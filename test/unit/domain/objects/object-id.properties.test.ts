@@ -9,7 +9,7 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 
-import { TsgitError } from '../../../../src/domain/objects/error.js';
+import { MAX_OBJECT_ID_IN_ERROR, TsgitError } from '../../../../src/domain/objects/error.js';
 import { ObjectId } from '../../../../src/domain/objects/object-id.js';
 import {
   arbCodeUnitString,
@@ -27,6 +27,31 @@ function oracleAccepts(hex: string): boolean {
   return SHA1_HEX_RE.test(hex) || SHA256_HEX_RE.test(hex);
 }
 
+const TAB_CODE = 0x09;
+const NEWLINE_CODE = 0x0a;
+const FIRST_PRINTABLE_CODE = 0x20;
+const LAST_PRINTABLE_CODE = 0x7e;
+
+/** Independent of production's escaping loop: every surviving code unit is one
+ *  the sanitiser leaves alone, so nothing raw got through. */
+function isDisplaySafe(value: string): boolean {
+  for (let i = 0; i < value.length; i += 1) {
+    const code = value.charCodeAt(i);
+    const printable = code >= FIRST_PRINTABLE_CODE && code <= LAST_PRINTABLE_CODE;
+    if (!(printable || code === TAB_CODE || code === NEWLINE_CODE)) return false;
+  }
+  return true;
+}
+
+function assertRefusalEchoIsBounded(error: unknown): void {
+  expect(error).toBeInstanceOf(TsgitError);
+  const data = (error as TsgitError).data;
+  expect(data.code).toBe('INVALID_OBJECT_ID');
+  if (data.code !== 'INVALID_OBJECT_ID') expect.unreachable();
+  expect(data.value.length).toBeLessThanOrEqual(MAX_OBJECT_ID_IN_ERROR);
+  expect(isDisplaySafe(data.value)).toBe(true);
+}
+
 function assertAgreesWithOracle(hex: string): void {
   if (oracleAccepts(hex)) {
     expect(ObjectId.from(hex)).toBe(hex);
@@ -36,8 +61,7 @@ function assertAgreesWithOracle(hex: string): void {
     ObjectId.from(hex);
     expect.unreachable();
   } catch (error) {
-    expect(error).toBeInstanceOf(TsgitError);
-    expect((error as TsgitError).data).toEqual({ code: 'INVALID_OBJECT_ID', value: hex });
+    assertRefusalEchoIsBounded(error);
   }
 }
 

@@ -15,7 +15,7 @@ import { readIndex } from '../../../src/application/primitives/read-index.js';
 import { TsgitError } from '../../../src/domain/error.js';
 import { FILE_MODE } from '../../../src/domain/objects/file-mode.js';
 import { SHA1_CONFIG } from '../../../src/domain/objects/hash-config.js';
-import type { Blob, FilePath, ObjectId } from '../../../src/domain/objects/index.js';
+import type { Blob, FilePath, ObjectContent, ObjectId } from '../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../src/domain/objects/tree.js';
 import { createLruCache } from '../../../src/domain/storage/lru-cache.js';
 import type { FileSystem } from '../../../src/ports/file-system.js';
@@ -30,7 +30,7 @@ const makeFallback = (): RuntimeFallback => ({
   runtime: 'memory',
   layout: { workDir: '/repo', gitDir: '/repo/.git', bare: false, refStorage: 'files' },
   hashConfig: SHA1_CONFIG,
-  deltaCache: createLruCache<Uint8Array>(1024),
+  deltaCache: createLruCache<ObjectContent>(1024),
 });
 
 const open = (opts: Parameters<typeof openRepository>[0] = {}): Promise<Repository> =>
@@ -651,7 +651,7 @@ describe('openRepository — dispose cache hygiene', () => {
         // Arrange — a pooling server disposing an idle repo must reclaim
         // this memory, not keep it pinned while the handle stays reachable.
         const sut = await open();
-        sut.ctx.deltaCache.set('some-key', new Uint8Array([1, 2, 3]), 3);
+        sut.ctx.deltaCache.set('some-key', { type: 'blob', content: new Uint8Array([1, 2, 3]) }, 3);
         expect(sut.ctx.deltaCache.currentSize).toBeGreaterThan(0);
 
         // Act
@@ -869,16 +869,32 @@ describe('openRepository — round-trip via memory adapter', () => {
     describe('When the bound reflog command is called', () => {
       it('Then it delegates and returns a show result', async () => {
         // Arrange — the bound `reflog` strips `ctx`; calling it with no args
-        // defaults to `show` on HEAD with an empty entry list.
+        // defaults to `show` on HEAD. HEAD has to resolve first: git parses
+        // the argument as a revision before it walks any log.
         const fallback = makeFallback();
         const sut = await openRepository({ cwd: '/repo' }, fallback);
         await sut.init();
+        await sut.ctx.fs.writeUtf8('/repo/a.txt', 'a');
+        await sut.add(['a.txt']);
+        await sut.commit({
+          message: 'seed',
+          author: {
+            name: 'Ada',
+            email: 'ada@example.com',
+            timestamp: 1_700_000_000,
+            timezoneOffset: '+0000',
+          },
+        });
 
         // Act
         const result = await sut.reflog();
 
         // Assert
-        expect(result).toEqual({ kind: 'show', ref: 'HEAD', entries: [] });
+        expect(result.kind).toBe('show');
+        expect(result.kind === 'show' && result.ref).toBe('HEAD');
+        expect(result.kind === 'show' && result.entries.map((e) => e.entry.message)).toEqual([
+          'commit (initial): seed',
+        ]);
       });
     });
     describe('When the bound sparseCheckout command is called', () => {
@@ -1292,7 +1308,7 @@ describe('openRepository — worktreeFs capability', () => {
     });
 
     describe('When accessing a path outside the worktree-scoped fs roots through a user-supplied (unbranded) fs', () => {
-      it('Then the wrapper still rejects it with PATHSPEC_OUTSIDE_REPO — R3: unbranded behaviour is unchanged', async () => {
+      it('Then the wrapper still rejects it with PATHSPEC_OUTSIDE_REPO — unbranded behaviour is unchanged', async () => {
         // Arrange
         const fallback = makeFallback();
         const sut = await openRepository({ cwd: '/repo', fs: fallback.fs }, fallback);
@@ -1409,7 +1425,7 @@ describe('openRepository — layout.commonDir plumbing', () => {
     });
 
     describe('When reading a path outside every layout root through a user-supplied (unbranded) fs', () => {
-      it('Then it still throws PATHSPEC_OUTSIDE_REPO — R3: unbranded behaviour is unchanged', async () => {
+      it('Then it still throws PATHSPEC_OUTSIDE_REPO — unbranded behaviour is unchanged', async () => {
         // Arrange — an explicit fs override keeps this fs unbranded, so both
         // layers still apply exactly as before this part.
         const fs = new MemoryFileSystem({ rootDir: '/root' });
@@ -1496,7 +1512,7 @@ describe('openRepository — config-scope allowlist', () => {
 
   describe('Given a user-supplied (unbranded) fs exposing the same config scopes', () => {
     describe('When accessing a non-config path through the wrapped fs', () => {
-      it('Then the wrapper still rejects it with PATHSPEC_OUTSIDE_REPO — R3: unbranded behaviour is unchanged', async () => {
+      it('Then the wrapper still rejects it with PATHSPEC_OUTSIDE_REPO — unbranded behaviour is unchanged', async () => {
         // Arrange — an explicit fs override keeps this fs unbranded.
         const fallback = makeFallback();
         const sut = await openRepository({ cwd: '/repo', fs: fallback.fs }, fallback);
@@ -1652,7 +1668,7 @@ describe('openRepository — config-scope allowlist', () => {
     });
 
     describe('When accessing the unavailable home config scope through a user-supplied (unbranded) fs', () => {
-      it('Then the wrapper still rejects it with PATHSPEC_OUTSIDE_REPO — R3: unbranded behaviour is unchanged', async () => {
+      it('Then the wrapper still rejects it with PATHSPEC_OUTSIDE_REPO — unbranded behaviour is unchanged', async () => {
         // Arrange
         const fallback = { ...makeFallback(), fs: new UnavailableConfigFs({ rootDir: '/repo' }) };
         const sut = await openRepository({ cwd: '/repo', fs: fallback.fs }, fallback);
@@ -1679,7 +1695,7 @@ describe('openRepository — config-scope allowlist', () => {
     });
 
     describe('When accessing the unavailable XDG config scope through a user-supplied (unbranded) fs', () => {
-      it('Then the wrapper still rejects it with PATHSPEC_OUTSIDE_REPO — R3: unbranded behaviour is unchanged', async () => {
+      it('Then the wrapper still rejects it with PATHSPEC_OUTSIDE_REPO — unbranded behaviour is unchanged', async () => {
         // Arrange
         const fallback = { ...makeFallback(), fs: new UnavailableConfigFs({ rootDir: '/repo' }) };
         const sut = await openRepository({ cwd: '/repo', fs: fallback.fs }, fallback);
@@ -1745,7 +1761,7 @@ describe('openRepository — object algorithm resolution', () => {
         // Act
         const sut = await openRepository({ cwd: '/repo' }, fallback);
 
-        // Assert — R6: default stays sha1; no upgrade needed, so the fallback's
+        // Assert — the default stays sha1; no upgrade needed, so the fallback's
         // own hash instance is reused (kills a mutant that always upgrades).
         expect(sut.ctx.hashConfig).toBe(SHA1_CONFIG);
         expect(sut.ctx.hash).toBe(fallback.hash);
@@ -1878,7 +1894,7 @@ describe('openRepository — memory-runtime read containment stays wrapper-autho
 
   describe('Given a user-supplied (unbranded) fs and the same `..`-collapsing-inside path', () => {
     describe('When the path is read', () => {
-      it('Then it is STILL refused with PATHSPEC_OUTSIDE_REPO — R3: unbranded behaviour is unchanged', async () => {
+      it('Then it is STILL refused with PATHSPEC_OUTSIDE_REPO — unbranded behaviour is unchanged', async () => {
         // Arrange
         const fallback = makeFallback();
         const sut = await openRepository({ cwd: '/repo', fs: fallback.fs }, fallback);

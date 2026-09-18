@@ -46,8 +46,9 @@ import {
 } from '../../../src/application/primitives/path-layout.ts';
 import { resolveRef } from '../../../src/application/primitives/resolve-ref.ts';
 import { updateRef } from '../../../src/application/primitives/update-ref.ts';
+import { writeObject } from '../../../src/application/primitives/write-object.ts';
 import { bytesEqual, bytesToHex } from '../../../src/domain/objects/encoding.ts';
-import { ObjectId, RefName } from '../../../src/domain/objects/index.ts';
+import { emptyTreeOid, ObjectId, RefName } from '../../../src/domain/objects/index.ts';
 import {
   buildReftableRefSection,
   compactionMetric,
@@ -67,15 +68,27 @@ import type { Scenario } from './types.ts';
 
 const MAIN_REF = RefName.from('refs/heads/main');
 const OLD_OID = ObjectId.from('a'.repeat(40));
-const NEW_OID = ObjectId.from('b'.repeat(40));
 const REFLOG_MESSAGE = 'reftable-refs scenario update';
+/** A deterministic parentless commit, written into the store before the
+ *  write under test — `updateRef` now verifies a branch target exists and
+ *  hashes to a commit, so the new value can no longer be an arbitrary id
+ *  absent from the store. Its id is fixed by its content (author, message,
+ *  empty tree), never re-derived from `writeObject`'s own return at
+ *  golden-compare time. */
+const NEW_COMMIT_AUTHOR = {
+  name: 'A U Thor',
+  email: 'author@example.com',
+  timestamp: 0,
+  timezoneOffset: '+0000',
+} as const;
+const NEW_OID = ObjectId.from('524af42eb70a2f800783f94ad7ee295e9d8d3263');
 /** The newest table's uncompressed ref-section prefix, measured once
  *  against the memory adapter's own output for this exact scenario — a
  *  literal, not re-derived from the same rebuild the scenario itself
  *  computes, so a genuine cross-adapter divergence has something fixed to
  *  diverge FROM. */
 const NON_LOG_PREFIX_HEX =
-  '524546540100100000000000000000010000000000000002720000470079726566732f68656164732f6d61696e01bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb00001c0001';
+  '524546540100100000000000000000010000000000000002720000470079726566732f68656164732f6d61696e01524af42eb70a2f800783f94ad7ee295e9d8d326300001c0001';
 
 interface ReftableRefsScenarioResult {
   readonly oidBeforeWrite: string;
@@ -156,6 +169,18 @@ export const reftableRefsScenario: Scenario<ReftableRefsScenarioResult> = {
       await plantStaleTablesListLock(ctx, ctx.layout.gitDir);
     }
 
+    await writeObject(ctx, {
+      type: 'commit',
+      id: '' as ObjectId,
+      data: {
+        tree: emptyTreeOid(ctx.hashConfig),
+        parents: [],
+        author: NEW_COMMIT_AUTHOR,
+        committer: NEW_COMMIT_AUTHOR,
+        message: REFLOG_MESSAGE,
+        extraHeaders: [],
+      },
+    });
     await updateRef(ctx, MAIN_REF, NEW_OID, { reflogMessage: REFLOG_MESSAGE });
     const oidAfterWrite = await resolveRef(ctx, MAIN_REF);
 

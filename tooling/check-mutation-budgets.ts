@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Mutation budget gate (Phase 19.1).
+ * Mutation budget gate.
  *
  * Reads the Stryker mutation report + the bucket manifest, evaluates per-bucket
  * scores against thresholds, prints a table, exits 0 (pass) or 1 (fail).

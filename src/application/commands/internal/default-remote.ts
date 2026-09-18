@@ -1,6 +1,7 @@
 import { invalidOption } from '../../../domain/commands/error.js';
 import { DEFAULT_REMOTE } from '../../../domain/remote.js';
 import type { ParsedConfig } from '../../primitives/config-read.js';
+import { isValidRemoteName } from './remote-config.js';
 
 /**
  * The configured remote, when exactly one is configured — the shared
@@ -51,28 +52,21 @@ export const resolvePushRemote = (
   DEFAULT_REMOTE;
 
 /**
- * First-pass sanity filter on remote names: alphanumerics, dot, dash,
- * underscore. Rejects obvious traversal vectors (slashes, control chars,
- * spaces) at the entry point so a hostile caller cannot smuggle a path
- * separator through a resolved remote name. NOT a sufficient guarantee on
- * its own — strings like `.git`, `..`, `a..b`, `a.lock` pass this regex but
- * produce invalid composed ref paths. The definitive guard is
- * `isSafeRefName(composed)` inside `updateTrackingCache` (and the contract
- * honored by `updateRef`), which runs `validateRefName` over the full
- * composed path.
- */
-const REMOTE_NAME_RE = /^[A-Za-z0-9._-]+$/;
-
-/**
  * Guard any resolved remote name (explicit, config-tracked, or sole-remote
  * inferred) before it flows into a composed on-disk path such as
  * `refs/remotes/<remote>/...`. Every caller that turns a remote name into a
  * filesystem path must call this first — resolution alone does not
  * validate, since `branch.<name>.remote` and `[remote "<name>"]` are both
  * attacker-controllable config values.
+ *
+ * The rule is git's own `valid_remote_name`, so every name `remote add` and
+ * `remote rename` accept can be fetched from and pushed to — `a/b`, `a"b`
+ * and `a]b` included. It is no weaker as a containment guard: a name that
+ * passes composes a ref path `validateRefName` already accepts, and `..`,
+ * a leading `/` and every control character are still rejected.
  */
 export const assertValidRemoteName = (remoteName: string): void => {
-  if (!REMOTE_NAME_RE.test(remoteName)) {
+  if (!isValidRemoteName(remoteName)) {
     throw invalidOption('remote', `invalid remote name: ${remoteName}`);
   }
 };

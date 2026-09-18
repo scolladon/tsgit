@@ -1,10 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createCommit } from '../../../../../src/application/primitives/create-commit.js';
 import {
   commitHeader,
+  correctedCommitDatesEnabled,
   insertBounded,
   isGraphKnownAbsent,
 } from '../../../../../src/application/primitives/internal/read-commit-graph.js';
+import { assertOperationalRepository } from '../../../../../src/application/primitives/internal/repo-state.js';
 import {
   commitGraphChainPath,
   commitGraphPath,
@@ -23,7 +25,12 @@ import type {
 } from '../../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../../src/ports/context.js';
 import { buildCommitGraphBytes } from '../../../domain/commit/arbitraries.js';
-import { buildSeededContext, instrumentedContext, writeCommitGraph } from '../fixtures.js';
+import {
+  buildSeededContext,
+  instrumentedContext,
+  seedMaxTreeDepth,
+  writeCommitGraph,
+} from '../fixtures.js';
 
 const withFsOverride = (ctx: Context, overrides: Partial<Context['fs']>): Context => ({
   ...ctx,
@@ -261,7 +268,7 @@ async function makeCommit(
   return object;
 }
 
-/** Pin D's 5-commit shape: c0 root, c1/c2 linear, c3 merges c0+c2, c4 tip. */
+/** A 5-commit history: c0 root, c1/c2 linear, c3 merges c0+c2, c4 tip. */
 async function buildFiveCommitHistory(
   ctx: Awaited<ReturnType<typeof buildSeededContext>>,
 ): Promise<{ c0: Commit; c1: Commit; c2: Commit; c3: Commit; c4: Commit }> {
@@ -435,8 +442,8 @@ describe('read-commit-graph', () => {
     describe('Given a chain whose most-recent layer file has been deleted', () => {
       describe('When commitHeader is called for a commit that lives in the still-present base layer', () => {
         it('Then the WHOLE graph is treated as absent (returns undefined)', async () => {
-          // Arrange — Pin D staleness: a chain referencing a missing layer is
-          // treated as absent, not "partially available".
+          // Arrange — a chain referencing a missing layer is treated as
+          // absent, not "partially available".
           const ctx = await buildSeededContext();
           const { c0, c1, c2, c3, c4 } = await buildFiveCommitHistory(ctx);
           await writeCommitGraph(ctx, [
@@ -585,7 +592,7 @@ describe('read-commit-graph', () => {
     describe('Given a commit-graph already loaded via a prior commitHeader call', () => {
       describe('When commitHeader is called for a different commit whose header is not yet cached', () => {
         it('Then no additional read on a commit-graph path occurs — the header is re-derived from the already-parsed graph', async () => {
-          // Arrange — pins the R3 eviction-safety property: a header-cache
+          // Arrange — pins the eviction-safety property: a header-cache
           // miss (whether never-computed or evicted) must be re-derivable
           // from `graph` alone, with zero further `ctx.fs` calls.
           const base = await buildSeededContext();
@@ -1196,6 +1203,106 @@ describe('isGraphKnownAbsent', () => {
 
       // Assert
       expect(result).toBe(false);
+    });
+  });
+});
+
+describe('commitHeader / correctedCommitDatesEnabled — repo-settings class boundary', () => {
+  describe('Given core.maxTreeDepth = 2.5 and a fresh session (no graph probed yet)', () => {
+    describe('When commitHeader is called for any oid', () => {
+      it('Then it throws CONFIG_BAD_NUMERIC_VALUE without ever probing the graph file', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await seedMaxTreeDepth(ctx, '2.5');
+        const existsSpy = vi.spyOn(ctx.fs, 'exists');
+
+        // Act
+        let caught: unknown;
+        try {
+          await commitHeader(ctx, oid('bb01'));
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+        expect(existsSpy).not.toHaveBeenCalled();
+        expect(isGraphKnownAbsent(ctx)).toBe(false);
+      });
+    });
+
+    describe('When correctedCommitDatesEnabled is called', () => {
+      it('Then it throws CONFIG_BAD_NUMERIC_VALUE without ever probing the graph file', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await seedMaxTreeDepth(ctx, '2.5');
+        const existsSpy = vi.spyOn(ctx.fs, 'exists');
+
+        // Act
+        let caught: unknown;
+        try {
+          await correctedCommitDatesEnabled(ctx);
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+        expect(existsSpy).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given a header already cached for an oid, then the config becomes malformed and is invalidated', () => {
+    describe('When commitHeader is called again for the same oid', () => {
+      it('Then it still refuses — the header-cache hit does not bypass the class check', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const tree = await emptyTree(ctx);
+        const commit = await makeCommit(ctx, tree, [], 1, 'settled');
+        await writeCommitGraph(ctx, [[commit]]);
+        const first = await commitHeader(ctx, commit.id);
+        expect(first).toBeDefined();
+
+        // Act — external rewrite + invalidation, no further probe in between
+        await seedMaxTreeDepth(ctx, '2.5');
+        let caught: unknown;
+        try {
+          await commitHeader(ctx, commit.id);
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+      });
+    });
+  });
+
+  describe('Given the operational gate has already opened an epoch for this command', () => {
+    describe('When the first commitHeader follows', () => {
+      it('Then it issues zero stat of config — the repo-settings check rides the trusted entry', async () => {
+        // Arrange — the gate runs on the UNWRAPPED context; instrumentation
+        // starts only after it, so the count reflects commitHeader alone.
+        const base = await buildSeededContext();
+        await base.fs.writeUtf8(`${base.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+        const tree = await emptyTree(base);
+        const commit = await makeCommit(base, tree, [], 1, 'epoch-boundary');
+        await assertOperationalRepository(base);
+        const { ctx, calls } = instrumentedContext(base);
+
+        // Act
+        await commitHeader(ctx, commit.id);
+
+        // Assert
+        const configStats = calls().filter(
+          (c) => c.method === 'stat' && c.path === `${ctx.layout.gitDir}/config`,
+        );
+        expect(configStats).toHaveLength(0);
+      });
     });
   });
 });

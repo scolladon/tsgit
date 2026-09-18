@@ -449,10 +449,6 @@ async function peelToTree(ctx: Context, id: ObjectId): Promise<PeeledTree> {
   return { id: currentId, content: result.content };
 }
 
-/** Recursion state threaded through `diffRecursiveLevel` — tracks the full-path
- * prefix plus per-side cycle/depth guards, mirroring `walkTree`'s protection
- * (the merge-join below descends into changed subtrees directly, bypassing
- * `walkTree`, so it must re-establish the same safety net). */
 /**
  * The root-to-current path for one side, as an immutable cons list: each level
  * allocates ONE node pointing at its parent, so every sibling shares its
@@ -483,6 +479,10 @@ const ancestryHas = (node: AncestryNode | undefined, id: ObjectId): boolean => {
   return false;
 };
 
+/** Recursion state threaded through `diffRecursiveLevel` — tracks the full-path
+ * prefix plus per-side cycle/depth guards, mirroring `walkTree`'s protection
+ * (the merge-join below descends into changed subtrees directly, bypassing
+ * `walkTree`, so it must re-establish the same safety net). */
 interface DiffCursor {
   readonly prefix: string;
   readonly depth: number;

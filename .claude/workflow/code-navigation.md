@@ -61,12 +61,20 @@ otherwise.
 
 ## 5. graft — cheap breadth, MCP only
 
-**The `graft` CLI is broken on this machine**: `graft build` / `graft check` throw
-`No native build was found … tree-sitter-kotlin` (the global install blocked scripts, so
-node-gyp never ran; 0.15.0 is latest, no upgrade fixes it). **Never run it, and ignore any
-instruction to `graft build` in a fresh worktree — it cannot succeed.**
+**Fixed 2026-09-11 — the previous "graft is broken here" note no longer applies.** The whole
+binary died at startup, CLI and MCP server alike, because `tree-sitter-kotlin` ships no prebuilt
+for darwin/arm64 at this ABI and its native build had never run, and graft imports it eagerly.
+The MCP server therefore failed as `CONNECTION_CLOSED` rather than as an error. The fix was to
+build that one module in place:
 
-The **MCP tools work and self-refresh** before each query, so no build step is needed:
+```bash
+cd "$(npm root -g)/@nanonets/graft/node_modules/tree-sitter-kotlin" && npx node-gyp rebuild
+```
+
+If graft ever goes silent again, run `graft --version` first: a stack trace naming a
+`tree-sitter-*` grammar is this same failure after an upgrade or a Node major bump, and the
+command above — pointed at whichever grammar is named — is the whole remedy. There is still no
+reason to run `graft build`; the **MCP tools self-refresh** before each query:
 `ToolSearch("select:mcp__graft__graft_find_code,mcp__graft__graft_file_api,mcp__graft__graft_trace_calls")`
 
 Two limits: the graft MCP server is rooted at the **main checkout**, so it is blind to your

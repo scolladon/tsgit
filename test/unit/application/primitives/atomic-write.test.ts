@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { atomicWriteRef } from '../../../../src/application/primitives/atomic-write.js';
+import {
+  atomicWriteRef,
+  withLockFile,
+} from '../../../../src/application/primitives/atomic-write.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import { buildSeededContext } from './fixtures.js';
 
@@ -293,6 +296,255 @@ describe('atomicWriteRef', () => {
         // Assert — the plain rm error propagates.
         expect(caught).toBe(rmError);
         expect((caught as Error).message).toBe('rm exploded');
+      });
+    });
+  });
+});
+
+describe('withLockFile', () => {
+  const onLocked = (lockPath: string): TsgitError =>
+    new TsgitError({ code: 'RESOURCE_LOCKED', resource: 'ref', path: lockPath });
+
+  describe('Given a held lock', () => {
+    describe('When withLockFile is called', () => {
+      it('Then it refuses through onLocked with the lock path and runs the body zero times', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const path = '/repo/.git/packed-refs';
+        await ctx.fs.write(`${path}.lock`, new Uint8Array(0));
+        let bodyCalls = 0;
+
+        // Act
+        let caught: unknown;
+        try {
+          await withLockFile(ctx, path, onLocked, async () => {
+            bodyCalls += 1;
+          });
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('RESOURCE_LOCKED');
+        if ((caught as TsgitError).data.code === 'RESOURCE_LOCKED') {
+          expect((caught as TsgitError).data).toMatchObject({ path: `${path}.lock` });
+        }
+        expect(bodyCalls).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a body that commits', () => {
+    describe('When withLockFile is called', () => {
+      it('Then path holds the committed content and no lock remains', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const path = '/repo/.git/packed-refs';
+        const content = new TextEncoder().encode('committed content');
+
+        // Act
+        await withLockFile(ctx, path, onLocked, async (commit) => {
+          await commit(content);
+        });
+
+        // Assert
+        expect(await ctx.fs.readUtf8(path)).toBe('committed content');
+        expect(await ctx.fs.exists(`${path}.lock`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a body that never calls commit', () => {
+    describe('When withLockFile is called', () => {
+      it('Then path is left untouched and no lock remains', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const path = '/repo/.git/packed-refs';
+        await ctx.fs.writeUtf8(path, 'original\n');
+
+        // Act
+        await withLockFile(ctx, path, onLocked, async () => {
+          // deliberately does not call commit
+        });
+
+        // Assert
+        expect(await ctx.fs.readUtf8(path)).toBe('original\n');
+        expect(await ctx.fs.exists(`${path}.lock`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a body that throws before committing', () => {
+    describe('When withLockFile is called', () => {
+      it("Then it removes the lock and rethrows the body's error", async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const path = '/repo/.git/packed-refs';
+        const bodyError = new Error('body exploded');
+
+        // Act
+        let caught: unknown;
+        try {
+          await withLockFile(ctx, path, onLocked, async () => {
+            throw bodyError;
+          });
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBe(bodyError);
+        expect(await ctx.fs.exists(`${path}.lock`)).toBe(false);
+        expect(await ctx.fs.exists(path)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given the commit rename fails', () => {
+    describe('When withLockFile is called', () => {
+      it('Then it removes the lock and rethrows the rename error', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const path = '/repo/.git/packed-refs';
+        const renameError = new TsgitError({ code: 'PERMISSION_DENIED', path });
+        const originalRename = ctx.fs.rename.bind(ctx.fs);
+        const wrapped = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            rename: async (from: string, to: string) => {
+              if (to === path) throw renameError;
+              return originalRename(from, to);
+            },
+          },
+        };
+
+        // Act
+        let caught: unknown;
+        try {
+          await withLockFile(wrapped, path, onLocked, async (commit) => {
+            await commit(new TextEncoder().encode('x'));
+          });
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBe(renameError);
+        expect(await wrapped.fs.exists(`${path}.lock`)).toBe(false);
+        expect(await wrapped.fs.exists(path)).toBe(false);
+      });
+    });
+  });
+  describe('Given writeExclusive throws a non-FILE_EXISTS TsgitError', () => {
+    describe('When withLockFile is called', () => {
+      it('Then that error propagates, not the onLocked refusal, and the body never runs', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const writeError = new TsgitError({ code: 'PERMISSION_DENIED', path: '/x' });
+        const wrapped = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            writeExclusive: async () => {
+              throw writeError;
+            },
+          },
+        };
+        let bodyCalls = 0;
+        const sut = withLockFile;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(wrapped, '/repo/.git/packed-refs', onLocked, async () => {
+            bodyCalls += 1;
+          });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBe(writeError);
+        expect(bodyCalls).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a body that throws and a lock removal that reports FILE_NOT_FOUND', () => {
+    describe('When withLockFile is called', () => {
+      it("Then the removal error is swallowed and the body's error propagates", async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const bodyError = new Error('body exploded');
+        const rmError = new TsgitError({
+          code: 'FILE_NOT_FOUND',
+          path: '/repo/.git/packed-refs.lock',
+        });
+        const wrapped = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            rm: async () => {
+              throw rmError;
+            },
+          },
+        };
+        const sut = withLockFile;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(wrapped, '/repo/.git/packed-refs', onLocked, async () => {
+            throw bodyError;
+          });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBe(bodyError);
+      });
+    });
+  });
+
+  describe('Given a body that throws and a lock removal that fails for another reason', () => {
+    describe('When withLockFile is called', () => {
+      it('Then the removal error propagates so a stuck lock surfaces', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const rmError = new TsgitError({
+          code: 'PERMISSION_DENIED',
+          path: '/repo/.git/packed-refs.lock',
+        });
+        const wrapped = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            rm: async () => {
+              throw rmError;
+            },
+          },
+        };
+        const sut = withLockFile;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(wrapped, '/repo/.git/packed-refs', onLocked, async () => {
+            throw new Error('body exploded');
+          });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBe(rmError);
+        expect(await ctx.fs.exists('/repo/.git/packed-refs.lock')).toBe(true);
       });
     });
   });

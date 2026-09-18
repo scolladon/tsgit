@@ -26,11 +26,17 @@ This split makes the Node adapter's write side the *only* symlink-aware containm
 
 ### Browser — OPFS sandbox
 
-OPFS is sandboxed per origin by the browser. The adapter does no extra path containment because it can't escape OPFS. The `gitDirName` option exists for hosts that disallow dot-prefixed names.
+OPFS is sandboxed per origin by the browser. The adapter does no extra path containment because it can't escape OPFS. The `gitDirName` option exists for hosts that disallow dot-prefixed names. OPFS has no symbolic links at all, so none of the symlink rules below reach it — `symlink`, `readlink` and `openWithNoFollow` refuse `UNSUPPORTED_OPERATION`, and `lstat` is `stat`.
 
-### Memory — symlink loop cap
+### Memory — symlink resolution and refusals
 
-The Memory adapter's symlink follower caps at 40 hops (POSIX `SYMLOOP_MAX`).
+The Memory adapter resolves symlinks the way the Node adapter does, and refuses with the same codes, so a symlink test that passes against memory means something about real disks ([ADR-872](../adr/872-the-memory-adapter-follows-symlinks-and-refuses-as-the-node-adapter-does.md)).
+
+- **Every path component is resolved through symlinks**, on reads and on writes alike. A relative link text resolves against **the link's own directory** — not against the adapter root, which is where `stat` used to resolve it.
+- **The leaf is followed on every read surface** — `read`, `readSlice`, `readUtf8`, `stat`, `exists`, `readdir` — and by `mkdir`, whose leaf the Node adapter follows too: a link to an existing directory is a no-op that leaves the link in place, a link to a regular file refuses `NOT_A_DIRECTORY`, and a dangling link refuses `FILE_NOT_FOUND` without creating its target. Every other write surface, plus `lstat`, `readlink`, `rm`, `rename` and `openWithNoFollow`, acts on the link itself.
+- **The follower caps at 40 hops** (POSIX `SYMLOOP_MAX`), counted across the whole resolution rather than per component — so 39 links resolve and the 40th refuses. A loop refuses `PERMISSION_DENIED`, `exists` included: on a loop it throws rather than answering `false` (on a merely dangling link it answers `false`).
+- **Refusals carry the Node adapter's errno mapping**: reading a directory is `PERMISSION_DENIED` (Node's `EISDIR`), `readdir` of a missing path or a dangling link is `FILE_NOT_FOUND`, `readdir` of a regular file is `NOT_A_DIRECTORY`, and any path *beneath* a regular file is `NOT_A_DIRECTORY`.
+- **Structural containment still applies, and at every hop.** The root prefix is checked when a path enters the adapter and again on each followed target, so a link whose target leaves the adapter root refuses `PERMISSION_DENIED` however deep in the chain it sits. That is deliberately stricter than the Node adapter, whose read path is lexical and follows a link out of the work tree exactly as git does — the memory adapter is a sandbox, and keeping its own containment closed costs nothing there.
 
 ## Index entry name validation
 

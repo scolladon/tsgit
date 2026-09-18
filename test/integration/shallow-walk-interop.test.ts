@@ -53,7 +53,7 @@ const looseObjectPath = (repoDir: string, id: ObjectId): string =>
   path.join(repoDir, '.git', 'objects', id.slice(0, 2), id.slice(2));
 
 describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
-  // F1 fixture: bare + source with 5 linear commits c1..c5 on main.
+  // Linear fixture: bare + source with 5 linear commits c1..c5 on main.
   let bare1: string;
   let source1: string;
   let ids: readonly ObjectId[]; // [C1, C2, C3, C4, C5], oldest first
@@ -62,27 +62,27 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
   let f2: string; // --depth 1 clone: shallow={C5}
   let f6worktree: string; // linked worktree of f1
 
-  // F3 fixture: base -> {side1, main1} -> merge, --depth 2 clone: two boundaries.
+  // Diamond fixture: base -> {side1, main1} -> merge, --depth 2 clone: two boundaries.
   let bare3: string;
   let source3: string;
   let f3: string;
   // `base` itself is deliberately never captured — it sits beyond BOTH
-  // boundaries and is absent from every F3 assertion below.
+  // boundaries and is absent from every diamond assertion below.
   let side1: ObjectId;
   let main1: ObjectId;
   let merge3: ObjectId;
 
-  // F7a/F7b: mutated inside their own `it` (Arrange), not in beforeAll.
+  // `f7a`/`f7b`: mutated inside their own `it` (Arrange), not in beforeAll.
   let f7a: string;
   let f7b: string;
 
-  // F4 fixture: `git init` in place (not a clone — C5 needs a deletable LOOSE
+  // Init-in-place fixture: `git init` in place (not a clone — C5 needs a deletable LOOSE
   // object), 5 commits, a written commit-graph, no shallow file. Its own
-  // [C1..C5] chain — different oids from F1's `ids`, kept separately.
+  // [C1..C5] chain — different oids from the linear fixture's `ids`, kept separately.
   let f4: string;
   let f4Ids: readonly ObjectId[];
 
-  // Cheap fs.cp copies of F4 for the commit-graph-disabled-by-shallow-presence rows.
+  // Cheap fs.cp copies of `f4` for the commit-graph-disabled-by-shallow-presence rows.
   let f4c2: string; // .git/shallow = {C4}: parents still present locally
   let f4c3: string; // .git/shallow = {C2}: mid-history boundary
   let f5NoShallow: string; // C3's loose object deleted, no shallow file (C4, git-side only)
@@ -98,7 +98,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
   };
 
   beforeAll(async () => {
-    // ── F1/F2/F6/F7a/F7b: shared linear 5-commit source ──
+    // ── the shared linear 5-commit source ──
     bare1 = await tmp('bare1');
     source1 = await tmp('source1');
     runGit(['init', '-q', '-b', 'main', '--bare', bare1]);
@@ -121,7 +121,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     f7b = await tmp('f7b');
     cloneDepth(bare1, 2, f7b);
 
-    // Annotate v0.4 on C4 directly in the shallow clone F1 (A28/A29): an
+    // Annotate v0.4 on C4 directly in the shallow clone `f1`: an
     // annotated tag needs a committer identity, and the isolated HOME means
     // there is no readable user.name/user.email, so the extended env is
     // required here.
@@ -132,7 +132,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     f6worktree = await tmp('f6-worktree');
     runGit(['-C', f1, 'worktree', 'add', f6worktree, '-b', 'wt'], { env: identityEnv(6) });
 
-    // ── F3: two-boundary diamond ──
+    // ── the two-boundary diamond ──
     bare3 = await tmp('bare3');
     source3 = await tmp('source3');
     runGit(['init', '-q', '-b', 'main', '--bare', bare3]);
@@ -163,9 +163,9 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     f3 = await tmp('f3');
     cloneDepth(bare3, 2, f3);
 
-    // ── F4: git init in place (NOT a clone — a clone packs objects, and C5
+    // ── git init in place (NOT a clone — a clone packs objects, and C5
     // needs a deletable LOOSE object), 5 commits, a written commit-graph, no
-    // shallow file. Its own [C1..C5] chain is distinct from F1's `ids`. ──
+    // shallow file. Its own [C1..C5] chain is distinct from `f1`'s `ids`. ──
     f4 = await tmp('f4');
     runGit(['init', '-q', '-b', 'main', f4]);
     for (let i = 0; i < 5; i += 1) {
@@ -209,7 +209,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     }
   });
 
-  describe('Given a --depth 2 clone (F1: objects {C5,C4}, shallow={C4})', () => {
+  describe('Given a --depth 2 clone (objects {C5,C4}, shallow={C4})', () => {
     describe('When log runs with maxParents:0', () => {
       it('Then only the boundary is returned, matching rev-list --max-parents=0', async () => {
         // Arrange
@@ -512,7 +512,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     });
   });
 
-  describe('Given a --depth 2 clone deepened by 1 inside the test (F7a)', () => {
+  describe('Given a --depth 2 clone deepened by 1 inside the test', () => {
     describe('When git fetch --deepen runs and a fresh Context is opened', () => {
       it('Then the new boundary is C3, matching git', async () => {
         // Arrange — A38
@@ -535,7 +535,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     });
   });
 
-  describe('Given a --depth 2 clone unshallowed inside the test (F7b)', () => {
+  describe('Given a --depth 2 clone unshallowed inside the test', () => {
     describe('When git fetch --unshallow runs and a fresh Context is opened', () => {
       it('Then the repository walks full history, matching git', async () => {
         // Arrange — A39
@@ -558,7 +558,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     });
   });
 
-  describe('Given a --depth 1 clone (F2: shallow={C5})', () => {
+  describe('Given a --depth 1 clone (shallow={C5})', () => {
     describe('When log runs with default options', () => {
       it('Then it yields one entry whose parents are empty', async () => {
         // Arrange
@@ -587,7 +587,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     });
   });
 
-  describe('Given a --depth 2 clone of a two-parent merge (F3: boundaries side1, main1)', () => {
+  describe('Given a --depth 2 clone of a two-parent merge (boundaries side1, main1)', () => {
     describe('When walkCommits walks from the merge', () => {
       it('Then it yields exactly the merge and both boundary parents', async () => {
         // Arrange
@@ -646,9 +646,9 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     });
   });
 
-  describe('Given a linked worktree of the shallow clone (F6: no .git/shallow in the worktree admin dir)', () => {
+  describe('Given a linked worktree of the shallow clone (no .git/shallow in the worktree admin dir)', () => {
     describe('When walkCommits and log both run through the worktree Context', () => {
-      it('Then the shared shallow set resolves through the common dir, identical masking to F1', async () => {
+      it('Then the shared shallow set resolves through the common dir, identical masking to the clone itself', async () => {
         // Arrange — E1/E3 (E2, `--is-shallow-repository`, has no tsgit surface)
         const repo = await openTrackedRepository({ cwd: f6worktree });
         const adminDir = path.join(f1, '.git', 'worktrees', path.basename(f6worktree));
@@ -671,7 +671,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     });
   });
 
-  describe('Given a git-init-in-place repo with a written commit-graph and no shallow file (F4)', () => {
+  describe('Given a git-init-in-place repo with a written commit-graph and no shallow file', () => {
     describe('When walkCommits and log both run', () => {
       it('Then the full history is reachable, matching git', async () => {
         // Arrange — C1
@@ -695,10 +695,10 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     });
   });
 
-  describe('Given F4 copied with .git/shallow={C4} (F4c2: parents still present locally)', () => {
+  describe('Given the init-in-place repo copied with .git/shallow={C4} (parents still present locally)', () => {
     describe('When enumeratePushObjects walks from the tip', () => {
       it('Then the closure stops at the cut even though the parents exist locally', async () => {
-        // Arrange — the discriminating variant of the F1 enumeration row: here
+        // Arrange — the discriminating variant of the clone enumeration row: here
         // every ancestor object IS present, so `ignoreMissing` cannot silently
         // absorb an unmasked walk — only the graft stops the closure, and git's
         // own `rev-list --objects` co-stops.
@@ -777,10 +777,10 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     });
   });
 
-  describe('Given F4 copied with .git/shallow={C2} (F4c3: a mid-history boundary)', () => {
+  describe('Given the init-in-place repo copied with .git/shallow={C2} (a mid-history boundary)', () => {
     describe('When walkCommits and log both run', () => {
       it('Then masking is applied by oid, independent of object availability', async () => {
-        // Arrange — C3, likewise a regression row (see F4c2 above): every
+        // Arrange — C3, likewise a regression row (see the row above): every
         // masked parent here is still locally present.
         const repo = await openTrackedRepository({ cwd: f4c3 });
 
@@ -798,7 +798,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     });
   });
 
-  describe("Given F4 with C3's loose object deleted and no shallow file (F5-no-shallow)", () => {
+  describe("Given the init-in-place repo with C3's loose object deleted and no shallow file", () => {
     describe('When git rev-list walks purely from the commit-graph', () => {
       it('Then git succeeds without ever reading the missing object', () => {
         // Arrange — C4. git traverses purely from the commit-graph and never
@@ -817,7 +817,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     });
   });
 
-  describe('Given F5 (C3 deleted, .git/shallow={C1} masks nothing real)', () => {
+  describe('Given C3 deleted and .git/shallow={C1} (masks nothing real)', () => {
     describe('When walkCommits and git rev-list both run', () => {
       it('Then both refuse to traverse the missing object', async () => {
         // Arrange — C5
@@ -840,7 +840,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     });
   });
 
-  describe('Given F5empty (C3 deleted, .git/shallow is a 0-byte file)', () => {
+  describe('Given C3 deleted and a 0-byte .git/shallow', () => {
     describe('When walkCommits and git rev-list both run', () => {
       it('Then both refuse identically — the decisive presence-not-content pin', async () => {
         // Arrange — C6
@@ -863,7 +863,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     });
   });
 
-  describe('Given F5restored (C3 restored, .git/shallow is a 0-byte file)', () => {
+  describe('Given C3 restored and a 0-byte .git/shallow', () => {
     describe('When walkCommits and git rev-list both run', () => {
       it('Then both walk the full 5-commit history with the graph disabled', async () => {
         // Arrange — C7
@@ -883,7 +883,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     });
   });
 
-  describe('Given the boundary commit C4 shown directly (F1)', () => {
+  describe('Given the boundary commit C4 shown directly', () => {
     describe('When show() runs on it', () => {
       it('Then parents are empty and the patch adds every locally-visible file, matching git show', async () => {
         // Arrange — A24
@@ -920,7 +920,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     });
   });
 
-  describe('Given the boundary commit C4 blamed directly on the file it introduced (F1)', () => {
+  describe('Given the boundary commit C4 blamed directly on the file it introduced', () => {
     describe('When blame() runs', () => {
       it('Then the line is a boundary attributed to C4, matching git blame --line-porcelain', async () => {
         // Arrange — A27
@@ -947,7 +947,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     describe('When repo.revert.run reverts the boundary', () => {
       it('Then it conflicts as modify/delete against the empty tree, matching git revert', async () => {
         // Arrange — A35. revert mutates the worktree, so it gets its own fs.cp
-        // copy of F1 (one for tsgit, one for the git co-refusal), built here.
+        // copy of the shallow clone (one for tsgit, one for the git co-refusal), built here.
         const c4 = ids[3] as ObjectId;
         const oursDir = await tmp('a35-ours');
         await cp(f1, oursDir, { recursive: true });
@@ -982,7 +982,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     describe('When repo.cherryPick.run picks the boundary', () => {
       it('Then it conflicts as add/add, matching git cherry-pick (the boundary behaves as a root)', async () => {
         // Arrange — A36. cherry-pick mutates the worktree, so it gets its own
-        // fs.cp copy of F1 (one for tsgit, one for the git co-refusal).
+        // fs.cp copy of the shallow clone (one for tsgit, one for the git co-refusal).
         const c4 = ids[3] as ObjectId;
         const oursDir = await tmp('a36-ours');
         await cp(f1, oursDir, { recursive: true });
@@ -1014,7 +1014,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     });
   });
 
-  describe('Given the boundary at HEAD~1 (F1)', () => {
+  describe('Given the boundary at HEAD~1', () => {
     describe('When revParse walks the parent chain past it', () => {
       it('Then HEAD~1 resolves to the boundary, matching git', async () => {
         // Arrange — A12
@@ -1071,7 +1071,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     });
   });
 
-  describe('Given the boundary compared against HEAD (F1)', () => {
+  describe('Given the boundary compared against HEAD', () => {
     describe('When mergeBase runs', () => {
       it('Then the boundary is the merge base — proving it is also an ancestor of HEAD, matching git', async () => {
         // Arrange — A18/A20: a single mergeBase call discharges both pins;
@@ -1125,7 +1125,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
   // boundary-marker line to reconstruct) and A22 (pathspec-filtered
   // `git log -- <path>` — `log` takes no pathspec). No option is invented to
   // close any of the three.
-  describe('Given the boundary compared against HEAD under --independent (F1, git-side only)', () => {
+  describe('Given the boundary compared against HEAD under --independent (git-side only)', () => {
     describe('When git merge-base --independent runs', () => {
       it('Then it reduces {HEAD, C4} to {C5} — A21 has no tsgit surface', () => {
         // Arrange + Act — A21
@@ -1138,7 +1138,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     });
   });
 
-  describe('Given HEAD named on a shallow clone (F1)', () => {
+  describe('Given HEAD named on a shallow clone', () => {
     describe('When nameRev runs', () => {
       it('Then it resolves the same name git prints, matching git name-rev', async () => {
         // Arrange — A30
@@ -1155,7 +1155,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     });
   });
 
-  describe('Given a shallow clone checked with fsck (F1)', () => {
+  describe('Given a shallow clone checked with fsck', () => {
     describe('When fsck runs strict', () => {
       it('Then it reports a clean exit bitmask, matching git fsck', async () => {
         // Arrange — A32
@@ -1183,7 +1183,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     });
   });
 
-  describe('Given a bisect between the boundary and HEAD (F1)', () => {
+  describe('Given a bisect between the boundary and HEAD', () => {
     describe('When bisectMidpoint runs', () => {
       it('Then it reports C5 as the sole candidate, consistent with a single-step git bisect', async () => {
         // Arrange — A37

@@ -5,9 +5,9 @@ import type { HashService } from '../ports/hash-service.js';
 import type { HttpTransport } from '../ports/http-transport.js';
 
 /**
- * The four-port set the facade plumbs into Context. §5 gives users
- * partial-override granularity: any subset of the four can be supplied, with
- * the rest falling back to the runtime-detected set.
+ * The four-port set the facade plumbs into Context, at partial-override
+ * granularity: any subset of the four can be supplied, with the rest falling
+ * back to the runtime-detected set.
  */
 interface AdapterOverrides {
   readonly fs?: FileSystem;

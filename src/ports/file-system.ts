@@ -117,7 +117,16 @@ export interface FileSystem {
   /** Get file/directory metadata. Throws FILE_NOT_FOUND if not found. Does NOT follow symlinks. */
   readonly lstat: (path: string) => Promise<FileStat>;
 
-  /** List directory entries. Throws NOT_A_DIRECTORY if not a directory. */
+  /**
+   * Whether any entry occupies `path`, a symbolic link included: the leaf is never followed, so a
+   * dangling link counts. Resolves `false` exactly where `lstat` refuses FILE_NOT_FOUND, and
+   * rejects with every other refusal `lstat` raises. OPTIONAL: a presence probe that spends no
+   * refusal on an absent path. A caller that finds it absent calls `lstat` and reads
+   * FILE_NOT_FOUND as absence, which answers identically.
+   */
+  readonly lexists?: (path: string) => Promise<boolean>;
+
+  /** List directory entries. Throws NOT_A_DIRECTORY if not a directory, FILE_NOT_FOUND if absent. */
   readonly readdir: (path: string) => Promise<ReadonlyArray<DirEntry>>;
 
   /** Create directory and all parents. No-op if already exists. */
@@ -143,14 +152,15 @@ export interface FileSystem {
    * parent-inherited permissions) on a best-effort basis if that rename then fails. Every refusal
    * above carries `data.path === src`; renaming
    * a directory onto a destination inside itself is refused with UNSUPPORTED_OPERATION, a
-   * variant that carries no `path`; a regular file, or a symlink that does not resolve to a
-   * directory, at the destination's immediate parent refuses with FILE_EXISTS carrying `src` on
-   * the node adapter (memory: NOT_A_DIRECTORY
-   * carrying that parent); higher up the destination's ancestor chain it refuses with
-   * NOT_A_DIRECTORY carrying an adapter- and platform-chosen path (node: `dst` on POSIX and
-   * `src` on Windows; memory: the blocking ancestor) — changing nothing in either case. On
-   * Windows a regular file on the source's ancestor chain reports FILE_NOT_FOUND rather than
-   * NOT_A_DIRECTORY, because a different resolution step fails first. The browser adapter's
+   * variant that carries no `path`. A regular file on the source's ancestor chain refuses
+   * NOT_A_DIRECTORY (the node adapter on Windows: FILE_NOT_FOUND, as a different resolution step
+   * fails first). A regular file, or a symlink to one, at the destination's immediate parent
+   * refuses FILE_EXISTS on the node adapter and NOT_A_DIRECTORY elsewhere; a dangling symlink
+   * there, FILE_NOT_FOUND on the node adapter and NOT_A_DIRECTORY on memory; higher up the
+   * destination's chain, NOT_A_DIRECTORY everywhere — each changing nothing. Their `path` names
+   * `src` or `dst` by adapter and platform (node: `src` at the immediate parent or through a
+   * dangling symlink, else `dst` on POSIX and `src` on Windows; memory and browser: the path
+   * whose chain is blocked), so callers must not branch on it. The browser adapter's
    * emulation moves files only: a directory source reports
    * FILE_NOT_FOUND (a directory `src === dst` included), a directory destination reports
    * PERMISSION_DENIED carrying `dst`, and no directory is replaced.

@@ -76,12 +76,14 @@ async function countingContext(): Promise<{
 function trackedReadable(
   source: ReadableStream<Uint8Array>,
   onCancel: () => void,
+  onClose: () => void = () => undefined,
 ): ReadableStream<Uint8Array> {
   const reader = source.getReader();
   return new ReadableStream<Uint8Array>({
     pull: async (controller) => {
       const { done, value } = await reader.read();
       if (done) {
+        onClose();
         controller.close();
         return;
       }
@@ -138,27 +140,55 @@ async function rechunkingContext(size: number): Promise<Context> {
   };
 }
 
-/** A context whose inflate streams report how many were cancelled — an
- *  un-cancelled stream is exactly the leaked reader/inflate instance. */
+/** A context whose inflate streams report how many were cancelled, and how many
+ *  are still open at the end. A stream settles either way — cancelled, or closed
+ *  by its own last read — so `openCount` counts exactly the leaked
+ *  reader/inflate instances, whichever way the others settled. Assert the leak
+ *  invariant with `openCount`; assert an exact `cancelCount` only where the
+ *  scenario forces a stream to be part-read, since a stream that reaches EOF
+ *  while its header is read has nothing left to cancel. */
 async function cancelTrackingContext(): Promise<{
   readonly ctx: Context;
   readonly cancelCount: () => number;
+  readonly openCount: () => number;
+  readonly createdCount: () => number;
 }> {
   const base = await buildSeededContext();
   let cancels = 0;
+  let created = 0;
+  let settled = 0;
   const compressor: Compressor = {
     ...base.compressor,
     createInflateStream: () => {
       const inner = base.compressor.createInflateStream();
+      created += 1;
+      // A stream can both reach EOF and then be cancelled by the release path,
+      // so settle each one at most once or the tally goes negative.
+      let done = false;
+      const settle = (): void => {
+        if (done) return;
+        done = true;
+        settled += 1;
+      };
       return {
-        readable: trackedReadable(inner.readable, () => {
-          cancels += 1;
-        }),
+        readable: trackedReadable(
+          inner.readable,
+          () => {
+            cancels += 1;
+            settle();
+          },
+          settle,
+        ),
         writable: inner.writable,
       };
     },
   };
-  return { ctx: { ...base, compressor }, cancelCount: () => cancels };
+  return {
+    ctx: { ...base, compressor },
+    cancelCount: () => cancels,
+    openCount: () => created - settled,
+    createdCount: () => created,
+  };
 }
 
 interface VerdictRow {
@@ -618,9 +648,9 @@ describe('isWhitespaceOnlyModify', () => {
 
   describe('Given one side refuses mid-stream while the other side streams', () => {
     describe('When isWhitespaceOnlyModify is forced onto the streaming arm (gate 0)', () => {
-      it('Then both sides are cancelled instead of leaking their readers', async () => {
+      it('Then neither side is left holding an open reader', async () => {
         // Arrange
-        const { ctx, cancelCount } = await cancelTrackingContext();
+        const { ctx, openCount, createdCount } = await cancelTrackingContext();
         const leafId = await writeBlob(ctx, enc.encode('leaf\n'));
         const treeId = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'leaf.txt', leafId)]);
         const blobId = await writeBlob(ctx, enc.encode('content\n'));
@@ -635,16 +665,22 @@ describe('isWhitespaceOnlyModify', () => {
           const data = (error as TsgitError).data;
           expect(data.code).toBe('UNEXPECTED_OBJECT_TYPE');
         }
-        expect(cancelCount()).toBe(2);
+        // Both sides opened, so the refusal must settle both. The count of
+        // *cancels* is not asserted: these objects are small enough that a
+        // side can reach EOF while its header is read, and a stream closed by
+        // its own last read has nothing left to cancel. What must hold either
+        // way is that no stream is still open.
+        expect(createdCount()).toBeGreaterThan(0);
+        expect(openCount()).toBe(0);
       });
     });
   });
 
   describe('Given one side fails to open while the other opens a stream', () => {
     describe('When isWhitespaceOnlyModify is forced onto the streaming arm (gate 0)', () => {
-      it('Then the side that opened is cancelled instead of leaking its reader', async () => {
+      it('Then the side that opened is left with no open reader', async () => {
         // Arrange
-        const { ctx, cancelCount } = await cancelTrackingContext();
+        const { ctx, openCount, createdCount } = await cancelTrackingContext();
         const missing = 'f'.repeat(40) as ObjectId;
         const blobId = await writeBlob(ctx, enc.encode('content\n'));
         const change = changeFor(missing, blobId);
@@ -658,7 +694,10 @@ describe('isWhitespaceOnlyModify', () => {
           const data = (error as TsgitError).data;
           expect(data.code).toBe('OBJECT_NOT_FOUND');
         }
-        expect(cancelCount()).toBe(1);
+        // Same reason as above: the surviving side settles either by cancel or
+        // by reaching EOF, and only "still open" is a leak.
+        expect(createdCount()).toBeGreaterThan(0);
+        expect(openCount()).toBe(0);
       });
     });
   });
@@ -666,11 +705,14 @@ describe('isWhitespaceOnlyModify', () => {
   describe('Given one side fails to open while the other opened a stream that has errored', () => {
     describe('When isWhitespaceOnlyModify is forced onto the streaming arm (gate 0)', () => {
       it('Then the open failure is reported, not the survivor’s release rejection', async () => {
-        // Arrange — releasing the survivor cancels an already-errored readable,
+        // Arrange — the survivor's inflate readable hands over the object header,
+        // so the survivor opens (its header is read at open), and errors on the
+        // very next pull. Releasing it then cancels an already-errored readable,
         // which rejects with the stored error; that must not displace the real
         // one the caller is being told about.
         const base = await buildSeededContext();
         const inflateFailure = new Error('inflate blew up');
+        let erroredAfterHeader = false;
         const ctx: Context = {
           ...base,
           compressor: {
@@ -678,6 +720,10 @@ describe('isWhitespaceOnlyModify', () => {
             createInflateStream: () => ({
               readable: new ReadableStream<Uint8Array>({
                 start: (controller) => {
+                  controller.enqueue(enc.encode('blob 8\0content\n'));
+                },
+                pull: (controller) => {
+                  erroredAfterHeader = true;
                   controller.error(inflateFailure);
                 },
               }),
@@ -689,18 +735,21 @@ describe('isWhitespaceOnlyModify', () => {
         const blobId = await writeBlob(base, enc.encode('content\n'));
         const change = changeFor(missing, blobId);
 
-        // Act + Assert
+        // Act
+        let caught: unknown;
         try {
           await isWhitespaceOnlyModify(ctx, change, ALL_KEY, false, 0);
           expect.unreachable();
         } catch (error) {
-          expect(error).toBeInstanceOf(TsgitError);
-          const data = (error as TsgitError).data;
-          expect(data.code).toBe('OBJECT_NOT_FOUND');
-          if (data.code === 'OBJECT_NOT_FOUND') {
-            expect(data.id).toBe(missing);
-          }
+          caught = error;
         }
+
+        // Assert
+        expect(erroredAfterHeader).toBe(true);
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('OBJECT_NOT_FOUND');
+        if (data.code === 'OBJECT_NOT_FOUND') expect(data.id).toBe(missing);
       });
     });
   });

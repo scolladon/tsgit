@@ -10,6 +10,7 @@ import {
   stashPop,
   stashPush,
 } from '../../../../src/application/commands/stash.js';
+import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
 import { flattenTree } from '../../../../src/application/primitives/flatten-tree.js';
 import * as writeFileMod from '../../../../src/application/primitives/internal/write-working-tree-file.js';
@@ -449,6 +450,26 @@ describe('stash drop', () => {
         // Assert
         await act.catch((err: TsgitError) => {
           expect(err.data).toEqual({ code: 'STASH_NOT_FOUND', index: 9, stackSize: 1 });
+        });
+        await expect(act).rejects.toBeInstanceOf(TsgitError);
+      });
+    });
+  });
+
+  describe('Given an empty stack AND a malformed core.maxTreeDepth', () => {
+    describe('When drop runs', () => {
+      it('Then it dies on the repo-settings class, not STASH_NOT_FOUND', async () => {
+        // Arrange
+        const ctx = await setupRepo();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth = 2.5\n');
+        invalidateConfigCache(ctx);
+
+        // Act
+        const act = stashDrop(ctx, {});
+
+        // Assert
+        await act.catch((err: TsgitError) => {
+          expect(err.data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
         });
         await expect(act).rejects.toBeInstanceOf(TsgitError);
       });

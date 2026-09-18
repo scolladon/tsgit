@@ -43,5 +43,5 @@ import { getPackRegistry } from '../../../primitives/read-object.js';
  */
 export async function objectIsPresent(ctx: Context, id: ObjectId): Promise<boolean> {
   if (await probeLooseOid(ctx, id)) return true;
-  return (await getPackRegistry(ctx).lookup(id)) !== undefined;
+  return (await (await getPackRegistry(ctx)).lookup(id)) !== undefined;
 }

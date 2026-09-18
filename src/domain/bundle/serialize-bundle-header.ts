@@ -1,3 +1,15 @@
+/**
+ * Bundle header serializer — the text `git bundle create` writes ahead of
+ * the packfile: the version magic line, one prerequisite line per
+ * `-<oid> <comment>`, one ref line per included tip, and the blank line
+ * that closes the header. A v3 bundle additionally carries its
+ * `@object-format=` capability line.
+ *
+ * @writes
+ *   surface: bundleCreate
+ *   kind:    byte-identical
+ *   format:  git-bundle-header
+ */
 import type { BundleHashAlgorithm, BundlePrerequisite, BundleRef, BundleVersion } from './types.js';
 
 const MAGIC_V2 = '# v2 git bundle\n';

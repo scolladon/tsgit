@@ -56,6 +56,9 @@ interface OpfsFs {
   rename(src: string, dst: string): Promise<void>;
   stat(path: string): Promise<{ isDirectory: boolean }>;
   exists(path: string): Promise<boolean>;
+  lexists(path: string): Promise<boolean>;
+  rm(path: string): Promise<void>;
+  rmRecursive(path: string): Promise<void>;
 }
 
 test.describe('OPFS directory-occupant refusals', () => {
@@ -134,8 +137,8 @@ test.describe('OPFS directory-occupant refusals', () => {
       const dirStat = await sut.stat('occupant-2');
       const dirExists = await sut.exists('occupant-2');
 
-      // The ancestor-fault mapping must not move: a regular file blocking an
-      // ancestor segment still reports FILE_NOT_FOUND, not PERMISSION_DENIED.
+      // The ancestor-fault mapping is distinct from the leaf one: a regular file
+      // blocking an ancestor segment reports NOT_A_DIRECTORY, not PERMISSION_DENIED.
       await sut.write('ancestor-file.txt', new Uint8Array([7]));
       let ancestorCode: string | undefined;
       try {
@@ -171,8 +174,8 @@ test.describe('OPFS directory-occupant refusals', () => {
       expect(result.dirExists).toBe(true);
     });
 
-    await test.step('a regular file blocking an ancestor segment still reports FILE_NOT_FOUND', () => {
-      expect(result.ancestorCode).toBe('FILE_NOT_FOUND');
+    await test.step('a regular file blocking an ancestor segment reports NOT_A_DIRECTORY', () => {
+      expect(result.ancestorCode).toBe('NOT_A_DIRECTORY');
     });
   });
 
@@ -261,6 +264,154 @@ test.describe('OPFS directory-occupant refusals', () => {
 
     await test.step('an absent source is still refused with FILE_NOT_FOUND', () => {
       expect(result.absentCode).toBe('FILE_NOT_FOUND');
+    });
+  });
+});
+
+test.describe('OPFS listing refusals', () => {
+  test.skip(({ browserName }) => browserName === 'webkit', 'OPFS not exposed in Playwright WebKit');
+
+  test('Given a regular file, When readdir lists it, Then it throws NOT_A_DIRECTORY against real OPFS', async ({
+    readyPage,
+  }) => {
+    const result = await readyPage.evaluate(async () => {
+      const MODULE_PATH = '/dist/esm/adapters/browser/index.js';
+      const mod = (await import(MODULE_PATH)) as {
+        BrowserFileSystem: new (rootHandle: FileSystemDirectoryHandle) => OpfsFs;
+      };
+      const sut = new mod.BrowserFileSystem(await navigator.storage.getDirectory());
+      await sut.write('listed-file.txt', new Uint8Array([1, 2]));
+
+      const refusalOf = async (path: string) => {
+        try {
+          await sut.readdir(path);
+          return undefined;
+        } catch (err) {
+          return (err as { data?: { code?: string; path?: string } }).data;
+        }
+      };
+      const fileRefusal = await refusalOf('listed-file.txt');
+      const missingRefusal = await refusalOf('never-created-dir');
+      const fileBytes = Array.from(await sut.read('listed-file.txt'));
+
+      return {
+        fileCode: fileRefusal?.code,
+        filePath: fileRefusal?.path,
+        missingCode: missingRefusal?.code,
+        fileBytes,
+      };
+    });
+
+    await test.step('readdir on a regular file reports NOT_A_DIRECTORY on the file path', () => {
+      expect(result.fileCode).toBe('NOT_A_DIRECTORY');
+      expect(result.filePath).toBe('listed-file.txt');
+    });
+
+    await test.step('readdir on a missing entry still reports FILE_NOT_FOUND', () => {
+      expect(result.missingCode).toBe('FILE_NOT_FOUND');
+    });
+
+    await test.step('the listed file is unchanged', () => {
+      expect(result.fileBytes).toEqual([1, 2]);
+    });
+  });
+});
+
+test.describe('OPFS presence probe', () => {
+  test.skip(({ browserName }) => browserName === 'webkit', 'OPFS not exposed in Playwright WebKit');
+
+  test('Given a file, a directory and a missing entry, When lexists probes each, Then it reports the file and the directory present against real OPFS', async ({
+    readyPage,
+  }) => {
+    const result = await readyPage.evaluate(async () => {
+      const MODULE_PATH = '/dist/esm/adapters/browser/index.js';
+      const mod = (await import(MODULE_PATH)) as {
+        BrowserFileSystem: new (rootHandle: FileSystemDirectoryHandle) => OpfsFs;
+      };
+      const sut = new mod.BrowserFileSystem(await navigator.storage.getDirectory());
+      await sut.write('probed/file.txt', new Uint8Array([1]));
+      await sut.mkdir('probed/dir');
+
+      return {
+        file: await sut.lexists('probed/file.txt'),
+        directory: await sut.lexists('probed/dir'),
+        missing: await sut.lexists('probed/missing.txt'),
+        beneathMissing: await sut.lexists('never-created/file.txt'),
+      };
+    });
+
+    await test.step('a file and a directory are present', () => {
+      expect(result.file).toBe(true);
+      expect(result.directory).toBe(true);
+    });
+
+    await test.step('a missing entry and an entry beneath a missing directory are absent', () => {
+      expect(result.missing).toBe(false);
+      expect(result.beneathMissing).toBe(false);
+    });
+  });
+});
+
+test.describe('OPFS refusals beneath a regular file', () => {
+  test.skip(({ browserName }) => browserName === 'webkit', 'OPFS not exposed in Playwright WebKit');
+
+  test('Given a regular file standing where a directory is needed, When each surface addresses a path beneath it, Then it throws NOT_A_DIRECTORY against real OPFS', async ({
+    readyPage,
+  }) => {
+    const result = await readyPage.evaluate(async () => {
+      const MODULE_PATH = '/dist/esm/adapters/browser/index.js';
+      const mod = (await import(MODULE_PATH)) as {
+        BrowserFileSystem: new (rootHandle: FileSystemDirectoryHandle) => OpfsFs;
+      };
+      const sut = new mod.BrowserFileSystem(await navigator.storage.getDirectory());
+      await sut.write('blocking-file.txt', new Uint8Array([3]));
+      const beneath = 'blocking-file.txt/x';
+
+      const codeOf = async (call: () => Promise<unknown>) => {
+        try {
+          await call();
+          return 'resolved';
+        } catch (err) {
+          return (err as { data?: { code?: string } }).data?.code;
+        }
+      };
+      const codes = {
+        read: await codeOf(() => sut.read(beneath)),
+        writeExclusive: await codeOf(() => sut.writeExclusive(beneath, new Uint8Array([4]))),
+        stat: await codeOf(() => sut.stat(beneath)),
+        exists: await codeOf(() => sut.exists(beneath)),
+        lexists: await codeOf(() => sut.lexists(beneath)),
+        readdir: await codeOf(() => sut.readdir(beneath)),
+        mkdir: await codeOf(() => sut.mkdir(beneath)),
+        rm: await codeOf(() => sut.rm(beneath)),
+        rmRecursive: await codeOf(() => sut.rmRecursive(beneath)),
+      };
+      const mkdirOnFileCode = await codeOf(() => sut.mkdir('blocking-file.txt'));
+      const fileBytes = Array.from(await sut.read('blocking-file.txt'));
+
+      return { codes, mkdirOnFileCode, fileBytes };
+    });
+
+    await test.step('every surface reports NOT_A_DIRECTORY', () => {
+      expect(result.codes).toEqual({
+        read: 'NOT_A_DIRECTORY',
+        writeExclusive: 'NOT_A_DIRECTORY',
+        stat: 'NOT_A_DIRECTORY',
+        exists: 'NOT_A_DIRECTORY',
+        lexists: 'NOT_A_DIRECTORY',
+        readdir: 'NOT_A_DIRECTORY',
+        mkdir: 'NOT_A_DIRECTORY',
+        rm: 'NOT_A_DIRECTORY',
+        rmRecursive: 'NOT_A_DIRECTORY',
+      });
+    });
+
+    await test.step('mkdir of the file path itself reports FILE_EXISTS', () => {
+      expect(result.mkdirOnFileCode).toBe('FILE_EXISTS');
+    });
+
+    await test.step('the blocking file is unchanged', () => {
+      expect(result.fileBytes).toEqual([3]);
     });
   });
 });

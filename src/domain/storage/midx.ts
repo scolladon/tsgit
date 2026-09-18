@@ -13,8 +13,8 @@ const CHUNK_ID_OIDF = 'OIDF';
 const CHUNK_ID_OIDL = 'OIDL';
 const CHUNK_ID_OOFF = 'OOFF';
 const CHUNK_ID_LOFF = 'LOFF';
-// Pin F's four bytes — the same shape and semantics as a pack `.rev` body,
-// with midx positions substituted for index positions.
+// The midx's own reverse index — the same shape and semantics as a pack
+// `.rev` body, with midx positions substituted for index positions.
 const CHUNK_ID_REVERSE_INDEX = 'RIDX';
 
 /** `hashVersion` byte → the digest width it implies (git's oid-version map). */

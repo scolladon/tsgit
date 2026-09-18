@@ -89,7 +89,7 @@ function assignedPackName(bytes: Buffer, oid: string): string {
 
 // ---------------------------------------------------------------------------
 // git-invocation helpers — writing the midx itself is git's job, never
-// tsgit's (§Out of scope: no write path).
+// tsgit's — tsgit has no midx write path.
 // ---------------------------------------------------------------------------
 
 export function midxPaths(dir: string): {
@@ -181,8 +181,8 @@ export function mutateMidxOrThrow(filePath: string, op: MidxMutation): void {
  * entries, and OOFF entry 0's offset word replaced by an indirection into
  * `row` of that chunk (`0x80000000 | row`). `row < count` produces a VALID,
  * round-trippable large-offset indirection (object 0's true small offset is
- * preserved in `LOFF[row]`); `row >= count` produces the out-of-range shape
- * Pin F/O28 pin. Everything before the old trailer that is not the chunk
+ * preserved in `LOFF[row]`); `row >= count` produces an out-of-range
+ * indirection. Everything before the old trailer that is not the chunk
  * table or OOFF's mutated entry is copied byte-for-byte, so the only thing
  * different from the input is exactly what the caller asked for.
  */
@@ -234,7 +234,7 @@ export function craftLoffMidx(
 }
 
 // ---------------------------------------------------------------------------
-// Fixture recipes — `BASE`, `DUP`, `CHAIN`, per §Pinned matrices' method.
+// Fixture recipes — `BASE`, `DUP`, `CHAIN`.
 // Every builder is a fresh, cheap repo: no row ever mutates a shared one.
 // ---------------------------------------------------------------------------
 
@@ -325,7 +325,7 @@ export interface DupFixture {
   readonly assignedPack: string;
   /** The sibling pack the midx did NOT assign the duplicate to. */
   readonly otherPack: string;
-  /** An unreferenced loose blob — the §D4.5 cross-tool proof every Tier-A row needs. */
+  /** An unreferenced loose blob — the cross-tool proof every Tier-A row needs. */
   readonly looseOid: string;
 }
 
@@ -367,7 +367,7 @@ export interface ChainFixture {
   readonly otherPack: string;
   /** Base-first layer digests, as recorded in the chain manifest. */
   readonly layerDigests: readonly [string, string];
-  /** An unreferenced loose blob — the §D4.5 cross-tool proof every Tier-A row needs. */
+  /** An unreferenced loose blob — the cross-tool proof every Tier-A row needs. */
   readonly looseOid: string;
 }
 

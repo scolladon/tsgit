@@ -164,13 +164,14 @@ await repo.grep({ patterns: [/^\s*\/\//], invert: true });
 
 - `INVALID_OPTION` — `patterns` is empty (`option: 'patterns'`), or a `RegExp`
   carries the `u` flag (`option: 'pattern'`, unsupported over byte content).
-  Checked **after** the repository gate below, matching git: `git grep` with
-  no pattern in a repository carrying a malformed `[core]` entry reports the
-  config fault, because git parses config at startup before it validates
-  arguments.
+  Checked **after** the repository gate and the repo-settings check below,
+  matching git: `git grep` with no pattern in a repository carrying a
+  malformed `[core]` entry reports the config fault, because git parses
+  config at startup before it validates arguments.
 - `NOT_A_REPOSITORY` — outside a git repository.
 - `WORK_TREE_REQUIRED` — the default (working-tree) target against a repository with no work tree (bare, or opened without one). Not raised for `'index'` or `{ treeish }` targets.
-- `CONFIG_BAD_NUMERIC_VALUE` / `CONFIG_BAD_ZLIB_LEVEL` / `CONFIG_MISSING_VALUE` / `CONFIG_BAD_BOOLEAN_VALUE` — an invalid `[core]` entry, reached through the same eager operational gate every other operational command reads (see [`errors.md`](../errors.md)); includes an invalid `core.maxTreeDepth`.
+- `CONFIG_BAD_ZLIB_LEVEL` / `CONFIG_MISSING_VALUE` / `CONFIG_BAD_BOOLEAN_VALUE` — an invalid streaming-class `[core]` entry, reached through the eager operational gate every operational command reads (see [`errors.md`](../errors.md)).
+- `CONFIG_BAD_NUMERIC_VALUE` — a malformed `core.maxTreeDepth` or `core.deltaBaseCacheLimit` — the repo-settings class, checked by an explicit call right after the gate and **before** the pattern-empty check above (so an empty-pattern call still reports the config fault, matching git, even though `grep` would otherwise reach this class structurally only once it walks the tree). See [`internals.md`](../primitives/internals.md#assertrepossettingsvalid).
 - `OBJECT_NOT_FOUND` / `REVPARSE_UNRESOLVED` — a `{ treeish }` target cannot be
   resolved.
 - `GREP_LINE_TOO_LONG` — a single line's bytes exceed the JS engine's maximum

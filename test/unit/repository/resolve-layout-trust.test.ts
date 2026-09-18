@@ -28,8 +28,8 @@ const ranStage2 = (reads: ReadonlyArray<string>): boolean =>
  * Wraps `fileSystemLayoutProbe` to record every `isOwnedByCaller` query (in
  * order) and every `readUtf8` read, answering ownership per-path via
  * `owned`. The per-path answer is what makes the checked set testable — a
- * single-path predicate could not distinguish row 1 (alien gitDir, owned
- * repository path) from full trust.
+ * single-path predicate could not distinguish an alien gitDir under an owned
+ * repository path from full trust.
  */
 const recordingProbe = (
   fs: MemoryFileSystem,

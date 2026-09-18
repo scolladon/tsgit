@@ -1,6 +1,7 @@
 import { BinaryHeap } from '../../domain/commit/binary-heap.js';
 import type { QueueEntry } from '../../domain/commit/priority-queue.js';
 import { invalidWalkInput, operationAborted } from '../../domain/error.js';
+import { isObjectNotFound } from '../../domain/objects/error.js';
 import type { ObjectId } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
 import { correctedCommitDatesEnabled } from './internal/read-commit-graph.js';
@@ -23,16 +24,34 @@ export interface MergeBaseOptions {
 
 type ReadCommit = (id: ObjectId) => Promise<CommitMeta | undefined>;
 
-const makeReadCommit = (ctx: Context): ReadCommit => {
+type ReadMeta = (ctx: Context, id: ObjectId) => Promise<CommitMeta | undefined>;
+
+const memoizedReader = (ctx: Context, readMeta: ReadMeta): ReadCommit => {
   const cache = new Map<ObjectId, CommitMeta | undefined>();
   return async (id) => {
     // The graph-first paint reads no object bytes, so this reader is merge-base's
     // only per-commit checkpoint for cancellation — the cadence `readObject`
     // gave on the object path (git checks between pops the same way).
     if (ctx.signal?.aborted) throw operationAborted();
-    if (!cache.has(id)) cache.set(id, await readCommitMeta(ctx, id));
+    if (!cache.has(id)) cache.set(id, await readMeta(ctx, id));
     return cache.get(id);
   };
+};
+
+const makeReadCommit = (ctx: Context): ReadCommit => memoizedReader(ctx, readCommitMeta);
+
+/** git's `repo_parse_commit` under `ignore_missing_commits`: an absent object
+ *  reads as a commit with no parents instead of refusing, so a history
+ *  truncated part-way down is answered from what is present. Memoised with
+ *  every other read, so an absent oid costs one lookup per call rather than
+ *  one per edge naming it. */
+const readMetaOrMissing: ReadMeta = async (ctx, id) => {
+  try {
+    return await readCommitMeta(ctx, id);
+  } catch (error) {
+    if (isObjectNotFound(error)) return undefined;
+    throw error;
+  }
 };
 
 const dateOf = (meta: CommitMeta | undefined): number => meta?.committerDate ?? 0;
@@ -331,6 +350,39 @@ const octopusMergeBases = async (
     bases = next;
   }
   return removeRedundant(read, bases, correctedCommitDates);
+};
+
+/**
+ * Git's `repo_in_merge_bases`: whether `commit` is reachable from `reference`.
+ *
+ * Git never walks to answer this when the generations already settle it — a
+ * commit younger than the reference cannot be its ancestor — and otherwise
+ * paints with the reduction floor set to `commit`'s OWN generation, so the
+ * `false` answer costs the frontier at or above that generation rather than
+ * all of history. The paint reads no object bytes wherever the graph covers
+ * the frontier, because it asks only for parents, dates and generations.
+ *
+ * `commit` carries PARENT1 from the start, so it picks up PARENT2 exactly when
+ * the reference reaches down to it. An end that names no commit — absent, or
+ * some other object type — answers `false`, as does a history truncated by an
+ * absent commit part-way down (Git's `ignore_missing_commits`).
+ */
+export const inMergeBases = async (
+  ctx: Context,
+  commit: ObjectId,
+  reference: ObjectId,
+): Promise<boolean> => {
+  const read = memoizedReader(ctx, readMetaOrMissing);
+  const meta = await read(commit);
+  const referenceMeta = await read(reference);
+  if (meta === undefined || referenceMeta === undefined) return false;
+  if (meta.generation > referenceMeta.generation) return false;
+  const { flags } = await paint(read, commit, [reference], {
+    minGeneration: meta.generation,
+    findAll: true,
+    correctedCommitDates: await correctedCommitDatesEnabled(ctx),
+  });
+  return ((flags.get(commit) ?? 0) & PARENT2) !== 0;
 };
 
 /**

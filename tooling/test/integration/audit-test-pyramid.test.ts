@@ -500,15 +500,15 @@ describe('tooling/audit-test-pyramid (integration)', () => {
       );
       // Two accepted: clone-a, clone-b (orphan is rejected, not in sidecar)
       expect(sidecar.files).toHaveLength(2);
-      expect(sidecar.files.map((f: { surface: string }) => f.surface)).toEqual(['clone', 'clone']);
+      expect(sidecar.files.map((f: { surfaces: ReadonlyArray<string> }) => f.surfaces)).toEqual([
+        ['clone'],
+        ['clone'],
+      ]);
     });
 
     it('Given gating.integrationProof=true and a duplicate present, When the audit runs without --report-only, Then exit code is 1 and stderr names the heuristic', async () => {
       // Arrange
-      await writeManifest(
-        tmpRoot,
-        buildManifest({ gating: { integrationProof: true } }),
-      );
+      await writeManifest(tmpRoot, buildManifest({ gating: { integrationProof: true } }));
       await mkdir(path.join(tmpRoot, 'test', 'integration', 'network'), { recursive: true });
       await writeFile(
         path.join(tmpRoot, 'test', 'integration', 'network', 'clone-a.test.ts'),

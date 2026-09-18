@@ -63,7 +63,7 @@ const collectMissing = async (
   ctx: Context,
   oids: ReadonlyArray<ObjectId>,
 ): Promise<ReadonlyArray<ObjectId>> => {
-  const registry = createPackRegistry(ctx);
+  const registry = await createPackRegistry(ctx);
   const seen = new Set<string>();
   const missing: ObjectId[] = [];
   for (const id of oids) {

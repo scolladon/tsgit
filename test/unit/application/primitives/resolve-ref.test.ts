@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
+import {
+  refResolvesForReading,
+  resolveRef,
+  resolveRefOrMissing,
+  resolveTerminalName,
+} from '../../../../src/application/primitives/resolve-ref.js';
 import type { ResolveRefOptions } from '../../../../src/application/primitives/types.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
@@ -130,6 +135,99 @@ describe('resolveRef', () => {
         } catch (error) {
           expect((error as TsgitError).data.code).toBe('REF_NOT_FOUND');
         }
+      });
+    });
+  });
+
+  describe('Given a dangling symbolic ref (x → gone, gone absent)', () => {
+    describe('When resolveRef is called on x', () => {
+      it('Then throws REF_NOT_FOUND naming the ref the chain ENDED on, not the ref asked for', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/x', 'ref: refs/heads/gone\n');
+
+        // Act + Assert
+        try {
+          await resolveRef(ctx, 'refs/heads/x' as RefName);
+          expect.unreachable();
+        } catch (error) {
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('REF_NOT_FOUND');
+          if (data.code === 'REF_NOT_FOUND') {
+            expect(data.name).toBe('refs/heads/gone');
+          }
+        }
+      });
+    });
+  });
+
+  describe('Given a loose ref file whose content is neither an oid nor a symbolic target', () => {
+    describe('When resolveRef is called', () => {
+      it('Then throws INVALID_REF naming the ref (a non-miss failure still propagates)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/bad', 'not-a-valid-ref-content\n');
+
+        // Act + Assert
+        try {
+          await resolveRef(ctx, 'refs/heads/bad' as RefName);
+          expect.unreachable();
+        } catch (error) {
+          expect((error as TsgitError).data).toEqual({
+            code: 'INVALID_REF',
+            reason: 'refs/heads/bad is broken',
+          });
+        }
+      });
+    });
+  });
+
+  describe('Given a chain of symbolic refs and no explicit depth cap', () => {
+    const seedChain = async (hops: number): Promise<Context> => {
+      const ctx = await buildSeededContext({
+        refs: [{ name: 'refs/heads/main' as RefName, id: MAIN_ID }],
+      });
+      for (let hop = 1; hop <= hops; hop += 1) {
+        const target = hop === hops ? 'refs/heads/main' : `refs/heads/link${hop + 1}`;
+        await ctx.fs.writeUtf8(`/repo/.git/refs/heads/link${hop}`, `ref: ${target}\n`);
+      }
+      return ctx;
+    };
+
+    describe('When resolveRef follows four symbolic hops', () => {
+      it('Then it resolves the terminal id, as git reads at most five refs', async () => {
+        // Arrange
+        const ctx = await seedChain(4);
+        const sut = resolveRef;
+
+        // Act
+        const result = await sut(ctx, 'refs/heads/link1' as RefName);
+
+        // Assert
+        expect(result).toBe(MAIN_ID);
+      });
+    });
+
+    describe('When resolveRef meets a fifth symbolic hop', () => {
+      it('Then it refuses REF_CHAIN_TOO_DEEP naming the five links read', async () => {
+        // Arrange
+        const ctx = await seedChain(5);
+        const sut = resolveRef;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, 'refs/heads/link1' as RefName);
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'REF_CHAIN_TOO_DEEP',
+          depth: 5,
+          chain: [1, 2, 3, 4, 5].map((hop) => `refs/heads/link${hop}`),
+        });
       });
     });
   });
@@ -331,6 +429,251 @@ describe('resolveRef', () => {
         } catch (error) {
           expect((error as TsgitError).data.code).toBe('REF_CHAIN_TOO_DEEP');
         }
+      });
+    });
+  });
+});
+
+describe('resolveRefOrMissing', () => {
+  describe('Given a missing ref chain', () => {
+    describe('When resolveRefOrMissing is called', () => {
+      it('Then resolves to undefined (no REF_NOT_FOUND thrown)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+
+        // Act
+        const result = await resolveRefOrMissing(ctx, 'refs/heads/gone' as RefName);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a ref that resolves to a concrete id', () => {
+    describe('When resolveRefOrMissing is called', () => {
+      it('Then resolves to the id', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({
+          refs: [{ name: 'refs/heads/main' as RefName, id: MAIN_ID }],
+        });
+
+        // Act
+        const result = await resolveRefOrMissing(ctx, 'refs/heads/main' as RefName);
+
+        // Assert
+        expect(result).toBe(MAIN_ID);
+      });
+    });
+  });
+
+  describe('Given an annotated tag pointing to a commit and peel=true', () => {
+    describe('When resolveRefOrMissing is called', () => {
+      it('Then resolves to the peeled object id (peel option threads through)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const tree: Tree = { type: 'tree', entries: [], id: '' as ObjectId };
+        const treeId = await writeObject(ctx, tree);
+        const tag: Tag = {
+          type: 'tag',
+          id: '' as ObjectId,
+          data: {
+            object: treeId,
+            objectType: 'tree',
+            tagName: 'v1',
+            tagger: { name: 'a', email: 'a@a', timestamp: 0, timezoneOffset: '+0000' },
+            message: 'v1',
+            extraHeaders: [],
+          },
+        };
+        const tagId = await writeObject(ctx, tag);
+        await ctx.fs.writeUtf8('/repo/.git/refs/tags/v1', `${tagId}\n`);
+
+        // Act
+        const result = await resolveRefOrMissing(ctx, 'refs/tags/v1' as RefName, { peel: true });
+
+        // Assert
+        expect(result).toBe(treeId);
+      });
+    });
+  });
+
+  describe('Given a symbolic ref cycle', () => {
+    describe('When resolveRefOrMissing is called', () => {
+      it('Then throws REF_CYCLE_DETECTED (a non-miss failure still propagates)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8('/repo/.git/HEAD', 'ref: refs/heads/loop\n');
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/loop', 'ref: HEAD\n');
+
+        // Act + Assert
+        try {
+          await resolveRefOrMissing(ctx, 'HEAD');
+          expect.unreachable();
+        } catch (error) {
+          expect((error as TsgitError).data.code).toBe('REF_CYCLE_DETECTED');
+        }
+      });
+    });
+  });
+});
+
+describe('resolveTerminalName', () => {
+  describe('Given a direct ref', () => {
+    describe('When resolveTerminalName is called', () => {
+      it('Then resolves to its own name', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({
+          refs: [{ name: 'refs/heads/main' as RefName, id: MAIN_ID }],
+        });
+
+        // Act
+        const result = await resolveTerminalName(ctx, 'refs/heads/main' as RefName);
+
+        // Assert
+        expect(result).toBe('refs/heads/main');
+      });
+    });
+  });
+
+  describe('Given a two-hop symbolic ref chain', () => {
+    describe('When resolveTerminalName is called', () => {
+      it('Then resolves to the terminal name', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({
+          refs: [{ name: 'refs/heads/main' as RefName, id: MAIN_ID }],
+        });
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/a', 'ref: refs/heads/b\n');
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/b', 'ref: refs/heads/main\n');
+
+        // Act
+        const result = await resolveTerminalName(ctx, 'refs/heads/a' as RefName);
+
+        // Assert
+        expect(result).toBe('refs/heads/main');
+      });
+    });
+  });
+
+  describe('Given a chain ending on a missing terminal ref', () => {
+    describe('When resolveTerminalName is called', () => {
+      it('Then resolves to undefined', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+
+        // Act
+        const result = await resolveTerminalName(ctx, 'refs/heads/gone' as RefName);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a loose ref whose content is unparseable', () => {
+    describe('When resolveTerminalName is called', () => {
+      it('Then resolves to undefined', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/garbage', 'not-an-oid\n');
+
+        // Act
+        const result = await resolveTerminalName(ctx, 'refs/heads/garbage' as RefName);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a symbolic ref whose target name fails the refname format', () => {
+    describe('When resolveTerminalName is called', () => {
+      it('Then resolves to undefined', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/bad', 'ref: refs/heads/..broken\n');
+
+        // Act
+        const result = await resolveTerminalName(ctx, 'refs/heads/bad' as RefName);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a symbolic ref cycle', () => {
+    describe('When resolveTerminalName is called', () => {
+      it('Then resolves to undefined — a reading resolve never resolves a cycle', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8('/repo/.git/HEAD', 'ref: refs/heads/loop\n');
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/loop', 'ref: HEAD\n');
+        const sut = resolveTerminalName;
+
+        // Act
+        const result = await sut(ctx, 'HEAD');
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a chain of symbolic refs ending on a direct ref', () => {
+    describe('When resolveTerminalName walks it', () => {
+      it.each([
+        {
+          label: 'four symbolic hops resolve to the terminal',
+          hops: 4,
+          expected: 'refs/heads/main',
+        },
+        { label: 'five symbolic hops do not resolve for reading', hops: 5, expected: undefined },
+        { label: 'six symbolic hops do not resolve for reading', hops: 6, expected: undefined },
+      ])('Then $label', async ({ hops, expected }) => {
+        // Arrange
+        const ctx = await buildSeededContext({
+          refs: [{ name: 'refs/heads/main' as RefName, id: MAIN_ID }],
+        });
+        for (let hop = 1; hop <= hops; hop += 1) {
+          const target = hop === hops ? 'refs/heads/main' : `refs/heads/link${hop + 1}`;
+          await ctx.fs.writeUtf8(`/repo/.git/refs/heads/link${hop}`, `ref: ${target}\n`);
+        }
+        const sut = resolveTerminalName;
+
+        // Act
+        const result = await sut(ctx, 'refs/heads/link1' as RefName);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+});
+
+describe('refResolvesForReading', () => {
+  describe('Given a direct ref and a dangling symbolic ref', () => {
+    describe('When refResolvesForReading probes each', () => {
+      it.each([
+        { label: 'the direct ref resolves', ref: 'refs/heads/main', expected: true },
+        {
+          label: 'the dangling symbolic ref does not',
+          ref: 'refs/heads/dangling',
+          expected: false,
+        },
+      ])('Then $label', async ({ ref, expected }) => {
+        // Arrange
+        const ctx = await buildSeededContext({
+          refs: [{ name: 'refs/heads/main' as RefName, id: MAIN_ID }],
+        });
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/dangling', 'ref: refs/heads/nope\n');
+        const sut = refResolvesForReading;
+
+        // Act
+        const result = await sut(ctx, ref as RefName);
+
+        // Assert
+        expect(result).toBe(expected);
       });
     });
   });

@@ -13,7 +13,7 @@ import { encodeEwah } from './arbitraries.js';
 // --- Fixture helpers -------------------------------------------------------
 
 /** A hand-crafted stream: `words` are `[high, low]` 32-bit halves of each
- *  big-endian 64-bit word — bypasses `encodeEwah` so Pin C's measured bytes
+ *  big-endian 64-bit word — bypasses `encodeEwah` so real git's measured bytes
  *  are the oracle, not our own writer. */
 function buildEwahStream(
   bitSize: number,
@@ -120,7 +120,7 @@ function assertExhaustiveBitmapCheck(check: BitmapCheck): void {
 
 describe('ewah', () => {
   describe('readEwahStream', () => {
-    describe("Given Pin C's commits stream (bitSize=2, one literal word 0x3)", () => {
+    describe("Given a real bitmap's commits stream (bitSize=2, one literal word 0x3)", () => {
       describe('When reading the descriptor', () => {
         it('Then bitSize, wordCount, wordsOffset and endOffset are recovered', () => {
           // Arrange
@@ -264,7 +264,7 @@ describe('ewah', () => {
   });
 
   describe('foldEwahStream', () => {
-    describe("Given Pin C's three type streams", () => {
+    describe("Given a real bitmap's three type streams", () => {
       describe('When folding into a single-lane destination', () => {
         it.each<{
           name: string;

@@ -15,8 +15,8 @@
  * no interesting walk reaches leaves its own tree unmarked and a blob it shares
  * with a `want` is still emitted — reproducing git's set, not a tighter one.
  */
-import { invalidWalkInput, operationAborted, TsgitError } from '../../../domain/error.js';
-import { treeDepthExceeded } from '../../../domain/objects/error.js';
+import { invalidWalkInput, operationAborted } from '../../../domain/error.js';
+import { isObjectNotFound, treeDepthExceeded } from '../../../domain/objects/error.js';
 import { type GitObject, isDirectory, type ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { readObject } from '../read-object.js';
@@ -88,7 +88,7 @@ const readTreeIfPresent = async (
   try {
     return await readObject(ctx, treeId);
   } catch (error) {
-    if (error instanceof TsgitError && error.data.code === 'OBJECT_NOT_FOUND') return undefined;
+    if (isObjectNotFound(error)) return undefined;
     throw error;
   }
 };
@@ -141,7 +141,7 @@ const readCommitMetaIfPresent = async (
   try {
     return await readCommitMeta(ctx, id);
   } catch (error) {
-    if (error instanceof TsgitError && error.data.code === 'OBJECT_NOT_FOUND') return undefined;
+    if (isObjectNotFound(error)) return undefined;
     throw error;
   }
 };

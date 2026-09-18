@@ -22,6 +22,12 @@ export const commitReflog = (subject: string): string => `commit: ${subject}`;
 export const branchCreatedFrom = (startPoint: string): string =>
   `branch: Created from ${startPoint}`;
 
+/** `branch: Reset to <start-point>` — what a forced branch write logs when the
+ *  name already resolves. A name nothing resolves under still reads
+ *  `Created from`: git types the message off `ref_exists`, not off the force
+ *  flag, so a dangling symbolic ref at the name reads as a creation. */
+export const branchResetTo = (startPoint: string): string => `branch: Reset to ${startPoint}`;
+
 /** `Branch: renamed <from> to <to>` — capitalised `Branch`, unlike every
  *  sibling `branch: …` message here; measured against git 2.55.0, both
  *  backends (`refs/files-backend.c` and `refs/reftable-backend.c` share the
@@ -34,6 +40,12 @@ export const resetMovingTo = (target: string): string => `reset: moving to ${tar
 
 /** `clone: from <url>`. */
 export const cloneFrom = (url: string): string => `clone: from ${url}`;
+
+/** `fetch: prune` — the message `fetch --prune` deletes every stale tracking ref with. */
+export const FETCH_PRUNE_REFLOG = 'fetch: prune';
+
+/** `remote: remove` — the message `remote remove` deletes every tracking ref with. */
+export const REMOTE_REMOVE_REFLOG = 'remote: remove';
 
 /** `fetch <remote>: storing head`. */
 export const fetchStoringHead = (remote: string): string => `fetch ${remote}: storing head`;

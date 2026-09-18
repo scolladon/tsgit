@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import { bootstrapRepository } from '../../../../../src/application/commands/internal/bootstrap.js';
+import {
+  readHeadFile,
+  validateHead,
+} from '../../../../../src/application/primitives/internal/head-file.js';
 import { TsgitError } from '../../../../../src/domain/index.js';
 
 describe('internal/bootstrap', () => {
@@ -97,6 +101,24 @@ describe('internal/bootstrap', () => {
         expect(caught).toBeInstanceOf(TsgitError);
         expect((caught as TsgitError).data.code).toBe('INVALID_REF');
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/HEAD`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a Context whose HEAD was already read into a trusted slot', () => {
+    describe('When bootstrapRepository re-runs on the SAME Context with a different branch', () => {
+      it('Then a later HEAD read observes the new branch — the write drops the stale slot', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await bootstrapRepository(ctx, { initialBranch: 'main', bare: false });
+        await validateHead(ctx);
+
+        // Act
+        await bootstrapRepository(ctx, { initialBranch: 'trunk', bare: false });
+        const head = await readHeadFile(ctx);
+
+        // Assert
+        expect(head).toEqual({ kind: 'file', content: 'ref: refs/heads/trunk\n' });
       });
     });
   });

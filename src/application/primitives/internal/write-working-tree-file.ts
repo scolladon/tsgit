@@ -122,7 +122,8 @@ export const writeWorkingTreeEntry = async (
 /**
  * Streaming sibling of `writeRegularFile`. Preserves the exact
  * `rmIfExists` → `writeStream` → `chmod` order so symlink self-heal and
- * W1/W2 faithfulness hold. Writes straight into the final path (no temp/rename).
+ * the write guard's containment and leaf no-follow both hold. Writes
+ * straight into the final path (no temp/rename).
  * `chmod` runs only when a `mode` is given.
  */
 export const writeRegularFileStream = async (

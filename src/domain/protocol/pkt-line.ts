@@ -1,4 +1,10 @@
-import { invalidPktLength, pktLengthReserved, pktTooLarge, pktTruncated } from './error.js';
+import {
+  invalidPktLength,
+  pktLengthReserved,
+  pktTooLarge,
+  pktTruncated,
+  remoteError,
+} from './error.js';
 
 export type PktLine =
   | { readonly kind: 'data'; readonly payload: Uint8Array }
@@ -16,6 +22,24 @@ export type PktLine =
 export type GitExchange = (requestBytes: Uint8Array) => Promise<AsyncIterable<PktLine>>;
 
 export const MAX_PKT_LINE_PAYLOAD = 65516;
+
+const REMOTE_ERROR_PREFIX = 'ERR ';
+
+/**
+ * Raises when a decoded pkt-line payload is the protocol's error packet.
+ *
+ * Mirrors canonical git's per-reader flag: armed on every advertisement and
+ * negotiation read, and on the push report-status reader
+ * (`receive_status()`); never on the sideband body itself — there an `ERR`
+ * payload is an out-of-range band, not an error packet, though the packets
+ * demuxed OUT of band 1 are read by an armed reader again. The separating
+ * space is part of the prefix, so `ERRboom` stays an ordinary data line.
+ */
+export const assertNotRemoteError = (text: string): void => {
+  if (!text.startsWith(REMOTE_ERROR_PREFIX)) return;
+  const message = text.slice(REMOTE_ERROR_PREFIX.length);
+  throw remoteError(message.endsWith('\n') ? message.slice(0, -1) : message);
+};
 
 const ENCODER = new TextEncoder();
 // Stryker disable next-line ObjectLiteral: equivalent — TextDecoder's fatal option defaults to false, so the empty options object configures an identical decoder

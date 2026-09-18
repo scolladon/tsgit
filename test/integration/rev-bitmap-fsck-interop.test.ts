@@ -156,10 +156,10 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
   }
 
   // -------------------------------------------------------------------------
-  // Pin H — `.rev` fault matrix
+  // `.rev` fault matrix
   // -------------------------------------------------------------------------
 
-  describe('Pin H — .rev fault matrix, against real git', () => {
+  describe('.rev fault matrix, against real git', () => {
     describe('Given a healthy BASE repo restamped with no other change (restamp control, mandatory first), When fsck runs', () => {
       it("Then both tools still exit 0 — the restamp algorithm is git's own", async () => {
         // Arrange
@@ -178,7 +178,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
       });
     });
 
-    describe('Given a healthy BASE repo (row R0, control), When fsck runs', () => {
+    describe('Given a healthy BASE repo as the control, When fsck runs', () => {
       it('Then both tools exit 0 with no rev-index finding', async () => {
         // Arrange
         const fixture = await freshBase('r0');
@@ -202,12 +202,12 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
       readonly mutate: (bytes: Buffer) => Buffer;
     }> = [
       {
-        label: 'R1 signature 4th byte flipped',
+        label: 'the signature 4th byte flipped',
         reasonContains: 'signature',
         mutate: flipSignatureByte,
       },
       {
-        label: 'R2 version set to 2',
+        label: 'the version set to 2',
         reasonContains: 'version',
         mutate: (bytes) => {
           bytes.writeUInt32BE(2, 4);
@@ -215,7 +215,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
         },
       },
       {
-        label: 'R5 hashId set to 0',
+        label: 'the hashId set to 0',
         reasonContains: 'hash id',
         mutate: (bytes) => {
           bytes.writeUInt32BE(0, 8);
@@ -223,13 +223,13 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
         },
       },
       {
-        label: 'R6 truncated to 8 bytes',
+        label: 'truncated to 8 bytes',
         reasonContains: 'too small',
         mutate: (bytes) => bytes.subarray(0, 8),
       },
-      { label: 'R8 zero-length', reasonContains: 'too small', mutate: () => Buffer.alloc(0) },
+      { label: 'zero-length', reasonContains: 'too small', mutate: () => Buffer.alloc(0) },
       {
-        label: 'R17 4 extra bytes appended, RESTAMPED',
+        label: '4 extra bytes appended, RESTAMPED',
         reasonContains: 'corrupt',
         mutate: (bytes) => restampRevIndex(Buffer.concat([bytes, Buffer.alloc(4)])),
       },
@@ -302,7 +302,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
       });
     });
 
-    describe('Given a BASE repo with R16 hashId set to 2 in a SHA-1 repo, RESTAMPED, When fsck runs', () => {
+    describe('Given a BASE repo with hashId set to 2 in a SHA-1 repo, RESTAMPED, When fsck runs', () => {
       it('Then both tools exit 0 — hashId is checked for membership, never against the repository', async () => {
         // Arrange
         const fixture = await freshBase('r16');
@@ -327,7 +327,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
       return REV_HEADER_SIZE + position * 4;
     }
 
-    describe('Given a BASE repo with R14 body[0] set out of range, RESTAMPED, When fsck runs', () => {
+    describe('Given a BASE repo with body[0] set out of range, RESTAMPED, When fsck runs', () => {
       it('Then both tools score bit 64 with exactly one position-mismatch finding at position 0, without pinning the fixture-dependent expected value', async () => {
         // Arrange
         const fixture = await freshBase('r14');
@@ -353,7 +353,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
       });
     });
 
-    describe('Given a BASE repo with R15 body[0] set to body[1] (non-permutation), RESTAMPED, When fsck runs', () => {
+    describe('Given a BASE repo with body[0] set to body[1] (non-permutation), RESTAMPED, When fsck runs', () => {
       it('Then both tools score bit 64 with exactly one position-mismatch finding at position 0', async () => {
         // Arrange
         const fixture = await freshBase('r15');
@@ -405,7 +405,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
       });
     });
 
-    describe('Given a BASE repo with R11 .rev deleted, When fsck runs', () => {
+    describe('Given a BASE repo with its .rev deleted, When fsck runs', () => {
       it('Then both tools exit 0, silently', async () => {
         // Arrange
         const fixture = await freshBase('r11');
@@ -422,10 +422,10 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
       });
     });
 
-    describe('Given a BASE repo with R12 a BAD-SIGNATURE .rev made unreadable via chmod 000 (node tier only), When fsck runs', () => {
+    describe('Given a BASE repo with a BAD-SIGNATURE .rev made unreadable via chmod 000 (node tier only), When fsck runs', () => {
       it('Then both tools exit 0, silently — the unreadable classification masks a fault that would otherwise score bit 64', async () => {
         // Arrange — corrupt FIRST, then make it unreadable: a healthy-but-
-        // unreadable artefact is byte-identical to the R0 control, so exit 0
+        // unreadable artefact is byte-identical to the control, so exit 0
         // would prove nothing about the chmod having taken effect.
         const fixture = await freshBase('r12');
         mutateOrThrowRev(fixture, flipSignatureByte);
@@ -442,7 +442,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
       });
     });
 
-    describe('Given a BASE repo with R13 an extra .rev naming no pack (orphan), When fsck runs', () => {
+    describe('Given a BASE repo with an extra .rev naming no pack (orphan), When fsck runs', () => {
       it('Then both tools exit 0 — a .rev with no corresponding .idx is never inspected', async () => {
         // Arrange
         const fixture = await freshBase('r13');
@@ -468,7 +468,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
     // "invalid sha1 pointer" and folds that into EXIT_REFS_CONTENT (bit 8)
     // ALONGSIDE the plain "missing" bit (2) — a distinct code path from the
     // "ref points to an oid that plainly doesn't exist anywhere" case
-    // (`fsck-interop.test.ts`'s already-pinned matrix #9a, bit 2 only).
+    // (`fsck-interop.test.ts` pins that one: bit 2 only).
     describe('Given a BASE repo with C1 .idx corrupted (truncated to 8 bytes), .rev intact, When fsck runs', () => {
       it("Then git's non-monotonic-index fault masks the .rev, and tsgit reports pack-index-unusable + pack-rev-index-unusable with no rev-index-invalid finding", async () => {
         // Arrange
@@ -539,10 +539,10 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
   });
 
   // -------------------------------------------------------------------------
-  // Pin I — `.rev` at `fsck`: mode gating and cardinality
+  // `.rev` at `fsck`: mode gating and cardinality
   // -------------------------------------------------------------------------
 
-  describe('Pin I — .rev at fsck: mode gating and cardinality', () => {
+  describe('.rev at fsck: mode gating and cardinality', () => {
     let control: BaseFixture;
     let controlGitExit: Record<string, number>;
     let controlTsgitExit: Record<string, number>;
@@ -560,7 +560,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
       controlTsgitExit = Object.fromEntries(entries);
     }, 60_000);
 
-    describe('Given a healthy BASE repo (row M0, control), When fsck runs across modes', () => {
+    describe('Given a healthy BASE repo (control), When fsck runs across modes', () => {
       it.each(MODES)('Then mode "$label" gives the same raw exit for both tools', ({ label }) => {
         // Arrange — both tools' per-mode control exits were already computed in beforeAll
         const gitExit = exitForMode(controlGitExit, label);
@@ -707,10 +707,10 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
   });
 
   // -------------------------------------------------------------------------
-  // Pin J — `.bitmap` fault matrix: `fsck` checks the checksum and nothing else
+  // `.bitmap` fault matrix: `fsck` checks the checksum and nothing else
   // -------------------------------------------------------------------------
 
-  describe('Pin J — .bitmap fault matrix: fsck checks the checksum and nothing else', () => {
+  describe('.bitmap fault matrix: fsck checks the checksum and nothing else', () => {
     describe('Given a healthy bitmap fixture restamped with no other change (restamp control, mandatory first), When fsck runs', () => {
       it("Then both tools still exit 0 — the restamp algorithm is git's own", async () => {
         // Arrange
@@ -729,7 +729,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
       });
     });
 
-    describe('Given a healthy bitmap fixture (row B0, control), When fsck runs', () => {
+    describe('Given a healthy bitmap fixture (control), When fsck runs', () => {
       it('Then both tools exit 0 with no bitmap finding', async () => {
         // Arrange
         const fixture = await freshBitmap('b0');
@@ -914,10 +914,10 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
   });
 
   // -------------------------------------------------------------------------
-  // Pin K — the midx bitmap
+  // the midx bitmap
   // -------------------------------------------------------------------------
 
-  describe('Pin K — the midx bitmap', () => {
+  describe('the midx bitmap', () => {
     describe('Given a healthy midx+bitmap fixture restamped with no other change (restamp control, mandatory first), When fsck runs', () => {
       it("Then both tools still show no bitmap bit — the restamp algorithm is git's own", async () => {
         // Arrange
@@ -935,7 +935,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
       });
     });
 
-    describe('Given a healthy midx+bitmap fixture (row X0, control), When fsck runs', () => {
+    describe('Given a healthy midx+bitmap fixture (control), When fsck runs', () => {
       it('Then fsck, verify, connectivity-only and strict report no bitmap bit', async () => {
         // Arrange
         const fixture = await freshMidxBitmap('x0');
@@ -1125,11 +1125,11 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
   });
 
   // -------------------------------------------------------------------------
-  // Pin L — exit-bit composition, and the interaction with pack accessibility
+  // exit-bit composition, and the interaction with pack accessibility
   // -------------------------------------------------------------------------
 
-  describe('Pin L — exit-bit composition, and the interaction with pack accessibility', () => {
-    describe('Given a healthy bitmap fixture (row Y0, control), When fsck runs across modes', () => {
+  describe('exit-bit composition, and the interaction with pack accessibility', () => {
+    describe('Given a healthy bitmap fixture (control), When fsck runs across modes', () => {
       it.each(MODES)(
         'Then mode "$label" gives the same raw exit for both tools',
         async ({ label, flags, opts }) => {

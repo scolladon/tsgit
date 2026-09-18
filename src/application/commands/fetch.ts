@@ -16,17 +16,15 @@
  *
  * Working-tree materialization is out of scope.
  */
-import { TsgitError } from '../../domain/error.js';
 import { remoteAdvertisesNoRefs, remoteNotConfigured } from '../../domain/index.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
-import { zeroOid } from '../../domain/objects/index.js';
 import type { AdvertisedRef, Advertisement } from '../../domain/protocol/index.js';
 import {
   formatObjectFilter,
   parseObjectFilter,
   remoteFilterUnsupported,
 } from '../../domain/protocol/index.js';
-import { fetchStoringHead } from '../../domain/reflog/reflog-messages.js';
+import { FETCH_PRUNE_REFLOG, fetchStoringHead } from '../../domain/reflog/reflog-messages.js';
 import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import { isSafeRefName, validateRefName } from '../../domain/refs/ref-validation.js';
 import { shortBranchName } from '../../domain/refs/short-branch-name.js';
@@ -38,12 +36,13 @@ import { assertNoValuelessConfig } from '../primitives/internal/valueless-config
 import { getRefStore } from '../primitives/ref-store.js';
 import { updateShallow } from '../primitives/shallow-file.js';
 import { MAX_HAVES, MAX_WALK_SEEDS } from '../primitives/types.js';
-import { updateRef } from '../primitives/update-ref.js';
+import { deleteRefs, updateRef } from '../primitives/update-ref.js';
 import { walkCommits } from '../primitives/walk-commits.js';
 import { assertValidRemoteName, defaultRemoteName } from './internal/default-remote.js';
 import { negotiateDiscovery, negotiatePackBytes } from './internal/fetch-negotiation.js';
 import { type GitServiceSession, openGitSession } from './internal/git-service-session.js';
 import { assertPeerAlgorithm } from './internal/object-format-guard.js';
+import { readRemoteConfig } from './internal/remote-config.js';
 import {
   assertOperationalRepository,
   branchRefFromHead,
@@ -93,7 +92,7 @@ export const fetch = async (ctx: Context, opts: FetchOptions = {}): Promise<Fetc
   const head = await readHeadRaw(ctx);
   const branchRef = branchRefFromHead(head);
   const currentBranch = branchRef !== undefined ? shortBranchName(branchRef) : undefined;
-  const config = await readConfig(ctx);
+  const config = await readRemoteConfig(ctx);
   const remoteName = defaultRemoteName(config, opts.remote, currentBranch);
   const { url, filter } = await resolveRemoteUrl(ctx, remoteName);
 
@@ -382,29 +381,16 @@ const prune = async (
   );
   const prefix = `refs/remotes/${remoteName}/` as RefName;
   const tracked = await getRefStore(ctx).listRefs(prefix);
-  const deleted: RefName[] = [];
-  for (const entry of tracked) {
-    const branch = entry.name.slice(prefix.length);
-    if (advertisedBranches.has(branch)) continue;
-    // `updateRef(..., { delete: true })` throws `UNSUPPORTED_OPERATION` when
-    // the ref is packed-only (packed-refs rewrite is follow-up).
-    try {
-      await updateRef(ctx, entry.name, zeroOid(ctx.hashConfig), { delete: true });
-    } catch (err) {
-      if (isPackedRefDeleteError(err)) {
-        // Skip packed-only refs rather than crashing the whole fetch.
-        ctx.logger?.warn?.('fetch.prune: skipping packed-only ref', { name: entry.name });
-        continue;
-      }
-      throw err;
-    }
-    deleted.push(entry.name);
-  }
-  return deleted;
+  // A symref (`<remote>/HEAD`) is never a stale-branch candidate — its own
+  // name is not a tracked branch slug, and git's prune scan skips symrefs
+  // outright rather than testing the name they happen to carry.
+  const stale = tracked
+    .filter((entry) => entry.value.kind !== 'symbolic')
+    .map((entry) => entry.name)
+    .filter((name) => !advertisedBranches.has(name.slice(prefix.length)));
+  // One transaction, as git's prune queues every stale ref into one: a
+  // packed-only tracking ref deletes like any other, and `packed-refs` is
+  // rewritten once for the whole run.
+  await deleteRefs(ctx, stale, { reflogMessage: FETCH_PRUNE_REFLOG });
+  return stale;
 };
-
-const isPackedRefDeleteError = (err: unknown): boolean =>
-  err instanceof TsgitError &&
-  err.data.code === 'UNSUPPORTED_OPERATION' &&
-  // Stryker disable next-line ConditionalExpression: equivalent — `updateRef` only ever raises `UNSUPPORTED_OPERATION` with operation 'delete-packed-ref', so once the code check passes this comparison is always true. The EqualityOperator/StringLiteral mutants here stay live and are killed by the packed-only-ref prune test.
-  err.data.operation === 'delete-packed-ref';

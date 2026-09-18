@@ -38,7 +38,7 @@ function commit(
 
 // A root commit, a single-parent commit, and a 2-parent merge commit — the
 // exact chunk composition (OIDF, OIDL, CDAT, GDA2 — no EDGE, no BASE) that
-// `git commit-graph write --reachable` produces for a 5-commit repo (Pin D).
+// `git commit-graph write --reachable` produces for a 5-commit repo.
 function fiveCommitModel(): CommitGraphLayerModel {
   return {
     hashVersion: 1,
@@ -190,7 +190,7 @@ const validBytes = buildCommitGraphBytes(fiveCommitModel());
 
 describe('commit-graph', () => {
   describe('parseCommitGraphLayer', () => {
-    describe('Given the pinned 5-commit single-file commit-graph layout (git 2.55.0, Pin D)', () => {
+    describe('Given the pinned 5-commit single-file commit-graph layout (git 2.55.0)', () => {
       describe('When reading the raw chunk table', () => {
         it('Then the offsets match the pinned byte layout (OIDF@68, OIDL@1092, CDAT@1192, GDA2@1372, end@1392, file 1412)', () => {
           // Arrange

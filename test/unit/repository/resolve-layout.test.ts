@@ -1254,7 +1254,7 @@ describe('resolveLayout', () => {
             commonDir: '/repo/alt',
           });
 
-          // Assert — this row is the R1/R3 behavioural pin, not proof of the
+          // Assert — this row pins the existing behaviour, not proof of the
           // new bareness rule: the OLD isLinkedWorktreeAdmin rule already
           // returns true here (route DISCOVERED, commonDir set). The rows
           // below discriminate the new rule.

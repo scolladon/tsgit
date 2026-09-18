@@ -690,6 +690,54 @@ describe('listWorktrees', () => {
     });
   });
 
+  describe('Given more linked worktrees than the ioBound limit, out of path order', () => {
+    describe('When listWorktrees runs', () => {
+      it('Then linked-entry building peaks at exactly the bound, and the result stays sorted', async () => {
+        // Arrange — an explicit ioBound distinct from cpuBound so a
+        // bucket-swap regression fails loudly; ids are seeded in DESCENDING
+        // path order so the final sort actually has to reorder something.
+        const ioBound = 3;
+        const width = ioBound + 4;
+        const base = await buildSeededContext({
+          refs: [{ name: 'refs/heads/main' as RefName, id: OID_MAIN }],
+        });
+        await seedMainHead(base);
+        const paths: string[] = [];
+        for (let i = width - 1; i >= 0; i--) {
+          const id = `wt${String(i).padStart(2, '0')}`;
+          const path = `/repo/wts/${id}`;
+          paths.push(path);
+          await seedAdmin(base, { id, path, head: OID_WT });
+        }
+        const ctx: Context = { ...base, concurrency: { cpuBound: 1, ioBound } };
+        let inFlight = 0;
+        let maxInFlight = 0;
+        const originalReadUtf8 = ctx.fs.readUtf8.bind(ctx.fs);
+        const instrumented: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            readUtf8: async (path: string) => {
+              if (!path.endsWith('/gitdir')) return originalReadUtf8(path);
+              inFlight += 1;
+              if (inFlight > maxInFlight) maxInFlight = inFlight;
+              await Promise.resolve();
+              inFlight -= 1;
+              return originalReadUtf8(path);
+            },
+          },
+        };
+
+        // Act
+        const result = await listWorktrees(instrumented);
+
+        // Assert
+        expect(maxInFlight).toBe(ioBound);
+        expect(result.map((e) => e.path)).toEqual([ctx.layout.workDir, ...paths.slice().sort()]);
+      });
+    });
+  });
+
   describe('Given a files-backed repository with several linked worktrees sharing one packed branch', () => {
     describe('When listWorktrees runs', () => {
       it('Then the common ref store is built once, not once per worktree (files backend)', async () => {

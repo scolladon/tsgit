@@ -250,3 +250,28 @@ describe('parseV2Capabilities', () => {
     });
   });
 });
+
+describe('parseV2Capabilities — the remote error packet', () => {
+  describe('Given an advertisement replaced by an ERR packet', () => {
+    describe('When parsed', () => {
+      it('Then the remote message is surfaced', async () => {
+        // Arrange
+        let captured: unknown;
+
+        // Act
+        try {
+          await parseV2Capabilities(streamOf(['ERR upload-pack: service denied']));
+        } catch (error) {
+          captured = error;
+        }
+
+        // Assert
+        expect(captured).toBeInstanceOf(TsgitError);
+        expect((captured as TsgitError).data).toEqual({
+          code: 'REMOTE_ERROR',
+          message: 'upload-pack: service denied',
+        });
+      });
+    });
+  });
+});

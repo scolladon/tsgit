@@ -56,12 +56,24 @@ For context, two other libraries are sometimes weighed against tsgit — but nei
 |---|---|
 | Pack-index lookup | Fanout binary search — O(log n) within fanout buckets of bounded size. |
 | Pack offset table (successor lookup, every packed-object read) | A usable `.rev` gathers the pack's sorted entry-offset order in O(n) instead of sorting it (O(n log n)); absent, unreadable, or refused, it falls back to the sort — same answer, different cost. |
-| Delta resolution | LRU base cache (16 MiB default, byte-bounded, configurable via `OpenNodeRepositoryOptions.deltaCacheMaxBytes`). A deep-delta-chain scenario benchmarks this cache under cold (empty LRU, full chain replay) and warm (cache primed) regimes — see [ADR-471](../adr/471-deep-delta-chain-bench-fixture.md). A same-sized offset-keyed delta-base cache for mid-chain intermediates sits alongside it as a separate, additive budget rather than a share of it — see [ADR-736](../adr/736-delta-base-cache-is-additive-not-a-fraction.md) for the full ~34 MiB default total across every cache in this family. |
+| Delta resolution | LRU base cache (16 MiB default, byte-bounded, configurable via `OpenNodeRepositoryOptions.deltaCacheMaxBytes`). A deep-delta-chain scenario benchmarks this cache under cold (empty LRU, full chain replay) and warm (cache primed) regimes — see [ADR-471](../adr/471-deep-delta-chain-bench-fixture.md). An offset-keyed delta-base cache for mid-chain intermediates sits alongside it as a separate budget, sized from `core.deltaBaseCacheLimit` (git's own dial for this cache) at git's 96 MiB default rather than from `deltaCacheMaxBytes` — see [ADR-852](../adr/852-the-delta-base-cache-honours-core-delta-base-cache-limit.md) — for the full ≈ 158 MiB default total across every cache in this family (up from ~34 MiB; table below). |
 | Parsing | Zero-copy `DataView` over inflated buffers. No intermediate string allocations on the binary path. |
 | Inflate | `node:zlib` (Node) / `DecompressionStream` (Browser). Streaming where possible. |
 | Working-tree comparison (`status`) | Stat-cache fast path: `mtime/ctime/size/ino` match the index's recorded stat fields → no re-hash. |
 | Hashing | `node:crypto` (Node) / `SubtleCrypto` (Browser). Both natively accelerated. |
 | I/O | Bounded-concurrency parallel reads, width derived from the limiting resource (see Methodology); serial where order matters. |
+
+### Cache-family footprint
+
+Four caches share one `Context`'s lifetime; each is sized independently since [ADR-851](../adr/851-derived-object-caches-are-bound-by-entries-with-explicit-budgets.md) / [ADR-852](../adr/852-the-delta-base-cache-honours-core-delta-base-cache-limit.md), and each derived valve is charged at measured cost and carries a hash-width surcharge since [ADR-869](../adr/869-cache-byte-valves-are-width-aware-and-charged-at-measured-cost.md), so the combined ceiling a `Context` can retain is larger than `deltaCacheMaxBytes` alone suggests:
+
+| Dial | `ctx.deltaCache` (loose bytes) | parsed-object memo valve | FlatTree cache | delta-base cache | **Total** |
+|---|---|---|---|---|---|
+| defaults at sha1 (`deltaCacheMaxBytes` 16 MiB, `core.deltaBaseCacheLimit` absent) | 16 MiB | ≈ 37.7 MiB | 8 MiB | 96 MiB | **≈ 158 MiB** (was ~34 MiB) |
+| defaults at sha256 | 16 MiB | ≈ 38.4 MiB | ≈ 9.1 MiB | 96 MiB | **≈ 160 MiB** |
+| defaults + `core.deltaBaseCacheLimit = 16m` (or `deltaBaseCacheMaxBytes: 16 * 1024 * 1024`) | 16 MiB | ≈ 37.7 MiB | 8 MiB | 16 MiB | **≈ 78 MiB** |
+
+`deltaCacheMaxBytes` scales the parsed-object memo and the FlatTree cache (each derives its own budget from it); only `core.deltaBaseCacheLimit` or the explicit `deltaBaseCacheMaxBytes` option scales the delta-base cache — it no longer tracks `deltaCacheMaxBytes` at all. The memo valve is priced at the **measured** retained cost of a typical entry (1 206 B at sha1 — 32 768 entries × 1 206 = 39 518 208 B), not at the 512 B a message-and-parents sizer charges; that correction alone is why the family total reads ≈ 158 MiB and not the ≈ 136 MiB the charged figure used to suggest, with no change to how many entries the default dial admits. Both derived caches carry a width surcharge, so the same reference workload is admitted at either hash width: the FlatTree default admits a HEAD tree of roughly 50 000 tracked files at sha1 (8 388 608 B) and at sha256 (9 588 608 B, where the boundary sits at 51 002 files), where the un-surcharged share admitted only ~44 600 sha256 files and refused a 50 000-file sha256 HEAD outright. A HEAD past the boundary still never caches — `status`/`rm` work, they simply never get a cache hit for that repository. See [`internals.md`](../use/primitives/internals.md#parsedobjectmemofor--cachedeltabase--probedeltabasecache--deltabasecachingenabled) and [`readHeadTree`](../use/primitives/internals.md#readheadtree) for the mechanics, and [`openRepository`'s cache options](../get-started/node.md#cache-budgets) for how to size each one.
 
 ## Why status:clean / readBlob:cold / delta-chain:cold trailed in the table above
 

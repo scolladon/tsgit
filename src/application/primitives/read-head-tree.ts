@@ -22,7 +22,7 @@ import { createLruCache, type LruCache } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
 import { flattenTree } from './flatten-tree.js';
 import { resolveFlattenBounds } from './internal/flatten-raw.js';
-import { deltaBaseCachingEnabled } from './internal/object-caches.js';
+import { budgetsFor, deltaBaseCachingEnabled } from './internal/object-caches.js';
 import { readObject } from './read-object.js';
 import { resolveRef } from './resolve-ref.js';
 
@@ -42,14 +42,6 @@ import { resolveRef } from './resolve-ref.js';
 const flatTreeCaches = new WeakMap<Context['session'], LruCache<FlatTree>>();
 
 /**
- * Share of `ctx.deltaCache`'s own byte budget this cache gets, as an
- * independent allocation — mirrors `object-resolver.ts`'s
- * `PARSED_OBJECT_MEMO_FRACTION`: the two caches hold different things and
- * compete only for process memory, not a shared accounting ledger.
- */
-export const FLAT_TREE_CACHE_FRACTION = 0.0625;
-
-/**
  * Entry-count ceiling on the number of DISTINCT `(rootTreeOid, maxDepth)`
  * trees this cache holds — independent of `MAX_FLAT_TREE_ENTRIES`, which
  * bounds the entries WITHIN one tree. Mirrors the parsed-object memo and the
@@ -66,7 +58,7 @@ function flatTreeCacheFor(ctx: Context): LruCache<FlatTree> | undefined {
   const existing = flatTreeCaches.get(ctx.session);
   if (existing !== undefined) return existing;
   const created = createLruCache<FlatTree>(
-    ctx.deltaCache.maxSize * FLAT_TREE_CACHE_FRACTION,
+    budgetsFor(ctx).flatTreeCacheMaxBytes,
     FLAT_TREE_CACHE_MAX_ENTRIES,
   );
   flatTreeCaches.set(ctx.session, created);

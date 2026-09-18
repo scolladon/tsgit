@@ -309,17 +309,23 @@ integration}/` and are scanned by the same audit globs.
   adapter is fine — it's a real class, not a mock).
 - **Integration usefulness** — every `test/integration/**/*.test.ts` file
   must carry a `@proves` JSDoc header declaring `surface`, `bucket`, and
-  `unique`. The audit reports three classes:
+  `unique`. `surface` is a comma-separated list of one or more names — a
+  file exercising several surfaces names all of them rather than picking
+  one. The audit reports three classes:
   - `missing` — header absent or grammar-invalid
   - `duplicate` — two files claim the same `(surface, bucket)` pair without
     the platform-only exemption (`posix-only/` + `win-only/` with bucket
-    `platform-only` is allowed)
+    `platform-only` is allowed); a file naming several surfaces is compared
+    on each of them
   - `misplaced` — bucket's directory rule rejects the file's directory
     (e.g. `real-http` outside `network/`)
 
   The audit also writes `reports/integration-surfaces.json` — a derived
-  index consumed by browser surface-parity tooling. Ships warn-only;
-  promotion to gating is a follow-up PR after one clean observation cycle.
+  index of every accepted claim, one entry per file, shaped
+  `{ path, surfaces, bucket, unique }` with `surfaces` an array because a
+  header may name several. Nothing in-tree reads it yet; the browser
+  surface-parity audit derives its own matrix. Ships warn-only; promotion to
+  gating is a follow-up PR after one clean observation cycle.
 
   Bucket taxonomy (one per file):
 
@@ -413,9 +419,28 @@ bytes (stat-cache fields are per-host). Drive the command through the
 (`tryRunGit` confirms git also refuses, with no mutation on either side). See
 `docs/design/porcelain-interop-harness.md`.
 
+### Orphan coverage — surfaces a test claims but no module declares
+
+An `interopSurface:` claim with no matching `@writes` tag shows up as
+*orphan coverage*. Most orphans are read surfaces (`log`, `diff`, `status`,
+`blame`, …) or grouping labels, and are expected. These write-bearing ones
+are deliberately left undeclared, each for a stated reason:
+
+| Surface | Why no `@writes` |
+|---|---|
+| `archive` | The command only picks a serializer; the two formats are declared on `tarArchive` (`domain/archive/tar.ts`) and `zipArchive` (`domain/archive/zip.ts`). |
+| `multi-pack-index` | Read-only here — `domain/storage/midx.ts` parses a midx, nothing writes one. |
+| `pack-artefacts` | A grouping label over `.rev` and `.bitmap`; `.rev` is declared as `packRevIndex`, and bitmaps are read-only (`domain/storage/bitmap.ts` parses only). |
+| `sparse-checkout` | The file format is declared as `sparseCheckoutFile`; the orphan claim comes from a config-refusal test that writes no sparse-checkout file. |
+| `remote` | Writes only through `update-config`, which declares `config`; the orphan claim comes from a tree-depth config test. |
+| `hooks` | tsgit runs hooks, never writes them. |
+| `gc`, `notes`, `branch`, `checkout`, `init`, `submodule` | Composite porcelain over primitive writers that already declare their formats. A `@writes` tag here is a readback-contract claim, and none of their interop files asserts that contract yet — declaring one before the test does would make the audit vouch for something unproven. |
+
 `npm run check:write-surfaces` (also part of `npm run validate`) walks
 both sides and reports gaps, allowlist rot, orphan coverage, and
-malformed headers. Ships warn-only (ADR-139) — promotion to blocking
+malformed headers — including a `@proves` block that is present but
+fails the grammar, whose `interopSurface` claim would otherwise be
+dropped without a word. Ships warn-only (ADR-139) — promotion to blocking
 is a follow-up PR after one clean observation cycle. Exemptions live
 in `tooling/audit-write-surfaces.allowlist.json` with a written
 `reason` and a `deferredTo` phase tag.

@@ -1,15 +1,14 @@
 /**
  * Reftable log block codec: the reflog record grammar (`log_record` /
  * `log_data`), the reversed-`update_index` log key, and the raw `±HHMM`
- * `tz_offset` divergence from the shipped spec (S1). Log blocks are
+ * `tz_offset` divergence from the shipped spec. Log blocks are
  * unaligned and written back-to-back — no `block_size` stride applies and a
  * block's own declared length is its INFLATED size, never its compressed
  * extent — so `loadReftable` inflates every log block eagerly, tracking
  * bytes consumed by the inflater to find each next block.
  * `iterateReftableLogs` then walks the pre-inflated payloads synchronously,
- * which is exactly what eager whole-stack loading buys. Per S3, the log
- * index (parsed into the footer by `reftable-format.ts`) is never consulted
- * here: the whole table is already resident, so every read is a linear scan.
+ * which is exactly what eager whole-stack loading buys. The log index
+ * (parsed into the footer by `reftable-format.ts`) is never consulted here: the whole table is already resident, so every read is a linear scan.
  */
 
 import { TsgitError } from '../../error.js';
@@ -19,7 +18,13 @@ import { ObjectId, type RefName } from '../../objects/index.js';
 import type { ReflogEntry } from '../../reflog/reflog-entry.js';
 import { invalidReftable } from '../error.js';
 import { decodeSafeRefName, readPrefixedName } from './reftable-block.js';
-import { parseReftable, type Reftable, readUint24, readVarint } from './reftable-format.js';
+import {
+  blockTypeAt,
+  parseReftable,
+  type Reftable,
+  readUint24,
+  readVarint,
+} from './reftable-format.js';
 
 /** `log_type` — the low bits of `log_record`'s packed
  *  `(suffix_length << SUFFIX_SHIFT) | log_type` field, the same packing
@@ -37,6 +42,10 @@ const LOG_TYPE_MASK = 0x7;
  * is — the reason the first restart offset is `4`, not `0`.
  */
 export const LOG_BLOCK_HEADER_LENGTH = 4;
+
+/** The block-type byte an index block opens with — what a log-block walk
+ *  meets when it has run out of log blocks and reached the log index. */
+const INDEX_BLOCK_TYPE = 'i';
 
 const RESTART_ENTRY_SIZE = 3;
 const RESTART_COUNT_SIZE = 2;
@@ -67,7 +76,7 @@ export interface LoadedReftable extends Reftable {
 }
 
 /**
- * git's raw `sint16` `tz_offset` divergence from the shipped spec (S1): the
+ * git's raw `sint16` `tz_offset` divergence from the shipped spec: the
  * stored integer is the signed `±HHMM` offset itself (`230` for `+0230`,
  * `-800` for `-0800`), never minutes from GMT as the spec claims. Six
  * repositories built at distinct `GIT_*_DATE` offsets confirm this both
@@ -269,7 +278,7 @@ export function logBlockBounds(payload: Uint8Array): LogBlockBounds {
 
 /**
  * Full forward scan of one inflated log block's records — never a binary
- * search: S3 means the log index is never consulted on read, so there is no
+ * search: the log index is never consulted on read, so there is no
  * candidate block to narrow down to in the first place. `matches` decides,
  * from the KEY alone, whether a record is worth materialising in full
  * ({@link decodeLogData}) or only worth skipping past ({@link skipLogData})
@@ -345,7 +354,7 @@ const FOOTER_LENGTH_BY_HEADER_LENGTH: ReadonlyMap<24 | 28, 68 | 72> = new Map([
 ]);
 
 /** The log section's exclusive upper bound: the log index position when one
- *  is present (S3: parsed into the footer, but never walked into), otherwise
+ *  is present (parsed into the footer, but never walked into), otherwise
  *  the footer's own start. */
 function logSectionEnd(table: Reftable): number {
   if (table.footer.logIndexPosition !== 0) {
@@ -437,6 +446,23 @@ function isDecompressFailure(err: unknown): err is TsgitError & {
   return err instanceof TsgitError && err.data.code === 'DECOMPRESS_FAILED';
 }
 
+/**
+ * Whether the walk below has already run past the log blocks into the log
+ * index, which is what ends it.
+ *
+ * `logSectionEnd` can only name the block the FOOTER points at, and a log
+ * index deep enough to need more than one level writes its lower levels
+ * BETWEEN the last log block and that top block — so an index block there is
+ * the section's end, not a block to inflate. Only an index block ends the walk
+ * this way: anything else still reaches the size and inflation refusals below,
+ * so a corrupt section is never quietly read as a short one.
+ */
+function reachedLogIndex(table: Reftable, offset: number): boolean {
+  if (table.footer.logIndexPosition === 0) return false;
+  if (offset + LOG_BLOCK_HEADER_LENGTH > table._bytes.length) return false;
+  return blockTypeAt(table, offset) === INDEX_BLOCK_TYPE;
+}
+
 async function collectLogBlocks(
   table: Reftable,
   inflateAt: InflateAt,
@@ -462,7 +488,7 @@ async function collectLogBlocks(
   const blocks: Uint8Array[] = [];
   let offset = table.footer.logPosition;
   let totalInflatedBytes = 0;
-  while (offset < sectionEnd) {
+  while (offset < sectionEnd && !reachedLogIndex(table, offset)) {
     // The guards above bound the two footer POSITIONS; this bounds the READ
     // they lead to. `sectionEnd` may legitimately equal the file length, so
     // an offset in the last three bytes still leaves no room for the 4-byte

@@ -1,6 +1,6 @@
 import type { ObjectId } from '../objects/object-id.js';
 import { emptyReceiveUpdates, invalidReportStatus } from './error.js';
-import { encodePktStream, type PktLine } from './pkt-line.js';
+import { assertNotRemoteError, encodePktStream, type PktLine } from './pkt-line.js';
 
 // Stryker disable next-line ObjectLiteral: equivalent — TextDecoder's fatal option defaults to false, so the empty options object configures an identical decoder
 const TEXT_DECODER = new TextDecoder('utf-8', { fatal: false });
@@ -134,11 +134,21 @@ const parseRefStatusLine = (line: string): RefStatus => {
   throw invalidReportStatus(line);
 };
 
+/**
+ * git arms `PACKET_READ_DIE_ON_ERR_PACKET` on `receive_status()`'s own reader,
+ * so an error packet anywhere in the report — first line or after a clean
+ * `unpack ok` — is the remote's message, never an unparseable status line
+ * (measured, git 2.55.0). Callers hand this the report pkt-lines themselves:
+ * under `side-band-64k` those are already the band-1 payload's own packets,
+ * which is where git's armed reader sits too.
+ */
 const collectDataLines = async (source: AsyncIterable<PktLine>): Promise<string[]> => {
   const lines: string[] = [];
   for await (const pkt of source) {
     if (pkt.kind !== 'data') return lines;
-    lines.push(stripTrailingNewline(TEXT_DECODER.decode(pkt.payload)));
+    const text = TEXT_DECODER.decode(pkt.payload);
+    assertNotRemoteError(text);
+    lines.push(stripTrailingNewline(text));
   }
   return lines;
 };

@@ -490,9 +490,19 @@ const indexOfUnquoted = (line: string, ch: string): number => {
 /**
  * Three-state result of parsing a trimmed `[…]`-shaped header line. Exported
  * so the sibling config writer (`update-config.ts`) shares one header parser.
+ *
+ * A recognised header carries two names, because git keeps two: `section` +
+ * `subsection` are its folded variable name (the lookup key), while `rawName`
+ * is the header's own bytes joined with a dot — the case-sensitive name its
+ * `--remove-section` / `--rename-section` matching compares against.
  */
 export type SectionHeaderParse =
-  | { readonly kind: 'header'; readonly section: string; readonly subsection: string | undefined }
+  | {
+      readonly kind: 'header';
+      readonly section: string;
+      readonly subsection: string | undefined;
+      readonly rawName: string;
+    }
   | { readonly kind: 'malformed'; readonly partialName: string }
   | { readonly kind: 'not-header' };
 
@@ -579,7 +589,11 @@ const scanQuotedSpan = (
   }
   if (line.startsWith(']', decoded.closeQuoteAt + 1)) {
     return {
-      parse: { kind: 'header', section, subsection: decoded.subsection },
+      parse: {
+        kind: 'header',
+        ...splitHeaderName(section, decoded.subsection),
+        rawName: `${section}${NAME_SEPARATOR}${decoded.subsection}`,
+      },
       closeQuoteAt: decoded.closeQuoteAt,
     };
   }
@@ -645,6 +659,31 @@ const NOT_HEADER_SCAN: HeaderPrefixScan = { parse: { kind: 'not-header' }, endOf
  */
 const PLAIN_SECTION_NAME = /^[A-Za-z0-9.-]+$/;
 
+/** The one byte that separates a section name from a subsection in git's flat variable name. */
+const NAME_SEPARATOR = '.';
+
+/**
+ * git holds one FLAT variable name: `get_base_var` folds every byte it reads up
+ * to the space or `]` to lower case — dots included — and, for the quoted form,
+ * `get_extended_base_var` appends `.` plus the quoted span verbatim. Split that
+ * name back at its FIRST dot so a token keeps this module's (section,
+ * subsection) shape without losing a byte: the dotted tail arrives already
+ * folded, the quoted tail keeps its case. `[a.b]`, `[a.B]` and `[a "b"]` land on
+ * one subsection, and `[a.]` and `[a ""]` on one empty subsection, exactly as
+ * git merges them.
+ */
+const splitHeaderName = (
+  rawSection: string,
+  quoted: string | undefined,
+): { readonly section: string; readonly subsection: string | undefined } => {
+  const dot = rawSection.indexOf(NAME_SEPARATOR);
+  if (dot === -1) return { section: rawSection, subsection: quoted };
+  const dotted = rawSection.slice(dot + 1).toLowerCase();
+  const section = rawSection.slice(0, dot);
+  const subsection = quoted === undefined ? dotted : `${dotted}${NAME_SEPARATOR}${quoted}`;
+  return { section, subsection };
+};
+
 /**
  * Plain `[section]` prefix: the section name is the exact (untrimmed) span from
  * `contentStart` (just past `[`) up to the closing `]` at absolute `closeAt`,
@@ -660,7 +699,7 @@ const scanPlainHeaderPrefix = (
   const inner = line.slice(contentStart, closeAt);
   if (!PLAIN_SECTION_NAME.test(inner)) return NOT_HEADER_SCAN;
   return {
-    parse: { kind: 'header', section: inner, subsection: undefined },
+    parse: { kind: 'header', ...splitHeaderName(inner, undefined), rawName: inner },
     endOffset: closeAt + 1,
   };
 };

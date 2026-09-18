@@ -162,6 +162,66 @@ describe('validateOptions — invalid option values', () => {
           option: 'trustedDirectories',
           reasonContains: "must be '*' or an absolute path",
         },
+        {
+          label: 'deltaCacheMaxBytes = 1.5 (non-integer)',
+          fn: () => validateOptions({ deltaCacheMaxBytes: 1.5 }),
+          option: 'deltaCacheMaxBytes',
+          reasonContains: 'non-negative integer',
+        },
+        {
+          label: 'deltaCacheMaxBytes = -1',
+          fn: () => validateOptions({ deltaCacheMaxBytes: -1 }),
+          option: 'deltaCacheMaxBytes',
+          reasonContains: 'non-negative integer',
+        },
+        {
+          label: 'deltaCacheMaxEntries = 1.5 (non-integer)',
+          fn: () => validateOptions({ deltaCacheMaxEntries: 1.5 }),
+          option: 'deltaCacheMaxEntries',
+          reasonContains: 'non-negative integer',
+        },
+        {
+          label: 'deltaCacheMaxEntries = -1',
+          fn: () => validateOptions({ deltaCacheMaxEntries: -1 }),
+          option: 'deltaCacheMaxEntries',
+          reasonContains: 'non-negative integer',
+        },
+        {
+          label: 'parsedObjectMemoMaxEntries = 1.5 (non-integer)',
+          fn: () => validateOptions({ parsedObjectMemoMaxEntries: 1.5 }),
+          option: 'parsedObjectMemoMaxEntries',
+          reasonContains: 'non-negative integer',
+        },
+        {
+          label: 'parsedObjectMemoMaxEntries = -1',
+          fn: () => validateOptions({ parsedObjectMemoMaxEntries: -1 }),
+          option: 'parsedObjectMemoMaxEntries',
+          reasonContains: 'non-negative integer',
+        },
+        {
+          label: 'flatTreeCacheMaxBytes = 1.5 (non-integer)',
+          fn: () => validateOptions({ flatTreeCacheMaxBytes: 1.5 }),
+          option: 'flatTreeCacheMaxBytes',
+          reasonContains: 'non-negative integer',
+        },
+        {
+          label: 'flatTreeCacheMaxBytes = -1',
+          fn: () => validateOptions({ flatTreeCacheMaxBytes: -1 }),
+          option: 'flatTreeCacheMaxBytes',
+          reasonContains: 'non-negative integer',
+        },
+        {
+          label: 'deltaBaseCacheMaxBytes = 1.5 (non-integer)',
+          fn: () => validateOptions({ deltaBaseCacheMaxBytes: 1.5 }),
+          option: 'deltaBaseCacheMaxBytes',
+          reasonContains: 'non-negative integer',
+        },
+        {
+          label: 'deltaBaseCacheMaxBytes = -1',
+          fn: () => validateOptions({ deltaBaseCacheMaxBytes: -1 }),
+          option: 'deltaBaseCacheMaxBytes',
+          reasonContains: 'non-negative integer',
+        },
       ])('Then throws INVALID_OPTION for $label', ({ fn, option, reasonContains }) => {
         // Arrange + Assert
         expectInvalid(fn, option, reasonContains);
@@ -308,6 +368,30 @@ describe('validateOptions — valid option values', () => {
         {
           label: 'an empty trustedDirectories array',
           fn: () => validateOptions({ trustedDirectories: [] }),
+        },
+        {
+          label: 'deltaCacheMaxBytes = 0 (disables the cache)',
+          fn: () => validateOptions({ deltaCacheMaxBytes: 0 }),
+        },
+        {
+          label: 'deltaCacheMaxEntries = 0',
+          fn: () => validateOptions({ deltaCacheMaxEntries: 0 }),
+        },
+        {
+          label: 'parsedObjectMemoMaxEntries = 0',
+          fn: () => validateOptions({ parsedObjectMemoMaxEntries: 0 }),
+        },
+        {
+          label: 'flatTreeCacheMaxBytes = 0',
+          fn: () => validateOptions({ flatTreeCacheMaxBytes: 0 }),
+        },
+        {
+          label: 'deltaBaseCacheMaxBytes = 0',
+          fn: () => validateOptions({ deltaBaseCacheMaxBytes: 0 }),
+        },
+        {
+          label: 'flatTreeCacheMaxBytes with no upper bound (a very large value)',
+          fn: () => validateOptions({ flatTreeCacheMaxBytes: 999_999_999_999 }),
         },
       ])('Then it does not throw for $label', ({ fn }) => {
         // Arrange + Act + Assert

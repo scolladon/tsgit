@@ -66,7 +66,8 @@ const LINK_ENCODER = new TextEncoder();
 
 /**
  * Apply the clean filter to worktree bytes before hashing for comparison.
- * On driver failure, fall back to the raw bytes (graceful, matches add's F4).
+ * On driver failure, fall back to the raw bytes — the same graceful arm
+ * `add` takes for a driver that is not marked required.
  * Symlinks are never filtered — callers guard this.
  */
 const cleanWorktreeBytes = async (

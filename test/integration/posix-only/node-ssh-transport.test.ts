@@ -3,6 +3,8 @@
  * `sh` child to prove the production web-stream bridge (`Writable.toWeb` /
  * `Readable.toWeb`) round-trips real process I/O end-to-end — exhaustive
  * branch coverage lives in `test/unit/adapters/node/node-ssh-transport.test.ts`.
+ * Sits beside the other real-process suites: spawning a POSIX shell is what
+ * this smoke test IS, so it runs in the posix-integration job only.
  *
  * @proves
  *   surface: sshTransport
@@ -10,7 +12,7 @@
  *   unique:  NodeSshTransport bridges a real child's stdin/stdout to web streams and reports its real exit code
  */
 import { describe, expect, it } from 'vitest';
-import { NodeSshTransport } from '../../src/adapters/node/node-ssh-transport.js';
+import { NodeSshTransport } from '../../../src/adapters/node/node-ssh-transport.js';
 
 const readAll = async (stream: ReadableStream<Uint8Array>): Promise<Uint8Array> => {
   const reader = stream.getReader();

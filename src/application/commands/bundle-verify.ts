@@ -6,7 +6,8 @@ import type {
   ParsedBundleHeader,
 } from '../../domain/bundle/index.js';
 import { bundlePrerequisiteAlgorithmMismatch } from '../../domain/commands/error.js';
-import { TsgitError, unsupportedOperation } from '../../domain/error.js';
+import { unsupportedOperation } from '../../domain/error.js';
+import { isObjectNotFound } from '../../domain/objects/error.js';
 import { configFor } from '../../domain/objects/hash-config.js';
 import { parseHeader, serializeObject } from '../../domain/objects/index.js';
 import type { FilePath, ObjectId } from '../../domain/objects/object-id.js';
@@ -162,7 +163,7 @@ const resolveExternalBase = async (ctx: Context, baseOid: ObjectId) => {
     const { contentOffset } = parseHeader(raw);
     return { type: obj.type, content: raw.subarray(contentOffset) };
   } catch (err) {
-    if (err instanceof TsgitError && err.data.code === 'OBJECT_NOT_FOUND') return undefined;
+    if (isObjectNotFound(err)) return undefined;
     throw err;
   }
 };
@@ -183,7 +184,7 @@ const isMissingObject = async (ctx: Context, oid: ObjectId): Promise<boolean> =>
     await readObject(ctx, oid, { verifyHash: true });
     return false;
   } catch (err) {
-    if (err instanceof TsgitError && err.data.code === 'OBJECT_NOT_FOUND') return true;
+    if (isObjectNotFound(err)) return true;
     throw err;
   }
 };

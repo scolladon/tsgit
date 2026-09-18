@@ -44,6 +44,11 @@
       "tooling/audit-assert-tier.ts",
       "tooling/audit-assert-tier/**/*.ts",
       "tooling/test/unit/audit-assert-tier.test.ts",
+      "tooling/audit-write-surfaces.ts",
+      "tooling/audit-write-surfaces/**/*.ts",
+      "tooling/test/unit/audit-write-surfaces/**/*.ts",
+      "tooling/test/unit/test-pyramid/**/*.ts",
+      "tooling/test/integration/audit-*.test.ts",
       "tooling/test/integration/bench-warmup-throw.test.ts",
       "tooling/test/fixtures/bench/throwing-warmup.bench.ts"
     ]

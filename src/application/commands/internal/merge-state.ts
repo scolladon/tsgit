@@ -1,5 +1,5 @@
 /**
- * Persisted merge-state writers for.4b.
+ * Persisted merge-state writers.
  *
  * `.git/MERGE_HEAD`, `.git/MERGE_MSG`, `.git/ORIG_HEAD` are the canonical
  * git markers that record "a merge is in progress". `merge` writes them
@@ -9,6 +9,11 @@
  * Symmetric with `repo-state.ts` which reads these markers via
  * `assertNoPendingOperation`. See `docs/adr/027-merge-conflict-write-order.md`
  * for the load-bearing write order.
+ *
+ * @writes
+ *   surface: merge
+ *   kind:    byte-identical
+ *   format:  git-merge-state-files
  */
 
 import type { ObjectId } from '../../../domain/objects/index.js';

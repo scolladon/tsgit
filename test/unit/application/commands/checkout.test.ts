@@ -180,9 +180,10 @@ describe('checkout', () => {
 
   describe('Given a checkout that detaches HEAD onto an oid', () => {
     describe('When checkout', () => {
-      it('Then the HEAD reflog records the move to the 7-char abbreviated target oid', async () => {
-        // Arrange — prior HEAD is the symbolic `main`; detaching onto the commit
-        // oid logs `to <oid[:7]>`, never the full 40-hex and never an empty message.
+      it('Then the HEAD reflog records the move to the argument it was handed', async () => {
+        // Arrange — prior HEAD is the symbolic `main`; git echoes the caller's
+        // own start argument, abbreviated or not, never an abbreviation of
+        // its own and never an empty message.
         const { ctx, commitId } = await seedWithBranches();
         const { readReflog } = await import(
           '../../../../src/application/primitives/reflog-store.js'
@@ -194,7 +195,7 @@ describe('checkout', () => {
         // Assert
         const headLog = await readReflog(ctx, 'HEAD' as RefName);
         expect(headLog[headLog.length - 1]?.message).toBe(
-          `checkout: moving from main to ${commitId.slice(0, 7)}`,
+          `checkout: moving from main to ${commitId}`,
         );
       });
     });

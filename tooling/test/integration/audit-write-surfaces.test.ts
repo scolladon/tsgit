@@ -28,10 +28,7 @@ interface CliRun {
   readonly code: number;
 }
 
-const runScript = async (
-  root: string,
-  extraArgs: ReadonlyArray<string> = [],
-): Promise<CliRun> => {
+const runScript = async (root: string, extraArgs: ReadonlyArray<string> = []): Promise<CliRun> => {
   const outDir = path.join(root, 'out');
   try {
     const { stdout, stderr } = await execFileAsync('node', [
@@ -81,11 +78,7 @@ export const stub = 1;
   await writeFile(path.join(root, relPath), body);
 };
 
-const writeInteropTest = async (
-  root: string,
-  relPath: string,
-  surface: string,
-): Promise<void> => {
+const writeInteropTest = async (root: string, relPath: string, surface: string): Promise<void> => {
   const body = `/**
  * @proves
  *   surface:        ${surface}
@@ -197,6 +190,83 @@ describe('tooling/audit-write-surfaces (integration)', () => {
         expect(report['summary']).toMatchObject({ malformed: 1 });
         const malformed = report['malformed'] as ReadonlyArray<{ detail: string }>;
         expect(malformed[0]?.detail).toContain('missing-interop-surface');
+      });
+    });
+  });
+
+  describe('Given an interop test whose @proves block names several surfaces', () => {
+    describe('When the audit runs', () => {
+      it('Then the interopSurface claim is still attributed to the declaring module', async () => {
+        // Arrange
+        await writeWritesSrc(tmpRoot, 'src/domain/tree.ts', 'tree');
+        const body = `/**
+ * @proves
+ *   surface:        tree, blob
+ *   bucket:         cross-tool-interop
+ *   unique:         round-trips both object kinds against canonical git
+ *   interopSurface: tree
+ */
+`;
+        await writeFile(path.join(tmpRoot, 'test/integration/multi.test.ts'), body);
+
+        // Act
+        const result = await runScript(tmpRoot);
+
+        // Assert
+        expect(result.code).toBe(0);
+        const report = await readReport(tmpRoot);
+        expect(report['summary']).toMatchObject({ declared: 1, covered: 1, malformed: 0 });
+      });
+    });
+  });
+
+  describe('Given an interop test whose @proves block fails the grammar', () => {
+    describe('When the audit runs', () => {
+      it('Then the test is reported in malformed rather than skipped', async () => {
+        // Arrange
+        await writeWritesSrc(tmpRoot, 'src/domain/tree.ts', 'tree');
+        const body = `/**
+ * @proves
+ *   surface:        Tree
+ *   bucket:         cross-tool-interop
+ *   unique:         round-trips the object kind against canonical git
+ *   interopSurface: tree
+ */
+`;
+        await writeFile(path.join(tmpRoot, 'test/integration/uppercase-name.test.ts'), body);
+
+        // Act
+        const result = await runScript(tmpRoot);
+
+        // Assert
+        const report = await readReport(tmpRoot);
+        expect(report['summary']).toMatchObject({ malformed: 1, covered: 0, gaps: 1 });
+        const malformed = report['malformed'] as ReadonlyArray<{ kind: string; detail: string }>;
+        expect(malformed[0]?.kind).toBe('test-malformed');
+        expect(malformed[0]?.detail).toBe('bad-surface: Tree');
+        expect(result.stderr).toContain('uppercase-name.test.ts');
+      });
+    });
+  });
+
+  describe('Given an integration test carrying no @proves block at all', () => {
+    describe('When the audit runs', () => {
+      it('Then it contributes no finding because it claims no surface', async () => {
+        // Arrange
+        await writeWritesSrc(tmpRoot, 'src/domain/tree.ts', 'tree');
+        await writeInteropTest(tmpRoot, 'test/integration/tree-interop.test.ts', 'tree');
+        await writeFile(
+          path.join(tmpRoot, 'test/integration/silent.test.ts'),
+          "import { it } from 'vitest';\nit('does a thing', () => {});\n",
+        );
+
+        // Act
+        const result = await runScript(tmpRoot);
+
+        // Assert
+        expect(result.code).toBe(0);
+        const report = await readReport(tmpRoot);
+        expect(report['summary']).toMatchObject({ malformed: 0 });
       });
     });
   });

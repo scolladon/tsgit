@@ -9,6 +9,11 @@
  * No IO, no platform dependency — deflateRaw is injected.
  *
  * Runtime imports: crc32 from ../storage/crc32.js (in-tree, no new deps).
+ *
+ * @writes
+ *   surface: zipArchive
+ *   kind:    byte-identical
+ *   format:  git-archive-zip
  */
 import { FILE_MODE } from '../objects/file-mode.js';
 import { crc32 } from '../storage/crc32.js';

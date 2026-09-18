@@ -129,6 +129,10 @@ const linked = await openRepository({ rootHandle, gitDir: 'checkout/.git', commo
 
 See [Repository trust](../understand/security.md#repository-trust) for what the gate closes on adapters that do implement it.
 
+## Cache budgets
+
+`OpenBrowserRepositoryOptions` carries the same five cache-sizing overrides Node does — `deltaCacheMaxBytes`, `deltaCacheMaxEntries`, `parsedObjectMemoMaxEntries`, `flatTreeCacheMaxBytes`, `deltaBaseCacheMaxBytes` — with the same defaults and the same `deltaBaseCacheMaxBytes`-suppresses-`core.deltaBaseCacheLimit` rule. See [Node get-started — Cache budgets](node.md#cache-budgets) for the full table and the security note on opening a repository you don't control.
+
 ## What works in the browser
 
 - Every command and primitive that doesn't depend on Node-only APIs
@@ -157,6 +161,7 @@ The OPFS adapter releases its handles on dispose. The OPFS bytes themselves pers
 | Run tsgit in Node | [Node quickstart](node.md) |
 | Use the in-memory adapter for tests | [In-memory adapter](memory.md) |
 | Migrate from `isomorphic-git` | [Migration guide](migrate-from-isomorphic-git.md) |
+| Upgrade an existing install to v5 | [v5 upgrade guide](upgrade-to-v5.md) |
 | See every command available | [Commands reference](../use/commands/) |
 | Compose your own walks | [Primitives reference](../use/primitives/) |
 | See real-world flows (clone + checkout, partial clone, hooks, …) | [Recipes](../use/recipes.md) |

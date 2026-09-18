@@ -20,6 +20,12 @@
  *   surface: cherryPick
  *   kind:    equivalent-under-readback
  *   format:  git-index-tree-state
+ *
+ * @proves
+ *   surface:        cherryPick, cherryPick.continue, cherryPick.abort
+ *   bucket:         cross-tool-interop
+ *   unique:         a pick sequencer either tool starts is resumable and abortable by the other, with the original author preserved
+ *   interopSurface: sequencer, reflog
  */
 import { writeFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';

@@ -227,12 +227,6 @@ async function emitSeedsWithoutWalking(
 }
 
 /**
- * Walk the commit seeds' ancestry, bounded by `maxCount` and ordered by
- * `firstParent`, buffered first: boundary-tree discovery (`markBoundaryTrees`)
- * needs the FULL walked set before any tree is emitted, since a boundary a
- * later commit surfaces must still gate an earlier commit's own tree walk.
- */
-/**
  * Drain the interesting walk into a buffer. git's `mark_edges_uninteresting`
  * runs over the WHOLE interesting frontier (`limit_list`) before `--max-count`
  * truncates the output, so a limited-objects walk (one with a `not` side) must
@@ -260,6 +254,12 @@ async function collectLimitedWalk(
   return walked;
 }
 
+/**
+ * Walk the commit seeds' ancestry, bounded by `maxCount` and ordered by
+ * `firstParent`, buffered first: boundary-tree discovery (`markBoundaryTrees`)
+ * needs the FULL walked set before any tree is emitted, since a boundary a
+ * later commit surfaces must still gate an earlier commit's own tree walk.
+ */
 async function walkAndEmitCommits(
   ctx: Context,
   commitSeeds: ReadonlyArray<Commit>,
@@ -334,7 +334,7 @@ async function tryBitmapClosure(
   ctx: Context,
   request: ClosureRequest,
 ): Promise<ClosureObject[] | undefined> {
-  const registry = getPackRegistry(ctx);
+  const registry = await getPackRegistry(ctx);
   const midxArtefact = await loadMidxBitmapArtefact(ctx, await registry.midxBitmap());
   if (midxArtefact !== undefined) {
     return [...(await resolveBitmapClosure(ctx, midxArtefact, projectedRequest(request)))];

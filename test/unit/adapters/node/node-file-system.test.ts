@@ -21,6 +21,8 @@ import { posixPolicy, windowsPolicy } from '../../../../src/adapters/node/path-p
 import { TsgitError } from '../../../../src/domain/index.js';
 import { fileSystemContractTests } from '../../ports/file-system.contract.js';
 
+const WINDOWS_PLATFORM = 'win32';
+
 /**
  * A synthetic `FsOperations` for `removeTree` concurrency-boundary tests:
  * `lstat`/`readdir` respond deterministically (no real disk I/O, so no
@@ -88,6 +90,10 @@ describe('NodeFileSystem', () => {
         },
         expected: 'allowed' as const,
       },
+      // The segment refusal codes are pinned on POSIX hosts only: Windows reports a file used
+      // as a directory as ENOENT or EINVAL rather than ENOTDIR, and its reparse-point loops
+      // do not surface ELOOP on every surface.
+      ...(process.platform === WINDOWS_PLATFORM ? {} : { segmentRefusals: 'pinned' as const }),
       cleanup: async () => {
         await fsPromises.rm(rootDir, { recursive: true, force: true });
         await fsPromises.rm(siblingDir, { recursive: true, force: true });
@@ -531,8 +537,8 @@ describe('NodeFileSystem', () => {
       describe('When chmod', () => {
         it('Then throws PERMISSION_DENIED', async () => {
           // Arrange — the leading directory is a symlink whose OWN path is
-          // lexically inside root, but whose target is not; W1 refuses
-          // before ever reaching the leaf.
+          // lexically inside root, but whose target is not; the write guard
+          // refuses before ever reaching the leaf.
           const { fs, rootDir, siblingDir, cleanup } = await makeFs();
           const dirLink = nodePath.join(rootDir, 'escape-dir');
           await fsPromises.symlink(siblingDir, dirLink);
@@ -660,6 +666,102 @@ describe('NodeFileSystem', () => {
           expect(caught).toBeInstanceOf(TsgitError);
           expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
           await cleanup();
+        });
+      });
+    });
+
+    describe('Given a directory cached as a parent, removed by rm and re-created as a symlink leaving the root', () => {
+      describe('When writing beneath the re-created path', () => {
+        it('Then throws PERMISSION_DENIED and nothing lands outside the root', async () => {
+          // Arrange — the first write caches `swapped-dir` as a parent; removing
+          // its only child leaves that entry in place, as a leaf removal should.
+          const { fs, rootDir, siblingDir, cleanup } = await makeFs();
+          const dir = nodePath.join(rootDir, 'swapped-dir');
+          await fs.write(nodePath.join(dir, 'seed.txt'), new Uint8Array([1]));
+          await fs.rm(nodePath.join(dir, 'seed.txt'));
+          await fs.rm(dir);
+          await fsPromises.symlink(siblingDir, dir);
+
+          // Act
+          let caught: unknown;
+          try {
+            await fs.write(nodePath.join(dir, 'escaped.txt'), new Uint8Array([2]));
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          const landedOutside = await fsPromises
+            .access(nodePath.join(siblingDir, 'escaped.txt'))
+            .then(() => true)
+            .catch(() => false);
+          await cleanup();
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+          expect(landedOutside).toBe(false);
+        });
+      });
+    });
+
+    describe('Given fs.rm throws a non-errno error', () => {
+      describe('When rm', () => {
+        it('Then rethrows the original error untouched', async () => {
+          // Arrange — the EISDIR-fallback catch in `rm` re-implements
+          // `runFs`'s own errno-vs-non-errno split for its OWN try/catch
+          // (it cannot delegate the initial call to `runFs`, since it
+          // needs the raw error to detect `ERR_FS_EISDIR`), so it needs
+          // its own proof of the non-errno passthrough branch.
+          const tempRoot = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-node-'));
+          const rootDir = await fsPromises.realpath(tempRoot);
+          const original = new TypeError('boom');
+          const fsOps: FsOperations = {
+            ...fsPromises,
+            rm: (async () => {
+              throw original;
+            }) as FsOperations['rm'],
+          };
+          const fs = new NodeFileSystem(rootDir, undefined, fsOps);
+
+          // Act
+          let caught: unknown;
+          try {
+            await fs.rm(nodePath.join(rootDir, 'whatever.txt'));
+          } catch (err) {
+            caught = err;
+          } finally {
+            await fsPromises.rm(rootDir, { recursive: true, force: true });
+          }
+
+          // Assert
+          expect(caught).toBe(original);
+        });
+      });
+    });
+
+    describe('Given fs.rm throws ERR_FS_EISDIR for a non-empty directory', () => {
+      describe('When rm', () => {
+        it('Then rmdir refuses with DIRECTORY_NOT_EMPTY rather than recursing', async () => {
+          // Arrange
+          const tempRoot = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-node-'));
+          const rootDir = await fsPromises.realpath(tempRoot);
+          const dir = nodePath.join(rootDir, 'busy');
+          await fsPromises.mkdir(dir);
+          await fsPromises.writeFile(nodePath.join(dir, 'inside.txt'), 'x');
+          const fs = new NodeFileSystem(rootDir);
+
+          // Act
+          let caught: unknown;
+          try {
+            await fs.rm(dir);
+          } catch (err) {
+            caught = err;
+          } finally {
+            await fsPromises.rm(rootDir, { recursive: true, force: true });
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('DIRECTORY_NOT_EMPTY');
         });
       });
     });

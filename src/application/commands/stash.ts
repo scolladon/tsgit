@@ -26,7 +26,9 @@ import { createCommit } from '../primitives/create-commit.js';
 import { flattenTree } from '../primitives/flatten-tree.js';
 import { hashBlob } from '../primitives/hash-blob.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
+import { pathIsOccupied } from '../primitives/internal/path-occupied.js';
 import { maybeBuildAttributeProvider } from '../primitives/internal/read-gitattributes.js';
+import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
 import {
   assertNoPendingOperation,
   assertOperationalRepository,
@@ -194,12 +196,25 @@ const collectUntracked = async (
   return { paths, entries };
 };
 
+/**
+ * `stash`'s own `prepare_repo_settings` prologue (git's `stash.c:2488`, top of
+ * `cmd_stash`): the gate, then the work-tree requirement, then the
+ * repo-settings class, in THAT order — git's `NEED_WORK_TREE` runs in
+ * `run_builtin` ahead of `cmd_stash` itself, so a bare repo's `stash list`
+ * dies on the missing work tree, not the class.
+ */
+const gateStash = async (ctx: Context, operation: string): Promise<string> => {
+  await assertOperationalRepository(ctx);
+  const workDir = requireWorkTree(ctx, operation);
+  await assertRepoSettingsValid(ctx);
+  return workDir;
+};
+
 export const stashPush = async (
   ctx: Context,
   opts: StashPushInput = {},
 ): Promise<StashPushResult> => {
-  await assertOperationalRepository(ctx);
-  const workDir = requireWorkTree(ctx, 'stash');
+  const workDir = await gateStash(ctx, 'stash');
   await assertNoPendingOperation(ctx);
   const head = await readHeadRaw(ctx);
   const base = await resolveBase(ctx, head);
@@ -286,8 +301,7 @@ export interface StashListResult {
 
 /** List the stash stack, newest-first (`stash@{0}` first). */
 export const stashList = async (ctx: Context): Promise<StashListResult> => {
-  await assertOperationalRepository(ctx);
-  requireWorkTree(ctx, 'stash list');
+  await gateStash(ctx, 'stash list');
   return { entries: await readStashStack(ctx) };
 };
 
@@ -300,8 +314,7 @@ export const stashDrop = async (
   ctx: Context,
   input: StashDropInput = {},
 ): Promise<StashDropResult> => {
-  await assertOperationalRepository(ctx);
-  requireWorkTree(ctx, 'stash drop');
+  await gateStash(ctx, 'stash drop');
   return dropStashEntry(ctx, input.index ?? 0);
 };
 
@@ -377,7 +390,7 @@ const untrackedOverwrites = async (
   const flat = await flattenTree(ctx, uTree);
   const clobbered: FilePath[] = [];
   for (const path of flat.entries.keys()) {
-    if (await ctx.fs.exists(joinPath(workDir, path))) clobbered.push(path);
+    if (await pathIsOccupied(ctx, joinPath(workDir, path))) clobbered.push(path);
   }
   return clobbered;
 };
@@ -433,8 +446,7 @@ export const stashApply = async (
   ctx: Context,
   input: StashApplyInput = {},
 ): Promise<StashApplyResult> => {
-  await assertOperationalRepository(ctx);
-  const workDir = requireWorkTree(ctx, 'stash apply');
+  const workDir = await gateStash(ctx, 'stash apply');
   await assertNoPendingOperation(ctx);
   const w = await resolveStashEntry(ctx, input.index ?? 0);
   const parsed = await parseStashCommit(ctx, w);
@@ -492,10 +504,9 @@ export const stashPop = async (
   ctx: Context,
   input: StashApplyInput = {},
 ): Promise<StashPopResult> => {
-  await assertOperationalRepository(ctx);
   // Gated here, ahead of the `stashApply` delegation below, so a work-tree
   // refusal names 'stash pop' rather than the delegate's own 'stash apply'.
-  requireWorkTree(ctx, 'stash pop');
+  await gateStash(ctx, 'stash pop');
   const applied = await stashApply(ctx, input);
   if (applied.kind === 'conflict') return applied;
   const dropped = await stashDrop(ctx, { index: input.index ?? 0 });

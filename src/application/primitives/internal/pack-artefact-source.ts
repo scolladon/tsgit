@@ -173,7 +173,7 @@ export async function loadBitmapBytes(
 
 /**
  * The midx bitmap's filename, composed from the in-use layer's STORED
- * trailer bytes — never a recomputed digest (Pin K rule 3). A rename, or a
+ * trailer bytes — never a recomputed digest. A rename, or a
  * midx whose own trailer disagrees with its bytes, both simply compose a
  * name that names no file on disk; there is no special case for either.
  */

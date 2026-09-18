@@ -79,12 +79,13 @@ export const reset = async (ctx: Context, opts: ResetOptions): Promise<ResetResu
   }
 
   const head = await readHeadRaw(ctx);
-  // A symbolic HEAD updates its branch (the HEAD coupling logs the symref-split);
-  // a detached HEAD writes HEAD directly. Both route through the canonical
-  // ref-writer, which skips the reflog on a no-move — git's needs-commit semantics,
-  // so `reset --hard HEAD` records no entry while a real move records the message.
+  // Always written through the literal `HEAD` — git's own reset moves HEAD
+  // itself; `updateRef` dereferences a symbolic HEAD to its branch and logs
+  // the coupled split, while a detached HEAD is written directly. Either
+  // way it skips the reflog on a no-move — git's needs-commit semantics, so
+  // `reset --hard HEAD` records no entry while a real move records the message.
   const branch = head.kind === 'symbolic' ? head.target : undefined;
-  await updateRef(ctx, branch ?? ('HEAD' as RefName), id, {
+  await updateRef(ctx, 'HEAD' as RefName, id, {
     reflogMessage: resetMovingTo(opts.rev),
   });
   return { mode: opts.mode, id, branch };

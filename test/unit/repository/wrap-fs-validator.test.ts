@@ -663,3 +663,146 @@ describe('wrapFsValidator — guardReads: false (branded first-party adapters)',
     });
   });
 });
+
+describe('wrapFsValidator — the optional lexists probe', () => {
+  // A method that reads its own receiver, as a class-based adapter's does: the wrapper must
+  // call it on the adapter, not detached from it.
+  const fsWithLexists = (): FileSystem & { readonly probed: string[] } => {
+    const probed: string[] = [];
+    return {
+      ...stubFs(),
+      probed,
+      lexists(this: { readonly probed: string[] }, path: string): Promise<boolean> {
+        this.probed.push(path);
+        return Promise.resolve(true);
+      },
+    };
+  };
+
+  describe('Given an adapter providing lexists and an in-cwd path', () => {
+    describe('When lexists is called through the wrapper', () => {
+      it('Then it delegates on the adapter and returns its answer', async () => {
+        // Arrange
+        const fs = fsWithLexists();
+        const sut = wrapFsValidator(fs, '/repo');
+
+        // Act
+        const result = await sut.lexists?.('/repo/x');
+
+        // Assert
+        expect(result).toBe(true);
+        expect(fs.probed).toEqual(['/repo/x']);
+      });
+    });
+  });
+
+  describe('Given an adapter providing lexists and a path outside every root', () => {
+    describe('When lexists is called through the wrapper', () => {
+      it('Then it throws PATHSPEC_OUTSIDE_REPO without probing', async () => {
+        // Arrange
+        const fs = fsWithLexists();
+        const sut = wrapFsValidator(fs, '/repo');
+
+        // Act + Assert
+        await expectOutside(async () => sut.lexists?.('/etc/x'));
+        expect(fs.probed).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given guardReads: false, an adapter providing lexists and a path outside every root', () => {
+    describe('When lexists is called through the wrapper', () => {
+      it('Then it delegates as every other read surface does', async () => {
+        // Arrange
+        const fs = fsWithLexists();
+        const sut = wrapFsValidator(fs, '/repo', [], { guardReads: false });
+
+        // Act
+        const result = await sut.lexists?.('/etc/x');
+
+        // Assert
+        expect(result).toBe(true);
+        expect(fs.probed).toEqual(['/etc/x']);
+      });
+    });
+  });
+
+  describe('Given an adapter without lexists', () => {
+    describe('When the wrapper is built', () => {
+      it('Then the wrapper exposes no lexists either', () => {
+        // Arrange
+        const fs = stubFs();
+
+        // Act
+        const sut = wrapFsValidator(fs, '/repo');
+
+        // Assert
+        expect('lexists' in sut).toBe(false);
+      });
+    });
+  });
+});
+
+describe('wrapFsValidator — the optional atomicRename capability', () => {
+  // A method that reads its own receiver, as a class-based adapter's does: the wrapper must
+  // call it on the adapter, not detached from it.
+  const fsWithAtomicRename = (): FileSystem & { readonly renamed: string[][] } => {
+    const renamed: string[][] = [];
+    return {
+      ...stubFs(),
+      renamed,
+      atomicRename(this: { readonly renamed: string[][] }, src: string, dst: string) {
+        this.renamed.push([src, dst]);
+        return Promise.resolve();
+      },
+    };
+  };
+
+  describe('Given an adapter providing atomicRename and two in-root paths', () => {
+    describe('When atomicRename is called through the wrapper', () => {
+      it('Then it delegates on the adapter with both paths', async () => {
+        // Arrange
+        const fs = fsWithAtomicRename();
+        const sut = wrapFsValidator(fs, '/repo');
+
+        // Act
+        await sut.atomicRename?.('/repo/a.lock', '/repo/a');
+
+        // Assert
+        expect(fs.renamed).toEqual([['/repo/a.lock', '/repo/a']]);
+      });
+    });
+  });
+
+  describe.each([
+    { side: 'source', src: '/etc/a.lock', dst: '/repo/a' },
+    { side: 'destination', src: '/repo/a.lock', dst: '/etc/a' },
+  ])('Given an adapter providing atomicRename and a $side outside every root', ({ src, dst }) => {
+    describe('When atomicRename is called through a wrapper that does not guard reads', () => {
+      it('Then it throws PATHSPEC_OUTSIDE_REPO without renaming, as rename does', async () => {
+        // Arrange
+        const fs = fsWithAtomicRename();
+        const sut = wrapFsValidator(fs, '/repo', [], { guardReads: false });
+
+        // Act + Assert
+        await expectOutside(async () => sut.atomicRename?.(src, dst));
+        expect(fs.renamed).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given an adapter without atomicRename, as the browser adapter is', () => {
+    describe('When the wrapper is built', () => {
+      it('Then the wrapper exposes no atomicRename either, so callers keep their degraded path', () => {
+        // Arrange
+        const fs = stubFs();
+
+        // Act
+        const sut = wrapFsValidator(fs, '/repo');
+
+        // Assert
+        expect('atomicRename' in sut).toBe(false);
+      });
+    });
+  });
+});

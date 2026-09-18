@@ -61,6 +61,10 @@ const bounded = await openRepository({ cwd: '/repo/nested/deep', ceilingDirs: ['
 
 `bareRepositories: 'explicit'` is **not** inert — unlike the browser's fixed entry, the memory adapter runs the same discovery walk as Node, so the walk-reached-a-gitdir-under-another-name condition that option keys on is real here too. See [Repository trust](../understand/security.md#repository-trust) for what the gate closes on adapters that do implement the ownership half.
 
+## Cache budgets
+
+`OpenMemoryRepositoryOptions` does **not** expose the cache-sizing overrides Node and Browser do ([Node get-started — Cache budgets](node.md#cache-budgets)) — the memory adapter always opens with the 16 MiB `deltaCache` default and no entry cap, with the parsed-object memo and FlatTree cache deriving their own budgets from it as usual, and the delta-base cache still honours the repository's own `core.deltaBaseCacheLimit` (or git's 96 MiB default when the key is absent) with no way to override or suppress it. Size a memory-adapter test repository's `.git/config` directly if a scenario needs a bounded delta-base cache.
+
 ## Exercise the API
 
 ```ts
@@ -120,5 +124,6 @@ describe('Given a fresh repo, When committing a file, Then HEAD points at the co
 | Run tsgit in Node | [Node quickstart](node.md) |
 | Run tsgit in the browser | [Browser quickstart](browser.md) |
 | Migrate from `isomorphic-git` | [Migration guide](migrate-from-isomorphic-git.md) |
+| Upgrade an existing install to v5 | [v5 upgrade guide](upgrade-to-v5.md) |
 | See every command available | [Commands reference](../use/commands/) |
 | Compose your own walks | [Primitives reference](../use/primitives/) |

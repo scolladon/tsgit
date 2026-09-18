@@ -37,6 +37,7 @@ type CatFileBatchEntry =
 - A missing object yields `{ ok: false, id, reason: 'missing' }` — the batch survives.
 - Other resolver errors (corrupt pack, hash mismatch, transport failure on a promisor remote) propagate.
 - Partial-clone lazy-fetch is transparent: calling `catFile` on a `blob:none` clone pulls each missing blob exactly once from the promisor remote.
+- **`entry.size` is the stored size `git cat-file --batch` reports** — for a loose object, the header's own claim, passed through untouched; for every other route, the content length. Identical numbers for every object whose stored header is honest. A loose **blob** whose header lies is still read, and reads back as the pair git prints: `object` holds the real bytes, `size` holds the claim ([ADR-863](../../adr/863-a-size-lying-loose-header-serves-a-blobs-bytes-and-refuses-other-types.md)). A loose commit, tree or tag whose header lies refuses `INVALID_OBJECT_HEADER` and takes the whole batch with it — that is not a per-entry `missing`. When you want a size that is a property of the object rather than of its current storage, read [`readObjectMetadata`](../primitives/read-object.md#object-size).
 
 ## Examples
 
@@ -55,6 +56,7 @@ for (const entry of entries) {
 
 - `INVALID_OBJECT_ID` — a string id failed `ObjectId.from` parsing.
 - `OBJECT_TOO_LARGE` — a resolved object exceeds `maxBytes`.
+- `INVALID_OBJECT_HEADER` — a malformed loose header, or a loose commit / tree / tag whose header size disagrees with its body. A loose blob's size claim is not enforced.
 
 ## See also
 

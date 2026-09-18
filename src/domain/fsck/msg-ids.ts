@@ -73,3 +73,105 @@ export const MSG_GITMODULES_URL = 'gitmodulesUrl' as const;
 export const MSG_GITATTRIBUTES_LARGE = 'gitattributesLarge' as const;
 export const MSG_GITATTRIBUTES_LINE_LENGTH = 'gitattributesLineLength' as const;
 export const MSG_GITATTRIBUTES_MISSING = 'gitattributesMissing' as const;
+
+/**
+ * Every msg-id `fsck.<msg-id>` accepts. Wider than the catalogue this
+ * repository emits: git accepts a re-typing for every id it knows,
+ * including checks with no tsgit counterpart, and refuses anything outside
+ * the set. Enumerated against git 2.55.0 by offering each id to `git fsck`
+ * and keeping the ones it did not reject.
+ */
+const CONFIGURABLE_MSG_ID_NAMES: ReadonlyArray<string> = [
+  'badDate',
+  'badDateOverflow',
+  'badEmail',
+  'badFilemode',
+  'badGpgsig',
+  'badHeadTarget',
+  'badHeaderContinuation',
+  'badName',
+  'badObjectSha1',
+  'badPackedRefEntry',
+  'badPackedRefHeader',
+  'badParentSha1',
+  'badRefContent',
+  'badRefFiletype',
+  'badRefName',
+  'badRefOid',
+  'badReferentName',
+  'badReftableTableName',
+  'badTagName',
+  'badTimezone',
+  'badTree',
+  'badTreeSha1',
+  'badType',
+  'duplicateEntries',
+  'emptyName',
+  'emptyPackedRefsFile',
+  'extraHeaderEntry',
+  'fullPathname',
+  'gitattributesBlob',
+  'gitattributesLarge',
+  'gitattributesLineLength',
+  'gitattributesMissing',
+  'gitattributesSymlink',
+  'gitignoreSymlink',
+  'gitmodulesBlob',
+  'gitmodulesLarge',
+  'gitmodulesMissing',
+  'gitmodulesName',
+  'gitmodulesParse',
+  'gitmodulesPath',
+  'gitmodulesSymlink',
+  'gitmodulesUpdate',
+  'gitmodulesUrl',
+  'hasDot',
+  'hasDotdot',
+  'hasDotgit',
+  'largePathname',
+  'mailmapSymlink',
+  'missingAuthor',
+  'missingCommitter',
+  'missingEmail',
+  'missingNameBeforeEmail',
+  'missingObject',
+  'missingSpaceBeforeDate',
+  'missingSpaceBeforeEmail',
+  'missingTag',
+  'missingTagEntry',
+  'missingTaggerEntry',
+  'missingTree',
+  'missingType',
+  'missingTypeEntry',
+  'multipleAuthors',
+  'nulInCommit',
+  'nulInHeader',
+  'nullSha1',
+  'packedRefEntryNotTerminated',
+  'packedRefUnsorted',
+  'refMissingNewline',
+  'symlinkRef',
+  'symrefTargetIsNotARef',
+  'trailingRefContent',
+  'treeNotSorted',
+  'unknownType',
+  'unterminatedHeader',
+  'zeroPaddedDate',
+  'zeroPaddedFilemode',
+];
+
+/** {@link CONFIGURABLE_MSG_ID_NAMES}, lower-cased — the key half of a config
+ *  name is case-insensitive, so every lookup is made on that form. */
+export const CONFIGURABLE_MSG_IDS: ReadonlySet<string> = new Set(
+  CONFIGURABLE_MSG_ID_NAMES.map((name) => name.toLowerCase()),
+);
+
+/**
+ * The msg-ids git marks `FSCK_FATAL`, lower-cased. They stay configurable, but
+ * only to `error`: anything softer dies `Cannot demote <id> to <type>` before a
+ * single object is read. Swept across all {@link CONFIGURABLE_MSG_ID_NAMES}
+ * against git 2.55.0 — these two are the whole set.
+ */
+export const FATAL_MSG_IDS: ReadonlySet<string> = new Set(
+  [MSG_NUL_IN_HEADER, MSG_UNTERMINATED_HEADER].map((name) => name.toLowerCase()),
+);

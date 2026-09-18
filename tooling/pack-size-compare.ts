@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 /**
- * Pack-size comparison driver — the design's §11 measurement contract as one
- * committed procedure instead of five hand-typed variants a reviewer cannot
- * re-run. Runs tsgit's `gc` (via the built `dist/`, mirroring `bench-memory.ts`)
+ * Pack-size comparison driver — the measurement contract as one committed
+ * procedure instead of five hand-typed variants a reviewer cannot re-run. Runs tsgit's `gc` (via the built `dist/`, mirroring `bench-memory.ts`)
  * against real git's selection peer — `repack -a -d -f`, never `gc`, which
  * reuses inherited deltas instead of re-selecting — over three corpora, and
  * prints one structural report per corpus: byte sizes, the size ratio (gated
@@ -118,7 +117,7 @@ export interface ComparableSizes {
 }
 
 /**
- * The comparability gate (design §11a): object counts must be equal on both
+ * The comparability gate: object counts must be equal on both
  * sides before any byte is divided. A mismatch is a measurement defect, not
  * a result, so it throws — naming both counts — rather than returning a
  * ratio over packs that do not hold the same objects.

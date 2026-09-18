@@ -12,7 +12,9 @@ import { BrowserHashService } from './adapters/browser/browser-hash-service.js';
 import { BrowserHttpTransport } from './adapters/browser/browser-http-transport.js';
 import { deriveLimits } from './domain/concurrency/derive-limits.js';
 import { configFor } from './domain/objects/hash-config.js';
+import type { ObjectContent } from './domain/objects/index.js';
 import { createLruCache } from './domain/storage/lru-cache.js';
+import { buildCacheBudgets } from './ports/context.js';
 import { resolveFixedEntryLayout } from './repository/fixed-entry-layout.js';
 import { portablePosixPolicy } from './repository/portable-posix-policy.js';
 import { resolveAgainst } from './repository/resolve-layout.js';
@@ -41,6 +43,12 @@ export interface OpenBrowserRepositoryOptions extends OpenRepositoryOptions {
   readonly bare?: boolean;
   readonly deltaCacheMaxBytes?: number;
   readonly deltaCacheMaxEntries?: number;
+  /** Override for the parsed-object memo's entry cap (default: derived from `deltaCacheMaxBytes`). */
+  readonly parsedObjectMemoMaxEntries?: number;
+  /** Override for the FlatTree cache's own byte valve (default: derived from `deltaCacheMaxBytes`). */
+  readonly flatTreeCacheMaxBytes?: number;
+  /** Override for the delta-base cache's byte budget (default: `core.deltaBaseCacheLimit`, or git's own default). */
+  readonly deltaBaseCacheMaxBytes?: number;
 }
 
 /**
@@ -59,7 +67,11 @@ const resolveGitDirEntry = (gitDirOpt: string | undefined, gitDirName: string): 
     : resolveAgainst(ROOT_WORK_DIR, gitDirOpt, portablePosixPolicy);
 
 export const openRepository = async (opts: OpenBrowserRepositoryOptions): Promise<Repository> => {
-  // Stryker disable next-line CallExpression: equivalent — `openRepositoryCore` (line 99, forwarding the SAME unmodified `opts` fields) runs `validateOptions` again at `repository.ts`; removing this eager call cannot change any thrown error, only where it is thrown from — confirmed empirically (an invalid `gitDir` still throws the identical `INVALID_OPTION` shape via the core's re-check).
+  // This shim strips the five cache-sizing options (deltaCacheMaxBytes,
+  // deltaCacheMaxEntries, parsedObjectMemoMaxEntries, flatTreeCacheMaxBytes,
+  // deltaBaseCacheMaxBytes) from `coreOpts` before forwarding, so the core's
+  // own `validateOptions` re-check in `repository.ts` never sees them — this
+  // eager call is the ONLY guard for those five options.
   validateOptions(opts);
   const gitDirName = opts.gitDirName ?? DEFAULT_GIT_DIR_NAME;
   const fs = new BrowserFileSystem(opts.rootHandle);
@@ -91,10 +103,15 @@ export const openRepository = async (opts: OpenBrowserRepositoryOptions): Promis
     runtime: 'browser' as const,
     layout,
     hashConfig: configFor(algorithm),
-    deltaCache: createLruCache<Uint8Array>(
+    deltaCache: createLruCache<ObjectContent>(
       opts.deltaCacheMaxBytes ?? DEFAULT_DELTA_CACHE_BYTES,
       opts.deltaCacheMaxEntries ?? DEFAULT_DELTA_CACHE_ENTRIES,
     ),
+    cacheBudgets: buildCacheBudgets({
+      parsedObjectMemoMaxEntries: opts.parsedObjectMemoMaxEntries,
+      flatTreeCacheMaxBytes: opts.flatTreeCacheMaxBytes,
+      deltaBaseCacheMaxBytes: opts.deltaBaseCacheMaxBytes,
+    }),
     concurrency: deriveLimits(nativeMachineFacts()),
   };
   // Strip the browser-only opts before forwarding so the core sees only its
@@ -105,6 +122,9 @@ export const openRepository = async (opts: OpenBrowserRepositoryOptions): Promis
     bare: _b,
     deltaCacheMaxBytes: _d,
     deltaCacheMaxEntries: _e,
+    parsedObjectMemoMaxEntries: _p,
+    flatTreeCacheMaxBytes: _t,
+    deltaBaseCacheMaxBytes: _c,
     ...coreOpts
   } = opts;
   return openRepositoryCore({ cwd: ROOT_WORK_DIR, ...coreOpts }, fallback);

@@ -13,6 +13,7 @@ import { NodeHashService } from '../../../../src/adapters/node/node-hash-service
 import { NodeHookRunner } from '../../../../src/adapters/node/node-hook-runner.js';
 import { NodeHttpTransport } from '../../../../src/adapters/node/node-http-transport.js';
 import { NodeSshTransport } from '../../../../src/adapters/node/node-ssh-transport.js';
+import { parsedObjectMemoFor } from '../../../../src/application/primitives/internal/object-caches.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import { SHA1_CONFIG, SHA256_CONFIG } from '../../../../src/domain/objects/hash-config.js';
 
@@ -200,7 +201,7 @@ describe('createNodeContext', () => {
         // Arrange / Act
         const sut = createNodeContext({ workDir: '/tmp/tsgit-ports-hash-config' });
 
-        // Assert — the default (no algorithm option) still yields sha1 (R6).
+        // Assert — the default (no algorithm option) still yields sha1.
         expect(sut.hashConfig).toBe(SHA1_CONFIG);
       });
     });
@@ -245,13 +246,58 @@ describe('createNodeContext', () => {
         });
 
         // Act
-        sut.deltaCache.set('a', new Uint8Array([1]), 1);
-        sut.deltaCache.set('b', new Uint8Array([2]), 1);
+        sut.deltaCache.set('a', { type: 'blob', content: new Uint8Array([1]) }, 1);
+        sut.deltaCache.set('b', { type: 'blob', content: new Uint8Array([2]) }, 1);
 
         // Assert — the configured cap of 1 is forwarded, so the LRU keeps only the newest entry.
         expect(sut.deltaCache.entryCount).toBe(1);
         expect(sut.deltaCache.has('b')).toBe(true);
         expect(sut.deltaCache.has('a')).toBe(false);
+      });
+    });
+  });
+
+  describe('Given parsedObjectMemoMaxEntries=3', () => {
+    describe('When a 4th tiny entry is set', () => {
+      it('Then the memo evicts down to the cap (the option reaches ctx.cacheBudgets)', () => {
+        // Arrange
+        const sut = createNodeContext({
+          workDir: '/tmp/tsgit-memo-entries',
+          parsedObjectMemoMaxEntries: 3,
+        });
+        const memo = parsedObjectMemoFor(sut);
+        const dummy = {} as never;
+
+        // Act
+        memo?.set('a', dummy, 1);
+        memo?.set('b', dummy, 1);
+        memo?.set('c', dummy, 1);
+        memo?.set('d', dummy, 1);
+
+        // Assert
+        expect(memo?.entryCount).toBe(3);
+      });
+    });
+  });
+
+  describe.each([
+    ['parsedObjectMemoMaxEntries', 3],
+    ['flatTreeCacheMaxBytes', 4096],
+    ['deltaBaseCacheMaxBytes', 8192],
+  ] as const)('Given %s: %s', (option, value) => {
+    describe('When creating context', () => {
+      it('Then ctx.cacheBudgets carries exactly that one field', () => {
+        // Arrange / Act — each of the three budget overrides must reach
+        // ctx.cacheBudgets on its own; dropping its `buildCacheBudgets({...})`
+        // literal entry would leave this field absent while every other test
+        // in this suite pins only parsedObjectMemoMaxEntries and stays green.
+        const sut = createNodeContext({
+          workDir: '/tmp/tsgit-cache-budgets',
+          [option]: value,
+        });
+
+        // Assert
+        expect(sut.cacheBudgets).toStrictEqual({ [option]: value });
       });
     });
   });

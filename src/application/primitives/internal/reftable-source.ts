@@ -16,8 +16,8 @@
  * coherent git behaviour to degrade past.
  */
 import type { TsgitError } from '../../../domain/error.js';
+import { errorDataCode } from '../../../domain/error-data-code.js';
 import type { ReftableCheck } from '../../../domain/refs/error.js';
-import { errorDataCode } from './error-data-code.js';
 
 type ReftableTier = 'degrade' | 'refuse';
 

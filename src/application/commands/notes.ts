@@ -15,6 +15,7 @@ import type { RefName } from '../../domain/objects/object-id.js';
 import { ObjectId } from '../../domain/objects/object-id.js';
 import { isOid } from '../../domain/objects/oid-pattern.js';
 import type { Context } from '../../ports/context.js';
+import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
 import { loadNotesTree } from '../primitives/load-notes-tree.js';
 import { readBlob } from '../primitives/read-blob.js';
 import { resolveNotesRef } from '../primitives/resolve-notes-ref.js';
@@ -127,6 +128,7 @@ export const notesAdd = async (ctx: Context, input: NotesAddInput): Promise<Note
  */
 export const notesRead = async (ctx: Context, input: NotesReadInput): Promise<NotesReadResult> => {
   await assertOperationalRepository(ctx);
+  await assertRepoSettingsValid(ctx);
 
   const objectOid = await resolveObject(ctx, input.object);
   const ref = await resolveNotesRef(ctx, input.ref);
@@ -175,6 +177,7 @@ export const notesRemove = async (
   input: NotesRemoveInput,
 ): Promise<NotesRemoveResult> => {
   await assertOperationalRepository(ctx);
+  await assertRepoSettingsValid(ctx);
 
   const objectOid = await resolveObject(ctx, input.object);
   const ref = await resolveNotesRef(ctx, input.ref);

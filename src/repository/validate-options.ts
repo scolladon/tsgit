@@ -17,6 +17,11 @@ interface ValidatableOptions {
   readonly trust?: 'ownership' | 'always';
   readonly trustedDirectories?: ReadonlyArray<string>;
   readonly bareRepositories?: 'all' | 'explicit';
+  readonly deltaCacheMaxBytes?: number;
+  readonly deltaCacheMaxEntries?: number;
+  readonly parsedObjectMemoMaxEntries?: number;
+  readonly flatTreeCacheMaxBytes?: number;
+  readonly deltaBaseCacheMaxBytes?: number;
 }
 
 const PARALLELISM_MIN = 1;
@@ -45,6 +50,11 @@ export const validateOptions = (opts: ValidatableOptions): void => {
   validateTrust(opts.trust);
   validateTrustedDirectories(opts.trustedDirectories);
   validateBareRepositories(opts.bareRepositories);
+  validateNonNegativeInteger('deltaCacheMaxBytes', opts.deltaCacheMaxBytes);
+  validateNonNegativeInteger('deltaCacheMaxEntries', opts.deltaCacheMaxEntries);
+  validateNonNegativeInteger('parsedObjectMemoMaxEntries', opts.parsedObjectMemoMaxEntries);
+  validateNonNegativeInteger('flatTreeCacheMaxBytes', opts.flatTreeCacheMaxBytes);
+  validateNonNegativeInteger('deltaBaseCacheMaxBytes', opts.deltaBaseCacheMaxBytes);
   const config = opts.config;
   if (config === undefined) return;
   validateParallelism(config.parallelism);
@@ -85,6 +95,24 @@ const validateCeilingDirs = (value: ReadonlyArray<string> | undefined): void => 
     if (!isAbsolutePath(entry)) {
       throw invalidOption('ceilingDirs', 'entries must be absolute paths');
     }
+  }
+};
+
+/**
+ * Shared guard for the five cache-sizing options
+ * (`deltaCacheMaxBytes`/`deltaCacheMaxEntries`/`parsedObjectMemoMaxEntries`/
+ * `flatTreeCacheMaxBytes`/`deltaBaseCacheMaxBytes`) — `0` is a legal,
+ * deliberate "disable this cache" value for every one of them, so only the
+ * lower bound is enforced. No upper bound: the byte valve that backs each of
+ * these caches is itself the memory guard.
+ */
+const validateNonNegativeInteger = (option: string, value: number | undefined): void => {
+  if (value === undefined) return;
+  if (!Number.isInteger(value)) {
+    throw invalidOption(option, `must be a non-negative integer (got ${value})`);
+  }
+  if (value < 0) {
+    throw invalidOption(option, `must be a non-negative integer (got ${value})`);
   }
 };
 

@@ -1,5 +1,5 @@
 /**
- * Per-bucket mutation-budget evaluator (Phase 19.1).
+ * Per-bucket mutation-budget evaluator.
  *
  * Pure functions only. I/O lives in `scripts/check-mutation-budgets.ts`.
  * See `docs/design/phase-19-1-mutation-pyramid.md`.

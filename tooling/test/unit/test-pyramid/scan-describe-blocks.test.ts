@@ -105,8 +105,7 @@ describe('Given a describe.each() with a nested describe inside its body', () =>
   describe('When scanDescribeBlocks runs', () => {
     it('Then the nested describe is captured (each-body is walked, not skipped)', () => {
       // Arrange
-      const source =
-        `describe.each([1, 2])('outer %s', () => { describe('inner', () => {}); });`;
+      const source = `describe.each([1, 2])('outer %s', () => { describe('inner', () => {}); });`;
 
       // Act
       const sut = scanDescribeBlocks(source);

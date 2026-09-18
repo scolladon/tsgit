@@ -57,7 +57,7 @@ import {
   MSG_ZERO_PADDED_DATE,
   MSG_ZERO_PADDED_FILEMODE,
 } from './msg-ids.js';
-import type { FsckSeverity } from './types.js';
+import type { FsckConfiguredSeverity, FsckSeverity, FsckSeverityTable } from './types.js';
 
 /**
  * Default severity for each msg-id.
@@ -155,3 +155,27 @@ export function resolveSeverity(msgId: string, strict: boolean): FsckSeverity {
   if (strict && base === 'warning' && STRICT_UPGRADE_SET.has(msgId)) return 'error';
   return base;
 }
+
+/** The three severity words `fsck.<msg-id>` accepts, mapped to this
+ *  repository's own names. Compared case-SENSITIVELY, as git does. */
+const CONFIGURED_SEVERITY_WORDS: ReadonlyMap<string, FsckConfiguredSeverity> = new Map([
+  ['error', 'error'],
+  ['warn', 'warning'],
+  ['ignore', 'ignore'],
+]);
+
+/** The severity `value` names, or `undefined` when it names none. */
+export const parseFsckSeverity = (value: string): FsckConfiguredSeverity | undefined =>
+  CONFIGURED_SEVERITY_WORDS.get(value);
+
+/**
+ * `base` as the repository's configuration re-types it. The configured
+ * value wins outright — over the catalogue default AND over the strict
+ * upgrade `resolveSeverity` already applied (measured: git 2.55.0 keeps a
+ * `warn` re-typing under `--strict`).
+ */
+export const retypeSeverity = (
+  table: FsckSeverityTable,
+  msgId: string,
+  base: FsckSeverity,
+): FsckConfiguredSeverity => table.get(msgId.toLowerCase()) ?? base;

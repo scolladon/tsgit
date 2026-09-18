@@ -26,6 +26,7 @@ const tree = await repo.primitives.writeTree([
 ## Throws
 
 - `TREE_ENTRY_LIMIT_EXCEEDED` — more than `MAX_FLAT_TREE_ENTRIES` entries.
+- `CONFIG_BAD_NUMERIC_VALUE` — inherited from [`writeObject`](write-object.md#repo-settings-validation): a malformed `core.maxTreeDepth` / `core.deltaBaseCacheLimit`, whether or not a gate ran this session.
 
 ## See also
 

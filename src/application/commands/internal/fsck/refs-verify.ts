@@ -1,6 +1,9 @@
+import type { FsckSeverityTable } from '../../../../domain/fsck/index.js';
+import { retypeSeverity } from '../../../../domain/fsck/index.js';
 import type { ObjectId } from '../../../../domain/objects/index.js';
 import { zeroOid } from '../../../../domain/objects/index.js';
 import type { Context } from '../../../../ports/context.js';
+import type { RefIntegrityFinding, RefStore } from '../../../primitives/ref-store.js';
 import { getRefStore } from '../../../primitives/ref-store.js';
 import { EXIT_MISSING, EXIT_REFS_CONTENT } from './exit-codes.js';
 import { objectIsPresent } from './object-presence.js';
@@ -26,49 +29,66 @@ async function isKnownOid(
   return objectIsPresent(ctx, oid);
 }
 
+/** One sub-check's own findings and the exit bits they carry. */
+interface PassResult {
+  readonly findings: ReadonlyArray<BadRefFinding>;
+  readonly exitBit: number;
+}
+
 /**
- * Verify ref content format and OID-reachability.
- *
- * Two sub-checks run independently:
- * - **Content format** (gated by `checkReferences`): a malformed loose ref —
- *   reported by the store's own `verifyIntegrity` as `badRefContent` —
- *   contributes `badRefContent` (bit 8, gated) + a synthesised zero-OID
- *   `badRefOid` (bit 2, always). Pinned: matrix #9b, composite exit 10 = 2|8.
- * - **OID presence** (always): every well-formed ref's OID (loose + packed,
- *   from `listRefs`) must be in the object universe, confirmed via
- *   `isKnownOid` rather than trusted at face value — `confirmPackAccessibility`
- *   is true exactly under `connectivityOnly`, the one mode where `universe`
- *   may admit an oid whose housing pack later fails its own header gate.
- *   Absent → `badRefOid` (bit 2). Pinned: matrix #9a, exit 2 same with/without
- *   `--no-references`. A symbolic ref (absent targets are not an error —
- *   unborn branch = OK, matrix #9c) never contributes.
+ * git's deprecation notice for a symbolic link standing in for a symref:
+ * one notice per link under `refs/`, defaulting to a warning that
+ * contributes no exit bit — and re-typed, like every catalogue message, by
+ * the repository's own `fsck.<msg-id>` table.
  */
-export async function runRefsVerifyPass(
-  ctx: Context,
-  universe: ReadonlySet<ObjectId>,
-  checkContentFormat: boolean,
-  confirmPackAccessibility: boolean,
-): Promise<{ readonly findings: ReadonlyArray<BadRefFinding>; readonly exitBit: number }> {
-  const findings: BadRefFinding[] = [];
-  let exitBit = 0;
-
-  const refStore = getRefStore(ctx);
-  const [entries, integrityFindings] = await Promise.all([
-    refStore.listRefs(),
-    refStore.verifyIntegrity(),
-  ]);
-
-  for (const finding of integrityFindings) {
-    if (finding.msgId !== 'badRefContent') continue;
-    let bit = EXIT_MISSING; // synthesised zero-OID pointer always contributes bit 2
-    if (checkContentFormat) {
-      findings.push({
+function collectSymlinkNotices(
+  integrityFindings: ReadonlyArray<RefIntegrityFinding>,
+  severities: FsckSeverityTable,
+): PassResult {
+  const severity = retypeSeverity(severities, 'symlinkRef', 'warning');
+  if (severity === 'ignore') return { findings: [], exitBit: 0 };
+  const findings = integrityFindings
+    .filter((finding) => finding.msgId === 'symlinkRef')
+    .map(
+      (finding): BadRefFinding => ({
         type: 'bad-ref',
         ref: finding.ref,
-        msgId: 'badRefContent',
-        severity: 'error',
-      });
-      bit |= EXIT_REFS_CONTENT;
+        msgId: 'symlinkRef',
+        severity,
+      }),
+    );
+  const exitBit = severity === 'error' && findings.length > 0 ? EXIT_REFS_CONTENT : 0;
+  return { findings, exitBit };
+}
+
+/**
+ * A ref whose content is not an object name: the content notice (gated by
+ * `checkContentFormat`, with a severity `fsck.<msg-id>` can re-type) plus the
+ * zero-OID pointer git synthesises for it. That pointer is reported OUTSIDE the catalogue —
+ * `fsck.badRefOid` does not reach it, measured against git 2.55.0 — so it
+ * always stands, at error severity, contributing bit 2.
+ *
+ * The two halves reach different names. git's ref-store content check stops at
+ * every symbolic link, so a name read through one carries the pointer alone;
+ * its ref iterator reads through, so that pointer is still reported under the
+ * linked name (measured: a link onto a broken ref yields `symlinkRef` and the
+ * pointer, and the `badRefContent` line names the real ref only).
+ */
+function collectBadContentNotices(
+  ctx: Context,
+  integrityFindings: ReadonlyArray<RefIntegrityFinding>,
+  checkContentFormat: boolean,
+  severities: FsckSeverityTable,
+): PassResult {
+  const severity = retypeSeverity(severities, 'badRefContent', 'error');
+  const reportContent = checkContentFormat && severity !== 'ignore';
+  const findings: BadRefFinding[] = [];
+  let exitBit = 0;
+  for (const finding of integrityFindings) {
+    if (finding.msgId !== 'badRefContent') continue;
+    const gradeContent = reportContent && !finding.throughSymlink;
+    if (gradeContent) {
+      findings.push({ type: 'bad-ref', ref: finding.ref, msgId: 'badRefContent', severity });
     }
     findings.push({
       type: 'bad-ref',
@@ -77,9 +97,20 @@ export async function runRefsVerifyPass(
       severity: 'error',
       target: zeroOid(ctx.hashConfig),
     });
-    exitBit |= bit;
+    exitBit |= EXIT_MISSING;
+    if (gradeContent && severity === 'error') exitBit |= EXIT_REFS_CONTENT;
   }
+  return { findings, exitBit };
+}
 
+/** Every well-formed ref whose OID the object universe does not hold. */
+async function collectAbsentTargets(
+  ctx: Context,
+  entries: Awaited<ReturnType<RefStore['listRefs']>>,
+  universe: ReadonlySet<ObjectId>,
+  confirmPackAccessibility: boolean,
+): Promise<PassResult> {
+  const findings: BadRefFinding[] = [];
   for (const entry of entries) {
     if (entry.value.kind !== 'direct') continue;
     if (await isKnownOid(ctx, universe, entry.value.id, confirmPackAccessibility)) continue;
@@ -90,8 +121,53 @@ export async function runRefsVerifyPass(
       severity: 'error',
       target: entry.value.id,
     });
-    exitBit |= EXIT_MISSING;
   }
+  return { findings, exitBit: findings.length > 0 ? EXIT_MISSING : 0 };
+}
 
-  return { findings, exitBit };
+/**
+ * Verify ref content format and OID-reachability.
+ *
+ * Two sub-checks run independently:
+ * - **Content format** (gated by `checkReferences`): a malformed loose ref —
+ *   reported by the store's own `verifyIntegrity` as `badRefContent` —
+ *   contributes `badRefContent` (bit 8, gated) + a synthesised zero-OID
+ *   `badRefOid` (bit 2, always), so a loose ref holding bytes that are not an
+ *   object name exits 10 = 2|8.
+ * - **OID presence** (always): every well-formed ref's OID (loose + packed,
+ *   from `listRefs`) must be in the object universe, confirmed via
+ *   `isKnownOid` rather than trusted at face value — `confirmPackAccessibility`
+ *   is true exactly under `connectivityOnly`, the one mode where `universe`
+ *   may admit an oid whose housing pack later fails its own header gate.
+ *   Absent → `badRefOid` (bit 2), so a loose ref naming a well-formed but
+ *   absent object exits 2 with AND without `--no-references`. A symbolic ref
+ *   never contributes: its target may legitimately be absent, which is what an
+ *   unborn branch is.
+ */
+export async function runRefsVerifyPass(
+  ctx: Context,
+  universe: ReadonlySet<ObjectId>,
+  checkContentFormat: boolean,
+  confirmPackAccessibility: boolean,
+  severities: FsckSeverityTable,
+): Promise<PassResult> {
+  const refStore = getRefStore(ctx);
+  const [entries, integrityFindings] = await Promise.all([
+    refStore.listRefs(),
+    refStore.verifyIntegrity(),
+  ]);
+
+  const symlinks = collectSymlinkNotices(integrityFindings, severities);
+  const badContent = collectBadContentNotices(
+    ctx,
+    integrityFindings,
+    checkContentFormat,
+    severities,
+  );
+  const absent = await collectAbsentTargets(ctx, entries, universe, confirmPackAccessibility);
+
+  return {
+    findings: [...symlinks.findings, ...badContent.findings, ...absent.findings],
+    exitBit: symlinks.exitBit | badContent.exitBit | absent.exitBit,
+  };
 }

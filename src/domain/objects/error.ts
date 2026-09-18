@@ -1,4 +1,5 @@
-import { TsgitError } from '../error.js';
+import { sanitizeForDisplay, TsgitError } from '../error.js';
+import { errorDataCode } from '../error-data-code.js';
 import type { ObjectId } from './object-id.js';
 
 export { TsgitError } from '../error.js';
@@ -47,8 +48,16 @@ export type DomainObjectError =
       readonly limit: number;
     };
 
+/** An object id is at most 64 hex characters, so echoing more than that never
+ *  describes an id — it describes whatever file the rejected string came out
+ *  of, which a refusal must not carry. */
+export const MAX_OBJECT_ID_IN_ERROR = 64;
+
 export const invalidObjectId = (value: string): TsgitError =>
-  new TsgitError({ code: 'INVALID_OBJECT_ID', value });
+  new TsgitError({
+    code: 'INVALID_OBJECT_ID',
+    value: sanitizeForDisplay(value).slice(0, MAX_OBJECT_ID_IN_ERROR),
+  });
 
 export const invalidObjectHeader = (reason: string): TsgitError =>
   new TsgitError({ code: 'INVALID_OBJECT_HEADER', reason });
@@ -70,6 +79,17 @@ export const invalidIdentity = (line: string, reason: string): TsgitError =>
 
 export const objectNotFound = (id: ObjectId): TsgitError =>
   new TsgitError({ code: 'OBJECT_NOT_FOUND', id });
+
+/**
+ * True when `err` carries the `OBJECT_NOT_FOUND` code in `data.code` — the
+ * shared guard every "was this object missing?" catch clause needs, rather
+ * than each call site re-deriving the structural check. Classifies by data
+ * shape, not class identity, so a value re-thrown verbatim through a Context
+ * port (a dist-bundle adapter in a mixed module graph, a dual-package
+ * consumer) still folds as a miss.
+ */
+export const isObjectNotFound = (err: unknown): boolean =>
+  errorDataCode(err) === 'OBJECT_NOT_FOUND';
 
 export const objectHashMismatch = (expected: ObjectId, actual: ObjectId): TsgitError =>
   new TsgitError({ code: 'OBJECT_HASH_MISMATCH', expected, actual });

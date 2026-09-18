@@ -42,11 +42,7 @@ export interface LoadAllowlistConfig {
 const isPlainObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
-const validateEntry = (
-  raw: unknown,
-  index: number,
-  config: LoadAllowlistConfig,
-): AllowEntry => {
+const validateEntry = (raw: unknown, index: number, config: LoadAllowlistConfig): AllowEntry => {
   if (!isPlainObject(raw)) {
     throw new AllowlistError('entry-not-an-object', `entry #${index}`);
   }
@@ -92,10 +88,7 @@ export const parseAllowlist = (
   try {
     parsed = JSON.parse(rawContent);
   } catch (cause) {
-    throw new AllowlistError(
-      'invalid-json',
-      cause instanceof Error ? cause.message : undefined,
-    );
+    throw new AllowlistError('invalid-json', cause instanceof Error ? cause.message : undefined);
   }
   if (!isPlainObject(parsed)) {
     throw new AllowlistError('not-an-object');

@@ -641,7 +641,7 @@ describe('Given two tracked files, When grep is restricted to one via pathspec',
   });
 });
 
-// ─── Multi-pattern OR (#F4) ──────────────────────────────────────────────────
+// ─── Multi-pattern OR ───────────────────────────────────────────────────────
 
 describe('Given a tracked file with two distinct lines, When grep uses two patterns', () => {
   it('Then both lines are returned (OR semantics)', async () => {

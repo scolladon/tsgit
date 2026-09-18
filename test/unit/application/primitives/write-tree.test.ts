@@ -1,11 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import * as configReadMod from '../../../../src/application/primitives/config-read.js';
 import { readTree } from '../../../../src/application/primitives/read-tree.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
 import type { Blob, ObjectId, TreeEntry } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
-import { buildSeededContext } from './fixtures.js';
+import { buildSeededContext, seedMaxTreeDepth } from './fixtures.js';
 
 describe('writeTree', () => {
   describe('Given 0 entries', () => {
@@ -84,6 +85,46 @@ describe('writeTree', () => {
         if (data !== undefined) {
           expect(data.code).not.toBe('TREE_ENTRY_LIMIT_EXCEEDED');
         }
+      });
+    });
+  });
+
+  describe('Given a malformed core.maxTreeDepth', () => {
+    describe('When writeTree is called', () => {
+      it('Then refuses through the writeObject boundary — CONFIG_BAD_NUMERIC_VALUE', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await seedMaxTreeDepth(ctx, '2.5');
+
+        // Act
+        let caught: unknown;
+        try {
+          await writeTree(ctx, []);
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+      });
+    });
+  });
+
+  describe('Given a settled session (a prior write already resolved the repo-settings class)', () => {
+    describe('When writeTree is called a second time', () => {
+      it('Then no finder re-runs — the settled fast path skips the check entirely', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeTree(ctx, []);
+        const spy = vi.spyOn(configReadMod, 'findLastInvalidMaxTreeDepth');
+
+        // Act
+        await writeTree(ctx, []);
+
+        // Assert
+        expect(spy).not.toHaveBeenCalled();
+        spy.mockRestore();
       });
     });
   });

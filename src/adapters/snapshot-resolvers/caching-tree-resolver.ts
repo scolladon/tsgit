@@ -13,7 +13,7 @@ const DEFAULT_MAX_SIZE = 256;
  * Bounded LRU cache keyed by tree `ObjectId`. Trees are content-addressed,
  * so the cache never needs invalidation — same oid always maps to the same
  * bytes. Lifts the pack delta-base LRU pattern (object-resolver.ts) into a
- * dedicated tree resolver adapter (design §10.5).
+ * dedicated tree resolver adapter.
  *
  * Most-recently-used promotion is implemented via Map insertion order:
  * deleting and re-setting the key moves it to the tail; the head is the

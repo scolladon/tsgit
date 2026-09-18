@@ -56,9 +56,9 @@ function extend(bytes: Uint8Array, extraBytes: number): Uint8Array {
   return copy;
 }
 
-// Pin B (F1, SHA-1, 7 objects) — oid-ascending order with each oid's real
+// A real SHA-1 pack's 7 objects — oid-ascending order with each oid's real
 // pack offset. Body derivation confirmed against `git verify-pack -v`.
-const F1_OID_PREFIXES = [
+const REAL_PACK_OID_PREFIXES = [
   '035f9b74',
   '4d4bc1c7',
   '75db9909',
@@ -67,13 +67,13 @@ const F1_OID_PREFIXES = [
   'a0054e49',
   'f1f36270',
 ];
-const F1_OFFSETS = [333, 276, 314, 94, 106, 257, 295];
+const REAL_PACK_OFFSETS = [333, 276, 314, 94, 106, 257, 295];
 
-function f1Entries(): PackIndexEntryLiteral[] {
-  return F1_OID_PREFIXES.map((prefix, i) => ({
+function realPackEntries(): PackIndexEntryLiteral[] {
+  return REAL_PACK_OID_PREFIXES.map((prefix, i) => ({
     id: prefix + '00'.repeat(16),
     crc32: 0,
-    offset: F1_OFFSETS[i]!,
+    offset: REAL_PACK_OFFSETS[i]!,
   }));
 }
 
@@ -161,7 +161,7 @@ describe('rev-index', () => {
       });
 
       describe('When parsing hashId 2 with digestLength 32', () => {
-        it('Then it accepts a 124-byte file — the Pin G sha256 twin of the 12-object fixture', () => {
+        it('Then it accepts a 124-byte file — the sha256 twin of the 12-object fixture', () => {
           // Arrange
           const spec = baseSpec({
             hashId: 2,
@@ -472,15 +472,15 @@ describe('rev-index', () => {
   });
 
   describe('serializePackRevIndex', () => {
-    describe('Given the F1 fixture entries (7 objects, SHA-1)', () => {
+    describe('Given the real-pack fixture entries (7 objects, SHA-1)', () => {
       describe('When serializing', () => {
-        it('Then bytes [0, 60) equal the Pin B literal and bytes [60, 80) are zero', () => {
+        it('Then bytes [0, 60) equal the real-git literal and bytes [60, 80) are zero', () => {
           // Arrange
           const packChecksum = new Uint8Array(20).fill(0xfc);
           const sut = serializePackRevIndex;
 
           // Act
-          const result = sut(sortedIndex(f1Entries()), packChecksum);
+          const result = sut(sortedIndex(realPackEntries()), packChecksum);
 
           // Assert
           expect(result.length).toBe(80);
@@ -496,7 +496,7 @@ describe('rev-index', () => {
       });
     });
 
-    describe('Given the F1 fixture entries fed in different input orders', () => {
+    describe('Given the real-pack fixture entries fed in different input orders', () => {
       describe('When serializing', () => {
         it.each([
           { label: 'oid-ascending order (identity)', indices: [0, 1, 2, 3, 4, 5, 6] },
@@ -505,7 +505,7 @@ describe('rev-index', () => {
           { label: 'an interleaved order', indices: [1, 6, 3, 0, 5, 2, 4] },
         ])('Then produces the identical body for $label', ({ indices }) => {
           // Arrange
-          const entries = f1Entries();
+          const entries = realPackEntries();
           const order = indices.map((i) => entries[i]!);
           const packChecksum = new Uint8Array(20).fill(0xfc);
           const sut = serializePackRevIndex;

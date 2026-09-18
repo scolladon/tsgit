@@ -102,10 +102,10 @@ describe('Given an arbitrary root and a prefix-only sibling (root + suffix, no s
 });
 
 /**
- * B3 join-algebra: proves `contained(join(realParent, basename)) ===
+ * Join algebra: proves `contained(join(realParent, basename)) ===
  * contained(realParent)` for a single clean `basename` (no separator, no
  * `.`/`..` — guaranteed by `arbSegment`'s alphanumeric-only charset), the
- * exact equivalence B3 relies on to memoise the lstat-arm post-check once
+ * exact equivalence the write guard relies on to memoise the lstat-arm post-check once
  * per parent instead of once per entry. `contained` is a local dual-root
  * oracle (`pathContains` against BOTH root and canon), independent of the
  * SUT's private `isContainedInEitherRoot`.
@@ -121,7 +121,7 @@ function dualRootContained(
 
 describe('Given an arbitrary realParent (contained or not) and an arbitrary single clean basename', () => {
   describe('When comparing containment of the joined leaf against containment of the bare realParent', () => {
-    it('Then both agree (the B3 per-parent memoisation is verdict-identical)', () => {
+    it('Then both agree, so the per-parent memoisation is verdict-identical', () => {
       // Arrange + Act + Assert
       fc.assert(
         fc.property(

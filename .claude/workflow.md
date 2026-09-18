@@ -2,7 +2,7 @@
 backlog: { source: file, ref: docs/BACKLOG.md }
 paths: { design: docs/design, adr: docs/adr, plan: docs/plan }
 context: .claude/workflow/code-navigation.md
-models: { designer: fable, reviewer: fable, fallback: opus }
+models: { designer: opus, reviewer: opus, fallback: opus }
 gates:
   part: "npx vitest run <touched-tests> && npm run check:types && ./node_modules/.bin/biome check <touched-files> && npm run check:spelling"
   phase: "npm run validate"
@@ -89,7 +89,7 @@ workflow" / "the usual flow" resolve here (see CLAUDE.md §Development Workflow)
   docs writers, whose natural instrument is Bash over a diff. Evidence and the full split:
   `.claude/workflow/code-navigation.md`.
 
-- **`models.designer` / `models.reviewer` on `fable`** — design and review are the two
+- **`models.designer` / `models.reviewer` on `opus`** — design and review are the two
   judgment-dense phases here: the designer has to hold git's on-disk contracts and the
   faithfulness mandate in one head, and the reviewer runs four dimensions to convergence
   over a whole feature diff. Both are read-and-reason work with a small write surface, so
@@ -99,7 +99,8 @@ workflow" / "the usual flow" resolve here (see CLAUDE.md §Development Workflow)
   *down* from both roles pinned above. A fallback only fires on model-availability
   degradation, so it fires precisely when a judgment-dense phase is already having a bad
   day; dropping design or review two tiers at that moment is the wrong direction. Opus is
-  the nearest tier that keeps the phase's reasoning budget intact.
+  the nearest tier that keeps the phase's reasoning budget intact, and is now also the
+  pinned tier for both roles.
 
 - **`check:spelling` is in BOTH `gates.part` and `review-batch`** — it was review-batch-only,
   and an unknown word once rode two commits before anything noticed, because the part gate

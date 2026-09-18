@@ -351,6 +351,21 @@ describe('lru-cache', () => {
           expect(sut.get('big')).toBeUndefined();
         });
       });
+
+      describe('When setting', () => {
+        it('Then returns false and leaves the cache empty', () => {
+          // Arrange
+          const sut = createLruCache<string>(50);
+
+          // Act
+          const result = sut.set('big', 'large-value', 200);
+
+          // Assert
+          expect(result).toBe(false);
+          expect(sut.currentSize).toBe(0);
+          expect(sut.entryCount).toBe(0);
+        });
+      });
     });
 
     describe('Given cache(50) holding a(30)', () => {
@@ -429,19 +444,37 @@ describe('lru-cache', () => {
 
     describe('Given cache(100) with entries totaling exactly 100', () => {
       describe('When checking', () => {
-        it('Then no eviction occurs', () => {
+        it('Then no eviction occurs and both sets return true', () => {
           // Arrange
           const sut = createLruCache<string>(100);
-          sut.set('a', 'val-a', 50);
 
           // Act
-          sut.set('b', 'val-b', 50);
+          const resultA = sut.set('a', 'val-a', 50);
+          const resultB = sut.set('b', 'val-b', 50);
 
           // Assert — currentSize === maxSize, nothing evicted
+          expect(resultA).toBe(true);
+          expect(resultB).toBe(true);
           expect(sut.entryCount).toBe(2);
           expect(sut.currentSize).toBe(100);
           expect(sut.get('a')).toBe('val-a');
           expect(sut.get('b')).toBe('val-b');
+        });
+      });
+
+      describe('When setting a single entry sized exactly to maxSize', () => {
+        it('Then returns true', () => {
+          // Arrange — kills the `byteSize > maxSizeBytes` `>` vs `>=` boundary
+          // mutant: an entry sized exactly to maxSize must be admitted, not refused.
+          const sut = createLruCache<string>(100);
+
+          // Act
+          const result = sut.set('a', 'val-a', 100);
+
+          // Assert
+          expect(result).toBe(true);
+          expect(sut.entryCount).toBe(1);
+          expect(sut.currentSize).toBe(100);
         });
       });
     });
@@ -564,6 +597,40 @@ describe('lru-cache', () => {
                 // Assert
                 expect(sut.entryCount).toBe(0);
                 expect(sut.currentSize).toBe(0);
+              },
+            ),
+          );
+        });
+      });
+    });
+
+    describe('Given a sequence of prior sets followed by one more set(key, v, byteSize)', () => {
+      describe('When checking the final set verdict', () => {
+        it('Then it is true iff byteSize <= maxSize, and false leaves currentSize/entryCount unchanged', () => {
+          fc.assert(
+            fc.property(
+              fc.array(fc.tuple(fc.string(), fc.integer({ min: 1, max: 1000 }))),
+              fc.integer({ min: 1, max: 10000 }),
+              fc.string(),
+              fc.integer({ min: 1, max: 10000 }),
+              (priorEntries, maxSize, key, byteSize) => {
+                // Arrange
+                const sut = createLruCache<null>(maxSize);
+                for (const [priorKey, priorSize] of priorEntries) {
+                  sut.set(priorKey, null, priorSize);
+                }
+                const currentSizeBefore = sut.currentSize;
+                const entryCountBefore = sut.entryCount;
+
+                // Act
+                const result = sut.set(key, null, byteSize);
+
+                // Assert
+                expect(result).toBe(byteSize <= maxSize);
+                if (!result) {
+                  expect(sut.currentSize).toBe(currentSizeBefore);
+                  expect(sut.entryCount).toBe(entryCountBefore);
+                }
               },
             ),
           );

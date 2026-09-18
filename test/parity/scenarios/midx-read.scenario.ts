@@ -183,7 +183,7 @@ async function arrangeMidxRepo(
   // on the dist-bundle drivers this touches a parallel registry and the
   // bundle's own registry simply takes its FIRST scan at the read below —
   // either way the healthy read sees the midx.
-  getPackRegistry(repo.ctx).refresh();
+  (await getPackRegistry(repo.ctx)).refresh();
   return { idA, idB, midxPath, midxBytes };
 }
 
@@ -255,7 +255,7 @@ export const midxReadDegradedScenario: Scenario<MidxReadDegradedResult> = {
     await repo.ctx.fs.rm(`${packDir}/${PACK_NAME_B}.pack`);
     await repo.ctx.fs.rm(`${packDir}/${PACK_NAME_B}.idx`);
     repo.ctx.deltaCache.delete(idB);
-    getPackRegistry(repo.ctx).refresh();
+    (await getPackRegistry(repo.ctx)).refresh();
     let staleReadSucceeded = true;
     let staleRejectCode = 'unexpected-success';
     try {
@@ -271,7 +271,7 @@ export const midxReadDegradedScenario: Scenario<MidxReadDegradedResult> = {
     // Act — leg 3: the flat midx truncated to a Tier-B fault — discarded, the
     // read for the still-present pack A blob falls back to the `.idx` scan
     await repo.ctx.fs.write(midxPath, midxBytes.subarray(0, 4));
-    getPackRegistry(repo.ctx).refresh();
+    (await getPackRegistry(repo.ctx)).refresh();
     let tierBReadSucceeded = true;
     let tierBContent = '';
     try {

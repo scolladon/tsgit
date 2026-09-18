@@ -131,7 +131,10 @@ describe('detectBareClassThrow', () => {
       ...MANIFEST,
       heuristics: {
         ...MANIFEST.heuristics,
-        bareClassToThrow: { ...MANIFEST.heuristics.bareClassToThrow, tiers: ['unit', 'integration'] },
+        bareClassToThrow: {
+          ...MANIFEST.heuristics.bareClassToThrow,
+          tiers: ['unit', 'integration'],
+        },
       },
     };
     const source = `it('whatever', () => { expect(fn).toThrow(TsgitError); });`;

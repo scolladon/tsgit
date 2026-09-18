@@ -1,5 +1,5 @@
 /**
- * Cross-tool interop — Pin C: the `ie_match_stat`-faithful stat-cache
+ * Cross-tool interop — the `ie_match_stat`-faithful stat-cache
  * short-circuit in `status`. tsgit exposes no `update-index` command, so
  * canonical git sets the `assume-unchanged`/`skip-worktree` index flags
  * directly on tsgit's own `.git/index` (a git-faithful on-disk format,

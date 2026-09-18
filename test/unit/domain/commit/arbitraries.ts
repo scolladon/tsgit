@@ -84,7 +84,7 @@ function planOverflowChunk(commits: ReadonlyArray<CommitGraphCommitModel>): Over
 }
 
 /**
- * Test-only encoder for the `commit-graph` on-disk format (Pin D). Production
+ * Test-only encoder for the `commit-graph` on-disk format. Production
  * code DOES write this format now (`serializeCommitGraph`,
  * `src/domain/commit/commit-graph-writer.ts`), but that writer only ever
  * emits a valid, causally-consistent commit DAG — it cannot reach every byte

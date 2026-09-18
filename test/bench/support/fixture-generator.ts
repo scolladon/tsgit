@@ -106,7 +106,7 @@ export const LARGE_FIXTURE: FixtureSpec = {
 };
 
 // P chosen large enough that a per-pack `.idx` scan is the dominant lookup
-// term (§D7) while staying cheap to build+cache: each pack costs one
+// term while staying cheap to build+cache: each pack costs one
 // fast-import + one repack subprocess pair.
 const MANY_PACK_COUNT = 48;
 const MANY_PACK_BLOB_BYTES = 512;
@@ -121,7 +121,7 @@ export const MANY_PACK_FIXTURE: FixtureSpec = {
   midx: true,
 };
 
-/** `MANY_PACK_FIXTURE`'s own shape without a multi-pack-index — isolates the midx's contribution to the same many-pack lookup (§D7's with/without pair). */
+/** `MANY_PACK_FIXTURE`'s own shape without a multi-pack-index — isolates the midx's contribution to the same many-pack lookup, as a with/without pair. */
 export const MANY_PACK_FIXTURE_NO_MIDX: FixtureSpec = {
   ...MANY_PACK_FIXTURE,
   label: 'many-pack-no-midx',
@@ -139,7 +139,7 @@ export const SINGLE_PACK_FIXTURE: FixtureSpec = {
   midx: false,
 };
 
-/** No packs at all — prices the §D4.5 `assertLoadable` gate in isolation, ahead of every `tryLoose` read. */
+/** No packs at all — prices the `assertLoadable` gate in isolation, ahead of every `tryLoose` read. */
 export const LOOSE_ONLY_FIXTURE: FixtureSpec = {
   label: 'loose-only',
   strategy: 'many-pack',

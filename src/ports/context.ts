@@ -1,5 +1,6 @@
 import type { ConcurrencyLimits } from '../domain/concurrency/derive-limits.js';
 import type { HashConfig } from '../domain/objects/hash-config.js';
+import type { ObjectContent } from '../domain/objects/index.js';
 import type { RefName } from '../domain/objects/object-id.js';
 import type { LruCache } from '../domain/storage/lru-cache.js';
 import type { CommandRunner } from './command-runner.js';
@@ -29,8 +30,8 @@ export type RepositoryFormatRefusal =
     };
 
 /**
- * Repository physical layout — where the working tree and.git directory live.
- * Renamed in from the previous `RepositoryConfig` (port-tier) to free that
+ * Repository physical layout — where the working tree and `.git` directory live.
+ * Renamed from the previous `RepositoryConfig` (port-tier) to free that
  * name for the facade-tier `RepositoryConfig` shape (auth/parallelism/etc.).
  */
 export interface RepositoryLayout {
@@ -40,7 +41,7 @@ export interface RepositoryLayout {
    * NULL`.
    */
   readonly workDir?: string;
-  /** Absolute path to the.git directory (usually `${workDir}/.git`, but may differ for bare repos or worktrees). */
+  /** Absolute path to the `.git` directory (usually `${workDir}/.git`, but may differ for bare repos or worktrees). */
   readonly gitDir: string;
   /**
    * Absolute path to the shared **common** git dir — objects, `packed-refs`,
@@ -195,6 +196,58 @@ export function createSession(): Session {
   return Object.freeze({});
 }
 
+/**
+ * Explicit overrides for the derived object caches' budgets — the memo's
+ * entry cap, the FlatTree's own byte valve, and the delta-base cache's byte
+ * budget (the `core.deltaBaseCacheLimit` dial; no synchronous default here,
+ * unlike the other two). All three are optional so every hand-built
+ * `Context`/`CreateContextParts` literal in the test suite keeps compiling
+ * and behaves as a default-budget Context — the same reason `concurrency` on
+ * this interface is optional. `0` disables the corresponding family member,
+ * mirroring `deltaCacheMaxBytes`'s existing "0 disables the whole family"
+ * contract.
+ */
+export interface CacheBudgets {
+  readonly parsedObjectMemoMaxEntries?: number;
+  readonly flatTreeCacheMaxBytes?: number;
+  readonly deltaBaseCacheMaxBytes?: number;
+}
+
+/**
+ * The raw shape {@link buildCacheBudgets} accepts — unlike {@link CacheBudgets}
+ * itself, each member explicitly allows `undefined` as a value (not just
+ * absence), because the caller's own options object carries these fields the
+ * same way (e.g. `OpenNodeRepositoryOptions.parsedObjectMemoMaxEntries?: number`
+ * read off a destructure is typed `number | undefined`, not merely absent).
+ */
+interface RawCacheBudgetInputs {
+  readonly parsedObjectMemoMaxEntries?: number | undefined;
+  readonly flatTreeCacheMaxBytes?: number | undefined;
+  readonly deltaBaseCacheMaxBytes?: number | undefined;
+}
+
+/**
+ * Builds a frozen {@link CacheBudgets} from raw, possibly-absent option
+ * values — shared by every entry point and adapter constructor so each one
+ * stays a plain pass-through instead of re-deriving the
+ * `exactOptionalPropertyTypes` "omit the key rather than assign it
+ * `undefined`" dance five times over. Fields the caller never set are simply
+ * absent from the result, not present-and-`undefined`.
+ */
+export function buildCacheBudgets(raw: RawCacheBudgetInputs): CacheBudgets {
+  return Object.freeze({
+    ...(raw.parsedObjectMemoMaxEntries !== undefined
+      ? { parsedObjectMemoMaxEntries: raw.parsedObjectMemoMaxEntries }
+      : {}),
+    ...(raw.flatTreeCacheMaxBytes !== undefined
+      ? { flatTreeCacheMaxBytes: raw.flatTreeCacheMaxBytes }
+      : {}),
+    ...(raw.deltaBaseCacheMaxBytes !== undefined
+      ? { deltaBaseCacheMaxBytes: raw.deltaBaseCacheMaxBytes }
+      : {}),
+  });
+}
+
 export interface Context {
   readonly fs: FileSystem;
   readonly hash: HashService;
@@ -216,7 +269,7 @@ export interface Context {
   /** Object serialization parameters (sha1 vs sha256 digest+hex sizes). */
   readonly hashConfig: HashConfig;
   /** Shared delta-base LRU cache; consumed by primitives' iterative delta walker. */
-  readonly deltaCache: LruCache<Uint8Array>;
+  readonly deltaCache: LruCache<ObjectContent>;
   /**
    * This Context's cache-identity anchor — internal and opaque, never
    * constructible outside `createContext`/`deriveContext`.
@@ -228,6 +281,13 @@ export interface Context {
    * `limitFor`, which falls back to the safe floor rather than a fast guess.
    */
   readonly concurrency?: ConcurrencyLimits;
+  /**
+   * Explicit overrides for the derived object caches' budgets. Absent means
+   * every member defaults — the memo's entry cap and the FlatTree's byte
+   * valve derive from `deltaCache.maxSize`; the delta-base cache's budget
+   * resolves from `core.deltaBaseCacheLimit`, or git's own default.
+   */
+  readonly cacheBudgets?: CacheBudgets;
   /** Optional facade-tier configuration (auth, parallelism, SSRF, …). Populated by openRepository. */
   readonly config?: RepositoryConfig;
   /** Optional sanitized logger. Populated by openRepository. */
@@ -278,8 +338,9 @@ export interface CreateContextParts {
   readonly cwd?: string;
   readonly runtime: 'node' | 'browser' | 'memory';
   readonly hashConfig: HashConfig;
-  readonly deltaCache: LruCache<Uint8Array>;
+  readonly deltaCache: LruCache<ObjectContent>;
   readonly concurrency?: ConcurrencyLimits;
+  readonly cacheBudgets?: CacheBudgets;
   readonly config?: RepositoryConfig;
   readonly logger?: Logger;
   readonly signal?: AbortSignal;

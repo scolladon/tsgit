@@ -10,7 +10,7 @@
  *  - Local refs (refs/heads/*, refs/tags/*) never touched.
  *  - Progress (fetch:negotiate + fetch:write-objects).
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { fetch } from '../../../../src/application/commands/fetch.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
@@ -18,6 +18,7 @@ import {
   commonGitDir,
   looseObjectPath,
 } from '../../../../src/application/primitives/path-layout.js';
+import { getRefStore, type RefUpdate } from '../../../../src/application/primitives/ref-store.js';
 import { readShallow } from '../../../../src/application/primitives/shallow-file.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import type { ObjectId, RefName } from '../../../../src/domain/objects/index.js';
@@ -34,6 +35,8 @@ const ENCODER = new TextEncoder();
 
 const FAKE_OID = (label: string): ObjectId =>
   label.padEnd(40, label[0] ?? '0').slice(0, 40) as ObjectId;
+
+const PRUNE_EPOCH_SECONDS = 1_800_000_000;
 
 interface RemoteRef {
   readonly name: string;
@@ -671,6 +674,36 @@ describe('fetch', () => {
       });
     });
 
+    describe('Given a configured remote whose name git accepts but the old allowlist did not', () => {
+      describe('When fetch is called with that remote', () => {
+        it.each([['a/b'], ['a"b'], ['a]b']])(
+          'Then the name reaches the transport rather than refusing INVALID_OPTION',
+          async (name) => {
+            // Arrange
+            const ctx = createMemoryContext();
+            await seedRepo(ctx, {});
+            await ctx.fs.writeUtf8(
+              `${ctx.layout.gitDir}/config`,
+              `[remote "${name.replace('"', String.raw`\"`)}"]\n  url = https://example.com/r.git\n`,
+            );
+            __resetConfigCacheForTests();
+            const { packBytes, blobId } = await buildOneBlobPack(ctx, 'hello fetch\n');
+            const { transport } = fakeRemote({
+              url: 'https://example.com/r.git',
+              advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+              packBytes,
+            });
+
+            // Act
+            const result = await fetch({ ...ctx, transport }, { remote: name });
+
+            // Assert
+            expect(result.remote).toBe(name);
+          },
+        );
+      });
+    });
+
     describe('Given a sole configured remote whose name is a path-traversal string', () => {
       describe('When fetch is called with no explicit remote', () => {
         it('Then it refuses with INVALID_OPTION and never reads a traversal directory', async () => {
@@ -851,6 +884,10 @@ describe('fetch', () => {
   });
 
   describe('prune', () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
     describe('Given prune=true and a stale remote-tracking ref', () => {
       describe('When fetch', () => {
         it('Then the stale ref is deleted and listed in prunedRefs', async () => {
@@ -885,6 +922,53 @@ describe('fetch', () => {
             false,
           );
           expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/origin/main`)).toBe(true);
+        });
+      });
+    });
+
+    describe('Given prune=true and two stale remote-tracking refs', () => {
+      describe('When fetch', () => {
+        it('Then both are deleted in one ref transaction', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx, {
+            refs: {
+              'refs/remotes/origin/main': FAKE_OID('a'),
+              'refs/remotes/origin/feature-x': FAKE_OID('b'),
+              'refs/remotes/origin/feature-y': FAKE_OID('c'),
+            },
+          });
+          await writeOriginConfig(ctx);
+          const { packBytes, blobId } = await buildOneBlobPack(ctx, 'one prune transaction\n');
+          const { transport } = fakeRemote({
+            url: 'https://example.com/r.git',
+            advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+            packBytes,
+          });
+          const fetchCtx = { ...ctx, transport };
+          const store = getRefStore(fetchCtx);
+          const deleteBatches: RefUpdate[][] = [];
+          const originalApply = store.applyRefUpdates.bind(store);
+          store.applyRefUpdates = async (updates) => {
+            if (updates.some((update) => update.kind === 'delete'))
+              deleteBatches.push([...updates]);
+            return originalApply(updates);
+          };
+
+          // Act
+          const result = await fetch(fetchCtx, { prune: true });
+
+          // Assert
+          expect(result.prunedRefs).toEqual([
+            'refs/remotes/origin/feature-x',
+            'refs/remotes/origin/feature-y',
+          ]);
+          expect(deleteBatches).toEqual([
+            [
+              { kind: 'delete', name: 'refs/remotes/origin/feature-x' },
+              { kind: 'delete', name: 'refs/remotes/origin/feature-y' },
+            ],
+          ]);
         });
       });
     });
@@ -950,6 +1034,110 @@ describe('fetch', () => {
             localHead,
           );
           expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/tags/v0`)).toBe(true);
+        });
+      });
+    });
+
+    describe('Given prune=true and a symbolic tracking ref (origin/HEAD)', () => {
+      describe('When fetch', () => {
+        it('Then the symref and its target are kept — the stale scan skips symrefs', async () => {
+          // Arrange — `origin/HEAD` is a symref onto `origin/main`, which the
+          // server still advertises. The scan must never treat a symref's own
+          // name ("HEAD") as a branch slug to test against the advertisement.
+          const ctx = createMemoryContext();
+          await seedRepo(ctx, {
+            refs: { 'refs/remotes/origin/main': FAKE_OID('a') },
+          });
+          await ctx.fs.writeUtf8(
+            `${ctx.layout.gitDir}/refs/remotes/origin/HEAD`,
+            'ref: refs/remotes/origin/main\n',
+          );
+          await writeOriginConfig(ctx);
+          const { packBytes, blobId } = await buildOneBlobPack(ctx, 'keep symref\n');
+          const { transport } = fakeRemote({
+            url: 'https://example.com/r.git',
+            advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+            packBytes,
+          });
+
+          // Act
+          const result = await fetch({ ...ctx, transport }, { prune: true });
+
+          // Assert
+          expect(result.prunedRefs).toEqual([]);
+          expect(
+            (await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/remotes/origin/HEAD`)).trim(),
+          ).toBe('ref: refs/remotes/origin/main');
+          expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/origin/main`)).toBe(true);
+        });
+      });
+    });
+
+    describe('Given prune=true and HEAD symbolically naming a stale remote-tracking ref', () => {
+      describe('When fetch', () => {
+        it('Then the pruned ref\'s coupled HEAD entry carries git\'s "fetch: prune" message', async () => {
+          // Arrange
+          vi.spyOn(Date, 'now').mockReturnValue(PRUNE_EPOCH_SECONDS * 1000);
+          const ctx = createMemoryContext();
+          const staleId = FAKE_OID('b');
+          await seedRepo(ctx, {
+            refs: {
+              'refs/remotes/origin/main': FAKE_OID('a'),
+              'refs/remotes/origin/dev': staleId,
+            },
+            head: 'refs/remotes/origin/dev',
+          });
+          await writeOriginConfig(ctx);
+          const { packBytes, blobId } = await buildOneBlobPack(ctx, 'coupled prune\n');
+          const { transport } = fakeRemote({
+            url: 'https://example.com/r.git',
+            advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+            packBytes,
+          });
+
+          // Act
+          await fetch({ ...ctx, transport }, { prune: true });
+
+          // Assert
+          expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/logs/HEAD`)).toBe(
+            `${staleId} ${'0'.repeat(40)} tsgit <tsgit@localhost> ${PRUNE_EPOCH_SECONDS} +0000\tfetch: prune\n`,
+          );
+        });
+      });
+    });
+
+    describe('Given prune=true and origin/HEAD naming a branch the server no longer advertises', () => {
+      describe('When fetch', () => {
+        it('Then only the stale branch is pruned and origin/HEAD is left dangling on it', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx, {
+            refs: {
+              'refs/remotes/origin/main': FAKE_OID('a'),
+              'refs/remotes/origin/dev': FAKE_OID('b'),
+            },
+          });
+          await ctx.fs.writeUtf8(
+            `${ctx.layout.gitDir}/refs/remotes/origin/HEAD`,
+            'ref: refs/remotes/origin/dev\n',
+          );
+          await writeOriginConfig(ctx);
+          const { packBytes, blobId } = await buildOneBlobPack(ctx, 'dangling symref\n');
+          const { transport } = fakeRemote({
+            url: 'https://example.com/r.git',
+            advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+            packBytes,
+          });
+
+          // Act
+          const result = await fetch({ ...ctx, transport }, { prune: true });
+
+          // Assert
+          expect(result.prunedRefs).toEqual(['refs/remotes/origin/dev']);
+          expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/remotes/origin/HEAD`)).toBe(
+            'ref: refs/remotes/origin/dev\n',
+          );
+          expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/origin/dev`)).toBe(false);
         });
       });
     });
@@ -1956,13 +2144,11 @@ describe('fetch', () => {
   describe('prune packed-only ref handling', () => {
     describe('Given a prune walk reaching a packed-only ref', () => {
       describe('When fetch', () => {
-        it('Then updateRef raises UNSUPPORTED_OPERATION and the ref is skipped with a warn naming the ref', async () => {
-          // Arrange — kills the catch-block mutants, the isPackedRefDeleteError
-          // checks, and the warn-call `{ name: refName }` ObjectLiteral mutant.
-          // `ghost` exists ONLY in packed-refs (no loose file); `listRefs`
-          // surfaces it as a prune candidate, and `updateRef`'s delete path
-          // then throws UNSUPPORTED_OPERATION/delete-packed-ref, which
-          // isPackedRefDeleteError must recognise so the loop continues.
+        it('Then the packed-only ref is pruned and its packed-refs line removed, no warn logged', async () => {
+          // Arrange — `ghost` exists ONLY in packed-refs (no loose file);
+          // `listRefs` surfaces it as a prune candidate, and `updateRef`'s
+          // delete path now rewrites packed-refs to drop it instead of
+          // refusing.
           const ctx = createMemoryContext();
           await seedRepo(ctx, { refs: { 'refs/remotes/origin/main': FAKE_OID('a') } });
           const packedOnly = 'c'.repeat(40);
@@ -1990,13 +2176,11 @@ describe('fetch', () => {
           // Act
           const result = await fetch({ ...ctx, transport, logger }, { prune: true });
 
-          // Assert — packed-only ref skipped, not crashed, and not listed as pruned.
-          expect(result.prunedRefs).toEqual([]);
-          const packedWarn = warnings.find(
-            (w) => w.message === 'fetch.prune: skipping packed-only ref',
-          );
-          expect(packedWarn).toBeDefined();
-          expect(packedWarn?.context).toEqual({ name: 'refs/remotes/origin/ghost' });
+          // Assert — packed-only ref pruned, listed, and no warn logged.
+          expect(result.prunedRefs).toEqual(['refs/remotes/origin/ghost']);
+          expect(warnings).toEqual([]);
+          const packedContent = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/packed-refs`);
+          expect(packedContent).not.toContain('refs/remotes/origin/ghost');
         });
       });
     });

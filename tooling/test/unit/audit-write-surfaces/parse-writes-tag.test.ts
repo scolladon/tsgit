@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-  type WritesTagConfig,
   parseWritesTag,
+  type WritesTagConfig,
 } from '../../../audit-write-surfaces/parse-writes-tag.js';
 
 const sutConfig = (): WritesTagConfig => ({

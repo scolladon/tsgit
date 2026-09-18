@@ -1,16 +1,36 @@
 /**
- * Cross-tool interop — SHA-256 object format, `.git/index` framing.
- * Builds a `git init --object-format=sha256` repository via real git, then
- * proves tsgit's `add` writes an index git itself can read back. Regression
- * pin for the shipped index-corruption bug: `index-writer.ts` framed the
- * flags word and entry name at the SHA-1-width `offset+60`/`offset+62`
- * regardless of the repository's own oid width, corrupting the last 12
- * bytes of a 32-byte SHA-256 oid.
+ * Cross-tool interop — SHA-256 object format across every surface whose bytes
+ * carry an oid. Builds `git init --object-format=sha256` repositories via real
+ * git, drives tsgit against them, and hands the result back to real git for
+ * the verdict. The original pin is still the widest row: tsgit's `add` writes
+ * an index git itself reads back, guarding the shipped index-corruption bug
+ * where `index-writer.ts` framed the flags word and entry name at the
+ * SHA-1-width `offset+60`/`offset+62` regardless of the repository's own oid
+ * width, corrupting the last 12 bytes of a 32-byte SHA-256 oid.
+ *
+ * Every other surface here carries its own real-git oracle, which is why the
+ * header names them all rather than the one it started with. `git ls-files
+ * --stage` reads back the index `add` wrote and `git hash-object` types the
+ * blob `status` reports. `git verify-pack -v` accepts the pack and index
+ * `packObjects` wrote. `git reflog show` reads the reflog line, and `git fsck`
+ * the loose objects, a tsgit `commit` wrote. `git get-tar-commit-id` reads the
+ * PAX payload `archive` + `tarArchive` serialized — the value, not just the
+ * exit code, since a wrong declared size truncates it silently. `git rev-parse`
+ * — plain, `--verify` and `--show-object-format` — is the verdict for
+ * `revParse`, `catFile`, `checkout`, `init` and the whole `extensions.
+ * objectFormat` value grammar. `git log` fixes the oid sequence tsgit's `log`
+ * must reproduce. The artefacts git itself wrote — the pack `.rev`, the
+ * multi-pack-index, the commit-graph, the `.bitmap` and the packed refs — are
+ * read back through tsgit's own parsers, so there git is the writer and tsgit
+ * the reader. `clone`, `push`, `fetch` and `submoduleAdd` negotiate with a real
+ * git peer served by a real `git-http-backend`, and the receiver's own
+ * `git rev-parse` confirms what a push landed.
  *
  * @proves
- *   surface: add
+ *   surface: add, archive, catFile, checkout, clone, commit, commitGraph, config, fetch, fsck, init, log, multi-pack-index, openRepository, packObjects, packRevIndex, push, revParse, status, submodule
  *   bucket: cross-tool-interop
- *   unique: SHA-256 index entry framing survives tsgit add and reads back identically to git's own add
+ *   unique: every oid-bearing SHA-256 surface tsgit writes is read back by the real git command that owns that format
+ *   interopSurface: add, archive, catFile, checkout, clone, commit, config, fetch, fsck, index, init, log, looseObject, packfile, packObjects, push, reflog, revParse, status, submodule, tarArchive
  */
 
 import { spawnSync } from 'node:child_process';
@@ -796,7 +816,7 @@ describe.skipIf(!GIT_AVAILABLE)(
 );
 
 describe.skipIf(!GIT_AVAILABLE)(
-  'sha256 object format — SHA-1 invariance (R6, same battery on a plain SHA-1 repository)',
+  'sha256 object format — SHA-1 invariance (the same battery on a plain SHA-1 repository)',
   () => {
     let dir: string;
     let expectedLog: ReadonlyArray<string>;
@@ -910,7 +930,7 @@ describe.skipIf(!GIT_AVAILABLE)(
 );
 
 describe.skipIf(!GIT_AVAILABLE)(
-  'sha256 object format — R13 cross-format meeting points inside one working tree',
+  'sha256 object format — cross-format meeting points inside one working tree',
   () => {
     describe('Given a linked worktree of a SHA-256 repository, When both tools operate inside it', () => {
       it("Then git reports sha256 from inside it, and tsgit's own add there writes a 32-byte-oid index — the format is inherited from the common dir, no worktree-specific branch needed", async () => {
@@ -1481,7 +1501,7 @@ const initLocalSuper = async (slug: string, algorithm: 'sha1' | 'sha256'): Promi
 };
 
 describe.skipIf(TRANSPORT_SKIP)(
-  'sha256 object format — submodule add refuses across formats (R13)',
+  'sha256 object format — submodule add refuses across formats',
   () => {
     describe('Given a SHA-1 superproject adding a SHA-256 submodule remote, When submodule add runs', () => {
       it("Then it refuses SUBMODULE_OBJECT_FORMAT_MISMATCH (local 'sha1', remote 'sha256'), leaving the partial .git/modules/sub state behind — the clone has already happened", async () => {

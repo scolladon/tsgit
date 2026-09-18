@@ -1,5 +1,5 @@
 /**
- * Read-side commit-graph support (Pin D). Serves `root-tree / parents /
+ * Read-side commit-graph support. Serves `root-tree / parents /
  * generation / committer-date` for a commit straight from a parsed
  * `commit-graph` — either the single-file form (`objects/info/commit-graph`)
  * or the chain/split form (`objects/info/commit-graphs/commit-graph-chain` +
@@ -27,6 +27,7 @@ import {
   commitGraphPath,
   commonGitDir,
 } from '../path-layout.js';
+import { assertRepoSettingsValid, repoSettingsVerdictSettled } from './repo-settings-gate.js';
 import { isShallowRepository } from './shallow-set.js';
 
 /** Parents/root-tree/generation/date for one commit, sourced from the commit-graph. */
@@ -154,7 +155,7 @@ function parseChainLayerHashes(chainText: string): readonly string[] {
 
 /**
  * Load the chain form. A chain that references a layer file which no longer
- * exists is treated as an ABSENT graph (Pin D staleness) — git's own
+ * exists is treated as an ABSENT graph — git's own
  * behaviour for a chain with a missing layer (warn + fall back, exit 0).
  */
 async function loadChain(ctx: Context, gitDir: string): Promise<LoadedGraph | undefined> {
@@ -255,6 +256,7 @@ function loadGraph(ctx: Context): Promise<LoadedGraph | undefined> {
  * through to the date clause, so the two verdicts are indistinguishable.
  */
 export async function correctedCommitDatesEnabled(ctx: Context): Promise<boolean> {
+  if (!repoSettingsVerdictSettled(ctx)) await assertRepoSettingsValid(ctx);
   const graph = await loadGraph(ctx);
   return graph !== undefined && graph.correctedCommitDates;
 }
@@ -339,10 +341,6 @@ function resolveParentIds(
   });
 }
 
-/**
- * Graph-only lookup: `undefined` when `id` is not present in the graph, or the
- * graph itself is absent/stale — the caller falls back to a full object read.
- */
 /** True once this session's graph probe has answered "absent" (no graph, a
  *  shallow repository, or a graph degraded on a decode fault). A synchronous
  *  read, so callers can skip `commitHeader` outright. */
@@ -350,7 +348,12 @@ export function isGraphKnownAbsent(ctx: Context): boolean {
   return absentGraphs.has(ctx.session);
 }
 
+/**
+ * Graph-only lookup: `undefined` when `id` is not present in the graph, or the
+ * graph itself is absent/stale — the caller falls back to a full object read.
+ */
 export async function commitHeader(ctx: Context, id: ObjectId): Promise<CommitHeader | undefined> {
+  if (!repoSettingsVerdictSettled(ctx)) await assertRepoSettingsValid(ctx);
   const cache = getHeaderCache(ctx);
   const cached = cache.get(id);
   if (cached !== undefined) return cached;

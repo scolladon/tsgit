@@ -17,6 +17,7 @@ import { isSafeRefName } from '../../domain/refs/ref-validation.js';
 import type { Context } from '../../ports/context.js';
 import { deriveContext } from '../primitives/derive-context.js';
 import { fetchPack } from '../primitives/fetch-pack.js';
+import { assertRefTargetValid } from '../primitives/internal/ref-target.js';
 import { getRefStore } from '../primitives/ref-store.js';
 import { updateShallow } from '../primitives/shallow-file.js';
 import { updateConfigEntries } from '../primitives/update-config.js';
@@ -324,6 +325,7 @@ const writeRef = async (
   id: ObjectId,
   reflogUrl: string,
 ): Promise<void> => {
+  await assertRefTargetValid(ctx, name, id);
   await getRefStore(ctx).applyRefUpdates([
     {
       kind: 'set',
@@ -370,6 +372,7 @@ const applyRemoteHead = async (
   // via head.id even when symref is missing (e.g., for a server that does not
   // expose the symref capability).
   if (advertisement.head !== undefined) {
+    await assertRefTargetValid(ctx, HEAD, advertisement.head.id);
     await getRefStore(ctx).applyRefUpdates([
       {
         kind: 'set',

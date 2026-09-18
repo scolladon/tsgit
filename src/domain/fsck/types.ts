@@ -7,3 +7,13 @@ export type FsckObjectType = 'commit' | 'blob' | 'tree' | 'tag';
  * `warning in …` / `error in …` / `warning in …` (INFO) output.
  */
 export type FsckSeverity = 'error' | 'warning' | 'info';
+
+/**
+ * A severity a repository's `fsck.<msg-id>` configuration may impose.
+ * `ignore` is not a reportable severity — a finding re-typed to it is never
+ * emitted, and contributes no exit bit.
+ */
+export type FsckConfiguredSeverity = FsckSeverity | 'ignore';
+
+/** `fsck.<msg-id>` re-typings, keyed by the lower-cased msg-id. */
+export type FsckSeverityTable = ReadonlyMap<string, FsckConfiguredSeverity>;

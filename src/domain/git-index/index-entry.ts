@@ -67,7 +67,7 @@ export interface GitIndex {
    * `CachingIndexResolver` can use it for the racy-stat fallback path
    * (compare trailing bytes when `(mtime, size, ino)` match an observed
    * stat but the underlying file may have been mutated in the racy-stat
-   * window — see design §10.4). Empty (`Uint8Array(0)`) when constructed
+   * window). Empty (`Uint8Array(0)`) when constructed
    * from the empty-index defaults in `readIndex` (no underlying file).
    */
   readonly trailerSha: Uint8Array;

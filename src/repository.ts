@@ -284,6 +284,14 @@ export interface RuntimeFallback {
    */
   readonly concurrency?: ConcurrencyLimits;
   /**
+   * Optional explicit overrides for the derived object caches' budgets,
+   * built by the entry point from its own option surface. Absent when the
+   * entry point exposes no such options (`index.default.ts`) or the caller
+   * set none of them — `budgetsFor`/`deltaBaseCacheBudgetFor` derive every
+   * default from `deltaCache.maxSize` in that case.
+   */
+  readonly cacheBudgets?: Context['cacheBudgets'];
+  /**
    * Build a raw (adapter-level) `FileSystem` able to reach `worktreePaths`
    * (which may lie outside `workDir`) as well as the repository itself — for the
    * worktree containment escape (ADR-298). The node shim roots a fresh adapter
@@ -423,10 +431,10 @@ export interface Repository {
   };
 
   /**
-   * Lazy snapshot factory wired to the cached resolver stack (Phase 20.1).
-   * Each method returns a `Snapshot` handle that performs no I/O until
-   * iterated; in-flight iterations are isolated from concurrent writes
-   * via the iteration-stability invariant (design §8.0 + ADR-150).
+   * Lazy snapshot factory wired to the cached resolver stack. Each method
+   * returns a `Snapshot` handle that performs no I/O until iterated;
+   * in-flight iterations are isolated from concurrent writes by the
+   * iteration-stability invariant (ADR-150).
    */
   readonly snapshot: SnapshotFactory;
 
@@ -486,6 +494,7 @@ interface OptionalCtxInputs {
   readonly env: EnvReader | undefined;
   readonly ssh: SshTransport | undefined;
   readonly concurrency: ConcurrencyLimits | undefined;
+  readonly cacheBudgets: Context['cacheBudgets'];
 }
 
 /**
@@ -502,12 +511,9 @@ const buildOptionalCtxFields = (inputs: OptionalCtxInputs) => ({
   ...(inputs.env !== undefined ? { env: inputs.env } : {}),
   ...(inputs.ssh !== undefined ? { ssh: inputs.ssh } : {}),
   ...(inputs.concurrency !== undefined ? { concurrency: inputs.concurrency } : {}),
+  ...(inputs.cacheBudgets !== undefined ? { cacheBudgets: inputs.cacheBudgets } : {}),
 });
 
-/**
- * Factory for the Repository handle. The runtime fallback (adapters + layout)
- * is supplied by the calling shim — `openRepository` itself is runtime-agnostic.
- */
 /**
  * The hash service to run this repository at. Keeping a service whose
  * `algorithm` disagrees with the resolved format would desynchronise the
@@ -547,6 +553,10 @@ const forgetSessionCaches = (ctx: Context): void => {
   invalidateIndexCache(ctx);
 };
 
+/**
+ * Factory for the Repository handle. The runtime fallback (adapters + layout)
+ * is supplied by the calling shim — `openRepository` itself is runtime-agnostic.
+ */
 export const openRepository = async (
   opts: OpenRepositoryOptions,
   fallback: RuntimeFallback,
@@ -681,6 +691,7 @@ export const openRepository = async (
       env: fallback.env,
       ssh: fallback.ssh,
       concurrency: fallback.concurrency,
+      cacheBudgets: fallback.cacheBudgets,
     }),
     promisor,
     session: createSession(),

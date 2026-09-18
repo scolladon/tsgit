@@ -73,6 +73,8 @@ import { revParse } from './rev-parse.js';
 
 export type { ConflictType } from '../../domain/merge/index.js';
 
+const HEAD: RefName = 'HEAD' as RefName;
+
 export interface CherryPickRunInput {
   /** Revisions to pick, in argument order — a commit-ish or an `A..B` range each. */
   readonly commits: ReadonlyArray<string>;
@@ -222,7 +224,6 @@ const writeSequencerStop = async (
 const runSequence = async (
   ctx: Context,
   todo: ReadonlyArray<ObjectId>,
-  branch: RefName,
   startOurId: ObjectId,
   opts: PickOptions,
   seq: SequenceState,
@@ -239,7 +240,7 @@ const runSequence = async (
       if (seq.multiPick) await writeSequencerStop(ctx, seq, todo.slice(i), ourId, opts);
       throw cherryPickMergeNoMainline(source);
     }
-    const outcome = await applyOnePick(ctx, source, cData, branch, ourId, opts);
+    const outcome = await applyOnePick(ctx, source, cData, ourId, opts);
     if (outcome.kind === 'committed') {
       applied.push({ source, created: outcome.id });
       ourId = outcome.id;
@@ -318,7 +319,6 @@ const applyOnePick = async (
   ctx: Context,
   source: ObjectId,
   cData: CommitData,
-  branch: RefName,
   ourId: ObjectId,
   opts: PickOptions,
 ): Promise<PickOutcome> => {
@@ -344,7 +344,9 @@ const applyOnePick = async (
     if (res.mergedTree === oursTree && !opts.allowEmpty) return { kind: 'empty' };
     await lock.commit(res.result.newIndexEntries);
     const id = await createPickCommit(ctx, source, cData, ourId, res.mergedTree, opts);
-    await updateRef(ctx, branch, id, {
+    // Written through the literal `HEAD` — cherry-pick refuses on a
+    // detached HEAD, so `HEAD` always names the branch being advanced here.
+    await updateRef(ctx, HEAD, id, {
       expected: ourId,
       reflogMessage: cherryPickReflog(subjectLine(cData.message)),
     });
@@ -443,7 +445,7 @@ export const cherryPickRun = async (
     allowEmpty: input.allowEmpty ?? false,
   };
   const seq: SequenceState = { multiPick: todo.length > 1, sequenceHead: ourId };
-  return runSequence(ctx, todo, head.target, ourId, opts, seq);
+  return runSequence(ctx, todo, ourId, opts, seq);
 };
 
 export interface CherryPickContinueInput {
@@ -464,7 +466,6 @@ const commitResolvedPick = async (
   ctx: Context,
   source: ObjectId,
   ourId: ObjectId,
-  branch: RefName,
   tree: ObjectId,
 ): Promise<ObjectId> => {
   const cData = await readCommitData(ctx, source);
@@ -480,7 +481,9 @@ const commitResolvedPick = async (
     message,
     extraHeaders: [],
   });
-  await updateRef(ctx, branch, id, {
+  // Written through the literal `HEAD` — cherry-pick continue refuses on a
+  // detached HEAD, so `HEAD` always names the branch being advanced here.
+  await updateRef(ctx, HEAD, id, {
     expected: ourId,
     reflogMessage: commitCherryPickReflog(subjectLine(message)),
   });
@@ -507,7 +510,6 @@ const resolveResumeOpts = async (
 const finaliseInProgressPick = async (
   ctx: Context,
   source: ObjectId,
-  branch: RefName,
   ourId: ObjectId,
   opts: PickOptions,
 ): Promise<{ readonly created: ObjectId } | { readonly empty: true }> => {
@@ -517,7 +519,7 @@ const finaliseInProgressPick = async (
   if (indexTree === (await treeOf(ctx, ourId)) && !opts.allowEmpty) {
     return { empty: true };
   }
-  const created = await commitResolvedPick(ctx, source, ourId, branch, indexTree);
+  const created = await commitResolvedPick(ctx, source, ourId, indexTree);
   await clearCherryPickHead(ctx);
   await clearMergeMsg(ctx);
   return { created };
@@ -548,7 +550,7 @@ export const cherryPickContinue = async (
   const applied: CherryPickedCommit[] = [];
   if (source !== undefined) {
     const remainingAfter = todoOnDisk !== undefined ? todoOnDisk.length - 1 : 0;
-    const done = await finaliseInProgressPick(ctx, source, head.target, ourId, opts);
+    const done = await finaliseInProgressPick(ctx, source, ourId, opts);
     if ('empty' in done) return { kind: 'empty', commit: source, remaining: remainingAfter };
     applied.push({ source, created: done.created });
     ourId = done.created;
@@ -563,7 +565,7 @@ export const cherryPickContinue = async (
     return { kind: 'picked', commits: applied };
   }
   const sequenceHead = (await readSequencerHead(ctx)) ?? ourId;
-  const result = await runSequence(ctx, rest, head.target, ourId, opts, {
+  const result = await runSequence(ctx, rest, ourId, opts, {
     multiPick: true,
     sequenceHead,
   });
@@ -609,7 +611,7 @@ export const cherryPickSkip = async (
     return { kind: 'picked', commits: [] };
   }
   const sequenceHead = (await readSequencerHead(ctx)) ?? ourId;
-  return runSequence(ctx, rest, branch, ourId, opts, { multiPick: true, sequenceHead });
+  return runSequence(ctx, rest, ourId, opts, { multiPick: true, sequenceHead });
 };
 
 /**
@@ -628,6 +630,6 @@ export const cherryPickAbort = async (ctx: Context): Promise<CherryPickAbortResu
   }
   const branch = await requireSymbolicHead(ctx, CHERRY_PICK_ABORT);
   const target = seqHead ?? (await resolveRef(ctx, branch));
-  await abortSequencerReset(ctx, { branch, target, clearHead: clearCherryPickHead });
+  await abortSequencerReset(ctx, { target, clearHead: clearCherryPickHead });
   return { head: target, branch };
 };

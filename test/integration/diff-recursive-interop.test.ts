@@ -15,6 +15,7 @@
  *   surface: diff.patch
  *   bucket:  cross-tool-interop
  *   unique:  recursive (sub-directory) patch text matches upstream git + a frozen golden
+ *   interopSurface: diff
  */
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';

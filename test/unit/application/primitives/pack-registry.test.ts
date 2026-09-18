@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
+import * as configReadMod from '../../../../src/application/primitives/config-read.js';
 import { enumerateObjects } from '../../../../src/application/primitives/enumerate-objects.js';
 import { packPositionMap } from '../../../../src/application/primitives/internal/pack-positions.js';
+import { GIT_DEFAULT_DELTA_BASE_CACHE_LIMIT_BYTES } from '../../../../src/application/primitives/internal/resolve-delta-base-cache-limit.js';
 import {
   createPackRegistry,
   isSkippableIdxFault,
@@ -109,7 +111,7 @@ describe('pack-registry', () => {
       it('Then returns an empty array', async () => {
         // Arrange
         const ctx = await buildSeededContext();
-        const sut = createPackRegistry(ctx);
+        const sut = await createPackRegistry(ctx);
 
         // Act
         const result = await sut.all();
@@ -122,7 +124,7 @@ describe('pack-registry', () => {
       it('Then returns undefined', async () => {
         // Arrange
         const ctx = await buildSeededContext();
-        const sut = createPackRegistry(ctx);
+        const sut = await createPackRegistry(ctx);
 
         // Act
         const result = await sut.lookup('a'.repeat(40) as ObjectId);
@@ -135,7 +137,7 @@ describe('pack-registry', () => {
       it('Then returns an empty set', async () => {
         // Arrange
         const ctx = await buildSeededContext();
-        const sut = createPackRegistry(ctx);
+        const sut = await createPackRegistry(ctx);
 
         // Act
         const result = await sut.fileNames();
@@ -165,7 +167,7 @@ describe('pack-registry', () => {
             ],
           },
         };
-        const sut = createPackRegistry(wrapped);
+        const sut = await createPackRegistry(wrapped);
 
         // Act
         const result = await sut.fileNames();
@@ -193,7 +195,7 @@ describe('pack-registry', () => {
             },
           },
         };
-        const sut = createPackRegistry(stubCtx);
+        const sut = await createPackRegistry(stubCtx);
 
         // Act
         const result = await sut.all();
@@ -221,7 +223,7 @@ describe('pack-registry', () => {
             },
           },
         };
-        const sut = createPackRegistry(stubCtx);
+        const sut = await createPackRegistry(stubCtx);
 
         // Act
         const result = await sut.all();
@@ -251,7 +253,7 @@ describe('pack-registry', () => {
             },
           },
         };
-        const sut = createPackRegistry(stubCtx);
+        const sut = await createPackRegistry(stubCtx);
 
         // Act
         let caught: unknown;
@@ -284,7 +286,7 @@ describe('pack-registry', () => {
             },
           },
         };
-        const sut = createPackRegistry(stubCtx);
+        const sut = await createPackRegistry(stubCtx);
 
         // Act
         let caught: unknown;
@@ -343,7 +345,7 @@ describe('pack-registry', () => {
             },
           },
         };
-        const sut = createPackRegistry(wrapped);
+        const sut = await createPackRegistry(wrapped);
 
         // Act
         let caught: unknown;
@@ -390,7 +392,7 @@ describe('pack-registry', () => {
             },
           },
         };
-        const sut = createPackRegistry(wrapped);
+        const sut = await createPackRegistry(wrapped);
 
         // Act
         let caught: unknown;
@@ -438,7 +440,7 @@ describe('pack-registry', () => {
             },
           },
         };
-        const sut = createPackRegistry(wrapped);
+        const sut = await createPackRegistry(wrapped);
 
         // Act
         const packs = await sut.all();
@@ -470,7 +472,7 @@ describe('pack-registry', () => {
             readdir: async (): Promise<ReadonlyArray<DirEntry>> => [],
           },
         });
-        const sut = createPackRegistry(ledger.ctx);
+        const sut = await createPackRegistry(ledger.ctx);
 
         // Act
         await sut.all();
@@ -492,7 +494,7 @@ describe('pack-registry', () => {
             readdir: async (): Promise<ReadonlyArray<DirEntry>> => [],
           },
         });
-        const sut = createPackRegistry(ledger.ctx);
+        const sut = await createPackRegistry(ledger.ctx);
         await sut.all();
 
         // Act
@@ -530,7 +532,7 @@ describe('pack-registry', () => {
             read: async () => oversized,
           },
         };
-        const sut = createPackRegistry(wrapped);
+        const sut = await createPackRegistry(wrapped);
 
         // Act
         const packs = await sut.all();
@@ -565,7 +567,7 @@ describe('PackRegistry.scan — per-pack idx degradation and orphan exclusion', 
         const id = ids[0] as ObjectId;
         const warn = vi.fn();
         const wrapped: Context = { ...ctx, logger: { warn } };
-        const sut = getPackRegistry(wrapped);
+        const sut = await getPackRegistry(wrapped);
 
         // Act
         const object = await readObject(wrapped, id);
@@ -609,7 +611,7 @@ describe('PackRegistry.scan — per-pack idx degradation and orphan exclusion', 
         const ctx = await buildSeededContext();
         await writeGarbageIdx(ctx, 'only-corrupt');
         const id = 'b'.repeat(40) as ObjectId;
-        const sut = getPackRegistry(ctx);
+        const sut = await getPackRegistry(ctx);
 
         // Act
         let caught: unknown;
@@ -647,7 +649,7 @@ describe('PackRegistry.scan — per-pack idx degradation and orphan exclusion', 
             },
           },
         };
-        const sut = createPackRegistry(wrapped);
+        const sut = await createPackRegistry(wrapped);
 
         // Act
         const packs = await sut.all();
@@ -682,7 +684,7 @@ describe('PackRegistry.scan — per-pack idx degradation and orphan exclusion', 
             },
           },
         };
-        const sut = createPackRegistry(wrapped);
+        const sut = await createPackRegistry(wrapped);
 
         // Act
         const packs = await sut.all();
@@ -704,7 +706,7 @@ describe('PackRegistry.scan — per-pack idx degradation and orphan exclusion', 
         await writeGarbageIdx(ctx, 'faulty-one');
         await writeGarbageIdx(ctx, 'faulty-two');
         const warn = vi.fn();
-        const sut = createPackRegistry({ ...ctx, logger: { warn } });
+        const sut = await createPackRegistry({ ...ctx, logger: { warn } });
 
         // Act
         const packs = await sut.all();
@@ -736,7 +738,7 @@ describe('PackRegistry.scan — per-pack idx degradation and orphan exclusion', 
             },
           },
         };
-        const sut = createPackRegistry(wrapped);
+        const sut = await createPackRegistry(wrapped);
 
         // Act
         let caught: unknown;
@@ -761,7 +763,7 @@ describe('PackRegistry.scan — per-pack idx degradation and orphan exclusion', 
         const ctx = await buildSeededContext();
         await writeGarbageIdx(ctx, 'lookup-cardinality');
         const warn = vi.fn();
-        const sut = createPackRegistry({ ...ctx, logger: { warn } });
+        const sut = await createPackRegistry({ ...ctx, logger: { warn } });
         const idA = 'a'.repeat(40) as ObjectId;
         const idB = 'b'.repeat(40) as ObjectId;
         const idC = 'c'.repeat(40) as ObjectId;
@@ -796,7 +798,7 @@ describe('PackRegistry.scan — per-pack idx degradation and orphan exclusion', 
         await ctx.fs.rm(orphanPackPath);
         const warn = vi.fn();
         const wrapped: Context = { ...ctx, logger: { warn } };
-        const sut = getPackRegistry(wrapped);
+        const sut = await getPackRegistry(wrapped);
 
         // Act
         const packs = await sut.all();
@@ -850,7 +852,7 @@ describe('PackRegistry.scan — per-pack idx degradation and orphan exclusion', 
             },
           },
         };
-        const sut = createPackRegistry(wrapped);
+        const sut = await createPackRegistry(wrapped);
 
         // Act
         const packs = await sut.all();
@@ -865,8 +867,13 @@ describe('PackRegistry.scan — per-pack idx degradation and orphan exclusion', 
 describe('PackRegistry — lazy pack-index loading', () => {
   describe('Given two healthy packs', () => {
     describe('When createPackRegistry is called and nothing else', () => {
-      it('Then no readdir and no .idx read has happened yet', async () => {
-        // Arrange
+      it('Then no readdir and no .idx read has happened yet — only the repo-settings class check and the delta-base budget config read', async () => {
+        // Arrange — construction validates the repo-settings class first,
+        // then resolves the delta-base cache's byte budget (a
+        // `core.deltaBaseCacheLimit` config read) — both hit the same warm
+        // parse cache, so the content is read once and only the mtime stat
+        // repeats — but the pack directory itself stays untouched until the
+        // registry is actually consulted.
         const ctx = await buildSeededContext();
         await writeSyntheticPack(ctx, 'lazy-cold-a', [
           { kind: 'base', type: 'blob', content: new TextEncoder().encode('a') },
@@ -877,10 +884,40 @@ describe('PackRegistry — lazy pack-index loading', () => {
         const { ctx: instrumented, calls } = instrumentedContext(ctx);
 
         // Act
-        createPackRegistry(instrumented);
+        await createPackRegistry(instrumented);
 
         // Assert
-        expect(calls()).toEqual([]);
+        expect(calls()).toEqual([
+          { method: 'stat', path: '/repo/.git/config' },
+          { method: 'readUtf8', path: '/repo/.git/config' },
+          { method: 'stat', path: '/repo/.git/config' },
+        ]);
+      });
+    });
+  });
+
+  describe('Given two healthy packs and cacheBudgets.deltaBaseCacheMaxBytes supplied', () => {
+    describe('When createPackRegistry is called and nothing else', () => {
+      it('Then only the repo-settings class check reads config — the budget option reads no configuration', async () => {
+        // Arrange — the option overrides the delta-base cache's own
+        // `core.deltaBaseCacheLimit` config read, so construction issues only
+        // the repo-settings verdict's stat + readUtf8, never the extra
+        // mtime-freshness stat the unset case pays.
+        const base = await buildSeededContext();
+        await writeSyntheticPack(base, 'lazy-cold-budget-a', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('a') },
+        ]);
+        const withBudget: Context = { ...base, cacheBudgets: { deltaBaseCacheMaxBytes: 2048 } };
+        const { ctx: instrumented, calls } = instrumentedContext(withBudget);
+
+        // Act
+        await createPackRegistry(instrumented);
+
+        // Assert
+        expect(calls()).toEqual([
+          { method: 'stat', path: '/repo/.git/config' },
+          { method: 'readUtf8', path: '/repo/.git/config' },
+        ]);
       });
     });
   });
@@ -897,7 +934,7 @@ describe('PackRegistry — lazy pack-index loading', () => {
           { kind: 'base', type: 'blob', content: new TextEncoder().encode('b') },
         ]);
         const { ctx: instrumented, calls } = instrumentedContext(ctx);
-        const sut = createPackRegistry(instrumented);
+        const sut = await createPackRegistry(instrumented);
 
         // Act
         await sut.lookup(idsA[0] as ObjectId);
@@ -925,7 +962,7 @@ describe('PackRegistry — lazy pack-index loading', () => {
           { kind: 'base', type: 'blob', content: new TextEncoder().encode('b') },
         ]);
         const { ctx: instrumented, calls } = instrumentedContext(ctx);
-        const sut = createPackRegistry(instrumented);
+        const sut = await createPackRegistry(instrumented);
 
         // Act
         await sut.lookup(idsA[0] as ObjectId);
@@ -949,7 +986,7 @@ describe('PackRegistry — lazy pack-index loading', () => {
           { kind: 'base', type: 'blob', content: new TextEncoder().encode('two') },
         ]);
         const { ctx: instrumented, calls } = instrumentedContext(ctx);
-        const sut = createPackRegistry(instrumented);
+        const sut = await createPackRegistry(instrumented);
 
         // Act
         await sut.lookup(ids[0] as ObjectId);
@@ -973,7 +1010,7 @@ describe('PackRegistry — lazy pack-index loading', () => {
           { kind: 'base', type: 'blob', content: new TextEncoder().encode('good') },
         ]);
         await writeGarbageIdx(ctx, 'lazy-membership-garbage');
-        const sut = createPackRegistry(ctx);
+        const sut = await createPackRegistry(ctx);
 
         // Act
         const packs = await sut.all();
@@ -991,7 +1028,7 @@ describe('PackRegistry — lazy pack-index loading', () => {
           { kind: 'base', type: 'blob', content: new TextEncoder().encode('good') },
         ]);
         await writeGarbageIdx(ctx, 'lazy-complete-garbage');
-        const sut = createPackRegistry(ctx);
+        const sut = await createPackRegistry(ctx);
 
         // Act
         const faults = await sut.indexFaults();
@@ -1012,7 +1049,7 @@ describe('PackRegistry — lazy pack-index loading', () => {
         ]);
         await writeGarbageIdx(ctx, 'lazy-warn-once-garbage');
         const warn = vi.fn();
-        const sut = createPackRegistry({ ...ctx, logger: { warn } });
+        const sut = await createPackRegistry({ ...ctx, logger: { warn } });
 
         // Act
         await sut.all();
@@ -1061,7 +1098,7 @@ describe('PackRegistry — lazy pack-index loading', () => {
             },
           },
         };
-        const sut = createPackRegistry(wrapped);
+        const sut = await createPackRegistry(wrapped);
 
         // Act
         const faults = await sut.indexFaults();
@@ -1097,7 +1134,7 @@ describe('PackRegistry — lazy pack-index loading', () => {
             },
           },
         });
-        const sut = createPackRegistry(instrumented);
+        const sut = await createPackRegistry(instrumented);
 
         // Act
         const before = await sut.all();
@@ -1132,7 +1169,7 @@ describe('PackRegistry — lazy pack-index loading', () => {
             },
           },
         };
-        const sut = createPackRegistry(wrapped);
+        const sut = await createPackRegistry(wrapped);
 
         // Act
         let caught: unknown;
@@ -1159,7 +1196,7 @@ describe('PackRegistry — lazy pack-index loading', () => {
         ]);
         const packPath = `${ctx.layout.gitDir}/objects/pack/pack-lazy-header-cross-check.pack`;
         await restampPackHeader(ctx, packPath, { objectCount: 2 });
-        const sut = createPackRegistry(ctx);
+        const sut = await createPackRegistry(ctx);
 
         // Act
         const result = await sut.health();
@@ -1205,7 +1242,7 @@ describe('PackRegistry — lazy pack-index loading', () => {
         ]);
         const id = ids[0] as ObjectId;
         const ledger = withHandleLedger(ctx);
-        const sut = createPackRegistry(ledger.ctx);
+        const sut = await createPackRegistry(ledger.ctx);
         await sut.lookup(id);
         const readdirCallsBeforeDispose = ledger.readdirCalls();
 
@@ -1229,7 +1266,7 @@ describe('PackRegistry — lazy pack-index loading', () => {
           { kind: 'base', type: 'blob', content: new TextEncoder().encode('c') },
         ]);
         const ledger = withHandleLedger(ctx);
-        const sut = createPackRegistry(ledger.ctx);
+        const sut = await createPackRegistry(ledger.ctx);
 
         // Act
         await sut.dispose();
@@ -1251,7 +1288,7 @@ describe('PackRegistry.health — per-pack accessibility', () => {
         const ctx = await buildSeededContext();
         const content = new TextEncoder().encode('health-healthy-content');
         await writeSyntheticPack(ctx, 'health-healthy', [{ kind: 'base', type: 'blob', content }]);
-        const sut = createPackRegistry(ctx);
+        const sut = await createPackRegistry(ctx);
 
         // Act
         const result = await sut.health();
@@ -1272,7 +1309,7 @@ describe('PackRegistry.health — per-pack accessibility', () => {
         await writeSyntheticPack(ctx, 'health-v99', [{ kind: 'base', type: 'blob', content }]);
         const packPath = `${ctx.layout.gitDir}/objects/pack/pack-health-v99.pack`;
         await restampPackHeader(ctx, packPath, { version: 99 });
-        const sut = createPackRegistry(ctx);
+        const sut = await createPackRegistry(ctx);
 
         // Act
         const result = await sut.health();
@@ -1302,7 +1339,7 @@ describe('PackRegistry.health — per-pack accessibility', () => {
         ]);
         const packPath = `${ctx.layout.gitDir}/objects/pack/pack-health-count-mismatch.pack`;
         await restampPackHeader(ctx, packPath, { objectCount: 2 });
-        const sut = createPackRegistry(ctx);
+        const sut = await createPackRegistry(ctx);
 
         // Act
         const result = await sut.health();
@@ -1329,7 +1366,7 @@ describe('PackRegistry.health — per-pack accessibility', () => {
         ]);
         const packPath = `${ctx.layout.gitDir}/objects/pack/pack-health-bad-magic.pack`;
         await restampPackHeader(ctx, packPath, { magic: 0x5041435a });
-        const sut = createPackRegistry(ctx);
+        const sut = await createPackRegistry(ctx);
 
         // Act
         const result = await sut.health();
@@ -1354,7 +1391,7 @@ describe('PackRegistry.health — per-pack accessibility', () => {
         const packPath = `${ctx.layout.gitDir}/objects/pack/pack-health-short-pack.pack`;
         const bytes = await ctx.fs.read(packPath);
         await ctx.fs.write(packPath, bytes.slice(0, 8));
-        const sut = createPackRegistry(ctx);
+        const sut = await createPackRegistry(ctx);
 
         // Act
         const result = await sut.health();
@@ -1387,7 +1424,7 @@ describe('PackRegistry.health — per-pack accessibility', () => {
             },
           },
         };
-        const sut = createPackRegistry(wrapped);
+        const sut = await createPackRegistry(wrapped);
 
         // Act
         const result = await sut.health();
@@ -1420,7 +1457,7 @@ describe('PackRegistry.health — per-pack accessibility', () => {
             },
           },
         };
-        const sut = createPackRegistry(wrapped);
+        const sut = await createPackRegistry(wrapped);
 
         // Act
         const result = await sut.health();
@@ -1439,7 +1476,7 @@ describe('PackRegistry.health — per-pack accessibility', () => {
         // Arrange
         const ctx = await buildSeededContext();
         await writeGarbageIdx(ctx, 'health-unparseable');
-        const sut = createPackRegistry(ctx);
+        const sut = await createPackRegistry(ctx);
 
         // Act
         const result = await sut.health();
@@ -1473,7 +1510,7 @@ describe('PackRegistry.health — per-pack accessibility', () => {
             },
           },
         };
-        const sut = createPackRegistry(wrapped);
+        const sut = await createPackRegistry(wrapped);
 
         // Act
         const result = await sut.health();
@@ -1506,7 +1543,7 @@ describe('PackRegistry.health — per-pack accessibility', () => {
             },
           },
         };
-        const sut = createPackRegistry(wrapped);
+        const sut = await createPackRegistry(wrapped);
 
         // Act
         const result = await sut.health();
@@ -1556,7 +1593,7 @@ describe('PackRegistry.health — per-pack accessibility', () => {
             },
           },
         };
-        const sut = createPackRegistry(wrapped);
+        const sut = await createPackRegistry(wrapped);
 
         // Act
         const result = await sut.health();
@@ -1581,7 +1618,7 @@ describe('PackRegistry.health — per-pack accessibility', () => {
         await writeSyntheticPack(ctx, 'health-orphan', [{ kind: 'base', type: 'blob', content }]);
         const packPath = `${ctx.layout.gitDir}/objects/pack/pack-health-orphan.pack`;
         await ctx.fs.rm(packPath);
-        const sut = createPackRegistry(ctx);
+        const sut = await createPackRegistry(ctx);
 
         // Act
         const result = await sut.health();
@@ -1603,7 +1640,7 @@ describe('PackRegistry.health — per-pack accessibility', () => {
         await writeSyntheticPack(ctx, 'health-idx-less', [{ kind: 'base', type: 'blob', content }]);
         const idxPath = `${ctx.layout.gitDir}/objects/pack/pack-health-idx-less.idx`;
         await ctx.fs.rm(idxPath);
-        const sut = createPackRegistry(ctx);
+        const sut = await createPackRegistry(ctx);
 
         // Act
         const result = await sut.health();
@@ -1635,7 +1672,7 @@ describe('PackRegistry.health — per-pack accessibility', () => {
             },
           },
         };
-        const sut = createPackRegistry(wrapped);
+        const sut = await createPackRegistry(wrapped);
 
         // Act
         let caught: unknown;
@@ -1672,7 +1709,7 @@ describe('PackRegistry.health — per-pack accessibility', () => {
             },
           },
         };
-        const sut = createPackRegistry(wrapped);
+        const sut = await createPackRegistry(wrapped);
 
         // Act
         let caught: unknown;
@@ -1708,7 +1745,7 @@ describe('PackRegistry.health — per-pack accessibility', () => {
             },
           },
         };
-        const sut = createPackRegistry(wrapped);
+        const sut = await createPackRegistry(wrapped);
 
         // Act
         let caught: unknown;
@@ -1738,7 +1775,7 @@ describe('PackRegistry.health — per-pack accessibility', () => {
         const id = ids[0] as ObjectId;
         const packPath = `${ctx.layout.gitDir}/objects/pack/pack-health-memo-warm.pack`;
         const ledger = withHandleLedger(ctx);
-        const sut = createPackRegistry(ledger.ctx);
+        const sut = await createPackRegistry(ledger.ctx);
 
         // Act
         await sut.health();
@@ -1764,7 +1801,7 @@ describe('PackRegistry.health — per-pack accessibility', () => {
         const packPath = `${ctx.layout.gitDir}/objects/pack/pack-health-no-negative-cache.pack`;
         await restampPackHeader(ctx, packPath, { version: 99 });
         const ledger = withHandleLedger(ctx);
-        const sut = createPackRegistry(ledger.ctx);
+        const sut = await createPackRegistry(ledger.ctx);
 
         // Act
         await sut.health();
@@ -1787,7 +1824,7 @@ describe('PackRegistry.health — per-pack accessibility', () => {
         ]);
         const packPath = `${ctx.layout.gitDir}/objects/pack/pack-health-all-unchanged.pack`;
         await restampPackHeader(ctx, packPath, { version: 99 });
-        const sut = createPackRegistry(ctx);
+        const sut = await createPackRegistry(ctx);
 
         // Act
         await sut.health();
@@ -1808,7 +1845,7 @@ describe('PackRegistry.health — per-pack accessibility', () => {
         const content = new TextEncoder().encode('health-disposed-content');
         await writeSyntheticPack(ctx, 'health-disposed', [{ kind: 'base', type: 'blob', content }]);
         const ledger = withHandleLedger(ctx);
-        const sut = createPackRegistry(ledger.ctx);
+        const sut = await createPackRegistry(ledger.ctx);
         await sut.all();
         await sut.dispose();
         const readdirCallsBeforeHealth = ledger.readdirCalls();
@@ -1835,7 +1872,7 @@ describe('PackRegistry.health — per-pack accessibility', () => {
           { kind: 'base', type: 'blob', content },
         ]);
         const ledger = withHandleLedger(ctx);
-        const sut = createPackRegistry(ledger.ctx);
+        const sut = await createPackRegistry(ledger.ctx);
 
         // Act
         await sut.health();
@@ -1855,7 +1892,7 @@ describe('PackRegistry.health — per-pack accessibility', () => {
         const content = new TextEncoder().encode('health-memo-content');
         await writeSyntheticPack(base, 'health-memo', [{ kind: 'base', type: 'blob', content }]);
         const ledger = withHandleLedger(base);
-        const sut = createPackRegistry(ledger.ctx);
+        const sut = await createPackRegistry(ledger.ctx);
 
         // Act
         await sut.health();
@@ -1882,7 +1919,7 @@ describe('PackRegistry.health — per-pack accessibility', () => {
         const packPath = `${ctx.layout.gitDir}/objects/pack/pack-health-stability.pack`;
         const goodPackBytes = await ctx.fs.read(packPath);
         await restampPackHeader(ctx, packPath, { version: 99 });
-        const sut = createPackRegistry(ctx);
+        const sut = await createPackRegistry(ctx);
 
         // Act
         const before = await sut.health();
@@ -1911,7 +1948,7 @@ describe('PackRegistry.health — per-pack accessibility', () => {
         const idxPath = `${ctx.layout.gitDir}/objects/pack/pack-health-refresh.idx`;
         const goodIdxBytes = await ctx.fs.read(idxPath);
         await ctx.fs.write(idxPath, garbageIdxBytes());
-        const sut = createPackRegistry(ctx);
+        const sut = await createPackRegistry(ctx);
 
         // Act
         const before = await sut.health();
@@ -1943,7 +1980,7 @@ describe('PackRegistry.health — per-pack accessibility', () => {
         const badPackPath = `${ctx.layout.gitDir}/objects/pack/pack-health-two-unusable-pack.pack`;
         await restampPackHeader(ctx, badPackPath, { version: 99 });
         await writeGarbageIdx(ctx, 'health-two-unusable-idx');
-        const sut = createPackRegistry(ctx);
+        const sut = await createPackRegistry(ctx);
 
         // Act
         const result = await sut.health();
@@ -2045,7 +2082,7 @@ describe('RegisteredPack.offsetTable — negative trailerStart guard', () => {
             },
           },
         };
-        const registry = createPackRegistry(wrappedCtx);
+        const registry = await createPackRegistry(wrappedCtx);
         const packs = await registry.all();
         const pack = packs[0]!;
         const sut = pack.offsetTable;
@@ -2094,7 +2131,7 @@ describe('RegisteredPack.offsetTable — zero trailerStart boundary', () => {
             },
           },
         };
-        const registry = createPackRegistry(wrappedCtx);
+        const registry = await createPackRegistry(wrappedCtx);
         const packs = await registry.all();
         const pack = packs[0]!;
         const sut = pack.offsetTable;
@@ -2121,7 +2158,7 @@ describe('RegisteredPack.offsetTable', () => {
           { kind: 'base', type: 'blob', content: content1 },
           { kind: 'base', type: 'blob', content: content2 },
         ]);
-        const registry = createPackRegistry(ctx);
+        const registry = await createPackRegistry(ctx);
         const packs = await registry.all();
         const pack = packs[0]!;
 
@@ -2138,7 +2175,7 @@ describe('RegisteredPack.offsetTable', () => {
             },
           },
         };
-        const registry2 = createPackRegistry(countingCtx);
+        const registry2 = await createPackRegistry(countingCtx);
         const packs2 = await registry2.all();
         const pack2 = packs2[0]!;
         // Stat was called during loadPack (for readBoundedIdx); reset the counter.
@@ -2166,7 +2203,7 @@ describe('RegisteredPack.offsetTable', () => {
           { kind: 'base', type: 'blob', content: content1 },
           { kind: 'base', type: 'blob', content: content2 },
         ]);
-        const registry = createPackRegistry(ctx);
+        const registry = await createPackRegistry(ctx);
         const packs = await registry.all();
         const pack = packs[0]!;
         const sut = pack.offsetTable;
@@ -2205,7 +2242,7 @@ describe('RegisteredPack.offsetTable', () => {
             },
           },
         };
-        const registry = createPackRegistry(countingCtx);
+        const registry = await createPackRegistry(countingCtx);
         const packs = await registry.all();
         const pack = packs[0]!;
         // Stat was called during loadPack (for readBoundedIdx); reset the counter
@@ -2250,7 +2287,7 @@ describe('RegisteredPack.offsetTable', () => {
             },
           },
         };
-        const registry = createPackRegistry(wrappedCtx);
+        const registry = await createPackRegistry(wrappedCtx);
         const packs = await registry.all();
         const pack = packs[0]!;
         const sut = pack.offsetTable;
@@ -2288,7 +2325,7 @@ describe('RegisteredPack.readSlice — persistent handle (A4)', () => {
         const ctx = await buildSeededContext();
         const content = new TextEncoder().encode('reuse-content');
         await writeSyntheticPack(ctx, 'reuse-pack', [{ kind: 'base', type: 'blob', content }]);
-        const registry = createPackRegistry(ctx);
+        const registry = await createPackRegistry(ctx);
         const pack = (await registry.all())[0]!;
         const openSpy = vi.spyOn(ctx.fs, 'openWithNoFollow');
 
@@ -2309,7 +2346,7 @@ describe('RegisteredPack.readSlice — persistent handle (A4)', () => {
         const ctx = await buildSeededContext();
         const content = new TextEncoder().encode('short-read-content');
         await writeSyntheticPack(ctx, 'short-read-pack', [{ kind: 'base', type: 'blob', content }]);
-        const registry = createPackRegistry(ctx);
+        const registry = await createPackRegistry(ctx);
         const pack = (await registry.all())[0]!;
         const table = await pack.offsetTable();
         const entryOffset = expectSortedOffsets(table)[0]!;
@@ -2343,7 +2380,7 @@ describe('RegisteredPack.readSlice — persistent handle (A4)', () => {
             },
           },
         };
-        const registry = createPackRegistry(wrapped);
+        const registry = await createPackRegistry(wrapped);
         const pack = (await registry.all())[0]!;
         const table = await pack.offsetTable();
         const entryOffset = expectSortedOffsets(table)[0]!;
@@ -2388,7 +2425,7 @@ describe('RegisteredPack.readSlice — non-UNSUPPORTED_OPERATION failure', () =>
             },
           },
         };
-        const registry = createPackRegistry(wrapped);
+        const registry = await createPackRegistry(wrapped);
         const pack = (await registry.all())[0]!;
 
         // Act
@@ -2417,7 +2454,7 @@ describe('RegisteredPack retired reads', () => {
         const content = new TextEncoder().encode('retired-read');
         await writeSyntheticPack(ctx, 'retired-read', [{ kind: 'base', type: 'blob', content }]);
         const ledger = withHandleLedger(ctx);
-        const registry = createPackRegistry(ledger.ctx);
+        const registry = await createPackRegistry(ledger.ctx);
         const pack = (await registry.all())[0]!;
         await pack.readSlice(0, 4);
         await pack.close();
@@ -2442,7 +2479,7 @@ describe('RegisteredPack retired reads', () => {
         const ctx = await buildSeededContext();
         const content = new TextEncoder().encode('drain-in-flight');
         await writeSyntheticPack(ctx, 'drain-in-flight', [{ kind: 'base', type: 'blob', content }]);
-        const registry = createPackRegistry(ctx);
+        const registry = await createPackRegistry(ctx);
         const pack = (await registry.all())[0]!;
 
         // Act — fire the read, close immediately, then await the read
@@ -2469,7 +2506,7 @@ describe('HandleLedger.outstanding', () => {
           { kind: 'base', type: 'blob', content },
         ]);
         const sut = withHandleLedger(ctx);
-        const registry = createPackRegistry(sut.ctx);
+        const registry = await createPackRegistry(sut.ctx);
         const pack = (await registry.all())[0]!;
         await pack.readSlice(0, 4);
         const beforeClose = sut.outstanding();
@@ -2495,7 +2532,7 @@ describe('RegisteredPack.close', () => {
         await writeSyntheticPack(ctx, 'close-idempotent', [
           { kind: 'base', type: 'blob', content },
         ]);
-        const registry = createPackRegistry(ctx);
+        const registry = await createPackRegistry(ctx);
         const pack = (await registry.all())[0]!;
         await pack.readSlice(0, 4);
 
@@ -2517,7 +2554,7 @@ describe('RegisteredPack.close', () => {
         await writeSyntheticPack(ctx, 'close-never-opened', [
           { kind: 'base', type: 'blob', content },
         ]);
-        const registry = createPackRegistry(ctx);
+        const registry = await createPackRegistry(ctx);
         const pack = (await registry.all())[0]!;
         const openSpy = vi.spyOn(ctx.fs, 'openWithNoFollow');
 
@@ -2541,7 +2578,7 @@ describe('PackRegistry.refresh', () => {
           { kind: 'base', type: 'blob', content: new TextEncoder().encode('r') },
         ]);
         const ledger = withHandleLedger(ctx);
-        const registry = createPackRegistry(ledger.ctx);
+        const registry = await createPackRegistry(ledger.ctx);
         const packs = await registry.all();
         await packs[0]!.readSlice(0, 4);
 
@@ -2565,7 +2602,7 @@ describe('Given a registry whose delta-base cache holds an entry from an OFS cha
         { kind: 'base', type: 'blob', content: new TextEncoder().encode('base') },
         { kind: 'ofs-delta', baseIndex: 0, targetContent: new TextEncoder().encode('tip') },
       ]);
-      const registry = getPackRegistry(ctx);
+      const registry = await getPackRegistry(ctx);
       await readObject(ctx, ids[1] as ObjectId);
       expect(registry.deltaBaseCache.entryCount).toBeGreaterThan(0);
 
@@ -2585,7 +2622,7 @@ describe('Given a registry whose delta-base cache holds an entry from an OFS cha
         { kind: 'base', type: 'blob', content: new TextEncoder().encode('base') },
         { kind: 'ofs-delta', baseIndex: 0, targetContent: new TextEncoder().encode('tip') },
       ]);
-      const registry = getPackRegistry(ctx);
+      const registry = await getPackRegistry(ctx);
       await readObject(ctx, ids[1] as ObjectId);
       expect(registry.deltaBaseCache.entryCount).toBeGreaterThan(0);
 
@@ -2607,14 +2644,105 @@ describe('Given the delta-base cache is created for a fresh registry', () => {
       createLruCacheSpy.mockClear();
 
       // Act
-      createPackRegistry(ctx);
+      await createPackRegistry(ctx);
 
       // Assert
       const deltaBaseCall = createLruCacheSpy.mock.calls.find(
-        (call) => call[0] === ctx.deltaCache.maxSize,
+        (call) => call[0] === GIT_DEFAULT_DELTA_BASE_CACHE_LIMIT_BYTES,
       );
       expect(deltaBaseCall?.[1]).toBeDefined();
       expect(deltaBaseCall?.[1]).toBeGreaterThan(0);
+    });
+  });
+});
+
+describe('Given core.deltaBaseCacheLimit / cacheBudgets.deltaBaseCacheMaxBytes resolve the budget', () => {
+  describe('When createPackRegistry resolves', () => {
+    it.each([
+      {
+        label: 'a core.deltaBaseCacheLimit config key',
+        config: '[core]\n\tdeltaBaseCacheLimit = 4m\n',
+        cacheBudgets: undefined,
+        expected: 4 * 1024 * 1024,
+      },
+      {
+        label: 'an explicit cacheBudgets option, over a conflicting key',
+        config: '[core]\n\tdeltaBaseCacheLimit = 4m\n',
+        cacheBudgets: { deltaBaseCacheMaxBytes: 2048 },
+        expected: 2048,
+      },
+      {
+        label: 'neither set — the 96 MiB git default',
+        config: '',
+        cacheBudgets: undefined,
+        expected: GIT_DEFAULT_DELTA_BASE_CACHE_LIMIT_BYTES,
+      },
+    ])(
+      'Then deltaBaseCache.maxSize resolves from $label',
+      async ({ config, cacheBudgets, expected }) => {
+        // Arrange
+        const base = await buildSeededContext();
+        if (config !== '') await base.fs.writeUtf8(`${base.layout.gitDir}/config`, config);
+        const ctx: Context = cacheBudgets === undefined ? base : { ...base, cacheBudgets };
+
+        // Act
+        const sut = await createPackRegistry(ctx);
+
+        // Assert
+        expect(sut.deltaBaseCache.maxSize).toBe(expected);
+      },
+    );
+  });
+});
+
+describe('Given a malformed core.maxTreeDepth', () => {
+  describe('When createPackRegistry is called', () => {
+    it('Then throws CONFIG_BAD_NUMERIC_VALUE before scanning the pack directory', async () => {
+      // Arrange
+      const base = await buildSeededContext();
+      await base.fs.writeUtf8(`${base.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth = 2.5\n');
+      let readdirCalled = false;
+      const ctx: Context = {
+        ...base,
+        fs: {
+          ...base.fs,
+          readdir: async (path: string) => {
+            readdirCalled = true;
+            return base.fs.readdir(path);
+          },
+        },
+      };
+
+      // Act
+      let caught: unknown;
+      try {
+        await createPackRegistry(ctx);
+        expect.unreachable();
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect((caught as TsgitError).data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+      expect(readdirCalled).toBe(false);
+    });
+  });
+});
+
+describe('Given a freshly constructed registry', () => {
+  describe('When refresh() runs after construction', () => {
+    it('Then readConfig ran exactly once — only during construction, never on refresh', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const spy = vi.spyOn(configReadMod, 'readConfig');
+
+      // Act
+      const sut = await createPackRegistry(ctx);
+      sut.refresh();
+
+      // Assert
+      expect(spy).toHaveBeenCalledTimes(1);
+      spy.mockRestore();
     });
   });
 });
@@ -2632,7 +2760,7 @@ describe('PackRegistry.dispose', () => {
           { kind: 'base', type: 'blob', content: new TextEncoder().encode('b') },
         ]);
         const ledger = withHandleLedger(ctx);
-        const registry = createPackRegistry(ledger.ctx);
+        const registry = await createPackRegistry(ledger.ctx);
         const packs = await registry.all();
         for (const pack of packs) {
           await pack.readSlice(0, 4);
@@ -2671,7 +2799,7 @@ describe('PackRegistry.dispose', () => {
             },
           },
         };
-        const registry = createPackRegistry(wrapped);
+        const registry = await createPackRegistry(wrapped);
         const pack = (await registry.all())[0]!;
         await pack.readSlice(0, 4);
 
@@ -2696,7 +2824,7 @@ describe('PackRegistry.dispose', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const ledger = withHandleLedger(ctx);
-        const registry = createPackRegistry(ledger.ctx);
+        const registry = await createPackRegistry(ledger.ctx);
 
         // Act
         await registry.dispose();
@@ -2736,7 +2864,7 @@ describe('PackRegistry.dispose', () => {
             },
           },
         };
-        const registry = createPackRegistry(slowClose);
+        const registry = await createPackRegistry(slowClose);
         const pack = (await registry.all())[0]!;
         await pack.readSlice(0, 4);
 
@@ -2781,7 +2909,7 @@ describe('PackRegistry.settleRefresh', () => {
             },
           },
         };
-        const registry = createPackRegistry(slowClose);
+        const registry = await createPackRegistry(slowClose);
         const pack = (await registry.all())[0]!;
         await pack.readSlice(0, 4);
 
@@ -2806,7 +2934,7 @@ describe('PackRegistry.settleRefresh', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const ledger = withHandleLedger(ctx);
-        const registry = createPackRegistry(ledger.ctx);
+        const registry = await createPackRegistry(ledger.ctx);
 
         // Act
         await registry.settleRefresh();
@@ -2829,7 +2957,7 @@ describe('PackRegistry.refresh — after dispose', () => {
           { kind: 'base', type: 'blob', content: new TextEncoder().encode('r') },
         ]);
         const ledger = withHandleLedger(ctx);
-        const registry = createPackRegistry(ledger.ctx);
+        const registry = await createPackRegistry(ledger.ctx);
         const pack = (await registry.all())[0]!;
         await pack.readSlice(0, 4);
         await registry.dispose();
@@ -2854,7 +2982,7 @@ describe('PackRegistry — single-flight scan', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const ledger = withHandleLedger(ctx);
-        const sut = createPackRegistry(ledger.ctx);
+        const sut = await createPackRegistry(ledger.ctx);
 
         // Act
         let thrown: unknown;
@@ -2884,7 +3012,7 @@ describe('PackRegistry — single-flight scan', () => {
           { kind: 'base', type: 'blob', content: new TextEncoder().encode('b') },
         ]);
         const ledger = withHandleLedger(ctx);
-        const sut = createPackRegistry(ledger.ctx);
+        const sut = await createPackRegistry(ledger.ctx);
 
         // Act
         const results = await Promise.all(Array.from({ length: 8 }, () => sut.all()));
@@ -2910,7 +3038,7 @@ describe('PackRegistry — single-flight scan', () => {
           { kind: 'base', type: 'blob', content: new TextEncoder().encode('b') },
         ]);
         const ledger = withHandleLedger(ctx);
-        const sut = createPackRegistry(ledger.ctx);
+        const sut = await createPackRegistry(ledger.ctx);
         const id = idsA[0] as ObjectId;
 
         // Act
@@ -2938,7 +3066,7 @@ describe('PackRegistry — single-flight scan', () => {
           { kind: 'base', type: 'blob', content: new TextEncoder().encode('b') },
         ]);
         const ledger = withHandleLedger(ctx);
-        const sut = createPackRegistry(ledger.ctx);
+        const sut = await createPackRegistry(ledger.ctx);
 
         // Act — every one of the 8 racing callers reads every pack in its own
         // result: pre-fix, each caller built its own set and opened its own
@@ -2965,7 +3093,7 @@ describe('PackRegistry — single-flight scan', () => {
           { kind: 'base', type: 'blob', content: new TextEncoder().encode('r') },
         ]);
         const ledger = withHandleLedger(ctx, { gateReaddir: true });
-        const sut = createPackRegistry(ledger.ctx);
+        const sut = await createPackRegistry(ledger.ctx);
 
         // Act
         const p1 = sut.all();
@@ -3000,7 +3128,7 @@ describe('PackRegistry — single-flight scan', () => {
           { kind: 'base', type: 'blob', content: new TextEncoder().encode('d') },
         ]);
         const ledger = withHandleLedger(ctx, { gateReaddir: true });
-        const sut = createPackRegistry(ledger.ctx);
+        const sut = await createPackRegistry(ledger.ctx);
         const order: string[] = [];
 
         // Act
@@ -3034,7 +3162,7 @@ describe('PackRegistry — single-flight scan', () => {
           { kind: 'base', type: 'blob', content: new TextEncoder().encode('t') },
         ]);
         const ledger = withHandleLedger(ctx, { gateReaddir: true });
-        const sut = createPackRegistry(ledger.ctx);
+        const sut = await createPackRegistry(ledger.ctx);
 
         // Act
         const p1 = sut.all();
@@ -3069,7 +3197,7 @@ describe('PackRegistry — single-flight scan', () => {
           { kind: 'base', type: 'blob', content: new TextEncoder().encode('i') },
         ]);
         const ledger = withHandleLedger(ctx, { gateReaddir: true });
-        const sut = createPackRegistry(ledger.ctx);
+        const sut = await createPackRegistry(ledger.ctx);
         const err = permissionDenied('/fake/pack/dir');
 
         // Act
@@ -3109,7 +3237,7 @@ describe('PackRegistry — single-flight scan', () => {
           { kind: 'base', type: 'blob', content: new TextEncoder().encode('x') },
         ]);
         const ledger = withHandleLedger(ctx, { gateReaddir: true });
-        const sut = createPackRegistry(ledger.ctx);
+        const sut = await createPackRegistry(ledger.ctx);
         const err = permissionDenied('/fake/pack/dir');
 
         // Act
@@ -3137,7 +3265,7 @@ describe('PackRegistry — single-flight scan', () => {
           { kind: 'base', type: 'blob', content: new TextEncoder().encode('u') },
         ]);
         const ledger = withHandleLedger(ctx, { gateReaddir: true });
-        const sut = createPackRegistry(ledger.ctx);
+        const sut = await createPackRegistry(ledger.ctx);
         const err = permissionDenied('/fake/pack/dir');
         let unhandled = false;
         const onUnhandledRejection = (): void => {
@@ -3176,7 +3304,7 @@ describe('PackRegistry — read path after dispose', () => {
           { kind: 'base', type: 'blob', content: new TextEncoder().encode('c') },
         ]);
         const ledger = withHandleLedger(ctx);
-        const sut = createPackRegistry(ledger.ctx);
+        const sut = await createPackRegistry(ledger.ctx);
         await sut.dispose();
 
         // Act
@@ -3203,7 +3331,7 @@ describe('PackRegistry — read path after dispose', () => {
           { kind: 'base', type: 'blob', content: new TextEncoder().encode('w') },
         ]);
         const ledger = withHandleLedger(ctx);
-        const sut = createPackRegistry(ledger.ctx);
+        const sut = await createPackRegistry(ledger.ctx);
         const before = await sut.all();
         await before[0]!.readSlice(0, 4);
         await sut.dispose();
@@ -3226,7 +3354,7 @@ describe('PackRegistry — read path after dispose', () => {
         const ctx = await buildSeededContext();
         await writeMidxBytes(ctx, buildMidx(healthyMidxSpec()));
         const ledger = withHandleLedger(ctx);
-        const sut = createPackRegistry(ledger.ctx);
+        const sut = await createPackRegistry(ledger.ctx);
         await sut.assertLoadable();
 
         // Act
@@ -3246,7 +3374,7 @@ describe('PackRegistry — read path after dispose', () => {
         const ctx = await buildSeededContext();
         await writeMidxBytes(ctx, buildMidx(healthyMidxSpec()));
         const { ctx: instrumented, calls } = instrumentedContext(ctx);
-        const sut = createPackRegistry(instrumented);
+        const sut = await createPackRegistry(instrumented);
         await sut.dispose();
 
         // Act
@@ -3279,7 +3407,7 @@ describe('PackRegistry.dispose — idempotence', () => {
           { kind: 'base', type: 'blob', content: new TextEncoder().encode('b') },
         ]);
         const ledger = withHandleLedger(ctx);
-        const sut = createPackRegistry(ledger.ctx);
+        const sut = await createPackRegistry(ledger.ctx);
         const packs = await sut.all();
         await Promise.all(packs.map((pack) => pack.readSlice(0, 4)));
         await sut.dispose();
@@ -3318,7 +3446,7 @@ describe('RegisteredPack.readSlice — errno-mapped UNSUPPORTED_OPERATION', () =
             },
           },
         });
-        const sut = createPackRegistry(ledger.ctx);
+        const sut = await createPackRegistry(ledger.ctx);
         const packs = await sut.all();
 
         // Act
@@ -3358,7 +3486,7 @@ describe('RegisteredPack.readSlice — errno-mapped UNSUPPORTED_OPERATION', () =
             },
           },
         });
-        const registry = createPackRegistry(ledger.ctx);
+        const registry = await createPackRegistry(ledger.ctx);
         const packs = await registry.all();
         const sut = packs[0]!;
         let firstError: unknown;
@@ -3404,7 +3532,7 @@ describe('PackRegistry.lookup — header gate', () => {
         const id = ids[0] as ObjectId;
         const packPath = `${ctx.layout.gitDir}/objects/pack/pack-v3-header.pack`;
         await restampPackHeader(ctx, packPath, { version: 3 });
-        const sut = createPackRegistry(ctx);
+        const sut = await createPackRegistry(ctx);
 
         // Act
         const hit = await sut.lookup(id);
@@ -3433,7 +3561,7 @@ describe('PackRegistry.lookup — header gate', () => {
         await restampPackHeader(ctx, packPath, { version: 99 });
         const warn = vi.fn();
         const ledger = withHandleLedger({ ...ctx, logger: { warn } });
-        const sut = createPackRegistry(ledger.ctx);
+        const sut = await createPackRegistry(ledger.ctx);
         const absentId = 'a'.repeat(40) as ObjectId;
 
         // Act
@@ -3559,7 +3687,7 @@ describe('PackRegistry.lookup — header gate', () => {
         await restampPackHeader(ctx, packPath, { version: 99 });
         const warn = vi.fn();
         const ledger = withHandleLedger({ ...ctx, logger: { warn } });
-        const sut = createPackRegistry(ledger.ctx);
+        const sut = await createPackRegistry(ledger.ctx);
 
         // Act
         await sut.lookup(id);
@@ -3587,7 +3715,7 @@ describe('PackRegistry.lookup — header gate', () => {
         const id = ids[0] as ObjectId;
         const packPath = `${ctx.layout.gitDir}/objects/pack/pack-positive-memo.pack`;
         const ledger = withHandleLedger(ctx);
-        const sut = createPackRegistry(ledger.ctx);
+        const sut = await createPackRegistry(ledger.ctx);
 
         // Act
         await sut.lookup(id);
@@ -3615,7 +3743,7 @@ describe('PackRegistry.lookup — header gate', () => {
         const packPath = `${ctx.layout.gitDir}/objects/pack/pack-bad-magic.pack`;
         await restampPackHeader(ctx, packPath, { magic: 0x50414358 }); // 'PACX'
         const warn = vi.fn();
-        const sut = createPackRegistry({ ...ctx, logger: { warn } });
+        const sut = await createPackRegistry({ ...ctx, logger: { warn } });
 
         // Act
         const result = await sut.lookup(id);
@@ -3643,7 +3771,7 @@ describe('PackRegistry.lookup — header gate', () => {
         const bytes = await ctx.fs.read(packPath);
         await ctx.fs.write(packPath, bytes.subarray(0, 8));
         const warn = vi.fn();
-        const sut = createPackRegistry({ ...ctx, logger: { warn } });
+        const sut = await createPackRegistry({ ...ctx, logger: { warn } });
 
         // Act
         const result = await sut.lookup(id);
@@ -3670,7 +3798,7 @@ describe('PackRegistry.lookup — header gate', () => {
         const packPath = `${ctx.layout.gitDir}/objects/pack/pack-count-mismatch.pack`;
         await restampPackHeader(ctx, packPath, { objectCount: 2 });
         const warn = vi.fn();
-        const sut = createPackRegistry({ ...ctx, logger: { warn } });
+        const sut = await createPackRegistry({ ...ctx, logger: { warn } });
 
         // Act
         const result = await sut.lookup(id);
@@ -3789,7 +3917,7 @@ describe('PackRegistry.lookup — header gate', () => {
             },
           },
         };
-        const sut = createPackRegistry(wrapped);
+        const sut = await createPackRegistry(wrapped);
 
         // Act
         let caught: unknown;
@@ -3844,7 +3972,7 @@ describe('PackRegistry.lookup — header gate', () => {
             },
           },
         });
-        const sut = createPackRegistry(ledger.ctx);
+        const sut = await createPackRegistry(ledger.ctx);
 
         // Act
         const hit = await sut.lookup(oidA);
@@ -3947,7 +4075,7 @@ describe('PackRegistry — multi-pack-index degradation', () => {
           { kind: 'base', type: 'blob', content: new TextEncoder().encode('escapes') },
         ]);
         await writeMidxBytes(ctx, flipMidxSignature(buildMidx(healthyMidxSpec())));
-        const sut = createPackRegistry(ctx);
+        const sut = await createPackRegistry(ctx);
 
         // Act
         let caught: unknown;
@@ -4006,7 +4134,7 @@ describe('PackRegistry — multi-pack-index degradation', () => {
           ]);
           await writeMidxBytes(ctx, corrupt(buildMidx(healthyMidxSpec())));
           const warn = vi.fn();
-          const sut = createPackRegistry({ ...ctx, logger: { warn } });
+          const sut = await createPackRegistry({ ...ctx, logger: { warn } });
 
           // Act
           const hit = await sut.lookup(ids[0] as ObjectId);
@@ -4050,7 +4178,7 @@ describe('PackRegistry — multi-pack-index degradation', () => {
               path === flatPath ? Promise.reject(makeError(path)) : ctx.fs.read(path),
           },
         };
-        const sut = createPackRegistry(wrapped);
+        const sut = await createPackRegistry(wrapped);
 
         // Act
         const hit = await sut.lookup(ids[0] as ObjectId);
@@ -4081,7 +4209,7 @@ describe('PackRegistry — multi-pack-index degradation', () => {
               path === flatPath ? Promise.reject(fault) : ctx.fs.read(path),
           },
         };
-        const sut = createPackRegistry(wrapped);
+        const sut = await createPackRegistry(wrapped);
 
         // Act
         let caught: unknown;
@@ -4168,8 +4296,8 @@ describe('PackRegistry — multi-pack-index degradation', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const id = 'c'.repeat(40) as ObjectId;
-        const cached = new TextEncoder().encode('blob 5\0hello');
-        ctx.deltaCache.set(id, cached, cached.length);
+        const cachedContent = new TextEncoder().encode('hello');
+        ctx.deltaCache.set(id, { type: 'blob', content: cachedContent }, cachedContent.length);
         await writeMidxBytes(ctx, flipMidxSignature(buildMidx(healthyMidxSpec())));
 
         // Act + Assert
@@ -4185,7 +4313,7 @@ describe('PackRegistry — multi-pack-index degradation', () => {
         const ctx = await buildSeededContext();
         await writeMidxBytes(ctx, flipMidxSignature(buildMidx(healthyMidxSpec())));
         const { ctx: instrumented, calls } = instrumentedContext(ctx);
-        const sut = createPackRegistry(instrumented);
+        const sut = await createPackRegistry(instrumented);
 
         // Act
         for (let i = 0; i < 3; i += 1) {
@@ -4210,7 +4338,7 @@ describe('PackRegistry — multi-pack-index degradation', () => {
           { kind: 'base', type: 'blob', content: new TextEncoder().encode('recover') },
         ]);
         await writeMidxBytes(ctx, flipMidxSignature(buildMidx(healthyMidxSpec())));
-        const sut = createPackRegistry(ctx);
+        const sut = await createPackRegistry(ctx);
         await expectMidxSignatureRejection(sut.lookup(ids[0] as ObjectId));
 
         // Act — repair in place, no refresh()
@@ -4231,7 +4359,7 @@ describe('PackRegistry — multi-pack-index degradation', () => {
         const ids = await writeSyntheticPack(ctx, 'midx-one-generation', [
           { kind: 'base', type: 'blob', content: new TextEncoder().encode('gen') },
         ]);
-        const sut = createPackRegistry(ctx);
+        const sut = await createPackRegistry(ctx);
         const before = await sut.lookup(ids[0] as ObjectId);
         await writeMidxBytes(ctx, flipMidxSignature(buildMidx(healthyMidxSpec())));
 
@@ -4288,7 +4416,7 @@ describe('PackRegistry — multi-pack-index degradation', () => {
         const ctx = await buildSeededContext();
         await writeMidxBytes(ctx, buildMidx(healthyMidxSpec()));
         const { ctx: instrumented, calls } = instrumentedContext(ctx);
-        const sut = createPackRegistry(instrumented);
+        const sut = await createPackRegistry(instrumented);
         await sut.assertLoadable();
 
         // Act
@@ -4317,7 +4445,7 @@ describe('PackRegistry — multi-pack-index degradation', () => {
         ]);
         await writeMidxBytes(ctx, buildMidx(healthyMidxSpec()));
         const { ctx: instrumented, calls } = instrumentedContext(ctx);
-        const sut = createPackRegistry(instrumented);
+        const sut = await createPackRegistry(instrumented);
         await sut.all();
 
         // Act
@@ -4345,7 +4473,7 @@ describe('PackRegistry — multi-pack-index degradation', () => {
         ]);
         await writeMidxBytes(ctx, buildMidx(healthyMidxSpec()));
         const ledger = withHandleLedger(ctx);
-        const sut = createPackRegistry(ledger.ctx);
+        const sut = await createPackRegistry(ledger.ctx);
         const pack = (await sut.all())[0]!;
         await pack.readSlice(0, 4);
 
@@ -4367,7 +4495,7 @@ describe('PackRegistry — multi-pack-index degradation', () => {
           { kind: 'base', type: 'blob', content: new TextEncoder().encode('regress') },
         ]);
         const { ctx: instrumented, calls } = instrumentedContext(ctx);
-        const sut = createPackRegistry(instrumented);
+        const sut = await createPackRegistry(instrumented);
 
         // Act
         const hit = await sut.lookup(ids[0] as ObjectId);
@@ -4392,7 +4520,7 @@ describe('PackRegistry.midxHealth() — unresolved-pack reporting', () => {
         // Arrange
         const ctx = await buildSeededContext();
         await writeMidxBytes(ctx, buildMidx(healthyMidxSpec({ packNames: ['pack-x y'] })));
-        const sut = createPackRegistry(ctx);
+        const sut = await createPackRegistry(ctx);
 
         // Act
         const health = await sut.midxHealth();
@@ -4410,7 +4538,7 @@ describe('PackRegistry.midxHealth() — unresolved-pack reporting', () => {
         // Arrange
         const ctx = await buildSeededContext();
         await writeMidxBytes(ctx, buildMidx(healthyMidxSpec({ packNames: ['pack-x~y'] })));
-        const sut = createPackRegistry(ctx);
+        const sut = await createPackRegistry(ctx);
 
         // Act
         const health = await sut.midxHealth();
@@ -4428,7 +4556,7 @@ describe('PackRegistry.midxHealth() — unresolved-pack reporting', () => {
         // Arrange
         const ctx = await buildSeededContext();
         await writeMidxBytes(ctx, buildMidx(healthyMidxSpec({ packNames: ['pack-xy'] })));
-        const sut = createPackRegistry(ctx);
+        const sut = await createPackRegistry(ctx);
 
         // Act
         const health = await sut.midxHealth();
@@ -4446,7 +4574,7 @@ describe('PackRegistry.midxHealth() — unresolved-pack reporting', () => {
         // Arrange
         const ctx = await buildSeededContext();
         await writeMidxBytes(ctx, buildMidx(healthyMidxSpec({ packNames: ['pack-x\\y'] })));
-        const sut = createPackRegistry(ctx);
+        const sut = await createPackRegistry(ctx);
 
         // Act
         const health = await sut.midxHealth();
@@ -4465,7 +4593,7 @@ describe('PackRegistry.midxHealth() — unresolved-pack reporting', () => {
         const ctx = await buildSeededContext();
         const name = 'a'.repeat(256);
         await writeMidxBytes(ctx, buildMidx(healthyMidxSpec({ packNames: [name] })));
-        const sut = createPackRegistry(ctx);
+        const sut = await createPackRegistry(ctx);
 
         // Act
         const health = await sut.midxHealth();
@@ -4487,7 +4615,7 @@ describe('PackRegistry.midxHealth() — unresolved-pack reporting', () => {
           ctx,
           buildMidx(healthyMidxSpec({ packNames: ['pack-first.idx', 'pack-second.idx'] })),
         );
-        const sut = createPackRegistry(ctx);
+        const sut = await createPackRegistry(ctx);
 
         // Act
         const health = await sut.midxHealth();
@@ -4525,7 +4653,7 @@ describe('PackRegistry.midxHealth() — unresolved-pack reporting', () => {
                 : ctx.fs.readSlice(path, offset, length),
           },
         };
-        const sut = createPackRegistry(wrapped);
+        const sut = await createPackRegistry(wrapped);
 
         // Act
         let caught: unknown;
@@ -4596,7 +4724,7 @@ describe('PackRegistry.lookup — multi-pack-index authority', () => {
         const idA = await writeSingleBlobPack(noMidx, 'A', 'same-answer-a');
         const idB = await writeSingleBlobPack(noMidx, 'B', 'same-answer-b');
         const idC = await writeSingleBlobPack(noMidx, 'C', 'same-answer-c');
-        const control = createPackRegistry(noMidx);
+        const control = await createPackRegistry(noMidx);
 
         const withMidx = await buildSeededContext();
         await writeSingleBlobPack(withMidx, 'A', 'same-answer-a');
@@ -4615,7 +4743,7 @@ describe('PackRegistry.lookup — multi-pack-index authority', () => {
             }),
           ),
         );
-        const sut = createPackRegistry(withMidx);
+        const sut = await createPackRegistry(withMidx);
 
         // Act + Assert
         for (const id of [idA, idB, idC]) {
@@ -4650,7 +4778,7 @@ describe('PackRegistry.lookup — multi-pack-index authority', () => {
           ),
         );
         const { ctx: instrumented, calls } = instrumentedContext(ctx);
-        const sut = createPackRegistry(instrumented);
+        const sut = await createPackRegistry(instrumented);
 
         // Act
         const hit = await sut.lookup(idB);
@@ -4687,7 +4815,7 @@ describe('PackRegistry.lookup — multi-pack-index authority', () => {
             }),
           ),
         );
-        const sut = createPackRegistry(ctx);
+        const sut = await createPackRegistry(ctx);
 
         // Act
         const hit = await sut.lookup(dupId);
@@ -4720,7 +4848,7 @@ describe('PackRegistry.lookup — multi-pack-index authority', () => {
           ),
         );
         const warn = vi.fn();
-        const sut = createPackRegistry({ ...ctx, logger: { warn } });
+        const sut = await createPackRegistry({ ...ctx, logger: { warn } });
 
         // Act
         const first = await sut.lookup(idsB[0] as ObjectId);
@@ -4768,7 +4896,7 @@ describe('PackRegistry.lookup — multi-pack-index authority', () => {
             }),
           ),
         );
-        const sut = createPackRegistry(ctx);
+        const sut = await createPackRegistry(ctx);
 
         // Act
         const hit = await sut.lookup(idsB[0] as ObjectId);
@@ -4801,7 +4929,7 @@ describe('PackRegistry.lookup — multi-pack-index authority', () => {
           ),
         );
         const { ctx: instrumented, calls } = instrumentedContext(ctx);
-        const sut = createPackRegistry(instrumented);
+        const sut = await createPackRegistry(instrumented);
 
         // Act
         const hit = await sut.lookup(dupId);
@@ -4828,7 +4956,7 @@ describe('PackRegistry.lookup — multi-pack-index authority', () => {
         await restampPackHeader(ctx, `${ctx.layout.gitDir}/objects/pack/pack-A.pack`, {
           version: 99,
         });
-        const sut = createPackRegistry(ctx);
+        const sut = await createPackRegistry(ctx);
 
         // Act
         const hit = await sut.lookup(dupId);
@@ -4859,7 +4987,7 @@ describe('PackRegistry.lookup — multi-pack-index authority', () => {
           ),
         );
         const idC = await writeSingleBlobPack(ctx, 'C', 'unclaimed-c');
-        const sut = createPackRegistry(ctx);
+        const sut = await createPackRegistry(ctx);
 
         // Act
         const hit = await sut.lookup(idC);
@@ -4887,7 +5015,7 @@ describe('PackRegistry.lookup — multi-pack-index authority', () => {
           ),
         );
         const warn = vi.fn();
-        const sut = createPackRegistry({ ...ctx, logger: { warn } });
+        const sut = await createPackRegistry({ ...ctx, logger: { warn } });
 
         // Act
         const hit = await sut.lookup(idA);
@@ -4928,7 +5056,7 @@ describe('PackRegistry.lookup — multi-pack-index authority', () => {
         );
         const { ctx: instrumented, calls } = instrumentedContext(ctx);
         const logging: Context = { ...instrumented, logger: { warn } };
-        const sut = createPackRegistry(logging);
+        const sut = await createPackRegistry(logging);
 
         // Act
         const hit = await sut.lookup(idA);
@@ -4955,7 +5083,7 @@ describe('PackRegistry.lookup — multi-pack-index authority', () => {
           ctx,
           buildMidx(healthyMidxSpec({ packNames: ['pack-A.idx'], entries: [] })),
         );
-        const sut = createPackRegistry(ctx);
+        const sut = await createPackRegistry(ctx);
 
         // Act
         const hit = await sut.lookup(idA);
@@ -4982,7 +5110,7 @@ describe('PackRegistry.lookup — multi-pack-index authority', () => {
             }),
           ),
         );
-        const sut = createPackRegistry(ctx);
+        const sut = await createPackRegistry(ctx);
 
         // Act
         const hit = await sut.lookup(orphanId);
@@ -5016,7 +5144,7 @@ describe('PackRegistry.lookup — multi-pack-index authority', () => {
             }),
           },
         ]);
-        const sut = createPackRegistry(ctx);
+        const sut = await createPackRegistry(ctx);
 
         // Act
         const hit = await sut.lookup(idB);
@@ -5050,7 +5178,7 @@ describe('PackRegistry.lookup — multi-pack-index authority', () => {
             }),
           },
         ]);
-        const sut = createPackRegistry(ctx);
+        const sut = await createPackRegistry(ctx);
 
         // Act
         const hit = await sut.lookup(sharedId);
@@ -5076,7 +5204,7 @@ describe('PackRegistry.lookup — multi-pack-index authority', () => {
             }),
           ),
         );
-        const sut = createPackRegistry(ctx);
+        const sut = await createPackRegistry(ctx);
 
         // Act
         let caught: unknown;
@@ -5111,7 +5239,7 @@ describe('PackRegistry.lookup — multi-pack-index authority', () => {
           }),
         );
         await writeMidxBytes(ctx, forceLargeOffsetRowOutOfRange(healthyBytes));
-        const sut = createPackRegistry(ctx);
+        const sut = await createPackRegistry(ctx);
 
         // Act
         let caught: unknown;
@@ -5152,7 +5280,7 @@ describe('PackRegistry.lookup — multi-pack-index authority', () => {
             }),
           ),
         );
-        const sut = createPackRegistry(ctx);
+        const sut = await createPackRegistry(ctx);
 
         // Act
         const packs = await sut.all();
@@ -5230,8 +5358,8 @@ describe('PackRegistry.lookup — multi-pack-index authority', () => {
         );
 
         // Act
-        const healthWithMidx = await createPackRegistry(withMidx).health();
-        const healthWithoutMidx = await createPackRegistry(withoutMidx).health();
+        const healthWithMidx = await (await createPackRegistry(withMidx)).health();
+        const healthWithoutMidx = await (await createPackRegistry(withoutMidx)).health();
 
         // Assert
         expect(healthWithMidx.accessible.map((pack) => pack.name)).toEqual(
@@ -5272,7 +5400,7 @@ describe('PackRegistry.lookup — multi-pack-index authority', () => {
           ),
         );
         const { ctx: instrumented, calls } = instrumentedContext(ctx);
-        const sut = createPackRegistry(instrumented);
+        const sut = await createPackRegistry(instrumented);
 
         // Act
         await sut.lookup(id0);
@@ -5308,7 +5436,7 @@ describe('RegisteredPack.hasRevIndex', () => {
         const ctx = await buildSeededContext();
         await writeOneObjectPack(ctx, 'rev-present');
         await writeSyntheticRevIndex(ctx, 'rev-present', [0]);
-        const sut = createPackRegistry(ctx);
+        const sut = await createPackRegistry(ctx);
 
         // Act
         const [pack] = await sut.all();
@@ -5325,7 +5453,7 @@ describe('RegisteredPack.hasRevIndex', () => {
         // Arrange
         const ctx = await buildSeededContext();
         await writeOneObjectPack(ctx, 'rev-absent');
-        const sut = createPackRegistry(ctx);
+        const sut = await createPackRegistry(ctx);
 
         // Act
         const [pack] = await sut.all();
@@ -5357,7 +5485,7 @@ describe('RegisteredPack.hasRevIndex', () => {
             ],
           },
         };
-        const sut = createPackRegistry(wrapped);
+        const sut = await createPackRegistry(wrapped);
 
         // Act
         const [pack] = await sut.all();
@@ -5378,7 +5506,7 @@ describe('RegisteredPack.revIndex', () => {
         await writeOneObjectPack(ctx, 'rev-single-flight');
         await writeSyntheticRevIndex(ctx, 'rev-single-flight', [0]);
         const { ctx: instrumented, calls } = instrumentedContext(ctx);
-        const sut = createPackRegistry(instrumented);
+        const sut = await createPackRegistry(instrumented);
         const [pack] = await sut.all();
 
         // Act
@@ -5400,7 +5528,7 @@ describe('RegisteredPack.revIndex', () => {
         const ctx = await buildSeededContext();
         await writeOneObjectPack(ctx, 'rev-refresh');
         await writeSyntheticRevIndex(ctx, 'rev-refresh', [0]);
-        const sut = createPackRegistry(ctx);
+        const sut = await createPackRegistry(ctx);
         const [before] = await sut.all();
         const firstLoad = await before!.revIndex();
 
@@ -5555,8 +5683,8 @@ describe('RegisteredPack.offsetTable — the .rev accelerator, identity', () => 
         const raw = await revAccelRawOffsets(withoutRev, 'identity-pack');
 
         // Act
-        const [withRevPack] = await createPackRegistry(withRev).all();
-        const [withoutRevPack] = await createPackRegistry(withoutRev).all();
+        const [withRevPack] = await (await createPackRegistry(withRev)).all();
+        const [withoutRevPack] = await (await createPackRegistry(withoutRev)).all();
         const withRevTable = await withRevPack!.offsetTable();
         const withoutRevTable = await withoutRevPack!.offsetTable();
 
@@ -5589,8 +5717,8 @@ describe('RegisteredPack.offsetTable — the .rev accelerator, identity', () => 
         const raw = await revAccelRawOffsets(baseline, 'scale-pack');
 
         // Act
-        const [pack] = await createPackRegistry(withRev).all();
-        const [baselinePack] = await createPackRegistry(baseline).all();
+        const [pack] = await (await createPackRegistry(withRev)).all();
+        const [baselinePack] = await (await createPackRegistry(baseline)).all();
         const table = await pack!.offsetTable();
         const baselineTable = await baselinePack!.offsetTable();
 
@@ -5615,7 +5743,7 @@ describe('RegisteredPack.offsetTable — the .rev accelerator, fallback', () => 
         const expected = ascendingSortOf(await revAccelRawOffsets(ctx, 'fallback-absent'));
 
         // Act
-        const [pack] = await getPackRegistry(ctx).all();
+        const [pack] = await (await getPackRegistry(ctx)).all();
         const result = await pack!.offsetTable();
 
         // Assert
@@ -5642,7 +5770,7 @@ describe('RegisteredPack.offsetTable — the .rev accelerator, fallback', () => 
         const wrapped = withUnreadableRev(ctx);
 
         // Act
-        const [pack] = await getPackRegistry(wrapped).all();
+        const [pack] = await (await getPackRegistry(wrapped)).all();
         const result = await pack!.offsetTable();
 
         // Assert
@@ -5669,7 +5797,7 @@ describe('RegisteredPack.offsetTable — the .rev accelerator, fallback', () => 
         const expected = ascendingSortOf(await revAccelRawOffsets(ctx, 'fallback-bad-magic'));
 
         // Act
-        const [pack] = await getPackRegistry(ctx).all();
+        const [pack] = await (await getPackRegistry(ctx)).all();
         const result = await pack!.offsetTable();
 
         // Assert
@@ -5696,7 +5824,7 @@ describe('RegisteredPack.offsetTable — the .rev accelerator, fallback', () => 
         const expected = ascendingSortOf(await revAccelRawOffsets(ctx, 'fallback-wrong-size'));
 
         // Act
-        const [pack] = await getPackRegistry(ctx).all();
+        const [pack] = await (await getPackRegistry(ctx)).all();
         const result = await pack!.offsetTable();
 
         // Assert
@@ -5736,7 +5864,7 @@ describe('RegisteredPack.offsetTable — the .rev accelerator, fallback', () => 
         const wrapped: Context = { ...ctx, logger: { warn } };
 
         // Act
-        const [pack] = await getPackRegistry(wrapped).all();
+        const [pack] = await (await getPackRegistry(wrapped)).all();
         const result = await pack!.offsetTable();
 
         // Assert
@@ -5771,7 +5899,7 @@ describe('RegisteredPack.offsetTable — the .rev accelerator, logging', () => {
         const wrapped = { ...ctx, logger: { warn } };
 
         // Act
-        const [pack] = await getPackRegistry(wrapped).all();
+        const [pack] = await (await getPackRegistry(wrapped)).all();
         await pack!.offsetTable();
 
         // Assert
@@ -5798,7 +5926,7 @@ describe('RegisteredPack.offsetTable — the .rev accelerator, logging', () => {
         const wrapped = { ...withUnreadableRev(ctx), logger: { warn } };
 
         // Act
-        const [pack] = await getPackRegistry(wrapped).all();
+        const [pack] = await (await getPackRegistry(wrapped)).all();
         await pack!.offsetTable();
 
         // Assert
@@ -5818,7 +5946,7 @@ describe('RegisteredPack.offsetTable — the .rev accelerator, logging', () => {
         const wrapped = { ...ctx, logger: { warn } };
 
         // Act
-        const [pack] = await getPackRegistry(wrapped).all();
+        const [pack] = await (await getPackRegistry(wrapped)).all();
         await pack!.offsetTable();
 
         // Assert
@@ -5841,7 +5969,7 @@ describe('RegisteredPack.offsetTable — the .rev accelerator, out-of-range body
         await writeSyntheticRevIndex(ctx, 'oob-pack', outOfRange);
 
         // Act
-        const [pack] = await getPackRegistry(ctx).all();
+        const [pack] = await (await getPackRegistry(ctx)).all();
         const result = await pack!.offsetTable();
 
         // Assert — no eager scan of the body ran, so building the table alone
@@ -5888,7 +6016,7 @@ describe('RegisteredPack.offsetTable — the .rev accelerator, read count', () =
         const { ctx: instrumented, calls } = instrumentedContext(ctx);
 
         // Act
-        const [pack] = await getPackRegistry(instrumented).all();
+        const [pack] = await (await getPackRegistry(instrumented)).all();
         await pack!.offsetTable();
 
         // Assert
@@ -5910,7 +6038,7 @@ describe('RegisteredPack.offsetTable — the .rev accelerator, read count', () =
         const { ctx: instrumented, calls } = instrumentedContext(ctx);
 
         // Act
-        const [pack] = await getPackRegistry(instrumented).all();
+        const [pack] = await (await getPackRegistry(instrumented)).all();
         await pack!.offsetTable();
 
         // Assert
@@ -5937,7 +6065,7 @@ describe('RegisteredPack.offsetTable — the .rev accelerator, single-flight', (
           await revAccelCorrectBody(ctx, 'single-flight-offset'),
         );
         const { ctx: instrumented, calls } = instrumentedContext(ctx);
-        const [pack] = await getPackRegistry(instrumented).all();
+        const [pack] = await (await getPackRegistry(instrumented)).all();
 
         // Act
         await Promise.all([pack!.offsetTable(), pack!.offsetTable()]);
@@ -5977,8 +6105,8 @@ describe('RegisteredPack.packPositions', () => {
         const expected = packPositionMap(parsePackIndex(idxBytes, 20));
 
         // Act
-        const [withRevPack] = await createPackRegistry(withRev).all();
-        const [withoutRevPack] = await createPackRegistry(withoutRev).all();
+        const [withRevPack] = await (await createPackRegistry(withRev)).all();
+        const [withoutRevPack] = await (await createPackRegistry(withoutRev)).all();
         const withRevPositions = await withRevPack!.packPositions();
         const withoutRevPositions = await withoutRevPack!.packPositions();
 
@@ -6006,7 +6134,7 @@ describe('RegisteredPack.packPositions', () => {
         const expected = packPositionMap(parsePackIndex(idxBytes, 20));
 
         // Act
-        const [pack] = await getPackRegistry(ctx).all();
+        const [pack] = await (await getPackRegistry(ctx)).all();
         const result = await pack!.packPositions();
 
         // Assert
@@ -6029,7 +6157,7 @@ describe('RegisteredPack.packPositions', () => {
         const expected = packPositionMap(parsePackIndex(idxBytes, 20));
 
         // Act
-        const [pack] = await getPackRegistry(ctx).all();
+        const [pack] = await (await getPackRegistry(ctx)).all();
         const result = await pack!.packPositions();
 
         // Assert
@@ -6055,7 +6183,7 @@ describe('RegisteredPack.packPositions', () => {
         const wrapped = withUnreadableRev(ctx);
 
         // Act
-        const [pack] = await getPackRegistry(wrapped).all();
+        const [pack] = await (await getPackRegistry(wrapped)).all();
         const result = await pack!.packPositions();
 
         // Assert
@@ -6079,7 +6207,7 @@ describe('RegisteredPack.packPositions', () => {
         const { ctx: instrumented, calls } = instrumentedContext(ctx);
 
         // Act
-        const [pack] = await getPackRegistry(instrumented).all();
+        const [pack] = await (await getPackRegistry(instrumented)).all();
         await Promise.all([pack!.packPositions(), pack!.offsetTable()]);
 
         // Assert
@@ -6108,7 +6236,7 @@ describe('RegisteredPack.packPositions', () => {
         const wrapped = { ...ctx, logger: { warn } };
 
         // Act
-        const [pack] = await getPackRegistry(wrapped).all();
+        const [pack] = await (await getPackRegistry(wrapped)).all();
         await pack!.packPositions();
 
         // Assert
@@ -6143,7 +6271,7 @@ describe('RegisteredPack.offsetTable — what the fallback warns say', () => {
         const wrapped = { ...ctx, logger: { warn } };
 
         // Act
-        const [pack] = await getPackRegistry(wrapped).all();
+        const [pack] = await (await getPackRegistry(wrapped)).all();
         await pack!.offsetTable();
 
         // Assert
@@ -6174,7 +6302,7 @@ describe('RegisteredPack.offsetTable — what the fallback warns say', () => {
         const wrapped = { ...ctx, logger: { warn } };
 
         // Act
-        const [pack] = await getPackRegistry(wrapped).all();
+        const [pack] = await (await getPackRegistry(wrapped)).all();
         const result = await pack!.offsetTable();
 
         // Assert
@@ -6200,7 +6328,7 @@ describe('RegisteredPack.offsetTable — what the fallback warns say', () => {
         const expected = packPositionMap(parsePackIndex(idxBytes, 20));
 
         // Act
-        const [pack] = await getPackRegistry(ctx).all();
+        const [pack] = await (await getPackRegistry(ctx)).all();
         const result = await pack!.packPositions();
 
         // Assert

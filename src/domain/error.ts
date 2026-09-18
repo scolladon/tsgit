@@ -323,6 +323,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `invalid sideband channel: ${data.channel}`;
     case 'SIDEBAND_FATAL':
       return `sideband fatal: ${data.message}`;
+    case 'REMOTE_ERROR':
+      return `remote error: ${data.message}`;
     case 'UNKNOWN_ACK_STATUS':
       return `unknown ack status: ${data.value}`;
     case 'INVALID_REPORT_STATUS':
@@ -383,12 +385,12 @@ function extractDetail(data: TsgitErrorData): string {
       return `branch already exists: ${data.name}`;
     case 'BRANCH_NOT_FOUND':
       return `branch not found: ${data.name}`;
+    case 'BRANCH_NOT_FULLY_MERGED':
+      return `branch is not fully merged: ${data.name}`;
     case 'TAG_EXISTS':
       return `tag already exists: ${data.name}`;
     case 'TAG_NOT_FOUND':
       return `tag not found: ${data.name}`;
-    case 'CANNOT_DELETE_CHECKED_OUT_BRANCH':
-      return `cannot delete branch currently checked out: ${data.name}`;
     case 'INVALID_URL':
       return `invalid URL: ${data.reason}`;
     case 'BLOCKED_HOST':
@@ -508,9 +510,19 @@ function extractDetail(data: TsgitErrorData): string {
     case 'CONFIG_BAD_BOOLEAN_LITERAL':
       return `invalid value for '${data.key}' in file ${data.source}`;
     case 'CONFIG_BAD_DATE_VALUE':
-      return `bad date config value '${data.value}'`;
+      return data.key === undefined
+        ? `bad date config value '${data.value}'`
+        : `bad date config value '${data.value}' for '${data.key}' in file ${data.source} at line ${data.line}`;
     case 'CONFIG_INVALID_ENUM_VALUE':
       return `invalid value for '${data.key}': '${data.value}' in file ${data.source} at line ${data.line}`;
+    case 'FSCK_UNKNOWN_MSG_ID':
+      return `unhandled fsck message id: ${data.msgId} in file ${data.source} at line ${data.line}`;
+    case 'FSCK_CANNOT_DEMOTE':
+      return `cannot demote ${data.msgId} to ${data.severity} in file ${data.source} at line ${data.line}`;
+    case 'FSCK_SKIP_LIST_UNREADABLE':
+      return `could not open object name list: ${data.path} (${data.reason})`;
+    case 'FSCK_SKIP_LIST_INVALID_NAME':
+      return `invalid object name: ${data.name} in file ${data.path} at line ${data.line}`;
     case 'CONFIG_BAD_ZLIB_LEVEL':
       return `bad zlib compression level ${data.level}`;
     case 'CONFIG_INVALID_FILE':

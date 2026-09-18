@@ -11,7 +11,7 @@ import type {
 } from '../../../../src/domain/objects/index.js';
 import { parseHeader, serializeObject } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
-import { buildSeededContext } from './fixtures.js';
+import { buildSeededContext, writeLooseWithDeclaredSize, writeRawObjectBytes } from './fixtures.js';
 import type { EntrySpec } from './pack-fixture.js';
 import { buildSyntheticPack, corruptIdxOffset, writeSyntheticPack } from './pack-fixture.js';
 
@@ -89,6 +89,25 @@ describe('readObjectMetadata', () => {
           expect(result.uncompressedSize).toBe(expectedSize);
         },
       );
+    });
+  });
+
+  describe('Given a loose blob whose header size claim disagrees with its body length', () => {
+    describe('When readObjectMetadata is called', () => {
+      it('Then uncompressedSize is the real 12-byte body, never the stored claim', async () => {
+        // Arrange
+        const content = ENC.encode('hello world!'); // 12 bytes
+        const ctx = await buildSeededContext();
+        const id = await writeRawObjectBytes(ctx, 'blob', content);
+        await writeLooseWithDeclaredSize(ctx, id, 'blob', 5, content);
+
+        // Act
+        const result = await readObjectMetadata(ctx, id);
+
+        // Assert
+        expect(result.type).toBe('blob');
+        expect(result.uncompressedSize).toBe(12);
+      });
     });
   });
 

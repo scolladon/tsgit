@@ -24,7 +24,6 @@ import { packDegradedIdxScenario } from './pack-degraded-idx.scenario.ts';
 import { packObjectsScenario } from './pack-objects.scenario.ts';
 import { packRefsScenario } from './pack-refs.scenario.ts';
 import { packV3ReadScenario } from './pack-v3-read.scenario.ts';
-import { phase202PrimitivesScenario } from './phase-20-2-primitives.scenario.ts';
 import { rangeDiffScenario } from './range-diff.scenario.ts';
 import { readPipelineScenario } from './read-pipeline.scenario.ts';
 import { rebaseScenario } from './rebase.scenario.ts';
@@ -39,6 +38,7 @@ import { shallowWalkScenario } from './shallow-walk.scenario.ts';
 import { shortlogScenario } from './shortlog.scenario.ts';
 import { showScenario } from './show.scenario.ts';
 import { sparseCheckoutScenario } from './sparse-checkout.scenario.ts';
+import { standalonePrimitivesScenario } from './standalone-primitives.scenario.ts';
 import { stashScenario } from './stash.scenario.ts';
 import { submodulesEmptyScenario } from './submodules-empty.scenario.ts';
 import { trustDefaultsScenario } from './trust-defaults.scenario.ts';
@@ -65,7 +65,7 @@ export const SCENARIOS: ReadonlyArray<Scenario<unknown>> = [
   mvScenario,
   sparseCheckoutScenario,
   submodulesEmptyScenario,
-  phase202PrimitivesScenario,
+  standalonePrimitivesScenario,
   remoteCrudScenario,
   configScenario,
   stashScenario,

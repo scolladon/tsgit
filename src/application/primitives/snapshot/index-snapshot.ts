@@ -35,7 +35,7 @@ const toEntry = (ctx: Context, row: DomainIndexEntry): IndexEntry =>
 /**
  * Lazily evaluates `.git/index` via `IndexResolver`. The parsed `GitIndex`
  * is captured on the first iteration and reused across subsequent
- * iterations of the same handle (design §8.0 iteration stability):
+ * iterations of the same handle — the iteration-stability invariant:
  *
  *   - First `entries()` call → resolver.resolve(ctx) → captured reference
  *   - All subsequent `entries()` calls → stream from captured reference,

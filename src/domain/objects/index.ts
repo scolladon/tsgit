@@ -33,8 +33,8 @@ export {
   validateFileMode,
 } from './file-mode.js';
 // GitObject
-export type { GitObject } from './git-object.js';
-export { parseObject, serializeObject } from './git-object.js';
+export type { GitObject, ObjectContent } from './git-object.js';
+export { parseObject, parseObjectContent, serializeObject } from './git-object.js';
 export type { HashConfig } from './hash-config.js';
 export { SHA1_CONFIG, SHA256_CONFIG } from './hash-config.js';
 // Object header

@@ -16,10 +16,7 @@ interface CliRun {
   readonly code: number;
 }
 
-const runScript = async (
-  root: string,
-  extraArgs: ReadonlyArray<string> = [],
-): Promise<CliRun> => {
+const runScript = async (root: string, extraArgs: ReadonlyArray<string> = []): Promise<CliRun> => {
   const outDir = path.join(root, 'out');
   try {
     const { stdout, stderr } = await execFileAsync('node', [
@@ -208,9 +205,7 @@ describe('tooling/audit-browser-surface (integration)', () => {
 
         // Assert
         expect(sut.code).toBe(1);
-        expect(sut.stderr).toContain(
-          "allowlist.commands: 'removedCommand' is not currently bound",
-        );
+        expect(sut.stderr).toContain("allowlist.commands: 'removedCommand' is not currently bound");
       });
     });
   });

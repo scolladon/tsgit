@@ -305,7 +305,7 @@ describe('bundleVerify', () => {
           revs: [{ range: ['refs/heads/main~1', 'refs/heads/main'] }],
         });
         await ctx.fs.write(BUNDLE_PATH, createResult.bytes);
-        // F2.3 also populates the delta cache when `bundleCreate` reads
+        // A loose read also populates the delta cache when `bundleCreate` reads
         // commit1's loose bytes above; drop that entry so the injected
         // PERMISSION_DENIED below is actually reached instead of being
         // masked by a cache hit.
@@ -352,7 +352,7 @@ describe('bundleVerify', () => {
           revs: [{ range: ['refs/heads/main~1', 'refs/heads/main'] }],
         });
         await ctx.fs.write(BUNDLE_PATH, createResult.bytes);
-        // F2.3 also populates the delta cache when `bundleCreate` reads
+        // A loose read also populates the delta cache when `bundleCreate` reads
         // commit1's loose bytes above; drop that entry so the corrupted loose
         // file below is actually read instead of being served from cache.
         ctx.deltaCache.delete(commit1);
@@ -1003,7 +1003,7 @@ describe('bundleVerify', () => {
         // Assert — verify succeeds with both prerequisites present
         expect(result.prerequisitesPresent).toBe(true);
         // Assert — the prereq check's loose read populates the shared delta
-        // cache (F2.3), so both the resolver's own memo and every REF_DELTA
+        // cache, so both the resolver's own memo and every REF_DELTA
         // entry's base lookup thereafter are cache hits — one physical read.
         expect(baseReadCount).toBe(1);
       });

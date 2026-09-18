@@ -6,11 +6,14 @@ import { describe, expect, it } from 'vitest';
 import {
   checkDocsExist,
   checkIndexRow,
+  findDetachedDocComments,
+  formatDetachedStanza,
   formatGapStanza,
   kebabCase,
   parseAllowList,
   parseRepositoryInterface,
   runCheck,
+  scanDetachedDocComments,
 } from '../../check-doc-coverage.js';
 
 const REPO_ROOT = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '../../..');
@@ -521,6 +524,146 @@ describe('parseAllowList', () => {
     // Assert
     expect(result).toEqual({ commands: [], primitives: [] });
   });
+    });
+  });
+});
+
+describe('findDetachedDocComments', () => {
+  describe('Given a doc comment immediately followed by another doc comment', () => {
+    describe('When the source is scanned', () => {
+      it('Then the line the detached comment closes on is reported', () => {
+        // Arrange
+        const sut = findDetachedDocComments;
+        const source = [
+          '/**',
+          ' * Documents the declaration below.',
+          ' */',
+          '/** Documents it too, and wins. */',
+          'export const value = 1;',
+        ].join('\n');
+
+        // Act
+        const result = sut('src/example.ts', source);
+
+        // Assert
+        expect(result).toEqual([{ file: 'src/example.ts', line: 3 }]);
+      });
+    });
+  });
+
+  describe('Given two doc comments separated by a blank line', () => {
+    describe('When the source is scanned', () => {
+      it('Then nothing is reported, because a file header is not detached', () => {
+        // Arrange
+        const sut = findDetachedDocComments;
+        const source = [
+          '/**',
+          ' * Describes the whole module.',
+          ' */',
+          '',
+          '/** Describes the declaration. */',
+          'export const value = 1;',
+        ].join('\n');
+
+        // Act
+        const result = sut('src/example.ts', source);
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a file with two separate detached comments', () => {
+    describe('When the source is scanned', () => {
+      it('Then both are reported in source order', () => {
+        // Arrange
+        const sut = findDetachedDocComments;
+        const source = [
+          '/** first */',
+          '/** second */',
+          'export const a = 1;',
+          '/** third */',
+          '/** fourth */',
+          'export const b = 2;',
+        ].join('\n');
+
+        // Act
+        const result = sut('src/example.ts', source);
+
+        // Assert
+        expect(result).toEqual([
+          { file: 'src/example.ts', line: 1 },
+          { file: 'src/example.ts', line: 4 },
+        ]);
+      });
+    });
+  });
+});
+
+describe('scanDetachedDocComments', () => {
+  describe('Given a source tree whose every doc comment is attached', () => {
+    describe('When the tree is scanned', () => {
+      it('Then no detached comment is reported', () => {
+        // Arrange
+        const sut = scanDetachedDocComments;
+        const listFiles = (root: string): ReadonlyArray<string> => [path.join(root, 'clean.ts')];
+        const readSource = (): string => '/** Attached. */\nexport const value = 1;\n';
+
+        // Act
+        const result = sut(REPO_ROOT, listFiles, readSource);
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a source tree carrying one detached doc comment', () => {
+    describe('When the tree is scanned', () => {
+      it('Then it is reported under its path relative to the repository root', () => {
+        // Arrange
+        const sut = scanDetachedDocComments;
+        const listFiles = (root: string): ReadonlyArray<string> => [path.join(root, 'orphan.ts')];
+        const readSource = (): string => '/** Lost. */\n/** Kept. */\nexport const value = 1;\n';
+
+        // Act
+        const result = sut(REPO_ROOT, listFiles, readSource);
+
+        // Assert
+        expect(result).toEqual([{ file: path.join('src', 'orphan.ts'), line: 1 }]);
+      });
+    });
+  });
+
+  describe('Given the repository as it stands', () => {
+    describe('When its own source tree is scanned', () => {
+      it('Then no published doc comment is detached', () => {
+        // Arrange
+        const sut = scanDetachedDocComments;
+
+        // Act
+        const result = sut(REPO_ROOT);
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+  });
+});
+
+describe('formatDetachedStanza', () => {
+  describe('Given a detached doc comment, When it is formatted', () => {
+    it('Then the stanza names the file, the line and the repair', () => {
+      // Arrange
+      const sut = formatDetachedStanza;
+
+      // Act
+      const result = sut({ file: 'src/example.ts', line: 42 });
+
+      // Assert
+      expect(result).toContain('src/example.ts:42');
+      expect(result).toContain('Move it above the declaration it documents');
     });
   });
 });

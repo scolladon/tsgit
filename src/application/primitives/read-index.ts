@@ -3,6 +3,7 @@ import { type GitIndex, parseIndex } from '../../domain/git-index/index.js';
 import { bytesToHex } from '../../domain/objects/encoding.js';
 import type { Context } from '../../ports/context.js';
 import type { FileStat } from '../../ports/file-system.js';
+import { assertRepoSettingsValid } from './internal/repo-settings-gate.js';
 import { indexPath } from './path-layout.js';
 import {
   exceedsMaxIndexBytes,
@@ -167,6 +168,7 @@ const loadIndex = async (ctx: Context, path: string, stat: FileStat): Promise<Gi
  * commits.
  */
 export async function readIndex(ctx: Context): Promise<GitIndex> {
+  await assertRepoSettingsValid(ctx);
   const path = indexPath(ctx.layout.gitDir);
   if (!(await ctx.fs.exists(path))) {
     return { version: 2, entries: [], extensions: [], trailerSha: new Uint8Array(0) };

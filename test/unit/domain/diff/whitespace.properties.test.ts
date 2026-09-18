@@ -62,7 +62,7 @@ function arbResprinkle(base: Uint8Array): fc.Arbitrary<Uint8Array> {
 }
 
 // Extends arbLineWithWhitespace's alphabet with CR, so a property drawing from
-// it also exercises the fold's CR-tail handling (§D1.2), not just WS runs.
+// it also exercises the fold's CR-tail handling, not just WS runs.
 function arbLineWithWhitespaceAndCr(): fc.Arbitrary<Uint8Array> {
   const ws = fc.constantFrom(0x20, 0x09, 0x0d); // space, tab, or CR
   const nonWs = fc.integer({ min: 0x21, max: 0x7e });
@@ -95,7 +95,7 @@ function arbSafeLine(): fc.Arbitrary<Uint8Array> {
 }
 
 // Arbitrary: a whitespace-run-then-optional-CR tail — the fold's droppable
-// TAIL grammar (WS* CR?) from §D1.2, nothing more.
+// TAIL grammar (WS* CR?), nothing more.
 function arbTailOnly(): fc.Arbitrary<Uint8Array> {
   return fc
     .tuple(fc.array(fc.constantFrom(0x20, 0x09), { minLength: 0, maxLength: 4 }), fc.boolean())
@@ -266,7 +266,7 @@ describe('whitespace normalizer properties', () => {
 
   // Lens 2 (compositional aggregator): the incremental fold is a left-fold
   // driving digestNormalizedLine — this is the property the whole design
-  // rests on (§D1.5). The oracle allocates the normalized array via
+  // rests on. The oracle allocates the normalized array via
   // normalizeLine and hashes it independently; it is not a copy of the fold.
   describe('Given an arbitrary line over {a, b, SP, TAB, CR} with an optional trailing LF, and an arbitrary key', () => {
     describe('When digestNormalizedLine folds it incrementally', () => {

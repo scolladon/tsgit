@@ -8,8 +8,19 @@ import {
   __resetSectionsCacheForTests,
   getConfigValue,
   invalidateScopedConfigCache,
+  isWorktreeScopeActive,
 } from '../../../../src/application/primitives/config-scoped-read.js';
+import { permissionDenied } from '../../../../src/domain/error.js';
 import type { Context } from '../../../../src/ports/context.js';
+import type { FileSystem } from '../../../../src/ports/file-system.js';
+import { instrumentedContext } from './fixtures.js';
+
+const u8 = (s: string): Uint8Array => new TextEncoder().encode(s);
+
+const withFsOverride = (ctx: Context, overrides: Partial<FileSystem>): Context => ({
+  ...ctx,
+  fs: { ...ctx.fs, ...overrides } as FileSystem,
+});
 
 const seed = async (ctx: Context, content: string): Promise<void> => {
   await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, content);
@@ -148,6 +159,252 @@ describe('primitives/config-scoped-read', () => {
 
         // Assert
         expect(result).toEqual({ key: 'user.name', value: 'a-much-longer-value', scope: 'local' });
+      });
+    });
+  });
+
+  describe('Given an unscoped config.get with the worktree extension active', () => {
+    describe('When getConfigValue merges every scope', () => {
+      it('Then the local config file is read exactly once — isWorktreeScopeActive shares the cached local read', async () => {
+        // Arrange — today's raw, uncached isWorktreeScopeActive read of the
+        // SAME local file, on top of the cached scope="local" read, would
+        // make this two.
+        const base = createMemoryContext();
+        await seed(base, '[extensions]\n\tworktreeConfig = true\n');
+        const { ctx, calls } = instrumentedContext(base);
+
+        // Act
+        await getConfigValue({ ctx, key: 'user.name' });
+
+        // Assert
+        const localReads = calls().filter(
+          (c) => c.method === 'readUtf8' && c.path === `${ctx.layout.gitDir}/config`,
+        );
+        expect(localReads).toHaveLength(1);
+      });
+    });
+  });
+});
+
+describe('isWorktreeScopeActive', () => {
+  beforeEach(() => {
+    __resetConfigCacheForTests();
+    __resetSectionsCacheForTests();
+  });
+
+  describe('Given a local config in a given state', () => {
+    describe('When isWorktreeScopeActive runs', () => {
+      it.each([
+        {
+          label: '[extensions] worktreeConfig = true',
+          files: { '/repo/.git/config': u8('[extensions]\n\tworktreeConfig = true\n') },
+          expected: true,
+        },
+        {
+          label: 'the worktreeConfig key is absent',
+          files: { '/repo/.git/config': u8('[user]\n\tname = ada\n') },
+          expected: false,
+        },
+        {
+          label: 'no local config exists at all (missing file is not an error)',
+          files: {},
+          expected: false,
+        },
+        {
+          label: 'worktreeConfig = true sits under a non-[extensions] section',
+          files: { '/repo/.git/config': u8('[user]\n\tworktreeConfig = true\n') },
+          expected: false,
+        },
+        {
+          label: 'worktreeConfig = true sits under a subsectioned [extensions "x"]',
+          files: { '/repo/.git/config': u8('[extensions "x"]\n\tworktreeConfig = true\n') },
+          expected: false,
+        },
+        {
+          label: '[extensions] carries a different key set to true',
+          files: { '/repo/.git/config': u8('[extensions]\n\totherKey = true\n') },
+          expected: false,
+        },
+        {
+          label: '[extensions] worktreeConfig = false (boolean-false word)',
+          files: { '/repo/.git/config': u8('[extensions]\n\tworktreeConfig = false\n') },
+          expected: false,
+        },
+        {
+          label:
+            '[extensions] worktreeConfig = maybe (grammar-refused — inert HERE; the discovery gate raises it)',
+          files: { '/repo/.git/config': u8('[extensions]\n\tworktreeConfig = maybe\n') },
+          expected: false,
+        },
+        {
+          label: '[extensions] worktreeConfig = TRUE (case-insensitive word)',
+          files: { '/repo/.git/config': u8('[extensions]\n\tworktreeConfig = TRUE\n') },
+          expected: true,
+        },
+        {
+          label: '[extensions] worktreeConfig = yes',
+          files: { '/repo/.git/config': u8('[extensions]\n\tworktreeConfig = yes\n') },
+          expected: true,
+        },
+        {
+          label: '[extensions] worktreeConfig = on',
+          files: { '/repo/.git/config': u8('[extensions]\n\tworktreeConfig = on\n') },
+          expected: true,
+        },
+        {
+          label: '[extensions] worktreeConfig = 1',
+          files: { '/repo/.git/config': u8('[extensions]\n\tworktreeConfig = 1\n') },
+          expected: true,
+        },
+        {
+          label: '[extensions] worktreeConfig = 2 (integer-true, magnitude arm)',
+          files: { '/repo/.git/config': u8('[extensions]\n\tworktreeConfig = 2\n') },
+          expected: true,
+        },
+        {
+          label: '[extensions] worktreeConfig (valueless — git’s internal NULL, always true)',
+          files: { '/repo/.git/config': u8('[extensions]\n\tworktreeConfig\n') },
+          expected: true,
+        },
+        {
+          label: '[extensions] worktreeConfig = off',
+          files: { '/repo/.git/config': u8('[extensions]\n\tworktreeConfig = off\n') },
+          expected: false,
+        },
+        {
+          label: '[extensions] worktreeConfig = 0',
+          files: { '/repo/.git/config': u8('[extensions]\n\tworktreeConfig = 0\n') },
+          expected: false,
+        },
+        {
+          label: '[extensions] worktreeConfig = "" (empty value)',
+          files: { '/repo/.git/config': u8('[extensions]\n\tworktreeConfig = ""\n') },
+          expected: false,
+        },
+      ])('Then returns $expected ($label)', async ({ files, expected }) => {
+        // Arrange
+        const ctx = createMemoryContext({ files });
+
+        // Act
+        const result = await isWorktreeScopeActive(ctx);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+
+  describe('Given the local config read rejects with PERMISSION_DENIED', () => {
+    describe('When isWorktreeScopeActive runs', () => {
+      it('Then it reports inactive — the shared scoped reader treats a permission-denied scope as absent', async () => {
+        // Arrange — isWorktreeScopeActive now routes through readSingleScope,
+        // which treats PERMISSION_DENIED the same as FILE_NOT_FOUND (empty
+        // config), unlike the raw, uncached read this predicate used to do.
+        const original = permissionDenied('/repo/.git/config');
+        const ctx = withFsOverride(createMemoryContext(), {
+          readUtf8: () => Promise.reject(original),
+        });
+
+        // Act
+        const result = await isWorktreeScopeActive(ctx);
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given the local config read rejects with a non-TsgitError', () => {
+    describe('When isWorktreeScopeActive runs', () => {
+      it('Then the error propagates unchanged', async () => {
+        // Arrange
+        const original = new Error('disk on fire');
+        const ctx = withFsOverride(createMemoryContext(), {
+          readUtf8: () => Promise.reject(original),
+        });
+        let caught: unknown;
+
+        // Act
+        try {
+          await isWorktreeScopeActive(ctx);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBe(original);
+      });
+    });
+  });
+
+  describe('Given a layout the ownership-trust gate refused', () => {
+    describe('When isWorktreeScopeActive runs', () => {
+      it('Then it reports inactive without reading the config file', async () => {
+        // Arrange — the invariant it has to hold up is that a refused
+        // repository's config is never PARSED, so the assertion is on the
+        // read, not just the verdict.
+        const base = createMemoryContext();
+        await base.fs.writeUtf8(
+          `${base.layout.gitDir}/config`,
+          '[extensions]\n\tworktreeConfig = true\n',
+        );
+        let reads = 0;
+        const ctx = {
+          ...base,
+          fs: {
+            ...base.fs,
+            readUtf8: async (path: string) => {
+              reads += 1;
+              return base.fs.readUtf8(path);
+            },
+          },
+          layout: { ...base.layout, untrusted: true as const },
+        };
+
+        // Act
+        const result = await isWorktreeScopeActive(ctx);
+
+        // Assert
+        expect(result).toBe(false);
+        expect(reads).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a layout refused for an unsupported repository format', () => {
+    describe('When isWorktreeScopeActive runs', () => {
+      it('Then it reports inactive without reading the config file', async () => {
+        // Arrange — the trust half of this guard is pinned by the sibling
+        // above; this is the format half. The planted extension makes both
+        // oracles discriminating: an unguarded read parses
+        // `worktreeConfig = true` and returns true.
+        const base = createMemoryContext();
+        await base.fs.writeUtf8(
+          `${base.layout.gitDir}/config`,
+          '[extensions]\n\tworktreeConfig = true\n',
+        );
+        let reads = 0;
+        const ctx = {
+          ...base,
+          fs: {
+            ...base.fs,
+            readUtf8: async (path: string) => {
+              reads += 1;
+              return base.fs.readUtf8(path);
+            },
+          },
+          layout: {
+            ...base.layout,
+            formatRefusal: { kind: 'version' as const, version: 99 },
+          },
+        };
+
+        // Act
+        const result = await isWorktreeScopeActive(ctx);
+
+        // Assert
+        expect(result).toBe(false);
+        expect(reads).toBe(0);
       });
     });
   });

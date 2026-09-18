@@ -1,4 +1,4 @@
-import type { ObjectId } from '../../domain/objects/index.js';
+import type { ObjectContent, ObjectId } from '../../domain/objects/index.js';
 import type { LruCache } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
 import { deriveContext } from '../primitives/derive-context.js';
@@ -19,6 +19,7 @@ import {
   buildReachableSet,
   classifyObjects,
 } from './internal/fsck/reachability.js';
+import { readFsckConfiguration } from './internal/fsck/read-configuration.js';
 import { runRefsVerifyPass } from './internal/fsck/refs-verify.js';
 import { runRevIndexHealthPass } from './internal/fsck/rev-index-health.js';
 import { collectRoots } from './internal/fsck/roots.js';
@@ -39,10 +40,10 @@ import type { FsckFinding, FsckOptions, FsckResult } from './internal/fsck/types
  *  Built fresh per call, never a shared module-level singleton — the
  *  allocation is free enough that a fresh instance every call beats relying
  *  on a shared one staying inert. */
-function createNoDeltaCache(): LruCache<Uint8Array> {
+function createNoDeltaCache(): LruCache<ObjectContent> {
   return {
     get: () => undefined,
-    set: () => undefined,
+    set: () => false,
     // Stryker disable next-line BooleanLiteral: equivalent — nothing in src/** ever calls .has() on a Context's deltaCache (only .get()/.set(), via object-resolver.ts and blob-source.ts), so this arm's return value is unobservable.
     has: () => false,
     // Stryker disable next-line BooleanLiteral: equivalent — nothing in src/** ever calls .delete() on a Context's deltaCache, so this arm's return value is unobservable.
@@ -56,6 +57,12 @@ function createNoDeltaCache(): LruCache<Uint8Array> {
 
 export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckResult> {
   await assertOperationalRepository(ctx);
+
+  // Read up front, before a single object is decoded: git parses `[fsck]`
+  // while it reads its configuration, so an unknown msg-id, an out-of-grammar
+  // severity or an unusable `fsck.skipList` refuses the whole audit rather
+  // than the entry — whichever of them the FILE holds first.
+  const { severities, skipped } = await readFsckConfiguration(ctx);
 
   // An integrity audit observes the STORE, never the object-byte read cache: a
   // delta base cached by an earlier read (or by this walk itself) would
@@ -102,7 +109,14 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   const contentResult =
     opts.connectivityOnly === true
       ? { findings: [] as FsckFinding[], exitBit: 0 }
-      : await runContentValidationPass(auditCtx, universe, opts.strict === true, blobFilenames);
+      : await runContentValidationPass(
+          auditCtx,
+          universe,
+          opts.strict === true,
+          blobFilenames,
+          severities,
+          skipped,
+        );
 
   // Refs-verify pass — `confirmPackAccessibility` is true exactly when the
   // universe above was built WITHOUT accessiblePacksOnly narrowing but WITH
@@ -114,6 +128,7 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
     universe,
     opts.checkReferences !== false,
     confirmPackAccessibility,
+    severities,
   );
 
   // Pack-health pass — reports packs the registry could not open or index.

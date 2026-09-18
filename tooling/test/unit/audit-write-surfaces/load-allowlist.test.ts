@@ -9,10 +9,7 @@ const sutConfig = (): LoadAllowlistConfig => ({
   surfaceRegex: /^[a-z][a-zA-Z0-9.-]{1,40}$/,
 });
 
-const expectError = (
-  fn: () => unknown,
-  expectedReason: string,
-): void => {
+const expectError = (fn: () => unknown, expectedReason: string): void => {
   try {
     fn();
     throw new Error('expected AllowlistError, got success');
@@ -52,9 +49,7 @@ describe('parseAllowlist', () => {
         const result = parseAllowlist(sutContent, sutConfig());
 
         // Assert
-        expect(result).toEqual([
-          { surface: 'tree', reason: 'because', deferredTo: '20.x' },
-        ]);
+        expect(result).toEqual([{ surface: 'tree', reason: 'because', deferredTo: '20.x' }]);
       });
     });
   });
@@ -107,10 +102,7 @@ describe('parseAllowlist', () => {
         const sutContent = '{ "other": [] }';
 
         // Act + Assert
-        expectError(
-          () => parseAllowlist(sutContent, sutConfig()),
-          'missing-surfaces-array',
-        );
+        expectError(() => parseAllowlist(sutContent, sutConfig()), 'missing-surfaces-array');
       });
     });
   });
@@ -122,10 +114,7 @@ describe('parseAllowlist', () => {
         const sutContent = '{ "surfaces": ["plain-string"] }';
 
         // Act + Assert
-        expectError(
-          () => parseAllowlist(sutContent, sutConfig()),
-          'entry-not-an-object',
-        );
+        expectError(() => parseAllowlist(sutContent, sutConfig()), 'entry-not-an-object');
       });
     });
   });
@@ -153,10 +142,7 @@ describe('parseAllowlist', () => {
         });
 
         // Act + Assert
-        expectError(
-          () => parseAllowlist(sutContent, sutConfig()),
-          'wrong-field-type',
-        );
+        expectError(() => parseAllowlist(sutContent, sutConfig()), 'wrong-field-type');
       });
     });
   });
@@ -184,10 +170,7 @@ describe('parseAllowlist', () => {
         });
 
         // Act + Assert
-        expectError(
-          () => parseAllowlist(sutContent, sutConfig()),
-          'bad-surface-format',
-        );
+        expectError(() => parseAllowlist(sutContent, sutConfig()), 'bad-surface-format');
       });
     });
   });
@@ -201,10 +184,7 @@ describe('parseAllowlist', () => {
         });
 
         // Act + Assert
-        expectError(
-          () => parseAllowlist(sutContent, sutConfig()),
-          'wrong-field-type',
-        );
+        expectError(() => parseAllowlist(sutContent, sutConfig()), 'wrong-field-type');
       });
     });
   });

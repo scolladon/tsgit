@@ -20,7 +20,9 @@ import { ownedByCallerPredicate } from './adapters/node/owner-predicate.js';
 import { nativePolicy } from './adapters/node/path-policy.js';
 import { deriveLimits } from './domain/concurrency/derive-limits.js';
 import { configFor } from './domain/objects/hash-config.js';
+import type { ObjectContent } from './domain/objects/index.js';
 import { createLruCache } from './domain/storage/lru-cache.js';
+import { buildCacheBudgets } from './ports/context.js';
 import type { LayoutProbe } from './ports/layout-probe.js';
 import { canonicalizeTrustedDirectories } from './repository/canonicalize-trusted-directories.js';
 import type { RepositoryLayoutInput } from './repository/layout-input.js';
@@ -50,10 +52,20 @@ export interface OpenNodeRepositoryOptions extends OpenRepositoryOptions {
   readonly allowInsecureHttp?: boolean;
   readonly deltaCacheMaxBytes?: number;
   readonly deltaCacheMaxEntries?: number;
+  /** Override for the parsed-object memo's entry cap (default: derived from `deltaCacheMaxBytes`). */
+  readonly parsedObjectMemoMaxEntries?: number;
+  /** Override for the FlatTree cache's own byte valve (default: derived from `deltaCacheMaxBytes`). */
+  readonly flatTreeCacheMaxBytes?: number;
+  /** Override for the delta-base cache's byte budget (default: `core.deltaBaseCacheLimit`, or git's own default). */
+  readonly deltaBaseCacheMaxBytes?: number;
 }
 
 export const openRepository = async (opts: OpenNodeRepositoryOptions = {}): Promise<Repository> => {
-  // Stryker disable next-line CallExpression: equivalent — `openRepositoryCore` (below, forwarding the SAME unmodified `opts` fields, `cwd` aside) runs `validateOptions` again at `repository.ts`; removing this eager call cannot change any thrown error, only where it is thrown from — confirmed empirically (an invalid `gitDir` still throws the identical `INVALID_OPTION` shape via the core's re-check).
+  // This shim strips the five cache-sizing options (deltaCacheMaxBytes,
+  // deltaCacheMaxEntries, parsedObjectMemoMaxEntries, flatTreeCacheMaxBytes,
+  // deltaBaseCacheMaxBytes) from `coreOpts` before forwarding, so the core's
+  // own `validateOptions` re-check in `repository.ts` never sees them — this
+  // eager call is the ONLY guard for those five options.
   validateOptions(opts);
   const cwd = opts.cwd ?? process.cwd();
   // Resolve to the real path (follows symlinks). On macOS, /var/folders/...
@@ -112,10 +124,15 @@ export const openRepository = async (opts: OpenNodeRepositoryOptions = {}): Prom
     runtime: 'node' as const,
     layout,
     hashConfig: configFor(algorithm),
-    deltaCache: createLruCache<Uint8Array>(
+    deltaCache: createLruCache<ObjectContent>(
       opts.deltaCacheMaxBytes ?? DEFAULT_DELTA_CACHE_BYTES,
       opts.deltaCacheMaxEntries ?? DEFAULT_DELTA_CACHE_ENTRIES,
     ),
+    cacheBudgets: buildCacheBudgets({
+      parsedObjectMemoMaxEntries: opts.parsedObjectMemoMaxEntries,
+      flatTreeCacheMaxBytes: opts.flatTreeCacheMaxBytes,
+      deltaBaseCacheMaxBytes: opts.deltaBaseCacheMaxBytes,
+    }),
     concurrency: deriveLimits(nativeMachineFacts()),
     // A linked worktree lives outside `workDir`; root a fresh adapter at the
     // repo's own workDir PLUS every path the caller asked for (the facade
@@ -138,6 +155,9 @@ export const openRepository = async (opts: OpenNodeRepositoryOptions = {}): Prom
     allowInsecureHttp: _a,
     deltaCacheMaxBytes: _b,
     deltaCacheMaxEntries: _c,
+    parsedObjectMemoMaxEntries: _d,
+    flatTreeCacheMaxBytes: _e,
+    deltaBaseCacheMaxBytes: _f,
     ...coreOpts
   } = opts;
   return openRepositoryCore({ ...coreOpts, cwd: resolvedCwd }, fallback);
@@ -236,23 +256,6 @@ const nodeLayoutCapabilities = {
 };
 
 /**
- * Falls back to a synthetic bootstrap layout at `{cwd}/.git` when discovery
- * finds nothing up to the filesystem root AND no explicit `gitDir` was
- * supplied — the `openRepository`/`init`/`clone` contract against a
- * not-yet-existing repository. The fallback honours `opts.bare` /
- * `opts.workDir` (argument tier) but reads NOTHING from disk: discovery
- * already judged there is no repository here, and git never consults the
- * config of a `.git` it rejected. That branch never realpaths its
- * synthesised paths, so it always reports `canonical: false`.
- *
- * The returned `canonical` flag is the AND of every realpath THIS function
- * performed. A `workDir` that came out of discovery is an ancestor of (or
- * equal to) the already-realpathed `cwd`, and an ancestor of a realpath is
- * itself real — so those shapes skip the extra realpath entirely; only the
- * genuinely lexical sources (`core.worktree`, an explicit `opts.workDir`)
- * pay one.
- */
-/**
  * Assembles the `ExplicitLayoutOptions` object `resolveLayout` receives,
  * folding in each optional field only when the caller actually set it —
  * `exactOptionalPropertyTypes` forbids the explicit-undefined form. Extracted
@@ -274,6 +277,23 @@ const buildLayoutOptions = (
   ...(opts.bareRepositories !== undefined ? { bareRepositories: opts.bareRepositories } : {}),
 });
 
+/**
+ * Falls back to a synthetic bootstrap layout at `{cwd}/.git` when discovery
+ * finds nothing up to the filesystem root AND no explicit `gitDir` was
+ * supplied — the `openRepository`/`init`/`clone` contract against a
+ * not-yet-existing repository. The fallback honours `opts.bare` /
+ * `opts.workDir` (argument tier) but reads NOTHING from disk: discovery
+ * already judged there is no repository here, and git never consults the
+ * config of a `.git` it rejected. That branch never realpaths its
+ * synthesised paths, so it always reports `canonical: false`.
+ *
+ * The returned `canonical` flag is the AND of every realpath THIS function
+ * performed. A `workDir` that came out of discovery is an ancestor of (or
+ * equal to) the already-realpathed `cwd`, and an ancestor of a realpath is
+ * itself real — so those shapes skip the extra realpath entirely; only the
+ * genuinely lexical sources (`core.worktree`, an explicit `opts.workDir`)
+ * pay one.
+ */
 const resolveNodeLayout = async (
   cwd: string,
   opts: ExplicitLayoutOptions,

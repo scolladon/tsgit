@@ -25,7 +25,7 @@ import 'x';
       // Assert
       expect(sut.ok).toBe(true);
       if (sut.ok) {
-        expect(sut.header.surface).toBe('clone');
+        expect(sut.header.surfaces).toEqual(['clone']);
         expect(sut.header.bucket).toBe('real-http');
         expect(sut.header.unique).toBe(
           'smart-HTTP packfile exchange against canonical git-http-backend',
@@ -61,7 +61,7 @@ import 'x';
 
       // Assert
       expect(sut.ok).toBe(true);
-      if (sut.ok) expect(sut.header.surface).toBe('clone');
+      if (sut.ok) expect(sut.header.surfaces).toEqual(['clone']);
     });
 
     it('Given prose around the @proves directive, When parsed, Then extraction succeeds', () => {
@@ -108,11 +108,71 @@ import 'x';
 
       // Assert
       expect(sut.ok).toBe(true);
-      if (sut.ok) expect(sut.header.surface).toBe('clone');
+      if (sut.ok) expect(sut.header.surfaces).toEqual(['clone']);
+    });
+
+    it('Given a comma-separated surface value, When parsed, Then every listed name is returned in order', () => {
+      // Arrange
+      const source =
+        '/**\n * @proves\n *   surface: updateRef, remote.remove, remote.rename\n *   bucket: real-http\n *   unique: smart-HTTP packfile exchange\n */\n';
+
+      // Act
+      const sut = parseProvesHeader(source, sutConfig());
+
+      // Assert
+      expect(sut.ok).toBe(true);
+      if (sut.ok) {
+        expect(sut.header.surfaces).toEqual(['updateRef', 'remote.remove', 'remote.rename']);
+      }
+    });
+
+    it('Given a comma-separated surface value repeating a name, When parsed, Then the repeat is collapsed', () => {
+      // Arrange
+      const source =
+        '/**\n * @proves\n *   surface: updateRef, remote.remove, updateRef\n *   bucket: real-http\n *   unique: smart-HTTP packfile exchange\n */\n';
+
+      // Act
+      const sut = parseProvesHeader(source, sutConfig());
+
+      // Assert
+      expect(sut.ok).toBe(true);
+      if (sut.ok) expect(sut.header.surfaces).toEqual(['updateRef', 'remote.remove']);
     });
   });
 
   describe('failure modes', () => {
+    it('Given a comma-separated surface value with one invalid name, When parsed, Then returns bad-surface naming only that entry', () => {
+      // Arrange
+      const source =
+        '/**\n * @proves\n *   surface: updateRef, Remote.remove\n *   bucket: real-http\n *   unique: smart-HTTP packfile exchange\n */\n';
+
+      // Act
+      const sut = parseProvesHeader(source, sutConfig());
+
+      // Assert
+      expect(sut.ok).toBe(false);
+      if (!sut.ok) {
+        expect(sut.error.reason).toBe('bad-surface');
+        expect(sut.error.detail).toBe('Remote.remove');
+      }
+    });
+
+    it('Given a surface value holding separators only, When parsed, Then returns bad-surface with the raw value in detail', () => {
+      // Arrange
+      const source =
+        '/**\n * @proves\n *   surface: , ,\n *   bucket: real-http\n *   unique: smart-HTTP packfile exchange\n */\n';
+
+      // Act
+      const sut = parseProvesHeader(source, sutConfig());
+
+      // Assert
+      expect(sut.ok).toBe(false);
+      if (!sut.ok) {
+        expect(sut.error.reason).toBe('bad-surface');
+        expect(sut.error.detail).toBe(', ,');
+      }
+    });
+
     it('Given a file with no JSDoc, When parsed, Then returns no-jsdoc-at-top', () => {
       // Arrange
       const source = "// regular comment\nimport 'x';\n";

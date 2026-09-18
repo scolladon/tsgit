@@ -31,7 +31,7 @@ function isContainedMidxFault(fault: MidxFault): boolean {
  * A load-time Tier-A multi-pack-index fault never reaches this pass at all:
  * `enumerateObjects` awaits the same generation before this pass runs, so
  * `fsck` has already rejected by the time control would get here. Only a
- * fault reached decoding one specific entry (§ the contained walk fault) is
+ * fault reached decoding one specific entry — the contained walk fault — is
  * caught anywhere in this design, and it is caught inside `midxHealth()`,
  * not here — this pass only reads the verdict it already settled.
  */
@@ -39,7 +39,7 @@ export async function runMidxHealthPass(
   ctx: Context,
   _opts: FsckOptions,
 ): Promise<{ readonly findings: ReadonlyArray<FsckFinding>; readonly exitBit: number }> {
-  const registry = getPackRegistry(ctx);
+  const registry = await getPackRegistry(ctx);
   const health = await registry.midxHealth();
 
   const findings: FsckFinding[] = [];

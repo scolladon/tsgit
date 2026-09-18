@@ -65,7 +65,7 @@ function unionRootPrefixes(
 const REMOVE_TREE_CONCURRENCY = 8;
 
 /**
- * Numeric `open`/`writeFile` flags for the write guard's W2 leaf no-follow:
+ * Numeric `open`/`writeFile` flags for the write guard's leaf no-follow:
  * `O_NOFOLLOW` refuses a symlink leaf atomically at the syscall, closing the
  * TOCTOU window between a pre-write `lstat` and the write and costing one
  * fewer syscall per write. Ignored by Windows, where the pre-write `lstat`
@@ -485,9 +485,12 @@ export class NodeFileSystem implements FileSystem {
    *   cached realpath shares one root set.
    * - Only EXISTING parents are cached. ENOENT walks fall back to
    *   `realpathNearestExisting` and are never recorded.
-   * - `rmRecursive` and `rename` clear the cache, which is cheap relative to
-   *   a re-walk. `rm` clears nothing — a leaf removal does not change the
-   *   parent's realpath. `rename` in particular cannot narrow this to just
+   * - `rmRecursive`, `rename` and `rm` of a directory clear the cache, which
+   *   is cheap relative to a re-walk. `rm` of a leaf clears nothing — a leaf
+   *   removal does not change the parent's realpath, while a removed
+   *   directory's path can come back as a symlink leaving the root, and a
+   *   stale entry for it would pass the write containment check on the old
+   *   real parent. `rename` in particular cannot narrow this to just
    *   `dirname(src)`/`dirname(dst)`: `src` is a legitimate `rename` argument
    *   for a whole directory (`worktree move`, `git mv` on a directory), and
    *   every cached entry keyed AT `src`/`dst` or NESTED under either (a
@@ -702,12 +705,23 @@ export class NodeFileSystem implements FileSystem {
     }, path);
   };
 
+  // Attempts the append before creating the parent: the common case (a
+  // reflog's directory already exists) then costs one syscall instead of
+  // an unconditional `mkdir` on every line. `mkdir` runs only when that
+  // first attempt reports the parent is absent — a SECOND `ENOENT` after
+  // `mkdir` succeeded is a real fault (e.g. a concurrent removal), not a
+  // transient race, so it propagates rather than looping.
   appendUtf8 = async (path: string, content: string): Promise<void> => {
     const real = await this.resolveWrite(path);
     await this.assertWritableLeaf(real, path);
     await runFs(async () => {
-      await this.fsOps.mkdir(this.pathPolicy.dirname(real), { recursive: true });
-      await this.fsOps.appendFile(real, content, { encoding: 'utf-8', flag: APPEND_FLAGS });
+      try {
+        await this.fsOps.appendFile(real, content, { encoding: 'utf-8', flag: APPEND_FLAGS });
+      } catch (err) {
+        if (!isErrnoException(err) || err.code !== 'ENOENT') throw err;
+        await this.fsOps.mkdir(this.pathPolicy.dirname(real), { recursive: true });
+        await this.fsOps.appendFile(real, content, { encoding: 'utf-8', flag: APPEND_FLAGS });
+      }
     }, path);
   };
 
@@ -716,18 +730,24 @@ export class NodeFileSystem implements FileSystem {
   // follows, so probing existence via `fsOps.stat` (never `lstat`) keeps
   // that contract while dropping the realpath + double root consultation
   // the old implementation paid on every call.
-  exists = async (path: string): Promise<boolean> => {
+  exists = async (path: string): Promise<boolean> => this.isPresent(path, 'stat');
+
+  // The no-follow twin of `exists`: the same probe through `fsOps.lstat`, so a
+  // dangling symlink counts as present and an absent path costs no refusal.
+  lexists = async (path: string): Promise<boolean> => this.isPresent(path, 'lstat');
+
+  private async isPresent(path: string, probe: 'stat' | 'lstat'): Promise<boolean> {
     const { all } = this.resolvedRootSet ?? (await this.loadRootSet());
     const real = this.resolveRead(path, all);
     try {
-      await this.fsOps.stat(real);
+      await this.fsOps[probe](real);
       return true;
     } catch (err) {
       if (isErrnoException(err) && err.code === 'ENOENT') return false;
       if (isErrnoException(err)) throw mapErrno(err, path);
       throw err;
     }
-  };
+  }
 
   stat = async (path: string): Promise<FileStat> => {
     const { all } = this.resolvedRootSet ?? (await this.loadRootSet());
@@ -761,17 +781,44 @@ export class NodeFileSystem implements FileSystem {
   };
 
   rm = async (path: string): Promise<void> => {
-    // W1 resolves the parent via realpath and joins the basename without
+    // The write guard resolves the parent via realpath and joins the basename without
     // following the leaf, so dangling symlinks — whose realpath would fail
     // — can still be removed. A regular file's containment is still
     // verified via its parent directory, which is the same guarantee.
     const real = await this.resolveWrite(path);
-    await runFs(() => this.fsOps.rm(real), path);
+    try {
+      await this.fsOps.rm(real);
+    } catch (err) {
+      // Node's `fs.rm` refuses EVERY directory outright (`ERR_FS_EISDIR`)
+      // unless `recursive: true` is passed — it never even checks whether
+      // one is empty. The port's own contract is "file or EMPTY directory",
+      // so a directory falls back to `rmdir`, which succeeds only when
+      // empty and throws `ENOTEMPTY` (mapped to `directoryNotEmpty`)
+      // otherwise — never silently recursing into a non-empty one.
+      if (isErrnoException(err) && err.code === 'ERR_FS_EISDIR') {
+        await this.removeDirectoryEntry(real, path);
+        return;
+      }
+      if (isErrnoException(err)) throw mapErrno(err, path);
+      throw err;
+    }
     // Node's `fs.rm` without `recursive` only removes leaves — a regular
     // file or symlink. The parent directory and its realpath are
     // unchanged, so the parent-realpath cache entry for `dirname(real)`
-    // remains valid. No invalidation needed.
+    // remains valid; only the directory arm above invalidates.
   };
+
+  /**
+   * `rm`'s directory arm. The removed directory may itself be a cached parent
+   * (or hold nested ones), and its path may be re-created as a symlink leaving
+   * the root, so the cache is cleared in full — see `parentRealpathCache`'s
+   * field doc for why no narrower eviction is sound. A failed `rmdir` left the
+   * directory in place, so its entries stay valid.
+   */
+  private async removeDirectoryEntry(real: string, path: string): Promise<void> {
+    await runFs(() => this.fsOps.rmdir(real), path);
+    this.parentRealpathCache.clear();
+  }
 
   rename = async (src: string, dst: string): Promise<void> => {
     // Neither arm follows its leaf: `rename(2)` itself acts on the link
@@ -934,7 +981,7 @@ export class NodeFileSystem implements FileSystem {
   symlink = async (target: string, path: string): Promise<void> => {
     // A symlink's target — absolute or relative — is opaque bytes, written
     // verbatim, exactly like git: it is never resolved or checked against
-    // the root set. Only the link's OWN path is contained (W1); `symlink(2)`
+    // the root set. Only the link's OWN path is contained; `symlink(2)`
     // itself refuses any existing leaf with EEXIST, so no leaf follow can
     // occur here either.
     const real = await this.resolveWrite(path);
@@ -946,7 +993,7 @@ export class NodeFileSystem implements FileSystem {
 
   chmod = async (path: string, mode: number): Promise<void> => {
     // chmod both writes AND follows its leaf, and no portable no-follow
-    // chmod exists — so, unlike the other W2 surfaces, it cannot rely on
+    // chmod exists — so, unlike the other leaf-dereferencing write surfaces, it cannot rely on
     // `O_NOFOLLOW` and keeps an explicit leaf check on every platform.
     const real = await this.resolveWrite(path);
     await this.assertLeafSafeToWrite(real, path);
@@ -967,14 +1014,21 @@ export class NodeFileSystem implements FileSystem {
       if (err instanceof TsgitError && err.data.code === 'FILE_NOT_FOUND') return;
       throw err;
     }
-    await this.removeTree(real, path);
-    this.parentRealpathCache.clear();
+    try {
+      await this.removeTree(real, path);
+    } finally {
+      // Cleared on the failure path too, as `rename` clears on its own: the
+      // walk removes children bottom-up, so a rejection part-way leaves
+      // siblings already gone and every cached parent realpath under the tree
+      // describing a shape that is no longer there.
+      this.parentRealpathCache.clear();
+    }
   };
 
   openWithNoFollow = async (path: string, mode: 'read' | 'write'): Promise<FileHandle> => {
     // 'read' never mutates state, so it takes the lexical, syscall-free
     // gate like every other read surface; 'write' takes the write guard
-    // (W1) and, like every other W2 surface, leans on `O_NOFOLLOW` at the
+    // and, like every other leaf-dereferencing write surface, leans on `O_NOFOLLOW` at the
     // `open` below rather than a pre-open leaf check.
     let real: string;
     if (mode === 'write') {
@@ -1069,7 +1123,7 @@ export class NodeFileSystem implements FileSystem {
   /**
    * Explicit leaf check for the two situations that cannot rely on
    * `O_NOFOLLOW`: `chmod` (no portable no-follow chmod exists, on any
-   * platform) and the Windows arm of every other W2 write surface except
+   * platform) and the Windows arm of every other leaf-dereferencing write surface except
    * `writeExclusive`, which takes `assertExclusiveCreateLeaf` and refuses
    * `FILE_EXISTS` instead (`O_NOFOLLOW` is silently ignored there). A symlink
    * leaf throws `PERMISSION_DENIED`; a leaf that doesn't exist yet (ENOENT) is a no-op
@@ -1087,7 +1141,7 @@ export class NodeFileSystem implements FileSystem {
   }
 
   /**
-   * Fallback for every W2 write surface but `writeExclusive` on a platform
+   * Fallback for every leaf-dereferencing write surface but `writeExclusive` on a platform
    * whose `open(2)` does not honour `O_NOFOLLOW` (`honoursNoFollow: false` — currently Windows
    * only, where the Win32 API silently ignores the flag): the explicit
    * leaf lstat is the only defence there. A platform that DOES honour
@@ -1205,7 +1259,7 @@ export class NodeFileSystem implements FileSystem {
   }
 
   /**
-   * The single write guard (W1): leading-path containment via
+   * The single write guard: leading-path containment via
    * `realpathForCreation` (never the leaf itself — a dangling symlink,
    * whose leaf realpath would ENOENT, must stay removable) followed by an
    * unconditional per-entry post-check on the joined result. Every write

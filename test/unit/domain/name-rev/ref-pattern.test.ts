@@ -1,61 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildRefFilter, matchRefGlob } from '../../../../src/domain/name-rev/ref-pattern.js';
-
-describe('matchRefGlob', () => {
-  describe('Given a `*` pattern and a nested ref', () => {
-    describe('When matching', () => {
-      it('Then `*` crosses slashes', () => {
-        // Arrange + Act
-        const result = matchRefGlob('refs/tags/*', 'refs/tags/rel/v1');
-
-        // Assert
-        expect(result).toBe(true);
-      });
-    });
-  });
-
-  describe('Given a `?` pattern', () => {
-    describe('When matching one character', () => {
-      it('Then `?` matches a single character including a slash', () => {
-        // Arrange + Act + Assert
-        expect(matchRefGlob('refs/tags/v?', 'refs/tags/v1')).toBe(true);
-        expect(matchRefGlob('a?b', 'a/b')).toBe(true);
-      });
-    });
-  });
-
-  describe('Given a literal pattern', () => {
-    describe('When matching', () => {
-      it('Then it matches iff the ref is equal', () => {
-        // Arrange + Act + Assert
-        expect(matchRefGlob('refs/tags/v1', 'refs/tags/v1')).toBe(true);
-        expect(matchRefGlob('refs/tags/v1', 'refs/tags/v2')).toBe(false);
-      });
-    });
-  });
-
-  describe('Given a pattern that matches only a prefix', () => {
-    describe('When matching', () => {
-      it('Then the match is anchored at both ends', () => {
-        // Arrange + Act
-        const result = matchRefGlob('tags/*', 'refs/tags/x');
-
-        // Assert
-        expect(result).toBe(false);
-      });
-    });
-  });
-
-  describe('Given a pattern with a regex metacharacter', () => {
-    describe('When matching', () => {
-      it('Then the metacharacter is treated literally', () => {
-        // Arrange + Act + Assert
-        expect(matchRefGlob('refs/tags/v1.0', 'refs/tags/v1.0')).toBe(true);
-        expect(matchRefGlob('refs/tags/v1.0', 'refs/tags/v1x0')).toBe(false);
-      });
-    });
-  });
-});
+import { buildRefFilter } from '../../../../src/domain/name-rev/ref-pattern.js';
 
 describe('buildRefFilter', () => {
   describe('Given any options and the HEAD ref', () => {
@@ -120,6 +64,19 @@ describe('buildRefFilter', () => {
 
         // Act + Assert — `refs/tags/apple` matches `a*` only (`some`, not `every`).
         expect(sut.qualifies('refs/tags/apple')).toBe(true);
+      });
+    });
+  });
+
+  describe('Given an include pattern using a bracket expression', () => {
+    describe('When qualifying', () => {
+      it('Then the shared glob dialect matches through buildRefFilter too', () => {
+        // Arrange
+        const sut = buildRefFilter({ tags: false, refs: ['refs/heads/m[a-z]in'], exclude: [] });
+
+        // Act + Assert
+        expect(sut.qualifies('refs/heads/main')).toBe(true);
+        expect(sut.qualifies('refs/heads/mMin')).toBe(false);
       });
     });
   });

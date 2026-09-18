@@ -20,6 +20,12 @@
  *
  * Isolation is load-bearing: `runGit` scrubs all `GIT_*` env vars, points `HOME`
  * at a non-existent path, and sets `GIT_CONFIG_NOSYSTEM=1`.
+ *
+ * @proves
+ *   surface:        diff.attributes
+ *   bucket:         cross-tool-interop
+ *   unique:         the -diff and binary attributes decide binary-vs-text classification exactly as git's own numstat does
+ *   interopSurface: diff
  */
 import { chmod, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';

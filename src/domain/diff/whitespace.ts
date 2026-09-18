@@ -123,8 +123,8 @@ function normalizeUnderMode(bytes: Uint8Array, key: LineKey): Uint8Array {
   }
 }
 
-// A line's trailing LF is part of its identity iff the line key is inactive
-// (C4): git ignores a difference in the final line's terminator under every
+// A line's trailing LF is part of its identity iff the line key is inactive:
+// git ignores a difference in the final line's terminator under every
 // flag that makes it compare content at all, symmetrically (LF gained or
 // lost). The rule can only ever bite the last line pair — every non-final
 // line is terminated on both sides by construction — so this strip is safe
@@ -224,7 +224,7 @@ const TAIL_WS = 1;
 const TAIL_CR = 2;
 
 /**
- * Per-line fold state (§D1.3). `committed` is the fold over everything
+ * Per-line fold state. `committed` is the fold over everything
  * definitely part of the normalized line; `tentative` is `committed` plus the
  * pending droppable tail (`WS* CR?`), folded as it would be if the tail turned
  * out to be internal. Both are two-number pairs — the memory cost of "not
@@ -364,8 +364,8 @@ function foldRange(
       continue;
     }
     // A soft byte behind a pending CR proves that CR internal, not trailing —
-    // promote. Behind an open run it promotes nothing (§D1.2 row 1), and
-    // behind nothing the commit is already current.
+    // promote. Behind an open whitespace run it promotes nothing, and behind
+    // nothing the commit is already current.
     if (tail === TAIL_CR) {
       committedHash = tentHash;
       committedLength = tentLength;
@@ -398,13 +398,13 @@ function foldRange(
   return stop;
 }
 
-/** One of the fold's `committed`/`tentative` hash+length pairs (§D1.3's doc comment). */
+/** One of the fold's `committed`/`tentative` hash+length pairs. */
 interface FoldPair {
   readonly hash: number;
   readonly length: number;
 }
 
-// Which pair `emitDigest` reports (C6, §D1.4): `tentative` — the pending
+// Which pair `emitDigest` reports: `tentative` — the pending
 // droppable tail kept as-if it were content — wins only for an incomplete
 // final line's trailing CR under `ignoreCrAtEol` with mode 'none', where the
 // CR is significant, not whitespace. Every other shape reports `committed`:

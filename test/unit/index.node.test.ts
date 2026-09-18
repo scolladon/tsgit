@@ -13,9 +13,10 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { NodeSshTransport } from '../../src/adapters/node/node-ssh-transport.js';
+import { parsedObjectMemoFor } from '../../src/application/primitives/internal/object-caches.js';
 import { TsgitError } from '../../src/domain/index.js';
 import { SHA1_CONFIG, SHA256_CONFIG } from '../../src/domain/objects/hash-config.js';
-import { openRepository } from '../../src/index.node.js';
+import { type OpenNodeRepositoryOptions, openRepository } from '../../src/index.node.js';
 
 let tmpdir: string;
 
@@ -191,7 +192,7 @@ describe('Node shim — deltaCacheMaxEntries option', () => {
         // the supplied cap (3) would be replaced by DEFAULT_DELTA_CACHE_ENTRIES
         // (65 536), so the 4th entry would NOT trigger eviction.
         const sut = await openRepository({ cwd: tmpdir, deltaCacheMaxEntries: 3 });
-        const one = new Uint8Array([1]);
+        const one = { type: 'blob' as const, content: new Uint8Array([1]) };
 
         try {
           // Act
@@ -202,6 +203,61 @@ describe('Node shim — deltaCacheMaxEntries option', () => {
 
           // Assert
           expect(sut.ctx.deltaCache.entryCount).toBe(3);
+        } finally {
+          await sut.dispose();
+        }
+      });
+    });
+  });
+});
+
+describe('Node shim — parsedObjectMemoMaxEntries option', () => {
+  describe('Given an explicit parsedObjectMemoMaxEntries of 3', () => {
+    describe('When a 4th tiny entry is set', () => {
+      it('Then the memo evicts down to the cap', async () => {
+        // Arrange — the option must reach ctx.cacheBudgets for the derived
+        // memo to honour it instead of the deltaCache-derived default.
+        const sut = await openRepository({ cwd: tmpdir, parsedObjectMemoMaxEntries: 3 });
+        const memo = parsedObjectMemoFor(sut.ctx);
+        const dummy = {} as never;
+
+        try {
+          // Act
+          memo?.set('a', dummy, 1);
+          memo?.set('b', dummy, 1);
+          memo?.set('c', dummy, 1);
+          memo?.set('d', dummy, 1);
+
+          // Assert
+          expect(memo?.entryCount).toBe(3);
+        } finally {
+          await sut.dispose();
+        }
+      });
+    });
+  });
+});
+
+describe('Node shim — cacheBudgets wiring', () => {
+  describe.each([
+    ['parsedObjectMemoMaxEntries', 3],
+    ['flatTreeCacheMaxBytes', 4096],
+    ['deltaBaseCacheMaxBytes', 8192],
+  ] as const)('Given %s: %s', (option, value) => {
+    describe('When openRepository runs', () => {
+      it('Then ctx.cacheBudgets carries exactly that one field', async () => {
+        // Arrange / Act — each of the three budget overrides must reach
+        // ctx.cacheBudgets on its own; a literal that dropped one of the
+        // other two fields from buildCacheBudgets({...}) would survive every
+        // test that pins only parsedObjectMemoMaxEntries.
+        const sut = await openRepository({
+          cwd: tmpdir,
+          [option]: value,
+        } as OpenNodeRepositoryOptions);
+
+        try {
+          // Assert
+          expect(sut.ctx.cacheBudgets).toStrictEqual({ [option]: value });
         } finally {
           await sut.dispose();
         }
@@ -277,6 +333,43 @@ describe('Node shim — explicit layout option validation ordering', () => {
         expect(data.code).toBe('INVALID_OPTION');
         if (data.code === 'INVALID_OPTION') {
           expect(data.option).toBe('gitDir');
+        }
+      });
+    });
+  });
+});
+
+describe('Node shim — cache option validation', () => {
+  describe.each([
+    ['deltaCacheMaxBytes', -1],
+    ['deltaCacheMaxBytes', 1.5],
+    ['deltaCacheMaxEntries', -1],
+    ['deltaCacheMaxEntries', 1.5],
+    ['parsedObjectMemoMaxEntries', -1],
+    ['parsedObjectMemoMaxEntries', 1.5],
+    ['flatTreeCacheMaxBytes', -1],
+    ['flatTreeCacheMaxBytes', 1.5],
+    ['deltaBaseCacheMaxBytes', -1],
+    ['deltaBaseCacheMaxBytes', 1.5],
+  ] as const)('Given %s: %s', (option, value) => {
+    describe('When openRepository runs', () => {
+      it(`Then it throws INVALID_OPTION{option: "${option}"} — the shim strips this field before the core's own re-check ever sees it`, async () => {
+        // Arrange / Act — the five cache options are stripped from `coreOpts`
+        // before forwarding, so ONLY this shim's eager `validateOptions` call
+        // can catch an invalid value; the core-level re-check never sees it.
+        let caught: unknown;
+        try {
+          await openRepository({ cwd: tmpdir, [option]: value } as OpenNodeRepositoryOptions);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('INVALID_OPTION');
+        if (data.code === 'INVALID_OPTION') {
+          expect(data.option).toBe(option);
         }
       });
     });

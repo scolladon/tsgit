@@ -1,15 +1,22 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../../../src/adapters/memory/memory-adapter.js';
 import {
   buildBlobFilenameMap,
   runContentValidationPass,
 } from '../../../../../../src/application/commands/internal/fsck/content-validation.js';
 import type { ObjectId, TreeEntry } from '../../../../../../src/domain/objects/index.js';
-import { FILE_MODE, serializeObject } from '../../../../../../src/domain/objects/index.js';
+import {
+  FILE_MODE,
+  serializeHeader,
+  serializeObject,
+} from '../../../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../../../src/domain/objects/tree.js';
 import { writeSyntheticPack } from '../../../primitives/pack-fixture.js';
 
 const sut = runContentValidationPass;
+
+/** No `fsck.skipList` configured. */
+const NO_SKIPS: ReadonlySet<string> = new Set();
 
 const BLOB_SHA_A = new Uint8Array(20).fill(1);
 const BLOB_SHA_B = new Uint8Array(20).fill(2);
@@ -61,7 +68,7 @@ describe('Given a universe containing an object that is neither loose nor readab
       const unreadableId = '0000000000000000000000000000000000000001' as ObjectId;
 
       // Act
-      const result = await sut(ctx, new Set([unreadableId]), false, new Map());
+      const result = await sut(ctx, new Set([unreadableId]), false, new Map(), new Map(), NO_SKIPS);
 
       // Assert
       expect(result.findings).toEqual([
@@ -93,7 +100,7 @@ describe('Given a packed blob whose bytes do not hash to its indexed id', () => 
       const blobId = ids[0] as ObjectId;
 
       // Act
-      const result = await sut(ctx, new Set([blobId]), false, new Map());
+      const result = await sut(ctx, new Set([blobId]), false, new Map(), new Map(), NO_SKIPS);
 
       // Assert
       const badTypeFindings = result.findings.filter(
@@ -115,6 +122,35 @@ describe('Given a packed blob whose bytes do not hash to its indexed id', () => 
   });
 });
 
+describe('Given a packed blob validated for content', () => {
+  describe('When runContentValidationPass computes its hash', () => {
+    it('Then the hasher receives the canonical header then the body, in that order', async () => {
+      // Arrange — the order is the mutant kill: a swapped or dropped update
+      // call would still hash *something*, but not the canonical
+      // `<type> <size>\0<content>` scheme, and no header+body buffer is ever
+      // concatenated to build it.
+      const content = ENCODER.encode('order-sensitive content');
+      const ctx = createMemoryContext();
+      const ids = await writeSyntheticPack(ctx, 'order', [{ kind: 'base', type: 'blob', content }]);
+      const blobId = ids[0] as ObjectId;
+      const updateSpy = vi.fn();
+      vi.spyOn(ctx.hash, 'createHasher').mockReturnValue({
+        update: updateSpy,
+        digest: vi.fn(),
+        digestHex: vi.fn().mockResolvedValue(blobId),
+      });
+
+      // Act
+      await sut(ctx, new Set([blobId]), false, new Map(), new Map(), NO_SKIPS);
+
+      // Assert
+      expect(updateSpy.mock.calls).toHaveLength(2);
+      expect(updateSpy.mock.calls[0]?.[0]).toEqual(serializeHeader('blob', content.length));
+      expect(updateSpy.mock.calls[1]?.[0]).toEqual(content);
+    });
+  });
+});
+
 describe('Given a packed tree with a duplicate entry name', () => {
   describe('When runContentValidationPass validates that object', () => {
     it('Then emits a duplicateEntries finding instead of badType', async () => {
@@ -126,7 +162,7 @@ describe('Given a packed tree with a duplicate entry name', () => {
       const { ctx, treeId } = await writePackedTree(treeBody);
 
       // Act
-      const result = await sut(ctx, new Set([treeId]), false, new Map());
+      const result = await sut(ctx, new Set([treeId]), false, new Map(), new Map(), NO_SKIPS);
 
       // Assert
       const msgIds = result.findings
@@ -146,7 +182,7 @@ describe('Given a packed tree with a non-octal byte in the mode', () => {
       const { ctx, treeId } = await writePackedTree(treeBody);
 
       // Act
-      const result = await sut(ctx, new Set([treeId]), false, new Map());
+      const result = await sut(ctx, new Set([treeId]), false, new Map(), new Map(), NO_SKIPS);
 
       // Assert
       const msgIds = result.findings
@@ -166,7 +202,7 @@ describe('Given a packed tree with an entry named "."', () => {
       const { ctx, treeId } = await writePackedTree(treeBody);
 
       // Act
-      const result = await sut(ctx, new Set([treeId]), false, new Map());
+      const result = await sut(ctx, new Set([treeId]), false, new Map(), new Map(), NO_SKIPS);
 
       // Assert
       const msgIds = result.findings
@@ -186,7 +222,7 @@ describe('Given a packed tree with an entry named ".."', () => {
       const { ctx, treeId } = await writePackedTree(treeBody);
 
       // Act
-      const result = await sut(ctx, new Set([treeId]), false, new Map());
+      const result = await sut(ctx, new Set([treeId]), false, new Map(), new Map(), NO_SKIPS);
 
       // Assert
       const msgIds = result.findings
@@ -206,7 +242,7 @@ describe('Given a packed tree with an entry name containing "/"', () => {
       const { ctx, treeId } = await writePackedTree(treeBody);
 
       // Act
-      const result = await sut(ctx, new Set([treeId]), false, new Map());
+      const result = await sut(ctx, new Set([treeId]), false, new Map(), new Map(), NO_SKIPS);
 
       // Assert
       const msgIds = result.findings
@@ -231,7 +267,7 @@ describe('Given a packed tree whose entries are not sorted', () => {
       const { ctx, treeId } = await writePackedTree(treeBody);
 
       // Act
-      const result = await sut(ctx, new Set([treeId]), false, new Map());
+      const result = await sut(ctx, new Set([treeId]), false, new Map(), new Map(), NO_SKIPS);
 
       // Assert
       const msgIds = result.findings
@@ -301,6 +337,42 @@ describe('Given a tree entry whose nameBytes are ".gitattributes" but whose deco
 
       // Assert
       expect(result.get(blobId)).toBe('.gitattributes');
+    });
+  });
+});
+
+describe('Given fsck.<msg-id> re-types the id an unreadable object would report', () => {
+  describe('When runContentValidationPass validates that object', () => {
+    it.each([
+      { configured: 'ignore' as const, label: 'ignore' },
+      { configured: 'warning' as const, label: 'warn' },
+    ])('Then the corrupt-object report survives at error severity for $label', async (row) => {
+      // Arrange — git raises this one through error(), which no fsck.<id> re-types.
+      const ctx = createMemoryContext();
+      const unreadableId = '0000000000000000000000000000000000000003' as ObjectId;
+      const severities = new Map([['badType'.toLowerCase(), row.configured]]);
+
+      // Act
+      const result = await sut(
+        ctx,
+        new Set([unreadableId]),
+        false,
+        new Map(),
+        severities,
+        NO_SKIPS,
+      );
+
+      // Assert
+      expect(result.findings).toEqual([
+        {
+          type: 'bad-object',
+          id: unreadableId,
+          objectType: 'unknown',
+          msgId: 'badType',
+          severity: 'error',
+        },
+      ]);
+      expect(result.exitBit).toBe(1);
     });
   });
 });

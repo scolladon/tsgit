@@ -6,6 +6,8 @@
  * detection, and superseded-pack retirement. See `maintenance.ts`'s module
  * doc for the task's observable contract.
  */
+
+import { errorDataCode } from '../../../domain/error-data-code.js';
 import type { ObjectId } from '../../../domain/objects/index.js';
 import { PACK_NAME_HASH_PATHLESS, parseMultiPackIndex } from '../../../domain/storage/index.js';
 import { allObjectIds } from '../../../domain/storage/pack-index.js';
@@ -31,7 +33,6 @@ import {
   retireCruftPack,
   writeCruftPack,
 } from '../../primitives/internal/cruft-pack-lifecycle.js';
-import { errorDataCode } from '../../primitives/internal/error-data-code.js';
 import { forgetLooseOidPrefix } from '../../primitives/internal/loose-oid-cache.js';
 import { forgetParsedObjectMemo } from '../../primitives/internal/object-caches.js';
 import {
@@ -154,26 +155,12 @@ async function listTempFileCandidatesTolerant(
     .map((entry) => `${dir}/${entry.name}`);
 }
 
-/** Whether `dir`'s own `readdir` fault means "nothing to enumerate here" —
- *  tolerated the same way git's fanout walk tolerates ENOENT. A real
- *  filesystem (node, browser) reports a missing directory as
- *  `FILE_NOT_FOUND` directly (its `ENOENT` maps there, distinct from
- *  `ENOTDIR`). tsgit's `readdir` port contract, though, only documents
- *  `NOT_A_DIRECTORY`, and the in-memory adapter has no separate "doesn't
- *  exist" outcome for `readdir` at all — it reports both "missing" and "a
- *  plain file sits here instead of a directory" as `NOT_A_DIRECTORY`. A
- *  `NOT_A_DIRECTORY` fault therefore falls back to `exists(dir)` to tell the
- *  two apart: absent still tolerates (matches git's ENOENT tolerance); a
- *  real file blocking the fanout name rethrows, exactly as git's `opendir`
- *  hard-failing on a genuine ENOTDIR would. The fallback only ever runs on
- *  that one fault, so the common 254-miss path (every real adapter's
- *  `FILE_NOT_FOUND`) costs nothing extra. */
-async function isFanoutDirAbsent(ctx: Context, dir: string, error: unknown): Promise<boolean> {
-  const code = errorDataCode(error);
-  if (code === 'FILE_NOT_FOUND') return true;
-  if (code !== 'NOT_A_DIRECTORY') return false;
-  return !(await ctx.fs.exists(dir));
-}
+/** Whether a fanout `dir`'s own `readdir` fault means "nothing to enumerate
+ *  here" — git's fanout walk tolerates ENOENT alone. Every adapter reports a
+ *  missing directory as `FILE_NOT_FOUND`; `NOT_A_DIRECTORY` means a file sits
+ *  at the name or above it, which git's `opendir` refuses, so it rethrows
+ *  without re-probing the name. */
+const isFanoutDirAbsent = (error: unknown): boolean => errorDataCode(error) === 'FILE_NOT_FOUND';
 
 /** `prefix`-matching file paths sitting directly inside a FANOUT `dir` —
  *  tolerant only of `dir` itself being absent (254 of the 256
@@ -190,7 +177,7 @@ async function listTempFileCandidatesStrict(
   try {
     entries = await ctx.fs.readdir(dir);
   } catch (error) {
-    if (!(await isFanoutDirAbsent(ctx, dir, error))) throw error;
+    if (!isFanoutDirAbsent(error)) throw error;
     return [];
   }
   return entries
@@ -338,8 +325,8 @@ async function computeReachable(ctx: Context): Promise<ReachableClosure> {
 /**
  * Step 1b: `lstat` every registered pack ONCE, before anything is written —
  * `mtimeMs` is the only source for an object migrating out of a superseded
- * NORMAL pack (Pin Y), and `size` on the same result is the free half of
- * `packBytesBefore`/`packBytesAfter` (R33).
+ * NORMAL pack, and `size` on the same result is the free half of
+ * `packBytesBefore`/`packBytesAfter`.
  */
 async function lstatPacks(
   ctx: Context,
@@ -398,16 +385,16 @@ async function collectNormalPackData(
  * reachable set itself, already in the closure's own traversal order —
  * instead of iterating `owned` and `ownedPromisor` separately the way
  * `cruftCandidatesOf` still does. Every reachable object is a member by
- * construction, so the only tests left are exclusion (`keptOids`, Pin V's
- * total exclusion — never repacked and never crufted even when ALSO loose
- * or in a normal pack) and ownership (`owned` OR `ownedPromisor` — a
+ * construction, so the only tests left are exclusion (`keptOids` — a
+ * `.keep`-marked pack's objects are never repacked and never crufted, even
+ * when ALSO loose or in a normal pack) and ownership (`owned` OR `ownedPromisor` — a
  * REACHABLE promisor-pack object duplicates into the normal pack the same
  * way git's own does not treat promisor membership as a `.keep`-style
  * exclusion; see `partitionOwned`'s own doc for the full reachable/
  * unreachable promisor distinction). No sort: traversal order is a pure
  * function of `computeReachable`'s sorted roots and the graph alone, so
- * Pin W's no-op boundary now holds by construction rather than by an
- * explicit `.sort()`. Every member's `recency` is its own traversal
+ * a repeat run over an unchanged object set reproduces the same pack bytes
+ * by construction rather than by an explicit `.sort()`. Every member's `recency` is its own traversal
  * ordinal, carried on the entry `reachable` maps it to — iterating the map
  * IS iterating the traversal, so the ordinal arrives with the entry rather
  * than costing a second lookup.
@@ -440,7 +427,7 @@ function toNormalPackInputs(
  * The cruft-candidate half: `owned`'s own iteration order, unchanged since
  * before this change — cruft passes neither hash nor recency, so its bytes
  * depend only on the survivor SET, never this array's order. `keptOids` is
- * excluded (Pin V, as above); every `ownedPromisor` member is excluded
+ * excluded (as above); every `ownedPromisor` member is excluded
  * outright, reachable or not — a reachable one already went to the normal
  * pack via `toNormalPackInputs`, and an unreachable one must never reach
  * cruft, because a cruft pack cannot carry the `.promisor` marker and
@@ -534,9 +521,9 @@ interface NormalPackOutcome {
    * bytes): `'cruft'` when the sha matches an EXISTING cruft pack (a
    * resurrected cruft set moving intact into the normal pack — that pack
    * must be DECLASSIFIED, its `.mtimes` dropped, never retired as garbage);
-   * `'normal'` when it matches an existing normal pack (Pin W's no-op
-   * boundary — that exact pack must NOT appear in the retirement list,
-   * since it now IS the fresh normal pack); `'none'` otherwise. The normal
+   * `'normal'` when it matches an existing normal pack (that exact pack
+   * must NOT appear in the retirement list, since it now IS the fresh
+   * normal pack); `'none'` otherwise. The normal
    * pack now carries hashes and recency where the cruft pack carries
    * neither, so `'cruft'` needs the same SEQUENCE, not just the same set —
    * a resurrected set of more than one object generally takes the
@@ -547,12 +534,11 @@ interface NormalPackOutcome {
 
 /**
  * Skipped entirely (`packId: undefined`) when `objects` is empty — git
- * writes no pack rather than a zero-object one (Pin V). Otherwise ALWAYS
- * writes fresh, via `writePackArtifactsViaQuarantine`: Pin W shows git
- * rewrites even an unchanged single pack on every run (a skipped rewrite
- * would leave the pack's mtime stale, silently ageing objects that later
- * migrate out of it — Pin Y), so there is no "already consolidated ⇒ skip"
- * branch here.
+ * writes no pack rather than a zero-object one. Otherwise ALWAYS writes
+ * fresh, via `writePackArtifactsViaQuarantine`: git rewrites even an
+ * unchanged single pack on every run (a skipped rewrite would leave the
+ * pack's mtime stale, silently ageing objects that later migrate out of
+ * it), so there is no "already consolidated ⇒ skip" branch here.
  */
 async function buildAndWriteNormalPack(
   ctx: Context,
@@ -594,7 +580,7 @@ interface PromisorPackOutcome {
  * repository that is not a partial clone. Otherwise ALWAYS writes fresh, via
  * `writePackArtifactsViaQuarantine`, for the same no-skip reason step 6's
  * normal pack never short-circuits: a repeat run over an unchanged promisor
- * set reproduces the same sha (Pin W's boundary, one class over), and the
+ * set reproduces the same sha (the same no-op boundary, one class over), and the
  * quarantine writer is what lets that same-name rewrite land without a
  * `FILE_EXISTS` refusal.
  */
@@ -625,7 +611,7 @@ async function buildAndWritePromisorPack(
  * EXISTING cruft pack's bytes byte-for-byte is real: the two-cruft-pack
  * crash-recovery state is always the newer one being a superset of the
  * older, so a follow-up run's union-derived survivor set routinely
- * reproduces the newer pack exactly. Unlike a normal pack (Pin Y), a cruft
+ * reproduces the newer pack exactly. Unlike a normal pack, a cruft
  * pack's OWN file mtime carries no semantic weight — ages live in the
  * `.mtimes` sidecar, never the `stat` — so reusing the file in place is
  * safe and simpler than a quarantine rewrite: no `FILE_EXISTS` risk, no
@@ -723,8 +709,8 @@ async function rmTolerant(ctx: Context, path: string): Promise<void> {
  * FIRST (removes it from every reader's candidate scan in one unlink, so
  * everything after operates on litter), then `.pack`/`.rev`/`.bitmap` —
  * there is no class-carrying sidecar to protect here, so the rest carries
- * no ordering constraint of its own. Pin X: a superseded pack's `.bitmap`
- * is deleted with it, never left orphaned.
+ * no ordering constraint of its own. A superseded pack's `.bitmap` is
+ * deleted with it, never left orphaned.
  */
 async function retireNormalPack(ctx: Context, packDir: string, packSha: string): Promise<void> {
   await rmTolerant(ctx, `${packDir}/pack-${packSha}.idx`);
@@ -791,9 +777,9 @@ async function retireSupersededPacks(
 
 /**
  * Deletes `objects/pack/multi-pack-index` whenever it names any pack this
- * run retired (Pin T; Pin G row 1) — the only available verb, since tsgit
- * has no midx writer. A midx naming only surviving (kept) packs is left
- * alone (Pin G row 2). A no-op, no read at all, when nothing was retired.
+ * run retired — the only available verb, since tsgit has no midx writer. A
+ * midx naming only surviving (kept) packs is left alone. A no-op, no read at
+ * all, when nothing was retired.
  */
 async function expireMidxIfNeeded(
   ctx: Context,
@@ -826,7 +812,7 @@ async function packedAnywhere(
   ctx: Context,
   looseSet: ReadonlySet<ObjectId>,
 ): Promise<ReadonlySet<ObjectId>> {
-  const registry = getPackRegistry(ctx);
+  const registry = await getPackRegistry(ctx);
   const looseArray = [...looseSet];
   const hits = await boundedMapFor(ctx, 'ioBound', looseArray, async (id) =>
     (await registry.lookup(id)) !== undefined ? id : undefined,
@@ -867,7 +853,7 @@ export async function runGcTask(
   const looseSet = new Set(looseIds);
   const looseObjectsBefore = looseIds.length;
 
-  const registry = getPackRegistry(ctx);
+  const registry = await getPackRegistry(ctx);
   const allPacksBefore = await registry.all();
   const packsBefore = allPacksBefore.length;
 
@@ -900,7 +886,7 @@ export async function runGcTask(
   );
 
   // --- step 2: existing cruft pack(s) — classification.cruft already
-  // excludes a pack that ALSO carries .keep (Pin V), so it is never
+  // excludes a pack that ALSO carries .keep, so it is never
   // treated as existing cruft here nor retired below.
   const existingCruft = await readExistingCruftPack(ctx, classification.cruft);
   const existingCruftShas = new Set(existingCruft.packShas);
@@ -1064,9 +1050,9 @@ export async function runGcTask(
   await removeStaleTempFiles(ctx, packDir, cutoff);
 
   // --- step 11: invalidate, refresh, packBytesAfter ---
-  // Stryker disable next-line CallExpression: equivalent — the registry's dirty-flag/lazy-rescan model (`refreshPackRegistry` marks dirty; the NEXT `.all()`/`.lookup()` call performs the actual re-scan) means this call is always redundant with an earlier one: every pack write in this run happens before step 8's own `refreshPackRegistry` + the registry calls inside the verify/packedAnywhere loops (so those already observe every write), and `retireSupersededPacks` performs its OWN `registry.refresh()` immediately before any unlink whenever it retires anything — so `getPackRegistry(ctx).all()` below always re-scans against a state already known-fresh, with or without this line — confirmed empirically (hand-applied CallExpression removal, full covering set still green).
+  // Stryker disable next-line CallExpression: equivalent — the registry's dirty-flag/lazy-rescan model (`refreshPackRegistry` marks dirty; the NEXT `.all()`/`.lookup()` call performs the actual re-scan) means this call is always redundant with an earlier one: every pack write in this run happens before step 8's own `refreshPackRegistry` + the registry calls inside the verify/packedAnywhere loops (so those already observe every write), and `retireSupersededPacks` performs its OWN `registry.refresh()` immediately before any unlink whenever it retires anything — so `(await getPackRegistry(ctx)).all()` below always re-scans against a state already known-fresh, with or without this line — confirmed empirically (hand-applied CallExpression removal, full covering set still green).
   refreshPackRegistry(ctx);
-  const allPacksAfter = await getPackRegistry(ctx).all();
+  const allPacksAfter = await (await getPackRegistry(ctx)).all();
   const packsAfter = allPacksAfter.length;
   const afterStats = await lstatPacks(ctx, allPacksAfter);
   const packBytesAfter = sumPackBytes([...afterStats.values()]);

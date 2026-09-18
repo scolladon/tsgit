@@ -9,7 +9,7 @@ import { refNotFound } from '../../../domain/refs/error.js';
 import { refCandidates } from '../../../domain/refs/index.js';
 import type { Context } from '../../../ports/context.js';
 import { resolveOidPrefix } from '../../primitives/resolve-oid-prefix.js';
-import { resolveRef } from '../../primitives/resolve-ref.js';
+import { resolveRefOrMissing } from '../../primitives/resolve-ref.js';
 
 export const resolveCommitIsh = async (ctx: Context, target: string): Promise<ObjectId> => {
   // A full-width oid is an object name and wins over a same-named ref: without
@@ -18,10 +18,13 @@ export const resolveCommitIsh = async (ctx: Context, target: string): Promise<Ob
   // the object first.
   if (isOid(target, ctx.hashConfig)) return target as ObjectId;
   // gitrevisions ref-DWIM: try each candidate namespace in priority order,
-  // peeling annotated tags to their underlying commit.
+  // peeling annotated tags to their underlying commit. resolveRefOrMissing
+  // signals a miss by returning undefined, so a swept-past candidate costs
+  // no thrown-and-caught REF_NOT_FOUND.
   for (const candidate of refCandidates(target)) {
     try {
-      return await resolveRef(ctx, candidate, { peel: true });
+      const id = await resolveRefOrMissing(ctx, candidate, { peel: true });
+      if (id !== undefined) return id;
     } catch {
       // Not this candidate — fall through to the next namespace.
     }

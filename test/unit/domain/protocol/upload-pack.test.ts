@@ -1754,3 +1754,129 @@ describe('parseUploadPackResponse — buffered non-data first packet', () => {
     });
   });
 });
+
+describe('upload-pack — the remote error packet', () => {
+  describe('Given a negotiation response whose first line is an ERR packet', () => {
+    describe('When parsed', () => {
+      it('Then the remote message is surfaced instead of a sideband band', async () => {
+        // Arrange — canonical git answers an unsatisfiable want with a bare
+        // `ERR <msg>` pkt-line where the NAK would have gone.
+        const source = asyncOf<PktLine>([
+          { kind: 'data', payload: bytesOf(`ERR upload-pack: not our ref ${OID1}`) },
+          { kind: 'flush' },
+        ]);
+
+        // Act
+        let captured: unknown;
+        try {
+          const result = await parseUploadPackResponse(source, { sideBand: true });
+          await collect(result.packBody);
+        } catch (error) {
+          captured = error;
+        }
+
+        // Assert
+        expect(captured).toBeInstanceOf(TsgitError);
+        expect((captured as TsgitError).data).toEqual({
+          code: 'REMOTE_ERROR',
+          message: `upload-pack: not our ref ${OID1}`,
+        });
+      });
+    });
+  });
+
+  describe('Given a negotiation response whose ERR packet carries a trailing newline', () => {
+    describe('When parsed', () => {
+      it('Then the message is reported without that newline', async () => {
+        // Arrange
+        const source = asyncOf<PktLine>([
+          { kind: 'data', payload: bytesOf('ERR boom with newline\n') },
+          { kind: 'flush' },
+        ]);
+
+        // Act
+        let captured: unknown;
+        try {
+          await parseUploadPackResponse(source, { sideBand: true });
+        } catch (error) {
+          captured = error;
+        }
+
+        // Assert
+        expect((captured as TsgitError).data).toEqual({
+          code: 'REMOTE_ERROR',
+          message: 'boom with newline',
+        });
+      });
+    });
+  });
+
+  describe('Given a negotiation response whose ERR packet carries no message', () => {
+    describe('When parsed', () => {
+      it('Then the refusal reports an empty remote message', async () => {
+        // Arrange
+        const source = asyncOf<PktLine>([
+          { kind: 'data', payload: bytesOf('ERR ') },
+          { kind: 'flush' },
+        ]);
+
+        // Act
+        let captured: unknown;
+        try {
+          await parseUploadPackResponse(source, { sideBand: true });
+        } catch (error) {
+          captured = error;
+        }
+
+        // Assert
+        expect((captured as TsgitError).data).toEqual({ code: 'REMOTE_ERROR', message: '' });
+      });
+    });
+  });
+
+  describe('Given a negotiation response whose line is ERR without the separating space', () => {
+    describe('When parsed', () => {
+      it('Then it is NOT taken for a remote error packet', async () => {
+        // Arrange — git requires the literal `ERR ` prefix; `ERRboom` stays a
+        // plain data line and flows on to the pack body.
+        const source = asyncOf<PktLine>([
+          { kind: 'data', payload: bytesOf('ERRboom') },
+          { kind: 'flush' },
+        ]);
+
+        // Act
+        const result = await parseUploadPackResponse(source, { sideBand: false });
+        const collected = await collect(result.packBody);
+
+        // Assert
+        expect(collected).toEqual([bytesOf('ERRboom')]);
+      });
+    });
+  });
+
+  describe('Given an advertisement whose first line is an ERR packet', () => {
+    describe('When parsed', () => {
+      it('Then the remote message is surfaced', async () => {
+        // Arrange
+        const source = asyncOf<PktLine>([
+          { kind: 'data', payload: bytesOf('ERR upload-pack: nope') },
+          { kind: 'flush' },
+        ]);
+
+        // Act
+        let captured: unknown;
+        try {
+          await parseAdvertisedRefs(source, 'git-upload-pack', { servicePrologue: false });
+        } catch (error) {
+          captured = error;
+        }
+
+        // Assert
+        expect((captured as TsgitError).data).toEqual({
+          code: 'REMOTE_ERROR',
+          message: 'upload-pack: nope',
+        });
+      });
+    });
+  });
+});

@@ -11,8 +11,8 @@
  * byte-for-byte faithfulness proof, not just a size check.
  *
  * @proves
- *   surface:        fetch-pack.walkPackEntries (memory adapter)
- *   bucket:         memory-large-compressed-pack-interop
+ *   surface:        fetch-pack.walkPackEntries
+ *   bucket:         cross-tool-interop
  *   unique:         memory streamInflate decodes a >64 KiB-compressed pack entry, matching git's object ids
  *   interopSurface: packfile
  */

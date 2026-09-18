@@ -15,7 +15,7 @@ import { resolveRef } from '../../../../src/application/primitives/resolve-ref.j
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
-import { buildSeededContext } from '../primitives/fixtures.js';
+import { buildSeededContext, seedMaxTreeDepth } from '../primitives/fixtures.js';
 
 const author: AuthorIdentity = {
   name: 'Ada',
@@ -96,6 +96,48 @@ describe('worktreeList', () => {
 
         // Act + Assert
         await expectError(() => worktreeList(ctx), 'NOT_A_REPOSITORY');
+      });
+    });
+  });
+
+  describe('Given a malformed core.maxTreeDepth', () => {
+    describe('When worktreeList runs', () => {
+      it('Then it throws CONFIG_BAD_NUMERIC_VALUE — the gateWorktree prologue covers list too', async () => {
+        // Arrange
+        const ctx = await buildSeededContext({
+          refs: [{ name: 'refs/heads/main' as RefName, id: 'a'.repeat(40) as ObjectId }],
+        });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+        await seedMaxTreeDepth(ctx, '2.5');
+
+        // Act + Assert
+        await expectError(() => worktreeList(ctx), 'CONFIG_BAD_NUMERIC_VALUE');
+      });
+    });
+  });
+});
+
+describe('worktreeMove / worktreeRemove — repo-settings class boundary', () => {
+  describe('Given a malformed core.maxTreeDepth and a nonexistent worktree name', () => {
+    describe('When worktreeMove runs', () => {
+      it('Then it dies on the class, not on "not a worktree"', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        await seedMaxTreeDepth(ctx, '2.5');
+
+        // Act + Assert
+        await expectError(() => worktreeMove(ctx, 'nope', 'elsewhere'), 'CONFIG_BAD_NUMERIC_VALUE');
+      });
+    });
+
+    describe('When worktreeRemove runs', () => {
+      it('Then it dies on the class, not on "not a worktree"', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        await seedMaxTreeDepth(ctx, '2.5');
+
+        // Act + Assert
+        await expectError(() => worktreeRemove(ctx, 'nope'), 'CONFIG_BAD_NUMERIC_VALUE');
       });
     });
   });
@@ -401,6 +443,19 @@ describe('worktreeAdd', () => {
 
         // Act + Assert
         await expectError(() => worktreeAdd(ctx, options), code);
+      });
+    });
+  });
+
+  describe('Given a malformed core.maxTreeDepth', () => {
+    describe('When worktreeAdd runs', () => {
+      it('Then it throws CONFIG_BAD_NUMERIC_VALUE via the gateWorktree prologue', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        await seedMaxTreeDepth(ctx, '2.5');
+
+        // Act + Assert
+        await expectError(() => worktreeAdd(ctx, { path: 'wt-gate' }), 'CONFIG_BAD_NUMERIC_VALUE');
       });
     });
   });

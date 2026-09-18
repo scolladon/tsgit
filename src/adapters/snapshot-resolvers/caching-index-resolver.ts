@@ -53,7 +53,7 @@ const readTrailer = async (
 ): Promise<Uint8Array> => fs.readSlice(path, fileSize - size, size);
 
 /**
- * Three-tier caching `IndexResolver` (design §10.4, ADR-150). On each
+ * Three-tier caching `IndexResolver` (ADR-150). On each
  * `resolve()`:
  *
  *   1. **Generation fast path** — if `cachedGen === view.current('index')`

@@ -16,6 +16,12 @@
  *   surface: rebase
  *   kind:    equivalent-under-readback
  *   format:  git-index-tree-state
+ *
+ * @proves
+ *   surface:        rebase, rebase.continue, rebase.abort
+ *   bucket:         cross-tool-interop
+ *   unique:         a rebase either tool starts is resumable by the other, and both drop the same already-upstream commit
+ *   interopSurface: rebaseMerge, reflog
  */
 import { writeFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';

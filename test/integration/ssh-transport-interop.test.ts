@@ -9,6 +9,12 @@
  * remote command directly against the shared local bare repo, so both
  * tools drive the real git-upload-pack process through tsgit's ssh client
  * code path (real git) and tsgit's own (tsgit).
+ *
+ * @proves
+ *   surface:        clone.ssh
+ *   bucket:         cross-tool-interop
+ *   unique:         both tools clone the same bare repo through one fake ssh bridge and land identical worktree, index, HEAD and reflog
+ *   interopSurface: index, reflog
  */
 import { accessSync, cpSync } from 'node:fs';
 import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';

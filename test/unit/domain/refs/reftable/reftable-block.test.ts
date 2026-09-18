@@ -8,11 +8,13 @@ import {
   decodeObjRecord,
   findInBlock,
   iterateReftableRefs,
+  iterateReftableRefsFrom,
   lookupReftableRef,
   type ReftableRefRecord,
   readPrefixedName,
   refRecordDecoder,
   SUFFIX_SHIFT,
+  VALUE_TYPE_SYMBOLIC,
   walkBlockRecords,
 } from '../../../../../src/domain/refs/reftable/reftable-block.js';
 import {
@@ -39,9 +41,32 @@ import {
 
 // --- Fixture helpers -----------------------------------------------------
 
+/** The reftable block footer's own two fields, in bytes. */
+const RESTART_COUNT_BYTES = 2;
+const RESTART_ENTRY_BYTES = 3;
+
+/** Overwrite one big-endian uint24 in place — the width every restart entry
+ *  and every `block_len` is stored at. */
+function writeUint24(view: DataView, at: number, value: number): void {
+  view.setUint8(at, (value >>> 16) & 0xff);
+  view.setUint8(at + 1, (value >>> 8) & 0xff);
+  view.setUint8(at + 2, value & 0xff);
+}
+
 function oid(fill: number): Uint8Array {
   return new Uint8Array(20).fill(fill);
 }
+
+/** A v1/SHA-1 header, for decoding a hand-built record without a file around it. */
+const HEADER_FOR_DECODE = {
+  version: 1,
+  blockSize: 0,
+  minUpdateIndex: 0n,
+  maxUpdateIndex: 0n,
+  hashId: 'sha1',
+  headerLength: 24,
+  digestLength: 20,
+} as const;
 
 const identityDeflate = async (data: Uint8Array): Promise<Uint8Array> => data;
 
@@ -435,6 +460,34 @@ describe('reftable-block', () => {
             'restart-count',
             'restart_count',
           );
+        });
+      });
+    });
+
+    describe('Given a first block whose restart offset points outside its record area', () => {
+      describe.each([
+        { label: 'into the file header, before any record', patched: 0, hint: 'restart offset 0' },
+        { label: 'into the restart array itself', patched: -1, hint: 'restart offset' },
+      ])('When reading block bounds with the offset patched $label', (row) => {
+        it('Then refuses with block-bounds rather than reading a record there', () => {
+          // Arrange
+          const header = buildReftableHeader({ version: 1 });
+          const block = buildRefBlock({
+            records: [{ name: 'refs/heads/aaa', value: { kind: 'direct', id: oid(0x01) } }],
+            restartIndices: [0],
+            isFirstBlock: true,
+            headerLength: header.length,
+          });
+          const bytes = buildReftable({ version: 1, blocks: [block] });
+          const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+          const blockEnd = header.length + block.length;
+          const restartArrayStart = blockEnd - RESTART_COUNT_BYTES - RESTART_ENTRY_BYTES;
+          const patched = row.patched === -1 ? restartArrayStart : row.patched;
+          writeUint24(view, restartArrayStart, patched);
+          const reftable = parseReftable(bytes);
+
+          // Act & Assert
+          expectRefusal(() => blockBoundsAt(reftable, header.length), 'block-bounds', row.hint);
         });
       });
     });
@@ -956,8 +1009,8 @@ describe('reftable-block', () => {
       // block-boundary arithmetic treats the file header as part of the
       // first block's own span, so an index record naming the first block
       // always carries `block_position: 0`, never its true file offset.
-      // `resolveRefBlockPosition`/`collectIndexLeaves` translate that `0`
-      // back to `header.length` before reading a block-type byte there.
+      // `resolveRefBlockPosition` translates that `0` back to
+      // `header.length` before reading a block-type byte there.
       const pos0 = header.length;
       const block0IndexPosition = 0;
       const block1 = buildRefBlock({
@@ -978,9 +1031,13 @@ describe('reftable-block', () => {
         isFirstBlock: false,
       });
       const posTop = posLeaf + leafIndex.length;
+      // `blockSize: 0` — the blocks below are concatenated with no padding,
+      // which is what an UNALIGNED table declares; advertising a stride the
+      // bytes do not keep would describe a table no writer produces.
       const reftable = parseReftable(
         buildReftable({
           version: 1,
+          blockSize: 0,
           blocks: [block0, block1, leafIndex, topIndex],
           refIndexPosition: posTop,
         }),
@@ -1296,9 +1353,8 @@ describe('reftable-block', () => {
      *  the index block itself — the self-referential shape the security
      *  reviewer's PoC patched into real writer output, one field at a time,
      *  leaving the footer CRC (which only covers the footer's own bytes)
-     *  valid throughout. `resolveRefBlockPosition`'s iterative descent and
-     *  `collectIndexLeaves`'s recursive one both walk straight back into this
-     *  same block forever without a depth bound. */
+     *  valid throughout. `resolveRefBlockPosition`'s descent walks straight
+     *  back into this same block forever without a depth bound. */
     function buildCyclicIndexReftable(): ReturnType<typeof parseReftable> {
       const header = buildReftableHeader({ version: 1 });
       const refBlock = buildRefBlock({
@@ -1336,14 +1392,18 @@ describe('reftable-block', () => {
         }, 2000);
       });
 
-      describe('When iterating every ref via the recursive index-leaf walk', () => {
-        it('Then refuses with cycle rather than overflowing the stack', () => {
+      describe('When the seeked walk descends it to find its floor', () => {
+        it('Then refuses with cycle rather than looping forever', () => {
           // Arrange
           const reftable = buildCyclicIndexReftable();
-          const sut = iterateReftableRefs;
+          const sut = iterateReftableRefsFrom;
 
           // Act & Assert
-          expectRefusal(() => Array.from(sut(reftable)), 'cycle', 'ref index descent');
+          expectRefusal(
+            () => Array.from(sut(reftable, RefName.from('refs/heads/aaa'))),
+            'cycle',
+            'ref index descent',
+          );
         }, 2000);
       });
     });
@@ -1382,8 +1442,13 @@ describe('reftable-block', () => {
 
     describe('Given a block whose restart array starts exactly at the record area (zero records)', () => {
       describe('When reading block bounds', () => {
-        it('Then it does not refuse — restartArrayStart === recordsStart is in-bounds, not overlapping', () => {
-          // Arrange
+        it('Then the restart offset is what refuses — an empty record area holds no record to seek to', () => {
+          // Arrange — `restartArrayStart === recordsStart` clears the overlap
+          // check (which refuses only when the array starts BEFORE the record
+          // area); the sole restart offset then has nowhere inside the record
+          // area to land, and a seek there would read the restart array itself
+          // as a record. The two refusals name different faults, so this row
+          // still pins the overlap check's own boundary.
           const header = buildReftableHeader({ version: 1 });
           const recordBytes = new Uint8Array(0);
           const restartOffsets = [header.length + 4];
@@ -1396,11 +1461,34 @@ describe('reftable-block', () => {
           const reftable = parseReftable(buildReftable({ version: 1, blocks: [block] }));
           const sut = blockBoundsAt;
 
-          // Act
-          const bounds = sut(reftable, header.length);
+          // Act & Assert
+          expectRefusal(
+            () => sut(reftable, header.length),
+            'block-bounds',
+            'outside its record area',
+          );
+        });
+      });
+    });
 
-          // Assert
-          expect(bounds.recordsStart).toBe(bounds.recordsEnd);
+    describe('Given a symbolic ref record whose target length runs past the end of the bytes', () => {
+      describe('When decoding the record', () => {
+        it('Then refuses with record-overrun rather than decoding the clamped target', () => {
+          // Arrange — the declared target is one byte longer than what is
+          // there, and what IS there (`refs/head`) still passes the ref-name
+          // gate: `subarray` clamps silently, so without a bound the decode
+          // yields a truncated target and a `nextOffset` past the last byte.
+          const target = new TextEncoder().encode('refs/head');
+          const packed = (1 << SUFFIX_SHIFT) | VALUE_TYPE_SYMBOLIC;
+          const bytes = Uint8Array.from([0x00, packed, 0x61, 0x00, target.length + 1, ...target]);
+          const sut = refRecordDecoder;
+
+          // Act & Assert
+          expectRefusal(
+            () => sut(HEADER_FOR_DECODE)(bytes, 0, undefined),
+            'record-overrun',
+            'symbolic ref target',
+          );
         });
       });
     });
@@ -1627,16 +1715,86 @@ describe('reftable-block', () => {
         }, 2000);
       });
 
-      describe('When iterating every ref via the recursive index-leaf walk', () => {
+      describe('When the seeked walk descends it to find its floor', () => {
         it('Then refuses with cycle — the 65th level sits past the 64-level bound', () => {
           // Arrange
           const reftable = buildIndexChain(65);
-          const sut = iterateReftableRefs;
+          const sut = iterateReftableRefsFrom;
 
           // Act & Assert
-          expectRefusal(() => Array.from(sut(reftable)), 'cycle', 'ref index descent');
+          expectRefusal(
+            () => Array.from(sut(reftable, RefName.from('refs/heads/leaf'))),
+            'cycle',
+            'ref index descent',
+          );
         }, 2000);
       });
+    });
+  });
+});
+
+describe('Given a reftable index whose top level spans several blocks', () => {
+  /** `blockSize: 128` with 200 sequential refs: measured, the ref index then
+   *  needs more blocks than one level can hold, and the writer leaves a top
+   *  level of several — the footer naming only its FIRST. Every ref the
+   *  blocks beside it cover is reachable only by walking on past that block,
+   *  which is what git's own reader does. */
+  const CROWDED_INDEX_REF_COUNT = 200;
+
+  const buildCrowdedIndexTable = async (): Promise<Reftable> => {
+    const options: ReftableWriteOptions = {
+      hashId: 'sha1',
+      blockSize: 128,
+      restartInterval: 2,
+      indexObjects: false,
+      minUpdateIndex: 0n,
+      maxUpdateIndex: 1000n,
+    };
+    const refs = makeSequentialRefs(CROWDED_INDEX_REF_COUNT);
+    return parseReftable(await serializeReftable(refs, [], options, identityDeflate));
+  };
+
+  describe('When every ref is walked', () => {
+    it('Then every ref written is yielded, not only those the first top block covers', async () => {
+      // Arrange
+      const table = await buildCrowdedIndexTable();
+      const sut = iterateReftableRefs;
+
+      // Act
+      const walked = [...sut(table)];
+
+      // Assert
+      expect(walked).toHaveLength(CROWDED_INDEX_REF_COUNT);
+    });
+  });
+
+  describe('When every ref is looked up by name', () => {
+    it('Then every ref written is found, not only those the first top block covers', async () => {
+      // Arrange
+      const table = await buildCrowdedIndexTable();
+      const names = makeSequentialRefs(CROWDED_INDEX_REF_COUNT).map((ref) => ref.name);
+      const sut = lookupReftableRef;
+
+      // Act
+      const missing = names.filter((name) => sut(table, name) === undefined);
+
+      // Assert
+      expect(missing).toEqual([]);
+    });
+  });
+
+  describe('When the walk is seeked to a name the first top block does not cover', () => {
+    it('Then it lands on that name rather than reporting nothing at or after it', async () => {
+      // Arrange
+      const table = await buildCrowdedIndexTable();
+      const last = makeSequentialRefs(CROWDED_INDEX_REF_COUNT).at(-1)!.name;
+      const sut = iterateReftableRefsFrom;
+
+      // Act
+      const seen = [...sut(table, last)].map((record) => record.name);
+
+      // Assert
+      expect(seen).toEqual([last]);
     });
   });
 });

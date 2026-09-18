@@ -1293,10 +1293,10 @@ describe('patch-serializer', () => {
     });
   });
 
-  describe('Given a sub-100% rename change with text content (matrix #1 shape)', () => {
+  describe('Given a sub-100% rename change with text content', () => {
     describe('When renderPatch is called', () => {
       it('Then emits similarity index + rename from/to + index line + hunk body', () => {
-        // Arrange — R087 shape: same-mode rename, old/new ids differ, score < MAX_SCORE
+        // Arrange — same-mode rename, old/new ids differ, score < MAX_SCORE
         const oldContent = utf8.encode('line 00\nline 01\nline 02\n');
         const newContent = utf8.encode('CHANGED\nline 01\nline 02\n');
         const file: PatchFile = {
@@ -1412,7 +1412,7 @@ describe('patch-serializer', () => {
     });
   });
 
-  describe('Given a mode-change + sub-100% rename (matrix #4)', () => {
+  describe('Given a mode-change + sub-100% rename', () => {
     describe('When renderPatch is called', () => {
       it('Then emits old mode / new mode BEFORE similarity index, and index line WITHOUT trailing mode', () => {
         // Arrange — modes differ: preamble precedes similarity; index omits mode suffix
@@ -1459,10 +1459,10 @@ describe('patch-serializer', () => {
     });
   });
 
-  describe('Given a pure R100 rename change (regression pin from slice 2)', () => {
+  describe('Given a pure rename change at MAX_SCORE', () => {
     describe('When renderPatch is called', () => {
       it('Then emits exactly 4 header lines with no index line and no hunk', () => {
-        // Arrange — score === MAX_SCORE: byte-identical to the slice 2 form
+        // Arrange — score === MAX_SCORE, so the block is header-only
         const file = renameFile('old/path.txt', 'new/path.txt');
 
         // Act
@@ -1522,7 +1522,7 @@ describe('patch-serializer', () => {
     });
   });
 
-  describe('Given a sub-100% copy change with text content (matrix #C1 shape)', () => {
+  describe('Given a sub-100% copy change with text content', () => {
     describe('When renderPatch is called', () => {
       it('Then emits copy from/copy to instead of rename from/to, plus index line and hunk', () => {
         // Arrange — C072 shape: same-mode copy, old/new ids differ, score < MAX_SCORE
@@ -1569,7 +1569,7 @@ describe('patch-serializer', () => {
     });
   });
 
-  describe('Given an exact copy (score === MAX_SCORE, matrix #C4)', () => {
+  describe('Given an exact copy (score === MAX_SCORE)', () => {
     describe('When renderPatch is called', () => {
       it('Then emits only the header + similarity 100% + copy from/to (no index line, no hunk)', () => {
         // Arrange — C100: content byte-identical
@@ -2065,7 +2065,7 @@ describe('patch-serializer', () => {
     });
   });
 
-  // Gitlink / submodule rendering pins (§ A1, DEL1, M, D1–D4)
+  // Gitlink / submodule rendering pins
   // These tests prove the existing serializer renders synthesized
   // `Subproject commit <oid>\n` content byte-faithfully without any
   // serializer change.  OIDs use clean repeating-digit values so the
@@ -2091,7 +2091,7 @@ describe('patch-serializer', () => {
         // Act
         const result = renderPatch([file]);
 
-        // Assert — A1 golden (§ Faithfulness baseline)
+        // Assert — the golden a real git add of a submodule produces
         expect(result).toBe(
           [
             'diff --git a/sub b/sub',

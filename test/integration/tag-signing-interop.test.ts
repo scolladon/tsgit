@@ -15,6 +15,12 @@
  * Isolation: `GNUPGHOME` points at a per-suite scratch dir (never the
  * developer's real keyring), saved/restored around the suite. Every git
  * invocation still goes through `runGit`'s `GIT_*` scrub + `GIT_CONFIG_NOSYSTEM=1`.
+ *
+ * @proves
+ *   surface:        tag.signing
+ *   bucket:         cross-tool-interop
+ *   unique:         a signed tag keeps the untrimmed newline git leaves when armor is appended straight onto the message body
+ *   interopSurface: tag
  */
 import { execFileSync } from 'node:child_process';
 import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';

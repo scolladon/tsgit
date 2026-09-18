@@ -151,6 +151,25 @@ describe('sparseCheckout command', () => {
       });
     });
 
+    describe('Given a bare repo AND a malformed core.maxTreeDepth', () => {
+      describe('When sparseCheckout list runs', () => {
+        it('Then it dies on the repo-settings class, not the work-tree requirement', async () => {
+          // Arrange
+          const ctx0 = createMemoryContext();
+          await init(ctx0);
+          await ctx0.fs.writeUtf8(`${ctx0.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth = 2.5\n');
+          invalidateConfigCache(ctx0);
+          const ctx = asBareContext(ctx0);
+
+          // Act
+          const err = await expectError(() => sparseCheckoutList(ctx));
+
+          // Assert
+          expect(err.data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+        });
+      });
+    });
+
     describe('Given a pending merge', () => {
       describe('When sparseCheckout list', () => {
         it('Then throws OPERATION_IN_PROGRESS', async () => {

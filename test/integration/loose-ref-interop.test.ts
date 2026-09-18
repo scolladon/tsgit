@@ -21,6 +21,16 @@ import { updateRef } from '../../src/application/primitives/update-ref.js';
 import type { ObjectId, RefName } from '../../src/domain/objects/index.js';
 import { GIT_AVAILABLE, runGit, runGitEnv } from './interop-helpers.js';
 
+/** Pinned author/committer date so two independently-initialised repos that
+ *  each commit `--allow-empty` compute the SAME oid — required now that
+ *  `updateRef` verifies its target actually exists in the store it writes
+ *  to, not merely that the caller believes it exists. */
+const PINNED_DATES: NodeJS.ProcessEnv = {
+  ...runGitEnv(),
+  GIT_AUTHOR_DATE: '2026-01-01T00:00:00Z',
+  GIT_COMMITTER_DATE: '2026-01-01T00:00:00Z',
+};
+
 describe.skipIf(!GIT_AVAILABLE)('loose-ref interop', () => {
   let peer: string;
   let ours: string;
@@ -38,16 +48,25 @@ describe.skipIf(!GIT_AVAILABLE)('loose-ref interop', () => {
   describe('Given a SHA from a canonical commit', () => {
     describe('When tsgit writes refs/heads/<name> and canonical git does the same', () => {
       it('Then the two ref files are byte-identical', async () => {
-        // Arrange — peer canonical-git repo with one commit
+        // Arrange — peer canonical-git repo with one commit; `ours` seeds the
+        // identical commit (pinned dates make the oid match), so the object
+        // `updateRef` now verifies actually exists in tsgit's own store.
         runGit(['init', '-q', '-b', 'main', peer]);
         runGit(['-C', peer, 'config', 'user.name', 'Ada']);
         runGit(['-C', peer, 'config', 'user.email', 'ada@example.com']);
-        runGit(['-C', peer, 'commit', '-q', '--allow-empty', '-m', 'seed']);
+        runGit(['-C', peer, 'commit', '-q', '--allow-empty', '-m', 'seed'], {
+          env: PINNED_DATES,
+        });
         const sha = runGit(['-C', peer, 'rev-parse', 'HEAD']).trim();
         runGit(['-C', peer, 'update-ref', 'refs/heads/test-ref', sha]);
-        // tsgit side: init the directory layout via canonical git, then write
-        // the ref via tsgit's primitive.
+        // tsgit side: init the directory layout via canonical git, seed the
+        // same commit, then write the ref via tsgit's primitive.
         runGit(['init', '-q', '-b', 'main', ours]);
+        runGit(['-C', ours, 'config', 'user.name', 'Ada']);
+        runGit(['-C', ours, 'config', 'user.email', 'ada@example.com']);
+        runGit(['-C', ours, 'commit', '-q', '--allow-empty', '-m', 'seed'], {
+          env: PINNED_DATES,
+        });
         const sut = createNodeContext({ workDir: ours });
 
         // Act
@@ -74,18 +93,15 @@ describe.skipIf(!GIT_AVAILABLE)('loose-ref interop', () => {
         // they straddle a second boundary, and the sha captured from the second
         // repository is then absent from the first — git refuses to write a ref
         // pointing at an object it does not have.
-        const pinnedDates: NodeJS.ProcessEnv = {
-          ...runGitEnv(),
-          GIT_AUTHOR_DATE: '2026-01-01T00:00:00Z',
-          GIT_COMMITTER_DATE: '2026-01-01T00:00:00Z',
-        };
         let sha = '';
         const logsHeadBefore = new Map<string, Buffer>();
         for (const dir of [peer, ours]) {
           runGit(['init', '-q', '-b', 'main', dir]);
           runGit(['-C', dir, 'config', 'user.name', 'Ada']);
           runGit(['-C', dir, 'config', 'user.email', 'ada@example.com']);
-          runGit(['-C', dir, 'commit', '-q', '--allow-empty', '-m', 'seed'], { env: pinnedDates });
+          runGit(['-C', dir, 'commit', '-q', '--allow-empty', '-m', 'seed'], {
+            env: PINNED_DATES,
+          });
           sha = runGit(['-C', dir, 'rev-parse', 'HEAD']).trim();
           logsHeadBefore.set(dir, await readFile(path.join(dir, '.git/logs/HEAD')));
           await writeFile(path.join(dir, '.git/HEAD'), 'ref: refs/heads/.invalid\n');

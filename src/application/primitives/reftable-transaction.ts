@@ -54,12 +54,14 @@
  * `REFTABLE_LOCKED`. git never reads a lock body and never runs on OPFS, so
  * this non-empty body can never confuse it.
  */
+
+import { errorDataCode } from '../../domain/error-data-code.js';
 import type { AuthorIdentity } from '../../domain/objects/author-identity.js';
 import { bytesEqual } from '../../domain/objects/encoding.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import { sanitizeReflogMessage } from '../../domain/reflog/reflog-format.js';
 import { shouldAutocreateReflog } from '../../domain/reflog/should-log.js';
-import { refNotFound, reftableLocked, refUpdateConflict } from '../../domain/refs/error.js';
+import { reftableLocked, refUpdateConflict } from '../../domain/refs/error.js';
 import {
   compactionMetric,
   createReftableStack,
@@ -77,13 +79,23 @@ import {
   suggestCompactionSegment,
 } from '../../domain/refs/index.js';
 import {
+  firstRefNameConflict,
+  type RefNameFacts,
+  refNamePrefixes,
+} from '../../domain/refs/ref-name-conflict.js';
+import {
   DEFAULT_BLOCK_SIZE,
   DEFAULT_RESTART_INTERVAL,
 } from '../../domain/refs/reftable/reftable-writer.js';
 import type { Context } from '../../ports/context.js';
 import { readConfig } from './config-read.js';
-import { errorDataCode } from './internal/error-data-code.js';
 import { isDegradableReftableFault } from './internal/reftable-source.js';
+import {
+  isCheckedWhenAbsent,
+  NO_TRANSACTION_NAMES,
+  prefixRelatedTransactionNames,
+  refNameConflictRefusal,
+} from './internal/transaction-names.js';
 import {
   invalidateReftableStack,
   parseTablesList,
@@ -98,6 +110,38 @@ import {
   tablesListPath,
 } from './path-layout.js';
 import type { ReflogAppend, RefUpdate } from './ref-store.js';
+
+/**
+ * `moveReflog`'s reftable decomposition (`renamedBranchLog:
+ * 'merge-then-delete-and-create'`): re-key `from`'s log under `to`, one
+ * record at a time, without disturbing either ref's OWN value or any log
+ * record `to` already carries. Never part of the public `RefUpdate` union
+ * the files backend's `applyRefUpdates` accepts — the reftable store's own
+ * `moveReflog` is the only emitter.
+ */
+export interface ReflogMergeUpdate {
+  readonly kind: 'reflogMerge';
+  readonly name: RefName;
+  readonly from: RefName;
+}
+
+/**
+ * `copyReflog`'s reftable decomposition (`renamedSymrefLog:
+ * 'copy-then-delete-entry'`): re-key `from`'s log under `to` exactly like
+ * {@link ReflogMergeUpdate}, with no tombstone written for `from` — both
+ * names carry the history afterward. Never part of the public `RefUpdate`
+ * union; the reftable store's own `copyReflog` is the only emitter.
+ */
+export interface ReflogCopyUpdate {
+  readonly kind: 'reflogCopy';
+  readonly name: RefName;
+  readonly from: RefName;
+}
+
+/** Every update `applyReftableUpdates` accepts: the public `RefUpdate`
+ *  union plus reftable-only internal kinds no other backend ever sees. */
+export type ReftableInternalUpdate = RefUpdate | ReflogMergeUpdate | ReflogCopyUpdate;
+
 import { resolveReflogIdentity } from './reflog-identity.js';
 
 const TEXT_ENCODER = new TextEncoder();
@@ -263,7 +307,7 @@ async function probeStackSizes(ctx: Context, gitDir: string): Promise<StackSizeP
   return { existingNames, sizes };
 }
 
-function expectedOf(update: RefUpdate): ObjectId | 'absent' | undefined {
+function expectedOf(update: ReftableInternalUpdate): ObjectId | 'absent' | undefined {
   return update.kind === 'set' || update.kind === 'setSymbolic' || update.kind === 'delete'
     ? update.expected
     : undefined;
@@ -329,12 +373,63 @@ function sortLogRecords(logs: readonly ReftableLogRecord[]): readonly ReftableLo
 
 /** Step 3 — every `expected` against the freshly loaded stack, before ANY
  *  write happens for ANY stack in this transaction. */
-function verifyExpectations(updates: readonly RefUpdate[], stack: ReftableStack): void {
+function verifyExpectations(
+  updates: readonly ReftableInternalUpdate[],
+  stack: ReftableStack,
+): void {
   for (const update of updates) {
     const expected = expectedOf(update);
     if (expected === undefined) continue;
     const actual = actualFor(stack.lookup(update.name));
     if (expected !== actual) throw refUpdateConflict(update.name, expected, actual);
+  }
+}
+
+/** What `stack` holds around `name`. */
+function reftableNameFacts(name: RefName, stack: ReftableStack): RefNameFacts {
+  const under = firstNameUnder(stack, name);
+  return {
+    existingPrefixes: new Set(
+      refNamePrefixes(name).filter((prefix) => stack.lookup(prefix) !== undefined),
+    ),
+    smallestExistingUnder: under,
+  };
+}
+
+/** The byte-smallest LIVE name strictly under `<name>/`. The merge view is
+ *  seeked straight to that floor through each table's ref index and stops at
+ *  the first name past the prefix, so the answer costs one seek plus the
+ *  records that actually sit under the name — never a pass over the whole
+ *  ref space. */
+function firstNameUnder(stack: ReftableStack, name: RefName): RefName | undefined {
+  const floor = `${name}/`;
+  for (const entry of stack.entriesFrom(floor as RefName)) {
+    return entry.name.startsWith(floor) ? entry.name : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * git's availability check, after every compare-and-swap and before any
+ * write: each absent name the transaction changes without a required value,
+ * in update order — against the refs the stack already holds, and, when two
+ * of the transaction's own names are prefix-related, against those too.
+ *
+ * Cost: per checked name, one index-guided seek to `<name>/` plus the
+ * records actually under it, and one `lookup` per proper prefix. All in
+ * memory — the stack is already read; no syscall is added to any write.
+ */
+function verifyTransactionNamesAvailable(
+  ctx: Context,
+  updates: readonly ReftableInternalUpdate[],
+  stack: ReftableStack,
+): void {
+  const transaction = prefixRelatedTransactionNames(updates) ?? NO_TRANSACTION_NAMES;
+  for (const update of updates) {
+    if (!isCheckedWhenAbsent(update) || stack.lookup(update.name) !== undefined) continue;
+    const facts = reftableNameFacts(update.name, stack);
+    const conflict = firstRefNameConflict(update.name, facts, transaction);
+    if (conflict !== undefined) throw refNameConflictRefusal(ctx, conflict);
   }
 }
 
@@ -382,7 +477,7 @@ function hasLiveLogRecord(stack: ReftableStack, name: RefName): boolean {
  * which strategy is worth its own cost — a pure, synchronous, in-memory
  * pass over the batch itself, never the stack.
  */
-function loggableCandidateNames(updates: readonly RefUpdate[]): ReadonlySet<RefName> {
+function loggableCandidateNames(updates: readonly ReftableInternalUpdate[]): ReadonlySet<RefName> {
   const names = new Set<RefName>();
   for (const update of updates) {
     if (update.kind !== 'set' && update.kind !== 'setSymbolic' && update.kind !== 'reflogOnly') {
@@ -485,8 +580,13 @@ function tombstoneExistingLogs(
 
 /** A deletion appends a ref tombstone at the NEW `update_index`, plus one
  *  log tombstone per EXISTING live reflog entry, each at THAT entry's own
- *  `update_index` — never the new one. Refuses `REF_NOT_FOUND` when the ref
- *  is not currently live, matching the files backend. */
+ *  `update_index` — never the new one. A ref that is not currently live is
+ *  already git's desired end state — no record is written at all, matching
+ *  the files backend's no-op. A SYMBOLIC record's log is the one exception:
+ *  a `noDeref` delete of a symbolic ref keeps its log on the reftable
+ *  backend, so the delete never tombstones it here — the log-only entry
+ *  that records the deletion is the caller's own concern (`updateRef`'s
+ *  `deleteUpdates`). */
 function applyDeleteRecords(
   stack: ReftableStack,
   name: RefName,
@@ -494,9 +594,10 @@ function applyDeleteRecords(
   refs: ReftableRefRecord[],
   logs: ReftableLogRecord[],
 ): void {
-  if (stack.lookup(name) === undefined) throw refNotFound(name);
+  const live = stack.lookup(name);
+  if (live === undefined) return;
   refs.push({ name, updateIndex, value: { kind: 'deletion' } });
-  tombstoneExistingLogs(stack, name, logs);
+  if (live.value.kind !== 'symbolic') tombstoneExistingLogs(stack, name, logs);
 }
 
 /**
@@ -535,11 +636,49 @@ function applyReflogReplaceRecords(
   });
 }
 
+/**
+ * `moveReflog`'s reftable decomposition (`renamedBranchLog:
+ * 'merge-then-delete-and-create'`): every LIVE record under `from` is
+ * re-emitted under `to` at that SAME record's own `update_index` (never a
+ * freshly assigned one — this merges into whatever live history `to`
+ * already has, rather than replacing it), and the `from` record at that
+ * index is tombstoned. Neither ref's own value is touched.
+ */
+function applyReflogMergeRecords(
+  stack: ReftableStack,
+  update: ReflogMergeUpdate,
+  logs: ReftableLogRecord[],
+): void {
+  for (const record of stack.logs(update.from)) {
+    if (record.entry.kind !== 'entry') continue;
+    logs.push({ name: update.name, updateIndex: record.updateIndex, entry: record.entry });
+    logs.push({ name: update.from, updateIndex: record.updateIndex, entry: { kind: 'deletion' } });
+  }
+}
+
+/**
+ * `RefStore.copyReflog`'s reftable decomposition: every LIVE record under
+ * `from` is re-emitted under `to` at that SAME record's own `update_index`,
+ * merged into whatever live history `to` already has — identical to {@link
+ * applyReflogMergeRecords} except `from`'s own records are never
+ * tombstoned, so `readReflog(from)` still reads its full history afterward.
+ */
+function applyReflogCopyRecords(
+  stack: ReftableStack,
+  update: ReflogCopyUpdate,
+  logs: ReftableLogRecord[],
+): void {
+  for (const record of stack.logs(update.from)) {
+    if (record.entry.kind !== 'entry') continue;
+    logs.push({ name: update.name, updateIndex: record.updateIndex, entry: record.entry });
+  }
+}
+
 async function applyOneUpdate(
   ctx: Context,
   stack: ReftableStack,
   loggable: (name: RefName) => boolean,
-  update: RefUpdate,
+  update: ReftableInternalUpdate,
   updateIndex: bigint,
   identity: AuthorIdentity,
   refs: ReftableRefRecord[],
@@ -591,6 +730,12 @@ async function applyOneUpdate(
     case 'reflogReplace':
       applyReflogReplaceRecords(stack, update, updateIndex, logs);
       return;
+    case 'reflogMerge':
+      applyReflogMergeRecords(stack, update, logs);
+      return;
+    case 'reflogCopy':
+      applyReflogCopyRecords(stack, update, logs);
+      return;
   }
 }
 
@@ -629,11 +774,12 @@ async function prepareStackWrite(
   ctx: Context,
   gitDir: string,
   lockPath: string,
-  updates: readonly RefUpdate[],
+  updates: readonly ReftableInternalUpdate[],
   identity: AuthorIdentity,
 ): Promise<PreparedStackWrite> {
   const { stack, existingNames } = await readFreshStack(ctx, gitDir);
   verifyExpectations(updates, stack);
+  verifyTransactionNamesAvailable(ctx, updates, stack);
   const updateIndex = stack.maxUpdateIndex + 1n;
   const loggable = createLoggableLookup(stack, loggableCandidateNames(updates));
   const refs: ReftableRefRecord[] = [];
@@ -1185,15 +1331,18 @@ export async function packReftableStack(
 
 interface StackBucket {
   readonly gitDir: string;
-  readonly updates: readonly RefUpdate[];
+  readonly updates: readonly ReftableInternalUpdate[];
 }
 
 /** Fixed order: common dir first, then a linked worktree's own — the
  *  deadlock-avoidance rule the module JSDoc documents. */
-function partitionByStack(ctx: Context, updates: readonly RefUpdate[]): readonly StackBucket[] {
+function partitionByStack(
+  ctx: Context,
+  updates: readonly ReftableInternalUpdate[],
+): readonly StackBucket[] {
   const commonDir = commonGitDir(ctx);
   const ownDir = ctx.layout.gitDir;
-  const buckets = new Map<string, RefUpdate[]>([[commonDir, []]]);
+  const buckets = new Map<string, ReftableInternalUpdate[]>([[commonDir, []]]);
   // Stryker disable next-line ConditionalExpression: equivalent — forcing this branch
   // when ownDir === commonDir re-`set`s the SAME map key back to a fresh `[]` before
   // anything has been pushed to it, a harmless no-op indistinguishable from skipping it.
@@ -1239,7 +1388,7 @@ async function releaseLocksReverse(
  */
 export async function applyReftableUpdates(
   ctx: Context,
-  updates: readonly RefUpdate[],
+  updates: readonly ReftableInternalUpdate[],
 ): Promise<void> {
   const buckets = partitionByStack(ctx, updates);
   if (buckets.length === 0) return;

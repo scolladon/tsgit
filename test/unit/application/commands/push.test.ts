@@ -67,6 +67,8 @@ interface FakeServer {
   };
   /** Wrap report-status in side-band channel 1. */
   readonly sideband?: boolean;
+  /** Report bytes to send verbatim, in place of anything `reportStatus` would build. */
+  readonly rawReport?: Uint8Array;
 }
 
 const buildAdvertisementBytes = (
@@ -124,7 +126,8 @@ const fakeServer = (
     spec.advertisedRefs,
     spec.advertisedCaps ?? ['report-status', 'ofs-delta', 'atomic', 'delete-refs'],
   );
-  const reportBytes = buildReportStatus(spec.reportStatus, spec.sideband === true);
+  const reportBytes =
+    spec.rawReport ?? buildReportStatus(spec.reportStatus, spec.sideband === true);
   const transport: HttpTransport = {
     request: async (req: HttpRequest): Promise<HttpResponse> => {
       requests.push(req);
@@ -265,9 +268,37 @@ const packObjectCount = (body: Uint8Array): number => {
 };
 
 describe('push — config + refspec guards', () => {
+  describe('Given a remote name git accepts but the old allowlist did not', () => {
+    describe('When push runs', () => {
+      it.each([['a/b'], ['a"b'], ['a]b']])(
+        'Then the name reaches the config lookup and refuses REMOTE_NOT_CONFIGURED',
+        async (name) => {
+          // Arrange — git's own rule is `refs/remotes/<name>/test` being a
+          // valid ref name, which accepts all three.
+          const ctx = createMemoryContext();
+          await seedRepo(ctx, {});
+
+          // Act
+          let caught: unknown;
+          try {
+            await push(ctx, { remote: name });
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as { code: string; remote: string };
+          expect(data.code).toBe('REMOTE_NOT_CONFIGURED');
+          expect(data.remote).toBe(name);
+        },
+      );
+    });
+  });
+
   describe('Given an invalid remote name %j', () => {
     describe('When push runs', () => {
-      it.each([['../escape'], ['has space'], ['weird/slash'], ['']])(
+      it.each([['../escape'], ['has space'], ['..'], ['x.lock'], ['']])(
         'Then throws INVALID_OPTION naming the remote',
         async (badName) => {
           // Arrange — pins the REMOTE_NAME_RE allowlist guarding the composed
@@ -1227,6 +1258,70 @@ describe('push — delete refspec', () => {
         // Assert — no cache file written for the deleted ref.
         const exists = await ctx.fs.exists(`${ctx.layout.gitDir}/refs/remotes/origin/feature`);
         expect(exists).toBe(false);
+      });
+    });
+  });
+});
+
+const CLEAN_REPORT = { unpack: 'ok' as const, refs: [] };
+
+/** The remote's error packet, alone where the report-status lines belong. */
+const errorPacketReport = (): Uint8Array =>
+  encodePktStream([ENCODER.encode('ERR receive-pack refused midway')]);
+
+/** The same packet carried inside side-band channel 1. */
+const sidebandErrorPacketReport = (): Uint8Array => {
+  const inner = errorPacketReport();
+  const channel1 = new Uint8Array(inner.length + 1);
+  channel1[0] = 0x01;
+  channel1.set(inner, 1);
+  return encodePktStream([channel1]);
+};
+
+describe('push — the error packet in report-status', () => {
+  describe.each([
+    {
+      label: 'plain',
+      caps: ['report-status'],
+      report: errorPacketReport,
+    },
+    {
+      label: 'side-band',
+      caps: ['report-status', 'side-band-64k'],
+      report: sidebandErrorPacketReport,
+    },
+  ])('Given a $label report-status stream carrying an ERR packet', ({ caps, report }) => {
+    describe('When push runs', () => {
+      it('Then it raises the remote error the packet carries', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const parent = await seedCommit(ctx, [], 'p');
+        const tip = await seedCommit(ctx, [parent.id], 't');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+        await writeOriginConfig(ctx);
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: parent.id }],
+          advertisedCaps: caps,
+          reportStatus: CLEAN_REPORT,
+          rawReport: report(),
+        });
+        const sut = push;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut({ ...ctx, transport });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({
+          code: 'REMOTE_ERROR',
+          message: 'receive-pack refused midway',
+        });
       });
     });
   });

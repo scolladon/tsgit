@@ -314,12 +314,47 @@ git's plain (no-quote) section name is `[A-Za-z0-9.-]+` — alnum + dot + dash, 
 | `[a]` / `[a.b]` / `[a-b]` / `[1a]` (digit-first) | accepted |
 | `[a ]` / `[ a]` / `[a b]` / `[]` / `[ core ]` / `[a_b]` (underscore) / `[foo` (unclosed) | `fatal: bad config line N` |
 
-`scanPlainHeaderPrefix` validates the **untrimmed** inner against the grammar; the prior lenient `[`-prefix comment-skip was removed so every bracket-shaped non-header refuses like git (closing a divergence wider than the originally-flagged `[a ]` — `[foo`/`[]`/`[ core ]` were silently swallowed as comments before). The `[section.subsection]` legacy dotted-header remains the sole unquoted out-of-scope item (below).
+`scanPlainHeaderPrefix` validates the **untrimmed** inner against the grammar; the prior lenient `[`-prefix comment-skip was removed so every bracket-shaped non-header refuses like git (closing a divergence wider than the originally-flagged `[a ]` — `[foo`/`[]`/`[ core ]` were silently swallowed as comments before).
 
 ## Out of scope
 
-- **`[section.subsection]` legacy dotted-header same-line content** — git lowercases the dotted subsection; tsgit parses the whole inner as section. Pre-existing (24.9g out-of-scope), unchanged.
-- **Whole unquoted-header refusal parity** (`[foo`, `[]`, `[s ]`) — **now IN scope** (user-directed; see "Scope expansion" → ADR-336). The unquoted section-name grammar is enforced and the lenient `[`-prefix skip removed. The `[section.subsection]` legacy dotted-header (bullet above) remains the sole unquoted out-of-scope item.
+- **`[section.subsection]` legacy dotted-header** — **closed** by the addendum below (ADR-876): the dotted subsection is folded and split off at parse time, so a dotted header names the same variable as its quoted twin.
+- **Whole unquoted-header refusal parity** (`[foo`, `[]`, `[s ]`) — **now IN scope** (user-directed; see "Scope expansion" → ADR-336). The unquoted section-name grammar is enforced and the lenient `[`-prefix skip removed.
 - **Per-use-site lazy `missing value` refusal** for string-typed internal reads — 24.9h/ADR-315 divergence, unchanged; orphan/valueless string fields stay treated as absent.
 - **Writing orphan or same-line entries** — git's CLI cannot write an orphan (`set orphan x` → exit 2) nor a same-line entry; the writer gains no such surface. The writer always emits canonical `[s]⏎⇥key = value`.
 - **`[a]key=v` write-canonicalisation subtleties beyond the pinned rows** — git's set always emits canonical `⏎⇥key = value` at the split position; whether it preserves any subtler original-indentation detail elsewhere is untested and unchanged (same boundary 24.9i drew).
+
+## Addendum — subsection header spellings (ADR-876)
+
+Pinned against git 2.55.0 with the same throwaway-repository method as the tables above. git keeps
+ONE flat variable name per header: `get_base_var` folds every byte up to the first GIT_SPACE or `]`
+to lower case (dots are ordinary name bytes), and `get_extended_base_var` then appends `.` plus the
+quoted span verbatim.
+
+| header | flat name | note |
+| --- | --- | --- |
+| `[a]` / `[A]` | `a` | the section half is case-insensitive |
+| `[a.B]` | `a.b` | a **dotted** subsection folds to lower case |
+| `[a "B"]` | `a.B` | a **quoted** subsection keeps its case |
+| `[a "b.c"]` | `a.b.c` | a quoted subsection may hold dots |
+| `[a.B "C"]` | `a.b.C` | both halves join; only the dotted half folds |
+| `[a.]` and `[a ""]` | `a.` | one variable, written two ways |
+| `[.a]` | `.a` | an empty section half |
+| `[a "b\"c"]` / `[a "b\\c"]` | `a.b"c` / `a.b\c` | the quoted span takes `\"` and `\\` |
+| `[a.b\c]` / `[a.b"c]` | — | `fatal: bad config line N`; neither byte is in the unquoted grammar |
+
+Two spellings of one name **merge** rather than shadow: with `[a.b] c = one` before `[a "b"] c =
+two`, `--get-all a.b.c` yields `one`, `two` and `--get` yields `two`; reversing the blocks reverses
+both answers, so the order is the FILE's and not a spelling precedence. A write through `git config
+a.b.c <v>` edits whichever block already carries the key, in place, and `git remote -v` lists a
+remote declared as `[remote.origin]`.
+
+`splitHeaderName` builds that flat name and splits it back at its FIRST dot, so a token keeps the
+`(section, subsection)` shape every reader already uses: the dotted tail arrives folded, the quoted
+tail keeps its case, and `matchesSection`'s existing identity compare becomes correct for both
+spellings with no reader change.
+
+The one surface that does **not** use the flat name is `--remove-section` / `--rename-section`,
+which match the header's own bytes: `[s.X]` answers to `s.X` and refuses `s.x` (`fatal: no such
+section: s.x`), and `[s "X"]` likewise. The recognised-header parse therefore carries `rawName`
+alongside the folded identity, and the section-op matcher reads that.

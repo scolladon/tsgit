@@ -182,7 +182,7 @@ async function expectBothRead(dir: string, ctx: Context, oid: string): Promise<v
   expect(Buffer.compare(gitPayload, Buffer.from(blobContent(object)))).toBe(0);
 }
 
-/** A Tier-A row must deny every read, loose included (§D4.5) — asserts this
+/** A Tier-A row must deny every read, loose included — asserts this
  *  for the fixture's packed marker oid(s) and its loose oid, and the matching
  *  git-side refusal. */
 async function expectTierARow(params: {
@@ -242,12 +242,12 @@ describe.skipIf(!GIT_AVAILABLE)(
           await expectBothRead(withMidx.dir, withMidxCtx, oid);
           await expectBothRead(withoutMidxDir, withoutMidxCtx, oid);
         }
-        expect(await getPackRegistry(withMidxCtx).all()).toHaveLength(3);
+        expect(await (await getPackRegistry(withMidxCtx)).all()).toHaveLength(3);
       });
     });
 
-    describe('Pin D — midx versions', () => {
-      describe("Given a flat midx written at git's default version, When both tools read it (row D4)", () => {
+    describe('midx versions', () => {
+      describe("Given a flat midx written at git's default version, When both tools read it", () => {
         it('Then git accepts it (version byte 1) and every packed object reads on both', async () => {
           // Arrange
           const dir = await newRoot('d4');
@@ -262,7 +262,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         });
       });
 
-      describe('Given a flat midx written with -c midx.version=2, When both tools read it (row D5)', () => {
+      describe('Given a flat midx written with -c midx.version=2, When both tools read it', () => {
         it('Then git verify exits 0 and every packed object reads on both', async () => {
           // Arrange
           const dir = await newRoot('d5');
@@ -283,7 +283,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
 
       describe.each([0, 3])(
-        'Given a flat midx restamped to version %i, When both tools read it (row D6)',
+        'Given a flat midx restamped to version %i, When both tools read it',
         (version) => {
           it('Then git dies at exit 128 and tsgit rejects every read — loose included — with the version check', async () => {
             // Arrange
@@ -306,7 +306,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         },
       );
 
-      describe('Given a v1 flat midx whose PNAM entries are not lexicographically ordered, When both tools read it (row D7)', () => {
+      describe('Given a v1 flat midx whose PNAM entries are not lexicographically ordered, When both tools read it', () => {
         it('Then git dies at exit 128 and tsgit rejects every read — loose included — with the pack-names check', async () => {
           // Arrange
           const dir = await newRoot('d7');
@@ -324,7 +324,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         });
       });
 
-      describe('Given the SAME non-lexicographic PNAM bytes restamped to version 2, When both tools read it (row D8)', () => {
+      describe('Given the SAME non-lexicographic PNAM bytes restamped to version 2, When both tools read it', () => {
         it('Then both accept it: git exits 0 and every packed object reads on both — v2 does not require PNAM order', async () => {
           // Arrange
           const dir = await newRoot('d8');
@@ -343,8 +343,8 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
-    describe('Pin F — large offsets (LOFF)', () => {
-      describe('Given a flat midx rebuilt with a valid, in-range LOFF indirection on object 0, When both tools read every packed object (row F1)', () => {
+    describe('large offsets (LOFF)', () => {
+      describe('Given a flat midx rebuilt with a valid, in-range LOFF indirection on object 0, When both tools read every packed object', () => {
         it('Then git exits 0 and every packed object still reads byte-identical', async () => {
           // Arrange
           const dir = await newRoot('f1');
@@ -367,7 +367,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         });
       });
 
-      describe('Given a flat midx whose OOFF entry 0 has bit 31 set but carries NO LOFF chunk, When both tools look up that object (row F2)', () => {
+      describe('Given a flat midx whose OOFF entry 0 has bit 31 set but carries NO LOFF chunk, When both tools look up that object', () => {
         it('Then git dies with a truncated-pack fatal at exit 128 and tsgit rejects the same lookup — the bit is literal without an LOFF chunk', async () => {
           // Arrange
           const dir = await newRoot('f2');
@@ -409,7 +409,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
-    describe('Pin G — corruption posture: two tiers, and one of them kills the read', () => {
+    describe('corruption posture: two tiers, and one of them kills the read', () => {
       describe('Tier A — a scan-time fault denies every read, loose included', () => {
         const TIER_A_ROWS: ReadonlyArray<{
           readonly label: string;
@@ -496,7 +496,7 @@ describe.skipIf(!GIT_AVAILABLE)(
           );
         });
 
-        describe('Given numPacks understated (1, real count 3), When both tools look up an object in the now-out-of-range packs (row G10)', () => {
+        describe('Given numPacks understated (1, real count 3), When both tools look up an object in the now-out-of-range packs', () => {
           it('Then the in-range object still reads on both, the others die per-lookup, and the loose object is unaffected — the fault is caught only at entry resolution, not at scan time', async () => {
             // Arrange — find each marker oid's REAL packIndex before mutating,
             // since PNAM's order (git's own tie-break) need not match build order
@@ -585,7 +585,7 @@ describe.skipIf(!GIT_AVAILABLE)(
           );
         });
 
-        describe('Given the flat midx truncated mid-OIDL, so its chunk table now claims offsets past end of file, When both tools read every object (row G7)', () => {
+        describe('Given the flat midx truncated mid-OIDL, so its chunk table now claims offsets past end of file, When both tools read every object', () => {
           it('Then git reports an improper chunk offset and every read still succeeds from the ordinary .idx scan', async () => {
             // Arrange
             const dir = await newRoot('g7');
@@ -605,7 +605,7 @@ describe.skipIf(!GIT_AVAILABLE)(
           });
         });
 
-        describe('Given the flat midx made unreadable via chmod 000, When both tools read every object (row G16, node tier only)', () => {
+        describe('Given the flat midx made unreadable via chmod 000, When both tools read every object (node tier only)', () => {
           it('Then reads still succeed on both, silently, from the ordinary .idx scan', async () => {
             // Arrange
             const dir = await newRoot('g16');
@@ -622,7 +622,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         });
       });
 
-      describe('Given a midx written with -c midx.version=2, When both tools read every object (row G4)', () => {
+      describe('Given a midx written with -c midx.version=2, When both tools read every object', () => {
         it('Then both accept it: every object reads on both', async () => {
           // Arrange
           const dir = await newRoot('g4');
@@ -640,7 +640,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         });
       });
 
-      describe('Given the trailer digest flipped, When both tools read every object (row G8)', () => {
+      describe('Given the trailer digest flipped, When both tools read every object', () => {
         it('Then reads stay silent on both — the midx is still used, not skipped — because the trailer is never verified on the read path', async () => {
           // Arrange
           const dir = await newRoot('g8');
@@ -659,7 +659,7 @@ describe.skipIf(!GIT_AVAILABLE)(
 
           // Act
           const gitResult = batchCheck(dup.dir, dup.dupOid);
-          const registry = getPackRegistry(sut);
+          const registry = await getPackRegistry(sut);
           const hit = await registry.lookup(dup.dupOid as never);
 
           // Assert — git still reads it (silent) and the midx is still the
@@ -671,7 +671,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         });
       });
 
-      describe('Given the same signature-flipped midx, but core.multiPackIndex=false, When both tools read every object (row G17)', () => {
+      describe('Given the same signature-flipped midx, but core.multiPackIndex=false, When both tools read every object', () => {
         it("Then git's config escape hatch suppresses the midx entirely (every read succeeds) — tsgit has no such config and still refuses (documented divergence, out of scope)", async () => {
           // Arrange
           const dir = await newRoot('g17');
@@ -696,9 +696,9 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
-    describe('Pin H — the midx is authoritative for the packs it names', () => {
+    describe('the midx is authoritative for the packs it names', () => {
       /** Overwrites `packBaseName`'s own PNAM slot with same-length garbage no
-       *  on-disk file matches — H7's exact shape. */
+       *  on-disk file matches. */
       function corruptPnamEntryFor(bytes: Buffer, packBaseName: string): Buffer {
         const numChunks = bytes.readUInt8(6);
         const pnamStart = 12 + (numChunks + 1) * 12;
@@ -714,7 +714,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         throw new Error(`corruptPnamEntryFor: pack ${packBaseName} not found in PNAM`);
       }
 
-      describe('Given a healthy DUP repo (control), When both tools look up the duplicated blob (row H1)', () => {
+      describe('Given a healthy DUP repo (control), When both tools look up the duplicated blob', () => {
         it('Then both read it', async () => {
           // Arrange
           const dir = await newRoot('h1');
@@ -731,7 +731,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         });
       });
 
-      describe('Given the assigned pack fully deleted (.pack + .idx + .rev), When both tools look up the duplicated blob (row H2)', () => {
+      describe('Given the assigned pack fully deleted (.pack + .idx + .rev), When both tools look up the duplicated blob', () => {
         it('Then both report it missing — the sibling pack is never consulted', async () => {
           // Arrange
           const dir = await newRoot('h2');
@@ -751,7 +751,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         });
       });
 
-      describe("Given the assigned pack's .pack deleted but its .idx kept, When both tools look up the duplicated blob (row H3)", () => {
+      describe("Given the assigned pack's .pack deleted but its .idx kept, When both tools look up the duplicated blob", () => {
         it('Then both report it missing', async () => {
           // Arrange
           const dir = await newRoot('h3');
@@ -769,7 +769,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         });
       });
 
-      describe("Given the assigned pack's .pack made unreadable via chmod 000, When both tools look up the duplicated blob (row H4, node tier only)", () => {
+      describe("Given the assigned pack's .pack made unreadable via chmod 000, When both tools look up the duplicated blob (node tier only)", () => {
         it('Then both report it missing', async () => {
           // Arrange
           const dir = await newRoot('h4');
@@ -787,7 +787,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         });
       });
 
-      describe('Given the assigned pack deleted, When git reads with core.multiPackIndex=false but tsgit reads with no such config (row H5)', () => {
+      describe('Given the assigned pack deleted, When git reads with core.multiPackIndex=false but tsgit reads with no such config', () => {
         it("Then git's config hatch falls back to the sibling pack and reads it, while tsgit — with no config to disable authority — still reports it missing (documented divergence, out of scope)", async () => {
           // Arrange
           const dir = await newRoot('h5');
@@ -809,7 +809,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         });
       });
 
-      describe('Given the assigned pack deleted AND the midx file itself removed, When both tools look up the duplicated blob (row H6)', () => {
+      describe('Given the assigned pack deleted AND the midx file itself removed, When both tools look up the duplicated blob', () => {
         it('Then both fall back to the sibling pack and read it', async () => {
           // Arrange
           const dir = await newRoot('h6');
@@ -829,7 +829,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         });
       });
 
-      describe("Given the assigned pack's own PNAM entry mutated to a same-length name no file has (its real pack files left intact), When both tools look up the duplicated blob (row H7)", () => {
+      describe("Given the assigned pack's own PNAM entry mutated to a same-length name no file has (its real pack files left intact), When both tools look up the duplicated blob", () => {
         it('Then both fall back to the ordinary .idx scan and read it, from the now-unclaimed real pack', async () => {
           // Arrange
           const dir = await newRoot('h7');
@@ -854,7 +854,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         });
       });
 
-      describe('Given a new pack written into the pack directory AFTER the midx, When both tools look up an object only that pack holds (row H8)', () => {
+      describe('Given a new pack written into the pack directory AFTER the midx, When both tools look up an object only that pack holds', () => {
         it("Then both find it normally — the midx never subtracts a pack it doesn't name", async () => {
           // Arrange — a third, `.keep`-guarded repack lands the late commit in
           // its own pack, leaving the two DUP packs and the midx untouched.
@@ -885,7 +885,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
-    describe('Pin I — chain degradation', () => {
+    describe('chain degradation', () => {
       /** Every CHAIN object worth reading: the duplicated blob, the third
        *  pack's own commit tree entry (via its file), and the loose blob. */
       async function chainReadTargets(fixture: ChainFixture): Promise<ReadonlyArray<string>> {
@@ -893,7 +893,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         return [fixture.dupOid, thirdOid, fixture.looseOid];
       }
 
-      describe('Given a healthy two-layer chain (control), When both tools read every object (row I1)', () => {
+      describe('Given a healthy two-layer chain (control), When both tools read every object', () => {
         it('Then all succeed', async () => {
           // Arrange
           const dir = await newRoot('i1');
@@ -909,7 +909,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         });
       });
 
-      describe("Given layer 2's .midx file deleted, When both tools read every object (row I2)", () => {
+      describe("Given layer 2's .midx file deleted, When both tools read every object", () => {
         it('Then git warns and the chain is dropped entirely — every object still reads from the ordinary .idx scan on both tools', async () => {
           // Arrange
           const dir = await newRoot('i2');
@@ -928,7 +928,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         });
       });
 
-      describe('Given a chain layer with a bad signature, When both tools read every object (row I3)', () => {
+      describe('Given a chain layer with a bad signature, When both tools read every object', () => {
         it('Then git dies at exit 128 and tsgit rejects every read — loose included — with the signature check', async () => {
           // Arrange
           const dir = await newRoot('i3');
@@ -950,7 +950,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         });
       });
 
-      describe('Given a chain layer truncated to 8 bytes, When both tools read every object (row I4)', () => {
+      describe('Given a chain layer truncated to 8 bytes, When both tools read every object', () => {
         it('Then git warns (too small, then unable to find all files) and the chain is dropped — every object still reads', async () => {
           // Arrange
           const dir = await newRoot('i4');
@@ -971,7 +971,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         });
       });
 
-      describe('Given the chain manifest file deleted (layers remain), When both tools read every object (row I5)', () => {
+      describe('Given the chain manifest file deleted (layers remain), When both tools read every object', () => {
         it('Then all succeed, silently, from the ordinary .idx scan', async () => {
           // Arrange
           const dir = await newRoot('i5');
@@ -988,7 +988,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         });
       });
 
-      describe('Given the chain manifest file emptied, When both tools read every object (row I6)', () => {
+      describe('Given the chain manifest file emptied, When both tools read every object', () => {
         it('Then all succeed, silently, from the ordinary .idx scan', async () => {
           // Arrange
           const dir = await newRoot('i6');
@@ -1006,7 +1006,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         });
       });
 
-      describe('Given the chain manifest truncated to list only layer 1, When both tools read every object (row I7)', () => {
+      describe('Given the chain manifest truncated to list only layer 1, When both tools read every object', () => {
         it("Then all succeed — layer 1's own objects via the chain, layer 2's pack via the ordinary scan (the chain does not name it)", async () => {
           // Arrange
           const dir = await newRoot('i7');
@@ -1024,7 +1024,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         });
       });
 
-      describe('Given a bogus 40-hex digest appended to the chain manifest, When both tools read every object (row I8)', () => {
+      describe('Given a bogus 40-hex digest appended to the chain manifest, When both tools read every object', () => {
         it('Then git warns and the chain is dropped entirely — every object still reads', async () => {
           // Arrange
           const dir = await newRoot('i8');
@@ -1047,7 +1047,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         });
       });
 
-      describe('Given the chain manifest reordered (layer 2 listed before layer 1), When both tools read every object (row I9)', () => {
+      describe('Given the chain manifest reordered (layer 2 listed before layer 1), When both tools read every object', () => {
         it('Then all succeed — the two layers cover disjoint packs, so order never changes an answer', async () => {
           // Arrange
           const dir = await newRoot('i9');
@@ -1068,7 +1068,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         });
       });
 
-      describe('Given a non-hex line appended to the chain manifest, When both tools read every object (row I10)', () => {
+      describe('Given a non-hex line appended to the chain manifest, When both tools read every object', () => {
         it('Then the garbage line is silently ignored on both — the real layers before it still load', async () => {
           // Arrange
           const dir = await newRoot('i10');
@@ -1090,7 +1090,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
-    describe('Pin J — flat vs chain precedence', () => {
+    describe('flat vs chain precedence', () => {
       interface ChainSnapshot {
         readonly chainText: string;
         readonly layers: ReadonlyArray<{ readonly digest: string; readonly bytes: Buffer }>;
@@ -1120,7 +1120,7 @@ describe.skipIf(!GIT_AVAILABLE)(
        * exists: a plain (non-incremental) `write` over an UNCHANGED chain is a
        * no-op, so a genuinely new, `.keep`-protected pack is added first to
        * give it something to do. The write empties `multi-pack-index.d/` as a
-       * side effect (Pin A) — restored by the caller from a snapshot taken
+       * side effect — restored by the caller from a snapshot taken
        * before this runs, which is the only way to reproduce "flat + a chain
        * still sitting there" at all, since git itself never produces that
        * combination in one step.
@@ -1138,7 +1138,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         writeMultiPackIndex(dir);
       }
 
-      describe("Given a broken chain (a layer's .midx file deleted) and NO flat midx, When both tools read every object (row J1, control)", () => {
+      describe("Given a broken chain (a layer's .midx file deleted) and NO flat midx, When both tools read every object (control)", () => {
         it('Then git warns and every object still reads', async () => {
           // Arrange
           const dir = await newRoot('j1');
@@ -1159,7 +1159,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         });
       });
 
-      describe('Given the SAME broken chain, but with a valid flat midx also present, When both tools read every object (row J2)', () => {
+      describe('Given the SAME broken chain, but with a valid flat midx also present, When both tools read every object', () => {
         it('Then git prints no warning — the flat file suppresses the chain entirely — and every object still reads', async () => {
           // Arrange
           const dir = await newRoot('j2');
@@ -1183,7 +1183,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         });
       });
 
-      describe('Given a chain with a bogus digest line, plus a valid flat midx, When both tools read every object (row J3)', () => {
+      describe('Given a chain with a bogus digest line, plus a valid flat midx, When both tools read every object', () => {
         it('Then git prints no warning and every object still reads', async () => {
           // Arrange
           const dir = await newRoot('j3');
@@ -1210,7 +1210,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         });
       });
 
-      describe('Given a chain layer with a bad signature (Tier A on its own), plus a valid flat midx, When both tools read every object (row J4)', () => {
+      describe('Given a chain layer with a bad signature (Tier A on its own), plus a valid flat midx, When both tools read every object', () => {
         it('Then both accept it at exit 0 — the flat file suppresses the chain entirely, so the Tier-A layer is never even read', async () => {
           // Arrange
           const dir = await newRoot('j4');
@@ -1233,7 +1233,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         });
       });
 
-      describe('Given an unparseable (Tier-B, too-small) flat midx alongside an intact chain whose layer-1 pack was deleted, When both tools look up the duplicated blob (row J5)', () => {
+      describe('Given an unparseable (Tier-B, too-small) flat midx alongside an intact chain whose layer-1 pack was deleted, When both tools look up the duplicated blob', () => {
         it('Then git errors on the flat file, then reports the object missing — the chain IS read and its own authority applies', async () => {
           // Arrange
           const dir = await newRoot('j5');
@@ -1257,7 +1257,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         });
       });
 
-      describe('Given a flat midx with a bad signature (Tier A) alongside an intact chain, When both tools read every object (row J6)', () => {
+      describe('Given a flat midx with a bad signature (Tier A) alongside an intact chain, When both tools read every object', () => {
         it('Then git dies at exit 128 and tsgit rejects every read — loose included — with the signature check; nothing else is even consulted', async () => {
           // Arrange
           const dir = await newRoot('j6');
@@ -1283,8 +1283,8 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
-    describe("Pin L — the rest of git's midx dependencies", () => {
-      describe("Given a midx-named pack's .idx deleted but its .pack kept, When both tools look up the packed object (row L5)", () => {
+    describe("the rest of git's midx dependencies", () => {
+      describe("Given a midx-named pack's .idx deleted but its .pack kept, When both tools look up the packed object", () => {
         it('Then both report the object missing', async () => {
           // Arrange
           const dir = await newRoot('l5');

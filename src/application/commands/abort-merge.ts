@@ -51,9 +51,9 @@ export const mergeAbort = async (ctx: Context): Promise<MergeAbortResult> => {
   await hardResetWorktreeToCommit(ctx, origHead);
   // git's `merge --abort` delegates to a `reset` whose rev argument is the
   // symbolic `HEAD`, so the coupled-HEAD reflog reads `reset: moving to HEAD`
-  // (the literal `HEAD`, not the oid). The branch entry is skipped upstream: a
-  // conflicted merge never moved HEAD, so `origHead` equals the current tip.
-  await updateRef(ctx, head.target, origHead, { reflogMessage: resetMovingTo('HEAD') });
+  // (the literal `HEAD`, not the oid) — and the write itself goes through
+  // the literal `HEAD` too, as git's own reset does.
+  await updateRef(ctx, 'HEAD' as RefName, origHead, { reflogMessage: resetMovingTo('HEAD') });
   await clearMergeState(ctx);
   return { origHead, branch: head.target };
 };

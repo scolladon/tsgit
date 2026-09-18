@@ -7,7 +7,7 @@
  * Source of truth: src/repository.ts (ADR-096).
  * Parser strategy: anchored regex over the file text (ADR-097).
  */
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import * as path from 'node:path';
 import * as url from 'node:url';
 
@@ -130,6 +130,57 @@ export const formatGapStanza = (gap: Gap): string => {
   ].join('\n');
 };
 
+interface DetachedComment {
+  readonly file: string;
+  readonly line: number;
+}
+
+// A block comment closed on one line and reopened as a doc comment on the very
+// next one: TypeScript binds only the LAST block before a declaration, so the
+// earlier block documents nothing.
+const DETACHED_DOC_COMMENT_RE = /\*\/\r?\n[ \t]*\/\*\*/g;
+
+/**
+ * Reports every doc comment in `source` that no declaration can see, by the
+ * line it closes on. Such a comment is silently dropped from reports/api.json,
+ * so a published summary can disappear without any gate noticing.
+ */
+export const findDetachedDocComments = (
+  file: string,
+  source: string,
+): ReadonlyArray<DetachedComment> => {
+  const scanner = new RegExp(DETACHED_DOC_COMMENT_RE.source, DETACHED_DOC_COMMENT_RE.flags);
+  const detached: DetachedComment[] = [];
+  let match: RegExpExecArray | null = scanner.exec(source);
+  while (match !== null) {
+    detached.push({ file, line: source.slice(0, match.index).split('\n').length });
+    match = scanner.exec(source);
+  }
+  return detached;
+};
+
+const typeScriptFilesUnder = (root: string): ReadonlyArray<string> =>
+  readdirSync(root, { recursive: true, encoding: 'utf8' })
+    .filter((entry) => entry.endsWith('.ts'))
+    .map((entry) => path.join(root, entry));
+
+export const scanDetachedDocComments = (
+  repoRoot: string,
+  listFiles: (root: string) => ReadonlyArray<string> = typeScriptFilesUnder,
+  readSource: (p: string) => string = (p) => readFileSync(p, 'utf8'),
+): ReadonlyArray<DetachedComment> =>
+  listFiles(path.join(repoRoot, 'src')).flatMap((file) =>
+    findDetachedDocComments(path.relative(repoRoot, file), readSource(file)),
+  );
+
+export const formatDetachedStanza = (comment: DetachedComment): string =>
+  [
+    `ERROR ${comment.file}:${comment.line} doc comment is followed by another doc comment`,
+    '  Only the last block before a declaration is attached, so this one never',
+    '  reaches reports/api.json. Move it above the declaration it documents, or',
+    '  merge the two blocks.',
+  ].join('\n');
+
 const asStringArray = (value: unknown): ReadonlyArray<string> => {
   if (!Array.isArray(value)) return [];
   return value.filter((entry): entry is string => typeof entry === 'string');
@@ -184,14 +235,18 @@ export const runCheck = (
 
 const main = (): void => {
   const gaps = runCheck(ROOT);
-  if (gaps.length === 0) {
+  const detached = scanDetachedDocComments(ROOT);
+  if (gaps.length === 0 && detached.length === 0) {
     process.stdout.write('check-doc-coverage: clean\n');
     return;
   }
   for (const gap of gaps) {
     process.stderr.write(`${formatGapStanza(gap)}\n\n`);
   }
-  process.stderr.write(`check-doc-coverage: ${gaps.length} gap(s) found\n`);
+  for (const comment of detached) {
+    process.stderr.write(`${formatDetachedStanza(comment)}\n\n`);
+  }
+  process.stderr.write(`check-doc-coverage: ${gaps.length + detached.length} gap(s) found\n`);
   process.exitCode = 1;
 };
 

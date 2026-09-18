@@ -324,10 +324,10 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
     await Promise.all(tmpDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
   });
 
-  describe('Given a healthy foreign pack, When fsck runs (row K-1)', () => {
+  describe('Given a healthy foreign pack, When fsck runs', () => {
     it('Then git exits 0 with no packfile line and fsck reports no pack finding', async () => {
       // Arrange
-      const dir = await bareTargetWithPack('k1', 'good', basePackBytes, baseIdxBytes);
+      const dir = await bareTargetWithPack('healthy-pack', 'good', basePackBytes, baseIdxBytes);
       const gitResult = gitFsck(dir);
       const sut = trackedNodeContext(dir);
 
@@ -342,12 +342,12 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
     });
   });
 
-  describe('Given a pack restamped to header version 3, When fsck runs (row K-2)', () => {
+  describe('Given a pack restamped to header version 3, When fsck runs', () => {
     it('Then both accept it: git exits 0 and fsck reports no pack finding', async () => {
       // Arrange
       const v3PackBytes = restampPackVersion(basePackBytes, 3);
       const v3IdxBytes = restampIdxForPack(baseIdxBytes, trailerOf(v3PackBytes));
-      const dir = await bareTargetWithPack('k2', 'good', v3PackBytes, v3IdxBytes);
+      const dir = await bareTargetWithPack('header-v3', 'good', v3PackBytes, v3IdxBytes);
       const gitResult = gitFsck(dir);
       const sut = trackedNodeContext(dir);
 
@@ -361,12 +361,12 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
     });
   });
 
-  describe('Given a pack restamped to header version 99, When fsck runs (row K-3)', () => {
+  describe('Given a pack restamped to header version 99, When fsck runs', () => {
     it('Then both refuse it: git exits 4 with the verdict once, and fsck reports one finding with zero object findings from that pack', async () => {
       // Arrange
       const v99PackBytes = restampPackVersion(basePackBytes, 99);
       const v99IdxBytes = restampIdxForPack(baseIdxBytes, trailerOf(v99PackBytes));
-      const dir = await bareTargetWithPack('k3', 'bad', v99PackBytes, v99IdxBytes);
+      const dir = await bareTargetWithPack('header-v99', 'bad', v99PackBytes, v99IdxBytes);
       const gitResult = gitFsck(dir);
       const sut = trackedNodeContext(dir);
 
@@ -385,11 +385,16 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
     });
   });
 
-  describe('Given a pack whose header object count disagrees with its own index, When fsck runs (row K-4)', () => {
+  describe('Given a pack whose header object count disagrees with its own index, When fsck runs', () => {
     it("Then git cites both counts and fsck's reason carries them", async () => {
       // Arrange
       const mismatchedPackBytes = setHeaderObjectCount(basePackBytes, objectCount + 1);
-      const dir = await bareTargetWithPack('k4', 'bad', mismatchedPackBytes, baseIdxBytes);
+      const dir = await bareTargetWithPack(
+        'header-count-mismatch',
+        'bad',
+        mismatchedPackBytes,
+        baseIdxBytes,
+      );
       const gitResult = gitFsck(dir);
       const sut = trackedNodeContext(dir);
 
@@ -413,11 +418,11 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
     });
   });
 
-  describe('Given a pack whose signature is not "PACK", When fsck runs (row K-5)', () => {
+  describe('Given a pack whose signature is not "PACK", When fsck runs', () => {
     it('Then git cites the bad signature and fsck reports the invalid-magic reason', async () => {
       // Arrange
       const badSignatureBytes = corruptSignature(basePackBytes);
-      const dir = await bareTargetWithPack('k5', 'bad', badSignatureBytes, baseIdxBytes);
+      const dir = await bareTargetWithPack('bad-signature', 'bad', badSignatureBytes, baseIdxBytes);
       const gitResult = gitFsck(dir);
       const sut = trackedNodeContext(dir);
 
@@ -437,11 +442,11 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
     });
   });
 
-  describe('Given a pack truncated to 8 bytes, When fsck runs (row K-6)', () => {
+  describe('Given a pack truncated to 8 bytes, When fsck runs', () => {
     it('Then git cites too-short and fsck reports the truncated-header reason', async () => {
       // Arrange
       const truncatedBytes = basePackBytes.subarray(0, 8);
-      const dir = await bareTargetWithPack('k6', 'bad', truncatedBytes, baseIdxBytes);
+      const dir = await bareTargetWithPack('pack-truncated', 'bad', truncatedBytes, baseIdxBytes);
       const gitResult = gitFsck(dir);
       const sut = trackedNodeContext(dir);
 
@@ -461,10 +466,10 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
     });
   });
 
-  describe('Given a healthy pack file made unreadable via chmod 000, When fsck runs (row K-7, node tier only)', () => {
+  describe('Given a healthy pack file made unreadable via chmod 000, When fsck runs (node tier only)', () => {
     it('Then git reports the verdict alone with no cause, and fsck reports one finding with a PERMISSION_DENIED reason', async () => {
       // Arrange
-      const dir = await bareTargetWithPack('k7', 'bad', basePackBytes, baseIdxBytes);
+      const dir = await bareTargetWithPack('pack-unreadable', 'bad', basePackBytes, baseIdxBytes);
       await chmod(path.join(dir, PACK_DIR, 'pack-bad.pack'), 0o000);
       const gitResult = gitFsck(dir);
       const sut = trackedNodeContext(dir);
@@ -486,11 +491,11 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
     });
   });
 
-  describe('Given an .idx corrupted to a same-length deterministic garbage stream, When fsck runs (row K-8)', () => {
+  describe('Given an .idx corrupted to a same-length deterministic garbage stream, When fsck runs', () => {
     it('Then git exits 68 with both verdicts once, and fsck reports both index-layer findings', async () => {
       // Arrange
       const dir = await bareTargetWithPack(
-        'k8',
+        'idx-garbage',
         'bad',
         basePackBytes,
         corruptIdxSameLength(baseIdxBytes),
@@ -514,10 +519,15 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
     });
   });
 
-  describe('Given an .idx truncated to 8 bytes, When fsck runs (row K-9)', () => {
+  describe('Given an .idx truncated to 8 bytes, When fsck runs', () => {
     it('Then git exits 68 with both verdicts once, and fsck reports both index-layer findings', async () => {
       // Arrange
-      const dir = await bareTargetWithPack('k9', 'bad', basePackBytes, baseIdxBytes.subarray(0, 8));
+      const dir = await bareTargetWithPack(
+        'idx-truncated',
+        'bad',
+        basePackBytes,
+        baseIdxBytes.subarray(0, 8),
+      );
       const gitResult = gitFsck(dir);
       const sut = trackedNodeContext(dir);
 
@@ -536,10 +546,10 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
     });
   });
 
-  describe('Given a healthy .idx made unreadable via chmod 000, When fsck runs (row K-10, node tier only)', () => {
+  describe('Given a healthy .idx made unreadable via chmod 000, When fsck runs (node tier only)', () => {
     it('Then git reports both verdicts with no cause, and fsck reports both index-layer findings with a PERMISSION_DENIED reason', async () => {
       // Arrange
-      const dir = await bareTargetWithPack('k10', 'bad', basePackBytes, baseIdxBytes);
+      const dir = await bareTargetWithPack('idx-unreadable', 'bad', basePackBytes, baseIdxBytes);
       await chmod(path.join(dir, PACK_DIR, 'pack-bad.idx'), 0o000);
       const gitResult = gitFsck(dir);
       const sut = trackedNodeContext(dir);
@@ -565,10 +575,10 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
     });
   });
 
-  describe('Given an orphaned .idx with no sibling .pack, When fsck runs (row K-11)', () => {
+  describe('Given an orphaned .idx with no sibling .pack, When fsck runs', () => {
     it('Then both are silent: git exits 0 and fsck reports no finding', async () => {
       // Arrange
-      const dir = await freshRepo('k11');
+      const dir = await freshRepo('orphaned-idx');
       await writeIdxOnly(dir, 'orphan', baseIdxBytes);
       const gitResult = gitFsck(dir);
       const sut = trackedNodeContext(dir);
@@ -584,10 +594,10 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
     });
   });
 
-  describe('Given an idx-less .pack with no sibling .idx, When fsck runs (row K-12)', () => {
+  describe('Given an idx-less .pack with no sibling .idx, When fsck runs', () => {
     it('Then both are silent: git exits 0 and fsck reports no finding', async () => {
       // Arrange
-      const dir = await freshRepo('k12');
+      const dir = await freshRepo('idx-less-pack');
       await writePackOnly(dir, 'no-pack', basePackBytes);
       const gitResult = gitFsck(dir);
       const sut = trackedNodeContext(dir);
@@ -603,10 +613,10 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
     });
   });
 
-  describe('Given two independently-unusable packs in the same repo, When fsck runs (row K-13)', () => {
+  describe('Given two independently-unusable packs in the same repo, When fsck runs', () => {
     it('Then git reports each pack once and fsck reports two findings with bit 4 set once', async () => {
       // Arrange
-      const dir = await freshRepo('k13');
+      const dir = await freshRepo('two-unusable-packs');
       const v99PackBytes = restampPackVersion(basePackBytes, 99);
       const v99IdxBytes = restampIdxForPack(baseIdxBytes, trailerOf(v99PackBytes));
       const badSignatureBytes = corruptSignature(basePackBytes);
@@ -629,10 +639,10 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
     });
   });
 
-  describe('Given a v99 pack and a healthy twin holding the same objects, When fsck runs (row K-14)', () => {
+  describe('Given a v99 pack and a healthy twin holding the same objects, When fsck runs', () => {
     it('Then git still reports the objects via the healthy twin, and fsck classifies them while reporting the bad pack', async () => {
       // Arrange
-      const dir = await freshRepo('k14');
+      const dir = await freshRepo('v99-with-twin');
       const v99PackBytes = restampPackVersion(basePackBytes, 99);
       const v99IdxBytes = restampIdxForPack(baseIdxBytes, trailerOf(v99PackBytes));
       await writePack(dir, 'bad', v99PackBytes, v99IdxBytes);
@@ -655,11 +665,11 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
     });
   });
 
-  describe('Given a reachable tree deleted with and without an added foreign v99 pack, When fsck runs on each independently (row K-15)', () => {
+  describe('Given a reachable tree deleted with and without an added foreign v99 pack, When fsck runs on each independently', () => {
     it('Then bit 4 is the only term the bad pack adds, on both tools independently', async () => {
       // Arrange
-      const baselineDir = await buildDeletedTreeRepo('k15-baseline');
-      const withPackDir = await buildDeletedTreeRepo('k15-with-pack');
+      const baselineDir = await buildDeletedTreeRepo('deleted-tree-baseline');
+      const withPackDir = await buildDeletedTreeRepo('deleted-tree-with-pack');
       const v99PackBytes = restampPackVersion(basePackBytes, 99);
       const v99IdxBytes = restampIdxForPack(baseIdxBytes, trailerOf(v99PackBytes));
       await writePack(withPackDir, 'bad', v99PackBytes, v99IdxBytes);
@@ -688,13 +698,13 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
     });
   });
 
-  describe("Given a v99 pack holding every one of the repo's own reachable objects with and without the fault, When fsck runs on each independently (row K-19)", () => {
+  describe("Given a v99 pack holding every one of the repo's own reachable objects with and without the fault, When fsck runs on each independently ()", () => {
     it('Then both tools exit 10 baseline and 14 with the bad pack — tsgit matches git absolutely, not just by the bit-4 delta', async () => {
       // Arrange — baseline: the sole pack removed entirely, so every reachable
       // object is simply absent; with-pack: the same pack, corrupted in place
-      const baselineDir = await buildFullyPackedRepo('k19-baseline');
+      const baselineDir = await buildFullyPackedRepo('fully-packed-baseline');
       await rm(path.join(baselineDir, PACK_DIR), { recursive: true, force: true });
-      const withPackDir = await buildFullyPackedRepo('k19-with-pack');
+      const withPackDir = await buildFullyPackedRepo('fully-packed-with-pack');
       await corruptSolePackToV99(withPackDir);
       const gitBaseline = gitFsck(baselineDir);
       const gitWithPack = gitFsck(withPackDir);
@@ -723,13 +733,13 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
     });
   });
 
-  describe('Given an index with entries but no cache-tree extension, every object then deleted, When fsck runs (row K-38)', () => {
+  describe('Given an index with entries but no cache-tree extension, every object then deleted, When fsck runs', () => {
     it('Then git omits the missing-entry-point bit entirely — there is no cache-tree to check — and tsgit matches exactly', async () => {
       // Arrange — a real commit (so the index carries entries), then its
       // cache-tree extension stripped from the on-disk index, then every
       // object deleted. Real git 2.55.0 does not run its cache-tree check
       // at all without the extension.
-      const dir = await freshRepo('k38');
+      const dir = await freshRepo('no-cache-tree');
       await writeFile(path.join(dir, 'a.txt'), 'alpha\n');
       commitSeed(dir);
       const commitSha = git(dir, 'rev-parse', 'HEAD').trim();
@@ -753,12 +763,12 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
     });
   });
 
-  describe('Given an unreadable commit and blob beside a readable tree indexed by the cache-tree, When fsck runs (row K-39)', () => {
+  describe('Given an unreadable commit and blob beside a readable tree indexed by the cache-tree, When fsck runs', () => {
     it('Then git omits the missing-entry-point bit — the cache-tree only resolves the tree oid — and tsgit matches exactly', async () => {
       // Arrange — the cache-tree's own entry resolves fine (the tree is
       // untouched); the commit and blob are deleted so the connectivity
       // pass alone accounts for the non-zero exit.
-      const dir = await freshRepo('k39');
+      const dir = await freshRepo('unreadable-beside-readable');
       await writeFile(path.join(dir, 'a.txt'), 'alpha\n');
       commitSeed(dir);
       const commitSha = git(dir, 'rev-parse', 'HEAD').trim();
@@ -780,12 +790,12 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
     });
   });
 
-  describe('Given a pack that is both header-version-99 and index-corrupt on the same pack, When fsck runs (row K-16)', () => {
+  describe('Given a pack that is both header-version-99 and index-corrupt on the same pack, When fsck runs', () => {
     it('Then the index-layer fault wins outright: git shows no version line and fsck reports only the index-layer findings', async () => {
       // Arrange
       const v99PackBytes = restampPackVersion(basePackBytes, 99);
       const dir = await bareTargetWithPack(
-        'k16',
+        'version-and-index-fault',
         'bad',
         v99PackBytes,
         corruptIdxSameLength(baseIdxBytes),
@@ -809,7 +819,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
     });
   });
 
-  describe('Given mode gating over a v99 pack and an index-corrupt pack, When fsck runs across modes (row K-17, exit axis)', () => {
+  describe('Given mode gating over a v99 pack and an index-corrupt pack, When fsck runs across modes (exit axis)', () => {
     const MODE_GATING_ROWS: ReadonlyArray<{
       readonly label: string;
       readonly repoShape: 'v99' | 'corrupt-idx';
@@ -868,13 +878,13 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
         const dir =
           repoShape === 'v99'
             ? await bareTargetWithPack(
-                `k17-${expectedExit}-${gitFlags.join('') || 'default'}`,
+                `mode-gating-${expectedExit}-${gitFlags.join('') || 'default'}`,
                 'bad',
                 restampPackVersion(basePackBytes, 99),
                 restampIdxForPack(baseIdxBytes, trailerOf(restampPackVersion(basePackBytes, 99))),
               )
             : await bareTargetWithPack(
-                `k17-${expectedExit}-${gitFlags.join('') || 'default'}`,
+                `mode-gating-${expectedExit}-${gitFlags.join('') || 'default'}`,
                 'bad',
                 basePackBytes,
                 corruptIdxSameLength(baseIdxBytes),
@@ -892,12 +902,12 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
     );
   });
 
-  describe('Given a v99 pack, When fsck runs with --strict (row K-18)', () => {
+  describe('Given a v99 pack, When fsck runs with --strict', () => {
     it('Then bit 4 is unchanged on both tools', async () => {
       // Arrange
       const v99PackBytes = restampPackVersion(basePackBytes, 99);
       const v99IdxBytes = restampIdxForPack(baseIdxBytes, trailerOf(v99PackBytes));
-      const dir = await bareTargetWithPack('k18', 'bad', v99PackBytes, v99IdxBytes);
+      const dir = await bareTargetWithPack('strict-v99', 'bad', v99PackBytes, v99IdxBytes);
       const gitResult = gitFsck(dir, '--strict');
       const sut = trackedNodeContext(dir);
 
@@ -910,18 +920,18 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
     });
   });
 
-  describe('Given a v99 pack whose objects are readable through no other source (rows K-20, K-21)', () => {
+  describe('Given a v99 pack whose objects are readable through no other source', () => {
     let targetDir = '';
     let donorObjectIds: ReadonlySet<string> = new Set();
 
     beforeAll(async () => {
-      const donor = await buildDonorV99Pack('k20-donor', 'donor-content');
-      targetDir = await buildSeededRepo('k20-target', 'target-content');
+      const donor = await buildDonorV99Pack('sole-source-donor', 'donor-content');
+      targetDir = await buildSeededRepo('sole-source-target', 'target-content');
       await writePack(targetDir, 'bad', donor.packBytes, donor.idxBytes);
       donorObjectIds = donor.objectIds;
     }, SETUP_TIMEOUT);
 
-    describe('When fsck runs with connectivityOnly (row K-20, findings axis)', () => {
+    describe('When fsck runs with connectivityOnly (findings axis)', () => {
       it('Then the dangling-unknown oid set matches exactly, sized off the donor pack itself', async () => {
         // Arrange
         const gitResult = gitFsck(targetDir, '--connectivity-only');
@@ -952,7 +962,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
       });
     });
 
-    describe('When fsck runs with full:false (row K-21)', () => {
+    describe('When fsck runs with full:false', () => {
       it('Then neither tool reports anything for the pack', async () => {
         // Arrange
         const gitResult = gitFsck(targetDir, '--no-full');
@@ -975,7 +985,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
 });
 
 // ---------------------------------------------------------------------------
-// Loose-object axis (K-22 … K-37) — its own top-level describe: unlike K-1…K-21
+// Loose-object axis — its own top-level describe: unlike the pack rows above
 // above, these repos have no packs at all (except the three rows that build
 // one on purpose), so every cell is attributable to the one damaged loose
 // object. git writes loose objects `0444`; `chmod u+w` before mutating any of
@@ -1001,7 +1011,7 @@ function mktree(dir: string, entryLine: string): string {
   return runGit(['-C', dir, 'mktree'], { input: entryLine }).trim();
 }
 
-/** Deterministic 40-hex-char oid for a hand-crafted loose object whose path is never derived from its own content hash — fsck's loose-object discovery is a directory scan keyed on path alone (K-25's whole point). */
+/** Deterministic 40-hex-char oid for a hand-crafted loose object whose path is never derived from its own content hash — fsck's loose-object discovery is a directory scan keyed on path alone, which is what the hash-path-mismatch row turns on. */
 function syntheticOid(seed: string): string {
   return sha1(Buffer.from(seed)).toString('hex');
 }
@@ -1011,7 +1021,7 @@ function craftedLooseBytes(header: string, body: Uint8Array): Buffer {
   return deflateSync(Buffer.concat([Buffer.from(`${header}\0`, 'ascii'), Buffer.from(body)]));
 }
 
-/** Runs `fsck` and catches its rejection — every reject row (K-26, K-29, K-31, K-33) shares this shape, so each `it` body reads as arrangement, then one assertion on the caught cause. Rethrows anything that is not a `TsgitError` and fails the test if `fsck` resolves instead of rejecting. */
+/** Runs `fsck` and catches its rejection — every row whose fixture makes the audit refuse shares this shape, so each `it` body reads as arrangement, then one assertion on the caught cause. Rethrows anything that is not a `TsgitError` and fails the test if `fsck` resolves instead of rejecting. */
 async function catchFsckRejection(ctx: Context, opts: FsckOptions): Promise<TsgitError> {
   try {
     await fsck(ctx, opts);
@@ -1022,7 +1032,7 @@ async function catchFsckRejection(ctx: Context, opts: FsckOptions): Promise<Tsgi
   throw new Error('expected fsck to reject, but it resolved');
 }
 
-/** Packs a single blob into its own donor-only pack — nothing else to delta against, so the entry is always stored whole (K-34, K-35's shared base). */
+/** Packs a single blob into its own donor-only pack — nothing else to delta against, so the entry is always stored whole. Shared by the corrupt-entry and shadowed-copy rows. */
 async function buildSingleObjectPack(
   slug: string,
   content: string,
@@ -1040,7 +1050,7 @@ async function buildSingleObjectPack(
  * so the second is always freshly delta-encoded against the first, then one
  * byte of the delta entry's own compressed body flipped (trailer left as-is —
  * `--connectivity-only` never checks it). `deltaBaseOffset` selects OFS_DELTA
- * over the default REF_DELTA (K-36 runs both encodings, per R13).
+ * over the default REF_DELTA; the row below runs both encodings.
  */
 async function buildDeltaPackPair(
   slug: string,
@@ -1088,11 +1098,11 @@ describe.skipIf(!GIT_AVAILABLE)(
       await Promise.all(tmpDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
     });
 
-    describe('Given a chmod-000 loose object, unreferenced, When fsck runs with connectivityOnly (row K-22, node tier only)', () => {
+    describe('Given a chmod-000 loose object, unreferenced, When fsck runs with connectivityOnly (node tier only)', () => {
       it('Then git exits 0 with dangling unknown once, and fsck reports one dangling finding typed unknown', async () => {
         // Arrange
-        const dir = await freshRepo('k22');
-        const oid = hashObjectW(dir, 'k22-content\n');
+        const dir = await freshRepo('unreferenced-unreadable');
+        const oid = hashObjectW(dir, 'unreadable-unreferenced\n');
         await chmod(looseObjectPath(dir, oid), 0o000);
         const gitResult = gitFsck(dir, '--connectivity-only');
         const sut = trackedNodeContext(dir);
@@ -1110,37 +1120,37 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
-    describe('Given the same chmod-000 loose object, When fsck runs in default mode (row K-23)', () => {
+    describe('Given the same chmod-000 loose object, When fsck runs in default mode', () => {
       it('Then git computes no dangling/unreachable line for it even with the projection flags on, and fsck rejects with the pre-existing IO-fault gap', async () => {
-        // Arrange — same fixture recipe as K-22, its own repo
-        const dir = await freshRepo('k23');
-        const oid = hashObjectW(dir, 'k23-content\n');
+        // Arrange — the unreferenced row's fixture recipe, in a repository of its own
+        const dir = await freshRepo('unreadable-default-mode');
+        const oid = hashObjectW(dir, 'unreadable-default-mode\n');
         await chmod(looseObjectPath(dir, oid), 0o000);
         const gitDefault = gitFsck(dir);
         const gitWithProjectionFlags = gitFsck(dir, '--dangling', '--unreachable');
         const sut = trackedNodeContext(dir);
 
-        // Assert — git: unchanged by the projection flags (Pin P-a) — this is
+        // Assert — git: unchanged by the projection flags — this is
         // what makes it a computation difference, not a print filter
         expect(gitDefault.exitCode).toBe(1);
         expect(gitWithProjectionFlags.exitCode).toBe(1);
         expect(gitWithProjectionFlags.stdout).not.toContain(`dangling ${oid}`);
         expect(gitWithProjectionFlags.stdout).not.toContain(`unreachable ${oid}`);
 
-        // Act + Assert — tsgit: the pre-existing IO-fault gap (§D11.13) — an
+        // Act + Assert — tsgit: the pre-existing IO-fault gap — an
         // unreadable loose object throws today in default mode instead of
         // resolving with a bad-object finding, unlike the decode-fault rows
-        // below (K-27); either way there is no dangling/unreachable finding.
+        // below in default mode; either way there is no dangling/unreachable finding.
         const error = await catchFsckRejection(sut, {});
         expect(error.data.code).toBe('PERMISSION_DENIED');
       });
     });
 
-    describe('Given a chmod-000 loose object that is reachable, When fsck runs with connectivityOnly (row K-24, node tier only)', () => {
+    describe('Given a chmod-000 loose object that is reachable, When fsck runs with connectivityOnly (node tier only)', () => {
       it('Then both are silent: git exits 0 with empty stdout, and fsck reports no finding for that object', async () => {
         // Arrange
-        const dir = await freshRepo('k24');
-        await writeFile(path.join(dir, 'reach.txt'), 'k24-content\n');
+        const dir = await freshRepo('reachable-unreadable');
+        await writeFile(path.join(dir, 'reach.txt'), 'unreadable-reachable\n');
         commitSeed(dir);
         const oid = git(dir, 'rev-parse', 'HEAD:reach.txt').trim();
         await chmod(looseObjectPath(dir, oid), 0o000);
@@ -1160,14 +1170,14 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
-    describe('Given a loose object whose path does not match its content hash, When fsck runs with connectivityOnly (row K-25)', () => {
+    describe('Given a loose object whose path does not match its content hash, When fsck runs with connectivityOnly', () => {
       it('Then both type it from the header alone: git exits 0 with dangling blob, and fsck reports one dangling finding typed blob', async () => {
         // Arrange — the object's real content hashes to a different oid than
         // the path it is filed under; connectivity-only reads the header and
         // never hashes the body, so it types the object anyway
-        const dir = await freshRepo('k25');
-        const content = Buffer.from('k25-mismatch-content\n');
-        const oid = syntheticOid('k25-mismatch-target');
+        const dir = await freshRepo('hash-path-mismatch');
+        const content = Buffer.from('hash-path-mismatch-content\n');
+        const oid = syntheticOid('hash-path-mismatch-target');
         await writeLooseObject(dir, oid, craftedLooseBytes(`blob ${content.length}`, content));
         const gitResult = gitFsck(dir, '--connectivity-only');
         const sut = trackedNodeContext(dir);
@@ -1185,11 +1195,11 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
-    describe('Given an undecodable loose object, dangling, When fsck runs with connectivityOnly (row K-26)', () => {
+    describe('Given an undecodable loose object, dangling, When fsck runs with connectivityOnly', () => {
       it('Then both reject: git exits 128 with empty stdout, and fsck rejects with a DECOMPRESS_FAILED cause', async () => {
         // Arrange
-        const dir = await freshRepo('k26');
-        const oid = syntheticOid('k26-garbage');
+        const dir = await freshRepo('dangling-undecodable');
+        const oid = syntheticOid('undecodable-dangling');
         await writeLooseObject(dir, oid, NON_ZLIB_GARBAGE);
         const gitResult = gitFsck(dir, '--connectivity-only');
         const sut = trackedNodeContext(dir);
@@ -1204,11 +1214,11 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
-    describe('Given the same undecodable loose object, When fsck runs in default mode (row K-27)', () => {
-      it('Then git exits 1, and fsck resolves with exit bit 1 and a bad-object finding — the mode boundary on the same bytes as K-26', async () => {
-        // Arrange — same fixture recipe as K-26, its own repo
-        const dir = await freshRepo('k27');
-        const oid = syntheticOid('k27-garbage');
+    describe('Given the same undecodable loose object, When fsck runs in default mode', () => {
+      it('Then git exits 1, and fsck resolves with exit bit 1 and a bad-object finding — the mode boundary on the same bytes the connectivity-only row rejects', async () => {
+        // Arrange — the connectivity-only row's fixture recipe, in a repository of its own
+        const dir = await freshRepo('undecodable-default-mode');
+        const oid = syntheticOid('undecodable-default-mode');
         await writeLooseObject(dir, oid, NON_ZLIB_GARBAGE);
         const gitResult = gitFsck(dir);
         const sut = trackedNodeContext(dir);
@@ -1226,11 +1236,11 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
-    describe('Given a reachable undecodable object, When fsck runs with connectivityOnly (row K-28)', () => {
+    describe('Given a reachable undecodable object, When fsck runs with connectivityOnly', () => {
       it('Then both are fully silent: git exits 0 with empty stdout and stderr, and fsck resolves with no finding for that object', async () => {
         // Arrange
-        const dir = await freshRepo('k28');
-        await writeFile(path.join(dir, 'reach.txt'), 'k28-content\n');
+        const dir = await freshRepo('reachable-undecodable');
+        await writeFile(path.join(dir, 'reach.txt'), 'undecodable-reachable\n');
         commitSeed(dir);
         const oid = git(dir, 'rev-parse', 'HEAD:reach.txt').trim();
         await chmod(looseObjectPath(dir, oid), 0o644);
@@ -1252,14 +1262,23 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
-    describe('Given an unreachable undecodable object referenced by a readable dangling tree, When fsck runs with connectivityOnly (row K-29)', () => {
+    describe('Given an unreachable undecodable object referenced by a readable dangling tree, When fsck runs with connectivityOnly', () => {
       it('Then both reject: git exits 128 with empty stdout, and fsck rejects with the same decode fault, scoped to the unreached set rather than the dangling subset', async () => {
         // Arrange — the corrupt blob has an in-edge from the tree, so it is
         // merely unreachable (not dangling); the tree itself stays dangling
-        // and readable
-        const dir = await freshRepo('k29');
-        const blobOid = hashObjectW(dir, 'k29-content\n');
-        mktree(dir, `100644 blob ${blobOid}\ttarget.txt\n`);
+        // and readable.
+        //
+        // The blob's content is chosen so its oid sorts into a `.git/objects`
+        // fan-out directory BEFORE the tree's: git scans those 256 directories
+        // in order and refuses the corrupt object when it meets it with no
+        // in-edge yet recorded. Reverse the order and git reaches the tree
+        // first, registers the edge, and exits 0 — so the assertion below
+        // stands on that ordering, and the guard keeps a future rename from
+        // flipping it silently.
+        const dir = await freshRepo('undecodable-under-dangling-tree');
+        const blobOid = hashObjectW(dir, 'undecodable-under-tree\n');
+        const treeOid = mktree(dir, `100644 blob ${blobOid}\ttarget.txt\n`);
+        expect(blobOid.slice(0, 2) < treeOid.slice(0, 2)).toBe(true);
         await chmod(looseObjectPath(dir, blobOid), 0o644);
         await writeFile(looseObjectPath(dir, blobOid), NON_ZLIB_GARBAGE);
         const gitResult = gitFsck(dir, '--connectivity-only');
@@ -1275,11 +1294,11 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
-    describe('Given an empty loose object, dangling, When fsck runs with connectivityOnly (row K-30)', () => {
+    describe('Given an empty loose object, dangling, When fsck runs with connectivityOnly', () => {
       it('Then both resolve: git exits 0 with dangling unknown, and fsck reports one dangling finding typed unknown', async () => {
         // Arrange
-        const dir = await freshRepo('k30');
-        const oid = hashObjectW(dir, 'k30-content\n');
+        const dir = await freshRepo('empty-dangling');
+        const oid = hashObjectW(dir, 'empty-loose-dangling\n');
         await chmod(looseObjectPath(dir, oid), 0o644);
         await writeFile(looseObjectPath(dir, oid), new Uint8Array(0));
         const gitResult = gitFsck(dir, '--connectivity-only');
@@ -1298,11 +1317,11 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
-    describe('Given a loose object with an unrecoverable header, When fsck runs with connectivityOnly (row K-31)', () => {
+    describe('Given a loose object with an unrecoverable header, When fsck runs with connectivityOnly', () => {
       it('Then both reject: git exits 128, and fsck rejects with an INVALID_OBJECT_HEADER cause', async () => {
         // Arrange
-        const dir = await freshRepo('k31');
-        const oid = syntheticOid('k31-widget');
+        const dir = await freshRepo('unrecoverable-header');
+        const oid = syntheticOid('unrecoverable-header');
         await writeLooseObject(dir, oid, craftedLooseBytes('widget 5', Buffer.from('abcde')));
         const gitResult = gitFsck(dir, '--connectivity-only');
         const sut = trackedNodeContext(dir);
@@ -1316,12 +1335,12 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
-    describe('Given a loose object whose header disagrees with its content size, When fsck runs with connectivityOnly (row K-32)', () => {
+    describe('Given a loose object whose header disagrees with its content size, When fsck runs with connectivityOnly', () => {
       it('Then both resolve, typed from the recovered header: git exits 0 with dangling blob, and fsck reports one dangling finding typed blob', async () => {
         // Arrange — pins the split as header-recovery, not error code: the
         // header parses fine, so nothing here aborts
-        const dir = await freshRepo('k32');
-        const oid = syntheticOid('k32-size-mismatch');
+        const dir = await freshRepo('header-size-mismatch');
+        const oid = syntheticOid('header-size-mismatch');
         await writeLooseObject(dir, oid, craftedLooseBytes('blob 99', Buffer.from('hi')));
         const gitResult = gitFsck(dir, '--connectivity-only');
         const sut = trackedNodeContext(dir);
@@ -1339,12 +1358,12 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
-    describe('Given a healthy dangling object and an undecodable dangling object in the same repo, When fsck runs with connectivityOnly (row K-33)', () => {
+    describe('Given a healthy dangling object and an undecodable dangling object in the same repo, When fsck runs with connectivityOnly', () => {
       it('Then both withhold the whole report: git exits 128 with the healthy line absent from stdout, and fsck rejects', async () => {
         // Arrange
-        const dir = await freshRepo('k33');
-        const healthyOid = hashObjectW(dir, 'k33-healthy\n');
-        const garbageOid = syntheticOid('k33-garbage');
+        const dir = await freshRepo('healthy-beside-undecodable');
+        const healthyOid = hashObjectW(dir, 'mixed-dangling-healthy\n');
+        const garbageOid = syntheticOid('mixed-dangling-garbage');
         await writeLooseObject(dir, garbageOid, NON_ZLIB_GARBAGE);
         const gitResult = gitFsck(dir, '--connectivity-only');
         const sut = trackedNodeContext(dir);
@@ -1361,18 +1380,26 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
-    describe('Given a packed-only object with a corrupt entry body, When fsck runs with connectivityOnly (row K-34)', () => {
+    describe('Given a packed-only object with a corrupt entry body, When fsck runs with connectivityOnly', () => {
       it('Then both resolve, typed from the pack-entry header alone: git exits 0 with dangling blob, and fsck reports one dangling finding typed blob', async () => {
         // Arrange — a donor pack with one healthy entry, then one byte of its
         // own compressed body flipped; the idx keeps the original (now stale)
         // CRC, which connectivity-only never checks
-        const donor = await buildSingleObjectPack('k34', 'k34-content\n');
+        const donor = await buildSingleObjectPack(
+          'corrupt-pack-entry',
+          'corrupt-pack-entry-content\n',
+        );
         const corruptedPackBytes = flipEntryBodyByte(
           donor.packBytes,
           PACK_HEADER_SIZE,
           donor.packBytes.length - DIGEST_LENGTH,
         );
-        const dir = await bareTargetWithPack('k34', 'corrupt', corruptedPackBytes, donor.idxBytes);
+        const dir = await bareTargetWithPack(
+          'corrupt-pack-entry',
+          'corrupt',
+          corruptedPackBytes,
+          donor.idxBytes,
+        );
         const gitResult = gitFsck(dir, '--connectivity-only');
         const sut = trackedNodeContext(dir);
 
@@ -1391,11 +1418,19 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
-    describe('Given a garbled loose copy shadowing a healthy packed copy, When fsck runs with connectivityOnly (row K-35)', () => {
+    describe('Given a garbled loose copy shadowing a healthy packed copy, When fsck runs with connectivityOnly', () => {
       it('Then both resolve, served from the healthy pack: git exits 0 with dangling blob, and fsck reports one dangling finding typed blob', async () => {
         // Arrange
-        const donor = await buildSingleObjectPack('k35', 'k35-content\n');
-        const dir = await bareTargetWithPack('k35', 'healthy', donor.packBytes, donor.idxBytes);
+        const donor = await buildSingleObjectPack(
+          'shadowed-loose-copy',
+          'shadowed-loose-content\n',
+        );
+        const dir = await bareTargetWithPack(
+          'shadowed-loose-copy',
+          'healthy',
+          donor.packBytes,
+          donor.idxBytes,
+        );
         await writeLooseObject(dir, donor.oid, NON_ZLIB_GARBAGE);
         const gitResult = gitFsck(dir, '--connectivity-only');
         const sut = trackedNodeContext(dir);
@@ -1419,11 +1454,11 @@ describe.skipIf(!GIT_AVAILABLE)(
       { label: 'REF_DELTA', deltaBaseOffset: false },
       { label: 'OFS_DELTA', deltaBaseOffset: true },
     ])(
-      'Given a packed delta entry ($label) with a corrupt body, When fsck runs with connectivityOnly (row K-36)',
+      'Given a packed delta entry ($label) with a corrupt body, When fsck runs with connectivityOnly',
       ({ label, deltaBaseOffset }) => {
         it('Then both resolve, typed by walking the delta base link: git exits 0 with dangling blob, and fsck reports one dangling finding typed blob', async () => {
           // Arrange
-          const slug = `k36-${label.toLowerCase()}`;
+          const slug = `delta-base-${label.toLowerCase()}`;
           const built = await buildDeltaPackPair(slug, deltaBaseOffset);
           const dir = await bareTargetWithPack(slug, 'delta', built.packBytes, built.idxBytes);
           const gitResult = gitFsck(dir, '--connectivity-only');
@@ -1445,12 +1480,12 @@ describe.skipIf(!GIT_AVAILABLE)(
       },
     );
 
-    describe('Given a valid header over an unparseable tree body, When fsck runs with connectivityOnly (row K-37)', () => {
+    describe('Given a valid header over an unparseable tree body, When fsck runs with connectivityOnly', () => {
       it('Then both resolve, typed from the header alone: git exits 0 with dangling tree, and fsck reports one dangling finding typed tree', async () => {
         // Arrange — git's own "too-short tree object" stderr is not compared
         // (verdict line only)
-        const dir = await freshRepo('k37');
-        const oid = syntheticOid('k37-tree-junk');
+        const dir = await freshRepo('unparseable-tree-body');
+        const oid = syntheticOid('unparseable-tree-body');
         await writeLooseObject(
           dir,
           oid,
