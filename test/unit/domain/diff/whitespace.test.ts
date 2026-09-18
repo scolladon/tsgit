@@ -383,7 +383,7 @@ describe('normalizeLine', () => {
   });
 });
 
-describe('normalizeLine — C4: a final-line terminator is whitespace under an active key', () => {
+describe('normalizeLine, a final-line terminator being whitespace under an active key', () => {
   const ACTIVE_SHAPES: ReadonlyArray<{ readonly label: string; readonly key: LineKey }> = [
     { label: "mode 'all'", key: { mode: 'all', ignoreCrAtEol: false } },
     { label: "mode 'change'", key: { mode: 'change', ignoreCrAtEol: false } },
@@ -820,7 +820,7 @@ describe('digestNormalizedLine', () => {
   });
 });
 
-describe('digestNormalizedLine — C4: a final-line terminator is whitespace under an active key', () => {
+describe('digestNormalizedLine, a final-line terminator being whitespace under an active key', () => {
   describe('Given "x y" (unterminated) and "x y\\n" (terminated), When digesting both under every LineKey shape', () => {
     it.each(
       ALL_LINE_KEYS.map((key) => ({
