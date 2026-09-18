@@ -82,6 +82,8 @@ export interface ParsedConfig {
       /** `remote.<name>.pushurl` — push-only URL; `push` reads `pushUrl ?? url`. */
       readonly pushUrl?: string;
       readonly fetch?: ReadonlyArray<string>;
+      /** `remote.<name>.push` — the remote's own push refspecs, in config order. */
+      readonly push?: ReadonlyArray<string>;
       /** `remote.<name>.promisor` — true when this is a partial-clone promisor remote. */
       readonly promisor?: boolean;
       /** `remote.<name>.partialclonefilter` — the canonical filter spec applied at clone. */
@@ -1388,30 +1390,43 @@ interface MutableRemote {
   url?: string;
   pushUrl?: string;
   fetch?: string[];
+  push?: string[];
   promisor?: boolean;
   partialCloneFilter?: string;
 }
 
+/** The remote keys carrying a single string, by their lower-cased config name. */
+const REMOTE_STRING_KEYS: ReadonlyMap<string, 'url' | 'pushUrl' | 'partialCloneFilter'> = new Map([
+  ['url', 'url'],
+  ['pushurl', 'pushUrl'],
+  ['partialclonefilter', 'partialCloneFilter'],
+]);
+
+/** The remote keys carrying a list, every valued entry appending in config order. */
+const REMOTE_LIST_KEYS: ReadonlyMap<string, 'fetch' | 'push'> = new Map([
+  ['fetch', 'fetch'],
+  ['push', 'push'],
+]);
+
 const applyRemoteEntry = (acc: MutableRemote, key: string, value: string | null): void => {
   // Git config keys are case-insensitive — compare on the lower-cased key.
   const lowered = key.toLowerCase();
-  if (lowered === 'url') {
-    // String-typed fields skip null (valueless key treated as absent).
-    if (value !== null) acc.url = value;
-  } else if (lowered === 'pushurl') {
-    if (value !== null) acc.pushUrl = value;
-  } else if (lowered === 'fetch') {
-    if (value !== null) {
-      // Stryker disable next-line ArrayDeclaration: equivalent — mergeRemote (the sole caller) pre-seeds mutable.fetch to an array before applyRemoteEntry runs, so this ??= never assigns and its right-hand literal never evaluates.
-      acc.fetch ??= [];
-      acc.fetch.push(value);
-    }
-  } else if (lowered === 'promisor') {
+  if (lowered === 'promisor') {
     const parsed = parseGitBoolean(value);
     if (parsed.ok) acc.promisor = parsed.value;
-  } else if (lowered === 'partialclonefilter') {
-    if (value !== null) acc.partialCloneFilter = value;
+    return;
   }
+  // Every key below is string- or list-typed, and skips null (a valueless key
+  // is treated as absent).
+  if (value === null) return;
+  const stringField = REMOTE_STRING_KEYS.get(lowered);
+  if (stringField !== undefined) {
+    acc[stringField] = value;
+    return;
+  }
+  // `mergeRemote` pre-seeds both list fields, so a matched key always appends.
+  const listField = REMOTE_LIST_KEYS.get(lowered);
+  if (listField !== undefined) acc[listField]?.push(value);
 };
 
 const compactRemote = (mutable: MutableRemote): MutableRemote => {
@@ -1419,6 +1434,7 @@ const compactRemote = (mutable: MutableRemote): MutableRemote => {
   if (mutable.url !== undefined) merged.url = mutable.url;
   if (mutable.pushUrl !== undefined) merged.pushUrl = mutable.pushUrl;
   if (mutable.fetch !== undefined && mutable.fetch.length > 0) merged.fetch = mutable.fetch;
+  if (mutable.push !== undefined && mutable.push.length > 0) merged.push = mutable.push;
   if (mutable.promisor !== undefined) merged.promisor = mutable.promisor;
   if (mutable.partialCloneFilter !== undefined) {
     merged.partialCloneFilter = mutable.partialCloneFilter;
@@ -1433,7 +1449,11 @@ const mergeRemote = (
 ): void => {
   acc.remote ??= new Map();
   const current = acc.remote.get(name) ?? {};
-  const mutable: MutableRemote = { ...current, fetch: current.fetch ? [...current.fetch] : [] };
+  const mutable: MutableRemote = {
+    ...current,
+    fetch: current.fetch ? [...current.fetch] : [],
+    push: current.push ? [...current.push] : [],
+  };
   for (const { key, value } of sec.entries) applyRemoteEntry(mutable, key, value);
   acc.remote.set(name, compactRemote(mutable));
 };

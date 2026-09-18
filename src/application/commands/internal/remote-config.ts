@@ -9,6 +9,7 @@ import { refspecInvalid } from '../../../domain/protocol/error.js';
 import { isSafeRefName } from '../../../domain/refs/ref-validation.js';
 import type { Context } from '../../../ports/context.js';
 import { type ParsedConfig, readConfig } from '../../primitives/config-read.js';
+import { isValidFetchRefspec, isValidPushRefspec } from './refspec-grammar.js';
 
 /** git's `valid_remote_name` probes the name as the remote component of a
  *  tracking ref: `refs/remotes/<name>/test` must be a valid ref name. */
@@ -81,49 +82,35 @@ export const listBranchReferrers = (
   return referrers;
 };
 
-const STAR = '*';
-
-/** git's `is_glob_ref`: a refspec side is a pattern when it holds exactly
- *  one `*` — two of them are no more a pattern than none. */
-const isGlobRef = (side: string): boolean => side.split(STAR).length === 2;
-
-/**
- * git's `parse_refspec` for a FETCH refspec: a source carrying a `*` needs a
- * destination that is a pattern too, and a colon-free source has no
- * destination at all; a source without one refuses a pattern destination.
- * Every other shape passes — the colon-free plain name that lands in
- * `FETCH_HEAD` and an empty destination included.
- */
-const isValidFetchRefspec = (spec: string): boolean => {
-  const body = spec.startsWith('+') ? spec.slice(1) : spec;
-  const colon = body.indexOf(':');
-  const source = colon < 0 ? body : body.slice(0, colon);
-  const destination = colon < 0 ? undefined : body.slice(colon + 1);
-  if (source.length > 0 && source.includes(STAR)) {
-    return destination !== undefined && isGlobRef(destination);
-  }
-  return destination === undefined || !isGlobRef(destination);
-};
-
 /**
  * git builds its whole remote table out of the config before any remote
  * command runs its own logic, and `parse_refspec` dies right there — so ONE
- * unusable `remote.<any>.fetch` value refuses the command whatever remote it
- * names, and ahead of every name refusal the command would otherwise raise.
+ * unusable `remote.<any>.fetch` or `remote.<any>.push` value refuses the
+ * command whatever remote it names, and ahead of every name refusal the
+ * command would otherwise raise.
  */
-export const assertFetchRefspecsValid = (config: ParsedConfig): void => {
+export const assertRemoteRefspecsValid = (config: ParsedConfig): void => {
   for (const [, entry] of config.remote ?? []) {
-    const invalid = (entry.fetch ?? []).find((spec) => !isValidFetchRefspec(spec));
-    if (invalid !== undefined) throw refspecInvalid(invalid, 'wildcard sides do not agree');
+    const invalid = firstInvalidRefspec(entry);
+    if (invalid !== undefined) throw refspecInvalid(invalid, 'not a valid refspec');
   }
 };
+
+/** The first unusable refspec one remote configures — its fetch specs first,
+ *  as git reads them, then its push specs. */
+const firstInvalidRefspec = (entry: {
+  readonly fetch?: ReadonlyArray<string>;
+  readonly push?: ReadonlyArray<string>;
+}): string | undefined =>
+  (entry.fetch ?? []).find((spec) => !isValidFetchRefspec(spec)) ??
+  (entry.push ?? []).find((spec) => !isValidPushRefspec(spec));
 
 /** {@link readConfig} for a command that reaches a remote: the same read git
  *  builds its remote table from, and so the same point its refspec refusal
  *  lands at. */
 export const readRemoteConfig = async (ctx: Context): Promise<ParsedConfig> => {
   const config = await readConfig(ctx);
-  assertFetchRefspecsValid(config);
+  assertRemoteRefspecsValid(config);
   return config;
 };
 

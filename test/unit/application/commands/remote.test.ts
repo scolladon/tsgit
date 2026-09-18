@@ -2936,6 +2936,9 @@ describe('Given fetch refspec shapes git accepts', () => {
     { label: 'wildcards on both sides', spec: '+refs/heads/*:refs/remotes/origin/*' },
     { label: 'exact names on both sides', spec: 'refs/heads/main:refs/remotes/origin/main' },
     { label: 'an empty destination', spec: 'refs/heads/main:' },
+    { label: 'an empty source, which stands for HEAD', spec: ':refs/remotes/origin/main' },
+    { label: 'a negative refspec', spec: '^refs/heads/wip' },
+    { label: 'a one-level name on each side', spec: 'a:b' },
   ])('When remoteShow reads a remote configured with $label', ({ spec }) => {
     it('Then it reads the remote without refusing', async () => {
       // Arrange
@@ -2947,6 +2950,59 @@ describe('Given fetch refspec shapes git accepts', () => {
 
       // Assert
       expect(result.remote.fetchRefspecs).toEqual([spec]);
+    });
+  });
+});
+
+describe('Given push refspec shapes git refuses at remote-table build time', () => {
+  describe.each([
+    { label: 'a wildcard source against an exact destination', spec: 'refs/heads/*:refs/x' },
+    { label: 'an exact source against a wildcard destination', spec: 'refs/x:refs/heads/*' },
+    { label: 'a destination stepping up a directory', spec: 'refs/heads/a:refs/../b' },
+    { label: 'a destination holding a space', spec: 'refs/heads/a:refs/b c' },
+    { label: 'an empty destination', spec: 'refs/heads/a:' },
+    { label: 'two wildcards on the destination', spec: 'refs/heads/*:refs/remotes/**' },
+  ])('When remoteShow reads a remote configured with $label', ({ spec }) => {
+    it('Then it refuses the refspec itself, naming the value verbatim', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seed(ctx, `[remote "origin"]\n\turl = u\n\tpush = ${spec}\n`);
+
+      // Act
+      let caught: unknown;
+      try {
+        await remoteShow(ctx, { name: 'origin' });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect((caught as TsgitError | undefined)?.data).toMatchObject({
+        code: 'REFSPEC_INVALID',
+        raw: spec,
+      });
+    });
+  });
+});
+
+describe('Given push refspec shapes git accepts', () => {
+  describe.each([
+    { label: 'a source no ref name could be, which may be an object name', spec: 'HEAD~1:refs/x' },
+    { label: 'a colon-free wildcard, which fetch refuses', spec: 'refs/heads/*' },
+    { label: 'wildcards on both sides', spec: 'refs/heads/*:refs/heads/*' },
+    { label: 'an empty source, which means delete', spec: ':refs/heads/b' },
+    { label: 'a negative refspec', spec: '^refs/heads/wip' },
+  ])('When remoteShow reads a remote configured with $label', ({ spec }) => {
+    it('Then it reads the remote without refusing', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seed(ctx, `[remote "origin"]\n\turl = u\n\tpush = ${spec}\n`);
+
+      // Act
+      const result = await remoteShow(ctx, { name: 'origin' });
+
+      // Assert
+      expect(result.remote.name).toBe('origin');
     });
   });
 });
@@ -2963,6 +3019,13 @@ describe('Given fetch refspec shapes git refuses for a mismatched wildcard', () 
     },
     { label: 'two wildcards on each side', spec: 'refs/heads/**:refs/remotes/origin/**' },
     { label: 'an empty source against a wildcard destination', spec: ':refs/remotes/origin/*' },
+    { label: 'two wildcards on the source alone', spec: 'refs/**:refs/remotes/origin/*' },
+    { label: 'two wildcards on the destination alone', spec: 'refs/heads/*:refs/remotes/**' },
+    { label: 'a destination stepping up a directory', spec: 'refs/heads/a:refs/../b' },
+    { label: 'a source stepping up a directory', spec: 'refs/heads/..bad:refs/remotes/origin/x' },
+    { label: 'a destination holding a space', spec: 'refs/heads/a:refs/b c' },
+    { label: 'a wildcard source with no destination at all', spec: 'refs/heads/*' },
+    { label: 'a negative refspec carrying a destination', spec: '^refs/heads/a:refs/x' },
   ])('When remoteShow reads a remote configured with $label', ({ spec }) => {
     it('Then it refuses the refspec itself, naming the value verbatim', async () => {
       // Arrange

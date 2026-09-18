@@ -24,7 +24,7 @@ import { peelRefToCommit } from '../../primitives/internal/peel-ref-to-commit.js
 import { resolveRefOrMissing } from '../../primitives/resolve-ref.js';
 import { isAncestor } from './is-ancestor.js';
 import { applyRefspec, parseRefspec } from './ref-spec.js';
-import { assertFetchRefspecsValid } from './remote-config.js';
+import { assertRemoteRefspecsValid } from './remote-config.js';
 
 const HEAD_NAME = 'HEAD' as RefName;
 
@@ -80,7 +80,7 @@ const upstreamRef = async (ctx: Context, name: RefName): Promise<RefName | undef
   // git reaches the remote through `remote_get`, which builds the whole remote
   // table before answering and dies on the first unusable fetch refspec — any
   // remote's, not only the one this branch names.
-  assertFetchRefspecsValid(config);
+  assertRemoteRefspecsValid(config);
   const mapped = firstMapping(config.remote?.get(remote)?.fetch, merge as RefName);
   if (mapped !== undefined || remote !== LOCAL_REMOTE) return mapped;
   return dwimLocalMerge(ctx, merge);
@@ -122,7 +122,7 @@ const mapsNamedSource = (spec: string): boolean => {
   if (spec.startsWith(NEGATIVE_PREFIX)) return false;
   const body = spec.startsWith(FORCE_PREFIX) ? spec.slice(1) : spec;
   // git splits on the LAST colon; a ref name can hold none, so the two agree
-  // on every spec `assertFetchRefspecsValid` lets through.
+  // on every spec `assertRemoteRefspecsValid` lets through.
   const colon = body.lastIndexOf(':');
   return colon > 0 && colon < body.length - 1;
 };

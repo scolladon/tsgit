@@ -98,7 +98,7 @@ for (const [ref, oid] of remote.trackingRefs) console.log(ref, oid);
 - `REMOTE_EXISTS` — `add` against a configured name; `rename` whose `to` is already configured, including a rename onto the remote's own name.
 - `REMOTE_NAME_INVALID` — `add` / `rename`'s `to` naming something that cannot form a `refs/remotes/<name>/` ref name, or an `add` nested under or over a configured remote.
 - `INVALID_OPTION` — URL contains a control character.
-- `REFSPEC_INVALID` — `add({ fetch })` supplied a malformed custom refspec.
+- `REFSPEC_INVALID` — `add({ fetch })` supplied a malformed custom refspec, or any configured `remote.<name>.fetch` / `remote.<name>.push` value fails git's own `parse_refspec`. git builds its whole remote table before a remote command runs any logic of its own, so one unusable value refuses the command whatever remote it names. The two keys are graded differently, exactly as git grades them: a **fetch** spec must have a ref-name-shaped source (or an empty one, standing for `HEAD`) and a ref-name-shaped destination (or an empty or absent one, standing for "do not store"), and refuses a wildcard source with no destination at all; a **push** spec checks its source only when that source is a wildcard — anything else may be an extended object name — and refuses an EMPTY destination that fetch accepts. On both keys a wildcard on one side demands one on the other, each side carries at most one `*`, and a negative (`^`) spec carries a source alone.
 - `INVALID_REF` — `rename` met a symbolic tracking ref whose target is too short for the slice git overwrites.
 
 ## See also
