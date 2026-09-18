@@ -1,21 +1,16 @@
 /**
- * git's `repo_in_merge_bases(a, b)` narrowed to the question every caller
- * actually asks: is `ancestor` reachable from `descendant`. The walk yields
- * `descendant` itself first, so an oid compared against itself answers true
- * without a separate fast path.
+ * git's `repo_in_merge_bases(a, b)` named for the question every caller
+ * actually asks: is `ancestor` reachable from `descendant`. An oid compared
+ * against itself answers true — it carries both of the paint's marks from the
+ * start, the way git's own walk leaves it.
  */
 
 import type { ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
-import { walkCommits } from '../../primitives/walk-commits.js';
+import { inMergeBases } from '../../primitives/merge-base.js';
 
-export const isAncestor = async (
+export const isAncestor = (
   ctx: Context,
   ancestor: ObjectId,
   descendant: ObjectId,
-): Promise<boolean> => {
-  for await (const commit of walkCommits(ctx, { from: [descendant], ignoreMissing: true })) {
-    if (commit.id === ancestor) return true;
-  }
-  return false;
-};
+): Promise<boolean> => inMergeBases(ctx, ancestor, descendant);
