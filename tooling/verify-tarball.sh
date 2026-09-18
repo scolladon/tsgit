@@ -154,7 +154,7 @@ done
 # distribution form ships: git's `parse_refspec` grammar for both the fetch and the
 # push key, `branch_checked_out`'s rebase and bisect claims over every worktree's own
 # state files, the fatal-msg-id demote refusal with its own error member, the loose-ref
-# and object-id refusal sanitisers, the reftable restart-offset and symbolic-target
+# and object-id refusal escaping and its caps, the reftable restart-offset and symbolic-target
 # bounds, and the shared `~/` pathname expansion. None is removable without dropping
 # the refusal or the parity each one exists to provide.
 SIZE_CAP=$((968 * 1024))
