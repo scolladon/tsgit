@@ -3044,3 +3044,144 @@ describe.skipIf(!GIT_AVAILABLE)('Given a fsck msg-id written with no value at al
     },
   );
 });
+
+// ---------------------------------------------------------------------------
+// [fsck] refusal order — git reads the section once, in file order, opening
+// each list as it reaches it, so the FIRST fault in the file is the one that
+// kills the audit. Neither kind of fault has a fixed precedence over the other.
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!GIT_AVAILABLE)('Given an unopenable list and an out-of-grammar severity', () => {
+  describe('When the list is written first', () => {
+    it(
+      'Then both refuse on the list, never reaching the severity word',
+      async () => {
+        // Arrange
+        const { dir, ctx } = await fsckRepoWithConfigText('order-list-first', '');
+        const absent = path.join(dir, 'absent-names.txt');
+        await appendFile(
+          path.join(dir, '.git', 'config'),
+          `[fsck]\n\tskipList = ${absent}\n\tbadTree = bogus\n`,
+        );
+        __resetConfigCacheForTests();
+
+        // Act
+        const gitResult = gitFsck(dir, '--full');
+        const caught = await catchFsckError(ctx);
+
+        // Assert
+        expect(gitResult.exitCode).toBe(128);
+        expect(gitResult.stderr).toBe(`fatal: could not open object name list: ${absent}\n`);
+        expect(caught.data).toEqual({
+          code: 'FSCK_SKIP_LIST_UNREADABLE',
+          path: absent,
+          reason: 'FILE_NOT_FOUND',
+        });
+      },
+      SETUP_TIMEOUT,
+    );
+  });
+
+  describe('When the severity word is written first', () => {
+    it(
+      'Then both refuse on the value, never opening the list',
+      async () => {
+        // Arrange
+        const { dir, ctx } = await fsckRepoWithConfigText('order-value-first', '');
+        const absent = path.join(dir, 'absent-names.txt');
+        await appendFile(
+          path.join(dir, '.git', 'config'),
+          `[fsck]\n\tbadTree = bogus\n\tskipList = ${absent}\n`,
+        );
+        __resetConfigCacheForTests();
+
+        // Act
+        const gitResult = gitFsck(dir, '--full');
+        const caught = await catchFsckError(ctx);
+
+        // Assert
+        expect(gitResult.exitCode).toBe(128);
+        expect(gitResult.stderr).toBe("fatal: Unknown fsck message type: 'bogus'\n");
+        expect(caught.data).toEqual({
+          code: 'CONFIG_INVALID_ENUM_VALUE',
+          key: `fsck.${'badTree'.toLowerCase()}`,
+          source: path.join(dir, '.git', 'config'),
+          value: 'bogus',
+          line: expect.any(Number),
+        });
+      },
+      SETUP_TIMEOUT,
+    );
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)('Given a list, then a bad severity, then a second list', () => {
+  describe('When fsck runs', () => {
+    it(
+      'Then both refuse on the FIRST list — the order is the file order, not a fixed precedence',
+      async () => {
+        // Arrange
+        const { dir, ctx } = await fsckRepoWithConfigText('order-three', '');
+        const first = path.join(dir, 'absent-one.txt');
+        const second = path.join(dir, 'absent-two.txt');
+        await appendFile(
+          path.join(dir, '.git', 'config'),
+          `[fsck]\n\tskipList = ${first}\n\tbadTree = bogus\n\tskipList = ${second}\n`,
+        );
+        __resetConfigCacheForTests();
+
+        // Act
+        const gitResult = gitFsck(dir, '--full');
+        const caught = await catchFsckError(ctx);
+
+        // Assert
+        expect(gitResult.exitCode).toBe(128);
+        expect(gitResult.stderr).toBe(`fatal: could not open object name list: ${first}\n`);
+        expect(caught.data).toEqual({
+          code: 'FSCK_SKIP_LIST_UNREADABLE',
+          path: first,
+          reason: 'FILE_NOT_FOUND',
+        });
+      },
+      SETUP_TIMEOUT,
+    );
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given a readable list carrying a line that is not an object name',
+  () => {
+    describe('When a bad severity word follows it', () => {
+      it(
+        'Then both refuse on the list line, which is reached first',
+        async () => {
+          // Arrange
+          const { dir, ctx } = await fsckRepoWithConfigText('order-bad-line', '');
+          const listPath = path.join(dir, 'names.txt');
+          const abbreviated = '0'.repeat(7);
+          await writeFile(listPath, `${abbreviated}\n`);
+          await appendFile(
+            path.join(dir, '.git', 'config'),
+            `[fsck]\n\tskipList = ${listPath}\n\tbadTree = bogus\n`,
+          );
+          __resetConfigCacheForTests();
+
+          // Act
+          const gitResult = gitFsck(dir, '--full');
+          const caught = await catchFsckError(ctx);
+
+          // Assert
+          expect(gitResult.exitCode).toBe(128);
+          expect(gitResult.stderr).toBe(`fatal: invalid object name: ${abbreviated}\n`);
+          expect(caught.data).toEqual({
+            code: 'FSCK_SKIP_LIST_INVALID_NAME',
+            name: abbreviated,
+            path: listPath,
+            line: 1,
+          });
+        },
+        SETUP_TIMEOUT,
+      );
+    });
+  },
+);

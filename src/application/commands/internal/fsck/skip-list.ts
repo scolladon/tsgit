@@ -18,7 +18,6 @@ import { errorDataCode } from '../../../../domain/error-data-code.js';
 import type { HashConfig } from '../../../../domain/objects/index.js';
 import { isOid } from '../../../../domain/objects/index.js';
 import type { Context, RepositoryLayout } from '../../../../ports/context.js';
-import { readFsckSkipListPaths } from '../../../primitives/config-read.js';
 import { isAbsolutePath } from '../../../primitives/internal/absolute-path.js';
 import { expandHomePrefix } from '../../../primitives/internal/expand-home-path.js';
 import { joinPath } from '../../../primitives/internal/join-working-tree-path.js';
@@ -30,21 +29,17 @@ const COMMENT_PREFIX = '#';
 const UNCLASSIFIED = 'UNKNOWN';
 
 /**
- * Every name the repository's `fsck.skipList` entries hold, unioned. The key
- * accumulates: git parses each configured list into ONE oidset as its config
- * read reaches the entry, so a second entry adds to the first rather than
- * replacing it, and the first unusable list refuses the audit before any later
- * one is opened.
+ * The names one configured `fsck.skipList` entry holds. git parses each list
+ * into ONE oidset as its config read reaches that entry, so the caller unions
+ * what every entry yields — and an unusable list refuses the audit right
+ * there, before anything later in the file is graded.
  */
-export const loadFsckSkipList = async (ctx: Context): Promise<ReadonlySet<string>> => {
-  const names = new Set<string>();
-  for (const configured of await readFsckSkipListPaths(ctx)) {
-    const path = resolveListPath(ctx.layout, configured);
-    for (const name of parseObjectNames(await readListFile(ctx, path), path, ctx.hashConfig)) {
-      names.add(name);
-    }
-  }
-  return names;
+export const readFsckSkipListNames = async (
+  ctx: Context,
+  configured: string,
+): Promise<ReadonlySet<string>> => {
+  const path = resolveListPath(ctx.layout, configured);
+  return parseObjectNames(await readListFile(ctx, path), path, ctx.hashConfig);
 };
 
 /**

@@ -385,6 +385,34 @@ working tree, with the git dir standing in for a bare repository — the two rul
 `core.hooksPath` already follows. The zero-OID pointer synthesised for an unreadable
 ref is reported outside the catalogue, so `fsck.badRefOid` does not reach it.
 
+### Configuration read order (ADR-877)
+
+git reads `[fsck]` ONCE and acts on each entry as its config walk reaches it: a severity
+word is graded against the msg-id catalogue on the spot, and a `fsck.skipList` path is
+handed to `oidset_parse_file` on the spot. The first fault in the FILE therefore kills the
+audit, and neither kind has precedence over the other. Pinned against git 2.55.0:
+
+| `[fsck]` body, in order | refusal |
+| --- | --- |
+| `skipList = <absent>`, `badTree = bogus` | `could not open object name list: <absent>` |
+| `badTree = bogus`, `skipList = <absent>` | `Unknown fsck message type: 'bogus'` |
+| `skipList = <absent-one>`, `badTree = bogus`, `skipList = <absent-two>` | `could not open object name list: <absent-one>` |
+| `skipList = <absent>`, `noSuchThing = error` | `could not open object name list: <absent>` |
+| `noSuchThing = error`, `skipList = <absent>` | `Unhandled message id: <folded key>` |
+| `skipList = <list holding an abbreviation>`, `badTree = bogus` | `invalid object name: <abbreviation>` |
+| `badTree = bogus`, `skipList = <list holding an abbreviation>` | `Unknown fsck message type: 'bogus'` |
+
+The list's own **parse** fault obeys the same rule as its open fault: both happen at the
+entry, not in a later pass.
+
+`readFsckConfigItems` reproduces that with one LAZY walk: each step grades the next
+`[fsck …]` entry and yields it — `{ kind: 'severity', … }` or `{ kind: 'skip-list', path }`
+— throwing that entry's refusal in place. `readFsckConfiguration` drives it, opening each
+list through `readFsckSkipListNames` inside the loop body, so a list is read before the
+walk grades anything after it. Filesystem access stays on the command side: the config
+primitive reads `.git/config` and nothing else. A repeated `skipList` still unions, the
+union now living in the walk's driver where the file order is.
+
 The **strict-upgrade set** is exactly the WARN-default rows above: `emptyName`,
 `fullPathname`, `hasDot`, `hasDotdot`, `hasDotgit`, `largePathname`, `nulInCommit`,
 `nullSha1`, `zeroPaddedFilemode`. INFO/IGNORE/FATAL/ERROR ids are *not* upgraded by

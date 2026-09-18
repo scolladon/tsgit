@@ -5,14 +5,34 @@
  */
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
-import {
-  readFsckSeverityTable,
-  readFsckSkipListPaths,
-} from '../../../../src/application/primitives/config-read.js';
+import type { FsckConfigItem } from '../../../../src/application/primitives/config-read.js';
+import { readFsckConfigItems } from '../../../../src/application/primitives/config-read.js';
 import { TsgitError } from '../../../../src/domain/error.js';
+import type { FsckConfiguredSeverity } from '../../../../src/domain/fsck/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 
-const sut = readFsckSeverityTable;
+const sut = readFsckConfigItems;
+
+/** The severity half of the walk. Iterating is what grades each entry, so
+ *  building this table forces every classification the file asks for. */
+const severityTable = (
+  items: Iterable<FsckConfigItem>,
+): ReadonlyMap<string, FsckConfiguredSeverity> => {
+  const table = new Map<string, FsckConfiguredSeverity>();
+  for (const item of items) {
+    if (item.kind === 'severity') table.set(item.msgId, item.severity);
+  }
+  return table;
+};
+
+/** The list half of the walk, in file order. */
+const listPaths = (items: Iterable<FsckConfigItem>): ReadonlyArray<string> =>
+  [...items].flatMap((item) => (item.kind === 'skip-list' ? [item.path] : []));
+
+/** Force every classification, keeping the items graded before the refusal. */
+const drain = async (
+  items: Promise<Iterable<FsckConfigItem>>,
+): Promise<ReadonlyArray<FsckConfigItem>> => [...(await items)];
 
 const seed = async (ctx: Context, content: string): Promise<Context> => {
   await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, content);
@@ -26,7 +46,7 @@ describe('Given a [fsck] section re-typing one msg-id', () => {
       const ctx = await seed(createMemoryContext(), '[fsck]\n  badTree = ignore\n');
 
       // Act
-      const result = await sut(ctx);
+      const result = severityTable(await sut(ctx));
 
       // Assert
       expect([...result]).toEqual([['badTree'.toLowerCase(), 'ignore']]);
@@ -41,7 +61,7 @@ describe('Given a [fsck] re-typing spelled warn', () => {
       const ctx = await seed(createMemoryContext(), '[fsck]\n  nulInCommit = warn\n');
 
       // Act
-      const result = await sut(ctx);
+      const result = severityTable(await sut(ctx));
 
       // Assert
       expect([...result]).toEqual([['nulInCommit'.toLowerCase(), 'warning']]);
@@ -56,7 +76,7 @@ describe('Given a msg-id offered in a case the catalogue does not use', () => {
       const ctx = await seed(createMemoryContext(), '[fsck]\n  ZEROpaddedFILEmode = error\n');
 
       // Act
-      const result = await sut(ctx);
+      const result = severityTable(await sut(ctx));
 
       // Assert
       expect([...result]).toEqual([['zeroPaddedFilemode'.toLowerCase(), 'error']]);
@@ -74,7 +94,7 @@ describe('Given the same msg-id re-typed twice in one section', () => {
       );
 
       // Act
-      const result = await sut(ctx);
+      const result = severityTable(await sut(ctx));
 
       // Assert
       expect([...result]).toEqual([['badTree'.toLowerCase(), 'warning']]);
@@ -92,7 +112,7 @@ describe('Given fsck.skipList sitting beside a re-typing in the same section', (
       );
 
       // Act
-      const result = await sut(ctx);
+      const result = severityTable(await sut(ctx));
 
       // Assert
       expect([...result]).toEqual([['badTree'.toLowerCase(), 'ignore']]);
@@ -107,7 +127,7 @@ describe('Given a msg-id-shaped key under a section that is not [fsck]', () => {
       const ctx = await seed(createMemoryContext(), '[core]\n  badTree = ignore\n');
 
       // Act
-      const result = await sut(ctx);
+      const result = severityTable(await sut(ctx));
 
       // Assert
       expect([...result]).toEqual([]);
@@ -125,7 +145,7 @@ describe('Given a [fsck] section closed by a later section carrying a msg-id-sha
       );
 
       // Act
-      const result = await sut(ctx);
+      const result = severityTable(await sut(ctx));
 
       // Assert
       expect([...result]).toEqual([['badTree'.toLowerCase(), 'ignore']]);
@@ -143,7 +163,7 @@ describe('Given a [fsck] section padded with comments and blank lines', () => {
       );
 
       // Act
-      const result = await sut(ctx);
+      const result = severityTable(await sut(ctx));
 
       // Assert
       expect([...result]).toEqual([['badTree'.toLowerCase(), 'ignore']]);
@@ -158,7 +178,7 @@ describe('Given no [fsck] section at all', () => {
       const ctx = await seed(createMemoryContext(), '[core]\n  bare = false\n');
 
       // Act
-      const result = await sut(ctx);
+      const result = severityTable(await sut(ctx));
 
       // Assert
       expect([...result]).toEqual([]);
@@ -188,7 +208,7 @@ describe('Given a msg-id written with no value at all', () => {
       const ctx = await seed(createMemoryContext(), '[core]\n[fsck]\n  badTree\n');
 
       // Act
-      const caught = await caughtFrom(() => sut(ctx));
+      const caught = await caughtFrom(() => drain(sut(ctx)));
 
       // Assert
       expect(caught.data).toEqual({
@@ -208,7 +228,7 @@ describe('Given a valueless key no fsck check knows', () => {
       const ctx = await seed(createMemoryContext(), '[fsck]\n  noSuchThing\n');
 
       // Act
-      const caught = await caughtFrom(() => sut(ctx));
+      const caught = await caughtFrom(() => drain(sut(ctx)));
 
       // Assert
       expect(caught.data).toEqual({
@@ -228,7 +248,7 @@ describe('Given a valueless key naming a msg-id that may never be demoted', () =
       const ctx = await seed(createMemoryContext(), '[fsck]\n  nulInHeader\n');
 
       // Act
-      const caught = await caughtFrom(() => sut(ctx));
+      const caught = await caughtFrom(() => drain(sut(ctx)));
 
       // Assert
       expect(caught.data).toEqual({
@@ -248,7 +268,7 @@ describe('Given a msg-id whose value is present but empty', () => {
       const ctx = await seed(createMemoryContext(), '[fsck]\n  badTree =\n');
 
       // Act
-      const caught = await caughtFrom(() => sut(ctx));
+      const caught = await caughtFrom(() => drain(sut(ctx)));
 
       // Assert
       expect(caught.data).toEqual({
@@ -273,7 +293,7 @@ describe('Given no fsck.skipList anywhere in the configuration', () => {
       const ctx = await seed(createMemoryContext(), '[fsck]\n  badTree = ignore\n');
 
       // Act
-      const result = await readFsckSkipListPaths(ctx);
+      const result = listPaths(await sut(ctx));
 
       // Assert
       expect(result).toEqual([]);
@@ -288,7 +308,7 @@ describe('Given one fsck.skipList entry', () => {
       const ctx = await seed(createMemoryContext(), '[fsck]\n  skipList = /names.txt\n');
 
       // Act
-      const result = await readFsckSkipListPaths(ctx);
+      const result = listPaths(await sut(ctx));
 
       // Assert
       expect(result).toEqual(['/names.txt']);
@@ -306,7 +326,7 @@ describe('Given fsck.skipList written twice', () => {
       );
 
       // Act
-      const result = await readFsckSkipListPaths(ctx);
+      const result = listPaths(await sut(ctx));
 
       // Assert
       expect(result).toEqual(['/first.txt', '/second.txt']);
@@ -324,7 +344,7 @@ describe('Given a valueless fsck.skipList sitting after a usable one', () => {
       );
 
       // Act
-      const caught = await caughtFrom(() => readFsckSkipListPaths(ctx));
+      const caught = await caughtFrom(() => drain(sut(ctx)));
 
       // Assert
       expect(caught.data).toEqual({
@@ -348,7 +368,7 @@ describe('Given a msg-id under a quoted subsection header', () => {
       const ctx = await seed(createMemoryContext(), '[fsck "SubName"]\n  BadTree = ignore\n');
 
       // Act
-      const caught = await caughtFrom(() => sut(ctx));
+      const caught = await caughtFrom(() => drain(sut(ctx)));
 
       // Assert
       expect(caught.data).toEqual({
@@ -368,7 +388,7 @@ describe('Given a msg-id under a dotted subsection header', () => {
       const ctx = await seed(createMemoryContext(), '[fsck.Sub]\n  badTree = ignore\n');
 
       // Act
-      const caught = await caughtFrom(() => sut(ctx));
+      const caught = await caughtFrom(() => drain(sut(ctx)));
 
       // Assert
       expect(caught.data).toEqual({
@@ -388,7 +408,7 @@ describe('Given a msg-id under an empty quoted subsection header', () => {
       const ctx = await seed(createMemoryContext(), '[fsck ""]\n  badTree = ignore\n');
 
       // Act
-      const caught = await caughtFrom(() => sut(ctx));
+      const caught = await caughtFrom(() => drain(sut(ctx)));
 
       // Assert
       expect(caught.data).toEqual({
@@ -408,7 +428,7 @@ describe('Given skipList under a subsection header', () => {
       const ctx = await seed(createMemoryContext(), '[fsck "x"]\n  skipList = /names.txt\n');
 
       // Act
-      const caught = await caughtFrom(() => sut(ctx));
+      const caught = await caughtFrom(() => drain(sut(ctx)));
 
       // Assert
       expect(caught.data).toEqual({
@@ -428,7 +448,7 @@ describe('Given a valueless msg-id under a subsection header', () => {
       const ctx = await seed(createMemoryContext(), '[fsck "x"]\n  badTree\n');
 
       // Act
-      const caught = await caughtFrom(() => sut(ctx));
+      const caught = await caughtFrom(() => drain(sut(ctx)));
 
       // Assert
       expect(caught.data).toEqual({
@@ -441,9 +461,9 @@ describe('Given a valueless msg-id under a subsection header', () => {
   });
 });
 
-describe('Given skipList under a subsection header beside the subsectionless one', () => {
-  describe('When the configured list paths are read', () => {
-    it('Then only the subsectionless entry is a list path', async () => {
+describe('Given a subsectionless skipList sitting after a subsectioned one', () => {
+  describe('When the entries are graded', () => {
+    it('Then the subsectioned key refuses as a msg-id before the usable list is reached', async () => {
       // Arrange
       const ctx = await seed(
         createMemoryContext(),
@@ -451,10 +471,72 @@ describe('Given skipList under a subsection header beside the subsectionless one
       );
 
       // Act
-      const result = await readFsckSkipListPaths(ctx);
+      const caught = await caughtFrom(() => drain(sut(ctx)));
 
       // Assert
-      expect(result).toEqual(['/plain.txt']);
+      expect(caught.data).toEqual({
+        code: 'FSCK_UNKNOWN_MSG_ID',
+        msgId: `x.${'skipList'.toLowerCase()}`,
+        source: `${ctx.layout.gitDir}/config`,
+        line: 2,
+      });
+    });
+  });
+});
+
+describe('Given a subsectionless skipList sitting before a subsectioned one', () => {
+  describe('When the entries are graded one at a time', () => {
+    it('Then the usable list is yielded before the walk refuses on the subsectioned key', async () => {
+      // Arrange
+      const ctx = await seed(
+        createMemoryContext(),
+        '[fsck]\n  skipList = /plain.txt\n[fsck "x"]\n  skipList = /sub.txt\n',
+      );
+      const items = await sut(ctx);
+      const graded: FsckConfigItem[] = [];
+
+      // Act
+      const caught = await caughtFrom(async () => {
+        for (const item of items) graded.push(item);
+      });
+
+      // Assert
+      expect(graded).toEqual([{ kind: 'skip-list', path: '/plain.txt' }]);
+      expect(caught.data).toEqual({
+        code: 'FSCK_UNKNOWN_MSG_ID',
+        msgId: `x.${'skipList'.toLowerCase()}`,
+        source: `${ctx.layout.gitDir}/config`,
+        line: 4,
+      });
+    });
+  });
+});
+
+describe('Given a skipList and an out-of-grammar severity word after it', () => {
+  describe('When the entries are graded one at a time', () => {
+    it('Then the list is yielded before the walk reaches the value it refuses', async () => {
+      // Arrange
+      const ctx = await seed(
+        createMemoryContext(),
+        '[fsck]\n  skipList = /names.txt\n  badTree = bogus\n',
+      );
+      const items = await sut(ctx);
+      const graded: FsckConfigItem[] = [];
+
+      // Act
+      const caught = await caughtFrom(async () => {
+        for (const item of items) graded.push(item);
+      });
+
+      // Assert
+      expect(graded).toEqual([{ kind: 'skip-list', path: '/names.txt' }]);
+      expect(caught.data).toEqual({
+        code: 'CONFIG_INVALID_ENUM_VALUE',
+        key: `fsck.${'badTree'.toLowerCase()}`,
+        source: `${ctx.layout.gitDir}/config`,
+        value: 'bogus',
+        line: 3,
+      });
     });
   });
 });

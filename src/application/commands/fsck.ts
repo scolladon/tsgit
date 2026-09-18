@@ -1,7 +1,6 @@
 import type { ObjectContent, ObjectId } from '../../domain/objects/index.js';
 import type { LruCache } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
-import { readFsckSeverityTable } from '../primitives/config-read.js';
 import { deriveContext } from '../primitives/derive-context.js';
 import { enumerateObjects } from '../primitives/enumerate-objects.js';
 import { assertValidPromisorRemoteConfig } from '../primitives/internal/boolean-config-guard.js';
@@ -20,10 +19,10 @@ import {
   buildReachableSet,
   classifyObjects,
 } from './internal/fsck/reachability.js';
+import { readFsckConfiguration } from './internal/fsck/read-configuration.js';
 import { runRefsVerifyPass } from './internal/fsck/refs-verify.js';
 import { runRevIndexHealthPass } from './internal/fsck/rev-index-health.js';
 import { collectRoots } from './internal/fsck/roots.js';
-import { loadFsckSkipList } from './internal/fsck/skip-list.js';
 import type { UnreadableMode } from './internal/fsck/types.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
 
@@ -60,14 +59,10 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   await assertOperationalRepository(ctx);
 
   // Read up front, before a single object is decoded: git parses `[fsck]`
-  // while it reads its configuration, so an unknown msg-id or an
-  // out-of-grammar severity refuses the whole audit rather than the entry.
-  const severities = await readFsckSeverityTable(ctx);
-
-  // Read in the same breath: git parses `fsck.skipList` alongside the
-  // severity table, and a list it cannot open — or one carrying a line that
-  // is not a full object name — kills the audit right there.
-  const skipped = await loadFsckSkipList(ctx);
+  // while it reads its configuration, so an unknown msg-id, an out-of-grammar
+  // severity or an unusable `fsck.skipList` refuses the whole audit rather
+  // than the entry — whichever of them the FILE holds first.
+  const { severities, skipped } = await readFsckConfiguration(ctx);
 
   // An integrity audit observes the STORE, never the object-byte read cache: a
   // delta base cached by an earlier read (or by this walk itself) would

@@ -16,7 +16,7 @@ import {
   tokenizeConfig,
 } from '../../domain/config/config-ini.js';
 import { TsgitError } from '../../domain/error.js';
-import type { FsckConfiguredSeverity, FsckSeverityTable } from '../../domain/fsck/index.js';
+import type { FsckConfiguredSeverity } from '../../domain/fsck/index.js';
 import { CONFIGURABLE_MSG_IDS, FATAL_MSG_IDS, parseFsckSeverity } from '../../domain/fsck/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import type { ReflogExpiryConfigEntry } from '../../domain/reflog/expire-policy.js';
@@ -930,18 +930,35 @@ const composeFsckMsgId = (subsection: string | undefined, key: string): string =
   subsection === undefined ? key.toLowerCase() : `${subsection}.${key.toLowerCase()}`;
 
 /**
- * The repository's `fsck.<msg-id>` re-typings, keyed by the lower-cased
- * msg-id. Walks EVERY `[fsck …]` header's tokens in file order — a subsection
- * does not hide an entry from git, it only lengthens the msg-id the entry asks
- * about — so a repeated key takes its LAST entry, exactly as git's own config
- * read does. Refuses on the four conditions git refuses the whole audit for: a
- * key with no value, a key half outside the msg-id set, a value outside the
- * three severity words, and a fatal msg-id asked for anything softer than
- * `error`.
+ * One graded `[fsck …]` entry, in the order the file holds it: either a msg-id
+ * re-typing or a path `fsck.skipList` names.
  */
-export const readFsckSeverityTable = async (ctx: Context): Promise<FsckSeverityTable> => {
+export type FsckConfigItem =
+  | { readonly kind: 'severity'; readonly msgId: string; readonly severity: FsckConfiguredSeverity }
+  | { readonly kind: 'skip-list'; readonly path: string };
+
+/**
+ * Every `[fsck …]` entry, graded LAZILY in file order. git reads the section
+ * once and acts on each entry as it reaches it — grading a severity word,
+ * opening a skip list — so the first fault in the FILE is the one that kills
+ * the audit, with no precedence between the two kinds. Grading one item per
+ * `next()` is what reproduces that: the caller opens the list an item names
+ * before the walk grades anything after it.
+ *
+ * A subsection does not hide an entry from git, it only lengthens the msg-id
+ * the entry asks about, so EVERY `[fsck …]` header is walked. A repeated
+ * msg-id takes its LAST entry, and a repeated `skipList` ACCUMULATES — git
+ * unions the lists into one oidset.
+ */
+export const readFsckConfigItems = async (ctx: Context): Promise<Iterable<FsckConfigItem>> => {
   const { tokens, source } = await readConfigEntry(ctx);
-  const table = new Map<string, FsckConfiguredSeverity>();
+  return walkFsckEntries(tokens, source);
+};
+
+function* walkFsckEntries(
+  tokens: ReadonlyArray<ConfigToken>,
+  source: string,
+): Generator<FsckConfigItem> {
   let inSection = false;
   let subsection: string | undefined;
   for (const token of tokens) {
@@ -951,11 +968,28 @@ export const readFsckSeverityTable = async (ctx: Context): Promise<FsckSeverityT
       continue;
     }
     if (!inSection || token.kind !== 'entry') continue;
-    const msgId = composeFsckMsgId(subsection, token.key);
-    if (msgId === FSCK_SKIP_LIST_KEY) continue;
-    table.set(msgId, readFsckSeverity(msgId, token, source));
+    yield gradeFsckEntry(composeFsckMsgId(subsection, token.key), token, source);
   }
-  return table;
+}
+
+/**
+ * One entry's verdict. `fsck.skipList` is exempt from the msg-id grammar — it
+ * names an object-name list file, not a check — but not from a value: git
+ * routes it through `git_config_pathname`, whose `config_error_nonbool` kills
+ * the audit on a valueless entry.
+ */
+const gradeFsckEntry = (
+  msgId: string,
+  token: Extract<ConfigToken, { kind: 'entry' }>,
+  source: string,
+): FsckConfigItem => {
+  if (msgId !== FSCK_SKIP_LIST_KEY) {
+    return { kind: 'severity', msgId, severity: readFsckSeverity(msgId, token, source) };
+  }
+  if (token.value === null) {
+    throw configMissingValue(`fsck.${FSCK_SKIP_LIST_KEY}`, source, token.startLine + 1);
+  }
+  return { kind: 'skip-list', path: token.value };
 };
 
 /** One `[fsck]` entry's severity, or the refusal git dies with in its place. */
@@ -985,34 +1019,6 @@ const readFsckSeverity = (
     throw fsckCannotDemote(msgId, token.value, source, line);
   }
   return severity;
-};
-
-/**
- * Every path `fsck.skipList` names, in file order — the key ACCUMULATES rather
- * than replaces. git hands each entry to `oidset_parse_file` as its config read
- * reaches it, so a repeated key unions the lists (measured against git 2.55.0:
- * two lists, two objects, both silenced) and the FIRST unusable one kills the
- * audit. A valueless entry (`skipList` with no `=`) is not absent: git routes
- * the key through `git_config_pathname`, whose `config_error_nonbool` kills the
- * whole audit.
- */
-export const readFsckSkipListPaths = async (ctx: Context): Promise<ReadonlyArray<string>> => {
-  const { tokens, source } = await readConfigEntry(ctx);
-  let inSection = false;
-  const paths: string[] = [];
-  for (const token of tokens) {
-    if (token.kind === 'header') {
-      inSection = matchesSection(token.section, token.subsection, 'fsck', undefined);
-      continue;
-    }
-    if (!inSection || token.kind !== 'entry') continue;
-    if (token.key.toLowerCase() !== FSCK_SKIP_LIST_KEY) continue;
-    if (token.value === null) {
-      throw configMissingValue(`fsck.${FSCK_SKIP_LIST_KEY}`, source, token.startLine + 1);
-    }
-    paths.push(token.value);
-  }
-  return paths;
 };
 
 /** One invalid `pack.window` / `pack.depth` / `pack.windowMemory` entry returned by `findFirstInvalidPackInt`. */
