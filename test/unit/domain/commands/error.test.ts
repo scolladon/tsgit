@@ -10,7 +10,6 @@ import {
   bundleEmpty,
   bundleReadFailed,
   type CommandError,
-  cannotDeleteCheckedOutBranch,
   cannotDescribe,
   checkoutOverwriteDirty,
   cherryPickMergeNoMainline,
@@ -364,18 +363,6 @@ describe('domain commands error — factory data', () => {
         expect(tagNotFound('refs/tags/v1' as RefName).data).toEqual({
           code: 'TAG_NOT_FOUND',
           name: 'refs/tags/v1',
-        });
-      });
-    });
-  });
-
-  describe('Given the cannotDeleteCheckedOutBranch error helper', () => {
-    describe('When called', () => {
-      it('Then data matches expected shape', () => {
-        // Arrange + Assert
-        expect(cannotDeleteCheckedOutBranch('refs/heads/main' as RefName).data).toEqual({
-          code: 'CANNOT_DELETE_CHECKED_OUT_BRANCH',
-          name: 'refs/heads/main',
         });
       });
     });
@@ -1341,10 +1328,6 @@ describe('domain commands error — extractDetail message formatting', () => {
     [
       { code: 'TAG_NOT_FOUND', name: 'refs/tags/v1' as RefName },
       'TAG_NOT_FOUND: tag not found: refs/tags/v1',
-    ],
-    [
-      { code: 'CANNOT_DELETE_CHECKED_OUT_BRANCH', name: 'refs/heads/main' as RefName },
-      'CANNOT_DELETE_CHECKED_OUT_BRANCH: cannot delete branch currently checked out: refs/heads/main',
     ],
     [{ code: 'INVALID_URL', reason: 'bad' }, 'INVALID_URL: invalid URL: bad'],
     [

@@ -389,8 +389,6 @@ function extractDetail(data: TsgitErrorData): string {
       return `tag already exists: ${data.name}`;
     case 'TAG_NOT_FOUND':
       return `tag not found: ${data.name}`;
-    case 'CANNOT_DELETE_CHECKED_OUT_BRANCH':
-      return `cannot delete branch currently checked out: ${data.name}`;
     case 'INVALID_URL':
       return `invalid URL: ${data.reason}`;
     case 'BLOCKED_HOST':

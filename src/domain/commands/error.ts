@@ -33,7 +33,6 @@ export type CommandError =
   | { readonly code: 'BRANCH_NOT_FOUND'; readonly name: RefName }
   | { readonly code: 'TAG_EXISTS'; readonly name: RefName }
   | { readonly code: 'TAG_NOT_FOUND'; readonly name: RefName }
-  | { readonly code: 'CANNOT_DELETE_CHECKED_OUT_BRANCH'; readonly name: RefName }
   | { readonly code: 'INVALID_URL'; readonly reason: string }
   | { readonly code: 'BLOCKED_HOST'; readonly host: string; readonly reason: string }
   | { readonly code: 'TOO_MANY_REDIRECTS'; readonly count: number }
@@ -360,9 +359,6 @@ export const tagExists = (name: RefName): TsgitError =>
 
 export const tagNotFound = (name: RefName): TsgitError =>
   new TsgitError({ code: 'TAG_NOT_FOUND', name });
-
-export const cannotDeleteCheckedOutBranch = (name: RefName): TsgitError =>
-  new TsgitError({ code: 'CANNOT_DELETE_CHECKED_OUT_BRANCH', name });
 
 export const invalidUrl = (reason: string): TsgitError =>
   new TsgitError({ code: 'INVALID_URL', reason });

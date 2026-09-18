@@ -107,7 +107,6 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'BRANCH_NOT_FOUND':
     case 'TAG_EXISTS':
     case 'TAG_NOT_FOUND':
-    case 'CANNOT_DELETE_CHECKED_OUT_BRANCH':
     case 'INVALID_URL':
     case 'BLOCKED_HOST':
     case 'TOO_MANY_REDIRECTS':

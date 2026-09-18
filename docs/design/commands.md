@@ -330,7 +330,6 @@ export type CommandError =
   | { readonly code: 'BRANCH_NOT_FOUND'; readonly name: RefName }
   | { readonly code: 'TAG_EXISTS'; readonly name: RefName }
   | { readonly code: 'TAG_NOT_FOUND'; readonly name: RefName }
-  | { readonly code: 'CANNOT_DELETE_CHECKED_OUT_BRANCH'; readonly name: RefName }
   | { readonly code: 'INVALID_URL'; readonly reason: string }
   | { readonly code: 'BLOCKED_HOST'; readonly host: string; readonly reason: string }
   | { readonly code: 'TOO_MANY_REDIRECTS'; readonly count: number }
@@ -395,7 +394,6 @@ Step 0 of the implementation plan widens the union AND every `extractDetail` arm
 | `BRANCH_NOT_FOUND` | `branch not found: ${name}` |
 | `TAG_EXISTS` | `tag already exists: ${name}` |
 | `TAG_NOT_FOUND` | `tag not found: ${name}` |
-| `CANNOT_DELETE_CHECKED_OUT_BRANCH` | `cannot delete branch currently checked out: ${name}` |
 | `INVALID_URL` | `invalid URL: ${reason}` |
 | `BLOCKED_HOST` | `host blocked: ${host} (${reason})` |
 | `TOO_MANY_REDIRECTS` | `too many redirects: ${count}` |
@@ -987,7 +985,7 @@ export function branch(ctx: Context, action: BranchAction): Promise<BranchResult
 
 - `list`: scan `refs/heads/` (or `refs/remotes/` if `remote`); group by ref directory. Reads `branch.<name>.merge` from `internal/config-read` to populate `BranchInfo.upstream`.
 - `create`: resolve `startPoint` (default HEAD) → `updateRef(refs/heads/<name>, id, { expected: force ? undefined : 'absent' })`.
-- `delete`: `updateRef(refs/heads/<name>, ..., { delete: true })`. Throws `CANNOT_DELETE_CHECKED_OUT_BRANCH` if `readHeadRaw` returns `{ kind: 'symbolic', target: refs/heads/<name> }`.
+- `delete`: `updateRef(refs/heads/<name>, ..., { delete: true })`. Throws `BRANCH_CHECKED_OUT` when any worktree's HEAD names the branch — the current checkout, a linked worktree, or a linked worktree whose directory is gone but whose registration has not been pruned. A detached HEAD names no branch and a bare main checkout is skipped, so neither holds anything.
 - `rename` (four steps with hand-rolled per-step rollback — no composite lock primitive):
   1. Resolve `from`'s oid via `resolveRef`.
   2. `updateRef(refs/heads/<to>, oid, { expected: force ? undefined : 'absent' })`.
@@ -995,7 +993,7 @@ export function branch(ctx: Context, action: BranchAction): Promise<BranchResult
   4. **If the renamed branch is currently checked out** (HEAD's symref target was `refs/heads/<from>`): `writeSymbolicRef('HEAD', refs/heads/<to>)`. Otherwise HEAD is left alone.
   Failure modes: if step 3 fails after step 2 succeeded, the new branch exists with the old still alive — caller can re-run `branch delete --force`. If step 4 fails after steps 1–3, HEAD points at a non-existent branch (unborn) — recoverable via `branch create <to> <oid>`.
 
-**Errors.** `BRANCH_EXISTS`, `BRANCH_NOT_FOUND`, `INVALID_REF`, `CANNOT_DELETE_CHECKED_OUT_BRANCH`.
+**Errors.** `BRANCH_EXISTS`, `BRANCH_NOT_FOUND`, `INVALID_REF`, `BRANCH_CHECKED_OUT`.
 
 ### 5.8 `tag`
 

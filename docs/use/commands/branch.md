@@ -61,8 +61,8 @@ await repo.branch.delete({ name: 'feature/y' });
 - `INVALID_REF` — name violates git ref syntax.
 - `BRANCH_NOT_FOUND` — `delete` / `rename` on a name that does not exist, or an unresolvable `startPoint`.
 - `UNEXPECTED_OBJECT_TYPE` — `create` whose (peeled) `startPoint` is not a commit.
-- `CANNOT_DELETE_CHECKED_OUT_BRANCH` — `delete` on the branch HEAD points at.
-- `CONFIG_BAD_NUMERIC_VALUE` — `delete` on a repository with a malformed `core.maxTreeDepth` / `core.deltaBaseCacheLimit` (the repo-settings class, checked right after the gate, before the checked-out / not-found checks); `create` reaches the same class through its own read of the start point's object, structurally, with no separate check. `list` and `rename` do **not** refuse on this class — git runs them without touching the object store.
+- `BRANCH_CHECKED_OUT` — `delete`, or a forced `create`, on a branch some worktree's HEAD names; `path` carries that worktree.
+- `CONFIG_BAD_NUMERIC_VALUE` — `delete` on a repository with a malformed `core.maxTreeDepth` / `core.deltaBaseCacheLimit` (the repo-settings class, checked right after the gate, before the worktree-holder / not-found checks); `create` reaches the same class through its own read of the start point's object, structurally, with no separate check. `list` and `rename` do **not** refuse on this class — git runs them without touching the object store.
 
 ## See also
 

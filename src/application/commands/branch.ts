@@ -8,7 +8,7 @@
 import { revparseAmbiguous } from '../../domain/commands/error.js';
 import { TsgitError, unsupportedOperation } from '../../domain/error.js';
 import { errorDataCode } from '../../domain/error-data-code.js';
-import { branchExists, branchNotFound, cannotDeleteCheckedOutBranch } from '../../domain/index.js';
+import { branchExists, branchNotFound } from '../../domain/index.js';
 import { unexpectedObjectType } from '../../domain/objects/error.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import { isOid, zeroOid } from '../../domain/objects/index.js';
@@ -145,13 +145,14 @@ const omittedStartPointLabel = async (ctx: Context): Promise<string> => {
 };
 
 /**
- * git's `find_shared_symref`: a forced rewrite of an existing branch is
- * refused while ANY worktree's HEAD names it — the current checkout, a
- * linked worktree, or a linked worktree whose directory is gone but whose
- * registration has not been pruned. A detached HEAD names no branch, and a
- * bare main checkout is skipped outright, so neither holds anything. The
- * check runs before the start point is resolved, so an unresolvable start
- * point on a held branch still reports the worktree.
+ * git's `find_shared_symref`: a branch is off limits while ANY worktree's
+ * HEAD names it — the current checkout, a linked worktree, or a linked
+ * worktree whose directory is gone but whose registration has not been
+ * pruned. A detached HEAD names no branch, and a bare main checkout is
+ * skipped outright, so neither holds anything. Both a forced rewrite and a
+ * delete run it before anything else they would refuse on, so an
+ * unresolvable start point or an unmerged tip on a held branch still
+ * reports the worktree.
  */
 const assertNoWorktreeHolds = async (ctx: Context, name: RefName): Promise<void> => {
   const holder = (await listWorktrees(ctx)).find((worktree) => worktree.branch === name);
@@ -217,10 +218,7 @@ export const branchDelete = async (
   await assertOperationalRepository(ctx);
   await assertRepoSettingsValid(ctx);
   const name = validateRefName(`${HEADS_PREFIX}${input.name}`);
-  const head = await readHeadRaw(ctx);
-  if (head.kind === 'symbolic' && head.target === name) {
-    throw cannotDeleteCheckedOutBranch(name);
-  }
+  await assertNoWorktreeHolds(ctx, name);
   if (!(await refExists(ctx, name))) {
     throw branchNotFound(name);
   }

@@ -354,15 +354,25 @@ describe('branch', () => {
 
   describe('Given the current branch', () => {
     describe('When branch delete', () => {
-      it('Then throws CANNOT_DELETE_CHECKED_OUT_BRANCH', async () => {
+      it('Then the refusal names the branch and the worktree holding it', async () => {
         // Arrange
         const { ctx } = await seedWithCommit();
 
-        // Act + Assert
-        await expectError(
-          () => branchDelete(ctx, { name: 'main' }),
-          'CANNOT_DELETE_CHECKED_OUT_BRANCH',
-        );
+        // Act
+        let caught: unknown;
+        try {
+          await branchDelete(ctx, { name: 'main' });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({
+          code: 'BRANCH_CHECKED_OUT',
+          branch: 'refs/heads/main',
+          path: ctx.layout.workDir,
+        });
       });
     });
   });

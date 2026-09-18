@@ -65,9 +65,17 @@ const asWorktreeChild = (ctx: Context): Context => ({
   layout: { ...ctx.layout, gitDir: adminDir(ctx), commonDir: ctx.layout.gitDir },
 });
 
-/** Give the child's own (admin) gitdir the `HEAD` file operational commands require. */
-const seedAdminHead = (ctx: Context): Promise<void> =>
-  ctx.fs.writeUtf8(`${adminDir(ctx)}/HEAD`, 'ref: refs/heads/main\n');
+/**
+ * Complete the child's registration the way `git worktree add` does: its own
+ * (admin) `HEAD` and `gitdir` pointer, plus the main checkout's own `HEAD`
+ * under the common dir. Commands that enumerate the repository's worktrees
+ * read all three.
+ */
+const seedAdminHead = async (ctx: Context): Promise<void> => {
+  await ctx.fs.writeUtf8(`${adminDir(ctx)}/HEAD`, 'ref: refs/heads/main\n');
+  await ctx.fs.writeUtf8(`${adminDir(ctx)}/gitdir`, `${ctx.layout.workDir}/wt/.git\n`);
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+};
 
 /**
  * Reframe a seeded main-repo Context so gitDir and commonDir sit in
