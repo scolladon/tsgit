@@ -472,7 +472,7 @@ async function addOtherWorktreeRoots(ctx: Context, roots: Set<ObjectId>): Promis
 }
 
 /**
- * Retention roots for `maintenance`'s `gc` task (Pin H): every resolvable
+ * Retention roots for `maintenance`'s `gc` task: every resolvable
  * ref (HEAD included), every reflog old/new oid, the index — stage-0
  * entries plus its cache-tree, when present — the MAIN worktree's own state
  * (`addMainWorktreeRoots`) and every OTHER worktree's own state

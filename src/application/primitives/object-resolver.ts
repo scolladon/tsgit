@@ -294,7 +294,7 @@ export async function looseCompressedBytes(
  * `resolveObjectContentWithDepth` and by `blob-source.ts`'s buffered arms, so
  * no caller keeps a private copy of this hash-and-compare.
  *
- * The unverified branch skips the hash entirely (F15's sync fast path for a
+ * The unverified branch skips the hash entirely (the sync fast path for a
  * delta-cache hit), so it carries its OWN abort poll rather than relying on
  * one raised elsewhere — omitting it would let a cache-hot read return
  * without ever observing an abort raised while this call was in flight,

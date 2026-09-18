@@ -56,7 +56,6 @@ export const hashSlot = <R extends SlotKeyedRow>(slot: string, opts: HashSlotOpt
 
 /**
  * Conventional wrapper for the 95% case (slot named `workdir`).
- * See design §12.1.
  */
 export const hashWorkdir = <R extends SlotKeyedRow>(
   opts: HashSlotOptions = {},

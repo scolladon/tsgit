@@ -2,7 +2,7 @@
  * The sparse-checkout apply engine — re-shapes the working tree to match a
  * `SparseMatcher`, operating on the current index (which already holds the
  * whole tree). Used by the `sparseCheckout` command's `set` / `add` /
- * `reapply` / `disable` actions (design §7.4).
+ * `reapply` / `disable` actions.
  *
  * Layering: this is command-internal machinery — it depends on
  * `acquireIndexLock` (a `commands/internal` member), so it lives here, not

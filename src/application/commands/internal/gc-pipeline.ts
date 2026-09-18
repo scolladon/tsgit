@@ -325,7 +325,7 @@ async function computeReachable(ctx: Context): Promise<ReachableClosure> {
 /**
  * Step 1b: `lstat` every registered pack ONCE, before anything is written —
  * `mtimeMs` is the only source for an object migrating out of a superseded
- * NORMAL pack (Pin Y), and `size` on the same result is the free half of
+ * NORMAL pack, and `size` on the same result is the free half of
  * `packBytesBefore`/`packBytesAfter`.
  */
 async function lstatPacks(
@@ -385,16 +385,16 @@ async function collectNormalPackData(
  * reachable set itself, already in the closure's own traversal order —
  * instead of iterating `owned` and `ownedPromisor` separately the way
  * `cruftCandidatesOf` still does. Every reachable object is a member by
- * construction, so the only tests left are exclusion (`keptOids`, Pin V's
- * total exclusion — never repacked and never crufted even when ALSO loose
- * or in a normal pack) and ownership (`owned` OR `ownedPromisor` — a
+ * construction, so the only tests left are exclusion (`keptOids` — a
+ * `.keep`-marked pack's objects are never repacked and never crufted, even
+ * when ALSO loose or in a normal pack) and ownership (`owned` OR `ownedPromisor` — a
  * REACHABLE promisor-pack object duplicates into the normal pack the same
  * way git's own does not treat promisor membership as a `.keep`-style
  * exclusion; see `partitionOwned`'s own doc for the full reachable/
  * unreachable promisor distinction). No sort: traversal order is a pure
  * function of `computeReachable`'s sorted roots and the graph alone, so
- * Pin W's no-op boundary now holds by construction rather than by an
- * explicit `.sort()`. Every member's `recency` is its own traversal
+ * a repeat run over an unchanged object set reproduces the same pack bytes
+ * by construction rather than by an explicit `.sort()`. Every member's `recency` is its own traversal
  * ordinal, carried on the entry `reachable` maps it to — iterating the map
  * IS iterating the traversal, so the ordinal arrives with the entry rather
  * than costing a second lookup.
@@ -427,7 +427,7 @@ function toNormalPackInputs(
  * The cruft-candidate half: `owned`'s own iteration order, unchanged since
  * before this change — cruft passes neither hash nor recency, so its bytes
  * depend only on the survivor SET, never this array's order. `keptOids` is
- * excluded (Pin V, as above); every `ownedPromisor` member is excluded
+ * excluded (as above); every `ownedPromisor` member is excluded
  * outright, reachable or not — a reachable one already went to the normal
  * pack via `toNormalPackInputs`, and an unreachable one must never reach
  * cruft, because a cruft pack cannot carry the `.promisor` marker and
@@ -521,9 +521,9 @@ interface NormalPackOutcome {
    * bytes): `'cruft'` when the sha matches an EXISTING cruft pack (a
    * resurrected cruft set moving intact into the normal pack — that pack
    * must be DECLASSIFIED, its `.mtimes` dropped, never retired as garbage);
-   * `'normal'` when it matches an existing normal pack (Pin W's no-op
-   * boundary — that exact pack must NOT appear in the retirement list,
-   * since it now IS the fresh normal pack); `'none'` otherwise. The normal
+   * `'normal'` when it matches an existing normal pack (that exact pack
+   * must NOT appear in the retirement list, since it now IS the fresh
+   * normal pack); `'none'` otherwise. The normal
    * pack now carries hashes and recency where the cruft pack carries
    * neither, so `'cruft'` needs the same SEQUENCE, not just the same set —
    * a resurrected set of more than one object generally takes the
@@ -534,12 +534,11 @@ interface NormalPackOutcome {
 
 /**
  * Skipped entirely (`packId: undefined`) when `objects` is empty — git
- * writes no pack rather than a zero-object one (Pin V). Otherwise ALWAYS
- * writes fresh, via `writePackArtifactsViaQuarantine`: Pin W shows git
- * rewrites even an unchanged single pack on every run (a skipped rewrite
- * would leave the pack's mtime stale, silently ageing objects that later
- * migrate out of it — Pin Y), so there is no "already consolidated ⇒ skip"
- * branch here.
+ * writes no pack rather than a zero-object one. Otherwise ALWAYS writes
+ * fresh, via `writePackArtifactsViaQuarantine`: git rewrites even an
+ * unchanged single pack on every run (a skipped rewrite would leave the
+ * pack's mtime stale, silently ageing objects that later migrate out of
+ * it), so there is no "already consolidated ⇒ skip" branch here.
  */
 async function buildAndWriteNormalPack(
   ctx: Context,
@@ -581,7 +580,7 @@ interface PromisorPackOutcome {
  * repository that is not a partial clone. Otherwise ALWAYS writes fresh, via
  * `writePackArtifactsViaQuarantine`, for the same no-skip reason step 6's
  * normal pack never short-circuits: a repeat run over an unchanged promisor
- * set reproduces the same sha (Pin W's boundary, one class over), and the
+ * set reproduces the same sha (the same no-op boundary, one class over), and the
  * quarantine writer is what lets that same-name rewrite land without a
  * `FILE_EXISTS` refusal.
  */
@@ -612,7 +611,7 @@ async function buildAndWritePromisorPack(
  * EXISTING cruft pack's bytes byte-for-byte is real: the two-cruft-pack
  * crash-recovery state is always the newer one being a superset of the
  * older, so a follow-up run's union-derived survivor set routinely
- * reproduces the newer pack exactly. Unlike a normal pack (Pin Y), a cruft
+ * reproduces the newer pack exactly. Unlike a normal pack, a cruft
  * pack's OWN file mtime carries no semantic weight — ages live in the
  * `.mtimes` sidecar, never the `stat` — so reusing the file in place is
  * safe and simpler than a quarantine rewrite: no `FILE_EXISTS` risk, no
@@ -710,8 +709,8 @@ async function rmTolerant(ctx: Context, path: string): Promise<void> {
  * FIRST (removes it from every reader's candidate scan in one unlink, so
  * everything after operates on litter), then `.pack`/`.rev`/`.bitmap` —
  * there is no class-carrying sidecar to protect here, so the rest carries
- * no ordering constraint of its own. Pin X: a superseded pack's `.bitmap`
- * is deleted with it, never left orphaned.
+ * no ordering constraint of its own. A superseded pack's `.bitmap` is
+ * deleted with it, never left orphaned.
  */
 async function retireNormalPack(ctx: Context, packDir: string, packSha: string): Promise<void> {
   await rmTolerant(ctx, `${packDir}/pack-${packSha}.idx`);
@@ -887,7 +886,7 @@ export async function runGcTask(
   );
 
   // --- step 2: existing cruft pack(s) — classification.cruft already
-  // excludes a pack that ALSO carries .keep (Pin V), so it is never
+  // excludes a pack that ALSO carries .keep, so it is never
   // treated as existing cruft here nor retired below.
   const existingCruft = await readExistingCruftPack(ctx, classification.cruft);
   const existingCruftShas = new Set(existingCruft.packShas);

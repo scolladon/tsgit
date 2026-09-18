@@ -1,7 +1,7 @@
 /**
  * Commit-graph writer. `serializeCommitGraph` emits the exact chunk set
- * `git commit-graph write --reachable` writes at default settings (Pin C,
- * Pin K): `OIDF`, `OIDL`, `CDAT`, `GDA2`, `GDO2` when any corrected-date
+ * `git commit-graph write --reachable` writes at default settings:
+ * `OIDF`, `OIDL`, `CDAT`, `GDA2`, `GDO2` when any corrected-date
  * offset overflows GDA2's plain 31-bit field, and `EDGE` when any commit has
  * more than two parents — in that order (git's own chunk table order,
  * confirmed against real git). No `BASE` chunk (single-file form only) and
@@ -241,7 +241,7 @@ function deriveGeneration(
 
 /** Positions (index 1 onward) for every commit with >2 parents, chained into
  *  one EDGE entry list, last-per-commit flagged `EDGE_LAST_FLAG` — the only
- *  conditional chunk (Pin M). */
+ *  conditional chunk. */
 function planEdges(
   sortedCommits: readonly CommitGraphWriterCommit[],
   positionOf: ReadonlyMap<ObjectId, number>,

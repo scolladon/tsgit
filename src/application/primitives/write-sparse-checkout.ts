@@ -1,7 +1,7 @@
 /**
  * Write the `.git/info/sparse-checkout` pattern file. The command tier
  * computes the text (via `serializeCone` or raw non-cone lines); this
- * primitive only persists it (design §7.3).
+ * primitive only persists it.
  *
  * @writes
  *   surface: sparseCheckoutFile

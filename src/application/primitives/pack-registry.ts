@@ -321,7 +321,7 @@ function isCandidate(entry: { isFile: boolean; name: string }): boolean {
 
 /** Every registered pack sorted into exactly one of gc's four file classes. */
 export interface PackFileClassification {
-  /** `*.keep`-marked — git's total opt-out (Pin V). Not read for repacking,
+  /** `*.keep`-marked — git's total opt-out. Not read for repacking,
    *  not rewritten, not deleted; its objects are neither duplicated into the
    *  new pack nor migrated to the cruft pack, even when unreachable. */
   readonly kept: ReadonlyArray<RegisteredPack>;
@@ -691,7 +691,7 @@ export async function createPackRegistry(ctx: Context): Promise<PackRegistry> {
     }
     const midx =
       midxLoad.set === undefined ? undefined : bindMidx(ctx, packs, midxLoad.set, fileNames);
-    // Named from the in-use layer's STORED trailer bytes (Pin K rule 3),
+    // Named from the in-use layer's STORED trailer bytes,
     // never a recomputed digest: a rename, or a midx whose own trailer
     // disagrees with its bytes, both simply compose a name this scan's own
     // `fileNames` does not carry — "not present" needs no special case.

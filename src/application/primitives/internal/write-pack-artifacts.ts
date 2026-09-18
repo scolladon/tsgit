@@ -71,8 +71,8 @@ export const buildRev = async (
 /**
  * Assembles a cruft pack's `.mtimes` sidecar bytes: `serializeCruftMtimes`
  * reserves the trailer's self-checksum region zeroed; this fills it in
- * place, the same body/trailer split `buildRev` uses for `.rev` (Pin P
- * confirms the digest covers the pack-checksum field identically).
+ * place, the same body/trailer split `buildRev` uses for `.rev` — in both
+ * sidecars the digest covers the pack-checksum field identically.
  */
 export const buildCruftMtimes = async (
   ctx: Context,
@@ -278,7 +278,7 @@ export const writePackArtifacts = async (
   return await writeSiblingsGiven(ctx, input, wantRev);
 };
 
-// git's own quarantine prefix pair (Pin B, Pin X): `tmp_pack_<6>` and
+// git's own quarantine prefix pair: `tmp_pack_<6>` and
 // `tmp_idx_<6>`, written before either lands under its final name.
 const TMP_PACK_PREFIX = 'tmp_pack_';
 const TMP_IDX_PREFIX = 'tmp_idx_';
@@ -320,18 +320,18 @@ async function rmTolerant(ctx: Context, path: string): Promise<void> {
 
 /**
  * Writes a pack's `.pack` and `.idx` through git's own quarantine-then-
- * rename ordering (Pin X: `tmp_pack_<6>`/`tmp_idx_<6>` streamed first,
- * renamed to their final names only once complete) instead of
+ * rename ordering (`tmp_pack_<6>`/`tmp_idx_<6>` streamed first, renamed to
+ * their final names only once complete) instead of
  * `writeExclusive` straight at the final path. This is the ONLY writer that
  * must tolerate a target already occupied by a pack of the exact same name:
  * a consolidating `gc` rewriting a pack whose freshly-built bytes happen to
- * reproduce an EXISTING pack byte-for-byte (Pin W's no-op boundary — git
- * rewrites even an unchanged single pack, every run) still needs that
- * file's mtime refreshed, because Pin Y makes a `.pack`'s own mtime the age
- * source for an object that later migrates out of it; `writeExclusive`
- * would refuse with `FILE_EXISTS`, and simply leaving the old file alone
- * would silently stale-date that clock. `.rev` is NOT quarantined — Pin X
- * names only the pack/idx pair — because it is cheap and fully
+ * reproduce an EXISTING pack byte-for-byte (git rewrites even an unchanged
+ * single pack, every run) still needs that file's mtime refreshed, because
+ * a `.pack`'s own mtime is the age source for an object that later migrates
+ * out of it; `writeExclusive` would refuse with `FILE_EXISTS`, and simply
+ * leaving the old file alone would silently stale-date that clock. `.rev`
+ * is NOT quarantined — git quarantines only the pack/idx pair — because it
+ * is cheap and fully
  * reconstructible from the SAME `entries` this call already has: any stale
  * sibling at the target name is removed first, then written fresh.
  */

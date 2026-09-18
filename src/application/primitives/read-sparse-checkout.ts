@@ -1,7 +1,7 @@
 /**
  * Read the `.git/info/sparse-checkout` pattern file and build the matcher
  * every sparse-aware consumer gates on. No working-tree mutation — pure read
- * side over ports + domain + `readConfig` (design §7.2).
+ * side over ports + domain + `readConfig`.
  */
 import { sparsePatternFileTooLarge } from '../../domain/commands/error.js';
 import { TsgitError } from '../../domain/error.js';

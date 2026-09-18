@@ -175,7 +175,7 @@ export const status = async (ctx: Context): Promise<StatusResult> => {
  * skip-worktree entry is intentionally absent from disk (sparse), so it is not
  * compared — its staged column is still surfaced via `stage0Map`. Every entry
  * ticks the progress tracker. The optional provider enables clean-filter
- * re-application so smudged-then-unmodified files report unchanged (F1). The
+ * re-application so smudged-then-unmodified files report unchanged. The
  * optional `indexMtime` (the `.git/index` file's own mtime) arms the
  * stat-cache short-circuit in `compareWorkingTreeDelta` — `status` is the
  * only consumer that supplies it today. The comparisons fan out through the

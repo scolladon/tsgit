@@ -65,7 +65,7 @@ function unionRootPrefixes(
 const REMOVE_TREE_CONCURRENCY = 8;
 
 /**
- * Numeric `open`/`writeFile` flags for the write guard's W2 leaf no-follow:
+ * Numeric `open`/`writeFile` flags for the write guard's leaf no-follow:
  * `O_NOFOLLOW` refuses a symlink leaf atomically at the syscall, closing the
  * TOCTOU window between a pre-write `lstat` and the write and costing one
  * fewer syscall per write. Ignored by Windows, where the pre-write `lstat`
@@ -781,7 +781,7 @@ export class NodeFileSystem implements FileSystem {
   };
 
   rm = async (path: string): Promise<void> => {
-    // W1 resolves the parent via realpath and joins the basename without
+    // The write guard resolves the parent via realpath and joins the basename without
     // following the leaf, so dangling symlinks — whose realpath would fail
     // — can still be removed. A regular file's containment is still
     // verified via its parent directory, which is the same guarantee.
@@ -981,7 +981,7 @@ export class NodeFileSystem implements FileSystem {
   symlink = async (target: string, path: string): Promise<void> => {
     // A symlink's target — absolute or relative — is opaque bytes, written
     // verbatim, exactly like git: it is never resolved or checked against
-    // the root set. Only the link's OWN path is contained (W1); `symlink(2)`
+    // the root set. Only the link's OWN path is contained; `symlink(2)`
     // itself refuses any existing leaf with EEXIST, so no leaf follow can
     // occur here either.
     const real = await this.resolveWrite(path);
@@ -993,7 +993,7 @@ export class NodeFileSystem implements FileSystem {
 
   chmod = async (path: string, mode: number): Promise<void> => {
     // chmod both writes AND follows its leaf, and no portable no-follow
-    // chmod exists — so, unlike the other W2 surfaces, it cannot rely on
+    // chmod exists — so, unlike the other leaf-dereferencing write surfaces, it cannot rely on
     // `O_NOFOLLOW` and keeps an explicit leaf check on every platform.
     const real = await this.resolveWrite(path);
     await this.assertLeafSafeToWrite(real, path);
@@ -1028,7 +1028,7 @@ export class NodeFileSystem implements FileSystem {
   openWithNoFollow = async (path: string, mode: 'read' | 'write'): Promise<FileHandle> => {
     // 'read' never mutates state, so it takes the lexical, syscall-free
     // gate like every other read surface; 'write' takes the write guard
-    // (W1) and, like every other W2 surface, leans on `O_NOFOLLOW` at the
+    // and, like every other leaf-dereferencing write surface, leans on `O_NOFOLLOW` at the
     // `open` below rather than a pre-open leaf check.
     let real: string;
     if (mode === 'write') {
@@ -1123,7 +1123,7 @@ export class NodeFileSystem implements FileSystem {
   /**
    * Explicit leaf check for the two situations that cannot rely on
    * `O_NOFOLLOW`: `chmod` (no portable no-follow chmod exists, on any
-   * platform) and the Windows arm of every other W2 write surface except
+   * platform) and the Windows arm of every other leaf-dereferencing write surface except
    * `writeExclusive`, which takes `assertExclusiveCreateLeaf` and refuses
    * `FILE_EXISTS` instead (`O_NOFOLLOW` is silently ignored there). A symlink
    * leaf throws `PERMISSION_DENIED`; a leaf that doesn't exist yet (ENOENT) is a no-op
@@ -1141,7 +1141,7 @@ export class NodeFileSystem implements FileSystem {
   }
 
   /**
-   * Fallback for every W2 write surface but `writeExclusive` on a platform
+   * Fallback for every leaf-dereferencing write surface but `writeExclusive` on a platform
    * whose `open(2)` does not honour `O_NOFOLLOW` (`honoursNoFollow: false` — currently Windows
    * only, where the Win32 API silently ignores the flag): the explicit
    * leaf lstat is the only defence there. A platform that DOES honour
@@ -1259,7 +1259,7 @@ export class NodeFileSystem implements FileSystem {
   }
 
   /**
-   * The single write guard (W1): leading-path containment via
+   * The single write guard: leading-path containment via
    * `realpathForCreation` (never the leaf itself — a dangling symlink,
    * whose leaf realpath would ENOENT, must stay removable) followed by an
    * unconditional per-entry post-check on the joined result. Every write

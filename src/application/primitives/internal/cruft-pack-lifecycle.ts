@@ -90,7 +90,7 @@ function mergeMtimesInto(
 
 /** Parses one classified-cruft pack's `.mtimes` sidecar against its own
  *  `.idx`'s oid list. `pack` is already a REGISTERED pack drawn from
- *  `classifyPackFiles`'s `cruft` bucket (Pin V: a pack carrying `.keep`
+ *  `classifyPackFiles`'s `cruft` bucket (a pack carrying `.keep`
  *  classifies as `kept`, never `cruft`, even when it ALSO carries
  *  `.mtimes` — so a kept pack's sidecar is never read here, never merged
  *  into the union, and never becomes a retirement candidate). */
@@ -112,9 +112,9 @@ const byPackName = (a: RegisteredPack, b: RegisteredPack): number =>
 
 /**
  * Parse the repository's existing cruft pack(s) — `cruftPacks` is
- * `classifyPackFiles`'s own `cruft` bucket (Pin V total exclusion: a
- * `.keep`-marked pack classifies as `kept`, never reaches here even when
- * it ALSO carries `.mtimes`). Normally at most one is present; a crash
+ * `classifyPackFiles`'s own `cruft` bucket (a `.keep`-marked pack
+ * classifies as `kept` and never reaches here, even when it ALSO carries
+ * `.mtimes`). Normally at most one is present; a crash
  * between step 7's write and step 10's retirement can leave TWO, both
  * valid — every one is read and merged into a single UNION map (`Math.max`
  * per shared oid), and every sha is returned so the caller retires all but

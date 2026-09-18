@@ -38,9 +38,8 @@ const mergeEnumOptions = (
 
 /**
  * Lazily streams working-tree entries via `WorkdirEnumerator`. Excludes
- * and consistency are captured at factory time (per design §8.2 boundary
- * table); the iteration-level option bundle accepts only the base
- * `SnapshotOptions` overrides.
+ * and consistency are captured at factory time; the iteration-level option
+ * bundle accepts only the base `SnapshotOptions` overrides.
  *
  *   - `'eager'` (default) — stream rows straight from the enumerator;
  *     race detection is opt-in via `entry.verify()` per row.
