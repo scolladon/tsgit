@@ -188,34 +188,67 @@ describe.skipIf(!GIT_AVAILABLE)('branch delete — configured-upstream interop',
     });
   });
 
-  describe.each([{ slug: 'dot-full', merge: 'refs/heads/topic', label: 'a full ref name' }])(
-    'Given the pseudo-remote "." and a merge value holding $label',
-    (row) => {
-      describe('When git branch -d and tsgit branchDelete both target the branch', () => {
-        it(
-          'Then both measure against that branch and delete',
-          async () => {
-            // Arrange
-            const entries: ReadonlyArray<readonly [string, string]> = [
-              ['branch.feature.remote', '.'],
-              ['branch.feature.merge', row.merge],
-            ];
-            const peer = await caseRepo(`${row.slug}-peer`, entries);
-            const dir = await caseRepo(row.slug, entries);
+  describe.each([
+    { slug: 'dot-short', merge: 'topic', label: 'a short branch name' },
+    { slug: 'dot-full', merge: 'refs/heads/topic', label: 'a full ref name' },
+  ])('Given the pseudo-remote "." and a merge value holding $label', (row) => {
+    describe('When git branch -d and tsgit branchDelete both target the branch', () => {
+      it(
+        'Then both measure against that branch and delete',
+        async () => {
+          // Arrange
+          const entries: ReadonlyArray<readonly [string, string]> = [
+            ['branch.feature.remote', '.'],
+            ['branch.feature.merge', row.merge],
+          ];
+          const peer = await caseRepo(`${row.slug}-peer`, entries);
+          const dir = await caseRepo(row.slug, entries);
 
-            // Act
-            const gitResult = quietDelete(peer, '-d', 'feature');
-            const err = await deleteWithTsgit(dir);
+          // Act
+          const gitResult = quietDelete(peer, '-d', 'feature');
+          const err = await deleteWithTsgit(dir);
 
-            // Assert
-            expect(gitResult.exitCode).toBe(0);
-            expect(err).toBeUndefined();
-          },
-          ROW_TIMEOUT,
-        );
-      });
-    },
-  );
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          expect(err).toBeUndefined();
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe('Given the pseudo-remote "." and a merge value more than one namespace holds', () => {
+    describe('When git branch -d and tsgit branchDelete both target the branch', () => {
+      it(
+        'Then neither resolves it, both fall back to HEAD and refuse',
+        async () => {
+          // Arrange
+          const entries: ReadonlyArray<readonly [string, string]> = [
+            ['branch.feature.remote', '.'],
+            ['branch.feature.merge', 'topic'],
+          ];
+          const peer = await caseRepo('dot-ambiguous-peer', entries);
+          const dir = await caseRepo('dot-ambiguous', entries);
+          for (const repo of [peer, dir]) {
+            git(repo, 'update-ref', 'refs/tags/topic', 'refs/heads/topic');
+          }
+
+          // Act
+          const gitResult = quietDelete(peer, '-d', 'feature');
+          const err = await deleteWithTsgit(dir);
+
+          // Assert
+          expect(gitResult.exitCode).toBe(1);
+          expect(gitResult.stderr).toBe(unmergedLine('feature'));
+          expect(err?.data).toEqual({
+            code: 'BRANCH_NOT_FULLY_MERGED',
+            name: 'refs/heads/feature',
+          });
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
 
   describe('Given the pseudo-remote "." and a merge value naming nothing', () => {
     describe('When git branch -d and tsgit branchDelete both target the branch', () => {

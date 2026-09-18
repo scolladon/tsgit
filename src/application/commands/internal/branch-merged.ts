@@ -16,6 +16,7 @@
  */
 
 import type { ObjectId, RefName } from '../../../domain/objects/index.js';
+import { refCandidates } from '../../../domain/refs/index.js';
 import { shortBranchName } from '../../../domain/refs/short-branch-name.js';
 import type { Context } from '../../../ports/context.js';
 import { readConfig } from '../../primitives/config-read.js';
@@ -65,9 +66,10 @@ const referenceCommit = async (ctx: Context, ref: RefName): Promise<ObjectId | u
 /**
  * git's `branch_get_upstream`: the ref `branch.<n>.merge` names once
  * `branch.<n>.remote` has placed it. A merge key without a remote key
- * configures no upstream at all; the pseudo-remote `.` takes the merge ref
- * verbatim; any other remote must carry a fetch refspec that maps it, and
- * without one there is no upstream to consult.
+ * configures no upstream at all; every remote's own fetch refspecs are asked
+ * to map the merge value first, and only the pseudo-remote `.` falls through
+ * to a name resolution when none of them does. Any other remote without a
+ * mapping refspec leaves no upstream to consult.
  */
 const upstreamRef = async (ctx: Context, name: RefName): Promise<RefName | undefined> => {
   const config = await readConfig(ctx);
@@ -79,8 +81,34 @@ const upstreamRef = async (ctx: Context, name: RefName): Promise<RefName | undef
   // table before answering and dies on the first unusable fetch refspec — any
   // remote's, not only the one this branch names.
   assertFetchRefspecsValid(config);
-  if (remote === LOCAL_REMOTE) return merge as RefName;
-  return firstMapping(config.remote?.get(remote)?.fetch, merge as RefName);
+  const mapped = firstMapping(config.remote?.get(remote)?.fetch, merge as RefName);
+  if (mapped !== undefined || remote !== LOCAL_REMOTE) return mapped;
+  return dwimLocalMerge(ctx, merge);
+};
+
+/**
+ * git's `repo_dwim_ref` over `branch.<n>.merge` for the pseudo-remote `.`:
+ * `set_merge` stores the full ref the value resolves to, and keeps the raw
+ * value only when the resolution fails. It counts EVERY candidate namespace
+ * that holds the name and resolves only on exactly one — an ambiguous name is
+ * no resolution at all.
+ */
+const dwimLocalMerge = async (ctx: Context, merge: string): Promise<RefName> => {
+  const found: RefName[] = [];
+  for (const candidate of refCandidates(merge)) {
+    if (await candidateResolves(ctx, candidate as RefName)) found.push(candidate as RefName);
+  }
+  return found.length === 1 ? (found[0] as RefName) : (merge as RefName);
+};
+
+/** Whether one dwim candidate names an object, the way `expand_ref` counts it —
+ *  a dangling or broken candidate counts for nothing rather than refusing. */
+const candidateResolves = async (ctx: Context, candidate: RefName): Promise<boolean> => {
+  try {
+    return (await resolveRefOrMissing(ctx, candidate)) !== undefined;
+  } catch {
+    return false;
+  }
 };
 
 /**
