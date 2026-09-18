@@ -24,7 +24,7 @@
  */
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as zlib from 'node:zlib';
@@ -2021,6 +2021,102 @@ describe.skipIf(!GIT_AVAILABLE)('Given a msg-id no fsck check knows', () => {
       expect(err.data).toEqual({
         code: 'FSCK_UNKNOWN_MSG_ID',
         msgId: 'noSuchThing'.toLowerCase(),
+        source: path.join(dir, '.git', 'config'),
+        line: expect.any(Number),
+      });
+    });
+  });
+});
+
+/**
+ * A repository whose `.git/config` ends with `text` verbatim. `git config`
+ * refuses to write a subsection header of its own, and a valueless entry has
+ * no CLI spelling at all, so raw bytes are the only way to plant these rows.
+ */
+const fsckRepoWithConfigText = async (
+  slug: string,
+  text: string,
+): Promise<{ readonly dir: string; readonly ctx: Context }> => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), `tsgit-fsck-config-${slug}-`));
+  symlinkDepthRoots.push(dir);
+  initRepo(dir);
+  await writeFile(path.join(dir, 'f.txt'), 'c1\n');
+  runGit(['-C', dir, 'add', '-A'], { env: SAFE_ENV });
+  runGit(['-C', dir, 'commit', '-q', '-m', 'c1'], { env: SAFE_ENV });
+  await appendFile(path.join(dir, '.git', 'config'), text);
+  __resetConfigCacheForTests();
+  return { dir, ctx: createNodeContext({ workDir: dir }) };
+};
+
+describe.skipIf(!GIT_AVAILABLE)('Given a fsck msg-id sitting under a subsection header', () => {
+  describe.each([
+    {
+      slug: 'quoted',
+      text: '[fsck "SubName"]\n\tBadTree = ignore\n',
+      msgId: `SubName.${'BadTree'.toLowerCase()}`,
+      label: 'a quoted subsection contributes its bytes unfolded',
+    },
+    {
+      slug: 'dotted',
+      text: '[fsck.Sub]\n\tbadTree = ignore\n',
+      msgId: `sub.${'badTree'.toLowerCase()}`,
+      label: 'a dotted subsection contributes its bytes folded down',
+    },
+    {
+      slug: 'empty',
+      text: '[fsck ""]\n\tbadTree = ignore\n',
+      msgId: `.${'badTree'.toLowerCase()}`,
+      label: 'an empty subsection still contributes its separating dot',
+    },
+    {
+      slug: 'list-key',
+      text: '[fsck "x"]\n\tskipList = /names.txt\n',
+      msgId: `x.${'skipList'.toLowerCase()}`,
+      label: 'the list key under a subsection is graded as a msg-id, not read as a list',
+    },
+  ])('When fsck runs and $label', ({ slug, text, msgId }) => {
+    it('Then both refuse on the composed msg-id before auditing anything', async () => {
+      // Arrange
+      const { dir, ctx } = await fsckRepoWithConfigText(`subsection-${slug}`, text);
+
+      // Act
+      const gitResult = gitFsck(dir, '--full');
+      const err = await catchFsckError(ctx);
+
+      // Assert
+      expect(gitResult.exitCode).toBe(128);
+      expect(gitResult.stderr).toBe(`fatal: Unhandled message id: ${msgId}\n`);
+      expect(err.data).toEqual({
+        code: 'FSCK_UNKNOWN_MSG_ID',
+        msgId,
+        source: path.join(dir, '.git', 'config'),
+        line: expect.any(Number),
+      });
+    });
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)('Given a valueless fsck msg-id under a subsection header', () => {
+  describe('When fsck runs', () => {
+    it('Then both name the composed key in the missing-value refusal', async () => {
+      // Arrange
+      const { dir, ctx } = await fsckRepoWithConfigText(
+        'subsection-valueless',
+        '[fsck "x"]\n\tbadTree\n',
+      );
+
+      // Act
+      const gitResult = gitFsck(dir, '--full');
+      const err = await catchFsckError(ctx);
+
+      // Assert
+      expect(gitResult.exitCode).toBe(128);
+      expect(gitResult.stderr).toContain(
+        `error: missing value for 'fsck.x.${'badTree'.toLowerCase()}'\n`,
+      );
+      expect(err.data).toEqual({
+        code: 'CONFIG_MISSING_VALUE',
+        key: `fsck.x.${'badTree'.toLowerCase()}`,
         source: path.join(dir, '.git', 'config'),
         line: expect.any(Number),
       });

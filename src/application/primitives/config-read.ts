@@ -916,25 +916,42 @@ export const assertValidGcAutoConfig = async (ctx: Context): Promise<void> => {
  *  like every key half this walk compares. */
 const FSCK_SKIP_LIST_KEY = 'skipList'.toLowerCase();
 
+/** The section half of every `fsck.*` variable name, folded once. */
+const FSCK_SECTION = 'fsck';
+
+/**
+ * The msg-id git grades: everything the variable name holds past `fsck.`. A
+ * subsection contributes its own bytes plus the separating dot, so
+ * `[fsck "SubName"] badTree` asks about `SubName.<folded key>` and an empty
+ * subsection asks about `.<folded key>` — neither is a msg-id the catalogue
+ * knows, and that is precisely why git refuses them.
+ */
+const composeFsckMsgId = (subsection: string | undefined, key: string): string =>
+  subsection === undefined ? key.toLowerCase() : `${subsection}.${key.toLowerCase()}`;
+
 /**
  * The repository's `fsck.<msg-id>` re-typings, keyed by the lower-cased
- * msg-id. Walks the `[fsck]` (subsectionless) tokens in file order so a
- * repeated key takes its LAST entry, exactly as git's own config read does.
- * Refuses on the four conditions git refuses the whole audit for: a key with
- * no value, a key half outside the msg-id set, a value outside the three
- * severity words, and a fatal msg-id asked for anything softer than `error`.
+ * msg-id. Walks EVERY `[fsck …]` header's tokens in file order — a subsection
+ * does not hide an entry from git, it only lengthens the msg-id the entry asks
+ * about — so a repeated key takes its LAST entry, exactly as git's own config
+ * read does. Refuses on the four conditions git refuses the whole audit for: a
+ * key with no value, a key half outside the msg-id set, a value outside the
+ * three severity words, and a fatal msg-id asked for anything softer than
+ * `error`.
  */
 export const readFsckSeverityTable = async (ctx: Context): Promise<FsckSeverityTable> => {
   const { tokens, source } = await readConfigEntry(ctx);
   const table = new Map<string, FsckConfiguredSeverity>();
   let inSection = false;
+  let subsection: string | undefined;
   for (const token of tokens) {
     if (token.kind === 'header') {
-      inSection = matchesSection(token.section, token.subsection, 'fsck', undefined);
+      inSection = token.section.toLowerCase() === FSCK_SECTION;
+      subsection = token.subsection;
       continue;
     }
     if (!inSection || token.kind !== 'entry') continue;
-    const msgId = token.key.toLowerCase();
+    const msgId = composeFsckMsgId(subsection, token.key);
     if (msgId === FSCK_SKIP_LIST_KEY) continue;
     table.set(msgId, readFsckSeverity(msgId, token, source));
   }

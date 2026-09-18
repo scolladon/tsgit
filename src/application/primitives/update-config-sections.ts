@@ -22,11 +22,11 @@ import {
 } from './internal/config-write-shared.js';
 
 /**
- * The raw dotted name of a parsed section header: `[s]` → `'s'`,
- * `[s "x"]` → `'s.x'`, `[s ""]` → `'s.'`, `[ ""]` → `'.'`,
- * deprecated `[s.X]` → `'s.X'`. The subsection is taken post-unescaping
- * (exactly what the header scan returns), making this the canonical
- * reduction used by git's section-op matching.
+ * Join a section identity into the dotted name git's section ops match on:
+ * `{ s, undefined }` → `'s'`, `{ s, 'x' }` → `'s.x'`, `{ s, '' }` → `'s.'`,
+ * `{ '', '' }` → `'.'`. Callers supply the identity; a header line's own raw
+ * name comes off the header scan (`rawName`), which keeps the bytes as written
+ * rather than the folded lookup key.
  *
  * The `'a.b'` ambiguity is documented and faithful: both `[a.b]` and
  * `[a "b"]` reduce to the same raw name `'a.b'`, so an old-name lookup
@@ -62,7 +62,7 @@ interface RecognizedHeader {
 const recognizeHeader = (line: string): RecognizedHeader | undefined => {
   const scan = scanHeaderPrefix(line);
   if (scan.parse.kind !== 'header') return undefined;
-  return { rawName: rawSectionName(scan.parse), endOffset: scan.endOffset };
+  return { rawName: scan.parse.rawName, endOffset: scan.endOffset };
 };
 
 /**

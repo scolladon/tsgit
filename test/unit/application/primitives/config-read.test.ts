@@ -5219,13 +5219,86 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     });
 
     describe('Given `[a.b]` (dot in section), When parseIniSections', () => {
-      it('Then the section records as a.b', () => {
+      it('Then the text after the first dot becomes the subsection', () => {
         // Arrange & Act
         const result = parseIniSections('[a.b]\nk=1\n');
 
         // Assert
         expect(result).toEqual<ReadonlyArray<IniSection>>([
-          { section: 'a.b', subsection: undefined, entries: [{ key: 'k', value: '1' }] },
+          { section: 'a', subsection: 'b', entries: [{ key: 'k', value: '1' }] },
+        ]);
+      });
+    });
+
+    describe('Given `[a.B]` (mixed-case dotted subsection), When parseIniSections', () => {
+      it('Then the subsection is lower-cased', () => {
+        // Arrange & Act
+        const result = parseIniSections('[a.B]\nk=1\n');
+
+        // Assert
+        expect(result).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: 'b', entries: [{ key: 'k', value: '1' }] },
+        ]);
+      });
+    });
+
+    describe('Given `[a.b.c]` (two dots in section), When parseIniSections', () => {
+      it('Then only the first dot splits and the rest is one subsection', () => {
+        // Arrange & Act
+        const result = parseIniSections('[a.b.c]\nk=1\n');
+
+        // Assert
+        expect(result).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: 'b.c', entries: [{ key: 'k', value: '1' }] },
+        ]);
+      });
+    });
+
+    describe('Given `[a.]` (trailing dot in section), When parseIniSections', () => {
+      it('Then the subsection is empty rather than absent', () => {
+        // Arrange & Act
+        const result = parseIniSections('[a.]\nk=1\n');
+
+        // Assert
+        expect(result).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: '', entries: [{ key: 'k', value: '1' }] },
+        ]);
+      });
+    });
+
+    describe('Given `[.a]` (leading dot in section), When parseIniSections', () => {
+      it('Then the section is empty and the remainder is the subsection', () => {
+        // Arrange & Act
+        const result = parseIniSections('[.a]\nk=1\n');
+
+        // Assert
+        expect(result).toEqual<ReadonlyArray<IniSection>>([
+          { section: '', subsection: 'a', entries: [{ key: 'k', value: '1' }] },
+        ]);
+      });
+    });
+
+    describe('Given `[a.b "C"]` (dotted section with a quoted subsection), When parseIniSections', () => {
+      it('Then the lowered dotted half joins the verbatim quoted half', () => {
+        // Arrange & Act
+        const result = parseIniSections('[a.B "C"]\nk=1\n');
+
+        // Assert
+        expect(result).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: 'b.C', entries: [{ key: 'k', value: '1' }] },
+        ]);
+      });
+    });
+
+    describe('Given `[a.]` and `[a ""]` in one file, When parseIniSections', () => {
+      it('Then both headers carry the same empty subsection', () => {
+        // Arrange & Act
+        const result = parseIniSections('[a.]\nk=one\n[a ""]\nk=two\n');
+
+        // Assert
+        expect(result).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: '', entries: [{ key: 'k', value: 'one' }] },
+          { section: 'a', subsection: '', entries: [{ key: 'k', value: 'two' }] },
         ]);
       });
     });

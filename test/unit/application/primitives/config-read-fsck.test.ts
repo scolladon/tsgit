@@ -336,3 +336,125 @@ describe('Given a valueless fsck.skipList sitting after a usable one', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Subsection headers — git composes the msg-id from the whole variable name
+// ---------------------------------------------------------------------------
+
+describe('Given a msg-id under a quoted subsection header', () => {
+  describe('When the severity table is read', () => {
+    it('Then it refuses the composed id, keeping the subsection case verbatim', async () => {
+      // Arrange
+      const ctx = await seed(createMemoryContext(), '[fsck "SubName"]\n  BadTree = ignore\n');
+
+      // Act
+      const caught = await caughtFrom(() => sut(ctx));
+
+      // Assert
+      expect(caught.data).toEqual({
+        code: 'FSCK_UNKNOWN_MSG_ID',
+        msgId: `SubName.${'BadTree'.toLowerCase()}`,
+        source: `${ctx.layout.gitDir}/config`,
+        line: 2,
+      });
+    });
+  });
+});
+
+describe('Given a msg-id under a dotted subsection header', () => {
+  describe('When the severity table is read', () => {
+    it('Then it refuses the composed id with the subsection folded down', async () => {
+      // Arrange
+      const ctx = await seed(createMemoryContext(), '[fsck.Sub]\n  badTree = ignore\n');
+
+      // Act
+      const caught = await caughtFrom(() => sut(ctx));
+
+      // Assert
+      expect(caught.data).toEqual({
+        code: 'FSCK_UNKNOWN_MSG_ID',
+        msgId: `sub.${'badTree'.toLowerCase()}`,
+        source: `${ctx.layout.gitDir}/config`,
+        line: 2,
+      });
+    });
+  });
+});
+
+describe('Given a msg-id under an empty quoted subsection header', () => {
+  describe('When the severity table is read', () => {
+    it('Then the composed id keeps the leading dot the empty subsection contributes', async () => {
+      // Arrange
+      const ctx = await seed(createMemoryContext(), '[fsck ""]\n  badTree = ignore\n');
+
+      // Act
+      const caught = await caughtFrom(() => sut(ctx));
+
+      // Assert
+      expect(caught.data).toEqual({
+        code: 'FSCK_UNKNOWN_MSG_ID',
+        msgId: `.${'badTree'.toLowerCase()}`,
+        source: `${ctx.layout.gitDir}/config`,
+        line: 2,
+      });
+    });
+  });
+});
+
+describe('Given skipList under a subsection header', () => {
+  describe('When the severity table is read', () => {
+    it('Then it is graded as a composed msg-id rather than passed over as the list key', async () => {
+      // Arrange
+      const ctx = await seed(createMemoryContext(), '[fsck "x"]\n  skipList = /names.txt\n');
+
+      // Act
+      const caught = await caughtFrom(() => sut(ctx));
+
+      // Assert
+      expect(caught.data).toEqual({
+        code: 'FSCK_UNKNOWN_MSG_ID',
+        msgId: `x.${'skipList'.toLowerCase()}`,
+        source: `${ctx.layout.gitDir}/config`,
+        line: 2,
+      });
+    });
+  });
+});
+
+describe('Given a valueless msg-id under a subsection header', () => {
+  describe('When the severity table is read', () => {
+    it('Then the missing-value refusal names the composed key, not the bare one', async () => {
+      // Arrange
+      const ctx = await seed(createMemoryContext(), '[fsck "x"]\n  badTree\n');
+
+      // Act
+      const caught = await caughtFrom(() => sut(ctx));
+
+      // Assert
+      expect(caught.data).toEqual({
+        code: 'CONFIG_MISSING_VALUE',
+        key: `fsck.x.${'badTree'.toLowerCase()}`,
+        source: `${ctx.layout.gitDir}/config`,
+        line: 2,
+      });
+    });
+  });
+});
+
+describe('Given skipList under a subsection header beside the subsectionless one', () => {
+  describe('When the configured list paths are read', () => {
+    it('Then only the subsectionless entry is a list path', async () => {
+      // Arrange
+      const ctx = await seed(
+        createMemoryContext(),
+        '[fsck "x"]\n  skipList = /sub.txt\n[fsck]\n  skipList = /plain.txt\n',
+      );
+
+      // Act
+      const result = await readFsckSkipListPaths(ctx);
+
+      // Assert
+      expect(result).toEqual(['/plain.txt']);
+    });
+  });
+});
