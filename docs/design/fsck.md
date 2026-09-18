@@ -359,7 +359,8 @@ never emitted and contributes no exit bit. A key half outside the msg-id set git
 knows refuses the whole audit (`FSCK_UNKNOWN_MSG_ID`), as does a value outside the
 three words (`CONFIG_INVALID_ENUM_VALUE`); `fsck.skipList` is exempt from that grammar —
 it names an object-name list file, not a check. `receive.fsck.*` and `fetch.fsck.*` are
-separate namespaces the audit never reads.
+separate namespaces the audit never reads — see [Transfer-time validation](#transfer-time-validation)
+for what git does with them and where tsgit stands.
 
 `fsck.skipList` names a file holding one full object name per line — blank lines and
 `#` comments are dropped, surrounding whitespace (a CRLF's own `\r` included) is
@@ -630,3 +631,34 @@ narrows to:
 - **Gitlink (submodule) target verification** — `walkTree` does not descend mode
   160000; submodule object integrity belongs to the submodule's own repo (matches
   git, which does not follow gitlinks in fsck).
+
+
+## Transfer-time validation
+
+`fsck.*` types the `fsck` **command**. Two sibling namespaces type the validation git
+runs over an **incoming pack** instead, and neither reaches the command. Measured
+against git 2.55.0, with a commit carrying `missingSpaceBeforeEmail` reachable from a
+branch in the source repository:
+
+| configuration | where it is read | observed |
+| --- | --- | --- |
+| `fetch.fsckObjects=true` | the fetching client | `error: object <oid>: <msg-id>: …`, then `fatal: fsck error in packed object` / `fatal: fetch-pack: invalid index-pack output`; exit 128 and **nothing is kept** — the destination's object store is left empty |
+| `transfer.fsckObjects=true` | the fetching client | identical; it is the fallback when `fetch.fsckObjects` is unset |
+| `fetch.fsck.<msg-id>=warn` | the fetching client | downgrades that id: the line becomes a `warning:` and the clone completes, exit 0 |
+| `fetch.fsck.skipList=<file>` | the fetching client | silences the listed oids outright; exit 0, no output |
+| `fsck.<msg-id>` | — | **not consulted**: the same repository still refuses, so the namespaces are genuinely separate |
+| `receive.fsckObjects=true` | `receive-pack`, on the receiving side | the push is rejected (`unpacker error`), the ref is not created and **no object lands** |
+| `receive.fsck.<msg-id>` / `receive.fsck.skipList` | `receive-pack` | downgrade and silence exactly as their `fetch.` counterparts do |
+| `transfer.fsckObjects=true` | `receive-pack` | identical to `receive.fsckObjects` |
+
+Both namespaces live under a config **subsection**: `git config fetch.fsck.<id> warn`
+writes `[fetch "fsck"]`, not a dotted key under `[fetch]`.
+
+**Where tsgit stands.** `receive.fsck.*` has no site here at all: tsgit implements the
+receive-pack **client**, never the server, so nothing in this library ever reads it.
+`fetch.fsckObjects` / `transfer.fsckObjects` and the `fetch.fsck.*` severity table are
+**not yet honoured** — a fetch or clone lands whatever the remote sends, and the catalogue
+is applied only later, when `fsck` is run by hand. Honouring them means validating each
+object at the point the receive path already resolves it (inside the quarantine index
+pass, which is where git's own `index-pack --strict` sits), not a second read-back:
+the quarantined pack carries no index until it settles.
