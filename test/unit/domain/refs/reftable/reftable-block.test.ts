@@ -1733,7 +1733,7 @@ describe('reftable-block', () => {
   });
 });
 
-describe('reftable — an index whose top level spans several blocks', () => {
+describe('Given a reftable index whose top level spans several blocks', () => {
   /** `blockSize: 128` with 200 sequential refs: measured, the ref index then
    *  needs more blocks than one level can hold, and the writer leaves a top
    *  level of several — the footer naming only its FIRST. Every ref the

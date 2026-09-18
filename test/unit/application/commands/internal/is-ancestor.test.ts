@@ -180,7 +180,7 @@ describe('isAncestor', () => {
     });
   });
 
-  describe('Given two histories with no commit in common', () => {
+  describe('Given two histories with no commit in common, When one is measured against the other', () => {
     it('Then answers false', async () => {
       // Arrange
       const ctx = await buildSeededContext();
@@ -197,7 +197,7 @@ describe('isAncestor', () => {
     });
   });
 
-  describe('Given a repository with no commit-graph', () => {
+  describe('Given a repository with no commit-graph, When two of its commits are measured', () => {
     it('Then answers true for an ancestor and false for a sibling', async () => {
       // Arrange
       const ctx = await buildSeededContext();
@@ -214,7 +214,7 @@ describe('isAncestor', () => {
     });
   });
 
-  describe('Given a commit-graph left stale by commits written after it', () => {
+  describe('Given a commit-graph left stale by commits written after it, When its commits are measured', () => {
     it('Then answers true downwards, false upwards and true for the uncovered commit itself', async () => {
       // Arrange
       const ctx = await buildSeededContext();
@@ -233,7 +233,7 @@ describe('isAncestor', () => {
     });
   });
 
-  describe('Given a history cut off at a shallow boundary', () => {
+  describe('Given a history cut off at a shallow boundary, When commits across it are measured', () => {
     it('Then answers false below the boundary and true at it', async () => {
       // Arrange
       const ctx = await buildSeededContext();
@@ -250,7 +250,7 @@ describe('isAncestor', () => {
     });
   });
 
-  describe('Given a candidate whose object is absent', () => {
+  describe('Given a candidate whose object is absent, When it is measured against a tip', () => {
     it('Then answers false instead of refusing', async () => {
       // Arrange
       const ctx = await buildSeededContext();
@@ -267,7 +267,7 @@ describe('isAncestor', () => {
     });
   });
 
-  describe('Given a history truncated by an absent commit part-way down', () => {
+  describe('Given a history truncated by an absent commit part-way down, When it is measured', () => {
     it('Then answers false for anything below the gap and true for anything above it', async () => {
       // Arrange
       const ctx = await buildSeededContext();

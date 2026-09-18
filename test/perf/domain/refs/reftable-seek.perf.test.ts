@@ -18,14 +18,16 @@ import { serializeReftable } from '../../../../src/domain/refs/reftable/reftable
  *
  * The walk used to reach the block the seek landed in by re-enumerating the
  * section from its FIRST block and discarding every block before it, so a run
- * of seeks cost the whole section once per seek. Continuing forward from the
- * block itself measured 4.3x faster over the run below; the budget sits
- * between the two with room for a loaded machine.
+ * of seeks cost the whole section once per seek.
  */
-const REF_COUNT = 5_000;
+const REF_COUNT = 20_000;
 const SMALL_BLOCK_SIZE = 256;
 const RESTART_INTERVAL = 4;
-const BUDGET_MS = 100;
+/** Measured on an idle machine: 114 ms continuing forward against 2 006 ms
+ *  re-enumerating from the first block — 17.6x. The budget sits seven times
+ *  above the first and two and a half times below the second, so a loaded
+ *  machine does not flake it and the regression still fails it. */
+const BUDGET_MS = 800;
 
 const oid = (n: number): ObjectId =>
   ObjectId.fromRaw(new Uint8Array(20).fill(0).map((_unused, i) => (i === 19 ? n % 251 : 0x11)));

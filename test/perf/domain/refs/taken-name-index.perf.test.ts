@@ -22,7 +22,7 @@ describe('takenNameIndex (performance)', () => {
     describe('When every name is queried and then taken in turn', () => {
       it('Then the whole pass finishes well inside a linear budget', () => {
         // Arrange
-        const sut = takenNameIndex();
+        const sut = takenNameIndex;
         const names = Array.from(
           { length: RUN_SIZE },
           (_unused, index) => `refs/remotes/origin/branch-${index}` as RefName,
@@ -30,10 +30,11 @@ describe('takenNameIndex (performance)', () => {
 
         // Act
         const start = performance.now();
+        const taken = sut();
         let held = 0;
         for (const name of names) {
-          if (sut.holdsUnder(name)) held += 1;
-          sut.take(name);
+          if (taken.holdsUnder(name)) held += 1;
+          taken.take(name);
         }
         const elapsedMs = performance.now() - start;
 
