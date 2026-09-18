@@ -43,6 +43,7 @@ import {
   refNamePrefixes,
   type TransactionNames,
 } from '../../domain/refs/ref-name-conflict.js';
+import { type TakenNameIndex, takenNameIndex } from '../../domain/refs/taken-name-index.js';
 import { isRefsLinkText } from '../../domain/repository/head-ref.js';
 import type { Context } from '../../ports/context.js';
 import type { DirEntry, FileStat } from '../../ports/file-system.js';
@@ -1665,15 +1666,55 @@ function createFilesRefStore(ctx: Context): RefStore {
     return (await resolveDirect(name)).kind !== 'missing';
   }
 
-  async function existingNames(names: readonly RefName[]): Promise<ReadonlySet<RefName>> {
+  async function looseFileAt(name: RefName): Promise<boolean> {
+    return (await pathKind(looseRefPath(refDir(name), name))) === 'file';
+  }
+
+  /**
+   * One prepare pass's own state: the names the run has already taken, and the
+   * facts it has already read about a name. A run under a single namespace asks
+   * the same questions of the same handful of prefixes at every update, and the
+   * pass writes nothing — git's lock clearing runs in the loop that FOLLOWS it
+   * — so a fact read once stands for the whole pass. Both die with the pass.
+   */
+  interface PreparePass {
+    readonly taken: TakenNameIndex;
+    readonly isPresent: (name: RefName) => Promise<boolean>;
+    readonly hasLooseFile: (name: RefName) => Promise<boolean>;
+  }
+
+  const recalled = <V>(
+    memo: Map<RefName, Promise<V>>,
+    name: RefName,
+    read: () => Promise<V>,
+  ): Promise<V> => {
+    const pending = memo.get(name) ?? read();
+    memo.set(name, pending);
+    return pending;
+  };
+
+  const newPreparePass = (): PreparePass => {
+    const present = new Map<RefName, Promise<boolean>>();
+    const looseFile = new Map<RefName, Promise<boolean>>();
+    return {
+      taken: takenNameIndex(),
+      isPresent: (name) => recalled(present, name, () => refIsPresent(name)),
+      hasLooseFile: (name) => recalled(looseFile, name, () => looseFileAt(name)),
+    };
+  };
+
+  async function existingNames(
+    names: readonly RefName[],
+    pass: PreparePass,
+  ): Promise<ReadonlySet<RefName>> {
     const existing = new Set<RefName>();
-    for (const name of names) if (await refIsPresent(name)) existing.add(name);
+    for (const name of names) if (await pass.isPresent(name)) existing.add(name);
     return existing;
   }
 
-  async function hasLooseFileAt(names: readonly RefName[]): Promise<boolean> {
+  async function hasLooseFileAt(names: readonly RefName[], pass: PreparePass): Promise<boolean> {
     for (const name of names) {
-      if ((await pathKind(looseRefPath(refDir(name), name))) === 'file') return true;
+      if (await pass.hasLooseFile(name)) return true;
     }
     return false;
   }
@@ -1681,7 +1722,7 @@ function createFilesRefStore(ctx: Context): RefStore {
   /** git takes a lock before it checks a name when that lock meets a regular
    *  file at a prefix, or a directory at the path: refs under the name, or
    *  the lock of an earlier update under it. */
-  async function nameCheckFor(name: RefName, earlier: readonly RefName[]): Promise<NameCheck> {
+  async function nameCheckFor(name: RefName, pass: PreparePass): Promise<NameCheck> {
     const prefixes = refNamePrefixes(name);
     // One `pathKind` answers both questions the lock would ask at this path.
     const looseDirectory = (await pathKind(looseRefPath(refDir(name), name))) === 'directory';
@@ -1691,20 +1732,20 @@ function createFilesRefStore(ctx: Context): RefStore {
     const smallestExistingUnder = smallerName(await smallestPackedRefUnder(name), looseUnder);
     const checkedUnderLock =
       looseUnder !== undefined ||
-      earlier.some((other) => other.startsWith(`${name}/`)) ||
-      (await hasLooseFileAt(prefixes));
-    const facts = { existingPrefixes: await existingNames(prefixes), smallestExistingUnder };
+      pass.taken.holdsUnder(name) ||
+      (await hasLooseFileAt(prefixes, pass));
+    const facts = { existingPrefixes: await existingNames(prefixes, pass), smallestExistingUnder };
     return { name, facts, checkedUnderLock, looseDirectory };
   }
 
   async function absentNameChecks(updates: readonly RefUpdate[]): Promise<readonly NameCheck[]> {
+    const pass = newPreparePass();
     const checks: NameCheck[] = [];
-    const earlier: RefName[] = [];
     for (const update of updates) {
-      if (isCheckedWhenAbsent(update) && !(await refIsPresent(update.name))) {
-        checks.push(await nameCheckFor(update.name, earlier));
+      if (isCheckedWhenAbsent(update) && !(await pass.isPresent(update.name))) {
+        checks.push(await nameCheckFor(update.name, pass));
       }
-      if (isRefChanging(update)) earlier.push(update.name);
+      if (isRefChanging(update)) pass.taken.take(update.name);
     }
     return checks;
   }
