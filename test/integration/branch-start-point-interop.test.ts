@@ -39,6 +39,9 @@ import {
   tryRunGitWithExit,
 } from './interop-helpers.js';
 
+/** Prefix width for the abbreviated start point — git's own default minimum. */
+const ABBREVIATED_OID_LENGTH = 7;
+
 /** git's `error: object <id> is a <actual>, not a commit` — reconstructed from tsgit's thrown data. */
 const errorLine = (id: string, actual: string): string =>
   `error: object ${id} is a ${actual}, not a commit\n`;
@@ -561,6 +564,36 @@ describe.skipIf(!GIT_AVAILABLE)('branch start-point interop', () => {
           id: treeId,
         });
         expect(gitResult.stderr).toBe(errorLine(treeId, 'tree') + fatalLine(treeId));
+      });
+    });
+  });
+
+  describe('Given a startPoint that resolves to a tree, by abbreviated oid', () => {
+    describe('When git branch and tsgit branchCreate both run', () => {
+      it('Then both refuse on the resolved tree while quoting the prefix as it was typed', async () => {
+        // Arrange — the abbreviation names the object for the typing check,
+        // but the refusal quotes back the caller's own spelling.
+        const { dir, ctx } = await caseRepo('tree-oid-prefix');
+        const startPoint = treeId.slice(0, ABBREVIATED_OID_LENGTH);
+
+        // Act
+        const gitResult = tryRunGitWithExit(['-C', dir, 'branch', 'b8-git', startPoint]);
+        const err = await catchTsgitError(() =>
+          branchCreate(ctx, { name: 'b8-tsgit', startPoint }),
+        );
+
+        // Assert
+        expect(gitResult.exitCode).toBe(128);
+        expect(err.data).toEqual({
+          code: 'UNEXPECTED_OBJECT_TYPE',
+          expected: 'commit',
+          actual: 'tree',
+          id: treeId,
+        });
+        expect(gitResult.stderr).toBe(errorLine(treeId, 'tree') + fatalLine(startPoint));
+        expect(
+          tryRunGitWithExit(['-C', dir, 'show-ref', '--verify', 'refs/heads/b8-git']).exitCode,
+        ).toBe(128);
       });
     });
   });
