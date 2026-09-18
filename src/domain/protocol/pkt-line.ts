@@ -29,8 +29,10 @@ const REMOTE_ERROR_PREFIX = 'ERR ';
  * Raises when a decoded pkt-line payload is the protocol's error packet.
  *
  * Mirrors canonical git's per-reader flag: armed on every advertisement and
- * negotiation read, and never on the sideband body — inside the body an
- * `ERR` payload is an out-of-range band, not an error packet. The separating
+ * negotiation read, and on the push report-status reader
+ * (`receive_status()`); never on the sideband body itself — there an `ERR`
+ * payload is an out-of-range band, not an error packet, though the packets
+ * demuxed OUT of band 1 are read by an armed reader again. The separating
  * space is part of the prefix, so `ERRboom` stays an ordinary data line.
  */
 export const assertNotRemoteError = (text: string): void => {
