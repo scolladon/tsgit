@@ -84,6 +84,11 @@ import {
 import { TsgitError } from '../../../../src/domain/error.js';
 import { type FilePath, ObjectId, type RefName } from '../../../../src/domain/objects/object-id.js';
 
+/** An `[fsck]` key half no check reports — spelled as git's own configured
+ *  camelCase and lower-cased the way git echoes it, matching the id the
+ *  interop fixture drives real git with. */
+const UNKNOWN_FSCK_MSG_ID = 'noSuchThing'.toLowerCase();
+
 const OID1 = ObjectId.from('a'.repeat(40));
 const OID2 = ObjectId.from('b'.repeat(40));
 
@@ -1279,17 +1284,17 @@ describe('domain commands error — config factory data', () => {
   });
 
   describe('Given the fsckUnknownMsgId helper', () => {
-    describe("When called with msgId='nosuchcheck', source='/abs/.git/config', line=4", () => {
+    describe("When called with an id no check reports, source='/abs/.git/config', line=4", () => {
       it('Then data carries code, msgId, source, and line individually', () => {
         // Arrange + Act
         const sut = fsckUnknownMsgId;
-        const result = sut('nosuchcheck', '/abs/.git/config', 4);
+        const result = sut(UNKNOWN_FSCK_MSG_ID, '/abs/.git/config', 4);
 
         // Assert
         const data = result.data;
         expect(data.code).toBe('FSCK_UNKNOWN_MSG_ID');
         if (data.code !== 'FSCK_UNKNOWN_MSG_ID') return;
-        expect(data.msgId).toBe('nosuchcheck');
+        expect(data.msgId).toBe(UNKNOWN_FSCK_MSG_ID);
         expect(data.source).toBe('/abs/.git/config');
         expect(data.line).toBe(4);
       });
@@ -1299,13 +1304,13 @@ describe('domain commands error — config factory data', () => {
       it('Then data.msgId is sanitized for display', () => {
         // Arrange + Act
         const sut = fsckUnknownMsgId;
-        const result = sut('\x1B[2Jnosuchcheck', '/abs/.git/config', 4);
+        const result = sut(`\x1B[2J${UNKNOWN_FSCK_MSG_ID}`, '/abs/.git/config', 4);
 
         // Assert — control bytes are escaped so the rendered error cannot be injected
         const data = result.data;
         expect(data.code).toBe('FSCK_UNKNOWN_MSG_ID');
         if (data.code !== 'FSCK_UNKNOWN_MSG_ID') return;
-        expect(data.msgId).toBe('\\x1B[2Jnosuchcheck');
+        expect(data.msgId).toBe(`\\x1B[2J${UNKNOWN_FSCK_MSG_ID}`);
         expect(data.source).toBe('/abs/.git/config');
         expect(data.line).toBe(4);
       });
@@ -1623,11 +1628,11 @@ describe('domain commands error — extractDetail message formatting', () => {
     [
       {
         code: 'FSCK_UNKNOWN_MSG_ID',
-        msgId: 'nosuchcheck',
+        msgId: UNKNOWN_FSCK_MSG_ID,
         source: '/repo/.git/config',
         line: 4,
       },
-      'FSCK_UNKNOWN_MSG_ID: unhandled fsck message id: nosuchcheck in file /repo/.git/config at line 4',
+      `FSCK_UNKNOWN_MSG_ID: unhandled fsck message id: ${UNKNOWN_FSCK_MSG_ID} in file /repo/.git/config at line 4`,
     ],
     [
       { code: 'CONFIG_BAD_ZLIB_LEVEL', level: 99 },
