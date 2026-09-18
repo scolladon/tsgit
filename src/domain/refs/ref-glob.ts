@@ -71,7 +71,7 @@ const CLASS_TESTS: Readonly<Record<string, ByteTest>> = {
 const bracketTest = (negated: boolean, atoms: ReadonlyArray<BracketAtom>): ByteTest => {
   const matchesAtom = (atom: BracketAtom, byte: number): boolean => {
     if (atom.kind === 'byte') return byte === atom.value;
-    // Stryker disable next-line EqualityOperator: equivalent — every range is preceded in the same set by the byte member that seeded its `lo` (git's `prev_ch`), so `byte === atom.lo` is already admitted by that member and this bound is unobservable.
+    // Equivalent mutant, deliberately not suppressed — a line-level disable would also silence the detected mutants sharing this line. every range is preceded in the same set by the byte member that seeded its `lo` (git's `prev_ch`), so `byte === atom.lo` is already admitted by that member and this bound is unobservable.
     if (atom.kind === 'range') return byte >= atom.lo && byte <= atom.hi;
     return atom.test(byte);
   };
@@ -90,9 +90,9 @@ interface MemberResult {
 
 const parseClassAttempt = (bytes: Uint8Array, i: number): MemberResult | undefined => {
   let j = i + 2;
-  // Stryker disable next-line EqualityOperator: equivalent — `j` can only walk up to `bytes.length`, and the refusal below rejects both that and the `bytes.length + 1` this mutant reaches instead.
+  // Equivalent mutant, deliberately not suppressed — a line-level disable would also silence the detected mutants sharing this line. `j` can only walk up to `bytes.length`, and the refusal below rejects both that and the `bytes.length + 1` this mutant reaches instead.
   while (j < bytes.length && bytes[j] !== RBRACKET) j += 1;
-  // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — `j === bytes.length` means no `]` exists at or after `i + 2` and `bytes[i + 1]` is `:`, so the caller's own scan also runs off the end and aborts; dropping this early refusal only moves where `undefined` comes from.
+  // Stryker disable next-line ConditionalExpression: equivalent — `j === bytes.length` means no `]` exists at or after `i + 2` and `bytes[i + 1]` is `:`, so the caller's own scan also runs off the end and aborts; dropping this early refusal only moves where `undefined` comes from.
   if (j >= bytes.length) return undefined; // unterminated — caller aborts
   const nameLength = j - i - 3;
   if (nameLength < 0 || bytes[j - 1] !== COLON) {
@@ -156,7 +156,7 @@ const parseBracket = (
   let rangeSeed: number | undefined;
   let first = true;
   for (;;) {
-    // Stryker disable next-line EqualityOperator: equivalent — a member's `next` never overshoots `bytes.length`, so at `i === bytes.length` the mutant parses one member off the end, lands on `bytes.length + 1` and refuses on the following turn; the caller still sees `undefined`.
+    // Equivalent mutant, deliberately not suppressed — a line-level disable would also silence the detected mutants sharing this line. a member's `next` never overshoots `bytes.length`, so at `i === bytes.length` the mutant parses one member off the end, lands on `bytes.length + 1` and refuses on the following turn; the caller still sees `undefined`.
     if (i >= bytes.length) return undefined; // ran off the end — unterminated
     if (!first && bytes[i] === RBRACKET) {
       i += 1;
@@ -191,7 +191,7 @@ const scanStarRun = (bytes: Uint8Array, i: number): ScannedToken => {
 // (nothing to escape), which never matches (see module docs).
 const scanEscape = (bytes: Uint8Array, i: number): ScannedToken | undefined => {
   const escaped = bytes[i + 1];
-  // Stryker disable next-line ConditionalExpression: equivalent — without this refusal the token tests `b === undefined`, which no byte satisfies, so the compiled matcher rejects every ref exactly as the `() => false` this abort produces.
+  // Equivalent mutant, deliberately not suppressed — a line-level disable would also silence the detected mutants sharing this line. without this refusal the token tests `b === undefined`, which no byte satisfies, so the compiled matcher rejects every ref exactly as the `() => false` this abort produces.
   if (escaped === undefined) return undefined;
   return { token: { kind: 'match', test: (b) => b === escaped }, next: i + 2 };
 };
@@ -234,7 +234,7 @@ const stepStar = (text: Uint8Array, next: Uint8Array): Uint8Array => {
 
 const stepMatch = (test: ByteTest, text: Uint8Array, next: Uint8Array): Uint8Array => {
   const cur = new Uint8Array(text.length + 1);
-  // Stryker disable next-line EqualityOperator: equivalent — the extra turn reads `next[text.length + 1]` past the end, which is never `1`, so no cell is written whatever `test` answers for the undefined byte beyond the text.
+  // Equivalent mutant, deliberately not suppressed — a line-level disable would also silence the detected mutants sharing this line. the extra turn reads `next[text.length + 1]` past the end, which is never `1`, so no cell is written whatever `test` answers for the undefined byte beyond the text.
   for (let j = 0; j < text.length; j++) {
     if (test(text[j] as number) && next[j + 1] === 1) cur[j] = 1;
   }
