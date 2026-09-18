@@ -4,6 +4,7 @@ import type { Context, RepositoryLayout } from '../../ports/context.js';
 import type { HookRequest, HookResult } from '../../ports/hook-runner.js';
 import { readConfig } from './config-read.js';
 import { isAbsolutePath } from './internal/absolute-path.js';
+import { expandHomePrefix, HOME_PREFIX } from './internal/expand-home-path.js';
 import { joinPath } from './internal/join-working-tree-path.js';
 import { assertNoValuelessConfig } from './internal/valueless-config-guard.js';
 import { commonDirOf, getSpawnCwd } from './path-layout.js';
@@ -33,8 +34,8 @@ export const resolveHooksDir = (
   const fallback = `${commonDirOf(layout)}/${HOOKS_SUBDIR}`;
   if (hooksPath === undefined) return fallback;
   if (hooksPath === '') return `${commonDirOf(layout)}/${NO_HOOKS_SUBDIR}`;
-  if (hooksPath.startsWith('~/')) {
-    return layout.homeDir === undefined ? fallback : `${layout.homeDir}/${hooksPath.slice(2)}`;
+  if (hooksPath.startsWith(HOME_PREFIX)) {
+    return expandHomePrefix(hooksPath, layout.homeDir) ?? fallback;
   }
   if (isAbsolutePath(hooksPath)) return hooksPath;
   // A relative hooksPath resolves against the working-tree root when there

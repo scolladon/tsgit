@@ -115,8 +115,8 @@ const makeTag = (
 });
 
 /** Write an empty tree as blob, no refs: no reachable tree object. */
-const initBareCtx = async (): Promise<Context> => {
-  const ctx = createMemoryContext();
+const initBareCtx = async (options: { readonly homeDir?: string } = {}): Promise<Context> => {
+  const ctx = createMemoryContext(options);
   // Seed HEAD so assertRepository passes
   await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
   return ctx;
@@ -6991,8 +6991,10 @@ describe('Given the opening Context already loaded its shallow-boundary set', ()
 // ---------------------------------------------------------------------------
 
 /** A repository whose only ref roots a commit carrying `missingSpaceBeforeEmail`. */
-const seedBadCommitRepo = async (): Promise<{ ctx: Context; commitId: ObjectId }> => {
-  const ctx = await initBareCtx();
+const seedBadCommitRepo = async (
+  options: { readonly homeDir?: string } = {},
+): Promise<{ ctx: Context; commitId: ObjectId }> => {
+  const ctx = await initBareCtx(options);
   const treeId = await writeObject(ctx, makeTree([]));
   const body = enc2.encode(
     `tree ${treeId}\nauthor Name<bad@example.com> 1700000000 +0000\ncommitter Test <c@example.com> 1700000000 +0000\n\nmessage\n`,
@@ -7155,6 +7157,47 @@ describe('Given fsck.skipList pointed at a path with a relative spelling', () =>
 
       // Assert
       expect(result.findings.filter((f) => f.type === 'bad-object')).toEqual([]);
+    });
+  });
+});
+
+describe('Given fsck.skipList pointed at a path under the user home', () => {
+  describe('When fsck runs', () => {
+    it('Then the home prefix expands and the oid still skips', async () => {
+      // Arrange
+      const homeDir = '/repo/ada-home';
+      const { ctx, commitId } = await seedBadCommitRepo({ homeDir });
+      await ctx.fs.writeUtf8(`${homeDir}/names.txt`, `${commitId}\n`);
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[fsck]\n\tskipList = ~/names.txt\n');
+      __resetConfigCacheForTests();
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(result.findings.filter((f) => f.type === 'bad-object')).toEqual([]);
+    });
+  });
+});
+
+describe('Given fsck.skipList under a home prefix and no home to expand it against', () => {
+  describe('When fsck runs', () => {
+    it('Then the audit refuses, naming the path exactly as configured', async () => {
+      // Arrange
+      const { ctx } = await seedBadCommitRepo();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[fsck]\n\tskipList = ~/names.txt\n');
+      __resetConfigCacheForTests();
+
+      // Act
+      const caught = await skipListError(ctx);
+
+      // Assert
+      expect(caught.data).toEqual({
+        code: 'FSCK_SKIP_LIST_UNREADABLE',
+        path: `${ctx.layout.workDir}/~/names.txt`,
+        reason: 'FILE_NOT_FOUND',
+      });
     });
   });
 });

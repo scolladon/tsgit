@@ -20,6 +20,7 @@ import { isOid } from '../../../../domain/objects/index.js';
 import type { Context, RepositoryLayout } from '../../../../ports/context.js';
 import { readFsckSkipListPath } from '../../../primitives/config-read.js';
 import { isAbsolutePath } from '../../../primitives/internal/absolute-path.js';
+import { expandHomePrefix } from '../../../primitives/internal/expand-home-path.js';
 import { joinPath } from '../../../primitives/internal/join-working-tree-path.js';
 
 /** git's own comment marker inside an object-name list. */
@@ -35,12 +36,19 @@ export const loadFsckSkipList = async (ctx: Context): Promise<ReadonlySet<string
   return parseObjectNames(await readListFile(ctx, path), path, ctx.hashConfig);
 };
 
-/** git resolves the configured pathname against the process working
- *  directory; tsgit's nearest equivalent is the working tree, with the git
- *  dir standing in for a bare repository — the same rule `core.hooksPath`
- *  already follows. */
-const resolveListPath = (layout: RepositoryLayout, configured: string): string =>
-  isAbsolutePath(configured) ? configured : joinPath(layout.workDir ?? layout.gitDir, configured);
+/**
+ * git routes the configured pathname through `git_config_pathname`, which
+ * expands a leading `~/` first and resolves the rest against the process
+ * working directory; tsgit's nearest equivalent for that second half is the
+ * working tree, with the git dir standing in for a bare repository — the same
+ * rule `core.hooksPath` already follows. A `~/` path with no home to expand
+ * against is left as written, so the read below refuses it by the name that
+ * was configured rather than by a silently invented one.
+ */
+const resolveListPath = (layout: RepositoryLayout, configured: string): string => {
+  const path = expandHomePrefix(configured, layout.homeDir) ?? configured;
+  return isAbsolutePath(path) ? path : joinPath(layout.workDir ?? layout.gitDir, path);
+};
 
 const readListFile = async (ctx: Context, path: string): Promise<string> => {
   try {

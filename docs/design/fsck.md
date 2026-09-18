@@ -377,9 +377,10 @@ listed oid still reports as `missing`, `dangling`, `hash-mismatch`, corrupt, or 
 ref-level fault, because git raises those outside `report()` (measured, git 2.55.0).
 Both faults the list can carry kill the whole audit before an object is decoded: a
 file that cannot be opened (`FSCK_SKIP_LIST_UNREADABLE`) and a line that is not a full
-object name, an abbreviation included (`FSCK_SKIP_LIST_INVALID_NAME`). A relative
-pathname resolves against the working tree, with the git dir standing in for a bare
-repository — the rule `core.hooksPath` already follows. The zero-OID pointer synthesised for an unreadable
+object name, an abbreviation included (`FSCK_SKIP_LIST_INVALID_NAME`). A `~/` pathname
+expands against the user's home directory, and a relative one resolves against the
+working tree, with the git dir standing in for a bare repository — the two rules
+`core.hooksPath` already follows. The zero-OID pointer synthesised for an unreadable
 ref is reported outside the catalogue, so `fsck.badRefOid` does not reach it.
 
 The **strict-upgrade set** is exactly the WARN-default rows above: `emptyName`,
