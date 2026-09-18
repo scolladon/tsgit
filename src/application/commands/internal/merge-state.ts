@@ -9,6 +9,11 @@
  * Symmetric with `repo-state.ts` which reads these markers via
  * `assertNoPendingOperation`. See `docs/adr/027-merge-conflict-write-order.md`
  * for the load-bearing write order.
+ *
+ * @writes
+ *   surface: merge
+ *   kind:    byte-identical
+ *   format:  git-merge-state-files
  */
 
 import type { ObjectId } from '../../../domain/objects/index.js';

@@ -9,6 +9,11 @@
  * uname, gname) are caller-supplied; no IO, no platform dependency.
  *
  * Runtime imports: none (only type import from ./types.js).
+ *
+ * @writes
+ *   surface: tarArchive
+ *   kind:    byte-identical
+ *   format:  git-archive-tar
  */
 import { FILE_MODE } from '../objects/file-mode.js';
 import type { ArchiveEntry, ArchiveResult } from './types.js';

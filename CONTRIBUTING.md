@@ -419,6 +419,23 @@ bytes (stat-cache fields are per-host). Drive the command through the
 (`tryRunGit` confirms git also refuses, with no mutation on either side). See
 `docs/design/porcelain-interop-harness.md`.
 
+### Orphan coverage — surfaces a test claims but no module declares
+
+An `interopSurface:` claim with no matching `@writes` tag shows up as
+*orphan coverage*. Most orphans are read surfaces (`log`, `diff`, `status`,
+`blame`, …) or grouping labels, and are expected. These write-bearing ones
+are deliberately left undeclared, each for a stated reason:
+
+| Surface | Why no `@writes` |
+|---|---|
+| `archive` | The command only picks a serializer; the two formats are declared on `tarArchive` (`domain/archive/tar.ts`) and `zipArchive` (`domain/archive/zip.ts`). |
+| `multi-pack-index` | Read-only here — `domain/storage/midx.ts` parses a midx, nothing writes one. |
+| `pack-artefacts` | A grouping label over `.rev` and `.bitmap`; `.rev` is declared as `packRevIndex`, and bitmaps are read-only (`domain/storage/bitmap.ts` parses only). |
+| `sparse-checkout` | The file format is declared as `sparseCheckoutFile`; the orphan claim comes from a config-refusal test that writes no sparse-checkout file. |
+| `remote` | Writes only through `update-config`, which declares `config`; the orphan claim comes from a tree-depth config test. |
+| `hooks` | tsgit runs hooks, never writes them. |
+| `gc`, `notes`, `branch`, `checkout`, `init`, `submodule` | Composite porcelain over primitive writers that already declare their formats. A `@writes` tag here is a readback-contract claim, and none of their interop files asserts that contract yet — declaring one before the test does would make the audit vouch for something unproven. |
+
 `npm run check:write-surfaces` (also part of `npm run validate`) walks
 both sides and reports gaps, allowlist rot, orphan coverage, and
 malformed headers — including a `@proves` block that is present but

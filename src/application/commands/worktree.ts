@@ -6,6 +6,11 @@
  * fields (path, head oid, branch, detached, bare, locked, prunable), never a
  * rendered table. The namespace binder lives in
  * `internal/worktree-namespace.ts`.
+ *
+ * @writes
+ *   surface: worktree
+ *   kind:    equivalent-under-readback
+ *   format:  git-worktree-admin
  */
 
 import { invalidOption } from '../../domain/commands/error.js';
