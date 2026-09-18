@@ -602,6 +602,7 @@
     "Mitter",
     "mkdtemps",
     "mkstemp",
+    "mktag",
     "mktemp",
     "mktree",
     "mmap",
