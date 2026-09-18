@@ -92187,7 +92187,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " match an observed\nstat but the underlying file may have been mutated in the racy-stat\nwindow — see design §10.4). Empty ("
+										"text": " match an observed\nstat but the underlying file may have been mutated in the racy-stat\nwindow). Empty ("
 									},
 									{
 										"kind": "code",
@@ -112474,7 +112474,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "Lazy, atomic-iteration view of a row source (tree / index / workdir / …).\nSnapshots are descriptions, not data — no I/O happens until the consumer\nstarts iterating. See design §8 and ADR-149.\n\nIteration-stability invariant: once a snapshot's "
+								"text": "Lazy, atomic-iteration view of a row source (tree / index / workdir / …).\nSnapshots are descriptions, not data — no I/O happens until the consumer\nstarts iterating. See ADR-149.\n\nIteration-stability invariant: once a snapshot's "
 							},
 							{
 								"kind": "code",
@@ -115072,7 +115072,7 @@
 						"summary": [
 							{
 								"kind": "text",
-								"text": "A point-in-time view of a stash entry. The trio (index, workdir,\nuntracked) is exposed as plain properties — discoverable at hand-out\ntime, not behind a method (ADR-156 + design §9.1).\n\n"
+								"text": "A point-in-time view of a stash entry. The trio (index, workdir,\nuntracked) is exposed as plain properties — discoverable at hand-out\ntime, not behind a method (ADR-156).\n\n"
 							},
 							{
 								"kind": "code",
