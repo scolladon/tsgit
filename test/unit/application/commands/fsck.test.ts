@@ -7161,6 +7161,28 @@ describe('Given fsck.skipList pointed at a path with a relative spelling', () =>
   });
 });
 
+describe('Given fsck.skipList present with no value at all', () => {
+  describe('When fsck runs', () => {
+    it('Then the audit refuses the valueless key rather than reading it as absent', async () => {
+      // Arrange
+      const { ctx } = await seedBadCommitRepo();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n[fsck]\n\tskipList\n');
+      __resetConfigCacheForTests();
+
+      // Act
+      const caught = await skipListError(ctx);
+
+      // Assert
+      expect(caught.data).toEqual({
+        code: 'CONFIG_MISSING_VALUE',
+        key: `fsck.${'skipList'.toLowerCase()}`,
+        source: `${ctx.layout.gitDir}/config`,
+        line: 3,
+      });
+    });
+  });
+});
+
 describe('Given fsck.skipList pointed at a path under the user home', () => {
   describe('When fsck runs', () => {
     it('Then the home prefix expands and the oid still skips', async () => {

@@ -1,6 +1,7 @@
 import {
   configBadNumericValue,
   configInvalidEnumValue,
+  configMissingValue,
   fsckCannotDemote,
   fsckUnknownMsgId,
 } from '../../domain/commands/error.js';
@@ -962,10 +963,11 @@ const readFsckSeverity = (
  * The path `fsck.skipList` names, or `undefined` when the key is absent.
  * Walks the same `[fsck]` tokens the severity table does, so a repeated key
  * takes its LAST entry exactly as git's config read does. A valueless entry
- * (`skipList` with no `=`) carries no path and reads as absent.
+ * (`skipList` with no `=`) is not absent: git routes the key through
+ * `git_config_pathname`, whose `config_error_nonbool` kills the whole audit.
  */
 export const readFsckSkipListPath = async (ctx: Context): Promise<string | undefined> => {
-  const { tokens } = await readConfigEntry(ctx);
+  const { tokens, source } = await readConfigEntry(ctx);
   let inSection = false;
   let path: string | undefined;
   for (const token of tokens) {
@@ -975,7 +977,10 @@ export const readFsckSkipListPath = async (ctx: Context): Promise<string | undef
     }
     if (!inSection || token.kind !== 'entry') continue;
     if (token.key.toLowerCase() !== FSCK_SKIP_LIST_KEY) continue;
-    path = token.value ?? undefined;
+    if (token.value === null) {
+      throw configMissingValue(`fsck.${FSCK_SKIP_LIST_KEY}`, source, token.startLine + 1);
+    }
+    path = token.value;
   }
   return path;
 };

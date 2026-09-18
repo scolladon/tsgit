@@ -362,7 +362,9 @@ itself: git marks `nulInHeader` and `unterminatedHeader` fatal, so they accept `
 and nothing else — `warn` or `ignore` refuses the whole audit with `FSCK_CANNOT_DEMOTE`
 (git's `Cannot demote <id> to <type>`). Swept across every msg-id `fsck.<id>` accepts
 against git 2.55.0, those two are the whole set. `fsck.skipList` is exempt from that grammar —
-it names an object-name list file, not a check. `receive.fsck.*` and `fetch.fsck.*` are
+it names an object-name list file, not a check — but not from a value: git routes it
+through `git_config_pathname`, so a valueless `skipList` refuses the audit with
+`CONFIG_MISSING_VALUE` rather than reading as absent. `receive.fsck.*` and `fetch.fsck.*` are
 separate namespaces the audit never reads — see [Transfer-time validation](#transfer-time-validation)
 for what git does with them and where tsgit stands.
 

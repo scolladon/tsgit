@@ -2194,6 +2194,14 @@ describe.skipIf(!GIT_AVAILABLE)(
 
 // --- Scenario family: fsck.skipList -----------------------------------------
 
+const valuelessDirs: string[] = [];
+
+afterAll(async () => {
+  await Promise.all(
+    valuelessDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })),
+  );
+});
+
 let skipListDir = '';
 let skipListCommitSha = '';
 let skipListDanglingSha = '';
@@ -2367,6 +2375,43 @@ describe.skipIf(!GIT_AVAILABLE)(
     });
   },
 );
+
+describe.skipIf(!GIT_AVAILABLE)('Given fsck.skipList present with no value at all', () => {
+  describe('When git fsck and tsgit fsck both run', () => {
+    it(
+      'Then both refuse the valueless key, naming it and the line it sits on',
+      async () => {
+        // Arrange
+        const dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-valueless-'));
+        valuelessDirs.push(dir);
+        initRepo(dir);
+        const configPath = path.join(dir, '.git', 'config');
+        const before = (await readFile(configPath, 'utf8')).split('\n').filter((l) => l !== '');
+        await writeFile(configPath, `${before.join('\n')}\n[fsck]\n\tskipList\n`);
+        __resetConfigCacheForTests();
+        const ctx = createNodeContext({ workDir: dir });
+
+        // Act
+        const gitResult = gitFsck(dir, '--full');
+        const caught = await catchFsckError(ctx);
+
+        // Assert
+        expect(gitResult.exitCode).toBe(128);
+        expect(gitResult.stderr).toContain(
+          `error: missing value for 'fsck.${'skipList'.toLowerCase()}'`,
+        );
+        expect(caught.data).toEqual({
+          code: 'CONFIG_MISSING_VALUE',
+          key: `fsck.${'skipList'.toLowerCase()}`,
+          source: configPath,
+          line: before.length + 2,
+        });
+        expect(gitResult.stderr).toContain(`at line ${before.length + 2}`);
+      },
+      SETUP_TIMEOUT,
+    );
+  });
+});
 
 describe.skipIf(!GIT_AVAILABLE)('Given a skip list holding an abbreviated object name', () => {
   describe('When git fsck and tsgit fsck both run', () => {
