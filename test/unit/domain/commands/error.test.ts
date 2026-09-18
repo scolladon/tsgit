@@ -26,6 +26,7 @@ import {
   configValueInvalid,
   emptyCommitMessage,
   emptyPathspec,
+  fsckUnknownMsgId,
   gitignoreFileTooLarge,
   grepLineTooLong,
   hookFailed,
@@ -1276,6 +1277,40 @@ describe('domain commands error — config factory data', () => {
       });
     });
   });
+
+  describe('Given the fsckUnknownMsgId helper', () => {
+    describe("When called with msgId='nosuchcheck', source='/abs/.git/config', line=4", () => {
+      it('Then data carries code, msgId, source, and line individually', () => {
+        // Arrange + Act
+        const sut = fsckUnknownMsgId;
+        const result = sut('nosuchcheck', '/abs/.git/config', 4);
+
+        // Assert
+        const data = result.data;
+        expect(data.code).toBe('FSCK_UNKNOWN_MSG_ID');
+        if (data.code !== 'FSCK_UNKNOWN_MSG_ID') return;
+        expect(data.msgId).toBe('nosuchcheck');
+        expect(data.source).toBe('/abs/.git/config');
+        expect(data.line).toBe(4);
+      });
+    });
+
+    describe('When called with a msgId containing a control byte', () => {
+      it('Then data.msgId is sanitized for display', () => {
+        // Arrange + Act
+        const sut = fsckUnknownMsgId;
+        const result = sut('\x1B[2Jnosuchcheck', '/abs/.git/config', 4);
+
+        // Assert — control bytes are escaped so the rendered error cannot be injected
+        const data = result.data;
+        expect(data.code).toBe('FSCK_UNKNOWN_MSG_ID');
+        if (data.code !== 'FSCK_UNKNOWN_MSG_ID') return;
+        expect(data.msgId).toBe('\\x1B[2Jnosuchcheck');
+        expect(data.source).toBe('/abs/.git/config');
+        expect(data.line).toBe(4);
+      });
+    });
+  });
 });
 
 describe('domain commands error — extractDetail message formatting', () => {
@@ -1584,6 +1619,15 @@ describe('domain commands error — extractDetail message formatting', () => {
         value: 'maybe',
       },
       "CONFIG_BAD_BOOLEAN_LITERAL: invalid value for 'push.gpgsign' in file /repo/.git/config",
+    ],
+    [
+      {
+        code: 'FSCK_UNKNOWN_MSG_ID',
+        msgId: 'nosuchcheck',
+        source: '/repo/.git/config',
+        line: 4,
+      },
+      'FSCK_UNKNOWN_MSG_ID: unhandled fsck message id: nosuchcheck in file /repo/.git/config at line 4',
     ],
     [
       { code: 'CONFIG_BAD_ZLIB_LEVEL', level: 99 },

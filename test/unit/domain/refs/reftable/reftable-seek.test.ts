@@ -16,6 +16,13 @@ import {
   type ReftableRefRecord,
 } from '../../../../../src/domain/refs/index.js';
 import { serializeReftable } from '../../../../../src/domain/refs/reftable/reftable-writer.js';
+import {
+  buildIndexBlock,
+  buildRefBlock,
+  buildReftable,
+  buildReftableHeader,
+  type RefRecordSpec,
+} from './arbitraries.js';
 
 /** Small enough that a few hundred refs span many blocks, so the seek has
  *  real block boundaries to cross. */
@@ -57,6 +64,49 @@ const buildTable = async (): Promise<Reftable> => {
 
 const namesFrom = (table: Reftable, from: string): ReadonlyArray<string> =>
   [...iterateReftableRefsFrom(table, from as RefName)].map((entry) => entry.name);
+
+/** One hand-written ref record spec carrying a direct object id of `fill`
+ *  bytes — the block writers take raw id bytes, not a branded `ObjectId`. */
+const directSpec = (name: string, fill: number): RefRecordSpec => ({
+  name,
+  value: { kind: 'direct', id: new Uint8Array(20).fill(fill) },
+});
+
+/**
+ * A table whose ref index LIES about its first block: the record says the
+ * block's last key is `refs/heads/mmm` where the block in fact ends at
+ * `refs/heads/aaa`. Our own writer never emits this — it keys every index
+ * record on the block's real last name — so only a FOREIGN writer's index
+ * puts the seek in a block none of whose keys reaches the floor, which is
+ * the state the walk's "keep going into the following block" arm answers.
+ */
+const buildForeignIndexTable = (): Reftable => {
+  const header = buildReftableHeader({ version: 1 });
+  const firstBlock = buildRefBlock({
+    records: [directSpec('refs/heads/aaa', 1)],
+    isFirstBlock: true,
+    headerLength: header.length,
+  });
+  const secondBlockStart = header.length + firstBlock.length;
+  const secondBlock = buildRefBlock({ records: [directSpec('refs/heads/zzz', 2)] });
+  const indexBlockStart = secondBlockStart + secondBlock.length;
+  // Position 0 is how every writer records the FIRST block, whose span the
+  // file header is folded into — the reader maps it back to `headerLength`.
+  const indexBlock = buildIndexBlock({
+    records: [
+      { key: 'refs/heads/mmm', blockPosition: 0 },
+      { key: 'refs/heads/zzz', blockPosition: secondBlockStart },
+    ],
+    restartIndices: [0, 1],
+  });
+  return parseReftable(
+    buildReftable({
+      version: 1,
+      blocks: [firstBlock, secondBlock, indexBlock],
+      refIndexPosition: indexBlockStart,
+    }),
+  );
+};
 
 describe('reftable — the seeked ref walk', () => {
   describe('Given a table whose refs span many blocks', () => {
@@ -144,6 +194,36 @@ describe('reftable — the seeked ref walk', () => {
         // Assert
         expect(full).toBeGreaterThanOrEqual(REF_COUNT);
         expect(seeked * 4).toBeLessThan(full);
+      });
+    });
+  });
+
+  describe('Given a foreign ref index pointing the seek at a block whose every key sorts before the floor', () => {
+    describe('When the walk is seeked to that floor', () => {
+      it('Then it carries on into the following block instead of reporting nothing', () => {
+        // Arrange
+        const table = buildForeignIndexTable();
+        const sut = namesFrom;
+
+        // Act
+        const seen = sut(table, 'refs/heads/ccc');
+
+        // Assert
+        expect(seen).toEqual(['refs/heads/zzz']);
+      });
+    });
+
+    describe('When the walk is seeked to a floor that block does reach', () => {
+      it('Then the same table still answers from the block the index chose', () => {
+        // Arrange
+        const table = buildForeignIndexTable();
+        const sut = namesFrom;
+
+        // Act
+        const seen = sut(table, 'refs/heads/aaa');
+
+        // Assert
+        expect(seen).toEqual(['refs/heads/aaa', 'refs/heads/zzz']);
       });
     });
   });
