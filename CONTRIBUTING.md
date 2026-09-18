@@ -321,8 +321,11 @@ integration}/` and are scanned by the same audit globs.
     (e.g. `real-http` outside `network/`)
 
   The audit also writes `reports/integration-surfaces.json` — a derived
-  index consumed by browser surface-parity tooling. Ships warn-only;
-  promotion to gating is a follow-up PR after one clean observation cycle.
+  index of every accepted claim, one entry per file, shaped
+  `{ path, surfaces, bucket, unique }` with `surfaces` an array because a
+  header may name several. Nothing in-tree reads it yet; the browser
+  surface-parity audit derives its own matrix. Ships warn-only; promotion to
+  gating is a follow-up PR after one clean observation cycle.
 
   Bucket taxonomy (one per file):
 

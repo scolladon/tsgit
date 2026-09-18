@@ -36,7 +36,7 @@ npm install
 | `npm run test:mutation` | Mutation testing — full tree (Stryker) |
 | `npm run test:mutation:pr` | Mutation testing — diff-scoped (reads `TSGIT_MUTATE_PATHS_FILE` or `--mutate`); CI invokes this |
 | `npm run check:mutation-budgets` | Evaluate per-bucket mutation budgets against the latest `reports/mutation/mutation-report.json` (Phase 19.1) |
-| `npm run check:test-pyramid` | Testing-pyramid audit — counts unit/integration/e2e files, flags over-mocked integrations, under-asserted units, and integration-test usefulness (missing `@proves` headers, duplicate `(surface, bucket)` pairs, misplaced buckets); writes `reports/test-pyramid.{json,md}` plus `reports/integration-surfaces.json`. Integration-usefulness ships warn-only |
+| `npm run check:test-pyramid` | Testing-pyramid audit — counts unit/integration/e2e files, flags over-mocked integrations, under-asserted units, and integration-test usefulness (missing `@proves` headers, duplicate `(surface, bucket)` pairs, misplaced buckets); writes `reports/test-pyramid.{json,md}` plus `reports/integration-surfaces.json` (one `{ path, surfaces, bucket, unique }` entry per accepted header; `surfaces` is an array). Integration-usefulness ships warn-only |
 | `npm run check:parity-fixtures` | Determinism audit on parity-scenario fixtures — flags `Date.now()`, `Math.random`, `performance.now()`, and unpinned `new Date(...)` (Phase 19.5); writes `reports/parity-fixtures.json` |
 | `npm run build:parity` | Build the browser-side parity scenario bundle (`test/browser/parity-scenarios.bundle.js`) consumed by `parity.spec.ts`; `test:e2e` depends on it automatically |
 | `npm run test:bench` | Performance benchmarks |
