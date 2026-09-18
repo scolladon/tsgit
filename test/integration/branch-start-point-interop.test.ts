@@ -369,6 +369,11 @@ describe.skipIf(!GIT_AVAILABLE)('branch start-point interop', () => {
         const { dir } = await caseRepo('bare-head');
         const bare = path.join(dir, '..', 'bare.git');
         runGit(['clone', '-q', '--bare', dir, bare]);
+        // A bare clone carries no local identity, and the spawned environment
+        // scrubs `GIT_*`, so `commit-tree` below refuses on a host that has no
+        // global one. Pin it here instead of depending on the host's config.
+        git(bare, 'config', 'user.name', 'Ada');
+        git(bare, 'config', 'user.email', 'ada@example.com');
         const ctx = createNodeContext({ gitDir: bare, workDir: bare, bare: true });
         git(bare, 'branch', 'spare-git', commitId);
         git(bare, 'commit-tree', '-m', 'unused', treeId);
