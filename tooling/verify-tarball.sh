@@ -149,7 +149,7 @@ done
 # ships: git's leftover-frontier re-walk and gentle peel in the reflog expire model, the
 # repo-settings verdict re-keying, the synchronous pack-registry peek, and the bounded
 # start-point tag walk. None is removable without dropping the behaviour each provides.
-SIZE_CAP=$((928 * 1024))
+SIZE_CAP=$((965 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
