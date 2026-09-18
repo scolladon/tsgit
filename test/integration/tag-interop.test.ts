@@ -216,9 +216,13 @@ describe.skipIf(!GIT_AVAILABLE)('tag interop', () => {
 
         // Assert
         expect(peerResult.exitCode).toBe(128);
-        expect(peerResult.stderr).toContain('nonexistent object');
+        expect(peerResult.stderr).toBe(
+          `fatal: trying to write ref 'refs/tags/${name}' with nonexistent object ${missing}\n`,
+        );
         expect(oursResult.ok).toBe(false);
-        if (!oursResult.ok) expect(oursResult.error.data.code).toBe('OBJECT_NOT_FOUND');
+        if (!oursResult.ok) {
+          expect(oursResult.error.data).toEqual({ code: 'OBJECT_NOT_FOUND', id: missing });
+        }
         expect(
           tryRunGitWithExit(['-C', pair.peer, 'rev-parse', '--verify', `refs/tags/${name}`])
             .exitCode,
@@ -281,9 +285,14 @@ describe.skipIf(!GIT_AVAILABLE)('tag interop', () => {
 
         // Assert
         expect(peerResult.exitCode).toBe(128);
-        expect(peerResult.stderr).toContain(`tag '${name}' already exists`);
+        expect(peerResult.stderr).toBe(`fatal: tag '${name}' already exists\n`);
         expect(oursResult.ok).toBe(false);
-        if (!oursResult.ok) expect(oursResult.error.data.code).toBe('TAG_EXISTS');
+        if (!oursResult.ok) {
+          expect(oursResult.error.data).toEqual({
+            code: 'TAG_EXISTS',
+            name: `refs/tags/${name}`,
+          });
+        }
         expect(git(pair.peer, 'rev-parse', name).trim()).toBe(seededTarget);
         expect(git(pair.ours, 'rev-parse', name).trim()).toBe(seededTarget);
       });
@@ -335,9 +344,14 @@ describe.skipIf(!GIT_AVAILABLE)('tag interop', () => {
 
         // Assert
         expect(peerResult.exitCode).toBe(128);
-        expect(peerResult.stderr).toContain(`'${name}' is not a valid tag name`);
+        expect(peerResult.stderr).toBe(`fatal: '${name}' is not a valid tag name.\n`);
         expect(oursResult.ok).toBe(false);
-        if (!oursResult.ok) expect(oursResult.error.data.code).toBe('INVALID_REF');
+        if (!oursResult.ok) {
+          expect(oursResult.error.data).toEqual({
+            code: 'INVALID_REF',
+            reason: 'ref name must not contain ..',
+          });
+        }
       });
     });
   });

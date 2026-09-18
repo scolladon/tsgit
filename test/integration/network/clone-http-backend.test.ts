@@ -236,13 +236,25 @@ describe.skipIf(HOSTILE_SKIP !== false)(
 
     const urlFor = (name: string): string => `http://127.0.0.1:${server.port}/${name}`;
 
+    /**
+     * Where the peer's clone may land. NEVER under `root`: that directory is
+     * the CGI's `GIT_PROJECT_ROOT` with `GIT_HTTP_EXPORT_ALL` on, so a clone
+     * written into it becomes another repository the same server exports,
+     * beside the fixtures a later row still has to fetch.
+     */
+    const peerDest = async (name: string): Promise<string> => {
+      const holder = await mkdtemp(path.join(os.tmpdir(), 'tsgit-clone-verify-peer-'));
+      scratch.push(holder);
+      return path.join(holder, name);
+    };
+
     describe('Given a remote whose HEAD branch names a tree, When clone runs', () => {
       it(
         'Then both refuse the non-commit and neither leaves a repository behind',
         async () => {
           // Arrange
           const url = urlFor('branch-tree.git');
-          const dest = path.join(root, 'peer-branch-tree');
+          const dest = await peerDest('peer-branch-tree');
 
           // Act
           const oursData = await cloneWithTsgit(url);
@@ -268,7 +280,7 @@ describe.skipIf(HOSTILE_SKIP !== false)(
         async () => {
           // Arrange
           const url = urlFor('ghost-want.git');
-          const dest = path.join(root, 'peer-ghost-want');
+          const dest = await peerDest('peer-ghost-want');
 
           // Act
           const oursData = await cloneWithTsgit(url);
@@ -294,7 +306,7 @@ describe.skipIf(HOSTILE_SKIP !== false)(
         async () => {
           // Arrange
           const url = urlFor('detached-tree.git');
-          const dest = path.join(root, 'peer-detached-tree');
+          const dest = await peerDest('peer-detached-tree');
 
           // Act
           const oursData = await cloneWithTsgit(url);

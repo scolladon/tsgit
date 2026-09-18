@@ -61,6 +61,15 @@ const honestContent = async (dir: string, id: string): Promise<Buffer> => {
 /** Overwrites the loose object at `id` with a header whose size claim is
  *  `claim` instead of `body`'s real length — a size-lying loose object at
  *  the id's real (honest) path. */
+/**
+ * How far past the real body an over-long size claim reaches. Only the
+ * DIRECTION is load-bearing: git zero-fills the residual whatever its width,
+ * so its accepting verbs read the commit and its verifying ones refuse on the
+ * hash. Measured across claims of +1, +5, +10, +100, +283, +284 and +1000 —
+ * the same split verdict every time — so the exact width below is arbitrary.
+ */
+const OVER_CLAIM_BYTES = 283;
+
 const forgeLoose = async (
   dir: string,
   id: string,
@@ -367,7 +376,7 @@ describe.skipIf(!GIT_AVAILABLE)('loose-object header size lying interop', () => 
         // Arrange
         const dir = await caseDir('commit-underrun-verbs');
         const body = await honestContent(dir, commitId);
-        await forgeLoose(dir, commitId, 'commit', body.byteLength + 283, body);
+        await forgeLoose(dir, commitId, 'commit', body.byteLength + OVER_CLAIM_BYTES, body);
         const ctx = createNodeContext({ workDir: dir });
 
         // Act — git's accepting verbs, then its verifying ones
