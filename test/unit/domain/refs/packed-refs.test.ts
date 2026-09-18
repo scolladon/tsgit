@@ -643,10 +643,11 @@ describe('packedRefsWithout', () => {
     });
   });
 
-  describe('Given entries in unsorted order', () => {
-    describe('When an unrelated entry is removed', () => {
-      it('Then the rewrite comes back sorted while the returned entries keep their order', () => {
-        // Arrange
+  describe('Given entries in an order that is not sorted', () => {
+    describe('When a name the ordered walk steps past is removed', () => {
+      it('Then every line survives and the rewrite keeps the order it was given', () => {
+        // Arrange — the walk over the names to drop only ever moves forward,
+        // so `mmm` is already behind it by the time its own line comes up.
         const { entries } = parsePackedRefs(
           [`${SHA1} refs/heads/zzz`, `${SHA2} refs/heads/aaa`, `${SHA3} refs/heads/mmm`, ''].join(
             '\n',
@@ -659,10 +660,15 @@ describe('packedRefsWithout', () => {
 
         // Assert
         expect(parsePackedRefs(result.content).entries.map((e) => e.name)).toEqual([
-          'refs/heads/aaa',
           'refs/heads/zzz',
+          'refs/heads/aaa',
+          'refs/heads/mmm',
         ]);
-        expect(result.entries.map((e) => e.name)).toEqual(['refs/heads/zzz', 'refs/heads/aaa']);
+        expect(result.entries.map((e) => e.name)).toEqual([
+          'refs/heads/zzz',
+          'refs/heads/aaa',
+          'refs/heads/mmm',
+        ]);
       });
     });
   });
@@ -699,8 +705,8 @@ describe('packedRefsWithout', () => {
           [
             '# pack-refs with: peeled fully-peeled sorted ',
             `${SHA1} refs/heads/gone-object`,
-            `${SHA2} refs/tags/unpeeled`,
             `${SHA3} refs/heads/victim`,
+            `${SHA2} refs/tags/unpeeled`,
             '',
           ].join('\n'),
         );

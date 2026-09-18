@@ -1112,6 +1112,52 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
+    describe('Given a packed-refs file claiming the sorted trait over lines that are not sorted', () => {
+      /** Only the line a binary search lands on first is ever reachable; the
+       *  two on either side of it are invisible to every lookup. */
+      const SORTED_CLAIM_ROWS: ReadonlyArray<{
+        readonly slug: string;
+        readonly name: string;
+        readonly resolves: boolean;
+      }> = [
+        { slug: 'sorted-claim-first-line', name: 'zz', resolves: false },
+        { slug: 'sorted-claim-middle-line', name: 'mm', resolves: true },
+        { slug: 'sorted-claim-last-line', name: 'aa', resolves: false },
+      ];
+
+      describe.each(SORTED_CLAIM_ROWS)('When $name is deleted', ({ slug, name, resolves }) => {
+        it('Then both exit clean, leave the file byte-identical and agree on what still resolves', async () => {
+          // Arrange
+          const { peer, ours, ctx } = await filesCasePair(slug);
+          const claimed = `# pack-refs with: peeled fully-peeled sorted \n${filesC1} refs/heads/zz\n${filesC1} refs/heads/mm\n${filesC1} refs/heads/aa\n`;
+          for (const dir of [peer, ours]) {
+            await writeFile(path.join(dir, '.git', 'packed-refs'), claimed);
+          }
+          const verifiedByGit = (dir: string): number =>
+            tryRunGitWithExit(['-C', dir, 'show-ref', '--verify', `refs/heads/${name}`]).exitCode;
+          const sut = updateRef;
+
+          // Act
+          const gitResult = tryRunGitWithExit([
+            '-C',
+            peer,
+            'update-ref',
+            '-d',
+            `refs/heads/${name}`,
+          ]);
+          await sut(ctx, branchRef(name), ZERO, { delete: true });
+          const ourRead = await resolveRefForReading(nodeCtx(ours), branchRef(name));
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          expect(await readFile(path.join(peer, '.git', 'packed-refs'), 'utf8')).toBe(claimed);
+          expect(await readFile(path.join(ours, '.git', 'packed-refs'), 'utf8')).toBe(claimed);
+          expect(verifiedByGit(peer)).toBe(resolves ? 0 : 128);
+          expect(ourRead).toBe(resolves ? filesC1 : undefined);
+        });
+      });
+    });
+
     describe('Given a packed line naming a missing object, alongside an unrelated entry', () => {
       describe('When the unrelated entry is deleted', () => {
         it('Then the missing-object line is copied verbatim — never peeled, never read', async () => {

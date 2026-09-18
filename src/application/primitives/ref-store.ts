@@ -519,10 +519,8 @@ const logsTreeParent = (target: DeleteTarget): readonly [string, string] => [
   `${logsDir(target.gitDir)}/${REFS_DIR}`,
 ];
 
-const holdsAnyName = (
-  index: ReadonlyMap<RefName, PackedRefEntry>,
-  names: ReadonlySet<RefName>,
-): boolean => [...names].some((name) => index.has(name));
+const holdsAnyName = (index: PackedNameIndex, names: ReadonlySet<RefName>): boolean =>
+  [...names].some((name) => index.has(name));
 
 const packedCacheKey = (stat: FileStat): string => `${stat.mtimeMs}:${stat.size}`;
 /** The smallest run whose updates can be left half-applied, and so the
@@ -591,6 +589,9 @@ const compareRefNames = (a: RefName, b: RefName): number => {
 
 const byName = (a: RefEntry, b: RefEntry): number => compareRefNames(a.name, b.name);
 
+const byPackedRefName = (a: PackedRefEntry, b: PackedRefEntry): number =>
+  compareRefNames(a.name, b.name);
+
 /** Backend dispatcher: `ctx.layout.refStorage` picks the files or reftable
  *  implementation. `getRefStore`'s `Context`-keyed memo (below) is what
  *  keeps this a one-shot decision per Context. */
@@ -600,36 +601,57 @@ export function createRefStore(ctx: Context): RefStore {
     : createFilesRefStore(ctx);
 }
 
-/** `loadPackedRefs`'s own return shape: the parsed entries (for a full scan —
- *  `collectCandidateNames`/`listRefNames`'s enumeration walks `entries`
- *  directly and has no name to index by) alongside a LAZY name-indexed
- *  `Map` of the SAME entries, built only on its first call, so a point
- *  lookup (`resolveDirect`) never falls back to a linear scan over every
- *  packed ref — but the bench-tracked enumeration path, which never reads
- *  it, no longer pays for the `Map` construction (or retains the P-entry
- *  index) it never needed. Built once per `loaded` instance and memoised
- *  inside the closure, so repeated `resolveDirect` calls against the SAME
- *  cached `loaded` share one `Map`, not one per call. Always internally
- *  consistent — never a stale index alongside fresh `entries` or vice
- *  versa, including the "packed-refs file is absent" fast path, which
- *  returns a freshly empty pair rather than whatever the mtime+size cache
- *  still holds from before the file was removed. */
+/** A packed snapshot's point lookup — git's `find_reference_location`. */
+interface PackedNameIndex {
+  readonly get: (name: RefName) => PackedRefEntry | undefined;
+  readonly has: (name: RefName) => boolean;
+}
+
+/**
+ * git bisects the snapshot in the order it is held rather than indexing it
+ * by name: `create_snapshot` sorts a file that does not claim the `sorted`
+ * trait and trusts one that does, and every lookup then bisects what that
+ * leaves. A file whose header claims `sorted` over lines that are not is
+ * therefore searched as though it were, and the names the bisection steps
+ * over are simply not there — which is why this is a search over `entries`
+ * and not a `Map` that would find every one of them.
+ *
+ * git bisects by byte offset and rewinds to the enclosing record; bisecting
+ * by record index lands on the same record whenever the records are equally
+ * wide, and on a snapshot that really is sorted the two agree for every
+ * file, since both find the only record that can match.
+ */
+function packedNameIndex(entries: readonly PackedRefEntry[]): PackedNameIndex {
+  const get = (name: RefName): PackedRefEntry | undefined => {
+    let low = 0;
+    let high = entries.length;
+    while (low < high) {
+      const mid = (low + high) >> 1;
+      const entry = entries[mid] as PackedRefEntry;
+      if (entry.name === name) return entry;
+      if (entry.name < name) low = mid + 1;
+      else high = mid;
+    }
+    return undefined;
+  };
+  return { get, has: (name) => get(name) !== undefined };
+}
+
+/** `loadPackedRefs`'s own return shape: the snapshot's entries (for a full
+ *  scan — `collectCandidateNames`/`listRefNames`'s enumeration walks
+ *  `entries` directly and has no name to index by) alongside the point
+ *  lookup over those SAME entries, so `resolveDirect` never falls back to a
+ *  linear scan over every packed ref. Always internally consistent — never a
+ *  stale index alongside fresh `entries` or vice versa, including the
+ *  "packed-refs file is absent" fast path, which returns a freshly empty
+ *  pair rather than whatever the mtime+size cache still holds from before
+ *  the file was removed. */
 interface LoadedPackedRefs {
   readonly entries: readonly PackedRefEntry[];
-  readonly byName: () => ReadonlyMap<RefName, PackedRefEntry>;
+  readonly byName: () => PackedNameIndex;
   /** Each name that is an ancestor directory of a packed ref, keyed to the
    *  byte-smallest packed ref under it — built lazily, once per snapshot. */
   readonly smallestUnder: () => ReadonlyMap<string, RefName>;
-}
-
-function lazyByNameIndex(
-  entries: readonly PackedRefEntry[],
-): () => ReadonlyMap<RefName, PackedRefEntry> {
-  let index: ReadonlyMap<RefName, PackedRefEntry> | undefined;
-  return () => {
-    index ??= new Map(entries.map((entry) => [entry.name, entry] as const));
-    return index;
-  };
 }
 
 /** Every ancestor prefix of every packed name, keyed to the smallest name under it. */
@@ -654,14 +676,13 @@ function lazySmallestUnderIndex(
   };
 }
 
-/** A parsed snapshot's lazy indexes over `entries`. */
-const loadedPackedRefs = (entries: readonly PackedRefEntry[]): LoadedPackedRefs => ({
-  entries,
-  byName: lazyByNameIndex(entries),
-  smallestUnder: lazySmallestUnderIndex(entries),
-});
+/** A parsed snapshot's indexes over `entries`. */
+const loadedPackedRefs = (entries: readonly PackedRefEntry[]): LoadedPackedRefs => {
+  const index = packedNameIndex(entries);
+  return { entries, byName: () => index, smallestUnder: lazySmallestUnderIndex(entries) };
+};
 
-const EMPTY_BY_NAME_INDEX: ReadonlyMap<RefName, PackedRefEntry> = new Map();
+const EMPTY_BY_NAME_INDEX: PackedNameIndex = packedNameIndex([]);
 const EMPTY_SMALLEST_UNDER_INDEX: ReadonlyMap<string, RefName> = new Map();
 const EMPTY_PACKED_REFS: LoadedPackedRefs = {
   entries: [],
@@ -688,7 +709,11 @@ function createFilesRefStore(ctx: Context): RefStore {
       return packedCache.loaded;
     }
     const content = await ctx.fs.readUtf8(path);
-    const { entries } = parsePackedRefs(content);
+    const parsed = parsePackedRefs(content);
+    // git's `create_snapshot`: a file that does not claim the `sorted` trait
+    // is sorted here, once, before anything looks a name up in it; one that
+    // claims it is taken at its word, lines and all.
+    const entries = parsed.sorted ? parsed.entries : [...parsed.entries].sort(byPackedRefName);
     const loaded = loadedPackedRefs(entries);
     packedCache = { loaded, mtimeKey: key };
     return loaded;

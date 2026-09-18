@@ -30,13 +30,19 @@ const dedupeByName = (entries: readonly PackedRefEntry[]): readonly PackedRefEnt
   });
 };
 
-/** A deduplicated entry set and a set of names to remove, mostly drawn from it. */
+/** git hands this function a SNAPSHOT — sorted, because `create_snapshot`
+ *  sorts any file that does not already claim the trait. */
+const sortedByName = (entries: readonly PackedRefEntry[]): readonly PackedRefEntry[] =>
+  [...entries].sort(byName);
+
+/** A deduplicated, sorted entry set and a set of names to remove, mostly drawn from it. */
 const arbEntriesAndNames = (): fc.Arbitrary<
   readonly [readonly PackedRefEntry[], ReadonlySet<RefName>]
 > =>
   fc
     .array(arbPackedRefEntry(), { minLength: 1, maxLength: 12 })
     .map(dedupeByName)
+    .map(sortedByName)
     .chain((entries) => {
       const present = fc.constantFrom(...entries.map((entry) => entry.name));
       const name = fc.oneof(
@@ -47,9 +53,9 @@ const arbEntriesAndNames = (): fc.Arbitrary<
       return fc.tuple(fc.constant(entries), names);
     });
 
-describe('Given an arbitrary optionally-peeled entry set and names mostly drawn from it', () => {
+describe('Given an arbitrary sorted, optionally-peeled entry set and names mostly drawn from it', () => {
   describe('When packedRefsWithout removes those names', () => {
-    it('Then parsing the rewrite equals the entries minus those names, sorted, and the returned entries match it', () => {
+    it('Then parsing the rewrite equals the entries minus those names, and the returned entries match it', () => {
       // Arrange + Act + Assert
       fc.assert(
         fc.property(arbEntriesAndNames(), ([entries, names]) => {
@@ -57,9 +63,9 @@ describe('Given an arbitrary optionally-peeled entry set and names mostly drawn 
 
           const result = sut(entries, names);
 
-          const expected = entries.filter((entry) => !names.has(entry.name)).sort(byName);
+          const expected = entries.filter((entry) => !names.has(entry.name));
           expect(parsePackedRefs(result.content).entries).toEqual(expected);
-          expect([...result.entries].sort(byName)).toEqual(expected);
+          expect(result.entries).toEqual(expected);
         }),
         { numRuns: ROUND_TRIP_NUM_RUNS },
       );
@@ -67,13 +73,16 @@ describe('Given an arbitrary optionally-peeled entry set and names mostly drawn 
   });
 });
 
-describe('Given an arbitrary entry set with a name present in it', () => {
+describe('Given an arbitrary sorted entry set with a name present in it', () => {
   describe('When that name is removed twice in a row', () => {
     it('Then the first removal drops exactly that entry and the second is a no-op', () => {
       // Arrange + Act + Assert
       fc.assert(
         fc.property(
-          fc.array(arbPackedRefEntry(), { minLength: 1, maxLength: 12 }).map(dedupeByName),
+          fc
+            .array(arbPackedRefEntry(), { minLength: 1, maxLength: 12 })
+            .map(dedupeByName)
+            .map(sortedByName),
           fc.nat(),
           (entries, pick) => {
             const sut = packedRefsWithout;
