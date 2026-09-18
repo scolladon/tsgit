@@ -26,6 +26,7 @@ import {
   unsupportedOperation,
 } from '../../../../src/domain/error.js';
 import { STAGE0_FLAGS } from '../../../../src/domain/git-index/index-entry.js';
+import { MAX_OBJECT_ID_IN_ERROR } from '../../../../src/domain/objects/error.js';
 import {
   FILE_MODE,
   hexToBytes,
@@ -7196,6 +7197,28 @@ describe('Given a skip list line that is not an object name', () => {
         name: 'not-an-oid',
         path: listPath,
         line: 2,
+      });
+    });
+  });
+});
+
+describe('Given a skip list line far longer than any object name', () => {
+  describe('When fsck runs', () => {
+    it('Then the refusal carries only an object name\u2019s worth of it', async () => {
+      // Arrange
+      const { ctx } = await seedBadCommitRepo();
+      const long = 'z'.repeat(5000);
+      const listPath = await configureSkipList(ctx, `${long}\n`);
+
+      // Act
+      const caught = await skipListError(ctx);
+
+      // Assert
+      expect(caught.data).toEqual({
+        code: 'FSCK_SKIP_LIST_INVALID_NAME',
+        name: 'z'.repeat(MAX_OBJECT_ID_IN_ERROR),
+        path: listPath,
+        line: 1,
       });
     });
   });

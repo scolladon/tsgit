@@ -1,5 +1,6 @@
 import { sanitizeForDisplay, TsgitError } from '../error.js';
 import type { HookName } from '../hooks/index.js';
+import { MAX_OBJECT_ID_IN_ERROR } from '../objects/error.js';
 import type { FilePath, ObjectId, RefName } from '../objects/object-id.js';
 import type { ReceivePackResponse as ReportStatus } from '../protocol/receive-pack.js';
 import type { PendingOperation } from '../sequencer/operation-labels.js';
@@ -761,11 +762,13 @@ export const fsckSkipListUnreadable = (path: string, reason: string): TsgitError
   new TsgitError({ code: 'FSCK_SKIP_LIST_UNREADABLE', path, reason });
 
 /** A skip-list line that is not a full object name — git's `invalid object
- *  name`, which kills the whole audit rather than dropping the line. */
+ *  name`, which kills the whole audit rather than dropping the line. Echoing
+ *  the line is git's own behaviour; echoing more of it than one object name
+ *  could ever be is not, so the echo is capped there. */
 export const fsckSkipListInvalidName = (name: string, path: string, line: number): TsgitError =>
   new TsgitError({
     code: 'FSCK_SKIP_LIST_INVALID_NAME',
-    name: sanitizeForDisplay(name),
+    name: sanitizeForDisplay(name).slice(0, MAX_OBJECT_ID_IN_ERROR),
     path,
     line,
   });
