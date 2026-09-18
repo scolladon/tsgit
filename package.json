@@ -1292,7 +1292,7 @@
       "output": []
     },
     "check:security": {
-      "command": "npm audit --audit-level=high || true",
+      "command": "npm audit --omit=dev --audit-level=high && (npm audit --audit-level=high || true)",
       "files": [
         "package-lock.json"
       ],
