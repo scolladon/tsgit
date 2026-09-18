@@ -2,10 +2,8 @@
  * Integration test — byte-parity between tsgit's whitespace-mode diff output
  * and `git diff` across the full whitespace faithfulness matrix.
  *
- * Covers every matrix row: W1, W3, B-none, B-zero, B-amt, B-run, B-tab, EOL1,
- * CR1, CR-narrow, M1, D1, D2, BL1, BL-two, BL2, BL-spaces, BL-combo, C2,
- * and the similarity-invariant regression guard. (C1 is subsumed by B-zero: same
- * fixture, same ignoreWhitespace:'all' no-diff assertion.)
+ * Covers every whitespace mode against every fixture shape that discriminates
+ * between them, plus the similarity-invariant regression guard.
  *
  * For each mode the test asserts:
  *   - name-status membership (TreeDiff.changes paths and types)
@@ -130,7 +128,7 @@ describe.skipIf(!GIT_AVAILABLE)(
   'integration — whitespace diff family git parity',
   { timeout: 60_000 },
   () => {
-    // W1: ws-only change disappears entirely under -w
+    // A whitespace-only change disappears entirely under -w
     describe('Given a file whose lines differ only in space/tab amount, When diffing with ignoreWhitespace all (-w)', () => {
       it('Then no changes appear', async () => {
         // Arrange
@@ -171,7 +169,7 @@ describe.skipIf(!GIT_AVAILABLE)(
             withStat: true,
           });
 
-          // Assert — W1: no changes survive
+          // Assert — no changes survive
           expect(nameStatusFrom(result).join('\n')).toBe(liveNames.trim());
           expect(result.changes).toHaveLength(0);
         } finally {
@@ -180,7 +178,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
-    // W3: -w vs --ignore-space-at-eol divergence on internal space removal
+    // -w vs --ignore-space-at-eol divergence on internal space removal
     describe('Given internal space removal (a b to ab), When diffing with at-eol vs all', () => {
       it('Then at-eol sees a diff but all does not', async () => {
         // Arrange
@@ -211,7 +209,7 @@ describe.skipIf(!GIT_AVAILABLE)(
             ignoreWhitespace: 'at-eol',
           });
 
-          // Assert — W3: -w drops it, --ignore-space-at-eol keeps it
+          // Assert — -w drops it, --ignore-space-at-eol keeps it
           expect(resultAll.changes).toHaveLength(0);
           expect(resultAtEol.changes).toHaveLength(1);
         } finally {

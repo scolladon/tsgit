@@ -537,8 +537,8 @@ describe('NodeFileSystem', () => {
       describe('When chmod', () => {
         it('Then throws PERMISSION_DENIED', async () => {
           // Arrange — the leading directory is a symlink whose OWN path is
-          // lexically inside root, but whose target is not; W1 refuses
-          // before ever reaching the leaf.
+          // lexically inside root, but whose target is not; the write guard
+          // refuses before ever reaching the leaf.
           const { fs, rootDir, siblingDir, cleanup } = await makeFs();
           const dirLink = nodePath.join(rootDir, 'escape-dir');
           await fsPromises.symlink(siblingDir, dirLink);

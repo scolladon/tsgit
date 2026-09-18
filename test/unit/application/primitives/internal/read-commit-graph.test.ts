@@ -268,7 +268,7 @@ async function makeCommit(
   return object;
 }
 
-/** Pin D's 5-commit shape: c0 root, c1/c2 linear, c3 merges c0+c2, c4 tip. */
+/** A 5-commit history: c0 root, c1/c2 linear, c3 merges c0+c2, c4 tip. */
 async function buildFiveCommitHistory(
   ctx: Awaited<ReturnType<typeof buildSeededContext>>,
 ): Promise<{ c0: Commit; c1: Commit; c2: Commit; c3: Commit; c4: Commit }> {
@@ -442,8 +442,8 @@ describe('read-commit-graph', () => {
     describe('Given a chain whose most-recent layer file has been deleted', () => {
       describe('When commitHeader is called for a commit that lives in the still-present base layer', () => {
         it('Then the WHOLE graph is treated as absent (returns undefined)', async () => {
-          // Arrange — Pin D staleness: a chain referencing a missing layer is
-          // treated as absent, not "partially available".
+          // Arrange — a chain referencing a missing layer is treated as
+          // absent, not "partially available".
           const ctx = await buildSeededContext();
           const { c0, c1, c2, c3, c4 } = await buildFiveCommitHistory(ctx);
           await writeCommitGraph(ctx, [

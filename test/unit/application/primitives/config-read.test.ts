@@ -5735,7 +5735,7 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     });
   });
 
-  describe('parseGitBoolean grammar (Pin K)', () => {
+  describe('parseGitBoolean grammar', () => {
     describe('Given a case-insensitive true word', () => {
       describe('When parseGitBoolean', () => {
         it.each([

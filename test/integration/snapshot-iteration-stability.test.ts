@@ -1,5 +1,5 @@
 /**
- * Snapshot iteration-stability invariant (design §8.0): once an
+ * Snapshot iteration-stability invariant: once an
  * IndexSnapshot's `.entries()` has been entered, mutations to the
  * underlying index file do not disturb the in-flight iteration. A
  * fresh snapshot opened after the mutation sees post-mutation rows.
@@ -113,7 +113,7 @@ describe('Given a repository whose .git/index has 3 entries', () => {
 
   describe('When a fresh snapshot uses bypassCache after an external write', () => {
     it('Then it yields the post-mutation rows (bypassCache forces re-parse)', async () => {
-      // Arrange — design §10.4 + ADR-150: external writes (no emit) are caught
+      // Arrange — ADR-150: external writes (no emit) are caught
       // lazily on the next generation bump or via bypassCache=true.
       const repo = await openRepository({ cwd: '/repo' }, makeFallback());
       try {

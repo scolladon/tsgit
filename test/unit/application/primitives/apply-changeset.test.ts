@@ -1068,7 +1068,7 @@ describe('applyChangeset', () => {
     });
   });
 
-  // ── Smudge filter (F2 identity + active smudge + fallback) ──────────────
+  // ── Smudge filter (identity + active smudge + fallback) ─────────────────
 
   describe('Given a regular file add whose smudge runner is invoked exactly once', () => {
     describe('When applyChangeset runs', () => {
@@ -1118,9 +1118,9 @@ describe('applyChangeset', () => {
   });
 
   describe('Given a regular file add with a clean-only filter (no smudge configured) and a runner', () => {
-    describe('When applyChangeset runs (F2 identity smudge)', () => {
+    describe('When applyChangeset runs with an identity smudge', () => {
       it('Then the worktree file contains the verbatim blob bytes and streamBlob is used', async () => {
-        // Arrange — clean-only filter: smudge is absent → identity (F2)
+        // Arrange — clean-only filter: smudge is absent → identity
         const ctx = await buildSeededContext();
         const blobContent = enc('HELLO WORLD');
         const id = await writeBlob(ctx, blobContent);

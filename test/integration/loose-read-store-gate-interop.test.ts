@@ -191,7 +191,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
-    describe('Given the pack directory made unreadable via chmod 000 (row C4/E5 — the divergence closure), When both tools read the loose object', () => {
+    describe('Given the pack directory made unreadable via chmod 000 (the divergence closure), When both tools read the loose object', () => {
       it.skipIf(os.userInfo().uid === 0 || process.platform === 'win32')(
         'Then git exits 0 with content and tsgit returns the same blob bytes',
         async () => {
@@ -211,7 +211,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       );
     });
 
-    describe('Given the flat midx removed and every .pack deleted, leaving orphaned .idx files (row C5), When both tools read the loose object', () => {
+    describe('Given the flat midx removed and every .pack deleted, leaving orphaned .idx files, When both tools read the loose object', () => {
       it('Then git is silent at exit 0, tsgit serves the same bytes and emits no logger warn', async () => {
         // Arrange — the midx must go first: with it present this is design row
         // E1 (a healthy midx naming a deleted pack), a different row.
@@ -234,7 +234,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
-    describe('Given the pack directory removed entirely (row E6), When both tools read the loose object', () => {
+    describe('Given the pack directory removed entirely, When both tools read the loose object', () => {
       it('Then git exits 0 and tsgit serves the same bytes', async () => {
         // Arrange
         const dir = await copyRow('e6');
@@ -246,7 +246,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
-    describe('Given the pack directory replaced by a regular file (row E7), When both tools read the loose object', () => {
+    describe('Given the pack directory replaced by a regular file, When both tools read the loose object', () => {
       it('Then git exits 0 with its not-a-directory diagnostic and tsgit serves the same bytes', async () => {
         // Arrange — git prints `error: unable to open object pack directory:
         // …: Not a directory` and still serves the loose object at exit 0. The

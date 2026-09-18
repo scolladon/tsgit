@@ -156,10 +156,10 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
   }
 
   // -------------------------------------------------------------------------
-  // Pin H — `.rev` fault matrix
+  // `.rev` fault matrix
   // -------------------------------------------------------------------------
 
-  describe('Pin H — .rev fault matrix, against real git', () => {
+  describe('.rev fault matrix, against real git', () => {
     describe('Given a healthy BASE repo restamped with no other change (restamp control, mandatory first), When fsck runs', () => {
       it("Then both tools still exit 0 — the restamp algorithm is git's own", async () => {
         // Arrange
@@ -539,10 +539,10 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
   });
 
   // -------------------------------------------------------------------------
-  // Pin I — `.rev` at `fsck`: mode gating and cardinality
+  // `.rev` at `fsck`: mode gating and cardinality
   // -------------------------------------------------------------------------
 
-  describe('Pin I — .rev at fsck: mode gating and cardinality', () => {
+  describe('.rev at fsck: mode gating and cardinality', () => {
     let control: BaseFixture;
     let controlGitExit: Record<string, number>;
     let controlTsgitExit: Record<string, number>;
@@ -560,7 +560,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
       controlTsgitExit = Object.fromEntries(entries);
     }, 60_000);
 
-    describe('Given a healthy BASE repo (row M0, control), When fsck runs across modes', () => {
+    describe('Given a healthy BASE repo (control), When fsck runs across modes', () => {
       it.each(MODES)('Then mode "$label" gives the same raw exit for both tools', ({ label }) => {
         // Arrange — both tools' per-mode control exits were already computed in beforeAll
         const gitExit = exitForMode(controlGitExit, label);
@@ -707,10 +707,10 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
   });
 
   // -------------------------------------------------------------------------
-  // Pin J — `.bitmap` fault matrix: `fsck` checks the checksum and nothing else
+  // `.bitmap` fault matrix: `fsck` checks the checksum and nothing else
   // -------------------------------------------------------------------------
 
-  describe('Pin J — .bitmap fault matrix: fsck checks the checksum and nothing else', () => {
+  describe('.bitmap fault matrix: fsck checks the checksum and nothing else', () => {
     describe('Given a healthy bitmap fixture restamped with no other change (restamp control, mandatory first), When fsck runs', () => {
       it("Then both tools still exit 0 — the restamp algorithm is git's own", async () => {
         // Arrange
@@ -729,7 +729,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
       });
     });
 
-    describe('Given a healthy bitmap fixture (row B0, control), When fsck runs', () => {
+    describe('Given a healthy bitmap fixture (control), When fsck runs', () => {
       it('Then both tools exit 0 with no bitmap finding', async () => {
         // Arrange
         const fixture = await freshBitmap('b0');
@@ -914,10 +914,10 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
   });
 
   // -------------------------------------------------------------------------
-  // Pin K — the midx bitmap
+  // the midx bitmap
   // -------------------------------------------------------------------------
 
-  describe('Pin K — the midx bitmap', () => {
+  describe('the midx bitmap', () => {
     describe('Given a healthy midx+bitmap fixture restamped with no other change (restamp control, mandatory first), When fsck runs', () => {
       it("Then both tools still show no bitmap bit — the restamp algorithm is git's own", async () => {
         // Arrange
@@ -935,7 +935,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
       });
     });
 
-    describe('Given a healthy midx+bitmap fixture (row X0, control), When fsck runs', () => {
+    describe('Given a healthy midx+bitmap fixture (control), When fsck runs', () => {
       it('Then fsck, verify, connectivity-only and strict report no bitmap bit', async () => {
         // Arrange
         const fixture = await freshMidxBitmap('x0');
@@ -1125,11 +1125,11 @@ describe.skipIf(!GIT_AVAILABLE)('fsck reverse-index and bitmap findings, against
   });
 
   // -------------------------------------------------------------------------
-  // Pin L — exit-bit composition, and the interaction with pack accessibility
+  // exit-bit composition, and the interaction with pack accessibility
   // -------------------------------------------------------------------------
 
-  describe('Pin L — exit-bit composition, and the interaction with pack accessibility', () => {
-    describe('Given a healthy bitmap fixture (row Y0, control), When fsck runs across modes', () => {
+  describe('exit-bit composition, and the interaction with pack accessibility', () => {
+    describe('Given a healthy bitmap fixture (control), When fsck runs across modes', () => {
       it.each(MODES)(
         'Then mode "$label" gives the same raw exit for both tools',
         async ({ label, flags, opts }) => {

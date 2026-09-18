@@ -323,7 +323,7 @@ describe.skipIf(!GIT_AVAILABLE)('core.maxTreeDepth — deep-tree cross-tool inte
   });
 
   // ─────────────────────────────────────────────────────────────────────
-  // W2 / W4 — the one residual divergence: write-tree never refuses on
+  // The one residual divergence: write-tree never refuses on
   // depth; synthesizeTreeFromIndex does, at the default cap.
   // ─────────────────────────────────────────────────────────────────────
 

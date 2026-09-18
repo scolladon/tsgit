@@ -3,11 +3,11 @@
  *
  * Proves that all four converted consumer sites (A/B/C/D) produce working-tree
  * output byte-identical to canonical `git` and are faithful to git's
- * replace-not-truncate, non-atomic write semantics (W1/W2).
+ * replace-not-truncate, non-atomic write semantics.
  *
  *   C1 — checkout a ~200 KB regular blob (site A, loose): byte-identical content
  *   C2 — same, executable mode 100755: byte-identical content + mode 0755
- *   C3 — symlink → regular file kind switch (site A, W1 self-heal): regular file, no stale symlink
+ *   C3 — symlink → regular file kind switch (site A, remove-then-write self-heal): regular file, no stale symlink
  *   C4 — checkout a deltified blob (site A, materialised: true upstream): byte-identical
  *   C5 — merge clean survivor (sites B/C): byte-identical to git merge result
  *   C6 — stash-apply untracked restore (site D, cap dropped): byte-identical
@@ -225,7 +225,7 @@ describe.skipIf(!GIT_AVAILABLE)(
     });
 
     // -----------------------------------------------------------------------
-    // C3 — site A: symlink → regular file kind switch (W1 self-heal)
+    // C3 — site A: symlink → regular file kind switch (remove-then-write self-heal)
     // -----------------------------------------------------------------------
     describe('C3: symlink-to-regular-file kind switch across checkout', () => {
       describe('Given main holds a symlink and feat holds a regular file at the same path', () => {

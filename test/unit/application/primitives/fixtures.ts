@@ -617,8 +617,8 @@ function layerModelFor(
 
 /**
  * Write a real `commit-graph` (single-file, `layers.length === 1`) or chain
- * (`layers.length > 1`, base → tip) encoding the given REAL commits (Pin D
- * format, via the domain parser's own test encoder). Each layer is sorted by
+ * (`layers.length > 1`, base → tip) encoding the given REAL commits, via the
+ * domain parser's own test encoder. Each layer is sorted by
  * oid — the on-disk fanout/OIDL requirement — and parent references are
  * resolved to GLOBAL positions across the concatenated layer ordering, the
  * same arithmetic `read-commit-graph.ts` decodes. Generations are git's own

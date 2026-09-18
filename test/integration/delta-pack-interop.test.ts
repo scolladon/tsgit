@@ -1,10 +1,10 @@
 /**
  * Cross-tool interop — the delta-writing packer. A tsgit `gc` over a
  * text-churn corpus (one evolving file, 200 commits, 5 edits + 1 append
- * each — the design's F1 shape) writes a self-contained `OFS_DELTA` pack;
+ * each) writes a self-contained `OFS_DELTA` pack;
  * every row below pins that pack, and the `pack-objects` / `bundle-create` /
  * `push` call sites, against real git 2.55.0. `push` deliberately stays
- * base-only — X14 is the regression guard for that exclusion.
+ * base-only, and one row below is the regression guard for that exclusion.
  *
  * @proves
  *   surface:        packfile

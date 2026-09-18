@@ -325,7 +325,7 @@ describe('commitDateWalk — early graph-confirmed push under ignoreMissing=fals
       const { computeLooseObjectPath } = await import(
         '../../../../../src/domain/storage/loose-path.js'
       );
-      // F2.3 also populates the delta cache on the arrange-phase pre-read
+      // A loose read also populates the delta cache on the arrange-phase pre-read
       // above; drop that entry so removing the loose file below produces a
       // genuine miss instead of a cache-served hit.
       ctx.deltaCache.delete(stale);
@@ -385,7 +385,7 @@ describe('commitDateWalk — stale commit-graph under ignoreMissing', () => {
       const { computeLooseObjectPath } = await import(
         '../../../../../src/domain/storage/loose-path.js'
       );
-      // F2.3 also populates the delta cache on the arrange-phase pre-read
+      // A loose read also populates the delta cache on the arrange-phase pre-read
       // above; drop that entry so removing the loose file below produces a
       // genuine miss instead of a cache-served hit.
       ctx.deltaCache.delete(pruned);
@@ -411,7 +411,7 @@ describe('commitDateWalk — stale commit-graph under ignoreMissing', () => {
   });
 });
 
-describe('commitDateWalk — parallel parent body reads (F12)', () => {
+describe('commitDateWalk — parallel parent body reads', () => {
   describe('Given a commit with three parents', () => {
     describe('When the walk enqueues them', () => {
       it('Then all three body reads are started before any is awaited', async () => {
@@ -522,7 +522,7 @@ describe('commitDateWalk — parent rejection order is array order, not first-in
   });
 });
 
-describe('commitDateWalk — sibling push order matches parent-array order, not completion order (F12, trap 1)', () => {
+describe('commitDateWalk — sibling push order matches parent-array order, not completion order', () => {
   describe('Given siblings whose reads complete out of array order', () => {
     describe('When the walk enqueues them', () => {
       it('Then the heap receives them in parent-array order', async () => {
@@ -589,7 +589,7 @@ describe('commitDateWalk — sibling push order matches parent-array order, not 
   });
 });
 
-describe('commitDateWalk — graph-present parent push stays body-await-free (F12, trap 3)', () => {
+describe('commitDateWalk — graph-present parent push stays body-await-free', () => {
   describe('Given a graph-covered merge whose parents are a fresh one and a stale one missing its body', () => {
     describe('When walking by date', () => {
       it('Then the fresher parent is yielded before the stale one aborts the walk', async () => {
@@ -623,7 +623,7 @@ describe('commitDateWalk — graph-present parent push stays body-await-free (F1
         const { computeLooseObjectPath } = await import(
           '../../../../../src/domain/storage/loose-path.js'
         );
-        // F2.3 also populates the delta cache on the arrange-phase pre-read
+        // A loose read also populates the delta cache on the arrange-phase pre-read
         // above; drop that entry so removing the loose file below produces a
         // genuine miss instead of a cache-served hit.
         ctx.deltaCache.delete(stale);

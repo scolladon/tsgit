@@ -409,7 +409,7 @@ describe('internal/repo-settings-gate', () => {
     };
 
     /**
-     * Builds the exact sequence F1 was found under: a gate settles the
+     * Builds the exact sequence the stale-verdict defect was found under: a gate settles the
      * repo-settings verdict against a VALID config, an object read confirms
      * the session is warm, an external rewrite (a raw `ctx.fs.writeUtf8` —
      * no `invalidateConfigCache`, mirroring an editor or another process

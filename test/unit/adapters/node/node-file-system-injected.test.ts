@@ -2212,7 +2212,7 @@ describe('assertLeafSafeToWrite — non-ENOENT errno on leaf lstat (DI)', () => 
   });
 });
 
-describe('NodeFileSystem — W2 leaf no-follow composition (DI)', () => {
+describe('NodeFileSystem — leaf no-follow composition (DI)', () => {
   const WRITE_CREATE_FLAGS =
     fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW;
   const WRITE_EXCLUSIVE_FLAGS =

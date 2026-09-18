@@ -471,7 +471,7 @@ describe('writePackArtifactsViaQuarantine', () => {
   describe('Given promisor: true rewriting the SAME sha a prior call already wrote', () => {
     describe('When writePackArtifactsViaQuarantine runs a second time', () => {
       it('Then it succeeds rather than refusing FILE_EXISTS, and .promisor is still present', async () => {
-        // Arrange — the no-op boundary (Pin W): a repeat build over an
+        // Arrange — the no-op boundary: a repeat build over an
         // unchanged oid set reproduces the identical sha, so the second
         // call's `.promisor` write finds its own sentinel from the FIRST
         // call already sitting at that exact path.

@@ -1257,7 +1257,7 @@ describe('object-resolver', () => {
     });
   });
 
-  describe('F2.3 — loose reads populate the delta cache', () => {
+  describe('loose reads populate the delta cache', () => {
     describe('Given a loose object read once', () => {
       describe('When resolveObject returns', () => {
         it('Then the delta cache holds its type and content', async () => {
@@ -1784,7 +1784,7 @@ describe('object-resolver', () => {
           const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
           const registry = await createPackRegistry(ctx);
           await resolveObject(ctx, registry, id, true);
-          // F2.3 also populates the delta cache on a loose read; drop that
+          // A loose read also populates the delta cache on a loose read; drop that
           // entry so this probe exercises the fanout MEMBERSHIP cache's own
           // stale-hit degradation, not the (separately-tested) delta cache.
           ctx.deltaCache.delete(id);

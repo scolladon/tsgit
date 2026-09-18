@@ -3771,7 +3771,7 @@ describe('Given tag with tagger timestamp of 18 nines (999999999999999999, less 
 
 // ---------------------------------------------------------------------------
 // tag — taggerLine.slice(7) strips the "tagger " prefix before parsing
-// Kills F1: taggerLine without slice(7) passes "tagger Name <email>" to
+// Kills the no-slice mutant: taggerLine without slice(7) passes "tagger Name <email>" to
 // checkTaggerLine, where "tagger Name" becomes the name part. "tagger Name"
 // ends with 'e' not ' ', triggering missingSpaceBeforeEmail spuriously.
 // The kill test uses a tagger whose name-before-email starts with "tagger "
@@ -3784,8 +3784,8 @@ describe('Given tag with a valid tagger where the identity has a space before th
       // Arrange
       // taggerLine = 'tagger Test User <test@example.com> 1234567890 +0000'
       // slice(7)  → 'Test User <test@example.com> ...' → name='Test User ', ends with ' ' → OK.
-      // F1 mutant (no slice): → 'tagger Test User <test@example.com> ...' →
-      // name='tagger Test User ', ends with ' ' → still OK. So F1 is subtle.
+      // No-slice mutant: → 'tagger Test User <test@example.com> ...' →
+      // name='tagger Test User ', ends with ' ' → still OK. So it is subtle.
       // Use a tagger where the raw (unsliced) form would trigger the space check:
       // 'tagger A<a@a.com> 1234567890 +0000' → sliced: 'A<a@a.com>...' → name='A', no space → missingSpaceBeforeEmail.
       // But without slice: 'tagger A<a@a.com>...' → name='tagger A', no space → missingSpaceBeforeEmail.
@@ -3794,10 +3794,10 @@ describe('Given tag with a valid tagger where the identity has a space before th
       // Key case: taggerLine is 'tagger <t@t.com> 1234567890 +0000' (no name, just email).
       // slice(7)  → '<t@t.com> ...' → ltIdx=0, name='', !name.endsWith(' ')=true →
       //            missingSpaceBeforeEmail (correct: no name before email).
-      // F1 mutant (no slice): 'tagger <t@t.com> ...' → ltIdx=7, name='tagger ',
+      // No-slice mutant: 'tagger <t@t.com> ...' → ltIdx=7, name='tagger ',
       //            name.endsWith(' ')=true → passes name check → no missingSpaceBeforeEmail.
       //            The email content is then parsed for the date.
-      // So with F1 mutant, 'tagger <t@t.com> ...' does NOT emit missingSpaceBeforeEmail.
+      // So with that mutant, 'tagger <t@t.com> ...' does NOT emit missingSpaceBeforeEmail.
       // A valid test: a tag with NO name before email should emit missingSpaceBeforeEmail.
       const rawBytes = encode(
         `object ${BLOB_SHA_HEX}\ntype blob\ntag v1.0\ntagger <t@t.com> 1234567890 +0000\n\nmsg\n`,
@@ -4136,7 +4136,7 @@ describe('Given commit author with single-character zero timestamp ("0")', () =>
 
 // ---------------------------------------------------------------------------
 // commit — checkIdentityLine ltIdx===-1 branch (line 80 Block/Unary/Conditional)
-// Kills F1 (block {}), F2 (ltIdx===+1), F3 (if false).
+// Kills the empty-block, the ltIdx===+1 and the always-false-guard mutants.
 // An identity string with '>' but no '<' has ltIdx=-1.
 // Original: if (ltIdx===-1) pushes missingEmail and returns early.
 // With any line-80 mutant: the block is skipped; gtIdx finds the '>'; the
@@ -4149,9 +4149,9 @@ describe('Given commit author identity with ">" but no "<" (opening angle-bracke
       // Arrange
       // 'Test User> 1234567890 +0000': indexOf('<')=-1, indexOf('>')=9.
       // Original: ltIdx===-1 → push missingEmail, return immediately.
-      // F1 mutant (block {}): skipped → gtIdx=9, date parses → no missingEmail. FAILS.
-      // F2 mutant (ltIdx===+1): -1!==+1=false → skipped → same. FAILS.
-      // F3 mutant (if false): → same as F1. FAILS.
+      // Empty block: skipped → gtIdx=9, date parses → no missingEmail. FAILS.
+      // ltIdx===+1: -1!==+1=false → skipped → same. FAILS.
+      // Always-false guard: → same as the empty block. FAILS.
       const rawBytes = buildCommit({
         tree: BLOB_SHA_HEX,
         author: 'Test User> 1234567890 +0000',

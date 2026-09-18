@@ -6372,7 +6372,7 @@ describe('Given a Tier-A-corrupt flat midx', () => {
 });
 
 // ---------------------------------------------------------------------------
-// MODE IS UNGATED (Pin N)
+// MODE IS UNGATED
 // ---------------------------------------------------------------------------
 
 describe('Given a finding-producing midx shape and no rescuing chain', () => {

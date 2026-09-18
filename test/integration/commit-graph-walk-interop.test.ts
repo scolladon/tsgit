@@ -1,9 +1,9 @@
 /**
- * Cross-tool interop — commit-graph-backed walks (Pin D). Builds one commit
+ * Cross-tool interop — commit-graph-backed walks. Builds one commit
  * history with canonical `git`, then reads it through `openRepository` under
  * FOUR on-disk commit-graph states — absent, single-file
  * (`commit-graph write --reachable`), chain/split (two `--split=no-merge`
- * passes, mirroring Pin D's own empirical reproduction), and a stale chain
+ * passes, as real git produces them), and a stale chain
  * (a referenced layer file deleted after the split) — proving every form
  * yields the identical oid sequence, both to each other and to real git.
  * The commit-graph is git's own cache: a correct reader changes nothing about
@@ -84,7 +84,7 @@ const resetCommitGraphState = async (dir: string): Promise<void> => {
 };
 
 /**
- * A genuine two-layer chain (Pin D's own reproduction shape): the first
+ * A genuine two-layer chain: the first
  * split write from the `side` checkout covers {base, c} (layer 1); the
  * second, from `main`, covers the remaining reachable delta {b, merge}
  * (layer 2) — so the merge commit's two parents resolve one cross-layer

@@ -40,13 +40,12 @@ describe('normalizeLine', () => {
         {
           input: 'a b\n',
           expected: 'ab',
-          label:
-            'internal spaces are dropped and the terminator is stripped under an active key (W1, C4)',
+          label: 'internal spaces are dropped and the terminator is stripped under an active key',
         },
         {
           input: '\tbeta gamma\n',
           expected: 'betagamma',
-          label: 'a tab byte is dropped along with space bytes and the terminator (W1, C4)',
+          label: 'a tab byte is dropped along with space bytes and the terminator',
         },
         {
           input: 'a\r\n',
@@ -220,7 +219,7 @@ describe('normalizeLine', () => {
         {
           left: '\tbeta gamma\n',
           right: '  beta  gamma   \n',
-          label: 'internal whitespace differing (W3) is preserved so keys differ',
+          label: 'internal whitespace differing is preserved so keys differ',
         },
         {
           left: '\tx\n',
@@ -444,7 +443,7 @@ describe('linesEqualUnder', () => {
           left: '\tbeta gamma\n',
           right: '  beta  gamma   \n',
           expected: true,
-          label: 'lines differing only in whitespace (W1) are equal',
+          label: 'lines differing only in whitespace are equal',
         },
         {
           left: 'real\n',
@@ -525,7 +524,7 @@ describe('linesEqualUnder', () => {
       });
     });
 
-    describe('When internal whitespace also differs (W3)', () => {
+    describe('When internal whitespace also differs', () => {
       it('Then returns false', () => {
         // Arrange & Act
         const result = linesEqualUnder(line('\tbeta gamma\n'), line('  beta  gamma   \n'), key);
@@ -680,7 +679,7 @@ describe('digestNormalizedLine', () => {
         mode: 'all' as const,
         left: '\tbeta gamma\n',
         right: '  beta  gamma   \n',
-        label: "mode 'all': whitespace-only difference (W1) digests equal",
+        label: "mode 'all': whitespace-only difference digests equal",
       },
       {
         mode: 'change' as const,
@@ -726,7 +725,7 @@ describe('digestNormalizedLine', () => {
         mode: 'at-eol' as const,
         left: '\tbeta gamma\n',
         right: '  beta  gamma   \n',
-        label: "mode 'at-eol': internal whitespace differs (W3) digests unequal",
+        label: "mode 'at-eol': internal whitespace differs, digests unequal",
       },
       {
         mode: 'none' as const,

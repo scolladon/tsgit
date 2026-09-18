@@ -334,7 +334,7 @@ describe('Given a merge whose two sides converge on one already-queued base comm
 
       // Assert — one physical read while walking the ancestry; the later
       // read while typing the object for emission now hits the delta cache
-      // that loose read populated (F2.3), so a re-walk of the base — which
+      // that loose read populated, so a re-walk of the base — which
       // would add a further physical read — is what this still catches.
       expect(baseReads).toBe(1);
       expect(new Set(idsOf(result))).toEqual(new Set([mergeId, leftId, rightId, baseId]));

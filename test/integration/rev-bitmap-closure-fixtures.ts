@@ -14,11 +14,11 @@
  * content at one point in history is byte-identical to that same file's
  * content at another point, straddling wherever a `not` boundary lands. On a
  * fixture where content never repeats, the walk tier's own over-report
- * (§ the closure engine's own module doc) is never exercised — the walk and
+ * (documented on the closure engine itself) is never exercised — the walk and
  * the exact set difference coincide, and a superset assertion degenerates
  * into an equality that would pass for the wrong reason.
  *
- * F2 is built via `git fast-import` — 400 real commits over individual
+ * The nested fixture is built via `git fast-import` — 400 real commits over individual
  * `git commit` invocations is too slow for a test suite. The stream is
  * written to a throwaway file OUTSIDE the fixture repository and piped into
  * `git fast-import` from a file descriptor, with every author/committer
@@ -42,27 +42,27 @@ import {
 const AUTHOR = 'Ada <ada@example.com>';
 const BASE_TIMESTAMP = 1_700_000_000;
 
-// F2 — the 400-commit fixture. Each commit writes ONE never-before-used file
+// The nested fixture — 400 commits. Each commit writes ONE never-before-used file
 // under `unique/` (so the boundary walk's "reachable only after the
 // boundary" side has real, exclusive content) AND rewrites the root-level
-// `shared.txt` to one of `F2_SHARED_VARIANTS` recurring contents (so some of
+// `shared.txt` to one of `NESTED_SHARED_VARIANTS` recurring contents (so some of
 // those values straddle any `--not` boundary — the property above).
-const F2_COMMITS = 400;
-const F2_SHARED_VARIANTS = 5;
+const NESTED_COMMITS = 400;
+const NESTED_SHARED_VARIANTS = 5;
 
-// F5 — the same shape, flattened (no `unique/` subdirectory) and smaller, so
+// The flat fixture — the same shape without the `unique/` subdirectory, and
+// smaller, so
 // its ~367-object closure is small enough to reason about by hand.
-const F5_COMMITS = 120;
-const F5_SHARED_VARIANTS = 7;
+const FLAT_COMMITS = 120;
+const FLAT_SHARED_VARIANTS = 7;
 
-// F4 — the merge fixture. `main` and `topic` each touch only their OWN file
+// The merge fixture. `main` and `topic` each touch only their OWN file
 // (`a.txt` / `b.txt`) after diverging at `root`, so the merge is a clean
 // auto-merge and `root` — reachable from both sides — is the shared-content
-// boundary case a linear fixture can never exercise (§ `--not topic`'s own
-// row: excluding `topic` must also exclude `root`, even though `root` is
-// ALSO an ancestor of `main`).
-const F4_MAIN_COMMITS = 59;
-const F4_TOPIC_COMMITS = 15;
+// boundary case a linear fixture can never exercise: excluding `topic` must
+// also exclude `root`, even though `root` is ALSO an ancestor of `main`.
+const MERGE_MAIN_COMMITS = 59;
+const MERGE_TOPIC_COMMITS = 15;
 
 function sharedVariant(index: number, variantCount: number): string {
   return `shared-variant-${index % variantCount}\n`;
@@ -129,18 +129,18 @@ function commitRecord(spec: StreamCommitSpec): string {
 }
 
 /**
- * F2's own stream: 400 commits, each pairing one never-reused blob (under
- * `unique/`, mark `2i+1`) with one of `F2_SHARED_VARIANTS` recurring
+ * The nested stream: 400 commits, each pairing one never-reused blob (under
+ * `unique/`, mark `2i+1`) with one of `NESTED_SHARED_VARIANTS` recurring
  * `shared.txt` contents (mark `2i+2`), followed by an annotated tag on the
- * final commit — F2's one branch, one tag shape.
+ * final commit — one branch, one tag.
  */
-function buildF2Stream(): string {
+function buildNestedStream(): string {
   let stream = '';
-  for (let i = 0; i < F2_COMMITS; i += 1) {
+  for (let i = 0; i < NESTED_COMMITS; i += 1) {
     const uniqueMark = i * 2 + 1;
     const sharedMark = i * 2 + 2;
     stream += blobRecord(uniqueMark, `unique-${i}\n`);
-    stream += blobRecord(sharedMark, sharedVariant(i, F2_SHARED_VARIANTS));
+    stream += blobRecord(sharedMark, sharedVariant(i, NESTED_SHARED_VARIANTS));
     stream += commitRecord({
       timestamp: BASE_TIMESTAMP + i,
       message: `commit ${i}\n`,
@@ -150,20 +150,20 @@ function buildF2Stream(): string {
   const tagMessage = 'release v1\n';
   stream += 'tag v1\n';
   stream += 'from refs/heads/main\n';
-  stream += `tagger ${AUTHOR} ${BASE_TIMESTAMP + F2_COMMITS} +0000\n`;
+  stream += `tagger ${AUTHOR} ${BASE_TIMESTAMP + NESTED_COMMITS} +0000\n`;
   stream += `data ${Buffer.byteLength(tagMessage)}\n${tagMessage}`;
   return stream;
 }
 
-/** F5's own stream: the same recurring-content shape as F2, flattened (no
+/** The flat stream: the same recurring-content shape, without the
  *  subdirectory) and with a wider variant cycle, over fewer commits. */
-function buildF5Stream(): string {
+function buildFlatStream(): string {
   let stream = '';
-  for (let i = 0; i < F5_COMMITS; i += 1) {
+  for (let i = 0; i < FLAT_COMMITS; i += 1) {
     const uniqueMark = i * 2 + 1;
     const sharedMark = i * 2 + 2;
     stream += blobRecord(uniqueMark, `unique-${i}\n`);
-    stream += blobRecord(sharedMark, sharedVariant(i, F5_SHARED_VARIANTS));
+    stream += blobRecord(sharedMark, sharedVariant(i, FLAT_SHARED_VARIANTS));
     stream += commitRecord({
       timestamp: BASE_TIMESTAMP + i,
       message: `commit ${i}\n`,
@@ -177,27 +177,27 @@ export interface ClosureFixture {
   readonly dir: string;
 }
 
-/** F2 — 400 commits / one annotated tag, `git repack -adq
+/** 400 commits / one annotated tag, `git repack -adq
  *  --write-bitmap-index`. See the module doc for the recurring-content
  *  property this fixture exists to carry. */
-export async function buildF2ClosureFixture(
+export async function buildNestedClosureFixture(
   baseDir: string,
   slug: string,
 ): Promise<ClosureFixture> {
   const dir = await freshRepo(baseDir, slug);
-  await runFastImport(dir, buildF2Stream());
+  await runFastImport(dir, buildNestedStream());
   git(dir, 'checkout', '-f', 'main');
   git(dir, 'repack', '-adq', '--write-bitmap-index');
   return { dir };
 }
 
-/** F5 — 120 commits, flattened, `git repack -adq --write-bitmap-index`. */
-export async function buildF5ClosureFixture(
+/** 120 commits, flattened, `git repack -adq --write-bitmap-index`. */
+export async function buildFlatClosureFixture(
   baseDir: string,
   slug: string,
 ): Promise<ClosureFixture> {
   const dir = await freshRepo(baseDir, slug);
-  await runFastImport(dir, buildF5Stream());
+  await runFastImport(dir, buildFlatStream());
   git(dir, 'checkout', '-f', 'main');
   git(dir, 'repack', '-adq', '--write-bitmap-index');
   return { dir };
@@ -205,27 +205,27 @@ export async function buildF5ClosureFixture(
 
 /**
  * Appends ONE plain (non-fast-import) commit on top of an already-repacked
- * F2 fixture, rewriting `shared.txt` to a content never used by any of the
+ * nested fixture, rewriting `shared.txt` to a content never used by any of the
  * 400 recurring variants. Left loose (no repack after), for the loose-object
  * row: exactly 3 new objects (the commit, the changed root tree, and the one
  * new blob) — `unique/`'s own subtree is untouched, since this commit never
  * touches it.
  */
-export async function addLooseCommitAboveF2(dir: string): Promise<void> {
+export async function addLooseCommitAboveNestedPack(dir: string): Promise<void> {
   await writeFile(path.join(dir, 'shared.txt'), 'shared-final\n');
   git(dir, 'add', 'shared.txt');
-  git(dir, 'commit', '-q', '-m', 'loose commit above F2');
+  git(dir, 'commit', '-q', '-m', 'loose commit above the pack');
 }
 
 /**
- * F4 — 76 commits including one real merge: `root` seeds `a.txt`/`b.txt`,
- * `main` (`F4_MAIN_COMMITS` commits) rewrites only `a.txt`, `topic`
- * (`F4_TOPIC_COMMITS` commits, forked from `root`) rewrites only `b.txt`,
+ * 76 commits including one real merge: `root` seeds `a.txt`/`b.txt`,
+ * `main` (`MERGE_MAIN_COMMITS` commits) rewrites only `a.txt`, `topic`
+ * (`MERGE_TOPIC_COMMITS` commits, forked from `root`) rewrites only `b.txt`,
  * then `topic` merges into `main`. `git repack -adq --write-bitmap-index`.
  * Plain `git commit` throughout — 76 commits is fast enough without
  * `fast-import`, and the merge itself needs a real working tree.
  */
-export async function buildF4ClosureFixture(
+export async function buildMergeClosureFixture(
   baseDir: string,
   slug: string,
 ): Promise<ClosureFixture> {
@@ -237,14 +237,14 @@ export async function buildF4ClosureFixture(
   git(dir, 'commit', '-q', '-m', 'root');
   git(dir, 'branch', 'topic');
 
-  for (let i = 1; i <= F4_MAIN_COMMITS; i += 1) {
+  for (let i = 1; i <= MERGE_MAIN_COMMITS; i += 1) {
     await writeFile(path.join(dir, 'a.txt'), `a${i}\n`);
     git(dir, 'add', 'a.txt');
     git(dir, 'commit', '-q', '-m', `main ${i}`);
   }
 
   git(dir, 'checkout', '-q', 'topic');
-  for (let j = 1; j <= F4_TOPIC_COMMITS; j += 1) {
+  for (let j = 1; j <= MERGE_TOPIC_COMMITS; j += 1) {
     await writeFile(path.join(dir, 'b.txt'), `b${j}\n`);
     git(dir, 'add', 'b.txt');
     git(dir, 'commit', '-q', '-m', `topic ${j}`);
@@ -258,14 +258,14 @@ export async function buildF4ClosureFixture(
 }
 
 // ---------------------------------------------------------------------------
-// F3 — F2 plus 5 more commits repacked incrementally into a second pack,
+// The nested fixture plus 5 more commits repacked incrementally into a second pack,
 // then `git multi-pack-index write --bitmap`: 2 packs, 1 pack bitmap (the
 // FIRST pack's, written before the extra commits existed), 1 midx bitmap
 // (covering both packs) — the artefact-preference and completeness
 // fixture.
 // ---------------------------------------------------------------------------
 
-const F3_EXTRA_COMMITS = 5;
+const SECOND_PACK_COMMITS = 5;
 
 function packDirOf(dir: string): string {
   return path.join(dir, '.git', 'objects', 'pack');
@@ -288,9 +288,9 @@ function midxBitmapNameFromBytes(bytes: Uint8Array): string {
   return `multi-pack-index-${Buffer.from(trailer).toString('hex')}.bitmap`;
 }
 
-export interface F3ClosureFixture extends ClosureFixture {
+export interface TwoPackClosureFixture extends ClosureFixture {
   /** The FIRST pack's own name — carries the pack bitmap written BEFORE the
-   *  5 extra commits existed, so it indexes only F2's 1606 objects. */
+   *  5 extra commits existed, so it indexes only the first pack's 1606 objects. */
   readonly bitmapPackName: string;
   /** The SECOND pack's own name — the 5 extra commits' 15 objects, `.keep`-
    *  guarded out of the first repack and never given a bitmap of its own. */
@@ -300,7 +300,7 @@ export interface F3ClosureFixture extends ClosureFixture {
 }
 
 /**
- * F3 — F2 (400 commits, repacked with `--write-bitmap-index`) plus 5 more
+ * The nested fixture (400 commits, repacked with `--write-bitmap-index`) plus 5 more
  * plain commits, each rewriting ONE never-reused root file (commit + a new
  * root tree + one new blob — 3 new objects apiece, 15 total), `.keep`-guarded
  * into a SECOND pack via an incremental `git repack -dq`, then
@@ -310,24 +310,24 @@ export interface F3ClosureFixture extends ClosureFixture {
  * completeness rows this fixture exists for would prove nothing (the second
  * pack would never end up "genuinely uncovered by the first bitmap").
  */
-export async function buildF3ClosureFixture(
+export async function buildTwoPackClosureFixture(
   baseDir: string,
   slug: string,
-): Promise<F3ClosureFixture> {
+): Promise<TwoPackClosureFixture> {
   const dir = await freshRepo(baseDir, slug);
-  await runFastImport(dir, buildF2Stream());
+  await runFastImport(dir, buildNestedStream());
   git(dir, 'checkout', '-f', 'main');
   git(dir, 'repack', '-adq', '--write-bitmap-index');
   const [bitmapPackName] = packNamesOf(dir);
   if (bitmapPackName === undefined) {
-    throw new Error('buildF3ClosureFixture: no pack after the first repack');
+    throw new Error('buildTwoPackClosureFixture: no pack after the first repack');
   }
   const packDir = packDirOf(dir);
   for (const name of packNamesOf(dir)) {
     writeFileSync(path.join(packDir, `${name}.keep`), '');
   }
 
-  for (let i = 0; i < F3_EXTRA_COMMITS; i += 1) {
+  for (let i = 0; i < SECOND_PACK_COMMITS; i += 1) {
     await writeFile(path.join(dir, `f3-extra-${i}.txt`), `f3-extra-${i}\n`);
     git(dir, 'add', `f3-extra-${i}.txt`);
     git(dir, 'commit', '-q', '-m', `f3 extra ${i}`);
@@ -337,7 +337,7 @@ export async function buildF3ClosureFixture(
 
   const plainPackName = packNamesOf(dir).find((name) => name !== bitmapPackName);
   if (plainPackName === undefined) {
-    throw new Error('buildF3ClosureFixture: could not identify the second pack');
+    throw new Error('buildTwoPackClosureFixture: could not identify the second pack');
   }
   const flatMidxPath = path.join(packDir, 'multi-pack-index');
   const midxBitmapPath = path.join(packDir, midxBitmapNameFromBytes(readFileSync(flatMidxPath)));
@@ -360,7 +360,7 @@ export function clearFullDagFlagAndRestamp(bytes: Buffer): Buffer {
 }
 
 // ---------------------------------------------------------------------------
-// F6 — the range-validation family's own fixture: 40 commits / 120 objects,
+// The range-validation fixture: 40 commits / 120 objects,
 // one pack with a bitmap whose first per-commit entry header is rewritten
 // to an out-of-range position and whose trailer is then restamped: the
 // checksum is VALID (unlike every other degradation fixture, whose
@@ -368,8 +368,8 @@ export function clearFullDagFlagAndRestamp(bytes: Buffer): Buffer {
 // range-validation family's own difficulty.
 // ---------------------------------------------------------------------------
 
-const F6_COMMITS = 40;
-const F6_OUT_OF_RANGE_POSITION = 999_999;
+const OUT_OF_RANGE_COMMITS = 40;
+const OUT_OF_RANGE_POSITION = 999_999;
 
 /**
  * One EWAH stream descriptor's own byte length: `bitSize`(4) + `wordCount`(4)
@@ -400,7 +400,7 @@ function firstEntryHeaderOffset(bytes: Buffer): number {
   return at;
 }
 
-export interface F6ClosureFixture extends ClosureFixture {
+export interface OutOfRangeClosureFixture extends ClosureFixture {
   readonly bitmap: PackArtefactPaths;
   /** The COMPUTED byte offset the mutation below rewrote — surfaced so a row
    *  can assert it is positive rather than trusting the mutation blindly. */
@@ -408,7 +408,7 @@ export interface F6ClosureFixture extends ClosureFixture {
 }
 
 /**
- * F6 — 40 commits, one file rewritten each time (commit + a new root tree +
+ * 40 commits, one file rewritten each time (commit + a new root tree +
  * one new blob, 3 new objects per commit — 120 total), one pack with
  * `--write-bitmap-index`. The first per-commit entry header's `position`
  * field is rewritten to `999999` (a position 120 objects can never reach),
@@ -420,12 +420,12 @@ export interface F6ClosureFixture extends ClosureFixture {
  * without it present, this family proves nothing (the module doc above
  * states why).
  */
-export async function buildF6ClosureFixture(
+export async function buildOutOfRangeClosureFixture(
   baseDir: string,
   slug: string,
-): Promise<F6ClosureFixture> {
+): Promise<OutOfRangeClosureFixture> {
   const dir = await freshRepo(baseDir, slug);
-  for (let i = 0; i < F6_COMMITS; i += 1) {
+  for (let i = 0; i < OUT_OF_RANGE_COMMITS; i += 1) {
     await writeFile(path.join(dir, 'f6.txt'), `f6-${i}\n`);
     git(dir, 'add', 'f6.txt');
     git(dir, 'commit', '-q', '-m', `f6 commit ${i}`);
@@ -436,7 +436,7 @@ export async function buildF6ClosureFixture(
   let entryHeaderOffset = -1;
   mutateOrThrow(bitmap.bitmap, (bytes) => {
     entryHeaderOffset = firstEntryHeaderOffset(bytes);
-    bytes.writeUInt32BE(F6_OUT_OF_RANGE_POSITION, entryHeaderOffset);
+    bytes.writeUInt32BE(OUT_OF_RANGE_POSITION, entryHeaderOffset);
     return bytes;
   });
   mutateOrThrow(bitmap.bitmap, (bytes) => restampBitmap(bytes));

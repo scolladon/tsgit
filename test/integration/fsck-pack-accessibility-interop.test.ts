@@ -1130,14 +1130,14 @@ describe.skipIf(!GIT_AVAILABLE)(
         const gitWithProjectionFlags = gitFsck(dir, '--dangling', '--unreachable');
         const sut = trackedNodeContext(dir);
 
-        // Assert — git: unchanged by the projection flags (Pin P-a) — this is
+        // Assert — git: unchanged by the projection flags — this is
         // what makes it a computation difference, not a print filter
         expect(gitDefault.exitCode).toBe(1);
         expect(gitWithProjectionFlags.exitCode).toBe(1);
         expect(gitWithProjectionFlags.stdout).not.toContain(`dangling ${oid}`);
         expect(gitWithProjectionFlags.stdout).not.toContain(`unreachable ${oid}`);
 
-        // Act + Assert — tsgit: the pre-existing IO-fault gap (§D11.13) — an
+        // Act + Assert — tsgit: the pre-existing IO-fault gap — an
         // unreadable loose object throws today in default mode instead of
         // resolving with a bad-object finding, unlike the decode-fault rows
         // below in default mode; either way there is no dangling/unreachable finding.
