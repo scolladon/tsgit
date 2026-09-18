@@ -18,7 +18,7 @@ import { errorDataCode } from '../../../../domain/error-data-code.js';
 import type { HashConfig } from '../../../../domain/objects/index.js';
 import { isOid } from '../../../../domain/objects/index.js';
 import type { Context, RepositoryLayout } from '../../../../ports/context.js';
-import { readFsckSkipListPath } from '../../../primitives/config-read.js';
+import { readFsckSkipListPaths } from '../../../primitives/config-read.js';
 import { isAbsolutePath } from '../../../primitives/internal/absolute-path.js';
 import { expandHomePrefix } from '../../../primitives/internal/expand-home-path.js';
 import { joinPath } from '../../../primitives/internal/join-working-tree-path.js';
@@ -29,11 +29,22 @@ const COMMENT_PREFIX = '#';
 /** What the refusal carries when the adapter's rejection was not a TsgitError. */
 const UNCLASSIFIED = 'UNKNOWN';
 
+/**
+ * Every name the repository's `fsck.skipList` entries hold, unioned. The key
+ * accumulates: git parses each configured list into ONE oidset as its config
+ * read reaches the entry, so a second entry adds to the first rather than
+ * replacing it, and the first unusable list refuses the audit before any later
+ * one is opened.
+ */
 export const loadFsckSkipList = async (ctx: Context): Promise<ReadonlySet<string>> => {
-  const configured = await readFsckSkipListPath(ctx);
-  if (configured === undefined) return new Set();
-  const path = resolveListPath(ctx.layout, configured);
-  return parseObjectNames(await readListFile(ctx, path), path, ctx.hashConfig);
+  const names = new Set<string>();
+  for (const configured of await readFsckSkipListPaths(ctx)) {
+    const path = resolveListPath(ctx.layout, configured);
+    for (const name of parseObjectNames(await readListFile(ctx, path), path, ctx.hashConfig)) {
+      names.add(name);
+    }
+  }
+  return names;
 };
 
 /**

@@ -2552,3 +2552,167 @@ describe.skipIf(!GIT_AVAILABLE)(
     });
   },
 );
+
+// --- Scenario family: fsck.skipList written more than once --------------------
+
+const repeatedListRoots: string[] = [];
+
+afterAll(async () => {
+  await Promise.all(
+    repeatedListRoots.splice(0).map((dir) => rm(dir, { recursive: true, force: true })),
+  );
+});
+
+/**
+ * A repository of its own whose two branches each root a commit carrying
+ * `missingSpaceBeforeEmail`, plus one list file per `bodies` entry, each
+ * pointed at by its own `fsck.skipList` line.
+ */
+const repeatedSkipListRepo = async (
+  slug: string,
+  bodies: (oids: ReadonlyArray<string>) => ReadonlyArray<string>,
+): Promise<{ readonly dir: string; readonly ctx: Context; readonly lists: string[] }> => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), `tsgit-fsck-repeated-list-${slug}-`));
+  repeatedListRoots.push(dir);
+  initRepo(dir);
+  const emptyTree = await writeLooseObject(dir, 'tree', Buffer.alloc(0));
+  const oids: string[] = [];
+  for (const [index, branch] of ['main', 'side'].entries()) {
+    const body = Buffer.from(
+      `tree ${emptyTree}\nauthor Name<bad@example.com> 1700000000 +0000\ncommitter Test <c@example.com> 170000000${index} +0000\n\nmessage\n`,
+    );
+    const oid = await writeLooseObject(dir, 'commit', body);
+    oids.push(oid);
+    const refsDir = path.join(dir, '.git', 'refs', 'heads');
+    await mkdir(refsDir, { recursive: true });
+    await writeFile(path.join(refsDir, branch), `${oid}\n`);
+  }
+  const lists: string[] = [];
+  for (const [index, listBody] of bodies(oids).entries()) {
+    const list = path.join(dir, `names-${index}.txt`);
+    await writeFile(list, listBody);
+    lists.push(list);
+    runGit(['-C', dir, 'config', '--add', 'fsck.skipList', list], { env: SAFE_ENV });
+  }
+  __resetConfigCacheForTests();
+  return { dir, ctx: createNodeContext({ workDir: dir }), lists };
+};
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given two fsck.skipList entries, each naming a different reported object',
+  () => {
+    describe('When git fsck and tsgit fsck both run', () => {
+      it(
+        'Then both fall silent — the second list adds to the first rather than replacing it',
+        async () => {
+          // Arrange
+          const { dir, ctx } = await repeatedSkipListRepo('union', (oids) =>
+            oids.map((oid) => `${oid}\n`),
+          );
+
+          // Act
+          const gitResult = gitFsck(dir, '--full');
+          const result = await fsck(ctx);
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          expect(gitResult.stderr).toBe('');
+          expect(result.exitCode).toBe(0);
+          expect(result.findings.filter((f) => f.type === 'bad-object')).toEqual([]);
+        },
+        SETUP_TIMEOUT,
+      );
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given two fsck.skipList entries of which the first names a file that is not there',
+  () => {
+    describe('When git fsck and tsgit fsck both run', () => {
+      it(
+        'Then both refuse on that first list, never reaching the usable one',
+        async () => {
+          // Arrange
+          const { dir, ctx, lists } = await repeatedSkipListRepo('first-absent', (oids) =>
+            oids.map((oid) => `${oid}\n`),
+          );
+          const absent = path.join(dir, 'names-absent.txt');
+          runGit(['-C', dir, 'config', '--replace-all', 'fsck.skipList', absent], {
+            env: SAFE_ENV,
+          });
+          runGit(['-C', dir, 'config', '--add', 'fsck.skipList', lists[0] as string], {
+            env: SAFE_ENV,
+          });
+          __resetConfigCacheForTests();
+
+          // Act
+          const gitResult = gitFsck(dir, '--full');
+          const caught = await catchFsckError(ctx);
+
+          // Assert
+          expect(gitResult.exitCode).toBe(128);
+          expect(gitResult.stderr).toBe(`fatal: could not open object name list: ${absent}\n`);
+          expect(caught.data).toEqual({
+            code: 'FSCK_SKIP_LIST_UNREADABLE',
+            path: absent,
+            reason: 'FILE_NOT_FOUND',
+          });
+        },
+        SETUP_TIMEOUT,
+      );
+    });
+  },
+);
+
+// --- Scenario family: a valueless fsck.<msg-id> -------------------------------
+
+const valuelessMsgIdRoots: string[] = [];
+
+afterAll(async () => {
+  await Promise.all(
+    valuelessMsgIdRoots.splice(0).map((dir) => rm(dir, { recursive: true, force: true })),
+  );
+});
+
+describe.skipIf(!GIT_AVAILABLE)('Given a fsck msg-id written with no value at all', () => {
+  describe.each([{ msgId: 'badTree' }, { msgId: 'noSuchThing' }, { msgId: 'nulInHeader' }])(
+    'When fsck runs with $msgId valueless',
+    (row) => {
+      it(
+        'Then both name the missing value rather than grading the id or the severity',
+        async () => {
+          // Arrange
+          const dir = await mkdtemp(
+            path.join(os.tmpdir(), `tsgit-fsck-valueless-id-${row.msgId}-`),
+          );
+          valuelessMsgIdRoots.push(dir);
+          initRepo(dir);
+          const configPath = path.join(dir, '.git', 'config');
+          const before = (await readFile(configPath, 'utf8')).split('\n').filter((l) => l !== '');
+          await writeFile(configPath, `${before.join('\n')}\n[fsck]\n\t${row.msgId}\n`);
+          __resetConfigCacheForTests();
+          const ctx = createNodeContext({ workDir: dir });
+
+          // Act
+          const gitResult = gitFsck(dir, '--full');
+          const caught = await catchFsckError(ctx);
+
+          // Assert
+          expect(gitResult.exitCode).toBe(128);
+          expect(gitResult.stderr).toBe(
+            `error: missing value for 'fsck.${row.msgId.toLowerCase()}'\n` +
+              `fatal: bad config variable 'fsck.${row.msgId.toLowerCase()}' in file '.git/config' at line ${before.length + 2}\n`,
+          );
+          expect(caught.data).toEqual({
+            code: 'CONFIG_MISSING_VALUE',
+            key: `fsck.${row.msgId.toLowerCase()}`,
+            source: configPath,
+            line: before.length + 2,
+          });
+        },
+        SETUP_TIMEOUT,
+      );
+    },
+  );
+});

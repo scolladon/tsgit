@@ -7410,3 +7410,84 @@ describe('Given a skip list naming a dangling blob', () => {
     });
   });
 });
+
+/** A repository whose two branches each root their own malformed commit. */
+const seedTwoBadCommitsRepo = async (): Promise<{
+  ctx: Context;
+  firstId: ObjectId;
+  secondId: ObjectId;
+}> => {
+  const ctx = await initBareCtx();
+  const treeId = await writeObject(ctx, makeTree([]));
+  const plant = async (message: string): Promise<ObjectId> => {
+    const body = enc2.encode(
+      `tree ${treeId}\nauthor Name<bad@example.com> 1700000000 +0000\ncommitter Test <c@example.com> 1700000000 +0000\n\n${message}\n`,
+    );
+    return writeMalformedLooseObject(ctx, buildLooseBytes('commit', body));
+  };
+  const firstId = await plant('first');
+  const secondId = await plant('second');
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${firstId}\n`);
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/side`, `${secondId}\n`);
+  return { ctx, firstId, secondId };
+};
+
+/** Writes one list file per body and points a repeated `fsck.skipList` at them. */
+const configureSkipLists = async (
+  ctx: Context,
+  bodies: ReadonlyArray<string>,
+): Promise<ReadonlyArray<string>> => {
+  const paths = bodies.map((_, index) => `${ctx.layout.gitDir}/skip-list-${index}`);
+  await Promise.all(
+    paths.map((listPath, index) => ctx.fs.writeUtf8(listPath, bodies[index] ?? '')),
+  );
+  const entries = paths.map((listPath) => `\tskipList = ${listPath}\n`).join('');
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, `[fsck]\n${entries}`);
+  __resetConfigCacheForTests();
+  return paths;
+};
+
+describe('Given two fsck.skipList entries, each naming a different reported object', () => {
+  describe('When fsck runs', () => {
+    it('Then both fall silent — the second list adds to the first rather than replacing it', async () => {
+      // Arrange
+      const { ctx, firstId, secondId } = await seedTwoBadCommitsRepo();
+      await configureSkipLists(ctx, [`${firstId}\n`, `${secondId}\n`]);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(result.findings.filter((f) => f.type === 'bad-object')).toEqual([]);
+      expect(result.exitCode & 1).toBe(0);
+    });
+  });
+});
+
+describe('Given two fsck.skipList entries of which the first cannot be opened', () => {
+  describe('When fsck runs', () => {
+    it('Then it refuses on that first list, never reaching the usable one', async () => {
+      // Arrange
+      const { ctx, firstId } = await seedTwoBadCommitsRepo();
+      const usable = `${ctx.layout.gitDir}/usable-list`;
+      await ctx.fs.writeUtf8(usable, `${firstId}\n`);
+      const absent = `${ctx.layout.gitDir}/absent-list`;
+      await ctx.fs.writeUtf8(
+        `${ctx.layout.gitDir}/config`,
+        `[fsck]\n\tskipList = ${absent}\n\tskipList = ${usable}\n`,
+      );
+      __resetConfigCacheForTests();
+
+      // Act
+      const caught = await skipListError(ctx);
+
+      // Assert
+      expect(caught.data).toEqual({
+        code: 'FSCK_SKIP_LIST_UNREADABLE',
+        path: absent,
+        reason: 'FILE_NOT_FOUND',
+      });
+    });
+  });
+});
