@@ -11,6 +11,7 @@
  *   surface: add
  *   bucket: cross-tool-interop
  *   unique: SHA-256 index entry framing survives tsgit add and reads back identically to git's own add
+ *   interopSurface: index
  */
 
 import { spawnSync } from 'node:child_process';

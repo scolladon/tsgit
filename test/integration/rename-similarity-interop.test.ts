@@ -13,6 +13,7 @@
  *   surface: diff.renames
  *   bucket:  cross-tool-interop
  *   unique:  inexact rename R-scores, patch body, limit semantics match upstream git + frozen goldens
+ *   interopSurface: diff
  */
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';

@@ -18,7 +18,7 @@
  *                    one Context is observed, not served stale; the real
  *                    Node adapter's lstat identity collapses an unchanged
  *                    second read to a single lstat
- *   interopSurface: HEAD
+ *   interopSurface: symbolicRef, looseRef
  */
 import { mkdtemp, rm } from 'node:fs/promises';
 import * as os from 'node:os';

@@ -22,7 +22,7 @@
  *   surface:        objectStore.storeGate
  *   bucket:         cross-tool-interop
  *   unique:         a loose read is denied only by a structurally self-inconsistent multi-pack-index, never by the pack directory
- *   interopSurface: objects/pack
+ *   interopSurface: looseObject
  */
 import { chmod, cp, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';

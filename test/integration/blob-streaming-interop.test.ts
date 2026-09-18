@@ -12,7 +12,7 @@
  *   surface:        streamBlob
  *   bucket:         cross-tool-interop
  *   unique:         streamed bytes over the packed-base, loose and delta paths are byte-identical to canonical git cat-file -p
- *   interopSurface: loose objects + packfile (base + delta entries)
+ *   interopSurface: looseObject, packfile
  */
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';

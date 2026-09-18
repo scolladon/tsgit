@@ -16,6 +16,7 @@
  *   surface: diff.patch
  *   bucket:  cross-tool-interop
  *   unique:  patch-text serializer's byte-output matches upstream git's and a frozen golden
+ *   interopSurface: diff
  */
 import { readFile, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';

@@ -20,6 +20,7 @@
  *   surface: diff.whitespace
  *   bucket:  cross-tool-interop
  *   unique:  the whole whitespace diff family matches upstream git across name-status, numstat, quiet and patch bytes, plus the whitespace-agnostic similarity invariant
+ *   interopSurface: diff
  */
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';

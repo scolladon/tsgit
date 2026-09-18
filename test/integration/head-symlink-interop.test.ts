@@ -20,7 +20,7 @@
  *   unique:         a symlinked HEAD resolves symbolic (not detached),
  *                    matching git 2.55.0; a non-refs/ link fails the same
  *                    way discovery does
- *   interopSurface: HEAD
+ *   interopSurface: symbolicRef, looseRef, commit
  */
 import {
   lstatSync,

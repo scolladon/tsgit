@@ -10,7 +10,7 @@
  *   surface:        repo.merge.abort
  *   bucket:         cross-tool-interop
  *   unique:         merge --abort HEAD reflog message matches canonical git
- *   interopSurface: merge --abort
+ *   interopSurface: reflog
  */
 import { writeFileSync } from 'node:fs';
 import * as path from 'node:path';
