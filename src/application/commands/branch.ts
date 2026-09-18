@@ -8,7 +8,7 @@
 import { revparseAmbiguous } from '../../domain/commands/error.js';
 import { TsgitError, unsupportedOperation } from '../../domain/error.js';
 import { errorDataCode } from '../../domain/error-data-code.js';
-import { branchExists, branchNotFound } from '../../domain/index.js';
+import { branchExists, branchNotFound, branchNotFullyMerged } from '../../domain/index.js';
 import { unexpectedObjectType } from '../../domain/objects/error.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import { isOid, zeroOid } from '../../domain/objects/index.js';
@@ -27,7 +27,12 @@ import { transactionLogging } from '../primitives/internal/ref-transaction-loggi
 import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
 import { listWorktrees } from '../primitives/list-worktrees.js';
 import { readObject } from '../primitives/read-object.js';
-import { getRefStore, type RefStore, refExists } from '../primitives/ref-store.js';
+import {
+  getRefStore,
+  type RefStore,
+  type ResolveDirectResult,
+  refExists,
+} from '../primitives/ref-store.js';
 import {
   refResolvesForReading,
   resolveRef,
@@ -35,6 +40,7 @@ import {
   resolveRefOrMissing,
 } from '../primitives/resolve-ref.js';
 import { updateRef } from '../primitives/update-ref.js';
+import { branchMerged } from './internal/branch-merged.js';
 import {
   assertOperationalRepository,
   branchRefFromHead,
@@ -231,13 +237,29 @@ export const branchDelete = async (
   await assertRepoSettingsValid(ctx);
   const name = validateRefName(`${HEADS_PREFIX}${input.name}`);
   await assertNoWorktreeHolds(ctx, name);
-  if (!(await refExists(ctx, name))) {
-    throw branchNotFound(name);
-  }
+  const held = await getRefStore(ctx).resolveDirect(name);
+  if (held.kind === 'missing') throw branchNotFound(name);
+  if (input.force !== true) await assertFullyMerged(ctx, name, held);
   // `branch -D` deletes the symref itself when `name` names one — git's
   // own `REF_NO_DEREF` on this delete.
   await updateRef(ctx, name, zeroOid(ctx.hashConfig), { delete: true, noDeref: true });
   return { name };
+};
+
+/**
+ * git's unforced safety valve. It resolves the branch with `NO_RECURSE` and
+ * only runs `branch_merged` when what came back is an oid, so a branch that
+ * is itself a symbolic ref is deleted unchecked however far behind its
+ * target stands (measured, git 2.55.0).
+ */
+const assertFullyMerged = async (
+  ctx: Context,
+  name: RefName,
+  held: ResolveDirectResult,
+): Promise<void> => {
+  if (held.kind !== 'direct') return;
+  if (await branchMerged(ctx, name, held.id)) return;
+  throw branchNotFullyMerged(name);
 };
 
 export const branchRename = async (

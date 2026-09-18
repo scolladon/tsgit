@@ -1,24 +1,28 @@
 /**
- * Cross-tool interop — which worktree holds a branch decides whether
- * `branch.delete` may remove it. Every row builds its own repository, runs
+ * Cross-tool interop — the two gates an unforced `branch.delete` must pass:
+ * no worktree holds the branch, and its tip is already reachable from the
+ * reference git measures against. Every row builds its own repository, runs
  * canonical git's `branch -d` as the oracle and tsgit's `branchDelete` as
  * the subject against a private twin of the same shape, and compares exit
  * code + the `error:` line git prints against the refusal data tsgit
- * throws. Covers the holder shapes git's `find_shared_symref` walks: the
+ * throws. Covers the holder shapes git's `find_shared_symref` walks — the
  * current checkout, a linked worktree, a linked worktree whose directory is
  * gone but whose registration survives, the same registration once pruned,
  * a detached HEAD that names no branch at all, and a bare main checkout
- * that is skipped whether or not a linked worktree holds the branch.
+ * that is skipped whether or not a linked worktree holds the branch — and
+ * the references `branch_merged` consults: HEAD, a configured upstream that
+ * replaces it in both directions, a squash that leaves content merged but
+ * history unreachable, and a symbolic branch git never measures at all.
  *
  * @proves
  *   surface:        branch.delete
  *   bucket:         cross-tool-interop
  *   unique:         branch.delete refuses exactly the branches a worktree
- *                    holds — current, linked, stale-registered — and frees
- *                    them on prune, detach, or a bare main checkout
+ *                    holds or an unmerged tip carries, and force is the
+ *                    only thing that overrides the second gate
  *   interopSurface: branch
  */
-import { mkdtemp, realpath, rm } from 'node:fs/promises';
+import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
@@ -40,6 +44,26 @@ const ROW_TIMEOUT = 60_000;
 /** git's `error: cannot delete branch '<name>' used by worktree at '<path>'`. */
 const heldLine = (branch: string, worktree: string): string =>
   `error: cannot delete branch '${branch}' used by worktree at '${worktree}'\n`;
+
+/** git's unforced refusal, with `advice.forceDeleteBranch` off so the two
+ *  hint lines it would otherwise append never enter the comparison. */
+const unmergedLine = (branch: string): string =>
+  `error: the branch '${branch}' is not fully merged\n`;
+
+/** `branch -d` with git's delete advice silenced. */
+const quietDelete = (dir: string, ...args: ReadonlyArray<string>) =>
+  tryRunGitWithExit(['-C', dir, '-c', 'advice.forceDeleteBranch=false', 'branch', ...args]);
+
+/** A branch carrying one commit its start point never saw, left unchecked-out. */
+const seedUnmergedBranch = (dir: string, name: string): void => {
+  git(dir, 'checkout', '-q', '-b', name);
+  git(dir, 'commit', '-q', '--allow-empty', '-m', 'ahead');
+  git(dir, 'checkout', '-q', 'main');
+};
+
+/** Whether `name` still names something, read back through git itself. */
+const branchSurvives = (dir: string, name: string): boolean =>
+  tryRunGitWithExit(['-C', dir, 'show-ref', '--verify', `refs/heads/${name}`]).exitCode === 0;
 
 const catchTsgitError = async (thrower: () => Promise<unknown>): Promise<TsgitError> => {
   let caught: unknown;
@@ -84,15 +108,25 @@ describe.skipIf(!GIT_AVAILABLE)('branch delete — worktree holders interop', ()
     }
   };
 
-  const deleteWithTsgitExpectingSuccess = async (dir: string, name: string): Promise<void> => {
+  const expectDeleted = async (
+    dir: string,
+    input: { readonly name: string; readonly force?: boolean },
+  ): Promise<void> => {
     const repo = await openRepository({ cwd: dir });
     try {
-      const result = await branchDelete(repo.ctx, { name });
-      expect(result.name).toBe(`refs/heads/${name}`);
+      const result = await branchDelete(repo.ctx, input);
+      expect(result.name).toBe(`refs/heads/${input.name}`);
     } finally {
       await repo.dispose();
     }
   };
+
+  const deleteWithTsgitExpectingSuccess = (dir: string, name: string): Promise<void> =>
+    expectDeleted(dir, { name });
+
+  /** tsgit's counterpart to git's `-D`. */
+  const forceDeleteWithTsgit = (dir: string, name: string): Promise<void> =>
+    expectDeleted(dir, { name, force: true });
 
   afterAll(async () => {
     await Promise.all(
@@ -352,6 +386,200 @@ describe.skipIf(!GIT_AVAILABLE)('branch delete — worktree holders interop', ()
             branch: 'refs/heads/sidecar',
             path: linked,
           });
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+  describe('Given a branch carrying a commit HEAD does not contain', () => {
+    describe('When git branch -d and tsgit branchDelete both target it', () => {
+      it(
+        'Then both refuse and the branch survives',
+        async () => {
+          // Arrange
+          const peer = await caseRepo('unmerged-peer');
+          seedUnmergedBranch(peer, 'topic');
+          const dir = await caseRepo('unmerged');
+          seedUnmergedBranch(dir, 'topic');
+
+          // Act
+          const gitResult = quietDelete(peer, '-d', 'topic');
+          const err = await deleteWithTsgit(dir, 'topic');
+
+          // Assert
+          expect(gitResult.exitCode).toBe(1);
+          expect(gitResult.stderr).toBe(unmergedLine('topic'));
+          expect(err?.data).toEqual({
+            code: 'BRANCH_NOT_FULLY_MERGED',
+            name: 'refs/heads/topic',
+          });
+          expect(branchSurvives(peer, 'topic')).toBe(true);
+          expect(branchSurvives(dir, 'topic')).toBe(true);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+
+    describe('When both delete it with force instead', () => {
+      it(
+        'Then both remove it and exit clean',
+        async () => {
+          // Arrange
+          const peer = await caseRepo('unmerged-forced-peer');
+          seedUnmergedBranch(peer, 'topic');
+          const dir = await caseRepo('unmerged-forced');
+          seedUnmergedBranch(dir, 'topic');
+
+          // Act
+          const gitResult = quietDelete(peer, '-D', 'topic');
+          await forceDeleteWithTsgit(dir, 'topic');
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          expect(branchSurvives(peer, 'topic')).toBe(false);
+          expect(branchSurvives(dir, 'topic')).toBe(false);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe('Given a branch merged into its configured upstream but not into HEAD', () => {
+    describe('When git branch -d and tsgit branchDelete both target it', () => {
+      it(
+        'Then both delete it — the upstream stands in for HEAD',
+        async () => {
+          // Arrange
+          const seed = (dir: string): void => {
+            seedUnmergedBranch(dir, 'topic');
+            git(dir, 'branch', 'up', 'topic');
+            git(dir, 'branch', '--set-upstream-to=up', 'topic');
+          };
+          const peer = await caseRepo('upstream-merged-peer');
+          seed(peer);
+          const dir = await caseRepo('upstream-merged');
+          seed(dir);
+
+          // Act
+          const gitResult = quietDelete(peer, '-d', 'topic');
+          await deleteWithTsgitExpectingSuccess(dir, 'topic');
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          expect(gitResult.stderr).toBe(
+            "warning: deleting branch 'topic' that has been merged to\n" +
+              "         'refs/heads/up', but not yet merged to HEAD\n",
+          );
+          expect(branchSurvives(peer, 'topic')).toBe(false);
+          expect(branchSurvives(dir, 'topic')).toBe(false);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe('Given a branch merged into HEAD but behind its configured upstream', () => {
+    describe('When git branch -d and tsgit branchDelete both target it', () => {
+      it(
+        'Then both still refuse — an upstream replaces HEAD rather than widening it',
+        async () => {
+          // Arrange
+          const seed = (dir: string): void => {
+            const root = git(dir, 'rev-parse', 'HEAD').trim();
+            seedUnmergedBranch(dir, 'topic');
+            git(dir, 'merge', '-q', '--no-ff', '-m', 'merge topic', 'topic');
+            git(dir, 'branch', 'up', root);
+            git(dir, 'branch', '--set-upstream-to=up', 'topic');
+          };
+          const peer = await caseRepo('upstream-behind-peer');
+          seed(peer);
+          const dir = await caseRepo('upstream-behind');
+          seed(dir);
+
+          // Act
+          const gitResult = quietDelete(peer, '-d', 'topic');
+          const err = await deleteWithTsgit(dir, 'topic');
+
+          // Assert
+          expect(gitResult.exitCode).toBe(1);
+          expect(gitResult.stderr).toBe(
+            "warning: not deleting branch 'topic' that is not yet merged to\n" +
+              "         'refs/heads/up', even though it is merged to HEAD\n" +
+              unmergedLine('topic'),
+          );
+          expect(err?.data).toEqual({
+            code: 'BRANCH_NOT_FULLY_MERGED',
+            name: 'refs/heads/topic',
+          });
+          expect(branchSurvives(dir, 'topic')).toBe(true);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe('Given a branch whose content reached HEAD only through a squash', () => {
+    describe('When git branch -d and tsgit branchDelete both target it', () => {
+      it(
+        'Then both refuse — reachability decides, never content',
+        async () => {
+          // Arrange
+          const seed = async (dir: string): Promise<void> => {
+            git(dir, 'checkout', '-q', '-b', 'topic');
+            await writeFile(path.join(dir, 'topic.txt'), 'topic\n');
+            git(dir, 'add', '-A');
+            git(dir, 'commit', '-q', '-m', 'topic work');
+            git(dir, 'checkout', '-q', 'main');
+            git(dir, 'merge', '-q', '--squash', 'topic');
+            git(dir, 'commit', '-q', '-m', 'squashed topic');
+          };
+          const peer = await caseRepo('squashed-peer');
+          await seed(peer);
+          const dir = await caseRepo('squashed');
+          await seed(dir);
+
+          // Act
+          const gitResult = quietDelete(peer, '-d', 'topic');
+          const err = await deleteWithTsgit(dir, 'topic');
+
+          // Assert
+          expect(gitResult.exitCode).toBe(1);
+          expect(gitResult.stderr).toBe(unmergedLine('topic'));
+          expect(err?.data).toEqual({
+            code: 'BRANCH_NOT_FULLY_MERGED',
+            name: 'refs/heads/topic',
+          });
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe('Given a symbolic branch pointing at a branch HEAD does not contain', () => {
+    describe('When git branch -d and tsgit branchDelete both target the symbolic name', () => {
+      it(
+        'Then both delete it unchecked and leave its target alone',
+        async () => {
+          // Arrange
+          const seed = (dir: string): void => {
+            seedUnmergedBranch(dir, 'topic');
+            git(dir, 'symbolic-ref', 'refs/heads/sym', 'refs/heads/topic');
+          };
+          const peer = await caseRepo('symref-unmerged-peer');
+          seed(peer);
+          const dir = await caseRepo('symref-unmerged');
+          seed(dir);
+
+          // Act
+          const gitResult = quietDelete(peer, '-d', 'sym');
+          await deleteWithTsgitExpectingSuccess(dir, 'sym');
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          expect(branchSurvives(peer, 'sym')).toBe(false);
+          expect(branchSurvives(peer, 'topic')).toBe(true);
+          expect(branchSurvives(dir, 'sym')).toBe(false);
+          expect(branchSurvives(dir, 'topic')).toBe(true);
         },
         ROW_TIMEOUT,
       );

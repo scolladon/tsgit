@@ -1322,6 +1322,10 @@ describe('domain commands error — extractDetail message formatting', () => {
       'BRANCH_NOT_FOUND: branch not found: refs/heads/x',
     ],
     [
+      { code: 'BRANCH_NOT_FULLY_MERGED', name: 'refs/heads/x' as RefName },
+      'BRANCH_NOT_FULLY_MERGED: branch is not fully merged: refs/heads/x',
+    ],
+    [
       { code: 'TAG_EXISTS', name: 'refs/tags/v1' as RefName },
       'TAG_EXISTS: tag already exists: refs/tags/v1',
     ],

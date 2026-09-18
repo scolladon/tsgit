@@ -261,8 +261,9 @@ describe('common-dir per-worktree-ref sweep', () => {
           await seedAdminHead(ctx);
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/feature`, `${ID_A}\n`);
 
-          // Act
-          await branchDelete(sut, { name: 'feature' });
+          // Act — forced: the planted tip is no commit HEAD can reach, and
+          // the unforced valve would refuse it before any ref dir is touched.
+          await branchDelete(sut, { name: 'feature', force: true });
 
           // Assert
           expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/heads/feature`)).toBe(false);

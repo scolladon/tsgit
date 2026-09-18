@@ -31,6 +31,7 @@ export type CommandError =
   | { readonly code: 'AUTHOR_UNCONFIGURED' }
   | { readonly code: 'BRANCH_EXISTS'; readonly name: RefName }
   | { readonly code: 'BRANCH_NOT_FOUND'; readonly name: RefName }
+  | { readonly code: 'BRANCH_NOT_FULLY_MERGED'; readonly name: RefName }
   | { readonly code: 'TAG_EXISTS'; readonly name: RefName }
   | { readonly code: 'TAG_NOT_FOUND'; readonly name: RefName }
   | { readonly code: 'INVALID_URL'; readonly reason: string }
@@ -360,6 +361,9 @@ export const branchExists = (name: RefName): TsgitError =>
 
 export const branchNotFound = (name: RefName): TsgitError =>
   new TsgitError({ code: 'BRANCH_NOT_FOUND', name });
+
+export const branchNotFullyMerged = (name: RefName): TsgitError =>
+  new TsgitError({ code: 'BRANCH_NOT_FULLY_MERGED', name });
 
 export const tagExists = (name: RefName): TsgitError =>
   new TsgitError({ code: 'TAG_EXISTS', name });

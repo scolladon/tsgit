@@ -385,6 +385,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `branch already exists: ${data.name}`;
     case 'BRANCH_NOT_FOUND':
       return `branch not found: ${data.name}`;
+    case 'BRANCH_NOT_FULLY_MERGED':
+      return `branch is not fully merged: ${data.name}`;
     case 'TAG_EXISTS':
       return `tag already exists: ${data.name}`;
     case 'TAG_NOT_FOUND':

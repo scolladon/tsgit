@@ -59,10 +59,10 @@ import { resolveRef } from '../primitives/resolve-ref.js';
 import { runHook } from '../primitives/run-hook.js';
 import { resolveSigningSelector } from '../primitives/sign-payload.js';
 import { updateRef } from '../primitives/update-ref.js';
-import { walkCommits } from '../primitives/walk-commits.js';
 import { resolveCurrentIdentity } from './internal/current-identity.js';
 import { assertValidRemoteName, resolvePushRemote } from './internal/default-remote.js';
 import { type GitServiceSession, openGitSession } from './internal/git-service-session.js';
+import { isAncestor } from './internal/is-ancestor.js';
 import { assertPeerAlgorithm } from './internal/object-format-guard.js';
 import {
   finalizePushRefspecs,
@@ -311,21 +311,6 @@ const resolveLease = async (
   const branch = parsed.dst.slice(HEADS_PREFIX.length);
   const trackingRef = `refs/remotes/${remoteName}/${branch}` as RefName;
   return resolveRef(ctx, trackingRef);
-};
-
-const isAncestor = async (
-  ctx: Context,
-  ancestor: ObjectId,
-  descendant: ObjectId,
-): Promise<boolean> => {
-  // walkCommits yields `descendant` itself first, so the `c.id === ancestor`
-  // check in the loop already handles the `ancestor === descendant` case
-  // without a separate fast-path guard. Callers also filter no-op refspecs
-  // before reaching this predicate via the `movers` step in push().
-  for await (const c of walkCommits(ctx, { from: [descendant], ignoreMissing: true })) {
-    if (c.id === ancestor) return true;
-  }
-  return false;
 };
 
 const emptyReport = (): { unpackOk: boolean; refUpdates: ReadonlyArray<RefStatus> } => ({

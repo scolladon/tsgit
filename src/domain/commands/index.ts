@@ -6,6 +6,7 @@ export {
   blockedHost,
   branchExists,
   branchNotFound,
+  branchNotFullyMerged,
   checkoutOverwriteDirty,
   configKeyInvalid,
   configMultipleValues,

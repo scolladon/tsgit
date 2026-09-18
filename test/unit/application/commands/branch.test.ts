@@ -95,6 +95,36 @@ const seedWithCommit = async () => {
   return { ctx, commitId: c.id, treeId, blobId, tagToTreeId, tagToCommitId };
 };
 
+/** A commit over an empty tree whose only parent is `parent`, planted straight
+ *  into the object store so a branch can carry history HEAD never saw. */
+const childCommit = async (ctx: Context, parent: ObjectId | undefined): Promise<ObjectId> => {
+  const tree = await writeObject(ctx, { type: 'tree', id: '' as ObjectId, entries: [] });
+  return writeObject(ctx, {
+    type: 'commit',
+    id: '' as ObjectId,
+    data: {
+      tree,
+      parents: parent === undefined ? [] : [parent],
+      author,
+      committer: author,
+      message: 'child',
+      extraHeaders: [],
+    },
+  });
+};
+
+/** Points `refs/heads/<name>` at `id`, bypassing `branch.create`'s own rules. */
+const plantBranch = (ctx: Context, name: string, id: ObjectId): Promise<unknown> =>
+  updateRef(ctx, `refs/heads/${name}` as RefName, id, { reflogMessage: 'test' });
+
+/** Adds `text` to the repository config `init` already wrote and drops the
+ *  cached parse, so the next read sees both. */
+const appendConfig = async (ctx: Context, text: string): Promise<void> => {
+  const path = `${ctx.layout.gitDir}/config`;
+  await ctx.fs.writeUtf8(path, `${await ctx.fs.readUtf8(path)}${text}`);
+  invalidateConfigCache(ctx);
+};
+
 /**
  * Plants a raw loose tag object at `id`'s OWN chosen path without computing
  * its hash from `tag`'s content — the on-disk shape a hostile repository can
@@ -385,6 +415,220 @@ describe('branch', () => {
 
         // Act + Assert
         await expectError(() => branchDelete(ctx, { name: 'ghost' }), 'BRANCH_NOT_FOUND');
+      });
+    });
+  });
+
+  describe('Given a branch carrying a commit HEAD does not contain, and no upstream', () => {
+    describe('When branch delete runs unforced', () => {
+      it('Then it refuses BRANCH_NOT_FULLY_MERGED and leaves the ref standing', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithCommit();
+        await plantBranch(ctx, 'topic', await childCommit(ctx, commitId));
+        const sut = branchDelete;
+
+        // Act
+        const caught = await expectError(
+          () => sut(ctx, { name: 'topic' }),
+          'BRANCH_NOT_FULLY_MERGED',
+        );
+
+        // Assert
+        expect(caught.data).toEqual({ code: 'BRANCH_NOT_FULLY_MERGED', name: 'refs/heads/topic' });
+        expect(await refExists(ctx, 'refs/heads/topic' as RefName)).toBe(true);
+      });
+    });
+
+    describe('When branch delete runs with force', () => {
+      it('Then the ref is removed', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithCommit();
+        await plantBranch(ctx, 'topic', await childCommit(ctx, commitId));
+        const sut = branchDelete;
+
+        // Act
+        const result = await sut(ctx, { name: 'topic', force: true });
+
+        // Assert
+        expect(result).toEqual({ name: 'refs/heads/topic' });
+        expect(await refExists(ctx, 'refs/heads/topic' as RefName)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a branch merged into its configured upstream but not into HEAD', () => {
+    describe('When branch delete runs unforced', () => {
+      it('Then the upstream stands in for HEAD and the ref is removed', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithCommit();
+        const tip = await childCommit(ctx, commitId);
+        await plantBranch(ctx, 'topic', tip);
+        await plantBranch(ctx, 'up', await childCommit(ctx, tip));
+        await appendConfig(ctx, '[branch "topic"]\n\tremote = .\n\tmerge = refs/heads/up\n');
+        const sut = branchDelete;
+
+        // Act
+        const result = await sut(ctx, { name: 'topic' });
+
+        // Assert
+        expect(result).toEqual({ name: 'refs/heads/topic' });
+        expect(await refExists(ctx, 'refs/heads/topic' as RefName)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a branch merged into HEAD but not into its configured upstream', () => {
+    describe('When branch delete runs unforced', () => {
+      it('Then it still refuses — the upstream replaces HEAD rather than widening it', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithCommit();
+        const tip = await childCommit(ctx, commitId);
+        await plantBranch(ctx, 'topic', tip);
+        await plantBranch(ctx, 'up', commitId);
+        await plantBranch(ctx, 'main', await childCommit(ctx, tip));
+        await appendConfig(ctx, '[branch "topic"]\n\tremote = .\n\tmerge = refs/heads/up\n');
+        const sut = branchDelete;
+
+        // Act
+        const caught = await expectError(
+          () => sut(ctx, { name: 'topic' }),
+          'BRANCH_NOT_FULLY_MERGED',
+        );
+
+        // Assert
+        expect(caught.data).toEqual({ code: 'BRANCH_NOT_FULLY_MERGED', name: 'refs/heads/topic' });
+      });
+    });
+  });
+
+  describe('Given branch.<name>.merge configured without branch.<name>.remote', () => {
+    describe('When branch delete runs unforced on a branch HEAD does not contain', () => {
+      it('Then no upstream is configured at all and HEAD decides — it refuses', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithCommit();
+        const tip = await childCommit(ctx, commitId);
+        await plantBranch(ctx, 'topic', tip);
+        await plantBranch(ctx, 'up', await childCommit(ctx, tip));
+        await appendConfig(ctx, '[branch "topic"]\n\tmerge = refs/heads/up\n');
+        const sut = branchDelete;
+
+        // Act + Assert
+        await expectError(() => sut(ctx, { name: 'topic' }), 'BRANCH_NOT_FULLY_MERGED');
+      });
+    });
+  });
+
+  describe('Given an upstream whose ref does not exist', () => {
+    describe('When branch delete runs unforced on a branch HEAD contains', () => {
+      it('Then HEAD stands in for the unresolvable upstream and the ref is removed', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        await branchCreate(ctx, { name: 'topic' });
+        await appendConfig(ctx, '[branch "topic"]\n\tremote = .\n\tmerge = refs/heads/ghost\n');
+        const sut = branchDelete;
+
+        // Act
+        const result = await sut(ctx, { name: 'topic' });
+
+        // Assert
+        expect(result).toEqual({ name: 'refs/heads/topic' });
+      });
+    });
+  });
+
+  describe('Given an upstream a remote fetch refspec maps to a tracking ref', () => {
+    describe('When branch delete runs unforced and that tracking ref contains the tip', () => {
+      it('Then the mapped tracking ref decides and the ref is removed', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithCommit();
+        const tip = await childCommit(ctx, commitId);
+        await plantBranch(ctx, 'topic', tip);
+        await updateRef(ctx, 'refs/remotes/origin/topic' as RefName, await childCommit(ctx, tip), {
+          reflogMessage: 'test',
+        });
+        await appendConfig(
+          ctx,
+          '[remote "origin"]\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n' +
+            '[branch "topic"]\n\tremote = origin\n\tmerge = refs/heads/topic\n',
+        );
+        const sut = branchDelete;
+
+        // Act
+        const result = await sut(ctx, { name: 'topic' });
+
+        // Assert
+        expect(result).toEqual({ name: 'refs/heads/topic' });
+      });
+    });
+
+    describe('When that remote carries no fetch refspec at all', () => {
+      it('Then nothing maps the upstream and HEAD decides — it refuses', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithCommit();
+        const tip = await childCommit(ctx, commitId);
+        await plantBranch(ctx, 'topic', tip);
+        await updateRef(ctx, 'refs/remotes/origin/topic' as RefName, await childCommit(ctx, tip), {
+          reflogMessage: 'test',
+        });
+        await appendConfig(
+          ctx,
+          '[branch "topic"]\n\tremote = origin\n\tmerge = refs/heads/topic\n',
+        );
+        const sut = branchDelete;
+
+        // Act + Assert
+        await expectError(() => sut(ctx, { name: 'topic' }), 'BRANCH_NOT_FULLY_MERGED');
+      });
+    });
+
+    describe('When that remote carries a malformed fetch refspec', () => {
+      it('Then the refspec itself is what refuses, exactly as git dies building its remote', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithCommit();
+        await plantBranch(ctx, 'topic', await childCommit(ctx, commitId));
+        await appendConfig(
+          ctx,
+          '[remote "origin"]\n\tfetch = refs/heads/*:refs/remotes/origin/x\n' +
+            '[branch "topic"]\n\tremote = origin\n\tmerge = refs/heads/topic\n',
+        );
+        const sut = branchDelete;
+
+        // Act + Assert
+        await expectError(() => sut(ctx, { name: 'topic' }), 'REFSPEC_INVALID');
+      });
+    });
+  });
+
+  describe('Given an unborn HEAD and a branch with no upstream', () => {
+    describe('When branch delete runs unforced', () => {
+      it('Then there is no reference to measure against and it refuses', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await plantBranch(ctx, 'topic', await childCommit(ctx, undefined));
+        const sut = branchDelete;
+
+        // Act + Assert
+        await expectError(() => sut(ctx, { name: 'topic' }), 'BRANCH_NOT_FULLY_MERGED');
+      });
+    });
+  });
+
+  describe('Given a symbolic branch name pointing at a branch HEAD does not contain', () => {
+    describe('When branch delete runs unforced', () => {
+      it('Then the symref is removed unchecked — git measures direct refs only', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithCommit();
+        await plantBranch(ctx, 'topic', await childCommit(ctx, commitId));
+        await writeSymbolicRef(ctx, 'refs/heads/sym' as RefName, 'refs/heads/topic' as RefName);
+        const sut = branchDelete;
+
+        // Act
+        const result = await sut(ctx, { name: 'sym' });
+
+        // Assert
+        expect(result).toEqual({ name: 'refs/heads/sym' });
+        expect(await refExists(ctx, 'refs/heads/topic' as RefName)).toBe(true);
       });
     });
   });

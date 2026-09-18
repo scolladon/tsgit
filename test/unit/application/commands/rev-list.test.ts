@@ -309,7 +309,9 @@ describe('revList', () => {
         await add(ctx, ['orphan.txt']);
         const dangling = (await commit(ctx, { message: 'orphan', author: AUTHOR })).id;
         await checkout(ctx, { rev: 'main' });
-        await branchDelete(ctx, { name: 'orphan' });
+        // Forced: `orphan` carries a commit `main` never saw, which is what
+        // leaves the tip dangling — the unforced delete refuses exactly that.
+        await branchDelete(ctx, { name: 'orphan', force: true });
         const sut = revList;
 
         // Act — `main` duplicates one of `all`'s own ref tips; the dangling

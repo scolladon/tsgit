@@ -105,6 +105,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'AUTHOR_UNCONFIGURED':
     case 'BRANCH_EXISTS':
     case 'BRANCH_NOT_FOUND':
+    case 'BRANCH_NOT_FULLY_MERGED':
     case 'TAG_EXISTS':
     case 'TAG_NOT_FOUND':
     case 'INVALID_URL':
