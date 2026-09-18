@@ -157,7 +157,14 @@ done
 # and object-id refusal escaping and its caps, the reftable restart-offset and symbolic-target
 # bounds, and the shared `~/` pathname expansion. None is removable without dropping
 # the refusal or the parity each one exists to provide.
-SIZE_CAP=$((968 * 1024))
+# Raised 968 -> 969 KiB by the `[fsck]` configuration and ref-walk fix batch: the
+# measured tarball landed at 991 421 B, 189 B over the old cap. Attribution, all
+# runtime code every distribution form ships: the accumulating `fsck.skipList` read
+# and the unioning loader it feeds, the valueless-key refusal ahead of the msg-id
+# grade, the ref-integrity walk's read-through-a-link mark and the content grade it
+# gates. None is removable without dropping the refusal or the parity each one
+# exists to provide.
+SIZE_CAP=$((969 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
