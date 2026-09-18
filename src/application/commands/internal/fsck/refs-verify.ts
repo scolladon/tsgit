@@ -79,8 +79,8 @@ function collectSymlinkNotices(
 
 /**
  * A ref whose content is not an object name: the content notice (gated by
- * `checkContentFormat`, and re-typable) plus the zero-OID pointer git
- * synthesises for it. That pointer is reported OUTSIDE the catalogue —
+ * `checkContentFormat`, with a severity `fsck.<msg-id>` can re-type) plus the
+ * zero-OID pointer git synthesises for it. That pointer is reported OUTSIDE the catalogue —
  * `fsck.badRefOid` does not reach it, measured against git 2.55.0 — so it
  * always stands, at error severity, contributing bit 2.
  */
