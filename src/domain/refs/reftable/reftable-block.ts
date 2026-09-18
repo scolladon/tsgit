@@ -148,13 +148,11 @@ export function blockBoundsAt(reftable: Reftable, blockStart: number): BlockBoun
     );
   }
 
-  const restartOffsets = readRestartOffsets(
-    view,
-    restartArrayStart,
-    restartCount,
-    blockStart,
-    isFirstBlock,
-  );
+  const restartOffsets = readRestartOffsets(view, blockStart, isFirstBlock, {
+    recordsStart,
+    recordsEnd: restartArrayStart,
+    count: restartCount,
+  });
 
   return {
     recordsStart,
@@ -164,17 +162,37 @@ export function blockBoundsAt(reftable: Reftable, blockStart: number): BlockBoun
   };
 }
 
+/** One block's record area, as the restart array must land inside it. */
+interface RecordArea {
+  readonly recordsStart: number;
+  readonly recordsEnd: number;
+  readonly count: number;
+}
+
+/**
+ * Every restart offset in the block's restart array, resolved to a file
+ * offset. A restart offset names a record START, so one landing outside the
+ * block's own record area would have a seek synthesise a record from header,
+ * footer or neighbouring-block bytes — a misparse primitive, refused here as
+ * the framing fault it is rather than decoded.
+ */
 function readRestartOffsets(
   view: DataView,
-  arrayStart: number,
-  count: number,
   blockStart: number,
   isFirstBlock: boolean,
+  area: RecordArea,
 ): ReadonlyArray<number> {
   const offsets: number[] = [];
-  for (let i = 0; i < count; i += 1) {
-    const stored = readUint24(view, arrayStart + i * RESTART_ENTRY_SIZE);
-    offsets.push(isFirstBlock ? stored : blockStart + stored);
+  for (let i = 0; i < area.count; i += 1) {
+    const stored = readUint24(view, area.recordsEnd + i * RESTART_ENTRY_SIZE);
+    const offset = isFirstBlock ? stored : blockStart + stored;
+    if (offset < area.recordsStart || offset >= area.recordsEnd) {
+      throw invalidReftable(
+        'block-bounds',
+        `block at file offset ${blockStart} has restart offset ${offset} outside its record area (${area.recordsStart}..${area.recordsEnd})`,
+      );
+    }
+    offsets.push(offset);
   }
   return offsets;
 }
@@ -273,6 +291,16 @@ export function decodeSafeRefName(bytes: Uint8Array, subject: string): RefName {
 
 function readSymbolicValue(bytes: Uint8Array, offset: number) {
   const { value: targetLen, nextOffset: afterLen } = readVarint(bytes, offset);
+  // `subarray` clamps silently, so an over-long declared length would decode a
+  // TRUNCATED target — one that can still pass the ref-name gate below — and
+  // hand back a `nextOffset` past the last byte. Bounded the way
+  // `readPrefixedName` bounds its own suffix.
+  if (afterLen + targetLen > bytes.length) {
+    throw invalidReftable(
+      'record-overrun',
+      `symbolic ref target length ${targetLen} at byte ${afterLen} runs past the end of the file`,
+    );
+  }
   const target = decodeSafeRefName(
     bytes.subarray(afterLen, afterLen + targetLen),
     'symbolic ref target',
