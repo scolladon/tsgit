@@ -1935,6 +1935,60 @@ describe.skipIf(!GIT_AVAILABLE)('Given a msg-id no fsck check knows', () => {
   });
 });
 
+describe.skipIf(!GIT_AVAILABLE)('Given a fatal msg-id asked for a softer severity', () => {
+  describe.each([{ word: 'ignore' }, { word: 'warn' }])('When fsck runs with $word', (row) => {
+    it.each([{ msgId: 'nulInHeader' }, { msgId: 'unterminatedHeader' }])(
+      'Then both refuse $msgId before auditing anything',
+      async ({ msgId }) => {
+        // Arrange
+        const { dir, ctx } = await symlinkRefRepoWith(`demote-${msgId}-${row.word}`, [
+          [`fsck.${msgId}`, row.word],
+        ]);
+
+        // Act
+        const gitResult = gitFsck(dir, '--full');
+        const err = await catchFsckError(ctx);
+
+        // Assert
+        expect(gitResult.exitCode).toBe(128);
+        expect(gitResult.stderr).toBe(
+          `fatal: Cannot demote ${msgId.toLowerCase()} to ${row.word}\n`,
+        );
+        expect(err.data).toEqual({
+          code: 'FSCK_CANNOT_DEMOTE',
+          msgId: msgId.toLowerCase(),
+          severity: row.word,
+          source: path.join(dir, '.git', 'config'),
+          line: expect.any(Number),
+        });
+      },
+    );
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)('Given a fatal msg-id asked for error', () => {
+  describe.each([{ msgId: 'nulInHeader' }, { msgId: 'unterminatedHeader' }])(
+    'When fsck runs with $msgId set to error',
+    (row) => {
+      it('Then both accept it and audit as usual', async () => {
+        // Arrange
+        const { dir, ctx } = await symlinkRefRepoWith(`keep-${row.msgId}`, [
+          [`fsck.${row.msgId}`, 'error'],
+        ]);
+
+        // Act
+        const gitResult = gitFsck(dir, '--full');
+        const result = await fsck(ctx);
+
+        // Assert
+        expect(gitResult.exitCode).toBe(0);
+        expect(gitResult.stderr).not.toContain('Cannot demote');
+        expect(result.exitCode).toBe(gitResult.exitCode);
+      });
+    },
+  );
+});
+
 describe.skipIf(!GIT_AVAILABLE)('Given a severity outside the three git accepts', () => {
   describe('When fsck runs', () => {
     it('Then both refuse before auditing anything', async () => {

@@ -26,6 +26,7 @@ import {
   configValueInvalid,
   emptyCommitMessage,
   emptyPathspec,
+  fsckCannotDemote,
   fsckUnknownMsgId,
   gitignoreFileTooLarge,
   grepLineTooLong,
@@ -1316,6 +1317,39 @@ describe('domain commands error — config factory data', () => {
       });
     });
   });
+
+  describe('Given the fsckCannotDemote helper', () => {
+    describe("When called with a fatal id, 'ignore', source='/abs/.git/config', line=7", () => {
+      it('Then data carries code, msgId, severity, source, and line individually', () => {
+        // Arrange + Act
+        const sut = fsckCannotDemote;
+        const result = sut('nulinheader', 'ignore', '/abs/.git/config', 7);
+
+        // Assert
+        const data = result.data;
+        expect(data.code).toBe('FSCK_CANNOT_DEMOTE');
+        if (data.code !== 'FSCK_CANNOT_DEMOTE') return;
+        expect(data.msgId).toBe('nulinheader');
+        expect(data.severity).toBe('ignore');
+        expect(data.source).toBe('/abs/.git/config');
+        expect(data.line).toBe(7);
+      });
+    });
+
+    describe('When called with a severity word containing a control byte', () => {
+      it('Then data.severity is sanitized for display', () => {
+        // Arrange + Act
+        const sut = fsckCannotDemote;
+        const result = sut('nulinheader', '\x1B[2Jwarn', '/abs/.git/config', 7);
+
+        // Assert
+        const data = result.data;
+        expect(data.code).toBe('FSCK_CANNOT_DEMOTE');
+        if (data.code !== 'FSCK_CANNOT_DEMOTE') return;
+        expect(data.severity).toBe('\\x1B[2Jwarn');
+      });
+    });
+  });
 });
 
 describe('domain commands error — extractDetail message formatting', () => {
@@ -1633,6 +1667,16 @@ describe('domain commands error — extractDetail message formatting', () => {
         line: 4,
       },
       `FSCK_UNKNOWN_MSG_ID: unhandled fsck message id: ${UNKNOWN_FSCK_MSG_ID} in file /repo/.git/config at line 4`,
+    ],
+    [
+      {
+        code: 'FSCK_CANNOT_DEMOTE',
+        msgId: 'nulinheader',
+        severity: 'ignore',
+        source: '/repo/.git/config',
+        line: 7,
+      },
+      'FSCK_CANNOT_DEMOTE: cannot demote nulinheader to ignore in file /repo/.git/config at line 7',
     ],
     [
       { code: 'CONFIG_BAD_ZLIB_LEVEL', level: 99 },

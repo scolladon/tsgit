@@ -357,7 +357,11 @@ value is `error`, `warn` or `ignore` replaces that message's severity outright �
 over the default AND over the `--strict` upgrade below. An `ignore` finding is
 never emitted and contributes no exit bit. A key half outside the msg-id set git
 knows refuses the whole audit (`FSCK_UNKNOWN_MSG_ID`), as does a value outside the
-three words (`CONFIG_INVALID_ENUM_VALUE`); `fsck.skipList` is exempt from that grammar —
+three words (`CONFIG_INVALID_ENUM_VALUE`). Two msg-ids are exceptions to the re-typing
+itself: git marks `nulInHeader` and `unterminatedHeader` fatal, so they accept `error`
+and nothing else — `warn` or `ignore` refuses the whole audit with `FSCK_CANNOT_DEMOTE`
+(git's `Cannot demote <id> to <type>`). Swept across every msg-id `fsck.<id>` accepts
+against git 2.55.0, those two are the whole set. `fsck.skipList` is exempt from that grammar —
 it names an object-name list file, not a check. `receive.fsck.*` and `fetch.fsck.*` are
 separate namespaces the audit never reads — see [Transfer-time validation](#transfer-time-validation)
 for what git does with them and where tsgit stands.

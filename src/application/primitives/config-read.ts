@@ -1,6 +1,7 @@
 import {
   configBadNumericValue,
   configInvalidEnumValue,
+  fsckCannotDemote,
   fsckUnknownMsgId,
 } from '../../domain/commands/error.js';
 import type { ConfigToken, IniSection } from '../../domain/config/config-ini.js';
@@ -15,7 +16,7 @@ import {
 } from '../../domain/config/config-ini.js';
 import { TsgitError } from '../../domain/error.js';
 import type { FsckConfiguredSeverity, FsckSeverityTable } from '../../domain/fsck/index.js';
-import { CONFIGURABLE_MSG_IDS, parseFsckSeverity } from '../../domain/fsck/index.js';
+import { CONFIGURABLE_MSG_IDS, FATAL_MSG_IDS, parseFsckSeverity } from '../../domain/fsck/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import type { ReflogExpiryConfigEntry } from '../../domain/reflog/expire-policy.js';
 import type { Context } from '../../ports/context.js';
@@ -916,8 +917,9 @@ const FSCK_SKIP_LIST_KEY = 'skipList'.toLowerCase();
  * The repository's `fsck.<msg-id>` re-typings, keyed by the lower-cased
  * msg-id. Walks the `[fsck]` (subsectionless) tokens in file order so a
  * repeated key takes its LAST entry, exactly as git's own config read does.
- * Refuses on the two conditions git refuses the whole audit for: a key half
- * outside the msg-id set, and a value outside the three severity words.
+ * Refuses on the three conditions git refuses the whole audit for: a key half
+ * outside the msg-id set, a value outside the three severity words, and a
+ * fatal msg-id asked for anything softer than `error`.
  */
 export const readFsckSeverityTable = async (ctx: Context): Promise<FsckSeverityTable> => {
   const { tokens, source } = await readConfigEntry(ctx);
@@ -931,16 +933,29 @@ export const readFsckSeverityTable = async (ctx: Context): Promise<FsckSeverityT
     if (!inSection || token.kind !== 'entry') continue;
     const msgId = token.key.toLowerCase();
     if (msgId === FSCK_SKIP_LIST_KEY) continue;
-    if (!CONFIGURABLE_MSG_IDS.has(msgId)) {
-      throw fsckUnknownMsgId(msgId, source, token.startLine);
-    }
-    const severity = parseFsckSeverity(token.value ?? '');
-    if (severity === undefined) {
-      throw configInvalidEnumValue(`fsck.${msgId}`, source, token.value ?? '', token.startLine);
-    }
-    table.set(msgId, severity);
+    table.set(msgId, readFsckSeverity(msgId, token, source));
   }
   return table;
+};
+
+/** One `[fsck]` entry's severity, or the refusal git dies with in its place. */
+const readFsckSeverity = (
+  msgId: string,
+  token: Extract<ConfigToken, { kind: 'entry' }>,
+  source: string,
+): FsckConfiguredSeverity => {
+  if (!CONFIGURABLE_MSG_IDS.has(msgId)) {
+    throw fsckUnknownMsgId(msgId, source, token.startLine);
+  }
+  const raw = token.value ?? '';
+  const severity = parseFsckSeverity(raw);
+  if (severity === undefined) {
+    throw configInvalidEnumValue(`fsck.${msgId}`, source, raw, token.startLine);
+  }
+  if (FATAL_MSG_IDS.has(msgId) && severity !== 'error') {
+    throw fsckCannotDemote(msgId, raw, source, token.startLine);
+  }
+  return severity;
 };
 
 /**

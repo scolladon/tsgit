@@ -517,6 +517,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `invalid value for '${data.key}': '${data.value}' in file ${data.source} at line ${data.line}`;
     case 'FSCK_UNKNOWN_MSG_ID':
       return `unhandled fsck message id: ${data.msgId} in file ${data.source} at line ${data.line}`;
+    case 'FSCK_CANNOT_DEMOTE':
+      return `cannot demote ${data.msgId} to ${data.severity} in file ${data.source} at line ${data.line}`;
     case 'FSCK_SKIP_LIST_UNREADABLE':
       return `could not open object name list: ${data.path} (${data.reason})`;
     case 'FSCK_SKIP_LIST_INVALID_NAME':

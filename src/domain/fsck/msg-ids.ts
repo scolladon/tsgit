@@ -165,3 +165,13 @@ const CONFIGURABLE_MSG_ID_NAMES: ReadonlyArray<string> = [
 export const CONFIGURABLE_MSG_IDS: ReadonlySet<string> = new Set(
   CONFIGURABLE_MSG_ID_NAMES.map((name) => name.toLowerCase()),
 );
+
+/**
+ * The msg-ids git marks `FSCK_FATAL`, lower-cased. They stay configurable, but
+ * only to `error`: anything softer dies `Cannot demote <id> to <type>` before a
+ * single object is read. Swept across all {@link CONFIGURABLE_MSG_ID_NAMES}
+ * against git 2.55.0 — these two are the whole set.
+ */
+export const FATAL_MSG_IDS: ReadonlySet<string> = new Set(
+  [MSG_NUL_IN_HEADER, MSG_UNTERMINATED_HEADER].map((name) => name.toLowerCase()),
+);

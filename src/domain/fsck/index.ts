@@ -1,4 +1,4 @@
-export { CONFIGURABLE_MSG_IDS } from './msg-ids.js';
+export { CONFIGURABLE_MSG_IDS, FATAL_MSG_IDS } from './msg-ids.js';
 export { parseFsckSeverity, retypeSeverity } from './severity.js';
 export type {
   FsckConfiguredSeverity,

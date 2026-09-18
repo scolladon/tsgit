@@ -207,6 +207,15 @@ export type CommandError =
       readonly line: number;
     }
   | {
+      readonly code: 'FSCK_CANNOT_DEMOTE';
+      /** The lower-cased key half, as git names it in its own refusal. */
+      readonly msgId: string;
+      /** The severity word the entry asked for, as git names it. */
+      readonly severity: string;
+      readonly source: string;
+      readonly line: number;
+    }
+  | {
       readonly code: 'FSCK_SKIP_LIST_UNREADABLE';
       /** The path as resolved, the one git names in its own refusal. */
       readonly path: string;
@@ -723,6 +732,25 @@ export const fsckUnknownMsgId = (msgId: string, source: string, line: number): T
   new TsgitError({
     code: 'FSCK_UNKNOWN_MSG_ID',
     msgId: sanitizeForDisplay(msgId),
+    source,
+    line,
+  });
+
+/**
+ * An `[fsck]` entry asks a fatal msg-id for a severity softer than `error`.
+ * git's `Cannot demote <id> to <type>` kills the whole audit before a single
+ * object is read; `source`/`line` locate the entry for a caller rebuilding it.
+ */
+export const fsckCannotDemote = (
+  msgId: string,
+  severity: string,
+  source: string,
+  line: number,
+): TsgitError =>
+  new TsgitError({
+    code: 'FSCK_CANNOT_DEMOTE',
+    msgId: sanitizeForDisplay(msgId),
+    severity: sanitizeForDisplay(severity),
     source,
     line,
   });
