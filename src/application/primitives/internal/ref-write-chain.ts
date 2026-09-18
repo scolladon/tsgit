@@ -34,9 +34,11 @@ const directIdOrAbsent = (value: ResolveDirectResult): ObjectId | 'absent' =>
   value.kind === 'direct' ? value.id : 'absent';
 
 /** git's split loop: follow every symbolic hop; a name met twice is git's
- *  "multiple updates" refusal. A `Set` keeps membership O(1) — this walk
- *  has no depth cap, so an O(n²) scan (the read path's own check) would
- *  scale with a hostile chain's own length. */
+ *  "multiple updates" refusal. The walk has no depth cap because git's own
+ *  has none — its ref transaction splits at every hop it meets, and a write
+ *  through a fifty-hop chain still lands on that chain's end (measured, git
+ *  2.55.0), where a READ of the same chain stops at five. A `Set` keeps
+ *  membership O(1), so an uncapped chain costs no O(n²) scan. */
 async function walkSymbolicChain(store: RefStore, name: RefName): Promise<RefWriteChain> {
   const links: RefName[] = [];
   const seen = new Set<RefName>();
