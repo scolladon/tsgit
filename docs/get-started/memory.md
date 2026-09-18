@@ -124,5 +124,6 @@ describe('Given a fresh repo, When committing a file, Then HEAD points at the co
 | Run tsgit in Node | [Node quickstart](node.md) |
 | Run tsgit in the browser | [Browser quickstart](browser.md) |
 | Migrate from `isomorphic-git` | [Migration guide](migrate-from-isomorphic-git.md) |
+| Upgrade an existing install to v5 | [v5 upgrade guide](upgrade-to-v5.md) |
 | See every command available | [Commands reference](../use/commands/) |
 | Compose your own walks | [Primitives reference](../use/primitives/) |

@@ -221,6 +221,7 @@ If your code already wraps work in `using`/`await using` (TypeScript 5.2+), `dis
 | Run tsgit in a browser tab | [Browser quickstart](browser.md) |
 | Use the in-memory adapter for tests | [In-memory adapter](memory.md) |
 | Migrate from `isomorphic-git` | [Migration guide](migrate-from-isomorphic-git.md) |
+| Upgrade an existing install to v5 | [v5 upgrade guide](upgrade-to-v5.md) |
 | See every command available | [Commands reference](../use/commands/) |
 | Compose your own walks | [Primitives reference](../use/primitives/) |
 | See real-world flows (clone + checkout, partial clone, hooks, …) | [Recipes](../use/recipes.md) |
