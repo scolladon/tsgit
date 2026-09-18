@@ -149,7 +149,15 @@ done
 # ships: git's leftover-frontier re-walk and gentle peel in the reflog expire model, the
 # repo-settings verdict re-keying, the synchronous pack-registry peek, and the bounded
 # start-point tag walk. None is removable without dropping the behaviour each provides.
-SIZE_CAP=$((965 * 1024))
+# Raised 965 -> 968 KiB by the git-faithfulness fix batch: the measured tarball landed
+# at 990 976 B, 2 816 B over the old cap. Attribution, all runtime code every
+# distribution form ships: git's `parse_refspec` grammar for both the fetch and the
+# push key, `branch_checked_out`'s rebase and bisect claims over every worktree's own
+# state files, the fatal-msg-id demote refusal with its own error member, the loose-ref
+# and object-id refusal sanitisers, the reftable restart-offset and symbolic-target
+# bounds, and the shared `~/` pathname expansion. None is removable without dropping
+# the refusal or the parity each one exists to provide.
+SIZE_CAP=$((968 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
