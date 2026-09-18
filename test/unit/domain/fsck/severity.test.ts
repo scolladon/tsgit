@@ -65,16 +65,36 @@ describe('retypeSeverity', () => {
       });
     });
 
-    describe('When the msg-id is offered in a different case', () => {
-      it('Then it still matches — the table is keyed on the lower-cased id', () => {
+    describe('When the msg-id is offered in the catalogue spelling', () => {
+      it('Then it still matches — the lookup folds the id before it reaches the table', () => {
         // Arrange
         const sut = retypeSeverity;
 
         // Act
-        const result = sut(tableOf([['nulInCommit', 'ignore']]), 'nulInCommit', 'warning');
+        const result = sut(
+          tableOf([['nulInCommit', 'ignore']]),
+          'nulInCommit'.toUpperCase(),
+          'warning',
+        );
 
         // Assert
         expect(result).toBe('ignore');
+      });
+    });
+  });
+
+  describe('Given a table key that was never folded down', () => {
+    describe('When the base severity is resolved against it', () => {
+      it('Then it is never found — the lookup is made on the folded form alone', () => {
+        // Arrange — a Map built by hand, not by the reader, which always folds.
+        const sut = retypeSeverity;
+        const unfolded = new Map([['symlinkRef', 'error']]) as FsckSeverityTable;
+
+        // Act
+        const result = sut(unfolded, 'symlinkRef', 'warning');
+
+        // Assert
+        expect(result).toBe('warning');
       });
     });
   });
@@ -95,18 +115,117 @@ describe('retypeSeverity', () => {
   });
 });
 
+/**
+ * Every name `fsck.<msg-id>` accepts, spelled the way the catalogue spells it.
+ * Each one was offered to `git fsck -c fsck.<name>=error` on git 2.55.0 and
+ * accepted; the list also covers, without a gap, every id git's own
+ * `fsck-msgids` documentation names. Wider than the set this repository emits:
+ * git accepts a re-typing for checks tsgit has no counterpart for.
+ */
+const ACCEPTED_MSG_ID_NAMES: ReadonlyArray<string> = [
+  'badDate',
+  'badDateOverflow',
+  'badEmail',
+  'badFilemode',
+  'badGpgsig',
+  'badHeadTarget',
+  'badHeaderContinuation',
+  'badName',
+  'badObjectSha1',
+  'badPackedRefEntry',
+  'badPackedRefHeader',
+  'badParentSha1',
+  'badRefContent',
+  'badRefFiletype',
+  'badRefName',
+  'badRefOid',
+  'badReferentName',
+  'badReftableTableName',
+  'badTagName',
+  'badTimezone',
+  'badTree',
+  'badTreeSha1',
+  'badType',
+  'duplicateEntries',
+  'emptyName',
+  'emptyPackedRefsFile',
+  'extraHeaderEntry',
+  'fullPathname',
+  'gitattributesBlob',
+  'gitattributesLarge',
+  'gitattributesLineLength',
+  'gitattributesMissing',
+  'gitattributesSymlink',
+  'gitignoreSymlink',
+  'gitmodulesBlob',
+  'gitmodulesLarge',
+  'gitmodulesMissing',
+  'gitmodulesName',
+  'gitmodulesParse',
+  'gitmodulesPath',
+  'gitmodulesSymlink',
+  'gitmodulesUpdate',
+  'gitmodulesUrl',
+  'hasDot',
+  'hasDotdot',
+  'hasDotgit',
+  'largePathname',
+  'mailmapSymlink',
+  'missingAuthor',
+  'missingCommitter',
+  'missingEmail',
+  'missingNameBeforeEmail',
+  'missingObject',
+  'missingSpaceBeforeDate',
+  'missingSpaceBeforeEmail',
+  'missingTag',
+  'missingTagEntry',
+  'missingTaggerEntry',
+  'missingTree',
+  'missingType',
+  'missingTypeEntry',
+  'multipleAuthors',
+  'nulInCommit',
+  'nulInHeader',
+  'nullSha1',
+  'packedRefEntryNotTerminated',
+  'packedRefUnsorted',
+  'refMissingNewline',
+  'symlinkRef',
+  'symrefTargetIsNotARef',
+  'trailingRefContent',
+  'treeNotSorted',
+  'unknownType',
+  'unterminatedHeader',
+  'zeroPaddedDate',
+  'zeroPaddedFilemode',
+];
+
 describe('CONFIGURABLE_MSG_IDS', () => {
   describe('Given the set of msg-ids the configuration may re-type', () => {
-    describe('When a name is looked up', () => {
-      it('Then it holds ids beyond this catalogue and rejects names no check reports', () => {
+    describe('When the set is enumerated', () => {
+      it('Then it holds exactly the names git accepts, each folded down', () => {
         // Arrange
-        const sut = CONFIGURABLE_MSG_IDS;
+        const expected = ACCEPTED_MSG_ID_NAMES.map((name) => name.toLowerCase()).sort();
 
-        // Act & Assert — an id this repository emits, one it never emits but
-        // git still accepts, and a name git refuses outright.
-        expect(sut.has('symlinkRef'.toLowerCase())).toBe(true);
-        expect(sut.has('badReftableTableName'.toLowerCase())).toBe(true);
-        expect(sut.has('noSuchThing'.toLowerCase())).toBe(false);
+        // Act
+        const result = [...CONFIGURABLE_MSG_IDS].sort();
+
+        // Assert
+        expect(result).toEqual(expected);
+      });
+    });
+
+    describe('When a name no fsck check reports is looked up', () => {
+      it('Then the set rejects it, so the configuration refuses on it', () => {
+        // Arrange
+        const absent = 'noSuchThing'.toLowerCase();
+
+        // Act
+        const result = CONFIGURABLE_MSG_IDS.has(absent);
+
+        // Assert
+        expect(result).toBe(false);
       });
     });
   });
