@@ -3030,8 +3030,8 @@ uses `repo_get_oid` directly, which is the plain gitrevisions ladder.
 - **Target names.** `resolveRevisionName` (`commands/internal/revision-name.ts`) is the shared
   `get_oid` ladder — a full-width oid, the gitrevisions candidates, an abbreviated oid — with a miss
   reported as `undefined` so each caller keeps its own refusal. `rev-parse`'s base resolution is now a
-  thin wrapper over it; `tag`'s target uses it directly; `checkout`'s detaching path uses
-  `resolveSwitchName`, which consults `refs/heads/<name>` first.
+  thin wrapper over it; `tag`'s target uses it directly; `checkout` consults `refs/heads/<name>`
+  itself — whatever `--detach` says — and reaches the ladder only on the detaching fallback.
 - **Adapter parity, folded in on the way.** A `<loose>.lock` that cannot be created because a regular
   file sits at a prefix surfaced as `NOT_A_DIRECTORY` on the memory adapter and `REF_LOCKED` on Node;
   the write path now checks for a file in the way on either refusal, so both report git's `'<p>'

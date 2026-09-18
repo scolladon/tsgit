@@ -13,7 +13,6 @@ import {
   type RefName,
 } from '../../../domain/objects/index.js';
 import { refCandidates } from '../../../domain/refs/index.js';
-import { HEADS_PREFIX } from '../../../domain/refs/ref-prefixes.js';
 import type { Context } from '../../../ports/context.js';
 import { resolveOidPrefix } from '../../primitives/resolve-oid-prefix.js';
 import { resolveRefOrMissing } from '../../primitives/resolve-ref.js';
@@ -75,18 +74,4 @@ export const resolvingCandidates = async (
     }
   }
   return found;
-};
-
-/**
- * `checkout`/`switch`'s own order: `refs/heads/<name>` is consulted BEFORE
- * the revision ladder, so a name that is both a branch and a tag detaches
- * onto the branch where `rev-parse` would answer the tag.
- */
-export const resolveSwitchName = async (
-  ctx: Context,
-  name: string,
-): Promise<ObjectId | undefined> => {
-  if (isOid(name, ctx.hashConfig)) return ObjectIdFactory.from(name);
-  const asBranch = await firstResolving(ctx, [`${HEADS_PREFIX}${name}` as RefName]);
-  return asBranch ?? resolveRevisionName(ctx, name);
 };
