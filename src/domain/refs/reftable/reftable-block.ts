@@ -755,9 +755,11 @@ function* refBlockPositions(reftable: Reftable): Generator<number> {
  * Every ref record whose name sorts at or after `from`, in name order. The
  * block to start in is found the way a lookup finds one — through the ref
  * index when the table has one, so the seek costs O(log R) rather than a
- * walk of every record before `from` — and the walk then continues into the
- * blocks that FOLLOW it, so a `from` sorting past the last key of the block
- * the index points at is never mistaken for "nothing at or after it".
+ * walk of every record before `from` — and the walk then continues FORWARD
+ * from that block by the section's own block arithmetic, so a `from` sorting
+ * past the last key of the block the index points at is never mistaken for
+ * "nothing at or after it", and the index is never re-entered to find out
+ * where the seek landed.
  */
 export function* iterateReftableRefsFrom(
   table: Reftable,
@@ -768,8 +770,7 @@ export function* iterateReftableRefsFrom(
   const startBlock = resolveRefBlockPosition(table, target);
   if (startBlock === undefined) return;
   let reached = false;
-  for (const blockStart of refBlockPositions(table)) {
-    if (!reached && blockStart !== startBlock) continue;
+  for (const blockStart of refBlocksFrom(table, startBlock)) {
     const bounds = blockBoundsAt(table, blockStart);
     if (reached) {
       yield* blockPayloads(table, bounds, decodeRecord);

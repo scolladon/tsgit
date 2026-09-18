@@ -16,15 +16,16 @@ import { serializeReftable } from '../../../../src/domain/refs/reftable/reftable
  * lives in the dedicated `perf` project (`npm run test:perf`) that Stryker
  * never mutates.
  *
- * The walk used to reach the block the index handed it by re-enumerating the
- * section from its first block — decoding one index record per block already
- * behind the seek — so a run of seeks cost the index descent PLUS the whole
- * index, every time.
+ * The walk used to reach the block the seek landed in by re-enumerating the
+ * section from its FIRST block and discarding every block before it, so a run
+ * of seeks cost the whole section once per seek. Continuing forward from the
+ * block itself measured 4.3x faster over the run below; the budget sits
+ * between the two with room for a loaded machine.
  */
 const REF_COUNT = 5_000;
 const SMALL_BLOCK_SIZE = 256;
 const RESTART_INTERVAL = 4;
-const BUDGET_MS = 1_000;
+const BUDGET_MS = 100;
 
 const oid = (n: number): ObjectId =>
   ObjectId.fromRaw(new Uint8Array(20).fill(0).map((_unused, i) => (i === 19 ? n % 251 : 0x11)));
