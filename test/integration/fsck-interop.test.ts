@@ -2314,6 +2314,60 @@ describe.skipIf(!GIT_AVAILABLE)(
   },
 );
 
+describe.skipIf(!GIT_AVAILABLE)('Given a skip list entry carrying a trailing comment', () => {
+  describe('When git fsck and tsgit fsck both run', () => {
+    it(
+      'Then both truncate the line at the marker and fall silent',
+      async () => {
+        // Arrange
+        const { ctx } = await withSkipList(`${skipListCommitSha} # forgiven for now\n`);
+
+        // Act
+        const gitResult = gitFsck(skipListDir, '--full');
+        const result = await fsck(ctx);
+
+        // Assert
+        expect(gitResult.exitCode).toBe(0);
+        expect(gitResult.stderr).toBe('');
+        expect(result.exitCode).toBe(0);
+        expect(result.findings.filter((f) => f.type === 'bad-object')).toEqual([]);
+      },
+      SETUP_TIMEOUT,
+    );
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given a skip list whose name sits behind a mid-line marker',
+  () => {
+    describe('When git fsck and tsgit fsck both run', () => {
+      it(
+        'Then both drop the whole line and keep reporting the object',
+        async () => {
+          // Arrange
+          const { ctx } = await withSkipList(`   #${skipListCommitSha}\n`);
+
+          // Act
+          const gitResult = gitFsck(skipListDir, '--full');
+          const result = await fsck(ctx);
+
+          // Assert
+          expect(gitResult.exitCode).toBe(1);
+          expect(result.exitCode & 1).toBe(1);
+          expect(result.findings).toContainEqual({
+            type: 'bad-object',
+            id: skipListCommitSha,
+            objectType: 'commit',
+            msgId: 'missingSpaceBeforeEmail',
+            severity: 'error',
+          });
+        },
+        SETUP_TIMEOUT,
+      );
+    });
+  },
+);
+
 describe.skipIf(!GIT_AVAILABLE)('Given a skip list holding an abbreviated object name', () => {
   describe('When git fsck and tsgit fsck both run', () => {
     it(

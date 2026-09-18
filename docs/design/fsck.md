@@ -366,9 +366,11 @@ it names an object-name list file, not a check. `receive.fsck.*` and `fetch.fsck
 separate namespaces the audit never reads — see [Transfer-time validation](#transfer-time-validation)
 for what git does with them and where tsgit stands.
 
-`fsck.skipList` names a file holding one full object name per line — blank lines and
-`#` comments are dropped, surrounding whitespace (a CRLF's own `\r` included) is
-trimmed, and the hex is case-folded. It silences exactly the per-object **content**
+`fsck.skipList` names a file holding one full object name per line — every line is
+truncated at its FIRST `#` (anywhere on the line, so a name may carry a trailing
+comment and a comment may carry leading whitespace), what is left has its
+surrounding whitespace (a CRLF's own `\r` included) trimmed, an empty remainder is
+dropped, and the hex is case-folded. It silences exactly the per-object **content**
 findings for the oids it names: that `bad-object` finding never appears and the exit
 bit it would have carried never sets. Nothing else is reachable from the list — a
 listed oid still reports as `missing`, `dangling`, `hash-mismatch`, corrupt, or as a

@@ -7082,6 +7082,46 @@ describe('Given a skip list padded with comments, blanks, whitespace and CRLF', 
   });
 });
 
+describe('Given a skip list whose entry carries a trailing comment', () => {
+  describe('When fsck runs', () => {
+    it('Then the line is truncated at the marker and the oid still skips', async () => {
+      // Arrange
+      const { ctx, commitId } = await seedBadCommitRepo();
+      await configureSkipList(ctx, `${commitId} # why this one is forgiven\n`);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(result.findings.filter((f) => f.type === 'bad-object')).toEqual([]);
+    });
+  });
+});
+
+describe('Given a skip list whose only content sits behind a mid-line marker', () => {
+  describe('When fsck runs', () => {
+    it('Then the whole line falls away and nothing is skipped', async () => {
+      // Arrange
+      const { ctx, commitId } = await seedBadCommitRepo();
+      await configureSkipList(ctx, `   #${commitId}\n`);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(result.findings).toContainEqual({
+        type: 'bad-object',
+        id: commitId,
+        objectType: 'commit',
+        msgId: 'missingSpaceBeforeEmail',
+        severity: 'error',
+      });
+    });
+  });
+});
+
 describe('Given a skip list holding an upper-cased oid with no trailing newline', () => {
   describe('When fsck runs', () => {
     it('Then the case is folded and the last line still counts', async () => {

@@ -50,6 +50,15 @@ const readListFile = async (ctx: Context, path: string): Promise<string> => {
   }
 };
 
+/** git's `oidset_parse_file_carefully` truncates a line at its FIRST `#` —
+ *  anywhere on the line, not only at column zero — and trims what is left, so
+ *  a name may carry a trailing comment and a comment may carry leading
+ *  whitespace. */
+const stripComment = (line: string): string => {
+  const marker = line.indexOf(COMMENT_PREFIX);
+  return (marker === -1 ? line : line.slice(0, marker)).trim();
+};
+
 /**
  * One full object name per line. Blank lines and `#` comments are dropped,
  * surrounding whitespace (a CRLF's own `\r` included) is trimmed away, and
@@ -64,8 +73,8 @@ const parseObjectNames = (
   const skipped = new Set<string>();
   const lines = body.split('\n');
   for (const [index, raw] of lines.entries()) {
-    const entry = raw.trim();
-    if (entry === '' || entry.startsWith(COMMENT_PREFIX)) continue;
+    const entry = stripComment(raw);
+    if (entry === '') continue;
     const name = entry.toLowerCase();
     if (!isOid(name, hashConfig)) throw fsckSkipListInvalidName(entry, path, index + 1);
     skipped.add(name);
