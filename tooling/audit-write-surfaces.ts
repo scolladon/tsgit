@@ -6,7 +6,7 @@
  * is exercised by at least one `cross-tool-interop` integration test
  * whose `interopSurface:` key names that surface (or by an entry in
  * `tooling/audit-write-surfaces.allowlist.json`). Static analysis only —
- * does not invoke `git` (the matrix CI jobs do that, see design §3.6).
+ * does not invoke `git` (the matrix CI jobs do that).
  *
  * Posture: ships warn-only on the sweep PR (ADR-139). The audit emits
  * the report and a stderr warning for any gap, but exits 0 unless
