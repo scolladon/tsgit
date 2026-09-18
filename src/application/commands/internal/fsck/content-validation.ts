@@ -196,16 +196,17 @@ async function validateOneObject(
 
   const rawResult = await tryGetRawObjectBody(ctx, id);
   if (!rawResult.ok) {
-    const severity = retypeSeverity(severities, rawResult.msgId, 'error');
-    if (severity === 'ignore') return { findings, exitBit };
+    // git raises an unreadable object through `error()`, never `report()`, so
+    // no `fsck.<msg-id>` re-types it: the report and its exit bit both stand
+    // whatever the repository configured.
     findings.push({
       type: 'bad-object',
       id,
       objectType: 'unknown',
       msgId: rawResult.msgId,
-      severity,
+      severity: 'error',
     });
-    return { findings, exitBit: severity === 'error' ? EXIT_CORRUPT : 0 };
+    return { findings, exitBit: EXIT_CORRUPT };
   }
 
   const { kind, rawBody, computeHash } = rawResult;

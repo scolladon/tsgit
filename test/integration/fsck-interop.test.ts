@@ -2345,3 +2345,57 @@ describe.skipIf(!GIT_AVAILABLE)('Given a skip list naming a dangling object', ()
     );
   });
 });
+
+// --- Scenario: fsck.<msg-id> aimed at an unreadable object --------------------
+
+let unreadableDir = '';
+let unreadableSha = '';
+
+beforeAll(async () => {
+  unreadableDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-unreadable-'));
+  initRepo(unreadableDir);
+  await writeFile(path.join(unreadableDir, 'f.txt'), 'seed\n');
+  runGit(['-C', unreadableDir, 'add', 'f.txt'], { env: SAFE_ENV });
+  runGit(['-C', unreadableDir, 'commit', '-q', '-m', 'seed'], { env: SAFE_ENV });
+  unreadableSha = await writeLooseObject(unreadableDir, 'bogus', Buffer.from('hello'));
+  runGit(['-C', unreadableDir, 'config', 'fsck.unknownType', 'ignore'], { env: SAFE_ENV });
+}, SETUP_TIMEOUT);
+
+afterAll(async () => {
+  if (unreadableDir !== '') await rm(unreadableDir, { recursive: true, force: true });
+});
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given fsck.unknownType set to ignore and an unreadable object',
+  () => {
+    describe('When git fsck and tsgit fsck both run', () => {
+      it(
+        'Then both still report it and set the corrupt bit — no msg-id re-types an error()',
+        async () => {
+          // Arrange
+          __resetConfigCacheForTests();
+          const ctx = createNodeContext({ workDir: unreadableDir });
+
+          // Act
+          const gitResult = gitFsck(unreadableDir);
+          const result = await fsck(ctx);
+
+          // Assert
+          expect(gitResult.exitCode & 1).toBe(1);
+          expect(gitResult.stderr).toContain(
+            `error: ${unreadableSha}: object corrupt or missing: `,
+          );
+          expect(result.exitCode & 1).toBe(1);
+          expect(result.findings).toContainEqual({
+            type: 'bad-object',
+            id: unreadableSha,
+            objectType: 'unknown',
+            msgId: 'unknownType',
+            severity: 'error',
+          });
+        },
+        SETUP_TIMEOUT,
+      );
+    });
+  },
+);

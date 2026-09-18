@@ -340,3 +340,39 @@ describe('Given a tree entry whose nameBytes are ".gitattributes" but whose deco
     });
   });
 });
+
+describe('Given fsck.<msg-id> re-types the id an unreadable object would report', () => {
+  describe('When runContentValidationPass validates that object', () => {
+    it.each([
+      { configured: 'ignore' as const, label: 'ignore' },
+      { configured: 'warning' as const, label: 'warn' },
+    ])('Then the corrupt-object report survives at error severity for $label', async (row) => {
+      // Arrange — git raises this one through error(), which no fsck.<id> re-types.
+      const ctx = createMemoryContext();
+      const unreadableId = '0000000000000000000000000000000000000003' as ObjectId;
+      const severities = new Map([['badType'.toLowerCase(), row.configured]]);
+
+      // Act
+      const result = await sut(
+        ctx,
+        new Set([unreadableId]),
+        false,
+        new Map(),
+        severities,
+        NO_SKIPS,
+      );
+
+      // Assert
+      expect(result.findings).toEqual([
+        {
+          type: 'bad-object',
+          id: unreadableId,
+          objectType: 'unknown',
+          msgId: 'badType',
+          severity: 'error',
+        },
+      ]);
+      expect(result.exitBit).toBe(1);
+    });
+  });
+});
