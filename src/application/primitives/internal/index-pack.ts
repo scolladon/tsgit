@@ -528,17 +528,6 @@ const resolveFromRoots = async <TCrcContext>(
   }
 };
 
-/**
- * Thin-pack completion: after the in-pack walk, every REF delta still
- * unresolved is offered — in the order pass 1 recorded it — to
- * `externalBaseResolver`. A resolved external base becomes an extra forest
- * root exactly like an in-pack one: `walkFromRoot` resolves the orphaned
- * delta itself against it, then descends into whatever chains onto that
- * delta's own offset or oid, so a multi-entry thin chain hanging off one
- * missing base resolves in a single sweep regardless of which entry in the
- * chain happens to be recorded first. `applyDelta`'s own base-length guard
- * refuses a wrong-sized external base rather than reconstructing garbage.
- */
 /** Resolves one external base through the shared cache: a cache hit (found
  *  OR previously-recorded-absent) skips `externalBaseResolver` entirely;
  *  a miss calls it once and records whichever answer it gives, so a repeat
@@ -560,6 +549,17 @@ const resolveExternalCached = async (
   return entry;
 };
 
+/**
+ * Thin-pack completion: after the in-pack walk, every REF delta still
+ * unresolved is offered — in the order pass 1 recorded it — to
+ * `externalBaseResolver`. A resolved external base becomes an extra forest
+ * root exactly like an in-pack one: `walkFromRoot` resolves the orphaned
+ * delta itself against it, then descends into whatever chains onto that
+ * delta's own offset or oid, so a multi-entry thin chain hanging off one
+ * missing base resolves in a single sweep regardless of which entry in the
+ * chain happens to be recorded first. `applyDelta`'s own base-length guard
+ * refuses a wrong-sized external base rather than reconstructing garbage.
+ */
 const resolveExternalBases = async <TCrcContext>(
   ctx: Context,
   source: PackByteSource<TCrcContext>,

@@ -243,13 +243,6 @@ export const diskPackByteSource = (
   const initialWindowSize = (anchor: number): number =>
     Math.min(DISK_WALK_WINDOW_BYTES, Math.max(0, trailerStart - anchor));
 
-  /** The size of the next growth-fetch, given the size of the last one
-   *  `withGrowth`'s own loop fetched fresh at `anchor` (`0` means none yet).
-   *  The first growth fetch is always the plain documented window size —
-   *  never a doubling of whatever window happened to be held before the
-   *  retry, reused or otherwise; only the second and later growth fetches
-   *  for this same anchor double, clamped so growth never reaches past the
-   *  trailer. */
   /** How far growth may climb for ONE entry, so a malformed member cannot walk
    *  the ladder to `trailerStart`. The attack shape is a zlib stream that
    *  yields no output and never terminates: it trips neither the declared size
@@ -274,6 +267,13 @@ export const diskPackByteSource = (
   // Stryker disable next-line ArithmeticOperator: equivalent — this value only feeds nextRung's doubling branch (priorRung !== 0), reached only once a documented-size retry already failed; every header shape is bounded to ~38 bytes (MAX_SIZE_EXTENSION_BYTES + max digestLength, pack-entry.ts), so a documented window (>=256 KiB, or exactly trailerStart-anchor when clamped near the trailer) either satisfies the header outright or growOrRethrow's trailerStart exhaustion check throws first — this multiplier is never read.
   const headerGrowthCeiling = (anchor: number): number => initialWindowSize(anchor) * 2;
 
+  /** The size of the next growth-fetch, given the size of the last one
+   *  `withGrowth`'s own loop fetched fresh at `anchor` (`0` means none yet).
+   *  The first growth fetch is always the plain documented window size —
+   *  never a doubling of whatever window happened to be held before the
+   *  retry, reused or otherwise; only the second and later growth fetches
+   *  for this same anchor double, clamped so growth never reaches past the
+   *  trailer. */
   const nextRung = (priorRung: number, anchor: number, maxSpan: number): number =>
     priorRung === 0
       ? initialWindowSize(anchor)

@@ -18134,6 +18134,62 @@
 					"variant": "declaration",
 					"kind": 2097152,
 					"flags": {},
+					"comment": {
+						"summary": [
+							{
+								"kind": "text",
+								"text": "One entry yielded by "
+							},
+							{
+								"kind": "code",
+								"text": "`catFileBatch`"
+							},
+							{
+								"kind": "text",
+								"text": " — a discriminated union so that a\nsingle bad id never aborts the stream. "
+							},
+							{
+								"kind": "code",
+								"text": "`ok: true`"
+							},
+							{
+								"kind": "text",
+								"text": " carries the parsed\nobject plus its canonical payload size (matches the "
+							},
+							{
+								"kind": "code",
+								"text": "`<size>`"
+							},
+							{
+								"kind": "text",
+								"text": " field of\n"
+							},
+							{
+								"kind": "code",
+								"text": "`git cat-file --batch`"
+							},
+							{
+								"kind": "text",
+								"text": "'s header). "
+							},
+							{
+								"kind": "code",
+								"text": "`ok: false`"
+							},
+							{
+								"kind": "text",
+								"text": " is shaped to extend later:\n"
+							},
+							{
+								"kind": "code",
+								"text": "`reason`"
+							},
+							{
+								"kind": "text",
+								"text": " is a literal union so a future variant is an additive change."
+							}
+						]
+					},
 					"type": {
 						"type": "union",
 						"types": [
@@ -47574,7 +47630,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " — and the walk then continues into the\nblocks that FOLLOW it, so a "
+										"text": " — and the walk then continues FORWARD\nfrom that block by the section's own block arithmetic, so a "
 									},
 									{
 										"kind": "code",
@@ -47582,7 +47638,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " sorting past the last key of the block\nthe index points at is never mistaken for \"nothing at or after it\"."
+										"text": " sorting\npast the last key of the block the index points at is never mistaken for\n\"nothing at or after it\", and the index is never re-entered to find out\nwhere the seek landed."
 									}
 								]
 							},
@@ -143690,7 +143746,7 @@
 									},
 									{
 										"kind": "text",
-										"text": "'s narrowing pre-scan (design §9)."
+										"text": "'s narrowing pre-scan."
 									}
 								]
 							},
@@ -144870,6 +144926,62 @@
 							"variant": "signature",
 							"kind": 4096,
 							"flags": {},
+							"comment": {
+								"summary": [
+									{
+										"kind": "text",
+										"text": "Merge "
+									},
+									{
+										"kind": "code",
+										"text": "`rev`"
+									},
+									{
+										"kind": "text",
+										"text": " into the current HEAD branch.\n\n- Up-to-date: rev is ancestor of HEAD → no-op.\n- Fast-forward: HEAD is ancestor of rev → branch advances.\n- True merge for diverged histories: the three-way tree merge ("
+									},
+									{
+										"kind": "code",
+										"text": "`mergeTrees`"
+									},
+									{
+										"kind": "text",
+										"text": "\n  + "
+									},
+									{
+										"kind": "code",
+										"text": "`mergeContent`"
+									},
+									{
+										"kind": "text",
+										"text": ") commits the merged tree directly when it comes out\n  CLEAN. A conflicted merge instead persists its state on disk (marker\n  files, stage-1/2/3 index entries, MERGE_HEAD / MERGE_MSG / ORIG_HEAD) and\n  returns "
+									},
+									{
+										"kind": "code",
+										"text": "`{ kind: 'conflict', ... }`"
+									},
+									{
+										"kind": "text",
+										"text": ". Resolution path: edit the marker\n  files, "
+									},
+									{
+										"kind": "code",
+										"text": "`repo.add(paths)`"
+									},
+									{
+										"kind": "text",
+										"text": ", "
+									},
+									{
+										"kind": "code",
+										"text": "`repo.commit({ message })`"
+									},
+									{
+										"kind": "text",
+										"text": " — the resulting\n  commit has two parents."
+									}
+								]
+							},
 							"parameters": [
 								{
 									"id": 2091,
@@ -168887,6 +168999,22 @@
 							"variant": "signature",
 							"kind": 4096,
 							"flags": {},
+							"comment": {
+								"summary": [
+									{
+										"kind": "text",
+										"text": "Factory for the Repository handle. The runtime fallback (adapters + layout)\nis supplied by the calling shim — "
+									},
+									{
+										"kind": "code",
+										"text": "`openRepository`"
+									},
+									{
+										"kind": "text",
+										"text": " itself is runtime-agnostic."
+									}
+								]
+							},
 							"parameters": [
 								{
 									"id": 416,

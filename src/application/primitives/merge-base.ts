@@ -353,20 +353,6 @@ const octopusMergeBases = async (
 };
 
 /**
- * Compute merge bases — the best common ancestors of the given commits.
- *
- * `commits[0]` is `one`, the rest are the others. By default the answer is the
- * single base Git's walk pops FIRST: the newest-dated common base in a
- * repository with no commit-graph, but the highest-generation one wherever a
- * graph serves corrected commit dates — the two disagree whenever a base
- * inherits its generation from an ancestor committed later than itself.
- * `{ all: true }` returns the whole reduced set, oid-sorted. `{ octopus: true }`
- * folds the commits pairwise and reports the reduced accumulator in Git's fold
- * order — each pairwise fold date-sorted, the folds concatenated — so its first
- * entry is the newest base of the FIRST fold, not the newest overall. Unrelated
- * histories yield `[]`.
- */
-/**
  * Git's `repo_in_merge_bases`: whether `commit` is reachable from `reference`.
  *
  * Git never walks to answer this when the generations already settle it — a
@@ -399,6 +385,20 @@ export const inMergeBases = async (
   return ((flags.get(commit) ?? 0) & PARENT2) !== 0;
 };
 
+/**
+ * Compute merge bases — the best common ancestors of the given commits.
+ *
+ * `commits[0]` is `one`, the rest are the others. By default the answer is the
+ * single base Git's walk pops FIRST: the newest-dated common base in a
+ * repository with no commit-graph, but the highest-generation one wherever a
+ * graph serves corrected commit dates — the two disagree whenever a base
+ * inherits its generation from an ancestor committed later than itself.
+ * `{ all: true }` returns the whole reduced set, oid-sorted. `{ octopus: true }`
+ * folds the commits pairwise and reports the reduced accumulator in Git's fold
+ * order — each pairwise fold date-sorted, the folds concatenated — so its first
+ * entry is the newest base of the FIRST fold, not the newest overall. Unrelated
+ * histories yield `[]`.
+ */
 export const mergeBase = async (
   ctx: Context,
   commits: readonly ObjectId[],

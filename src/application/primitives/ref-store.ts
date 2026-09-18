@@ -1907,15 +1907,6 @@ function createFilesRefStore(ctx: Context): RefStore {
     return peeled === id ? { name: entry.name, id } : { name: entry.name, id, peeled };
   }
 
-  /**
-   * git's `pack-refs --all`: every packable ref is rewritten into
-   * `packed-refs` (traits `peeled fully-peeled sorted`, matching git's own
-   * unconditional header regardless of whether any entry needs peeling),
-   * and every loose file that duplicated a now-packed ref is removed.
-   * Nothing to pack (an empty repository) writes nothing — `packed-refs`'s
-   * OWN absence already reads back as zero entries, so an empty repo is
-   * left byte-for-byte unchanged rather than gaining a header-only file.
-   */
   /** Every packable ref whose loose file still duplicates the packed value,
    *  carrying the leaf kind its single `lstat` already answered. */
   async function looseDuplicates(
@@ -1971,6 +1962,15 @@ function createFilesRefStore(ctx: Context): RefStore {
     return removed;
   }
 
+  /**
+   * git's `pack-refs --all`: every packable ref is rewritten into
+   * `packed-refs` (traits `peeled fully-peeled sorted`, matching git's own
+   * unconditional header regardless of whether any entry needs peeling),
+   * and every loose file that duplicated a now-packed ref is removed.
+   * Nothing to pack (an empty repository) writes nothing — `packed-refs`'s
+   * OWN absence already reads back as zero entries, so an empty repo is
+   * left byte-for-byte unchanged rather than gaining a header-only file.
+   */
   async function packRefs(): Promise<PackRefsOutcome> {
     const packable = await packableEntries();
     if (packable.length === 0) {

@@ -240,13 +240,6 @@ function scopedCache(ctx: Context): LruCache<CachedStack> {
 }
 
 /**
- * Loads (or returns the memoised) `ReftableStack` for the stack rooted at
- * `reftableDir` (`path-layout.ts`'s `reftableDir(gitDir)` — the common
- * dir's, or a linked worktree's own). Eager: every table is fully parsed —
- * including its log blocks, inflated via `ctx.compressor.streamInflate` —
- * before this resolves.
- */
-/**
  * Drops `reftableDir`'s memoised stack for `ctx`, if cached — the write
  * path's own escape from the mtime+size cache key (`reftable-transaction.ts`'s
  * commit-protocol step 10), since a same-second commit could alias the
@@ -257,6 +250,13 @@ export function invalidateReftableStack(ctx: Context, reftableDir: string): void
   stackCache.get(ctx.session)?.delete(reftableDir);
 }
 
+/**
+ * Loads (or returns the memoised) `ReftableStack` for the stack rooted at
+ * `reftableDir` (`path-layout.ts`'s `reftableDir(gitDir)` — the common
+ * dir's, or a linked worktree's own). Eager: every table is fully parsed —
+ * including its log blocks, inflated via `ctx.compressor.streamInflate` —
+ * before this resolves.
+ */
 export async function loadReftableStack(ctx: Context, reftableDir: string): Promise<ReftableStack> {
   let stat: FileStat;
   try {

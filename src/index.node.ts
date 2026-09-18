@@ -256,23 +256,6 @@ const nodeLayoutCapabilities = {
 };
 
 /**
- * Falls back to a synthetic bootstrap layout at `{cwd}/.git` when discovery
- * finds nothing up to the filesystem root AND no explicit `gitDir` was
- * supplied — the `openRepository`/`init`/`clone` contract against a
- * not-yet-existing repository. The fallback honours `opts.bare` /
- * `opts.workDir` (argument tier) but reads NOTHING from disk: discovery
- * already judged there is no repository here, and git never consults the
- * config of a `.git` it rejected. That branch never realpaths its
- * synthesised paths, so it always reports `canonical: false`.
- *
- * The returned `canonical` flag is the AND of every realpath THIS function
- * performed. A `workDir` that came out of discovery is an ancestor of (or
- * equal to) the already-realpathed `cwd`, and an ancestor of a realpath is
- * itself real — so those shapes skip the extra realpath entirely; only the
- * genuinely lexical sources (`core.worktree`, an explicit `opts.workDir`)
- * pay one.
- */
-/**
  * Assembles the `ExplicitLayoutOptions` object `resolveLayout` receives,
  * folding in each optional field only when the caller actually set it —
  * `exactOptionalPropertyTypes` forbids the explicit-undefined form. Extracted
@@ -294,6 +277,23 @@ const buildLayoutOptions = (
   ...(opts.bareRepositories !== undefined ? { bareRepositories: opts.bareRepositories } : {}),
 });
 
+/**
+ * Falls back to a synthetic bootstrap layout at `{cwd}/.git` when discovery
+ * finds nothing up to the filesystem root AND no explicit `gitDir` was
+ * supplied — the `openRepository`/`init`/`clone` contract against a
+ * not-yet-existing repository. The fallback honours `opts.bare` /
+ * `opts.workDir` (argument tier) but reads NOTHING from disk: discovery
+ * already judged there is no repository here, and git never consults the
+ * config of a `.git` it rejected. That branch never realpaths its
+ * synthesised paths, so it always reports `canonical: false`.
+ *
+ * The returned `canonical` flag is the AND of every realpath THIS function
+ * performed. A `workDir` that came out of discovery is an ancestor of (or
+ * equal to) the already-realpathed `cwd`, and an ancestor of a realpath is
+ * itself real — so those shapes skip the extra realpath entirely; only the
+ * genuinely lexical sources (`core.worktree`, an explicit `opts.workDir`)
+ * pay one.
+ */
 const resolveNodeLayout = async (
   cwd: string,
   opts: ExplicitLayoutOptions,

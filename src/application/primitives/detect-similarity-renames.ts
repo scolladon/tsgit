@@ -112,8 +112,9 @@ export type ScoredTriple =
  * git's record_if_better keeps only the top 4 scoring sources per destination;
  * when the slot array is full, a new entry replaces the current minimum only if
  * strictly better (score > min). Equal-score entries do not replace.
+ *
+ * @internal — exported for direct unit testing.
  */
-/** @internal — exported for direct unit testing. */
 export const NUM_CANDIDATE_PER_DST = 4;
 
 /**
@@ -528,13 +529,6 @@ function computeBreakScores(src: Uint8Array, dst: Uint8Array): BreakScores {
   return { computedBreakScore, dissimilarity };
 }
 
-/**
- * Attempt to break dissimilar modifies into synthetic delete+add pairs.
- * Returns the broken records and a new diff with those modifies replaced.
- *
- * Break-attempt runs BEFORE exact/inexact rename passes so the synthetic halves
- * feed the rename/copy matrix.
- */
 /** Score all modifies and return those that exceed breakScore as broken records. */
 async function scoreModifies(
   ctx: Context,
@@ -595,6 +589,13 @@ function patchDiffWithBroken(
   return { changes: patchedChanges };
 }
 
+/**
+ * Attempt to break dissimilar modifies into synthetic delete+add pairs.
+ * Returns the broken records and a new diff with those modifies replaced.
+ *
+ * Break-attempt runs BEFORE exact/inexact rename passes so the synthetic halves
+ * feed the rename/copy matrix.
+ */
 async function attemptBreaks(
   ctx: Context,
   diff: TreeDiff,

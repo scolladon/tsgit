@@ -341,10 +341,6 @@ function resolveParentIds(
   });
 }
 
-/**
- * Graph-only lookup: `undefined` when `id` is not present in the graph, or the
- * graph itself is absent/stale — the caller falls back to a full object read.
- */
 /** True once this session's graph probe has answered "absent" (no graph, a
  *  shallow repository, or a graph degraded on a decode fault). A synchronous
  *  read, so callers can skip `commitHeader` outright. */
@@ -352,6 +348,10 @@ export function isGraphKnownAbsent(ctx: Context): boolean {
   return absentGraphs.has(ctx.session);
 }
 
+/**
+ * Graph-only lookup: `undefined` when `id` is not present in the graph, or the
+ * graph itself is absent/stale — the caller falls back to a full object read.
+ */
 export async function commitHeader(ctx: Context, id: ObjectId): Promise<CommitHeader | undefined> {
   if (!repoSettingsVerdictSettled(ctx)) await assertRepoSettingsValid(ctx);
   const cache = getHeaderCache(ctx);

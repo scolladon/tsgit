@@ -1146,7 +1146,7 @@
     "check:doc-coverage": {
       "command": "node --experimental-strip-types tooling/check-doc-coverage.ts",
       "files": [
-        "src/repository.ts",
+        "src/**/*.ts",
         "tooling/check-doc-coverage.ts",
         "tooling/check-doc-coverage.allowlist.json",
         "docs/use/commands/**/*.md",

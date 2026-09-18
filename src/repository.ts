@@ -515,10 +515,6 @@ const buildOptionalCtxFields = (inputs: OptionalCtxInputs) => ({
 });
 
 /**
- * Factory for the Repository handle. The runtime fallback (adapters + layout)
- * is supplied by the calling shim — `openRepository` itself is runtime-agnostic.
- */
-/**
  * The hash service to run this repository at. Keeping a service whose
  * `algorithm` disagrees with the resolved format would desynchronise the
  * verifier from `hashConfig` — the same desync `resolveAlgorithm` exists to
@@ -557,6 +553,10 @@ const forgetSessionCaches = (ctx: Context): void => {
   invalidateIndexCache(ctx);
 };
 
+/**
+ * Factory for the Repository handle. The runtime fallback (adapters + layout)
+ * is supplied by the calling shim — `openRepository` itself is runtime-agnostic.
+ */
 export const openRepository = async (
   opts: OpenRepositoryOptions,
   fallback: RuntimeFallback,

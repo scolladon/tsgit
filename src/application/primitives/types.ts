@@ -364,13 +364,6 @@ export interface SubmoduleEntry {
 }
 
 /**
- * One entry yielded by `catFileBatch` — a discriminated union so that a
- * single bad id never aborts the stream. `ok: true` carries the parsed
- * object plus its canonical payload size (matches the `<size>` field of
- * `git cat-file --batch`'s header). `ok: false` is shaped to extend later:
- * `reason` is a literal union so a future variant is an additive change.
- */
-/**
  * Optional knobs for the `catFileBatch` primitive — currently a single
  * `maxBytes` cap forwarded to each per-id `readObject` call so a long
  * batch over untrusted ids cannot exhaust the heap. Defaults to no cap.
@@ -384,6 +377,13 @@ export interface CatFileBatchOptions {
   readonly maxBytes?: number;
 }
 
+/**
+ * One entry yielded by `catFileBatch` — a discriminated union so that a
+ * single bad id never aborts the stream. `ok: true` carries the parsed
+ * object plus its canonical payload size (matches the `<size>` field of
+ * `git cat-file --batch`'s header). `ok: false` is shaped to extend later:
+ * `reason` is a literal union so a future variant is an additive change.
+ */
 export type CatFileBatchEntry =
   | {
       readonly ok: true;

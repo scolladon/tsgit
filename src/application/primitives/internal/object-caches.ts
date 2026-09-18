@@ -335,15 +335,6 @@ export function deltaBaseCacheEntrySize(content: Uint8Array): number {
 export const DELTA_BASE_CHAIN_INSERT_FRACTION = 0.25;
 
 /**
- * Populate one delta-chain level's offset-keyed entry, under an
- * already-built key — a `DeltaStep`'s own `probeKey` for a delta level, or a
- * freshly-built one for the base (which was never pushed as a `DeltaStep`
- * and so never had a key built for it before now). Callers skip this
- * entirely for a level with no key at all: one that came from a cache hit
- * (already cached) or a REF_DELTA base (resolved by id, not by this pack's
- * offset).
- */
-/**
  * Fixed per-entry overhead `ctx.deltaCache`'s own byte accounting adds beyond
  * the raw content length: the `ObjectId` key, the LRU's own node object, and
  * the `{ type, content }` wrapper. Deliberately NOT
@@ -355,6 +346,15 @@ export const DELTA_BASE_CHAIN_INSERT_FRACTION = 0.25;
  */
 export const OBJECT_CACHE_ENTRY_OVERHEAD_BYTES = 32;
 
+/**
+ * Populate one delta-chain level's offset-keyed entry, under an
+ * already-built key — a `DeltaStep`'s own `probeKey` for a delta level, or a
+ * freshly-built one for the base (which was never pushed as a `DeltaStep`
+ * and so never had a key built for it before now). Callers skip this
+ * entirely for a level with no key at all: one that came from a cache hit
+ * (already cached) or a REF_DELTA base (resolved by id, not by this pack's
+ * offset).
+ */
 export function cacheDeltaBase(
   ctx: Context,
   registry: PackRegistry,
