@@ -137,6 +137,7 @@ reconstructed from git's stderr text.
 
 ## Behaviour
 
+- **`fsck.<msg-id>` re-types a finding.** Each configured msg-id (key halves are case-insensitive, values are the case-sensitive `error` / `warn` / `ignore`) replaces that message's severity: `error` reports it and contributes its exit bit, `warn` reports it with none, `ignore` drops the finding entirely. The configured value beats the catalogue default AND the `strict` upgrade. Two exceptions carry over from git: the synthesised zero-OID pointer of an unreadable ref is reported outside the catalogue, so `fsck.badRefOid` never reaches it; and `fsck.skipList` names an object-name list file, not a check, so it is never taken for a msg-id. `receive.fsck.*` and `fetch.fsck.*` are separate namespaces this command never reads.
 - **Verdicts are relative to the shallow set.** In a shallow repository a
   boundary commit's parents are masked (as in git), so a "no missing objects"
   verdict does not cover ancestors beyond the `.git/shallow` cut — they are
@@ -300,6 +301,7 @@ process.exit(result.exitCode);
 ## Throws
 
 - `NOT_A_REPOSITORY` — `cwd` (or `gitDir`) does not point inside a git repository.
+- `FSCK_UNKNOWN_MSG_ID` / `CONFIG_INVALID_ENUM_VALUE` — an `[fsck]` entry names a msg-id no check reports, or a severity outside `error` / `warn` / `ignore`. Either refuses the whole audit before a single object is read, as git does.
 - `CONFIG_BAD_ZLIB_LEVEL` / `CONFIG_MISSING_VALUE` / `CONFIG_BAD_BOOLEAN_VALUE` — an invalid streaming-class `[core]` entry, reached through the eager operational gate every operational command reads (see [`errors.md`](../errors.md)).
 - `CONFIG_BAD_NUMERIC_VALUE` — a malformed `core.maxTreeDepth` or `core.deltaBaseCacheLimit` — the **repo-settings tier** ([`internals.md`](../primitives/internals.md#assertrepossettingsvalid)), reached structurally the moment `fsck` first enumerates or reads an object, not the eager gate above. `fsck` is the command a user reaches for when a repository is already suspect, and it still refuses to run at all against one whose `core.maxTreeDepth` (or `core.deltaBaseCacheLimit`) is malformed — matching git, which does the same. That refusal does not deadlock: `config --get` / `config --set` stay on the narrower, non-eager gate and keep working against the same repository, so `config --set core.maxTreeDepth <n>` is the recovery path. Separately: `fsck` itself does **not** check tree depth — `git fsck --strict` exits 0 on a repository containing a 2049-deep tree, and tsgit matches.
 - `DECOMPRESS_FAILED` — `connectivityOnly: true` only, and only for an object

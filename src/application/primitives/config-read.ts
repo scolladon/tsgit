@@ -1,4 +1,8 @@
-import { configBadNumericValue } from '../../domain/commands/error.js';
+import {
+  configBadNumericValue,
+  configInvalidEnumValue,
+  fsckUnknownMsgId,
+} from '../../domain/commands/error.js';
 import type { ConfigToken, IniSection } from '../../domain/config/config-ini.js';
 import {
   GIT_C_INT_MAX,
@@ -10,6 +14,8 @@ import {
   tokenizeConfig,
 } from '../../domain/config/config-ini.js';
 import { TsgitError } from '../../domain/error.js';
+import type { FsckConfiguredSeverity, FsckSeverityTable } from '../../domain/fsck/index.js';
+import { CONFIGURABLE_MSG_IDS, parseFsckSeverity } from '../../domain/fsck/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import type { ReflogExpiryConfigEntry } from '../../domain/reflog/expire-policy.js';
 import type { Context } from '../../ports/context.js';
@@ -899,6 +905,42 @@ export const assertValidGcAutoConfig = async (ctx: Context): Promise<void> => {
   if (found !== undefined) {
     throw configBadNumericValue(found.key, found.source, found.value, found.reason);
   }
+};
+
+/** The `fsck.skipList` key is not a msg-id — it names an object-name list
+ *  file, and git never offers it to its severity table. Lower-cased once,
+ *  like every key half this walk compares. */
+const FSCK_SKIP_LIST_KEY = 'skipList'.toLowerCase();
+
+/**
+ * The repository's `fsck.<msg-id>` re-typings, keyed by the lower-cased
+ * msg-id. Walks the `[fsck]` (subsectionless) tokens in file order so a
+ * repeated key takes its LAST entry, exactly as git's own config read does.
+ * Refuses on the two conditions git refuses the whole audit for: a key half
+ * outside the msg-id set, and a value outside the three severity words.
+ */
+export const readFsckSeverityTable = async (ctx: Context): Promise<FsckSeverityTable> => {
+  const { tokens, source } = await readConfigEntry(ctx);
+  const table = new Map<string, FsckConfiguredSeverity>();
+  let inSection = false;
+  for (const token of tokens) {
+    if (token.kind === 'header') {
+      inSection = matchesSection(token.section, token.subsection, 'fsck', undefined);
+      continue;
+    }
+    if (!inSection || token.kind !== 'entry') continue;
+    const msgId = token.key.toLowerCase();
+    if (msgId === FSCK_SKIP_LIST_KEY) continue;
+    if (!CONFIGURABLE_MSG_IDS.has(msgId)) {
+      throw fsckUnknownMsgId(msgId, source, token.startLine);
+    }
+    const severity = parseFsckSeverity(token.value ?? '');
+    if (severity === undefined) {
+      throw configInvalidEnumValue(`fsck.${msgId}`, source, token.value ?? '', token.startLine);
+    }
+    table.set(msgId, severity);
+  }
+  return table;
 };
 
 /** One invalid `pack.window` / `pack.depth` / `pack.windowMemory` entry returned by `findFirstInvalidPackInt`. */

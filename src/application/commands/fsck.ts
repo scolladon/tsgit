@@ -1,6 +1,7 @@
 import type { ObjectContent, ObjectId } from '../../domain/objects/index.js';
 import type { LruCache } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
+import { readFsckSeverityTable } from '../primitives/config-read.js';
 import { deriveContext } from '../primitives/derive-context.js';
 import { enumerateObjects } from '../primitives/enumerate-objects.js';
 import { assertValidPromisorRemoteConfig } from '../primitives/internal/boolean-config-guard.js';
@@ -57,6 +58,11 @@ function createNoDeltaCache(): LruCache<ObjectContent> {
 export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckResult> {
   await assertOperationalRepository(ctx);
 
+  // Read up front, before a single object is decoded: git parses `[fsck]`
+  // while it reads its configuration, so an unknown msg-id or an
+  // out-of-grammar severity refuses the whole audit rather than the entry.
+  const severities = await readFsckSeverityTable(ctx);
+
   // An integrity audit observes the STORE, never the object-byte read cache: a
   // delta base cached by an earlier read (or by this walk itself) would
   // satisfy a lookup git answers through the multi-pack-index, hiding the
@@ -102,7 +108,13 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   const contentResult =
     opts.connectivityOnly === true
       ? { findings: [] as FsckFinding[], exitBit: 0 }
-      : await runContentValidationPass(auditCtx, universe, opts.strict === true, blobFilenames);
+      : await runContentValidationPass(
+          auditCtx,
+          universe,
+          opts.strict === true,
+          blobFilenames,
+          severities,
+        );
 
   // Refs-verify pass — `confirmPackAccessibility` is true exactly when the
   // universe above was built WITHOUT accessiblePacksOnly narrowing but WITH
@@ -114,6 +126,7 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
     universe,
     opts.checkReferences !== false,
     confirmPackAccessibility,
+    severities,
   );
 
   // Pack-health pass — reports packs the registry could not open or index.

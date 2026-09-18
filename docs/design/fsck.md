@@ -352,6 +352,16 @@ verify` pass):**
 | `symlinkRef` | INFO | 0 | symlink used as a symref |
 | `symrefTargetIsNotARef` | INFO | 0 | symref target outside `refs/` |
 
+Every row above can be **re-typed by configuration**: an `fsck.<msg-id>` entry whose
+value is `error`, `warn` or `ignore` replaces that message's severity outright —
+over the default AND over the `--strict` upgrade below. An `ignore` finding is
+never emitted and contributes no exit bit. A key half outside the msg-id set git
+knows refuses the whole audit (`FSCK_UNKNOWN_MSG_ID`), as does a value outside the
+three words (`CONFIG_INVALID_ENUM_VALUE`); `fsck.skipList` is exempt — it names an
+object-name list file, not a check. `receive.fsck.*` and `fetch.fsck.*` are separate
+namespaces the audit never reads. The zero-OID pointer synthesised for an unreadable
+ref is reported outside the catalogue, so `fsck.badRefOid` does not reach it.
+
 The **strict-upgrade set** is exactly the WARN-default rows above: `emptyName`,
 `fullPathname`, `hasDot`, `hasDotdot`, `hasDotgit`, `largePathname`, `nulInCommit`,
 `nullSha1`, `zeroPaddedFilemode`. INFO/IGNORE/FATAL/ERROR ids are *not* upgraded by

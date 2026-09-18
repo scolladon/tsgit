@@ -1,6 +1,10 @@
 import { TsgitError } from '../../../../domain/error.js';
-import type { FsckObjectType, ValidateObjectInput } from '../../../../domain/fsck/index.js';
-import { validateObject } from '../../../../domain/fsck/index.js';
+import type {
+  FsckObjectType,
+  FsckSeverityTable,
+  ValidateObjectInput,
+} from '../../../../domain/fsck/index.js';
+import { retypeSeverity, validateObject } from '../../../../domain/fsck/index.js';
 import { bytesEqual, encode } from '../../../../domain/objects/encoding.js';
 import type { HashConfig } from '../../../../domain/objects/hash-config.js';
 import type { ObjectId } from '../../../../domain/objects/index.js';
@@ -184,20 +188,23 @@ async function validateOneObject(
   id: ObjectId,
   strict: boolean,
   blobFilenames: ReadonlyMap<ObjectId, string>,
+  severities: FsckSeverityTable,
 ): Promise<ContentValidationResult> {
   const findings: FsckFinding[] = [];
   let exitBit = 0;
 
   const rawResult = await tryGetRawObjectBody(ctx, id);
   if (!rawResult.ok) {
+    const severity = retypeSeverity(severities, rawResult.msgId, 'error');
+    if (severity === 'ignore') return { findings, exitBit };
     findings.push({
       type: 'bad-object',
       id,
       objectType: 'unknown',
       msgId: rawResult.msgId,
-      severity: 'error',
+      severity,
     });
-    return { findings, exitBit: EXIT_CORRUPT };
+    return { findings, exitBit: severity === 'error' ? EXIT_CORRUPT : 0 };
   }
 
   const { kind, rawBody, computeHash } = rawResult;
@@ -208,8 +215,10 @@ async function validateOneObject(
   const catalogueFindings = validateObject(
     buildValidateObjectInput(ctx.hashConfig, kind, rawBody, strict, fileName),
   );
-  for (const { msgId, severity } of catalogueFindings) {
-    findings.push({ type: 'bad-object', id, objectType: kind, msgId, severity });
+  for (const catalogued of catalogueFindings) {
+    const severity = retypeSeverity(severities, catalogued.msgId, catalogued.severity);
+    if (severity === 'ignore') continue;
+    findings.push({ type: 'bad-object', id, objectType: kind, msgId: catalogued.msgId, severity });
     if (severity === 'error') exitBit |= EXIT_CONTENT_ERROR;
   }
 
@@ -241,6 +250,7 @@ export async function runContentValidationPass(
   universe: ReadonlySet<ObjectId>,
   strict: boolean,
   blobFilenames: ReadonlyMap<ObjectId, string>,
+  severities: FsckSeverityTable,
 ): Promise<ContentValidationResult> {
   const findings: FsckFinding[] = [];
   let exitBit = 0;
@@ -251,6 +261,7 @@ export async function runContentValidationPass(
       id,
       strict,
       blobFilenames,
+      severities,
     );
     findings.push(...objFindings);
     exitBit |= objBit;

@@ -198,6 +198,13 @@ export type CommandError =
       readonly value: string;
       readonly line: number;
     }
+  | {
+      readonly code: 'FSCK_UNKNOWN_MSG_ID';
+      /** The lower-cased key half, as git names it in its own refusal. */
+      readonly msgId: string;
+      readonly source: string;
+      readonly line: number;
+    }
   | { readonly code: 'CONFIG_BAD_ZLIB_LEVEL'; readonly level: number }
   | {
       readonly code: 'CONFIG_MULTIPLE_VALUES';
@@ -684,6 +691,20 @@ export const configInvalidEnumValue = (
     key: sanitizeForDisplay(key),
     source,
     value: sanitizeForDisplay(value),
+    line,
+  });
+
+/**
+ * An `[fsck]` entry names something no fsck check reports. git refuses the
+ * whole audit rather than skipping the entry, naming the key half it
+ * lower-cased; `source`/`line` locate the entry for a caller rebuilding
+ * git's second refusal line.
+ */
+export const fsckUnknownMsgId = (msgId: string, source: string, line: number): TsgitError =>
+  new TsgitError({
+    code: 'FSCK_UNKNOWN_MSG_ID',
+    msgId: sanitizeForDisplay(msgId),
+    source,
     line,
   });
 

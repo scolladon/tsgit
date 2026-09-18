@@ -81,6 +81,7 @@ Codes are grouped by domain. Within each group, alphabetical.
 | `BRANCH_EXISTS` | `name` | `branch.create(...)` without `force` against an existing branch. |
 | `BRANCH_NOT_FOUND` | `name` | `branch.delete(...)` against an unknown branch. |
 | `DUPLICATE_REF` | `name` | Packed-refs file lists the same name twice. |
+| `FSCK_UNKNOWN_MSG_ID` | `msgId, source, line` | An `[fsck]` config entry names a msg-id no check reports. |
 | `INVALID_PACKED_REFS` | `reason` | `.git/packed-refs` malformed. |
 | `INVALID_REF` | `name, reason` | Ref name violates git syntax. |
 | `INVALID_REF_LINE` | `reason` | Ref-line on the wire was malformed. |

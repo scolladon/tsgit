@@ -65,7 +65,7 @@ describe('Given a universe containing an object that is neither loose nor readab
       const unreadableId = '0000000000000000000000000000000000000001' as ObjectId;
 
       // Act
-      const result = await sut(ctx, new Set([unreadableId]), false, new Map());
+      const result = await sut(ctx, new Set([unreadableId]), false, new Map(), new Map());
 
       // Assert
       expect(result.findings).toEqual([
@@ -97,7 +97,7 @@ describe('Given a packed blob whose bytes do not hash to its indexed id', () => 
       const blobId = ids[0] as ObjectId;
 
       // Act
-      const result = await sut(ctx, new Set([blobId]), false, new Map());
+      const result = await sut(ctx, new Set([blobId]), false, new Map(), new Map());
 
       // Assert
       const badTypeFindings = result.findings.filter(
@@ -138,7 +138,7 @@ describe('Given a packed blob validated for content', () => {
       });
 
       // Act
-      await sut(ctx, new Set([blobId]), false, new Map());
+      await sut(ctx, new Set([blobId]), false, new Map(), new Map());
 
       // Assert
       expect(updateSpy.mock.calls).toHaveLength(2);
@@ -159,7 +159,7 @@ describe('Given a packed tree with a duplicate entry name', () => {
       const { ctx, treeId } = await writePackedTree(treeBody);
 
       // Act
-      const result = await sut(ctx, new Set([treeId]), false, new Map());
+      const result = await sut(ctx, new Set([treeId]), false, new Map(), new Map());
 
       // Assert
       const msgIds = result.findings
@@ -179,7 +179,7 @@ describe('Given a packed tree with a non-octal byte in the mode', () => {
       const { ctx, treeId } = await writePackedTree(treeBody);
 
       // Act
-      const result = await sut(ctx, new Set([treeId]), false, new Map());
+      const result = await sut(ctx, new Set([treeId]), false, new Map(), new Map());
 
       // Assert
       const msgIds = result.findings
@@ -199,7 +199,7 @@ describe('Given a packed tree with an entry named "."', () => {
       const { ctx, treeId } = await writePackedTree(treeBody);
 
       // Act
-      const result = await sut(ctx, new Set([treeId]), false, new Map());
+      const result = await sut(ctx, new Set([treeId]), false, new Map(), new Map());
 
       // Assert
       const msgIds = result.findings
@@ -219,7 +219,7 @@ describe('Given a packed tree with an entry named ".."', () => {
       const { ctx, treeId } = await writePackedTree(treeBody);
 
       // Act
-      const result = await sut(ctx, new Set([treeId]), false, new Map());
+      const result = await sut(ctx, new Set([treeId]), false, new Map(), new Map());
 
       // Assert
       const msgIds = result.findings
@@ -239,7 +239,7 @@ describe('Given a packed tree with an entry name containing "/"', () => {
       const { ctx, treeId } = await writePackedTree(treeBody);
 
       // Act
-      const result = await sut(ctx, new Set([treeId]), false, new Map());
+      const result = await sut(ctx, new Set([treeId]), false, new Map(), new Map());
 
       // Assert
       const msgIds = result.findings
@@ -264,7 +264,7 @@ describe('Given a packed tree whose entries are not sorted', () => {
       const { ctx, treeId } = await writePackedTree(treeBody);
 
       // Act
-      const result = await sut(ctx, new Set([treeId]), false, new Map());
+      const result = await sut(ctx, new Set([treeId]), false, new Map(), new Map());
 
       // Assert
       const msgIds = result.findings

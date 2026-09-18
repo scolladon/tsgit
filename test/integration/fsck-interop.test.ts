@@ -32,6 +32,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import type { FsckFinding } from '../../src/application/commands/fsck.js';
 import { fsck } from '../../src/application/commands/fsck.js';
+import { TsgitError } from '../../src/domain/error.js';
 import type { Context } from '../../src/ports/context.js';
 import { GIT_AVAILABLE, runGit } from './interop-helpers.js';
 import { trackedRepositories } from './repository-lifecycle.js';
@@ -1824,24 +1825,46 @@ describe.skipIf(!GIT_AVAILABLE)('Given HEAD itself stored as a symbolic link to 
   });
 });
 
+/** A repository carrying exactly one symlinked loose ref, plus whatever
+ *  `[fsck]` entries a row needs. */
+const symlinkRefRepoWith = async (
+  slug: string,
+  entries: ReadonlyArray<readonly [string, string]>,
+): Promise<{ readonly dir: string; readonly ctx: Context }> => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), `tsgit-fsck-symlink-${slug}-`));
+  symlinkDepthRoots.push(dir);
+  initRepo(dir);
+  await writeFile(path.join(dir, 'f.txt'), 'c1\n');
+  runGit(['-C', dir, 'add', '-A'], { env: SAFE_ENV });
+  runGit(['-C', dir, 'commit', '-q', '-m', 'c1'], { env: SAFE_ENV });
+  runGit(['-C', dir, 'branch', 'side', 'main'], { env: SAFE_ENV });
+  await symlink('side', path.join(dir, '.git', 'refs', 'heads', 'rel'));
+  for (const [key, value] of entries) {
+    runGit(['-C', dir, 'config', key, value], { env: SAFE_ENV });
+  }
+  return { dir, ctx: createNodeContext({ workDir: dir }) };
+};
+
+const catchFsckError = async (ctx: Context): Promise<TsgitError> => {
+  let caught: unknown;
+  try {
+    await fsck(ctx);
+  } catch (error) {
+    caught = error;
+  }
+  expect(caught).toBeInstanceOf(TsgitError);
+  return caught as TsgitError;
+};
+
 describe.skipIf(!GIT_AVAILABLE)('Given fsck.symlinkRef re-typed in the configuration', () => {
   describe.each([
-    { level: 'error', exitCode: 8, prefix: 'error' },
-    { level: 'ignore', exitCode: 0, prefix: undefined },
+    { level: 'error', exitCode: 8, prefix: 'error', severities: ['error'] },
+    { level: 'warn', exitCode: 0, prefix: 'warning', severities: ['warning'] },
+    { level: 'ignore', exitCode: 0, prefix: undefined, severities: [] },
   ])('When fsck runs with the notice set to $level', (row) => {
-    it('Then git re-types it while tsgit keeps reporting the fixed warning', async () => {
-      // Arrange — tsgit has no `fsck.<msg-id>` severity table, so the notice
-      // it reports is the same one at every configured level.
-      const dir = await mkdtemp(path.join(os.tmpdir(), `tsgit-fsck-symlink-${row.level}-`));
-      symlinkDepthRoots.push(dir);
-      initRepo(dir);
-      await writeFile(path.join(dir, 'f.txt'), 'c1\n');
-      runGit(['-C', dir, 'add', '-A'], { env: SAFE_ENV });
-      runGit(['-C', dir, 'commit', '-q', '-m', 'c1'], { env: SAFE_ENV });
-      runGit(['-C', dir, 'branch', 'side', 'main'], { env: SAFE_ENV });
-      await symlink('side', path.join(dir, '.git', 'refs', 'heads', 'rel'));
-      runGit(['-C', dir, 'config', 'fsck.symlinkRef', row.level], { env: SAFE_ENV });
-      const ctx = createNodeContext({ workDir: dir });
+    it('Then both re-type it the same way, down to the exit code', async () => {
+      // Arrange
+      const { dir, ctx } = await symlinkRefRepoWith(row.level, [['fsck.symlinkRef', row.level]]);
 
       // Act
       const gitResult = gitFsck(dir, '--full');
@@ -1855,11 +1878,261 @@ describe.skipIf(!GIT_AVAILABLE)('Given fsck.symlinkRef re-typed in the configura
           : `${row.prefix}: ${SYMLINKED_REF}: symlinkRef: use deprecated symbolic link for symref\n`,
       );
 
-      // Assert — tsgit's side, unchanged by the key
-      const warned = symlinkRefFindings(result.findings);
-      expect(warned.map((f) => f.severity)).toEqual(['warning']);
-      expect(warned.map((f) => f.ref)).toEqual([SYMLINKED_REF]);
-      expect(result.exitCode).toBe(0);
+      // Assert — tsgit's side, re-typed by the same key
+      const reported = symlinkRefFindings(result.findings);
+      expect(reported.map((f) => f.severity)).toEqual(row.severities);
+      expect(result.exitCode).toBe(row.exitCode);
+      expect(gitResult.stderr).toBe(
+        row.prefix === undefined ? '' : symlinkRefStderr(reported, row.prefix),
+      );
     });
   });
 });
+
+describe.skipIf(!GIT_AVAILABLE)('Given the msg-id written in a different case', () => {
+  describe('When fsck runs', () => {
+    it('Then both honour it — the key half of a config name is case-insensitive', async () => {
+      // Arrange
+      const { dir, ctx } = await symlinkRefRepoWith('case', [
+        [`fsck.${'symlinkRef'.toLowerCase()}`, 'error'],
+      ]);
+
+      // Act
+      const gitResult = gitFsck(dir, '--full');
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(gitResult.exitCode).toBe(8);
+      expect(result.exitCode).toBe(8);
+      expect(symlinkRefFindings(result.findings).map((f) => f.severity)).toEqual(['error']);
+    });
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)('Given a msg-id no fsck check knows', () => {
+  describe('When fsck runs', () => {
+    it('Then both refuse before auditing anything', async () => {
+      // Arrange
+      const { dir, ctx } = await symlinkRefRepoWith('unknown-id', [['fsck.noSuchThing', 'error']]);
+
+      // Act
+      const gitResult = gitFsck(dir, '--full');
+      const err = await catchFsckError(ctx);
+
+      // Assert
+      expect(gitResult.exitCode).toBe(128);
+      expect(gitResult.stderr).toBe(
+        `fatal: Unhandled message id: ${'noSuchThing'.toLowerCase()}\n`,
+      );
+      expect(err.data).toEqual({
+        code: 'FSCK_UNKNOWN_MSG_ID',
+        msgId: 'noSuchThing'.toLowerCase(),
+        source: path.join(dir, '.git', 'config'),
+        line: expect.any(Number),
+      });
+    });
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)('Given a severity outside the three git accepts', () => {
+  describe('When fsck runs', () => {
+    it('Then both refuse before auditing anything', async () => {
+      // Arrange
+      const { dir, ctx } = await symlinkRefRepoWith('bad-value', [['fsck.symlinkRef', 'bogus']]);
+
+      // Act
+      const gitResult = gitFsck(dir, '--full');
+      const err = await catchFsckError(ctx);
+
+      // Assert
+      expect(gitResult.exitCode).toBe(128);
+      expect(gitResult.stderr).toBe("fatal: Unknown fsck message type: 'bogus'\n");
+      expect(err.data).toEqual({
+        code: 'CONFIG_INVALID_ENUM_VALUE',
+        key: `fsck.${'symlinkRef'.toLowerCase()}`,
+        source: path.join(dir, '.git', 'config'),
+        value: 'bogus',
+        line: expect.any(Number),
+      });
+    });
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)('Given the same msg-id typed twice', () => {
+  describe('When fsck runs', () => {
+    it('Then both take the last entry', async () => {
+      // Arrange
+      const { dir, ctx } = await symlinkRefRepoWith('last-wins', []);
+      runGit(['-C', dir, 'config', '--add', 'fsck.symlinkRef', 'error'], { env: SAFE_ENV });
+      runGit(['-C', dir, 'config', '--add', 'fsck.symlinkRef', 'ignore'], { env: SAFE_ENV });
+
+      // Act
+      const gitResult = gitFsck(dir, '--full');
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(gitResult.exitCode).toBe(0);
+      expect(gitResult.stderr).toBe('');
+      expect(result.exitCode).toBe(0);
+      expect(symlinkRefFindings(result.findings)).toEqual([]);
+    });
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)('Given the receive and fetch fsck namespaces', () => {
+  describe.each([{ key: 'receive.fsck.symlinkRef' }, { key: 'fetch.fsck.symlinkRef' }])(
+    'When fsck runs with $key set to ignore',
+    (row) => {
+      it('Then neither honours it — the audit reads the fsck namespace alone', async () => {
+        // Arrange
+        const { dir, ctx } = await symlinkRefRepoWith(row.key.split('.')[0] as string, [
+          [row.key, 'ignore'],
+        ]);
+
+        // Act
+        const gitResult = gitFsck(dir, '--full');
+        const result = await fsck(ctx);
+
+        // Assert — the notice survives on both sides
+        const reported = symlinkRefFindings(result.findings);
+        expect(gitResult.exitCode).toBe(0);
+        expect(result.exitCode).toBe(0);
+        expect(reported.map((f) => f.severity)).toEqual(['warning']);
+        expect(gitResult.stderr).toBe(symlinkRefStderr(reported, 'warning'));
+      });
+    },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// The severity table over the object catalogue and the ref-content notice
+// ---------------------------------------------------------------------------
+
+/** A repository holding one commit whose message carries a NUL — the
+ *  `nulInCommit` notice, a WARN default the strict flag upgrades. */
+const nulInCommitRepoWith = async (
+  slug: string,
+  entries: ReadonlyArray<readonly [string, string]>,
+): Promise<{ readonly dir: string; readonly ctx: Context }> => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), `tsgit-fsck-nul-${slug}-`));
+  symlinkDepthRoots.push(dir);
+  initRepo(dir);
+  await writeFile(path.join(dir, 'f.txt'), 'c1\n');
+  runGit(['-C', dir, 'add', '-A'], { env: SAFE_ENV });
+  runGit(['-C', dir, 'commit', '-q', '-m', 'c1'], { env: SAFE_ENV });
+  const tree = runGit(['-C', dir, 'rev-parse', 'HEAD^{tree}'], { env: SAFE_ENV }).trim();
+  const body = Buffer.concat([
+    Buffer.from(
+      `tree ${tree}\nauthor A <a@x> 1700000000 +0000\ncommitter A <a@x> 1700000000 +0000\n\nmsg`,
+    ),
+    Buffer.from([0]),
+    Buffer.from('nul\n'),
+  ]);
+  const raw = Buffer.concat([Buffer.from(`commit ${body.length}\0`), body]);
+  const id = sha1Hex(raw);
+  const objDir = path.join(dir, '.git', 'objects', id.slice(0, 2));
+  await mkdir(objDir, { recursive: true });
+  await writeFile(path.join(objDir, id.slice(2)), deflateSync(raw));
+  runGit(['-C', dir, 'update-ref', 'refs/heads/nul', id], { env: SAFE_ENV });
+  for (const [key, value] of entries) {
+    runGit(['-C', dir, 'config', key, value], { env: SAFE_ENV });
+  }
+  return { dir, ctx: createNodeContext({ workDir: dir }) };
+};
+
+/** Every `nulInCommit` finding the audit reported. */
+const nulFindings = (
+  findings: ReadonlyArray<FsckFinding>,
+): ReadonlyArray<FsckFinding & { type: 'bad-object' }> =>
+  findings.filter(
+    (f): f is FsckFinding & { type: 'bad-object' } =>
+      f.type === 'bad-object' && f.msgId === 'nulInCommit',
+  );
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given an object-catalogue notice re-typed in the configuration',
+  () => {
+    describe.each([
+      { level: 'error', flags: [] as string[], exitCode: 1, severities: ['error'] },
+      { level: 'ignore', flags: [] as string[], exitCode: 0, severities: [] },
+      { level: 'warn', flags: ['--strict'], exitCode: 0, severities: ['warning'] },
+    ])('When fsck runs with the notice set to $level and flags $flags', (row) => {
+      it('Then both land on the same severity and exit code, the key beating the strict upgrade', async () => {
+        // Arrange
+        const { dir, ctx } = await nulInCommitRepoWith(`${row.level}${row.flags.join('')}`, [
+          ['fsck.nulInCommit', row.level],
+        ]);
+
+        // Act
+        const gitResult = gitFsck(dir, ...row.flags);
+        const result = await fsck(ctx, row.flags.includes('--strict') ? { strict: true } : {});
+
+        // Assert
+        expect(gitResult.exitCode).toBe(row.exitCode);
+        expect(result.exitCode).toBe(row.exitCode);
+        expect(nulFindings(result.findings).map((f) => f.severity)).toEqual(row.severities);
+      });
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE)('Given a loose ref whose content is not an object name', () => {
+  describe.each([
+    { key: 'fsck.badRefContent', exitCode: 2, contentReported: false },
+    { key: 'fsck.badRefOid', exitCode: 10, contentReported: true },
+  ])('When fsck runs with $key set to ignore', (row) => {
+    it('Then only the content notice can be re-typed — the synthesised pointer cannot', async () => {
+      // Arrange
+      const dir = await mkdtemp(path.join(os.tmpdir(), `tsgit-fsck-ref-${row.key}-`));
+      symlinkDepthRoots.push(dir);
+      initRepo(dir);
+      await writeFile(path.join(dir, 'f.txt'), 'c1\n');
+      runGit(['-C', dir, 'add', '-A'], { env: SAFE_ENV });
+      runGit(['-C', dir, 'commit', '-q', '-m', 'c1'], { env: SAFE_ENV });
+      await writeFile(path.join(dir, '.git', 'refs', 'heads', 'bad'), 'garbage\n');
+      runGit(['-C', dir, 'config', row.key, 'ignore'], { env: SAFE_ENV });
+      const ctx = createNodeContext({ workDir: dir });
+
+      // Act
+      const gitResult = gitFsck(dir, '--full');
+      const result = await fsck(ctx);
+
+      // Assert
+      const content = result.findings.filter(
+        (f) => f.type === 'bad-ref' && f.msgId === 'badRefContent',
+      );
+      const pointer = result.findings.filter(
+        (f) => f.type === 'bad-ref' && f.msgId === 'badRefOid',
+      );
+      expect(gitResult.exitCode).toBe(row.exitCode);
+      expect(result.exitCode).toBe(row.exitCode);
+      expect(content.length > 0).toBe(row.contentReported);
+      expect(pointer.length).toBe(1);
+      expect(gitResult.stderr).toContain('invalid sha1 pointer');
+    });
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given fsck.skipList, which names a file rather than a check',
+  () => {
+    describe('When fsck runs', () => {
+      it('Then neither takes it for a msg-id', async () => {
+        // Arrange
+        const { dir, ctx } = await symlinkRefRepoWith('skip-list', []);
+        const names = path.join(dir, 'names.txt');
+        await writeFile(names, '');
+        runGit(['-C', dir, 'config', 'fsck.skipList', names], { env: SAFE_ENV });
+
+        // Act
+        const gitResult = gitFsck(dir, '--full');
+        const result = await fsck(ctx);
+
+        // Assert — the notice survives; neither side refuses on the key itself
+        expect(gitResult.exitCode).toBe(0);
+        expect(result.exitCode).toBe(0);
+        expect(symlinkRefFindings(result.findings).map((f) => f.severity)).toEqual(['warning']);
+      });
+    });
+  },
+);

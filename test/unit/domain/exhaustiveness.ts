@@ -166,6 +166,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'CONFIG_BAD_BOOLEAN_VALUE':
     case 'CONFIG_BAD_BOOLEAN_LITERAL':
     case 'CONFIG_BAD_DATE_VALUE':
+    case 'FSCK_UNKNOWN_MSG_ID':
     case 'CONFIG_INVALID_ENUM_VALUE':
     case 'CONFIG_BAD_ZLIB_LEVEL':
     case 'CONFIG_INVALID_FILE':

@@ -513,6 +513,8 @@ function extractDetail(data: TsgitErrorData): string {
         : `bad date config value '${data.value}' for '${data.key}' in file ${data.source} at line ${data.line}`;
     case 'CONFIG_INVALID_ENUM_VALUE':
       return `invalid value for '${data.key}': '${data.value}' in file ${data.source} at line ${data.line}`;
+    case 'FSCK_UNKNOWN_MSG_ID':
+      return `unhandled fsck message id: ${data.msgId} in file ${data.source} at line ${data.line}`;
     case 'CONFIG_BAD_ZLIB_LEVEL':
       return `bad zlib compression level ${data.level}`;
     case 'CONFIG_INVALID_FILE':

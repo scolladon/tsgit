@@ -2926,8 +2926,9 @@ git's ref-store check walks `refs/**` with `lstat` and never follows a link.
 | FK3 | `refs/heads/dl → ../other` (a directory of refs), `refs/heads/nest/deep → ../../side` | 0 | one warning per link, naming the link's own ref path; the linked directory is **not** descended |
 | FK4 | `HEAD` itself a symbolic link | 0 | no warning — the walk covers `refs/**` only |
 
-`fsck.symlinkRef=error` raises it to `error:`, `=ignore` drops it; the exit code is 0 either way when
-nothing else is wrong.
+`fsck.symlinkRef=error` raises it to `error:` and to exit 8, `=warn` keeps the warning, `=ignore`
+drops it; the exit code is 0 for the latter two when nothing else is wrong. The whole `fsck.<msg-id>`
+table behaves this way, the configured value beating both the catalogue default and `--strict`.
 
 ### Pins — refusal priority inside one transaction
 
@@ -3019,7 +3020,8 @@ uses `repo_get_oid` directly, which is the plain gitrevisions ladder.
   `undefined`; such an entry is omitted instead of throwing.
 - **`fsck`.** The files store's `verifyIntegrity` walks `refs/**` for symbolic links — `readdir` only,
   never following one — and reports `symlinkRef` per link; the refs-verify pass turns each into a
-  `bad-ref` finding with `severity: 'warning'` and no exit bit.
+  `bad-ref` finding whose default severity is `warning` with no exit bit — re-typed, like every
+  catalogue message, by the repository's own `fsck.<msg-id>` table.
 - **Refusal priority.** The files store's prepare pass now walks the updates in order, raising each
   name it checks under that name's lock and then that update's compare-and-swap, and runs the batch
   half only afterwards. **Cost:** one extra compare-and-swap read per update, paid only by a
