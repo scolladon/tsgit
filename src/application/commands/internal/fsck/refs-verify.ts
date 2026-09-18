@@ -29,23 +29,7 @@ async function isKnownOid(
   return objectIsPresent(ctx, oid);
 }
 
-/**
- * Verify ref content format and OID-reachability.
- *
- * Two sub-checks run independently:
- * - **Content format** (gated by `checkReferences`): a malformed loose ref —
- *   reported by the store's own `verifyIntegrity` as `badRefContent` —
- *   contributes `badRefContent` (bit 8, gated) + a synthesised zero-OID
- *   `badRefOid` (bit 2, always). Pinned: matrix #9b, composite exit 10 = 2|8.
- * - **OID presence** (always): every well-formed ref's OID (loose + packed,
- *   from `listRefs`) must be in the object universe, confirmed via
- *   `isKnownOid` rather than trusted at face value — `confirmPackAccessibility`
- *   is true exactly under `connectivityOnly`, the one mode where `universe`
- *   may admit an oid whose housing pack later fails its own header gate.
- *   Absent → `badRefOid` (bit 2). Pinned: matrix #9a, exit 2 same with/without
- *   `--no-references`. A symbolic ref (absent targets are not an error —
- *   unborn branch = OK, matrix #9c) never contributes.
- */
+/** One sub-check's own findings and the exit bits they carry. */
 interface PassResult {
   readonly findings: ReadonlyArray<BadRefFinding>;
   readonly exitBit: number;
@@ -134,6 +118,23 @@ async function collectAbsentTargets(
   return { findings, exitBit: findings.length > 0 ? EXIT_MISSING : 0 };
 }
 
+/**
+ * Verify ref content format and OID-reachability.
+ *
+ * Two sub-checks run independently:
+ * - **Content format** (gated by `checkReferences`): a malformed loose ref —
+ *   reported by the store's own `verifyIntegrity` as `badRefContent` —
+ *   contributes `badRefContent` (bit 8, gated) + a synthesised zero-OID
+ *   `badRefOid` (bit 2, always). Pinned: matrix #9b, composite exit 10 = 2|8.
+ * - **OID presence** (always): every well-formed ref's OID (loose + packed,
+ *   from `listRefs`) must be in the object universe, confirmed via
+ *   `isKnownOid` rather than trusted at face value — `confirmPackAccessibility`
+ *   is true exactly under `connectivityOnly`, the one mode where `universe`
+ *   may admit an oid whose housing pack later fails its own header gate.
+ *   Absent → `badRefOid` (bit 2). Pinned: matrix #9a, exit 2 same with/without
+ *   `--no-references`. A symbolic ref (absent targets are not an error —
+ *   unborn branch = OK, matrix #9c) never contributes.
+ */
 export async function runRefsVerifyPass(
   ctx: Context,
   universe: ReadonlySet<ObjectId>,
