@@ -23,7 +23,7 @@
  *                    notes, pack-refs, status, show, submodule, worktree,
  *                    hash-object, write-tree
  */
-import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -831,6 +831,190 @@ describe.skipIf(!GIT_AVAILABLE)('repo-settings tier — cross-tool interop', () 
           code: 'CONFIG_BAD_NUMERIC_VALUE',
           key: 'core.deltabasecachelimit',
           value: '-1',
+        });
+      });
+    });
+  });
+
+  describe('the core.deltaBaseCacheLimit value grammar', () => {
+    const DELTA_BASE_KEY = 'core.deltabasecachelimit';
+
+    /** git prints the key lowercased and the file path as it reached it. */
+    const badNumericFatal = (value: string, reason: string): string =>
+      `fatal: bad numeric config value '${value}' for '${DELTA_BASE_KEY}' in file .git/config: ${reason}\n`;
+
+    /** Every spelling git's unsigned-long grammar admits: plain decimal,
+     *  hexadecimal, the ×1024ⁿ suffixes in either case, and zero. */
+    const ACCEPTED_VALUES: ReadonlyArray<{ readonly slug: string; readonly value: string }> = [
+      { slug: 'lowercase-m-suffix', value: '96m' },
+      { slug: 'uppercase-m-suffix', value: '96M' },
+      { slug: 'lowercase-k-suffix', value: '98304k' },
+      { slug: 'uppercase-k-suffix', value: '1K' },
+      { slug: 'plain-decimal', value: '100663296' },
+      { slug: 'lowercase-g-suffix', value: '1g' },
+      { slug: 'zero', value: '0' },
+      { slug: 'hexadecimal', value: '0x6000000' },
+    ];
+
+    interface RefusedValue {
+      readonly slug: string;
+      readonly lines: string;
+      /** The value git quotes back — `''` for the empty and valueless forms. */
+      readonly reported: string;
+      readonly reason: 'invalid unit' | 'out of range';
+    }
+
+    const REFUSED_VALUES: ReadonlyArray<RefusedValue> = [
+      {
+        slug: 'negative',
+        lines: '\tdeltaBaseCacheLimit = -1\n',
+        reported: '-1',
+        reason: 'invalid unit',
+      },
+      {
+        slug: 'letters',
+        lines: '\tdeltaBaseCacheLimit = abc\n',
+        reported: 'abc',
+        reason: 'invalid unit',
+      },
+      {
+        slug: 'unknown-suffix',
+        lines: '\tdeltaBaseCacheLimit = 96x\n',
+        reported: '96x',
+        reason: 'invalid unit',
+      },
+      {
+        slug: 'fractional',
+        lines: '\tdeltaBaseCacheLimit = 1.5m\n',
+        reported: '1.5m',
+        reason: 'invalid unit',
+      },
+      {
+        slug: 'empty',
+        lines: '\tdeltaBaseCacheLimit = \n',
+        reported: '',
+        reason: 'invalid unit',
+      },
+      {
+        slug: 'valueless',
+        lines: '\tdeltaBaseCacheLimit\n',
+        reported: '',
+        reason: 'invalid unit',
+      },
+      {
+        slug: 'past-the-unsigned-bound',
+        lines: '\tdeltaBaseCacheLimit = 99999999999999g\n',
+        reported: '99999999999999g',
+        reason: 'out of range',
+      },
+    ];
+
+    /** A later valid line supersedes an earlier rejected one: this key is
+     *  resolved through the cached config set, where the last write wins. */
+    const LAST_WINS_VALUES: ReadonlyArray<{ readonly slug: string; readonly lines: string }> = [
+      {
+        slug: 'negative-then-valid',
+        lines: '\tdeltaBaseCacheLimit = -1\n\tdeltaBaseCacheLimit = 96m\n',
+      },
+      {
+        slug: 'valueless-then-valid',
+        lines: '\tdeltaBaseCacheLimit\n\tdeltaBaseCacheLimit = 1m\n',
+      },
+    ];
+
+    let base = '';
+    const caseRoots: string[] = [];
+
+    /** A private copy of the shared fixture, carrying this row's own `[core]`
+     *  lines — no two rows may share a config file, nor a Context whose
+     *  session cache would outlive the copy it was opened on. */
+    const caseRepo = async (
+      slug: string,
+      lines: string,
+    ): Promise<{ readonly dir: string; readonly ctx: Context }> => {
+      const root = await mkdtemp(path.join(os.tmpdir(), `tsgit-repo-settings-limit-${slug}-`));
+      caseRoots.push(root);
+      const dir = path.join(root, 'repo');
+      await cp(base, dir, { recursive: true });
+      await writeFile(path.join(dir, '.git', 'config'), `[core]\n${lines}`, { flag: 'a' });
+      return { dir, ctx: createNodeContext({ workDir: dir }) };
+    };
+
+    beforeAll(async () => {
+      base = await mkdtemp(path.join(os.tmpdir(), 'tsgit-repo-settings-limit-base-'));
+      await buildReadonlyRepo(base);
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(base, { recursive: true, force: true });
+      await Promise.all(
+        caseRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
+      );
+    });
+
+    describe('Given a byte budget spelled in a form the unsigned-long grammar admits', () => {
+      describe.each(ACCEPTED_VALUES)('When rev-parse HEAD runs under $value', ({ slug, value }) => {
+        it('Then git exits 0 and tsgit resolves the very same commit id', async () => {
+          // Arrange
+          const { dir, ctx } = await caseRepo(slug, `\tdeltaBaseCacheLimit = ${value}\n`);
+
+          // Act
+          const gitResult = tryRunGitWithExit(['-C', dir, 'rev-parse', 'HEAD']);
+          const result = await revParse(ctx, 'HEAD');
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          expect(result).toBe(gitResult.stdout.trim());
+        });
+      });
+    });
+
+    describe('Given a byte budget the unsigned-long grammar cannot read', () => {
+      describe.each(REFUSED_VALUES)(
+        'When rev-parse HEAD runs under a $slug value',
+        ({ slug, lines, reported, reason }) => {
+          it("Then both refuse with exit 128 and tsgit carries git's own key, value and reason", async () => {
+            // Arrange
+            const { dir, ctx } = await caseRepo(slug, lines);
+
+            // Act
+            const gitResult = tryRunGitWithExit(['-C', dir, 'rev-parse', 'HEAD']);
+            let caught: unknown;
+            try {
+              await revParse(ctx, 'HEAD');
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert
+            expect(gitResult.exitCode).toBe(128);
+            expect(gitResult.stderr).toBe(badNumericFatal(reported, reason));
+            expect(caught).toBeInstanceOf(TsgitError);
+            expect((caught as TsgitError).data).toEqual({
+              code: 'CONFIG_BAD_NUMERIC_VALUE',
+              key: DELTA_BASE_KEY,
+              source: path.join(dir, '.git', 'config'),
+              value: reported,
+              reason,
+            });
+          });
+        },
+      );
+    });
+
+    describe('Given a rejected line superseded by a valid one for the same key', () => {
+      describe.each(LAST_WINS_VALUES)('When rev-parse HEAD runs under $slug', ({ slug, lines }) => {
+        it('Then git exits 0 and tsgit resolves the same commit id — neither reads the dead line', async () => {
+          // Arrange
+          const { dir, ctx } = await caseRepo(slug, lines);
+
+          // Act
+          const gitResult = tryRunGitWithExit(['-C', dir, 'rev-parse', 'HEAD']);
+          const result = await revParse(ctx, 'HEAD');
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          expect(result).toBe(gitResult.stdout.trim());
         });
       });
     });
