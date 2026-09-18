@@ -223,6 +223,16 @@ describe.skipIf(!GIT_AVAILABLE)(
         kept: ['e6', 'e7'],
       },
       {
+        label: 'both global keys spelled entirely in lower case, holding never',
+        config: '[gc]\n\treflogexpire = never\n\treflogexpireunreachable = never\n',
+        kept: ['e1', 'e2', 'e3', 'e4', 'e5', 'e6', 'e7'],
+      },
+      {
+        label: 'both global keys spelled entirely in lower case, holding finite cutoffs',
+        config: '[gc]\n\treflogexpire = 120.days.ago\n\treflogexpireunreachable = 45.days.ago\n',
+        kept: ['e2', 'e5', 'e6', 'e7'],
+      },
+      {
         label: 'both global cutoffs set to honest, finite values',
         config: '[gc]\n\treflogExpire = 120.days.ago\n\treflogExpireUnreachable = 45.days.ago\n',
         kept: ['e2', 'e5', 'e6', 'e7'],
