@@ -1557,8 +1557,8 @@ describe('Given a repo with one commit whose reflog first entry has the null-oid
 });
 
 // ---------------------------------------------------------------------------
-// FIX 1 — .gitmodules blob content checks must fire when blob is named
-// .gitmodules in its parent tree (pinned real git 2.54.0: exit 1, stderr
+// .gitmodules blob content checks fire when the blob is named .gitmodules in
+// its parent tree (pinned against real git: exit 1, stderr
 // "error in blob <sha>: gitmodulesUrl: disallowed submodule url: ...")
 // ---------------------------------------------------------------------------
 
@@ -1729,7 +1729,7 @@ describe('Given a blob named .gitmodules in a sub-tree (not the root tree)', () 
 });
 
 // ---------------------------------------------------------------------------
-// FIX 3 — corrupt-object msgId faithfulness
+// Corrupt-object msgId faithfulness:
 // Inflate failure → objectType 'unknown', not 'blob'
 // Unknown type in header → msgId 'unknownType', objectType 'unknown'
 // ---------------------------------------------------------------------------
@@ -3803,7 +3803,7 @@ describe('Given a cache-tree oid a multi-pack-index routes to a pack whose index
 });
 
 // ---------------------------------------------------------------------------
-// CONNECTIVITY-ONLY — CLASSIFY UNREADABLE OBJECTS (§D12)
+// CONNECTIVITY-ONLY — CLASSIFY UNREADABLE OBJECTS
 // ---------------------------------------------------------------------------
 
 describe('Given a v99-header pack whose objects exist nowhere else, connectivity classification', () => {
@@ -5338,7 +5338,7 @@ describe('Given a corrupt-idx pack beside a pack whose header probe would reject
 });
 
 // ---------------------------------------------------------------------------
-// MULTI-PACK-INDEX HEALTH PASS — fsck reports the midx (ADR-601)
+// MULTI-PACK-INDEX HEALTH PASS — fsck reports the midx
 // ---------------------------------------------------------------------------
 
 const midxDir = (ctx: Context): string => packsDir(commonGitDir(ctx));
@@ -7157,6 +7157,84 @@ describe('Given fsck.skipList pointed at a path with a relative spelling', () =>
 
       // Assert
       expect(result.findings.filter((f) => f.type === 'bad-object')).toEqual([]);
+    });
+  });
+});
+
+describe('Given an unknown fsck msg-id on the third line of the config', () => {
+  describe('When fsck runs', () => {
+    it('Then the refusal names that line the way every other config refusal counts them', async () => {
+      // Arrange — physical lines are 1-based everywhere a config refusal
+      // names one, so the entry below is line 3, not line 2.
+      const { ctx } = await seedBadCommitRepo();
+      await ctx.fs.writeUtf8(
+        `${ctx.layout.gitDir}/config`,
+        '[core]\n[fsck]\n  noSuchThing = error\n',
+      );
+      __resetConfigCacheForTests();
+
+      // Act
+      const caught = await skipListError(ctx);
+
+      // Assert
+      expect(caught.data).toEqual({
+        code: 'FSCK_UNKNOWN_MSG_ID',
+        msgId: 'noSuchThing'.toLowerCase(),
+        source: `${ctx.layout.gitDir}/config`,
+        line: 3,
+      });
+    });
+  });
+});
+
+describe('Given an fsck severity outside the three git accepts on the third config line', () => {
+  describe('When fsck runs', () => {
+    it('Then the refusal names that line the way every other config refusal counts them', async () => {
+      // Arrange
+      const { ctx } = await seedBadCommitRepo();
+      await ctx.fs.writeUtf8(
+        `${ctx.layout.gitDir}/config`,
+        '[core]\n[fsck]\n  symlinkRef = bogus\n',
+      );
+      __resetConfigCacheForTests();
+
+      // Act
+      const caught = await skipListError(ctx);
+
+      // Assert
+      expect(caught.data).toEqual({
+        code: 'CONFIG_INVALID_ENUM_VALUE',
+        key: `fsck.${'symlinkRef'.toLowerCase()}`,
+        source: `${ctx.layout.gitDir}/config`,
+        value: 'bogus',
+        line: 3,
+      });
+    });
+  });
+});
+
+describe('Given a fatal fsck msg-id demoted on the third config line', () => {
+  describe('When fsck runs', () => {
+    it('Then the refusal names that line the way every other config refusal counts them', async () => {
+      // Arrange
+      const { ctx } = await seedBadCommitRepo();
+      await ctx.fs.writeUtf8(
+        `${ctx.layout.gitDir}/config`,
+        '[core]\n[fsck]\n  nulInHeader = warn\n',
+      );
+      __resetConfigCacheForTests();
+
+      // Act
+      const caught = await skipListError(ctx);
+
+      // Assert
+      expect(caught.data).toEqual({
+        code: 'FSCK_CANNOT_DEMOTE',
+        msgId: 'nulInHeader'.toLowerCase(),
+        severity: 'warn',
+        source: `${ctx.layout.gitDir}/config`,
+        line: 3,
+      });
     });
   });
 });

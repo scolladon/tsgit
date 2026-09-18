@@ -947,16 +947,19 @@ const readFsckSeverity = (
   token: Extract<ConfigToken, { kind: 'entry' }>,
   source: string,
 ): FsckConfiguredSeverity => {
+  // `startLine` counts from 0; every config refusal names a PHYSICAL line,
+  // which counts from 1.
+  const line = token.startLine + 1;
   if (!CONFIGURABLE_MSG_IDS.has(msgId)) {
-    throw fsckUnknownMsgId(msgId, source, token.startLine);
+    throw fsckUnknownMsgId(msgId, source, line);
   }
   const raw = token.value ?? '';
   const severity = parseFsckSeverity(raw);
   if (severity === undefined) {
-    throw configInvalidEnumValue(`fsck.${msgId}`, source, raw, token.startLine);
+    throw configInvalidEnumValue(`fsck.${msgId}`, source, raw, line);
   }
   if (FATAL_MSG_IDS.has(msgId) && severity !== 'error') {
-    throw fsckCannotDemote(msgId, raw, source, token.startLine);
+    throw fsckCannotDemote(msgId, raw, source, line);
   }
   return severity;
 };

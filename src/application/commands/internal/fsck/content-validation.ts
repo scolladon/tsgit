@@ -33,64 +33,76 @@ interface ReadableObject {
 
 type RawObjectResult = ReadableObject | { readonly ok: false; readonly msgId: string };
 
-/**
- * Read an object's raw decompressed body for content validation.
- *
- * For loose objects: inflate compressed bytes and return body (after the
- * git `<type> <size>\0` header). This preserves zero-padded file modes and
- * other normalisation-defeated bytes that tsgit's strict parsers reject.
- * The full inflated bytes are also returned for hash verification.
- *
- * For pack objects: read the pre-parse bytes directly (no domain parse, no
- * re-serialisation), so a malformed packed object is classified by the
- * catalogue instead of being swallowed into a generic `badType` finding, and
- * hash verification is computed from the object's ORIGINAL bytes rather than
- * a canonicalised re-encoding.
- */
-async function tryGetRawObjectBody(ctx: Context, id: ObjectId): Promise<RawObjectResult> {
-  const compressed = await looseCompressedBytes(ctx, id);
-  if (compressed !== undefined) {
-    let inflated: Uint8Array;
-    try {
-      inflated = await ctx.compressor.inflate(compressed);
-    } catch {
-      // Inflate failure: compressed bytes are corrupt — type unknown.
-      return { ok: false, msgId: 'unterminatedHeader' };
-    }
-    try {
-      const { type, contentOffset } = parseHeader(inflated);
-      return {
-        ok: true,
-        kind: type,
-        rawBody: inflated.subarray(contentOffset),
-        // The loose arm keeps hashing the inflated on-disk bytes AS STORED —
-        // a malformed on-disk header must still hash as written, never a
-        // canonical reconstruction.
-        computeHash: () => ctx.hash.hashHex(inflated),
-      };
-    } catch (err) {
-      // Header-parse failure: inflated successfully but header is malformed.
-      // Distinguish unknown type (unknownType) from missing NUL (unterminatedHeader).
-      const reason =
-        // Stryker disable next-line ConditionalExpression: equivalent — parseHeader only throws TsgitError with code INVALID_OBJECT_HEADER; the condition is always true when reached.
-        err instanceof TsgitError && err.data.code === 'INVALID_OBJECT_HEADER'
-          ? (err.data as { reason: string }).reason
-          : // Stryker disable next-line StringLiteral: equivalent — reason is read only by reason.startsWith('unknown object type'); neither '' nor 'Stryker was here!' starts with that prefix, so msgId stays 'unterminatedHeader'.
-            '';
-      const msgId = reason.startsWith('unknown object type') ? 'unknownType' : 'unterminatedHeader';
-      return { ok: false, msgId };
-    }
-  }
+/** The loose arm's header-parse failure, told apart by the reason
+ *  `parseHeader` refused with: an unknown type word is `unknownType`,
+ *  anything else (a missing NUL above all) is `unterminatedHeader`. */
+function looseHeaderFailure(err: unknown): RawObjectResult {
+  const reason =
+    // Stryker disable next-line ConditionalExpression: equivalent — parseHeader only throws TsgitError with code INVALID_OBJECT_HEADER; the condition is always true when reached.
+    err instanceof TsgitError && err.data.code === 'INVALID_OBJECT_HEADER'
+      ? (err.data as { reason: string }).reason
+      : // Stryker disable next-line StringLiteral: equivalent — reason is read only by reason.startsWith('unknown object type'); neither '' nor 'Stryker was here!' starts with that prefix, so msgId stays 'unterminatedHeader'.
+        '';
+  const msgId = reason.startsWith('unknown object type') ? 'unknownType' : 'unterminatedHeader';
+  return { ok: false, msgId };
+}
 
-  // Pack object — read the pre-parse bytes directly. Going through readObject's
-  // domain parser would throw on exactly the faults the catalogue exists to
-  // report (duplicate name, '.', '..', an embedded '/'), collapsing every such
-  // packed tree into badType; and re-serializing a parsed Tree re-sorts its
-  // entries, so hashing that re-sorted form against an unsorted tree's id
-  // would report a false hash-mismatch. `raw.type`/`raw.content` are the
-  // object's own bytes — no re-serialisation — so hashing them (via the
-  // canonical header, built fresh rather than carried as a field) avoids
-  // both, without ever concatenating header and body into one buffer.
+/** The object's inflated bytes, or `undefined` when the compressed bytes are
+ *  corrupt — a fault the caller reports as a type it could not even read. */
+async function inflateOrUndefined(
+  ctx: Context,
+  compressed: Uint8Array,
+): Promise<Uint8Array | undefined> {
+  try {
+    return await ctx.compressor.inflate(compressed);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The body that follows a loose object's git `<type> <size>\0` header.
+ * Hashing stays on the inflated on-disk bytes AS STORED — a malformed on-disk
+ * header must hash as written, never as a canonical reconstruction.
+ */
+function parsedLooseObject(ctx: Context, inflated: Uint8Array): RawObjectResult {
+  try {
+    const { type, contentOffset } = parseHeader(inflated);
+    return {
+      ok: true,
+      kind: type,
+      rawBody: inflated.subarray(contentOffset),
+      computeHash: () => ctx.hash.hashHex(inflated),
+    };
+  } catch (err) {
+    return looseHeaderFailure(err);
+  }
+}
+
+/**
+ * A loose object's raw body. Reading it from the on-disk bytes preserves
+ * zero-padded file modes and other normalisation-defeated bytes that tsgit's
+ * strict parsers reject, so the catalogue gets to classify them.
+ */
+async function looseRawObjectBody(ctx: Context, compressed: Uint8Array): Promise<RawObjectResult> {
+  const inflated = await inflateOrUndefined(ctx, compressed);
+  if (inflated === undefined) return { ok: false, msgId: 'unterminatedHeader' };
+  return parsedLooseObject(ctx, inflated);
+}
+
+/**
+ * A packed object's raw body, read as the pre-parse bytes it is stored as.
+ *
+ * Going through `readObject`'s domain parser would throw on exactly the faults
+ * the catalogue exists to report (duplicate name, `.`, `..`, an embedded `/`),
+ * collapsing every such packed tree into `badType`; and re-serializing a parsed
+ * Tree re-sorts its entries, so hashing that re-sorted form against an unsorted
+ * tree's id would report a false hash-mismatch. `raw.type`/`raw.content` are
+ * the object's own bytes — no re-serialisation — so hashing them (via the
+ * canonical header, built fresh rather than carried as a field) avoids both,
+ * without ever concatenating header and body into one buffer.
+ */
+async function packedRawObjectBody(ctx: Context, id: ObjectId): Promise<RawObjectResult> {
   try {
     const raw = await readRawObject(ctx, id, { verifyHash: false });
     return {
@@ -107,6 +119,14 @@ async function tryGetRawObjectBody(ctx: Context, id: ObjectId): Promise<RawObjec
   } catch {
     return { ok: false, msgId: 'badType' };
   }
+}
+
+/** Read an object's raw decompressed body for content validation, from
+ *  whichever store holds it. */
+async function tryGetRawObjectBody(ctx: Context, id: ObjectId): Promise<RawObjectResult> {
+  const compressed = await looseCompressedBytes(ctx, id);
+  if (compressed !== undefined) return looseRawObjectBody(ctx, compressed);
+  return packedRawObjectBody(ctx, id);
 }
 
 const GITMODULES_NAME_BYTES = encode('.gitmodules');
