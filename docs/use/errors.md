@@ -82,6 +82,8 @@ Codes are grouped by domain. Within each group, alphabetical.
 | `BRANCH_NOT_FOUND` | `name` | `branch.delete(...)` against an unknown branch. |
 | `DUPLICATE_REF` | `name` | Packed-refs file lists the same name twice. |
 | `FSCK_UNKNOWN_MSG_ID` | `msgId, source, line` | An `[fsck]` config entry names a msg-id no check reports. |
+| `FSCK_SKIP_LIST_UNREADABLE` | `path, reason` | The object-name list `fsck.skipList` points at could not be opened. |
+| `FSCK_SKIP_LIST_INVALID_NAME` | `name, path, line` | A `fsck.skipList` line is not a full object name. |
 | `INVALID_PACKED_REFS` | `reason` | `.git/packed-refs` malformed. |
 | `INVALID_REF` | `name, reason` | Ref name violates git syntax. |
 | `INVALID_REF_LINE` | `reason` | Ref-line on the wire was malformed. |

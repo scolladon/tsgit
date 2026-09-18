@@ -15,6 +15,9 @@ import { writeSyntheticPack } from '../../../primitives/pack-fixture.js';
 
 const sut = runContentValidationPass;
 
+/** No `fsck.skipList` configured. */
+const NO_SKIPS: ReadonlySet<string> = new Set();
+
 const BLOB_SHA_A = new Uint8Array(20).fill(1);
 const BLOB_SHA_B = new Uint8Array(20).fill(2);
 const ENCODER = new TextEncoder();
@@ -65,7 +68,7 @@ describe('Given a universe containing an object that is neither loose nor readab
       const unreadableId = '0000000000000000000000000000000000000001' as ObjectId;
 
       // Act
-      const result = await sut(ctx, new Set([unreadableId]), false, new Map(), new Map());
+      const result = await sut(ctx, new Set([unreadableId]), false, new Map(), new Map(), NO_SKIPS);
 
       // Assert
       expect(result.findings).toEqual([
@@ -97,7 +100,7 @@ describe('Given a packed blob whose bytes do not hash to its indexed id', () => 
       const blobId = ids[0] as ObjectId;
 
       // Act
-      const result = await sut(ctx, new Set([blobId]), false, new Map(), new Map());
+      const result = await sut(ctx, new Set([blobId]), false, new Map(), new Map(), NO_SKIPS);
 
       // Assert
       const badTypeFindings = result.findings.filter(
@@ -138,7 +141,7 @@ describe('Given a packed blob validated for content', () => {
       });
 
       // Act
-      await sut(ctx, new Set([blobId]), false, new Map(), new Map());
+      await sut(ctx, new Set([blobId]), false, new Map(), new Map(), NO_SKIPS);
 
       // Assert
       expect(updateSpy.mock.calls).toHaveLength(2);
@@ -159,7 +162,7 @@ describe('Given a packed tree with a duplicate entry name', () => {
       const { ctx, treeId } = await writePackedTree(treeBody);
 
       // Act
-      const result = await sut(ctx, new Set([treeId]), false, new Map(), new Map());
+      const result = await sut(ctx, new Set([treeId]), false, new Map(), new Map(), NO_SKIPS);
 
       // Assert
       const msgIds = result.findings
@@ -179,7 +182,7 @@ describe('Given a packed tree with a non-octal byte in the mode', () => {
       const { ctx, treeId } = await writePackedTree(treeBody);
 
       // Act
-      const result = await sut(ctx, new Set([treeId]), false, new Map(), new Map());
+      const result = await sut(ctx, new Set([treeId]), false, new Map(), new Map(), NO_SKIPS);
 
       // Assert
       const msgIds = result.findings
@@ -199,7 +202,7 @@ describe('Given a packed tree with an entry named "."', () => {
       const { ctx, treeId } = await writePackedTree(treeBody);
 
       // Act
-      const result = await sut(ctx, new Set([treeId]), false, new Map(), new Map());
+      const result = await sut(ctx, new Set([treeId]), false, new Map(), new Map(), NO_SKIPS);
 
       // Assert
       const msgIds = result.findings
@@ -219,7 +222,7 @@ describe('Given a packed tree with an entry named ".."', () => {
       const { ctx, treeId } = await writePackedTree(treeBody);
 
       // Act
-      const result = await sut(ctx, new Set([treeId]), false, new Map(), new Map());
+      const result = await sut(ctx, new Set([treeId]), false, new Map(), new Map(), NO_SKIPS);
 
       // Assert
       const msgIds = result.findings
@@ -239,7 +242,7 @@ describe('Given a packed tree with an entry name containing "/"', () => {
       const { ctx, treeId } = await writePackedTree(treeBody);
 
       // Act
-      const result = await sut(ctx, new Set([treeId]), false, new Map(), new Map());
+      const result = await sut(ctx, new Set([treeId]), false, new Map(), new Map(), NO_SKIPS);
 
       // Assert
       const msgIds = result.findings
@@ -264,7 +267,7 @@ describe('Given a packed tree whose entries are not sorted', () => {
       const { ctx, treeId } = await writePackedTree(treeBody);
 
       // Act
-      const result = await sut(ctx, new Set([treeId]), false, new Map(), new Map());
+      const result = await sut(ctx, new Set([treeId]), false, new Map(), new Map(), NO_SKIPS);
 
       // Assert
       const msgIds = result.findings

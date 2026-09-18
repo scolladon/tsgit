@@ -23,6 +23,7 @@ import {
 import { runRefsVerifyPass } from './internal/fsck/refs-verify.js';
 import { runRevIndexHealthPass } from './internal/fsck/rev-index-health.js';
 import { collectRoots } from './internal/fsck/roots.js';
+import { loadFsckSkipList } from './internal/fsck/skip-list.js';
 import type { UnreadableMode } from './internal/fsck/types.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
 
@@ -62,6 +63,11 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   // while it reads its configuration, so an unknown msg-id or an
   // out-of-grammar severity refuses the whole audit rather than the entry.
   const severities = await readFsckSeverityTable(ctx);
+
+  // Read in the same breath: git parses `fsck.skipList` alongside the
+  // severity table, and a list it cannot open — or one carrying a line that
+  // is not a full object name — kills the audit right there.
+  const skipped = await loadFsckSkipList(ctx);
 
   // An integrity audit observes the STORE, never the object-byte read cache: a
   // delta base cached by an earlier read (or by this walk itself) would
@@ -114,6 +120,7 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
           opts.strict === true,
           blobFilenames,
           severities,
+          skipped,
         );
 
   // Refs-verify pass — `confirmPackAccessibility` is true exactly when the

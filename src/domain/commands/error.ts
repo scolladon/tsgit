@@ -206,6 +206,21 @@ export type CommandError =
       readonly source: string;
       readonly line: number;
     }
+  | {
+      readonly code: 'FSCK_SKIP_LIST_UNREADABLE';
+      /** The path as resolved, the one git names in its own refusal. */
+      readonly path: string;
+      /** The adapter's own code for why the read failed. */
+      readonly reason: string;
+    }
+  | {
+      readonly code: 'FSCK_SKIP_LIST_INVALID_NAME';
+      /** The offending line, trimmed, as git echoes it. */
+      readonly name: string;
+      readonly path: string;
+      /** 1-based line number inside the list file. */
+      readonly line: number;
+    }
   | { readonly code: 'CONFIG_BAD_ZLIB_LEVEL'; readonly level: number }
   | {
       readonly code: 'CONFIG_MULTIPLE_VALUES';
@@ -709,6 +724,21 @@ export const fsckUnknownMsgId = (msgId: string, source: string, line: number): T
     code: 'FSCK_UNKNOWN_MSG_ID',
     msgId: sanitizeForDisplay(msgId),
     source,
+    line,
+  });
+
+/** The object-name list `fsck.skipList` points at could not be read at all —
+ *  git's `could not open object name list`, which kills the whole audit. */
+export const fsckSkipListUnreadable = (path: string, reason: string): TsgitError =>
+  new TsgitError({ code: 'FSCK_SKIP_LIST_UNREADABLE', path, reason });
+
+/** A skip-list line that is not a full object name — git's `invalid object
+ *  name`, which kills the whole audit rather than dropping the line. */
+export const fsckSkipListInvalidName = (name: string, path: string, line: number): TsgitError =>
+  new TsgitError({
+    code: 'FSCK_SKIP_LIST_INVALID_NAME',
+    name: sanitizeForDisplay(name),
+    path,
     line,
   });
 

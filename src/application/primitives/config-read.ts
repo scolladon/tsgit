@@ -943,6 +943,28 @@ export const readFsckSeverityTable = async (ctx: Context): Promise<FsckSeverityT
   return table;
 };
 
+/**
+ * The path `fsck.skipList` names, or `undefined` when the key is absent.
+ * Walks the same `[fsck]` tokens the severity table does, so a repeated key
+ * takes its LAST entry exactly as git's config read does. A valueless entry
+ * (`skipList` with no `=`) carries no path and reads as absent.
+ */
+export const readFsckSkipListPath = async (ctx: Context): Promise<string | undefined> => {
+  const { tokens } = await readConfigEntry(ctx);
+  let inSection = false;
+  let path: string | undefined;
+  for (const token of tokens) {
+    if (token.kind === 'header') {
+      inSection = matchesSection(token.section, token.subsection, 'fsck', undefined);
+      continue;
+    }
+    if (!inSection || token.kind !== 'entry') continue;
+    if (token.key.toLowerCase() !== FSCK_SKIP_LIST_KEY) continue;
+    path = token.value ?? undefined;
+  }
+  return path;
+};
+
 /** One invalid `pack.window` / `pack.depth` / `pack.windowMemory` entry returned by `findFirstInvalidPackInt`. */
 export interface InvalidPackIntEntry {
   readonly key: string;

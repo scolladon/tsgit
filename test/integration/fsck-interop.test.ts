@@ -32,6 +32,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import type { FsckFinding } from '../../src/application/commands/fsck.js';
 import { fsck } from '../../src/application/commands/fsck.js';
+import { __resetConfigCacheForTests } from '../../src/application/primitives/config-read.js';
 import { TsgitError } from '../../src/domain/error.js';
 import type { Context } from '../../src/ports/context.js';
 import { GIT_AVAILABLE, runGit } from './interop-helpers.js';
@@ -2136,3 +2137,211 @@ describe.skipIf(!GIT_AVAILABLE)(
     });
   },
 );
+
+// --- Scenario family: fsck.skipList -----------------------------------------
+
+let skipListDir = '';
+let skipListCommitSha = '';
+let skipListDanglingSha = '';
+
+beforeAll(async () => {
+  skipListDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-skipList-'));
+  initRepo(skipListDir);
+  const emptyTree = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+  await writeLooseObject(skipListDir, 'tree', Buffer.alloc(0));
+  const commitBody = Buffer.from(
+    `tree ${emptyTree}\nauthor Name<bad@example.com> 1700000000 +0000\ncommitter Test <c@example.com> 1700000000 +0000\n\nmessage\n`,
+  );
+  skipListCommitSha = await writeLooseObject(skipListDir, 'commit', commitBody);
+  const refsDir = path.join(skipListDir, '.git', 'refs', 'heads');
+  await mkdir(refsDir, { recursive: true });
+  await writeFile(path.join(refsDir, 'main'), `${skipListCommitSha}\n`);
+  skipListDanglingSha = runGit(['-C', skipListDir, 'hash-object', '-w', '--stdin'], {
+    env: SAFE_ENV,
+    input: 'loose and unreferenced\n',
+  }).trim();
+}, SETUP_TIMEOUT);
+
+afterAll(async () => {
+  if (skipListDir !== '') await rm(skipListDir, { recursive: true, force: true });
+});
+
+/** Writes the list file, points the repository's `fsck.skipList` at it, and
+ *  hands back a Context whose config read has not been cached yet. */
+const withSkipList = async (body: string): Promise<{ list: string; ctx: Context }> => {
+  const list = path.join(skipListDir, 'names.txt');
+  await writeFile(list, body);
+  runGit(['-C', skipListDir, 'config', 'fsck.skipList', list], { env: SAFE_ENV });
+  __resetConfigCacheForTests();
+  return { list, ctx: createNodeContext({ workDir: skipListDir }) };
+};
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given fsck.skipList naming the object whose content check fires',
+  () => {
+    describe('When git fsck and tsgit fsck both run', () => {
+      it(
+        'Then both fall silent and exit clean',
+        async () => {
+          // Arrange
+          const { ctx } = await withSkipList(`${skipListCommitSha}\n`);
+
+          // Act
+          const gitResult = gitFsck(skipListDir, '--full');
+          const result = await fsck(ctx);
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          expect(gitResult.stderr).toBe('');
+          expect(result.exitCode).toBe(0);
+          expect(result.findings.filter((f) => f.type === 'bad-object')).toEqual([]);
+        },
+        SETUP_TIMEOUT,
+      );
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE)('Given fsck.skipList naming some other object', () => {
+  describe('When git fsck and tsgit fsck both run', () => {
+    it(
+      'Then both still report the finding and exit 1',
+      async () => {
+        // Arrange
+        const { ctx } = await withSkipList('0123456789abcdef0123456789abcdef01234567\n');
+
+        // Act
+        const gitResult = gitFsck(skipListDir, '--full');
+        const result = await fsck(ctx);
+
+        // Assert
+        expect(gitResult.exitCode).toBe(1);
+        expect(gitResult.stderr).toBe(
+          `error in commit ${skipListCommitSha}: missingSpaceBeforeEmail: invalid author/committer line - missing space before email\n`,
+        );
+        expect(result.exitCode & 1).toBe(1);
+        expect(result.findings).toContainEqual({
+          type: 'bad-object',
+          id: skipListCommitSha,
+          objectType: 'commit',
+          msgId: 'missingSpaceBeforeEmail',
+          severity: 'error',
+        });
+      },
+      SETUP_TIMEOUT,
+    );
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given a skip list decorated with comments, blanks and upper-case hex',
+  () => {
+    describe('When git fsck and tsgit fsck both run', () => {
+      it(
+        'Then both still recognise the name and fall silent',
+        async () => {
+          // Arrange
+          const { ctx } = await withSkipList(
+            `# names to ignore\r\n\r\n   ${skipListCommitSha.toUpperCase()}   \r\n`,
+          );
+
+          // Act
+          const gitResult = gitFsck(skipListDir, '--full');
+          const result = await fsck(ctx);
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          expect(result.exitCode).toBe(0);
+          expect(result.findings.filter((f) => f.type === 'bad-object')).toEqual([]);
+        },
+        SETUP_TIMEOUT,
+      );
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE)('Given a skip list holding an abbreviated object name', () => {
+  describe('When git fsck and tsgit fsck both run', () => {
+    it(
+      'Then both refuse the whole audit rather than dropping the line',
+      async () => {
+        // Arrange
+        const abbreviated = skipListCommitSha.slice(0, 8);
+        const { list, ctx } = await withSkipList(`${abbreviated}\n`);
+
+        // Act
+        const gitResult = gitFsck(skipListDir, '--full');
+        const caught = await catchFsckError(ctx);
+
+        // Assert
+        expect(gitResult.exitCode).toBe(128);
+        expect(gitResult.stderr).toBe(`fatal: invalid object name: ${abbreviated}\n`);
+        expect(caught.data).toEqual({
+          code: 'FSCK_SKIP_LIST_INVALID_NAME',
+          name: abbreviated,
+          path: list,
+          line: 1,
+        });
+      },
+      SETUP_TIMEOUT,
+    );
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given fsck.skipList pointed at a file that was never created',
+  () => {
+    describe('When git fsck and tsgit fsck both run', () => {
+      it(
+        'Then both refuse, naming the path they could not open',
+        async () => {
+          // Arrange
+          const absent = path.join(skipListDir, 'absent-names.txt');
+          runGit(['-C', skipListDir, 'config', 'fsck.skipList', absent], { env: SAFE_ENV });
+          __resetConfigCacheForTests();
+          const ctx = createNodeContext({ workDir: skipListDir });
+
+          // Act
+          const gitResult = gitFsck(skipListDir, '--full');
+          const caught = await catchFsckError(ctx);
+
+          // Assert
+          expect(gitResult.exitCode).toBe(128);
+          expect(gitResult.stderr).toBe(`fatal: could not open object name list: ${absent}\n`);
+          expect(caught.data).toEqual({
+            code: 'FSCK_SKIP_LIST_UNREADABLE',
+            path: absent,
+            reason: 'FILE_NOT_FOUND',
+          });
+        },
+        SETUP_TIMEOUT,
+      );
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE)('Given a skip list naming a dangling object', () => {
+  describe('When git fsck and tsgit fsck both run', () => {
+    it(
+      'Then both still report it — the list only silences content checks',
+      async () => {
+        // Arrange
+        const { ctx } = await withSkipList(`${skipListCommitSha}\n${skipListDanglingSha}\n`);
+
+        // Act
+        const gitResult = gitFsck(skipListDir, '--full');
+        const result = await fsck(ctx);
+
+        // Assert
+        expect(gitResult.exitCode).toBe(0);
+        expect(gitResult.stdout).toContain(`dangling blob ${skipListDanglingSha}`);
+        expect(result.findings).toContainEqual({
+          type: 'dangling',
+          id: skipListDanglingSha,
+          objectType: 'blob',
+        });
+      },
+      SETUP_TIMEOUT,
+    );
+  });
+});

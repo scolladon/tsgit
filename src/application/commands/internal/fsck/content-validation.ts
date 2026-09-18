@@ -189,6 +189,7 @@ async function validateOneObject(
   strict: boolean,
   blobFilenames: ReadonlyMap<ObjectId, string>,
   severities: FsckSeverityTable,
+  skipped: ReadonlySet<string>,
 ): Promise<ContentValidationResult> {
   const findings: FsckFinding[] = [];
   let exitBit = 0;
@@ -212,9 +213,14 @@ async function validateOneObject(
   // For blobs, pass filename when the blob appears under a special name
   // (.gitmodules / .gitattributes) so content checks fire (gitmodulesUrl, …).
   const fileName = kind === 'blob' ? blobFilenames.get(id) : undefined;
-  const catalogueFindings = validateObject(
-    buildValidateObjectInput(ctx.hashConfig, kind, rawBody, strict, fileName),
-  );
+  // `fsck.skipList` reaches exactly here: git still runs every check and
+  // drops the REPORT for a listed oid, so the finding and the exit bit it
+  // would have carried disappear together. The corrupt-object arm above and
+  // the hash check below are `error()` calls in git, never `report()` ones,
+  // and no list silences them.
+  const catalogueFindings = skipped.has(id)
+    ? []
+    : validateObject(buildValidateObjectInput(ctx.hashConfig, kind, rawBody, strict, fileName));
   for (const catalogued of catalogueFindings) {
     const severity = retypeSeverity(severities, catalogued.msgId, catalogued.severity);
     if (severity === 'ignore') continue;
@@ -251,6 +257,7 @@ export async function runContentValidationPass(
   strict: boolean,
   blobFilenames: ReadonlyMap<ObjectId, string>,
   severities: FsckSeverityTable,
+  skipped: ReadonlySet<string>,
 ): Promise<ContentValidationResult> {
   const findings: FsckFinding[] = [];
   let exitBit = 0;
@@ -262,6 +269,7 @@ export async function runContentValidationPass(
       strict,
       blobFilenames,
       severities,
+      skipped,
     );
     findings.push(...objFindings);
     exitBit |= objBit;

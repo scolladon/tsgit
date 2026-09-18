@@ -6984,3 +6984,223 @@ describe('Given the opening Context already loaded its shallow-boundary set', ()
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// fsck.skipList
+// ---------------------------------------------------------------------------
+
+/** A repository whose only ref roots a commit carrying `missingSpaceBeforeEmail`. */
+const seedBadCommitRepo = async (): Promise<{ ctx: Context; commitId: ObjectId }> => {
+  const ctx = await initBareCtx();
+  const treeId = await writeObject(ctx, makeTree([]));
+  const body = enc2.encode(
+    `tree ${treeId}\nauthor Name<bad@example.com> 1700000000 +0000\ncommitter Test <c@example.com> 1700000000 +0000\n\nmessage\n`,
+  );
+  const commitId = await writeMalformedLooseObject(ctx, buildLooseBytes('commit', body));
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+  return { ctx, commitId };
+};
+
+/** Writes the list file and points `fsck.skipList` at it. */
+const configureSkipList = async (ctx: Context, body: string, path?: string): Promise<string> => {
+  const listPath = path ?? `${ctx.layout.gitDir}/skip-list`;
+  await ctx.fs.writeUtf8(listPath, body);
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, `[fsck]\n\tskipList = ${listPath}\n`);
+  __resetConfigCacheForTests();
+  return listPath;
+};
+
+const OTHER_OID = '0123456789abcdef0123456789abcdef01234567';
+
+const skipListError = async (ctx: Context): Promise<TsgitError> => {
+  let caught: unknown;
+  try {
+    await fsck(ctx);
+  } catch (err) {
+    caught = err;
+  }
+  expect(caught).toBeInstanceOf(TsgitError);
+  return caught as TsgitError;
+};
+
+describe('Given fsck.skipList naming the oid whose content check fires', () => {
+  describe('When fsck runs', () => {
+    it('Then the finding is gone and its exit bit with it', async () => {
+      // Arrange
+      const { ctx, commitId } = await seedBadCommitRepo();
+      await configureSkipList(ctx, `${commitId}\n`);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(result.findings.filter((f) => f.type === 'bad-object')).toEqual([]);
+      expect(result.exitCode & 1).toBe(0);
+    });
+  });
+});
+
+describe('Given fsck.skipList naming some other oid', () => {
+  describe('When fsck runs', () => {
+    it('Then the finding survives and still carries its exit bit', async () => {
+      // Arrange
+      const { ctx, commitId } = await seedBadCommitRepo();
+      await configureSkipList(ctx, `${OTHER_OID}\n`);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(result.findings).toContainEqual({
+        type: 'bad-object',
+        id: commitId,
+        objectType: 'commit',
+        msgId: 'missingSpaceBeforeEmail',
+        severity: 'error',
+      });
+      expect(result.exitCode & 1).toBe(1);
+    });
+  });
+});
+
+describe('Given a skip list padded with comments, blanks, whitespace and CRLF', () => {
+  describe('When fsck runs', () => {
+    it('Then every decoration is tolerated and the oid still skips', async () => {
+      // Arrange
+      const { ctx, commitId } = await seedBadCommitRepo();
+      await configureSkipList(ctx, `# a note\r\n\r\n   ${commitId}   \r\n\r\n`);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(result.findings.filter((f) => f.type === 'bad-object')).toEqual([]);
+    });
+  });
+});
+
+describe('Given a skip list holding an upper-cased oid with no trailing newline', () => {
+  describe('When fsck runs', () => {
+    it('Then the case is folded and the last line still counts', async () => {
+      // Arrange
+      const { ctx, commitId } = await seedBadCommitRepo();
+      await configureSkipList(ctx, (commitId as string).toUpperCase());
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(result.findings.filter((f) => f.type === 'bad-object')).toEqual([]);
+    });
+  });
+});
+
+describe('Given fsck.skipList pointed at a path with a relative spelling', () => {
+  describe('When fsck runs', () => {
+    it('Then it resolves against the working tree and the oid still skips', async () => {
+      // Arrange
+      const { ctx, commitId } = await seedBadCommitRepo();
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/names.txt`, `${commitId}\n`);
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[fsck]\n\tskipList = names.txt\n');
+      __resetConfigCacheForTests();
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(result.findings.filter((f) => f.type === 'bad-object')).toEqual([]);
+    });
+  });
+});
+
+describe('Given fsck.skipList pointed at a file that is not there', () => {
+  describe('When fsck runs', () => {
+    it('Then the whole audit refuses, naming the path it could not open', async () => {
+      // Arrange
+      const { ctx } = await seedBadCommitRepo();
+      const missing = `${ctx.layout.gitDir}/absent-list`;
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, `[fsck]\n\tskipList = ${missing}\n`);
+      __resetConfigCacheForTests();
+
+      // Act
+      const caught = await skipListError(ctx);
+
+      // Assert
+      expect(caught.data).toEqual({
+        code: 'FSCK_SKIP_LIST_UNREADABLE',
+        path: missing,
+        reason: 'FILE_NOT_FOUND',
+      });
+    });
+  });
+});
+
+describe('Given a skip list line that is not an object name', () => {
+  describe('When fsck runs', () => {
+    it('Then the whole audit refuses, naming the line and where it came from', async () => {
+      // Arrange
+      const { ctx } = await seedBadCommitRepo();
+      const listPath = await configureSkipList(ctx, '# lead-in\nnot-an-oid\n');
+
+      // Act
+      const caught = await skipListError(ctx);
+
+      // Assert
+      expect(caught.data).toEqual({
+        code: 'FSCK_SKIP_LIST_INVALID_NAME',
+        name: 'not-an-oid',
+        path: listPath,
+        line: 2,
+      });
+    });
+  });
+});
+
+describe('Given a skip list holding an abbreviated object name', () => {
+  describe('When fsck runs', () => {
+    it('Then it refuses too — git takes full names only', async () => {
+      // Arrange
+      const { ctx, commitId } = await seedBadCommitRepo();
+      const abbreviated = (commitId as string).slice(0, 8);
+      const listPath = await configureSkipList(ctx, `${abbreviated}\n`);
+
+      // Act
+      const caught = await skipListError(ctx);
+
+      // Assert
+      expect(caught.data).toEqual({
+        code: 'FSCK_SKIP_LIST_INVALID_NAME',
+        name: abbreviated,
+        path: listPath,
+        line: 1,
+      });
+    });
+  });
+});
+
+describe('Given a skip list naming a dangling blob', () => {
+  describe('When fsck runs', () => {
+    it('Then the dangling verdict survives — the list only silences content checks', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const blobId = await writeObject(ctx, makeBlob('dangling'));
+      await configureSkipList(ctx, `${blobId}\n`);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(result.findings).toContainEqual({
+        type: 'dangling',
+        id: blobId,
+        objectType: 'blob',
+      });
+    });
+  });
+});
