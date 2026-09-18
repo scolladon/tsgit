@@ -164,7 +164,18 @@ done
 # grade, the ref-integrity walk's read-through-a-link mark and the content grade it
 # gates. None is removable without dropping the refusal or the parity each one
 # exists to provide.
-SIZE_CAP=$((969 * 1024))
+# Raised 969 -> 970 KiB by the doc-attachment repair and the packed-refs ordering
+# fix: the measured tarball landed at 993 180 B, 924 B over the old cap. Two
+# sources, both shipped. First, sixteen doc comments that sat above another doc
+# comment instead of above a declaration reached no declaration at all, so the
+# published `.d.ts` files carried no summary for `openRepository`, `mergeBase`,
+# `CatFileBatchEntry`, `loadReftableStack`, `commitHeader` and `cacheDeltaBase`;
+# reattaching them is what a type-declaration bundle is for and costs about
+# 1.1 KiB. Second, `packedRefsWithout`'s forward merge and the record-index
+# bisection that replaced the by-name map are runtime code every distribution
+# form ships. Neither is removable without dropping the published documentation
+# or the ordering parity it exists to provide.
+SIZE_CAP=$((970 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
