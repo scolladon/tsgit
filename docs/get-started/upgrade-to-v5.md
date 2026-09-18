@@ -70,6 +70,13 @@ This is the largest group. `updateRef` was a thin compare-and-swap over one ref 
 
 **`remote.rename` renames packed-only tracking refs.** It used to refuse `UNSUPPORTED_OPERATION`. The new names are written loose and the old lines leave `packed-refs`, exactly as `git remote rename` does.
 
+**`remote.rename` also reproduces two defects in `git remote rename` itself.** Both are transcribed deliberately, because faithfulness here binds to the binary rather than to what the binary ought to do. Verified against git 2.55.0 on both the files and reftable backends.
+
+- *A symbolic `<remote>/HEAD` target is spliced blind.* git rewrites the moved names by overwriting a fixed byte slice — the 13 bytes of `refs/remotes/` followed by the length of the old name — and applies that same splice to a symbolic ref's **target** without checking the target lives under that remote, or under `refs/remotes/` at all. Renaming `origin` to `up2` turns a `refs/remotes/origin/HEAD` pointing at `refs/remotes/other/main` into `refs/remotes/up2main`, a dangling symref; pointing it at `refs/heads/feature-long-name` yields `refs/heads/feup2long-name`. If the target is *shorter* than the slice, the rename refuses outright and moves nothing — and that refusal beats every name-conflict check.
+- *The config section is renamed first and never rolled back.* git commits `remote.<old>` → `remote.<new>` before it moves any ref, and rewrites the fetch refspecs and `branch.<x>.remote` only afterwards. A refusal in between leaves `[remote "<new>"]` still carrying values that name `<old>`, with the refs untouched.
+
+If you rename remotes programmatically, point `<remote>/HEAD` inside its own remote first, and re-read the config after a refused rename rather than assuming it rolled back.
+
 ## Caches and memory
 
 **The cache family's documented ceiling is about 158 MiB, not 136 MiB.** The parsed-object memo's byte valve is now charged at measured cost rather than an estimate (about 37.7 MiB at SHA-1), and at SHA-256 the flat-tree and memo valves are sized so each still admits its full reference workload. No API changed and no default you set moves — only the number you should budget for.
