@@ -132,7 +132,7 @@ See [errors](../use/errors.md) for the refusal codes a missing or misconfigured 
 | `deltaCacheMaxBytes` | 16 MiB | The loose/packed-object byte cache (`Context.deltaCache`). `0` disables this **and** the parsed-object memo, the FlatTree cache, and delta-base caching as a family — every one of them is gated off entirely when this is `0`. |
 | `deltaCacheMaxEntries` | 65 536 | Entry cap on the same cache. |
 | `parsedObjectMemoMaxEntries` | derived from `deltaCacheMaxBytes` (32 768 at the default) | Entry cap on the parsed-commit/tag memo — the binding constraint since [ADR-851](../adr/851-derived-object-caches-are-bound-by-entries-with-explicit-budgets.md); overriding this does not change the memo's byte valve, only how many entries it will hold before the valve itself binds. |
-| `flatTreeCacheMaxBytes` | half of `deltaCacheMaxBytes` (8 MiB at the default) | The FlatTree cache HEAD reads memoise behind ([`readHeadTree`](../use/primitives/internals.md#readheadtree)). |
+| `flatTreeCacheMaxBytes` | half of `deltaCacheMaxBytes`, plus a hash-width surcharge (8 MiB at the sha1 default, 9 588 608 B at sha256) | The FlatTree cache HEAD reads memoise behind ([`readHeadTree`](../use/primitives/internals.md#readheadtree)). An explicit value is taken verbatim — it gets no surcharge. |
 | `deltaBaseCacheMaxBytes` | `core.deltaBaseCacheLimit`, or git's own `96 MiB` default when the key is absent | The delta-base cache of reconstructed pack intermediates. Supplying this option **suppresses `core.deltaBaseCacheLimit` entirely** — the key is neither read nor validated, transcribing git's own `-c` override precedence ([ADR-858](../adr/858-the-explicit-delta-base-budget-option-suppresses-the-config-key.md)). |
 
 ```ts
