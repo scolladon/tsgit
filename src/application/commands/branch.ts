@@ -25,7 +25,6 @@ import type { Context } from '../../ports/context.js';
 import { peelChain } from '../primitives/internal/peel-chain.js';
 import { transactionLogging } from '../primitives/internal/ref-transaction-logging.js';
 import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
-import { listWorktrees } from '../primitives/list-worktrees.js';
 import { readObject } from '../primitives/read-object.js';
 import {
   getRefStore,
@@ -41,6 +40,7 @@ import {
 } from '../primitives/resolve-ref.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { branchMerged } from './internal/branch-merged.js';
+import { worktreeHolding } from './internal/checked-out-branches.js';
 import {
   assertOperationalRepository,
   branchRefFromHead,
@@ -152,18 +152,18 @@ const omittedStartPointLabel = async (ctx: Context): Promise<string> => {
 };
 
 /**
- * git's `find_shared_symref`: a branch is off limits while ANY worktree's
- * HEAD names it — the current checkout, a linked worktree, or a linked
- * worktree whose directory is gone but whose registration has not been
- * pruned. A detached HEAD names no branch, and a bare main checkout is
- * skipped outright, so neither holds anything. Both a forced rewrite and a
- * delete run it before anything else they would refuse on, so an
- * unresolvable start point or an unmerged tip on a held branch still
- * reports the worktree.
+ * git's `branch_checked_out`: a branch is off limits while ANY worktree holds
+ * it — the current checkout, a linked worktree, or a linked worktree whose
+ * directory is gone but whose registration has not been pruned. A worktree
+ * holds the branch its HEAD names, the branch its in-progress rebase will
+ * reattach, and the branch its bisect started from; a bare main checkout is
+ * skipped outright, so it holds nothing. Both a forced rewrite and a delete
+ * run it before anything else they would refuse on, so an unresolvable start
+ * point or an unmerged tip on a held branch still reports the worktree.
  */
 const assertNoWorktreeHolds = async (ctx: Context, name: RefName): Promise<void> => {
-  const holder = (await listWorktrees(ctx)).find((worktree) => worktree.branch === name);
-  if (holder !== undefined) throw branchCheckedOut(name, holder.path);
+  const holder = await worktreeHolding(ctx, name);
+  if (holder !== undefined) throw branchCheckedOut(name, holder);
 };
 
 /**

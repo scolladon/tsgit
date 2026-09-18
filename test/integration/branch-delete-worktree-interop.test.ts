@@ -192,6 +192,96 @@ describe.skipIf(!GIT_AVAILABLE)('branch delete — worktree holders interop', ()
     });
   });
 
+  /** A linked worktree on `sidecar`, stopped mid-rebase onto `main` with a
+   *  conflict — HEAD detached, `rebase-merge/head-name` naming the branch. */
+  const seedRebasingWorktree = async (dir: string): Promise<string> => {
+    const linked = path.join(dir, '..', 'linked');
+    await writeFile(path.join(dir, 'f.txt'), 'base\n');
+    git(dir, 'add', 'f.txt');
+    git(dir, 'commit', '-q', '-m', 'base');
+    git(dir, 'worktree', 'add', '-q', linked, '-b', 'sidecar');
+    await writeFile(path.join(linked, 'f.txt'), 'sidecar\n');
+    git(linked, 'commit', '-q', '-am', 'sidecar edit');
+    await writeFile(path.join(dir, 'f.txt'), 'main\n');
+    git(dir, 'commit', '-q', '-am', 'main edit');
+    tryRunGitWithExit(['-C', linked, 'rebase', 'main']);
+    return linked;
+  };
+
+  describe('Given a linked worktree stopped mid-rebase, its HEAD detached off the branch', () => {
+    describe('When git branch -D and tsgit branchDelete both target that branch', () => {
+      it(
+        'Then both refuse — the rebase still holds the branch it will reattach',
+        async () => {
+          // Arrange
+          const peer = await caseRepo('rebasing-peer');
+          const peerLinked = await seedRebasingWorktree(peer);
+          const dir = await caseRepo('rebasing');
+          const linked = await seedRebasingWorktree(dir);
+
+          // Act
+          const gitResult = quietDelete(peer, '-D', 'sidecar');
+          const err = await deleteWithTsgit(dir, 'sidecar');
+
+          // Assert
+          expect(gitResult.exitCode).toBe(1);
+          expect(gitResult.stderr).toBe(heldLine('sidecar', peerLinked));
+          expect(err?.data).toEqual({
+            code: 'BRANCH_CHECKED_OUT',
+            branch: 'refs/heads/sidecar',
+            path: linked,
+          });
+          expect(branchSurvives(dir, 'sidecar')).toBe(true);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  /** A linked worktree on `sidecar`, bisecting — HEAD detached, `BISECT_START`
+   *  naming the branch it started from. */
+  const seedBisectingWorktree = (dir: string): string => {
+    const linked = path.join(dir, '..', 'linked');
+    git(dir, 'worktree', 'add', '-q', linked, '-b', 'sidecar');
+    for (const message of ['b1', 'b2', 'b3']) {
+      git(linked, 'commit', '-q', '--allow-empty', '-m', message);
+    }
+    git(linked, 'bisect', 'start');
+    git(linked, 'bisect', 'bad', 'HEAD');
+    git(linked, 'bisect', 'good', 'HEAD~2');
+    return linked;
+  };
+
+  describe('Given a linked worktree bisecting, its HEAD detached off the branch', () => {
+    describe('When git branch -D and tsgit branchDelete both target that branch', () => {
+      it(
+        'Then both refuse — the bisect still holds the branch it started from',
+        async () => {
+          // Arrange
+          const peer = await caseRepo('bisecting-peer');
+          const peerLinked = seedBisectingWorktree(peer);
+          const dir = await caseRepo('bisecting');
+          const linked = seedBisectingWorktree(dir);
+
+          // Act
+          const gitResult = quietDelete(peer, '-D', 'sidecar');
+          const err = await deleteWithTsgit(dir, 'sidecar');
+
+          // Assert
+          expect(gitResult.exitCode).toBe(1);
+          expect(gitResult.stderr).toBe(heldLine('sidecar', peerLinked));
+          expect(err?.data).toEqual({
+            code: 'BRANCH_CHECKED_OUT',
+            branch: 'refs/heads/sidecar',
+            path: linked,
+          });
+          expect(branchSurvives(dir, 'sidecar')).toBe(true);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
   describe('Given a linked worktree whose directory is gone but whose registration survives', () => {
     describe('When git branch -d and tsgit branchDelete both target its branch', () => {
       it(
