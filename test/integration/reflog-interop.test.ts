@@ -20,7 +20,7 @@ import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { branchRename } from '../../src/application/commands/branch.js';
-import type { ReflogShowEntry } from '../../src/application/commands/reflog.js';
+import type { ReflogAction, ReflogShowEntry } from '../../src/application/commands/reflog.js';
 import { reflog } from '../../src/application/commands/reflog.js';
 import { revParse } from '../../src/application/commands/rev-parse.js';
 import { dropStashEntry, readStashStack } from '../../src/application/primitives/stash-ref.js';
@@ -2896,6 +2896,38 @@ describe.skipIf(!GIT_AVAILABLE)(
       const poisonClass = (dir: string): Promise<void> =>
         appendFile(path.join(dir, '.git', 'config'), '[core]\n\tdeltaBaseCacheLimit = bogus\n');
 
+      /** The refusal payload both tools carry for a malformed class value. */
+      interface ClassRefusalData {
+        readonly code: string;
+        readonly key: string;
+        readonly source: string;
+        readonly value: string;
+        readonly reason: string;
+      }
+
+      /** The two ways a sweep reaches `HEAD` under a cutoff pair the
+       *  reachability walk cannot shortcut: every log at once, and `HEAD`
+       *  named on its own. */
+      const WALKING_SWEEPS: ReadonlyArray<{
+        readonly label: string;
+        readonly slug: string;
+        readonly gitArgs: ReadonlyArray<string>;
+        readonly opts: ReflogAction;
+      }> = [
+        {
+          label: 'every log carrying one',
+          slug: 'walking-sweep-all',
+          gitArgs: ['--all'],
+          opts: { action: 'expire', all: true, expire: 'never', expireUnreachable: 'now' },
+        },
+        {
+          label: 'HEAD alone',
+          slug: 'walking-sweep-head',
+          gitArgs: ['HEAD'],
+          opts: { action: 'expire', ref: 'HEAD', expire: 'never', expireUnreachable: 'now' },
+        },
+      ];
+
       describe('Given a malformed core.deltaBaseCacheLimit and a target that cannot resolve', () => {
         describe.each([
           { label: 'a name no ref ever had', arg: 'refs/heads/nope', orphanLog: false },
@@ -3050,6 +3082,64 @@ describe.skipIf(!GIT_AVAILABLE)(
             }
           });
         });
+      });
+
+      describe('Given a malformed core.deltaBaseCacheLimit and a cutoff pair that walks from HEAD', () => {
+        describe.each(WALKING_SWEEPS)(
+          'When expire runs with --expire=never --expire-unreachable=now over $label',
+          ({ slug, gitArgs, opts }) => {
+            it('Then both tools refuse on the class with every log left byte-identical', async () => {
+              // Arrange
+              const peer = await caseDir(`${slug}-peer`);
+              const ours = await caseDir(`${slug}-ours`);
+              for (const dir of [peer, ours]) await poisonClass(dir);
+              const beforeMain = await readFile(mainLogPath(peer), 'utf8');
+              const beforeHead = await readFile(headLogPath(peer), 'utf8');
+
+              // Act
+              const gitResult = tryRunGitWithExit([
+                '-C',
+                peer,
+                'reflog',
+                'expire',
+                '--expire=never',
+                '--expire-unreachable=now',
+                ...gitArgs,
+              ]);
+              const ctx = createNodeContext({ workDir: ours });
+              let caught: unknown;
+              try {
+                await reflog(ctx, opts);
+              } catch (err) {
+                caught = err;
+              }
+
+              // Assert — git's own fatal line, rebuilt from tsgit's refusal data.
+              expect(caught).toBeInstanceOf(TsgitError);
+              const data = (caught as TsgitError).data as unknown as ClassRefusalData;
+              expect(data).toEqual({
+                code: 'CONFIG_BAD_NUMERIC_VALUE',
+                key: 'core.deltabasecachelimit',
+                source: path.join(ours, '.git', 'config'),
+                value: 'bogus',
+                reason: 'invalid unit',
+              });
+              expect(gitResult.exitCode).toBe(128);
+              expect(gitResult.stderr).toBe(
+                `fatal: bad numeric config value '${data.value}' for '${data.key}' in file ${path.relative(ours, data.source)}: ${data.reason}\n`,
+              );
+              // Unlike the `--expire=now` sweep above, the unreachable cutoff
+              // can still move a verdict, so the sweep reads a tip and reaches
+              // the class BEFORE any log is rewritten: both tools leave
+              // `logs/HEAD` exactly as they found it.
+              expect(beforeHead).not.toBe('');
+              for (const dir of [peer, ours]) {
+                expect(await readFile(mainLogPath(dir), 'utf8')).toBe(beforeMain);
+                expect(await readFile(headLogPath(dir), 'utf8')).toBe(beforeHead);
+              }
+            });
+          },
+        );
       });
     });
   },
