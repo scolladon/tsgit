@@ -237,7 +237,7 @@ const writeBlobToWorkingTree = async (
       const smudge = choice.smudge;
       // A smudge filter spawns a subprocess — CPU/process-bound, not
       // blocking-fd-bound — so it must not inherit the write wave's wider
-      // ioBound budget (P10): `filterLimiter` is sized off cpuBound and
+      // ioBound budget: `filterLimiter` is sized off cpuBound and
       // shared for the whole changeset apply, bounding how many subprocess
       // spawns run at once regardless of how many writes the ioBound pool
       // has in flight. The write itself, below, stays on the full pool.
@@ -485,7 +485,7 @@ export const applyChangeset = async (
 
   validateChangesetPaths(changeset);
 
-  // Hoisted above the dirty check (P9) so a `noop`-heavy changeset never
+  // Hoisted above the dirty check so a `noop`-heavy changeset never
   // pays a dirty probe — or a pool slot — for entries that carry no I/O.
   const { deletes, writes } = splitWaves(changeset.entries);
 
@@ -508,7 +508,7 @@ export const applyChangeset = async (
   // tree with many entries under the same symlinked directory costs one
   // `lstat` per distinct directory, not one per entry.
   const scanner = createLeadingPathScanner(ctx);
-  // Sized off cpuBound, not ioBound (P10): a smudge subprocess spawn is
+  // Sized off cpuBound, not ioBound: a smudge subprocess spawn is
   // process/CPU-bound, not blocking-fd-bound, so it must not inherit the
   // write wave's wider ioBound budget — see `writeBlobToWorkingTree`.
   const filterLimiter = limiterFor(ctx, 'cpuBound');

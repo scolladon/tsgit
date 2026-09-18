@@ -123,8 +123,8 @@ function normalizeUnderMode(bytes: Uint8Array, key: LineKey): Uint8Array {
   }
 }
 
-// A line's trailing LF is part of its identity iff the line key is inactive
-// (C4): git ignores a difference in the final line's terminator under every
+// A line's trailing LF is part of its identity iff the line key is inactive:
+// git ignores a difference in the final line's terminator under every
 // flag that makes it compare content at all, symmetrically (LF gained or
 // lost). The rule can only ever bite the last line pair — every non-final
 // line is terminated on both sides by construction — so this strip is safe

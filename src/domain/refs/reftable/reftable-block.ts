@@ -93,7 +93,7 @@ export type RecordDecoder<T> = (
 
 /** A block's record area and restart array, both resolved to absolute file
  *  offsets — the first block's restart offsets are stored file-relative
- *  already (S2), every later block's are stored block-relative and are
+ *  already, every later block's are stored block-relative and are
  *  translated here so every downstream reader deals in file offsets only. */
 export interface BlockBounds {
   readonly recordsStart: number;

@@ -661,7 +661,7 @@ export async function readEntryHeaderWithChunk(
   }
   // Read exactly the bytes belonging to this entry: [entryOffset, nextOffset).
   // REF_DELTA base-id length follows the active hash algorithm (SHA-1=20, SHA-256=32).
-  // Routed through the pack's persistent handle (A4) — one `open` per pack for
+  // Routed through the pack's persistent handle — one `open` per pack for
   // the whole chain walk, not one per step.
   const chunk = await hit.pack.readSlice(hit.offset, sliceLength);
   const header = parsePackEntryHeader(chunk, 0, ctx.hashConfig);

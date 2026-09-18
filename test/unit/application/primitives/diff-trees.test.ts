@@ -1201,7 +1201,7 @@ describe('diffTrees', () => {
 
   describe('Given a whitespace-only modify and ignoreWhitespace:all', () => {
     describe('When diffTrees is called', () => {
-      it('Then the ws-only modify is dropped from changes (#D1)', async () => {
+      it('Then the ws-only modify is dropped from changes', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         const oldId = await blob(ctx, 'hello world\n');
@@ -1286,7 +1286,7 @@ describe('diffTrees', () => {
 
   describe('Given a mixed two-file diff (ws-only f + real g) and ignoreWhitespace:all', () => {
     describe('When diffTrees is called', () => {
-      it('Then only the ws-only file is dropped, real change is kept (#D1)', async () => {
+      it('Then only the ws-only file is dropped, real change is kept', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         const fOldId = await blob(ctx, 'spaces here\n');

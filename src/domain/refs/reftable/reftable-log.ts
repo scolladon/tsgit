@@ -1,15 +1,14 @@
 /**
  * Reftable log block codec: the reflog record grammar (`log_record` /
  * `log_data`), the reversed-`update_index` log key, and the raw `±HHMM`
- * `tz_offset` divergence from the shipped spec (S1). Log blocks are
+ * `tz_offset` divergence from the shipped spec. Log blocks are
  * unaligned and written back-to-back — no `block_size` stride applies and a
  * block's own declared length is its INFLATED size, never its compressed
  * extent — so `loadReftable` inflates every log block eagerly, tracking
  * bytes consumed by the inflater to find each next block.
  * `iterateReftableLogs` then walks the pre-inflated payloads synchronously,
- * which is exactly what eager whole-stack loading buys. Per S3, the log
- * index (parsed into the footer by `reftable-format.ts`) is never consulted
- * here: the whole table is already resident, so every read is a linear scan.
+ * which is exactly what eager whole-stack loading buys. The log index
+ * (parsed into the footer by `reftable-format.ts`) is never consulted here: the whole table is already resident, so every read is a linear scan.
  */
 
 import { TsgitError } from '../../error.js';
@@ -77,7 +76,7 @@ export interface LoadedReftable extends Reftable {
 }
 
 /**
- * git's raw `sint16` `tz_offset` divergence from the shipped spec (S1): the
+ * git's raw `sint16` `tz_offset` divergence from the shipped spec: the
  * stored integer is the signed `±HHMM` offset itself (`230` for `+0230`,
  * `-800` for `-0800`), never minutes from GMT as the spec claims. Six
  * repositories built at distinct `GIT_*_DATE` offsets confirm this both
@@ -279,7 +278,7 @@ export function logBlockBounds(payload: Uint8Array): LogBlockBounds {
 
 /**
  * Full forward scan of one inflated log block's records — never a binary
- * search: S3 means the log index is never consulted on read, so there is no
+ * search: the log index is never consulted on read, so there is no
  * candidate block to narrow down to in the first place. `matches` decides,
  * from the KEY alone, whether a record is worth materialising in full
  * ({@link decodeLogData}) or only worth skipping past ({@link skipLogData})
@@ -355,7 +354,7 @@ const FOOTER_LENGTH_BY_HEADER_LENGTH: ReadonlyMap<24 | 28, 68 | 72> = new Map([
 ]);
 
 /** The log section's exclusive upper bound: the log index position when one
- *  is present (S3: parsed into the footer, but never walked into), otherwise
+ *  is present (parsed into the footer, but never walked into), otherwise
  *  the footer's own start. */
 function logSectionEnd(table: Reftable): number {
   if (table.footer.logIndexPosition !== 0) {

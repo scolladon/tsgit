@@ -13,7 +13,7 @@ import { createLruCache } from '../../../src/domain/storage/lru-cache.js';
 import { openRepository, type RuntimeFallback } from '../../../src/repository.js';
 
 /**
- * Kills the B3 wiring-drift class: a `primitives/index.ts` export that is
+ * Kills the wiring-drift class: a `primitives/index.ts` export that is
  * shaped like a Tier-2 primitive — `(ctx, …)` — but never reaches
  * `repo.primitives`. Every such export must be either bound, or listed here
  * with a reason (internal building block reused by commands/other

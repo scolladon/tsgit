@@ -334,7 +334,7 @@ function trailingNoNewline(edit: Edit, ctx: NoNewlineCtx): boolean {
     edit.newIndex === ctx.lastNewIdx &&
     ctx.lastNewIdx === ctx.newTotal - 1;
   // git renders a context line from the postimage and derives the no-newline
-  // marker from the postimage's termination alone (C4): once a whitespace-only
+  // marker from the postimage's termination alone: once a whitespace-only
   // context match can straddle differing termination, the preimage side must
   // not be consulted here. The branch is kept rather than folded into the
   // fallthrough it currently agrees with: it is what states the rule for a
