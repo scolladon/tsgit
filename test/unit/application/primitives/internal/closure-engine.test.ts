@@ -1407,19 +1407,24 @@ describe('computeClosure', () => {
         });
 
         try {
-          const [
-            { computeClosure: sut },
-            { TsgitError: ScopedTsgitError },
-            { writeObject: scopedWriteObject },
-            { writeTree: scopedWriteTree },
-            { buildSeededContext: scopedBuildSeededContext },
-          ] = await Promise.all([
-            import('../../../../../src/application/primitives/internal/closure-engine.js'),
-            import('../../../../../src/domain/error.js'),
-            import('../../../../../src/application/primitives/write-object.js'),
-            import('../../../../../src/application/primitives/write-tree.js'),
-            import('../fixtures.js'),
-          ]);
+          // The re-imports run one at a time on purpose: importing them concurrently
+          // starts one mock-queue drain per module, and a straggling drain re-applies
+          // its queued unmock after another drain has already registered the mock.
+          // A dependency resolved inside that window finds an empty registry and
+          // binds the unmocked module, so the override silently does not apply.
+          const { computeClosure: sut } = await import(
+            '../../../../../src/application/primitives/internal/closure-engine.js'
+          );
+          const { TsgitError: ScopedTsgitError } = await import(
+            '../../../../../src/domain/error.js'
+          );
+          const { writeObject: scopedWriteObject } = await import(
+            '../../../../../src/application/primitives/write-object.js'
+          );
+          const { writeTree: scopedWriteTree } = await import(
+            '../../../../../src/application/primitives/write-tree.js'
+          );
+          const { buildSeededContext: scopedBuildSeededContext } = await import('../fixtures.js');
           const ctx = await scopedBuildSeededContext();
           const blob: Blob = {
             type: 'blob',
@@ -1631,19 +1636,21 @@ describe('computeClosure', () => {
         });
 
         try {
-          const [
-            { computeClosure: sut },
-            { TsgitError: ScopedTsgitError },
-            { writeObject: scopedWriteObject },
-            { writeTree: scopedWriteTree },
-            { buildSeededContext: scopedBuildSeededContext },
-          ] = await Promise.all([
-            import('../../../../../src/application/primitives/internal/closure-engine.js'),
-            import('../../../../../src/domain/error.js'),
-            import('../../../../../src/application/primitives/write-object.js'),
-            import('../../../../../src/application/primitives/write-tree.js'),
-            import('../fixtures.js'),
-          ]);
+          // Re-imported one at a time, for the mock-registration reason recorded at
+          // the first scoped re-import in this file.
+          const { computeClosure: sut } = await import(
+            '../../../../../src/application/primitives/internal/closure-engine.js'
+          );
+          const { TsgitError: ScopedTsgitError } = await import(
+            '../../../../../src/domain/error.js'
+          );
+          const { writeObject: scopedWriteObject } = await import(
+            '../../../../../src/application/primitives/write-object.js'
+          );
+          const { writeTree: scopedWriteTree } = await import(
+            '../../../../../src/application/primitives/write-tree.js'
+          );
+          const { buildSeededContext: scopedBuildSeededContext } = await import('../fixtures.js');
           const ctx = await scopedBuildSeededContext();
           const writeScopedBlob = async (content: string): Promise<ObjectId> => {
             const blob: Blob = {

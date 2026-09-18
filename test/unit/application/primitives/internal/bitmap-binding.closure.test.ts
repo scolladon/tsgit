@@ -406,19 +406,25 @@ describe('Given more extended positions across one closure than the push limit a
       });
 
       try {
-        const [
-          { resolveBitmapClosure: scopedResolve },
-          { loadPackBitmapArtefact: scopedLoad },
-          { createMemoryContext: scopedCreateContext },
-          { writeSyntheticPack: scopedWritePack, writeSyntheticBitmap: scopedWriteBitmap },
-          { getPackRegistry: scopedRegistry },
-        ] = await Promise.all([
-          import('../../../../../src/application/primitives/internal/bitmap-binding.js'),
-          import('../../../../../src/application/primitives/internal/pack-bitmap-binding.js'),
-          import('../../../../../src/adapters/memory/memory-adapter.js'),
-          import('../pack-fixture.js'),
-          import('../../../../../src/application/primitives/read-object.js'),
-        ]);
+        // The re-imports run one at a time on purpose: importing them concurrently
+        // starts one mock-queue drain per module, and a straggling drain re-applies
+        // its queued unmock after another drain has already registered the mock.
+        // A dependency resolved inside that window finds an empty registry and
+        // binds the unmocked module, so the override silently does not apply.
+        const { resolveBitmapClosure: scopedResolve } = await import(
+          '../../../../../src/application/primitives/internal/bitmap-binding.js'
+        );
+        const { loadPackBitmapArtefact: scopedLoad } = await import(
+          '../../../../../src/application/primitives/internal/pack-bitmap-binding.js'
+        );
+        const { createMemoryContext: scopedCreateContext } = await import(
+          '../../../../../src/adapters/memory/memory-adapter.js'
+        );
+        const { writeSyntheticPack: scopedWritePack, writeSyntheticBitmap: scopedWriteBitmap } =
+          await import('../pack-fixture.js');
+        const { getPackRegistry: scopedRegistry } = await import(
+          '../../../../../src/application/primitives/read-object.js'
+        );
         const ctx = scopedCreateContext();
         await scopedWritePack(ctx, 'extended-bound', [
           baseEntry(ctx, blobOf('a')),
