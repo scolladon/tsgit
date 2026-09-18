@@ -468,7 +468,7 @@ describe('commitDateWalk — parallel parent body reads (F12)', () => {
   });
 });
 
-describe('commitDateWalk — parent rejection order is array order, not first-in-time (F12, R5)', () => {
+describe('commitDateWalk — parent rejection order is array order, not first-in-time', () => {
   describe('Given two missing parents where the second one fails first in time', () => {
     describe('When the walk enqueues them', () => {
       it("Then the propagated rejection is the first parent's", async () => {

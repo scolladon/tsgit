@@ -326,7 +326,7 @@ async function computeReachable(ctx: Context): Promise<ReachableClosure> {
  * Step 1b: `lstat` every registered pack ONCE, before anything is written —
  * `mtimeMs` is the only source for an object migrating out of a superseded
  * NORMAL pack (Pin Y), and `size` on the same result is the free half of
- * `packBytesBefore`/`packBytesAfter` (R33).
+ * `packBytesBefore`/`packBytesAfter`.
  */
 async function lstatPacks(
   ctx: Context,
@@ -778,9 +778,9 @@ async function retireSupersededPacks(
 
 /**
  * Deletes `objects/pack/multi-pack-index` whenever it names any pack this
- * run retired (Pin T; Pin G row 1) — the only available verb, since tsgit
- * has no midx writer. A midx naming only surviving (kept) packs is left
- * alone (Pin G row 2). A no-op, no read at all, when nothing was retired.
+ * run retired — the only available verb, since tsgit has no midx writer. A
+ * midx naming only surviving (kept) packs is left alone. A no-op, no read at
+ * all, when nothing was retired.
  */
 async function expireMidxIfNeeded(
   ctx: Context,

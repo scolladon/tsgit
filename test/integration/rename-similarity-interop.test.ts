@@ -597,9 +597,9 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
     });
   });
 
-  describe('Given a renamed file with 1 of 10 lines changed (matrix #1), When tsgit reconstructs the patch', () => {
+  describe('Given a renamed file with 1 of 10 lines changed, When tsgit reconstructs the patch', () => {
     it('Then full patch body matches git diff -M byte-for-byte and frozen golden', async () => {
-      // Arrange — R087 fixture: same content as the name-status test (matrix #1)
+      // Arrange — the same content the name-status row uses
       const pair = await makePeerPair('rename-similarity-m1-full-body');
       try {
         runGit(['init', '-q', '-b', 'main', pair.peer], { env: gitDeterministicEnv() });
@@ -657,9 +657,9 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
     });
   });
 
-  describe('Given a mode-change + rename in real git (matrix #4), When git diff -M is run', () => {
+  describe('Given a mode-change + rename in real git, When git diff -M is run', () => {
     it('Then old mode/new mode appear before similarity index and index line has no trailing mode (golden pin)', async () => {
-      // Arrange — matrix #4: rename with mode change (regular → executable); modes differ.
+      // Arrange — rename with a mode change (regular → executable); the modes differ.
       // The memory adapter does not support executable file bits, so tsgit's reconstructPatch
       // cannot be byte-compared against git here. This test pins the live git patch FORMAT
       // (order of mode preamble vs similarity, index line suffix) against a frozen golden,
@@ -744,7 +744,7 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
     });
   });
 
-  describe('Given a pure git mv with identical content (matrix #5 / R100), When tsgit reconstructs the patch', () => {
+  describe('Given a pure git mv with identical content, When tsgit reconstructs the patch', () => {
     it('Then patch has no index line and no hunk', async () => {
       // Arrange — R100: content byte-identical, only path changes
       const pair = await makePeerPair('rename-similarity-m5-r100');
@@ -889,9 +889,9 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
     });
   });
 
-  describe('Given a copy from a MODIFIED source (matrix #C1), When tsgit detects copies with copies:"on"', () => {
+  describe('Given a copy from a MODIFIED source, When tsgit detects copies with copies:"on"', () => {
     it('Then C-score matches git and source modify survives', async () => {
-      // Arrange — matrix #C1: source file is modified (M) AND its preimage is copied.
+      // Arrange — the source file is modified (M) AND its preimage is copied.
       // Under plain -C, the modify's preimage acts as a copy source.
       const pair = await makePeerPair('rename-similarity-c1');
       try {
@@ -972,9 +972,9 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
     });
   });
 
-  describe('Given an UNCHANGED source under plain -C (matrix #C1b), When tsgit runs copies:"on"', () => {
+  describe('Given an UNCHANGED source under plain -C, When tsgit runs copies:"on"', () => {
     it('Then the add remains as add (not detected as copy)', async () => {
-      // Arrange — matrix #C1b: the potential copy source is UNCHANGED in the diff.
+      // Arrange — the potential copy source is UNCHANGED in the diff.
       // Under plain -C (copies: 'on'), unchanged files are NOT copy sources.
       // The add should remain as A (not C).
       const pair = await makePeerPair('rename-similarity-c1b');
@@ -1051,9 +1051,9 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
     });
   });
 
-  describe('Given an exact copy (C100, matrix #C4), When tsgit detects copies', () => {
+  describe('Given an exact copy (C100), When tsgit detects copies', () => {
     it('Then C100 patch has no index line and no hunk', async () => {
-      // Arrange — matrix #C4: content byte-identical; git reports C100.
+      // Arrange — content byte-identical; git reports C100.
       // The patch should have no index line or hunk (header-only, like R100).
       const pair = await makePeerPair('rename-similarity-c4');
       try {
@@ -1147,9 +1147,9 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
     });
   });
 
-  describe('Given a copy from an UNCHANGED source (matrix #C2), When tsgit runs copies:"harder"', () => {
+  describe('Given a copy from an UNCHANGED source, When tsgit runs copies:"harder"', () => {
     it('Then C-score matches git; plain -C does NOT detect it', async () => {
-      // Arrange — matrix #C2: source file is UNCHANGED in the diff. Plain -C misses it.
+      // Arrange — the source file is UNCHANGED in the diff. Plain -C misses it.
       // --find-copies-harder includes all preimage paths as copy sources.
       const pair = await makePeerPair('rename-similarity-c2');
       try {
@@ -1260,9 +1260,9 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
     });
   });
 
-  describe('Given a deleted source and an unchanged source both matching dst (matrix #C3), When tsgit runs copies:"harder"', () => {
+  describe('Given a deleted source and an unchanged source both matching dst, When tsgit runs copies:"harder"', () => {
     it('Then rename wins and no copy is emitted', async () => {
-      // Arrange — matrix #C3: del-src is deleted (rename candidate); keep-src is unchanged
+      // Arrange — del-src is deleted (rename candidate); keep-src is unchanged
       // (copy candidate under harder). Both are similar to new.txt.
       // The greedy sort puts rename ahead of copy at equal score → rename wins.
       const pair = await makePeerPair('rename-similarity-c3');
@@ -1496,7 +1496,7 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
     });
   });
 
-  describe('Given a fully-disjoint rewrite (matrix #B1), When tsgit detects breaks with default -B', () => {
+  describe('Given a fully-disjoint rewrite, When tsgit detects breaks with default -B', () => {
     it('Then M100 matches git and frozen golden', async () => {
       // Arrange — 20 lines old, 0 shared with new → 100% dissimilarity (>= 60% gate → kept broken)
       const pair = await makePeerPair('break-b1');
@@ -1575,7 +1575,7 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
     });
   });
 
-  describe('Given a substantially-dissimilar rewrite (matrix #B2), When tsgit detects breaks with default -B', () => {
+  describe('Given a substantially-dissimilar rewrite, When tsgit detects breaks with default -B', () => {
     it('Then M065 matches git byte-for-byte', async () => {
       // Arrange — 20 lines old, 7 shared in new → 65% dissimilarity (git merge_score formula)
       // Verified against real git 2.54.0: `git diff -B --name-status` → M065
@@ -1644,8 +1644,8 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
 
   describe('Given a mildly-dissimilar rewrite, When tsgit detects breaks with a merge-score gate variant', () => {
     it.each([
-      { label: 'matrix #B3 — explicit default gate (merge:36000)', merge: 36000 },
-      { label: 'matrix #B4b — merge:0 maps to DEFAULT_MERGE_SCORE', merge: 0 },
+      { label: 'the explicit default gate (merge:36000)', merge: 36000 },
+      { label: 'merge:0, which maps to DEFAULT_MERGE_SCORE', merge: 0 },
     ])('Then $label re-merges to plain M (both tsgit and git)', async ({ merge }) => {
       // Arrange — 20 lines old (all shared prefix), 10 shared in new → ~55% dissimilarity in tsgit,
       // ~50% in git — both < 60% default merge gate → re-merged in both.
@@ -1706,7 +1706,7 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
     });
   });
 
-  describe('Given a 60%-dissimilar rewrite (matrix #B5), When tsgit uses default -B', () => {
+  describe('Given a 60%-dissimilar rewrite, When tsgit uses default -B', () => {
     it('Then M060 matches git byte-for-byte', async () => {
       // Arrange — 50 lines old, 20 shared in new.
       // git merge_score = (3550-1420)*60000/3550 = 36000 → 60%; verified: default -B → M060.
@@ -1801,7 +1801,7 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
     });
   });
 
-  describe('Given a broken file plus an unrelated rename (matrix #B6), When tsgit detects breaks', () => {
+  describe('Given a broken file plus an unrelated rename, When tsgit detects breaks', () => {
     it('Then M100 + R094 matches git', async () => {
       // Arrange — file-a: 100% rewrite (breaks to M100); file-b deleted; file-c added ~= old file-b (R094)
       // The break pass runs BEFORE rename detection — this pin proves the fixed ordering

@@ -132,15 +132,17 @@ async function collectAbsentTargets(
  * - **Content format** (gated by `checkReferences`): a malformed loose ref —
  *   reported by the store's own `verifyIntegrity` as `badRefContent` —
  *   contributes `badRefContent` (bit 8, gated) + a synthesised zero-OID
- *   `badRefOid` (bit 2, always). Pinned: matrix #9b, composite exit 10 = 2|8.
+ *   `badRefOid` (bit 2, always), so a loose ref holding bytes that are not an
+ *   object name exits 10 = 2|8.
  * - **OID presence** (always): every well-formed ref's OID (loose + packed,
  *   from `listRefs`) must be in the object universe, confirmed via
  *   `isKnownOid` rather than trusted at face value — `confirmPackAccessibility`
  *   is true exactly under `connectivityOnly`, the one mode where `universe`
  *   may admit an oid whose housing pack later fails its own header gate.
- *   Absent → `badRefOid` (bit 2). Pinned: matrix #9a, exit 2 same with/without
- *   `--no-references`. A symbolic ref (absent targets are not an error —
- *   unborn branch = OK, matrix #9c) never contributes.
+ *   Absent → `badRefOid` (bit 2), so a loose ref naming a well-formed but
+ *   absent object exits 2 with AND without `--no-references`. A symbolic ref
+ *   never contributes: its target may legitimately be absent, which is what an
+ *   unborn branch is.
  */
 export async function runRefsVerifyPass(
   ctx: Context,

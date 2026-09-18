@@ -1253,7 +1253,7 @@ describe('applyChangeset', () => {
     });
   });
 
-  describe('Given a regular file add with a filter attribute but no ctx.command (R11 fallback)', () => {
+  describe('Given a regular file add with a filter attribute but no ctx.command', () => {
     describe('When applyChangeset runs', () => {
       it('Then the worktree file contains the verbatim blob bytes and streamBlob is used', async () => {
         // Arrange — no command in ctx (ADR-408 inert fallback)

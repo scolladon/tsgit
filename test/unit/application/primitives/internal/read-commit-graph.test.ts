@@ -592,7 +592,7 @@ describe('read-commit-graph', () => {
     describe('Given a commit-graph already loaded via a prior commitHeader call', () => {
       describe('When commitHeader is called for a different commit whose header is not yet cached', () => {
         it('Then no additional read on a commit-graph path occurs — the header is re-derived from the already-parsed graph', async () => {
-          // Arrange — pins the R3 eviction-safety property: a header-cache
+          // Arrange — pins the eviction-safety property: a header-cache
           // miss (whether never-computed or evicted) must be re-derivable
           // from `graph` alone, with zero further `ctx.fs` calls.
           const base = await buildSeededContext();

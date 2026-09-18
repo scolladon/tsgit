@@ -1453,10 +1453,10 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
     );
   });
 
-  describe('Given twin repos with two same-line [a] blocks of the same key (R6)', () => {
+  describe('Given twin repos with two same-line [a] blocks of the same key', () => {
     describe('When git and tsgit each unset-all a.key', () => {
       it('Then both repos collapse to an empty config (every block pruned)', async () => {
-        // Arrange — R6: every same-line occurrence + its block is removed
+        // Arrange — every same-line occurrence and its block is removed
         const { peerConfigPath } = await seedTwinConfigs(
           pair,
           `${PREAMBLE}[a] key = 1\n[a] key = 2\n`,
@@ -2647,7 +2647,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
     }> = [
       { label: 'a same-line entry (W8)', bytes: '[a] key = v\n', oldName: 'a', newName: 'b' },
       {
-        label: 'a same-line entry with a body (R1)',
+        label: 'a same-line entry with a body',
         bytes: '[a] key = v\n\tk2 = w\n',
         oldName: 'a',
         newName: 'b',

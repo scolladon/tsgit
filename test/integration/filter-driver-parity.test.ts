@@ -340,7 +340,7 @@ describe('Given -diff attribute with no runner (memory and node command:false)',
     });
   });
 
-  describe('When diff is called without withStat (R4 boundary — no provider built)', () => {
+  describe('When diff is called without withStat, so no provider is built', () => {
     it('Then the change has no binary stat and no override (content-stable path unaffected)', async () => {
       // Arrange — same -diff attribute, but called without withStat
       const ctx = createMemoryContext();

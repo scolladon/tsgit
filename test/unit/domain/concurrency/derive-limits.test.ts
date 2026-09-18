@@ -11,7 +11,7 @@ const factsOf = (cores: number | undefined, threadpoolWidth: number | undefined)
 });
 
 describe('deriveLimits', () => {
-  describe('Given the R18 matrix of cores x threadpool width', () => {
+  describe('Given the matrix of cores x threadpool width', () => {
     describe('When deriving cpuBound', () => {
       it.each([
         { cores: 1, width: undefined, expected: 1, label: '1 core, threadpool width unset' },

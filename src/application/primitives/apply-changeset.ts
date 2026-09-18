@@ -102,7 +102,7 @@ const blobMatches = async (ctx: Context, absPath: string, expectedId: string): P
 /**
  * `true` when a working-tree file exists at `absPath` but its blob content
  * hash differs from `expectedId`. An absent file is not dirty. Shared by
- * `applySparseCheckout`'s narrowing pre-scan (design §9).
+ * `applySparseCheckout`'s narrowing pre-scan.
  */
 export const isWorkingTreeDirty = async (
   ctx: Context,
@@ -497,7 +497,8 @@ export const applyChangeset = async (
   }
 
   // Build attribute provider lazily once per invocation (mirror build-content-merger.ts:48).
-  // Skip entirely when no runner is wired (R11 inert fallback — ADR-408).
+  // Skip entirely when no command runner is wired: filters cannot run, so the
+  // provider would be inert anyway (ADR-408).
   let providerPromise: Promise<AttributeProvider> | undefined;
   const lazyProvider = (): Promise<AttributeProvider> =>
     (providerPromise ??= buildAttributeProvider(ctx));

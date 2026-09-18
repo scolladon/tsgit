@@ -246,7 +246,7 @@ describe.skipIf(!GIT_AVAILABLE)('core.maxTreeDepth — deep-tree cross-tool inte
   afterAll(async () => rm(dir, { recursive: true, force: true }));
 
   // ─────────────────────────────────────────────────────────────────────
-  // Pin 2 / R4–R5 — the default-cap split at D=2048/2049.
+  // The default-cap split at D=2048/2049.
   // ─────────────────────────────────────────────────────────────────────
 
   describe('Given config unset (default cap 2048) and trees at D=2048 and D=2049', () => {
@@ -282,7 +282,7 @@ describe.skipIf(!GIT_AVAILABLE)('core.maxTreeDepth — deep-tree cross-tool inte
   });
 
   // ─────────────────────────────────────────────────────────────────────
-  // R9 — archive's restored depth refusal. Fails on `main`: today archive
+  // Archive's restored depth refusal. Fails on `main`: today archive
   // refuses at no input at all.
   // ─────────────────────────────────────────────────────────────────────
 
@@ -303,7 +303,7 @@ describe.skipIf(!GIT_AVAILABLE)('core.maxTreeDepth — deep-tree cross-tool inte
   });
 
   // ─────────────────────────────────────────────────────────────────────
-  // R13 — fsck does NOT check depth. Negative assertion.
+  // fsck does NOT check depth. Negative assertion.
   // ─────────────────────────────────────────────────────────────────────
 
   describe('Given a repo containing the D=2049 tree', () => {

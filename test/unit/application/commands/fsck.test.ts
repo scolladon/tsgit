@@ -1412,7 +1412,7 @@ describe('Given a loose ref pointing to an absent OID', () => {
 // REFS-VERIFY PASS — malformed content: badRefContent + badRefOid(zero), exit 10
 // ---------------------------------------------------------------------------
 
-describe('Given a loose ref with malformed content (matrix #9b)', () => {
+describe('Given a loose ref holding bytes that are not an object name', () => {
   describe('When fsck runs', () => {
     it('Then emits both badRefContent (bit 8) and badRefOid for zero OID (bit 2), exit 10', async () => {
       // Arrange

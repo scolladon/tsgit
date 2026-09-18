@@ -191,7 +191,7 @@ function untypedFault(ctx: Context, id: ObjectId, reason: string): TypedOrUntype
 /**
  * Read the type from a pack entry header at `hit`, following `OFS_DELTA` /
  * `REF_DELTA` base links through entry headers only — it never inflates a
- * body, which is why a corrupt delta body still types (R13). Reached from
+ * body, which is why a corrupt delta body still types. Reached from
  * two places (arm 2: not loose at all; arm 3: loose but header-unrecoverable
  * with a healthy packed twin) — one code path, one function. This never
  * rejects on store damage: a corrupt entry header, an unreadable slice, or an

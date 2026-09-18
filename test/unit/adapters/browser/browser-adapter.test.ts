@@ -32,7 +32,7 @@ describe('createBrowserContext', () => {
         // Act
         const result = sut({ rootHandle });
 
-        // Assert — the default (no algorithm option) still yields sha1 (R6).
+        // Assert — the default (no algorithm option) still yields sha1.
         expect(result.hash.algorithm).toBe('sha1');
         expect(result.hashConfig).toBe(SHA1_CONFIG);
       });

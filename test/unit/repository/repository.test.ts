@@ -1308,7 +1308,7 @@ describe('openRepository — worktreeFs capability', () => {
     });
 
     describe('When accessing a path outside the worktree-scoped fs roots through a user-supplied (unbranded) fs', () => {
-      it('Then the wrapper still rejects it with PATHSPEC_OUTSIDE_REPO — R3: unbranded behaviour is unchanged', async () => {
+      it('Then the wrapper still rejects it with PATHSPEC_OUTSIDE_REPO — unbranded behaviour is unchanged', async () => {
         // Arrange
         const fallback = makeFallback();
         const sut = await openRepository({ cwd: '/repo', fs: fallback.fs }, fallback);
@@ -1425,7 +1425,7 @@ describe('openRepository — layout.commonDir plumbing', () => {
     });
 
     describe('When reading a path outside every layout root through a user-supplied (unbranded) fs', () => {
-      it('Then it still throws PATHSPEC_OUTSIDE_REPO — R3: unbranded behaviour is unchanged', async () => {
+      it('Then it still throws PATHSPEC_OUTSIDE_REPO — unbranded behaviour is unchanged', async () => {
         // Arrange — an explicit fs override keeps this fs unbranded, so both
         // layers still apply exactly as before this part.
         const fs = new MemoryFileSystem({ rootDir: '/root' });
@@ -1512,7 +1512,7 @@ describe('openRepository — config-scope allowlist', () => {
 
   describe('Given a user-supplied (unbranded) fs exposing the same config scopes', () => {
     describe('When accessing a non-config path through the wrapped fs', () => {
-      it('Then the wrapper still rejects it with PATHSPEC_OUTSIDE_REPO — R3: unbranded behaviour is unchanged', async () => {
+      it('Then the wrapper still rejects it with PATHSPEC_OUTSIDE_REPO — unbranded behaviour is unchanged', async () => {
         // Arrange — an explicit fs override keeps this fs unbranded.
         const fallback = makeFallback();
         const sut = await openRepository({ cwd: '/repo', fs: fallback.fs }, fallback);
@@ -1668,7 +1668,7 @@ describe('openRepository — config-scope allowlist', () => {
     });
 
     describe('When accessing the unavailable home config scope through a user-supplied (unbranded) fs', () => {
-      it('Then the wrapper still rejects it with PATHSPEC_OUTSIDE_REPO — R3: unbranded behaviour is unchanged', async () => {
+      it('Then the wrapper still rejects it with PATHSPEC_OUTSIDE_REPO — unbranded behaviour is unchanged', async () => {
         // Arrange
         const fallback = { ...makeFallback(), fs: new UnavailableConfigFs({ rootDir: '/repo' }) };
         const sut = await openRepository({ cwd: '/repo', fs: fallback.fs }, fallback);
@@ -1695,7 +1695,7 @@ describe('openRepository — config-scope allowlist', () => {
     });
 
     describe('When accessing the unavailable XDG config scope through a user-supplied (unbranded) fs', () => {
-      it('Then the wrapper still rejects it with PATHSPEC_OUTSIDE_REPO — R3: unbranded behaviour is unchanged', async () => {
+      it('Then the wrapper still rejects it with PATHSPEC_OUTSIDE_REPO — unbranded behaviour is unchanged', async () => {
         // Arrange
         const fallback = { ...makeFallback(), fs: new UnavailableConfigFs({ rootDir: '/repo' }) };
         const sut = await openRepository({ cwd: '/repo', fs: fallback.fs }, fallback);
@@ -1761,7 +1761,7 @@ describe('openRepository — object algorithm resolution', () => {
         // Act
         const sut = await openRepository({ cwd: '/repo' }, fallback);
 
-        // Assert — R6: default stays sha1; no upgrade needed, so the fallback's
+        // Assert — the default stays sha1; no upgrade needed, so the fallback's
         // own hash instance is reused (kills a mutant that always upgrades).
         expect(sut.ctx.hashConfig).toBe(SHA1_CONFIG);
         expect(sut.ctx.hash).toBe(fallback.hash);
@@ -1894,7 +1894,7 @@ describe('openRepository — memory-runtime read containment stays wrapper-autho
 
   describe('Given a user-supplied (unbranded) fs and the same `..`-collapsing-inside path', () => {
     describe('When the path is read', () => {
-      it('Then it is STILL refused with PATHSPEC_OUTSIDE_REPO — R3: unbranded behaviour is unchanged', async () => {
+      it('Then it is STILL refused with PATHSPEC_OUTSIDE_REPO — unbranded behaviour is unchanged', async () => {
         // Arrange
         const fallback = makeFallback();
         const sut = await openRepository({ cwd: '/repo', fs: fallback.fs }, fallback);

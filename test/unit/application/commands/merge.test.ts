@@ -2871,7 +2871,7 @@ describe('materialiseConflictBytes (direct)', () => {
             conflictOf({ type: 'modify-delete', theirId: await seedBlob(ctx, 'THEIRS-MODDEL') }),
         },
         {
-          label: 'a bare content conflict with both ids returns the ours blob bytes (R5 take-ours)',
+          label: 'a bare content conflict with both ids returns the ours blob bytes',
           expected: 'OURS-LINE',
           build: async (ctx: ReturnType<typeof createMemoryContext>) =>
             conflictOf({
@@ -2881,8 +2881,7 @@ describe('materialiseConflictBytes (direct)', () => {
             }),
         },
         {
-          label:
-            'a bare content conflict with only ourId returns the ours blob bytes (take-ours for R5)',
+          label: 'a bare content conflict with only ourId returns the ours blob bytes',
           expected: 'OURS-ONLY',
           build: async (ctx: ReturnType<typeof createMemoryContext>) =>
             conflictOf({ type: 'content', ourId: await seedBlob(ctx, 'OURS-ONLY') }),

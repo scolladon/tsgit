@@ -660,7 +660,8 @@ interface TwoPathChange {
 
 function twoPathIndexLine(change: TwoPathChange): string {
   const base = `index ${shortOid(change.oldId)}..${shortOid(change.newId)}`;
-  // Mode suffix is present ONLY when old and new modes are equal (matrix #4).
+  // Mode suffix is present ONLY when old and new modes are equal; a rename that
+  // also changes the mode carries its modes in the preamble instead.
   return change.oldMode === change.newMode ? `${base} ${change.newMode}` : base;
 }
 
@@ -705,7 +706,7 @@ function renderTwoPathBlock(
 ): string[] {
   const header: string[] = [];
   header.push(diffGitHeader(change.oldPath, change.newPath, prefix));
-  // Mode preamble PRECEDES the similarity line when modes differ (matrix #4).
+  // The mode preamble PRECEDES the similarity line when the modes differ.
   if (change.oldMode !== change.newMode) {
     header.push(`old mode ${change.oldMode}`);
     header.push(`new mode ${change.newMode}`);
@@ -713,7 +714,7 @@ function renderTwoPathBlock(
   header.push(`similarity index ${toSimilarityPercent(change.similarity.score)}%`);
   header.push(`${keyword} from ${change.oldPath}`);
   header.push(`${keyword} to ${change.newPath}`);
-  // Exact (100%): stop here — no index line, no hunk (matrix #5 / #C4).
+  // An exact rename or copy (100%) stops here — no index line, no hunk.
   if (change.similarity.score === MAX_SCORE) return header;
   const body = renderTwoPathBody(
     change,

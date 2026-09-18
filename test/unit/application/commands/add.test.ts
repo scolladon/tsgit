@@ -2346,7 +2346,7 @@ describe('add', () => {
   });
 
   describe('Given a file with an active filter attribute but no ctx.command (no runner)', () => {
-    describe('When add stages the file (R11 fallback)', () => {
+    describe('When add stages the file with no command runner wired', () => {
       it('Then raw bytes are staged and no runner is invoked', async () => {
         // Arrange — no command in ctx (ADR-408 fallback)
         const ctx = await seedFreshRepo({ 'a.y': 'Hello World' });

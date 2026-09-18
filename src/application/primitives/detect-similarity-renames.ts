@@ -54,7 +54,8 @@ interface CopySource {
  * Build the copy source set for `copies: 'on'`:
  * PREIMAGE blobs of files MODIFIED (modify/type-change) in the diff
  * plus the unpaired deletes already in the rename source set.
- * An UNCHANGED file is NOT a copy source under plain -C (matrix #C1b).
+ * An UNCHANGED file is NOT a copy source under plain -C — only a file the
+ * diff itself touches lends its preimage.
  */
 function buildCopySourcesForOn(
   deletes: ReadonlyArray<DeleteChange>,
@@ -252,8 +253,8 @@ function buildCopyTriples(
 }
 
 /**
- * Sort triples score-descending; at equal score rename sorts AHEAD of copy
- * (matrix #C3 — copy-vs-rename precedence).
+ * Sort triples score-descending; at equal score a rename sorts AHEAD of a
+ * copy, so a deleted source claims the destination before an unchanged one.
  */
 function sortTriples(triples: ScoredTriple[]): void {
   triples.sort((a, b) => {

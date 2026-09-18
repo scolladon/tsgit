@@ -8,7 +8,7 @@
  * `createNodeContext` (which wires `NodeCommandRunner`).
  *
  * Reconstructed patches are compared byte-for-byte to live `git diff --textconv`
- * output. OIDs on the structured `DiffChange` are asserted unchanged (T6 / R2).
+ * output. OIDs on the structured `DiffChange` are asserted unchanged.
  *
  * Isolation is load-bearing: `runGit` from interop-helpers scrubs all `GIT_*` env
  * vars, points `HOME` at a non-existent path, and sets `GIT_CONFIG_NOSYSTEM=1` —
@@ -234,7 +234,7 @@ describe.skipIf(!GIT_AVAILABLE)('textconv diff interop', () => {
         expect(ours).toBe(peer);
       });
 
-      it('Then DiffChange OIDs are the raw tree OIDs — not from textconv output (T6 / R2)', async () => {
+      it('Then DiffChange OIDs are the raw tree OIDs — not from textconv output', async () => {
         // Arrange — parse raw OIDs from git diff --raw --abbrev=40 output
         // format: `:<old mode> <new mode> <old sha> <new sha> <status>\t<path>`
         const { from, to } = textconvModify;

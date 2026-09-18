@@ -201,7 +201,7 @@ describe('createNodeContext', () => {
         // Arrange / Act
         const sut = createNodeContext({ workDir: '/tmp/tsgit-ports-hash-config' });
 
-        // Assert — the default (no algorithm option) still yields sha1 (R6).
+        // Assert — the default (no algorithm option) still yields sha1.
         expect(sut.hashConfig).toBe(SHA1_CONFIG);
       });
     });

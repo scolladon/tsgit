@@ -322,7 +322,7 @@ describe('materialiseOne', () => {
     });
   });
 
-  describe('Given an exact copy change (score === MAX_SCORE, matrix #C4)', () => {
+  describe('Given an exact copy change (score === MAX_SCORE)', () => {
     describe('When materialiseOne is called', () => {
       it('Then it loads neither side (oldContent and newContent are undefined)', async () => {
         // Arrange — C100: content byte-identical, no content needed for the header-only patch
@@ -512,7 +512,7 @@ describe('materialiseOne', () => {
         expect(result).toHaveLength(1);
         expect(result[0]?.oldContent).toEqual(oldTransformed);
         expect(result[0]?.newContent).toEqual(newTransformed);
-        // OIDs on the change are untouched (R2 / T6)
+        // OIDs on the change are untouched
         expect(result[0]?.change.type).toBe('modify');
         if (result[0]?.change.type === 'modify') {
           expect(result[0].change.oldId).toBe(oldOid);

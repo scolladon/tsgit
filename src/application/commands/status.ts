@@ -149,7 +149,7 @@ export const status = async (ctx: Context): Promise<StatusResult> => {
     const tracker = createGranularityTracker(ctx.progress, STATUS_SCAN_OP, STATUS_SCAN_GRANULARITY);
     // Build the attribute provider once per status invocation when a command
     // runner is wired. When absent, the provider is undefined and every
-    // compareWorkingTreeDelta call takes the raw-bytes path (R11 guard).
+    // compareWorkingTreeDelta call takes the raw-bytes path.
     const provider = await maybeBuildAttributeProvider(ctx);
     const workingMap = await scanWorkingTree(
       ctx,

@@ -126,8 +126,8 @@ const conflictBytes = async (
     }
     return undefined;
   }
-  // Bare add-add (binary/symlink-symlink/type-change) and bare content (R5 symlink-pair):
-  // keep ours when present.
+  // Bare add-add (binary / symlink-symlink / type-change) and a bare content
+  // conflict between two symlinks: keep ours when present.
   // Stryker disable next-line ConditionalExpression,BlockStatement: equivalent — for bare
   // content/add-add/binary/type-change the `ourId` is always defined (ours has a side), and the
   // write reproduces bytes the working tree already holds (ours was checked out at `path`), so

@@ -259,7 +259,7 @@ describe.skipIf(!GIT_AVAILABLE)('diff type-change interop', () => {
     const bumpSubV2 = doCommit('bump_sub gitlink v2');
     gitlinkModify = { from: bumpSubV1, to: bumpSubV2 };
 
-    // 11. R1 — exact same-oid gitlink move (path A → B)
+    // 11. Exact same-oid gitlink move (path A → B)
     runGit(['-C', dir, 'update-index', '--add', '--cacheinfo', `160000,${GITLINK_OID},r1_src`]);
     const r1From = doCommit('r1 gitlink at src');
     git(dir, 'rm', '--cached', 'r1_src');
@@ -267,7 +267,7 @@ describe.skipIf(!GIT_AVAILABLE)('diff type-change interop', () => {
     const r1To = doCommit('r1 gitlink moved to dst');
     r1Exact = { from: r1From, to: r1To };
 
-    // 12. R2 — different-oid gitlink "move" (stays A+D)
+    // 12. Different-oid gitlink "move" (stays A+D)
     runGit(['-C', dir, 'update-index', '--add', '--cacheinfo', `160000,${GITLINK_OID},r2_old`]);
     const r2From = doCommit('r2 gitlink oid1 at old');
     git(dir, 'rm', '--cached', 'r2_old');
@@ -275,7 +275,7 @@ describe.skipIf(!GIT_AVAILABLE)('diff type-change interop', () => {
     const r2To = doCommit('r2 gitlink oid2 at new');
     r2DifferentOid = { from: r2From, to: r2To };
 
-    // 13. R3 — gitlink delete + near-similar real blob add (not cross-paired)
+    // 13. Gitlink delete + near-similar real blob add (not cross-paired)
     runGit(['-C', dir, 'update-index', '--add', '--cacheinfo', `160000,${GITLINK_OID},r3_gone`]);
     const r3From = doCommit('r3 gitlink present');
     git(dir, 'rm', '--cached', 'r3_gone');
@@ -536,7 +536,7 @@ describe.skipIf(!GIT_AVAILABLE)('diff type-change interop', () => {
     });
   });
 
-  describe('Given a same-oid gitlink move (R1 — exact rename)', () => {
+  describe('Given a same-oid gitlink move, which is an exact rename', () => {
     describe('When diff called with detectRenames', () => {
       it('Then the move is paired as a R100 rename with score MAX_SCORE', async () => {
         // Arrange
@@ -584,7 +584,7 @@ describe.skipIf(!GIT_AVAILABLE)('diff type-change interop', () => {
     });
   });
 
-  describe('Given a different-oid gitlink move (R2 — different oids)', () => {
+  describe('Given a gitlink move whose oids differ', () => {
     describe('When diff called with detectRenames at default threshold', () => {
       it('Then the gitlinks stay as separate add and delete', async () => {
         // Arrange
@@ -660,7 +660,7 @@ describe.skipIf(!GIT_AVAILABLE)('diff type-change interop', () => {
     });
   });
 
-  describe('Given a gitlink delete and a near-similar blob add (R3)', () => {
+  describe('Given a gitlink delete and a near-similar blob add', () => {
     describe('When diff called with detectRenames', () => {
       it('Then the gitlink delete and blob add stay unpaired', async () => {
         // Arrange

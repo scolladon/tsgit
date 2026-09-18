@@ -816,7 +816,7 @@ describe.skipIf(!GIT_AVAILABLE)(
 );
 
 describe.skipIf(!GIT_AVAILABLE)(
-  'sha256 object format — SHA-1 invariance (R6, same battery on a plain SHA-1 repository)',
+  'sha256 object format — SHA-1 invariance (the same battery on a plain SHA-1 repository)',
   () => {
     let dir: string;
     let expectedLog: ReadonlyArray<string>;
@@ -930,7 +930,7 @@ describe.skipIf(!GIT_AVAILABLE)(
 );
 
 describe.skipIf(!GIT_AVAILABLE)(
-  'sha256 object format — R13 cross-format meeting points inside one working tree',
+  'sha256 object format — cross-format meeting points inside one working tree',
   () => {
     describe('Given a linked worktree of a SHA-256 repository, When both tools operate inside it', () => {
       it("Then git reports sha256 from inside it, and tsgit's own add there writes a 32-byte-oid index — the format is inherited from the common dir, no worktree-specific branch needed", async () => {
@@ -1501,7 +1501,7 @@ const initLocalSuper = async (slug: string, algorithm: 'sha1' | 'sha256'): Promi
 };
 
 describe.skipIf(TRANSPORT_SKIP)(
-  'sha256 object format — submodule add refuses across formats (R13)',
+  'sha256 object format — submodule add refuses across formats',
   () => {
     describe('Given a SHA-1 superproject adding a SHA-256 submodule remote, When submodule add runs', () => {
       it("Then it refuses SUBMODULE_OBJECT_FORMAT_MISMATCH (local 'sha1', remote 'sha256'), leaving the partial .git/modules/sub state behind — the clone has already happened", async () => {
