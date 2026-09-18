@@ -20,9 +20,10 @@
  *                    fixtures, and the residual two-class ordering split is
  *                    pinned, not silently divergent
  *   interopSurface: branch, tag, rev-parse, sparse-checkout, stash, reflog,
- *                    notes, pack-refs, status, show
+ *                    notes, pack-refs, status, show, submodule, worktree,
+ *                    hash-object, write-tree
  */
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -34,16 +35,31 @@ import {
   branchRename,
 } from '../../src/application/commands/branch.js';
 import { log } from '../../src/application/commands/log.js';
-import { notesList } from '../../src/application/commands/notes.js';
+import {
+  notesAdd,
+  notesList,
+  notesRead,
+  notesRemove,
+} from '../../src/application/commands/notes.js';
 import { packRefs } from '../../src/application/commands/pack-refs.js';
 import { reflog } from '../../src/application/commands/reflog.js';
 import { revParse } from '../../src/application/commands/rev-parse.js';
 import { show } from '../../src/application/commands/show.js';
 import { sparseCheckoutList } from '../../src/application/commands/sparse-checkout.js';
-import { stashList } from '../../src/application/commands/stash.js';
+import { stashDrop, stashList } from '../../src/application/commands/stash.js';
 import { status } from '../../src/application/commands/status.js';
+import { submoduleInit, submoduleSync } from '../../src/application/commands/submodule.js';
 import { tagCreate, tagDelete, tagList } from '../../src/application/commands/tag.js';
+import {
+  worktreeList,
+  worktreeMove,
+  worktreeRemove,
+} from '../../src/application/commands/worktree.js';
+import { writeObject } from '../../src/application/primitives/write-object.js';
+import { writeTree } from '../../src/application/primitives/write-tree.js';
 import { TsgitError } from '../../src/domain/error.js';
+import { FILE_MODE, type ObjectId } from '../../src/domain/objects/index.js';
+import { treeEntry } from '../../src/domain/objects/tree.js';
 import type { Context } from '../../src/ports/context.js';
 import { GIT_AVAILABLE, git, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
 
@@ -77,6 +93,31 @@ const assertRefusesWithBadMaxTreeDepth = async (op: () => Promise<unknown>): Pro
   const data = (caught as TsgitError).data as BadNumericData;
   expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
   expect(data.key).toBe('core.maxtreedepth');
+  expect(data.value).toBe('2.5');
+  expect(data.reason).toBe('invalid unit');
+};
+
+/** git 2.55.0's fatal line for the poisoned value, byte-for-byte, as every
+ *  command that reaches the class prints it from a repository root. */
+const CLASS_FATAL =
+  "fatal: bad numeric config value '2.5' for 'core.maxtreedepth' in file .git/config: invalid unit\n";
+
+/** git exits 128 on a `fatal:`; the class is always a fatal. */
+const CLASS_EXIT = 128;
+
+const FANOUT_DIR = /^[0-9a-f]{2}$/;
+
+/** Files under `objects/<2>/<38>` — the loose store, ignoring `pack/` and
+ *  `info/`. A write that never happened leaves this count untouched. */
+const countLooseObjects = async (dir: string): Promise<number> => {
+  const objects = path.join(dir, '.git', 'objects');
+  const fanout = await readdir(objects, { withFileTypes: true });
+  let total = 0;
+  for (const entry of fanout) {
+    if (!entry.isDirectory() || !FANOUT_DIR.test(entry.name)) continue;
+    total += (await readdir(path.join(objects, entry.name))).length;
+  }
+  return total;
 };
 
 /** A non-bare repo with one commit, a branch, and a tag — the shared
@@ -256,6 +297,243 @@ describe.skipIf(!GIT_AVAILABLE)('repo-settings tier — cross-tool interop', () 
         await assertRefusesWithBadMaxTreeDepth(() =>
           tagCreate(ctx, { name: 't2', target: 'HEAD' }),
         );
+      });
+    });
+
+    describe('When notes show HEAD runs with no notes ref', () => {
+      it('Then both refuse on the class, never reporting that the object carries no note', async () => {
+        // Arrange
+        const sut = notesRead;
+
+        // Act
+        const g = tryRunGitWithExit(['-C', dir, 'notes', 'show', 'HEAD']);
+
+        // Assert
+        expect(g.exitCode).toBe(CLASS_EXIT);
+        expect(g.stderr).toBe(CLASS_FATAL);
+        await assertRefusesWithBadMaxTreeDepth(() => sut(ctx, { object: 'HEAD' }));
+      });
+    });
+
+    describe.each([
+      { label: 'the plain form', gitArgs: ['notes', 'remove', 'HEAD'] },
+      {
+        label: 'the --ignore-missing form',
+        gitArgs: ['notes', 'remove', '--ignore-missing', 'HEAD'],
+      },
+    ])('When notes remove HEAD runs in $label with no notes ref', ({ gitArgs }) => {
+      it('Then both refuse on the class, never reporting that the object carries no note', async () => {
+        // Arrange
+        const sut = notesRemove;
+
+        // Act
+        const g = tryRunGitWithExit(['-C', dir, ...gitArgs]);
+
+        // Assert
+        expect(g.exitCode).toBe(CLASS_EXIT);
+        expect(g.stderr).toBe(CLASS_FATAL);
+        await assertRefusesWithBadMaxTreeDepth(() => sut(ctx, { object: 'HEAD' }));
+      });
+    });
+
+    describe.each([
+      {
+        label: 'reflog show',
+        gitArgs: ['reflog', 'show'],
+        sut: (context: Context): Promise<unknown> => reflog(context, { action: 'show' }),
+      },
+      {
+        label: 'reflog delete on the newest entry',
+        gitArgs: ['reflog', 'delete', 'HEAD@{0}'],
+        sut: (context: Context): Promise<unknown> =>
+          reflog(context, { action: 'delete', ref: 'HEAD', index: 0 }),
+      },
+    ])('When $label runs', ({ gitArgs, sut }) => {
+      it('Then both refuse on the class, unlike reflog exists which reads no store', async () => {
+        // Arrange + Act
+        const g = tryRunGitWithExit(['-C', dir, ...gitArgs]);
+
+        // Assert
+        expect(g.exitCode).toBe(CLASS_EXIT);
+        expect(g.stderr).toBe(CLASS_FATAL);
+        await assertRefusesWithBadMaxTreeDepth(() => sut(ctx));
+      });
+    });
+
+    describe.each([
+      {
+        label: 'submodule init',
+        gitArgs: ['submodule', 'init'],
+        sut: (context: Context): Promise<unknown> => submoduleInit(context),
+      },
+      {
+        label: 'submodule sync',
+        gitArgs: ['submodule', 'sync'],
+        sut: (context: Context): Promise<unknown> => submoduleSync(context),
+      },
+    ])('When $label runs against a repo carrying no .gitmodules', ({ gitArgs, sut }) => {
+      it('Then both refuse on the class, before the absent .gitmodules is noticed', async () => {
+        // Arrange + Act
+        const g = tryRunGitWithExit(['-C', dir, ...gitArgs]);
+
+        // Assert
+        expect(g.exitCode).toBe(CLASS_EXIT);
+        expect(g.stderr).toBe(CLASS_FATAL);
+        await assertRefusesWithBadMaxTreeDepth(() => sut(ctx));
+      });
+    });
+
+    describe.each([
+      {
+        label: 'worktree list',
+        gitArgs: ['worktree', 'list'],
+        sut: (context: Context): Promise<unknown> => worktreeList(context),
+      },
+      {
+        label: 'worktree remove on a path that is no worktree',
+        gitArgs: ['worktree', 'remove', 'nope'],
+        sut: (context: Context): Promise<unknown> => worktreeRemove(context, 'nope'),
+      },
+      {
+        label: 'worktree move from a path that is no worktree',
+        gitArgs: ['worktree', 'move', 'nope', 'elsewhere'],
+        sut: (context: Context): Promise<unknown> => worktreeMove(context, 'nope', 'elsewhere'),
+      },
+    ])('When $label runs', ({ gitArgs, sut }) => {
+      it('Then both refuse on the class, before the named path is looked up', async () => {
+        // Arrange + Act
+        const g = tryRunGitWithExit(['-C', dir, ...gitArgs]);
+
+        // Assert
+        expect(g.exitCode).toBe(CLASS_EXIT);
+        expect(g.stderr).toBe(CLASS_FATAL);
+        await assertRefusesWithBadMaxTreeDepth(() => sut(ctx));
+      });
+    });
+
+    describe.each([
+      {
+        label: 'stash list',
+        gitArgs: ['stash', 'list'],
+        sut: (context: Context): Promise<unknown> => stashList(context),
+      },
+      {
+        label: 'stash drop',
+        gitArgs: ['stash', 'drop'],
+        sut: (context: Context): Promise<unknown> => stashDrop(context),
+      },
+    ])('When $label runs on an empty stack with a work tree present', ({ gitArgs, sut }) => {
+      it('Then both refuse on the class, the work-tree requirement being already met', async () => {
+        // Arrange + Act
+        const g = tryRunGitWithExit(['-C', dir, ...gitArgs]);
+
+        // Assert
+        expect(g.exitCode).toBe(CLASS_EXIT);
+        expect(g.stderr).toBe(CLASS_FATAL);
+        await assertRefusesWithBadMaxTreeDepth(() => sut(ctx));
+      });
+    });
+  });
+
+  describe('Given a repo with one commit and no notes ref, poisoned AFTER setup', () => {
+    let dir = '';
+    let ctx: Context;
+
+    beforeAll(async () => {
+      dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-repo-settings-notes-add-'));
+      await buildReadonlyRepo(dir);
+      await poison(dir);
+      ctx = createNodeContext({ workDir: dir });
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => rm(dir, { recursive: true, force: true }));
+
+    describe('When notes add -m annotates HEAD', () => {
+      it('Then both refuse on the class and neither leaves a loose object behind', async () => {
+        // Arrange
+        const sut = notesAdd;
+        const content = new TextEncoder().encode('a note\n');
+        const before = await countLooseObjects(dir);
+
+        // Act
+        const g = tryRunGitWithExit(['-C', dir, 'notes', 'add', '-m', 'a note', 'HEAD']);
+        const looseAfterGit = await countLooseObjects(dir);
+
+        // Assert
+        expect(g.exitCode).toBe(CLASS_EXIT);
+        expect(g.stderr).toBe(CLASS_FATAL);
+        expect(looseAfterGit).toBe(before);
+        await assertRefusesWithBadMaxTreeDepth(() => sut(ctx, { object: 'HEAD', content }));
+        expect(await countLooseObjects(dir)).toBe(before);
+      });
+    });
+  });
+
+  describe('Given a repo whose index stages a file no tree records yet, poisoned AFTER setup', () => {
+    let dir = '';
+    let ctx: Context;
+    let committedBlob = '' as ObjectId;
+    let stagedBlob = '' as ObjectId;
+
+    beforeAll(async () => {
+      dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-repo-settings-object-writers-'));
+      await buildReadonlyRepo(dir);
+      committedBlob = git(dir, 'rev-parse', 'HEAD:file.txt').trim() as ObjectId;
+      // A staged-but-uncommitted path, so a successful `write-tree` would
+      // have to mint a tree the store does not hold yet — without it the
+      // loose count could not tell a refusal from a no-op write.
+      await writeFile(path.join(dir, 'other.txt'), 'other\n');
+      git(dir, 'add', 'other.txt');
+      stagedBlob = git(dir, 'rev-parse', ':other.txt').trim() as ObjectId;
+      await poison(dir);
+      ctx = createNodeContext({ workDir: dir });
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => rm(dir, { recursive: true, force: true }));
+
+    describe('When a fresh blob is written — git by hash-object -w, tsgit by writeObject', () => {
+      it('Then both refuse on the class with the loose store left untouched', async () => {
+        // Arrange
+        const sut = writeObject;
+        const text = 'fresh\n';
+        const before = await countLooseObjects(dir);
+
+        // Act
+        const g = tryRunGitWithExit(['-C', dir, 'hash-object', '-w', '--stdin'], { input: text });
+        const looseAfterGit = await countLooseObjects(dir);
+
+        // Assert
+        expect(g.exitCode).toBe(CLASS_EXIT);
+        expect(g.stderr).toBe(CLASS_FATAL);
+        expect(looseAfterGit).toBe(before);
+        const content = new TextEncoder().encode(text);
+        await assertRefusesWithBadMaxTreeDepth(() =>
+          sut(ctx, { type: 'blob', id: '' as ObjectId, content }),
+        );
+        expect(await countLooseObjects(dir)).toBe(before);
+      });
+    });
+
+    describe('When the staged tree is written — git by write-tree, tsgit by writeTree', () => {
+      it('Then both refuse on the class with the loose store left untouched', async () => {
+        // Arrange — the same two entries git would materialise from the index.
+        const sut = writeTree;
+        const entries = [
+          treeEntry(FILE_MODE.REGULAR, 'file.txt', committedBlob),
+          treeEntry(FILE_MODE.REGULAR, 'other.txt', stagedBlob),
+        ];
+        const before = await countLooseObjects(dir);
+
+        // Act
+        const g = tryRunGitWithExit(['-C', dir, 'write-tree']);
+        const looseAfterGit = await countLooseObjects(dir);
+
+        // Assert
+        expect(g.exitCode).toBe(CLASS_EXIT);
+        expect(g.stderr).toBe(CLASS_FATAL);
+        expect(looseAfterGit).toBe(before);
+        await assertRefusesWithBadMaxTreeDepth(() => sut(ctx, entries));
+        expect(await countLooseObjects(dir)).toBe(before);
       });
     });
   });
