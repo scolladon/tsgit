@@ -158,6 +158,75 @@ describe.skipIf(!GIT_AVAILABLE)('branch start-point interop', () => {
     });
   });
 
+  describe('Given a fresh repository whose HEAD names a branch no commit backs', () => {
+    /** An unborn checkout — `git init` and nothing else. Rows here cannot
+     *  reuse the shared fixture, which carries a root commit. */
+    const unbornRepo = async (
+      slug: string,
+    ): Promise<{ readonly dir: string; readonly ctx: Context }> => {
+      const root = await realpath(
+        await mkdtemp(path.join(os.tmpdir(), `tsgit-branch-unborn-${slug}-`)),
+      );
+      caseRoots.push(root);
+      const dir = path.join(root, 'repo');
+      runGit(['init', '-q', '-b', 'main', dir]);
+      disableAutoMaintenance(dir);
+      return { dir, ctx: createNodeContext({ workDir: dir }) };
+    };
+
+    describe('When git branch and tsgit branchCreate both omit the start point', () => {
+      it('Then both name the branch HEAD points at, never HEAD itself', async () => {
+        // Arrange
+        const { dir, ctx } = await unbornRepo('omitted');
+
+        // Act
+        const gitResult = tryRunGitWithExit(['-C', dir, 'branch', 'b-unborn-git']);
+        const err = await catchTsgitError(() => branchCreate(ctx, { name: 'b-unborn-tsgit' }));
+
+        // Assert
+        expect(gitResult.exitCode).toBe(128);
+        expect(gitResult.stderr).toBe("fatal: not a valid object name: 'main'\n");
+        expect(err.data).toEqual({ code: 'BRANCH_NOT_FOUND', name: 'main' });
+      });
+    });
+
+    describe('When git branch --force and tsgit branchCreate with force both omit the start point', () => {
+      it('Then both refuse identically, force reaching no further', async () => {
+        // Arrange
+        const { dir, ctx } = await unbornRepo('omitted-force');
+
+        // Act
+        const gitResult = tryRunGitWithExit(['-C', dir, 'branch', '--force', 'b-unborn-git']);
+        const err = await catchTsgitError(() =>
+          branchCreate(ctx, { name: 'b-unborn-tsgit', force: true }),
+        );
+
+        // Assert
+        expect(gitResult.exitCode).toBe(128);
+        expect(gitResult.stderr).toBe("fatal: not a valid object name: 'main'\n");
+        expect(err.data).toEqual({ code: 'BRANCH_NOT_FOUND', name: 'main' });
+      });
+    });
+
+    describe('When git branch and tsgit branchCreate both pass a start point nothing resolves', () => {
+      it('Then both name that start point verbatim rather than the current branch', async () => {
+        // Arrange
+        const { dir, ctx } = await unbornRepo('explicit');
+
+        // Act
+        const gitResult = tryRunGitWithExit(['-C', dir, 'branch', 'b-unborn-git', 'nope-xyz']);
+        const err = await catchTsgitError(() =>
+          branchCreate(ctx, { name: 'b-unborn-tsgit', startPoint: 'nope-xyz' }),
+        );
+
+        // Assert
+        expect(gitResult.exitCode).toBe(128);
+        expect(gitResult.stderr).toBe("fatal: not a valid object name: 'nope-xyz'\n");
+        expect(err.data).toEqual({ code: 'BRANCH_NOT_FOUND', name: 'nope-xyz' });
+      });
+    });
+  });
+
   describe('Given a branch the main worktree has checked out', () => {
     describe('When git branch --force and tsgit branchCreate with force both rewrite it', () => {
       it('Then both refuse, naming the branch and the worktree holding it', async () => {

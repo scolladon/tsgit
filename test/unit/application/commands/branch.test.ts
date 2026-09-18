@@ -1760,3 +1760,66 @@ describe('branch', () => {
     });
   });
 });
+
+describe('branch create — an unborn HEAD', () => {
+  describe('Given a fresh repository whose HEAD names a branch no commit backs', () => {
+    describe('When branch create runs with no start point', () => {
+      it('Then the refusal names the branch HEAD points at, not HEAD itself', async () => {
+        // Arrange — git substitutes the resolved current branch for the
+        // omitted start point before it reports what it could not resolve.
+        const ctx = createMemoryContext();
+        await init(ctx);
+
+        // Act
+        let caught: unknown;
+        try {
+          await branchCreate(ctx, { name: 'sprout' });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({ code: 'BRANCH_NOT_FOUND', name: 'main' });
+      });
+    });
+
+    describe('When branch create runs with force and no start point', () => {
+      it('Then it refuses the same way, force reaching no further', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+
+        // Act
+        let caught: unknown;
+        try {
+          await branchCreate(ctx, { name: 'sprout', force: true });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({ code: 'BRANCH_NOT_FOUND', name: 'main' });
+      });
+    });
+
+    describe('When branch create runs with a start point nothing resolves', () => {
+      it('Then the refusal names that start point verbatim', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+
+        // Act
+        let caught: unknown;
+        try {
+          await branchCreate(ctx, { name: 'sprout', startPoint: 'nope-xyz' });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({ code: 'BRANCH_NOT_FOUND', name: 'nope-xyz' });
+      });
+    });
+  });
+});

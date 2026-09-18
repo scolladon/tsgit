@@ -41,6 +41,7 @@ Each method returns a concrete result — no discriminator to narrow on at the c
 ## Behaviour
 
 - **`create` refuses a start point that does not peel to a commit.** `startPoint` is resolved and, when it is a ref or an annotated tag, peeled through the tag chain; the resulting object is then typed — a tree or blob (by full oid, abbreviated oid, lightweight tag, or annotated tag pointing at one) throws `UNEXPECTED_OBJECT_TYPE` with `expected: 'commit'` and **nothing is written**. An annotated tag over a commit is accepted and peeled — the branch lands on the commit, never on the tag object. The existing-name check (`BRANCH_EXISTS`, unless `force`) runs **before** the start point resolves, so `create({ name: '<existing>', startPoint: 'nope' })` reports `BRANCH_EXISTS`, not `BRANCH_NOT_FOUND`. See [errors](../errors.md#refs-reflog-revparse) and [ADR-860](../../adr/860-branch-create-verifies-its-start-point-is-a-commit.md) / [ADR-861](../../adr/861-the-non-commit-branch-point-refusal-reuses-unexpected-object-type.md). Known divergence: annotated-tag chains are capped at a depth of 5 (the repo-wide peel-depth limit) — a legitimate 6-deep chain git accepts is refused here.
+- **`create` on an unborn HEAD names the current branch.** With no `startPoint`, the start point is HEAD; when no commit backs it the refusal is `BRANCH_NOT_FOUND` carrying the current branch's short name, matching git's `fatal: not a valid object name: '<branch>'`. An explicit `startPoint` that does not resolve is reported verbatim instead.
 - **Reflog move, not rewrite.** `rename` moves the source's reflog file byte-for-byte instead of parsing and re-serializing it, so a malformed line survives verbatim under the new name; the rename entry is appended afterward.
 - **Renaming a branch onto its own name succeeds** — the ref and its log stay put, and only the rename entry is appended.
 - **`force` onto an existing branch replaces its reflog**, not concatenates it: the destination's prior history is dropped before the source's log moves in.
@@ -59,7 +60,7 @@ await repo.branch.delete({ name: 'feature/y' });
 
 - `BRANCH_EXISTS` — `create` with an existing name and no `force`; `rename` whose `to` already exists and no `force`.
 - `INVALID_REF` — name violates git ref syntax.
-- `BRANCH_NOT_FOUND` — `delete` / `rename` on a name that does not exist, or an unresolvable `startPoint`.
+- `BRANCH_NOT_FOUND` — `delete` / `rename` on a name that does not exist, or an unresolvable `startPoint`. On an unborn HEAD with no `startPoint`, `name` carries the current branch's short name — the label git substituted for the omitted start point — never `HEAD`.
 - `UNEXPECTED_OBJECT_TYPE` — `create` whose (peeled) `startPoint` is not a commit.
 - `BRANCH_CHECKED_OUT` — `delete`, or a forced `create`, on a branch some worktree's HEAD names; `path` carries that worktree.
 - `CONFIG_BAD_NUMERIC_VALUE` — `delete` on a repository with a malformed `core.maxTreeDepth` / `core.deltaBaseCacheLimit` (the repo-settings class, checked right after the gate, before the worktree-holder / not-found checks); `create` reaches the same class through its own read of the start point's object, structurally, with no separate check. `list` and `rename` do **not** refuse on this class — git runs them without touching the object store.

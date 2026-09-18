@@ -984,7 +984,7 @@ export function branch(ctx: Context, action: BranchAction): Promise<BranchResult
 **Semantics.** Each subcommand is a small composition of primitive calls wrapped in validation:
 
 - `list`: scan `refs/heads/` (or `refs/remotes/` if `remote`); group by ref directory. Reads `branch.<name>.merge` from `internal/config-read` to populate `BranchInfo.upstream`.
-- `create`: resolve `startPoint` (default HEAD) → `updateRef(refs/heads/<name>, id, { expected: force ? undefined : 'absent' })`.
+- `create`: resolve `startPoint` (default HEAD) → `updateRef(refs/heads/<name>, id, { expected: force ? undefined : 'absent' })`. An omitted start point resolves HEAD directly, never through the revision ladder; an unborn HEAD throws `BRANCH_NOT_FOUND` carrying the current branch's short name, the label git substituted for the omitted start point.
 - `delete`: `updateRef(refs/heads/<name>, ..., { delete: true })`. Throws `BRANCH_CHECKED_OUT` when any worktree's HEAD names the branch — the current checkout, a linked worktree, or a linked worktree whose directory is gone but whose registration has not been pruned. A detached HEAD names no branch and a bare main checkout is skipped, so neither holds anything.
 - `rename` (four steps with hand-rolled per-step rollback — no composite lock primitive):
   1. Resolve `from`'s oid via `resolveRef`.

@@ -32,6 +32,7 @@ import {
   refResolvesForReading,
   resolveRef,
   resolveRefForReading,
+  resolveRefOrMissing,
 } from '../primitives/resolve-ref.js';
 import { updateRef } from '../primitives/update-ref.js';
 import {
@@ -159,6 +160,20 @@ const assertNoWorktreeHolds = async (ctx: Context, name: RefName): Promise<void>
   if (holder !== undefined) throw branchCheckedOut(name, holder.path);
 };
 
+/**
+ * HEAD as `create_branch` resolves it when no start point was given. git
+ * hands it the CURRENT branch's own resolved ref name, so the default never
+ * goes through the revision ladder — and never reports ambiguity against a
+ * branch literally named `HEAD`. An unborn HEAD names no object at all, and
+ * the refusal carries the label git had already substituted for the start
+ * point (the current branch's short name), never `HEAD`.
+ */
+const resolveOmittedStartPoint = async (ctx: Context, label: string): Promise<ObjectId> => {
+  const id = await resolveRefOrMissing(ctx, HEAD_NAME);
+  if (id === undefined) throw branchNotFound(label as RefName);
+  return id;
+};
+
 export const branchCreate = async (
   ctx: Context,
   input: BranchCreateInput,
@@ -172,12 +187,9 @@ export const branchCreate = async (
   if (!force && held) throw branchExists(name);
   if (force && held) await assertNoWorktreeHolds(ctx, name);
   const startPoint = input.startPoint ?? (await omittedStartPointLabel(ctx));
-  // git hands `create_branch` the CURRENT branch's own resolved ref name when
-  // no start point is given, so the default never goes through the ladder —
-  // and never reports ambiguity against a branch literally named `HEAD`.
   const start =
     input.startPoint === undefined
-      ? await resolveRef(ctx, HEAD_NAME)
+      ? await resolveOmittedStartPoint(ctx, startPoint)
       : await resolveBranchTarget(ctx, input.startPoint);
   const target = await requireCommit(ctx, start);
   const reflogMessage = force && held ? branchResetTo(startPoint) : branchCreatedFrom(startPoint);
