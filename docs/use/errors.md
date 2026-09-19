@@ -79,7 +79,7 @@ Codes are grouped by domain. Within each group, alphabetical.
 |---|---|---|
 | `AMBIGUOUS_OID_PREFIX` | `prefix, candidates` | An abbreviated object-id prefix matched more than one object. |
 | `BRANCH_CHECKED_OUT` | `branch, path` | `branch.delete(...)`, or a forced `branch.create(...)`, against a branch some worktree's HEAD names. |
-| `BRANCH_EXISTS` | `name` | `branch.create(...)` without `force` against an existing branch. |
+| `BRANCH_EXISTS` | `name` | `branch.create(...)` without `force` against an existing branch, or `branch.rename(...)` without `force` onto a destination that **resolves for reading**. A destination that exists but does not resolve — a loose ref file holding unparseable bytes — is renamed over instead, the way git's ref rename deletes its destination rather than locking it. |
 | `BRANCH_NOT_FOUND` | `name` | `branch.delete(...)` against an unknown branch. |
 | `DUPLICATE_REF` | `name` | Packed-refs file lists the same name twice. |
 | `FSCK_UNKNOWN_MSG_ID` | `msgId, source, line` | An `[fsck]` config entry names a msg-id no check reports. |
@@ -87,7 +87,7 @@ Codes are grouped by domain. Within each group, alphabetical.
 | `FSCK_SKIP_LIST_UNREADABLE` | `path, reason` | The object-name list `fsck.skipList` points at could not be opened. |
 | `FSCK_SKIP_LIST_INVALID_NAME` | `name, path, line` | A `fsck.skipList` line is not a full object name. |
 | `INVALID_PACKED_REFS` | `reason` | `.git/packed-refs` malformed. |
-| `INVALID_REF` | `name, reason` | Ref name violates git syntax. |
+| `INVALID_REF` | `reason` | Ref name violates git syntax, or a ref's stored content does not parse — `reason: '<ref> is broken'` for a loose ref file, `'<ref> is a symbolic link to content that is not a ref'` when the content was read through a link. Neither form names the bytes it read. `branch.create(...)` surfaces the broken-loose form, forced or not; `branch.rename(...)` does not, because it replaces such a destination. |
 | `INVALID_REF_LINE` | `reason` | Ref-line on the wire was malformed. |
 | `INVALID_REFLOG_ENTRY` | `reason` | Reflog file line could not be parsed. |
 | `INVALID_REFTABLE` | `check, reason` | A reftable stack file failed a structural parse gate. |
@@ -99,7 +99,7 @@ Codes are grouped by domain. Within each group, alphabetical.
 | `REFLOG_ENTRY_OUT_OF_RANGE` | `index, length` | `@{N}` (or explicit delete by index) beyond reflog length. |
 | `REFLOG_NOT_FOUND` | `ref` | Ref has no reflog. [`reflog({ action: 'expire', ref })`](commands/reflog.md) reports it carrying the argument **exactly as passed** (the short name, not the DWIM-resolved one) for a deleted ref whose log survives, a dangling symbolic ref, an unborn `HEAD`, an invalid ref name (previously `INVALID_REF`), and ref content that does not parse. A tip naming a missing object is not this case — it expires by clock. |
 | `REFTABLE_LOCKED` | `stack, reason` | Another writer holds the reftable stack's `tables.list.lock`. |
-| `REVPARSE_AMBIGUOUS` | `expression, candidates` | Short oid matched multiple objects. |
+| `REVPARSE_AMBIGUOUS` | `expression, candidates` | A revision expression matched more than one object — a short oid across several objects, or a name that several ref namespaces carry. [`branch.create`](commands/branch.md)'s start point is counted this way at **every** width, a full 40-hex spelling included, because that is the one surface git refuses on rather than taking the first candidate and warning. |
 | `REVPARSE_UNRESOLVED` | `expression, reason` | Revision expression could not resolve. |
 | `TAG_EXISTS` | `name` | `tag.create(...)` without `force` against an existing tag. |
 | `TAG_NOT_FOUND` | `name` | `tag.delete(...)` against an unknown tag. |
