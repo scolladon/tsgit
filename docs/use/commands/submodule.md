@@ -178,6 +178,13 @@ exact path against `.gitmodules`; an unmatched entry refuses with
 (`..`/empty segment, absolute, drive-prefixed, backslash, control chars, leading
 `-`) are dropped (CVE-2018-17456 lineage); a `.gitmodules` over 1 MiB refuses.
 
+`init` and `sync` refuse a malformed `core.maxTreeDepth` / `core.deltaBaseCacheLimit`
+with `CONFIG_BAD_NUMERIC_VALUE` (the repo-settings class), checked right after the
+operational gate and **before** the work-tree requirement, transcribing git's own
+per-builtin prologue. `add`, `update` and `deinit` carry no such check of their own,
+and reach the class only if what they do touches the object store. See
+[`internals.md`](../primitives/internals.md#assertrepossettingsvalid).
+
 ### `init`
 
 ```ts

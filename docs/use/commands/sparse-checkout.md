@@ -74,6 +74,7 @@ await repo.sparseCheckout.disable();
 - `WORKING_TREE_DIRTY` — `set` / `add` would discard a dirty out-of-cone file and `force` is not set.
 - `INVALID_OPTION` — empty pattern list, or `cone: true` with a non-cone-compatible pattern.
 - `SPARSE_PATTERN_FILE_TOO_LARGE` — `.git/info/sparse-checkout` exceeds the size cap.
+- `CONFIG_BAD_NUMERIC_VALUE` — a malformed `core.maxTreeDepth` / `core.deltaBaseCacheLimit` (the repo-settings class), checked right after the operational gate and **before** the work-tree check, transcribing git's own per-builtin prologue — so a bare repository with a malformed value reports this rather than `WORK_TREE_REQUIRED`. See [`internals.md`](../primitives/internals.md#assertrepossettingsvalid).
 
 ## See also
 

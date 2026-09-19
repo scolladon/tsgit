@@ -117,13 +117,23 @@ await repo.stash.apply({ restoreIndex: true });
 - `NO_INITIAL_COMMIT` — `push` on an unborn branch (no commit yet).
 - `STASH_NOT_FOUND` — the selector `index` is out of range.
 - `STASH_APPLY_WOULD_OVERWRITE` — `apply`/`pop` would overwrite uncommitted
-  working-tree changes or an existing untracked file.
+  working-tree changes or an existing untracked file. The untracked-restore
+  probe does not follow symbolic links, so a **dangling** symlink sitting at a
+  restore path counts as occupying it and refuses, where a target-following
+  existence check would have let the restore clobber the link.
 - `INVALID_INDEX_ENTRY` — an untracked entry in the stash fails git's own
   index-entry name rules (`apply`/`pop` restores nothing); or, separately, a
   conflicting tracked-merge outcome/conflict path fails the same rules (every
   path in that batch is checked before any of them is written, so a hostile
   path anywhere refuses the whole conflict write, atomically).
 - `INVALID_COMMIT` — `refs/stash` points at a commit that is not a stash entry.
+- `CONFIG_BAD_NUMERIC_VALUE` — a malformed `core.maxTreeDepth` /
+  `core.deltaBaseCacheLimit` (the repo-settings class), checked by every verb
+  — `push`, `list`, `drop`, `apply`, `pop` — right after the work-tree check,
+  transcribing git's own per-builtin prologue. The order matters: a bare
+  repository reports `WORK_TREE_REQUIRED` first, unlike
+  [`sparseCheckout`](sparse-checkout.md), which reports the config class
+  first. See [`internals.md`](../primitives/internals.md#assertrepossettingsvalid).
 
 See [`../errors.md`](../errors.md) for the canonical `TsgitError.data.code` list.
 
