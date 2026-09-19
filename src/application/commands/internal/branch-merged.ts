@@ -119,6 +119,7 @@ const candidateResolves = async (ctx: Context, candidate: RefName): Promise<bool
  * `branch.<n>.merge` value names. Both reach the same answer by being skipped.
  */
 const mapsNamedSource = (spec: string): boolean => {
+  // Stryker disable next-line MethodExpression: equivalent — `^` is a forbidden ref-name character, so no spec `assertRemoteRefspecsValid` lets through ENDS with one; the flipped probe never fires, and the colon test below then rejects the negative spec anyway, since a validated one carries no colon at all.
   if (spec.startsWith(NEGATIVE_PREFIX)) return false;
   const body = spec.startsWith(FORCE_PREFIX) ? spec.slice(1) : spec;
   // git splits on the LAST colon; a ref name can hold none, so the two agree
@@ -133,6 +134,7 @@ const firstMapping = (
   specs: ReadonlyArray<string> | undefined,
   ref: RefName,
 ): RefName | undefined => {
+  // Stryker disable next-line ArrayDeclaration: equivalent — the fallback only stands in for a remote with no fetch refspec, and any element put in its place holds no colon, so mapsNamedSource passes it over and the loop still ends in `undefined`.
   for (const spec of specs ?? []) {
     if (!mapsNamedSource(spec)) continue;
     const mapped = applyRefspec(parseRefspec(spec), ref);

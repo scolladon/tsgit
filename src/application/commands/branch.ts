@@ -333,7 +333,9 @@ const renameBranch = async (ctx: Context, request: RenameRequest, id: ObjectId):
   // is still coupled to `from` here (unmoved), so this delete carries git's
   // FIRST `logs/HEAD` rename line when HEAD names the branch being renamed.
   await updateRef(ctx, from, zeroOid(ctx.hashConfig), {
+    // Stryker disable next-line BooleanLiteral: equivalent — updateRef takes its delete path on `options.delete === true || newId === zeroOid(...)`, and the id handed over here IS that zero oid.
     delete: true,
+    // Stryker disable next-line BooleanLiteral: equivalent — assertRenameAllowed has already refused a symbolic source, and resolveWriteChain's two arms agree on a direct name: no links, the name itself as terminal, its own id as the old value.
     noDeref: true,
     reflogMessage: branchRenamed(from, to),
   });
@@ -362,7 +364,9 @@ const renameNestedBranch = async (
   const staging = transactionLogging(ctx).renamedBranchLog === MERGED_RENAME_LOG ? to : STAGED_LOG;
   await store.moveReflog(from, staging);
   await updateRef(ctx, from, zeroOid(ctx.hashConfig), {
+    // Stryker disable next-line BooleanLiteral: equivalent — updateRef takes its delete path on `options.delete === true || newId === zeroOid(...)`, and the id handed over here IS that zero oid.
     delete: true,
+    // Stryker disable next-line BooleanLiteral: equivalent — assertRenameAllowed has already refused a symbolic source, and resolveWriteChain's two arms agree on a direct name: no links, the name itself as terminal, its own id as the old value.
     noDeref: true,
     reflogMessage: branchRenamed(from, to),
   });
