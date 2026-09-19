@@ -54,6 +54,7 @@ await repo.reset({ mode: 'hard', rev: 'ORIG_HEAD' });
 - `WORK_TREE_REQUIRED` — `hard` against a repository with no work tree (bare, or opened without one).
 - `BARE_REPOSITORY` — `mixed` against a bare repository (`operation: 'reset --mixed'`) — git refuses to write an `index` file a bare repository never has, even when `hard`'s work-tree check above would have passed.
 - `REF_NOT_FOUND` / `INVALID_REF` — `target` does not resolve.
+- `REF_UPDATE_CONFLICT` — a concurrent writer moved HEAD between the read and the write. `reset` writes through the literal `HEAD`, as git's own reset does, so `name` is `'HEAD'` even when HEAD is attached to a branch; the branch still moves and the coupled split is still logged. A no-move reset records no reflog entry.
 
 ## See also
 

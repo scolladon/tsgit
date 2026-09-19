@@ -11,6 +11,7 @@ type CheckoutOptions = CheckoutSwitchOptions | CheckoutPathsOptions;
 
 interface CheckoutSwitchOptions {
   readonly rev: string;
+  readonly detach?: boolean;
   readonly force?: boolean;
 }
 
@@ -30,6 +31,8 @@ interface CheckoutPathsOptions {
 
 ## Behaviour
 
+- **The branch lookup runs first, whatever `detach` says.** Switch mode reads `rev` as `refs/heads/<rev>` before anything else, the way git's own branch-argument parse does. A name a branch carries attaches HEAD to that branch — or checks out the same commit detached when `detach: true`. A name no branch carries goes down git's revision ladder instead and **detaches** HEAD onto what it finds: a full object id first, then the tag and remote-tracking namespaces in gitrevisions order, then an unambiguous abbreviated id. So `detach` decides only whether a *branch* name attaches; it no longer decides how `rev` is resolved, and a tag or a remote-tracking name checks out detached without it.
+- **The reflog entry echoes the argument you passed.** `checkout: moving from <old> to <rev>` carries `rev` verbatim — the branch name, the tag, or the object id exactly as you spelled it — where it used to abbreviate an id to seven characters. git echoes the argument it was handed.
 - **Dirty-tree guard.** Switch mode refuses to overwrite tracked modifications or to clobber untracked paths that would collide. Use `force: true` to override.
 - **Atomicity.** Per-file (matches canonical git). The index commit is atomic; working-tree writes are not all-or-nothing if power is cut mid-write.
 - **Sparse checkout.** Switch mode honours the active sparse pattern on the target branch.
@@ -55,7 +58,10 @@ await repo.checkout({ rev: 'main', force: true });
 ## Throws
 
 - `CHECKOUT_OVERWRITE_DIRTY` — switch without `force` against a dirty working tree.
-- `REF_NOT_FOUND` / `INVALID_REF` — `rev` does not resolve.
+- `BRANCH_NOT_FOUND` — switch mode where `rev` names no branch and resolves to nothing on the revision ladder either; `name` carries `refs/heads/<rev>`, the branch git names in its own refusal.
+- `INVALID_REF` — `rev` cannot be spelled as a ref name and does not resolve as an object id.
+- `AMBIGUOUS_OID_PREFIX` — an abbreviated `rev` matches more than one object.
+- `REF_NOT_FOUND` — HEAD itself does not resolve (an unborn branch).
 - `PATHSPEC_NO_MATCH` — a literal path pattern matched nothing.
 - `WORK_TREE_REQUIRED` — the repository has no work tree (bare, or opened without one).
 
