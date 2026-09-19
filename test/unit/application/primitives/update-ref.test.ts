@@ -2475,3 +2475,29 @@ describe('deleteRefs', () => {
     });
   });
 });
+
+describe('updateRef — a chain that walks HEAD', () => {
+  describe('Given a detached HEAD moved through HEAD itself', () => {
+    describe('When updateRef writes it with noDeref', () => {
+      it('Then HEAD is read once — the walked chain never re-reads it to couple', async () => {
+        // Arrange
+        const base = await buildSeededContext({});
+        const first = await writeCommit(base, 'first');
+        const second = await writeCommit(base, 'second');
+        await base.fs.writeUtf8(`${base.layout.gitDir}/HEAD`, `${first}\n`);
+        const { ctx, calls } = instrumentedContext(base);
+        const headPath = `${ctx.layout.gitDir}/HEAD`;
+        const sut = updateRef;
+
+        // Act
+        await sut(ctx, 'HEAD' as RefName, second, { reflogMessage: 'move', noDeref: true });
+
+        // Assert
+        const headContentReads = calls().filter(
+          (call) => call.path === headPath && call.method === 'readUtf8',
+        );
+        expect(headContentReads).toHaveLength(1);
+      });
+    });
+  });
+});

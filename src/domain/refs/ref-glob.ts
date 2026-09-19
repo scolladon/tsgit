@@ -92,6 +92,7 @@ const parseClassAttempt = (bytes: Uint8Array, i: number): MemberResult | undefin
   let j = i + 2;
   // Equivalent mutant, deliberately not suppressed — a line-level disable would also silence the detected mutants sharing this line. `j` can only walk up to `bytes.length`, and the refusal below rejects both that and the `bytes.length + 1` this mutant reaches instead.
   while (j < bytes.length && bytes[j] !== RBRACKET) j += 1;
+  // Equivalent mutant, deliberately not suppressed — a line-level disable would also silence the detected mutants sharing this line. the scan above stops at `j === bytes.length`, so a strict bound never fires and leaves the same abort the proof below describes.
   // Stryker disable next-line ConditionalExpression: equivalent — `j === bytes.length` means no `]` exists at or after `i + 2` and `bytes[i + 1]` is `:`, so the caller's own scan also runs off the end and aborts; dropping this early refusal only moves where `undefined` comes from.
   if (j >= bytes.length) return undefined; // unterminated — caller aborts
   const nameLength = j - i - 3;

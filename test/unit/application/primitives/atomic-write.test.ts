@@ -356,6 +356,27 @@ describe('withLockFile', () => {
     });
   });
 
+  describe('Given a body that commits and a fresh lock taken at the path after it', () => {
+    describe('When withLockFile returns', () => {
+      it('Then the fresh lock stands — the committed lock was renamed away, not ours to remove', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const path = '/repo/.git/packed-refs';
+        const content = new TextEncoder().encode('committed content');
+
+        // Act
+        await withLockFile(ctx, path, onLocked, async (commit) => {
+          await commit(content);
+          await ctx.fs.writeExclusive(`${path}.lock`, new Uint8Array(0));
+        });
+
+        // Assert
+        expect(await ctx.fs.readUtf8(path)).toBe('committed content');
+        expect(await ctx.fs.exists(`${path}.lock`)).toBe(true);
+      });
+    });
+  });
+
   describe('Given a body that never calls commit', () => {
     describe('When withLockFile is called', () => {
       it('Then path is left untouched and no lock remains', async () => {

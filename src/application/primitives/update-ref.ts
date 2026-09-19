@@ -229,6 +229,7 @@ function keptSymbolicLogEntry(
 ): readonly RefUpdate[] {
   const { chain, logging, zero, message } = plan;
   const kept = logging.symbolicDeleteLog === 'kept-with-entry' && chain.terminalIsSymbolic;
+  // Equivalent mutant, deliberately not suppressed — a line-level disable would also silence the detected mutants sharing this line. `terminalIsSymbolic` is set only by `resolveWithoutDeref`, which `resolveWriteChain` reaches only when `noDeref` is true, so `kept` already implies this disjunct.
   if (options.noDeref !== true || !kept) return [];
   const reflog = { oldId: oldOrZero(chain.old, zero), newId: zero, message };
   return [{ kind: 'reflogOnly', name: chain.terminal, reflog }];

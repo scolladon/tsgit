@@ -44,6 +44,7 @@ export async function resolveTerminalName(
     const outcome = await resolveDirectChain(store, name, MAX_SYMBOLIC_REF_DEPTH);
     return outcome.kind === 'found' ? outcome.name : undefined;
   } catch (err) {
+    // Stryker disable next-line StringLiteral: equivalent — the `??` fallback is reached only when `errorDataCode` yields undefined, and no literal put there is a member of UNREADABLE_REF_CODES, so the probe answers false whatever the literal is.
     if (UNREADABLE_REF_CODES.has(errorDataCode(err) ?? '')) return undefined;
     throw err;
   }
@@ -63,6 +64,7 @@ export async function resolveRefForReading(
   try {
     return await resolveRefOrMissing(ctx, name);
   } catch (err) {
+    // Stryker disable next-line StringLiteral: equivalent — the `??` fallback is reached only when `errorDataCode` yields undefined, and no literal put there is a member of UNREADABLE_REF_CODES, so the probe answers false whatever the literal is.
     if (UNREADABLE_REF_CODES.has(errorDataCode(err) ?? '')) return undefined;
     throw err;
   }
@@ -124,6 +126,7 @@ const finalizeOutcome = (
   options?: ResolveRefOptions,
 ): Promise<ObjectId> => {
   if (options?.peel !== true) return Promise.resolve(outcome.id);
+  // Stryker disable next-line OptionalChaining: equivalent — the guard above returns unless `options?.peel === true`, which no undefined `options` can satisfy, so `options` is always defined here.
   return peelChain(ctx, outcome.id, options?.maxPeelDepth ?? MAX_PEEL_DEPTH);
 };
 

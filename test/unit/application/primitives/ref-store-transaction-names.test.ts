@@ -244,6 +244,13 @@ const SINGLE_ROWS: readonly SingleRow[] = [
     code: 'NOT_A_DIRECTORY',
     blocking: 'd/x',
   },
+  {
+    label: 'creating k/z under the existing k while requiring k/z absent',
+    existing: ['k'],
+    update: { kind: 'set', name: ref('k/z'), id: ID, expected: 'absent' },
+    code: 'NOT_A_DIRECTORY',
+    blocking: 'k',
+  },
 ];
 
 interface PriorityRow {
@@ -596,6 +603,28 @@ describe('ref-store — names that collide inside one transaction', () => {
 
           // Assert
           expect(await sut.listRefNames(`${REMOTES}/` as RefName)).toEqual([]);
+        });
+      });
+    });
+
+    describe('Given a reflog rewrite beside the creation of the name above it', () => {
+      describe('When applyRefUpdates applies both', () => {
+        it('Then the rewrite claims no name of its own and the creation stands', async () => {
+          // Arrange
+          const ctx = await build();
+          const sut = createRefStore(ctx);
+
+          // Act
+          const data = await refusalOf(() =>
+            sut.applyRefUpdates([
+              set('r'),
+              { kind: 'reflogReplace', name: ref('r/x'), entries: [] },
+            ]),
+          );
+
+          // Assert
+          expect(data).toBeUndefined();
+          expect(await sut.listRefNames(`${REMOTES}/` as RefName)).toEqual([ref('r')]);
         });
       });
     });

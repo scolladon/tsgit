@@ -88,6 +88,7 @@ async function readReferentValue(
     const outcome = await resolveDirectChain(store, target, MAX_SYMBOLIC_REF_DEPTH);
     return outcome.kind === 'found' ? outcome.id : 'absent';
   } catch (err) {
+    // Stryker disable next-line StringLiteral: equivalent — the `??` fallback is reached only when `errorDataCode` yields undefined, and no literal put there is a member of UNREADABLE_REFERENT_CODES, so the probe answers false whatever the literal is.
     const unreadable = UNREADABLE_REFERENT_CODES.has(errorDataCode(err) ?? '');
     if (expected === undefined && unreadable) return 'absent';
     throw err;

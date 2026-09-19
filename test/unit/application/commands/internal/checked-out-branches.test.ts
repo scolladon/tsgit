@@ -6,6 +6,7 @@ import { init } from '../../../../../src/application/commands/init.js';
 import { worktreeHolding } from '../../../../../src/application/commands/internal/checked-out-branches.js';
 import { updateRef } from '../../../../../src/application/primitives/update-ref.js';
 import { writeSymbolicRef } from '../../../../../src/application/primitives/write-symbolic-ref.js';
+import { permissionDenied, type TsgitError } from '../../../../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../../src/ports/context.js';
 
@@ -112,19 +113,25 @@ describe('worktreeHolding', () => {
 
   describe('Given a rebase started from a detached HEAD', () => {
     describe.each([
-      { body: 'detached HEAD\n', label: "git's detached-HEAD literal" },
-      { body: '\n', label: 'an empty head-name' },
+      {
+        body: 'detached HEAD\n',
+        label: "git's detached-HEAD literal",
+        composed: 'refs/heads/detached HEAD',
+      },
+      { body: '\n', label: 'an empty head-name', composed: 'refs/heads/' },
     ])('When head-name holds $label', (row) => {
-      it('Then it names no branch at all', async () => {
+      it('Then it names no branch at all, not even the one that text would compose', async () => {
         // Arrange
         const ctx = await seedDetachedRepo();
         await writeState(ctx, 'rebase-merge/head-name', row.body);
 
         // Act
-        const result = await sut(ctx, SIDECAR);
+        const held = await sut(ctx, SIDECAR);
+        const composed = await sut(ctx, row.composed as RefName);
 
         // Assert
-        expect(result).toBeUndefined();
+        expect(held).toBeUndefined();
+        expect(composed).toBeUndefined();
       });
     });
   });
@@ -201,6 +208,52 @@ describe('worktreeHolding', () => {
         // Arrange
         const { ctx } = await seedRepo();
         await writeSymbolicRef(ctx, 'HEAD' as RefName, SIDECAR);
+
+        // Act
+        const result = await sut(ctx, SIDECAR);
+
+        // Assert
+        expect(result).toBe(ctx.layout.workDir);
+      });
+    });
+  });
+
+  describe('Given a state file that cannot be read for a reason other than absence', () => {
+    describe('When the branch it would name is looked up', () => {
+      it('Then that refusal propagates instead of reading as no state at all', async () => {
+        // Arrange
+        const base = await seedDetachedRepo();
+        const target = `${base.layout.gitDir}/rebase-merge/head-name`;
+        await writeState(base, 'rebase-merge/head-name', `${SIDECAR}\n`);
+        const ctx: Context = {
+          ...base,
+          fs: {
+            ...base.fs,
+            readUtf8: async (path: string) => {
+              if (path === target) throw permissionDenied(path);
+              return base.fs.readUtf8(path);
+            },
+          },
+        };
+
+        // Act
+        const refusal = await sut(ctx, SIDECAR).catch((err: TsgitError) => err.data);
+
+        // Assert
+        expect(refusal).toEqual({ code: 'PERMISSION_DENIED', path: target });
+      });
+    });
+  });
+
+  describe('Given a linked worktree beside a main checkout carrying the rebase state', () => {
+    describe('When the branch that state names is looked up', () => {
+      it('Then only the main checkout holds it — each worktree reads its own admin dir', async () => {
+        // Arrange
+        const ctx = await seedDetachedRepo();
+        const adminDir = `${ctx.layout.gitDir}/worktrees/wt`;
+        await ctx.fs.writeUtf8(`${adminDir}/HEAD`, 'ref: refs/heads/main\n');
+        await ctx.fs.writeUtf8(`${adminDir}/gitdir`, `${ctx.layout.workDir}/wt/.git\n`);
+        await writeState(ctx, 'rebase-merge/head-name', `${SIDECAR}\n`);
 
         // Act
         const result = await sut(ctx, SIDECAR);

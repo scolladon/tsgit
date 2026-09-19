@@ -126,6 +126,42 @@ describe('internal/head-file', () => {
       });
     });
 
+    describe('Given an ino !== 0 HEAD whose handle counts its own closes', () => {
+      describe('When validateHead runs', () => {
+        it('Then the handle is closed once the bytes are read', async () => {
+          // Arrange
+          const base = createMemoryContext();
+          await seedRegularHead(base);
+          const { ctx: proxied } = withNodeIdentity(base, headPath(base));
+          let closes = 0;
+          const ctx: Context = {
+            ...proxied,
+            fs: {
+              ...proxied.fs,
+              openWithNoFollow: async (p, mode) => {
+                const handle = await proxied.fs.openWithNoFollow(p, mode);
+                return {
+                  ...handle,
+                  close: async () => {
+                    closes += 1;
+                    await handle.close();
+                  },
+                };
+              },
+            },
+          };
+          const sut = validateHead;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result).toEqual({ kind: 'file', content: 'ref: refs/heads/main\n' });
+          expect(closes).toBe(1);
+        });
+      });
+    });
+
     describe('Given a regular HEAD on the plain memory adapter (ino === 0)', () => {
       describe('When validateHead runs', () => {
         it('Then it reads through readUtf8 and never opens a handle', async () => {
@@ -168,6 +204,28 @@ describe('internal/head-file', () => {
           // Assert
           expect(result).toEqual({ kind: 'file', content: 'ref: refs/heads/main\n' });
           expect(duringSecondCall).toEqual([{ method: 'lstat', path: headPath(ctx) }]);
+        });
+      });
+    });
+
+    describe('Given a memory-adapter symlinked HEAD (ino === 0) unchanged between two calls', () => {
+      describe('When the second validateHead runs', () => {
+        it('Then it re-reads the link — a degenerate ino is never a usable identity', async () => {
+          // Arrange
+          const base = createMemoryContext();
+          await base.fs.symlink('refs/heads/main', headPath(base));
+          const { ctx, calls } = instrumentedContext(refuseReadOnSymlink(base, headPath(base)));
+          const sut = validateHead;
+          await sut(ctx);
+
+          // Act
+          const before = calls().length;
+          const result = await sut(ctx);
+          const duringSecondCall = calls().slice(before);
+
+          // Assert
+          expect(result).toEqual({ kind: 'symlink', linkText: 'refs/heads/main' });
+          expect(duringSecondCall.map((c) => c.method)).toEqual(['lstat', 'readlink']);
         });
       });
     });
@@ -223,6 +281,30 @@ describe('internal/head-file', () => {
           const base = createMemoryContext();
           await seedRegularHead(base);
           const { ctx, calls } = instrumentedContext(base);
+          await validateHead(ctx);
+          const sut = readHeadFile;
+          const before = calls().length;
+
+          // Act
+          const result = await sut(ctx);
+          const duringCall = calls().slice(before);
+
+          // Assert
+          expect(result).toEqual({ kind: 'file', content: 'ref: refs/heads/main\n' });
+          expect(duringCall).toEqual([]);
+        });
+      });
+    });
+
+    describe('Given two gates validated an ino !== 0 HEAD whose identity never changed', () => {
+      describe('When readHeadFile runs after the second gate', () => {
+        it('Then the identity-matched slot is still trusted and serves with zero fs calls', async () => {
+          // Arrange
+          const base = createMemoryContext();
+          await seedRegularHead(base);
+          const { ctx: proxied } = withNodeIdentity(base, headPath(base));
+          const { ctx, calls } = instrumentedContext(proxied);
+          await validateHead(ctx);
           await validateHead(ctx);
           const sut = readHeadFile;
           const before = calls().length;
@@ -354,6 +436,29 @@ describe('internal/head-file', () => {
 
           // Assert
           expect(result.kind).toBe('unusable');
+        });
+      });
+    });
+
+    describe('Given a trusted slot and a gate whose lstat then fails', () => {
+      describe('When readHeadFile runs after that gate', () => {
+        it('Then the stale slot was dropped and the failure is seen again', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRegularHead(ctx);
+          await validateHead(ctx);
+          await ctx.fs.rm(headPath(ctx));
+          await validateHead(ctx);
+          const sut = readHeadFile;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result.kind).toBe('unusable');
+          if (result.kind === 'unusable') {
+            expect((result.cause as TsgitError).data.code).toBe('FILE_NOT_FOUND');
+          }
         });
       });
     });

@@ -91,6 +91,7 @@ const branchesHeldBy = async (
     await rebasingBranch(ctx, adminDir),
     await bisectingBranch(ctx, adminDir),
   ];
+  // Equivalent mutant, deliberately not suppressed — a line-level disable would also silence the detected mutants sharing this line. the only consumer asks `includes(name)` for a concrete RefName, which no undefined claim can equal, so keeping them changes no answer.
   return claims.filter((claim): claim is RefName => claim !== undefined);
 };
 

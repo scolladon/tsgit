@@ -2,12 +2,13 @@ import { describe, expect, it } from 'vitest';
 import {
   refResolvesForReading,
   resolveRef,
+  resolveRefForReading,
   resolveRefOrMissing,
   resolveTerminalName,
 } from '../../../../src/application/primitives/resolve-ref.js';
 import type { ResolveRefOptions } from '../../../../src/application/primitives/types.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
-import type { TsgitError } from '../../../../src/domain/error.js';
+import { permissionDenied, type TsgitError } from '../../../../src/domain/error.js';
 import type { ObjectId, RefName, Tag, Tree } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { buildSeededContext } from './fixtures.js';
@@ -674,6 +675,47 @@ describe('refResolvesForReading', () => {
 
         // Assert
         expect(result).toBe(expected);
+      });
+    });
+  });
+});
+
+describe('resolveRefForReading', () => {
+  describe('Given a ref whose read fails for a reason the reading walk does not fold away', () => {
+    describe('When resolveRefForReading resolves it', () => {
+      it('Then that refusal propagates instead of reading as unresolvable', async () => {
+        // Arrange
+        const base = await buildSeededContext({
+          refs: [{ name: 'refs/heads/main' as RefName, id: MAIN_ID }],
+        });
+        const target = '/repo/.git/refs/heads/main';
+        const ctx: Context = {
+          ...base,
+          fs: {
+            ...base.fs,
+            openWithNoFollow: async (path, mode) => {
+              if (path === target) throw permissionDenied(path);
+              return base.fs.openWithNoFollow(path, mode);
+            },
+            read: async (path) => {
+              if (path === target) throw permissionDenied(path);
+              return base.fs.read(path);
+            },
+            readUtf8: async (path) => {
+              if (path === target) throw permissionDenied(path);
+              return base.fs.readUtf8(path);
+            },
+          },
+        };
+        const sut = resolveRefForReading;
+
+        // Act
+        const refusal = await sut(ctx, 'refs/heads/main' as RefName).catch(
+          (err: TsgitError) => err.data,
+        );
+
+        // Assert
+        expect(refusal).toEqual({ code: 'PERMISSION_DENIED', path: target });
       });
     });
   });

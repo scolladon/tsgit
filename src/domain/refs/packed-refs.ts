@@ -142,6 +142,7 @@ function keptAfterDrops(
   const kept: PackedRefEntry[] = [];
   let next = 0;
   for (const entry of entries) {
+    // Equivalent mutant, deliberately not suppressed — a line-level disable would also silence the detected mutants sharing this line. past the end `dropping[next]` is undefined and compares false against any name, so widening or dropping this bound still halts the walk on the same step.
     while (next < dropping.length && (dropping[next] as string) < (entry.name as string)) next++;
     if (dropping[next] === entry.name) next++;
     else kept.push(entry);

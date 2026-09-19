@@ -22,6 +22,7 @@ export async function removeEmptyDirectory(ctx: Context, dir: string): Promise<b
     await ctx.fs.rm(dir);
     return true;
   } catch (err) {
+    // Stryker disable next-line StringLiteral: equivalent — the `??` fallback is reached only when `errorDataCode` yields undefined, and no literal put there is a member of UNREMOVABLE_DIRECTORY_CODES, so the probe answers false whatever the literal is.
     if (UNREMOVABLE_DIRECTORY_CODES.has(errorDataCode(err) ?? '')) return false;
     throw err;
   }
