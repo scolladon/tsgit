@@ -643,6 +643,10 @@ function applyReflogReplaceRecords(
  * freshly assigned one — this merges into whatever live history `to`
  * already has, rather than replacing it), and the `from` record at that
  * index is tombstoned. Neither ref's own value is touched.
+ *
+ * "Live" costs no filter here: `ReftableStack.logs` resolves tombstones
+ * while merging the stack's own tables and yields only entries, so a guard
+ * against a deletion reaching this loop would be unreachable.
  */
 function applyReflogMergeRecords(
   stack: ReftableStack,
@@ -650,7 +654,6 @@ function applyReflogMergeRecords(
   logs: ReftableLogRecord[],
 ): void {
   for (const record of stack.logs(update.from)) {
-    if (record.entry.kind !== 'entry') continue;
     logs.push({ name: update.name, updateIndex: record.updateIndex, entry: record.entry });
     logs.push({ name: update.from, updateIndex: record.updateIndex, entry: { kind: 'deletion' } });
   }
@@ -669,7 +672,6 @@ function applyReflogCopyRecords(
   logs: ReftableLogRecord[],
 ): void {
   for (const record of stack.logs(update.from)) {
-    if (record.entry.kind !== 'entry') continue;
     logs.push({ name: update.name, updateIndex: record.updateIndex, entry: record.entry });
   }
 }
