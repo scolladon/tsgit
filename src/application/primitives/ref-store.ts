@@ -347,6 +347,12 @@ export async function refExists(ctx: Context, name: RefName): Promise<boolean> {
 }
 
 const HEAD_NAME: RefName = 'HEAD' as RefName;
+
+/** `err`'s code, or a sentinel no code set below holds — the one spelling the
+ *  membership tests share, so a code-less failure misses every one of them. */
+// Stryker disable next-line StringLiteral: equivalent — no code set in this module contains the empty string, so any other sentinel is a non-member in exactly the same way.
+const errorCodeOf = (err: unknown): string => errorDataCode(err) ?? '';
+
 /** The stat failures that mean "no directory here": the path, or a
  *  component above it, is absent or a regular file. */
 const NOT_A_DIRECTORY_PATH_CODES: ReadonlySet<string> = new Set([
@@ -422,8 +428,9 @@ interface LooseDuplicate {
 }
 
 /** git's pruning order — descending full ref name, across every namespace.
- *  Names are distinct, so no equal case can arise. */
-// Stryker disable next-line EqualityOperator: equivalent — duplicate names are distinct, so < and <= behave identically
+ *  Names are distinct, so no equal case can arise and `<` and `<=` agree; the
+ *  proof cannot be a `next-line` directive, because the comparison shares its
+ *  line with the `>=` flip, which existing tests do detect. */
 const byDescendingName = (a: LooseDuplicate, b: LooseDuplicate): number =>
   a.name < b.name ? 1 : -1;
 
@@ -658,9 +665,9 @@ interface LoadedPackedRefs {
 function buildSmallestUnderIndex(entries: readonly PackedRefEntry[]): ReadonlyMap<string, RefName> {
   const index = new Map<string, RefName>();
   for (const { name } of entries) {
-    for (let slash = name.lastIndexOf('/'); slash > 0; slash = name.lastIndexOf('/', slash - 1)) {
-      const known = index.get(name.slice(0, slash));
-      if (known === undefined || name < known) index.set(name.slice(0, slash), name);
+    for (const prefix of refNamePrefixes(name)) {
+      const known = index.get(prefix);
+      if (known === undefined || name < known) index.set(prefix, name);
     }
   }
   return index;
@@ -727,7 +734,7 @@ function createFilesRefStore(ctx: Context): RefStore {
       // Absent, and a regular file in the path, both read as no loose ref —
       // git's `ENOENT` and `ENOTDIR` alike; so does a directory at the path
       // (`EISDIR`), which costs the one `stat` below.
-      if (NOT_A_DIRECTORY_PATH_CODES.has(errorDataCode(err) ?? '')) return undefined;
+      if (NOT_A_DIRECTORY_PATH_CODES.has(errorCodeOf(err))) return undefined;
       if ((await pathKind(path)) === 'directory') return undefined;
       throw err;
     }
@@ -819,7 +826,7 @@ function createFilesRefStore(ctx: Context): RefStore {
     path: string,
     err: unknown,
   ): Promise<LooseLeaf> {
-    const code = errorDataCode(err);
+    const code = errorCodeOf(err);
     if (code === 'FILE_NOT_FOUND') return NO_LEAF;
     // A regular file in the path is no such ref — git's `lstat` leaves the
     // read there, so `packed-refs` is never consulted for the name (the same
@@ -829,7 +836,7 @@ function createFilesRefStore(ctx: Context): RefStore {
     if (code === 'PERMISSION_DENIED' && (await ctx.fs.lstat(path)).isSymbolicLink) {
       return SYMLINK_LEAF;
     }
-    if (!PLAIN_READER_CODES.has(code ?? '')) throw err;
+    if (!PLAIN_READER_CODES.has(code)) throw err;
     const content = await readLooseContent(name);
     return content === undefined ? NO_LEAF : { kind: 'content', content };
   }
@@ -860,7 +867,7 @@ function createFilesRefStore(ctx: Context): RefStore {
     try {
       return (await ctx.fs.stat(path)).isDirectory ? 'directory' : 'ref';
     } catch (err) {
-      if (UNRESOLVABLE_LINK_CODES.has(errorDataCode(err) ?? '')) return 'unlisted';
+      if (UNRESOLVABLE_LINK_CODES.has(errorCodeOf(err))) return 'unlisted';
       throw err;
     }
   }
@@ -1150,7 +1157,7 @@ function createFilesRefStore(ctx: Context): RefStore {
       if (stat.isDirectory) return 'directory';
       return stat.isSymbolicLink ? 'link' : 'file';
     } catch (err) {
-      if (NOT_A_DIRECTORY_PATH_CODES.has(errorDataCode(err) ?? '')) return 'absent';
+      if (NOT_A_DIRECTORY_PATH_CODES.has(errorCodeOf(err))) return 'absent';
       throw err;
     }
   }
@@ -1370,7 +1377,7 @@ function createFilesRefStore(ctx: Context): RefStore {
     try {
       return (await ctx.fs.stat(path)).isDirectory ? 'directory' : 'file';
     } catch (err) {
-      if (NOT_A_DIRECTORY_PATH_CODES.has(errorDataCode(err) ?? '')) return 'absent';
+      if (NOT_A_DIRECTORY_PATH_CODES.has(errorCodeOf(err))) return 'absent';
       throw err;
     }
   }
@@ -1426,7 +1433,7 @@ function createFilesRefStore(ctx: Context): RefStore {
       // creation no way to say why, as the lock refusal itself — is git's
       // `'X' exists; cannot create 'Y'` whenever a regular file sits at a
       // prefix. A genuine contention refusal falls straight back through.
-      if (LOCK_PATH_REFUSAL_CODES.has(errorDataCode(err) ?? '')) {
+      if (LOCK_PATH_REFUSAL_CODES.has(errorCodeOf(err))) {
         await assertNoFileInTheWay(name, path);
       }
       throw err;
@@ -1662,6 +1669,7 @@ function createFilesRefStore(ctx: Context): RefStore {
    *  directory; the logs tree whether or not a ref had a log, as git's own
    *  unlink-then-prune treats an absent log. */
   async function pruneDeletedParents(targets: readonly DeleteTarget[]): Promise<void> {
+    // Stryker disable next-line StringLiteral: equivalent — a bare pseudo-ref admitted by an empty prefix sits directly in the git dir, whose parent is never below either prune root, so both climbs return before touching anything.
     const nested = targets.filter((target) => target.name.startsWith(`${REFS_DIR}/`));
     const lockable = nested.filter((target) => target.looseDirExists);
     for (const [dir, root] of new Map(lockable.map(refsTreeParent))) {

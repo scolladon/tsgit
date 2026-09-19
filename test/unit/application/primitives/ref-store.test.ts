@@ -10,7 +10,12 @@ import {
 import { appendReflog, readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { MAX_REFLOG_BYTES } from '../../../../src/application/primitives/types.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
-import { fileNotFound, permissionDenied, TsgitError } from '../../../../src/domain/error.js';
+import {
+  fileNotFound,
+  permissionDenied,
+  TsgitError,
+  unsupportedOperation,
+} from '../../../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import type { ReflogEntry } from '../../../../src/domain/reflog/index.js';
 import type { Context } from '../../../../src/ports/context.js';
@@ -3500,6 +3505,268 @@ describe('ref-store', () => {
 
         // Assert
         expect(result).toEqual({ kind: 'direct', id: 'aa'.repeat(20) });
+      });
+    });
+  });
+
+  describe('Given a packed snapshot holding several refs', () => {
+    describe('When resolveDirect names the byte-smallest of them', () => {
+      it('Then the bisection steps back and finds it', async () => {
+        // Arrange — a lookup that only ever steps forward lands past every
+        // record below the first midpoint, so the first name is the one that
+        // proves the search narrows in both directions.
+        const ctx = await buildSeededContext({
+          packedRefs: [
+            { name: 'refs/heads/a' as RefName, id: 'a'.repeat(40) as ObjectId },
+            { name: 'refs/heads/b' as RefName, id: 'b'.repeat(40) as ObjectId },
+            { name: 'refs/heads/c' as RefName, id: 'c'.repeat(40) as ObjectId },
+          ],
+        });
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.resolveDirect('refs/heads/a' as RefName);
+
+        // Assert
+        expect(result).toEqual({ kind: 'direct', id: 'a'.repeat(40) });
+      });
+    });
+  });
+
+  describe('Given a packed-refs file whose lines are out of order under no sorted trait', () => {
+    describe('When resolveDirect names one of them', () => {
+      it('Then the snapshot is sorted before it is searched', async () => {
+        // Arrange — git sorts a snapshot that does not claim the trait once,
+        // at load, and every lookup bisects what that leaves; unsorted lines
+        // left as they are would be stepped over instead.
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/packed-refs`,
+          `${'c'.repeat(40)} refs/heads/c\n${'b'.repeat(40)} refs/heads/b\n${'a'.repeat(40)} refs/heads/a\n`,
+        );
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.resolveDirect('refs/heads/a' as RefName);
+
+        // Assert
+        expect(result).toEqual({ kind: 'direct', id: 'a'.repeat(40) });
+      });
+    });
+  });
+
+  describe('Given an adapter without the no-follow open and a packed-only ref', () => {
+    describe('When resolveDirect names it', () => {
+      it('Then the absent loose file reads as no such loose ref and the packed value answers', async () => {
+        // Arrange — the plain reader decides a refusal the no-follow open
+        // cannot; an absent file there is git's `ENOENT`, not a failure.
+        const base = await buildSeededContext({
+          packedRefs: [{ name: 'refs/tags/v1' as RefName, id: 'b'.repeat(40) as ObjectId }],
+        });
+        const ctx: Context = {
+          ...base,
+          fs: {
+            ...base.fs,
+            openWithNoFollow: async () => {
+              throw unsupportedOperation('openWithNoFollow', 'not supported');
+            },
+          },
+        };
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.resolveDirect('refs/tags/v1' as RefName);
+
+        // Assert
+        expect(result).toEqual({ kind: 'direct', id: 'b'.repeat(40) });
+      });
+    });
+  });
+
+  describe('Given a plain reader that refuses a directory with a code of its own', () => {
+    describe('When resolveDirect names the directory', () => {
+      it('Then a directory at the ref path reads as no such ref', async () => {
+        // Arrange — an adapter may report reading a directory however it
+        // likes; one `stat` settles it, and git's own `EISDIR` is no ref.
+        const base = await buildSeededContext({
+          refs: [{ name: 'refs/heads/dir/child' as RefName, id: 'a'.repeat(40) as ObjectId }],
+        });
+        const dirPath = `${base.layout.gitDir}/refs/heads/dir`;
+        const ctx: Context = {
+          ...base,
+          fs: {
+            ...base.fs,
+            openWithNoFollow: async () => {
+              throw unsupportedOperation('openWithNoFollow', 'not supported');
+            },
+            readUtf8: async (path) => {
+              if (path === dirPath) throw permissionDenied(path);
+              return base.fs.readUtf8(path);
+            },
+          },
+        };
+        const sut = createRefStore(ctx);
+
+        // Act
+        const result = await sut.resolveDirect('refs/heads/dir' as RefName);
+
+        // Assert
+        expect(result).toEqual({ kind: 'missing' });
+      });
+    });
+  });
+
+  describe('Given an lstat that refuses a loose ref for a reason no path fault explains', () => {
+    describe('When packRefs probes that ref', () => {
+      it('Then the refusal carries out rather than reading as an absent file', async () => {
+        // Arrange — only "absent, or a regular file above it" reads as no
+        // loose file; anything else is a fault the caller must see.
+        const base = await buildSeededContext({
+          refs: [{ name: 'refs/heads/main' as RefName, id: 'a'.repeat(40) as ObjectId }],
+        });
+        const loosePath = `${base.layout.gitDir}/refs/heads/main`;
+        const ctx: Context = {
+          ...base,
+          fs: {
+            ...base.fs,
+            lstat: async (path) => {
+              if (path === loosePath) throw permissionDenied(path);
+              return base.fs.lstat(path);
+            },
+          },
+        };
+        const sut = createRefStore(ctx);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.packRefs();
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({
+          code: 'PERMISSION_DENIED',
+          path: loosePath,
+        });
+      });
+    });
+  });
+
+  describe('Given a lock refusal no path fault explains, over a ref blocked by a regular file', () => {
+    describe('When a set writes the ref', () => {
+      it('Then the lock refusal carries out untouched, with no file-in-the-way probe', async () => {
+        // Arrange — a file at a prefix would make the probe refuse
+        // NOT_A_DIRECTORY, so the reported code tells whether the probe ran;
+        // only a lock that could not be created FOR A PATH REASON pays it.
+        const base = await buildSeededContext({
+          refs: [{ name: 'refs/heads/blocked' as RefName, id: 'a'.repeat(40) as ObjectId }],
+        });
+        const ctx: Context = {
+          ...base,
+          fs: {
+            ...base.fs,
+            writeExclusive: async (path, data) => {
+              if (path.endsWith('.lock')) throw permissionDenied(path);
+              return base.fs.writeExclusive(path, data);
+            },
+          },
+        };
+        const sut = createRefStore(ctx);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.applyRefUpdates([
+            {
+              kind: 'set',
+              name: 'refs/heads/blocked/deep' as RefName,
+              id: 'b'.repeat(40) as ObjectId,
+            },
+          ]);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'PERMISSION_DENIED',
+          path: `${base.layout.gitDir}/refs/heads/blocked/deep.lock`,
+        });
+      });
+    });
+  });
+
+  describe('Given a delete of the last ref in a directory the climb may never remove', () => {
+    describe('When applyRefUpdates deletes it', () => {
+      it('Then that parent is never even stat-ed for the log tree', async () => {
+        // Arrange — `logs/refs/heads` is an immediate child of the log climb's
+        // root, so it can never be pruned; asking what sits there is work the
+        // answer could not use.
+        const base = await buildSeededContext({
+          refs: [{ name: 'refs/heads/main' as RefName, id: 'a'.repeat(40) as ObjectId }],
+        });
+        const { ctx, calls } = instrumentedContext(base);
+        const logParent = `${base.layout.gitDir}/logs/refs/heads`;
+        const sut = createRefStore(ctx);
+
+        // Act
+        await sut.applyRefUpdates([{ kind: 'delete', name: 'refs/heads/main' as RefName }]);
+
+        // Assert
+        expect(calls().filter((call) => call.path === logParent)).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a delete of a ref whose loose directory is already there', () => {
+    describe('When applyRefUpdates deletes it', () => {
+      it('Then availability above it is never probed — the directory answered that', async () => {
+        // Arrange — the file-in-the-way search exists for a parent that is
+        // NOT a directory; one that is has already answered the question, and
+        // a repeat walk up the prefixes is pure cost.
+        const base = await buildSeededContext({
+          refs: [{ name: 'refs/heads/main' as RefName, id: 'a'.repeat(40) as ObjectId }],
+        });
+        const { ctx, calls } = instrumentedContext(base);
+        const refParent = `${base.layout.gitDir}/refs/heads`;
+        const sut = createRefStore(ctx);
+
+        // Act
+        await sut.applyRefUpdates([{ kind: 'delete', name: 'refs/heads/main' as RefName }]);
+
+        // Assert
+        expect(calls().filter((call) => call.path === refParent)).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given a trusted HEAD slot and a delete of another ref', () => {
+    describe('When resolveDirect reads HEAD afterwards', () => {
+      it('Then the slot still answers it with no I/O — only a HEAD write drops it', async () => {
+        // Arrange — the slot is dropped by writes to `HEAD` itself; a delete
+        // of any other name leaves the bytes it holds still current.
+        const base = await buildSeededContext({
+          refs: [
+            { name: 'refs/heads/main' as RefName, id: 'a'.repeat(40) as ObjectId },
+            { name: 'refs/heads/other' as RefName, id: 'b'.repeat(40) as ObjectId },
+          ],
+        });
+        await base.fs.writeUtf8(`${base.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+        const { ctx, calls } = instrumentedContext(base);
+        await validateHead(ctx);
+        const sut = createRefStore(ctx);
+        await sut.applyRefUpdates([{ kind: 'delete', name: 'refs/heads/other' as RefName }]);
+        const before = calls().length;
+
+        // Act
+        const result = await sut.resolveDirect('HEAD' as RefName);
+
+        // Assert
+        expect(result).toEqual({ kind: 'symbolic', target: 'refs/heads/main' });
+        expect(calls()).toHaveLength(before);
       });
     });
   });

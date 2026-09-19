@@ -232,6 +232,39 @@ describe('ref-store — a directory at a ref or log path', () => {
       });
     });
 
+    describe('Given a ref nested under the loose path and a blocked log path', () => {
+      describe('When a logged set writes the outer ref', () => {
+        it('Then the ref path reports first, ahead of the log path that refused', async () => {
+          // Arrange — git settles the ref path while it holds the lock and
+          // only then sets the log up, so a tree of real refs at the ref path
+          // is what the caller hears about, not the log that refused first.
+          const ctx = await build();
+          await ctx.fs.writeUtf8(gitPath(ctx, `${REF}/nested`), `${ID}\n`);
+          await ctx.fs.writeUtf8(gitPath(ctx, `logs/${REF}/f`), 'kept\n');
+          const sut = createRefStore(ctx);
+
+          // Act
+          const refusal = await refusalOf(() =>
+            sut.applyRefUpdates([
+              {
+                kind: 'set',
+                name: REF,
+                id: ID,
+                reflog: { oldId: '0'.repeat(40) as ObjectId, newId: ID, message: 'w' },
+              },
+            ]),
+          );
+
+          // Assert
+          expect(refusal).toEqual({
+            code: 'FILE_EXISTS',
+            path: gitPath(ctx, `${REF}/nested`),
+          });
+          expect(await ctx.fs.readUtf8(gitPath(ctx, `${REF}/nested`))).toBe(`${ID}\n`);
+        });
+      });
+    });
+
     describe('Given a directory holding a file at the log path', () => {
       describe('When a logged set would create the ref', () => {
         it('Then it refuses before the ref is written and nothing on disk changes', async () => {
