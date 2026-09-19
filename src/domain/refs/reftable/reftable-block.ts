@@ -772,10 +772,12 @@ export function* iterateReftableRefsFrom(
   let reached = false;
   for (const blockStart of refBlocksFrom(table, startBlock)) {
     const bounds = blockBoundsAt(table, blockStart);
+    // Stryker disable next-line BlockStatement: equivalent — the start block is the first whose last key sorts at or after `from`, so every block after it holds only names past `from`; the seek path below then finds that block's FIRST record and yields the block whole, exactly what this branch yields, only at one redundant binary search more.
     if (reached) {
       yield* blockPayloads(table, bounds, decodeRecord);
       continue;
     }
+    // Stryker disable next-line BooleanLiteral: equivalent — same reason as the branch above: with this flag never set every block takes the seek path, which on a block holding only names past `from` returns its first record and walks the rest, yielding the same records in the same order.
     reached = true;
     // Every key in the block the index points at can still sort before
     // `from`; the answer is then the first record of a LATER block.
