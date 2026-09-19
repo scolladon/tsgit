@@ -1,4 +1,4 @@
-// cspell:ignore xree xfiller xbject
+// cspell:ignore xree xfiller xbject xtype
 import { describe, expect, it } from 'vitest';
 import {
   feedParseAcceptance,
@@ -23,6 +23,8 @@ const scanTag = (hexLength: 40 | 64, body: string | Uint8Array) =>
 
 const CHECKED = { parentLookups: 'checked' } as const;
 const SKIPPED = { parentLookups: 'skipped' } as const;
+
+const BAD_TREE_POINTER = { type: 'commit', reason: 'bad tree pointer' } as const;
 
 // Alternating digit/letter by default so the ordinary "accepted" rows cover
 // both `isHexByte` ranges without a dedicated test for either; a single-char
@@ -133,6 +135,58 @@ describe('parse-acceptance', () => {
         });
       });
     });
+
+    describe('Given a tree id whose opening bytes are hex and whose tail is not', () => {
+      describe('When the verdict is read', () => {
+        it('Then it refuses bad tree pointer', () => {
+          // Arrange — every byte of the id is read, not just its first few.
+          const sut = parseAcceptanceVerdict;
+          const scan = scanCommit(40, `tree ${T(40).slice(0, 6)}${'g'.repeat(34)}\nfiller`);
+
+          // Act
+          const result = sut(scan, CHECKED);
+
+          // Assert
+          expect(result).toEqual({ type: 'commit', reason: 'bad tree pointer' });
+        });
+      });
+    });
+
+    // git's `get_oid_hex` reads 0-9, a-f and A-F and nothing else, so each of
+    // the three ranges refuses on both of the bytes bordering it.
+    const HEX_EDGE_ROWS = [
+      { label: "'/', one below '0'", fill: '/', expected: BAD_TREE_POINTER },
+      { label: "'0', the lowest digit", fill: '0', expected: undefined },
+      { label: "'9', the highest digit", fill: '9', expected: undefined },
+      { label: "':', one above '9'", fill: ':', expected: BAD_TREE_POINTER },
+      { label: "'@', one below 'A'", fill: '@', expected: BAD_TREE_POINTER },
+      { label: "'A', the lowest upper-case letter", fill: 'A', expected: undefined },
+      { label: "'F', the highest upper-case letter", fill: 'F', expected: undefined },
+      { label: "'G', one above 'F'", fill: 'G', expected: BAD_TREE_POINTER },
+      { label: "'`', one below 'a'", fill: '`', expected: BAD_TREE_POINTER },
+      { label: "'a', the lowest lower-case letter", fill: 'a', expected: undefined },
+      { label: "'f', the highest lower-case letter", fill: 'f', expected: undefined },
+      { label: "'g', one above 'f'", fill: 'g', expected: BAD_TREE_POINTER },
+    ] as const;
+
+    describe('Given a tree id filled with a byte bordering one of the hex ranges', () => {
+      describe('When the verdict is read', () => {
+        it.each(HEX_EDGE_ROWS)(
+          'Then $label lands on git’s side of the range',
+          ({ fill, expected }) => {
+            // Arrange
+            const sut = parseAcceptanceVerdict;
+            const scan = scanCommit(40, `tree ${fill.repeat(40)}\nfiller`);
+
+            // Act
+            const result = sut(scan, CHECKED);
+
+            // Assert
+            expect(result).toEqual(expected);
+          },
+        );
+      });
+    });
   });
 
   describe('commit — bad parents', () => {
@@ -236,6 +290,24 @@ describe('parse-acceptance', () => {
 
           // Assert
           expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given a well-formed parent id with no LF and more body after it', () => {
+      describe('When the verdict is read', () => {
+        it('Then it refuses bad parents', () => {
+          // Arrange — more bytes follow the line, so the refusal has to come
+          // from the line's own terminator rather than from the verdict's
+          // trailing-window check.
+          const sut = parseAcceptanceVerdict;
+          const scan = scanCommit(40, `tree ${T(40)}\nparent ${T(40, 'b')}xfiller\n`);
+
+          // Act
+          const result = sut(scan, CHECKED);
+
+          // Assert
+          expect(result).toEqual({ type: 'commit', reason: 'bad parents' });
         });
       });
     });
@@ -471,6 +543,42 @@ describe('parse-acceptance', () => {
         });
       });
     });
+
+    describe('Given an object id whose opening bytes are hex and whose tail is not', () => {
+      describe('When the verdict is read', () => {
+        it('Then it refuses bad object line', () => {
+          // Arrange — every byte of the id is read, not just its first few.
+          const sut = parseAcceptanceVerdict;
+          const scan = scanTag(
+            40,
+            `object ${T(40).slice(0, 8)}${'g'.repeat(32)}\ntype commit\ntag t\n\nmsg\n`,
+          );
+
+          // Act
+          const result = sut(scan, CHECKED);
+
+          // Assert
+          expect(result).toEqual({ type: 'tag', reason: 'bad object line' });
+        });
+      });
+    });
+
+    describe('Given a full-length hex object id closed by a byte that is not the LF', () => {
+      describe('When the verdict is read', () => {
+        it('Then it refuses bad object line', () => {
+          // Arrange — the id itself is beyond reproach, so only the line's
+          // terminator can refuse this body.
+          const sut = parseAcceptanceVerdict;
+          const scan = scanTag(40, `object ${T(40)}xtype commit\ntag t\n\nmsg\n`);
+
+          // Act
+          const result = sut(scan, CHECKED);
+
+          // Assert
+          expect(result).toEqual({ type: 'tag', reason: 'bad object line' });
+        });
+      });
+    });
   });
 
   describe('tag — bad type line', () => {
@@ -683,6 +791,23 @@ describe('parse-acceptance', () => {
           // still-unresolved carry rather than an already-empty one.
           const sut = parseAcceptanceVerdict;
           const scan = scanTag(40, `object ${T(40)}\ntype commit\ntag good-name-no-newline`);
+
+          // Act
+          const result = sut(scan, CHECKED);
+
+          // Assert
+          expect(result).toEqual({ type: 'tag', reason: 'bad tag line' });
+        });
+      });
+    });
+
+    describe('Given a third line that misses the tag prefix but does end in an LF', () => {
+      describe('When the verdict is read', () => {
+        it('Then it refuses bad tag line', () => {
+          // Arrange — the LF would carry the scan to its tail, so only the
+          // prefix check stands between this body and acceptance.
+          const sut = parseAcceptanceVerdict;
+          const scan = scanTag(40, `object ${T(40)}\ntype commit\ntagX name\n\nmsg\n`);
 
           // Act
           const result = sut(scan, CHECKED);
