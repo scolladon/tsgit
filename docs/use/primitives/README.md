@@ -2,7 +2,7 @@
 
 The composable building blocks every Tier-1 command is built from. Same `Context` users get — you can compose them into custom workflows that don't fit the command surface.
 
-24 primitives bound on `repo.primitives.*`, alphabetical:
+25 primitives bound on `repo.primitives.*`, alphabetical:
 
 | Primitive | Summary |
 |---|---|

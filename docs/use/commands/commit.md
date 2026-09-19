@@ -73,6 +73,7 @@ await repo.commit({ message: 'resolve conflict' });
 - `CONFIG_MISSING_VALUE` — a `[user]` `name` or `email` line is present but valueless (git NULL); carries `{ key, source, line }`. Distinct from the absent case (`AUTHOR_UNCONFIGURED`). The first valueless `user.*` entry by config-file line order is reported.
 - `CONFIG_BAD_BOOLEAN_VALUE` — `commit.gpgSign` or `remote.<n>.promisor` holds a value git's boolean grammar refuses. `commit.gpgSign` is checked first, before hooks run and before the tree is written; the promisor guard runs right after.
 - `SIGNING_FAILED` — `sign` requested but the signing program failed or is unavailable (e.g. off-node, no `gpg`, bad key, or `gpg.format=x509` which is unsupported).
+- `REF_UPDATE_CONFLICT` — a concurrent writer moved the tip between the read and the write. An attached HEAD is written through the literal `HEAD`, as git commits through HEAD, so `name` is `'HEAD'` rather than the branch it resolves to; the branch still advances. A detached HEAD is written directly.
 
 ## See also
 
