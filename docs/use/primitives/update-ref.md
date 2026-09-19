@@ -164,6 +164,8 @@ await repo.primitives.updateRef('refs/heads/stale', zeroOid, {
 - `REF_CYCLE_DETECTED` — a symbolic chain that meets a name twice, or the same ref named twice in one transaction; `chain` lists the names walked.
 - `REF_LOCKED` — a held `<ref>.lock`.
 - `RESOURCE_LOCKED` — a held `packed-refs.lock`; `resource` is `'ref'`.
+- `NOT_A_DIRECTORY` / `FILE_EXISTS` — git's name-availability check, run over every name the transaction creates or rewrites without requiring a current value: a name blocked by refs **beneath** it (`refs/heads/a` while `refs/heads/a/b` exists) is `FILE_EXISTS`; one blocked by a ref **above** it (`refs/heads/a/b` while `refs/heads/a` exists) is `NOT_A_DIRECTORY`. `path` names the blocking ref's loose path on both backends, even when the blocker is packed or held in a reftable.
+- `DIRECTORY_NOT_EMPTY` — the ref's reflog path is occupied by a directory holding real logs; an all-empty directory tree there is removed and the write proceeds.
 - `INVALID_REF` — `name` violates git ref syntax.
 
 ## See also
