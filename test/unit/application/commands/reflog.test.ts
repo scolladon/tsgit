@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import type { ReflogResult } from '../../../../src/application/commands/reflog.js';
 import { reflog } from '../../../../src/application/commands/reflog.js';
+import * as peelMod from '../../../../src/application/primitives/internal/peel-ref-to-commit.js';
 import * as readCommitMetaMod from '../../../../src/application/primitives/internal/read-commit-meta.js';
 import * as readObjectMod from '../../../../src/application/primitives/read-object.js';
 import { getRefStore, type RefUpdate } from '../../../../src/application/primitives/ref-store.js';
@@ -10,6 +11,7 @@ import {
   readReflog,
   writeReflog,
 } from '../../../../src/application/primitives/reflog-store.js';
+import * as resolveRefMod from '../../../../src/application/primitives/resolve-ref.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeSymbolicRef } from '../../../../src/application/primitives/write-symbolic-ref.js';
 import { TsgitError } from '../../../../src/domain/error.js';
@@ -354,6 +356,28 @@ describe('reflog command', () => {
 
           // Assert
           expect(result.kind === 'show' && result.entries).toEqual([]);
+        });
+      });
+    });
+
+    describe('Given a branch under refs/heads carrying a log, named by its short name', () => {
+      describe('When reflog show', () => {
+        it('Then the closing literal prefixes find it and label it with the argument as typed', async () => {
+          // Arrange — nothing carries a log at `z` or at `refs/z`; only
+          // `refs/heads/z` does, so the second literal prefix is the one that
+          // finds it, before the relabelling candidate walk is ever reached.
+          const ctx = createMemoryContext();
+          await seedRepo(ctx, { refs: { 'refs/heads/main': OID_X, 'refs/heads/z': OID_X } });
+          await appendReflog(ctx, 'refs/heads/z' as RefName, entry({ message: 'under heads' }));
+          const sut = reflog;
+
+          // Act
+          const result = await sut(ctx, { action: 'show', ref: 'z' });
+
+          // Assert
+          expect(result.kind === 'show' && result.ref).toBe('z');
+          expect(result.kind === 'show' && result.entries[0]?.selector).toBe('z@{0}');
+          expect(result.kind === 'show' && result.entries[0]?.entry.message).toBe('under heads');
         });
       });
     });
@@ -1003,6 +1027,35 @@ describe('reflog command', () => {
             ref: '../../etc/passwd',
           });
           expect(calls().some((call) => call.path.includes('etc/passwd'))).toBe(false);
+        });
+      });
+      describe('When reflog expire walks its candidates', () => {
+        it('Then no candidate built from it is ever resolved', async () => {
+          // Arrange — every DWIM candidate built from an invalid name is
+          // itself invalid, and git's own walk rejects such a name on the
+          // grammar alone; resolution is never asked for one.
+          const ctx = createMemoryContext();
+          await seedRepo(ctx, {});
+          const spy = vi.spyOn(resolveRefMod, 'resolveTerminalName');
+
+          // Act
+          let caught: unknown;
+          let resolutions = 0;
+          try {
+            await reflog(ctx, { action: 'expire', ref: '../../etc/passwd' });
+          } catch (err) {
+            caught = err;
+          } finally {
+            resolutions = spy.mock.calls.length;
+            spy.mockRestore();
+          }
+
+          // Assert
+          expect((caught as TsgitError).data).toEqual({
+            code: 'REFLOG_NOT_FOUND',
+            ref: '../../etc/passwd',
+          });
+          expect(resolutions).toBe(0);
         });
       });
       describe('When reflog expire', () => {
@@ -3306,6 +3359,308 @@ describe('reflog command', () => {
           // Assert
           expect(result).toEqual({ kind: 'expire', removed: 1, kept: 0 });
           expect(missingReads).toBe(1);
+        });
+      });
+    });
+
+    describe('Given a cutoff pair set to one instant on a named ref', () => {
+      describe('When expire runs', () => {
+        it('Then it never resolves or peels the ref tip', async () => {
+          // Arrange — reachability could not change a verdict two equal clocks
+          // already decide, so the named target's own tip is left unread.
+          const now = wallNow();
+          const ctx = createMemoryContext();
+          const tip = await writeCommit(ctx, [], now);
+          await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+          await writeReflog(ctx, BRANCH, [
+            entry({ newId: tip, identity: identityAt(now - 45 * DAY) }),
+          ]);
+          const spy = vi.spyOn(peelMod, 'peelRefToCommit');
+          const sut = reflog;
+
+          // Act
+          let result: ReflogResult;
+          let peels: number;
+          try {
+            result = await sut(ctx, {
+              action: 'expire',
+              ref: 'refs/heads/main',
+              expire: '10.days.ago',
+              expireUnreachable: '10.days.ago',
+            });
+            peels = spy.mock.calls.length;
+          } finally {
+            spy.mockRestore();
+          }
+
+          // Assert
+          expect(result).toEqual({ kind: 'expire', removed: 1, kept: 0 });
+          expect(peels).toBe(0);
+        });
+      });
+    });
+
+    describe('Given a malformed core.maxTreeDepth and a HEAD sweep whose cutoff pair is one instant', () => {
+      describe('When expire runs with --all', () => {
+        it('Then HEAD sweeps on the clock alone and never reaches the repo-settings class', async () => {
+          // Arrange — a swept `HEAD` reads no tip under a cutoff pair that can
+          // never move a verdict, so the class the tip read would reach is
+          // never consulted and the malformed value never refuses.
+          const now = wallNow();
+          const ctx = createMemoryContext();
+          await seedRepo(ctx, {});
+          await writeReflog(ctx, HEAD, [entry({ identity: identityAt(now - 45 * DAY) })]);
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth = 2.5\n');
+          const sut = reflog;
+
+          // Act
+          const result = await sut(ctx, {
+            action: 'expire',
+            all: true,
+            expire: '10.days.ago',
+            expireUnreachable: '10.days.ago',
+          });
+
+          // Assert
+          expect(result).toEqual({ kind: 'expire', removed: 1, kept: 0 });
+          expect(await readReflog(ctx, HEAD)).toEqual([]);
+        });
+      });
+    });
+
+    describe('Given an ancestor queued twice ahead of the only commit an entry names', () => {
+      describe('When expire pops the repeated copy', () => {
+        it('Then it is skipped and the walk goes on to reach that commit', async () => {
+          // Arrange — `a` parents both `b` and `c`, so it sits on the frontier
+          // twice; `e` is queued behind the second copy and is all the entry
+          // names. A pop that ends the walk instead of skipping never sees it.
+          const epoch = 1_700_000_000;
+          const ctx = createMemoryContext();
+          const a = await writeCommit(ctx, [], epoch + 101);
+          const e = await writeCommit(ctx, [], epoch + 102);
+          const b = await writeCommit(ctx, [a], epoch + 103);
+          const c = await writeCommit(ctx, [a, e], epoch + 104);
+          const tip = await writeCommit(ctx, [b, c], epoch + 105);
+          await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+          await writeReflog(ctx, BRANCH, [
+            entry({ oldId: ZERO_OID, newId: e, identity: identityAt(epoch + 200) }),
+          ]);
+          const sut = reflog;
+
+          // Act
+          const result = await sut(ctx, {
+            action: 'expire',
+            ref: 'refs/heads/main',
+            expire: `@${epoch}`,
+            expireUnreachable: `@${epoch + 300}`,
+          });
+
+          // Assert
+          expect(result).toEqual({ kind: 'expire', removed: 0, kept: 1 });
+        });
+      });
+    });
+
+    describe('Given a commit dated exactly on the total cutoff', () => {
+      describe('When the bounded pass pops it', () => {
+        it('Then it is expanded there and then, never deferred and re-read', async () => {
+          // Arrange — `p` sits on the cutoff instant itself, which is not below
+          // it, so the bounded pass expands `p` into `g` straight away and the
+          // bound is never dropped on its account.
+          const epoch = 1_700_000_000;
+          const ctx = createMemoryContext();
+          const g = await writeCommit(ctx, [], epoch);
+          const p = await writeCommit(ctx, [g], epoch + 50);
+          const tip = await writeCommit(ctx, [p], epoch + 150);
+          await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+          await writeReflog(ctx, BRANCH, [
+            entry({ oldId: ZERO_OID, newId: g, identity: identityAt(epoch + 200) }),
+          ]);
+          const spy = vi.spyOn(readCommitMetaMod, 'readCommitMeta');
+          const sut = reflog;
+
+          // Act
+          let result: ReflogResult;
+          let visited: ReadonlyArray<ObjectId>;
+          try {
+            result = await sut(ctx, {
+              action: 'expire',
+              ref: 'refs/heads/main',
+              expire: `@${epoch + 50}`,
+              expireUnreachable: `@${epoch + 300}`,
+            });
+            visited = spy.mock.calls.map(([, id]) => id);
+          } finally {
+            spy.mockRestore();
+          }
+
+          // Assert
+          expect(result).toEqual({ kind: 'expire', removed: 0, kept: 1 });
+          expect(visited.filter((id) => id === p)).toHaveLength(1);
+          expect(visited).toContain(g);
+        });
+      });
+    });
+
+    describe('Given a bounded frontier still holding a young commit behind an aged one', () => {
+      describe('When expire pops the aged one', () => {
+        it('Then the bounded pass drains the rest before the bound is dropped', async () => {
+          // Arrange — `p` is aged and popped first, `q` is young and popped
+          // after it. Deferring `p` is not a miss: the pass keeps going, so
+          // `q` expands under the bound and its aged parent is deferred too,
+          // both re-read only once the exhausted frontier drops the bound.
+          const epoch = 1_700_000_000;
+          const ctx = createMemoryContext();
+          const g = await writeCommit(ctx, [], epoch);
+          const p = await writeCommit(ctx, [g], epoch + 50);
+          const qp = await writeCommit(ctx, [], epoch + 60);
+          const q = await writeCommit(ctx, [qp], epoch + 150);
+          const tip = await writeCommit(ctx, [p, q], epoch + 160);
+          await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+          await writeReflog(ctx, BRANCH, [
+            entry({ oldId: ZERO_OID, newId: g, identity: identityAt(epoch + 200) }),
+          ]);
+          const spy = vi.spyOn(readCommitMetaMod, 'readCommitMeta');
+          const sut = reflog;
+
+          // Act
+          let result: ReflogResult;
+          let visited: ReadonlyArray<ObjectId>;
+          try {
+            result = await sut(ctx, {
+              action: 'expire',
+              ref: 'refs/heads/main',
+              expire: `@${epoch + 100}`,
+              expireUnreachable: `@${epoch + 300}`,
+            });
+            visited = spy.mock.calls.map(([, id]) => id);
+          } finally {
+            spy.mockRestore();
+          }
+
+          // Assert
+          expect(result).toEqual({ kind: 'expire', removed: 0, kept: 1 });
+          expect(visited.filter((id) => id === qp)).toHaveLength(2);
+          expect(visited.indexOf(qp)).toBeLessThan(visited.lastIndexOf(p));
+        });
+      });
+    });
+
+    describe('Given an entry whose old id is the null object id', () => {
+      describe('When expire weighs its reachability', () => {
+        it('Then the null id is answered outright and never peeled', async () => {
+          // Arrange — a creation entry carries the null id as its old side;
+          // nothing can ever peel it, so asking the object store at all is
+          // work git's own gentle lookup never does.
+          const epoch = 1_700_000_000;
+          const ctx = createMemoryContext();
+          const tip = await writeCommit(ctx, [], epoch + 100);
+          await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+          await writeReflog(ctx, BRANCH, [
+            entry({ oldId: ZERO_OID, newId: tip, identity: identityAt(epoch + 200) }),
+          ]);
+          const spy = vi.spyOn(peelMod, 'peelRefToCommit');
+          const sut = reflog;
+
+          // Act
+          let result: ReflogResult;
+          let peeledZero: boolean;
+          try {
+            result = await sut(ctx, {
+              action: 'expire',
+              ref: 'refs/heads/main',
+              expire: `@${epoch}`,
+              expireUnreachable: `@${epoch + 300}`,
+            });
+            peeledZero = spy.mock.calls.some(([, id]) => id === ZERO_OID);
+          } finally {
+            spy.mockRestore();
+          }
+
+          // Assert
+          expect(result).toEqual({ kind: 'expire', removed: 0, kept: 1 });
+          expect(peeledZero).toBe(false);
+        });
+      });
+    });
+
+    describe('Given two entries naming the same commit the walk has already marked', () => {
+      describe('When expire weighs the second one', () => {
+        it('Then the mark answers it and the commit is not peeled again', async () => {
+          // Arrange — marks come from the walk's own commit reads, so a marked
+          // id is a confirmed commit by construction and needs no second peel.
+          const epoch = 1_700_000_000;
+          const ctx = createMemoryContext();
+          const ancestor = await writeCommit(ctx, [], epoch + 100);
+          const tip = await writeCommit(ctx, [ancestor], epoch + 150);
+          await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+          await writeReflog(ctx, BRANCH, [
+            entry({ oldId: ZERO_OID, newId: ancestor, identity: identityAt(epoch + 200) }),
+            entry({ oldId: ZERO_OID, newId: ancestor, identity: identityAt(epoch + 201) }),
+          ]);
+          const spy = vi.spyOn(peelMod, 'peelRefToCommit');
+          const sut = reflog;
+
+          // Act
+          let result: ReflogResult;
+          let ancestorPeels: number;
+          try {
+            result = await sut(ctx, {
+              action: 'expire',
+              ref: 'refs/heads/main',
+              expire: `@${epoch}`,
+              expireUnreachable: `@${epoch + 300}`,
+            });
+            ancestorPeels = spy.mock.calls.filter(([, id]) => id === ancestor).length;
+          } finally {
+            spy.mockRestore();
+          }
+
+          // Assert
+          expect(result).toEqual({ kind: 'expire', removed: 0, kept: 2 });
+          expect(ancestorPeels).toBe(1);
+        });
+      });
+    });
+
+    describe("Given a ref that does not peel to a commit while HEAD's sweep seeds its tips", () => {
+      describe('When expire runs', () => {
+        it('Then that ref contributes no tip and the walk reads only real ids', async () => {
+          // Arrange — `refs/heads/dangling` names an object the repository does
+          // not have, so it resolves to nothing; seeding it as a tip anyway
+          // would push a hole onto the frontier for the walk to read.
+          const epoch = 1_700_000_000;
+          const ctx = createMemoryContext();
+          const tip = await writeCommit(ctx, [], epoch + 100);
+          const island = await writeCommit(ctx, [], epoch + 90);
+          await seedRepo(ctx, {
+            refs: { 'refs/heads/main': tip, 'refs/heads/dangling': 'f'.repeat(40) as ObjectId },
+          });
+          await writeReflog(ctx, HEAD, [
+            entry({ oldId: ZERO_OID, newId: island, identity: identityAt(epoch + 200) }),
+          ]);
+          const spy = vi.spyOn(readCommitMetaMod, 'readCommitMeta');
+          const sut = reflog;
+
+          // Act
+          let result: ReflogResult;
+          let visited: ReadonlyArray<ObjectId | undefined>;
+          try {
+            result = await sut(ctx, {
+              action: 'expire',
+              ref: 'HEAD',
+              expire: `@${epoch}`,
+              expireUnreachable: `@${epoch + 300}`,
+            });
+            visited = spy.mock.calls.map(([, id]) => id);
+          } finally {
+            spy.mockRestore();
+          }
+
+          // Assert
+          expect(result).toEqual({ kind: 'expire', removed: 1, kept: 0 });
+          expect(visited.filter((id) => id === undefined)).toEqual([]);
+          expect(visited).toContain(tip);
         });
       });
     });

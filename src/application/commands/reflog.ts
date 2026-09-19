@@ -123,13 +123,14 @@ const entriesViaTarget = async (
   return readReflogLenient(ctx, terminal);
 };
 
-/** git's two closing literal prefixes for a short argument, in its order. */
+/** git's two closing literal prefixes for a short argument, in its order.
+ *  `arg` already passed the ref-name grammar, and prefixing a valid name with
+ *  a valid component cannot break it, so neither candidate needs re-checking. */
 const entriesUnderPrefixes = async (
   ctx: Context,
   arg: RefName,
 ): Promise<ReadonlyArray<ReflogEntry>> => {
   for (const name of [`refs/${arg}` as RefName, `${HEADS_PREFIX}${arg}` as RefName]) {
-    if (!isSafeRefName(name)) continue;
     const entries = await readReflogLenient(ctx, name);
     if (entries.length > 0) return entries;
   }
@@ -538,6 +539,7 @@ const expandFrontier = async (
  * leftover, means the walk is genuinely exhausted.
  */
 const dropBoundAndRetry = (state: ReachabilityState): boolean => {
+  // Stryker disable next-line LogicalOperator: equivalent — && only differs while the bound is active with an empty leftover, and this runs solely on an exhausted frontier, so the re-queue loop adds nothing and the very next call returns false through the same arm.
   if (!state.boundActive || state.leftover.length === 0) return false;
   state.boundActive = false;
   // Loop form, not `frontier.push(...leftover)` — same reason `ref-store.ts`
