@@ -20,6 +20,7 @@ import {
   type IniSection,
   invalidateConfigCache,
   memoizeGateVerdict,
+  openConfigEpoch,
   parseGitBoolean,
   parseGitInt,
   parseIniSections,
@@ -1265,6 +1266,43 @@ describe('primitives/config-read', () => {
         expect(result.remote?.get('origin')?.url).toBe('https://second.example/r.git');
         expect(result.remote?.get('origin')?.fetch).toEqual(['+a:b', '+c:d']);
       });
+
+      it('Then push lines accumulate across sections too', async () => {
+        // Arrange — the push twin of the fetch accumulator above: the second
+        // section must extend the first section's list, not replace it.
+        const ctx = createMemoryContext();
+        await seed(
+          ctx,
+          '[remote "origin"]\n  url = https://example.com/r.git\n  push = refs/heads/main:refs/heads/main\n[remote "origin"]\n  push = refs/heads/dev:refs/heads/dev\n',
+        );
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.remote?.get('origin')?.push).toEqual([
+          'refs/heads/main:refs/heads/main',
+          'refs/heads/dev:refs/heads/dev',
+        ]);
+      });
+    });
+  });
+
+  describe('Given a [remote "origin"] section carrying no push line', () => {
+    describe('When readConfig', () => {
+      it('Then push is absent rather than an empty list', async () => {
+        // Arrange — `git config --get-all remote.origin.push` answers nothing
+        // here, so the structured reading carries no push field at all.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[remote "origin"]\n  url = https://example.com/r.git\n  fetch = +a:b\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.remote?.get('origin')?.push).toBeUndefined();
+        expect(result.remote?.get('origin')?.fetch).toEqual(['+a:b']);
+      });
     });
   });
 
@@ -2218,6 +2256,25 @@ describe('primitives/config-read', () => {
     });
   });
 
+  describe('Given a [core] section carrying a size-valued key this reading does not model', () => {
+    describe('When readConfig', () => {
+      it('Then deltaBaseCacheLimit stays absent — an unmodelled key is not its value', async () => {
+        // Arrange — `core.bigFileThreshold` is a real git key with the same
+        // unsigned-size grammar, so a dispatch that stopped discriminating on
+        // the key name would silently adopt its value.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n\tbare = true\n\tbigFileThreshold = 512m\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.core?.deltaBaseCacheLimit).toBeUndefined();
+        expect(result.core?.bare).toBe(true);
+      });
+    });
+  });
+
   describe('Given a cached config and invalidateConfigCache for that context', () => {
     describe('When readConfig is called again', () => {
       it('Then the file is re-read', async () => {
@@ -2372,6 +2429,65 @@ describe('primitives/config-read', () => {
         await readConfig(ctx);
 
         // Assert — the epoch's own stat, plus one more paid by the freshly untrusted read
+        expect(configStatCalls(calls())).toBe(2);
+      });
+    });
+  });
+
+  describe('Given a layout the trust gate refused', () => {
+    describe('When openConfigEpoch runs on it', () => {
+      it.each([
+        { label: 'an untrusted owner', derive: untrustedCtx },
+        { label: 'an implicit bare repository', derive: implicitBareCtx },
+      ])('Then $label is passed over with no stat and no epoch to serve', async ({ derive }) => {
+        // Arrange — the refused layout shares the session with a trusted
+        // Context, so a cache entry seeded here would be served to it.
+        const base = createMemoryContext();
+        await seed(base, '[core]\n  bare = true\n');
+        const { ctx, calls } = instrumentedContext(base);
+
+        // Act
+        await openConfigEpoch(derive(ctx));
+
+        // Assert — no stat paid, and the trusted read still pays its own.
+        expect(configStatCalls(calls())).toBe(0);
+        await readConfig(ctx);
+        expect(configStatCalls(calls())).toBe(1);
+      });
+    });
+  });
+
+  describe('Given a session whose epoch is re-opened with the config file unchanged', () => {
+    describe('When the second openConfigEpoch runs', () => {
+      it('Then the existing parse is kept rather than the file being read twice', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  bare = true\n');
+        const spy = vi.spyOn(ctx.fs, 'readUtf8');
+
+        // Act
+        await openConfigEpoch(ctx);
+        await readConfig(ctx);
+        await openConfigEpoch(ctx);
+        await readConfig(ctx);
+
+        // Assert
+        expect(spy).toHaveBeenCalledTimes(READS_PER_LOAD);
+      });
+
+      it('Then the kept entry stays trusted, so the reads after it pay no stat', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        await seed(base, '[core]\n  bare = true\n');
+        const { ctx, calls } = instrumentedContext(base);
+
+        // Act
+        await openConfigEpoch(ctx);
+        await readConfig(ctx);
+        await openConfigEpoch(ctx);
+        await readConfig(ctx);
+
+        // Assert — one stat per epoch open, none from either read
         expect(configStatCalls(calls())).toBe(2);
       });
     });
@@ -6322,6 +6438,24 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
           expect(result?.key).toBe('core.deltabasecachelimit');
           expect(result?.value).toBe('-1');
           expect(result?.reason).toBe('invalid unit');
+        });
+      });
+    });
+
+    describe('Given an invalid deltaBaseCacheLimit ahead of the first header', () => {
+      describe('When findLastInvalidDeltaBaseCacheLimit', () => {
+        it('Then returns undefined — a key with no section is not a [core] key', async () => {
+          // Arrange — measured against git 2.55.0: a key ahead of every header
+          // is refused with "key does not contain a section", so it is never
+          // the effective `core.deltaBaseCacheLimit`.
+          const ctx = createMemoryContext();
+          await seed(ctx, 'deltaBaseCacheLimit = -1\n[core]\n\tbare = true\n');
+
+          // Act
+          const result = await findLastInvalidDeltaBaseCacheLimit(ctx);
+
+          // Assert
+          expect(result).toBeUndefined();
         });
       });
     });

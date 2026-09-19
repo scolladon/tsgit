@@ -171,6 +171,33 @@ describe('readReflogExpiryConfig', () => {
     });
   });
 
+  describe('Given a section-less reflogExpire ahead of the first header, then a real [gc] one', () => {
+    describe('When reading', () => {
+      it('Then only the [gc] entry is reported — a key with no section joins none', async () => {
+        // Arrange — measured against git 2.55.0: a key ahead of every header
+        // is refused with "key does not contain a section", and
+        // `gc.reflogExpire` still resolves to the value inside `[gc]`.
+        const ctx = createMemoryContext();
+        await seed(ctx, 'reflogExpire = 90.days.ago\n[gc]\n\treflogExpire = 30.days.ago\n');
+
+        // Act
+        const result = await readReflogExpiryConfig(ctx);
+
+        // Assert
+        expect(result).toEqual([
+          {
+            pattern: undefined,
+            slot: 'total',
+            value: '30.days.ago',
+            key: 'gc.reflogexpire',
+            source: `${ctx.layout.gitDir}/config`,
+            line: 3,
+          },
+        ]);
+      });
+    });
+  });
+
   describe('Given entries across multiple [gc] sections, in file order', () => {
     describe('When reading', () => {
       it('Then every entry is returned with its own 1-based line', async () => {

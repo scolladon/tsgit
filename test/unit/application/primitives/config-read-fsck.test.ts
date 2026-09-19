@@ -135,6 +135,26 @@ describe('Given a msg-id-shaped key under a section that is not [fsck]', () => {
   });
 });
 
+describe('Given a msg-id-shaped key ahead of the first header, then a real [fsck] one', () => {
+  describe('When the severity table is read', () => {
+    it('Then only the key inside [fsck] is taken — a key with no section joins none', async () => {
+      // Arrange — measured against git 2.55.0: a key ahead of every header is
+      // refused with "key does not contain a section", so it never reaches the
+      // severity table the way the `[fsck]` entry below it does.
+      const ctx = await seed(
+        createMemoryContext(),
+        'badTree = ignore\n[fsck]\n  nulInCommit = warn\n',
+      );
+
+      // Act
+      const result = severityTable(await sut(ctx));
+
+      // Assert
+      expect([...result]).toEqual([['nulInCommit'.toLowerCase(), 'warning']]);
+    });
+  });
+});
+
 describe('Given a [fsck] section closed by a later section carrying a msg-id-shaped key', () => {
   describe('When the severity table is read', () => {
     it('Then only the key inside [fsck] is taken', async () => {

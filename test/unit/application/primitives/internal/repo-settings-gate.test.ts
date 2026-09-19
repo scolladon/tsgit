@@ -398,6 +398,31 @@ describe('internal/repo-settings-gate', () => {
         });
       });
     });
+
+    describe('Given a repo-settings verdict whose compute has not resolved yet', () => {
+      describe('When checked while that compute is still in flight', () => {
+        it('Then reports false, and true only once the compute resolves', async () => {
+          // Arrange — a compute held open by hand, so the memo entry is in the
+          // slot while its promise is still pending. A boundary that read
+          // `true` here would skip the refusal this verdict has not yet owed.
+          const ctx = createMemoryContext();
+          let release: () => void = () => {};
+          const held = new Promise<void>((resolve) => {
+            release = resolve;
+          });
+
+          // Act
+          const inFlight = memoizeRepoSettingsVerdict(ctx, () => held);
+          const duringCompute = repoSettingsVerdictSettled(ctx);
+          release();
+          await inFlight;
+
+          // Assert
+          expect(duringCompute).toBe(false);
+          expect(repoSettingsVerdictSettled(ctx)).toBe(true);
+        });
+      });
+    });
   });
 
   describe('Given a warm session — gate, an object read, an external config rewrite, then the gate again', () => {
