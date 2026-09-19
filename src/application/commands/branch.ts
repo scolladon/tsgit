@@ -377,27 +377,26 @@ const renameNestedBranch = async (
 };
 
 /**
- * Writes `to` — refusing `BRANCH_EXISTS` through the compare-and-swap unless
- * forced. The check runs BEFORE any log move: git checks and refuses before
- * touching anything. The failure window differs from git's: a throw after
- * the log move leaves `from` a live branch whose log already moved to `to`,
- * where git stages the log through a temp path and rolls back.
+ * Writes `to` unguarded, as git's `refs_rename_ref` does — it deletes the
+ * destination rather than locking it, so a destination that exists but cannot
+ * be read is renamed over, not refused. `assertRenameAllowed` has already
+ * applied git's own refusal for a destination that resolves, so a
+ * compare-and-swap here only added an unfaithful refusal over a broken ref:
+ * measured against git 2.55.0, `git branch -m src dst` across a `dst` holding
+ * garbage exits 0 and renames, where the guard threw `INVALID_REF`.
+ * Concurrency stays the ref store's business, through the same `<ref>.lock`
+ * git itself takes.
+ *
+ * The failure window differs from git's: a throw after the log move leaves
+ * `from` a live branch whose log already moved to `to`, where git stages the
+ * log through a temp path and rolls back.
  */
 const createRenameDestination = async (
   store: RefStore,
-  { to, force }: RenameRequest,
+  { to }: RenameRequest,
   id: ObjectId,
 ): Promise<void> => {
-  try {
-    await store.applyRefUpdates([
-      { kind: 'set', name: to, id, ...(force ? {} : { expected: 'absent' as const }) },
-    ]);
-  } catch (err) {
-    if (err instanceof TsgitError && err.data.code === 'REF_UPDATE_CONFLICT') {
-      throw branchExists(to);
-    }
-    throw err;
-  }
+  await store.applyRefUpdates([{ kind: 'set', name: to, id }]);
 };
 
 /** The re-point is git's SECOND `logs/HEAD` rename line: the old id is null
