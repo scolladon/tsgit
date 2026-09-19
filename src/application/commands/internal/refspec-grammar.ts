@@ -74,8 +74,10 @@ const fetchSidesValid = (src: string, dst: string | undefined, pattern: boolean)
  *  it may be any extended object name), a missing destination puts the source
  *  under the same check instead, and an empty destination is refused outright. */
 const pushSidesValid = (src: string, dst: string | undefined, pattern: boolean): boolean => {
+  // Stryker disable next-line StringLiteral: equivalent — the guard only decides when `pattern` holds, and `patternFlag` sets that only for a source carrying a `*`, so the source is never the empty string nor any other star-free literal here.
   if (src !== '' && pattern && !isRefspecSide(src, true)) return false;
   if (dst === undefined) return isRefspecSide(src, pattern);
+  // Stryker disable next-line StringLiteral: equivalent — `isRefspecSide` already refuses the empty string and every literal carrying a space, so the conjunction is false for both literals whichever one the comparison names.
   return dst !== '' && isRefspecSide(dst, pattern);
 };
 

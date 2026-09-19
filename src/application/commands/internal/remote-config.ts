@@ -44,7 +44,8 @@ const collisionReason = (existing: string, name: string): string | undefined => 
  * `refs/remotes/` namespace — reporting the first such remote in config order.
  */
 export const assertRemoteNameUnnested = (config: ParsedConfig, name: string): void => {
-  for (const existing of config.remote?.keys() ?? []) {
+  if (config.remote === undefined) return;
+  for (const existing of config.remote.keys()) {
     const reason = collisionReason(existing, name);
     if (reason !== undefined) throw remoteNameInvalid(name, reason);
   }

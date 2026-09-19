@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  assertRemoteNameUnnested,
+  assertRemoteRefspecsValid,
   fetchesInto,
   listBranchReferrers,
   mapsTrackingNamespace,
@@ -13,6 +15,21 @@ import type { RefName } from '../../../../../src/domain/objects/object-id.js';
 const buildBranch = (
   entries: ReadonlyArray<readonly [string, { remote?: string; merge?: string }]>,
 ): NonNullable<ParsedConfig['branch']> => new Map(entries);
+
+const buildRemote = (
+  entries: ReadonlyArray<
+    readonly [string, { fetch?: ReadonlyArray<string>; push?: ReadonlyArray<string> }]
+  >,
+): NonNullable<ParsedConfig['remote']> => new Map(entries);
+
+const catchError = (act: () => void): TsgitError | undefined => {
+  try {
+    act();
+    return undefined;
+  } catch (err) {
+    return err as TsgitError;
+  }
+};
 
 describe('application/commands/internal/remote-config', () => {
   describe('validateRemoteName', () => {
@@ -88,6 +105,130 @@ describe('application/commands/internal/remote-config', () => {
 
           // Assert
           expect(result).toBe(input);
+        });
+      });
+    });
+  });
+
+  describe('assertRemoteNameUnnested', () => {
+    describe('Given a config carrying no remote section at all', () => {
+      describe('When assertRemoteNameUnnested runs', () => {
+        it('Then any name passes, there being no namespace to share', () => {
+          // Arrange
+          const sut = assertRemoteNameUnnested;
+
+          // Act
+          const caught = catchError(() => sut({}, 'origin'));
+
+          // Assert
+          expect(caught).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given a configured remote and a candidate name', () => {
+      describe('When assertRemoteNameUnnested runs', () => {
+        it.each([
+          {
+            name: 'a/b',
+            reason: "subset of existing remote 'a'",
+            label: 'a name nested under the existing remote refuses as a subset',
+          },
+          {
+            name: 'a',
+            reason: undefined,
+            label: 'a name equal to the existing remote is left to the duplicate check',
+          },
+          {
+            name: 'other',
+            reason: undefined,
+            label: 'an unrelated name passes',
+          },
+        ])('Then $label', ({ name, reason }) => {
+          // Arrange
+          const sut = assertRemoteNameUnnested;
+          const config: ParsedConfig = { remote: buildRemote([['a', {}]]) };
+
+          // Act
+          const caught = catchError(() => sut(config, name));
+
+          // Assert
+          expect(caught?.data).toEqual(
+            reason === undefined ? undefined : { code: 'REMOTE_NAME_INVALID', name, reason },
+          );
+        });
+      });
+    });
+
+    describe('Given a configured remote nested under the candidate name', () => {
+      describe('When assertRemoteNameUnnested runs', () => {
+        it('Then it refuses as a superset of that remote', () => {
+          // Arrange
+          const sut = assertRemoteNameUnnested;
+          const config: ParsedConfig = { remote: buildRemote([['a/b', {}]]) };
+
+          // Act
+          const caught = catchError(() => sut(config, 'a'));
+
+          // Assert
+          expect(caught?.data).toEqual({
+            code: 'REMOTE_NAME_INVALID',
+            name: 'a',
+            reason: "superset of existing remote 'a/b'",
+          });
+        });
+      });
+    });
+  });
+
+  describe('assertRemoteRefspecsValid', () => {
+    describe('Given a remote configuring a refspec git would refuse', () => {
+      describe('When assertRemoteRefspecsValid runs', () => {
+        it.each([
+          {
+            entry: { fetch: ['refs/heads/*'] },
+            raw: 'refs/heads/*',
+            label: 'a fetch spec is named verbatim with the reason it was refused for',
+          },
+          {
+            entry: { push: ['refs/heads/a:'] },
+            raw: 'refs/heads/a:',
+            label: 'a push spec is named verbatim with the reason it was refused for',
+          },
+        ])('Then $label', ({ entry, raw }) => {
+          // Arrange
+          const sut = assertRemoteRefspecsValid;
+          const config: ParsedConfig = { remote: buildRemote([['origin', entry]]) };
+
+          // Act
+          const caught = catchError(() => sut(config));
+
+          // Assert
+          expect(caught?.data).toEqual({
+            code: 'REFSPEC_INVALID',
+            raw,
+            reason: 'not a valid refspec',
+          });
+        });
+      });
+    });
+
+    describe('Given every configured remote carries usable refspecs', () => {
+      describe('When assertRemoteRefspecsValid runs', () => {
+        it('Then it returns without refusing', () => {
+          // Arrange
+          const sut = assertRemoteRefspecsValid;
+          const config: ParsedConfig = {
+            remote: buildRemote([
+              ['origin', { fetch: ['+refs/heads/*:refs/remotes/origin/*'], push: ['HEAD:refs/x'] }],
+            ]),
+          };
+
+          // Act
+          const caught = catchError(() => sut(config));
+
+          // Assert
+          expect(caught).toBeUndefined();
         });
       });
     });
@@ -214,6 +355,11 @@ describe('application/commands/internal/remote-config', () => {
             expected: ['+refs/remotes/old/x:refs/remotes/new/y'],
             label: 'only the destination occurrence is spliced, never the source',
           },
+          {
+            refspecs: [':refs/remotes/old/main'],
+            expected: [':refs/remotes/new/main'],
+            label: 'a source-free refspec, whose marker opens the whole spec, is spliced too',
+          },
         ])('Then $label', ({ refspecs, expected }) => {
           // Arrange + Act
           const result = rewriteTrackingFetchRefspecs(refspecs, 'old', 'new');
@@ -294,6 +440,18 @@ describe('application/commands/internal/remote-config', () => {
             name: 'refs/heads/main',
             expected: false,
             label: 'a colon-free refspec has no destination to match',
+          },
+          {
+            refspecs: [':refs/remotes/old/main'],
+            name: 'refs/remotes/old/main',
+            expected: true,
+            label: 'a source-free refspec still carries the destination after its opening colon',
+          },
+          {
+            refspecs: ['+refs/heads/*:refs/remotes/old/aa*aa'],
+            name: 'refs/remotes/old/aaa',
+            expected: false,
+            label: 'a name too short to hold both halves side by side does not match',
           },
           {
             refspecs: ['+refs/tags/*:refs/other/x/*', '+refs/heads/*:refs/remotes/old/*'],
