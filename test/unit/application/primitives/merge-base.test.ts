@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, type MockInstance, vi } from 'vitest';
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
 import * as readCommitGraphModule from '../../../../src/application/primitives/internal/read-commit-graph.js';
 import * as readCommitMetaModule from '../../../../src/application/primitives/internal/read-commit-meta.js';
-import { mergeBase } from '../../../../src/application/primitives/merge-base.js';
+import { inMergeBases, mergeBase } from '../../../../src/application/primitives/merge-base.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/error.js';
@@ -1133,6 +1133,62 @@ describe('mergeBase cancellation on the graph path', () => {
       expect((caught as TsgitError).data.code).toBe('OPERATION_ABORTED');
       expect(metaSpy).toHaveBeenCalledTimes(1);
       metaSpy.mockRestore();
+    });
+  });
+});
+
+describe('inMergeBases read memoisation', () => {
+  describe('Given a criss-cross whose ends the paint marks after they were already read', () => {
+    describe('When inMergeBases measures one end against the other', () => {
+      it('Then every commit it consults is read exactly once', async () => {
+        // Arrange — both ends are read for their generations before `paint`
+        // marks them, so the memo is what keeps those second lookups off the
+        // object store; `consultedIds` reports a set and cannot see a repeat.
+        const ctx = await buildSeededContext();
+        const { d, e } = await buildCrissCross(ctx);
+        const consult = vi.spyOn(readCommitMetaModule, 'readCommitMeta');
+        const sut = inMergeBases;
+
+        // Act
+        await sut(ctx, d, e);
+
+        // Assert
+        const consulted = consult.mock.calls.map(([, id]) => id);
+        expect(consulted.length).toBeGreaterThan(0);
+        expect(consulted).toHaveLength(new Set(consulted).size);
+      });
+    });
+  });
+});
+
+describe('inMergeBases on a read refusal that is not a missing object', () => {
+  describe('Given a metadata read that refuses for a reason other than absence', () => {
+    describe('When inMergeBases measures one commit against another', () => {
+      it('Then the refusal reaches the caller instead of reading as a truncated history', async () => {
+        // Arrange — only an absent object stands in for Git's
+        // `ignore_missing_commits`; every other refusal has to surface.
+        const ctx = await buildSeededContext();
+        const chain = await buildLinear(ctx, 3);
+        vi.spyOn(readCommitMetaModule, 'readCommitMeta').mockRejectedValue(
+          new TsgitError({ code: 'INVALID_OBJECT_HEADER', reason: 'bad header' }),
+        );
+        const sut = inMergeBases;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, chain[0] as ObjectId, chain[2] as ObjectId);
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'INVALID_OBJECT_HEADER',
+          reason: 'bad header',
+        });
+      });
     });
   });
 });
