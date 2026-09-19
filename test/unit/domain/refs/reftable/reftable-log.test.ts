@@ -684,6 +684,29 @@ describe('reftable-log', () => {
     });
   });
 
+  describe('Given an index-typed block in the log section of a table declaring no log index', () => {
+    describe('When loading the table', () => {
+      it('Then it still faces the size guards rather than ending the walk there', async () => {
+        // Arrange — an 'i' type byte ends the walk only where the footer
+        // actually declares a log index. With none declared nothing may sit
+        // between the log blocks and the section's end, so a corrupt section
+        // is never quietly read as a short one: this block's declared
+        // block_len of 2 is under the 4-byte header it must contain.
+        const logBlock = await buildRawLogBlock(10);
+        const indexTypedBlock = Uint8Array.from([0x69, 0x00, 0x00, 0x02]);
+        const bytes = buildLogOnlyReftable([logBlock], { trailingBytes: indexTypedBlock });
+        const sut = loadReftable;
+
+        // Act & Assert
+        await expectReftableRefusal(
+          sut(bytes, inflateAt),
+          'declares block_len 2, shorter than',
+          'block-bounds',
+        );
+      });
+    });
+  });
+
   describe('log-block inflation budget', () => {
     describe('Given a log block declaring far more inflated bytes than the per-block budget', () => {
       describe('When loading the table', () => {
@@ -815,6 +838,29 @@ describe('reftable-log', () => {
         const sut = loadReftable;
 
         // Act & Assert
+        await expectReftableRefusal(sut(bytes, inflateAt), 'header bytes', 'block-bounds');
+      });
+    });
+
+    describe('When that same offset carries the index block type', () => {
+      it('Then it refuses all the same — three bytes cannot hold a block header', async () => {
+        // Arrange — same 92-byte shape as above, but max_update_index 36
+        // lands an 0x69 ('i') in the footer's own CRC-32 at byte 91. A room
+        // check stated only against the byte the type test reads would take
+        // that byte for the log index the walk stops at, and report a short
+        // log section instead of refusing.
+        const bytes = buildReftable({
+          version: 1,
+          blocks: [],
+          maxUpdateIndex: 36n,
+          logPosition: 91,
+          logIndexPosition: 92,
+        });
+        const sut = loadReftable;
+
+        // Act & Assert — the CRC byte is the fixture's own precondition:
+        // without it the row proves nothing the one above does not.
+        expect(bytes[91]).toBe(0x69);
         await expectReftableRefusal(sut(bytes, inflateAt), 'header bytes', 'block-bounds');
       });
     });
@@ -1322,6 +1368,33 @@ describe('reftable-log', () => {
 
           // Act & Assert
           await expectReftableRefusal(sut(bytes, inflateAt), 'per-block limit', 'block-bounds');
+        });
+      });
+    });
+
+    describe('Given that same position carrying the index block type', () => {
+      describe('When loading the table', () => {
+        it('Then the walk ends there — four remaining bytes are exactly a block header', async () => {
+          // Arrange — max_update_index 138 lands an 0x69 ('i') at byte 88 of
+          // the same 92-byte v1 table, so the walk's first offset IS a block
+          // header filling exactly the bytes that remain. The room check is
+          // stated against positions PAST the end, so equality must not
+          // divert this to the refusal path the row above takes.
+          const bytes = buildReftable({
+            version: 1,
+            blocks: [],
+            maxUpdateIndex: 138n,
+            logPosition: 88,
+            logIndexPosition: 92,
+          });
+          const sut = loadReftable;
+
+          // Act
+          const table = await sut(bytes, inflateAt);
+
+          // Assert
+          expect(bytes[88]).toBe(0x69);
+          expect(table.logBlocks).toStrictEqual([]);
         });
       });
     });

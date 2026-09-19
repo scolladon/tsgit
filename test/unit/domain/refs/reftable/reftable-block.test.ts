@@ -119,6 +119,10 @@ function expectRefusal(act: () => void, check: ReftableCheck, reasonContains: st
   expect(data.reason).toContain(reasonContains);
 }
 
+/** The `block_size` the header {@link reftableFrom} borrows declares — the
+ *  stride a block walk rounds each block's own end up to. */
+const BORROWED_BLOCK_STRIDE = 4096;
+
 /** A `Reftable` view over hand-assembled `bytes` with no real footer —
  *  `header` is borrowed from a normally-parsed minimal table (so
  *  `headerLength`/`digestLength` etc. are real), only `_bytes`/`_view` and
@@ -1345,6 +1349,37 @@ describe('reftable-block', () => {
         }, 2000);
       });
     });
+
+    describe('Given a foreign block inside the ref section of a table with no ref index', () => {
+      describe('When iterating every ref', () => {
+        it('Then refuses with block-type rather than reading it as the section end', () => {
+          // Arrange — a table carrying a ref index writes that index between
+          // the last ref block and the section's end, so the first non-ref
+          // block there IS the end. With no index nothing may sit there at
+          // all, which makes a foreign block type corruption to refuse, never
+          // a boundary to stop at. `blockSize: 0` keeps the blocks adjacent,
+          // so the walk's own arithmetic lands exactly on the second one.
+          const header = buildReftableHeader({ version: 1 });
+          const refBlock = buildRefBlock({
+            records: [{ name: 'refs/heads/aaa', value: { kind: 'direct', id: oid(0x01) } }],
+            restartIndices: [0],
+            isFirstBlock: true,
+            headerLength: header.length,
+          });
+          const objBlock = buildObjBlock({
+            records: [{ key: Uint8Array.from([0xab, 0xcd]), positions: [header.length] }],
+            restartIndices: [0],
+          });
+          const reftable = parseReftable(
+            buildReftable({ version: 1, blockSize: 0, blocks: [refBlock, objBlock] }),
+          );
+          const sut = iterateReftableRefs;
+
+          // Act & Assert
+          expectRefusal(() => Array.from(sut(reftable)), 'block-type', "expected block type 'r'");
+        });
+      });
+    });
   });
 
   describe('ref index descent bound', () => {
@@ -1493,6 +1528,31 @@ describe('reftable-block', () => {
       });
     });
 
+    describe('Given a symbolic ref record whose target ends exactly at the last byte', () => {
+      describe('When decoding the record', () => {
+        it('Then it does not refuse — afterLen + targetLen === bytes.length is in-bounds', () => {
+          // Arrange — the boundary between `>` and `>=`: the declared target
+          // is exactly what remains, so `subarray` clamps nothing and the
+          // target decodes whole. A bound that refused equality here would
+          // reject a record no reader may reject.
+          const target = new TextEncoder().encode('refs/heads/main');
+          const packed = (1 << SUFFIX_SHIFT) | VALUE_TYPE_SYMBOLIC;
+          const bytes = Uint8Array.from([0x00, packed, 0x61, 0x00, target.length, ...target]);
+          const sut = refRecordDecoder;
+
+          // Act
+          const result = sut(HEADER_FOR_DECODE)(bytes, 0, undefined);
+
+          // Assert
+          expect(result.nextOffset).toBe(bytes.length);
+          expect(result.payload.value).toStrictEqual({
+            kind: 'symbolic',
+            target: RefName.from('refs/heads/main'),
+          });
+        });
+      });
+    });
+
     describe('Given a prefixed name whose suffix runs exactly to the end of the byte range', () => {
       describe('When decoding it', () => {
         it('Then it does not refuse — afterPacked + suffixLength === bytes.length is in-bounds', () => {
@@ -1569,6 +1629,46 @@ describe('reftable-block', () => {
             'block-bounds',
             'restart array',
           );
+        });
+      });
+    });
+
+    describe('Given an index level whose next block start leaves fewer than 4 bytes', () => {
+      describe('When descending into it', () => {
+        it('Then the descent ends there rather than reading a truncated block header', () => {
+          // Arrange — the level's first index block answers nothing for this
+          // target, so the descent walks on to the next block-size boundary.
+          // That boundary carries an 'i' type byte but only three bytes
+          // behind it, where a block header needs four: the advance is
+          // bounded against the whole header, not just the one byte the type
+          // check itself reads.
+          const header = buildReftableHeader({ version: 1 });
+          const refBlock = buildRefBlock({
+            records: [{ name: 'refs/heads/aaa', value: { kind: 'direct', id: oid(0x01) } }],
+            restartIndices: [0],
+            isFirstBlock: true,
+            headerLength: header.length,
+          });
+          const indexBlock = buildIndexBlock({
+            records: [{ key: 'refs/heads/aaa', blockPosition: 0 }],
+            restartIndices: [0],
+          });
+          const indexBlockStart = header.length + refBlock.length;
+          const bytes = new Uint8Array(BORROWED_BLOCK_STRIDE + 3);
+          bytes.set(header, 0);
+          bytes.set(refBlock, header.length);
+          bytes.set(indexBlock, indexBlockStart);
+          bytes[BORROWED_BLOCK_STRIDE] = 0x69; // 'i'
+          const reftable = reftableFrom(bytes, { refIndexPosition: indexBlockStart });
+          const sut = lookupReftableRef;
+
+          // Act
+          const result = sut(reftable, RefName.from('zzz'));
+
+          // Assert — the stride is the fixture's own precondition: without it
+          // the advance lands somewhere else entirely.
+          expect(reftable.header.blockSize).toBe(BORROWED_BLOCK_STRIDE);
+          expect(result).toBeUndefined();
         });
       });
     });

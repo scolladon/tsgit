@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
+import { tablesListLockPath } from '../../../../src/application/primitives/path-layout.js';
 import { createReftableRefStore } from '../../../../src/application/primitives/reftable-ref-store.js';
 import { updateRef } from '../../../../src/application/primitives/update-ref.js';
 import { fileNotFound, permissionDenied } from '../../../../src/domain/error.js';
@@ -478,6 +479,28 @@ describe('reftable-ref-store', () => {
 
         // Assert
         expect(result).toBe(false);
+      });
+    });
+
+    describe('When copyReflog copies that ref while another writer holds the stack lock', () => {
+      it('Then it returns — with nothing to copy there is no transaction to contend for', async () => {
+        // Arrange — every stack write takes `tables.list.lock` first, and a
+        // held one whose body does not match `tables.list` is refused rather
+        // than broken. A copy whose source carries no records writes
+        // nothing, so it must never reach for that lock: an unrelated
+        // writer's lock cannot be what makes a no-op call fail.
+        const ctx = withReftableStorage(createMemoryContext());
+        await seedTwoTableStack(ctx, commonReftableDir(ctx));
+        const lockPath = tablesListLockPath(ctx.layout.gitDir);
+        await ctx.fs.writeExclusive(lockPath, new Uint8Array(0));
+        const sut = createReftableRefStore(ctx);
+
+        // Act
+        await sut.copyReflog(ref('refs/heads/main'), ref('refs/heads/copied'));
+
+        // Assert
+        expect(await ctx.fs.exists(lockPath)).toBe(true);
+        expect(await sut.hasReflog(ref('refs/heads/copied'))).toBe(false);
       });
     });
   });
