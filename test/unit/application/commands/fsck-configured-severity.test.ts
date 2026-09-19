@@ -114,8 +114,8 @@ const repoWithRawTreeMode = async (
   return { ctx, treeId };
 };
 
-/** A healthy repository carrying one loose ref that is a symbolic link. */
-const repoWithSymlinkedRef = async (): Promise<Context> => {
+/** A healthy repository whose every loose ref is an ordinary file. */
+const healthyRepo = async (): Promise<Context> => {
   const ctx = await initRepo();
   const treeId = await writeObject(ctx, { type: 'tree', id: '' as ObjectId, entries: [] });
   const commitId = await writeObject(ctx, {
@@ -131,6 +131,12 @@ const repoWithSymlinkedRef = async (): Promise<Context> => {
     },
   });
   await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+  return ctx;
+};
+
+/** A healthy repository carrying one loose ref that is a symbolic link. */
+const repoWithSymlinkedRef = async (): Promise<Context> => {
+  const ctx = await healthyRepo();
   await ctx.fs.symlink('refs/heads/main', `${ctx.layout.gitDir}/refs/heads/sym`);
   return ctx;
 };
@@ -291,6 +297,25 @@ describe('Given a symlinked ref whose WARNING default is hardened to error', () 
         { type: 'bad-ref', ref: 'refs/heads/sym', msgId: 'symlinkRef', severity: 'error' },
       ]);
       expect(result.exitCode & BIT_REFS_CONTENT).toBe(BIT_REFS_CONTENT);
+    });
+  });
+});
+
+describe('Given no symlinked ref at all and that notice hardened to error', () => {
+  describe('When fsck runs', () => {
+    it('Then nothing is reported and the refs-content exit bit stays clear', async () => {
+      // Arrange — measured against git 2.55.0: the hardened severity raises the
+      // bit only for a notice that actually fired, so a clean repository exits 0.
+      const ctx = await healthyRepo();
+      await configure(ctx, '[fsck]\n\tsymlinkRef = error\n');
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(badRefs(result.findings, 'symlinkRef')).toEqual([]);
+      expect(result.exitCode & BIT_REFS_CONTENT).toBe(0);
+      expect(result.exitCode).toBe(0);
     });
   });
 });

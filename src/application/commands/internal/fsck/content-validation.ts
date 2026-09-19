@@ -104,6 +104,7 @@ async function looseRawObjectBody(ctx: Context, compressed: Uint8Array): Promise
  */
 async function packedRawObjectBody(ctx: Context, id: ObjectId): Promise<RawObjectResult> {
   try {
+    // Stryker disable next-line ObjectLiteral: equivalent — readRawObject reads `options?.verifyHash ?? false`, so an empty options object resolves to the same false.
     const raw = await readRawObject(ctx, id, { verifyHash: false });
     return {
       ok: true,
