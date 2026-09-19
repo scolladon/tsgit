@@ -11,7 +11,7 @@ import { errorDataCode } from '../../domain/error-data-code.js';
 import { branchExists, branchNotFound, branchNotFullyMerged } from '../../domain/index.js';
 import { unexpectedObjectType } from '../../domain/objects/error.js';
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
-import { isOid, zeroOid } from '../../domain/objects/index.js';
+import { zeroOid } from '../../domain/objects/index.js';
 import {
   branchCreatedFrom,
   branchRenamed,
@@ -528,12 +528,14 @@ const appendRenameEntries = (
 
 /**
  * A branch's start point, through git's revision ladder. `create_branch` is
- * the one surface that refuses an ambiguous short name rather than taking the
- * first candidate and warning — `dwim_ref` returning more than one match is
- * its `ambiguous object name` refusal.
+ * the one surface that refuses an ambiguous name rather than taking the first
+ * candidate and warning — `dwim_ref` returning more than one match is its
+ * `ambiguous object name` refusal. `dwim_branch_start` runs that count for
+ * EVERY start point, a full-width object id included: git resolves the object
+ * first and still refuses when two namespaces carry the same 40-hex string as
+ * a ref name (measured, git 2.55.0).
  */
 const resolveBranchTarget = async (ctx: Context, startPoint: string): Promise<ObjectId> => {
-  if (isOid(startPoint, ctx.hashConfig)) return startPoint as ObjectId;
   const candidates = await resolvingCandidates(ctx, startPoint);
   if (candidates.length > 1) throw revparseAmbiguous(startPoint, candidates);
   const id = await resolveRevisionName(ctx, startPoint);

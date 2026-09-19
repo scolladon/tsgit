@@ -176,5 +176,28 @@ describe('branchCreate — the start point a branch is cut from', () => {
         });
       });
     });
+
+    describe('Given a full-width object id two namespaces also carry as a ref name', () => {
+      describe('When branchCreate cuts from it', () => {
+        it('Then the count still refuses, naming the expression and every object it could mean', async () => {
+          // Arrange
+          const { ctx, branchId, tagId } = await seedAmbiguity(build);
+          const reflogMessage = 'plant';
+          await updateRef(ctx, `refs/tags/${tagId}` as RefName, branchId, { reflogMessage });
+          await updateRef(ctx, `${HEADS}${tagId}` as RefName, branchId, { reflogMessage });
+          const sut = branchCreate;
+
+          // Act
+          const data = await refusalOf(() => sut(ctx, { name: 'fresh', startPoint: tagId }));
+
+          // Assert
+          expect(data).toEqual({
+            code: 'REVPARSE_AMBIGUOUS',
+            expression: tagId,
+            candidates: [branchId, branchId],
+          });
+        });
+      });
+    });
   });
 });
