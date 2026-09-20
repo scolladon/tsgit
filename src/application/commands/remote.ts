@@ -185,9 +185,11 @@ const removableTrackingRefs = (
   name: string,
   candidates: ReadonlyArray<RefName>,
 ): ReadonlyArray<RefName> => {
+  // Stryker disable next-line ArrayDeclaration: equivalent — `own` feeds only `fetchesInto` below, which skips every spec `destinationOf` cannot split on a colon; a one-element array holding a colon-free string therefore yields the same verdict as the empty one
   const own = config.remote?.get(name)?.fetch ?? [];
   const others = [...(config.remote ?? [])].filter(([other]) => other !== name);
   const keptElsewhere = (ref: RefName): boolean =>
+    // Stryker disable next-line ArrayDeclaration: equivalent — same reason as `own` above; this fallback is consumed inline by `fetchesInto` and nowhere else
     others.some(([, entry]) => fetchesInto(entry.fetch ?? [], ref));
   return candidates.filter((ref) => fetchesInto(own, ref) && !keptElsewhere(ref));
 };

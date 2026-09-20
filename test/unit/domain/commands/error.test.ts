@@ -1686,6 +1686,23 @@ describe('domain commands error — extractDetail message formatting', () => {
       `FSCK_CANNOT_DEMOTE: cannot demote ${FATAL_FSCK_MSG_ID} to ignore in file /repo/.git/config at line 7`,
     ],
     [
+      {
+        code: 'FSCK_SKIP_LIST_UNREADABLE',
+        path: '/repo/.git/skip-list',
+        reason: 'FILE_NOT_FOUND',
+      },
+      'FSCK_SKIP_LIST_UNREADABLE: could not open object name list: /repo/.git/skip-list (FILE_NOT_FOUND)',
+    ],
+    [
+      {
+        code: 'FSCK_SKIP_LIST_INVALID_NAME',
+        name: 'not-an-oid',
+        path: '/repo/.git/skip-list',
+        line: 2,
+      },
+      'FSCK_SKIP_LIST_INVALID_NAME: invalid object name: not-an-oid in file /repo/.git/skip-list at line 2',
+    ],
+    [
       { code: 'CONFIG_BAD_ZLIB_LEVEL', level: 99 },
       'CONFIG_BAD_ZLIB_LEVEL: bad zlib compression level 99',
     ],

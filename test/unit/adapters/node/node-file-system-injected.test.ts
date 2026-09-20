@@ -2332,6 +2332,35 @@ describe('NodeFileSystem — leaf no-follow composition (DI)', () => {
     });
   });
 
+  describe('Given a contained target whose parent directory is missing', () => {
+    describe('When appendUtf8 retries the append after creating the parent', () => {
+      it('Then the retry carries the same utf-8 encoding AND O_APPEND composed with O_NOFOLLOW', async () => {
+        // Arrange — the retry opens its own descriptor rather than continuing
+        // the first attempt, so it owes the same no-follow guarantee: a
+        // symlink planted at the leaf between the ENOENT and the retry would
+        // otherwise be followed straight out of the root.
+        const rootDir = '/root';
+        const appendFile = vi.fn().mockRejectedValueOnce(enoent()).mockResolvedValueOnce(undefined);
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+          appendFile,
+          mkdir: vi.fn().mockResolvedValue(undefined),
+        });
+        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+        // Act
+        await sut.appendUtf8('/root/logs/HEAD.log', 'entry\n');
+
+        // Assert
+        expect(appendFile).toHaveBeenCalledTimes(2);
+        expect(appendFile).toHaveBeenNthCalledWith(2, '/root/logs/HEAD.log', 'entry\n', {
+          encoding: 'utf-8',
+          flag: APPEND_FLAGS,
+        });
+      });
+    });
+  });
+
   describe('Given a POSIX policy', () => {
     describe('When write is called', () => {
       it('Then no pre-write lstat is issued (O_NOFOLLOW alone guards the leaf)', async () => {

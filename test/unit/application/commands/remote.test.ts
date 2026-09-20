@@ -804,6 +804,31 @@ describe('application/commands/remote', () => {
       });
     });
 
+    describe('Given a mirror remote whose refspec fetches into every namespace', () => {
+      describe('When remoteRemove runs', () => {
+        it('Then only refs under refs/remotes/ are deleted, never a local branch or tag', async () => {
+          // Arrange — `+refs/*:refs/*` maps into refs/heads and refs/tags as
+          // readily as into refs/remotes, so the destination test alone would
+          // claim every ref in the repository. git searches only the
+          // refs/remotes/ hierarchy and leaves everything outside it standing
+          // (verified against git 2.55.0, which also advises `git branch -d`).
+          const ctx = createMemoryContext();
+          await seed(ctx, '[remote "origin"]\n\turl = u\n\tfetch = +refs/*:refs/*\n');
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${ORIGIN_ID}\n`);
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/v1`, `${STALE_ID}\n`);
+          await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/remotes/origin/main`, `${ORIGIN_ID}\n`);
+
+          // Act
+          const result = await remoteRemove(ctx, { name: 'origin' });
+
+          // Assert
+          expect(result.removedTrackingRefs).toEqual([ORIGIN_MAIN]);
+          expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/heads/main`)).toBe(true);
+          expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/tags/v1`)).toBe(true);
+        });
+      });
+    });
+
     describe('Given a configured remote with a symbolic HEAD and two direct tracking refs', () => {
       describe('When remoteRemove runs', () => {
         it('Then every tracking ref is deleted in one ref transaction', async () => {
