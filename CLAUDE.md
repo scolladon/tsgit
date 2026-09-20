@@ -50,8 +50,8 @@ npm run build         # Compile to dist/
 
 Routing table, rationale and measurements live in
 [`.claude/workflow/code-navigation.md`](.claude/workflow/code-navigation.md), which the
-craft manifest injects as global context into every agent — it is the single home, do not
-restate it here. Measurements: [`docs/spike/code-graph-tool-selection.md`](docs/spike/code-graph-tool-selection.md).
+craft manifest injects into the implementation and refactoring phases — it is the single
+home, do not restate it here. Measurements: [`docs/spike/code-graph-tool-selection.md`](docs/spike/code-graph-tool-selection.md).
 
 - **serena — precision and all writes.** Exact references, symbol bodies, renames,
   diagnostics. The **only** tool that resolves `export type *` barrels, so every

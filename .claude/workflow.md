@@ -1,7 +1,6 @@
 ---
 backlog: { source: file, ref: docs/BACKLOG.md }
 paths: { design: docs/design, adr: docs/adr, plan: docs/plan }
-context: .claude/workflow/code-navigation.md
 models: { designer: opus, reviewer: opus, fallback: opus }
 gates:
   part: "npx vitest run <touched-tests> && npm run check:types && ./node_modules/.bin/biome check <touched-files> && npm run check:spelling"
@@ -10,7 +9,8 @@ gates:
 phases:
   design:         { context: .claude/workflow/faithfulness.md }
   planning:       { context: .claude/workflow/surface-gates.md }
-  implementation: { context: [.claude/workflow/surface-gates.md, .claude/workflow/faithfulness.md] }
+  implementation: { context: [.claude/workflow/surface-gates.md, .claude/workflow/faithfulness.md, .claude/workflow/code-navigation.md] }
+  refactoring:    { context: .claude/workflow/code-navigation.md }
   review:         { context: .claude/workflow/surface-gates.md }
   documentation:  { context: .claude/workflow/docs-drift.md }
   validation:     { override: .claude/workflow/mutation.md }
@@ -88,6 +88,14 @@ workflow" / "the usual flow" resolve here (see CLAUDE.md §Development Workflow)
   space for implementers and refactor executors, and is not worth it for reviewers, planners or
   docs writers, whose natural instrument is Bash over a diff. Evidence and the full split:
   `.claude/workflow/code-navigation.md`.
+
+- **`code-navigation.md` is phase-scoped, not global.** It was wired as global `context:`,
+  so all eleven phases paid its ~9.2 KB. The measurement recorded above says that is wrong:
+  code-editing agents made 321 MCP calls across 16 spawns, read-only agents made 0 across 6,
+  and three read-only agents ran the ToolSearch calls then used nothing. It now loads on
+  `implementation` and `refactoring` only — the two phases whose agents edit code. Reviewers,
+  planners, docs writers and the delivery phases work over a diff with Bash and no longer
+  carry the routing table. Re-add it to a phase the moment that phase starts editing code.
 
 - **`models.designer` / `models.reviewer` on `opus`** — design and review are the two
   judgment-dense phases here: the designer has to hold git's on-disk contracts and the
