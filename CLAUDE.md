@@ -46,12 +46,12 @@ npm run test:mutation # Stryker mutation testing
 npm run build         # Compile to dist/
 ```
 
-## Code Navigation (Serena + graft + tokensave)
+## Code Navigation (serena + graft)
 
-Three tools, three jobs — full routing table and rationale in
-[`.claude/workflow/code-navigation.md`](.claude/workflow/code-navigation.md)
-(injected into every craft agent); measurements in
-[`docs/spike/code-graph-tool-selection.md`](docs/spike/code-graph-tool-selection.md).
+Routing table, rationale and measurements live in
+[`.claude/workflow/code-navigation.md`](.claude/workflow/code-navigation.md), which the
+craft manifest injects as global context into every agent — it is the single home, do not
+restate it here. Measurements: [`docs/spike/code-graph-tool-selection.md`](docs/spike/code-graph-tool-selection.md).
 
 - **serena — precision and all writes.** Exact references, symbol bodies, renames,
   diagnostics. The **only** tool that resolves `export type *` barrels, so every
@@ -59,31 +59,21 @@ Three tools, three jobs — full routing table and rationale in
 - **graft — cheap breadth.** `graft ask` to orient, `graft skeleton` for a file's
   signatures (~6× cheaper than reading it). Deterministic tier only — never
   `graft build --deep`.
-- **tokensave — analytics only.** `circular`, `god_class`, `coupling`, `dsm`,
-  `blame`. Not for orientation; `dead_code` is unusable unfiltered here.
 
 Loop: `graft ask` → `graft skeleton` → serena `find_symbol` /
 `find_referencing_symbols` → serena `replace_*`.
 
-**Activate Serena on the active worktree first** (`mcp__serena__activate_project`
-with the absolute worktree path, e.g. `/abs/path/tsgit-<slug>`), then use its
-symbol/LSP tools as the **default** for editing and precise navigation. Fall back
-to the harness LSP tool or `Edit`/`Write` only when Serena can't do it; reach for
-`Read`/`Grep` only for non-code files (markdown, JSON, generated artefacts) or a
-quick literal scan.
+**Activate serena on the active worktree first** (`mcp__serena__activate_project` with the
+absolute worktree path, e.g. `/abs/path/tsgit-<slug>`), then use its symbol/LSP tools as
+the default for editing and precise navigation. Its LSP is rooted at the **worktree**;
+the harness LSP is rooted at the **main** checkout and reports spurious cross-root
+`Cannot find module` errors plus stale content for sibling worktrees. Activation and the
+end-of-workflow `~/.serena` prune are a matched pair. Fall back to `Edit`/`Write` only
+when serena can't do it; `Read`/`Grep` only for non-code files or a quick literal scan.
 
-**Why Serena, not the harness LSP, in worktrees:** Serena's activated-project LSP
-is rooted at the **worktree**, so references/hover/rename reflect the worktree's
-own edits and project (`tsconfig`/`node_modules`). The harness LSP tool is
-single-rooted at the **main** repo — for a sibling worktree's files it sees only
-the declaration, surfaces spurious `Cannot find module` cross-root diagnostics,
-and shows stale content that misses your worktree edits. Activation and the
-end-of-workflow `~/.serena` prune are a matched pair: every worktree that gets
-activated gets pruned when it's removed.
+LSP/serena diagnostics are advisory only; the ground-truth gate is always
+`npm run validate` (and `npm run check:types`).
 
-LSP/Serena diagnostics are advisory only; the ground-truth gate is always
-`npm run validate` (and `npm run check:types`). Ignore lagging cross-root
-diagnostics when the type-check is green.
 
 ## Test Conventions
 
@@ -101,35 +91,12 @@ diagnostics when the type-check is green.
 - **Prefer try/catch over toThrow for data assertions:** `toThrow(expect.objectContaining(...))` can miss nested property mutations. Use try/catch + direct `.data` assertions for reliable mutant killing.
 - **Watch for dead code in guards:** `string.split('\n')` always returns at least one element — `if (lines.length === 0)` is unreachable dead code. Mutation testing reveals these. Remove them rather than writing impossible tests.
 - **Accept provably equivalent mutants:** Loop bounds (`i < len` vs `i <= len` where out-of-bounds returns `undefined`) and search start offsets in homogeneous data are often equivalent. Document why, don't write contrived tests.
-- **Triage suspected false survivors before writing kill tests:** the procedure (and all Stryker run scoping) lives in `.claude/workflow/mutation.md` — its single home, used by the forge mutation phase.
+- **Triage suspected false survivors before writing kill tests:** the procedure (and all Stryker run scoping) lives in `.claude/workflow/mutation.md` — its single home, used by the craft validation phase.
 
-### Property-Based Testing (when to reach for `fast-check`)
+### Property-Based Testing
 
-Example tests prove specific inputs round-trip; property tests prove the *grammar* round-trips. They are not interchangeable — example tests document literal Git on-disk encodings, property tests catch grammar-level bugs the examples can't enumerate.
+Parsers, decoders, matchers and serializers get a `*.properties.test.ts` sibling alongside the example test — properties prove the *grammar* round-trips, examples document the literal Git encoding; they are additive, never substitutes. The four lenses that decide whether a property fits, the cases where they don't, and the layout/`numRuns` budget live in [`.claude/workflow/property-testing.md`](.claude/workflow/property-testing.md) (ADRs 134–136). If a diff touches one of those shapes without a property sibling, surface the gap in review and either add it or note which lens fails.
 
-**When property tests are appropriate** — touch the new/changed code with all four lenses; if any one fits, ship a `*.properties.test.ts` sibling alongside the example test:
-
-1. **Round-trip pair** — code under test is half of a `parse`/`serialize` (or `compile`/`render`, `encode`/`decode`) pair. Property: `parse(serialize(x)) ≡ x` (modulo documented canonicalisation, e.g. sort order).
-2. **Compositional matcher / aggregator** — function reduces an array of rules/entries/levels to a verdict (e.g. `matchesPathspec`, `matchInStack`, `matches`). Property: invariant shapes — empty input returns the identity, appending a non-negated match makes the verdict true, appending its negation flips it back.
-3. **Total function over an algebraic grammar** — compiler / validator that should *never* throw on any input within a declared safe subset (e.g. `compilePathspec` over ASCII no-NUL). Property: `compile(any p in safeSubset)` returns a callable matcher.
-4. **Idempotence / counting invariant** — parser whose output should re-parse to the same structure (e.g. `parseGitignore(rulesToText(parseGitignore(x))) ≡ parseGitignore(x)`), or where a syntactic input feature should map 1:1 to a semantic output feature (`!`-prefixed lines ↔ negated rules count).
-
-**When property tests are NOT appropriate (skip them, no virtue points):**
-
-- Single-purpose UI / orchestration code with no algebraic structure.
-- Functions whose only inputs are a small enum (3–10 values) — a parameterised example sweep does the same job clearer.
-- I/O wrappers, transport middleware, command facades — these belong in integration / parity tests, not property tests.
-- A property that requires re-implementing the production loop as the oracle. If the oracle is a verbatim copy of the SUT, you have a tautology, not a property. Rewrite as invariants (case 2 above) or delegate to an *independently tested* sibling function.
-
-**Layout and budget** (per ADRs 134–136):
-
-- Property tests live in `<parser>.properties.test.ts` next to the example file, never mixed in. Per-family generators live in a shared `arbitraries.ts` in the same directory.
-- Tiered `numRuns`: **200** for cheap round-trip properties, **100** (default) for composition / invariant properties, **50** for filter-heavy negative properties.
-- Properties are *additive*: never delete an example test in the same PR that adds a property — the example documents the literal Git format, the property proves the grammar.
-- Same describe/it / AAA / `sut` conventions as example tests. `Given` reads "Given an arbitrary X".
-- Never commit a seed. Failing properties shrink to a counterexample; the seed is printed locally for repro, not pinned.
-
-If the work touches a parser/decoder/matcher and the diff lands without a `*.properties.test.ts` sibling, surface the gap in the review pass and either add the property or note why the four lenses above don't fit.
 
 ## Code Style
 
@@ -159,11 +126,27 @@ If the work touches a parser/decoder/matcher and the diff lands without a `*.pro
 
 ## Development Workflow (MANDATORY)
 
-The workflow is the **forge plugin**: run `/forge:run <backlog-id | file | description>`. The repo customizes it through the committed declination manifest **`.claude/workflow.md`** plus `.claude/workflow/` (Serena mandate as global context, git-faithfulness pinning as design context, the Stryker procedure as the mutation override, `serena-prune.sh` as teardown). Triggers: `"apply the workflow"`, `"the usual flow"`, or `/forge:run` directly. Phase skills also run standalone — `/forge:review` (four-dimension battery on the current branch), `/forge:mutation` (scoped run + triage).
+The workflow is the **craft plugin**: run `/craft:run <backlog-id | file | description>`.
+The repo customizes it through the committed declination manifest
+[`.claude/workflow.md`](.claude/workflow.md) plus `.claude/workflow/` — that manifest is
+the single source of truth for gates, models, phase contexts and PR policy; do not restate
+its values here. Triggers: `"apply the workflow"`, `"the usual flow"`, or `/craft:run`
+directly. Phase skills also run standalone — `/craft:review` (four-dimension battery on
+the current branch), `/craft:validation` (scoped Stryker run + triage).
 
-Phase sequence (engine-fixed): **branch → design → ADR (with user) → plan → implement (TDD per slice, sonnet subagents, atomic commits) → review ×4 (code / security / perf / tests, per-dimension convergence) → architecture refactor + scoped re-review (behavior-preserving, may no-op with written justification) → mutation (gates the PR) → docs → PR → merge + cleanup**. The session orchestrates and verifies; agents produce committed artifacts.
+Phase sequence: **workspace → design → decisions (ADRs, with user) → planning ->
+implementation (TDD per part, atomic commits) → review x4 (code / security / tests / perf,
+per-dimension convergence) → refactoring (behaviour-preserving, may no-op with written
+justification) → validation (mutation; gates the PR) → documentation → propose (PR) ->
+integrate (merge + cleanup)**. The session orchestrates and verifies; agents produce
+committed artifacts.
 
-**Non-negotiables** (hook-enforced where mechanical — see `.claude/hooks/` and the forge plugin hooks): never commit on a red `npm run validate`; never `--no-verify`; never use ignore directives (`@ts-ignore` / `v8 ignore` / `stryker-disable` / `biome-ignore`); never include phase/ADR refs inside source or test code; be git-faithful unless an ADR diverges. Escalate blockers as `{ slice/finding, reason, ≤3 options }` — never spin, never silently abandon.
+**Non-negotiables** (hook-enforced where mechanical — see `.claude/hooks/` and the craft
+plugin hooks): never commit on a red `npm run validate`; never `--no-verify`; never use
+ignore directives (`@ts-ignore` / `v8 ignore` / `stryker-disable` / `biome-ignore`); never
+include phase/ADR refs inside source or test code; be git-faithful unless an ADR diverges.
+Escalate blockers as `{ unit, reason, ≤3 options }` — never spin, never silently abandon.
+
 
 ## Docs
 
