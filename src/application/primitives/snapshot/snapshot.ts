@@ -7,7 +7,7 @@ import type { WorkdirEntry } from './workdir-entry.js';
 /**
  * Lazy, atomic-iteration view of a row source (tree / index / workdir / …).
  * Snapshots are descriptions, not data — no I/O happens until the consumer
- * starts iterating. See design §8 and ADR-149.
+ * starts iterating. See ADR-149.
  *
  * Iteration-stability invariant: once a snapshot's `entries()` resolves its
  * underlying source on the first iteration, every subsequent iteration on

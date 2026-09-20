@@ -5,7 +5,7 @@ import { resolveAlgorithm } from '../../../src/repository/resolve-algorithm.js';
 describe('resolveAlgorithm', () => {
   describe('Given no option, no declared format, and no service algorithm', () => {
     describe('When resolveAlgorithm runs', () => {
-      it("Then returns 'sha1' (R6 — the default)", () => {
+      it("Then returns 'sha1' — the default", () => {
         // Arrange / Act
         const result = resolveAlgorithm({});
 

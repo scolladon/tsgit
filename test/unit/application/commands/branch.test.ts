@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
 import {
@@ -10,8 +10,12 @@ import {
 } from '../../../../src/application/commands/branch.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
-import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
-import { getRefStore } from '../../../../src/application/primitives/ref-store.js';
+import {
+  __resetConfigCacheForTests,
+  invalidateConfigCache,
+} from '../../../../src/application/primitives/config-read.js';
+import { looseObjectPath, objectsDir } from '../../../../src/application/primitives/path-layout.js';
+import { getRefStore, refExists } from '../../../../src/application/primitives/ref-store.js';
 import {
   appendReflog,
   deleteReflog,
@@ -19,9 +23,12 @@ import {
   readReflog,
   reflogExists,
 } from '../../../../src/application/primitives/reflog-store.js';
+import { updateRef } from '../../../../src/application/primitives/update-ref.js';
+import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import { writeSymbolicRef } from '../../../../src/application/primitives/write-symbolic-ref.js';
 import { fileNotFound, TsgitError } from '../../../../src/domain/index.js';
-import type { AuthorIdentity, RefName } from '../../../../src/domain/objects/index.js';
-import { ObjectId, zeroOid } from '../../../../src/domain/objects/index.js';
+import type { AuthorIdentity, RefName, Tag } from '../../../../src/domain/objects/index.js';
+import { ObjectId, serializeObject, zeroOid } from '../../../../src/domain/objects/index.js';
 import type { ReflogEntry } from '../../../../src/domain/reflog/reflog-entry.js';
 import type { Context } from '../../../../src/ports/context.js';
 import type { FileStat } from '../../../../src/ports/file-system.js';
@@ -34,13 +41,103 @@ const author: AuthorIdentity = {
   timezoneOffset: '+0000',
 };
 
+const ZERO_OID = '0'.repeat(40);
+const FROZEN_NOW_S = 1_700_000_000;
+const FROZEN_NOW_MS = FROZEN_NOW_S * 1000;
+
+/**
+ * Extends the base commit fixture with non-commit branch-point candidates:
+ * a bare tree and blob (by oid), a lightweight tag over the tree, and
+ * annotated tags over the tree and over the commit — the shapes
+ * `branch.create`'s start-point typing (D12) must refuse or peel.
+ */
 const seedWithCommit = async () => {
   const ctx = createMemoryContext();
   await init(ctx);
   await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
   await add(ctx, ['a.txt']);
   const c = await commit(ctx, { message: 'first', author });
-  return { ctx, commitId: c.id };
+  const treeId = await writeObject(ctx, { type: 'tree', id: '' as ObjectId, entries: [] });
+  const blobId = await writeObject(ctx, {
+    type: 'blob',
+    id: '' as ObjectId,
+    content: new TextEncoder().encode('blob'),
+  });
+  await updateRef(ctx, 'refs/tags/light-to-tree' as RefName, treeId, { reflogMessage: 'test' });
+  const tagToTreeId = await writeObject(ctx, {
+    type: 'tag',
+    id: '' as ObjectId,
+    data: {
+      object: treeId,
+      objectType: 'tree',
+      tagName: 'tag-to-tree',
+      tagger: author,
+      message: 'tag-to-tree\n',
+      extraHeaders: [],
+    },
+  });
+  await updateRef(ctx, 'refs/tags/tag-to-tree' as RefName, tagToTreeId, { reflogMessage: 'test' });
+  const tagToCommitId = await writeObject(ctx, {
+    type: 'tag',
+    id: '' as ObjectId,
+    data: {
+      object: c.id,
+      objectType: 'commit',
+      tagName: 'tag-to-commit',
+      tagger: author,
+      message: 'tag-to-commit\n',
+      extraHeaders: [],
+    },
+  });
+  await updateRef(ctx, 'refs/tags/tag-to-commit' as RefName, tagToCommitId, {
+    reflogMessage: 'test',
+  });
+  return { ctx, commitId: c.id, treeId, blobId, tagToTreeId, tagToCommitId };
+};
+
+/** A commit over an empty tree whose only parent is `parent`, planted straight
+ *  into the object store so a branch can carry history HEAD never saw. */
+const childCommit = async (ctx: Context, parent: ObjectId | undefined): Promise<ObjectId> => {
+  const tree = await writeObject(ctx, { type: 'tree', id: '' as ObjectId, entries: [] });
+  return writeObject(ctx, {
+    type: 'commit',
+    id: '' as ObjectId,
+    data: {
+      tree,
+      parents: parent === undefined ? [] : [parent],
+      author,
+      committer: author,
+      message: 'child',
+      extraHeaders: [],
+    },
+  });
+};
+
+/** Points `refs/heads/<name>` at `id`, bypassing `branch.create`'s own rules. */
+const plantBranch = (ctx: Context, name: string, id: ObjectId): Promise<unknown> =>
+  updateRef(ctx, `refs/heads/${name}` as RefName, id, { reflogMessage: 'test' });
+
+/** Adds `text` to the repository config `init` already wrote and drops the
+ *  cached parse, so the next read sees both. */
+const appendConfig = async (ctx: Context, text: string): Promise<void> => {
+  const path = `${ctx.layout.gitDir}/config`;
+  await ctx.fs.writeUtf8(path, `${await ctx.fs.readUtf8(path)}${text}`);
+  invalidateConfigCache(ctx);
+};
+
+/**
+ * Plants a raw loose tag object at `id`'s OWN chosen path without computing
+ * its hash from `tag`'s content — the on-disk shape a hostile repository can
+ * plant (git's cryptographic hash makes an honest self- or mutually-
+ * referential tag chain impossible to produce any other way). `readObject`
+ * defaults to `verifyHash: false`, so the mismatch between `id` and the
+ * content's real hash is never checked.
+ */
+const writeForgedLooseTag = async (ctx: Context, id: ObjectId, tag: Tag): Promise<void> => {
+  const bytes = serializeObject(tag, ctx.hashConfig);
+  const compressed = await ctx.compressor.deflate(bytes);
+  await ctx.fs.mkdir(objectsDir(ctx.layout.gitDir, id.slice(0, 2)));
+  await ctx.fs.writeExclusive(looseObjectPath(ctx.layout.gitDir, id), compressed);
 };
 
 /**
@@ -89,6 +186,10 @@ const expectError = async (fn: () => Promise<unknown>, code: string): Promise<Ts
 };
 
 describe('branch', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   describe('Given a repo with main + one commit', () => {
     describe('When branch list', () => {
       it('Then returns main as current', async () => {
@@ -101,6 +202,66 @@ describe('branch', () => {
         // Assert
         expect(result.branches.map((b) => b.name)).toContain('refs/heads/main');
         expect(result.branches.find((b) => b.name === 'refs/heads/main')?.current).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a malformed core.maxTreeDepth', () => {
+    describe('When branch list runs', () => {
+      it('Then it still runs — git lists refs without parsing an object', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth = 2.5\n');
+        invalidateConfigCache(ctx);
+
+        // Act
+        const result = await branchList(ctx);
+
+        // Assert
+        expect(result.branches.map((b) => b.name)).toContain('refs/heads/main');
+      });
+    });
+
+    describe('When branch rename runs', () => {
+      it('Then it still runs — git renames refs without parsing an object', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth = 2.5\n');
+        invalidateConfigCache(ctx);
+
+        // Act
+        const result = await branchRename(ctx, { from: 'main', to: 'trunk' });
+
+        // Assert
+        expect(result).toEqual({ from: 'refs/heads/main', to: 'refs/heads/trunk' });
+      });
+    });
+
+    describe('When branch delete runs on a nonexistent branch (unforced)', () => {
+      it('Then it dies on the class, not BRANCH_NOT_FOUND', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth = 2.5\n');
+        invalidateConfigCache(ctx);
+
+        // Act + Assert
+        await expectError(() => branchDelete(ctx, { name: 'nope' }), 'CONFIG_BAD_NUMERIC_VALUE');
+      });
+    });
+
+    describe('When branch create runs (cold session — first touch settles the invalid verdict)', () => {
+      it('Then it dies on the class before writing the ref — typing the start point reaches the boundary naturally', async () => {
+        // Arrange — branch.create carries no explicit assertRepoSettingsValid
+        // call of its own; requireCommit's readObject on the resolved start
+        // point is the first object-store touch, and that boundary's own
+        // fast path settles the (invalid) verdict.
+        const { ctx } = await seedWithCommit();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth = 2.5\n');
+        invalidateConfigCache(ctx);
+
+        // Act + Assert
+        await expectError(() => branchCreate(ctx, { name: 'nope' }), 'CONFIG_BAD_NUMERIC_VALUE');
+        expect(await refExists(ctx, 'refs/heads/nope' as RefName)).toBe(false);
       });
     });
   });
@@ -134,6 +295,56 @@ describe('branch', () => {
     });
   });
 
+  describe('Given refs/heads/x is a symbolic ref to an absent refs/heads/nope', () => {
+    describe('When branch x is created without force', () => {
+      it('Then the branch is written through the dangling symref and both names log the creation', async () => {
+        // Arrange
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(FROZEN_NOW_MS);
+        const { ctx, commitId } = await seedWithCommit();
+        await writeSymbolicRef(ctx, 'refs/heads/x' as RefName, 'refs/heads/nope' as RefName);
+        const sut = branchCreate;
+
+        // Act
+        const result = await sut(ctx, { name: 'x' });
+
+        // Assert
+        const store = getRefStore(ctx);
+        // git 2.55.0 resolves HEAD before typing the entry and strips
+        // `refs/heads/`, so an attached HEAD labels it with the branch name.
+        const line = `${ZERO_OID} ${commitId} tsgit <tsgit@localhost> ${FROZEN_NOW_S} +0000\tbranch: Created from main\n`;
+        expect(result).toEqual({ name: 'refs/heads/x', id: commitId });
+        expect(await store.resolveDirect('refs/heads/x' as RefName)).toEqual({
+          kind: 'symbolic',
+          target: 'refs/heads/nope',
+        });
+        expect(await store.resolveDirect('refs/heads/nope' as RefName)).toEqual({
+          kind: 'direct',
+          id: commitId,
+        });
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/logs/refs/heads/nope`)).toBe(line);
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/logs/refs/heads/x`)).toBe(line);
+      });
+    });
+  });
+
+  describe('Given refs/heads/y is a symbolic ref to the existing refs/heads/main', () => {
+    describe('When branch y is created without force', () => {
+      it('Then it refuses BRANCH_EXISTS naming y', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        await writeSymbolicRef(ctx, 'refs/heads/y' as RefName, 'refs/heads/main' as RefName);
+        const sut = branchCreate;
+
+        // Act
+        const caught = await expectError(() => sut(ctx, { name: 'y' }), 'BRANCH_EXISTS');
+
+        // Assert
+        expect(caught.data).toEqual({ code: 'BRANCH_EXISTS', name: 'refs/heads/y' });
+      });
+    });
+  });
+
   describe('Given a branch other than the current', () => {
     describe('When branch delete', () => {
       it('Then it is removed', async () => {
@@ -150,17 +361,48 @@ describe('branch', () => {
     });
   });
 
+  describe('Given a symbolic branch name pointing at another branch', () => {
+    describe('When branch delete runs', () => {
+      it('Then the symbolic ref itself is deleted and its target is kept, --no-deref', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        await branchCreate(ctx, { name: 'x' });
+        await writeSymbolicRef(ctx, 'refs/heads/sym' as RefName, 'refs/heads/x' as RefName);
+
+        // Act
+        const result = await branchDelete(ctx, { name: 'sym' });
+
+        // Assert
+        expect(result).toEqual({ name: 'refs/heads/sym' });
+        expect(await getRefStore(ctx).resolveDirect('refs/heads/sym' as RefName)).toEqual({
+          kind: 'missing',
+        });
+        expect(await refExists(ctx, 'refs/heads/x' as RefName)).toBe(true);
+      });
+    });
+  });
+
   describe('Given the current branch', () => {
     describe('When branch delete', () => {
-      it('Then throws CANNOT_DELETE_CHECKED_OUT_BRANCH', async () => {
+      it('Then the refusal names the branch and the worktree holding it', async () => {
         // Arrange
         const { ctx } = await seedWithCommit();
 
-        // Act + Assert
-        await expectError(
-          () => branchDelete(ctx, { name: 'main' }),
-          'CANNOT_DELETE_CHECKED_OUT_BRANCH',
-        );
+        // Act
+        let caught: unknown;
+        try {
+          await branchDelete(ctx, { name: 'main' });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({
+          code: 'BRANCH_CHECKED_OUT',
+          branch: 'refs/heads/main',
+          path: ctx.layout.workDir,
+        });
       });
     });
   });
@@ -173,6 +415,220 @@ describe('branch', () => {
 
         // Act + Assert
         await expectError(() => branchDelete(ctx, { name: 'ghost' }), 'BRANCH_NOT_FOUND');
+      });
+    });
+  });
+
+  describe('Given a branch carrying a commit HEAD does not contain, and no upstream', () => {
+    describe('When branch delete runs unforced', () => {
+      it('Then it refuses BRANCH_NOT_FULLY_MERGED and leaves the ref standing', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithCommit();
+        await plantBranch(ctx, 'topic', await childCommit(ctx, commitId));
+        const sut = branchDelete;
+
+        // Act
+        const caught = await expectError(
+          () => sut(ctx, { name: 'topic' }),
+          'BRANCH_NOT_FULLY_MERGED',
+        );
+
+        // Assert
+        expect(caught.data).toEqual({ code: 'BRANCH_NOT_FULLY_MERGED', name: 'refs/heads/topic' });
+        expect(await refExists(ctx, 'refs/heads/topic' as RefName)).toBe(true);
+      });
+    });
+
+    describe('When branch delete runs with force', () => {
+      it('Then the ref is removed', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithCommit();
+        await plantBranch(ctx, 'topic', await childCommit(ctx, commitId));
+        const sut = branchDelete;
+
+        // Act
+        const result = await sut(ctx, { name: 'topic', force: true });
+
+        // Assert
+        expect(result).toEqual({ name: 'refs/heads/topic' });
+        expect(await refExists(ctx, 'refs/heads/topic' as RefName)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a branch merged into its configured upstream but not into HEAD', () => {
+    describe('When branch delete runs unforced', () => {
+      it('Then the upstream stands in for HEAD and the ref is removed', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithCommit();
+        const tip = await childCommit(ctx, commitId);
+        await plantBranch(ctx, 'topic', tip);
+        await plantBranch(ctx, 'up', await childCommit(ctx, tip));
+        await appendConfig(ctx, '[branch "topic"]\n\tremote = .\n\tmerge = refs/heads/up\n');
+        const sut = branchDelete;
+
+        // Act
+        const result = await sut(ctx, { name: 'topic' });
+
+        // Assert
+        expect(result).toEqual({ name: 'refs/heads/topic' });
+        expect(await refExists(ctx, 'refs/heads/topic' as RefName)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a branch merged into HEAD but not into its configured upstream', () => {
+    describe('When branch delete runs unforced', () => {
+      it('Then it still refuses — the upstream replaces HEAD rather than widening it', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithCommit();
+        const tip = await childCommit(ctx, commitId);
+        await plantBranch(ctx, 'topic', tip);
+        await plantBranch(ctx, 'up', commitId);
+        await plantBranch(ctx, 'main', await childCommit(ctx, tip));
+        await appendConfig(ctx, '[branch "topic"]\n\tremote = .\n\tmerge = refs/heads/up\n');
+        const sut = branchDelete;
+
+        // Act
+        const caught = await expectError(
+          () => sut(ctx, { name: 'topic' }),
+          'BRANCH_NOT_FULLY_MERGED',
+        );
+
+        // Assert
+        expect(caught.data).toEqual({ code: 'BRANCH_NOT_FULLY_MERGED', name: 'refs/heads/topic' });
+      });
+    });
+  });
+
+  describe('Given branch.<name>.merge configured without branch.<name>.remote', () => {
+    describe('When branch delete runs unforced on a branch HEAD does not contain', () => {
+      it('Then no upstream is configured at all and HEAD decides — it refuses', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithCommit();
+        const tip = await childCommit(ctx, commitId);
+        await plantBranch(ctx, 'topic', tip);
+        await plantBranch(ctx, 'up', await childCommit(ctx, tip));
+        await appendConfig(ctx, '[branch "topic"]\n\tmerge = refs/heads/up\n');
+        const sut = branchDelete;
+
+        // Act + Assert
+        await expectError(() => sut(ctx, { name: 'topic' }), 'BRANCH_NOT_FULLY_MERGED');
+      });
+    });
+  });
+
+  describe('Given an upstream whose ref does not exist', () => {
+    describe('When branch delete runs unforced on a branch HEAD contains', () => {
+      it('Then HEAD stands in for the unresolvable upstream and the ref is removed', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        await branchCreate(ctx, { name: 'topic' });
+        await appendConfig(ctx, '[branch "topic"]\n\tremote = .\n\tmerge = refs/heads/ghost\n');
+        const sut = branchDelete;
+
+        // Act
+        const result = await sut(ctx, { name: 'topic' });
+
+        // Assert
+        expect(result).toEqual({ name: 'refs/heads/topic' });
+      });
+    });
+  });
+
+  describe('Given an upstream a remote fetch refspec maps to a tracking ref', () => {
+    describe('When branch delete runs unforced and that tracking ref contains the tip', () => {
+      it('Then the mapped tracking ref decides and the ref is removed', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithCommit();
+        const tip = await childCommit(ctx, commitId);
+        await plantBranch(ctx, 'topic', tip);
+        await updateRef(ctx, 'refs/remotes/origin/topic' as RefName, await childCommit(ctx, tip), {
+          reflogMessage: 'test',
+        });
+        await appendConfig(
+          ctx,
+          '[remote "origin"]\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n' +
+            '[branch "topic"]\n\tremote = origin\n\tmerge = refs/heads/topic\n',
+        );
+        const sut = branchDelete;
+
+        // Act
+        const result = await sut(ctx, { name: 'topic' });
+
+        // Assert
+        expect(result).toEqual({ name: 'refs/heads/topic' });
+      });
+    });
+
+    describe('When that remote carries no fetch refspec at all', () => {
+      it('Then nothing maps the upstream and HEAD decides — it refuses', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithCommit();
+        const tip = await childCommit(ctx, commitId);
+        await plantBranch(ctx, 'topic', tip);
+        await updateRef(ctx, 'refs/remotes/origin/topic' as RefName, await childCommit(ctx, tip), {
+          reflogMessage: 'test',
+        });
+        await appendConfig(
+          ctx,
+          '[branch "topic"]\n\tremote = origin\n\tmerge = refs/heads/topic\n',
+        );
+        const sut = branchDelete;
+
+        // Act + Assert
+        await expectError(() => sut(ctx, { name: 'topic' }), 'BRANCH_NOT_FULLY_MERGED');
+      });
+    });
+
+    describe('When that remote carries a malformed fetch refspec', () => {
+      it('Then the refspec itself is what refuses, exactly as git dies building its remote', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithCommit();
+        await plantBranch(ctx, 'topic', await childCommit(ctx, commitId));
+        await appendConfig(
+          ctx,
+          '[remote "origin"]\n\tfetch = refs/heads/*:refs/remotes/origin/x\n' +
+            '[branch "topic"]\n\tremote = origin\n\tmerge = refs/heads/topic\n',
+        );
+        const sut = branchDelete;
+
+        // Act + Assert
+        await expectError(() => sut(ctx, { name: 'topic' }), 'REFSPEC_INVALID');
+      });
+    });
+  });
+
+  describe('Given an unborn HEAD and a branch with no upstream', () => {
+    describe('When branch delete runs unforced', () => {
+      it('Then there is no reference to measure against and it refuses', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await plantBranch(ctx, 'topic', await childCommit(ctx, undefined));
+        const sut = branchDelete;
+
+        // Act + Assert
+        await expectError(() => sut(ctx, { name: 'topic' }), 'BRANCH_NOT_FULLY_MERGED');
+      });
+    });
+  });
+
+  describe('Given a symbolic branch name pointing at a branch HEAD does not contain', () => {
+    describe('When branch delete runs unforced', () => {
+      it('Then the symref is removed unchecked — git measures direct refs only', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithCommit();
+        await plantBranch(ctx, 'topic', await childCommit(ctx, commitId));
+        await writeSymbolicRef(ctx, 'refs/heads/sym' as RefName, 'refs/heads/topic' as RefName);
+        const sut = branchDelete;
+
+        // Act
+        const result = await sut(ctx, { name: 'sym' });
+
+        // Assert
+        expect(result).toEqual({ name: 'refs/heads/sym' });
+        expect(await refExists(ctx, 'refs/heads/topic' as RefName)).toBe(true);
       });
     });
   });
@@ -192,6 +648,93 @@ describe('branch', () => {
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/heads/trunk`)).toBe(true);
         const head = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`);
         expect(head).toBe('ref: refs/heads/trunk\n');
+      });
+    });
+  });
+
+  describe('Given the checked-out branch', () => {
+    describe('When branch rename runs', () => {
+      it('Then logs/HEAD gains exactly two new entries: the delete then the re-point', async () => {
+        // Arrange — `seedWithCommit` already made one commit through HEAD,
+        // which itself appended one `logs/HEAD` entry; only the entries
+        // APPENDED by the rename are under test here.
+        const { ctx } = await seedWithCommit();
+        const before = await getRefStore(ctx).resolveDirect('refs/heads/main' as RefName);
+        if (before.kind !== 'direct') throw new Error('unreachable');
+        const id = before.id;
+        const baseline = await readReflog(ctx, 'HEAD' as RefName);
+
+        // Act
+        await branchRename(ctx, { from: 'main', to: 'trunk' });
+        const result = await readReflog(ctx, 'HEAD' as RefName);
+        const appended = result.slice(baseline.length);
+
+        // Assert
+        expect(appended).toHaveLength(2);
+        expect(appended[0]?.oldId).toBe(id);
+        expect(appended[0]?.newId).toBe(zeroOid(ctx.hashConfig));
+        expect(appended[0]?.message).toBe('Branch: renamed refs/heads/main to refs/heads/trunk');
+        expect(appended[1]?.oldId).toBe(zeroOid(ctx.hashConfig));
+        expect(appended[1]?.newId).toBe(id);
+        expect(appended[1]?.message).toBe('Branch: renamed refs/heads/main to refs/heads/trunk');
+      });
+    });
+
+    describe('When branch rename force-renames onto a live branch', () => {
+      it('Then logs/HEAD still gains exactly the same two new entries', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        await branchCreate(ctx, { name: 'other' });
+        const before = await getRefStore(ctx).resolveDirect('refs/heads/main' as RefName);
+        if (before.kind !== 'direct') throw new Error('unreachable');
+        const id = before.id;
+        const baseline = await readReflog(ctx, 'HEAD' as RefName);
+
+        // Act
+        await branchRename(ctx, { from: 'main', to: 'other', force: true });
+        const result = await readReflog(ctx, 'HEAD' as RefName);
+        const appended = result.slice(baseline.length);
+
+        // Assert
+        expect(appended).toHaveLength(2);
+        expect(appended[0]?.message).toBe('Branch: renamed refs/heads/main to refs/heads/other');
+        expect(appended[1]?.oldId).toBe(zeroOid(ctx.hashConfig));
+        expect(appended[1]?.newId).toBe(id);
+      });
+    });
+  });
+
+  describe('Given a branch other than the checked-out one', () => {
+    describe('When branch rename runs', () => {
+      it('Then logs/HEAD gains no new entry', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        await branchCreate(ctx, { name: 'other' });
+        const baseline = await readReflog(ctx, 'HEAD' as RefName);
+
+        // Act
+        await branchRename(ctx, { from: 'other', to: 'renamed2' });
+        const result = await readReflog(ctx, 'HEAD' as RefName);
+
+        // Assert
+        expect(result).toEqual(baseline);
+      });
+    });
+  });
+
+  describe('Given a self-rename of the checked-out branch', () => {
+    describe('When branch rename runs', () => {
+      it('Then logs/HEAD gains no new entry — the self-rename arm neither deletes nor re-points', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        const baseline = await readReflog(ctx, 'HEAD' as RefName);
+
+        // Act
+        await branchRename(ctx, { from: 'main', to: 'main', force: true });
+        const result = await readReflog(ctx, 'HEAD' as RefName);
+
+        // Assert
+        expect(result).toEqual(baseline);
       });
     });
   });
@@ -266,10 +809,8 @@ describe('branch', () => {
 
   describe('Given a reftable-backed branch with reflog history', () => {
     describe('When branch rename runs', () => {
-      it('Then the old branch is gone, the new branch exists, and history moved — never a half-applied rename', async () => {
-        // Arrange — the reftable reflogReplace decomposition used to throw
-        // UNSUPPORTED_OPERATION here, after `to` had already been created
-        // and before `from` was deleted, leaving both branches on disk.
+      it("Then the old branch is gone, the new branch exists, and history moved with git's reftable delete-then-create shape — never a half-applied rename", async () => {
+        // Arrange
         const { ctx } = await seedReftableWithCommit();
         const before = await readReflog(ctx, 'refs/heads/main' as RefName);
         expect(before).toHaveLength(1);
@@ -283,14 +824,71 @@ describe('branch', () => {
         expect(names).not.toContain('refs/heads/main');
         expect(names).toContain('refs/heads/trunk');
 
-        // Assert — moved history precedes the rename entry, matching the
-        // files backend's own contract; the source reflog is gone entirely.
+        // Assert — moved history, then TWO rename entries (git's reftable
+        // shape): a delete-shaped `<id> 0{40}` then a create-shaped
+        // `0{40} <id>`, unlike the files backend's single `<id> <id>` entry.
         const movedLog = await readReflog(ctx, 'refs/heads/trunk' as RefName);
-        expect(movedLog).toHaveLength(2);
+        expect(movedLog).toHaveLength(3);
         expect(movedLog[0]).toEqual(before[0]);
+        expect(movedLog[1]?.oldId).toBe(before[0]?.newId);
+        expect(movedLog[1]?.newId).toBe(zeroOid(ctx.hashConfig));
         expect(movedLog[1]?.message).toBe('Branch: renamed refs/heads/main to refs/heads/trunk');
+        expect(movedLog[2]?.oldId).toBe(zeroOid(ctx.hashConfig));
+        expect(movedLog[2]?.newId).toBe(before[0]?.newId);
+        expect(movedLog[2]?.message).toBe('Branch: renamed refs/heads/main to refs/heads/trunk');
         expect(await readReflog(ctx, 'refs/heads/main' as RefName)).toEqual([]);
         expect(await listReflogs(ctx)).not.toContain('refs/heads/main');
+      });
+    });
+
+    describe('When branch rename force-renames onto a live branch whose own record sits between the source history', () => {
+      it("Then the destination's own entries stay in update-index order — never dropped, never reordered", async () => {
+        // Arrange — three separate writes, each its own update index: the
+        // source's own commit, then the destination branch's creation, then
+        // a second move on the source — so a naive merge that appends the
+        // whole source history after the destination's would reorder them incorrectly.
+        const { ctx, tip } = await seedReftableWithCommit();
+        const store = getRefStore(ctx);
+        const secondTip = ObjectId.fromRaw(new Uint8Array(20).fill(0x02));
+        await store.applyRefUpdates([
+          {
+            kind: 'set',
+            name: 'refs/heads/other' as RefName,
+            id: tip,
+            reflog: {
+              oldId: zeroOid(ctx.hashConfig),
+              newId: tip,
+              message: 'branch: Created from main',
+              unconditional: true,
+            },
+          },
+        ]);
+        await store.applyRefUpdates([
+          {
+            kind: 'set',
+            name: 'refs/heads/main' as RefName,
+            id: secondTip,
+            reflog: {
+              oldId: tip,
+              newId: secondTip,
+              message: 'commit: second',
+              unconditional: true,
+            },
+          },
+        ]);
+
+        // Act
+        await branchRename(ctx, { from: 'main', to: 'other', force: true });
+
+        // Assert
+        const merged = await readReflog(ctx, 'refs/heads/other' as RefName);
+        expect(merged.map((e) => e.message)).toEqual([
+          'commit (initial): first',
+          'branch: Created from main',
+          'commit: second',
+          'Branch: renamed refs/heads/main to refs/heads/other',
+          'Branch: renamed refs/heads/main to refs/heads/other',
+        ]);
       });
     });
   });
@@ -416,6 +1014,159 @@ describe('branch', () => {
     });
   });
 
+  describe('Given a branch a, and refs/heads/y a symbolic ref to the existing refs/heads/main', () => {
+    const seedSymbolicDestination = async () => {
+      const seeded = await seedWithCommit();
+      await branchCreate(seeded.ctx, { name: 'a' });
+      await writeSymbolicRef(seeded.ctx, 'refs/heads/y' as RefName, 'refs/heads/main' as RefName);
+      return seeded;
+    };
+
+    describe('When branch rename moves a onto y without force', () => {
+      it('Then it refuses BRANCH_EXISTS naming y and changes nothing', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedSymbolicDestination();
+        const store = getRefStore(ctx);
+        const sut = branchRename;
+
+        // Act
+        const caught = await expectError(() => sut(ctx, { from: 'a', to: 'y' }), 'BRANCH_EXISTS');
+
+        // Assert
+        expect(caught.data).toEqual({ code: 'BRANCH_EXISTS', name: 'refs/heads/y' });
+        expect(await store.resolveDirect('refs/heads/y' as RefName)).toEqual({
+          kind: 'symbolic',
+          target: 'refs/heads/main',
+        });
+        expect(await store.resolveDirect('refs/heads/a' as RefName)).toEqual({
+          kind: 'direct',
+          id: commitId,
+        });
+        expect(await readReflog(ctx, 'refs/heads/a' as RefName)).toHaveLength(1);
+      });
+    });
+
+    describe('When branch rename moves a onto y with force', () => {
+      it("Then y becomes a direct ref carrying a's log plus the rename entry, and main is untouched", async () => {
+        // Arrange
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(FROZEN_NOW_MS);
+        const { ctx, commitId } = await seedSymbolicDestination();
+        const store = getRefStore(ctx);
+        const mainLogBefore = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/logs/refs/heads/main`);
+        const sut = branchRename;
+
+        // Act
+        await sut(ctx, { from: 'a', to: 'y', force: true });
+
+        // Assert
+        const identity = `tsgit <tsgit@localhost> ${FROZEN_NOW_S} +0000`;
+        expect(await store.resolveDirect('refs/heads/y' as RefName)).toEqual({
+          kind: 'direct',
+          id: commitId,
+        });
+        expect(await store.resolveDirect('refs/heads/a' as RefName)).toEqual({ kind: 'missing' });
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/logs/refs/heads/y`)).toBe(
+          `${ZERO_OID} ${commitId} ${identity}\tbranch: Created from main\n` +
+            `${commitId} ${commitId} ${identity}\tBranch: renamed refs/heads/a to refs/heads/y\n`,
+        );
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/logs/refs/heads/main`)).toBe(
+          mainLogBefore,
+        );
+      });
+    });
+  });
+
+  describe('Given a branch b, and refs/heads/dy a symbolic ref to an absent refs/heads/nope', () => {
+    describe('When branch rename moves b onto dy without force', () => {
+      it('Then dy is replaced by a direct ref and nope is never created', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithCommit();
+        await branchCreate(ctx, { name: 'b' });
+        await writeSymbolicRef(ctx, 'refs/heads/dy' as RefName, 'refs/heads/nope' as RefName);
+        const store = getRefStore(ctx);
+        const sut = branchRename;
+
+        // Act
+        await sut(ctx, { from: 'b', to: 'dy' });
+
+        // Assert
+        expect(await store.resolveDirect('refs/heads/dy' as RefName)).toEqual({
+          kind: 'direct',
+          id: commitId,
+        });
+        expect(await store.resolveDirect('refs/heads/nope' as RefName)).toEqual({
+          kind: 'missing',
+        });
+        expect(await store.resolveDirect('refs/heads/b' as RefName)).toEqual({ kind: 'missing' });
+      });
+    });
+  });
+
+  describe('Given refs/heads/sym is a symbolic ref to refs/heads/x, and a branch y', () => {
+    const seedSymbolicSource = async () => {
+      const seeded = await seedWithCommit();
+      await branchCreate(seeded.ctx, { name: 'x' });
+      await branchCreate(seeded.ctx, { name: 'y' });
+      await writeSymbolicRef(seeded.ctx, 'refs/heads/sym' as RefName, 'refs/heads/x' as RefName);
+      return seeded;
+    };
+
+    describe('When branch rename moves sym', () => {
+      it.each([
+        { label: 'to a new name', to: 'renamed', force: false },
+        { label: 'onto itself', to: 'sym', force: false },
+        { label: 'onto the existing y with force', to: 'y', force: true },
+      ])(
+        'Then renaming it $label refuses UNSUPPORTED_OPERATION and changes nothing',
+        async ({ to, force }) => {
+          // Arrange
+          const { ctx, commitId } = await seedSymbolicSource();
+          const store = getRefStore(ctx);
+          const symLogBefore = await readReflog(ctx, 'refs/heads/sym' as RefName);
+          const sut = branchRename;
+
+          // Act
+          const caught = await expectError(
+            () => sut(ctx, { from: 'sym', to, force }),
+            'UNSUPPORTED_OPERATION',
+          );
+
+          // Assert
+          expect(caught.data).toEqual({
+            code: 'UNSUPPORTED_OPERATION',
+            operation: 'branch.rename',
+            reason: 'refname refs/heads/sym is a symbolic ref',
+          });
+          expect(await store.resolveDirect('refs/heads/sym' as RefName)).toEqual({
+            kind: 'symbolic',
+            target: 'refs/heads/x',
+          });
+          expect(await store.resolveDirect('refs/heads/y' as RefName)).toEqual({
+            kind: 'direct',
+            id: commitId,
+          });
+          expect(await store.resolveDirect('refs/heads/renamed' as RefName)).toEqual({
+            kind: 'missing',
+          });
+          expect(await readReflog(ctx, 'refs/heads/sym' as RefName)).toEqual(symLogBefore);
+        },
+      );
+
+      it('Then renaming it onto the existing y without force refuses BRANCH_EXISTS first', async () => {
+        // Arrange
+        const { ctx } = await seedSymbolicSource();
+        const sut = branchRename;
+
+        // Act
+        const caught = await expectError(() => sut(ctx, { from: 'sym', to: 'y' }), 'BRANCH_EXISTS');
+
+        // Assert
+        expect(caught.data).toEqual({ code: 'BRANCH_EXISTS', name: 'refs/heads/y' });
+      });
+    });
+  });
+
   describe('Given a non-current branch', () => {
     describe('When branch rename', () => {
       it('Then HEAD is unchanged (only the renamed-current branch updates HEAD)', async () => {
@@ -445,6 +1196,61 @@ describe('branch', () => {
         const result = await branchCreate(ctx, { name: 'feature', force: true });
         // Assert
         expect(result.name).toBe('refs/heads/feature');
+      });
+    });
+  });
+
+  describe('Given a branch name a ref already resolves under', () => {
+    describe('When branch create forces it onto a new start point', () => {
+      it('Then the appended reflog reads "branch: Reset to <start-point>"', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithCommit();
+        const sut = branchCreate;
+        await sut(ctx, { name: 'feature', startPoint: commitId });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
+        await add(ctx, ['b.txt']);
+        await commit(ctx, { message: 'second', author });
+
+        // Act
+        await sut(ctx, { name: 'feature', startPoint: 'main', force: true });
+
+        // Assert
+        const log = await readReflog(ctx, 'refs/heads/feature' as RefName);
+        expect(log.at(-1)?.message).toBe('branch: Reset to main');
+      });
+    });
+
+    describe('When branch create forces a name only a dangling symbolic ref holds', () => {
+      it('Then the appended reflog still reads "branch: Created from <start-point>"', async () => {
+        // Arrange — git types the message off `ref_exists`, which a symbolic
+        // ref whose target is absent does not satisfy.
+        const { ctx, commitId } = await seedWithCommit();
+        await writeSymbolicRef(ctx, 'refs/heads/dangling' as RefName, 'refs/heads/nope' as RefName);
+        const sut = branchCreate;
+
+        // Act
+        await sut(ctx, { name: 'dangling', startPoint: commitId, force: true });
+
+        // Assert
+        const log = await readReflog(ctx, 'refs/heads/nope' as RefName);
+        expect(log.at(-1)?.message).toBe(`branch: Created from ${commitId}`);
+      });
+    });
+  });
+
+  describe('Given a branch name nothing holds', () => {
+    describe('When branch create forces it', () => {
+      it('Then the appended reflog reads "branch: Created from <start-point>"', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithCommit();
+        const sut = branchCreate;
+
+        // Act
+        await sut(ctx, { name: 'fresh', startPoint: commitId, force: true });
+
+        // Assert
+        const log = await readReflog(ctx, 'refs/heads/fresh' as RefName);
+        expect(log.at(-1)?.message).toBe(`branch: Created from ${commitId}`);
       });
     });
   });
@@ -496,6 +1302,234 @@ describe('branch', () => {
 
         // Assert
         expect(result.id).toBe(commitId);
+      });
+    });
+  });
+
+  describe('Given a startPoint that resolves to a tree (full oid)', () => {
+    describe('When branch create runs', () => {
+      it('Then throws UNEXPECTED_OBJECT_TYPE and writes nothing', async () => {
+        // Arrange
+        const { ctx, treeId } = await seedWithCommit();
+        let caught: unknown;
+
+        // Act
+        try {
+          await branchCreate(ctx, { name: 'b2', startPoint: treeId });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({
+          code: 'UNEXPECTED_OBJECT_TYPE',
+          expected: 'commit',
+          actual: 'tree',
+          id: treeId,
+        });
+        expect(await refExists(ctx, 'refs/heads/b2' as RefName)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a startPoint that resolves to a blob (full oid)', () => {
+    describe('When branch create runs', () => {
+      it('Then throws UNEXPECTED_OBJECT_TYPE and writes nothing', async () => {
+        // Arrange
+        const { ctx, blobId } = await seedWithCommit();
+        let caught: unknown;
+
+        // Act
+        try {
+          await branchCreate(ctx, { name: 'b2', startPoint: blobId });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({
+          code: 'UNEXPECTED_OBJECT_TYPE',
+          expected: 'commit',
+          actual: 'blob',
+          id: blobId,
+        });
+        expect(await refExists(ctx, 'refs/heads/b2' as RefName)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a startPoint that is a lightweight tag over a tree', () => {
+    describe('When branch create runs', () => {
+      it('Then throws UNEXPECTED_OBJECT_TYPE for the tree and writes nothing', async () => {
+        // Arrange
+        const { ctx, treeId } = await seedWithCommit();
+        let caught: unknown;
+
+        // Act
+        try {
+          await branchCreate(ctx, { name: 'b2', startPoint: 'refs/tags/light-to-tree' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({
+          code: 'UNEXPECTED_OBJECT_TYPE',
+          expected: 'commit',
+          actual: 'tree',
+          id: treeId,
+        });
+        expect(await refExists(ctx, 'refs/heads/b2' as RefName)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a startPoint that is an annotated tag over a tree', () => {
+    describe('When branch create runs', () => {
+      it('Then throws UNEXPECTED_OBJECT_TYPE with the tag oid, not the tree, and writes nothing', async () => {
+        // Arrange — git reports the resolved tag's own oid, never the peeled
+        // target, alongside the fully-peeled type (measured, git 2.55.0).
+        const { ctx, tagToTreeId } = await seedWithCommit();
+        let caught: unknown;
+
+        // Act
+        try {
+          await branchCreate(ctx, { name: 'b2', startPoint: 'refs/tags/tag-to-tree' });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({
+          code: 'UNEXPECTED_OBJECT_TYPE',
+          expected: 'commit',
+          actual: 'tree',
+          id: tagToTreeId,
+        });
+        expect(await refExists(ctx, 'refs/heads/b2' as RefName)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a startPoint that is an annotated tag over a commit', () => {
+    describe('When branch create runs', () => {
+      it('Then the branch lands on the commit, not the tag object', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithCommit();
+
+        // Act
+        const result = await branchCreate(ctx, {
+          name: 'peeled',
+          startPoint: 'refs/tags/tag-to-commit',
+        });
+
+        // Assert
+        expect(result.id).toBe(commitId);
+      });
+    });
+  });
+
+  describe('Given a two-object tag cycle (A -> B -> A), forged directly on disk', () => {
+    describe('When branch create runs', () => {
+      it('Then throws REF_CHAIN_TOO_DEEP instead of hanging', async () => {
+        // Arrange — no honest hash chain can produce a mutual reference, so
+        // both tags are forged straight onto the loose-object store.
+        const { ctx } = await seedWithCommit();
+        const tagAId = ObjectId.from('a'.repeat(40));
+        const tagBId = ObjectId.from('b'.repeat(40));
+        await writeForgedLooseTag(ctx, tagAId, {
+          type: 'tag',
+          id: tagAId,
+          data: {
+            object: tagBId,
+            objectType: 'tag',
+            tagName: 'cycle-a',
+            tagger: author,
+            message: 'cycle-a\n',
+            extraHeaders: [],
+          },
+        });
+        await writeForgedLooseTag(ctx, tagBId, {
+          type: 'tag',
+          id: tagBId,
+          data: {
+            object: tagAId,
+            objectType: 'tag',
+            tagName: 'cycle-b',
+            tagger: author,
+            message: 'cycle-b\n',
+            extraHeaders: [],
+          },
+        });
+
+        // Act
+        let caught: unknown;
+        try {
+          await branchCreate(ctx, { name: 'x', startPoint: tagAId });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — the full payload, not just the code: pins the depth cap
+        // as the refusal, not some other error shape.
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({
+          code: 'REF_CHAIN_TOO_DEEP',
+          depth: 6,
+          chain: [],
+        });
+      }, 5_000);
+    });
+  });
+
+  describe('Given an existing branch name and an unresolvable startPoint', () => {
+    describe('When branch create runs without force', () => {
+      it('Then throws BRANCH_EXISTS before the startPoint ever resolves', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        await branchCreate(ctx, { name: 'side' });
+
+        // Act + Assert
+        await expectError(
+          () => branchCreate(ctx, { name: 'side', startPoint: 'nope' }),
+          'BRANCH_EXISTS',
+        );
+      });
+    });
+  });
+
+  describe('Given an existing branch name and an unresolvable startPoint, with force', () => {
+    describe('When branch create runs', () => {
+      it('Then throws BRANCH_NOT_FOUND — force skips the exists check, not resolution', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        await branchCreate(ctx, { name: 'side' });
+
+        // Act + Assert
+        await expectError(
+          () => branchCreate(ctx, { name: 'side', startPoint: 'nope', force: true }),
+          'BRANCH_NOT_FOUND',
+        );
+      });
+    });
+  });
+
+  describe('Given a startPoint that is a nonexistent full oid', () => {
+    describe('When branch create runs', () => {
+      it('Then throws OBJECT_NOT_FOUND', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        const missing = ObjectId.fromRaw(new Uint8Array(20).fill(0x09));
+
+        // Act + Assert
+        await expectError(
+          () => branchCreate(ctx, { name: 'ghost', startPoint: missing }),
+          'OBJECT_NOT_FOUND',
+        );
       });
     });
   });
@@ -780,6 +1814,43 @@ describe('branch', () => {
     });
   });
 
+  describe('Given a create/create race between the early exists probe and the CAS write', () => {
+    describe('When branch create runs', () => {
+      it('Then the CAS conflict still surfaces as BRANCH_EXISTS', async () => {
+        // Arrange — the early `refExists` probe reads the loose ref file and
+        // finds it absent; a concurrent `branch create` lands before
+        // `updateRef`'s own CAS re-reads the SAME file, which now reports the
+        // ref present, so `expected: 'absent'` conflicts. This is the only
+        // path that reaches the catch's positive arm (REF_UPDATE_CONFLICT ->
+        // BRANCH_EXISTS) — the pre-existing "already exists" test proves the
+        // early check instead.
+        const { ctx, commitId } = await seedWithCommit();
+        const racedPath = `${ctx.layout.gitDir}/refs/heads/race`;
+        let reads = 0;
+        const racyCtx: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            openWithNoFollow: async (path, mode) => {
+              if (path !== racedPath) return ctx.fs.openWithNoFollow(path, mode);
+              reads += 1;
+              if (reads === 1) throw fileNotFound(path);
+              await ctx.fs.writeUtf8(racedPath, `${commitId}\n`);
+              return ctx.fs.openWithNoFollow(path, mode);
+            },
+          },
+        };
+
+        // Act + Assert — the read count is the only thing separating this
+        // from the early-probe test, which refuses with the same code: two
+        // reads means the probe found nothing and the CAS re-read found the
+        // ref, so the catch's positive arm is what answered.
+        await expectError(() => branchCreate(racyCtx, { name: 'race' }), 'BRANCH_EXISTS');
+        expect(reads).toBe(2);
+      });
+    });
+  });
+
   describe('Given updateRef throws a non-TsgitError', () => {
     describe('When branch rename', () => {
       it('Then that exact error propagates unchanged', async () => {
@@ -929,6 +2000,69 @@ describe('branch', () => {
 
         // Assert
         expect(result.id).toBe(second.id);
+      });
+    });
+  });
+});
+
+describe('branch create — an unborn HEAD', () => {
+  describe('Given a fresh repository whose HEAD names a branch no commit backs', () => {
+    describe('When branch create runs with no start point', () => {
+      it('Then the refusal names the branch HEAD points at, not HEAD itself', async () => {
+        // Arrange — git substitutes the resolved current branch for the
+        // omitted start point before it reports what it could not resolve.
+        const ctx = createMemoryContext();
+        await init(ctx);
+
+        // Act
+        let caught: unknown;
+        try {
+          await branchCreate(ctx, { name: 'sprout' });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toEqual({ code: 'BRANCH_NOT_FOUND', name: 'main' });
+      });
+    });
+
+    describe('When branch create runs with force and no start point', () => {
+      it('Then it refuses the same way, force reaching no further', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+
+        // Act
+        let caught: unknown;
+        try {
+          await branchCreate(ctx, { name: 'sprout', force: true });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({ code: 'BRANCH_NOT_FOUND', name: 'main' });
+      });
+    });
+
+    describe('When branch create runs with a start point nothing resolves', () => {
+      it('Then the refusal names that start point verbatim', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+
+        // Act
+        let caught: unknown;
+        try {
+          await branchCreate(ctx, { name: 'sprout', startPoint: 'nope-xyz' });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({ code: 'BRANCH_NOT_FOUND', name: 'nope-xyz' });
       });
     });
   });

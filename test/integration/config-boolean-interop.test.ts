@@ -10,6 +10,7 @@
  *   surface:        config
  *   bucket:         cross-tool-interop
  *   unique:         boolean refusal tier boundaries pinned against canonical git
+ *   interopSurface: config
  */
 import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';

@@ -9,6 +9,7 @@ import type {
   FileMode,
   FilePath,
   GitObject,
+  ObjectContent,
   ObjectId,
   ObjectType,
   RefName,
@@ -17,8 +18,10 @@ import type {
 import type { PathHasher } from '../../domain/storage/pack-name-hash.js';
 import type { FileStat } from '../../ports/file-system.js';
 
+// git's SYMREF_MAXDEPTH (5) bounds the refs one read resolve READS, the
+// terminal included: four symbolic hops resolve, a fifth refuses.
 /** Max symbolic-ref dereferences resolveRef will follow. */
-export const MAX_SYMBOLIC_REF_DEPTH = 5;
+export const MAX_SYMBOLIC_REF_DEPTH = 4;
 
 /** Max tag-peel hops resolveRef / readTree will follow when peeling. */
 export const MAX_PEEL_DEPTH = 5;
@@ -29,7 +32,7 @@ export const MAX_WALK_SEEDS = 1024;
 /** Hard cap on walkCommits' pending queue size to prevent unbounded heap growth. */
 export const MAX_WALK_QUEUE_SIZE = MAX_WALK_SEEDS * 64;
 
-/** Max.git/index file size readIndex will accept. */
+/** Max `.git/index` file size readIndex will accept. */
 export const MAX_INDEX_BYTES = 256 * 1024 * 1024;
 
 /** Max commit message byte length createCommit will accept. */
@@ -81,19 +84,17 @@ export interface ReadObjectOptions {
 /**
  * The pre-parse product of an object read: the header's declared type plus
  * the raw content bytes, before any `parseBlobContent`/`parseTreeContent`/…
- * decode. Internal-only — not re-exported from the primitives barrel and not
- * bound on `repo.primitives` (see `readRawObject`).
+ * decode. Public — bound on `repo.primitives` and re-exported from the
+ * primitives barrel (see `readRawObject`) — an alias of `ObjectContent`
+ * rather than a distinct shape, since a read now produces exactly that.
  *
- * `content` and `bytes` may alias the object cache (`ctx.deltaCache` or a
- * loose-read buffer) — treat both as immutable and copy before mutating.
+ * `content` may alias the object cache (`ctx.deltaCache` or a loose-read
+ * buffer) — treat it as immutable and copy before mutating. A caller that
+ * genuinely needs the header-prefixed loose-format buffer synthesises it
+ * explicitly: `serializeHeader(raw.type, raw.content.length)` followed by
+ * `raw.content`, never carried as a field on this type.
  */
-export interface RawObject {
-  readonly type: ObjectType;
-  /** The object's content, after its `<type> <size>\0` header. */
-  readonly content: Uint8Array;
-  /** The object's full bytes, header included — `content` is a subarray of this. */
-  readonly bytes: Uint8Array;
-}
+export type RawObject = ObjectContent;
 
 export interface ResolveRefOptions {
   readonly peel?: boolean;
@@ -104,18 +105,26 @@ export interface ResolveRefOptions {
 /**
  * `updateRef` option shapes. A write requires a `reflogMessage` — git's
  * builtins always supply a reason string; the type checker forces every
- * present and future ref write to state why the ref moved. A delete drops the
- * reflog file, so it carries no message.
+ * present and future ref write to state why the ref moved. A delete's own
+ * reflog file is dropped, but the ref `HEAD` names (directly or through a
+ * walked symbolic ref) still gains a coupled `logs/HEAD` entry on every
+ * delete path, so a delete carries an OPTIONAL message for that entry —
+ * empty when omitted, matching a bare `git update-ref -d` with no `-m`.
+ * `noDeref` mirrors git's `--no-deref`: act on `name` itself even when it is
+ * a symbolic ref, instead of walking through it to its terminal.
  */
 export type UpdateRefOptions =
   | {
       readonly delete?: false;
       readonly expected?: ObjectId | 'absent';
       readonly reflogMessage: string;
+      readonly noDeref?: boolean;
     }
   | {
       readonly delete: true;
       readonly expected?: ObjectId | 'absent';
+      readonly reflogMessage?: string;
+      readonly noDeref?: boolean;
     };
 
 export interface WalkCommitsOptions {
@@ -355,13 +364,6 @@ export interface SubmoduleEntry {
 }
 
 /**
- * One entry yielded by `catFileBatch` — a discriminated union so that a
- * single bad id never aborts the stream. `ok: true` carries the parsed
- * object plus its canonical payload size (matches the `<size>` field of
- * `git cat-file --batch`'s header). `ok: false` is shaped to extend later:
- * `reason` is a literal union so a future variant is an additive change.
- */
-/**
  * Optional knobs for the `catFileBatch` primitive — currently a single
  * `maxBytes` cap forwarded to each per-id `readObject` call so a long
  * batch over untrusted ids cannot exhaust the heap. Defaults to no cap.
@@ -375,6 +377,13 @@ export interface CatFileBatchOptions {
   readonly maxBytes?: number;
 }
 
+/**
+ * One entry yielded by `catFileBatch` — a discriminated union so that a
+ * single bad id never aborts the stream. `ok: true` carries the parsed
+ * object plus its canonical payload size (matches the `<size>` field of
+ * `git cat-file --batch`'s header). `ok: false` is shaped to extend later:
+ * `reason` is a literal union so a future variant is an additive change.
+ */
 export type CatFileBatchEntry =
   | {
       readonly ok: true;

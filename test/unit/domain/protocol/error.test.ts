@@ -10,6 +10,7 @@ import {
   invalidRefLine,
   invalidReportStatus,
   invalidSidebandChannel,
+  MAX_REMOTE_MESSAGE_IN_ERROR,
   missingCapabilities,
   missingServiceHeader,
   type ProtocolError,
@@ -17,6 +18,7 @@ import {
   pktTooLarge,
   pktTruncated,
   pushObjectFormatUnsupported,
+  remoteError,
   sidebandFatal,
   tooManyAdvertisedRefs,
   tooManySectionEntries,
@@ -25,6 +27,9 @@ import {
   unsupportedObjectFormat,
   v2CommandUnsupported,
 } from '../../../../src/domain/protocol/error.js';
+
+/** The two factories a peer's own text reaches verbatim. */
+const REMOTE_MESSAGE_FACTORIES = { remoteError, sidebandFatal } as const;
 
 describe('domain protocol error', () => {
   describe('factory data', () => {
@@ -160,6 +165,43 @@ describe('domain protocol error', () => {
 
           // Assert
           expect(result.data).toEqual({ code: 'SIDEBAND_FATAL', message: 'repo not found' });
+        });
+      });
+    });
+
+    describe.each([
+      { factory: 'remoteError' as const, code: 'REMOTE_ERROR' as const },
+      { factory: 'sidebandFatal' as const, code: 'SIDEBAND_FATAL' as const },
+    ])('Given $factory called with a peer message holding control bytes', (row) => {
+      describe('When checking data.message', () => {
+        it('Then every byte outside the printable set is a visible escape', () => {
+          // Arrange
+          const sut = REMOTE_MESSAGE_FACTORIES[row.factory];
+
+          // Act
+          const result = sut(`boom\u0000\u001B[2J${'gone'}`);
+
+          // Assert
+          expect(result.data).toEqual({
+            code: row.code,
+            message: `boom\\x00\\x1B[2J${'gone'}`,
+          });
+        });
+      });
+
+      describe('When checking data.message for a payload-sized message', () => {
+        it('Then it is cut to the bound a peer message may carry', () => {
+          // Arrange
+          const sut = REMOTE_MESSAGE_FACTORIES[row.factory];
+
+          // Act
+          const result = sut('z'.repeat(MAX_REMOTE_MESSAGE_IN_ERROR * 2));
+
+          // Assert
+          expect(result.data).toEqual({
+            code: row.code,
+            message: 'z'.repeat(MAX_REMOTE_MESSAGE_IN_ERROR),
+          });
         });
       });
     });
@@ -367,6 +409,10 @@ describe('domain protocol error', () => {
       [
         { code: 'SIDEBAND_FATAL', message: 'repository not found' },
         'SIDEBAND_FATAL: sideband fatal: repository not found',
+      ],
+      [
+        { code: 'REMOTE_ERROR', message: 'upload-pack: not our ref' },
+        'REMOTE_ERROR: remote error: upload-pack: not our ref',
       ],
       [
         { code: 'UNKNOWN_ACK_STATUS', value: 'bogus' },

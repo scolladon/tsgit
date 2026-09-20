@@ -13,10 +13,19 @@ import * as path from 'node:path';
 
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { createCommit } from '../../src/application/primitives/create-commit.js';
+import { boundedMapFor } from '../../src/application/primitives/internal/concurrency.js';
 import { packPositionMap } from '../../src/application/primitives/internal/pack-positions.js';
+import { updateRef } from '../../src/application/primitives/update-ref.js';
 import { writeObject } from '../../src/application/primitives/write-object.js';
 import { writeTree } from '../../src/application/primitives/write-tree.js';
-import type { Blob, Commit, FileMode, ObjectId, Tree } from '../../src/domain/objects/index.js';
+import type {
+  Blob,
+  Commit,
+  FileMode,
+  ObjectId,
+  RefName,
+  Tree,
+} from '../../src/domain/objects/index.js';
 import { FILE_MODE, serializeObject } from '../../src/domain/objects/index.js';
 import { treeEntry } from '../../src/domain/objects/tree.js';
 import { parsePackIndex } from '../../src/domain/storage/index.js';
@@ -94,6 +103,24 @@ export const setupDirtyWorkingTree = async (
     const name = `f${i.toString().padStart(4, '0')}.txt`;
     await writeFile(path.join(base.cwd, name), `payload ${i} dirty\n`);
   }
+};
+
+/**
+ * Writes `count` refs, each named by `refNameFor(index)` and pointing at
+ * `targetId`, without a serial loop. Shared by benches that need many refs
+ * fast (tag-list, branch-list) — only the ref-name shape and any downstream
+ * packing differ between them.
+ */
+export const writeManyRefs = async (
+  ctx: Context,
+  count: number,
+  refNameFor: (index: number) => RefName,
+  targetId: ObjectId,
+): Promise<void> => {
+  const indices = Array.from({ length: count }, (_unused, index) => index);
+  await boundedMapFor(ctx, 'ioBound', indices, (index) =>
+    updateRef(ctx, refNameFor(index), targetId, { reflogMessage: `bench ref ${index}` }),
+  );
 };
 
 /**

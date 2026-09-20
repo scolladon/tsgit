@@ -34,7 +34,7 @@ const toRow = (path: WorkdirEntryRow['path'], stat: FileStat): WorkdirEntryRow =
 };
 
 /**
- * Working-tree enumerator (design §6.3, §10.6). Wraps the existing
+ * Working-tree enumerator. Wraps the existing
  * `walkWorkingTree` primitive with the new row shape and the snapshot
  * port's option set. Pathspec and excludes compose via logical AND
  * (ADR-158): excludes prunes during traversal (cheap — applies to

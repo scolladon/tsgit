@@ -1,5 +1,5 @@
 /**
- * Snapshot iteration-stability invariant (design §8.0): once an
+ * Snapshot iteration-stability invariant: once an
  * IndexSnapshot's `.entries()` has been entered, mutations to the
  * underlying index file do not disturb the in-flight iteration. A
  * fresh snapshot opened after the mutation sees post-mutation rows.
@@ -23,7 +23,12 @@ import type {
 } from '../../src/domain/git-index/index-entry.js';
 import { STAGE0_FLAGS } from '../../src/domain/git-index/index-entry.js';
 import { SHA1_CONFIG } from '../../src/domain/objects/hash-config.js';
-import { FILE_MODE, FilePath, type ObjectId } from '../../src/domain/objects/index.js';
+import {
+  FILE_MODE,
+  FilePath,
+  type ObjectContent,
+  type ObjectId,
+} from '../../src/domain/objects/index.js';
 import { createLruCache } from '../../src/domain/storage/lru-cache.js';
 import { openRepository, type Repository, type RuntimeFallback } from '../../src/repository.js';
 
@@ -65,7 +70,7 @@ const makeFallback = (): RuntimeFallback => ({
   runtime: 'memory',
   layout: { workDir: '/repo', gitDir: '/repo/.git', bare: false, refStorage: 'files' },
   hashConfig: SHA1_CONFIG,
-  deltaCache: createLruCache<Uint8Array>(1024),
+  deltaCache: createLruCache<ObjectContent>(1024),
 });
 
 describe('Given a repository whose .git/index has 3 entries', () => {
@@ -108,7 +113,7 @@ describe('Given a repository whose .git/index has 3 entries', () => {
 
   describe('When a fresh snapshot uses bypassCache after an external write', () => {
     it('Then it yields the post-mutation rows (bypassCache forces re-parse)', async () => {
-      // Arrange — design §10.4 + ADR-150: external writes (no emit) are caught
+      // Arrange — ADR-150: external writes (no emit) are caught
       // lazily on the next generation bump or via bypassCache=true.
       const repo = await openRepository({ cwd: '/repo' }, makeFallback());
       try {

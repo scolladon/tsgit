@@ -1,5 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
+import * as configRead from '../../../../src/application/primitives/config-read.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import { recordRefUpdate } from '../../../../src/application/primitives/record-ref-update.js';
 import { readReflog, reflogExists } from '../../../../src/application/primitives/reflog-store.js';
@@ -134,6 +135,25 @@ describe('recordRefUpdate', () => {
 
           // Assert
           expect(await reflogExists(ctx, TAG)).toBe(true);
+        });
+      });
+    });
+  });
+
+  describe('config reads', () => {
+    describe('Given a default-loggable branch ref with no existing reflog', () => {
+      describe('When recordRefUpdate runs (the gate check AND identity resolution both need config)', () => {
+        it('Then readConfig is called exactly once', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedConfig(ctx, '[user]\n  name = Ada\n  email = ada@example.com\n');
+          const spy = vi.spyOn(configRead, 'readConfig');
+
+          // Act
+          await recordRefUpdate(ctx, BRANCH, ZERO_OID, OID_A, 'commit: x');
+
+          // Assert
+          expect(spy).toHaveBeenCalledTimes(1);
         });
       });
     });

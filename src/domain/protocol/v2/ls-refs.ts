@@ -1,6 +1,6 @@
 import { ObjectId } from '../../objects/object-id.js';
 import { invalidRefLine, tooManyAdvertisedRefs } from '../error.js';
-import type { PktLine } from '../pkt-line.js';
+import { assertNotRemoteError, type PktLine } from '../pkt-line.js';
 import { type AdvertisedRef, type Advertisement, MAX_ADVERTISED_REFS } from '../upload-pack.js';
 import { encodeCommandRequest } from './sections.js';
 
@@ -118,6 +118,7 @@ export const parseLsRefsResponse = async (
     while (!pkt.done) {
       if (pkt.value.kind !== 'data') break;
       const line = stripTrailingNewline(TEXT_DECODER.decode(pkt.value.payload));
+      assertNotRemoteError(line);
       const parsed = parseRefLine(line);
 
       if (parsed.symrefTarget !== undefined) {

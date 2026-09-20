@@ -13,6 +13,7 @@ import type { Context } from '../../ports/context.js';
 import { readBlob, readIndex, walkTree } from '../primitives/index.js';
 import { boundedMapFor } from '../primitives/internal/concurrency.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
+import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
 import { assertOperationalRepository, requireWorkTree } from './internal/repo-state.js';
 import { resolvePathspec } from './internal/resolve-pathspec.js';
 import { resolveTreeish } from './internal/resolve-rev.js';
@@ -173,8 +174,11 @@ export async function grep(ctx: Context, opts: GrepOptions): Promise<GrepResult>
   // Repository state is checked BEFORE the argument guard, because that is the
   // order git refuses in: `git grep` with no pattern, in a repository whose
   // config is malformed, reports the config fault rather than the missing
-  // pattern — git parses config at startup, before validating arguments.
+  // pattern — git parses config at startup, before validating arguments. The
+  // repo-settings class is included here for the same reason: a `grep` with
+  // no pattern never reaches the tree walk that would otherwise touch it.
   await assertOperationalRepository(ctx);
+  await assertRepoSettingsValid(ctx);
   if (opts.patterns.length === 0) {
     throw invalidOption('patterns', 'at least one pattern required');
   }

@@ -15,6 +15,7 @@ import {
   assertAcceptedRepository,
   type HeadState,
 } from '../../../../../src/application/primitives/internal/repo-state.js';
+import { readIndex } from '../../../../../src/application/primitives/read-index.js';
 import { ObjectId, RefName, TsgitError } from '../../../../../src/domain/index.js';
 import type { Context, RepositoryFormatRefusal } from '../../../../../src/ports/context.js';
 
@@ -400,24 +401,30 @@ describe('internal/repo-state', () => {
       });
     });
 
-    describe('Given a repository whose HEAD lives only in the backend, not as a loose file', () => {
+    describe('Given a packed-refs entry for HEAD but no loose HEAD file', () => {
       describe('When readHeadRaw is called', () => {
-        it('Then it returns the backend answer', async () => {
-          // Arrange — no loose HEAD file; only a packed-refs entry answers
-          // for it, proving readHeadRaw defers to the general ref-store
-          // lookup (loose-then-packed) rather than a hardcoded single-file
-          // read of `<gitDir>/HEAD`.
+        it('Then it throws REF_NOT_FOUND — HEAD is never packed, so it is never consulted', async () => {
+          // Arrange — real git never writes HEAD to packed-refs; the single
+          // HEAD reader reads `<gitDir>/HEAD` exclusively and never falls
+          // through to the packed-refs lookup every other ref name uses.
           const ctx = createMemoryContext();
           const oid = '0123456789abcdef0123456789abcdef01234567';
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/packed-refs`, `${oid} HEAD\n`);
 
           // Act
-          const result = await readHeadRaw(ctx);
+          let caught: unknown;
+          try {
+            await readHeadRaw(ctx);
+          } catch (err) {
+            caught = err;
+          }
 
           // Assert
-          expect(result.kind).toBe('direct');
-          if (result.kind === 'direct') {
-            expect(result.id).toBe(oid);
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('REF_NOT_FOUND');
+          if (data.code === 'REF_NOT_FOUND') {
+            expect(data.name).toBe('HEAD');
           }
         });
       });
@@ -891,6 +898,33 @@ describe('internal/repo-state', () => {
         });
       });
     });
+
+    describe('Given a valid config accepted by a first command, then rewritten to a malformed value by a raw external write', () => {
+      describe('When a second assertOperationalRepository call runs (no invalidateConfigCache)', () => {
+        it('Then the second call refuses — the epoch re-stats and notices the edit', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\tsparseCheckout = true\n');
+          await assertOperationalRepository(ctx);
+
+          // Act — a raw rewrite between two commands, no invalidateConfigCache call
+          await seedConfig(ctx, '[core]\n\tsparseCheckout = maybe\n');
+          let caught: unknown;
+          try {
+            await assertOperationalRepository(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as { code: string; key: string };
+          expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+          expect(data.key).toBe('core.sparsecheckout');
+        });
+      });
+    });
   });
 
   describe('assertEagerConfigValid', () => {
@@ -1262,62 +1296,21 @@ describe('internal/repo-state', () => {
     });
   });
 
-  describe('assertEagerConfigValid (core.maxTreeDepth)', () => {
-    describe('Given core.maxTreeDepth = 2.5', () => {
-      describe('When called', () => {
-        it('Then throws CONFIG_BAD_NUMERIC_VALUE with reason invalid unit', async () => {
+  describe('assertEagerConfigValid (core.maxTreeDepth moved to the repo-settings tier)', () => {
+    describe('Given core.maxTreeDepth = 2.5 (an otherwise-clean config)', () => {
+      describe('When the eager gate and the full operational gate both run', () => {
+        it('Then both resolve without throwing — the class no longer lives at this gate', async () => {
           // Arrange
           const ctx = createMemoryContext();
           await seedRepo(ctx);
           await seedConfig(ctx, '[core]\n\tmaxTreeDepth = 2.5\n');
 
-          // Act
-          let caught: unknown;
-          try {
-            await assertEagerConfigValid(ctx);
-          } catch (err) {
-            caught = err;
-          }
-
-          // Assert — the whole payload, each field individually (mutation-resistant)
-          expect(caught).toBeInstanceOf(TsgitError);
-          const data = (caught as TsgitError).data as BadNumericData;
-          expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
-          expect(data.key).toBe('core.maxtreedepth');
-          expect(data.value).toBe('2.5');
-          expect(data.reason).toBe('invalid unit');
+          // Act + Assert — must not throw
+          await assertEagerConfigValid(ctx);
+          await assertOperationalRepository(ctx);
         });
       });
-    });
 
-    describe('Given core.maxTreeDepth = 2147483648 (past the C int ceiling)', () => {
-      describe('When called', () => {
-        it('Then throws CONFIG_BAD_NUMERIC_VALUE with reason out of range', async () => {
-          // Arrange
-          const ctx = createMemoryContext();
-          await seedRepo(ctx);
-          await seedConfig(ctx, '[core]\n\tmaxTreeDepth = 2147483648\n');
-
-          // Act
-          let caught: unknown;
-          try {
-            await assertEagerConfigValid(ctx);
-          } catch (err) {
-            caught = err;
-          }
-
-          // Assert
-          expect(caught).toBeInstanceOf(TsgitError);
-          const data = (caught as TsgitError).data as BadNumericData;
-          expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
-          expect(data.key).toBe('core.maxtreedepth');
-          expect(data.value).toBe('2147483648');
-          expect(data.reason).toBe('out of range');
-        });
-      });
-    });
-
-    describe('Given core.maxTreeDepth = 2.5 (an otherwise-clean config)', () => {
       describe('When the porcelain-only assertRepository is called', () => {
         it('Then resolves without throwing (the config porcelain survives)', async () => {
           // Arrange
@@ -1355,7 +1348,7 @@ describe('internal/repo-state', () => {
 
     describe('Given core.loosecompression = bogus on an earlier line than core.maxTreeDepth = 2.5', () => {
       describe('When the operational entry point runs', () => {
-        it('Then maxTreeDepth wins despite loosecompression sitting on the earlier line', async () => {
+        it('Then the streaming class (loosecompression) wins — this is the majority order (19 of 24 measured commands); core.maxTreeDepth no longer competes at this gate', async () => {
           // Arrange — line 2 = loosecompression (invalid), line 3 = maxTreeDepth (invalid)
           const ctx = createMemoryContext();
           await seedRepo(ctx);
@@ -1373,15 +1366,15 @@ describe('internal/repo-state', () => {
           expect(caught).toBeInstanceOf(TsgitError);
           const data = (caught as TsgitError).data as BadNumericData;
           expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
-          expect(data.key).toBe('core.maxtreedepth');
-          expect(data.value).toBe('2.5');
+          expect(data.key).toBe('core.loosecompression');
+          expect(data.value).toBe('bogus');
         });
       });
     });
 
-    describe('Given core.sparseCheckout = bogus on an earlier line than core.maxTreeDepth = 2.5', () => {
+    describe('Given core.sparseCheckout = bogus on the same line ordering as core.maxTreeDepth = 2.5', () => {
       describe('When the operational entry point runs', () => {
-        it('Then maxTreeDepth wins despite sparseCheckout sitting on the earlier line', async () => {
+        it('Then the gate throws CONFIG_BAD_BOOLEAN_VALUE for sparseCheckout — the repo-settings class is refused only at its own boundary (readIndex), not here', async () => {
           // Arrange — line 2 = sparseCheckout (invalid), line 3 = maxTreeDepth (invalid)
           const ctx = createMemoryContext();
           await seedRepo(ctx);
@@ -1395,52 +1388,25 @@ describe('internal/repo-state', () => {
             caught = err;
           }
 
-          // Assert
+          // Assert — the gate names the streaming boolean class
           expect(caught).toBeInstanceOf(TsgitError);
-          const data = (caught as TsgitError).data as BadNumericData;
-          expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
-          expect(data.key).toBe('core.maxtreedepth');
-          expect(data.value).toBe('2.5');
-        });
-      });
-    });
+          expect((caught as TsgitError).data).toMatchObject({
+            code: 'CONFIG_BAD_BOOLEAN_VALUE',
+            key: 'core.sparsecheckout',
+          });
 
-    describe('Given maxTreeDepth = 2.5 on line 2 then maxTreeDepth = 2048 on line 3 (invalid-then-valid)', () => {
-      describe('When called', () => {
-        it('Then resolves without throwing (the effective last-wins value reaches the gate)', async () => {
-          // Arrange
-          const ctx = createMemoryContext();
-          await seedRepo(ctx);
-          await seedConfig(ctx, '[core]\n\tmaxTreeDepth = 2.5\n\tmaxTreeDepth = 2048\n');
-
-          // Act + Assert — must not throw
-          await assertEagerConfigValid(ctx);
-        });
-      });
-    });
-
-    describe('Given maxTreeDepth = 2048 on line 2 then maxTreeDepth = 2.5 on line 3 (valid-then-invalid)', () => {
-      describe('When called', () => {
-        it('Then throws CONFIG_BAD_NUMERIC_VALUE (the effective last-wins value reaches the gate)', async () => {
-          // Arrange
-          const ctx = createMemoryContext();
-          await seedRepo(ctx);
-          await seedConfig(ctx, '[core]\n\tmaxTreeDepth = 2048\n\tmaxTreeDepth = 2.5\n');
-
-          // Act
-          let caught: unknown;
+          // Assert — the repo-settings class still refuses, at its own boundary
+          let boundaryCaught: unknown;
           try {
-            await assertEagerConfigValid(ctx);
+            await readIndex(ctx);
           } catch (err) {
-            caught = err;
+            boundaryCaught = err;
           }
-
-          // Assert
-          expect(caught).toBeInstanceOf(TsgitError);
-          const data = (caught as TsgitError).data as BadNumericData;
-          expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
-          expect(data.key).toBe('core.maxtreedepth');
-          expect(data.value).toBe('2.5');
+          expect(boundaryCaught).toBeInstanceOf(TsgitError);
+          expect((boundaryCaught as TsgitError).data).toMatchObject({
+            code: 'CONFIG_BAD_NUMERIC_VALUE',
+            key: 'core.maxtreedepth',
+          });
         });
       });
     });

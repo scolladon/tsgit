@@ -15,12 +15,12 @@
  * negotiation, ref-update propagation.
  */
 import { fileExists, packArtifactMismatch, TsgitError } from '../../domain/error.js';
+import { errorDataCode } from '../../domain/error-data-code.js';
 import { bytesEqual, bytesToHex } from '../../domain/objects/encoding.js';
 import type { ObjectId } from '../../domain/objects/object-id.js';
 import { invalidPackHeader, type PackIndexEntries } from '../../domain/storage/index.js';
 import { PACK_HEADER_SIZE } from '../../domain/storage/pack-entry.js';
 import type { Context } from '../../ports/context.js';
-import { errorDataCode } from './internal/error-data-code.js';
 import { indexQuarantinedPack } from './internal/index-pack.js';
 import {
   packFilePath,
@@ -38,7 +38,8 @@ const TMP_PACK_SUFFIX_LENGTH = 6;
 const TMP_PACK_SUFFIX_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
 /**
  * Default cap on the pack body size, applied when `ctx.config?.maxResponseBytes`
- * is not set. Matches the bound documented in.
+ * is not set. A transport-level ceiling only: it bounds how many bytes a
+ * remote may stream into quarantine before the receive is abandoned.
  */
 const DEFAULT_MAX_RESPONSE_BYTES = 512 * 1024 * 1024;
 

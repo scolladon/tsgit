@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   type AllowEntry,
   type Coverage,
-  type WriteSurface,
   computeGaps,
+  type WriteSurface,
 } from '../../../audit-write-surfaces/compute-gaps.js';
 
 const surface = (name: string): WriteSurface => ({

@@ -4,6 +4,7 @@ import {
   fileNotFound,
   notADirectory,
   permissionDenied,
+  type TsgitError,
   unsupportedOperation,
 } from '../../domain/index.js';
 import { collapsePosixSegments } from '../../domain/path/collapse-posix-segments.js';
@@ -31,6 +32,24 @@ const MEMORY_FILE_MODE = 0o100644;
 // POSIX's invalid-argument errno name — the literal `mapErrno`'s `default` arm forwards for
 // "an attempt was made to make a directory a subdirectory of itself".
 const INVALID_ARGUMENT = 'EINVAL';
+
+/** Whether a resolution follows a symbolic link at its final component. */
+type LeafResolution = 'follow' | 'no-follow';
+
+/**
+ * How a surface walks its path: `'follow'` and `'no-follow'` decide the final component alone;
+ * `'create'` does not follow it either, and also refuses to pass through a symbolic link whose
+ * target is not a directory, since the entry would otherwise be filed under the link's target.
+ */
+type WalkMode = LeafResolution | 'create';
+
+interface WalkContext {
+  readonly path: string;
+  readonly mode: WalkMode;
+  // Shared by every link one resolution follows, nested link texts included, so a cycle that
+  // only ever passes through intermediate components still exhausts the one budget.
+  hops: number;
+}
 
 export class MemoryFileSystem implements FileSystem {
   private readonly files = new Map<string, Uint8Array>();
@@ -64,10 +83,10 @@ export class MemoryFileSystem implements FileSystem {
   systemConfigPath = (): string => this.systemPath;
 
   read = async (path: string): Promise<Uint8Array> => {
-    const normalized = this.resolve(path);
+    const normalized = this.walk(path, 'follow');
     const stored = this.files.get(normalized);
     if (stored === undefined) {
-      throw fileNotFound(path);
+      throw this.absentFileRefusal(normalized, path);
     }
     return stored.slice();
   };
@@ -76,14 +95,19 @@ export class MemoryFileSystem implements FileSystem {
     if (offset < 0 || length < 0) {
       throw permissionDenied(path);
     }
-    const normalized = this.resolve(path);
+    const normalized = this.walk(path, 'follow');
     const stored = this.files.get(normalized);
     if (stored === undefined) {
-      throw fileNotFound(path);
+      throw this.absentFileRefusal(normalized, path);
     }
     const end = Math.min(offset + length, stored.length);
     return stored.slice(offset, end);
   };
+
+  /** A directory where a file read was expected refuses PERMISSION_DENIED, as Node's EISDIR does. */
+  private absentFileRefusal(normalized: string, path: string): TsgitError {
+    return this.directories.has(normalized) ? permissionDenied(path) : fileNotFound(path);
+  }
 
   readUtf8 = async (path: string): Promise<string> => {
     const bytes = await this.read(path);
@@ -91,7 +115,7 @@ export class MemoryFileSystem implements FileSystem {
   };
 
   write = async (path: string, data: Uint8Array): Promise<void> => {
-    const normalized = this.resolve(path);
+    const normalized = this.walk(path, 'create');
     // node: EISDIR for a directory leaf, ELOOP for a symlink leaf under O_NOFOLLOW —
     // mapErrno sends both to PERMISSION_DENIED.
     if (this.directories.has(normalized) || this.symlinks.has(normalized)) {
@@ -116,7 +140,7 @@ export class MemoryFileSystem implements FileSystem {
   };
 
   writeExclusive = async (path: string, data: Uint8Array): Promise<void> => {
-    const normalized = this.resolve(path);
+    const normalized = this.walk(path, 'create');
     if (this.occupied(normalized)) {
       throw fileExists(path);
     }
@@ -135,51 +159,27 @@ export class MemoryFileSystem implements FileSystem {
   };
 
   private async readExistingUtf8(path: string): Promise<string> {
-    const stored = this.files.get(this.resolve(path));
+    const stored = this.files.get(this.walk(path, 'no-follow'));
     // `TextDecoder().decode(undefined)` is `''`, so a missing file decodes to
     // the empty string without a separate branch.
     return new TextDecoder().decode(stored);
   }
 
   exists = async (path: string): Promise<boolean> => {
-    const normalized = this.resolve(path);
-    return (
-      this.files.has(normalized) ||
-      this.directories.has(normalized) ||
-      this.symlinks.has(normalized)
-    );
+    const normalized = this.walk(path, 'follow');
+    return this.files.has(normalized) || this.directories.has(normalized);
   };
 
   /** POSIX ELOOP threshold — symlink chains longer than this are cycle-detected. */
   private static readonly SYMLINK_FOLLOW_LIMIT = 40;
 
   stat = async (path: string): Promise<FileStat> => {
-    // `return await` (not a bare `return`) attaches the rejection handler
-    // synchronously; the bare form leaves the inner promise handler-less for one
-    // microtask, which workerd reports as an unhandled rejection when `resolve`
-    // throws synchronously (e.g. probing an absent path during discovery).
-    return await this.statFollowing(path, path, 0);
+    const normalized = this.walk(path, 'follow');
+    return this.buildStat(normalized, path);
   };
 
-  private async statFollowing(
-    currentPath: string,
-    originalPath: string,
-    hops: number,
-  ): Promise<FileStat> {
-    if (hops >= MemoryFileSystem.SYMLINK_FOLLOW_LIMIT) {
-      // POSIX ELOOP: too many levels of symbolic links.
-      throw unsupportedOperation('stat', `symlink loop: ${originalPath}`);
-    }
-    const normalized = this.resolve(currentPath);
-    const target = this.symlinks.get(normalized);
-    if (target !== undefined) {
-      return await this.statFollowing(target, originalPath, hops + 1);
-    }
-    return this.buildStat(normalized, originalPath);
-  }
-
   lstat = async (path: string): Promise<FileStat> => {
-    const normalized = this.resolve(path);
+    const normalized = this.walk(path, 'no-follow');
     const target = this.symlinks.get(normalized);
     if (target !== undefined) {
       return this.makeStatRecord({
@@ -193,14 +193,15 @@ export class MemoryFileSystem implements FileSystem {
     return this.buildStat(normalized, path);
   };
 
+  lexists = async (path: string): Promise<boolean> => this.occupied(this.walk(path, 'no-follow'));
+
   readdir = async (path: string): Promise<ReadonlyArray<DirEntry>> => {
-    const normalized = this.resolve(path);
-    // Stryker disable next-line ConditionalExpression,BlockStatement: equivalent — files and directories are disjoint namespaces, so a file path always fails the `!directories.has` check below, which throws the identical NOT_A_DIRECTORY error.
+    const normalized = this.walk(path, 'follow');
     if (this.files.has(normalized)) {
       throw notADirectory(path);
     }
     if (!this.directories.has(normalized)) {
-      throw notADirectory(path);
+      throw fileNotFound(path);
     }
     // rootDir='/' is rejected at construction by resolve(), so normalized is always a
     // non-root path under the configured rootDir; appending '/' is safe.
@@ -221,17 +222,33 @@ export class MemoryFileSystem implements FileSystem {
   };
 
   mkdir = async (path: string): Promise<void> => {
-    const normalized = this.resolve(path);
-    // The chain check below would refuse a file leaf too, but with the normalized key as
-    // its path; this guard keeps the caller's string, as every other leaf refusal does.
-    if (this.files.has(normalized) || this.symlinks.has(normalized)) {
+    const normalized = this.walk(path, 'create');
+    if (this.symlinks.has(normalized)) {
+      this.mkdirThroughLeafSymlink(path);
+      return;
+    }
+    // The check below would refuse a file leaf too, but with the normalized key as its
+    // path; this guard keeps the caller's string, as every other leaf refusal does.
+    if (this.files.has(normalized)) {
       throw notADirectory(path);
     }
     this.addDirectoryRecursive(normalized);
   };
 
+  /**
+   * `mkdir` is the one write surface whose leaf follows a symlink: a link to an existing
+   * directory is a no-op, a link to a regular file keeps this adapter's own not-a-directory
+   * report, and a dangling link refuses without creating its target.
+   */
+  private mkdirThroughLeafSymlink(path: string): void {
+    const followed = this.walk(path, 'follow');
+    if (this.directories.has(followed)) return;
+    if (this.files.has(followed)) throw notADirectory(path);
+    throw fileNotFound(path);
+  }
+
   rm = async (path: string): Promise<void> => {
-    const normalized = this.resolve(path);
+    const normalized = this.walk(path, 'no-follow');
     if (this.files.has(normalized)) {
       this.files.delete(normalized);
       this.times.delete(normalized);
@@ -257,8 +274,8 @@ export class MemoryFileSystem implements FileSystem {
   };
 
   rename = async (src: string, dst: string): Promise<void> => {
-    const normalizedSrc = this.resolve(src);
-    const normalizedDst = this.resolve(dst);
+    const normalizedSrc = this.walk(src, 'no-follow');
+    const normalizedDst = this.walk(dst, 'create');
     this.assertRenamable(normalizedSrc, normalizedDst, src);
     if (normalizedSrc === normalizedDst) return;
     if (this.directories.has(normalizedSrc)) {
@@ -352,7 +369,7 @@ export class MemoryFileSystem implements FileSystem {
   }
 
   readlink = async (path: string): Promise<string> => {
-    const normalized = this.resolve(path);
+    const normalized = this.walk(path, 'no-follow');
     const target = this.symlinks.get(normalized);
     if (target === undefined) {
       throw fileNotFound(path);
@@ -361,7 +378,7 @@ export class MemoryFileSystem implements FileSystem {
   };
 
   symlink = async (target: string, path: string): Promise<void> => {
-    const normalized = this.resolve(path);
+    const normalized = this.walk(path, 'create');
     if (this.occupied(normalized)) {
       throw fileExists(path);
     }
@@ -378,12 +395,16 @@ export class MemoryFileSystem implements FileSystem {
     );
   }
 
+  // Modes are not modelled, so this only refuses as the Node adapter does: a symlink leaf first
+  // (no portable no-follow chmod exists, live or dangling), then a path with no entry.
   chmod = async (path: string, _mode: number): Promise<void> => {
-    this.resolve(path);
+    const normalized = this.walk(path, 'no-follow');
+    if (this.symlinks.has(normalized)) throw permissionDenied(path);
+    if (!this.occupied(normalized)) throw fileNotFound(path);
   };
 
   rmRecursive = async (path: string): Promise<void> => {
-    const normalized = this.resolve(path);
+    const normalized = this.walk(path, 'no-follow');
     if (this.removeLeafEntry(normalized)) return;
     // Idempotent: a missing path returns void with no error.
     // Stryker disable next-line ConditionalExpression: equivalent — when `normalized` is not a directory it is also missing entirely (leaf cases already returned above), so removeSubtree finds no `${normalized}/`-prefixed keys and is a pure no-op whether or not this guard short-circuits.
@@ -419,7 +440,7 @@ export class MemoryFileSystem implements FileSystem {
   }
 
   openWithNoFollow = async (path: string, _mode: 'read' | 'write'): Promise<FileHandle> => {
-    const normalized = this.resolve(path);
+    const normalized = this.walk(path, 'no-follow');
     if (this.symlinks.has(normalized)) {
       // O_NOFOLLOW equivalent: refuse to open through a symlink leaf.
       throw permissionDenied(path);
@@ -464,6 +485,67 @@ export class MemoryFileSystem implements FileSystem {
     return normalized;
   }
 
+  /**
+   * POSIX resolution over the in-memory tree: every symlinked path component is followed — a
+   * relative link text resolves against the link's own directory — and the leaf too under
+   * `'follow'`. Every hop is re-checked by `resolve`'s own containment, so a followed target
+   * outside the root still refuses. A regular file at a non-final component, reached directly or
+   * through a link, refuses NOT_A_DIRECTORY, as Node's own path resolution does; so does a link
+   * that resolves to nothing under `'create'`, the code this adapter keeps for every create
+   * surface whose parent chain cannot hold the entry. More than `SYMLINK_FOLLOW_LIMIT` hops
+   * refuses PERMISSION_DENIED, as Node's ELOOP does.
+   */
+  private walk(path: string, mode: WalkMode): string {
+    const resolved = this.resolve(path);
+    // A file or directory filed at the lexical key proves nothing on its chain needs resolving:
+    // `directories` is prefix-closed and every create files its key at the walked path, so no
+    // file or symlink can stand at any of its ancestors, and the key itself is not a link.
+    if (this.files.has(resolved) || this.directories.has(resolved)) return resolved;
+    const leaf: LeafResolution = mode === 'follow' ? 'follow' : 'no-follow';
+    const segments = segmentsUnder(this.rootDir, resolved);
+    return this.resolveSegments(segments, leaf, { path, mode, hops: 0 });
+  }
+
+  private resolveSegments(
+    segments: ReadonlyArray<string>,
+    leaf: LeafResolution,
+    walk: WalkContext,
+  ): string {
+    const last = segments.length - 1;
+    let current = this.rootDir;
+    for (let index = 0; index < last; index += 1) {
+      current = this.resolveIntermediate(`${current}/${segments[index] as string}`, walk);
+    }
+    if (last < 0) return current;
+    return this.resolveLeaf(`${current}/${segments[last] as string}`, leaf, walk);
+  }
+
+  private resolveIntermediate(next: string, walk: WalkContext): string {
+    if (this.files.has(next)) throw notADirectory(walk.path);
+    const target = this.symlinks.get(next);
+    if (target === undefined) return next;
+    const resolved = this.followLink(next, target, walk);
+    if (this.files.has(resolved)) throw notADirectory(walk.path);
+    if (walk.mode === 'create' && !this.directories.has(resolved)) throw notADirectory(walk.path);
+    return resolved;
+  }
+
+  private resolveLeaf(next: string, leaf: LeafResolution, walk: WalkContext): string {
+    const target = this.symlinks.get(next);
+    if (target === undefined || leaf === 'no-follow') return next;
+    return this.followLink(next, target, walk);
+  }
+
+  private followLink(link: string, target: string, walk: WalkContext): string {
+    walk.hops += 1;
+    if (walk.hops >= MemoryFileSystem.SYMLINK_FOLLOW_LIMIT) {
+      // POSIX ELOOP: too many levels of symbolic links.
+      throw permissionDenied(walk.path);
+    }
+    const joined = target.startsWith('/') ? target : `${parentOf(link)}/${target}`;
+    return this.resolveSegments(segmentsUnder(this.rootDir, this.resolve(joined)), 'follow', walk);
+  }
+
   private ensureParentDirs(normalizedPath: string): void {
     this.addDirectoryRecursive(parentOf(normalizedPath));
   }
@@ -474,8 +556,10 @@ export class MemoryFileSystem implements FileSystem {
     // on every reachable state — so there is nothing to refuse and nothing to add.
     // Stryker disable next-line ConditionalExpression: equivalent — without this early return the walk below runs over a chain that is already recorded and holds no file or symlink at any level (prefix closure and disjointness hold on every reachable state: the constructor refuses a seeded collision and a stale handle never re-files a removed path), so the check refuses nothing and the add loop re-adds keys that are already present; the forced-true variant is killable (every parent auto-create test) and is suppressed only because the mutator cannot be narrowed.
     if (this.directories.has(normalizedPath)) return;
-    // Refuse before recording anything: a file or symlink anywhere on the ancestor chain
-    // must leave the tree untouched — the all-or-nothing shape of `mkdir -p`.
+    // Refuse before recording anything: a file anywhere on the ancestor chain must leave
+    // the tree untouched — the all-or-nothing shape of `mkdir -p`. A symlinked ancestor
+    // cannot reach here: every caller's own `walk` has already resolved one away, and the
+    // constructor's seed path (the one caller that skips `walk`) never has one to find.
     this.assertAncestorChainFree(normalizedPath);
     let current = normalizedPath;
     // The `>=` bound reaches rootDir on purpose: after `rmRecursive(rootDir)` the root is
@@ -496,7 +580,7 @@ export class MemoryFileSystem implements FileSystem {
     // beneath it must refuse. Dropping the `return` alone is harmless — `parentOf(rootDir)`
     // is '' and fails the bound on the next test.
     while (current.length >= this.rootDir.length) {
-      if (this.files.has(current) || this.symlinks.has(current)) {
+      if (this.files.has(current)) {
         throw notADirectory(current);
       }
       // Stryker disable next-line ConditionalExpression: equivalent — forcing this false only lets the loop step to parentOf(rootDir), which is strictly shorter than rootDir and fails the `>=` bound before anything is checked; the forced-true variant is killable (it stops after the first segment) and rides along only because the mutator cannot be narrowed.
@@ -609,6 +693,12 @@ function normalizePath(rootDir: string, path: string): string {
  */
 function parentOf(normalizedPath: string): string {
   return normalizedPath.slice(0, normalizedPath.lastIndexOf('/'));
+}
+
+/** `resolved`'s path segments below `rootDir`; empty when `resolved` is `rootDir` itself. */
+function segmentsUnder(rootDir: string, resolved: string): string[] {
+  if (resolved === rootDir) return [];
+  return resolved.slice(rootDir.length + 1).split('/');
 }
 
 function collectStartsWith(keys: Iterable<string>, prefix: string): string[] {

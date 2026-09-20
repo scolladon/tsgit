@@ -1,5 +1,5 @@
 /**
- * Integration — sparse checkout end to end (Phase 17.3).
+ * Integration — sparse checkout end to end.
  *
  * Drives the real command surface through the memory adapter and asserts
  * observable state: files on disk, index entry skip-worktree flags, the

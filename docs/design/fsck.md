@@ -352,6 +352,67 @@ verify` pass):**
 | `symlinkRef` | INFO | 0 | symlink used as a symref |
 | `symrefTargetIsNotARef` | INFO | 0 | symref target outside `refs/` |
 
+Every row above can be **re-typed by configuration**: an `fsck.<msg-id>` entry whose
+value is `error`, `warn` or `ignore` replaces that message's severity outright —
+over the default AND over the `--strict` upgrade below. An `ignore` finding is
+never emitted and contributes no exit bit. A key half outside the msg-id set git
+knows refuses the whole audit (`FSCK_UNKNOWN_MSG_ID`), as does a value outside the
+three words (`CONFIG_INVALID_ENUM_VALUE`). Two msg-ids are exceptions to the re-typing
+itself: git marks `nulInHeader` and `unterminatedHeader` fatal, so they accept `error`
+and nothing else — `warn` or `ignore` refuses the whole audit with `FSCK_CANNOT_DEMOTE`
+(git's `Cannot demote <id> to <type>`). Swept across every msg-id `fsck.<id>` accepts
+against git 2.55.0, those two are the whole set. `fsck.skipList` is exempt from that grammar —
+it names an object-name list file, not a check — but not from a value: git routes it
+through `git_config_pathname`, so a valueless `skipList` refuses the audit with
+`CONFIG_MISSING_VALUE` rather than reading as absent. `receive.fsck.*` and `fetch.fsck.*` are
+separate namespaces the audit never reads — see [Transfer-time validation](#transfer-time-validation)
+for what git does with them and where tsgit stands.
+
+`fsck.skipList` names a file holding one full object name per line — every line is
+truncated at its FIRST `#` (anywhere on the line, so a name may carry a trailing
+comment and a comment may carry leading whitespace), what is left has its
+surrounding whitespace (a CRLF's own `\r` included) trimmed, an empty remainder is
+dropped, and the hex is case-folded. It silences exactly the per-object **content**
+findings for the oids it names: that `bad-object` finding never appears and the exit
+bit it would have carried never sets. Nothing else is reachable from the list — a
+listed oid still reports as `missing`, `dangling`, `hash-mismatch`, corrupt, or as a
+ref-level fault, because git raises those outside `report()` (measured, git 2.55.0).
+Both faults the list can carry kill the whole audit before an object is decoded: a
+file that cannot be opened (`FSCK_SKIP_LIST_UNREADABLE`) and a line that is not a full
+object name, an abbreviation included (`FSCK_SKIP_LIST_INVALID_NAME`). A `~/` pathname
+expands against the user's home directory, and a relative one resolves against the
+working tree, with the git dir standing in for a bare repository — the two rules
+`core.hooksPath` already follows. The zero-OID pointer synthesised for an unreadable
+ref is reported outside the catalogue, so `fsck.badRefOid` does not reach it.
+
+### Configuration read order (ADR-877)
+
+git reads `[fsck]` ONCE and acts on each entry as its config walk reaches it: a severity
+word is graded against the msg-id catalogue on the spot, and a `fsck.skipList` path is
+handed to `oidset_parse_file` on the spot. The first fault in the FILE therefore kills the
+audit, and neither kind has precedence over the other. Pinned against git 2.55.0:
+
+| `[fsck]` body, in order | refusal |
+| --- | --- |
+| `skipList = <absent>`, `badTree = bogus` | `could not open object name list: <absent>` |
+| `badTree = bogus`, `skipList = <absent>` | `Unknown fsck message type: 'bogus'` |
+| `skipList = <absent-one>`, `badTree = bogus`, `skipList = <absent-two>` | `could not open object name list: <absent-one>` |
+| `skipList = <absent>`, `noSuchThing = error` | `could not open object name list: <absent>` |
+| `noSuchThing = error`, `skipList = <absent>` | `Unhandled message id: <folded key>` |
+| `skipList = <list holding an abbreviation>`, `badTree = bogus` | `invalid object name: <abbreviation>` |
+| `badTree = bogus`, `skipList = <list holding an abbreviation>` | `Unknown fsck message type: 'bogus'` |
+
+The list's own **parse** fault obeys the same rule as its open fault: both happen at the
+entry, not in a later pass.
+
+`readFsckConfigItems` reproduces that with one LAZY walk: each step grades the next
+`[fsck …]` entry and yields it — `{ kind: 'severity', … }` or `{ kind: 'skip-list', path }`
+— throwing that entry's refusal in place. `readFsckConfiguration` drives it, opening each
+list through `readFsckSkipListNames` inside the loop body, so a list is read before the
+walk grades anything after it. Filesystem access stays on the command side: the config
+primitive reads `.git/config` and nothing else. A repeated `skipList` still unions, the
+union now living in the walk's driver where the file order is.
+
 The **strict-upgrade set** is exactly the WARN-default rows above: `emptyName`,
 `fullPathname`, `hasDot`, `hasDotdot`, `hasDotgit`, `largePathname`, `nulInCommit`,
 `nullSha1`, `zeroPaddedFilemode`. INFO/IGNORE/FATAL/ERROR ids are *not* upgraded by
@@ -607,3 +668,34 @@ narrows to:
 - **Gitlink (submodule) target verification** — `walkTree` does not descend mode
   160000; submodule object integrity belongs to the submodule's own repo (matches
   git, which does not follow gitlinks in fsck).
+
+
+## Transfer-time validation
+
+`fsck.*` types the `fsck` **command**. Two sibling namespaces type the validation git
+runs over an **incoming pack** instead, and neither reaches the command. Measured
+against git 2.55.0, with a commit carrying `missingSpaceBeforeEmail` reachable from a
+branch in the source repository:
+
+| configuration | where it is read | observed |
+| --- | --- | --- |
+| `fetch.fsckObjects=true` | the fetching client | `error: object <oid>: <msg-id>: …`, then `fatal: fsck error in packed object` / `fatal: fetch-pack: invalid index-pack output`; exit 128 and **nothing is kept** — the destination's object store is left empty |
+| `transfer.fsckObjects=true` | the fetching client | identical; it is the fallback when `fetch.fsckObjects` is unset |
+| `fetch.fsck.<msg-id>=warn` | the fetching client | downgrades that id: the line becomes a `warning:` and the clone completes, exit 0 |
+| `fetch.fsck.skipList=<file>` | the fetching client | silences the listed oids outright; exit 0, no output |
+| `fsck.<msg-id>` | — | **not consulted**: the same repository still refuses, so the namespaces are genuinely separate |
+| `receive.fsckObjects=true` | `receive-pack`, on the receiving side | the push is rejected (`unpacker error`), the ref is not created and **no object lands** |
+| `receive.fsck.<msg-id>` / `receive.fsck.skipList` | `receive-pack` | downgrade and silence exactly as their `fetch.` counterparts do |
+| `transfer.fsckObjects=true` | `receive-pack` | identical to `receive.fsckObjects` |
+
+Both namespaces live under a config **subsection**: `git config fetch.fsck.<id> warn`
+writes `[fetch "fsck"]`, not a dotted key under `[fetch]`.
+
+**Where tsgit stands.** `receive.fsck.*` has no site here at all: tsgit implements the
+receive-pack **client**, never the server, so nothing in this library ever reads it.
+`fetch.fsckObjects` / `transfer.fsckObjects` and the `fetch.fsck.*` severity table are
+**not yet honoured** — a fetch or clone lands whatever the remote sends, and the catalogue
+is applied only later, when `fsck` is run by hand. Honouring them means validating each
+object at the point the receive path already resolves it (inside the quarantine index
+pass, which is where git's own `index-pack --strict` sits), not a second read-back:
+the quarantined pack carries no index until it settles.

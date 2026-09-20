@@ -128,7 +128,54 @@ done
 # The closure and history-walk work then added the object-closure prune, the shared
 # commit-graph reader and the not-side marker; its end-of-review measure overran 920 KiB
 # by 65 bytes, so the cap is 921 KiB.
-SIZE_CAP=$((921 * 1024))
+# Raised 921 -> 924 KiB by the loose-object cache type flip: the measured tarball landed
+# at 945 249 B, 2 145 B over the old cap. Attribution: the new `ObjectContent` type and
+# `parseObjectContent` function (public, re-exported from the domain barrel and — as
+# `RawObject` — from the primitives barrel, each carrying its own JSDoc in both `.d.ts`
+# AND `.d.cts`), plus the runtime additions every distribution form ships: the exported
+# `verifyObjectContent` incremental-hash helper that replaces a header-copy-then-hash
+# with hash-and-compare, and the cache-entry-overhead constant its sizer charges. None is
+# removable without reintroducing the per-read header buffer this change exists to drop.
+# Raised 924 -> 927 KiB by the ref, HEAD, config-epoch and reflog work in the same
+# change set: the measured tarball landed at 948 653 B, 2 477 B over the old cap.
+# Attribution, all runtime code every distribution form ships: the repo-settings
+# validation tier and its session-memoised verdict, the single HEAD reader with its
+# lstat-identity slot, the config epoch's trusted-entry bookkeeping, the packed-refs
+# snapshot path and the pooled loose-ref enumeration, and git's reflog expire model
+# (per-ref mark walk with a date-bounded frontier). None is removable without dropping
+# the behaviour each one exists to provide.
+# Raised 927 -> 928 KiB by the review round's own fix commits: the measured tarball
+# landed at 949 335 B, 87 B over. Attribution, all runtime code every distribution form
+# ships: git's leftover-frontier re-walk and gentle peel in the reflog expire model, the
+# repo-settings verdict re-keying, the synchronous pack-registry peek, and the bounded
+# start-point tag walk. None is removable without dropping the behaviour each provides.
+# Raised 965 -> 968 KiB by the git-faithfulness fix batch: the measured tarball landed
+# at 990 976 B, 2 816 B over the old cap. Attribution, all runtime code every
+# distribution form ships: git's `parse_refspec` grammar for both the fetch and the
+# push key, `branch_checked_out`'s rebase and bisect claims over every worktree's own
+# state files, the fatal-msg-id demote refusal with its own error member, the loose-ref
+# and object-id refusal escaping and its caps, the reftable restart-offset and symbolic-target
+# bounds, and the shared `~/` pathname expansion. None is removable without dropping
+# the refusal or the parity each one exists to provide.
+# Raised 968 -> 969 KiB by the `[fsck]` configuration and ref-walk fix batch: the
+# measured tarball landed at 991 421 B, 189 B over the old cap. Attribution, all
+# runtime code every distribution form ships: the accumulating `fsck.skipList` read
+# and the unioning loader it feeds, the valueless-key refusal ahead of the msg-id
+# grade, the ref-integrity walk's read-through-a-link mark and the content grade it
+# gates. None is removable without dropping the refusal or the parity each one
+# exists to provide.
+# Raised 969 -> 970 KiB by the doc-attachment repair and the packed-refs ordering
+# fix: the measured tarball landed at 993 180 B, 924 B over the old cap. Two
+# sources, both shipped. First, sixteen doc comments that sat above another doc
+# comment instead of above a declaration reached no declaration at all, so the
+# published `.d.ts` files carried no summary for `openRepository`, `mergeBase`,
+# `CatFileBatchEntry`, `loadReftableStack`, `commitHeader` and `cacheDeltaBase`;
+# reattaching them is what a type-declaration bundle is for and costs about
+# 1.1 KiB. Second, `packedRefsWithout`'s forward merge and the record-index
+# bisection that replaced the by-name map are runtime code every distribution
+# form ships. Neither is removable without dropping the published documentation
+# or the ordering parity it exists to provide.
+SIZE_CAP=$((970 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders

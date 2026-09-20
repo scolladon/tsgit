@@ -1185,7 +1185,7 @@ describe('Given a deep chain with an annotated tag three commits below HEAD', ()
       // Act
       await describeCmd(counted);
 
-      // Assert — F2.3 caches every loose commit read, so cross-pass rereads
+      // Assert — the resolver caches every loose commit read, so cross-pass rereads
       // within describe's own algorithm now hit the delta cache instead of
       // touching disk again; the walk still stops short of the full chain.
       expect(reads()).toBe(2);
@@ -1209,7 +1209,7 @@ describe('Given only a lightweight tag on a deep chain in tags mode', () => {
       // Act
       const result = await describeCmd(counted, undefined, { tags: true });
 
-      // Assert — F2.3 caches every loose commit read, so cross-pass rereads
+      // Assert — the resolver caches every loose commit read, so cross-pass rereads
       // within describe's own algorithm now hit the delta cache instead of
       // touching disk again.
       expect(result.name).toBe('light');
@@ -1241,7 +1241,7 @@ describe('Given two annotated tags tied on sibling legs above a deep ancestry', 
       // Act
       const result = await describeCmd(counted, m);
 
-      // Assert — F2.3 caches every loose commit read, so cross-pass rereads
+      // Assert — the resolver caches every loose commit read, so cross-pass rereads
       // within describe's own algorithm now hit the delta cache instead of
       // touching disk again.
       expect(result.name).toBe('ty');
@@ -1271,7 +1271,7 @@ describe('Given a frozen winner whose coverage reaches the frontier only later',
       // Act
       const result = await describeCmd(counted, m);
 
-      // Assert — F2.3 caches every loose commit read, so cross-pass rereads
+      // Assert — the resolver caches every loose commit read, so cross-pass rereads
       // within describe's own algorithm now hit the delta cache instead of
       // touching disk again.
       expect(result.name).toBe('tx');
@@ -1301,7 +1301,7 @@ describe('Given an annotated tag on a side leg that does not cover the deeper ch
       // Act
       const result = await describeCmd(counted, m);
 
-      // Assert — F2.3 caches every loose commit read, so cross-pass rereads
+      // Assert — the resolver caches every loose commit read, so cross-pass rereads
       // within describe's own algorithm now hit the delta cache instead of
       // touching disk again.
       expect(result.name).toBe('ty');
@@ -1443,7 +1443,7 @@ describe('Given no names and a deep history to walk', () => {
       const error = await catchError(() => describeCmd(counted));
 
       // Assert — the empty freeze stops immediately; it never descends the
-      // chain. F2.3 also caches HEAD's own loose read, collapsing a repeated
+      // chain. The resolver also caches HEAD's own loose read, collapsing a repeated
       // touch into a cache hit.
       expect(error.data).toMatchObject({ code: 'NO_NAMES' });
       expect(reads()).toBe(1);

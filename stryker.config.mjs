@@ -64,6 +64,14 @@ export default {
   concurrency: scheduledConcurrency(),
   timeoutMS: 60000,
   timeoutFactor: 2,
+  // The dry run executes the WHOLE unit suite once against every instrumented
+  // file in scope. That cost scales with how much of `src/` a change touches,
+  // not with the mutant count, and Stryker's 5-minute default is sized for a
+  // handful of files: a PR instrumenting a couple of hundred dies with
+  // "Initial test run timed out", which reads as a mutation failure but is a
+  // harness deadline. An upper bound, not a delay — a fast dry run still
+  // finishes in its own time.
+  dryRunTimeoutMinutes: 25,
   tempDirName: '.stryker-tmp',
   cleanTempDir: true,
   ignoreStatic: true,

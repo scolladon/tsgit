@@ -391,7 +391,7 @@ describe('detectSimilarityRenames', () => {
   describe('Given a modify change alongside an add/delete rename candidate', () => {
     describe('When detectSimilarityRenames is called', () => {
       it('Then the modify is passed through unchanged and is never a rename source', async () => {
-        // Arrange — matrix #10: modify is never an inexact rename source
+        // Arrange — a modify is never an inexact rename source
         const ctx = await buildSeededContext();
         const modOldId = await writeBlob(ctx, 'kept file old content for modify test\n'.repeat(3));
         const modNewId = await writeBlob(ctx, 'kept file new content for modify test\n'.repeat(3));
@@ -434,7 +434,7 @@ describe('detectSimilarityRenames', () => {
   describe('Given copies: "on" and a modify change alongside an add with similar content', () => {
     describe('When detectSimilarityRenames is called', () => {
       it('Then the modify source folds into a copy WITHOUT consuming the modify', async () => {
-        // Arrange — matrix #C1: a modified file acts as a copy source; the copy
+        // Arrange — a modified file acts as a copy source; the copy
         // is emitted but the modify SURVIVES (source is retained, not consumed).
         const ctx = await buildSeededContext();
         const modOldId = await writeBlob(ctx, tenLines(0));
@@ -478,10 +478,10 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
-  describe('Given copies: "on" with an UNCHANGED source (matrix #C1b)', () => {
+  describe('Given copies: "on" with a source the diff does not touch', () => {
     describe('When detectSimilarityRenames is called', () => {
       it('Then the unchanged file is NOT a copy source and the add remains as-is', async () => {
-        // Arrange — matrix #C1b: plain -C only uses preimage of CHANGED files
+        // Arrange — plain -C only uses the preimage of CHANGED files.
         // An unchanged file is NOT a copy source under copies: "on".
         // The add stays as an add (no copy detected).
         const ctx = await buildSeededContext();
@@ -840,7 +840,7 @@ describe('detectSimilarityRenames', () => {
 
   describe('Given copies: "harder" with a delete and an unchanged file both matching the same dst', () => {
     describe('When detectSimilarityRenames is called', () => {
-      it('Then rename wins over copy at equal score (matrix #C3 precedence)', async () => {
+      it('Then rename wins over copy at equal score', async () => {
         // Arrange — del-src (deleted) and keep-src (unchanged in preimage) both have similar
         // content to new-dst. At equal score, rename sorts AHEAD of copy.
         const ctx = await buildSeededContext();
@@ -1392,7 +1392,7 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
-  describe('Given a 5x5 scenario with unambiguous per-pair best scores (matrix #8)', () => {
+  describe('Given a 5x5 scenario with unambiguous per-pair best scores', () => {
     describe('When detectSimilarityRenames is called', () => {
       it('Then all 5 pairs are detected as renames with no orphan', async () => {
         // Arrange — 5 src-dst pairs; each src-i is most similar to dst-i because
@@ -3361,7 +3361,7 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
-  describe('Given a gitlink delete and a real-blob add (R3 candidate)', () => {
+  describe('Given a gitlink delete and a real-blob add', () => {
     describe('When detectSimilarityRenames runs', () => {
       it('Then gitlink stays delete and blob stays add (no cross-kind rename)', async () => {
         // Arrange — isolates the gitlink-delete guard in partitionLeftovers
@@ -3638,7 +3638,7 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
-  describe('Given an exact same-oid gitlink add/delete pair (R1)', () => {
+  describe('Given an exact same-oid gitlink add/delete pair', () => {
     describe('When detectSimilarityRenames is called', () => {
       it('Then folds to R100 MAX_SCORE rename, no bytes read', async () => {
         // Arrange — regression guard: exact domain fold must stay mode-agnostic

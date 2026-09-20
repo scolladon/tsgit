@@ -5579,7 +5579,7 @@ describe('fetchPack — an already-present pack', () => {
         // Arrange
         const ctx = createMemoryContext();
         const { packBytes, blobId } = await buildSingleBlobPack(ctx, 'stale registry\n');
-        await getPackRegistry(ctx).lookup(blobId);
+        await (await getPackRegistry(ctx)).lookup(blobId);
         const writerCtx = { ...ctx, session: createSession() };
         const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
         const { transport } = captureRequests(body);

@@ -24,7 +24,20 @@ export interface FileSystemContractEnv {
     readonly create: () => Promise<string>;
     readonly expected: 'allowed' | 'refused';
   };
+  /**
+   * Declares that a refusal raised while resolving a path segment — a symbolic link loop, or a
+   * regular file or dangling symbolic link standing where a directory is needed — carries a code
+   * this adapter pins on the current host. The rows asserting those codes run only when it is
+   * declared. Memory declares it everywhere: its codes are structural. Node declares it on POSIX
+   * hosts, where each code maps an explicit errno (`ELOOP`, `ENOTDIR`, `ENOENT`); Windows
+   * resolves such segments through reparse points and reports a file used as a directory as
+   * `ENOENT` or `EINVAL`, so the rows are skipped there rather than asserting unpinned codes.
+   */
+  readonly segmentRefusals?: 'pinned';
 }
+
+const SEGMENT_REFUSALS_UNPINNED =
+  'segment refusal codes are not pinned for this adapter on this host';
 
 interface PathCall {
   readonly name: string;
@@ -52,6 +65,7 @@ const pathCalls: ReadonlyArray<PathCall> = [
   { name: 'exists', invoke: (e, p) => e.fs.exists(p) },
   { name: 'stat', invoke: (e, p) => e.fs.stat(p) },
   { name: 'lstat', invoke: (e, p) => e.fs.lstat(p) },
+  { name: 'lexists', invoke: (e, p) => lexists(e.fs, p) },
   { name: 'readdir', invoke: (e, p) => e.fs.readdir(p) },
   { name: 'mkdir', invoke: (e, p) => e.fs.mkdir(p) },
   { name: 'rm', invoke: (e, p) => e.fs.rm(p) },
@@ -74,6 +88,95 @@ const pathCalls: ReadonlyArray<PathCall> = [
   { name: 'chmod', invoke: (e, p) => e.fs.chmod(p, 0o644) },
   { name: 'rmRecursive', invoke: (e, p) => e.fs.rmRecursive(p) },
 ];
+
+interface EnvCall {
+  readonly name: string;
+  readonly invoke: (env: FileSystemContractEnv) => Promise<unknown>;
+}
+
+/** Every surface that reaches the mutual symlink loop `refusal-loop-a` / `-b`, as a component
+ *  or as a followed leaf, and `exists` on the leaf. */
+const mutualLoopCalls: ReadonlyArray<EnvCall> = [
+  { name: 'read', invoke: (e) => e.fs.read(`${e.rootDir}/refusal-loop-a`) },
+  { name: 'stat', invoke: (e) => e.fs.stat(`${e.rootDir}/refusal-loop-a`) },
+  { name: 'readdir', invoke: (e) => e.fs.readdir(`${e.rootDir}/refusal-loop-a`) },
+  { name: 'read through it', invoke: (e) => e.fs.read(`${e.rootDir}/refusal-loop-a/x`) },
+  { name: 'lstat through it', invoke: (e) => e.fs.lstat(`${e.rootDir}/refusal-loop-a/x`) },
+  {
+    name: 'write through it',
+    invoke: (e) => e.fs.write(`${e.rootDir}/refusal-loop-a/x`, new Uint8Array()),
+  },
+  { name: 'lexists through it', invoke: (e) => lexists(e.fs, `${e.rootDir}/refusal-loop-a/x`) },
+  { name: 'rm through it', invoke: (e) => e.fs.rm(`${e.rootDir}/refusal-loop-a/x`) },
+  { name: 'exists', invoke: (e) => e.fs.exists(`${e.rootDir}/refusal-loop-a`) },
+];
+
+/** Every read surface that refuses a directory where a file was expected. */
+const directoryReadCalls: ReadonlyArray<EnvCall> = [
+  { name: 'read', invoke: (e) => e.fs.read(`${e.rootDir}/refusal-dir`) },
+  { name: 'readUtf8', invoke: (e) => e.fs.readUtf8(`${e.rootDir}/refusal-dir`) },
+  { name: 'readSlice', invoke: (e) => e.fs.readSlice(`${e.rootDir}/refusal-dir`, 0, 1) },
+];
+
+/** Every surface that refuses a path beneath a regular file, `exists` included. */
+const beneathFileCalls: ReadonlyArray<PathCall> = [
+  { name: 'read', invoke: (e, p) => e.fs.read(p) },
+  { name: 'stat', invoke: (e, p) => e.fs.stat(p) },
+  { name: 'lstat', invoke: (e, p) => e.fs.lstat(p) },
+  { name: 'lexists', invoke: (e, p) => lexists(e.fs, p) },
+  { name: 'readlink', invoke: (e, p) => e.fs.readlink(p) },
+  { name: 'rm', invoke: (e, p) => e.fs.rm(p) },
+  { name: 'rename', invoke: (e, p) => e.fs.rename(p, `${e.rootDir}/refusal-file-rename-dst`) },
+  { name: 'rmRecursive', invoke: (e, p) => e.fs.rmRecursive(p) },
+  { name: 'exists', invoke: (e, p) => e.fs.exists(p) },
+];
+
+/** The intermediate segments that stand where a directory is needed but hold a regular file. */
+const fileSegments: ReadonlyArray<{ readonly label: string; readonly segment: string }> = [
+  { label: 'a regular file', segment: 'refusal-file.bin' },
+  { label: 'a relative symlink to a regular file', segment: 'refusal-file-link' },
+];
+
+/** Every surface that reports a path beneath a dangling symbolic link as absent. */
+const beneathDanglingReadCalls: ReadonlyArray<PathCall> = [
+  { name: 'read', invoke: (e, p) => e.fs.read(p) },
+  { name: 'stat', invoke: (e, p) => e.fs.stat(p) },
+  { name: 'lstat', invoke: (e, p) => e.fs.lstat(p) },
+  { name: 'rm', invoke: (e, p) => e.fs.rm(p) },
+];
+
+/** Every surface that creates the entry it addresses, creating missing parents on the way. */
+const createCalls: ReadonlyArray<PathCall> = [
+  { name: 'write', invoke: (e, p) => e.fs.write(p, new Uint8Array([1])) },
+  { name: 'writeExclusive', invoke: (e, p) => e.fs.writeExclusive(p, new Uint8Array([1])) },
+  { name: 'writeUtf8', invoke: (e, p) => e.fs.writeUtf8(p, 'content') },
+  { name: 'appendUtf8', invoke: (e, p) => e.fs.appendUtf8(p, 'content') },
+  {
+    name: 'writeStream',
+    invoke: (e, p) =>
+      e.fs.writeStream(
+        p,
+        (async function* () {
+          yield new Uint8Array([1]);
+        })(),
+      ),
+  },
+  { name: 'mkdir', invoke: (e, p) => e.fs.mkdir(p) },
+  { name: 'symlink', invoke: (e, p) => e.fs.symlink('target', p) },
+  {
+    name: 'rename destination',
+    invoke: async (e, p) => e.fs.rename(await e.getExistingInRoot(), p),
+  },
+];
+
+const DANGLING_COMPONENT = 'sub/dangling-component';
+const DANGLING_COMPONENT_TARGET = 'sub/dangling-component-target';
+
+/** Every adapter this suite runs against provides the optional presence probe. */
+async function lexists(fs: FileSystem, path: string): Promise<boolean> {
+  if (fs.lexists === undefined) throw new Error('the adapter under contract provides no lexists');
+  return fs.lexists(path);
+}
 
 function assertFileNotFound(err: unknown): void {
   expect(err).toBeInstanceOf(TsgitError);
@@ -766,9 +869,8 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
         caught = err;
       }
 
-      // Assert — exact code is platform-dependent (Node may surface EEXIST or ENOTDIR
-      // depending on whether the mkdir is on the file path itself or a child-of-file path);
-      // both are acceptable as long as it's a structured TsgitError.
+      // Assert — exact code is adapter-dependent: the node adapter's `mkdir -p` reports
+      // FILE_EXISTS for the file path itself, where the memory adapter keeps NOT_A_DIRECTORY.
       expect(caught).toBeInstanceOf(TsgitError);
       const code = (caught as TsgitError).data.code;
       expect(['FILE_EXISTS', 'NOT_A_DIRECTORY']).toContain(code);
@@ -802,6 +904,367 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
       expect(stat.isFile).toBe(true);
       expect(stat.isSymbolicLink).toBe(false);
       expect(stat.size).toBe(3);
+    });
+
+    it('Given a relative symlink to a file in the same directory, When reading through it, Then every read surface returns the target bytes', async () => {
+      // Arrange
+      const target = `${env.rootDir}/sub/target.txt`;
+      const link = `${env.rootDir}/sub/link.txt`;
+      const data = new Uint8Array([10, 20, 30, 40]);
+      await env.fs.write(target, data);
+      await env.fs.symlink('target.txt', link);
+
+      // Act
+      const bytes = await env.fs.read(link);
+      const text = await env.fs.readUtf8(link);
+      const slice = await env.fs.readSlice(link, 1, 2);
+      const stat = await env.fs.stat(link);
+      const exists = await env.fs.exists(link);
+      const lstat = await env.fs.lstat(link);
+
+      // Assert
+      expect(bytes).toEqual(data);
+      expect(text).toBe(new TextDecoder().decode(data));
+      expect(slice).toEqual(new Uint8Array([20, 30]));
+      expect(stat.size).toBe(data.length);
+      expect(exists).toBe(true);
+      expect(lstat.isSymbolicLink).toBe(true);
+    });
+
+    it("Given a relative symlink pointing one directory up, When reading through it, Then it resolves against the link's own directory", async () => {
+      // Arrange
+      const top = `${env.rootDir}/top.txt`;
+      const up = `${env.rootDir}/sub/up.txt`;
+      const data = new Uint8Array([1, 2, 3]);
+      await env.fs.write(top, data);
+      await env.fs.symlink('../top.txt', up);
+
+      // Act
+      const result = await env.fs.read(up);
+
+      // Assert
+      expect(result).toEqual(data);
+    });
+
+    it('Given a two-hop chain of relative symlinks, When reading through it, Then it reaches the final target', async () => {
+      // Arrange
+      const target = `${env.rootDir}/sub/final.txt`;
+      const firstHop = `${env.rootDir}/sub/first-hop`;
+      const secondHop = `${env.rootDir}/sub/second-hop`;
+      const data = new Uint8Array([9, 9]);
+      await env.fs.write(target, data);
+      await env.fs.symlink('final.txt', firstHop);
+      await env.fs.symlink('first-hop', secondHop);
+
+      // Act
+      const result = await env.fs.read(secondHop);
+
+      // Assert
+      expect(result).toEqual(data);
+    });
+
+    it('Given a dangling relative symlink, When checking existence or reading, Then it reports absent', async () => {
+      // Arrange
+      const link = `${env.rootDir}/sub/dangling.txt`;
+      await env.fs.symlink('missing.txt', link);
+
+      // Act
+      const exists = await env.fs.exists(link);
+      let caught: unknown;
+      try {
+        await env.fs.read(link);
+        expect.fail('expected FILE_NOT_FOUND');
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(exists).toBe(false);
+      assertFileNotFound(caught);
+    });
+
+    it('Given a relative symlink to a directory, When listing it or reading its stat, Then it behaves as the target directory', async () => {
+      // Arrange
+      const dir = `${env.rootDir}/sub/dir`;
+      const link = `${env.rootDir}/sub/dir-link`;
+      await env.fs.mkdir(dir);
+      await env.fs.write(`${dir}/inner.txt`, new Uint8Array([1]));
+      await env.fs.symlink('dir', link);
+
+      // Act
+      const entries = await env.fs.readdir(link);
+      const stat = await env.fs.stat(link);
+
+      // Assert
+      expect(entries.map((entry) => entry.name)).toEqual(['inner.txt']);
+      expect(stat.isDirectory).toBe(true);
+    });
+
+    it('Given a symlinked intermediate directory, When reading through a path beneath it, Then every read surface reaches the real file', async () => {
+      // Arrange
+      const real = `${env.rootDir}/real`;
+      const linkDir = `${env.rootDir}/sub/link-dir`;
+      const data = new Uint8Array([5, 6, 7]);
+      await env.fs.write(`${real}/f.txt`, data);
+      await env.fs.symlink('../real', linkDir);
+      const through = `${linkDir}/f.txt`;
+
+      // Act
+      const bytes = await env.fs.read(through);
+      const text = await env.fs.readUtf8(through);
+      const slice = await env.fs.readSlice(through, 0, 2);
+      const stat = await env.fs.stat(through);
+      const exists = await env.fs.exists(through);
+      const lstat = await env.fs.lstat(through);
+      const entries = await env.fs.readdir(linkDir);
+      const handle = await env.fs.openWithNoFollow(through, 'read');
+
+      // Assert
+      try {
+        expect(bytes).toEqual(data);
+        expect(text).toBe(new TextDecoder().decode(data));
+        expect(slice).toEqual(new Uint8Array([5, 6]));
+        expect(stat.size).toBe(data.length);
+        expect(exists).toBe(true);
+        expect(lstat.isFile).toBe(true);
+        expect(entries.map((entry) => entry.name)).toEqual(['f.txt']);
+      } finally {
+        await handle.close();
+      }
+    });
+
+    it('Given a symlinked intermediate directory, When writing through a path beneath it, Then the bytes land at the real path', async () => {
+      // Arrange
+      const real = `${env.rootDir}/write-real`;
+      const linkDir = `${env.rootDir}/sub/write-link-dir`;
+      await env.fs.mkdir(real);
+      await env.fs.writeUtf8(`${real}/au.txt`, 'existing ');
+      await env.fs.symlink('../write-real', linkDir);
+      const writeData = new Uint8Array([1]);
+      const exclusiveData = new Uint8Array([2]);
+      const streamData = new Uint8Array([3]);
+      async function* source() {
+        yield streamData;
+      }
+
+      // Act
+      await env.fs.write(`${linkDir}/w.bin`, writeData);
+      await env.fs.writeExclusive(`${linkDir}/we.bin`, exclusiveData);
+      await env.fs.writeUtf8(`${linkDir}/wu.txt`, 'utf8');
+      await env.fs.appendUtf8(`${linkDir}/au.txt`, 'appended');
+      await env.fs.writeStream(`${linkDir}/ws.bin`, source());
+
+      // Assert
+      expect(await env.fs.read(`${real}/w.bin`)).toEqual(writeData);
+      expect(await env.fs.read(`${real}/we.bin`)).toEqual(exclusiveData);
+      expect(await env.fs.readUtf8(`${real}/wu.txt`)).toBe('utf8');
+      expect(await env.fs.readUtf8(`${real}/au.txt`)).toBe('existing appended');
+      expect(await env.fs.read(`${real}/ws.bin`)).toEqual(streamData);
+    });
+
+    it('Given a symlinked intermediate directory, When creating a nested symlink or directory beneath it, Then they land under the real path, missing parents included', async () => {
+      // Arrange
+      const real = `${env.rootDir}/create-real`;
+      const linkDir = `${env.rootDir}/sub/create-link-dir`;
+      await env.fs.mkdir(real);
+      await env.fs.write(`${real}/target.txt`, new Uint8Array([1]));
+      await env.fs.symlink('../create-real', linkDir);
+
+      // Act
+      await env.fs.symlink('target.txt', `${linkDir}/shortcut`);
+      await env.fs.mkdir(`${linkDir}/deep/new`);
+
+      // Assert
+      expect(await env.fs.readlink(`${real}/shortcut`)).toBe('target.txt');
+      expect((await env.fs.stat(`${real}/deep/new`)).isDirectory).toBe(true);
+    });
+
+    it('Given a symlinked intermediate directory, When renaming an entry within it, Then the entry moves under the real path', async () => {
+      // Arrange
+      const real = `${env.rootDir}/rename-real`;
+      const linkDir = `${env.rootDir}/sub/rename-link-dir`;
+      const data = new Uint8Array([8]);
+      await env.fs.write(`${real}/a.bin`, data);
+      await env.fs.symlink('../rename-real', linkDir);
+
+      // Act
+      await env.fs.rename(`${linkDir}/a.bin`, `${linkDir}/b.bin`);
+
+      // Assert
+      expect(await env.fs.exists(`${real}/a.bin`)).toBe(false);
+      expect(await env.fs.read(`${real}/b.bin`)).toEqual(data);
+    });
+
+    it('Given a symlinked intermediate directory, When atomicRename moves an entry within it, Then the entry moves under the real path', async () => {
+      // Arrange
+      const real = `${env.rootDir}/atomic-real`;
+      const linkDir = `${env.rootDir}/sub/atomic-link-dir`;
+      const data = new Uint8Array([9]);
+      await env.fs.write(`${real}/a.bin`, data);
+      await env.fs.symlink('../atomic-real', linkDir);
+
+      // Act
+      await env.fs.atomicRename?.(`${linkDir}/a.bin`, `${linkDir}/b.bin`);
+
+      // Assert
+      expect(await env.fs.exists(`${real}/a.bin`)).toBe(false);
+      expect(await env.fs.read(`${real}/b.bin`)).toEqual(data);
+    });
+
+    it('Given a symlinked intermediate directory, When removing an entry beneath it, Then the real entry is removed', async () => {
+      // Arrange
+      const real = `${env.rootDir}/rm-real`;
+      const linkDir = `${env.rootDir}/sub/rm-link-dir`;
+      await env.fs.write(`${real}/gone.bin`, new Uint8Array([1]));
+      await env.fs.symlink('../rm-real', linkDir);
+
+      // Act
+      await env.fs.rm(`${linkDir}/gone.bin`);
+
+      // Assert
+      expect(await env.fs.exists(`${real}/gone.bin`)).toBe(false);
+    });
+
+    it('Given a symlinked intermediate directory holding a nested tree, When rmRecursive removes a path beneath it, Then the real subtree is removed', async () => {
+      // Arrange
+      const real = `${env.rootDir}/rm-recursive-real`;
+      const linkDir = `${env.rootDir}/sub/rm-recursive-link-dir`;
+      await env.fs.write(`${real}/deep/inner.bin`, new Uint8Array([1]));
+      await env.fs.symlink('../rm-recursive-real', linkDir);
+
+      // Act
+      await env.fs.rmRecursive(`${linkDir}/deep`);
+
+      // Assert
+      expect(await env.fs.exists(`${real}/deep`)).toBe(false);
+      expect(await env.fs.exists(real)).toBe(true);
+    });
+
+    it('Given a symlinked intermediate directory, When opening a path beneath it with openWithNoFollow in write mode, Then the real file is updated', async () => {
+      // Arrange
+      const real = `${env.rootDir}/open-write-real`;
+      const linkDir = `${env.rootDir}/sub/open-write-link-dir`;
+      await env.fs.write(`${real}/f.bin`, new Uint8Array([0, 0]));
+      await env.fs.symlink('../open-write-real', linkDir);
+
+      // Act
+      const handle = await env.fs.openWithNoFollow(`${linkDir}/f.bin`, 'write');
+      try {
+        await handle.write(new Uint8Array([7, 7]));
+      } finally {
+        await handle.close();
+      }
+
+      // Assert
+      expect(await env.fs.read(`${real}/f.bin`)).toEqual(new Uint8Array([7, 7]));
+    });
+
+    it('Given a two-hop chain of symlinked intermediate directories, When reading through it, Then it reaches the real file', async () => {
+      // Arrange
+      const real = `${env.rootDir}/chain-real`;
+      const linkDir = `${env.rootDir}/sub/chain-link-dir`;
+      const chainLink = `${env.rootDir}/sub/chain-link2`;
+      const data = new Uint8Array([3, 1, 4]);
+      await env.fs.write(`${real}/f.txt`, data);
+      await env.fs.symlink('../chain-real', linkDir);
+      await env.fs.symlink('chain-link-dir', chainLink);
+
+      // Act
+      const result = await env.fs.read(`${chainLink}/f.txt`);
+
+      // Assert
+      expect(result).toEqual(data);
+    });
+
+    it('Given a symlink to a directory occupies the write target, When write is called, Then it still refuses PERMISSION_DENIED', async () => {
+      // Arrange
+      const real = `${env.rootDir}/leaf-real`;
+      const linkDir = `${env.rootDir}/sub/leaf-link-dir`;
+      await env.fs.mkdir(real);
+      await env.fs.symlink('../leaf-real', linkDir);
+
+      // Act
+      let caught: unknown;
+      try {
+        await env.fs.write(linkDir, new Uint8Array([1]));
+        expect.fail('expected a refusal');
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      assertPermissionDenied(caught);
+    });
+
+    it('Given a symlink to a directory, When rmRecursive removes it, Then the link is removed and the real directory is kept', async () => {
+      // Arrange
+      const real = `${env.rootDir}/leaf-rm-real`;
+      const link = `${env.rootDir}/sub/leaf-rm-link`;
+      await env.fs.mkdir(real);
+      await env.fs.symlink('../leaf-rm-real', link);
+
+      // Act
+      await env.fs.rmRecursive(link);
+
+      // Assert
+      expect(await env.fs.exists(link)).toBe(false);
+      expect(await env.fs.exists(real)).toBe(true);
+    });
+
+    it('Given a symlink to an existing directory occupies the mkdir target, When mkdir is called, Then it resolves without creating anything and the link is kept', async () => {
+      // Arrange
+      const real = `${env.rootDir}/mkdir-real`;
+      const link = `${env.rootDir}/sub/mkdir-link`;
+      await env.fs.mkdir(real);
+      await env.fs.symlink('../mkdir-real', link);
+
+      // Act
+      await env.fs.mkdir(link);
+
+      // Assert
+      expect((await env.fs.lstat(link)).isSymbolicLink).toBe(true);
+      expect(await env.fs.readdir(real)).toEqual([]);
+    });
+
+    it('Given a dangling symlink occupies the mkdir target, When mkdir is called, Then it refuses FILE_NOT_FOUND and creates nothing', async () => {
+      // Arrange
+      const link = `${env.rootDir}/sub/mkdir-dangling`;
+      await env.fs.symlink('missing-dir', link);
+
+      // Act
+      let caught: unknown;
+      try {
+        await env.fs.mkdir(link);
+        expect.fail('expected FILE_NOT_FOUND');
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      assertFileNotFound(caught);
+      expect(await env.fs.exists(`${env.rootDir}/sub/missing-dir`)).toBe(false);
+    });
+
+    it('Given a mutual symlink loop occupies the mkdir target, When mkdir is called, Then it refuses PERMISSION_DENIED', async (ctx) => {
+      ctx.skip(env.segmentRefusals !== 'pinned', SEGMENT_REFUSALS_UNPINNED);
+
+      // Arrange
+      const linkA = `${env.rootDir}/sub/mkdir-loop-a`;
+      const linkB = `${env.rootDir}/sub/mkdir-loop-b`;
+      await env.fs.symlink('mkdir-loop-b', linkA);
+      await env.fs.symlink('mkdir-loop-a', linkB);
+
+      // Act
+      let caught: unknown;
+      try {
+        await env.fs.mkdir(linkA);
+        expect.fail('expected PERMISSION_DENIED');
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      assertPermissionDenied(caught);
     });
 
     it('Given nested path, When writeUtf8, Then creates parent directories', async () => {
@@ -862,6 +1325,18 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
       expect(await env.fs.readUtf8(path)).toBe('a\nb\nc\n');
     });
 
+    it('Given empty directory, When rm, Then the directory is removed', async () => {
+      // Arrange
+      const dir = `${env.rootDir}/rm-empty-dir`;
+      await env.fs.mkdir(dir);
+
+      // Act
+      await env.fs.rm(dir);
+
+      // Assert
+      expect(await env.fs.exists(dir)).toBe(false);
+    });
+
     it('Given non-empty directory, When rm, Then throws a TsgitError', async () => {
       // Arrange
       const dir = `${env.rootDir}/non-empty`;
@@ -876,8 +1351,8 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
         caught = err;
       }
 
-      // Assert — exact code is platform-dependent (Node returns ENOTEMPTY which maps to
-      // UNSUPPORTED_OPERATION; other adapters may surface NOT_A_DIRECTORY or similar).
+      // Assert — exact code is platform-dependent (Node returns ENOTEMPTY, mapped to
+      // DIRECTORY_NOT_EMPTY; other adapters may surface NOT_A_DIRECTORY or similar).
       // What matters is that a structured TsgitError is thrown, not the loose fact of throwing.
       expect(caught).toBeInstanceOf(TsgitError);
     });
@@ -1047,6 +1522,310 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
           }
         });
       }
+    });
+
+    describe('symlink and directory refusal parity', () => {
+      describe('Given a mutual symlink loop', () => {
+        for (const { name, invoke } of mutualLoopCalls) {
+          it(`Then ${name} refuses PERMISSION_DENIED`, async (ctx) => {
+            ctx.skip(env.segmentRefusals !== 'pinned', SEGMENT_REFUSALS_UNPINNED);
+
+            // Arrange
+            const linkA = `${env.rootDir}/refusal-loop-a`;
+            const linkB = `${env.rootDir}/refusal-loop-b`;
+            await env.fs.symlink('refusal-loop-b', linkA);
+            await env.fs.symlink('refusal-loop-a', linkB);
+
+            // Act
+            let caught: unknown;
+            try {
+              await invoke(env);
+              expect.fail('expected PERMISSION_DENIED');
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert
+            assertPermissionDenied(caught);
+          });
+        }
+      });
+
+      describe('Given a directory', () => {
+        for (const { name, invoke } of directoryReadCalls) {
+          it(`Then ${name} refuses PERMISSION_DENIED`, async () => {
+            // Arrange
+            await env.fs.mkdir(`${env.rootDir}/refusal-dir`);
+
+            // Act
+            let caught: unknown;
+            try {
+              await invoke(env);
+              expect.fail('expected PERMISSION_DENIED');
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert
+            assertPermissionDenied(caught);
+          });
+        }
+      });
+
+      describe('Given a missing path', () => {
+        it('Then readdir refuses FILE_NOT_FOUND', async () => {
+          // Act
+          let caught: unknown;
+          try {
+            await env.fs.readdir(`${env.rootDir}/refusal-never-existed`);
+            expect.fail('expected FILE_NOT_FOUND');
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          assertFileNotFound(caught);
+        });
+      });
+
+      describe('Given a dangling symlink', () => {
+        it('Then readdir refuses FILE_NOT_FOUND', async () => {
+          // Arrange
+          await env.fs.symlink('refusal-nope', `${env.rootDir}/refusal-readdir-dangling`);
+
+          // Act
+          let caught: unknown;
+          try {
+            await env.fs.readdir(`${env.rootDir}/refusal-readdir-dangling`);
+            expect.fail('expected FILE_NOT_FOUND');
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          assertFileNotFound(caught);
+        });
+      });
+
+      for (const { label, segment } of fileSegments) {
+        describe(`Given ${label} occupying an intermediate path segment`, () => {
+          for (const { name, invoke } of beneathFileCalls) {
+            it(`Then ${name} refuses NOT_A_DIRECTORY`, async (ctx) => {
+              ctx.skip(env.segmentRefusals !== 'pinned', SEGMENT_REFUSALS_UNPINNED);
+
+              // Arrange
+              await env.fs.write(`${env.rootDir}/refusal-file.bin`, new Uint8Array([1]));
+              await env.fs.symlink('refusal-file.bin', `${env.rootDir}/refusal-file-link`);
+
+              // Act
+              let caught: unknown;
+              try {
+                await invoke(env, `${env.rootDir}/${segment}/x`);
+                expect.fail('expected NOT_A_DIRECTORY');
+              } catch (err) {
+                caught = err;
+              }
+
+              // Assert
+              assertNotADirectory(caught);
+            });
+          }
+        });
+      }
+
+      describe('Given a dangling relative symlink as an intermediate path segment', () => {
+        it('Then exists and lexists report a path beneath it absent', async (ctx) => {
+          ctx.skip(env.segmentRefusals !== 'pinned', SEGMENT_REFUSALS_UNPINNED);
+
+          // Arrange
+          await env.fs.symlink('dangling-component-target', `${env.rootDir}/${DANGLING_COMPONENT}`);
+          const beneath = `${env.rootDir}/${DANGLING_COMPONENT}/entry`;
+
+          // Act
+          const result = [await env.fs.exists(beneath), await lexists(env.fs, beneath)];
+
+          // Assert
+          expect(result).toEqual([false, false]);
+        });
+
+        for (const { name, invoke } of beneathDanglingReadCalls) {
+          it(`Then ${name} beneath it refuses FILE_NOT_FOUND`, async (ctx) => {
+            ctx.skip(env.segmentRefusals !== 'pinned', SEGMENT_REFUSALS_UNPINNED);
+
+            // Arrange
+            await env.fs.symlink(
+              'dangling-component-target',
+              `${env.rootDir}/${DANGLING_COMPONENT}`,
+            );
+
+            // Act
+            let caught: unknown;
+            try {
+              await invoke(env, `${env.rootDir}/${DANGLING_COMPONENT}/entry`);
+              expect.fail('expected FILE_NOT_FOUND');
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert
+            assertFileNotFound(caught);
+          });
+        }
+
+        for (const { name, invoke } of createCalls) {
+          it(`Then ${name} directly beneath it refuses and creates nothing at the link target`, async () => {
+            // Arrange
+            await env.fs.symlink(
+              'dangling-component-target',
+              `${env.rootDir}/${DANGLING_COMPONENT}`,
+            );
+
+            // Act
+            let caught: unknown;
+            try {
+              await invoke(env, `${env.rootDir}/${DANGLING_COMPONENT}/entry`);
+              expect.fail('expected a refusal');
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert — at this depth the code is adapter-dependent: the Node adapter's
+            // `mkdir -p` of the dangling parent reports FILE_NOT_FOUND for every surface but
+            // `mkdir`, where the memory adapter keeps NOT_A_DIRECTORY throughout.
+            expect(caught).toBeInstanceOf(TsgitError);
+            expect(['FILE_NOT_FOUND', 'NOT_A_DIRECTORY']).toContain(
+              (caught as TsgitError).data.code,
+            );
+            expect(await env.fs.exists(`${env.rootDir}/${DANGLING_COMPONENT_TARGET}`)).toBe(false);
+          });
+
+          it(`Then ${name} two segments beneath it refuses NOT_A_DIRECTORY and creates nothing at the link target`, async (ctx) => {
+            ctx.skip(env.segmentRefusals !== 'pinned', SEGMENT_REFUSALS_UNPINNED);
+
+            // Arrange
+            await env.fs.symlink(
+              'dangling-component-target',
+              `${env.rootDir}/${DANGLING_COMPONENT}`,
+            );
+
+            // Act
+            let caught: unknown;
+            try {
+              await invoke(env, `${env.rootDir}/${DANGLING_COMPONENT}/mid/entry`);
+              expect.fail('expected NOT_A_DIRECTORY');
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert
+            assertNotADirectory(caught);
+            expect(await env.fs.exists(`${env.rootDir}/${DANGLING_COMPONENT_TARGET}`)).toBe(false);
+          });
+        }
+      });
+    });
+
+    describe('Given a file, a directory, a symlink to the file and a dangling symlink', () => {
+      it('Then lexists reports each of them present and a missing sibling absent', async () => {
+        // Arrange
+        await env.fs.write(`${env.rootDir}/probe/file.bin`, new Uint8Array([1]));
+        await env.fs.mkdir(`${env.rootDir}/probe/dir`);
+        await env.fs.symlink('file.bin', `${env.rootDir}/probe/live-link`);
+        await env.fs.symlink('missing-target', `${env.rootDir}/probe/dangling-link`);
+        const names = ['file.bin', 'dir', 'live-link', 'dangling-link', 'missing'];
+
+        // Act
+        const result = await Promise.all(
+          names.map((name) => lexists(env.fs, `${env.rootDir}/probe/${name}`)),
+        );
+
+        // Assert
+        expect(result).toEqual([true, true, true, true, false]);
+      });
+    });
+
+    describe.each([
+      {
+        label: 'two segments beneath a dangling symlink',
+        blocked: `${DANGLING_COMPONENT}/mid/entry`,
+      },
+      { label: 'two segments beneath a regular file', blocked: 'rename-blocker.bin/mid/entry' },
+    ])('Given a missing rename source and a destination $label', ({ blocked }) => {
+      it('Then rename refuses NOT_A_DIRECTORY: the destination parent is refused before the source is looked up', async (ctx) => {
+        ctx.skip(env.segmentRefusals !== 'pinned', SEGMENT_REFUSALS_UNPINNED);
+
+        // Arrange
+        await env.fs.symlink('dangling-component-target', `${env.rootDir}/${DANGLING_COMPONENT}`);
+        await env.fs.write(`${env.rootDir}/rename-blocker.bin`, new Uint8Array([1]));
+
+        // Act
+        let caught: unknown;
+        try {
+          await env.fs.rename(`${env.rootDir}/rename-missing-source`, `${env.rootDir}/${blocked}`);
+          expect.fail('expected NOT_A_DIRECTORY');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        assertNotADirectory(caught);
+      });
+    });
+
+    describe('Given a regular file and a directory', () => {
+      it('Then chmod resolves on each', async () => {
+        // Arrange
+        await env.fs.write(`${env.rootDir}/mode/file.bin`, new Uint8Array([1]));
+        await env.fs.mkdir(`${env.rootDir}/mode/dir`);
+
+        // Act
+        const result = await Promise.all([
+          env.fs.chmod(`${env.rootDir}/mode/file.bin`, 0o755),
+          env.fs.chmod(`${env.rootDir}/mode/dir`, 0o755),
+        ]);
+
+        // Assert
+        expect(result).toEqual([undefined, undefined]);
+      });
+    });
+
+    describe('Given a path with no entry', () => {
+      it('Then chmod refuses FILE_NOT_FOUND', async () => {
+        // Act
+        let caught: unknown;
+        try {
+          await env.fs.chmod(`${env.rootDir}/mode-never-created.bin`, 0o755);
+          expect.fail('expected FILE_NOT_FOUND');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        assertFileNotFound(caught);
+      });
+    });
+
+    describe.each([
+      { label: 'a live symlink', target: 'mode-target.bin' },
+      { label: 'a dangling symlink', target: 'mode-missing-target.bin' },
+    ])('Given $label at the leaf', ({ target }) => {
+      it('Then chmod refuses PERMISSION_DENIED rather than changing the target', async () => {
+        // Arrange
+        await env.fs.write(`${env.rootDir}/mode-target.bin`, new Uint8Array([1]));
+        await env.fs.symlink(target, `${env.rootDir}/mode-link`);
+
+        // Act
+        let caught: unknown;
+        try {
+          await env.fs.chmod(`${env.rootDir}/mode-link`, 0o755);
+          expect.fail('expected PERMISSION_DENIED');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        assertPermissionDenied(caught);
+      });
     });
 
     describe('Given an in-root symlink whose target escapes every root', () => {

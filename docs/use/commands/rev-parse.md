@@ -42,6 +42,7 @@ const second = await repo.revParse('main^2');
 - `REVPARSE_UNRESOLVED` — name does not resolve, or `@{date}` form unparseable.
 - `REVPARSE_AMBIGUOUS` — short oid matches multiple objects.
 - `REFLOG_ENTRY_OUT_OF_RANGE` — `@{N}` beyond the reflog length.
+- `CONFIG_BAD_NUMERIC_VALUE` — a malformed `core.maxTreeDepth` / `core.deltaBaseCacheLimit` (the repo-settings class), checked by an explicit call right after the operational gate and before the expression is parsed, transcribing git's own per-builtin prologue. See [`internals.md`](../primitives/internals.md#assertrepossettingsvalid).
 
 ## See also
 

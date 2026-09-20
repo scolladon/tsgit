@@ -14,7 +14,7 @@ a bound `this`.
 | [`add`](add.md) | Stage paths into `.git/index`. Literal paths or `all: true` bulk mode. |
 | [`archive`](archive.md) | Export a tree-ish as a structured entry stream (paths, raw modes, oids, blob bytes); no tar/zip bytes produced. |
 | [`blame`](blame.md) | Line-by-line authorship for a file at a revision; returns structured per-line data (no rendered line). |
-| [`branch`](branch.md) | List, create, or delete branches. |
+| [`branch`](branch.md) | List, create, delete, or rename branches. Nested-namespace surface (`repo.branch.list/create/delete/rename`). |
 | [`bundle`](bundle.md) | Package and inspect git objects in a transportable bundle file. Nested-namespace surface (`repo.bundle.create/verify/listHeads`). |
 | [`catFile`](cat-file.md) | Batch read of git objects in strict input order. |
 | [`checkout`](checkout.md) | Switch branches or restore working-tree files. |

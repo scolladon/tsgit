@@ -1,6 +1,4 @@
-import { TsgitError } from '../../domain/error.js';
-import { objectNotFound } from '../../domain/objects/error.js';
-import { splitObject } from '../../domain/objects/git-object.js';
+import { isObjectNotFound, objectNotFound } from '../../domain/objects/error.js';
 import type { GitObject, ObjectId, ObjectType } from '../../domain/objects/index.js';
 import {
   type OfsPackEntryHeader,
@@ -12,13 +10,19 @@ import {
 } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
 import type { PromisorRemote } from '../../ports/promisor.js';
+import { createPromiseMemo, type PromiseMemo } from './internal/promise-memo.js';
+import {
+  assertRepoSettingsValid,
+  repoSettingsVerdictSettled,
+} from './internal/repo-settings-gate.js';
 import {
   assertChainDepthWithinCap,
   isBase,
   ofsDeltaBaseOffset,
   readEntryHeaderWithChunk,
   resolveObject,
-  resolveObjectBytesWithDepth,
+  resolveObjectContentWithDepth,
+  resolveObjectWithSize,
 } from './object-resolver.js';
 import {
   createPackRegistry,
@@ -29,14 +33,28 @@ import {
 import type { RawObject, ReadObjectOptions } from './types.js';
 
 /**
- * Per-session registry cache. Keyed by `ctx.session` (not the Context
- * instance itself) so that every Context derived from the same
- * `openRepository()`/`createXContext()` call — a long-running walk
+ * Per-session single-flight registry construction. Keyed by `ctx.session`
+ * (not the Context instance itself) so that every Context derived from the
+ * same `openRepository()`/`createXContext()` call — a long-running walk
  * (walkCommits, walkTree), or a same-repository derivation such as fsck's
  * audit view — reuses the parsed .idx files across thousands of object reads
- * instead of re-scanning the pack directory each time.
+ * instead of re-scanning the pack directory each time. `PromiseMemo`, not a
+ * plain `WeakMap<Session, PackRegistry>`: `createPackRegistry` now crosses an
+ * `await` (it reads `core.deltaBaseCacheLimit`), so two concurrent first
+ * reads racing on an empty cache must join the same construction instead of
+ * each starting — and finishing — their own registry.
  */
-const registryCache = new WeakMap<Context['session'], PackRegistry>();
+const registryMemos = new WeakMap<Context['session'], PromiseMemo<PackRegistry>>();
+
+/**
+ * The settled registry for a session that has already resolved once — the
+ * synchronous surface both `refreshPackRegistry` and `peekPackRegistry`
+ * read, the latter on every warm object read, so this is a hot-path map and
+ * not merely a refresh hook. A registry still under construction has not
+ * scanned the pack directory yet, so there is nothing for a concurrent
+ * `refresh()` to do and nothing for a peek to serve; both simply miss.
+ */
+const resolvedRegistries = new WeakMap<Context['session'], PackRegistry>();
 
 /**
  * Per-session in-flight lazy-fetch map. Concurrent reads of the same missing
@@ -44,14 +62,44 @@ const registryCache = new WeakMap<Context['session'], PackRegistry>();
  */
 const inflightCache = new WeakMap<Context['session'], Map<string, Promise<boolean>>>();
 
-export function getPackRegistry(ctx: Context): PackRegistry {
-  let registry = registryCache.get(ctx.session);
-  if (registry === undefined) {
-    registry = createPackRegistry(ctx);
-    registryCache.set(ctx.session, registry);
+export const getPackRegistry = async (ctx: Context): Promise<PackRegistry> => {
+  if (!repoSettingsVerdictSettled(ctx)) await assertRepoSettingsValid(ctx);
+  let memo = registryMemos.get(ctx.session);
+  if (memo === undefined) {
+    // `resolvedRegistries.set` rides the CONSTRUCTION's own `.then`, not
+    // every call: once per registry build, not once per read. A call that
+    // joins an already-settled memo returns straight from `memo.get()`
+    // without ever re-touching `resolvedRegistries` — `peekPackRegistry`
+    // already served the sync case, and this async path pays a `WeakMap.set`
+    // it does not need to repeat.
+    memo = createPromiseMemo(() =>
+      createPackRegistry(ctx).then((registry) => {
+        resolvedRegistries.set(ctx.session, registry);
+        return registry;
+      }),
+    );
+    registryMemos.set(ctx.session, memo);
   }
-  return registry;
-}
+  return memo.get();
+};
+
+/**
+ * The synchronous fast path `getPackRegistry` cannot be: a settled registry
+ * for a session whose repo-settings verdict is CURRENT, at zero promise-hop
+ * cost. `readObject` and its siblings call `peekPackRegistry(ctx) ?? await
+ * getPackRegistry(ctx)` — the settled case pays one `WeakMap.get` (~10ns)
+ * instead of the two microtask hops `await`-ing an already-resolved promise
+ * costs (~135ns measured on this worktree), the same order of saving
+ * `repoSettingsVerdictSettled` already banks for the config check itself.
+ *
+ * Gated on `repoSettingsVerdictSettled`, never on "a registry merely exists":
+ * a registry built against a SUPERSEDED config key must not be served as if
+ * still current, which would reopen the stale-verdict hole one call site later.
+ * `repoSettingsVerdictSettled` is itself key-aware (see `config-read.ts`), so
+ * this peek inherits that protection instead of re-deriving it.
+ */
+export const peekPackRegistry = (ctx: Context): PackRegistry | undefined =>
+  repoSettingsVerdictSettled(ctx) ? resolvedRegistries.get(ctx.session) : undefined;
 
 /**
  * Drop the per-session pack-registry's cached `.idx` scan so the next read
@@ -61,16 +109,26 @@ export function getPackRegistry(ctx: Context): PackRegistry {
  * exposed when its `merge` step could not see freshly-fetched commits.
  */
 export function refreshPackRegistry(ctx: Context): void {
-  registryCache.get(ctx.session)?.refresh();
+  resolvedRegistries.get(ctx.session)?.refresh();
 }
 
 /**
  * Close every persistent per-pack handle the registry opened for this
  * session. Does NOT create a registry if none exists — a repo that never
  * touched a pack disposes without scanning `objects/pack/`.
+ *
+ * The in-flight construction this awaits can now REJECT (a repo-settings
+ * refusal, or a config read fault) where the old synchronous registry never
+ * could — `dispose` is cleanup, not a place to surface a construction
+ * failure the caller already has its own path to observe. The rejection is
+ * swallowed deliberately and narrowly, at exactly this one `.catch`, not by
+ * silencing the underlying promise: a dispose racing a still-failing
+ * construction has nothing left to close.
  */
 export async function disposePackRegistry(ctx: Context): Promise<void> {
-  await registryCache.get(ctx.session)?.dispose();
+  const pending = registryMemos.get(ctx.session)?.peek();
+  const registry = await pending?.catch(() => undefined);
+  await registry?.dispose();
 }
 
 function getInflight(ctx: Context): Map<string, Promise<boolean>> {
@@ -80,15 +138,6 @@ function getInflight(ctx: Context): Map<string, Promise<boolean>> {
     inflightCache.set(ctx.session, inflight);
   }
   return inflight;
-}
-
-/**
- * True when `err` is `OBJECT_NOT_FOUND`. tsgit strips `thin-pack`, so every
- * stored pack is self-contained — a resolver miss always means the requested
- * object itself is absent, never a dangling delta base.
- */
-function isObjectNotFound(err: unknown): boolean {
-  return err instanceof TsgitError && err.data.code === 'OBJECT_NOT_FOUND';
 }
 
 /**
@@ -120,9 +169,11 @@ async function lazyFetchOnce(
  * lazy-fetches the missing object and retries `run` exactly once. Shared by
  * `readObject` and `readRawObject` so a partial clone behaves identically on
  * both — a divergence here would let the raw path see a weaker retry
- * contract than the parsed one.
+ * contract than the parsed one. Exported for `blob-source.ts`'s
+ * `verifyStoredObject` (the ref-target verifier), which needs the identical
+ * retry contract for a promised object.
  */
-async function withLazyFetchRetry<T>(
+export async function withLazyFetchRetry<T>(
   ctx: Context,
   id: ObjectId,
   registry: PackRegistry,
@@ -132,6 +183,9 @@ async function withLazyFetchRetry<T>(
     return await run();
   } catch (err) {
     const promisor = ctx.promisor;
+    // tsgit strips thin-pack, so every stored pack is self-contained — a
+    // resolver miss always means the requested object itself is absent,
+    // never a dangling delta base.
     if (promisor === undefined || !isObjectNotFound(err)) throw err;
     // Partial-clone lazy-fetch: pull the missing object, refresh the pack
     // registry so the new pack is visible, then retry the resolve exactly once.
@@ -151,9 +205,24 @@ export async function readObject(
   options?: ReadObjectOptions,
 ): Promise<GitObject> {
   const verifyHash = options?.verifyHash ?? false;
-  const registry = getPackRegistry(ctx);
+  const registry = peekPackRegistry(ctx) ?? (await getPackRegistry(ctx));
   return withLazyFetchRetry(ctx, id, registry, () =>
     resolveObject(ctx, registry, id, verifyHash, options?.maxBytes),
+  );
+}
+
+/** Like `readObject`, but also surfaces the resolved object's declared size
+ *  — `cat-file-batch.ts`'s reader, sharing the same lazy-fetch retry and
+ *  parsed memo. */
+export async function readObjectWithSize(
+  ctx: Context,
+  id: ObjectId,
+  options?: ReadObjectOptions,
+): Promise<{ readonly object: GitObject; readonly size: number }> {
+  const verifyHash = options?.verifyHash ?? false;
+  const registry = peekPackRegistry(ctx) ?? (await getPackRegistry(ctx));
+  return withLazyFetchRetry(ctx, id, registry, () =>
+    resolveObjectWithSize(ctx, registry, id, verifyHash, options?.maxBytes),
   );
 }
 
@@ -163,9 +232,9 @@ export async function readRawObject(
   options?: ReadObjectOptions,
 ): Promise<RawObject> {
   const verifyHash = options?.verifyHash ?? false;
-  const registry = getPackRegistry(ctx);
+  const registry = peekPackRegistry(ctx) ?? (await getPackRegistry(ctx));
   return withLazyFetchRetry(ctx, id, registry, async () => {
-    const resolved = await resolveObjectBytesWithDepth(
+    const { type, content } = await resolveObjectContentWithDepth(
       ctx,
       registry,
       id,
@@ -173,7 +242,7 @@ export async function readRawObject(
       options?.maxBytes,
       0,
     );
-    return splitObject(resolved.bytes);
+    return { type, content };
   });
 }
 
@@ -225,7 +294,7 @@ export async function readObjectMetadataWithContent(
   ctx: Context,
   id: ObjectId,
 ): Promise<ObjectMetadataWithContent> {
-  const registry = getPackRegistry(ctx);
+  const registry = peekPackRegistry(ctx) ?? (await getPackRegistry(ctx));
   return withLazyFetchRetry(ctx, id, registry, () =>
     resolveObjectMetadataWithContent(ctx, registry, id),
   );

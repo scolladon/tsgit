@@ -24,7 +24,7 @@
  */
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as zlib from 'node:zlib';
@@ -32,6 +32,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import type { FsckFinding } from '../../src/application/commands/fsck.js';
 import { fsck } from '../../src/application/commands/fsck.js';
+import { __resetConfigCacheForTests } from '../../src/application/primitives/config-read.js';
+import { TsgitError } from '../../src/domain/error.js';
 import type { Context } from '../../src/ports/context.js';
 import { GIT_AVAILABLE, runGit } from './interop-helpers.js';
 import { trackedRepositories } from './repository-lifecycle.js';
@@ -810,7 +812,7 @@ describe.skipIf(!GIT_AVAILABLE)(
 );
 
 // ---------------------------------------------------------------------------
-// Refs-verify pass — matrix #9a: ref → valid-but-absent sha (exit 2)
+// Refs-verify pass — a ref naming a well-formed but absent sha (exit 2)
 // ---------------------------------------------------------------------------
 // Pinned against real git 2.54.0:
 //   stderr: "error: refs/heads/broken: invalid sha1 pointer <sha>"
@@ -833,44 +835,41 @@ afterAll(async () => {
   if (refAbsentDir !== '') await rm(refAbsentDir, { recursive: true, force: true });
 });
 
-describe.skipIf(!GIT_AVAILABLE)(
-  'Given loose ref pointing to valid-format but absent OID (matrix #9a)',
-  () => {
-    describe('When fsck runs', () => {
-      it('Then emits bad-ref badRefOid, exit code 2 matches real git', async () => {
-        // Arrange — git's expected output
-        const gitResult = gitFsck(refAbsentDir);
+describe.skipIf(!GIT_AVAILABLE)('Given a loose ref naming a well-formed but absent OID', () => {
+  describe('When fsck runs', () => {
+    it('Then emits bad-ref badRefOid, exit code 2 matches real git', async () => {
+      // Arrange — git's expected output
+      const gitResult = gitFsck(refAbsentDir);
 
-        // Act
-        const result = await fsck(refAbsentCtx);
+      // Act
+      const result = await fsck(refAbsentCtx);
 
-        // Assert — exit code 2 (absent OID = bit 2)
-        expect(result.exitCode).toBe(2);
-        expect(gitResult.exitCode).toBe(2);
+      // Assert — exit code 2 (absent OID = bit 2)
+      expect(result.exitCode).toBe(2);
+      expect(gitResult.exitCode).toBe(2);
 
-        // Assert — badRefOid finding present
-        const badRef = result.findings.find(
-          (f): f is FsckFinding & { type: 'bad-ref' } =>
-            f.type === 'bad-ref' && f.msgId === 'badRefOid',
-        );
-        expect(badRef).toBeDefined();
-        expect(badRef?.severity).toBe('error');
-        expect(badRef?.ref).toBe('refs/heads/broken');
-        expect(badRef?.target).toBe(ABSENT_OID);
+      // Assert — badRefOid finding present
+      const badRef = result.findings.find(
+        (f): f is FsckFinding & { type: 'bad-ref' } =>
+          f.type === 'bad-ref' && f.msgId === 'badRefOid',
+      );
+      expect(badRef).toBeDefined();
+      expect(badRef?.severity).toBe('error');
+      expect(badRef?.ref).toBe('refs/heads/broken');
+      expect(badRef?.target).toBe(ABSENT_OID);
 
-        // Reconstruct git's exact stderr line and assert byte-equality
-        // git: "error: refs/heads/broken: invalid sha1 pointer <sha>"
-        if (badRef !== undefined) {
-          const reconstructed = `${badRef.ref}: invalid sha1 pointer ${badRef.target}`;
-          expect(gitResult.stderr).toContain(reconstructed);
-        }
-      });
+      // Reconstruct git's exact stderr line and assert byte-equality
+      // git: "error: refs/heads/broken: invalid sha1 pointer <sha>"
+      if (badRef !== undefined) {
+        const reconstructed = `${badRef.ref}: invalid sha1 pointer ${badRef.target}`;
+        expect(gitResult.stderr).toContain(reconstructed);
+      }
     });
-  },
-);
+  });
+});
 
 // ---------------------------------------------------------------------------
-// Refs-verify pass — matrix #9b: ref → malformed content (exit 10 = 2|8)
+// Refs-verify pass — a ref holding malformed content (exit 10 = 2|8)
 // ---------------------------------------------------------------------------
 // Pinned against real git 2.54.0:
 //   stderr line 1: "error: refs/heads/garbage: badRefContent: not-a-valid-sha"
@@ -899,7 +898,7 @@ afterAll(async () => {
 });
 
 describe.skipIf(!GIT_AVAILABLE)(
-  'Given loose ref with malformed content (matrix #9b, exit 10 = 2|8)',
+  'Given a loose ref holding malformed content, so the exit is 10 = 2|8',
   () => {
     describe('When fsck runs', () => {
       it('Then emits badRefContent + badRefOid(zero), composite exit 10 matches real git', async () => {
@@ -1676,6 +1675,1510 @@ describe.skipIf(!GIT_AVAILABLE)(
         expect(badTree).toBeDefined();
         expect(badTree?.severity).toBe('error');
       });
+    });
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Refs-verify pass — a loose ref that is a symbolic link
+// ---------------------------------------------------------------------------
+// Pinned against real git 2.55.0:
+//   stderr: "warning: refs/heads/rel: symlinkRef: use deprecated symbolic link for symref"
+//   exit: 0 — the notice never fails the audit
+
+let symlinkRefDir = '';
+let symlinkRefCtx: Context;
+const SYMLINKED_REF = 'refs/heads/rel';
+
+/** Roots created per row below, removed together in this family's teardown. */
+const symlinkDepthRoots: string[] = [];
+
+/** Every `symlinkRef` finding, in ref order — the whole set, so an extra
+ *  finding on either side changes the comparison. */
+const symlinkRefFindings = (
+  findings: ReadonlyArray<FsckFinding>,
+): ReadonlyArray<FsckFinding & { type: 'bad-ref' }> =>
+  findings
+    .filter(
+      (f): f is FsckFinding & { type: 'bad-ref' } =>
+        f.type === 'bad-ref' && f.msgId === 'symlinkRef',
+    )
+    .slice()
+    .sort((a, b) => (a.ref < b.ref ? -1 : 1));
+
+/** git's own stderr for a set of `symlinkRef` notices, rebuilt from tsgit's
+ *  structured findings alone — the library never renders a line. */
+const symlinkRefStderr = (
+  findings: ReadonlyArray<FsckFinding & { type: 'bad-ref' }>,
+  prefix: string,
+): string =>
+  findings
+    .map((f) => `${prefix}: ${f.ref}: ${f.msgId}: use deprecated symbolic link for symref\n`)
+    .join('');
+
+beforeAll(async () => {
+  symlinkRefDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-symlinkRef-'));
+  initRepo(symlinkRefDir);
+  await writeFile(path.join(symlinkRefDir, 'f.txt'), 'c1\n');
+  runGit(['-C', symlinkRefDir, 'add', '-A'], { env: SAFE_ENV });
+  runGit(['-C', symlinkRefDir, 'commit', '-q', '-m', 'c1'], { env: SAFE_ENV });
+  runGit(['-C', symlinkRefDir, 'branch', 'side', 'main'], { env: SAFE_ENV });
+  // Read-through text, so the link also resolves as a path and git's own
+  // worktree probe stays out of the way.
+  await symlink('side', path.join(symlinkRefDir, '.git', 'refs', 'heads', 'rel'));
+  symlinkRefCtx = createNodeContext({ workDir: symlinkRefDir });
+}, SETUP_TIMEOUT);
+
+afterAll(async () => {
+  if (symlinkRefDir !== '') await rm(symlinkRefDir, { recursive: true, force: true });
+  await Promise.all(
+    symlinkDepthRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
+  );
+});
+
+describe.skipIf(!GIT_AVAILABLE)('Given a loose ref that is a symbolic link', () => {
+  describe('When fsck runs', () => {
+    it('Then emits a symlinkRef warning and the clean exit code real git reports', async () => {
+      // Arrange — git's expected output
+      const gitResult = gitFsck(symlinkRefDir);
+
+      // Act
+      const result = await fsck(symlinkRefCtx);
+
+      // Assert — the notice never fails the audit
+      expect(gitResult.exitCode).toBe(0);
+      expect(result.exitCode).toBe(0);
+
+      // Assert — the whole warning SET, not just one member: an extra
+      // finding on either side changes the list and fails the row.
+      const warned = symlinkRefFindings(result.findings);
+      expect(warned.map((f) => f.severity)).toEqual(['warning']);
+      expect(warned.map((f) => f.ref)).toEqual([SYMLINKED_REF]);
+
+      // Reconstruct git's exact stderr and assert byte-equality
+      expect(gitResult.stderr).toBe(symlinkRefStderr(warned, 'warning'));
+    });
+  });
+});
+
+/** git's stderr lines for a ref walk, rebuilt from the structured findings:
+ *  one line per symlink notice, one per content notice, one per zero pointer.
+ *  `content` is the raw text the broken ref holds, which git echoes verbatim. */
+const refWalkStderr = (findings: ReadonlyArray<FsckFinding>, content: string): string[] =>
+  findings
+    .filter((f): f is FsckFinding & { type: 'bad-ref' } => f.type === 'bad-ref')
+    .map((f) => {
+      if (f.msgId === 'symlinkRef') {
+        return `warning: ${f.ref}: symlinkRef: use deprecated symbolic link for symref`;
+      }
+      if (f.msgId === 'badRefContent') {
+        return `${f.severity === 'error' ? 'error' : 'warning'}: ${f.ref}: badRefContent: ${content}`;
+      }
+      return `error: ${f.ref}: invalid sha1 pointer ${f.target}`;
+    });
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given links at several depths and one naming a directory holding a broken ref',
+  () => {
+    describe('When fsck runs', () => {
+      it('Then both warn once per link and report the broken ref under its real name only', async () => {
+        // Arrange — `refs/heads/other/broken` holds text that is not an object
+        // name, so a walk that followed `refs/heads/dl` into that directory
+        // would report the SAME fault a second time, under the linked name.
+        const dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-symlink-depths-'));
+        symlinkDepthRoots.push(dir);
+        initRepo(dir);
+        await writeFile(path.join(dir, 'f.txt'), 'c1\n');
+        runGit(['-C', dir, 'add', '-A'], { env: SAFE_ENV });
+        runGit(['-C', dir, 'commit', '-q', '-m', 'c1'], { env: SAFE_ENV });
+        runGit(['-C', dir, 'branch', 'side', 'main'], { env: SAFE_ENV });
+        runGit(['-C', dir, 'update-ref', 'refs/heads/other/x', 'HEAD'], { env: SAFE_ENV });
+        const heads = path.join(dir, '.git', 'refs', 'heads');
+        await writeFile(path.join(heads, 'other', 'broken'), 'garbage\n');
+        await mkdir(path.join(heads, 'nest'), { recursive: true });
+        await symlink('other', path.join(heads, 'dl'));
+        await symlink('../side', path.join(heads, 'nest', 'deep'));
+        const ctx = createNodeContext({ workDir: dir });
+
+        // Act
+        const gitResult = gitFsck(dir, '--full');
+        const result = await fsck(ctx);
+        const enumerated = runGit(['-C', dir, 'for-each-ref', '--format=%(refname)'], {
+          env: SAFE_ENV,
+        })
+          .trim()
+          .split('\n');
+
+        // Assert — git's own ref enumeration DOES read through the link, so the
+        // audit's silence about `refs/heads/dl/broken` is a property of the fsck
+        // walk, not of the link being unreadable.
+        expect(enumerated).toContain('refs/heads/dl/x');
+
+        // Assert — exactly one notice per link
+        const warned = symlinkRefFindings(result.findings);
+        expect(warned.map((f) => f.ref)).toEqual(['refs/heads/dl', 'refs/heads/nest/deep']);
+
+        // Assert — the CONTENT notice names the real ref alone, while the zero
+        // pointer the broken body stands for is reported under both names.
+        expect(
+          result.findings
+            .filter((f) => f.type === 'bad-ref' && f.msgId !== 'symlinkRef')
+            .map((f) => (f.type === 'bad-ref' ? `${f.msgId} ${f.ref}` : ''))
+            .sort(),
+        ).toEqual([
+          'badRefContent refs/heads/other/broken',
+          'badRefOid refs/heads/dl/broken',
+          'badRefOid refs/heads/other/broken',
+        ]);
+
+        // Assert — git's whole stderr, rebuilt from those structured fields
+        expect(gitResult.stderr.split('\n').filter(Boolean).sort()).toEqual(
+          refWalkStderr(result.findings, 'garbage').sort(),
+        );
+        expect(gitResult.exitCode).toBe(10);
+        expect(result.exitCode).toBe(gitResult.exitCode);
+      });
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given a link whose target ref holds text that is not an object name',
+  () => {
+    describe('When fsck runs', () => {
+      it('Then the content notice names the real ref alone and both names carry the pointer', async () => {
+        // Arrange
+        const dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-symlink-broken-'));
+        symlinkDepthRoots.push(dir);
+        initRepo(dir);
+        await writeFile(path.join(dir, 'f.txt'), 'c1\n');
+        runGit(['-C', dir, 'add', '-A'], { env: SAFE_ENV });
+        runGit(['-C', dir, 'commit', '-q', '-m', 'c1'], { env: SAFE_ENV });
+        const heads = path.join(dir, '.git', 'refs', 'heads');
+        await writeFile(path.join(heads, 'broken-ref'), 'garbage\n');
+        await symlink('broken-ref', path.join(heads, 'broken-link'));
+        const ctx = createNodeContext({ workDir: dir });
+
+        // Act
+        const gitResult = gitFsck(dir, '--full');
+        const result = await fsck(ctx);
+
+        // Assert — one content notice, two pointers, one symlink notice
+        expect(
+          result.findings
+            .filter((f): f is FsckFinding & { type: 'bad-ref' } => f.type === 'bad-ref')
+            .map((f) => `${f.msgId} ${f.ref}`)
+            .sort(),
+        ).toEqual([
+          'badRefContent refs/heads/broken-ref',
+          'badRefOid refs/heads/broken-link',
+          'badRefOid refs/heads/broken-ref',
+          'symlinkRef refs/heads/broken-link',
+        ]);
+
+        // Assert — git's whole stderr, rebuilt from those structured fields
+        expect(gitResult.stderr.split('\n').filter(Boolean).sort()).toEqual(
+          refWalkStderr(result.findings, 'garbage').sort(),
+        );
+        expect(gitResult.exitCode).toBe(10);
+        expect(result.exitCode).toBe(gitResult.exitCode);
+      });
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE)('Given HEAD itself stored as a symbolic link to a branch', () => {
+  describe('When fsck runs', () => {
+    it('Then neither tool reports anything — the walk covers refs only', async () => {
+      // Arrange
+      const dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-symlink-head-'));
+      symlinkDepthRoots.push(dir);
+      initRepo(dir);
+      await writeFile(path.join(dir, 'f.txt'), 'c1\n');
+      runGit(['-C', dir, 'add', '-A'], { env: SAFE_ENV });
+      runGit(['-C', dir, 'commit', '-q', '-m', 'c1'], { env: SAFE_ENV });
+      await rm(path.join(dir, '.git', 'HEAD'));
+      await symlink('refs/heads/main', path.join(dir, '.git', 'HEAD'));
+      const ctx = createNodeContext({ workDir: dir });
+
+      // Act
+      const gitResult = gitFsck(dir, '--full');
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(gitResult.exitCode).toBe(0);
+      expect(gitResult.stderr).toBe('');
+      expect(result.exitCode).toBe(0);
+      expect(symlinkRefFindings(result.findings)).toEqual([]);
+    });
+  });
+});
+
+/** A repository carrying exactly one symlinked loose ref, plus whatever
+ *  `[fsck]` entries a row needs. */
+const symlinkRefRepoWith = async (
+  slug: string,
+  entries: ReadonlyArray<readonly [string, string]>,
+): Promise<{ readonly dir: string; readonly ctx: Context }> => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), `tsgit-fsck-symlink-${slug}-`));
+  symlinkDepthRoots.push(dir);
+  initRepo(dir);
+  await writeFile(path.join(dir, 'f.txt'), 'c1\n');
+  runGit(['-C', dir, 'add', '-A'], { env: SAFE_ENV });
+  runGit(['-C', dir, 'commit', '-q', '-m', 'c1'], { env: SAFE_ENV });
+  runGit(['-C', dir, 'branch', 'side', 'main'], { env: SAFE_ENV });
+  await symlink('side', path.join(dir, '.git', 'refs', 'heads', 'rel'));
+  for (const [key, value] of entries) {
+    runGit(['-C', dir, 'config', key, value], { env: SAFE_ENV });
+  }
+  return { dir, ctx: createNodeContext({ workDir: dir }) };
+};
+
+const catchFsckError = async (ctx: Context): Promise<TsgitError> => {
+  let caught: unknown;
+  try {
+    await fsck(ctx);
+  } catch (error) {
+    caught = error;
+  }
+  expect(caught).toBeInstanceOf(TsgitError);
+  return caught as TsgitError;
+};
+
+describe.skipIf(!GIT_AVAILABLE)('Given fsck.symlinkRef re-typed in the configuration', () => {
+  // `warn` is the catalogue default for this notice, so a row asking for it
+  // would pass with the whole table ignored; the `warn` spelling is pinned
+  // where it re-types something — over `badRefContent`, an ERROR default.
+  describe.each([
+    { level: 'error', exitCode: 8, prefix: 'error', severities: ['error'] },
+    { level: 'ignore', exitCode: 0, prefix: undefined, severities: [] },
+  ])('When fsck runs with the notice set to $level', (row) => {
+    it('Then both re-type it the same way, down to the exit code', async () => {
+      // Arrange
+      const { dir, ctx } = await symlinkRefRepoWith(row.level, [['fsck.symlinkRef', row.level]]);
+
+      // Act
+      const gitResult = gitFsck(dir, '--full');
+      const result = await fsck(ctx);
+
+      // Assert — git's side
+      expect(gitResult.exitCode).toBe(row.exitCode);
+      expect(gitResult.stderr).toBe(
+        row.prefix === undefined
+          ? ''
+          : `${row.prefix}: ${SYMLINKED_REF}: symlinkRef: use deprecated symbolic link for symref\n`,
+      );
+
+      // Assert — tsgit's side, re-typed by the same key
+      const reported = symlinkRefFindings(result.findings);
+      expect(reported.map((f) => f.severity)).toEqual(row.severities);
+      expect(result.exitCode).toBe(row.exitCode);
+      expect(gitResult.stderr).toBe(
+        row.prefix === undefined ? '' : symlinkRefStderr(reported, row.prefix),
+      );
+    });
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)('Given the msg-id written in a different case', () => {
+  describe('When fsck runs', () => {
+    it('Then both honour it — the key half of a config name is case-insensitive', async () => {
+      // Arrange
+      const { dir, ctx } = await symlinkRefRepoWith('case', [
+        [`fsck.${'symlinkRef'.toLowerCase()}`, 'error'],
+      ]);
+
+      // Act
+      const gitResult = gitFsck(dir, '--full');
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(gitResult.exitCode).toBe(8);
+      expect(result.exitCode).toBe(8);
+      expect(symlinkRefFindings(result.findings).map((f) => f.severity)).toEqual(['error']);
+    });
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)('Given a msg-id no fsck check knows', () => {
+  describe('When fsck runs', () => {
+    it('Then both refuse before auditing anything', async () => {
+      // Arrange
+      const { dir, ctx } = await symlinkRefRepoWith('unknown-id', [['fsck.noSuchThing', 'error']]);
+
+      // Act
+      const gitResult = gitFsck(dir, '--full');
+      const err = await catchFsckError(ctx);
+
+      // Assert
+      expect(gitResult.exitCode).toBe(128);
+      expect(gitResult.stderr).toBe(
+        `fatal: Unhandled message id: ${'noSuchThing'.toLowerCase()}\n`,
+      );
+      expect(err.data).toEqual({
+        code: 'FSCK_UNKNOWN_MSG_ID',
+        msgId: 'noSuchThing'.toLowerCase(),
+        source: path.join(dir, '.git', 'config'),
+        line: expect.any(Number),
+      });
+    });
+  });
+});
+
+/**
+ * A repository whose `.git/config` ends with `text` verbatim. `git config`
+ * refuses to write a subsection header of its own, and a valueless entry has
+ * no CLI spelling at all, so raw bytes are the only way to plant these rows.
+ */
+const fsckRepoWithConfigText = async (
+  slug: string,
+  text: string,
+): Promise<{ readonly dir: string; readonly ctx: Context }> => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), `tsgit-fsck-config-${slug}-`));
+  symlinkDepthRoots.push(dir);
+  initRepo(dir);
+  await writeFile(path.join(dir, 'f.txt'), 'c1\n');
+  runGit(['-C', dir, 'add', '-A'], { env: SAFE_ENV });
+  runGit(['-C', dir, 'commit', '-q', '-m', 'c1'], { env: SAFE_ENV });
+  await appendFile(path.join(dir, '.git', 'config'), text);
+  __resetConfigCacheForTests();
+  return { dir, ctx: createNodeContext({ workDir: dir }) };
+};
+
+describe.skipIf(!GIT_AVAILABLE)('Given a fsck msg-id sitting under a subsection header', () => {
+  describe.each([
+    {
+      slug: 'quoted',
+      text: '[fsck "SubName"]\n\tBadTree = ignore\n',
+      msgId: `SubName.${'BadTree'.toLowerCase()}`,
+      label: 'a quoted subsection contributes its bytes unfolded',
+    },
+    {
+      slug: 'dotted',
+      text: '[fsck.Sub]\n\tbadTree = ignore\n',
+      msgId: `sub.${'badTree'.toLowerCase()}`,
+      label: 'a dotted subsection contributes its bytes folded down',
+    },
+    {
+      slug: 'empty',
+      text: '[fsck ""]\n\tbadTree = ignore\n',
+      msgId: `.${'badTree'.toLowerCase()}`,
+      label: 'an empty subsection still contributes its separating dot',
+    },
+    {
+      slug: 'list-key',
+      text: '[fsck "x"]\n\tskipList = /names.txt\n',
+      msgId: `x.${'skipList'.toLowerCase()}`,
+      label: 'the list key under a subsection is graded as a msg-id, not read as a list',
+    },
+  ])('When fsck runs and $label', ({ slug, text, msgId }) => {
+    it('Then both refuse on the composed msg-id before auditing anything', async () => {
+      // Arrange
+      const { dir, ctx } = await fsckRepoWithConfigText(`subsection-${slug}`, text);
+
+      // Act
+      const gitResult = gitFsck(dir, '--full');
+      const err = await catchFsckError(ctx);
+
+      // Assert
+      expect(gitResult.exitCode).toBe(128);
+      expect(gitResult.stderr).toBe(`fatal: Unhandled message id: ${msgId}\n`);
+      expect(err.data).toEqual({
+        code: 'FSCK_UNKNOWN_MSG_ID',
+        msgId,
+        source: path.join(dir, '.git', 'config'),
+        line: expect.any(Number),
+      });
+    });
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)('Given a valueless fsck msg-id under a subsection header', () => {
+  describe('When fsck runs', () => {
+    it('Then both name the composed key in the missing-value refusal', async () => {
+      // Arrange
+      const { dir, ctx } = await fsckRepoWithConfigText(
+        'subsection-valueless',
+        '[fsck "x"]\n\tbadTree\n',
+      );
+
+      // Act
+      const gitResult = gitFsck(dir, '--full');
+      const err = await catchFsckError(ctx);
+
+      // Assert
+      expect(gitResult.exitCode).toBe(128);
+      expect(gitResult.stderr).toContain(
+        `error: missing value for 'fsck.x.${'badTree'.toLowerCase()}'\n`,
+      );
+      expect(err.data).toEqual({
+        code: 'CONFIG_MISSING_VALUE',
+        key: `fsck.x.${'badTree'.toLowerCase()}`,
+        source: path.join(dir, '.git', 'config'),
+        line: expect.any(Number),
+      });
+    });
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)('Given a fatal msg-id asked for a softer severity', () => {
+  describe.each([{ word: 'ignore' }, { word: 'warn' }])('When fsck runs with $word', (row) => {
+    it.each([{ msgId: 'nulInHeader' }, { msgId: 'unterminatedHeader' }])(
+      'Then both refuse $msgId before auditing anything',
+      async ({ msgId }) => {
+        // Arrange
+        const { dir, ctx } = await symlinkRefRepoWith(`demote-${msgId}-${row.word}`, [
+          [`fsck.${msgId}`, row.word],
+        ]);
+
+        // Act
+        const gitResult = gitFsck(dir, '--full');
+        const err = await catchFsckError(ctx);
+
+        // Assert
+        expect(gitResult.exitCode).toBe(128);
+        expect(gitResult.stderr).toBe(
+          `fatal: Cannot demote ${msgId.toLowerCase()} to ${row.word}\n`,
+        );
+        expect(err.data).toEqual({
+          code: 'FSCK_CANNOT_DEMOTE',
+          msgId: msgId.toLowerCase(),
+          severity: row.word,
+          source: path.join(dir, '.git', 'config'),
+          line: expect.any(Number),
+        });
+      },
+    );
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)('Given a fatal msg-id asked for error', () => {
+  describe.each([{ msgId: 'nulInHeader' }, { msgId: 'unterminatedHeader' }])(
+    'When fsck runs with $msgId set to error',
+    (row) => {
+      it('Then both accept it and audit as usual', async () => {
+        // Arrange
+        const { dir, ctx } = await symlinkRefRepoWith(`keep-${row.msgId}`, [
+          [`fsck.${row.msgId}`, 'error'],
+        ]);
+
+        // Act
+        const gitResult = gitFsck(dir, '--full');
+        const result = await fsck(ctx);
+
+        // Assert
+        expect(gitResult.exitCode).toBe(0);
+        expect(gitResult.stderr).not.toContain('Cannot demote');
+        expect(result.exitCode).toBe(gitResult.exitCode);
+      });
+    },
+  );
+});
+
+describe.skipIf(!GIT_AVAILABLE)('Given a severity outside the three git accepts', () => {
+  describe('When fsck runs', () => {
+    it('Then both refuse before auditing anything', async () => {
+      // Arrange
+      const { dir, ctx } = await symlinkRefRepoWith('bad-value', [['fsck.symlinkRef', 'bogus']]);
+
+      // Act
+      const gitResult = gitFsck(dir, '--full');
+      const err = await catchFsckError(ctx);
+
+      // Assert
+      expect(gitResult.exitCode).toBe(128);
+      expect(gitResult.stderr).toBe("fatal: Unknown fsck message type: 'bogus'\n");
+      expect(err.data).toEqual({
+        code: 'CONFIG_INVALID_ENUM_VALUE',
+        key: `fsck.${'symlinkRef'.toLowerCase()}`,
+        source: path.join(dir, '.git', 'config'),
+        value: 'bogus',
+        line: expect.any(Number),
+      });
+    });
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)('Given the same msg-id typed twice', () => {
+  describe('When fsck runs', () => {
+    it('Then both take the last entry', async () => {
+      // Arrange
+      const { dir, ctx } = await symlinkRefRepoWith('last-wins', []);
+      runGit(['-C', dir, 'config', '--add', 'fsck.symlinkRef', 'error'], { env: SAFE_ENV });
+      runGit(['-C', dir, 'config', '--add', 'fsck.symlinkRef', 'ignore'], { env: SAFE_ENV });
+
+      // Act
+      const gitResult = gitFsck(dir, '--full');
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(gitResult.exitCode).toBe(0);
+      expect(gitResult.stderr).toBe('');
+      expect(result.exitCode).toBe(0);
+      expect(symlinkRefFindings(result.findings)).toEqual([]);
+    });
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)('Given the receive and fetch fsck namespaces', () => {
+  describe.each([{ key: 'receive.fsck.symlinkRef' }, { key: 'fetch.fsck.symlinkRef' }])(
+    'When fsck runs with $key set to ignore',
+    (row) => {
+      it('Then neither honours it — the audit reads the fsck namespace alone', async () => {
+        // Arrange
+        const { dir, ctx } = await symlinkRefRepoWith(row.key.split('.')[0] as string, [
+          [row.key, 'ignore'],
+        ]);
+
+        // Act
+        const gitResult = gitFsck(dir, '--full');
+        const result = await fsck(ctx);
+
+        // Assert — the notice survives on both sides
+        const reported = symlinkRefFindings(result.findings);
+        expect(gitResult.exitCode).toBe(0);
+        expect(result.exitCode).toBe(0);
+        expect(reported.map((f) => f.severity)).toEqual(['warning']);
+        expect(gitResult.stderr).toBe(symlinkRefStderr(reported, 'warning'));
+      });
+    },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// The severity table over the object catalogue and the ref-content notice
+// ---------------------------------------------------------------------------
+
+/** A repository holding one commit whose message carries a NUL — the
+ *  `nulInCommit` notice, a WARN default the strict flag upgrades. */
+const nulInCommitRepoWith = async (
+  slug: string,
+  entries: ReadonlyArray<readonly [string, string]>,
+): Promise<{ readonly dir: string; readonly ctx: Context; readonly commitSha: string }> => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), `tsgit-fsck-nul-${slug}-`));
+  symlinkDepthRoots.push(dir);
+  initRepo(dir);
+  await writeFile(path.join(dir, 'f.txt'), 'c1\n');
+  runGit(['-C', dir, 'add', '-A'], { env: SAFE_ENV });
+  runGit(['-C', dir, 'commit', '-q', '-m', 'c1'], { env: SAFE_ENV });
+  const tree = runGit(['-C', dir, 'rev-parse', 'HEAD^{tree}'], { env: SAFE_ENV }).trim();
+  const body = Buffer.concat([
+    Buffer.from(
+      `tree ${tree}\nauthor A <a@x> 1700000000 +0000\ncommitter A <a@x> 1700000000 +0000\n\nmsg`,
+    ),
+    Buffer.from([0]),
+    Buffer.from('nul\n'),
+  ]);
+  const raw = Buffer.concat([Buffer.from(`commit ${body.length}\0`), body]);
+  const id = sha1Hex(raw);
+  const objDir = path.join(dir, '.git', 'objects', id.slice(0, 2));
+  await mkdir(objDir, { recursive: true });
+  await writeFile(path.join(objDir, id.slice(2)), deflateSync(raw));
+  runGit(['-C', dir, 'update-ref', 'refs/heads/nul', id], { env: SAFE_ENV });
+  for (const [key, value] of entries) {
+    runGit(['-C', dir, 'config', key, value], { env: SAFE_ENV });
+  }
+  __resetConfigCacheForTests();
+  return { dir, ctx: createNodeContext({ workDir: dir }), commitSha: id };
+};
+
+/** Every `nulInCommit` finding the audit reported. */
+const nulFindings = (
+  findings: ReadonlyArray<FsckFinding>,
+): ReadonlyArray<FsckFinding & { type: 'bad-object' }> =>
+  findings.filter(
+    (f): f is FsckFinding & { type: 'bad-object' } =>
+      f.type === 'bad-object' && f.msgId === 'nulInCommit',
+  );
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given an object-catalogue notice re-typed in the configuration',
+  () => {
+    describe.each([
+      { level: 'error', flags: [] as string[], exitCode: 1, severities: ['error'] },
+      { level: 'ignore', flags: [] as string[], exitCode: 0, severities: [] },
+      { level: 'warn', flags: ['--strict'], exitCode: 0, severities: ['warning'] },
+    ])('When fsck runs with the notice set to $level and flags $flags', (row) => {
+      it('Then both land on the same severity and exit code, the key beating the strict upgrade', async () => {
+        // Arrange
+        const { dir, ctx, commitSha } = await nulInCommitRepoWith(
+          `${row.level}${row.flags.join('')}`,
+          [['fsck.nulInCommit', row.level]],
+        );
+
+        // Act
+        const gitResult = gitFsck(dir, ...row.flags);
+        const result = await fsck(ctx, row.flags.includes('--strict') ? { strict: true } : {});
+
+        // Assert
+        expect(gitResult.exitCode).toBe(row.exitCode);
+        expect(result.exitCode).toBe(gitResult.exitCode);
+        const reported = nulFindings(result.findings);
+        expect(reported.map((f) => f.severity)).toEqual(row.severities);
+        expect(reported.map((f) => f.id)).toEqual(row.severities.map(() => commitSha));
+
+        // Assert — git's exact stderr, rebuilt from those structured fields.
+        // The severity word git prints for a notice is the word the audit
+        // resolved, so a divergence in either direction fails this line.
+        expect(gitResult.stderr).toBe(
+          reported
+            .map(
+              (f) =>
+                `${f.severity} in commit ${f.id}: ${f.msgId}: NUL byte in the commit object body\n`,
+            )
+            .join(''),
+        );
+      });
+    });
+  },
+);
+
+const BAD_CONTENT_REF = 'refs/heads/bad';
+const BAD_CONTENT_TEXT = 'garbage';
+const ZERO_OID = '0'.repeat(40);
+
+/** A repository whose one extra loose ref holds text that is not an object
+ *  name, plus whatever `[fsck]` entries a row needs. */
+const badRefContentRepo = async (
+  slug: string,
+  entries: ReadonlyArray<readonly [string, string]>,
+): Promise<{ readonly dir: string; readonly ctx: Context }> => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), `tsgit-fsck-ref-content-${slug}-`));
+  symlinkDepthRoots.push(dir);
+  initRepo(dir);
+  await writeFile(path.join(dir, 'f.txt'), 'c1\n');
+  runGit(['-C', dir, 'add', '-A'], { env: SAFE_ENV });
+  runGit(['-C', dir, 'commit', '-q', '-m', 'c1'], { env: SAFE_ENV });
+  await writeFile(path.join(dir, '.git', 'refs', 'heads', 'bad'), `${BAD_CONTENT_TEXT}\n`);
+  for (const [key, value] of entries) {
+    runGit(['-C', dir, 'config', key, value], { env: SAFE_ENV });
+  }
+  __resetConfigCacheForTests();
+  return { dir, ctx: createNodeContext({ workDir: dir }) };
+};
+
+describe.skipIf(!GIT_AVAILABLE)('Given a loose ref whose content is not an object name', () => {
+  describe.each([
+    { label: 'no re-typing at all', entries: [], exit: 10, contentSeverity: 'error' },
+    {
+      label: 'badRefContent left at error',
+      entries: [['fsck.badRefContent', 'error']],
+      exit: 10,
+      contentSeverity: 'error',
+    },
+    {
+      label: 'badRefContent softened to warn',
+      entries: [['fsck.badRefContent', 'warn']],
+      exit: 2,
+      contentSeverity: 'warning',
+    },
+    {
+      label: 'badRefContent silenced',
+      entries: [['fsck.badRefContent', 'ignore']],
+      exit: 2,
+      contentSeverity: undefined,
+    },
+    {
+      label: 'badRefOid silenced',
+      entries: [['fsck.badRefOid', 'ignore']],
+      exit: 10,
+      contentSeverity: 'error',
+    },
+  ] as ReadonlyArray<{
+    label: string;
+    entries: ReadonlyArray<readonly [string, string]>;
+    exit: number;
+    contentSeverity: string | undefined;
+  }>)('When fsck runs with $label', (row) => {
+    it('Then only the content notice re-types — the synthesised pointer never does', async () => {
+      // Arrange
+      const { dir, ctx } = await badRefContentRepo(row.label.replace(/\s+/g, '-'), row.entries);
+
+      // Act
+      const gitResult = gitFsck(dir, '--full');
+      const result = await fsck(ctx);
+
+      // Assert — the content notice, named and graded
+      const content = result.findings.filter(
+        (f): f is FsckFinding & { type: 'bad-ref' } =>
+          f.type === 'bad-ref' && f.msgId === 'badRefContent',
+      );
+      expect(content).toEqual(
+        row.contentSeverity === undefined
+          ? []
+          : [
+              {
+                type: 'bad-ref',
+                ref: BAD_CONTENT_REF,
+                msgId: 'badRefContent',
+                severity: row.contentSeverity,
+              },
+            ],
+      );
+
+      // Assert — the pointer stands whatever the configuration says, at error
+      // severity, naming the all-zero oid git synthesises for a broken body
+      expect(
+        result.findings.filter(
+          (f): f is FsckFinding & { type: 'bad-ref' } =>
+            f.type === 'bad-ref' && f.msgId === 'badRefOid',
+        ),
+      ).toEqual([
+        {
+          type: 'bad-ref',
+          ref: BAD_CONTENT_REF,
+          msgId: 'badRefOid',
+          severity: 'error',
+          target: ZERO_OID,
+        },
+      ]);
+
+      // Assert — git's exact stderr, rebuilt from those structured fields
+      expect(gitResult.stderr).toBe(
+        refWalkStderr(result.findings, BAD_CONTENT_TEXT)
+          .map((line) => `${line}\n`)
+          .join(''),
+      );
+      expect(gitResult.exitCode).toBe(row.exit);
+      expect(result.exitCode).toBe(gitResult.exitCode);
+    });
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given fsck.skipList, which names a file rather than a check',
+  () => {
+    describe('When fsck runs', () => {
+      it('Then neither takes it for a msg-id', async () => {
+        // Arrange
+        const { dir, ctx } = await symlinkRefRepoWith('skip-list', []);
+        const names = path.join(dir, 'names.txt');
+        await writeFile(names, '');
+        runGit(['-C', dir, 'config', 'fsck.skipList', names], { env: SAFE_ENV });
+
+        // Act
+        const gitResult = gitFsck(dir, '--full');
+        const result = await fsck(ctx);
+
+        // Assert — the notice survives; neither side refuses on the key itself
+        expect(gitResult.exitCode).toBe(0);
+        expect(result.exitCode).toBe(0);
+        expect(symlinkRefFindings(result.findings).map((f) => f.severity)).toEqual(['warning']);
+      });
+    });
+  },
+);
+
+// --- Scenario family: fsck.skipList -----------------------------------------
+
+const valuelessDirs: string[] = [];
+
+afterAll(async () => {
+  await Promise.all(
+    valuelessDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })),
+  );
+});
+
+const skipListRoots: string[] = [];
+
+afterAll(async () => {
+  await Promise.all(
+    skipListRoots.splice(0).map((dir) => rm(dir, { recursive: true, force: true })),
+  );
+});
+
+interface SkipListRepo {
+  readonly dir: string;
+  readonly commitSha: string;
+  readonly danglingSha: string;
+}
+
+/**
+ * A repository OF ITS OWN whose only branch roots a commit carrying
+ * `missingSpaceBeforeEmail`, plus one loose blob nothing references. Every row
+ * builds its own, so a row that rewrites the list file — or the `[fsck]`
+ * section — cannot reach any other row's repository.
+ */
+const skipListRepo = async (slug: string): Promise<SkipListRepo> => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), `tsgit-fsck-skip-list-${slug}-`));
+  skipListRoots.push(dir);
+  initRepo(dir);
+  const emptyTree = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+  await writeLooseObject(dir, 'tree', Buffer.alloc(0));
+  const commitBody = Buffer.from(
+    `tree ${emptyTree}\nauthor Name<bad@example.com> 1700000000 +0000\ncommitter Test <c@example.com> 1700000000 +0000\n\nmessage\n`,
+  );
+  const commitSha = await writeLooseObject(dir, 'commit', commitBody);
+  const refsDir = path.join(dir, '.git', 'refs', 'heads');
+  await mkdir(refsDir, { recursive: true });
+  await writeFile(path.join(refsDir, 'main'), `${commitSha}\n`);
+  const danglingSha = runGit(['-C', dir, 'hash-object', '-w', '--stdin'], {
+    env: SAFE_ENV,
+    input: 'loose and unreferenced\n',
+  }).trim();
+  return { dir, commitSha, danglingSha };
+};
+
+/** That repository with its own list file, `fsck.skipList` pointed at it, and
+ *  a Context whose config read has not been cached yet. */
+const withSkipList = async (
+  slug: string,
+  makeBody: (repo: SkipListRepo) => string,
+): Promise<SkipListRepo & { readonly list: string; readonly ctx: Context }> => {
+  const repo = await skipListRepo(slug);
+  const list = path.join(repo.dir, 'names.txt');
+  await writeFile(list, makeBody(repo));
+  runGit(['-C', repo.dir, 'config', 'fsck.skipList', list], { env: SAFE_ENV });
+  __resetConfigCacheForTests();
+  return { ...repo, list, ctx: createNodeContext({ workDir: repo.dir }) };
+};
+
+/** The same repository with `fsck.skipList` naming a file that was never
+ *  created — the one list shape `withSkipList` cannot build, since it always
+ *  writes the file it points at. */
+const skipListRepoPointedAtAbsentList = async (slug: string): Promise<SkipListRepo> => {
+  const repo = await skipListRepo(slug);
+  const absent = path.join(repo.dir, 'absent-names.txt');
+  runGit(['-C', repo.dir, 'config', 'fsck.skipList', absent], { env: SAFE_ENV });
+  __resetConfigCacheForTests();
+  return repo;
+};
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given fsck.skipList naming the object whose content check fires',
+  () => {
+    describe('When git fsck and tsgit fsck both run', () => {
+      it(
+        'Then both fall silent and exit clean',
+        async () => {
+          // Arrange
+          const { dir, ctx } = await withSkipList('named', (r) => `${r.commitSha}\n`);
+
+          // Act
+          const gitResult = gitFsck(dir, '--full');
+          const result = await fsck(ctx);
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          expect(gitResult.stderr).toBe('');
+          expect(result.exitCode).toBe(gitResult.exitCode);
+          expect(result.findings.filter((f) => f.type === 'bad-object')).toEqual([]);
+        },
+        SETUP_TIMEOUT,
+      );
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE)('Given fsck.skipList naming some other object', () => {
+  describe('When git fsck and tsgit fsck both run', () => {
+    it(
+      'Then both still report the finding and exit 1',
+      async () => {
+        // Arrange
+        const { dir, ctx, commitSha } = await withSkipList(
+          'other-name',
+          () => '0123456789abcdef0123456789abcdef01234567\n',
+        );
+
+        // Act
+        const gitResult = gitFsck(dir, '--full');
+        const result = await fsck(ctx);
+
+        // Assert
+        expect(gitResult.exitCode).toBe(1);
+        expect(gitResult.stderr).toBe(
+          `error in commit ${commitSha}: missingSpaceBeforeEmail: invalid author/committer line - missing space before email\n`,
+        );
+        expect(result.exitCode).toBe(gitResult.exitCode);
+        expect(result.findings.filter((f) => f.type === 'bad-object')).toEqual([
+          {
+            type: 'bad-object',
+            id: commitSha,
+            objectType: 'commit',
+            msgId: 'missingSpaceBeforeEmail',
+            severity: 'error',
+          },
+        ]);
+      },
+      SETUP_TIMEOUT,
+    );
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given a skip list decorated with comments, blanks and upper-case hex',
+  () => {
+    describe('When git fsck and tsgit fsck both run', () => {
+      it(
+        'Then both still recognise the name and fall silent',
+        async () => {
+          // Arrange
+          const { dir, ctx } = await withSkipList(
+            'decorated',
+            (r) => `# names to ignore\r\n\r\n   ${r.commitSha.toUpperCase()}   \r\n`,
+          );
+
+          // Act
+          const gitResult = gitFsck(dir, '--full');
+          const result = await fsck(ctx);
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          expect(gitResult.stderr).toBe('');
+          expect(result.exitCode).toBe(gitResult.exitCode);
+          expect(result.findings.filter((f) => f.type === 'bad-object')).toEqual([]);
+        },
+        SETUP_TIMEOUT,
+      );
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE)('Given a skip list entry carrying a trailing comment', () => {
+  describe('When git fsck and tsgit fsck both run', () => {
+    it(
+      'Then both truncate the line at the marker and fall silent',
+      async () => {
+        // Arrange
+        const { dir, ctx } = await withSkipList(
+          'trailing-comment',
+          (r) => `${r.commitSha} # forgiven for now\n`,
+        );
+
+        // Act
+        const gitResult = gitFsck(dir, '--full');
+        const result = await fsck(ctx);
+
+        // Assert
+        expect(gitResult.exitCode).toBe(0);
+        expect(gitResult.stderr).toBe('');
+        expect(result.exitCode).toBe(gitResult.exitCode);
+        expect(result.findings.filter((f) => f.type === 'bad-object')).toEqual([]);
+      },
+      SETUP_TIMEOUT,
+    );
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given a skip list whose name sits behind a mid-line marker',
+  () => {
+    describe('When git fsck and tsgit fsck both run', () => {
+      it(
+        'Then both drop the whole line and keep reporting the object',
+        async () => {
+          // Arrange
+          const { dir, ctx, commitSha } = await withSkipList(
+            'mid-line-marker',
+            (r) => `   #${r.commitSha}\n`,
+          );
+
+          // Act
+          const gitResult = gitFsck(dir, '--full');
+          const result = await fsck(ctx);
+
+          // Assert
+          expect(gitResult.exitCode).toBe(1);
+          expect(result.exitCode).toBe(gitResult.exitCode);
+          expect(result.findings.filter((f) => f.type === 'bad-object')).toEqual([
+            {
+              type: 'bad-object',
+              id: commitSha,
+              objectType: 'commit',
+              msgId: 'missingSpaceBeforeEmail',
+              severity: 'error',
+            },
+          ]);
+        },
+        SETUP_TIMEOUT,
+      );
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE)('Given fsck.skipList present with no value at all', () => {
+  describe('When git fsck and tsgit fsck both run', () => {
+    it(
+      'Then both refuse the valueless key, naming it and the line it sits on',
+      async () => {
+        // Arrange
+        const dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-valueless-'));
+        valuelessDirs.push(dir);
+        initRepo(dir);
+        const configPath = path.join(dir, '.git', 'config');
+        const before = (await readFile(configPath, 'utf8')).split('\n').filter((l) => l !== '');
+        await writeFile(configPath, `${before.join('\n')}\n[fsck]\n\tskipList\n`);
+        __resetConfigCacheForTests();
+        const ctx = createNodeContext({ workDir: dir });
+
+        // Act
+        const gitResult = gitFsck(dir, '--full');
+        const caught = await catchFsckError(ctx);
+
+        // Assert
+        expect(gitResult.exitCode).toBe(128);
+        expect(gitResult.stderr).toContain(
+          `error: missing value for 'fsck.${'skipList'.toLowerCase()}'`,
+        );
+        expect(caught.data).toEqual({
+          code: 'CONFIG_MISSING_VALUE',
+          key: `fsck.${'skipList'.toLowerCase()}`,
+          source: configPath,
+          line: before.length + 2,
+        });
+        expect(gitResult.stderr).toContain(`at line ${before.length + 2}`);
+      },
+      SETUP_TIMEOUT,
+    );
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)('Given a skip list holding an abbreviated object name', () => {
+  describe('When git fsck and tsgit fsck both run', () => {
+    it(
+      'Then both refuse the whole audit rather than dropping the line',
+      async () => {
+        // Arrange
+        let abbreviated = '';
+        const { dir, list, ctx } = await withSkipList('abbreviated', (r) => {
+          abbreviated = r.commitSha.slice(0, 8);
+          return `${abbreviated}\n`;
+        });
+
+        // Act
+        const gitResult = gitFsck(dir, '--full');
+        const caught = await catchFsckError(ctx);
+
+        // Assert
+        expect(gitResult.exitCode).toBe(128);
+        expect(gitResult.stderr).toBe(`fatal: invalid object name: ${abbreviated}\n`);
+        expect(caught.data).toEqual({
+          code: 'FSCK_SKIP_LIST_INVALID_NAME',
+          name: abbreviated,
+          path: list,
+          line: 1,
+        });
+      },
+      SETUP_TIMEOUT,
+    );
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given fsck.skipList pointed at a file that was never created',
+  () => {
+    describe('When git fsck and tsgit fsck both run', () => {
+      it(
+        'Then both refuse, naming the path they could not open',
+        async () => {
+          // Arrange
+          const { dir } = await skipListRepoPointedAtAbsentList('absent');
+          const absent = path.join(dir, 'absent-names.txt');
+          const ctx = createNodeContext({ workDir: dir });
+
+          // Act
+          const gitResult = gitFsck(dir, '--full');
+          const caught = await catchFsckError(ctx);
+
+          // Assert
+          expect(gitResult.exitCode).toBe(128);
+          expect(gitResult.stderr).toBe(`fatal: could not open object name list: ${absent}\n`);
+          expect(caught.data).toEqual({
+            code: 'FSCK_SKIP_LIST_UNREADABLE',
+            path: absent,
+            reason: 'FILE_NOT_FOUND',
+          });
+        },
+        SETUP_TIMEOUT,
+      );
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE)('Given a skip list naming a dangling object', () => {
+  describe('When git fsck and tsgit fsck both run', () => {
+    it(
+      'Then both still report it — the list only silences content checks',
+      async () => {
+        // Arrange
+        const { dir, ctx, danglingSha } = await withSkipList(
+          'dangling',
+          (r) => `${r.commitSha}\n${r.danglingSha}\n`,
+        );
+
+        // Act
+        const gitResult = gitFsck(dir, '--full');
+        const result = await fsck(ctx);
+
+        // Assert
+        expect(gitResult.exitCode).toBe(0);
+        expect(result.exitCode).toBe(gitResult.exitCode);
+        expect(gitResult.stdout).toBe(`dangling blob ${danglingSha}\n`);
+        expect(result.findings.filter((f) => f.type === 'dangling')).toEqual([
+          { type: 'dangling', id: danglingSha, objectType: 'blob' },
+        ]);
+      },
+      SETUP_TIMEOUT,
+    );
+  });
+});
+
+// --- Scenario: fsck.<msg-id> aimed at an unreadable object --------------------
+
+let unreadableDir = '';
+let unreadableSha = '';
+
+beforeAll(async () => {
+  unreadableDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-unreadable-'));
+  initRepo(unreadableDir);
+  await writeFile(path.join(unreadableDir, 'f.txt'), 'seed\n');
+  runGit(['-C', unreadableDir, 'add', 'f.txt'], { env: SAFE_ENV });
+  runGit(['-C', unreadableDir, 'commit', '-q', '-m', 'seed'], { env: SAFE_ENV });
+  unreadableSha = await writeLooseObject(unreadableDir, 'bogus', Buffer.from('hello'));
+  runGit(['-C', unreadableDir, 'config', 'fsck.unknownType', 'ignore'], { env: SAFE_ENV });
+}, SETUP_TIMEOUT);
+
+afterAll(async () => {
+  if (unreadableDir !== '') await rm(unreadableDir, { recursive: true, force: true });
+});
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given fsck.unknownType set to ignore and an unreadable object',
+  () => {
+    describe('When git fsck and tsgit fsck both run', () => {
+      it(
+        'Then both still report it and set the corrupt bit — no msg-id re-types an error()',
+        async () => {
+          // Arrange
+          __resetConfigCacheForTests();
+          const ctx = createNodeContext({ workDir: unreadableDir });
+
+          // Act
+          const gitResult = gitFsck(unreadableDir);
+          const result = await fsck(ctx);
+
+          // Assert
+          expect(gitResult.exitCode & 1).toBe(1);
+          expect(gitResult.stderr).toContain(
+            `error: ${unreadableSha}: object corrupt or missing: `,
+          );
+          expect(result.exitCode & 1).toBe(1);
+          expect(result.findings).toContainEqual({
+            type: 'bad-object',
+            id: unreadableSha,
+            objectType: 'unknown',
+            msgId: 'unknownType',
+            severity: 'error',
+          });
+        },
+        SETUP_TIMEOUT,
+      );
+    });
+  },
+);
+
+// --- Scenario family: fsck.skipList written more than once --------------------
+
+const repeatedListRoots: string[] = [];
+
+afterAll(async () => {
+  await Promise.all(
+    repeatedListRoots.splice(0).map((dir) => rm(dir, { recursive: true, force: true })),
+  );
+});
+
+/**
+ * A repository of its own whose two branches each root a commit carrying
+ * `missingSpaceBeforeEmail`, plus one list file per `bodies` entry, each
+ * pointed at by its own `fsck.skipList` line.
+ */
+const repeatedSkipListRepo = async (
+  slug: string,
+  bodies: (oids: ReadonlyArray<string>) => ReadonlyArray<string>,
+): Promise<{ readonly dir: string; readonly ctx: Context; readonly lists: string[] }> => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), `tsgit-fsck-repeated-list-${slug}-`));
+  repeatedListRoots.push(dir);
+  initRepo(dir);
+  const emptyTree = await writeLooseObject(dir, 'tree', Buffer.alloc(0));
+  const oids: string[] = [];
+  for (const [index, branch] of ['main', 'side'].entries()) {
+    const body = Buffer.from(
+      `tree ${emptyTree}\nauthor Name<bad@example.com> 1700000000 +0000\ncommitter Test <c@example.com> 170000000${index} +0000\n\nmessage\n`,
+    );
+    const oid = await writeLooseObject(dir, 'commit', body);
+    oids.push(oid);
+    const refsDir = path.join(dir, '.git', 'refs', 'heads');
+    await mkdir(refsDir, { recursive: true });
+    await writeFile(path.join(refsDir, branch), `${oid}\n`);
+  }
+  const lists: string[] = [];
+  for (const [index, listBody] of bodies(oids).entries()) {
+    const list = path.join(dir, `names-${index}.txt`);
+    await writeFile(list, listBody);
+    lists.push(list);
+    runGit(['-C', dir, 'config', '--add', 'fsck.skipList', list], { env: SAFE_ENV });
+  }
+  __resetConfigCacheForTests();
+  return { dir, ctx: createNodeContext({ workDir: dir }), lists };
+};
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given two fsck.skipList entries, each naming a different reported object',
+  () => {
+    describe('When git fsck and tsgit fsck both run', () => {
+      it(
+        'Then both fall silent — the second list adds to the first rather than replacing it',
+        async () => {
+          // Arrange
+          const { dir, ctx } = await repeatedSkipListRepo('union', (oids) =>
+            oids.map((oid) => `${oid}\n`),
+          );
+
+          // Act
+          const gitResult = gitFsck(dir, '--full');
+          const result = await fsck(ctx);
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          expect(gitResult.stderr).toBe('');
+          expect(result.exitCode).toBe(0);
+          expect(result.findings.filter((f) => f.type === 'bad-object')).toEqual([]);
+        },
+        SETUP_TIMEOUT,
+      );
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given two fsck.skipList entries of which the first names a file that is not there',
+  () => {
+    describe('When git fsck and tsgit fsck both run', () => {
+      it(
+        'Then both refuse on that first list, never reaching the usable one',
+        async () => {
+          // Arrange
+          const { dir, ctx, lists } = await repeatedSkipListRepo('first-absent', (oids) =>
+            oids.map((oid) => `${oid}\n`),
+          );
+          const absent = path.join(dir, 'names-absent.txt');
+          runGit(['-C', dir, 'config', '--replace-all', 'fsck.skipList', absent], {
+            env: SAFE_ENV,
+          });
+          runGit(['-C', dir, 'config', '--add', 'fsck.skipList', lists[0] as string], {
+            env: SAFE_ENV,
+          });
+          __resetConfigCacheForTests();
+
+          // Act
+          const gitResult = gitFsck(dir, '--full');
+          const caught = await catchFsckError(ctx);
+
+          // Assert
+          expect(gitResult.exitCode).toBe(128);
+          expect(gitResult.stderr).toBe(`fatal: could not open object name list: ${absent}\n`);
+          expect(caught.data).toEqual({
+            code: 'FSCK_SKIP_LIST_UNREADABLE',
+            path: absent,
+            reason: 'FILE_NOT_FOUND',
+          });
+        },
+        SETUP_TIMEOUT,
+      );
+    });
+  },
+);
+
+// --- Scenario family: a valueless fsck.<msg-id> -------------------------------
+
+const valuelessMsgIdRoots: string[] = [];
+
+afterAll(async () => {
+  await Promise.all(
+    valuelessMsgIdRoots.splice(0).map((dir) => rm(dir, { recursive: true, force: true })),
+  );
+});
+
+describe.skipIf(!GIT_AVAILABLE)('Given a fsck msg-id written with no value at all', () => {
+  describe.each([{ msgId: 'badTree' }, { msgId: 'noSuchThing' }, { msgId: 'nulInHeader' }])(
+    'When fsck runs with $msgId valueless',
+    (row) => {
+      it(
+        'Then both name the missing value rather than grading the id or the severity',
+        async () => {
+          // Arrange
+          const dir = await mkdtemp(
+            path.join(os.tmpdir(), `tsgit-fsck-valueless-id-${row.msgId}-`),
+          );
+          valuelessMsgIdRoots.push(dir);
+          initRepo(dir);
+          const configPath = path.join(dir, '.git', 'config');
+          const before = (await readFile(configPath, 'utf8')).split('\n').filter((l) => l !== '');
+          await writeFile(configPath, `${before.join('\n')}\n[fsck]\n\t${row.msgId}\n`);
+          __resetConfigCacheForTests();
+          const ctx = createNodeContext({ workDir: dir });
+
+          // Act
+          const gitResult = gitFsck(dir, '--full');
+          const caught = await catchFsckError(ctx);
+
+          // Assert
+          expect(gitResult.exitCode).toBe(128);
+          expect(gitResult.stderr).toBe(
+            `error: missing value for 'fsck.${row.msgId.toLowerCase()}'\n` +
+              `fatal: bad config variable 'fsck.${row.msgId.toLowerCase()}' in file '.git/config' at line ${before.length + 2}\n`,
+          );
+          expect(caught.data).toEqual({
+            code: 'CONFIG_MISSING_VALUE',
+            key: `fsck.${row.msgId.toLowerCase()}`,
+            source: configPath,
+            line: before.length + 2,
+          });
+        },
+        SETUP_TIMEOUT,
+      );
+    },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// [fsck] refusal order — git reads the section once, in file order, opening
+// each list as it reaches it, so the FIRST fault in the file is the one that
+// kills the audit. Neither kind of fault has a fixed precedence over the other.
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!GIT_AVAILABLE)('Given an unopenable list and an out-of-grammar severity', () => {
+  describe('When the list is written first', () => {
+    it(
+      'Then both refuse on the list, never reaching the severity word',
+      async () => {
+        // Arrange
+        const { dir, ctx } = await fsckRepoWithConfigText('order-list-first', '');
+        const absent = path.join(dir, 'absent-names.txt');
+        await appendFile(
+          path.join(dir, '.git', 'config'),
+          `[fsck]\n\tskipList = ${absent}\n\tbadTree = bogus\n`,
+        );
+        __resetConfigCacheForTests();
+
+        // Act
+        const gitResult = gitFsck(dir, '--full');
+        const caught = await catchFsckError(ctx);
+
+        // Assert
+        expect(gitResult.exitCode).toBe(128);
+        expect(gitResult.stderr).toBe(`fatal: could not open object name list: ${absent}\n`);
+        expect(caught.data).toEqual({
+          code: 'FSCK_SKIP_LIST_UNREADABLE',
+          path: absent,
+          reason: 'FILE_NOT_FOUND',
+        });
+      },
+      SETUP_TIMEOUT,
+    );
+  });
+
+  describe('When the severity word is written first', () => {
+    it(
+      'Then both refuse on the value, never opening the list',
+      async () => {
+        // Arrange
+        const { dir, ctx } = await fsckRepoWithConfigText('order-value-first', '');
+        const absent = path.join(dir, 'absent-names.txt');
+        await appendFile(
+          path.join(dir, '.git', 'config'),
+          `[fsck]\n\tbadTree = bogus\n\tskipList = ${absent}\n`,
+        );
+        __resetConfigCacheForTests();
+
+        // Act
+        const gitResult = gitFsck(dir, '--full');
+        const caught = await catchFsckError(ctx);
+
+        // Assert
+        expect(gitResult.exitCode).toBe(128);
+        expect(gitResult.stderr).toBe("fatal: Unknown fsck message type: 'bogus'\n");
+        expect(caught.data).toEqual({
+          code: 'CONFIG_INVALID_ENUM_VALUE',
+          key: `fsck.${'badTree'.toLowerCase()}`,
+          source: path.join(dir, '.git', 'config'),
+          value: 'bogus',
+          line: expect.any(Number),
+        });
+      },
+      SETUP_TIMEOUT,
+    );
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)('Given a list, then a bad severity, then a second list', () => {
+  describe('When fsck runs', () => {
+    it(
+      'Then both refuse on the FIRST list — the order is the file order, not a fixed precedence',
+      async () => {
+        // Arrange
+        const { dir, ctx } = await fsckRepoWithConfigText('order-three', '');
+        const first = path.join(dir, 'absent-one.txt');
+        const second = path.join(dir, 'absent-two.txt');
+        await appendFile(
+          path.join(dir, '.git', 'config'),
+          `[fsck]\n\tskipList = ${first}\n\tbadTree = bogus\n\tskipList = ${second}\n`,
+        );
+        __resetConfigCacheForTests();
+
+        // Act
+        const gitResult = gitFsck(dir, '--full');
+        const caught = await catchFsckError(ctx);
+
+        // Assert
+        expect(gitResult.exitCode).toBe(128);
+        expect(gitResult.stderr).toBe(`fatal: could not open object name list: ${first}\n`);
+        expect(caught.data).toEqual({
+          code: 'FSCK_SKIP_LIST_UNREADABLE',
+          path: first,
+          reason: 'FILE_NOT_FOUND',
+        });
+      },
+      SETUP_TIMEOUT,
+    );
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given a readable list carrying a line that is not an object name',
+  () => {
+    describe('When a bad severity word follows it', () => {
+      it(
+        'Then both refuse on the list line, which is reached first',
+        async () => {
+          // Arrange
+          const { dir, ctx } = await fsckRepoWithConfigText('order-bad-line', '');
+          const listPath = path.join(dir, 'names.txt');
+          const abbreviated = '0'.repeat(7);
+          await writeFile(listPath, `${abbreviated}\n`);
+          await appendFile(
+            path.join(dir, '.git', 'config'),
+            `[fsck]\n\tskipList = ${listPath}\n\tbadTree = bogus\n`,
+          );
+          __resetConfigCacheForTests();
+
+          // Act
+          const gitResult = gitFsck(dir, '--full');
+          const caught = await catchFsckError(ctx);
+
+          // Assert
+          expect(gitResult.exitCode).toBe(128);
+          expect(gitResult.stderr).toBe(`fatal: invalid object name: ${abbreviated}\n`);
+          expect(caught.data).toEqual({
+            code: 'FSCK_SKIP_LIST_INVALID_NAME',
+            name: abbreviated,
+            path: listPath,
+            line: 1,
+          });
+        },
+        SETUP_TIMEOUT,
+      );
     });
   },
 );

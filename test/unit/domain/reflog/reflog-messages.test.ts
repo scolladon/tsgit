@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   branchCreatedFrom,
   branchRenamed,
+  branchResetTo,
   cherryPickReflog,
   cloneFrom,
   commitCherryPickReflog,
@@ -51,6 +52,11 @@ describe('Given the reflog message builders', () => {
     it('Then branchCreatedFrom renders "branch: Created from <start-point>"', () => {
       // Arrange / Act / Assert
       expect(branchCreatedFrom('main')).toBe('branch: Created from main');
+    });
+
+    it('Then branchResetTo renders "branch: Reset to <start-point>"', () => {
+      // Arrange / Act / Assert
+      expect(branchResetTo('main')).toBe('branch: Reset to main');
     });
 
     it('Then branchRenamed renders "Branch: renamed <from> to <to>"', () => {

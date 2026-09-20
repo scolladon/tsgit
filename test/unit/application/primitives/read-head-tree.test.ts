@@ -4,15 +4,15 @@ import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import * as flattenTreeMod from '../../../../src/application/primitives/flatten-tree.js';
+import { budgetsFor } from '../../../../src/application/primitives/internal/object-caches.js';
 import {
-  FLAT_TREE_CACHE_FRACTION,
   FLAT_TREE_CACHE_MAX_ENTRIES,
   flatTreeByteSize,
   readHeadTree,
 } from '../../../../src/application/primitives/read-head-tree.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
-import type { FlatTree } from '../../../../src/domain/diff/flat-tree.js';
+import type { FlatTree, FlatTreeEntry } from '../../../../src/domain/diff/flat-tree.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { AuthorIdentity, FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
@@ -385,22 +385,21 @@ describe('readHeadTree', () => {
 
         // Assert
         const memoCall = createLruCacheSpy.mock.calls.find(
-          (call) => call[0] === ctx.deltaCache.maxSize * FLAT_TREE_CACHE_FRACTION,
+          (call) => call[0] === budgetsFor(ctx).flatTreeCacheMaxBytes,
         );
         expect(memoCall?.[1]).toBe(FLAT_TREE_CACHE_MAX_ENTRIES);
       });
     });
   });
 
-  describe('Given a deltaCache sized so a real one-entry tree fits the multiplied share but not a 16×-larger divided one', () => {
+  describe('Given a deltaCache sized so a real one-entry tree fits the multiplied share but not the halved one', () => {
     describe('When readHeadTree runs twice', () => {
       it('Then it is not cached — the share is a FRACTION of the deltaCache budget, not a multiple of it', async () => {
-        // Arrange — 1000-byte deltaCache: the correct 1/16 share (62.5
-        // bytes) is far smaller than any real one-entry FlatTree (~200
-        // bytes), so real code never caches it. A 16×-inflated share
-        // (maxSize / FLAT_TREE_CACHE_FRACTION = 16000 bytes) would
-        // comfortably fit the same tree and wrongly cache it.
-        const ctx = createMemoryContext({ deltaCacheMaxBytes: 1000 });
+        // Arrange — 300-byte deltaCache: the correct 0.5 share (150 bytes)
+        // is smaller than any real one-entry FlatTree (~203 bytes), so real
+        // code never caches it. A mutated share (maxSize / share = 600
+        // bytes) would comfortably fit the same tree and wrongly cache it.
+        const ctx = createMemoryContext({ deltaCacheMaxBytes: 300 });
         await commitOneFile(ctx);
         const flattenSpy = vi.spyOn(flattenTreeMod, 'flattenTree');
         const baseline = flattenSpy.mock.calls.length;
@@ -433,20 +432,20 @@ describe('readHeadTree', () => {
         createLruCacheSpy.mockClear();
         await commitOneFile(ctx);
         await readHeadTree(ctx);
-        // THREE distinct caches share this exact 65_536 entry cap by design
-        // (each module's own doc cross-references the others): the pack
+        // TWO distinct caches share this exact 65_536 entry cap by design
+        // (each module's own doc cross-references the other): the pack
         // registry's delta-base cache (`pack-registry.ts`, constructed
         // EAGERLY the moment `readObject` first calls `getPackRegistry`,
-        // before it ever resolves the object), object-resolver's
-        // parsed-object memo (populated resolving that same commit), and
-        // read-head-tree's own flat-tree cache. A bare `findIndex` on
-        // `call[1]` grabs whichever spawns FIRST — the delta-base cache,
-        // never the flat-tree one. The flat-tree cache is always the LAST
-        // of the three: `flatTreeCacheFor` is only ever called, within
-        // `readHeadTree`, after the HEAD commit read that triggers the
-        // other two. Asserting the count pins that structural ordering
-        // instead of silently trusting it, and picks the LAST match rather
-        // than the first.
+        // before it ever resolves the object) and read-head-tree's own
+        // flat-tree cache. The parsed-object memo's own entry cap is now
+        // DERIVED from its byte valve, not this fixed constant, so it no
+        // longer coincides here. A bare `findIndex` on `call[1]` grabs
+        // whichever spawns FIRST — the delta-base cache, never the
+        // flat-tree one. The flat-tree cache is always the LAST of the two:
+        // `flatTreeCacheFor` is only ever called, within `readHeadTree`,
+        // after the HEAD commit read that triggers the other one. Asserting
+        // the count pins that structural ordering instead of silently
+        // trusting it, and picks the LAST match rather than the first.
         const matchingCallIndexes = createLruCacheSpy.mock.calls.reduce<number[]>(
           (acc, call, index) => {
             if (call[1] === FLAT_TREE_CACHE_MAX_ENTRIES) acc.push(index);
@@ -454,7 +453,7 @@ describe('readHeadTree', () => {
           },
           [],
         );
-        expect(matchingCallIndexes).toHaveLength(3);
+        expect(matchingCallIndexes).toHaveLength(2);
         const memoCallIndex = matchingCallIndexes.at(-1) as number;
         const cache = createLruCacheSpy.mock.results[memoCallIndex]?.value as LruCache<FlatTree>;
         const dummy: FlatTree = { entries: new Map() };
@@ -467,6 +466,122 @@ describe('readHeadTree', () => {
         // Assert — capped at the entry count; the byte budget (far larger
         // than FLAT_TREE_CACHE_MAX_ENTRIES tiny 1-byte entries) never bound.
         expect(cache.entryCount).toBe(FLAT_TREE_CACHE_MAX_ENTRIES);
+      });
+    });
+  });
+
+  describe('Given the default deltaCacheMaxBytes budget, and REAL synthetic HEAD trees of 50,000 tracked files (14-char paths)', () => {
+    /** A tree built from actual Map entries at the given oid hex width, so
+     *  {@link flatTreeByteSize} is exercised for real rather than restated:
+     *  a future retune of its per-entry overhead changes what it returns for
+     *  the same tree, and these rows fail instead of shipping a dead cache. */
+    const syntheticTreeOf = (entryCount: number, hexLength: number): FlatTree => {
+      const pathLength = 14;
+      const entries = new Map<FilePath, FlatTreeEntry>();
+      for (let i = 0; i < entryCount; i += 1) {
+        const path = i.toString().padStart(pathLength, '0') as FilePath;
+        entries.set(path, { id: 'a'.repeat(hexLength) as ObjectId, mode: FILE_MODE.REGULAR });
+      }
+      return { entries };
+    };
+
+    describe('When sizing a sha1 tree through flatTreeByteSize against the FlatTree byte valve', () => {
+      it('Then the real sizer output never exceeds the valve, and such a tree is admitted', () => {
+        // Arrange
+        const syntheticTree = syntheticTreeOf(50_000, 40);
+        const ctx = createMemoryContext();
+        const valve = budgetsFor(ctx).flatTreeCacheMaxBytes;
+        const cache = storage.createLruCache<FlatTree>(valve, FLAT_TREE_CACHE_MAX_ENTRIES);
+        const realTreeBytes = flatTreeByteSize(syntheticTree);
+
+        // Act — a future retune that flips the binding constraint would fail
+        // one of the assertions below instead of shipping a dead cache.
+        const admitted = cache.set('typical', syntheticTree, realTreeBytes);
+
+        // Assert — the valve literal is pinned on purpose; the tree size is
+        // deliberately COUPLED to the production sizer, never restated.
+        expect(valve).toBe(8 * 1024 * 1024);
+        expect(realTreeBytes).toBeLessThanOrEqual(valve);
+        expect(admitted).toBe(true);
+      });
+    });
+
+    describe('When sizing a sha256 tree through flatTreeByteSize against the FlatTree byte valve', () => {
+      it('Then the width surcharge keeps the same 50,000-file workload admitted, and pins the real sha256 boundary', () => {
+        // Arrange — 64-hex oids cost 24 bytes more per entry than 40-hex
+        // ones; the width surcharge grows the valve by exactly
+        // 50,000 × 24 so the reference workload still fits. The row below
+        // records where the real sha256 boundary sits (188 B/entry) so
+        // nobody re-derives it from the sha1 figure.
+        const ctx = createMemoryContext({ algorithm: 'sha256' });
+        const valve = budgetsFor(ctx).flatTreeCacheMaxBytes;
+        const cache = storage.createLruCache<FlatTree>(valve, FLAT_TREE_CACHE_MAX_ENTRIES);
+        const referenceTreeBytes = flatTreeByteSize(syntheticTreeOf(50_000, 64));
+        const atBoundaryBytes = flatTreeByteSize(syntheticTreeOf(51_002, 64));
+        const overBoundaryBytes = flatTreeByteSize(syntheticTreeOf(51_003, 64));
+
+        // Act
+        const admitted = cache.set('sha256', syntheticTreeOf(50_000, 64), referenceTreeBytes);
+
+        // Assert
+        expect(valve).toBe(9_588_608);
+        expect(referenceTreeBytes).toBeLessThanOrEqual(valve);
+        expect(admitted).toBe(true);
+        expect(atBoundaryBytes).toBeLessThanOrEqual(valve);
+        expect(overBoundaryBytes).toBeGreaterThan(valve);
+      });
+    });
+  });
+
+  describe('Given a 4 MiB deltaCacheMaxBytes dial at sha256', () => {
+    describe('When resolving the FlatTree byte valve', () => {
+      it('Then the width surcharge scales with the smaller dial-derived reference file count', () => {
+        // Arrange
+        const ctx = createMemoryContext({
+          algorithm: 'sha256',
+          deltaCacheMaxBytes: 4 * 1024 * 1024,
+        });
+
+        // Act
+        const valve = budgetsFor(ctx).flatTreeCacheMaxBytes;
+
+        // Assert
+        expect(valve).toBe(2_397_152);
+      });
+    });
+  });
+
+  describe('Given an explicit flatTreeCacheMaxBytes at sha256', () => {
+    describe('When resolving the FlatTree byte valve', () => {
+      it('Then the explicit value wins verbatim, unmodified by the width surcharge', () => {
+        // Arrange
+        const ctx = createMemoryContext({ algorithm: 'sha256', flatTreeCacheMaxBytes: 4096 });
+
+        // Act
+        const valve = budgetsFor(ctx).flatTreeCacheMaxBytes;
+
+        // Assert
+        expect(valve).toBe(4096);
+      });
+    });
+  });
+
+  describe('Given a deliberately shrunk flatTreeCacheMaxBytes', () => {
+    describe('When the cache is asked to hold an entry over that budget', () => {
+      it('Then set reports the refusal instead of silently dropping it', async () => {
+        // Arrange
+        const ctx = createMemoryContext({ flatTreeCacheMaxBytes: 100 });
+        createLruCacheSpy.mockClear();
+        await commitOneFile(ctx);
+        await readHeadTree(ctx);
+        const callIndex = createLruCacheSpy.mock.calls.findIndex((call) => call[0] === 100);
+        const cache = createLruCacheSpy.mock.results[callIndex]?.value as LruCache<FlatTree>;
+
+        // Act
+        const result = cache.set('synthetic', { entries: new Map() }, 1000);
+
+        // Assert
+        expect(result).toBe(false);
       });
     });
   });

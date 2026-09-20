@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { MemoryHookRunner } from '../../../../src/adapters/memory/memory-hook-runner.js';
 import { add } from '../../../../src/application/commands/add.js';
@@ -21,10 +21,12 @@ import * as writeFileMod from '../../../../src/application/primitives/internal/w
 import { readBlob } from '../../../../src/application/primitives/read-blob.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
+import { getRefStore } from '../../../../src/application/primitives/ref-store.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
 import * as streamBlobMod from '../../../../src/application/primitives/stream-blob.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import { writeSymbolicRef } from '../../../../src/application/primitives/write-symbolic-ref.js';
 import * as writeTreeMod from '../../../../src/application/primitives/write-tree.js';
 import { checkoutOverwriteDirty } from '../../../../src/domain/commands/error.js';
 import { DEFAULT_MAX_TREE_DEPTH } from '../../../../src/domain/diff/flat-tree.js';
@@ -41,6 +43,7 @@ import type {
 } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
+import type { Context } from '../../../../src/ports/context.js';
 import {
   buildSeededContext,
   buildTreeChain,
@@ -64,6 +67,27 @@ const author: AuthorIdentity = {
   email: 'ada@example.com',
   timestamp: 1_700_000_000,
   timezoneOffset: '+0000',
+};
+
+const FROZEN_SECONDS = 1_800_000_000;
+
+/** Freezes the wall clock every reflog entry reads its timestamp from. */
+const freezeClock = (): void => {
+  vi.spyOn(Date, 'now').mockReturnValue(FROZEN_SECONDS * 1000);
+};
+
+/** `name`'s newest reflog entry, as the raw line the files backend writes. */
+const lastReflogLine = async (ctx: Context, name: string): Promise<string | undefined> => {
+  const last = (await readReflog(ctx, name as RefName)).at(-1);
+  if (last === undefined) return undefined;
+  const { oldId, newId, identity, message } = last;
+  return `${oldId} ${newId} ${identity.name} <${identity.email}> ${identity.timestamp} ${identity.timezoneOffset}\t${message}`;
+};
+
+/** Points `HEAD` at `refs/heads/s`, itself a symbolic ref naming `branch`. */
+const chainHeadThroughS = async (ctx: Context, branch: string): Promise<void> => {
+  await writeSymbolicRef(ctx, 'refs/heads/s' as RefName, branch as RefName);
+  await writeSymbolicRef(ctx, 'HEAD' as RefName, 'refs/heads/s' as RefName);
 };
 
 describe('merge', () => {
@@ -110,6 +134,45 @@ describe('merge', () => {
         if (result.kind === 'fast-forward') {
           expect(result.id).toBe(c2.id);
         }
+      });
+    });
+  });
+
+  describe('Given HEAD -> refs/heads/s -> refs/heads/x, x an ancestor of the merge target', () => {
+    describe('When merge fast-forwards', () => {
+      it('Then x moves to the target, s stays symbolic, and both x and HEAD log the move', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+        await add(ctx, ['a.txt']);
+        const c1 = await commit(ctx, { message: 'first', author });
+        await branchCreate(ctx, { name: 'x' });
+        await checkout(ctx, { rev: 'x' });
+        await branchCreate(ctx, { name: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
+        await add(ctx, ['b.txt']);
+        const c2 = await commit(ctx, { message: 'second', author });
+        await checkout(ctx, { rev: 'x' });
+        await writeSymbolicRef(ctx, 'refs/heads/s' as RefName, 'refs/heads/x' as RefName);
+        await writeSymbolicRef(ctx, 'HEAD' as RefName, 'refs/heads/s' as RefName);
+
+        // Act
+        const result = await mergeRun(ctx, { rev: 'feature' });
+
+        // Assert
+        expect(result.kind).toBe('fast-forward');
+        const xValue = await getRefStore(ctx).resolveDirect('refs/heads/x' as RefName);
+        expect(xValue).toEqual({ kind: 'direct', id: c2.id });
+        const sValue = await getRefStore(ctx).resolveDirect('refs/heads/s' as RefName);
+        expect(sValue).toEqual({ kind: 'symbolic', target: 'refs/heads/x' });
+        const xLog = await readReflog(ctx, 'refs/heads/x' as RefName);
+        expect(xLog[xLog.length - 1]?.oldId).toBe(c1.id);
+        expect(xLog[xLog.length - 1]?.newId).toBe(c2.id);
+        const headLog = await readReflog(ctx, 'HEAD' as RefName);
+        expect(headLog[headLog.length - 1]?.oldId).toBe(c1.id);
+        expect(headLog[headLog.length - 1]?.newId).toBe(c2.id);
       });
     });
   });
@@ -1725,11 +1788,12 @@ describe('merge — updateRef CAS guard', () => {
     const refPath = `${ctx.layout.gitDir}/refs/heads/main`;
     const staleId = '1'.repeat(40);
     let mainReads = 0;
-    const original = ctx.fs.readUtf8.bind(ctx.fs);
-    (ctx.fs as { readUtf8: typeof original }).readUtf8 = async (path: string) => {
-      if (path !== refPath) return original(path);
+    const original = ctx.fs.openWithNoFollow.bind(ctx.fs);
+    (ctx.fs as { openWithNoFollow: typeof original }).openWithNoFollow = async (path, mode) => {
+      if (path !== refPath) return original(path, mode);
       mainReads += 1;
-      return mainReads === 1 ? original(path) : `${staleId}\n`;
+      if (mainReads > 1) await ctx.fs.writeUtf8(refPath, `${staleId}\n`);
+      return original(path, mode);
     };
   };
 
@@ -1943,6 +2007,47 @@ describe('merge — conflicting-write atomicity', () => {
         expect(data?.code).toBe('INVALID_INDEX_ENTRY');
         expect(data?.reason).toBe("'.' segment rejected");
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/clean.txt`)).toBe(false);
+      });
+    });
+  });
+});
+
+describe('merge commit — HEAD through a chain of symbolic refs', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe('Given HEAD -> refs/heads/s -> refs/heads/x and a diverged feature branch', () => {
+    describe('When merge records a merge commit', () => {
+      it('Then x, s and HEAD each log the merge from the pre-merge id', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+        await add(ctx, ['a.txt']);
+        await commit(ctx, { message: 'first', author });
+        await branchCreate(ctx, { name: 'x' });
+        await branchCreate(ctx, { name: 'feature' });
+        await checkout(ctx, { rev: 'feature' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
+        await add(ctx, ['b.txt']);
+        await commit(ctx, { message: 'second', author });
+        await checkout(ctx, { rev: 'x' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c.txt`, 'c');
+        await add(ctx, ['c.txt']);
+        const ours = await commit(ctx, { message: 'third', author });
+        await chainHeadThroughS(ctx, 'refs/heads/x');
+        freezeClock();
+
+        // Act
+        const result = await mergeRun(ctx, { rev: 'feature', message: 'merge', author });
+
+        // Assert
+        const created = result.kind === 'merge' ? result.id : undefined;
+        const line = `${ours.id} ${created} tsgit <tsgit@localhost> ${FROZEN_SECONDS} +0000\tmerge feature: Merge made by the 'tsgit' strategy.`;
+        expect(await lastReflogLine(ctx, 'refs/heads/x')).toBe(line);
+        expect(await lastReflogLine(ctx, 'refs/heads/s')).toBe(line);
+        expect(await lastReflogLine(ctx, 'HEAD')).toBe(line);
       });
     });
   });
@@ -2766,7 +2871,7 @@ describe('materialiseConflictBytes (direct)', () => {
             conflictOf({ type: 'modify-delete', theirId: await seedBlob(ctx, 'THEIRS-MODDEL') }),
         },
         {
-          label: 'a bare content conflict with both ids returns the ours blob bytes (R5 take-ours)',
+          label: 'a bare content conflict with both ids returns the ours blob bytes',
           expected: 'OURS-LINE',
           build: async (ctx: ReturnType<typeof createMemoryContext>) =>
             conflictOf({
@@ -2776,8 +2881,7 @@ describe('materialiseConflictBytes (direct)', () => {
             }),
         },
         {
-          label:
-            'a bare content conflict with only ourId returns the ours blob bytes (take-ours for R5)',
+          label: 'a bare content conflict with only ourId returns the ours blob bytes',
           expected: 'OURS-ONLY',
           build: async (ctx: ReturnType<typeof createMemoryContext>) =>
             conflictOf({ type: 'content', ourId: await seedBlob(ctx, 'OURS-ONLY') }),

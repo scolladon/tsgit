@@ -13,10 +13,9 @@
  * `*-http-backend` suites and staying robust under the full-suite concurrency.
  *
  * @proves
- *   surface:        submodule.add, submodule.update
- *   bucket:         cross-tool-interop
- *   unique:         tsgit submodule add/update reproduce git's absorbed layout + gitlink over smart-HTTP
- *   interopSurface: submodule
+ *   surface: submodule.add, submodule.update
+ *   bucket:  real-http
+ *   unique:  tsgit submodule add/update reproduce git's absorbed layout + gitlink over smart-HTTP
  */
 import { execFileSync } from 'node:child_process';
 import { accessSync, readFileSync } from 'node:fs';

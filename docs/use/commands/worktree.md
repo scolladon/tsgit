@@ -118,6 +118,7 @@ await repo.worktree.remove('../feature-2', { force: true });
 - `NOT_A_WORKTREE` — `move`/`remove` on a path that is not a linked worktree.
 - `INVALID_OPTION` — `move`/`remove` targeting the main worktree.
 - `OBJECT_NOT_FOUND` / `REVPARSE_UNRESOLVED` — the start point does not resolve.
+- `CONFIG_BAD_NUMERIC_VALUE` — a malformed `core.maxTreeDepth` / `core.deltaBaseCacheLimit` (the repo-settings class), checked by `list`, `add`, `move` and `remove` alike right after the operational gate, transcribing git's own per-builtin prologue. `worktree` carries no work-tree requirement of its own, so nothing runs ahead of it. See [`internals.md`](../primitives/internals.md#assertrepossettingsvalid).
 
 ## Non-goals (v1)
 

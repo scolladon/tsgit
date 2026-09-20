@@ -25,8 +25,9 @@ headers so 19.5a (browser surface-parity audit) can consume it.
    *promote* the test — it *names* the surface so 19.5a can promote it into
    the browser-surface-parity matrix.
 4. **Single source of truth for the integration tier.** The audit emits
-   `reports/integration-surfaces.json` listing every `(file, surface, bucket,
-   unique)` tuple. 19.5a will read this to compute browser-coverage gaps.
+   `reports/integration-surfaces.json` listing every `(file, surfaces, bucket,
+   unique)` tuple — `surfaces` is an array, because a file may name several.
+   19.5a will read this to compute browser-coverage gaps.
 
 ## 2. Non-goals
 
@@ -183,7 +184,7 @@ artefact for 19.5a):
   "files": [
     {
       "path": "test/integration/network/clone-http-backend.test.ts",
-      "surface": "clone",
+      "surfaces": ["clone"],
       "bucket": "real-http",
       "unique": "smart-HTTP v1 packfile fetch against canonical git-http-backend"
     },

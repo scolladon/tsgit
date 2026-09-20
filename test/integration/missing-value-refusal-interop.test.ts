@@ -5,7 +5,7 @@
  * valueless entry, so file-write is mandatory for fixture setup.
  *
  * @proves
- *   surface:        commit/config
+ *   surface:        commit, config
  *   bucket:         cross-tool-interop
  *   unique:         valueless identity refusal two-line reconstruction + absent-case distinctness
  *   interopSurface: config

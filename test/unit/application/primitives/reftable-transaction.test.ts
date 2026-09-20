@@ -29,6 +29,7 @@ import {
 } from '../../../../src/domain/refs/reftable/reftable-writer.js';
 import type { Context } from '../../../../src/ports/context.js';
 import type { FileSystem } from '../../../../src/ports/file-system.js';
+import { wrapFsValidator } from '../../../../src/repository/wrap-fs-validator.js';
 import { commonReftableDir, withReftableStorage, writeReftableFiles } from './reftable-fixtures.js';
 
 const oid = (fill: number): ObjectId => ObjectId.fromRaw(new Uint8Array(20).fill(fill));
@@ -38,6 +39,12 @@ const liveRef = (name: string, id: number, updateIndex: number): ReftableRefReco
   name: ref(name),
   updateIndex: BigInt(updateIndex),
   value: { kind: 'direct', id: oid(id) },
+});
+
+const symbolicRef = (name: string, updateIndex: number): ReftableRefRecord => ({
+  name: ref(name),
+  updateIndex: BigInt(updateIndex),
+  value: { kind: 'symbolic', target: ref('refs/heads/main') },
 });
 
 const tombstoneRef = (name: string, updateIndex: number): ReftableRefRecord => ({
@@ -225,6 +232,27 @@ describe('reftable-transaction', () => {
 
         // Assert
         expect(atomicRenameSpy).toHaveBeenCalledWith(lockPath, listPath);
+      });
+    });
+
+    describe('When the transaction commits through the validating wrapper a repository opens', () => {
+      it('Then the wrapper forwards atomicRename, so the commit still takes the atomic branch', async () => {
+        // Arrange
+        const base = withReftableStorage(createMemoryContext());
+        const atomicRenameSpy = vi.spyOn(base.fs, 'atomicRename');
+        const rmSpy = vi.spyOn(base.fs, 'rm');
+        const ctx: Context = { ...base, fs: wrapFsValidator(base.fs, base.layout.gitDir) };
+        const lockPath = tablesListLockPath(ctx.layout.gitDir);
+        const listPath = tablesListPath(ctx.layout.gitDir);
+
+        // Act
+        await applyReftableUpdates(ctx, [
+          { kind: 'set', name: ref('refs/heads/a'), id: oid(0x01) },
+        ]);
+
+        // Assert
+        expect(atomicRenameSpy).toHaveBeenCalledWith(lockPath, listPath);
+        expect(rmSpy).not.toHaveBeenCalledWith(lockPath);
       });
     });
   });
@@ -438,7 +466,7 @@ describe('reftable-transaction', () => {
 
   describe('Given a ref that exists in neither an empty nor a populated stack', () => {
     describe('When applyReftableUpdates applies a delete update', () => {
-      it('Then it throws REF_NOT_FOUND naming the ref', async () => {
+      it('Then it resolves and writes no table for the no-op', async () => {
         // Arrange — every other delete test in this file deletes a LIVE
         // ref; `applyDeleteRecords`'s own `stack.lookup(name) === undefined`
         // guard is otherwise never exercised on the reftable path.
@@ -446,22 +474,17 @@ describe('reftable-transaction', () => {
         await applyReftableUpdates(ctx, [
           { kind: 'set', name: ref('refs/heads/present'), id: oid(0x01) },
         ]);
+        const listingBefore = await ctx.fs.readUtf8(tablesListPath(ctx.layout.gitDir));
 
         // Act
-        let caught: unknown;
-        try {
-          await applyReftableUpdates(ctx, [{ kind: 'delete', name: ref('refs/heads/never') }]);
-        } catch (err) {
-          caught = err;
-        }
-        if (caught === undefined) expect.unreachable();
+        await applyReftableUpdates(ctx, [{ kind: 'delete', name: ref('refs/heads/never') }]);
 
-        // Assert
-        const data = (caught as TsgitError).data;
-        expect(data.code).toBe('REF_NOT_FOUND');
-        if (data.code === 'REF_NOT_FOUND') {
-          expect(data.name).toBe(ref('refs/heads/never'));
-        }
+        // Assert — the absent-ref delete never staged a table: tables.list is
+        // byte-unchanged.
+        const listingAfter = await ctx.fs.readUtf8(tablesListPath(ctx.layout.gitDir));
+        expect(listingAfter).toBe(listingBefore);
+        const store = createReftableRefStore(ctx);
+        expect(await store.resolveDirect(ref('refs/heads/never'))).toEqual({ kind: 'missing' });
       });
     });
   });
@@ -507,6 +530,66 @@ describe('reftable-transaction', () => {
         // search would).
         expect(logRecords.map((r) => r.updateIndex)).toEqual([3n, 2n, 1n]);
         expect(logRecords.every((r) => r.entry.kind === 'deletion')).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a symbolic ref with a live reflog entry', () => {
+    describe('When the ref is deleted', () => {
+      it('Then the log survives — a symbolic delete keeps its log', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const name = ref('refs/remotes/origin/HEAD');
+        await applyReftableUpdates(ctx, [
+          {
+            kind: 'setSymbolic',
+            name,
+            target: ref('refs/remotes/origin/main'),
+            reflog: {
+              oldId: oid(0),
+              newId: oid(0),
+              message: 'clone',
+              unconditional: true,
+            },
+          },
+        ]);
+
+        // Act
+        await applyReftableUpdates(ctx, [{ kind: 'delete', name }]);
+
+        // Assert — the ref itself is gone, but its reflog is not: reading it
+        // through the store's own reflog API (never the raw tables, which
+        // may legitimately compact away an all-tombstone log section).
+        const store = createReftableRefStore(ctx);
+        expect(await store.resolveDirect(name)).toEqual({ kind: 'missing' });
+        const entries = await store.readReflog(name);
+        expect(entries).toHaveLength(1);
+        expect(entries[0]?.message).toBe('clone');
+      });
+    });
+  });
+
+  describe('Given a direct ref with a live reflog entry', () => {
+    describe('When the ref is deleted', () => {
+      it('Then the log is gone — unaffected by the symbolic-keep rule', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const name = ref('refs/heads/direct');
+        await applyReftableUpdates(ctx, [
+          {
+            kind: 'set',
+            name,
+            id: oid(1),
+            reflog: { oldId: oid(0), newId: oid(1), message: 'created', unconditional: true },
+          },
+        ]);
+
+        // Act
+        await applyReftableUpdates(ctx, [{ kind: 'delete', name }]);
+
+        // Assert
+        const store = createReftableRefStore(ctx);
+        expect(await store.readReflog(name)).toEqual([]);
       });
     });
   });
@@ -616,6 +699,126 @@ describe('reftable-transaction', () => {
     });
   });
 
+  describe('Given a source ref with two live reflog entries and a target with one of its own', () => {
+    describe('When reflogMerge moves the source under the target', () => {
+      it("Then each source record lands under the target at its OWN update index, the source's are tombstoned, and the target's own record stays live", async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const from = ref('refs/heads/main');
+        const to = ref('refs/heads/renamed');
+        await applyReftableUpdates(ctx, [
+          {
+            kind: 'set',
+            name: to,
+            id: oid(9),
+            reflog: {
+              oldId: oid(0),
+              newId: oid(9),
+              message: 'target created',
+              unconditional: true,
+            },
+          },
+        ]);
+        await applyReftableUpdates(ctx, [
+          {
+            kind: 'set',
+            name: from,
+            id: oid(1),
+            reflog: { oldId: oid(0), newId: oid(1), message: 'source c1', unconditional: true },
+          },
+        ]);
+        await applyReftableUpdates(ctx, [
+          {
+            kind: 'set',
+            name: from,
+            id: oid(2),
+            reflog: { oldId: oid(1), newId: oid(2), message: 'source c2', unconditional: true },
+          },
+        ]);
+        const store = createReftableRefStore(ctx);
+        const sourceBefore = await store.readReflog(from);
+        expect(sourceBefore).toHaveLength(2);
+
+        // Act
+        await applyReftableUpdates(ctx, [{ kind: 'reflogMerge', name: to, from }]);
+
+        // Assert — the target's log is its own history followed by the
+        // source's two entries, in the source's own order; the source has
+        // no reflog left.
+        const targetAfter = await store.readReflog(to);
+        expect(targetAfter.map((e) => e.message)).toEqual([
+          'target created',
+          'source c1',
+          'source c2',
+        ]);
+        expect(await store.readReflog(from)).toEqual([]);
+        // The ref VALUES are untouched — only log records moved.
+        expect(await store.resolveDirect(to)).toEqual({ kind: 'direct', id: oid(9) });
+        expect(await store.resolveDirect(from)).toEqual({ kind: 'direct', id: oid(2) });
+      });
+    });
+  });
+
+  describe('Given a source ref with two live reflog entries and a target with one of its own', () => {
+    describe('When reflogCopy copies the source onto the target', () => {
+      it("Then the source's records land under the target too, AND the source's own log survives untouched", async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const from = ref('refs/heads/main');
+        const to = ref('refs/heads/renamed');
+        await applyReftableUpdates(ctx, [
+          {
+            kind: 'set',
+            name: to,
+            id: oid(9),
+            reflog: {
+              oldId: oid(0),
+              newId: oid(9),
+              message: 'target created',
+              unconditional: true,
+            },
+          },
+        ]);
+        await applyReftableUpdates(ctx, [
+          {
+            kind: 'set',
+            name: from,
+            id: oid(1),
+            reflog: { oldId: oid(0), newId: oid(1), message: 'source c1', unconditional: true },
+          },
+        ]);
+        await applyReftableUpdates(ctx, [
+          {
+            kind: 'set',
+            name: from,
+            id: oid(2),
+            reflog: { oldId: oid(1), newId: oid(2), message: 'source c2', unconditional: true },
+          },
+        ]);
+        const store = createReftableRefStore(ctx);
+
+        // Act
+        await applyReftableUpdates(ctx, [{ kind: 'reflogCopy', name: to, from }]);
+
+        // Assert — the target's log is its own history followed by the
+        // source's two entries; the source keeps its full history too.
+        const targetAfter = await store.readReflog(to);
+        expect(targetAfter.map((e) => e.message)).toEqual([
+          'target created',
+          'source c1',
+          'source c2',
+        ]);
+        expect((await store.readReflog(from)).map((e) => e.message)).toEqual([
+          'source c1',
+          'source c2',
+        ]);
+        // The ref VALUES are untouched — only log records copied.
+        expect(await store.resolveDirect(to)).toEqual({ kind: 'direct', id: oid(9) });
+        expect(await store.resolveDirect(from)).toEqual({ kind: 'direct', id: oid(2) });
+      });
+    });
+  });
+
   describe('Given a ref with two live reflog entries', () => {
     describe('When one applyReftableUpdates call both repoints the ref and replaces its reflog', () => {
       it('Then the ref moves to the new tip and the reflog carries only the survivor', async () => {
@@ -701,6 +904,38 @@ describe('reftable-transaction', () => {
     });
   });
 
+  describe('Given a stack holding many refs, and a single-update batch for a brand-new name', () => {
+    describe('When the transaction commits', () => {
+      it('Then the availability check seeks past the ref space instead of decoding it', async () => {
+        // Arrange — every live ref record decodes one object id, so the
+        // `fromRaw` count is the record-decode count. The name created sorts
+        // after every existing one, which is exactly where a full sorted-names
+        // pass would be most expensive and a seek cheapest.
+        const ctx = withReftableStorage(createMemoryContext());
+        const dir = commonReftableDir(ctx);
+        const priorRefs = Array.from({ length: 400 }, (_, index) =>
+          liveRef(`refs/heads/b${String(index).padStart(5, '0')}`, (index % 250) + 1, index + 1),
+        );
+        const bytes = await buildFixtureTable(ctx, priorRefs, [], 1n, BigInt(priorRefs.length));
+        await writeReftableFiles(ctx, dir, [{ name: 'many.ref', bytes }]);
+        const fromRawSpy = vi.spyOn(ObjectId, 'fromRaw');
+        fromRawSpy.mockClear();
+
+        // Act
+        try {
+          await applyReftableUpdates(ctx, [
+            { kind: 'set', name: ref('refs/heads/zzz'), id: oid(9) },
+          ]);
+
+          // Assert
+          expect(fromRawSpy.mock.calls.length).toBeLessThan(priorRefs.length);
+        } finally {
+          fromRawSpy.mockRestore();
+        }
+      });
+    });
+  });
+
   describe('Given a stack with reflog history under several OTHER ref names, and a single-update batch for a brand-new ref', () => {
     describe('When the transaction commits', () => {
       it('Then only the checked name would ever be decoded — none of the other names’ log records are', async () => {
@@ -721,7 +956,10 @@ describe('reftable-transaction', () => {
           'refs/tags/e',
         ];
         const priorLogs = priorNames.map((name, i) => liveLog(name, i + 1, `history for ${name}`));
-        const priorRefs = priorNames.map((name, i) => liveRef(name, i + 1, i + 1));
+        // Symbolic, so reading the ref space never decodes an `ObjectId`
+        // either: any `fromRaw` call can then only have come from a log
+        // record, which is what this row is about.
+        const priorRefs = priorNames.map((name, i) => symbolicRef(name, i + 1));
         const bytes = await buildFixtureTable(
           ctx,
           priorRefs,

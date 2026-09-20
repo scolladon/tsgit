@@ -120,7 +120,7 @@ describe('detectIntegrationProof', () => {
     expect(sut.misplaced).toEqual([]);
     expect(sut.accepted).toHaveLength(1);
     const first = sut.accepted[0];
-    expect(first?.surface).toBe('clone');
+    expect(first?.surfaces).toEqual(['clone']);
     expect(first?.bucket).toBe('real-http');
     expect(first?.directory).toBe('network/');
   });

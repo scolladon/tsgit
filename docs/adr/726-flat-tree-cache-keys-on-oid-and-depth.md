@@ -5,7 +5,14 @@ subjects:
 ---
 # 726 — FlatTree cache keys on `(rootTreeOid, maxDepth)`
 
-- **Status:** accepted
+> **Superseded by [ADR-851](851-derived-object-caches-are-bound-by-entries-with-explicit-budgets.md)**
+> for the cache's sizing: the 1/16-of-`deltaCacheMaxBytes` budget held about 6 400 tracked files, so
+> the medium fixture's HEAD tree was refused on every `status` and this cache was dead. It is now
+> bound in tracked files on its own explicit budget, and the over-cap drop this record documented
+> as acceptable is reported by `set` (ADR-853). The `(rootTreeOid, maxDepth)` key, gitlink
+> preservation in cached trees, and the floor-at-1 sizer are carried forward.
+
+- **Status:** superseded by ADR-851
 - **Date:** 2026-08-26
 - **Design:** docs/design/perf-remediation-2026-08.md (DC-12) · **Supersedes/Refines:** none
 

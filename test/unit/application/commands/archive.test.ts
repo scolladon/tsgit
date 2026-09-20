@@ -83,7 +83,7 @@ const seedOneCommit = async (
 };
 
 // ---------------------------------------------------------------------------
-// R1 — NOT_A_REPOSITORY
+// NOT_A_REPOSITORY
 // ---------------------------------------------------------------------------
 
 describe('Given a context without a HEAD file (not a repository)', () => {
@@ -108,7 +108,7 @@ describe('Given a context without a HEAD file (not a repository)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// R2 — unborn HEAD (revParse cannot resolve)
+// Unborn HEAD (revParse cannot resolve)
 // ---------------------------------------------------------------------------
 
 describe('Given a repository with an unborn HEAD (no commits yet)', () => {
@@ -133,7 +133,7 @@ describe('Given a repository with an unborn HEAD (no commits yet)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// R3 — unresolvable rev
+// Unresolvable rev
 // ---------------------------------------------------------------------------
 
 describe('Given a repository with a valid commit', () => {
@@ -158,7 +158,7 @@ describe('Given a repository with a valid commit', () => {
 });
 
 // ---------------------------------------------------------------------------
-// R4 — blob treeish (ISOLATED test)
+// Blob treeish (ISOLATED test)
 // ---------------------------------------------------------------------------
 
 describe('Given a treeish that resolves to a blob (not a tree)', () => {

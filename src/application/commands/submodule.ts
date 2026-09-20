@@ -44,6 +44,7 @@ import { assertValidBooleanConfigInSection } from '../primitives/internal/boolea
 import { indexEntryFromStat } from '../primitives/internal/index-entry-from-stat.js';
 import { acquireIndexLock } from '../primitives/internal/index-lock.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
+import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
 import {
   deriveSubmoduleCloneContext,
   deriveSubmoduleContext,
@@ -219,6 +220,7 @@ export const submoduleInit = async (
   opts: SubmoduleInitOptions = {},
 ): Promise<SubmoduleInitResult> => {
   await assertOperationalRepository(ctx);
+  await assertRepoSettingsValid(ctx);
   const workDir = requireWorkTree(ctx, 'submodule init');
   const rows = await readWorktreeGitmodules(ctx, workDir);
   const updateModes = validateUpdateModes(rows);
@@ -304,6 +306,7 @@ const syncLevel = async (
   visited: ReadonlySet<string>,
 ): Promise<SubmoduleSyncResult> => {
   await assertOperationalRepository(ctx);
+  await assertRepoSettingsValid(ctx);
   const workDir = requireWorkTree(ctx, 'submodule sync');
   const selected = selectRows(await readWorktreeGitmodules(ctx, workDir), opts.paths);
   const config = await readConfig(ctx);
@@ -588,12 +591,6 @@ const stageSubmodule = async (
 };
 
 /**
- * Clone a submodule into its absorbed gitdir (`child`) and lay down the absorbed
- * layout: the module's `core.worktree`, then the `.git` gitfile in the worktree.
- * Shared by `add` and `update`'s clone-if-missing step; the caller then
- * materialises / checks out the worktree.
- */
-/**
  * git refuses a submodule whose object format differs from the
  * superproject's — a cross-width gitlink oid cannot be represented in the
  * superproject's own tree (`error: cannot add a submodule of a different
@@ -617,6 +614,12 @@ const assertSameObjectFormat = (ctx: Context, cloned: CloneResult): void => {
   throw submoduleObjectFormatMismatch(ctx.hashConfig.algorithm, remote);
 };
 
+/**
+ * Clone a submodule into its absorbed gitdir (`child`) and lay down the absorbed
+ * layout: the module's `core.worktree`, then the `.git` gitfile in the worktree.
+ * Shared by `add` and `update`'s clone-if-missing step; the caller then
+ * materialises / checks out the worktree.
+ */
 const cloneSubmoduleInto = async (
   ctx: Context,
   workDir: string,

@@ -306,7 +306,7 @@ async function buildLinearBitmapFixture(
 }
 
 async function firstPack(ctx: Context, deps: FixtureDeps = DEFAULT_DEPS) {
-  const [pack] = await deps.registry(ctx).all();
+  const [pack] = await (await deps.registry(ctx)).all();
   if (pack === undefined) throw new Error('expected a registered pack');
   return pack;
 }
@@ -386,19 +386,25 @@ describe('Given an entry whose reconstruction is requested via both wants and no
       });
 
       try {
-        const [
-          { resolveBitmapClosure: scopedResolve },
-          { loadPackBitmapArtefact: scopedLoad },
-          { createMemoryContext: scopedCreateContext },
-          { writeSyntheticPack: scopedWritePack, writeSyntheticBitmap: scopedWriteBitmap },
-          { getPackRegistry: scopedRegistry },
-        ] = await Promise.all([
-          import('../../../../../src/application/primitives/internal/bitmap-binding.js'),
-          import('../../../../../src/application/primitives/internal/pack-bitmap-binding.js'),
-          import('../../../../../src/adapters/memory/memory-adapter.js'),
-          import('../pack-fixture.js'),
-          import('../../../../../src/application/primitives/read-object.js'),
-        ]);
+        // The re-imports run one at a time on purpose: importing them concurrently
+        // starts one mock-queue drain per module, and a straggling drain re-applies
+        // its queued unmock after another drain has already registered the mock.
+        // A dependency resolved inside that window finds an empty registry and
+        // binds the unmocked module, so the override silently does not apply.
+        const { resolveBitmapClosure: scopedResolve } = await import(
+          '../../../../../src/application/primitives/internal/bitmap-binding.js'
+        );
+        const { loadPackBitmapArtefact: scopedLoad } = await import(
+          '../../../../../src/application/primitives/internal/pack-bitmap-binding.js'
+        );
+        const { createMemoryContext: scopedCreateContext } = await import(
+          '../../../../../src/adapters/memory/memory-adapter.js'
+        );
+        const { writeSyntheticPack: scopedWritePack, writeSyntheticBitmap: scopedWriteBitmap } =
+          await import('../pack-fixture.js');
+        const { getPackRegistry: scopedRegistry } = await import(
+          '../../../../../src/application/primitives/read-object.js'
+        );
         const scopedDeps: FixtureDeps = {
           createContext: scopedCreateContext,
           writePack: scopedWritePack,
@@ -672,19 +678,22 @@ describe('Given a bitmap-tier answer larger than the push limit', () => {
       });
 
       try {
-        const [
-          { resolveBitmapClosure: scopedResolve },
-          { loadPackBitmapArtefact: scopedLoad },
-          { createMemoryContext: scopedCreateContext },
-          { writeSyntheticPack: scopedWritePack, writeSyntheticBitmap: scopedWriteBitmap },
-          { getPackRegistry: scopedRegistry },
-        ] = await Promise.all([
-          import('../../../../../src/application/primitives/internal/bitmap-binding.js'),
-          import('../../../../../src/application/primitives/internal/pack-bitmap-binding.js'),
-          import('../../../../../src/adapters/memory/memory-adapter.js'),
-          import('../pack-fixture.js'),
-          import('../../../../../src/application/primitives/read-object.js'),
-        ]);
+        // Re-imported one at a time, for the mock-registration reason recorded at
+        // the first scoped re-import in this file.
+        const { resolveBitmapClosure: scopedResolve } = await import(
+          '../../../../../src/application/primitives/internal/bitmap-binding.js'
+        );
+        const { loadPackBitmapArtefact: scopedLoad } = await import(
+          '../../../../../src/application/primitives/internal/pack-bitmap-binding.js'
+        );
+        const { createMemoryContext: scopedCreateContext } = await import(
+          '../../../../../src/adapters/memory/memory-adapter.js'
+        );
+        const { writeSyntheticPack: scopedWritePack, writeSyntheticBitmap: scopedWriteBitmap } =
+          await import('../pack-fixture.js');
+        const { getPackRegistry: scopedRegistry } = await import(
+          '../../../../../src/application/primitives/read-object.js'
+        );
         const scopedDeps: FixtureDeps = {
           createContext: scopedCreateContext,
           writePack: scopedWritePack,
@@ -1413,17 +1422,19 @@ describe('Given the out-of-range whole-artefact fixture, under an instrumented C
       });
 
       try {
-        const [
-          { computeClosure: scopedComputeClosure },
-          { getPackRegistry: scopedGetPackRegistry },
-          { createMemoryContext: scopedCreateContext },
-          { writeSyntheticPack: scopedWritePack, writeSyntheticBitmap: scopedWriteBitmap },
-        ] = await Promise.all([
-          import('../../../../../src/application/primitives/internal/closure-engine.js'),
-          import('../../../../../src/application/primitives/read-object.js'),
-          import('../../../../../src/adapters/memory/memory-adapter.js'),
-          import('../pack-fixture.js'),
-        ]);
+        // Re-imported one at a time, for the mock-registration reason recorded at
+        // the first scoped re-import in this file.
+        const { computeClosure: scopedComputeClosure } = await import(
+          '../../../../../src/application/primitives/internal/closure-engine.js'
+        );
+        const { getPackRegistry: scopedGetPackRegistry } = await import(
+          '../../../../../src/application/primitives/read-object.js'
+        );
+        const { createMemoryContext: scopedCreateContext } = await import(
+          '../../../../../src/adapters/memory/memory-adapter.js'
+        );
+        const { writeSyntheticPack: scopedWritePack, writeSyntheticBitmap: scopedWriteBitmap } =
+          await import('../pack-fixture.js');
         const scopedDeps: FixtureDeps = {
           createContext: scopedCreateContext,
           writePack: scopedWritePack,
@@ -1431,7 +1442,7 @@ describe('Given the out-of-range whole-artefact fixture, under an instrumented C
           registry: scopedGetPackRegistry,
         };
         const fixture = await buildWholeArtefactDeclineFixture('ordering', scopedDeps);
-        const [pack] = await scopedGetPackRegistry(fixture.ctx).all();
+        const [pack] = await (await scopedGetPackRegistry(fixture.ctx)).all();
         const packPositionsSpy = vi.spyOn(
           pack as { packPositions: () => unknown },
           'packPositions',
@@ -1564,7 +1575,7 @@ async function realMidxBinding(
 }
 
 async function loadMidxArtefact(ctx: Context): Promise<LoadedMidxBitmap | undefined> {
-  return loadMidxBitmapArtefact(ctx, await getPackRegistry(ctx).midxBitmap());
+  return loadMidxBitmapArtefact(ctx, await (await getPackRegistry(ctx)).midxBitmap());
 }
 
 interface MidxBitmapFixture {
@@ -1927,7 +1938,7 @@ describe('Given a midx bitmap beside a midx with no reverse-index chunk', () => 
       // Act
       const artefact = await loadMidxBitmapArtefact(
         wrapped,
-        await getPackRegistry(wrapped).midxBitmap(),
+        await (await getPackRegistry(wrapped)).midxBitmap(),
       );
 
       // Assert
@@ -2300,7 +2311,7 @@ describe.each([
         // Act
         const artefact = await loadMidxBitmapArtefact(
           wrapped,
-          await getPackRegistry(wrapped).midxBitmap(),
+          await (await getPackRegistry(wrapped)).midxBitmap(),
         );
 
         // Assert
@@ -2427,7 +2438,7 @@ describe('Given the out-of-range midx whole-artefact fixture', () => {
       const wrapped = { ...fixture.ctx, logger: { warn } };
 
       // Act
-      await loadMidxBitmapArtefact(wrapped, await getPackRegistry(wrapped).midxBitmap());
+      await loadMidxBitmapArtefact(wrapped, await (await getPackRegistry(wrapped)).midxBitmap());
 
       // Assert
       expect(warn).toHaveBeenCalledTimes(1);
@@ -2489,13 +2500,14 @@ describe('Given the out-of-range midx whole-artefact fixture, under an instrumen
       });
 
       try {
-        const [
-          { computeClosure: scopedComputeClosure },
-          { createMemoryContext: scopedCreateContext },
-        ] = await Promise.all([
-          import('../../../../../src/application/primitives/internal/closure-engine.js'),
-          import('../../../../../src/adapters/memory/memory-adapter.js'),
-        ]);
+        // Re-imported one at a time, for the mock-registration reason recorded at
+        // the first scoped re-import in this file.
+        const { computeClosure: scopedComputeClosure } = await import(
+          '../../../../../src/application/primitives/internal/closure-engine.js'
+        );
+        const { createMemoryContext: scopedCreateContext } = await import(
+          '../../../../../src/adapters/memory/memory-adapter.js'
+        );
         const fixture = await buildMidxWholeArtefactDeclineFixture(
           'midx-ordering',
           scopedCreateContext,

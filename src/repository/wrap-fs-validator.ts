@@ -36,11 +36,50 @@ const hasDotDotSegment = (path: string): boolean =>
 const sanitizeAllowlist = (paths: ReadonlyArray<string>): ReadonlyArray<string> =>
   paths.filter((p) => p.length > 0 && !hasDotDotSegment(p));
 
+/**
+ * `lexists` is optional on the port, so it is forwarded only when the adapter provides it: an
+ * absent probe has to stay absent for callers to take their `lstat` fallback. It is invoked on
+ * the adapter itself, because a class-based adapter's method reads its own receiver.
+ */
+const guardedLexists = (
+  fs: FileSystem,
+  readGuard: (path: string) => void,
+): Pick<FileSystem, 'lexists'> => {
+  const { lexists } = fs;
+  if (lexists === undefined) return {};
+  return {
+    lexists: (p) => {
+      readGuard(p);
+      return lexists.call(fs, p);
+    },
+  };
+};
+
+/**
+ * `atomicRename` is optional on the port for the same reason: an adapter that omits it (OPFS) has
+ * to stay without it behind the wrapper, so lock-file protocols keep their degraded path there,
+ * while an adapter that provides it keeps its atomic commit. Both paths get `rename`'s guard.
+ */
+const guardedAtomicRename = (
+  fs: FileSystem,
+  guard: (path: string) => void,
+): Pick<FileSystem, 'atomicRename'> => {
+  const { atomicRename } = fs;
+  if (atomicRename === undefined) return {};
+  return {
+    atomicRename: (s, d) => {
+      guard(s);
+      guard(d);
+      return atomicRename.call(fs, s, d);
+    },
+  };
+};
+
 /** Options controlling which surfaces {@link wrapFsValidator} guards. */
 export interface WrapFsValidatorOptions {
   /**
    * Guard READ surfaces (`read`, `readSlice`, `readUtf8`, `exists`, `stat`,
-   * `lstat`, `readdir`, `readlink`, `openWithNoFollow(_, 'read')`) with the
+   * `lstat`, `lexists`, `readdir`, `readlink`, `openWithNoFollow(_, 'read')`) with the
    * same containment check as every write surface. Defaults to `true`.
    *
    * Pass `false` only for a branded first-party adapter whose OWN read path
@@ -149,6 +188,7 @@ export const wrapFsValidator = (
       readGuard(p);
       return fs.lstat(p);
     },
+    ...guardedLexists(fs, readGuard),
     readdir: (p) => {
       readGuard(p);
       return fs.readdir(p);
@@ -166,6 +206,7 @@ export const wrapFsValidator = (
       guard(d);
       return fs.rename(s, d);
     },
+    ...guardedAtomicRename(fs, guard),
     readlink: (p) => {
       readGuard(p);
       return fs.readlink(p);

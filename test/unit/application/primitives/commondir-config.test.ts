@@ -1,9 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { readConfig } from '../../../../src/application/primitives/config-read.js';
-import {
-  isWorktreeScopeActive,
-  resolveScopePath,
-} from '../../../../src/application/primitives/internal/config-scope.js';
+import { isWorktreeScopeActive } from '../../../../src/application/primitives/config-scoped-read.js';
+import { resolveScopePath } from '../../../../src/application/primitives/internal/config-scope.js';
 import { readInfoExclude } from '../../../../src/application/primitives/internal/read-gitignore.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { buildSeededContext } from './fixtures.js';

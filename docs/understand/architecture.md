@@ -82,7 +82,12 @@ Every command and primitive takes a `Context` — a frozen record that carries:
   `algorithm` option, else SHA-1; a genuine disagreement between the two
   channels, or with a caller-supplied `hash` adapter's own algorithm, throws
   `OBJECT_FORMAT_CONFLICT`)
-- The delta cache (LRU, configurable)
+- The delta cache (LRU, configurable), plus the cache budgets — explicit
+  per-family overrides for the parsed-object memo, the FlatTree cache and the
+  delta-base cache, each sized independently rather than as a share of the
+  delta cache; see [`performance.md`](performance.md)
+- The session handle every session-keyed cache is keyed on, so a derived
+  `Context` either shares those caches or starts them cold
 - The promisor remote (partial-clone lazy-fetch)
 - Optionally the hook runner, config logger, and (Node only) an SSH transport
 
@@ -101,7 +106,7 @@ Every command and primitive takes a `Context` — a frozen record that carries:
 | **Domain: sparse** | `src/domain/sparse/` | Cone / non-cone pattern parsing, matching, serialization. |
 | **Hooks** | `src/ports/hook-runner.ts`, `src/adapters/node/node-hook-runner.ts` | `pre-commit` / `commit-msg` / `pre-push` script execution. |
 | **Partial clone** | `src/domain/protocol/object-filter.ts`, `src/application/commands/fetch-missing.ts` | `--filter` parsing, promisor remote port, lazy-fetch on read. |
-| **Submodules** | `src/application/primitives/walk-submodules.ts`, `src/application/commands/submodules.ts` | Tree-ish gitlink walk + `.gitmodules` join, recursive into absorbed nested gitdirs. |
+| **Submodules** | `src/application/primitives/walk-submodules.ts`, `src/application/commands/submodule.ts` | Tree-ish gitlink walk + `.gitmodules` join, recursive into absorbed nested gitdirs. |
 | **Cat-file batch** | `src/application/primitives/cat-file-batch.ts`, `src/application/commands/cat-file.ts` | Streaming `git cat-file --batch` equivalent. |
 | **Pack auxiliary artefacts** | `src/domain/storage/{rev-index,bitmap,ewah}.ts`, `src/application/primitives/internal/closure-engine.ts` | `.rev` (pack offset acceleration) and pack/midx `.bitmap` (EWAH-compressed reachability) parsers — `rev-index.ts` also holds the `.rev` serializer, written beside every `.idx` tsgit writes; the shared walk-or-bitmap closure engine behind [`revList`](../use/commands/rev-list.md) / [`packObjects`](../use/commands/pack-objects.md). |
 | **Ports** | `src/ports/` | Interfaces for I/O and platform abstraction. |

@@ -600,24 +600,26 @@ describe('applyChangeset', () => {
     });
   });
 
-  describe('Given an update whose target file is reported absent by exists() but readable', () => {
+  describe('Given an update whose target file is reported absent by the presence probe but readable', () => {
     describe('When applyChangeset runs without force', () => {
       it('Then treats it as non-dirty and does not throw', async () => {
-        // Arrange — exists() says absent; blobMatches must NOT run for an absent file
+        // Arrange — the presence probe says absent; blobMatches must NOT run for an absent file
         const ctx = await buildSeededContext();
         const oldId = await writeBlob(ctx, new TextEncoder().encode('original'));
         const newId = await writeBlob(ctx, new TextEncoder().encode('updated'));
         // Working tree holds content that does NOT match previousId.
-        await ctx.fs.write(`${WORKDIR}/phantom.txt`, new TextEncoder().encode('mismatching-bytes'));
+        const phantomPath = `${WORKDIR}/phantom.txt`;
+        await ctx.fs.write(phantomPath, new TextEncoder().encode('mismatching-bytes'));
+        // Only the pre-write dirty probe asks for presence — the post-write index-entry
+        // lstat still sees the file applyChangeset itself just wrote.
         const wrappedCtx: Context = {
           ...ctx,
           fs: {
             ...ctx.fs,
-            exists: async (p: string): Promise<boolean> =>
-              p === `${WORKDIR}/phantom.txt` ? false : ctx.fs.exists(p),
+            lexists: async (p: string): Promise<boolean> => p !== phantomPath,
           },
         };
-        // Act — exists()=false short-circuits to non-dirty; no throw despite mismatching bytes
+        // Act — probe=absent short-circuits to non-dirty; no throw despite mismatching bytes
         const result = await applyChangeset(wrappedCtx, {
           changeset: makeChangeset([makeUpdate('phantom.txt', oldId, newId)]),
           force: false,
@@ -1066,7 +1068,7 @@ describe('applyChangeset', () => {
     });
   });
 
-  // ── Smudge filter (F2 identity + active smudge + fallback) ──────────────
+  // ── Smudge filter (identity + active smudge + fallback) ─────────────────
 
   describe('Given a regular file add whose smudge runner is invoked exactly once', () => {
     describe('When applyChangeset runs', () => {
@@ -1116,9 +1118,9 @@ describe('applyChangeset', () => {
   });
 
   describe('Given a regular file add with a clean-only filter (no smudge configured) and a runner', () => {
-    describe('When applyChangeset runs (F2 identity smudge)', () => {
+    describe('When applyChangeset runs with an identity smudge', () => {
       it('Then the worktree file contains the verbatim blob bytes and streamBlob is used', async () => {
-        // Arrange — clean-only filter: smudge is absent → identity (F2)
+        // Arrange — clean-only filter: smudge is absent → identity
         const ctx = await buildSeededContext();
         const blobContent = enc('HELLO WORLD');
         const id = await writeBlob(ctx, blobContent);
@@ -1251,7 +1253,7 @@ describe('applyChangeset', () => {
     });
   });
 
-  describe('Given a regular file add with a filter attribute but no ctx.command (R11 fallback)', () => {
+  describe('Given a regular file add with a filter attribute but no ctx.command', () => {
     describe('When applyChangeset runs', () => {
       it('Then the worktree file contains the verbatim blob bytes and streamBlob is used', async () => {
         // Arrange — no command in ctx (ADR-408 inert fallback)
@@ -1470,17 +1472,28 @@ describe('applyChangeset', () => {
           entries.push(makeAdd(`f${i}.txt`, id));
         }
         const ctx: Context = { ...base, concurrency: { cpuBound: 1, ioBound } };
+        // The pool's genuine per-entry concurrency window spans reading the
+        // blob through writing it — `streamBlob`'s loose stream arm now
+        // pulls real (natively-scheduled) inflate output before it resolves,
+        // so a window that starts only at the write call can land entirely
+        // inside one entry's already-finished read and under-count.
         let inFlight = 0;
         let maxInFlight = 0;
-        const realWrite = writeFileMod.writeWorkingTreeEntryStream;
-        const spy = vi
-          .spyOn(writeFileMod, 'writeWorkingTreeEntryStream')
+        const realStream = streamBlobMod.streamBlob;
+        const streamSpy = vi
+          .spyOn(streamBlobMod, 'streamBlob')
           .mockImplementation(async (...args) => {
             inFlight += 1;
             maxInFlight = Math.max(maxInFlight, inFlight);
-            await Promise.resolve();
+            return realStream(...args);
+          });
+        const realWrite = writeFileMod.writeWorkingTreeEntryStream;
+        const writeSpy = vi
+          .spyOn(writeFileMod, 'writeWorkingTreeEntryStream')
+          .mockImplementation(async (...args) => {
+            const result = await realWrite(...args);
             inFlight -= 1;
-            return realWrite(...args);
+            return result;
           });
 
         // Act
@@ -1494,7 +1507,8 @@ describe('applyChangeset', () => {
           // Assert
           expect(maxInFlight).toBe(ioBound);
         } finally {
-          spy.mockRestore();
+          streamSpy.mockRestore();
+          writeSpy.mockRestore();
         }
       });
     });

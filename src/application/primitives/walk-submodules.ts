@@ -3,8 +3,8 @@
  * recursing into each nested submodule whose absorbed gitdir is locally
  * available.
  */
-import { TsgitError } from '../../domain/error.js';
 import { bytesEqual, encode } from '../../domain/objects/encoding.js';
+import { isObjectNotFound } from '../../domain/objects/error.js';
 import {
   FILE_MODE,
   type FilePath,
@@ -132,7 +132,7 @@ const tryReadTree = async (ctx: Context, commitId: ObjectId): Promise<Tree | und
   try {
     return await readTree(ctx, commitId);
   } catch (err) {
-    if (err instanceof TsgitError && err.data.code === 'OBJECT_NOT_FOUND') return undefined;
+    if (isObjectNotFound(err)) return undefined;
     throw err;
   }
 };

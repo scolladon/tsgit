@@ -8,6 +8,7 @@ import {
   requireSymbolicHead,
   treeOf,
 } from '../../../../../src/application/commands/internal/history-rewrite.js';
+import { assertOperationalRepository } from '../../../../../src/application/primitives/internal/repo-state.js';
 import { readObject } from '../../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import type { TsgitError } from '../../../../../src/domain/error.js';
@@ -140,9 +141,15 @@ describe('history-rewrite helpers', () => {
     describe('Given a detached HEAD', () => {
       describe('When the branch is required', () => {
         it('Then throws UNSUPPORTED_OPERATION carrying the verb and reason', async () => {
-          // Arrange
+          // Arrange — a raw external HEAD rewrite between two commands: the
+          // gate re-runs (as every real caller of `requireSymbolicHead`
+          // does — `cherryPickAbort`/`revertAbort` call
+          // `assertOperationalRepository` first) so this command observes
+          // the detached state fresh, rather than the prior command's
+          // now-stale trusted slot.
           const { ctx, head } = await seedCommit();
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${head}\n`);
+          await assertOperationalRepository(ctx);
 
           // Act
           let caught: TsgitError | undefined;

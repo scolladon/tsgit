@@ -1,7 +1,6 @@
 /**
  * Three-way tree merge applied to the working tree + index. Shared by
- * `stash apply` and (later) the Phase 22 apply step (cherry-pick / revert /
- * rebase). Composes the pure domain `mergeTrees` / `mergeContent` with the
+ * `stash apply`, `cherry-pick`, `revert` and `rebase`. Composes the pure domain `mergeTrees` / `mergeContent` with the
  * working-tree writers; it writes NO commit, ref, or `MERGE_HEAD` — the caller
  * owns those.
  *
@@ -126,8 +125,8 @@ const conflictBytes = async (
     }
     return undefined;
   }
-  // Bare add-add (binary/symlink-symlink/type-change) and bare content (R5 symlink-pair):
-  // keep ours when present.
+  // Bare add-add (binary / symlink-symlink / type-change) and a bare content
+  // conflict between two symlinks: keep ours when present.
   // Stryker disable next-line ConditionalExpression,BlockStatement: equivalent — for bare
   // content/add-add/binary/type-change the `ourId` is always defined (ours has a side), and the
   // write reproduces bytes the working tree already holds (ours was checked out at `path`), so

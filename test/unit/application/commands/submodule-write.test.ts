@@ -13,6 +13,7 @@ import { TsgitError } from '../../../../src/domain/error.js';
 import type { ObjectId } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { buildSeededContext } from '../primitives/fixtures.js';
+import { asBareContext } from './fixtures.js';
 
 interface SeedParts {
   readonly gitmodules?: string;
@@ -61,6 +62,53 @@ describe('commands/submodule — init', () => {
         ]);
         const text = await readConfigText(ctx);
         expect(text).toContain('[submodule "libs/a"]\n\tactive = true\n\turl = https://h.x/g/a\n');
+      });
+    });
+  });
+
+  describe('Given a malformed core.maxTreeDepth', () => {
+    describe('When init runs', () => {
+      it('Then it throws CONFIG_BAD_NUMERIC_VALUE before reading .gitmodules', async () => {
+        // Arrange
+        const ctx = await seed({
+          gitmodules: GITMODULES_ONE,
+          config: `${ORIGIN}[core]\n\tmaxTreeDepth = 2.5\n`,
+        });
+
+        // Act
+        let caught: unknown;
+        try {
+          await submoduleInit(ctx);
+          expect.fail('init did not refuse the malformed class');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+      });
+    });
+
+    describe('When init runs on a bare repository', () => {
+      it('Then it throws CONFIG_BAD_NUMERIC_VALUE, not WORK_TREE_REQUIRED — the class is checked first', async () => {
+        // Arrange
+        const seeded = await seed({
+          gitmodules: GITMODULES_ONE,
+          config: `${ORIGIN}[core]\n\tmaxTreeDepth = 2.5\n`,
+        });
+        const ctx = asBareContext(seeded);
+
+        // Act
+        let caught: unknown;
+        try {
+          await submoduleInit(ctx);
+          expect.fail('init did not refuse the malformed class');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
       });
     });
   });
@@ -372,6 +420,53 @@ describe('commands/submodule — sync', () => {
         // Assert
         expect(result.entries).toEqual([]);
         expect(await readConfigText(ctx)).not.toContain('[submodule "libs/a"]');
+      });
+    });
+  });
+
+  describe('Given a malformed core.maxTreeDepth', () => {
+    describe('When sync runs', () => {
+      it('Then it throws CONFIG_BAD_NUMERIC_VALUE before reading .gitmodules', async () => {
+        // Arrange
+        const ctx = await seed({
+          gitmodules: GITMODULES_ONE,
+          config: `${ORIGIN}[core]\n\tmaxTreeDepth = 2.5\n`,
+        });
+
+        // Act
+        let caught: unknown;
+        try {
+          await submoduleSync(ctx);
+          expect.fail('sync did not refuse the malformed class');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+      });
+    });
+
+    describe('When sync runs on a bare repository', () => {
+      it('Then it throws CONFIG_BAD_NUMERIC_VALUE, not WORK_TREE_REQUIRED — the class is checked first', async () => {
+        // Arrange
+        const seeded = await seed({
+          gitmodules: GITMODULES_ONE,
+          config: `${ORIGIN}[core]\n\tmaxTreeDepth = 2.5\n`,
+        });
+        const ctx = asBareContext(seeded);
+
+        // Act
+        let caught: unknown;
+        try {
+          await submoduleSync(ctx);
+          expect.fail('sync did not refuse the malformed class');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
       });
     });
   });

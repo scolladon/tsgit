@@ -6,8 +6,9 @@ import { serializeTreeContent } from './tree.js';
 
 /**
  * Length in bytes of an object's canonical payload — the body that follows
- * `<type> <size>\0` on disk. Equal to the `size` field of git's
- * `cat-file --batch` header.
+ * `<type> <size>\0` on disk. Equal to the stored size git's
+ * `cat-file --batch` prints for every object whose stored header is honest
+ * and whose body re-serialises byte-exactly.
  *
  * Blobs are O(1) (a slice of an existing buffer). Trees / commits / tags
  * re-serialise the body to measure it; that matches the cost of

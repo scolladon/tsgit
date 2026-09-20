@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
+import { tablesListLockPath } from '../../../../src/application/primitives/path-layout.js';
 import { createReftableRefStore } from '../../../../src/application/primitives/reftable-ref-store.js';
+import { updateRef } from '../../../../src/application/primitives/update-ref.js';
 import { fileNotFound, permissionDenied } from '../../../../src/domain/error.js';
 import type { AuthorIdentity } from '../../../../src/domain/objects/index.js';
 import { ObjectId, RefName } from '../../../../src/domain/objects/index.js';
@@ -479,6 +481,28 @@ describe('reftable-ref-store', () => {
         expect(result).toBe(false);
       });
     });
+
+    describe('When copyReflog copies that ref while another writer holds the stack lock', () => {
+      it('Then it returns — with nothing to copy there is no transaction to contend for', async () => {
+        // Arrange — every stack write takes `tables.list.lock` first, and a
+        // held one whose body does not match `tables.list` is refused rather
+        // than broken. A copy whose source carries no records writes
+        // nothing, so it must never reach for that lock: an unrelated
+        // writer's lock cannot be what makes a no-op call fail.
+        const ctx = withReftableStorage(createMemoryContext());
+        await seedTwoTableStack(ctx, commonReftableDir(ctx));
+        const lockPath = tablesListLockPath(ctx.layout.gitDir);
+        await ctx.fs.writeExclusive(lockPath, new Uint8Array(0));
+        const sut = createReftableRefStore(ctx);
+
+        // Act
+        await sut.copyReflog(ref('refs/heads/main'), ref('refs/heads/copied'));
+
+        // Assert
+        expect(await ctx.fs.exists(lockPath)).toBe(true);
+        expect(await sut.hasReflog(ref('refs/heads/copied'))).toBe(false);
+      });
+    });
   });
 
   describe('Given a ref whose entire reflog is tombstoned by a newer table', () => {
@@ -749,6 +773,59 @@ describe('reftable-ref-store', () => {
 
         // Assert
         expect(await sut.readReflog(ref('refs/heads/trunk'))).toEqual([kept]);
+      });
+    });
+  });
+
+  describe('Given a source with two live entries and a destination whose own record was written BETWEEN them', () => {
+    describe('When moveReflog moves the source onto the destination', () => {
+      it('Then the merge orders by update index — the destination record lands between the two source ones', async () => {
+        // Arrange — three separate applyRefUpdates calls, each its own
+        // update index: source c1, then destination's own record, then
+        // source c2 — so a naive "append source after destination" merge
+        // would reorder them incorrectly.
+        const ctx = withReftableStorage(createMemoryContext());
+        const sut = createReftableRefStore(ctx);
+        const sourceFirst = reflogEntry({ message: 'source c1' });
+        await sut.applyRefUpdates([
+          { kind: 'set', name: ref('refs/heads/main'), id: sourceFirst.newId, reflog: sourceFirst },
+        ]);
+        const destinationOwn = reflogEntry({ message: 'destination created' });
+        await sut.applyRefUpdates([
+          {
+            kind: 'set',
+            name: ref('refs/heads/other'),
+            id: destinationOwn.newId,
+            reflog: destinationOwn,
+          },
+        ]);
+        const sourceSecond = reflogEntry({
+          oldId: sourceFirst.newId,
+          newId: ObjectId.fromRaw(oid(0x03)),
+          message: 'source c2',
+        });
+        await sut.applyRefUpdates([
+          {
+            kind: 'set',
+            name: ref('refs/heads/main'),
+            id: sourceSecond.newId,
+            reflog: sourceSecond,
+          },
+        ]);
+
+        // Act
+        await sut.moveReflog(ref('refs/heads/main'), ref('refs/heads/other'));
+
+        // Assert — destination's own history stays where it was created
+        // (by update index), never with the whole source history dumped
+        // ahead of or behind it in creation order.
+        const merged = await sut.readReflog(ref('refs/heads/other'));
+        expect(merged.map((e) => e.message)).toEqual([
+          'source c1',
+          'destination created',
+          'source c2',
+        ]);
+        expect(await sut.readReflog(ref('refs/heads/main'))).toEqual([]);
       });
     });
   });
@@ -1198,6 +1275,37 @@ describe('reftable-ref-store', () => {
         expect(findings).toEqual([
           { table: 'table1.ref', msgId: 'badReftableTable', check: 'magic' },
         ]);
+      });
+    });
+  });
+
+  describe('Given an existing ref with a reflog on a reftable Context', () => {
+    describe('When updateRef is called with the null object id', () => {
+      it('Then the ref resolves as missing and has no reflog', async () => {
+        // Arrange
+        const ctx = withReftableStorage(createMemoryContext());
+        const sut = createReftableRefStore(ctx);
+        const zero = ObjectId.fromRaw(new Uint8Array(20));
+        await sut.applyRefUpdates([
+          {
+            kind: 'set',
+            name: ref('refs/heads/main'),
+            id: ObjectId.fromRaw(oid(0x01)),
+            reflog: {
+              oldId: zero,
+              newId: ObjectId.fromRaw(oid(0x01)),
+              message: 'commit (initial): seed',
+              unconditional: true,
+            },
+          },
+        ]);
+
+        // Act
+        await updateRef(ctx, ref('refs/heads/main'), zero, { reflogMessage: 'delete: main' });
+
+        // Assert
+        expect(await sut.resolveDirect(ref('refs/heads/main'))).toEqual({ kind: 'missing' });
+        expect(await sut.hasReflog(ref('refs/heads/main'))).toBe(false);
       });
     });
   });

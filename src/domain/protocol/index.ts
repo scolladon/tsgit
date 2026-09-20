@@ -27,6 +27,7 @@ export {
   pktTooLarge,
   pktTruncated,
   pushObjectFormatUnsupported,
+  remoteError,
   remoteFilterUnsupported,
   sidebandFatal,
   unexpectedV2Section,

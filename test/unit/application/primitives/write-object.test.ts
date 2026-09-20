@@ -4,7 +4,7 @@ import { readObject } from '../../../../src/application/primitives/read-object.j
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { Blob, ObjectId } from '../../../../src/domain/objects/index.js';
-import { buildSeededContext } from './fixtures.js';
+import { buildSeededContext, seedMaxTreeDepth } from './fixtures.js';
 
 describe('writeObject', () => {
   describe('Given a fresh blob', () => {
@@ -267,6 +267,41 @@ describe('writeObject', () => {
 
         // Assert
         expect(deflateCapture[0]).toBe(expected);
+      });
+    });
+  });
+
+  describe('Given a malformed core.maxTreeDepth and NO gate has run on this Context', () => {
+    describe('When writeObject is called directly', () => {
+      it('Then throws CONFIG_BAD_NUMERIC_VALUE and writes no loose file — a Tier-2 write now validates the class on its own', async () => {
+        // Arrange — a bare Tier-2 call, no Tier-1 gate ever ran on this ctx.
+        const ctx = await buildSeededContext();
+        await seedMaxTreeDepth(ctx, '2.5');
+        const blob: Blob = { type: 'blob', content: new Uint8Array([99]), id: '' as ObjectId };
+        const writeExclusiveSpy = { called: false };
+        const wrapped = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            writeExclusive: async (path: string, data: Uint8Array): Promise<void> => {
+              writeExclusiveSpy.called = true;
+              return ctx.fs.writeExclusive(path, data);
+            },
+          },
+        };
+
+        // Act
+        let caught: unknown;
+        try {
+          await writeObject(wrapped, blob);
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+        expect(writeExclusiveSpy.called).toBe(false);
       });
     });
   });

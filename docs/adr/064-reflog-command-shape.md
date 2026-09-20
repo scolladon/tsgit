@@ -1,8 +1,19 @@
 # ADR-064: `reflog` command shape
 
+> **Superseded by [ADR-857](857-reflog-expire-follows-git-reachability-rule.md)** for the
+> `expire` reachability rule and this record's "fully faithful" claim: git expires below the total
+> cutoff unconditionally, tests both the old and the new object id against the unreachable cutoff,
+> marks from the ref's own tip rather than every tip, and bounds the mark walk at the total cutoff.
+> The one-command discriminated `action` shape, the `show`/`exists`/`delete`/`expire` split,
+> approxidate cutoff parsing with its 90-day and 30-day defaults, and `delete --rewrite` are all
+> carried forward.
+
 ## Status
 
-Accepted (at `1e5f20b`)
+- **Status:** superseded by ADR-857
+
+Accepted at `1e5f20b`; the expire reachability rule is superseded, the command shape is
+carried forward.
 
 ## Context
 

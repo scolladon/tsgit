@@ -1,9 +1,8 @@
 /**
  * Writes `objects/info/commit-graph`, byte-identical to
- * `git commit-graph write --reachable` for the same commit set (Pin C, Pin
- * K). Sources commits from every resolvable REF (Pin O: `--reachable`'s
- * root set, distinct from `gc`'s `HEAD + index + reflogs` retention roots)
- * via `walkCommits` — never from an existing graph, corrupt or not, which
+ * `git commit-graph write --reachable` for the same commit set. Sources
+ * commits from every resolvable REF (`--reachable`'s root set, distinct
+ * from `gc`'s `HEAD + index + reflogs` retention roots) via `walkCommits` — never from an existing graph, corrupt or not, which
  * would encode a stale generation set instead of a fresh one.
  *
  * @writes
@@ -35,7 +34,7 @@ const commitGraphLocked = (lockPath: string): TsgitError =>
 /**
  * Every ref's peeled target (annotated tags follow through to the tagged
  * object, matching `--reachable`) — refs-only, not gc's wider retention
- * roots (Pin O). An unresolvable ref (unborn HEAD, a dangling symref) roots
+ * roots. An unresolvable ref (unborn HEAD, a dangling symref) roots
  * nothing rather than failing the whole write, mirroring fsck's own
  * `addRefRoots` tolerance for the same conditions.
  */

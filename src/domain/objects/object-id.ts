@@ -6,8 +6,8 @@ const SHA1_HEX_LENGTH = 40;
 const SHA256_HEX_LENGTH = 64;
 
 // Inclusive code-unit boundaries of the two accepted ranges: ASCII '0'-'9'
-// and ASCII 'a'-'f'. Uppercase hex is deliberately not accepted (R1 keeps
-// the accept set byte-identical to the two regexes this replaces).
+// and ASCII 'a'-'f'. Uppercase hex is deliberately not accepted, keeping the
+// accept set byte-identical to the two regexes this replaces.
 const DIGIT_ZERO_CODE = 0x30; // '0'
 const DIGIT_NINE_CODE = 0x39; // '9'
 const LOWER_A_CODE = 0x61; // 'a'

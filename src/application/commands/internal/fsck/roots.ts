@@ -1,4 +1,5 @@
 import { TsgitError } from '../../../../domain/error.js';
+import { errorDataCode } from '../../../../domain/error-data-code.js';
 import type { CacheTreeEntry, GitIndex } from '../../../../domain/git-index/index-entry.js';
 import { parseCacheTree } from '../../../../domain/git-index/index-parser.js';
 import type { ObjectId, RefName } from '../../../../domain/objects/index.js';
@@ -9,7 +10,6 @@ import type { Context } from '../../../../ports/context.js';
 import { deriveContext } from '../../../primitives/derive-context.js';
 import { enumerateRefs } from '../../../primitives/enumerate-refs.js';
 import { boundedMapFor } from '../../../primitives/internal/concurrency.js';
-import { errorDataCode } from '../../../primitives/internal/error-data-code.js';
 import { deriveWorktreeContext } from '../../../primitives/internal/worktree-context.js';
 import { commonGitDir } from '../../../primitives/path-layout.js';
 import { readIndex } from '../../../primitives/read-index.js';
@@ -472,7 +472,7 @@ async function addOtherWorktreeRoots(ctx: Context, roots: Set<ObjectId>): Promis
 }
 
 /**
- * Retention roots for `maintenance`'s `gc` task (Pin H): every resolvable
+ * Retention roots for `maintenance`'s `gc` task: every resolvable
  * ref (HEAD included), every reflog old/new oid, the index — stage-0
  * entries plus its cache-tree, when present — the MAIN worktree's own state
  * (`addMainWorktreeRoots`) and every OTHER worktree's own state

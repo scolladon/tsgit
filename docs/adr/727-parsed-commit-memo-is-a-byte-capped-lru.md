@@ -5,7 +5,14 @@ subjects:
 ---
 # 727 — Parsed-commit memo is a byte-capped LRU
 
-- **Status:** accepted
+> **Superseded by [ADR-851](851-derived-object-caches-are-bound-by-entries-with-explicit-budgets.md)**
+> for the memo's primary bound: the byte cap bound at about 4 096 entries against a 256 B per-entry
+> overhead, so a 5 000-commit walk missed on nearly every lookup and the fraction sweep recorded
+> here was taken entirely on the wrong side of that cliff. The memo is now bound by entries with the
+> byte cap demoted to a valve. The per-session memo itself, its population on parse, and
+> deep-readonly `CommitData` making shared parsed objects safe are carried forward.
+
+- **Status:** superseded by ADR-851
 - **Date:** 2026-08-26
 - **Design:** docs/design/perf-remediation-2026-08.md (DC-13) · **Supersedes/Refines:** none
 

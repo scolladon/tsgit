@@ -114,7 +114,7 @@ async function expectFsckRejects(ctx: Context, check: string): Promise<void> {
 }
 
 /**
- * The Pin N mapping, asserted on every non-reject row: a non-zero `verify`
+ * The exit-bit mapping, asserted on every non-reject row: a non-zero `verify`
  * exit sets bit 32 on `fsck`'s exit, and only that — proven by masking every
  * other bit out of both sides before comparing.
  */
@@ -156,11 +156,11 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
   }
 
   // -------------------------------------------------------------------------
-  // Pin O — a flat midx over the BASE fixture
+  // a flat midx over the BASE fixture
   // -------------------------------------------------------------------------
 
-  describe('Pin O — git fsck over a flat midx (BASE)', () => {
-    describe('Given a healthy BASE repo (row O1, control), When fsck runs', () => {
+  describe('git fsck over a flat midx (BASE)', () => {
+    describe('Given a healthy BASE repo (control), When fsck runs', () => {
       it('Then both tools exit 0 with no midx finding', async () => {
         // Arrange
         const fixture = await freshBase('o1');
@@ -183,7 +183,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
       });
     });
 
-    describe('Given a BASE repo with no midx at all (row O2, control), When fsck runs', () => {
+    describe('Given a BASE repo with no midx at all (control), When fsck runs', () => {
       it('Then both tools exit 0 with no midx finding', async () => {
         // Arrange
         const fixture = await freshBase('o2');
@@ -203,7 +203,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
       });
     });
 
-    describe('Given a flat midx restamped to version 2 (row O6, accepted), When fsck runs', () => {
+    describe('Given a flat midx restamped to version 2 (accepted), When fsck runs', () => {
       it('Then both tools accept it, exit 0, with no midx finding', async () => {
         // Arrange
         const fixture = await freshBase('o6');
@@ -321,7 +321,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
     // needs the midx's own pack routing, and the fault is first reached
     // inside the health pass's own walk of every entry the midx lists — the
     // same contained shape a bad large-offset row reaches (below).
-    describe('Given a BASE repo with numPacks understated below a referenced pack index (row O12), When fsck runs', () => {
+    describe('Given a BASE repo with numPacks understated below a referenced pack index, When fsck runs', () => {
       it("Then git's verify child dies while its parent is topology-bimodal, and tsgit deterministically contains the fault as midx-unusable with bit 32", async () => {
         // Arrange — git's parent exits 128 only when its own walk happens to
         // route a poisoned oid through the midx (delta-topology-dependent;
@@ -404,7 +404,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
       },
     );
 
-    describe('Given a BASE repo with the flat midx truncated to 8 bytes (row O8), When fsck runs', () => {
+    describe('Given a BASE repo with the flat midx truncated to 8 bytes, When fsck runs', () => {
       it('Then git verify exits non-zero, fsck gains bit 32, and tsgit reports one midx-unusable finding', async () => {
         // Arrange
         const fixture = await freshBase('o8');
@@ -424,7 +424,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
       });
     });
 
-    describe('Given a BASE repo with the flat midx made unreadable via chmod 000 (row O18, node tier only), When fsck runs', () => {
+    describe('Given a BASE repo with the flat midx made unreadable via chmod 000 (node tier only), When fsck runs', () => {
       it('Then git verify exits non-zero, fsck gains bit 32, and tsgit reports one midx-unusable finding', async () => {
         // Arrange
         const fixture = await freshBase('o18');
@@ -444,7 +444,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
       });
     });
 
-    describe('Given a signature-flipped midx AND core.multiPackIndex=false (row O19), When fsck runs', () => {
+    describe('Given a signature-flipped midx AND core.multiPackIndex=false, When fsck runs', () => {
       it("Then git's config hatch spawns no child and exits 0, while tsgit — with no such config — still rejects (documented divergence, out of scope)", async () => {
         // Arrange
         const fixture = await freshBase('o19');
@@ -471,7 +471,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
       });
     });
 
-    describe('Given a BASE repo with the trailer digest flipped (row O10), When fsck runs', () => {
+    describe('Given a BASE repo with the trailer digest flipped, When fsck runs', () => {
       it('Then git verify reports incorrect checksum, fsck gains bit 32, and tsgit reports one midx-checksum-mismatch finding', async () => {
         // Arrange
         const fixture = await freshBase('o10');
@@ -497,7 +497,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
       });
     });
 
-    describe('Given a BASE repo with numBaseFiles = 1 (row O20, ignored), When fsck runs', () => {
+    describe('Given a BASE repo with numBaseFiles = 1 (ignored), When fsck runs', () => {
       it('Then both tools ignore the byte: exit 0, no midx finding', async () => {
         // Arrange
         const fixture = await freshBase('o20');
@@ -522,7 +522,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
       });
     });
 
-    describe('Given numBaseFiles = 1 AND a midx-named pack deleted (row O21, byte-identical to O23), When fsck runs', () => {
+    describe('Given numBaseFiles = 1 AND a midx-named pack deleted (byte-identical to O23), When fsck runs', () => {
       it('Then the numBaseFiles byte changes nothing: same finding shape as the plain staleness row', async () => {
         // Arrange
         const fixture = await freshBase('o21');
@@ -554,7 +554,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
       });
     });
 
-    describe('Given PNAM[0] renamed to a name no file has (row O22, staleness), When fsck runs', () => {
+    describe('Given PNAM[0] renamed to a name no file has (staleness), When fsck runs', () => {
       it('Then both report the position unresolved and every one of its oids unresolved', async () => {
         // Arrange
         const fixture = await freshBase('o22');
@@ -591,7 +591,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
       });
     });
 
-    describe('Given a midx-named pack fully deleted (.pack + .idx + .rev) (row O23), When fsck runs', () => {
+    describe('Given a midx-named pack fully deleted (.pack + .idx + .rev), When fsck runs', () => {
       it('Then both report it unresolved plus the ordinary connectivity fallout', async () => {
         // Arrange
         const fixture = await freshBase('o23');
@@ -624,7 +624,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
       });
     });
 
-    describe("Given a midx-named pack's .pack deleted, .idx kept (row O24, identical to O23), When fsck runs", () => {
+    describe("Given a midx-named pack's .pack deleted, .idx kept (identical to O23), When fsck runs", () => {
       it('Then both report it unresolved the same way', async () => {
         // Arrange
         const fixture = await freshBase('o24');
@@ -650,7 +650,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
       });
     });
 
-    describe("Given a midx-named pack's .idx deleted, .pack kept (row O25), When fsck runs", () => {
+    describe("Given a midx-named pack's .idx deleted, .pack kept, When fsck runs", () => {
       it('Then the pack itself resolved (its .pack is on disk) so only the per-entry family is reported — no midx-pack-unresolved', async () => {
         // Arrange
         const fixture = await freshBase('o25');
@@ -685,7 +685,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
       });
     });
 
-    describe('Given the SAME O23 repo with the midx removed instead (row O26, differential control), When fsck runs', () => {
+    describe('Given the SAME O23 repo with the midx removed instead (differential control), When fsck runs', () => {
       it("Then bit 32 and both midx findings vanish — the difference isolates the midx's own contribution", async () => {
         // Arrange — one repository, run twice: with the midx (O23 shape) and
         // with it removed, the pack deletion held constant
@@ -724,7 +724,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
       });
     });
 
-    describe('Given a LOFF chunk with the target row in range (row O27, accepted), When fsck runs', () => {
+    describe('Given a LOFF chunk with the target row in range (accepted), When fsck runs', () => {
       it('Then both tools accept it: exit 0, every object still enumerates', async () => {
         // Arrange
         const fixture = await freshBase('o27');
@@ -749,7 +749,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
       });
     });
 
-    describe('Given a LOFF chunk with the target row out of range (row O28), When fsck runs', () => {
+    describe('Given a LOFF chunk with the target row out of range, When fsck runs', () => {
       it("Then git's verify child dies while its parent is topology-bimodal, and tsgit deterministically contains the fault as midx-unusable with bit 32", async () => {
         // Arrange — the crafted row targets midx entry 0. Whether git's
         // PARENT also dies (128) depends on its own walk routing that oid
@@ -782,10 +782,10 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
   });
 
   // -------------------------------------------------------------------------
-  // Pin N — the mode table: bit 32 is ungated
+  // the mode table: bit 32 is ungated
   // -------------------------------------------------------------------------
 
-  describe('Pin N — mode is not a gate for the multi-pack-index pass', () => {
+  describe('mode is not a gate for the multi-pack-index pass', () => {
     const MODES: ReadonlyArray<{ readonly label: string; readonly opts: FsckOptions }> = [
       { label: 'default', opts: {} },
       { label: 'connectivityOnly', opts: { connectivityOnly: true } },
@@ -841,11 +841,11 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
   });
 
   // -------------------------------------------------------------------------
-  // Pin P — a chain over the CHAIN fixture
+  // a chain over the CHAIN fixture
   // -------------------------------------------------------------------------
 
-  describe('Pin P — git fsck over a chain (CHAIN)', () => {
-    describe('Given a healthy chain (row P1, control), When fsck runs', () => {
+  describe('git fsck over a chain (CHAIN)', () => {
+    describe('Given a healthy chain (control), When fsck runs', () => {
       it('Then both tools exit 0 with no midx finding', async () => {
         // Arrange
         const fixture = await freshChain('p1');
@@ -938,7 +938,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
       );
     });
 
-    describe('Given the base layer truncated to 8 bytes (row P8, Tier-B, dropped), When fsck runs', () => {
+    describe('Given the base layer truncated to 8 bytes (Tier-B, dropped), When fsck runs', () => {
       it('Then git prints an error line with no exit bit, and tsgit reports no midx finding', async () => {
         // Arrange
         const fixture = await freshChain('p8');
@@ -1019,7 +1019,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
       );
     });
 
-    describe('Given the base layer trailer flipped (row P12, silent), When fsck runs', () => {
+    describe('Given the base layer trailer flipped (silent), When fsck runs', () => {
       it('Then only the chain head is verified — base-layer corruption produces no finding', async () => {
         // Arrange — written DIRECTLY, never through the re-stamping mutator:
         // a re-stamped trailer would round-trip to the healthy bytes and this
@@ -1051,7 +1051,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
       });
     });
 
-    describe('Given the newest layer trailer flipped (row P13, checksum-mismatch), When fsck runs', () => {
+    describe('Given the newest layer trailer flipped (checksum-mismatch), When fsck runs', () => {
       it('Then the chain head IS verified — one midx-checksum-mismatch finding, bit 32', async () => {
         // Arrange
         const fixture = await freshChain('p13');
@@ -1076,7 +1076,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
       });
     });
 
-    describe('Given the newest layer PNAM unresolvable (row P14, chain-global position), When fsck runs', () => {
+    describe('Given the newest layer PNAM unresolvable (chain-global position), When fsck runs', () => {
       it('Then tsgit reports the pack unresolved at the chain-global position past the base layer', async () => {
         // Arrange
         const fixture = await freshChain('p14');
@@ -1114,7 +1114,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
       });
     });
 
-    describe('Given the base layer PNAM unresolvable (row P15, base layers are verified), When fsck runs', () => {
+    describe('Given the base layer PNAM unresolvable (base layers are verified), When fsck runs', () => {
       it('Then tsgit reports the pack unresolved at chain-global position 0', async () => {
         // Arrange
         const fixture = await freshChain('p15');
@@ -1148,7 +1148,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
       });
     });
 
-    describe('Given a midx-named pack deleted, chain intact (row P16), When fsck runs', () => {
+    describe('Given a midx-named pack deleted, chain intact, When fsck runs', () => {
       it('Then tsgit reports it unresolved plus the ordinary connectivity fallout', async () => {
         // Arrange
         const fixture = await freshChain('p16');
@@ -1176,7 +1176,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
       });
     });
 
-    describe('Given a Tier-B flat midx over an intact chain (row P17, the chain is the usable midx), When fsck runs', () => {
+    describe('Given a Tier-B flat midx over an intact chain (the chain is the usable midx), When fsck runs', () => {
       it('Then the chain loads and no finding is emitted for the flat fault', async () => {
         // Arrange
         const fixture = await freshChain('p17');
@@ -1198,7 +1198,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
       });
     });
 
-    describe('Given a Tier-A flat midx over an intact chain (row P18, flat wins outright), When fsck runs', () => {
+    describe('Given a Tier-A flat midx over an intact chain (flat wins outright), When fsck runs', () => {
       it('Then flat Tier A rejects the whole run — the chain is never opened', async () => {
         // Arrange
         const fixture = await freshChain('p18');
@@ -1218,7 +1218,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
       });
     });
 
-    describe('Given a broken chain AND a valid flat midx (row P19, flat suppresses the chain), When fsck runs', () => {
+    describe('Given a broken chain AND a valid flat midx (flat suppresses the chain), When fsck runs', () => {
       it('Then completely silent — the broken layer is never opened', async () => {
         // Arrange
         const fixture = await freshChain('p19');
@@ -1243,7 +1243,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck multi-pack-index reporting, against real g
       });
     });
 
-    describe('Given a broken chain with no flat file (row P20, no verdict — gated on the flat file existing), When fsck runs', () => {
+    describe('Given a broken chain with no flat file (no verdict — gated on the flat file existing), When fsck runs', () => {
       it('Then no midx finding — only the dropped-chain shape', async () => {
         // Arrange
         const fixture = await freshChain('p20');

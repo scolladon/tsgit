@@ -114,9 +114,9 @@ export async function* pathMerge<S extends SnapshotMap>(
 
 /**
  * Asserts that a stream of `{ path }`-keyed rows is in non-decreasing
- * path order. Used by every downstream operator (per ADR design §11.1)
- * to confirm upstream invariants before performing work that assumes
- * ordering (e.g. groupByDir).
+ * path order. Used by every downstream operator to confirm upstream
+ * invariants before performing work that assumes ordering (e.g.
+ * groupByDir).
  */
 export async function* assertOrdered<R extends { readonly path: FilePath }>(
   source: AsyncIterable<R>,

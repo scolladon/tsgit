@@ -1,23 +1,30 @@
 /**
  * Cross-tool interop — clean/smudge filter driver faithfulness.
  *
- * Pins F1 (clean@add stores cleaned blob; smudge@checkout writes smudged bytes;
- * git diff is clean after checkout), F2 (clean-only ⇒ identity smudge), F3
- * (required=true + failing clean ⇒ fatal; tsgit throws CLEAN_FILTER_FAILED with
- * structured data; git refuses with exit 128), and F4 (required absent ⇒ exit 0,
- * raw bytes staged — assert raw blob OID parity).
+ * Pins the round trip (clean@add stores the cleaned blob; smudge@checkout
+ * writes the smudged bytes; the peer's own diff is clean after checkout), the
+ * clean-only case (identity smudge), the fatal case (required=true + failing
+ * clean; tsgit throws CLEAN_FILTER_FAILED with structured data; git refuses
+ * with exit 128), and the graceful case (required absent ⇒ exit 0, raw bytes
+ * staged — assert raw blob OID parity).
  *
- * F-EXEC pins the stdin→stdout driver contract: the driver receives no positional
+ * The driver contract itself is pinned too: the driver receives no positional
  * arguments (argc=0), content on stdin, result on stdout.
  *
  * Drivers are trivial portable stdin→stdout scripts (`LC_ALL=C tr a-z A-Z` for
  * clean / uppercase, `LC_ALL=C tr A-Z a-z` for smudge / lowercase). The `tr`
- * binary reads stdin — no filename argument — which matches the F-EXEC contract
+ * binary reads stdin — no filename argument — which matches that contract
  * (clean/smudge are pure stdin→stdout; contrast textconv which takes argv[1]).
  *
  * Isolation is load-bearing: `runGit` from interop-helpers scrubs all `GIT_*`
  * env vars, points `HOME` at a non-existent path, and sets `GIT_CONFIG_NOSYSTEM=1`
  * — no global/system/XDG git config engages.
+ *
+ * @proves
+ *   surface:        add.filters, checkout.filters
+ *   bucket:         cross-tool-interop
+ *   unique:         clean and smudge drivers take content on stdin with no positional argv, and required decides whether a failure is fatal
+ *   interopSurface: add
  */
 import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
@@ -82,7 +89,7 @@ describe.skipIf(!GIT_AVAILABLE)('filter clean/smudge interop', () => {
     await writeFile(cleanScript, '#!/bin/sh\nLC_ALL=C tr a-z A-Z\n');
     await chmod(cleanScript, 0o755);
 
-    // Always-failing clean driver (for F3/F4)
+    // Always-failing clean driver (for the fatal and the graceful clean rows)
     cleanFailScript = path.join(dir, '.git', 'clean-fail.sh');
     await writeFile(cleanFailScript, '#!/bin/sh\nexit 1\n');
     await chmod(cleanFailScript, 0o755);
@@ -92,18 +99,18 @@ describe.skipIf(!GIT_AVAILABLE)('filter clean/smudge interop', () => {
     await writeFile(smudgeScript, '#!/bin/sh\nLC_ALL=C tr A-Z a-z\n');
     await chmod(smudgeScript, 0o755);
 
-    // Always-failing smudge driver (for F6/F7)
+    // Always-failing smudge driver (for the fatal and the graceful smudge rows)
     smudgeFailScript = path.join(dir, '.git', 'smudge-fail.sh');
     await writeFile(smudgeFailScript, '#!/bin/sh\nexit 1\n');
     await chmod(smudgeFailScript, 0o755);
 
-    // F-EXEC logging driver: echo stdin→stdout, append argc to a log file (clean side)
+    // Argc-logging driver: echo stdin→stdout, append argc to a log file (clean side)
     fexecLogFile = path.join(dir, '.git', 'fexec-argc.log');
     const fexecScript = path.join(dir, '.git', 'fexec-log.sh');
     await writeFile(fexecScript, `#!/bin/sh\necho $# >> "${fexecLogFile}"\nLC_ALL=C tr a-z A-Z\n`);
     await chmod(fexecScript, 0o755);
 
-    // F-EXEC smudge logging driver: echo stdin→stdout lowercase, append argc to log file
+    // Argc-logging smudge driver: echo stdin→stdout lowercase, append argc to log file
     fexecSmudgeLogFile = path.join(dir, '.git', 'fexec-smudge-argc.log');
     const fexecSmudgeScript = path.join(dir, '.git', 'fexec-smudge-log.sh');
     await writeFile(
@@ -118,18 +125,18 @@ describe.skipIf(!GIT_AVAILABLE)('filter clean/smudge interop', () => {
     runGit(['-C', dir, 'config', `filter.fail-req.clean`, cleanFailScript]);
     runGit(['-C', dir, 'config', `filter.fail-req.required`, 'true']);
     runGit(['-C', dir, 'config', `filter.fail-opt.clean`, cleanFailScript]);
-    // F6: smudge-required — smudge fails + required=true → fatal
+    // smudge-required — smudge fails + required=true → fatal
     runGit(['-C', dir, 'config', `filter.smudge-req.clean`, cleanScript]);
     runGit(['-C', dir, 'config', `filter.smudge-req.smudge`, smudgeFailScript]);
     runGit(['-C', dir, 'config', `filter.smudge-req.required`, 'true']);
-    // F7: smudge-optional — smudge fails, no required → raw bytes written
+    // smudge-optional — smudge fails, no required → raw bytes written
     runGit(['-C', dir, 'config', `filter.smudge-opt.clean`, cleanScript]);
     runGit(['-C', dir, 'config', `filter.smudge-opt.smudge`, smudgeFailScript]);
-    // F2: clean-only (no smudge configured) — identity smudge
+    // clean-only (no smudge configured) — identity smudge
     runGit(['-C', dir, 'config', `filter.c2.clean`, cleanScript]);
-    // F-EXEC: logging driver wired as clean
+    // Argc-logging driver wired as clean
     runGit(['-C', dir, 'config', `filter.fexec.clean`, fexecScript]);
-    // F-EXEC smudge: logging driver wired as smudge (with a clean pass-through)
+    // Argc-logging driver wired as smudge (with a clean pass-through)
     runGit(['-C', dir, 'config', `filter.fexec2.clean`, cleanScript]);
     runGit(['-C', dir, 'config', `filter.fexec2.smudge`, fexecSmudgeScript]);
 
@@ -150,7 +157,7 @@ describe.skipIf(!GIT_AVAILABLE)('filter clean/smudge interop', () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  // ── clean-F1: clean stores cleaned blob ────────────────────────────────────
+  // ── clean: stores the cleaned blob ─────────────────────────────────────────
 
   describe('Given a .y file under filter=myf with an uppercase clean driver', () => {
     describe('When tsgit add stages it', () => {
@@ -188,7 +195,7 @@ describe.skipIf(!GIT_AVAILABLE)('filter clean/smudge interop', () => {
     });
   });
 
-  // ── F3: required=true + clean failure → fatal ──────────────────────────────
+  // ── required=true + clean failure → fatal ──────────────────────────────────
 
   describe('Given a .req file under filter=fail-req with required=true and a failing clean', () => {
     describe('When tsgit add stages it', () => {
@@ -228,7 +235,7 @@ describe.skipIf(!GIT_AVAILABLE)('filter clean/smudge interop', () => {
     });
   });
 
-  // ── F4: required absent → exit 0, raw bytes staged ─────────────────────────
+  // ── required absent → exit 0, raw bytes staged ─────────────────────────────
 
   describe('Given a .opt file under filter=fail-opt with required absent and a failing clean', () => {
     describe('When tsgit add stages it', () => {
@@ -273,7 +280,7 @@ describe.skipIf(!GIT_AVAILABLE)('filter clean/smudge interop', () => {
     });
   });
 
-  // ── smudge-F1: checkout writes smudged bytes; tsgit status is clean ────────
+  // ── smudge: checkout writes smudged bytes; tsgit status is clean ───────────
 
   describe('Given a committed .y file whose blob is UPPERCASE (cleaned) and filter=myf smudge is configured', () => {
     describe('When tsgit checkout restores the file and status is queried', () => {
@@ -312,7 +319,7 @@ describe.skipIf(!GIT_AVAILABLE)('filter clean/smudge interop', () => {
     });
   });
 
-  // ── F2: clean-only filter → identity smudge → worktree = blob bytes ────────
+  // ── clean-only filter → identity smudge → worktree = blob bytes ────────────
 
   describe('Given a committed .c2 file with filter=c2 (clean-only, no smudge configured)', () => {
     describe('When tsgit checkout restores the file', () => {
@@ -350,7 +357,7 @@ describe.skipIf(!GIT_AVAILABLE)('filter clean/smudge interop', () => {
     });
   });
 
-  // ── F6: smudge required=true + failing smudge → fatal; file NOT written ────
+  // ── smudge required=true + failing smudge → fatal; file NOT written ────────
 
   describe('Given a .sr file under filter=smudge-req (required=true) with a failing smudge', () => {
     describe('When checkout is attempted after the worktree file is removed', () => {
@@ -410,7 +417,7 @@ describe.skipIf(!GIT_AVAILABLE)('filter clean/smudge interop', () => {
     });
   });
 
-  // ── F7: smudge optional (no required) + failing smudge → raw bytes, succeeds ─
+  // ── smudge optional (no required) + failing smudge → raw bytes, succeeds ─────
 
   describe('Given a .so file under filter=smudge-opt (required absent) with a failing smudge', () => {
     describe('When checkout is performed after the worktree file is removed', () => {
@@ -457,7 +464,7 @@ describe.skipIf(!GIT_AVAILABLE)('filter clean/smudge interop', () => {
     });
   });
 
-  // ── F-EXEC: driver receives stdin, writes stdout, no positional args ────────
+  // ── driver receives stdin, writes stdout, no positional args ────────────────
 
   describe('Given a .fx file under filter=fexec whose clean driver logs $# to a file', () => {
     describe('When tsgit add stages it', () => {
@@ -484,7 +491,7 @@ describe.skipIf(!GIT_AVAILABLE)('filter clean/smudge interop', () => {
     });
   });
 
-  // ── F-EXEC smudge: smudge driver receives stdin, writes stdout, no positional args ──
+  // ── smudge driver receives stdin, writes stdout, no positional args ─────────────────
 
   describe('Given a .fs file under filter=fexec2 whose smudge driver logs $# to a file', () => {
     describe('When tsgit checkout restores the file', () => {

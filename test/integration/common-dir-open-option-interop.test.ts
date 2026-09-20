@@ -104,7 +104,7 @@ describe.skipIf(!GIT_AVAILABLE)('commonDir open option interop', () => {
     describe('When opened at the worktree with commonDir naming the real common dir (scenario A)', () => {
       it('Then layout.gitDir/commonDir match git rev-parse --git-dir --git-common-dir, and reads agree', async () => {
         // Arrange — NOTE: the supplied value equals what the commondir file
-        // already implies, so this is an agreement pin (R1), deliberately
+        // already implies, so this is an agreement pin, deliberately
         // non-discriminating: every assertion would pass with the option
         // dropped. The discriminating pins are scenarios B–H.
         const [expectedGitDir, expectedCommonDir] = gitDirPair(wt);

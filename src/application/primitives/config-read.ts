@@ -1,4 +1,10 @@
-import { configBadNumericValue } from '../../domain/commands/error.js';
+import {
+  configBadNumericValue,
+  configInvalidEnumValue,
+  configMissingValue,
+  fsckCannotDemote,
+  fsckUnknownMsgId,
+} from '../../domain/commands/error.js';
 import type { ConfigToken, IniSection } from '../../domain/config/config-ini.js';
 import {
   GIT_C_INT_MAX,
@@ -10,7 +16,10 @@ import {
   tokenizeConfig,
 } from '../../domain/config/config-ini.js';
 import { TsgitError } from '../../domain/error.js';
+import type { FsckConfiguredSeverity } from '../../domain/fsck/index.js';
+import { CONFIGURABLE_MSG_IDS, FATAL_MSG_IDS, parseFsckSeverity } from '../../domain/fsck/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
+import type { ReflogExpiryConfigEntry } from '../../domain/reflog/expire-policy.js';
 import type { Context } from '../../ports/context.js';
 import { invalidateScopedConfigCache } from './config-scoped-read.js';
 import { layoutFailsTrustGate } from './internal/layout-verdict.js';
@@ -57,6 +66,13 @@ export interface ParsedConfig {
     readonly maxTreeDepth?: number;
     /** `core.sshCommand` — shell string resolved by `resolveSshCommand` ahead of `GIT_SSH`. */
     readonly sshCommand?: string;
+    /**
+     * `core.deltaBaseCacheLimit` — unsigned-long bytes; absent when unset or
+     * malformed (lenient read). A value above `Number.MAX_SAFE_INTEGER`
+     * becomes an inexact `number`; it is only ever used as a comparison bound
+     * for `LruCache`, never arithmetic, so the inexactness is harmless.
+     */
+    readonly deltaBaseCacheLimit?: number;
   };
   readonly user?: { readonly name?: string; readonly email?: string; readonly signingKey?: string };
   readonly remote?: ReadonlyMap<
@@ -66,6 +82,8 @@ export interface ParsedConfig {
       /** `remote.<name>.pushurl` — push-only URL; `push` reads `pushUrl ?? url`. */
       readonly pushUrl?: string;
       readonly fetch?: ReadonlyArray<string>;
+      /** `remote.<name>.push` — the remote's own push refspecs, in config order. */
+      readonly push?: ReadonlyArray<string>;
       /** `remote.<name>.promisor` — true when this is a partial-clone promisor remote. */
       readonly promisor?: boolean;
       /** `remote.<name>.partialclonefilter` — the canonical filter spec applied at clone. */
@@ -177,6 +195,15 @@ interface ConfigCacheEntry {
 interface CachedConfigEntry {
   readonly promise: Promise<ConfigCacheEntry>;
   readonly mtimeKey: string;
+  /**
+   * Set by `openConfigEpoch` (the operational gate's one-stat-per-command
+   * freshness boundary) — never by `readConfigEntry`'s own per-read path.
+   * While `true`, every `readConfigEntry` call this command makes serves
+   * this entry with ZERO further `stat`; a primitive-only session, which
+   * never opens an epoch, never sees this flip and keeps paying its own
+   * per-read stat (see `readConfigEntry`).
+   */
+  trusted: boolean;
 }
 
 /** Sentinel `mtimeKey` for "the config file does not exist" — distinct from
@@ -276,38 +303,167 @@ let cache: WeakMap<Context['session'], CachedConfigEntry> = new WeakMap();
  * keep passing through the original Context, since `invalidateConfigCache`
  * only ever drops the caller's own key.
  */
-let gateVerdictCache: WeakMap<Context['session'], Promise<FilePath>> = new WeakMap();
+interface VerdictEntry<T> {
+  readonly promise: Promise<T>;
+  /**
+   * Mutable in exactly one direction: seeded with the caller's snapshot at
+   * CALL time, and — only when that snapshot is the absent sentinel —
+   * reconciled to the post-resolution snapshot the instant `promise`
+   * RESOLVES (see `memoizeSessionVerdict`). A session's first-ever touch
+   * calls in before anything has read the file, so the call-time snapshot is
+   * that sentinel; reconciling it is what lets
+   * `repoSettingsVerdictSettled` recognise a verdict as current for the key
+   * it actually validated, rather than the placeholder key that predated it.
+   * A key that was already real stays put — see the reconciliation's own
+   * comment for why advancing it would be unsound.
+   */
+  mtimeKey: string;
+  /** Flipped by `memoizeSessionVerdict` the instant `promise` RESOLVES — never on a rejection. */
+  settled: boolean;
+}
+
+let gateVerdictCache: WeakMap<Context['session'], VerdictEntry<FilePath>> = new WeakMap();
 
 /**
- * Get-or-populate the per-session gate-verdict memo: a second call sharing
- * the same, unchanged session joins the promise the first call started
- * rather than re-running `compute`. `invalidateConfigCache` (below) drops
- * this memo alongside its own, so a config write observed through that
- * invalidator — from ANY Context sharing the session, not just the one that
- * first populated the memo — is observed here too.
+ * The repo-settings class's own verdict memo (`internal/repo-settings-gate.ts`'s
+ * `assertRepoSettingsValid`) — same shape and same reason for living here as
+ * `gateVerdictCache` above (a shared invalidation domain with the parse
+ * `cache`, and `repo-settings-gate.ts` importing this module rather than the
+ * reverse to avoid a cycle), a separate slot because the two verdicts are
+ * independent classes with independent computations.
+ */
+let repoSettingsVerdictCache: WeakMap<Context['session'], VerdictEntry<void>> = new WeakMap();
+
+/**
+ * The mtimeKey a verdict memo re-keys against: whatever the parse `cache`
+ * currently associates with this session — TRUSTED or not — read with ZERO
+ * I/O (a plain property lookup, never a `stat`). A session that has never
+ * read config at all falls back to the same absent sentinel `configMtimeKey`
+ * uses, so two SYNCHRONOUS, back-to-back calls in the same tick (before
+ * either's `compute` has had a chance to populate the parse cache) still
+ * observe an IDENTICAL key and correctly share one in-flight `compute` —
+ * single-flight survives the mtimeKey becoming part of the cache key.
+ *
+ * Inside an open epoch this is the epoch's own fresh key, so a verdict memo
+ * re-derives the instant `openConfigEpoch` notices a changed file — closing
+ * the gap `internal/repo-settings-gate.ts`'s docstring describes. Outside an
+ * epoch (primitive-only), it is whatever the LAST per-read stat produced,
+ * which is enough to notice a rewrite once something has actually re-read
+ * the file — the freshness `readConfigEntry` itself already guarantees.
+ */
+const snapshotConfigMtimeKey = (ctx: Context): string =>
+  cache.get(ctx.session)?.mtimeKey ?? CONFIG_ABSENT_MTIME_KEY;
+
+/**
+ * Reconciles the placeholder {@link CONFIG_ABSENT_MTIME_KEY} `entry.mtimeKey`
+ * was seeded with, ONLY when it is still that sentinel — a session's
+ * first-ever touch, where nothing had read the file at call time, so the key
+ * captured then is a placeholder rather than a validated one. Without this
+ * the placeholder would stay pinned forever and the key-aware
+ * `repoSettingsVerdictSettled` fast path would never recognise this entry as
+ * current for the key it just validated.
+ *
+ * A REAL key is never overwritten: the snapshot read here is whatever the
+ * parse cache holds at `.then` time, which a concurrent read that re-keyed
+ * the cache mid-`compute` may already have moved on to. Stamping that on
+ * would advertise the verdict as current for a key it never validated, and
+ * the boundaries branching on `settled` would then skip the refusal
+ * `assertRepoSettingsValid` owes the new bytes.
+ */
+const reconcileAbsentKey = <T>(entry: VerdictEntry<T>, ctx: Context): void => {
+  if (entry.mtimeKey === CONFIG_ABSENT_MTIME_KEY) {
+    entry.mtimeKey = snapshotConfigMtimeKey(ctx);
+  }
+};
+
+/**
+ * Get-or-populate a per-session verdict memo in `slot`, re-keyed on
+ * `mtimeKey`: a second call sharing the same, unchanged session AND the same
+ * `mtimeKey` joins the promise the first call started rather than re-running
+ * `compute`; a call whose `mtimeKey` differs from what is cached is treated
+ * as a miss and recomputes — this is what lets an external edit invalidate a
+ * verdict memo without either binding needing to call `invalidateConfigCache`
+ * itself. The caller's invalidator still drops the relevant slot outright,
+ * so a config write observed through it — from ANY Context sharing the
+ * session, not just the one that first populated the memo — is observed
+ * here too.
  *
  * A REJECTED verdict is never left cached: `compute` can fail on a transient
  * condition (EACCES/EIO/EMFILE reading the config file) that has nothing to
  * do with the repository's actual state, and caching that failure would
- * permanently poison the session until `invalidateConfigCache` happens to
+ * permanently poison the session until the caller's invalidator happens to
  * run — every later command would refuse for a fault that already cleared.
  * The eviction only removes the entry when it is STILL the one this call
  * populated: a later, successful `compute` may already have replaced it
- * (e.g., a concurrent call after `invalidateConfigCache`), and this handler
- * must not evict that fresh entry out from under it.
+ * (e.g., a concurrent call after invalidation), and this handler must not
+ * evict that fresh entry out from under it.
+ *
+ * `settled` lives on the ENTRY, not on a session-keyed side set: replacing
+ * the entry (a changed `mtimeKey`, reached via THIS function) starts a
+ * fresh, unsettled one by construction. That alone does not protect the
+ * synchronous `repoSettingsVerdictSettled` fast path, which reads whatever
+ * entry currently sits in the slot without ever calling back in here — it
+ * needs its own `mtimeKey` comparison against `snapshotConfigMtimeKey`, and
+ * that comparison is the SOLE mechanism keeping a verdict a newer key has
+ * superseded from being reported `true`.
  */
+const memoizeSessionVerdict = <T>(
+  slot: WeakMap<Context['session'], VerdictEntry<T>>,
+  ctx: Context,
+  mtimeKey: string,
+  compute: (ctx: Context) => Promise<T>,
+): Promise<T> => {
+  const existing = slot.get(ctx.session);
+  if (existing !== undefined && existing.mtimeKey === mtimeKey) return existing.promise;
+  const pending = compute(ctx);
+  const entry: VerdictEntry<T> = { promise: pending, mtimeKey, settled: false };
+  slot.set(ctx.session, entry);
+  pending
+    .then(() => {
+      entry.settled = true;
+      reconcileAbsentKey(entry, ctx);
+    })
+    .catch(() => {
+      if (slot.get(ctx.session) === entry) slot.delete(ctx.session);
+    });
+  return pending;
+};
+
 export const memoizeGateVerdict = (
   ctx: Context,
   compute: (ctx: Context) => Promise<FilePath>,
-): Promise<FilePath> => {
-  const existing = gateVerdictCache.get(ctx.session);
-  if (existing !== undefined) return existing;
-  const pending = compute(ctx);
-  gateVerdictCache.set(ctx.session, pending);
-  pending.catch(() => {
-    if (gateVerdictCache.get(ctx.session) === pending) gateVerdictCache.delete(ctx.session);
-  });
-  return pending;
+): Promise<FilePath> =>
+  memoizeSessionVerdict(gateVerdictCache, ctx, snapshotConfigMtimeKey(ctx), compute);
+
+/**
+ * `internal/repo-settings-gate.ts`'s own binding of {@link memoizeSessionVerdict}.
+ */
+export const memoizeRepoSettingsVerdict = (
+  ctx: Context,
+  compute: (ctx: Context) => Promise<void>,
+): Promise<void> =>
+  memoizeSessionVerdict(repoSettingsVerdictCache, ctx, snapshotConfigMtimeKey(ctx), compute);
+
+/**
+ * The synchronous hot-path fast path: true once `assertRepoSettingsValid` has
+ * RESOLVED for this session's CURRENT key — never merely been called, and
+ * never for a verdict a changed config key has since superseded.
+ * `getPackRegistry` and `commitHeader` branch on this to skip the `await` on
+ * a warm session; a `false` here means the caller must await
+ * `assertRepoSettingsValid` itself (first touch this session, the first
+ * touch after an invalidation, or the first touch after the epoch re-keyed).
+ *
+ * The `mtimeKey` comparison is the ONLY thing standing between a superseded
+ * verdict and this fast path — nothing drops the memo on a re-key. A
+ * primitive-only caller that rewrites `.git/config` outside any gate re-keys
+ * the parse cache on its next `readConfigEntry`, and this comparison is what
+ * turns that into a miss here instead of a stale `settled === true`.
+ * `snapshotConfigMtimeKey` is zero I/O — a plain WeakMap read — so it closes
+ * the gap without adding a `stat` to the hot path.
+ */
+export const repoSettingsVerdictSettled = (ctx: Context): boolean => {
+  const entry = repoSettingsVerdictCache.get(ctx.session);
+  return entry?.settled === true && entry.mtimeKey === snapshotConfigMtimeKey(ctx);
 };
 
 /**
@@ -344,6 +500,15 @@ const readConfigEntry = async (ctx: Context): Promise<ConfigCacheEntry> => {
   // untrusted layout is recomputed fresh every call (cheap: no fs access)
   // rather than consulting or populating the cache below.
   if (layoutFailsTrustGate(ctx.layout)) return loadConfigEntry(ctx);
+  // Inside an epoch `openConfigEpoch` already opened (this command's own
+  // gate, or an earlier one against the same session): the entry is fresh
+  // by construction, so every further call this command makes is a plain
+  // WeakMap hit — ZERO further `stat`.
+  const trusted = cache.get(ctx.session);
+  if (trusted?.trusted === true) return trusted.promise;
+  // No open epoch (a primitive-only session, or one whose epoch has not run
+  // yet) — today's per-read freshness check: pay a stat, and reuse the
+  // cached parse only when that stat's key still matches it.
   const path = `${commonGitDir(ctx)}/config`;
   const mtimeKey = await coalescedMtimeKey(ctx, path);
   const cached = cache.get(ctx.session);
@@ -351,29 +516,72 @@ const readConfigEntry = async (ctx: Context): Promise<ConfigCacheEntry> => {
     return cached.promise;
   }
   const promise = loadConfigEntry(ctx);
-  cache.set(ctx.session, { promise, mtimeKey });
+  cache.set(ctx.session, { promise, mtimeKey, trusted: false });
   return promise;
 };
 
 /**
+ * The operational gate's freshness boundary: exactly ONE `stat` of
+ * `.git/config`, run once per `assertOperationalRepository` call. An
+ * unchanged key marks the existing parse entry `trusted` for the rest of
+ * this command, so every `readConfigEntry` call it makes — including the
+ * gate's OWN eager finders, called right after this returns — shares that
+ * one parse with zero further `stat`. A changed key (or a session that has
+ * never read config at all) seeds a FRESH, already-trusted entry instead:
+ * calling `loadConfigEntry` here, rather than merely dropping the stale one,
+ * is what lets a cold-cache command still end this call with a populated,
+ * trusted entry — the same total cost (one stat, one read) TODAY's
+ * gate-triggered `assertEagerConfigValid` fan-out already pays, just moved
+ * earlier.
+ *
+ * Neither verdict memo is touched here, and neither needs to be. Re-keying
+ * the parse entry is ITSELF what supersedes them: `snapshotConfigMtimeKey`
+ * reads the key this function just installed, so
+ * `repoSettingsVerdictSettled`'s synchronous fast path compares a verdict's
+ * own key against the new one and reports a miss, and `memoizeSessionVerdict`
+ * treats the same mismatch as a miss and recomputes. Deleting the entries in
+ * addition — which this function used to do — could change no observable
+ * outcome, because the `cache.set` below always lands on the same tick.
+ *
+ * An untrusted/implicit-bare layout is skipped entirely: `readConfigEntry`
+ * never populates the cache for one either, so there is nothing to trust and
+ * nothing to stat — the ownership-trust gate (`assertTrusted`, downstream)
+ * still refuses on its own.
+ */
+export const openConfigEpoch = async (ctx: Context): Promise<void> => {
+  if (layoutFailsTrustGate(ctx.layout)) return;
+  const path = `${commonGitDir(ctx)}/config`;
+  const mtimeKey = await coalescedMtimeKey(ctx, path);
+  const existing = cache.get(ctx.session);
+  if (existing !== undefined && existing.mtimeKey === mtimeKey) {
+    existing.trusted = true;
+    return;
+  }
+  cache.set(ctx.session, { promise: loadConfigEntry(ctx), mtimeKey, trusted: true });
+};
+
+/**
  * @internal — test-only cache reset between cases. Replaces every WeakMap
- * this module owns (the parse cache, the gate-verdict memo, and the
- * in-flight stat-coalescing memo), mirroring what `invalidateConfigCache`
- * drops in production plus the transient memo that never survives past its
- * own settling anyway.
+ * this module owns (the parse cache — trusted bit included, the two verdict
+ * memos, and the in-flight stat-coalescing memo), mirroring what
+ * `invalidateConfigCache` drops in production plus the transient memo that
+ * never survives past its own settling anyway.
  */
 export const __resetConfigCacheForTests = (): void => {
   cache = new WeakMap();
   gateVerdictCache = new WeakMap();
+  repoSettingsVerdictCache = new WeakMap();
   inflightMtimeKey = new WeakMap();
 };
 
 /**
- * Drop the cached `readConfig` entry for the session, AND the gate-verdict
- * memo `internal/repo-state.ts` populates via `memoizeGateVerdict` (owned
- * here — see that export's docstring for why) — both session-keyed, so a
- * call through ANY Context sharing `ctx.session` drops the entry every
- * OTHER Context in that session would otherwise keep serving stale.
+ * Drop the cached `readConfig` entry for the session, AND both verdict
+ * memos — the operational gate's (`memoizeGateVerdict`) and the repo-settings
+ * class's (`memoizeRepoSettingsVerdict`), owned here for the same reason (see
+ * `memoizeGateVerdict`'s docstring) — all session-keyed, so a call through
+ * ANY Context sharing `ctx.session` drops the entry every OTHER Context in
+ * that session would otherwise keep serving stale. One invalidation domain
+ * for every cache `readConfigEntry` feeds.
  *
  * DELEGATES to `invalidateScopedConfigCache` (`config-scoped-read.ts`) so a
  * caller who invalidates only this cache — an embedder unaware of the
@@ -389,6 +597,7 @@ export const __resetConfigCacheForTests = (): void => {
 export const invalidateConfigCache = (ctx: Context): void => {
   cache.delete(ctx.session);
   gateVerdictCache.delete(ctx.session);
+  repoSettingsVerdictCache.delete(ctx.session);
   invalidateScopedConfigCache(ctx);
 };
 
@@ -528,6 +737,54 @@ export const findFirstValuelessInSection = async (
   return undefined;
 };
 
+const REFLOG_EXPIRE_SLOTS: Readonly<Record<string, 'total' | 'unreachable'>> = {
+  reflogexpire: 'total',
+  reflogexpireunreachable: 'unreachable',
+};
+
+/**
+ * Every `[gc]` / `[gc "<pattern>"]` entry whose lowercased key is
+ * `reflogExpire` or `reflogExpireUnreachable`, in file order — no value
+ * parsing here, see `../../domain/reflog/expire-policy.js`. The subsection
+ * is kept verbatim (case and `*` untouched); the qualified key folds it in
+ * as-is, lowering only the section and key themselves.
+ */
+export const readReflogExpiryConfig = async (
+  ctx: Context,
+): Promise<ReadonlyArray<ReflogExpiryConfigEntry>> => {
+  const { tokens, source } = await readConfigEntry(ctx);
+  const entries: ReflogExpiryConfigEntry[] = [];
+  let inSection = false;
+  let subsection: string | undefined;
+  for (const token of tokens) {
+    if (token.kind === 'header') {
+      inSection = token.section.toLowerCase() === 'gc';
+      subsection = token.subsection;
+      continue;
+    }
+    if (!inSection || token.kind !== 'entry') continue;
+    const entry = reflogExpiryEntry(token, subsection, source);
+    if (entry !== undefined) entries.push(entry);
+  }
+  return entries;
+};
+
+/** A `[gc]` / `[gc "<pattern>"]` entry's reflog-expiry reading, or
+ *  `undefined` when its key is neither `reflogExpire` nor
+ *  `reflogExpireUnreachable`. */
+const reflogExpiryEntry = (
+  token: Extract<ConfigToken, { kind: 'entry' }>,
+  subsection: string | undefined,
+  source: string,
+): ReflogExpiryConfigEntry | undefined => {
+  const loweredKey = token.key.toLowerCase();
+  const slot = REFLOG_EXPIRE_SLOTS[loweredKey];
+  if (slot === undefined) return undefined;
+  const key = subsection === undefined ? `gc.${loweredKey}` : `gc.${subsection}.${loweredKey}`;
+  const line = token.startLine + 1;
+  return { pattern: subsection, slot, value: token.value, key, source, line };
+};
+
 /** Minimum valid zlib compression level (synonym for the implementation default). */
 export const ZLIB_MIN_LEVEL = -1;
 /** Maximum valid zlib compression level. */
@@ -654,6 +911,116 @@ export const assertValidGcAutoConfig = async (ctx: Context): Promise<void> => {
   }
 };
 
+/** The `fsck.skipList` key is not a msg-id — it names an object-name list
+ *  file, and git never offers it to its severity table. Lower-cased once,
+ *  like every key half this walk compares. */
+const FSCK_SKIP_LIST_KEY = 'skipList'.toLowerCase();
+
+/** The section half of every `fsck.*` variable name, folded once. */
+const FSCK_SECTION = 'fsck';
+
+/**
+ * The msg-id git grades: everything the variable name holds past `fsck.`. A
+ * subsection contributes its own bytes plus the separating dot, so
+ * `[fsck "SubName"] badTree` asks about `SubName.<folded key>` and an empty
+ * subsection asks about `.<folded key>` — neither is a msg-id the catalogue
+ * knows, and that is precisely why git refuses them.
+ */
+const composeFsckMsgId = (subsection: string | undefined, key: string): string =>
+  subsection === undefined ? key.toLowerCase() : `${subsection}.${key.toLowerCase()}`;
+
+/**
+ * One graded `[fsck …]` entry, in the order the file holds it: either a msg-id
+ * re-typing or a path `fsck.skipList` names.
+ */
+export type FsckConfigItem =
+  | { readonly kind: 'severity'; readonly msgId: string; readonly severity: FsckConfiguredSeverity }
+  | { readonly kind: 'skip-list'; readonly path: string };
+
+/**
+ * Every `[fsck …]` entry, graded LAZILY in file order. git reads the section
+ * once and acts on each entry as it reaches it — grading a severity word,
+ * opening a skip list — so the first fault in the FILE is the one that kills
+ * the audit, with no precedence between the two kinds. Grading one item per
+ * `next()` is what reproduces that: the caller opens the list an item names
+ * before the walk grades anything after it.
+ *
+ * A subsection does not hide an entry from git, it only lengthens the msg-id
+ * the entry asks about, so EVERY `[fsck …]` header is walked. A repeated
+ * msg-id takes its LAST entry, and a repeated `skipList` ACCUMULATES — git
+ * unions the lists into one oidset.
+ */
+export const readFsckConfigItems = async (ctx: Context): Promise<Iterable<FsckConfigItem>> => {
+  const { tokens, source } = await readConfigEntry(ctx);
+  return walkFsckEntries(tokens, source);
+};
+
+function* walkFsckEntries(
+  tokens: ReadonlyArray<ConfigToken>,
+  source: string,
+): Generator<FsckConfigItem> {
+  let inSection = false;
+  let subsection: string | undefined;
+  for (const token of tokens) {
+    if (token.kind === 'header') {
+      inSection = token.section.toLowerCase() === FSCK_SECTION;
+      subsection = token.subsection;
+      continue;
+    }
+    if (!inSection || token.kind !== 'entry') continue;
+    yield gradeFsckEntry(composeFsckMsgId(subsection, token.key), token, source);
+  }
+}
+
+/**
+ * One entry's verdict. `fsck.skipList` is exempt from the msg-id grammar — it
+ * names an object-name list file, not a check — but not from a value: git
+ * routes it through `git_config_pathname`, whose `config_error_nonbool` kills
+ * the audit on a valueless entry.
+ */
+const gradeFsckEntry = (
+  msgId: string,
+  token: Extract<ConfigToken, { kind: 'entry' }>,
+  source: string,
+): FsckConfigItem => {
+  if (msgId !== FSCK_SKIP_LIST_KEY) {
+    return { kind: 'severity', msgId, severity: readFsckSeverity(msgId, token, source) };
+  }
+  if (token.value === null) {
+    throw configMissingValue(`fsck.${FSCK_SKIP_LIST_KEY}`, source, token.startLine + 1);
+  }
+  return { kind: 'skip-list', path: token.value };
+};
+
+/** One `[fsck]` entry's severity, or the refusal git dies with in its place. */
+const readFsckSeverity = (
+  msgId: string,
+  token: Extract<ConfigToken, { kind: 'entry' }>,
+  source: string,
+): FsckConfiguredSeverity => {
+  // `startLine` counts from 0; every config refusal names a PHYSICAL line,
+  // which counts from 1.
+  const line = token.startLine + 1;
+  // A key with no `=` at all never reaches the msg-id catalogue: git reads the
+  // value before it grades the id, and a valueless entry dies there — measured
+  // against git 2.55.0, which answers `missing value for 'fsck.<key>'` even for
+  // a key no check knows and even for a fatal one.
+  if (token.value === null) {
+    throw configMissingValue(`fsck.${msgId}`, source, line);
+  }
+  if (!CONFIGURABLE_MSG_IDS.has(msgId)) {
+    throw fsckUnknownMsgId(msgId, source, line);
+  }
+  const severity = parseFsckSeverity(token.value);
+  if (severity === undefined) {
+    throw configInvalidEnumValue(`fsck.${msgId}`, source, token.value, line);
+  }
+  if (FATAL_MSG_IDS.has(msgId) && severity !== 'error') {
+    throw fsckCannotDemote(msgId, token.value, source, line);
+  }
+  return severity;
+};
+
 /** One invalid `pack.window` / `pack.depth` / `pack.windowMemory` entry returned by `findFirstInvalidPackInt`. */
 export interface InvalidPackIntEntry {
   readonly key: string;
@@ -713,8 +1080,13 @@ export const assertValidPackIntConfig = async (ctx: Context): Promise<void> => {
 
 const MAX_TREE_DEPTH_KEY = 'maxtreedepth';
 
-/** One invalid `core.maxTreeDepth` entry returned by `findLastInvalidMaxTreeDepth`. */
-export interface InvalidMaxTreeDepthEntry {
+/**
+ * One invalid entry from either repo-settings-class finder
+ * (`findLastInvalidMaxTreeDepth`, `findLastInvalidDeltaBaseCacheLimit`) —
+ * git validates both keys in the same function (`prepare_repo_settings`),
+ * and both finders share this exact shape.
+ */
+export interface InvalidNumericEntry {
   readonly key: string;
   readonly source: string;
   readonly value: string;
@@ -735,7 +1107,7 @@ export interface InvalidMaxTreeDepthEntry {
  */
 export const findLastInvalidMaxTreeDepth = async (
   ctx: Context,
-): Promise<InvalidMaxTreeDepthEntry | undefined> => {
+): Promise<InvalidNumericEntry | undefined> => {
   const { tokens, source: path } = await readConfigEntry(ctx);
   let inSection = false;
   let last: { readonly value: string | null } | undefined;
@@ -764,6 +1136,38 @@ export const findLastInvalidMaxTreeDepth = async (
     return { key, source: path, value: last.value, reason: 'out of range' };
   }
   return undefined;
+};
+
+/**
+ * Cold-path detection for `core.deltaBaseCacheLimit`: same last-wins model as
+ * {@link findLastInvalidMaxTreeDepth} (git resolves both through its cached
+ * config-set lookup), but git's unsigned-long grammar — reusing
+ * `checkPackWindowMemoryBound`, the same bound `pack.windowMemory` uses — so
+ * a negative value is `'invalid unit'` (this key has no signed
+ * representation to be "out of range" of) and only a magnitude past
+ * `GIT_UINT64_MAX` is `'out of range'`. Runs ONLY on a command's refusal
+ * path — this is the eager twin of the lenient `applyDeltaBaseCacheLimitEntry`.
+ */
+export const findLastInvalidDeltaBaseCacheLimit = async (
+  ctx: Context,
+): Promise<InvalidNumericEntry | undefined> => {
+  const { tokens, source: path } = await readConfigEntry(ctx);
+  let inSection = false;
+  let last: { readonly value: string | null } | undefined;
+  for (const token of tokens) {
+    if (token.kind === 'header') {
+      inSection = matchesSection(token.section, token.subsection, 'core', undefined);
+      continue;
+    }
+    if (!inSection || token.kind !== 'entry') continue;
+    if (token.key.toLowerCase() !== DELTA_BASE_CACHE_LIMIT_KEY) continue;
+    last = { value: token.value };
+  }
+  if (last === undefined) return undefined;
+  const key = `core.${DELTA_BASE_CACHE_LIMIT_KEY}`;
+  const checked = checkPackWindowMemoryBound(last.value);
+  if (checked.ok) return undefined;
+  return { key, source: path, value: last.value ?? '', reason: checked.reason };
 };
 
 type MutableGpg = {
@@ -864,6 +1268,7 @@ type MutableCore = {
   looseCompression?: number;
   maxTreeDepth?: number;
   sshCommand?: string;
+  deltaBaseCacheLimit?: number;
   /** Transient: true when looseCompression was set via loosecompression key (not compression).
    *  Dropped by finalizeCore. Guards order-independent precedence: loosecompression > compression. */
   looseCompressionFromLoose?: boolean;
@@ -902,6 +1307,23 @@ const applyMaxTreeDepthEntry = (core: MutableCore, value: string): MutableCore |
   if (!parsed.ok) return undefined;
   if (parsed.value < GIT_C_INT_MIN || parsed.value > GIT_C_INT_MAX) return undefined;
   return { ...core, maxTreeDepth: parsed.value };
+};
+
+const DELTA_BASE_CACHE_LIMIT_KEY = 'deltabasecachelimit';
+
+/**
+ * Apply `core.deltaBaseCacheLimit`: git's unsigned-long grammar, reusing
+ * `checkPackWindowMemoryBound` — the same bound `pack.windowMemory` uses
+ * (decimal / hex / octal, one optional k/m/g unit, negative refused). Merges
+ * as absent on any failure — this is the LENIENT read only; the eager
+ * refusal for a malformed value is a separate finder, not added here.
+ */
+const applyDeltaBaseCacheLimitEntry = (
+  core: MutableCore,
+  value: string,
+): MutableCore | undefined => {
+  const checked = checkPackWindowMemoryBound(value);
+  return checked.ok ? { ...core, deltaBaseCacheLimit: checked.value } : undefined;
 };
 
 // One map is BOTH the key set and the field dispatch: a new boolean key
@@ -957,6 +1379,7 @@ const applyCoreEntry = (
     return applyLooseCompressionEntry(core, lowered, value);
   }
   if (lowered === MAX_TREE_DEPTH_KEY) return applyMaxTreeDepthEntry(core, value);
+  if (lowered === DELTA_BASE_CACHE_LIMIT_KEY) return applyDeltaBaseCacheLimitEntry(core, value);
   return undefined;
 };
 
@@ -1001,30 +1424,43 @@ interface MutableRemote {
   url?: string;
   pushUrl?: string;
   fetch?: string[];
+  push?: string[];
   promisor?: boolean;
   partialCloneFilter?: string;
 }
 
+/** The remote keys carrying a single string, by their lower-cased config name. */
+const REMOTE_STRING_KEYS: ReadonlyMap<string, 'url' | 'pushUrl' | 'partialCloneFilter'> = new Map([
+  ['url', 'url'],
+  ['pushurl', 'pushUrl'],
+  ['partialclonefilter', 'partialCloneFilter'],
+]);
+
+/** The remote keys carrying a list, every valued entry appending in config order. */
+const REMOTE_LIST_KEYS: ReadonlyMap<string, 'fetch' | 'push'> = new Map([
+  ['fetch', 'fetch'],
+  ['push', 'push'],
+]);
+
 const applyRemoteEntry = (acc: MutableRemote, key: string, value: string | null): void => {
   // Git config keys are case-insensitive — compare on the lower-cased key.
   const lowered = key.toLowerCase();
-  if (lowered === 'url') {
-    // String-typed fields skip null (valueless key treated as absent).
-    if (value !== null) acc.url = value;
-  } else if (lowered === 'pushurl') {
-    if (value !== null) acc.pushUrl = value;
-  } else if (lowered === 'fetch') {
-    if (value !== null) {
-      // Stryker disable next-line ArrayDeclaration: equivalent — mergeRemote (the sole caller) pre-seeds mutable.fetch to an array before applyRemoteEntry runs, so this ??= never assigns and its right-hand literal never evaluates.
-      acc.fetch ??= [];
-      acc.fetch.push(value);
-    }
-  } else if (lowered === 'promisor') {
+  if (lowered === 'promisor') {
     const parsed = parseGitBoolean(value);
     if (parsed.ok) acc.promisor = parsed.value;
-  } else if (lowered === 'partialclonefilter') {
-    if (value !== null) acc.partialCloneFilter = value;
+    return;
   }
+  // Every key below is string- or list-typed, and skips null (a valueless key
+  // is treated as absent).
+  if (value === null) return;
+  const stringField = REMOTE_STRING_KEYS.get(lowered);
+  if (stringField !== undefined) {
+    acc[stringField] = value;
+    return;
+  }
+  // `mergeRemote` pre-seeds both list fields, so a matched key always appends.
+  const listField = REMOTE_LIST_KEYS.get(lowered);
+  if (listField !== undefined) acc[listField]?.push(value);
 };
 
 const compactRemote = (mutable: MutableRemote): MutableRemote => {
@@ -1032,6 +1468,7 @@ const compactRemote = (mutable: MutableRemote): MutableRemote => {
   if (mutable.url !== undefined) merged.url = mutable.url;
   if (mutable.pushUrl !== undefined) merged.pushUrl = mutable.pushUrl;
   if (mutable.fetch !== undefined && mutable.fetch.length > 0) merged.fetch = mutable.fetch;
+  if (mutable.push !== undefined && mutable.push.length > 0) merged.push = mutable.push;
   if (mutable.promisor !== undefined) merged.promisor = mutable.promisor;
   if (mutable.partialCloneFilter !== undefined) {
     merged.partialCloneFilter = mutable.partialCloneFilter;
@@ -1046,7 +1483,11 @@ const mergeRemote = (
 ): void => {
   acc.remote ??= new Map();
   const current = acc.remote.get(name) ?? {};
-  const mutable: MutableRemote = { ...current, fetch: current.fetch ? [...current.fetch] : [] };
+  const mutable: MutableRemote = {
+    ...current,
+    fetch: current.fetch ? [...current.fetch] : [],
+    push: current.push ? [...current.push] : [],
+  };
   for (const { key, value } of sec.entries) applyRemoteEntry(mutable, key, value);
   acc.remote.set(name, compactRemote(mutable));
 };
@@ -1464,6 +1905,9 @@ const finalizeCore = (core: MutableCore | undefined): ParsedConfig['core'] => {
     ...(core.looseCompression !== undefined ? { looseCompression: core.looseCompression } : {}),
     ...(core.maxTreeDepth !== undefined ? { maxTreeDepth: core.maxTreeDepth } : {}),
     ...(core.sshCommand !== undefined ? { sshCommand: core.sshCommand } : {}),
+    ...(core.deltaBaseCacheLimit !== undefined
+      ? { deltaBaseCacheLimit: core.deltaBaseCacheLimit }
+      : {}),
   };
 };
 
@@ -1529,6 +1973,7 @@ const finalize = (acc: MutableParsedConfig): ParsedConfig => {
       sparseCheckoutCone?: boolean;
       looseCompression?: number;
       maxTreeDepth?: number;
+      deltaBaseCacheLimit?: number;
     };
     user?: { name?: string; email?: string; signingKey?: string };
     remote?: ReadonlyMap<

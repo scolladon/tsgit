@@ -2,8 +2,8 @@
  * `pull` command — fetch + integrate.
  *
  * Composes `fetch` (download objects + update remote-tracking refs) with
- * `merge` (integrate the fetched tip into HEAD). Integration is merge-only;
- * the `rebase` mode is added when rebase (Phase 22.3) lands.
+ * `merge` (integrate the fetched tip into HEAD). Integration is merge-only:
+ * there is no `rebase` mode.
  *
  * A pull that conflicts leaves the exact MERGE_HEAD / MERGE_MSG / ORIG_HEAD +
  * conflicted-index state a direct `merge` leaves, so `merge.abort` /

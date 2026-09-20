@@ -17,8 +17,12 @@
  *  - reftable: a deleted ref stays absent after a full compaction
  *    (tombstone elided, not resurrected)
  */
-import { describe, expect, it, vi } from 'vitest';
+import { mkdtemp, rm } from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
+import { createNodeContext } from '../../../../src/adapters/node/node-adapter.js';
 import { add } from '../../../../src/application/commands/add.js';
 import { branchCreate } from '../../../../src/application/commands/branch.js';
 import { commit } from '../../../../src/application/commands/commit.js';
@@ -139,6 +143,35 @@ describe('packRefs — files backend', () => {
     });
   });
 
+  describe('Given a files repository whose main branch is loose AND stale-packed under the same name', () => {
+    describe('When packRefs runs', () => {
+      it('Then packed-refs names main exactly once, carrying the current loose oid', async () => {
+        // Arrange — a stale packed-refs entry for refs/heads/main pre-dates
+        // the loose file's current commit. `packableEntries` derives from
+        // `listRefs()`; a flipped/dropped `!looseSet.has(entry.name)` dedup
+        // guard there would let this stale packed entry survive alongside
+        // the loose one, producing a duplicate `main` line in packed-refs.
+        const { ctx, commitId } = await seedOneCommit();
+        const staleOid = 'c'.repeat(40) as ObjectId;
+        await ctx.fs.writeUtf8(
+          packedRefsPathOf(ctx),
+          `# pack-refs with: peeled fully-peeled sorted \n${staleOid} refs/heads/main\n`,
+        );
+        const sut = packRefs;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.packedRefCount).toBe(1);
+        const packed = await ctx.fs.readUtf8(packedRefsPathOf(ctx));
+        const mainLines = packed.split('\n').filter((line) => line.endsWith(' refs/heads/main'));
+        expect(mainLines).toHaveLength(1);
+        expect(mainLines[0]).toBe(`${commitId} refs/heads/main`);
+      });
+    });
+  });
+
   describe('Given a freshly initialised files repository with no refs', () => {
     describe('When packRefs runs', () => {
       it('Then the repository is unchanged — no packed-refs file is written', async () => {
@@ -157,6 +190,53 @@ describe('packRefs — files backend', () => {
           removedOrphanCount: 0,
         });
         expect(await ctx.fs.exists(packedRefsPathOf(ctx))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a freshly initialised files repository with no refs AND a malformed core.maxTreeDepth', () => {
+    describe('When packRefs runs', () => {
+      it('Then it still succeeds — nothing packable means no object is ever read', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth = 2.5\n');
+        __resetConfigCacheForTests();
+        const sut = packRefs;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toEqual({
+          packedRefCount: 0,
+          prunedLooseRefCount: 0,
+          removedOrphanCount: 0,
+        });
+      });
+    });
+  });
+
+  describe('Given one loose branch ref AND a malformed core.maxTreeDepth', () => {
+    describe('When packRefs runs', () => {
+      it('Then it refuses — peeling the ref reads an object, reaching the class boundary', async () => {
+        // Arrange
+        const { ctx } = await seedOneCommit();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth = 2.5\n');
+        __resetConfigCacheForTests();
+        const sut = packRefs;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx);
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
       });
     });
   });
@@ -216,6 +296,27 @@ describe('packRefs — files backend', () => {
         const packed = await ctx.fs.readUtf8(packedRefsPathOf(ctx));
         const lines = packed.split('\n').filter((line) => line.length > 0);
         expect(lines.some((line) => line.startsWith('^'))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a files repository whose refs all peel to themselves', () => {
+    describe('When packRefs runs', () => {
+      it('Then it learns each ref\u2019s type from its metadata, never inflating the object', async () => {
+        // Arrange \u2014 a commit peels to itself, so its bytes are never needed;
+        // only its TYPE is, and a packed base entry answers that from its
+        // pack header with no inflate at all.
+        const { ctx } = await seedOneCommit();
+        const readObject = vi.spyOn(readObjectMod, 'readObject');
+        const readObjectMetadata = vi.spyOn(readObjectMod, 'readObjectMetadata');
+        const sut = packRefs;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        expect(readObjectMetadata).toHaveBeenCalled();
+        expect(readObject).not.toHaveBeenCalled();
       });
     });
   });
@@ -321,13 +422,41 @@ describe('packRefs — files backend', () => {
     });
   });
 
+  describe('Given an object store whose type probe and object bytes disagree', () => {
+    describe('When packRefs runs', () => {
+      it('Then it refuses, naming the type the bytes actually carried', async () => {
+        // Arrange — the peel walk reads an object only after the probe has
+        // said `tag`; a store that then hands back something else has
+        // contradicted itself, and the peel says so rather than guessing.
+        const { ctx } = await seedOneCommit();
+        vi.spyOn(readObjectMod, 'readObjectMetadata').mockResolvedValue({
+          type: 'tag',
+          uncompressedSize: 1,
+        });
+        const sut = packRefs;
+
+        // Act
+        const refusal = await sut(ctx).catch((error: unknown) => error);
+
+        // Assert
+        const data = (refusal as TsgitError).data;
+        expect(data.code).toBe('UNEXPECTED_OBJECT_TYPE');
+        if (data.code === 'UNEXPECTED_OBJECT_TYPE') {
+          expect(data.expected).toBe('tag');
+          expect(data.actual).toBe('commit');
+        }
+      });
+    });
+  });
+
   describe('Given more packable refs than the ioBound limit', () => {
     describe('When packRefs runs', () => {
       it('Then packed-entry building peaks at exactly the bound', async () => {
         // Arrange — an explicit ioBound distinct from cpuBound so a
         // bucket-swap regression (deriving the pool from the wrong bucket)
         // fails loudly. Each ref points at its own distinct commit so every
-        // one reaches its own `readObject` peel call.
+        // one reaches its own type probe, the read the peel walk makes per
+        // ref before it ever asks for an object's bytes.
         const ioBound = 3;
         const width = ioBound + 4;
         const base = createMemoryContext();
@@ -345,15 +474,15 @@ describe('packRefs — files backend', () => {
         const ctx: Context = { ...base, concurrency: { cpuBound: 1, ioBound } };
         let inFlight = 0;
         let maxInFlight = 0;
-        const realReadObject = readObjectMod.readObject;
+        const realReadObjectMetadata = readObjectMod.readObjectMetadata;
         const spy = vi
-          .spyOn(readObjectMod, 'readObject')
-          .mockImplementation(async (spyCtx, id, opts) => {
+          .spyOn(readObjectMod, 'readObjectMetadata')
+          .mockImplementation(async (spyCtx, id) => {
             inFlight += 1;
             if (inFlight > maxInFlight) maxInFlight = inFlight;
             await Promise.resolve();
             inFlight -= 1;
-            return realReadObject(spyCtx, id, opts);
+            return realReadObjectMetadata(spyCtx, id);
           });
         const sut = packRefs;
 
@@ -429,6 +558,84 @@ async function buildFixtureTable(
   };
   return serializeReftable(refs, logs, options, ctx.compressor.deflate);
 }
+
+describe('packRefs — emptied loose directories', () => {
+  const tempRoots: string[] = [];
+
+  afterEach(async () => {
+    await Promise.all(
+      tempRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
+    );
+  });
+
+  const ADAPTERS = [
+    { adapter: 'memory', build: async (): Promise<Context> => createMemoryContext() },
+    {
+      adapter: 'node',
+      build: async (): Promise<Context> => {
+        const root = await mkdtemp(path.join(os.tmpdir(), 'tsgit-pack-refs-'));
+        tempRoots.push(root);
+        return createNodeContext({ workDir: root });
+      },
+    },
+  ] as const;
+
+  describe.each(ADAPTERS)('$adapter adapter', ({ build }) => {
+    describe('Given loose refs nested at several depths under every namespace', () => {
+      describe('When packRefs prunes them', () => {
+        it('Then every emptied directory below a namespace is removed and the namespaces stay', async () => {
+          // Arrange
+          const ctx = await build();
+          await init(ctx);
+          const tree = await writeObject(ctx, { type: 'tree', id: '' as ObjectId, entries: [] });
+          const id = await writeObject(ctx, {
+            type: 'commit',
+            id: '' as ObjectId,
+            data: {
+              tree,
+              parents: [],
+              author: AUTHOR,
+              committer: AUTHOR,
+              message: 'm',
+              extraHeaders: [],
+            },
+          });
+          const names = [
+            'refs/remotes/d/x',
+            'refs/remotes/o/n1/n2/r',
+            'refs/remotes/o/keep',
+            'refs/heads/solo',
+            'refs/tags/t/nested',
+            'refs/notes/deep/n',
+            'refs/x/y/z',
+            'refs/w',
+          ];
+          for (const name of names) await ctx.fs.writeUtf8(`${gitDirOf(ctx)}/${name}`, `${id}\n`);
+          const sut = packRefs;
+
+          // Act
+          await sut(ctx);
+
+          // Assert
+          const exists = (relative: string): Promise<boolean> =>
+            ctx.fs.exists(`${gitDirOf(ctx)}/${relative}`);
+          for (const removed of [
+            'refs/remotes/d',
+            'refs/remotes/o',
+            'refs/tags/t',
+            'refs/notes/deep',
+            'refs/x/y',
+          ]) {
+            expect(await exists(removed)).toBe(false);
+          }
+          for (const kept of ['refs/heads', 'refs/tags', 'refs/remotes', 'refs/notes', 'refs/x']) {
+            expect(await exists(kept)).toBe(true);
+          }
+        });
+      });
+    });
+  });
+});
 
 describe('packRefs — reftable backend', () => {
   describe('Given a reftable stack with three small tables', () => {

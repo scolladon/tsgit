@@ -11,7 +11,7 @@
  * `pack-fixture-helpers.ts` and `midx-fixture-helpers.ts`.
  *
  * SHA-1 hard-coded at `DIGEST_LENGTH = 20` — every fixture here is a plain
- * `--object-format=sha1` repository (Pin G's SHA-256 twin is out of this
+ * `--object-format=sha1` repository (the SHA-256 twin is out of this
  * part's scope), so every trailer restamped here is re-hashed with SHA-1
  * regardless of what a row's own mutation claims a `hashId` byte says.
  */
@@ -33,7 +33,7 @@ function packDirOf(dir: string): string {
 
 // ---------------------------------------------------------------------------
 // Restamping — recompute a trailer over `[0, len - DIGEST_LENGTH)`. The SAME
-// rule for both artefacts (Pin H's `.rev` trailer and Pin J's `.bitmap`
+// rule for both artefacts (a `.rev` trailer and a `.bitmap`
 // trailer are both "digest of everything before the last 20 bytes"), kept as
 // two named exports so a row reads as "restamp THIS kind of file" rather than
 // a generic byte operation.
@@ -49,7 +49,7 @@ function restampTrailer(bytes: Buffer): Buffer {
 /**
  * Recomputes a `.rev` file's own trailing digest — the control every
  * RESTAMPED mutation row composes to isolate a structural fault from a
- * checksum failure (Pin H). Without this, every mutation row would read as
+ * checksum failure. Without this, every mutation row would read as
  * "checksum failure" and the matrix would be uninterpretable.
  */
 export function restampRevIndex(bytes: Buffer): Buffer {
@@ -57,7 +57,7 @@ export function restampRevIndex(bytes: Buffer): Buffer {
 }
 
 /** Same rule, for a `.bitmap` (pack or midx) — its own fsck obligation IS
- *  this one comparison (Pin J rule 1), so restamping after a structural
+ *  this one comparison, so restamping after a structural
  *  mutation reproduces the exact "clean" verdict git gives it. */
 export function restampBitmap(bytes: Buffer): Buffer {
   return restampTrailer(bytes);
@@ -175,8 +175,7 @@ function keepExistingPacks(dir: string): void {
 // Commit 1 puts two files at the root (root tree v1, 2 blobs). Commit 2 adds
 // five files under a new subdirectory, changing the root tree (v2, since git
 // never rewrites a tree in place) and adding one new subtree — 3 trees total
-// (root v1, root v2, sub), 7 blobs, 2 commits: 12 objects, matching the
-// design's own fixture shape (Pin B/C).
+// (root v1, root v2, sub), 7 blobs, 2 commits: 12 objects.
 const ROOT_FILES = { 'a.txt': 'alpha\n', 'b.txt': 'bravo\n' } as const;
 const SUB_FILES = {
   'sub/c.txt': 'charlie\n',
@@ -191,7 +190,7 @@ export interface BaseFixture {
 }
 
 /** BASE — 2 commits / 3 trees / 7 blobs = 12 objects in one pack, via
- *  `git repack -adq` (which writes `.rev` by default — Pin A). */
+ *  `git repack -adq` (which writes `.rev` by default). */
 export async function buildBaseFixture(baseDir: string, slug: string): Promise<BaseFixture> {
   const dir = await freshRepo(baseDir, slug);
   await commitFiles(dir, ROOT_FILES, 'root files');
@@ -237,8 +236,8 @@ export interface MidxBitmapFixture {
   readonly flatMidxPath: string;
   readonly midxBitmapPath: string;
   /** The pack that carries its own on-disk `.bitmap` (built via
-   *  `--write-bitmap-index` before the midx write — the "pack bitmap" Pin K's
-   *  X8 targets, distinct from the midx bitmap X0/X1/X2/X4/X5/X7/X10 target). */
+   *  `--write-bitmap-index` before the midx write) — a PACK bitmap, distinct
+   *  from the midx's own bitmap below. */
   readonly bitmapPackName: string;
   /** The sibling pack with no bitmap of its own. */
   readonly plainPackName: string;
@@ -253,8 +252,8 @@ function midxBitmapNameFromBytes(bytes: Uint8Array): string {
  * Two packs (pack bitmap on the first, via `repack --write-bitmap-index`;
  * the second added afterward and `.keep`-guarded out of that repack) plus a
  * flat multi-pack-index with its own bitmap, via
- * `git multi-pack-index write --bitmap` — the shape Pin K's X0 control
- * names: "midx + midx bitmap + pack bitmap".
+ * `git multi-pack-index write --bitmap` — the "midx + midx bitmap + pack
+ * bitmap" shape.
  */
 export async function buildMidxBitmapFixture(
   baseDir: string,

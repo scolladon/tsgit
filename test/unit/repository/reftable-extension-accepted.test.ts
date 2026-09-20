@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { TsgitError } from '../../../src/domain/error.js';
-import { ObjectId, RefName } from '../../../src/domain/objects/index.js';
+import { configFor } from '../../../src/domain/objects/hash-config.js';
+import type { AuthorIdentity } from '../../../src/domain/objects/index.js';
+import { emptyTreeOid, type ObjectId, RefName } from '../../../src/domain/objects/index.js';
 import { openRepository } from '../../../src/index.default.js';
 import {
   buildRefBlock,
@@ -13,7 +15,13 @@ const oidBytes = (fill: number): Uint8Array => new Uint8Array(20).fill(fill);
 const hexOid = (fill: number): string => fill.toString(16).padStart(2, '0').repeat(20);
 
 const MAIN_OID = hexOid(0xaa);
-const UPDATED_OID = hexOid(0xbb);
+
+const COMMIT_AUTHOR: AuthorIdentity = {
+  name: 'A U Thor',
+  email: 'author@example.com',
+  timestamp: 0,
+  timezoneOffset: '+0000',
+};
 
 /** A minimal one-record ref-block table: `refs/heads/main -> id`, mirroring
  *  `load-reftable-stack.test.ts`'s own `buildSimpleTable` helper. */
@@ -64,21 +72,30 @@ describe('openRepository (memory shim) — the reftable acceptance-gate inverse'
 
     describe('When a ref update is applied', () => {
       it('Then a ref update commits instead of refusing', async () => {
-        // Arrange
+        // Arrange — a branch update now verifies its target, so the new
+        // value must be a real, hash-valid commit.
         const sut = await openRepository({ files: reftableRepoFiles() });
+        const updatedId = await sut.primitives.writeObject({
+          type: 'commit',
+          id: '' as ObjectId,
+          data: {
+            tree: emptyTreeOid(configFor('sha1')),
+            parents: [],
+            author: COMMIT_AUTHOR,
+            committer: COMMIT_AUTHOR,
+            message: 'inverse test commit',
+            extraHeaders: [],
+          },
+        });
 
         // Act
-        await sut.primitives.updateRef(
-          RefName.from('refs/heads/main'),
-          ObjectId.from(UPDATED_OID),
-          {
-            reflogMessage: 'inverse test update',
-          },
-        );
+        await sut.primitives.updateRef(RefName.from('refs/heads/main'), updatedId, {
+          reflogMessage: 'inverse test update',
+        });
         const result = await sut.primitives.resolveRef(RefName.from('refs/heads/main'));
 
         // Assert
-        expect(result).toBe(UPDATED_OID);
+        expect(result).toBe(updatedId);
       });
     });
   });

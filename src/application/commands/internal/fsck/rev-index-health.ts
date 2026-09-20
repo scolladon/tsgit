@@ -103,7 +103,7 @@ export async function runRevIndexHealthPass(
   ctx: Context,
   _opts: FsckOptions,
 ): Promise<{ readonly findings: ReadonlyArray<FsckFinding>; readonly exitBit: number }> {
-  const registry = getPackRegistry(ctx);
+  const registry = await getPackRegistry(ctx);
   const packs = await registry.all();
 
   const findings: FsckFinding[] = [];

@@ -18,9 +18,11 @@ import { fetch } from '../../../../src/application/commands/fetch.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { tagDelete } from '../../../../src/application/commands/tag.js';
 import { updateRef } from '../../../../src/application/primitives/update-ref.js';
+import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeSymbolicRef } from '../../../../src/application/primitives/write-symbolic-ref.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
+import { emptyTreeOid } from '../../../../src/domain/objects/index.js';
 import { encodePktStream } from '../../../../src/domain/protocol/pkt-line.js';
 import type { Context } from '../../../../src/ports/context.js';
 import type { HttpTransport } from '../../../../src/ports/http-transport.js';
@@ -37,6 +39,23 @@ const AUTHOR: AuthorIdentity = {
   timezoneOffset: '+0000',
 };
 
+/** Writes a real, hash-valid parentless commit — `updateRef` now verifies
+ *  every non-delete write target. */
+async function writeCommit(ctx: Context, message: string): Promise<ObjectId> {
+  return writeObject(ctx, {
+    type: 'commit',
+    id: '' as ObjectId,
+    data: {
+      tree: emptyTreeOid(ctx.hashConfig),
+      parents: [],
+      author: AUTHOR,
+      committer: AUTHOR,
+      message,
+      extraHeaders: [],
+    },
+  });
+}
+
 /** The linked worktree's own (admin) gitdir under the common dir's `worktrees/`. */
 const adminDir = (ctx: Context): string => `${ctx.layout.gitDir}/worktrees/wt`;
 
@@ -46,9 +65,17 @@ const asWorktreeChild = (ctx: Context): Context => ({
   layout: { ...ctx.layout, gitDir: adminDir(ctx), commonDir: ctx.layout.gitDir },
 });
 
-/** Give the child's own (admin) gitdir the `HEAD` file operational commands require. */
-const seedAdminHead = (ctx: Context): Promise<void> =>
-  ctx.fs.writeUtf8(`${adminDir(ctx)}/HEAD`, 'ref: refs/heads/main\n');
+/**
+ * Complete the child's registration the way `git worktree add` does: its own
+ * (admin) `HEAD` and `gitdir` pointer, plus the main checkout's own `HEAD`
+ * under the common dir. Commands that enumerate the repository's worktrees
+ * read all three.
+ */
+const seedAdminHead = async (ctx: Context): Promise<void> => {
+  await ctx.fs.writeUtf8(`${adminDir(ctx)}/HEAD`, 'ref: refs/heads/main\n');
+  await ctx.fs.writeUtf8(`${adminDir(ctx)}/gitdir`, `${ctx.layout.workDir}/wt/.git\n`);
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+};
 
 /**
  * Reframe a seeded main-repo Context so gitDir and commonDir sit in
@@ -121,9 +148,10 @@ describe('common-dir per-worktree-ref sweep', () => {
           // Arrange
           const ctx = await buildSeededContext();
           const sut = asWorktreeChild(ctx);
+          const commit = await writeCommit(sut, 'shared ref');
 
           // Act
-          await updateRef(sut, 'refs/heads/x' as RefName, ID_A, { reflogMessage: 'test' });
+          await updateRef(sut, 'refs/heads/x' as RefName, commit, { reflogMessage: 'test' });
 
           // Assert
           expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/heads/x`)).toBe(true);
@@ -136,9 +164,10 @@ describe('common-dir per-worktree-ref sweep', () => {
           // Arrange
           const ctx = await buildSeededContext();
           const sut = asWorktreeChild(ctx);
+          const commit = await writeCommit(sut, 'per-worktree ref');
 
           // Act
-          await updateRef(sut, 'refs/bisect/bad' as RefName, ID_A, { reflogMessage: 'test' });
+          await updateRef(sut, 'refs/bisect/bad' as RefName, commit, { reflogMessage: 'test' });
 
           // Assert
           expect(await ctx.fs.exists(`${adminDir(ctx)}/refs/bisect/bad`)).toBe(true);
@@ -154,9 +183,10 @@ describe('common-dir per-worktree-ref sweep', () => {
           const ctx = await buildSeededContext();
           const sut = asOverriddenCommonDir(ctx);
           await seedOverriddenAdminHead(ctx);
+          const commit = await writeCommit(sut, 'disjoint shared ref');
 
           // Act
-          await updateRef(sut, 'refs/heads/x' as RefName, ID_A, { reflogMessage: 'test' });
+          await updateRef(sut, 'refs/heads/x' as RefName, commit, { reflogMessage: 'test' });
 
           // Assert
           expect(await ctx.fs.exists(`${sut.layout.commonDir}/refs/heads/x`)).toBe(true);
@@ -170,9 +200,10 @@ describe('common-dir per-worktree-ref sweep', () => {
           const ctx = await buildSeededContext();
           const sut = asOverriddenCommonDir(ctx);
           await seedOverriddenAdminHead(ctx);
+          const commit = await writeCommit(sut, 'disjoint per-worktree ref');
 
           // Act
-          await updateRef(sut, 'refs/bisect/bad' as RefName, ID_A, { reflogMessage: 'test' });
+          await updateRef(sut, 'refs/bisect/bad' as RefName, commit, { reflogMessage: 'test' });
 
           // Assert
           expect(await ctx.fs.exists(`${sut.layout.gitDir}/refs/bisect/bad`)).toBe(true);
@@ -230,8 +261,9 @@ describe('common-dir per-worktree-ref sweep', () => {
           await seedAdminHead(ctx);
           await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/feature`, `${ID_A}\n`);
 
-          // Act
-          await branchDelete(sut, { name: 'feature' });
+          // Act — forced: the planted tip is no commit HEAD can reach, and
+          // the unforced valve would refuse it before any ref dir is touched.
+          await branchDelete(sut, { name: 'feature', force: true });
 
           // Assert
           expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/heads/feature`)).toBe(false);

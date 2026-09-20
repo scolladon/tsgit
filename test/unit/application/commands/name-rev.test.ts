@@ -495,10 +495,13 @@ describe('nameRev', () => {
   describe('Given a commit whose recorded parent is not a commit', () => {
     describe('When name-rev runs', () => {
       it('Then the non-commit parent is not traversed', async () => {
-        // Arrange — a hand-built commit whose parent oid points at a tree.
+        // Arrange — a hand-built commit whose parent oid points at a tree
+        // (a different one from its own, so this exercises "the parent is a
+        // tree", not the separate "parent equals the commit's own tree" case).
         const ctx = await seed();
         const tree = await treeOf(ctx, await commitFile(ctx, 'c1'));
-        const corrupt = await writeCommit(ctx, tree, [tree]);
+        const otherTree = await treeOf(ctx, await commitFile(ctx, 'c2'));
+        const corrupt = await writeCommit(ctx, tree, [otherTree]);
         await pointBranch(ctx, 'corrupt', corrupt);
 
         // Act
@@ -612,7 +615,7 @@ describe('Given a linear chain with an old root block and a recent tip block', (
       // Act
       await nameRev(counted, tip);
 
-      // Assert — F2.3 also caches every loose commit read; the real `commit`
+      // Assert — the resolver also caches every loose commit read; the real `commit`
       // command in `commitFile` already read each ancestor once while
       // linking it as HEAD's parent during arrange, so nameRev's own walk —
       // still bounded by the date cutoff — is almost entirely cache hits.
@@ -628,7 +631,7 @@ describe('Given a linear chain with an old root block and a recent tip block', (
       // Act
       await nameRev(counted, oldest);
 
-      // Assert — F2.3 also caches every loose commit read; the real `commit`
+      // Assert — the resolver also caches every loose commit read; the real `commit`
       // command in `commitFile` already read each ancestor once while
       // linking it as HEAD's parent during arrange, so nameRev's own
       // full-ancestry walk is almost entirely cache hits.
@@ -673,7 +676,7 @@ describe('Given a recent branch and a disjoint branch whose tip is over a day ol
       // Act
       await nameRev(counted, target);
 
-      // Assert — F2.3 also caches every loose commit read; `commitFile`'s
+      // Assert — the resolver also caches every loose commit read; `commitFile`'s
       // own `commit` command already read each ancestor once while linking
       // it as HEAD's parent during arrange, so nameRev's walk is all hits.
       expect(reads()).toBe(1);
@@ -715,7 +718,7 @@ describe('Given a chain whose middle commit is dated exactly one day older than 
       // Act
       await nameRev(counted, tip);
 
-      // Assert — F2.3 also caches every loose commit read; `treeOf`'s calls
+      // Assert — the resolver also caches every loose commit read; `treeOf`'s calls
       // in arrange already read the boundary commit and its parent while
       // building the chain, so only the (uncached) tip costs a real read.
       expect(reads()).toBe(1);

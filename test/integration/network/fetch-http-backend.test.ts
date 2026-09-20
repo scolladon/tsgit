@@ -309,7 +309,7 @@ describe.skipIf(SKIP_REASON !== false)(
 
     beforeAll(async () => {
       projectRoot = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fetch-remote-fixture-'));
-      for (const name of ['origin', 'upstream', 'solo']) {
+      for (const name of ['origin', 'upstream', 'solo', 'pruned']) {
         await seedBare(name);
       }
       server = http.createServer((req, res) => {
@@ -508,6 +508,73 @@ describe.skipIf(SKIP_REASON !== false)(
 
         await repo.dispose();
       }, 30_000);
+    });
+
+    describe('Given packed tracking refs and a tracking HEAD aimed at one the upstream dropped, When both tools fetch with prune', () => {
+      /** Every `refs/remotes/origin/` name a repository still resolves, sorted. */
+      const trackingNames = (dir: string): readonly string[] =>
+        git(dir, 'for-each-ref', '--format=%(refname)', 'refs/remotes/origin')
+          .split('\n')
+          .filter((line) => line.length > 0)
+          .sort();
+
+      /** Fills a twin's tracking namespace, aims its HEAD at `origin/main`
+       *  and packs every ref, so the prune below meets packed-only refs. */
+      const prepareTwin = async (dir: string): Promise<void> => {
+        await gitAsync(dir, 'fetch', '-q', 'origin');
+        git(dir, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main');
+        git(dir, 'pack-refs', '--all');
+      };
+
+      it('Then both delete every stale tracking ref and neither touches the symbolic one', async () => {
+        // Arrange — one upstream both twins read, carrying three branches.
+        const barePath = path.join(projectRoot, 'pruned.git');
+        const mainOid = runGit(['--git-dir', barePath, 'rev-parse', 'main']).trim();
+        for (const branch of ['gone', 'keep']) {
+          runGit(['--git-dir', barePath, 'update-ref', `refs/heads/${branch}`, mainOid]);
+        }
+        const gitDir = await initGitRepo();
+        git(gitDir, 'remote', 'add', 'origin', bareUrl('pruned'));
+        await prepareTwin(gitDir);
+        const { repo, dir } = await initTsgitRepo();
+        await appendConfig(
+          repo,
+          `[remote "origin"]\n  url = ${bareUrl('pruned')}\n  fetch = +refs/heads/*:refs/remotes/origin/*`,
+        );
+        await prepareTwin(dir);
+        __resetConfigCacheForTests();
+        expect(trackingNames(gitDir)).toEqual([
+          'refs/remotes/origin/HEAD',
+          'refs/remotes/origin/gone',
+          'refs/remotes/origin/keep',
+          'refs/remotes/origin/main',
+        ]);
+        for (const branch of ['gone', 'main']) {
+          runGit(['--git-dir', barePath, 'update-ref', '-d', `refs/heads/${branch}`]);
+        }
+
+        // Act
+        await gitAsync(gitDir, 'fetch', '-q', '--prune', 'origin');
+        const result = await repo.fetch({ remote: 'origin', prune: true });
+
+        // Assert — the symbolic ref survives as a file even though it no
+        // longer resolves, so neither twin lists it any more.
+        expect([...result.prunedRefs].sort()).toEqual([
+          'refs/remotes/origin/gone',
+          'refs/remotes/origin/main',
+        ]);
+        for (const twin of [gitDir, dir]) {
+          expect(trackingNames(twin)).toEqual(['refs/remotes/origin/keep']);
+          expect(
+            await readFile(path.join(twin, '.git', 'refs', 'remotes', 'origin', 'HEAD'), 'utf8'),
+          ).toBe('ref: refs/remotes/origin/main\n');
+        }
+        expect(await readFile(path.join(dir, '.git', 'packed-refs'), 'utf8')).toBe(
+          await readFile(path.join(gitDir, '.git', 'packed-refs'), 'utf8'),
+        );
+
+        await repo.dispose();
+      }, 60_000);
     });
 
     describe('Given exactly one non-origin remote configured and no branch tracking, When fetch runs with no explicit remote', () => {

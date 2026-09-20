@@ -1,4 +1,5 @@
 import fc from 'fast-check';
+import type { ReflogExpiryConfigEntry } from '../../../../src/domain/reflog/expire-policy.js';
 import type { ReflogEntry } from '../../../../src/domain/reflog/reflog-entry.js';
 import { serializeReflogLine } from '../../../../src/domain/reflog/reflog-format.js';
 import { arbObjectId } from '../objects/arbitraries.js';
@@ -88,6 +89,50 @@ const arbIdentityByte = (): fc.Arbitrary<number> =>
 // excludes TAB/CR/LF/NUL by starting at 0x20 — none of those bytes has a
 // structural role inside a message once the line's own TAB has been found.
 const arbMessageByte = (): fc.Arbitrary<number> => fc.integer({ min: 0x20, max: 0xff });
+
+// A ref-name-shaped string built from a safe alphabet only — never a glob
+// metacharacter (`*?[]\`), so a literal reflog-expiry pattern built from a
+// DIFFERENT such string can never accidentally cross-match it.
+export const arbSafeRefName = (): fc.Arbitrary<string> =>
+  fc
+    .array(fc.constantFrom('a', 'b', 'c', 'd', 'e'), { minLength: 1, maxLength: 8 })
+    .map((parts) => `refs/heads/${parts.join('')}`);
+
+/** A finite pair of expiry cutoffs — never a `NEVER`/`Infinity` sentinel, so
+ *  every property comparison stays a plain finite-number equality. */
+export const arbExpiryCuts = (): fc.Arbitrary<{
+  readonly expireCut: number;
+  readonly unreachableCut: number;
+}> =>
+  fc.record({
+    expireCut: fc.integer({ min: 0, max: 1_000_000 }),
+    unreachableCut: fc.integer({ min: 0, max: 1_000_000 }),
+  });
+
+const EXPIRY_SLOT_KEYS = { total: 'reflogexpire', unreachable: 'reflogexpireunreachable' } as const;
+
+/** A valid `[gc]` or `[gc "<pattern>"]` reflog-expiry entry whose value is a
+ *  decimal cutoff; `arbPattern` decides which subsection (if any) it sits in. */
+export const arbReflogExpiryEntry = (
+  arbPattern: fc.Arbitrary<string | undefined>,
+): fc.Arbitrary<ReflogExpiryConfigEntry> =>
+  fc
+    .record({
+      pattern: arbPattern,
+      slot: fc.constantFrom('total', 'unreachable'),
+      cutoff: fc.integer({ min: 0, max: 1_000_000 }),
+    })
+    .map(({ pattern, slot, cutoff }) => ({
+      pattern,
+      slot,
+      value: String(cutoff),
+      key:
+        pattern === undefined
+          ? `gc.${EXPIRY_SLOT_KEYS[slot]}`
+          : `gc.${pattern}.${EXPIRY_SLOT_KEYS[slot]}`,
+      source: '/repo/.git/config',
+      line: 1,
+    }));
 
 /**
  * One well-formed reflog line, built directly in BYTES rather than through a

@@ -10,7 +10,6 @@ import {
   bundleEmpty,
   bundleReadFailed,
   type CommandError,
-  cannotDeleteCheckedOutBranch,
   cannotDescribe,
   checkoutOverwriteDirty,
   cherryPickMergeNoMainline,
@@ -27,6 +26,8 @@ import {
   configValueInvalid,
   emptyCommitMessage,
   emptyPathspec,
+  fsckCannotDemote,
+  fsckUnknownMsgId,
   gitignoreFileTooLarge,
   grepLineTooLong,
   hookFailed,
@@ -83,6 +84,13 @@ import {
 } from '../../../../src/domain/commands/error.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import { type FilePath, ObjectId, type RefName } from '../../../../src/domain/objects/object-id.js';
+
+/** An `[fsck]` key half no check reports — spelled as git's own configured
+ *  camelCase and lower-cased the way git echoes it, matching the id the
+ *  interop fixture drives real git with. */
+const UNKNOWN_FSCK_MSG_ID = 'noSuchThing'.toLowerCase();
+const FATAL_FSCK_MSG_ID = 'nulInHeader'.toLowerCase();
+const SOFT_SEVERITY_WORD = 'warn';
 
 const OID1 = ObjectId.from('a'.repeat(40));
 const OID2 = ObjectId.from('b'.repeat(40));
@@ -364,18 +372,6 @@ describe('domain commands error — factory data', () => {
         expect(tagNotFound('refs/tags/v1' as RefName).data).toEqual({
           code: 'TAG_NOT_FOUND',
           name: 'refs/tags/v1',
-        });
-      });
-    });
-  });
-
-  describe('Given the cannotDeleteCheckedOutBranch error helper', () => {
-    describe('When called', () => {
-      it('Then data matches expected shape', () => {
-        // Arrange + Assert
-        expect(cannotDeleteCheckedOutBranch('refs/heads/main' as RefName).data).toEqual({
-          code: 'CANNOT_DELETE_CHECKED_OUT_BRANCH',
-          name: 'refs/heads/main',
         });
       });
     });
@@ -1289,6 +1285,78 @@ describe('domain commands error — config factory data', () => {
       });
     });
   });
+
+  describe('Given the fsckUnknownMsgId helper', () => {
+    describe("When called with an id no check reports, source='/abs/.git/config', line=4", () => {
+      it('Then data carries code, msgId, source, and line individually', () => {
+        // Arrange + Act
+        const sut = fsckUnknownMsgId;
+        const result = sut(UNKNOWN_FSCK_MSG_ID, '/abs/.git/config', 4);
+
+        // Assert
+        const data = result.data;
+        expect(data.code).toBe('FSCK_UNKNOWN_MSG_ID');
+        if (data.code !== 'FSCK_UNKNOWN_MSG_ID') return;
+        expect(data.msgId).toBe(UNKNOWN_FSCK_MSG_ID);
+        expect(data.source).toBe('/abs/.git/config');
+        expect(data.line).toBe(4);
+      });
+    });
+
+    describe('When called with a msgId containing a control byte', () => {
+      it('Then data.msgId is sanitized for display', () => {
+        // Arrange + Act
+        const sut = fsckUnknownMsgId;
+        const result = sut(`\x1B[2J${UNKNOWN_FSCK_MSG_ID}`, '/abs/.git/config', 4);
+
+        // Assert — control bytes are escaped so the rendered error cannot be injected
+        const data = result.data;
+        expect(data.code).toBe('FSCK_UNKNOWN_MSG_ID');
+        if (data.code !== 'FSCK_UNKNOWN_MSG_ID') return;
+        expect(data.msgId).toBe(`\\x1B[2J${UNKNOWN_FSCK_MSG_ID}`);
+        expect(data.source).toBe('/abs/.git/config');
+        expect(data.line).toBe(4);
+      });
+    });
+  });
+
+  describe('Given the fsckCannotDemote helper', () => {
+    describe("When called with a fatal id, 'ignore', source='/abs/.git/config', line=7", () => {
+      it('Then data carries code, msgId, severity, source, and line individually', () => {
+        // Arrange + Act
+        const sut = fsckCannotDemote;
+        const result = sut(FATAL_FSCK_MSG_ID, 'ignore', '/abs/.git/config', 7);
+
+        // Assert
+        const data = result.data;
+        expect(data.code).toBe('FSCK_CANNOT_DEMOTE');
+        if (data.code !== 'FSCK_CANNOT_DEMOTE') return;
+        expect(data.msgId).toBe(FATAL_FSCK_MSG_ID);
+        expect(data.severity).toBe('ignore');
+        expect(data.source).toBe('/abs/.git/config');
+        expect(data.line).toBe(7);
+      });
+    });
+
+    describe('When called with a severity word containing a control byte', () => {
+      it('Then data.severity is sanitized for display', () => {
+        // Arrange + Act
+        const sut = fsckCannotDemote;
+        const result = sut(
+          FATAL_FSCK_MSG_ID,
+          `\x1B[2J${SOFT_SEVERITY_WORD}`,
+          '/abs/.git/config',
+          7,
+        );
+
+        // Assert
+        const data = result.data;
+        expect(data.code).toBe('FSCK_CANNOT_DEMOTE');
+        if (data.code !== 'FSCK_CANNOT_DEMOTE') return;
+        expect(data.severity).toBe(`\\x1B[2J${SOFT_SEVERITY_WORD}`);
+      });
+    });
+  });
 });
 
 describe('domain commands error — extractDetail message formatting', () => {
@@ -1335,16 +1403,16 @@ describe('domain commands error — extractDetail message formatting', () => {
       'BRANCH_NOT_FOUND: branch not found: refs/heads/x',
     ],
     [
+      { code: 'BRANCH_NOT_FULLY_MERGED', name: 'refs/heads/x' as RefName },
+      'BRANCH_NOT_FULLY_MERGED: branch is not fully merged: refs/heads/x',
+    ],
+    [
       { code: 'TAG_EXISTS', name: 'refs/tags/v1' as RefName },
       'TAG_EXISTS: tag already exists: refs/tags/v1',
     ],
     [
       { code: 'TAG_NOT_FOUND', name: 'refs/tags/v1' as RefName },
       'TAG_NOT_FOUND: tag not found: refs/tags/v1',
-    ],
-    [
-      { code: 'CANNOT_DELETE_CHECKED_OUT_BRANCH', name: 'refs/heads/main' as RefName },
-      'CANNOT_DELETE_CHECKED_OUT_BRANCH: cannot delete branch currently checked out: refs/heads/main',
     ],
     [{ code: 'INVALID_URL', reason: 'bad' }, 'INVALID_URL: invalid URL: bad'],
     [
@@ -1572,6 +1640,16 @@ describe('domain commands error — extractDetail message formatting', () => {
     ],
     [
       {
+        code: 'CONFIG_BAD_DATE_VALUE',
+        value: 'bogus',
+        key: 'gc.reflogexpire',
+        source: '/repo/.git/config',
+        line: 9,
+      },
+      "CONFIG_BAD_DATE_VALUE: bad date config value 'bogus' for 'gc.reflogexpire' in file /repo/.git/config at line 9",
+    ],
+    [
+      {
         code: 'CONFIG_BAD_BOOLEAN_VALUE',
         key: 'core.bare',
         source: '/repo/.git/config',
@@ -1587,6 +1665,42 @@ describe('domain commands error — extractDetail message formatting', () => {
         value: 'maybe',
       },
       "CONFIG_BAD_BOOLEAN_LITERAL: invalid value for 'push.gpgsign' in file /repo/.git/config",
+    ],
+    [
+      {
+        code: 'FSCK_UNKNOWN_MSG_ID',
+        msgId: UNKNOWN_FSCK_MSG_ID,
+        source: '/repo/.git/config',
+        line: 4,
+      },
+      `FSCK_UNKNOWN_MSG_ID: unhandled fsck message id: ${UNKNOWN_FSCK_MSG_ID} in file /repo/.git/config at line 4`,
+    ],
+    [
+      {
+        code: 'FSCK_CANNOT_DEMOTE',
+        msgId: FATAL_FSCK_MSG_ID,
+        severity: 'ignore',
+        source: '/repo/.git/config',
+        line: 7,
+      },
+      `FSCK_CANNOT_DEMOTE: cannot demote ${FATAL_FSCK_MSG_ID} to ignore in file /repo/.git/config at line 7`,
+    ],
+    [
+      {
+        code: 'FSCK_SKIP_LIST_UNREADABLE',
+        path: '/repo/.git/skip-list',
+        reason: 'FILE_NOT_FOUND',
+      },
+      'FSCK_SKIP_LIST_UNREADABLE: could not open object name list: /repo/.git/skip-list (FILE_NOT_FOUND)',
+    ],
+    [
+      {
+        code: 'FSCK_SKIP_LIST_INVALID_NAME',
+        name: 'not-an-oid',
+        path: '/repo/.git/skip-list',
+        line: 2,
+      },
+      'FSCK_SKIP_LIST_INVALID_NAME: invalid object name: not-an-oid in file /repo/.git/skip-list at line 2',
     ],
     [
       { code: 'CONFIG_BAD_ZLIB_LEVEL', level: 99 },

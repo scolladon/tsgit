@@ -73,11 +73,6 @@ interface ScannedEntry {
   readonly line: number;
 }
 
-/**
- * Scans `tokens` for the LAST top-level (no subsection) entry under
- * `[section] key`, case-insensitively on both — git's scalar-value
- * resolution is last-occurrence-wins within one file.
- */
 /** One `[section "subsection"] key = value` entry, with its header resolved. */
 interface SectionedEntry {
   /** Lower-cased section name. */
@@ -126,6 +121,11 @@ function* sectionedEntries(tokens: ReadonlyArray<ConfigToken>): Generator<Sectio
   }
 }
 
+/**
+ * Scans `tokens` for the LAST top-level (no subsection) entry under
+ * `[section] key`, case-insensitively on both — git's scalar-value
+ * resolution is last-occurrence-wins within one file.
+ */
 const lastTopLevelEntry = (
   tokens: ReadonlyArray<ConfigToken>,
   section: string,

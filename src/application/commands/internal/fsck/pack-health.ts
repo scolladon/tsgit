@@ -31,7 +31,7 @@ export async function runPackHealthPass(
   ctx: Context,
   opts: FsckOptions,
 ): Promise<{ readonly findings: ReadonlyArray<FsckFinding>; readonly exitBit: number }> {
-  const registry = getPackRegistry(ctx);
+  const registry = await getPackRegistry(ctx);
   const gated = packAccessibilityReported(opts);
   const unusable = gated ? (await registry.health()).unusable : await registry.indexFaults();
 

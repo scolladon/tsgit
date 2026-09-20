@@ -1,7 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { revParse } from '../../../../src/application/commands/rev-parse.js';
+import { getRefStore } from '../../../../src/application/primitives/ref-store.js';
 import { writeReflog } from '../../../../src/application/primitives/reflog-store.js';
+import * as resolveRefMod from '../../../../src/application/primitives/resolve-ref.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type { GitIndex, IndexEntry } from '../../../../src/domain/git-index/index.js';
 import { STAGE0_FLAGS, serializeIndex } from '../../../../src/domain/git-index/index.js';
@@ -118,6 +120,29 @@ describe('revParse', () => {
         // Assert
         expect(caught).toBeInstanceOf(TsgitError);
         expect((caught as TsgitError).data.code).toBe('NOT_A_REPOSITORY');
+      });
+    });
+  });
+
+  describe('Given a malformed core.maxTreeDepth, even for an unresolvable argument', () => {
+    describe('When revParse is called', () => {
+      it('Then throws CONFIG_BAD_NUMERIC_VALUE — the class is checked right after the gate', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tmaxTreeDepth = 2.5\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          await revParse(ctx, 'nope');
+          expect.unreachable();
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
       });
     });
   });
@@ -374,6 +399,154 @@ describe('revParse', () => {
         const data = (caught as TsgitError).data as { code: string; id: string };
         expect(data.code).toBe('OBJECT_NOT_FOUND');
         expect(data.id).toBe('no-such-thing');
+      });
+    });
+  });
+
+  describe('Given a base matching none of the six ref candidates', () => {
+    describe('When revParse sweeps the candidates', () => {
+      it('Then probes resolveDirect exactly 6 times and never invokes the throwing resolveRef', async () => {
+        // Arrange — a RefStore double (the real store, spied) counts direct
+        // probes; resolveRef is the sweep's OLD throw-per-miss path.
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        const resolveDirectSpy = vi.spyOn(getRefStore(ctx), 'resolveDirect');
+        const resolveRefSpy = vi.spyOn(resolveRefMod, 'resolveRef');
+
+        // Act
+        try {
+          await revParse(ctx, 'totally-unknown-base');
+          expect.unreachable();
+        } catch {
+          // OBJECT_NOT_FOUND — already asserted by the sibling case above.
+        }
+
+        // Assert
+        expect(resolveDirectSpy).toHaveBeenCalledTimes(6);
+        expect(resolveRefSpy).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given a broken ref candidate ahead of a resolvable one', () => {
+    describe('When revParse sweeps refs/tags/ (broken) before refs/heads/ (valid)', () => {
+      it('Then the broken candidate is swept past and refs/heads/x resolves', async () => {
+        // Arrange — refCandidates tries refs/tags/<base> BEFORE
+        // refs/heads/<base>; garbage loose-ref content makes resolveDirect
+        // throw INVALID_REF, which the sweep's catch must swallow to reach
+        // the valid candidate. Without the catch, this throws instead of
+        // resolving.
+        const ctx = createMemoryContext();
+        const commit = await writeCommit(ctx, TREE_OID as ObjectId, []);
+        await seedRepo(ctx, {});
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/x`, 'not-an-oid\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/x`, `${commit}\n`);
+
+        // Act
+        const result = await revParse(ctx, 'x');
+
+        // Assert
+        expect(result).toBe(commit);
+      });
+    });
+  });
+
+  describe('Given a symref-cycle ref candidate ahead of a resolvable one', () => {
+    describe('When revParse sweeps refs/tags/ (cyclic) before refs/heads/ (valid)', () => {
+      it('Then the cyclic candidate is swept past and refs/heads/x resolves', async () => {
+        // Arrange — refs/tags/x and refs/tags/loop point at each other,
+        // so the sweep's own cycle-detection throws REF_CYCLE_DETECTED for
+        // that candidate; the catch must swallow it to reach refs/heads/x.
+        const ctx = createMemoryContext();
+        const commit = await writeCommit(ctx, TREE_OID as ObjectId, []);
+        await seedRepo(ctx, {});
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/x`, 'ref: refs/tags/loop\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/loop`, 'ref: refs/tags/x\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/x`, `${commit}\n`);
+
+        // Act
+        const result = await revParse(ctx, 'x');
+
+        // Assert
+        expect(result).toBe(commit);
+      });
+    });
+  });
+
+  describe('Given a ref candidate whose symbolic chain is deeper than the reading cap', () => {
+    /** `refs/<namespace>/<base>` → four more links → a direct ref holding `id`. */
+    const seedChain = async (
+      ctx: Context,
+      namespace: string,
+      base: string,
+      hops: number,
+      id: ObjectId,
+    ): Promise<void> => {
+      const link = (index: number): string => (index === 0 ? base : `${base}-${index}`);
+      for (let index = 0; index < hops; index += 1) {
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/refs/${namespace}/${link(index)}`,
+          `ref: refs/${namespace}/${link(index + 1)}\n`,
+        );
+      }
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/${namespace}/${link(hops)}`, `${id}\n`);
+    };
+
+    describe('When revParse sweeps a five-hop refs/tags/ candidate before a valid refs/heads/ one', () => {
+      it('Then the deep candidate is swept past and refs/heads/y resolves', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        const tagTip = await writeCommit(ctx, TREE_OID as ObjectId, []);
+        const branchTip = await writeCommit(ctx, TREE_OID as ObjectId, [tagTip]);
+        await seedChain(ctx, 'tags', 'y', 5, tagTip);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/y`, `${branchTip}\n`);
+
+        // Act
+        const result = await revParse(ctx, 'y');
+
+        // Assert
+        expect(result).toBe(branchTip);
+      });
+    });
+
+    describe('When revParse resolves a four-hop chain', () => {
+      it('Then it resolves to the chain tip', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        const tip = await writeCommit(ctx, TREE_OID as ObjectId, []);
+        await seedChain(ctx, 'heads', 'h', 4, tip);
+
+        // Act
+        const result = await revParse(ctx, 'h');
+
+        // Assert
+        expect(result).toBe(tip);
+      });
+    });
+
+    describe('When revParse names the five-hop ref in full', () => {
+      it('Then no candidate resolves and it refuses OBJECT_NOT_FOUND naming the argument', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        const tip = await writeCommit(ctx, TREE_OID as ObjectId, []);
+        await seedChain(ctx, 'heads', 'x', 5, tip);
+
+        // Act
+        let caught: unknown;
+        try {
+          await revParse(ctx, 'refs/heads/x');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'OBJECT_NOT_FOUND',
+          id: 'refs/heads/x',
+        });
       });
     });
   });

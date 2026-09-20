@@ -11,7 +11,7 @@ export type FilterDriverResult =
  * Run an external clean/smudge filter driver over stdin→stdout.
  *
  * Feeds `input` to the driver's stdin, captures stdout. No temp files.
- * The caller decides whether a non-zero exit is fatal (F3) or graceful (F4).
+ * The caller decides whether a non-zero exit is fatal or graceful.
  */
 export const runFilterDriver = async (
   ctx: Context,

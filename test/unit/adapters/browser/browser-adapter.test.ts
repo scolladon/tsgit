@@ -32,7 +32,7 @@ describe('createBrowserContext', () => {
         // Act
         const result = sut({ rootHandle });
 
-        // Assert — the default (no algorithm option) still yields sha1 (R6).
+        // Assert — the default (no algorithm option) still yields sha1.
         expect(result.hash.algorithm).toBe('sha1');
         expect(result.hashConfig).toBe(SHA1_CONFIG);
       });
@@ -84,6 +84,27 @@ describe('createBrowserContext', () => {
 
         // Assert
         expect(result.layout.refStorage).toBe('files');
+      });
+    });
+  });
+
+  describe.each([
+    ['parsedObjectMemoMaxEntries', 3],
+    ['flatTreeCacheMaxBytes', 4096],
+    ['deltaBaseCacheMaxBytes', 8192],
+  ] as const)('Given %s: %s', (option, value) => {
+    describe('When creating context', () => {
+      it('Then ctx.cacheBudgets carries exactly that one field', () => {
+        // Arrange
+        const sut = createBrowserContext;
+
+        // Act — each of the three budget overrides must reach
+        // ctx.cacheBudgets on its own; before this test createBrowserContext
+        // had no cacheBudgets coverage at all.
+        const result = sut({ rootHandle, [option]: value });
+
+        // Assert
+        expect(result.cacheBudgets).toStrictEqual({ [option]: value });
       });
     });
   });

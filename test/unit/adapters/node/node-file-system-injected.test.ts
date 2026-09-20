@@ -10,6 +10,7 @@
  */
 import * as fs from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
+import type { FsOperations } from '../../../../src/adapters/node/fs-operations.js';
 import {
   mapConcurrent,
   NodeFileSystem,
@@ -18,7 +19,7 @@ import {
 import { posixPolicy, windowsPolicy } from '../../../../src/adapters/node/path-policy.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import { dataFor } from '../../../fixtures/tsgit-error-data.js';
-import { eacces, eexist, eloop, enoent, enotdir, fakeFsOps } from './node-fs-fakes.js';
+import { eacces, eexist, eloop, enoent, enotdir, entry, fakeFsOps } from './node-fs-fakes.js';
 
 describe('NodeFileSystem — realpathForCreation parent-realpath LRU (DI)', () => {
   const fileStat = {
@@ -2211,7 +2212,7 @@ describe('assertLeafSafeToWrite — non-ENOENT errno on leaf lstat (DI)', () => 
   });
 });
 
-describe('NodeFileSystem — W2 leaf no-follow composition (DI)', () => {
+describe('NodeFileSystem — leaf no-follow composition (DI)', () => {
   const WRITE_CREATE_FLAGS =
     fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW;
   const WRITE_EXCLUSIVE_FLAGS =
@@ -2327,6 +2328,35 @@ describe('NodeFileSystem — W2 leaf no-follow composition (DI)', () => {
           '/root/leaf.bin',
           fs.constants.O_WRONLY | fs.constants.O_NOFOLLOW,
         );
+      });
+    });
+  });
+
+  describe('Given a contained target whose parent directory is missing', () => {
+    describe('When appendUtf8 retries the append after creating the parent', () => {
+      it('Then the retry carries the same utf-8 encoding AND O_APPEND composed with O_NOFOLLOW', async () => {
+        // Arrange — the retry opens its own descriptor rather than continuing
+        // the first attempt, so it owes the same no-follow guarantee: a
+        // symlink planted at the leaf between the ENOENT and the retry would
+        // otherwise be followed straight out of the root.
+        const rootDir = '/root';
+        const appendFile = vi.fn().mockRejectedValueOnce(enoent()).mockResolvedValueOnce(undefined);
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+          appendFile,
+          mkdir: vi.fn().mockResolvedValue(undefined),
+        });
+        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+        // Act
+        await sut.appendUtf8('/root/logs/HEAD.log', 'entry\n');
+
+        // Assert
+        expect(appendFile).toHaveBeenCalledTimes(2);
+        expect(appendFile).toHaveBeenNthCalledWith(2, '/root/logs/HEAD.log', 'entry\n', {
+          encoding: 'utf-8',
+          flag: APPEND_FLAGS,
+        });
       });
     });
   });
@@ -2518,6 +2548,135 @@ describe('NodeFileSystem — W2 leaf no-follow composition (DI)', () => {
         expect(writeFile).toHaveBeenCalledWith('C:\\Root\\lock.bin', new Uint8Array([2]), {
           flag: WRITE_EXCLUSIVE_FLAGS,
         });
+      });
+    });
+  });
+});
+
+describe('NodeFileSystem.appendUtf8 — attempt-first, mkdir only on ENOENT (DI)', () => {
+  describe('Given the parent directory already exists', () => {
+    describe('When appendUtf8 is called', () => {
+      it('Then the append succeeds and mkdir is never called', async () => {
+        // Arrange
+        const rootDir = '/root';
+        const appendFile = vi.fn().mockResolvedValue(undefined);
+        const mkdir = vi.fn().mockResolvedValue(undefined);
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+          appendFile,
+          mkdir,
+        });
+        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+        // Act
+        await sut.appendUtf8('/root/logs/HEAD.log', 'entry\n');
+
+        // Assert
+        expect(appendFile).toHaveBeenCalledTimes(1);
+        expect(mkdir).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given the parent directory is missing (first append throws ENOENT)', () => {
+    describe('When appendUtf8 is called', () => {
+      it('Then it retries in order: appendFile, mkdir, appendFile', async () => {
+        // Arrange — the retry-count/order mutant kill: a plain call-count
+        // assertion alone would not distinguish "mkdir first" from
+        // "append first, mkdir on ENOENT" — the shared `calls` array pins
+        // the ORDER across both fakes.
+        const rootDir = '/root';
+        const calls: string[] = [];
+        const appendFile = vi
+          .fn()
+          .mockImplementationOnce(() => {
+            calls.push('appendFile');
+            return Promise.reject(enoent());
+          })
+          .mockImplementationOnce(() => {
+            calls.push('appendFile');
+            return Promise.resolve(undefined);
+          });
+        const mkdir = vi.fn().mockImplementation(() => {
+          calls.push('mkdir');
+          return Promise.resolve(undefined);
+        });
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+          appendFile,
+          mkdir,
+        });
+        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+        // Act
+        await sut.appendUtf8('/root/logs/HEAD.log', 'entry\n');
+
+        // Assert
+        expect(calls).toEqual(['appendFile', 'mkdir', 'appendFile']);
+      });
+    });
+  });
+
+  describe('Given a non-ENOENT failure on the first append (EACCES)', () => {
+    describe('When appendUtf8 is called', () => {
+      it('Then PERMISSION_DENIED propagates and mkdir is never called', async () => {
+        // Arrange — the errno-filter mutant kill: only ENOENT may trigger
+        // the mkdir-and-retry fallback.
+        const rootDir = '/root';
+        const appendFile = vi.fn().mockRejectedValue(eacces());
+        const mkdir = vi.fn().mockResolvedValue(undefined);
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+          appendFile,
+          mkdir,
+        });
+        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.appendUtf8('/root/logs/HEAD.log', 'entry\n');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        dataFor(caught, 'PERMISSION_DENIED');
+        expect(mkdir).not.toHaveBeenCalled();
+        expect(appendFile).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Given a second ENOENT persists after mkdir (a real fault, not a transient race)', () => {
+    describe('When appendUtf8 is called', () => {
+      it('Then FILE_NOT_FOUND propagates instead of looping', async () => {
+        // Arrange — the retry-count mutant kill: exactly one retry, never a
+        // loop. mkdir resolving yet the second append still ENOENT is a
+        // real fault (e.g. the directory was removed again concurrently)
+        // that must surface, not be swallowed by another mkdir attempt.
+        const rootDir = '/root';
+        const appendFile = vi.fn().mockRejectedValue(enoent());
+        const mkdir = vi.fn().mockResolvedValue(undefined);
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+          appendFile,
+          mkdir,
+        });
+        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.appendUtf8('/root/logs/HEAD.log', 'entry\n');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        dataFor(caught, 'FILE_NOT_FOUND');
+        expect(appendFile).toHaveBeenCalledTimes(2);
+        expect(mkdir).toHaveBeenCalledTimes(1);
       });
     });
   });
@@ -3665,6 +3824,48 @@ describe('NodeFileSystem — resolveWrite `..`-and-separator prefilter (DI)', ()
 
         // Assert
         expect(mkdirSpy).toHaveBeenCalledWith('/root/other', { recursive: true });
+      });
+    });
+  });
+});
+
+describe('NodeFileSystem — rmRecursive parent-realpath invalidation (DI)', () => {
+  const rootDir = '/root';
+  const CHILD = '/root/sub/a.bin';
+
+  /**
+   * A tree `/root/sub/a.bin` whose directory removal fails: the child is gone
+   * by then, so every cached realpath under `/root/sub` describes a tree that
+   * no longer has that shape.
+   */
+  const partialRemovalOps = (realpathSpy: (input: string) => Promise<string>) =>
+    fakeFsOps({
+      realpath: realpathSpy as unknown as FsOperations['realpath'],
+      lstat: vi.fn().mockImplementation(async (input: string) => {
+        if (input === '/root/sub') return entry('directory', 2);
+        if (input === CHILD) return entry('file', 3);
+        throw enoent();
+      }),
+      readdir: vi.fn().mockResolvedValue([{ name: 'a.bin' }]),
+      rmdir: vi.fn().mockRejectedValue(eacces()),
+    });
+
+  describe('Given a cached parent realpath and a recursive removal that fails partway', () => {
+    describe('When a later write resolves the same parent', () => {
+      it('Then the parent is realpathed afresh — the failed removal cleared the cache', async () => {
+        // Arrange
+        const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
+        const sut = new NodeFileSystem(rootDir, posixPolicy, partialRemovalOps(realpathSpy));
+        await sut.write(CHILD, new Uint8Array([1]));
+        await expect(sut.rmRecursive('/root/sub')).rejects.toBeInstanceOf(TsgitError);
+        const before = realpathSpy.mock.calls.filter(([arg]) => arg === '/root/sub').length;
+
+        // Act
+        await sut.write('/root/sub/b.bin', new Uint8Array([2]));
+
+        // Assert
+        const after = realpathSpy.mock.calls.filter(([arg]) => arg === '/root/sub').length;
+        expect(after).toBe(before + 1);
       });
     });
   });

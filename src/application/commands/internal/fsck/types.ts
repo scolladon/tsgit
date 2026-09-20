@@ -135,7 +135,7 @@ export type FsckFinding =
  * How `collectTypeFindings` treats a universe object whose cache entry is
  * `null` (unreadable). `'skip'` is today's default/`full: false` behaviour —
  * git turns unreadable loose objects into content errors there. `'classify'`
- * is `connectivityOnly` only (Pin P) — git yields `dangling unknown` there
+ * is `connectivityOnly` only — git yields `dangling unknown` there
  * instead. Not re-exported from `fsck.ts`: internal to the reachability pass.
  */
 export type UnreadableMode = 'skip' | 'classify';

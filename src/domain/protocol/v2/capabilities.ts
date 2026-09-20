@@ -1,5 +1,5 @@
 import { unsupportedObjectFormat, v2CommandUnsupported } from '../error.js';
-import type { PktLine } from '../pkt-line.js';
+import { assertNotRemoteError, type PktLine } from '../pkt-line.js';
 
 const VERSION_LINE = 'version 2';
 const DEFAULT_OBJECT_FORMAT = 'sha1';
@@ -32,7 +32,9 @@ const splitCapability = (line: string): readonly [string, string | undefined] =>
 const readLine = async (iter: AsyncIterator<PktLine>): Promise<string | undefined> => {
   const next = await iter.next();
   if (next.done || next.value.kind !== 'data') return undefined;
-  return stripTrailingNewline(TEXT_DECODER.decode(next.value.payload));
+  const line = stripTrailingNewline(TEXT_DECODER.decode(next.value.payload));
+  assertNotRemoteError(line);
+  return line;
 };
 
 const splitFetchFeatures = (value: string | undefined): ReadonlyArray<string> =>

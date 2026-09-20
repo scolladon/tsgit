@@ -2226,7 +2226,7 @@ describe('add', () => {
     });
   });
 
-  // ── Clean filter (F1/F3/F4/symlink/fallback) ─────────────────────────────
+  // ── Clean filter (required / optional / symlink / fallback) ──────────────
 
   describe('Given a file with an active clean filter that exits 0', () => {
     describe('When add stages the file', () => {
@@ -2256,7 +2256,7 @@ describe('add', () => {
   });
 
   describe('Given a file with required=true clean filter that exits non-zero', () => {
-    describe('When add stages the file (F3)', () => {
+    describe('When add stages the file', () => {
       it('Then throws CLEAN_FILTER_FAILED and nothing is staged', async () => {
         // Arrange
         const runner = new FakeRunner(1);
@@ -2291,7 +2291,7 @@ describe('add', () => {
   });
 
   describe('Given a file with required=false (default) clean filter that exits non-zero', () => {
-    describe('When add stages the file (F4)', () => {
+    describe('When add stages the file', () => {
       it('Then stages RAW bytes and succeeds (no throw)', async () => {
         // Arrange
         const runner = new FakeRunner(1);
@@ -2346,7 +2346,7 @@ describe('add', () => {
   });
 
   describe('Given a file with an active filter attribute but no ctx.command (no runner)', () => {
-    describe('When add stages the file (R11 fallback)', () => {
+    describe('When add stages the file with no command runner wired', () => {
       it('Then raw bytes are staged and no runner is invoked', async () => {
         // Arrange — no command in ctx (ADR-408 fallback)
         const ctx = await seedFreshRepo({ 'a.y': 'Hello World' });

@@ -14,7 +14,7 @@ import {
 } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
-import { buildSeededContext } from './fixtures.js';
+import { buildSeededContext, writeLooseWithDeclaredSize, writeRawObjectBytes } from './fixtures.js';
 
 const IDENTITY = {
   name: 'Test',
@@ -186,6 +186,31 @@ describe('catFileBatch', () => {
     });
   });
 
+  describe('Given a loose blob whose header size claim disagrees with its body length', () => {
+    describe('When iterated', () => {
+      it('Then yields an ok entry whose size is the stored claim and whose object content is the real body', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('hello world!'); // 12 bytes
+        const id = await writeRawObjectBytes(ctx, 'blob', content);
+        await writeLooseWithDeclaredSize(ctx, id, 'blob', 5, content);
+        const sut = catFileBatch(ctx, [id]);
+
+        // Act
+        const [entry] = await collect(sut);
+
+        // Assert
+        if (entry?.ok !== true) throw new Error('expected ok');
+        expect(entry.type).toBe('blob');
+        expect(entry.size).toBe(5);
+        expect(entry.object.type).toBe('blob');
+        if (entry.object.type === 'blob') {
+          expect(entry.object.content).toEqual(content);
+        }
+      });
+    });
+  });
+
   describe('Given a missing id', () => {
     describe('When iterated', () => {
       it('Then yields { ok: false, reason: "missing" }', async () => {
@@ -286,6 +311,39 @@ describe('catFileBatch', () => {
 
         // Act / Assert
         await expect(collect(sut)).rejects.toBeInstanceOf(RangeError);
+      });
+    });
+  });
+
+  describe('Given a foreign-shaped OBJECT_NOT_FOUND thrown by the read', () => {
+    describe('When iterated', () => {
+      it('Then yields a missing entry', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const stored = await writeBlobBytes(ctx, new Uint8Array([1]));
+        const path = `${ctx.layout.gitDir}/objects/${stored.slice(0, 2)}/${stored.slice(2)}`;
+        const originalRead = ctx.fs.read.bind(ctx.fs);
+        const probe: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            read: async (p: string) => {
+              if (p === path) {
+                throw Object.assign(new Error('foreign graph'), {
+                  data: { code: 'OBJECT_NOT_FOUND', id: stored },
+                });
+              }
+              return originalRead(p);
+            },
+          },
+        } as Context;
+        const sut = catFileBatch(probe, [stored]);
+
+        // Act
+        const entries = await collect(sut);
+
+        // Assert
+        expect(entries).toEqual([{ ok: false, id: stored, reason: 'missing' }]);
       });
     });
   });

@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { deriveContext } from '../../../../src/application/primitives/derive-context.js';
 import { indexEntryFromStat } from '../../../../src/application/primitives/internal/index-entry-from-stat.js';
 import { acquireIndexLock } from '../../../../src/application/primitives/internal/index-lock.js';
+import { assertOperationalRepository } from '../../../../src/application/primitives/internal/repo-state.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
@@ -9,11 +10,17 @@ import type { FilePath, ObjectId } from '../../../../src/domain/objects/object-i
 import type { Context } from '../../../../src/ports/context.js';
 import {
   buildSeededContext,
+  instrumentedContext,
+  seedMaxTreeDepth,
   serializeIndexFixture,
   serializeIndexFixtureAsync,
 } from './fixtures.js';
 
 const FAKE_OBJECT_ID = 'a'.repeat(40) as ObjectId;
+
+const seedHead = async (ctx: Context): Promise<void> => {
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+};
 
 /** Counts `ctx.fs.read` calls, proving whether a `readIndex` call was a cache hit or a miss. */
 const trackRead = (ctx: Context): { readonly ctx: Context; readonly count: () => number } => {
@@ -60,6 +67,30 @@ describe('readIndex', () => {
         expect(result.version).toBe(2);
         expect(result.entries).toEqual([]);
         expect(result.extensions).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a malformed core.maxTreeDepth and no index file present', () => {
+    describe('When readIndex is called', () => {
+      it('Then throws CONFIG_BAD_NUMERIC_VALUE before the exists probe', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await seedMaxTreeDepth(ctx, '2.5');
+        const existsSpy = vi.spyOn(ctx.fs, 'exists');
+
+        // Act
+        let caught: unknown;
+        try {
+          await readIndex(ctx);
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert — refuses ahead of even the absent-index fast path
+        expect((caught as TsgitError).data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+        expect(existsSpy).not.toHaveBeenCalled();
       });
     });
   });
@@ -723,6 +754,28 @@ describe('readIndex', () => {
         expect(caught).toBeInstanceOf(TsgitError);
         expect((caught as TsgitError).data.code).toBe('INVALID_INDEX_HEADER');
         expect((caught as TsgitError).message).toMatch(/shorter than/);
+      });
+    });
+  });
+
+  describe('Given the operational gate has already opened an epoch for this command', () => {
+    describe('When the first readIndex follows', () => {
+      it('Then it issues zero stat of config — the repo-settings check rides the trusted entry', async () => {
+        // Arrange — the gate runs on the UNWRAPPED context; instrumentation
+        // starts only after it, so the count reflects readIndex alone.
+        const base = await buildSeededContext();
+        await seedHead(base);
+        await assertOperationalRepository(base);
+        const { ctx, calls } = instrumentedContext(base);
+
+        // Act
+        await readIndex(ctx);
+
+        // Assert
+        const configStats = calls().filter(
+          (c) => c.method === 'stat' && c.path === `${ctx.layout.gitDir}/config`,
+        );
+        expect(configStats).toHaveLength(0);
       });
     });
   });

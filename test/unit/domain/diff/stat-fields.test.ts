@@ -51,7 +51,7 @@ describe('computeStatFields', () => {
         },
         {
           label:
-            'a line-key mode all and a whitespace-only change reports zero added and zero deleted (W1/D1 at count level)',
+            'a line-key mode all and a whitespace-only change reports zero added and zero deleted',
           old: enc('  ws\n'),
           next: enc('    ws\n'),
           options: { lineKey: { mode: 'all', ignoreCrAtEol: false } as LineKey },

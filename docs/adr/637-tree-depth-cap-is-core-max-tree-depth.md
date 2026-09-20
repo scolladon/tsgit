@@ -1,6 +1,17 @@
 # 637 — The tree-depth cap is `core.maxTreeDepth`, honoured unclamped
 
-- **Status:** accepted
+> **Superseded by [ADR-859](859-repo-settings-are-validated-at-their-own-tier.md)** for the
+> refusal's placement and its ordering claim. Git reads this key and `core.deltaBaseCacheLimit` in
+> one function and nowhere else, so they are one class, validated at the object-store / index /
+> commit-graph boundary rather than at the eager operational gate — the gate refused
+> `branch.list`, `tag.list` and `branch.rename` where git 2.55.0 runs. This record's "reported
+> first regardless of line order" was measured on `status`/`commit` and generalised: git names the
+> streaming class first in 19 of 24 probed commands and this key first in 5. Everything else here
+> stands — the key's identity, unclamped honouring with a 2048 default, the `slashCount > cap`
+> predicate, one shared source per site, `CONFIG_BAD_NUMERIC_VALUE` with no new public surface, the
+> local-only `readConfig` scope divergence, and the lazy twin at the tree-walk boundary.
+
+- **Status:** superseded by ADR-859
 - **Date:** 2026-08-15
 - **Design:** docs/design/depth-caps-and-node-aliases.md · **Supersedes/Refines:** refines ADR-226 (git-faithfulness prime directive); depends on ADR-636; refines ADR-024
 

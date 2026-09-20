@@ -9,9 +9,11 @@ import { init } from '../../../../src/application/commands/init.js';
 import { mergeRun } from '../../../../src/application/commands/merge.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
+import { getRefStore } from '../../../../src/application/primitives/ref-store.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import { writeSymbolicRef } from '../../../../src/application/primitives/write-symbolic-ref.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { asBareContext } from './fixtures.js';
@@ -331,6 +333,39 @@ describe('mergeAbort', () => {
         const branchAfter = await readReflog(ctx, MAIN);
         expect(branchAfter.at(-1)?.message).toBe(branchBefore);
         expect(branchAfter.at(-1)?.message).not.toBe('reset: moving to HEAD');
+      });
+
+      it('Then HEAD records the same entry when it reaches the branch through a walked symbolic chain', async () => {
+        // Arrange — HEAD -> refs/heads/s -> refs/heads/x, `x` branched from the
+        // same pre-merge tip `main` was at. A conflicted merge on `x` never
+        // advances it (same no-move rule as the direct-`main` row above), so
+        // `x`'s own reflog is unaffected by the abort — only the coupled HEAD
+        // entry fires, and it must do so even though HEAD reaches `x` through
+        // a walked link rather than naming it directly.
+        const ctx = createMemoryContext();
+        const { preMergeMain } = await setupConflictingMerge(ctx);
+        await getRefStore(ctx).applyRefUpdates([
+          { kind: 'set', name: 'refs/heads/x' as RefName, id: preMergeMain },
+        ]);
+        await checkout(ctx, { rev: 'x' });
+        await writeSymbolicRef(ctx, 'refs/heads/s' as RefName, 'refs/heads/x' as RefName);
+        await writeSymbolicRef(ctx, HEAD, 'refs/heads/s' as RefName);
+        await mergeRun(ctx, { rev: 'feature', author });
+        const xBefore = (await readReflog(ctx, 'refs/heads/x' as RefName)).at(-1)?.message;
+
+        // Act
+        await mergeAbort(ctx);
+
+        // Assert
+        const xValue = await getRefStore(ctx).resolveDirect('refs/heads/x' as RefName);
+        expect(xValue).toEqual({ kind: 'direct', id: preMergeMain });
+        const headLog = await readReflog(ctx, HEAD);
+        expect(headLog.at(-1)?.message).toBe('reset: moving to HEAD');
+        expect(headLog.at(-1)?.oldId).toBe(preMergeMain);
+        expect(headLog.at(-1)?.newId).toBe(preMergeMain);
+        const xAfter = await readReflog(ctx, 'refs/heads/x' as RefName);
+        expect(xAfter.at(-1)?.message).toBe(xBefore);
+        expect(xAfter.at(-1)?.message).not.toBe('reset: moving to HEAD');
       });
 
       it('Then result.origHead matches the on-disk ORIG_HEAD value', async () => {

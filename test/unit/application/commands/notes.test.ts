@@ -403,6 +403,74 @@ describe('notes', () => {
     });
   });
 
+  describe('Given no notes ref exists AND a malformed core.maxTreeDepth', () => {
+    describe('When notesRead runs', () => {
+      it('Then it throws CONFIG_BAD_NUMERIC_VALUE right after the gate, not null', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithCommit();
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          `${USER_CONFIG}[core]\n\tmaxTreeDepth = 2.5\n`,
+        );
+        __resetConfigCacheForTests();
+
+        // Act
+        let caught: unknown;
+        try {
+          await notesRead(ctx, { object: commitId });
+          expect.fail('notesRead did not refuse the malformed class');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+      });
+    });
+
+    describe('When notesRemove runs', () => {
+      it('Then it throws CONFIG_BAD_NUMERIC_VALUE right after the gate, not NOTES_OBJECT_HAS_NONE', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedWithCommit();
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          `${USER_CONFIG}[core]\n\tmaxTreeDepth = 2.5\n`,
+        );
+        __resetConfigCacheForTests();
+
+        // Act
+        let caught: unknown;
+        try {
+          await notesRemove(ctx, { object: commitId });
+          expect.fail('notesRemove did not refuse the malformed class');
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+      });
+    });
+
+    describe('When notesList runs', () => {
+      it('Then it still runs — it reads an object only when git does', async () => {
+        // Arrange
+        const { ctx } = await seedWithCommit();
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          `${USER_CONFIG}[core]\n\tmaxTreeDepth = 2.5\n`,
+        );
+        __resetConfigCacheForTests();
+
+        // Act
+        const result = await notesList(ctx);
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+  });
+
   describe('Given two notes added for different objects', () => {
     describe('When notesList', () => {
       it('Then returns both entries sorted by annotated-object oid ascending', async () => {

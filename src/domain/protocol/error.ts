@@ -16,6 +16,7 @@ export type ProtocolError =
   | { readonly code: 'DUPLICATE_REF'; readonly name: string }
   | { readonly code: 'INVALID_SIDEBAND_CHANNEL'; readonly channel: number }
   | { readonly code: 'SIDEBAND_FATAL'; readonly message: string }
+  | { readonly code: 'REMOTE_ERROR'; readonly message: string }
   | { readonly code: 'UNKNOWN_ACK_STATUS'; readonly value: string }
   | { readonly code: 'INVALID_REPORT_STATUS'; readonly line: string }
   | { readonly code: 'EMPTY_WANTS' }
@@ -81,8 +82,23 @@ export const duplicateRef = (name: string): TsgitError =>
 export const invalidSidebandChannel = (channel: number): TsgitError =>
   new TsgitError({ code: 'INVALID_SIDEBAND_CHANNEL', channel });
 
+/**
+ * A peer's own text reaches these two payloads verbatim — a whole pkt-line
+ * payload's worth (up to 65516 bytes) of bytes it chose, control sequences
+ * included. Neither the message nor its length is ever load-bearing, so both
+ * are escaped and cut to the same order of magnitude the hook-stderr echo
+ * already uses for untrusted process output.
+ */
+export const MAX_REMOTE_MESSAGE_IN_ERROR = 4096;
+
+const boundedRemoteMessage = (message: string): string =>
+  sanitizeForDisplay(message).slice(0, MAX_REMOTE_MESSAGE_IN_ERROR);
+
 export const sidebandFatal = (message: string): TsgitError =>
-  new TsgitError({ code: 'SIDEBAND_FATAL', message });
+  new TsgitError({ code: 'SIDEBAND_FATAL', message: boundedRemoteMessage(message) });
+
+export const remoteError = (message: string): TsgitError =>
+  new TsgitError({ code: 'REMOTE_ERROR', message: boundedRemoteMessage(message) });
 
 export const unknownAckStatus = (value: string): TsgitError =>
   new TsgitError({ code: 'UNKNOWN_ACK_STATUS', value });

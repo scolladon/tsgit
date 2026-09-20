@@ -4,7 +4,6 @@ import {
   configSystemPathUnresolved,
 } from '../../../domain/commands/error.js';
 import type { IniSection } from '../../../domain/config/config-ini.js';
-import { parseGitBoolean, parseIniSections } from '../../../domain/config/config-ini.js';
 import { TsgitError } from '../../../domain/error.js';
 import type { Context } from '../../../ports/context.js';
 import { commonGitDir } from '../path-layout.js';
@@ -15,15 +14,6 @@ import { layoutFailsAcceptance } from './layout-verdict.js';
  * key. Used by `mergeConfigsByScope`.
  */
 export const SCOPE_ORDER: ReadonlyArray<ConfigScope> = ['system', 'global', 'local', 'worktree'];
-
-const safeReadUtf8 = async (ctx: Context, path: string): Promise<string | undefined> => {
-  try {
-    return await ctx.fs.readUtf8(path);
-  } catch (err) {
-    if (err instanceof TsgitError && err.data.code === 'FILE_NOT_FOUND') return undefined;
-    throw err;
-  }
-};
 
 const exists = async (ctx: Context, path: string): Promise<boolean> => {
   try {
@@ -45,57 +35,43 @@ const callAdapterPath = (scope: ConfigScope, fn: () => string): string => {
 };
 
 /**
- * True iff the local config's `[extensions] worktreeConfig` parses as true
- * under git's boolean grammar, the gate for the per-worktree config file at
- * `${gitDir}/config.worktree`.
+ * Resolve the on-disk path for the per-worktree config scope. Takes the
+ * `active` verdict (git's `[extensions] worktreeConfig` boolean) from its
+ * caller rather than computing it: the predicate now lives in
+ * `config-scoped-read.ts`, next to the cached local-scope read it shares —
+ * importing it back here would close an import cycle
+ * (`config-scoped-read.ts` already imports THIS module for `resolveScopePath`
+ * / `mergeConfigsByScope`; depcruise's `no-circular` rule is enforced).
+ *
+ * A refused repository and an unset extension both make the scope
+ * unavailable, but they are different facts and the payload must say which:
+ * reporting a refused repository as "extension unset" would send a caller
+ * looking for a config key that was never read.
  */
-export const isWorktreeScopeActive = async (ctx: Context): Promise<boolean> => {
-  // The third reader of the repository config file, and the only one not
-  // reached through `loadConfigEntry` or `readSingleScope`. Every caller sits
-  // behind the acceptance tier today, so this keys on the same predicate as
-  // the other two rather than resting the "a refused repository's config is
-  // never parsed" invariant on caller discipline at one site.
-  if (layoutFailsAcceptance(ctx.layout)) return false;
-  const path = `${commonGitDir(ctx)}/config`;
-  const text = await safeReadUtf8(ctx, path);
-  if (text === undefined) return false;
-  const sections = parseIniSections(text, path);
-  for (const section of sections) {
-    if (section.section.toLowerCase() !== 'extensions') continue;
-    if (section.subsection !== undefined) continue;
-    for (const entry of section.entries) {
-      if (entry.key.toLowerCase() !== 'worktreeconfig') continue;
-      const parsed = parseGitBoolean(entry.value);
-      // A value git's boolean grammar refuses is inert here — the discovery-tier
-      // gate in `assertRepository` is what raises it, and it runs before this on
-      // every command.
-      return parsed.ok && parsed.value;
-    }
+export const resolveWorktreeScopePath = (
+  ctx: Context,
+  { active }: { readonly active: boolean },
+): string => {
+  if (layoutFailsAcceptance(ctx.layout)) {
+    throw configScopeNotAvailable('worktree', 'repository-not-accepted');
   }
-  return false;
+  if (!active) {
+    throw configScopeNotAvailable('worktree', 'worktree-extension-unset');
+  }
+  return `${ctx.layout.gitDir}/config.worktree`;
 };
 
 /**
- * Resolve the on-disk path for a config scope. Returns the path even if the
- * file does not yet exist (writes target it). Throws when the scope is
+ * Resolve the on-disk path for a config scope OTHER than `'worktree'` (see
+ * {@link resolveWorktreeScopePath} for that one). Returns the path even if
+ * the file does not yet exist (writes target it). Throws when the scope is
  * unavailable on this adapter or platform.
  */
-export const resolveScopePath = async (ctx: Context, scope: ConfigScope): Promise<string> => {
+export const resolveScopePath = async (
+  ctx: Context,
+  scope: Exclude<ConfigScope, 'worktree'>,
+): Promise<string> => {
   if (scope === 'local') return `${commonGitDir(ctx)}/config`;
-  if (scope === 'worktree') {
-    // A refused repository and an unset extension both make the worktree scope
-    // unavailable, but they are different facts and the payload must say
-    // which: reporting a refused repository as "extension unset" would send a
-    // caller looking for a config key that was never read. The sibling reader
-    // in `config-scoped-read.ts` already distinguishes them.
-    if (layoutFailsAcceptance(ctx.layout)) {
-      throw configScopeNotAvailable('worktree', 'repository-not-accepted');
-    }
-    if (!(await isWorktreeScopeActive(ctx))) {
-      throw configScopeNotAvailable('worktree', 'worktree-extension-unset');
-    }
-    return `${ctx.layout.gitDir}/config.worktree`;
-  }
   if (scope === 'global') {
     const xdg = callAdapterPath('global', () => ctx.fs.xdgConfigHome());
     const home = callAdapterPath('global', () => ctx.fs.homedir());

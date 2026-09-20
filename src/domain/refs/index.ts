@@ -21,7 +21,11 @@ export type { DirectRef, LooseRef, PackedRefEntry, PackedRefs, SymbolicRef } fro
 export { isSafeRefName, validateRefName } from './ref-validation.js';
 // Reftable codec: ref, index and obj block record grammar
 export type { ReftableRefRecord, ReftableRefValue } from './reftable/reftable-block.js';
-export { iterateReftableRefs, lookupReftableRef } from './reftable/reftable-block.js';
+export {
+  iterateReftableRefs,
+  iterateReftableRefsFrom,
+  lookupReftableRef,
+} from './reftable/reftable-block.js';
 // Reftable codec: compaction policy (size metric, geometric merge segment)
 export type { CompactionSegment } from './reftable/reftable-compaction.js';
 export {

@@ -3,7 +3,7 @@ import type { TreeSnapshot } from './snapshot.js';
 /**
  * A point-in-time view of a stash entry. The trio (index, workdir,
  * untracked) is exposed as plain properties — discoverable at hand-out
- * time, not behind a method (ADR-156 + design §9.1).
+ * time, not behind a method (ADR-156).
  *
  * `untracked` is `null` when the stash was created without
  * `--include-untracked`. Consumers branch on the property's value, not

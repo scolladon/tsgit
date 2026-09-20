@@ -88,7 +88,7 @@ function probedCache(): CacheProbe {
       get: (key) => delegate.get(key),
       set: (key, value, byteSize) => {
         setKeys.push(key);
-        delegate.set(key, value, byteSize);
+        return delegate.set(key, value, byteSize);
       },
       has: (key) => delegate.has(key),
       delete: (key) => delegate.delete(key),

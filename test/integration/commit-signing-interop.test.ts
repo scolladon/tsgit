@@ -13,6 +13,12 @@
  * developer's real keyring), saved/restored around the suite the same way
  * `ssh-transport-interop.test.ts` saves/restores `GIT_SSH_COMMAND`. Every git
  * invocation still goes through `runGit`'s `GIT_*` scrub + `GIT_CONFIG_NOSYSTEM=1`.
+ *
+ * @proves
+ *   surface:        commit.signing
+ *   bucket:         cross-tool-interop
+ *   unique:         a canned signer yields byte-identical signed commit objects in both tools, and both refuse alike when it fails
+ *   interopSurface: commit
  */
 import { execFileSync } from 'node:child_process';
 import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';

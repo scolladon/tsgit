@@ -14,7 +14,7 @@
  * @proves
  *   surface:        repo-state
  *   bucket:         cross-tool-interop
- *   unique:         core.repositoryformatversion's accept/refuse split (a named ceiling, not membership; the parsed integer, not the literal) matches canonical git (git 2.55.0), reconstructed from tsgit's structured fields alone
+ *   unique:         core.repositoryformatversion's accept/refuse split is a named ceiling over the parsed integer, matching git 2.55.0 from tsgit's structured fields alone
  *   interopSurface: config, init, status
  */
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';

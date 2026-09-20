@@ -149,13 +149,13 @@ describe('exceedsMaxIndexBytes boundary triple', () => {
   });
 });
 
-describe('exceedsMaxSymbolicDepth boundary triple (default cap = 5)', () => {
+describe('exceedsMaxSymbolicDepth boundary triple (default cap = 4, as git)', () => {
   describe('Given a depth around the default or an overridden cap', () => {
     describe('When invoked', () => {
       it.each([
-        { depth: 4, cap: undefined, expected: false, label: 'returns false (just-under)' },
-        { depth: 5, cap: undefined, expected: false, label: 'returns false (at cap)' },
-        { depth: 6, cap: undefined, expected: true, label: 'returns true (just-over)' },
+        { depth: 3, cap: undefined, expected: false, label: 'returns false (just-under)' },
+        { depth: 4, cap: undefined, expected: false, label: 'returns false (at cap)' },
+        { depth: 5, cap: undefined, expected: true, label: 'returns true (just-over)' },
         {
           depth: 6,
           cap: 10,

@@ -1,9 +1,9 @@
 /**
- * Bench: `readBlob()` lookup cost as a function of pack count, pinning §D7's
- * claim — a midx collapses P per-pack fanout searches into one — and the
+ * Bench: `readBlob()` lookup cost as a function of pack count, pinning the
+ * claim that a midx collapses P per-pack fanout searches into one, and the
  * regression guard that the midx machinery does not slow the cases where
  * there is nothing for it to accelerate. Three shapes, not one: a single
- * pack with no midx, a loose-only repository (the §D4.5 `assertLoadable`
+ * pack with no midx, a loose-only repository (the `assertLoadable`
  * gate in isolation), and the many-pack win itself, with and without a
  * midx, for both a hit-in-the-first-pack and a hit-in-the-last-pack
  * workload. Published numbers come from the CI nightly `bench.yml`

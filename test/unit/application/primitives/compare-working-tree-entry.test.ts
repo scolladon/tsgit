@@ -8,6 +8,7 @@ import {
   isWorkingTreeModified,
   type WorkingTreeComparison,
 } from '../../../../src/application/primitives/compare-working-tree-entry.js';
+import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
 import { buildAttributeProvider } from '../../../../src/application/primitives/internal/read-gitattributes.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import type { IndexEntry } from '../../../../src/domain/git-index/index-entry.js';
@@ -415,6 +416,11 @@ describe('compareWorkingTreeDelta', () => {
           `${ctx.layout.gitDir}/config`,
           '[filter "zed"]\n\trequired = maybe\n',
         );
+        // `seedFile`'s `add` call already opened this session's operational
+        // gate epoch on the (empty) config that preceded this raw rewrite —
+        // without this, the read below would still be served the pre-rewrite,
+        // trusted entry until the next gate call.
+        invalidateConfigCache(ctx);
         const runner = new FakeRunner();
         const enrichedCtx: Context = { ...ctx, command: runner };
         const provider = await buildAttributeProvider(enrichedCtx);

@@ -332,7 +332,7 @@ const runFsckObjectCacheWorkload = async (
   return toReport(`fsck-object-cache-${spec.label}`, before, peak, after);
 };
 
-// Two pack sizes differing >= 4x — the R17 oracle for clone's quarantine
+// Two pack sizes differing >= 4x — the oracle for clone's quarantine
 // streaming: peak RSS should be bounded independently of pack size, not
 // scale with it the way the old whole-pack buffer-then-concat drain did.
 //
@@ -836,7 +836,7 @@ const runCloneWorkload = async (
       await runOneCloneMeasurement(gc, openRepository, transport, 'large', large.packBytes),
       // Exercises the index-pass base cache at its shipped default budget
       // through the real receive path — the ongoing regression signal for
-      // R1/R2's residency claim; the sizing sweep that picked the default
+      // the base cache's residency claim; the sizing sweep that picked the default
       // itself is a one-off local measurement recorded in the base-cache
       // budget spike doc, not something this nightly workload re-derives.
       await runOneCloneMeasurement(

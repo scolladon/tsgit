@@ -359,8 +359,8 @@ describe.skipIf(!GIT_AVAILABLE)('tree entry-name bytes interop', () => {
 
     describe('When a mode of 40000 points at a blob rather than a tree', () => {
       it('Then git accepts the write structurally, and readTree parses one entry without verifying the target type', async () => {
-        // Arrange — row 8: a type mismatch is deliberately not asserted
-        // further (recursion/ls-tree -r behaviour is out of scope here).
+        // Arrange — the type mismatch is deliberately not asserted further
+        // (recursion / ls-tree -r behaviour is out of scope here).
         const body = rawEntry('40000', 'd', blobA);
         const treeId = buildTreeIn(dir, body);
         const ctx = freshCtx();
@@ -674,8 +674,8 @@ describe.skipIf(!GIT_AVAILABLE)('tree entry-name bytes interop', () => {
   describe('Given two invalid-UTF-8 sibling names that decode to the same replacement character', () => {
     describe("When git's index and tsgit's FlatTree both materialise the tree", () => {
       it('Then git read-tree + ls-files -s keeps two index entries, while flattenTree carries one FlatTree key (never a worktree comparison)', async () => {
-        // Arrange — row 4 through flattenTree. Never compared via a real
-        // worktree checkout: checkout-index itself fails on these names on
+        // Arrange — the two colliding names go through flattenTree, never a
+        // real worktree checkout: checkout-index itself fails on these names on
         // APFS with "Illegal byte sequence", a filesystem-level fact, not a
         // tsgit/git divergence.
         const treeId = buildTreeIn(
@@ -1159,7 +1159,7 @@ describe.skipIf(!GIT_AVAILABLE)('tree entry-name bytes interop', () => {
       await rm(sha256Dir, { recursive: true, force: true });
     });
 
-    it('Then a BOM-prefixed name is accepted by git and by tsgit readTree (row 2, SHA-256 width)', async () => {
+    it('Then a BOM-prefixed name is accepted by git and by tsgit readTree at SHA-256 width', async () => {
       // Arrange
       const blob = runGit(['-C', sha256Dir, 'hash-object', '-w', '--stdin'], {
         input: 'one\n',
@@ -1178,7 +1178,7 @@ describe.skipIf(!GIT_AVAILABLE)('tree entry-name bytes interop', () => {
       expect(tree.entries[0]?.nameBytes).toEqual(concatBytes(BOM, encode('a')));
     });
 
-    it('Then an empty entry name is refused by git ls-tree (exit 128) and by tsgit readTree (row 13, SHA-256 width)', async () => {
+    it('Then an empty entry name is refused by git ls-tree (exit 128) and by tsgit readTree at SHA-256 width', async () => {
       // Arrange
       const blob = runGit(['-C', sha256Dir, 'hash-object', '-w', '--stdin'], {
         input: 'one\n',

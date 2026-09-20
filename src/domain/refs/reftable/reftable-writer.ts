@@ -78,10 +78,13 @@ export const DEFAULT_RESTART_INTERVAL = 16;
  *  section (the spec: "formatted exactly the same as the ref index"). */
 export const INDEX_EMIT_THRESHOLD_BLOCKS = 4;
 export const MIN_OBJ_ID_LENGTH = 2;
-/** Once an index level itself needs more than this many blocks, another
- *  index level is built above it — unexercised at generated/fixture scales
- *  (an index block holds hundreds of entries), so this is the source rule
- *  from git's writer, not a directly measured byte offset. */
+/** Once an index level itself needs more than this many blocks, another index
+ *  level is built above it — the source rule from git's writer, so the topmost
+ *  level legitimately spans up to this many blocks and the footer names only
+ *  its FIRST. A reader that stops at that one block loses every ref the blocks
+ *  beside it cover; git's own reader walks on into them, and so does ours
+ *  (`reftable-block.ts`'s index descent). Measured against a git-written table
+ *  at `reftable.blockSize = 256`, whose top level spans several blocks. */
 export const MULTI_LEVEL_INDEX_THRESHOLD_BLOCKS = 3;
 
 const RESTART_ENTRY_SIZE = 3;

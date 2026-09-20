@@ -74,6 +74,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'MISSING_CAPABILITIES':
     case 'INVALID_REF_LINE':
     case 'DUPLICATE_REF':
+    case 'REMOTE_ERROR':
     case 'INVALID_SIDEBAND_CHANNEL':
     case 'SIDEBAND_FATAL':
     case 'UNKNOWN_ACK_STATUS':
@@ -104,9 +105,9 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'AUTHOR_UNCONFIGURED':
     case 'BRANCH_EXISTS':
     case 'BRANCH_NOT_FOUND':
+    case 'BRANCH_NOT_FULLY_MERGED':
     case 'TAG_EXISTS':
     case 'TAG_NOT_FOUND':
-    case 'CANNOT_DELETE_CHECKED_OUT_BRANCH':
     case 'INVALID_URL':
     case 'BLOCKED_HOST':
     case 'TOO_MANY_REDIRECTS':
@@ -166,6 +167,10 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'CONFIG_BAD_BOOLEAN_VALUE':
     case 'CONFIG_BAD_BOOLEAN_LITERAL':
     case 'CONFIG_BAD_DATE_VALUE':
+    case 'FSCK_UNKNOWN_MSG_ID':
+    case 'FSCK_CANNOT_DEMOTE':
+    case 'FSCK_SKIP_LIST_UNREADABLE':
+    case 'FSCK_SKIP_LIST_INVALID_NAME':
     case 'CONFIG_INVALID_ENUM_VALUE':
     case 'CONFIG_BAD_ZLIB_LEVEL':
     case 'CONFIG_INVALID_FILE':

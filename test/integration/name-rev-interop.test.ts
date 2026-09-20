@@ -552,4 +552,68 @@ describe.skipIf(!GIT_AVAILABLE)('name-rev interop', () => {
       });
     });
   });
+
+  describe('Given branches whose names exercise the bracket and escape glob dialect', () => {
+    let dir = '';
+    let ctx: Context;
+    let root = '';
+
+    beforeAll(async () => {
+      dir = await makeRepo('glob-dialect');
+      root = await commitFile(dir, 'root');
+      git(dir, 'branch', 'm]in');
+      await commitFile(dir, 'middle');
+      git(dir, 'branch', 'mXin');
+      await commitFile(dir, 'tip');
+      ctx = createNodeContext({ workDir: dir });
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(dir, { recursive: true, force: true });
+    });
+
+    const REFS_DIALECT_MATRIX: ReadonlyArray<{ label: string; pattern: string; named: string }> = [
+      { label: 'a byte range', pattern: 'refs/heads/m[a-z]in', named: 'main~2' },
+      { label: 'a POSIX class', pattern: 'refs/heads/m[[:upper:]]in', named: 'mXin~1' },
+      { label: 'a negated set', pattern: 'refs/heads/m[!a]in', named: 'm]in' },
+      { label: 'a leading `]` member', pattern: 'refs/heads/m[]]in', named: 'm]in' },
+      { label: 'a backslash escape', pattern: 'refs/heads/m\\Xin', named: 'mXin~1' },
+      { label: 'an escaped `]` range bound', pattern: 'refs/heads/m[#-\\]]in', named: 'm]in' },
+      {
+        label: 'a `[:` with no class name after it',
+        pattern: 'refs/heads/m[![:]in',
+        named: 'm]in',
+      },
+      { label: 'an unterminated `[`', pattern: 'refs/heads/m[a-z', named: 'undefined' },
+      { label: 'an unknown class name', pattern: 'refs/heads/m[[:bogus:]]in', named: 'undefined' },
+    ];
+
+    describe('When nameRevCmd runs with each refs pattern', () => {
+      it.each(REFS_DIALECT_MATRIX)(
+        'Then $label names the root as git does',
+        async ({ pattern, named }) => {
+          // Arrange & Act
+          const result = renderNameRev(await nameRevCmd(ctx, root, { refs: pattern }));
+
+          // Assert
+          expect(result).toBe(gitNameRev(dir, root, `--refs=${pattern}`));
+          expect(result).toBe(named);
+        },
+      );
+    });
+
+    describe('When nameRevCmd runs with a bracket exclude pattern', () => {
+      it('Then the excluded branch is skipped as git skips it', async () => {
+        // Arrange
+        const pattern = 'refs/heads/m[]]in';
+
+        // Act
+        const result = renderNameRev(await nameRevCmd(ctx, root, { exclude: pattern }));
+
+        // Assert
+        expect(result).toBe(gitNameRev(dir, root, `--exclude=${pattern}`));
+        expect(result).toBe('mXin~1');
+      });
+    });
+  });
 });

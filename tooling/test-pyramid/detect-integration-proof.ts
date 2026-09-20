@@ -6,7 +6,8 @@
  *
  *   missing   — header absent or grammar-invalid
  *   duplicate — two files claim the same `(surface, bucket)` pair without
- *               the platform-only exemption
+ *               the platform-only exemption; a file naming several
+ *               surfaces is compared on each of them
  *   misplaced — bucket's directoryRules forbid the file's directory class
  *
  * Pure function. Caller owns I/O.
@@ -44,7 +45,7 @@ export interface IntegrationProofFindings {
 
 export interface AcceptedRecord {
   readonly path: string;
-  readonly surface: string;
+  readonly surfaces: ReadonlyArray<string>;
   readonly bucket: string;
   readonly unique: string;
   readonly directory: DirectoryClass;
@@ -80,12 +81,15 @@ const collectDuplicates = (
 ): ReadonlyArray<DuplicateFinding> => {
   const byKey = new Map<string, { surface: string; bucket: string; paths: string[] }>();
   for (const [path, header] of parsed) {
-    const key = `${header.surface}${KEY_DELIM}${header.bucket}`;
-    const entry = byKey.get(key);
-    if (entry === undefined) {
-      byKey.set(key, { surface: header.surface, bucket: header.bucket, paths: [path] });
-    } else {
-      entry.paths.push(path);
+    for (const surface of header.surfaces) {
+      const entry = byKey.get(`${surface}${KEY_DELIM}${header.bucket}`);
+      if (entry === undefined) {
+        byKey.set(`${surface}${KEY_DELIM}${header.bucket}`, {
+          surface,
+          bucket: header.bucket,
+          paths: [path],
+        });
+      } else entry.paths.push(path);
     }
   }
   const findings: DuplicateFinding[] = [];
@@ -155,7 +159,7 @@ export const detectIntegrationProof = (
     parsed.push([file.path, result.header]);
     accepted.push({
       path: file.path,
-      surface: result.header.surface,
+      surfaces: result.header.surfaces,
       bucket: result.header.bucket,
       unique: result.header.unique,
       directory: classifyDirectory(file.path),

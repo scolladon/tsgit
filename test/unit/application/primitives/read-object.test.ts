@@ -1,16 +1,41 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import * as configReadMod from '../../../../src/application/primitives/config-read.js';
 import { deriveContext } from '../../../../src/application/primitives/derive-context.js';
-import { readObject, readRawObject } from '../../../../src/application/primitives/read-object.js';
+import { assertRepoSettingsValid } from '../../../../src/application/primitives/internal/repo-settings-gate.js';
+import { assertOperationalRepository } from '../../../../src/application/primitives/internal/repo-state.js';
+import * as packRegistryMod from '../../../../src/application/primitives/pack-registry.js';
+import {
+  disposePackRegistry,
+  getPackRegistry,
+  peekPackRegistry,
+  readObject,
+  readObjectWithSize,
+  readRawObject,
+} from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
-import type { TsgitError } from '../../../../src/domain/error.js';
+import { fileNotFound, type TsgitError } from '../../../../src/domain/error.js';
 import type { Blob, ObjectId } from '../../../../src/domain/objects/index.js';
 import { EMPTY_TREE_OID, serializeObject } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import type { PromisorRemote } from '../../../../src/ports/promisor.js';
-import { buildSeededContext } from './fixtures.js';
+import {
+  buildSeededContext,
+  instrumentedContext,
+  seedMaxTreeDepth,
+  writeLooseWithDeclaredSize,
+  writeRawObjectBytes,
+} from './fixtures.js';
 import { writeSyntheticPack } from './pack-fixture.js';
 
+const seedHead = async (ctx: Context): Promise<void> => {
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+};
+
 describe('readObject', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   describe('Given a seeded blob', () => {
     describe('When readObject is called', () => {
       it('Then returns the Blob', async () => {
@@ -195,14 +220,14 @@ describe('readObject', () => {
       });
     });
 
-    describe('Given a loose blob whose declared header size differs from its actual content length', () => {
-      describe('When readObject is called with maxBytes', () => {
-        it('Then the cap measures ACTUAL content bytes (mutation hardening for)', async () => {
-          // Arrange — forge a loose object whose <type> <size>\0 header lies
-          // about its payload size. The cap MUST measure the inflated body's
-          // actual length, not the declared header value — otherwise an
-          // adversary can declare 1 byte and ship 10 GiB without tripping the
-          // cap.
+    describe('Given a loose blob whose header claims 1 byte and whose body is 8', () => {
+      describe('When readObject is called with maxBytes 4', () => {
+        it('Then the cap measures the actual 8 bytes and refuses OBJECT_TOO_LARGE', async () => {
+          // Arrange — forge a loose blob whose <type> <size>\0 header lies
+          // about its payload size. A lying blob is served by its real
+          // bytes (git's streaming contract), so a cap that trusted the
+          // declared size would wrongly admit it — this pins that the cap
+          // measures the ACTUAL 8 bytes instead.
           const ctx = await buildSeededContext();
           const fakeId = 'a'.repeat(40) as ObjectId;
           const { computeLooseObjectPath } = await import(
@@ -215,10 +240,10 @@ describe('readObject', () => {
             compressed,
           );
 
-          // Act + Assert — cap is 4. Declared size (1) ≤ 4 would pass a
-          // declared-size cap; actual content is 8 > 4 → must reject.
+          // Act
           try {
             await readObject(ctx, fakeId, { maxBytes: 4, verifyHash: false });
+            // Assert
             expect.unreachable();
           } catch (error) {
             const data = (error as TsgitError).data;
@@ -226,8 +251,41 @@ describe('readObject', () => {
             if (data.code !== 'OBJECT_TOO_LARGE') {
               expect.fail(`expected OBJECT_TOO_LARGE, got ${data.code}`);
             }
+            expect(data.id).toBe(fakeId);
             expect(data.actualSize).toBe(8);
             expect(data.limit).toBe(4);
+          }
+        });
+      });
+    });
+
+    describe('Given a loose commit whose header size claim disagrees with its body length', () => {
+      describe('When readObject is called', () => {
+        it('Then it still throws INVALID_OBJECT_HEADER (only a blob takes the streaming contract)', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const fakeId = 'b'.repeat(40) as ObjectId;
+          const { computeLooseObjectPath } = await import(
+            '../../../../src/domain/storage/loose-path.js'
+          );
+          const forged = new TextEncoder().encode('commit 400\0short body'); // declares 400, actual 10
+          const compressed = await ctx.compressor.deflate(forged);
+          await ctx.fs.write(
+            `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(fakeId)}`,
+            compressed,
+          );
+
+          // Act
+          try {
+            await readObject(ctx, fakeId);
+            // Assert
+            expect.unreachable();
+          } catch (error) {
+            const data = (error as TsgitError).data;
+            expect(data.code).toBe('INVALID_OBJECT_HEADER');
+            if (data.code === 'INVALID_OBJECT_HEADER') {
+              expect(data.reason).toBe('size mismatch: header says 400, actual content is 10');
+            }
           }
         });
       });
@@ -404,7 +462,6 @@ describe('readObject', () => {
         // Assert — session unchanged ⇒ same registry, no re-scan.
         expect(derived.session).toBe(ctx.session);
         expect(spy).not.toHaveBeenCalledWith('/repo/.git/objects/pack');
-        spy.mockRestore();
       });
     });
   });
@@ -470,6 +527,19 @@ describe('readObject', () => {
               if (path === '/elsewhere/.git/objects/pack') readdirCount += 1;
               return originalReaddir('/repo/.git/objects/pack');
             },
+            // `/elsewhere` sits outside the memory adapter's sandboxed root,
+            // so it can never resolve — `readConfig` (now read at
+            // registry-construction time, for `core.deltaBaseCacheLimit`)
+            // must see the same "no config file" absence a real unopened
+            // gitDir would produce, not the sandbox's PERMISSION_DENIED.
+            stat: async (path: string) => {
+              if (path === '/elsewhere/.git/config') throw fileNotFound(path);
+              return ctx.fs.stat(path);
+            },
+            readUtf8: async (path: string) => {
+              if (path === '/elsewhere/.git/config') throw fileNotFound(path);
+              return ctx.fs.readUtf8(path);
+            },
           },
         });
 
@@ -488,7 +558,380 @@ describe('readObject', () => {
   });
 });
 
+describe('Given a fresh session and two concurrent first readObject calls', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe('When neither call has settled before the other starts', () => {
+    it('Then only one pack registry is constructed for the session', async () => {
+      // Arrange
+      const blob: Blob = { type: 'blob', content: new Uint8Array([7]), id: '' as ObjectId };
+      const ctx = await buildSeededContext({ objects: [blob] });
+      const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
+      const spy = vi.spyOn(packRegistryMod, 'createPackRegistry');
+
+      // Act
+      await Promise.all([readObject(ctx, id), readObject(ctx, id)]);
+
+      // Assert
+      expect(spy).toHaveBeenCalledTimes(1);
+    });
+  });
+});
+
+describe('getPackRegistry — repo-settings class boundary', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe('Given core.maxTreeDepth = 2.5 and a loose object fixture', () => {
+    describe('When readObject is called', () => {
+      it('Then throws CONFIG_BAD_NUMERIC_VALUE before any registry construction', async () => {
+        // Arrange
+        const blob: Blob = { type: 'blob', content: new Uint8Array([1]), id: '' as ObjectId };
+        const ctx = await buildSeededContext({ objects: [blob] });
+        const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
+        await seedMaxTreeDepth(ctx, '2.5');
+        const spy = vi.spyOn(packRegistryMod, 'createPackRegistry');
+
+        // Act
+        let caught: unknown;
+        try {
+          await readObject(ctx, id);
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+        expect(spy).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given core.maxTreeDepth = 2.5 and a packed object fixture', () => {
+    describe('When readObject is called', () => {
+      it('Then throws CONFIG_BAD_NUMERIC_VALUE', async () => {
+        // Arrange
+        const content = new TextEncoder().encode('abcdefgh');
+        const ctx = await buildSeededContext();
+        const [id] = await writeSyntheticPack(ctx, 'settings-gate', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        await seedMaxTreeDepth(ctx, '2.5');
+
+        // Act
+        let caught: unknown;
+        try {
+          await readObject(ctx, id as ObjectId);
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+      });
+    });
+  });
+
+  describe('Given a settled session (a prior readObject already resolved the repo-settings class)', () => {
+    describe('When readObject is called a second time', () => {
+      it('Then no finder re-runs — the settled fast path skips the check', async () => {
+        // Arrange
+        const blob: Blob = { type: 'blob', content: new Uint8Array([2]), id: '' as ObjectId };
+        const ctx = await buildSeededContext({ objects: [blob] });
+        const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
+        await readObject(ctx, id);
+        const spy = vi.spyOn(configReadMod, 'findLastInvalidMaxTreeDepth');
+
+        // Act
+        await readObject(ctx, id);
+
+        // Assert
+        expect(spy).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given a bare Context with cacheBudgets.deltaBaseCacheMaxBytes supplied and no gate opened', () => {
+    describe('When readObject runs twice', () => {
+      it('Then the first read issues exactly one stat and one readUtf8 of config, and the finder runs once across both reads', async () => {
+        // Arrange — the finder spy is installed BEFORE the first read, so its
+        // count covers the compute that read triggers.
+        const blob: Blob = { type: 'blob', content: new Uint8Array([10]), id: '' as ObjectId };
+        const base = await buildSeededContext({ objects: [blob] });
+        const id = (await base.hash.hashHex(serializeObject(blob, base.hashConfig))) as ObjectId;
+        const withBudget: Context = { ...base, cacheBudgets: { deltaBaseCacheMaxBytes: 2048 } };
+        const { ctx, calls } = instrumentedContext(withBudget);
+        const spy = vi.spyOn(configReadMod, 'findLastInvalidMaxTreeDepth');
+        const configPath = `${ctx.layout.gitDir}/config`;
+
+        // Act
+        await readObject(ctx, id);
+        const firstReadConfigCalls = calls().filter((c) => c.path === configPath);
+        await readObject(ctx, id);
+
+        // Assert
+        expect(firstReadConfigCalls).toEqual([
+          { method: 'stat', path: configPath },
+          { method: 'readUtf8', path: configPath },
+        ]);
+        expect(spy).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Given a bare Context with no cacheBudgets override and no gate opened', () => {
+    describe('When readObject runs twice', () => {
+      it('Then the first read issues stat, readUtf8, stat of config, and the finder runs once across both reads', async () => {
+        // Arrange
+        const blob: Blob = { type: 'blob', content: new Uint8Array([11]), id: '' as ObjectId };
+        const base = await buildSeededContext({ objects: [blob] });
+        const id = (await base.hash.hashHex(serializeObject(blob, base.hashConfig))) as ObjectId;
+        const { ctx, calls } = instrumentedContext(base);
+        const spy = vi.spyOn(configReadMod, 'findLastInvalidMaxTreeDepth');
+        const configPath = `${ctx.layout.gitDir}/config`;
+
+        // Act
+        await readObject(ctx, id);
+        const firstReadConfigCalls = calls().filter((c) => c.path === configPath);
+        await readObject(ctx, id);
+
+        // Assert
+        expect(firstReadConfigCalls).toEqual([
+          { method: 'stat', path: configPath },
+          { method: 'readUtf8', path: configPath },
+          { method: 'stat', path: configPath },
+        ]);
+        expect(spy).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Given readObjectWithSize as the first touch of a fresh session', () => {
+    describe('When readObjectWithSize is followed by readObject', () => {
+      it('Then the repo-settings finder runs exactly once across both calls', async () => {
+        // Arrange
+        const blob: Blob = { type: 'blob', content: new Uint8Array([12]), id: '' as ObjectId };
+        const ctx = await buildSeededContext({ objects: [blob] });
+        const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
+        const spy = vi.spyOn(configReadMod, 'findLastInvalidMaxTreeDepth');
+
+        // Act
+        await readObjectWithSize(ctx, id);
+        await readObject(ctx, id);
+
+        // Assert
+        expect(spy).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Given the operational gate has already opened an epoch for this command', () => {
+    describe('When the first readObject follows', () => {
+      it('Then it issues zero stat of config — the registry read and the repo-settings check both ride the trusted entry', async () => {
+        // Arrange — the gate runs on the UNWRAPPED context; instrumentation
+        // starts only after it, so the count reflects readObject alone.
+        const blob: Blob = { type: 'blob', content: new Uint8Array([3]), id: '' as ObjectId };
+        const base = await buildSeededContext({ objects: [blob] });
+        await seedHead(base);
+        const id = (await base.hash.hashHex(serializeObject(blob, base.hashConfig))) as ObjectId;
+        await assertOperationalRepository(base);
+        const { ctx, calls } = instrumentedContext(base);
+
+        // Act
+        await readObject(ctx, id);
+
+        // Assert
+        const configStats = calls().filter(
+          (c) => c.method === 'stat' && c.path === `${ctx.layout.gitDir}/config`,
+        );
+        expect(configStats).toHaveLength(0);
+      });
+    });
+  });
+});
+
+describe('peekPackRegistry', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe('Given a fresh session that has never constructed a registry', () => {
+    describe('When checked', () => {
+      it('Then returns undefined — nothing to serve synchronously yet', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+
+        // Act
+        const result = peekPackRegistry(ctx);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a session warmed by a prior getPackRegistry call', () => {
+    describe('When checked', () => {
+      it('Then returns the SAME registry getPackRegistry resolves to, built exactly once', async () => {
+        // Arrange — the spy is installed BEFORE the warming call, so its
+        // count covers the warm-up too: one construction for the pair pins
+        // single-flight, where a spy installed afterwards could only ever
+        // observe the zero calls a synchronous peek makes by construction.
+        const ctx = await buildSeededContext();
+        const spy = vi.spyOn(packRegistryMod, 'createPackRegistry');
+
+        // Act
+        const warm = await getPackRegistry(ctx);
+        const result = peekPackRegistry(ctx);
+
+        // Assert
+        expect(result).toBe(warm);
+        expect(spy).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Given a warm session whose config is then poisoned (the repo-settings verdict is superseded)', () => {
+    describe('When checked', () => {
+      it('Then returns undefined instead of serving the stale registry', async () => {
+        // Arrange
+        const blob: Blob = { type: 'blob', content: new Uint8Array([9]), id: '' as ObjectId };
+        const ctx = await buildSeededContext({ objects: [blob] });
+        const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
+        await readObject(ctx, id);
+        expect(peekPackRegistry(ctx)).toBeDefined();
+
+        // Act — poison drops the repo-settings verdict memo (invalidateConfigCache).
+        await seedMaxTreeDepth(ctx, '2.5');
+
+        // Assert
+        expect(peekPackRegistry(ctx)).toBeUndefined();
+      });
+    });
+  });
+});
+
+describe('disposePackRegistry', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe('Given a construction in flight that then rejects', () => {
+    describe('When disposePackRegistry races the rejection', () => {
+      it('Then dispose resolves without throwing, and the original caller still observes the rejection', async () => {
+        // Arrange — settle the repo-settings verdict WITHOUT ever touching
+        // the pack registry, so getPackRegistry's own check below is
+        // synchronous (the fast path), and the memo it creates is the first
+        // and only one for this session.
+        const ctx = await buildSeededContext();
+        await seedHead(ctx);
+        await assertRepoSettingsValid(ctx);
+        const failure = new Error('construction boom');
+        vi.spyOn(packRegistryMod, 'createPackRegistry').mockRejectedValue(failure);
+
+        // Act — start the (soon-to-reject) construction, then race dispose
+        // against it before the rejection has settled.
+        const pending = getPackRegistry(ctx);
+        pending.catch(() => {
+          // Expected — asserted below via `.rejects`; this only prevents an
+          // unhandled-rejection warning from the head start above.
+        });
+        const disposal = disposePackRegistry(ctx);
+
+        // Assert
+        await expect(disposal).resolves.toBeUndefined();
+        await expect(pending).rejects.toBe(failure);
+      });
+    });
+  });
+
+  describe('Given no registry was ever constructed for the session', () => {
+    describe('When disposePackRegistry is called', () => {
+      it('Then resolves without constructing one', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const spy = vi.spyOn(packRegistryMod, 'createPackRegistry');
+
+        // Act + Assert
+        await expect(disposePackRegistry(ctx)).resolves.toBeUndefined();
+        expect(spy).not.toHaveBeenCalled();
+      });
+    });
+  });
+});
+
+describe('readObjectWithSize', () => {
+  describe('Given an honest loose blob', () => {
+    describe('When readObjectWithSize is called', () => {
+      it('Then size equals the content byte length', async () => {
+        // Arrange
+        const content = new TextEncoder().encode('hello world');
+        const ctx = await buildSeededContext();
+        const id = await writeRawObjectBytes(ctx, 'blob', content);
+
+        // Act
+        const result = await readObjectWithSize(ctx, id);
+
+        // Assert
+        expect(result.object.type).toBe('blob');
+        expect(result.size).toBe(content.byteLength);
+      });
+    });
+  });
+
+  describe('Given a loose blob whose header size claim disagrees with its body length', () => {
+    describe('When readObjectWithSize is called', () => {
+      it('Then size equals the stored claim, not the body length', async () => {
+        // Arrange
+        const content = new TextEncoder().encode('hello world!');
+        const ctx = await buildSeededContext();
+        const id = await writeRawObjectBytes(ctx, 'blob', content);
+        await writeLooseWithDeclaredSize(ctx, id, 'blob', 5, content);
+
+        // Act
+        const result = await readObjectWithSize(ctx, id);
+
+        // Assert
+        expect(result.object.type).toBe('blob');
+        expect(result.size).toBe(5);
+      });
+    });
+  });
+
+  describe('Given a missing id with no promisor attached', () => {
+    describe('When readObjectWithSize is called', () => {
+      it('Then it throws OBJECT_NOT_FOUND with the requested id', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const missingId = 'f'.repeat(40) as ObjectId;
+
+        // Act
+        try {
+          await readObjectWithSize(ctx, missingId);
+          // Assert
+          expect.unreachable();
+        } catch (error) {
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('OBJECT_NOT_FOUND');
+          if (data.code === 'OBJECT_NOT_FOUND') {
+            expect(data.id).toBe(missingId);
+          }
+        }
+      });
+    });
+  });
+});
+
 describe('readRawObject', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   describe('Given a seeded blob', () => {
     describe('When readRawObject is called', () => {
       it('Then returns the pre-parse { type, content }', async () => {
@@ -503,6 +946,23 @@ describe('readRawObject', () => {
         // Assert
         expect(result.type).toBe('blob');
         expect(result.content).toEqual(blob.content);
+      });
+    });
+  });
+
+  describe('Given a seeded blob', () => {
+    describe('When readRawObject is called', () => {
+      it('Then the result carries no bytes key', async () => {
+        // Arrange
+        const blob: Blob = { type: 'blob', content: new Uint8Array([4, 5, 6]), id: '' as ObjectId };
+        const ctx = await buildSeededContext({ objects: [blob] });
+        const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
+
+        // Act
+        const result = await readRawObject(ctx, id);
+
+        // Assert
+        expect('bytes' in result).toBe(false);
       });
     });
   });
@@ -595,8 +1055,6 @@ describe('readRawObject', () => {
         expect(readSliceSpy).not.toHaveBeenCalled();
         expect(result.type).toBe('blob');
         expect(result.content).toEqual(targetContent);
-        cacheGetSpy.mockRestore();
-        readSliceSpy.mockRestore();
       });
     });
   });

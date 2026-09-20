@@ -328,9 +328,9 @@ export type CommandError =
   | { readonly code: 'AUTHOR_UNCONFIGURED' }
   | { readonly code: 'BRANCH_EXISTS'; readonly name: RefName }
   | { readonly code: 'BRANCH_NOT_FOUND'; readonly name: RefName }
+  | { readonly code: 'BRANCH_NOT_FULLY_MERGED'; readonly name: RefName }
   | { readonly code: 'TAG_EXISTS'; readonly name: RefName }
   | { readonly code: 'TAG_NOT_FOUND'; readonly name: RefName }
-  | { readonly code: 'CANNOT_DELETE_CHECKED_OUT_BRANCH'; readonly name: RefName }
   | { readonly code: 'INVALID_URL'; readonly reason: string }
   | { readonly code: 'BLOCKED_HOST'; readonly host: string; readonly reason: string }
   | { readonly code: 'TOO_MANY_REDIRECTS'; readonly count: number }
@@ -393,9 +393,9 @@ Step 0 of the implementation plan widens the union AND every `extractDetail` arm
 | `AUTHOR_UNCONFIGURED` | `author identity not configured (set ctx.config.user or pass author/committer)` |
 | `BRANCH_EXISTS` | `branch already exists: ${name}` |
 | `BRANCH_NOT_FOUND` | `branch not found: ${name}` |
+| `BRANCH_NOT_FULLY_MERGED` | `branch is not fully merged: ${name}` |
 | `TAG_EXISTS` | `tag already exists: ${name}` |
 | `TAG_NOT_FOUND` | `tag not found: ${name}` |
-| `CANNOT_DELETE_CHECKED_OUT_BRANCH` | `cannot delete branch currently checked out: ${name}` |
 | `INVALID_URL` | `invalid URL: ${reason}` |
 | `BLOCKED_HOST` | `host blocked: ${host} (${reason})` |
 | `TOO_MANY_REDIRECTS` | `too many redirects: ${count}` |
@@ -986,8 +986,8 @@ export function branch(ctx: Context, action: BranchAction): Promise<BranchResult
 **Semantics.** Each subcommand is a small composition of primitive calls wrapped in validation:
 
 - `list`: scan `refs/heads/` (or `refs/remotes/` if `remote`); group by ref directory. Reads `branch.<name>.merge` from `internal/config-read` to populate `BranchInfo.upstream`.
-- `create`: resolve `startPoint` (default HEAD) → `updateRef(refs/heads/<name>, id, { expected: force ? undefined : 'absent' })`.
-- `delete`: `updateRef(refs/heads/<name>, ..., { delete: true })`. Throws `CANNOT_DELETE_CHECKED_OUT_BRANCH` if `readHeadRaw` returns `{ kind: 'symbolic', target: refs/heads/<name> }`.
+- `create`: resolve `startPoint` (default HEAD) → `updateRef(refs/heads/<name>, id, { expected: force ? undefined : 'absent' })`. An omitted start point resolves HEAD directly, never through the revision ladder; an unborn HEAD throws `BRANCH_NOT_FOUND` carrying the current branch's short name, the label git substituted for the omitted start point.
+- `delete`: `updateRef(refs/heads/<name>, ..., { delete: true })`. Throws `BRANCH_CHECKED_OUT` when any worktree holds the branch — the current checkout, a linked worktree, or a linked worktree whose directory is gone but whose registration has not been pruned. A worktree holds three branches, exactly the ones git's `prepare_checked_out_branches` registers: the branch its HEAD names, the branch its in-progress rebase will reattach (`rebase-merge/head-name`, or `rebase-apply/head-name` when that directory is a rebase rather than an `am`), and the branch its bisect started from (`BISECT_START`, while `BISECT_LOG` stands). A detached HEAD with none of that state names no branch, and a bare main checkout is skipped, so neither holds anything. Without `force`, a branch that resolves to an oid must also be reachable from the reference git's `branch_merged` consults, or it throws `BRANCH_NOT_FULLY_MERGED`: the branch's configured upstream when `branch.<name>.remote` plus `branch.<name>.merge` name a ref that resolves, and HEAD otherwise. The remote's own fetch refspecs map the merge value first — skipping, as `query_refspecs` does, a negative refspec and one carrying no destination — and only the pseudo-remote `.` falls through to a name resolution when none of them maps it, keeping the raw value when that resolution finds no candidate or more than one. The upstream REPLACES HEAD rather than widening the test — a branch merged into HEAD but behind its upstream is still refused — and an unborn HEAD with no upstream leaves no reference at all, so nothing is merged. A branch that is itself a symbolic ref is never measured; git resolves it with `NO_RECURSE` and skips the valve.
 - `rename` (four steps with hand-rolled per-step rollback — no composite lock primitive):
   1. Resolve `from`'s oid via `resolveRef`.
   2. `updateRef(refs/heads/<to>, oid, { expected: force ? undefined : 'absent' })`.
@@ -995,7 +995,7 @@ export function branch(ctx: Context, action: BranchAction): Promise<BranchResult
   4. **If the renamed branch is currently checked out** (HEAD's symref target was `refs/heads/<from>`): `writeSymbolicRef('HEAD', refs/heads/<to>)`. Otherwise HEAD is left alone.
   Failure modes: if step 3 fails after step 2 succeeded, the new branch exists with the old still alive — caller can re-run `branch delete --force`. If step 4 fails after steps 1–3, HEAD points at a non-existent branch (unborn) — recoverable via `branch create <to> <oid>`.
 
-**Errors.** `BRANCH_EXISTS`, `BRANCH_NOT_FOUND`, `INVALID_REF`, `CANNOT_DELETE_CHECKED_OUT_BRANCH`.
+**Errors.** `BRANCH_EXISTS`, `BRANCH_NOT_FOUND`, `BRANCH_NOT_FULLY_MERGED`, `INVALID_REF`, `BRANCH_CHECKED_OUT`.
 
 ### 5.8 `tag`
 

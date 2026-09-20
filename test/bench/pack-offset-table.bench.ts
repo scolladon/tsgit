@@ -33,7 +33,7 @@ import { removeSync } from './support/fixture-scratch.js';
  */
 const measureAllOffsetTables = async (cwd: string): Promise<void> => {
   const ctx = createNodeContext({ workDir: cwd, hooks: false, command: false, ssh: false });
-  const packs = await getPackRegistry(ctx).all();
+  const packs = await (await getPackRegistry(ctx)).all();
   for (const pack of packs) {
     await pack.offsetTable();
   }

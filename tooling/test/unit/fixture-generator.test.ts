@@ -61,7 +61,13 @@ const hasGit = (): boolean => {
   }
 };
 
-const RUNNING_UNDER_STRYKER = process.env.STRYKER_MUTANT_ID !== undefined;
+// Stryker sets `STRYKER_MUTANT_ID` only while a mutant is active, so that
+// variable is UNDEFINED during the dry run — which is precisely when this
+// suite would otherwise build the shared bench fixture cache from several
+// parallel workers at once, race on it, and take the run's worker down with
+// it. The sandbox cwd is the only signal present for both phases.
+const RUNNING_UNDER_STRYKER =
+  process.env.STRYKER_MUTANT_ID !== undefined || process.cwd().includes('.stryker-tmp');
 const HAS_GIT = hasGit();
 
 const gitOut = (cwd: string, args: readonly string[]): string =>

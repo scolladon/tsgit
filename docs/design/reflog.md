@@ -433,7 +433,7 @@ Matches canonical git wording so third-party reflog readers stay happy:
 | `commit` (first) | branch, HEAD | `commit (initial): <subject>` |
 | `commit` | branch, HEAD | `commit: <subject>` |
 | `commit` resolving a conflicted merge | branch, HEAD | `commit (merge): <subject>` |
-| `branch` create | `refs/heads/<n>` | `branch: Created from <start-point>` |
+| `branch` create | `refs/heads/<n>` | `branch: Created from <start-point>`; an omitted start point is labelled with the current branch's short name, or `HEAD` when HEAD is detached |
 | `branch` rename | `refs/heads/<new>` | log moved (§6.3); `Branch: renamed <old> to <new>` |
 | `checkout` switch | HEAD | `checkout: moving from <A> to <B>` |
 | `reset` (soft/mixed/hard) | branch, HEAD | `reset: moving to <target>` |

@@ -46,6 +46,10 @@ const decodeAll = (bytes: Uint8Array): Promise<PktLine[]> =>
 
 const dataLine = (text: string): PktLine => ({ kind: 'data', payload: bytesOf(text) });
 
+async function* pktStreamOf(lines: ReadonlyArray<PktLine>): AsyncIterable<PktLine> {
+  for (const line of lines) yield line;
+}
+
 type CollectedSection = { readonly name: Section['name']; readonly lines: PktLine[] };
 
 async function collectSections(pktStream: AsyncIterable<PktLine>): Promise<CollectedSection[]> {
@@ -189,6 +193,34 @@ describe('readSections', () => {
         expect((caught as TsgitError).data).toEqual({
           code: 'UNEXPECTED_V2_SECTION',
           section: 'bogus',
+        });
+      });
+    });
+  });
+});
+
+describe('readSections — the remote error packet', () => {
+  describe('Given a section header position holding an ERR packet', () => {
+    describe('When the sections are read', () => {
+      it('Then the remote message is surfaced instead of an unknown section', async () => {
+        // Arrange
+        const stream = await decodeAll(
+          concatBytes(pktBytes('ERR upload-pack: not our ref\n'), FLUSH),
+        );
+        let captured: unknown;
+
+        // Act
+        try {
+          await collectSections(pktStreamOf(stream));
+        } catch (error) {
+          captured = error;
+        }
+
+        // Assert
+        expect(captured).toBeInstanceOf(TsgitError);
+        expect((captured as TsgitError).data).toEqual({
+          code: 'REMOTE_ERROR',
+          message: 'upload-pack: not our ref',
         });
       });
     });

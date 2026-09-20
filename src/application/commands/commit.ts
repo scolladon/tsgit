@@ -226,8 +226,9 @@ interface CommitRefUpdate {
 }
 
 /**
- * Point the commit's target at the new commit: a branch ref via `updateRef`
- * (CAS on its prior tip), or detached HEAD via a raw write + reflog record.
+ * Point the commit's target at the new commit: written through the literal
+ * `HEAD` via `updateRef` (CAS on its prior tip) when HEAD names a branch, or
+ * detached HEAD via a raw write + reflog record.
  */
 const writeCommitRef = async (ctx: Context, update: CommitRefUpdate): Promise<void> => {
   const { branch, id, parentId, reflogMessage } = update;
@@ -235,7 +236,7 @@ const writeCommitRef = async (ctx: Context, update: CommitRefUpdate): Promise<vo
     // Stryker disable next-line ObjectLiteral: equivalent — parentId is read from `branch` itself and the library is single-threaded, so the CAS `expected` always equals the ref's current value; dropping it cannot change the outcome.
     await updateRef(
       ctx,
-      branch,
+      'HEAD' as RefName,
       id,
       parentId !== undefined ? { expected: parentId, reflogMessage } : { reflogMessage },
     );

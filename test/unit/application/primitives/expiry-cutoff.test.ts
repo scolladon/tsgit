@@ -95,11 +95,10 @@ describe('expiryCutoff', () => {
           caught = err;
         }
 
-        // Assert
-        expect((caught as TsgitError).data).toEqual({
-          code: 'CONFIG_BAD_DATE_VALUE',
-          value: 'FALSE',
-        });
+        // Assert — no config-file token here, so no located fields either.
+        const data = (caught as TsgitError).data;
+        expect(data).toEqual({ code: 'CONFIG_BAD_DATE_VALUE', value: 'FALSE' });
+        expect('key' in data).toBe(false);
       });
     });
   });
@@ -173,6 +172,7 @@ describe('expiryCutoff', () => {
         expect(data.code).toBe('CONFIG_BAD_DATE_VALUE');
         if (data.code === 'CONFIG_BAD_DATE_VALUE') {
           expect(data.value).toBe('3 fortnights ago');
+          expect('key' in data).toBe(false);
         }
       });
     });

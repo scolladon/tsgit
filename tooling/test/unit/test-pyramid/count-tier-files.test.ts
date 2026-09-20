@@ -12,197 +12,197 @@ const e2ePaths = (count: number): string[] =>
   Array.from({ length: count }, (_, i) => `test/browser/baz${i}.spec.ts`);
 
 describe('tallyTierFiles', () => {
-  describe("Given no input files", () => {
-    describe("When tallied", () => {
+  describe('Given no input files', () => {
+    describe('When tallied', () => {
       it('Then all tier counts are 0 and totalClassified is 0', () => {
-    // Arrange + Act
-    const result = tallyTierFiles(MANIFEST, []);
+        // Arrange + Act
+        const result = tallyTierFiles(MANIFEST, []);
 
-    // Assert
-    expect(result.totalClassified).toBe(0);
-    expect(result.tiers).toHaveLength(3);
-    for (const tier of result.tiers) {
-      expect(tier.fileCount).toBe(0);
-      expect(tier.sharePct).toBe(0);
-    }
-  });
+        // Assert
+        expect(result.totalClassified).toBe(0);
+        expect(result.tiers).toHaveLength(3);
+        for (const tier of result.tiers) {
+          expect(tier.fileCount).toBe(0);
+          expect(tier.sharePct).toBe(0);
+        }
+      });
     });
   });
 
-  describe("Given 8 unit + 1 integration + 1 e2e", () => {
-    describe("When tallied", () => {
+  describe('Given 8 unit + 1 integration + 1 e2e', () => {
+    describe('When tallied', () => {
       it('Then shares are 80.0 / 10.0 / 10.0', () => {
-    // Arrange
-    const paths = [...unitPaths(8), ...integrationPaths(1), ...e2ePaths(1)];
+        // Arrange
+        const paths = [...unitPaths(8), ...integrationPaths(1), ...e2ePaths(1)];
 
-    // Act
-    const result = tallyTierFiles(MANIFEST, paths);
+        // Act
+        const result = tallyTierFiles(MANIFEST, paths);
 
-    // Assert
-    expect(result.totalClassified).toBe(10);
-    expect(result.tiers.find((t) => t.tier === 'unit')?.sharePct).toBe(80.0);
-    expect(result.tiers.find((t) => t.tier === 'integration')?.sharePct).toBe(10.0);
-    expect(result.tiers.find((t) => t.tier === 'e2e')?.sharePct).toBe(10.0);
-  });
+        // Assert
+        expect(result.totalClassified).toBe(10);
+        expect(result.tiers.find((t) => t.tier === 'unit')?.sharePct).toBe(80.0);
+        expect(result.tiers.find((t) => t.tier === 'integration')?.sharePct).toBe(10.0);
+        expect(result.tiers.find((t) => t.tier === 'e2e')?.sharePct).toBe(10.0);
+      });
     });
   });
 
-  describe("Given the 207/24/4 baseline", () => {
-    describe("When tallied", () => {
+  describe('Given the 207/24/4 baseline', () => {
+    describe('When tallied', () => {
       it('Then shares round to 88.0 / 10.2 / 1.7', () => {
-    // Arrange
-    const paths = [...unitPaths(207), ...integrationPaths(24), ...e2ePaths(4)];
+        // Arrange
+        const paths = [...unitPaths(207), ...integrationPaths(24), ...e2ePaths(4)];
 
-    // Act
-    const result = tallyTierFiles(MANIFEST, paths);
+        // Act
+        const result = tallyTierFiles(MANIFEST, paths);
 
-    // Assert
-    expect(result.totalClassified).toBe(235);
-    expect(result.tiers.find((t) => t.tier === 'unit')?.sharePct).toBe(88.1);
-    expect(result.tiers.find((t) => t.tier === 'integration')?.sharePct).toBe(10.2);
-    expect(result.tiers.find((t) => t.tier === 'e2e')?.sharePct).toBe(1.7);
-  });
+        // Assert
+        expect(result.totalClassified).toBe(235);
+        expect(result.tiers.find((t) => t.tier === 'unit')?.sharePct).toBe(88.1);
+        expect(result.tiers.find((t) => t.tier === 'integration')?.sharePct).toBe(10.2);
+        expect(result.tiers.find((t) => t.tier === 'e2e')?.sharePct).toBe(1.7);
+      });
     });
   });
 
-  describe("Given a path that no tier matches", () => {
-    describe("When tallied", () => {
+  describe('Given a path that no tier matches', () => {
+    describe('When tallied', () => {
       it('Then it appears in unclassified and is excluded from share denominator', () => {
-    // Arrange
-    const paths = [...unitPaths(8), 'test/fixtures/data.ts', 'docs/note.md'];
+        // Arrange
+        const paths = [...unitPaths(8), 'test/fixtures/data.ts', 'docs/note.md'];
 
-    // Act
-    const result = tallyTierFiles(MANIFEST, paths);
+        // Act
+        const result = tallyTierFiles(MANIFEST, paths);
 
-    // Assert
-    expect(result.totalClassified).toBe(8);
-    expect(result.unclassified).toEqual(['test/fixtures/data.ts', 'docs/note.md']);
-    expect(result.tiers.find((t) => t.tier === 'unit')?.sharePct).toBe(100.0);
-  });
+        // Assert
+        expect(result.totalClassified).toBe(8);
+        expect(result.unclassified).toEqual(['test/fixtures/data.ts', 'docs/note.md']);
+        expect(result.tiers.find((t) => t.tier === 'unit')?.sharePct).toBe(100.0);
+      });
     });
   });
 
-  describe("Given a unit share below the warn-below threshold", () => {
-    describe("When tallied", () => {
+  describe('Given a unit share below the warn-below threshold', () => {
+    describe('When tallied', () => {
       it('Then unit tier status is "warn-below"', () => {
-    // Arrange — 7 unit / 2 integration / 1 e2e → unit share = 70%, below 75 warn floor
-    const paths = [...unitPaths(7), ...integrationPaths(2), ...e2ePaths(1)];
+        // Arrange — 7 unit / 2 integration / 1 e2e → unit share = 70%, below 75 warn floor
+        const paths = [...unitPaths(7), ...integrationPaths(2), ...e2ePaths(1)];
 
-    // Act
-    const result = tallyTierFiles(MANIFEST, paths);
+        // Act
+        const result = tallyTierFiles(MANIFEST, paths);
 
-    // Assert
-    expect(result.tiers.find((t) => t.tier === 'unit')?.status).toBe('warn-below');
-  });
+        // Assert
+        expect(result.tiers.find((t) => t.tier === 'unit')?.status).toBe('warn-below');
+      });
     });
   });
 
-  describe("Given an integration share above its warnAbove ceiling", () => {
-    describe("When tallied", () => {
+  describe('Given an integration share above its warnAbove ceiling', () => {
+    describe('When tallied', () => {
       it('Then integration status is "warn-above"', () => {
-    // Arrange — 6 unit / 4 integration / 0 e2e → integration share = 40%, above 25 warnAbove
-    const paths = [...unitPaths(6), ...integrationPaths(4)];
+        // Arrange — 6 unit / 4 integration / 0 e2e → integration share = 40%, above 25 warnAbove
+        const paths = [...unitPaths(6), ...integrationPaths(4)];
 
-    // Act
-    const result = tallyTierFiles(MANIFEST, paths);
+        // Act
+        const result = tallyTierFiles(MANIFEST, paths);
 
-    // Assert
-    expect(result.tiers.find((t) => t.tier === 'integration')?.status).toBe('warn-above');
-  });
+        // Assert
+        expect(result.tiers.find((t) => t.tier === 'integration')?.status).toBe('warn-above');
+      });
     });
   });
 
-  describe("Given the e2e tier below its warn-below floor", () => {
-    describe("When tallied", () => {
+  describe('Given the e2e tier below its warn-below floor', () => {
+    describe('When tallied', () => {
       it('Then e2e status is "warn-below"', () => {
-    // Arrange — 207/24/4: e2e = 1.7%, below 3% floor
-    const paths = [...unitPaths(207), ...integrationPaths(24), ...e2ePaths(4)];
+        // Arrange — 207/24/4: e2e = 1.7%, below 3% floor
+        const paths = [...unitPaths(207), ...integrationPaths(24), ...e2ePaths(4)];
 
-    // Act
-    const result = tallyTierFiles(MANIFEST, paths);
+        // Act
+        const result = tallyTierFiles(MANIFEST, paths);
 
-    // Assert
-    expect(result.tiers.find((t) => t.tier === 'e2e')?.status).toBe('warn-below');
-  });
+        // Assert
+        expect(result.tiers.find((t) => t.tier === 'e2e')?.status).toBe('warn-below');
+      });
     });
   });
 
-  describe("Given a tier whose target is met exactly", () => {
-    describe("When tallied", () => {
+  describe('Given a tier whose target is met exactly', () => {
+    describe('When tallied', () => {
       it('Then status is "ok"', () => {
-    // Arrange — 80/15/5
-    const paths = [...unitPaths(80), ...integrationPaths(15), ...e2ePaths(5)];
+        // Arrange — 80/15/5
+        const paths = [...unitPaths(80), ...integrationPaths(15), ...e2ePaths(5)];
 
-    // Act
-    const result = tallyTierFiles(MANIFEST, paths);
+        // Act
+        const result = tallyTierFiles(MANIFEST, paths);
 
-    // Assert
-    for (const tier of result.tiers) {
-      expect(tier.status).toBe('ok');
-    }
-  });
+        // Assert
+        for (const tier of result.tiers) {
+          expect(tier.status).toBe('ok');
+        }
+      });
     });
   });
 
-  describe("Given a tier with no warnAbove", () => {
-    describe("When the share is much higher than target", () => {
+  describe('Given a tier with no warnAbove', () => {
+    describe('When the share is much higher than target', () => {
       it('Then status remains "ok"', () => {
-    // Arrange — unit at 100%, no warnAbove on unit tier
-    const paths = unitPaths(10);
+        // Arrange — unit at 100%, no warnAbove on unit tier
+        const paths = unitPaths(10);
 
-    // Act
-    const result = tallyTierFiles(MANIFEST, paths);
+        // Act
+        const result = tallyTierFiles(MANIFEST, paths);
 
-    // Assert
-    expect(result.tiers.find((t) => t.tier === 'unit')?.status).toBe('ok');
-  });
+        // Assert
+        expect(result.tiers.find((t) => t.tier === 'unit')?.status).toBe('ok');
+      });
     });
   });
 
-  describe("Given a unit share exactly equal to warnBelow (75%)", () => {
-    describe("When tallied", () => {
+  describe('Given a unit share exactly equal to warnBelow (75%)', () => {
+    describe('When tallied', () => {
       it('Then status is "ok" (strict less-than)', () => {
-    // Arrange — 75 unit / 20 integration / 5 e2e → unit share = 75.0%, exactly the warnBelow floor.
-    const paths = [...unitPaths(75), ...integrationPaths(20), ...e2ePaths(5)];
+        // Arrange — 75 unit / 20 integration / 5 e2e → unit share = 75.0%, exactly the warnBelow floor.
+        const paths = [...unitPaths(75), ...integrationPaths(20), ...e2ePaths(5)];
 
-    // Act
-    const result = tallyTierFiles(MANIFEST, paths);
+        // Act
+        const result = tallyTierFiles(MANIFEST, paths);
 
-    // Assert
-    expect(result.tiers.find((t) => t.tier === 'unit')?.sharePct).toBe(75.0);
-    expect(result.tiers.find((t) => t.tier === 'unit')?.status).toBe('ok');
-  });
+        // Assert
+        expect(result.tiers.find((t) => t.tier === 'unit')?.sharePct).toBe(75.0);
+        expect(result.tiers.find((t) => t.tier === 'unit')?.status).toBe('ok');
+      });
     });
   });
 
-  describe("Given an integration share exactly equal to warnAbove (25%)", () => {
-    describe("When tallied", () => {
+  describe('Given an integration share exactly equal to warnAbove (25%)', () => {
+    describe('When tallied', () => {
       it('Then status is "ok" (strict greater-than)', () => {
-    // Arrange — 65 unit / 25 integration / 10 e2e → integration share = 25.0%, exactly warnAbove.
-    const paths = [...unitPaths(65), ...integrationPaths(25), ...e2ePaths(10)];
+        // Arrange — 65 unit / 25 integration / 10 e2e → integration share = 25.0%, exactly warnAbove.
+        const paths = [...unitPaths(65), ...integrationPaths(25), ...e2ePaths(10)];
 
-    // Act
-    const result = tallyTierFiles(MANIFEST, paths);
+        // Act
+        const result = tallyTierFiles(MANIFEST, paths);
 
-    // Assert
-    expect(result.tiers.find((t) => t.tier === 'integration')?.sharePct).toBe(25.0);
-    expect(result.tiers.find((t) => t.tier === 'integration')?.status).toBe('ok');
-  });
+        // Assert
+        expect(result.tiers.find((t) => t.tier === 'integration')?.sharePct).toBe(25.0);
+        expect(result.tiers.find((t) => t.tier === 'integration')?.status).toBe('ok');
+      });
     });
   });
 
-  describe("Given the result", () => {
-    describe("When checked", () => {
+  describe('Given the result', () => {
+    describe('When checked', () => {
       it('Then tiers are returned in manifest order', () => {
-    // Arrange
-    const paths = [...unitPaths(8), ...integrationPaths(1), ...e2ePaths(1)];
+        // Arrange
+        const paths = [...unitPaths(8), ...integrationPaths(1), ...e2ePaths(1)];
 
-    // Act
-    const result = tallyTierFiles(MANIFEST, paths);
+        // Act
+        const result = tallyTierFiles(MANIFEST, paths);
 
-    // Assert
-    expect(result.tiers.map((t) => t.tier)).toEqual(['unit', 'integration', 'e2e']);
-  });
+        // Assert
+        expect(result.tiers.map((t) => t.tier)).toEqual(['unit', 'integration', 'e2e']);
+      });
     });
   });
 });

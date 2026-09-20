@@ -75,6 +75,8 @@ import { revParse } from './rev-parse.js';
 
 export type { ConflictType } from '../../domain/merge/index.js';
 
+const HEAD: RefName = 'HEAD' as RefName;
+
 export interface RevertRunInput {
   /** Revisions to revert, in argument order — a commit-ish each. */
   readonly commits: ReadonlyArray<string>;
@@ -155,7 +157,6 @@ const applyOneRevert = async (
   ctx: Context,
   source: ObjectId,
   cData: CommitData,
-  branch: RefName,
   ourId: ObjectId,
 ): Promise<RevertOutcome> => {
   const parentId = cData.parents[0];
@@ -180,7 +181,9 @@ const applyOneRevert = async (
     if (res.mergedTree === oursTree) return { kind: 'empty' };
     await lock.commit(res.result.newIndexEntries);
     const { id, subject } = await buildRevertCommit(ctx, source, cData, ourId, res.mergedTree);
-    await updateRef(ctx, branch, id, { expected: ourId, reflogMessage: revertReflog(subject) });
+    // Written through the literal `HEAD` — revert refuses on a detached
+    // HEAD, so `HEAD` always names the branch being advanced here.
+    await updateRef(ctx, HEAD, id, { expected: ourId, reflogMessage: revertReflog(subject) });
     return { kind: 'committed', id };
   } finally {
     await lock.release();
@@ -279,7 +282,6 @@ const stopRun = async (
 const runSequence = async (
   ctx: Context,
   todo: ReadonlyArray<ObjectId>,
-  branch: RefName,
   startOurId: ObjectId,
   seq: SequenceState,
 ): Promise<RevertResult> => {
@@ -294,7 +296,7 @@ const runSequence = async (
       if (seq.multiPick) await writeSequencerStop(ctx, seq, todo.slice(i), ourId);
       throw revertMergeNoMainline(source);
     }
-    const outcome = await applyOneRevert(ctx, source, cData, branch, ourId);
+    const outcome = await applyOneRevert(ctx, source, cData, ourId);
     if (outcome.kind === 'committed') {
       applied.push({ source, created: outcome.id });
       ourId = outcome.id;
@@ -423,7 +425,7 @@ export const revertRun = async (ctx: Context, input: RevertRunInput): Promise<Re
   await assertCleanWorkTree(ctx, await treeOf(ctx, ourId));
   if (input.noCommit === true) return runNoCommit(ctx, todo);
   const seq: SequenceState = { multiPick: todo.length > 1, sequenceHead: ourId, onEmpty: 'stop' };
-  return runSequence(ctx, todo, head.target, ourId, seq);
+  return runSequence(ctx, todo, ourId, seq);
 };
 
 const rejectUnmergedIndex = (entries: ReadonlyArray<IndexEntry>): void => {
@@ -442,7 +444,6 @@ const rejectUnmergedIndex = (entries: ReadonlyArray<IndexEntry>): void => {
 const commitResolvedRevert = async (
   ctx: Context,
   ourId: ObjectId,
-  branch: RefName,
   tree: ObjectId,
 ): Promise<ObjectId> => {
   const identity = await resolveCurrentIdentity(ctx);
@@ -457,7 +458,9 @@ const commitResolvedRevert = async (
     message,
     extraHeaders: [],
   });
-  await updateRef(ctx, branch, id, {
+  // Written through the literal `HEAD` — revert continue refuses on a
+  // detached HEAD, so `HEAD` always names the branch being advanced here.
+  await updateRef(ctx, HEAD, id, {
     expected: ourId,
     reflogMessage: commitReflog(subjectLine(message)),
   });
@@ -471,14 +474,13 @@ const commitResolvedRevert = async (
  */
 const finaliseInProgressRevert = async (
   ctx: Context,
-  branch: RefName,
   ourId: ObjectId,
 ): Promise<{ readonly created: ObjectId } | { readonly empty: true }> => {
   const index = await readIndex(ctx);
   rejectUnmergedIndex(index.entries);
   const indexTree = await synthesizeTreeFromIndex(ctx, index.entries);
   if (indexTree === (await treeOf(ctx, ourId))) return { empty: true };
-  const created = await commitResolvedRevert(ctx, ourId, branch, indexTree);
+  const created = await commitResolvedRevert(ctx, ourId, indexTree);
   await clearRevertHead(ctx);
   await clearMergeMsg(ctx);
   return { created };
@@ -505,7 +507,7 @@ export const revertContinue = async (ctx: Context): Promise<RevertResult> => {
   const applied: RevertedCommit[] = [];
   if (source !== undefined) {
     const remainingAfter = todoOnDisk !== undefined ? todoOnDisk.length - 1 : 0;
-    const done = await finaliseInProgressRevert(ctx, head.target, ourId);
+    const done = await finaliseInProgressRevert(ctx, ourId);
     if ('empty' in done) return { kind: 'empty', commit: source, remaining: remainingAfter };
     applied.push({ source, created: done.created });
     ourId = done.created;
@@ -516,7 +518,7 @@ export const revertContinue = async (ctx: Context): Promise<RevertResult> => {
   const rest = (todoOnDisk ?? []).slice(source !== undefined ? 1 : 0).map((e) => e.oid);
   const sequenceHead = (await readSequencerHead(ctx)) ?? ourId;
   const onEmpty = source === undefined ? 'drop' : 'stop';
-  const result = await runSequence(ctx, rest, head.target, ourId, {
+  const result = await runSequence(ctx, rest, ourId, {
     multiPick: true,
     sequenceHead,
     onEmpty,
@@ -552,7 +554,7 @@ export const revertSkip = async (ctx: Context): Promise<RevertResult> => {
   // `reverted []`); no separate early-return is needed.
   const rest = (todoOnDisk ?? []).slice(1).map((e) => e.oid);
   const sequenceHead = (await readSequencerHead(ctx)) ?? ourId;
-  return runSequence(ctx, rest, branch, ourId, { multiPick: true, sequenceHead, onEmpty: 'stop' });
+  return runSequence(ctx, rest, ourId, { multiPick: true, sequenceHead, onEmpty: 'stop' });
 };
 
 /**
@@ -569,6 +571,6 @@ export const revertAbort = async (ctx: Context): Promise<RevertAbortResult> => {
   if (source === undefined && seqHead === undefined) throw noOperationInProgress(REVERT);
   const branch = await requireSymbolicHead(ctx, REVERT_ABORT);
   const target = seqHead ?? (await resolveRef(ctx, branch));
-  await abortSequencerReset(ctx, { branch, target, clearHead: clearRevertHead });
+  await abortSequencerReset(ctx, { target, clearHead: clearRevertHead });
   return { head: target, branch };
 };

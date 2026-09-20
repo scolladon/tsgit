@@ -894,7 +894,7 @@ describe('mergeTrees — mode handling', () => {
     });
   });
 
-  describe('Given a gitlink-involving mode combination that resolves as type-change (R8 regression)', () => {
+  describe('Given a gitlink-involving mode combination that resolves as type-change (regression pin)', () => {
     describe('When mergeTrees called', () => {
       it.each([
         {
@@ -980,7 +980,7 @@ describe('mergeTrees — mode handling', () => {
     });
   });
 
-  describe('Given ours and theirs both symlink with a base entry present (R5)', () => {
+  describe('Given ours and theirs both symlink with a base entry present', () => {
     describe('When mergeTrees called', () => {
       it.each([
         { label: 'base regular', baseMode: FILE_MODE.REGULAR },
@@ -1015,7 +1015,7 @@ describe('mergeTrees — mode handling', () => {
     });
   });
 
-  describe('Given base symlink and both sides regular with different ids (R4 ctx shape)', () => {
+  describe('Given base symlink and both sides regular with different ids, through the ctx-taking shape', () => {
     describe('When merger returns a content conflict', () => {
       it('Then merger called once with no baseId/baseMode in ctx, conflict carries base fields', async () => {
         // Arrange
@@ -1073,7 +1073,7 @@ describe('mergeTrees — mode handling', () => {
     });
   });
 
-  describe('Given base symlink and both sides regular with equal modes (R4 clean/equal)', () => {
+  describe('Given base symlink and both sides regular with equal modes, resolving clean', () => {
     describe('When merger returns clean bytes', () => {
       it('Then resolved-merged outcome with mode from sides', async () => {
         // Arrange
@@ -1122,7 +1122,7 @@ describe('mergeTrees — mode handling', () => {
     });
   });
 
-  describe('Given base symlink and both sides regular with differing modes (R4 clean/differing)', () => {
+  describe('Given base symlink and both sides regular with differing modes, resolving clean', () => {
     describe('When merger returns clean bytes', () => {
       it('Then content conflict with contentVerdict clean and base fields', async () => {
         // Arrange — Q1/Q2 domain shape
@@ -1152,7 +1152,7 @@ describe('mergeTrees — mode handling', () => {
     });
   });
 
-  describe('Given base symlink and both sides regular (R4 cap — oversize clean bytes)', () => {
+  describe('Given base symlink and both sides regular, with oversize clean bytes', () => {
     describe('When merger returns oversize clean bytes', () => {
       it('Then throws invalidMergeInput with INVALID_MERGE_INPUT code', async () => {
         // Arrange
@@ -1180,7 +1180,7 @@ describe('mergeTrees — mode handling', () => {
     });
   });
 
-  describe('Given base symlink and both sides regular (R4 cap — oversize marked bytes)', () => {
+  describe('Given base symlink and both sides regular, with oversize marked bytes', () => {
     describe('When merger returns oversize marked bytes', () => {
       it('Then throws invalidMergeInput with INVALID_MERGE_INPUT code', async () => {
         // Arrange

@@ -34,15 +34,15 @@ function sortedIndex(entries: ReadonlyArray<PackIndexEntryLiteral>, digestLength
 
 // Real bytes, `git gc` over a repo with 4 unreachable objects sharing one
 // forced mtime — every field of a 68-byte SHA-1 sidecar.
-const PIN_P_HEADER_BODY_CHECKSUM_HEX =
+const REAL_SIDECAR_HEADER_BODY_CHECKSUM_HEX =
   '4d544d45' +
   '00000001' +
   '00000001' +
   '6a8ef72a'.repeat(4) +
   'a204c436941c335bcc59e413fe79e7fa46d2c380';
-const PIN_P_SELF_CHECKSUM_HEX = '5bfde0b728b507a500a7ba48c7daef7fc8ae844f';
-const PIN_P_PACK_CHECKSUM = hexToBytes('a204c436941c335bcc59e413fe79e7fa46d2c380');
-const PIN_P_MTIME = 0x6a8ef72a;
+const REAL_SIDECAR_SELF_CHECKSUM_HEX = '5bfde0b728b507a500a7ba48c7daef7fc8ae844f';
+const REAL_SIDECAR_PACK_CHECKSUM = hexToBytes('a204c436941c335bcc59e413fe79e7fa46d2c380');
+const REAL_SIDECAR_SHARED_MTIME = 0x6a8ef72a;
 
 function pokeByte(bytes: Uint8Array, offset: number, value: number): Uint8Array {
   const copy = bytes.slice();
@@ -78,7 +78,7 @@ function expectRefusal(act: () => unknown, check: CruftMtimesCheck, reasonContai
 
 describe('cruft-pack', () => {
   describe('serializeCruftMtimes', () => {
-    describe('Given the Pin P fixture (4 objects sharing one mtime, SHA-1)', () => {
+    describe('Given the real-git fixture (4 objects sharing one mtime, SHA-1)', () => {
       describe('When serializing', () => {
         it('Then bytes [0, 48) equal the real git sidecar and bytes [48, 68) are zero', () => {
           // Arrange
@@ -86,11 +86,11 @@ describe('cruft-pack', () => {
           const sut = serializeCruftMtimes;
 
           // Act
-          const result = sut(sorted, PIN_P_PACK_CHECKSUM, () => PIN_P_MTIME);
+          const result = sut(sorted, REAL_SIDECAR_PACK_CHECKSUM, () => REAL_SIDECAR_SHARED_MTIME);
 
           // Assert
           expect(result.length).toBe(68);
-          expect(result.subarray(0, 48)).toEqual(hexToBytes(PIN_P_HEADER_BODY_CHECKSUM_HEX));
+          expect(result.subarray(0, 48)).toEqual(hexToBytes(REAL_SIDECAR_HEADER_BODY_CHECKSUM_HEX));
           expect(result.subarray(48, 68)).toEqual(new Uint8Array(20));
         });
       });
@@ -327,18 +327,20 @@ describe('cruft-pack', () => {
   });
 
   describe('parseCruftMtimes', () => {
-    describe('Given the Pin P fixture bytes with the real self-checksum', () => {
+    describe('Given the real-git fixture bytes with their real self-checksum', () => {
       describe('When parsing with a matching selfChecksum', () => {
         it('Then every oid maps to the shared mtime and the checksum is accepted', () => {
           // Arrange
-          const bytes = hexToBytes(PIN_P_HEADER_BODY_CHECKSUM_HEX + PIN_P_SELF_CHECKSUM_HEX);
+          const bytes = hexToBytes(
+            REAL_SIDECAR_HEADER_BODY_CHECKSUM_HEX + REAL_SIDECAR_SELF_CHECKSUM_HEX,
+          );
           const oidsInIndexOrder = [
             `aa${'00'.repeat(19)}`,
             `bb${'00'.repeat(19)}`,
             `cc${'00'.repeat(19)}`,
             `dd${'00'.repeat(19)}`,
           ] as ObjectId[];
-          const selfChecksum = hexToBytes(PIN_P_SELF_CHECKSUM_HEX);
+          const selfChecksum = hexToBytes(REAL_SIDECAR_SELF_CHECKSUM_HEX);
           const sut = parseCruftMtimes;
 
           // Act
@@ -347,7 +349,7 @@ describe('cruft-pack', () => {
           // Assert
           expect(result.size).toBe(4);
           for (const oid of oidsInIndexOrder) {
-            expect(result.get(oid)).toBe(PIN_P_MTIME);
+            expect(result.get(oid)).toBe(REAL_SIDECAR_SHARED_MTIME);
           }
         });
       });
@@ -392,8 +394,8 @@ describe('cruft-pack', () => {
           // Arrange
           const bytes = serializeCruftMtimes(
             sortedIndex(fourEntries()),
-            PIN_P_PACK_CHECKSUM,
-            () => PIN_P_MTIME,
+            REAL_SIDECAR_PACK_CHECKSUM,
+            () => REAL_SIDECAR_SHARED_MTIME,
           );
           const tooFewOids = [`aa${'00'.repeat(19)}`, `bb${'00'.repeat(19)}`] as ObjectId[];
 
@@ -407,8 +409,8 @@ describe('cruft-pack', () => {
           // Arrange
           const bytes = serializeCruftMtimes(
             sortedIndex(fourEntries()),
-            PIN_P_PACK_CHECKSUM,
-            () => PIN_P_MTIME,
+            REAL_SIDECAR_PACK_CHECKSUM,
+            () => REAL_SIDECAR_SHARED_MTIME,
           );
           const tooManyOids = [
             `aa${'00'.repeat(19)}`,
@@ -428,7 +430,9 @@ describe('cruft-pack', () => {
       describe('When parsing with a selfChecksum that disagrees with the trailer', () => {
         it('Then it refuses with checksum', () => {
           // Arrange
-          const bytes = hexToBytes(PIN_P_HEADER_BODY_CHECKSUM_HEX + PIN_P_SELF_CHECKSUM_HEX);
+          const bytes = hexToBytes(
+            REAL_SIDECAR_HEADER_BODY_CHECKSUM_HEX + REAL_SIDECAR_SELF_CHECKSUM_HEX,
+          );
           const oidsInIndexOrder = [
             `aa${'00'.repeat(19)}`,
             `bb${'00'.repeat(19)}`,
@@ -449,7 +453,9 @@ describe('cruft-pack', () => {
       describe('When parsing without a selfChecksum argument', () => {
         it('Then it does not refuse — verification is opt-in', () => {
           // Arrange
-          const bytes = hexToBytes(PIN_P_HEADER_BODY_CHECKSUM_HEX + PIN_P_SELF_CHECKSUM_HEX);
+          const bytes = hexToBytes(
+            REAL_SIDECAR_HEADER_BODY_CHECKSUM_HEX + REAL_SIDECAR_SELF_CHECKSUM_HEX,
+          );
           const oidsInIndexOrder = [
             `aa${'00'.repeat(19)}`,
             `bb${'00'.repeat(19)}`,
@@ -507,8 +513,8 @@ describe('cruft-pack', () => {
           // Arrange
           const valid = serializeCruftMtimes(
             sortedIndex(fourEntries()),
-            PIN_P_PACK_CHECKSUM,
-            () => PIN_P_MTIME,
+            REAL_SIDECAR_PACK_CHECKSUM,
+            () => REAL_SIDECAR_SHARED_MTIME,
           );
           const bytes = pokeByte(valid, 3, valid[3]! ^ 0xff);
           const oids = fourEntries().map((e) => e.id) as ObjectId[];
@@ -525,8 +531,8 @@ describe('cruft-pack', () => {
           // Arrange
           const valid = serializeCruftMtimes(
             sortedIndex(fourEntries()),
-            PIN_P_PACK_CHECKSUM,
-            () => PIN_P_MTIME,
+            REAL_SIDECAR_PACK_CHECKSUM,
+            () => REAL_SIDECAR_SHARED_MTIME,
           );
           const bytes = pokeUint32(valid, 4, 0);
           const oids = fourEntries().map((e) => e.id) as ObjectId[];
@@ -543,8 +549,8 @@ describe('cruft-pack', () => {
           // Arrange
           const valid = serializeCruftMtimes(
             sortedIndex(fourEntries()),
-            PIN_P_PACK_CHECKSUM,
-            () => PIN_P_MTIME,
+            REAL_SIDECAR_PACK_CHECKSUM,
+            () => REAL_SIDECAR_SHARED_MTIME,
           );
           const bytes = pokeUint32(valid, 4, 2);
           const oids = fourEntries().map((e) => e.id) as ObjectId[];
@@ -561,8 +567,8 @@ describe('cruft-pack', () => {
           // Arrange
           const valid = serializeCruftMtimes(
             sortedIndex(fourEntries()),
-            PIN_P_PACK_CHECKSUM,
-            () => PIN_P_MTIME,
+            REAL_SIDECAR_PACK_CHECKSUM,
+            () => REAL_SIDECAR_SHARED_MTIME,
           );
           const bytes = pokeUint32(valid, 8, 0);
           const oids = fourEntries().map((e) => e.id) as ObjectId[];
@@ -579,8 +585,8 @@ describe('cruft-pack', () => {
           // Arrange
           const valid = serializeCruftMtimes(
             sortedIndex(fourEntries()),
-            PIN_P_PACK_CHECKSUM,
-            () => PIN_P_MTIME,
+            REAL_SIDECAR_PACK_CHECKSUM,
+            () => REAL_SIDECAR_SHARED_MTIME,
           );
           const bytes = pokeUint32(valid, 8, 3);
           const oids = fourEntries().map((e) => e.id) as ObjectId[];
@@ -597,8 +603,8 @@ describe('cruft-pack', () => {
           // Arrange
           const valid = serializeCruftMtimes(
             sortedIndex(fourEntries()),
-            PIN_P_PACK_CHECKSUM,
-            () => PIN_P_MTIME,
+            REAL_SIDECAR_PACK_CHECKSUM,
+            () => REAL_SIDECAR_SHARED_MTIME,
           );
           const bytes = pokeUint32(valid, 0, 1); // signature 0x00000001 -> hex '1' unpadded
           const oids = fourEntries().map((e) => e.id) as ObjectId[];

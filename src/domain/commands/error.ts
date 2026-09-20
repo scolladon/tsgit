@@ -1,5 +1,6 @@
 import { sanitizeForDisplay, TsgitError } from '../error.js';
 import type { HookName } from '../hooks/index.js';
+import { MAX_OBJECT_ID_IN_ERROR } from '../objects/error.js';
 import type { FilePath, ObjectId, RefName } from '../objects/object-id.js';
 import type { ReceivePackResponse as ReportStatus } from '../protocol/receive-pack.js';
 import type { PendingOperation } from '../sequencer/operation-labels.js';
@@ -31,9 +32,9 @@ export type CommandError =
   | { readonly code: 'AUTHOR_UNCONFIGURED' }
   | { readonly code: 'BRANCH_EXISTS'; readonly name: RefName }
   | { readonly code: 'BRANCH_NOT_FOUND'; readonly name: RefName }
+  | { readonly code: 'BRANCH_NOT_FULLY_MERGED'; readonly name: RefName }
   | { readonly code: 'TAG_EXISTS'; readonly name: RefName }
   | { readonly code: 'TAG_NOT_FOUND'; readonly name: RefName }
-  | { readonly code: 'CANNOT_DELETE_CHECKED_OUT_BRANCH'; readonly name: RefName }
   | { readonly code: 'INVALID_URL'; readonly reason: string }
   | { readonly code: 'BLOCKED_HOST'; readonly host: string; readonly reason: string }
   | { readonly code: 'TOO_MANY_REDIRECTS'; readonly count: number }
@@ -185,12 +186,49 @@ export type CommandError =
       readonly source: string;
       readonly value: string;
     }
-  | { readonly code: 'CONFIG_BAD_DATE_VALUE'; readonly value: string }
+  | {
+      readonly code: 'CONFIG_BAD_DATE_VALUE';
+      readonly value: string;
+      readonly key?: string;
+      readonly source?: string;
+      readonly line?: number;
+    }
   | {
       readonly code: 'CONFIG_INVALID_ENUM_VALUE';
       readonly key: string;
       readonly source: string;
       readonly value: string;
+      readonly line: number;
+    }
+  | {
+      readonly code: 'FSCK_UNKNOWN_MSG_ID';
+      /** The lower-cased key half, as git names it in its own refusal. */
+      readonly msgId: string;
+      readonly source: string;
+      readonly line: number;
+    }
+  | {
+      readonly code: 'FSCK_CANNOT_DEMOTE';
+      /** The lower-cased key half, as git names it in its own refusal. */
+      readonly msgId: string;
+      /** The severity word the entry asked for, as git names it. */
+      readonly severity: string;
+      readonly source: string;
+      readonly line: number;
+    }
+  | {
+      readonly code: 'FSCK_SKIP_LIST_UNREADABLE';
+      /** The path as resolved, the one git names in its own refusal. */
+      readonly path: string;
+      /** The adapter's own code for why the read failed. */
+      readonly reason: string;
+    }
+  | {
+      readonly code: 'FSCK_SKIP_LIST_INVALID_NAME';
+      /** The offending line, trimmed, as git echoes it. */
+      readonly name: string;
+      readonly path: string;
+      /** 1-based line number inside the list file. */
       readonly line: number;
     }
   | { readonly code: 'CONFIG_BAD_ZLIB_LEVEL'; readonly level: number }
@@ -349,14 +387,14 @@ export const branchExists = (name: RefName): TsgitError =>
 export const branchNotFound = (name: RefName): TsgitError =>
   new TsgitError({ code: 'BRANCH_NOT_FOUND', name });
 
+export const branchNotFullyMerged = (name: RefName): TsgitError =>
+  new TsgitError({ code: 'BRANCH_NOT_FULLY_MERGED', name });
+
 export const tagExists = (name: RefName): TsgitError =>
   new TsgitError({ code: 'TAG_EXISTS', name });
 
 export const tagNotFound = (name: RefName): TsgitError =>
   new TsgitError({ code: 'TAG_NOT_FOUND', name });
-
-export const cannotDeleteCheckedOutBranch = (name: RefName): TsgitError =>
-  new TsgitError({ code: 'CANNOT_DELETE_CHECKED_OUT_BRANCH', name });
 
 export const invalidUrl = (reason: string): TsgitError =>
   new TsgitError({ code: 'INVALID_URL', reason });
@@ -640,13 +678,24 @@ export const configBadBooleanLiteral = (key: string, source: string, value: stri
   });
 
 /**
- * A date-expression config value (`gc.pruneExpire`) fails the supported
- * grammar (`never`, `now`, `@<epoch>`, ISO-8601, `<n>.<unit>.ago`). Carries
- * only the offending value — the caller resolves this from a plain string,
- * not a config-file token, so there is no key/source/line to report.
+ * A date-expression config value (`gc.pruneExpire`, `gc.reflogExpire[Unreachable]`)
+ * fails the supported grammar (`never`, `now`, `@<epoch>`, ISO-8601,
+ * `<n>.<unit>.ago`). `gc.pruneExpire`'s caller resolves this from a plain
+ * string with no config-file token to report, so `location` is omitted;
+ * `gc.reflogExpire[Unreachable]`'s caller reads a config entry and passes its
+ * key, source file and 1-based line.
  */
-export const configBadDateValue = (value: string): TsgitError =>
-  new TsgitError({ code: 'CONFIG_BAD_DATE_VALUE', value: sanitizeForDisplay(value) });
+export const configBadDateValue = (
+  value: string,
+  location?: { readonly key: string; readonly source: string; readonly line: number },
+): TsgitError =>
+  new TsgitError({
+    code: 'CONFIG_BAD_DATE_VALUE',
+    value: sanitizeForDisplay(value),
+    ...(location !== undefined
+      ? { key: sanitizeForDisplay(location.key), source: location.source, line: location.line }
+      : {}),
+  });
 
 /**
  * A string-typed config key restricted to a fixed, case-sensitive set of
@@ -671,6 +720,56 @@ export const configInvalidEnumValue = (
     key: sanitizeForDisplay(key),
     source,
     value: sanitizeForDisplay(value),
+    line,
+  });
+
+/**
+ * An `[fsck]` entry names something no fsck check reports. git refuses the
+ * whole audit rather than skipping the entry, naming the key half it
+ * lower-cased; `source`/`line` locate the entry for a caller rebuilding
+ * git's second refusal line.
+ */
+export const fsckUnknownMsgId = (msgId: string, source: string, line: number): TsgitError =>
+  new TsgitError({
+    code: 'FSCK_UNKNOWN_MSG_ID',
+    msgId: sanitizeForDisplay(msgId),
+    source,
+    line,
+  });
+
+/**
+ * An `[fsck]` entry asks a fatal msg-id for a severity softer than `error`.
+ * git's `Cannot demote <id> to <type>` kills the whole audit before a single
+ * object is read; `source`/`line` locate the entry for a caller rebuilding it.
+ */
+export const fsckCannotDemote = (
+  msgId: string,
+  severity: string,
+  source: string,
+  line: number,
+): TsgitError =>
+  new TsgitError({
+    code: 'FSCK_CANNOT_DEMOTE',
+    msgId: sanitizeForDisplay(msgId),
+    severity: sanitizeForDisplay(severity),
+    source,
+    line,
+  });
+
+/** The object-name list `fsck.skipList` points at could not be read at all —
+ *  git's `could not open object name list`, which kills the whole audit. */
+export const fsckSkipListUnreadable = (path: string, reason: string): TsgitError =>
+  new TsgitError({ code: 'FSCK_SKIP_LIST_UNREADABLE', path, reason });
+
+/** A skip-list line that is not a full object name — git's `invalid object
+ *  name`, which kills the whole audit rather than dropping the line. Echoing
+ *  the line is git's own behaviour; echoing more of it than one object name
+ *  could ever be is not, so the echo is capped there. */
+export const fsckSkipListInvalidName = (name: string, path: string, line: number): TsgitError =>
+  new TsgitError({
+    code: 'FSCK_SKIP_LIST_INVALID_NAME',
+    name: sanitizeForDisplay(name).slice(0, MAX_OBJECT_ID_IN_ERROR),
+    path,
     line,
   });
 

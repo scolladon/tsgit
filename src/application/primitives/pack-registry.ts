@@ -3,6 +3,7 @@
  * Returns a PackRegistry facade used by object-resolver and readObject.
  */
 import { TsgitError, type TsgitErrorData } from '../../domain/error.js';
+import { errorDataCode } from '../../domain/error-data-code.js';
 import type { ObjectId } from '../../domain/objects/index.js';
 import { invalidPackHeader, invalidPackIndex } from '../../domain/storage/error.js';
 import {
@@ -21,7 +22,6 @@ import {
   parsePackHeader,
 } from '../../domain/storage/pack-entry.js';
 import type { Context } from '../../ports/context.js';
-import { errorDataCode } from './internal/error-data-code.js';
 import {
   bindMidx,
   computeMidxHealth,
@@ -57,6 +57,8 @@ import {
   packBaseName,
 } from './internal/pack-shared.js';
 import { createPromiseMemo, type PromiseMemo } from './internal/promise-memo.js';
+import { assertRepoSettingsValid } from './internal/repo-settings-gate.js';
+import { deltaBaseCacheBudgetFor } from './internal/resolve-delta-base-cache-limit.js';
 import { commonGitDir, packsDir } from './path-layout.js';
 import { exceedsMaxPackIdxBytes, REASON_PACK_IDX_EXCEEDS_MAX } from './validators.js';
 
@@ -319,7 +321,7 @@ function isCandidate(entry: { isFile: boolean; name: string }): boolean {
 
 /** Every registered pack sorted into exactly one of gc's four file classes. */
 export interface PackFileClassification {
-  /** `*.keep`-marked — git's total opt-out (Pin V). Not read for repacking,
+  /** `*.keep`-marked — git's total opt-out. Not read for repacking,
    *  not rewritten, not deleted; its objects are neither duplicated into the
    *  new pack nor migrated to the cruft pack, even when unreachable. */
   readonly kept: ReadonlyArray<RegisteredPack>;
@@ -582,18 +584,18 @@ const unusableEntry = (
 ): UnusablePack => ({ name, layer, data });
 
 /**
- * Node's `readdir` on a missing directory maps to `FILE_NOT_FOUND`.
- * `NOT_A_DIRECTORY` covers two distinct real shapes: the memory adapter's
- * code for a MISSING directory, and node's `ENOTDIR` when `objects/pack` is
- * itself a regular file. Both mean the same thing here — there are no packs
- * to list — and canonical git agrees, serving a loose read at exit 0 while
- * printing `error: unable to open object pack directory: …: Not a directory`.
+ * `readdir` on a missing directory maps to `FILE_NOT_FOUND` on every
+ * adapter. `NOT_A_DIRECTORY` covers the other real shape this tolerates: a
+ * regular file sitting where `objects/pack` should be a directory (node's
+ * `ENOTDIR`). Both mean the same thing here — there are no packs to list —
+ * and canonical git agrees, serving a loose read at exit 0 while printing
+ * `error: unable to open object pack directory: …: Not a directory`.
  *
  * Structural on `data.code`, never `instanceof`: this classifies an error
  * thrown by `ctx.fs`, so in a mixed-module-graph harness (a source-graph
  * registry over a dist-bundle Context) the adapter's `TsgitError` is a
  * different class identity than this module's — the hazard
- * `internal/error-data-code.ts` documents, and the reason every `ctx.fs`
+ * `domain/error-data-code.ts` documents, and the reason every `ctx.fs`
  * absence probe shares `errorDataCode`.
  */
 function isMissingPackDir(error: unknown): boolean {
@@ -628,17 +630,18 @@ function createStoreGate(ctx: Context): PromiseMemo<MidxLoadResult> {
  */
 const DELTA_BASE_CACHE_MAX_ENTRIES = 65_536;
 
-export function createPackRegistry(ctx: Context): PackRegistry {
+export async function createPackRegistry(ctx: Context): Promise<PackRegistry> {
+  await assertRepoSettingsValid(ctx);
   const storeGate = createStoreGate(ctx);
-  // A SEPARATE, ADDITIONAL byte budget the same size as the ordinary delta
-  // cache's own — not a share carved out of it. The two caches hold
-  // different things (raw loose-format bytes vs. header-split reconstructed
-  // delta bases) and compete only for process memory, not a shared
-  // accounting ledger; sizing this one AT `ctx.deltaCache.maxSize` rather
-  // than a fraction of it is a deliberate choice, not an oversight — see the
-  // delta-base cache sizing decision.
+  // A SEPARATE, ADDITIONAL byte budget from the ordinary delta cache's own —
+  // not a share carved out of it. The two caches hold different things (raw
+  // loose-format bytes vs. header-split reconstructed delta bases) and
+  // compete only for process memory, not a shared accounting ledger. Sized
+  // from `core.deltaBaseCacheLimit` (git's own dial for this cache, resolved
+  // once here, at construction — never re-derived on `refresh()`), an
+  // explicit `ctx.cacheBudgets` override, or git's 96 MiB default.
   const deltaBaseCache = createLruCache<DeltaBaseCacheEntry>(
-    ctx.deltaCache.maxSize,
+    await deltaBaseCacheBudgetFor(ctx),
     DELTA_BASE_CACHE_MAX_ENTRIES,
   );
 
@@ -688,7 +691,7 @@ export function createPackRegistry(ctx: Context): PackRegistry {
     }
     const midx =
       midxLoad.set === undefined ? undefined : bindMidx(ctx, packs, midxLoad.set, fileNames);
-    // Named from the in-use layer's STORED trailer bytes (Pin K rule 3),
+    // Named from the in-use layer's STORED trailer bytes,
     // never a recomputed digest: a rename, or a midx whose own trailer
     // disagrees with its bytes, both simply compose a name this scan's own
     // `fileNames` does not carry — "not present" needs no special case.

@@ -7,7 +7,7 @@
 # both the tip and the shallow boundary without re-running the script.
 #
 # Requires the `git` CLI on $PATH. CI runners (Ubuntu, macOS) have it
-# pre-installed; Windows is out of scope for this fixture (Phase 14.4 work).
+# pre-installed; Windows is out of scope for this fixture.
 
 set -euo pipefail
 

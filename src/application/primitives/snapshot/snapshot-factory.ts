@@ -47,7 +47,7 @@ const COMMIT_REF_FILES = [MERGE_HEAD, CHERRY_PICK_HEAD, REVERT_HEAD, FETCH_HEAD]
 /**
  * Build a lazy `TreeSnapshot` whose root tree is resolved on first
  * iteration. The construction is purely synchronous — no I/O happens
- * until the consumer iterates (design §9 + ADR-149).
+ * until the consumer iterates (ADR-149).
  */
 const lazyTree = (deps: SnapshotFactoryDeps, treeId: ObjectId): TreeSnapshot =>
   createTreeSnapshot({ ctx: deps.ctx, treeResolver: deps.treeResolver }, treeId);
@@ -108,7 +108,7 @@ const compoundFactory =
  * (`head`, `commit`, `tree`, `index`, `workdir`) or returns a promise
  * solely because it has to check ref-file existence first. None of
  * them parse the underlying source until the returned snapshot is
- * iterated (design §9 construction discipline).
+ * iterated.
  */
 export const createSnapshotFactory = (deps: SnapshotFactoryDeps): SnapshotFactory => {
   const tree = (oid: ObjectId): TreeSnapshot => lazyTree(deps, oid);

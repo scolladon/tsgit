@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MemoryFileSystem } from '../../../../src/adapters/memory/memory-file-system.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import { fileSystemContractTests } from '../../ports/file-system.contract.js';
@@ -20,10 +20,47 @@ describe('MemoryFileSystem', () => {
         },
         expected: 'refused' as const,
       },
+      segmentRefusals: 'pinned' as const,
     };
   });
 
   describe('memory-specific behaviors', () => {
+    describe('Given an existing entry and a symlink elsewhere in the tree', () => {
+      afterEach(() => {
+        vi.restoreAllMocks();
+      });
+
+      // `stat` runs its whole body before its first await, so every map lookup it makes lands
+      // inside the synchronous window between installing the spy and reading its count.
+      const lookupsToStat = (sut: MemoryFileSystem, path: string): number => {
+        const lookups = vi.spyOn(Map.prototype, 'get');
+        void sut.stat(path);
+        const count = lookups.mock.calls.length;
+        lookups.mockRestore();
+        return count;
+      };
+
+      describe.each([
+        { kind: 'file', shallow: '/repo/f.txt', deep: '/repo/a/b/c/d/e/f.txt' },
+        { kind: 'directory', shallow: '/repo/a', deep: '/repo/a/b/c/d/e' },
+      ])('When stat resolves a shallow and a deep $kind', ({ shallow, deep }) => {
+        it('Then both cost the same lookups, however many segments the path has', async () => {
+          // Arrange
+          const sut = new MemoryFileSystem({ rootDir: '/repo' });
+          await sut.write('/repo/f.txt', new Uint8Array([1]));
+          await sut.write('/repo/a/b/c/d/e/f.txt', new Uint8Array([1]));
+          await sut.symlink('f.txt', '/repo/link');
+
+          // Act
+          const shallowLookups = lookupsToStat(sut, shallow);
+          const deepLookups = lookupsToStat(sut, deep);
+
+          // Assert
+          expect(deepLookups).toBe(shallowLookups);
+        });
+      });
+    });
+
     describe('Given pre-seeded files', () => {
       describe('When reading', () => {
         it('Then returns seeded bytes', async () => {
@@ -330,7 +367,7 @@ describe('MemoryFileSystem', () => {
 
     describe('Given non-existent path', () => {
       describe('When readdir', () => {
-        it('Then throws NOT_A_DIRECTORY', async () => {
+        it('Then throws FILE_NOT_FOUND', async () => {
           // Arrange
           const sut = new MemoryFileSystem({ rootDir: '/repo' });
 
@@ -344,7 +381,7 @@ describe('MemoryFileSystem', () => {
 
           // Assert
           expect(caught).toBeInstanceOf(TsgitError);
-          expect((caught as TsgitError).data.code).toBe('NOT_A_DIRECTORY');
+          expect((caught as TsgitError).data.code).toBe('FILE_NOT_FOUND');
         });
       });
     });
@@ -471,6 +508,99 @@ describe('MemoryFileSystem', () => {
       });
     });
 
+    describe('Given a dangling symlink as the immediate parent of a create target', () => {
+      const target = '/repo/link/entry';
+      describe.each([
+        {
+          name: 'write',
+          create: (sut: MemoryFileSystem) => sut.write(target, new Uint8Array([1])),
+        },
+        {
+          name: 'writeExclusive',
+          create: (sut: MemoryFileSystem) => sut.writeExclusive(target, new Uint8Array([1])),
+        },
+        { name: 'appendUtf8', create: (sut: MemoryFileSystem) => sut.appendUtf8(target, 'line') },
+        { name: 'mkdir', create: (sut: MemoryFileSystem) => sut.mkdir(target) },
+        { name: 'symlink', create: (sut: MemoryFileSystem) => sut.symlink('elsewhere', target) },
+        {
+          name: 'rename',
+          create: (sut: MemoryFileSystem) => sut.rename('/repo/existing.txt', target),
+        },
+      ])('When $name creates beneath it', ({ create }) => {
+        it('Then it refuses NOT_A_DIRECTORY carrying the requested path and leaves the tree untouched', async () => {
+          // Arrange
+          const sut = new MemoryFileSystem({ rootDir: '/repo' });
+          await sut.write('/repo/existing.txt', new Uint8Array([7]));
+          await sut.symlink('missing-dir', '/repo/link');
+
+          // Act
+          let caught: unknown;
+          try {
+            await create(sut);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data;
+          expect(data.code).toBe('NOT_A_DIRECTORY');
+          if (data.code === 'NOT_A_DIRECTORY') expect(data.path).toBe(target);
+          expect(await sut.readdir('/repo')).toEqual([
+            { name: 'existing.txt', isFile: true, isDirectory: false, isSymbolicLink: false },
+            { name: 'link', isFile: false, isDirectory: false, isSymbolicLink: true },
+          ]);
+        });
+      });
+    });
+
+    describe('Given a create target beneath a chain of links ending in a missing entry', () => {
+      describe.each([
+        { label: 'a link to a dangling link', link: 'inner-link', inner: 'missing-dir' },
+        {
+          label: 'a link whose text passes through a missing directory',
+          link: 'missing-dir/deeper',
+        },
+      ])('When writing beneath $label', ({ link, inner }) => {
+        it('Then it refuses NOT_A_DIRECTORY', async () => {
+          // Arrange
+          const sut = new MemoryFileSystem({ rootDir: '/repo' });
+          await sut.symlink(link, '/repo/outer-link');
+          if (inner !== undefined) await sut.symlink(inner, '/repo/inner-link');
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut.write('/repo/outer-link/entry', new Uint8Array([1]));
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('NOT_A_DIRECTORY');
+          expect(await sut.exists('/repo/missing-dir')).toBe(false);
+        });
+      });
+    });
+
+    describe('Given a live link followed by a missing component', () => {
+      describe('When writing beneath the missing component', () => {
+        it('Then the missing parent is created under the link target', async () => {
+          // Arrange
+          const sut = new MemoryFileSystem({ rootDir: '/repo' });
+          await sut.mkdir('/repo/real');
+          await sut.symlink('real', '/repo/live-link');
+
+          // Act
+          await sut.write('/repo/live-link/new-dir/entry', new Uint8Array([3]));
+
+          // Assert
+          expect(await sut.read('/repo/real/new-dir/entry')).toEqual(new Uint8Array([3]));
+        });
+      });
+    });
+
     describe('Given directory containing a symlink', () => {
       describe('When readdir', () => {
         it('Then entry is returned with isSymbolicLink=true', async () => {
@@ -562,7 +692,7 @@ describe('MemoryFileSystem', () => {
 
     describe('Given mutually-recursive symlink pair', () => {
       describe('When stat', () => {
-        it('Then throws UNSUPPORTED_OPERATION with stat operation and symlink-loop reason', async () => {
+        it('Then throws PERMISSION_DENIED, as the Node adapter maps ELOOP', async () => {
           // Arrange
           const sut = new MemoryFileSystem({ rootDir: '/repo' });
           await sut.symlink('/repo/b', '/repo/a');
@@ -579,10 +709,9 @@ describe('MemoryFileSystem', () => {
           // Assert — cycle detected; no infinite recursion / stack overflow
           expect(caught).toBeInstanceOf(TsgitError);
           const data = (caught as TsgitError).data;
-          expect(data.code).toBe('UNSUPPORTED_OPERATION');
-          if (data.code === 'UNSUPPORTED_OPERATION') {
-            expect(data.operation).toBe('stat');
-            expect(data.reason).toBe('symlink loop: /repo/a');
+          expect(data.code).toBe('PERMISSION_DENIED');
+          if (data.code === 'PERMISSION_DENIED') {
+            expect(data.path).toBe('/repo/a');
           }
         });
       });
@@ -590,7 +719,7 @@ describe('MemoryFileSystem', () => {
 
     describe('Given chain of exactly 40 valid symlinks ending at a file', () => {
       describe('When stat', () => {
-        it('Then throws ELOOP at POSIX threshold', async () => {
+        it('Then throws PERMISSION_DENIED at the POSIX ELOOP threshold', async () => {
           // Arrange — POSIX SYMLOOP_MAX = 40. Kills the mutant that relaxes `>=` to `>`.
           const sut = new MemoryFileSystem({ rootDir: '/repo' });
           await sut.write('/repo/target.txt', new Uint8Array([1]));
@@ -608,9 +737,10 @@ describe('MemoryFileSystem', () => {
             caught = err;
           }
 
-          // Assert — the POSIX-defined 40-level limit is reached and throws ELOOP.
+          // Assert — the POSIX-defined 40-level limit is reached and throws ELOOP, mapped
+          // to PERMISSION_DENIED as the Node adapter maps it.
           expect(caught).toBeInstanceOf(TsgitError);
-          expect((caught as TsgitError).data.code).toBe('UNSUPPORTED_OPERATION');
+          expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
         });
       });
     });
@@ -648,6 +778,53 @@ describe('MemoryFileSystem', () => {
           expect(stat.isSymbolicLink).toBe(true);
           expect(stat.isFile).toBe(false);
           expect(stat.isDirectory).toBe(false);
+        });
+      });
+    });
+
+    describe('Given a symlink to an existing file occupies the mkdir target', () => {
+      describe('When mkdir is called', () => {
+        it('Then throws NOT_A_DIRECTORY, the code this adapter keeps for a file where a directory is created', async () => {
+          // Arrange
+          const sut = new MemoryFileSystem({ rootDir: '/repo' });
+          await sut.write('/repo/mkdir-target.txt', new Uint8Array([1]));
+          await sut.symlink('/repo/mkdir-target.txt', '/repo/mkdir-file-link');
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut.mkdir('/repo/mkdir-file-link');
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('NOT_A_DIRECTORY');
+          expect((await sut.lstat('/repo/mkdir-file-link')).isSymbolicLink).toBe(true);
+        });
+      });
+    });
+
+    describe('Given a symlink whose absolute target leaves the root occupies the mkdir target', () => {
+      describe('When mkdir is called', () => {
+        it('Then throws PERMISSION_DENIED and nothing is recorded', async () => {
+          // Arrange
+          const sut = new MemoryFileSystem({ rootDir: '/repo' });
+          await sut.symlink('/outside/escape-dir', '/repo/mkdir-escape-link');
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut.mkdir('/repo/mkdir-escape-link');
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+          expect((await sut.lstat('/repo/mkdir-escape-link')).isSymbolicLink).toBe(true);
         });
       });
     });
@@ -1618,28 +1795,23 @@ describe('MemoryFileSystem', () => {
 
     describe('Given a symlink at src and an existing regular file at dst', () => {
       describe('When renaming', () => {
-        it('Then the file is replaced by the link, which keeps its target', async () => {
+        it('Then the file is replaced by the link, which keeps and follows through to its target', async () => {
           // Arrange
           const sut = new MemoryFileSystem({ rootDir: '/repo' });
-          await sut.write('/repo/target.bin', new Uint8Array([1]));
+          const targetBytes = new Uint8Array([1]);
+          await sut.write('/repo/target.bin', targetBytes);
           await sut.symlink('/repo/target.bin', '/repo/moved-link');
           await sut.write('/repo/dst-file.bin', new Uint8Array([9]));
 
           // Act
           await sut.rename('/repo/moved-link', '/repo/dst-file.bin');
 
-          // Assert — the destination is the link; the file entry it replaced is gone
-          // (memory `read` never follows a link, so a surviving file entry would read back)
+          // Assert — the destination is the link; the file entry it replaced is gone (a
+          // surviving file entry would shadow the link and read back its own stale bytes)
           const dst = await sut.lstat('/repo/dst-file.bin');
           expect(dst.isSymbolicLink).toBe(true);
           expect(await sut.readlink('/repo/dst-file.bin')).toBe('/repo/target.bin');
-          let caught: unknown;
-          try {
-            await sut.read('/repo/dst-file.bin');
-          } catch (err) {
-            caught = err;
-          }
-          expect((caught as TsgitError).data.code).toBe('FILE_NOT_FOUND');
+          expect(await sut.read('/repo/dst-file.bin')).toEqual(targetBytes);
           expect(await sut.exists('/repo/moved-link')).toBe(false);
         });
       });
@@ -1971,10 +2143,18 @@ describe('MemoryFileSystem', () => {
             caught = err;
           }
 
-          // Assert — refused, and the tree is exactly what it was before the call
+          // Assert — refused, and the tree is exactly what it was before the call. `exists`
+          // beneath a regular file now refuses NOT_A_DIRECTORY itself, so "nothing recorded"
+          // is proven through the root listing instead of an `exists` probe.
           expect(caught).toBeInstanceOf(TsgitError);
           expect((caught as TsgitError).data.code).toBe('NOT_A_DIRECTORY');
-          expect(await sut.exists('/repo/blocker/mid')).toBe(false);
+          let probeCaught: unknown;
+          try {
+            await sut.exists('/repo/blocker/mid');
+          } catch (err) {
+            probeCaught = err;
+          }
+          expect((probeCaught as TsgitError).data.code).toBe('NOT_A_DIRECTORY');
           expect((await sut.readdir('/repo')).map((entry) => entry.name)).toEqual(['blocker']);
         });
       });
@@ -1993,11 +2173,17 @@ describe('MemoryFileSystem', () => {
             caught = err;
           }
 
-          // Assert
+          // Assert — `exists` beneath a regular file now refuses NOT_A_DIRECTORY itself, so
+          // "nothing recorded" is proven through the root listing instead of an `exists` probe.
           expect(caught).toBeInstanceOf(TsgitError);
           expect((caught as TsgitError).data.code).toBe('NOT_A_DIRECTORY');
-          expect(await sut.exists('/repo/blocker/mid/leaf')).toBe(false);
-          expect(await sut.exists('/repo/blocker/mid')).toBe(false);
+          let probeCaught: unknown;
+          try {
+            await sut.exists('/repo/blocker/mid/leaf');
+          } catch (err) {
+            probeCaught = err;
+          }
+          expect((probeCaught as TsgitError).data.code).toBe('NOT_A_DIRECTORY');
           expect((await sut.readdir('/repo')).map((entry) => entry.name)).toEqual(['blocker']);
         });
       });

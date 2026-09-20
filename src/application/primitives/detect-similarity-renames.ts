@@ -54,7 +54,8 @@ interface CopySource {
  * Build the copy source set for `copies: 'on'`:
  * PREIMAGE blobs of files MODIFIED (modify/type-change) in the diff
  * plus the unpaired deletes already in the rename source set.
- * An UNCHANGED file is NOT a copy source under plain -C (matrix #C1b).
+ * An UNCHANGED file is NOT a copy source under plain -C — only a file the
+ * diff itself touches lends its preimage.
  */
 function buildCopySourcesForOn(
   deletes: ReadonlyArray<DeleteChange>,
@@ -111,8 +112,9 @@ export type ScoredTriple =
  * git's record_if_better keeps only the top 4 scoring sources per destination;
  * when the slot array is full, a new entry replaces the current minimum only if
  * strictly better (score > min). Equal-score entries do not replace.
+ *
+ * @internal — exported for direct unit testing.
  */
-/** @internal — exported for direct unit testing. */
 export const NUM_CANDIDATE_PER_DST = 4;
 
 /**
@@ -252,8 +254,8 @@ function buildCopyTriples(
 }
 
 /**
- * Sort triples score-descending; at equal score rename sorts AHEAD of copy
- * (matrix #C3 — copy-vs-rename precedence).
+ * Sort triples score-descending; at equal score a rename sorts AHEAD of a
+ * copy, so a deleted source claims the destination before an unchanged one.
  */
 function sortTriples(triples: ScoredTriple[]): void {
   triples.sort((a, b) => {
@@ -527,13 +529,6 @@ function computeBreakScores(src: Uint8Array, dst: Uint8Array): BreakScores {
   return { computedBreakScore, dissimilarity };
 }
 
-/**
- * Attempt to break dissimilar modifies into synthetic delete+add pairs.
- * Returns the broken records and a new diff with those modifies replaced.
- *
- * Break-attempt runs BEFORE exact/inexact rename passes so the synthetic halves
- * feed the rename/copy matrix.
- */
 /** Score all modifies and return those that exceed breakScore as broken records. */
 async function scoreModifies(
   ctx: Context,
@@ -594,6 +589,13 @@ function patchDiffWithBroken(
   return { changes: patchedChanges };
 }
 
+/**
+ * Attempt to break dissimilar modifies into synthetic delete+add pairs.
+ * Returns the broken records and a new diff with those modifies replaced.
+ *
+ * Break-attempt runs BEFORE exact/inexact rename passes so the synthetic halves
+ * feed the rename/copy matrix.
+ */
 async function attemptBreaks(
   ctx: Context,
   diff: TreeDiff,

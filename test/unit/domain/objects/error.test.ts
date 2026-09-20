@@ -8,6 +8,9 @@ import {
   invalidObjectId,
   invalidTag,
   invalidTreeEntry,
+  isObjectNotFound,
+  MAX_OBJECT_ID_IN_ERROR,
+  objectNotFound,
   objectTooLarge,
   type TsgitError,
   treeCycleDetected,
@@ -26,6 +29,42 @@ describe('error', () => {
 
           // Assert
           expect(result.data).toEqual({ code: 'INVALID_OBJECT_ID', value: 'xyz' });
+        });
+      });
+    });
+
+    describe('Given invalidObjectId called with a whole foreign file as its value', () => {
+      describe('When checking error.data.value', () => {
+        it('Then it is capped at one object id and carries none of the trailing bytes', () => {
+          // Arrange
+          const fileContent = `PRIVATE-LINE\n${'z'.repeat(5000)}`;
+
+          // Act
+          const result = invalidObjectId(fileContent);
+
+          // Assert
+          expect(result.data).toEqual({
+            code: 'INVALID_OBJECT_ID',
+            value: `PRIVATE-LINE\n${'z'.repeat(MAX_OBJECT_ID_IN_ERROR - 'PRIVATE-LINE\n'.length)}`,
+          });
+        });
+      });
+    });
+
+    describe('Given invalidObjectId called with a value holding raw control bytes', () => {
+      describe('When checking error.data.value', () => {
+        it('Then every byte outside the printable set is a visible escape', () => {
+          // Arrange
+          const raw = 'a\u0000b\u001Bc\u00FF';
+
+          // Act
+          const result = invalidObjectId(raw);
+
+          // Assert
+          expect(result.data).toEqual({
+            code: 'INVALID_OBJECT_ID',
+            value: 'a\\x00b\\x1Bc\\xFF',
+          });
         });
       });
     });
@@ -174,6 +213,88 @@ describe('error', () => {
           expect(result.message).toContain(id);
           expect(result.message).toContain('size=999');
           expect(result.message).toContain('limit=100');
+        });
+      });
+    });
+  });
+
+  describe('isObjectNotFound', () => {
+    describe('Given a TsgitError with code OBJECT_NOT_FOUND', () => {
+      describe('When checking isObjectNotFound', () => {
+        it('Then returns true', () => {
+          // Arrange
+          const id = 'd'.repeat(40) as ObjectId;
+          const error = objectNotFound(id);
+
+          // Act
+          const result = isObjectNotFound(error);
+
+          // Assert
+          expect(result).toBe(true);
+        });
+      });
+    });
+
+    describe('Given a TsgitError with a different code', () => {
+      describe('When checking isObjectNotFound', () => {
+        it('Then returns false', () => {
+          // Arrange
+          const error = invalidObjectId('xyz');
+
+          // Act
+          const result = isObjectNotFound(error);
+
+          // Assert
+          expect(result).toBe(false);
+        });
+      });
+    });
+
+    describe('Given a non-TsgitError value', () => {
+      describe('When checking isObjectNotFound', () => {
+        it('Then returns false', () => {
+          // Arrange
+          const error = new Error('not a TsgitError');
+
+          // Act
+          const result = isObjectNotFound(error);
+
+          // Assert
+          expect(result).toBe(false);
+        });
+      });
+    });
+
+    describe('Given a foreign-shaped error that is not a TsgitError instance', () => {
+      describe('When checking isObjectNotFound', () => {
+        it('Then returns true', () => {
+          // Arrange
+          const id = 'f'.repeat(40) as ObjectId;
+          const error = Object.assign(new Error('foreign graph'), {
+            name: 'TsgitError',
+            data: { code: 'OBJECT_NOT_FOUND', id },
+          });
+
+          // Act
+          const result = isObjectNotFound(error);
+
+          // Assert
+          expect(result).toBe(true);
+        });
+      });
+    });
+
+    describe('Given an error whose data.code is not a string', () => {
+      describe('When checking isObjectNotFound', () => {
+        it('Then returns false', () => {
+          // Arrange
+          const error = Object.assign(new Error('x'), { data: { code: 404 } });
+
+          // Act
+          const result = isObjectNotFound(error);
+
+          // Assert
+          expect(result).toBe(false);
         });
       });
     });

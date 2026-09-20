@@ -1,10 +1,7 @@
 /**
- * Phase 20.2 standalone primitives — single bundled parity scenario that
- * exercises the read/compute primitives in one flow so Node + Memory + Browser
- * drivers all close the surface gaps in one go.
- *
- * Surfaces closed (per 19.5a):
- *   primitives: hashBlob, isIgnored
+ * Standalone primitives — a single bundled parity scenario that exercises the
+ * read/compute primitives (`hashBlob`, `isIgnored`) in one flow, so the Node,
+ * Memory and Browser drivers all close that surface in one go.
  */
 import type { FilePath } from '../../../src/domain/objects/object-id.ts';
 import { AUTHOR } from '../fixtures.ts';
@@ -20,8 +17,8 @@ interface Phase202Result {
 
 const sampleContent = new Uint8Array([0x68, 0x69]); // 'hi'
 
-export const phase202PrimitivesScenario: Scenario<Phase202Result> = {
-  name: 'phase-20-2-primitives',
+export const standalonePrimitivesScenario: Scenario<Phase202Result> = {
+  name: 'standalone-primitives',
   // Pre-seed `.gitignore` so `isIgnored` finds rules on the working tree
   // without first staging+committing them. The parity driver writes these
   // files to the workdir before `run` executes.

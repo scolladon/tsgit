@@ -6,8 +6,10 @@ import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
+import { getRefStore } from '../../../../src/application/primitives/ref-store.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import { writeSymbolicRef } from '../../../../src/application/primitives/write-symbolic-ref.js';
 import * as writeTreeMod from '../../../../src/application/primitives/write-tree.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
@@ -1096,6 +1098,53 @@ describe('commit — bounded subtree writes', () => {
         } finally {
           spy.mockRestore();
         }
+      });
+    });
+  });
+
+  afterEach(() => __resetConfigCacheForTests());
+});
+
+describe('commit — HEAD through a chain of symbolic refs', () => {
+  describe('Given HEAD -> refs/heads/s -> refs/heads/x', () => {
+    describe('When commit runs', () => {
+      it('Then x moves to the new commit and s stays symbolic', async () => {
+        // Arrange
+        const ctx = await seed();
+        const first = await commit(ctx, { message: 'first', author });
+        await getRefStore(ctx).applyRefUpdates([
+          { kind: 'set', name: 'refs/heads/x' as RefName, id: first.id },
+        ]);
+        await writeSymbolicRef(ctx, 'refs/heads/s' as RefName, 'refs/heads/x' as RefName);
+        await writeSymbolicRef(ctx, 'HEAD' as RefName, 'refs/heads/s' as RefName);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'b');
+        await add(ctx, ['b.txt']);
+
+        // Act
+        const result = await commit(ctx, { message: 'second', author });
+
+        // Assert
+        const xValue = await getRefStore(ctx).resolveDirect('refs/heads/x' as RefName);
+        expect(xValue).toEqual({ kind: 'direct', id: result.id });
+        const sValue = await getRefStore(ctx).resolveDirect('refs/heads/s' as RefName);
+        expect(sValue).toEqual({ kind: 'symbolic', target: 'refs/heads/x' });
+        // main is untouched — HEAD names x through s, never main.
+        const mainValue = await getRefStore(ctx).resolveDirect('refs/heads/main' as RefName);
+        expect(mainValue).toEqual({ kind: 'direct', id: first.id });
+        // The write is logged under x's own name AND under HEAD, both with
+        // the same old/new ids — proving the coupled HEAD entry fires even
+        // though HEAD reaches x through a walked link (s), not directly.
+        // `first` was already committed through `main` before the symref
+        // chain was rewired, so HEAD's log carries that entry too — the
+        // assertion reads the LAST entry, the one this second commit made.
+        const xLog = await readReflog(ctx, 'refs/heads/x' as RefName);
+        expect(xLog).toHaveLength(1);
+        expect(xLog[0]?.oldId).toBe(first.id);
+        expect(xLog[0]?.newId).toBe(result.id);
+        const headLog = await readReflog(ctx, 'HEAD' as RefName);
+        expect(headLog).toHaveLength(2);
+        expect(headLog[1]?.oldId).toBe(first.id);
+        expect(headLog[1]?.newId).toBe(result.id);
       });
     });
   });

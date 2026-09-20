@@ -213,7 +213,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       await oursCommit('main-change');
     };
 
-    // ── S9: base=symlink, ours=file, theirs=file → R4 content conflict ──────
+    // ── base=symlink, ours=file, theirs=file → a content conflict ──────────
 
     describe('Given base is a symlink, ours and theirs are regular files with a shared prefix (S9)', () => {
       describe('When both tools merge', () => {
@@ -845,7 +845,7 @@ describe.skipIf(!GIT_AVAILABLE)(
 
     // ── S9b: base=file; both sides symlinks, differing targets ───────────────
     //
-    // Content conflict: domain emits a bare `content` conflict (R5). Both stages
+    // Content conflict: the domain emits a bare `content` conflict. Both stages
     // 2 and 3 are symlinks at `p`; stage 1 is the file. Worktree must hold ours'
     // symlink — no marker bytes anywhere.
 
@@ -882,7 +882,7 @@ describe.skipIf(!GIT_AVAILABLE)(
     // ── P3: base=symlink; both sides symlinks, differing targets ─────────────
     //
     // Same shape as S9b but base is also a symlink. Still a bare `content`
-    // conflict (R5): domain emits no markers; worktree keeps ours' symlink.
+    // conflict: the domain emits no markers; the worktree keeps ours' symlink.
 
     describe('Given base=symlink, both sides are symlinks with differing targets (P3)', () => {
       describe('When both tools merge', () => {

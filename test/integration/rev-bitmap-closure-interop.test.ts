@@ -26,11 +26,11 @@
  *      INDEPENDENT full `git rev-list --objects <not-tip>` closure, never
  *      by inspection. This is the clause a fixture with no repeated blob
  *      content passes VACUOUSLY (the difference degenerates to equality),
- *      so it is asserted NON-EMPTY only on F2 and F5, which carry the
+ *      so it is asserted NON-EMPTY only on the nested and flat fixtures, which carry the
  *      recurring-content property (module doc, `rev-bitmap-closure-
  *      fixtures.ts`) the vacuous case would otherwise hide behind.
  *
- * **The double run.** Every set-correctness row — F2's, F5's AND F3's
+ * **The double run.** Every set-correctness row — the nested, flat AND two-pack ones
  * set-equality and have-bearing rows — runs TWICE: once against a fixture
  * carrying a bitmap, once against the SAME repository with every `.bitmap`
  * file removed (forcing the silent walk fallback). Together with the walk
@@ -39,7 +39,7 @@
  * answer and a wrong pack — a bug confined to the decoder has nowhere to
  * hide if removing the artefact it decodes does not change the answer.
  *
- * F4's `firstParent`/`noWalk` rows are the ONE genuine exemption: there the
+ * The merge fixture's `firstParent`/`noWalk` rows are the ONE genuine exemption: there the
  * two tiers disagree BY DESIGN — git's own bitmap tier ignores both flags
  * and answers the full closure (76 commits / 228 objects) where the walk
  * honours them (61/184 and 2/7) — so a bitmap-removed second run would
@@ -71,16 +71,16 @@ import { allObjectIds } from '../../src/domain/storage/pack-index.js';
 import type { Context } from '../../src/ports/context.js';
 import { GIT_AVAILABLE, git, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
 import {
-  addLooseCommitAboveF2,
-  buildF2ClosureFixture,
-  buildF3ClosureFixture,
-  buildF4ClosureFixture,
-  buildF5ClosureFixture,
-  buildF6ClosureFixture,
+  addLooseCommitAboveNestedPack,
+  buildFlatClosureFixture,
+  buildMergeClosureFixture,
+  buildNestedClosureFixture,
+  buildOutOfRangeClosureFixture,
+  buildTwoPackClosureFixture,
   type ClosureFixture,
   clearFullDagFlagAndRestamp,
-  type F3ClosureFixture,
-  type F6ClosureFixture,
+  type OutOfRangeClosureFixture,
+  type TwoPackClosureFixture,
 } from './rev-bitmap-closure-fixtures.js';
 import {
   buildBitmapFixture,
@@ -179,7 +179,7 @@ afterEach(async () => {
 /**
  * Copies `sourceDir`'s whole `.git` state into `targetDir` and strips every
  * pack-directory file ending in `suffix` from the copy. Copies rather than
- * mutating a shared fixture in place: F2 and F5 are built once per file in
+ * mutating a shared fixture in place: the nested and flat fixtures are built once per file in
  * a shared `beforeAll` and reused across many rows, so stripping an
  * artefact from the ORIGINAL would leave every row declared after this one
  * running against a broken fixture.
@@ -203,9 +203,9 @@ async function fixtureWithoutBitmap(sourceDir: string, targetDir: string): Promi
   return fixtureWithoutArtefactSuffix(sourceDir, targetDir, '.bitmap');
 }
 
-/** Plain recursive copy, no stripping — F3's artefact-preference rows each
+/** Plain recursive copy, no stripping — the two-pack artefact-preference rows each
  *  need their OWN disposable copy, since the detector (`gitAborts`) is
- *  destructive (it corrupts a `.bitmap` beyond recovery) and F3 is a
+ *  destructive (it corrupts a `.bitmap` beyond recovery) and that fixture is a
  *  shared `beforeAll` fixture reused across every row in its own describe. */
 async function copyFixture(sourceDir: string, targetDir: string): Promise<string> {
   await cp(sourceDir, targetDir, { recursive: true });
@@ -279,14 +279,14 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list walk closures match canonical git', ()
   }
 
   // ---------------------------------------------------------------------
-  // F2 — 400 commits, one branch, one annotated tag
+  // The nested fixture — 400 commits, one branch, one annotated tag
   // ---------------------------------------------------------------------
 
-  describe('Given F2 (400 commits, one branch, one annotated tag)', () => {
+  describe('Given 400 commits, one branch and one annotated tag', () => {
     let f2: ClosureFixture;
 
     beforeAll(async () => {
-      f2 = await buildF2ClosureFixture(await newRoot('f2'), 'repo');
+      f2 = await buildNestedClosureFixture(await newRoot('f2'), 'repo');
     }, 60_000);
 
     describe("When the named detector parses git's own --objects HEAD output (control)", () => {
@@ -435,7 +435,7 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list walk closures match canonical git', ()
     });
 
     // -----------------------------------------------------------------
-    // Bitmap tier — the double run's F2 half (module doc).
+    // Bitmap tier — the double run's nested half (module doc).
     // -----------------------------------------------------------------
 
     describe(
@@ -483,7 +483,7 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list walk closures match canonical git', ()
       () => {
         it('Then both runs match git --objects HEAD~295 exactly (425) and carry no path', async () => {
           // Arrange — HEAD~295 is one of the ~292 commits git's bitmap
-          // writer gave no direct entry to (only 108 of F2's 400 commits
+          // writer gave no direct entry to (only 108 of the 400 commits
           // have one); the artefact still answers it correctly, through the
           // fallback walk INSIDE the bitmap tier rather than a direct
           // reconstruction.
@@ -638,7 +638,7 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list walk closures match canonical git', ()
       });
     });
 
-    describe('When a COPY of F2 has its .rev deleted and revList runs bitmap-tier over HEAD', () => {
+    describe('When a COPY has its .rev deleted and revList runs bitmap-tier over HEAD', () => {
       it('Then the ARTEFACT still answers (named 0), same set (1605) — packPositions never needed the .rev on disk', async () => {
         // Arrange
         const noRevDir = await fixtureWithoutArtefactSuffix(
@@ -665,7 +665,7 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list walk closures match canonical git', ()
       });
     });
 
-    describe('When packObjects runs on F2 with a have boundary (HEAD --not HEAD~50), at both tiers', () => {
+    describe('When packObjects runs with a have boundary (HEAD --not HEAD~50), at both tiers', () => {
       it('Then each tier writes ITS OWN object set (walk 204, bitmap 200), read back from the .idx, and git index-pack --verify accepts both', async () => {
         // Arrange
         const sut = packObjects;
@@ -715,7 +715,7 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list walk closures match canonical git', ()
     describe('When a loose commit is added on top and revList runs over the new HEAD', () => {
       it('Then the id set matches git exactly, grows by 3 loose objects (1608), and carries 806 names', async () => {
         // Arrange
-        await addLooseCommitAboveF2(f2.dir);
+        await addLooseCommitAboveNestedPack(f2.dir);
         const gitSet = gitObjectSet(f2.dir, '--objects', 'HEAD');
         const sut = revList;
 
@@ -762,14 +762,14 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list walk closures match canonical git', ()
   });
 
   // ---------------------------------------------------------------------
-  // F5 — 120 commits, flattened, small enough to enumerate by hand
+  // The flat fixture — 120 commits, small enough to enumerate by hand
   // ---------------------------------------------------------------------
 
-  describe('Given F5 (120 commits, flattened, recurring shared-file content)', () => {
+  describe('Given 120 flattened commits with recurring shared-file content', () => {
     let f5: ClosureFixture;
 
     beforeAll(async () => {
-      f5 = await buildF5ClosureFixture(await newRoot('f5'), 'repo');
+      f5 = await buildFlatClosureFixture(await newRoot('f5'), 'repo');
     }, 60_000);
 
     describe('When revList runs with objects: true over HEAD', () => {
@@ -841,7 +841,7 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list walk closures match canonical git', ()
     });
 
     // -----------------------------------------------------------------
-    // Bitmap tier — the double run's F5 half (module doc).
+    // Bitmap tier — the double run's flat half (module doc).
     // -----------------------------------------------------------------
 
     describe(
@@ -949,7 +949,7 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list walk closures match canonical git', ()
             expect(withoutArtefact.count).toBe(156);
 
             // Assert — clause 2 of the cross-tier invariant, same shape as
-            // F2's own row above.
+            // the nested fixture's own row above.
             const bitmapIds = tsgitObjectSet(withArtefact).ids;
             const walkIds = tsgitObjectSet(withoutArtefact).ids;
             for (const id of bitmapIds) {
@@ -972,14 +972,14 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list walk closures match canonical git', ()
   });
 
   // ---------------------------------------------------------------------
-  // F4 — 76 commits including one real merge
+  // The merge fixture — 76 commits including one real merge
   // ---------------------------------------------------------------------
 
-  describe('Given F4 (76 commits including one real merge of topic into main)', () => {
+  describe('Given 76 commits including one real merge of topic into main', () => {
     let f4: ClosureFixture;
 
     beforeAll(async () => {
-      f4 = await buildF4ClosureFixture(await newRoot('f4'), 'repo');
+      f4 = await buildMergeClosureFixture(await newRoot('f4'), 'repo');
     }, 60_000);
 
     describe('When revList runs with a have boundary (HEAD --not topic), against plain git rev-list', () => {
@@ -1138,19 +1138,19 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list walk closures match canonical git', ()
   });
 
   // ---------------------------------------------------------------------
-  // F3 — F2 plus 5 more commits across a second pack, plus a midx bitmap.
+  // The two-pack fixture — 5 more commits across a second pack, plus a midx bitmap.
   // Artefact preference, midx mapping, .rev-free consumption, and
   // completeness beyond a single artefact.
   // ---------------------------------------------------------------------
 
   describe(
-    'Given F3 (F2 plus 5 more commits repacked incrementally into a second pack, plus a ' +
+    'Given 400 commits plus 5 more repacked incrementally into a second pack, plus a ' +
       'multi-pack-index with its own bitmap: 2 packs, 1 pack bitmap, 1 midx bitmap, 1621 midx objects)',
     () => {
-      let f3: F3ClosureFixture;
+      let f3: TwoPackClosureFixture;
 
       beforeAll(async () => {
-        f3 = await buildF3ClosureFixture(await newRoot('f3'), 'repo');
+        f3 = await buildTwoPackClosureFixture(await newRoot('f3'), 'repo');
       }, 90_000);
 
       describe("When the named detector parses git's own --objects --all / --objects HEAD output (control)", () => {
@@ -1360,7 +1360,7 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list walk closures match canonical git', ()
         it('Then every object type the MIDX tier reports matches git cat-file --batch-check exactly, over all 1620 objects', async () => {
           // Arrange — the midx tier resolves an oid through the reverse-index
           // chunk and types it from the midx bitmap's own type streams: a
-          // different mapping from the pack tier F2 already pins this way.
+          // different mapping from the pack tier the nested fixture already pins this way.
           const sut = revList;
 
           // Act
@@ -1463,7 +1463,7 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list walk closures match canonical git', ()
   );
 
   // ---------------------------------------------------------------------
-  // F6 — the range-validation family. Unlike every degradation row below,
+  // The range-validation family. Unlike every degradation row below,
   // the checksum here is VALID and the fault is a VALUE (an out-of-range
   // entry-header position), not a structure — the one difference that
   // makes the fsck pass and the closure engine disagree, correctly: fsck
@@ -1473,13 +1473,13 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list walk closures match canonical git', ()
   // ---------------------------------------------------------------------
 
   describe(
-    'Given F6 (40 commits / 120 objects, one pack bitmap whose first per-commit entry header ' +
+    'Given 40 commits / 120 objects, one pack bitmap whose first per-commit entry header ' +
       'is rewritten to position 999999 and then RESTAMPED)',
     () => {
-      let f6: F6ClosureFixture;
+      let f6: OutOfRangeClosureFixture;
 
       beforeAll(async () => {
-        f6 = await buildF6ClosureFixture(await newRoot('f6'), 'repo');
+        f6 = await buildOutOfRangeClosureFixture(await newRoot('f6'), 'repo');
       }, 60_000);
 
       describe(
@@ -1536,7 +1536,7 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list walk closures match canonical git', ()
               'corrupt ewah bitmap: commit index 999999 out of range',
             );
             expect(gitResult.stdout.split('\n').filter(Boolean)).toHaveLength(120);
-            // Assert — tsgit's own degradation. F6 carries NO `not`, so the
+            // Assert — tsgit's own degradation. This fixture carries NO `not`, so the
             // two tiers agree on the SET (120) — the warn and git's stderr
             // line are the discriminators here, never the count.
             expect(result.count).toBe(120);
@@ -1754,7 +1754,7 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list walk closures match canonical git', ()
 
   describe('Given a fresh BASE bitmap fixture (12 objects) whose .bitmap flag word is cleared of full-DAG and RESTAMPED', () => {
     describe('When both tools resolve the closure from HEAD', () => {
-      it('Then git ABORTS on load while tsgit still answers correctly (12) — the detector this suite depends on for the F3 artefact-preference rows', async () => {
+      it('Then git ABORTS on load while tsgit still answers correctly (12) — the detector this suite depends on for the two-pack artefact-preference rows', async () => {
         // Arrange
         const base = await buildBitmapFixture(await newRoot('degrade-full-dag'), 'repo');
         const packDir = path.join(base.dir, '.git', 'objects', 'pack');

@@ -9,10 +9,10 @@
  *   S4 — a deltified blob (OFS_DELTA in the pack, reconstructed, materialised: true)
  *
  * @proves
- *   surface:        streamBlob (packed base + loose + delta paths)
- *   bucket:         blob-streaming-interop
- *   unique:         streamed bytes byte-identical to canonical git cat-file -p
- *   interopSurface: loose objects + packfile (base + delta entries)
+ *   surface:        streamBlob
+ *   bucket:         cross-tool-interop
+ *   unique:         streamed bytes over the packed-base, loose and delta paths are byte-identical to canonical git cat-file -p
+ *   interopSurface: looseObject, packfile
  */
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';

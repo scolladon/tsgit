@@ -20,7 +20,7 @@
  *
  * @proves
  *   surface:        pack-registry
- *   bucket:         cross-tool-interop
+ *   bucket:         real-fs
  *   unique:         dispose-free-exit — persistent per-pack handles never keep the event loop alive; a concurrent read burst then dispose() orphans no descriptor to the GC (GC-close-warning oracle)
  */
 import { execFile } from 'node:child_process';

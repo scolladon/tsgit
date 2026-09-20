@@ -42,6 +42,7 @@ import type { Changeset, ChangesetEntry } from './compute-changeset.js';
 import { boundedMapFor, limiterFor } from './internal/concurrency.js';
 import type { ConcurrencyLimiter } from './internal/concurrency-limiter.js';
 import { joinPath } from './internal/join-working-tree-path.js';
+import { pathIsOccupied } from './internal/path-occupied.js';
 import { type AttributeProvider, buildAttributeProvider } from './internal/read-gitattributes.js';
 import { serializeAndHash } from './internal/serialize-and-hash.js';
 import {
@@ -101,19 +102,19 @@ const blobMatches = async (ctx: Context, absPath: string, expectedId: string): P
 /**
  * `true` when a working-tree file exists at `absPath` but its blob content
  * hash differs from `expectedId`. An absent file is not dirty. Shared by
- * `applySparseCheckout`'s narrowing pre-scan (design §9).
+ * `applySparseCheckout`'s narrowing pre-scan.
  */
 export const isWorkingTreeDirty = async (
   ctx: Context,
   absPath: string,
   expectedId: string,
 ): Promise<boolean> => {
-  if (!(await ctx.fs.exists(absPath))) return false;
+  if (!(await pathIsOccupied(ctx, absPath))) return false;
   return !(await blobMatches(ctx, absPath, expectedId));
 };
 
 const isUntrackedClash = async (ctx: Context, absPath: string): Promise<boolean> =>
-  ctx.fs.exists(absPath);
+  pathIsOccupied(ctx, absPath);
 
 interface DirtyClass {
   readonly class: 'local-changes' | 'untracked';
@@ -236,7 +237,7 @@ const writeBlobToWorkingTree = async (
       const smudge = choice.smudge;
       // A smudge filter spawns a subprocess — CPU/process-bound, not
       // blocking-fd-bound — so it must not inherit the write wave's wider
-      // ioBound budget (P10): `filterLimiter` is sized off cpuBound and
+      // ioBound budget: `filterLimiter` is sized off cpuBound and
       // shared for the whole changeset apply, bounding how many subprocess
       // spawns run at once regardless of how many writes the ioBound pool
       // has in flight. The write itself, below, stays on the full pool.
@@ -484,7 +485,7 @@ export const applyChangeset = async (
 
   validateChangesetPaths(changeset);
 
-  // Hoisted above the dirty check (P9) so a `noop`-heavy changeset never
+  // Hoisted above the dirty check so a `noop`-heavy changeset never
   // pays a dirty probe — or a pool slot — for entries that carry no I/O.
   const { deletes, writes } = splitWaves(changeset.entries);
 
@@ -496,7 +497,8 @@ export const applyChangeset = async (
   }
 
   // Build attribute provider lazily once per invocation (mirror build-content-merger.ts:48).
-  // Skip entirely when no runner is wired (R11 inert fallback — ADR-408).
+  // Skip entirely when no command runner is wired: filters cannot run, so the
+  // provider would be inert anyway (ADR-408).
   let providerPromise: Promise<AttributeProvider> | undefined;
   const lazyProvider = (): Promise<AttributeProvider> =>
     (providerPromise ??= buildAttributeProvider(ctx));
@@ -506,7 +508,7 @@ export const applyChangeset = async (
   // tree with many entries under the same symlinked directory costs one
   // `lstat` per distinct directory, not one per entry.
   const scanner = createLeadingPathScanner(ctx);
-  // Sized off cpuBound, not ioBound (P10): a smudge subprocess spawn is
+  // Sized off cpuBound, not ioBound: a smudge subprocess spawn is
   // process/CPU-bound, not blocking-fd-bound, so it must not inherit the
   // write wave's wider ioBound budget — see `writeBlobToWorkingTree`.
   const filterLimiter = limiterFor(ctx, 'cpuBound');

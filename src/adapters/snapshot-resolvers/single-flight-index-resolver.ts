@@ -11,7 +11,7 @@ import type { IndexResolver, ResolveOptions } from '../../ports/snapshot-resolve
  * Why: with `CachingIndexResolver` underneath, a thundering herd of
  * concurrent readers would otherwise each pay the parse cost during the
  * cache-warm window. De-duplicating to one inner call is the standard
- * single-flight idiom (see design §10.3).
+ * single-flight idiom.
  *
  * `bypassCache` opts out of the dedup gate entirely. A caller that asks to
  * skip the cache wants a fresh parse — joining an already-in-flight

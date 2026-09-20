@@ -15,10 +15,12 @@ import {
   findFirstValuelessEntry,
   findFirstValuelessInSection,
   findInvalidPushDefault,
+  findLastInvalidDeltaBaseCacheLimit,
   findLastInvalidMaxTreeDepth,
   type IniSection,
   invalidateConfigCache,
   memoizeGateVerdict,
+  openConfigEpoch,
   parseGitBoolean,
   parseGitInt,
   parseIniSections,
@@ -34,14 +36,23 @@ import {
 } from '../../../../src/application/primitives/config-scoped-read.js';
 import { assertValidBooleanConfig } from '../../../../src/application/primitives/internal/boolean-config-guard.js';
 import { qualifyKey } from '../../../../src/application/primitives/internal/config-key.js';
+import { assertOperationalRepository } from '../../../../src/application/primitives/internal/repo-state.js';
 import { parseConfigKey } from '../../../../src/domain/commands/config-key.js';
 import { notADirectory, TsgitError } from '../../../../src/domain/error.js';
 import type { FilePath } from '../../../../src/domain/objects/object-id.js';
 import type { Context, RepositoryFormatRefusal } from '../../../../src/ports/context.js';
+import { instrumentedContext } from './fixtures.js';
 
 const seed = async (ctx: Context, content: string): Promise<void> => {
   await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, content);
 };
+
+const seedHead = async (ctx: Context): Promise<void> => {
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+};
+
+const configStatCalls = (calls: ReadonlyArray<{ method: string; path: string }>): number =>
+  calls.filter((c) => c.method === 'stat' && c.path.endsWith('/config')).length;
 
 /** A context carrying a format-acceptance refusal — the repository config scope is dropped. */
 const rejectedCtx = (
@@ -1255,6 +1266,43 @@ describe('primitives/config-read', () => {
         expect(result.remote?.get('origin')?.url).toBe('https://second.example/r.git');
         expect(result.remote?.get('origin')?.fetch).toEqual(['+a:b', '+c:d']);
       });
+
+      it('Then push lines accumulate across sections too', async () => {
+        // Arrange — the push twin of the fetch accumulator above: the second
+        // section must extend the first section's list, not replace it.
+        const ctx = createMemoryContext();
+        await seed(
+          ctx,
+          '[remote "origin"]\n  url = https://example.com/r.git\n  push = refs/heads/main:refs/heads/main\n[remote "origin"]\n  push = refs/heads/dev:refs/heads/dev\n',
+        );
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.remote?.get('origin')?.push).toEqual([
+          'refs/heads/main:refs/heads/main',
+          'refs/heads/dev:refs/heads/dev',
+        ]);
+      });
+    });
+  });
+
+  describe('Given a [remote "origin"] section carrying no push line', () => {
+    describe('When readConfig', () => {
+      it('Then push is absent rather than an empty list', async () => {
+        // Arrange — `git config --get-all remote.origin.push` answers nothing
+        // here, so the structured reading carries no push field at all.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[remote "origin"]\n  url = https://example.com/r.git\n  fetch = +a:b\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.remote?.get('origin')?.push).toBeUndefined();
+        expect(result.remote?.get('origin')?.fetch).toEqual(['+a:b']);
+      });
     });
   });
 
@@ -2164,6 +2212,69 @@ describe('primitives/config-read', () => {
       );
     });
   });
+  describe('Given a config with a [core] deltaBaseCacheLimit value', () => {
+    describe('When readConfig', () => {
+      it.each([
+        { config: '[core]\n\tdeltaBaseCacheLimit = 96m\n', expected: 100_663_296 },
+        { config: '[core]\n\tdeltaBaseCacheLimit = 1K\n', expected: 1_024 },
+        { config: '[core]\n\tdeltaBaseCacheLimit = 0x6000000\n', expected: 100_663_296 },
+        { config: '[core]\n\tdeltaBaseCacheLimit = 0\n', expected: 0 },
+      ])('Then parsed.core.deltaBaseCacheLimit is $expected', async ({ config, expected }) => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, config);
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.core?.deltaBaseCacheLimit).toBe(expected);
+      });
+    });
+  });
+
+  describe('Given a [core] section with an invalid deltaBaseCacheLimit value', () => {
+    describe('When readConfig', () => {
+      it.each([
+        { config: '[core]\n\tdeltaBaseCacheLimit = -1\n', label: 'invalid unit (-1)' },
+        { config: '[core]\n\tdeltaBaseCacheLimit = abc\n', label: 'invalid unit (abc)' },
+        { config: '[core]\n\tdeltaBaseCacheLimit = 1.5m\n', label: 'invalid unit (1.5m)' },
+      ])(
+        'Then deltaBaseCacheLimit is absent and readConfig does not throw ($label)',
+        async ({ config }) => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, config);
+
+          // Act
+          const result = await readConfig(ctx);
+
+          // Assert
+          expect(result.core?.deltaBaseCacheLimit).toBeUndefined();
+        },
+      );
+    });
+  });
+
+  describe('Given a [core] section carrying a size-valued key this reading does not model', () => {
+    describe('When readConfig', () => {
+      it('Then deltaBaseCacheLimit stays absent — an unmodelled key is not its value', async () => {
+        // Arrange — `core.bigFileThreshold` is a real git key with the same
+        // unsigned-size grammar, so a dispatch that stopped discriminating on
+        // the key name would silently adopt its value.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n\tbare = true\n\tbigFileThreshold = 512m\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.core?.deltaBaseCacheLimit).toBeUndefined();
+        expect(result.core?.bare).toBe(true);
+      });
+    });
+  });
+
   describe('Given a cached config and invalidateConfigCache for that context', () => {
     describe('When readConfig is called again', () => {
       it('Then the file is re-read', async () => {
@@ -2247,6 +2358,137 @@ describe('primitives/config-read', () => {
 
         // Assert
         expect(computeThird).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given the operational gate has opened an epoch for this command', () => {
+    describe('When three sequential readConfig calls follow', () => {
+      it('Then only the gate itself pays a stat of config (the three reads are free)', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        await seedHead(base);
+        await seed(base, '[core]\n  bare = true\n');
+        const { ctx, calls } = instrumentedContext(base);
+
+        // Act
+        await assertOperationalRepository(ctx);
+        await readConfig(ctx);
+        await readConfig(ctx);
+        await readConfig(ctx);
+
+        // Assert
+        expect(configStatCalls(calls())).toBe(1);
+      });
+    });
+
+    describe('When a raw writeUtf8 rewrites the file inside the epoch', () => {
+      it('Then a readConfig within the same command does not see it', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedHead(ctx);
+        await seed(ctx, '[core]\n  bare = true\n');
+        await assertOperationalRepository(ctx);
+
+        // Act — a raw rewrite past the epoch, no invalidateConfigCache call
+        await seed(ctx, '[core]\n  bare = false\n');
+        const result = await readConfig(ctx);
+
+        // Assert — still the trusted, pre-rewrite value
+        expect(result.core?.bare).toBe(true);
+      });
+
+      it('Then the NEXT operational gate observes it', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedHead(ctx);
+        await seed(ctx, '[core]\n  bare = true\n');
+        await assertOperationalRepository(ctx);
+        await seed(ctx, '[core]\n  bare = false\n');
+
+        // Act — the next command's gate re-stats and re-keys the epoch
+        await assertOperationalRepository(ctx);
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.core?.bare).toBe(false);
+      });
+    });
+
+    describe('When invalidateConfigCache runs inside the epoch', () => {
+      it('Then the trusted bit is cleared and the next readConfig stats again', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        await seedHead(base);
+        await seed(base, '[core]\n  bare = true\n');
+        const { ctx, calls } = instrumentedContext(base);
+        await assertOperationalRepository(ctx);
+
+        // Act
+        invalidateConfigCache(ctx);
+        await readConfig(ctx);
+
+        // Assert — the epoch's own stat, plus one more paid by the freshly untrusted read
+        expect(configStatCalls(calls())).toBe(2);
+      });
+    });
+  });
+
+  describe('Given a layout the trust gate refused', () => {
+    describe('When openConfigEpoch runs on it', () => {
+      it.each([
+        { label: 'an untrusted owner', derive: untrustedCtx },
+        { label: 'an implicit bare repository', derive: implicitBareCtx },
+      ])('Then $label is passed over with no stat and no epoch to serve', async ({ derive }) => {
+        // Arrange — the refused layout shares the session with a trusted
+        // Context, so a cache entry seeded here would be served to it.
+        const base = createMemoryContext();
+        await seed(base, '[core]\n  bare = true\n');
+        const { ctx, calls } = instrumentedContext(base);
+
+        // Act
+        await openConfigEpoch(derive(ctx));
+
+        // Assert — no stat paid, and the trusted read still pays its own.
+        expect(configStatCalls(calls())).toBe(0);
+        await readConfig(ctx);
+        expect(configStatCalls(calls())).toBe(1);
+      });
+    });
+  });
+
+  describe('Given a session whose epoch is re-opened with the config file unchanged', () => {
+    describe('When the second openConfigEpoch runs', () => {
+      it('Then the existing parse is kept rather than the file being read twice', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  bare = true\n');
+        const spy = vi.spyOn(ctx.fs, 'readUtf8');
+
+        // Act
+        await openConfigEpoch(ctx);
+        await readConfig(ctx);
+        await openConfigEpoch(ctx);
+        await readConfig(ctx);
+
+        // Assert
+        expect(spy).toHaveBeenCalledTimes(READS_PER_LOAD);
+      });
+
+      it('Then the kept entry stays trusted, so the reads after it pay no stat', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        await seed(base, '[core]\n  bare = true\n');
+        const { ctx, calls } = instrumentedContext(base);
+
+        // Act
+        await openConfigEpoch(ctx);
+        await readConfig(ctx);
+        await openConfigEpoch(ctx);
+        await readConfig(ctx);
+
+        // Assert — one stat per epoch open, none from either read
+        expect(configStatCalls(calls())).toBe(2);
       });
     });
   });
@@ -5093,13 +5335,86 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     });
 
     describe('Given `[a.b]` (dot in section), When parseIniSections', () => {
-      it('Then the section records as a.b', () => {
+      it('Then the text after the first dot becomes the subsection', () => {
         // Arrange & Act
         const result = parseIniSections('[a.b]\nk=1\n');
 
         // Assert
         expect(result).toEqual<ReadonlyArray<IniSection>>([
-          { section: 'a.b', subsection: undefined, entries: [{ key: 'k', value: '1' }] },
+          { section: 'a', subsection: 'b', entries: [{ key: 'k', value: '1' }] },
+        ]);
+      });
+    });
+
+    describe('Given `[a.B]` (mixed-case dotted subsection), When parseIniSections', () => {
+      it('Then the subsection is lower-cased', () => {
+        // Arrange & Act
+        const result = parseIniSections('[a.B]\nk=1\n');
+
+        // Assert
+        expect(result).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: 'b', entries: [{ key: 'k', value: '1' }] },
+        ]);
+      });
+    });
+
+    describe('Given `[a.b.c]` (two dots in section), When parseIniSections', () => {
+      it('Then only the first dot splits and the rest is one subsection', () => {
+        // Arrange & Act
+        const result = parseIniSections('[a.b.c]\nk=1\n');
+
+        // Assert
+        expect(result).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: 'b.c', entries: [{ key: 'k', value: '1' }] },
+        ]);
+      });
+    });
+
+    describe('Given `[a.]` (trailing dot in section), When parseIniSections', () => {
+      it('Then the subsection is empty rather than absent', () => {
+        // Arrange & Act
+        const result = parseIniSections('[a.]\nk=1\n');
+
+        // Assert
+        expect(result).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: '', entries: [{ key: 'k', value: '1' }] },
+        ]);
+      });
+    });
+
+    describe('Given `[.a]` (leading dot in section), When parseIniSections', () => {
+      it('Then the section is empty and the remainder is the subsection', () => {
+        // Arrange & Act
+        const result = parseIniSections('[.a]\nk=1\n');
+
+        // Assert
+        expect(result).toEqual<ReadonlyArray<IniSection>>([
+          { section: '', subsection: 'a', entries: [{ key: 'k', value: '1' }] },
+        ]);
+      });
+    });
+
+    describe('Given `[a.b "C"]` (dotted section with a quoted subsection), When parseIniSections', () => {
+      it('Then the lowered dotted half joins the verbatim quoted half', () => {
+        // Arrange & Act
+        const result = parseIniSections('[a.B "C"]\nk=1\n');
+
+        // Assert
+        expect(result).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: 'b.C', entries: [{ key: 'k', value: '1' }] },
+        ]);
+      });
+    });
+
+    describe('Given `[a.]` and `[a ""]` in one file, When parseIniSections', () => {
+      it('Then both headers carry the same empty subsection', () => {
+        // Arrange & Act
+        const result = parseIniSections('[a.]\nk=one\n[a ""]\nk=two\n');
+
+        // Assert
+        expect(result).toEqual<ReadonlyArray<IniSection>>([
+          { section: 'a', subsection: '', entries: [{ key: 'k', value: 'one' }] },
+          { section: 'a', subsection: '', entries: [{ key: 'k', value: 'two' }] },
         ]);
       });
     });
@@ -5536,7 +5851,7 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     });
   });
 
-  describe('parseGitBoolean grammar (Pin K)', () => {
+  describe('parseGitBoolean grammar', () => {
     describe('Given a case-insensitive true word', () => {
       describe('When parseGitBoolean', () => {
         it.each([
@@ -6018,6 +6333,129 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
           // Assert
           expect(result?.key).toBe('core.maxtreedepth');
           expect(result?.value).toBe('2.5');
+        });
+      });
+    });
+  });
+
+  describe('findLastInvalidDeltaBaseCacheLimit', () => {
+    describe('Given core.deltaBaseCacheLimit = -1 (negative)', () => {
+      describe('When findLastInvalidDeltaBaseCacheLimit', () => {
+        it("Then returns an entry with reason 'invalid unit'", async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[core]\n\tdeltaBaseCacheLimit = -1\n');
+
+          // Act
+          const result = await findLastInvalidDeltaBaseCacheLimit(ctx);
+
+          // Assert
+          expect(result?.key).toBe('core.deltabasecachelimit');
+          expect(result?.value).toBe('-1');
+          expect(result?.reason).toBe('invalid unit');
+        });
+      });
+    });
+
+    describe('Given core.deltaBaseCacheLimit past the uint64 ceiling', () => {
+      describe('When findLastInvalidDeltaBaseCacheLimit', () => {
+        it("Then returns an entry with reason 'out of range'", async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[core]\n\tdeltaBaseCacheLimit = 18446744073709551616\n');
+
+          // Act
+          const result = await findLastInvalidDeltaBaseCacheLimit(ctx);
+
+          // Assert
+          expect(result?.key).toBe('core.deltabasecachelimit');
+          expect(result?.value).toBe('18446744073709551616');
+          expect(result?.reason).toBe('out of range');
+        });
+      });
+    });
+
+    describe('Given a valueless core.deltaBaseCacheLimit entry (no "=")', () => {
+      describe('When findLastInvalidDeltaBaseCacheLimit', () => {
+        it("Then returns an entry with value '' and reason invalid unit", async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[core]\n\tdeltaBaseCacheLimit\n');
+
+          // Act
+          const result = await findLastInvalidDeltaBaseCacheLimit(ctx);
+
+          // Assert
+          expect(result?.value).toBe('');
+          expect(result?.reason).toBe('invalid unit');
+        });
+      });
+    });
+
+    describe('Given a valid core.deltaBaseCacheLimit (e.g. 4m)', () => {
+      describe('When findLastInvalidDeltaBaseCacheLimit', () => {
+        it('Then returns undefined', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[core]\n\tdeltaBaseCacheLimit = 4m\n');
+
+          // Act
+          const result = await findLastInvalidDeltaBaseCacheLimit(ctx);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given deltaBaseCacheLimit = -1 (line 2) then deltaBaseCacheLimit = 4m (line 3) — invalid-then-valid', () => {
+      describe('When findLastInvalidDeltaBaseCacheLimit', () => {
+        it('Then returns undefined (the last, valid entry is the effective one)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[core]\n\tdeltaBaseCacheLimit = -1\n\tdeltaBaseCacheLimit = 4m\n');
+
+          // Act
+          const result = await findLastInvalidDeltaBaseCacheLimit(ctx);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given deltaBaseCacheLimit = 4m (line 2) then deltaBaseCacheLimit = -1 (line 3) — valid-then-invalid', () => {
+      describe('When findLastInvalidDeltaBaseCacheLimit', () => {
+        it('Then returns the entry for -1 (only the last entry is validated)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[core]\n\tdeltaBaseCacheLimit = 4m\n\tdeltaBaseCacheLimit = -1\n');
+
+          // Act
+          const result = await findLastInvalidDeltaBaseCacheLimit(ctx);
+
+          // Assert
+          expect(result?.key).toBe('core.deltabasecachelimit');
+          expect(result?.value).toBe('-1');
+          expect(result?.reason).toBe('invalid unit');
+        });
+      });
+    });
+
+    describe('Given an invalid deltaBaseCacheLimit ahead of the first header', () => {
+      describe('When findLastInvalidDeltaBaseCacheLimit', () => {
+        it('Then returns undefined — a key with no section is not a [core] key', async () => {
+          // Arrange — measured against git 2.55.0: a key ahead of every header
+          // is refused with "key does not contain a section", so it is never
+          // the effective `core.deltaBaseCacheLimit`.
+          const ctx = createMemoryContext();
+          await seed(ctx, 'deltaBaseCacheLimit = -1\n[core]\n\tbare = true\n');
+
+          // Act
+          const result = await findLastInvalidDeltaBaseCacheLimit(ctx);
+
+          // Assert
+          expect(result).toBeUndefined();
         });
       });
     });

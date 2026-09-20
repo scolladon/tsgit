@@ -7,7 +7,7 @@ import type { IndexResolver } from '../../ports/snapshot-resolvers.js';
  * `ResolveOptions.bypassCache` flag is accepted (port contract) but
  * ignored here, since there is no cache to bypass.
  *
- * This is the bottom of the resolver decorator stack (see design §10.1).
+ * This is the bottom of the resolver decorator stack.
  * Caching and single-flight adapters wrap this; the freshness checks
  * (size limit, SHA-1 trailer verification) live inside `readIndex` and
  * therefore apply to every uncached read.

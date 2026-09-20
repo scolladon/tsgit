@@ -108,6 +108,7 @@ await repo.notes.add({ object: 'HEAD', content: enc.encode('ok'), ref: 'refs/not
 - `NOTES_OBJECT_HAS_NONE` — `remove` on an object that has no note, or when the notes ref is absent.
 - `NOTES_REF_OUTSIDE` — `GIT_NOTES_REF` or `core.notesRef` names a ref outside `refs/notes/` (the data carries the offending `ref`). An explicit `ref` option is expanded into the namespace instead, so it never triggers this.
 - `INVALID_REF` — the resolved notes ref (after expansion) violates git ref syntax.
+- `CONFIG_BAD_NUMERIC_VALUE` — a malformed `core.maxTreeDepth` / `core.deltaBaseCacheLimit` (the repo-settings class). `read` and `remove` check it explicitly right after the operational gate, before the object argument resolves, transcribing git's own per-builtin prologue; `add` reaches the same class structurally through its first object read/write, with no separate check. See [`internals.md`](../primitives/internals.md#assertrepossettingsvalid).
 
 ## See also
 

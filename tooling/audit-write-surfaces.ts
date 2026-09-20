@@ -6,26 +6,27 @@
  * is exercised by at least one `cross-tool-interop` integration test
  * whose `interopSurface:` key names that surface (or by an entry in
  * `tooling/audit-write-surfaces.allowlist.json`). Static analysis only —
- * does not invoke `git` (the matrix CI jobs do that, see design §3.6).
+ * does not invoke `git` (the matrix CI jobs do that).
  *
  * Posture: ships warn-only on the sweep PR (ADR-139). The audit emits
  * the report and a stderr warning for any gap, but exits 0 unless
  * `--blocking` is passed.
  */
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import type { Dirent } from 'node:fs';
+import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import * as process from 'node:process';
 import * as url from 'node:url';
-
-import type { IntegrationProofHeuristic } from './test-pyramid/parse-manifest.ts';
-import { parseProvesHeader } from './test-pyramid/parse-proves-header.ts';
 import { type AllowEntry, computeGaps } from './audit-write-surfaces/compute-gaps.ts';
 import { parseAllowlist } from './audit-write-surfaces/load-allowlist.ts';
 import { parseInteropSurface } from './audit-write-surfaces/parse-interop-surface.ts';
+import { parseWritesTag, type WritesTagConfig } from './audit-write-surfaces/parse-writes-tag.ts';
+import type { IntegrationProofHeuristic } from './test-pyramid/parse-manifest.ts';
 import {
-  type WritesTagConfig,
-  parseWritesTag,
-} from './audit-write-surfaces/parse-writes-tag.ts';
+  type ProvesError,
+  type ProvesErrorReason,
+  parseProvesHeader,
+} from './test-pyramid/parse-proves-header.ts';
 
 const SCRIPT_DIR = path.dirname(url.fileURLToPath(import.meta.url));
 const DEFAULT_ROOT = path.resolve(SCRIPT_DIR, '..');
@@ -74,37 +75,44 @@ interface AuditFlags {
   readonly blocking: boolean;
 }
 
+/** The flags that take a path argument, and where each one lands. */
+const PATH_FLAGS = new Set(['--root', '--out', '--allowlist']);
+
+type PathFlagValues = { root?: string; out?: string; allowlist?: string };
+
+/** The accumulator field `flag` fills. Flags and fields are named alike, so
+ *  the mapping is the flag's own name without its leading dashes. */
+const pathFlagField = (flag: string): keyof PathFlagValues => flag.slice(2) as keyof PathFlagValues;
+
+/** The value following a `--flag <value>` pair, or a thrown error when the
+ *  argument list ends before the value arrives. */
+const requireFlagValue = (argv: ReadonlyArray<string>, index: number, flag: string): string => {
+  const value = argv[index + 1];
+  if (value === undefined) throw new Error(`${flag} requires a value`);
+  return path.resolve(value);
+};
+
 export const parseArgs = (argv: ReadonlyArray<string>): AuditFlags => {
-  let root = DEFAULT_ROOT;
-  let out: string | undefined;
-  let allowlist: string | undefined;
+  const paths: PathFlagValues = {};
   let blocking = false;
   for (let i = 0; i < argv.length; i += 1) {
-    const flag = argv[i];
-    const value = argv[i + 1];
-    if (flag === '--root') {
-      if (value === undefined) throw new Error('--root requires a value');
-      root = path.resolve(value);
+    const flag = argv[i] as string;
+    if (PATH_FLAGS.has(flag)) {
+      paths[pathFlagField(flag)] = requireFlagValue(argv, i, flag);
       i += 1;
-    } else if (flag === '--out') {
-      if (value === undefined) throw new Error('--out requires a value');
-      out = path.resolve(value);
-      i += 1;
-    } else if (flag === '--allowlist') {
-      if (value === undefined) throw new Error('--allowlist requires a value');
-      allowlist = path.resolve(value);
-      i += 1;
-    } else if (flag === '--blocking') {
-      blocking = true;
-    } else {
-      throw new Error(`unknown flag: ${flag}`);
+      continue;
     }
+    if (flag === '--blocking') {
+      blocking = true;
+      continue;
+    }
+    throw new Error(`unknown flag: ${flag}`);
   }
+  const root = paths.root ?? DEFAULT_ROOT;
   return {
     root,
-    out: out ?? path.join(root, 'reports'),
-    allowlist:
-      allowlist ?? path.join(root, 'tooling', 'audit-write-surfaces.allowlist.json'),
+    out: paths.out ?? path.join(root, 'reports'),
+    allowlist: paths.allowlist ?? path.join(root, 'tooling', 'audit-write-surfaces.allowlist.json'),
     blocking,
   };
 };
@@ -124,7 +132,7 @@ const walkDir = async (
 ): Promise<ReadonlyArray<string>> => {
   const out: string[] = [];
   const visit = async (current: string): Promise<void> => {
-    let entries;
+    let entries: Dirent[];
     try {
       entries = await readdir(current, { withFileTypes: true });
     } catch {
@@ -209,35 +217,73 @@ interface CollectedCoverage {
   readonly malformedTest: ReadonlyArray<ParseFinding>;
 }
 
+// A file with no `@proves` block claims no surface, so it can lose none —
+// the test-pyramid audit owns that class. A block that is present but fails
+// the grammar is a claim the audit would otherwise drop unseen, so it is
+// reported here instead.
+const NO_CLAIM_REASONS: ReadonlySet<ProvesErrorReason> = new Set<ProvesErrorReason>([
+  'no-jsdoc-at-top',
+  'no-proves-block',
+]);
+
+const claimsNothing = (reason: ProvesErrorReason): boolean => NO_CLAIM_REASONS.has(reason);
+
+const describeProvesError = (error: ProvesError): string =>
+  error.detail === undefined ? error.reason : `${error.reason}: ${error.detail}`;
+
+/** The surfaces one integration file claims, or the finding that says why
+ *  its header could not be read. A header claiming nothing yields neither. */
+type FileClaim =
+  | { readonly kind: 'surfaces'; readonly surfaces: ReadonlySet<string> }
+  | { readonly kind: 'malformed'; readonly detail: string }
+  | { readonly kind: 'silent' };
+
+const readClaim = (source: string): FileClaim => {
+  const proves = parseProvesHeader(source, PROVES_CONFIG);
+  if (!proves.ok) {
+    if (claimsNothing(proves.error.reason)) return { kind: 'silent' };
+    return { kind: 'malformed', detail: describeProvesError(proves.error) };
+  }
+  const interop = parseInteropSurface(source, proves.header.bucket, INTEROP_CONFIG);
+  if (!interop.ok) {
+    const detail =
+      interop.error.detail === undefined
+        ? interop.error.reason
+        : `${interop.error.reason}: ${interop.error.detail}`;
+    return { kind: 'malformed', detail };
+  }
+  return { kind: 'surfaces', surfaces: interop.surfaces };
+};
+
+/** Records `rel` as a coverer of `name`, keeping each file once per surface. */
+const addCoverer = (byName: Map<string, string[]>, name: string, rel: string): void => {
+  const existing = byName.get(name);
+  if (existing === undefined) {
+    byName.set(name, [rel]);
+    return;
+  }
+  if (!existing.includes(rel)) existing.push(rel);
+};
+
 const collectCoverage = async (root: string): Promise<CollectedCoverage> => {
   const testDir = path.join(root, 'test', 'integration');
   const files = await walkDir(testDir, isIntegrationTest);
   const byName = new Map<string, string[]>();
   const malformed: ParseFinding[] = [];
   for (const absPath of files) {
-    const source = await readFile(absPath, 'utf8');
-    const proves = parseProvesHeader(source, PROVES_CONFIG);
-    if (!proves.ok) continue;
-    const interop = parseInteropSurface(source, proves.header.bucket, INTEROP_CONFIG);
     const rel = path.relative(root, absPath).replaceAll(path.sep, '/');
-    if (!interop.ok) {
-      malformed.push({
-        path: rel,
-        kind: 'test-malformed',
-        detail: `${interop.error.reason}${interop.error.detail !== undefined ? `: ${interop.error.detail}` : ''}`,
-      });
+    const claim = readClaim(await readFile(absPath, 'utf8'));
+    if (claim.kind === 'malformed') {
+      malformed.push({ path: rel, kind: 'test-malformed', detail: claim.detail });
       continue;
     }
-    for (const name of interop.surfaces) {
-      const existing = byName.get(name);
-      if (existing === undefined) byName.set(name, [rel]);
-      else if (!existing.includes(rel)) existing.push(rel);
-    }
+    if (claim.kind === 'silent') continue;
+    for (const name of claim.surfaces) addCoverer(byName, name, rel);
   }
-  const coverage: CoverageDecl[] = [];
-  for (const [surface, paths] of byName) {
-    coverage.push({ surface, coveredBy: paths });
-  }
+  const coverage: CoverageDecl[] = [...byName].map(([surface, paths]) => ({
+    surface,
+    coveredBy: paths,
+  }));
   return { coverage, malformedTest: malformed };
 };
 
@@ -372,8 +418,7 @@ const totalFindings = (report: AuditReport): number =>
   report.orphanCoverage.length +
   report.malformed.length;
 
-const describeError = (err: unknown): string =>
-  err instanceof Error ? err.message : String(err);
+const describeError = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
 const parseFlagsOrExit = (argv: ReadonlyArray<string>): AuditFlags => {
   try {

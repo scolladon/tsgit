@@ -78,6 +78,8 @@ export type { IndexEntry } from '../../domain/git-index/index.js';
 export type { ConflictType, MergeConflict, MergeOutcome } from '../../domain/merge/index.js';
 export type { SparseMatcher } from '../../domain/sparse/index.js';
 
+const HEAD: RefName = 'HEAD' as RefName;
+
 export interface MergeRunInput {
   readonly rev: string;
   readonly message?: string;
@@ -127,22 +129,22 @@ export type MergeResult =
       readonly origHead: ObjectId;
     };
 
+/** `post-merge`'s squash-flag argument. tsgit has no `--squash`, so always off. */
+const SQUASH_FLAG_OFF = '0';
+
 /**
  * Merge `rev` into the current HEAD branch.
  *
  * - Up-to-date: rev is ancestor of HEAD → no-op.
  * - Fast-forward: HEAD is ancestor of rev → branch advances.
- * - True merge for diverged histories:.4a wired the three-way
- *  tree merge (`mergeTrees` + `mergeContent`) so a CLEAN merge commits
- *  the merged tree directly.4b persists conflict state on
- *  disk (marker files, stage-1/2/3 index entries, MERGE_HEAD /
- *  MERGE_MSG / ORIG_HEAD) and returns `{ kind: 'conflict',... }`.
- *  Resolution path: edit the marker files, `repo.add(paths)`,
- *  `repo.commit({ message })` — the resulting commit has two parents.
+ * - True merge for diverged histories: the three-way tree merge (`mergeTrees`
+ *   + `mergeContent`) commits the merged tree directly when it comes out
+ *   CLEAN. A conflicted merge instead persists its state on disk (marker
+ *   files, stage-1/2/3 index entries, MERGE_HEAD / MERGE_MSG / ORIG_HEAD) and
+ *   returns `{ kind: 'conflict', ... }`. Resolution path: edit the marker
+ *   files, `repo.add(paths)`, `repo.commit({ message })` — the resulting
+ *   commit has two parents.
  */
-/** `post-merge`'s squash-flag argument. tsgit has no `--squash`, so always off. */
-const SQUASH_FLAG_OFF = '0';
-
 export const mergeRun = async (
   ctx: Context,
   opts: MergeRunInput,
@@ -179,7 +181,9 @@ const computeMerge = async (
   if (base === ourId) {
     if (opts.fastForward !== 'never') {
       return materialiseAndApply(ctx, await getTree(ctx, theirId), async () => {
-        await updateRef(ctx, head.target, theirId, {
+        // Written through the literal `HEAD` — merge refuses on a detached
+        // HEAD, so `HEAD` always names the branch being fast-forwarded here.
+        await updateRef(ctx, HEAD, theirId, {
           expected: ourId,
           reflogMessage: `${internal.reflogAction ?? `merge ${opts.rev}`}: Fast-forward`,
         });
@@ -295,7 +299,9 @@ const commitCleanMerge = async (
   };
   return materialiseAndApply(ctx, mergedTree, async () => {
     const id = await createCommit(ctx, commitData);
-    await updateRef(ctx, branchName, id, {
+    // Written through the literal `HEAD` — merge refuses on a detached
+    // HEAD, so `HEAD` always names the branch this merge commit advances.
+    await updateRef(ctx, HEAD, id, {
       expected: ourId,
       reflogMessage: `${internal.reflogAction ?? `merge ${opts.rev}`}: Merge made by the 'tsgit' strategy.`,
     });

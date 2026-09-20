@@ -117,7 +117,7 @@ export const add = async (
   // path forward for merge / cherry-pick / revert / rebase alike.
   await assertNoPendingOperation(ctx, { except: [MERGE, CHERRY_PICK, REVERT, REBASE] });
   // Build the attribute provider ONCE per add invocation. Skip when no runner
-  // is wired (R11 inert fallback — ctx.command absent means no filter execution).
+  // runner is wired — an absent `ctx.command` means no filter can execute.
   const provider = await maybeBuildAttributeProvider(ctx);
   if (opts.all === true) {
     if (paths.length !== 0) {
@@ -582,8 +582,8 @@ const stageFromStat = async (
 /**
  * Apply the clean filter for `path` when a runner and provider are available.
  * Symlinks are never filtered (git stores the link target verbatim).
- * F3: required=true + non-zero exit → throw CLEAN_FILTER_FAILED.
- * F4: required=false/absent + non-zero exit → stage raw bytes silently.
+ * A required driver's non-zero exit throws CLEAN_FILTER_FAILED; an optional
+ * one's stages the raw bytes silently.
  */
 const applyCleanFilter = async (
   ctx: Context,

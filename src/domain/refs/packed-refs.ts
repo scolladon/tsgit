@@ -8,6 +8,8 @@
  *   kind:    byte-identical
  *   format:  git-packed-refs
  */
+
+import type { RefName } from '../objects/index.js';
 import { ObjectId as ObjectIdFactory, RefName as RefNameFactory } from '../objects/index.js';
 import { invalidPackedRefs } from './error.js';
 import type { PackedRefEntry, PackedRefs } from './ref-types.js';
@@ -89,6 +91,19 @@ function parseEntries(
   return entries;
 }
 
+/** One line per entry, in the order given, each annotated tag's `^` peel
+ *  line following its own ref line. */
+function renderEntries(entries: ReadonlyArray<PackedRefEntry>): ReadonlyArray<string> {
+  const lines: string[] = [];
+  for (const entry of entries) {
+    lines.push(`${entry.id} ${entry.name}`);
+    if (entry.peeled !== undefined) {
+      lines.push(`^${entry.peeled}`);
+    }
+  }
+  return lines;
+}
+
 export function serializePackedRefs(refs: PackedRefs): string {
   if (refs.entries.length === 0) {
     return '';
@@ -99,17 +114,57 @@ export function serializePackedRefs(refs: PackedRefs): string {
     (a.name as string) < (b.name as string) ? -1 : (a.name as string) > (b.name as string) ? 1 : 0,
   );
 
-  const lines: string[] = [];
-  lines.push(buildHeaderLine(refs));
+  return `${[buildHeaderLine(refs), ...renderEntries(sorted)].join('\n')}\n`;
+}
 
-  for (const entry of sorted) {
-    lines.push(`${entry.id} ${entry.name}`);
-    if (entry.peeled !== undefined) {
-      lines.push(`^${entry.peeled}`);
-    }
+/** {@link packedRefsWithout}'s result: the surviving entries, in their
+ *  original relative order, and the rewrite's text — so a caller caching the
+ *  parsed file can adopt `entries` without re-parsing `content` (a lookup by
+ *  name, or a name-sorted listing, reads the two identically). */
+export interface PackedRefsRewrite {
+  readonly entries: ReadonlyArray<PackedRefEntry>;
+  readonly content: string;
+}
+
+/**
+ * git's `write_with_updates`: the names to drop are walked in byte order
+ * alongside the snapshot in the order it is held, and a name is dropped only
+ * where the two walks meet. A snapshot whose order really is sorted meets
+ * every one of them; a snapshot a `sorted` header claims but whose lines do
+ * not honour lets the walk step past a name, and that line survives the
+ * rewrite exactly as git leaves it.
+ */
+function keptAfterDrops(
+  entries: ReadonlyArray<PackedRefEntry>,
+  names: ReadonlySet<RefName>,
+): ReadonlyArray<PackedRefEntry> {
+  const dropping = [...names].sort();
+  const kept: PackedRefEntry[] = [];
+  let next = 0;
+  for (const entry of entries) {
+    // Equivalent mutant, deliberately not suppressed — a line-level disable would also silence the detected mutants sharing this line. past the end `dropping[next]` is undefined and compares false against any name, so widening or dropping this bound still halts the walk on the same step.
+    while (next < dropping.length && (dropping[next] as string) < (entry.name as string)) next++;
+    if (dropping[next] === entry.name) next++;
+    else kept.push(entry);
   }
+  return kept;
+}
 
-  return `${lines.join('\n')}\n`;
+/**
+ * git's `packed-refs` rewrite without `names` (the files backend's delete
+ * path): the survivors are re-serialized under git's own canonical header
+ * (`buildHeaderLine`'s traits, never the file's old header), in the order the
+ * snapshot holds them, with every surviving line and `^` value copied
+ * verbatim — never re-peeled, never reading an object. Dropping the last
+ * entry leaves the header line alone.
+ */
+export function packedRefsWithout(
+  entries: ReadonlyArray<PackedRefEntry>,
+  names: ReadonlySet<RefName>,
+): PackedRefsRewrite {
+  const kept = keptAfterDrops(entries, names);
+  const header = buildHeaderLine({ entries: [], peeling: 'fully', sorted: true });
+  return { entries: kept, content: `${[header, ...renderEntries(kept)].join('\n')}\n` };
 }
 
 function buildHeaderLine(refs: PackedRefs): string {

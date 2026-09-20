@@ -29,6 +29,7 @@ import {
 import { remoteAdd } from '../../src/application/commands/remote.js';
 import { readConfig } from '../../src/application/primitives/config-read.js';
 import { getConfigValue } from '../../src/application/primitives/config-scoped-read.js';
+import { assertOperationalRepository } from '../../src/application/primitives/internal/repo-state.js';
 import {
   type ConfigOperation,
   removeConfigSection,
@@ -1298,7 +1299,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
     });
   });
 
-  describe('Given twin repos with `[remote "o"]` having a multi-line fetch entry (row J2)', () => {
+  describe('Given twin repos with `[remote "o"]` having a multi-line fetch entry', () => {
     describe('When git and tsgit each append remote.o.fetch = B', () => {
       it('Then the [remote "o"] section bytes are identical — appended entry lands after the multi-line tail', async () => {
         // Arrange — row J2: append after a multi-line entry
@@ -1344,25 +1345,25 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
     value: string;
   }> = [
     {
-      label: 'W1 replace same-line key splits the header',
+      label: 'replace same-line key splits the header',
       body: '[a] key = v\n',
       key: 'a.key',
       value: 'x2',
     },
     {
-      label: 'W3 replace valueless same-line key splits the header',
+      label: 'replace valueless same-line key splits the header',
       body: '[a] key\n',
       key: 'a.key',
       value: 'x2',
     },
     {
-      label: 'W5 new key keeps the same-line head verbatim',
+      label: 'new key keeps the same-line head verbatim',
       body: '[a] key = v\n',
       key: 'a.other',
       value: 'y',
     },
     {
-      label: 'W6 replace same-line key, body survives',
+      label: 'replace same-line key, body survives',
       body: '[a] key = v\n\tk2 = w\n',
       key: 'a.key',
       value: 'x2',
@@ -1395,17 +1396,17 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
 
   const SAME_LINE_UNSET_MATRIX: ReadonlyArray<{ label: string; body: string; key: string }> = [
     {
-      label: 'W2 unset the only same-line key prunes the block',
+      label: 'unset the only same-line key prunes the block',
       body: '[a] key = v\n',
       key: 'a.key',
     },
     {
-      label: 'W4 unset the only valueless same-line key prunes the block',
+      label: 'unset the only valueless same-line key prunes the block',
       body: '[a] key\n',
       key: 'a.key',
     },
     {
-      label: 'W7 unset a non-matching key keeps the same-line head verbatim',
+      label: 'unset a non-matching key keeps the same-line head verbatim',
       body: '[a] key = v\n\tk2 = w\n',
       key: 'a.k2',
     },
@@ -1421,7 +1422,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
     },
   ];
 
-  // Unsetting may prune `[a]` entirely (W2/W4), so the comparator returns `''`
+  // Unsetting may prune `[a]` entirely, so the comparator returns `''`
   // when the marker is absent instead of throwing like `extractFromA`.
   const sliceFromA = (content: string): string => {
     const idx = content.indexOf('[a]');
@@ -1452,10 +1453,10 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
     );
   });
 
-  describe('Given twin repos with two same-line [a] blocks of the same key (R6)', () => {
+  describe('Given twin repos with two same-line [a] blocks of the same key', () => {
     describe('When git and tsgit each unset-all a.key', () => {
       it('Then both repos collapse to an empty config (every block pruned)', async () => {
-        // Arrange — R6: every same-line occurrence + its block is removed
+        // Arrange — every same-line occurrence and its block is removed
         const { peerConfigPath } = await seedTwinConfigs(
           pair,
           `${PREAMBLE}[a] key = 1\n[a] key = 2\n`,
@@ -1477,7 +1478,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
     });
   });
 
-  describe('Given twin repos where [a] has one entry followed by [b] (row I1)', () => {
+  describe('Given twin repos where [a] has one entry followed by [b]', () => {
     describe('When git and tsgit each set a.other to "val"', () => {
       it('Then the [a] section bytes are identical — new key is inserted at the end of the section, not after the header', async () => {
         // Arrange — row I1: new key lands after the last entry, not right after the header
@@ -1500,7 +1501,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
     });
   });
 
-  describe('Given twin repos where [a] has an entry then a blank then a comment then [b] (row I2)', () => {
+  describe('Given twin repos where [a] has an entry then a blank then a comment then [b]', () => {
     describe('When git and tsgit each set a.other to "val"', () => {
       it('Then the [a] section bytes are identical — new key is inserted after the last entry, before trailing blank/comment', async () => {
         // Arrange — row I2: insertion after the last entry token, before trailing blank+comment
@@ -1523,7 +1524,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
     });
   });
 
-  describe('Given twin repos with two [a] blocks and new key targeting [a] (row I4 + last-empty-block)', () => {
+  describe('Given twin repos with two [a] blocks and new key targeting [a] (last-empty-block)', () => {
     describe('When git and tsgit each set a.new to "val"', () => {
       it('Then the [a] section bytes are identical — new key lands in the last matching block', async () => {
         // Arrange — row I4: the last matching block (empty) receives the new key;
@@ -1570,7 +1571,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
     });
   });
 
-  describe('Given twin repos where [a] has a comment then a multi-line entry (row D4)', () => {
+  describe('Given twin repos where [a] has a comment then a multi-line entry', () => {
     describe('When git and tsgit each unset a.key', () => {
       it('Then the comment keeps the header — only the entry span is removed', async () => {
         // Arrange — row D4: a comment in the block keeps the header (and the comment)
@@ -1593,7 +1594,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
     });
   });
 
-  describe('Given twin repos where [a] has key, blank, and a comment before [b] (row D8)', () => {
+  describe('Given twin repos where [a] has key, blank, and a comment before [b]', () => {
     describe('When git and tsgit each unset a.key', () => {
       it('Then the comment keeps the header, blank, and comment — only the entry span is removed', async () => {
         // Arrange — row D8: comment present → header, blank, and comment all kept
@@ -1782,7 +1783,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
   // Rename/remove-section span-unawareness (N1/N2/N3) — both tools "corrupt" identically
   // ---------------------------------------------------------------------------
 
-  describe('Given twin repos with a lookalike-tail followed by a real [b "s"] block (row N1)', () => {
+  describe('Given twin repos with a lookalike-tail followed by a real [b "s"] block', () => {
     describe('When git and tsgit each rename-section b.s to b.t', () => {
       it('Then the full-file bytes are identical — the lookalike tail is renamed too (span-unaware, intended)', async () => {
         // Arrange — row N1: `[a]` has `key = one\` then `[b "s"]` (lookalike tail).
@@ -1813,7 +1814,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
     });
   });
 
-  describe('Given twin repos with [a "s"] having a plain continuation body tail (row N2)', () => {
+  describe('Given twin repos with [a "s"] having a plain continuation body tail', () => {
     describe('When git and tsgit each rename-section a.s to a.t', () => {
       it('Then the full-file bytes are identical — body tails pass through verbatim', async () => {
         // Arrange — row N2: the continuation tail `   two` does not look like a
@@ -1844,7 +1845,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
     });
   });
 
-  describe('Given twin repos with [a] having a lookalike-tail followed by two [b "s"] blocks (row N3)', () => {
+  describe('Given twin repos with [a] having a lookalike-tail followed by two [b "s"] blocks', () => {
     describe('When git and tsgit each remove-section b.s', () => {
       it('Then the full-file bytes are identical — both lookalike tail and real blocks are removed (span-unaware, intended)', async () => {
         // Arrange — row N3: removing b.s hits the lookalike tail plus both real blocks,
@@ -2644,9 +2645,9 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
       readonly oldName: string;
       readonly newName: string;
     }> = [
-      { label: 'a same-line entry (W8)', bytes: '[a] key = v\n', oldName: 'a', newName: 'b' },
+      { label: 'a same-line entry', bytes: '[a] key = v\n', oldName: 'a', newName: 'b' },
       {
-        label: 'a same-line entry with a body (R1)',
+        label: 'a same-line entry with a body',
         bytes: '[a] key = v\n\tk2 = w\n',
         oldName: 'a',
         newName: 'b',
@@ -2713,7 +2714,7 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
       readonly bytes: string;
       readonly sectionName: string;
     }> = [
-      { label: 'a same-line block (W9)', bytes: '[a] key = v\n', sectionName: 'a' },
+      { label: 'a same-line block', bytes: '[a] key = v\n', sectionName: 'a' },
       {
         label: 'a same-line block before a section (C3)',
         bytes: '[a] key = v\n\tk2=w\n[c]\n\tk3=x\n',
@@ -3028,6 +3029,57 @@ describe.skipIf(!GIT_AVAILABLE)('config interop', () => {
         expect(ctx.fs.homedir()).toBe(process.env['HOME']);
         expect(existsSync(`${ctx.fs.homedir()}/.gitconfig`)).toBe(false);
         expect(existsSync(`${ctx.fs.xdgConfigHome()}/git/config`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a valid config accepted by a first tsgit command, then canonical git rewrites the value in place', () => {
+    describe('When git and the same warm tsgit session each read the repository again', () => {
+      it('Then both refuse, naming the same key and value', async () => {
+        // Arrange — one Context/session reused across both "commands": the
+        // epoch and its verdict memos are session-keyed, so a fresh
+        // createNodeContext per call (this file's usual pattern, chosen to
+        // bypass the cache between UNRELATED assertions) would defeat this
+        // one, which is specifically about freshness WITHIN one session.
+        const configPath = path.join(pair.ours, '.git', 'config');
+        await writeFile(configPath, '[core]\n\tsparseCheckout = true\n', 'utf8');
+        const ctx = createNodeContext({ workDir: pair.ours });
+        await assertOperationalRepository(ctx);
+
+        // Act — a real `git config` process rewrites the value, bypassing
+        // every tsgit config writer (and its invalidateConfigCache pairing);
+        // both tools are then pointed back at the repository.
+        const rewrite = tryRunGitWithExit([
+          '-C',
+          pair.ours,
+          'config',
+          'core.sparseCheckout',
+          'maybe',
+        ]);
+        expect(rewrite.exitCode).toBe(0);
+        const gitResult = tryRunGitWithExit(['-C', pair.ours, 'status', '--porcelain']);
+        let caught: unknown;
+        try {
+          await assertOperationalRepository(ctx);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert — git's own fatal line, rebuilt from tsgit's refusal data.
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as unknown as Record<string, unknown>;
+        expect(data).toEqual({
+          code: 'CONFIG_BAD_BOOLEAN_VALUE',
+          key: 'core.sparsecheckout',
+          source: configPath,
+          value: 'maybe',
+        });
+        expect(gitResult.exitCode).toBe(128);
+        expect(gitResult.stderr).toBe(
+          `fatal: bad boolean config value '${data['value'] as string}' for '${data['key'] as string}'\n`,
+        );
+        // git's in-place rewrite touched the value alone.
+        expect(await readFile(configPath, 'utf8')).toBe('[core]\n\tsparseCheckout = maybe\n');
       });
     });
   });

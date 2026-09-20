@@ -40,6 +40,7 @@ import {
   type ReftableCheck,
   serializeReftable,
 } from '../../src/domain/refs/index.js';
+import type { ReftableLogRecord } from '../../src/domain/refs/reftable/reftable-log.js';
 import type { ReftableWriteOptions } from '../../src/domain/refs/reftable/reftable-writer.js';
 import { DEFAULT_RESTART_INTERVAL } from '../../src/domain/refs/reftable/reftable-writer.js';
 import type { Context } from '../../src/ports/context.js';
@@ -234,6 +235,43 @@ const buildBigFixture = (rootDir: string): BigFixture => {
   });
   git(dir, 'pack-refs', '--all');
   return { dir, ctx: reftableCtx(dir), refCount: BIG_REF_COUNT + 1 };
+};
+
+interface CrowdedIndexFixture {
+  readonly dir: string;
+  readonly ctx: Context;
+  readonly lastRef: RefName;
+}
+
+const CROWDED_INDEX_REF_COUNT = 3000;
+
+/**
+ * The same shape as {@link buildBigFixture}, written with git's own
+ * `reftable.blockSize` turned down to 256 bytes. The ref index then needs more
+ * blocks than one index level can hold, and git's writer leaves a TOP level of
+ * several blocks with the footer naming only its first — the layout a reader
+ * that stops at that one block silently loses most of the ref set to.
+ */
+const buildCrowdedIndexFixture = (rootDir: string): CrowdedIndexFixture => {
+  const dir = path.join(rootDir, 'crowded-index');
+  initReftableRepo(dir);
+  git(dir, 'config', 'reftable.blockSize', '256');
+  git(dir, 'config', 'reftable.restartInterval', '2');
+  runGit(['-C', dir, 'commit', '-q', '--allow-empty', '-m', 'c1'], {
+    env: dateEnv(1_700_000_000, '+0000'),
+  });
+  const sha = git(dir, 'rev-parse', 'HEAD').trim();
+  const lines: string[] = [];
+  for (let i = 0; i < CROWDED_INDEX_REF_COUNT; i += 1) {
+    lines.push(`create refs/heads/b${i.toString().padStart(6, '0')} ${sha}`);
+  }
+  runGit(['-C', dir, 'update-ref', '--stdin'], {
+    input: `${lines.join('\n')}\n`,
+    env: dateEnv(1_700_000_000, '+0000'),
+  });
+  git(dir, 'pack-refs', '--all');
+  const last = `refs/heads/b${(CROWDED_INDEX_REF_COUNT - 1).toString().padStart(6, '0')}`;
+  return { dir, ctx: reftableCtx(dir), lastRef: last as RefName };
 };
 
 interface HundredFixture {
@@ -460,6 +498,7 @@ describe.skipIf(!GIT_AVAILABLE)('reftable-ref-storage interop', () => {
   let main: MainFixture;
   let sha256: Sha256Fixture;
   let big: BigFixture;
+  let crowdedIndex: CrowdedIndexFixture;
   let hundred: HundredFixture;
   let worktree: WorktreeFixture;
   let corruptControl: { readonly dir: string; readonly ctx: Context };
@@ -470,6 +509,7 @@ describe.skipIf(!GIT_AVAILABLE)('reftable-ref-storage interop', () => {
     main = buildMainFixture(rootDir);
     sha256 = buildSha256Fixture(rootDir);
     big = buildBigFixture(rootDir);
+    crowdedIndex = buildCrowdedIndexFixture(rootDir);
     hundred = buildHundredFixture(rootDir);
     worktree = buildWorktreeFixture(rootDir);
 
@@ -698,6 +738,37 @@ describe.skipIf(!GIT_AVAILABLE)('reftable-ref-storage interop', () => {
     });
   });
 
+  describe('Given a fixture whose ref index git wrote across several top-level blocks', () => {
+    describe('When tsgit reads the ref set', () => {
+      it('Then every ref git shows is walked, not only those the first top block covers', async () => {
+        // Arrange
+        const expected = showRefNames(crowdedIndex.dir);
+        const sut = getRefStore(crowdedIndex.ctx);
+
+        // Act
+        const listed = await sut.listRefs();
+        const names = listed.map((entry) => entry.name).filter((name) => name !== 'HEAD');
+
+        // Assert
+        expect(names.slice().sort()).toEqual(expected);
+      });
+    });
+
+    describe('When tsgit resolves a name only a later top-level block covers', () => {
+      it('Then it reads the same object id git resolves it to', async () => {
+        // Arrange
+        const expected = git(crowdedIndex.dir, 'rev-parse', crowdedIndex.lastRef).trim();
+        const sut = resolveRef;
+
+        // Act
+        const resolved = await sut(crowdedIndex.ctx, crowdedIndex.lastRef);
+
+        // Assert
+        expect(resolved).toBe(expected);
+      });
+    });
+  });
+
   describe('Given a 3001-ref fixture compacted into one table', () => {
     describe('When tsgit reads the ref set', () => {
       it('Then every ref matches git, and the ref index + obj block are exercised', async () => {
@@ -712,6 +783,97 @@ describe.skipIf(!GIT_AVAILABLE)('reftable-ref-storage interop', () => {
         // Assert
         expect(names).toHaveLength(big.refCount);
         expect(names.slice().sort()).toEqual(expected);
+      });
+    });
+
+    describe('When a name is created whose availability check seeks into a late block', () => {
+      it('Then both refuse it, naming the ref that already sits above it', async () => {
+        // Arrange — twin copies of the 20-block fixture: the check seeks to
+        // `refs/heads/b02999/child/`, which sorts past every key of the block
+        // the ref index lands in, so the walk has to continue into the next.
+        const peer = path.join(rootDir, 'seek-above-peer');
+        const ours = path.join(rootDir, 'seek-above-ours');
+        cpSync(big.dir, peer, { recursive: true });
+        cpSync(big.dir, ours, { recursive: true });
+        const ctx = reftableCtx(ours);
+        const sha = git(peer, 'rev-parse', 'HEAD').trim();
+
+        // Act
+        const gitResult = tryRunGitWithExit(
+          ['-C', peer, 'update-ref', 'refs/heads/b02999/child', sha],
+          { env: runGitEnv() },
+        );
+        let caught: unknown;
+        try {
+          await updateRef(ctx, 'refs/heads/b02999/child' as RefName, sha as ObjectId, {
+            reflogMessage: 'update by test',
+          });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(gitResult.exitCode).toBe(128);
+        expect(gitResult.stderr).toContain(
+          "'refs/heads/b02999' exists; cannot create 'refs/heads/b02999/child'",
+        );
+        expect((caught as TsgitError).data.code).toBe('NOT_A_DIRECTORY');
+        expect(showRefNames(ours)).not.toContain('refs/heads/b02999/child');
+      });
+    });
+
+    describe('When a name is created whose seek crosses a block and finds nothing under it', () => {
+      it('Then tsgit writes it and git reads it back out of the tsgit-written stack', async () => {
+        // Arrange — `refs/heads/b02999x/` sorts between the last key of one
+        // block and the first key of the next, so a walk that stopped at the
+        // indexed block would have to be right for the wrong reason.
+        const ours = path.join(rootDir, 'seek-free');
+        cpSync(big.dir, ours, { recursive: true });
+        const ctx = reftableCtx(ours);
+        const sha = git(ours, 'rev-parse', 'HEAD').trim();
+
+        // Act
+        await updateRef(ctx, 'refs/heads/b02999x' as RefName, sha as ObjectId, {
+          reflogMessage: 'update by test',
+        });
+
+        // Assert
+        expect(git(ours, 'show-ref', 'refs/heads/b02999x').trim()).toBe(
+          `${sha} refs/heads/b02999x`,
+        );
+        expect(tryRunGitWithExit(['-C', ours, 'fsck'], { env: runGitEnv() }).exitCode).toBe(0);
+      });
+    });
+
+    describe('When a name is created over a tombstone left under it by an earlier table', () => {
+      it('Then both accept — a deleted name under the prefix blocks nothing', async () => {
+        // Arrange — the child created, the child deleted (its tombstone still
+        // in the stack), then the parent created over it.
+        const peer = path.join(rootDir, 'seek-tombstone-peer');
+        const ours = path.join(rootDir, 'seek-tombstone-ours');
+        cpSync(big.dir, peer, { recursive: true });
+        cpSync(big.dir, ours, { recursive: true });
+        const sha = git(peer, 'rev-parse', 'HEAD').trim();
+        for (const dir of [peer, ours]) {
+          git(dir, 'update-ref', 'refs/heads/b02999x/child', sha);
+          git(dir, 'update-ref', '-d', 'refs/heads/b02999x/child');
+        }
+        const ctx = reftableCtx(ours);
+
+        // Act
+        const gitResult = tryRunGitWithExit(['-C', peer, 'update-ref', 'refs/heads/b02999x', sha], {
+          env: runGitEnv(),
+        });
+        await updateRef(ctx, 'refs/heads/b02999x' as RefName, sha as ObjectId, {
+          reflogMessage: 'update by test',
+        });
+
+        // Assert
+        expect(gitResult.exitCode).toBe(0);
+        expect(git(ours, 'show-ref', 'refs/heads/b02999x').trim()).toBe(
+          git(peer, 'show-ref', 'refs/heads/b02999x').trim(),
+        );
+        expect(tryRunGitWithExit(['-C', ours, 'fsck'], { env: runGitEnv() }).exitCode).toBe(0);
       });
     });
 
@@ -1054,6 +1216,16 @@ describe.skipIf(!GIT_AVAILABLE)('reftable-ref-storage interop', () => {
 
   const REFLOG_SELECTOR = /@\{(\d+) ([+-]\d{4})\}$/;
 
+  /** Every log record `name` carries in the stack itself — the records on
+   *  disk, not the lines `git log -g` chooses to display. */
+  const reftableLogRecords = async (
+    context: Context,
+    name: RefName,
+  ): Promise<ReadonlyArray<ReftableLogRecord>> => {
+    const stack = await loadReftableStack(context, reftableDir(context.layout.gitDir));
+    return [...stack.logs(name)];
+  };
+
   /** `git log -g --date=raw --format='%H<TAB>%gd<TAB>%gs' <ref>`, parsed
    *  oldest -> newest (git itself lists newest -> oldest, matching
    *  `git reflog show`) — the FULL oid, never the abbreviated one
@@ -1118,6 +1290,19 @@ describe.skipIf(!GIT_AVAILABLE)('reftable-ref-storage interop', () => {
         // (timestamp + timezone) and message, read back by git ITSELF —
         // closing the gap a tsgit-only encode/decode round trip cannot: a
         // shared encoding bug would cancel out there but not here.
+        // The reftable itself holds FIVE records for the renamed branch: the
+        // three moved ones plus the rename's own pair (the tip cleared, then
+        // re-set). `git log -g` collapses that pair into one displayed line,
+        // so the porcelain alone cannot tell the written shape apart from a
+        // single-record one — the stack is read directly for the count.
+        const renamedRecords = await reftableLogRecords(ctx, 'refs/heads/renamed' as RefName);
+        expect(renamedRecords.map((record) => record.entry.kind)).toEqual([
+          'entry',
+          'entry',
+          'entry',
+          'entry',
+          'entry',
+        ]);
         const renamedLog = reflogRows(dir, 'renamed');
         expect(renamedLog).toHaveLength(4);
         renamedLog.slice(0, 3).forEach((row, index) => {

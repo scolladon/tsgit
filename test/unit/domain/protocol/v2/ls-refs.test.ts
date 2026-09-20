@@ -447,3 +447,28 @@ describe('parseLsRefsResponse — advertised-refs cap', () => {
     });
   });
 });
+
+describe('parseLsRefsResponse — the remote error packet', () => {
+  describe('Given an ls-refs response replaced by an ERR packet', () => {
+    describe('When parsed', () => {
+      it('Then the remote message is surfaced', async () => {
+        // Arrange
+        let captured: unknown;
+
+        // Act
+        try {
+          await parseLsRefsResponse(responseBody(['ERR upload-pack: ls-refs denied\n']));
+        } catch (error) {
+          captured = error;
+        }
+
+        // Assert
+        expect(captured).toBeInstanceOf(TsgitError);
+        expect((captured as TsgitError).data).toEqual({
+          code: 'REMOTE_ERROR',
+          message: 'upload-pack: ls-refs denied',
+        });
+      });
+    });
+  });
+});

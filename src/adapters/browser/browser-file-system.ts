@@ -2,6 +2,7 @@
 import {
   fileExists,
   fileNotFound,
+  notADirectory,
   permissionDenied,
   TsgitError,
   unsupportedOperation,
@@ -58,7 +59,7 @@ export class BrowserFileSystem implements FileSystem {
   async writeExclusive(path: string, data: Uint8Array): Promise<void> {
     const segments = this.splitPath(path);
     if (segments.length === 0) throw permissionDenied(path);
-    const dir = await this.walkToParent(segments, true);
+    const dir = await this.walkToParent(segments, true, path);
     const leaf = leafSegment(segments, path);
     await this.assertDoesNotExist(dir, leaf, path);
     const handle = await dir.getFileHandle(leaf, { create: true });
@@ -113,6 +114,23 @@ export class BrowserFileSystem implements FileSystem {
     return this.stat(path);
   }
 
+  // One parent walk and one leaf lookup, where `lstat` (this adapter's `stat`) walks twice and
+  // raises two refusals for an absent path. The walk refuses as `lstat`'s does; at the leaf, every
+  // rejection but a directory occupant reads as absent, as `lstat` reports each FILE_NOT_FOUND.
+  async lexists(path: string): Promise<boolean> {
+    const segments = this.splitPath(path);
+    if (segments.length === 0) return true;
+    const parent = await this.walkToParent(segments, false, path).catch((err: unknown) => {
+      if (isFileNotFound(err)) return undefined;
+      throw err;
+    });
+    if (parent === undefined) return false;
+    return parent.getFileHandle(leafSegment(segments, path), { create: false }).then(
+      () => true,
+      (err: unknown) => isTypeMismatch(err),
+    );
+  }
+
   async readdir(path: string): Promise<ReadonlyArray<DirEntry>> {
     const handle = await this.resolveDirHandle(path, false);
     const entries: DirEntry[] = [];
@@ -132,16 +150,31 @@ export class BrowserFileSystem implements FileSystem {
 
   async mkdir(path: string): Promise<void> {
     const segments = this.splitPath(path);
-    let dir = this.rootHandle;
-    for (const segment of segments) {
-      dir = await dir.getDirectoryHandle(segment, { create: true });
+    if (segments.length === 0) return;
+    const parent = await this.walkToParent(segments, true, path);
+    await this.createLeafDirectory(parent, leafSegment(segments, path), path);
+  }
+
+  /** The parents map as every other walk does; a regular file holding the leaf itself is an
+   *  occupant rather than a blocked segment, which the node adapter's `mkdir -p` reports as
+   *  FILE_EXISTS. */
+  private async createLeafDirectory(
+    dir: FileSystemDirectoryHandle,
+    leaf: string,
+    path: string,
+  ): Promise<void> {
+    try {
+      await dir.getDirectoryHandle(leaf, { create: true });
+    } catch (err) {
+      if (isTypeMismatch(err)) throw fileExists(path);
+      throw fileNotFound(path);
     }
   }
 
   async rm(path: string): Promise<void> {
     const segments = this.splitPath(path);
     if (segments.length === 0) throw permissionDenied(path);
-    const dir = await this.walkToParent(segments, false);
+    const dir = await this.walkToParent(segments, false, path);
     const leaf = leafSegment(segments, path);
     try {
       await dir.removeEntry(leaf);
@@ -189,7 +222,7 @@ export class BrowserFileSystem implements FileSystem {
       // Removing the root itself is meaningless; OPFS does not expose root removal.
       throw permissionDenied(path);
     }
-    const parent = await this.walkToParent(segments, false).catch((err: unknown) => {
+    const parent = await this.walkToParent(segments, false, path).catch((err: unknown) => {
       if (isFileNotFound(err)) return undefined;
       throw err;
     });
@@ -230,7 +263,7 @@ export class BrowserFileSystem implements FileSystem {
   private async resolveFileHandle(path: string, create: boolean): Promise<FileSystemFileHandle> {
     const segments = this.splitPath(path);
     if (segments.length === 0) throw fileNotFound(path);
-    const dir = await this.walkToParent(segments, create);
+    const dir = await this.walkToParent(segments, create, path);
     const leaf = leafSegment(segments, path);
     try {
       return await dir.getFileHandle(leaf, { create });
@@ -250,12 +283,15 @@ export class BrowserFileSystem implements FileSystem {
   ): Promise<FileSystemDirectoryHandle> {
     const segments = this.splitPath(path);
     if (segments.length === 0) return this.rootHandle;
-    const dir = await this.walkToParent(segments, create);
+    const dir = await this.walkToParent(segments, create, path);
     const leaf = leafSegment(segments, path);
     try {
       return await dir.getDirectoryHandle(leaf, { create });
     } catch (err) {
       if (err instanceof TsgitError) throw err;
+      // OPFS rejects a directory lookup of a file entry with TypeMismatchError: that entry is
+      // present but not a directory, which Node's ENOTDIR and the memory adapter report alike.
+      if (isTypeMismatch(err)) throw notADirectory(path);
       throw fileNotFound(path);
     }
   }
@@ -263,6 +299,7 @@ export class BrowserFileSystem implements FileSystem {
   private async walkToParent(
     segments: ReadonlyArray<string>,
     create: boolean,
+    path: string,
   ): Promise<FileSystemDirectoryHandle> {
     let dir = this.rootHandle;
     for (let i = 0; i < segments.length - 1; i++) {
@@ -272,6 +309,8 @@ export class BrowserFileSystem implements FileSystem {
         dir = await dir.getDirectoryHandle(segment, { create });
       } catch (err) {
         if (err instanceof TsgitError) throw err;
+        // A regular file where a directory is needed: present, but not a directory.
+        if (isTypeMismatch(err)) throw notADirectory(path);
         throw fileNotFound(segments.join('/'));
       }
     }

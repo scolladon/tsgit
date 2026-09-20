@@ -26,6 +26,7 @@ import {
   unsupportedOperation,
 } from '../../../../src/domain/error.js';
 import { STAGE0_FLAGS } from '../../../../src/domain/git-index/index-entry.js';
+import { MAX_OBJECT_ID_IN_ERROR } from '../../../../src/domain/objects/error.js';
 import {
   FILE_MODE,
   hexToBytes,
@@ -114,8 +115,8 @@ const makeTag = (
 });
 
 /** Write an empty tree as blob, no refs: no reachable tree object. */
-const initBareCtx = async (): Promise<Context> => {
-  const ctx = createMemoryContext();
+const initBareCtx = async (options: { readonly homeDir?: string } = {}): Promise<Context> => {
+  const ctx = createMemoryContext(options);
   // Seed HEAD so assertRepository passes
   await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
   return ctx;
@@ -1411,7 +1412,7 @@ describe('Given a loose ref pointing to an absent OID', () => {
 // REFS-VERIFY PASS — malformed content: badRefContent + badRefOid(zero), exit 10
 // ---------------------------------------------------------------------------
 
-describe('Given a loose ref with malformed content (matrix #9b)', () => {
+describe('Given a loose ref holding bytes that are not an object name', () => {
   describe('When fsck runs', () => {
     it('Then emits both badRefContent (bit 8) and badRefOid for zero OID (bit 2), exit 10', async () => {
       // Arrange
@@ -1556,8 +1557,8 @@ describe('Given a repo with one commit whose reflog first entry has the null-oid
 });
 
 // ---------------------------------------------------------------------------
-// FIX 1 — .gitmodules blob content checks must fire when blob is named
-// .gitmodules in its parent tree (pinned real git 2.54.0: exit 1, stderr
+// .gitmodules blob content checks fire when the blob is named .gitmodules in
+// its parent tree (pinned against real git: exit 1, stderr
 // "error in blob <sha>: gitmodulesUrl: disallowed submodule url: ...")
 // ---------------------------------------------------------------------------
 
@@ -1728,7 +1729,7 @@ describe('Given a blob named .gitmodules in a sub-tree (not the root tree)', () 
 });
 
 // ---------------------------------------------------------------------------
-// FIX 3 — corrupt-object msgId faithfulness
+// Corrupt-object msgId faithfulness:
 // Inflate failure → objectType 'unknown', not 'blob'
 // Unknown type in header → msgId 'unknownType', objectType 'unknown'
 // ---------------------------------------------------------------------------
@@ -3802,7 +3803,7 @@ describe('Given a cache-tree oid a multi-pack-index routes to a pack whose index
 });
 
 // ---------------------------------------------------------------------------
-// CONNECTIVITY-ONLY — CLASSIFY UNREADABLE OBJECTS (§D12)
+// CONNECTIVITY-ONLY — CLASSIFY UNREADABLE OBJECTS
 // ---------------------------------------------------------------------------
 
 describe('Given a v99-header pack whose objects exist nowhere else, connectivity classification', () => {
@@ -5337,7 +5338,7 @@ describe('Given a corrupt-idx pack beside a pack whose header probe would reject
 });
 
 // ---------------------------------------------------------------------------
-// MULTI-PACK-INDEX HEALTH PASS — fsck reports the midx (ADR-601)
+// MULTI-PACK-INDEX HEALTH PASS — fsck reports the midx
 // ---------------------------------------------------------------------------
 
 const midxDir = (ctx: Context): string => packsDir(commonGitDir(ctx));
@@ -6053,8 +6054,12 @@ describe('Given a packed object corrupted on disk but warm in the delta cache', 
       // repository.
       const ctx = await initBareCtx();
       const [blobId] = await writeSyntheticPack(ctx, 'warmed', onePackEntry('warm-content'));
-      const healthy = new TextEncoder().encode('blob 12\u0000warm-content');
-      ctx.deltaCache.set(blobId as string, healthy, healthy.length);
+      const healthyContent = new TextEncoder().encode('warm-content');
+      ctx.deltaCache.set(
+        blobId as string,
+        { type: 'blob', content: healthyContent },
+        healthyContent.length,
+      );
       const packPath = packFilePath(ctx, 'warmed');
       const packBytes = (await ctx.fs.read(packPath)).slice();
       packBytes.fill(0xff, 12, Math.min(packBytes.length - 20, 64));
@@ -6367,7 +6372,7 @@ describe('Given a Tier-A-corrupt flat midx', () => {
 });
 
 // ---------------------------------------------------------------------------
-// MODE IS UNGATED (Pin N)
+// MODE IS UNGATED
 // ---------------------------------------------------------------------------
 
 describe('Given a finding-producing midx shape and no rescuing chain', () => {
@@ -6918,7 +6923,7 @@ describe('Given fsck audit reads through the shared registry with createNoDeltaC
       await fsck(ctx);
 
       // Assert
-      const registry = getPackRegistry(ctx);
+      const registry = await getPackRegistry(ctx);
       expect(registry.deltaBaseCache.entryCount).toBe(0);
     });
   });
@@ -6977,6 +6982,512 @@ describe('Given the opening Context already loaded its shallow-boundary set', ()
 
       // Assert
       expect(reads).toBe(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fsck.skipList
+// ---------------------------------------------------------------------------
+
+/** A repository whose only ref roots a commit carrying `missingSpaceBeforeEmail`. */
+const seedBadCommitRepo = async (
+  options: { readonly homeDir?: string } = {},
+): Promise<{ ctx: Context; commitId: ObjectId }> => {
+  const ctx = await initBareCtx(options);
+  const treeId = await writeObject(ctx, makeTree([]));
+  const body = enc2.encode(
+    `tree ${treeId}\nauthor Name<bad@example.com> 1700000000 +0000\ncommitter Test <c@example.com> 1700000000 +0000\n\nmessage\n`,
+  );
+  const commitId = await writeMalformedLooseObject(ctx, buildLooseBytes('commit', body));
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+  return { ctx, commitId };
+};
+
+/** Writes the list file and points `fsck.skipList` at it. */
+const configureSkipList = async (ctx: Context, body: string, path?: string): Promise<string> => {
+  const listPath = path ?? `${ctx.layout.gitDir}/skip-list`;
+  await ctx.fs.writeUtf8(listPath, body);
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, `[fsck]\n\tskipList = ${listPath}\n`);
+  __resetConfigCacheForTests();
+  return listPath;
+};
+
+const OTHER_OID = '0123456789abcdef0123456789abcdef01234567';
+
+const skipListError = async (ctx: Context): Promise<TsgitError> => {
+  let caught: unknown;
+  try {
+    await fsck(ctx);
+  } catch (err) {
+    caught = err;
+  }
+  expect(caught).toBeInstanceOf(TsgitError);
+  return caught as TsgitError;
+};
+
+describe('Given fsck.skipList naming the oid whose content check fires', () => {
+  describe('When fsck runs', () => {
+    it('Then the finding is gone and its exit bit with it', async () => {
+      // Arrange
+      const { ctx, commitId } = await seedBadCommitRepo();
+      await configureSkipList(ctx, `${commitId}\n`);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(result.findings.filter((f) => f.type === 'bad-object')).toEqual([]);
+      expect(result.exitCode & 1).toBe(0);
+    });
+  });
+});
+
+describe('Given fsck.skipList naming some other oid', () => {
+  describe('When fsck runs', () => {
+    it('Then the finding survives and still carries its exit bit', async () => {
+      // Arrange
+      const { ctx, commitId } = await seedBadCommitRepo();
+      await configureSkipList(ctx, `${OTHER_OID}\n`);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(result.findings).toContainEqual({
+        type: 'bad-object',
+        id: commitId,
+        objectType: 'commit',
+        msgId: 'missingSpaceBeforeEmail',
+        severity: 'error',
+      });
+      expect(result.exitCode & 1).toBe(1);
+    });
+  });
+});
+
+describe('Given a skip list padded with comments, blanks, whitespace and CRLF', () => {
+  describe('When fsck runs', () => {
+    it('Then every decoration is tolerated and the oid still skips', async () => {
+      // Arrange
+      const { ctx, commitId } = await seedBadCommitRepo();
+      await configureSkipList(ctx, `# a note\r\n\r\n   ${commitId}   \r\n\r\n`);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(result.findings.filter((f) => f.type === 'bad-object')).toEqual([]);
+    });
+  });
+});
+
+describe('Given a skip list whose entry carries a trailing comment', () => {
+  describe('When fsck runs', () => {
+    it('Then the line is truncated at the marker and the oid still skips', async () => {
+      // Arrange
+      const { ctx, commitId } = await seedBadCommitRepo();
+      await configureSkipList(ctx, `${commitId} # why this one is forgiven\n`);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(result.findings.filter((f) => f.type === 'bad-object')).toEqual([]);
+    });
+  });
+});
+
+describe('Given a skip list whose only content sits behind a mid-line marker', () => {
+  describe('When fsck runs', () => {
+    it('Then the whole line falls away and nothing is skipped', async () => {
+      // Arrange
+      const { ctx, commitId } = await seedBadCommitRepo();
+      await configureSkipList(ctx, `   #${commitId}\n`);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(result.findings).toContainEqual({
+        type: 'bad-object',
+        id: commitId,
+        objectType: 'commit',
+        msgId: 'missingSpaceBeforeEmail',
+        severity: 'error',
+      });
+    });
+  });
+});
+
+describe('Given a skip list holding an upper-cased oid with no trailing newline', () => {
+  describe('When fsck runs', () => {
+    it('Then the case is folded and the last line still counts', async () => {
+      // Arrange
+      const { ctx, commitId } = await seedBadCommitRepo();
+      await configureSkipList(ctx, (commitId as string).toUpperCase());
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(result.findings.filter((f) => f.type === 'bad-object')).toEqual([]);
+    });
+  });
+});
+
+describe('Given fsck.skipList pointed at a path with a relative spelling', () => {
+  describe('When fsck runs', () => {
+    it('Then it resolves against the working tree and the oid still skips', async () => {
+      // Arrange
+      const { ctx, commitId } = await seedBadCommitRepo();
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/names.txt`, `${commitId}\n`);
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[fsck]\n\tskipList = names.txt\n');
+      __resetConfigCacheForTests();
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(result.findings.filter((f) => f.type === 'bad-object')).toEqual([]);
+    });
+  });
+});
+
+describe('Given an unknown fsck msg-id on the third line of the config', () => {
+  describe('When fsck runs', () => {
+    it('Then the refusal names that line the way every other config refusal counts them', async () => {
+      // Arrange — physical lines are 1-based everywhere a config refusal
+      // names one, so the entry below is line 3, not line 2.
+      const { ctx } = await seedBadCommitRepo();
+      await ctx.fs.writeUtf8(
+        `${ctx.layout.gitDir}/config`,
+        '[core]\n[fsck]\n  noSuchThing = error\n',
+      );
+      __resetConfigCacheForTests();
+
+      // Act
+      const caught = await skipListError(ctx);
+
+      // Assert
+      expect(caught.data).toEqual({
+        code: 'FSCK_UNKNOWN_MSG_ID',
+        msgId: 'noSuchThing'.toLowerCase(),
+        source: `${ctx.layout.gitDir}/config`,
+        line: 3,
+      });
+    });
+  });
+});
+
+describe('Given an fsck severity outside the three git accepts on the third config line', () => {
+  describe('When fsck runs', () => {
+    it('Then the refusal names that line the way every other config refusal counts them', async () => {
+      // Arrange
+      const { ctx } = await seedBadCommitRepo();
+      await ctx.fs.writeUtf8(
+        `${ctx.layout.gitDir}/config`,
+        '[core]\n[fsck]\n  symlinkRef = bogus\n',
+      );
+      __resetConfigCacheForTests();
+
+      // Act
+      const caught = await skipListError(ctx);
+
+      // Assert
+      expect(caught.data).toEqual({
+        code: 'CONFIG_INVALID_ENUM_VALUE',
+        key: `fsck.${'symlinkRef'.toLowerCase()}`,
+        source: `${ctx.layout.gitDir}/config`,
+        value: 'bogus',
+        line: 3,
+      });
+    });
+  });
+});
+
+describe('Given a fatal fsck msg-id demoted on the third config line', () => {
+  describe('When fsck runs', () => {
+    it('Then the refusal names that line the way every other config refusal counts them', async () => {
+      // Arrange
+      const { ctx } = await seedBadCommitRepo();
+      await ctx.fs.writeUtf8(
+        `${ctx.layout.gitDir}/config`,
+        '[core]\n[fsck]\n  nulInHeader = warn\n',
+      );
+      __resetConfigCacheForTests();
+
+      // Act
+      const caught = await skipListError(ctx);
+
+      // Assert
+      expect(caught.data).toEqual({
+        code: 'FSCK_CANNOT_DEMOTE',
+        msgId: 'nulInHeader'.toLowerCase(),
+        severity: 'warn',
+        source: `${ctx.layout.gitDir}/config`,
+        line: 3,
+      });
+    });
+  });
+});
+
+describe('Given fsck.skipList present with no value at all', () => {
+  describe('When fsck runs', () => {
+    it('Then the audit refuses the valueless key rather than reading it as absent', async () => {
+      // Arrange
+      const { ctx } = await seedBadCommitRepo();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n[fsck]\n\tskipList\n');
+      __resetConfigCacheForTests();
+
+      // Act
+      const caught = await skipListError(ctx);
+
+      // Assert
+      expect(caught.data).toEqual({
+        code: 'CONFIG_MISSING_VALUE',
+        key: `fsck.${'skipList'.toLowerCase()}`,
+        source: `${ctx.layout.gitDir}/config`,
+        line: 3,
+      });
+    });
+  });
+});
+
+describe('Given fsck.skipList pointed at a path under the user home', () => {
+  describe('When fsck runs', () => {
+    it('Then the home prefix expands and the oid still skips', async () => {
+      // Arrange
+      const homeDir = '/repo/ada-home';
+      const { ctx, commitId } = await seedBadCommitRepo({ homeDir });
+      await ctx.fs.writeUtf8(`${homeDir}/names.txt`, `${commitId}\n`);
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[fsck]\n\tskipList = ~/names.txt\n');
+      __resetConfigCacheForTests();
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(result.findings.filter((f) => f.type === 'bad-object')).toEqual([]);
+    });
+  });
+});
+
+describe('Given fsck.skipList under a home prefix and no home to expand it against', () => {
+  describe('When fsck runs', () => {
+    it('Then the audit refuses, naming the path exactly as configured', async () => {
+      // Arrange
+      const { ctx } = await seedBadCommitRepo();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[fsck]\n\tskipList = ~/names.txt\n');
+      __resetConfigCacheForTests();
+
+      // Act
+      const caught = await skipListError(ctx);
+
+      // Assert
+      expect(caught.data).toEqual({
+        code: 'FSCK_SKIP_LIST_UNREADABLE',
+        path: `${ctx.layout.workDir}/~/names.txt`,
+        reason: 'FILE_NOT_FOUND',
+      });
+    });
+  });
+});
+
+describe('Given fsck.skipList pointed at a file that is not there', () => {
+  describe('When fsck runs', () => {
+    it('Then the whole audit refuses, naming the path it could not open', async () => {
+      // Arrange
+      const { ctx } = await seedBadCommitRepo();
+      const missing = `${ctx.layout.gitDir}/absent-list`;
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, `[fsck]\n\tskipList = ${missing}\n`);
+      __resetConfigCacheForTests();
+
+      // Act
+      const caught = await skipListError(ctx);
+
+      // Assert
+      expect(caught.data).toEqual({
+        code: 'FSCK_SKIP_LIST_UNREADABLE',
+        path: missing,
+        reason: 'FILE_NOT_FOUND',
+      });
+    });
+  });
+});
+
+describe('Given a skip list line that is not an object name', () => {
+  describe('When fsck runs', () => {
+    it('Then the whole audit refuses, naming the line and where it came from', async () => {
+      // Arrange
+      const { ctx } = await seedBadCommitRepo();
+      const listPath = await configureSkipList(ctx, '# lead-in\nnot-an-oid\n');
+
+      // Act
+      const caught = await skipListError(ctx);
+
+      // Assert
+      expect(caught.data).toEqual({
+        code: 'FSCK_SKIP_LIST_INVALID_NAME',
+        name: 'not-an-oid',
+        path: listPath,
+        line: 2,
+      });
+    });
+  });
+});
+
+describe('Given a skip list line far longer than any object name', () => {
+  describe('When fsck runs', () => {
+    it('Then the refusal carries only an object name\u2019s worth of it', async () => {
+      // Arrange
+      const { ctx } = await seedBadCommitRepo();
+      const long = 'z'.repeat(5000);
+      const listPath = await configureSkipList(ctx, `${long}\n`);
+
+      // Act
+      const caught = await skipListError(ctx);
+
+      // Assert
+      expect(caught.data).toEqual({
+        code: 'FSCK_SKIP_LIST_INVALID_NAME',
+        name: 'z'.repeat(MAX_OBJECT_ID_IN_ERROR),
+        path: listPath,
+        line: 1,
+      });
+    });
+  });
+});
+
+describe('Given a skip list holding an abbreviated object name', () => {
+  describe('When fsck runs', () => {
+    it('Then it refuses too — git takes full names only', async () => {
+      // Arrange
+      const { ctx, commitId } = await seedBadCommitRepo();
+      const abbreviated = (commitId as string).slice(0, 8);
+      const listPath = await configureSkipList(ctx, `${abbreviated}\n`);
+
+      // Act
+      const caught = await skipListError(ctx);
+
+      // Assert
+      expect(caught.data).toEqual({
+        code: 'FSCK_SKIP_LIST_INVALID_NAME',
+        name: abbreviated,
+        path: listPath,
+        line: 1,
+      });
+    });
+  });
+});
+
+describe('Given a skip list naming a dangling blob', () => {
+  describe('When fsck runs', () => {
+    it('Then the dangling verdict survives — the list only silences content checks', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const blobId = await writeObject(ctx, makeBlob('dangling'));
+      await configureSkipList(ctx, `${blobId}\n`);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(result.findings).toContainEqual({
+        type: 'dangling',
+        id: blobId,
+        objectType: 'blob',
+      });
+    });
+  });
+});
+
+/** A repository whose two branches each root their own malformed commit. */
+const seedTwoBadCommitsRepo = async (): Promise<{
+  ctx: Context;
+  firstId: ObjectId;
+  secondId: ObjectId;
+}> => {
+  const ctx = await initBareCtx();
+  const treeId = await writeObject(ctx, makeTree([]));
+  const plant = async (message: string): Promise<ObjectId> => {
+    const body = enc2.encode(
+      `tree ${treeId}\nauthor Name<bad@example.com> 1700000000 +0000\ncommitter Test <c@example.com> 1700000000 +0000\n\n${message}\n`,
+    );
+    return writeMalformedLooseObject(ctx, buildLooseBytes('commit', body));
+  };
+  const firstId = await plant('first');
+  const secondId = await plant('second');
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${firstId}\n`);
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/side`, `${secondId}\n`);
+  return { ctx, firstId, secondId };
+};
+
+/** Writes one list file per body and points a repeated `fsck.skipList` at them. */
+const configureSkipLists = async (
+  ctx: Context,
+  bodies: ReadonlyArray<string>,
+): Promise<ReadonlyArray<string>> => {
+  const paths = bodies.map((_, index) => `${ctx.layout.gitDir}/skip-list-${index}`);
+  await Promise.all(
+    paths.map((listPath, index) => ctx.fs.writeUtf8(listPath, bodies[index] ?? '')),
+  );
+  const entries = paths.map((listPath) => `\tskipList = ${listPath}\n`).join('');
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, `[fsck]\n${entries}`);
+  __resetConfigCacheForTests();
+  return paths;
+};
+
+describe('Given two fsck.skipList entries, each naming a different reported object', () => {
+  describe('When fsck runs', () => {
+    it('Then both fall silent — the second list adds to the first rather than replacing it', async () => {
+      // Arrange
+      const { ctx, firstId, secondId } = await seedTwoBadCommitsRepo();
+      await configureSkipLists(ctx, [`${firstId}\n`, `${secondId}\n`]);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(result.findings.filter((f) => f.type === 'bad-object')).toEqual([]);
+      expect(result.exitCode & 1).toBe(0);
+    });
+  });
+});
+
+describe('Given two fsck.skipList entries of which the first cannot be opened', () => {
+  describe('When fsck runs', () => {
+    it('Then it refuses on that first list, never reaching the usable one', async () => {
+      // Arrange
+      const { ctx, firstId } = await seedTwoBadCommitsRepo();
+      const usable = `${ctx.layout.gitDir}/usable-list`;
+      await ctx.fs.writeUtf8(usable, `${firstId}\n`);
+      const absent = `${ctx.layout.gitDir}/absent-list`;
+      await ctx.fs.writeUtf8(
+        `${ctx.layout.gitDir}/config`,
+        `[fsck]\n\tskipList = ${absent}\n\tskipList = ${usable}\n`,
+      );
+      __resetConfigCacheForTests();
+
+      // Act
+      const caught = await skipListError(ctx);
+
+      // Assert
+      expect(caught.data).toEqual({
+        code: 'FSCK_SKIP_LIST_UNREADABLE',
+        path: absent,
+        reason: 'FILE_NOT_FOUND',
+      });
     });
   });
 });

@@ -1,10 +1,10 @@
 /**
  * Cross-tool interop — the delta-writing packer. A tsgit `gc` over a
  * text-churn corpus (one evolving file, 200 commits, 5 edits + 1 append
- * each — the design's F1 shape) writes a self-contained `OFS_DELTA` pack;
+ * each) writes a self-contained `OFS_DELTA` pack;
  * every row below pins that pack, and the `pack-objects` / `bundle-create` /
  * `push` call sites, against real git 2.55.0. `push` deliberately stays
- * base-only — X14 is the regression guard for that exclusion.
+ * base-only, and one row below is the regression guard for that exclusion.
  *
  * @proves
  *   surface:        packfile
@@ -142,7 +142,7 @@ const sameSizeLine = (index: number, version: number): string =>
  * One path, exactly `versions` TOTAL revisions of a FIXED-LENGTH file —
  * the seed is version 1, and each subsequent edit overwrites one line's
  * version stamp in place, never appending or shortening, so every commit's
- * blob is the exact same byte length. The R13 cap oracle's tie-dense
+ * blob is the exact same byte length. The cap oracle's tie-dense
  * corpus: every pair ties on size (and, being the one path, on nameHash
  * too), so only gc's recency tiebreak can order them — the shape the
  * whole entry exists to close the gap on.
@@ -257,8 +257,8 @@ interface BlobPackShape {
 
 /** Reads `git verify-pack -v`'s BLOB lines only — trees and commits are
  *  excluded because their deltas are decided by the deflate-size
- *  acceptance rule, not by ordering, so they carry no signal for the R13
- *  cap oracle. Mirrors `maxChainDepthOid`'s own filter (`fixture-generator
+ *  acceptance rule, not by ordering, so they carry no signal for the cap
+ *  oracle. Mirrors `maxChainDepthOid`'s own filter (`fixture-generator
  *  .ts`): a deltified blob line has `tokens[1] === 'blob'` and 6+ tokens,
  *  with the chain depth at `tokens[5]`; a base blob line has 5. */
 function parseBlobPackShape(verifyOutput: string): BlobPackShape {
@@ -1067,7 +1067,7 @@ describe.skipIf(!GIT_AVAILABLE)('delta-writing packer, against real git', () => 
 });
 
 // ---------------------------------------------------------------------------
-// R13 cap oracle — a tie-dense, same-size-versions corpus (one path, every
+// The cap oracle — a tie-dense, same-size-versions corpus (one path, every
 // revision the same byte length), gc'd by tsgit, read back through
 // `git verify-pack -v`'s blob lines only
 // ---------------------------------------------------------------------------
