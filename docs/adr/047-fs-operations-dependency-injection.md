@@ -1,8 +1,17 @@
 # ADR-047: `FsOperations` dependency injection — the `node:fs/promises` surface as a constructor argument
 
+> Superseded by [ADR-883](883-node-file-system-takes-its-injectable-operations-in-one-options-object.md)
+> for the positional constructor signature (`fsOps` as the optional third parameter after
+> `rootDir` and `pathPolicy`, followed by `rootsArePreResolved` and `removeTreeConcurrency`):
+> the trailing positionals became one options object. The `FsOperations` type, the
+> `realFsOps` default, the injection-over-`vi.mock` rationale and the helpers that take an
+> `fsOps` argument are carried forward unchanged.
+
 ## Status
 
-Accepted (at `e9e82e6`)
+- **Status:** superseded by ADR-883
+
+Accepted (at `e9e82e6`); superseded for the constructor signature only, see the note above.
 
 ## Context
 

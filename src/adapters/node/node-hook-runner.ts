@@ -42,7 +42,7 @@ interface HookChild {
 /**
  * Injectable process / filesystem surface. Production uses the Node builtins;
  * unit tests inject a fake so every branch is exercised deterministically
- * without spawning a real process (mirrors `FsOperations` — ADR-047).
+ * without spawning a real process (mirrors `FsOperations`).
  */
 export interface HookRunnerOps {
   readonly stat: (path: string) => Promise<HookStat>;
