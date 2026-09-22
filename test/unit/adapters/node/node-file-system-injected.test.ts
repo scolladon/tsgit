@@ -17,9 +17,50 @@ import {
   realpathNearestExisting,
 } from '../../../../src/adapters/node/node-file-system.js';
 import { posixPolicy, windowsPolicy } from '../../../../src/adapters/node/path-policy.js';
+import type { TurnBudget } from '../../../../src/adapters/node/sync-io-budget.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import { dataFor } from '../../../fixtures/tsgit-error-data.js';
-import { eacces, eexist, eloop, enoent, enotdir, entry, fakeFsOps } from './node-fs-fakes.js';
+import {
+  eacces,
+  eexist,
+  einval,
+  eloop,
+  enoent,
+  enotdir,
+  entry,
+  fakeFsOps,
+  fakeSyncFsOps,
+  fakeSyncIoPolicy,
+} from './node-fs-fakes.js';
+
+/** A fabricated `NodeJS.ErrnoException` carrying an arbitrary `code`. */
+const errnoOf = (code: string): NodeJS.ErrnoException => Object.assign(new Error(code), { code });
+
+/** A minimal bigint-shaped stat answer, sufficient for `mapStat`. */
+const bigintFileStat = {
+  ctimeMs: BigInt(0),
+  mtimeMs: BigInt(0),
+  dev: BigInt(0),
+  ino: BigInt(0),
+  mode: BigInt(0o100644),
+  uid: BigInt(0),
+  gid: BigInt(0),
+  size: BigInt(0),
+  isFile: () => true,
+  isDirectory: () => false,
+  isSymbolicLink: () => false,
+};
+
+/** Every errno row `mapErrno` maps, shared across the sync-arm suites below. */
+const ERRNO_TABLE = [
+  { code: 'ENOENT', expectedCode: 'FILE_NOT_FOUND' },
+  { code: 'ENOTDIR', expectedCode: 'NOT_A_DIRECTORY' },
+  { code: 'EACCES', expectedCode: 'PERMISSION_DENIED' },
+  { code: 'EPERM', expectedCode: 'PERMISSION_DENIED' },
+  { code: 'ELOOP', expectedCode: 'PERMISSION_DENIED' },
+  { code: 'EISDIR', expectedCode: 'PERMISSION_DENIED' },
+  { code: 'ENOTSUP', expectedCode: 'UNSUPPORTED_OPERATION' },
+] as const;
 
 describe('NodeFileSystem — realpathForCreation parent-realpath LRU (DI)', () => {
   const fileStat = {
@@ -4050,6 +4091,470 @@ describe('NodeFileSystem — options object (DI)', () => {
 
         // Assert
         expect(getMaxInFlight()).toBe(2);
+      });
+    });
+  });
+});
+
+describe('NodeFileSystem.lstat — sync arm (DI)', () => {
+  const rootDir = '/root';
+  const target = '/root/child.txt';
+
+  describe('Given a policy-bearing adapter', () => {
+    describe('When lstat is called', () => {
+      it('Then lstatSync is called with (real, { bigint: true }) and the async arm is not', async () => {
+        // Arrange
+        const asyncLstat = vi.fn();
+        const lstatSync = vi.fn().mockReturnValue(bigintFileStat);
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+          lstat: asyncLstat,
+        });
+        const syncIo = fakeSyncIoPolicy(fakeSyncFsOps({ lstatSync }));
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps, syncIo });
+
+        // Act
+        await sut.lstat(target);
+
+        // Assert
+        expect(lstatSync).toHaveBeenCalledWith(target, { bigint: true });
+        expect(asyncLstat).not.toHaveBeenCalled();
+      });
+    });
+
+    describe.each(ERRNO_TABLE)('When lstatSync throws $code', ({ code, expectedCode }) => {
+      it(`Then it rejects with ${expectedCode}`, async () => {
+        // Arrange
+        const lstatSync = vi.fn(() => {
+          throw errnoOf(code);
+        });
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+        });
+        const syncIo = fakeSyncIoPolicy(fakeSyncFsOps({ lstatSync }));
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps, syncIo });
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.lstat(target);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe(expectedCode);
+      });
+    });
+
+    describe('When lstatSync throws a non-errno error', () => {
+      it('Then it rejects with the same error instance', async () => {
+        // Arrange
+        const error = new TypeError('boom');
+        const lstatSync = vi.fn(() => {
+          throw error;
+        });
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+        });
+        const syncIo = fakeSyncIoPolicy(fakeSyncFsOps({ lstatSync }));
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps, syncIo });
+
+        // Act & Assert
+        await expect(sut.lstat(target)).rejects.toBe(error);
+      });
+    });
+  });
+});
+
+describe('NodeFileSystem.stat — sync arm (DI)', () => {
+  const rootDir = '/root';
+  const target = '/root/child.txt';
+
+  describe('Given a policy-bearing adapter', () => {
+    describe('When stat is called', () => {
+      it('Then statSync is called with (real, { bigint: true }) and the async arm is not', async () => {
+        // Arrange
+        const asyncStat = vi.fn();
+        const statSync = vi.fn().mockReturnValue(bigintFileStat);
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+          stat: asyncStat,
+        });
+        const syncIo = fakeSyncIoPolicy(fakeSyncFsOps({ statSync }));
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps, syncIo });
+
+        // Act
+        await sut.stat(target);
+
+        // Assert
+        expect(statSync).toHaveBeenCalledWith(target, { bigint: true });
+        expect(asyncStat).not.toHaveBeenCalled();
+      });
+    });
+
+    describe.each(ERRNO_TABLE)('When statSync throws $code', ({ code, expectedCode }) => {
+      it(`Then it rejects with ${expectedCode}`, async () => {
+        // Arrange
+        const statSync = vi.fn(() => {
+          throw errnoOf(code);
+        });
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+        });
+        const syncIo = fakeSyncIoPolicy(fakeSyncFsOps({ statSync }));
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps, syncIo });
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.stat(target);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe(expectedCode);
+      });
+    });
+
+    describe('When statSync throws a non-errno error', () => {
+      it('Then it rejects with the same error instance', async () => {
+        // Arrange
+        const error = new TypeError('boom');
+        const statSync = vi.fn(() => {
+          throw error;
+        });
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+        });
+        const syncIo = fakeSyncIoPolicy(fakeSyncFsOps({ statSync }));
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps, syncIo });
+
+        // Act & Assert
+        await expect(sut.stat(target)).rejects.toBe(error);
+      });
+    });
+  });
+});
+
+describe('NodeFileSystem.exists — sync arm (DI)', () => {
+  const rootDir = '/root';
+  const target = '/root/child.txt';
+
+  describe('Given a policy-bearing adapter', () => {
+    describe('When statSync throws ENOENT', () => {
+      it('Then exists resolves false, and the async arm is not called', async () => {
+        // Arrange — a throwing probe, not `throwIfNoEntry: false`: Node's
+        // `throwIfNoEntry: false` also swallows ENOTDIR, which would hide the
+        // NOT_A_DIRECTORY refusal the next row proves.
+        const asyncStat = vi.fn();
+        const statSync = vi.fn(() => {
+          throw enoent();
+        });
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+          stat: asyncStat,
+        });
+        const syncIo = fakeSyncIoPolicy(fakeSyncFsOps({ statSync }));
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps, syncIo });
+
+        // Act
+        const result = await sut.exists(target);
+
+        // Assert
+        expect(result).toBe(false);
+        expect(statSync).toHaveBeenCalledWith(target, { bigint: true });
+        expect(asyncStat).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('When statSync returns a stat object', () => {
+      it('Then exists resolves true', async () => {
+        // Arrange
+        const statSync = vi.fn().mockReturnValue(bigintFileStat);
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+        });
+        const syncIo = fakeSyncIoPolicy(fakeSyncFsOps({ statSync }));
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps, syncIo });
+
+        // Act
+        const result = await sut.exists(target);
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+
+    describe('When statSync throws ENOTDIR', () => {
+      it('Then it rejects with NOT_A_DIRECTORY', async () => {
+        // Arrange
+        const statSync = vi.fn(() => {
+          throw enotdir();
+        });
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+        });
+        const syncIo = fakeSyncIoPolicy(fakeSyncFsOps({ statSync }));
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps, syncIo });
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.exists(target);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('NOT_A_DIRECTORY');
+      });
+    });
+
+    describe('When statSync throws a non-errno error', () => {
+      it('Then it rejects with the same error instance', async () => {
+        // Arrange
+        const error = new TypeError('boom');
+        const statSync = vi.fn(() => {
+          throw error;
+        });
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+        });
+        const syncIo = fakeSyncIoPolicy(fakeSyncFsOps({ statSync }));
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps, syncIo });
+
+        // Act & Assert
+        await expect(sut.exists(target)).rejects.toBe(error);
+      });
+    });
+  });
+});
+
+describe('NodeFileSystem.readlink — sync arm (DI)', () => {
+  const rootDir = '/root';
+  const link = '/root/link.txt';
+  const target = '/root/target.txt';
+
+  describe('Given a policy-bearing adapter', () => {
+    describe('When readlink is called', () => {
+      it('Then readlinkSync is called and the async arm is not', async () => {
+        // Arrange
+        const asyncReadlink = vi.fn();
+        const readlinkSync = vi.fn().mockReturnValue(target);
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+          readlink: asyncReadlink,
+        });
+        const syncIo = fakeSyncIoPolicy(fakeSyncFsOps({ readlinkSync }));
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps, syncIo });
+
+        // Act
+        const result = await sut.readlink(link);
+
+        // Assert
+        expect(result).toBe(target);
+        expect(readlinkSync).toHaveBeenCalledWith(link);
+        expect(asyncReadlink).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('When readlinkSync throws EINVAL', () => {
+      it('Then it rejects with UNSUPPORTED_OPERATION, as the async arm maps it', async () => {
+        // Arrange
+        const readlinkSync = vi.fn(() => {
+          throw einval();
+        });
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+        });
+        const syncIo = fakeSyncIoPolicy(fakeSyncFsOps({ readlinkSync }));
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps, syncIo });
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.readlink(link);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('UNSUPPORTED_OPERATION');
+      });
+    });
+  });
+});
+
+describe('NodeFileSystem.lexists — sync arm (DI)', () => {
+  const rootDir = '/root';
+  const target = '/root/child.txt';
+
+  describe('Given a policy-bearing adapter', () => {
+    describe('When lstatSync throws ENOENT', () => {
+      it('Then lexists resolves false, and the async arm is not called', async () => {
+        // Arrange — a throwing probe, not `throwIfNoEntry: false`: Node's
+        // `throwIfNoEntry: false` also swallows ENOTDIR, which would hide the
+        // NOT_A_DIRECTORY refusal the next row proves.
+        const asyncLstat = vi.fn();
+        const lstatSync = vi.fn(() => {
+          throw enoent();
+        });
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+          lstat: asyncLstat,
+        });
+        const syncIo = fakeSyncIoPolicy(fakeSyncFsOps({ lstatSync }));
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps, syncIo });
+
+        // Act
+        const result = await sut.lexists(target);
+
+        // Assert
+        expect(result).toBe(false);
+        expect(lstatSync).toHaveBeenCalledWith(target, { bigint: true });
+        expect(asyncLstat).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('When lstatSync returns a stat object', () => {
+      it('Then lexists resolves true', async () => {
+        // Arrange
+        const lstatSync = vi.fn().mockReturnValue(bigintFileStat);
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+        });
+        const syncIo = fakeSyncIoPolicy(fakeSyncFsOps({ lstatSync }));
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps, syncIo });
+
+        // Act
+        const result = await sut.lexists(target);
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+
+    describe('When lstatSync throws ENOTDIR', () => {
+      it('Then it rejects with NOT_A_DIRECTORY', async () => {
+        // Arrange
+        const lstatSync = vi.fn(() => {
+          throw enotdir();
+        });
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+        });
+        const syncIo = fakeSyncIoPolicy(fakeSyncFsOps({ lstatSync }));
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps, syncIo });
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.lexists(target);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('NOT_A_DIRECTORY');
+      });
+    });
+  });
+});
+
+describe('NodeFileSystem — sync arm turn budget (DI)', () => {
+  const rootDir = '/root';
+  const target = '/root/child.txt';
+
+  describe('Given a policy whose budget admit() returns a pending promise', () => {
+    describe('When a sync arm runs', () => {
+      it('Then the sync op does not run until the promise resolves, and charge receives now()', async () => {
+        // Arrange
+        let resolveAdmit!: () => void;
+        const pending = new Promise<void>((resolve) => {
+          resolveAdmit = resolve;
+        });
+        const charge = vi.fn();
+        const budget: TurnBudget = { admit: () => pending, charge, now: () => 42 };
+        const lstatSync = vi.fn().mockReturnValue(bigintFileStat);
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+        });
+        const syncIo = fakeSyncIoPolicy(fakeSyncFsOps({ lstatSync }), budget);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps, syncIo });
+
+        // Act
+        const call = sut.lstat(target);
+        await Promise.resolve();
+        await Promise.resolve();
+
+        // Assert — not yet admitted
+        expect(lstatSync).not.toHaveBeenCalled();
+
+        // Act — admit resolves
+        resolveAdmit();
+        await call;
+
+        // Assert
+        expect(lstatSync).toHaveBeenCalledTimes(1);
+        expect(charge).toHaveBeenCalledWith(42);
+      });
+    });
+  });
+});
+
+describe('NodeFileSystem — canonicalizeRoots sync arm (DI)', () => {
+  describe('Given a policy-bearing adapter', () => {
+    describe('When the first exists call resolves the root', () => {
+      it('Then realpathSync.native is called with the root and fsOps.realpath is not', async () => {
+        // Arrange
+        const rootDir = '/root';
+        const native = vi.fn().mockReturnValue(rootDir);
+        const realpath = vi.fn().mockRejectedValue(enoent());
+        const statSync = vi.fn().mockReturnValue(bigintFileStat);
+        const fsOps = fakeFsOps({ realpath });
+        const syncIo = fakeSyncIoPolicy(fakeSyncFsOps({ statSync, realpathSync: { native } }));
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps, syncIo });
+
+        // Act
+        await sut.exists('/root/child.txt');
+
+        // Assert
+        expect(native).toHaveBeenCalledWith(rootDir);
+        expect(realpath).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('When realpathSync.native rejects the root with ENOENT', () => {
+      it('Then the nearest-existing async fallback still resolves the canonical prefix', async () => {
+        // Arrange — the root itself is missing; the raw errno from
+        // `realpathSync.native` must stay classifiable by `canonicalizeRoots`'
+        // own ENOENT check, not pre-mapped by `runSync`.
+        const rootDir = '/root/missing';
+        const native = vi.fn(() => {
+          throw enoent();
+        });
+        const realpath = vi.fn().mockImplementation(async (input: string) => {
+          if (input === '/root') return '/root';
+          throw enoent();
+        });
+        const statSync = vi.fn().mockReturnValue(bigintFileStat);
+        const fsOps = fakeFsOps({ realpath });
+        const syncIo = fakeSyncIoPolicy(fakeSyncFsOps({ statSync, realpathSync: { native } }));
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps, syncIo });
+
+        // Act
+        const result = await sut.exists('/root/missing/child.txt');
+
+        // Assert
+        expect(result).toBe(true);
+        expect(native).toHaveBeenCalledWith(rootDir);
       });
     });
   });

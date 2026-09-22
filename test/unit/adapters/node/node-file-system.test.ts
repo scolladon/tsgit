@@ -4,6 +4,7 @@ import * as os from 'node:os';
 import * as nodePath from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { FsOperations } from '../../../../src/adapters/node/fs-operations.js';
+import type { NodeFileSystemOptions } from '../../../../src/adapters/node/node-file-system.js';
 import {
   isCreationLeafSymlink,
   isErrnoException,
@@ -18,7 +19,9 @@ import {
   toAbsolute,
 } from '../../../../src/adapters/node/node-file-system.js';
 import { posixPolicy, windowsPolicy } from '../../../../src/adapters/node/path-policy.js';
+import { createSyncIoPolicy } from '../../../../src/adapters/node/sync-io-budget.js';
 import { TsgitError } from '../../../../src/domain/index.js';
+import type { FileSystemContractEnv } from '../../ports/file-system.contract.js';
 import { fileSystemContractTests } from '../../ports/file-system.contract.js';
 
 const WINDOWS_PLATFORM = 'win32';
@@ -61,44 +64,59 @@ function fakeRemoveTreeFsOps(
   return { fsOps, getMaxInFlight: () => maxInFlight };
 }
 
+/**
+ * Builds a throwaway root and sibling directory and returns the
+ * `FileSystemContractEnv` the shared port contract suite drives, backed by
+ * a `NodeFileSystem` constructed with `options` — `{}` runs the async path,
+ * `{ syncIo: createSyncIoPolicy() }` runs the sync fast path, so both arms
+ * of the port's refusal matrix are proven identical.
+ */
+async function buildContractEnv(
+  options: NodeFileSystemOptions = {},
+): Promise<FileSystemContractEnv> {
+  const tempRoot = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-'));
+  // macOS os.tmpdir() returns /var/... which is a symlink to /private/var/...
+  // Resolve once so the stored rootDir matches realpath output on all platforms.
+  const rootDir = await fsPromises.realpath(tempRoot);
+  const siblingDir = `${rootDir}-evil`;
+  await fsPromises.mkdir(siblingDir, { recursive: true });
+  await fsPromises.writeFile(nodePath.join(siblingDir, 'file.txt'), '');
+  const existingFile = nodePath.join(rootDir, 'existing.txt');
+  await fsPromises.writeFile(existingFile, Buffer.from([1, 2, 3]));
+
+  const fs = new NodeFileSystem(rootDir, options);
+
+  return {
+    fs,
+    rootDir,
+    getRootDirSibling: async () => nodePath.join(siblingDir, 'file.txt'),
+    getExistingInRoot: async () => existingFile,
+    symlinkReadEscape: {
+      create: async () => {
+        const escapeTarget = nodePath.join(siblingDir, 'escape-read-target.txt');
+        await fsPromises.writeFile(escapeTarget, Buffer.from('escape-read'));
+        const link = nodePath.join(rootDir, 'escape-read-link');
+        await fsPromises.symlink(escapeTarget, link);
+        return link;
+      },
+      expected: 'allowed' as const,
+    },
+    // The segment refusal codes are pinned on POSIX hosts only: Windows reports a file used
+    // as a directory as ENOENT or EINVAL rather than ENOTDIR, and its reparse-point loops
+    // do not surface ELOOP on every surface.
+    ...(process.platform === WINDOWS_PLATFORM ? {} : { segmentRefusals: 'pinned' as const }),
+    cleanup: async () => {
+      await fsPromises.rm(rootDir, { recursive: true, force: true });
+      await fsPromises.rm(siblingDir, { recursive: true, force: true });
+    },
+  };
+}
+
 describe('NodeFileSystem', () => {
-  fileSystemContractTests(async () => {
-    const tempRoot = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-'));
-    // macOS os.tmpdir() returns /var/... which is a symlink to /private/var/...
-    // Resolve once so the stored rootDir matches realpath output on all platforms.
-    const rootDir = await fsPromises.realpath(tempRoot);
-    const siblingDir = `${rootDir}-evil`;
-    await fsPromises.mkdir(siblingDir, { recursive: true });
-    await fsPromises.writeFile(nodePath.join(siblingDir, 'file.txt'), '');
-    const existingFile = nodePath.join(rootDir, 'existing.txt');
-    await fsPromises.writeFile(existingFile, Buffer.from([1, 2, 3]));
+  fileSystemContractTests(() => buildContractEnv());
 
-    const fs = new NodeFileSystem(rootDir);
-
-    return {
-      fs,
-      rootDir,
-      getRootDirSibling: async () => nodePath.join(siblingDir, 'file.txt'),
-      getExistingInRoot: async () => existingFile,
-      symlinkReadEscape: {
-        create: async () => {
-          const escapeTarget = nodePath.join(siblingDir, 'escape-read-target.txt');
-          await fsPromises.writeFile(escapeTarget, Buffer.from('escape-read'));
-          const link = nodePath.join(rootDir, 'escape-read-link');
-          await fsPromises.symlink(escapeTarget, link);
-          return link;
-        },
-        expected: 'allowed' as const,
-      },
-      // The segment refusal codes are pinned on POSIX hosts only: Windows reports a file used
-      // as a directory as ENOENT or EINVAL rather than ENOTDIR, and its reparse-point loops
-      // do not surface ELOOP on every surface.
-      ...(process.platform === WINDOWS_PLATFORM ? {} : { segmentRefusals: 'pinned' as const }),
-      cleanup: async () => {
-        await fsPromises.rm(rootDir, { recursive: true, force: true });
-        await fsPromises.rm(siblingDir, { recursive: true, force: true });
-      },
-    };
+  describe('NodeFileSystem with the sync fast path', () => {
+    fileSystemContractTests(() => buildContractEnv({ syncIo: createSyncIoPolicy() }));
   });
 
   describe('node-specific behaviors', () => {
@@ -2048,6 +2066,37 @@ describe('NodeFileSystem multi-root containment', () => {
         // Assert
         expect(await fsPromises.readFile(nodePath.join(pending, 'file.txt'), 'utf-8')).toBe('late');
         await cleanup();
+      });
+    });
+  });
+});
+
+describe('NodeFileSystem — sync fast path real-timer interleaving', () => {
+  describe('Given a real timer scheduled before a 5000-lstat sweep through a policy-bearing adapter', () => {
+    describe('When the sweep runs', () => {
+      it('Then the timer fires before the sweep resolves (the turn budget actually yields)', async () => {
+        // Arrange — real timers and a real `createSyncIoPolicy()`: a fake
+        // clock/scheduler cannot prove the event loop truly got a turn.
+        // Ordering, not elapsed time, is asserted (real-timer durations are
+        // not reproducible across CI runners).
+        const tempRoot = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-real-timer-'));
+        const rootDir = await fsPromises.realpath(tempRoot);
+        const file = nodePath.join(rootDir, 'existing.txt');
+        await fsPromises.writeFile(file, 'x');
+        const sut = new NodeFileSystem(rootDir, { syncIo: createSyncIoPolicy() });
+        const order: Array<'timer' | 'sweep'> = [];
+        const sweepCount = 5000;
+
+        // Act
+        setTimeout(() => order.push('timer'), 0);
+        for (let i = 0; i < sweepCount; i += 1) {
+          await sut.lstat(file);
+        }
+        order.push('sweep');
+
+        // Assert
+        expect(order[0]).toBe('timer');
+        await fsPromises.rm(rootDir, { recursive: true, force: true });
       });
     });
   });

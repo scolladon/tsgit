@@ -18,6 +18,8 @@ import type { FsOperations } from './fs-operations.js';
 import { realFsOps } from './fs-operations.js';
 import type { PathPolicy } from './path-policy.js';
 import { nativePolicy } from './path-policy.js';
+import type { SyncIoPolicy, TurnBudget } from './sync-io-budget.js';
+import { runWithinBudget } from './sync-io-budget.js';
 
 /**
  * A normalised containment root paired with its precomputed `+sep` prefix.
@@ -176,6 +178,22 @@ async function orMissing<T>(probe: () => Promise<T>): Promise<T | undefined> {
 }
 
 /**
+ * Runs `probe`, folding ONLY `ENOENT` into `undefined` — unlike `orMissing`,
+ * which also folds `ENOTDIR`. Every other errno maps through `mapErrno`; a
+ * non-errno error rethrows untouched. Shared by every async presence probe
+ * (`isPresent`, and the optional `tryLstat`/`tryReadUtf8` port members).
+ */
+async function orAbsent<T>(probe: () => Promise<T>, path: string): Promise<T | undefined> {
+  try {
+    return await probe();
+  } catch (err) {
+    if (isErrnoException(err) && err.code === 'ENOENT') return undefined;
+    if (isErrnoException(err)) throw mapErrno(err, path);
+    throw err;
+  }
+}
+
+/**
  * On Windows, `O_NOFOLLOW` against a symlink leaf surfaces as `EACCES`,
  * `EPERM`, or `EISDIR` depending on the link target — `mapErrno` cannot
  * disambiguate without knowing whether the leaf is a symlink. This helper
@@ -289,6 +307,46 @@ export async function runFs<T>(op: () => Promise<T>, path: string): Promise<T> {
   try {
     return await op();
   } catch (err) {
+    if (isErrnoException(err)) throw mapErrno(err, path);
+    throw err;
+  }
+}
+
+/**
+ * The synchronous twin of `runFs`: runs `op` under the turn budget
+ * (`runWithinBudget` admits, times and charges it), translating Node's
+ * errno exceptions into `TsgitError` exactly as `runFs` does. The method
+ * itself stays `async`, so a synchronous throw always surfaces as a
+ * rejection, never a synchronous exception.
+ * @internal
+ */
+async function runSync<T>(budget: TurnBudget, op: () => T, path: string): Promise<T> {
+  try {
+    return await runWithinBudget(budget, op);
+  } catch (err) {
+    if (isErrnoException(err)) throw mapErrno(err, path);
+    throw err;
+  }
+}
+
+/**
+ * The synchronous twin of `orAbsent`: runs `probe` under the turn budget,
+ * folding `ENOENT` into `false` and mapping any other errno through
+ * `mapErrno`. `statSync`/`lstatSync`'s `throwIfNoEntry: false` option is
+ * NOT used here because it also swallows `ENOTDIR` — a throwing probe,
+ * caught here, is the only way to keep the sync and async presence arms
+ * identical.
+ */
+async function runSyncPresence(
+  budget: TurnBudget,
+  probe: () => unknown,
+  path: string,
+): Promise<boolean> {
+  try {
+    await runWithinBudget(budget, probe);
+    return true;
+  } catch (err) {
+    if (isErrnoException(err) && err.code === 'ENOENT') return false;
     if (isErrnoException(err)) throw mapErrno(err, path);
     throw err;
   }
@@ -426,6 +484,12 @@ export interface NodeFileSystemOptions {
   readonly pathPolicy?: PathPolicy;
   /** The `node:fs/promises` surface to call through. Default `realFsOps`. */
   readonly fsOps?: FsOperations;
+  /**
+   * The per-turn synchronous I/O policy. Absent → every method runs
+   * today's async code path, byte for byte.
+   * @internal
+   */
+  readonly syncIo?: SyncIoPolicy;
   /** Whether `rootDir`/`rootDirs` are already realpathed. Default `false`. */
   readonly rootsArePreResolved?: boolean;
   /** Bound on concurrent child removals inside `rmRecursive`. Default `REMOVE_TREE_CONCURRENCY`. */
@@ -453,6 +517,9 @@ export class NodeFileSystem implements FileSystem {
   private readonly pathPolicy: PathPolicy;
 
   private readonly fsOps: FsOperations;
+
+  /** The per-turn sync I/O policy; `undefined` runs every method on the async path. */
+  private readonly syncIo: SyncIoPolicy | undefined;
 
   /**
    * Whether `rootDirs` are ALREADY realpathed, so `canonicalizeRoots` may
@@ -537,6 +604,7 @@ export class NodeFileSystem implements FileSystem {
     const {
       pathPolicy = nativePolicy,
       fsOps = realFsOps,
+      syncIo,
       rootsArePreResolved = false,
       removeTreeConcurrency = REMOVE_TREE_CONCURRENCY,
     } = options;
@@ -552,6 +620,7 @@ export class NodeFileSystem implements FileSystem {
     this.rootDir = primary;
     this.pathPolicy = pathPolicy;
     this.fsOps = fsOps;
+    this.syncIo = syncIo;
     this.rootsArePreResolved = rootsArePreResolved;
     this.removeTreeConcurrency = removeTreeConcurrency;
   }
@@ -589,30 +658,43 @@ export class NodeFileSystem implements FileSystem {
     if (this.rootsArePreResolved) {
       return this.getRootDirPrefixes();
     }
-    const resolved = await Promise.all(
-      this.rootDirs.map(async (root) => {
-        try {
-          return await this.fsOps.realpath(root);
-        } catch (err) {
-          if (isErrnoException(err) && err.code === 'ENOENT') {
-            // The nearest-existing walk itself can ENOENT at the volume root
-            // (an unmounted Windows drive / offline UNC share — unreachable on
-            // POSIX, where realpath('/') always succeeds). Fall back to the
-            // lexical root: its raw prefix still gates, and every op under the
-            // unreachable volume fails closed on its own realpath instead of
-            // rejecting the whole adapter with an unmapped errno.
-            return realpathNearestExisting(root, this.pathPolicy, this.fsOps).catch(
-              (nestedErr: unknown) => {
-                if (isErrnoException(nestedErr) && nestedErr.code === 'ENOENT') return root;
-                throw nestedErr;
-              },
-            );
-          }
-          throw err;
-        }
-      }),
-    );
+    const resolved = await Promise.all(this.rootDirs.map((root) => this.canonicalizeRoot(root)));
     return resolved.map((root) => this.toRootPrefix(root));
+  }
+
+  /**
+   * Realpaths one root: `realpathSync.native` under a policy (raw errno kept
+   * — this method classifies `ENOENT` itself, so it must NOT go through
+   * `runSync`'s `mapErrno`), else `fsOps.realpath`. The nearest-existing
+   * fallback always stays async — it is a cold, one-time path.
+   */
+  private async canonicalizeRoot(root: string): Promise<string> {
+    const sync = this.syncIo;
+    try {
+      return sync === undefined
+        ? await this.fsOps.realpath(root)
+        : await runWithinBudget(sync.budget, () => sync.ops.realpathSync.native(root));
+    } catch (err) {
+      if (isErrnoException(err) && err.code === 'ENOENT') return this.nearestExistingRoot(root);
+      throw err;
+    }
+  }
+
+  /**
+   * The nearest-existing walk itself can ENOENT at the volume root (an
+   * unmounted Windows drive / offline UNC share — unreachable on POSIX,
+   * where realpath('/') always succeeds). Fall back to the lexical root:
+   * its raw prefix still gates, and every op under the unreachable volume
+   * fails closed on its own realpath instead of rejecting the whole
+   * adapter with an unmapped errno.
+   */
+  private nearestExistingRoot(root: string): Promise<string> {
+    return realpathNearestExisting(root, this.pathPolicy, this.fsOps).catch(
+      (nestedErr: unknown) => {
+        if (isErrnoException(nestedErr) && nestedErr.code === 'ENOENT') return root;
+        throw nestedErr;
+      },
+    );
   }
 
   /**
@@ -751,26 +833,51 @@ export class NodeFileSystem implements FileSystem {
   private async isPresent(path: string, probe: 'stat' | 'lstat'): Promise<boolean> {
     const { all } = this.resolvedRootSet ?? (await this.loadRootSet());
     const real = this.resolveRead(path, all);
-    try {
-      await this.fsOps[probe](real);
-      return true;
-    } catch (err) {
-      if (isErrnoException(err) && err.code === 'ENOENT') return false;
-      if (isErrnoException(err)) throw mapErrno(err, path);
-      throw err;
+    const sync = this.syncIo;
+    if (sync !== undefined) {
+      return this.isPresentSync(real, path, probe, sync);
+    } else {
+      const result = await orAbsent(() => this.fsOps[probe](real), path);
+      return result !== undefined;
     }
+  }
+
+  /**
+   * A throwing probe, caught here — NOT `throwIfNoEntry: false`. That option
+   * also swallows `ENOTDIR` into `undefined`, which would hide the
+   * `NOT_A_DIRECTORY` refusal `isPresent`'s async arm (and the port
+   * contract) both require.
+   */
+  private isPresentSync(
+    real: string,
+    path: string,
+    probe: 'stat' | 'lstat',
+    sync: SyncIoPolicy,
+  ): Promise<boolean> {
+    if (probe === 'stat') {
+      return runSyncPresence(sync.budget, () => sync.ops.statSync(real, { bigint: true }), path);
+    }
+    return runSyncPresence(sync.budget, () => sync.ops.lstatSync(real, { bigint: true }), path);
   }
 
   stat = async (path: string): Promise<FileStat> => {
     const { all } = this.resolvedRootSet ?? (await this.loadRootSet());
     const real = this.resolveRead(path, all);
-    return runFs(async () => mapStat(await this.fsOps.stat(real, { bigint: true })), path);
+    const sync = this.syncIo;
+    if (sync === undefined) {
+      return runFs(async () => mapStat(await this.fsOps.stat(real, { bigint: true })), path);
+    }
+    return runSync(sync.budget, () => mapStat(sync.ops.statSync(real, { bigint: true })), path);
   };
 
   lstat = async (path: string): Promise<FileStat> => {
     const { all } = this.resolvedRootSet ?? (await this.loadRootSet());
     const real = this.resolveRead(path, all);
-    return runFs(async () => mapStat(await this.fsOps.lstat(real, { bigint: true })), path);
+    const sync = this.syncIo;
+    if (sync === undefined) {
+      return runFs(async () => mapStat(await this.fsOps.lstat(real, { bigint: true })), path);
+    }
+    return runSync(sync.budget, () => mapStat(sync.ops.lstatSync(real, { bigint: true })), path);
   };
 
   readdir = async (path: string): Promise<ReadonlyArray<DirEntry>> => {
@@ -987,7 +1094,9 @@ export class NodeFileSystem implements FileSystem {
   readlink = async (path: string): Promise<string> => {
     const { all } = this.resolvedRootSet ?? (await this.loadRootSet());
     const real = this.resolveRead(path, all);
-    return runFs(() => this.fsOps.readlink(real), path);
+    const sync = this.syncIo;
+    if (sync === undefined) return runFs(() => this.fsOps.readlink(real), path);
+    return runSync(sync.budget, () => sync.ops.readlinkSync(real), path);
   };
 
   symlink = async (target: string, path: string): Promise<void> => {
