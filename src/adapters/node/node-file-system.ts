@@ -14,7 +14,7 @@ import {
 } from '../../domain/index.js';
 import { createLruCache } from '../../domain/storage/lru-cache.js';
 import type { DirEntry, FileHandle, FileStat, FileSystem } from '../../ports/file-system.js';
-import type { FsOperations } from './fs-operations.js';
+import type { FsOperations, SyncFsOperations } from './fs-operations.js';
 import { realFsOps } from './fs-operations.js';
 import type { PathPolicy } from './path-policy.js';
 import { nativePolicy } from './path-policy.js';
@@ -82,6 +82,26 @@ const WRITE_EXCLUSIVE_FLAGS =
   fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW;
 const APPEND_FLAGS =
   fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW;
+
+/**
+ * `O_NONBLOCK` makes an `openSync` of a FIFO return immediately instead of
+ * waiting for a writer. Windows has no such constant — `constants.O_NONBLOCK`
+ * reads `undefined` there — and named pipes do not live in the namespace
+ * these paths resolve to on that platform anyway, so `0` composes in as a
+ * no-op flag. Takes the `constants` object as a parameter (rather than
+ * reading the module-level `fs.constants` directly) so both arms of the `??`
+ * are unit-testable without depending on which platform runs the suite.
+ * @internal
+ */
+export function nonBlockFlag(constants: { readonly O_NONBLOCK?: number }): number {
+  return constants.O_NONBLOCK ?? 0;
+}
+
+/** Numeric `openSync` flags for the sync fast path's small-read arms. */
+const REGULAR_READ_FLAGS = fs.constants.O_RDONLY | nonBlockFlag(fs.constants);
+
+/** Size of the extra read issued once a sync fill reaches the reported size, to detect growth. */
+const EOF_PROBE_BYTES = 1;
 
 /**
  * `@types/node` types `WriteStreamOptions.flags` as `string`, but Node's own
@@ -299,6 +319,24 @@ export function mapErrno(err: NodeJS.ErrnoException, path: string): TsgitError {
 }
 
 /**
+ * Wraps `fsOps.readFile`'s result as a view over its own `ArrayBuffer` when it
+ * is the Buffer's own exact-fit allocation (`byteOffset === 0` and
+ * `byteLength` spans the whole backing buffer); copies otherwise, since a
+ * pooled slice's backing buffer holds unrelated bytes on either side.
+ */
+function toBufferView(buf: Buffer): Uint8Array {
+  const ownsExactFitBuffer = buf.byteOffset === 0 && buf.byteLength === buf.buffer.byteLength;
+  return ownsExactFitBuffer
+    ? new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength)
+    : new Uint8Array(buf);
+}
+
+/** Decodes a sync-arm view identically to `fsOps.readFile(path, 'utf-8')` — neither strips a BOM. */
+function decodeUtf8(view: Uint8Array): string {
+  return Buffer.from(view.buffer, view.byteOffset, view.byteLength).toString('utf8');
+}
+
+/**
  * Run a filesystem operation, translating Node's errno exceptions into TsgitError.
  * Any non-errno error is re-thrown untouched so the caller sees the underlying cause.
  * @internal
@@ -408,23 +446,116 @@ export function isCreationLeafSymlink(
   throw err;
 }
 
-function wrapNodeHandle(handle: fsPromises.FileHandle): FileHandle {
+/** Fills `buf` from `fd` starting at file position 0, looping until `size` bytes land or EOF. */
+function fillSync(ops: SyncFsOperations, fd: number, buf: Buffer, size: number): number {
+  let filled = 0;
+  while (filled < size) {
+    const read = ops.readSync(fd, buf, filled, size - filled, filled);
+    if (read === 0) break;
+    filled += read;
+  }
+  return filled;
+}
+
+/** One extra byte past `size`: any byte read means the file grew since `fstat`. */
+function grewPastGate(ops: SyncFsOperations, fd: number, size: number): boolean {
+  const probe = Buffer.allocUnsafe(EOF_PROBE_BYTES);
+  return ops.readSync(fd, probe, 0, EOF_PROBE_BYTES, size) > 0;
+}
+
+/** Fills a size-exact buffer of its own (never a pool slice) so the returned view owns its own memory. */
+function readWholeFileSync(
+  ops: SyncFsOperations,
+  fd: number,
+  size: number,
+): Uint8Array | undefined {
+  const buf = Buffer.allocUnsafeSlow(size);
+  const filled = fillSync(ops, fd, buf, size);
+  if (filled === size && grewPastGate(ops, fd, size)) return undefined;
+  return new Uint8Array(buf.buffer, buf.byteOffset, filled);
+}
+
+/**
+ * The sync fast path's whole-file read: `undefined` means "not eligible for
+ * this path" (non-regular, over the gate, or grew mid-read) — the caller
+ * falls back to the async arm. A thrown errno is NOT one of those cases; it
+ * propagates raw for the caller's `runSync` to map.
+ * @internal
+ */
+export function readRegularFileSync(
+  ops: SyncFsOperations,
+  real: string,
+  maxBytes: number,
+): Uint8Array | undefined {
+  const fd = ops.openSync(real, REGULAR_READ_FLAGS);
+  try {
+    const stat = ops.fstatSync(fd);
+    if (!stat.isFile() || stat.size > maxBytes) return undefined;
+    return readWholeFileSync(ops, fd, stat.size);
+  } finally {
+    ops.closeSync(fd);
+  }
+}
+
+/**
+ * The sync fast path's twin of `readSlice`'s handle-based read: same
+ * open/fstat non-regular guard as {@link readRegularFileSync}, then one
+ * `readSync` at the given offset/length. `undefined` → the caller's async
+ * fallback (non-regular file); a thrown errno propagates raw.
+ */
+function readSliceSync(
+  ops: SyncFsOperations,
+  real: string,
+  offset: number,
+  length: number,
+): Uint8Array | undefined {
+  const fd = ops.openSync(real, REGULAR_READ_FLAGS);
+  try {
+    if (!ops.fstatSync(fd).isFile()) return undefined;
+    const buf = Buffer.allocUnsafe(length);
+    const bytesRead = ops.readSync(fd, buf, 0, length, offset);
+    return new Uint8Array(buf.buffer, buf.byteOffset, bytesRead);
+  } finally {
+    ops.closeSync(fd);
+  }
+}
+
+function wrapNodeHandle(handle: fsPromises.FileHandle, syncIo?: SyncIoPolicy): FileHandle {
   let closed = false;
   return {
-    read: async (buffer, offset, length, position) => {
-      const { bytesRead } = await handle.read(buffer, offset, length, position ?? null);
-      return bytesRead;
-    },
+    read: (buffer, offset, length, position) =>
+      syncIo === undefined
+        ? readHandleAsync(handle, buffer, offset, length, position)
+        : runWithinBudget(syncIo.budget, () =>
+            syncIo.ops.readSync(handle.fd, buffer, offset, length, position ?? null),
+          ),
     write: async (buffer) => {
       await handle.write(buffer, 0, buffer.length);
     },
-    stat: async () => mapStat(await handle.stat({ bigint: true })),
+    stat: () =>
+      syncIo === undefined
+        ? handle.stat({ bigint: true }).then(mapStat)
+        : runWithinBudget(syncIo.budget, () =>
+            mapStat(syncIo.ops.fstatSync(handle.fd, { bigint: true })),
+          ),
     close: async () => {
       if (closed) return;
       closed = true;
       await handle.close();
     },
   };
+}
+
+/** Held-handle `read`, no policy: today's `fs.promises` call, unpacking `bytesRead`. */
+async function readHandleAsync(
+  handle: fsPromises.FileHandle,
+  buffer: Uint8Array,
+  offset: number,
+  length: number,
+  position?: number,
+): Promise<number> {
+  const { bytesRead } = await handle.read(buffer, offset, length, position ?? null);
+  return bytesRead;
 }
 
 /** @internal */
@@ -728,13 +859,49 @@ export class NodeFileSystem implements FileSystem {
   read = async (path: string): Promise<Uint8Array> => {
     const { all } = this.resolvedRootSet ?? (await this.loadRootSet());
     const real = this.resolveRead(path, all);
-    return runFs(async () => new Uint8Array(await this.fsOps.readFile(real)), path);
+    const fast = await this.readWholeFileFast(real, path);
+    if (fast !== undefined) return fast;
+    return runFs(async () => toBufferView(await this.fsOps.readFile(real)), path);
   };
+
+  /** `read`/`readUtf8`'s shared sync attempt: `undefined` → the caller's async fallback. */
+  private readWholeFileFast(real: string, path: string): Promise<Uint8Array | undefined> {
+    const sync = this.syncIo;
+    if (sync === undefined) return Promise.resolve(undefined);
+    return runSync(
+      sync.budget,
+      () => readRegularFileSync(sync.ops, real, sync.maxSyncReadBytes),
+      path,
+    );
+  }
 
   readSlice = async (path: string, offset: number, length: number): Promise<Uint8Array> => {
     if (offset < 0 || length < 0) throw permissionDenied(path);
     const { all } = this.resolvedRootSet ?? (await this.loadRootSet());
     const real = this.resolveRead(path, all);
+    const fast = await this.readSliceFast(real, offset, length, path);
+    if (fast !== undefined) return fast;
+    return this.readSliceViaHandle(real, offset, length, path);
+  };
+
+  /** `readSlice`'s sync attempt: `undefined` when over the gate, non-regular, or no policy. */
+  private readSliceFast(
+    real: string,
+    offset: number,
+    length: number,
+    path: string,
+  ): Promise<Uint8Array | undefined> {
+    const sync = this.syncIo;
+    if (sync === undefined || length > sync.maxSyncReadBytes) return Promise.resolve(undefined);
+    return runSync(sync.budget, () => readSliceSync(sync.ops, real, offset, length), path);
+  }
+
+  private async readSliceViaHandle(
+    real: string,
+    offset: number,
+    length: number,
+    path: string,
+  ): Promise<Uint8Array> {
     let handle: fsPromises.FileHandle | undefined;
     try {
       return await runFs(async () => {
@@ -751,11 +918,13 @@ export class NodeFileSystem implements FileSystem {
       // hot-path caller (pack index lookups) cannot leak FDs.
       await handle?.close();
     }
-  };
+  }
 
   readUtf8 = async (path: string): Promise<string> => {
     const { all } = this.resolvedRootSet ?? (await this.loadRootSet());
     const real = this.resolveRead(path, all);
+    const fast = await this.readWholeFileFast(real, path);
+    if (fast !== undefined) return decodeUtf8(fast);
     return runFs(() => this.fsOps.readFile(real, 'utf-8'), path);
   };
 
@@ -1185,7 +1354,7 @@ export class NodeFileSystem implements FileSystem {
       }
       throw err;
     });
-    return wrapNodeHandle(handle);
+    return wrapNodeHandle(handle, mode === 'read' ? this.syncIo : undefined);
   };
 
   private async isSymlinkLeaf(real: string): Promise<boolean> {

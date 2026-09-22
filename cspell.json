@@ -605,6 +605,7 @@
     "misreadable",
     "Mitter",
     "mkdtemps",
+    "mkfifo",
     "mkstemp",
     "mktag",
     "mktemp",

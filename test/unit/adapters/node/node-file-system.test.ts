@@ -13,6 +13,7 @@ import {
   mapErrno,
   mapStat,
   NodeFileSystem,
+  nonBlockFlag,
   pathContains,
   realpathNearestExisting,
   runFs,
@@ -1242,6 +1243,32 @@ describe('NodeFileSystem', () => {
             // Assert
             expect(result.data.code).toBe(expectedCode);
             extra?.(result.data);
+          });
+        });
+      });
+    });
+
+    describe('nonBlockFlag', () => {
+      describe('Given a `constants` object with O_NONBLOCK set', () => {
+        describe('When computing the flag', () => {
+          it('Then it returns O_NONBLOCK unchanged', () => {
+            // Arrange & Act
+            const result = nonBlockFlag({ O_NONBLOCK: 2048 });
+
+            // Assert
+            expect(result).toBe(2048);
+          });
+        });
+      });
+
+      describe('Given a `constants` object with no O_NONBLOCK (Windows)', () => {
+        describe('When computing the flag', () => {
+          it('Then it falls back to 0', () => {
+            // Arrange & Act
+            const result = nonBlockFlag({});
+
+            // Assert
+            expect(result).toBe(0);
           });
         });
       });
