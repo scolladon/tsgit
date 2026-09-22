@@ -57,3 +57,7 @@ and the sparse-checkout read; cold `FILE_NOT_FOUND` catch sites stay as they are
   the measurement shows ref misses matter.
 - The `instanceof TsgitError` in `loadCappedUtf8` is replaced by the structural check while the
   site is touched.
+- Planning correction: the sparse-checkout reader reads bytes and applies its size cap before
+  decoding, so `tryReadUtf8` does not fit it; it keeps its `FILE_NOT_FOUND` catch and is listed
+  with the cold sites. The per-command shallow reader is `internal/shallow-set.ts`, not
+  `shallow-file.ts`. The rule above is unchanged.
