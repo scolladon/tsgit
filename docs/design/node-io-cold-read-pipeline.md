@@ -9,7 +9,8 @@
 > handle, answering midx presence from the listing, loading `.idx` files lazily per pack, and
 > caching pack windows. Adapter constant factors (error construction on expected misses, buffer
 > copies, the limiter queue, adler32, browser handle walks) come along with it.
-> Status: draft → self-reviewed ×3 (converged) → ready for the decisions phase.
+> Status: draft → self-reviewed ×3 (converged) → revised against ADR-879…892 (every decision
+> candidate settled) → ready for planning.
 
 ## Context
 
@@ -39,14 +40,15 @@ serial primitives.
 31.3 makes the calls that remain cheaper and removes the ones on the cold packed path. The two
 changes compound.
 
-### Pre-decided (user, 2026-09-10) — recorded here, ratified by the ADR phase, not re-opened
+### Pre-decided (user, 2026-09-10) — ratified as ADR-879, not re-opened
 
 **Option (a).** The sync fast path is **default-on** for the cheap serial primitives: stat, lstat,
 exists, readlink, size-gated small reads (about 64 KiB) and pread on a held handle. It runs under
 a per-event-loop-turn budget (about 1 ms of synchronous work, then one `setImmediate` yield).
-`openRepository` gets an opt-out for network or cold filesystems. Bulk independent reads stay on
-the threadpool pools, where async measured faster. **The port stays Promise-returning**: this is
-an adapter-level policy behind `openRepository`, and application code never sees a sync call.
+`openRepository` gets an opt-out for network or cold filesystems (`io: 'threadpool'`, ADR-881).
+Bulk independent reads stay on the threadpool pools, where async measured faster. **The port
+stays Promise-returning**: this is an adapter-level policy behind `openRepository`, and
+application code never sees a sync call.
 
 ### Measured today (main 46ac2df5, post-31.2; ordered trace, this design session)
 
@@ -163,8 +165,11 @@ Micro-costs on this machine (Apple M3 Pro, Node 22.22.3), used to size the budge
 - **Hexagonal layering.** Sync calls live **only** in `src/adapters/node/` and in the Node entry
   `src/index.node.ts`. Application code keeps calling the Promise-returning port. The budget and
   yield are adapter state.
-- **ADR-047** (`FsOperations` injection): injected test doubles must keep working. The sync
-  surface is an optional capability, and the async path stays the fallback.
+- **ADR-047** (`FsOperations` injection), **superseded for the constructor signature by
+  ADR-883**: injected test doubles must keep working, now passed as `{ fsOps }` in one options
+  object. The sync surface is an optional capability, and the async path stays the fallback.
+- **ADR-879…892** (this slice's decisions) bind every section below; the Decision candidates
+  section maps each candidate to its ADR.
 - **ADR-873 / ADR-705** (optional-capability shape): a new port method is optional, its absence
   changes cost and never the answer, and `wrapFsValidator` forwards it only when present.
 - **ADR-721** (first-party read containment is single-authority): every sync arm resolves through
@@ -203,7 +208,7 @@ Micro-costs on this machine (Apple M3 Pro, Node 22.22.3), used to size the budge
 | `node-file-system.ts:634` copy | `read` `:637` | Moved, still copies. |
 | `node-compressor.ts:168,196,277` | `:168` `inflate`, `:196` `streamInflate`, `:277` `createInflateStream` | `:196` sits inside `streamInflate`, which **31.6** replaces with `inflateSync({info:true})`. It is out of 31.3 to avoid a collision. |
 | `stat .git` twice | — | The second is `evaluateTrust`'s ownership stat (uid), not discovery. It is batchable, not removable. |
-| (new) | open trace | `read-repository-format.ts` reads `.git/config` at open. The first command then re-stats and re-reads it, so the open-time read seeds nothing. See DC-11. |
+| (new) | open trace | `read-repository-format.ts` reads `.git/config` at open. The first command then re-stats and re-reads it, so the open-time read seeds nothing. Left as is (ADR-891). |
 | (new) | — | Pack-first puts the `objects/pack` listing in front of **every** loose read. An unreadable `objects/pack` then decides loose reads; pinned in D5 (rows D1–D3). |
 | `has-object.ts:15-17` | unchanged | Already pack-first. Only the `exists` → membership-cache change remains. |
 | `read-gitattributes.ts` promise memo | — | Backlog places it in **31.5**; not here. |
@@ -212,10 +217,13 @@ Micro-costs on this machine (Apple M3 Pro, Node 22.22.3), used to size the budge
 
 R1. **Port unchanged for callers.** No existing `FileSystem` method changes signature or
 semantics. The only port additions are optional methods (`tryLstat`, `tryReadUtf8`), and
-omitting them changes cost, never answers.
+omitting them changes cost, never answers. The Node adapter's constructor is not a port: it
+becomes `new NodeFileSystem(rootDir, options?)` (ADR-883), and a bare `new NodeFileSystem(root)`
+keeps compiling.
 
 R2. **Default-on, opt-out exact.** `openRepository` (node) and `createNodeContext` serve the
-primitives in R3 synchronously by default. With the opt-out set, the ordered fs trace of every
+primitives in R3 synchronously by default (`io?: 'sync-fast-path' | 'threadpool'`, default
+`'sync-fast-path'`, ADR-881). With `io: 'threadpool'`, the ordered fs trace of every
 bench workload matches `main`'s call for call, apart from the changes of D5–D8 (pack-first,
 shared listing, held-handle header, lazy `.idx`, windows, the lstat-first discovery probe and the
 skipped realpath), which hold in both modes.
@@ -227,7 +235,7 @@ size ≤ the size gate; `readSlice` with `length` ≤ the size gate on a regular
 open, `LayoutProbe.stat` / `readUtf8` / `readLink` plus `realpath` canonicalisation. Everything
 else (all writes, `readdir`, `rmRecursive`, `open` itself, `close`, and reads above the gate)
 stays on the async path unchanged. "`open` itself" means the `open` behind
-`openWithNoFollow`, which keeps its `fsPromises.FileHandle` (DC-5). The `openSync` inside the
+`openWithNoFollow`, which keeps its `fsPromises.FileHandle` (ADR-885). The `openSync` inside the
 small-read arms is part of those arms and is closed before they return.
 
 R4. **Loop budget holds.** With the sync path on, no single unbroken run of synchronous
@@ -258,7 +266,9 @@ one `.idx`. `all()`, `health()` and `indexFaults()` still see the full classific
 once per unreadable `.idx` per generation.
 
 R10. **Delta chain windows.** The 43-deep leaf issues ≤ ⌈chain span / window⌉ + 1 pack reads
-instead of 44.
+instead of 44. Windows default to 64 KiB, under a 16 MiB registry-wide limit.
+`core.packedGitWindowSize` / `core.packedGitLimit` only lower those defaults, and a malformed
+value refuses every command at the eager tier, as git does (ADR-882).
 
 R11. **Benches, main vs branch, absolute.** `bench:ab` rows listed in D10 are reported both sides.
 No row regresses beyond `bench-check` noise. The headline rows (open, `revParse`, `catFile`, cold
@@ -269,17 +279,23 @@ R12. **Quality gates.** 100 % line/branch/function/statement coverage; 0 survivi
 equivalent mutants proven in prose; no ignore directives; property siblings for adler32 (D9) and
 for any new parser (none expected).
 
+R13. **The strategy is documented.** `docs/get-started/node.md` and
+`docs/understand/performance.md` describe the two `io` modes and when to pick `'threadpool'`
+(network or cold filesystems), and the `openRepository` reference (`reports/api.json`) carries
+the new option (ADR-881).
+
 ## Design
 
 ### D0 — Shape and part order
 
 ```
-                 openRepository({ syncIo })            createNodeContext({ syncIo })
-                         │                                      │
-                         ▼                                      ▼
+                 openRepository({ io })                createNodeContext({ io })
+                         │   'threadpool' → no policy, async arm only   │
+                         ▼  'sync-fast-path' (default)                  ▼
             SyncIoPolicy { ops: SyncFsOperations, budget: TurnBudget }   ◄── one per repository
                │                     │                        │
      nodeLayoutProbe/canonicalize   NodeFileSystem (main)    NodeFileSystem (makeWorktreeFs)
+                                    new NodeFileSystem(roots, { syncIo, … })
                │                     │
                ▼                     ▼
    sync arm ◄── admit? ── TurnBudget ── spent ≥ budget ─► await nextTurn (setImmediate)
@@ -291,13 +307,24 @@ for any new parser (none expected).
      resolveObjectContentWithDepth: gate → empty tree → deltaCache → registry.lookup → loose
      registry: packDirListing (1 readdir) ─► store gate (midx presence from listing)
                                          └► scanPacks (same listing)
-               RegisteredPack: handle ─► header / fstat size / windows (LRU per pack)
+               RegisteredPack: handle ─► header / fstat size / windows (registry-wide LRU)
                lookup (no midx): lazy per-pack .idx, first hit wins
 ```
 
-Part order (sequential where files overlap): P1 → P2 → P3 → P4, and P5 → P6 → P7, with P7
-also after P3 because both edit `index.node.ts` / `node-adapter.ts` options. P8 and P9 are
-independent of both chains. Parts are listed with context blocks after D12.
+Part order (sequential where files overlap):
+
+```
+adapter chain:  P1 (constructor options object, mechanical) ─┐
+                P2 (budget, policy, sync ops type)  ─────────┴─► P3 → P4 → P5 → P10
+registry chain: P6 → P7 → P8
+riders:         P9
+```
+
+P1 lands before any sync arm (ADR-883). P2 shares no file with P1 and may run beside it. P3–P5
+share `node-file-system.ts`, P4 edits the constructor sites P1 migrated, and P10 follows P5
+because both edit `browser-file-system.ts`. P8 adds no public option (ADR-882), so the registry
+chain shares no file with the adapter chain. P9 is independent. Parts are listed with context
+blocks after D12.
 
 ### D1 — `TurnBudget` and `SyncIoPolicy` (adapter state)
 
@@ -334,11 +361,16 @@ Semantics:
   the hot path). Otherwise it returns the shared `nextTurn` promise, and N concurrent callers
   share one yield.
 - `charge(startedAt)` adds `clock() − startedAt`. One clock read before and one after each op
-  cost 0.13 µs against a 1.1–1.4 µs op (about 10 %). A cheaper count-based budget is DC-1(c).
+  cost 0.13 µs against a 1.1–1.4 µs op (about 10 %). A cheaper count-based budget was rejected (ADR-880).
 - Measured yield cost is 13 µs. At a 1 ms budget, a long sweep pays about 1.3 % for the yields.
-- Scope is **per repository** (DC-10): `openRepository` creates one budget and shares it among the
-  layout probe, the main adapter and every `makeWorktreeFs` instance. `createNodeContext` creates
-  one per context.
+- Scope is **per repository** (ADR-890): `openRepository` creates one `SyncIoPolicy` and shares
+  it among the layout probe, the main adapter and every `makeWorktreeFs` instance.
+  `createNodeContext` creates one per context. No module-level budget exists.
+- The policy is built from the public option (ADR-881): `io` absent or `'sync-fast-path'` →
+  `createSyncIoPolicy()` (1 ms budget, 64 KiB gate, `realSyncFsOps`; internal constants per
+  ADR-880, not options); `io: 'threadpool'` → no policy at all (`undefined`), so every adapter the
+  repository builds runs today's async path. `SyncIoPolicy` is an internal name; only `io` is
+  public.
 
 The arm pattern every sync-eligible method follows (shown for `lstat`):
 
@@ -359,7 +391,7 @@ turns errno into `mapErrno(err, path)`, and rethrows non-errno errors untouched.
 `async`, so a throw becomes a rejection; callers never see a synchronous throw. The shared tail is
 extracted so no arm exceeds 20 lines.
 
-### D2 — `SyncFsOperations` (ADR-047 widening, DC-3)
+### D2 — `SyncFsOperations` and the constructor options object (ADR-883)
 
 `src/adapters/node/fs-operations.ts` gains a second injectable surface:
 
@@ -371,11 +403,28 @@ export type SyncFsOperations = Pick<typeof fs,
 export const realSyncFsOps: SyncFsOperations = fs;
 ```
 
-`NodeFileSystem`'s constructor takes an optional sixth parameter `syncIo?: SyncIoPolicy` (DC-3
-weighs this against an options object). When it is absent, **every method runs today's code
-path**. `node-fs-fakes.ts`, `node-file-system-injected.test.ts` and every existing double are
-unchanged. New tests pass a fake `SyncFsOperations` built the same way as the existing
-`fakeFsOps`.
+`NodeFileSystem`'s constructor becomes `(rootDir, options?)` (ADR-883, superseding ADR-047's
+positional signature):
+
+```ts
+export interface NodeFileSystemOptions {
+  readonly pathPolicy?: PathPolicy;          // default nativePolicy
+  readonly fsOps?: FsOperations;             // default realFsOps
+  readonly syncIo?: SyncIoPolicy;            // absent → every method runs today's async path
+  readonly rootsArePreResolved?: boolean;    // default false
+  readonly removeTreeConcurrency?: number;   // default REMOVE_TREE_CONCURRENCY
+}
+
+constructor(rootDir: string | ReadonlyArray<string>, options: NodeFileSystemOptions = {})
+```
+
+The migration of every construction site is its own mechanical part, **P1**, landed before any
+sync arm; P1 introduces the object without `syncIo`, and P3 adds the member. When `syncIo` is
+absent, **every method runs today's code path**. Existing doubles (`fakeFsOps` in
+`node-fs-fakes.ts`) are passed as `{ fsOps }` and keep the async path. New tests pass a fake
+`SyncFsOperations` built the same way as `fakeFsOps`. The internal helpers that take an `fsOps`
+argument (`realpathNearestExisting(absolute, policy, fsOps)`) keep their signatures (ADR-883
+carries them forward from ADR-047).
 
 `realpathSync.native` is used, not `realpathSync`, because `fs.promises.realpath` is the native
 `realpath(3)` while the JS `realpathSync` walks segments with its own cache. On Windows the two
@@ -398,7 +447,7 @@ Invariants:
 
 - **Containment unchanged.** Every arm calls `resolveRead` first (ADR-721). `openWithNoFollow`
   keeps its `isSymlinkLeaf` pre-check and discriminator.
-- **The open of a held handle stays async** (DC-5). The `fsPromises.FileHandle` object keeps its
+- **The open of a held handle stays async** (ADR-885). The `fsPromises.FileHandle` object keeps its
   GC-close safety net, and only its reads and fstat use `handle.fd`. A `close` cannot race a sync
   read: the read completes inside one JS turn, and `RegisteredPack.close` already drains
   `inFlight`.
@@ -422,14 +471,14 @@ Invariants:
   `undefined` for `ENOENT` **only**; `ENOTDIR` still throws and maps to `NOT_A_DIRECTORY`, exactly
   as the async arm does.
 
-What stays pooled, and why: `readdir` (DC-6: its entries count is unbounded, and after D5 the
+What stays pooled, and why: `readdir` (ADR-886: its entries count is unbounded, and after D5 the
 cold path has one or two), all writes (not in the decision), `read` above the gate (bulk: blobs,
 large `.idx`, packs), and `rmRecursive`/`rename` (compound, write-side). The `boundedMapFor` pools
 keep their ADR-719 widths. A sync-eligible call issued through a pool (the 20k `lstat` sweep of
 `status`) runs synchronously inside the pool's slot. The pool then serialises cheaply, and the
 budget yields every ≈ 1 ms (≈ 700 lstats at 1.4 µs).
 
-### D4 — `tryLstat` / `tryReadUtf8` (optional port methods, ADR-873 shape; DC-4)
+### D4 — `tryLstat` / `tryReadUtf8` (optional port methods, ADR-873 shape; ADR-884)
 
 ```ts
 /** OPTIONAL. Resolves `undefined` exactly where `lstat` refuses FILE_NOT_FOUND; otherwise as `lstat`. */
@@ -455,7 +504,7 @@ readonly tryReadUtf8?: (path: string) => Promise<string | undefined>;
   `FILE_NOT_FOUND` catch sites are cold and stay as they are; the PR lists them.
 - Loose-ref misses go through `openWithNoFollow` (`ref-store.ts` `leafKind`), not
   `readUtf8`/`lstat`. They are **not** covered by these two methods, and a `tryOpenWithNoFollow`
-  is out of scope (DC-4 note).
+  is out of scope (ADR-884).
 
 ### D5 — Pack-first buffered reads (faithfulness-positive) and the shared pack-dir listing
 
@@ -524,9 +573,11 @@ memo per generation feeds both, and `refresh()` clears it with the gate:
 
 tsgit today: `isMissingPackDir` folds `FILE_NOT_FOUND` and `NOT_A_DIRECTORY` (D3, already
 faithful). `PERMISSION_DENIED` propagates, but only to `all()`/`lookup()`, so a loose read
-survives D1 by accident of the order. Pack-first would make D1 refuse. **DC-7** decides. The
-recommendation is to fold every listing fault into an empty listing plus a logger `warn` carrying
-the fault, which is git's shape on all of D1–D3: loose served, packed → `OBJECT_NOT_FOUND`. D5 is
+survives D1 by accident of the order. Pack-first would make D1 refuse. **ADR-887 decides:** the
+registry folds every fault of the `objects/pack` listing (`FILE_NOT_FOUND` and `NOT_A_DIRECTORY`
+as today, `PERMISSION_DENIED` and any other errno newly) into an empty listing, and reports it
+once per generation through `ctx.logger?.warn` with the fault attached (no logger → silent, never
+a refusal). That is git's shape on all of D1–D3: loose served, packed → `OBJECT_NOT_FOUND`. D5 is
 a **pre-existing** divergence (tsgit's `probeFlat` discards a non-regular midx as a tier-B fault
 where git dies). It is recorded here and not changed.
 
@@ -569,7 +620,7 @@ where git dies). It is recorded here and not changed.
   lookup of any object. git warns on its own lazy `open_pack_index`. This is closer, and
   `logger` output is not a git-faithfulness surface.
 
-### D7 — Pack window cache (git's `use_pack`, DC-2)
+### D7 — Pack window cache (git's `use_pack`, ADR-882)
 
 A per-`RegisteredPack` window LRU sits under `RegisteredPack.readSlice`, in the application
 layer, so it is platform-neutral:
@@ -580,21 +631,26 @@ layer, so it is platform-neutral:
 - A request `[offset, offset + len)` fully inside a cached window returns a **view** (`subarray`,
   no copy). `RegisteredPack.readSlice` has exactly two consumers, `object-resolver.ts`
   (`readEntryHeaderWithChunk`, `:666`) and `fsck/object-cache.ts` (`:224`), plus the header memo
-  after D6. P7 audits all three for writes into the returned bytes (none expected: they feed
+  after D6. P8 audits all three for writes into the returned bytes (none expected: they feed
   header parsers and inflate) and for **retention**. A retained view pins its whole window after
   eviction, and the LRU would then under-count live memory, so any consumer that keeps bytes
   beyond the call must copy. The return type becomes `Promise<Readonly<Uint8Array>>`-shaped where
   the compiler allows it. A request that crosses a window edge with `len ≤ W` loads a
   window based at `floor(offset / PAGE) × PAGE` (PAGE = 4 KiB), git's "window starting at the
   offset" rule. A request with `len > W` bypasses the cache (one direct read, today's shape).
-- Budget: windows are charged to a registry-wide byte budget (DC-2 value) with LRU eviction
-  across packs, git's `packed_git_limit` shape. The cache is cleared exactly where
+- Budget: windows are charged to one registry-wide byte limit with LRU eviction across packs,
+  git's `packed_git_limit` shape. Defaults (ADR-882): **64 KiB window, 16 MiB limit**, internal
+  named constants in `pack-window-cache.ts`; no programmatic option exists (ADR-882 keeps one
+  additive for later). The effective values are `min(default, key)` for
+  `core.packedGitWindowSize` / `core.packedGitLimit`: a key can only **lower** a default, and a
+  value above it is clamped to it. The 64 KiB window is confirmed or replaced by P8's
+  delta-chain probe on the spread row before merge. The cache is cleared exactly where
   `deltaBaseCache` is cleared (`refresh()`, `dispose()`), because a replaced pack may reuse its
   name.
 - This replaces the per-call `new Uint8Array(length)` zero-fill (the `:498` rider), since window
   buffers are allocated once.
 - **Honest sizing of the win.** Under the default sync arm, a pread costs 0.6 µs, so the 44 reads
-  of the delta chain are ≈ 26 µs of its 0.30 ms. The window cache mostly pays on the opt-out path
+  of the delta chain are ≈ 26 µs of its 0.30 ms. The window cache mostly pays on the `io: 'threadpool'` path
   (44 × 10 µs) and in the **browser**, where each `readSlice` is a handle walk plus `getFile()`
   (a depth-10 chain costs 50 round trips). That is why it is in scope. The probe for this part
   measures all three.
@@ -613,20 +669,23 @@ The bound is `unsigned long`, with the grammar and reasons of `pack.windowMemory
 Documented defaults (`git help config`): window 1 GiB on 64-bit (32 MiB on 32-bit, 1 MiB with
 `NO_MMAP`); limit 32 TiB on 64-bit (256 MiB on 32-bit). **git's numbers are mmap reservations**,
 paged lazily, while tsgit's window is an eager heap read. A literal 1 GiB window would read the
-whole pack on the first access. DC-2 therefore separates "honour the key" from "use git's default
-value".
+whole pack on the first access. ADR-882 therefore separates "honour the key" (as an upper
+bound) from "use git's default value" (tsgit keeps heap-sized defaults).
 
 Today tsgit **ignores** both keys and so accepts a malformed value that git refuses. That is a
-pre-existing faithfulness gap. Honouring the keys (DC-2 b/c) closes it by adding a sixth class to
-`assertEagerConfigValid` (`internal/repo-state.ts`, lowest-line ordering, `configBadNumericValue`,
-reusing the `pack.windowMemory` unsigned-long finder). This is the **eager** tier, not ADR-859's
+pre-existing faithfulness gap. ADR-882 closes it: a malformed value refuses through
+`configBadNumericValue` from `assertEagerConfigValid`
+(`src/application/primitives/internal/repo-state.ts`) on every command, as a **sixth candidate**
+beside the five finders it already runs under one `Promise.all`, in lowest-line ordering
+(`pickLowerLine`) with the other eager keys. The finder reuses the grammar and reasons of the
+`pack.windowMemory` unsigned-long finder (`findFirstInvalidPackInt`, `config-read.ts`). This is the **eager** tier, not ADR-859's
 repo-settings tier, because git reads these keys in `git_default_core_config`, which the pin shows
 dying in `rev-parse` and `status`.
 
 ### D8 — `openRepository`: batched probes and the derivable realpath
 
 With the sync arm on, the 13 open calls cost about 1–8 µs each and batching changes little. With
-the opt-out on (network filesystem, where each hop can be milliseconds), the serial chain is the
+`io: 'threadpool'` (network filesystem, where each hop can be milliseconds), the serial chain is the
 cost. So the batching targets **critical-path depth**, and the call count stays the same or
 falls:
 
@@ -663,8 +722,8 @@ falls:
 | `browser/browser-file-system.ts` `walkToParent` / `resolveFileHandle` | directory-handle LRU keyed by parent path (the `parentRealpathCache` shape: bytes + entries capped), invalidated on `rm`/`rename`/`rmRecursive` of the path or any ancestor | browser contract suite; Playwright chromium + firefox |
 | `browser/browser-hash-service.ts` hex + streaming | 256-entry hex lookup table; the streaming hasher concatenates once into a preallocated buffer (one copy, not two) | hash-service contract suite, browser interop spec |
 
-`createSyncAccessHandle` (worker-only, exclusive lock per file) is DC-8. It is recommended
-**out** of this slice.
+`createSyncAccessHandle` (worker-only, exclusive lock per file) is **out** of this slice
+(ADR-888).
 
 ### D10 — Harness and measurement plan (one probe per part)
 
@@ -672,18 +731,19 @@ falls:
 
 | Item | Oracle | Status |
 |---|---|---|
-| Sync arms (P2) | `rev-parse.bench` HEAD row, `cat-file.bench`, `loose-read.bench` both rows, `status.bench` (local), all `bench:ab` main-vs-branch absolute | exist |
-| Open (P3) | `loose-read.bench` "reads a blob" (fresh open per call) is the open oracle; trace oracle: 13 → 12 calls, serial rounds recorded with `syncIo: false` | exist + script |
+| Constructor options object (P1) | none: no runtime change; gate is types + biome + the touched suites, and the `new NodeFileSystem(` site count before/after | — |
+| Sync arms (P3) | `rev-parse.bench` HEAD row, `cat-file.bench`, `loose-read.bench` both rows, `status.bench` (local), all `bench:ab` main-vs-branch absolute | exist |
+| Open (P4) | `loose-read.bench` "reads a blob" (fresh open per call) is the open oracle; trace oracle: 13 → 12 calls, serial rounds recorded with `io: 'threadpool'` | exist + script |
 | Loop budget (R4) | new implementation-time probe: `monitorEventLoopDelay({ resolution: 1 })` around 5 × `status()` on `medium-v3`; max and p99 recorded both modes | script |
-| `tryLstat` (P4) | `status.bench` (review: 4–5 % of status is error construction); unit fs-count on `loadCappedUtf8` misses | exists |
-| Pack-first + listing (P5) | `midx-lookup.bench` rows "loose object with no packs", "cold open reads one loose blob", "cold open reads one blob with/without midx"; `pack-read.bench` cold rows; trace oracle R8 | exist |
-| Lazy `.idx` (P6) | `midx-lookup.bench` "first pack with no midx" and "cold open reads one blob with no midx" (review: 11.7 vs 2.6 ms); trace oracle R9 | exist |
-| Windows (P7) | `delta-chain-read.bench` cold + 8-tips rows, both modes; `pack-read.bench` "spread across a cold large pack" (the regression sentinel: a random-access read must not pay a full window per object); `log.bench`; trace oracle R10 | exist |
-| Riders (P8) | `adapter-inflate.bench` bundled rows (adler32); a 40k-task limiter micro-probe; `diff-whitespace.bench` (blob-source cache) | exist + script |
-| Browser (P9) | Playwright parity + a depth-10 chain read counting `getFile()` calls | script |
+| `tryLstat` (P5) | `status.bench` (review: 4–5 % of status is error construction); unit fs-count on `loadCappedUtf8` misses | exists |
+| Pack-first + listing (P6) | `midx-lookup.bench` rows "loose object with no packs", "cold open reads one loose blob", "cold open reads one blob with/without midx"; `pack-read.bench` cold rows; trace oracle R8 | exist |
+| Lazy `.idx` (P7) | `midx-lookup.bench` "first pack with no midx" and "cold open reads one blob with no midx" (review: 11.7 vs 2.6 ms); trace oracle R9 | exist |
+| Windows (P8) | `delta-chain-read.bench` cold + 8-tips rows, both modes; `pack-read.bench` "spread across a cold large pack" (the regression sentinel: a random-access read must not pay a full window per object); `log.bench`; trace oracle R10 | exist |
+| Riders (P9) | `adapter-inflate.bench` bundled rows (adler32); a 40k-task limiter micro-probe; `diff-whitespace.bench` (blob-source cache) | exist + script |
+| Browser (P10) | Playwright parity + a depth-10 chain read counting `getFile()` calls | script |
 
 **Trace shim (replaces `fs-count.cjs`).** 31.1/31.2's shim wraps only `fs.promises`, so after
-P2 it would report a **false** drop to near zero. The implementation-time shim must wrap
+P3 it would report a **false** drop to near zero. The implementation-time shim must wrap
 `fs.promises.*`, the `*Sync` functions **and** the `FileHandle` prototype (`read`, `stat`, and
 `close` via the prototype symbol), and count both families. The shape used for this design's
 traces: ordered log, path made relative to the fixture root, enabled around one iteration. Numbers
@@ -694,9 +754,11 @@ run `strace -c -f` over the open + one-blob probe on `ubuntu-latest` through a t
 branch with a push-triggered workflow (the rename-probe pattern from 2026-09-06). Record syscall
 counts both modes. The branch is deleted after.
 
-**`profile` workloads.** `pack-read` (8000 fresh opens) is really an `openRepository` profile. Add
-an explicit `open` workload (open + dispose, no read) and keep `pack-read` so its baseline series
-continues (DC-12). Regenerate and commit `docs/perf/baseline.*` in the harness part.
+**`profile` workloads (ADR-892).** `pack-read` (8000 fresh opens) is really an `openRepository`
+profile. Add an explicit `open` workload that measures `openRepository` alone (open + dispose, no
+read). `pack-read` keeps its name and is made to profile the packed read on an already-open
+repository (open once outside the measured loop), so the name finally matches the workload; its
+baseline row is re-recorded in the same commit and the PR notes the series break. Regenerate and commit `docs/perf/baseline.*` in the harness part.
 
 **`bench:ab` rows read for non-regression:** every row in the table above plus `log` (both),
 `commit`, `tag-list`, `branch-list`, `maintenance gc`, `fetch-pack`, `clone-small-repo`. The
@@ -706,14 +768,14 @@ writes stay async, but they share the adapter.
 
 | Change | Class | Pin |
 |---|---|---|
-| Sync arms, budget, opt-out | neutral (git is synchronous; no data or refusal change) | contract suite both modes (R5) |
+| Sync arms, budget, `io` option | neutral (git is synchronous; no data or refusal change) | contract suite both modes (R5) |
 | Pack-first buffered resolver | **positive** (O1 buffered, O2, O3, P1, P3) | new `test/integration/object-precedence-interop.test.ts` |
 | `openBlobSource` stays loose-first | faithful (O1 streamed rows) | same test, streamed rows |
-| Unreadable `objects/pack` fold (DC-7 a) | **positive** (D1–D3) | same test, posix-only, skipped as root |
+| Unreadable `objects/pack` fold (ADR-887) | **positive** (D1–D3) | same test, posix-only, skipped as root |
 | midx presence from listing | neutral (symlink/dir entries fall through to `stat`; D4) | `midx-interop.test.ts` gains the symlinked-midx row |
 | Header/size through the held handle | neutral | unit |
 | Lazy `.idx` | neutral (same pack order, same first hit) | unit + `packfile-interop` unchanged |
-| Window knobs (DC-2 b/c) | **positive** (malformed keys refused as git does) | `config-interop` / new rows in `repo-settings-config-interop.test.ts`-style file, eager tier |
+| Window knobs (ADR-882) | **positive** (malformed keys refused as git does) | `config-interop` / new rows in `repo-settings-config-interop.test.ts`-style file, eager tier |
 | Open batching / realpath skip | neutral (same decisions, same order) | `find-layout.test.ts`, trust tests |
 | Riders | neutral (bit-identical outputs) | property + unit |
 | midx-as-directory (D5 row) | pre-existing divergence, unchanged | recorded only |
@@ -724,11 +786,55 @@ writes stay async, but they share the adapter.
 Each part is one TDD cycle with atomic commits and ends with its probe (memory hint: one
 measurement per part; review has caught regressions a green validate missed).
 
-#### P1 — `TurnBudget`, `SyncIoPolicy`, `SyncFsOperations`
+#### P1 — `NodeFileSystem` takes one options object (mechanical migration, ADR-883)
 
-- **Files:** new `src/adapters/node/sync-io-budget.ts`; `src/adapters/node/fs-operations.ts`
-  (add `SyncFsOperations`, `realSyncFsOps`).
-- **Signatures:** D1 and D2 verbatim. `createTurnBudget(budgetMs, clock?, scheduleTurnEnd?)`.
+- **Behaviour:** none. Every construction site keeps its meaning; only the argument shape
+  changes. Lands before any sync arm (ADR-883), as one commit.
+- **Files:** `src/adapters/node/node-file-system.ts` (`NodeFileSystem` `constructor`, new exported
+  `NodeFileSystemOptions`; `src/adapters/node/index.ts` re-exports the type next to the class);
+  every construction site passing a second argument; `reports/api.json` regenerated.
+- **Current signature** (`node-file-system.ts:524-530`):
+  `constructor(rootDir: string | ReadonlyArray<string>, pathPolicy: PathPolicy = nativePolicy,
+  fsOps: FsOperations = realFsOps, rootsArePreResolved = false, removeTreeConcurrency: number =
+  REMOVE_TREE_CONCURRENCY)`. **New:** `constructor(rootDir, options: NodeFileSystemOptions = {})`
+  with the D2 interface **minus `syncIo`** (P3 adds that member); each field defaults exactly as
+  the positional parameter did, destructured in the constructor head.
+- **Unchanged:** `FsOperations`, `realFsOps`, and the internal helpers that take an `fsOps`
+  argument (`realpathNearestExisting(absolute, policy = nativePolicy, fsOps = realFsOps)`,
+  called from `loadRootSet` `:592` and `resolveWrite`'s creation arm `:1192` with
+  `this.pathPolicy, this.fsOps`).
+- **Site clusters** (176 code sites in 12 files; ADR-883's 214 also counts doc mentions; 16
+  single-argument sites stay as they are):
+
+  | File | Sites | Shape today → after |
+  |---|---|---|
+  | `src/index.node.ts` `openRepository` `:108` | 1 | `(roots, nativePolicy, undefined, canonical)` → `(roots, { pathPolicy: nativePolicy, rootsArePreResolved: canonical })`; the `:106-107` comment about the `undefined` third argument goes |
+  | `src/index.node.ts` `makeWorktreeFs` `:145` | 1 | `([...], nativePolicy)` → `([...], { pathPolicy: nativePolicy })`; the existing comment above the array argument stays attached to it |
+  | `test/unit/adapters/node/node-file-system-injected.test.ts` | 117 | `(root, policy, fakeFsOps(…))` → `(root, { pathPolicy: policy, fsOps: fakeFsOps(…) })`; 3 four-argument sites add `rootsArePreResolved` |
+  | `test/unit/adapters/node/node-file-system-rename-kinds.test.ts` | 35 | three-argument, as above |
+  | `test/unit/adapters/node/node-file-system.test.ts` | 13 | 6 migrate (`(root, policy)` ×3, `(root, undefined, fsOps)` ×2, `(root, undefined, fsOps, undefined, concurrency)` ×1 → `{ fsOps, removeTreeConcurrency: concurrency }`); 7 single-argument |
+  | `src/adapters/node/node-adapter.ts` `:76`, `test/integration/posix-only/*` (4), `win-only/*` (3), `sha256-object-format-interop.test.ts` (1) | 9 | single-argument, unchanged |
+
+- **Public surface:** `NodeFileSystem` is exported through `tsgit/adapters/node`, so a consumer
+  passing positional arguments breaks: the commit is marked breaking (`!`) and the changelog
+  entry shows the before/after call.
+- **Tests:** no new behaviour, so the only new rows are the constructor's own: each option
+  absent → its documented default is used (one row per field, asserting the observable effect:
+  native policy resolution, real fs reached, roots re-resolved, default removal width), and each
+  option present → honoured. Existing suites pass unchanged in meaning.
+- **Gate:** `npm run check:types`, `npm run check` (biome), and the touched suites
+  (`node-file-system*.test.ts`, `index.node` tests, the integration files above on their OS).
+- **Probe:** none (no runtime change); `git grep -c 'new NodeFileSystem('` recorded before and
+  after to prove the site count.
+
+#### P2 — `TurnBudget`, `SyncIoPolicy`, `SyncFsOperations`
+
+- **Files:** new `src/adapters/node/sync-io-budget.ts` (`TurnBudget`, `SyncIoPolicy`,
+  `createTurnBudget`, `createSyncIoPolicy`, the 1 ms / 64 KiB constants of ADR-880);
+  `src/adapters/node/fs-operations.ts` (add `SyncFsOperations`, `realSyncFsOps`).
+- **Signatures:** D1 and D2's `SyncFsOperations` verbatim. `createTurnBudget(budgetMs, clock?,
+  scheduleTurnEnd?)`; `createSyncIoPolicy(): SyncIoPolicy` (no parameters: the values are
+  internal constants, ADR-880/881).
 - **Tests:** new `test/unit/adapters/node/sync-io-budget.test.ts` with an injected clock and
   `scheduleTurnEnd` (collect callbacks, fire manually). Rows: under budget → `admit()` is
   `undefined`; at/over budget → the same promise for N callers; marker fires → spent resets and
@@ -736,16 +842,16 @@ measurement per part; review has caught regressions a green validate missed).
   Mutation: the `>=` boundary needs an exactly-at-budget row.
 - **Probe:** micro-bench of `admit()+charge()` overhead per op (expect ≤ 0.15 µs).
 
-#### P2 — `NodeFileSystem` sync arms
+#### P3 — `NodeFileSystem` sync arms
 
 - **Files:** `src/adapters/node/node-file-system.ts` (`NodeFileSystem` constructor, `read`,
   `readSlice`, `readUtf8`, `exists`, `lexists`, `isPresent`, `stat`, `lstat`, `readlink`,
   `openWithNoFollow` → `wrapNodeHandle`, `canonicalizeRoots`; new private `runSync`,
   `readRegularSmall`); `test/unit/adapters/node/node-fs-fakes.ts` (add `fakeSyncFsOps`).
-- **Current signatures being changed:** `constructor(rootDir, pathPolicy = nativePolicy, fsOps =
-  realFsOps, rootsArePreResolved = false, removeTreeConcurrency = REMOVE_TREE_CONCURRENCY)`
-  gains `syncIo?: SyncIoPolicy` (or the DC-3 options object). `function wrapNodeHandle(handle:
-  fsPromises.FileHandle): FileHandle` gains `(handle, syncIo?: SyncIoPolicy)`.
+- **Current signatures being changed:** `NodeFileSystemOptions` (after P1) gains
+  `readonly syncIo?: SyncIoPolicy`, stored as the private `syncIo` field the D1 arm pattern reads.
+  `function wrapNodeHandle(handle: fsPromises.FileHandle): FileHandle` gains `(handle, syncIo?:
+  SyncIoPolicy)`.
 - **Tests:** `test/unit/adapters/node/node-file-system.test.ts` calls
   `fileSystemContractTests(createSut)` a second time with a policy-bearing sut (the dual-mode
   requirement, R5). `node-file-system-injected.test.ts` gets one describe per arm: sync path taken
@@ -757,13 +863,22 @@ measurement per part; review has caught regressions a green validate missed).
 - **Probe:** `bench:ab` `rev-parse`, `cat-file`, `loose-read`, `status`; trace shim on
   `revParse('HEAD')` both modes. Run `test:parity:workers|deno|bun` (the adapter changed).
 
-#### P3 — Option plumbing and the open path
+#### P4 — Option plumbing and the open path
 
+- **Public option (ADR-881):** `readonly io?: 'sync-fast-path' | 'threadpool'` on
+  `OpenNodeRepositoryOptions` (`src/index.node.ts`) and `NodeAdapterOptions`
+  (`src/adapters/node/node-adapter.ts`), default `'sync-fast-path'`. `openRepository` strips it
+  before forwarding to the core (the existing `const { cwd: _cwd, allowInsecureHttp: _a, … }`
+  destructure). `'threadpool'` builds no `SyncIoPolicy`: the layout probe, the main adapter and
+  every worktree adapter receive `undefined`.
 - **Files:** `src/index.node.ts` (`OpenNodeRepositoryOptions`, `openRepository`,
-  `nodeLayoutProbe` → a factory `createNodeLayoutProbe(syncIo?)`, `canonicalize`,
-  `resolveNodeLayout`, `isDerivedFromCanonicalCwd`, `makeWorktreeFs`);
+  `nodeLayoutProbe` → a factory `createNodeLayoutProbe(syncIo?: SyncIoPolicy)`, `canonicalize`,
+  `resolveNodeLayout`, `isDerivedFromCanonicalCwd`, `makeWorktreeFs` — both constructions pass
+  `{ …, syncIo }` into the P1 options object);
   `src/adapters/node/node-adapter.ts` (`NodeAdapterOptions`, `createNodeContext`);
-  `src/repository/validate-options.ts` (`validateOptions`: the new option's type check);
+  `src/repository/validate-options.ts` (`ValidatableOptions` gains `io`; new `validateIo`
+  following `validateBareRepositories`: `invalidOption('io', "must be 'sync-fast-path' or
+  'threadpool'")`);
   `src/repository/find-layout.ts` (`findLayout`, `layoutFor`, `hasValidHead`, `resolveCommonDir`,
   `sharedDirsValid`); `src/repository/trust-verdict.ts` (`evaluateTrust`);
   `src/ports/layout-probe.ts` (`stat` result gains `isSymbolicLink` for the lstat-first probe —
@@ -773,12 +888,16 @@ measurement per part; review has caught regressions a green validate missed).
   non-file; the commondir-present path ignores the speculative stats);
   `test/unit/repository/resolve-layout-trust.test.ts` (first foreign path in order is reported
   when two are foreign); `test/unit/adapters/node/node-adapter.test.ts` + an `index.node` test
-  (option default on, `syncIo: false` wires no policy, worktree fs shares the budget);
-  `validate-options` rows (non-boolean refused with the existing code).
-- **Probe:** trace shim on open (13 → 12, serial rounds with `syncIo: false`); `loose-read.bench`
-  fresh-open row `bench:ab`.
+  (`io` absent and `'sync-fast-path'` build one policy; `io: 'threadpool'` wires no policy
+  anywhere; the worktree fs shares the main adapter's budget);
+  `validate-options` rows (`'sync-fast-path'` and `'threadpool'` accepted; any other string, a
+  boolean and a number each refused `INVALID_OPTION` with the `io` data, one row per operand).
+- **Docs (R13):** `docs/get-started/node.md` and `docs/understand/performance.md` describe the
+  two modes and when to pick `'threadpool'`; `reports/api.json` regenerated.
+- **Probe:** trace shim on open (13 → 12, serial rounds with `io: 'threadpool'`);
+  `loose-read.bench` fresh-open row `bench:ab`.
 
-#### P4 — `tryLstat` / `tryReadUtf8`
+#### P5 — `tryLstat` / `tryReadUtf8`
 
 - **Files:** `src/ports/file-system.ts`; `src/adapters/node/node-file-system.ts`;
   `src/adapters/memory/memory-file-system.ts`; `src/adapters/browser/browser-file-system.ts`;
@@ -793,25 +912,29 @@ measurement per part; review has caught regressions a green validate missed).
 - **Probe:** `status.bench` `bench:ab`; unit count of `TsgitError` constructions in a 200-directory
   status (spy on the error factory): 200 → 0.
 
-#### P5 — Pack-first, shared listing, pack-dir fault fold, `hasObject`, prefix scan
+#### P6 — Pack-first, shared listing, pack-dir fault fold, `hasObject`, prefix scan
 
 - **Files:** `src/application/primitives/object-resolver.ts` (`resolveObjectContentWithDepth`
   `:68-131`, arms swapped; `tryLoose` unchanged); `pack-registry.ts` (`createStoreGate`,
-  `scanPacks`, `isMissingPackDir` → fold per DC-7, new `packDirListing` memo cleared in
-  `refresh()`); `internal/midx-source.ts` (`loadMidxSet(ctx, packsDir, listing)`, `probeFlat`,
+  `scanPacks`, `isMissingPackDir` → fold per ADR-887: every listing fault becomes an empty
+  listing plus one `ctx.logger?.warn` per generation carrying the fault; new `packDirListing`
+  memo cleared in `refresh()`); `internal/midx-source.ts` (`loadMidxSet(ctx, packsDir, listing)`, `probeFlat`,
   `readChainManifest`); `internal/loose-oid-cache.ts` (doc); `has-object.ts`;
   `resolve-oid-prefix.ts`.
 - **Tests:** `test/unit/application/primitives/object-resolver.test.ts` (a packed hit never lists
   the fanout; a pack miss falls to loose; a corrupt loose copy of a packed object is never read);
   `pack-registry.test.ts` (one `readdir` shared by gate and scan; midx `stat` only when the
-  listing has an entry; a symlink entry still stats); `midx-source` tests (listing parameter);
+  listing has an entry; a symlink entry still stats; each listing fault — `FILE_NOT_FOUND`,
+  `NOT_A_DIRECTORY`, `PERMISSION_DENIED`, an unmapped errno — yields an empty listing, and
+  `ctx.logger.warn` is called once with the fault even across two lookups; no logger → no throw);
+  `midx-source` tests (listing parameter);
   new `test/integration/object-precedence-interop.test.ts` (rows O1–O3, P1–P3, D1–D4 against real
   git, reconstructing git's answer from structured fields; the chmod rows are posix-only and
   skipped when `process.getuid() === 0`); `midx-interop.test.ts` (symlinked midx row).
 - **Probe:** trace shim R8 (16 → ≤ 12); `midx-lookup.bench` loose-only rows and `pack-read.bench`
   cold rows `bench:ab`. A loose-only cold read must not regress: it trades 2 stats for 1 readdir.
 
-#### P6 — Held-handle header and size, lazy `.idx`
+#### P7 — Held-handle header and size, lazy `.idx`
 
 - **Files:** `pack-registry.ts` (`loadPack`: `headerMemo`, `buildOffsetTable`, new `sizeMemo`;
   `lookupViaIndexedSnapshot` + `lookupViaUnclaimedPacks` → one lazy loop; `unclaimedIndexOrSkip`);
@@ -823,23 +946,30 @@ measurement per part; review has caught regressions a green validate missed).
   order equal candidate order under a deliberately reversed completion order (injected delays).
 - **Probe:** trace shim R9 on `many-pack-no-midx-v3`; `midx-lookup.bench` no-midx rows.
 
-#### P7 — Window cache and knobs
+#### P8 — Window cache and git's window keys (ADR-882)
 
 - **Files:** new `src/application/primitives/internal/pack-window-cache.ts` (`createPackWindowCache
-  ({ windowBytes, limitBytes })` → `read(pack, offset, length, load)` + `clear()`);
-  `pack-registry.ts` (`readSlice` through the cache, cleared in `refresh()`/`dispose()`);
-  `src/ports/context.ts` `buildCacheBudgets` (new budget fields per DC-2);
-  `index.node.ts` / `node-adapter.ts` options per DC-2; and, if DC-2 (b|c):
-  `config-read.ts` (two finders reusing the `pack.windowMemory` unsigned-long grammar) and
-  `internal/repo-state.ts` `assertEagerConfigValid` (sixth class, lowest-line ordering).
+  ({ windowBytes, limitBytes })` → `read(pack, offset, length, load)` + `clear()`; named
+  constants `DEFAULT_PACK_WINDOW_BYTES` = 64 KiB and `DEFAULT_PACK_WINDOW_LIMIT_BYTES` = 16 MiB);
+  `pack-registry.ts` (`readSlice` through the cache, cleared in `refresh()`/`dispose()`; the
+  effective sizes are `min(default, key)`); `config-read.ts` (two finders for
+  `core.packedGitWindowSize` / `core.packedGitLimit` reusing the `pack.windowMemory`
+  unsigned-long grammar of `findFirstInvalidPackInt`); `internal/repo-state.ts`
+  `assertEagerConfigValid` (sixth candidate, `configBadNumericValue`, lowest-line ordering via
+  `pickLowerLine`). No public option: `index.node.ts`, `node-adapter.ts` and `context.ts` are
+  untouched (ADR-882).
 - **Tests:** unit cache rows (contained request → view without load; crossing request → one
   page-aligned load; `len > W` → bypass; LRU eviction across two packs at the limit; `clear()`
-  empties; a replaced pack after `refresh()` never serves stale bytes); interop rows for the
-  malformed keys (the D7 pin table), reconstructed through `CONFIG_BAD_NUMERIC_VALUE` data.
+  empties; a replaced pack after `refresh()` never serves stale bytes); clamp rows (a key below a
+  default lowers it; a key above a default is clamped to the default; the boundary value equal to
+  the default); eager-tier rows (a malformed key refuses `CONFIG_BAD_NUMERIC_VALUE` on a read
+  command; lowest-line ordering against an earlier and a later malformed `core.compression`);
+  interop rows for the malformed keys (the D7 pin table), reconstructed through
+  `CONFIG_BAD_NUMERIC_VALUE` data.
 - **Probe:** `delta-chain-read.bench` cold/warm/8-tips and `pack-read.bench` spread row, both
   modes; `log.bench`; trace R10.
 
-#### P8 — Constant-factor riders (Node, domain)
+#### P9 — Constant-factor riders (Node, domain)
 
 - **Files:** `internal/concurrency-limiter.ts`; `internal/blob-source.ts`; `adapters/adler32.ts`
   (+ new `test/unit/adapters/adler32.properties.test.ts`); `adapters/inflate.ts`
@@ -849,10 +979,11 @@ measurement per part; review has caught regressions a green validate missed).
 - **Probe:** `adapter-inflate.bench` bundled rows; 40k-task limiter micro-probe;
   `diff-whitespace.bench`.
 
-#### P9 — Browser riders and harness
+#### P10 — Browser riders and harness
 
 - **Files:** `browser/browser-file-system.ts`; `browser/browser-hash-service.ts`;
-  `tooling/profile-registry.ts` (`open` workload); `docs/perf/baseline.*` regenerated.
+  `tooling/profile-registry.ts` (new `open` workload; `pack-read` re-pointed at the packed read
+  on an already-open repository, ADR-892); `docs/perf/baseline.*` regenerated.
 - **Tests:** browser contract suite (`npm run test:e2e`, chromium + firefox locally; WebKit
   per the 1.62.1 note); a Playwright row counting `getFile()` calls for a depth-10 chain read.
 - **Probe:** Playwright timing of the depth-10 chain before and after (local, recorded
@@ -870,34 +1001,44 @@ measurement per part; review has caught regressions a green validate missed).
   "honour key" from "default"), and that the knobs are an **eager**-tier class, not a
   repo-settings one. It confirmed that the window cache's Node win is small under sync and argued
   its scope from the opt-out and browser paths.
+- **Revision (decisions phase, ADR-879…892)** renamed the public option to `io?: 'sync-fast-path'
+  | 'threadpool'` (ADR-881), moved `NodeFileSystem` to one options object with the site migration
+  as a new mechanical P1 (ADR-883; parts 9 → 10, old P1–P9 → P2–P10), fixed the window defaults,
+  clamp and eager refusal (ADR-882, no public window option, so P8 no longer waits on P4), named
+  `ctx.logger?.warn` for the pack-directory fold (ADR-887), re-pointed `pack-read` (ADR-892),
+  made P10 follow P5 (both edit `browser-file-system.ts`), and settled every decision candidate.
 
 ## Decision candidates
 
-The sync fast path itself is **decided** (option (a), 2026-09-10) and is recorded above for
-ratification, not listed here.
+The sync fast path itself is **decided** (option (a), 2026-09-10) and is ratified as
+**ADR-879**, not listed here. Every candidate below is now settled by ADR-880…892; the
+"Recommendation" and "Why" columns are kept as the design-time record, and the "Settled" column
+is binding. Two outcomes deviate from the recommendation (DC-1b, DC-3) and this revision carries
+them through D0–D12. **No open decision candidates remain.**
 
-| # | Choice | Alternatives (≤3) | Recommendation | Why |
-|---|---|---|---|---|
-| DC-1 | Budget value, size gate, budget mechanism | (a) 1 ms time-based budget, 64 KiB gate; (b) 2 ms / 128 KiB; (c) op-count budget (≈ 700 ops/turn), 64 KiB | **(a)** | The review's measured shape. The clock costs 0.13 µs per op against 1.1–1.4 µs ops. A count budget mis-sizes on slow disks, which is exactly where the bound matters. 64 KiB covers HEAD, refs, config, packed-refs, small `.idx`, `.rev` on small packs. |
-| DC-1b | Public option name and shape | (a) `syncIo?: boolean` (default `true`) on `OpenNodeRepositoryOptions` and `NodeAdapterOptions`, values internal constants; (b) `io?: 'sync-fast-path' \| 'threadpool'`; (c) `syncIo?: false \| { budgetMs?: number; maxReadBytes?: number }` | **(a)** | Matches the house `hooks?: boolean` / `command?: boolean` shape. Exposing the tuning numbers (c) is YAGNI until a user reports a filesystem where the constants are wrong. (c) stays additive later. |
-| DC-2 | Window cache knobs and values | (a) tsgit-only options (`packWindowBytes`, `packWindowCacheMaxBytes`), git keys ignored as today; (b) honour `core.packedGitWindowSize` / `core.packedGitLimit` as **upper bounds** clamped by tsgit defaults (64 KiB window, 16 MiB limit), plus the eager refusal class; (c) (b) + explicit options that suppress the keys (ADR-858 precedent) | **(b)** | Git's key names and grammar (ADR-773 precedent) close a pre-existing refusal gap (pinned: every command dies on a malformed value). git's defaults are mmap figures, so tsgit keeps heap-sized defaults and only lets a user shrink them. An option override (c) has no requester. The 64 KiB vs 256 KiB window is settled by P7's probe on the spread row before merge. |
-| DC-3 | `FsOperations` widening (ADR-047) | (a) separate `SyncFsOperations` type + optional sixth constructor parameter `syncIo?: SyncIoPolicy`; (b) same type, but convert the four trailing positional parameters into one options object; (c) add sync members to `FsOperations` itself as optional properties | **(a)** | Absent → today's path, so every existing double works unchanged. Keeps `FsOperations` a pure `Pick<typeof fsPromises>`. (b) is cleaner, but it churns 176 `new NodeFileSystem(` sites (mostly tests) for no behaviour. (c) mixes two modules in one `Pick` and makes "has sync" a per-method question. |
-| DC-4 | Expected-miss cost | (a) optional `tryLstat` / `tryReadUtf8` port methods, ADR-873 shape, fallback in callers; (b) cheap stack-free `FILE_NOT_FOUND` construction inside the adapters (no port change); (c) both | **(a)** | The miss answer becomes data rather than an error, and stacks stay intact for real faults. (b) silently drops stacks on every not-found, including unexpected ones. Loose-ref misses (`openWithNoFollow`) stay uncovered; a `tryOpenWithNoFollow` is a follow-up if P4's probe shows ref misses matter. |
-| DC-5 | Held-handle open | (a) async `open` (keeps `FileHandle`'s GC close), sync `read`/`fstat` via `handle.fd`; (b) fully sync raw fd (`openSync`), wrapped in the port `FileHandle`; (c) async everything on handles | **(a)** | The review's measured patch was (a): pread was the cost, open is one hop per pack/HEAD. (b) saves one hop per open but turns a forgotten `close` into a silent fd leak (no GC close hook). This repo has already paid for the FileHandle leak class once. |
-| DC-6 | `readdir` sync arm | (a) out, stays pooled; (b) in, gated by an entry-count probe; (c) in, unconditionally | **(a)** | Not in the decided set. Its entry count is unbounded (a 256-dir fanout, `objects/pack` with thousands of packs). After P5 the cold path does 1–2 `readdir` calls. Revisit only if a trace shows serial `readdir` calls dominating. |
-| DC-7 | Unusable `objects/pack` under pack-first | (a) fold every listing fault into an empty listing + logger `warn` carrying the fault (loose served, packed → `OBJECT_NOT_FOUND`); (b) catch on the pack-first arm, try loose, rethrow the listing fault if loose misses (keeps today's `PERMISSION_DENIED` for packed objects); (c) propagate (loose reads start refusing) | **(a)** | git's pinned shape on D1–D3 (error line, loose served, packed "not a valid object name"). (c) is a regression. (b) keeps a tsgit-only refusal code for no git reason. |
-| DC-8 | Browser scope | (a) directory-handle LRU + hex table + single-copy streaming hasher, no `createSyncAccessHandle`; (b) (a) + memoised sync access handle per pack in dedicated workers; (c) defer all browser items | **(a)** | (a) is pure call-count/CPU work, testable in Playwright. Sync access handles exist only in dedicated workers and take an exclusive lock per file (a second tab or reader fails). That is a new failure surface that needs its own ADR and a real-browser host this slice does not have. |
-| DC-9 | adler32 / `GrowableBuffer` rider | (a) in (P8, isolated, bit-identical, property-pinned); (b) defer to 31.6 with the compressor work | **(a)** | No file overlap with 31.6 (`adler32.ts`, `GrowableBuffer`). The measured 55 % self time of the bundled decoder is independent of the Node I/O work, and the property test proves identity. |
-| DC-10 | Budget scope | (a) one budget per repository, shared by its layout probe and all its adapters; (b) one process-wide module singleton; (c) one per `NodeFileSystem` instance | **(a)** | (b) is mutable module state shared across unrelated repositories and test files. (c) lets a repository's worktree adapter and main adapter each take a full budget. (a) bounds the stall at 1 ms × concurrently active repositories, which is documented. |
-| DC-11 | Seed the session config cache from the open-time `.git/config` read | (a) seed (the first command's gate stat then matches and skips the `readFile`); (b) leave, record as follow-up | **(b)** | It saves one `readFile` per open, but it crosses ADR-850's epoch contract and 31.2's cache ownership. It deserves its own small design rather than a rider. |
-| DC-12 | `profile` workload for open | (a) add an explicit `open` workload, keep `pack-read`; (b) rename `pack-read` → `open-read`; (c) leave | **(a)** | Keeps the `pack-read` baseline series continuous and gives open its own honest profile. |
+| # | Choice | Alternatives (≤3) | Recommendation | Why | Settled |
+|---|---|---|---|---|---|
+| DC-1 | Budget value, size gate, budget mechanism | (a) 1 ms time-based budget, 64 KiB gate; (b) 2 ms / 128 KiB; (c) op-count budget (≈ 700 ops/turn), 64 KiB | **(a)** | The review's measured shape. The clock costs 0.13 µs per op against 1.1–1.4 µs ops. A count budget mis-sizes on slow disks, which is exactly where the bound matters. 64 KiB covers HEAD, refs, config, packed-refs, small `.idx`, `.rev` on small packs. | ADR-880 — (a), adopted as recommended |
+| DC-1b | Public option name and shape | (a) `syncIo?: boolean` (default `true`) on `OpenNodeRepositoryOptions` and `NodeAdapterOptions`, values internal constants; (b) `io?: 'sync-fast-path' \| 'threadpool'`; (c) `syncIo?: false \| { budgetMs?: number; maxReadBytes?: number }` | **(a)** | Matches the house `hooks?: boolean` / `command?: boolean` shape. Exposing the tuning numbers (c) is YAGNI until a user reports a filesystem where the constants are wrong. (c) stays additive later. | ADR-881 — **(b)**, user judgment (deviates): `io?: 'sync-fast-path' \| 'threadpool'` |
+| DC-2 | Window cache knobs and values | (a) tsgit-only options (`packWindowBytes`, `packWindowCacheMaxBytes`), git keys ignored as today; (b) honour `core.packedGitWindowSize` / `core.packedGitLimit` as **upper bounds** clamped by tsgit defaults (64 KiB window, 16 MiB limit), plus the eager refusal class; (c) (b) + explicit options that suppress the keys (ADR-858 precedent) | **(b)** | Git's key names and grammar (ADR-773 precedent) close a pre-existing refusal gap (pinned: every command dies on a malformed value). git's defaults are mmap figures, so tsgit keeps heap-sized defaults and only lets a user shrink them. An option override (c) has no requester. The 64 KiB vs 256 KiB window is settled by P8's probe on the spread row before merge. | ADR-882 — (b), user judgment, as recommended |
+| DC-3 | `FsOperations` widening (ADR-047) | (a) separate `SyncFsOperations` type + optional sixth constructor parameter `syncIo?: SyncIoPolicy`; (b) same type, but convert the four trailing positional parameters into one options object; (c) add sync members to `FsOperations` itself as optional properties | **(a)** | Absent → today's path, so every existing double works unchanged. Keeps `FsOperations` a pure `Pick<typeof fsPromises>`. (b) is cleaner, but it churns 176 `new NodeFileSystem(` sites (mostly tests) for no behaviour. (c) mixes two modules in one `Pick` and makes "has sync" a per-method question. | ADR-883 — **(b)**, user judgment (deviates): options object, migration as P1 |
+| DC-4 | Expected-miss cost | (a) optional `tryLstat` / `tryReadUtf8` port methods, ADR-873 shape, fallback in callers; (b) cheap stack-free `FILE_NOT_FOUND` construction inside the adapters (no port change); (c) both | **(a)** | The miss answer becomes data rather than an error, and stacks stay intact for real faults. (b) silently drops stacks on every not-found, including unexpected ones. Loose-ref misses (`openWithNoFollow`) stay uncovered; a `tryOpenWithNoFollow` is a follow-up if P5's probe shows ref misses matter. | ADR-884 — (a), adopted as recommended |
+| DC-5 | Held-handle open | (a) async `open` (keeps `FileHandle`'s GC close), sync `read`/`fstat` via `handle.fd`; (b) fully sync raw fd (`openSync`), wrapped in the port `FileHandle`; (c) async everything on handles | **(a)** | The review's measured patch was (a): pread was the cost, open is one hop per pack/HEAD. (b) saves one hop per open but turns a forgotten `close` into a silent fd leak (no GC close hook). This repo has already paid for the FileHandle leak class once. | ADR-885 — (a), adopted as recommended |
+| DC-6 | `readdir` sync arm | (a) out, stays pooled; (b) in, gated by an entry-count probe; (c) in, unconditionally | **(a)** | Not in the decided set. Its entry count is unbounded (a 256-dir fanout, `objects/pack` with thousands of packs). After P6 the cold path does 1–2 `readdir` calls. Revisit only if a trace shows serial `readdir` calls dominating. | ADR-886 — (a), adopted as recommended |
+| DC-7 | Unusable `objects/pack` under pack-first | (a) fold every listing fault into an empty listing + logger `warn` carrying the fault (loose served, packed → `OBJECT_NOT_FOUND`); (b) catch on the pack-first arm, try loose, rethrow the listing fault if loose misses (keeps today's `PERMISSION_DENIED` for packed objects); (c) propagate (loose reads start refusing) | **(a)** | git's pinned shape on D1–D3 (error line, loose served, packed "not a valid object name"). (c) is a regression. (b) keeps a tsgit-only refusal code for no git reason. | ADR-887 — (a), adopted as recommended |
+| DC-8 | Browser scope | (a) directory-handle LRU + hex table + single-copy streaming hasher, no `createSyncAccessHandle`; (b) (a) + memoised sync access handle per pack in dedicated workers; (c) defer all browser items | **(a)** | (a) is pure call-count/CPU work, testable in Playwright. Sync access handles exist only in dedicated workers and take an exclusive lock per file (a second tab or reader fails). That is a new failure surface that needs its own ADR and a real-browser host this slice does not have. | ADR-888 — (a), adopted as recommended |
+| DC-9 | adler32 / `GrowableBuffer` rider | (a) in (P9, isolated, bit-identical, property-pinned); (b) defer to 31.6 with the compressor work | **(a)** | No file overlap with 31.6 (`adler32.ts`, `GrowableBuffer`). The measured 55 % self time of the bundled decoder is independent of the Node I/O work, and the property test proves identity. | ADR-889 — (a), adopted as recommended |
+| DC-10 | Budget scope | (a) one budget per repository, shared by its layout probe and all its adapters; (b) one process-wide module singleton; (c) one per `NodeFileSystem` instance | **(a)** | (b) is mutable module state shared across unrelated repositories and test files. (c) lets a repository's worktree adapter and main adapter each take a full budget. (a) bounds the stall at 1 ms × concurrently active repositories, which is documented. | ADR-890 — (a), adopted as recommended |
+| DC-11 | Seed the session config cache from the open-time `.git/config` read | (a) seed (the first command's gate stat then matches and skips the `readFile`); (b) leave, record as follow-up | **(b)** | It saves one `readFile` per open, but it crosses ADR-850's epoch contract and 31.2's cache ownership. It deserves its own small design rather than a rider. | ADR-891 — (b), adopted as recommended |
+| DC-12 | `profile` workload for open | (a) add an explicit `open` workload, keep `pack-read`; (b) rename `pack-read` → `open-read`; (c) leave | **(a)** | Keeps the `pack-read` baseline series continuous and gives open its own honest profile. | ADR-892 — (a), adopted as recommended |
 
 ## Test strategy
 
-- **Contract, both modes (R5).** `fileSystemContractTests` runs twice for Node, policy absent and
-  policy present, on every CI OS (windows-latest included). New `tryLstat`/`tryReadUtf8`
+- **Contract, both modes (R5).** `fileSystemContractTests` runs twice for Node, policy absent
+  (`io: 'threadpool'`) and policy present (`'sync-fast-path'`), on every CI OS (windows-latest included). New `tryLstat`/`tryReadUtf8`
   equivalence rows run for all three adapters. ADR-812/824 rows stay exact-code.
-- **Injected unit (ADR-047).** `node-file-system-injected.test.ts` + `fakeSyncFsOps`: one describe
+- **Injected unit (ADR-047, ADR-883).** `node-file-system-injected.test.ts` + `fakeSyncFsOps`,
+  passed as `{ fsOps, syncIo }`: one describe
   per arm × {sync taken, budget wait, errno table, non-regular fallback, above-gate fallback,
   growth fallback}. Every guard gets an isolated row for each operand (mutation pattern:
   `isFile && size <= gate` needs a non-file-small row **and** a file-large row).
@@ -917,7 +1058,7 @@ ratification, not listed here.
   parser, so no other property sibling is owed. The window cache's contained-request identity
   (`read(o, l)` equals the bytes of a direct read at `(o, l)` for arbitrary `(o, l)` inside the
   file) is a property over a generated byte file.
-- **Parity runtimes.** `test:parity:workers|deno|bun` after P2, P4, P5 and P7 (adapter or
+- **Parity runtimes.** `test:parity:workers|deno|bun` after P1, P3, P5, P6 and P8 (adapter or
   registry change; they are not in `validate`).
 - **Mutation.** Scoped Stryker per part (`.claude/workflow/mutation.md`), with a narrow vitest
   config per mutated file (CLAUDE.md debugging note). Equivalences expected and to be proven: the
@@ -927,16 +1068,16 @@ ratification, not listed here.
 ## Out of scope
 
 - **Writes on the sync path.** Not in the decided set; writes are rare and not serial-hot.
-- **`readdir` sync arm.** DC-6; unbounded entry counts.
-- **`createSyncAccessHandle`.** DC-8; worker-only, exclusive-lock failure surface, no real-browser
+- **`readdir` sync arm.** ADR-886; unbounded entry counts.
+- **`createSyncAccessHandle`.** ADR-888; worker-only, exclusive-lock failure surface, no real-browser
   host here.
 - **`streamInflate` per-entry cost and `crc32` port method.** 31.6 owns `node-compressor.ts:174-214`
   and the `Compressor` port change.
 - **`.gitattributes` promise memo.** 31.5 per the backlog.
-- **Config-cache seeding from the open-time read.** DC-11 (b); a follow-up with its own design.
+- **Config-cache seeding from the open-time read.** ADR-891; a backlog follow-up with its own design.
 - **Pack re-scan on a miss.** A pre-existing divergence (git re-scans the pack directory before
   failing a lookup; tsgit re-scans only after a lazy fetch). Not pinned here; recorded.
 - **midx-as-directory.** A pre-existing divergence (git dies, tsgit discards), pinned in D5 and
   unchanged.
-- **`tryOpenWithNoFollow` for loose-ref misses.** DC-4 follow-up, only if P4's probe shows it.
+- **`tryOpenWithNoFollow` for loose-ref misses.** ADR-884 follow-up, only if P5's probe shows it.
 - **`status` refresh write-back, index extensions.** 31.4.
