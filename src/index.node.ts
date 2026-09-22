@@ -103,9 +103,10 @@ export const openRepository = async (opts: OpenNodeRepositoryOptions = {}): Prom
   // (when `canonical`) lets it skip re-realpathing them on its own first call —
   // the containment check itself is unchanged either way, and the flag can only
   // ever skip recomputing the SAME prefixes, never substitute different ones.
-  // `undefined` for the 3rd (`fsOps`) argument takes the constructor's own
-  // `realFsOps` default; this module never imports it directly.
-  const fs = new NodeFileSystem(roots, nativePolicy, undefined, canonical);
+  const fs = new NodeFileSystem(roots, {
+    pathPolicy: nativePolicy,
+    rootsArePreResolved: canonical,
+  });
   const algorithm = opts.algorithm ?? 'sha1';
   const hash = new NodeHashService(algorithm);
   const compressor = new NodeCompressor();
@@ -145,7 +146,7 @@ export const openRepository = async (opts: OpenNodeRepositoryOptions = {}): Prom
       new NodeFileSystem(
         // Stryker disable next-line ArrayDeclaration: equivalent — `worktreePaths` ALREADY carries the layout roots (workDir included), prepended by the facade's own `worktreeFs` wrapper (`repository.ts`, "the worktree paths followed by the layout roots") before this function ever runs; dropping/replacing this array's own `workDir` contribution cannot narrow or widen the resulting containment set — confirmed empirically (a bare-repo probe still resolves correctly with either branch mutated).
         [...(layout.workDir !== undefined ? [layout.workDir] : []), ...worktreePaths],
-        nativePolicy,
+        { pathPolicy: nativePolicy },
       ),
   };
   // Strip the node-only opts AND `cwd` (we override with the realpath-resolved

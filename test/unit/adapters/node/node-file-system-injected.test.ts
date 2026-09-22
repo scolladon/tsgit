@@ -46,7 +46,7 @@ describe('NodeFileSystem — realpathForCreation parent-realpath LRU (DI)', () =
           realpath: realpathSpy,
           lstat: vi.fn().mockRejectedValue(enoent()),
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act — two writes into /root/sub
         await sut.write('/root/sub/a.bin', new Uint8Array([1]));
@@ -70,7 +70,7 @@ describe('NodeFileSystem — realpathForCreation parent-realpath LRU (DI)', () =
         const fsOps = fakeFsOps({
           realpath: vi.fn().mockImplementation(async (input: string) => input),
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         let caught: unknown;
@@ -96,7 +96,7 @@ describe('NodeFileSystem — realpathForCreation parent-realpath LRU (DI)', () =
         const fsOps = fakeFsOps({
           realpath: vi.fn().mockImplementation(async (input: string) => input),
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         let caught: unknown;
@@ -127,7 +127,7 @@ describe('NodeFileSystem — realpathForCreation parent-realpath LRU (DI)', () =
           throw enoent();
         });
         const fsOps = fakeFsOps({ realpath });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         let caught: unknown;
@@ -159,7 +159,7 @@ describe('NodeFileSystem — realpathForCreation parent-realpath LRU (DI)', () =
           throw eacces();
         });
         const fsOps = fakeFsOps({ realpath });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         let caught: unknown;
@@ -193,7 +193,7 @@ describe('NodeFileSystem — realpathForCreation parent-realpath LRU (DI)', () =
           realpath: realpathSpy,
           lstat: vi.fn().mockRejectedValue(enoent()),
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         await sut.write('/root/new-dir/leaf.bin', new Uint8Array([1]));
@@ -223,7 +223,7 @@ describe('NodeFileSystem — realpathForCreation parent-realpath LRU (DI)', () =
           lstat: vi.fn().mockResolvedValue(fileStat),
           rm: vi.fn().mockResolvedValue(undefined),
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         await sut.write('/root/sub/a.bin', new Uint8Array([1]));
@@ -267,7 +267,7 @@ describe('NodeFileSystem — normalised-root cache (DI)', () => {
         const fsOps = fakeFsOps({
           realpath: vi.fn().mockImplementation(async (input: string) => input),
         });
-        const sut = new NodeFileSystem(rootDir, spyPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: spyPolicy, fsOps: fsOps });
 
         // Act — 10 exists() calls; each one normalises only the child.
         for (let i = 0; i < 10; i++) {
@@ -298,7 +298,10 @@ describe('NodeFileSystem — canonical-root cache (DI)', () => {
           if (input === rootDir) return rootDir;
           throw enoent();
         });
-        const sut = new NodeFileSystem(rootDir, windowsPolicy, fakeFsOps({ realpath }));
+        const sut = new NodeFileSystem(rootDir, {
+          pathPolicy: windowsPolicy,
+          fsOps: fakeFsOps({ realpath }),
+        });
 
         // Act
         await sut.exists('C:\\canonical\\root\\a');
@@ -322,7 +325,10 @@ describe('NodeFileSystem — canonical-root cache (DI)', () => {
           if (input === rootDir) return rootDir;
           throw enoent();
         });
-        const sut = new NodeFileSystem(rootDir, windowsPolicy, fakeFsOps({ realpath }));
+        const sut = new NodeFileSystem(rootDir, {
+          pathPolicy: windowsPolicy,
+          fsOps: fakeFsOps({ realpath }),
+        });
 
         // Act
         await Promise.all([
@@ -355,7 +361,7 @@ describe('NodeFileSystem — canonical-root cache (DI)', () => {
           throw enoent();
         });
         const fsOps = fakeFsOps({ realpath });
-        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         await sut.writeUtf8('C:\\canonical\\missing\\f', 'x');
@@ -394,7 +400,7 @@ describe('NodeFileSystem — canonical-root cache (DI)', () => {
             isSymbolicLink: () => false,
           }),
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act — `lstat` never realpaths its own leaf or parent (lexical,
         // syscall-free `resolveRead`); the only `realpath` this can ever
@@ -445,7 +451,7 @@ describe('NodeFileSystem — canonical-root cache (DI)', () => {
             isSymbolicLink: () => false,
           }),
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act — `loadRootSet()`'s rejection propagates raw (it is awaited
         // BEFORE `resolveRead`'s containment check), so the first call
@@ -485,7 +491,11 @@ describe('NodeFileSystem — pre-resolved roots (DI)', () => {
         const rootDir = '/root';
         const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
         const fsOps = fakeFsOps({ realpath: realpathSpy });
-        const sut = new NodeFileSystem([rootDir], posixPolicy, fsOps, true);
+        const sut = new NodeFileSystem([rootDir], {
+          pathPolicy: posixPolicy,
+          fsOps: fsOps,
+          rootsArePreResolved: true,
+        });
 
         // Act
         await sut.exists(`${rootDir}/file.txt`);
@@ -501,7 +511,11 @@ describe('NodeFileSystem — pre-resolved roots (DI)', () => {
         const fsOps = fakeFsOps({
           realpath: vi.fn().mockImplementation(async (input: string) => input),
         });
-        const sut = new NodeFileSystem(['/root'], posixPolicy, fsOps, true);
+        const sut = new NodeFileSystem(['/root'], {
+          pathPolicy: posixPolicy,
+          fsOps: fsOps,
+          rootsArePreResolved: true,
+        });
 
         // Act
         let caught: unknown;
@@ -525,7 +539,7 @@ describe('NodeFileSystem — pre-resolved roots (DI)', () => {
         const rootB = '/root-b';
         const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
         const fsOps = fakeFsOps({ realpath: realpathSpy });
-        const sut = new NodeFileSystem([rootA, rootB], posixPolicy, fsOps);
+        const sut = new NodeFileSystem([rootA, rootB], { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         await sut.exists(`${rootA}/file.txt`);
@@ -545,7 +559,11 @@ describe('NodeFileSystem — pre-resolved roots (DI)', () => {
         // VALUE, `/` would enter the prefix set and admit everything. The
         // flag only ever skips recomputing the same prefixes.
         const fsOps = fakeFsOps({ realpath: vi.fn().mockResolvedValue('/') });
-        const sut = new NodeFileSystem(['/root'], posixPolicy, fsOps, true);
+        const sut = new NodeFileSystem(['/root'], {
+          pathPolicy: posixPolicy,
+          fsOps: fsOps,
+          rootsArePreResolved: true,
+        });
 
         // Act
         let caught: unknown;
@@ -582,7 +600,7 @@ describe('NodeFileSystem.resolveWrite — settled root-set fast path (DI)', () =
           realpath: vi.fn().mockImplementation(async (input: string) => input),
           writeFile,
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         await sut.write('/root/first.bin', new Uint8Array([1]));
@@ -601,7 +619,7 @@ describe('NodeFileSystem.resolveWrite — settled root-set fast path (DI)', () =
         const writeFile = vi.fn().mockResolvedValue(undefined);
         const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
         const fsOps = fakeFsOps({ realpath: realpathSpy, writeFile });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
         const writeCount = 5;
 
         // Act — first write hits the lazy-load arm, the rest hit the
@@ -635,7 +653,7 @@ describe('NodeFileSystem — guarded canonical-root await, first-call resolution
           realpath: realpathSpy,
           readFile: vi.fn().mockResolvedValue(Buffer.from([1, 2, 3])),
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         const result = await sut.read('/root/leaf.bin');
@@ -661,7 +679,7 @@ describe('NodeFileSystem — guarded canonical-root await, first-call resolution
           realpath: realpathSpy,
           stat: vi.fn().mockResolvedValue({}),
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         const result = await sut.exists('/root/leaf.bin');
@@ -698,7 +716,7 @@ describe('NodeFileSystem — guarded canonical-root await, first-call resolution
           symlink: symlinkOp,
           lstat: vi.fn().mockRejectedValue(enoent()),
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         await sut.symlink(target, link);
@@ -731,7 +749,7 @@ describe('NodeFileSystem — resolveRead dual-root OR disjuncts (DI)', () => {
           realpath: realpathSpy,
           readFile: vi.fn().mockResolvedValue(Buffer.from([9])),
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         const result = await sut.read(leaf);
@@ -760,7 +778,7 @@ describe('NodeFileSystem — resolveRead dual-root OR disjuncts (DI)', () => {
           realpath: realpathSpy,
           readFile: vi.fn().mockResolvedValue(Buffer.from([7])),
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         const result = await sut.read(leaf);
@@ -789,7 +807,7 @@ describe('NodeFileSystem — openWithNoFollow Windows symlink refusal (DI)', () 
           lstat: vi.fn().mockResolvedValue({ isSymbolicLink: () => true }),
           open: openOp,
         });
-        const sut = new NodeFileSystem(root, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(root, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         let caught: unknown;
@@ -815,7 +833,7 @@ describe('NodeFileSystem — openWithNoFollow Windows symlink refusal (DI)', () 
           lstat: vi.fn().mockResolvedValue({ isSymbolicLink: () => true }),
           open: vi.fn().mockRejectedValue(eacces()),
         });
-        const sut = new NodeFileSystem(root, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(root, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         let caught: unknown;
@@ -844,7 +862,7 @@ describe('NodeFileSystem — openWithNoFollow Windows symlink refusal (DI)', () 
           lstat: vi.fn().mockResolvedValue({ isSymbolicLink: () => false }),
           open: vi.fn().mockRejectedValue(eacces()),
         });
-        const sut = new NodeFileSystem(root, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(root, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         let caught: unknown;
@@ -874,7 +892,7 @@ describe('NodeFileSystem — openWithNoFollow Windows symlink refusal (DI)', () 
           lstat: vi.fn().mockRejectedValue(enoent()),
           open: vi.fn().mockRejectedValue(eacces()),
         });
-        const sut = new NodeFileSystem(root, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(root, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         let caught: unknown;
@@ -902,7 +920,7 @@ describe('NodeFileSystem — openWithNoFollow Windows symlink refusal (DI)', () 
           lstat: vi.fn().mockRejectedValue(enoent()),
           open: vi.fn().mockResolvedValue(fakeHandle),
         });
-        const sut = new NodeFileSystem(root, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(root, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         const handle = await sut.openWithNoFollow(file, 'read');
@@ -934,7 +952,7 @@ describe('NodeFileSystem — openWithNoFollow Windows symlink refusal (DI)', () 
           lstat: vi.fn().mockResolvedValue({ isSymbolicLink: () => false }),
           open: vi.fn().mockRejectedValue(eisdir()),
         });
-        const sut = new NodeFileSystem(root, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(root, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         let caught: unknown;
@@ -962,7 +980,7 @@ describe('NodeFileSystem — openWithNoFollow Windows symlink refusal (DI)', () 
           lstat: vi.fn().mockResolvedValue({ isSymbolicLink: () => true }),
           open: vi.fn().mockRejectedValue(eloop()),
         });
-        const sut = new NodeFileSystem(root, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(root, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         let caught: unknown;
@@ -1002,7 +1020,7 @@ describe('NodeFileSystem — openWithNoFollow Windows symlink refusal (DI)', () 
             open: vi.fn().mockRejectedValue(eio()),
           });
           const mixedPolicy = { ...posixPolicy, caseInsensitive: true };
-          const sut = new NodeFileSystem(root, mixedPolicy, fsOps);
+          const sut = new NodeFileSystem(root, { pathPolicy: mixedPolicy, fsOps: fsOps });
 
           // Act
           let caught: unknown;
@@ -1038,7 +1056,7 @@ describe('NodeFileSystem — non-errno fault propagation (DI)', () => {
           realpath: vi.fn().mockImplementation(async (input: string) => input),
           stat: vi.fn().mockRejectedValue('not-an-error'),
         });
-        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         let caught: unknown;
@@ -1063,7 +1081,10 @@ describe('NodeFileSystem — non-errno fault propagation (DI)', () => {
           if (input === rootDir) return rootDir;
           throw 'not-an-error';
         });
-        const sut = new NodeFileSystem(rootDir, windowsPolicy, fakeFsOps({ realpath }));
+        const sut = new NodeFileSystem(rootDir, {
+          pathPolicy: windowsPolicy,
+          fsOps: fakeFsOps({ realpath }),
+        });
 
         // Act
         let caught: unknown;
@@ -1090,7 +1111,7 @@ describe('NodeFileSystem — non-errno fault propagation (DI)', () => {
           lstat: vi.fn().mockRejectedValue(eacces()),
           open: vi.fn().mockResolvedValue({ close: async () => undefined }),
         });
-        const sut = new NodeFileSystem(root, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(root, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         let caught: unknown;
@@ -1134,7 +1155,7 @@ describe('NodeFileSystem — 8.3 short-name parent reconciliation (DI)', () => {
           }),
           lstat: vi.fn().mockRejectedValue(enoent()),
         });
-        const sut = new NodeFileSystem(shortRoot, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(shortRoot, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         let caught: unknown;
@@ -1174,7 +1195,7 @@ describe('NodeFileSystem — 8.3 short-name parent reconciliation (DI)', () => {
             return input;
           }),
         });
-        const sut = new NodeFileSystem(shortRoot, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(shortRoot, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         let caught: unknown;
@@ -1214,7 +1235,7 @@ describe('NodeFileSystem — Windows-mocked containment (DI)', () => {
           }),
           stat: vi.fn().mockResolvedValue({}),
         });
-        const sut = new NodeFileSystem(shortRoot, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(shortRoot, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         const result = await sut.exists(child);
@@ -1241,7 +1262,7 @@ describe('NodeFileSystem — Windows-mocked containment (DI)', () => {
             throw enoent();
           }),
         });
-        const sut = new NodeFileSystem(shortRoot, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(shortRoot, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         let caught: unknown;
@@ -1265,7 +1286,7 @@ describe('NodeFileSystem — Windows-mocked containment (DI)', () => {
           realpath: vi.fn().mockImplementation(async (input: string) => input),
           stat: vi.fn().mockResolvedValue({}),
         });
-        const sut = new NodeFileSystem(root, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(root, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         const result = await sut.exists(child);
@@ -1289,7 +1310,7 @@ describe('NodeFileSystem — Windows-mocked containment (DI)', () => {
             throw enoent();
           }),
         });
-        const sut = new NodeFileSystem(shortRoot, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(shortRoot, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         const result = await sut.exists(longChild);
@@ -1313,7 +1334,7 @@ describe('NodeFileSystem — Windows-mocked containment (DI)', () => {
             throw enoent();
           }),
         });
-        const sut = new NodeFileSystem(shortRoot, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(shortRoot, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         const result = await sut.exists(shortChild);
@@ -1334,7 +1355,7 @@ describe('NodeFileSystem — Windows-mocked containment (DI)', () => {
         const fsOps = fakeFsOps({
           realpath: vi.fn().mockImplementation(async (input: string) => input),
         });
-        const sut = new NodeFileSystem(root, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(root, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         let caught: unknown;
@@ -1389,7 +1410,7 @@ describe('NodeFileSystem.exists — non-ENOENT errno from stat (DI)', () => {
           realpath: vi.fn().mockImplementation(async (input: string) => input),
           stat: vi.fn().mockRejectedValue(enotdir()),
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         let caught: unknown;
@@ -1417,7 +1438,7 @@ describe('NodeFileSystem.exists — non-ENOENT errno from stat (DI)', () => {
           realpath: vi.fn().mockImplementation(async (input: string) => input),
           stat: vi.fn().mockResolvedValue({}),
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         const result = await sut.exists('/root/escape-link');
@@ -1442,7 +1463,7 @@ describe('NodeFileSystem.resolveWrite — non-ENOENT errno from realpath (DI)', 
             throw enotdir();
           }),
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         let caught: unknown;
@@ -1477,7 +1498,7 @@ describe('resolveRead — lstat() lexical pre-check (DI)', () => {
         const fsOps = fakeFsOps({
           realpath: realpathSpy,
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         let caught: unknown;
@@ -1508,7 +1529,7 @@ describe('NodeFileSystem — write guard parent-realpath LRU (DI)', () => {
         const rootDir = '/root';
         const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
         const fsOps = fakeFsOps({ realpath: realpathSpy });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         await sut.rm('/root/sub/a');
@@ -1530,7 +1551,7 @@ describe('NodeFileSystem — write guard parent-realpath LRU (DI)', () => {
         const rootDir = '/root';
         const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
         const fsOps = fakeFsOps({ realpath: realpathSpy });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         await sut.rm('/root/x/a');
@@ -1561,7 +1582,7 @@ describe('NodeFileSystem — write guard parent-realpath LRU (DI)', () => {
             .fn()
             .mockResolvedValue({ isDirectory: () => false, isSymbolicLink: () => false }),
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         await sut.rm('/root/sub/a');
@@ -1582,7 +1603,7 @@ describe('NodeFileSystem — write guard parent-realpath LRU (DI)', () => {
         const rootDir = '/root';
         const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
         const fsOps = fakeFsOps({ realpath: realpathSpy });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         await sut.rm('/root/sub/a');
@@ -1603,7 +1624,7 @@ describe('NodeFileSystem — write guard parent-realpath LRU (DI)', () => {
         const rootDir = '/root';
         const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
         const fsOps = fakeFsOps({ realpath: realpathSpy });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         await sut.rm('/root/sub/a');
@@ -1636,7 +1657,7 @@ describe('NodeFileSystem — write guard parent-realpath LRU (DI)', () => {
           realpath: realpathSpy,
           rm: vi.fn().mockRejectedValue(enoent()),
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         let firstCaught: unknown;
@@ -1678,7 +1699,7 @@ describe('NodeFileSystem — write guard parent-realpath LRU (DI)', () => {
         const rootDir = '/root';
         const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
         const fsOps = fakeFsOps({ realpath: realpathSpy });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
         const fanoutDir = '/root/objects/ab';
 
         // Act
@@ -1702,7 +1723,7 @@ describe('NodeFileSystem — write guard parent-realpath LRU (DI)', () => {
         const rootDir = '/root';
         const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
         const fsOps = fakeFsOps({ realpath: realpathSpy });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
         const fanoutDir = (n: number): string => `/root/objects/${n.toString(16).padStart(2, '0')}`;
 
         // Act — touch 300 distinct fanout dirs, then re-touch dir #1.
@@ -1738,7 +1759,7 @@ describe('NodeFileSystem.rename — parent-realpath cache invalidation soundness
         const rootDir = '/root';
         const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
         const fsOps = fakeFsOps({ realpath: realpathSpy });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
         await sut.rm('/root/a/sibling');
         await sut.rm('/root/b/sibling');
         realpathSpy.mockClear();
@@ -1774,7 +1795,7 @@ describe('NodeFileSystem.rename — parent-realpath cache invalidation soundness
         const rootDir = '/root';
         const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
         const fsOps = fakeFsOps({ realpath: realpathSpy });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
         await sut.rm('/root/olddir/nested/leaf');
         realpathSpy.mockClear();
 
@@ -1825,7 +1846,7 @@ describe('NodeFileSystem — write guard per-call containment post-check (DI)', 
         const fsOps = fakeFsOps({
           realpath: vi.fn().mockImplementation(async (input: string) => input),
         });
-        const sut = new NodeFileSystem(rootDir, spyPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: spyPolicy, fsOps: fsOps });
 
         // Act
         await sut.rm(sibling('a'));
@@ -1860,7 +1881,7 @@ describe('NodeFileSystem — write guard per-call containment post-check (DI)', 
             return input;
           }),
         });
-        const sut = new NodeFileSystem(rootDir, policy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: policy, fsOps: fsOps });
         const a = policy.join(parent, 'a');
         const renamedDst = policy.join(parent, 'renamed');
         const b = policy.join(parent, 'b');
@@ -1898,7 +1919,7 @@ describe('NodeFileSystem — write guard per-call containment post-check (DI)', 
             .fn()
             .mockResolvedValue({ isDirectory: () => false, isSymbolicLink: () => false }),
         });
-        const sut = new NodeFileSystem(rootDir, policy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: policy, fsOps: fsOps });
         const a = policy.join(parent, 'a');
         const b = policy.join(parent, 'b');
 
@@ -1933,7 +1954,7 @@ describe('NodeFileSystem — write guard per-call containment post-check (DI)', 
             return input;
           }),
         });
-        const sut = new NodeFileSystem(rootDir, policy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: policy, fsOps: fsOps });
         const a = policy.join(parent, 'a');
         const b = policy.join(parent, 'b');
 
@@ -1978,7 +1999,7 @@ describe('NodeFileSystem — write guard per-call containment post-check (DI)', 
             realpath: realpathSpy,
             readFile: vi.fn().mockResolvedValue(Buffer.from('x')),
           });
-          const sut = new NodeFileSystem(rootDir, policy, fsOps);
+          const sut = new NodeFileSystem(rootDir, { pathPolicy: policy, fsOps: fsOps });
 
           // Act
           const first = await sut.read(leaf);
@@ -2023,7 +2044,7 @@ describe('NodeFileSystem — write guard per-call containment post-check (DI)', 
             }),
             lstat: vi.fn().mockRejectedValue(enoent()),
           });
-          const sut = new NodeFileSystem(rootDir, policy, fsOps);
+          const sut = new NodeFileSystem(rootDir, { pathPolicy: policy, fsOps: fsOps });
 
           // Act
           let firstCaught: unknown;
@@ -2101,7 +2122,7 @@ describe('NodeFileSystem — lstat exact-root leaf containment (DI)', () => {
               isSymbolicLink: () => false,
             }),
           });
-          const sut = new NodeFileSystem(linkRoot, policy, fsOps);
+          const sut = new NodeFileSystem(linkRoot, { pathPolicy: policy, fsOps: fsOps });
 
           // Act
           const stat = await sut.lstat(linkRoot);
@@ -2139,7 +2160,7 @@ describe('NodeFileSystem — lstat exact-root leaf containment (DI)', () => {
           realpath: vi.fn().mockImplementation(async (input: string) => input),
           lstat: vi.fn().mockResolvedValue(fileStat),
         });
-        const sut = new NodeFileSystem(rootDir, policy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: policy, fsOps: fsOps });
 
         // Act
         const result = await sut.lstat(rootDir);
@@ -2163,7 +2184,7 @@ describe('NodeFileSystem — lstat exact-root leaf containment (DI)', () => {
         // its own merits — no exact-root special case is needed.
         const realpath = vi.fn().mockImplementation(async (input: string) => input);
         const fsOps = fakeFsOps({ realpath });
-        const sut = new NodeFileSystem(rootDir, policy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: policy, fsOps: fsOps });
 
         // Act
         let caught: unknown;
@@ -2194,7 +2215,7 @@ describe('assertLeafSafeToWrite — non-ENOENT errno on leaf lstat (DI)', () => 
           realpath: vi.fn().mockImplementation(async (input: string) => input),
           lstat: vi.fn().mockRejectedValue(enotdir()),
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         let caught: unknown;
@@ -2230,7 +2251,7 @@ describe('NodeFileSystem — leaf no-follow composition (DI)', () => {
           realpath: vi.fn().mockImplementation(async (input: string) => input),
           writeFile,
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         await sut.write('/root/leaf.bin', new Uint8Array([1]));
@@ -2251,7 +2272,7 @@ describe('NodeFileSystem — leaf no-follow composition (DI)', () => {
           realpath: vi.fn().mockImplementation(async (input: string) => input),
           writeFile,
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         await sut.writeUtf8('/root/leaf.txt', 'hello');
@@ -2273,7 +2294,7 @@ describe('NodeFileSystem — leaf no-follow composition (DI)', () => {
           realpath: vi.fn().mockImplementation(async (input: string) => input),
           writeFile,
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         await sut.writeExclusive('/root/lock.bin', new Uint8Array([2]));
@@ -2294,7 +2315,7 @@ describe('NodeFileSystem — leaf no-follow composition (DI)', () => {
           realpath: vi.fn().mockImplementation(async (input: string) => input),
           appendFile,
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         await sut.appendUtf8('/root/log.txt', 'entry\n');
@@ -2317,7 +2338,7 @@ describe('NodeFileSystem — leaf no-follow composition (DI)', () => {
           realpath: vi.fn().mockImplementation(async (input: string) => input),
           open,
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         const wrapped = await sut.openWithNoFollow('/root/leaf.bin', 'write');
@@ -2346,7 +2367,7 @@ describe('NodeFileSystem — leaf no-follow composition (DI)', () => {
           appendFile,
           mkdir: vi.fn().mockResolvedValue(undefined),
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         await sut.appendUtf8('/root/logs/HEAD.log', 'entry\n');
@@ -2371,7 +2392,7 @@ describe('NodeFileSystem — leaf no-follow composition (DI)', () => {
           realpath: vi.fn().mockImplementation(async (input: string) => input),
           lstat,
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         await sut.write('/root/leaf.bin', new Uint8Array([1]));
@@ -2398,7 +2419,10 @@ describe('NodeFileSystem — leaf no-follow composition (DI)', () => {
           lstat,
         });
         const caseInsensitivePosixPolicy = { ...posixPolicy, caseInsensitive: true };
-        const sut = new NodeFileSystem(rootDir, caseInsensitivePosixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, {
+          pathPolicy: caseInsensitivePosixPolicy,
+          fsOps: fsOps,
+        });
 
         // Act
         await sut.write('/root/leaf.bin', new Uint8Array([1]));
@@ -2426,7 +2450,7 @@ describe('NodeFileSystem — leaf no-follow composition (DI)', () => {
           lstat,
           writeFile,
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         let caught: unknown;
@@ -2456,7 +2480,7 @@ describe('NodeFileSystem — leaf no-follow composition (DI)', () => {
           lstat,
           writeFile,
         });
-        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         let caught: unknown;
@@ -2485,7 +2509,7 @@ describe('NodeFileSystem — leaf no-follow composition (DI)', () => {
           lstat,
           writeFile,
         });
-        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         await sut.write('C:\\Root\\leaf.bin', new Uint8Array([1]));
@@ -2510,7 +2534,7 @@ describe('NodeFileSystem — leaf no-follow composition (DI)', () => {
           lstat,
           writeFile,
         });
-        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         let caught: unknown;
@@ -2538,7 +2562,7 @@ describe('NodeFileSystem — leaf no-follow composition (DI)', () => {
           lstat,
           writeFile,
         });
-        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         await sut.writeExclusive('C:\\Root\\lock.bin', new Uint8Array([2]));
@@ -2566,7 +2590,7 @@ describe('NodeFileSystem.appendUtf8 — attempt-first, mkdir only on ENOENT (DI)
           appendFile,
           mkdir,
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         await sut.appendUtf8('/root/logs/HEAD.log', 'entry\n');
@@ -2606,7 +2630,7 @@ describe('NodeFileSystem.appendUtf8 — attempt-first, mkdir only on ENOENT (DI)
           appendFile,
           mkdir,
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         await sut.appendUtf8('/root/logs/HEAD.log', 'entry\n');
@@ -2630,7 +2654,7 @@ describe('NodeFileSystem.appendUtf8 — attempt-first, mkdir only on ENOENT (DI)
           appendFile,
           mkdir,
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         let caught: unknown;
@@ -2663,7 +2687,7 @@ describe('NodeFileSystem.appendUtf8 — attempt-first, mkdir only on ENOENT (DI)
           appendFile,
           mkdir,
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         let caught: unknown;
@@ -2694,7 +2718,7 @@ describe('NodeFileSystem.readlink + chmod + symlink (DI)', () => {
           realpath: vi.fn().mockImplementation(async (input: string) => input),
           readlink: vi.fn().mockResolvedValue(target),
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         const result = await sut.readlink(link);
@@ -2714,7 +2738,7 @@ describe('NodeFileSystem.readlink + chmod + symlink (DI)', () => {
         const realpath = vi.fn().mockImplementation(async (input: string) => input);
         const chmod = vi.fn().mockResolvedValue(undefined);
         const fsOps = fakeFsOps({ realpath, chmod });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         await sut.chmod(path, 0o600);
@@ -2744,7 +2768,7 @@ describe('NodeFileSystem.readlink + chmod + symlink (DI)', () => {
           symlink,
           lstat: vi.fn().mockRejectedValue(enoent()),
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         await sut.symlink(target, link);
@@ -2769,7 +2793,7 @@ describe('NodeFileSystem.readlink + chmod + symlink (DI)', () => {
           realpath: vi.fn().mockImplementation(async (input: string) => input),
           symlink: symlinkOp,
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         await sut.symlink('/etc/passwd', link);
@@ -2792,7 +2816,7 @@ describe('NodeFileSystem.readlink + chmod + symlink (DI)', () => {
           realpath: vi.fn().mockImplementation(async (input: string) => input),
           symlink: symlinkOp,
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         await sut.symlink('/root/sub/../../escape', link);
@@ -2819,7 +2843,7 @@ describe('NodeFileSystem.readlink + chmod + symlink (DI)', () => {
           symlink: symlinkOp,
           lstat: vi.fn().mockRejectedValue(enoent()),
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         await sut.symlink('../sibling.txt', link);
@@ -2864,7 +2888,7 @@ describe('NodeFileSystem.openWithNoFollow — handle wrapper semantics (DI)', ()
           lstat: vi.fn().mockResolvedValue({ isSymbolicLink: () => false }),
           open: vi.fn().mockResolvedValue(handle),
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         const wrapped = await sut.openWithNoFollow('/root/file.bin', 'read');
@@ -2887,7 +2911,7 @@ describe('NodeFileSystem.openWithNoFollow — handle wrapper semantics (DI)', ()
           lstat: vi.fn().mockResolvedValue({ isSymbolicLink: () => false }),
           open: vi.fn().mockResolvedValue(handle),
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
         const wrapped = await sut.openWithNoFollow('/root/file.bin', 'read');
 
         // Act
@@ -2923,7 +2947,7 @@ describe('NodeFileSystem — TsgitError rethrow defence (DI)', () => {
           realpath: vi.fn().mockImplementation(async (input: string) => input),
           stat: vi.fn().mockRejectedValue(sentinel),
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         let caught: unknown;
@@ -2949,7 +2973,7 @@ describe('NodeFileSystem — TsgitError rethrow defence (DI)', () => {
             throw sentinel;
           }),
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         let caught: unknown;
@@ -2996,7 +3020,7 @@ describe('NodeFileSystem.rmRecursive — option-shape pin (DI)', () => {
           lstat: vi.fn().mockResolvedValue(fileStat),
           rm: vi.fn().mockResolvedValue(undefined),
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         await sut.rmRecursive(target);
@@ -3037,7 +3061,7 @@ describe('NodeFileSystem.rmRecursive — option-shape pin (DI)', () => {
           lstat: lstatSpy,
           rm: vi.fn().mockResolvedValue(undefined),
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         await sut.rmRecursive(target);
@@ -3222,7 +3246,7 @@ describe('NodeFileSystem.openWithNoFollow — handle.read position (DI)', () => 
           lstat: vi.fn().mockResolvedValue({ isSymbolicLink: () => false }),
           open: vi.fn().mockResolvedValue(handle),
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
         const wrapped = await sut.openWithNoFollow('/root/file.bin', 'read');
         const buffer = new Uint8Array(8);
 
@@ -3245,7 +3269,7 @@ describe('NodeFileSystem.openWithNoFollow — handle.read position (DI)', () => 
           lstat: vi.fn().mockResolvedValue({ isSymbolicLink: () => false }),
           open: vi.fn().mockResolvedValue(handle),
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
         const wrapped = await sut.openWithNoFollow('/root/file.bin', 'read');
         const buffer = new Uint8Array(8);
 
@@ -3281,7 +3305,7 @@ describe('NodeFileSystem.readSlice — handle close on success (DI)', () => {
           realpath: vi.fn().mockImplementation(async (input: string) => input),
           open: vi.fn().mockResolvedValue(handle),
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         const slice = await sut.readSlice('/root/file.bin', 0, 4);
@@ -3314,7 +3338,7 @@ describe('NodeFileSystem.readSlice — exact-size unsafe allocation (DI)', () =>
           realpath: vi.fn().mockImplementation(async (input: string) => input),
           open: vi.fn().mockResolvedValue(handle),
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
         const allocUnsafeSpy = vi.spyOn(Buffer, 'allocUnsafe');
         const allocSpy = vi.spyOn(Buffer, 'alloc');
 
@@ -3355,7 +3379,7 @@ describe('NodeFileSystem.readSlice — short read at EOF (DI)', () => {
           realpath: vi.fn().mockImplementation(async (input: string) => input),
           open: vi.fn().mockResolvedValue(handle),
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         const result = await sut.readSlice('/root/file.bin', 0, 8);
@@ -3389,7 +3413,7 @@ describe('NodeFileSystem.symlink — absolute-target containment OR (DI)', () =>
           }),
           symlink: symlinkOp,
         });
-        const sut = new NodeFileSystem(shortRoot, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(shortRoot, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         let caught: unknown;
@@ -3427,7 +3451,7 @@ describe('NodeFileSystem.symlink — absolute-target containment OR (DI)', () =>
           }),
           symlink: symlinkOp,
         });
-        const sut = new NodeFileSystem(shortRoot, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(shortRoot, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         let caught: unknown;
@@ -3464,7 +3488,7 @@ describe('NodeFileSystem.openWithNoFollow — UNSUPPORTED_OPERATION rewrap (DI)'
           lstat: vi.fn().mockResolvedValue({ isSymbolicLink: () => false }),
           open: vi.fn().mockRejectedValue(eunknown()),
         });
-        const sut = new NodeFileSystem(root, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(root, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         let caught: unknown;
@@ -3504,7 +3528,7 @@ describe('NodeFileSystem.realpathForCreation — non-ENOENT parent error (DI)', 
           }),
           lstat: vi.fn().mockRejectedValue(enoent()),
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         let caught: unknown;
@@ -3582,7 +3606,7 @@ describe('NodeFileSystem — containment prefix precompute (DI)', () => {
           realpath: vi.fn().mockImplementation(async (input: string) => input),
           lstat: vi.fn().mockResolvedValue(fileStat),
         });
-        const sut = new NodeFileSystem(rootDir, policy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: policy, fsOps: fsOps });
 
         // Act
         const result = await sut.lstat(leaf);
@@ -3602,7 +3626,7 @@ describe('NodeFileSystem — containment prefix precompute (DI)', () => {
           realpath: vi.fn().mockImplementation(async (input: string) => input),
           lstat: vi.fn().mockResolvedValue(fileStat),
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         let caught: unknown;
@@ -3628,7 +3652,7 @@ describe('NodeFileSystem — containment prefix precompute (DI)', () => {
           realpath: vi.fn().mockImplementation(async (input: string) => input),
           lstat: vi.fn().mockResolvedValue(fileStat),
         });
-        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         let caught: unknown;
@@ -3662,7 +3686,7 @@ describe('NodeFileSystem — containment prefix precompute (DI)', () => {
           realpath,
           lstat: vi.fn().mockResolvedValue(fileStat),
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         const result = await sut.lstat('/canonical-root/leaf');
@@ -3680,7 +3704,10 @@ describe('NodeFileSystem — containment prefix precompute (DI)', () => {
         // the unmounted-drive shape. The root must fall back to its lexical
         // form rather than rejecting the whole adapter unmapped.
         const realpath = vi.fn().mockRejectedValue(enoent());
-        const sut = new NodeFileSystem('/gone', posixPolicy, fakeFsOps({ realpath }));
+        const sut = new NodeFileSystem('/gone', {
+          pathPolicy: posixPolicy,
+          fsOps: fakeFsOps({ realpath }),
+        });
 
         // Act
         const result = await sut.exists('/gone/file');
@@ -3698,7 +3725,10 @@ describe('NodeFileSystem — containment prefix precompute (DI)', () => {
           if (input === '/gone/missing') throw enoent();
           throw eacces();
         });
-        const sut = new NodeFileSystem('/gone/missing', posixPolicy, fakeFsOps({ realpath }));
+        const sut = new NodeFileSystem('/gone/missing', {
+          pathPolicy: posixPolicy,
+          fsOps: fakeFsOps({ realpath }),
+        });
 
         // Act
         let caught: unknown;
@@ -3721,7 +3751,10 @@ describe('NodeFileSystem — containment prefix precompute (DI)', () => {
         // out of `realpathForCreation` and must be mapped by
         // `resolveWrite`'s own catch, not swallowed or misreported.
         const realpath = vi.fn().mockRejectedValue(enoent());
-        const sut = new NodeFileSystem('/gone', posixPolicy, fakeFsOps({ realpath }));
+        const sut = new NodeFileSystem('/gone', {
+          pathPolicy: posixPolicy,
+          fsOps: fakeFsOps({ realpath }),
+        });
 
         // Act
         let caught: unknown;
@@ -3746,7 +3779,10 @@ describe('NodeFileSystem — resolveWrite `..`-and-separator prefilter (DI)', ()
         // Arrange
         const resolveSpy = vi.spyOn(posixPolicy, 'resolve');
         const realpath = vi.fn().mockResolvedValue('/root');
-        const sut = new NodeFileSystem('/root', posixPolicy, fakeFsOps({ realpath }));
+        const sut = new NodeFileSystem('/root', {
+          pathPolicy: posixPolicy,
+          fsOps: fakeFsOps({ realpath }),
+        });
 
         try {
           // Act
@@ -3767,7 +3803,10 @@ describe('NodeFileSystem — resolveWrite `..`-and-separator prefilter (DI)', ()
         // Arrange
         const resolveSpy = vi.spyOn(windowsPolicy, 'resolve');
         const realpath = vi.fn().mockResolvedValue('C:\\Root');
-        const sut = new NodeFileSystem('C:\\Root', windowsPolicy, fakeFsOps({ realpath }));
+        const sut = new NodeFileSystem('C:\\Root', {
+          pathPolicy: windowsPolicy,
+          fsOps: fakeFsOps({ realpath }),
+        });
 
         try {
           // Act
@@ -3792,11 +3831,10 @@ describe('NodeFileSystem — resolveWrite `..`-and-separator prefilter (DI)', ()
         // realpath/symlink check.
         const mkdirSpy = vi.fn().mockResolvedValue(undefined);
         const realpath = vi.fn().mockResolvedValue('C:\\Root');
-        const sut = new NodeFileSystem(
-          'C:\\Root',
-          windowsPolicy,
-          fakeFsOps({ realpath, mkdir: mkdirSpy }),
-        );
+        const sut = new NodeFileSystem('C:\\Root', {
+          pathPolicy: windowsPolicy,
+          fsOps: fakeFsOps({ realpath, mkdir: mkdirSpy }),
+        });
 
         // Act
         await sut.mkdir('C:\\Root/sub');
@@ -3813,11 +3851,10 @@ describe('NodeFileSystem — resolveWrite `..`-and-separator prefilter (DI)', ()
         // Arrange
         const mkdirSpy = vi.fn().mockResolvedValue(undefined);
         const realpath = vi.fn().mockResolvedValue('/root');
-        const sut = new NodeFileSystem(
-          '/root',
-          posixPolicy,
-          fakeFsOps({ realpath, mkdir: mkdirSpy }),
-        );
+        const sut = new NodeFileSystem('/root', {
+          pathPolicy: posixPolicy,
+          fsOps: fakeFsOps({ realpath, mkdir: mkdirSpy }),
+        });
 
         // Act
         await sut.mkdir('/root/sub/../other');
@@ -3855,7 +3892,10 @@ describe('NodeFileSystem — rmRecursive parent-realpath invalidation (DI)', () 
       it('Then the parent is realpathed afresh — the failed removal cleared the cache', async () => {
         // Arrange
         const realpathSpy = vi.fn().mockImplementation(async (input: string) => input);
-        const sut = new NodeFileSystem(rootDir, posixPolicy, partialRemovalOps(realpathSpy));
+        const sut = new NodeFileSystem(rootDir, {
+          pathPolicy: posixPolicy,
+          fsOps: partialRemovalOps(realpathSpy),
+        });
         await sut.write(CHILD, new Uint8Array([1]));
         await expect(sut.rmRecursive('/root/sub')).rejects.toBeInstanceOf(TsgitError);
         const before = realpathSpy.mock.calls.filter(([arg]) => arg === '/root/sub').length;
@@ -3866,6 +3906,150 @@ describe('NodeFileSystem — rmRecursive parent-realpath invalidation (DI)', () 
         // Assert
         const after = realpathSpy.mock.calls.filter(([arg]) => arg === '/root/sub').length;
         expect(after).toBe(before + 1);
+      });
+    });
+  });
+});
+
+/**
+ * A synthetic `FsOperations` for `removeTreeConcurrency`-boundary tests:
+ * `lstat`/`readdir` respond deterministically (no real disk I/O, so no
+ * OS-scheduling jitter) — `rootDir` is a directory with `width` regular-file
+ * children. `rm` is instrumented to count in-flight calls, gated on a
+ * resolved-next-tick promise so a full worker burst is observable before any
+ * of them settle.
+ */
+function fakeRemoveTreeFsOps(
+  rootDir: string,
+  width: number,
+): { readonly fsOps: FsOperations; readonly getMaxInFlight: () => number } {
+  let inFlight = 0;
+  let maxInFlight = 0;
+  const children = Array.from({ length: width }, (_unused, i) => ({ name: `f${i}.txt` }));
+  const fsOps = fakeFsOps({
+    realpath: vi.fn().mockImplementation(async (input: string) => input),
+    lstat: vi
+      .fn()
+      .mockImplementation(async (input: string) =>
+        input === rootDir ? entry('directory', 1) : entry('file', 2),
+      ),
+    readdir: vi
+      .fn()
+      .mockImplementation(async (input: string) => (input === rootDir ? children : [])),
+    rm: vi.fn().mockImplementation(async () => {
+      inFlight += 1;
+      if (inFlight > maxInFlight) maxInFlight = inFlight;
+      await Promise.resolve();
+      inFlight -= 1;
+    }),
+    rmdir: vi.fn().mockResolvedValue(undefined),
+  });
+  return { fsOps, getMaxInFlight: () => maxInFlight };
+}
+
+describe('NodeFileSystem — options object (DI)', () => {
+  describe('Given no `rootsArePreResolved` option', () => {
+    describe('When `exists` resolves the root set for the first time', () => {
+      it('Then `fsOps.realpath` canonicalizes the root', async () => {
+        // Arrange
+        const rootDir = '/root';
+        const realpathSpy = vi.fn().mockResolvedValue(rootDir);
+        const fsOps = fakeFsOps({ realpath: realpathSpy });
+        const sut = new NodeFileSystem(rootDir, { fsOps });
+
+        // Act
+        await sut.exists('/root/a');
+
+        // Assert
+        expect(realpathSpy).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Given `rootsArePreResolved: true`', () => {
+    describe('When `exists` resolves the root set for the first time', () => {
+      it('Then `fsOps.realpath` is never called', async () => {
+        // Arrange
+        const rootDir = '/root';
+        const realpathSpy = vi.fn().mockResolvedValue(rootDir);
+        const fsOps = fakeFsOps({ realpath: realpathSpy });
+        const sut = new NodeFileSystem(rootDir, { fsOps, rootsArePreResolved: true });
+
+        // Act
+        await sut.exists('/root/a');
+
+        // Assert
+        expect(realpathSpy).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given an injected `fsOps`', () => {
+    describe('When `exists` runs', () => {
+      it('Then the injected fake answers the probe, not the real filesystem', async () => {
+        // Arrange
+        const rootDir = '/root';
+        const statSpy = vi.fn().mockResolvedValue({});
+        const fsOps = fakeFsOps({ realpath: vi.fn().mockResolvedValue(rootDir), stat: statSpy });
+        const sut = new NodeFileSystem(rootDir, { fsOps });
+
+        // Act
+        await sut.exists('/root/a');
+
+        // Assert
+        expect(statSpy).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Given an injected `pathPolicy`', () => {
+    describe('When a backslash path is probed', () => {
+      it('Then it resolves under that policy', async () => {
+        // Arrange
+        const rootDir = 'C:\\root';
+        const statSpy = vi.fn().mockResolvedValue({});
+        const fsOps = fakeFsOps({ realpath: vi.fn().mockResolvedValue(rootDir), stat: statSpy });
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: windowsPolicy, fsOps });
+
+        // Act
+        const result = await sut.exists('C:\\root\\a');
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+
+  describe('Given no `removeTreeConcurrency` option', () => {
+    describe('When `rmRecursive` removes a 16-entry directory', () => {
+      it('Then concurrent removals peak at the historical default of 8', async () => {
+        // Arrange
+        const rootDir = '/root';
+        const { fsOps, getMaxInFlight } = fakeRemoveTreeFsOps(rootDir, 16);
+        const sut = new NodeFileSystem(rootDir, { fsOps });
+
+        // Act
+        await sut.rmRecursive(rootDir);
+
+        // Assert
+        expect(getMaxInFlight()).toBe(8);
+      });
+    });
+  });
+
+  describe('Given `removeTreeConcurrency: 2`', () => {
+    describe('When `rmRecursive` removes a 16-entry directory', () => {
+      it('Then concurrent removals peak at 2', async () => {
+        // Arrange
+        const rootDir = '/root';
+        const { fsOps, getMaxInFlight } = fakeRemoveTreeFsOps(rootDir, 16);
+        const sut = new NodeFileSystem(rootDir, { fsOps, removeTreeConcurrency: 2 });
+
+        // Act
+        await sut.rmRecursive(rootDir);
+
+        // Assert
+        expect(getMaxInFlight()).toBe(2);
       });
     });
   });

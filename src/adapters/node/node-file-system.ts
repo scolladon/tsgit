@@ -420,6 +420,18 @@ export function mapStat(s: {
   return { ctimeMs, mtimeMs, dev, ino, mode, uid, gid, size, isFile, isDirectory, isSymbolicLink };
 }
 
+/** Injectable dependencies and settings for {@link NodeFileSystem}, every member optional. */
+export interface NodeFileSystemOptions {
+  /** Path-parsing and containment rules to resolve against. Default `nativePolicy`. */
+  readonly pathPolicy?: PathPolicy;
+  /** The `node:fs/promises` surface to call through. Default `realFsOps`. */
+  readonly fsOps?: FsOperations;
+  /** Whether `rootDir`/`rootDirs` are already realpathed. Default `false`. */
+  readonly rootsArePreResolved?: boolean;
+  /** Bound on concurrent child removals inside `rmRecursive`. Default `REMOVE_TREE_CONCURRENCY`. */
+  readonly removeTreeConcurrency?: number;
+}
+
 export class NodeFileSystem implements FileSystem {
   /**
    * Every containment root this adapter admits. A path is contained when it
@@ -521,13 +533,13 @@ export class NodeFileSystem implements FileSystem {
    */
   private resolvedRootSet: RootSet | undefined = undefined;
 
-  constructor(
-    rootDir: string | ReadonlyArray<string>,
-    pathPolicy: PathPolicy = nativePolicy,
-    fsOps: FsOperations = realFsOps,
-    rootsArePreResolved = false,
-    removeTreeConcurrency: number = REMOVE_TREE_CONCURRENCY,
-  ) {
+  constructor(rootDir: string | ReadonlyArray<string>, options: NodeFileSystemOptions = {}) {
+    const {
+      pathPolicy = nativePolicy,
+      fsOps = realFsOps,
+      rootsArePreResolved = false,
+      removeTreeConcurrency = REMOVE_TREE_CONCURRENCY,
+    } = options;
     const roots = typeof rootDir === 'string' ? [rootDir] : rootDir;
     const [primary] = roots;
     // Fail closed: an empty root set would make every containment check

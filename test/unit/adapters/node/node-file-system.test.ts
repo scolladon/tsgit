@@ -720,7 +720,7 @@ describe('NodeFileSystem', () => {
               throw original;
             }) as FsOperations['rm'],
           };
-          const fs = new NodeFileSystem(rootDir, undefined, fsOps);
+          const fs = new NodeFileSystem(rootDir, { fsOps });
 
           // Act
           let caught: unknown;
@@ -804,7 +804,7 @@ describe('NodeFileSystem', () => {
           const tempRoot = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-node-'));
           const rootDir = await fsPromises.realpath(tempRoot);
           const { fsOps, getMaxInFlight } = fakeRemoveTreeFsOps(rootDir, width);
-          const fs = new NodeFileSystem(rootDir, undefined, fsOps, undefined, concurrency);
+          const fs = new NodeFileSystem(rootDir, { fsOps, removeTreeConcurrency: concurrency });
 
           // Act
           try {
@@ -829,7 +829,7 @@ describe('NodeFileSystem', () => {
           const tempRoot = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-node-'));
           const rootDir = await fsPromises.realpath(tempRoot);
           const { fsOps, getMaxInFlight } = fakeRemoveTreeFsOps(rootDir, width);
-          const fs = new NodeFileSystem(rootDir, undefined, fsOps);
+          const fs = new NodeFileSystem(rootDir, { fsOps });
 
           // Act
           try {
@@ -1654,7 +1654,7 @@ describe('NodeFileSystem config-path capabilities', () => {
         // Arrange
         const tmp = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-fs-'));
         try {
-          const fs = new NodeFileSystem(tmp, posixPolicy);
+          const fs = new NodeFileSystem(tmp, { pathPolicy: posixPolicy });
 
           // Act
           const result = fs.homedir();
@@ -1694,7 +1694,7 @@ describe('NodeFileSystem config-path capabilities', () => {
         try {
           if (envValue === undefined) delete process.env['XDG_CONFIG_HOME'];
           else process.env['XDG_CONFIG_HOME'] = envValue;
-          const fs = new NodeFileSystem(tmp, posixPolicy);
+          const fs = new NodeFileSystem(tmp, { pathPolicy: posixPolicy });
 
           // Act
           const result = fs.xdgConfigHome();
@@ -1743,7 +1743,7 @@ describe('NodeFileSystem config-path capabilities', () => {
           Object.defineProperty(process, 'platform', { value: platform, configurable: true });
           if (programData === undefined) delete process.env['ProgramData'];
           else process.env['ProgramData'] = programData;
-          const fs = new NodeFileSystem(tmp, policy);
+          const fs = new NodeFileSystem(tmp, { pathPolicy: policy });
 
           // Act
           const result = fs.systemConfigPath();
