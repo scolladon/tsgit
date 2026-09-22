@@ -59,13 +59,15 @@ interface RealpathSplit {
 
 /**
  * Opens `cwd`, forces the adapter's lazy root-set resolution with one read,
- * and reports how many realpaths each side performed.
+ * and reports how many realpaths each side performed. Pinned to
+ * `io: 'threadpool'` — this file counts calls to the async `realpath`, which
+ * the default sync fast path never reaches.
  */
 const splitRealpathCalls = async (
   cwd: string,
   extraOpts: { readonly workDir?: string; readonly gitDir?: string; readonly bare?: boolean } = {},
 ): Promise<RealpathSplit> => {
-  const repo = await openRepository({ cwd, ...extraOpts });
+  const repo = await openRepository({ cwd, io: 'threadpool', ...extraOpts });
   const shim = realpathSpy.mock.calls.length;
   try {
     // The read's own outcome is irrelevant — resolving the root set is what is

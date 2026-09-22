@@ -81,8 +81,10 @@ describe.skipIf(!POSIX_UID_ACCESSORS)(
         const getuidSpy = vi.spyOn(process, 'getuid').mockReturnValue(DECOY_UID);
         const sut = openRepository;
 
-        // Act
-        const repo = await sut({ cwd: tmpdir });
+        // Act — `io: 'threadpool'` keeps the ownership stat on the async
+        // `node:fs/promises` arm this file spoofs; the default sync fast
+        // path reaches a real, un-mocked `statSync` instead.
+        const repo = await sut({ cwd: tmpdir, io: 'threadpool' });
 
         try {
           // Assert — the effective uid matched the stat'd owner, so the trust

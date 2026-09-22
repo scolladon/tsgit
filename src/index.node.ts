@@ -4,6 +4,7 @@
  * cwd-walked layout) and forwards every `openRepository(opts)` call to the
  * core factory with the fallback pre-bound.
  */
+import type { Stats } from 'node:fs';
 import { readFile, readlink, realpath, stat } from 'node:fs/promises';
 import * as nodePath from 'node:path';
 
@@ -11,13 +12,18 @@ import { NodeCommandRunner } from './adapters/node/node-command-runner.js';
 import { NodeCompressor } from './adapters/node/node-compressor.js';
 import { nativeMachineFacts } from './adapters/node/node-concurrency.js';
 import { NodeEnvReader } from './adapters/node/node-env-reader.js';
-import { NodeFileSystem } from './adapters/node/node-file-system.js';
+import { NodeFileSystem, readRegularFileSync } from './adapters/node/node-file-system.js';
 import { NodeHashService } from './adapters/node/node-hash-service.js';
 import { NodeHookRunner } from './adapters/node/node-hook-runner.js';
 import { NodeHttpTransport } from './adapters/node/node-http-transport.js';
 import { NodeSshTransport } from './adapters/node/node-ssh-transport.js';
 import { ownedByCallerPredicate } from './adapters/node/owner-predicate.js';
 import { nativePolicy } from './adapters/node/path-policy.js';
+import {
+  runWithinBudget,
+  type SyncIoPolicy,
+  syncIoPolicyFor,
+} from './adapters/node/sync-io-budget.js';
 import { deriveLimits } from './domain/concurrency/derive-limits.js';
 import { configFor } from './domain/objects/hash-config.js';
 import type { ObjectContent } from './domain/objects/index.js';
@@ -41,6 +47,7 @@ import {
 
 const DEFAULT_DELTA_CACHE_BYTES = 16 * 1024 * 1024;
 const DEFAULT_DELTA_CACHE_ENTRIES = 65_536;
+const DECODER = new TextDecoder();
 
 /**
  * Node-runtime extension to `OpenRepositoryOptions`. Adds `allowInsecureHttp`
@@ -58,6 +65,14 @@ export interface OpenNodeRepositoryOptions extends OpenRepositoryOptions {
   readonly flatTreeCacheMaxBytes?: number;
   /** Override for the delta-base cache's byte budget (default: `core.deltaBaseCacheLimit`, or git's own default). */
   readonly deltaBaseCacheMaxBytes?: number;
+  /**
+   * The I/O strategy for cheap, serial filesystem calls (stat, small reads,
+   * held-handle reads). Default `'sync-fast-path'`: these run synchronously,
+   * under a per-turn budget that yields back to the event loop on its own.
+   * Pick `'threadpool'` on a network or otherwise cold filesystem, where a
+   * blocking call can stall the loop for milliseconds instead of microseconds.
+   */
+  readonly io?: 'sync-fast-path' | 'threadpool';
 }
 
 export const openRepository = async (opts: OpenNodeRepositoryOptions = {}): Promise<Repository> => {
@@ -67,6 +82,11 @@ export const openRepository = async (opts: OpenNodeRepositoryOptions = {}): Prom
   // own `validateOptions` re-check in `repository.ts` never sees them — this
   // eager call is the ONLY guard for those five options.
   validateOptions(opts);
+  // One sync I/O policy for the whole repository, shared by the layout probe,
+  // the main adapter and every worktree adapter built below — never a
+  // module-level singleton.
+  const syncIo = syncIoPolicyFor(opts.io);
+  const canonicalize = createCanonicalize(syncIo);
   const cwd = opts.cwd ?? process.cwd();
   // Resolve to the real path (follows symlinks). On macOS, /var/folders/...
   // symlinks to /private/var/folders/..., and the NodeFileSystem's containment
@@ -85,6 +105,8 @@ export const openRepository = async (opts: OpenNodeRepositoryOptions = {}): Prom
     resolvedCwd,
     opts,
     cwdCanonical,
+    createNodeLayoutProbe(syncIo),
+    canonicalize,
   );
   // The layout's roots are trustworthy as pre-resolved ONLY when every
   // realpath performed above — cwd's own AND the layout's own — actually
@@ -106,6 +128,7 @@ export const openRepository = async (opts: OpenNodeRepositoryOptions = {}): Prom
   const fs = new NodeFileSystem(roots, {
     pathPolicy: nativePolicy,
     rootsArePreResolved: canonical,
+    ...(syncIo !== undefined ? { syncIo } : {}),
   });
   const algorithm = opts.algorithm ?? 'sha1';
   const hash = new NodeHashService(algorithm);
@@ -146,7 +169,7 @@ export const openRepository = async (opts: OpenNodeRepositoryOptions = {}): Prom
       new NodeFileSystem(
         // Stryker disable next-line ArrayDeclaration: equivalent — `worktreePaths` ALREADY carries the layout roots (workDir included), prepended by the facade's own `worktreeFs` wrapper (`repository.ts`, "the worktree paths followed by the layout roots") before this function ever runs; dropping/replacing this array's own `workDir` contribution cannot narrow or widen the resulting containment set — confirmed empirically (a bare-repo probe still resolves correctly with either branch mutated).
         [...(layout.workDir !== undefined ? [layout.workDir] : []), ...worktreePaths],
-        { pathPolicy: nativePolicy },
+        { pathPolicy: nativePolicy, ...(syncIo !== undefined ? { syncIo } : {}) },
       ),
   };
   // Strip the node-only opts AND `cwd` (we override with the realpath-resolved
@@ -159,49 +182,109 @@ export const openRepository = async (opts: OpenNodeRepositoryOptions = {}): Prom
     parsedObjectMemoMaxEntries: _d,
     flatTreeCacheMaxBytes: _e,
     deltaBaseCacheMaxBytes: _f,
+    io: _g,
     ...coreOpts
   } = opts;
   return openRepositoryCore({ ...coreOpts, cwd: resolvedCwd }, fallback);
 };
 
 /**
- * Raw `node:fs/promises`-backed `LayoutProbe`. Must stay raw (never routed
- * through a bounded `NodeFileSystem`): the discovery walk climbs above `cwd`
- * looking for `.git`, and a bounded adapter would reject every step outside
- * its own rootDir — this has to run BEFORE that adapter is constructed.
+ * Stats `p` following symlinks, `undefined` on any error. Without a policy,
+ * today's `fs.promises.stat`; with one, `statSync(p, { throwIfNoEntry: false
+ * })` under the turn budget — that option already collapses ENOENT AND
+ * ENOTDIR to `undefined` without throwing, and every other error is still
+ * caught here, exactly like the async arm's `.catch(() => undefined)`.
  */
-const nodeLayoutProbe: LayoutProbe = {
+const statOrUndefined = (
+  syncIo: SyncIoPolicy | undefined,
+  p: string,
+): Promise<Stats | undefined> =>
+  syncIo === undefined
+    ? stat(p).catch(() => undefined)
+    : runWithinBudget(syncIo.budget, () => syncIo.ops.statSync(p, { throwIfNoEntry: false })).catch(
+        () => undefined,
+      );
+
+/**
+ * Reads `p` as UTF-8, `undefined` on any error. Without a policy, today's
+ * `fs.promises.readFile`; with one, the sync fast path's whole-file read
+ * decoded as UTF-8 — `readRegularFileSync` returns `undefined` for a
+ * non-regular or over-cap file, which falls back to the same async read
+ * rather than reporting absence (defense in depth: `findLayout` already
+ * gates every real call behind an `isFile` stat, but this arm must still
+ * behave correctly if ever reached directly).
+ */
+const readUtf8OrUndefined = async (
+  syncIo: SyncIoPolicy | undefined,
+  p: string,
+): Promise<string | undefined> => {
+  if (syncIo === undefined) return readFile(p, 'utf8').catch(() => undefined);
+  const bytes = await runWithinBudget(syncIo.budget, () =>
+    readRegularFileSync(syncIo.ops, p, syncIo.maxSyncReadBytes),
+  ).catch(() => undefined);
+  return bytes === undefined ? readFile(p, 'utf8').catch(() => undefined) : DECODER.decode(bytes);
+};
+
+/**
+ * Builds the raw `node:fs/promises`- or sync-`fs`-backed `LayoutProbe`. Must
+ * stay raw (never routed through a bounded `NodeFileSystem`): the discovery
+ * walk climbs above `cwd` looking for `.git`, and a bounded adapter would
+ * reject every step outside its own rootDir — this has to run BEFORE that
+ * adapter is constructed. `syncIo` is the repository's own policy (or
+ * `undefined` for `io: 'threadpool'`) — never module-level state, so a
+ * concurrent `openRepository` call under a different `io` option never
+ * shares this one's budget.
+ */
+const createNodeLayoutProbe = (syncIo: SyncIoPolicy | undefined): LayoutProbe => ({
   stat: async (p) => {
-    const s = await stat(p).catch(() => undefined);
+    const s = await statOrUndefined(syncIo, p);
     return s === undefined
       ? undefined
       : { isDirectory: s.isDirectory(), isFile: s.isFile(), size: s.size };
   },
-  readUtf8: (p) => readFile(p, 'utf8').catch(() => undefined),
+  readUtf8: (p) => readUtf8OrUndefined(syncIo, p),
   // EINVAL (not a symlink) and ENOENT both collapse to undefined per the
   // port contract — the caller only cares whether usable link text exists.
-  readLink: (p) => readlink(p, 'utf8').catch(() => undefined),
+  readLink: (p) =>
+    syncIo === undefined
+      ? readlink(p, 'utf8').catch(() => undefined)
+      : runWithinBudget(syncIo.budget, () => syncIo.ops.readlinkSync(p, 'utf8')).catch(
+          () => undefined,
+        ),
   isOwnedByCaller: ownedByCallerPredicate({
     // Effective uid, matching the port contract and git's own `geteuid()`.
     callerUid: () => process.geteuid?.() ?? process.getuid?.(),
-    ownerUid: async (p) => (await stat(p).catch(() => undefined))?.uid,
+    ownerUid: async (p) => (await statOrUndefined(syncIo, p))?.uid,
   }),
-};
+});
 
 /**
- * Realpath `p`, paired with whether that realpath actually succeeded. A
- * not-yet-existing path (the `openRepository`/`init`/`clone` contract) falls
- * back to `p` itself with `canonical: false` — callers must never treat that
- * fallback as an already-resolved root; only a `true` outcome makes `path`
- * safe to hand the adapter as pre-resolved.
+ * Builds the realpath-and-outcome helper `resolveNodeLayout` and its callers
+ * thread through explicitly — one policy per repository, never module-level
+ * state, so a concurrent `openRepository` call under a different `io` option
+ * never shares this one's budget. Realpaths `p`, paired with whether that
+ * realpath actually succeeded. A not-yet-existing path (the
+ * `openRepository`/`init`/`clone` contract) falls back to `p` itself with
+ * `canonical: false` — callers must never treat that fallback as an
+ * already-resolved root; only a `true` outcome makes `path` safe to hand the
+ * adapter as pre-resolved.
  */
-const canonicalize = async (p: string): Promise<{ path: string; canonical: boolean }> => {
-  try {
-    return { path: await realpath(p), canonical: true };
-  } catch {
-    return { path: p, canonical: false };
-  }
-};
+const createCanonicalize =
+  (syncIo: SyncIoPolicy | undefined) =>
+  async (p: string): Promise<{ path: string; canonical: boolean }> => {
+    try {
+      const real =
+        syncIo === undefined
+          ? await realpath(p)
+          : await runWithinBudget(syncIo.budget, () => syncIo.ops.realpathSync.native(p));
+      return { path: real, canonical: true };
+    } catch {
+      return { path: p, canonical: false };
+    }
+  };
+
+/** The function `createCanonicalize` returns — threaded as a parameter, never read from module state. */
+type Canonicalize = ReturnType<typeof createCanonicalize>;
 
 /**
  * Realpaths every entry of `ceilingDirs`, best-effort — a ceiling that does
@@ -212,6 +295,7 @@ const canonicalize = async (p: string): Promise<{ path: string; canonical: boole
  */
 const canonicalizeCeilings = async (
   ceilingDirs: ReadonlyArray<string> | undefined,
+  canonicalize: Canonicalize,
 ): Promise<ReadonlyArray<string> | undefined> => {
   if (ceilingDirs === undefined) return undefined;
   const resolved = await Promise.all(ceilingDirs.map((dir) => canonicalize(dir)));
@@ -299,8 +383,10 @@ const resolveNodeLayout = async (
   cwd: string,
   opts: ExplicitLayoutOptions,
   cwdCanonical: boolean,
+  probe: LayoutProbe,
+  canonicalize: Canonicalize,
 ): Promise<{ layout: RepositoryLayoutInput; canonical: boolean }> => {
-  const ceilingDirs = await canonicalizeCeilings(opts.ceilingDirs);
+  const ceilingDirs = await canonicalizeCeilings(opts.ceilingDirs, canonicalize);
   const trustedDirectories = await canonicalizeTrustedDirectories(
     opts.trustedDirectories,
     async (path) => (await canonicalize(path)).path,
@@ -310,7 +396,7 @@ const resolveNodeLayout = async (
     ...(opts.bare !== undefined ? { bare: opts.bare } : {}),
   };
   const resolved = await resolveLayout(
-    nodeLayoutProbe,
+    probe,
     cwd,
     nativePolicy,
     buildLayoutOptions(opts, explicit, ceilingDirs, trustedDirectories),

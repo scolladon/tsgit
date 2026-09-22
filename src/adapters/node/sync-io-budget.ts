@@ -11,6 +11,7 @@
  * @internal — not re-exported from `src/adapters/node/index.ts`.
  */
 
+import { invalidOption } from '../../domain/commands/error.js';
 import { realSyncFsOps, type SyncFsOperations } from './fs-operations.js';
 
 /** Clock time budgeted per event-loop turn before sync callers must yield. */
@@ -89,6 +90,20 @@ export const createSyncIoPolicy = (): SyncIoPolicy => ({
   budget: createTurnBudget(SYNC_TURN_BUDGET_MS),
   maxSyncReadBytes: MAX_SYNC_READ_BYTES,
 });
+
+/**
+ * Resolves the public `io` option to a policy: absent or `'sync-fast-path'`
+ * builds a fresh policy; `'threadpool'` opts out entirely (`undefined`, so
+ * every caller runs today's async path); any other runtime value is refused
+ * before any I/O happens.
+ */
+export const syncIoPolicyFor = (
+  io: 'sync-fast-path' | 'threadpool' | undefined,
+): SyncIoPolicy | undefined => {
+  if (io === undefined || io === 'sync-fast-path') return createSyncIoPolicy();
+  if (io === 'threadpool') return undefined;
+  throw invalidOption('io', "must be 'sync-fast-path' or 'threadpool'");
+};
 
 export const runWithinBudget = async <T>(budget: TurnBudget, op: () => T): Promise<T> => {
   const wait = budget.admit();

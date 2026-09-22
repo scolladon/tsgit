@@ -4,7 +4,26 @@ import {
   createSyncIoPolicy,
   createTurnBudget,
   runWithinBudget,
+  syncIoPolicyFor,
 } from '../../../../src/adapters/node/sync-io-budget.js';
+import { TsgitError } from '../../../../src/domain/error.js';
+
+type IoOption = 'sync-fast-path' | 'threadpool';
+
+const expectInvalidIo = (io: IoOption, reasonContains: string): void => {
+  try {
+    syncIoPolicyFor(io);
+    expect.unreachable('expected syncIoPolicyFor to throw');
+  } catch (err) {
+    expect(err).toBeInstanceOf(TsgitError);
+    const data = (err as TsgitError).data;
+    expect(data.code).toBe('INVALID_OPTION');
+    if (data.code === 'INVALID_OPTION') {
+      expect(data.option).toBe('io');
+      expect(data.reason).toContain(reasonContains);
+    }
+  }
+};
 
 const manualClock = () => {
   let t = 0;
@@ -389,6 +408,80 @@ describe('createSyncIoPolicy', () => {
 
       // Assert
       expect(result).toBeInstanceOf(Promise);
+    });
+  });
+});
+
+describe('syncIoPolicyFor', () => {
+  describe('Given io is undefined', () => {
+    describe('When resolving the policy', () => {
+      it('Then it returns a fresh sync policy', () => {
+        // Arrange
+        const sut = syncIoPolicyFor;
+
+        // Act
+        const result = sut(undefined);
+
+        // Assert
+        expect(result?.maxSyncReadBytes).toBe(64 * 1024);
+      });
+    });
+  });
+
+  describe("Given io is 'sync-fast-path'", () => {
+    describe('When resolving the policy', () => {
+      it('Then it returns a fresh sync policy', () => {
+        // Arrange
+        const sut = syncIoPolicyFor;
+
+        // Act
+        const result = sut('sync-fast-path');
+
+        // Assert
+        expect(result?.maxSyncReadBytes).toBe(64 * 1024);
+      });
+    });
+  });
+
+  describe("Given io is 'threadpool'", () => {
+    describe('When resolving the policy', () => {
+      it('Then it returns undefined', () => {
+        // Arrange
+        const sut = syncIoPolicyFor;
+
+        // Act
+        const result = sut('threadpool');
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given io is an unrecognised string', () => {
+    describe('When resolving the policy', () => {
+      it("Then it throws INVALID_OPTION naming 'io'", () => {
+        // Arrange + Act + Assert
+        expectInvalidIo('async' as unknown as IoOption, "must be 'sync-fast-path' or 'threadpool'");
+      });
+    });
+  });
+
+  describe('Given io is the boolean true', () => {
+    describe('When resolving the policy', () => {
+      it("Then it throws INVALID_OPTION naming 'io'", () => {
+        // Arrange + Act + Assert
+        expectInvalidIo(true as unknown as IoOption, "must be 'sync-fast-path' or 'threadpool'");
+      });
+    });
+  });
+
+  describe('Given io is the number 1', () => {
+    describe('When resolving the policy', () => {
+      it("Then it throws INVALID_OPTION naming 'io'", () => {
+        // Arrange + Act + Assert
+        expectInvalidIo(1 as unknown as IoOption, "must be 'sync-fast-path' or 'threadpool'");
+      });
     });
   });
 });
