@@ -754,6 +754,8 @@
     "overclaim",
     "overcounts",
     "OVERRIDEKEY",
+    "packedgitlimit",
+    "packedgitwindowsize",
     "packfile",
     "packfiles",
     "packlist",

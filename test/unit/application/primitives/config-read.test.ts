@@ -10,6 +10,7 @@ import {
   findFirstInvalidCompression,
   findFirstInvalidGcAuto,
   findFirstInvalidLogAllRefUpdates,
+  findFirstInvalidPackedGitBound,
   findFirstInvalidPackInt,
   findFirstInvalidPushGpgSign,
   findFirstValuelessEntry,
@@ -2274,6 +2275,56 @@ describe('primitives/config-read', () => {
       });
     });
   });
+
+  describe.each(['packedGitWindowSize', 'packedGitLimit'] as const)(
+    'Given a config with a [core] %s value',
+    (key) => {
+      describe('When readConfig', () => {
+        it.each([
+          { value: '0', expected: 0 },
+          { value: '1', expected: 1 },
+          { value: '1k', expected: 1_024 },
+          { value: '4g', expected: 4_294_967_296 },
+          { value: '9223372036854775807', expected: Number(BigInt('9223372036854775807')) },
+        ])(`Then parsed.core.${key} is $expected for $value`, async ({ value, expected }) => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, `[core]\n\t${key} = ${value}\n`);
+
+          // Act
+          const result = await readConfig(ctx);
+
+          // Assert
+          expect(result.core?.[key]).toBe(expected);
+        });
+      });
+    },
+  );
+
+  describe.each(['packedGitWindowSize', 'packedGitLimit'] as const)(
+    'Given a [core] section with an invalid %s value',
+    (key) => {
+      describe('When readConfig', () => {
+        it.each([
+          { config: `[core]\n\t${key} = -1\n`, label: 'invalid unit (-1)' },
+          { config: `[core]\n\t${key} = abc\n`, label: 'invalid unit (abc)' },
+          { config: `[core]\n\t${key} = \n`, label: 'invalid unit (empty)' },
+          { config: `[core]\n\t${key}\n`, label: 'invalid unit (valueless)' },
+          { config: `[core]\n\t${key} = 18446744073709551616\n`, label: 'out of range (2**64)' },
+        ])(`Then ${key} is absent and readConfig does not throw ($label)`, async ({ config }) => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, config);
+
+          // Act
+          const result = await readConfig(ctx);
+
+          // Assert
+          expect(result.core?.[key]).toBeUndefined();
+        });
+      });
+    },
+  );
 
   describe('Given a cached config and invalidateConfigCache for that context', () => {
     describe('When readConfig is called again', () => {
@@ -6453,6 +6504,125 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
           // Act
           const result = await findLastInvalidDeltaBaseCacheLimit(ctx);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+  });
+
+  describe('findFirstInvalidPackedGitBound', () => {
+    describe.each(['packedGitWindowSize', 'packedGitLimit'] as const)(
+      'Given a malformed core.%s',
+      (key) => {
+        describe('When findFirstInvalidPackedGitBound', () => {
+          it.each([
+            { config: `[core]\n\t${key} = abc\n`, value: 'abc', reason: 'invalid unit' as const },
+            { config: `[core]\n\t${key} = -1\n`, value: '-1', reason: 'invalid unit' as const },
+            { config: `[core]\n\t${key} = \n`, value: '', reason: 'invalid unit' as const },
+            {
+              config: `[core]\n\t${key} = 18446744073709551616\n`,
+              value: '18446744073709551616',
+              reason: 'out of range' as const,
+            },
+          ])(
+            'Then it returns key/value/reason for $reason ($value)',
+            async ({ config, value, reason }) => {
+              // Arrange
+              const ctx = createMemoryContext();
+              await seed(ctx, config);
+
+              // Act
+              const result = await findFirstInvalidPackedGitBound(ctx);
+
+              // Assert
+              expect(result?.key).toBe(`core.${key.toLowerCase()}`);
+              expect(result?.value).toBe(value);
+              expect(result?.reason).toBe(reason);
+            },
+          );
+        });
+
+        describe('Given a valueless entry (no "=")', () => {
+          describe('When findFirstInvalidPackedGitBound', () => {
+            it("Then returns value '', reason invalid unit, and the 1-based line", async () => {
+              // Arrange
+              const ctx = createMemoryContext();
+              await seed(ctx, `[core]\n\t${key}\n`);
+
+              // Act
+              const result = await findFirstInvalidPackedGitBound(ctx);
+
+              // Assert
+              expect(result?.value).toBe('');
+              expect(result?.reason).toBe('invalid unit');
+              expect(result?.line).toBe(2);
+            });
+          });
+        });
+
+        describe('Given a valid value (e.g. 4m)', () => {
+          describe('When findFirstInvalidPackedGitBound', () => {
+            it('Then returns undefined', async () => {
+              // Arrange
+              const ctx = createMemoryContext();
+              await seed(ctx, `[core]\n\t${key} = 4m\n`);
+
+              // Act
+              const result = await findFirstInvalidPackedGitBound(ctx);
+
+              // Assert
+              expect(result).toBeUndefined();
+            });
+          });
+        });
+      },
+    );
+
+    describe('Given packedGitLimit malformed on line 2 and packedGitWindowSize malformed on line 3', () => {
+      describe('When findFirstInvalidPackedGitBound', () => {
+        it('Then returns the earlier (packedGitLimit) entry — first in file order', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[core]\n\tpackedGitLimit = -1\n\tpackedGitWindowSize = -1\n');
+
+          // Act
+          const result = await findFirstInvalidPackedGitBound(ctx);
+
+          // Assert
+          expect(result?.key).toBe('core.packedgitlimit');
+          expect(result?.line).toBe(2);
+        });
+      });
+    });
+
+    describe('Given packedGitWindowSize malformed on line 2 and packedGitLimit malformed on line 3', () => {
+      describe('When findFirstInvalidPackedGitBound', () => {
+        it('Then returns the earlier (packedGitWindowSize) entry — first in file order', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[core]\n\tpackedGitWindowSize = -1\n\tpackedGitLimit = -1\n');
+
+          // Act
+          const result = await findFirstInvalidPackedGitBound(ctx);
+
+          // Assert
+          expect(result?.key).toBe('core.packedgitwindowsize');
+          expect(result?.line).toBe(2);
+        });
+      });
+    });
+
+    describe('Given a malformed packedGitWindowSize entry outside [core]', () => {
+      describe('When findFirstInvalidPackedGitBound', () => {
+        it('Then returns undefined — a [pack] key is not a [core] key', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[pack]\n\tpackedGitWindowSize = -1\n');
+
+          // Act
+          const result = await findFirstInvalidPackedGitBound(ctx);
 
           // Assert
           expect(result).toBeUndefined();

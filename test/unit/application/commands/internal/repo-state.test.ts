@@ -899,6 +899,91 @@ describe('internal/repo-state', () => {
       });
     });
 
+    describe('Given a valueless core.packedGitWindowSize / core.packedGitLimit entry', () => {
+      describe('When called', () => {
+        it.each([
+          { key: 'packedGitWindowSize', label: 'core.packedGitWindowSize' },
+          { key: 'packedGitLimit', label: 'core.packedGitLimit' },
+        ])('Then throws CONFIG_BAD_NUMERIC_VALUE for $label', async ({ key }) => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, `[core]\n\t${key}\n`);
+
+          // Act
+          let caught: unknown;
+          try {
+            await assertOperationalRepository(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert — each field individually (mutation-resistant)
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as BadNumericData;
+          expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+          expect(data.key).toBe(`core.${key.toLowerCase()}`);
+          expect(data.source).toMatch(/\/config$/);
+          expect(data.value).toBe('');
+          expect(data.reason).toBe('invalid unit');
+        });
+      });
+    });
+
+    describe('Given a config with core.compression (line 2) earlier than a malformed core.packedGitWindowSize (line 3)', () => {
+      describe('When called', () => {
+        it('Then throws CONFIG_BAD_NUMERIC_VALUE for core.compression (earlier line wins)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\tcompression\n\tpackedGitWindowSize = -1\n');
+
+          // Act
+          let caught: unknown;
+          try {
+            await assertOperationalRepository(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as BadNumericData;
+          expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+          expect(data.key).toBe('core.compression');
+          expect(data.value).toBe('');
+          expect(data.reason).toBe('invalid unit');
+        });
+      });
+    });
+
+    describe('Given a config with a malformed core.packedGitWindowSize (line 2) earlier than core.compression (line 3)', () => {
+      describe('When called', () => {
+        it('Then throws CONFIG_BAD_NUMERIC_VALUE for core.packedGitWindowSize (earlier line wins)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\tpackedGitWindowSize = -1\n\tcompression\n');
+
+          // Act
+          let caught: unknown;
+          try {
+            await assertOperationalRepository(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as BadNumericData;
+          expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+          expect(data.key).toBe('core.packedgitwindowsize');
+          expect(data.value).toBe('-1');
+          expect(data.reason).toBe('invalid unit');
+        });
+      });
+    });
+
     describe('Given a valid config accepted by a first command, then rewritten to a malformed value by a raw external write', () => {
       describe('When a second assertOperationalRepository call runs (no invalidateConfigCache)', () => {
         it('Then the second call refuses — the epoch re-stats and notices the edit', async () => {
@@ -1581,6 +1666,7 @@ interface FormatExtensionsData {
 interface BadNumericData {
   readonly code: string;
   readonly key: string;
+  readonly source: string;
   readonly value: string;
   readonly reason: string;
 }
