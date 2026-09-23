@@ -22,6 +22,7 @@ import {
   parsePackHeader,
 } from '../../domain/storage/pack-entry.js';
 import type { Context } from '../../ports/context.js';
+import type { DirEntry } from '../../ports/file-system.js';
 import {
   bindMidx,
   computeMidxHealth,
@@ -584,12 +585,17 @@ const unusableEntry = (
 ): UnusablePack => ({ name, layer, data });
 
 /**
- * `readdir` on a missing directory maps to `FILE_NOT_FOUND` on every
- * adapter. `NOT_A_DIRECTORY` covers the other real shape this tolerates: a
- * regular file sitting where `objects/pack` should be a directory (node's
- * `ENOTDIR`). Both mean the same thing here — there are no packs to list —
- * and canonical git agrees, serving a loose read at exit 0 while printing
- * `error: unable to open object pack directory: …: Not a directory`.
+ * List `objects/pack` once per generation — the single listing the store
+ * gate and the scan now share. `readdir` on a missing directory maps to
+ * `FILE_NOT_FOUND` on every adapter; `NOT_A_DIRECTORY` covers a regular file
+ * sitting where the directory should be (node's `ENOTDIR`); `PERMISSION_DENIED`
+ * and any other coded errno fold the same way. Canonical git agrees on every
+ * one of these shapes: it prints an `error: unable to open object pack
+ * directory: …` line and keeps serving loose reads at exit 0, never
+ * refusing. Every coded fault is reported once here, through
+ * `ctx.logger?.warn` with the fault attached (no logger → silent, never a
+ * refusal). An error carrying no data code is a programming error and is
+ * rethrown, never folded.
  *
  * Structural on `data.code`, never `instanceof`: this classifies an error
  * thrown by `ctx.fs`, so in a mixed-module-graph harness (a source-graph
@@ -598,9 +604,16 @@ const unusableEntry = (
  * `domain/error-data-code.ts` documents, and the reason every `ctx.fs`
  * absence probe shares `errorDataCode`.
  */
-function isMissingPackDir(error: unknown): boolean {
-  const code = errorDataCode(error);
-  return code === 'FILE_NOT_FOUND' || code === 'NOT_A_DIRECTORY';
+async function listPackDir(ctx: Context): Promise<ReadonlyArray<DirEntry>> {
+  const dir = packsDir(commonGitDir(ctx));
+  try {
+    return await ctx.fs.readdir(dir);
+  } catch (error) {
+    if (errorDataCode(error) === undefined) throw error;
+    const { data } = error as { readonly data: TsgitErrorData };
+    ctx.logger?.warn?.('packRegistry: unreadable pack directory', { dir, ...faultContext(data) });
+    return [];
+  }
 }
 
 // git dies during object-store setup ahead of every read, and the ONLY
@@ -608,10 +621,21 @@ function isMissingPackDir(error: unknown): boolean {
 // the directory listing and pack construction below are invisible to a
 // successful loose read's outcome. So the gate is exactly the midx load,
 // and its Tier-B discard diagnostic belongs here too: git prints that one
-// on a loose read.
-function createStoreGate(ctx: Context): PromiseMemo<MidxLoadResult> {
+// on a loose read. `listing` is the shared `packDirListing` memo's `get` —
+// forcing the gate now also answers "does objects/pack name a
+// multi-pack-index (or a chain)" for `loadMidxSet`, at no I/O beyond the one
+// listing every read already pays.
+function createStoreGate(
+  ctx: Context,
+  listing: () => Promise<ReadonlyArray<DirEntry>>,
+): PromiseMemo<MidxLoadResult> {
   const loadStoreGate = async (): Promise<MidxLoadResult> => {
-    const midxLoad = await loadMidxSet(ctx, packsDir(commonGitDir(ctx)));
+    const entries = await listing();
+    const midxLoad = await loadMidxSet(
+      ctx,
+      packsDir(commonGitDir(ctx)),
+      new Set(entries.map((entry) => entry.name)),
+    );
     for (const fault of midxLoad.faults) {
       ctx.logger?.warn?.('packRegistry: discarding unusable multi-pack-index', {
         artefact: fault.artefact,
@@ -632,7 +656,8 @@ const DELTA_BASE_CACHE_MAX_ENTRIES = 65_536;
 
 export async function createPackRegistry(ctx: Context): Promise<PackRegistry> {
   await assertRepoSettingsValid(ctx);
-  const storeGate = createStoreGate(ctx);
+  const packDirListing = createPromiseMemo(() => listPackDir(ctx));
+  const storeGate = createStoreGate(ctx, packDirListing.get);
   // A SEPARATE, ADDITIONAL byte budget from the ordinary delta cache's own —
   // not a share carved out of it. The two caches hold different things (raw
   // loose-format bytes vs. header-split reconstructed delta bases) and
@@ -664,19 +689,12 @@ export async function createPackRegistry(ctx: Context): Promise<PackRegistry> {
     // costs a packed cold read the round-trip the two used to share, which is
     // the accepted price of not listing the directory on a loose hit.
     //
-    // No separate `exists(dir)` guard: a missing (or non-directory)
-    // `objects/pack` folds to an empty listing right here, inside the same
-    // `Promise.all` arm — never a sequential probe-then-list round trip.
-    // Everything else (PERMISSION_DENIED, …) is a real fault and propagates
-    // to the only consumers that actually need the pack store — `all()` and
-    // `lookup()` — never to a loose-only read, which never forces this scan.
-    const [midxLoad, entries] = await Promise.all([
-      storeGate.get(),
-      ctx.fs.readdir(dir).catch((error: unknown) => {
-        if (isMissingPackDir(error)) return [];
-        throw error;
-      }),
-    ]);
+    // packDirListing is the SAME memo the store gate above forces to build
+    // loadMidxSet's entry set — a directory fault (a missing directory,
+    // PERMISSION_DENIED, …) already folded to an empty listing there, with
+    // its own warn; scanPacks never re-classifies it and never sees it as a
+    // rejection.
+    const [midxLoad, entries] = await Promise.all([storeGate.get(), packDirListing.get()]);
     // git registers a pack only when its .pack exists by name — an orphaned
     // .idx is garbage, never a pack. The listing already in hand is the same
     // data, so the check costs no I/O.
@@ -922,9 +940,11 @@ export async function createPackRegistry(ctx: Context): Promise<PackRegistry> {
       deltaBaseCache.clear();
       // Cleared before the early return below: a Context that only ever
       // called assertLoadable (a loose-only read) never forces the scan, so
-      // clearing the gate here — not after the guard — is the only way a
-      // stale multi-pack-index load doesn't outlive this refresh().
+      // clearing the gate — and the listing it shares with the scan — here,
+      // not after the guard, is the only way a stale multi-pack-index load
+      // or a stale directory listing doesn't outlive this refresh().
       storeGate.clear();
+      packDirListing.clear();
       // The outgoing packs may hold open persistent handles; close them before
       // dropping the references or every refresh leaks one fd per touched pack.
       const outgoing = scan.clear();

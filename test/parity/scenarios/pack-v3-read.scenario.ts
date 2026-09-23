@@ -25,6 +25,14 @@ const PACKED_BLOB_CONTENT = 'packed via v3\n';
 
 export const packV3ReadScenario: Scenario<PackV3ReadResult> = {
   name: 'pack-v3-read',
+  // The seed commit's own ref-update verification forces the store gate
+  // before `writeScenarioPackPair` writes objects/pack directly; that
+  // helper's own `refresh()` call reaches only the SOURCE module graph
+  // (same limitation `midx-read.scenario.ts` documents), so a dist-bundle
+  // driver's own internal registry — a parallel instance the test cannot
+  // reach — keeps its pre-write listing with no packs. Cross-adapter parity for
+  // this read is still proven by the node and memory drivers.
+  unsupportedRuntimes: ['workers', 'deno', 'bun', 'browser'],
   inputs: { files: [FILES.helloA], author: AUTHOR, message: MESSAGES.seed },
   expected: {
     probedVersion: 3,

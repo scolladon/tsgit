@@ -1542,7 +1542,7 @@ describe('object-resolver', () => {
 
   describe('Given a cold Context whose requested object is loose', () => {
     describe('When resolveObject reads it', () => {
-      it('Then no readdir targets objects/pack and no .idx path is ever statted or read', async () => {
+      it('Then objects/pack is listed only once, by the shared listing, and no .idx path is ever statted or read', async () => {
         // Arrange
         const blob: Blob = {
           type: 'blob',
@@ -1570,7 +1570,7 @@ describe('object-resolver', () => {
         const packDirReaddirCalls = calls().filter(
           (call) => call.method === 'readdir' && call.path.endsWith('/objects/pack'),
         );
-        expect(packDirReaddirCalls).toEqual([]);
+        expect(packDirReaddirCalls).toHaveLength(1);
         // `exists` never fires for a stronger reason than "the scan didn't run
         // this time": scanPacks no longer calls it at all (the readdir fold
         // below replaced it), so this count is zero by construction, not by
@@ -1694,7 +1694,7 @@ describe('object-resolver', () => {
 
   describe('Given a Tier-B multi-pack-index (truncated) and a loose object that exists', () => {
     describe('When resolveObject reads it', () => {
-      it('Then the blob resolves, the discard warn fires once, and objects/pack is never listed', async () => {
+      it('Then the blob resolves, the discard warn fires once, and objects/pack is listed only once for the shared listing', async () => {
         // Arrange
         const blob: Blob = {
           type: 'blob',
@@ -1721,7 +1721,7 @@ describe('object-resolver', () => {
         const packDirReaddirCalls = calls().filter(
           (call) => call.method === 'readdir' && call.path.endsWith('/objects/pack'),
         );
-        expect(packDirReaddirCalls).toEqual([]);
+        expect(packDirReaddirCalls).toHaveLength(1);
       });
     });
   });
@@ -1729,7 +1729,7 @@ describe('object-resolver', () => {
   describe('loose-oid probe (A2/B7b — per-fanout-dir cache)', () => {
     describe('Given several seeded loose blobs', () => {
       describe('When resolveObject reads each of them, then reads every one again', () => {
-        it('Then each touched fanout dir is readdir-ed at most once and the pack store is never probed', async () => {
+        it('Then each touched fanout dir is readdir-ed at most once, objects/pack is listed once for the shared listing, and the pack scan is never forced', async () => {
           // Arrange
           const blobs: Blob[] = Array.from({ length: 5 }, (_, i) => ({
             type: 'blob',
@@ -1758,12 +1758,14 @@ describe('object-resolver', () => {
 
           // Assert — one readdir per DISTINCT touched prefix, never per object
           // or per read; the old per-object exists/realpath probe is gone.
-          // exists() never fires at all: resolveObjectContentWithDepth's assertLoadable
-          // gate is now the multi-pack-index load alone, and the pack
-          // directory's own `exists` presence check moved behind the
-          // deferred scan, which a loose HIT never forces.
+          // Plus exactly one more: assertLoadable's gate now shares
+          // packDirListing with the scan, so the FIRST read of this
+          // generation lists objects/pack once — memoised, so the second
+          // pass over the same ids adds none. exists() never fires at all:
+          // the pack directory's own `exists` presence check moved behind
+          // the deferred scan, which a loose HIT never forces.
           const touchedPrefixes = new Set(ids.map((id) => id.slice(0, 2)));
-          expect(readdirSpy.mock.calls.length).toBe(touchedPrefixes.size);
+          expect(readdirSpy.mock.calls.length).toBe(touchedPrefixes.size + 1);
           expect(existsSpy.mock.calls.length).toBe(0);
         });
       });

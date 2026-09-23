@@ -189,6 +189,15 @@ async function arrangeMidxRepo(
 
 export const midxReadScenario: Scenario<MidxReadResult> = {
   name: 'midx-read',
+  // The seed commit's own ref-update verification forces the store gate
+  // before `arrangeMidxRepo` writes the two packs and the midx directly to
+  // objects/pack; its own `getPackRegistry(...).refresh()` call reaches
+  // only the SOURCE module graph (the same limitation `midx-read-degraded`
+  // below documents at length), so a dist-bundle driver's own internal
+  // registry — a parallel instance the test cannot reach — keeps its
+  // pre-write listing with no packs. Cross-adapter parity for this read is
+  // still proven by the node and memory drivers.
+  unsupportedRuntimes: ['workers', 'deno', 'bun', 'browser'],
   inputs: { files: [FILES.helloA], author: AUTHOR, message: MESSAGES.seed },
   expected: {
     healthyContentA: CONTENT_A,

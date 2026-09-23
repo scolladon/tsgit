@@ -44,6 +44,15 @@ const ARBITRARY_PACK_BYTES = new Uint8Array([1, 2, 3, 4]);
 
 export const packDegradedIdxScenario: Scenario<PackDegradedIdxResult> = {
   name: 'pack-degraded-idx',
+  // The seed commit's own ref-update verification forces the store gate
+  // before the corrupt/orphan idx files are written directly to
+  // objects/pack; the `registry.refresh()` calls below reach only the
+  // SOURCE module graph (same limitation `midx-read.scenario.ts`
+  // documents), so a dist-bundle driver's own internal registry — a
+  // parallel instance the test cannot reach — keeps its pre-write listing.
+  // Cross-adapter parity for this degradation is still proven by the node
+  // and memory drivers.
+  unsupportedRuntimes: ['workers', 'deno', 'bun', 'browser'],
   inputs: { files: [FILES.helloA], author: AUTHOR, message: MESSAGES.seed },
   expected: {
     readBackType: 'commit',
@@ -70,6 +79,11 @@ export const packDegradedIdxScenario: Scenario<PackDegradedIdxResult> = {
     // Orphaned idx — no sibling pack by name, excluded before its bytes are
     // ever parsed.
     await repo.ctx.fs.write(`${packDir}/pack-degraded-orphan.idx`, ORPHAN_IDX_BYTES);
+
+    // The seed commit's own ref-update verification already forced the
+    // store gate — its pack-directory listing, shared with the scan, was
+    // captured before the writes above and must not outlive them.
+    (await getPackRegistry(repo.ctx)).refresh();
 
     // Act (arms 1+2) — the seed commit still reads, and fsck walks a healthy
     // graph; both run before the vanished-pack arm so their scan generation

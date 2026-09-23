@@ -271,13 +271,15 @@ describe('pack-registry', () => {
 
   describe('Given a pack directory that exists but whose readdir rejects with PERMISSION_DENIED', () => {
     describe('When all() is called', () => {
-      it('Then it rejects with PERMISSION_DENIED', async () => {
+      it('Then it resolves as if the directory were empty, and warns once with the code', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         const dir = `${ctx.layout.gitDir}/objects/pack`;
         await ctx.fs.mkdir(dir);
+        const warn = vi.fn();
         const stubCtx: Context = {
           ...ctx,
+          logger: { warn },
           fs: {
             ...ctx.fs,
             readdir: async (path: string) => {
@@ -289,17 +291,155 @@ describe('pack-registry', () => {
         const sut = await createPackRegistry(stubCtx);
 
         // Act
-        let caught: unknown;
-        try {
-          await sut.all();
-          expect.unreachable();
-        } catch (error) {
-          caught = error;
-        }
+        const result = await sut.all();
 
         // Assert
-        expect(caught).toBeInstanceOf(TsgitError);
-        expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+        expect(result).toEqual([]);
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn).toHaveBeenCalledWith(
+          'packRegistry: unreadable pack directory',
+          expect.objectContaining({ code: 'PERMISSION_DENIED' }),
+        );
+      });
+    });
+  });
+
+  describe('PackRegistry — pack directory listing', () => {
+    describe('Given a registry whose gate and scan are both exercised', () => {
+      describe('When assertLoadable() then lookup() run in sequence', () => {
+        it('Then the pack directory is listed exactly once, shared by the gate and the scan', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          await writeSyntheticPack(ctx, 'shared-listing', [
+            { kind: 'base', type: 'blob', content: new TextEncoder().encode('a') },
+          ]);
+          const { ctx: instrumented, calls } = instrumentedContext(ctx);
+          const sut = await createPackRegistry(instrumented);
+
+          // Act
+          await sut.assertLoadable();
+          await sut.lookup('a'.repeat(40) as ObjectId);
+
+          // Assert
+          const packDirReaddirCalls = calls().filter(
+            (call) => call.method === 'readdir' && call.path.endsWith('/objects/pack'),
+          );
+          expect(packDirReaddirCalls).toHaveLength(1);
+        });
+      });
+    });
+
+    describe('Given a pack directory listing with no multi-pack-index entry', () => {
+      describe('When assertLoadable() runs', () => {
+        it('Then the flat midx path is never statted', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          await ctx.fs.mkdir(`${ctx.layout.gitDir}/objects/pack`);
+          const { ctx: instrumented, calls } = instrumentedContext(ctx);
+          const sut = await createPackRegistry(instrumented);
+
+          // Act
+          await sut.assertLoadable();
+
+          // Assert
+          const midxStats = calls().filter(
+            (call) =>
+              call.method === 'stat' && call.path.endsWith('/objects/pack/multi-pack-index'),
+          );
+          expect(midxStats).toEqual([]);
+        });
+      });
+    });
+
+    describe('Given a pack directory listing naming multi-pack-index', () => {
+      describe('When assertLoadable() runs', () => {
+        it('Then the flat midx path is statted exactly once', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          await writeMidxBytes(ctx, buildMidx(healthyMidxSpec()));
+          const { ctx: instrumented, calls } = instrumentedContext(ctx);
+          const sut = await createPackRegistry(instrumented);
+
+          // Act
+          await sut.assertLoadable();
+
+          // Assert
+          const midxStats = calls().filter(
+            (call) =>
+              call.method === 'stat' && call.path.endsWith('/objects/pack/multi-pack-index'),
+          );
+          expect(midxStats).toHaveLength(1);
+        });
+      });
+    });
+
+    describe.each([
+      ['FILE_NOT_FOUND', () => fileNotFound('/repo/.git/objects/pack')],
+      ['NOT_A_DIRECTORY', () => notADirectory('/repo/.git/objects/pack')],
+      ['PERMISSION_DENIED', () => permissionDenied('/repo/.git/objects/pack')],
+      ['UNSUPPORTED_OPERATION', () => unsupportedOperation('filesystem', 'EIO')],
+    ])('Given a pack directory whose readdir rejects with %s', (code, buildFault) => {
+      describe('When lookup runs twice', () => {
+        it('Then both resolve as if the directory were empty and exactly one warn carries the code', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const dir = `${ctx.layout.gitDir}/objects/pack`;
+          await ctx.fs.mkdir(dir);
+          const warn = vi.fn();
+          const stubCtx: Context = {
+            ...ctx,
+            logger: { warn },
+            fs: {
+              ...ctx.fs,
+              readdir: async (path: string) => {
+                if (path === dir) throw buildFault();
+                return ctx.fs.readdir(path);
+              },
+            },
+          };
+          const sut = await createPackRegistry(stubCtx);
+
+          // Act
+          const first = await sut.lookup('a'.repeat(40) as ObjectId);
+          const second = await sut.lookup('b'.repeat(40) as ObjectId);
+
+          // Assert
+          expect(first).toBeUndefined();
+          expect(second).toBeUndefined();
+          expect(warn).toHaveBeenCalledTimes(1);
+          expect(warn).toHaveBeenCalledWith(
+            'packRegistry: unreadable pack directory',
+            expect.objectContaining({ code }),
+          );
+        });
+      });
+    });
+
+    describe('Given a pack directory whose readdir rejects with PERMISSION_DENIED and no logger attached', () => {
+      describe('When all() is called', () => {
+        it('Then it resolves with an empty array', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const dir = `${ctx.layout.gitDir}/objects/pack`;
+          await ctx.fs.mkdir(dir);
+          const stubCtx: Context = {
+            ...ctx,
+            fs: {
+              ...ctx.fs,
+              readdir: async (path: string) => {
+                if (path === dir) throw permissionDenied(dir);
+                return ctx.fs.readdir(path);
+              },
+            },
+          };
+          const sut = await createPackRegistry(stubCtx);
+
+          // Act
+          const result = await sut.all();
+
+          // Assert
+          expect(result).toEqual([]);
+        });
       });
     });
   });
@@ -3153,21 +3293,24 @@ describe('PackRegistry — single-flight scan', () => {
     });
   });
 
-  describe('Given a gated scan whose call 0 is failed with PERMISSION_DENIED', () => {
+  describe('Given a gated scan whose call 0 is failed with a code-less error', () => {
     describe('When all() is awaited', () => {
-      it('Then the rejection carries PERMISSION_DENIED and a second all() re-scans and resolves normally', async () => {
-        // Arrange
+      it('Then the rejection propagates and a second all() re-scans and resolves normally', async () => {
+        // Arrange — a code-less error is a programming error, never folded
+        // (`errorDataCode` finds no `data.code`), so it must still propagate
+        // and clear the single-flight memo for the next caller to retry.
         const ctx = await buildSeededContext();
         await writeSyntheticPack(ctx, 'gated-retry', [
           { kind: 'base', type: 'blob', content: new TextEncoder().encode('t') },
         ]);
         const ledger = withHandleLedger(ctx, { gateReaddir: true });
         const sut = await createPackRegistry(ledger.ctx);
+        const err = new Error('readdir exploded');
 
         // Act
         const p1 = sut.all();
         await ledger.readdirGate.arrived(0);
-        ledger.readdirGate.fail(0, permissionDenied('/fake/pack/dir'));
+        ledger.readdirGate.fail(0, err);
         let caught: unknown;
         try {
           await p1;
@@ -3181,8 +3324,7 @@ describe('PackRegistry — single-flight scan', () => {
         const packs = await p2;
 
         // Assert
-        const data = (caught as { data?: { code?: string } }).data;
-        expect(data?.code).toBe('PERMISSION_DENIED');
+        expect(caught).toBe(err);
         expect(packs).toHaveLength(1);
       });
     });
@@ -3191,14 +3333,15 @@ describe('PackRegistry — single-flight scan', () => {
   describe('Given gated scans', () => {
     describe('When refresh() runs between two overlapping scans and the first is failed while the second settles', () => {
       it('Then the first scan rejects, the second resolves, and a third all() performs no further scan', async () => {
-        // Arrange
+        // Arrange — a code-less error is never folded, so it still rejects
+        // and clears the single-flight memo (see the sibling row above).
         const ctx = await buildSeededContext();
         await writeSyntheticPack(ctx, 'gated-identity', [
           { kind: 'base', type: 'blob', content: new TextEncoder().encode('i') },
         ]);
         const ledger = withHandleLedger(ctx, { gateReaddir: true });
         const sut = await createPackRegistry(ledger.ctx);
-        const err = permissionDenied('/fake/pack/dir');
+        const err = new Error('readdir exploded');
 
         // Act
         const p1 = sut.all();
@@ -3349,8 +3492,10 @@ describe('PackRegistry — read path after dispose', () => {
 
   describe('Given a Context that only ever hit loose objects', () => {
     describe('When dispose() is called', () => {
-      it('Then objects/pack is never listed', async () => {
-        // Arrange
+      it('Then objects/pack is listed only once, by the gate assertLoadable already forced, and no handle opens', async () => {
+        // Arrange — assertLoadable now shares the store gate's listing, so
+        // it alone lists the pack directory once; dispose() never scans on
+        // top of it, and it opens no pack handle either way.
         const ctx = await buildSeededContext();
         await writeMidxBytes(ctx, buildMidx(healthyMidxSpec()));
         const ledger = withHandleLedger(ctx);
@@ -3361,7 +3506,7 @@ describe('PackRegistry — read path after dispose', () => {
         await sut.dispose();
 
         // Assert
-        expect(ledger.readdirCalls()).toBe(0);
+        expect(ledger.readdirCalls()).toBe(1);
         expect(ledger.opens()).toBe(0);
       });
     });
@@ -4375,7 +4520,7 @@ describe('PackRegistry — multi-pack-index degradation', () => {
 
   describe('Given two healthy packs and a healthy multi-pack-index', () => {
     describe('When a loose object is read', () => {
-      it('Then assertLoadable forces only the midx load: one midx read, zero .idx reads, and objects/pack is never listed', async () => {
+      it('Then assertLoadable lists objects/pack once for the shared listing, reads the midx once, and never touches an .idx', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         await writeSyntheticPack(ctx, 'midx-assert-a', [
@@ -4404,14 +4549,14 @@ describe('PackRegistry — multi-pack-index degradation', () => {
         const packDirReaddirCalls = calls().filter(
           (call) => call.method === 'readdir' && call.path.endsWith('/objects/pack'),
         );
-        expect(packDirReaddirCalls).toEqual([]);
+        expect(packDirReaddirCalls).toHaveLength(1);
       });
     });
   });
 
   describe('Given a registry whose gate has resolved but whose scan never ran', () => {
     describe('When refresh() is called and a read follows', () => {
-      it('Then the multi-pack-index is probed again', async () => {
+      it('Then the multi-pack-index is probed again and the shared listing is re-read', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         await writeMidxBytes(ctx, buildMidx(healthyMidxSpec()));
@@ -4423,10 +4568,11 @@ describe('PackRegistry — multi-pack-index degradation', () => {
         sut.refresh();
         await sut.assertLoadable();
 
-        // Assert — assertLoadable alone never lists the pack directory: only
-        // the gate ran, twice.
+        // Assert — refresh() clears the listing alongside the gate, so the
+        // second assertLoadable() re-lists objects/pack exactly as the
+        // first one did.
         const readdirCalls = calls().filter((call) => call.method === 'readdir');
-        expect(readdirCalls).toEqual([]);
+        expect(readdirCalls).toHaveLength(2);
         const midxReads = calls().filter(
           (call) => call.method === 'read' && call.path.endsWith('multi-pack-index'),
         );

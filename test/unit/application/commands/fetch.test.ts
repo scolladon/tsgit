@@ -2144,7 +2144,7 @@ describe('fetch', () => {
   describe('prune packed-only ref handling', () => {
     describe('Given a prune walk reaching a packed-only ref', () => {
       describe('When fetch', () => {
-        it('Then the packed-only ref is pruned and its packed-refs line removed, no warn logged', async () => {
+        it('Then the packed-only ref is pruned and its packed-refs line removed, no prune-related warn logged', async () => {
           // Arrange — `ghost` exists ONLY in packed-refs (no loose file);
           // `listRefs` surfaces it as a prune candidate, and `updateRef`'s
           // delete path now rewrites packed-refs to drop it instead of
@@ -2176,9 +2176,16 @@ describe('fetch', () => {
           // Act
           const result = await fetch({ ...ctx, transport, logger }, { prune: true });
 
-          // Assert — packed-only ref pruned, listed, and no warn logged.
+          // Assert — packed-only ref pruned, listed, and no warn beyond the
+          // pack registry's own once-per-generation notice that this fresh
+          // repo has no objects/pack directory yet (unrelated to pruning).
           expect(result.prunedRefs).toEqual(['refs/remotes/origin/ghost']);
-          expect(warnings).toEqual([]);
+          expect(warnings).toEqual([
+            {
+              message: 'packRegistry: unreadable pack directory',
+              context: { dir: `${ctx.layout.gitDir}/objects/pack`, code: 'FILE_NOT_FOUND' },
+            },
+          ]);
           const packedContent = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/packed-refs`);
           expect(packedContent).not.toContain('refs/remotes/origin/ghost');
         });

@@ -4,6 +4,7 @@
  * optionally stamped with a non-default header version, always the sole
  * source of its blob (the loose copy is removed).
  */
+import { peekPackRegistry } from '../../../src/application/primitives/read-object.ts';
 import type { ObjectId } from '../../../src/domain/objects/index.ts';
 import {
   PACK_ENTRY_TYPE,
@@ -89,6 +90,13 @@ export async function writeScenarioPackPair(
   // the pack registry, so with it present the pack would never be consulted;
   // removing it makes the pack the object's only source.
   await repo.ctx.fs.rm(`${repo.ctx.layout.gitDir}/objects/${computeLooseObjectPath(id)}`);
+
+  // This writes objects/pack directly, bypassing the registry entirely — if
+  // an earlier read (the seed commit's own ref-update verification, say)
+  // already forced the store gate, the pack-directory listing it shares
+  // with the scan is memoised and would never see these new files without
+  // this. A registry never yet touched has nothing to invalidate.
+  peekPackRegistry(repo.ctx)?.refresh();
 
   return { id, packBase };
 }

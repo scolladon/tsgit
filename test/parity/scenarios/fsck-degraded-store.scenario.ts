@@ -18,6 +18,7 @@
  * Surfaces closed:
  *   commands: fsck
  */
+import { getPackRegistry } from '../../../src/application/primitives/read-object.ts';
 import type { ObjectId } from '../../../src/domain/objects/index.ts';
 import {
   PACK_ENTRY_TYPE,
@@ -111,8 +112,16 @@ export const fsckDegradedStoreScenario: Scenario<FsckDegradedStoreResult> = {
   // consumer side (every read is awaited and the writable side carries a
   // no-op catch; the rejections still surface). All 37 assertions pass; only
   // the stray rejections fail the suite. Same workerd limitation and same
-  // remedy as the bundle scenario above. Node/Deno/Bun/browsers stay proven.
-  unsupportedRuntimes: ['workers'],
+  // remedy as the bundle scenario above.
+  //
+  // Deno/Bun/browser are excluded separately: the seed commit's own
+  // ref-update verification forces the store gate before arms 1 and 3 write
+  // objects/pack directly, and the `registry.refresh()` call below reaches
+  // only the SOURCE module graph (same limitation `midx-read.scenario.ts`
+  // documents) — a dist-bundle driver's own internal registry is a parallel
+  // instance the test cannot reach. Cross-adapter parity for this
+  // degradation is still proven by the node and memory drivers.
+  unsupportedRuntimes: ['workers', 'deno', 'bun', 'browser'],
   inputs: { files: [FILES.helloA], author: AUTHOR, message: MESSAGES.seed },
   expected: {
     defaultExitCode: 69,
@@ -165,6 +174,12 @@ export const fsckDegradedStoreScenario: Scenario<FsckDegradedStoreResult> = {
 
     // Arm 3 — a healthy, openable pack whose one entry will not inflate.
     const corruptEntryId = await writeCorruptEntryPack(repo, 'fsck-degraded-corrupt-entry');
+
+    // Arms 1 and 3 write objects/pack directly, bypassing the registry —
+    // the seed commit's own ref-update verification already forced the
+    // store gate, so its pack-directory listing (shared with the scan)
+    // predates every arm above and must not outlive them.
+    (await getPackRegistry(repo.ctx)).refresh();
 
     // Act — both modes over the 3-arm base fixture, before the reject fault
     // (arm 4) exists, since an abort withholds the whole report.

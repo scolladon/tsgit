@@ -996,7 +996,7 @@ describe('streamBlob', () => {
 
   describe('Given a cold Context and a loose blob', () => {
     describe('When streamBlob opens it', () => {
-      it('Then the ledger matches readObject: no objects/pack listing, no .idx touch', async () => {
+      it('Then the ledger matches readObject: objects/pack listed once for the shared listing, no .idx touch', async () => {
         // Arrange
         const blob: Blob = {
           type: 'blob',
@@ -1022,7 +1022,7 @@ describe('streamBlob', () => {
         const packDirReaddirCalls = calls().filter(
           (call) => call.method === 'readdir' && call.path.endsWith('/objects/pack'),
         );
-        expect(packDirReaddirCalls).toEqual([]);
+        expect(packDirReaddirCalls).toHaveLength(1);
         const idxTouches = calls().filter((call) => call.path.endsWith('.idx'));
         expect(idxTouches).toEqual([]);
       });

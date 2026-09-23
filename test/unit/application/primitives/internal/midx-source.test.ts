@@ -1118,6 +1118,78 @@ describe('midx-source', () => {
         });
       });
     });
+
+    describe('Given a listing naming neither multi-pack-index nor multi-pack-index.d', () => {
+      describe('When loadMidxSet is called with that listing', () => {
+        it('Then set is undefined, faults is empty, and no filesystem call ever runs', async () => {
+          // Arrange — both artefacts exist on disk; only the listing decides.
+          const ctx = await buildSeededContext();
+          const dir = packsDir(commonGitDir(ctx));
+          await writeMidx(ctx, dir, 'multi-pack-index', buildMidx(baseSpec()));
+          await writeChain(ctx, dir, [baseSpec()]);
+          const { ctx: instrumented, calls } = instrumentedContext(ctx);
+          const listing = new Set<string>();
+
+          // Act
+          const result = await loadMidxSet(instrumented, dir, listing);
+
+          // Assert
+          expect(result).toEqual({ set: undefined, faults: [], flatFilePresent: false });
+          expect(calls()).toEqual([]);
+        });
+      });
+    });
+
+    describe('Given a listing naming multi-pack-index', () => {
+      describe('When loadMidxSet is called with that listing', () => {
+        it('Then the flat file is statted and loaded', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const dir = packsDir(commonGitDir(ctx));
+          await writeMidx(ctx, dir, 'multi-pack-index', buildMidx(baseSpec()));
+          const { ctx: instrumented, calls } = instrumentedContext(ctx);
+          const listing = new Set(['multi-pack-index']);
+
+          // Act
+          const result = await loadMidxSet(instrumented, dir, listing);
+
+          // Assert
+          expect(result.set?.kind).toBe('flat');
+          const flatStats = calls().filter(
+            (call) => call.method === 'stat' && call.path === multiPackIndexPath(dir),
+          );
+          expect(flatStats).toHaveLength(1);
+        });
+      });
+    });
+
+    describe('Given a listing naming multi-pack-index.d but not multi-pack-index', () => {
+      describe('When loadMidxSet is called with that listing', () => {
+        it('Then the flat probe touches nothing and the chain manifest is read', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const dir = packsDir(commonGitDir(ctx));
+          const digests = await writeChain(ctx, dir, [baseSpec()]);
+          const { ctx: instrumented, calls } = instrumentedContext(ctx);
+          const listing = new Set(['multi-pack-index.d']);
+
+          // Act
+          const result = await loadMidxSet(instrumented, dir, listing);
+
+          // Assert
+          expect(result.set?.kind).toBe('chain');
+          expect(result.set?.artefacts).toEqual([`multi-pack-index-${digests[0]}.midx`]);
+          const flatStats = calls().filter(
+            (call) => call.method === 'stat' && call.path === multiPackIndexPath(dir),
+          );
+          expect(flatStats).toEqual([]);
+          const manifestReads = calls().filter(
+            (call) => call.method === 'readUtf8' && call.path === multiPackIndexChainPath(dir),
+          );
+          expect(manifestReads).toHaveLength(1);
+        });
+      });
+    });
   });
 
   describe('isTierBMidxFault', () => {
