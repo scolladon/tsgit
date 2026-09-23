@@ -29,18 +29,25 @@ files) fit under 64 KiB.
 
 ## Decision
 
-**Option 1 — adopted-as-recommended (no user judgment).** The budget is 1 ms of measured clock
-time per event-loop turn; the small-read gate is 64 KiB. Both are internal constants, not
-options. The first charge in a turn arms one `setImmediate` marker that resets the spent time and
-resolves one shared next-turn promise; `admit()` returns `undefined` below the budget (no
-microtask hop on the hot path) and the shared promise otherwise, so concurrent callers share one
-yield. A read's size is checked at read time, not stat time: the arm reads the stated size plus
+**Option 1 — adopted-as-recommended (no user judgment).** The budget is 1 ms of clock time per
+event-loop turn, **measured as the wall-clock time elapsed since the turn's first admitted sync
+operation started** — not as the sum of the operations' own durations, so the CPU work between
+two cheap calls counts against the same turn. The small-read gate is 64 KiB. Both are internal
+constants, not options. The first charge in a turn pins the turn's start and arms one
+`setImmediate` marker that ends the turn and resolves one shared next-turn promise; `admit()`
+returns `undefined` while the turn is under budget (no microtask hop on the hot path) and the
+shared promise otherwise, so concurrent callers share one yield. A read's size is checked at read time, not stat time: the arm reads the stated size plus
 one extra `readSync` to confirm EOF, and delegates to the async arm if the file grew past the gate
 between `fstat` and the read, so a growing file is never truncated.
 
 ## Consequences
 
-- The worst-case loop stall per repository is about 1 ms plus one op.
+- The worst-case loop stall attributable to the sync arms is about 1 ms plus the CPU work queued
+  behind the last admitted operation. Measured on a 20k-file `status` (event-loop delay
+  histogram, warm, 5 runs): sync mode max ≈ 8 ms / p99 ≈ 3 ms against ≈ 4.5 ms / ≈ 2.4 ms on
+  the threadpool. Patching the budget to 0.25 ms leaves the tail at ≈ 7.5 ms and 4 ms raises it
+  to ≈ 13 ms, so the residual sits outside every `admit` checkpoint; locating it is a recorded
+  follow-up, not a reason to move the constants.
 - The gate keeps blobs, packs and large `.idx` files on the threadpool where the pool measured
   faster.
 - Making the numbers tunable is additive (ADR-881 reserves the room); it waits for a filesystem
