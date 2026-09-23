@@ -22,7 +22,7 @@ const MAX_SYNC_READ_BYTES = 64 * 1024;
 export interface TurnBudget {
   /** `undefined` → run now; a `Promise` → await it (the next turn) before running. */
   readonly admit: () => Promise<void> | undefined;
-  /** Charge the elapsed time of one completed sync operation. */
+  /** Pin the turn's start at this operation's start time, on the turn's first charge. */
   readonly charge: (startedAt: number) => void;
   /** The budget's own clock, so callers time their own operations consistently. */
   readonly now: () => number;
@@ -52,12 +52,12 @@ export const createTurnBudget = (
   clock: () => number = performance.now.bind(performance),
   scheduleTurnEnd: (onTurnEnd: () => void) => void = setImmediate,
 ): TurnBudget => {
-  let spent = 0;
+  let turnStartedAt: number | undefined;
   let armed = false;
   let pending: Deferred | undefined;
 
   const onTurnEnd = (): void => {
-    spent = 0;
+    turnStartedAt = undefined;
     armed = false;
     const toResolve = pending;
     pending = undefined;
@@ -71,14 +71,15 @@ export const createTurnBudget = (
   };
 
   const admit = (): Promise<void> | undefined => {
-    if (spent < budgetMs) return undefined;
+    if (turnStartedAt === undefined) return undefined;
+    if (clock() - turnStartedAt < budgetMs) return undefined;
     armMarker();
     pending ??= createDeferred();
     return pending.promise;
   };
 
   const charge = (startedAt: number): void => {
-    spent += clock() - startedAt;
+    turnStartedAt ??= startedAt;
     armMarker();
   };
 

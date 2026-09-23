@@ -74,7 +74,27 @@ describe('createTurnBudget', () => {
     });
   });
 
-  describe('Given charges totalling 0.4 ms against a 1 ms budget', () => {
+  describe('Given one 0.1 ms sync op charged at the start of a turn and 1.1 ms of uncharged work since', () => {
+    describe('When admit runs', () => {
+      it('Then it returns the shared next-turn promise', () => {
+        // Arrange
+        const { clock, advance } = manualClock();
+        const { schedule } = collectingScheduler();
+        const sut = createTurnBudget(1, clock, schedule);
+        advance(0.1);
+        sut.charge(0);
+        advance(1.1);
+
+        // Act
+        const result = sut.admit();
+
+        // Assert
+        expect(result).toBeInstanceOf(Promise);
+      });
+    });
+  });
+
+  describe("Given the clock has advanced 0.4 ms since the turn's first charge", () => {
     describe('When admit runs', () => {
       it('Then it still returns undefined', () => {
         // Arrange
@@ -93,7 +113,29 @@ describe('createTurnBudget', () => {
     });
   });
 
-  describe('Given charges totalling exactly the budget', () => {
+  describe('Given two charges occur in the same turn with different start times', () => {
+    describe('When admit runs', () => {
+      it("Then elapsed time is measured from the FIRST charge's start, not the second", () => {
+        // Arrange
+        const { clock, advance } = manualClock();
+        const { schedule } = collectingScheduler();
+        const sut = createTurnBudget(1, clock, schedule);
+        advance(0.1);
+        sut.charge(0);
+        advance(0.4);
+        sut.charge(0.5);
+        advance(0.5);
+
+        // Act
+        const result = sut.admit();
+
+        // Assert
+        expect(result).toBeInstanceOf(Promise);
+      });
+    });
+  });
+
+  describe("Given the clock has advanced exactly the budget since the turn's first charge", () => {
     describe('When admit runs', () => {
       it('Then it returns a pending promise', () => {
         // Arrange
@@ -156,7 +198,7 @@ describe('createTurnBudget', () => {
 
   describe('Given a charge that stays under budget', () => {
     describe('When the marker fires', () => {
-      it('Then spent resets without a pending promise to resolve', () => {
+      it('Then the turn resets without a pending promise to resolve', () => {
         // Arrange
         const { clock, advance } = manualClock();
         const { schedule, marks } = collectingScheduler();
@@ -211,8 +253,30 @@ describe('createTurnBudget', () => {
     });
   });
 
+  describe('Given a turn has ended and a new sync op is charged', () => {
+    describe("When admit runs within the new turn's budget", () => {
+      it('Then it returns undefined, pinned to the new charge, not the stale one', () => {
+        // Arrange
+        const { clock, advance } = manualClock();
+        const { schedule, marks } = collectingScheduler();
+        const sut = createTurnBudget(1, clock, schedule);
+        advance(2);
+        sut.charge(0);
+        sut.admit();
+        marks[0]?.();
+
+        // Act
+        advance(0.3);
+        sut.charge(2.2);
+
+        // Assert
+        expect(sut.admit()).toBeUndefined();
+      });
+    });
+  });
+
   describe('Given a budget of 0 ms', () => {
-    describe('When admit is called', () => {
+    describe('When a sync op is charged', () => {
       it('Then it arms exactly one marker', () => {
         // Arrange
         const { clock } = manualClock();
@@ -220,17 +284,20 @@ describe('createTurnBudget', () => {
         const sut = createTurnBudget(0, clock, schedule);
 
         // Act
-        sut.admit();
+        sut.charge(0);
 
         // Assert
         expect(marks.length).toBe(1);
       });
+    });
 
+    describe('When admit runs after a charge', () => {
       it('Then it returns a pending promise', () => {
         // Arrange
         const { clock } = manualClock();
         const { schedule } = collectingScheduler();
         const sut = createTurnBudget(0, clock, schedule);
+        sut.charge(0);
 
         // Act
         const result = sut.admit();
@@ -246,6 +313,7 @@ describe('createTurnBudget', () => {
         const { clock } = manualClock();
         const { schedule, marks } = collectingScheduler();
         const sut = createTurnBudget(0, clock, schedule);
+        sut.charge(0);
         const pending = sut.admit();
 
         // Act
