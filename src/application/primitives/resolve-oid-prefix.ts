@@ -12,6 +12,7 @@ import { ambiguousOidPrefix } from '../../domain/commands/error.js';
 import { isOid, type ObjectId } from '../../domain/objects/index.js';
 import { findByPrefix } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
+import { isMissingFanoutDir } from './internal/loose-oid-cache.js';
 import { commonGitDir, objectsDir } from './path-layout.js';
 import { getPackRegistry, peekPackRegistry } from './read-object.js';
 
@@ -20,27 +21,60 @@ import { getPackRegistry, peekPackRegistry } from './read-object.js';
  *  both SHA-1 and SHA-256). */
 const MIN_OID_PREFIX_LENGTH = 4;
 
+/** The two hash widths a repository's `HashConfig.hexLength` ever reports. */
+const SHA1_HEX_LENGTH = 40;
+const SHA256_HEX_LENGTH = 64;
+
 /** A prefix pattern spanning `[MIN_OID_PREFIX_LENGTH, hexLength - 1]` hex
  *  chars — anything matching the full `hexLength` width is a full oid,
- *  handled by the `isOid` fast path below, never routed here. */
-const oidPrefixPattern = (hexLength: number): RegExp =>
-  new RegExp(`^[0-9a-f]{${MIN_OID_PREFIX_LENGTH},${hexLength - 1}}$`);
+ *  handled by the `isOid` fast path below, never routed here. Built once per
+ *  hash width at module load, keyed by `hexLength` — never rebuilt per call. */
+const OID_PREFIX_PATTERNS: ReadonlyMap<number, RegExp> = new Map([
+  [SHA1_HEX_LENGTH, new RegExp(`^[0-9a-f]{${MIN_OID_PREFIX_LENGTH},${SHA1_HEX_LENGTH - 1}}$`)],
+  [SHA256_HEX_LENGTH, new RegExp(`^[0-9a-f]{${MIN_OID_PREFIX_LENGTH},${SHA256_HEX_LENGTH - 1}}$`)],
+]);
 
 /** Loose object filename width: the fanout directory takes the first 2 hex
- *  chars, so the on-disk filename holds the remaining `hexLength - 2`. */
-const looseNamePattern = (hexLength: number): RegExp => new RegExp(`^[0-9a-f]{${hexLength - 2}}$`);
+ *  chars, so the on-disk filename holds the remaining `hexLength - 2`. Built
+ *  once per hash width at module load, keyed by `hexLength`. */
+const LOOSE_NAME_PATTERNS: ReadonlyMap<number, RegExp> = new Map([
+  [SHA1_HEX_LENGTH, new RegExp(`^[0-9a-f]{${SHA1_HEX_LENGTH - 2}}$`)],
+  [SHA256_HEX_LENGTH, new RegExp(`^[0-9a-f]{${SHA256_HEX_LENGTH - 2}}$`)],
+]);
+
+/** Looks up this repository's pattern by its own `hexLength` — every
+ *  `HashConfig` in this codebase reports one of the two module-level widths,
+ *  so a missing entry can only mean a third hash algorithm was added without
+ *  updating these maps. */
+function patternFor(patterns: ReadonlyMap<number, RegExp>, hexLength: number): RegExp {
+  const pattern = patterns.get(hexLength);
+  if (pattern === undefined) {
+    throw new Error(`resolve-oid-prefix: no pattern registered for hexLength ${hexLength}`);
+  }
+  return pattern;
+}
 
 /** Max candidate oids embedded in an `AMBIGUOUS_OID_PREFIX` error payload. */
 export const MAX_OID_PREFIX_CANDIDATES = 16;
 
-/** Loose objects whose `<dir><name>` starts with `prefix` (name-based scan). */
+/** Loose objects whose `<dir><name>` starts with `prefix` (name-based scan).
+ *  No `exists` pre-probe: `readdir` itself answers "nothing loose here yet"
+ *  via `isMissingFanoutDir` (a missing directory or a file occupying the
+ *  fanout path), folded to an empty scan; any other fault (e.g. a
+ *  `PERMISSION_DENIED` directory) is rethrown, never silently swallowed. */
 const scanLoose = async (ctx: Context, prefix: string): Promise<ReadonlyArray<ObjectId>> => {
   const dir = objectsDir(commonGitDir(ctx), prefix.slice(0, 2));
-  if (!(await ctx.fs.exists(dir))) return [];
   const rest = prefix.slice(2);
-  const looseName = looseNamePattern(ctx.hashConfig.hexLength);
+  const looseName = patternFor(LOOSE_NAME_PATTERNS, ctx.hashConfig.hexLength);
+  let entries: Awaited<ReturnType<Context['fs']['readdir']>>;
+  try {
+    entries = await ctx.fs.readdir(dir);
+  } catch (error) {
+    if (!isMissingFanoutDir(error)) throw error;
+    return [];
+  }
   const found: ObjectId[] = [];
-  for (const entry of await ctx.fs.readdir(dir)) {
+  for (const entry of entries) {
     if (!entry.isFile) continue;
     if (!looseName.test(entry.name)) continue;
     if (!entry.name.startsWith(rest)) continue;
@@ -66,7 +100,7 @@ export const resolveOidPrefix = async (
   prefix: string,
 ): Promise<ObjectId | undefined> => {
   if (isOid(prefix, ctx.hashConfig)) return prefix as ObjectId;
-  if (!oidPrefixPattern(ctx.hashConfig.hexLength).test(prefix)) return undefined;
+  if (!patternFor(OID_PREFIX_PATTERNS, ctx.hashConfig.hexLength).test(prefix)) return undefined;
   const [loose, packed] = await Promise.all([scanLoose(ctx, prefix), scanPacks(ctx, prefix)]);
   const unique = [...new Set<ObjectId>([...loose, ...packed])];
   if (unique.length === 0) return undefined;

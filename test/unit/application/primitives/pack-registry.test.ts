@@ -4551,8 +4551,11 @@ describe('PackRegistry — multi-pack-index degradation', () => {
 
   describe('Given two healthy packs and a healthy multi-pack-index', () => {
     describe('When a loose object is read', () => {
-      it('Then assertLoadable lists objects/pack once for the shared listing, reads the midx once, and never touches an .idx', async () => {
-        // Arrange
+      it('Then assertLoadable lists objects/pack once for the shared listing, reads the midx once, and consults every unclaimed pack index before the loose fallback', async () => {
+        // Arrange — an empty midx (`packNames: []`) claims neither pack, so
+        // pack-first buffered reads must rule BOTH out via their own `.idx`
+        // before falling to the loose copy — the price a mixed store pays
+        // for consulting packs first, matching git's own find_pack_entry.
         const ctx = await buildSeededContext();
         await writeSyntheticPack(ctx, 'midx-assert-a', [
           { kind: 'base', type: 'blob', content: new TextEncoder().encode('a') },
@@ -4572,7 +4575,10 @@ describe('PackRegistry — multi-pack-index degradation', () => {
         const idxReads = calls().filter(
           (call) => call.method === 'read' && call.path.endsWith('.idx'),
         );
-        expect(idxReads).toEqual([]);
+        expect(idxReads.map((call) => call.path)).toEqual([
+          `${ctx.layout.gitDir}/objects/pack/pack-midx-assert-a.idx`,
+          `${ctx.layout.gitDir}/objects/pack/pack-midx-assert-b.idx`,
+        ]);
         const midxReads = calls().filter(
           (call) => call.method === 'read' && call.path.endsWith('multi-pack-index'),
         );

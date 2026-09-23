@@ -4,8 +4,11 @@
  * walks: instead of an `exists`/`realpath` round trip per object, the
  * fanout dir (`objects/xx`, ≤256 of them) is `readdir`'d lazily at most
  * once per session, then membership is a `Set` lookup. A miss short-
- * circuits the caller with NO filesystem call — loose-first precedence is
- * unaffected because a membership HIT still routes through `ctx.fs.read`
+ * circuits the caller with NO filesystem call. The store split this cache
+ * now serves: buffered reads (`resolveObjectContentWithDepth`) consult packs
+ * FIRST and fall to this cache only on a pack miss; `openBlobSource`'s
+ * streamed blob reads and `hasObject`'s fallback still consult it as their
+ * loose-first arm. Either way, a membership HIT routes through `ctx.fs.read`
  * (the containment gate and corrupt-loose inflate-error surfacing are
  * unchanged).
  *
@@ -37,8 +40,9 @@ const suffixOf = (id: ObjectId): string => id.slice(2);
 
 /** `readdir` on a missing fanout dir reports `FILE_NOT_FOUND` on every adapter;
  *  `NOT_A_DIRECTORY` covers the other tolerated shape, a regular file occupying the fanout
- *  path instead of a directory. Both mean "nothing loose here yet". */
-function isMissingFanoutDir(error: unknown): boolean {
+ *  path instead of a directory. Both mean "nothing loose here yet". Exported for
+ *  `resolve-oid-prefix.ts`'s `scanLoose`, which folds the identical two shapes. */
+export function isMissingFanoutDir(error: unknown): boolean {
   const code = errorDataCode(error);
   return code === 'FILE_NOT_FOUND' || code === 'NOT_A_DIRECTORY';
 }

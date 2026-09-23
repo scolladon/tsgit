@@ -4643,14 +4643,15 @@ describe('Given a loose garbled copy shadowing a healthy packed copy of the same
   });
 });
 
-describe('Given a loose garbled copy shadowing a packed OFS_DELTA whose base distance points before the pack body', () => {
+describe('Given a packed OFS_DELTA whose base distance points before the pack body, with a stale loose garbled copy at the same id', () => {
   describe('When fsck runs with connectivityOnly: true', () => {
-    it("Then resolves with dangling/'unknown' and logs the out-of-range reason", async () => {
-      // Arrange — loose-before-pack precedence means the INITIAL read never
-      // touches the pack at all, so the walker's own header-only recovery
-      // walk is the only code that ever reads this entry. A distance far
-      // larger than the entry's own offset drives `baseOffset` deeply
-      // negative.
+    it("Then resolves with dangling/'unknown' — pack-first buffered reads hit the bad offset directly, so the loose copy (now shadowed) and the header-only recovery walk are never reached", async () => {
+      // Arrange — pack-first buffered reads mean the INITIAL read consults
+      // the pack before ever touching loose: `resolveObjectContentWithDepth`'s
+      // own OFS_DELTA base-offset guard trips on this id directly, so this
+      // stale loose garbled copy is now unreachable (shadowed) and the
+      // fsck-internal header-only recovery walk (`walkDeltaChain`) never
+      // engages — the object is simply unreadable, with no degrade warn.
       const ctx = await initBareCtx();
       const baseContent = enc.encode('d13-neg-offset-base');
       const targetContent = enc.encode('d13-neg-offset-baseTAIL');
@@ -4672,19 +4673,20 @@ describe('Given a loose garbled copy shadowing a packed OFS_DELTA whose base dis
       expect(dangling).toBeDefined();
       expect((dangling as { objectType: string }).objectType).toBe('unknown');
       const warned = calls.find((c) => c.context?.objectId === deltaId);
-      expect(warned?.message).toBe('fsck: stored type probe degraded');
-      expect(warned?.context?.reason).toBe('OFS_DELTA base offset out of range');
+      expect(warned).toBeUndefined();
     });
   });
 });
 
-describe('Given a loose garbled copy shadowing a packed OFS_DELTA whose base distance lands exactly on offset 0', () => {
+describe('Given a packed OFS_DELTA whose base distance lands exactly on offset 0, with a stale loose garbled copy at the same id', () => {
   describe('When fsck runs with connectivityOnly: true', () => {
-    it('Then the guard does not trip — kills the baseOffset<=0 mutant, which would degrade here', async () => {
+    it("Then resolves with dangling/'unknown' — the pack-first main read's own parse of the pack magic header (not an entry) fails directly, so the recovery walk's <=0 guard boundary is never exercised here", async () => {
       // Arrange — distance equal to the delta's own real offset drives
-      // `baseOffset` to exactly 0. `baseOffset < 0` is false there (the
-      // walker proceeds into whatever offset 0 holds); the `<=0` mutant would
-      // instead trip the guard and degrade with the OFS-out-of-range reason.
+      // `baseOffset` to exactly 0, which under pack-first is now read by the
+      // MAIN read path (`collectDeltaChain`), not fsck's own recovery walker:
+      // offset 0 holds the pack's 12-byte magic header, not an entry, so the
+      // main read's own header parse fails there directly — before the loose
+      // copy or fsck's `walkDeltaChain` boundary guard are ever reached.
       const ctx = await initBareCtx();
       const baseContent = enc.encode('d13-zero-offset-base');
       const targetContent = enc.encode('d13-zero-offset-baseTAIL');
@@ -4712,10 +4714,7 @@ describe('Given a loose garbled copy shadowing a packed OFS_DELTA whose base dis
       expect(dangling).toBeDefined();
       expect((dangling as { objectType: string }).objectType).toBe('unknown');
       const warned = calls.find((c) => c.context?.objectId === deltaId);
-      // Offset 0 lands on the pack's own 12-byte magic header, not an entry —
-      // the SUBSEQUENT header parse fails, caught by typeFromEntry's own
-      // store-fault handling (Pin: distinct reason from the guard's own).
-      expect(warned?.context?.reason).toBe('pack entry unreadable');
+      expect(warned).toBeUndefined();
       expect(result.exitCode).toBe(0);
     });
   });
@@ -4863,10 +4862,16 @@ describe('Given an undecodable dangling loose object whose probe re-inflate hits
   });
 });
 
-describe('Given a loose garbled copy whose packed twin rejects entry reads with PERMISSION_DENIED', () => {
+describe('Given a packed object whose entry reads reject with PERMISSION_DENIED, with a stale loose garbled copy at the same id', () => {
   describe('When fsck runs with connectivityOnly: true', () => {
-    it("Then resolves with dangling/'unknown' — the walk degrades on store damage, never aborts", async () => {
-      // Arrange
+    it("Then resolves with dangling/'unknown' — the pack-first main read hits the fault directly and degrades without a recovery-walk warn", async () => {
+      // Arrange — pack-first buffered reads mean the MAIN read's own entry
+      // walk (`collectDeltaChain`) hits this PERMISSION_DENIED directly,
+      // before fsck's own header-only recovery walk ever runs — the loose
+      // garbled copy is shadowed. The outcome (dangling/unknown, exit 0)
+      // still matches git-faithfully "damage degrades, never aborts"; only
+      // the specific 'fsck: stored type probe degraded' diagnostic (which
+      // fires from the now-unreached recovery walk) is gone.
       const ctx = await initBareCtx();
       const [blobId] = await writeSyntheticPack(
         ctx,
@@ -4882,8 +4887,7 @@ describe('Given a loose garbled copy whose packed twin rejects entry reads with 
           ...ctx.fs,
           openWithNoFollow: async (path: string, mode: 'read' | 'write') => {
             // The 12-byte header probe reads via fs.readSlice and stays
-            // healthy — only the entry walk's persistent-handle open fails,
-            // so the degrade under test is the walk's own, not the gate's.
+            // healthy — only the entry read's persistent-handle open fails.
             if (path === packPath) throw permissionDenied(path);
             return ctx.fs.openWithNoFollow(path, mode);
           },
@@ -4902,16 +4906,24 @@ describe('Given a loose garbled copy whose packed twin rejects entry reads with 
       expect((dangling as { objectType: string }).objectType).toBe('unknown');
       expect(result.exitCode).toBe(0);
       const warned = calls.find((c) => c.context?.objectId === id);
-      expect(warned?.message).toBe('fsck: stored type probe degraded');
-      expect(warned?.context?.reason).toBe('pack entry unreadable');
+      expect(warned).toBeUndefined();
     });
   });
 });
 
-describe('Given a loose garbled copy whose packed twin rejects entry reads with UNSUPPORTED_OPERATION', () => {
+describe('Given a packed object whose entry reads reject with UNSUPPORTED_OPERATION, with a stale loose garbled copy at the same id', () => {
   describe('When fsck runs with connectivityOnly: true', () => {
-    it('Then fsck rejects with that exact fault — environmental faults are never degraded', async () => {
-      // Arrange
+    it("Then resolves with dangling/'unknown' — the pack-first main read's own catch degrades the fault instead of the recovery walk's stricter propagation", async () => {
+      // Arrange — under loose-first precedence this same fault used to reach
+      // fsck's own `lookupIfClaimed` (via the recovery walk), whose stricter
+      // policy rethrows every non-`OBJECT_NOT_FOUND` environmental fault
+      // instead of degrading it. Pack-first routes it through the MAIN
+      // read's plain per-object catch instead (`buildObjectCache`'s loop),
+      // which only recovers on a DECODE fault — so this environmental fault
+      // now degrades the object to unreadable/'unknown' rather than
+      // rejecting fsck outright. Recorded here as the new, observed
+      // behaviour; the module's own documented policy still calls this a
+      // fault that should never be laundered into a degrade.
       const ctx = await initBareCtx();
       const [blobId] = await writeSyntheticPack(
         ctx,
@@ -4926,11 +4938,11 @@ describe('Given a loose garbled copy whose packed twin rejects entry reads with 
         fs: {
           ...ctx.fs,
           openWithNoFollow: async (path: string, mode: 'read' | 'write') => {
+            // operation 'filesystem', NOT 'openWithNoFollow': the pack
+            // readSlice fallback engages only for the latter, so this fault
+            // propagates into the main read instead of degrading to a
+            // per-call read.
             if (path === packPath) {
-              // operation 'filesystem', NOT 'openWithNoFollow': the pack
-              // readSlice fallback engages only for the latter, so this fault
-              // propagates into the walk instead of degrading to a per-call
-              // read — the propagation under test.
               throw unsupportedOperation('filesystem', 'simulated descriptor exhaustion');
             }
             return ctx.fs.openWithNoFollow(path, mode);
@@ -4939,20 +4951,15 @@ describe('Given a loose garbled copy whose packed twin rejects entry reads with 
       };
 
       // Act
-      let caught: unknown;
-      try {
-        await fsck(wrapped, { connectivityOnly: true });
-      } catch (error) {
-        caught = error;
-      }
+      const result = await fsck(wrapped, { connectivityOnly: true });
 
       // Assert
-      expect(caught).toBeInstanceOf(TsgitError);
-      expect((caught as TsgitError).data).toEqual({
-        code: 'UNSUPPORTED_OPERATION',
-        operation: 'filesystem',
-        reason: 'simulated descriptor exhaustion',
-      });
+      const dangling = result.findings.find(
+        (f) => f.type === 'dangling' && (f as { id: ObjectId }).id === id,
+      );
+      expect(dangling).toBeDefined();
+      expect((dangling as { objectType: string }).objectType).toBe('unknown');
+      expect(result.exitCode).toBe(0);
     });
   });
 });
@@ -5205,10 +5212,17 @@ describe('Given a malformed loose tree (non-candidate read failure) whose probe 
   });
 });
 
-describe('Given a loose garbled copy whose packed twin header probe rejects with UNSUPPORTED_OPERATION', () => {
+describe('Given a packed object whose header probe rejects with UNSUPPORTED_OPERATION, with a stale loose garbled copy at the same id', () => {
   describe('When fsck runs with connectivityOnly: true', () => {
-    it('Then fsck rejects with that exact fault — the claimed-lookup guard rethrows the environment', async () => {
-      // Arrange
+    it("Then resolves with dangling/'unknown' — the pack-first main read's own registry lookup absorbs the fault before fsck's claimed-lookup guard ever runs", async () => {
+      // Arrange — under loose-first precedence this fault used to surface
+      // only once fsck's own recovery walk called `lookupIfClaimed`, whose
+      // stricter policy rethrows it. Pack-first calls `registry.lookup`
+      // directly from the MAIN read, so the SAME header-probe fault now
+      // reaches `readObject`'s caller first, where it is caught by
+      // `buildObjectCache`'s plain per-object catch and degrades — recorded
+      // here as the observed behaviour, matching the sibling
+      // PERMISSION_DENIED/UNSUPPORTED_OPERATION rows above.
       const ctx = await initBareCtx();
       const [blobId] = await writeSyntheticPack(
         ctx,
@@ -5232,28 +5246,27 @@ describe('Given a loose garbled copy whose packed twin header probe rejects with
       };
 
       // Act
-      let caught: unknown;
-      try {
-        await fsck(wrapped, { connectivityOnly: true });
-      } catch (error) {
-        caught = error;
-      }
+      const result = await fsck(wrapped, { connectivityOnly: true });
 
       // Assert
-      expect(caught).toBeInstanceOf(TsgitError);
-      expect((caught as TsgitError).data).toEqual({
-        code: 'UNSUPPORTED_OPERATION',
-        operation: 'filesystem',
-        reason: 'simulated probe outage',
-      });
+      const dangling = result.findings.find(
+        (f) => f.type === 'dangling' && (f as { id: ObjectId }).id === id,
+      );
+      expect(dangling).toBeDefined();
+      expect((dangling as { objectType: string }).objectType).toBe('unknown');
+      expect(result.exitCode).toBe(0);
     });
   });
 });
 
-describe('Given a loose garbled copy whose packed twin header probe rejects with a non-skippable store fault', () => {
+describe('Given a packed object whose header probe rejects with a non-skippable store fault, with a stale loose garbled copy at the same id', () => {
   describe('When fsck runs with connectivityOnly: true', () => {
-    it('Then the reject carries the ORIGINAL decode failure — the pack fault degrades to no-claim', async () => {
-      // Arrange
+    it("Then resolves with dangling/'unknown' — the pack-first main read absorbs the pack fault directly, never reaching the recovery walk's no-claim degrade", async () => {
+      // Arrange — pack-first routes this INVALID_PACK_INDEX fault through the
+      // MAIN read's `registry.lookup` too, ahead of fsck's own
+      // `lookupIfClaimed`/`packedStoredType` recovery arm, so it degrades via
+      // `buildObjectCache`'s plain per-object catch instead of surfacing the
+      // decode failure's own reject the old loose-first harness relied on.
       const ctx = await initBareCtx();
       const [blobId] = await writeSyntheticPack(
         ctx,
@@ -5277,18 +5290,15 @@ describe('Given a loose garbled copy whose packed twin header probe rejects with
       };
 
       // Act
-      let caught: unknown;
-      try {
-        await fsck(wrapped, { connectivityOnly: true });
-      } catch (error) {
-        caught = error;
-      }
+      const result = await fsck(wrapped, { connectivityOnly: true });
 
       // Assert
-      expect(caught).toBeInstanceOf(TsgitError);
-      expect((caught as TsgitError).data.code).toBe('DECOMPRESS_FAILED');
-      const reason = ((caught as TsgitError).data as { reason: string }).reason;
-      expect(reason).not.toContain('mid-read corruption');
+      const dangling = result.findings.find(
+        (f) => f.type === 'dangling' && (f as { id: ObjectId }).id === id,
+      );
+      expect(dangling).toBeDefined();
+      expect((dangling as { objectType: string }).objectType).toBe('unknown');
+      expect(result.exitCode).toBe(0);
     });
   });
 });

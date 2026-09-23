@@ -1542,7 +1542,7 @@ describe('object-resolver', () => {
 
   describe('Given a cold Context whose requested object is loose', () => {
     describe('When resolveObject reads it', () => {
-      it('Then objects/pack is listed only once, by the shared listing, and no .idx path is ever statted or read', async () => {
+      it('Then objects/pack is listed once and every unclaimed pack index is consulted before the loose fallback', async () => {
         // Arrange
         const blob: Blob = {
           type: 'blob',
@@ -1577,8 +1577,17 @@ describe('object-resolver', () => {
         // this read happening to take the loose branch.
         const existsCalls = calls().filter((call) => call.method === 'exists');
         expect(existsCalls).toEqual([]);
+        // Neither pack claims this loose-only id, so the pack-first order
+        // must rule BOTH out via their own `.idx` before falling to loose —
+        // the price a mixed store pays for consulting packs first, matching
+        // git's own find_pack_entry over unclaimed packs.
         const idxTouches = calls().filter((call) => call.path.endsWith('.idx'));
-        expect(idxTouches).toEqual([]);
+        expect(idxTouches).toEqual([
+          { method: 'stat', path: `${ctx.layout.gitDir}/objects/pack/pack-cold-read-a.idx` },
+          { method: 'read', path: `${ctx.layout.gitDir}/objects/pack/pack-cold-read-a.idx` },
+          { method: 'stat', path: `${ctx.layout.gitDir}/objects/pack/pack-cold-read-b.idx` },
+          { method: 'read', path: `${ctx.layout.gitDir}/objects/pack/pack-cold-read-b.idx` },
+        ]);
       });
     });
   });
@@ -4001,6 +4010,97 @@ describe('object-resolver', () => {
           // Assert
           expect(parseCallsSince(parseSpy, baseline)).toBe(2);
           parseSpy.mockRestore();
+        });
+      });
+    });
+  });
+
+  describe('pack-first precedence (buffered reads)', () => {
+    describe('Given a synthetic pack with a base blob and no loose copy', () => {
+      describe('When resolveObject reads it', () => {
+        it('Then its loose fanout directory is never listed', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const content = ENC.encode('pack-first fanout probe');
+          const [id] = await writeSyntheticPack(ctx, 'pack-first-fanout', [
+            { kind: 'base', type: 'blob', content },
+          ]);
+          const { ctx: instrumented, calls } = instrumentedContext(ctx);
+          const registry = await createPackRegistry(instrumented);
+
+          // Act
+          const result = await resolveObject(instrumented, registry, id as ObjectId, true);
+
+          // Assert
+          expect((result as Blob).content).toEqual(content);
+          const fanoutReaddirCalls = calls().filter(
+            (call) =>
+              call.method === 'readdir' &&
+              call.path.endsWith(`/objects/${(id as string).slice(0, 2)}`),
+          );
+          expect(fanoutReaddirCalls).toEqual([]);
+        });
+      });
+    });
+
+    describe('Given an object that exists only loosely (no pack copy)', () => {
+      describe('When resolveObject reads it', () => {
+        it('Then the pack registry is consulted first and the loose read follows the miss', async () => {
+          // Arrange
+          const blob: Blob = {
+            type: 'blob',
+            content: ENC.encode('pack-miss-falls-to-loose'),
+            id: '' as ObjectId,
+          };
+          const ctx = await buildSeededContext({ objects: [blob] });
+          const { serializeObject } = await import('../../../../src/domain/objects/index.js');
+          const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
+          const registry = await createPackRegistry(ctx);
+          const lookupSpy = vi.spyOn(registry, 'lookup');
+          const readSpy = vi.spyOn(ctx.fs, 'read');
+
+          // Act
+          const result = await resolveObject(ctx, registry, id, true);
+
+          // Assert
+          expect((result as Blob).content).toEqual(blob.content);
+          expect(lookupSpy).toHaveBeenCalledTimes(1);
+          expect(readSpy).toHaveBeenCalledTimes(1);
+          const lookupOrder = lookupSpy.mock.invocationCallOrder[0];
+          const readOrder = readSpy.mock.invocationCallOrder[0];
+          expect(lookupOrder).toBeDefined();
+          expect(readOrder).toBeDefined();
+          expect(lookupOrder as number).toBeLessThan(readOrder as number);
+        });
+      });
+    });
+
+    describe('Given a packed object with a corrupt loose copy at the same id', () => {
+      describe('When resolveObject reads it', () => {
+        it('Then it returns the pack content and the corrupt loose file is never read', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const content = ENC.encode('pack-served-despite-corrupt-loose');
+          const [id] = await writeSyntheticPack(ctx, 'corrupt-loose-shadow', [
+            { kind: 'base', type: 'blob', content },
+          ]);
+          const { computeLooseObjectPath } = await import(
+            '../../../../src/domain/storage/loose-path.js'
+          );
+          const loosePath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(id as ObjectId)}`;
+          await ctx.fs.write(loosePath, ENC.encode('not-a-zlib-stream'));
+          const { ctx: instrumented, calls } = instrumentedContext(ctx);
+          const registry = await createPackRegistry(instrumented);
+
+          // Act
+          const result = await resolveObject(instrumented, registry, id as ObjectId, true);
+
+          // Assert
+          expect((result as Blob).content).toEqual(content);
+          const looseReadCalls = calls().filter(
+            (call) => call.method === 'read' && call.path === loosePath,
+          );
+          expect(looseReadCalls).toEqual([]);
         });
       });
     });

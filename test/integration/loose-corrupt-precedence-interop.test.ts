@@ -1,16 +1,17 @@
 /**
  * Cross-tool interop — object-store precedence. Canonical git consults the
- * LOOSE store even when a valid pack copy of the same object exists, and
- * surfaces the loose copy's inflate error rather than silently falling back
- * to the pack. The per-fanout-dir loose-oid membership cache that amortises
- * the loose probe must preserve this precedence exactly: a membership HIT
- * still routes through a real file read + inflate, so a corrupt loose file
- * is never silently shadowed by a valid pack copy.
+ * PACK store first for a buffered read once an object is packed, even when a
+ * corrupt loose copy of the same object exists: it prints the loose copy's
+ * inflate error to stderr but still serves the pack content, exit 0. The
+ * per-fanout-dir loose-oid membership cache that amortises the loose probe
+ * never changes this — a membership HIT is only ever consulted on a PACK
+ * miss (see `object-precedence-interop.test.ts`'s P1/P3 rows for the fuller
+ * pinned matrix).
  *
  * @proves
  *   surface:        readObject
  *   bucket:         cross-tool-interop
- *   unique:         loose-first precedence — a corrupt loose copy surfaces its inflate error even when a valid pack copy is present
+ *   unique:         pack-first precedence — a corrupt loose copy never shadows a valid pack copy
  *   interopSurface: readObject
  */
 import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
@@ -20,7 +21,6 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { readObject } from '../../src/application/primitives/read-object.js';
-import { TsgitError } from '../../src/domain/error.js';
 import type { Blob, ObjectId } from '../../src/domain/objects/index.js';
 import { GIT_AVAILABLE, runGitAsync, runGitEnv } from './interop-helpers.js';
 
@@ -87,7 +87,7 @@ describe.skipIf(!GIT_AVAILABLE)('loose-corrupt precedence interop', () => {
 
   describe('Given an object present in a valid pack AND a corrupted loose copy', () => {
     describe('When tsgit resolves it via readObject', () => {
-      it('Then it surfaces the loose inflate error, matching git — NOT a silent pack serve', async () => {
+      it('Then it serves the pack content, matching git — the corrupt loose copy never shadows it', async () => {
         // Arrange — object exists in both stores; corrupt the loose copy with
         // non-zlib bytes while the pack copy stays intact. Loose objects are
         // written read-only by git, so the stale copy must be removed before
@@ -99,17 +99,11 @@ describe.skipIf(!GIT_AVAILABLE)('loose-corrupt precedence interop', () => {
         const ctx = createNodeContext({ workDir: dir });
 
         // Act
-        let caught: unknown;
-        try {
-          await readObject(ctx, oid);
-          expect.unreachable();
-        } catch (error) {
-          caught = error;
-        }
+        const result = await readObject(ctx, oid);
 
         // Assert
-        expect(caught).toBeInstanceOf(TsgitError);
-        expect((caught as TsgitError).data.code).toBe('DECOMPRESS_FAILED');
+        expect(result.type).toBe('blob');
+        expect((result as Blob).content).toEqual(new TextEncoder().encode(PAYLOAD));
       });
     });
   });

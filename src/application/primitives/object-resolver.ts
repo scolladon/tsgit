@@ -55,15 +55,17 @@ const EMPTY_TREE_CONTENT = new Uint8Array(0);
 
 /**
  * Depth-aware object-content resolution — the single entry point for every
- * caller. The arms mirror the read model: empty-tree / deltaCache hit /
- * loose read never walk a delta chain, so each reports depth 0; a pack hit
- * threads `externalDepth` into `resolvePackChain` (bounding the cap early,
- * and any further REF_DELTA recursion beneath it) and surfaces the chain's
- * true depth back out. `resolveObject` (below) and `readRawObject`
- * (read-object.ts) call it with `externalDepth` 0 on the hottest read path;
- * `resolveBaseForRefDelta` calls it with the accumulated depth of the chain
- * that reached the base, and the base's own true depth comes back out for
- * the caching loop to record accurately.
+ * caller. Buffered reads answer from the pack before loose, mirroring git's
+ * own `do_oid_object_info_extended`: the arms are empty-tree / deltaCache hit
+ * (neither ever walks a delta chain, so each reports depth 0) / a pack hit
+ * (threads `externalDepth` into `resolvePackChain`, bounding the cap early,
+ * and any further REF_DELTA recursion beneath it, surfacing the chain's true
+ * depth back out) / a pack miss falling to `resolveLooseArm` (also depth 0).
+ * `resolveObject` (below) and `readRawObject` (read-object.ts) call it with
+ * `externalDepth` 0 on the hottest read path; `resolveBaseForRefDelta` calls
+ * it with the accumulated depth of the chain that reached the base, and the
+ * base's own true depth comes back out for the caching loop to record
+ * accurately.
  */
 export async function resolveObjectContentWithDepth(
   ctx: Context,
@@ -93,28 +95,11 @@ export async function resolveObjectContentWithDepth(
       declaredSize: cached.content.byteLength,
     };
   }
-  const loose = await tryLoose(ctx, id);
-  if (loose !== undefined) {
-    checkAborted(ctx);
-    const split = splitLooseObject(loose);
-    assertLooseSizeConsistent(split);
-    enforceLooseCap(id, split.content, maxBytes);
-    if (split.declaredSize === split.content.byteLength) {
-      cacheEntry(ctx.deltaCache, id, { type: split.type, content: split.content });
-    }
-    await verifyObjectContent(ctx, id, split.type, split.content, verifyHash, split.declaredSize);
-    return {
-      type: split.type,
-      content: split.content,
-      chainDepth: 0,
-      declaredSize: split.declaredSize,
-    };
-  }
 
   checkAborted(ctx);
   const hit = await registry.lookup(id);
   if (hit === undefined) {
-    throw objectNotFound(id);
+    return resolveLooseArm(ctx, id, maxBytes, verifyHash);
   }
   checkAborted(ctx);
   const resolved = await resolvePackChainWithDepth(ctx, registry, hit, id, maxBytes, externalDepth);
@@ -125,6 +110,38 @@ export async function resolveObjectContentWithDepth(
     content: resolved.content,
     chainDepth: resolved.chainDepth,
     declaredSize: resolved.content.byteLength,
+  };
+}
+
+/**
+ * The pack-miss arm: tried only once the pack registry has answered
+ * `undefined` for `id`. A loose hit never walks a delta chain, so it always
+ * reports depth 0. Extracted so `resolveObjectContentWithDepth` stays under
+ * the line budget with the pack arm inlined above it.
+ */
+async function resolveLooseArm(
+  ctx: Context,
+  id: ObjectId,
+  maxBytes: number | undefined,
+  verifyHash: boolean,
+): Promise<ObjectContent & { chainDepth: number; declaredSize: number }> {
+  const loose = await tryLoose(ctx, id);
+  if (loose === undefined) {
+    throw objectNotFound(id);
+  }
+  checkAborted(ctx);
+  const split = splitLooseObject(loose);
+  assertLooseSizeConsistent(split);
+  enforceLooseCap(id, split.content, maxBytes);
+  if (split.declaredSize === split.content.byteLength) {
+    cacheEntry(ctx.deltaCache, id, { type: split.type, content: split.content });
+  }
+  await verifyObjectContent(ctx, id, split.type, split.content, verifyHash, split.declaredSize);
+  return {
+    type: split.type,
+    content: split.content,
+    chainDepth: 0,
+    declaredSize: split.declaredSize,
   };
 }
 
