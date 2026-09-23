@@ -39,6 +39,15 @@ const INITIAL_BUFFER_CAPACITY = 64;
 const BUFFER_GROWTH_FACTOR = 2;
 
 /**
+ * Ceiling on how much a declared entry size may pre-size the output buffer:
+ * large pack entries are common, but pre-allocating the full declared size
+ * up front (potentially the global cap itself) would defeat the point of a
+ * growable buffer. A caller-declared size above this ceiling still starts
+ * pre-sized, just clamped to it.
+ */
+const INITIAL_CAPACITY_CEILING = 1 << 20;
+
+/**
  * Cap on inflated output to defeat decompression-bomb amplification. Mirrors
  * NodeCompressor's 2 GiB output cap so all three adapters refuse the same
  * malicious member with the same error, instead of exhausting memory.
@@ -276,12 +285,36 @@ interface PeekResult {
   readonly availableBits: number;
 }
 
-/** Growable byte accumulator: doubles capacity on overflow, trims on read-out. */
-class GrowableBuffer {
-  private buffer = new Uint8Array(INITIAL_BUFFER_CAPACITY);
+/**
+ * Pre-size a fresh buffer from the caller's declared entry size when one is
+ * known (below the decoder's global cap), clamped to `INITIAL_CAPACITY_CEILING`;
+ * falls back to the small default when no size was declared (`maxBytes` at
+ * the global cap itself).
+ */
+function initialBufferCapacity(maxBytes: number): number {
+  return maxBytes < MAX_INFLATED_OUTPUT_BYTES
+    ? Math.min(maxBytes, INITIAL_CAPACITY_CEILING)
+    : INITIAL_BUFFER_CAPACITY;
+}
+
+/**
+ * Growable byte accumulator: doubles capacity on overflow, trims on
+ * read-out. Exported so tests can pin the pre-sizing formula directly,
+ * without decoding a full member.
+ * @internal
+ */
+export class GrowableBuffer {
+  private buffer: Uint8Array;
   private length = 0;
 
-  constructor(private readonly maxBytes: number) {}
+  constructor(private readonly maxBytes: number) {
+    this.buffer = new Uint8Array(initialBufferCapacity(maxBytes));
+  }
+
+  /** @internal Exposed only so tests can assert the pre-sized initial capacity. */
+  get capacity(): number {
+    return this.buffer.length;
+  }
 
   append(chunk: Uint8Array): void {
     this.ensureCapacity(this.length + chunk.length);
