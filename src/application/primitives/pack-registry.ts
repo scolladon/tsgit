@@ -592,9 +592,11 @@ const unusableEntry = (
  * and any other coded errno fold the same way. Canonical git agrees on every
  * one of these shapes: it prints an `error: unable to open object pack
  * directory: …` line and keeps serving loose reads at exit 0, never
- * refusing. Every coded fault is reported once here, through
- * `ctx.logger?.warn` with the fault attached (no logger → silent, never a
- * refusal). An error carrying no data code is a programming error and is
+ * refusing. An absent directory is the ordinary state of a young repository
+ * and stays silent, as git's `opendir` ENOENT path does; every other coded
+ * fault is reported once here, through `ctx.logger?.warn` with the fault
+ * attached (no logger → silent, never a refusal), where git prints its
+ * `unable to open object pack directory` line. An error carrying no data code is a programming error and is
  * rethrown, never folded.
  *
  * Structural on `data.code`, never `instanceof`: this classifies an error
@@ -609,7 +611,9 @@ async function listPackDir(ctx: Context): Promise<ReadonlyArray<DirEntry>> {
   try {
     return await ctx.fs.readdir(dir);
   } catch (error) {
-    if (errorDataCode(error) === undefined) throw error;
+    const code = errorDataCode(error);
+    if (code === undefined) throw error;
+    if (code === 'FILE_NOT_FOUND') return [];
     const { data } = error as { readonly data: TsgitErrorData };
     ctx.logger?.warn?.('packRegistry: unreadable pack directory', { dir, ...faultContext(data) });
     return [];

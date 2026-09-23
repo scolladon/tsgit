@@ -373,8 +373,39 @@ describe('pack-registry', () => {
       });
     });
 
+    describe('Given a pack directory that does not exist yet', () => {
+      describe('When lookup runs twice', () => {
+        it('Then both resolve as if the directory were empty and nothing is logged', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const dir = `${ctx.layout.gitDir}/objects/pack`;
+          const warn = vi.fn();
+          const stubCtx: Context = {
+            ...ctx,
+            logger: { warn },
+            fs: {
+              ...ctx.fs,
+              readdir: async (path: string) => {
+                if (path === dir) throw fileNotFound(dir);
+                return ctx.fs.readdir(path);
+              },
+            },
+          };
+          const sut = await createPackRegistry(stubCtx);
+
+          // Act
+          const first = await sut.lookup('a'.repeat(40) as ObjectId);
+          const second = await sut.lookup('b'.repeat(40) as ObjectId);
+
+          // Assert
+          expect(first).toBeUndefined();
+          expect(second).toBeUndefined();
+          expect(warn).not.toHaveBeenCalled();
+        });
+      });
+    });
+
     describe.each([
-      ['FILE_NOT_FOUND', () => fileNotFound('/repo/.git/objects/pack')],
       ['NOT_A_DIRECTORY', () => notADirectory('/repo/.git/objects/pack')],
       ['PERMISSION_DENIED', () => permissionDenied('/repo/.git/objects/pack')],
       ['UNSUPPORTED_OPERATION', () => unsupportedOperation('filesystem', 'EIO')],
