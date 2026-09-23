@@ -15,6 +15,7 @@ import {
   parsePackEntryHeader,
 } from '../../../../domain/storage/index.js';
 import type { Context } from '../../../../ports/context.js';
+import { probeLooseOid } from '../../../primitives/internal/loose-oid-cache.js';
 import { loadShallowSet } from '../../../primitives/internal/shallow-set.js';
 import { looseCompressedBytes } from '../../../primitives/object-resolver.js';
 import type { PackLookupHit, PackRegistry } from '../../../primitives/pack-registry.js';
@@ -262,6 +263,22 @@ async function packedStoredType(
 }
 
 /**
+ * Loose bytes for `id`, tolerating a store fault reading them as absent —
+ * this probe is best-effort, not the object's read of record, so a damaged
+ * read environment degrades to "nothing to recover from" instead of
+ * aborting the probe itself. An environmental fault still propagates, same
+ * policy as everywhere else in this file.
+ */
+async function looseBytesForRecovery(ctx: Context, id: ObjectId): Promise<Uint8Array | undefined> {
+  try {
+    return await looseCompressedBytes(ctx, id);
+  } catch (err) {
+    if (!isStoreFault(err)) throw err;
+    return undefined;
+  }
+}
+
+/**
  * Re-asks git's own question about an object's STORED form: can a
  * `<type> <size>\0` header be recovered from it? Deliberately uses
  * `parseHeader`, NOT `splitObject` — `splitObject`'s size-mismatch check
@@ -274,7 +291,7 @@ async function recoverStoredType(
   readErr: unknown,
 ): Promise<RecoveryOutcome> {
   const registry = await getPackRegistry(ctx);
-  const looseBytes = await looseCompressedBytes(ctx, id);
+  const looseBytes = await looseBytesForRecovery(ctx, id);
   if (looseBytes === undefined) {
     return await packedStoredType(ctx, registry, id);
   }
@@ -319,6 +336,47 @@ interface CacheAccumulator {
 }
 
 /**
+ * Independently re-derives the decode fault this object's OWN stored (loose)
+ * bytes would have produced, had loose been read first — the role the
+ * INITIAL read played before pack-first buffered reads. Returns undefined
+ * when the bytes are absent, healthy, or fail with a non-candidate code, so
+ * the caller's own fault stands in unchanged.
+ */
+async function looseDecodeFault(ctx: Context, id: ObjectId): Promise<unknown> {
+  const looseBytes = await looseBytesForRecovery(ctx, id);
+  if (looseBytes === undefined || looseBytes.length === 0) return undefined;
+  try {
+    parseHeader(await ctx.compressor.inflate(looseBytes));
+    return undefined;
+  } catch (err) {
+    // Narrow, mirroring `recoverStoredType`'s own probe: any unrecognised
+    // fault (an adapter fault, a file that changed under this reread)
+    // surfaces itself instead of being laundered into a silent degrade.
+    if (!isRecoveryCandidate(err)) throw err;
+    return err;
+  }
+}
+
+/**
+ * Whether `buildObjectCache`'s per-object fault warrants the recovery probe.
+ * A decode fault always does — the original case, unaffected by read order.
+ * Pack-first buffered reads can now surface a raw, non-decode-shaped fault
+ * (an offset guard, an entry read, a header probe) as the FIRST error for an
+ * object that ALSO has a stale loose copy at the same id: under the prior
+ * loose-first ordering, THAT copy's own decode fault would have been the
+ * first error instead, triggering this same probe. A loose MEMBERSHIP check
+ * (not a read) detects that shadow without risking a second read failure of
+ * its own. An object with no loose copy at all behaves exactly as before
+ * pack-first — no widening, no probe; `RECOVERABLE_DECODE_CODES`'s own doc
+ * comment keeps a code like `PERMISSION_DENIED` outside recovery
+ * structurally, and that stays true here.
+ */
+async function warrantsRecovery(ctx: Context, id: ObjectId, err: unknown): Promise<boolean> {
+  if (isDecodeFault(err)) return true;
+  return err instanceof TsgitError && (await probeLooseOid(ctx, id));
+}
+
+/**
  * Records a universe object's unreadable slot and, in `'classify'` mode, runs
  * the header-recovery probe: its `typed` outcome upgrades `recovered`, its
  * `unrecoverable` outcome records the cause `fsck.ts` rejects on once
@@ -332,8 +390,13 @@ async function recordUnreadable(
   acc: CacheAccumulator,
 ): Promise<void> {
   acc.cache.set(id, null);
-  if (unreadable !== 'classify' || !isDecodeFault(err)) return;
-  const recovery = await recoverStoredType(ctx, id, err);
+  if (unreadable !== 'classify' || !(await warrantsRecovery(ctx, id, err))) return;
+  // A decode-shaped fault IS the original read failure `recoverStoredType`
+  // gates its reject verdict on (the settled two-code test); a widened,
+  // non-decode-shaped fault stands in for it with the shadow's OWN decode
+  // fault instead, reproducing the pre-pack-first ordering exactly.
+  const readErr = isDecodeFault(err) ? err : ((await looseDecodeFault(ctx, id)) ?? err);
+  const recovery = await recoverStoredType(ctx, id, readErr);
   if (recovery.kind === 'typed') acc.recovered.set(id, recovery.objectType);
   if (recovery.kind === 'unrecoverable') acc.unrecoverable.set(id, recovery.cause);
 }
