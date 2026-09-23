@@ -1,6 +1,7 @@
+import * as os from 'node:os';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { TsgitError } from '../../../src/domain/index.js';
-import type { FileSystem } from '../../../src/ports/file-system.js';
+import type { FileStat, FileSystem } from '../../../src/ports/file-system.js';
 
 export interface FileSystemContractEnv {
   readonly fs: FileSystem;
@@ -124,6 +125,8 @@ const beneathFileCalls: ReadonlyArray<PathCall> = [
   { name: 'stat', invoke: (e, p) => e.fs.stat(p) },
   { name: 'lstat', invoke: (e, p) => e.fs.lstat(p) },
   { name: 'lexists', invoke: (e, p) => lexists(e.fs, p) },
+  { name: 'tryLstat', invoke: (e, p) => tryLstat(e.fs, p) },
+  { name: 'tryReadUtf8', invoke: (e, p) => tryReadUtf8(e.fs, p) },
   { name: 'readlink', invoke: (e, p) => e.fs.readlink(p) },
   { name: 'rm', invoke: (e, p) => e.fs.rm(p) },
   { name: 'rename', invoke: (e, p) => e.fs.rename(p, `${e.rootDir}/refusal-file-rename-dst`) },
@@ -176,6 +179,29 @@ const DANGLING_COMPONENT_TARGET = 'sub/dangling-component-target';
 async function lexists(fs: FileSystem, path: string): Promise<boolean> {
   if (fs.lexists === undefined) throw new Error('the adapter under contract provides no lexists');
   return fs.lexists(path);
+}
+
+/** Every adapter this suite runs against provides the optional non-throwing lstat probe. */
+async function tryLstat(fs: FileSystem, path: string): Promise<FileStat | undefined> {
+  if (fs.tryLstat === undefined) {
+    throw new Error('the adapter under contract provides no tryLstat');
+  }
+  return fs.tryLstat(path);
+}
+
+/** Every adapter this suite runs against provides the optional non-throwing UTF-8 read probe. */
+async function tryReadUtf8(fs: FileSystem, path: string): Promise<string | undefined> {
+  if (fs.tryReadUtf8 === undefined) {
+    throw new Error('the adapter under contract provides no tryReadUtf8');
+  }
+  return fs.tryReadUtf8(path);
+}
+
+/** Reason string shared by every permission-bit-enforcement row: only a real POSIX filesystem, run by a non-root user, refuses through the kernel's own permission check. */
+const POSIX_NON_ROOT_ONLY = 'permission-bit enforcement is POSIX-only and requires a non-root user';
+
+function isPermissionDeniedError(err: unknown): boolean {
+  return err instanceof TsgitError && err.data.code === 'PERMISSION_DENIED';
 }
 
 function assertFileNotFound(err: unknown): void {
@@ -1741,6 +1767,204 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
         // Assert
         expect(result).toEqual([true, true, true, true, false]);
+      });
+    });
+
+    describe('tryLstat / tryReadUtf8 — non-throwing probes', () => {
+      describe('Given a path with no entry', () => {
+        it("Then tryLstat resolves undefined, matching lstat's FILE_NOT_FOUND", async () => {
+          // Arrange
+          const path = `${env.rootDir}/try-missing.bin`;
+
+          // Act
+          const result = await tryLstat(env.fs, path);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+
+        it("Then tryReadUtf8 resolves undefined, matching readUtf8's FILE_NOT_FOUND", async () => {
+          // Arrange
+          const path = `${env.rootDir}/try-missing.txt`;
+
+          // Act
+          const result = await tryReadUtf8(env.fs, path);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+
+      describe('Given a present regular file', () => {
+        it('Then tryLstat equals lstat', async () => {
+          // Arrange
+          const path = `${env.rootDir}/try-present.bin`;
+          await env.fs.write(path, new Uint8Array([1, 2, 3]));
+
+          // Act
+          const [result, expected] = await Promise.all([
+            tryLstat(env.fs, path),
+            env.fs.lstat(path),
+          ]);
+
+          // Assert
+          expect(result).toEqual(expected);
+        });
+
+        it('Then tryReadUtf8 equals readUtf8', async () => {
+          // Arrange
+          const path = `${env.rootDir}/try-present.txt`;
+          await env.fs.writeUtf8(path, 'hello');
+
+          // Act
+          const [result, expected] = await Promise.all([
+            tryReadUtf8(env.fs, path),
+            env.fs.readUtf8(path),
+          ]);
+
+          // Assert
+          expect(result).toBe(expected);
+        });
+      });
+
+      describe('Given a dangling symlink', () => {
+        it("Then tryLstat reports it present, matching lstat's no-follow view", async () => {
+          // Arrange
+          const link = `${env.rootDir}/try-dangling-lstat`;
+          await env.fs.symlink('try-dangling-target', link);
+
+          // Act
+          const [result, expected] = await Promise.all([
+            tryLstat(env.fs, link),
+            env.fs.lstat(link),
+          ]);
+
+          // Assert
+          expect(result).toEqual(expected);
+        });
+
+        it("Then tryReadUtf8 resolves undefined, matching readUtf8's FILE_NOT_FOUND on the followed leaf", async () => {
+          // Arrange
+          const link = `${env.rootDir}/try-dangling-read`;
+          await env.fs.symlink('try-dangling-read-target', link);
+
+          // Act
+          const result = await tryReadUtf8(env.fs, link);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+
+      describe('Given a directory', () => {
+        it('Then tryLstat equals lstat', async () => {
+          // Arrange
+          const dir = `${env.rootDir}/try-dir`;
+          await env.fs.mkdir(dir);
+
+          // Act
+          const [result, expected] = await Promise.all([tryLstat(env.fs, dir), env.fs.lstat(dir)]);
+
+          // Assert
+          expect(result).toEqual(expected);
+        });
+
+        it('Then tryReadUtf8 refuses PERMISSION_DENIED, as readUtf8 does', async () => {
+          // Arrange
+          const dir = `${env.rootDir}/try-dir-read`;
+          await env.fs.mkdir(dir);
+
+          // Act
+          let caught: unknown;
+          try {
+            await tryReadUtf8(env.fs, dir);
+            expect.fail('expected PERMISSION_DENIED');
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          assertPermissionDenied(caught);
+        });
+      });
+
+      describe('Given an ancestor directory whose search permission is revoked', () => {
+        it('Then tryLstat refuses PERMISSION_DENIED wherever lstat does', async (ctx) => {
+          ctx.skip(process.platform === 'win32' || os.userInfo().uid === 0, POSIX_NON_ROOT_ONLY);
+
+          // Arrange
+          const dir = `${env.rootDir}/try-locked-lstat`;
+          const leaf = `${dir}/leaf.txt`;
+          await env.fs.write(leaf, new Uint8Array([1]));
+          await env.fs.chmod(dir, 0o000);
+
+          try {
+            let twinCaught: unknown;
+            try {
+              await env.fs.lstat(leaf);
+            } catch (err) {
+              twinCaught = err;
+            }
+            // The adapter under contract may not enforce OS permission bits at all — the memory
+            // adapter's chmod validates the path but never restricts a later read — so a host or
+            // adapter that never reaches a permission refusal here has nothing to prove.
+            if (!isPermissionDeniedError(twinCaught)) {
+              ctx.skip();
+              return;
+            }
+
+            // Act
+            let caught: unknown;
+            try {
+              await tryLstat(env.fs, leaf);
+              expect.fail('expected PERMISSION_DENIED');
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert
+            assertPermissionDenied(caught);
+          } finally {
+            await env.fs.chmod(dir, 0o755);
+          }
+        });
+
+        it('Then tryReadUtf8 refuses PERMISSION_DENIED wherever readUtf8 does', async (ctx) => {
+          ctx.skip(process.platform === 'win32' || os.userInfo().uid === 0, POSIX_NON_ROOT_ONLY);
+
+          // Arrange
+          const dir = `${env.rootDir}/try-locked-read`;
+          const leaf = `${dir}/leaf.txt`;
+          await env.fs.writeUtf8(leaf, 'x');
+          await env.fs.chmod(dir, 0o000);
+
+          try {
+            let twinCaught: unknown;
+            try {
+              await env.fs.readUtf8(leaf);
+            } catch (err) {
+              twinCaught = err;
+            }
+            if (!isPermissionDeniedError(twinCaught)) {
+              ctx.skip();
+              return;
+            }
+
+            // Act
+            let caught: unknown;
+            try {
+              await tryReadUtf8(env.fs, leaf);
+              expect.fail('expected PERMISSION_DENIED');
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert
+            assertPermissionDenied(caught);
+          } finally {
+            await env.fs.chmod(dir, 0o755);
+          }
+        });
       });
     });
 

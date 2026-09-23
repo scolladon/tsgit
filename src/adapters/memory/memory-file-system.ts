@@ -114,6 +114,18 @@ export class MemoryFileSystem implements FileSystem {
     return new TextDecoder().decode(bytes);
   };
 
+  /**
+   * `tryReadUtf8`'s twin of `readUtf8`: reuses `read`'s follow resolution and returns `undefined`
+   * on its not-found arm instead of a refusal. A directory still refuses PERMISSION_DENIED.
+   */
+  tryReadUtf8 = async (path: string): Promise<string | undefined> => {
+    const normalized = this.walk(path, 'follow');
+    const stored = this.files.get(normalized);
+    if (stored !== undefined) return new TextDecoder().decode(stored);
+    if (this.directories.has(normalized)) throw permissionDenied(path);
+    return undefined;
+  };
+
   write = async (path: string, data: Uint8Array): Promise<void> => {
     const normalized = this.walk(path, 'create');
     // node: EISDIR for a directory leaf, ELOOP for a symlink leaf under O_NOFOLLOW —
@@ -180,6 +192,19 @@ export class MemoryFileSystem implements FileSystem {
 
   lstat = async (path: string): Promise<FileStat> => {
     const normalized = this.walk(path, 'no-follow');
+    const record = this.lstatEntry(normalized);
+    if (record === undefined) throw fileNotFound(path);
+    return record;
+  };
+
+  /** `tryLstat`'s twin of `lstat`: `undefined` on the not-found arm instead of a refusal. */
+  tryLstat = async (path: string): Promise<FileStat | undefined> => {
+    const normalized = this.walk(path, 'no-follow');
+    return this.lstatEntry(normalized);
+  };
+
+  /** Shared no-follow resolution for `lstat`/`tryLstat`: `undefined` when nothing stands there. */
+  private lstatEntry(normalized: string): FileStat | undefined {
     const target = this.symlinks.get(normalized);
     if (target !== undefined) {
       return this.makeStatRecord({
@@ -190,8 +215,8 @@ export class MemoryFileSystem implements FileSystem {
         times: this.times.get(normalized),
       });
     }
-    return this.buildStat(normalized, path);
-  };
+    return this.statEntry(normalized);
+  }
 
   lexists = async (path: string): Promise<boolean> => this.occupied(this.walk(path, 'no-follow'));
 
@@ -595,6 +620,13 @@ export class MemoryFileSystem implements FileSystem {
   }
 
   private buildStat(normalized: string, path: string): FileStat {
+    const record = this.statEntry(normalized);
+    if (record === undefined) throw fileNotFound(path);
+    return record;
+  }
+
+  /** File-or-directory resolution shared by `buildStat` and `lstatEntry`: `undefined` when neither stands there (a symlink included — its caller checks that first). */
+  private statEntry(normalized: string): FileStat | undefined {
     const fileBytes = this.files.get(normalized);
     if (fileBytes !== undefined) {
       return this.makeStatRecord({
@@ -614,7 +646,7 @@ export class MemoryFileSystem implements FileSystem {
         times: this.times.get(normalized),
       });
     }
-    throw fileNotFound(path);
+    return undefined;
   }
 
   private makeStatRecord(parts: {

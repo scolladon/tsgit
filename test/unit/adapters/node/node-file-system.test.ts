@@ -4,6 +4,7 @@ import * as os from 'node:os';
 import * as nodePath from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { FsOperations } from '../../../../src/adapters/node/fs-operations.js';
+import { realSyncFsOps } from '../../../../src/adapters/node/fs-operations.js';
 import type { NodeFileSystemOptions } from '../../../../src/adapters/node/node-file-system.js';
 import {
   isCreationLeafSymlink,
@@ -20,7 +21,11 @@ import {
   toAbsolute,
 } from '../../../../src/adapters/node/node-file-system.js';
 import { posixPolicy, windowsPolicy } from '../../../../src/adapters/node/path-policy.js';
-import { createSyncIoPolicy } from '../../../../src/adapters/node/sync-io-budget.js';
+import type { SyncIoPolicy } from '../../../../src/adapters/node/sync-io-budget.js';
+import {
+  createSyncIoPolicy,
+  createTurnBudget,
+} from '../../../../src/adapters/node/sync-io-budget.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import type { FileSystemContractEnv } from '../../ports/file-system.contract.js';
 import { fileSystemContractTests } from '../../ports/file-system.contract.js';
@@ -2123,6 +2128,37 @@ describe('NodeFileSystem — sync fast path real-timer interleaving', () => {
 
         // Assert
         expect(order[0]).toBe('timer');
+        await fsPromises.rm(rootDir, { recursive: true, force: true });
+      });
+    });
+  });
+});
+
+describe('NodeFileSystem — tryReadUtf8 sync-arm ineligibility', () => {
+  describe('Given a policy-bearing adapter and a file over the sync read gate', () => {
+    describe('When tryReadUtf8 is called', () => {
+      it('Then it falls back to the async arm and still returns the full content', async () => {
+        // Arrange — a `maxSyncReadBytes` gate far below the file's size forces
+        // `readRegularFileSync` to report "not eligible", which must be told
+        // apart from a confirmed ENOENT absence: the async fallback still has
+        // to run and return the real bytes, never `undefined`.
+        const tempRoot = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-gate-'));
+        const rootDir = await fsPromises.realpath(tempRoot);
+        const file = nodePath.join(rootDir, 'oversized.txt');
+        const content = 'x'.repeat(64);
+        await fsPromises.writeFile(file, content);
+        const syncIo: SyncIoPolicy = {
+          ops: realSyncFsOps,
+          budget: createTurnBudget(1),
+          maxSyncReadBytes: 4,
+        };
+        const sut = new NodeFileSystem(rootDir, { syncIo });
+
+        // Act
+        const result = await sut.tryReadUtf8(file);
+
+        // Assert
+        expect(result).toBe(content);
         await fsPromises.rm(rootDir, { recursive: true, force: true });
       });
     });

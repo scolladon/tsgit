@@ -198,6 +198,18 @@ async function orMissing<T>(probe: () => Promise<T>): Promise<T | undefined> {
 }
 
 /**
+ * The classification shared by every `ENOENT`-folding probe, sync or async:
+ * `ENOENT` is the caller's to fold into its own "absent" value (this
+ * function returns normally); every other errno maps through `mapErrno`;
+ * a non-errno error rethrows untouched.
+ */
+function throwUnlessEnoent(err: unknown, path: string): void {
+  if (isErrnoException(err) && err.code === 'ENOENT') return;
+  if (isErrnoException(err)) throw mapErrno(err, path);
+  throw err;
+}
+
+/**
  * Runs `probe`, folding ONLY `ENOENT` into `undefined` — unlike `orMissing`,
  * which also folds `ENOTDIR`. Every other errno maps through `mapErrno`; a
  * non-errno error rethrows untouched. Shared by every async presence probe
@@ -207,9 +219,8 @@ async function orAbsent<T>(probe: () => Promise<T>, path: string): Promise<T | u
   try {
     return await probe();
   } catch (err) {
-    if (isErrnoException(err) && err.code === 'ENOENT') return undefined;
-    if (isErrnoException(err)) throw mapErrno(err, path);
-    throw err;
+    throwUnlessEnoent(err, path);
+    return undefined;
   }
 }
 
@@ -369,25 +380,33 @@ async function runSync<T>(budget: TurnBudget, op: () => T, path: string): Promis
 
 /**
  * The synchronous twin of `orAbsent`: runs `probe` under the turn budget,
- * folding `ENOENT` into `false` and mapping any other errno through
- * `mapErrno`. `statSync`/`lstatSync`'s `throwIfNoEntry: false` option is
- * NOT used here because it also swallows `ENOTDIR` — a throwing probe,
- * caught here, is the only way to keep the sync and async presence arms
- * identical.
+ * folding `ENOENT` into `undefined` via `throwUnlessEnoent`.
+ * `statSync`/`lstatSync`'s `throwIfNoEntry: false` option is NOT used here
+ * because it also swallows `ENOTDIR` — a throwing probe, caught here, is
+ * the only way to keep the sync and async arms identical. Shared by every
+ * sync presence/miss probe (`isPresentSync`, and the optional `tryLstat`
+ * port member).
  */
+async function runSyncAbsent<T>(
+  budget: TurnBudget,
+  probe: () => T,
+  path: string,
+): Promise<T | undefined> {
+  try {
+    return await runWithinBudget(budget, probe);
+  } catch (err) {
+    throwUnlessEnoent(err, path);
+    return undefined;
+  }
+}
+
+/** The synchronous twin of `orAbsent` reduced to a boolean answer, for the plain presence probes. */
 async function runSyncPresence(
   budget: TurnBudget,
   probe: () => unknown,
   path: string,
 ): Promise<boolean> {
-  try {
-    await runWithinBudget(budget, probe);
-    return true;
-  } catch (err) {
-    if (isErrnoException(err) && err.code === 'ENOENT') return false;
-    if (isErrnoException(err)) throw mapErrno(err, path);
-    throw err;
-  }
+  return (await runSyncAbsent(budget, probe, path)) !== undefined;
 }
 
 export async function realpathNearestExisting(
@@ -494,6 +513,41 @@ export function readRegularFileSync(
     return readWholeFileSync(ops, fd, stat.size);
   } finally {
     ops.closeSync(fd);
+  }
+}
+
+/**
+ * Outcome of `tryReadUtf8`'s sync attempt. `settled: false` means the fast
+ * path could not answer at all (non-regular, over the gate, or grew
+ * mid-read) — the caller re-runs the async arm from scratch, which
+ * recomputes the correct answer or refusal on its own. `settled: true`
+ * carries the FINAL answer: `bytes` is `undefined` when an `ENOENT` from the
+ * open proved the file absent, and defined otherwise. Kept apart from
+ * `readRegularFileSync`'s own "not eligible" `undefined` so a FIFO can never
+ * be misread as an absent file.
+ */
+type SyncReadUtf8Outcome =
+  | { readonly settled: false }
+  | { readonly settled: true; readonly bytes: Uint8Array | undefined };
+
+/**
+ * `tryReadUtf8`'s sync arm: attempts `readRegularFileSync` under the turn
+ * budget. An `ENOENT` from the open is a settled "absent" answer; any other
+ * errno maps through `mapErrno` via `throwUnlessEnoent`, never swallowed.
+ */
+async function tryReadWholeFileSync(
+  sync: SyncIoPolicy,
+  real: string,
+  path: string,
+): Promise<SyncReadUtf8Outcome> {
+  try {
+    const bytes = await runWithinBudget(sync.budget, () =>
+      readRegularFileSync(sync.ops, real, sync.maxSyncReadBytes),
+    );
+    return bytes === undefined ? { settled: false } : { settled: true, bytes };
+  } catch (err) {
+    throwUnlessEnoent(err, path);
+    return { settled: true, bytes: undefined };
   }
 }
 
@@ -928,6 +982,26 @@ export class NodeFileSystem implements FileSystem {
     return runFs(() => this.fsOps.readFile(real, 'utf-8'), path);
   };
 
+  /**
+   * Resolves `undefined` exactly where `readUtf8` refuses FILE_NOT_FOUND;
+   * behaves identically otherwise, a directory's PERMISSION_DENIED included.
+   * The sync arm's own "not eligible" outcome (non-regular, over the gate,
+   * or grew mid-read) always falls back to the async arm rather than being
+   * misread as a miss.
+   */
+  tryReadUtf8 = async (path: string): Promise<string | undefined> => {
+    const { all } = this.resolvedRootSet ?? (await this.loadRootSet());
+    const real = this.resolveRead(path, all);
+    const sync = this.syncIo;
+    if (sync !== undefined) {
+      const outcome = await tryReadWholeFileSync(sync, real, path);
+      if (outcome.settled) {
+        return outcome.bytes === undefined ? undefined : decodeUtf8(outcome.bytes);
+      }
+    }
+    return orAbsent(() => this.fsOps.readFile(real, 'utf-8'), path);
+  };
+
   write = async (path: string, data: Uint8Array): Promise<void> => {
     const real = await this.resolveWrite(path);
     await this.assertWritableLeaf(real, path);
@@ -1047,6 +1121,27 @@ export class NodeFileSystem implements FileSystem {
       return runFs(async () => mapStat(await this.fsOps.lstat(real, { bigint: true })), path);
     }
     return runSync(sync.budget, () => mapStat(sync.ops.lstatSync(real, { bigint: true })), path);
+  };
+
+  /**
+   * Resolves `undefined` exactly where `lstat` refuses FILE_NOT_FOUND;
+   * behaves identically otherwise. The sync arm answers a miss with no
+   * error object at all; the async arm folds `ENOENT` before `mapErrno`, as
+   * `isPresent` does.
+   */
+  tryLstat = async (path: string): Promise<FileStat | undefined> => {
+    const { all } = this.resolvedRootSet ?? (await this.loadRootSet());
+    const real = this.resolveRead(path, all);
+    const sync = this.syncIo;
+    if (sync === undefined) {
+      return orAbsent(async () => mapStat(await this.fsOps.lstat(real, { bigint: true })), path);
+    }
+    const stat = await runSyncAbsent(
+      sync.budget,
+      () => sync.ops.lstatSync(real, { bigint: true }),
+      path,
+    );
+    return stat === undefined ? undefined : mapStat(stat);
   };
 
   readdir = async (path: string): Promise<ReadonlyArray<DirEntry>> => {
