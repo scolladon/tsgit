@@ -29,6 +29,7 @@ import { readableStreamToAsyncIterable } from '../../../operators/readable-strea
 import type { Context } from '../../../ports/context.js';
 import type { Hasher } from '../../../ports/hash-service.js';
 import {
+  cacheEntry,
   isBase,
   looseCompressedBytes,
   readEntryHeaderWithChunk,
@@ -197,9 +198,17 @@ function fitsBuffer(byteLength: number, maxBufferedBytes: number): boolean {
   return byteLength <= maxBufferedBytes;
 }
 
-function toBytesSource(looseFormatBytes: Uint8Array): BlobSource {
+/** Splits an inflated loose-format buffer into a bytes source and, when the
+ *  header's declared size was honest (matches the actual content length),
+ *  warms `ctx.deltaCache` under `id` — mirroring `resolveObjectContentWithDepth`'s
+ *  own loose arm. A size-lying header (tolerated only for a blob) is never
+ *  cached: a later consumer keyed on `id` would read the wrong claim. */
+function toCachedBytesSource(ctx: Context, id: ObjectId, looseFormatBytes: Uint8Array): BlobSource {
   const split = splitLooseObject(looseFormatBytes);
   assertLooseSizeConsistent(split);
+  if (split.declaredSize === split.content.byteLength) {
+    cacheEntry(ctx.deltaCache, id, { type: split.type, content: split.content });
+  }
   return { kind: 'bytes', type: split.type, content: split.content };
 }
 
@@ -241,7 +250,7 @@ async function resolveLoose(
   if (fitsBuffer(compressed.length, gate.maxBufferedBytes)) {
     const inflated = await ctx.compressor.inflate(compressed);
     await verifyBufferedBytes(ctx, id, inflated, gate.verifyHash);
-    return toBytesSource(inflated);
+    return toCachedBytesSource(ctx, id, inflated);
   }
   const iterator = readableStreamToAsyncIterable(inflateOneShot(ctx, compressed))[
     Symbol.asyncIterator
@@ -298,6 +307,9 @@ async function resolvePackBase(
     fitsBuffer(declaredSize, gate.maxBufferedBytes)
   ) {
     const content = await ctx.compressor.inflate(payload);
+    if (declaredSize === content.byteLength) {
+      cacheEntry(ctx.deltaCache, id, { type, content });
+    }
     await verifyObjectContent(ctx, id, type, content, gate.verifyHash);
     return { kind: 'bytes', type, content };
   }

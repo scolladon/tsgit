@@ -1185,10 +1185,12 @@ describe('Given a deep chain with an annotated tag three commits below HEAD', ()
       // Act
       await describeCmd(counted);
 
-      // Assert — the resolver caches every loose commit read, so cross-pass rereads
-      // within describe's own algorithm now hit the delta cache instead of
-      // touching disk again; the walk still stops short of the full chain.
-      expect(reads()).toBe(2);
+      // Assert — every commit on this chain was written through `commit()`,
+      // whose ref-transaction verification (ref-target.ts) already warmed
+      // ctx.deltaCache with its bytes, so the walk's own rereads are served
+      // from memory instead of touching disk again; the walk still stops
+      // short of the full chain.
+      expect(reads()).toBe(0);
     });
   });
 });
@@ -1209,12 +1211,12 @@ describe('Given only a lightweight tag on a deep chain in tags mode', () => {
       // Act
       const result = await describeCmd(counted, undefined, { tags: true });
 
-      // Assert — the resolver caches every loose commit read, so cross-pass rereads
-      // within describe's own algorithm now hit the delta cache instead of
-      // touching disk again.
+      // Assert — every commit was written through `commit()`, whose ref-target
+      // verification already warmed ctx.deltaCache with its bytes, so this
+      // walk's rereads are served from memory instead of touching disk again.
       expect(result.name).toBe('light');
       expect(result.distance).toBe(3);
-      expect(reads()).toBe(1);
+      expect(reads()).toBe(0);
     });
   });
 });
@@ -1241,12 +1243,14 @@ describe('Given two annotated tags tied on sibling legs above a deep ancestry', 
       // Act
       const result = await describeCmd(counted, m);
 
-      // Assert — the resolver caches every loose commit read, so cross-pass rereads
-      // within describe's own algorithm now hit the delta cache instead of
-      // touching disk again.
+      // Assert — `annotatedTag` points each tag ref at a tag OBJECT, whose own
+      // ref-target verification (`tagCreate`) now warms ctx.deltaCache with
+      // that tag object's bytes, so peeling `tx` and `ty` never touches disk;
+      // `x`, `y` and `m` — the raw commits the tags point AT, never
+      // themselves ref-target verified — still cost a genuine read each.
       expect(result.name).toBe('ty');
       expect(result.distance).toBe(2);
-      expect(reads()).toBe(5);
+      expect(reads()).toBe(3);
     });
   });
 });
@@ -1271,12 +1275,14 @@ describe('Given a frozen winner whose coverage reaches the frontier only later',
       // Act
       const result = await describeCmd(counted, m);
 
-      // Assert — the resolver caches every loose commit read, so cross-pass rereads
-      // within describe's own algorithm now hit the delta cache instead of
-      // touching disk again.
+      // Assert — `annotatedTag` points the `tx` ref at a tag OBJECT, whose own
+      // ref-target verification (`tagCreate`) now warms ctx.deltaCache with
+      // that tag object's bytes, so peeling `tx` never touches disk; `side`,
+      // `x` and `m` — the raw commits, never themselves ref-target verified —
+      // still cost a genuine read each.
       expect(result.name).toBe('tx');
       expect(result.distance).toBe(2);
-      expect(reads()).toBe(4);
+      expect(reads()).toBe(3);
     });
   });
 });
@@ -1301,12 +1307,14 @@ describe('Given an annotated tag on a side leg that does not cover the deeper ch
       // Act
       const result = await describeCmd(counted, m);
 
-      // Assert — the resolver caches every loose commit read, so cross-pass rereads
-      // within describe's own algorithm now hit the delta cache instead of
-      // touching disk again.
+      // Assert — `annotatedTag` points `ty` and `t-root` at tag OBJECTS, whose
+      // own ref-target verification (`tagCreate`) now warms ctx.deltaCache
+      // with each tag object's bytes, so peeling either tag never touches
+      // disk; `x1`, `x2`, `y` and `m` — the raw commits, never themselves
+      // ref-target verified — still cost a genuine read each.
       expect(result.name).toBe('ty');
       expect(result.distance).toBe(3);
-      expect(reads()).toBe(6);
+      expect(reads()).toBe(4);
     });
   });
 });
@@ -1443,10 +1451,12 @@ describe('Given no names and a deep history to walk', () => {
       const error = await catchError(() => describeCmd(counted));
 
       // Assert — the empty freeze stops immediately; it never descends the
-      // chain. The resolver also caches HEAD's own loose read, collapsing a repeated
-      // touch into a cache hit.
+      // chain. Every commit here was written through `commit()`, so
+      // ref-target verification already warmed ctx.deltaCache with HEAD's own
+      // bytes too, collapsing what would have been a repeated touch into a
+      // cache hit that never reaches disk.
       expect(error.data).toMatchObject({ code: 'NO_NAMES' });
-      expect(reads()).toBe(1);
+      expect(reads()).toBe(0);
     });
   });
 });

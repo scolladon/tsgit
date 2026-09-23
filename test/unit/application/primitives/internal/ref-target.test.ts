@@ -14,8 +14,12 @@ describe('assertRefTargetValid', () => {
   describe('Given more distinct blobs verified on one Context than it remembers', () => {
     describe('When the oldest and the newest are verified again', () => {
       it('Then only the oldest has been forgotten — its stored bytes are read again', async () => {
-        // Arrange
-        const base = createMemoryContext();
+        // Arrange — ctx.deltaCache is disabled so this test isolates the
+        // property it means to prove (`verifiedTargets`' own bounded memo
+        // evicting its oldest entry) from openBlobSource's buffered arms,
+        // which would otherwise keep every tiny blob content-cached forever
+        // and mask the eviction behind a content-cache hit.
+        const base = createMemoryContext({ deltaCacheMaxBytes: 0 });
         const ids: ObjectId[] = [];
         for (let index = 0; index <= REMEMBERED_TARGETS; index += 1) {
           const content = ENCODER.encode(`blob ${index}`);

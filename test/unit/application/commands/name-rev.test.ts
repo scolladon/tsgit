@@ -615,11 +615,11 @@ describe('Given a linear chain with an old root block and a recent tip block', (
       // Act
       await nameRev(counted, tip);
 
-      // Assert — the resolver also caches every loose commit read; the real `commit`
-      // command in `commitFile` already read each ancestor once while
-      // linking it as HEAD's parent during arrange, so nameRev's own walk —
-      // still bounded by the date cutoff — is almost entirely cache hits.
-      expect(reads()).toBe(1);
+      // Assert — every ancestor was written through the real `commit` command
+      // in `commitFile`, whose ref-target verification already warmed
+      // ctx.deltaCache with its bytes, so nameRev's own walk — still bounded
+      // by the date cutoff — never touches disk.
+      expect(reads()).toBe(0);
     });
   });
 
@@ -631,11 +631,11 @@ describe('Given a linear chain with an old root block and a recent tip block', (
       // Act
       await nameRev(counted, oldest);
 
-      // Assert — the resolver also caches every loose commit read; the real `commit`
-      // command in `commitFile` already read each ancestor once while
-      // linking it as HEAD's parent during arrange, so nameRev's own
-      // full-ancestry walk is almost entirely cache hits.
-      expect(reads()).toBe(1);
+      // Assert — every ancestor was written through the real `commit` command
+      // in `commitFile`, whose ref-target verification already warmed
+      // ctx.deltaCache with its bytes, so nameRev's own full-ancestry walk
+      // never touches disk.
+      expect(reads()).toBe(0);
     });
   });
 });
@@ -676,10 +676,10 @@ describe('Given a recent branch and a disjoint branch whose tip is over a day ol
       // Act
       await nameRev(counted, target);
 
-      // Assert — the resolver also caches every loose commit read; `commitFile`'s
-      // own `commit` command already read each ancestor once while linking
-      // it as HEAD's parent during arrange, so nameRev's walk is all hits.
-      expect(reads()).toBe(1);
+      // Assert — `target` was written through `commitFile`'s own `commit`
+      // command, whose ref-target verification already warmed ctx.deltaCache
+      // with its bytes, so nameRev's walk never touches disk.
+      expect(reads()).toBe(0);
     });
   });
 });
@@ -718,10 +718,13 @@ describe('Given a chain whose middle commit is dated exactly one day older than 
       // Act
       await nameRev(counted, tip);
 
-      // Assert — the resolver also caches every loose commit read; `treeOf`'s calls
-      // in arrange already read the boundary commit and its parent while
-      // building the chain, so only the (uncached) tip costs a real read.
-      expect(reads()).toBe(1);
+      // Assert — `root` was written through `commitFile`'s real `commit`
+      // command; `mid` was read once by `treeOf` during arrange (the
+      // resolver's own loose-read cache already covered that, pre-existing);
+      // `tip` is ref-target verified by `pointBranch` before the counter
+      // starts, and that verification now warms ctx.deltaCache too, so
+      // nameRev's own walk never touches disk.
+      expect(reads()).toBe(0);
     });
   });
 });
@@ -763,11 +766,13 @@ describe('Given a diamond whose shared parent is reached by both merge sides', (
       // Act
       await nameRev(counted, shared);
 
-      // Assert — the diamond's four commits are pure `writeObject` writes in
-      // arrange (never pre-read), so all four cost a real read; the fifth
-      // touch of `shared` (from the merge-parent side) is what `accept`'s
-      // own gate — not caching — still skips.
-      expect(reads()).toBe(4);
+      // Assert — `merge` is ref-target verified by `pointBranch` before the
+      // counter starts, and that verification now warms ctx.deltaCache too,
+      // so only `firstSide`, `secondSide` and `shared` (pure `writeObject`
+      // writes, never pre-read) still cost a real read each; the fifth touch
+      // of `shared` (from the merge-parent side) is what `accept`'s own gate
+      // — not caching — still skips.
+      expect(reads()).toBe(3);
     });
   });
 });
@@ -802,9 +807,12 @@ describe('Given a commit-graph covering a short, densely-timed chain (every comm
       const result = await nameRev(counted, tip);
 
       // Assert — every ancestor is within the one-day slop, so the date test
-      // never prunes; the walk reads the tip and every ancestor down to the root.
+      // never prunes; the walk reads the tip and every ancestor down to the
+      // root. `tip` is ref-target verified by `pointBranch` before the
+      // counter starts, and that verification now warms ctx.deltaCache too,
+      // so only the remaining ancestors still cost a real read each.
       expect(result.ref).toBe(RefName.from('refs/heads/main'));
-      expect(reads()).toBe(ancestors.length);
+      expect(reads()).toBe(ancestors.length - 1);
     });
   });
 

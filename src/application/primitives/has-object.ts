@@ -7,12 +7,12 @@
  */
 import type { ObjectId } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
-import { commonGitDir, looseObjectPath } from './path-layout.js';
+import { probeLooseOid } from './internal/loose-oid-cache.js';
 import { getPackRegistry, peekPackRegistry } from './read-object.js';
 
 export const hasObject = async (ctx: Context, id: ObjectId): Promise<boolean> => {
   const registry = peekPackRegistry(ctx) ?? (await getPackRegistry(ctx));
   const hit = await registry.lookup(id);
   if (hit !== undefined) return true;
-  return ctx.fs.exists(looseObjectPath(commonGitDir(ctx), id));
+  return probeLooseOid(ctx, id);
 };

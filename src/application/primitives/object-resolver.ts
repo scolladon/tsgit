@@ -756,6 +756,13 @@ function objectTypeToPackType(type: ObjectType): PackEntryHeader['type'] {
   }
 }
 
-function cacheEntry(cache: LruCache<ObjectContent>, id: ObjectId, entry: ObjectContent): void {
+/** Shared by every arm that resolves an object's full bytes (this module's
+ *  own loose and pack-chain arms, and `blob-source.ts`'s buffered arms):
+ *  charges the cache the same byte size for the same reason everywhere. */
+export function cacheEntry(
+  cache: LruCache<ObjectContent>,
+  id: ObjectId,
+  entry: ObjectContent,
+): void {
   cache.set(id, entry, entry.content.byteLength + OBJECT_CACHE_ENTRY_OVERHEAD_BYTES);
 }

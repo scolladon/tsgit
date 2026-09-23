@@ -934,6 +934,121 @@ describe('openBlobSource', () => {
       });
     });
   });
+
+  describe('Given a loose blob resolved buffered', () => {
+    describe('When openBlobSource is called with the gate at the compressed length', () => {
+      it('Then the resolved bytes are cached in ctx.deltaCache under its id', async () => {
+        // Arrange
+        const blob: Blob = {
+          type: 'blob',
+          content: ENC.encode('loose buffered caching content'),
+          id: '' as ObjectId,
+        };
+        const ctx = await buildSeededContext({ objects: [blob] });
+        const id = await writeObject(ctx, blob);
+        const compressedLen = await looseCompressedLength(ctx, id);
+
+        // Act
+        await openBlobSource(ctx, id, compressedLen);
+
+        // Assert
+        expect(ctx.deltaCache.get(id)).toEqual({ type: 'blob', content: blob.content });
+      });
+    });
+  });
+
+  describe('Given a loose blob resolved streamed (gate one byte under the compressed length)', () => {
+    describe('When the returned stream is fully drained', () => {
+      it('Then it is never cached in ctx.deltaCache', async () => {
+        // Arrange
+        const blob: Blob = {
+          type: 'blob',
+          content: ENC.encode('loose streamed caching content'),
+          id: '' as ObjectId,
+        };
+        const ctx = await buildSeededContext({ objects: [blob] });
+        const id = await writeObject(ctx, blob);
+        const compressedLen = await looseCompressedLength(ctx, id);
+
+        // Act
+        const result = await openBlobSource(ctx, id, compressedLen - 1);
+        if (result.kind === 'stream') {
+          await collect(result.stream);
+        }
+
+        // Assert
+        expect(result.kind).toBe('stream');
+        expect(ctx.deltaCache.get(id)).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a loose blob whose header size claim disagrees with its body length', () => {
+    describe('When openBlobSource is called with the gate at the compressed length', () => {
+      it('Then the size-lying entry is never cached in ctx.deltaCache', async () => {
+        // Arrange
+        const blob: Blob = {
+          type: 'blob',
+          content: ENC.encode('size-lying loose blob content'),
+          id: '' as ObjectId,
+        };
+        const ctx = await buildSeededContext({ objects: [blob] });
+        const id = await writeObject(ctx, blob);
+        await overwriteLoose(ctx, id, looseFormatBytesWithClaim('blob', 3, blob.content));
+        const compressedLen = await looseCompressedLength(ctx, id);
+
+        // Act
+        await openBlobSource(ctx, id, compressedLen);
+
+        // Assert
+        expect(ctx.deltaCache.get(id)).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a packed base (non-delta) blob', () => {
+    describe('When openBlobSource is called with the gate at the payload length', () => {
+      it('Then the resolved bytes are cached in ctx.deltaCache under its id', async () => {
+        // Arrange
+        const content = ENC.encode('packed base content for the caching test');
+        const ctx = await buildSeededContext();
+        const ids = await writeSyntheticPack(ctx, 'cache-base', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const id = ids[0] as ObjectId;
+        const payloadLen = (await ctx.compressor.deflate(content)).length;
+
+        // Act
+        await openBlobSource(ctx, id, payloadLen);
+
+        // Assert
+        expect(ctx.deltaCache.get(id)).toEqual({ type: 'blob', content });
+      });
+    });
+
+    describe('When openBlobSource is called with the gate one byte under the payload length', () => {
+      it('Then the streamed result is never cached in ctx.deltaCache', async () => {
+        // Arrange
+        const content = ENC.encode('packed base content for the streamed caching test');
+        const ctx = await buildSeededContext();
+        const ids = await writeSyntheticPack(ctx, 'cache-base-stream', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const id = ids[0] as ObjectId;
+        const payloadLen = (await ctx.compressor.deflate(content)).length;
+
+        // Act
+        const result = await openBlobSource(ctx, id, payloadLen - 1);
+        if (result.kind === 'stream') {
+          await collect(result.stream);
+        }
+
+        // Assert
+        expect(result.kind).toBe('stream');
+        expect(ctx.deltaCache.get(id)).toBeUndefined();
+      });
+    });
+  });
 });
 
 const IDENTITY = { name: 'A', email: 'a@a.com', timestamp: 1, timezoneOffset: '+0000' as const };

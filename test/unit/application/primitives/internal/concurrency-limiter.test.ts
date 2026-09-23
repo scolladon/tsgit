@@ -1,5 +1,27 @@
+import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { createConcurrencyLimiter } from '../../../../../src/application/primitives/internal/concurrency-limiter.js';
+
+/** Runs `taskCount` tasks (indices 0..taskCount-1, admitted in that order)
+ *  through `sut` and returns the order each task body actually started in. */
+async function runIndexedTasks(
+  sut: ReturnType<typeof createConcurrencyLimiter>,
+  taskCount: number,
+): Promise<{ started: number[]; results: number[] }> {
+  const started: number[] = [];
+  const results = await Promise.all(
+    Array.from({ length: taskCount }, (_, index) =>
+      sut.run(async () => {
+        started.push(index);
+        return index;
+      }),
+    ),
+  );
+  return { started, results };
+}
+
+const admissionOrder = (taskCount: number): number[] =>
+  Array.from({ length: taskCount }, (_, index) => index);
 
 describe('createConcurrencyLimiter', () => {
   describe('Given limit=2 and 5 tasks submitted at once', () => {
@@ -115,6 +137,84 @@ describe('createConcurrencyLimiter', () => {
         // fully serialising bug, maxInFlight === 1, would also satisfy).
         expect(results).toEqual([1, 2, 3]);
         expect(maxInFlight).toBe(3);
+      });
+    });
+  });
+
+  describe('Given an arbitrary limit and an arbitrary count of tasks with staggered completion', () => {
+    describe('When every task is submitted at once through the limiter', () => {
+      it('Then tasks start in admission order and in-flight never exceeds the limit', async () => {
+        // Arrange + Act + Assert
+        await fc.assert(
+          fc.asyncProperty(
+            fc.integer({ min: 1, max: 8 }),
+            fc.array(fc.nat({ max: 5 }), { maxLength: 60 }),
+            async (limit, ticks) => {
+              const sut = createConcurrencyLimiter(limit);
+              const started: number[] = [];
+              let active = 0;
+              let maxActive = 0;
+
+              const results = await Promise.all(
+                ticks.map((tickCount, index) =>
+                  sut.run(async () => {
+                    started.push(index);
+                    active += 1;
+                    maxActive = Math.max(maxActive, active);
+                    for (let i = 0; i < tickCount; i += 1) await Promise.resolve();
+                    active -= 1;
+                    return index;
+                  }),
+                ),
+              );
+
+              return (
+                maxActive <= limit &&
+                results.every((value, index) => value === index) &&
+                started.every((value, index) => value === index)
+              );
+            },
+          ),
+          { numRuns: 100 },
+        );
+      });
+    });
+  });
+
+  describe('Given a limit-1 limiter with 2 × 1024 + 1 tasks queued behind the first', () => {
+    describe('When every task runs to completion', () => {
+      it('Then start order still equals admission order across a queue compaction', async () => {
+        // Arrange
+        const QUEUED_TASK_COUNT = 2 * 1024 + 1;
+        const TOTAL_TASK_COUNT = QUEUED_TASK_COUNT + 1;
+        const sut = createConcurrencyLimiter(1);
+
+        // Act
+        const { started, results } = await runIndexedTasks(sut, TOTAL_TASK_COUNT);
+
+        // Assert
+        expect(started).toEqual(admissionOrder(TOTAL_TASK_COUNT));
+        expect(results).toEqual(admissionOrder(TOTAL_TASK_COUNT));
+      });
+    });
+  });
+
+  describe('Given a limit-1 limiter whose queue is far larger than twice the compaction floor', () => {
+    describe('When every task runs to completion', () => {
+      it('Then FIFO holds while the head cursor is past the floor but still under half the queue', async () => {
+        // Arrange — 4000 queued tasks: the head cursor spends a wide stretch
+        // (1025..2000) past QUEUE_COMPACTION_MIN yet under half of 4000,
+        // deferring compaction, before a later stretch clears it.
+        const QUEUED_TASK_COUNT = 4000;
+        const TOTAL_TASK_COUNT = QUEUED_TASK_COUNT + 1;
+        const sut = createConcurrencyLimiter(1);
+
+        // Act
+        const { started, results } = await runIndexedTasks(sut, TOTAL_TASK_COUNT);
+
+        // Assert
+        expect(started).toEqual(admissionOrder(TOTAL_TASK_COUNT));
+        expect(results).toEqual(admissionOrder(TOTAL_TASK_COUNT));
       });
     });
   });
