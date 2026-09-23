@@ -691,7 +691,7 @@ describe('openRepository — dispose cache hygiene', () => {
         // Arrange
         const sut = await open();
         await loadShallowSet(sut.ctx);
-        const spy = vi.spyOn(sut.ctx.fs, 'readUtf8');
+        const spy = vi.spyOn(sut.ctx.fs, 'tryReadUtf8');
 
         // Act
         await sut.dispose();

@@ -20,6 +20,7 @@ import { errorDataCode } from '../../../domain/error-data-code.js';
 import type { ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { commonGitDir, shallowFilePath } from '../path-layout.js';
+import { readUtf8IfPresent } from './fs-probes.js';
 import { parseShallowFile } from './parse-shallow.js';
 
 interface ShallowState {
@@ -46,17 +47,18 @@ export function isAbsentShallowFile(error: unknown): boolean {
 }
 
 async function loadStateUncached(ctx: Context): Promise<ShallowState> {
-  // A single throwing readUtf8, deliberately NOT the `exists`-gates-the-read
+  // A single non-throwing probe, deliberately NOT the `exists`-gates-the-read
   // rule read-commit-graph.ts follows: here presence AND content are both
   // needed, so one call covers either branch — an exists+read pair would
   // spend two syscalls on every shallow repository.
-  let raw: string;
+  let raw: string | undefined;
   try {
-    raw = await ctx.fs.readUtf8(shallowFilePath(commonGitDir(ctx)));
+    raw = await readUtf8IfPresent(ctx.fs, shallowFilePath(commonGitDir(ctx)));
   } catch (error) {
     if (isAbsentShallowFile(error)) return EMPTY_SHALLOW_STATE;
     throw error;
   }
+  if (raw === undefined) return EMPTY_SHALLOW_STATE;
   return { present: true, set: new Set(parseShallowFile(raw, ctx.hashConfig.hexLength)) };
 }
 

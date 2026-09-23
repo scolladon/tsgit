@@ -3385,11 +3385,11 @@ describe('readConfigSections / getConfigValue / getAllConfigValues', () => {
   });
 
   describe('Given two consecutive readConfigSections calls for the same scope, When the second runs', () => {
-    it('Then fs.readUtf8 is called exactly once (cache hit)', async () => {
+    it('Then fs.tryReadUtf8 is called exactly once (cache hit)', async () => {
       // Arrange
       const ctx = createMemoryContext();
       await seed(ctx, '[user]\n\tname = ada\n');
-      const spy = vi.spyOn(ctx.fs, 'readUtf8');
+      const spy = vi.spyOn(ctx.fs, 'tryReadUtf8');
 
       // Act
       await readConfigSections({ ctx, scope: 'local' });
@@ -3401,11 +3401,11 @@ describe('readConfigSections / getConfigValue / getAllConfigValues', () => {
   });
 
   describe('Given a scoped-cache invalidation between two calls, When the second readConfigSections runs', () => {
-    it('Then fs.readUtf8 is called twice (cache miss after invalidate)', async () => {
+    it('Then fs.tryReadUtf8 is called twice (cache miss after invalidate)', async () => {
       // Arrange
       const ctx = createMemoryContext();
       await seed(ctx, '[user]\n\tname = ada\n');
-      const spy = vi.spyOn(ctx.fs, 'readUtf8');
+      const spy = vi.spyOn(ctx.fs, 'tryReadUtf8');
 
       // Act
       await readConfigSections({ ctx, scope: 'local' });
@@ -3559,11 +3559,11 @@ describe('readConfigSections / getConfigValue / getAllConfigValues', () => {
   });
 
   describe('Given a populated scoped cache, When __resetSectionsCacheForTests runs between two reads', () => {
-    it('Then the cache is cleared so fs.readUtf8 is called again', async () => {
+    it('Then the cache is cleared so fs.tryReadUtf8 is called again', async () => {
       // Arrange
       const ctx = createMemoryContext();
       await seed(ctx, '[user]\n\tname = ada\n');
-      const spy = vi.spyOn(ctx.fs, 'readUtf8');
+      const spy = vi.spyOn(ctx.fs, 'tryReadUtf8');
 
       // Act
       await readConfigSections({ ctx, scope: 'local' });
@@ -3575,12 +3575,12 @@ describe('readConfigSections / getConfigValue / getAllConfigValues', () => {
     });
   });
 
-  describe('Given fs.readUtf8 rejects with a TsgitError that is neither FILE_NOT_FOUND nor PERMISSION_DENIED, When readConfigSections reads a single scope', () => {
+  describe('Given fs.tryReadUtf8 rejects with a TsgitError that is neither FILE_NOT_FOUND nor PERMISSION_DENIED, When readConfigSections reads a single scope', () => {
     it('Then the error propagates (only missing or denied scopes are swallowed as empty)', async () => {
       // Arrange
       const ctx = createMemoryContext();
       const boom = new TsgitError({ code: 'NOT_A_DIRECTORY', path: '/repo/.git/config' });
-      vi.spyOn(ctx.fs, 'readUtf8').mockRejectedValue(boom);
+      vi.spyOn(ctx.fs, 'tryReadUtf8').mockRejectedValue(boom);
       let caught: TsgitError | undefined;
 
       // Act
