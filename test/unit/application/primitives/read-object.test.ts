@@ -658,9 +658,13 @@ describe('getPackRegistry — repo-settings class boundary', () => {
 
   describe('Given a bare Context with cacheBudgets.deltaBaseCacheMaxBytes supplied and no gate opened', () => {
     describe('When readObject runs twice', () => {
-      it('Then the first read issues exactly one stat and one readUtf8 of config, and the finder runs once across both reads', async () => {
+      it('Then the first read issues one stat, one readUtf8 and one more stat (the window budget) of config, and the finder runs once across both reads', async () => {
         // Arrange — the finder spy is installed BEFORE the first read, so its
-        // count covers the compute that read triggers.
+        // count covers the compute that read triggers. The option overrides
+        // the delta-base cache's own config read, but the pack window cache
+        // has no equivalent override — it always resolves
+        // `core.packedGitWindowSize`/`core.packedGitLimit`, paying one more
+        // mtime-freshness stat against the same warm parse cache.
         const blob: Blob = { type: 'blob', content: new Uint8Array([10]), id: '' as ObjectId };
         const base = await buildSeededContext({ objects: [blob] });
         const id = (await base.hash.hashHex(serializeObject(blob, base.hashConfig))) as ObjectId;
@@ -678,6 +682,7 @@ describe('getPackRegistry — repo-settings class boundary', () => {
         expect(firstReadConfigCalls).toEqual([
           { method: 'stat', path: configPath },
           { method: 'readUtf8', path: configPath },
+          { method: 'stat', path: configPath },
         ]);
         expect(spy).toHaveBeenCalledTimes(1);
       });
@@ -686,8 +691,10 @@ describe('getPackRegistry — repo-settings class boundary', () => {
 
   describe('Given a bare Context with no cacheBudgets override and no gate opened', () => {
     describe('When readObject runs twice', () => {
-      it('Then the first read issues stat, readUtf8, stat of config, and the finder runs once across both reads', async () => {
-        // Arrange
+      it('Then the first read issues stat, readUtf8, stat, stat of config (delta-base + window budgets), and the finder runs once across both reads', async () => {
+        // Arrange — both derived caches resolve their own config-backed
+        // budget once against the same warm parse cache: one mtime-freshness
+        // stat each, beyond the repo-settings check's stat + readUtf8.
         const blob: Blob = { type: 'blob', content: new Uint8Array([11]), id: '' as ObjectId };
         const base = await buildSeededContext({ objects: [blob] });
         const id = (await base.hash.hashHex(serializeObject(blob, base.hashConfig))) as ObjectId;
@@ -704,6 +711,7 @@ describe('getPackRegistry — repo-settings class boundary', () => {
         expect(firstReadConfigCalls).toEqual([
           { method: 'stat', path: configPath },
           { method: 'readUtf8', path: configPath },
+          { method: 'stat', path: configPath },
           { method: 'stat', path: configPath },
         ]);
         expect(spy).toHaveBeenCalledTimes(1);

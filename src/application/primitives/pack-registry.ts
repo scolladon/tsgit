@@ -56,6 +56,11 @@ import {
   isSkippablePackFault,
   packBaseName,
 } from './internal/pack-shared.js';
+import {
+  createPackWindowCache,
+  type PackWindowCache,
+  packWindowBudgetFor,
+} from './internal/pack-window-cache.js';
 import { createPromiseMemo, type PromiseMemo } from './internal/promise-memo.js';
 import { assertRepoSettingsValid } from './internal/repo-settings-gate.js';
 import { deltaBaseCacheBudgetFor } from './internal/resolve-delta-base-cache-limit.js';
@@ -114,7 +119,7 @@ export interface RegisteredPack {
    * completeness rests on every pack-byte read passing through `lookup` first,
    * and nothing here structurally forces that to stay true.
    */
-  readonly readSlice: (offset: number, length: number) => Promise<Uint8Array>;
+  readonly readSlice: (offset: number, length: number) => Promise<Readonly<Uint8Array>>;
   /** Release the persistent handle, if one was ever opened. Idempotent. */
   readonly close: () => Promise<void>;
   /** Whether this pack's `.rev` sibling was present in the scan's own file
@@ -383,6 +388,7 @@ function loadPack(
   dir: string,
   entryName: string,
   fileNames: ReadonlySet<string>,
+  windowCache: PackWindowCache,
 ): RegisteredPack {
   const idxPath = `${dir}/${entryName}`;
   const name = packBaseName(entryName);
@@ -461,14 +467,42 @@ function loadPack(
   const inFlight = new Set<Promise<unknown>>();
   let retired = false;
 
+  // Pack file size via fstat on the held handle — one syscall cheaper than a
+  // path stat, and consistent with every other read now going through this
+  // same handle. A retired pack (closed by refresh()) never reopens one, so
+  // it stats by path instead, mirroring readSlice's own retired arm; the
+  // browser-shaped UNSUPPORTED_OPERATION arm (no persistent handles) falls
+  // back to the same path stat.
+  const packSize = async (): Promise<number> => {
+    if (retired) return (await ctx.fs.stat(packPath)).size;
+    try {
+      const handle = await handleMemo.get();
+      return (await handle.stat()).size;
+    } catch (err) {
+      if (!isUnsupportedOperation(err)) throw err;
+      handleMemo.clear();
+      return (await ctx.fs.stat(packPath)).size;
+    }
+  };
+  const sizeMemo = createPromiseMemo(packSize);
+
+  // Loads `size` bytes at `base` through the held handle into a FRESH
+  // buffer — no per-call zero-fill of a caller-supplied length, since the
+  // window cache owns the allocation and reuses it across every request the
+  // window covers. Clamped to the pack's own end, mirroring the window
+  // cache's "a short window at file end returns a short view" contract.
+  const loadWindow = async (base: number, size: number): Promise<Uint8Array> => {
+    const handle = await handleMemo.get();
+    const packFileSize = await sizeMemo.get();
+    const clampedSize = Math.min(size, packFileSize - base);
+    const buffer = new Uint8Array(clampedSize);
+    const bytesRead = await handle.read(buffer, 0, clampedSize, base);
+    return buffer.subarray(0, bytesRead);
+  };
+
   const readSlice = async (offset: number, length: number): Promise<Uint8Array> => {
     if (retired) return ctx.fs.readSlice(packPath, offset, length);
-    const read = (async (): Promise<Uint8Array> => {
-      const handle = await handleMemo.get();
-      const buffer = new Uint8Array(length);
-      const bytesRead = await handle.read(buffer, 0, length, offset);
-      return buffer.subarray(0, bytesRead);
-    })();
+    const read = windowCache.read(name, offset, length, loadWindow);
     inFlight.add(read);
     try {
       return await read;
@@ -492,11 +526,12 @@ function loadPack(
     }
   };
 
-  // The 12-byte header rides the SAME held handle every data read uses — the
-  // header is no longer a special path-based read, so a scan that only ever
-  // probes headers still opens the pack exactly once. The browser-shaped
-  // UNSUPPORTED_OPERATION arm inside readSlice already falls back to a path
-  // read, so this needs no fallback of its own.
+  // The header now rides the pack window cache, sharing its window with
+  // whatever else falls in [0, windowBytes) — the header is no longer a
+  // special path-based read, so a scan that only ever probes headers still
+  // opens the pack exactly once. The browser-shaped UNSUPPORTED_OPERATION
+  // arm inside readSlice already falls back to a path read, so this needs
+  // no fallback of its own.
   const headerMemo = createPromiseMemo(async (): Promise<PackHeader> => {
     const index = await indexMemo.get();
     const header = parsePackHeader(await readSlice(0, PACK_HEADER_SIZE));
@@ -507,25 +542,6 @@ function loadPack(
     }
     return header;
   });
-
-  // Pack file size via fstat on the held handle — one syscall cheaper than a
-  // path stat, and consistent with every other read now going through this
-  // same handle. A retired pack (closed by refresh()) never reopens one, so
-  // it stats by path instead, mirroring readSlice's own retired arm; the
-  // browser-shaped UNSUPPORTED_OPERATION arm (no persistent handles) falls
-  // back to the same path stat.
-  const packSize = async (): Promise<number> => {
-    if (retired) return (await ctx.fs.stat(packPath)).size;
-    try {
-      const handle = await handleMemo.get();
-      return (await handle.stat()).size;
-    } catch (err) {
-      if (!isUnsupportedOperation(err)) throw err;
-      handleMemo.clear();
-      return (await ctx.fs.stat(packPath)).size;
-    }
-  };
-  const sizeMemo = createPromiseMemo(packSize);
 
   const buildOffsetTable = async (): Promise<PackOffsetTable> => {
     const index = await indexMemo.get();
@@ -589,6 +605,7 @@ function loadCandidatePack(
   dir: string,
   entry: { readonly name: string },
   fileNames: ReadonlySet<string>,
+  windowCache: PackWindowCache,
 ): RegisteredPack | undefined {
   const name = packBaseName(entry.name);
   if (!fileNames.has(`${name}.pack`)) {
@@ -597,7 +614,7 @@ function loadCandidatePack(
     });
     return undefined;
   }
-  return loadPack(ctx, dir, entry.name, fileNames);
+  return loadPack(ctx, dir, entry.name, fileNames, windowCache);
 }
 
 const unusableEntry = (
@@ -695,6 +712,12 @@ export async function createPackRegistry(ctx: Context): Promise<PackRegistry> {
     await deltaBaseCacheBudgetFor(ctx),
     DELTA_BASE_CACHE_MAX_ENTRIES,
   );
+  // Registry-wide window cache backing every RegisteredPack.readSlice — one
+  // LRU shared across every pack this registry loads, so a window evicted
+  // for one pack can make room for another's. Sized once here, at
+  // construction, from the SAME config `readConfig` already parsed for the
+  // eager gate above; never re-derived on `refresh()`.
+  const windowCache = createPackWindowCache(await packWindowBudgetFor(ctx));
 
   const scanPacks = async (): Promise<PackGeneration> => {
     const dir = packsDir(commonGitDir(ctx));
@@ -730,7 +753,7 @@ export async function createPackRegistry(ctx: Context): Promise<PackRegistry> {
     const packs: RegisteredPack[] = [];
     for (const entry of entries) {
       if (!isCandidate(entry)) continue;
-      const pack = loadCandidatePack(ctx, dir, entry, fileNames);
+      const pack = loadCandidatePack(ctx, dir, entry, fileNames, windowCache);
       if (pack !== undefined) packs.push(pack);
     }
     const midx =
@@ -949,6 +972,10 @@ export async function createPackRegistry(ctx: Context): Promise<PackRegistry> {
       // offset for entirely different bytes, so this MUST clear alongside
       // the scan, not survive into the next generation.
       deltaBaseCache.clear();
+      // Same reasoning as deltaBaseCache above: a replaced pack can reuse
+      // its name, and `${packName}:${base}` would otherwise serve the OLD
+      // pack's bytes to a read against the new one.
+      windowCache.clear();
       // Cleared before the early return below: a Context that only ever
       // called assertLoadable (a loose-only read) never forces the scan, so
       // clearing the gate — and the listing it shares with the scan — here,
@@ -993,6 +1020,7 @@ export async function createPackRegistry(ctx: Context): Promise<PackRegistry> {
     async dispose(): Promise<void> {
       disposed = true;
       deltaBaseCache.clear();
+      windowCache.clear();
       // A registry that never scanned the pack directory has no handles to
       // close — skip the scan entirely rather than triggering one just to
       // find nothing. Peek, not clear: all() keeps returning the closed,

@@ -46,7 +46,13 @@ import type { DirEntry, FileHandle, FileStat } from '../../../../src/ports/file-
 import { buildMidx, type MidxSpec } from '../../domain/storage/arbitraries.js';
 import { buildSeededContext, instrumentedContext } from './fixtures.js';
 import { withHandleLedger } from './handle-ledger.js';
-import { restampPackHeader, writeSyntheticPack, writeSyntheticRevIndex } from './pack-fixture.js';
+import {
+  buildSyntheticPack,
+  type EntrySpec,
+  restampPackHeader,
+  writeSyntheticPack,
+  writeSyntheticRevIndex,
+} from './pack-fixture.js';
 
 vi.mock('../../../../src/domain/storage/index.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../../src/domain/storage/index.js')>();
@@ -1038,13 +1044,15 @@ describe('PackRegistry.scan — per-pack idx degradation and orphan exclusion', 
 describe('PackRegistry — lazy pack-index loading', () => {
   describe('Given two healthy packs', () => {
     describe('When createPackRegistry is called and nothing else', () => {
-      it('Then no readdir and no .idx read has happened yet — only the repo-settings class check and the delta-base budget config read', async () => {
+      it('Then no readdir and no .idx read has happened yet — only the repo-settings class check and the two budget config reads', async () => {
         // Arrange — construction validates the repo-settings class first,
         // then resolves the delta-base cache's byte budget (a
-        // `core.deltaBaseCacheLimit` config read) — both hit the same warm
-        // parse cache, so the content is read once and only the mtime stat
-        // repeats — but the pack directory itself stays untouched until the
-        // registry is actually consulted.
+        // `core.deltaBaseCacheLimit` config read) and the pack window
+        // cache's budget (`core.packedGitWindowSize`/`core.packedGitLimit`)
+        // — all three hit the same warm parse cache, so the content is read
+        // once and only the mtime-freshness stat repeats per resolver — but
+        // the pack directory itself stays untouched until the registry is
+        // actually consulted.
         const ctx = await buildSeededContext();
         await writeSyntheticPack(ctx, 'lazy-cold-a', [
           { kind: 'base', type: 'blob', content: new TextEncoder().encode('a') },
@@ -1062,6 +1070,7 @@ describe('PackRegistry — lazy pack-index loading', () => {
           { method: 'stat', path: '/repo/.git/config' },
           { method: 'readUtf8', path: '/repo/.git/config' },
           { method: 'stat', path: '/repo/.git/config' },
+          { method: 'stat', path: '/repo/.git/config' },
         ]);
       });
     });
@@ -1069,11 +1078,13 @@ describe('PackRegistry — lazy pack-index loading', () => {
 
   describe('Given two healthy packs and cacheBudgets.deltaBaseCacheMaxBytes supplied', () => {
     describe('When createPackRegistry is called and nothing else', () => {
-      it('Then only the repo-settings class check reads config — the budget option reads no configuration', async () => {
+      it('Then the delta-base budget option reads no configuration, but the window budget still does', async () => {
         // Arrange — the option overrides the delta-base cache's own
-        // `core.deltaBaseCacheLimit` config read, so construction issues only
-        // the repo-settings verdict's stat + readUtf8, never the extra
-        // mtime-freshness stat the unset case pays.
+        // `core.deltaBaseCacheLimit` config read (skipped entirely by its
+        // `??` short-circuit), but the pack window cache has no equivalent
+        // override option — it always resolves `core.packedGitWindowSize`/
+        // `core.packedGitLimit`, paying one more mtime-freshness stat
+        // against the same warm parse cache the repo-settings check filled.
         const base = await buildSeededContext();
         await writeSyntheticPack(base, 'lazy-cold-budget-a', [
           { kind: 'base', type: 'blob', content: new TextEncoder().encode('a') },
@@ -1088,6 +1099,7 @@ describe('PackRegistry — lazy pack-index loading', () => {
         expect(calls()).toEqual([
           { method: 'stat', path: '/repo/.git/config' },
           { method: 'readUtf8', path: '/repo/.git/config' },
+          { method: 'stat', path: '/repo/.git/config' },
         ]);
       });
     });
@@ -2064,9 +2076,13 @@ describe('PackRegistry.health — per-pack accessibility', () => {
 
   describe('Given a healthy pack', () => {
     describe('When health() is called, then lookup() resolves the same pack', () => {
-      it('Then exactly one 12-byte header readSlice is issued in total', async () => {
+      it('Then exactly one handle read is issued in total, sized to the cached window', async () => {
         // Arrange — health() warms pack.header()'s memo; a later lookup() must
         // reuse it rather than re-probing (requirement 10, no second gate).
+        // The header read now goes through the pack window cache: a small
+        // pack's window load is clamped to the whole (small) file, not to
+        // PACK_HEADER_SIZE — the point of caching a window at offset 0 in
+        // the first place.
         const ctx = await buildSeededContext();
         const content = new TextEncoder().encode('health-memo-warm-content');
         const ids = await writeSyntheticPack(ctx, 'health-memo-warm', [
@@ -2074,6 +2090,7 @@ describe('PackRegistry.health — per-pack accessibility', () => {
         ]);
         const id = ids[0] as ObjectId;
         const packPath = `${ctx.layout.gitDir}/objects/pack/pack-health-memo-warm.pack`;
+        const packFileSize = (await ctx.fs.stat(packPath)).size;
         const ledger = withHandleLedger(ctx);
         const sut = await createPackRegistry(ledger.ctx);
 
@@ -2082,16 +2099,20 @@ describe('PackRegistry.health — per-pack accessibility', () => {
         await sut.lookup(id);
 
         // Assert
-        expect(ledger.slices()).toEqual([{ path: packPath, offset: 0, length: PACK_HEADER_SIZE }]);
+        expect(ledger.slices()).toEqual([{ path: packPath, offset: 0, length: packFileSize }]);
       });
     });
   });
 
   describe('Given a pack whose header is invalid', () => {
     describe('When health() is called, then lookup() probes the same pack again', () => {
-      it('Then two header probes are issued — the memo clears on rejection', async () => {
+      it('Then the header is re-parsed and re-warned on the second probe — the memo clears on rejection', async () => {
         // Arrange — no negative cache: a rejected probe must not pin later
-        // callers to a stale fault.
+        // callers to a stale fault. The pack window cache serves the second
+        // probe's bytes from the window health() already loaded, so a
+        // single physical read now backs both probes — `warn`, not the
+        // handle-read count, is what proves the header memo itself still
+        // re-parses (and re-rejects) on every call.
         const ctx = await buildSeededContext();
         const content = new TextEncoder().encode('health-no-negative-cache-content');
         const ids = await writeSyntheticPack(ctx, 'health-no-negative-cache', [
@@ -2100,7 +2121,8 @@ describe('PackRegistry.health — per-pack accessibility', () => {
         const id = ids[0] as ObjectId;
         const packPath = `${ctx.layout.gitDir}/objects/pack/pack-health-no-negative-cache.pack`;
         await restampPackHeader(ctx, packPath, { version: 99 });
-        const ledger = withHandleLedger(ctx);
+        const warn = vi.fn();
+        const ledger = withHandleLedger({ ...ctx, logger: { warn } });
         const sut = await createPackRegistry(ledger.ctx);
 
         // Act
@@ -2108,7 +2130,8 @@ describe('PackRegistry.health — per-pack accessibility', () => {
         await sut.lookup(id);
 
         // Assert
-        expect(ledger.slices().filter((s) => s.path === packPath)).toHaveLength(2);
+        expect(ledger.slices().filter((s) => s.path === packPath)).toHaveLength(1);
+        expect(warn).toHaveBeenCalledTimes(2);
       });
     });
   });
@@ -2948,6 +2971,140 @@ describe('RegisteredPack.readSlice — non-UNSUPPORTED_OPERATION failure', () =>
   });
 });
 
+describe('RegisteredPack.readSlice — pack window cache (P8)', () => {
+  describe('Given a delta chain read at a configured small window size', () => {
+    describe('When every entry offset is read from tip to base', () => {
+      it('Then handle reads stay within one window load per span segment', async () => {
+        // Arrange — windowBytes=8192 is at least two 4 KiB pages, so a
+        // request that crosses a window-aligned boundary is always rescued
+        // by a page-aligned load (never bypassed): the number of distinct
+        // windows touched is bounded by the span alone, independent of read
+        // order.
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[core]\n\tpackedGitWindowSize = 8192\n',
+        );
+        const entries: EntrySpec[] = [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('chain-base') },
+        ];
+        for (let i = 1; i < 6; i += 1) {
+          entries.push({
+            kind: 'ofs-delta',
+            baseIndex: i - 1,
+            targetContent: Uint8Array.from({ length: 3000 }, () => Math.floor(Math.random() * 256)),
+          });
+        }
+        const build = await buildSyntheticPack(ctx, entries);
+        const base = `${ctx.layout.gitDir}/objects/pack/pack-delta-window-span`;
+        await ctx.fs.write(`${base}.pack`, build.packBytes);
+        await ctx.fs.write(`${base}.idx`, build.idxBytes);
+        const ledger = withHandleLedger(ctx);
+        const registry = await createPackRegistry(ledger.ctx);
+        const pack = (await registry.all())[0]!;
+        const readLength = 8;
+        const span = build.offsets[build.offsets.length - 1]! + readLength - build.offsets[0]!;
+        const maxHandleReads = Math.ceil(span / 8192) + 1;
+
+        // Act — tip to base, the real delta-chain walk order.
+        for (const offset of [...build.offsets].reverse()) {
+          await pack.readSlice(offset, readLength);
+        }
+
+        // Assert
+        const packPath = `${base}.pack`;
+        const reads = ledger.slices().filter((s) => s.path === packPath);
+        expect(reads.length).toBeLessThanOrEqual(maxHandleReads);
+      });
+    });
+  });
+});
+
+describe('Given a registry that cached a pack window before refresh()', () => {
+  describe('When the pack is rewritten under the same name and refresh() runs', () => {
+    it('Then a read at the same offset serves the new bytes, not the stale window', async () => {
+      // Arrange — both packs are single-entry, so the first entry always
+      // starts at PACK_HEADER_SIZE=12, well inside the default 64 KiB
+      // window: the cache key collides across the rewrite unless refresh()
+      // clears it.
+      const ctx = await buildSeededContext();
+      await writeSyntheticPack(ctx, 'reused-name', [
+        { kind: 'base', type: 'blob', content: new TextEncoder().encode('original-window-bytes') },
+      ]);
+      const registry = await createPackRegistry(ctx);
+      const firstPack = (await registry.all())[0]!;
+      await firstPack.readSlice(PACK_HEADER_SIZE, 10);
+
+      // Act
+      registry.refresh();
+      await writeSyntheticPack(ctx, 'reused-name', [
+        {
+          kind: 'base',
+          type: 'blob',
+          content: new TextEncoder().encode('rewritten-window-bytes!!'),
+        },
+      ]);
+      const secondPack = (await registry.all())[0]!;
+      const result = await secondPack.readSlice(PACK_HEADER_SIZE, 10);
+
+      // Assert
+      const direct = await ctx.fs.readSlice(secondPack.packPath, PACK_HEADER_SIZE, 10);
+      expect(Array.from(result)).toEqual(Array.from(direct));
+    });
+  });
+});
+
+describe('Given a registry whose pack window cache holds a warmed window', () => {
+  describe('When refresh() runs', () => {
+    it('Then the pack window cache is cleared', async () => {
+      // Arrange — the window cache is internal (not on the PackRegistry
+      // surface); the createLruCache spy's own returned instance is the
+      // only observable handle onto it, distinguished from deltaBaseCache's
+      // call by argument count (windowCache passes only maxSizeBytes).
+      const ctx = await buildSeededContext();
+      await writeSyntheticPack(ctx, 'window-cache-refresh', [
+        { kind: 'base', type: 'blob', content: new TextEncoder().encode('window-refresh-content') },
+      ]);
+      createLruCacheSpy.mockClear();
+      const registry = await createPackRegistry(ctx);
+      const windowCacheIndex = createLruCacheSpy.mock.calls.findIndex((call) => call.length === 1);
+      const windowCache = createLruCacheSpy.mock.results[windowCacheIndex]!.value;
+      const pack = (await registry.all())[0]!;
+      await pack.readSlice(0, 4);
+      expect(windowCache.entryCount).toBeGreaterThan(0);
+
+      // Act
+      registry.refresh();
+
+      // Assert
+      expect(windowCache.entryCount).toBe(0);
+    });
+  });
+
+  describe('When dispose() is awaited', () => {
+    it('Then the pack window cache is cleared', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      await writeSyntheticPack(ctx, 'window-cache-dispose', [
+        { kind: 'base', type: 'blob', content: new TextEncoder().encode('window-dispose-content') },
+      ]);
+      createLruCacheSpy.mockClear();
+      const registry = await createPackRegistry(ctx);
+      const windowCacheIndex = createLruCacheSpy.mock.calls.findIndex((call) => call.length === 1);
+      const windowCache = createLruCacheSpy.mock.results[windowCacheIndex]!.value;
+      const pack = (await registry.all())[0]!;
+      await pack.readSlice(0, 4);
+      expect(windowCache.entryCount).toBeGreaterThan(0);
+
+      // Act
+      await registry.dispose();
+
+      // Assert
+      expect(windowCache.entryCount).toBe(0);
+    });
+  });
+});
+
 describe('RegisteredPack retired reads', () => {
   describe('Given a pack whose persistent handle was closed', () => {
     describe('When readSlice is called after close', () => {
@@ -3234,8 +3391,9 @@ describe('Given a malformed core.maxTreeDepth', () => {
 
 describe('Given a freshly constructed registry', () => {
   describe('When refresh() runs after construction', () => {
-    it('Then readConfig ran exactly once — only during construction, never on refresh', async () => {
-      // Arrange
+    it('Then readConfig ran exactly twice (delta-base + window budgets) — only during construction, never on refresh', async () => {
+      // Arrange — both derived caches resolve their config-backed budget
+      // once, at construction; refresh() must not re-derive either.
       const ctx = await buildSeededContext();
       const spy = vi.spyOn(configReadMod, 'readConfig');
 
@@ -3244,7 +3402,7 @@ describe('Given a freshly constructed registry', () => {
       sut.refresh();
 
       // Assert
-      expect(spy).toHaveBeenCalledTimes(1);
+      expect(spy).toHaveBeenCalledTimes(2);
       spy.mockRestore();
     });
   });
@@ -4183,8 +4341,14 @@ describe('PackRegistry.lookup — header gate', () => {
 
   describe('Given a pack with an invalid header', () => {
     describe('When lookup(id) is called twice', () => {
-      it('Then each call re-probes the header and warns again — no negative cache', async () => {
-        // Arrange
+      it('Then each call re-parses the header and warns again — no negative cache at the parse level', async () => {
+        // Arrange — the header MEMO self-clears on rejection (no negative
+        // cache), so parsePackHeader really does run again on the second
+        // call. The pack window cache is a separate, lower layer that
+        // caches raw bytes regardless of parse outcome: the first call's
+        // window load already covers offset 0, so the second call's
+        // re-parse is served from that cached window with no second handle
+        // read — one physical read, two independent parse attempts.
         const ctx = await buildSeededContext();
         const content = new TextEncoder().encode('no-negative-cache-content');
         const ids = await writeSyntheticPack(ctx, 'no-negative-cache', [
@@ -4202,10 +4366,8 @@ describe('PackRegistry.lookup — header gate', () => {
         await sut.lookup(id);
 
         // Assert
-        const probes = ledger
-          .slices()
-          .filter((s) => s.path === packPath && s.offset === 0 && s.length === PACK_HEADER_SIZE);
-        expect(probes).toHaveLength(2);
+        const probes = ledger.slices().filter((s) => s.path === packPath && s.offset === 0);
+        expect(probes).toHaveLength(1);
         expect(warn).toHaveBeenCalledTimes(2);
       });
     });
@@ -4229,10 +4391,9 @@ describe('PackRegistry.lookup — header gate', () => {
         await sut.lookup(id);
         await sut.lookup(id);
 
-        // Assert
-        const probes = ledger
-          .slices()
-          .filter((s) => s.path === packPath && s.offset === 0 && s.length === PACK_HEADER_SIZE);
+        // Assert — the pack window cache's window load, not a bare
+        // PACK_HEADER_SIZE read, is what actually reaches the handle.
+        const probes = ledger.slices().filter((s) => s.path === packPath && s.offset === 0);
         expect(probes).toHaveLength(1);
       });
     });

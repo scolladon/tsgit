@@ -38,6 +38,7 @@ import {
 import type { FilePath } from '../../../../src/domain/objects/object-id.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import { invalidPackIndex } from '../../../../src/domain/storage/index.js';
+import * as packEntryMod from '../../../../src/domain/storage/pack-entry.js';
 import type { Context } from '../../../../src/ports/context.js';
 import {
   type BitmapSpec,
@@ -4968,8 +4969,12 @@ describe('Given a packed object whose entry reads reject with PERMISSION_DENIED,
       // walk (`collectDeltaChain`) hits this PERMISSION_DENIED directly,
       // shadowing the stale loose garbled copy. The store fault still routes
       // into fsck's own header-only recovery walk, which degrades and warns
-      // with the same reason as before.
+      // with the same reason as before. A tiny configured window forces
+      // every readSlice to bypass the pack window cache, so the header probe
+      // and the entry read stay two distinct handle reads at two distinct
+      // positions — the fixture's own fault-injection axis.
       const ctx = await initBareCtx();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tpackedGitWindowSize = 1\n');
       const [blobId] = await writeSyntheticPack(
         ctx,
         'd13-degrade-walk',
@@ -6265,21 +6270,28 @@ describe('Given two midx entries routed to one pack whose header is broken', () 
         }),
       );
       const ledger = withHandleLedger(ctx);
+      const parseHeaderSpy = vi.spyOn(packEntryMod, 'parsePackHeader');
 
       // Act
       const result = await fsck(ledger.ctx);
 
-      // Assert — both entries unresolved, yet the broken header was read
-      // exactly twice: once by the pack-health pass and once by the midx
-      // walk. The walk's per-pack memo is what holds the count there at one —
-      // a rejection clears the underlying header memo, so a per-entry probe
-      // would make this three.
+      // Assert — both entries unresolved, and the broken header is
+      // re-PARSED exactly twice: once by the pack-health pass and once by
+      // the midx walk's own (silent, non-warning) serviceability probe —
+      // the header memo's self-clear-on-rejection means neither caller
+      // reuses a stale negative verdict. The pack window cache now serves
+      // the second parse's bytes from the window the first probe already
+      // loaded, so only ONE physical read backs both parses; `parsePackHeader`
+      // call count, not the handle-read count, is what still discriminates
+      // "re-probed" from "negatively cached" here.
       const entryUnresolved = result.findings.filter((f) => f.type === 'midx-entry-unresolved');
       expect(entryUnresolved).toHaveLength(2);
+      expect(parseHeaderSpy).toHaveBeenCalledTimes(2);
       const headerReads = ledger
         .slices()
         .filter((call) => call.path.endsWith('pack-shared.pack') && call.offset === 0);
-      expect(headerReads).toHaveLength(2);
+      expect(headerReads).toHaveLength(1);
+      parseHeaderSpy.mockRestore();
     });
   });
 });
