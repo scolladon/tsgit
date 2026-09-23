@@ -27,7 +27,6 @@ import {
   bindMidx,
   computeMidxHealth,
   findMidxHit,
-  type LoadedMidx,
   type MidxHealth,
 } from './internal/midx-binding.js';
 import { loadMidxSet, type MidxLoadResult } from './internal/midx-source.js';
@@ -448,36 +447,6 @@ function loadPack(
     return packPositionMap(index);
   });
 
-  const headerMemo = createPromiseMemo(async (): Promise<PackHeader> => {
-    const index = await indexMemo.get();
-    const header = parsePackHeader(await ctx.fs.readSlice(packPath, 0, PACK_HEADER_SIZE));
-    if (header.objectCount !== index.objectCount) {
-      throw invalidPackHeader(
-        `object count disagrees with index: pack ${header.objectCount}, index ${index.objectCount}`,
-      );
-    }
-    return header;
-  });
-
-  const buildOffsetTable = async (): Promise<PackOffsetTable> => {
-    const index = await indexMemo.get();
-    const stat = await ctx.fs.stat(packPath);
-    const packFileSize = stat.size;
-    // The pack file trailer is a single pack-checksum digest (SHA-1: 20 bytes,
-    // SHA-256: 32 bytes). The last entry's data ends exactly at trailerStart.
-    const trailerStart = packFileSize - ctx.hashConfig.digestLength;
-    if (trailerStart < 0) {
-      throw invalidPackIndex('pack file too small to contain a trailer');
-    }
-    // A present, loadable `.rev` always wins — resolveOffsetTable answers
-    // with a lazy, `.rev`-backed table and never materialises an O(n) sorted
-    // array for it. `revIndexMemo.get` is passed through rather than
-    // awaited here, so the SAME single-flight `.rev` load this pack's other
-    // consumers (packPositionsMemo) share is reused, not duplicated.
-    return resolveOffsetTable(ctx, name, index, revIndexMemo.get, packFileSize, trailerStart);
-  };
-  const offsetTable = createPromiseMemo(buildOffsetTable).get;
-
   // Lazily-opened, memoised persistent handle for this pack's slice reads.
   // The memo clears itself on any open rejection (a transient EMFILE must
   // not pin later reads — or dispose() — to a stale fault), and the
@@ -522,6 +491,59 @@ function loadPack(
       inFlight.delete(read);
     }
   };
+
+  // The 12-byte header rides the SAME held handle every data read uses — the
+  // header is no longer a special path-based read, so a scan that only ever
+  // probes headers still opens the pack exactly once. The browser-shaped
+  // UNSUPPORTED_OPERATION arm inside readSlice already falls back to a path
+  // read, so this needs no fallback of its own.
+  const headerMemo = createPromiseMemo(async (): Promise<PackHeader> => {
+    const index = await indexMemo.get();
+    const header = parsePackHeader(await readSlice(0, PACK_HEADER_SIZE));
+    if (header.objectCount !== index.objectCount) {
+      throw invalidPackHeader(
+        `object count disagrees with index: pack ${header.objectCount}, index ${index.objectCount}`,
+      );
+    }
+    return header;
+  });
+
+  // Pack file size via fstat on the held handle — one syscall cheaper than a
+  // path stat, and consistent with every other read now going through this
+  // same handle. A retired pack (closed by refresh()) never reopens one, so
+  // it stats by path instead, mirroring readSlice's own retired arm; the
+  // browser-shaped UNSUPPORTED_OPERATION arm (no persistent handles) falls
+  // back to the same path stat.
+  const packSize = async (): Promise<number> => {
+    if (retired) return (await ctx.fs.stat(packPath)).size;
+    try {
+      const handle = await handleMemo.get();
+      return (await handle.stat()).size;
+    } catch (err) {
+      if (!isUnsupportedOperation(err)) throw err;
+      handleMemo.clear();
+      return (await ctx.fs.stat(packPath)).size;
+    }
+  };
+  const sizeMemo = createPromiseMemo(packSize);
+
+  const buildOffsetTable = async (): Promise<PackOffsetTable> => {
+    const index = await indexMemo.get();
+    const packFileSize = await sizeMemo.get();
+    // The pack file trailer is a single pack-checksum digest (SHA-1: 20 bytes,
+    // SHA-256: 32 bytes). The last entry's data ends exactly at trailerStart.
+    const trailerStart = packFileSize - ctx.hashConfig.digestLength;
+    if (trailerStart < 0) {
+      throw invalidPackIndex('pack file too small to contain a trailer');
+    }
+    // A present, loadable `.rev` always wins — resolveOffsetTable answers
+    // with a lazy, `.rev`-backed table and never materialises an O(n) sorted
+    // array for it. `revIndexMemo.get` is passed through rather than
+    // awaited here, so the SAME single-flight `.rev` load this pack's other
+    // consumers (packPositionsMemo) share is reused, not duplicated.
+    return resolveOffsetTable(ctx, name, index, revIndexMemo.get, packFileSize, trailerStart);
+  };
+  const offsetTable = createPromiseMemo(buildOffsetTable).get;
 
   const close = async (): Promise<void> => {
     retired = true;
@@ -729,12 +751,17 @@ export async function createPackRegistry(ctx: Context): Promise<PackRegistry> {
       );
       return { artefact, midx: head, ...load };
     });
+    // Created before `indexed` below so both share the SAME set: a lazy
+    // lookup's `unclaimedIndexOrSkip` and this generation's bulk
+    // `resolveIndexes` warn into it interchangeably, and whichever runs
+    // first claims the one warn for a given `.idx`.
+    const warnedIdx = new Set<string>();
     return {
       packs,
       midxLoad,
       midx,
-      indexed: createPromiseMemo(() => resolveIndexes(ctx, packs)),
-      warnedIdx: new Set(),
+      indexed: createPromiseMemo(() => resolveIndexes(ctx, packs, warnedIdx)),
+      warnedIdx,
       fileNames,
       midxBitmap: midxBitmapMemo,
     };
@@ -816,35 +843,11 @@ export async function createPackRegistry(ctx: Context): Promise<PackRegistry> {
     }
   };
 
-  // Step 3 of lookup: the ordinary .idx scan over packs the midx does not
-  // claim. With no midx, the generation's classified snapshot is forced once
-  // and walked synchronously (every parse already settled). With a midx,
-  // ONLY unclaimed packs are touched — git never opens a midx-covered `.idx`
-  // in find_pack_entry, and forcing the snapshot here would re-pay the P
-  // eager reads the lazy scan exists to avoid. Each unclaimed `.idx` loads
-  // lazily; a classified-corrupt one is skipped per pack, mirroring the
-  // snapshot's own classification.
-  // No midx: force the generation's classified snapshot once, then walk it
-  // synchronously — every parse already settled, and the header probe is
-  // awaited only on the index match, so a full-scan miss costs zero awaits.
-  const lookupViaIndexedSnapshot = async (
-    generation: PackGeneration,
-    id: ObjectId,
-  ): Promise<PackLookupHit | undefined> => {
-    const { packs } = await generation.indexed.get();
-    for (const { pack, index } of packs) {
-      const offset = lookupPackIndex(index, id);
-      if (offset === undefined) continue;
-      const fault = await probeHeader(pack);
-      if (fault !== undefined) continue;
-      return { pack, offset };
-    }
-    return undefined;
-  };
-
-  // The one lazy per-pack classification site outside the snapshot: an
-  // unclaimed pack's corrupt `.idx` is skipped exactly as `resolveIndexes`
-  // would skip it, with the same warn shape.
+  // The one lazy per-pack classification site every lookup shares, whether
+  // or not a midx exists: a corrupt `.idx` is skipped exactly as
+  // `resolveIndexes` would skip it, with the same warn shape, deduped
+  // against the generation's own set so a pack `resolveIndexes` already
+  // warned about (or vice versa) never warns twice.
   const unclaimedIndexOrSkip = async (
     pack: RegisteredPack,
     warnedIdx: Set<string>,
@@ -865,13 +868,18 @@ export async function createPackRegistry(ctx: Context): Promise<PackRegistry> {
     }
   };
 
-  const lookupViaUnclaimedPacks = async (
+  // Step 3 of lookup: one `.idx` at a time, in candidate order, stopping at
+  // the first hit — never a snapshot forced ahead of need. `isClaimed` is
+  // the only difference between the no-midx and midx-present shapes: git
+  // never opens a midx-covered `.idx` in find_pack_entry, so a midx routes
+  // straight past every pack it claims and only walks the rest this way.
+  const lookupLazily = async (
     generation: PackGeneration,
-    midx: LoadedMidx,
     id: ObjectId,
+    isClaimed: (pack: RegisteredPack) => boolean,
   ): Promise<PackLookupHit | undefined> => {
     for (const pack of generation.packs) {
-      if (midx.claimedNames.has(`${pack.name}.idx`)) continue;
+      if (isClaimed(pack)) continue;
       const index = await unclaimedIndexOrSkip(pack, generation.warnedIdx);
       if (index === undefined) continue;
       const offset = lookupPackIndex(index, id);
@@ -888,9 +896,8 @@ export async function createPackRegistry(ctx: Context): Promise<PackRegistry> {
     id: ObjectId,
   ): Promise<PackLookupHit | undefined> => {
     const midx = generation.midx;
-    return midx === undefined
-      ? lookupViaIndexedSnapshot(generation, id)
-      : lookupViaUnclaimedPacks(generation, midx, id);
+    if (midx === undefined) return lookupLazily(generation, id, () => false);
+    return lookupLazily(generation, id, (pack) => midx.claimedNames.has(`${pack.name}.idx`));
   };
 
   const computeHealth = async (): Promise<PackHealth> => {

@@ -11,6 +11,7 @@ import type { TsgitErrorData } from '../../../domain/error.js';
 import type { PackIndex } from '../../../domain/storage/index.js';
 import type { Context } from '../../../ports/context.js';
 import type { MidxBitmapLoad, RegisteredPack } from '../pack-registry.js';
+import { boundedMapFor } from './concurrency.js';
 import type { LoadedMidx } from './midx-binding.js';
 import type { MidxLoadResult } from './midx-source.js';
 import { faultContext, isSkippableIdxFault } from './pack-shared.js';
@@ -103,32 +104,69 @@ export function emptyGeneration(): PackGeneration {
   };
 }
 
+/** One pack's settled `.idx` load, kept alongside its origin pack so the
+ *  bounded fan-out below can be walked back into candidate order once every
+ *  load has settled. */
+type IndexOutcome =
+  | { readonly kind: 'loaded'; readonly index: PackIndex }
+  | { readonly kind: 'fault'; readonly data: TsgitErrorData };
+
+async function loadIndexOutcome(pack: RegisteredPack): Promise<IndexOutcome> {
+  try {
+    return { kind: 'loaded', index: await pack.index() };
+  } catch (err) {
+    if (!isSkippableIdxFault(err)) throw err;
+    return { kind: 'fault', data: err.data };
+  }
+}
+
+/** Warns once per `.idx` per generation — shared with the lazy lookup's own
+ *  `unclaimedIndexOrSkip`, through the SAME `warnedIdx` set, so a pack either
+ *  side already warned about never warns twice. */
+function warnUnreadableIndexOnce(
+  ctx: Context,
+  packName: string,
+  data: TsgitErrorData,
+  warnedIdx: Set<string>,
+): void {
+  const idxName = `${packName}.idx`;
+  if (warnedIdx.has(idxName)) return;
+  warnedIdx.add(idxName);
+  ctx.logger?.warn?.('packRegistry: skipping unreadable pack index', {
+    idx: idxName,
+    ...faultContext(data),
+  });
+}
+
 /**
  * The single site that classifies an index-layer fault — run once per
- * generation, behind `PackGeneration.indexed`, sequentially in candidate
- * order, never per lookup — so a generation warns for each unreadable index
- * exactly once no matter how many consumers later force the memo. Forces
- * every candidate's `.idx` load, not just the ones a lookup needed, so
- * `all()`, `indexFaults()` and `health()` see a complete classification even
- * when no lookup ever ran.
+ * generation, behind `PackGeneration.indexed`, never per lookup — so a
+ * generation warns for each unreadable index exactly once no matter how many
+ * consumers later force the memo, and never twice when a lazy lookup already
+ * warned about the same `.idx` first. Forces every candidate's `.idx` load,
+ * not just the ones a lookup needed, so `all()`, `indexFaults()` and
+ * `health()` see a complete classification even when no lookup ever ran.
+ * Every load races in the ctx's I/O-bound pool, but the walk that builds
+ * `packs`/`indexFaults` and warns runs afterward, over the settled results in
+ * CANDIDATE order — never completion order — so the accessible list and the
+ * warn sequence stay identical to a strictly sequential scan.
  */
 export async function resolveIndexes(
   ctx: Context,
   packs: ReadonlyArray<RegisteredPack>,
+  warnedIdx: Set<string>,
 ): Promise<IndexedPacks> {
+  const outcomes = await boundedMapFor(ctx, 'ioBound', packs, loadIndexOutcome);
   const loaded: IndexedPack[] = [];
   const faults: Array<{ readonly name: string; readonly data: TsgitErrorData }> = [];
-  for (const pack of packs) {
-    try {
-      loaded.push({ pack, index: await pack.index() });
-    } catch (err) {
-      if (!isSkippableIdxFault(err)) throw err;
-      ctx.logger?.warn?.('packRegistry: skipping unreadable pack index', {
-        idx: `${pack.name}.idx`,
-        ...faultContext(err.data),
-      });
-      faults.push({ name: pack.name, data: err.data });
+  packs.forEach((pack, position) => {
+    const outcome = outcomes[position]!;
+    if (outcome.kind === 'loaded') {
+      loaded.push({ pack, index: outcome.index });
+      return;
     }
-  }
+    faults.push({ name: pack.name, data: outcome.data });
+    warnUnreadableIndexOnce(ctx, pack.name, outcome.data, warnedIdx);
+  });
   return { packs: loaded, packList: loaded.map((entry) => entry.pack), indexFaults: faults };
 }

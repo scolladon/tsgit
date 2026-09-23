@@ -43,8 +43,10 @@ export interface HandleLedger {
   readonly readdirCalls: () => number;
   /** ctx.fs.readSlice call count — the per-call fallback path. */
   readonly perCallReads: () => number;
-  /** Every ctx.fs.readSlice call, in order — lets a test separate the 12-byte
-   *  header probe from an entry read on the same pack. */
+  /** Every byte-range read this pack issued, through the persistent handle
+   *  or the per-call fallback, in order — lets a test separate the 12-byte
+   *  header probe from an entry read on the same pack regardless of which
+   *  arm served it. */
   readonly slices: () => ReadonlyArray<SliceCall>;
   /** Gates each readdir call; only takes effect when `gateReaddir` was requested. */
   readonly readdirGate: ReaddirGate;
@@ -118,6 +120,11 @@ export function withHandleLedger(base: Context, opts?: { gateReaddir?: boolean }
         opens += 1;
         return {
           ...handle,
+          read: async (buffer, bufferOffset, length, position) => {
+            const bytesRead = await handle.read(buffer, bufferOffset, length, position);
+            sliceCalls.push({ path, offset: position ?? 0, length });
+            return bytesRead;
+          },
           close: async () => {
             await handle.close();
             closes += 1;

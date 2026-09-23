@@ -45,11 +45,7 @@ import {
   buildMidx,
   type MidxSpec,
 } from '../../domain/storage/arbitraries.js';
-import {
-  buildSeededContext,
-  instrumentedContext,
-  serializeIndexFixtureAsync,
-} from '../primitives/fixtures.js';
+import { buildSeededContext, serializeIndexFixtureAsync } from '../primitives/fixtures.js';
 import { withHandleLedger } from '../primitives/handle-ledger.js';
 import {
   buildSyntheticPack,
@@ -4987,10 +4983,22 @@ describe('Given a packed object whose entry reads reject with PERMISSION_DENIED,
         fs: {
           ...ctx.fs,
           openWithNoFollow: async (path: string, mode: 'read' | 'write') => {
-            // The 12-byte header probe reads via fs.readSlice and stays
-            // healthy — only the entry read's persistent-handle open fails.
-            if (path === packPath) throw permissionDenied(path);
-            return ctx.fs.openWithNoFollow(path, mode);
+            const handle = await ctx.fs.openWithNoFollow(path, mode);
+            if (path !== packPath) return handle;
+            // The 12-byte header probe (position 0) rides the SAME handle and
+            // stays healthy — only a non-header entry read fails.
+            return {
+              ...handle,
+              read: async (
+                buffer: Uint8Array,
+                bufferOffset: number,
+                length: number,
+                position?: number,
+              ) => {
+                if (position === 0) return handle.read(buffer, bufferOffset, length, position);
+                throw permissionDenied(path);
+              },
+            };
           },
         },
       };
@@ -5376,11 +5384,11 @@ describe('Given a packed object whose header probe rejects with UNSUPPORTED_OPER
         ...ctx,
         fs: {
           ...ctx.fs,
-          readSlice: async (path: string, offset: number, length: number) => {
+          openWithNoFollow: async (path: string, mode: 'read' | 'write') => {
             if (path === packPath) {
               throw unsupportedOperation('filesystem', 'simulated probe outage');
             }
-            return ctx.fs.readSlice(path, offset, length);
+            return ctx.fs.openWithNoFollow(path, mode);
           },
         },
       };
@@ -5425,11 +5433,11 @@ describe('Given a packed object whose header probe rejects with a non-skippable 
         ...ctx,
         fs: {
           ...ctx.fs,
-          readSlice: async (path: string, offset: number, length: number) => {
+          openWithNoFollow: async (path: string, mode: 'read' | 'write') => {
             if (path === packPath) {
               throw invalidPackIndex('mid-read corruption');
             }
-            return ctx.fs.readSlice(path, offset, length);
+            return ctx.fs.openWithNoFollow(path, mode);
           },
         },
       };
@@ -6256,10 +6264,10 @@ describe('Given two midx entries routed to one pack whose header is broken', () 
           entries: ids.map((id, i) => ({ id: id as ObjectId, packIndex: 0, offset: 12 + i })),
         }),
       );
-      const { ctx: instrumented, calls } = instrumentedContext(ctx);
+      const ledger = withHandleLedger(ctx);
 
       // Act
-      const result = await fsck(instrumented);
+      const result = await fsck(ledger.ctx);
 
       // Assert — both entries unresolved, yet the broken header was read
       // exactly twice: once by the pack-health pass and once by the midx
@@ -6268,9 +6276,9 @@ describe('Given two midx entries routed to one pack whose header is broken', () 
       // would make this three.
       const entryUnresolved = result.findings.filter((f) => f.type === 'midx-entry-unresolved');
       expect(entryUnresolved).toHaveLength(2);
-      const headerReads = calls().filter(
-        (call) => call.method === 'readSlice' && call.path.endsWith('pack-shared.pack'),
-      );
+      const headerReads = ledger
+        .slices()
+        .filter((call) => call.path.endsWith('pack-shared.pack') && call.offset === 0);
       expect(headerReads).toHaveLength(2);
     });
   });
