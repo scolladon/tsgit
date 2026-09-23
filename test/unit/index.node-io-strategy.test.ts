@@ -340,6 +340,27 @@ describe('Given the sync stat always throws a non-ENOENT error', () => {
   });
 });
 
+describe('Given the sync lstat always throws a non-ENOENT error', () => {
+  describe('When openRepository runs', () => {
+    it('Then it still resolves — the lstat-first probe collapses the error to absent, same as a missing entry', async () => {
+      // Arrange
+      spyOps.lstatSync.mockImplementation(() => {
+        throw Object.assign(new Error('boom'), { code: 'EACCES' });
+      });
+
+      try {
+        // Act
+        const sut = await openRepository({ cwd: tmpdir });
+
+        // Assert
+        await sut.dispose();
+      } finally {
+        spyOps.lstatSync.mockImplementation(fs.lstatSync);
+      }
+    });
+  });
+});
+
 describe('Given the sync read always throws opening the file', () => {
   describe('When openRepository runs', () => {
     it('Then it falls back to the async readFile instead of rejecting', async () => {

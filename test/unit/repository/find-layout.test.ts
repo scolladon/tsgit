@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { MemoryFileSystem } from '../../../src/adapters/memory/memory-file-system.js';
 import { posixPolicy } from '../../../src/adapters/node/path-policy.js';
 import { TsgitError } from '../../../src/domain/error.js';
@@ -22,6 +22,23 @@ const makeGitDir = async (fs: MemoryFileSystem, dir: string): Promise<void> => {
   await fs.mkdir(`${dir}/refs`);
   await fs.writeUtf8(`${dir}/HEAD`, 'ref: refs/heads/main\n');
 };
+
+interface Deferred<T> {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T) => void;
+}
+
+/** A promise the test settles by hand — proves "issued before any settles" without depending on microtask-tick counts. */
+const createDeferred = <T>(): Deferred<T> => {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+};
+
+/** Waits for every already-queued microtask AND macrotask to drain. */
+const flushTasks = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
 
 describe('findLayout', () => {
   describe('Given cwd contains a valid .git directory', () => {
@@ -1061,6 +1078,26 @@ describe('findLayout', () => {
     });
   });
 
+  describe('Given a commondir that stats as a regular file but whose readUtf8 resolves to undefined', () => {
+    describe('When resolveCommonDir runs', () => {
+      it('Then it is treated as absent and the gitDir is its own common dir', async () => {
+        // Arrange — a race between the stat and the read (the file vanished,
+        // or turned unreadable) collapses to the same "absent" answer as a
+        // missing commondir file.
+        const probe: LayoutProbe = {
+          stat: async () => ({ isDirectory: false, isFile: true, size: 10 }),
+          readUtf8: async () => undefined,
+        };
+
+        // Act
+        const result = await resolveCommonDir(probe, '/repo/.git', posixPolicy);
+
+        // Assert
+        expect(result).toBe('/repo/.git');
+      });
+    });
+  });
+
   describe('Given a commondir that stats non-regular but whose readUtf8 would still return a pointer', () => {
     describe('When resolveCommonDir runs', () => {
       it('Then the non-regular check short-circuits before that read is ever attempted', async () => {
@@ -1464,6 +1501,292 @@ describe('findLayout', () => {
             origin: '/repo',
           });
           expect(result !== undefined && 'commonDirSupplied' in result).toBe(false);
+        });
+      });
+    });
+  });
+
+  describe('The batched .git-directory candidate', () => {
+    describe('Given a delay-controlled recording probe over a .git directory candidate', () => {
+      describe('When findLayout runs', () => {
+        it('Then all five candidate probes are issued before either the link text or the HEAD stat settles', async () => {
+          // Arrange — `linkText` and `head` are deferred and deliberately left
+          // unresolved until the flush below; `commondir`/`objects`/`refs`
+          // resolve immediately, so nothing but those two decisions can block
+          // the walk once every candidate probe has been issued.
+          const order: string[] = [];
+          const linkText = createDeferred<string | undefined>();
+          const head = createDeferred<
+            { isDirectory: boolean; isFile: boolean; size: number } | undefined
+          >();
+          const okDir = { isDirectory: true, isFile: false, size: 0 };
+          const probe: LayoutProbe = {
+            stat: (path) => {
+              order.push(`stat ${path}`);
+              if (path === '/repo/.git') return Promise.resolve(okDir);
+              if (path === '/repo/.git/HEAD') return head.promise;
+              return Promise.resolve(okDir);
+            },
+            readUtf8: () => Promise.resolve('ref: refs/heads/main\n'),
+            readLink: (path) => {
+              order.push(`readLink ${path}`);
+              return path === '/repo/.git/HEAD' ? linkText.promise : Promise.resolve(undefined);
+            },
+          };
+
+          // Act
+          const pending = findLayout(probe, '/repo', posixPolicy);
+          await flushTasks();
+
+          // Assert — every candidate probe already fired, though neither
+          // decision has anything to work with yet.
+          expect(order).toStrictEqual([
+            'stat /repo/.git',
+            'readLink /repo/.git/HEAD',
+            'stat /repo/.git/HEAD',
+            'stat /repo/.git/commondir',
+            'stat /repo/.git/objects',
+            'stat /repo/.git/refs',
+          ]);
+
+          // Cleanup — settle the two blocking promises so `pending` resolves.
+          linkText.resolve(undefined);
+          head.resolve({ isDirectory: false, isFile: true, size: 20 });
+          await pending;
+        });
+      });
+    });
+
+    describe('Given a probe exposing readLink, a HEAD symlink whose text qualifies, and a stat(HEAD) that rejects', () => {
+      describe('When findLayout runs', () => {
+        it('Then the directory still qualifies — the stat rejection is never surfaced', async () => {
+          // Arrange — `stat(HEAD)` would blow up if ever awaited; the link
+          // text alone must decide before this promise's settlement is read.
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await fs.mkdir('/repo/.git/objects');
+          await fs.mkdir('/repo/.git/refs');
+          const base = fileSystemLayoutProbe(fs);
+          const probe: LayoutProbe = {
+            ...base,
+            stat: (path) =>
+              path === '/repo/.git/HEAD'
+                ? Promise.reject(new Error('stat(HEAD) must not be read'))
+                : base.stat(path),
+            readLink: async (path) => (path === '/repo/.git/HEAD' ? 'refs/heads/main' : undefined),
+          };
+
+          // Act
+          const result = await findLayout(probe, '/repo', posixPolicy);
+
+          // Assert
+          expect(result).toStrictEqual({
+            gitDir: '/repo/.git',
+            route: 'DISCOVERED',
+            origin: '/repo',
+          });
+        });
+      });
+    });
+
+    describe('Given a probe whose readLink call itself rejects', () => {
+      describe('When findLayout runs', () => {
+        it('Then the rejection propagates untouched', async () => {
+          // Arrange
+          const boom = new Error('readLink boom');
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/.git');
+          const base = fileSystemLayoutProbe(fs);
+          const probe: LayoutProbe = {
+            ...base,
+            readLink: (path) =>
+              path === '/repo/.git/HEAD' ? Promise.reject(boom) : Promise.resolve(undefined),
+          };
+
+          // Act
+          let caught: unknown;
+          try {
+            await findLayout(probe, '/repo', posixPolicy);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBe(boom);
+        });
+      });
+    });
+
+    describe('Given no usable link text (capability absent) and a HEAD stat that rejects', () => {
+      describe('When findLayout runs', () => {
+        it('Then the rejection propagates untouched', async () => {
+          // Arrange
+          const boom = new Error('stat(HEAD) boom');
+          const probe: LayoutProbe = {
+            stat: async (path) => {
+              if (path === '/repo/.git') return { isDirectory: true, isFile: false, size: 0 };
+              if (path === '/repo/.git/HEAD') throw boom;
+              return undefined;
+            },
+            readUtf8: async () => undefined,
+          };
+
+          // Act
+          let caught: unknown;
+          try {
+            await findLayout(probe, '/repo', posixPolicy);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBe(boom);
+        });
+      });
+    });
+
+    describe('Given no readLink support and a HEAD stat reporting a directory (not a file)', () => {
+      describe('When findLayout runs from inside it, with a valid repo one level up', () => {
+        it('Then readUtf8 on HEAD never runs, and the walk climbs to the enclosing repo', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/.git');
+          await fs.mkdir('/repo/bait/.git/HEAD');
+          await fs.mkdir('/repo/bait/.git/objects');
+          await fs.mkdir('/repo/bait/.git/refs');
+          const readUtf8Spy = vi.spyOn(fs, 'readUtf8');
+
+          // Act
+          const result = await findLayout(fileSystemLayoutProbe(fs), '/repo/bait', posixPolicy);
+
+          // Assert
+          expect(result).toStrictEqual({
+            gitDir: '/repo/.git',
+            route: 'DISCOVERED',
+            origin: '/repo',
+          });
+          expect(readUtf8Spy).not.toHaveBeenCalledWith('/repo/bait/.git/HEAD');
+        });
+      });
+    });
+
+    describe('Given a discovered .git directory whose commondir file names a different directory', () => {
+      describe('When findLayout runs', () => {
+        it('Then objects/refs are validated under the common dir, ignoring the speculative gitDir-rooted stats', async () => {
+          // Arrange — gitDir's OWN objects/refs are missing; a batching bug
+          // reading the speculative gitDir-rooted stats instead of the
+          // common dir's would report NOT valid. Only the common dir carries them.
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await fs.writeUtf8('/repo/.git/HEAD', 'ref: refs/heads/main\n');
+          await fs.writeUtf8('/repo/.git/commondir', '/repo/common\n');
+          await fs.mkdir('/repo/common/objects');
+          await fs.mkdir('/repo/common/refs');
+
+          // Act
+          const result = await findLayout(fileSystemLayoutProbe(fs), '/repo', posixPolicy);
+
+          // Assert
+          expect(result).toStrictEqual({
+            gitDir: '/repo/.git',
+            commonDir: '/repo/common',
+            route: 'DISCOVERED',
+            origin: '/repo',
+          });
+        });
+      });
+    });
+
+    describe('Given a .git directory with a plain valid HEAD and no commondir file', () => {
+      describe('When findLayout runs', () => {
+        it('Then it issues exactly five probe calls before readUtf8, and no more', async () => {
+          // Arrange
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/.git');
+          const base = fileSystemLayoutProbe(fs);
+          const calls: string[] = [];
+          const probe: LayoutProbe = {
+            stat: (path) => {
+              calls.push(`stat ${path}`);
+              return base.stat(path);
+            },
+            readUtf8: (path) => {
+              calls.push(`readUtf8 ${path}`);
+              return base.readUtf8(path);
+            },
+            readLink: (path) => {
+              calls.push(`readLink ${path}`);
+              return base.readLink?.(path) ?? Promise.resolve(undefined);
+            },
+          };
+
+          // Act
+          const result = await findLayout(probe, '/repo', posixPolicy);
+
+          // Assert
+          expect(result).toStrictEqual({
+            gitDir: '/repo/.git',
+            route: 'DISCOVERED',
+            origin: '/repo',
+          });
+          const innerCalls = calls.filter((call) => call !== 'stat /repo/.git');
+          expect(innerCalls).toHaveLength(6);
+          expect(new Set(innerCalls.slice(0, 5))).toStrictEqual(
+            new Set([
+              'readLink /repo/.git/HEAD',
+              'stat /repo/.git/HEAD',
+              'stat /repo/.git/commondir',
+              'stat /repo/.git/objects',
+              'stat /repo/.git/refs',
+            ]),
+          );
+          expect(innerCalls[5]).toBe('readUtf8 /repo/.git/HEAD');
+        });
+      });
+    });
+
+    describe('Given a climbed level with no .git entry and no HEAD file, with a valid repo one level up', () => {
+      describe('When findLayout runs', () => {
+        it('Then the speculative batch never starts — it costs exactly the pre-batching stat/readLink/stat sequence', async () => {
+          // Arrange — the SAME regression this file already pins with a plain
+          // counting probe (see above); repeated here with a probe that also
+          // tracks readLink, so a batching leak into the bare-dir path would
+          // show up as an unexpected readLink call too.
+          const fs = new MemoryFileSystem({ rootDir: '/repo' });
+          await makeGitDir(fs, '/repo/.git');
+          await fs.mkdir('/repo/empty');
+          const base = fileSystemLayoutProbe(fs);
+          const calls: string[] = [];
+          const probe: LayoutProbe = {
+            stat: (path) => {
+              calls.push(`stat ${path}`);
+              return base.stat(path);
+            },
+            readUtf8: (path) => {
+              calls.push(`readUtf8 ${path}`);
+              return base.readUtf8(path);
+            },
+            readLink: (path) => {
+              calls.push(`readLink ${path}`);
+              return base.readLink?.(path) ?? Promise.resolve(undefined);
+            },
+          };
+
+          // Act
+          const result = await findLayout(probe, '/repo/empty', posixPolicy);
+
+          // Assert
+          expect(result).toStrictEqual({
+            gitDir: '/repo/.git',
+            route: 'DISCOVERED',
+            origin: '/repo',
+          });
+          const emptyLevelCalls = calls.filter(
+            (call) => call.endsWith('/repo/empty/.git') || call.endsWith('/repo/empty/HEAD'),
+          );
+          expect(emptyLevelCalls).toStrictEqual([
+            'stat /repo/empty/.git',
+            'readLink /repo/empty/HEAD',
+            'stat /repo/empty/HEAD',
+          ]);
         });
       });
     });

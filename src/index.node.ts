@@ -5,7 +5,7 @@
  * core factory with the fallback pre-bound.
  */
 import type { Stats } from 'node:fs';
-import { readFile, readlink, realpath, stat } from 'node:fs/promises';
+import { lstat, readFile, readlink, realpath, stat } from 'node:fs/promises';
 import * as nodePath from 'node:path';
 
 import { NodeCommandRunner } from './adapters/node/node-command-runner.js';
@@ -101,12 +101,14 @@ export const openRepository = async (opts: OpenNodeRepositoryOptions = {}): Prom
   // gitfile pointer — linked worktree, submodule, `--separate-git-dir`); the
   // bounded FS would reject paths outside its rootDir, preventing the walk
   // from reaching a repo whose root is an ancestor of the user's cwd.
+  const { probe: layoutProbe, isPlainDirectory } = createNodeLayoutProbe(syncIo);
   const { layout, canonical: layoutCanonical } = await resolveNodeLayout(
     resolvedCwd,
     opts,
     cwdCanonical,
-    createNodeLayoutProbe(syncIo),
+    layoutProbe,
     canonicalize,
+    isPlainDirectory,
   );
   // The layout's roots are trustworthy as pre-resolved ONLY when every
   // realpath performed above — cwd's own AND the layout's own — actually
@@ -205,6 +207,17 @@ const statOrUndefined = (
         () => undefined,
       );
 
+/** `lstat`'s twin of `statOrUndefined` — never follows the final symlink. */
+const lstatOrUndefined = (
+  syncIo: SyncIoPolicy | undefined,
+  p: string,
+): Promise<Stats | undefined> =>
+  syncIo === undefined
+    ? lstat(p).catch(() => undefined)
+    : runWithinBudget(syncIo.budget, () =>
+        syncIo.ops.lstatSync(p, { throwIfNoEntry: false }),
+      ).catch(() => undefined);
+
 /**
  * Reads `p` as UTF-8, `undefined` on any error. Without a policy, today's
  * `fs.promises.readFile`; with one, the sync fast path's whole-file read
@@ -225,38 +238,73 @@ const readUtf8OrUndefined = async (
   return bytes === undefined ? readFile(p, 'utf8').catch(() => undefined) : DECODER.decode(bytes);
 };
 
+/** The settled shape `LayoutProbe['stat']` resolves to. */
+type ProbeStat = Awaited<ReturnType<LayoutProbe['stat']>>;
+
 /**
- * Builds the raw `node:fs/promises`- or sync-`fs`-backed `LayoutProbe`. Must
- * stay raw (never routed through a bounded `NodeFileSystem`): the discovery
- * walk climbs above `cwd` looking for `.git`, and a bounded adapter would
- * reject every step outside its own rootDir — this has to run BEFORE that
- * adapter is constructed. `syncIo` is the repository's own policy (or
- * `undefined` for `io: 'threadpool'`) — never module-level state, so a
- * concurrent `openRepository` call under a different `io` option never
- * shares this one's budget.
+ * `stat`, lstat-first: `lstat` alone answers correctly for anything that is
+ * NOT itself a symlink (a plain file, directory, or absence) — `stat`
+ * follows exactly the links `lstat` reports, so escalating only on a
+ * confirmed symlink reaches the identical answer at a fraction of the cost
+ * on the common, non-symlink path. Every verdict is recorded into
+ * `plainDirectories` (a directory that is not itself a link) — the per-open
+ * cache `isPlainDirectory` reads, so a caller never has to lstat the SAME
+ * path twice to learn what this call already settled.
  */
-const createNodeLayoutProbe = (syncIo: SyncIoPolicy | undefined): LayoutProbe => ({
-  stat: async (p) => {
-    const s = await statOrUndefined(syncIo, p);
-    return s === undefined
-      ? undefined
-      : { isDirectory: s.isDirectory(), isFile: s.isFile(), size: s.size };
-  },
-  readUtf8: (p) => readUtf8OrUndefined(syncIo, p),
-  // EINVAL (not a symlink) and ENOENT both collapse to undefined per the
-  // port contract — the caller only cares whether usable link text exists.
-  readLink: (p) =>
-    syncIo === undefined
-      ? readlink(p, 'utf8').catch(() => undefined)
-      : runWithinBudget(syncIo.budget, () => syncIo.ops.readlinkSync(p, 'utf8')).catch(
-          () => undefined,
-        ),
-  isOwnedByCaller: ownedByCallerPredicate({
-    // Effective uid, matching the port contract and git's own `geteuid()`.
-    callerUid: () => process.geteuid?.() ?? process.getuid?.(),
-    ownerUid: async (p) => (await statOrUndefined(syncIo, p))?.uid,
-  }),
-});
+const lstatFirstStat = async (
+  syncIo: SyncIoPolicy | undefined,
+  plainDirectories: Map<string, boolean>,
+  p: string,
+): Promise<ProbeStat> => {
+  const link = await lstatOrUndefined(syncIo, p);
+  if (link === undefined) return undefined;
+  plainDirectories.set(p, !link.isSymbolicLink() && link.isDirectory());
+  if (!link.isSymbolicLink()) {
+    return { isDirectory: link.isDirectory(), isFile: link.isFile(), size: link.size };
+  }
+  const followed = await statOrUndefined(syncIo, p);
+  return followed === undefined
+    ? undefined
+    : { isDirectory: followed.isDirectory(), isFile: followed.isFile(), size: followed.size };
+};
+
+/**
+ * Builds the raw `node:fs/promises`- or sync-`fs`-backed `LayoutProbe`, plus
+ * `isPlainDirectory` — a per-open `Map` of every path the probe's `stat` has
+ * lstat'ed, answering whether it is a directory that is not itself a
+ * symlink. Must stay raw (never routed through a bounded `NodeFileSystem`):
+ * the discovery walk climbs above `cwd` looking for `.git`, and a bounded
+ * adapter would reject every step outside its own rootDir — this has to run
+ * BEFORE that adapter is constructed. `syncIo` is the repository's own
+ * policy (or `undefined` for `io: 'threadpool'`) — never module-level state,
+ * so a concurrent `openRepository` call under a different `io` option never
+ * shares this one's budget, or its `plainDirectories` cache.
+ */
+const createNodeLayoutProbe = (
+  syncIo: SyncIoPolicy | undefined,
+): { probe: LayoutProbe; isPlainDirectory: (path: string) => boolean } => {
+  const plainDirectories = new Map<string, boolean>();
+  return {
+    probe: {
+      stat: (p) => lstatFirstStat(syncIo, plainDirectories, p),
+      readUtf8: (p) => readUtf8OrUndefined(syncIo, p),
+      // EINVAL (not a symlink) and ENOENT both collapse to undefined per the
+      // port contract — the caller only cares whether usable link text exists.
+      readLink: (p) =>
+        syncIo === undefined
+          ? readlink(p, 'utf8').catch(() => undefined)
+          : runWithinBudget(syncIo.budget, () => syncIo.ops.readlinkSync(p, 'utf8')).catch(
+              () => undefined,
+            ),
+      isOwnedByCaller: ownedByCallerPredicate({
+        // Effective uid, matching the port contract and git's own `geteuid()`.
+        callerUid: () => process.geteuid?.() ?? process.getuid?.(),
+        ownerUid: async (p) => (await statOrUndefined(syncIo, p))?.uid,
+      }),
+    },
+    isPlainDirectory: (path) => plainDirectories.get(path) === true,
+  };
+};
 
 /**
  * Builds the realpath-and-outcome helper `resolveNodeLayout` and its callers
@@ -385,6 +433,7 @@ const resolveNodeLayout = async (
   cwdCanonical: boolean,
   probe: LayoutProbe,
   canonicalize: Canonicalize,
+  isPlainDirectory: (path: string) => boolean,
 ): Promise<{ layout: RepositoryLayoutInput; canonical: boolean }> => {
   const ceilingDirs = await canonicalizeCeilings(opts.ceilingDirs, canonicalize);
   const trustedDirectories = await canonicalizeTrustedDirectories(
@@ -409,7 +458,13 @@ const resolveNodeLayout = async (
       canonical: false,
     };
   }
-  const gitDir = await canonicalize(resolved.gitDir);
+  const gitDir = await resolveGitDirCanonical(
+    cwdCanonical,
+    cwd,
+    resolved,
+    isPlainDirectory,
+    canonicalize,
+  );
   const commonDirCanonical =
     resolved.commonDir === undefined ? undefined : await canonicalize(resolved.commonDir);
   // Realpathing can collapse a lexically-distinct common dir onto the gitDir
@@ -452,6 +507,47 @@ const resolveNodeLayout = async (
  */
 const isDerivedFromCanonicalCwd = (workDir: string, cwd: string): boolean =>
   workDir === cwd || cwd.startsWith(`${workDir}${nativePolicy.sep}`);
+
+/**
+ * Extends `isDerivedFromCanonicalCwd`'s proof by one segment: an ancestor of
+ * a realpath is real, and a non-symlink CHILD of a real directory is real
+ * too, so `<real workDir>/.git` is already `gitDir`'s realpath whenever
+ * `gitDir` is literally that join AND `isPlainDirectory` (an lstat, not a
+ * followed stat) confirms it is a directory and not itself a symlink.
+ * `realpath` would return the exact same string here — recomputing it costs a
+ * syscall for an answer this proof already has for free. Every operand
+ * matters: dropping any one admits a case the proof does not cover (a
+ * symlinked `.git`, a `gitDir` the discovery walk did not derive from `cwd`,
+ * or a `cwd` whose OWN realpath never actually ran).
+ */
+const gitDirIsDerivable = (
+  cwdCanonical: boolean,
+  cwd: string,
+  resolved: RepositoryLayoutInput,
+  isPlainDirectory: (path: string) => boolean,
+): boolean =>
+  cwdCanonical &&
+  resolved.workDir !== undefined &&
+  isDerivedFromCanonicalCwd(resolved.workDir, cwd) &&
+  resolved.gitDir === nodePath.join(resolved.workDir, '.git') &&
+  isPlainDirectory(resolved.gitDir);
+
+/**
+ * `resolved.gitDir`'s canonical form: the zero-syscall proof's answer when
+ * `gitDirIsDerivable`, otherwise today's realpath. Extracted out of
+ * `resolveNodeLayout` so that function's own branching stays within the
+ * linter's complexity budget — this ternary carries none of its own.
+ */
+const resolveGitDirCanonical = (
+  cwdCanonical: boolean,
+  cwd: string,
+  resolved: RepositoryLayoutInput,
+  isPlainDirectory: (path: string) => boolean,
+  canonicalize: Canonicalize,
+): Promise<{ path: string; canonical: boolean }> =>
+  gitDirIsDerivable(cwdCanonical, cwd, resolved, isPlainDirectory)
+    ? Promise.resolve({ path: resolved.gitDir, canonical: true })
+    : canonicalize(resolved.gitDir);
 
 export type { AdapterSet } from './adapter-detect.js';
 export { detectRuntime, isBrowser, isNode } from './adapter-detect.js';

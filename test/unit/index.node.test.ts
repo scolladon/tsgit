@@ -599,6 +599,78 @@ describe('Node shim — worktreeFs raw adapter root (bare repository)', () => {
   });
 });
 
+describe('Given a plain (non-symlink) .git directory directly under cwd', () => {
+  describe('When openRepository discovers it', () => {
+    it('Then layout.gitDir is <canonical cwd>/.git', async () => {
+      // Arrange
+      await makeGitDir(path.join(tmpdir, '.git'));
+      const resolvedCwd = await realpath(tmpdir);
+
+      // Act
+      const repo = await openRepository({ cwd: tmpdir });
+
+      try {
+        // Assert
+        expect(repo.ctx.layout.gitDir).toBe(path.join(resolvedCwd, '.git'));
+      } finally {
+        await repo.dispose();
+      }
+    });
+  });
+});
+
+describe('Given a .git entry that is itself a symlink to a real directory elsewhere', () => {
+  describe('When openRepository discovers it', () => {
+    it("Then layout.gitDir is the realpathed target, not the symlink's own lexical path — the lstat-first probe still resolves the repository", async () => {
+      // Arrange — the derivable-gitDir skip must NOT fire here: `isPlainDirectory`
+      // is false for a symlink, so the realpath actually runs and resolves
+      // through it, exactly as it would without the skip at all.
+      const realGitDir = path.join(tmpdir, 'real.git');
+      await makeGitDir(realGitDir);
+      const linkedGitDir = path.join(tmpdir, '.git');
+      await symlink(realGitDir, linkedGitDir);
+      const resolvedRealGitDir = await realpath(realGitDir);
+
+      // Act
+      const repo = await openRepository({ cwd: tmpdir });
+
+      try {
+        // Assert
+        expect(repo.ctx.layout.gitDir).toBe(resolvedRealGitDir);
+        expect(repo.ctx.layout.gitDir).not.toBe(linkedGitDir);
+      } finally {
+        await repo.dispose();
+      }
+    });
+  });
+});
+
+describe('Given a .git entry that is a DANGLING symlink (its target does not exist)', () => {
+  describe('When openRepository discovers it', () => {
+    it('Then the lstat-first probe reports it absent and the walk falls through to the bootstrap layout', async () => {
+      // Arrange — lstat succeeds and reports a symlink, but the followed
+      // stat fails (missing target): `lstatFirstStat` must collapse this to
+      // absent, exactly like any other unusable `.git` entry.
+      const missingTarget = path.join(tmpdir, 'nowhere.git');
+      const linkedGitDir = path.join(tmpdir, '.git');
+      await symlink(missingTarget, linkedGitDir);
+      const resolvedCwd = await realpath(tmpdir);
+
+      // Act
+      const repo = await openRepository({ cwd: tmpdir });
+
+      try {
+        // Assert — no usable git directory was found, so the synthetic
+        // bootstrap layout wins, rooted at the resolved cwd.
+        expect(repo.ctx.layout.gitDir).toBe(path.join(resolvedCwd, '.git'));
+        expect(repo.ctx.layout.bare).toBe(false);
+      } finally {
+        await repo.dispose();
+      }
+    });
+  });
+});
+
 describe('Given a directory whose HEAD is a dangling symlink into refs/', () => {
   describe('When openRepository discovers it', () => {
     it('Then the node probe reads the link text and the directory qualifies as a git directory', async () => {
