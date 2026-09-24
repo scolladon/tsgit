@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
-import { readObjectMetadata } from '../../../../src/application/primitives/read-object.js';
+import {
+  getPackRegistry,
+  readObjectMetadata,
+} from '../../../../src/application/primitives/read-object.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
 import type {
   Blob,
@@ -258,6 +261,37 @@ describe('readObjectMetadata', () => {
             expect(data.id).toBe(missingBaseId);
           }
         }
+      });
+    });
+  });
+
+  describe('Given a packed REF_DELTA entry whose base moved to a new pack after the registry already scanned', () => {
+    describe('When readObjectMetadata is called', () => {
+      it('Then it resolves the base type via one re-scan retry, mirroring reprepare_packed_git', async () => {
+        // Arrange
+        const baseContent = new TextEncoder().encode('ref base, late pack');
+        const targetContent = new TextEncoder().encode('ref target, late base — different bytes');
+        const ctx = await buildSeededContext();
+        const basePack = await buildSyntheticPack(ctx, [
+          { kind: 'base', type: 'blob', content: baseContent },
+        ]);
+        const baseId = basePack.ids[0] as string;
+        const deltaIds = await writeSyntheticPack(ctx, 'meta-ref-late-base-delta', [
+          { kind: 'ref-delta', baseId, baseUncompressed: baseContent, targetContent },
+        ]);
+        const registry = await getPackRegistry(ctx);
+        await registry.lookup(deltaIds[0] as ObjectId); // scans while the base's pack is absent
+
+        const base = `${ctx.layout.gitDir}/objects/pack/pack-meta-ref-late-base`;
+        await ctx.fs.write(`${base}.pack`, basePack.packBytes);
+        await ctx.fs.write(`${base}.idx`, basePack.idxBytes);
+
+        // Act
+        const result = await readObjectMetadata(ctx, deltaIds[0] as ObjectId);
+
+        // Assert
+        expect(result.type).toBe('blob');
+        expect(result.uncompressedSize).toBe(targetContent.length);
       });
     });
   });
