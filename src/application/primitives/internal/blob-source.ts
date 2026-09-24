@@ -29,6 +29,7 @@ import { readableStreamToAsyncIterable } from '../../../operators/readable-strea
 import type { Context } from '../../../ports/context.js';
 import type { Hasher } from '../../../ports/hash-service.js';
 import {
+  assertInflatedSizeMatches,
   cacheEntry,
   isBase,
   looseCompressedBytes,
@@ -153,6 +154,7 @@ async function tryOpenBlobSource(
       header.size,
       chunk.subarray(headerEndInChunk),
       gate,
+      hit.offset,
     );
   }
 
@@ -322,6 +324,7 @@ async function resolvePackBase(
   declaredSize: number,
   payload: Uint8Array,
   gate: BufferGate,
+  offset: number,
 ): Promise<BlobSource> {
   const type = packTypeName(baseType);
   // Both conditions: the compressed payload is the gated quantity everywhere,
@@ -342,6 +345,7 @@ async function resolvePackBase(
     fitsBuffer(declaredSize, gate.maxBufferedBytes)
   ) {
     const content = await ctx.compressor.inflate(payload);
+    assertInflatedSizeMatches(offset, declaredSize, content.byteLength);
     // Blobs excluded: see `toCachedBytesSource`'s doc — a read-once buffered
     // blob only spends the shared cache's budget a repeatedly-walked tree or
     // commit would otherwise keep warm.
@@ -363,6 +367,7 @@ async function resolvePackBase(
       type,
       declaredSize,
       gate.verifyHash,
+      offset,
     ),
     release: () => cancelUnread(inflated),
   };
@@ -516,9 +521,14 @@ async function* yieldAndVerifyLooseChunks(
  * bytes (no loose-format header in the inflated output). The canonical header
  * `<type> <declaredSize>\0` is built from the pack entry header's own type and
  * declared inflated size — both known before inflation — so chunks can be
- * yielded as they arrive. A wrong declared size is caught: the incremental hash
- * over the synthetic header plus the true inflated bytes will not equal id, so
- * objectHashMismatch fires.
+ * yielded as they arrive. The inflated length is known only once the stream
+ * ends, so the declared-size check — the same structural refusal the buffered
+ * arm and the index-pack write path enforce (`assertInflatedSizeMatches`,
+ * `PACK_ENTRY_INFLATED_SIZE_MISMATCH_REASON`) — runs after the last chunk,
+ * over a running byte count rather than the buffered bytes themselves. A hash
+ * mismatch cannot substitute for it: `verifyObjectContent`/`finalizeHash`
+ * rehash the object's OWN true content length, which a lying declared size
+ * never changes.
  */
 async function* yieldAndVerifyPackedBaseChunks(
   ctx: Context,
@@ -527,18 +537,22 @@ async function* yieldAndVerifyPackedBaseChunks(
   type: ObjectType,
   declaredSize: number,
   verifyHash: boolean,
+  offset: number,
 ): AsyncIterable<Uint8Array> {
   const hasher: Hasher | undefined = verifyHash ? ctx.hash.createHasher() : undefined;
 
   hasher?.update(syntheticObjectHeader(type, declaredSize));
 
+  let total = 0;
   for await (const chunk of chunks) {
     if (ctx.signal?.aborted === true) {
       throw operationAborted();
     }
+    total += chunk.byteLength;
     hasher?.update(chunk);
     yield chunk;
   }
+  assertInflatedSizeMatches(offset, declaredSize, total);
 
   await finalizeHash(hasher, id);
 }

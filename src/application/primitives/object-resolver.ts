@@ -467,7 +467,11 @@ export function assertChainDepthWithinCap(depth: number): void {
  * counterpart, sharing the same refusal so a `.pack` write and a `.pack`
  * read agree on what "bad object" means.
  */
-function assertInflatedSizeMatches(offset: number, declaredSize: number, actualSize: number): void {
+export function assertInflatedSizeMatches(
+  offset: number,
+  declaredSize: number,
+  actualSize: number,
+): void {
   if (actualSize !== declaredSize) {
     throw invalidPackEntry(offset, PACK_ENTRY_INFLATED_SIZE_MISMATCH_REASON);
   }

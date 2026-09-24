@@ -434,6 +434,152 @@ describe('openBlobSource', () => {
     });
   });
 
+  describe('Given a packed base blob whose header declares a size LONGER than its real inflated bytes', () => {
+    describe('When openBlobSource is called with a gate wide enough to buffer it', () => {
+      it('Then throws INVALID_PACK_ENTRY with the inflated-size-mismatch reason', async () => {
+        // Arrange
+        const content = ENC.encode('abcdefgh');
+        const ctx = await buildSeededContext();
+        const built = await buildSyntheticPack(ctx, [
+          { kind: 'base', type: 'blob', content, declaredSizeOverride: content.length + 5 },
+        ]);
+        const base = `${ctx.layout.gitDir}/objects/pack/pack-blob-source-long-declared-buffered`;
+        await ctx.fs.write(`${base}.pack`, built.packBytes);
+        await ctx.fs.write(`${base}.idx`, built.idxBytes);
+        const id = built.ids[0] as ObjectId;
+
+        // Act
+        let caught: unknown;
+        try {
+          await openBlobSource(ctx, id, MAX_BUFFERED_BLOB_BYTES);
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('INVALID_PACK_ENTRY');
+        if (data.code !== 'INVALID_PACK_ENTRY') {
+          expect.fail(`expected INVALID_PACK_ENTRY, got ${data.code}`);
+        }
+        expect(data.reason).toBe('bad object: inflated size differs from declared size');
+        expect(data.offset).toBe(built.offsets[0]);
+      });
+    });
+
+    describe('When openBlobSource is called with the gate closed (forces streaming)', () => {
+      it('Then throws INVALID_PACK_ENTRY at stream end, without buffering the whole blob', async () => {
+        // Arrange
+        const content = ENC.encode('abcdefgh');
+        const ctx = await buildSeededContext();
+        const built = await buildSyntheticPack(ctx, [
+          { kind: 'base', type: 'blob', content, declaredSizeOverride: content.length + 5 },
+        ]);
+        const base = `${ctx.layout.gitDir}/objects/pack/pack-blob-source-long-declared-streamed`;
+        await ctx.fs.write(`${base}.pack`, built.packBytes);
+        await ctx.fs.write(`${base}.idx`, built.idxBytes);
+        const id = built.ids[0] as ObjectId;
+
+        // Act
+        const result = await openBlobSource(ctx, id, 0);
+        expect(result.kind).toBe('stream');
+        let caught: unknown;
+        try {
+          if (result.kind === 'stream') {
+            await collect(result.stream);
+          }
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('INVALID_PACK_ENTRY');
+        if (data.code !== 'INVALID_PACK_ENTRY') {
+          expect.fail(`expected INVALID_PACK_ENTRY, got ${data.code}`);
+        }
+        expect(data.reason).toBe('bad object: inflated size differs from declared size');
+        expect(data.offset).toBe(built.offsets[0]);
+      });
+    });
+  });
+
+  describe('Given a packed base blob whose header declares a size SHORTER than its real inflated bytes', () => {
+    describe('When openBlobSource is called with a gate wide enough to buffer it', () => {
+      it('Then throws INVALID_PACK_ENTRY with the inflated-size-mismatch reason', async () => {
+        // Arrange
+        const content = ENC.encode('abcdefgh');
+        const ctx = await buildSeededContext();
+        const built = await buildSyntheticPack(ctx, [
+          { kind: 'base', type: 'blob', content, declaredSizeOverride: content.length - 3 },
+        ]);
+        const base = `${ctx.layout.gitDir}/objects/pack/pack-blob-source-short-declared-buffered`;
+        await ctx.fs.write(`${base}.pack`, built.packBytes);
+        await ctx.fs.write(`${base}.idx`, built.idxBytes);
+        const id = built.ids[0] as ObjectId;
+
+        // Act
+        let caught: unknown;
+        try {
+          await openBlobSource(ctx, id, MAX_BUFFERED_BLOB_BYTES);
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('INVALID_PACK_ENTRY');
+        if (data.code !== 'INVALID_PACK_ENTRY') {
+          expect.fail(`expected INVALID_PACK_ENTRY, got ${data.code}`);
+        }
+        expect(data.reason).toBe('bad object: inflated size differs from declared size');
+      });
+    });
+
+    describe('When openBlobSource is called with the gate closed (forces streaming)', () => {
+      it('Then throws INVALID_PACK_ENTRY at stream end, without buffering the whole blob', async () => {
+        // Arrange
+        const content = ENC.encode('abcdefgh');
+        const ctx = await buildSeededContext();
+        const built = await buildSyntheticPack(ctx, [
+          { kind: 'base', type: 'blob', content, declaredSizeOverride: content.length - 3 },
+        ]);
+        const base = `${ctx.layout.gitDir}/objects/pack/pack-blob-source-short-declared-streamed`;
+        await ctx.fs.write(`${base}.pack`, built.packBytes);
+        await ctx.fs.write(`${base}.idx`, built.idxBytes);
+        const id = built.ids[0] as ObjectId;
+
+        // Act
+        const result = await openBlobSource(ctx, id, 0);
+        expect(result.kind).toBe('stream');
+        let caught: unknown;
+        try {
+          if (result.kind === 'stream') {
+            await collect(result.stream);
+          }
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('INVALID_PACK_ENTRY');
+        if (data.code !== 'INVALID_PACK_ENTRY') {
+          expect.fail(`expected INVALID_PACK_ENTRY, got ${data.code}`);
+        }
+        expect(data.reason).toBe('bad object: inflated size differs from declared size');
+      });
+    });
+  });
+
   describe('Given a deltified packed blob', () => {
     describe('When openBlobSource is called with the gate at 0', () => {
       it('Then resolves as a bytes source (the gate is a no-op for deltas)', async () => {

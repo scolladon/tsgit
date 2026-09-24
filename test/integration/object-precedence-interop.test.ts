@@ -616,6 +616,42 @@ describe.skipIf(!GIT_AVAILABLE || PACK_DIR_FAULTS_SKIPPED)(
         expect(data.reason).toBe(PACK_ENTRY_INFLATED_SIZE_MISMATCH_REASON);
         expect(data.offset).toBe(offset);
       });
+
+      it('Then git refuses its streaming reader (cat-file --filters) the same way, and tsgit refuses streamBlob at stream end', async () => {
+        // Arrange
+        const ctx = createNodeContext({ workDir: dir });
+        const id = blobId as ObjectId;
+
+        // Act — git side: --filters is git's streaming-class reader (smudge
+        // pipeline), reached from the CLI without ever buffering the whole blob.
+        const gitResult = tryRunGitWithExit(['-C', dir, 'cat-file', '--filters', 'HEAD:a.txt']);
+
+        // Act — tsgit side: streamBlob always forces the streaming arm
+        // (NEVER_BUFFER), so this drains the SAME code path readObject's own
+        // buffered arm exercises above, just reached from the streaming entry
+        // point real git's `--filters` maps to.
+        let caught: unknown;
+        try {
+          await collect(await streamBlob(ctx, id));
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert — git's observed answer
+        expect(gitResult.exitCode).toBe(128);
+        expect(gitResult.stderr).toContain('is corrupt');
+
+        // Assert — tsgit's observed answer
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('INVALID_PACK_ENTRY');
+        if (data.code !== 'INVALID_PACK_ENTRY') {
+          expect.fail(`expected INVALID_PACK_ENTRY, got ${data.code}`);
+        }
+        expect(data.reason).toBe(PACK_ENTRY_INFLATED_SIZE_MISMATCH_REASON);
+        expect(data.offset).toBe(offset);
+      });
     });
   },
 );
