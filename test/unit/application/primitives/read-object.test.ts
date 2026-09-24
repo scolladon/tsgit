@@ -691,10 +691,13 @@ describe('getPackRegistry — repo-settings class boundary', () => {
 
   describe('Given a bare Context with no cacheBudgets override and no gate opened', () => {
     describe('When readObject runs twice', () => {
-      it('Then the first read issues stat, readUtf8, stat, stat of config (delta-base + window budgets), and the finder runs once across both reads', async () => {
+      it('Then the first read issues stat, readUtf8, stat of config (delta-base + window budgets sharing one coalesced stat), and the finder runs once across both reads', async () => {
         // Arrange — both derived caches resolve their own config-backed
-        // budget once against the same warm parse cache: one mtime-freshness
-        // stat each, beyond the repo-settings check's stat + readUtf8.
+        // budget CONCURRENTLY, so their two `readConfig` calls fall inside
+        // the same coalescing window (`config-read.ts`'s per-session
+        // single-flight stat) and share ONE mtime-freshness stat, beyond the
+        // repo-settings check's own stat + readUtf8 — two stats total, not
+        // three.
         const blob: Blob = { type: 'blob', content: new Uint8Array([11]), id: '' as ObjectId };
         const base = await buildSeededContext({ objects: [blob] });
         const id = (await base.hash.hashHex(serializeObject(blob, base.hashConfig))) as ObjectId;
@@ -711,7 +714,6 @@ describe('getPackRegistry — repo-settings class boundary', () => {
         expect(firstReadConfigCalls).toEqual([
           { method: 'stat', path: configPath },
           { method: 'readUtf8', path: configPath },
-          { method: 'stat', path: configPath },
           { method: 'stat', path: configPath },
         ]);
         expect(spy).toHaveBeenCalledTimes(1);

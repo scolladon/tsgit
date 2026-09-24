@@ -1044,15 +1044,16 @@ describe('PackRegistry.scan — per-pack idx degradation and orphan exclusion', 
 describe('PackRegistry — lazy pack-index loading', () => {
   describe('Given two healthy packs', () => {
     describe('When createPackRegistry is called and nothing else', () => {
-      it('Then no readdir and no .idx read has happened yet — only the repo-settings class check and the two budget config reads', async () => {
-        // Arrange — construction validates the repo-settings class first,
-        // then resolves the delta-base cache's byte budget (a
-        // `core.deltaBaseCacheLimit` config read) and the pack window
+      it('Then no readdir and no .idx read has happened yet — only the repo-settings class check and one shared budget config read', async () => {
+        // Arrange — construction validates the repo-settings class first
+        // (its own coalesced stat), then resolves the delta-base cache's
+        // byte budget (`core.deltaBaseCacheLimit`) and the pack window
         // cache's budget (`core.packedGitWindowSize`/`core.packedGitLimit`)
-        // — all three hit the same warm parse cache, so the content is read
-        // once and only the mtime-freshness stat repeats per resolver — but
-        // the pack directory itself stays untouched until the registry is
-        // actually consulted.
+        // CONCURRENTLY, so their two `readConfig` calls share the SAME
+        // in-flight coalesced stat instead of paying one each — the content
+        // is read once, and the mtime-freshness stat runs exactly twice
+        // total, not three times. The pack directory itself stays untouched
+        // until the registry is actually consulted.
         const ctx = await buildSeededContext();
         await writeSyntheticPack(ctx, 'lazy-cold-a', [
           { kind: 'base', type: 'blob', content: new TextEncoder().encode('a') },
@@ -1069,7 +1070,6 @@ describe('PackRegistry — lazy pack-index loading', () => {
         expect(calls()).toEqual([
           { method: 'stat', path: '/repo/.git/config' },
           { method: 'readUtf8', path: '/repo/.git/config' },
-          { method: 'stat', path: '/repo/.git/config' },
           { method: 'stat', path: '/repo/.git/config' },
         ]);
       });
@@ -1619,6 +1619,29 @@ describe('PackRegistry.lookup — settled indexes walk synchronously', () => {
         for (const spy of indexSpies) {
           expect(spy).not.toHaveBeenCalled();
         }
+      });
+    });
+  });
+});
+
+describe('createPackRegistry — one config read for both cache budgets', () => {
+  describe('Given a fresh registry construction', () => {
+    describe('When createPackRegistry resolves', () => {
+      it('Then the delta-base and window budgets share one coalesced config stat, not their own two', async () => {
+        // Arrange — assertRepoSettingsValid's own pair (maxTreeDepth +
+        // deltaBaseCacheLimit, fanned out via its own Promise.all) pays one
+        // coalesced stat; reading the delta-base and window budgets
+        // CONCURRENTLY must pay exactly one more — never a third,
+        // sequential stat for the window budget alone.
+        const ctx = await buildSeededContext();
+        const statSpy = vi.spyOn(ctx.fs, 'stat');
+        statSpy.mockClear();
+
+        // Act
+        await createPackRegistry(ctx);
+
+        // Assert
+        expect(statSpy).toHaveBeenCalledTimes(2);
       });
     });
   });

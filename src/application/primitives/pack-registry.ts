@@ -727,6 +727,15 @@ export async function createPackRegistry(ctx: Context): Promise<PackRegistry> {
   await assertRepoSettingsValid(ctx);
   const packDirListing = createPromiseMemo(() => listPackDir(ctx));
   const storeGate = createStoreGate(ctx, packDirListing.get);
+  // Both budgets read `core.*` config independently, but NEVER sequentially:
+  // run concurrently, their two `readConfig` calls fall inside the same
+  // coalescing window (`config-read.ts`'s per-session single-flight stat),
+  // so construction pays one shared stat for the pair instead of two
+  // separate ones stacked after the repo-settings gate's own.
+  const [deltaBaseCacheBudget, windowBudget] = await Promise.all([
+    deltaBaseCacheBudgetFor(ctx),
+    packWindowBudgetFor(ctx),
+  ]);
   // A SEPARATE, ADDITIONAL byte budget from the ordinary delta cache's own —
   // not a share carved out of it. The two caches hold different things (raw
   // loose-format bytes vs. header-split reconstructed delta bases) and
@@ -735,15 +744,14 @@ export async function createPackRegistry(ctx: Context): Promise<PackRegistry> {
   // once here, at construction — never re-derived on `refresh()`), an
   // explicit `ctx.cacheBudgets` override, or git's 96 MiB default.
   const deltaBaseCache = createLruCache<DeltaBaseCacheEntry>(
-    await deltaBaseCacheBudgetFor(ctx),
+    deltaBaseCacheBudget,
     DELTA_BASE_CACHE_MAX_ENTRIES,
   );
   // Registry-wide window cache backing every RegisteredPack.readSlice — one
   // LRU shared across every pack this registry loads, so a window evicted
   // for one pack can make room for another's. Sized once here, at
-  // construction, from the SAME config `readConfig` already parsed for the
-  // eager gate above; never re-derived on `refresh()`.
-  const windowCache = createPackWindowCache(await packWindowBudgetFor(ctx));
+  // construction; never re-derived on `refresh()`.
+  const windowCache = createPackWindowCache(windowBudget);
 
   const scanPacks = async (): Promise<PackGeneration> => {
     const dir = packsDir(commonGitDir(ctx));
