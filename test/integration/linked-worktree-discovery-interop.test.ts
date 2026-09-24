@@ -717,6 +717,9 @@ describe.skipIf(!GIT_AVAILABLE)('linked-worktree discovery interop', () => {
 
     describe('When opened under io: sync-fast-path and io: threadpool', () => {
       it('Then both refuse GITFILE_INVALID_FORMAT identically, matching git rev-parse --git-dir (exit 128)', async () => {
+        // Arrange — the BOM-prefixed gitfile written in beforeAll
+        const gitfilePath = path.join(dir, '.git');
+
         // Act
         const syncCaught = await openAndCatchWithIo('sync-fast-path');
         const threadpoolCaught = await openAndCatchWithIo('threadpool');
@@ -725,7 +728,7 @@ describe.skipIf(!GIT_AVAILABLE)('linked-worktree discovery interop', () => {
         const syncData = (syncCaught as { data: { code: string; path: string } }).data;
         const threadpoolData = (threadpoolCaught as { data: { code: string; path: string } }).data;
         expect(syncData.code).toBe('GITFILE_INVALID_FORMAT');
-        expect(syncData.path).toBe(path.join(dir, '.git'));
+        expect(syncData.path).toBe(gitfilePath);
         expect(threadpoolData.code).toBe(syncData.code);
         expect(threadpoolData.path).toBe(syncData.path);
 
