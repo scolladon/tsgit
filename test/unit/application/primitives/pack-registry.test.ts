@@ -9,6 +9,7 @@ import {
   isSkippablePackFault,
   nextOffsetForEntry,
   type PackOffsetTable,
+  type RegisteredPack,
 } from '../../../../src/application/primitives/pack-registry.js';
 import { getPackRegistry, readObject } from '../../../../src/application/primitives/read-object.js';
 import { REASON_PACK_IDX_EXCEEDS_MAX } from '../../../../src/application/primitives/validators.js';
@@ -1684,6 +1685,49 @@ describe('PackRegistry.lookup — settled indexes walk synchronously', () => {
 
         // Assert
         expect(hit).toBeUndefined();
+        for (const spy of indexSpies) {
+          expect(spy).not.toHaveBeenCalled();
+        }
+      });
+    });
+  });
+
+  describe('Given a no-midx registry whose unclaimed packs have all settled their own index() through a prior miss, with all()/health() never forced', () => {
+    describe('When a further lookup runs', () => {
+      it("Then it takes the settled walk passively — no pack's index() is called again", async () => {
+        // Arrange — a genuine full miss walks EVERY unclaimed pack in
+        // candidate order (none matches, so none short-circuits), settling
+        // each one's own index() organically. all()/health() is never
+        // called — the plain read-walk shape (log, checkout, diff).
+        const ctx = await buildSeededContext();
+        const packCount = 5;
+        const ids: ObjectId[] = [];
+        for (let p = 0; p < packCount; p += 1) {
+          const [id] = await writeSyntheticPack(ctx, `settle-promote-${p}`, [
+            {
+              kind: 'base',
+              type: 'blob',
+              content: new TextEncoder().encode(`settle-promote-${p}`),
+            },
+          ]);
+          ids.push(id as ObjectId);
+        }
+        const registry = await createPackRegistry(ctx);
+        const missingId = 'f'.repeat(40) as ObjectId;
+        await registry.lookup(missingId); // walks and settles every unclaimed pack
+
+        const packs: RegisteredPack[] = [];
+        for (const id of ids) {
+          const hit = await registry.lookup(id);
+          packs.push(hit!.pack);
+        }
+        const indexSpies = packs.map((pack) => vi.spyOn(pack, 'index'));
+
+        // Act
+        const missAgain = await registry.lookup(missingId);
+
+        // Assert
+        expect(missAgain).toBeUndefined();
         for (const spy of indexSpies) {
           expect(spy).not.toHaveBeenCalled();
         }
