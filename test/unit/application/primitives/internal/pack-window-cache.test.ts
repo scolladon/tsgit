@@ -64,12 +64,16 @@ describe('createPackWindowCache', () => {
     });
   });
 
-  describe('Given a request that crosses a window-aligned boundary but fits a page-aligned window', () => {
+  describe('Given a request that crosses a window-aligned boundary', () => {
     describe('When read is called', () => {
-      it('Then it loads one page-aligned window and returns the requested view', async () => {
+      it('Then it bypasses the cache with one direct load, never a page-aligned rescue window', async () => {
         // Arrange — windowBytes=8192 (two 4 KiB pages); offset=8100 straddles
-        // the window-aligned boundary at 8192, but the page-aligned base
-        // 4096 covers [4096, 12288), which contains the whole request.
+        // the window-aligned boundary at 8192. A page-aligned rescue window
+        // would load [4096, 12288) — a range the FOLLOWING aligned window
+        // ([8192, 16384)) already re-loads on the very next sequential read,
+        // doubling I/O over their overlap. Serving the straddling read
+        // directly, uncached, avoids that double load; it costs no more than
+        // the rescue window did for this one request.
         const source = fakeSource(20000);
         const load = loaderOver(source);
         const cache = createPackWindowCache({ windowBytes: 8192, limitBytes: 1 << 20 });
@@ -80,7 +84,38 @@ describe('createPackWindowCache', () => {
         // Assert
         expect(Array.from(result)).toEqual(Array.from(source.subarray(8100, 8300)));
         expect(load).toHaveBeenCalledTimes(1);
-        expect(load).toHaveBeenCalledWith(4096, 8192);
+        expect(load).toHaveBeenCalledWith(8100, 200);
+      });
+    });
+  });
+
+  describe('Given a sequential trace whose first entry straddles a window boundary', () => {
+    describe('When the next entry lands inside the following aligned window', () => {
+      it('Then every byte range is loaded at most once — no overlapping double load', async () => {
+        // Arrange — the default 64 KiB window: an entry at [65000, 65600)
+        // straddles the [0, 65536) window (65000 + 600 > 65536), so it is
+        // served directly; the next entry at 66000 lands fully inside the
+        // FOLLOWING aligned window [65536, 131072), loaded once and cached.
+        // Pre-fix, the straddling read would have loaded a page-aligned
+        // rescue window [61440, 126976) — overlapping the second read's own
+        // [65536, 131072) window across [65536, 126976), loading that whole
+        // span twice.
+        const source = fakeSource(140_000);
+        const load = loaderOver(source);
+        const cache = createPackWindowCache({ windowBytes: 65536, limitBytes: 1 << 20 });
+
+        // Act
+        const first = await cache.read('pack-a', 65000, 600, load);
+        const second = await cache.read('pack-a', 66000, 4, load);
+        const third = await cache.read('pack-a', 66100, 4, load);
+
+        // Assert
+        expect(Array.from(first)).toEqual(Array.from(source.subarray(65000, 65600)));
+        expect(Array.from(second)).toEqual(Array.from(source.subarray(66000, 66004)));
+        expect(Array.from(third)).toEqual(Array.from(source.subarray(66100, 66104)));
+        expect(load).toHaveBeenCalledTimes(2);
+        expect(load).toHaveBeenNthCalledWith(1, 65000, 600);
+        expect(load).toHaveBeenNthCalledWith(2, 65536, 65536);
       });
     });
   });

@@ -11,7 +11,6 @@ import { readConfig } from '../config-read.js';
 
 export const DEFAULT_PACK_WINDOW_BYTES = 64 * 1024;
 export const DEFAULT_PACK_WINDOW_LIMIT_BYTES = 16 * 1024 * 1024;
-const PAGE_BYTES = 4096;
 
 export interface PackWindowBudget {
   readonly windowBytes: number;
@@ -99,14 +98,16 @@ export function createPackWindowCache({
   ): Promise<Uint8Array> => {
     if (length > windowBytes || limitBytes < windowBytes) return load(offset, length);
     const windowBase = alignedBase(offset, windowBytes);
-    if (fitsWindow(offset, length, windowBase, windowBytes)) {
-      const window = await cachedWindow(packName, windowBase, load);
-      return viewAt(window, windowBase, offset, length);
+    if (!fitsWindow(offset, length, windowBase, windowBytes)) {
+      // Straddles the window-aligned boundary. A page-aligned rescue window
+      // would re-load whatever byte range the FOLLOWING aligned window is
+      // about to cover on the next sequential read — up to a whole window's
+      // worth of double I/O over their overlap. Serving it directly, once,
+      // uncached, costs only this one small request instead.
+      return load(offset, length);
     }
-    const pageBase = alignedBase(offset, PAGE_BYTES);
-    if (!fitsWindow(offset, length, pageBase, windowBytes)) return load(offset, length);
-    const window = await cachedWindow(packName, pageBase, load);
-    return viewAt(window, pageBase, offset, length);
+    const window = await cachedWindow(packName, windowBase, load);
+    return viewAt(window, windowBase, offset, length);
   };
 
   return { read, clear: windows.clear };
