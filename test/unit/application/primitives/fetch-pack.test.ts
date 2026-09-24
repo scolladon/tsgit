@@ -401,6 +401,41 @@ const buildSingleBlobPack = async (
   };
 };
 
+/**
+ * Builds a single-entry pack body (12-byte header + one BLOB entry +
+ * trailer) whose entry header declares `declaredSize` while the zlib stream
+ * actually deflates `actualPayload` — a hand-built version of git's own
+ * crafted-pack measurement for this refusal (`git index-pack --stdin`
+ * against a one-blob pack, entry at offset 12): declared 5, actual 3 ("abc")
+ * exits 128 with `inflate returned 1`; declared 2, actual 3 exits 128 with
+ * `inflate returned -5`; declared === actual exits 0. tsgit refuses both
+ * mismatched directions with the same coded `INVALID_PACK_ENTRY` (offset
+ * 12), mirroring git's own uniform `unpack_entry_data` check, which does not
+ * distinguish short from long.
+ */
+const buildDeclaredSizeMismatchPackBody = async (
+  ctx: ReturnType<typeof createMemoryContext>,
+  declaredSize: number,
+  actualPayload: Uint8Array,
+): Promise<Uint8Array> => {
+  const header = new Uint8Array(12);
+  const dv = new DataView(header.buffer);
+  dv.setUint32(0, 0x5041434b);
+  dv.setUint32(4, 2);
+  dv.setUint32(8, 1);
+  const entryHeaderByte = encodePackEntryHeader(PACK_ENTRY_TYPE.BLOB, declaredSize);
+  const zlibStream = await ctx.compressor.deflate(actualPayload);
+  const bodyBytes = new Uint8Array(header.length + entryHeaderByte.length + zlibStream.length);
+  bodyBytes.set(header, 0);
+  bodyBytes.set(entryHeaderByte, header.length);
+  bodyBytes.set(zlibStream, header.length + entryHeaderByte.length);
+  const trailerHex = await ctx.hash.hashHex(bodyBytes);
+  const packBytes = new Uint8Array(bodyBytes.length + 20);
+  packBytes.set(bodyBytes, 0);
+  packBytes.set(hexToBytes(trailerHex), bodyBytes.length);
+  return packBytes;
+};
+
 describe('fetchPack', () => {
   describe('happy path', () => {
     describe('Given a single-blob side-band-1 pack', () => {
@@ -3127,37 +3162,18 @@ describe('quarantine disk-backed entry walk', () => {
     });
   });
 
-  describe('Given a quarantined pack entry whose zlib stream inflates past its declared header size', () => {
+  describe('Given a quarantined pack entry whose zlib stream inflates LONGER than its declared header size', () => {
     describe('When fetchPack walks the quarantined pack from disk', () => {
-      it('Then the disk walk refuses instead of inflating past the declared size, and reaps the quarantine file', async () => {
-        // Arrange — declared size 5, but the zlib stream is a valid, complete
-        // encoding of 10 bytes: bounding `streamInflate` to the declared size
-        // trips the output-safety-cap refusal instead of silently accepting a
-        // stream larger than its own header claims.
+      it('Then it refuses with INVALID_PACK_ENTRY naming the offset, and reaps the quarantine file', async () => {
+        // Arrange — declared size 2, but the zlib stream is a valid, complete
+        // encoding of 3 bytes ("abc") — mirrors git's own "declared 2,
+        // actual 3" crafted-pack row (exit 128, `inflate returned -5`).
         const ctx = createMemoryContext();
         const dummyId = (await computeBlobId(
           ctx,
           ENCODER.encode('oversize-declare\n'),
         )) as ObjectId;
-        const header = new Uint8Array(12);
-        const dv = new DataView(header.buffer);
-        dv.setUint32(0, 0x5041434b);
-        dv.setUint32(4, 2);
-        dv.setUint32(8, 1);
-        const declaredSize = 5;
-        const actualPayload = ENCODER.encode('AAAAAAAAAA'); // 10 bytes, > declaredSize
-        const entryHeaderByte = encodePackEntryHeader(PACK_ENTRY_TYPE.BLOB, declaredSize);
-        const zlibStream = await ctx.compressor.deflate(actualPayload);
-        const bodyBytes = new Uint8Array(
-          header.length + entryHeaderByte.length + zlibStream.length,
-        );
-        bodyBytes.set(header, 0);
-        bodyBytes.set(entryHeaderByte, header.length);
-        bodyBytes.set(zlibStream, header.length + entryHeaderByte.length);
-        const trailerHex = await ctx.hash.hashHex(bodyBytes);
-        const packBytes = new Uint8Array(bodyBytes.length + 20);
-        packBytes.set(bodyBytes, 0);
-        packBytes.set(hexToBytes(trailerHex), bodyBytes.length);
+        const packBytes = await buildDeclaredSizeMismatchPackBody(ctx, 2, ENCODER.encode('abc'));
         const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
         const { transport } = captureRequests(body);
         const sut = fetchPack;
@@ -3177,9 +3193,62 @@ describe('quarantine disk-backed entry walk', () => {
 
         // Assert
         expect(caught).toBeInstanceOf(TsgitError);
-        const data = (caught as TsgitError).data as { code: string; reason?: string };
-        expect(data.code).toBe('DECOMPRESS_FAILED');
-        expect(data.reason).toContain('safety cap');
+        const data = (caught as TsgitError).data as {
+          code: string;
+          offset?: number;
+          reason?: string;
+        };
+        expect(data.code).toBe('INVALID_PACK_ENTRY');
+        expect(data.offset).toBe(12);
+        expect(data.reason).toContain('differs from declared size');
+        expect(await tmpPackNames(ctx)).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given a quarantined pack entry whose zlib stream inflates SHORTER than its declared header size', () => {
+    describe('When fetchPack walks the quarantined pack from disk', () => {
+      it('Then it refuses with INVALID_PACK_ENTRY naming the offset, and reaps the quarantine file', async () => {
+        // Arrange — declared size 5, but the zlib stream is a valid, complete
+        // encoding of only 3 bytes ("abc") — mirrors git's own "declared 5,
+        // actual 3" crafted-pack row (exit 128, `inflate returned 1`). Before
+        // this fix, a short-declared entry like this passed silently: the
+        // compressor's declared-size output cap only ever catches a stream
+        // that inflates LONGER than declared, never one that ends early but
+        // otherwise validly.
+        const ctx = createMemoryContext();
+        const dummyId = (await computeBlobId(
+          ctx,
+          ENCODER.encode('undersize-declare\n'),
+        )) as ObjectId;
+        const packBytes = await buildDeclaredSizeMismatchPackBody(ctx, 5, ENCODER.encode('abc'));
+        const body = buildUploadPackResponseBody({ packBytes, sideBand: true });
+        const { transport } = captureRequests(body);
+        const sut = fetchPack;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, toNegotiator(transport), {
+            wants: [dummyId],
+            haves: [],
+            capabilities: ['side-band-64k'],
+            progressOp: 'test:write-objects',
+          });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          code: string;
+          offset?: number;
+          reason?: string;
+        };
+        expect(data.code).toBe('INVALID_PACK_ENTRY');
+        expect(data.offset).toBe(12);
+        expect(data.reason).toContain('differs from declared size');
         expect(await tmpPackNames(ctx)).toHaveLength(0);
       });
     });
@@ -3941,35 +4010,17 @@ describe('index pass base cache — invariants', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('walkPackEntries', () => {
-  describe('Given a pack entry whose zlib stream inflates past its declared header size', () => {
+  describe('Given a pack entry whose zlib stream inflates LONGER than its declared header size', () => {
     describe('When walkPackEntries walks it from an in-memory buffer', () => {
-      it('Then it refuses instead of inflating past the declared size — mirrors the disk-source refusal', async () => {
+      it('Then it refuses with INVALID_PACK_ENTRY naming the offset — mirrors the disk-source refusal', async () => {
         // Arrange — same construction as the disk-source "oversize-declare"
-        // pin in `quarantine disk-backed entry walk` above: declared size 5,
-        // but the zlib stream is a valid, complete encoding of 10 bytes. The
-        // in-memory source must bound `streamInflate` to the declared size
-        // exactly like the disk source does, or identical bytes are refused
-        // from disk and silently accepted in memory.
+        // pin in `quarantine disk-backed entry walk` above: declared size 2,
+        // but the zlib stream is a valid, complete encoding of 3 bytes
+        // ("abc"). The in-memory source must bound `streamInflate` to the
+        // declared size exactly like the disk source does, or identical
+        // bytes are refused from disk and silently accepted in memory.
         const ctx = createMemoryContext();
-        const header = new Uint8Array(12);
-        const dv = new DataView(header.buffer);
-        dv.setUint32(0, 0x5041434b);
-        dv.setUint32(4, 2);
-        dv.setUint32(8, 1);
-        const declaredSize = 5;
-        const actualPayload = ENCODER.encode('AAAAAAAAAA'); // 10 bytes, > declaredSize
-        const entryHeaderByte = encodePackEntryHeader(PACK_ENTRY_TYPE.BLOB, declaredSize);
-        const zlibStream = await ctx.compressor.deflate(actualPayload);
-        const bodyBytes = new Uint8Array(
-          header.length + entryHeaderByte.length + zlibStream.length,
-        );
-        bodyBytes.set(header, 0);
-        bodyBytes.set(entryHeaderByte, header.length);
-        bodyBytes.set(zlibStream, header.length + entryHeaderByte.length);
-        const trailerHex = await ctx.hash.hashHex(bodyBytes);
-        const packBytes = new Uint8Array(bodyBytes.length + 20);
-        packBytes.set(bodyBytes, 0);
-        packBytes.set(hexToBytes(trailerHex), bodyBytes.length);
+        const packBytes = await buildDeclaredSizeMismatchPackBody(ctx, 2, ENCODER.encode('abc'));
         const sut = walkPackEntries;
 
         // Act
@@ -3982,9 +4033,47 @@ describe('walkPackEntries', () => {
 
         // Assert
         expect(caught).toBeInstanceOf(TsgitError);
-        const data = (caught as TsgitError).data as { code: string; reason?: string };
-        expect(data.code).toBe('DECOMPRESS_FAILED');
-        expect(data.reason).toContain('safety cap');
+        const data = (caught as TsgitError).data as {
+          code: string;
+          offset?: number;
+          reason?: string;
+        };
+        expect(data.code).toBe('INVALID_PACK_ENTRY');
+        expect(data.offset).toBe(12);
+        expect(data.reason).toContain('differs from declared size');
+      });
+    });
+  });
+
+  describe('Given a pack entry whose zlib stream inflates SHORTER than its declared header size', () => {
+    describe('When walkPackEntries walks it from an in-memory buffer', () => {
+      it('Then it refuses with INVALID_PACK_ENTRY naming the offset — mirrors the disk-source refusal', async () => {
+        // Arrange — declared size 5, but the zlib stream is a valid,
+        // complete encoding of only 3 bytes ("abc"). Before this fix, the
+        // in-memory source silently accepted this: the declared-size output
+        // cap only ever catches a stream that inflates LONGER than declared.
+        const ctx = createMemoryContext();
+        const packBytes = await buildDeclaredSizeMismatchPackBody(ctx, 5, ENCODER.encode('abc'));
+        const sut = walkPackEntries;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, packBytes);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data as {
+          code: string;
+          offset?: number;
+          reason?: string;
+        };
+        expect(data.code).toBe('INVALID_PACK_ENTRY');
+        expect(data.offset).toBe(12);
+        expect(data.reason).toContain('differs from declared size');
       });
     });
   });

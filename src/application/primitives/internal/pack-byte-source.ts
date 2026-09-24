@@ -24,6 +24,29 @@ import type { InflateStreamResult } from '../../../ports/compressor.js';
 import type { Context } from '../../../ports/context.js';
 
 /**
+ * git's own reason, worded loosely rather than byte-for-byte (this library
+ * ships structured data, never rendered text), for a pack entry whose zlib
+ * stream inflates to a byte count other than its own header-declared size —
+ * applied uniformly to BOTH directions, exactly as git's own check does
+ * (`unpack_entry_data`'s `stream.total_out != size`, regardless of which
+ * side of `size` it lands on).
+ */
+const INFLATED_SIZE_MISMATCH_REASON = 'bad object: inflated size differs from declared size';
+
+/**
+ * The reason `ctx.compressor.streamInflate` raises when its output cap is
+ * exceeded — reached here specifically because every `inflateEntry` below
+ * binds that cap to `declaredSize` (see the interface doc), so hitting it
+ * means the entry's stream is inflating LONGER than it declared. Owned
+ * independently here for the same reason `RETRYABLE_DECOMPRESS_REASON`
+ * below is: a structural match against every adapter's own wording for the
+ * identical condition (`inflateZlibMember`'s `GrowableBuffer.ensureCapacity`,
+ * `NodeCompressor.streamInflate`'s cap check), which this module cannot
+ * import across the port boundary.
+ */
+const INFLATE_CAP_EXCEEDED_REASON = 'inflated output exceeds safety cap';
+
+/**
  * `TCrcContext` lets a source thread whatever it needs from `inflateEntry`
  * into the matching `entryCrc32` call as an ordinary parameter, instead of
  * the caller trusting an undocumented "these two calls happen in this order"
@@ -50,6 +73,13 @@ export interface PackByteSource<TCrcContext = undefined> {
    * `entryCrc32` read the whole `[offset, entryEnd)` range back with no
    * further I/O. Returns the inflate result alongside whatever `crcContext`
    * the matching `entryCrc32` call needs.
+   *
+   * Every implementation also enforces, uniformly, that the inflated output
+   * is EXACTLY `declaredSize` bytes — never more (already stopped by the
+   * bound above), never fewer (a valid, complete zlib stream that simply
+   * ends early passes that bound untouched) — refusing with
+   * `INVALID_PACK_ENTRY` and this call's own `offset` otherwise, mirroring
+   * git's own uniform `unpack_entry_data` check.
    */
   inflateEntry(
     offset: number,
@@ -69,10 +99,11 @@ export const inMemoryPackByteSource = (ctx: Context, packBytes: Uint8Array): Pac
   totalBytes: packBytes.length,
   header: async () => parsePackHeader(packBytes),
   entryHeader: async (offset) => parsePackEntryHeader(packBytes, offset, ctx.hashConfig),
-  inflateEntry: async (_offset, dataOffset, declaredSize) => ({
-    result: await ctx.compressor.streamInflate(packBytes, dataOffset, declaredSize),
-    crcContext: undefined,
-  }),
+  inflateEntry: (offset, dataOffset, declaredSize) =>
+    withDeclaredSizeCheck(offset, declaredSize, async () => ({
+      result: await ctx.compressor.streamInflate(packBytes, dataOffset, declaredSize),
+      crcContext: undefined,
+    })),
   entryCrc32: async (offset, entryEnd) => crc32(packBytes.subarray(offset, entryEnd)),
 });
 
@@ -118,6 +149,41 @@ const errorDataReason = (error: unknown): string | undefined => {
   if (typeof error !== 'object' || error === null) return undefined;
   const data = (error as { readonly data?: { readonly reason?: unknown } }).data;
   return typeof data?.reason === 'string' ? data.reason : undefined;
+};
+
+/** Whether `err` is the compressor's own declared-size output cap firing —
+ *  see {@link INFLATE_CAP_EXCEEDED_REASON}. */
+const isCapExceeded = (err: unknown): boolean =>
+  errorDataCode(err) === 'DECOMPRESS_FAILED' &&
+  errorDataReason(err) === INFLATE_CAP_EXCEEDED_REASON;
+
+/**
+ * Wraps one `inflateEntry` attempt with git's uniform declared-size check:
+ * a stream that inflates LONGER than `declaredSize` is caught here by
+ * remapping the compressor's own cap-exceeded refusal (`DECOMPRESS_FAILED`,
+ * no offset — the compressor has no pack-offset context) into
+ * `INVALID_PACK_ENTRY` at `offset`; a stream that inflates SHORTER is caught
+ * by the explicit length check below, since a short-but-complete zlib
+ * member never trips that cap at all. Shared by both sources so every
+ * `index-pack.ts` call path (pass 1's scan, pass 2's root/child re-inflates,
+ * the thin-pack external-base sweep) is covered from this one seam.
+ */
+const withDeclaredSizeCheck = async <TCrcContext>(
+  offset: number,
+  declaredSize: number,
+  attempt: () => Promise<{
+    readonly result: InflateStreamResult;
+    readonly crcContext: TCrcContext;
+  }>,
+): Promise<{ readonly result: InflateStreamResult; readonly crcContext: TCrcContext }> => {
+  const outcome = await attempt().catch((err: unknown) => {
+    if (isCapExceeded(err)) throw invalidPackEntry(offset, INFLATED_SIZE_MISMATCH_REASON);
+    throw err;
+  });
+  if (outcome.result.output.byteLength !== declaredSize) {
+    throw invalidPackEntry(offset, INFLATED_SIZE_MISMATCH_REASON);
+  }
+  return outcome;
 };
 
 /**
@@ -385,10 +451,12 @@ export const diskPackByteSource = (
         }
       }),
     inflateEntry: (offset, dataOffset, declaredSize) =>
-      withGrowth(offset, entryGrowthCeiling(offset, declaredSize), async (w) => ({
-        result: await ctx.compressor.streamInflate(w.bytes, dataOffset - w.start, declaredSize),
-        crcContext: w,
-      })),
+      withDeclaredSizeCheck(offset, declaredSize, () =>
+        withGrowth(offset, entryGrowthCeiling(offset, declaredSize), async (w) => ({
+          result: await ctx.compressor.streamInflate(w.bytes, dataOffset - w.start, declaredSize),
+          crcContext: w,
+        })),
+      ),
     entryCrc32: async (offset, entryEnd, crcContext) => {
       // `crcContext` is the window `inflateEntry` actually read from for
       // this same `offset`. That call cannot have consumed more bytes than

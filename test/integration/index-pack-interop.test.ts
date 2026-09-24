@@ -483,6 +483,61 @@ describe.skipIf(!GIT_AVAILABLE)('index-pack interop', () => {
     });
   });
 
+  describe.each([
+    // Measured against git 2.55.0 (`git index-pack --stdin` into a fresh
+    // `git init`, scrubbed env, on a hand-built one-blob pack; the entry
+    // sits at offset 12): declared 5, actual 3 ("abc") exits 128 with
+    // `inflate returned 1`; declared 2, actual 3 exits 128 with `inflate
+    // returned -5`. The trailing number is zlib's own internal status and
+    // is not reproducible from tsgit's own inflater — only the stable
+    // "pack has bad object at offset 12" prefix is pinned here.
+    { label: 'a LARGER size than its zlib stream actually inflates to', declaredSize: 5 },
+    { label: 'a SMALLER size than its zlib stream actually inflates to', declaredSize: 2 },
+  ])('Given a crafted one-blob pack whose entry declares $label', ({ declaredSize }) => {
+    describe('When git index-pack --strict and tsgit walkPackEntries both run over the same bytes', () => {
+      it("Then both refuse, and tsgit's offset matches git's own", async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const built = await buildSyntheticPack(ctx, [
+          {
+            kind: 'base',
+            type: 'blob',
+            content: ENCODER.encode('abc'),
+            declaredSizeOverride: declaredSize,
+          },
+        ]);
+        const dir = await withCraftedPack(built.packBytes);
+        try {
+          // Act
+          const gitResult = tryRunGitWithExit(['index-pack', '--strict', dir.packPath]);
+          let caught: unknown;
+          try {
+            await walkPackEntries(ctx, built.packBytes);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(gitResult.exitCode).not.toBe(0);
+          expect(gitResult.stderr).toContain('pack has bad object at offset 12');
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as {
+            code: string;
+            offset?: number;
+            reason?: string;
+          };
+          expect(data.code).toBe('INVALID_PACK_ENTRY');
+          const gitOffset = /at offset (\d+):/.exec(gitResult.stderr)?.[1];
+          expect(gitOffset).toBeDefined();
+          expect(data.offset).toBe(Number(gitOffset));
+          expect(data.reason).toContain('differs from declared size');
+        } finally {
+          await dir.dispose();
+        }
+      });
+    });
+  });
+
   describe("Given the crafted REF_DELTA cycle pack (two deltas naming each other's target oid, no base entry)", () => {
     describe('When git index-pack --strict and tsgit walkPackEntries both run over the same bytes', () => {
       it('Then both refuse with "pack has 2 unresolved deltas", byte-identical', async () => {
