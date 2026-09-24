@@ -212,7 +212,7 @@ describe.skipIf(!GIT_AVAILABLE)(
     });
 
     describe('Given the flat midx removed and every .pack deleted, leaving orphaned .idx files, When both tools read the loose object', () => {
-      it('Then git is silent at exit 0, tsgit serves the same bytes and emits no logger warn', async () => {
+      it('Then git is silent at exit 0, tsgit serves the same bytes and warns once per orphaned .idx', async () => {
         // Arrange — the midx must go first: with it present this is design row
         // E1 (a healthy midx naming a deleted pack), a different row.
         const dir = await copyRow('c5');
@@ -224,13 +224,26 @@ describe.skipIf(!GIT_AVAILABLE)(
             .filter((entry) => entry.endsWith('.pack'))
             .map((entry) => rm(path.join(packDir, entry), { force: true })),
         );
+        const orphanedIdx = entries
+          .filter((entry) => entry.endsWith('.idx'))
+          .sort((a, b) => a.localeCompare(b));
         const warn = vi.fn();
         const ctx: Context = { ...createNodeContext({ workDir: dir }), logger: { warn } };
         liveContexts.push(ctx);
 
-        // Act + Assert
+        // Act + Assert — packs are consulted before loose objects, so the
+        // registry's scan names each orphan on the logger channel, which sits
+        // outside what git prints
         await expectLooseServed(dir, ctx, base.looseOid);
-        expect(warn).not.toHaveBeenCalled();
+        const warned = warn.mock.calls
+          .map(([message, context]) => ({ message, context }))
+          .sort((a, b) => String(a.context?.idx).localeCompare(String(b.context?.idx)));
+        expect(warned).toEqual(
+          orphanedIdx.map((idx) => ({
+            message: 'packRegistry: skipping pack index with no pack file',
+            context: { idx },
+          })),
+        );
       });
     });
 
