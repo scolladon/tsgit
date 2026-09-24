@@ -527,6 +527,80 @@ describe('lru-cache', () => {
     });
   });
 
+  describe('keys', () => {
+    describe('Given cache(100) with A(50) and B(50) evicted by a third entry C(50)', () => {
+      describe('When keys is read', () => {
+        it('Then it yields only the resident keys, never the byte-cap-evicted one', () => {
+          // Arrange
+          const sut = createLruCache<string>(100);
+          sut.set('a', 'val-a', 50);
+          sut.set('b', 'val-b', 50);
+
+          // Act
+          sut.set('c', 'val-c', 50);
+          const result = [...sut.keys()];
+
+          // Assert
+          expect(result).toEqual(['b', 'c']);
+        });
+      });
+    });
+
+    describe('Given createLruCache(huge, 2) with three entries set', () => {
+      describe('When keys is read', () => {
+        it('Then it yields only the two the entry cap kept resident', () => {
+          // Arrange
+          const sut = createLruCache<number>(Number.MAX_SAFE_INTEGER, 2);
+          sut.set('a', 1, 10);
+          sut.set('b', 2, 10);
+
+          // Act
+          sut.set('c', 3, 10);
+          const result = [...sut.keys()];
+
+          // Assert
+          expect(result).toEqual(['b', 'c']);
+        });
+      });
+    });
+
+    describe('Given cache(100) with A(50) and B(50), When A is explicitly deleted', () => {
+      describe('When keys is read', () => {
+        it('Then the deleted key is absent while the untouched one remains', () => {
+          // Arrange
+          const sut = createLruCache<string>(100);
+          sut.set('a', 'val-a', 50);
+          sut.set('b', 'val-b', 50);
+
+          // Act
+          sut.delete('a');
+          const result = [...sut.keys()];
+
+          // Assert
+          expect(result).toEqual(['b']);
+        });
+      });
+    });
+
+    describe('Given cache(100) with entries, When clear is called', () => {
+      describe('When keys is read', () => {
+        it('Then it yields nothing', () => {
+          // Arrange
+          const sut = createLruCache<string>(100);
+          sut.set('a', 'val-a', 50);
+          sut.set('b', 'val-b', 50);
+
+          // Act
+          sut.clear();
+          const result = [...sut.keys()];
+
+          // Assert
+          expect(result).toEqual([]);
+        });
+      });
+    });
+  });
+
   describe('property-based tests', () => {
     describe('Given any sequence of set operations', () => {
       describe('When checking currentSize', () => {

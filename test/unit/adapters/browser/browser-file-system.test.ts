@@ -675,35 +675,78 @@ describe('BrowserFileSystem directory-handle cache', () => {
 
   const CACHED_PARENT_COUNT = 600;
 
-  describe('Given more distinct parent directories cached than the handle-cache LRU holds', () => {
-    describe('When every one of them has been read at least once', () => {
-      it("Then the tracked key set never outgrows the LRU's own resident entries", async () => {
-        // Arrange — one empty subdirectory per distinct parent, so each read
-        // caches its own parent key without ever hitting another one's.
-        const children: Record<string, FileSystemDirectoryHandle> = {};
-        for (let index = 0; index < CACHED_PARENT_COUNT; index += 1) {
-          children[`d${index}`] = directory({});
-        }
-        const root = directory(children);
+  /** `ancestor/d{index}/nested/file.txt` per index — each read caches the
+   *  distinct parent key `ancestor/d{index}/nested`, well past the handle-cache
+   *  LRU's entry cap, so the earliest-inserted parents are evicted by the time
+   *  every index has been read once. */
+  const buildNestedParentFixture = (): {
+    readonly root: FileSystemDirectoryHandle & { readonly removeEntry: ReturnType<typeof vi.fn> };
+    readonly parents: ReadonlyArray<FileSystemDirectoryHandle>;
+  } => {
+    const parents: FileSystemDirectoryHandle[] = [];
+    const ancestorChildren: Record<string, FileSystemDirectoryHandle> = {};
+    for (let index = 0; index < CACHED_PARENT_COUNT; index += 1) {
+      const nested = directory({ 'file.txt': 'file' });
+      const parent = directory({ nested });
+      parents.push(parent);
+      ancestorChildren[`d${index}`] = parent;
+    }
+    const ancestor = directory(ancestorChildren);
+    const root = withRemoveEntry(directory({ ancestor }));
+    return { root, parents };
+  };
+
+  const readNestedParent = (sut: BrowserFileSystem, index: number): Promise<Uint8Array> =>
+    sut.read(`ancestor/d${index}/nested/file.txt`);
+
+  const directoryHandleCalls = (handle: FileSystemDirectoryHandle): number =>
+    (handle.getDirectoryHandle as ReturnType<typeof vi.fn>).mock.calls.length;
+
+  describe('Given more distinct nested parent directories read than the handle-cache LRU holds', () => {
+    describe('When an early parent — already evicted by the entry cap — is read again', () => {
+      it('Then it walks the directory handles again rather than serving a stale cache hit', async () => {
+        // Arrange
+        const { root, parents } = buildNestedParentFixture();
         const sut = new BrowserFileSystem(root);
+        for (let index = 0; index < CACHED_PARENT_COUNT; index += 1) {
+          await readNestedParent(sut, index);
+        }
+        const evictedParent = parents[0];
+        if (evictedParent === undefined) throw new Error('fixture invariant: parents[0] missing');
+        const callsBeforeReread = directoryHandleCalls(evictedParent);
 
         // Act
-        for (let index = 0; index < CACHED_PARENT_COUNT; index += 1) {
-          await sut.exists(`d${index}/file.txt`);
-        }
+        await readNestedParent(sut, 0);
 
-        // Assert — `createLruCache` exposes no key enumeration, so reaching
-        // through the private fields is the only seam available; the tracked
-        // Set must never sit above the LRU's own live entry count, which is
-        // itself capped well below the 600 distinct parents cached above.
-        const internals = sut as unknown as {
-          readonly directoryHandleCacheKeys: ReadonlySet<string>;
-          readonly directoryHandleCache: { readonly entryCount: number };
-        };
-        expect(internals.directoryHandleCacheKeys.size).toBe(
-          internals.directoryHandleCache.entryCount,
-        );
-        expect(internals.directoryHandleCacheKeys.size).toBeLessThan(CACHED_PARENT_COUNT);
+        // Assert — d0 was cached first and the LRU holds far fewer than
+        // CACHED_PARENT_COUNT entries, so it was evicted long before this
+        // re-read; a cache hit would leave the walk count unchanged.
+        expect(directoryHandleCalls(evictedParent)).toBeGreaterThan(callsBeforeReread);
+      });
+    });
+
+    describe('When the shared ancestor is invalidated, then a still-resident parent is read again', () => {
+      it('Then the resident entry is dropped too and the read walks again', async () => {
+        // Arrange
+        const { root, parents } = buildNestedParentFixture();
+        const sut = new BrowserFileSystem(root);
+        for (let index = 0; index < CACHED_PARENT_COUNT; index += 1) {
+          await readNestedParent(sut, index);
+        }
+        const lastIndex = CACHED_PARENT_COUNT - 1;
+        const residentParent = parents[lastIndex];
+        if (residentParent === undefined) {
+          throw new Error('fixture invariant: last parent missing');
+        }
+        const callsBeforeInvalidate = directoryHandleCalls(residentParent);
+
+        // Act — the most recently cached parent is still resident (unlike d0
+        // above), so without invalidation a repeat read would hit the cache.
+        await sut.rm('ancestor');
+        await readNestedParent(sut, lastIndex);
+
+        // Assert
+        expect(directoryHandleCalls(residentParent)).toBeGreaterThan(callsBeforeInvalidate);
       });
     });
   });

@@ -31,19 +31,14 @@ export class BrowserFileSystem implements FileSystem {
    * Resolved `FileSystemDirectoryHandle` per parent path (the joined
    * segments `walkToParent` was asked to resolve), so a second read under
    * the same parent skips every `getDirectoryHandle` call the first paid.
-   * `createLruCache` exposes no key enumeration, so `directoryHandleCacheKeys`
-   * mirrors every key ever inserted — a superset of the LRU's live entries
-   * once byte/entry eviction has silently dropped some. Bounded back to the
-   * LRU's own residency by `pruneEvictedDirectoryHandleKeys` (called once the
-   * Set overshoots the entry cap) and by `invalidateDirectoryHandleCache`'s
-   * own scan (called on every `rm`/`rmRecursive`/`rename`), so the Set never
-   * outgrows the LRU by more than the gap between two such calls.
+   * `invalidateDirectoryHandleCache` walks the cache's own `keys()`, so it
+   * only ever sees currently resident entries — nothing to reconcile against
+   * silent byte/entry eviction.
    */
   private readonly directoryHandleCache: LruCache<FileSystemDirectoryHandle> = createLruCache(
     DIRECTORY_HANDLE_CACHE_MAX_BYTES,
     DIRECTORY_HANDLE_CACHE_MAX_ENTRIES,
   );
-  private readonly directoryHandleCacheKeys = new Set<string>();
 
   async read(path: string): Promise<Uint8Array> {
     const handle = await this.resolveFileHandle(path, false);
@@ -379,34 +374,14 @@ export class BrowserFileSystem implements FileSystem {
 
   private cacheDirectoryHandle(key: string, handle: FileSystemDirectoryHandle): void {
     this.directoryHandleCache.set(key, handle, key.length);
-    this.directoryHandleCacheKeys.add(key);
-    // The LRU's own entry cap bounds `directoryHandleCache`, but the mirror Set only ever
-    // grows on insert; once it overshoots the cap at least one key below is guaranteed
-    // evicted (the LRU enforces its cap on every `set`), so this always makes progress.
-    if (this.directoryHandleCacheKeys.size > DIRECTORY_HANDLE_CACHE_MAX_ENTRIES) {
-      this.pruneEvictedDirectoryHandleKeys();
-    }
-  }
-
-  /** Drops every tracked key the LRU no longer holds — the eviction it never announces. */
-  private pruneEvictedDirectoryHandleKeys(): void {
-    for (const key of this.directoryHandleCacheKeys) {
-      if (!this.directoryHandleCache.has(key)) this.directoryHandleCacheKeys.delete(key);
-    }
   }
 
   /** Drops every cached entry at `path` or nested under it (`path/...`) — a removed or
-   *  renamed-away directory, and any deeper parent path this instance ever cached through it.
-   *  Also drops any key the LRU has already silently evicted, so the mirror Set never
-   *  outgrows the LRU's own residency for longer than the gap between two invalidations. */
+   *  renamed-away directory, and any deeper parent path this instance ever cached through it. */
   private invalidateDirectoryHandleCache(path: string): void {
     const prefix = `${path}/`;
-    for (const key of this.directoryHandleCacheKeys) {
-      const stillResident = this.directoryHandleCache.has(key);
-      if (!stillResident || key === path || key.startsWith(prefix)) {
-        this.directoryHandleCache.delete(key);
-        this.directoryHandleCacheKeys.delete(key);
-      }
+    for (const key of this.directoryHandleCache.keys()) {
+      if (key === path || key.startsWith(prefix)) this.directoryHandleCache.delete(key);
     }
   }
 
