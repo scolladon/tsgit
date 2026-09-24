@@ -6,7 +6,7 @@
  * `bare` flag) must be exercised here — the integration suite does not feed
  * the mutation runner.
  */
-import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
@@ -604,6 +604,38 @@ describe('Given a plain (non-symlink) .git directory directly under cwd', () => 
     it('Then layout.gitDir is <canonical cwd>/.git', async () => {
       // Arrange
       await makeGitDir(path.join(tmpdir, '.git'));
+      const resolvedCwd = await realpath(tmpdir);
+
+      // Act
+      const repo = await openRepository({ cwd: tmpdir });
+
+      try {
+        // Assert
+        expect(repo.ctx.layout.gitDir).toBe(path.join(resolvedCwd, '.git'));
+      } finally {
+        await repo.dispose();
+      }
+    });
+  });
+});
+
+describe('Given a `.git` directory renamed to a different case on a case-folding volume', () => {
+  describe('When openRepository discovers it', () => {
+    it('Then layout.gitDir is the literal join, matching what git itself reports there', async (ctx) => {
+      // Arrange
+      const probe = path.join(tmpdir, 'tsgit-case-probe');
+      await writeFile(probe, '');
+      const folds = await realpath(path.join(tmpdir, 'TSGIT-CASE-PROBE')).then(
+        () => true,
+        () => false,
+      );
+      await rm(probe, { force: true });
+      if (!folds) {
+        ctx.skip();
+        return;
+      }
+      await makeGitDir(path.join(tmpdir, '.git'));
+      await rename(path.join(tmpdir, '.git'), path.join(tmpdir, '.GIT'));
       const resolvedCwd = await realpath(tmpdir);
 
       // Act
