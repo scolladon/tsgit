@@ -179,25 +179,15 @@ async function arrangeMidxRepo(
   midxBytes.set(trailer, trailerStart);
   const midxPath = `${packDir}/multi-pack-index`;
   await repo.ctx.fs.write(midxPath, midxBytes);
-  // Best-effort on the source module graph (the local node/memory drivers);
-  // on the dist-bundle drivers this touches a parallel registry and the
-  // bundle's own registry simply takes its FIRST scan at the read below —
-  // either way the healthy read sees the midx.
-  (await getPackRegistry(repo.ctx)).refresh();
+  // No explicit `registry.refresh()` here, deliberately — the object-
+  // resolver's own full-miss re-scan retry (`pack-miss-rescan.ts`) re-scans
+  // and finds the midx on the read below, on every runtime, without needing
+  // to reach across a dist-bundle driver's own parallel registry instance.
   return { idA, idB, midxPath, midxBytes };
 }
 
 export const midxReadScenario: Scenario<MidxReadResult> = {
   name: 'midx-read',
-  // The seed commit's own ref-update verification forces the store gate
-  // before `arrangeMidxRepo` writes the two packs and the midx directly to
-  // objects/pack; its own `getPackRegistry(...).refresh()` call reaches
-  // only the SOURCE module graph (the same limitation `midx-read-degraded`
-  // below documents at length), so a dist-bundle driver's own internal
-  // registry — a parallel instance the test cannot reach — keeps its
-  // pre-write listing with no packs. Cross-adapter parity for this read is
-  // still proven by the node and memory drivers.
-  unsupportedRuntimes: ['workers', 'deno', 'bun', 'browser'],
   inputs: { files: [FILES.helloA], author: AUTHOR, message: MESSAGES.seed },
   expected: {
     healthyContentA: CONTENT_A,
