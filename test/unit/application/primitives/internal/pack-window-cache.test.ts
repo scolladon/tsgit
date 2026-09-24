@@ -294,6 +294,78 @@ describe('createPackWindowCache', () => {
       });
     });
   });
+
+  describe('Given clear() runs while a load is in flight, and a NEW load for the same key starts before the old one settles', () => {
+    describe('When the OLD load settles', () => {
+      it('Then it does not delete the NEW flight from the in-flight map — a third read joins it, never a third load', async () => {
+        // Arrange
+        const source = fakeSource(1000);
+        let releaseOldLoad: ((value: Uint8Array) => void) | undefined;
+        const oldGate = new Promise<Uint8Array>((resolve) => {
+          releaseOldLoad = resolve;
+        });
+        let releaseNewLoad: ((value: Uint8Array) => void) | undefined;
+        const newGate = new Promise<Uint8Array>((resolve) => {
+          releaseNewLoad = resolve;
+        });
+        const load = vi
+          .fn<(base: number, size: number) => Promise<Uint8Array>>()
+          .mockImplementationOnce(async () => oldGate)
+          .mockImplementationOnce(async () => newGate)
+          .mockImplementation(async (base, size) => source.subarray(base, base + size));
+        const cache = createPackWindowCache({ windowBytes: 256, limitBytes: 4096 });
+        const oldPending = cache.read('pack-a', 10, 20, load);
+
+        // Act
+        cache.clear();
+        const newPending = cache.read('pack-a', 10, 20, load); // starts a NEW flight for the SAME key
+        // The OLD flight settles EMPTY (byteLength 0 skips windows.set — see
+        // loadAndCache's own guard) so this row isolates the in-flight MAP
+        // bug from the separate stale-fill bug the next row covers: without
+        // that, a stale windows.set() would serve the third read from cache
+        // before ever consulting inFlightLoads, masking a wrong delete.
+        releaseOldLoad?.(new Uint8Array(0));
+        await oldPending;
+        const thirdRead = cache.read('pack-a', 10, 20, load); // must join newPending, not start a third load
+        releaseNewLoad?.(source.subarray(0, 256));
+        await Promise.all([newPending, thirdRead]);
+
+        // Assert — exactly 2 loads: old + new. A wrongly-deleted map entry
+        // would have let the third read start its own (3rd) load.
+        expect(load).toHaveBeenCalledTimes(2);
+      });
+    });
+  });
+
+  describe('Given clear() runs while a load is in flight', () => {
+    describe('When that load resolves after clear()', () => {
+      it('Then it does not populate the window cache for the retired epoch — a later read at the same key pays a fresh load', async () => {
+        // Arrange
+        const source = fakeSource(1000);
+        let releaseLoad: ((value: Uint8Array) => void) | undefined;
+        const gate = new Promise<Uint8Array>((resolve) => {
+          releaseLoad = resolve;
+        });
+        const load = vi
+          .fn<(base: number, size: number) => Promise<Uint8Array>>()
+          .mockImplementationOnce(async () => gate)
+          .mockImplementation(async (base, size) => source.subarray(base, base + size));
+        const cache = createPackWindowCache({ windowBytes: 256, limitBytes: 4096 });
+        const stalePending = cache.read('pack-a', 10, 20, load);
+
+        // Act
+        cache.clear();
+        releaseLoad?.(source.subarray(0, 256)); // settles AFTER clear() — a retired-epoch fill
+        await stalePending;
+        await cache.read('pack-a', 10, 20, load);
+
+        // Assert — the stale fill never entered the LRU under the retired
+        // epoch, so the later read pays its own fresh load rather than a
+        // cache hit serving bytes a clear() was supposed to retire.
+        expect(load).toHaveBeenCalledTimes(2);
+      });
+    });
+  });
 });
 
 describe('packWindowBudgetFor', () => {

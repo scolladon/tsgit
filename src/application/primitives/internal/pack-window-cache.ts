@@ -101,18 +101,24 @@ export function createPackWindowCache({
   // `clear()` (a fault or a refresh must not let a later reader join a
   // flight the cache no longer stands behind).
   const inFlightLoads = new Map<string, Promise<Uint8Array>>();
+  // Bumped by every clear() — a load started before a clear() must not fill
+  // `windows` for the retired epoch once it resolves after it (a stale,
+  // possibly cross-generation fill masquerading as a fresh cache entry).
+  let epoch = 0;
 
   const loadAndCache = async (
     key: string,
     base: number,
     load: WindowLoader,
+    startEpoch: number,
   ): Promise<Uint8Array> => {
     const window = await load(base, windowBytes);
     // A window base past the pack's own end loads empty — the LRU rejects a
     // zero-byte entry (there is nothing to evict room for), and caching it
     // would buy nothing: the next read at the same base costs the same
-    // empty load either way.
-    if (window.byteLength > 0) windows.set(key, window, window.byteLength);
+    // empty load either way. `epoch === startEpoch` is the retired-fill
+    // guard above.
+    if (window.byteLength > 0 && epoch === startEpoch) windows.set(key, window, window.byteLength);
     return window;
   };
 
@@ -126,8 +132,12 @@ export function createPackWindowCache({
     if (cached !== undefined) return Promise.resolve(cached);
     const existing = inFlightLoads.get(key);
     if (existing !== undefined) return existing;
-    const pending = loadAndCache(key, base, load).finally(() => {
-      inFlightLoads.delete(key);
+    const startEpoch = epoch;
+    const pending: Promise<Uint8Array> = loadAndCache(key, base, load, startEpoch).finally(() => {
+      // Identity-guarded: an abandoned flight settling after a clear() (and
+      // a fresh flight already installed for the same key) must not delete
+      // the fresh flight's own map entry out from under it.
+      if (inFlightLoads.get(key) === pending) inFlightLoads.delete(key);
     });
     inFlightLoads.set(key, pending);
     return pending;
@@ -157,6 +167,7 @@ export function createPackWindowCache({
   };
 
   const clear = (): void => {
+    epoch += 1;
     windows.clear();
     // A reader arriving after clear() must never join a flight this cache no
     // longer stands behind — its eventual fill would write into the

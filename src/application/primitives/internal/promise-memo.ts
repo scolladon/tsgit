@@ -34,7 +34,10 @@ export function createPromiseMemo<T>(factory: () => Promise<T>): PromiseMemo<T> 
     if (slot !== undefined) return slot;
     const pending: Promise<T> = factory().then(
       (value) => {
-        settled = value;
+        // Identity-guarded, mirroring the reject arm below: a flight `clear()`
+        // already abandoned must never store its late value into a slot that
+        // is now idle or already holds a successor's own flight.
+        if (slot === pending) settled = value;
         return value;
       },
       (err: unknown) => {

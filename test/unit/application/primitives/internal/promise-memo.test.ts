@@ -273,4 +273,25 @@ describe('createPromiseMemo', () => {
       });
     });
   });
+
+  describe('Given get() started a flight, then clear() ran before it settled', () => {
+    describe('When the abandoned flight later resolves', () => {
+      it('Then peekSettled() is undefined, not the abandoned value', async () => {
+        // Arrange
+        const deferred = createDeferred<string>();
+        const sut = createPromiseMemo(() => deferred.promise);
+        const abandoned = sut.get();
+        sut.clear();
+
+        // Act — the abandoned flight settles after the clear.
+        deferred.resolve('abandoned-value');
+        await abandoned;
+
+        // Assert — the resolve arm's identity guard (mirroring the reject
+        // arm's) refused to store a value for a slot that is no longer this
+        // flight's own.
+        expect(sut.peekSettled()).toBeUndefined();
+      });
+    });
+  });
 });
