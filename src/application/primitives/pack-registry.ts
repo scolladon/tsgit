@@ -38,6 +38,7 @@ import {
 } from './internal/pack-artefact-source.js';
 import {
   emptyGeneration,
+  type IndexedPacks,
   NO_PACKS,
   type PackGeneration,
   resolveIndexes,
@@ -916,12 +917,38 @@ export async function createPackRegistry(ctx: Context): Promise<PackRegistry> {
     }
   };
 
+  // The fast half of lookupLazily: every candidate's `.idx` has ALREADY
+  // settled (someone forced `generation.indexed` first — `all()`, `health()`,
+  // a prior lookup), so the walk needs no per-pack await at all until an
+  // actual index hit forces one — the common "settled full miss" case pays
+  // zero awaits instead of one per pack. `isClaimed` and the header-fault
+  // continue both mirror `lookupLazily`'s own loop exactly.
+  const lookupSettled = async (
+    indexed: IndexedPacks,
+    id: ObjectId,
+    isClaimed: (pack: RegisteredPack) => boolean,
+  ): Promise<PackLookupHit | undefined> => {
+    for (const { pack, index } of indexed.packs) {
+      if (isClaimed(pack)) continue;
+      const offset = lookupPackIndex(index, id);
+      if (offset === undefined) continue;
+      const fault = await probeHeader(pack);
+      if (fault !== undefined) continue;
+      return { pack, offset };
+    }
+    return undefined;
+  };
+
   // Step 3 of lookup: one `.idx` at a time, in candidate order, stopping at
   // the first hit — never a snapshot forced ahead of need. `isClaimed` is
   // the only difference between the no-midx and midx-present shapes: git
   // never opens a midx-covered `.idx` in find_pack_entry, so a midx routes
   // straight past every pack it claims and only walks the rest this way.
-  const lookupLazily = async (
+  // Takes the settled synchronous walk above when `generation.indexed` has
+  // already resolved; otherwise falls back to the lazy, per-pack await —
+  // this is the ONE place forcing `generation.indexed` would defeat the
+  // point of loading indexes lazily, so it only ever PEEKS.
+  const lookupUnsettled = async (
     generation: PackGeneration,
     id: ObjectId,
     isClaimed: (pack: RegisteredPack) => boolean,
@@ -937,6 +964,16 @@ export async function createPackRegistry(ctx: Context): Promise<PackRegistry> {
       return { pack, offset };
     }
     return undefined;
+  };
+
+  const lookupLazily = (
+    generation: PackGeneration,
+    id: ObjectId,
+    isClaimed: (pack: RegisteredPack) => boolean,
+  ): Promise<PackLookupHit | undefined> => {
+    const settled = generation.indexed.peekSettled();
+    if (settled !== undefined) return lookupSettled(settled, id, isClaimed);
+    return lookupUnsettled(generation, id, isClaimed);
   };
 
   const lookupViaIdxScan = (

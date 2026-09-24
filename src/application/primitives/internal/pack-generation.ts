@@ -27,13 +27,13 @@ const NO_INDEX_FAULTS: ReadonlyArray<{ readonly name: string; readonly data: Tsg
  * unreadable/unparseable (`indexFaults`). Built once per generation by
  * `resolveIndexes`, behind `PackGeneration.indexed`.
  */
-interface IndexedPack {
+export interface IndexedPack {
   readonly pack: RegisteredPack;
   /** The settled parse — held here so lookup's fallback loop stays synchronous. */
   readonly index: PackIndex;
 }
 
-interface IndexedPacks {
+export interface IndexedPacks {
   readonly packs: ReadonlyArray<IndexedPack>;
   /** The same packs projected once — `all()` returns one stable reference per generation. */
   readonly packList: ReadonlyArray<RegisteredPack>;

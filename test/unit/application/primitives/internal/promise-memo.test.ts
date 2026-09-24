@@ -20,6 +20,24 @@ function createDeferred<T>(): Deferred<T> {
 
 describe('createPromiseMemo', () => {
   describe('Given an idle memo', () => {
+    describe('When peekSettled() is called', () => {
+      it('Then it returns undefined and the factory never ran', () => {
+        // Arrange
+        let factoryRuns = 0;
+        const sut = createPromiseMemo(async () => {
+          factoryRuns += 1;
+          return 'value';
+        });
+
+        // Act
+        const result = sut.peekSettled();
+
+        // Assert
+        expect(result).toBeUndefined();
+        expect(factoryRuns).toBe(0);
+      });
+    });
+
     describe('When peek() is called', () => {
       it('Then it returns undefined and the factory never ran', () => {
         // Arrange
@@ -79,6 +97,64 @@ describe('createPromiseMemo', () => {
         await inFlight;
       });
     });
+
+    describe('When peekSettled() is called', () => {
+      it('Then it returns undefined — the flight has not settled yet', async () => {
+        // Arrange
+        const deferred = createDeferred<string>();
+        const sut = createPromiseMemo(() => deferred.promise);
+        const inFlight = sut.get();
+
+        // Act
+        const result = sut.peekSettled();
+
+        // Assert
+        expect(result).toBeUndefined();
+
+        // Cleanup — settle the flight so it does not leak into later tests.
+        deferred.resolve('settled');
+        await inFlight;
+      });
+    });
+  });
+
+  describe('Given a memo whose flight already resolved', () => {
+    describe('When peekSettled() is called', () => {
+      it('Then it returns the resolved value without starting a new flight', async () => {
+        // Arrange
+        let factoryRuns = 0;
+        const sut = createPromiseMemo(async () => {
+          factoryRuns += 1;
+          return 'resolved-value';
+        });
+        await sut.get();
+
+        // Act
+        const result = sut.peekSettled();
+
+        // Assert
+        expect(result).toBe('resolved-value');
+        expect(factoryRuns).toBe(1);
+      });
+    });
+  });
+
+  describe('Given a memo whose only flight rejected', () => {
+    describe('When peekSettled() is called', () => {
+      it('Then it returns undefined — a rejection leaves nothing settled', async () => {
+        // Arrange
+        const sut = createPromiseMemo<string>(async () => {
+          throw permissionDenied('/blocked/path');
+        });
+        await sut.get().catch(() => undefined);
+
+        // Act
+        const result = sut.peekSettled();
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
   });
 
   describe('Given a populated memo', () => {
@@ -103,6 +179,20 @@ describe('createPromiseMemo', () => {
         expect(outgoing).toBe(firstFlight);
         expect(peeked).toBeUndefined();
         expect(factoryRuns).toBe(2);
+      });
+    });
+
+    describe('When clear() is called', () => {
+      it('Then peekSettled() is undefined afterwards', async () => {
+        // Arrange
+        const sut = createPromiseMemo(async () => 'value');
+        await sut.get();
+
+        // Act
+        sut.clear();
+
+        // Assert
+        expect(sut.peekSettled()).toBeUndefined();
       });
     });
   });

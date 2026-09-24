@@ -15,19 +15,33 @@ export interface PromiseMemo<T> {
   readonly get: () => Promise<T>;
   /** The memoised promise, or undefined when idle. Never starts one. */
   readonly peek: () => Promise<T> | undefined;
+  /**
+   * The already-resolved value, or undefined when idle, still in flight, or
+   * the last attempt rejected. Never starts a flight — a caller that must
+   * not force one falls back to its own unmemoised path while this is
+   * undefined.
+   */
+  readonly peekSettled: () => T | undefined;
   /** Drop the memo, returning what it held (undefined when idle). */
   readonly clear: () => Promise<T> | undefined;
 }
 
 export function createPromiseMemo<T>(factory: () => Promise<T>): PromiseMemo<T> {
   let slot: Promise<T> | undefined;
+  let settled: T | undefined;
 
   const get = (): Promise<T> => {
     if (slot !== undefined) return slot;
-    const pending: Promise<T> = factory().catch((err: unknown) => {
-      if (slot === pending) slot = undefined;
-      throw err;
-    });
+    const pending: Promise<T> = factory().then(
+      (value) => {
+        settled = value;
+        return value;
+      },
+      (err: unknown) => {
+        if (slot === pending) slot = undefined;
+        throw err;
+      },
+    );
     slot = pending;
     return pending;
   };
@@ -35,9 +49,11 @@ export function createPromiseMemo<T>(factory: () => Promise<T>): PromiseMemo<T> 
   return {
     get,
     peek: () => slot,
+    peekSettled: () => settled,
     clear: () => {
       const outgoing = slot;
       slot = undefined;
+      settled = undefined;
       return outgoing;
     },
   };

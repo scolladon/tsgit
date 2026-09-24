@@ -1592,6 +1592,38 @@ describe('resolveIndexes — ordered parallel load', () => {
   });
 });
 
+describe('PackRegistry.lookup — settled indexes walk synchronously', () => {
+  describe("Given a registry whose generation already settled every pack's index", () => {
+    describe('When lookup() misses every pack', () => {
+      it("Then no pack's index() is called again — the settled snapshot is walked without a per-pack await", async () => {
+        // Arrange — all() forces generation.indexed to settle; the spies
+        // installed AFTER that only trip if lookup() re-invokes index()
+        // itself, not merely because index() was ever called at all.
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'settled-miss-a', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('a') },
+        ]);
+        await writeSyntheticPack(ctx, 'settled-miss-b', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('b') },
+        ]);
+        const registry = await createPackRegistry(ctx);
+        const packs = await registry.all();
+        const indexSpies = packs.map((pack) => vi.spyOn(pack, 'index'));
+        const missingId = 'ffffffffffffffffffffffffffffffffffffffff' as ObjectId;
+
+        // Act
+        const hit = await registry.lookup(missingId);
+
+        // Assert
+        expect(hit).toBeUndefined();
+        for (const spy of indexSpies) {
+          expect(spy).not.toHaveBeenCalled();
+        }
+      });
+    });
+  });
+});
+
 describe('PackRegistry.health — per-pack accessibility', () => {
   describe('Given one healthy pack', () => {
     describe('When health() is called', () => {
