@@ -8,22 +8,17 @@
 import type { ObjectId } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
 import { probeLooseOid } from './internal/loose-oid-cache.js';
-import { rescanOnFullMiss } from './internal/pack-miss-rescan.js';
 import type { PackRegistry } from './pack-registry.js';
 import { getPackRegistry, peekPackRegistry } from './read-object.js';
 
-async function probeOnce(ctx: Context, registry: PackRegistry, id: ObjectId): Promise<boolean> {
+/**
+ * A quick probe, as git's `has_object` is by default: a miss is an ordinary
+ * answer here (negotiation walks absent haves routinely), so it never
+ * re-scans the pack directory the way a content read does.
+ */
+export const hasObject = async (ctx: Context, id: ObjectId): Promise<boolean> => {
+  const registry: PackRegistry = peekPackRegistry(ctx) ?? (await getPackRegistry(ctx));
   const hit = await registry.lookup(id);
   if (hit !== undefined) return true;
   return probeLooseOid(ctx, id);
-}
-
-export const hasObject = async (ctx: Context, id: ObjectId): Promise<boolean> => {
-  const registry = peekPackRegistry(ctx) ?? (await getPackRegistry(ctx));
-  if (await probeOnce(ctx, registry, id)) return true;
-  // Full miss: as of the CURRENT generation, neither a pack nor the loose
-  // store claims `id` — re-scan once (git's `reprepare_packed_git` retry)
-  // and probe again. Many concurrent misses share ONE re-scan.
-  await rescanOnFullMiss(ctx, registry);
-  return probeOnce(ctx, registry, id);
 };

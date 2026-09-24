@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { hasObject } from '../../../../src/application/primitives/has-object.js';
 import { getPackRegistry } from '../../../../src/application/primitives/read-object.js';
 import type { Blob, ObjectId } from '../../../../src/domain/objects/index.js';
@@ -45,13 +45,13 @@ describe('hasObject', () => {
     });
   });
 
-  describe('Given a pack written directly to disk after hasObject already forced a registry scan', () => {
+  describe('Given a pack written directly to disk after the registry already scanned', () => {
     describe('When probing hasObject for the newly-packed id', () => {
-      it('Then it returns true via one re-scan retry, mirroring reprepare_packed_git', async () => {
+      it('Then it answers false without re-scanning, as git has_object does without a recheck', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         const registry = await getPackRegistry(ctx);
-        await registry.all(); // force the (empty) generation the write below bypasses
+        await registry.all();
         const content = new TextEncoder().encode('packed content\n');
         const [id] = await writeSyntheticPack(ctx, 'has-object-late-pack', [
           { kind: 'base', type: 'blob', content },
@@ -61,7 +61,27 @@ describe('hasObject', () => {
         const result = await hasObject(ctx, id as ObjectId);
 
         // Assert
-        expect(result).toBe(true);
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given many ids absent from loose and packs', () => {
+    describe('When probing hasObject for each', () => {
+      it('Then the pack registry is never refreshed', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const registry = await getPackRegistry(ctx);
+        const refresh = vi.spyOn(registry, 'refresh');
+        const missingIds = Array.from({ length: 20 }, (_, i) =>
+          i.toString(16).padStart(40, 'e'),
+        ) as ObjectId[];
+
+        // Act
+        for (const id of missingIds) await hasObject(ctx, id);
+
+        // Assert
+        expect(refresh).not.toHaveBeenCalled();
       });
     });
   });
