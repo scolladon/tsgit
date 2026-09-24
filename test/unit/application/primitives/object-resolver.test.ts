@@ -493,6 +493,65 @@ describe('object-resolver', () => {
     });
   });
 
+  describe('Given a signal that aborts while the full-miss re-scan is in flight, and the retry would otherwise succeed', () => {
+    describe('When resolveObject is called for the missing id', () => {
+      it('Then OPERATION_ABORTED wins over the now-available object', async () => {
+        // Arrange — the loose file lands DURING the re-scan's own readdir
+        // (bypassing writeObject, so the loose-oid cache is untouched by
+        // the write itself), so a retry that skipped the abort check would
+        // find it and succeed. The FIRST readdir is the registry's own
+        // construction scan; the SECOND is the miss-triggered re-scan
+        // (reprepare()) — abort, and write the object, exactly there.
+        const content = new TextEncoder().encode('abort-wins-over-late-loose-write');
+        const header = serializeHeader('blob', content.length);
+        const bytes = new Uint8Array(header.length + content.length);
+        bytes.set(header, 0);
+        bytes.set(content, header.length);
+        const controller = new AbortController();
+        const ctx = await buildSeededContext({ signal: controller.signal });
+        const id = (await ctx.hash.hashHex(bytes)) as ObjectId;
+        const packDir = `${ctx.layout.gitDir}/objects/pack`;
+        let packDirReaddirCount = 0;
+        const wrapped: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            readdir: async (path: string) => {
+              if (path === packDir) {
+                packDirReaddirCount += 1;
+                // The SECOND pack-dir listing is the miss-triggered
+                // re-scan (reprepare()) — abort, and write the object,
+                // exactly there, never on the construction scan.
+                if (packDirReaddirCount === 2) {
+                  controller.abort();
+                  const { computeLooseObjectPath } = await import(
+                    '../../../../src/domain/storage/loose-path.js'
+                  );
+                  const loosePath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(id)}`;
+                  const compressed = await ctx.compressor.deflate(bytes);
+                  await ctx.fs.write(loosePath, compressed);
+                }
+              }
+              return ctx.fs.readdir(path);
+            },
+          },
+        };
+        const registry = await createPackRegistry(wrapped);
+        await registry.all(); // consumes the construction scan's own readdir
+
+        // Act
+        try {
+          await resolveObject(wrapped, registry, id, true);
+          expect.unreachable();
+        } catch (error) {
+          // Assert
+          expect(error).toBeInstanceOf(TsgitError);
+          expect((error as TsgitError).data.code).toBe('OPERATION_ABORTED');
+        }
+      });
+    });
+  });
+
   describe('Given an aborted signal and a flat multi-pack-index with a flipped signature', () => {
     describe('When resolveObject is called', () => {
       it('Then the abort wins — OPERATION_ABORTED, never the midx fault, and no scan I/O', async () => {

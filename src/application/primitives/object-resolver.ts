@@ -2,7 +2,7 @@
  * Internal object resolver — loose-first-then-pack, iterative delta walker.
  * Consumed only by readObject.
  */
-import { operationAborted, TsgitError } from '../../domain/error.js';
+import { TsgitError } from '../../domain/error.js';
 import { objectHashMismatch, objectNotFound, objectTooLarge } from '../../domain/objects/error.js';
 import { assertLooseSizeConsistent, splitLooseObject } from '../../domain/objects/git-object.js';
 import {
@@ -41,7 +41,7 @@ import {
   parsedObjectMemoFor,
   probeDeltaBaseCache,
 } from './internal/object-caches.js';
-import { rescanOnFullMiss } from './internal/pack-miss-rescan.js';
+import { checkAborted, retryOnceAfterRescan } from './internal/retry-after-rescan.js';
 import {
   deltaBaseCacheKey,
   nextOffsetForEntry,
@@ -90,41 +90,45 @@ export async function resolveObjectContentWithDepth(
   if (id === emptyTreeOid(ctx.hashConfig)) {
     return { type: 'tree', content: EMPTY_TREE_CONTENT, chainDepth: 0, declaredSize: 0 };
   }
-  const cached = ctx.deltaCache.get(id);
-  if (cached !== undefined) {
-    enforceCachedCap(id, cached, maxBytes);
-    await verifyObjectContent(ctx, id, cached.type, cached.content, verifyHash);
-    return {
-      type: cached.type,
-      content: cached.content,
-      chainDepth: 0,
-      declaredSize: cached.content.byteLength,
-    };
-  }
+  const cached = await tryDeltaCacheHit(ctx, id, verifyHash, maxBytes);
+  if (cached !== undefined) return cached;
 
   checkAborted(ctx);
   const first = await tryResolveViaRegistry(ctx, registry, id, verifyHash, maxBytes, externalDepth);
   if (first !== undefined) return first;
 
-  // Full miss: as of the CURRENT generation, no pack claims `id` and no
-  // loose file exists for it either. Mirrors git's `oid_object_info_extended`
-  // → `reprepare_packed_git(r)` → retry-once (`odb.c`/`object-file.c`): an
-  // external tool (a concurrent `git repack`, a lazy fetch that landed
-  // outside this session) may have changed the store since the last scan.
-  // Many concurrent misses share ONE re-scan (`rescanOnFullMiss`); a SECOND
-  // miss, after the retry, refuses exactly as before.
-  await rescanOnFullMiss(ctx, registry, id);
-  checkAborted(ctx);
-  const retried = await tryResolveViaRegistry(
-    ctx,
-    registry,
-    id,
-    verifyHash,
-    maxBytes,
-    externalDepth,
+  // Full miss: as of the CURRENT generation, no pack claims `id` and no loose
+  // file exists for it either. Mirrors git's `oid_object_info_extended` →
+  // `reprepare_packed_git(r)` → retry-once: an external tool (a concurrent
+  // `git repack`, a lazy fetch outside this session) may have changed the
+  // store since the last scan. `retryOnceAfterRescan` single-flights the
+  // re-scan across concurrent misses and honours an abort raised during it.
+  const retried = await retryOnceAfterRescan(ctx, registry, id, () =>
+    tryResolveViaRegistry(ctx, registry, id, verifyHash, maxBytes, externalDepth),
   );
   if (retried !== undefined) return retried;
   throw objectNotFound(id);
+}
+
+/** The deltaCache fast path: neither hop walks a delta chain, so a hit always
+ *  reports depth 0. Extracted so the entry point above stays a short list of
+ *  short-circuits, one per storage form. */
+async function tryDeltaCacheHit(
+  ctx: Context,
+  id: ObjectId,
+  verifyHash: boolean,
+  maxBytes: number | undefined,
+): Promise<(ObjectContent & { chainDepth: number; declaredSize: number }) | undefined> {
+  const cached = ctx.deltaCache.get(id);
+  if (cached === undefined) return undefined;
+  enforceCachedCap(id, cached, maxBytes);
+  await verifyObjectContent(ctx, id, cached.type, cached.content, verifyHash);
+  return {
+    type: cached.type,
+    content: cached.content,
+    chainDepth: 0,
+    declaredSize: cached.content.byteLength,
+  };
 }
 
 /**
@@ -306,12 +310,6 @@ function enforcePackDeltaPreApplyCap(
   }
 }
 // Stryker restore BlockStatement
-
-function checkAborted(ctx: Context): void {
-  if (ctx.signal?.aborted === true) {
-    throw operationAborted();
-  }
-}
 
 async function tryLoose(ctx: Context, id: ObjectId): Promise<Uint8Array | undefined> {
   const compressed = await readLooseCompressed(ctx, id);

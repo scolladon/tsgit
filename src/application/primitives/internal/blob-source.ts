@@ -40,7 +40,7 @@ import {
 import { nextOffsetForEntry, type PackLookupHit, type PackRegistry } from '../pack-registry.js';
 import { getPackRegistry, peekPackRegistry, withLazyFetchRetry } from '../read-object.js';
 import type { StreamBlobOptions } from '../stream-blob.js';
-import { rescanOnFullMiss } from './pack-miss-rescan.js';
+import { checkAborted, retryOnceAfterRescan } from './retry-after-rescan.js';
 
 /** 64 KiB of compressed/on-disk bytes — the uniform buffered/streamed gate. */
 export const MAX_BUFFERED_BLOB_BYTES = 65_536;
@@ -87,31 +87,41 @@ export async function openBlobSource(
   const gate: BufferGate = { maxBufferedBytes, verifyHash: options?.verifyHash ?? false };
 
   checkAborted(ctx);
+  const registry = peekPackRegistry(ctx) ?? (await getPackRegistry(ctx));
   // Same store-setup gate as resolveObjectContentWithDepth: a structurally
   // self-inconsistent multi-pack-index denies streamed loose reads too —
   // otherwise the two read paths would disagree about a corrupt store.
-  await (peekPackRegistry(ctx) ?? (await getPackRegistry(ctx))).assertLoadable();
+  await registry.assertLoadable();
 
-  if (gate.maxBufferedBytes > 0) {
-    const cached = ctx.deltaCache.get(id);
-    if (cached !== undefined) {
-      return await resolveFromCache(ctx, id, cached, gate);
-    }
-  }
+  const cached = await tryDeltaCacheHit(ctx, id, gate);
+  if (cached !== undefined) return cached;
 
   const first = await tryOpenBlobSource(ctx, id, gate);
   if (first !== undefined) return first;
 
-  // Full miss: as of the CURRENT generation, no pack claims `id` and no
-  // loose file exists for it either. Mirrors `resolveObjectContentWithDepth`'s
-  // own retry (see `pack-miss-rescan.ts`'s doc) — an external tool may have
-  // changed the store since the last scan. Many concurrent misses share ONE
-  // re-scan; a SECOND miss, after the retry, refuses exactly as before.
-  const registry = peekPackRegistry(ctx) ?? (await getPackRegistry(ctx));
-  await rescanOnFullMiss(ctx, registry, id);
-  const retried = await tryOpenBlobSource(ctx, id, gate);
+  // Full miss: as of the CURRENT generation, no pack claims `id` and no loose
+  // file exists for it either. Mirrors `resolveObjectContentWithDepth`'s own
+  // retry — `retryOnceAfterRescan` single-flights the re-scan across
+  // concurrent misses and honours an abort raised during it.
+  const retried = await retryOnceAfterRescan(ctx, registry, id, () =>
+    tryOpenBlobSource(ctx, id, gate),
+  );
   if (retried !== undefined) return retried;
   throw objectNotFound(id);
+}
+
+/** The deltaCache fast path, gated at zero (`NEVER_BUFFER` skips it too — see
+ *  its own doc). Extracted so the entry point above stays a short list of
+ *  short-circuits, one per storage form. */
+async function tryDeltaCacheHit(
+  ctx: Context,
+  id: ObjectId,
+  gate: BufferGate,
+): Promise<BlobSource | undefined> {
+  if (gate.maxBufferedBytes <= 0) return undefined;
+  const cached = ctx.deltaCache.get(id);
+  if (cached === undefined) return undefined;
+  return resolveFromCache(ctx, id, cached, gate);
 }
 
 /**
@@ -216,12 +226,6 @@ async function hashStoredObject(
     acceptance = acceptance && feedParseAcceptance(acceptance, chunk);
   }
   return { type: source.type, acceptance };
-}
-
-function checkAborted(ctx: Context): void {
-  if (ctx.signal?.aborted === true) {
-    throw operationAborted();
-  }
 }
 
 function fitsBuffer(byteLength: number, maxBufferedBytes: number): boolean {
