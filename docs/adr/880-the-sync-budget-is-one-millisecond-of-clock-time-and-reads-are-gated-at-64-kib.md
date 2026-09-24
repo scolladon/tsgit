@@ -44,10 +44,25 @@ between `fstat` and the read, so a growing file is never truncated.
 
 - The worst-case loop stall attributable to the sync arms is about 1 ms plus the CPU work queued
   behind the last admitted operation. Measured on a 20k-file `status` (event-loop delay
-  histogram, warm, 5 runs): sync mode max ≈ 8 ms / p99 ≈ 3 ms against ≈ 4.5 ms / ≈ 2.4 ms on
-  the threadpool. Patching the budget to 0.25 ms leaves the tail at ≈ 7.5 ms and 4 ms raises it
-  to ≈ 13 ms, so the residual sits outside every `admit` checkpoint; locating it is a recorded
-  follow-up, not a reason to move the constants.
+  histogram, warm, 5 runs, 3 repeats): sync mode max 8.41–8.68 ms / p99 2.87–4.00 ms against
+  4.79–5.10 ms / 2.57–2.66 ms on the threadpool. Patching the budget to 0.25 ms leaves the tail
+  at ≈ 7.5 ms and 4 ms raises it to ≈ 13 ms, so the residual sits outside every `admit`
+  checkpoint.
+- **Located (`node --cpu-prof`, sync mode, 40 warm `status()` iterations on `medium-v3`):** the
+  residual is `status.ts`'s in-memory index-vs-tree diff pass —
+  `collectStagedKinds`→`diffIndexAgainstTree` (`stage0IndexMap` + `unionPaths` + a `sortByPath`
+  call), immediately chained into `buildChanges`'s own union-and-sort — plus V8 GC pauses
+  measured alongside it (≈2.2 ms self time/iteration on average, worse at the tail). Self-time
+  sum across the diff/union/sort functions alone averages ≈3.7 ms/iteration (`unionPaths` 1.3,
+  `stage0IndexMap` 1.0, `diffIndexAgainstTree` 1.0, `collectStagedKinds` 0.2,
+  `buildChanges` 0.1). Both classes touch zero filesystem calls, so `sync-io-budget.ts`'s
+  `admit()` — wired only at fs syscall boundaries — never runs during them; a GC pause cannot be
+  paused or checked from JS at all, and the diff pass sits in
+  `application/commands`/`domain` code that runs unmodified on the browser adapter (no event
+  loop, no Node `setImmediate`) — threading a Node-only yield primitive into it to shave one
+  adapter's tail would cost every platform a two-sort, whole-index CPU phase that canonical
+  git's own `status`/`diff-index` also runs as one uninterruptible pass. No change made; the
+  residual is accepted as CPU work outside the sync-arm's remit, per the option above.
 - The gate keeps blobs, packs and large `.idx` files on the threadpool where the pool measured
   faster.
 - Making the numbers tunable is additive (ADR-881 reserves the room); it waits for a filesystem
