@@ -958,7 +958,7 @@ describe('PackRegistry.scan — per-pack idx degradation and orphan exclusion', 
 
   describe('Given two packs, one whose .pack file is removed after write (an orphaned .idx)', () => {
     describe('When all() is called, then readObject is called for both the orphan and the survivor oid', () => {
-      it('Then the orphan is excluded from the generation, its object is not found, the survivor still reads, and exactly one warn names the orphan', async () => {
+      it('Then the orphan is excluded from the generation, its object is not found, the survivor still reads, and warns twice naming the orphan (one re-scan retry)', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         const orphanContent = new TextEncoder().encode('h5-orphan-content');
@@ -999,8 +999,11 @@ describe('PackRegistry.scan — per-pack idx degradation and orphan exclusion', 
         // Assert — (iii) the survivor still reads
         expect(survivorObject.type).toBe('blob');
         expect((survivorObject as Blob).content).toEqual(survivorContent);
-        // Assert — (iv) exactly one warn names the orphan
-        expect(warn).toHaveBeenCalledTimes(1);
+        // Assert — (iv) warns twice naming the orphan: `sut.all()`'s own
+        // scan, plus the object-resolver's own full-miss re-scan retry
+        // (pack-miss-rescan.ts) when reading the orphan oid re-scans and
+        // finds the SAME orphan .idx again.
+        expect(warn).toHaveBeenCalledTimes(2);
         const [message, context] = warn.mock.calls[0] ?? [];
         expect(message).toBe('packRegistry: skipping pack index with no pack file');
         expect(context).toEqual({ idx: 'pack-h5-orphan.idx' });
@@ -4585,7 +4588,7 @@ describe('PackRegistry.lookup — header gate', () => {
 
   describe('Given a pack with an invalid header whose index claims the requested oid, and no sibling pack', () => {
     describe('When readObject is called', () => {
-      it('Then rejects with OBJECT_NOT_FOUND after warning once', async () => {
+      it('Then rejects with OBJECT_NOT_FOUND after warning twice (one re-scan retry)', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         const content = new TextEncoder().encode('only-pack-content');
@@ -4608,9 +4611,12 @@ describe('PackRegistry.lookup — header gate', () => {
           caught = error;
         }
 
-        // Assert
+        // Assert — the header-probe fault is skippable (warn + fold to a
+        // miss), so the object-resolver's own full-miss re-scan retry
+        // (pack-miss-rescan.ts) runs a SECOND generation, which re-probes
+        // the same still-invalid header and warns again.
         expect((caught as TsgitError).data).toEqual({ code: 'OBJECT_NOT_FOUND', id });
-        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn).toHaveBeenCalledTimes(2);
       });
     });
   });
@@ -4761,7 +4767,7 @@ describe('PackRegistry.lookup — header gate', () => {
 
   describe('Given a pack whose header probe rejects PERMISSION_DENIED for the .pack file', () => {
     describe('When readObject is called', () => {
-      it('Then skips the pack, rejects with OBJECT_NOT_FOUND, and warns once', async () => {
+      it('Then skips the pack, rejects with OBJECT_NOT_FOUND, and warns twice (one re-scan retry)', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         const content = new TextEncoder().encode('permission-denied-content');
@@ -4792,16 +4798,19 @@ describe('PackRegistry.lookup — header gate', () => {
           caught = error;
         }
 
-        // Assert
+        // Assert — the header-probe fault is skippable (warn + fold to a
+        // miss), so the object-resolver's own full-miss re-scan retry
+        // (pack-miss-rescan.ts) runs a SECOND generation, which re-probes
+        // the same still-broken pack and warns again.
         expect((caught as TsgitError).data).toEqual({ code: 'OBJECT_NOT_FOUND', id });
-        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn).toHaveBeenCalledTimes(2);
       });
     });
   });
 
   describe('Given a pack file unlinked between scan and probe (header probe rejects FILE_NOT_FOUND)', () => {
     describe('When readObject is called', () => {
-      it('Then skips the pack, rejects with OBJECT_NOT_FOUND, and warns once', async () => {
+      it('Then skips the pack, rejects with OBJECT_NOT_FOUND, and warns twice (one re-scan retry)', async () => {
         // Arrange — the .pack is still listed by readdir (the sibling check
         // sees it), but a concurrent repack removed it before the probe read.
         const ctx = await buildSeededContext();
@@ -4833,9 +4842,12 @@ describe('PackRegistry.lookup — header gate', () => {
           caught = error;
         }
 
-        // Assert
+        // Assert — the header-probe fault is skippable (warn + fold to a
+        // miss), so the object-resolver's own full-miss re-scan retry
+        // (pack-miss-rescan.ts) runs a SECOND generation, which re-probes
+        // the same still-unlinked pack and warns again.
         expect((caught as TsgitError).data).toEqual({ code: 'OBJECT_NOT_FOUND', id });
-        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn).toHaveBeenCalledTimes(2);
       });
     });
   });

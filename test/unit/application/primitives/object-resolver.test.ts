@@ -404,6 +404,94 @@ describe('object-resolver', () => {
     });
   });
 
+  describe('Given a pack written directly to disk after the registry already scanned an empty pack directory', () => {
+    describe('When resolveObject is called for the newly-packed id', () => {
+      it('Then it resolves via one re-scan retry, mirroring reprepare_packed_git', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const registry = await createPackRegistry(ctx);
+        await registry.all(); // force the (empty) generation the writeSyntheticPack below bypasses
+        const content = new TextEncoder().encode('packed after scan\n');
+        const [id] = await writeSyntheticPack(ctx, 'late-pack', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+
+        // Act
+        const result = await resolveObject(ctx, registry, id as ObjectId, true);
+
+        // Assert
+        expect(result.type).toBe('blob');
+        expect((result as Blob).content).toEqual(content);
+      });
+    });
+  });
+
+  describe('Given the registry still misses after a re-scan (id genuinely absent everywhere)', () => {
+    describe('When resolveObject is called', () => {
+      it('Then it throws OBJECT_NOT_FOUND after exactly one re-scan (one extra pack-directory listing)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const { ctx: instrumented, calls } = instrumentedContext(ctx);
+        const registry = await createPackRegistry(instrumented);
+        await registry.all();
+        const packDir = `${ctx.layout.gitDir}/objects/pack`;
+        const baseline = calls().length; // ignore the arrange-time listing
+
+        // Act
+        try {
+          await resolveObject(instrumented, registry, 'f'.repeat(40) as ObjectId, true);
+          expect.unreachable();
+        } catch (error) {
+          // Assert
+          expect(error).toBeInstanceOf(TsgitError);
+          expect((error as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
+        }
+        const packDirListings = calls()
+          .slice(baseline)
+          .filter((call) => call.method === 'readdir' && call.path === packDir);
+        expect(packDirListings).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given many concurrent full misses for objects packed after the registry already scanned', () => {
+    describe('When resolveObject is called concurrently for each', () => {
+      it('Then every read resolves and the pack directory is only re-listed once', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const { ctx: instrumented, calls } = instrumentedContext(ctx);
+        const registry = await createPackRegistry(instrumented);
+        await registry.all();
+        const packDir = `${ctx.layout.gitDir}/objects/pack`;
+        const entries = await Promise.all(
+          Array.from({ length: 5 }, async (_unused, i) => {
+            const content = new TextEncoder().encode(`concurrent-late-pack-${i}\n`);
+            const [id] = await writeSyntheticPack(instrumented, `concurrent-late-pack-${i}`, [
+              { kind: 'base', type: 'blob', content },
+            ]);
+            return { id: id as ObjectId, content };
+          }),
+        );
+        const baseline = calls().length; // ignore the writes' own bookkeeping reads
+
+        // Act
+        const results = await Promise.all(
+          entries.map(({ id }) => resolveObject(instrumented, registry, id, true)),
+        );
+
+        // Assert
+        results.forEach((result, i) => {
+          expect(result.type).toBe('blob');
+          expect((result as Blob).content).toEqual(entries[i]?.content);
+        });
+        const packDirListings = calls()
+          .slice(baseline)
+          .filter((call) => call.method === 'readdir' && call.path === packDir);
+        expect(packDirListings).toHaveLength(1);
+      });
+    });
+  });
+
   describe('Given an aborted signal and a flat multi-pack-index with a flipped signature', () => {
     describe('When resolveObject is called', () => {
       it('Then the abort wins — OPERATION_ABORTED, never the midx fault, and no scan I/O', async () => {

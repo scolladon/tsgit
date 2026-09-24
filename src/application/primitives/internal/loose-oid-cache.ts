@@ -96,3 +96,14 @@ export function invalidateLooseOid(ctx: Context, id: ObjectId): void {
 export function forgetLooseOidPrefix(ctx: Context, id: ObjectId): void {
   fanoutCache.get(ctx.session)?.delete(prefixOf(id));
 }
+
+/**
+ * Drop EVERY prefix's cached set for this session — the loose half of a
+ * full-object-miss re-scan (see `pack-miss-rescan.ts`). A targeted single-
+ * prefix drop cannot help there: concurrent misses share ONE re-scan even
+ * when the missed ids land in different fanout directories, so the whole
+ * listing is invalidated rather than just the id that triggered it.
+ */
+export function forgetAllLooseOid(ctx: Context): void {
+  fanoutCache.delete(ctx.session);
+}

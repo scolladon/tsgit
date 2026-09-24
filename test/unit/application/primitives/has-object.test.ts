@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { hasObject } from '../../../../src/application/primitives/has-object.js';
+import { getPackRegistry } from '../../../../src/application/primitives/read-object.js';
 import type { Blob, ObjectId } from '../../../../src/domain/objects/index.js';
 import { serializeObject } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
@@ -32,6 +33,27 @@ describe('hasObject', () => {
         const ctx = await buildSeededContext();
         const content = new TextEncoder().encode('packed content\n');
         const [id] = await writeSyntheticPack(ctx, 'has-object-pack', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+
+        // Act
+        const result = await hasObject(ctx, id as ObjectId);
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a pack written directly to disk after hasObject already forced a registry scan', () => {
+    describe('When probing hasObject for the newly-packed id', () => {
+      it('Then it returns true via one re-scan retry, mirroring reprepare_packed_git', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const registry = await getPackRegistry(ctx);
+        await registry.all(); // force the (empty) generation the write below bypasses
+        const content = new TextEncoder().encode('packed content\n');
+        const [id] = await writeSyntheticPack(ctx, 'has-object-late-pack', [
           { kind: 'base', type: 'blob', content },
         ]);
 

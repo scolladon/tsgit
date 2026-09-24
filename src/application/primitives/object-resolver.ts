@@ -36,6 +36,7 @@ import {
   parsedObjectMemoFor,
   probeDeltaBaseCache,
 } from './internal/object-caches.js';
+import { rescanOnFullMiss } from './internal/pack-miss-rescan.js';
 import {
   deltaBaseCacheKey,
   nextOffsetForEntry,
@@ -97,6 +98,46 @@ export async function resolveObjectContentWithDepth(
   }
 
   checkAborted(ctx);
+  const first = await tryResolveViaRegistry(ctx, registry, id, verifyHash, maxBytes, externalDepth);
+  if (first !== undefined) return first;
+
+  // Full miss: as of the CURRENT generation, no pack claims `id` and no
+  // loose file exists for it either. Mirrors git's `oid_object_info_extended`
+  // → `reprepare_packed_git(r)` → retry-once (`odb.c`/`object-file.c`): an
+  // external tool (a concurrent `git repack`, a lazy fetch that landed
+  // outside this session) may have changed the store since the last scan.
+  // Many concurrent misses share ONE re-scan (`rescanOnFullMiss`); a SECOND
+  // miss, after the retry, refuses exactly as before.
+  await rescanOnFullMiss(ctx, registry);
+  checkAborted(ctx);
+  const retried = await tryResolveViaRegistry(
+    ctx,
+    registry,
+    id,
+    verifyHash,
+    maxBytes,
+    externalDepth,
+  );
+  if (retried !== undefined) return retried;
+  throw objectNotFound(id);
+}
+
+/**
+ * One resolution attempt against the CURRENT generation: a pack hit resolves
+ * its delta chain, a loose hit resolves its bytes, and neither claiming `id`
+ * reports `undefined` — the full-miss signal `resolveObjectContentWithDepth`
+ * retries once after a re-scan. Any OTHER error (a corrupt entry, a hash
+ * mismatch, an oversize object) propagates directly, never converted to a
+ * miss and never retried.
+ */
+async function tryResolveViaRegistry(
+  ctx: Context,
+  registry: PackRegistry,
+  id: ObjectId,
+  verifyHash: boolean,
+  maxBytes: number | undefined,
+  externalDepth: number,
+): Promise<(ObjectContent & { chainDepth: number; declaredSize: number }) | undefined> {
   const hit = await registry.lookup(id);
   if (hit === undefined) {
     return resolveLooseArm(ctx, id, maxBytes, verifyHash);
@@ -115,19 +156,20 @@ export async function resolveObjectContentWithDepth(
 
 /**
  * The pack-miss arm: tried only once the pack registry has answered
- * `undefined` for `id`. A loose hit never walks a delta chain, so it always
- * reports depth 0. Extracted so `resolveObjectContentWithDepth` stays under
- * the line budget with the pack arm inlined above it.
+ * `undefined` for `id`. Reports `undefined` — never throws — when the loose
+ * store ALSO misses: that is the full-miss signal `tryResolveViaRegistry`'s
+ * caller retries once after a re-scan, not a refusal in its own right. A
+ * loose hit never walks a delta chain, so it always reports depth 0.
  */
 async function resolveLooseArm(
   ctx: Context,
   id: ObjectId,
   maxBytes: number | undefined,
   verifyHash: boolean,
-): Promise<ObjectContent & { chainDepth: number; declaredSize: number }> {
+): Promise<(ObjectContent & { chainDepth: number; declaredSize: number }) | undefined> {
   const loose = await tryLoose(ctx, id);
   if (loose === undefined) {
-    throw objectNotFound(id);
+    return undefined;
   }
   checkAborted(ctx);
   const split = splitLooseObject(loose);

@@ -483,6 +483,30 @@ describe('openBlobSource', () => {
     });
   });
 
+  describe('Given a pack written directly to disk after openBlobSource already forced a registry scan', () => {
+    describe('When openBlobSource is called for the newly-packed id', () => {
+      it('Then it resolves via one re-scan retry, mirroring reprepare_packed_git', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const registry = await getPackRegistry(ctx);
+        await registry.all(); // force the (empty) generation the write below bypasses
+        const content = ENC.encode('packed after scan\n');
+        const [id] = await writeSyntheticPack(ctx, 'blob-source-late-pack', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+
+        // Act
+        const source = await openBlobSource(ctx, id as ObjectId, MAX_BUFFERED_BLOB_BYTES);
+
+        // Assert
+        expect(source.kind).toBe('bytes');
+        if (source.kind === 'bytes') {
+          expect(source.content).toEqual(content);
+        }
+      });
+    });
+  });
+
   describe('Given the empty-tree oid, absent from both loose and pack storage', () => {
     describe('When openBlobSource is called', () => {
       it('Then throws objectNotFound, never unexpectedObjectType (no virtual short-circuit)', async () => {

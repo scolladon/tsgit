@@ -39,6 +39,7 @@ import {
 import { nextOffsetForEntry, type PackLookupHit, type PackRegistry } from '../pack-registry.js';
 import { getPackRegistry, peekPackRegistry, withLazyFetchRetry } from '../read-object.js';
 import type { StreamBlobOptions } from '../stream-blob.js';
+import { rescanOnFullMiss } from './pack-miss-rescan.js';
 
 /** 64 KiB of compressed/on-disk bytes — the uniform buffered/streamed gate. */
 export const MAX_BUFFERED_BLOB_BYTES = 65_536;
@@ -97,6 +98,33 @@ export async function openBlobSource(
     }
   }
 
+  const first = await tryOpenBlobSource(ctx, id, gate);
+  if (first !== undefined) return first;
+
+  // Full miss: as of the CURRENT generation, no pack claims `id` and no
+  // loose file exists for it either. Mirrors `resolveObjectContentWithDepth`'s
+  // own retry (see `pack-miss-rescan.ts`'s doc) — an external tool may have
+  // changed the store since the last scan. Many concurrent misses share ONE
+  // re-scan; a SECOND miss, after the retry, refuses exactly as before.
+  const registry = peekPackRegistry(ctx) ?? (await getPackRegistry(ctx));
+  await rescanOnFullMiss(ctx, registry);
+  const retried = await tryOpenBlobSource(ctx, id, gate);
+  if (retried !== undefined) return retried;
+  throw objectNotFound(id);
+}
+
+/**
+ * One resolution attempt against the CURRENT generation — loose first, then
+ * pack, mirroring `openBlobSource`'s own original order — reporting
+ * `undefined` when NEITHER claims `id`: the full-miss signal `openBlobSource`
+ * retries once after a re-scan. Any OTHER error (a corrupt entry, a hash
+ * mismatch) propagates directly, never converted to a miss.
+ */
+async function tryOpenBlobSource(
+  ctx: Context,
+  id: ObjectId,
+  gate: BufferGate,
+): Promise<BlobSource | undefined> {
   const compressed = await looseCompressedBytes(ctx, id);
   if (compressed !== undefined) {
     checkAborted(ctx);
@@ -106,7 +134,7 @@ export async function openBlobSource(
   checkAborted(ctx);
   const registry = peekPackRegistry(ctx) ?? (await getPackRegistry(ctx));
   const hit = await registry.lookup(id);
-  if (hit === undefined) throw objectNotFound(id);
+  if (hit === undefined) return undefined;
 
   const table = await hit.pack.offsetTable();
   const nextOffset = nextOffsetForEntry(table, hit.offset);

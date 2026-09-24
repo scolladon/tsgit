@@ -473,5 +473,60 @@ describe.skipIf(!GIT_AVAILABLE || PACK_DIR_FAULTS_SKIPPED)(
         expect((object as Blob).content).toEqual(new Uint8Array(HELLO));
       });
     });
+
+    describe('Given an external repack+prune-packed after a Context already memoised the pack registry (R1), When tsgit reads the now-formerly-loose HEAD commit', () => {
+      let dir = '';
+      let firstCommitId = '';
+      let headCommitId = '';
+
+      beforeAll(async () => {
+        dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-object-precedence-r1-'));
+        runGit(['init', '-q', '-b', 'main', dir]);
+        git(dir, 'config', 'user.name', 'Ada');
+        git(dir, 'config', 'user.email', 'ada@example.com');
+        git(dir, 'config', 'commit.gpgsign', 'false');
+        disableAutoMaintenance(dir);
+        await writeFile(path.join(dir, 'a.txt'), HELLO);
+        git(dir, 'add', 'a.txt');
+        git(dir, 'commit', '-q', '-m', 'c1');
+        firstCommitId = git(dir, 'rev-parse', 'HEAD').trim();
+        // Packs c1 — gives tsgit a PACKED object to read first, below.
+        git(dir, 'gc', '-q');
+        await writeFile(path.join(dir, 'b.txt'), Buffer.from('world\n'));
+        git(dir, 'add', 'b.txt');
+        git(dir, 'commit', '-q', '-m', 'c2');
+        // No gc since c2 — HEAD's commit/tree/blob are still loose.
+        headCommitId = git(dir, 'rev-parse', 'HEAD').trim();
+      }, SETUP_TIMEOUT);
+
+      afterAll(async () => {
+        await rm(dir, { recursive: true, force: true });
+      });
+
+      it('Then git cat-file -t reports commit, and tsgit resolves it too via one re-scan retry (reprepare_packed_git)', async () => {
+        // Arrange — a long-lived Context: reading the earlier PACKED commit
+        // memoises the pack registry's directory listing before the repack.
+        const ctx = createNodeContext({ workDir: dir });
+        await readObject(ctx, firstCommitId as ObjectId);
+
+        // Act — external repack+prune: HEAD's own commit (and its tree and
+        // blob) move from loose into a NEW consolidated pack, and their
+        // loose copies are pruned — exactly as a concurrent `git gc` would
+        // do behind tsgit's memoised registry's back.
+        git(dir, 'repack', '-a', '-d', '-q');
+        git(dir, 'prune-packed', '-q');
+        const gitType = git(dir, 'cat-file', '-t', headCommitId).trim();
+
+        // Act — tsgit side, through the SAME memoised Context/registry
+        const object = await readObject(ctx, headCommitId as ObjectId);
+
+        // Assert — git and tsgit agree: tsgit's re-scan-on-miss (mirroring
+        // git's own `reprepare_packed_git` retry) finds the object in its
+        // new pack instead of refusing OBJECT_NOT_FOUND against the stale
+        // (pre-repack) generation.
+        expect(gitType).toBe('commit');
+        expect(object.type).toBe('commit');
+      });
+    });
   },
 );
