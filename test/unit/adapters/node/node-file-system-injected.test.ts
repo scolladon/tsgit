@@ -10,7 +10,10 @@
  */
 import * as fs from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
-import type { FsOperations } from '../../../../src/adapters/node/fs-operations.js';
+import type {
+  FsOperations,
+  SyncFsOperations,
+} from '../../../../src/adapters/node/fs-operations.js';
 import {
   mapConcurrent,
   NodeFileSystem,
@@ -50,6 +53,33 @@ const bigintFileStat = {
   isDirectory: () => false,
   isSymbolicLink: () => false,
 };
+
+/** `bigintFileStat`'s directory twin — reports a plain directory, not a file. */
+const bigintDirStat = {
+  ...bigintFileStat,
+  mode: BigInt(0o040755),
+  isFile: () => false,
+  isDirectory: () => true,
+};
+
+/**
+ * A `statSync`/`lstatSync`-shaped fake told apart by the options it
+ * receives: the non-throwing miss probe passes `throwIfNoEntry: false`
+ * (`onMiss` backs it), the disambiguating parent probe never does
+ * (`onParent` backs it, and a returned `Error` throws instead of resolving).
+ * Cast once here (matching the wider `fakeSyncFsOps`/`fakeFsOps` pattern of
+ * simplifying Node's real, heavily overloaded signatures) rather than at
+ * every call site.
+ */
+const missAwareStat = (
+  onMiss: () => unknown,
+  onParent: () => unknown,
+): SyncFsOperations['statSync'] =>
+  vi.fn((_p: unknown, opts?: { readonly throwIfNoEntry?: boolean }) => {
+    const outcome = opts?.throwIfNoEntry === false ? onMiss() : onParent();
+    if (outcome instanceof Error) throw outcome;
+    return outcome;
+  }) as unknown as SyncFsOperations['statSync'];
 
 /** Every errno row `mapErrno` maps, shared across the sync-arm suites below. */
 const ERRNO_TABLE = [
@@ -4301,17 +4331,20 @@ describe('NodeFileSystem.stat — sync arm (DI)', () => {
 describe('NodeFileSystem.exists — sync arm (DI)', () => {
   const rootDir = '/root';
   const target = '/root/child.txt';
+  const parent = '/root';
 
   describe('Given a policy-bearing adapter', () => {
-    describe('When statSync throws ENOENT', () => {
+    describe('When statSync answers the miss without throwing, and the parent is a directory', () => {
       it('Then exists resolves false, and the async arm is not called', async () => {
-        // Arrange — a throwing probe, not `throwIfNoEntry: false`: Node's
-        // `throwIfNoEntry: false` also swallows ENOTDIR, which would hide the
-        // NOT_A_DIRECTORY refusal the next row proves.
+        // Arrange — the common case: `throwIfNoEntry: false` answers the leaf
+        // miss with `undefined`, no throw paid at all; the disambiguating
+        // parent probe succeeds and confirms an ordinary directory, so the
+        // miss is plain absence.
         const asyncStat = vi.fn();
-        const statSync = vi.fn(() => {
-          throw enoent();
-        });
+        const statSync = missAwareStat(
+          () => undefined,
+          () => bigintDirStat,
+        );
         const fsOps = fakeFsOps({
           realpath: vi.fn().mockImplementation(async (input: string) => input),
           stat: asyncStat,
@@ -4324,7 +4357,8 @@ describe('NodeFileSystem.exists — sync arm (DI)', () => {
 
         // Assert
         expect(result).toBe(false);
-        expect(statSync).toHaveBeenCalledWith(target, { bigint: true });
+        expect(statSync).toHaveBeenCalledWith(target, { bigint: true, throwIfNoEntry: false });
+        expect(statSync).toHaveBeenCalledWith(parent, { bigint: true });
         expect(asyncStat).not.toHaveBeenCalled();
       });
     });
@@ -4347,12 +4381,14 @@ describe('NodeFileSystem.exists — sync arm (DI)', () => {
       });
     });
 
-    describe('When statSync throws ENOTDIR', () => {
+    describe('When the miss disambiguates against a parent that is itself a plain file', () => {
       it('Then it rejects with NOT_A_DIRECTORY', async () => {
-        // Arrange
-        const statSync = vi.fn(() => {
-          throw enotdir();
-        });
+        // Arrange — the parent probe SUCCEEDS (no throw) but reports a file,
+        // not a directory: the direct "immediate parent is the culprit" case.
+        const statSync = missAwareStat(
+          () => undefined,
+          () => bigintFileStat,
+        );
         const fsOps = fakeFsOps({
           realpath: vi.fn().mockImplementation(async (input: string) => input),
         });
@@ -4373,6 +4409,55 @@ describe('NodeFileSystem.exists — sync arm (DI)', () => {
       });
     });
 
+    describe('When the miss disambiguates against a parent whose OWN resolution throws ENOTDIR', () => {
+      it('Then it rejects with NOT_A_DIRECTORY', async () => {
+        // Arrange — a grandparent-is-a-file case: resolving the immediate
+        // parent's own path fails with ENOTDIR before it ever answers.
+        const statSync = missAwareStat(
+          () => undefined,
+          () => enotdir(),
+        );
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+        });
+        const syncIo = fakeSyncIoPolicy(fakeSyncFsOps({ statSync }));
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps, syncIo });
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.exists(target);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('NOT_A_DIRECTORY');
+      });
+    });
+
+    describe('When the miss disambiguates against a parent that is ALSO absent', () => {
+      it('Then exists resolves false (a missing ancestor is still plain absence)', async () => {
+        // Arrange
+        const statSync = missAwareStat(
+          () => undefined,
+          () => enoent(),
+        );
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+        });
+        const syncIo = fakeSyncIoPolicy(fakeSyncFsOps({ statSync }));
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps, syncIo });
+
+        // Act
+        const result = await sut.exists(target);
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+
     describe('When statSync throws a non-errno error', () => {
       it('Then it rejects with the same error instance', async () => {
         // Arrange
@@ -4380,6 +4465,25 @@ describe('NodeFileSystem.exists — sync arm (DI)', () => {
         const statSync = vi.fn(() => {
           throw error;
         });
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+        });
+        const syncIo = fakeSyncIoPolicy(fakeSyncFsOps({ statSync }));
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps, syncIo });
+
+        // Act & Assert
+        await expect(sut.exists(target)).rejects.toBe(error);
+      });
+    });
+
+    describe('When the disambiguating parent probe throws a non-errno error', () => {
+      it('Then it rejects with the same error instance', async () => {
+        // Arrange
+        const error = new TypeError('boom');
+        const statSync = missAwareStat(
+          () => undefined,
+          () => error,
+        );
         const fsOps = fakeFsOps({
           realpath: vi.fn().mockImplementation(async (input: string) => input),
         });
@@ -4452,22 +4556,24 @@ describe('NodeFileSystem.readlink — sync arm (DI)', () => {
 describe('NodeFileSystem.lexists — sync arm (DI)', () => {
   const rootDir = '/root';
   const target = '/root/child.txt';
+  const parent = '/root';
 
   describe('Given a policy-bearing adapter', () => {
-    describe('When lstatSync throws ENOENT', () => {
+    describe('When lstatSync answers the miss without throwing, and the parent is a directory', () => {
       it('Then lexists resolves false, and the async arm is not called', async () => {
-        // Arrange — a throwing probe, not `throwIfNoEntry: false`: Node's
-        // `throwIfNoEntry: false` also swallows ENOTDIR, which would hide the
-        // NOT_A_DIRECTORY refusal the next row proves.
+        // Arrange — the common case: `throwIfNoEntry: false` answers the leaf
+        // miss with `undefined`, no throw paid at all; the disambiguating
+        // parent probe (always `statSync` — the parent must be resolved
+        // following symlinks, whichever probe the leaf itself used) confirms
+        // an ordinary directory, so the miss is plain absence.
         const asyncLstat = vi.fn();
-        const lstatSync = vi.fn(() => {
-          throw enoent();
-        });
+        const lstatSync = vi.fn().mockReturnValue(undefined);
+        const statSync = vi.fn().mockReturnValue(bigintDirStat);
         const fsOps = fakeFsOps({
           realpath: vi.fn().mockImplementation(async (input: string) => input),
           lstat: asyncLstat,
         });
-        const syncIo = fakeSyncIoPolicy(fakeSyncFsOps({ lstatSync }));
+        const syncIo = fakeSyncIoPolicy(fakeSyncFsOps({ lstatSync, statSync }));
         const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps, syncIo });
 
         // Act
@@ -4475,7 +4581,8 @@ describe('NodeFileSystem.lexists — sync arm (DI)', () => {
 
         // Assert
         expect(result).toBe(false);
-        expect(lstatSync).toHaveBeenCalledWith(target, { bigint: true });
+        expect(lstatSync).toHaveBeenCalledWith(target, { bigint: true, throwIfNoEntry: false });
+        expect(statSync).toHaveBeenCalledWith(parent, { bigint: true });
         expect(asyncLstat).not.toHaveBeenCalled();
       });
     });
@@ -4498,16 +4605,44 @@ describe('NodeFileSystem.lexists — sync arm (DI)', () => {
       });
     });
 
-    describe('When lstatSync throws ENOTDIR', () => {
+    describe('When the miss disambiguates against a parent that is itself a plain file', () => {
       it('Then it rejects with NOT_A_DIRECTORY', async () => {
-        // Arrange
-        const lstatSync = vi.fn(() => {
+        // Arrange — the parent probe SUCCEEDS (no throw) but reports a file,
+        // not a directory: the direct "immediate parent is the culprit" case.
+        const lstatSync = vi.fn().mockReturnValue(undefined);
+        const statSync = vi.fn().mockReturnValue(bigintFileStat);
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+        });
+        const syncIo = fakeSyncIoPolicy(fakeSyncFsOps({ lstatSync, statSync }));
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps, syncIo });
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.lexists(target);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('NOT_A_DIRECTORY');
+      });
+    });
+
+    describe('When the miss disambiguates against a parent whose OWN resolution throws ENOTDIR', () => {
+      it('Then it rejects with NOT_A_DIRECTORY', async () => {
+        // Arrange — a grandparent-is-a-file case: resolving the immediate
+        // parent's own path fails with ENOTDIR before it ever answers.
+        const lstatSync = vi.fn().mockReturnValue(undefined);
+        const statSync = vi.fn(() => {
           throw enotdir();
         });
         const fsOps = fakeFsOps({
           realpath: vi.fn().mockImplementation(async (input: string) => input),
         });
-        const syncIo = fakeSyncIoPolicy(fakeSyncFsOps({ lstatSync }));
+        const syncIo = fakeSyncIoPolicy(fakeSyncFsOps({ lstatSync, statSync }));
         const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps, syncIo });
 
         // Act

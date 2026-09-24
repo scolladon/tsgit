@@ -378,49 +378,91 @@ async function runSync<T>(budget: TurnBudget, op: () => T, path: string): Promis
   }
 }
 
+type PresenceProbeKind = 'stat' | 'lstat';
+
+/** One non-throwing `stat`/`lstat` attempt: `undefined` on ANY miss, `ENOENT` or `ENOTDIR` alike. */
+function probeOnce(
+  ops: SyncFsOperations,
+  kind: PresenceProbeKind,
+  real: string,
+): fs.BigIntStats | undefined {
+  return kind === 'stat'
+    ? ops.statSync(real, { bigint: true, throwIfNoEntry: false })
+    : ops.lstatSync(real, { bigint: true, throwIfNoEntry: false });
+}
+
 /**
- * The synchronous twin of `orAbsent`: runs `probe` under the turn budget,
- * folding `ENOENT` into `undefined` via `throwUnlessEnoent`.
- * `statSync`/`lstatSync`'s `throwIfNoEntry: false` option is NOT used here
- * because it also swallows `ENOTDIR` — a throwing probe, caught here, is
- * the only way to keep the sync and async arms identical. Shared by every
- * sync presence/miss probe (`isPresentSync`, and the optional `tryLstat`
- * port member).
+ * Distinguishes a sync miss's `ENOENT` from `ENOTDIR` without paying for a
+ * thrown error on the common (plain-absence) case: `throwIfNoEntry: false`
+ * answers a miss with `undefined` for EITHER cause, which would otherwise
+ * silently report a genuine ancestor `NOT_A_DIRECTORY` as absence. One
+ * more, still-throwing `statSync` on the immediate parent settles it — the
+ * OS re-resolves that SAME ancestor chain, so an `ENOTDIR` anywhere above
+ * the parent surfaces here exactly as it would have from the original
+ * probe, and the parent itself being a plain file answers via
+ * `isDirectory()` with no throw at all. The overwhelmingly common case (the
+ * parent directory exists and IS a directory) never throws either way.
  */
-async function runSyncAbsent<T>(
-  budget: TurnBudget,
-  probe: () => T,
-  path: string,
-): Promise<T | undefined> {
+function disambiguateMiss(ops: SyncFsOperations, parent: string, path: string): undefined {
+  let parentStat: fs.BigIntStats;
   try {
-    return await runWithinBudget(budget, probe);
+    parentStat = ops.statSync(parent, { bigint: true });
   } catch (err) {
     throwUnlessEnoent(err, path);
     return undefined;
   }
+  if (!parentStat.isDirectory()) throw notADirectory(path);
+  return undefined;
+}
+
+/**
+ * The synchronous twin of `orAbsent`: a non-throwing `stat`/`lstat` under
+ * the turn budget, escalating to {@link disambiguateMiss} only on a miss.
+ * Any OTHER errno the fast probe itself raises (`throwIfNoEntry: false`
+ * only suppresses `ENOENT`/`ENOTDIR`) still maps directly. Shared by every
+ * sync presence/miss probe (`isPresentSync`, and the optional `tryLstat`
+ * port member).
+ */
+async function runSyncAbsent(
+  budget: TurnBudget,
+  ops: SyncFsOperations,
+  kind: PresenceProbeKind,
+  real: string,
+  parent: string,
+  path: string,
+): Promise<fs.BigIntStats | undefined> {
+  let result: fs.BigIntStats | undefined;
+  try {
+    result = await runWithinBudget(budget, () => probeOnce(ops, kind, real));
+  } catch (err) {
+    throwUnlessEnoent(err, path);
+    return undefined;
+  }
+  if (result !== undefined) return result;
+  return runWithinBudget(budget, () => disambiguateMiss(ops, parent, path));
 }
 
 /** The sync arm of `tryLstat`: a miss answers `undefined`, every other refusal throws. */
 async function tryLstatSync(
   sync: SyncIoPolicy,
   real: string,
+  parent: string,
   path: string,
 ): Promise<FileStat | undefined> {
-  const stat = await runSyncAbsent(
-    sync.budget,
-    () => sync.ops.lstatSync(real, { bigint: true }),
-    path,
-  );
+  const stat = await runSyncAbsent(sync.budget, sync.ops, 'lstat', real, parent, path);
   return stat === undefined ? undefined : mapStat(stat);
 }
 
 /** The synchronous twin of `orAbsent` reduced to a boolean answer, for the plain presence probes. */
 async function runSyncPresence(
   budget: TurnBudget,
-  probe: () => unknown,
+  ops: SyncFsOperations,
+  kind: PresenceProbeKind,
+  real: string,
+  parent: string,
   path: string,
 ): Promise<boolean> {
-  return (await runSyncAbsent(budget, probe, path)) !== undefined;
+  return (await runSyncAbsent(budget, ops, kind, real, parent, path)) !== undefined;
 }
 
 export async function realpathNearestExisting(
@@ -1200,10 +1242,10 @@ export class NodeFileSystem implements FileSystem {
   }
 
   /**
-   * A throwing probe, caught here — NOT `throwIfNoEntry: false`. That option
-   * also swallows `ENOTDIR` into `undefined`, which would hide the
-   * `NOT_A_DIRECTORY` refusal `isPresent`'s async arm (and the port
-   * contract) both require.
+   * A non-throwing `throwIfNoEntry: false` probe, escalating to
+   * {@link disambiguateMiss} only on a miss — that option alone would
+   * swallow `ENOTDIR` into `undefined`, hiding the `NOT_A_DIRECTORY`
+   * refusal `isPresent`'s async arm (and the port contract) both require.
    */
   private isPresentSync(
     real: string,
@@ -1211,10 +1253,7 @@ export class NodeFileSystem implements FileSystem {
     probe: 'stat' | 'lstat',
     sync: SyncIoPolicy,
   ): Promise<boolean> {
-    if (probe === 'stat') {
-      return runSyncPresence(sync.budget, () => sync.ops.statSync(real, { bigint: true }), path);
-    }
-    return runSyncPresence(sync.budget, () => sync.ops.lstatSync(real, { bigint: true }), path);
+    return runSyncPresence(sync.budget, sync.ops, probe, real, this.pathPolicy.dirname(real), path);
   }
 
   stat = async (path: string): Promise<FileStat> => {
@@ -1247,7 +1286,7 @@ export class NodeFileSystem implements FileSystem {
     const sync = this.syncIo;
     return sync === undefined
       ? orAbsent(async () => mapStat(await this.fsOps.lstat(real, { bigint: true })), path)
-      : tryLstatSync(sync, real, path);
+      : tryLstatSync(sync, real, this.pathPolicy.dirname(real), path);
   };
 
   readdir = async (path: string): Promise<ReadonlyArray<DirEntry>> => {
