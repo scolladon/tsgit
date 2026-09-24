@@ -531,7 +531,7 @@ describe('openBlobSource', () => {
 
   describe('Given a loose non-blob (commit) object', () => {
     describe('When openBlobSource resolves it buffered (gate at the compressed length)', () => {
-      it('Then reports the real type without refusing', async () => {
+      it('Then reports the real type without refusing, and caches it (non-blob types are reused, not read-once)', async () => {
         // Arrange
         const { ctx, id } = await buildLooseCommit();
         const compressedLen = await looseCompressedLength(ctx, id);
@@ -543,6 +543,7 @@ describe('openBlobSource', () => {
         expect(result.kind).toBe('bytes');
         if (result.kind === 'bytes') {
           expect(result.type).toBe('commit');
+          expect(ctx.deltaCache.get(id)).toEqual({ type: 'commit', content: result.content });
         }
       });
     });
@@ -593,7 +594,7 @@ describe('openBlobSource', () => {
     });
 
     describe('When openBlobSource resolves it buffered (gate over the entry size)', () => {
-      it('Then reports the real type instead of failing the blob-shaped hash', async () => {
+      it('Then reports the real type instead of failing the blob-shaped hash, and caches it (non-blob types are reused, not read-once)', async () => {
         // Arrange — the seam only REPORTS type, so a non-blob must reach the
         // caller's refusal rather than dying on a hash rebuilt as `blob <n>`.
         const content = ENC.encode('tree-like content for the buffered type test');
@@ -611,6 +612,7 @@ describe('openBlobSource', () => {
         if (result.kind === 'bytes') {
           expect(result.type).toBe('tree');
           expect(result.content).toEqual(content);
+          expect(ctx.deltaCache.get(id)).toEqual({ type: 'tree', content });
         }
       });
     });
@@ -961,7 +963,7 @@ describe('openBlobSource', () => {
 
   describe('Given a loose blob resolved buffered', () => {
     describe('When openBlobSource is called with the gate at the compressed length', () => {
-      it('Then the resolved bytes are cached in ctx.deltaCache under its id', async () => {
+      it('Then it is never cached in ctx.deltaCache — a read-once blob would only evict hotter tree/commit entries', async () => {
         // Arrange
         const blob: Blob = {
           type: 'blob',
@@ -976,7 +978,7 @@ describe('openBlobSource', () => {
         await openBlobSource(ctx, id, compressedLen);
 
         // Assert
-        expect(ctx.deltaCache.get(id)).toEqual({ type: 'blob', content: blob.content });
+        expect(ctx.deltaCache.get(id)).toBeUndefined();
       });
     });
   });
@@ -1032,7 +1034,7 @@ describe('openBlobSource', () => {
 
   describe('Given a packed base (non-delta) blob', () => {
     describe('When openBlobSource is called with the gate at the payload length', () => {
-      it('Then the resolved bytes are cached in ctx.deltaCache under its id', async () => {
+      it('Then it is never cached in ctx.deltaCache — a read-once blob would only evict hotter tree/commit entries', async () => {
         // Arrange
         const content = ENC.encode('packed base content for the caching test');
         const ctx = await buildSeededContext();
@@ -1046,7 +1048,7 @@ describe('openBlobSource', () => {
         await openBlobSource(ctx, id, payloadLen);
 
         // Assert
-        expect(ctx.deltaCache.get(id)).toEqual({ type: 'blob', content });
+        expect(ctx.deltaCache.get(id)).toBeUndefined();
       });
     });
 

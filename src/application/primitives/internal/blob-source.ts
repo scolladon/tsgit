@@ -227,14 +227,21 @@ function fitsBuffer(byteLength: number, maxBufferedBytes: number): boolean {
 }
 
 /** Splits an inflated loose-format buffer into a bytes source and, when the
- *  header's declared size was honest (matches the actual content length),
- *  warms `ctx.deltaCache` under `id` — mirroring `resolveObjectContentWithDepth`'s
- *  own loose arm. A size-lying header (tolerated only for a blob) is never
- *  cached: a later consumer keyed on `id` would read the wrong claim. */
+ *  header's declared size was honest (matches the actual content length) AND
+ *  the object is NOT a blob, warms `ctx.deltaCache` under `id` — mirroring
+ *  `resolveObjectContentWithDepth`'s own loose arm. A size-lying header
+ *  (tolerated only for a blob) is never cached: a later consumer keyed on
+ *  `id` would read the wrong claim. Blobs are excluded on purpose (measured:
+ *  a checkout-scale buffered-blob walk — 300×60 KiB, exceeding the default
+ *  16 MiB budget — evicted every tree/commit entry the walk had warmed,
+ *  forcing them to re-read) — this seam is reached once per blob per caller
+ *  (a diff's whitespace-drop predicate, a ref target's hash verification),
+ *  so caching them only spends budget a repeatedly-walked tree or commit
+ *  would otherwise keep warm. */
 function toCachedBytesSource(ctx: Context, id: ObjectId, looseFormatBytes: Uint8Array): BlobSource {
   const split = splitLooseObject(looseFormatBytes);
   assertLooseSizeConsistent(split);
-  if (split.declaredSize === split.content.byteLength) {
+  if (split.type !== 'blob' && split.declaredSize === split.content.byteLength) {
     cacheEntry(ctx.deltaCache, id, { type: split.type, content: split.content });
   }
   return { kind: 'bytes', type: split.type, content: split.content };
@@ -335,7 +342,10 @@ async function resolvePackBase(
     fitsBuffer(declaredSize, gate.maxBufferedBytes)
   ) {
     const content = await ctx.compressor.inflate(payload);
-    if (declaredSize === content.byteLength) {
+    // Blobs excluded: see `toCachedBytesSource`'s doc — a read-once buffered
+    // blob only spends the shared cache's budget a repeatedly-walked tree or
+    // commit would otherwise keep warm.
+    if (type !== 'blob' && declaredSize === content.byteLength) {
       cacheEntry(ctx.deltaCache, id, { type, content });
     }
     await verifyObjectContent(ctx, id, type, content, gate.verifyHash);
