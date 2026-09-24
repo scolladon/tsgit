@@ -50,6 +50,7 @@ import { buildSeededContext, serializeIndexFixtureAsync } from '../primitives/fi
 import { withHandleLedger } from '../primitives/handle-ledger.js';
 import {
   buildSyntheticPack,
+  corruptIdxOffset,
   type EntrySpec,
   restampPackHeader,
   writeSyntheticBitmap,
@@ -4714,6 +4715,46 @@ describe('Given a packed OFS_DELTA whose base distance lands exactly on offset 0
       // Offset 0 lands on the pack's own 12-byte magic header, not an entry —
       // the SUBSEQUENT header parse fails, caught by typeFromEntry's own
       // store-fault handling (Pin: distinct reason from the guard's own).
+      expect(warned?.context?.reason).toBe('pack entry unreadable');
+      expect(result.exitCode).toBe(0);
+    });
+  });
+});
+
+describe('Given a pack whose .idx records an entry offset at least one window past the pack end', () => {
+  describe('When fsck runs with connectivityOnly: true', () => {
+    it('Then the object degrades to unknown as it did before the window cache, not a raw RangeError', async () => {
+      // Arrange — a truncated pack (or a corrupt `.idx` offset — the same
+      // observable shape) plants an entry offset the window cache's own
+      // `loadWindow` must clamp: its aligned window base lands past the
+      // pack's tiny real end. Pre-window-cache, `ctx.fs.readSlice` bounded
+      // the read to 0 bytes there; the entry-header parser refused with its
+      // own `INVALID_PACK_ENTRY` (typeFromEntry's store-fault degrade). A
+      // stale garbled loose copy at the same id routes through the same
+      // recovery probe `d13-zero-offset` already pins.
+      const ctx = await initBareCtx();
+      const baseContent = enc.encode('window-trunc-content');
+      const built = await buildSyntheticPack(ctx, [
+        { kind: 'base', type: 'blob', content: baseContent },
+      ]);
+      const digestLength = ctx.hashConfig.digestLength;
+      const idxBytes = corruptIdxOffset(built.idxBytes, digestLength, built.offsets[0]!, 200_000);
+      await ctx.fs.write(packFilePath(ctx, 'window-trunc'), built.packBytes);
+      await ctx.fs.write(idxFilePath(ctx, 'window-trunc'), idxBytes);
+      const targetId = built.ids[0] as ObjectId;
+      await writeGarbageLooseObject(ctx, targetId, GARBAGE_BYTES);
+      const { ctx: logged, calls } = withWarnLog(ctx);
+
+      // Act
+      const result = await fsck(logged, { connectivityOnly: true });
+
+      // Assert
+      const dangling = result.findings.find(
+        (f) => f.type === 'dangling' && (f as { id: ObjectId }).id === targetId,
+      );
+      expect(dangling).toBeDefined();
+      expect((dangling as { objectType: string }).objectType).toBe('unknown');
+      const warned = calls.find((c) => c.context?.objectId === targetId);
       expect(warned?.context?.reason).toBe('pack entry unreadable');
       expect(result.exitCode).toBe(0);
     });

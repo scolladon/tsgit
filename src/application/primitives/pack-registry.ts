@@ -494,7 +494,7 @@ function loadPack(
   const loadWindow = async (base: number, size: number): Promise<Uint8Array> => {
     const handle = await handleMemo.get();
     const packFileSize = await sizeMemo.get();
-    const clampedSize = Math.min(size, packFileSize - base);
+    const clampedSize = Math.max(0, Math.min(size, packFileSize - base));
     const buffer = new Uint8Array(clampedSize);
     const bytesRead = await handle.read(buffer, 0, clampedSize, base);
     return buffer.subarray(0, bytesRead);

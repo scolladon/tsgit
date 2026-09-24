@@ -80,7 +80,11 @@ export function createPackWindowCache({
     const cached = windows.get(key);
     if (cached !== undefined) return cached;
     const window = await load(base, windowBytes);
-    windows.set(key, window, window.byteLength);
+    // A window base past the pack's own end loads empty — the LRU rejects a
+    // zero-byte entry (there is nothing to evict room for), and caching it
+    // would buy nothing: the next read at the same base costs the same
+    // empty load either way.
+    if (window.byteLength > 0) windows.set(key, window, window.byteLength);
     return window;
   };
 

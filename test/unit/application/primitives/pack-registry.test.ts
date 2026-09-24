@@ -3020,6 +3020,33 @@ describe('RegisteredPack.readSlice — pack window cache (P8)', () => {
   });
 });
 
+describe('Given a window whose base lies past the pack file end', () => {
+  describe('When readSlice is called at an offset far beyond the pack', () => {
+    it('Then it resolves to an empty view instead of throwing a raw RangeError', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const content = new TextEncoder().encode('past-eof-content');
+      await writeSyntheticPack(ctx, 'past-eof', [{ kind: 'base', type: 'blob', content }]);
+      const registry = await createPackRegistry(ctx);
+      const pack = (await registry.all())[0]!;
+
+      // Act
+      let caught: unknown;
+      let result: Uint8Array | undefined;
+      try {
+        result = await pack.readSlice(1_000_000, 4);
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect(caught).toBeUndefined();
+      expect(result).toBeDefined();
+      expect(result?.byteLength).toBe(0);
+    });
+  });
+});
+
 describe('Given a registry that cached a pack window before refresh()', () => {
   describe('When the pack is rewritten under the same name and refresh() runs', () => {
     it('Then a read at the same offset serves the new bytes, not the stale window', async () => {
