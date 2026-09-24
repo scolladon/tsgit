@@ -672,4 +672,39 @@ describe('BrowserFileSystem directory-handle cache', () => {
       expect(root.getDirectoryHandle).toHaveBeenCalledTimes(1);
     });
   });
+
+  const CACHED_PARENT_COUNT = 600;
+
+  describe('Given more distinct parent directories cached than the handle-cache LRU holds', () => {
+    describe('When every one of them has been read at least once', () => {
+      it("Then the tracked key set never outgrows the LRU's own resident entries", async () => {
+        // Arrange — one empty subdirectory per distinct parent, so each read
+        // caches its own parent key without ever hitting another one's.
+        const children: Record<string, FileSystemDirectoryHandle> = {};
+        for (let index = 0; index < CACHED_PARENT_COUNT; index += 1) {
+          children[`d${index}`] = directory({});
+        }
+        const root = directory(children);
+        const sut = new BrowserFileSystem(root);
+
+        // Act
+        for (let index = 0; index < CACHED_PARENT_COUNT; index += 1) {
+          await sut.exists(`d${index}/file.txt`);
+        }
+
+        // Assert — `createLruCache` exposes no key enumeration, so reaching
+        // through the private fields is the only seam available; the tracked
+        // Set must never sit above the LRU's own live entry count, which is
+        // itself capped well below the 600 distinct parents cached above.
+        const internals = sut as unknown as {
+          readonly directoryHandleCacheKeys: ReadonlySet<string>;
+          readonly directoryHandleCache: { readonly entryCount: number };
+        };
+        expect(internals.directoryHandleCacheKeys.size).toBe(
+          internals.directoryHandleCache.entryCount,
+        );
+        expect(internals.directoryHandleCacheKeys.size).toBeLessThan(CACHED_PARENT_COUNT);
+      });
+    });
+  });
 });
