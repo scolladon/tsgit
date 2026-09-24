@@ -595,7 +595,7 @@ function wrapNodeHandle(handle: fsPromises.FileHandle, syncIo?: SyncIoPolicy): F
   let closed = false;
   return {
     read: (buffer, offset, length, position) =>
-      syncIo === undefined
+      syncIo === undefined || length > syncIo.maxSyncReadBytes
         ? readHandleAsync(handle, buffer, offset, length, position)
         : runWithinBudget(syncIo.budget, () =>
             syncIo.ops.readSync(handle.fd, buffer, offset, length, position ?? null),

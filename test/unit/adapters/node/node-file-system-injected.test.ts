@@ -3325,6 +3325,64 @@ describe('NodeFileSystem.openWithNoFollow — handle.read position (DI)', () => 
   });
 });
 
+describe('NodeFileSystem.openWithNoFollow — held-handle read stays inside the sync gate (DI)', () => {
+  const rootDir = '/root';
+  const target = '/root/file.bin';
+  const FD = 13;
+
+  describe('Given a held handle opened under the sync fast path', () => {
+    describe('When read length exceeds the sync gate', () => {
+      it('Then it falls back to the async handle read, never calling readSync', async () => {
+        // Arrange — over-the-gate length must route to the held handle's
+        // OWN async `read`, not `syncIo.ops.readSync`, however large.
+        const readSync = vi.fn();
+        const asyncRead = vi.fn().mockResolvedValue({ bytesRead: 0, buffer: Buffer.alloc(0) });
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+          open: vi.fn().mockResolvedValue({ fd: FD, read: asyncRead, close: vi.fn() }),
+        });
+        const syncIo = fakeSyncIoPolicy(fakeSyncFsOps({ readSync }));
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps, syncIo });
+        const wrapped = await sut.openWithNoFollow(target, 'read');
+        const overGate = syncIo.maxSyncReadBytes + 1;
+        const buffer = new Uint8Array(overGate);
+
+        // Act
+        await wrapped.read(buffer, 0, overGate);
+
+        // Assert
+        expect(readSync).not.toHaveBeenCalled();
+        expect(asyncRead).toHaveBeenCalledWith(buffer, 0, overGate, null);
+      });
+    });
+
+    describe('When read length is exactly at the sync gate', () => {
+      it('Then it takes the sync arm, calling readSync', async () => {
+        // Arrange
+        const readSync = vi.fn().mockReturnValue(4);
+        const asyncRead = vi.fn().mockResolvedValue({ bytesRead: 0, buffer: Buffer.alloc(0) });
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+          open: vi.fn().mockResolvedValue({ fd: FD, read: asyncRead, close: vi.fn() }),
+        });
+        const syncIo = fakeSyncIoPolicy(fakeSyncFsOps({ readSync }));
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps, syncIo });
+        const wrapped = await sut.openWithNoFollow(target, 'read');
+        const atGate = syncIo.maxSyncReadBytes;
+        const buffer = new Uint8Array(atGate);
+
+        // Act
+        const bytesRead = await wrapped.read(buffer, 0, atGate);
+
+        // Assert
+        expect(bytesRead).toBe(4);
+        expect(readSync).toHaveBeenCalledWith(FD, buffer, 0, atGate, null);
+        expect(asyncRead).not.toHaveBeenCalled();
+      });
+    });
+  });
+});
+
 describe('NodeFileSystem.readSlice — handle close on success (DI)', () => {
   describe('Given a successful readSlice', () => {
     describe('When it returns', () => {
