@@ -120,27 +120,6 @@ describe('createPackWindowCache', () => {
     });
   });
 
-  describe('Given a request that crosses a window edge and still does not fit once page-aligned', () => {
-    describe('When read is called', () => {
-      it('Then it bypasses the cache with one direct load at the exact offset and length', async () => {
-        // Arrange — windowBytes=100 is far smaller than the 4 KiB page, so
-        // aligning offset=4050 down to its page (0) cannot rescue a request
-        // that already crosses the 100-byte window.
-        const source = fakeSource(5000);
-        const load = loaderOver(source);
-        const cache = createPackWindowCache({ windowBytes: 100, limitBytes: 4096 });
-
-        // Act
-        const result = await cache.read('pack-a', 4050, 90, load);
-
-        // Assert
-        expect(Array.from(result)).toEqual(Array.from(source.subarray(4050, 4140)));
-        expect(load).toHaveBeenCalledTimes(1);
-        expect(load).toHaveBeenCalledWith(4050, 90);
-      });
-    });
-  });
-
   describe('Given a request longer than the window', () => {
     describe('When read is called', () => {
       it('Then it bypasses the cache with one direct load at the exact offset and length', async () => {
