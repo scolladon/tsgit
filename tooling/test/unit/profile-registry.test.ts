@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
+import type { ReadWorkload } from '../../profile-registry.js';
 import { resolveWorkloads, UnknownCommandError, WORKLOADS } from '../../profile-registry.js';
 
 const READ_KEYS = [
   'log',
   'log-commit-graph',
   'status',
+  'open',
   'pack-read',
   'describe',
   'name-rev',
@@ -46,6 +48,22 @@ describe('resolveWorkloads', () => {
         // Assert
         expect(result).toHaveLength(1);
         expect(result[0]?.[0]).toBe('commit');
+      });
+    });
+  });
+
+  describe("Given a known cmd 'open'", () => {
+    describe("When resolveWorkloads('open') runs", () => {
+      it('Then it returns exactly that one entry', () => {
+        // Arrange
+        const sut = resolveWorkloads;
+
+        // Act
+        const result = sut('open');
+
+        // Assert
+        expect(result).toHaveLength(1);
+        expect(result[0]?.[0]).toBe('open');
       });
     });
   });
@@ -106,6 +124,14 @@ describe('resolveWorkloads', () => {
 
         // Assert
         expect(sut.status?.iterations).toBeUndefined();
+      });
+
+      it('Then pack-read has no perIterationRepo (profiles the packed read on an already-open repository)', () => {
+        // Arrange
+        const sut = WORKLOADS['pack-read'] as ReadWorkload;
+
+        // Assert
+        expect(sut.perIterationRepo).toBeUndefined();
       });
     });
   });
