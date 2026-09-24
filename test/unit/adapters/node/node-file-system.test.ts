@@ -2119,16 +2119,19 @@ describe('NodeFileSystem — sync fast path real-timer interleaving', () => {
         const order: Array<'timer' | 'sweep'> = [];
         const sweepCount = 5000;
 
-        // Act
-        setTimeout(() => order.push('timer'), 0);
-        for (let i = 0; i < sweepCount; i += 1) {
-          await sut.lstat(file);
-        }
-        order.push('sweep');
+        try {
+          // Act
+          setTimeout(() => order.push('timer'), 0);
+          for (let i = 0; i < sweepCount; i += 1) {
+            await sut.lstat(file);
+          }
+          order.push('sweep');
 
-        // Assert
-        expect(order[0]).toBe('timer');
-        await fsPromises.rm(rootDir, { recursive: true, force: true });
+          // Assert
+          expect(order[0]).toBe('timer');
+        } finally {
+          await fsPromises.rm(rootDir, { recursive: true, force: true });
+        }
       });
     });
   });
@@ -2154,12 +2157,15 @@ describe('NodeFileSystem — tryReadUtf8 sync-arm ineligibility', () => {
         };
         const sut = new NodeFileSystem(rootDir, { syncIo });
 
-        // Act
-        const result = await sut.tryReadUtf8(file);
+        try {
+          // Act
+          const result = await sut.tryReadUtf8(file);
 
-        // Assert
-        expect(result).toBe(content);
-        await fsPromises.rm(rootDir, { recursive: true, force: true });
+          // Assert
+          expect(result).toBe(content);
+        } finally {
+          await fsPromises.rm(rootDir, { recursive: true, force: true });
+        }
       });
     });
   });

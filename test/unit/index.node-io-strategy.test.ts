@@ -95,44 +95,48 @@ describe('Given no io option', () => {
   describe('When openRepository runs', () => {
     it('Then syncIoPolicyFor is called exactly once, with undefined', async () => {
       // Arrange & Act
-      const sut = await openRepository({ cwd: tmpdir });
+      const sut = openRepository;
+      const repository = await sut({ cwd: tmpdir });
 
       // Assert
       try {
         expect(syncIoPolicyForSpy).toHaveBeenCalledTimes(1);
         expect(syncIoPolicyForSpy).toHaveBeenCalledWith(undefined);
       } finally {
-        await sut.dispose();
+        await repository.dispose();
       }
     });
 
     it("Then the layout probe's stat member reaches statSync", async () => {
       // Arrange & Act
-      const sut = await openRepository({ cwd: tmpdir });
+      const sut = openRepository;
+      const repository = await sut({ cwd: tmpdir });
 
       // Assert
       try {
         expect(spyOps.statSync).toHaveBeenCalled();
       } finally {
-        await sut.dispose();
+        await repository.dispose();
       }
     });
 
     it("Then the layout probe's readLink member reaches readlinkSync", async () => {
       // Arrange & Act
-      const sut = await openRepository({ cwd: tmpdir });
+      const sut = openRepository;
+      const repository = await sut({ cwd: tmpdir });
 
       // Assert
       try {
         expect(spyOps.readlinkSync).toHaveBeenCalled();
       } finally {
-        await sut.dispose();
+        await repository.dispose();
       }
     });
 
     it("Then the layout probe's readUtf8 member reaches the sync read, never the async fallback", async () => {
       // Arrange & Act
-      const sut = await openRepository({ cwd: tmpdir });
+      const sut = openRepository;
+      const repository = await sut({ cwd: tmpdir });
 
       // Assert
       try {
@@ -142,19 +146,20 @@ describe('Given no io option', () => {
         expect(spyOps.closeSync).toHaveBeenCalled();
         expect(readFileSpy).not.toHaveBeenCalled();
       } finally {
-        await sut.dispose();
+        await repository.dispose();
       }
     });
 
     it('Then canonicalize reaches realpathSync.native', async () => {
       // Arrange & Act
-      const sut = await openRepository({ cwd: tmpdir });
+      const sut = openRepository;
+      const repository = await sut({ cwd: tmpdir });
 
       // Assert
       try {
         expect(spyOps.realpathSync.native).toHaveBeenCalled();
       } finally {
-        await sut.dispose();
+        await repository.dispose();
       }
     });
   });
@@ -163,21 +168,22 @@ describe('Given no io option', () => {
     it('Then it reaches a sync fs operation', async () => {
       // Arrange — the fixture's HEAD points at a branch with no commit yet,
       // so resolution fails past the ref read this row actually probes.
-      const sut = await openRepository({ cwd: tmpdir });
+      const sut = openRepository;
+      const repository = await sut({ cwd: tmpdir });
 
       try {
         spyOps.lstatSync.mockClear();
         spyOps.openSync.mockClear();
 
         // Act
-        await sut.revParse('HEAD').catch(() => undefined);
+        await repository.revParse('HEAD').catch(() => undefined);
 
         // Assert
         const reachedSync =
           spyOps.lstatSync.mock.calls.length > 0 || spyOps.openSync.mock.calls.length > 0;
         expect(reachedSync).toBe(true);
       } finally {
-        await sut.dispose();
+        await repository.dispose();
       }
     });
   });
@@ -187,26 +193,28 @@ describe("Given io: 'sync-fast-path'", () => {
   describe('When openRepository runs', () => {
     it('Then syncIoPolicyFor is called exactly once, with the explicit value', async () => {
       // Arrange & Act
-      const sut = await openRepository({ cwd: tmpdir, io: 'sync-fast-path' });
+      const sut = openRepository;
+      const repository = await sut({ cwd: tmpdir, io: 'sync-fast-path' });
 
       // Assert
       try {
         expect(syncIoPolicyForSpy).toHaveBeenCalledTimes(1);
         expect(syncIoPolicyForSpy).toHaveBeenCalledWith('sync-fast-path');
       } finally {
-        await sut.dispose();
+        await repository.dispose();
       }
     });
 
     it('Then the layout probe reaches the sync ops', async () => {
       // Arrange & Act
-      const sut = await openRepository({ cwd: tmpdir, io: 'sync-fast-path' });
+      const sut = openRepository;
+      const repository = await sut({ cwd: tmpdir, io: 'sync-fast-path' });
 
       // Assert
       try {
         expect(spyOps.statSync).toHaveBeenCalled();
       } finally {
-        await sut.dispose();
+        await repository.dispose();
       }
     });
   });
@@ -216,58 +224,62 @@ describe("Given io: 'threadpool'", () => {
   describe('When openRepository runs', () => {
     it('Then syncIoPolicyFor is called exactly once, with the explicit value', async () => {
       // Arrange & Act
-      const sut = await openRepository({ cwd: tmpdir, io: 'threadpool' });
+      const sut = openRepository;
+      const repository = await sut({ cwd: tmpdir, io: 'threadpool' });
 
       // Assert
       try {
         expect(syncIoPolicyForSpy).toHaveBeenCalledTimes(1);
         expect(syncIoPolicyForSpy).toHaveBeenCalledWith('threadpool');
       } finally {
-        await sut.dispose();
+        await repository.dispose();
       }
     });
 
     it('Then no spyOps member is called', async () => {
       // Arrange & Act
-      const sut = await openRepository({ cwd: tmpdir, io: 'threadpool' });
+      const sut = openRepository;
+      const repository = await sut({ cwd: tmpdir, io: 'threadpool' });
 
       // Assert
       try {
         expect(everySpyOpsCall()).toBe(0);
       } finally {
-        await sut.dispose();
+        await repository.dispose();
       }
     });
 
     it('Then the layout probe reads HEAD through the async readFile', async () => {
       // Arrange & Act
-      const sut = await openRepository({ cwd: tmpdir, io: 'threadpool' });
+      const sut = openRepository;
+      const repository = await sut({ cwd: tmpdir, io: 'threadpool' });
 
       // Assert
       try {
         expect(readFileSpy).toHaveBeenCalled();
       } finally {
-        await sut.dispose();
+        await repository.dispose();
       }
     });
 
     it('Then a worktree adapter it builds also carries no sync policy', async () => {
       // Arrange
-      const sut = await openRepository({
+      const sut = openRepository;
+      const repository = await sut({
         cwd: tmpdir,
         io: 'threadpool',
         unsafeRawAdapters: true,
       });
-      const resolvedWorkDir = sut.ctx.layout.workDir as string;
+      const resolvedWorkDir = repository.ctx.layout.workDir as string;
 
       try {
         // Act
-        sut.ctx.worktreeFs?.(path.join(resolvedWorkDir, 'wt'));
+        repository.ctx.worktreeFs?.(path.join(resolvedWorkDir, 'wt'));
 
         // Assert — building the adapter must not have reached any sync op.
         expect(everySpyOpsCall()).toBe(0);
       } finally {
-        await sut.dispose();
+        await repository.dispose();
       }
     });
   });
@@ -277,11 +289,12 @@ describe('Given an invalid io value', () => {
   describe('When openRepository runs', () => {
     it('Then it throws INVALID_OPTION before any fs call', async () => {
       // Arrange
+      const sut = openRepository;
       let caught: unknown;
 
       // Act
       try {
-        await openRepository({ cwd: tmpdir, io: 'bogus' as unknown as 'sync-fast-path' });
+        await sut({ cwd: tmpdir, io: 'bogus' as unknown as 'sync-fast-path' });
         expect.unreachable('expected openRepository to throw');
       } catch (err) {
         caught = err;
@@ -301,19 +314,20 @@ describe('Given the sync stat reports HEAD as a non-regular file', () => {
   describe('When openRepository runs', () => {
     it('Then it falls back to the async readFile', async () => {
       // Arrange
+      const sut = openRepository;
       spyOps.fstatSync.mockReturnValueOnce({
         isFile: () => false,
         size: 0,
       } as unknown as ReturnType<typeof fs.fstatSync>);
 
       // Act
-      const sut = await openRepository({ cwd: tmpdir });
+      const repository = await sut({ cwd: tmpdir });
 
       // Assert
       try {
         expect(readFileSpy).toHaveBeenCalled();
       } finally {
-        await sut.dispose();
+        await repository.dispose();
       }
     });
   });
@@ -323,19 +337,20 @@ describe('Given the sync stat always throws a non-ENOENT error', () => {
   describe('When openRepository runs', () => {
     it('Then it still resolves, matching the async arm collapsing every error to undefined', async () => {
       // Arrange
+      const sut = openRepository;
       spyOps.statSync.mockImplementation(() => {
         throw Object.assign(new Error('boom'), { code: 'EACCES' });
       });
 
       try {
         // Act
-        const sut = await openRepository({ cwd: tmpdir });
+        const repository = await sut({ cwd: tmpdir });
 
         // Assert — a genuine, fully-opened repository, not a degraded stub.
         try {
-          expect(sut.ctx.layout.workDir).toBe(fs.realpathSync(tmpdir));
+          expect(repository.ctx.layout.workDir).toBe(fs.realpathSync(tmpdir));
         } finally {
-          await sut.dispose();
+          await repository.dispose();
         }
       } finally {
         spyOps.statSync.mockImplementation(fs.statSync);
@@ -348,19 +363,20 @@ describe('Given the sync lstat always throws a non-ENOENT error', () => {
   describe('When openRepository runs', () => {
     it('Then it still resolves — the lstat-first probe collapses the error to absent, same as a missing entry', async () => {
       // Arrange
+      const sut = openRepository;
       spyOps.lstatSync.mockImplementation(() => {
         throw Object.assign(new Error('boom'), { code: 'EACCES' });
       });
 
       try {
         // Act
-        const sut = await openRepository({ cwd: tmpdir });
+        const repository = await sut({ cwd: tmpdir });
 
         // Assert — a genuine, fully-opened repository, not a degraded stub.
         try {
-          expect(sut.ctx.layout.workDir).toBe(fs.realpathSync(tmpdir));
+          expect(repository.ctx.layout.workDir).toBe(fs.realpathSync(tmpdir));
         } finally {
-          await sut.dispose();
+          await repository.dispose();
         }
       } finally {
         spyOps.lstatSync.mockImplementation(fs.lstatSync);
@@ -373,19 +389,20 @@ describe('Given the sync read always throws opening the file', () => {
   describe('When openRepository runs', () => {
     it('Then it falls back to the async readFile instead of rejecting', async () => {
       // Arrange
+      const sut = openRepository;
       spyOps.openSync.mockImplementation(() => {
         throw Object.assign(new Error('boom'), { code: 'EACCES' });
       });
 
       try {
         // Act
-        const sut = await openRepository({ cwd: tmpdir });
+        const repository = await sut({ cwd: tmpdir });
 
         // Assert
         try {
           expect(readFileSpy).toHaveBeenCalled();
         } finally {
-          await sut.dispose();
+          await repository.dispose();
         }
       } finally {
         spyOps.openSync.mockImplementation(fs.openSync);
@@ -398,6 +415,7 @@ describe('Given both the sync read and its async fallback fail', () => {
   describe('When openRepository runs', () => {
     it('Then it still resolves rather than rejecting', async () => {
       // Arrange
+      const sut = openRepository;
       spyOps.fstatSync.mockReturnValueOnce({
         isFile: () => false,
         size: 0,
@@ -405,13 +423,13 @@ describe('Given both the sync read and its async fallback fail', () => {
       readFileSpy.mockRejectedValueOnce(new Error('read failed'));
 
       // Act
-      const sut = await openRepository({ cwd: tmpdir });
+      const repository = await sut({ cwd: tmpdir });
 
       // Assert — a genuine, fully-opened repository, not a degraded stub.
       try {
-        expect(sut.ctx.layout.workDir).toBe(fs.realpathSync(tmpdir));
+        expect(repository.ctx.layout.workDir).toBe(fs.realpathSync(tmpdir));
       } finally {
-        await sut.dispose();
+        await repository.dispose();
       }
     });
   });
@@ -421,16 +439,17 @@ describe("Given io: 'threadpool' and the async readFile fails", () => {
   describe('When openRepository runs', () => {
     it('Then it still resolves rather than rejecting', async () => {
       // Arrange
+      const sut = openRepository;
       readFileSpy.mockRejectedValueOnce(new Error('read failed'));
 
       // Act
-      const sut = await openRepository({ cwd: tmpdir, io: 'threadpool' });
+      const repository = await sut({ cwd: tmpdir, io: 'threadpool' });
 
       // Assert — a genuine, fully-opened repository, not a degraded stub.
       try {
-        expect(sut.ctx.layout.workDir).toBe(fs.realpathSync(tmpdir));
+        expect(repository.ctx.layout.workDir).toBe(fs.realpathSync(tmpdir));
       } finally {
-        await sut.dispose();
+        await repository.dispose();
       }
     });
   });
@@ -440,10 +459,11 @@ describe("Given createNodeContext with io: 'threadpool'", () => {
   describe('When creating a context', () => {
     it('Then syncIoPolicyFor is called exactly once, with the explicit value', () => {
       // Arrange & Act
-      const sut = createNodeContext({ workDir: tmpdir, io: 'threadpool' });
+      const sut = createNodeContext;
+      const context = sut({ workDir: tmpdir, io: 'threadpool' });
 
       // Assert
-      expect(sut).toBeDefined();
+      expect(context.layout.workDir).toBe(tmpdir);
       expect(syncIoPolicyForSpy).toHaveBeenCalledTimes(1);
       expect(syncIoPolicyForSpy).toHaveBeenCalledWith('threadpool');
     });
@@ -454,7 +474,8 @@ describe('Given createNodeContext with no io option', () => {
   describe('When creating a context', () => {
     it('Then syncIoPolicyFor is called exactly once, with undefined', () => {
       // Arrange & Act
-      createNodeContext({ workDir: tmpdir });
+      const sut = createNodeContext;
+      sut({ workDir: tmpdir });
 
       // Assert
       expect(syncIoPolicyForSpy).toHaveBeenCalledTimes(1);
