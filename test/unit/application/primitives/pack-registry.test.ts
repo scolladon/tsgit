@@ -2841,6 +2841,77 @@ describe('RegisteredPack.offsetTable — size through the handle', () => {
       });
     });
   });
+
+  describe("Given close() called while offsetTable()'s own size probe is mid-flight", () => {
+    describe('When the probe resolves', () => {
+      it('Then it never surfaces a raw, unmapped fault — close() waited for it', async () => {
+        // Arrange — the handle's stat() only settles once released; it
+        // inspects a `closed` flag flipped by this SAME handle's close() to
+        // decide whether to throw the raw fault a real fstat-after-close
+        // would (EBADF) — the shape close() must prevent by waiting for
+        // every in-flight size probe before it ever calls handle.close().
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'size-race', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('race') },
+        ]);
+        let closed = false;
+        let releaseStat: (() => void) | undefined;
+        let statCalled: (() => void) | undefined;
+        const statCalledPromise = new Promise<void>((resolve) => {
+          statCalled = resolve;
+        });
+        const statGate = new Promise<void>((resolve) => {
+          releaseStat = resolve;
+        });
+        const wrapped: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            openWithNoFollow: async (path: string, mode: 'read' | 'write') => {
+              const handle = await ctx.fs.openWithNoFollow(path, mode);
+              return {
+                ...handle,
+                stat: async () => {
+                  statCalled?.();
+                  await statGate;
+                  if (closed) throw new Error('EBADF: bad file descriptor, fstat');
+                  return handle.stat();
+                },
+                close: async () => {
+                  closed = true;
+                  await handle.close();
+                },
+              };
+            },
+          },
+        };
+        const registry = await createPackRegistry(wrapped);
+        const pack = (await registry.all())[0]!;
+        await pack.index(); // pre-warm indexMemo — offsetTable's own first await
+
+        // Act
+        const sizePending = pack.offsetTable();
+        await statCalledPromise;
+        const closePending = pack.close();
+        // Flush every microtask close() can advance through on its own —
+        // unprotected, it needs nothing from this test to reach
+        // handle.close() and flip `closed`; protected, it stays blocked on
+        // the still-pending size probe no matter how long this waits.
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        releaseStat?.();
+        let caught: unknown;
+        try {
+          await sizePending;
+        } catch (error) {
+          caught = error;
+        }
+        await closePending;
+
+        // Assert
+        expect(caught).toBeUndefined();
+      });
+    });
+  });
 });
 
 describe('RegisteredPack.readSlice — persistent handle (A4)', () => {

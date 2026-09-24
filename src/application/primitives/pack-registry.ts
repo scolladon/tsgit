@@ -479,6 +479,16 @@ function loadPack(
   const inFlight = new Set<Promise<unknown>>();
   let retired = false;
 
+  // The handle-based half of `packSize` — split out so its whole span (open
+  // + fstat) can be tracked in `inFlight` the same way `readSlice` tracks its
+  // own reads: without that, `close()`'s `Promise.allSettled(inFlight)` drain
+  // sails past a probe still mid-`fstat`, and the handle it closes underneath
+  // that probe surfaces as a raw, unmapped fault instead of a clean size.
+  const sizeViaHandle = async (): Promise<number> => {
+    const handle = await handleMemo.get();
+    return (await handle.stat()).size;
+  };
+
   // Pack file size via fstat on the held handle — one syscall cheaper than a
   // path stat, and consistent with every other read now going through this
   // same handle. A retired pack (closed by refresh()) never reopens one, so
@@ -487,13 +497,16 @@ function loadPack(
   // back to the same path stat.
   const packSize = async (): Promise<number> => {
     if (retired) return (await ctx.fs.stat(packPath)).size;
+    const probe = sizeViaHandle();
+    inFlight.add(probe);
     try {
-      const handle = await handleMemo.get();
-      return (await handle.stat()).size;
+      return await probe;
     } catch (err) {
       if (!isUnsupportedOperation(err)) throw err;
       handleMemo.clear();
       return (await ctx.fs.stat(packPath)).size;
+    } finally {
+      inFlight.delete(probe);
     }
   };
   const sizeMemo = createPromiseMemo(packSize);
