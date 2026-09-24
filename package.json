@@ -1361,7 +1361,7 @@
     "@arethetypeswrong/cli": "0.18.5",
     "@biomejs/biome": "2.5.14",
     "@cloudflare/vitest-pool-workers": "0.22.0",
-    "@cloudflare/workers-types": "5.20260918.1",
+    "@cloudflare/workers-types": "5.20260924.1",
     "@commitlint/cli": "21.2.3",
     "@commitlint/config-conventional": "21.2.3",
     "@ls-lint/ls-lint": "2.3.1",
@@ -1373,10 +1373,10 @@
     "@stryker-mutator/core": "10.0.0",
     "@stryker-mutator/typescript-checker": "10.0.0",
     "@stryker-mutator/vitest-runner": "10.0.0",
-    "@types/node": "26.5.1",
+    "@types/node": "26.6.2",
     "@vitest/coverage-v8": "4.1.11",
     "cspell": "10.3.3",
-    "dependency-cruiser": "18.3.1",
+    "dependency-cruiser": "18.4.0",
     "fast-check": "4.10.2",
     "husky": "9.1.7",
     "isomorphic-git": "1.42.2",
@@ -1384,7 +1384,7 @@
     "knip": "6.33.0",
     "lint-staged": "17.5.1",
     "minimatch": "10.2.6",
-    "rollup": "4.63.4",
+    "rollup": "4.63.5",
     "rollup-plugin-dts": "6.5.1",
     "rollup-plugin-visualizer": "7.1.1",
     "size-limit": "14.0.0",
@@ -1392,6 +1392,6 @@
     "typescript": "6.0.3",
     "vitest": "4.1.11",
     "wireit": "0.14.13",
-    "wrangler": "4.135.0"
+    "wrangler": "4.138.0"
   }
 }
