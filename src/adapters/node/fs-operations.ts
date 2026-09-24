@@ -46,7 +46,30 @@ export const realFsOps: FsOperations = fsPromises;
 export type SyncFsOperations = Pick<
   typeof fs,
   'statSync' | 'lstatSync' | 'readlinkSync' | 'openSync' | 'fstatSync' | 'readSync' | 'closeSync'
-> & { readonly realpathSync: { readonly native: typeof fs.realpathSync.native } };
+> & {
+  readonly realpathSync: { readonly native: typeof fs.realpathSync.native };
+  /**
+   * Async read on an already-open descriptor — the over-the-sync-gate
+   * handoff's own read, so a large file's async completion reuses the sync
+   * probe's `openSync`'d fd instead of paying a second `open`.
+   */
+  readonly readAsync: (
+    fd: number,
+    buffer: Uint8Array,
+    offset: number,
+    length: number,
+    position: number,
+  ) => Promise<number>;
+};
+
+/** Promisified `fs.read` on a raw descriptor — `fs/promises` has no fd-based read. */
+const readAsync: SyncFsOperations['readAsync'] = (fd, buffer, offset, length, position) =>
+  new Promise((resolve, reject) => {
+    fs.read(fd, buffer, offset, length, position, (err, bytesRead) => {
+      if (err) reject(err);
+      else resolve(bytesRead);
+    });
+  });
 
 /** Production sync FS operations: the real `node:fs` module. */
-export const realSyncFsOps: SyncFsOperations = fs;
+export const realSyncFsOps: SyncFsOperations = { ...fs, readAsync };

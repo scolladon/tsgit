@@ -4658,6 +4658,25 @@ const syncReaderOf = (content: Buffer) =>
     },
   );
 
+/** An async `readAsync` fake that serves `content`, honouring the explicit `position` argument. */
+const asyncReaderOf = (content: Buffer) =>
+  vi.fn(
+    async (
+      _fd: number,
+      dest: NodeJS.ArrayBufferView,
+      offset: number,
+      length: number,
+      position: number,
+    ): Promise<number> => {
+      const remaining = content.length - position;
+      if (remaining <= 0) return 0;
+      const toCopy = Math.min(length, remaining);
+      const view = Buffer.from(dest.buffer, dest.byteOffset, dest.byteLength);
+      content.copy(view, offset, position, position + toCopy);
+      return toCopy;
+    },
+  );
+
 describe('NodeFileSystem.read + readUtf8 — small regular-file sync arm (DI)', () => {
   const rootDir = '/root';
   const target = '/root/child.txt';
@@ -4796,18 +4815,24 @@ describe('NodeFileSystem.read — sync-to-async fallback rows (DI)', () => {
   });
 
   describe('Given a policy-bearing adapter, When the file size is above the gate', () => {
-    it('Then read falls back to fsOps.readFile and still closes the descriptor', async () => {
-      // Arrange
+    it('Then read reuses the probe descriptor for the async read and opens only once', async () => {
+      // Arrange — the old expectation (close, then `fsOps.readFile` re-opens) was the
+      // double-open bug this test now pins closed: the async completion must run on
+      // the SAME descriptor the sync probe already opened, not a fresh one.
+      const content = Buffer.from('big-file-payload');
       const openSync = vi.fn().mockReturnValue(FD);
-      const fstatSync = vi.fn().mockReturnValue({ isFile: () => true, size: GATE + 1 });
+      const fstatSync = vi.fn().mockReturnValue({ isFile: () => true, size: content.length });
+      const readAsync = asyncReaderOf(content);
       const closeSync = vi.fn();
-      const readFile = vi.fn().mockResolvedValue(Buffer.from('big-file'));
+      const readFile = vi.fn().mockRejectedValue(new Error('must not be called'));
+      const open = vi.fn().mockRejectedValue(new Error('must not be called'));
       const fsOps = fakeFsOps({
         realpath: vi.fn().mockImplementation(async (input: string) => input),
         readFile,
+        open,
       });
       const syncIo: SyncIoPolicy = {
-        ops: fakeSyncFsOps({ openSync, fstatSync, closeSync }),
+        ops: fakeSyncFsOps({ openSync, fstatSync, readAsync, closeSync }),
         budget: alwaysAdmit(),
         maxSyncReadBytes: GATE,
       };
@@ -4817,8 +4842,74 @@ describe('NodeFileSystem.read — sync-to-async fallback rows (DI)', () => {
       const result = await sut.read(target);
 
       // Assert
-      expect(result).toEqual(new Uint8Array(Buffer.from('big-file')));
+      expect(result).toEqual(new Uint8Array(content));
+      expect(openSync).toHaveBeenCalledTimes(1);
+      expect(readAsync).toHaveBeenCalledWith(FD, expect.any(Buffer), 0, content.length, 0);
       expect(closeSync).toHaveBeenCalledWith(FD);
+      expect(readFile).not.toHaveBeenCalled();
+      expect(open).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Given a policy-bearing adapter, When the file above the gate shrinks before the async read completes', () => {
+    it('Then read is served with the shorter view (no async fallback)', async () => {
+      // Arrange — fstat reports GATE + 5 bytes, but only 3 bytes are actually
+      // there: `readAsync`'s fill loop returns 0 before reaching the fstat'd size.
+      const shrunk = Buffer.from('abc');
+      const openSync = vi.fn().mockReturnValue(FD);
+      const fstatSync = vi.fn().mockReturnValue({ isFile: () => true, size: GATE + 5 });
+      const readAsync = asyncReaderOf(shrunk);
+      const closeSync = vi.fn();
+      const readFile = vi.fn();
+      const fsOps = fakeFsOps({
+        realpath: vi.fn().mockImplementation(async (input: string) => input),
+        readFile,
+      });
+      const syncIo: SyncIoPolicy = {
+        ops: fakeSyncFsOps({ openSync, fstatSync, readAsync, closeSync }),
+        budget: alwaysAdmit(),
+        maxSyncReadBytes: GATE,
+      };
+      const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps, syncIo });
+
+      // Act
+      const result = await sut.read(target);
+
+      // Assert
+      expect(result).toEqual(new Uint8Array(shrunk));
+      expect(readFile).not.toHaveBeenCalled();
+      expect(closeSync).toHaveBeenCalledWith(FD);
+    });
+  });
+
+  describe('Given a policy-bearing adapter, When the file above the gate grows again during the async read', () => {
+    it('Then read falls back to a fresh fsOps.readFile and still closes the held descriptor', async () => {
+      // Arrange — fstat reports GATE + 1 bytes, but the EOF probe issued once the
+      // async fill reaches that many bytes returns 1: the file grew again.
+      const grown = Buffer.from('even-more-bytes-than-declared');
+      const openSync = vi.fn().mockReturnValue(FD);
+      const fstatSync = vi.fn().mockReturnValue({ isFile: () => true, size: GATE + 1 });
+      const readAsync = asyncReaderOf(grown);
+      const closeSync = vi.fn();
+      const readFile = vi.fn().mockResolvedValue(grown);
+      const fsOps = fakeFsOps({
+        realpath: vi.fn().mockImplementation(async (input: string) => input),
+        readFile,
+      });
+      const syncIo: SyncIoPolicy = {
+        ops: fakeSyncFsOps({ openSync, fstatSync, readAsync, closeSync }),
+        budget: alwaysAdmit(),
+        maxSyncReadBytes: GATE,
+      };
+      const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps, syncIo });
+
+      // Act
+      const result = await sut.read(target);
+
+      // Assert
+      expect(result).toEqual(new Uint8Array(grown));
+      expect(closeSync).toHaveBeenCalledWith(FD);
+      expect(readFile).toHaveBeenCalledWith(target);
     });
   });
 

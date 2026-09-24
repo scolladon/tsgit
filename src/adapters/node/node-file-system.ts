@@ -531,6 +531,93 @@ export function readRegularFileSync(
 }
 
 /**
+ * `read`/`readUtf8`'s whole-file sync attempt, widened over
+ * {@link readRegularFileSync} with one more outcome: `over-gate` hands back
+ * the ALREADY-OPEN descriptor and its fstat'd size instead of closing it —
+ * the caller finishes the read asynchronously on that SAME fd, so a file
+ * over the sync gate (the index, a `.idx`, any read above 64 KiB) pays one
+ * `open` instead of the sync probe's `open` plus a second one from the async
+ * fallback. `ineligible` (non-regular, or grew mid-read under the gate) still
+ * closes the fd itself — those cases must re-open from scratch regardless.
+ */
+type SyncWholeFileAttempt =
+  | { readonly kind: 'read'; readonly bytes: Uint8Array }
+  | { readonly kind: 'ineligible' }
+  | { readonly kind: 'over-gate'; readonly fd: number; readonly size: number };
+
+function openAndAttemptSyncRead(
+  ops: SyncFsOperations,
+  real: string,
+  maxBytes: number,
+): SyncWholeFileAttempt {
+  const fd = ops.openSync(real, REGULAR_READ_FLAGS);
+  const stat = ops.fstatSync(fd);
+  if (!stat.isFile()) {
+    ops.closeSync(fd);
+    return { kind: 'ineligible' };
+  }
+  if (stat.size > maxBytes) return { kind: 'over-gate', fd, size: stat.size };
+  try {
+    const bytes = readWholeFileSync(ops, fd, stat.size);
+    return bytes === undefined ? { kind: 'ineligible' } : { kind: 'read', bytes };
+  } finally {
+    ops.closeSync(fd);
+  }
+}
+
+/** The async twin of {@link fillSync}, reading off an already-open descriptor. */
+async function fillAsync(
+  ops: SyncFsOperations,
+  fd: number,
+  buf: Buffer,
+  size: number,
+): Promise<number> {
+  let filled = 0;
+  while (filled < size) {
+    const read = await ops.readAsync(fd, buf, filled, size - filled, filled);
+    if (read === 0) break;
+    filled += read;
+  }
+  return filled;
+}
+
+/** The async twin of {@link grewPastGate}. */
+async function grewPastGateAsync(
+  ops: SyncFsOperations,
+  fd: number,
+  size: number,
+): Promise<boolean> {
+  const probe = Buffer.allocUnsafe(EOF_PROBE_BYTES);
+  return (await ops.readAsync(fd, probe, 0, EOF_PROBE_BYTES, size)) > 0;
+}
+
+/**
+ * Finishes an `over-gate` sync attempt: reads the fstat'd `size` off the SAME
+ * descriptor asynchronously (the threadpool, exactly where an over-gate read
+ * belongs), then closes it — one `open` total. A grow-mid-read race (the
+ * same EOF-probe defense the sync arm applies) falls back to a fresh
+ * `fsOps.readFile`, the only case that still pays a second open.
+ */
+async function finishOverGateRead(
+  ops: SyncFsOperations,
+  fsOps: FsOperations,
+  real: string,
+  fd: number,
+  size: number,
+): Promise<Uint8Array> {
+  try {
+    const buf = Buffer.allocUnsafeSlow(size);
+    const filled = await fillAsync(ops, fd, buf, size);
+    if (filled === size && (await grewPastGateAsync(ops, fd, size))) {
+      return toBufferView(await fsOps.readFile(real));
+    }
+    return new Uint8Array(buf.buffer, buf.byteOffset, filled);
+  } finally {
+    ops.closeSync(fd);
+  }
+}
+
+/**
  * Outcome of `tryReadUtf8`'s sync attempt. `settled: false` means the fast
  * path could not answer at all (non-regular, over the gate, or grew
  * mid-read) — the caller re-runs the async arm from scratch, which
@@ -935,13 +1022,24 @@ export class NodeFileSystem implements FileSystem {
     return runFs(async () => toBufferView(await this.fsOps.readFile(real)), path);
   };
 
-  /** `read`/`readUtf8`'s shared sync attempt: `undefined` → the caller's async fallback. */
-  private readWholeFileFast(real: string, path: string): Promise<Uint8Array | undefined> {
+  /**
+   * `read`/`readUtf8`'s shared sync attempt: `undefined` → the caller's async
+   * fallback (non-regular, or grew mid-read). A file over the sync gate is
+   * answered here too — the sync probe's descriptor is handed to an async
+   * read on the SAME fd rather than closed and re-opened.
+   */
+  private async readWholeFileFast(real: string, path: string): Promise<Uint8Array | undefined> {
     const sync = this.syncIo;
-    if (sync === undefined) return Promise.resolve(undefined);
-    return runSync(
+    if (sync === undefined) return undefined;
+    const attempt = await runSync(
       sync.budget,
-      () => readRegularFileSync(sync.ops, real, sync.maxSyncReadBytes),
+      () => openAndAttemptSyncRead(sync.ops, real, sync.maxSyncReadBytes),
+      path,
+    );
+    if (attempt.kind === 'read') return attempt.bytes;
+    if (attempt.kind === 'ineligible') return undefined;
+    return runFs(
+      () => finishOverGateRead(sync.ops, this.fsOps, real, attempt.fd, attempt.size),
       path,
     );
   }

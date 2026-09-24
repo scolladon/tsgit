@@ -97,6 +97,7 @@ export const fakeSyncFsOps = (overrides: Partial<SyncFsOperations> = {}): SyncFs
     readSync: vi.fn(throwEnoentSync),
     closeSync: vi.fn(throwEnoentSync),
     realpathSync: { native: vi.fn(throwEnoentSync) },
+    readAsync: vi.fn().mockRejectedValue(enoent()),
     ...overrides,
   }) as unknown as SyncFsOperations;
 

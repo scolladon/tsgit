@@ -2170,3 +2170,52 @@ describe('NodeFileSystem — tryReadUtf8 sync-arm ineligibility', () => {
     });
   });
 });
+
+describe('NodeFileSystem — read over the sync gate, real fs', () => {
+  describe('Given a policy-bearing adapter and a real file over the sync read gate', () => {
+    describe('When read is called', () => {
+      it('Then it returns the full content via the real async-on-held-fd handoff', async () => {
+        // Arrange — a real `realSyncFsOps` policy with the gate set far below the
+        // file's size, so the sync probe opens the fd, sees it is over the gate,
+        // and the production `readAsync` (promisified `fs.read` on that same fd)
+        // must finish the read for real.
+        const tempRoot = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-gate-read-'));
+        const rootDir = await fsPromises.realpath(tempRoot);
+        const file = nodePath.join(rootDir, 'oversized.bin');
+        const content = 'y'.repeat(64);
+        await fsPromises.writeFile(file, content);
+        const syncIo: SyncIoPolicy = {
+          ops: realSyncFsOps,
+          budget: createTurnBudget(1),
+          maxSyncReadBytes: 4,
+        };
+        const sut = new NodeFileSystem(rootDir, { syncIo });
+
+        try {
+          // Act
+          const result = await sut.read(file);
+
+          // Assert
+          expect(Buffer.from(result).toString('utf8')).toBe(content);
+        } finally {
+          await fsPromises.rm(rootDir, { recursive: true, force: true });
+        }
+      });
+    });
+  });
+
+  describe('Given a descriptor that is not open', () => {
+    describe('When realSyncFsOps.readAsync is called on it', () => {
+      it('Then the returned promise rejects with the underlying errno', async () => {
+        // Arrange — a syntactically valid but never-opened descriptor number.
+        const closedFd = 999_999;
+
+        // Act
+        const attempt = realSyncFsOps.readAsync(closedFd, Buffer.alloc(1), 0, 1, 0);
+
+        // Assert
+        await expect(attempt).rejects.toMatchObject({ code: 'EBADF' });
+      });
+    });
+  });
+});
