@@ -25,6 +25,7 @@ import {
   EMPTY_TREE_OID,
   type GitObject,
   type ObjectId,
+  serializeHeader,
 } from '../../../../src/domain/objects/index.js';
 import type {
   BitmapCheck,
@@ -32,6 +33,7 @@ import type {
   RevIndexCheck,
 } from '../../../../src/domain/storage/error.js';
 import {
+  computeLooseObjectPath,
   entryOffsets,
   invalidMultiPackIndex,
   invalidPackBitmap,
@@ -7301,6 +7303,169 @@ describe('RegisteredPack.offsetTable — what the fallback warns say', () => {
 
         // Assert
         expect(result).toEqual(expected);
+      });
+    });
+  });
+});
+
+describe('PackRegistry.reprepare', () => {
+  describe('Given a registered pack with a warm window and a warm delta-base cache entry, and an unchanged pack directory', () => {
+    describe('When reprepare() runs and a subsequent read touches the same pack', () => {
+      it('Then the .idx is never re-read, no new handle opens, and the window/delta-base cache stay warm', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'reprepare-warm', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('warm-bytes') },
+        ]);
+        const ledger = withHandleLedger(ctx);
+        const { ctx: instrumented, calls } = instrumentedContext(ledger.ctx);
+        const registry = await createPackRegistry(instrumented);
+        const [pack] = await registry.all();
+        await pack!.readSlice(PACK_HEADER_SIZE, 4); // warms the handle + window cache
+        registry.deltaBaseCache.set(
+          'warm-key',
+          { type: 3, content: new Uint8Array([1, 2, 3]), chainDepth: 0 },
+          32,
+        );
+        const opensBeforeReprepare = ledger.opens();
+        const slicesBeforeReprepare = ledger.slices().length;
+        const baseline = calls().length;
+
+        // Act
+        await registry.reprepare();
+        const [packAfter] = await registry.all();
+        const readAfter = await packAfter!.readSlice(PACK_HEADER_SIZE, 4);
+
+        // Assert — the SAME instance is reused, not a fresh construction.
+        expect(packAfter).toBe(pack);
+        // Assert — reprepare() itself re-lists the directory once.
+        const readdirCalls = calls()
+          .slice(baseline)
+          .filter((call) => call.method === 'readdir');
+        expect(readdirCalls).toHaveLength(1);
+        // Assert — no .idx read anywhere in this whole flow, from either the
+        // reprepare's own re-scan or the subsequent read.
+        const idxReads = calls()
+          .slice(baseline)
+          .filter((call) => call.method === 'read' && call.path.endsWith('.idx'));
+        expect(idxReads).toHaveLength(0);
+        // Assert — no new handle opened and no new low-level slice read: the
+        // second readSlice at the same offset serves straight from the warm
+        // window cache.
+        expect(ledger.opens()).toBe(opensBeforeReprepare);
+        expect(ledger.slices()).toHaveLength(slicesBeforeReprepare);
+        expect(Array.from(readAfter)).toHaveLength(4);
+        // Assert — the delta-base cache entry survives reprepare(), unlike refresh().
+        expect(registry.deltaBaseCache.has('warm-key')).toBe(true);
+      });
+    });
+  });
+
+  describe('Given two registered packs, one of which is deleted from disk', () => {
+    describe('When reprepare() runs and settleRefresh() is awaited', () => {
+      it('Then the vanished pack is retired (its handle closed) and no longer listed by all()', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'reprepare-keep', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('keep') },
+        ]);
+        await writeSyntheticPack(ctx, 'reprepare-vanish', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('vanish') },
+        ]);
+        const ledger = withHandleLedger(ctx);
+        const registry = await createPackRegistry(ledger.ctx);
+        const packs = await registry.all();
+        const vanishing = packs.find((pack) => pack.name === 'pack-reprepare-vanish')!;
+        const keeping = packs.find((pack) => pack.name === 'pack-reprepare-keep')!;
+        await vanishing.readSlice(PACK_HEADER_SIZE, 4); // opens its handle
+        const dir = `${ctx.layout.gitDir}/objects/pack`;
+        await ctx.fs.rm(`${dir}/${vanishing.name}.pack`);
+        await ctx.fs.rm(`${dir}/${vanishing.name}.idx`);
+
+        // Act
+        await registry.reprepare();
+        await registry.settleRefresh();
+
+        // Assert
+        const after = await registry.all();
+        expect(after.map((pack) => pack.name)).toEqual([keeping.name]);
+        expect(ledger.outstanding()).toBe(0);
+        expect(ledger.closes()).toBe(1);
+      });
+    });
+  });
+
+  describe('Given a probe that cached an empty fanout listing for an id, and its loose file is later written directly to disk', () => {
+    describe('When resolveObject is called again for that id', () => {
+      it("Then it resolves via a re-scan that drops just that id's cached fanout listing", async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('late-direct-loose-write');
+        const header = serializeHeader('blob', content.length);
+        const bytes = new Uint8Array(header.length + content.length);
+        bytes.set(header, 0);
+        bytes.set(content, header.length);
+        const id = (await ctx.hash.hashHex(bytes)) as ObjectId;
+        // Probe: the first read misses everywhere, caching the (empty)
+        // fanout listing for id's prefix.
+        await expect(readObject(ctx, id)).rejects.toMatchObject({
+          data: { code: 'OBJECT_NOT_FOUND' },
+        });
+        // Write straight through ctx.fs.write, bypassing writeObject (which
+        // would invalidate the cache itself via invalidateLooseOid).
+        const loosePath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(id)}`;
+        const compressed = await ctx.compressor.deflate(bytes);
+        await ctx.fs.write(loosePath, compressed);
+
+        // Act
+        const result = await readObject(ctx, id);
+
+        // Assert
+        expect(result.type).toBe('blob');
+        expect((result as Blob).content).toEqual(content);
+      });
+    });
+  });
+
+  describe('Given a registered pack and N sequential full misses for distinct absent ids', () => {
+    describe('When resolveObject is called once per id, in sequence', () => {
+      it('Then the pack directory is listed once per miss and the pack .idx is never re-read', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'sequential-miss-anchor', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('anchor') },
+        ]);
+        // Build the registry against the INSTRUMENTED context from the
+        // start — readObject's session-keyed registry memo would otherwise
+        // keep closing over the uninstrumented ctx.fs a registry built
+        // before instrumentation captured.
+        const { ctx: instrumented, calls } = instrumentedContext(ctx);
+        const registry = await getPackRegistry(instrumented);
+        await registry.all(); // warm the initial scan + .idx before counting
+        const baseline = calls().length;
+        const packDir = `${ctx.layout.gitDir}/objects/pack`;
+        const MISS_COUNT = 20;
+        const missingIds = Array.from(
+          { length: MISS_COUNT },
+          (_unused, i) => `${i.toString(16).padStart(2, '0')}${'0'.repeat(38)}` as ObjectId,
+        );
+
+        // Act
+        for (const id of missingIds) {
+          await expect(readObject(instrumented, id)).rejects.toMatchObject({
+            data: { code: 'OBJECT_NOT_FOUND' },
+          });
+        }
+
+        // Assert
+        const readdirCalls = calls()
+          .slice(baseline)
+          .filter((call) => call.method === 'readdir' && call.path === packDir);
+        expect(readdirCalls).toHaveLength(MISS_COUNT);
+        const idxReads = calls()
+          .slice(baseline)
+          .filter((call) => call.method === 'read' && call.path.endsWith('.idx'));
+        expect(idxReads).toHaveLength(0);
       });
     });
   });

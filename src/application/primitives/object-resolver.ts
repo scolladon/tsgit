@@ -113,7 +113,7 @@ export async function resolveObjectContentWithDepth(
   // outside this session) may have changed the store since the last scan.
   // Many concurrent misses share ONE re-scan (`rescanOnFullMiss`); a SECOND
   // miss, after the retry, refuses exactly as before.
-  await rescanOnFullMiss(ctx, registry);
+  await rescanOnFullMiss(ctx, registry, id);
   checkAborted(ctx);
   const retried = await tryResolveViaRegistry(
     ctx,

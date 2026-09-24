@@ -88,22 +88,15 @@ export function invalidateLooseOid(ctx: Context, id: ObjectId): void {
 
 /**
  * Drop the cached set for `id`'s prefix entirely. Called by `maintenance`'s
- * `gc` task for every prefix it unlinks a loose object from, and also when
- * a cached HIT turns out stale (the file vanished under us — an external
- * pruner such as a concurrent `git gc` removed it), so the next probe
- * re-reads the directory.
+ * `gc` task for every prefix it unlinks a loose object from, when a cached
+ * HIT turns out stale (the file vanished under us — an external pruner such
+ * as a concurrent `git gc` removed it), and by `pack-miss-rescan.ts`'s
+ * full-object-miss retry for every id that missed during the current wave —
+ * the loose half of git's `reprepare_packed_git` retry, scoped to exactly
+ * the prefixes a miss actually consulted rather than the whole session
+ * cache. Either caller's goal is the same: the next probe re-reads the
+ * directory instead of trusting a listing that may now be stale.
  */
 export function forgetLooseOidPrefix(ctx: Context, id: ObjectId): void {
   fanoutCache.get(ctx.session)?.delete(prefixOf(id));
-}
-
-/**
- * Drop EVERY prefix's cached set for this session — the loose half of a
- * full-object-miss re-scan (see `pack-miss-rescan.ts`). A targeted single-
- * prefix drop cannot help there: concurrent misses share ONE re-scan even
- * when the missed ids land in different fanout directories, so the whole
- * listing is invalidated rather than just the id that triggered it.
- */
-export function forgetAllLooseOid(ctx: Context): void {
-  fanoutCache.delete(ctx.session);
 }

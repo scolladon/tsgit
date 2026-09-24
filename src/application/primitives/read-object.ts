@@ -413,6 +413,6 @@ async function rescanAndRetryBase(
   registry: PackRegistry,
   baseId: ObjectId,
 ): Promise<PackLookupHit | undefined> {
-  await rescanOnFullMiss(ctx, registry);
+  await rescanOnFullMiss(ctx, registry, baseId);
   return registry.lookup(baseId);
 }

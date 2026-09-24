@@ -108,7 +108,7 @@ export async function openBlobSource(
   // changed the store since the last scan. Many concurrent misses share ONE
   // re-scan; a SECOND miss, after the retry, refuses exactly as before.
   const registry = peekPackRegistry(ctx) ?? (await getPackRegistry(ctx));
-  await rescanOnFullMiss(ctx, registry);
+  await rescanOnFullMiss(ctx, registry, id);
   const retried = await tryOpenBlobSource(ctx, id, gate);
   if (retried !== undefined) return retried;
   throw objectNotFound(id);

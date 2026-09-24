@@ -259,10 +259,26 @@ export interface PackRegistry {
    *  which may ship a new midx as well as new packs. */
   refresh(): void;
   /**
-   * Await every handle close a prior `refresh()` parked for background
-   * completion, without disposing the registry. A caller about to unlink a
-   * retired pack must drain first: on Windows an open `FileHandle` may
-   * refuse the unlink outright, and on every platform an unlinked-but-open
+   * Incremental re-scan for a full-object-miss retry — git's
+   * `reprepare_packed_git`, never `refresh()`'s teardown. Re-lists
+   * `objects/pack` and the multi-pack-index gate, but REUSES the existing
+   * `RegisteredPack` instance (same `.idx` memo, handle, window keys) for
+   * every pack whose NAME the new listing still carries — git's own
+   * `pack_map` identity, keyed by path/name, never mtime or size. A pack
+   * whose name vanished from the listing is retired (closed, in the
+   * background — see `settleRefresh`); a newly-listed name is loaded fresh.
+   * Deliberately leaves the delta-base cache and the pack window cache
+   * untouched: a reused instance's per-instance window keys stay valid, and
+   * a retired instance's keys become unreachable on their own, so nothing
+   * needs evicting. Never call from a caller that just WROTE a pack — that
+   * caller wants `refresh()`'s full teardown, not a reuse-preserving rescan.
+   */
+  reprepare(): Promise<void>;
+  /**
+   * Await every handle close a prior `refresh()`/`reprepare()` parked for
+   * background completion, without disposing the registry. A caller about to
+   * unlink a retired pack must drain first: on Windows an open `FileHandle`
+   * may refuse the unlink outright, and on every platform an unlinked-but-open
    * pack keeps its bytes allocated until the fd closes.
    */
   settleRefresh(): Promise<void>;
@@ -625,6 +641,12 @@ function loadPack(
  * because it needs no I/O to detect. The pack's `.idx` itself is not read
  * here — that happens lazily, the first time something forces `pack.index()`
  * (see `resolveIndexes`).
+ *
+ * `reusable` is `reprepare()`'s carry-forward set, keyed by pack name — the
+ * SAME identity git's `pack_map` uses. A name still present there is served
+ * its EXISTING instance (warm `.idx` memo, handle, window keys) instead of a
+ * freshly constructed one; `undefined` (the cold-scan and `refresh()` path)
+ * always constructs fresh.
  */
 function loadCandidatePack(
   ctx: Context,
@@ -632,6 +654,7 @@ function loadCandidatePack(
   entry: { readonly name: string },
   fileNames: ReadonlySet<string>,
   windowCache: PackWindowCache,
+  reusable: ReadonlyMap<string, RegisteredPack> | undefined,
 ): RegisteredPack | undefined {
   const name = packBaseName(entry.name);
   if (!fileNames.has(`${name}.pack`)) {
@@ -640,7 +663,7 @@ function loadCandidatePack(
     });
     return undefined;
   }
-  return loadPack(ctx, dir, entry.name, fileNames, windowCache);
+  return reusable?.get(name) ?? loadPack(ctx, dir, entry.name, fileNames, windowCache);
 }
 
 const unusableEntry = (
@@ -753,7 +776,16 @@ export async function createPackRegistry(ctx: Context): Promise<PackRegistry> {
   // construction; never re-derived on `refresh()`.
   const windowCache = createPackWindowCache(windowBudget);
 
+  // `reprepare()`'s carry-forward set, consumed exactly once by the NEXT
+  // `scanPacks` run it triggers — set and read with no `await` between, so no
+  // other caller can observe or steal it mid-flight. `undefined` for every
+  // other path (the cold first scan, and `refresh()`), which always builds
+  // fresh instances.
+  let reuseFrom: ReadonlyMap<string, RegisteredPack> | undefined;
+
   const scanPacks = async (): Promise<PackGeneration> => {
+    const priorPacks = reuseFrom;
+    reuseFrom = undefined;
     const dir = packsDir(commonGitDir(ctx));
     // storeGate.get() directly, not currentGate(): scanPacks is reachable
     // only through currentGeneration(), which already refuses to start once
@@ -787,7 +819,7 @@ export async function createPackRegistry(ctx: Context): Promise<PackRegistry> {
     const packs: RegisteredPack[] = [];
     for (const entry of entries) {
       if (!isCandidate(entry)) continue;
-      const pack = loadCandidatePack(ctx, dir, entry, fileNames, windowCache);
+      const pack = loadCandidatePack(ctx, dir, entry, fileNames, windowCache, priorPacks);
       if (pack !== undefined) packs.push(pack);
     }
     const midx =
@@ -1035,6 +1067,9 @@ export async function createPackRegistry(ctx: Context): Promise<PackRegistry> {
     },
     refresh(): void {
       if (disposed) return;
+      // A full teardown must never reuse an in-flight reprepare()'s carry-
+      // forward set — this always builds every instance fresh.
+      reuseFrom = undefined;
       healthMemo.clear();
       midxHealthMemo.clear();
       // (packName, offset) pairs are only meaningful within the generation
@@ -1067,6 +1102,37 @@ export async function createPackRegistry(ctx: Context): Promise<PackRegistry> {
           () => NO_PACKS,
         ),
       );
+    },
+    async reprepare(): Promise<void> {
+      if (disposed) return;
+      // The OUTGOING generation's packs are the reuse candidates — captured
+      // before anything is cleared, by name (git's own `pack_map` identity:
+      // keyed by path, never mtime/size — a repack always mints a new name,
+      // so a same-named pack is the same bytes).
+      const previous = await currentGeneration();
+      if (disposed) return;
+      const priorByName = new Map(previous.packs.map((pack) => [pack.name, pack] as const));
+      // Generation-scoped verdicts, reset alongside the scan they were
+      // computed against — same reasoning as refresh()'s own clear.
+      healthMemo.clear();
+      midxHealthMemo.clear();
+      // Unlike refresh(): deltaBaseCache and windowCache are NOT cleared. A
+      // reused RegisteredPack instance keeps its own window keys valid; a
+      // retired one's keys simply become unreachable once closed below —
+      // nothing needs evicting either way.
+      storeGate.clear();
+      packDirListing.clear();
+      scan.clear();
+      // Set and consumed with no `await` between: scanPacks reads this
+      // before its own first await, so nothing else can observe or steal it.
+      reuseFrom = priorByName;
+      const fresh = await scan.get();
+      const freshNames = new Set(fresh.packs.map((pack) => pack.name));
+      const vanished = [...priorByName.values()].filter((pack) => !freshNames.has(pack.name));
+      if (vanished.length === 0) return;
+      // Same background-close discipline as refresh(): a vanished pack's
+      // handle closes off the read path, drained by settleRefresh().
+      trackClose(Promise.allSettled(vanished.map((pack) => pack.close())));
     },
     settleRefresh: drainPendingCloses,
     async lookup(id: ObjectId): Promise<PackLookupHit | undefined> {
