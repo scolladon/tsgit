@@ -400,6 +400,20 @@ async function runSyncAbsent<T>(
   }
 }
 
+/** The sync arm of `tryLstat`: a miss answers `undefined`, every other refusal throws. */
+async function tryLstatSync(
+  sync: SyncIoPolicy,
+  real: string,
+  path: string,
+): Promise<FileStat | undefined> {
+  const stat = await runSyncAbsent(
+    sync.budget,
+    () => sync.ops.lstatSync(real, { bigint: true }),
+    path,
+  );
+  return stat === undefined ? undefined : mapStat(stat);
+}
+
 /** The synchronous twin of `orAbsent` reduced to a boolean answer, for the plain presence probes. */
 async function runSyncPresence(
   budget: TurnBudget,
@@ -529,6 +543,9 @@ export function readRegularFileSync(
 type SyncReadUtf8Outcome =
   | { readonly settled: false }
   | { readonly settled: true; readonly bytes: Uint8Array | undefined };
+
+/** The outcome the pooled arm starts from: no sync attempt, so nothing settled. */
+const UNSETTLED_SYNC_READ: SyncReadUtf8Outcome = { settled: false };
 
 /**
  * `tryReadUtf8`'s sync arm: attempts `readRegularFileSync` under the turn
@@ -993,11 +1010,10 @@ export class NodeFileSystem implements FileSystem {
     const { all } = this.resolvedRootSet ?? (await this.loadRootSet());
     const real = this.resolveRead(path, all);
     const sync = this.syncIo;
-    if (sync !== undefined) {
-      const outcome = await tryReadWholeFileSync(sync, real, path);
-      if (outcome.settled) {
-        return outcome.bytes === undefined ? undefined : decodeUtf8(outcome.bytes);
-      }
+    const outcome =
+      sync === undefined ? UNSETTLED_SYNC_READ : await tryReadWholeFileSync(sync, real, path);
+    if (outcome.settled) {
+      return outcome.bytes === undefined ? undefined : decodeUtf8(outcome.bytes);
     }
     return orAbsent(() => this.fsOps.readFile(real, 'utf-8'), path);
   };
@@ -1107,20 +1123,18 @@ export class NodeFileSystem implements FileSystem {
     const { all } = this.resolvedRootSet ?? (await this.loadRootSet());
     const real = this.resolveRead(path, all);
     const sync = this.syncIo;
-    if (sync === undefined) {
-      return runFs(async () => mapStat(await this.fsOps.stat(real, { bigint: true })), path);
-    }
-    return runSync(sync.budget, () => mapStat(sync.ops.statSync(real, { bigint: true })), path);
+    return sync === undefined
+      ? runFs(async () => mapStat(await this.fsOps.stat(real, { bigint: true })), path)
+      : runSync(sync.budget, () => mapStat(sync.ops.statSync(real, { bigint: true })), path);
   };
 
   lstat = async (path: string): Promise<FileStat> => {
     const { all } = this.resolvedRootSet ?? (await this.loadRootSet());
     const real = this.resolveRead(path, all);
     const sync = this.syncIo;
-    if (sync === undefined) {
-      return runFs(async () => mapStat(await this.fsOps.lstat(real, { bigint: true })), path);
-    }
-    return runSync(sync.budget, () => mapStat(sync.ops.lstatSync(real, { bigint: true })), path);
+    return sync === undefined
+      ? runFs(async () => mapStat(await this.fsOps.lstat(real, { bigint: true })), path)
+      : runSync(sync.budget, () => mapStat(sync.ops.lstatSync(real, { bigint: true })), path);
   };
 
   /**
@@ -1133,15 +1147,9 @@ export class NodeFileSystem implements FileSystem {
     const { all } = this.resolvedRootSet ?? (await this.loadRootSet());
     const real = this.resolveRead(path, all);
     const sync = this.syncIo;
-    if (sync === undefined) {
-      return orAbsent(async () => mapStat(await this.fsOps.lstat(real, { bigint: true })), path);
-    }
-    const stat = await runSyncAbsent(
-      sync.budget,
-      () => sync.ops.lstatSync(real, { bigint: true }),
-      path,
-    );
-    return stat === undefined ? undefined : mapStat(stat);
+    return sync === undefined
+      ? orAbsent(async () => mapStat(await this.fsOps.lstat(real, { bigint: true })), path)
+      : tryLstatSync(sync, real, path);
   };
 
   readdir = async (path: string): Promise<ReadonlyArray<DirEntry>> => {
