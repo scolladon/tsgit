@@ -147,6 +147,28 @@ const bounded = await openRepository({ cwd: '.', deltaBaseCacheMaxBytes: 32 * 10
 
 See [Performance — cache-family footprint](../understand/performance.md#cache-family-footprint) for the combined ceiling these five add up to, and [`internals.md`](../use/primitives/internals.md#parsedobjectmemofor--cachedeltabase--probedeltabasecache--deltabasecachingenabled) for the mechanics each cache follows. The in-memory adapter ([In-memory](memory.md)) does not expose these options.
 
+## I/O strategy
+
+`OpenNodeRepositoryOptions` and `NodeAdapterOptions` (`createNodeContext`) both carry `io?: 'sync-fast-path' | 'threadpool'`, default `'sync-fast-path'`:
+
+| Mode | What runs where |
+|---|---|
+| `'sync-fast-path'` (default) | Cheap, serial filesystem calls — `stat`, `lstat`, `exists`, `readlink`, reads up to 64 KiB, and reads through an already-open handle — run synchronously, under a 1 ms-per-event-loop-turn budget. Once a turn's budget is spent, the arm awaits one `setImmediate` before its next call, so a long sweep holds the loop for one budget at a time, not all at once. `readdir`, every write, and reads above the 64 KiB gate stay on the threadpool regardless of mode. |
+| `'threadpool'` | Every filesystem call goes through `fs.promises`, one libuv threadpool round trip each — the pre-v5 default. |
+
+Pick `'threadpool'` on a network or otherwise cold filesystem, where a blocking call can stall for milliseconds instead of microseconds and a stalled event loop costs more than the extra hop buys back. Pick the `'sync-fast-path'` default everywhere else — a threadpool round trip runs roughly ten times the cost of the equivalent synchronous call on local disk, and a cold repository open or a small command pays for several of them in a row.
+
+```ts
+// A network filesystem: keep every read off the event loop
+const repo = await openRepository({ cwd: '/mnt/nfs/repo', io: 'threadpool' });
+
+// The lower-level factory takes the same field
+import { createNodeContext } from '@scolladon/tsgit/adapters/node';
+const ctx = createNodeContext({ workDir: '/mnt/nfs/repo', io: 'threadpool' });
+```
+
+The budget and the 64 KiB gate are internal constants, not configurable. See [Performance — I/O strategy](../understand/performance.md#io-strategy) for the measurements behind the default and the bounded stall it trades for them.
+
 ## Read
 
 ```ts
