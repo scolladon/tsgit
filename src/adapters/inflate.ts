@@ -54,6 +54,9 @@ const INITIAL_CAPACITY_CEILING = 1 << 20;
  */
 export const MAX_INFLATED_OUTPUT_BYTES = 2 * 1024 * 1024 * 1024;
 
+/** How much larger than its output an inflate buffer may be and still be handed out as a view. */
+const MAX_RETAINED_SLACK_FACTOR = 2;
+
 /**
  * Clamp a caller-supplied `streamInflate` bound to this decoder's own
  * default cap: a caller may narrow the effective cap, never raise it above
@@ -361,8 +364,16 @@ export class GrowableBuffer {
     }
   }
 
+  /**
+   * A view while the buffer is at most `MAX_RETAINED_SLACK_FACTOR` times the
+   * output (the bound doubling growth already gives); a copy otherwise, so a
+   * short stream never pins a buffer pre-sized from an untrusted declared
+   * length.
+   */
   toUint8Array(): Uint8Array {
-    return this.buffer.subarray(0, this.length);
+    return this.buffer.length > this.length * MAX_RETAINED_SLACK_FACTOR
+      ? this.buffer.slice(0, this.length)
+      : this.buffer.subarray(0, this.length);
   }
 
   private ensureCapacity(required: number): void {

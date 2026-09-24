@@ -1256,4 +1256,78 @@ describe('GrowableBuffer', () => {
       });
     });
   });
+
+  describe('Given a buffer pre-sized for a declared size its content never reaches', () => {
+    describe('When its bytes are taken', () => {
+      it('Then they own a backing store no larger than the bytes written', () => {
+        // Arrange
+        const declaredSize = CAPACITY_CEILING;
+        const written = new Uint8Array([1, 2, 3]);
+        const sut = new GrowableBuffer(declaredSize);
+        sut.append(written);
+
+        // Act
+        const result = sut.toUint8Array();
+
+        // Assert
+        expect(Array.from(result)).toEqual([1, 2, 3]);
+        expect(result.buffer.byteLength).toBe(written.length);
+      });
+    });
+  });
+
+  describe('Given a buffer holding exactly half its capacity', () => {
+    describe('When its bytes are taken', () => {
+      it('Then they share the buffer without a copy', () => {
+        // Arrange
+        const declaredSize = 1000;
+        const sut = new GrowableBuffer(declaredSize);
+        sut.append(new Uint8Array(declaredSize / 2).fill(0x41));
+
+        // Act
+        const first = sut.toUint8Array();
+        const second = sut.toUint8Array();
+
+        // Assert
+        expect(first.buffer).toBe(second.buffer);
+      });
+    });
+  });
+
+  describe('Given a buffer holding one byte less than half its capacity', () => {
+    describe('When its bytes are taken', () => {
+      it('Then they are copied into a backing store of their own size', () => {
+        // Arrange
+        const declaredSize = 1000;
+        const written = declaredSize / 2 - 1;
+        const sut = new GrowableBuffer(declaredSize);
+        sut.append(new Uint8Array(written).fill(0x41));
+
+        // Act
+        const result = sut.toUint8Array();
+
+        // Assert
+        expect(result.buffer.byteLength).toBe(written);
+      });
+    });
+  });
+});
+
+describe('inflateZlibMember', () => {
+  describe('Given an empty zlib stream whose entry declares a 1 MiB size', () => {
+    describe('When inflated', () => {
+      it('Then the output pins no more memory than it holds', () => {
+        // Arrange
+        const declaredSize = 1 << 20;
+        const sut = inflateZlibMember;
+
+        // Act
+        const result = sut(new Uint8Array(deflateSync(new Uint8Array(0))), 0, declaredSize);
+
+        // Assert
+        expect(result.output.byteLength).toBe(0);
+        expect(result.output.buffer.byteLength).toBe(0);
+      });
+    });
+  });
 });
