@@ -47,7 +47,12 @@ import {
 
 const DEFAULT_DELTA_CACHE_BYTES = 16 * 1024 * 1024;
 const DEFAULT_DELTA_CACHE_ENTRIES = 65_536;
-const DECODER = new TextDecoder();
+// `ignoreBOM: true` keeps a leading BOM in the decoded string, matching
+// `readFile(p, 'utf8')`'s non-stripping decode (the threadpool arm) and
+// git's own gitfile/HEAD/commondir readers, which require `gitdir: ` (etc.)
+// at byte 0 — the default `TextDecoder` would strip the BOM and silently
+// change the sync arm's verdict on a BOM-prefixed file.
+const DECODER = new TextDecoder('utf-8', { ignoreBOM: true });
 
 /**
  * Node-runtime extension to `OpenRepositoryOptions`. Adds `allowInsecureHttp`
