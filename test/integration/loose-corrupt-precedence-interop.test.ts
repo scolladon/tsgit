@@ -22,7 +22,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { readObject } from '../../src/application/primitives/read-object.js';
 import type { Blob, ObjectId } from '../../src/domain/objects/index.js';
-import { GIT_AVAILABLE, runGitAsync, runGitEnv } from './interop-helpers.js';
+import { GIT_AVAILABLE, runGitAsync, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
 
 const IDENTITY = {
   GIT_AUTHOR_NAME: 'Ada',
@@ -100,10 +100,16 @@ describe.skipIf(!GIT_AVAILABLE)('loose-corrupt precedence interop', () => {
 
         // Act
         const result = await readObject(ctx, oid);
+        const gitCat = tryRunGitWithExit(['-C', dir, 'cat-file', '-p', oid], {
+          env: runGitEnv(),
+        });
 
-        // Assert
+        // Assert — matching git: it serves the pack content at exit 0 despite
+        // the corrupt loose copy (it only complains on stderr).
         expect(result.type).toBe('blob');
         expect((result as Blob).content).toEqual(new TextEncoder().encode(PAYLOAD));
+        expect(gitCat.exitCode).toBe(0);
+        expect(gitCat.stdout).toBe(PAYLOAD);
       });
     });
   });

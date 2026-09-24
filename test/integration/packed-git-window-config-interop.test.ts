@@ -23,7 +23,8 @@ import { catFile } from '../../src/application/commands/cat-file.js';
 import { revParse } from '../../src/application/commands/rev-parse.js';
 import { status } from '../../src/application/commands/status.js';
 import { TsgitError } from '../../src/domain/error.js';
-import { ObjectId } from '../../src/domain/objects/index.js';
+import type { Commit } from '../../src/domain/objects/index.js';
+import { ObjectId, serializeIdentity } from '../../src/domain/objects/index.js';
 import type { Context } from '../../src/ports/context.js';
 import { GIT_AVAILABLE, git, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
 
@@ -83,6 +84,21 @@ interface BadNumericData {
   readonly value: string;
   readonly reason: string;
 }
+
+/**
+ * Rebuilds `git cat-file -p <commit>`'s byte layout from tsgit's structured
+ * `CommitData` — the library returns fields, never rendered text, so pinning
+ * the interop against git's stdout means reconstructing it here.
+ */
+const reconstructCatFileText = (commit: Commit): string => {
+  const headerLines = [
+    `tree ${commit.data.tree}`,
+    ...commit.data.parents.map((parent) => `parent ${parent}`),
+    `author ${serializeIdentity(commit.data.author)}`,
+    `committer ${serializeIdentity(commit.data.committer)}`,
+  ];
+  return `${headerLines.join('\n')}\n\n${commit.data.message}`;
+};
 
 describe.skipIf(!GIT_AVAILABLE)(
   'core.packedGitWindowSize / core.packedGitLimit eager refusal — cross-tool interop',
@@ -166,10 +182,19 @@ describe.skipIf(!GIT_AVAILABLE)(
           expect(revParseGit.exitCode).toBe(0);
           expect(statusGit.exitCode).toBe(0);
 
-          // Assert — tsgit
-          await expect(catFile(ctx, { ids: [headId] })).resolves.toBeDefined();
+          // Assert — tsgit's catFile content matches git's own cat-file bytes
+          // (reconstructed from the structured commit, per the library's
+          // fields-not-rendered-text contract); rev-parse matches the head id
+          // git resolved to; status reports the clean tree git's exit 0 does.
+          const catFileResult = await catFile(ctx, { ids: [headId] });
+          const entry = catFileResult.entries[0];
+          if (entry === undefined || !entry.ok || entry.object.type !== 'commit') {
+            throw new Error('expected a resolved commit entry');
+          }
+          expect(reconstructCatFileText(entry.object)).toBe(catFileGit.stdout);
           await expect(revParse(ctx, 'HEAD')).resolves.toBe(headId);
-          await expect(status(ctx)).resolves.toBeDefined();
+          const statusResult = await status(ctx);
+          expect(statusResult.changes).toEqual([]);
         });
       });
     });
