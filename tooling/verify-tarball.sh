@@ -183,7 +183,12 @@ done
 # directory-handle cache, and the declarations and doc comments for the new
 # `io` option and `NodeFileSystemOptions`. The refactoring pass that follows is
 # expected to trim part of it and lower this cap again.
-SIZE_CAP=$((984 * 1024))
+# Raised 984 -> 986 KiB by that work's review round: the measured tarball
+# landed at 1 008 901 B, 1 285 B over. The growth is the git-faithful read
+# fixes: one pack re-scan on a full object miss, the declared-size refusal on
+# index-pack and on buffered, streamed and metadata reads, and the pack
+# window cache's instance keys, single-flight loads and page normalisation.
+SIZE_CAP=$((986 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
