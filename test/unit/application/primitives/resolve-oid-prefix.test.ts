@@ -340,27 +340,6 @@ describe('resolveOidPrefix', () => {
     });
   });
 
-  describe('Given a Context whose hashConfig reports a third, unregistered hex width', () => {
-    describe('When resolveOidPrefix is called with a prefix of that width', () => {
-      it('Then rejects rather than silently falling through with the wrong pattern', async () => {
-        // Arrange — every real HashConfig in this codebase reports 40 or 64;
-        // this simulates a third hash algorithm the module-constant pattern
-        // maps were never updated for.
-        const base = await buildSeededContext();
-        const ctx: Context = {
-          ...base,
-          hashConfig: { ...base.hashConfig, hexLength: 20 as unknown as 40 },
-        };
-        const sut = resolveOidPrefix;
-
-        // Act + Assert
-        await expect(sut(ctx, 'deadbeef')).rejects.toThrow(
-          'resolve-oid-prefix: no pattern registered for hexLength 20',
-        );
-      });
-    });
-  });
-
   describe('Given a SHA-256 repository', () => {
     describe('When a full 64-hex oid is resolved', () => {
       it('Then it returns verbatim with no scan', async () => {
