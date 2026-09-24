@@ -107,8 +107,13 @@ export const syncIoPolicyFor = (
 };
 
 export const runWithinBudget = async <T>(budget: TurnBudget, op: () => T): Promise<T> => {
-  const wait = budget.admit();
-  if (wait !== undefined) await wait;
+  // A loop, not a single check: every waiter shares one pending promise
+  // while the budget is spent, so a resumed caller must re-admit before
+  // running — otherwise the whole fan-out barrels through in one turn the
+  // instant the first waiter's `charge` starts a fresh one.
+  for (let wait = budget.admit(); wait !== undefined; wait = budget.admit()) {
+    await wait;
+  }
   const startedAt = budget.now();
   try {
     return op();

@@ -4533,13 +4533,25 @@ describe('NodeFileSystem — sync arm turn budget (DI)', () => {
   describe('Given a policy whose budget admit() returns a pending promise', () => {
     describe('When a sync arm runs', () => {
       it('Then the sync op does not run until the promise resolves, and charge receives now()', async () => {
-        // Arrange
+        // Arrange — `admit` returns `pending` on its FIRST call only, then
+        // `undefined`: `runWithinBudget` re-admits in a loop, and a real
+        // `TurnBudget` always eventually clears (never stays pending
+        // forever), so a faithful fake must too.
         let resolveAdmit!: () => void;
         const pending = new Promise<void>((resolve) => {
           resolveAdmit = resolve;
         });
+        let admitted = false;
         const charge = vi.fn();
-        const budget: TurnBudget = { admit: () => pending, charge, now: () => 42 };
+        const budget: TurnBudget = {
+          admit: () => {
+            if (admitted) return undefined;
+            admitted = true;
+            return pending;
+          },
+          charge,
+          now: () => 42,
+        };
         const lstatSync = vi.fn().mockReturnValue(bigintFileStat);
         const fsOps = fakeFsOps({
           realpath: vi.fn().mockImplementation(async (input: string) => input),

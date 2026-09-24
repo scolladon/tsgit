@@ -433,6 +433,53 @@ describe('runWithinBudget', () => {
       });
     });
   });
+
+  describe('Given N concurrent ops of cost c fan out onto the same budget', () => {
+    describe('When the waiters parked on the shared pending promise resume together', () => {
+      it('Then no turn runs more ops than ceil(budget / cost) + 1', async () => {
+        // Arrange — every caller shares ONE pending promise once the budget
+        // is spent (`pending ??= createDeferred()`); a single-admit caller
+        // that never re-checks after waking runs its whole backlog in one
+        // turn, so cost is charged as a clock advance INSIDE the op —
+        // exactly what lets a re-admitting sibling observe the spend.
+        const budgetMs = 1;
+        const cost = 0.5;
+        const opCount = 100;
+        const maxPerTurn = Math.ceil(budgetMs / cost) + 1;
+        const { clock, advance } = manualClock();
+        const { schedule, marks } = collectingScheduler();
+        const budget = createTurnBudget(budgetMs, clock, schedule);
+        const perTurnCounts: number[] = [];
+        let ranThisTurn = 0;
+        const op = () => {
+          ranThisTurn += 1;
+          advance(cost);
+        };
+
+        // Act — the synchronous fan-out is itself the first turn (whatever
+        // admits for free before the first caller parks); each subsequent
+        // marker fire replays the next turn's cascade of admits/re-parks.
+        const runs = Array.from({ length: opCount }, () => runWithinBudget(budget, op));
+        perTurnCounts.push(ranThisTurn);
+        let fired = 0;
+        while (fired < marks.length) {
+          ranThisTurn = 0;
+          marks[fired]?.();
+          fired += 1;
+          await Promise.resolve();
+          perTurnCounts.push(ranThisTurn);
+        }
+        await Promise.all(runs);
+
+        // Assert
+        const total = perTurnCounts.reduce((sum, count) => sum + count, 0);
+        expect(total).toBe(opCount);
+        for (const count of perTurnCounts) {
+          expect(count).toBeLessThanOrEqual(maxPerTurn);
+        }
+      });
+    });
+  });
 });
 
 describe('createSyncIoPolicy', () => {
