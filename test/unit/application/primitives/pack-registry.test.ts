@@ -3081,6 +3081,66 @@ describe('Given a registry that cached a pack window before refresh()', () => {
   });
 });
 
+describe('Given an outgoing pack whose window load is still in flight when refresh() runs', () => {
+  describe('When a same-named successor pack is read after the late fill lands', () => {
+    it("Then the successor's cached window is never overwritten by the outgoing pack's late fill", async () => {
+      // Arrange — the handle wrapper never touches real pack bytes: the
+      // FIRST opened handle (the outgoing pack) fills its window with 0xaa
+      // once released from a gate; every later handle (a successor pack)
+      // fills immediately with 0xbb. Only the window CACHE KEY decides which
+      // value a read observes — the exact thing this fix scopes per pack
+      // instance.
+      const ctx = await buildSeededContext();
+      await writeSyntheticPack(ctx, 'swap-late-fill', [
+        { kind: 'base', type: 'blob', content: new TextEncoder().encode('irrelevant') },
+      ]);
+      let openCount = 0;
+      let releaseFirstRead: (() => void) | undefined;
+      const gate = new Promise<void>((resolve) => {
+        releaseFirstRead = resolve;
+      });
+      const wrapped: Context = {
+        ...ctx,
+        fs: {
+          ...ctx.fs,
+          openWithNoFollow: async (path: string, mode: 'read' | 'write') => {
+            const handle = await ctx.fs.openWithNoFollow(path, mode);
+            openCount += 1;
+            const isFirstOpen = openCount === 1;
+            const marker = isFirstOpen ? 0xaa : 0xbb;
+            return {
+              ...handle,
+              read: async (buffer: Uint8Array, bufferOffset: number, length: number) => {
+                if (isFirstOpen) await gate;
+                buffer.fill(marker, bufferOffset, bufferOffset + length);
+                return length;
+              },
+              stat: async () => ({ ...(await handle.stat()), size: 1_000_000 }),
+            };
+          },
+        },
+      };
+      const registry = await createPackRegistry(wrapped);
+      const outgoingPack = (await registry.all())[0]!;
+
+      // Act — the outgoing pack's window fill starts, blocked on the gate.
+      const stalePending = outgoingPack.readSlice(PACK_HEADER_SIZE, 4);
+      registry.refresh();
+      const successorPack = (await registry.all())[0]!;
+      const freshRead = await successorPack.readSlice(PACK_HEADER_SIZE, 4);
+      // The outgoing pack's late fill now resolves and writes into the
+      // shared window cache.
+      releaseFirstRead?.();
+      await stalePending;
+      const secondRead = await successorPack.readSlice(PACK_HEADER_SIZE, 4);
+
+      // Assert
+      expect(Array.from(freshRead)).toEqual([0xbb, 0xbb, 0xbb, 0xbb]);
+      expect(Array.from(secondRead)).toEqual([0xbb, 0xbb, 0xbb, 0xbb]);
+    });
+  });
+});
+
 describe('Given a registry whose pack window cache holds a warmed window', () => {
   describe('When refresh() runs', () => {
     it('Then the pack window cache is cleared', async () => {

@@ -383,6 +383,12 @@ async function readBoundedIdx(ctx: Context, idxPath: string): Promise<Uint8Array
   return bytes;
 }
 
+// Every `loadPack` call gets its own token — a replaced pack reuses the same
+// NAME, but never the same token, so a late window fill from an outgoing
+// pack's in-flight read can never land under a successor's own cache key
+// (see `loadPack`'s `windowCacheKey`).
+let nextPackInstanceToken = 0;
+
 function loadPack(
   ctx: Context,
   dir: string,
@@ -392,6 +398,12 @@ function loadPack(
 ): RegisteredPack {
   const idxPath = `${dir}/${entryName}`;
   const name = packBaseName(entryName);
+  // Distinct from `name`: `name` is the stable, human-facing pack identity
+  // (`RegisteredPack.name`, log context, cache keys elsewhere); this is the
+  // window cache's OWN key, scoped to this one `loadPack` call so a
+  // same-named successor never shares a cached window with the pack it
+  // replaced.
+  const windowCacheKey = `${name}#${nextPackInstanceToken++}`;
   const packPath = `${dir}/${name}.pack`;
   const revPath = `${dir}/${name}.rev`;
   const hasRevIndex = fileNames.has(`${name}.rev`);
@@ -502,7 +514,7 @@ function loadPack(
 
   const readSlice = async (offset: number, length: number): Promise<Uint8Array> => {
     if (retired) return ctx.fs.readSlice(packPath, offset, length);
-    const read = windowCache.read(name, offset, length, loadWindow);
+    const read = windowCache.read(windowCacheKey, offset, length, loadWindow);
     inFlight.add(read);
     try {
       return await read;
