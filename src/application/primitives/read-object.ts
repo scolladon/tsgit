@@ -10,7 +10,6 @@ import {
 } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
 import type { PromisorRemote } from '../../ports/promisor.js';
-import { rescanOnFullMiss } from './internal/pack-miss-rescan.js';
 import { createPromiseMemo, type PromiseMemo } from './internal/promise-memo.js';
 import {
   assertRepoSettingsValid,
@@ -362,7 +361,7 @@ async function walkDeltaBaseType(
   let currentHeader = header;
   let depth = 1;
   for (;;) {
-    const nextHit = await nextDeltaHit(ctx, registry, currentHit, currentHeader, targetId);
+    const nextHit = await nextDeltaHit(registry, currentHit, currentHeader, targetId);
     const { header: nextHeader } = await readEntryHeaderAt(ctx, nextHit);
     if (!isDeltaHeader(nextHeader)) {
       return packEntryTypeToObjectType(nextHeader.type);
@@ -377,18 +376,19 @@ async function walkDeltaBaseType(
 /**
  * One hop down a delta chain by HEADER alone: OFS_DELTA stays in the same
  * pack at a computed offset; REF_DELTA looks its base up by id, which may
- * land in a different pack. A base the registry cannot find is retried
- * exactly once after `rescanOnFullMiss` — the same single-flighted
- * re-scan-and-retry `resolveBaseForRefDelta` (object-resolver.ts) gets via
- * `resolveObjectContentWithDepth`, so an external repack that moved the base
- * to a different pack is found here too, not just on the content-resolving
- * walk. A base still missing after the retry is a corrupt pack — this
- * throws OBJECT_NOT_FOUND for the base id, fail-loud like every other read
- * here, and retried by the same `withLazyFetchRetry` a missing REF_DELTA
- * base already gets via `resolveObject`/`readRawObject`.
+ * land in a different pack. git's own header-only type walk
+ * (`packed_to_object_type` in `packfile.c`) resolves a REF_DELTA base with a
+ * plain `find_pack_entry` lookup against the packs already known — it never
+ * calls `reprepare_packed_git`; only the CONTENT-resolving path
+ * (`oid_object_info_extended` / `do_oid_object_info_extended`) retries after
+ * a re-scan, which `resolveBaseForRefDelta` (object-resolver.ts) already
+ * gets via `resolveObjectContentWithDepth`. A base the registry cannot find
+ * here is a corrupt pack — this throws OBJECT_NOT_FOUND for the base id,
+ * fail-loud like every other read here, and retried by the same
+ * `withLazyFetchRetry` a missing REF_DELTA base already gets via
+ * `resolveObject`/`readRawObject`.
  */
 async function nextDeltaHit(
-  ctx: Context,
   registry: PackRegistry,
   hit: PackLookupHit,
   header: DeltaEntryHeader,
@@ -398,21 +398,7 @@ async function nextDeltaHit(
     const baseOffset = ofsDeltaBaseOffset(targetId, hit.offset, header.baseDistance);
     return { pack: hit.pack, offset: baseOffset };
   }
-  const baseHit =
-    (await registry.lookup(header.baseId)) ??
-    (await rescanAndRetryBase(ctx, registry, header.baseId));
+  const baseHit = await registry.lookup(header.baseId);
   if (baseHit === undefined) throw objectNotFound(header.baseId);
   return baseHit;
-}
-
-/** Re-scans the pack registry once and retries the base lookup — the
- *  metadata walk's own choke point onto `rescanOnFullMiss`, mirroring the
- *  content-resolving delta walk's retry (object-resolver.ts). */
-async function rescanAndRetryBase(
-  ctx: Context,
-  registry: PackRegistry,
-  baseId: ObjectId,
-): Promise<PackLookupHit | undefined> {
-  await rescanOnFullMiss(ctx, registry, baseId);
-  return registry.lookup(baseId);
 }
