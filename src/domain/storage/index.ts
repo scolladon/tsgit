@@ -29,6 +29,7 @@ export {
   invalidPackIndex,
   invalidPackInput,
   invalidPackRevIndex,
+  PACK_ENTRY_INFLATED_SIZE_MISMATCH_REASON,
 } from './error.js';
 // Pack bitmap
 export type { EwahStream } from './ewah.js';

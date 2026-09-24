@@ -16,22 +16,13 @@ import type { PackEntryHeader, PackHeader } from '../../../domain/storage/index.
 import {
   crc32,
   invalidPackEntry,
+  PACK_ENTRY_INFLATED_SIZE_MISMATCH_REASON,
   parsePackEntryHeader,
   parsePackHeader,
 } from '../../../domain/storage/index.js';
 import { PACK_HEADER_SIZE } from '../../../domain/storage/pack-entry.js';
 import type { InflateStreamResult } from '../../../ports/compressor.js';
 import type { Context } from '../../../ports/context.js';
-
-/**
- * git's own reason, worded loosely rather than byte-for-byte (this library
- * ships structured data, never rendered text), for a pack entry whose zlib
- * stream inflates to a byte count other than its own header-declared size —
- * applied uniformly to BOTH directions, exactly as git's own check does
- * (`unpack_entry_data`'s `stream.total_out != size`, regardless of which
- * side of `size` it lands on).
- */
-const INFLATED_SIZE_MISMATCH_REASON = 'bad object: inflated size differs from declared size';
 
 /**
  * The reason `ctx.compressor.streamInflate` raises when its output cap is
@@ -177,11 +168,13 @@ const withDeclaredSizeCheck = async <TCrcContext>(
   }>,
 ): Promise<{ readonly result: InflateStreamResult; readonly crcContext: TCrcContext }> => {
   const outcome = await attempt().catch((err: unknown) => {
-    if (isCapExceeded(err)) throw invalidPackEntry(offset, INFLATED_SIZE_MISMATCH_REASON);
+    if (isCapExceeded(err)) {
+      throw invalidPackEntry(offset, PACK_ENTRY_INFLATED_SIZE_MISMATCH_REASON);
+    }
     throw err;
   });
   if (outcome.result.output.byteLength !== declaredSize) {
-    throw invalidPackEntry(offset, INFLATED_SIZE_MISMATCH_REASON);
+    throw invalidPackEntry(offset, PACK_ENTRY_INFLATED_SIZE_MISMATCH_REASON);
   }
   return outcome;
 };

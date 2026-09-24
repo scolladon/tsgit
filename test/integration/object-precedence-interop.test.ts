@@ -14,7 +14,7 @@
  *   unique:         pack-first precedence for buffered reads, loose-first for the streaming path — pinned against git 2.55.0
  *   interopSurface: readObject, readBlob, readTree, streamBlob
  */
-import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { deflateSync } from 'node:zlib';
@@ -26,6 +26,7 @@ import { readTree } from '../../src/application/primitives/read-tree.js';
 import { streamBlob } from '../../src/application/primitives/stream-blob.js';
 import { TsgitError } from '../../src/domain/error.js';
 import type { Blob, Commit, ObjectId, Tree } from '../../src/domain/objects/index.js';
+import { PACK_ENTRY_INFLATED_SIZE_MISMATCH_REASON } from '../../src/domain/storage/index.js';
 import {
   disableAutoMaintenance,
   GIT_AVAILABLE,
@@ -526,6 +527,94 @@ describe.skipIf(!GIT_AVAILABLE || PACK_DIR_FAULTS_SKIPPED)(
         // (pre-repack) generation.
         expect(gitType).toBe('commit');
         expect(object.type).toBe('commit');
+      });
+    });
+
+    describe('Given a packed blob entry whose header declares a size differing from its actual inflated size (S1), When both git and tsgit read it', () => {
+      let dir = '';
+      let blobId = '';
+      let offset = -1;
+
+      beforeAll(async () => {
+        dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-object-precedence-s1-'));
+        runGit(['init', '-q', '-b', 'main', dir]);
+        git(dir, 'config', 'user.name', 'Ada');
+        git(dir, 'config', 'user.email', 'ada@example.com');
+        git(dir, 'config', 'commit.gpgsign', 'false');
+        disableAutoMaintenance(dir);
+        // 55 bytes: git's varint pack-entry size encoding needs exactly TWO
+        // header bytes for any size in [16, 2047) — patching only the FIRST
+        // byte's low nibble (below) changes the declared size while leaving
+        // the header's own byte WIDTH, and every other entry's offset,
+        // untouched.
+        await writeFile(path.join(dir, 'a.txt'), Buffer.from('x'.repeat(55)));
+        git(dir, 'add', 'a.txt');
+        git(dir, 'commit', '-q', '-m', 'c1');
+        blobId = git(dir, 'rev-parse', 'HEAD:a.txt').trim();
+        git(dir, 'gc', '-q');
+
+        const packDir = path.join(dir, '.git', 'objects', 'pack');
+        const idxName = (await readdir(packDir)).find((name) => name.endsWith('.idx'));
+        if (idxName === undefined) throw new Error('no .idx written by git gc');
+        const packName = idxName.replace(/\.idx$/, '.pack');
+
+        // `git verify-pack -v` reports "<oid> <type> <size> <size-in-pack> <offset>"
+        // per object — parsed rather than assumed, so this pins against
+        // whatever real offset git chose.
+        const verify = git(dir, 'verify-pack', '-v', path.join(packDir, idxName));
+        const row = verify.split('\n').find((line) => line.startsWith(blobId));
+        if (row === undefined) throw new Error(`blob ${blobId} not found in verify-pack output`);
+        offset = Number.parseInt(row.trim().split(/\s+/)[4] ?? '', 10);
+
+        // Patch the entry header's FIRST byte: bits 3-0 are the size varint's
+        // lowest 4 bits (bit 7 continuation, bits 6-4 type) — bumping them by
+        // one lies the declared size up by exactly one byte, an off-by-one a
+        // real corrupt/adversarial pack could carry, without touching the
+        // zlib stream that follows or any other entry's bytes.
+        const packPath = path.join(packDir, packName);
+        await chmod(packPath, 0o644);
+        const packBytes = await readFile(packPath);
+        const headerByte = packBytes.at(offset) ?? 0;
+        packBytes[offset] = (headerByte & 0xf0) | ((headerByte + 1) & 0x0f);
+        await writeFile(packPath, packBytes);
+      }, SETUP_TIMEOUT);
+
+      afterAll(async () => {
+        await rm(dir, { recursive: true, force: true });
+      });
+
+      it('Then git refuses cat-file -p as corrupt, and tsgit refuses readObject with INVALID_PACK_ENTRY at the same offset', async () => {
+        // Arrange
+        const ctx = createNodeContext({ workDir: dir });
+        const id = blobId as ObjectId;
+
+        // Act — git side
+        const gitResult = tryRunGitWithExit(['-C', dir, 'cat-file', '-p', blobId]);
+
+        // Act — tsgit side
+        let caught: unknown;
+        try {
+          await readObject(ctx, id);
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert — git's observed answer
+        expect(gitResult.exitCode).toBe(128);
+        expect(gitResult.stderr).toContain('is corrupt');
+
+        // Assert — tsgit's observed answer: the same refusal shape the
+        // index-pack WRITE path already enforces (pack-byte-source.ts's
+        // withDeclaredSizeCheck), now on the READ path too.
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('INVALID_PACK_ENTRY');
+        if (data.code !== 'INVALID_PACK_ENTRY') {
+          expect.fail(`expected INVALID_PACK_ENTRY, got ${data.code}`);
+        }
+        expect(data.reason).toBe(PACK_ENTRY_INFLATED_SIZE_MISMATCH_REASON);
+        expect(data.offset).toBe(offset);
       });
     });
   },

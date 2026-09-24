@@ -65,6 +65,14 @@ export interface OfsDeltaSpec {
    * index and content still resolve normally; only the on-disk distance lies.
    */
   readonly distanceOverride?: number;
+  /**
+   * Encode this exact byte count in the entry header's size field instead of
+   * the delta instruction stream's real length — the only way to plant a
+   * delta entry whose zlib stream inflates to a different length than it
+   * declares (declared-size mismatch fixtures). The zlib stream itself still
+   * deflates the real delta instructions; only the header's declared size lies.
+   */
+  readonly declaredSizeOverride?: number;
 }
 
 export interface RefDeltaSpec {
@@ -121,7 +129,8 @@ export async function buildSyntheticPack(
       const delta = encodeDeltaFromScratch(base, spec.targetContent);
       uncompressed = spec.targetContent;
       const compressed = await ctx.compressor.deflate(delta);
-      const typeHeader = encodePackEntryHeader(PACK_ENTRY_TYPE.OFS_DELTA, delta.length);
+      const declaredSize = spec.declaredSizeOverride ?? delta.length;
+      const typeHeader = encodePackEntryHeader(PACK_ENTRY_TYPE.OFS_DELTA, declaredSize);
       const baseOffset = offsets[spec.baseIndex]!;
       const distance = spec.distanceOverride ?? currentOffset - baseOffset;
       const ofsBytes = encodeOfsDistance(distance);

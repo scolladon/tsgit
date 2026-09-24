@@ -3623,10 +3623,14 @@ describe('object-resolver', () => {
           // 100, so `nextOffset = 12 - 100 = -88`. The `if (nextOffset < 0)`
           // guard must throw OBJECT_NOT_FOUND. Forcing the conditional `false`
           // would carry a negative offset into the next chain hop instead.
+          // Declared size 2, matching the 2-byte deflated body's real
+          // inflated length — an honest declared size, so the new
+          // declared-vs-actual check (item 2) never fires here; only the
+          // negative-offset guard this row targets does.
           const ctx = await buildSeededContext();
           const deltaBody = await ctx.compressor.deflate(new Uint8Array([0x00, 0x00]));
           const entry = new Uint8Array([
-            ...encodePackEntryHeader(PACK_ENTRY_TYPE.OFS_DELTA, 0),
+            ...encodePackEntryHeader(PACK_ENTRY_TYPE.OFS_DELTA, 2),
             ...encodeOfsDistance(100),
             ...deltaBody,
           ]);
@@ -3658,10 +3662,14 @@ describe('object-resolver', () => {
           // → the walker continues with offset 0 → nextOffsetForEntry cannot find 0
           // in sortedOffsets → INVALID_PACK_INDEX. The `<=` mutant makes `0 <= 0`
           // true → throws OBJECT_NOT_FOUND before reaching nextOffsetForEntry.
+          // Declared size 2, matching the 2-byte deflated body's real
+          // inflated length — an honest declared size, so the new
+          // declared-vs-actual check (item 2) never fires here; only the
+          // offset-0 guard this row targets does.
           const ctx = await buildSeededContext();
           const deltaBody = await ctx.compressor.deflate(new Uint8Array([0x00, 0x00]));
           const entry = new Uint8Array([
-            ...encodePackEntryHeader(PACK_ENTRY_TYPE.OFS_DELTA, 0),
+            ...encodePackEntryHeader(PACK_ENTRY_TYPE.OFS_DELTA, 2),
             ...encodeOfsDistance(12),
             ...deltaBody,
           ]);
@@ -3689,12 +3697,14 @@ describe('object-resolver', () => {
 
   describe('Given a pack base entry whose declared size lies small but inflates large', () => {
     describe('When a capped resolveObject runs', () => {
-      it('Then the post-apply cap throws OBJECT_TOO_LARGE', async () => {
+      it('Then the declared-size check throws INVALID_PACK_ENTRY, ahead of the post-apply cap', async () => {
         // Arrange — a base blob entry whose header declares size 1 (so the
         // pre-inflate `enforcePackBaseCap` passes the cap of 4) while the zlib
-        // body inflates to 40 bytes. With no deltas the post-apply check in
-        // `resolvePackChain` is the only guard left; emptying its block lets the
-        // oversized object through silently.
+        // body inflates to 40 bytes. The unconditional declared-vs-actual
+        // check now catches this lie before the post-apply OBJECT_TOO_LARGE
+        // cap ever runs — mirroring git's `unpack_entry_data`
+        // (`stream.total_out != size`), which refuses the SAME shape the
+        // same way regardless of any caller-side size cap.
         const ctx = await buildSeededContext();
         const bigContent = new TextEncoder().encode('A'.repeat(40));
         const deflated = await ctx.compressor.deflate(bigContent);
@@ -3714,12 +3724,75 @@ describe('object-resolver', () => {
           expect.unreachable();
         } catch (error) {
           const data = (error as TsgitError).data;
-          expect(data.code).toBe('OBJECT_TOO_LARGE');
-          if (data.code !== 'OBJECT_TOO_LARGE') {
-            expect.fail(`expected OBJECT_TOO_LARGE, got ${data.code}`);
+          expect(data.code).toBe('INVALID_PACK_ENTRY');
+          if (data.code !== 'INVALID_PACK_ENTRY') {
+            expect.fail(`expected INVALID_PACK_ENTRY, got ${data.code}`);
           }
-          expect(data.actualSize).toBe(40);
-          expect(data.limit).toBe(4);
+          expect(data.reason).toBe('bad object: inflated size differs from declared size');
+          expect(data.offset).toBe(12);
+        }
+      });
+    });
+  });
+
+  describe('Given a pack base entry whose declared size mismatches its actual inflated size, with no maxBytes cap', () => {
+    describe('When resolveObject is called', () => {
+      it('Then throws INVALID_PACK_ENTRY unconditionally — not gated on a size cap', async () => {
+        // Arrange — an honest zlib body, but the header's declared size is
+        // one byte short of the real content length.
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('honest body, dishonest declared size\n');
+        const [id] = await writeSyntheticPack(ctx, 'base-declared-size-lie', [
+          { kind: 'base', type: 'blob', content, declaredSizeOverride: content.length - 1 },
+        ]);
+        const registry = await createPackRegistry(ctx);
+
+        // Act — no maxBytes argument at all.
+        try {
+          await resolveObject(ctx, registry, id as ObjectId, false);
+          expect.unreachable();
+        } catch (error) {
+          // Assert
+          expect(error).toBeInstanceOf(TsgitError);
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('INVALID_PACK_ENTRY');
+          if (data.code !== 'INVALID_PACK_ENTRY') {
+            expect.fail(`expected INVALID_PACK_ENTRY, got ${data.code}`);
+          }
+          expect(data.reason).toBe('bad object: inflated size differs from declared size');
+        }
+      });
+    });
+  });
+
+  describe("Given an OFS_DELTA entry whose declared size mismatches its instruction stream's actual inflated size", () => {
+    describe('When resolveObject is called', () => {
+      it('Then throws INVALID_PACK_ENTRY: bad object: inflated size differs from declared size', async () => {
+        // Arrange — an honest delta instruction stream, but the entry
+        // header's declared size lies.
+        const ctx = await buildSeededContext();
+        const baseContent = new TextEncoder().encode('base content for a delta size lie\n');
+        const targetContent = new TextEncoder().encode('reconstructed target, different length\n');
+        const ids = await writeSyntheticPack(ctx, 'delta-declared-size-lie', [
+          { kind: 'base', type: 'blob', content: baseContent },
+          { kind: 'ofs-delta', baseIndex: 0, targetContent, declaredSizeOverride: 1 },
+        ]);
+        const deltaId = ids[1] as ObjectId;
+        const registry = await createPackRegistry(ctx);
+
+        // Act
+        try {
+          await resolveObject(ctx, registry, deltaId, false);
+          expect.unreachable();
+        } catch (error) {
+          // Assert
+          expect(error).toBeInstanceOf(TsgitError);
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('INVALID_PACK_ENTRY');
+          if (data.code !== 'INVALID_PACK_ENTRY') {
+            expect.fail(`expected INVALID_PACK_ENTRY, got ${data.code}`);
+          }
+          expect(data.reason).toBe('bad object: inflated size differs from declared size');
         }
       });
     });

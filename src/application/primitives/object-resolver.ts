@@ -15,7 +15,12 @@ import {
   serializeHeader,
 } from '../../domain/objects/index.js';
 import { MAX_DELTA_CHAIN_DEPTH } from '../../domain/storage/delta.js';
-import { deltaChainTooDeep, invalidPackIndex } from '../../domain/storage/error.js';
+import {
+  deltaChainTooDeep,
+  invalidPackEntry,
+  invalidPackIndex,
+  PACK_ENTRY_INFLATED_SIZE_MISMATCH_REASON,
+} from '../../domain/storage/error.js';
 import {
   applyDelta,
   type LruCache,
@@ -450,6 +455,24 @@ export function assertChainDepthWithinCap(depth: number): void {
   }
 }
 
+/**
+ * git's uniform `unpack_entry_data` check (`stream.total_out != size`),
+ * applied on the READ path to an entry's already-inflated bytes: a zlib
+ * stream that inflates to a byte count other than its own header's declared
+ * size is refused, regardless of which side of `declaredSize` it lands on.
+ * Covers both a base entry's own content and a delta entry's instruction
+ * stream — the ONE declared-size field every `PackEntryHeader` variant
+ * carries. The WRITE path enforces the identical shape
+ * (`pack-byte-source.ts`'s `withDeclaredSizeCheck`); this is its read-side
+ * counterpart, sharing the same refusal so a `.pack` write and a `.pack`
+ * read agree on what "bad object" means.
+ */
+function assertInflatedSizeMatches(offset: number, declaredSize: number, actualSize: number): void {
+  if (actualSize !== declaredSize) {
+    throw invalidPackEntry(offset, PACK_ENTRY_INFLATED_SIZE_MISMATCH_REASON);
+  }
+}
+
 async function collectDeltaChain(
   ctx: Context,
   registry: PackRegistry,
@@ -501,6 +524,7 @@ async function collectDeltaChain(
     if (isBase(header)) {
       enforcePackBaseCap(targetId, header.size, maxBytes);
       const inflated = await ctx.compressor.inflate(chunk.subarray(headerEndInChunk));
+      assertInflatedSizeMatches(currentHit.offset, header.size, inflated.byteLength);
       return {
         deltas,
         baseContent: inflated,
@@ -512,6 +536,7 @@ async function collectDeltaChain(
     depth += 1;
     assertChainDepthWithinCap(externalDepth + depth);
     const instructions = await ctx.compressor.inflate(chunk.subarray(headerEndInChunk));
+    assertInflatedSizeMatches(currentHit.offset, header.size, instructions.byteLength);
     // Stryker disable next-line CallExpression: equivalent — this pre-apply cap is a documented perf-only optimisation (see enforcePackDeltaPreApplyCap's own docstring): removing the call leaves the POST-apply cap in resolvePackChainWithDepth (current.length > maxBytes) to throw the identical OBJECT_TOO_LARGE, just after the wasted apply+allocation instead of before it (full covering set — object-resolver, read-object, stream-blob, blob-source, fsck, pack-registry — passes unmutated).
     enforcePackDeltaPreApplyCap(targetId, instructions, maxBytes, depth);
 
