@@ -32,29 +32,24 @@ export class BrowserHashService implements HashService {
     const chunks: Uint8Array[] = [];
     const algoName = this.algoName;
     let consumed = false;
+    let total = 0;
 
     const finalize = async (): Promise<Uint8Array> => {
       if (consumed) throw hashFailed('cannot digest after digest');
       consumed = true;
-      const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
-      const concatenated = new Uint8Array(total);
-      let offset = 0;
-      for (const chunk of chunks) {
-        concatenated.set(chunk, offset);
-        offset += chunk.length;
-      }
-      return new Uint8Array(await crypto.subtle.digest(algoName, concatenated as BufferSource));
+      const message = joinChunks(chunks, total);
+      return new Uint8Array(await crypto.subtle.digest(algoName, message as BufferSource));
     };
 
     return {
       update(data: Uint8Array): void {
         if (consumed) throw hashFailed('cannot update after digest');
-        // No defensive copy here: `finalize` copies every chunk exactly once,
-        // into `concatenated`, above — a second copy on the way in would only
-        // protect against the caller mutating `data` between `update` and
-        // `digest`, which none of this port's callers do (each hands over a
-        // freshly built or freshly sliced buffer it never touches again).
-        chunks.push(data);
+        // SubtleCrypto cannot stream, so the bytes are held until digest; the
+        // copy keeps the digest bound to the bytes seen at update() time, as
+        // node:crypto's consume-now hasher is, for callers that hand the same
+        // chunk onward before digesting.
+        chunks.push(data.slice());
+        total += data.length;
       },
       digest: finalize,
       digestHex: async () => toHex(await finalize()),
@@ -64,6 +59,17 @@ export class BrowserHashService implements HashService {
   private get algoName(): SubtleAlgorithm {
     return this.algorithm === 'sha1' ? 'SHA-1' : 'SHA-256';
   }
+}
+
+function joinChunks(chunks: ReadonlyArray<Uint8Array>, total: number): Uint8Array {
+  if (chunks.length === 1) return chunks[0]!;
+  const joined = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    joined.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return joined;
 }
 
 const HEX_BYTE_TABLE: ReadonlyArray<string> = Array.from({ length: 256 }, (_, byte) =>

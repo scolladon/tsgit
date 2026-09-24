@@ -151,14 +151,31 @@ describe('BrowserHashService', () => {
   });
 
   describe('Given a chunk mutated after update() but before digest()', () => {
-    it('Then the digest reflects the mutated bytes — update() takes no defensive copy', async () => {
+    it('Then the digest covers the bytes as they were at update() time', async () => {
       // Arrange
       const sut = new BrowserHashService('sha1');
       const chunk = new Uint8Array([1, 2, 3]);
       const hasher = sut.createHasher();
       hasher.update(chunk);
       chunk[0] = 99;
-      const expected = await sut.hashHex(new Uint8Array([99, 2, 3]));
+      const expected = await sut.hashHex(new Uint8Array([1, 2, 3]));
+
+      // Act
+      const result = await hasher.digestHex();
+
+      // Assert
+      expect(result).toBe(expected);
+    });
+  });
+
+  describe('Given a hasher fed a single chunk', () => {
+    it('Then the streamed digest equals the one-shot digest', async () => {
+      // Arrange
+      const sut = new BrowserHashService('sha256');
+      const chunk = new Uint8Array([10, 20, 30, 40]);
+      const hasher = sut.createHasher();
+      hasher.update(chunk);
+      const expected = await sut.hashHex(new Uint8Array([10, 20, 30, 40]));
 
       // Act
       const result = await hasher.digestHex();
