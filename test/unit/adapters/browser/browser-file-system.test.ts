@@ -233,6 +233,8 @@ describe('BrowserFileSystem beneath a regular file', () => {
     { name: 'stat', invoke: (sut: BrowserFileSystem) => sut.stat(beneath) },
     { name: 'lstat', invoke: (sut: BrowserFileSystem) => sut.lstat(beneath) },
     { name: 'lexists', invoke: (sut: BrowserFileSystem) => sut.lexists(beneath) },
+    { name: 'tryLstat', invoke: (sut: BrowserFileSystem) => sut.tryLstat(beneath) },
+    { name: 'tryReadUtf8', invoke: (sut: BrowserFileSystem) => sut.tryReadUtf8(beneath) },
     { name: 'readdir', invoke: (sut: BrowserFileSystem) => sut.readdir(beneath) },
     { name: 'mkdir', invoke: (sut: BrowserFileSystem) => sut.mkdir(beneath) },
     { name: 'rm', invoke: (sut: BrowserFileSystem) => sut.rm(beneath) },
@@ -349,6 +351,23 @@ describe('BrowserFileSystem mkdir', () => {
   });
 });
 
+describe('BrowserFileSystem rename onto itself', () => {
+  describe('Given a file, When renamed onto its own path', () => {
+    it('Then it resolves as a no-op without removing the entry', async () => {
+      // Arrange
+      const root = directory({ 'same.txt': 'file' });
+      const sut = new BrowserFileSystem(root);
+
+      // Act
+      await sut.rename('same.txt', 'same.txt');
+      const result = await sut.exists('same.txt');
+
+      // Assert
+      expect(result).toBe(true);
+    });
+  });
+});
+
 describe('BrowserFileSystem lexists', () => {
   describe.each([
     { label: 'a file', path: 'sub/file.txt', expected: true },
@@ -409,6 +428,236 @@ describe('BrowserFileSystem lexists', () => {
         expect(data.code).toBe('PERMISSION_DENIED');
         if (data.code === 'PERMISSION_DENIED') expect(data.path).toBe('sub/../escape');
       });
+    });
+  });
+});
+
+describe('BrowserFileSystem tryLstat / tryReadUtf8 — non-throwing probes', () => {
+  describe('Given a path with no entry', () => {
+    it("Then tryLstat resolves undefined, matching lstat's FILE_NOT_FOUND", async () => {
+      // Arrange
+      const sut = new BrowserFileSystem(directory({}));
+
+      // Act
+      const result = await sut.tryLstat('missing.bin');
+
+      // Assert
+      expect(result).toBeUndefined();
+    });
+
+    it("Then tryReadUtf8 resolves undefined, matching readUtf8's FILE_NOT_FOUND", async () => {
+      // Arrange
+      const sut = new BrowserFileSystem(directory({}));
+
+      // Act
+      const result = await sut.tryReadUtf8('missing.txt');
+
+      // Assert
+      expect(result).toBeUndefined();
+    });
+  });
+
+  describe('Given a present regular file', () => {
+    const presentFileHandle = (content: string): FileSystemFileHandle =>
+      ({
+        getFile: async () => new File([content], 'probe', { lastModified: 1_700_000_000_000 }),
+      }) as unknown as FileSystemFileHandle;
+
+    it('Then tryLstat equals lstat', async () => {
+      // Arrange
+      const root = {
+        getFileHandle: async () => presentFileHandle('x'),
+      } as unknown as FileSystemDirectoryHandle;
+      const sut = new BrowserFileSystem(root);
+
+      // Act
+      const [result, expected] = await Promise.all([
+        sut.tryLstat('present.bin'),
+        sut.lstat('present.bin'),
+      ]);
+
+      // Assert
+      expect(result).toEqual(expected);
+    });
+
+    it('Then tryReadUtf8 equals readUtf8', async () => {
+      // Arrange
+      const root = {
+        getFileHandle: async () => presentFileHandle('hello'),
+      } as unknown as FileSystemDirectoryHandle;
+      const sut = new BrowserFileSystem(root);
+
+      // Act
+      const [result, expected] = await Promise.all([
+        sut.tryReadUtf8('present.txt'),
+        sut.readUtf8('present.txt'),
+      ]);
+
+      // Assert
+      expect(result).toBe(expected);
+    });
+  });
+
+  describe('Given a directory', () => {
+    it('Then tryLstat equals lstat', async () => {
+      // Arrange
+      const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000);
+      const root = directory({ dir: directory({}) });
+      const sut = new BrowserFileSystem(root);
+
+      // Act
+      let result: Awaited<ReturnType<BrowserFileSystem['tryLstat']>>;
+      let expected: Awaited<ReturnType<BrowserFileSystem['lstat']>>;
+      try {
+        result = await sut.tryLstat('dir');
+        expected = await sut.lstat('dir');
+      } finally {
+        nowSpy.mockRestore();
+      }
+
+      // Assert
+      expect(result).toEqual(expected);
+    });
+
+    it('Then tryReadUtf8 resolves undefined — readUtf8 refuses FILE_NOT_FOUND on a directory on this adapter', async () => {
+      // Arrange
+      const root = directory({ dir: directory({}) });
+      const sut = new BrowserFileSystem(root);
+
+      // Act
+      const result = await sut.tryReadUtf8('dir');
+
+      // Assert
+      expect(result).toBeUndefined();
+    });
+  });
+});
+
+describe('BrowserFileSystem directory-handle cache', () => {
+  describe('Given a file resolved under one cached parent directory', () => {
+    it('Then a second read under the same parent walks zero directory handles', async () => {
+      // Arrange
+      const sub = directory({ 'file.txt': 'file' });
+      const root = directory({ sub });
+      const sut = new BrowserFileSystem(root);
+
+      // Act
+      await sut.read('sub/file.txt');
+      await sut.read('sub/file.txt');
+
+      // Assert
+      expect(root.getDirectoryHandle).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('Given a file resolved two directory levels deep', () => {
+    it('Then a second read under the same parent walks zero directory handles at either level', async () => {
+      // Arrange
+      const nested = directory({ 'file.txt': 'file' });
+      const sub = directory({ nested });
+      const root = directory({ sub });
+      const sut = new BrowserFileSystem(root);
+
+      // Act
+      await sut.read('sub/nested/file.txt');
+      await sut.read('sub/nested/file.txt');
+
+      // Assert
+      expect(root.getDirectoryHandle).toHaveBeenCalledTimes(1);
+      expect(sub.getDirectoryHandle).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  const withRemoveEntry = (
+    handle: FileSystemDirectoryHandle,
+  ): FileSystemDirectoryHandle & { removeEntry: ReturnType<typeof vi.fn> } => {
+    const removable = handle as FileSystemDirectoryHandle & {
+      removeEntry: ReturnType<typeof vi.fn>;
+    };
+    removable.removeEntry = vi.fn(async () => {});
+    return removable;
+  };
+
+  describe('Given a cached parent directory removed by rm', () => {
+    it('Then the next read under it walks the directory handle again', async () => {
+      // Arrange
+      const sub = directory({ 'file.txt': 'file' });
+      const root = withRemoveEntry(directory({ sub }));
+      const sut = new BrowserFileSystem(root);
+      await sut.read('sub/file.txt');
+
+      // Act
+      await sut.rm('sub');
+      await sut.read('sub/file.txt');
+
+      // Assert
+      expect(root.getDirectoryHandle).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('Given a cached parent directory nested under an ancestor removed by rm', () => {
+    it('Then the next read under the nested parent walks every directory handle again', async () => {
+      // Arrange
+      const nested = directory({ 'file.txt': 'file' });
+      const sub = directory({ nested });
+      const root = withRemoveEntry(directory({ sub }));
+      const sut = new BrowserFileSystem(root);
+      await sut.read('sub/nested/file.txt');
+
+      // Act
+      await sut.rm('sub');
+      await sut.read('sub/nested/file.txt');
+
+      // Assert
+      expect(root.getDirectoryHandle).toHaveBeenCalledTimes(2);
+      expect(sub.getDirectoryHandle).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('Given a cached parent directory nested under an ancestor removed by rmRecursive', () => {
+    it('Then the next read under the nested parent walks every directory handle again', async () => {
+      // Arrange
+      const nested = directory({ 'file.txt': 'file' });
+      const sub = directory({ nested });
+      const root = withRemoveEntry(directory({ sub }));
+      const sut = new BrowserFileSystem(root);
+      await sut.read('sub/nested/file.txt');
+
+      // Act
+      await sut.rmRecursive('sub');
+      await sut.read('sub/nested/file.txt');
+
+      // Assert
+      expect(root.getDirectoryHandle).toHaveBeenCalledTimes(2);
+      expect(sub.getDirectoryHandle).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('Given a rename of a file inside a cached parent directory', () => {
+    it('Then the sibling parent cache is left intact — invalidation is scoped, not a blanket clear', async () => {
+      // Arrange
+      const sub = directory({ 'a.txt': 'file', 'b.txt': 'file' });
+      const root = withRemoveEntry(directory({ sub }));
+      const permissiveSub = sub as FileSystemDirectoryHandle & {
+        getFileHandle: ReturnType<typeof vi.fn>;
+        removeEntry: ReturnType<typeof vi.fn>;
+      };
+      const writableFile = {
+        getFile: async () => new Blob([new Uint8Array([1])]),
+        createWritable: async () => ({ write: async () => {}, close: async () => {} }),
+      } as unknown as FileSystemFileHandle;
+      permissiveSub.getFileHandle = vi.fn(async () => writableFile);
+      permissiveSub.removeEntry = vi.fn(async () => {});
+      const sut = new BrowserFileSystem(root);
+      await sut.read('sub/a.txt');
+
+      // Act
+      await sut.rename('sub/a.txt', 'sub/b.txt');
+      await sut.read('sub/a.txt');
+
+      // Assert — 'sub' itself was never a rename target, so its cache entry
+      // survives: the walk to it happens exactly once, not once per read.
+      expect(root.getDirectoryHandle).toHaveBeenCalledTimes(1);
     });
   });
 });

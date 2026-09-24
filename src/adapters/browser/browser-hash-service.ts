@@ -49,7 +49,12 @@ export class BrowserHashService implements HashService {
     return {
       update(data: Uint8Array): void {
         if (consumed) throw hashFailed('cannot update after digest');
-        chunks.push(data.slice());
+        // No defensive copy here: `finalize` copies every chunk exactly once,
+        // into `concatenated`, above — a second copy on the way in would only
+        // protect against the caller mutating `data` between `update` and
+        // `digest`, which none of this port's callers do (each hands over a
+        // freshly built or freshly sliced buffer it never touches again).
+        chunks.push(data);
       },
       digest: finalize,
       digestHex: async () => toHex(await finalize()),
@@ -61,10 +66,14 @@ export class BrowserHashService implements HashService {
   }
 }
 
-function toHex(bytes: Uint8Array): string {
+const HEX_BYTE_TABLE: ReadonlyArray<string> = Array.from({ length: 256 }, (_, byte) =>
+  byte.toString(16).padStart(2, '0'),
+);
+
+export function toHex(bytes: Uint8Array): string {
   let result = '';
   for (const byte of bytes) {
-    result += byte.toString(16).padStart(2, '0');
+    result += HEX_BYTE_TABLE[byte]!;
   }
   return result;
 }

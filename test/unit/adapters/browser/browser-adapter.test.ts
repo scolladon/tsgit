@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { createBrowserContext } from '../../../../src/adapters/browser/browser-adapter.js';
 import { BrowserCompressor } from '../../../../src/adapters/browser/browser-compressor.js';
 import { BrowserFileSystem } from '../../../../src/adapters/browser/browser-file-system.js';
-import { BrowserHashService } from '../../../../src/adapters/browser/browser-hash-service.js';
+import {
+  BrowserHashService,
+  toHex,
+} from '../../../../src/adapters/browser/browser-hash-service.js';
 import { BrowserHttpTransport } from '../../../../src/adapters/browser/browser-http-transport.js';
 import { SHA1_CONFIG, SHA256_CONFIG } from '../../../../src/domain/objects/hash-config.js';
 
@@ -106,6 +109,62 @@ describe('createBrowserContext', () => {
         // Assert
         expect(result.cacheBudgets).toStrictEqual({ [option]: value });
       });
+    });
+  });
+});
+
+describe('BrowserHashService', () => {
+  describe('Given every byte value 0-255', () => {
+    it('Then toHex renders each byte as byte.toString(16).padStart(2, "0")', () => {
+      // Arrange
+      const bytes = Uint8Array.from({ length: 256 }, (_, i) => i);
+      const expected = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+
+      // Act
+      const result = toHex(bytes);
+
+      // Assert
+      expect(result).toBe(expected);
+    });
+  });
+
+  describe('Given a hasher fed three chunks', () => {
+    it('Then the streamed digest equals the one-shot digest of the concatenation', async () => {
+      // Arrange
+      const sut = new BrowserHashService('sha1');
+      const chunk1 = new Uint8Array([1, 2, 3]);
+      const chunk2 = new Uint8Array([4, 5]);
+      const chunk3 = new Uint8Array([6, 7, 8, 9]);
+      const concatenated = new Uint8Array([...chunk1, ...chunk2, ...chunk3]);
+      const hasher = sut.createHasher();
+
+      // Act
+      hasher.update(chunk1);
+      hasher.update(chunk2);
+      hasher.update(chunk3);
+      const streamed = await hasher.digestHex();
+      const oneShot = await sut.hashHex(concatenated);
+
+      // Assert
+      expect(streamed).toBe(oneShot);
+    });
+  });
+
+  describe('Given a chunk mutated after update() but before digest()', () => {
+    it('Then the digest reflects the mutated bytes — update() takes no defensive copy', async () => {
+      // Arrange
+      const sut = new BrowserHashService('sha1');
+      const chunk = new Uint8Array([1, 2, 3]);
+      const hasher = sut.createHasher();
+      hasher.update(chunk);
+      chunk[0] = 99;
+      const expected = await sut.hashHex(new Uint8Array([99, 2, 3]));
+
+      // Act
+      const result = await hasher.digestHex();
+
+      // Assert
+      expect(result).toBe(expected);
     });
   });
 });

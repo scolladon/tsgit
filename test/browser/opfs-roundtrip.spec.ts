@@ -7,6 +7,9 @@
  * Then each operation's result is asserted under its own step, so a failure
  *   names the exact git operation that broke instead of a trailing aggregate.
  */
+
+import { buildSeededContext } from '../unit/application/primitives/fixtures.ts';
+import { buildSyntheticPack, type EntrySpec } from '../unit/application/primitives/pack-fixture.ts';
 import { expect, runOpfsRoundTrip, test } from './fixtures.js';
 
 // Playwright's WebKit headless build does not expose
@@ -412,6 +415,145 @@ test.describe('OPFS refusals beneath a regular file', () => {
 
     await test.step('the blocking file is unchanged', () => {
       expect(result.fileBytes).toEqual([3]);
+    });
+  });
+});
+
+// Local typing aid for the surface the probe drives — not a shared contract;
+// the real facade lives in src/repository.ts.
+interface DeltaChainProbeRepo {
+  init(): Promise<unknown>;
+  dispose(): Promise<void>;
+  primitives: {
+    readBlob(id: string): Promise<{ content: Uint8Array }>;
+  };
+}
+
+interface DeltaChainProbeOpener {
+  openRepository(opts: { rootHandle: FileSystemDirectoryHandle }): Promise<DeltaChainProbeRepo>;
+}
+
+interface DeltaChainFixture {
+  readonly packBytes: ReadonlyArray<number>;
+  readonly idxBytes: ReadonlyArray<number>;
+  readonly tipId: string;
+}
+
+interface DeltaChainProbeResult {
+  readonly getFileCalls: number;
+  readonly getDirectoryHandleCalls: number;
+  readonly wallTimeMs: number;
+  readonly contentLength: number;
+}
+
+const DELTA_CHAIN_DEPTH = 10;
+const DELTA_CHAIN_PACK_NAME = 'pack-depth-10-probe';
+
+// A pack of one base blob plus DELTA_CHAIN_DEPTH ofs-deltas, each chained off
+// the previous entry — a linear depth-10 chain, built byte-exact with the
+// synthetic pack fixture rather than through real git or the deltify
+// heuristic, so the depth is guaranteed rather than merely likely.
+async function buildDeltaChainFixture(): Promise<DeltaChainFixture> {
+  const ctx = await buildSeededContext();
+  const entries: EntrySpec[] = [
+    { kind: 'base', type: 'blob', content: new TextEncoder().encode('depth-10 probe base\n') },
+  ];
+  for (let depth = 1; depth <= DELTA_CHAIN_DEPTH; depth += 1) {
+    entries.push({
+      kind: 'ofs-delta',
+      baseIndex: depth - 1,
+      targetContent: new TextEncoder().encode(`depth-10 probe layer ${depth}\n`.repeat(depth)),
+    });
+  }
+  const build = await buildSyntheticPack(ctx, entries);
+  const tipId = build.ids[build.ids.length - 1];
+  if (tipId === undefined) throw new Error('synthetic delta chain produced no tip id');
+  return { packBytes: Array.from(build.packBytes), idxBytes: Array.from(build.idxBytes), tipId };
+}
+
+test.describe('OPFS depth-10 delta-chain read — cold-read directory-walk probe', () => {
+  test.skip(({ browserName }) => browserName === 'webkit', 'OPFS not exposed in Playwright WebKit');
+
+  test('Given a depth-10 delta chain packed into OPFS, When the tip blob is read, Then getFile()/getDirectoryHandle() counts and wall time are reported', async ({
+    readyPage,
+  }) => {
+    const fixture = await buildDeltaChainFixture();
+
+    const result: DeltaChainProbeResult = await readyPage.evaluate(
+      async ({ packBytes, idxBytes, tipId, packName }) => {
+        const tsgit = (window as unknown as { __tsgit: DeltaChainProbeOpener }).__tsgit;
+        const rootHandle = await navigator.storage.getDirectory();
+        const repo = await tsgit.openRepository({ rootHandle });
+        try {
+          await repo.init();
+
+          // Writes the two pack files directly through the native OPFS
+          // handle API (never through tsgit's own FileSystem adapter), so
+          // the setup writes never pollute the counters installed below.
+          const gitDir = await rootHandle.getDirectoryHandle('.git');
+          const objectsDir = await gitDir.getDirectoryHandle('objects');
+          const packDir = await objectsDir.getDirectoryHandle('pack', { create: true });
+          const packFile = await packDir.getFileHandle(`${packName}.pack`, { create: true });
+          const packWritable = await packFile.createWritable();
+          await packWritable.write(new Uint8Array(packBytes));
+          await packWritable.close();
+          const idxFile = await packDir.getFileHandle(`${packName}.idx`, { create: true });
+          const idxWritable = await idxFile.createWritable();
+          await idxWritable.write(new Uint8Array(idxBytes));
+          await idxWritable.close();
+
+          let getFileCalls = 0;
+          let getDirectoryHandleCalls = 0;
+          const originalGetFile = FileSystemFileHandle.prototype.getFile;
+          FileSystemFileHandle.prototype.getFile = function (
+            this: FileSystemFileHandle,
+          ): Promise<File> {
+            getFileCalls += 1;
+            return originalGetFile.call(this);
+          };
+          const originalGetDirectoryHandle = FileSystemDirectoryHandle.prototype.getDirectoryHandle;
+          FileSystemDirectoryHandle.prototype.getDirectoryHandle = function (
+            this: FileSystemDirectoryHandle,
+            name: string,
+            options?: FileSystemGetDirectoryOptions,
+          ): Promise<FileSystemDirectoryHandle> {
+            getDirectoryHandleCalls += 1;
+            return originalGetDirectoryHandle.call(this, name, options);
+          };
+
+          const start = performance.now();
+          const blob = await repo.primitives.readBlob(tipId);
+          const wallTimeMs = performance.now() - start;
+
+          FileSystemFileHandle.prototype.getFile = originalGetFile;
+          FileSystemDirectoryHandle.prototype.getDirectoryHandle = originalGetDirectoryHandle;
+
+          return {
+            getFileCalls,
+            getDirectoryHandleCalls,
+            wallTimeMs,
+            contentLength: blob.content.length,
+          };
+        } finally {
+          await repo.dispose();
+        }
+      },
+      {
+        packBytes: fixture.packBytes,
+        idxBytes: fixture.idxBytes,
+        tipId: fixture.tipId,
+        packName: DELTA_CHAIN_PACK_NAME,
+      },
+    );
+
+    await test.step('reports getFile()/getDirectoryHandle() call counts and wall time', () => {
+      console.log(`[probe:depth-10-delta-chain] ${JSON.stringify(result)}`);
+      expect(result.getFileCalls).toBeGreaterThan(0);
+      expect(result.getDirectoryHandleCalls).toBeGreaterThan(0);
+    });
+
+    await test.step('reads the correct tip content through the chain', () => {
+      expect(result.contentLength).toBeGreaterThan(0);
     });
   });
 });

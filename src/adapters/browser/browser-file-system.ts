@@ -7,6 +7,7 @@ import {
   TsgitError,
   unsupportedOperation,
 } from '../../domain/index.js';
+import { createLruCache, type LruCache } from '../../domain/storage/lru-cache.js';
 import type { DirEntry, FileHandle, FileStat, FileSystem } from '../../ports/file-system.js';
 
 export interface BrowserFileSystemOptions {
@@ -16,8 +17,31 @@ export interface BrowserFileSystemOptions {
 const OPFS_FILE_MODE = 0o100644;
 const OPFS_DIR_MODE = 0o040755;
 
+// The `parentRealpathCache` shape in src/adapters/node/node-file-system.ts:
+// bytes + entries capped, each entry charged its key length. Sized the same
+// way — comfortably past the 256 loose-object fanout directories so a full
+// history walk does not thrash the cache.
+const DIRECTORY_HANDLE_CACHE_MAX_BYTES = 128 * 1024;
+const DIRECTORY_HANDLE_CACHE_MAX_ENTRIES = 512;
+
 export class BrowserFileSystem implements FileSystem {
   constructor(private readonly rootHandle: FileSystemDirectoryHandle) {}
+
+  /**
+   * Resolved `FileSystemDirectoryHandle` per parent path (the joined
+   * segments `walkToParent` was asked to resolve), so a second read under
+   * the same parent skips every `getDirectoryHandle` call the first paid.
+   * `createLruCache` exposes no key enumeration, so `directoryHandleCacheKeys`
+   * mirrors every key ever inserted — a superset of the LRU's live entries
+   * once byte/entry eviction has silently dropped some, which is harmless:
+   * invalidation only ever calls `delete` on candidate keys, a no-op for one
+   * already evicted.
+   */
+  private readonly directoryHandleCache: LruCache<FileSystemDirectoryHandle> = createLruCache(
+    DIRECTORY_HANDLE_CACHE_MAX_BYTES,
+    DIRECTORY_HANDLE_CACHE_MAX_ENTRIES,
+  );
+  private readonly directoryHandleCacheKeys = new Set<string>();
 
   async read(path: string): Promise<Uint8Array> {
     const handle = await this.resolveFileHandle(path, false);
@@ -131,6 +155,18 @@ export class BrowserFileSystem implements FileSystem {
     );
   }
 
+  /** `tryLstat`'s twin of `lstat`: `undefined` exactly where `lstat` refuses FILE_NOT_FOUND. */
+  async tryLstat(path: string): Promise<FileStat | undefined> {
+    return orAbsentFileNotFound(() => this.lstat(path));
+  }
+
+  /** `tryReadUtf8`'s twin of `readUtf8`: `undefined` exactly where `readUtf8` refuses
+   *  FILE_NOT_FOUND — on this adapter that includes a directory leaf, which `readUtf8`
+   *  reports as absent rather than PERMISSION_DENIED (see `resolveFileHandle`). */
+  async tryReadUtf8(path: string): Promise<string | undefined> {
+    return orAbsentFileNotFound(() => this.readUtf8(path));
+  }
+
   async readdir(path: string): Promise<ReadonlyArray<DirEntry>> {
     const handle = await this.resolveDirHandle(path, false);
     const entries: DirEntry[] = [];
@@ -181,6 +217,7 @@ export class BrowserFileSystem implements FileSystem {
     } catch {
       throw fileNotFound(path);
     }
+    this.invalidateDirectoryHandleCache(segments.join('/'));
   }
 
   async rename(src: string, dst: string): Promise<void> {
@@ -190,12 +227,14 @@ export class BrowserFileSystem implements FileSystem {
     // exactly this reason — callers must branch on its absence rather than assume
     // `rename` is safe to commit through. See FileSystem port JSDoc.
     const data = await this.read(src);
+    const dstKey = this.splitPath(dst).join('/');
     // A self-rename is a no-op on every adapter (checked after the read so an absent
     // source still reports FILE_NOT_FOUND); without it the emulation's `rm(src)` would
     // unlink the file it had just rewritten.
-    if (this.splitPath(src).join('/') === this.splitPath(dst).join('/')) return;
+    if (this.splitPath(src).join('/') === dstKey) return;
     await this.write(dst, data);
-    await this.rm(src);
+    await this.rm(src); // invalidates src's own cache key as part of `rm`'s own contract
+    this.invalidateDirectoryHandleCache(dstKey);
   }
 
   async readlink(_path: string): Promise<string> {
@@ -226,13 +265,15 @@ export class BrowserFileSystem implements FileSystem {
       if (isFileNotFound(err)) return undefined;
       throw err;
     });
-    if (parent === undefined) return;
-    const leaf = leafSegment(segments, path);
-    try {
-      await parent.removeEntry(leaf, { recursive: true });
-    } catch {
-      // OPFS removeEntry throws NotFoundError if the entry is missing — idempotent contract.
+    if (parent !== undefined) {
+      const leaf = leafSegment(segments, path);
+      try {
+        await parent.removeEntry(leaf, { recursive: true });
+      } catch {
+        // OPFS removeEntry throws NotFoundError if the entry is missing — idempotent contract.
+      }
     }
+    this.invalidateDirectoryHandleCache(segments.join('/'));
   }
 
   async openWithNoFollow(_path: string, _mode: 'read' | 'write'): Promise<FileHandle> {
@@ -301,6 +342,19 @@ export class BrowserFileSystem implements FileSystem {
     create: boolean,
     path: string,
   ): Promise<FileSystemDirectoryHandle> {
+    const key = parentPathKey(segments);
+    const cached = key === undefined ? undefined : this.directoryHandleCache.get(key);
+    if (cached !== undefined) return cached;
+    const dir = await this.walkSegments(segments, create, path);
+    if (key !== undefined) this.cacheDirectoryHandle(key, dir);
+    return dir;
+  }
+
+  private async walkSegments(
+    segments: ReadonlyArray<string>,
+    create: boolean,
+    path: string,
+  ): Promise<FileSystemDirectoryHandle> {
     let dir = this.rootHandle;
     for (let i = 0; i < segments.length - 1; i++) {
       const segment = segments[i];
@@ -315,6 +369,23 @@ export class BrowserFileSystem implements FileSystem {
       }
     }
     return dir;
+  }
+
+  private cacheDirectoryHandle(key: string, handle: FileSystemDirectoryHandle): void {
+    this.directoryHandleCache.set(key, handle, key.length);
+    this.directoryHandleCacheKeys.add(key);
+  }
+
+  /** Drops every cached entry at `path` or nested under it (`path/...`) — a removed or
+   *  renamed-away directory, and any deeper parent path this instance ever cached through it. */
+  private invalidateDirectoryHandleCache(path: string): void {
+    const prefix = `${path}/`;
+    for (const key of this.directoryHandleCacheKeys) {
+      if (key === path || key.startsWith(prefix)) {
+        this.directoryHandleCache.delete(key);
+        this.directoryHandleCacheKeys.delete(key);
+      }
+    }
   }
 
   private async assertDoesNotExist(
@@ -342,6 +413,23 @@ function leafSegment(segments: ReadonlyArray<string>, path: string): string {
 
 function isFileNotFound(err: unknown): boolean {
   return err instanceof TsgitError && err.data.code === 'FILE_NOT_FOUND';
+}
+
+/** The joined parent-path cache key `walkToParent` resolves to — `undefined` when there is
+ *  nothing to walk (a root-level leaf), so the trivial case is never cached. */
+function parentPathKey(segments: ReadonlyArray<string>): string | undefined {
+  return segments.length > 1 ? segments.slice(0, -1).join('/') : undefined;
+}
+
+/** Runs `probe`, folding a FILE_NOT_FOUND `TsgitError` into `undefined`; every other rejection
+ *  — including a non-`TsgitError` — propagates untouched. Shared by `tryLstat`/`tryReadUtf8`. */
+async function orAbsentFileNotFound<T>(probe: () => Promise<T>): Promise<T | undefined> {
+  try {
+    return await probe();
+  } catch (err) {
+    if (isFileNotFound(err)) return undefined;
+    throw err;
+  }
 }
 
 // Reads a rejection's `name` structurally rather than through `instanceof Error`, so a
