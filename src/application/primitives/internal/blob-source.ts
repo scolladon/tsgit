@@ -339,11 +339,15 @@ async function resolvePackBase(
   // What this actually buys, stated honestly: `declaredSize` is read from the
   // entry header, so it holds an HONEST entry to the gate and nothing more. A
   // crafted entry can declare a tiny size and carry a maximally-compressible
-  // payload, pass both tests, and still inflate to ~64 MiB before the hash
-  // check rejects it. That is no worse than the loose arm, whose ceiling is the
-  // same 64 KiB-compressed bound, and both sit under the compressor port's
-  // 2 GiB inflate cap. Bounding a lying header would take streaming the entry
-  // and counting bytes, which is a different gate than this one.
+  // payload, pass both tests, and still force a ~64 MiB inflate — the cost of
+  // that single inflate call is not bounded ahead of time; only its result is.
+  // `assertInflatedSizeMatches`, right below, refuses the object as soon as the
+  // inflated byte count disagrees with the declared one, before either the
+  // cache write or the hash check runs. That is no worse than the loose arm,
+  // whose ceiling is the same 64 KiB-compressed bound, and both sit under the
+  // compressor port's 2 GiB inflate cap. Bounding the inflate call's own cost
+  // ahead of time would take streaming the entry and counting bytes as it
+  // decompresses, which is a different gate than this one.
   if (
     fitsBuffer(payload.length, gate.maxBufferedBytes) &&
     fitsBuffer(declaredSize, gate.maxBufferedBytes)
@@ -353,7 +357,7 @@ async function resolvePackBase(
     // Blobs excluded: see `toCachedBytesSource`'s doc — a read-once buffered
     // blob only spends the shared cache's budget a repeatedly-walked tree or
     // commit would otherwise keep warm.
-    if (type !== 'blob' && declaredSize === content.byteLength) {
+    if (type !== 'blob') {
       cacheEntry(ctx.deltaCache, id, { type, content });
     }
     await verifyObjectContent(ctx, id, type, content, gate.verifyHash);
