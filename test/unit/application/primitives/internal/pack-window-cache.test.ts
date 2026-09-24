@@ -32,10 +32,10 @@ describe('createPackWindowCache', () => {
         // Arrange
         const source = fakeSource(1000);
         const load = loaderOver(source);
-        const sut = createPackWindowCache({ windowBytes: 256, limitBytes: 4096 });
+        const cache = createPackWindowCache({ windowBytes: 256, limitBytes: 4096 });
 
         // Act
-        const result = await sut.read('pack-a', 10, 20, load);
+        const result = await cache.read('pack-a', 10, 20, load);
 
         // Assert
         expect(Array.from(result)).toEqual(Array.from(source.subarray(10, 30)));
@@ -51,11 +51,11 @@ describe('createPackWindowCache', () => {
         // Arrange
         const source = fakeSource(1000);
         const load = loaderOver(source);
-        const sut = createPackWindowCache({ windowBytes: 256, limitBytes: 4096 });
-        await sut.read('pack-a', 10, 20, load);
+        const cache = createPackWindowCache({ windowBytes: 256, limitBytes: 4096 });
+        await cache.read('pack-a', 10, 20, load);
 
         // Act
-        const result = await sut.read('pack-a', 40, 30, load);
+        const result = await cache.read('pack-a', 40, 30, load);
 
         // Assert
         expect(Array.from(result)).toEqual(Array.from(source.subarray(40, 70)));
@@ -72,10 +72,10 @@ describe('createPackWindowCache', () => {
         // 4096 covers [4096, 12288), which contains the whole request.
         const source = fakeSource(20000);
         const load = loaderOver(source);
-        const sut = createPackWindowCache({ windowBytes: 8192, limitBytes: 1 << 20 });
+        const cache = createPackWindowCache({ windowBytes: 8192, limitBytes: 1 << 20 });
 
         // Act
-        const result = await sut.read('pack-a', 8100, 200, load);
+        const result = await cache.read('pack-a', 8100, 200, load);
 
         // Assert
         expect(Array.from(result)).toEqual(Array.from(source.subarray(8100, 8300)));
@@ -93,10 +93,10 @@ describe('createPackWindowCache', () => {
         // that already crosses the 100-byte window.
         const source = fakeSource(5000);
         const load = loaderOver(source);
-        const sut = createPackWindowCache({ windowBytes: 100, limitBytes: 4096 });
+        const cache = createPackWindowCache({ windowBytes: 100, limitBytes: 4096 });
 
         // Act
-        const result = await sut.read('pack-a', 4050, 90, load);
+        const result = await cache.read('pack-a', 4050, 90, load);
 
         // Assert
         expect(Array.from(result)).toEqual(Array.from(source.subarray(4050, 4140)));
@@ -112,10 +112,10 @@ describe('createPackWindowCache', () => {
         // Arrange
         const source = fakeSource(5000);
         const load = loaderOver(source);
-        const sut = createPackWindowCache({ windowBytes: 256, limitBytes: 4096 });
+        const cache = createPackWindowCache({ windowBytes: 256, limitBytes: 4096 });
 
         // Act
-        const result = await sut.read('pack-a', 10, 300, load);
+        const result = await cache.read('pack-a', 10, 300, load);
 
         // Assert
         expect(Array.from(result)).toEqual(Array.from(source.subarray(10, 310)));
@@ -131,10 +131,10 @@ describe('createPackWindowCache', () => {
         // Arrange
         const source = fakeSource(5000);
         const load = loaderOver(source);
-        const sut = createPackWindowCache({ windowBytes: 256, limitBytes: 100 });
+        const cache = createPackWindowCache({ windowBytes: 256, limitBytes: 100 });
 
         // Act
-        const result = await sut.read('pack-a', 10, 20, load);
+        const result = await cache.read('pack-a', 10, 20, load);
 
         // Assert
         expect(Array.from(result)).toEqual(Array.from(source.subarray(10, 30)));
@@ -151,10 +151,10 @@ describe('createPackWindowCache', () => {
         // 40, and the request [30, 50) can only be served up to byte 40.
         const source = fakeSource(40);
         const load = loaderOver(source);
-        const sut = createPackWindowCache({ windowBytes: 256, limitBytes: 4096 });
+        const cache = createPackWindowCache({ windowBytes: 256, limitBytes: 4096 });
 
         // Act
-        const result = await sut.read('pack-a', 30, 20, load);
+        const result = await cache.read('pack-a', 30, 20, load);
 
         // Assert
         expect(Array.from(result)).toEqual(Array.from(source.subarray(30, 40)));
@@ -170,12 +170,12 @@ describe('createPackWindowCache', () => {
         // window fits at a time, so loading pack-b's window evicts pack-a's.
         const source = fakeSource(1000);
         const load = loaderOver(source);
-        const sut = createPackWindowCache({ windowBytes: 256, limitBytes: 300 });
-        await sut.read('pack-a', 0, 10, load);
+        const cache = createPackWindowCache({ windowBytes: 256, limitBytes: 300 });
+        await cache.read('pack-a', 0, 10, load);
 
         // Act
-        await sut.read('pack-b', 0, 10, load);
-        await sut.read('pack-a', 0, 10, load);
+        await cache.read('pack-b', 0, 10, load);
+        await cache.read('pack-a', 0, 10, load);
 
         // Assert — pack-a loaded twice (evicted in between), pack-b once.
         expect(load).toHaveBeenCalledTimes(3);
@@ -189,12 +189,12 @@ describe('createPackWindowCache', () => {
         // Arrange
         const source = fakeSource(1000);
         const load = loaderOver(source);
-        const sut = createPackWindowCache({ windowBytes: 256, limitBytes: 4096 });
-        await sut.read('pack-a', 0, 10, load);
+        const cache = createPackWindowCache({ windowBytes: 256, limitBytes: 4096 });
+        await cache.read('pack-a', 0, 10, load);
 
         // Act
-        sut.clear();
-        await sut.read('pack-a', 0, 10, load);
+        cache.clear();
+        await cache.read('pack-a', 0, 10, load);
 
         // Assert
         expect(load).toHaveBeenCalledTimes(2);

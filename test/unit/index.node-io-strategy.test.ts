@@ -331,8 +331,12 @@ describe('Given the sync stat always throws a non-ENOENT error', () => {
         // Act
         const sut = await openRepository({ cwd: tmpdir });
 
-        // Assert
-        await sut.dispose();
+        // Assert — a genuine, fully-opened repository, not a degraded stub.
+        try {
+          expect(sut.ctx.layout.workDir).toBe(fs.realpathSync(tmpdir));
+        } finally {
+          await sut.dispose();
+        }
       } finally {
         spyOps.statSync.mockImplementation(fs.statSync);
       }
@@ -352,8 +356,12 @@ describe('Given the sync lstat always throws a non-ENOENT error', () => {
         // Act
         const sut = await openRepository({ cwd: tmpdir });
 
-        // Assert
-        await sut.dispose();
+        // Assert — a genuine, fully-opened repository, not a degraded stub.
+        try {
+          expect(sut.ctx.layout.workDir).toBe(fs.realpathSync(tmpdir));
+        } finally {
+          await sut.dispose();
+        }
       } finally {
         spyOps.lstatSync.mockImplementation(fs.lstatSync);
       }
@@ -399,8 +407,12 @@ describe('Given both the sync read and its async fallback fail', () => {
       // Act
       const sut = await openRepository({ cwd: tmpdir });
 
-      // Assert
-      await sut.dispose();
+      // Assert — a genuine, fully-opened repository, not a degraded stub.
+      try {
+        expect(sut.ctx.layout.workDir).toBe(fs.realpathSync(tmpdir));
+      } finally {
+        await sut.dispose();
+      }
     });
   });
 });
@@ -414,8 +426,12 @@ describe("Given io: 'threadpool' and the async readFile fails", () => {
       // Act
       const sut = await openRepository({ cwd: tmpdir, io: 'threadpool' });
 
-      // Assert
-      await sut.dispose();
+      // Assert — a genuine, fully-opened repository, not a degraded stub.
+      try {
+        expect(sut.ctx.layout.workDir).toBe(fs.realpathSync(tmpdir));
+      } finally {
+        await sut.dispose();
+      }
     });
   });
 });

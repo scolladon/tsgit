@@ -47,10 +47,10 @@ describe('createTurnBudget', () => {
         // Arrange
         const { clock } = manualClock();
         const { schedule } = collectingScheduler();
-        const sut = createTurnBudget(1, clock, schedule);
+        const budget = createTurnBudget(1, clock, schedule);
 
         // Act
-        const result = sut.admit();
+        const result = budget.admit();
 
         // Assert
         expect(result).toBeUndefined();
@@ -62,11 +62,11 @@ describe('createTurnBudget', () => {
         // Arrange
         const { clock, advance } = manualClock();
         const { schedule } = collectingScheduler();
-        const sut = createTurnBudget(1, clock, schedule);
+        const budget = createTurnBudget(1, clock, schedule);
         advance(0.7);
 
         // Act
-        const result = sut.now();
+        const result = budget.now();
 
         // Assert
         expect(result).toBe(0.7);
@@ -80,13 +80,13 @@ describe('createTurnBudget', () => {
         // Arrange
         const { clock, advance } = manualClock();
         const { schedule } = collectingScheduler();
-        const sut = createTurnBudget(1, clock, schedule);
+        const budget = createTurnBudget(1, clock, schedule);
         advance(0.1);
-        sut.charge(0);
+        budget.charge(0);
         advance(1.1);
 
         // Act
-        const result = sut.admit();
+        const result = budget.admit();
 
         // Assert
         expect(result).toBeInstanceOf(Promise);
@@ -100,12 +100,12 @@ describe('createTurnBudget', () => {
         // Arrange
         const { clock, advance } = manualClock();
         const { schedule } = collectingScheduler();
-        const sut = createTurnBudget(1, clock, schedule);
+        const budget = createTurnBudget(1, clock, schedule);
         advance(0.4);
-        sut.charge(0);
+        budget.charge(0);
 
         // Act
-        const result = sut.admit();
+        const result = budget.admit();
 
         // Assert
         expect(result).toBeUndefined();
@@ -119,15 +119,15 @@ describe('createTurnBudget', () => {
         // Arrange
         const { clock, advance } = manualClock();
         const { schedule } = collectingScheduler();
-        const sut = createTurnBudget(1, clock, schedule);
+        const budget = createTurnBudget(1, clock, schedule);
         advance(0.1);
-        sut.charge(0);
+        budget.charge(0);
         advance(0.4);
-        sut.charge(0.5);
+        budget.charge(0.5);
         advance(0.5);
 
         // Act
-        const result = sut.admit();
+        const result = budget.admit();
 
         // Assert
         expect(result).toBeInstanceOf(Promise);
@@ -141,12 +141,12 @@ describe('createTurnBudget', () => {
         // Arrange
         const { clock, advance } = manualClock();
         const { schedule } = collectingScheduler();
-        const sut = createTurnBudget(1, clock, schedule);
+        const budget = createTurnBudget(1, clock, schedule);
         advance(1);
-        sut.charge(0);
+        budget.charge(0);
 
         // Act
-        const result = sut.admit();
+        const result = budget.admit();
 
         // Assert
         expect(result).toBeInstanceOf(Promise);
@@ -160,14 +160,14 @@ describe('createTurnBudget', () => {
         // Arrange
         const { clock, advance } = manualClock();
         const { schedule } = collectingScheduler();
-        const sut = createTurnBudget(1, clock, schedule);
+        const budget = createTurnBudget(1, clock, schedule);
         advance(2);
-        sut.charge(0);
+        budget.charge(0);
 
         // Act
-        const first = sut.admit();
-        const second = sut.admit();
-        const third = sut.admit();
+        const first = budget.admit();
+        const second = budget.admit();
+        const third = budget.admit();
 
         // Assert
         expect(second).toBe(first);
@@ -182,13 +182,13 @@ describe('createTurnBudget', () => {
         // Arrange
         const { clock, advance } = manualClock();
         const { schedule, marks } = collectingScheduler();
-        const sut = createTurnBudget(1, clock, schedule);
+        const budget = createTurnBudget(1, clock, schedule);
 
         // Act
         advance(0.1);
-        sut.charge(0);
+        budget.charge(0);
         advance(0.1);
-        sut.charge(0.1);
+        budget.charge(0.1);
 
         // Assert
         expect(marks.length).toBe(1);
@@ -202,16 +202,16 @@ describe('createTurnBudget', () => {
         // Arrange
         const { clock, advance } = manualClock();
         const { schedule, marks } = collectingScheduler();
-        const sut = createTurnBudget(1, clock, schedule);
+        const budget = createTurnBudget(1, clock, schedule);
         advance(0.2);
-        sut.charge(0);
+        budget.charge(0);
 
         // Act
         const fireMarker = () => marks[0]?.();
 
         // Assert
         expect(fireMarker).not.toThrow();
-        expect(sut.admit()).toBeUndefined();
+        expect(budget.admit()).toBeUndefined();
       });
     });
   });
@@ -222,10 +222,10 @@ describe('createTurnBudget', () => {
         // Arrange
         const { clock, advance } = manualClock();
         const { schedule, marks } = collectingScheduler();
-        const sut = createTurnBudget(1, clock, schedule);
+        const budget = createTurnBudget(1, clock, schedule);
         advance(2);
-        sut.charge(0);
-        const pending = sut.admit();
+        budget.charge(0);
+        const pending = budget.admit();
 
         // Act
         marks[0]?.();
@@ -238,14 +238,14 @@ describe('createTurnBudget', () => {
         // Arrange
         const { clock, advance } = manualClock();
         const { schedule, marks } = collectingScheduler();
-        const sut = createTurnBudget(1, clock, schedule);
+        const budget = createTurnBudget(1, clock, schedule);
         advance(2);
-        sut.charge(0);
-        sut.admit();
+        budget.charge(0);
+        budget.admit();
 
         // Act
         marks[0]?.();
-        const result = sut.admit();
+        const result = budget.admit();
 
         // Assert
         expect(result).toBeUndefined();
@@ -259,18 +259,18 @@ describe('createTurnBudget', () => {
         // Arrange
         const { clock, advance } = manualClock();
         const { schedule, marks } = collectingScheduler();
-        const sut = createTurnBudget(1, clock, schedule);
+        const budget = createTurnBudget(1, clock, schedule);
         advance(2);
-        sut.charge(0);
-        sut.admit();
+        budget.charge(0);
+        budget.admit();
         marks[0]?.();
 
         // Act
         advance(0.3);
-        sut.charge(2.2);
+        budget.charge(2.2);
 
         // Assert
-        expect(sut.admit()).toBeUndefined();
+        expect(budget.admit()).toBeUndefined();
       });
     });
   });
@@ -281,10 +281,10 @@ describe('createTurnBudget', () => {
         // Arrange
         const { clock } = manualClock();
         const { schedule, marks } = collectingScheduler();
-        const sut = createTurnBudget(0, clock, schedule);
+        const budget = createTurnBudget(0, clock, schedule);
 
         // Act
-        sut.charge(0);
+        budget.charge(0);
 
         // Assert
         expect(marks.length).toBe(1);
@@ -296,11 +296,11 @@ describe('createTurnBudget', () => {
         // Arrange
         const { clock } = manualClock();
         const { schedule } = collectingScheduler();
-        const sut = createTurnBudget(0, clock, schedule);
-        sut.charge(0);
+        const budget = createTurnBudget(0, clock, schedule);
+        budget.charge(0);
 
         // Act
-        const result = sut.admit();
+        const result = budget.admit();
 
         // Assert
         expect(result).toBeInstanceOf(Promise);
@@ -312,9 +312,9 @@ describe('createTurnBudget', () => {
         // Arrange
         const { clock } = manualClock();
         const { schedule, marks } = collectingScheduler();
-        const sut = createTurnBudget(0, clock, schedule);
-        sut.charge(0);
-        const pending = sut.admit();
+        const budget = createTurnBudget(0, clock, schedule);
+        budget.charge(0);
+        const pending = budget.admit();
 
         // Act
         marks[0]?.();
@@ -333,7 +333,7 @@ describe('runWithinBudget', () => {
         // Arrange
         const { clock } = manualClock();
         const { schedule } = collectingScheduler();
-        const sut = createTurnBudget(1, clock, schedule);
+        const budget = createTurnBudget(1, clock, schedule);
         let ranBeforeAwait = false;
         const op = () => {
           ranBeforeAwait = true;
@@ -341,7 +341,7 @@ describe('runWithinBudget', () => {
         };
 
         // Act
-        const result = runWithinBudget(sut, op);
+        const result = runWithinBudget(budget, op);
 
         // Assert
         expect(ranBeforeAwait).toBe(true);
@@ -352,10 +352,10 @@ describe('runWithinBudget', () => {
         // Arrange
         const { clock } = manualClock();
         const { schedule } = collectingScheduler();
-        const sut = createTurnBudget(1, clock, schedule);
+        const budget = createTurnBudget(1, clock, schedule);
 
         // Act
-        const result = await runWithinBudget(sut, () => 'value');
+        const result = await runWithinBudget(budget, () => 'value');
 
         // Assert
         expect(result).toBe('value');
@@ -365,12 +365,12 @@ describe('runWithinBudget', () => {
         // Arrange
         const { clock, advance } = manualClock();
         const { schedule } = collectingScheduler();
-        const sut = createTurnBudget(1, clock, schedule);
+        const budget = createTurnBudget(1, clock, schedule);
         const op = () => advance(1);
 
         // Act
-        await runWithinBudget(sut, op);
-        const result = sut.admit();
+        await runWithinBudget(budget, op);
+        const result = budget.admit();
 
         // Assert
         expect(result).toBeInstanceOf(Promise);
@@ -384,9 +384,9 @@ describe('runWithinBudget', () => {
         // Arrange
         const { clock, advance } = manualClock();
         const { schedule, marks } = collectingScheduler();
-        const sut = createTurnBudget(1, clock, schedule);
+        const budget = createTurnBudget(1, clock, schedule);
         advance(2);
-        sut.charge(0);
+        budget.charge(0);
         let ran = false;
         const op = () => {
           ran = true;
@@ -394,7 +394,7 @@ describe('runWithinBudget', () => {
         };
 
         // Act
-        const promise = runWithinBudget(sut, op);
+        const promise = runWithinBudget(budget, op);
 
         // Assert
         expect(ran).toBe(false);
@@ -412,7 +412,7 @@ describe('runWithinBudget', () => {
         // Arrange
         const { clock, advance } = manualClock();
         const { schedule } = collectingScheduler();
-        const sut = createTurnBudget(1, clock, schedule);
+        const budget = createTurnBudget(1, clock, schedule);
         const error = new Error('boom');
         const op = () => {
           advance(1);
@@ -422,14 +422,14 @@ describe('runWithinBudget', () => {
         // Act
         let caught: unknown;
         try {
-          await runWithinBudget(sut, op);
+          await runWithinBudget(budget, op);
         } catch (err) {
           caught = err;
         }
 
         // Assert
         expect(caught).toBe(error);
-        expect(sut.admit()).toBeInstanceOf(Promise);
+        expect(budget.admit()).toBeInstanceOf(Promise);
       });
     });
   });
@@ -440,42 +440,44 @@ describe('createSyncIoPolicy', () => {
     vi.restoreAllMocks();
   });
 
-  describe('When building the default policy', () => {
-    it('Then maxSyncReadBytes is 64 KiB', () => {
-      // Arrange & Act
-      const result = createSyncIoPolicy();
+  describe('Given no options', () => {
+    describe('When building the default policy', () => {
+      it('Then maxSyncReadBytes is 64 KiB', () => {
+        // Arrange & Act
+        const result = createSyncIoPolicy();
 
-      // Assert
-      expect(result.maxSyncReadBytes).toBe(64 * 1024);
-    });
+        // Assert
+        expect(result.maxSyncReadBytes).toBe(64 * 1024);
+      });
 
-    it('Then ops is the real sync fs operations', () => {
-      // Arrange & Act
-      const result = createSyncIoPolicy();
+      it('Then ops is the real sync fs operations', () => {
+        // Arrange & Act
+        const result = createSyncIoPolicy();
 
-      // Assert
-      expect(result.ops).toBe(realSyncFsOps);
-    });
+        // Assert
+        expect(result.ops).toBe(realSyncFsOps);
+      });
 
-    it('Then the budget admits immediately before any charge', () => {
-      // Arrange & Act
-      const result = createSyncIoPolicy();
+      it('Then the budget admits immediately before any charge', () => {
+        // Arrange & Act
+        const result = createSyncIoPolicy();
 
-      // Assert
-      expect(result.budget.admit()).toBeUndefined();
-    });
+        // Assert
+        expect(result.budget.admit()).toBeUndefined();
+      });
 
-    it('Then the budget gates after one millisecond of charged clock time', () => {
-      // Arrange
-      vi.spyOn(performance, 'now').mockReturnValue(1);
-      const sut = createSyncIoPolicy();
+      it('Then the budget gates after one millisecond of charged clock time', () => {
+        // Arrange
+        vi.spyOn(performance, 'now').mockReturnValue(1);
+        const policy = createSyncIoPolicy();
 
-      // Act
-      sut.budget.charge(0);
-      const result = sut.budget.admit();
+        // Act
+        policy.budget.charge(0);
+        const result = policy.budget.admit();
 
-      // Assert
-      expect(result).toBeInstanceOf(Promise);
+        // Assert
+        expect(result).toBeInstanceOf(Promise);
+      });
     });
   });
 });

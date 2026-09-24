@@ -114,7 +114,7 @@ describe('createBrowserContext', () => {
 });
 
 describe('BrowserHashService', () => {
-  describe('Given every byte value 0-255', () => {
+  describe('Given every byte value 0-255, When converting to hex via toHex', () => {
     it('Then toHex renders each byte as byte.toString(16).padStart(2, "0")', () => {
       // Arrange
       const bytes = Uint8Array.from({ length: 256 }, (_, i) => i);
@@ -128,7 +128,7 @@ describe('BrowserHashService', () => {
     });
   });
 
-  describe('Given a hasher fed three chunks', () => {
+  describe('Given a hasher fed three chunks, When comparing the streamed digest to the one-shot digest', () => {
     it('Then the streamed digest equals the one-shot digest of the concatenation', async () => {
       // Arrange
       const sut = new BrowserHashService('sha1');
@@ -150,7 +150,7 @@ describe('BrowserHashService', () => {
     });
   });
 
-  describe('Given a chunk mutated after update() but before digest()', () => {
+  describe('Given a chunk mutated after update() but before digest(), When digestHex() runs', () => {
     it('Then the digest covers the bytes as they were at update() time', async () => {
       // Arrange
       const sut = new BrowserHashService('sha1');
@@ -168,7 +168,7 @@ describe('BrowserHashService', () => {
     });
   });
 
-  describe('Given a hasher fed a single chunk', () => {
+  describe('Given a hasher fed a single chunk, When comparing the streamed digest to the one-shot digest', () => {
     it('Then the streamed digest equals the one-shot digest', async () => {
       // Arrange
       const sut = new BrowserHashService('sha256');

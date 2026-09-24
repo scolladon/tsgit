@@ -6544,37 +6544,33 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
           );
         });
 
-        describe('Given a valueless entry (no "=")', () => {
-          describe('When findFirstInvalidPackedGitBound', () => {
-            it("Then returns value '', reason invalid unit, and the 1-based line", async () => {
-              // Arrange
-              const ctx = createMemoryContext();
-              await seed(ctx, `[core]\n\t${key}\n`);
+        describe('When findFirstInvalidPackedGitBound runs against a valueless entry (no "=")', () => {
+          it("Then returns value '', reason invalid unit, and the 1-based line", async () => {
+            // Arrange
+            const ctx = createMemoryContext();
+            await seed(ctx, `[core]\n\t${key}\n`);
 
-              // Act
-              const result = await findFirstInvalidPackedGitBound(ctx);
+            // Act
+            const result = await findFirstInvalidPackedGitBound(ctx);
 
-              // Assert
-              expect(result?.value).toBe('');
-              expect(result?.reason).toBe('invalid unit');
-              expect(result?.line).toBe(2);
-            });
+            // Assert
+            expect(result?.value).toBe('');
+            expect(result?.reason).toBe('invalid unit');
+            expect(result?.line).toBe(2);
           });
         });
 
-        describe('Given a valid value (e.g. 4m)', () => {
-          describe('When findFirstInvalidPackedGitBound', () => {
-            it('Then returns undefined', async () => {
-              // Arrange
-              const ctx = createMemoryContext();
-              await seed(ctx, `[core]\n\t${key} = 4m\n`);
+        describe('When findFirstInvalidPackedGitBound runs against a valid value (e.g. 4m)', () => {
+          it('Then returns undefined', async () => {
+            // Arrange
+            const ctx = createMemoryContext();
+            await seed(ctx, `[core]\n\t${key} = 4m\n`);
 
-              // Act
-              const result = await findFirstInvalidPackedGitBound(ctx);
+            // Act
+            const result = await findFirstInvalidPackedGitBound(ctx);
 
-              // Assert
-              expect(result).toBeUndefined();
-            });
+            // Assert
+            expect(result).toBeUndefined();
           });
         });
       },

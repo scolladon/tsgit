@@ -103,7 +103,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       await rm(dir, { recursive: true, force: true });
     });
 
-    describe('Given a blob impostor planted loose at the packed blob oid (O1)', () => {
+    describe('Given a blob impostor planted loose at the packed blob oid (O1), When both git and tsgit read it', () => {
       it('Then git serves the impostor only on the streaming class, and the pack everywhere else — tsgit matches: readBlob/readObject pack-first, streamBlob loose-first', async () => {
         // Arrange
         const impostor = Buffer.from('LOOSE!\n');
@@ -143,7 +143,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
-    describe('Given a commit impostor planted loose at the HEAD commit oid (O2)', () => {
+    describe("Given a commit impostor planted loose at the HEAD commit oid (O2), When both git log and tsgit's readObject read it", () => {
       it("Then both git log and tsgit's readObject report the packed commit's own subject, never the impostor's", async () => {
         // Arrange
         const impostorBody = Buffer.from(
@@ -169,7 +169,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
-    describe('Given a tree impostor planted loose at the HEAD tree oid (O3)', () => {
+    describe("Given a tree impostor planted loose at the HEAD tree oid (O3), When both git ls-tree and tsgit's readTree read it", () => {
       it("Then both git ls-tree and tsgit's readTree report the original entries, never the impostor's (empty)", async () => {
         // Arrange — the impostor is a well-formed, but EMPTY, tree — the
         // original has exactly one entry (a.txt), so serving the impostor is
@@ -191,7 +191,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
-    describe('Given non-zlib garbage planted loose at the packed blob oid (P1)', () => {
+    describe('Given non-zlib garbage planted loose at the packed blob oid (P1), When both git and tsgit read it', () => {
       it('Then git prints an inflate error but still serves the pack content, and tsgit resolves the pack content without throwing', async () => {
         // Arrange
         await plantGarbageLoose(dir, blobId);
@@ -215,7 +215,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
-    describe('Given non-zlib garbage planted loose at the packed blob oid (P1), on the streamed path', () => {
+    describe("Given non-zlib garbage planted loose at the packed blob oid (P1), on the streamed path, When git's streaming reader and tsgit's streamBlob read it", () => {
       it("Then git's streaming reader also falls back to the pack, but tsgit's streamBlob still refuses — a pre-existing divergence, recorded not fixed", async () => {
         // Arrange — git's own `cat-file blob` (the streaming class, per O1
         // above) tries loose first; on a genuinely unreadable loose copy it
@@ -249,7 +249,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
-    describe('Given non-zlib garbage planted loose at an oid with no packed twin (P2)', () => {
+    describe('Given non-zlib garbage planted loose at an oid with no packed twin (P2), When both git and tsgit attempt to read it', () => {
       it('Then git refuses with exit 128 ("Not a valid object name"), and tsgit refuses too — its exact code recorded as a pre-existing divergence if not OBJECT_NOT_FOUND', async () => {
         // Arrange
         const unpackedId = 'd'.repeat(40);
@@ -283,7 +283,7 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
-    describe('Given a size-lying loose object planted at the packed blob oid (P3)', () => {
+    describe('Given a size-lying loose object planted at the packed blob oid (P3), When both git and tsgit read it', () => {
       it('Then both git and tsgit report the pack content and its true 6-byte size, never the claimed 99', async () => {
         // Arrange
         await plantLooseDeclaring(dir, blobId, 'blob', 99, HELLO);
@@ -315,7 +315,7 @@ const PACK_DIR_FAULTS_SKIPPED = process.platform === 'win32' || process.getuid?.
 describe.skipIf(!GIT_AVAILABLE || PACK_DIR_FAULTS_SKIPPED)(
   'object-store precedence interop — unusable objects/pack (D1-D3)',
   () => {
-    describe('Given a loose-only repository whose objects/pack directory is chmod 000 (D1)', () => {
+    describe('Given a loose-only repository whose objects/pack directory is chmod 000 (D1), When both git and tsgit read the loose blob', () => {
       let dir = '';
       let blobId = '';
 
@@ -387,48 +387,52 @@ describe.skipIf(!GIT_AVAILABLE || PACK_DIR_FAULTS_SKIPPED)(
         await rm(dir, { recursive: true, force: true });
       });
 
-      it('Then git refuses the packed blob with exit 128, and tsgit refuses it with OBJECT_NOT_FOUND', async () => {
-        // Arrange
-        const ctx = createNodeContext({ workDir: dir });
-        const id = packedBlobId as ObjectId;
+      describe('When reading the packed blob', () => {
+        it('Then git refuses the packed blob with exit 128, and tsgit refuses it with OBJECT_NOT_FOUND', async () => {
+          // Arrange
+          const ctx = createNodeContext({ workDir: dir });
+          const id = packedBlobId as ObjectId;
 
-        // Act — git side
-        const gitResult = tryRunGitWithExit(['-C', dir, 'cat-file', '-p', packedBlobId]);
+          // Act — git side
+          const gitResult = tryRunGitWithExit(['-C', dir, 'cat-file', '-p', packedBlobId]);
 
-        // Act — tsgit side
-        let caught: unknown;
-        try {
-          await readObject(ctx, id);
-        } catch (error) {
-          caught = error;
-        }
+          // Act — tsgit side
+          let caught: unknown;
+          try {
+            await readObject(ctx, id);
+          } catch (error) {
+            caught = error;
+          }
 
-        // Assert
-        expect(gitResult.exitCode).toBe(128);
-        expect(gitResult.stderr).toContain('Not a valid object name');
-        expect(caught).toBeInstanceOf(TsgitError);
-        expect((caught as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
+          // Assert
+          expect(gitResult.exitCode).toBe(128);
+          expect(gitResult.stderr).toContain('Not a valid object name');
+          expect(caught).toBeInstanceOf(TsgitError);
+          expect((caught as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
+        });
       });
 
-      it('Then git still serves the loose blob after an error line, and tsgit serves it too', async () => {
-        // Arrange
-        const ctx = createNodeContext({ workDir: dir });
-        const id = looseBlobId as ObjectId;
+      describe('When reading the loose blob', () => {
+        it('Then git still serves the loose blob after an error line, and tsgit serves it too', async () => {
+          // Arrange
+          const ctx = createNodeContext({ workDir: dir });
+          const id = looseBlobId as ObjectId;
 
-        // Act — git side
-        const gitResult = tryRunGitWithExit(['-C', dir, 'cat-file', '-p', looseBlobId]);
+          // Act — git side
+          const gitResult = tryRunGitWithExit(['-C', dir, 'cat-file', '-p', looseBlobId]);
 
-        // Act — tsgit side
-        const object = await readObject(ctx, id);
+          // Act — tsgit side
+          const object = await readObject(ctx, id);
 
-        // Assert
-        expect(gitResult.exitCode).toBe(0);
-        expect(gitResult.stderr).toContain('Permission denied');
-        expect(object.type).toBe('blob');
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          expect(gitResult.stderr).toContain('Permission denied');
+          expect(object.type).toBe('blob');
+        });
       });
     });
 
-    describe('Given a repository whose objects/pack path is a regular file (D3)', () => {
+    describe('Given a repository whose objects/pack path is a regular file (D3), When both git and tsgit read the loose blob', () => {
       let dir = '';
       let blobId = '';
 

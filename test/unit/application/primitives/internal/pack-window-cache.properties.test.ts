@@ -20,10 +20,10 @@ describe('createPackWindowCache — read against a direct slice', () => {
               const length = 1 + (lengthSeed % (bytes.length - offset));
               const load = async (base: number, size: number): Promise<Uint8Array> =>
                 bytes.subarray(base, base + size);
-              const sut = createPackWindowCache({ windowBytes, limitBytes });
+              const cache = createPackWindowCache({ windowBytes, limitBytes });
 
               // Act
-              const result = await sut.read('pack', offset, length, load);
+              const result = await cache.read('pack', offset, length, load);
 
               // Assert
               expect(Array.from(result)).toEqual(
