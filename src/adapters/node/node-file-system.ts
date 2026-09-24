@@ -587,13 +587,23 @@ type SyncWholeFileAttempt =
   | { readonly kind: 'ineligible' }
   | { readonly kind: 'over-gate'; readonly fd: number; readonly size: number };
 
+/** `fstatSync` that closes the descriptor it was given when the stat itself fails. */
+function fstatOrClose(ops: SyncFsOperations, fd: number): fs.Stats {
+  try {
+    return ops.fstatSync(fd);
+  } catch (err) {
+    ops.closeSync(fd);
+    throw err;
+  }
+}
+
 function openAndAttemptSyncRead(
   ops: SyncFsOperations,
   real: string,
   maxBytes: number,
 ): SyncWholeFileAttempt {
   const fd = ops.openSync(real, REGULAR_READ_FLAGS);
-  const stat = ops.fstatSync(fd);
+  const stat = fstatOrClose(ops, fd);
   if (!stat.isFile()) {
     ops.closeSync(fd);
     return { kind: 'ineligible' };
@@ -606,6 +616,13 @@ function openAndAttemptSyncRead(
     ops.closeSync(fd);
   }
 }
+
+/**
+ * The largest file finished on the probe's own descriptor: `fs.readFile`'s
+ * ceiling, past which `fs.read`'s length would wrap. Larger files go to
+ * `readFile`, which refuses them exactly as the pooled arm does.
+ */
+const MAX_REUSED_FD_READ_BYTES = 2 ** 31 - 1;
 
 /** The async twin of {@link fillSync}, reading off an already-open descriptor. */
 async function fillAsync(
@@ -647,6 +664,10 @@ async function finishOverGateRead(
   fd: number,
   size: number,
 ): Promise<Uint8Array> {
+  if (size > MAX_REUSED_FD_READ_BYTES) {
+    ops.closeSync(fd);
+    return toBufferView(await fsOps.readFile(real));
+  }
   try {
     const buf = Buffer.allocUnsafeSlow(size);
     const filled = await fillAsync(ops, fd, buf, size);

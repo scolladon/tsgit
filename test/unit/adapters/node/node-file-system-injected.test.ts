@@ -5173,6 +5173,77 @@ describe('NodeFileSystem.read — sync-to-async fallback rows (DI)', () => {
       expect(closeSync).toHaveBeenCalledWith(FD);
     });
   });
+
+  describe('Given a policy-bearing adapter, When the file above the gate is larger than readFile accepts', () => {
+    it('Then read hands the file to fsOps.readFile instead of filling the probe descriptor', async () => {
+      // Arrange — a sparse file past 4 GiB: fs.read's 32-bit length would wrap
+      const beyondReadFileLimit = 2 ** 32 + 5;
+      const openSync = vi.fn().mockReturnValue(FD);
+      const fstatSync = vi.fn().mockReturnValue({ isFile: () => true, size: beyondReadFileLimit });
+      const readAsync = vi.fn();
+      const closeSync = vi.fn();
+      const refusal = Object.assign(new Error('File size is greater than 2 GiB'), {
+        code: 'ERR_FS_FILE_TOO_LARGE',
+      });
+      const readFile = vi.fn().mockRejectedValue(refusal);
+      const fsOps = fakeFsOps({
+        realpath: vi.fn().mockImplementation(async (input: string) => input),
+        readFile,
+      });
+      const syncIo: SyncIoPolicy = {
+        ops: fakeSyncFsOps({ openSync, fstatSync, readAsync, closeSync }),
+        budget: alwaysAdmit(),
+        maxSyncReadBytes: GATE,
+      };
+      const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps, syncIo });
+
+      // Act
+      let caught: unknown;
+      try {
+        await sut.read(target);
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(caught).toBeDefined();
+      expect(readAsync).not.toHaveBeenCalled();
+      expect(closeSync).toHaveBeenCalledWith(FD);
+      expect(readFile).toHaveBeenCalledWith(target);
+    });
+  });
+
+  describe('Given a policy-bearing adapter, When fstat fails on the probe descriptor', () => {
+    it('Then read closes the descriptor before the failure propagates', async () => {
+      // Arrange
+      const openSync = vi.fn().mockReturnValue(FD);
+      const fstatSync = vi.fn().mockImplementation(() => {
+        throw Object.assign(new Error('EIO: i/o error, fstat'), { code: 'EIO' });
+      });
+      const closeSync = vi.fn();
+      const fsOps = fakeFsOps({
+        realpath: vi.fn().mockImplementation(async (input: string) => input),
+      });
+      const syncIo: SyncIoPolicy = {
+        ops: fakeSyncFsOps({ openSync, fstatSync, closeSync }),
+        budget: alwaysAdmit(),
+        maxSyncReadBytes: GATE,
+      };
+      const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps, syncIo });
+
+      // Act
+      let caught: unknown;
+      try {
+        await sut.read(target);
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(caught).toBeDefined();
+      expect(closeSync).toHaveBeenCalledWith(FD);
+    });
+  });
 });
 
 describe('NodeFileSystem.readSlice — sync arm (DI)', () => {
