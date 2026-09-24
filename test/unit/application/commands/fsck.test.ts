@@ -5010,12 +5010,16 @@ describe('Given a packed object whose entry reads reject with PERMISSION_DENIED,
       // walk (`collectDeltaChain`) hits this PERMISSION_DENIED directly,
       // shadowing the stale loose garbled copy. The store fault still routes
       // into fsck's own header-only recovery walk, which degrades and warns
-      // with the same reason as before. A tiny configured window forces
-      // every readSlice to bypass the pack window cache, so the header probe
-      // and the entry read stay two distinct handle reads at two distinct
-      // positions — the fixture's own fault-injection axis.
+      // with the same reason as before. A registry-wide limit below the
+      // window size forces every readSlice to bypass the pack window cache
+      // (`limitBytes < windowBytes`), so the header probe and the entry read
+      // stay two distinct handle reads at two distinct positions — the
+      // fixture's own fault-injection axis. `packedGitWindowSize` itself
+      // cannot serve this role any more: git normalises it to a whole
+      // 2×page unit (8192 bytes), so a value of `1` no longer produces a
+      // window smaller than either read.
       const ctx = await initBareCtx();
-      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tpackedGitWindowSize = 1\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tpackedGitLimit = 1\n');
       const [blobId] = await writeSyntheticPack(
         ctx,
         'd13-degrade-walk',

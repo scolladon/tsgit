@@ -12,6 +12,29 @@ import { readConfig } from '../config-read.js';
 export const DEFAULT_PACK_WINDOW_BYTES = 64 * 1024;
 export const DEFAULT_PACK_WINDOW_LIMIT_BYTES = 16 * 1024 * 1024;
 
+// git's own page size is `getpagesize()` — 4096 on Linux, 16384 on Apple
+// silicon. This cache already assumed the Linux figure for its window-base
+// alignment before this normalisation existed; kept for a deterministic
+// budget across dev machines rather than a real (unavailable) page-size
+// probe.
+const PAGE_BYTES = 4096;
+// git's `pgsz_x2` (environment.c): 2× the OS page size, the unit
+// `core.packedGitWindowSize` is normalised to.
+const PACKED_GIT_WINDOW_UNIT = 2 * PAGE_BYTES;
+
+/**
+ * git normalises `core.packedGitWindowSize` to a whole `pgsz_x2` unit with a
+ * floor of one unit (`environment.c`): `packed_git_window_size /= pgsz_x2; if
+ * (packed_git_window_size < 1) packed_git_window_size = 1;
+ * packed_git_window_size *= pgsz_x2;`. Below one unit rounds UP to it; at or
+ * past one unit, integer division truncates the remainder DOWN into the same
+ * unit — never up to the next one.
+ */
+function normalizePackedGitWindowSize(value: number): number {
+  const units = Math.max(1, Math.floor(value / PACKED_GIT_WINDOW_UNIT));
+  return units * PACKED_GIT_WINDOW_UNIT;
+}
+
 export interface PackWindowBudget {
   readonly windowBytes: number;
   readonly limitBytes: number;
@@ -21,15 +44,18 @@ export interface PackWindowBudget {
  * `core.packedGitWindowSize`/`core.packedGitLimit` can only LOWER tsgit's
  * defaults — git's own figures are mmap reservations an eager heap read
  * cannot honour. The eager config gate refuses a malformed value before any
- * read reaches here, so a present key is always a valid number.
+ * read reaches here, so a present key is always a valid number. A present
+ * `packedGitWindowSize` is normalised to git's own `pgsz_x2` unit BEFORE the
+ * upper-bound clamp, exactly as git normalises it before ever comparing it
+ * to anything else.
  */
 export const packWindowBudgetFor = async (ctx: Context): Promise<PackWindowBudget> => {
   const { core } = await readConfig(ctx);
+  const windowSize = core?.packedGitWindowSize;
+  const normalizedWindow =
+    windowSize === undefined ? DEFAULT_PACK_WINDOW_BYTES : normalizePackedGitWindowSize(windowSize);
   return {
-    windowBytes: Math.min(
-      DEFAULT_PACK_WINDOW_BYTES,
-      core?.packedGitWindowSize ?? DEFAULT_PACK_WINDOW_BYTES,
-    ),
+    windowBytes: Math.min(DEFAULT_PACK_WINDOW_BYTES, normalizedWindow),
     limitBytes: Math.min(
       DEFAULT_PACK_WINDOW_LIMIT_BYTES,
       core?.packedGitLimit ?? DEFAULT_PACK_WINDOW_LIMIT_BYTES,

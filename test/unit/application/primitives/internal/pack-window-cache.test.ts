@@ -254,10 +254,13 @@ describe('packWindowBudgetFor', () => {
     });
   });
 
-  describe('Given core.packedGitWindowSize below the default', () => {
+  describe('Given core.packedGitWindowSize below the default but not a whole 2×page unit', () => {
     describe('When packWindowBudgetFor is called', () => {
-      it('Then windowBytes resolves to the config value', async () => {
-        // Arrange
+      it('Then windowBytes is normalised up to the nearest 2×page unit, not passed through raw', async () => {
+        // Arrange — 4096 is under one 8192-byte unit (2×4 KiB pages), so it
+        // floors to 0 units and is bumped to the 1-unit floor, exactly as
+        // git normalises `core.packedGitWindowSize` — the config value is
+        // NOT the config value's own byte count once git's own rule applies.
         const ctx = createMemoryContext();
         await seedConfig(ctx, '[core]\n\tpackedGitWindowSize = 4096\n');
 
@@ -265,7 +268,35 @@ describe('packWindowBudgetFor', () => {
         const result = await packWindowBudgetFor(ctx);
 
         // Assert
-        expect(result.windowBytes).toBe(4096);
+        expect(result.windowBytes).toBe(8192);
+      });
+    });
+  });
+
+  describe("Given core.packedGitWindowSize at the boundary values git's 2×page normalisation treats specially", () => {
+    describe('When packWindowBudgetFor is called', () => {
+      it.each([
+        ['0', 0],
+        ['1', 1],
+        ['one unit (8192)', 8192],
+        ['one unit + 1 (8193)', 8193],
+      ])('Then %s normalises to exactly one 8192-byte unit', async (_label, configured) => {
+        // Arrange — git: `packed_git_window_size /= pgsz_x2; if (< 1) = 1;
+        // packed_git_window_size *= pgsz_x2;` (environment.c, `pgsz_x2` =
+        // 2×getpagesize()). 0 and 1 hit the 1-unit floor; 8192 is already
+        // exactly one unit; 8193 truncates BACK DOWN into the same unit —
+        // never up to a second one. All four collapse to the same 8192,
+        // proving floor-with-a-floor, not a plain clamp (which would leave
+        // 0, 1, 8192, 8193 each distinct) and not ceiling (which would carry
+        // 8193 up to 16384).
+        const ctx = createMemoryContext();
+        await seedConfig(ctx, `[core]\n\tpackedGitWindowSize = ${configured}\n`);
+
+        // Act
+        const result = await packWindowBudgetFor(ctx);
+
+        // Assert
+        expect(result.windowBytes).toBe(8192);
       });
     });
   });
