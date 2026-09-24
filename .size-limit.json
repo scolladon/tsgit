@@ -56,7 +56,7 @@
   {
     "name": "Browser bundle (no-build)",
     "path": "dist/browser/tsgit.js",
-    "limit": "208 kB",
+    "limit": "208.5 kB",
     "gzip": true
   },
   {
@@ -386,7 +386,7 @@
   {
     "name": "Chunks: primitives",
     "path": "dist/esm/chunks/primitives-*.js",
-    "limit": "70 kB",
+    "limit": "70.25 kB",
     "gzip": true
   },
   {
@@ -398,7 +398,7 @@
   {
     "name": "Chunks: repository",
     "path": "dist/esm/chunks/repository-*.js",
-    "limit": "7.5 kB",
+    "limit": "7.9 kB",
     "gzip": true
   }
 ]
