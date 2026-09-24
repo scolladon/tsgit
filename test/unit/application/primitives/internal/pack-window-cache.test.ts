@@ -236,6 +236,64 @@ describe('createPackWindowCache', () => {
       });
     });
   });
+
+  describe('Given two concurrent reads that miss the same uncached window', () => {
+    describe('When both are read at once', () => {
+      it('Then load is called exactly once, and each read gets its own requested view', async () => {
+        // Arrange — both offsets fall inside the same [0, 256) window, so an
+        // unsynchronised second miss would start a SECOND load before the
+        // first one ever populates the cache.
+        const source = fakeSource(1000);
+        let releaseLoad: ((value: Uint8Array) => void) | undefined;
+        const gate = new Promise<Uint8Array>((resolve) => {
+          releaseLoad = resolve;
+        });
+        const load = vi.fn(async (): Promise<Uint8Array> => gate);
+        const cache = createPackWindowCache({ windowBytes: 256, limitBytes: 4096 });
+
+        // Act
+        const first = cache.read('pack-a', 10, 20, load);
+        const second = cache.read('pack-a', 40, 30, load);
+        releaseLoad?.(source.subarray(0, 256));
+        const [firstResult, secondResult] = await Promise.all([first, second]);
+
+        // Assert
+        expect(load).toHaveBeenCalledTimes(1);
+        expect(Array.from(firstResult)).toEqual(Array.from(source.subarray(10, 30)));
+        expect(Array.from(secondResult)).toEqual(Array.from(source.subarray(40, 70)));
+      });
+    });
+  });
+
+  describe('Given an in-flight load for a key', () => {
+    describe('When clear() runs before the load settles', () => {
+      it('Then a read arriving after clear() starts its own fresh load, not the stale in-flight one', async () => {
+        // Arrange
+        const source = fakeSource(1000);
+        let releaseFirstLoad: ((value: Uint8Array) => void) | undefined;
+        const firstGate = new Promise<Uint8Array>((resolve) => {
+          releaseFirstLoad = resolve;
+        });
+        const load = vi
+          .fn<(base: number, size: number) => Promise<Uint8Array>>()
+          .mockImplementationOnce(async () => firstGate)
+          .mockImplementation(async (base, size) => source.subarray(base, base + size));
+        const cache = createPackWindowCache({ windowBytes: 256, limitBytes: 4096 });
+        const stalePending = cache.read('pack-a', 10, 20, load);
+
+        // Act
+        cache.clear();
+        const fresh = await cache.read('pack-a', 10, 20, load);
+        releaseFirstLoad?.(source.subarray(0, 256));
+        await stalePending;
+
+        // Assert — the post-clear read did not join the pre-clear in-flight
+        // load; it issued its own.
+        expect(load).toHaveBeenCalledTimes(2);
+        expect(Array.from(fresh)).toEqual(Array.from(source.subarray(10, 30)));
+      });
+    });
+  });
 });
 
 describe('packWindowBudgetFor', () => {

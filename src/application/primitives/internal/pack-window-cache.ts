@@ -95,15 +95,18 @@ export function createPackWindowCache({
   limitBytes,
 }: PackWindowBudget): PackWindowCache {
   const windows = createLruCache<Uint8Array>(limitBytes);
+  // Single-flight for a cache MISS: concurrent readers of the same key join
+  // the one load already under way instead of each starting their own full
+  // window read. Cleared on settle (the flight is over either way) and by
+  // `clear()` (a fault or a refresh must not let a later reader join a
+  // flight the cache no longer stands behind).
+  const inFlightLoads = new Map<string, Promise<Uint8Array>>();
 
-  const cachedWindow = async (
-    packName: string,
+  const loadAndCache = async (
+    key: string,
     base: number,
     load: WindowLoader,
   ): Promise<Uint8Array> => {
-    const key = windowKey(packName, base);
-    const cached = windows.get(key);
-    if (cached !== undefined) return cached;
     const window = await load(base, windowBytes);
     // A window base past the pack's own end loads empty — the LRU rejects a
     // zero-byte entry (there is nothing to evict room for), and caching it
@@ -111,6 +114,23 @@ export function createPackWindowCache({
     // empty load either way.
     if (window.byteLength > 0) windows.set(key, window, window.byteLength);
     return window;
+  };
+
+  const cachedWindow = (
+    packName: string,
+    base: number,
+    load: WindowLoader,
+  ): Promise<Uint8Array> => {
+    const key = windowKey(packName, base);
+    const cached = windows.get(key);
+    if (cached !== undefined) return Promise.resolve(cached);
+    const existing = inFlightLoads.get(key);
+    if (existing !== undefined) return existing;
+    const pending = loadAndCache(key, base, load).finally(() => {
+      inFlightLoads.delete(key);
+    });
+    inFlightLoads.set(key, pending);
+    return pending;
   };
 
   const viewAt = (window: Uint8Array, base: number, offset: number, length: number): Uint8Array =>
@@ -136,5 +156,13 @@ export function createPackWindowCache({
     return viewAt(window, windowBase, offset, length);
   };
 
-  return { read, clear: windows.clear };
+  const clear = (): void => {
+    windows.clear();
+    // A reader arriving after clear() must never join a flight this cache no
+    // longer stands behind — its eventual fill would write into the
+    // just-cleared LRU under a key nothing here still vouches for.
+    inFlightLoads.clear();
+  };
+
+  return { read, clear };
 }
