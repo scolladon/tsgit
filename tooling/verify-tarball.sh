@@ -175,7 +175,15 @@ done
 # bisection that replaced the by-name map are runtime code every distribution
 # form ships. Neither is removable without dropping the published documentation
 # or the ordering parity it exists to provide.
-SIZE_CAP=$((970 * 1024))
+# Raised 970 -> 984 KiB by the Node I/O strategy and cold read pipeline: the
+# measured tarball landed at 1 005 951 B, 12 671 B over the old cap. The growth
+# is runtime code every distribution form ships: the synchronous fast path and
+# its per-turn budget, the non-throwing lstat/readUtf8 probes on every adapter,
+# the batched open-time layout probes, the pack window cache, the browser
+# directory-handle cache, and the declarations and doc comments for the new
+# `io` option and `NodeFileSystemOptions`. The refactoring pass that follows is
+# expected to trim part of it and lower this cap again.
+SIZE_CAP=$((984 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
