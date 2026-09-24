@@ -732,8 +732,12 @@ describe.skipIf(!GIT_AVAILABLE)('linked-worktree discovery interop', () => {
         expect(threadpoolData.code).toBe(syncData.code);
         expect(threadpoolData.path).toBe(syncData.path);
 
-        // Assert — git co-refuses the same BOM-prefixed gitfile
-        expect(tryRunGitWithExit(['-C', dir, 'rev-parse', '--git-dir']).exitCode).toBe(128);
+        // Assert — git co-refuses the same BOM-prefixed gitfile with its own
+        // "invalid gitfile format" fatal, tying the exit code to the specific
+        // refusal tsgit's GITFILE_INVALID_FORMAT names, not just any 128 exit.
+        const gitRefusal = tryRunGitWithExit(['-C', dir, 'rev-parse', '--git-dir']);
+        expect(gitRefusal.exitCode).toBe(128);
+        expect(gitRefusal.stderr).toContain('invalid gitfile format');
       });
     });
   });
