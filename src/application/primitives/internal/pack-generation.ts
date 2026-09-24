@@ -104,18 +104,25 @@ export function emptyGeneration(): PackGeneration {
   };
 }
 
-/** One pack's settled `.idx` load, kept alongside its origin pack so the
- *  bounded fan-out below can be walked back into candidate order once every
- *  load has settled. */
+/**
+ * One pack's settled `.idx` load, kept alongside its origin pack so the
+ * bounded fan-out below can be walked back into candidate order once every
+ * load has settled. `fatal` captures a non-skippable rejection AS DATA
+ * instead of letting it escape the worker: an error thrown from inside
+ * `boundedMap`'s `worker` rejects whichever runner's promise settles first
+ * in REAL completion order, not candidate order — capturing it here lets the
+ * candidate-order walk below decide which fatal fault wins.
+ */
 type IndexOutcome =
   | { readonly kind: 'loaded'; readonly index: PackIndex }
-  | { readonly kind: 'fault'; readonly data: TsgitErrorData };
+  | { readonly kind: 'fault'; readonly data: TsgitErrorData }
+  | { readonly kind: 'fatal'; readonly error: unknown };
 
 async function loadIndexOutcome(pack: RegisteredPack): Promise<IndexOutcome> {
   try {
     return { kind: 'loaded', index: await pack.index() };
   } catch (err) {
-    if (!isSkippableIdxFault(err)) throw err;
+    if (!isSkippableIdxFault(err)) return { kind: 'fatal', error: err };
     return { kind: 'fault', data: err.data };
   }
 }
@@ -149,7 +156,10 @@ function warnUnreadableIndexOnce(
  * Every load races in the ctx's I/O-bound pool, but the walk that builds
  * `packs`/`indexFaults` and warns runs afterward, over the settled results in
  * CANDIDATE order — never completion order — so the accessible list and the
- * warn sequence stay identical to a strictly sequential scan.
+ * warn sequence stay identical to a strictly sequential scan. A fatal fault
+ * is rethrown from that same candidate-order walk, so two packs completing
+ * in reverse of candidate order still surface the EARLIER candidate's fault,
+ * never whichever happened to finish first.
  */
 export async function resolveIndexes(
   ctx: Context,
@@ -161,6 +171,7 @@ export async function resolveIndexes(
   const faults: Array<{ readonly name: string; readonly data: TsgitErrorData }> = [];
   packs.forEach((pack, position) => {
     const outcome = outcomes[position]!;
+    if (outcome.kind === 'fatal') throw outcome.error;
     if (outcome.kind === 'loaded') {
       loaded.push({ pack, index: outcome.index });
       return;

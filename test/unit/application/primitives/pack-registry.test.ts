@@ -1592,6 +1592,69 @@ describe('resolveIndexes — ordered parallel load', () => {
   });
 });
 
+describe('resolveIndexes — fatal faults surface in candidate order', () => {
+  describe('Given two packs whose .idx reads reject with different FATAL faults, the later candidate completing first', () => {
+    describe('When all() is called', () => {
+      it("Then the earlier candidate's fault surfaces, not whichever completed first", async () => {
+        // Arrange — a fatal (non-skippable) fault must never escape a
+        // worker mid-fan-out and win Promise.all's completion-order race;
+        // it is captured as an outcome and rethrown during the ordered
+        // walk, so the FIRST candidate's fault always wins regardless of
+        // which read settles first.
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'fatal-order-a', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('a') },
+        ]);
+        await writeSyntheticPack(ctx, 'fatal-order-b', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('b') },
+        ]);
+        const delayByIdxName: Readonly<Record<string, number>> = {
+          'pack-fatal-order-a.idx': 20,
+          'pack-fatal-order-b.idx': 0,
+        };
+        const wrapped: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            read: async (path: string) => {
+              const name = path.split('/').pop() ?? path;
+              const delay = delayByIdxName[name];
+              if (delay !== undefined) await new Promise((resolve) => setTimeout(resolve, delay));
+              if (name === 'pack-fatal-order-a.idx') {
+                throw unsupportedOperation('idx-fault-a', 'boom-a');
+              }
+              if (name === 'pack-fatal-order-b.idx') {
+                throw unsupportedOperation('idx-fault-b', 'boom-b');
+              }
+              return ctx.fs.read(path);
+            },
+          },
+        };
+        const sut = await createPackRegistry(wrapped);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.all();
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert — pack-fatal-order-b's read completes first (0ms delay),
+        // yet pack-fatal-order-a's fault (the earlier candidate) is what
+        // surfaces.
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('UNSUPPORTED_OPERATION');
+        if (data.code !== 'UNSUPPORTED_OPERATION') {
+          expect.fail(`expected UNSUPPORTED_OPERATION, got ${data.code}`);
+        }
+        expect(data.operation).toBe('idx-fault-a');
+      });
+    });
+  });
+});
+
 describe('PackRegistry.lookup — settled indexes walk synchronously', () => {
   describe("Given a registry whose generation already settled every pack's index", () => {
     describe('When lookup() misses every pack', () => {
