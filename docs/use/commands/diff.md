@@ -91,6 +91,15 @@ const noBlank = await repo.diff({ from: 'HEAD~1', ignoreBlankLines: true });
 - A `rename` or `copy` change carries `oldId`/`newId`/`oldMode`/`newMode` (both
   sides of the pairing) and a `similarity` score (`SimilarityScore` with `score`
   in `0..MAX_SCORE` and `maxScore === MAX_SCORE`).
+- **Exact rename pairing** (identical content, `similarity.score === MAX_SCORE`)
+  matches git's `-M`: adds are matched in path order, and each deleted path is
+  the source of at most one rename — a second add with the same content shows
+  as an `add`, not a second `rename`. Among several same-content deletes, a
+  matching basename wins; otherwise the first delete in path order, examining
+  at most 100 candidates per add (git's fixed bound). Regular files pair
+  across the executable bit; symlinks, gitlinks, and trees pair only with an
+  identical mode. Exact pairing is never skipped by the rename limit — the
+  limit only gates similarity scoring for non-identical content.
 - A `modify` may carry a `broken` dissimilarity datum (`SimilarityScore`) when `-B`
   break detection kept the modify broken rather than folding it into a rename. The
   `score` is git's break-detection dissimilarity (`merge_score`), which the caller
