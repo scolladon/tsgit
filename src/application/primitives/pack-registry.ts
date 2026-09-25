@@ -1216,18 +1216,26 @@ export async function createPackRegistry(ctx: Context): Promise<PackRegistry> {
       // retired one's keys simply become unreachable once closed below —
       // nothing needs evicting either way.
       //
-      // storeGate is ALSO left settled — git's own `reprepare_packed_git`
-      // keeps a loaded multi-pack-index across a re-scan too, never
-      // re-reading and re-parsing it on every miss wave (measured: 1.32
-      // ms/miss on an 8.4 MB midx under the old teardown, 0 further I/O once
-      // kept). `scanPacks` still rebinds this SAME midx set against the
-      // fresh pack listing below (`bindMidx`), so a pack that appeared after
-      // the midx loaded becomes a non-midx candidate rather than an invisible
-      // one. A midx that never loaded, or previously REJECTED (a Tier-A
-      // fault), has nothing settled here — the promise-memo's own
-      // clear-on-rejection already emptied it — so `storeGate.get()` below
-      // still re-probes it exactly once, matching git dying again on a
-      // structurally self-inconsistent midx.
+      // storeGate is left settled ONLY when a multi-pack-index is actually
+      // loaded — git's own `reprepare_packed_git` (`prepare_multi_pack_index_one`)
+      // returns early exactly then, never re-reading and re-parsing an
+      // already-loaded midx on every miss wave (measured: 1.32 ms/miss on an
+      // 8.4 MB midx under the old teardown, 0 further I/O once kept).
+      // `scanPacks` still rebinds this SAME midx set against the fresh pack
+      // listing below (`bindMidx`), so a pack that appeared after the midx
+      // loaded becomes a non-midx candidate rather than an invisible one.
+      // When NO midx is bound — none on disk at this scan, or every
+      // candidate was a Tier-B discard — the settled value still carries
+      // `set: undefined` (a REJECTED, Tier-A gate is different: the
+      // promise-memo's own clear-on-rejection already emptied it), so it is
+      // captured and cleared here rather than kept: git calls
+      // `load_multi_pack_index` again whenever none is already loaded,
+      // which is what lets a midx written mid-session (`git
+      // multi-pack-index write`, `repack --write-midx`) get picked up on
+      // the very next re-scan instead of staying invisible for the rest of
+      // the session.
+      const settledMidxLoad = storeGate.peekSettled();
+      if (settledMidxLoad?.set === undefined) storeGate.clear();
       packDirListing.clear();
       scan.clear();
       // Set and consumed with no `await` between: scanPacks reads this

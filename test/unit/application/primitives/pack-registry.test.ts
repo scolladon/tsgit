@@ -7554,6 +7554,38 @@ describe('PackRegistry.reprepare', () => {
     });
   });
 
+  describe('Given no multi-pack-index at the first scan, then one written to disk before the next miss', () => {
+    describe('When a full-object-miss wave calls reprepare()', () => {
+      it('Then the newly-written multi-pack-index is loaded and bound on the next scan', async () => {
+        // Arrange — assertLoadable() forces the ONE midx load a read
+        // already pays; at this point objects/pack carries no midx at all.
+        const ctx = await buildSeededContext();
+        const idA = await writeSingleBlobPack(ctx, 'A', 'midx-late-write');
+        const registry = await createPackRegistry(ctx);
+        await registry.assertLoadable();
+        const before = await registry.midxHealth();
+
+        // Act — a midx lands on disk mid-session (`git multi-pack-index
+        // write`), then a miss wave triggers reprepare()'s own re-scan.
+        await writeMidxBytes(
+          ctx,
+          buildMidx(
+            healthyMidxSpec({
+              packNames: ['pack-A.idx'],
+              entries: [{ id: idA, packIndex: 0, offset: PACK_HEADER_SIZE }],
+            }),
+          ),
+        );
+        await registry.reprepare();
+        const after = await registry.midxHealth();
+
+        // Assert
+        expect(before.artefact).toBeUndefined();
+        expect(after.artefact).toBe('multi-pack-index');
+      });
+    });
+  });
+
   describe('Given a probe that cached an empty fanout listing for an id, and its loose file is later written directly to disk', () => {
     describe('When resolveObject is called again for that id', () => {
       it("Then it resolves via a re-scan that drops just that id's cached fanout listing", async () => {
