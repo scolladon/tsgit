@@ -10,7 +10,7 @@ repo.primitives.diffTrees(
   b: ObjectId | undefined,
   options?: {
     detectRenames?: boolean;
-    renameOptions?: RenameDetectOptions; // threshold, copies, copyThreshold, breakRewrites
+    renameOptions?: RenameDetectOptions; // threshold, copies, breakRewrites
     recursive?: boolean;
     ignoreWhitespace?: 'all' | 'change' | 'at-eol';  // -w / -b / --ignore-space-at-eol
     ignoreCrAtEol?: boolean;                          // --ignore-cr-at-eol
@@ -25,7 +25,7 @@ interface TreeDiff {
 
 `renameOptions` threads through to the detection engine unchanged. See
 [`diff`](../commands/diff.md) for the full `RenameDetectOptions` knob reference
-(`threshold`, `copies`, `copyThreshold`, `breakRewrites`).
+(`threshold`, `copies`, `breakRewrites`).
 
 `b` may be `undefined`, interpreted as the empty tree (every entry under `a` shows as added).
 

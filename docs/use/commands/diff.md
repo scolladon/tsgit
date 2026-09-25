@@ -20,11 +20,10 @@ interface DiffOptions {
 }
 
 // RenameDetectOptions knobs:
-//   threshold?:      numeric 0..MAX_SCORE rename similarity gate (default 50%); callers map
+//   threshold?:      numeric 0..MAX_SCORE similarity gate for renames and copies (default 50%); callers map
 //                    git's -M50% / -M50 / -M0.5 forms to this number.
 //   copies?:         'off' (default) | 'on' (detect copies from modified sources, -C) |
 //                    'harder' (widen copy sources to all preimage paths, -C -C)
-//   copyThreshold?:  numeric 0..MAX_SCORE copy similarity gate; defaults to threshold.
 //   breakRewrites?:  { score: number; merge: number } | false (default false, -B off)
 //                    score: dissimilarity gate to attempt a break; merge: gate to keep broken.
 //                    A merge value of 0 maps to the default keep-broken gate (60%).
