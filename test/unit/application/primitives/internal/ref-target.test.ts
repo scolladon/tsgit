@@ -1,10 +1,15 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
+import { forgetLooseOidPrefix } from '../../../../../src/application/primitives/internal/loose-oid-cache.js';
 import { assertRefTargetValid } from '../../../../../src/application/primitives/internal/ref-target.js';
+import { getPackRegistry } from '../../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
-import type { ObjectId, RefName } from '../../../../../src/domain/objects/index.js';
+import type { TsgitError } from '../../../../../src/domain/error.js';
+import type { Blob, ObjectId, RefName } from '../../../../../src/domain/objects/index.js';
+import { serializeObject } from '../../../../../src/domain/objects/index.js';
 import { computeLooseObjectPath } from '../../../../../src/domain/storage/loose-path.js';
-import { instrumentedContext } from '../fixtures.js';
+import { buildSeededContext, instrumentedContext } from '../fixtures.js';
+import { writeSyntheticPack } from '../pack-fixture.js';
 
 const REMEMBERED_TARGETS = 4096;
 const TAG_REF = 'refs/tags/verified' as RefName;
@@ -46,6 +51,66 @@ describe('assertRefTargetValid', () => {
         };
         expect(touchesOf(oldest).length).toBeGreaterThan(0);
         expect(touchesOf(newest)).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a memoised target moved into a pack written after the registry last scanned', () => {
+    describe('When the target is verified again for a second ref write', () => {
+      it('Then the write succeeds via exactly one reprepare()', async () => {
+        // Arrange
+        const content = ENCODER.encode('moved into a pack');
+        const blob: Blob = { type: 'blob', content, id: '' as ObjectId };
+        const ctx = await buildSeededContext({ objects: [blob] });
+        const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
+        await assertRefTargetValid(ctx, TAG_REF, id); // populates the memo
+        const registry = await getPackRegistry(ctx);
+        await registry.all(); // forces the initial scan while the pack dir is still empty
+        const loosePath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(id)}`;
+        await ctx.fs.rm(loosePath);
+        // Mirrors the gc/repack primitive's own invalidation of the loose
+        // membership cache right after it unlinks a just-repacked object.
+        forgetLooseOidPrefix(ctx, id);
+        await writeSyntheticPack(ctx, 'ref-target-moved', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const reprepareSpy = vi.spyOn(registry, 'reprepare');
+
+        // Act
+        await assertRefTargetValid(ctx, TAG_REF, id);
+
+        // Assert
+        expect(reprepareSpy).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Given a memoised target that has since vanished entirely', () => {
+    describe('When the target is verified again for a second ref write', () => {
+      it('Then it refuses as OBJECT_NOT_FOUND via exactly one reprepare()', async () => {
+        // Arrange
+        const content = ENCODER.encode('vanishes without a trace');
+        const blob: Blob = { type: 'blob', content, id: '' as ObjectId };
+        const ctx = await buildSeededContext({ objects: [blob] });
+        const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
+        await assertRefTargetValid(ctx, TAG_REF, id); // populates the memo
+        const loosePath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(id)}`;
+        await ctx.fs.rm(loosePath);
+        forgetLooseOidPrefix(ctx, id);
+        const registry = await getPackRegistry(ctx);
+        const reprepareSpy = vi.spyOn(registry, 'reprepare');
+
+        // Act
+        let caught: unknown;
+        try {
+          await assertRefTargetValid(ctx, TAG_REF, id);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({ code: 'OBJECT_NOT_FOUND', id });
+        expect(reprepareSpy).toHaveBeenCalledTimes(1);
       });
     });
   });
