@@ -82,41 +82,43 @@ describe('NodeCompressor', () => {
       });
     });
 
-    describe('Given a decoded output that exactly fills its own dedicated buffer', () => {
+    describe('Given inflateSync returns an output that exactly fills its own buffer', () => {
       describe('When inflate runs', () => {
-        it('Then the result is a zero-copy view over the same ArrayBuffer inflateSync returned', async () => {
-          // Arrange — an output past a single internal chunk (16 KiB) forces
-          // node:zlib to allocate a dedicated, exact-fit buffer for it.
+        it('Then the result is a zero-copy view over that same ArrayBuffer', async () => {
+          // Arrange — how node:zlib sizes its output varies across Node
+          // versions, so the exact-fit case is supplied rather than provoked.
           const sut = new NodeCompressor();
           const payload = new Uint8Array(20000).fill(0x41);
           const deflated = await sut.deflate(payload);
+          const exactFit = Buffer.alloc(payload.length, 0x41);
+          inflateSyncSpy.mockReturnValueOnce(exactFit);
 
           // Act
           const result = await sut.inflate(deflated);
 
           // Assert
-          const rawOutput = inflateSyncSpy.mock.results[0]?.value as Buffer;
-          expect(result.buffer).toBe(rawOutput.buffer);
+          expect(result.buffer).toBe(exactFit.buffer);
           expect(Array.from(result)).toEqual(Array.from(payload));
         });
       });
     });
 
-    describe("Given a decoded output that only partially fills node:zlib's shared internal chunk buffer", () => {
+    describe('Given inflateSync returns an output that is a slice of a larger buffer', () => {
       describe('When inflate runs', () => {
-        it('Then the result is copied into its own buffer, distinct from the internal chunk', async () => {
-          // Arrange — an output well under 16 KiB shares node:zlib's internal
-          // chunk buffer with bytes past its own length.
+        it('Then the result is copied into its own buffer, distinct from the larger one', async () => {
+          // Arrange — a slice aliases an allocation that may still be written to.
           const sut = new NodeCompressor();
           const payload = new Uint8Array(100).fill(0x41);
           const deflated = await sut.deflate(payload);
+          const larger = Buffer.alloc(payload.length * 4, 0x41);
+          const slice = larger.subarray(0, payload.length);
+          inflateSyncSpy.mockReturnValueOnce(slice);
 
           // Act
           const result = await sut.inflate(deflated);
 
           // Assert
-          const rawOutput = inflateSyncSpy.mock.results[0]?.value as Buffer;
-          expect(result.buffer).not.toBe(rawOutput.buffer);
+          expect(result.buffer).not.toBe(larger.buffer);
           expect(Array.from(result)).toEqual(Array.from(payload));
         });
       });

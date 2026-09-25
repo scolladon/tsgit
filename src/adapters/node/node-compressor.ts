@@ -96,11 +96,10 @@ const isTruncatedStreamError = (err: NodeJS.ErrnoException): boolean => err.code
 
 /** A zlib output buffer that starts at byte 0 and fills its entire backing
  *  ArrayBuffer owns that allocation outright — nothing else can be sharing
- *  it, and node:zlib never writes into it again once it's been handed out
- *  (a full internal chunk buffer is retired in favour of a fresh one; a
- *  one-shot sync call always allocates exact-fit for such an output). A
- *  smaller or offset slice aliases a larger allocation (node:zlib's shared
- *  internal chunk buffer) that may still be written to. */
+ *  it, and node:zlib never writes into it again once it's been handed out.
+ *  A smaller or offset slice aliases a larger allocation (node:zlib's shared
+ *  internal chunk buffer) that may still be written to. Which of the two a
+ *  call returns depends on the Node version, so both are handled. */
 function ownsExactFitBuffer(out: Buffer): boolean {
   return out.byteOffset === 0 && out.byteLength === out.buffer.byteLength;
 }
