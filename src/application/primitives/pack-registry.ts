@@ -1215,7 +1215,19 @@ export async function createPackRegistry(ctx: Context): Promise<PackRegistry> {
       // reused RegisteredPack instance keeps its own window keys valid; a
       // retired one's keys simply become unreachable once closed below —
       // nothing needs evicting either way.
-      storeGate.clear();
+      //
+      // storeGate is ALSO left settled — git's own `reprepare_packed_git`
+      // keeps a loaded multi-pack-index across a re-scan too, never
+      // re-reading and re-parsing it on every miss wave (measured: 1.32
+      // ms/miss on an 8.4 MB midx under the old teardown, 0 further I/O once
+      // kept). `scanPacks` still rebinds this SAME midx set against the
+      // fresh pack listing below (`bindMidx`), so a pack that appeared after
+      // the midx loaded becomes a non-midx candidate rather than an invisible
+      // one. A midx that never loaded, or previously REJECTED (a Tier-A
+      // fault), has nothing settled here — the promise-memo's own
+      // clear-on-rejection already emptied it — so `storeGate.get()` below
+      // still re-probes it exactly once, matching git dying again on a
+      // structurally self-inconsistent midx.
       packDirListing.clear();
       scan.clear();
       // Set and consumed with no `await` between: scanPacks reads this

@@ -7477,6 +7477,75 @@ describe('PackRegistry.reprepare', () => {
     });
   });
 
+  describe('Given a loaded multi-pack-index bound to a registered pack', () => {
+    describe('When reprepare() runs for two successive full-object misses', () => {
+      it('Then the multi-pack-index is never re-statted or re-read', async () => {
+        // Arrange — assertLoadable() forces the ONE midx load every read
+        // already pays ahead of a loose-vs-pack branch; reprepare() must
+        // keep that settled load rather than tearing it down, the way
+        // `refresh()` deliberately does.
+        const ctx = await buildSeededContext();
+        const idA = await writeSingleBlobPack(ctx, 'A', 'midx-keep-a');
+        await writeMidxBytes(
+          ctx,
+          buildMidx(
+            healthyMidxSpec({
+              packNames: ['pack-A.idx'],
+              entries: [{ id: idA, packIndex: 0, offset: PACK_HEADER_SIZE }],
+            }),
+          ),
+        );
+        const { ctx: instrumented, calls } = instrumentedContext(ctx);
+        const registry = await createPackRegistry(instrumented);
+        await registry.assertLoadable();
+        const baseline = calls().length;
+
+        // Act — two miss re-scans, mirroring rescanOnFullMiss's own
+        // per-wave call to reprepare().
+        await registry.reprepare();
+        await registry.reprepare();
+
+        // Assert
+        const midxCalls = calls()
+          .slice(baseline)
+          .filter((call) => call.path.endsWith('/objects/pack/multi-pack-index'));
+        expect(midxCalls).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a loaded multi-pack-index bound to one pack, and a second pack appearing after it loaded', () => {
+    describe('When reprepare() runs and the new pack is looked up', () => {
+      it('Then the new pack is found even though the kept midx does not name it', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const idA = await writeSingleBlobPack(ctx, 'A', 'midx-keep-existing');
+        await writeMidxBytes(
+          ctx,
+          buildMidx(
+            healthyMidxSpec({
+              packNames: ['pack-A.idx'],
+              entries: [{ id: idA, packIndex: 0, offset: PACK_HEADER_SIZE }],
+            }),
+          ),
+        );
+        const registry = await createPackRegistry(ctx);
+        await registry.assertLoadable();
+
+        // Act — a pack the kept midx has never heard of appears on disk;
+        // scanPacks's own `bindMidx` re-binds the KEPT midx set against the
+        // NEW pack listing, so the newcomer becomes a non-midx candidate
+        // rather than an invisible one.
+        const idB = await writeSingleBlobPack(ctx, 'B', 'midx-keep-new');
+        await registry.reprepare();
+        const hit = await registry.lookup(idB);
+
+        // Assert
+        expect(hit?.pack.name).toBe('pack-B');
+      });
+    });
+  });
+
   describe('Given a probe that cached an empty fanout listing for an id, and its loose file is later written directly to disk', () => {
     describe('When resolveObject is called again for that id', () => {
       it("Then it resolves via a re-scan that drops just that id's cached fanout listing", async () => {
