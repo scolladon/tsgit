@@ -562,14 +562,12 @@ export function readRegularFileSync(
   real: string,
   maxBytes: number,
 ): Uint8Array | undefined {
-  const fd = ops.openSync(real, REGULAR_READ_FLAGS);
-  try {
-    const stat = ops.fstatSync(fd);
-    if (!stat.isFile() || stat.size > maxBytes) return undefined;
-    return readWholeFileSync(ops, fd, stat.size);
-  } finally {
-    ops.closeSync(fd);
+  const attempt = openAndAttemptSyncRead(ops, real, maxBytes);
+  if (attempt.kind === 'over-gate') {
+    ops.closeSync(attempt.fd);
+    return undefined;
   }
+  return attempt.kind === 'read' ? attempt.bytes : undefined;
 }
 
 /**
