@@ -4161,7 +4161,7 @@ describe('NodeFileSystem — options object (DI)', () => {
         // Arrange
         const rootDir = '/root';
         const { fsOps, getMaxInFlight } = fakeRemoveTreeFsOps(rootDir, 16);
-        const sut = new NodeFileSystem(rootDir, { fsOps });
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps });
 
         // Act
         await sut.rmRecursive(rootDir);
@@ -4178,7 +4178,11 @@ describe('NodeFileSystem — options object (DI)', () => {
         // Arrange
         const rootDir = '/root';
         const { fsOps, getMaxInFlight } = fakeRemoveTreeFsOps(rootDir, 16);
-        const sut = new NodeFileSystem(rootDir, { fsOps, removeTreeConcurrency: 2 });
+        const sut = new NodeFileSystem(rootDir, {
+          pathPolicy: posixPolicy,
+          fsOps,
+          removeTreeConcurrency: 2,
+        });
 
         // Act
         await sut.rmRecursive(rootDir);

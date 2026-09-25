@@ -107,14 +107,14 @@ describe('Given no io option', () => {
       }
     });
 
-    it("Then the layout probe's stat member reaches statSync", async () => {
+    it("Then the layout probe's stat member reaches lstatSync, which it calls first", async () => {
       // Arrange & Act
       const sut = openRepository;
       const repository = await sut({ cwd: tmpdir });
 
       // Assert
       try {
-        expect(spyOps.statSync).toHaveBeenCalled();
+        expect(spyOps.lstatSync).toHaveBeenCalled();
       } finally {
         await repository.dispose();
       }
@@ -240,7 +240,7 @@ describe("Given io: 'sync-fast-path'", () => {
 
       // Assert
       try {
-        expect(spyOps.statSync).toHaveBeenCalled();
+        expect(spyOps.lstatSync).toHaveBeenCalled();
       } finally {
         await repository.dispose();
       }
@@ -376,7 +376,7 @@ describe('Given the sync stat always throws a non-ENOENT error', () => {
 
         // Assert — a genuine, fully-opened repository, not a degraded stub.
         try {
-          expect(repository.ctx.layout.workDir).toBe(fs.realpathSync(tmpdir));
+          expect(repository.ctx.layout.workDir).toBe(fs.realpathSync.native(tmpdir));
         } finally {
           await repository.dispose();
         }
@@ -402,7 +402,7 @@ describe('Given the sync lstat always throws a non-ENOENT error', () => {
 
         // Assert — a genuine, fully-opened repository, not a degraded stub.
         try {
-          expect(repository.ctx.layout.workDir).toBe(fs.realpathSync(tmpdir));
+          expect(repository.ctx.layout.workDir).toBe(fs.realpathSync.native(tmpdir));
         } finally {
           await repository.dispose();
         }
@@ -455,7 +455,7 @@ describe('Given both the sync read and its async fallback fail', () => {
 
       // Assert — a genuine, fully-opened repository, not a degraded stub.
       try {
-        expect(repository.ctx.layout.workDir).toBe(fs.realpathSync(tmpdir));
+        expect(repository.ctx.layout.workDir).toBe(fs.realpathSync.native(tmpdir));
       } finally {
         await repository.dispose();
       }
@@ -475,7 +475,7 @@ describe("Given io: 'threadpool' and the async readFile fails", () => {
 
       // Assert — a genuine, fully-opened repository, not a degraded stub.
       try {
-        expect(repository.ctx.layout.workDir).toBe(fs.realpathSync(tmpdir));
+        expect(repository.ctx.layout.workDir).toBe(fs.realpathSync.native(tmpdir));
       } finally {
         await repository.dispose();
       }
@@ -547,7 +547,7 @@ describe('Given a work tree whose .git is a symlink to a git directory elsewhere
 
       // Assert
       try {
-        expect(repository.ctx.layout.gitDir).toBe(fs.realpathSync(target));
+        expect(repository.ctx.layout.gitDir).toBe(fs.realpathSync.native(target));
       } finally {
         await repository.dispose();
         await rm(target, { recursive: true, force: true });
