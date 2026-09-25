@@ -175,22 +175,16 @@ done
 # bisection that replaced the by-name map are runtime code every distribution
 # form ships. Neither is removable without dropping the published documentation
 # or the ordering parity it exists to provide.
-# Raised 970 -> 984 KiB by the Node I/O strategy and cold read pipeline: the
-# measured tarball landed at 1 005 951 B, 12 671 B over the old cap. The growth
-# is runtime code every distribution form ships: the synchronous fast path and
-# its per-turn budget, the non-throwing lstat/readUtf8 probes on every adapter,
-# the batched open-time layout probes, the pack window cache, the browser
-# directory-handle cache, and the declarations and doc comments for the new
-# `io` option and `NodeFileSystemOptions`. The refactoring pass that follows is
-# expected to trim part of it and lower this cap again.
-# Raised 984 -> 986 KiB by that work's review round: the measured tarball
-# landed at 1 008 901 B, 1 285 B over. The growth is the git-faithful read
-# fixes: one pack re-scan on a full object miss, the declared-size refusal on
-# index-pack and on buffered, streamed and metadata reads, and the pack
-# window cache's instance keys, single-flight loads and page normalisation.
-# Raised 986 -> 987 KiB by the second review round: the measured tarball
-# landed at 1 009 673 B, 9 B over. The incremental pack re-scan that replaced
-# the per-miss teardown, and the settled lookup walk plain reads now take.
+# Raised 970 -> 987 KiB across the Node I/O strategy and cold read pipeline's
+# implementation and review rounds: the measured tarball lands at 1 010 313 B,
+# 375 B under the cap after the prologue/hex-encoder refactoring pass. The
+# growth is runtime code every distribution form ships: the synchronous fast
+# path and its per-turn budget, the non-throwing lstat/readUtf8 probes on
+# every adapter, the batched open-time layout probes, the pack window cache,
+# the browser directory-handle cache, the pack re-scan on a full-object miss,
+# and the declared-size refusals on index-pack and on buffered, streamed and
+# metadata reads. None of it is removable without dropping the behaviour
+# each one exists to provide.
 SIZE_CAP=$((987 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
