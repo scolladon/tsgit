@@ -1052,6 +1052,35 @@ describe('object-resolver', () => {
       });
     });
 
+    describe('Given a loose (never-packed) object whose content exceeds maxBytes', () => {
+      describe('When resolveObject is called with a maxBytes cap', () => {
+        it('Then throws OBJECT_TOO_LARGE from the loose-arm cap, not a silent pass-through', async () => {
+          // Arrange — 10 content bytes on disk, cap = 5. Only a loose read
+          // exercises `enforceLooseCap`; the pack arms have their own caps.
+          const content = new Uint8Array(10).fill(0x41);
+          const ctx = await buildSeededContext();
+          const id = await writeRawObjectBytes(ctx, 'blob', content);
+          const registry = await createPackRegistry(ctx);
+
+          // Act
+          try {
+            await resolveObject(ctx, registry, id, false, 5);
+            // Assert
+            expect.unreachable();
+          } catch (error) {
+            const data = (error as TsgitError).data;
+            expect(data.code).toBe('OBJECT_TOO_LARGE');
+            if (data.code !== 'OBJECT_TOO_LARGE') {
+              expect.fail(`expected OBJECT_TOO_LARGE, got ${data.code}`);
+            }
+            expect(data.id).toBe(id);
+            expect(data.actualSize).toBe(10);
+            expect(data.limit).toBe(5);
+          }
+        });
+      });
+    });
+
     describe('Given a delta-cache hit', () => {
       describe('When resolveObjectContentWithDepth is called with verifyHash=false', () => {
         it('Then no hash is computed', async () => {
@@ -1539,6 +1568,48 @@ describe('object-resolver', () => {
             );
           }
         }
+      });
+    });
+  });
+
+  describe('Given a signal that aborts right after a loose read resolves, with a size-lying commit header', () => {
+    describe('When resolveObjectContentWithDepth is called', () => {
+      it('Then it throws OPERATION_ABORTED, not the size-mismatch the lying header would otherwise trigger', async () => {
+        // Arrange — the abort fires inside the loose read's own inflate call,
+        // landing strictly between `tryLoose` resolving and the size-lying
+        // header ever being parsed. Without its own poll right there, the
+        // synchronous split/assert work would run first and surface
+        // INVALID_OBJECT_HEADER instead of the abort already in flight.
+        const controller = new AbortController();
+        const ctx = await buildSeededContext({ signal: controller.signal });
+        const content = ENC.encode('commit body');
+        const id = await writeRawObjectBytes(ctx, 'commit', content);
+        await writeLooseWithDeclaredSize(ctx, id, 'commit', 400, content);
+        const registry = await createPackRegistry(ctx);
+        const baseInflate = ctx.compressor.inflate.bind(ctx.compressor);
+        const abortingCtx: Context = {
+          ...ctx,
+          compressor: {
+            ...ctx.compressor,
+            inflate: (async (bytes: Uint8Array) => {
+              controller.abort();
+              return baseInflate(bytes);
+            }) as typeof ctx.compressor.inflate,
+          },
+        };
+
+        // Act
+        let caught: unknown;
+        try {
+          await resolveObjectContentWithDepth(abortingCtx, registry, id, false, undefined, 0);
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('OPERATION_ABORTED');
       });
     });
   });
