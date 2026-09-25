@@ -236,7 +236,7 @@ function buildCopyTriples(
   adds: ReadonlyArray<AddChange>,
   srcFingerprints: Map<ObjectId, BlobFingerprint>,
   dstFingerprints: Map<ObjectId, BlobFingerprint>,
-  copyThreshold: number,
+  threshold: number,
 ): ScoredTriple[] {
   const triples: ScoredTriple[] = [];
   for (const add of adds) {
@@ -246,7 +246,7 @@ function buildCopyTriples(
     for (const src of copySources) {
       const sf = srcFingerprints.get(src.oldId);
       if (sf !== undefined)
-        scoreAndRecord(sf, df, copyThreshold, { kind: 'copy', src, add, score: 0 }, slots);
+        scoreAndRecord(sf, df, threshold, { kind: 'copy', src, add, score: 0 }, slots);
     }
     for (const triple of slots) triples.push(triple);
   }
@@ -369,7 +369,6 @@ interface InexactPassOptions {
   readonly deletes: ReadonlyArray<DeleteChange>;
   readonly other: ReadonlyArray<DiffChange>;
   readonly threshold: number;
-  readonly copyThreshold: number;
   readonly copies: 'off' | 'on' | 'harder';
   /** Effective copy sources resolved by the caller (after limit-fallback applied). */
   readonly copySources: ReadonlyArray<CopySource>;
@@ -430,7 +429,6 @@ function buildAllTriples(
   copySources: ReadonlyArray<CopySource>,
   copies: 'off' | 'on' | 'harder',
   threshold: number,
-  copyThreshold: number,
   { srcFingerprints, dstFingerprints }: FingerprintPair,
 ): ScoredTriple[] {
   const renameTriples = buildRenameTriples(
@@ -443,7 +441,7 @@ function buildAllTriples(
   const copyTriples =
     // Stryker disable next-line ConditionalExpression: equivalent — resolveCopySources returns [] whenever copies==='off', so buildCopyTriples over the empty copySources yields [], identical to the : [] arm.
     copies !== 'off'
-      ? buildCopyTriples(copySources, adds, srcFingerprints, dstFingerprints, copyThreshold)
+      ? buildCopyTriples(copySources, adds, srcFingerprints, dstFingerprints, threshold)
       : [];
   const allTriples: ScoredTriple[] = [...renameTriples, ...copyTriples];
   sortTriples(allTriples);
@@ -454,7 +452,7 @@ async function runInexactPass(
   ctx: Context,
   opts: InexactPassOptions,
 ): Promise<InexactPassResult | null> {
-  const { adds, deletes, threshold, copyThreshold, copies, copySources } = opts;
+  const { adds, deletes, threshold, copies, copySources } = opts;
   // Stryker disable next-line ConditionalExpression: equivalent — with deletes and copySources both empty the pass builds no triples and greedySelect returns []; assemblePostPass over that empty result equals its null-defaulted output.
   if (deletes.length === 0 && copySources.length === 0) return null;
 
@@ -466,7 +464,6 @@ async function runInexactPass(
     copySources,
     copies,
     threshold,
-    copyThreshold,
     fingerprintPair,
   );
 
@@ -777,7 +774,6 @@ async function runBreakPass(
 
 interface DetectOptions {
   readonly threshold: number;
-  readonly copyThreshold: number;
   readonly limit: number;
   readonly copies: 'off' | 'on' | 'harder';
   readonly breakRewrites: RenameDetectOptions['breakRewrites'];
@@ -785,10 +781,8 @@ interface DetectOptions {
 
 /** Resolve all detection options from the public RenameDetectOptions with defaults. */
 function resolveDetectOptions(options: RenameDetectOptions | undefined): DetectOptions {
-  const threshold = options?.threshold ?? DEFAULT_RENAME_THRESHOLD;
   return {
-    threshold,
-    copyThreshold: options?.copyThreshold ?? threshold,
+    threshold: options?.threshold ?? DEFAULT_RENAME_THRESHOLD,
     limit: options?.limit ?? DEFAULT_LIMIT,
     copies: options?.copies ?? 'off',
     breakRewrites: options?.breakRewrites ?? false,
@@ -821,7 +815,7 @@ export async function detectSimilarityRenames(
   options?: RenameDetectOptions,
   preimage?: ReadonlyMap<FilePath, FlatTreeEntry>,
 ): Promise<TreeDiff> {
-  const { threshold, copyThreshold, limit, copies, breakRewrites } = resolveDetectOptions(options);
+  const { threshold, limit, copies, breakRewrites } = resolveDetectOptions(options);
   const mergeScore = resolveEffectiveMergeScore(breakRewrites);
 
   // Break-attempt pass: runs BEFORE exact/inexact so halves feed the matrix.
@@ -856,7 +850,6 @@ export async function detectSimilarityRenames(
     deletes,
     other,
     threshold,
-    copyThreshold,
     copies,
     copySources,
   });

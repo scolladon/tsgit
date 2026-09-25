@@ -2007,7 +2007,7 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
     });
   });
 
-  describe('Given a copy pair scoring C040, When copyThreshold is 24000 (40%)', () => {
+  describe('Given a copy pair scoring C040, When threshold is 24000 (40%)', () => {
     it('Then tsgit detects the copy matching git -C40%; at 24600 (41%) it does not (threshold #T3)', async () => {
       // Arrange — same shared/unique byte ratio as T1/T2 (37+57 lines).
       // source.txt is modified (preimage = original), copy.txt = new file with ~40% similarity
@@ -2081,19 +2081,19 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
         await add(ctx, ['source.txt', 'copy.txt']);
         const c2 = await commit(ctx, { message: 'second', author });
 
-        // Act — copyThreshold:24000 = 40% of MAX_SCORE
+        // Act — threshold:24000 = 40% of MAX_SCORE
         const treeDiff40 = await diff(ctx, {
           from: c1.id,
           to: c2.id,
           detectRenames: true,
-          renameOptions: { copies: 'on', copyThreshold: 24000 },
+          renameOptions: { copies: 'on', threshold: 24000 },
         });
-        // Act — copyThreshold:24600 = 41%: should NOT copy
+        // Act — threshold:24600 = 41%: should NOT copy
         const treeDiff41 = await diff(ctx, {
           from: c1.id,
           to: c2.id,
           detectRenames: true,
-          renameOptions: { copies: 'on', copyThreshold: 24600 },
+          renameOptions: { copies: 'on', threshold: 24600 },
         });
 
         const resultAt40 = reconstructNameStatus(treeDiff40.changes);

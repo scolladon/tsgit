@@ -8,10 +8,9 @@ import { MAX_SCORE } from './similarity.js';
 
 export interface RenameDetectOptions {
   readonly limit?: number;
+  /** Similarity gate (0..MAX_SCORE) for both renames and copies — git's `-M<n>` / `-C<n>`; default 50%. */
   readonly threshold?: number;
   readonly copies?: 'off' | 'on' | 'harder';
-  /** Per-copy threshold (0..MAX_SCORE). Defaults to `threshold` when absent. */
-  readonly copyThreshold?: number;
   /**
    * Break-rewrite detection (-B).
    * score: dissimilarity gate (>= score → attempt break; default DEFAULT_BREAK_SCORE).

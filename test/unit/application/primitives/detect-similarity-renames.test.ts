@@ -13,6 +13,7 @@ import {
   DEFAULT_BREAK_SCORE,
   DEFAULT_MERGE_SCORE,
   DEFAULT_RENAME_THRESHOLD,
+  estimateSimilarity,
   MAX_SCORE,
 } from '../../../../src/domain/diff/similarity.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
@@ -512,15 +513,21 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
-  describe('Given copies: "on" and a copy pair whose score is below copyThreshold', () => {
+  describe('Given copies: "on" and a copy pair scored one below threshold', () => {
     describe('When detectSimilarityRenames is called', () => {
       it('Then the copy is NOT detected (add remains as add)', async () => {
-        // Arrange — use a very high threshold so the copy score falls below it
+        // Arrange — the copy pass gate is the same `threshold` as renames; set it to
+        // one above the pair's measured score so this exact pair falls below it.
         const ctx = await buildSeededContext();
-        const modOldId = await writeBlob(ctx, tenLines(0));
+        const preimageContent = tenLines(0);
+        const copyContent = tenLines(0).replace('X line 0\n', 'COPY DST\n');
+        const measuredScore = estimateSimilarity(
+          new TextEncoder().encode(preimageContent),
+          new TextEncoder().encode(copyContent),
+        );
+        const modOldId = await writeBlob(ctx, preimageContent);
         const modNewId = await writeBlob(ctx, tenLines(0).replace('X line 0\n', 'EDITED line 0\n'));
-        // dst is similar to preimage but we set copyThreshold = MAX_SCORE so it won't match
-        const dstId = await writeBlob(ctx, tenLines(0).replace('X line 0\n', 'COPY DST\n'));
+        const dstId = await writeBlob(ctx, copyContent);
         const diff: TreeDiff = {
           changes: [
             {
@@ -540,10 +547,10 @@ describe('detectSimilarityRenames', () => {
           ],
         };
 
-        // Act — copyThreshold = MAX_SCORE means ONLY identical blobs qualify (impossible for different content)
+        // Act — threshold one above the measured score: the copy-pass gate rejects it
         const result = await detectSimilarityRenames(ctx, diff, {
           copies: 'on',
-          copyThreshold: MAX_SCORE,
+          threshold: measuredScore + 1,
         });
 
         // Assert — no copy detected
@@ -551,6 +558,57 @@ describe('detectSimilarityRenames', () => {
         expect(copies).toHaveLength(0);
         const adds = result.changes.filter((c) => c.type === 'add');
         expect(adds).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given copies: "on" and a copy pair scored exactly at threshold', () => {
+    describe('When detectSimilarityRenames is called', () => {
+      it('Then the copy IS detected (inclusive gate)', async () => {
+        // Arrange — same pair as the sibling row above, threshold set to the exact
+        // measured score so the copy-pass gate (score >= threshold) admits it.
+        const ctx = await buildSeededContext();
+        const preimageContent = tenLines(0);
+        const copyContent = tenLines(0).replace('X line 0\n', 'COPY DST\n');
+        const measuredScore = estimateSimilarity(
+          new TextEncoder().encode(preimageContent),
+          new TextEncoder().encode(copyContent),
+        );
+        const modOldId = await writeBlob(ctx, preimageContent);
+        const modNewId = await writeBlob(ctx, tenLines(0).replace('X line 0\n', 'EDITED line 0\n'));
+        const dstId = await writeBlob(ctx, copyContent);
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'modify',
+              path: 'kept.txt' as FilePath,
+              oldId: modOldId,
+              newId: modNewId,
+              oldMode: FILE_MODE.REGULAR,
+              newMode: FILE_MODE.REGULAR,
+            },
+            {
+              type: 'add',
+              newPath: 'copied.txt' as FilePath,
+              newId: dstId,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act — threshold at the exact measured score: the copy-pass gate admits it
+        const result = await detectSimilarityRenames(ctx, diff, {
+          copies: 'on',
+          threshold: measuredScore,
+        });
+
+        // Assert — copy detected
+        const copies = result.changes.filter((c) => c.type === 'copy');
+        expect(copies).toHaveLength(1);
+        if (copies[0]?.type === 'copy') {
+          expect(copies[0].oldPath).toBe('kept.txt');
+          expect(copies[0].newPath).toBe('copied.txt');
+        }
       });
     });
   });
