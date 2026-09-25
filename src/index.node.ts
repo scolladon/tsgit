@@ -265,6 +265,7 @@ const lstatFirstStat = async (
 ): Promise<ProbeStat> => {
   const link = await lstatOrUndefined(syncIo, p);
   if (link === undefined) return undefined;
+  // Stryker disable next-line LogicalOperator: equivalent — the `||` form differs only for a regular file, and gitDirIsDerivable, the sole reader, requires gitDir === <workDir>/.git, which discovery never yields for a file (a gitfile resolves to its target, anything else is refused)
   plainDirectories.set(p, !link.isSymbolicLink() && link.isDirectory());
   if (!link.isSymbolicLink()) {
     return { isDirectory: link.isDirectory(), isFile: link.isFile(), size: link.size };

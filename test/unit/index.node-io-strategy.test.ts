@@ -531,3 +531,27 @@ describe('Given a path whose parent segment is a regular file (ENOTDIR)', () => 
     });
   });
 });
+
+describe('Given a work tree whose .git is a symlink to a git directory elsewhere', () => {
+  describe('When openRepository runs under the default io strategy', () => {
+    it('Then the git dir is the resolved link target, not the link itself', async () => {
+      // Arrange
+      const target = await mkdtemp(path.join(os.tmpdir(), 'tsgit-node-io-linked-gitdir-'));
+      await makeGitDir(target);
+      await rm(path.join(tmpdir, '.git'), { recursive: true, force: true });
+      fs.symlinkSync(target, path.join(tmpdir, '.git'), 'dir');
+      const sut = openRepository;
+
+      // Act
+      const repository = await sut({ cwd: tmpdir });
+
+      // Assert
+      try {
+        expect(repository.ctx.layout.gitDir).toBe(fs.realpathSync(target));
+      } finally {
+        await repository.dispose();
+        await rm(target, { recursive: true, force: true });
+      }
+    });
+  });
+});
