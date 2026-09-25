@@ -356,7 +356,7 @@ from`/`dissimilarity index` (patch) renderings are the **same**
 ```ts
 export interface RenameDetectOptions {
   readonly limit?: number;            // inexact matrix cap; 0 = unlimited (ADR-370)
-  readonly maxSameIdDeletes?: number; // unchanged
+  readonly maxSameIdDeletes?: number; // unchanged here; removed later by ADR-894
   readonly threshold?: number;        // rename minimum_score, 0..MAX_SCORE; default 30000
   readonly copies?: 'off' | 'on' | 'harder';     // -C / -C --find-copies-harder; default 'off'
   readonly copyThreshold?: number;    // -C<n>; default = threshold

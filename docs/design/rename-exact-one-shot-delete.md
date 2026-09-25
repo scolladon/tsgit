@@ -6,7 +6,7 @@
 > that was already renamed. Git consumes a deleted source once under `-M`. Fix the exact
 > pass so tsgit pairs the same way git does, and pin it against real git.
 > Part B (basename tie-break in the similarity pass `sortTriples`) is out of scope (§10).
-> Status: draft → self-reviewed ×3
+> Status: revised against the ratified ADRs 893–898 (§9)
 
 ## 1. Context
 
@@ -44,8 +44,9 @@ diffTrees (primitives/diff-trees.ts:91)
 ```
 
 - The exact pass always runs with an unlimited `limit` (ADR-370). The one exact-pass cap
-  that still applies is `maxSameIdDeletes` (default 100). It **prunes** any id group
-  larger than the cap, so the adds for that id get no exact pairing at all.
+  that applies today is the public option `maxSameIdDeletes` (default 100). It **prunes**
+  any id group larger than the cap, so the adds for that id get no exact pairing at all.
+  ADR-894 removes the option (§4.2).
 - When an id group has two or more deletes, the `length !== 1` guard leaves it unpaired
   and it falls through to the similarity pass. There, identical blobs score `MAX_SCORE`
   and `sortTriples`' stable sort picks the **first delete in path order**. This has no
@@ -69,7 +70,8 @@ diffTrees (primitives/diff-trees.ts:91)
 ## 2. Git's algorithm, read from source and pinned against the binary
 
 Source: git **v2.55.0** `diffcore-rename.c`. Behaviour: probed with the real
-`git version 2.55.0` (§3).
+`git version 2.55.0` (§3). The block below is an abridged paraphrase of
+`find_identical_files`, not a verbatim copy.
 
 `find_exact_renames` (`:347`) inserts every source into a hash table keyed by oid,
 **in reverse order**, then retrieves them LIFO, so sources are visited in forward
@@ -79,7 +81,7 @@ Source: git **v2.55.0** `diffcore-rename.c`. Behaviour: probed with the real
 ```c
 int i = 100, best_score = -1;
 hashmap_for_each_entry_from(srcs, p, entry) {
-    if (!oideq(&source->oid, &target->oid)) continue;          /* hash collision */
+    if (source->oid != target->oid) continue;                  /* hash-bucket collision */
     if (!S_ISREG(source->mode) || !S_ISREG(target->mode))
         if (source->mode != target->mode) continue;           /* non-regular: modes must match */
     score = !source->rename_used;
@@ -107,7 +109,8 @@ Points that bear on this design:
 5. **Candidate cap, not group prune.** At most 100 *eligible* candidates are examined per
    destination. Collisions, mode mismatches and used sources `continue` before `--i`, so
    they do not count toward the 100. A group larger than 100 still pairs, with the best
-   among the first 100 (probes #15–#17).
+   among the first 100 (probes #15–#17). The 100th candidate is still examined; the 101st
+   is not (probes #16a, #16b).
 6. **Not limited.** The exact pass runs before and regardless of `diff.renameLimit`
    (probes #8, #17). This matches ADR-370.
 7. **Copies (`-C`) differ.** Used sources stay eligible at score 0. Each extra
@@ -148,11 +151,18 @@ fix candidates of D1, prototyped in a scratch copy of `src/` and run end-to-end
 | 14 | empty blob, 1 del → 2 adds | `R Foo→Bar ; A Baz` | two R ✗ | ✓ | ✓ |
 | 15 | 101 del `a/F001..F101` → `b/Bar` | `R F001→Bar` + 100 D | ✓ (via similarity) | ✓ | ✓ |
 | 16 | 101 del + `a/Zzz` → `b/Zzz` (basename is 102nd) | `R F001→Zzz` + D Zzz… | ✓ (via similarity) | ✓ | ✓ (cap hides `Zzz`) |
+| 16a | 99 del `a/F001..F099` + `a/Zzz` → `b/Zzz` (basename is 100th) | `R Zzz→Zzz` | `R F001→Zzz` ✗ | ✗ | ✓ † |
+| 16b | 100 del `a/F001..F100` + `a/Zzz` → `b/Zzz` (basename is 101st) | `R F001→Zzz` | ✓ (via similarity) | ✓ | ✓ † |
 | 17 | #15 with `-l1` | `R F001→Bar` + 100 D | `A Bar` + 101 D ✗ | ✗ | ✓ |
 | 18 | 3 del `Foo`,`Qux`,`Zed` → `b/Zed` | `D Foo ; D Qux ; R Zed→Zed` | `R Foo→Zed` ✗ | ✗ | ✓ |
 | D1 | `mv x y; cp -r y z` — `diff-tree -M` (non-recursive) | `R x→y ; A z` | `R x→y ; R x→z` ✗ | ✓ | ✓ |
 | D1r | same, `-r` | `R x/f→y/f ; R x/g→y/g ; A z/f ; A z/g` | four R ✗ | ✓ | ✓ |
 | B1 | `git blame` of each add in #1 and #6 | every file → `a/Foo.meta` | every file → `a/Foo.meta` ✓ | **only the first** → `a/Foo`; others → themselves ✗ | same regression as (a) ✗ |
+
+† #16a/#16b were probed against git 2.55.0 during the design revision, after the
+prototypes were discarded. The (a)/(b) cells are derived from the algorithm (a leaves any
+multi-delete group to the similarity pass, which picks `F001`), not from a prototype run.
+Part 4 pins them against live git.
 
 Reading the table:
 
@@ -169,12 +179,12 @@ Reading the table:
 - **#9 and #10 (`-C`) are wrong under every option**, including today's code. Doing
   what git does needs copy-aware exact pairing: used sources stay eligible, and all
   pairings but the last become copies. The domain exact pass cannot express that today
-  (it has no copy notion; copies live in the primitive). See D1 (c).
+  (it has no copy notion; copies live in the primitive). Deferred (§10).
 - **B1 is a regression that both fixes introduce.** tsgit's blame
   (`renamedSource`, `blame.ts:519`) runs full-tree rename detection and looks for a
   `rename` whose `newPath` is the blamed path. Today it relies on the fan-out bug. Git
   blame uses `single_follow` (§2.9), so every copy follows back. The fix must ship with
-  single-follow blame (D3), or `blame b/Baz.meta` stops following a rename that git
+  single-follow blame (ADR-895), or `blame b/Baz.meta` stops following a rename that git
   follows.
 
 Reproduction: the probe script and the tsgit runner live outside the repo (scratchpad).
@@ -182,15 +192,16 @@ Each row is re-expressed as an interop case (§6 Part 4), which is the durable c
 
 ## 4. Design
 
-### 4.1 Exact pass (depends on D1, D2)
+### 4.1 Exact pass (ADR-893, ADR-894)
 
-Under **D1 (b)**, `detectRenames` transcribes `find_identical_files` for `-M`:
+`detectRenames` transcribes `find_identical_files` for `-M`:
 
 ```
 for add in adds (input order = path order — the raw diff is path-sorted and
                  patchDiffWithBroken splices -B halves in place):
   candidates = groupsById.get(add.newId) ?? []         // unused deletes only, path order
-  best = first candidate c, within the first `cap` mode-compatible candidates,
+  best = first candidate c, within the first EXACT_CANDIDATE_CAP (100)
+         mode-compatible candidates,
          maximising 1 + basenameSame(c.oldPath, add.newPath); stop at score 2
   if best: emit rename(best, add, MAX_SCORE); remove best from its group
   else:    keep add
@@ -203,32 +214,44 @@ leftover deletes = deletes not consumed
   backwards scan to `/`. Paths are `FilePath` and never end in `/`.
 - **One-shot.** A consumed delete is removed from its group, so later adds never see it.
   The group arrays are local, mutable working state inside the function; the input and
-  output stay immutable. Removing the delete keeps each scan within `cap` *unused*
+  output stay immutable. Removing the delete keeps each scan within the cap's *unused*
   candidates, where git scans past used sources. The chosen source is the same either
   way, because git's `continue` does not count used sources toward the cap.
-- **Cost.** Per add: O(min(k, cap)) scan plus O(k) removal, where k is the size of the
+- **Cost.** Per add: O(min(k, 100)) scan plus O(k) removal, where k is the size of the
   same-id group. Typical k = 1, which reduces to today's single lookup. Worst case
-  O(adds · k), the same bound as git. No `limit` gate, per ADR-370.
+  O(adds · k), the same bound as git. No new gate. The existing `adds × deletes > limit`
+  guard in `detectRenames` is unchanged; the primitive keeps calling it with
+  `limit: MAX_SAFE_INTEGER`, so the exact pass stays unlimited inside `diffTrees` (ADR-370).
 - **Output order** stays `sortByPath(merged, primaryPath)`. Pinned: git's `--name-status`
   order equals `primaryPath` order on every row in §3 (a rename sits at its destination
   path).
 
-Under **D1 (a)**, the only change is to remove the consumed id from `deletesByOldId` after
-a fold. The `length !== 1` refusal and the `maxSameIdDeletes` prune stay.
+### 4.2 `maxSameIdDeletes` is removed (ADR-894)
 
-### 4.2 `maxSameIdDeletes` (depends on D2)
+The option's meaning ("prune the whole id group above N") contradicts git: rows #15–#17
+pair in git. The option leaves the public `RenameDetectOptions` type. Git's bound is not
+tunable (`int i = 100`), and it is observable (rows #16, #16a, #16b), so the pass carries
+it as a private module constant:
 
-Under (b), the option's current meaning ("prune the whole id group above N") contradicts
-git (rows #15–#17 pair in git). D2 decides its fate. The recommended option keeps the name
-and re-defines it as git's per-destination **examined-candidate cap** (default 100, which
-equals git's hard-coded `i = 100`). `0` keeps meaning "no exact pairing". The DoS bound
-it was introduced for (`docs/design/diff-and-merge.md` §4.5) is preserved: the scan per
-add is bounded by the cap.
+```ts
+// git's find_identical_files examines at most this many candidates per destination
+const EXACT_CANDIDATE_CAP = 100;
+```
 
-### 4.3 Blame follows a single destination (depends on D3)
+- It replaces `DEFAULT_MAX_SAME_ID_DELETES`. `buildDeletesByOldId` loses its
+  `maxSameIdDeletes` parameter and its prune loop.
+- The DoS bound the option was added for (`docs/design/diff-and-merge.md` §4.5) still
+  holds: the scan per add examines at most 100 candidates. The O(k) removal of the
+  consumed delete is not capped by it. That matches git, whose scan also walks past every
+  used source of the group without counting it, so both are O(k) per add.
+- Callers that pass `maxSameIdDeletes` get a type error. No caller in `src/` sets it.
+  Part 1 ships as a breaking commit (`feat!` or `fix!`) whose subject names the removal,
+  so release-please lists it under BREAKING CHANGES.
+
+### 4.3 Blame follows a single destination (ADR-895)
 
 `renamedSource` (`blame.ts:519`) must detect renames with **only the blamed path** as a
-destination, as git's `single_follow` does. Recommended shape (D3 b): blame asks
+destination, as git's `single_follow` does. Shape: blame asks
 `diffTrees` for the raw recursive diff (no detection), keeps every `delete` plus the one
 `add` whose `newPath === path`, and passes that to `detectSimilarityRenames(ctx, diff)`.
 The result is the same pairing git blame computes: that add is the only destination, and
@@ -239,14 +262,14 @@ blame lookup over the rename limit, while git's `num_create` is 1.
 ### 4.4 What does not change
 
 - The inexact pass (`detect-similarity-renames.ts`), apart from the blame caller.
-- `RenameChange` / `CopyChange` shapes. No public type change under D2 (a); under
-  D2 (c) the option is removed (breaking change).
+- `RenameChange` / `CopyChange` shapes. The only public type change is the removal of
+  `RenameDetectOptions.maxSameIdDeletes` (§4.2); the other option fields are unchanged.
 - ADR-405 gitlink behaviour. Same-oid, same-mode gitlinks still pair exactly, and the
   mode rule keeps them from pairing with anything else.
 
 ## 5. Edge cases
 
-| Case | Behaviour after the fix (b + D3) | Pin |
+| Case | Behaviour after the fix (ADR-893, ADR-895) | Pin |
 |---|---|---|
 | 1 source, N identical adds | first add in path order gets R100; the rest stay `A` | #1, #6 |
 | basename-matching add is not first | path order wins over basename | #2 |
@@ -255,10 +278,10 @@ blame lookup over the rename limit, while git's `num_create` is 1.
 | 644 ↔ 755 | regular files pair across the exec bit | #13 |
 | symlink/gitlink/tree | pairs only with an identical mode | #12, D1, ADR-405 |
 | empty blob | pairs exactly | #14 |
-| > cap identical sources | best among the first `cap` examined | #15, #16 |
+| > 100 identical sources | best among the first 100 examined; the 100th is examined, the 101st is not | #15, #16, #16a, #16b |
 | rename limit exceeded | exact pairing unaffected | #8, #17 |
-| `-C` / `-C -C` fan-out | **unchanged divergence** (D1 c / follow-up) | #9, #10 |
-| symlink ↔ regular, identical blob | **unchanged divergence** (similarity pass) | #11 |
+| `-C` / `-C -C` fan-out | **unchanged divergence** (follow-up, ADR-893 consequences) | #9, #10 |
+| symlink ↔ regular, identical blob | **unchanged divergence** (similarity pass, ADR-898) | #11 |
 | `-B` broken delete halves | unchanged: tsgit does not seed git's `rename_used` for `broken_pair && !score` | — |
 | blame of a fan-out copy | follows to the original source | B1 |
 
@@ -267,23 +290,40 @@ blame lookup over the rename limit, while git's `num_create` is 1.
 ### Part 1 — exact pass (`src/domain/diff/rename-detect.ts`)
 
 - Symbols: `buildDeletesByOldId` (`:43`), `tryFoldAdd` (`:64`), `detectRenames` (`:87`),
-  `DEFAULT_MAX_SAME_ID_DELETES` (`:25`), `RenameDetectOptions.maxSameIdDeletes` (`:9`).
-  Current signatures: `detectRenames(diff: TreeDiff, options: RenameDetectOptions = {}):
-  TreeDiff`; `tryFoldAdd(add, deletesByOldId: Map<ObjectId, ReadonlyArray<DeleteChange>>)
-  → { rename; consumedDelete } | undefined`.
+  `DEFAULT_MAX_SAME_ID_DELETES` (`:25`, replaced by `EXACT_CANDIDATE_CAP`),
+  `RenameDetectOptions.maxSameIdDeletes` (`:9`, removed). Current signatures:
+  `detectRenames(diff: TreeDiff, options: RenameDetectOptions = {}): TreeDiff` (unchanged);
+  `buildDeletesByOldId(deletes, maxSameIdDeletes: number)` (loses the second parameter and
+  the prune loop at `:56-60`); `tryFoldAdd(add, deletesByOldId: Map<ObjectId,
+  ReadonlyArray<DeleteChange>>) → { rename; consumedDelete } | undefined`.
 - Helpers to reuse: `kindOf` (`src/domain/diff/mode-kind.ts`), `sortByPath`/`primaryPath`,
   `MAX_SCORE`.
-- New private helpers (b): `isExactModeCompatible(oldMode, newMode)`,
-  `hasSameBasename(oldPath, newPath)`, `pickExactSource(add, group, cap)`. Each is under
-  20 lines, with early returns and no boolean params.
+- New private helpers: `isExactModeCompatible(oldMode, newMode)`,
+  `hasSameBasename(oldPath, newPath)`, `pickExactSource(add, group)` (reads
+  `EXACT_CANDIDATE_CAP` directly). Each is under 20 lines, with early returns and no
+  boolean params.
 - Tests: `test/unit/domain/diff/rename-detect.test.ts` (fixtures `addChange`,
-  `deleteChange`, `diff`, `ID_A..C`). **Existing tests whose expectation flips under (b):**
-  "multiple deletion candidates → no fold" (`:79`, now folds `a.txt→c.txt`), "exactly
-  maxSameIdDeletes … skipped" (`:179`) and "maxSameIdDeletes + 1 … pruned" (`:198`), both
-  now fold under cap semantics. `maxSameIdDeletes=0` (`:280`) and `=1` (`:253`) keep
-  their outcome. Each flipped test is rewritten to the git-pinned outcome, not deleted.
+  `deleteChange`, `diff`, `ID_A..C`; `diff()` does not sort, so inputs are written in path
+  order). Existing tests affected:
+
+  | Test (line) | Today | Action |
+  |---|---|---|
+  | "multiple deletion candidates → no fold" (`:79`) | refusal | **rewrite**: `a.txt→c.txt` folds, `b.txt` stays `D` (row #3) |
+  | "exactly maxSameIdDeletes … skipped" (`:179`, `{ maxSameIdDeletes: 2 }`) | refusal with a caller cap | **remove**: it pinned the refusal through the option; the multi-candidate outcome is the rewritten `:79` |
+  | "maxSameIdDeletes + 1 … pruned" (`:198`, `{ maxSameIdDeletes: 2 }`) | group prune | **rewrite** as the cap boundary pair against the internal constant: 99 deletes `a/F001..F099` + `a/Zzz` → `b/Zzz` folds `a/Zzz` (row #16a); 100 deletes + `a/Zzz` → `b/Zzz` folds `a/F001` (row #16b). 1 add × 101 deletes stays under the default `limit` of 1000 |
+  | "maxSameIdDeletes=1 … rename found (at boundary)" (`:253`) | prune `>` vs `>=` | **remove**: without the option it duplicates the 1:1 fold at `:47`, and the prune it guarded is gone |
+  | "maxSameIdDeletes=0 … no rename" (`:280`) | `0` disables pairing | **remove**: the "0 = no exact pairing" behaviour no longer exists |
+
   New example rows: #1, #2, #4, #6, #7, #12, #13, #16 at the domain level (mode and
   basename guards each get an isolated test).
+- Generated API report: `reports/api.json` drops `RenameDetectOptions.maxSameIdDeletes`.
+  Regenerate it with `npm run docs:json` in the same commit; `check:doc-typedoc` fails on
+  a stale report. Do not edit it by hand.
+- Design docs that describe the option (`docs/design/diff-and-merge.md` §4.5, §5.3, §11,
+  test list; `docs/design/similarity-rename-detection.md` §7.1) already carry a note that
+  points here. The `docs/use/` pages and the README do not mention it. The historical plans
+  (`docs/plan/phase-5-diff-and-merge.md`, `docs/plan/similarity-rename-detection.md`) are
+  left as they are.
 
 ### Part 2 — blame single-follow (`src/application/commands/blame.ts`)
 
@@ -300,7 +340,7 @@ blame lookup over the rename limit, while git's `num_create` is 1.
   `:331`, `:795`, `:822`, `:869`). Add "Given a file copied to two paths alongside the
   delete" → both paths blame to the source.
 
-### Part 3 — property sibling (D5)
+### Part 3 — property sibling (ADR-897)
 
 - New `test/unit/domain/diff/rename-detect.properties.test.ts`, with generators added to
   `test/unit/domain/diff/arbitraries.ts`: small id and path pools to force collisions,
@@ -314,14 +354,14 @@ blame lookup over the rename limit, while git's `num_create` is 1.
   there is no tautology oracle. The two inline example "properties" (`:303`, `:324`)
   stay; properties are additive per ADR-136.
 
-### Part 4 — interop pins (D4)
+### Part 4 — interop pins (ADR-896)
 
 - New `test/integration/rename-exact-interop.test.ts`, modelled on
   `diff-type-change-interop.test.ts`: git builds one repo per row, tsgit opens the same
   repo through `createNodeContext`, and a local `nameStatusFrom` rebuilds `--name-status`
   for a string-equal comparison with live `git diff --name-status`. Helpers:
   `GIT_AVAILABLE`, `git`, `runGit`, `runGitEnv` (`test/integration/interop-helpers.ts`).
-  Rows: #1–#8, #12–#18, D1, D1r. `@proves` header `surface: diff.renames`,
+  Rows: #1–#8, #12–#18 (with #16a, #16b), D1, D1r. `@proves` header `surface: diff.renames`,
   `bucket: cross-tool-interop`.
 - Blame row B1: add to `test/integration/blame-interop.test.ts` (existing `git blame
   --porcelain` comparison helpers at `:136`/`:140`).
@@ -331,45 +371,44 @@ blame lookup over the rename limit, while git's `num_create` is 1.
 ## 7. Test strategy (summary)
 
 TDD per part: RED example rows from §3 → GREEN → refactor. Domain unit tests carry every
-guard in isolation (mode rule, basename tie, cap boundary at `cap` and `cap+1`, one-shot).
+guard in isolation (mode rule, basename tie, cap boundary at the 100th and 101st
+candidate, one-shot).
 The property sibling proves one-shot and conservation over arbitrary collisions. Interop
 proves each row against live git. Coverage 100%; mutation target 0 survivors. The
 `hasSameBasename` scan, the `score === 2` early exit and the cap counter each get a
-killing row (#4, #18, #16).
+killing row (#4, #18, #16a/#16b).
 
 ## 8. Performance
 
 The exact pass is on the hot path of every `show`/`log`/`range-diff` commit diff.
-With k = 1 (the norm), (b) does one map lookup, one scan of one element and one removal,
+With k = 1 (the norm), the fix does one map lookup, one scan of one element and one removal,
 the same as today plus the removal. There is no allocation beyond the existing grouping
 Map. Blame (Part 2) does less rename work per lookup: one destination instead of every
 add in the commit. No bench gate expected. Run `bench:ab` on the log/show fixtures if the
 review asks.
 
-## 9. Decision candidates
+## 9. Decisions (ratified)
 
-| # | Choice | Alternatives (≤3) | Recommendation | Why |
-|---|---|---|---|---|
-| D1 | Scope of the exact-pass fix | (a) **minimal**: drop the consumed id from `deletesByOldId`; keep the `length !== 1` refusal and the group prune, and leave multi-delete groups to the similarity pass. (b) **faithful `-M` port** of `find_identical_files`: per add in order, best unused mode-compatible same-id delete, score `1 + basename`, first wins, examined-candidate cap. (c) (b) **plus copy-aware exact pairing** under `copies ≠ 'off'` (used sources eligible at score 0; all pairings but the last become `copy`) | **(b)** | (a) fixes #300 but leaves six pinned `-M` rows wrong (#4, #7, #8, #12, #17, #18), and #8/#17 violate ADR-370's "exact pairing is never limited". (b) matches git on every pinned `-M` row except #11 (an inexact-pool gap) at the same cost. (c) is the only way to fix #9/#10, but it moves copy semantics into the byte-free domain pass (or the exact pass into the primitive) and changes `-C` output shape; it deserves its own pin matrix and follow-up |
-| D2 | Fate of `RenameDetectOptions.maxSameIdDeletes` under D1 (b) (moot under D1 a) | (a) keep the name, redefine as git's per-add **examined-candidate cap** (default 100 = git's `i = 100`; `0` = no exact pairing); (b) keep the prune semantics (diverges on groups > 100, rows #15–#17); (c) remove the option (breaking, `feat!`) | **(a)** | keeps the DoS bound it was added for and the public type, while making the default git-exact. (b) keeps a known divergence. (c) breaks the public API for no faithfulness gain over (a). Note that (a) is a semantic change for callers who set the option; the changelog must say so |
-| D3 | Blame's rename lookup after the fix | (a) new `followPath` option on `RenameDetectOptions` (git's `single_follow`) applied in `detectSimilarityRenames`: adds at other paths are not destinations; (b) blame-local: raw diff → keep all deletes and the add at `path` → `detectSimilarityRenames`; (c) accept the regression and defer | **(b)** | without it, both D1 fixes regress `blame` against git (row B1). (b) is faithful to `single_follow` for exact and inexact pairing, and adds no public surface (YAGNI: blame is the only follower; there is no `log --follow`). (a) is right if a second follower appears. (c) ships a known regression |
-| D4 | Where the regression pins live | (a) unit rows in `rename-detect.test.ts` + new `test/integration/rename-exact-interop.test.ts` (diff rows) + a B1 row in `blame-interop.test.ts`; (b) unit rows + new describes in the existing 2,500-line `rename-similarity-interop.test.ts`; (c) unit rows only, with the §3 matrix as documentation | **(a)** | only the interop harness proves faithfulness (`faithfulness.md`). The exact pass is a distinct git routine (`find_identical_files`) with its own matrix, so a dedicated file keeps the similarity suite focused. Blame rows belong with blame's porcelain comparison. (c) proves nothing against git |
-| D5 | Property-test sibling | (a) new `rename-detect.properties.test.ts` (fast-check, lenses 2 + 4): one-shot, conservation, id/mode soundness, pass-through, idempotence; (b) examples only (the inline "property" examples stay as they are) | **(a)** | `detectRenames` is a matcher that reduces changes to a pairing (lens 2), and conservation is a counting invariant (lens 4). The #300 bug is exactly a conservation violation that no property caught. The invariants need no production-loop oracle |
-| D6 | Widen scope to row #11 (symlink ↔ regular pairs via the similarity pass) | (a) follow-up issue: extend ADR-405's gitlink exclusion to "non-regular" in `partitionLeftovers`/copy/break pools, with its own pins; (b) include it here | **(a)** | it is an inexact-pass defect (git `estimate_similarity` `:158`) that neither D1 option touches. It changes three pool builders shared with `-C`/`-B` and needs its own matrix (symlink modify under `-B`, symlink copy sources) |
+Every decision candidate of the draft is settled. No open candidate remains.
 
-If D1 (b) is ratified, it warrants an ADR ("the exact rename pass transcribes git's
-`find_identical_files`"). D2 (a) and D3 (b) each need one too: one for the public option
-semantic change, one for blame's single-follow.
+| # | Choice | Outcome | ADR |
+|---|---|---|---|
+| D1 | Scope of the exact-pass fix | (b) faithful `-M` port of `find_identical_files`: per add in path order, best unused mode-compatible same-id delete, score `1 + basenameSame`, first wins, 100-candidate cap, never limited. User-ratified | [ADR-893](../adr/893-the-exact-rename-pass-transcribes-git-find-identical-files.md) |
+| D2 | Fate of `RenameDetectOptions.maxSameIdDeletes` | (c) removed from the public type (breaking; the release is already a major). The pass keeps a private `EXACT_CANDIDATE_CAP = 100`, equal to git's hard-coded cap. User-ratified; **this is the one departure from the draft's recommendation** (which was (a), redefining the option as the cap) | [ADR-894](../adr/894-rename-detect-drops-max-same-id-deletes.md) |
+| D3 | Blame's rename lookup after the fix | (b) blame-local single-follow: raw diff, keep every delete plus the add at the blamed path, then `detectSimilarityRenames`. Adopted as recommended | [ADR-895](../adr/895-blame-detects-renames-with-the-blamed-path-as-sole-destination.md) |
+| D4 | Where the regression pins live | (a) unit rows + new `test/integration/rename-exact-interop.test.ts` + a B1 row in `blame-interop.test.ts`. Adopted as recommended | [ADR-896](../adr/896-exact-rename-pass-pinned-by-a-dedicated-interop-suite.md) |
+| D5 | Property-test sibling | (a) new `rename-detect.properties.test.ts`. Adopted as recommended | [ADR-897](../adr/897-rename-detect-gains-a-property-sibling.md) |
+| D6 | Row #11 (symlink ↔ regular via the similarity pass) | (a) deferred to a follow-up that extends ADR-405's gitlink exclusion to every non-regular mode. Adopted as recommended | [ADR-898](../adr/898-non-regular-inexact-pairing-deferred.md) |
 
 ## 10. Non-goals and follow-ups
 
 - **Issue #300 part B:** a basename tie-break in the similarity pass (`sortTriples`,
   `detect-similarity-renames.ts:260`). Git's `score_compare` breaks equal scores on
   `name_score = basename_same`, and git ≥ 2.33 also runs `find_basename_matches` before
-  the matrix. Under D1 (b), the exact-content rows no longer reach the similarity pass, so
+  the matrix. Under ADR-893, the exact-content rows no longer reach the similarity pass, so
   part B only concerns *inexact* ties.
-- **Copy-aware exact pairing** (`-C` rows #9/#10): D1 (c), follow-up.
-- **Non-regular files in the inexact pools** (row #11): D6, follow-up.
+- **Copy-aware exact pairing** (`-C` rows #9/#10): D1 option (c), rejected for this change by ADR-893; follow-up.
+- **Non-regular files in the inexact pools** (row #11): follow-up (ADR-898).
 - **`-B` `rename_used` seeding** for broken delete halves (`diffcore-rename.c:1443`):
   unchanged, not pinned here.
 - git's stderr rename-limit warning: rendering (ADR-249/370).
