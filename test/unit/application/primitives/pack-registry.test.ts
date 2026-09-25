@@ -7439,6 +7439,44 @@ describe('PackRegistry.reprepare', () => {
     });
   });
 
+  describe('Given a reprepare() in flight when a refresh() lands on the same synchronous turn', () => {
+    describe('When lookup() runs and every in-flight operation settles', () => {
+      it('Then dispose leaves no handle outstanding and the live generation holds no retired instance', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const [id] = await writeSyntheticPack(ctx, 'reprepare-refresh-race', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('race') },
+        ]);
+        const ledger = withHandleLedger(ctx);
+        const registry = await createPackRegistry(ledger.ctx);
+        const [g0Pack] = await registry.all(); // establishes G0 — no handle open yet
+
+        // Act — reprepare() captures G0 and yields at its first await;
+        // refresh() then runs to completion on this SAME synchronous turn,
+        // clearing the scan before reprepare()'s continuation ever resumes.
+        // lookup() triggers the fresh scan refresh() left for the next
+        // reader, so reprepare()'s later resumption must recognise that its
+        // own captured generation was superseded and bail rather than reuse
+        // G0's now-retired instance in a scan of its own.
+        const rep = registry.reprepare();
+        registry.refresh();
+        const hit = await registry.lookup(id as ObjectId);
+        await hit!.pack.readSlice(PACK_HEADER_SIZE, 4);
+        await rep;
+        await registry.settleRefresh();
+
+        // Assert — the live generation never resurrects the retired G0 instance.
+        const raced = await registry.all();
+        expect(raced).not.toContain(g0Pack);
+
+        // Assert — every handle this race opened is reachable from the live
+        // generation, so a full dispose() closes it: nothing is orphaned.
+        await registry.dispose();
+        expect(ledger.outstanding()).toBe(0);
+      });
+    });
+  });
+
   describe('Given a probe that cached an empty fanout listing for an id, and its loose file is later written directly to disk', () => {
     describe('When resolveObject is called again for that id', () => {
       it("Then it resolves via a re-scan that drops just that id's cached fanout listing", async () => {

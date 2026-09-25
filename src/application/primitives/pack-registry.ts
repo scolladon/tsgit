@@ -1196,9 +1196,16 @@ export async function createPackRegistry(ctx: Context): Promise<PackRegistry> {
       // The OUTGOING generation's packs are the reuse candidates — captured
       // before anything is cleared, by name (git's own `pack_map` identity:
       // keyed by path, never mtime/size — a repack always mints a new name,
-      // so a same-named pack is the same bytes).
-      const previous = await currentGeneration();
-      if (disposed) return;
+      // so a same-named pack is the same bytes). The FLIGHT itself, not just
+      // its value, is captured too: a concurrent refresh() (or another
+      // reprepare()) can clear and replace `scan` while this awaits, and
+      // reusing a generation that is no longer the live one would resurrect
+      // an instance the concurrent caller is already retiring in the
+      // background. `scan.peek() !== flight` below is that check —
+      // identity-guarded exactly as a single-flight memo's own reject arm is.
+      const flight = currentGeneration();
+      const previous = await flight;
+      if (disposed || scan.peek() !== flight) return;
       const priorByName = new Map(previous.packs.map((pack) => [pack.name, pack] as const));
       // Generation-scoped verdicts, reset alongside the scan they were
       // computed against — same reasoning as refresh()'s own clear.
