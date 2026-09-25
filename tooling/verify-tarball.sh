@@ -182,8 +182,8 @@ done
 # path and its per-turn budget, the non-throwing lstat/readUtf8 probes on
 # every adapter, the batched open-time layout probes, the pack window cache,
 # the browser directory-handle cache, the pack re-scan on a full-object miss,
-# and the declared-size refusals on index-pack and on buffered, streamed and
-# metadata reads. None of it is removable without dropping the behaviour
+# and the declared-size refusals on index-pack and on buffered and streamed
+# reads. None of it is removable without dropping the behaviour
 # each one exists to provide.
 SIZE_CAP=$((987 * 1024))
 
