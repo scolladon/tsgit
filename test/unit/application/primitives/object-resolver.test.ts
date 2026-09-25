@@ -174,6 +174,7 @@ function unusedPack(): RegisteredPack {
   };
   return {
     name: 'unused',
+    instanceKey: 'unused#0',
     index: boom,
     packPath: 'unused',
     idxPath: 'unused',
@@ -214,6 +215,7 @@ async function stubRegistry(
     const packPath = match.packPath;
     const pack: RegisteredPack = {
       name: 'stub',
+      instanceKey: 'stub#0',
       index: async () => fillerIndex,
       packPath,
       idxPath: `${packPath}.idx`,
@@ -2204,6 +2206,52 @@ describe('object-resolver', () => {
       });
     });
 
+    describe('Given a pack retired by reprepare() and a same-named pack later reappearing', () => {
+      describe('When the new pack is read at the same on-disk offset the retired one cached', () => {
+        it('Then the new bytes are served, never the retired instance’s cached delta base', async () => {
+          // Arrange — gen1 (P0) is a real delta chain, so reading its tip
+          // populates the offset-keyed delta-base cache for its base entry —
+          // always the pack's very first offset, right after the fixed
+          // header, regardless of entry count or content (see the sibling
+          // refresh() test above). reprepare() — unlike refresh() — never
+          // clears that cache, by design: it is what lets a reused instance
+          // stay warm. Retiring P0 (its files vanish, so a bare reprepare()
+          // finds nothing left under that name) and only THEN writing a
+          // same-named P1 with different bytes at that same offset means P1
+          // is a genuinely FRESH RegisteredPack — reprepare()'s reuse map
+          // never carried the name across the gap — so a cache keyed by name
+          // alone cannot tell P0's stale entry from P1's real one.
+          const ctx = await buildSeededContext();
+          const contentA = ENC.encode('generation one base content');
+          const gen1 = await writeSyntheticPack(ctx, 'reprepare-instance-swap', [
+            { kind: 'base', type: 'blob', content: contentA },
+            { kind: 'ofs-delta', baseIndex: 0, targetContent: ENC.encode('generation one tip') },
+          ]);
+          const tip1Id = gen1[1]! as ObjectId;
+          const registry = await createPackRegistry(ctx);
+          await resolveObject(ctx, registry, tip1Id, true);
+
+          // Act — retire P0, let it fully vanish, then reappear under the
+          // SAME name with unrelated bytes.
+          const dir = `${ctx.layout.gitDir}/objects/pack`;
+          await ctx.fs.rm(`${dir}/pack-reprepare-instance-swap.pack`);
+          await ctx.fs.rm(`${dir}/pack-reprepare-instance-swap.idx`);
+          await registry.reprepare();
+          await registry.settleRefresh();
+          const contentB = ENC.encode('generation two — completely unrelated bytes');
+          const gen2 = await writeSyntheticPack(ctx, 'reprepare-instance-swap', [
+            { kind: 'base', type: 'blob', content: contentB },
+          ]);
+          const newBaseId = gen2[0]! as ObjectId;
+          await registry.reprepare();
+          const result = await resolveObject(ctx, registry, newBaseId, false);
+
+          // Assert
+          expect((result as Blob).content).toEqual(contentB);
+        });
+      });
+    });
+
     describe('Given an intermediate larger than the byte cap', () => {
       describe('When resolveObject is called', () => {
         it('Then it is not cached and the read still succeeds', async () => {
@@ -2234,20 +2282,21 @@ describe('object-resolver', () => {
           const baseOffset = built.offsets[0]!;
           const midOffset = built.offsets[1]!;
           const registry = await createPackRegistry(ctx);
+          const [pack] = await registry.all();
 
           // Act
           const result = await resolveObject(ctx, registry, tipId, true);
 
           // Assert — the 1-byte base fits under the cap and IS cached
-          // (proving the key/pack-name shape used below is right, so the
+          // (proving the key/instance shape used below is right, so the
           // mid's absence is the size cap, not a lookup miss); the 64-byte
           // mid is not.
           expect((result as Blob).content).toEqual(tipContent);
           expect(
-            registry.deltaBaseCache.get(deltaBaseCacheKey('pack-oversize-mid', baseOffset)),
+            registry.deltaBaseCache.get(deltaBaseCacheKey(pack!.instanceKey, baseOffset)),
           ).toBeDefined();
           expect(
-            registry.deltaBaseCache.get(deltaBaseCacheKey('pack-oversize-mid', midOffset)),
+            registry.deltaBaseCache.get(deltaBaseCacheKey(pack!.instanceKey, midOffset)),
           ).toBeUndefined();
         });
       });
@@ -2275,6 +2324,7 @@ describe('object-resolver', () => {
           const tipId = built.ids[2]! as ObjectId;
           const midOffset = built.offsets[1]!;
           const registry = await createPackRegistry(ctx);
+          const [pack] = await registry.all();
 
           // Act
           const result = await resolveObject(ctx, registry, tipId, true);
@@ -2282,7 +2332,9 @@ describe('object-resolver', () => {
           // Assert — the read succeeds AND the entry is genuinely retained,
           // not merely "didn't crash".
           expect((result as Blob).content).toEqual(tipContent);
-          const cached = registry.deltaBaseCache.get(deltaBaseCacheKey('pack-zero-mid', midOffset));
+          const cached = registry.deltaBaseCache.get(
+            deltaBaseCacheKey(pack!.instanceKey, midOffset),
+          );
           expect(cached).toBeDefined();
           expect(cached!.content.length).toBe(0);
         });
@@ -2364,6 +2416,7 @@ describe('object-resolver', () => {
         const tipId = built.ids[3]! as ObjectId;
         const [baseOffset, mid1Offset, mid2Offset, tipOffset] = built.offsets;
         const registry = await createPackRegistry(ctx);
+        const [pack] = await registry.all();
 
         // Act
         const result = await resolveObject(ctx, registry, tipId, true);
@@ -2373,16 +2426,16 @@ describe('object-resolver', () => {
         // Assert — nearest-base-first: base and mid1 resident, mid2 and the
         // tip's own delta level pruned.
         expect(
-          registry.deltaBaseCache.get(deltaBaseCacheKey('pack-budget-chain', baseOffset!)),
+          registry.deltaBaseCache.get(deltaBaseCacheKey(pack!.instanceKey, baseOffset!)),
         ).toBeDefined();
         expect(
-          registry.deltaBaseCache.get(deltaBaseCacheKey('pack-budget-chain', mid1Offset!)),
+          registry.deltaBaseCache.get(deltaBaseCacheKey(pack!.instanceKey, mid1Offset!)),
         ).toBeDefined();
         expect(
-          registry.deltaBaseCache.get(deltaBaseCacheKey('pack-budget-chain', mid2Offset!)),
+          registry.deltaBaseCache.get(deltaBaseCacheKey(pack!.instanceKey, mid2Offset!)),
         ).toBeUndefined();
         expect(
-          registry.deltaBaseCache.get(deltaBaseCacheKey('pack-budget-chain', tipOffset!)),
+          registry.deltaBaseCache.get(deltaBaseCacheKey(pack!.instanceKey, tipOffset!)),
         ).toBeUndefined();
         expect(registry.deltaBaseCache.entryCount).toBe(2);
       });
@@ -2409,6 +2462,7 @@ describe('object-resolver', () => {
         const tipId = built.ids[1]! as ObjectId;
         const [baseOffset, tipOffset] = built.offsets;
         const registry = await createPackRegistry(ctx);
+        const [pack] = await registry.all();
 
         // Act
         const result = await resolveObject(ctx, registry, tipId, true);
@@ -2416,10 +2470,10 @@ describe('object-resolver', () => {
         // Assert
         expect((result as Blob).content).toEqual(tipContent);
         expect(
-          registry.deltaBaseCache.get(deltaBaseCacheKey('pack-oversized-base', baseOffset!)),
+          registry.deltaBaseCache.get(deltaBaseCacheKey(pack!.instanceKey, baseOffset!)),
         ).toBeUndefined();
         expect(
-          registry.deltaBaseCache.get(deltaBaseCacheKey('pack-oversized-base', tipOffset!)),
+          registry.deltaBaseCache.get(deltaBaseCacheKey(pack!.instanceKey, tipOffset!)),
         ).toBeDefined();
       });
     });
@@ -2444,13 +2498,14 @@ describe('object-resolver', () => {
         const tipId = built.ids[1]! as ObjectId;
         const [baseOffset] = built.offsets;
         const registry = await createPackRegistry(ctx);
+        const [pack] = await registry.all();
 
         // Act
         await resolveObject(ctx, registry, tipId, true);
 
         // Assert
         expect(
-          registry.deltaBaseCache.get(deltaBaseCacheKey('pack-exact-fit', baseOffset!)),
+          registry.deltaBaseCache.get(deltaBaseCacheKey(pack!.instanceKey, baseOffset!)),
         ).toBeDefined();
       });
     });
@@ -2477,13 +2532,14 @@ describe('object-resolver', () => {
         const tipId = built.ids[1]! as ObjectId;
         const [baseOffset] = built.offsets;
         const registry = await createPackRegistry(ctx);
+        const [pack] = await registry.all();
 
         // Act
         await resolveObject(ctx, registry, tipId, true);
 
         // Assert
         expect(
-          registry.deltaBaseCache.get(deltaBaseCacheKey('pack-exact-miss', baseOffset!)),
+          registry.deltaBaseCache.get(deltaBaseCacheKey(pack!.instanceKey, baseOffset!)),
         ).toBeUndefined();
       });
     });
@@ -2787,6 +2843,7 @@ describe('object-resolver', () => {
           const fillerIndex = parsePackIndex(filler.idxBytes, 20);
           const pack: RegisteredPack = {
             name: 'stub-corrupt-slice',
+            instanceKey: 'stub-corrupt-slice#0',
             index: async () => fillerIndex,
             packPath,
             idxPath: `${packPath}.idx`,
@@ -2866,6 +2923,7 @@ describe('object-resolver', () => {
           const fillerIndex = parsePackIndex(filler.idxBytes, 20);
           const pack: RegisteredPack = {
             name: 'stub-zero-slice',
+            instanceKey: 'stub-zero-slice#0',
             index: async () => fillerIndex,
             packPath,
             idxPath: `${packPath}.idx`,
@@ -2941,6 +2999,7 @@ describe('object-resolver', () => {
           const fillerIndex = parsePackIndex(filler.idxBytes, 20);
           const pack: RegisteredPack = {
             name: 'stub-corrupt-exceeds',
+            instanceKey: 'stub-corrupt-exceeds#0',
             index: async () => fillerIndex,
             packPath,
             idxPath: `${packPath}.idx`,

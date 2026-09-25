@@ -391,9 +391,10 @@ interface DeltaStep {
   /** Offset this step's entry was found at — the key `resolvePackChain`
    *  caches this level's reconstructed content under. */
   readonly offset: number;
-  /** The `deltaBaseCacheKey(packName, offset)` string already built to probe
-   *  this level — carried forward so `resolvePackChain`'s later cache write
-   *  for this same offset reuses it instead of rebuilding an identical key. */
+  /** The `deltaBaseCacheKey(pack.instanceKey, offset)` string already built
+   *  to probe this level — carried forward so `resolvePackChain`'s later
+   *  cache write for this same offset reuses it instead of rebuilding an
+   *  identical key. */
   readonly probeKey: string;
 }
 
@@ -495,7 +496,7 @@ async function collectDeltaChain(
     // Built once per level and carried on the pushed `DeltaStep` below, so a
     // probe miss that becomes a delta level never rebuilds this same key for
     // `resolvePackChain`'s later cache write.
-    const probeKey = deltaBaseCacheKey(currentHit.pack.name, currentHit.offset);
+    const probeKey = deltaBaseCacheKey(currentHit.pack.instanceKey, currentHit.offset);
     // Probe BEFORE descending: a level cached by an earlier chain (this
     // offset reached as someone else's intermediate) short-circuits the
     // whole rest of the walk exactly as reaching a real base entry would.
@@ -662,7 +663,7 @@ async function resolvePackChainWithDepth(
   // above (only `DeltaStep`s did), so its key is built fresh here — the one
   // key this function still computes rather than reuses.
   if (phase1.deltas.length > 0 && phase1.baseOffset !== undefined) {
-    insertLevel(deltaBaseCacheKey(hit.pack.name, phase1.baseOffset), current, 0);
+    insertLevel(deltaBaseCacheKey(hit.pack.instanceKey, phase1.baseOffset), current, 0);
   }
   for (let i = phase1.deltas.length - 1; i >= 0; i -= 1) {
     const step = phase1.deltas[i];

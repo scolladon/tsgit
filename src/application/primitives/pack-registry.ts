@@ -87,6 +87,16 @@ function isUnsupportedOperation(err: unknown): boolean {
 export interface RegisteredPack {
   readonly name: string;
   /**
+   * This instance's own identity — `${name}#<token>`, the SAME string
+   * `readSlice`'s window-cache key is built from. A same-named successor
+   * created after this instance is retired always carries a different
+   * token, so any offset-keyed cache keyed by `instanceKey` (not `name`
+   * alone) naturally stops matching once this instance is gone — no
+   * eviction needed, exactly the window cache's own posture. See
+   * {@link deltaBaseCacheKey}.
+   */
+  readonly instanceKey: string;
+  /**
    * Memoised `.idx` read + parse — one bounded read per pack, on first use,
    * never at scan time. A rejection is **not** memoised (the next caller
    * retries); the ONE site that classifies a rejection as skippable (a
@@ -206,10 +216,18 @@ export interface DeltaBaseCacheEntry {
   readonly chainDepth: number;
 }
 
-/** The one key shape for {@link PackRegistry.deltaBaseCache} — a pack name and
- *  an on-disk byte offset are only meaningful together, within one generation. */
-export function deltaBaseCacheKey(packName: string, offset: number): string {
-  return `${packName}:${offset}`;
+/**
+ * The one key shape for {@link PackRegistry.deltaBaseCache} — a pack
+ * INSTANCE and an on-disk byte offset are only meaningful together, for as
+ * long as that instance lives. Takes `RegisteredPack.instanceKey`, never
+ * `name` alone: `reprepare()` deliberately leaves this cache warm across a
+ * re-scan (unlike `refresh()`), so a retired instance's entries must become
+ * unreachable on their own once a same-named successor takes over — the
+ * same reasoning `loadPack`'s `windowCacheKey` already applies to the
+ * window cache.
+ */
+export function deltaBaseCacheKey(instanceKey: string, offset: number): string {
+  return `${instanceKey}:${offset}`;
 }
 
 /**
@@ -416,10 +434,10 @@ function loadPack(
   const idxPath = `${dir}/${entryName}`;
   const name = packBaseName(entryName);
   // Distinct from `name`: `name` is the stable, human-facing pack identity
-  // (`RegisteredPack.name`, log context, cache keys elsewhere); this is the
-  // window cache's OWN key, scoped to this one `loadPack` call so a
-  // same-named successor never shares a cached window with the pack it
-  // replaced.
+  // (`RegisteredPack.name`, log context); this is the per-INSTANCE key,
+  // scoped to this one `loadPack` call so a same-named successor never
+  // shares a cached window — or a cached delta base, via
+  // `RegisteredPack.instanceKey` below — with the pack it replaced.
   const windowCacheKey = `${name}#${nextPackInstanceToken++}`;
   const packPath = `${dir}/${name}.pack`;
   const revPath = `${dir}/${name}.rev`;
@@ -619,6 +637,7 @@ function loadPack(
 
   return {
     name,
+    instanceKey: windowCacheKey,
     index: indexMemo.get,
     packPath,
     idxPath,
