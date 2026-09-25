@@ -89,11 +89,15 @@ describe('hasObject', () => {
 
   describe('Given many ids absent from loose and packs', () => {
     describe('When probing hasObject for each', () => {
-      it('Then the pack registry is never refreshed', async () => {
-        // Arrange
+      it('Then the pack registry is never refreshed or re-scanned', async () => {
+        // Arrange — quick mode (the default hasObject takes here) must
+        // never touch EITHER re-scan mechanism: `refresh()`'s full teardown,
+        // or `reprepare()`'s incremental re-scan a recheck-mode miss goes
+        // through instead.
         const ctx = await buildSeededContext();
         const registry = await getPackRegistry(ctx);
         const refresh = vi.spyOn(registry, 'refresh');
+        const reprepare = vi.spyOn(registry, 'reprepare');
         const missingIds = Array.from({ length: 20 }, (_, i) =>
           i.toString(16).padStart(40, 'e'),
         ) as ObjectId[];
@@ -103,6 +107,7 @@ describe('hasObject', () => {
 
         // Assert
         expect(refresh).not.toHaveBeenCalled();
+        expect(reprepare).not.toHaveBeenCalled();
       });
     });
   });

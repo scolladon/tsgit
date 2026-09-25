@@ -269,11 +269,12 @@ describe('readObjectMetadata', () => {
     describe('When readObjectMetadata is called', () => {
       it('Then throws OBJECT_NOT_FOUND for the base id — the metadata walk never re-scans, matching packed_to_object_type', async () => {
         // Arrange — git's header-only type walk (`packed_to_object_type`)
-        // resolves a REF_DELTA base with a lookup against the packs already
-        // known, never `reprepare_packed_git`; only the CONTENT-resolving
-        // path (`oid_object_info_extended`) retries after a re-scan. A base
-        // that only lands on disk after the scan is therefore a genuine
-        // miss here, exactly like the "claimed by no pack" row above.
+        // resolves a REF_DELTA base via a same-pack lookup (git's
+        // `get_delta_base` / `find_pack_entry_one`), never `reprepare_packed_git`;
+        // only the CONTENT-resolving path (`oid_object_info_extended`)
+        // retries after a re-scan. A base that only lands on disk after the
+        // scan is therefore a genuine miss here, exactly like the "claimed
+        // by no pack" row above.
         const baseContent = new TextEncoder().encode('ref base, late pack');
         const targetContent = new TextEncoder().encode('ref target, late base — different bytes');
         const ctx = await buildSeededContext();

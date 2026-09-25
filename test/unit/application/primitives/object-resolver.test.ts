@@ -31,6 +31,7 @@ import {
   serializeHeader,
 } from '../../../../src/domain/objects/index.js';
 import type { LruCache } from '../../../../src/domain/storage/index.js';
+import { computeLooseObjectPath } from '../../../../src/domain/storage/loose-path.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { buildMidx, type MidxSpec } from '../../domain/storage/arbitraries.js';
 import {
@@ -513,6 +514,7 @@ describe('object-resolver', () => {
         const ctx = await buildSeededContext({ signal: controller.signal });
         const id = (await ctx.hash.hashHex(bytes)) as ObjectId;
         const packDir = `${ctx.layout.gitDir}/objects/pack`;
+        const loosePath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(id)}`;
         let packDirReaddirCount = 0;
         const wrapped: Context = {
           ...ctx,
@@ -526,10 +528,6 @@ describe('object-resolver', () => {
                 // exactly there, never on the construction scan.
                 if (packDirReaddirCount === 2) {
                   controller.abort();
-                  const { computeLooseObjectPath } = await import(
-                    '../../../../src/domain/storage/loose-path.js'
-                  );
-                  const loosePath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(id)}`;
                   const compressed = await ctx.compressor.deflate(bytes);
                   await ctx.fs.write(loosePath, compressed);
                 }
@@ -538,18 +536,33 @@ describe('object-resolver', () => {
             },
           },
         };
-        const registry = await createPackRegistry(wrapped);
+        const { ctx: instrumented, calls } = instrumentedContext(wrapped);
+        const registry = await createPackRegistry(instrumented);
         await registry.all(); // consumes the construction scan's own readdir
+        const lookupSpy = vi.spyOn(registry, 'lookup');
 
         // Act
         try {
-          await resolveObject(wrapped, registry, id, true);
+          await resolveObject(instrumented, registry, id, true);
           expect.unreachable();
         } catch (error) {
           // Assert
           expect(error).toBeInstanceOf(TsgitError);
           expect((error as TsgitError).data.code).toBe('OPERATION_ABORTED');
         }
+
+        // Assert — `retryOnceAfterRescan`'s OWN `checkAborted`, run right
+        // after the re-scan and BEFORE its retry `attempt()`, is what wins:
+        // exactly the one lookup the original miss made, never a second one
+        // the retry would have made, and the just-written loose file is
+        // never read — proves the abort fired before `attempt()` ran at all,
+        // not merely somewhere later inside it (`resolveLooseArm`'s own
+        // `checkAborted` would also throw OPERATION_ABORTED, but only AFTER
+        // reading the file).
+        expect(lookupSpy).toHaveBeenCalledTimes(1);
+        expect(calls().some((call) => call.method === 'read' && call.path === loosePath)).toBe(
+          false,
+        );
       });
     });
   });

@@ -5206,7 +5206,76 @@ describe('NodeFileSystem.read — sync-to-async fallback rows (DI)', () => {
       }
 
       // Assert
-      expect(caught).toBeDefined();
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data).toEqual({
+        code: 'UNSUPPORTED_OPERATION',
+        operation: 'filesystem',
+        reason: 'ERR_FS_FILE_TOO_LARGE',
+      });
+      expect(readAsync).not.toHaveBeenCalled();
+      expect(closeSync).toHaveBeenCalledWith(FD);
+      expect(readFile).toHaveBeenCalledWith(target);
+    });
+  });
+
+  describe('Given a policy-bearing adapter, When the file size is exactly MAX_REUSED_FD_READ_BYTES (2**31 - 1)', () => {
+    it('Then read stays on the held descriptor instead of diverting to fsOps.readFile', async () => {
+      // Arrange — one byte under the readFile-diversion boundary: the
+      // over-gate arm must still finish on the SAME fd via fillAsync, never
+      // close it early and hand the file to fsOps.readFile.
+      const atLimit = 2 ** 31 - 1;
+      const openSync = vi.fn().mockReturnValue(FD);
+      const fstatSync = vi.fn().mockReturnValue({ isFile: () => true, size: atLimit });
+      const readAsync = asyncReaderOf(Buffer.alloc(0)); // empty: filled stops at 0, no huge copy
+      const closeSync = vi.fn();
+      const readFile = vi.fn();
+      const fsOps = fakeFsOps({
+        realpath: vi.fn().mockImplementation(async (input: string) => input),
+        readFile,
+      });
+      const syncIo: SyncIoPolicy = {
+        ops: fakeSyncFsOps({ openSync, fstatSync, readAsync, closeSync }),
+        budget: alwaysAdmit(),
+        maxSyncReadBytes: GATE,
+      };
+      const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps, syncIo });
+
+      // Act
+      await sut.read(target);
+
+      // Assert
+      expect(readAsync).toHaveBeenCalled();
+      expect(readFile).not.toHaveBeenCalled();
+      expect(closeSync).toHaveBeenCalledWith(FD);
+    });
+  });
+
+  describe('Given a policy-bearing adapter, When the file size is exactly 2**31 (one past MAX_REUSED_FD_READ_BYTES)', () => {
+    it('Then read closes the descriptor and diverts to fsOps.readFile', async () => {
+      // Arrange — one byte past the boundary: the file is now large enough
+      // that fs.read's 32-bit length parameter could wrap, so the over-gate
+      // arm must divert to fsOps.readFile instead of reusing the fd.
+      const onePastLimit = 2 ** 31;
+      const openSync = vi.fn().mockReturnValue(FD);
+      const fstatSync = vi.fn().mockReturnValue({ isFile: () => true, size: onePastLimit });
+      const readAsync = vi.fn();
+      const closeSync = vi.fn();
+      const readFile = vi.fn().mockResolvedValue(Buffer.alloc(0));
+      const fsOps = fakeFsOps({
+        realpath: vi.fn().mockImplementation(async (input: string) => input),
+        readFile,
+      });
+      const syncIo: SyncIoPolicy = {
+        ops: fakeSyncFsOps({ openSync, fstatSync, readAsync, closeSync }),
+        budget: alwaysAdmit(),
+        maxSyncReadBytes: GATE,
+      };
+      const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps, syncIo });
+
+      // Act
+      await sut.read(target);
+
+      // Assert
       expect(readAsync).not.toHaveBeenCalled();
       expect(closeSync).toHaveBeenCalledWith(FD);
       expect(readFile).toHaveBeenCalledWith(target);
@@ -5240,7 +5309,12 @@ describe('NodeFileSystem.read — sync-to-async fallback rows (DI)', () => {
       }
 
       // Assert
-      expect(caught).toBeDefined();
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data).toEqual({
+        code: 'UNSUPPORTED_OPERATION',
+        operation: 'filesystem',
+        reason: 'EIO',
+      });
       expect(closeSync).toHaveBeenCalledWith(FD);
     });
   });

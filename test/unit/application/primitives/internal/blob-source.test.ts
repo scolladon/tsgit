@@ -14,7 +14,7 @@ import { EMPTY_TREE_OID } from '../../../../../src/domain/objects/index.js';
 import { parseAcceptanceVerdict } from '../../../../../src/domain/objects/parse-acceptance.js';
 import { computeLooseObjectPath } from '../../../../../src/domain/storage/loose-path.js';
 import type { Context } from '../../../../../src/ports/context.js';
-import { buildSeededContext, writeRawObjectBytes } from '../fixtures.js';
+import { buildSeededContext, instrumentedContext, writeRawObjectBytes } from '../fixtures.js';
 import { buildSyntheticPack, corruptIdxOffset, writeSyntheticPack } from '../pack-fixture.js';
 
 const ZERO_ID = '0'.repeat(40) as ObjectId;
@@ -668,6 +668,7 @@ describe('openBlobSource', () => {
         const ctx = await buildSeededContext({ signal: controller.signal });
         const id = (await ctx.hash.hashHex(bytes)) as ObjectId;
         const packDir = `${ctx.layout.gitDir}/objects/pack`;
+        const loosePath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(id)}`;
         let packDirReaddirCount = 0;
         const wrapped: Context = {
           ...ctx,
@@ -678,7 +679,6 @@ describe('openBlobSource', () => {
                 packDirReaddirCount += 1;
                 if (packDirReaddirCount === 2) {
                   controller.abort();
-                  const loosePath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(id)}`;
                   const compressed = await ctx.compressor.deflate(bytes);
                   await ctx.fs.write(loosePath, compressed);
                 }
@@ -687,14 +687,16 @@ describe('openBlobSource', () => {
             },
           },
         };
+        const { ctx: instrumented, calls } = instrumentedContext(wrapped);
         // openBlobSource resolves its registry via the session memo
         // (getPackRegistry) — warm THAT instance, not a standalone one.
-        const registry = await getPackRegistry(wrapped);
+        const registry = await getPackRegistry(instrumented);
         await registry.all(); // consumes the construction scan's own readdir
+        const lookupSpy = vi.spyOn(registry, 'lookup');
 
         // Act
         try {
-          await openBlobSource(wrapped, id, MAX_BUFFERED_BLOB_BYTES);
+          await openBlobSource(instrumented, id, MAX_BUFFERED_BLOB_BYTES);
           expect.unreachable();
         } catch (error) {
           // Assert
@@ -702,6 +704,16 @@ describe('openBlobSource', () => {
           const data = (error as TsgitError).data;
           expect(data.code).toBe('OPERATION_ABORTED');
         }
+
+        // Assert — `retryOnceAfterRescan`'s OWN `checkAborted`, run right
+        // after the re-scan and BEFORE its retry `attempt()`, is what wins:
+        // exactly the one lookup the original miss made, never a second one
+        // the retry would have made, and the just-written loose file is
+        // never read.
+        expect(lookupSpy).toHaveBeenCalledTimes(1);
+        expect(calls().some((call) => call.method === 'read' && call.path === loosePath)).toBe(
+          false,
+        );
       });
     });
   });

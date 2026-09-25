@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import * as configReadMod from '../../../../src/application/primitives/config-read.js';
 import { enumerateObjects } from '../../../../src/application/primitives/enumerate-objects.js';
+import { probeLooseOid } from '../../../../src/application/primitives/internal/loose-oid-cache.js';
 import { packPositionMap } from '../../../../src/application/primitives/internal/pack-positions.js';
 import { GIT_DEFAULT_DELTA_BASE_CACHE_LIMIT_BYTES } from '../../../../src/application/primitives/internal/resolve-delta-base-cache-limit.js';
 import {
@@ -7422,6 +7423,7 @@ describe('PackRegistry.reprepare', () => {
         const vanishing = packs.find((pack) => pack.name === 'pack-reprepare-vanish')!;
         const keeping = packs.find((pack) => pack.name === 'pack-reprepare-keep')!;
         await vanishing.readSlice(PACK_HEADER_SIZE, 4); // opens its handle
+        await keeping.readSlice(PACK_HEADER_SIZE, 4); // opens its handle too
         const dir = `${ctx.layout.gitDir}/objects/pack`;
         await ctx.fs.rm(`${dir}/${vanishing.name}.pack`);
         await ctx.fs.rm(`${dir}/${vanishing.name}.idx`);
@@ -7430,11 +7432,17 @@ describe('PackRegistry.reprepare', () => {
         await registry.reprepare();
         await registry.settleRefresh();
 
-        // Assert
+        // Assert — only the vanished pack's handle closes; the reused,
+        // still-live keeper's handle is never touched by reprepare().
         const after = await registry.all();
         expect(after.map((pack) => pack.name)).toEqual([keeping.name]);
-        expect(ledger.outstanding()).toBe(0);
         expect(ledger.closes()).toBe(1);
+        expect(ledger.outstanding()).toBe(1);
+        // Assert — the keeper still serves straight from its OWN warm
+        // handle: a fresh readSlice opens no new one.
+        const opensBefore = ledger.opens();
+        await keeping.readSlice(PACK_HEADER_SIZE, 4);
+        expect(ledger.opens()).toBe(opensBefore);
       });
     });
   });
@@ -7557,23 +7565,43 @@ describe('PackRegistry.reprepare', () => {
         bytes.set(header, 0);
         bytes.set(content, header.length);
         const id = (await ctx.hash.hashHex(bytes)) as ObjectId;
+        // An UNRELATED prefix, warmed up front — proves the miss's own
+        // forget pass drops only the MISSED id's own prefix, never the
+        // whole session's fanout cache.
+        const idPrefix = id.slice(0, 2);
+        const differentNibble = ((Number.parseInt(idPrefix[0]!, 16) + 1) % 16).toString(16);
+        const unrelatedPrefix = `${differentNibble}${idPrefix[1]}`;
+        const unrelatedId = `${unrelatedPrefix}${'0'.repeat(38)}` as ObjectId;
+        const { ctx: instrumented, calls } = instrumentedContext(ctx);
+        await probeLooseOid(instrumented, unrelatedId);
+        const unrelatedDir = `${ctx.layout.gitDir}/objects/${unrelatedPrefix}`;
+        const baseline = calls().length;
+
         // Probe: the first read misses everywhere, caching the (empty)
-        // fanout listing for id's prefix.
-        await expect(readObject(ctx, id)).rejects.toMatchObject({
+        // fanout listing for id's own prefix.
+        await expect(readObject(instrumented, id)).rejects.toMatchObject({
           data: { code: 'OBJECT_NOT_FOUND' },
         });
         // Write straight through ctx.fs.write, bypassing writeObject (which
         // would invalidate the cache itself via invalidateLooseOid).
         const loosePath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(id)}`;
         const compressed = await ctx.compressor.deflate(bytes);
-        await ctx.fs.write(loosePath, compressed);
+        await instrumented.fs.write(loosePath, compressed);
 
         // Act
-        const result = await readObject(ctx, id);
+        const result = await readObject(instrumented, id);
 
         // Assert
         expect(result.type).toBe('blob');
         expect((result as Blob).content).toEqual(content);
+        // Assert — re-probing the unrelated prefix costs no further
+        // readdir: its cached (warm) listing survived the miss's forget
+        // pass untouched.
+        await probeLooseOid(instrumented, unrelatedId);
+        const unrelatedReaddirCalls = calls()
+          .slice(baseline)
+          .filter((call) => call.method === 'readdir' && call.path === unrelatedDir);
+        expect(unrelatedReaddirCalls).toEqual([]);
       });
     });
   });
