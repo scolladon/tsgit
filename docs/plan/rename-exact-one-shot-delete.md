@@ -16,7 +16,7 @@
 - A part that would be a pure test pass over already-landed code merges into its
   neighbour.
 - A part should land in ~100 tool calls. More than ~5 RED→GREEN cycles, or more than 6
-  files in its `### Context` block, is two parts. What counts is a backticked path:
+  files in its `### Context` block, is two parts. What counts is a path in code format:
   backtick the files the part CREATES or EDITS, and write read-only reference paths in
   plain text.
 
