@@ -162,6 +162,8 @@ describe.skipIf(!GIT_AVAILABLE)('blame interop', () => {
   let rangeMatrix: { dir: string; ctx: Context };
   let rangeMatrixBase: string;
   let emptyFile: { dir: string; ctx: Context };
+  let fanOut: { dir: string; ctx: Context };
+  let inexactCompetition: { dir: string; ctx: Context };
 
   beforeAll(async () => {
     const linearDir = await makeRepo('linear');
@@ -245,6 +247,40 @@ describe.skipIf(!GIT_AVAILABLE)('blame interop', () => {
     const emptyFileDir = await makeRepo('empty-file');
     await commitContent(emptyFileDir, 'e.txt', '');
     emptyFile = { dir: emptyFileDir, ctx: createNodeContext({ workDir: emptyFileDir }) };
+
+    // Fan-out: one delete, three adds with the identical bytes in one commit —
+    // git blame's single_follow means every copy blames back to Foo.txt (row B1).
+    const fanOutDir = await makeRepo('fan-out');
+    await commitContent(fanOutDir, 'Foo.txt', 'l1\nl2\n');
+    git(fanOutDir, 'rm', '-q', 'Foo.txt');
+    await writeFile(path.join(fanOutDir, 'A.txt'), 'l1\nl2\n');
+    await writeFile(path.join(fanOutDir, 'B.txt'), 'l1\nl2\n');
+    await writeFile(path.join(fanOutDir, 'C.txt'), 'l1\nl2\n');
+    git(fanOutDir, 'add', '-A');
+    clock += 60;
+    runGit(['-C', fanOutDir, 'commit', '-q', '-m', 'fan-out copy'], { env: datedEnv(clock) });
+    fanOut = { dir: fanOutDir, ctx: createNodeContext({ workDir: fanOutDir }) };
+
+    // Inexact competition: one delete, two adds each keeping a different share
+    // of its content — single_follow pins each add to its OWN blame lookup,
+    // so the less similar add still follows a.txt (not the sibling's add).
+    const inexactCompetitionDir = await makeRepo('inexact-competition');
+    const original = `${Array.from({ length: 10 }, (_, i) => `l${i + 1}`).join('\n')}\n`;
+    await commitContent(inexactCompetitionDir, 'a.txt', original);
+    git(inexactCompetitionDir, 'rm', '-q', 'a.txt');
+    const bContent = `${[...Array.from({ length: 8 }, (_, i) => `l${i + 1}`), 'XX', 'YY'].join('\n')}\n`;
+    const cContent = `${[...Array.from({ length: 9 }, (_, i) => `l${i + 1}`), 'ZZ'].join('\n')}\n`;
+    await writeFile(path.join(inexactCompetitionDir, 'b.txt'), bContent);
+    await writeFile(path.join(inexactCompetitionDir, 'c.txt'), cContent);
+    git(inexactCompetitionDir, 'add', '-A');
+    clock += 60;
+    runGit(['-C', inexactCompetitionDir, 'commit', '-q', '-m', 'inexact competition'], {
+      env: datedEnv(clock),
+    });
+    inexactCompetition = {
+      dir: inexactCompetitionDir,
+      ctx: createNodeContext({ workDir: inexactCompetitionDir }),
+    };
   }, SETUP_TIMEOUT);
 
   afterAll(async () => {
@@ -259,6 +295,8 @@ describe.skipIf(!GIT_AVAILABLE)('blame interop', () => {
         oursMerge,
         rangeMatrix,
         emptyFile,
+        fanOut,
+        inexactCompetition,
       ].map((r) => rm(r.dir, { recursive: true, force: true })),
     );
   });
@@ -362,6 +400,19 @@ describe.skipIf(!GIT_AVAILABLE)('blame interop', () => {
       fixture: () => renamed,
       file: 'renamed.txt',
       range: { start: 1, end: 1 },
+    },
+    { label: 'a fan-out copy (first in path order)', fixture: () => fanOut, file: 'A.txt' },
+    { label: 'a fan-out copy (second)', fixture: () => fanOut, file: 'B.txt' },
+    { label: 'a fan-out copy (third)', fixture: () => fanOut, file: 'C.txt' },
+    {
+      label: 'the less similar of two competing adds',
+      fixture: () => inexactCompetition,
+      file: 'b.txt',
+    },
+    {
+      label: 'the more similar of two competing adds',
+      fixture: () => inexactCompetition,
+      file: 'c.txt',
     },
   ];
 
