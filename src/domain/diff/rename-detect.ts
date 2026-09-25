@@ -1,4 +1,5 @@
 import type { FileMode, FilePath, ObjectId } from '../objects/index.js';
+import { FILE_MODE } from '../objects/index.js';
 import { primaryPath } from './change-path.js';
 import type { AddChange, DeleteChange, DiffChange, RenameChange, TreeDiff } from './diff-change.js';
 import { kindOf } from './mode-kind.js';
@@ -40,9 +41,10 @@ function partition(changes: ReadonlyArray<DiffChange>): {
   return { adds, deletes, other };
 }
 
-// Regular files pair across the executable bit; every other mode pairs only with itself.
+// Regular files pair across the executable bit, so both key as REGULAR; every
+// other mode pairs only with itself.
 function exactKey(id: ObjectId, mode: FileMode): string {
-  return `${id} ${kindOf(mode) === 'file' ? 'file' : mode}`;
+  return `${id} ${kindOf(mode) === 'file' ? FILE_MODE.REGULAR : mode}`;
 }
 
 // Bucketing by mode class up front keeps git's candidate order among compatible
