@@ -60,7 +60,7 @@ describe('detectRenames', () => {
         const input = diff([deleteChange('old.txt', ID_A), addChange('new.txt', ID_A)]);
 
         // Act
-        const result = detectRenames(input);
+        const result = sut(input);
 
         // Assert
         expect(result.changes).toEqual([
@@ -678,7 +678,7 @@ describe('detectRenames', () => {
 
   describe('Given 101 mode-compatible deletes sharing an id with no basename match', () => {
     describe('When detectRenames called', () => {
-      it('Then only the first delete, within the cap, folds', () => {
+      it('Then the first delete in path order folds', () => {
         // Arrange
         const input = diff([...manyDeletes(101), addChange('b/Bar.meta', ID_A)]);
 
@@ -712,7 +712,7 @@ describe('detectRenames', () => {
         const input = diff([deleteChange('a.txt', ID_A), addChange('b.txt', ID_B)]);
 
         // Act
-        const result = detectRenames(input);
+        const result = sut(input);
 
         // Assert
         expect(result.changes).toEqual(input.changes);
@@ -720,64 +720,35 @@ describe('detectRenames', () => {
     });
   });
 
-  describe('Given adds × deletes at limit exactly', () => {
+  describe('Given more adds × deletes than the default rename limit', () => {
     describe('When detectRenames called', () => {
-      it('Then rename detected', () => {
-        // Arrange — 2 × 2 = 4 ≤ limit 4
+      it('Then the exact pair still folds', () => {
+        // Arrange — 40 adds × 30 deletes = 1200 candidate pairs, one sharing an id
+        const unrelatedAdds = Array.from({ length: 39 }, (_, i) => addChange(`b/N${i}.meta`, ID_C));
         const input = diff([
-          deleteChange('a', ID_A),
-          deleteChange('b', ID_B),
-          addChange('c', ID_A),
-          addChange('d', ID_B),
+          ...manyDeletes(29, ID_B),
+          deleteChange('a/Foo.meta', ID_A),
+          ...unrelatedAdds,
+          addChange('b/Bar.meta', ID_A),
         ]);
 
         // Act
-        const result = detectRenames(input, { limit: 4 });
+        const result = sut(input);
 
-        // Assert — two renames
+        // Assert
         const renames = result.changes.filter((c) => c.type === 'rename');
-        expect(renames).toHaveLength(2);
-      });
-    });
-  });
-
-  describe('Given adds x deletes product (3) just under limit (4)', () => {
-    describe('When detectRenames called', () => {
-      it('Then renames still detected', () => {
-        // Arrange — 1 add x 3 deletes = 3 <= 4
-        const input = diff([
-          deleteChange('a', ID_A),
-          deleteChange('b', ID_B),
-          deleteChange('c', ID_C),
-          addChange('d', ID_A),
+        expect(renames).toEqual([
+          {
+            type: 'rename',
+            oldPath: 'a/Foo.meta',
+            newPath: 'b/Bar.meta',
+            oldId: ID_A,
+            newId: ID_A,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+            similarity: { score: MAX_SCORE, maxScore: MAX_SCORE },
+          },
         ]);
-
-        // Act
-        const result = detectRenames(input, { limit: 4 });
-
-        // Assert — product 3 < limit 4, rename detection proceeds
-        const renames = result.changes.filter((c) => c.type === 'rename');
-        expect(renames).toHaveLength(1);
-      });
-    });
-  });
-
-  describe('Given adds × deletes at limit + 1', () => {
-    describe('When detectRenames called', () => {
-      it('Then diff returned unchanged', () => {
-        // Arrange — 2 × 2 = 4 > limit 3
-        const input = diff([
-          deleteChange('a', ID_A),
-          deleteChange('b', ID_B),
-          addChange('c', ID_A),
-          addChange('d', ID_B),
-        ]);
-
-        // Act
-        const result = detectRenames(input, { limit: 3 });
-
-        // Assert — unchanged
-        expect(result).toBe(input);
       });
     });
   });
@@ -801,7 +772,7 @@ describe('detectRenames', () => {
         ]);
 
         // Act
-        const result = detectRenames(input);
+        const result = sut(input);
 
         // Assert — primary-key sort: 'x' (modify) < 'y' (rename newPath) < 'z' (add newPath)
         const keys = result.changes.map((c) => {
@@ -827,8 +798,8 @@ describe('detectRenames', () => {
         ]);
 
         // Act
-        const once = detectRenames(input);
-        const twice = detectRenames(once);
+        const once = sut(input);
+        const twice = sut(once);
 
         // Assert
         expect(twice).toEqual(once);
@@ -848,7 +819,7 @@ describe('detectRenames', () => {
         ]);
 
         // Act
-        const result = detectRenames(input);
+        const result = sut(input);
 
         // Assert — all paths in the output must come from input paths
         const inputPaths = extractPaths(input.changes);

@@ -26,7 +26,7 @@ import type { Context } from '../../ports/context.js';
 import { boundedMapFor } from './internal/concurrency.js';
 import { readBlob } from './read-blob.js';
 
-/** Must match `rename-detect.ts` DEFAULT_LIMIT (1000). */
+/** git's default `diff.renameLimit`. */
 const DEFAULT_LIMIT = 1000;
 
 interface BlobEntry {
@@ -827,8 +827,8 @@ export async function detectSimilarityRenames(
   // Break-attempt pass: runs BEFORE exact/inexact so halves feed the matrix.
   const { broken, workingDiff } = await runBreakPass(ctx, diff, breakRewrites);
 
-  // Run the exact pass with an unlimited ceiling (rename-limit guard is inexact-only).
-  const exactResult = detectRenames(workingDiff, { ...options, limit: Number.MAX_SAFE_INTEGER });
+  // The exact pass is never limited; the rename-limit guard below is inexact-only.
+  const exactResult = detectRenames(workingDiff);
   const { adds, deletes, other } = partitionLeftovers(exactResult.changes);
 
   // Stryker disable next-line ConditionalExpression,LogicalOperator,EqualityOperator: equivalent — hasRenameWork only gates the pure-optimisation early return below; every listed variant merely forces it true in more no-work cases (adds===0 or deletes===0), and falling through then builds no triples (no destinations or no sources), leaving the result unchanged.

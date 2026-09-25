@@ -209,7 +209,12 @@ leftover deletes = deletes not consumed
 ```
 
 - **Mode compatibility.** Both sides have `kindOf(mode) === 'file'`, or `oldMode === newMode`.
-  Reuses `kindOf` (`src/domain/diff/mode-kind.ts`). No new mode table.
+  Reuses `kindOf` (`src/domain/diff/mode-kind.ts`). Deletes are grouped by id **and** mode
+  class (`'file'` for 644/755, the literal mode otherwise), so an add only ever scans its
+  compatible group. git skips incompatible candidates without counting them and without
+  reordering the rest, so the choice is identical; grouping up front is what makes the
+  100-candidate cap bound the scan (review: an add with no compatible candidate otherwise
+  walked the whole id group, O(adds · k) on a hostile tree).
 - **basenameSame.** The last path segments are equal. This is equivalent to git's
   backwards scan to `/`. Paths are `FilePath` and never end in `/`.
 - **One-shot.** A consumed delete is removed from its group, so later adds never see it.
@@ -219,9 +224,10 @@ leftover deletes = deletes not consumed
   way, because git's `continue` does not count used sources toward the cap.
 - **Cost.** Per add: O(min(k, 100)) scan plus O(k) removal, where k is the size of the
   same-id group. Typical k = 1, which reduces to today's single lookup. Worst case
-  O(adds · k), the same bound as git. No new gate. The existing `adds × deletes > limit`
-  guard in `detectRenames` is unchanged; the primitive keeps calling it with
-  `limit: MAX_SAFE_INTEGER`, so the exact pass stays unlimited inside `diffTrees` (ADR-370).
+  O(adds · min(k, 100)) scan. No gate at all: the `adds × deletes > limit` guard is
+  removed from `detectRenames` (ratified in review), which now takes no options, so the
+  public function matches ADR-370 ("exact pairing is never limited") for direct callers
+  too, not only inside `diffTrees`.
 - **Output order** stays `sortByPath(merged, primaryPath)`. Pinned: git's `--name-status`
   order equals `primaryPath` order on every row in §3 (a rename sits at its destination
   path).
