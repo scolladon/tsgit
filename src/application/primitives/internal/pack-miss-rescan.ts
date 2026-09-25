@@ -45,15 +45,29 @@ export function rescanOnFullMiss(
     return existing.promise;
   }
   const missedIds = new Set<ObjectId>([missedId]);
+  const dropSessionEntry = (): void => {
+    if (pendingRescanBySession.get(ctx.session)?.promise === promise) {
+      pendingRescanBySession.delete(ctx.session);
+    }
+  };
   const promise = registry
     .reprepare()
     .then(() => {
+      // Drop the session entry BEFORE walking `missedIds` — not only in
+      // `.finally` below, once every id is already forgotten. A miss that
+      // arrives once `reprepare()` has settled but before this callback
+      // runs would otherwise still see the (about-to-be-stale) entry, join
+      // via `missedIds.add`, and never have ITS OWN prefix forgotten — this
+      // wave's forget pass has already walked the set by the time it joins.
+      // Removing first means that miss instead starts a fresh wave of its
+      // own, which forgets its prefix on its own terms.
+      dropSessionEntry();
       for (const id of missedIds) forgetLooseOidPrefix(ctx, id);
     })
     .finally(() => {
-      if (pendingRescanBySession.get(ctx.session)?.promise === promise) {
-        pendingRescanBySession.delete(ctx.session);
-      }
+      // Safety net for the rejection path only: a rejected reprepare() skips
+      // the .then() above entirely, so the entry would otherwise never drop.
+      dropSessionEntry();
     });
   pendingRescanBySession.set(ctx.session, { promise, missedIds });
   return promise;
