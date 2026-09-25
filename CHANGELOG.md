@@ -1,5 +1,24 @@
 # Changelog
 
+## [5.0.0](https://github.com/scolladon/tsgit/compare/v4.0.0...v5.0.0) (2026-09-25)
+
+
+### ⚠ BREAKING CHANGES
+
+* serve cheap Node file calls synchronously and read cold packs the way git does ([#304](https://github.com/scolladon/tsgit/issues/304))
+* size the session caches, cut the per-command floor, and follow git on refs, reflogs and config ([#301](https://github.com/scolladon/tsgit/issues/301))
+
+### Features
+
+* **history:** prune the object closure and route the history walks through the commit-graph ([be57e0c](https://github.com/scolladon/tsgit/commit/be57e0cce13699610ef06bf531dc64ac9e2ee385))
+* serve cheap Node file calls synchronously and read cold packs the way git does ([#304](https://github.com/scolladon/tsgit/issues/304)) ([79fb9bd](https://github.com/scolladon/tsgit/commit/79fb9bd745bf44ee09f2b2fba7b2aed825185b4d))
+* size the session caches, cut the per-command floor, and follow git on refs, reflogs and config ([#301](https://github.com/scolladon/tsgit/issues/301)) ([8a56d98](https://github.com/scolladon/tsgit/commit/8a56d98a6d06695925f11964eb88379d3ca7e406))
+
+
+### Documentation
+
+* retarget CLAUDE.md at craft and extract property-testing guidance ([5ac1a17](https://github.com/scolladon/tsgit/commit/5ac1a1707f67cd027629849921ec4f17abb4659f))
+
 ## [4.0.0](https://github.com/scolladon/tsgit/compare/v3.6.0...v4.0.0) (2026-09-10)
 
 
