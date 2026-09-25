@@ -1,12 +1,12 @@
-import type { ObjectId } from '../objects/index.js';
+import type { FileMode, FilePath, ObjectId } from '../objects/index.js';
 import { primaryPath } from './change-path.js';
 import type { AddChange, DeleteChange, DiffChange, RenameChange, TreeDiff } from './diff-change.js';
+import { kindOf } from './mode-kind.js';
 import { sortByPath } from './path-compare.js';
 import { MAX_SCORE } from './similarity.js';
 
 export interface RenameDetectOptions {
   readonly limit?: number;
-  readonly maxSameIdDeletes?: number;
   readonly threshold?: number;
   readonly copies?: 'off' | 'on' | 'harder';
   /** Per-copy threshold (0..MAX_SCORE). Defaults to `threshold` when absent. */
@@ -22,7 +22,9 @@ export interface RenameDetectOptions {
 }
 
 const DEFAULT_LIMIT = 1000;
-const DEFAULT_MAX_SAME_ID_DELETES = 100;
+// git's find_identical_files examines at most this many eligible candidates per destination.
+const EXACT_CANDIDATE_CAP = 100;
+const NOT_FOUND = -1;
 
 function partition(changes: ReadonlyArray<DiffChange>): {
   readonly adds: ReadonlyArray<AddChange>;
@@ -40,35 +42,57 @@ function partition(changes: ReadonlyArray<DiffChange>): {
   return { adds, deletes, other };
 }
 
-function buildDeletesByOldId(
-  deletes: ReadonlyArray<DeleteChange>,
-  maxSameIdDeletes: number,
-): Map<ObjectId, ReadonlyArray<DeleteChange>> {
+function buildDeletesByOldId(deletes: ReadonlyArray<DeleteChange>): Map<ObjectId, DeleteChange[]> {
   const byOldId = new Map<ObjectId, DeleteChange[]>();
   for (const del of deletes) {
-    const list = byOldId.get(del.oldId);
-    if (list === undefined) {
+    const group = byOldId.get(del.oldId);
+    if (group === undefined) {
       byOldId.set(del.oldId, [del]);
     } else {
-      list.push(del);
+      group.push(del);
     }
   }
-  // Prune keys exceeding per-id fan-out cap; freeze into read-only shape.
-  const pruned = new Map<ObjectId, ReadonlyArray<DeleteChange>>();
-  for (const [key, list] of byOldId) {
-    if (list.length <= maxSameIdDeletes) pruned.set(key, list);
+  return byOldId;
+}
+
+// Both regular (644/755 pair freely) or identical modes (symlink, gitlink, tree).
+function isExactModeCompatible(oldMode: FileMode, newMode: FileMode): boolean {
+  if (kindOf(oldMode) === 'file' && kindOf(newMode) === 'file') return true;
+  return oldMode === newMode;
+}
+
+// Last path segment equality; 'Foo' ≡ 'b/Foo', 'xFoo' ≢ 'Foo' (git's basename_same).
+function hasSameBasename(oldPath: FilePath, newPath: FilePath): boolean {
+  const oldBasename = oldPath.slice(oldPath.lastIndexOf('/') + 1);
+  const newBasename = newPath.slice(newPath.lastIndexOf('/') + 1);
+  return oldBasename === newBasename;
+}
+
+// Transcribes git's find_identical_files: first unused mode-compatible candidate,
+// basename match wins immediately, first-in-order candidate wins ties, capped scan.
+function pickExactSource(add: AddChange, group: ReadonlyArray<DeleteChange>): number {
+  let fallback = NOT_FOUND;
+  let examined = 0;
+  for (const [index, candidate] of group.entries()) {
+    if (examined >= EXACT_CANDIDATE_CAP) break;
+    if (!isExactModeCompatible(candidate.oldMode, add.newMode)) continue;
+    if (hasSameBasename(candidate.oldPath, add.newPath)) return index;
+    if (fallback === NOT_FOUND) fallback = index;
+    examined += 1;
   }
-  return pruned;
+  return fallback;
 }
 
 function tryFoldAdd(
   add: AddChange,
-  deletesByOldId: Map<ObjectId, ReadonlyArray<DeleteChange>>,
+  deletesByOldId: Map<ObjectId, DeleteChange[]>,
 ): { readonly rename: RenameChange; readonly consumedDelete: DeleteChange } | undefined {
-  const matches = deletesByOldId.get(add.newId);
-  if (matches === undefined || matches.length !== 1) return undefined;
-  // length === 1 is guaranteed by the guard above; cast is safe.
-  const del = matches[0] as DeleteChange;
+  const group = deletesByOldId.get(add.newId);
+  if (group === undefined) return undefined;
+  const index = pickExactSource(add, group);
+  if (index === NOT_FOUND) return undefined;
+  // index came from pickExactSource iterating this exact group; always in bounds.
+  const del = group.splice(index, 1)[0] as DeleteChange;
   return {
     rename: {
       type: 'rename',
@@ -86,12 +110,11 @@ function tryFoldAdd(
 
 export function detectRenames(diff: TreeDiff, options: RenameDetectOptions = {}): TreeDiff {
   const limit = options.limit ?? DEFAULT_LIMIT;
-  const maxSameIdDeletes = options.maxSameIdDeletes ?? DEFAULT_MAX_SAME_ID_DELETES;
   const { adds, deletes, other } = partition(diff.changes);
 
   if (adds.length * deletes.length > limit) return diff;
 
-  const deletesByOldId = buildDeletesByOldId(deletes, maxSameIdDeletes);
+  const deletesByOldId = buildDeletesByOldId(deletes);
   const consumedDeletes = new Set<DeleteChange>();
   const renames: RenameChange[] = [];
   const unfoldedAdds: AddChange[] = [];
