@@ -4,7 +4,9 @@ subjects:
 ---
 # 898 — Symlink-to-regular inexact pairing is deferred to its own change
 
-- **Status:** accepted
+> Superseded by [ADR-899](899-non-regular-files-leave-the-inexact-scoring-pools.md): the deferral of symlink-to-regular inexact pairing — the exclusion ships in the same change.
+
+- **Status:** superseded by ADR-899
 - **Date:** 2026-09-25
 - **Design:** docs/design/rename-exact-one-shot-delete.md (§10, D6) · **Supersedes/Refines:** none
 
