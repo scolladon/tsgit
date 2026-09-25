@@ -32,15 +32,17 @@ The composable building blocks every Tier-1 command is built from. Same `Context
 | [`writeObject`](write-object.md) | Write any git object; returns the resulting id. |
 | [`writeTree`](write-tree.md) | Write a tree object from entries; returns the id. |
 
-For internal building blocks referenced from command pages (`materializeTree`, `fetchPack`, `buildPack`, etc.) see [`internals.md`](internals.md).
+For internal building blocks referenced from command pages (`materializeTree`, `fetchPack`, `buildPack`, `hasObject`, etc.) see [`internals.md`](internals.md).
 
 ### Re-exported types
 
 The `@scolladon/tsgit/primitives` entry also re-exports the types its own signatures
 reference, so a consumer never needs a deep import to name a parameter or return
-value: `ConfigKey`, `ConfigScope`, `IndexEntry`, `ReflogEntry`, `SparseMatcher`,
-`TreeEntry`. These are type-only re-exports — the values (where any exist) keep their
-documented homes.
+value: `ConfigKey`, `ConfigScope`, `HasObjectMode`, `HasObjectOptions`, `IndexEntry`,
+`ReflogEntry`, `SparseMatcher`, `TreeEntry`. These are type-only re-exports — the values
+(where any exist) keep their documented homes; `hasObject` itself is documented in
+[`internals.md`](internals.md#hasobject) alongside the other barrel exports not bound on
+`repo.primitives.*`.
 
 ## Snapshot + join surface (Phase 20.1)
 

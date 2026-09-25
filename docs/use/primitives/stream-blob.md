@@ -47,6 +47,14 @@ A loose blob whose header size disagrees with its body still streams, and stream
 
 `UNEXPECTED_OBJECT_TYPE` is thrown by the **`await` on `streamBlob` itself**, before any chunk is yielded and before there is an iterable to consume — the object's type is settled at open, the loose route reading its header eagerly for exactly this reason, and the partially drained inflate pipeline is cancelled on the way out. A `try` around the `for await` is not what catches it; the `await` is.
 
+## A packed entry whose declared size lies
+
+A packed base entry's inflated length must equal its header's own declared size — the same check the buffered [`readObject`](read-object.md) applies, git's `unpack_entry_data` shape. Because a stream's true length is only known once it ends, this refusal lands **at end-of-stream**, over a running byte count, after every chunk has already been yielded — not at the `await`, and not substitutable by `verifyHash`'s own hash check, which verifies the object's true content length regardless of what the entry claims. A mismatch throws `INVALID_PACK_ENTRY { offset, reason: 'bad object: inflated size differs from declared size' }`.
+
+## A full miss re-scans once
+
+`streamBlob` shares the same full-miss retry [`readObject`](read-object.md) does: when no pack claims the id and no loose file exists for it either, the pack directory is re-scanned once — incrementally, every already-known pack and its `.idx`/handle/window-cache state surviving — and the lookup is retried once before `OBJECT_NOT_FOUND`.
+
 ## No `maxBytes`
 
 `streamBlob` is uncapped. There is no `maxBytes` option — the caller streams through an
@@ -55,9 +63,10 @@ count bytes as chunks arrive and abort via `AbortSignal` when the limit is reach
 
 ## Throws
 
-- `OBJECT_NOT_FOUND` — id is missing locally.
+- `OBJECT_NOT_FOUND` — id is missing locally, including after one pack-directory re-scan on a full miss.
 - `UNEXPECTED_OBJECT_TYPE` — id resolves to a non-blob object (commit, tree, tag); thrown by the `await`, never mid-iteration.
 - `OBJECT_HASH_MISMATCH` — recomputed id does not match (thrown at end-of-stream, only when `verifyHash: true`).
+- `INVALID_PACK_ENTRY` — a packed base entry's inflated bytes disagree with its own declared size (thrown at end-of-stream).
 - `OPERATION_ABORTED` — `ctx.signal` was aborted between chunks.
 
 ## See also
