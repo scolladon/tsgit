@@ -79,7 +79,12 @@ const rememberVerified = (
 const verifiedTargetType = async (ctx: Context, id: ObjectId): Promise<ObjectType> => {
   const memo = verifiedTargetsOf(ctx);
   const known = memo.get(id);
-  if (known !== undefined && (await hasObject(ctx, id))) return known;
+  // Recheck mode: this re-probe runs for EVERY ref write, including the
+  // fetch/clone-driven ones that land right after a pack just landed on
+  // disk — git's `update_local_ref` calls `odb_has_object` with
+  // `HAS_OBJECT_RECHECK_PACKED` for exactly that reason, never the quick
+  // probe `hasObject`'s own default is.
+  if (known !== undefined && (await hasObject(ctx, id, { mode: 'recheck' }))) return known;
   const { type, acceptance } = await verifyStoredObject(ctx, id);
   if (acceptance !== undefined) await assertParseAccepted(ctx, id, acceptance);
   if (acceptance === undefined || !needsParentLookups(acceptance)) rememberVerified(memo, id, type);

@@ -18,6 +18,7 @@ import {
   commonGitDir,
   looseObjectPath,
 } from '../../../../src/application/primitives/path-layout.js';
+import { getPackRegistry } from '../../../../src/application/primitives/read-object.js';
 import { getRefStore, type RefUpdate } from '../../../../src/application/primitives/ref-store.js';
 import { readShallow } from '../../../../src/application/primitives/shallow-file.js';
 import { TsgitError } from '../../../../src/domain/index.js';
@@ -2450,6 +2451,41 @@ describe('fetch — everything local', () => {
         const { packBytes, blobId } = await buildOneBlobPack(ctx, 'already local\n');
         await writeSyntheticPack(ctx, 'seed', [
           { kind: 'base', type: 'blob', content: ENCODER.encode('already local\n') },
+        ]);
+        const { transport, requests } = fakeRemote({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: blobId }],
+          packBytes,
+        });
+
+        // Act
+        const result = await fetch({ ...ctx, transport });
+
+        // Assert
+        expect(requests.some((r) => r.method === 'POST')).toBe(false);
+        const update = result.updatedRefs.find((r) => r.name === 'refs/remotes/origin/main');
+        expect(update?.newId).toBe(blobId);
+      });
+    });
+  });
+
+  describe('Given the pack registry already scanned before the wanted oid was packed', () => {
+    describe('When fetch runs', () => {
+      it('Then the everything-local probe rechecks and still skips the upload-pack POST', async () => {
+        // Arrange — force an early registry scan against an EMPTY pack
+        // directory, THEN write the pack the fetch will want. A quick
+        // probe would still answer "absent" from that stale scan; the
+        // everything-local check must recheck (git's own
+        // `HAS_OBJECT_RECHECK_PACKED`), never phone home for an object a
+        // concurrent writer already packed.
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, { head: 'refs/heads/main' });
+        await writeOriginConfig(ctx);
+        const registry = await getPackRegistry(ctx);
+        await registry.all();
+        const { packBytes, blobId } = await buildOneBlobPack(ctx, 'scanned-then-packed\n');
+        await writeSyntheticPack(ctx, 'seed', [
+          { kind: 'base', type: 'blob', content: ENCODER.encode('scanned-then-packed\n') },
         ]);
         const { transport, requests } = fakeRemote({
           url: 'https://example.com/r.git',

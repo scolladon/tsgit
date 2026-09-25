@@ -66,6 +66,27 @@ describe('hasObject', () => {
     });
   });
 
+  describe('Given a pack written directly to disk after the registry already scanned', () => {
+    describe('When probing hasObject in recheck mode', () => {
+      it('Then it re-scans and finds the newly-packed id', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const registry = await getPackRegistry(ctx);
+        await registry.all();
+        const content = new TextEncoder().encode('packed content\n');
+        const [id] = await writeSyntheticPack(ctx, 'has-object-late-pack-recheck', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+
+        // Act
+        const result = await hasObject(ctx, id as ObjectId, { mode: 'recheck' });
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+
   describe('Given many ids absent from loose and packs', () => {
     describe('When probing hasObject for each', () => {
       it('Then the pack registry is never refreshed', async () => {
