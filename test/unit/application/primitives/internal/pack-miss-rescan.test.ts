@@ -8,12 +8,10 @@ import { buildSeededContext } from '../fixtures.js';
 
 const idOf = (n: number): ObjectId => n.toString(16).padStart(2, '0').repeat(20) as ObjectId;
 
-/** Resolves once `promise` (or `registry.reprepare`'s mocked stand-in for
- *  it) has settled and every reaction chained onto it BEFORE this call
- *  has run — used to land test code inside the exact microtask gap
- *  between `rescanOnFullMiss`'s own `.then` (the forget pass) and its
- *  `.finally` (the session-entry removal), by registering as a THIRD
- *  direct reaction on the SAME underlying promise. */
+/** A plain externally-resolvable promise: `resolve()` settles `promise`
+ *  whenever the caller chooses to call it — the test below uses it to stand
+ *  in for `registry.reprepare()`'s own promise, so it can control exactly
+ *  when the mocked wave settles. */
 function deferred(): {
   readonly promise: Promise<void>;
   readonly resolve: () => void;
@@ -98,11 +96,14 @@ describe('rescanOnFullMiss', () => {
         const { promise: reprepareGate, resolve: settleReprepare } = deferred();
         vi.spyOn(registry, 'reprepare').mockReturnValue(reprepareGate);
 
-        // Act — A starts the wave; B's join is registered as a THIRD
-        // reaction directly on `reprepareGate`, landing in the exact
-        // microtask gap between the wave's own `.then` (the forget pass)
-        // and `.finally` (the session-entry removal) — see `deferred`'s
-        // doc. B's loose bytes land on disk before the wave settles at all.
+        // Act — A starts the wave, whose `.then` reaction on `reprepareGate`
+        // now drops the session entry FIRST and only then forgets every id
+        // that joined; the `.finally` chained onto that `.then`'s own result
+        // is a safety net for the REJECTION path only, a no-op here. B's
+        // join is registered as a SECOND, direct reaction on `reprepareGate`
+        // itself, so it runs right after the wave's own `.then` — once the
+        // entry is already gone — and starts a fresh wave of its own. B's
+        // loose bytes land on disk before the wave settles at all.
         const waveA = rescanOnFullMiss(ctx, registry, idA);
         let waveB: Promise<void> | undefined;
         reprepareGate.then(() => {
@@ -112,8 +113,6 @@ describe('rescanOnFullMiss', () => {
         await ctx.fs.write(loosePath, new Uint8Array([1, 2, 3]));
         settleReprepare();
         await waveA;
-
-        // Act — B's retry.
         await waveB;
 
         // Assert — B's own prefix was dropped from the fanout cache too,

@@ -5222,8 +5222,12 @@ describe('NodeFileSystem.read — sync-to-async fallback rows (DI)', () => {
     it('Then read stays on the held descriptor instead of diverting to fsOps.readFile', async () => {
       // Arrange — one byte under the readFile-diversion boundary: the
       // over-gate arm must still finish on the SAME fd via fillAsync, never
-      // close it early and hand the file to fsOps.readFile.
+      // close it early and hand the file to fsOps.readFile. The real
+      // allocation is stubbed out too: this row's whole point is the
+      // boundary value itself, not exercising a genuine ~2 GiB buffer on
+      // every run.
       const atLimit = 2 ** 31 - 1;
+      const allocUnsafeSlow = vi.spyOn(Buffer, 'allocUnsafeSlow').mockReturnValue(Buffer.alloc(0));
       const openSync = vi.fn().mockReturnValue(FD);
       const fstatSync = vi.fn().mockReturnValue({ isFile: () => true, size: atLimit });
       const readAsync = asyncReaderOf(Buffer.alloc(0)); // empty: filled stops at 0, no huge copy
@@ -5247,6 +5251,7 @@ describe('NodeFileSystem.read — sync-to-async fallback rows (DI)', () => {
       expect(readAsync).toHaveBeenCalled();
       expect(readFile).not.toHaveBeenCalled();
       expect(closeSync).toHaveBeenCalledWith(FD);
+      expect(allocUnsafeSlow).toHaveBeenCalledWith(atLimit);
     });
   });
 
