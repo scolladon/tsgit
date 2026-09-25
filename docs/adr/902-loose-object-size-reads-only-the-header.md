@@ -1,6 +1,7 @@
 ---
 subjects:
   - src/application/primitives/read-object.ts
+  - src/application/primitives/detect-similarity-renames.ts
 ---
 # 902 — A loose object's size is read from its header alone
 
@@ -23,8 +24,12 @@ NUL after `<type> <size>`.
 
 ## Decision
 
-**Option 1 — adopted-as-recommended (no user judgment).** One size primitive, which also
-benefits other metadata readers (e.g. tag peeling).
+**Option 1's header-only read — adopted-as-recommended (no user judgment) — placed in a new
+internal `readDeclaredObjectSize`, not inside `readObjectMetadata`.** Planning found that
+ADR-863 keeps `readObjectMetadata` content-derived (a size-lying loose header reports its real
+byte count, pinned by its unit test); the size gate instead needs the header's *claim*, which is
+exactly what git's `CHECK_SIZE_ONLY` path reads through `oid_object_info`. Two readers with two
+contracts, ADR-863 untouched.
 
 ## Consequences
 
