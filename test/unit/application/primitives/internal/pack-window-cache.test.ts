@@ -89,6 +89,27 @@ describe('createPackWindowCache', () => {
     });
   });
 
+  describe('Given a request whose end lands exactly on the window-aligned boundary', () => {
+    describe('When read is called', () => {
+      it('Then it is served from the window, not treated as a straddle', async () => {
+        // Arrange — windowBytes=256; offset+length === base+windowBytes
+        // exactly (236 + 20 === 0 + 256), the `fitsWindow` boundary itself.
+        const source = fakeSource(1000);
+        const load = loaderOver(source);
+        const cache = createPackWindowCache({ windowBytes: 256, limitBytes: 4096 });
+
+        // Act
+        const result = await cache.read('pack-a', 236, 20, load);
+
+        // Assert — a whole aligned window was loaded and cached, not a
+        // direct uncached read at the exact requested range.
+        expect(Array.from(result)).toEqual(Array.from(source.subarray(236, 256)));
+        expect(load).toHaveBeenCalledTimes(1);
+        expect(load).toHaveBeenCalledWith(0, 256);
+      });
+    });
+  });
+
   describe('Given a sequential trace whose first entry straddles a window boundary', () => {
     describe('When the next entry lands inside the following aligned window', () => {
       it('Then every byte range is loaded at most once — no overlapping double load', async () => {
@@ -342,6 +363,73 @@ describe('createPackWindowCache', () => {
         // epoch, so the later read pays its own fresh load rather than a
         // cache hit serving bytes a clear() was supposed to retire.
         expect(load).toHaveBeenCalledTimes(2);
+      });
+    });
+  });
+
+  describe('Given a window base past the pack file end (a zero-byte load)', () => {
+    describe('When read is called twice at the same offset', () => {
+      it('Then the zero-byte window is never cached — each read pays its own load', async () => {
+        // Arrange — the LRU refuses a zero-byte entry (`byteSize` must be
+        // positive), so `loadAndCache`'s own guard must skip `windows.set`
+        // for an empty window rather than let that refusal escape as a
+        // rejection from an otherwise-successful read.
+        const load = vi.fn(async (): Promise<Uint8Array> => new Uint8Array(0));
+        const cache = createPackWindowCache({ windowBytes: 256, limitBytes: 4096 });
+
+        // Act
+        const first = await cache.read('pack-a', 0, 10, load);
+        const second = await cache.read('pack-a', 0, 10, load);
+
+        // Assert
+        expect(first.length).toBe(0);
+        expect(second.length).toBe(0);
+        expect(load).toHaveBeenCalledTimes(2);
+      });
+    });
+  });
+
+  describe('Given a request exactly one window long, aligned to the window boundary', () => {
+    describe('When a second read lands inside that same window', () => {
+      it('Then the first read is cached — the second costs no new load', async () => {
+        // Arrange — length === windowBytes exactly, at an aligned offset:
+        // `fitsWindow` itself is satisfied (offset + length === base +
+        // windowBytes), so this must take the cached path, not a direct
+        // uncached load.
+        const source = fakeSource(1000);
+        const load = loaderOver(source);
+        const cache = createPackWindowCache({ windowBytes: 256, limitBytes: 4096 });
+
+        // Act
+        const first = await cache.read('pack-a', 0, 256, load);
+        const second = await cache.read('pack-a', 10, 20, load);
+
+        // Assert
+        expect(Array.from(first)).toEqual(Array.from(source.subarray(0, 256)));
+        expect(Array.from(second)).toEqual(Array.from(source.subarray(10, 30)));
+        expect(load).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Given a registry-wide limit exactly equal to one window', () => {
+    describe('When two reads land inside the same window', () => {
+      it('Then the first read is cached — the second costs no new load', async () => {
+        // Arrange — limitBytes === windowBytes exactly: the LRU can still
+        // hold one window (`set` only refuses when `byteSize > maxSize`),
+        // so this must not be forced onto the direct-load bypass.
+        const source = fakeSource(1000);
+        const load = loaderOver(source);
+        const cache = createPackWindowCache({ windowBytes: 256, limitBytes: 256 });
+
+        // Act
+        const first = await cache.read('pack-a', 10, 20, load);
+        const second = await cache.read('pack-a', 40, 30, load);
+
+        // Assert
+        expect(Array.from(first)).toEqual(Array.from(source.subarray(10, 30)));
+        expect(Array.from(second)).toEqual(Array.from(source.subarray(40, 70)));
+        expect(load).toHaveBeenCalledTimes(1);
       });
     });
   });

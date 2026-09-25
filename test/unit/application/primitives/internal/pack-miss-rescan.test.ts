@@ -121,4 +121,72 @@ describe('rescanOnFullMiss', () => {
       });
     });
   });
+
+  describe('Given two misses for different ids that join the SAME in-flight wave', () => {
+    describe('When the wave settles', () => {
+      it("Then the joining id's own fanout prefix is forgotten too, not just the wave starter's", async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const registry = await createPackRegistry(ctx);
+        const idA = idOf(0xaa);
+        const idB = idOf(0xbb);
+        expect(await probeLooseOid(ctx, idA)).toBe(false);
+        expect(await probeLooseOid(ctx, idB)).toBe(false);
+        const { promise: reprepareGate, resolve: settleReprepare } = deferred();
+        vi.spyOn(registry, 'reprepare').mockReturnValue(reprepareGate);
+
+        // Act — B joins the wave A already started, both calls made before
+        // reprepare() ever settles, so B never starts its own wave.
+        const waveA = rescanOnFullMiss(ctx, registry, idA);
+        const waveB = rescanOnFullMiss(ctx, registry, idB);
+        const loosePathB = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(idB)}`;
+        await ctx.fs.write(loosePathB, new Uint8Array([1, 2, 3]));
+        settleReprepare();
+        await waveA;
+        await waveB;
+
+        // Assert — B's own prefix was forgotten by the wave it only joined.
+        expect(await probeLooseOid(ctx, idB)).toBe(true);
+      });
+    });
+  });
+
+  describe("Given wave A's own .then drops its entry, and wave B starts before A's .finally runs", () => {
+    describe("When A's .finally fires, then a third miss arrives", () => {
+      it("Then A's .finally does not delete B's entry — the third miss joins B, never a third reprepare", async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const registry = await createPackRegistry(ctx);
+        const idA = idOf(0xa1);
+        const idB = idOf(0xb2);
+        const idC = idOf(0xc3);
+        const gates: Array<() => void> = [];
+        const reprepareSpy = vi.spyOn(registry, 'reprepare').mockImplementation(() => {
+          const { promise, resolve } = deferred();
+          gates.push(resolve);
+          return promise;
+        });
+
+        // Act — A settles and its `.then` drops its own entry (one
+        // microtask tick); B starts a fresh wave in the gap before A's
+        // `.finally` runs (a second tick); C arrives once A's `.finally`
+        // has already run its (guarded) drop.
+        const waveA = rescanOnFullMiss(ctx, registry, idA);
+        gates[0]?.();
+        await Promise.resolve();
+        const waveB = rescanOnFullMiss(ctx, registry, idB);
+        await Promise.resolve();
+        const waveC = rescanOnFullMiss(ctx, registry, idC);
+        gates[1]?.();
+        gates[2]?.();
+        await waveA;
+        await waveB;
+        await waveC;
+
+        // Assert — exactly two reprepare() calls: A's own, and B's, which C
+        // joined rather than starting a third.
+        expect(reprepareSpy).toHaveBeenCalledTimes(2);
+      });
+    });
+  });
 });

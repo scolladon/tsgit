@@ -438,6 +438,7 @@ function loadPack(
   // scoped to this one `loadPack` call so a same-named successor never
   // shares a cached window — or a cached delta base, via
   // `RegisteredPack.instanceKey` below — with the pack it replaced.
+  // Stryker disable next-line UpdateOperator: equivalent — the token is only ever embedded in a string key (never compared by order or parsed back to a number), so a decrementing sequence is just as unique per instance as an incrementing one.
   const windowCacheKey = `${name}#${nextPackInstanceToken++}`;
   const packPath = `${dir}/${name}.pack`;
   const revPath = `${dir}/${name}.rev`;
@@ -538,9 +539,21 @@ function loadPack(
       return await probe;
     } catch (err) {
       if (!isUnsupportedOperation(err)) throw err;
+      // Stryker disable next-line CallExpression: equivalent — `isUnsupportedOperation` only matches an error tagged `operation: 'openWithNoFollow'`, which can only come from `handleMemo`'s own factory rejecting; `createPromiseMemo`'s `get()` already clears its slot on ANY rejection before this catch ever runs, so this call finds the slot already empty.
       handleMemo.clear();
       return (await ctx.fs.stat(packPath)).size;
     } finally {
+      // NOTE: this block's BlockStatement mutant (`{}`) is equivalent — inFlight's only
+      // reader is close()'s `Promise.allSettled(inFlight)`, which settles identically
+      // whether or not already-settled entries remain (an already-settled promise adds no
+      // wait and its outcome is discarded), so dropping this deletion cannot change any
+      // observable return value or thrown error — only when the settled reference becomes
+      // eligible for GC. No inline ignore-comment can attach here and stay equivalent-only,
+      // scoped: a comment placed before this block (outside the catch clause) would need
+      // `} finally {` split across lines, which the formatter always collapses back onto
+      // one line, and a comment placed inside the block (as here) attaches to the first
+      // STATEMENT's line, not the block's own line, so it can never target this exact
+      // mutant's reported location (verified against the instrumenter's comment handling).
       inFlight.delete(probe);
     }
   };
@@ -554,6 +567,7 @@ function loadPack(
   const loadWindow = async (base: number, size: number): Promise<Uint8Array> => {
     const handle = await handleMemo.get();
     const packFileSize = await sizeMemo.get();
+    // Stryker disable next-line ArithmeticOperator: equivalent — this clamp is a perf/allocation optimization only; `handle.read`'s own `bytesRead` already truncates to whatever the file actually holds (see the memory adapter's own `subarray` clamp), so an unclamped `size` here still yields the identical returned byte range below, just via a larger scratch buffer and a doomed-past-EOF read attempt instead of a skipped one.
     const clampedSize = Math.max(0, Math.min(size, packFileSize - base));
     const buffer = new Uint8Array(clampedSize);
     const bytesRead = await handle.read(buffer, 0, clampedSize, base);

@@ -3458,6 +3458,30 @@ describe('RegisteredPack retired reads', () => {
     });
   });
 
+  describe('Given a pack whose persistent handle was closed before its size was ever probed', () => {
+    describe('When offsetTable is called', () => {
+      it('Then it stats by path — it never reopens the closed handle', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'retired-offset', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('x') },
+        ]);
+        const ledger = withHandleLedger(ctx);
+        const registry = await createPackRegistry(ledger.ctx);
+        const pack = (await registry.all())[0]!;
+        await pack.close();
+
+        // Act
+        const table = await pack.offsetTable();
+
+        // Assert — no handle was ever opened for a pack closed before its
+        // size was ever needed.
+        expect(ledger.opens()).toBe(0);
+        expect(table.packFileSize).toBeGreaterThan(0);
+      });
+    });
+  });
+
   describe('Given a slice read still in flight', () => {
     describe('When close is called before the read is awaited', () => {
       it('Then the in-flight read completes with correct bytes (drained before the handle closes)', async () => {
@@ -5957,6 +5981,78 @@ describe('PackRegistry.lookup — multi-pack-index authority', () => {
     });
   });
 
+  describe('Given a duplicate in an UNCLAIMED pack, the claimed sibling healthy, and the generation already settled', () => {
+    describe('When lookup is called for that oid', () => {
+      it('Then the settled synchronous walk never re-probes the claimed sibling a second time', async () => {
+        // Arrange — pack-A is claimed by the midx; the midx's own hit
+        // validation already probes (and warns about) its broken header
+        // once. The settled walk must skip pack-A via isClaimed alone,
+        // never falling through to its own probeHeader(pack-A) a SECOND
+        // time — both handle and window are already memoised from that
+        // first probe, so a redundant second probe leaves no filesystem
+        // trace of its own; the one place it DOES show up is a second
+        // "skipping unusable pack" warning for pack-A.
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('duplicate-blob-settled');
+        const idsA = await writeSyntheticPack(ctx, 'A', [{ kind: 'base', type: 'blob', content }]);
+        await writeSyntheticPack(ctx, 'B', [{ kind: 'base', type: 'blob', content }]);
+        const dupId = idsA[0] as ObjectId;
+        await restampPackHeader(ctx, `${ctx.layout.gitDir}/objects/pack/pack-A.pack`, {
+          version: 99,
+        });
+        await writeMidxBytes(
+          ctx,
+          buildMidx(
+            healthyMidxSpec({
+              packNames: ['pack-A.idx'],
+              entries: [{ id: dupId, packIndex: 0, offset: PACK_HEADER_SIZE }],
+            }),
+          ),
+        );
+        const warn = vi.fn();
+        const sut = await createPackRegistry({ ...ctx, logger: { warn } });
+        await sut.all(); // forces generation.indexed to settle before lookup
+
+        // Act
+        const hit = await sut.lookup(dupId);
+
+        // Assert — pack-B serves it, and pack-A was warned about only ONCE
+        // (the midx's own hit validation), never a second time from the
+        // settled walk re-probing it instead of skipping it via isClaimed.
+        expect(hit?.pack.name).toBe('pack-B');
+        const packAWarnings = warn.mock.calls.filter(
+          (call) =>
+            call[0] === 'packRegistry: skipping unusable pack' &&
+            (call[1] as { pack: string }).pack === 'pack-A',
+        );
+        expect(packAWarnings).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given an unclaimed pack with a broken header, and the generation already settled', () => {
+    describe('When lookup is called for an object only that pack holds', () => {
+      it('Then it misses — the settled walk never serves a header-faulted hit', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const ids = await writeSyntheticPack(ctx, 'settled-broken', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('settled-header-fault') },
+        ]);
+        await restampPackHeader(ctx, `${ctx.layout.gitDir}/objects/pack/pack-settled-broken.pack`, {
+          version: 99,
+        });
+        const sut = await createPackRegistry(ctx);
+        await sut.all(); // forces generation.indexed to settle before lookup
+
+        // Act
+        const hit = await sut.lookup(ids[0] as ObjectId);
+
+        // Assert
+        expect(hit).toBeUndefined();
+      });
+    });
+  });
+
   describe('Given the same repository shape with no multi-pack-index present', () => {
     describe('When lookup is called for the duplicated oid', () => {
       it('Then it resolves via the healthy pack — the .idx loop skips the still-broken one', async () => {
@@ -7406,6 +7502,34 @@ describe('PackRegistry.reprepare', () => {
     });
   });
 
+  describe('Given a health() verdict cached before a new pack is added and reprepare() runs', () => {
+    describe('When health() is called again', () => {
+      it('Then it reflects the new pack — reprepare() invalidates the cached verdict', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'reprepare-health-a', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('health-a') },
+        ]);
+        const registry = await createPackRegistry(ctx);
+        const before = await registry.health();
+        expect(before.accessible.map((pack) => pack.name)).toEqual(['pack-reprepare-health-a']);
+        await writeSyntheticPack(ctx, 'reprepare-health-b', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('health-b') },
+        ]);
+
+        // Act
+        await registry.reprepare();
+        const after = await registry.health();
+
+        // Assert
+        expect(after.accessible.map((pack) => pack.name).sort()).toEqual([
+          'pack-reprepare-health-a',
+          'pack-reprepare-health-b',
+        ]);
+      });
+    });
+  });
+
   describe('Given two registered packs, one of which is deleted from disk', () => {
     describe('When reprepare() runs and settleRefresh() is awaited', () => {
       it('Then the vanished pack is retired (its handle closed) and no longer listed by all()', async () => {
@@ -7481,6 +7605,33 @@ describe('PackRegistry.reprepare', () => {
         // generation, so a full dispose() closes it: nothing is orphaned.
         await registry.dispose();
         expect(ledger.outstanding()).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a reprepare() in flight when dispose() lands on the same synchronous turn', () => {
+    describe('When reprepare() resumes', () => {
+      it('Then it bails without re-scanning the now-disposed registry', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'reprepare-dispose-race', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('race') },
+        ]);
+        const ledger = withHandleLedger(ctx);
+        const registry = await createPackRegistry(ledger.ctx);
+        await registry.all(); // establishes G0 — one readdir so far
+        const readdirCallsBeforeRace = ledger.readdirCalls();
+
+        // Act — reprepare() captures G0 and yields at its first await;
+        // dispose() then runs to completion on this SAME synchronous turn,
+        // before reprepare()'s continuation ever resumes.
+        const rep = registry.reprepare();
+        await registry.dispose();
+        await rep;
+
+        // Assert — reprepare()'s resumption recognised the registry was
+        // disposed mid-flight and never re-scanned the pack directory.
+        expect(ledger.readdirCalls()).toBe(readdirCallsBeforeRace);
       });
     });
   });

@@ -167,6 +167,7 @@ export function createPackWindowCache({
   };
 
   const clear = (): void => {
+    // Stryker disable next-line AssignmentOperator: equivalent — `epoch` is only ever read via `===` against a snapshot taken before this call; decrementing instead of incrementing still produces a value distinct from every prior snapshot, which is the only property `loadAndCache`'s guard depends on.
     epoch += 1;
     windows.clear();
     // A reader arriving after clear() must never join a flight this cache no
