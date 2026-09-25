@@ -1,4 +1,5 @@
 import { hashFailed } from '../../domain/index.js';
+import { bytesToHex } from '../../domain/objects/encoding.js';
 import type { Hasher, HashService } from '../../ports/hash-service.js';
 
 type Algorithm = 'sha1' | 'sha256';
@@ -80,12 +81,4 @@ export class MemoryHashService implements HashService {
       },
     };
   };
-}
-
-function bytesToHex(bytes: Uint8Array): string {
-  let out = '';
-  for (const byte of bytes) {
-    out += byte.toString(16).padStart(2, '0');
-  }
-  return out;
 }

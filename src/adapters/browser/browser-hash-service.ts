@@ -1,5 +1,6 @@
 /// <reference lib="dom" />
 import { hashFailed } from '../../domain/index.js';
+import { bytesToHex } from '../../domain/objects/encoding.js';
 import type { Hasher, HashService } from '../../ports/hash-service.js';
 
 type SubtleAlgorithm = 'SHA-1' | 'SHA-256';
@@ -25,7 +26,7 @@ export class BrowserHashService implements HashService {
   }
 
   async hashHex(data: Uint8Array): Promise<string> {
-    return toHex(await this.hash(data));
+    return bytesToHex(await this.hash(data));
   }
 
   createHasher(): Hasher {
@@ -52,7 +53,7 @@ export class BrowserHashService implements HashService {
         total += data.length;
       },
       digest: finalize,
-      digestHex: async () => toHex(await finalize()),
+      digestHex: async () => bytesToHex(await finalize()),
     };
   }
 
@@ -70,16 +71,4 @@ function joinChunks(chunks: ReadonlyArray<Uint8Array>, total: number): Uint8Arra
     offset += chunk.length;
   }
   return joined;
-}
-
-const HEX_BYTE_TABLE: ReadonlyArray<string> = Array.from({ length: 256 }, (_, byte) =>
-  byte.toString(16).padStart(2, '0'),
-);
-
-export function toHex(bytes: Uint8Array): string {
-  let result = '';
-  for (const byte of bytes) {
-    result += HEX_BYTE_TABLE[byte]!;
-  }
-  return result;
 }

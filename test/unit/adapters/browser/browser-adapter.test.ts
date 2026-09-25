@@ -2,10 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createBrowserContext } from '../../../../src/adapters/browser/browser-adapter.js';
 import { BrowserCompressor } from '../../../../src/adapters/browser/browser-compressor.js';
 import { BrowserFileSystem } from '../../../../src/adapters/browser/browser-file-system.js';
-import {
-  BrowserHashService,
-  toHex,
-} from '../../../../src/adapters/browser/browser-hash-service.js';
+import { BrowserHashService } from '../../../../src/adapters/browser/browser-hash-service.js';
 import { BrowserHttpTransport } from '../../../../src/adapters/browser/browser-http-transport.js';
 import { SHA1_CONFIG, SHA256_CONFIG } from '../../../../src/domain/objects/hash-config.js';
 
@@ -114,14 +111,18 @@ describe('createBrowserContext', () => {
 });
 
 describe('BrowserHashService', () => {
-  describe('Given every byte value 0-255, When converting to hex via toHex', () => {
-    it('Then toHex renders each byte as byte.toString(16).padStart(2, "0")', () => {
+  describe('Given a digest, When rendering it through hashHex', () => {
+    it('Then hashHex renders the hash() bytes as byte.toString(16).padStart(2, "0")', async () => {
       // Arrange
-      const bytes = Uint8Array.from({ length: 256 }, (_, i) => i);
-      const expected = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+      const sut = new BrowserHashService('sha1');
+      const data = new Uint8Array([1, 2, 3]);
+      const digestBytes = await sut.hash(data);
+      const expected = Array.from(digestBytes, (byte) => byte.toString(16).padStart(2, '0')).join(
+        '',
+      );
 
       // Act
-      const result = toHex(bytes);
+      const result = await sut.hashHex(data);
 
       // Assert
       expect(result).toBe(expected);
