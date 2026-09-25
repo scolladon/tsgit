@@ -86,7 +86,7 @@ function pickExactSource(add: AddChange, group: ReadonlyArray<DeleteChange>): nu
 function tryFoldAdd(
   add: AddChange,
   deletesByOldId: Map<ObjectId, DeleteChange[]>,
-): { readonly rename: RenameChange; readonly consumedDelete: DeleteChange } | undefined {
+): RenameChange | undefined {
   const group = deletesByOldId.get(add.newId);
   if (group === undefined) return undefined;
   const index = pickExactSource(add, group);
@@ -94,17 +94,14 @@ function tryFoldAdd(
   // index came from pickExactSource iterating this exact group; always in bounds.
   const del = group.splice(index, 1)[0] as DeleteChange;
   return {
-    rename: {
-      type: 'rename',
-      oldPath: del.oldPath,
-      newPath: add.newPath,
-      oldId: del.oldId,
-      newId: add.newId,
-      oldMode: del.oldMode,
-      newMode: add.newMode,
-      similarity: { score: MAX_SCORE, maxScore: MAX_SCORE },
-    },
-    consumedDelete: del,
+    type: 'rename',
+    oldPath: del.oldPath,
+    newPath: add.newPath,
+    oldId: del.oldId,
+    newId: add.newId,
+    oldMode: del.oldMode,
+    newMode: add.newMode,
+    similarity: { score: MAX_SCORE, maxScore: MAX_SCORE },
   };
 }
 
@@ -115,21 +112,20 @@ export function detectRenames(diff: TreeDiff, options: RenameDetectOptions = {})
   if (adds.length * deletes.length > limit) return diff;
 
   const deletesByOldId = buildDeletesByOldId(deletes);
-  const consumedDeletes = new Set<DeleteChange>();
   const renames: RenameChange[] = [];
   const unfoldedAdds: AddChange[] = [];
 
   for (const add of adds) {
-    const fold = tryFoldAdd(add, deletesByOldId);
-    if (fold === undefined) {
+    const rename = tryFoldAdd(add, deletesByOldId);
+    if (rename === undefined) {
       unfoldedAdds.push(add);
     } else {
-      renames.push(fold.rename);
-      consumedDeletes.add(fold.consumedDelete);
+      renames.push(rename);
     }
   }
 
-  const unfoldedDeletes = deletes.filter((d) => !consumedDeletes.has(d));
+  // A folded delete was spliced out of its group, so the groups hold exactly the unfolded deletes.
+  const unfoldedDeletes = [...deletesByOldId.values()].flat();
   const merged: DiffChange[] = [...unfoldedAdds, ...unfoldedDeletes, ...renames, ...other];
   return { changes: sortByPath(merged, primaryPath) };
 }
