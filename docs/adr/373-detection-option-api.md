@@ -1,8 +1,10 @@
 # ADR-373: Detection knobs extend `RenameDetectOptions` as one cohesive object
 
+> Superseded in part by [ADR-906](906-copy-threshold-is-removed.md): `RenameDetectOptions.copyThreshold` is removed; the rest of this decision stands.
+
 ## Status
 
-Accepted
+Accepted — superseded in part by ADR-906 (`copyThreshold`)
 
 - **Date:** 2026-06-19
 - **Design:** [design/similarity-rename-detection.md](../design/similarity-rename-detection.md)
