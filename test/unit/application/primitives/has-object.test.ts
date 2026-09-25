@@ -112,6 +112,25 @@ describe('hasObject', () => {
     });
   });
 
+  describe('Given an id absent from loose and packs', () => {
+    describe('When hasObject runs in recheck mode', () => {
+      it('Then it returns false and reprepare is called exactly once', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const registry = await getPackRegistry(ctx);
+        const reprepare = vi.spyOn(registry, 'reprepare');
+        const missingId = 'd'.repeat(40) as ObjectId;
+
+        // Act
+        const result = await hasObject(ctx, missingId, { mode: 'recheck' });
+
+        // Assert
+        expect(result).toBe(false);
+        expect(reprepare).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
   describe('Given an object absent from loose and packs', () => {
     describe('When probing hasObject', () => {
       it('Then it returns false', async () => {

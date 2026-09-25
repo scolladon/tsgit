@@ -1160,14 +1160,16 @@ export async function createPackRegistry(ctx: Context): Promise<PackRegistry> {
       reuseFrom = undefined;
       healthMemo.clear();
       midxHealthMemo.clear();
-      // (packName, offset) pairs are only meaningful within the generation
-      // that produced them — a replaced pack can reuse the same name and
-      // offset for entirely different bytes, so this MUST clear alongside
-      // the scan, not survive into the next generation.
+      // `(instanceKey, offset)` pairs are only meaningful within the
+      // generation that produced them, but the key is already
+      // instance-scoped on its own (see `deltaBaseCacheKey`) — a retired
+      // instance's entries are unreachable under a same-named successor's
+      // own key regardless. This clear now only frees that memory promptly;
+      // it no longer guards against a replaced pack serving the old bytes.
       deltaBaseCache.clear();
-      // Same reasoning as deltaBaseCache above: a replaced pack can reuse
-      // its name, and `${packName}:${base}` would otherwise serve the OLD
-      // pack's bytes to a read against the new one.
+      // Same reasoning as deltaBaseCache above: `windowCacheKey` already
+      // carries the retired instance's own token, so this too now only
+      // frees memory promptly, not prevents stale bytes.
       windowCache.clear();
       // Cleared before the early return below: a Context that only ever
       // called assertLoadable (a loose-only read) never forces the scan, so

@@ -95243,6 +95243,28 @@
 					"variant": "declaration",
 					"kind": 256,
 					"flags": {},
+					"comment": {
+						"summary": [
+							{
+								"kind": "code",
+								"text": "`hasObject`"
+							},
+							{
+								"kind": "text",
+								"text": "'s one option: the probe "
+							},
+							{
+								"kind": "inline-tag",
+								"tag": "@link",
+								"text": "HasObjectMode",
+								"target": 3210
+							},
+							{
+								"kind": "text",
+								"text": "."
+							}
+						]
+					},
 					"children": [
 						{
 							"id": 3212,
@@ -130363,44 +130385,18 @@
 					"comment": {
 						"summary": [
 							{
-								"kind": "code",
-								"text": "`'quick'`"
+								"kind": "text",
+								"text": "Whether a miss re-scans the pack directory before answering — see "
+							},
+							{
+								"kind": "inline-tag",
+								"tag": "@link",
+								"text": "hasObject",
+								"target": 3213
 							},
 							{
 								"kind": "text",
-								"text": " (the default) never re-scans the pack directory on a miss —\ngit's "
-							},
-							{
-								"kind": "code",
-								"text": "`has_object`"
-							},
-							{
-								"kind": "text",
-								"text": " posture by default, since negotiation walks absent\nhaves routinely. "
-							},
-							{
-								"kind": "code",
-								"text": "`'recheck'`"
-							},
-							{
-								"kind": "text",
-								"text": " goes through the SAME one-retry re-scan a\ncontent read pays on a full miss (git's "
-							},
-							{
-								"kind": "code",
-								"text": "`odb_has_object(...,\nHAS_OBJECT_RECHECK_PACKED)`"
-							},
-							{
-								"kind": "text",
-								"text": "), for a caller that must not answer \"absent\"\nfor an object a concurrent writer (a lazy fetch, an external "
-							},
-							{
-								"kind": "code",
-								"text": "`git\nrepack`"
-							},
-							{
-								"kind": "text",
-								"text": ") already put on disk since the registry last scanned."
+								"text": "."
 							}
 						]
 					},
@@ -144176,6 +144172,58 @@
 							"variant": "signature",
 							"kind": 4096,
 							"flags": {},
+							"comment": {
+								"summary": [
+									{
+										"kind": "code",
+										"text": "`options.mode`"
+									},
+									{
+										"kind": "text",
+										"text": "'s "
+									},
+									{
+										"kind": "code",
+										"text": "`'quick'`"
+									},
+									{
+										"kind": "text",
+										"text": " (the default) never re-scans the pack directory\non a miss — git's "
+									},
+									{
+										"kind": "code",
+										"text": "`has_object`"
+									},
+									{
+										"kind": "text",
+										"text": " posture by default, since negotiation walks\nabsent haves routinely. "
+									},
+									{
+										"kind": "code",
+										"text": "`'recheck'`"
+									},
+									{
+										"kind": "text",
+										"text": " goes through the SAME one-retry\nre-scan a content read pays on a full miss (git's "
+									},
+									{
+										"kind": "code",
+										"text": "`odb_has_object(...,\nHAS_OBJECT_RECHECK_PACKED)`"
+									},
+									{
+										"kind": "text",
+										"text": "), for a caller that must not answer \"absent\"\nfor an object a concurrent writer (a lazy fetch, an external "
+									},
+									{
+										"kind": "code",
+										"text": "`git\nrepack`"
+									},
+									{
+										"kind": "text",
+										"text": ") already put on disk since the registry last scanned."
+									}
+								]
+							},
 							"parameters": [
 								{
 									"id": 3215,

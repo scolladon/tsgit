@@ -12,17 +12,10 @@ import { retryOnceAfterRescan } from './internal/retry-after-rescan.js';
 import type { PackRegistry } from './pack-registry.js';
 import { getPackRegistry, peekPackRegistry } from './read-object.js';
 
-/**
- * `'quick'` (the default) never re-scans the pack directory on a miss —
- * git's `has_object` posture by default, since negotiation walks absent
- * haves routinely. `'recheck'` goes through the SAME one-retry re-scan a
- * content read pays on a full miss (git's `odb_has_object(...,
- * HAS_OBJECT_RECHECK_PACKED)`), for a caller that must not answer "absent"
- * for an object a concurrent writer (a lazy fetch, an external `git
- * repack`) already put on disk since the registry last scanned.
- */
+/** Whether a miss re-scans the pack directory before answering — see {@link hasObject}. */
 export type HasObjectMode = 'quick' | 'recheck';
 
+/** `hasObject`'s one option: the probe {@link HasObjectMode}. */
 export interface HasObjectOptions {
   readonly mode: HasObjectMode;
 }
@@ -35,6 +28,15 @@ async function probeOnce(ctx: Context, registry: PackRegistry, id: ObjectId): Pr
   return probeLooseOid(ctx, id);
 }
 
+/**
+ * `options.mode`'s `'quick'` (the default) never re-scans the pack directory
+ * on a miss — git's `has_object` posture by default, since negotiation walks
+ * absent haves routinely. `'recheck'` goes through the SAME one-retry
+ * re-scan a content read pays on a full miss (git's `odb_has_object(...,
+ * HAS_OBJECT_RECHECK_PACKED)`), for a caller that must not answer "absent"
+ * for an object a concurrent writer (a lazy fetch, an external `git
+ * repack`) already put on disk since the registry last scanned.
+ */
 export const hasObject = async (
   ctx: Context,
   id: ObjectId,
