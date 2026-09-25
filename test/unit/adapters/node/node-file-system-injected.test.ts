@@ -4918,6 +4918,38 @@ describe('NodeFileSystem.read + readUtf8 — small regular-file sync arm (DI)', 
         expect(asyncReadFile).not.toHaveBeenCalled();
       });
     });
+
+    describe('When the fill loop needs a second read (a short first read)', () => {
+      it('Then the second readSync call requests exactly the remaining length, not size + filled', async () => {
+        // Arrange — the first read returns fewer bytes than requested (a real OS
+        // read is allowed to do this even with more data available); the fill
+        // loop's second call must ask for exactly what's left (`size - filled`),
+        // never `size + filled` (would run the offset+length past the buffer).
+        const size = 10;
+        const firstChunk = 4;
+        const openSync = vi.fn().mockReturnValue(FD);
+        const fstatSync = vi.fn().mockReturnValue({ isFile: () => true, size });
+        const readSync = vi
+          .fn()
+          .mockReturnValueOnce(firstChunk)
+          .mockReturnValueOnce(size - firstChunk);
+        const closeSync = vi.fn();
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+        });
+        const syncIo = fakeSyncIoPolicy(
+          fakeSyncFsOps({ openSync, fstatSync, readSync, closeSync }),
+        );
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps, syncIo });
+
+        // Act
+        await sut.read(target);
+
+        // Assert
+        expect(readSync.mock.calls[1]?.[2]).toBe(firstChunk);
+        expect(readSync.mock.calls[1]?.[3]).toBe(size - firstChunk);
+      });
+    });
   });
 });
 
@@ -5329,6 +5361,152 @@ describe('NodeFileSystem.read — sync-to-async fallback rows (DI)', () => {
       expect(closeSync).toHaveBeenCalledWith(FD);
     });
   });
+
+  describe(
+    'Given a policy-bearing adapter, When the fill loop stops short of size (shrunk) but the ' +
+      'EOF-probe position would independently signal growth',
+    () => {
+      it('Then grewPastGate is never consulted — the && short-circuits — and the short read is served synchronously', async () => {
+        // Arrange — `readSync` answers the fill loop's real positions honestly (4 real
+        // bytes, then EOF), but would (wrongly, for this test) report growth if the
+        // EOF-probe's distinguishing position (`size`) were ever reached.
+        const shortContent = Buffer.from('data');
+        const size = GATE;
+        const openSync = vi.fn().mockReturnValue(FD);
+        const fstatSync = vi.fn().mockReturnValue({ isFile: () => true, size });
+        const readSync = vi.fn(
+          (
+            _fd: number,
+            buf: NodeJS.ArrayBufferView,
+            offset = 0,
+            length = buf.byteLength,
+            position: fs.ReadPosition | null = null,
+          ): number => {
+            const at = Number(position ?? 0);
+            if (at === size) return 1;
+            const remaining = shortContent.length - at;
+            if (remaining <= 0) return 0;
+            const toCopy = Math.min(length, remaining);
+            const view = Buffer.from(buf.buffer, buf.byteOffset, buf.byteLength);
+            shortContent.copy(view, offset, at, at + toCopy);
+            return toCopy;
+          },
+        );
+        const closeSync = vi.fn();
+        const readFile = vi.fn();
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+          readFile,
+        });
+        const syncIo: SyncIoPolicy = {
+          ops: fakeSyncFsOps({ openSync, fstatSync, readSync, closeSync }),
+          budget: alwaysAdmit(),
+          maxSyncReadBytes: GATE,
+        };
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps, syncIo });
+
+        // Act
+        const result = await sut.read(target);
+
+        // Assert — `filled !== size` short-circuits the `&&` before `grewPastGate`
+        // ever runs the EOF probe: only the two fill calls happen, and the short
+        // read is served without falling back to `fsOps.readFile`.
+        expect(result).toEqual(new Uint8Array(shortContent));
+        expect(readSync).toHaveBeenCalledTimes(2);
+        expect(readFile).not.toHaveBeenCalled();
+      });
+    },
+  );
+
+  describe(
+    'Given a policy-bearing adapter, When the over-gate fill loop stops short of size (shrunk) ' +
+      'but the EOF-probe position would independently signal growth',
+    () => {
+      it('Then grewPastGateAsync is never consulted — the && short-circuits — and the short read is served on the same fd', async () => {
+        // Arrange — over-gate: fstat reports a size above `maxSyncReadBytes`, routing
+        // through `finishOverGateRead`'s own fill loop (`readAsync`). Same shape as the
+        // sync-arm row above: honest positions, but a probe-position trap.
+        const shortContent = Buffer.from('abcde');
+        const size = GATE + 12;
+        const openSync = vi.fn().mockReturnValue(FD);
+        const fstatSync = vi.fn().mockReturnValue({ isFile: () => true, size });
+        const readAsync = vi.fn(
+          async (
+            _fd: number,
+            buf: NodeJS.ArrayBufferView,
+            offset: number,
+            length: number,
+            position: number,
+          ): Promise<number> => {
+            if (position === size) return 1;
+            const remaining = shortContent.length - position;
+            if (remaining <= 0) return 0;
+            const toCopy = Math.min(length, remaining);
+            const view = Buffer.from(buf.buffer, buf.byteOffset, buf.byteLength);
+            shortContent.copy(view, offset, position, position + toCopy);
+            return toCopy;
+          },
+        );
+        const closeSync = vi.fn();
+        const readFile = vi.fn();
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+          readFile,
+        });
+        const syncIo: SyncIoPolicy = {
+          ops: fakeSyncFsOps({ openSync, fstatSync, readAsync, closeSync }),
+          budget: alwaysAdmit(),
+          maxSyncReadBytes: GATE,
+        };
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps, syncIo });
+
+        // Act
+        const result = await sut.read(target);
+
+        // Assert
+        expect(result).toEqual(new Uint8Array(shortContent));
+        expect(readAsync).toHaveBeenCalledTimes(2);
+        expect(readFile).not.toHaveBeenCalled();
+        expect(closeSync).toHaveBeenCalledWith(FD);
+      });
+    },
+  );
+
+  describe(
+    'Given a policy-bearing adapter, When the over-gate fill loop needs a second read ' +
+      '(a short first read)',
+    () => {
+      it('Then the second readAsync call requests exactly the remaining length, not size + filled', async () => {
+        // Arrange — the async twin of the sync-arm row above: the fill loop's
+        // second call must request exactly what's left, never `size + filled`.
+        const size = GATE + 12;
+        const firstChunk = 4;
+        const openSync = vi.fn().mockReturnValue(FD);
+        const fstatSync = vi.fn().mockReturnValue({ isFile: () => true, size });
+        const readAsync = vi
+          .fn()
+          .mockResolvedValueOnce(firstChunk)
+          .mockResolvedValueOnce(size - firstChunk);
+        const closeSync = vi.fn();
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+        });
+        const syncIo: SyncIoPolicy = {
+          ops: fakeSyncFsOps({ openSync, fstatSync, readAsync, closeSync }),
+          budget: alwaysAdmit(),
+          maxSyncReadBytes: GATE,
+        };
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps, syncIo });
+
+        // Act
+        await sut.read(target);
+
+        // Assert
+        expect(readAsync.mock.calls[1]?.[2]).toBe(firstChunk);
+        expect(readAsync.mock.calls[1]?.[3]).toBe(size - firstChunk);
+      });
+    },
+  );
 });
 
 describe('NodeFileSystem.readSlice — sync arm (DI)', () => {
@@ -5370,6 +5548,47 @@ describe('NodeFileSystem.readSlice — sync arm (DI)', () => {
         // Assert
         expect(result).toEqual(new Uint8Array(payload));
         expect(readSync).toHaveBeenCalledWith(FD, expect.any(Buffer), 0, 4, 5);
+        expect(asyncOpen).not.toHaveBeenCalled();
+        expect(closeSync).toHaveBeenCalledWith(FD);
+      });
+    });
+  });
+
+  describe('Given a policy-bearing adapter and a length exactly at the gate', () => {
+    describe('When readSlice is called', () => {
+      it('Then readSync runs and fsOps.open is not called (the gate is inclusive)', async () => {
+        // Arrange — `length === maxSyncReadBytes` must still take the sync fast
+        // path; `length > max` → `length >= max` would wrongly divert this
+        // exact-boundary length to the async handle open.
+        const payload = Buffer.from([1, 2, 3, 4, 5, 6, 7, 8]); // GATE (8) bytes
+        const openSync = vi.fn().mockReturnValue(FD);
+        const fstatSync = vi.fn().mockReturnValue({ isFile: () => true, size: 100 });
+        const closeSync = vi.fn();
+        const readSync = vi.fn(
+          (_fd: number, dest: NodeJS.ArrayBufferView, offset = 0, length = dest.byteLength) => {
+            const view = Buffer.from(dest.buffer, dest.byteOffset, dest.byteLength);
+            payload.copy(view, offset, 0, Math.min(length, payload.length));
+            return Math.min(length, payload.length);
+          },
+        );
+        const asyncOpen = vi.fn();
+        const fsOps = fakeFsOps({
+          realpath: vi.fn().mockImplementation(async (input: string) => input),
+          open: asyncOpen,
+        });
+        const syncIo: SyncIoPolicy = {
+          ops: fakeSyncFsOps({ openSync, fstatSync, readSync, closeSync }),
+          budget: alwaysAdmit(),
+          maxSyncReadBytes: GATE,
+        };
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps, syncIo });
+
+        // Act
+        const result = await sut.readSlice(target, 0, GATE);
+
+        // Assert
+        expect(result).toEqual(new Uint8Array(payload));
+        expect(readSync).toHaveBeenCalledWith(FD, expect.any(Buffer), 0, GATE, 0);
         expect(asyncOpen).not.toHaveBeenCalled();
         expect(closeSync).toHaveBeenCalledWith(FD);
       });
@@ -5726,6 +5945,37 @@ describe('NodeFileSystem.tryReadUtf8 — sync arm above the gate (DI)', () => {
       expect(readSync).not.toHaveBeenCalled();
       expect(closeSync).toHaveBeenCalledTimes(1);
       expect(closeSync).toHaveBeenCalledWith(FD);
+    });
+  });
+
+  describe('Given a policy-bearing adapter and a file under the sync gate, When tryReadUtf8 runs', () => {
+    it('Then the sync read settles and fsOps.readFile is never called', async () => {
+      // Arrange — a genuinely successful sync read (`bytes` defined) must settle
+      // here; forcing `bytes === undefined` to always `true` would discard it
+      // and wrongly fall back to the pooled async read every time.
+      const content = Buffer.from('hi!', 'utf8');
+      const openSync = vi.fn().mockReturnValue(FD);
+      const fstatSync = vi.fn().mockReturnValue({ isFile: () => true, size: content.length });
+      const readSync = syncReaderOf(content);
+      const closeSync = vi.fn();
+      const readFile = vi.fn();
+      const fsOps = fakeFsOps({
+        realpath: vi.fn().mockImplementation(async (input: string) => input),
+        readFile,
+      });
+      const syncIo: SyncIoPolicy = {
+        ops: fakeSyncFsOps({ openSync, fstatSync, readSync, closeSync }),
+        budget: alwaysAdmit(),
+        maxSyncReadBytes: GATE,
+      };
+      const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps, syncIo });
+
+      // Act
+      const result = await sut.tryReadUtf8(target);
+
+      // Assert
+      expect(result).toBe(content.toString('utf8'));
+      expect(readFile).not.toHaveBeenCalled();
     });
   });
 });

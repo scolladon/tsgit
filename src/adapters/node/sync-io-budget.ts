@@ -73,6 +73,7 @@ export const createTurnBudget = (
   const admit = (): Promise<void> | undefined => {
     if (turnStartedAt === undefined) return undefined;
     if (clock() - turnStartedAt < budgetMs) return undefined;
+    // Stryker disable next-line CallExpression: equivalent — reaching here requires `turnStartedAt` defined, which only `charge` sets, and `charge` always arms the marker in that same call first, so `armed` is already `true` here — this call is always a no-op.
     armMarker();
     pending ??= createDeferred();
     return pending.promise;

@@ -21,6 +21,7 @@ const NMAX = 5552;
 export function adler32(data: Uint8Array): number {
   let a = 1;
   let b = 0;
+  // Stryker disable next-line EqualityOperator: equivalent — an extra start===data.length pass makes end===start, so the inner loop adds nothing and the redundant modulo is a no-op
   for (let start = 0; start < data.length; start += NMAX) {
     const end = Math.min(start + NMAX, data.length);
     for (let i = start; i < end; i += 1) {

@@ -208,7 +208,8 @@ const statOrUndefined = (
 ): Promise<Stats | undefined> =>
   syncIo === undefined
     ? stat(p).catch(() => undefined)
-    : runWithinBudget(syncIo.budget, () => syncIo.ops.statSync(p, { throwIfNoEntry: false })).catch(
+    : // Stryker disable next-line ObjectLiteral,BooleanLiteral: equivalent — the trailing `.catch(() => undefined)` swallows any thrown error too, so whether `throwIfNoEntry` suppresses the throw or not, the returned value is `undefined` either way; the option only saves the throw+catch cost.
+      runWithinBudget(syncIo.budget, () => syncIo.ops.statSync(p, { throwIfNoEntry: false })).catch(
         () => undefined,
       );
 
@@ -220,6 +221,7 @@ const lstatOrUndefined = (
   syncIo === undefined
     ? lstat(p).catch(() => undefined)
     : runWithinBudget(syncIo.budget, () =>
+        // Stryker disable next-line ObjectLiteral,BooleanLiteral: equivalent — same reasoning as `statOrUndefined` above: the trailing `.catch(() => undefined)` swallows any thrown error too, so the returned value is `undefined` either way.
         syncIo.ops.lstatSync(p, { throwIfNoEntry: false }),
       ).catch(() => undefined);
 

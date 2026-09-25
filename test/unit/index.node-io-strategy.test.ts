@@ -187,6 +187,34 @@ describe('Given no io option', () => {
       }
     });
   });
+
+  describe('When a worktree adapter it builds is used', () => {
+    it('Then it reaches the sync ops (the syncIo spread propagates)', async () => {
+      // Arrange — `unsafeRawAdapters` hands back `makeWorktreeFs`'s own output
+      // directly, so this exercises `index.node.ts`'s `{ syncIo }` spread with
+      // nothing else in between. The ObjectLiteral mutant that swaps it for
+      // `{}` would leave this adapter's syncIo undefined.
+      const sut = openRepository;
+      const repository = await sut({ cwd: tmpdir, unsafeRawAdapters: true });
+      const resolvedWorkDir = repository.ctx.layout.workDir as string;
+
+      try {
+        const worktreeFs = repository.ctx.worktreeFs?.(path.join(resolvedWorkDir, 'wt'));
+        // Clear every count accrued opening the repository itself (the main
+        // adapter's own sync calls) so only the worktree adapter's own calls
+        // are visible below.
+        vi.clearAllMocks();
+
+        // Act
+        await worktreeFs?.exists('.');
+
+        // Assert
+        expect(everySpyOpsCall()).toBeGreaterThan(0);
+      } finally {
+        await repository.dispose();
+      }
+    });
+  });
 });
 
 describe("Given io: 'sync-fast-path'", () => {
