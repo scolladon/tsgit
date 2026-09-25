@@ -2276,6 +2276,25 @@ describe('primitives/config-read', () => {
     });
   });
 
+  describe('Given a [core] section carrying a size-valued key packedGitLimit reading does not model', () => {
+    describe('When readConfig', () => {
+      it('Then packedGitLimit stays absent — an unmodelled key is not its value', async () => {
+        // Arrange — `core.bigFileThreshold` shares the SAME unsigned-size
+        // grammar as `packedGitLimit`, so a dispatch that stopped
+        // discriminating on the key name would silently adopt its value.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n\tbare = true\n\tbigFileThreshold = 512m\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.core?.packedGitLimit).toBeUndefined();
+        expect(result.core?.bare).toBe(true);
+      });
+    });
+  });
+
   describe.each(['packedGitWindowSize', 'packedGitLimit'] as const)(
     'Given a config with a [core] %s value',
     (key) => {
@@ -6616,6 +6635,23 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
           // Arrange
           const ctx = createMemoryContext();
           await seed(ctx, '[pack]\n\tpackedGitWindowSize = -1\n');
+
+          // Act
+          const result = await findFirstInvalidPackedGitBound(ctx);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given a malformed packedGitWindowSize value that appears before any section header', () => {
+      describe('When findFirstInvalidPackedGitBound', () => {
+        it('Then returns undefined — inSection starts false and only a matching [core] header sets it', async () => {
+          // Arrange — a pre-header bare key must NOT match. Mutant
+          // (inSection=true) would wrongly check and return it.
+          const ctx = createMemoryContext();
+          await seed(ctx, '\tpackedGitWindowSize = -1\n[core]\n\tbare = true\n');
 
           // Act
           const result = await findFirstInvalidPackedGitBound(ctx);
