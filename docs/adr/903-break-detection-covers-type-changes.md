@@ -32,3 +32,6 @@ source must turn its other pair into a copy (K1: git `M100 m ; C100 m→q`, tsgi
 
 - Public type change on the `DiffChange` union (additive field; ships in the major).
 - More pins: the N7 rows join the interop matrix.
+- git's `should_break` guards come with it: an empty source and a pair under 400 bytes are
+  never broken (rows S0/S1), and `-B` applies without `-M` as git does (adopted-as-recommended
+  under this decision's "every `-B` row" scope; no user judgment).
