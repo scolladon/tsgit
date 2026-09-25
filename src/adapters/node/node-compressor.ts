@@ -94,6 +94,24 @@ const TRUNCATED_STREAM_REASON = 'unexpected end of deflate stream';
  *  is the wording `TRUNCATED_STREAM_REASON` exists to stop depending on. */
 const isTruncatedStreamError = (err: NodeJS.ErrnoException): boolean => err.code === 'Z_BUF_ERROR';
 
+/** A zlib output buffer that starts at byte 0 and fills its entire backing
+ *  ArrayBuffer owns that allocation outright — nothing else can be sharing
+ *  it, and node:zlib never writes into it again once it's been handed out.
+ *  A smaller or offset slice aliases a larger allocation (node:zlib's shared
+ *  internal chunk buffer) that may still be written to. Which of the two a
+ *  call returns depends on the Node version, so both are handled. */
+function ownsExactFitBuffer(out: Buffer): boolean {
+  return out.byteOffset === 0 && out.byteLength === out.buffer.byteLength;
+}
+
+/** A Uint8Array over `out`'s bytes: a zero-copy view when `out` owns an
+ *  exact-fit ArrayBuffer outright, a defensive copy otherwise. */
+function toResultView(out: Buffer): Uint8Array {
+  return ownsExactFitBuffer(out)
+    ? new Uint8Array(out.buffer, out.byteOffset, out.byteLength)
+    : new Uint8Array(out);
+}
+
 interface NodeCompressorOptions {
   /** Override the inflated-output cap. Tests use a small value to exercise the overflow branch. */
   readonly maxInflatedBytes?: number;
@@ -165,7 +183,7 @@ export class NodeCompressor implements Compressor {
   // does not gate on payload size.
   inflate = async (data: Uint8Array): Promise<Uint8Array> => {
     try {
-      return new Uint8Array(inflateSync(data, { maxOutputLength: this.maxInflatedBytes }));
+      return toResultView(inflateSync(data, { maxOutputLength: this.maxInflatedBytes }));
     } catch (err) {
       throw decompressFailed(describeError(err));
     }
@@ -274,7 +292,7 @@ export class NodeCompressor implements Compressor {
             return;
           }
           try {
-            controller?.enqueue(new Uint8Array(chunk));
+            controller?.enqueue(toResultView(chunk));
           } catch {
             // `enqueue` throws only when the readable side is already finished,
             // and there are exactly three ways to get there. Two are the paths

@@ -59,13 +59,15 @@ interface RealpathSplit {
 
 /**
  * Opens `cwd`, forces the adapter's lazy root-set resolution with one read,
- * and reports how many realpaths each side performed.
+ * and reports how many realpaths each side performed. Pinned to
+ * `io: 'threadpool'` — this file counts calls to the async `realpath`, which
+ * the default sync fast path never reaches.
  */
 const splitRealpathCalls = async (
   cwd: string,
   extraOpts: { readonly workDir?: string; readonly gitDir?: string; readonly bare?: boolean } = {},
 ): Promise<RealpathSplit> => {
-  const repo = await openRepository({ cwd, ...extraOpts });
+  const repo = await openRepository({ cwd, io: 'threadpool', ...extraOpts });
   const shim = realpathSpy.mock.calls.length;
   try {
     // The read's own outcome is irrelevant — resolving the root set is what is
@@ -79,8 +81,11 @@ const splitRealpathCalls = async (
 
 describe('Given a repository whose layout resolves and whose realpaths all succeed', () => {
   describe('When openRepository is followed by a first object-store read', () => {
-    it('Then the shim resolves cwd and gitDir only — a discovered workDir is an ancestor of the realpathed cwd and needs no realpath of its own', async () => {
-      // Arrange
+    it('Then the shim resolves cwd only — a discovered workDir is an ancestor of the realpathed cwd, and its plain (non-symlink) .git needs no realpath of its own', async () => {
+      // Arrange — gitDir is a literal `<workDir>/.git`, a plain directory
+      // (never a symlink), and workDir is the realpathed cwd itself: every
+      // operand of the derivable-gitDir proof holds, so the shim skips its
+      // realpath entirely.
       const workDir = path.join(tmpdir, 'repo');
       await mkdir(workDir, { recursive: true });
       await makeGitDir(path.join(workDir, '.git'));
@@ -90,7 +95,7 @@ describe('Given a repository whose layout resolves and whose realpaths all succe
       const result = await sut(workDir);
 
       // Assert
-      expect(result).toEqual({ shim: 2, adapter: 0 });
+      expect(result).toEqual({ shim: 1, adapter: 0 });
     });
   });
 });
@@ -322,12 +327,13 @@ describe('Given a commonDir that is a symlink alias OF the gitDir itself', () =>
 
 describe('Given cwd nested (a true descendant, not equal) inside the discovered workDir', () => {
   describe('When openRepository resolves its roots', () => {
-    it("Then the workDir shortcut still avoids its own realpath (isDerivedFromCanonicalCwd's startsWith, not endsWith)", async () => {
+    it("Then the workDir AND gitDir shortcuts both avoid their own realpath (isDerivedFromCanonicalCwd's startsWith, not endsWith)", async () => {
       // Arrange — cwd !== workDir here, so `isDerivedFromCanonicalCwd`'s
       // first disjunct (`workDir === cwd`) cannot short-circuit the
       // evaluation; only the second (`cwd.startsWith(workDir + sep)`) can.
       // The MethodExpression mutant (`startsWith` → `endsWith`) fails that
-      // check for an ordinary descendant path, forcing an extra realpath.
+      // check for an ordinary descendant path, forcing an extra realpath —
+      // and gitDir's own derivable-path proof leans on the SAME predicate.
       const workDir = path.join(tmpdir, 'repo');
       await mkdir(workDir, { recursive: true });
       await makeGitDir(path.join(workDir, '.git'));
@@ -338,8 +344,8 @@ describe('Given cwd nested (a true descendant, not equal) inside the discovered 
       // Act
       const result = await sut(nested);
 
-      // Assert — cwd + gitDir only; the workDir shortcut avoided a 3rd realpath.
-      expect(result).toEqual({ shim: 2, adapter: 0 });
+      // Assert — cwd only; both the workDir and gitDir shortcuts fired.
+      expect(result).toEqual({ shim: 1, adapter: 0 });
     });
   });
 });

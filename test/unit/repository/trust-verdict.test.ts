@@ -47,4 +47,84 @@ describe('evaluateTrust', () => {
       });
     });
   });
+
+  describe('Given two checked paths, both unowned', () => {
+    describe('When evaluateTrust runs', () => {
+      it('Then it reports the first one in iteration order, though both were queried', async () => {
+        // Arrange — the serial form would never query the common dir once
+        // the repository path already decided the verdict; the batched form
+        // starts every checked path at once, so both calls are observed here.
+        const outcome: WalkOutcome = { route: 'EXPLICIT', gitDir: '/repo/.git' };
+        const commonDir = '/repo/common';
+        const calls: string[] = [];
+        const probe: LayoutProbe = {
+          stat: async () => undefined,
+          readUtf8: async () => undefined,
+          isOwnedByCaller: async (path) => {
+            calls.push(path);
+            return false;
+          },
+        };
+        const sut = evaluateTrust;
+
+        // Act
+        const result = await sut(probe, outcome, commonDir, {});
+
+        // Assert
+        expect(result).toStrictEqual({ trusted: false, foreignPath: '/repo/.git' });
+        expect(calls).toStrictEqual(['/repo/.git', '/repo/common']);
+      });
+    });
+  });
+
+  describe('Given the first checked path is unowned and a later one rejects', () => {
+    describe('When evaluateTrust runs', () => {
+      it('Then the first foreign path is reported and the later rejection never surfaces', async () => {
+        // Arrange
+        const outcome: WalkOutcome = { route: 'EXPLICIT', gitDir: '/repo/.git' };
+        const commonDir = '/repo/common';
+        const probe: LayoutProbe = {
+          stat: async () => undefined,
+          readUtf8: async () => undefined,
+          isOwnedByCaller: async (path) =>
+            path === '/repo/.git' ? false : Promise.reject(new Error('must not be surfaced')),
+        };
+        const sut = evaluateTrust;
+
+        // Act
+        const result = await sut(probe, outcome, commonDir, {});
+
+        // Assert
+        expect(result).toStrictEqual({ trusted: false, foreignPath: '/repo/.git' });
+      });
+    });
+  });
+
+  describe('Given every earlier checked path is owned and the last one rejects', () => {
+    describe('When evaluateTrust runs', () => {
+      it('Then the rejection propagates untouched', async () => {
+        // Arrange
+        const outcome: WalkOutcome = { route: 'EXPLICIT', gitDir: '/repo/.git' };
+        const commonDir = '/repo/common';
+        const boom = new Error('isOwnedByCaller boom');
+        const probe: LayoutProbe = {
+          stat: async () => undefined,
+          readUtf8: async () => undefined,
+          isOwnedByCaller: async (path) => (path === '/repo/.git' ? true : Promise.reject(boom)),
+        };
+        const sut = evaluateTrust;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(probe, outcome, commonDir, {});
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBe(boom);
+      });
+    });
+  });
 });

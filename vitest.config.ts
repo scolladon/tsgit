@@ -89,6 +89,7 @@ export default defineConfig({
       include: [
         'src/domain/**/*.ts',
         'src/ports/**/*.ts',
+        'src/adapters/*.ts',
         'src/adapters/node/**/*.ts',
         'src/adapters/memory/**/*.ts',
         'src/operators/**/*.ts',

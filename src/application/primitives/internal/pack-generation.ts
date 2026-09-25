@@ -11,6 +11,7 @@ import type { TsgitErrorData } from '../../../domain/error.js';
 import type { PackIndex } from '../../../domain/storage/index.js';
 import type { Context } from '../../../ports/context.js';
 import type { MidxBitmapLoad, RegisteredPack } from '../pack-registry.js';
+import { boundedMapFor } from './concurrency.js';
 import type { LoadedMidx } from './midx-binding.js';
 import type { MidxLoadResult } from './midx-source.js';
 import { faultContext, isSkippableIdxFault } from './pack-shared.js';
@@ -26,13 +27,13 @@ const NO_INDEX_FAULTS: ReadonlyArray<{ readonly name: string; readonly data: Tsg
  * unreadable/unparseable (`indexFaults`). Built once per generation by
  * `resolveIndexes`, behind `PackGeneration.indexed`.
  */
-interface IndexedPack {
+export interface IndexedPack {
   readonly pack: RegisteredPack;
   /** The settled parse — held here so lookup's fallback loop stays synchronous. */
   readonly index: PackIndex;
 }
 
-interface IndexedPacks {
+export interface IndexedPacks {
   readonly packs: ReadonlyArray<IndexedPack>;
   /** The same packs projected once — `all()` returns one stable reference per generation. */
   readonly packList: ReadonlyArray<RegisteredPack>;
@@ -104,31 +105,79 @@ export function emptyGeneration(): PackGeneration {
 }
 
 /**
+ * One pack's settled `.idx` load, kept alongside its origin pack so the
+ * bounded fan-out below can be walked back into candidate order once every
+ * load has settled. `fatal` captures a non-skippable rejection AS DATA
+ * instead of letting it escape the worker: an error thrown from inside
+ * `boundedMap`'s `worker` rejects whichever runner's promise settles first
+ * in REAL completion order, not candidate order — capturing it here lets the
+ * candidate-order walk below decide which fatal fault wins.
+ */
+type IndexOutcome =
+  | { readonly kind: 'loaded'; readonly index: PackIndex }
+  | { readonly kind: 'fault'; readonly data: TsgitErrorData }
+  | { readonly kind: 'fatal'; readonly error: unknown };
+
+async function loadIndexOutcome(pack: RegisteredPack): Promise<IndexOutcome> {
+  try {
+    return { kind: 'loaded', index: await pack.index() };
+  } catch (err) {
+    if (!isSkippableIdxFault(err)) return { kind: 'fatal', error: err };
+    return { kind: 'fault', data: err.data };
+  }
+}
+
+/** Warns once per `.idx` per generation — shared with the lazy lookup's own
+ *  `unclaimedIndexOrSkip`, through the SAME `warnedIdx` set, so a pack either
+ *  side already warned about never warns twice. */
+function warnUnreadableIndexOnce(
+  ctx: Context,
+  packName: string,
+  data: TsgitErrorData,
+  warnedIdx: Set<string>,
+): void {
+  const idxName = `${packName}.idx`;
+  if (warnedIdx.has(idxName)) return;
+  warnedIdx.add(idxName);
+  ctx.logger?.warn?.('packRegistry: skipping unreadable pack index', {
+    idx: idxName,
+    ...faultContext(data),
+  });
+}
+
+/**
  * The single site that classifies an index-layer fault — run once per
- * generation, behind `PackGeneration.indexed`, sequentially in candidate
- * order, never per lookup — so a generation warns for each unreadable index
- * exactly once no matter how many consumers later force the memo. Forces
- * every candidate's `.idx` load, not just the ones a lookup needed, so
- * `all()`, `indexFaults()` and `health()` see a complete classification even
- * when no lookup ever ran.
+ * generation, behind `PackGeneration.indexed`, never per lookup — so a
+ * generation warns for each unreadable index exactly once no matter how many
+ * consumers later force the memo, and never twice when a lazy lookup already
+ * warned about the same `.idx` first. Forces every candidate's `.idx` load,
+ * not just the ones a lookup needed, so `all()`, `indexFaults()` and
+ * `health()` see a complete classification even when no lookup ever ran.
+ * Every load races in the ctx's I/O-bound pool, but the walk that builds
+ * `packs`/`indexFaults` and warns runs afterward, over the settled results in
+ * CANDIDATE order — never completion order — so the accessible list and the
+ * warn sequence stay identical to a strictly sequential scan. A fatal fault
+ * is rethrown from that same candidate-order walk, so two packs completing
+ * in reverse of candidate order still surface the EARLIER candidate's fault,
+ * never whichever happened to finish first.
  */
 export async function resolveIndexes(
   ctx: Context,
   packs: ReadonlyArray<RegisteredPack>,
+  warnedIdx: Set<string>,
 ): Promise<IndexedPacks> {
+  const outcomes = await boundedMapFor(ctx, 'ioBound', packs, loadIndexOutcome);
   const loaded: IndexedPack[] = [];
   const faults: Array<{ readonly name: string; readonly data: TsgitErrorData }> = [];
-  for (const pack of packs) {
-    try {
-      loaded.push({ pack, index: await pack.index() });
-    } catch (err) {
-      if (!isSkippableIdxFault(err)) throw err;
-      ctx.logger?.warn?.('packRegistry: skipping unreadable pack index', {
-        idx: `${pack.name}.idx`,
-        ...faultContext(err.data),
-      });
-      faults.push({ name: pack.name, data: err.data });
+  packs.forEach((pack, position) => {
+    const outcome = outcomes[position]!;
+    if (outcome.kind === 'fatal') throw outcome.error;
+    if (outcome.kind === 'loaded') {
+      loaded.push({ pack, index: outcome.index });
+      return;
     }
-  }
+    faults.push({ name: pack.name, data: outcome.data });
+    warnUnreadableIndexOnce(ctx, pack.name, outcome.data, warnedIdx);
+  });
   return { packs: loaded, packList: loaded.map((entry) => entry.pack), indexFaults: faults };
 }

@@ -7,6 +7,7 @@ import {
   parseIniSections,
 } from '../../domain/config/config-ini.js';
 import { TsgitError } from '../../domain/error.js';
+import { errorDataCode } from '../../domain/error-data-code.js';
 import type { Context } from '../../ports/context.js';
 import { collectScopedValues, collectValues } from './internal/config-key.js';
 import {
@@ -15,6 +16,7 @@ import {
   resolveWorktreeScopePath,
   SCOPE_ORDER,
 } from './internal/config-scope.js';
+import { readUtf8IfPresent } from './internal/fs-probes.js';
 import { layoutFailsAcceptance } from './internal/layout-verdict.js';
 
 interface CachedScopeEntry {
@@ -128,17 +130,15 @@ const getSectionsCacheBucket = (ctx: Context): Map<ConfigScope, CachedScopeEntry
 
 const readScopeFile = async (ctx: Context, path: string): Promise<ReadonlyArray<IniSection>> => {
   try {
-    const text = await ctx.fs.readUtf8(path);
+    const text = await readUtf8IfPresent(ctx.fs, path);
+    // A missing scope file is normal — git treats it as empty config.
+    if (text === undefined) return [];
     return parseIniSections(text, path);
   } catch (err) {
-    if (err instanceof TsgitError) {
-      const code = err.data.code;
-      // A missing scope file is normal — git treats it as empty config. A
-      // permission-denied also yields empty: in production it means the caller
-      // can't see that scope's contents (treat as absent); in the memory
-      // adapter it means the scope path falls outside the adapter's rootDir.
-      if (code === 'FILE_NOT_FOUND' || code === 'PERMISSION_DENIED') return [];
-    }
+    // A permission-denied scope also yields empty: in production it means the
+    // caller can't see that scope's contents (treat as absent); in the memory
+    // adapter it means the scope path falls outside the adapter's rootDir.
+    if (errorDataCode(err) === 'PERMISSION_DENIED') return [];
     throw err;
   }
 };

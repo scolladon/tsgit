@@ -2,6 +2,7 @@ import type { PathPolicy } from '../adapters/node/path-policy.js';
 import { isAllowlisted } from '../domain/repository/allowlist.js';
 import type { LayoutProbe } from '../ports/layout-probe.js';
 import type { WalkOutcome } from './find-layout.js';
+import { settleSpeculation, speculate } from './speculate.js';
 
 /**
  * Trust policy options threaded from `OpenRepositoryOptions`
@@ -73,8 +74,11 @@ const checkedPathsOf = (
  * never the checked set, or allowlisting a work tree would admit a gitdir at
  * an unrelated location; an adapter that omits `isOwnedByCaller` declares
  * that foreign ownership cannot exist in its world and is trusted; otherwise
- * each member of the checked set is queried in order and the FIRST one
- * reported unowned decides the verdict.
+ * every member of the checked set is queried AT ONCE (a cold filesystem pays
+ * one round trip, not one per path) and the results are walked in iteration
+ * order — the FIRST one reported unowned decides the verdict, exactly as the
+ * serial form would have, and a later path's rejection is read only if the
+ * walk actually reaches it (`speculate` — never surfaced otherwise).
  */
 export const evaluateTrust = async (
   probe: LayoutProbe,
@@ -85,9 +89,14 @@ export const evaluateTrust = async (
   if (opts.trust === 'always') return TRUSTED;
   const repositoryPath = repositoryPathOf(outcome);
   if (isAllowlisted(repositoryPath, opts.trustedDirectories ?? [])) return TRUSTED;
-  if (probe.isOwnedByCaller === undefined) return TRUSTED;
-  for (const path of checkedPathsOf(repositoryPath, outcome.gitDir, commonDir)) {
-    if (!(await probe.isOwnedByCaller(path))) return { trusted: false, foreignPath: path };
+  const { isOwnedByCaller } = probe;
+  if (isOwnedByCaller === undefined) return TRUSTED;
+  const checks = checkedPathsOf(repositoryPath, outcome.gitDir, commonDir).map((path) => ({
+    path,
+    ownership: speculate(isOwnedByCaller(path)),
+  }));
+  for (const { path, ownership } of checks) {
+    if (!(await settleSpeculation(ownership))) return { trusted: false, foreignPath: path };
   }
   return TRUSTED;
 };

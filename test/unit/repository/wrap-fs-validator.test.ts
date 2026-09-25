@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { TsgitError } from '../../../src/domain/error.js';
-import type { FileSystem } from '../../../src/ports/file-system.js';
+import type { FileStat, FileSystem } from '../../../src/ports/file-system.js';
 import { wrapFsValidator } from '../../../src/repository/wrap-fs-validator.js';
 
 const stubFs = (): FileSystem =>
@@ -802,6 +802,132 @@ describe('wrapFsValidator — the optional atomicRename capability', () => {
 
         // Assert
         expect('atomicRename' in sut).toBe(false);
+      });
+    });
+  });
+});
+
+const fakeFileStat = { isFile: true } as unknown as FileStat;
+
+describe('wrapFsValidator — the optional tryLstat probe', () => {
+  // A method that reads its own receiver, as a class-based adapter's does: the wrapper must
+  // call it on the adapter, not detached from it.
+  const fsWithTryLstat = (): FileSystem & { readonly probed: string[] } => {
+    const probed: string[] = [];
+    return {
+      ...stubFs(),
+      probed,
+      tryLstat(this: { readonly probed: string[] }, path: string): Promise<FileStat> {
+        this.probed.push(path);
+        return Promise.resolve(fakeFileStat);
+      },
+    };
+  };
+
+  describe('Given an adapter providing tryLstat and an in-cwd path', () => {
+    describe('When tryLstat is called through the wrapper', () => {
+      it('Then it delegates on the adapter and returns its answer', async () => {
+        // Arrange
+        const fs = fsWithTryLstat();
+        const sut = wrapFsValidator(fs, '/repo');
+
+        // Act
+        const result = await sut.tryLstat?.('/repo/x');
+
+        // Assert
+        expect(result).toEqual(fakeFileStat);
+        expect(fs.probed).toEqual(['/repo/x']);
+      });
+    });
+  });
+
+  describe('Given an adapter providing tryLstat and a path outside every root', () => {
+    describe('When tryLstat is called through the wrapper', () => {
+      it('Then it throws PATHSPEC_OUTSIDE_REPO without probing', async () => {
+        // Arrange
+        const fs = fsWithTryLstat();
+        const sut = wrapFsValidator(fs, '/repo');
+
+        // Act + Assert
+        await expectOutside(async () => sut.tryLstat?.('/etc/x'));
+        expect(fs.probed).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given an adapter without tryLstat', () => {
+    describe('When the wrapper is built', () => {
+      it('Then the wrapper exposes no tryLstat either', () => {
+        // Arrange
+        const fs = stubFs();
+
+        // Act
+        const sut = wrapFsValidator(fs, '/repo');
+
+        // Assert
+        expect('tryLstat' in sut).toBe(false);
+      });
+    });
+  });
+});
+
+describe('wrapFsValidator — the optional tryReadUtf8 probe', () => {
+  // A method that reads its own receiver, as a class-based adapter's does: the wrapper must
+  // call it on the adapter, not detached from it.
+  const fsWithTryReadUtf8 = (): FileSystem & { readonly probed: string[] } => {
+    const probed: string[] = [];
+    return {
+      ...stubFs(),
+      probed,
+      tryReadUtf8(this: { readonly probed: string[] }, path: string): Promise<string> {
+        this.probed.push(path);
+        return Promise.resolve('content');
+      },
+    };
+  };
+
+  describe('Given an adapter providing tryReadUtf8 and an in-cwd path', () => {
+    describe('When tryReadUtf8 is called through the wrapper', () => {
+      it('Then it delegates on the adapter and returns its answer', async () => {
+        // Arrange
+        const fs = fsWithTryReadUtf8();
+        const sut = wrapFsValidator(fs, '/repo');
+
+        // Act
+        const result = await sut.tryReadUtf8?.('/repo/x');
+
+        // Assert
+        expect(result).toBe('content');
+        expect(fs.probed).toEqual(['/repo/x']);
+      });
+    });
+  });
+
+  describe('Given an adapter providing tryReadUtf8 and a path outside every root', () => {
+    describe('When tryReadUtf8 is called through the wrapper', () => {
+      it('Then it throws PATHSPEC_OUTSIDE_REPO without probing', async () => {
+        // Arrange
+        const fs = fsWithTryReadUtf8();
+        const sut = wrapFsValidator(fs, '/repo');
+
+        // Act + Assert
+        await expectOutside(async () => sut.tryReadUtf8?.('/etc/x'));
+        expect(fs.probed).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given an adapter without tryReadUtf8', () => {
+    describe('When the wrapper is built', () => {
+      it('Then the wrapper exposes no tryReadUtf8 either', () => {
+        // Arrange
+        const fs = stubFs();
+
+        // Act
+        const sut = wrapFsValidator(fs, '/repo');
+
+        // Assert
+        expect('tryReadUtf8' in sut).toBe(false);
       });
     });
   });

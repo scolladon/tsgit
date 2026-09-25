@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { adler32 } from '../../../src/adapters/adler32.js';
 import {
   boundedInflateCap,
+  GrowableBuffer,
   inflateZlibMember,
   MAX_INFLATED_OUTPUT_BYTES,
 } from '../../../src/adapters/inflate.js';
@@ -1020,6 +1021,25 @@ describe('inflateZlibMember', () => {
     });
   });
 
+  describe('Given an exact-size member whose maxOutputBytes equals its own decoded length', () => {
+    const EXACT_SIZE_PAYLOAD_LENGTH = 128;
+
+    describe('When decoding it', () => {
+      it('Then the output matches the original payload byte-for-byte', () => {
+        // Arrange
+        const payload = new Uint8Array(EXACT_SIZE_PAYLOAD_LENGTH).fill(0x41);
+        const member = deflateSync(payload);
+
+        // Act
+        const result = inflateZlibMember(member, 0, payload.length);
+
+        // Assert
+        expect(Array.from(result.output)).toEqual(Array.from(payload));
+        expect(result.bytesConsumed).toBe(member.length);
+      });
+    });
+  });
+
   describe('Given a dynamic-Huffman lit/len table that is Kraft-complete down to the 15-bit code depth', () => {
     describe('When decoding a payload whose only literal uses the forced 15-bit code', () => {
       it('Then round-trips with byte-exact bytesConsumed', () => {
@@ -1165,6 +1185,148 @@ describe('boundedInflateCap', () => {
 
         // Assert
         expect(result).toBe(MAX_INFLATED_OUTPUT_BYTES);
+      });
+    });
+  });
+});
+
+describe('GrowableBuffer', () => {
+  // Pinned independently of inflate.ts's own constants: today's default
+  // initial capacity (unchanged when no declared entry size applies) and the
+  // pre-sizing ceiling a large declared entry size is clamped to.
+  const DEFAULT_INITIAL_CAPACITY = 64;
+  const CAPACITY_CEILING = 1 << 20;
+
+  describe('Given a declared entry size below the pre-sizing ceiling', () => {
+    describe('When constructed', () => {
+      it('Then the initial capacity equals the declared size', () => {
+        // Arrange
+        const declaredSize = 1000;
+
+        // Act
+        const sut = new GrowableBuffer(declaredSize);
+
+        // Assert
+        expect(sut.capacity).toBe(declaredSize);
+      });
+    });
+  });
+
+  describe('Given a declared entry size at or above the pre-sizing ceiling but below the decoder default cap', () => {
+    describe('When constructed', () => {
+      it('Then the initial capacity is clamped to the ceiling', () => {
+        // Arrange
+        const declaredSize = CAPACITY_CEILING + 1;
+
+        // Act
+        const sut = new GrowableBuffer(declaredSize);
+
+        // Assert
+        expect(sut.capacity).toBe(CAPACITY_CEILING);
+      });
+    });
+  });
+
+  describe('Given no declared entry size (the decoder default cap)', () => {
+    describe('When constructed', () => {
+      it('Then the initial capacity is the small default, unchanged from before pre-sizing', () => {
+        // Arrange & Act
+        const sut = new GrowableBuffer(MAX_INFLATED_OUTPUT_BYTES);
+
+        // Assert
+        expect(sut.capacity).toBe(DEFAULT_INITIAL_CAPACITY);
+      });
+    });
+  });
+
+  describe('Given a buffer pre-sized exactly to its declared entry size', () => {
+    describe('When filled to exactly that size', () => {
+      it('Then the capacity never grows past the pre-sized value', () => {
+        // Arrange
+        const declaredSize = 1000;
+        const sut = new GrowableBuffer(declaredSize);
+        const chunk = new Uint8Array(declaredSize).fill(0x41);
+
+        // Act
+        sut.append(chunk);
+
+        // Assert
+        expect(sut.capacity).toBe(declaredSize);
+        expect(Array.from(sut.toUint8Array())).toEqual(Array.from(chunk));
+      });
+    });
+  });
+
+  describe('Given a buffer pre-sized for a declared size its content never reaches', () => {
+    describe('When its bytes are taken', () => {
+      it('Then they own a backing store no larger than the bytes written', () => {
+        // Arrange
+        const declaredSize = CAPACITY_CEILING;
+        const written = new Uint8Array([1, 2, 3]);
+        const sut = new GrowableBuffer(declaredSize);
+        sut.append(written);
+
+        // Act
+        const result = sut.toUint8Array();
+
+        // Assert
+        expect(Array.from(result)).toEqual([1, 2, 3]);
+        expect(result.buffer.byteLength).toBe(written.length);
+      });
+    });
+  });
+
+  describe('Given a buffer holding exactly half its capacity', () => {
+    describe('When its bytes are taken', () => {
+      it('Then they share the buffer without a copy', () => {
+        // Arrange
+        const declaredSize = 1000;
+        const sut = new GrowableBuffer(declaredSize);
+        sut.append(new Uint8Array(declaredSize / 2).fill(0x41));
+
+        // Act
+        const first = sut.toUint8Array();
+        const second = sut.toUint8Array();
+
+        // Assert
+        expect(first.buffer).toBe(second.buffer);
+      });
+    });
+  });
+
+  describe('Given a buffer holding one byte less than half its capacity', () => {
+    describe('When its bytes are taken', () => {
+      it('Then they are copied into a backing store of their own size', () => {
+        // Arrange
+        const declaredSize = 1000;
+        const written = declaredSize / 2 - 1;
+        const sut = new GrowableBuffer(declaredSize);
+        sut.append(new Uint8Array(written).fill(0x41));
+
+        // Act
+        const result = sut.toUint8Array();
+
+        // Assert
+        expect(result.buffer.byteLength).toBe(written);
+      });
+    });
+  });
+});
+
+describe('inflateZlibMember', () => {
+  describe('Given an empty zlib stream whose entry declares a 1 MiB size', () => {
+    describe('When inflated', () => {
+      it('Then the output pins no more memory than it holds', () => {
+        // Arrange
+        const declaredSize = 1 << 20;
+        const sut = inflateZlibMember;
+
+        // Act
+        const result = sut(new Uint8Array(deflateSync(new Uint8Array(0))), 0, declaredSize);
+
+        // Assert
+        expect(result.output.byteLength).toBe(0);
+        expect(result.output.buffer.byteLength).toBe(0);
       });
     });
   });

@@ -10,12 +10,26 @@
 
 const ADLER_MOD = 65521;
 
+/**
+ * Largest run of bytes `a`/`b` can accumulate (worst case: every byte 0xff)
+ * before `b` risks overflowing the 32-bit range the final `(b << 16) | a`
+ * combination assumes, so the modulo can be deferred to once per block
+ * instead of once per byte. Matches zlib's own adler32.c bound.
+ */
+const NMAX = 5552;
+
 export function adler32(data: Uint8Array): number {
   let a = 1;
   let b = 0;
-  for (const byte of data) {
-    a = (a + byte) % ADLER_MOD;
-    b = (b + a) % ADLER_MOD;
+  // Stryker disable next-line EqualityOperator: equivalent — an extra start===data.length pass makes end===start, so the inner loop adds nothing and the redundant modulo is a no-op
+  for (let start = 0; start < data.length; start += NMAX) {
+    const end = Math.min(start + NMAX, data.length);
+    for (let i = start; i < end; i += 1) {
+      a += data[i] as number;
+      b += a;
+    }
+    a %= ADLER_MOD;
+    b %= ADLER_MOD;
   }
   return ((b << 16) | a) >>> 0;
 }

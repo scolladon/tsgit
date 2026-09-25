@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import * as configReadMod from '../../../../src/application/primitives/config-read.js';
 import { enumerateObjects } from '../../../../src/application/primitives/enumerate-objects.js';
+import { probeLooseOid } from '../../../../src/application/primitives/internal/loose-oid-cache.js';
 import { packPositionMap } from '../../../../src/application/primitives/internal/pack-positions.js';
 import { GIT_DEFAULT_DELTA_BASE_CACHE_LIMIT_BYTES } from '../../../../src/application/primitives/internal/resolve-delta-base-cache-limit.js';
 import {
@@ -9,6 +10,7 @@ import {
   isSkippablePackFault,
   nextOffsetForEntry,
   type PackOffsetTable,
+  type RegisteredPack,
 } from '../../../../src/application/primitives/pack-registry.js';
 import { getPackRegistry, readObject } from '../../../../src/application/primitives/read-object.js';
 import { REASON_PACK_IDX_EXCEEDS_MAX } from '../../../../src/application/primitives/validators.js';
@@ -25,6 +27,7 @@ import {
   EMPTY_TREE_OID,
   type GitObject,
   type ObjectId,
+  serializeHeader,
 } from '../../../../src/domain/objects/index.js';
 import type {
   BitmapCheck,
@@ -32,6 +35,7 @@ import type {
   RevIndexCheck,
 } from '../../../../src/domain/storage/error.js';
 import {
+  computeLooseObjectPath,
   entryOffsets,
   invalidMultiPackIndex,
   invalidPackBitmap,
@@ -46,7 +50,13 @@ import type { DirEntry, FileHandle, FileStat } from '../../../../src/ports/file-
 import { buildMidx, type MidxSpec } from '../../domain/storage/arbitraries.js';
 import { buildSeededContext, instrumentedContext } from './fixtures.js';
 import { withHandleLedger } from './handle-ledger.js';
-import { restampPackHeader, writeSyntheticPack, writeSyntheticRevIndex } from './pack-fixture.js';
+import {
+  buildSyntheticPack,
+  type EntrySpec,
+  restampPackHeader,
+  writeSyntheticPack,
+  writeSyntheticRevIndex,
+} from './pack-fixture.js';
 
 vi.mock('../../../../src/domain/storage/index.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../../src/domain/storage/index.js')>();
@@ -271,13 +281,15 @@ describe('pack-registry', () => {
 
   describe('Given a pack directory that exists but whose readdir rejects with PERMISSION_DENIED', () => {
     describe('When all() is called', () => {
-      it('Then it rejects with PERMISSION_DENIED', async () => {
+      it('Then it resolves as if the directory were empty, and warns once with the code', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         const dir = `${ctx.layout.gitDir}/objects/pack`;
         await ctx.fs.mkdir(dir);
+        const warn = vi.fn();
         const stubCtx: Context = {
           ...ctx,
+          logger: { warn },
           fs: {
             ...ctx.fs,
             readdir: async (path: string) => {
@@ -289,17 +301,186 @@ describe('pack-registry', () => {
         const sut = await createPackRegistry(stubCtx);
 
         // Act
-        let caught: unknown;
-        try {
-          await sut.all();
-          expect.unreachable();
-        } catch (error) {
-          caught = error;
-        }
+        const result = await sut.all();
 
         // Assert
-        expect(caught).toBeInstanceOf(TsgitError);
-        expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+        expect(result).toEqual([]);
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn).toHaveBeenCalledWith(
+          'packRegistry: unreadable pack directory',
+          expect.objectContaining({ code: 'PERMISSION_DENIED' }),
+        );
+      });
+    });
+  });
+
+  describe('PackRegistry — pack directory listing', () => {
+    describe('Given a registry whose gate and scan are both exercised', () => {
+      describe('When assertLoadable() then lookup() run in sequence', () => {
+        it('Then the pack directory is listed exactly once, shared by the gate and the scan', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          await writeSyntheticPack(ctx, 'shared-listing', [
+            { kind: 'base', type: 'blob', content: new TextEncoder().encode('a') },
+          ]);
+          const { ctx: instrumented, calls } = instrumentedContext(ctx);
+          const sut = await createPackRegistry(instrumented);
+
+          // Act
+          await sut.assertLoadable();
+          await sut.lookup('a'.repeat(40) as ObjectId);
+
+          // Assert
+          const packDirReaddirCalls = calls().filter(
+            (call) => call.method === 'readdir' && call.path.endsWith('/objects/pack'),
+          );
+          expect(packDirReaddirCalls).toHaveLength(1);
+        });
+      });
+    });
+
+    describe('Given a pack directory listing with no multi-pack-index entry', () => {
+      describe('When assertLoadable() runs', () => {
+        it('Then the flat midx path is never statted', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          await ctx.fs.mkdir(`${ctx.layout.gitDir}/objects/pack`);
+          const { ctx: instrumented, calls } = instrumentedContext(ctx);
+          const sut = await createPackRegistry(instrumented);
+
+          // Act
+          await sut.assertLoadable();
+
+          // Assert
+          const midxStats = calls().filter(
+            (call) =>
+              call.method === 'stat' && call.path.endsWith('/objects/pack/multi-pack-index'),
+          );
+          expect(midxStats).toEqual([]);
+        });
+      });
+    });
+
+    describe('Given a pack directory listing naming multi-pack-index', () => {
+      describe('When assertLoadable() runs', () => {
+        it('Then the flat midx path is statted exactly once', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          await writeMidxBytes(ctx, buildMidx(healthyMidxSpec()));
+          const { ctx: instrumented, calls } = instrumentedContext(ctx);
+          const sut = await createPackRegistry(instrumented);
+
+          // Act
+          await sut.assertLoadable();
+
+          // Assert
+          const midxStats = calls().filter(
+            (call) =>
+              call.method === 'stat' && call.path.endsWith('/objects/pack/multi-pack-index'),
+          );
+          expect(midxStats).toHaveLength(1);
+        });
+      });
+    });
+
+    describe('Given a pack directory that does not exist yet', () => {
+      describe('When lookup runs twice', () => {
+        it('Then both resolve as if the directory were empty and nothing is logged', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const dir = `${ctx.layout.gitDir}/objects/pack`;
+          const warn = vi.fn();
+          const stubCtx: Context = {
+            ...ctx,
+            logger: { warn },
+            fs: {
+              ...ctx.fs,
+              readdir: async (path: string) => {
+                if (path === dir) throw fileNotFound(dir);
+                return ctx.fs.readdir(path);
+              },
+            },
+          };
+          const sut = await createPackRegistry(stubCtx);
+
+          // Act
+          const first = await sut.lookup('a'.repeat(40) as ObjectId);
+          const second = await sut.lookup('b'.repeat(40) as ObjectId);
+
+          // Assert
+          expect(first).toBeUndefined();
+          expect(second).toBeUndefined();
+          expect(warn).not.toHaveBeenCalled();
+        });
+      });
+    });
+
+    describe.each([
+      ['NOT_A_DIRECTORY', () => notADirectory('/repo/.git/objects/pack')],
+      ['PERMISSION_DENIED', () => permissionDenied('/repo/.git/objects/pack')],
+      ['UNSUPPORTED_OPERATION', () => unsupportedOperation('filesystem', 'EIO')],
+    ])('Given a pack directory whose readdir rejects with %s', (code, buildFault) => {
+      describe('When lookup runs twice', () => {
+        it('Then both resolve as if the directory were empty and exactly one warn carries the code', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const dir = `${ctx.layout.gitDir}/objects/pack`;
+          await ctx.fs.mkdir(dir);
+          const warn = vi.fn();
+          const stubCtx: Context = {
+            ...ctx,
+            logger: { warn },
+            fs: {
+              ...ctx.fs,
+              readdir: async (path: string) => {
+                if (path === dir) throw buildFault();
+                return ctx.fs.readdir(path);
+              },
+            },
+          };
+          const sut = await createPackRegistry(stubCtx);
+
+          // Act
+          const first = await sut.lookup('a'.repeat(40) as ObjectId);
+          const second = await sut.lookup('b'.repeat(40) as ObjectId);
+
+          // Assert
+          expect(first).toBeUndefined();
+          expect(second).toBeUndefined();
+          expect(warn).toHaveBeenCalledTimes(1);
+          expect(warn).toHaveBeenCalledWith(
+            'packRegistry: unreadable pack directory',
+            expect.objectContaining({ code }),
+          );
+        });
+      });
+    });
+
+    describe('Given a pack directory whose readdir rejects with PERMISSION_DENIED and no logger attached', () => {
+      describe('When all() is called', () => {
+        it('Then it resolves with an empty array', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const dir = `${ctx.layout.gitDir}/objects/pack`;
+          await ctx.fs.mkdir(dir);
+          const stubCtx: Context = {
+            ...ctx,
+            fs: {
+              ...ctx.fs,
+              readdir: async (path: string) => {
+                if (path === dir) throw permissionDenied(dir);
+                return ctx.fs.readdir(path);
+              },
+            },
+          };
+          const sut = await createPackRegistry(stubCtx);
+
+          // Act
+          const result = await sut.all();
+
+          // Assert
+          expect(result).toEqual([]);
+        });
       });
     });
   });
@@ -781,7 +962,7 @@ describe('PackRegistry.scan — per-pack idx degradation and orphan exclusion', 
 
   describe('Given two packs, one whose .pack file is removed after write (an orphaned .idx)', () => {
     describe('When all() is called, then readObject is called for both the orphan and the survivor oid', () => {
-      it('Then the orphan is excluded from the generation, its object is not found, the survivor still reads, and exactly one warn names the orphan', async () => {
+      it('Then the orphan is excluded from the generation, its object is not found, the survivor still reads, and warns twice naming the orphan (one re-scan retry)', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         const orphanContent = new TextEncoder().encode('h5-orphan-content');
@@ -822,8 +1003,11 @@ describe('PackRegistry.scan — per-pack idx degradation and orphan exclusion', 
         // Assert — (iii) the survivor still reads
         expect(survivorObject.type).toBe('blob');
         expect((survivorObject as Blob).content).toEqual(survivorContent);
-        // Assert — (iv) exactly one warn names the orphan
-        expect(warn).toHaveBeenCalledTimes(1);
+        // Assert — (iv) warns twice naming the orphan: `sut.all()`'s own
+        // scan, plus the object-resolver's own full-miss re-scan retry
+        // (pack-miss-rescan.ts) when reading the orphan oid re-scans and
+        // finds the SAME orphan .idx again.
+        expect(warn).toHaveBeenCalledTimes(2);
         const [message, context] = warn.mock.calls[0] ?? [];
         expect(message).toBe('packRegistry: skipping pack index with no pack file');
         expect(context).toEqual({ idx: 'pack-h5-orphan.idx' });
@@ -867,13 +1051,16 @@ describe('PackRegistry.scan — per-pack idx degradation and orphan exclusion', 
 describe('PackRegistry — lazy pack-index loading', () => {
   describe('Given two healthy packs', () => {
     describe('When createPackRegistry is called and nothing else', () => {
-      it('Then no readdir and no .idx read has happened yet — only the repo-settings class check and the delta-base budget config read', async () => {
-        // Arrange — construction validates the repo-settings class first,
-        // then resolves the delta-base cache's byte budget (a
-        // `core.deltaBaseCacheLimit` config read) — both hit the same warm
-        // parse cache, so the content is read once and only the mtime stat
-        // repeats — but the pack directory itself stays untouched until the
-        // registry is actually consulted.
+      it('Then no readdir and no .idx read has happened yet — only the repo-settings class check and one shared budget config read', async () => {
+        // Arrange — construction validates the repo-settings class first
+        // (its own coalesced stat), then resolves the delta-base cache's
+        // byte budget (`core.deltaBaseCacheLimit`) and the pack window
+        // cache's budget (`core.packedGitWindowSize`/`core.packedGitLimit`)
+        // CONCURRENTLY, so their two `readConfig` calls share the SAME
+        // in-flight coalesced stat instead of paying one each — the content
+        // is read once, and the mtime-freshness stat runs exactly twice
+        // total, not three times. The pack directory itself stays untouched
+        // until the registry is actually consulted.
         const ctx = await buildSeededContext();
         await writeSyntheticPack(ctx, 'lazy-cold-a', [
           { kind: 'base', type: 'blob', content: new TextEncoder().encode('a') },
@@ -898,11 +1085,13 @@ describe('PackRegistry — lazy pack-index loading', () => {
 
   describe('Given two healthy packs and cacheBudgets.deltaBaseCacheMaxBytes supplied', () => {
     describe('When createPackRegistry is called and nothing else', () => {
-      it('Then only the repo-settings class check reads config — the budget option reads no configuration', async () => {
+      it('Then the delta-base budget option reads no configuration, but the window budget still does', async () => {
         // Arrange — the option overrides the delta-base cache's own
-        // `core.deltaBaseCacheLimit` config read, so construction issues only
-        // the repo-settings verdict's stat + readUtf8, never the extra
-        // mtime-freshness stat the unset case pays.
+        // `core.deltaBaseCacheLimit` config read (skipped entirely by its
+        // `??` short-circuit), but the pack window cache has no equivalent
+        // override option — it always resolves `core.packedGitWindowSize`/
+        // `core.packedGitLimit`, paying one more mtime-freshness stat
+        // against the same warm parse cache the repo-settings check filled.
         const base = await buildSeededContext();
         await writeSyntheticPack(base, 'lazy-cold-budget-a', [
           { kind: 'base', type: 'blob', content: new TextEncoder().encode('a') },
@@ -917,6 +1106,7 @@ describe('PackRegistry — lazy pack-index loading', () => {
         expect(calls()).toEqual([
           { method: 'stat', path: '/repo/.git/config' },
           { method: 'readUtf8', path: '/repo/.git/config' },
+          { method: 'stat', path: '/repo/.git/config' },
         ]);
       });
     });
@@ -952,7 +1142,7 @@ describe('PackRegistry — lazy pack-index loading', () => {
 
   describe('Given two healthy packs and no multi-pack-index', () => {
     describe('When lookup is called for an id claimed by the first pack', () => {
-      it('Then both .idx files are read — the fallback loop has nothing to short it', async () => {
+      it('Then only the first .idx is read — the lazy loop stops at the first hit', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         const idsA = await writeSyntheticPack(ctx, 'lazy-fallback-a', [
@@ -968,10 +1158,10 @@ describe('PackRegistry — lazy pack-index loading', () => {
         await sut.lookup(idsA[0] as ObjectId);
 
         // Assert
-        const idxReads = calls().filter(
-          (call) => call.method === 'read' && call.path.endsWith('.idx'),
-        );
-        expect(idxReads).toHaveLength(2);
+        const idxReads = calls()
+          .filter((call) => call.method === 'read' && call.path.endsWith('.idx'))
+          .map((call) => call.path);
+        expect(idxReads).toEqual([`${ctx.layout.gitDir}/objects/pack/pack-lazy-fallback-a.idx`]);
       });
     });
   });
@@ -1280,6 +1470,296 @@ describe('PackRegistry — lazy pack-index loading', () => {
   });
 });
 
+describe('PackRegistry.lookup — lazy index loading without a multi-pack-index', () => {
+  describe('Given three healthy packs and no multi-pack-index', () => {
+    describe('When lookup is called for an id claimed by the first pack', () => {
+      it('Then exactly one .idx is read — the other two are never touched', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const idsA = await writeSyntheticPack(ctx, 'lazy3-a', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('a') },
+        ]);
+        await writeSyntheticPack(ctx, 'lazy3-b', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('b') },
+        ]);
+        await writeSyntheticPack(ctx, 'lazy3-c', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('c') },
+        ]);
+        const { ctx: instrumented, calls } = instrumentedContext(ctx);
+        const sut = await createPackRegistry(instrumented);
+
+        // Act
+        const hit = await sut.lookup(idsA[0] as ObjectId);
+
+        // Assert
+        expect(hit?.pack.name).toBe('pack-lazy3-a');
+        const idxReads = calls()
+          .filter((call) => call.method === 'read' && call.path.endsWith('.idx'))
+          .map((call) => call.path);
+        expect(idxReads).toEqual([`${ctx.layout.gitDir}/objects/pack/pack-lazy3-a.idx`]);
+      });
+    });
+  });
+
+  describe('Given the first pack of two carries a corrupt .idx and the second claims the requested oid', () => {
+    describe('When lookup is called', () => {
+      it('Then it warns once for the corrupt index and serves the hit from the second pack', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeGarbageIdx(ctx, 'lazy2-corrupt-a');
+        const idsB = await writeSyntheticPack(ctx, 'lazy2-good-b', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('good') },
+        ]);
+        const warn = vi.fn();
+        const sut = await createPackRegistry({ ...ctx, logger: { warn } });
+
+        // Act
+        const hit = await sut.lookup(idsB[0] as ObjectId);
+
+        // Assert
+        expect(hit?.pack.name).toBe('pack-lazy2-good-b');
+        expect(warn).toHaveBeenCalledTimes(1);
+        const [message, context] = warn.mock.calls[0] ?? [];
+        expect(message).toBe('packRegistry: skipping unreadable pack index');
+        expect(context).toMatchObject({ idx: 'pack-lazy2-corrupt-a.idx' });
+      });
+    });
+
+    describe('When lookup is called, then health() is called', () => {
+      it('Then health() warns nothing new for the .idx the lookup already warned about', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeGarbageIdx(ctx, 'lazy2-corrupt-c');
+        const idsD = await writeSyntheticPack(ctx, 'lazy2-good-d', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('good') },
+        ]);
+        const warn = vi.fn();
+        const sut = await createPackRegistry({ ...ctx, logger: { warn } });
+
+        // Act
+        await sut.lookup(idsD[0] as ObjectId);
+        const health = await sut.health();
+
+        // Assert — the same corrupt .idx the lazy lookup already warned about
+        // is not warned a second time when health() forces the full scan.
+        expect(health.accessible.map((pack) => pack.name)).toEqual(['pack-lazy2-good-d']);
+        expect(warn).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+});
+
+describe('resolveIndexes — ordered parallel load', () => {
+  describe('Given four packs whose .idx reads complete in the reverse of candidate order', () => {
+    describe('When all() is called', () => {
+      it('Then the accessible list and the warn order both follow candidate order, not completion order', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeGarbageIdx(ctx, 'ord-a');
+        await writeSyntheticPack(ctx, 'ord-b', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('b') },
+        ]);
+        await writeGarbageIdx(ctx, 'ord-c');
+        await writeSyntheticPack(ctx, 'ord-d', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('d') },
+        ]);
+        const delayByIdxName: Readonly<Record<string, number>> = {
+          'pack-ord-a.idx': 30,
+          'pack-ord-b.idx': 20,
+          'pack-ord-c.idx': 10,
+          'pack-ord-d.idx': 0,
+        };
+        const delayed: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            read: async (path: string) => {
+              const delay = delayByIdxName[path.split('/').pop() ?? path];
+              if (delay !== undefined) await new Promise((resolve) => setTimeout(resolve, delay));
+              return ctx.fs.read(path);
+            },
+          },
+        };
+        const warn = vi.fn();
+        const sut = await createPackRegistry({ ...delayed, logger: { warn } });
+
+        // Act
+        const packs = await sut.all();
+
+        // Assert — pack-ord-d's read completes first and pack-ord-a's last,
+        // yet both the accessible list and the warn order stay in candidate
+        // (scan) order.
+        expect(packs.map((pack) => pack.name)).toEqual(['pack-ord-b', 'pack-ord-d']);
+        expect(warn.mock.calls.map(([, context]) => (context as { idx: string }).idx)).toEqual([
+          'pack-ord-a.idx',
+          'pack-ord-c.idx',
+        ]);
+      });
+    });
+  });
+});
+
+describe('resolveIndexes — fatal faults surface in candidate order', () => {
+  describe('Given two packs whose .idx reads reject with different FATAL faults, the later candidate completing first', () => {
+    describe('When all() is called', () => {
+      it("Then the earlier candidate's fault surfaces, not whichever completed first", async () => {
+        // Arrange — a fatal (non-skippable) fault must never escape a
+        // worker mid-fan-out and win Promise.all's completion-order race;
+        // it is captured as an outcome and rethrown during the ordered
+        // walk, so the FIRST candidate's fault always wins regardless of
+        // which read settles first.
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'fatal-order-a', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('a') },
+        ]);
+        await writeSyntheticPack(ctx, 'fatal-order-b', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('b') },
+        ]);
+        const delayByIdxName: Readonly<Record<string, number>> = {
+          'pack-fatal-order-a.idx': 20,
+          'pack-fatal-order-b.idx': 0,
+        };
+        const wrapped: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            read: async (path: string) => {
+              const name = path.split('/').pop() ?? path;
+              const delay = delayByIdxName[name];
+              if (delay !== undefined) await new Promise((resolve) => setTimeout(resolve, delay));
+              if (name === 'pack-fatal-order-a.idx') {
+                throw unsupportedOperation('idx-fault-a', 'boom-a');
+              }
+              if (name === 'pack-fatal-order-b.idx') {
+                throw unsupportedOperation('idx-fault-b', 'boom-b');
+              }
+              return ctx.fs.read(path);
+            },
+          },
+        };
+        const sut = await createPackRegistry(wrapped);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.all();
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert — pack-fatal-order-b's read completes first (0ms delay),
+        // yet pack-fatal-order-a's fault (the earlier candidate) is what
+        // surfaces.
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('UNSUPPORTED_OPERATION');
+        if (data.code !== 'UNSUPPORTED_OPERATION') {
+          expect.fail(`expected UNSUPPORTED_OPERATION, got ${data.code}`);
+        }
+        expect(data.operation).toBe('idx-fault-a');
+      });
+    });
+  });
+});
+
+describe('PackRegistry.lookup — settled indexes walk synchronously', () => {
+  describe("Given a registry whose generation already settled every pack's index", () => {
+    describe('When lookup() misses every pack', () => {
+      it("Then no pack's index() is called again — the settled snapshot is walked without a per-pack await", async () => {
+        // Arrange — all() forces generation.indexed to settle; the spies
+        // installed AFTER that only trip if lookup() re-invokes index()
+        // itself, not merely because index() was ever called at all.
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'settled-miss-a', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('a') },
+        ]);
+        await writeSyntheticPack(ctx, 'settled-miss-b', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('b') },
+        ]);
+        const registry = await createPackRegistry(ctx);
+        const packs = await registry.all();
+        const indexSpies = packs.map((pack) => vi.spyOn(pack, 'index'));
+        const missingId = 'ffffffffffffffffffffffffffffffffffffffff' as ObjectId;
+
+        // Act
+        const hit = await registry.lookup(missingId);
+
+        // Assert
+        expect(hit).toBeUndefined();
+        for (const spy of indexSpies) {
+          expect(spy).not.toHaveBeenCalled();
+        }
+      });
+    });
+  });
+
+  describe('Given a no-midx registry whose unclaimed packs have all settled their own index() through a prior miss, with all()/health() never forced', () => {
+    describe('When a further lookup runs', () => {
+      it("Then it takes the settled walk passively — no pack's index() is called again", async () => {
+        // Arrange — a genuine full miss walks EVERY unclaimed pack in
+        // candidate order (none matches, so none short-circuits), settling
+        // each one's own index() organically. all()/health() is never
+        // called — the plain read-walk shape (log, checkout, diff).
+        const ctx = await buildSeededContext();
+        const packCount = 5;
+        const ids: ObjectId[] = [];
+        for (let p = 0; p < packCount; p += 1) {
+          const [id] = await writeSyntheticPack(ctx, `settle-promote-${p}`, [
+            {
+              kind: 'base',
+              type: 'blob',
+              content: new TextEncoder().encode(`settle-promote-${p}`),
+            },
+          ]);
+          ids.push(id as ObjectId);
+        }
+        const registry = await createPackRegistry(ctx);
+        const missingId = 'f'.repeat(40) as ObjectId;
+        await registry.lookup(missingId); // walks and settles every unclaimed pack
+
+        const packs: RegisteredPack[] = [];
+        for (const id of ids) {
+          const hit = await registry.lookup(id);
+          packs.push(hit!.pack);
+        }
+        const indexSpies = packs.map((pack) => vi.spyOn(pack, 'index'));
+
+        // Act
+        const missAgain = await registry.lookup(missingId);
+
+        // Assert
+        expect(missAgain).toBeUndefined();
+        for (const spy of indexSpies) {
+          expect(spy).not.toHaveBeenCalled();
+        }
+      });
+    });
+  });
+});
+
+describe('createPackRegistry — one config read for both cache budgets', () => {
+  describe('Given a fresh registry construction', () => {
+    describe('When createPackRegistry resolves', () => {
+      it('Then the delta-base and window budgets share one coalesced config stat, not their own two', async () => {
+        // Arrange — assertRepoSettingsValid's own pair (maxTreeDepth +
+        // deltaBaseCacheLimit, fanned out via its own Promise.all) pays one
+        // coalesced stat; reading the delta-base and window budgets
+        // CONCURRENTLY must pay exactly one more — never a third,
+        // sequential stat for the window budget alone.
+        const ctx = await buildSeededContext();
+        const statSpy = vi.spyOn(ctx.fs, 'stat');
+        statSpy.mockClear();
+
+        // Act
+        await createPackRegistry(ctx);
+
+        // Assert
+        expect(statSpy).toHaveBeenCalledTimes(2);
+      });
+    });
+  });
+});
+
 describe('PackRegistry.health — per-pack accessibility', () => {
   describe('Given one healthy pack', () => {
     describe('When health() is called', () => {
@@ -1418,9 +1898,9 @@ describe('PackRegistry.health — per-pack accessibility', () => {
           ...ctx,
           fs: {
             ...ctx.fs,
-            readSlice: async (path: string, offset: number, length: number) => {
+            openWithNoFollow: async (path: string, mode: 'read' | 'write') => {
               if (path.endsWith('.pack')) throw fileNotFound(path);
-              return ctx.fs.readSlice(path, offset, length);
+              return ctx.fs.openWithNoFollow(path, mode);
             },
           },
         };
@@ -1451,9 +1931,9 @@ describe('PackRegistry.health — per-pack accessibility', () => {
           ...ctx,
           fs: {
             ...ctx.fs,
-            readSlice: async (path: string, offset: number, length: number) => {
+            openWithNoFollow: async (path: string, mode: 'read' | 'write') => {
               if (path.endsWith('.pack')) throw permissionDenied(path);
-              return ctx.fs.readSlice(path, offset, length);
+              return ctx.fs.openWithNoFollow(path, mode);
             },
           },
         };
@@ -1666,9 +2146,9 @@ describe('PackRegistry.health — per-pack accessibility', () => {
           ...ctx,
           fs: {
             ...ctx.fs,
-            readSlice: async (path: string, offset: number, length: number) => {
+            openWithNoFollow: async (path: string, mode: 'read' | 'write') => {
               if (path.endsWith('.pack')) throw fault;
-              return ctx.fs.readSlice(path, offset, length);
+              return ctx.fs.openWithNoFollow(path, mode);
             },
           },
         };
@@ -1764,9 +2244,13 @@ describe('PackRegistry.health — per-pack accessibility', () => {
 
   describe('Given a healthy pack', () => {
     describe('When health() is called, then lookup() resolves the same pack', () => {
-      it('Then exactly one 12-byte header readSlice is issued in total', async () => {
+      it('Then exactly one handle read is issued in total, sized to the cached window', async () => {
         // Arrange — health() warms pack.header()'s memo; a later lookup() must
         // reuse it rather than re-probing (requirement 10, no second gate).
+        // The header read now goes through the pack window cache: a small
+        // pack's window load is clamped to the whole (small) file, not to
+        // PACK_HEADER_SIZE — the point of caching a window at offset 0 in
+        // the first place.
         const ctx = await buildSeededContext();
         const content = new TextEncoder().encode('health-memo-warm-content');
         const ids = await writeSyntheticPack(ctx, 'health-memo-warm', [
@@ -1774,6 +2258,7 @@ describe('PackRegistry.health — per-pack accessibility', () => {
         ]);
         const id = ids[0] as ObjectId;
         const packPath = `${ctx.layout.gitDir}/objects/pack/pack-health-memo-warm.pack`;
+        const packFileSize = (await ctx.fs.stat(packPath)).size;
         const ledger = withHandleLedger(ctx);
         const sut = await createPackRegistry(ledger.ctx);
 
@@ -1782,16 +2267,20 @@ describe('PackRegistry.health — per-pack accessibility', () => {
         await sut.lookup(id);
 
         // Assert
-        expect(ledger.slices()).toEqual([{ path: packPath, offset: 0, length: PACK_HEADER_SIZE }]);
+        expect(ledger.slices()).toEqual([{ path: packPath, offset: 0, length: packFileSize }]);
       });
     });
   });
 
   describe('Given a pack whose header is invalid', () => {
     describe('When health() is called, then lookup() probes the same pack again', () => {
-      it('Then two header probes are issued — the memo clears on rejection', async () => {
+      it('Then the header is re-parsed and re-warned on the second probe — the memo clears on rejection', async () => {
         // Arrange — no negative cache: a rejected probe must not pin later
-        // callers to a stale fault.
+        // callers to a stale fault. The pack window cache serves the second
+        // probe's bytes from the window health() already loaded, so a
+        // single physical read now backs both probes — `warn`, not the
+        // handle-read count, is what proves the header memo itself still
+        // re-parses (and re-rejects) on every call.
         const ctx = await buildSeededContext();
         const content = new TextEncoder().encode('health-no-negative-cache-content');
         const ids = await writeSyntheticPack(ctx, 'health-no-negative-cache', [
@@ -1800,7 +2289,8 @@ describe('PackRegistry.health — per-pack accessibility', () => {
         const id = ids[0] as ObjectId;
         const packPath = `${ctx.layout.gitDir}/objects/pack/pack-health-no-negative-cache.pack`;
         await restampPackHeader(ctx, packPath, { version: 99 });
-        const ledger = withHandleLedger(ctx);
+        const warn = vi.fn();
+        const ledger = withHandleLedger({ ...ctx, logger: { warn } });
         const sut = await createPackRegistry(ledger.ctx);
 
         // Act
@@ -1808,7 +2298,8 @@ describe('PackRegistry.health — per-pack accessibility', () => {
         await sut.lookup(id);
 
         // Assert
-        expect(ledger.slices().filter((s) => s.path === packPath)).toHaveLength(2);
+        expect(ledger.slices().filter((s) => s.path === packPath)).toHaveLength(1);
+        expect(warn).toHaveBeenCalledTimes(2);
       });
     });
   });
@@ -1994,6 +2485,66 @@ describe('PackRegistry.health — per-pack accessibility', () => {
   });
 });
 
+describe('RegisteredPack.header — held handle', () => {
+  describe('Given a pack whose persistent handle is already open', () => {
+    describe('When header() is called', () => {
+      it('Then it reads through the held handle: no path readSlice, no second openWithNoFollow', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'header-held-handle', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('h') },
+        ]);
+        const ledger = withHandleLedger(ctx);
+        const registry = await createPackRegistry(ledger.ctx);
+        const pack = (await registry.all())[0]!;
+        await pack.readSlice(0, 4);
+
+        // Act
+        const header = await pack.header();
+
+        // Assert
+        expect(header).toEqual({ version: 2, objectCount: 1 });
+        expect(ledger.opens()).toBe(1);
+        expect(ledger.perCallReads()).toBe(0);
+      });
+    });
+  });
+
+  describe('Given an fs whose openWithNoFollow always throws UNSUPPORTED_OPERATION (browser-like)', () => {
+    describe('When header() is called', () => {
+      it('Then it attempts the handle once and still reads the header by path', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'header-browser-fallback', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('h') },
+        ]);
+        const wrapped = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            openWithNoFollow: async () => {
+              throw unsupportedOperation(
+                'openWithNoFollow',
+                'browser FS does not support O_NOFOLLOW',
+              );
+            },
+          },
+        };
+        const openSpy = vi.spyOn(wrapped.fs, 'openWithNoFollow');
+        const registry = await createPackRegistry(wrapped);
+        const pack = (await registry.all())[0]!;
+
+        // Act
+        const header = await pack.header();
+
+        // Assert
+        expect(header).toEqual({ version: 2, objectCount: 1 });
+        expect(openSpy).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+});
+
 describe('nextOffsetForEntry', () => {
   describe('Given a table with sortedOffsets=[100, 500, 900], packFileSize=1000, trailerStart=980', () => {
     const table: PackOffsetTable = {
@@ -2061,7 +2612,10 @@ describe('RegisteredPack.offsetTable — negative trailerStart guard', () => {
   describe('Given a pack file whose size is smaller than the digest length', () => {
     describe('When offsetTable() is called', () => {
       it('Then throws INVALID_PACK_INDEX with reason containing "pack file too small"', async () => {
-        // Arrange — stat returns size=10 (< digestLength=20), so trailerStart = 10 - 20 = -10.
+        // Arrange — the size now rides the held handle's fstat, so the fake
+        // small size is planted on the handle returned for the .pack file,
+        // not on ctx.fs.stat (which offsetTable no longer calls when a
+        // handle is available). trailerStart = 10 - 20 = -10.
         const ctx = await buildSeededContext();
         const content1 = new Uint8Array([1, 2, 3]);
         await writeSyntheticPack(ctx, 'tiny-pack', [
@@ -2072,13 +2626,13 @@ describe('RegisteredPack.offsetTable — negative trailerStart guard', () => {
           ...ctx,
           fs: {
             ...ctx.fs,
-            stat: async (path: string) => {
-              const real = await ctx.fs.stat(path);
-              // Only override the .pack file stat, not .idx
-              if (path.endsWith('.pack')) {
-                return { ...real, size: tinySize };
-              }
-              return real;
+            openWithNoFollow: async (path: string, mode: 'read' | 'write') => {
+              const handle = await ctx.fs.openWithNoFollow(path, mode);
+              if (!path.endsWith('.pack')) return handle;
+              return {
+                ...handle,
+                stat: async () => ({ ...(await handle.stat()), size: tinySize }),
+              };
             },
           },
         };
@@ -2109,9 +2663,10 @@ describe('RegisteredPack.offsetTable — zero trailerStart boundary', () => {
   describe('Given a pack file whose size equals the digest length', () => {
     describe('When offsetTable() is called', () => {
       it('Then admits trailerStart = 0 without throwing', async () => {
-        // Arrange — stat the .pack as exactly digestLength bytes, so
-        // trailerStart = digestLength - digestLength = 0. The `< 0` guard admits
-        // this boundary; a `<= 0` mutant would reject it and throw.
+        // Arrange — the handle's own fstat reports exactly digestLength
+        // bytes, so trailerStart = digestLength - digestLength = 0. The
+        // `< 0` guard admits this boundary; a `<= 0` mutant would reject it
+        // and throw.
         const ctx = await buildSeededContext();
         const content1 = new Uint8Array([1, 2, 3]);
         await writeSyntheticPack(ctx, 'zero-trailer-pack', [
@@ -2122,12 +2677,13 @@ describe('RegisteredPack.offsetTable — zero trailerStart boundary', () => {
           ...ctx,
           fs: {
             ...ctx.fs,
-            stat: async (path: string) => {
-              const real = await ctx.fs.stat(path);
-              if (path.endsWith('.pack')) {
-                return { ...real, size: digestLength };
-              }
-              return real;
+            openWithNoFollow: async (path: string, mode: 'read' | 'write') => {
+              const handle = await ctx.fs.openWithNoFollow(path, mode);
+              if (!path.endsWith('.pack')) return handle;
+              return {
+                ...handle,
+                stat: async () => ({ ...(await handle.stat()), size: digestLength }),
+              };
             },
           },
         };
@@ -2149,7 +2705,7 @@ describe('RegisteredPack.offsetTable — zero trailerStart boundary', () => {
 describe('RegisteredPack.offsetTable', () => {
   describe('Given a pack with 2 base entries', () => {
     describe('When offsetTable() is called twice', () => {
-      it('Then ctx.fs.stat is called exactly once (lazy cache)', async () => {
+      it('Then fstat runs against the pack handle exactly once (lazy cache)', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         const content1 = new Uint8Array([10, 20, 30]);
@@ -2162,31 +2718,36 @@ describe('RegisteredPack.offsetTable', () => {
         const packs = await registry.all();
         const pack = packs[0]!;
 
-        // Replace pack's offsetTable with one that uses a stat-counting fs,
-        // but only after all() has already finished (so we don't count loadPack's stat).
+        // Replace the pack's handle with one whose stat() is counted — size
+        // now rides the held handle's fstat, not ctx.fs.stat.
         let statCallCount = 0;
         const countingCtx = {
           ...ctx,
           fs: {
             ...ctx.fs,
-            stat: async (path: string) => {
-              statCallCount += 1;
-              return ctx.fs.stat(path);
+            openWithNoFollow: async (path: string, mode: 'read' | 'write') => {
+              const handle = await ctx.fs.openWithNoFollow(path, mode);
+              if (!path.endsWith('.pack')) return handle;
+              return {
+                ...handle,
+                stat: async () => {
+                  statCallCount += 1;
+                  return handle.stat();
+                },
+              };
             },
           },
         };
         const registry2 = await createPackRegistry(countingCtx);
         const packs2 = await registry2.all();
         const pack2 = packs2[0]!;
-        // Stat was called during loadPack (for readBoundedIdx); reset the counter.
-        statCallCount = 0;
         const sut = pack2.offsetTable;
 
-        // Act — call twice; only the first should hit stat
+        // Act — call twice; only the first should hit fstat
         await sut();
         await sut();
 
-        // Assert — stat called exactly once across both offsetTable() calls
+        // Assert — fstat called exactly once across both offsetTable() calls
         expect(statCallCount).toBe(1);
         // Verify the pack reference is the same as what we loaded
         expect(pack.name).toBe(pack2.name);
@@ -2222,7 +2783,7 @@ describe('RegisteredPack.offsetTable', () => {
 
   describe('Given a cold pack obtained from all() with the stat counter reset', () => {
     describe('When 8 offsetTable() calls run under Promise.all', () => {
-      it('Then ctx.fs.stat was called exactly once and all 8 results are the same object reference', async () => {
+      it('Then fstat ran against the pack handle exactly once and all 8 results are the same object reference', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         const content1 = new Uint8Array([10, 20, 30]);
@@ -2236,18 +2797,22 @@ describe('RegisteredPack.offsetTable', () => {
           ...ctx,
           fs: {
             ...ctx.fs,
-            stat: async (path: string) => {
-              statCallCount += 1;
-              return ctx.fs.stat(path);
+            openWithNoFollow: async (path: string, mode: 'read' | 'write') => {
+              const handle = await ctx.fs.openWithNoFollow(path, mode);
+              if (!path.endsWith('.pack')) return handle;
+              return {
+                ...handle,
+                stat: async () => {
+                  statCallCount += 1;
+                  return handle.stat();
+                },
+              };
             },
           },
         };
         const registry = await createPackRegistry(countingCtx);
         const packs = await registry.all();
         const pack = packs[0]!;
-        // Stat was called during loadPack (for readBoundedIdx); reset the counter
-        // so only offsetTable()'s own stat calls are measured.
-        statCallCount = 0;
         const sut = pack.offsetTable;
 
         // Act — 8 concurrent calls under Promise.all
@@ -2264,8 +2829,12 @@ describe('RegisteredPack.offsetTable', () => {
 
   describe('Given a pack whose stat makes trailerStart negative', () => {
     describe('When offsetTable() rejects and is called again', () => {
-      it('Then stat ran twice and the second rejection carries INVALID_PACK_INDEX with reason containing "pack file too small"', async () => {
-        // Arrange — stat returns size=10 (< digestLength=20), so trailerStart = 10 - 20 = -10 each time.
+      it('Then the size is fetched via one fstat call and both calls reject with INVALID_PACK_INDEX, reason containing "pack file too small"', async () => {
+        // Arrange — the handle's fstat reports size=10 (< digestLength=20),
+        // so trailerStart = 10 - 20 = -10 on every buildOffsetTable attempt.
+        // The size itself is a SUCCESSFUL fstat, so sizeMemo caches it across
+        // retries — unlike buildOffsetTable's own trailerStart guard, which
+        // is not memoised and re-throws on every call.
         const ctx = await buildSeededContext();
         const content1 = new Uint8Array([1, 2, 3]);
         await writeSyntheticPack(ctx, 'tiny-pack-retried', [
@@ -2277,13 +2846,16 @@ describe('RegisteredPack.offsetTable', () => {
           ...ctx,
           fs: {
             ...ctx.fs,
-            stat: async (path: string) => {
-              const real = await ctx.fs.stat(path);
-              if (path.endsWith('.pack')) {
-                statCallCount += 1;
-                return { ...real, size: tinySize };
-              }
-              return real;
+            openWithNoFollow: async (path: string, mode: 'read' | 'write') => {
+              const handle = await ctx.fs.openWithNoFollow(path, mode);
+              if (!path.endsWith('.pack')) return handle;
+              return {
+                ...handle,
+                stat: async () => {
+                  statCallCount += 1;
+                  return { ...(await handle.stat()), size: tinySize };
+                },
+              };
             },
           },
         };
@@ -2306,12 +2878,205 @@ describe('RegisteredPack.offsetTable', () => {
           secondCaught = error;
         }
 
-        // Assert — rejection is never memoised: stat runs again on the second call
+        // Assert — buildOffsetTable's own rejection is never memoised (both
+        // calls throw), but the underlying size fetch succeeded, so sizeMemo
+        // serves the second attempt from cache.
         expect(firstCaught).toBeDefined();
-        expect(statCallCount).toBe(2);
+        expect(statCallCount).toBe(1);
         const data = (secondCaught as { data?: { code?: string; reason?: string } }).data;
         expect(data?.code).toBe('INVALID_PACK_INDEX');
         expect(data?.reason).toContain('pack file too small');
+      });
+    });
+  });
+});
+
+describe('RegisteredPack.offsetTable — size through the handle', () => {
+  describe('Given a pack whose persistent handle is already open', () => {
+    describe('When offsetTable() is called', () => {
+      it('Then no ctx.fs.stat(packPath) is issued', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'size-handle-reuse', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('s') },
+        ]);
+        const statSpy = vi.spyOn(ctx.fs, 'stat');
+        const registry = await createPackRegistry(ctx);
+        const pack = (await registry.all())[0]!;
+        await pack.readSlice(0, 4);
+        statSpy.mockClear();
+
+        // Act
+        await pack.offsetTable();
+
+        // Assert
+        expect(statSpy).not.toHaveBeenCalledWith(pack.packPath);
+      });
+    });
+  });
+
+  describe('Given the pack handle rejects with a non-UNSUPPORTED_OPERATION fault (permission denied)', () => {
+    describe('When offsetTable() is called', () => {
+      it('Then the fault propagates instead of falling back to a path stat', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'size-non-skippable', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('s') },
+        ]);
+        const wrapped = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            openWithNoFollow: async (path: string) => {
+              throw permissionDenied(path);
+            },
+          },
+        };
+        const registry = await createPackRegistry(wrapped);
+        const pack = (await registry.all())[0]!;
+
+        // Act
+        let caught: unknown;
+        try {
+          await pack.offsetTable();
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
+      });
+    });
+  });
+
+  describe('Given an fs whose openWithNoFollow always throws UNSUPPORTED_OPERATION (browser-like)', () => {
+    describe('When offsetTable() is called', () => {
+      it('Then it falls back to ctx.fs.stat(packPath) and still resolves', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'size-browser-fallback', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('s') },
+        ]);
+        const wrapped = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            openWithNoFollow: async () => {
+              throw unsupportedOperation(
+                'openWithNoFollow',
+                'browser FS does not support O_NOFOLLOW',
+              );
+            },
+          },
+        };
+        const statSpy = vi.spyOn(wrapped.fs, 'stat');
+        const registry = await createPackRegistry(wrapped);
+        const pack = (await registry.all())[0]!;
+        const directStat = await ctx.fs.stat(pack.packPath);
+
+        // Act
+        const result = await pack.offsetTable();
+
+        // Assert
+        expect(statSpy).toHaveBeenCalledWith(pack.packPath);
+        expect(result.packFileSize).toBe(directStat.size);
+      });
+    });
+  });
+
+  describe('Given a pack whose persistent handle was already closed', () => {
+    describe('When offsetTable() is called', () => {
+      it('Then the size is fetched by path instead of reopening a handle', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'size-retired', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('s') },
+        ]);
+        const ledger = withHandleLedger(ctx);
+        const registry = await createPackRegistry(ledger.ctx);
+        const pack = (await registry.all())[0]!;
+        await pack.readSlice(0, 4);
+        await pack.close();
+        const directStat = await ctx.fs.stat(pack.packPath);
+
+        // Act
+        const result = await pack.offsetTable();
+
+        // Assert — no second open past the one already closed
+        expect(ledger.opens()).toBe(1);
+        expect(result.packFileSize).toBe(directStat.size);
+      });
+    });
+  });
+
+  describe("Given close() called while offsetTable()'s own size probe is mid-flight", () => {
+    describe('When the probe resolves', () => {
+      it('Then it never surfaces a raw, unmapped fault — close() waited for it', async () => {
+        // Arrange — the handle's stat() only settles once released; it
+        // inspects a `closed` flag flipped by this SAME handle's close() to
+        // decide whether to throw the raw fault a real fstat-after-close
+        // would (EBADF) — the shape close() must prevent by waiting for
+        // every in-flight size probe before it ever calls handle.close().
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'size-race', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('race') },
+        ]);
+        let closed = false;
+        let releaseStat: (() => void) | undefined;
+        let statCalled: (() => void) | undefined;
+        const statCalledPromise = new Promise<void>((resolve) => {
+          statCalled = resolve;
+        });
+        const statGate = new Promise<void>((resolve) => {
+          releaseStat = resolve;
+        });
+        const wrapped: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            openWithNoFollow: async (path: string, mode: 'read' | 'write') => {
+              const handle = await ctx.fs.openWithNoFollow(path, mode);
+              return {
+                ...handle,
+                stat: async () => {
+                  statCalled?.();
+                  await statGate;
+                  if (closed) throw new Error('EBADF: bad file descriptor, fstat');
+                  return handle.stat();
+                },
+                close: async () => {
+                  closed = true;
+                  await handle.close();
+                },
+              };
+            },
+          },
+        };
+        const registry = await createPackRegistry(wrapped);
+        const pack = (await registry.all())[0]!;
+        await pack.index(); // pre-warm indexMemo — offsetTable's own first await
+
+        // Act
+        const sizePending = pack.offsetTable();
+        await statCalledPromise;
+        const closePending = pack.close();
+        // Flush every microtask close() can advance through on its own —
+        // unprotected, it needs nothing from this test to reach
+        // handle.close() and flip `closed`; protected, it stays blocked on
+        // the still-pending size probe no matter how long this waits.
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        releaseStat?.();
+        let caught: unknown;
+        try {
+          await sizePending;
+        } catch (error) {
+          caught = error;
+        }
+        await closePending;
+
+        // Assert
+        expect(caught).toBeUndefined();
       });
     });
   });
@@ -2445,6 +3210,227 @@ describe('RegisteredPack.readSlice — non-UNSUPPORTED_OPERATION failure', () =>
   });
 });
 
+describe('RegisteredPack.readSlice — pack window cache (P8)', () => {
+  describe('Given a delta chain read at a configured small window size', () => {
+    describe('When every entry offset is read from tip to base', () => {
+      it('Then handle reads stay within one window load per span segment', async () => {
+        // Arrange — windowBytes=8192 is at least two 4 KiB pages, so a
+        // request that crosses a window-aligned boundary is always rescued
+        // by a page-aligned load (never bypassed): the number of distinct
+        // windows touched is bounded by the span alone, independent of read
+        // order.
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[core]\n\tpackedGitWindowSize = 8192\n',
+        );
+        const entries: EntrySpec[] = [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('chain-base') },
+        ];
+        for (let i = 1; i < 6; i += 1) {
+          entries.push({
+            kind: 'ofs-delta',
+            baseIndex: i - 1,
+            targetContent: Uint8Array.from({ length: 3000 }, () => Math.floor(Math.random() * 256)),
+          });
+        }
+        const build = await buildSyntheticPack(ctx, entries);
+        const base = `${ctx.layout.gitDir}/objects/pack/pack-delta-window-span`;
+        await ctx.fs.write(`${base}.pack`, build.packBytes);
+        await ctx.fs.write(`${base}.idx`, build.idxBytes);
+        const ledger = withHandleLedger(ctx);
+        const registry = await createPackRegistry(ledger.ctx);
+        const pack = (await registry.all())[0]!;
+        const readLength = 8;
+        const span = build.offsets[build.offsets.length - 1]! + readLength - build.offsets[0]!;
+        const maxHandleReads = Math.ceil(span / 8192) + 1;
+
+        // Act — tip to base, the real delta-chain walk order.
+        for (const offset of [...build.offsets].reverse()) {
+          await pack.readSlice(offset, readLength);
+        }
+
+        // Assert
+        const packPath = `${base}.pack`;
+        const reads = ledger.slices().filter((s) => s.path === packPath);
+        expect(reads.length).toBeLessThanOrEqual(maxHandleReads);
+      });
+    });
+  });
+});
+
+describe('Given a window whose base lies past the pack file end', () => {
+  describe('When readSlice is called at an offset far beyond the pack', () => {
+    it('Then it resolves to an empty view instead of throwing a raw RangeError', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const content = new TextEncoder().encode('past-eof-content');
+      await writeSyntheticPack(ctx, 'past-eof', [{ kind: 'base', type: 'blob', content }]);
+      const registry = await createPackRegistry(ctx);
+      const pack = (await registry.all())[0]!;
+
+      // Act
+      let caught: unknown;
+      let result: Uint8Array | undefined;
+      try {
+        result = await pack.readSlice(1_000_000, 4);
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect(caught).toBeUndefined();
+      expect(result).toBeDefined();
+      expect(result?.byteLength).toBe(0);
+    });
+  });
+});
+
+describe('Given a registry that cached a pack window before refresh()', () => {
+  describe('When the pack is rewritten under the same name and refresh() runs', () => {
+    it('Then a read at the same offset serves the new bytes, not the stale window', async () => {
+      // Arrange — both packs are single-entry, so the first entry always
+      // starts at PACK_HEADER_SIZE=12, well inside the default 64 KiB
+      // window: the cache key collides across the rewrite unless refresh()
+      // clears it.
+      const ctx = await buildSeededContext();
+      await writeSyntheticPack(ctx, 'reused-name', [
+        { kind: 'base', type: 'blob', content: new TextEncoder().encode('original-window-bytes') },
+      ]);
+      const registry = await createPackRegistry(ctx);
+      const firstPack = (await registry.all())[0]!;
+      await firstPack.readSlice(PACK_HEADER_SIZE, 10);
+
+      // Act
+      registry.refresh();
+      await writeSyntheticPack(ctx, 'reused-name', [
+        {
+          kind: 'base',
+          type: 'blob',
+          content: new TextEncoder().encode('rewritten-window-bytes!!'),
+        },
+      ]);
+      const secondPack = (await registry.all())[0]!;
+      const result = await secondPack.readSlice(PACK_HEADER_SIZE, 10);
+
+      // Assert
+      const direct = await ctx.fs.readSlice(secondPack.packPath, PACK_HEADER_SIZE, 10);
+      expect(Array.from(result)).toEqual(Array.from(direct));
+    });
+  });
+});
+
+describe('Given an outgoing pack whose window load is still in flight when refresh() runs', () => {
+  describe('When a same-named successor pack is read after the late fill lands', () => {
+    it("Then the successor's cached window is never overwritten by the outgoing pack's late fill", async () => {
+      // Arrange — the handle wrapper never touches real pack bytes: the
+      // FIRST opened handle (the outgoing pack) fills its window with 0xaa
+      // once released from a gate; every later handle (a successor pack)
+      // fills immediately with 0xbb. Only the window CACHE KEY decides which
+      // value a read observes — the exact thing this fix scopes per pack
+      // instance.
+      const ctx = await buildSeededContext();
+      await writeSyntheticPack(ctx, 'swap-late-fill', [
+        { kind: 'base', type: 'blob', content: new TextEncoder().encode('irrelevant') },
+      ]);
+      let openCount = 0;
+      let releaseFirstRead: (() => void) | undefined;
+      const gate = new Promise<void>((resolve) => {
+        releaseFirstRead = resolve;
+      });
+      const wrapped: Context = {
+        ...ctx,
+        fs: {
+          ...ctx.fs,
+          openWithNoFollow: async (path: string, mode: 'read' | 'write') => {
+            const handle = await ctx.fs.openWithNoFollow(path, mode);
+            openCount += 1;
+            const isFirstOpen = openCount === 1;
+            const marker = isFirstOpen ? 0xaa : 0xbb;
+            return {
+              ...handle,
+              read: async (buffer: Uint8Array, bufferOffset: number, length: number) => {
+                if (isFirstOpen) await gate;
+                buffer.fill(marker, bufferOffset, bufferOffset + length);
+                return length;
+              },
+              stat: async () => ({ ...(await handle.stat()), size: 1_000_000 }),
+            };
+          },
+        },
+      };
+      const registry = await createPackRegistry(wrapped);
+      const outgoingPack = (await registry.all())[0]!;
+
+      // Act — the outgoing pack's window fill starts, blocked on the gate.
+      const stalePending = outgoingPack.readSlice(PACK_HEADER_SIZE, 4);
+      registry.refresh();
+      const successorPack = (await registry.all())[0]!;
+      const freshRead = await successorPack.readSlice(PACK_HEADER_SIZE, 4);
+      // The outgoing pack's late fill now resolves and writes into the
+      // shared window cache.
+      releaseFirstRead?.();
+      await stalePending;
+      const secondRead = await successorPack.readSlice(PACK_HEADER_SIZE, 4);
+
+      // Assert
+      expect(Array.from(freshRead)).toEqual([0xbb, 0xbb, 0xbb, 0xbb]);
+      expect(Array.from(secondRead)).toEqual([0xbb, 0xbb, 0xbb, 0xbb]);
+    });
+  });
+});
+
+describe('Given a registry whose pack window cache holds a warmed window', () => {
+  describe('When refresh() runs', () => {
+    it('Then the pack window cache is cleared', async () => {
+      // Arrange — the window cache is internal (not on the PackRegistry
+      // surface); the createLruCache spy's own returned instance is the
+      // only observable handle onto it, distinguished from deltaBaseCache's
+      // call by argument count (windowCache passes only maxSizeBytes).
+      const ctx = await buildSeededContext();
+      await writeSyntheticPack(ctx, 'window-cache-refresh', [
+        { kind: 'base', type: 'blob', content: new TextEncoder().encode('window-refresh-content') },
+      ]);
+      createLruCacheSpy.mockClear();
+      const registry = await createPackRegistry(ctx);
+      const windowCacheIndex = createLruCacheSpy.mock.calls.findIndex((call) => call.length === 1);
+      const windowCache = createLruCacheSpy.mock.results[windowCacheIndex]!.value;
+      const pack = (await registry.all())[0]!;
+      await pack.readSlice(0, 4);
+      expect(windowCache.entryCount).toBeGreaterThan(0);
+
+      // Act
+      registry.refresh();
+
+      // Assert
+      expect(windowCache.entryCount).toBe(0);
+    });
+  });
+
+  describe('When dispose() is awaited', () => {
+    it('Then the pack window cache is cleared', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      await writeSyntheticPack(ctx, 'window-cache-dispose', [
+        { kind: 'base', type: 'blob', content: new TextEncoder().encode('window-dispose-content') },
+      ]);
+      createLruCacheSpy.mockClear();
+      const registry = await createPackRegistry(ctx);
+      const windowCacheIndex = createLruCacheSpy.mock.calls.findIndex((call) => call.length === 1);
+      const windowCache = createLruCacheSpy.mock.results[windowCacheIndex]!.value;
+      const pack = (await registry.all())[0]!;
+      await pack.readSlice(0, 4);
+      expect(windowCache.entryCount).toBeGreaterThan(0);
+
+      // Act
+      await registry.dispose();
+
+      // Assert
+      expect(windowCache.entryCount).toBe(0);
+    });
+  });
+});
+
 describe('RegisteredPack retired reads', () => {
   describe('Given a pack whose persistent handle was closed', () => {
     describe('When readSlice is called after close', () => {
@@ -2468,6 +3454,30 @@ describe('RegisteredPack retired reads', () => {
         expect(ledger.opens()).toBe(1);
         expect(ledger.perCallReads()).toBe(1);
         expect(Array.from(result)).toEqual(Array.from(direct));
+      });
+    });
+  });
+
+  describe('Given a pack whose persistent handle was closed before its size was ever probed', () => {
+    describe('When offsetTable is called', () => {
+      it('Then it stats by path — it never reopens the closed handle', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'retired-offset', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('x') },
+        ]);
+        const ledger = withHandleLedger(ctx);
+        const registry = await createPackRegistry(ledger.ctx);
+        const pack = (await registry.all())[0]!;
+        await pack.close();
+
+        // Act
+        const table = await pack.offsetTable();
+
+        // Assert — no handle was ever opened for a pack closed before its
+        // size was ever needed.
+        expect(ledger.opens()).toBe(0);
+        expect(table.packFileSize).toBeGreaterThan(0);
       });
     });
   });
@@ -2731,8 +3741,9 @@ describe('Given a malformed core.maxTreeDepth', () => {
 
 describe('Given a freshly constructed registry', () => {
   describe('When refresh() runs after construction', () => {
-    it('Then readConfig ran exactly once — only during construction, never on refresh', async () => {
-      // Arrange
+    it('Then readConfig ran exactly twice (delta-base + window budgets) — only during construction, never on refresh', async () => {
+      // Arrange — both derived caches resolve their config-backed budget
+      // once, at construction; refresh() must not re-derive either.
       const ctx = await buildSeededContext();
       const spy = vi.spyOn(configReadMod, 'readConfig');
 
@@ -2741,7 +3752,7 @@ describe('Given a freshly constructed registry', () => {
       sut.refresh();
 
       // Assert
-      expect(spy).toHaveBeenCalledTimes(1);
+      expect(spy).toHaveBeenCalledTimes(2);
       spy.mockRestore();
     });
   });
@@ -3153,21 +4164,24 @@ describe('PackRegistry — single-flight scan', () => {
     });
   });
 
-  describe('Given a gated scan whose call 0 is failed with PERMISSION_DENIED', () => {
+  describe('Given a gated scan whose call 0 is failed with a code-less error', () => {
     describe('When all() is awaited', () => {
-      it('Then the rejection carries PERMISSION_DENIED and a second all() re-scans and resolves normally', async () => {
-        // Arrange
+      it('Then the rejection propagates and a second all() re-scans and resolves normally', async () => {
+        // Arrange — a code-less error is a programming error, never folded
+        // (`errorDataCode` finds no `data.code`), so it must still propagate
+        // and clear the single-flight memo for the next caller to retry.
         const ctx = await buildSeededContext();
         await writeSyntheticPack(ctx, 'gated-retry', [
           { kind: 'base', type: 'blob', content: new TextEncoder().encode('t') },
         ]);
         const ledger = withHandleLedger(ctx, { gateReaddir: true });
         const sut = await createPackRegistry(ledger.ctx);
+        const err = new Error('readdir exploded');
 
         // Act
         const p1 = sut.all();
         await ledger.readdirGate.arrived(0);
-        ledger.readdirGate.fail(0, permissionDenied('/fake/pack/dir'));
+        ledger.readdirGate.fail(0, err);
         let caught: unknown;
         try {
           await p1;
@@ -3181,8 +4195,7 @@ describe('PackRegistry — single-flight scan', () => {
         const packs = await p2;
 
         // Assert
-        const data = (caught as { data?: { code?: string } }).data;
-        expect(data?.code).toBe('PERMISSION_DENIED');
+        expect(caught).toBe(err);
         expect(packs).toHaveLength(1);
       });
     });
@@ -3191,14 +4204,15 @@ describe('PackRegistry — single-flight scan', () => {
   describe('Given gated scans', () => {
     describe('When refresh() runs between two overlapping scans and the first is failed while the second settles', () => {
       it('Then the first scan rejects, the second resolves, and a third all() performs no further scan', async () => {
-        // Arrange
+        // Arrange — a code-less error is never folded, so it still rejects
+        // and clears the single-flight memo (see the sibling row above).
         const ctx = await buildSeededContext();
         await writeSyntheticPack(ctx, 'gated-identity', [
           { kind: 'base', type: 'blob', content: new TextEncoder().encode('i') },
         ]);
         const ledger = withHandleLedger(ctx, { gateReaddir: true });
         const sut = await createPackRegistry(ledger.ctx);
-        const err = permissionDenied('/fake/pack/dir');
+        const err = new Error('readdir exploded');
 
         // Act
         const p1 = sut.all();
@@ -3349,8 +4363,10 @@ describe('PackRegistry — read path after dispose', () => {
 
   describe('Given a Context that only ever hit loose objects', () => {
     describe('When dispose() is called', () => {
-      it('Then objects/pack is never listed', async () => {
-        // Arrange
+      it('Then objects/pack is listed only once, by the gate assertLoadable already forced, and no handle opens', async () => {
+        // Arrange — assertLoadable now shares the store gate's listing, so
+        // it alone lists the pack directory once; dispose() never scans on
+        // top of it, and it opens no pack handle either way.
         const ctx = await buildSeededContext();
         await writeMidxBytes(ctx, buildMidx(healthyMidxSpec()));
         const ledger = withHandleLedger(ctx);
@@ -3361,7 +4377,7 @@ describe('PackRegistry — read path after dispose', () => {
         await sut.dispose();
 
         // Assert
-        expect(ledger.readdirCalls()).toBe(0);
+        expect(ledger.readdirCalls()).toBe(1);
         expect(ledger.opens()).toBe(0);
       });
     });
@@ -3643,7 +4659,7 @@ describe('PackRegistry.lookup — header gate', () => {
 
   describe('Given a pack with an invalid header whose index claims the requested oid, and no sibling pack', () => {
     describe('When readObject is called', () => {
-      it('Then rejects with OBJECT_NOT_FOUND after warning once', async () => {
+      it('Then rejects with OBJECT_NOT_FOUND after warning twice (one re-scan retry)', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         const content = new TextEncoder().encode('only-pack-content');
@@ -3666,17 +4682,26 @@ describe('PackRegistry.lookup — header gate', () => {
           caught = error;
         }
 
-        // Assert
+        // Assert — the header-probe fault is skippable (warn + fold to a
+        // miss), so the object-resolver's own full-miss re-scan retry
+        // (pack-miss-rescan.ts) runs a SECOND generation, which re-probes
+        // the same still-invalid header and warns again.
         expect((caught as TsgitError).data).toEqual({ code: 'OBJECT_NOT_FOUND', id });
-        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn).toHaveBeenCalledTimes(2);
       });
     });
   });
 
   describe('Given a pack with an invalid header', () => {
     describe('When lookup(id) is called twice', () => {
-      it('Then each call re-probes the header and warns again — no negative cache', async () => {
-        // Arrange
+      it('Then each call re-parses the header and warns again — no negative cache at the parse level', async () => {
+        // Arrange — the header MEMO self-clears on rejection (no negative
+        // cache), so parsePackHeader really does run again on the second
+        // call. The pack window cache is a separate, lower layer that
+        // caches raw bytes regardless of parse outcome: the first call's
+        // window load already covers offset 0, so the second call's
+        // re-parse is served from that cached window with no second handle
+        // read — one physical read, two independent parse attempts.
         const ctx = await buildSeededContext();
         const content = new TextEncoder().encode('no-negative-cache-content');
         const ids = await writeSyntheticPack(ctx, 'no-negative-cache', [
@@ -3694,10 +4719,8 @@ describe('PackRegistry.lookup — header gate', () => {
         await sut.lookup(id);
 
         // Assert
-        const probes = ledger
-          .slices()
-          .filter((s) => s.path === packPath && s.offset === 0 && s.length === PACK_HEADER_SIZE);
-        expect(probes).toHaveLength(2);
+        const probes = ledger.slices().filter((s) => s.path === packPath && s.offset === 0);
+        expect(probes).toHaveLength(1);
         expect(warn).toHaveBeenCalledTimes(2);
       });
     });
@@ -3721,10 +4744,9 @@ describe('PackRegistry.lookup — header gate', () => {
         await sut.lookup(id);
         await sut.lookup(id);
 
-        // Assert
-        const probes = ledger
-          .slices()
-          .filter((s) => s.path === packPath && s.offset === 0 && s.length === PACK_HEADER_SIZE);
+        // Assert — the pack window cache's window load, not a bare
+        // PACK_HEADER_SIZE read, is what actually reaches the handle.
+        const probes = ledger.slices().filter((s) => s.path === packPath && s.offset === 0);
         expect(probes).toHaveLength(1);
       });
     });
@@ -3816,7 +4838,7 @@ describe('PackRegistry.lookup — header gate', () => {
 
   describe('Given a pack whose header probe rejects PERMISSION_DENIED for the .pack file', () => {
     describe('When readObject is called', () => {
-      it('Then skips the pack, rejects with OBJECT_NOT_FOUND, and warns once', async () => {
+      it('Then skips the pack, rejects with OBJECT_NOT_FOUND, and warns twice (one re-scan retry)', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         const content = new TextEncoder().encode('permission-denied-content');
@@ -3830,9 +4852,9 @@ describe('PackRegistry.lookup — header gate', () => {
           logger: { warn },
           fs: {
             ...ctx.fs,
-            readSlice: async (path: string, offset: number, length: number) => {
+            openWithNoFollow: async (path: string, mode: 'read' | 'write') => {
               if (path.endsWith('.pack')) throw permissionDenied(path);
-              return ctx.fs.readSlice(path, offset, length);
+              return ctx.fs.openWithNoFollow(path, mode);
             },
           },
         };
@@ -3847,16 +4869,19 @@ describe('PackRegistry.lookup — header gate', () => {
           caught = error;
         }
 
-        // Assert
+        // Assert — the header-probe fault is skippable (warn + fold to a
+        // miss), so the object-resolver's own full-miss re-scan retry
+        // (pack-miss-rescan.ts) runs a SECOND generation, which re-probes
+        // the same still-broken pack and warns again.
         expect((caught as TsgitError).data).toEqual({ code: 'OBJECT_NOT_FOUND', id });
-        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn).toHaveBeenCalledTimes(2);
       });
     });
   });
 
   describe('Given a pack file unlinked between scan and probe (header probe rejects FILE_NOT_FOUND)', () => {
     describe('When readObject is called', () => {
-      it('Then skips the pack, rejects with OBJECT_NOT_FOUND, and warns once', async () => {
+      it('Then skips the pack, rejects with OBJECT_NOT_FOUND, and warns twice (one re-scan retry)', async () => {
         // Arrange — the .pack is still listed by readdir (the sibling check
         // sees it), but a concurrent repack removed it before the probe read.
         const ctx = await buildSeededContext();
@@ -3871,9 +4896,9 @@ describe('PackRegistry.lookup — header gate', () => {
           logger: { warn },
           fs: {
             ...ctx.fs,
-            readSlice: async (path: string, offset: number, length: number) => {
+            openWithNoFollow: async (path: string, mode: 'read' | 'write') => {
               if (path.endsWith('.pack')) throw fileNotFound(path);
-              return ctx.fs.readSlice(path, offset, length);
+              return ctx.fs.openWithNoFollow(path, mode);
             },
           },
         };
@@ -3888,9 +4913,12 @@ describe('PackRegistry.lookup — header gate', () => {
           caught = error;
         }
 
-        // Assert
+        // Assert — the header-probe fault is skippable (warn + fold to a
+        // miss), so the object-resolver's own full-miss re-scan retry
+        // (pack-miss-rescan.ts) runs a SECOND generation, which re-probes
+        // the same still-unlinked pack and warns again.
         expect((caught as TsgitError).data).toEqual({ code: 'OBJECT_NOT_FOUND', id });
-        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn).toHaveBeenCalledTimes(2);
       });
     });
   });
@@ -3911,9 +4939,9 @@ describe('PackRegistry.lookup — header gate', () => {
           logger: { warn },
           fs: {
             ...ctx.fs,
-            readSlice: async (path: string, offset: number, length: number) => {
+            openWithNoFollow: async (path: string, mode: 'read' | 'write') => {
               if (path.endsWith('.pack')) throw unsupportedOperation('filesystem', 'EMFILE');
-              return ctx.fs.readSlice(path, offset, length);
+              return ctx.fs.openWithNoFollow(path, mode);
             },
           },
         };
@@ -3941,7 +4969,7 @@ describe('PackRegistry.lookup — header gate', () => {
 
   describe('Given a bad pack and a good pack indexing the same oid, bad pack scanned first', () => {
     describe('When lookup resolves the good hit, its bytes are read, and dispose() is awaited', () => {
-      it('Then only the served pack ever opened a handle, and none is left outstanding', async () => {
+      it('Then both probed packs opened a handle for their header, and none is left outstanding', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         const goodContent = new TextEncoder().encode('ledger-good-content');
@@ -3979,9 +5007,11 @@ describe('PackRegistry.lookup — header gate', () => {
         await hit?.pack.readSlice(0, 4);
         await sut.dispose();
 
-        // Assert
+        // Assert — the header probe now rides the same held handle as every
+        // other read, so the skipped bad pack opens one too; dispose() still
+        // closes both.
         expect(hit).toBeDefined();
-        expect(ledger.opens()).toBe(1);
+        expect(ledger.opens()).toBe(2);
         expect(ledger.outstanding()).toBe(0);
       });
     });
@@ -4375,8 +5405,11 @@ describe('PackRegistry — multi-pack-index degradation', () => {
 
   describe('Given two healthy packs and a healthy multi-pack-index', () => {
     describe('When a loose object is read', () => {
-      it('Then assertLoadable forces only the midx load: one midx read, zero .idx reads, and objects/pack is never listed', async () => {
-        // Arrange
+      it('Then assertLoadable lists objects/pack once for the shared listing, reads the midx once, and consults every unclaimed pack index before the loose fallback', async () => {
+        // Arrange — an empty midx (`packNames: []`) claims neither pack, so
+        // pack-first buffered reads must rule BOTH out via their own `.idx`
+        // before falling to the loose copy — the price a mixed store pays
+        // for consulting packs first, matching git's own find_pack_entry.
         const ctx = await buildSeededContext();
         await writeSyntheticPack(ctx, 'midx-assert-a', [
           { kind: 'base', type: 'blob', content: new TextEncoder().encode('a') },
@@ -4396,7 +5429,10 @@ describe('PackRegistry — multi-pack-index degradation', () => {
         const idxReads = calls().filter(
           (call) => call.method === 'read' && call.path.endsWith('.idx'),
         );
-        expect(idxReads).toEqual([]);
+        expect(idxReads.map((call) => call.path)).toEqual([
+          `${ctx.layout.gitDir}/objects/pack/pack-midx-assert-a.idx`,
+          `${ctx.layout.gitDir}/objects/pack/pack-midx-assert-b.idx`,
+        ]);
         const midxReads = calls().filter(
           (call) => call.method === 'read' && call.path.endsWith('multi-pack-index'),
         );
@@ -4404,14 +5440,14 @@ describe('PackRegistry — multi-pack-index degradation', () => {
         const packDirReaddirCalls = calls().filter(
           (call) => call.method === 'readdir' && call.path.endsWith('/objects/pack'),
         );
-        expect(packDirReaddirCalls).toEqual([]);
+        expect(packDirReaddirCalls).toHaveLength(1);
       });
     });
   });
 
   describe('Given a registry whose gate has resolved but whose scan never ran', () => {
     describe('When refresh() is called and a read follows', () => {
-      it('Then the multi-pack-index is probed again', async () => {
+      it('Then the multi-pack-index is probed again and the shared listing is re-read', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         await writeMidxBytes(ctx, buildMidx(healthyMidxSpec()));
@@ -4423,10 +5459,11 @@ describe('PackRegistry — multi-pack-index degradation', () => {
         sut.refresh();
         await sut.assertLoadable();
 
-        // Assert — assertLoadable alone never lists the pack directory: only
-        // the gate ran, twice.
+        // Assert — refresh() clears the listing alongside the gate, so the
+        // second assertLoadable() re-lists objects/pack exactly as the
+        // first one did.
         const readdirCalls = calls().filter((call) => call.method === 'readdir');
-        expect(readdirCalls).toEqual([]);
+        expect(readdirCalls).toHaveLength(2);
         const midxReads = calls().filter(
           (call) => call.method === 'read' && call.path.endsWith('multi-pack-index'),
         );
@@ -4647,10 +5684,10 @@ describe('PackRegistry.midxHealth() — unresolved-pack reporting', () => {
           ...ctx,
           fs: {
             ...ctx.fs,
-            readSlice: async (path: string, offset: number, length: number) =>
+            openWithNoFollow: async (path: string, mode: 'read' | 'write') =>
               path === packPath
                 ? Promise.reject(new Error('boom'))
-                : ctx.fs.readSlice(path, offset, length),
+                : ctx.fs.openWithNoFollow(path, mode),
           },
         };
         const sut = await createPackRegistry(wrapped);
@@ -4940,6 +5977,78 @@ describe('PackRegistry.lookup — multi-pack-index authority', () => {
           (call) => call.method === 'read' && call.path.includes('pack-B'),
         );
         expect(packBReads).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a duplicate in an UNCLAIMED pack, the claimed sibling healthy, and the generation already settled', () => {
+    describe('When lookup is called for that oid', () => {
+      it('Then the settled synchronous walk never re-probes the claimed sibling a second time', async () => {
+        // Arrange — pack-A is claimed by the midx; the midx's own hit
+        // validation already probes (and warns about) its broken header
+        // once. The settled walk must skip pack-A via isClaimed alone,
+        // never falling through to its own probeHeader(pack-A) a SECOND
+        // time — both handle and window are already memoised from that
+        // first probe, so a redundant second probe leaves no filesystem
+        // trace of its own; the one place it DOES show up is a second
+        // "skipping unusable pack" warning for pack-A.
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('duplicate-blob-settled');
+        const idsA = await writeSyntheticPack(ctx, 'A', [{ kind: 'base', type: 'blob', content }]);
+        await writeSyntheticPack(ctx, 'B', [{ kind: 'base', type: 'blob', content }]);
+        const dupId = idsA[0] as ObjectId;
+        await restampPackHeader(ctx, `${ctx.layout.gitDir}/objects/pack/pack-A.pack`, {
+          version: 99,
+        });
+        await writeMidxBytes(
+          ctx,
+          buildMidx(
+            healthyMidxSpec({
+              packNames: ['pack-A.idx'],
+              entries: [{ id: dupId, packIndex: 0, offset: PACK_HEADER_SIZE }],
+            }),
+          ),
+        );
+        const warn = vi.fn();
+        const sut = await createPackRegistry({ ...ctx, logger: { warn } });
+        await sut.all(); // forces generation.indexed to settle before lookup
+
+        // Act
+        const hit = await sut.lookup(dupId);
+
+        // Assert — pack-B serves it, and pack-A was warned about only ONCE
+        // (the midx's own hit validation), never a second time from the
+        // settled walk re-probing it instead of skipping it via isClaimed.
+        expect(hit?.pack.name).toBe('pack-B');
+        const packAWarnings = warn.mock.calls.filter(
+          (call) =>
+            call[0] === 'packRegistry: skipping unusable pack' &&
+            (call[1] as { pack: string }).pack === 'pack-A',
+        );
+        expect(packAWarnings).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given an unclaimed pack with a broken header, and the generation already settled', () => {
+    describe('When lookup is called for an object only that pack holds', () => {
+      it('Then it misses — the settled walk never serves a header-faulted hit', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const ids = await writeSyntheticPack(ctx, 'settled-broken', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('settled-header-fault') },
+        ]);
+        await restampPackHeader(ctx, `${ctx.layout.gitDir}/objects/pack/pack-settled-broken.pack`, {
+          version: 99,
+        });
+        const sut = await createPackRegistry(ctx);
+        await sut.all(); // forces generation.indexed to settle before lookup
+
+        // Act
+        const hit = await sut.lookup(ids[0] as ObjectId);
+
+        // Assert
+        expect(hit).toBeUndefined();
       });
     });
   });
@@ -5399,19 +6508,21 @@ describe('PackRegistry.lookup — multi-pack-index authority', () => {
             }),
           ),
         );
-        const { ctx: instrumented, calls } = instrumentedContext(ctx);
-        const sut = await createPackRegistry(instrumented);
+        const ledger = withHandleLedger(ctx);
+        const sut = await createPackRegistry(ledger.ctx);
 
         // Act
         await sut.lookup(id0);
         await sut.lookup(id1);
 
         // Assert
-        const headerReads = calls().filter(
-          (call) =>
-            call.method === 'readSlice' &&
-            call.path === `${ctx.layout.gitDir}/objects/pack/pack-shared.pack`,
-        );
+        const headerReads = ledger
+          .slices()
+          .filter(
+            (call) =>
+              call.offset === 0 &&
+              call.path === `${ctx.layout.gitDir}/objects/pack/pack-shared.pack`,
+          );
         expect(headerReads).toHaveLength(1);
       });
     });
@@ -6333,6 +7444,390 @@ describe('RegisteredPack.offsetTable — what the fallback warns say', () => {
 
         // Assert
         expect(result).toEqual(expected);
+      });
+    });
+  });
+});
+
+describe('PackRegistry.reprepare', () => {
+  describe('Given a registered pack with a warm window and a warm delta-base cache entry, and an unchanged pack directory', () => {
+    describe('When reprepare() runs and a subsequent read touches the same pack', () => {
+      it('Then the .idx is never re-read, no new handle opens, and the window/delta-base cache stay warm', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'reprepare-warm', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('warm-bytes') },
+        ]);
+        const ledger = withHandleLedger(ctx);
+        const { ctx: instrumented, calls } = instrumentedContext(ledger.ctx);
+        const registry = await createPackRegistry(instrumented);
+        const [pack] = await registry.all();
+        await pack!.readSlice(PACK_HEADER_SIZE, 4); // warms the handle + window cache
+        registry.deltaBaseCache.set(
+          'warm-key',
+          { type: 3, content: new Uint8Array([1, 2, 3]), chainDepth: 0 },
+          32,
+        );
+        const opensBeforeReprepare = ledger.opens();
+        const slicesBeforeReprepare = ledger.slices().length;
+        const baseline = calls().length;
+
+        // Act
+        await registry.reprepare();
+        const [packAfter] = await registry.all();
+        const readAfter = await packAfter!.readSlice(PACK_HEADER_SIZE, 4);
+
+        // Assert — the SAME instance is reused, not a fresh construction.
+        expect(packAfter).toBe(pack);
+        // Assert — reprepare() itself re-lists the directory once.
+        const readdirCalls = calls()
+          .slice(baseline)
+          .filter((call) => call.method === 'readdir');
+        expect(readdirCalls).toHaveLength(1);
+        // Assert — no .idx read anywhere in this whole flow, from either the
+        // reprepare's own re-scan or the subsequent read.
+        const idxReads = calls()
+          .slice(baseline)
+          .filter((call) => call.method === 'read' && call.path.endsWith('.idx'));
+        expect(idxReads).toHaveLength(0);
+        // Assert — no new handle opened and no new low-level slice read: the
+        // second readSlice at the same offset serves straight from the warm
+        // window cache.
+        expect(ledger.opens()).toBe(opensBeforeReprepare);
+        expect(ledger.slices()).toHaveLength(slicesBeforeReprepare);
+        expect(Array.from(readAfter)).toHaveLength(4);
+        // Assert — the delta-base cache entry survives reprepare(), unlike refresh().
+        expect(registry.deltaBaseCache.has('warm-key')).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a health() verdict cached before a new pack is added and reprepare() runs', () => {
+    describe('When health() is called again', () => {
+      it('Then it reflects the new pack — reprepare() invalidates the cached verdict', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'reprepare-health-a', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('health-a') },
+        ]);
+        const registry = await createPackRegistry(ctx);
+        const before = await registry.health();
+        expect(before.accessible.map((pack) => pack.name)).toEqual(['pack-reprepare-health-a']);
+        await writeSyntheticPack(ctx, 'reprepare-health-b', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('health-b') },
+        ]);
+
+        // Act
+        await registry.reprepare();
+        const after = await registry.health();
+
+        // Assert
+        expect(after.accessible.map((pack) => pack.name).sort()).toEqual([
+          'pack-reprepare-health-a',
+          'pack-reprepare-health-b',
+        ]);
+      });
+    });
+  });
+
+  describe('Given two registered packs, one of which is deleted from disk', () => {
+    describe('When reprepare() runs and settleRefresh() is awaited', () => {
+      it('Then the vanished pack is retired (its handle closed) and no longer listed by all()', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'reprepare-keep', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('keep') },
+        ]);
+        await writeSyntheticPack(ctx, 'reprepare-vanish', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('vanish') },
+        ]);
+        const ledger = withHandleLedger(ctx);
+        const registry = await createPackRegistry(ledger.ctx);
+        const packs = await registry.all();
+        const vanishing = packs.find((pack) => pack.name === 'pack-reprepare-vanish')!;
+        const keeping = packs.find((pack) => pack.name === 'pack-reprepare-keep')!;
+        await vanishing.readSlice(PACK_HEADER_SIZE, 4); // opens its handle
+        await keeping.readSlice(PACK_HEADER_SIZE, 4); // opens its handle too
+        const dir = `${ctx.layout.gitDir}/objects/pack`;
+        await ctx.fs.rm(`${dir}/${vanishing.name}.pack`);
+        await ctx.fs.rm(`${dir}/${vanishing.name}.idx`);
+
+        // Act
+        await registry.reprepare();
+        await registry.settleRefresh();
+
+        // Assert — only the vanished pack's handle closes; the reused,
+        // still-live keeper's handle is never touched by reprepare().
+        const after = await registry.all();
+        expect(after.map((pack) => pack.name)).toEqual([keeping.name]);
+        expect(ledger.closes()).toBe(1);
+        expect(ledger.outstanding()).toBe(1);
+        // Assert — the keeper still serves straight from its OWN warm
+        // handle: a fresh readSlice opens no new one.
+        const opensBefore = ledger.opens();
+        await keeping.readSlice(PACK_HEADER_SIZE, 4);
+        expect(ledger.opens()).toBe(opensBefore);
+      });
+    });
+  });
+
+  describe('Given a reprepare() in flight when a refresh() lands on the same synchronous turn', () => {
+    describe('When lookup() runs and every in-flight operation settles', () => {
+      it('Then dispose leaves no handle outstanding and the live generation holds no retired instance', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const [id] = await writeSyntheticPack(ctx, 'reprepare-refresh-race', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('race') },
+        ]);
+        const ledger = withHandleLedger(ctx);
+        const registry = await createPackRegistry(ledger.ctx);
+        const [g0Pack] = await registry.all(); // establishes G0 — no handle open yet
+
+        // Act — reprepare() captures G0 and yields at its first await;
+        // refresh() then runs to completion on this SAME synchronous turn,
+        // clearing the scan before reprepare()'s continuation ever resumes.
+        // lookup() triggers the fresh scan refresh() left for the next
+        // reader, so reprepare()'s later resumption must recognise that its
+        // own captured generation was superseded and bail rather than reuse
+        // G0's now-retired instance in a scan of its own.
+        const rep = registry.reprepare();
+        registry.refresh();
+        const hit = await registry.lookup(id as ObjectId);
+        await hit!.pack.readSlice(PACK_HEADER_SIZE, 4);
+        await rep;
+        await registry.settleRefresh();
+
+        // Assert — the live generation never resurrects the retired G0 instance.
+        const raced = await registry.all();
+        expect(raced).not.toContain(g0Pack);
+
+        // Assert — every handle this race opened is reachable from the live
+        // generation, so a full dispose() closes it: nothing is orphaned.
+        await registry.dispose();
+        expect(ledger.outstanding()).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a reprepare() in flight when dispose() lands on the same synchronous turn', () => {
+    describe('When reprepare() resumes', () => {
+      it('Then it bails without re-scanning the now-disposed registry', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'reprepare-dispose-race', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('race') },
+        ]);
+        const ledger = withHandleLedger(ctx);
+        const registry = await createPackRegistry(ledger.ctx);
+        await registry.all(); // establishes G0 — one readdir so far
+        const readdirCallsBeforeRace = ledger.readdirCalls();
+
+        // Act — reprepare() captures G0 and yields at its first await;
+        // dispose() then runs to completion on this SAME synchronous turn,
+        // before reprepare()'s continuation ever resumes.
+        const rep = registry.reprepare();
+        await registry.dispose();
+        await rep;
+
+        // Assert — reprepare()'s resumption recognised the registry was
+        // disposed mid-flight and never re-scanned the pack directory.
+        expect(ledger.readdirCalls()).toBe(readdirCallsBeforeRace);
+      });
+    });
+  });
+
+  describe('Given a loaded multi-pack-index bound to a registered pack', () => {
+    describe('When reprepare() runs for two successive full-object misses', () => {
+      it('Then the multi-pack-index is never re-statted or re-read', async () => {
+        // Arrange — assertLoadable() forces the ONE midx load every read
+        // already pays ahead of a loose-vs-pack branch; reprepare() must
+        // keep that settled load rather than tearing it down, the way
+        // `refresh()` deliberately does.
+        const ctx = await buildSeededContext();
+        const idA = await writeSingleBlobPack(ctx, 'A', 'midx-keep-a');
+        await writeMidxBytes(
+          ctx,
+          buildMidx(
+            healthyMidxSpec({
+              packNames: ['pack-A.idx'],
+              entries: [{ id: idA, packIndex: 0, offset: PACK_HEADER_SIZE }],
+            }),
+          ),
+        );
+        const { ctx: instrumented, calls } = instrumentedContext(ctx);
+        const registry = await createPackRegistry(instrumented);
+        await registry.assertLoadable();
+        const baseline = calls().length;
+
+        // Act — two miss re-scans, mirroring rescanOnFullMiss's own
+        // per-wave call to reprepare().
+        await registry.reprepare();
+        await registry.reprepare();
+
+        // Assert
+        const midxCalls = calls()
+          .slice(baseline)
+          .filter((call) => call.path.endsWith('/objects/pack/multi-pack-index'));
+        expect(midxCalls).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a loaded multi-pack-index bound to one pack, and a second pack appearing after it loaded', () => {
+    describe('When reprepare() runs and the new pack is looked up', () => {
+      it('Then the new pack is found even though the kept midx does not name it', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const idA = await writeSingleBlobPack(ctx, 'A', 'midx-keep-existing');
+        await writeMidxBytes(
+          ctx,
+          buildMidx(
+            healthyMidxSpec({
+              packNames: ['pack-A.idx'],
+              entries: [{ id: idA, packIndex: 0, offset: PACK_HEADER_SIZE }],
+            }),
+          ),
+        );
+        const registry = await createPackRegistry(ctx);
+        await registry.assertLoadable();
+
+        // Act — a pack the kept midx has never heard of appears on disk;
+        // scanPacks's own `bindMidx` re-binds the KEPT midx set against the
+        // NEW pack listing, so the newcomer becomes a non-midx candidate
+        // rather than an invisible one.
+        const idB = await writeSingleBlobPack(ctx, 'B', 'midx-keep-new');
+        await registry.reprepare();
+        const hit = await registry.lookup(idB);
+
+        // Assert
+        expect(hit?.pack.name).toBe('pack-B');
+      });
+    });
+  });
+
+  describe('Given no multi-pack-index at the first scan, then one written to disk before the next miss', () => {
+    describe('When a full-object-miss wave calls reprepare()', () => {
+      it('Then the newly-written multi-pack-index is loaded and bound on the next scan', async () => {
+        // Arrange — assertLoadable() forces the ONE midx load a read
+        // already pays; at this point objects/pack carries no midx at all.
+        const ctx = await buildSeededContext();
+        const idA = await writeSingleBlobPack(ctx, 'A', 'midx-late-write');
+        const registry = await createPackRegistry(ctx);
+        await registry.assertLoadable();
+        const before = await registry.midxHealth();
+
+        // Act — a midx lands on disk mid-session (`git multi-pack-index
+        // write`), then a miss wave triggers reprepare()'s own re-scan.
+        await writeMidxBytes(
+          ctx,
+          buildMidx(
+            healthyMidxSpec({
+              packNames: ['pack-A.idx'],
+              entries: [{ id: idA, packIndex: 0, offset: PACK_HEADER_SIZE }],
+            }),
+          ),
+        );
+        await registry.reprepare();
+        const after = await registry.midxHealth();
+
+        // Assert
+        expect(before.artefact).toBeUndefined();
+        expect(after.artefact).toBe('multi-pack-index');
+      });
+    });
+  });
+
+  describe('Given a probe that cached an empty fanout listing for an id, and its loose file is later written directly to disk', () => {
+    describe('When resolveObject is called again for that id', () => {
+      it("Then it resolves via a re-scan that drops just that id's cached fanout listing", async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('late-direct-loose-write');
+        const header = serializeHeader('blob', content.length);
+        const bytes = new Uint8Array(header.length + content.length);
+        bytes.set(header, 0);
+        bytes.set(content, header.length);
+        const id = (await ctx.hash.hashHex(bytes)) as ObjectId;
+        // An UNRELATED prefix, warmed up front — proves the miss's own
+        // forget pass drops only the MISSED id's own prefix, never the
+        // whole session's fanout cache.
+        const idPrefix = id.slice(0, 2);
+        const differentNibble = ((Number.parseInt(idPrefix[0]!, 16) + 1) % 16).toString(16);
+        const unrelatedPrefix = `${differentNibble}${idPrefix[1]}`;
+        const unrelatedId = `${unrelatedPrefix}${'0'.repeat(38)}` as ObjectId;
+        const { ctx: instrumented, calls } = instrumentedContext(ctx);
+        await probeLooseOid(instrumented, unrelatedId);
+        const unrelatedDir = `${ctx.layout.gitDir}/objects/${unrelatedPrefix}`;
+        const baseline = calls().length;
+
+        // Probe: the first read misses everywhere, caching the (empty)
+        // fanout listing for id's own prefix.
+        await expect(readObject(instrumented, id)).rejects.toMatchObject({
+          data: { code: 'OBJECT_NOT_FOUND' },
+        });
+        // Write straight through ctx.fs.write, bypassing writeObject (which
+        // would invalidate the cache itself via invalidateLooseOid).
+        const loosePath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(id)}`;
+        const compressed = await ctx.compressor.deflate(bytes);
+        await instrumented.fs.write(loosePath, compressed);
+
+        // Act
+        const result = await readObject(instrumented, id);
+
+        // Assert
+        expect(result.type).toBe('blob');
+        expect((result as Blob).content).toEqual(content);
+        // Assert — re-probing the unrelated prefix costs no further
+        // readdir: its cached (warm) listing survived the miss's forget
+        // pass untouched.
+        await probeLooseOid(instrumented, unrelatedId);
+        const unrelatedReaddirCalls = calls()
+          .slice(baseline)
+          .filter((call) => call.method === 'readdir' && call.path === unrelatedDir);
+        expect(unrelatedReaddirCalls).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a registered pack and N sequential full misses for distinct absent ids', () => {
+    describe('When resolveObject is called once per id, in sequence', () => {
+      it('Then the pack directory is listed once per miss and the pack .idx is never re-read', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSyntheticPack(ctx, 'sequential-miss-anchor', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('anchor') },
+        ]);
+        // Build the registry against the INSTRUMENTED context from the
+        // start — readObject's session-keyed registry memo would otherwise
+        // keep closing over the uninstrumented ctx.fs a registry built
+        // before instrumentation captured.
+        const { ctx: instrumented, calls } = instrumentedContext(ctx);
+        const registry = await getPackRegistry(instrumented);
+        await registry.all(); // warm the initial scan + .idx before counting
+        const baseline = calls().length;
+        const packDir = `${ctx.layout.gitDir}/objects/pack`;
+        const MISS_COUNT = 20;
+        const missingIds = Array.from(
+          { length: MISS_COUNT },
+          (_unused, i) => `${i.toString(16).padStart(2, '0')}${'0'.repeat(38)}` as ObjectId,
+        );
+
+        // Act
+        for (const id of missingIds) {
+          await expect(readObject(instrumented, id)).rejects.toMatchObject({
+            data: { code: 'OBJECT_NOT_FOUND' },
+          });
+        }
+
+        // Assert
+        const readdirCalls = calls()
+          .slice(baseline)
+          .filter((call) => call.method === 'readdir' && call.path === packDir);
+        expect(readdirCalls).toHaveLength(MISS_COUNT);
+        const idxReads = calls()
+          .slice(baseline)
+          .filter((call) => call.method === 'read' && call.path.endsWith('.idx'));
+        expect(idxReads).toHaveLength(0);
       });
     });
   });

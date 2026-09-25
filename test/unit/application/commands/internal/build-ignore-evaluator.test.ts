@@ -253,10 +253,12 @@ describe('buildRepoIgnorePredicate', () => {
         // itself as an ancestor and look up `a/foo.txt/.gitignore`. The
         // lookup begins with `lstat` (and stops there when the file is
         // missing, so it never reaches `readUtf8`) — the spy must therefore
-        // observe `lstat`, not `readUtf8`.
+        // observe `lstat`/`tryLstat` (the reader prefers the latter when the
+        // adapter provides it), not `readUtf8`.
         const ctx = await seed();
         await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a/.gitignore`, '*.x\n');
         const baseLstat = ctx.fs.lstat.bind(ctx.fs);
+        const baseTryLstat = ctx.fs.tryLstat?.bind(ctx.fs);
         const lstatGitignorePaths: string[] = [];
         const spyFs = new Proxy(ctx.fs, {
           get(target, prop, receiver) {
@@ -264,6 +266,12 @@ describe('buildRepoIgnorePredicate', () => {
               return async (p: string) => {
                 if (p.endsWith('/.gitignore')) lstatGitignorePaths.push(p);
                 return baseLstat(p);
+              };
+            }
+            if (prop === 'tryLstat' && baseTryLstat !== undefined) {
+              return async (p: string) => {
+                if (p.endsWith('/.gitignore')) lstatGitignorePaths.push(p);
+                return baseTryLstat(p);
               };
             }
             return Reflect.get(target, prop, receiver);

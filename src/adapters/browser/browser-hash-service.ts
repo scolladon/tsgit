@@ -1,5 +1,6 @@
 /// <reference lib="dom" />
 import { hashFailed } from '../../domain/index.js';
+import { bytesToHex } from '../../domain/objects/encoding.js';
 import type { Hasher, HashService } from '../../ports/hash-service.js';
 
 type SubtleAlgorithm = 'SHA-1' | 'SHA-256';
@@ -25,34 +26,34 @@ export class BrowserHashService implements HashService {
   }
 
   async hashHex(data: Uint8Array): Promise<string> {
-    return toHex(await this.hash(data));
+    return bytesToHex(await this.hash(data));
   }
 
   createHasher(): Hasher {
     const chunks: Uint8Array[] = [];
     const algoName = this.algoName;
     let consumed = false;
+    let total = 0;
 
     const finalize = async (): Promise<Uint8Array> => {
       if (consumed) throw hashFailed('cannot digest after digest');
       consumed = true;
-      const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
-      const concatenated = new Uint8Array(total);
-      let offset = 0;
-      for (const chunk of chunks) {
-        concatenated.set(chunk, offset);
-        offset += chunk.length;
-      }
-      return new Uint8Array(await crypto.subtle.digest(algoName, concatenated as BufferSource));
+      const message = joinChunks(chunks, total);
+      return new Uint8Array(await crypto.subtle.digest(algoName, message as BufferSource));
     };
 
     return {
       update(data: Uint8Array): void {
         if (consumed) throw hashFailed('cannot update after digest');
+        // SubtleCrypto cannot stream, so the bytes are held until digest; the
+        // copy keeps the digest bound to the bytes seen at update() time, as
+        // node:crypto's consume-now hasher is, for callers that hand the same
+        // chunk onward before digesting.
         chunks.push(data.slice());
+        total += data.length;
       },
       digest: finalize,
-      digestHex: async () => toHex(await finalize()),
+      digestHex: async () => bytesToHex(await finalize()),
     };
   }
 
@@ -61,10 +62,14 @@ export class BrowserHashService implements HashService {
   }
 }
 
-function toHex(bytes: Uint8Array): string {
-  let result = '';
-  for (const byte of bytes) {
-    result += byte.toString(16).padStart(2, '0');
+function joinChunks(chunks: ReadonlyArray<Uint8Array>, total: number): Uint8Array {
+  const only = chunks.length === 1 ? chunks[0] : undefined;
+  if (only !== undefined) return only;
+  const joined = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    joined.set(chunk, offset);
+    offset += chunk.length;
   }
-  return result;
+  return joined;
 }

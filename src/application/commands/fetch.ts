@@ -195,7 +195,11 @@ const isEverythingLocal = async (
   wants: ReadonlyArray<ObjectId>,
 ): Promise<boolean> => {
   for (const id of wants) {
-    if (!(await hasObject(ctx, id))) return false;
+    // Recheck mode: git's `check_exist_and_connected` calls `odb_has_object`
+    // with `HAS_OBJECT_RECHECK_PACKED` here — a quick probe against a
+    // registry scanned before a concurrent writer packed this exact id
+    // would wrongly deny the short-circuit and pay a needless round trip.
+    if (!(await hasObject(ctx, id, { mode: 'recheck' }))) return false;
   }
   return true;
 };

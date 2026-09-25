@@ -16,7 +16,15 @@
  *   interopSurface: multi-pack-index
  */
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -243,6 +251,28 @@ describe.skipIf(!GIT_AVAILABLE)(
           await expectBothRead(withoutMidxDir, withoutMidxCtx, oid);
         }
         expect(await (await getPackRegistry(withMidxCtx)).all()).toHaveLength(3);
+      });
+    });
+
+    describe('Given a healthy flat midx moved aside and replaced by a symlink to it, When both tools read every packed object', () => {
+      it('Then tsgit follows the symlink exactly as cat-file -p does — the shared listing never short-circuits it', async () => {
+        // Arrange — the pack-directory listing carries a `multi-pack-index`
+        // entry (a symlink, not a regular file); the listing only answers
+        // "is there an entry of this name", so probeFlat's stat path still
+        // runs and still follows the link, exactly as with no listing.
+        const dir = await newRoot('d4-symlink');
+        const fixture = await buildBaseFixture(dir, 'repo');
+        const { flat } = midxPaths(fixture.dir);
+        const real = `${flat}.real`;
+        renameSync(flat, real);
+        symlinkSync(real, flat);
+        const sut = trackedNodeContext(fixture.dir);
+
+        // Act + Assert
+        for (const oid of fixture.packedOids) {
+          expect(gitExit(fixture.dir, 'cat-file', '-p', oid)).toBe(0);
+          await expectBothRead(fixture.dir, sut, oid);
+        }
       });
     });
 

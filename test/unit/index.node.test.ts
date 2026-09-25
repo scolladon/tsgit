@@ -6,7 +6,7 @@
  * `bare` flag) must be exercised here — the integration suite does not feed
  * the mutation runner.
  */
-import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
@@ -595,6 +595,110 @@ describe('Node shim — worktreeFs raw adapter root (bare repository)', () => {
           await sut.dispose();
         }
       });
+    });
+  });
+});
+
+describe('Given a plain (non-symlink) .git directory directly under cwd', () => {
+  describe('When openRepository discovers it', () => {
+    it('Then layout.gitDir is <canonical cwd>/.git', async () => {
+      // Arrange
+      await makeGitDir(path.join(tmpdir, '.git'));
+      const resolvedCwd = await realpath(tmpdir);
+
+      // Act
+      const repo = await openRepository({ cwd: tmpdir });
+
+      try {
+        // Assert
+        expect(repo.ctx.layout.gitDir).toBe(path.join(resolvedCwd, '.git'));
+      } finally {
+        await repo.dispose();
+      }
+    });
+  });
+});
+
+describe('Given a `.git` directory renamed to a different case on a case-folding volume', () => {
+  describe('When openRepository discovers it', () => {
+    it('Then layout.gitDir is the literal join, matching what git itself reports there', async (ctx) => {
+      // Arrange
+      const probe = path.join(tmpdir, 'tsgit-case-probe');
+      await writeFile(probe, '');
+      const folds = await realpath(path.join(tmpdir, 'TSGIT-CASE-PROBE')).then(
+        () => true,
+        () => false,
+      );
+      await rm(probe, { force: true });
+      if (!folds) {
+        ctx.skip();
+        return;
+      }
+      await makeGitDir(path.join(tmpdir, '.git'));
+      await rename(path.join(tmpdir, '.git'), path.join(tmpdir, '.GIT'));
+      const resolvedCwd = await realpath(tmpdir);
+
+      // Act
+      const repo = await openRepository({ cwd: tmpdir });
+
+      try {
+        // Assert
+        expect(repo.ctx.layout.gitDir).toBe(path.join(resolvedCwd, '.git'));
+      } finally {
+        await repo.dispose();
+      }
+    });
+  });
+});
+
+describe('Given a .git entry that is itself a symlink to a real directory elsewhere', () => {
+  describe('When openRepository discovers it', () => {
+    it("Then layout.gitDir is the realpathed target, not the symlink's own lexical path — the lstat-first probe still resolves the repository", async () => {
+      // Arrange — the derivable-gitDir skip must NOT fire here: `isPlainDirectory`
+      // is false for a symlink, so the realpath actually runs and resolves
+      // through it, exactly as it would without the skip at all.
+      const realGitDir = path.join(tmpdir, 'real.git');
+      await makeGitDir(realGitDir);
+      const linkedGitDir = path.join(tmpdir, '.git');
+      await symlink(realGitDir, linkedGitDir);
+      const resolvedRealGitDir = await realpath(realGitDir);
+
+      // Act
+      const repo = await openRepository({ cwd: tmpdir });
+
+      try {
+        // Assert
+        expect(repo.ctx.layout.gitDir).toBe(resolvedRealGitDir);
+        expect(repo.ctx.layout.gitDir).not.toBe(linkedGitDir);
+      } finally {
+        await repo.dispose();
+      }
+    });
+  });
+});
+
+describe('Given a .git entry that is a DANGLING symlink (its target does not exist)', () => {
+  describe('When openRepository discovers it', () => {
+    it('Then the lstat-first probe reports it absent and the walk falls through to the bootstrap layout', async () => {
+      // Arrange — lstat succeeds and reports a symlink, but the followed
+      // stat fails (missing target): `lstatFirstStat` must collapse this to
+      // absent, exactly like any other unusable `.git` entry.
+      const missingTarget = path.join(tmpdir, 'nowhere.git');
+      const linkedGitDir = path.join(tmpdir, '.git');
+      await symlink(missingTarget, linkedGitDir);
+      const resolvedCwd = await realpath(tmpdir);
+
+      // Act
+      const repo = await openRepository({ cwd: tmpdir });
+
+      try {
+        // Assert — no usable git directory was found, so the synthetic
+        // bootstrap layout wins, rooted at the resolved cwd.
+        expect(repo.ctx.layout.gitDir).toBe(path.join(resolvedCwd, '.git'));
+        expect(repo.ctx.layout.bare).toBe(false);
+      } finally {
+        await repo.dispose();
+      }
     });
   });
 });

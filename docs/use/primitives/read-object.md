@@ -12,8 +12,9 @@ type GitObject = Blob | Tree | Commit | Tag;
 
 ## Behaviour
 
-- **Resolution order:** loose object → packed object (via fanout binary search) → promisor lazy-fetch.
+- **Resolution order:** packed object (via fanout binary search) → loose object → promisor lazy-fetch, matching git's own `do_oid_object_info_extended` for buffered content. A full miss — no pack claims the id and no loose file exists for it either — re-scans the pack directory once (`reprepare_packed_git`'s own retry) and retries the lookup once before falling through to the promisor fetch or `OBJECT_NOT_FOUND`; the re-scan is incremental (every already-known pack, its parsed `.idx`, handle, window-cache entries, and a loaded multi-pack-index all survive — only a vanished or newly-listed pack changes) and single-flighted across concurrent misses in the same session.
 - **Delta resolution:** packed objects with `OBJ_REF_DELTA` / `OBJ_OFS_DELTA` are resolved against the LRU base cache.
+- **A packed entry whose inflated bytes disagree with its own declared size:** a base entry's or a delta's instruction stream's inflated length must equal its header's own claim, in either direction — a mismatch refuses `INVALID_PACK_ENTRY { offset, reason: 'bad object: inflated size differs from declared size' }`, git's uniform `unpack_entry_data` check applied on read.
 - **A loose header whose size disagrees with its body:** a **blob** is read anyway and serves the bytes actually stored — `readObject`, [`readBlob`](read-blob.md), [`catFile`](../commands/cat-file.md), [`streamBlob`](stream-blob.md) and `checkout` all return the real content, the way git's streaming tier does for every user-facing blob read. Such a blob is deliberately **never admitted to the object cache**, so a later read re-derives it from disk rather than from an entry whose stored header no longer describes it. A **commit, tree or tag** refuses `INVALID_OBJECT_HEADER` with `reason: 'size mismatch: header says <declared>, actual content is <actual>'`, in either direction — git's buffered tier allocates from the claim and refuses an over-run the same way. Nothing in tsgit is ever *sized* from the claim (ADR-863).
   - One divergence, in the strict direction: where the claim is **larger** than the body, git zero-pads the shortfall and accepts the object (`log`, `status` and `cat-file -p` all succeed on it); tsgit refuses. Fabricating the missing bytes to keep a corrupt object readable is not a behaviour worth transcribing.
 - **`maxBytes`:** caps the payload size. A loose object is capped on the **bytes actually inflated**, never on the header's claim — a hostile object cannot claim a tiny size and ship a huge body. Pack base entries still cap pre-inflate against the pack entry header's declared size, and delta-resolved entries cap again post-apply against the real length, so a pack entry that declares small and inflates large is caught on the way out rather than on the way in.
@@ -38,6 +39,7 @@ switch (obj.type) {
 - `OBJECT_TOO_LARGE` — payload exceeds `maxBytes`.
 - `OBJECT_HASH_MISMATCH` — the stored bytes don't hash to the requested id (`verifyHash: true` only).
 - `INVALID_OBJECT_HEADER` — a malformed loose header, or a loose commit / tree / tag whose header size disagrees with its body. A loose blob's size claim is not enforced.
+- `INVALID_PACK_ENTRY` — a packed entry's inflated bytes disagree with its own header-declared size.
 
 ## Object size
 

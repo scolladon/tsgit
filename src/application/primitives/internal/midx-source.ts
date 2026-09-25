@@ -36,6 +36,10 @@ import {
 
 const FLAT_ARTEFACT = 'multi-pack-index';
 const CHAIN_ARTEFACT = 'multi-pack-index-chain';
+/** The chain's containing directory name, as it appears in a pack-directory
+ *  listing — distinct from `CHAIN_ARTEFACT`, which names the manifest FILE
+ *  inside that directory. */
+const CHAIN_DIR_NAME = 'multi-pack-index.d';
 const REASON_MIDX_IRREGULAR_FILE = 'multi-pack-index artefact is not a regular file';
 const REASON_MIDX_CHAIN_DUPLICATE = 'multi-pack-index chain lists a layer digest twice';
 
@@ -129,8 +133,19 @@ type FlatPresence =
  * without the midx in every such shape. A non-regular entry (FIFO, socket,
  * directory) is likewise discarded rather than opened: reading a FIFO would
  * block every object read in the repository indefinitely.
+ *
+ * `listing`, when supplied, is the caller's own pack-directory listing: no
+ * entry named `multi-pack-index` answers "absent" with no I/O at all — the
+ * listing already knows. ANY entry of that name (file, symlink, directory)
+ * still runs the `stat` path below verbatim, so a symlinked or irregular
+ * midx is classified exactly as it is with no listing supplied.
  */
-async function probeFlat(ctx: Context, path: string): Promise<FlatPresence> {
+async function probeFlat(
+  ctx: Context,
+  path: string,
+  listing?: ReadonlySet<string>,
+): Promise<FlatPresence> {
+  if (listing !== undefined && !listing.has(FLAT_ARTEFACT)) return { kind: 'absent' };
   let stat: FileStat;
   try {
     stat = await ctx.fs.stat(path);
@@ -284,30 +299,18 @@ function hasDuplicateDigest(digests: ReadonlyArray<string>): boolean {
   return new Set(digests).size !== digests.length;
 }
 
-async function loadChain(
+/**
+ * Reads and parses each layer named by `digests`, base first, stopping at
+ * the first Tier-B fault (a Tier-A one propagates). Split out of `loadChain`
+ * so the manifest-to-digests prefix and this per-layer walk are each scored
+ * for cognitive complexity on their own.
+ */
+async function loadChainLayers(
   ctx: Context,
   packsDir: string,
   digestLength: number,
+  digests: ReadonlyArray<string>,
 ): Promise<ChainOutcome> {
-  const manifest = await readChainManifest(ctx, multiPackIndexChainPath(packsDir), digestLength);
-  if (manifest.kind === 'none') return NO_CHAIN;
-  // The manifest's bound derives from the layer cap, so overrunning it IS
-  // the too-many-layers condition — not the artefact-size one.
-  if (manifest.kind === 'oversized') return chainFault(REASON_MIDX_CHAIN_TOO_LONG);
-
-  const digests = leadingHexRun(manifest.text, digestLength);
-  if (digests.length === 0) return NO_CHAIN;
-
-  if (exceedsMaxMidxChainLayers(digests.length)) {
-    return chainFault(REASON_MIDX_CHAIN_TOO_LONG);
-  }
-  // A repeated digest would load (and retain) the same layer twice — the one
-  // shape that lets a small manifest amplify its on-disk bytes in memory. A
-  // git-written chain never repeats a digest, so refusing costs nothing.
-  if (hasDuplicateDigest(digests)) {
-    return chainFault(REASON_MIDX_CHAIN_DUPLICATE);
-  }
-
   const layers: MultiPackIndex[] = [];
   // One artefact budget for the WHOLE chain, not per layer: distinct hostile
   // layers must not sum past what a single flat midx may occupy in memory.
@@ -340,18 +343,64 @@ async function loadChain(
   };
 }
 
-export async function loadMidxSet(ctx: Context, packsDir: string): Promise<MidxLoadResult> {
+/**
+ * `listing`, when supplied, is the caller's own pack-directory listing: no
+ * entry named `multi-pack-index.d` answers "no chain" with no I/O at all —
+ * the listing already knows there is no chain directory to read a manifest
+ * from. ANY entry of that name still runs `readChainManifest` verbatim.
+ */
+async function loadChain(
+  ctx: Context,
+  packsDir: string,
+  digestLength: number,
+  listing?: ReadonlySet<string>,
+): Promise<ChainOutcome> {
+  if (listing !== undefined && !listing.has(CHAIN_DIR_NAME)) return NO_CHAIN;
+  const manifest = await readChainManifest(ctx, multiPackIndexChainPath(packsDir), digestLength);
+  if (manifest.kind === 'none') return NO_CHAIN;
+  // The manifest's bound derives from the layer cap, so overrunning it IS
+  // the too-many-layers condition — not the artefact-size one.
+  if (manifest.kind === 'oversized') return chainFault(REASON_MIDX_CHAIN_TOO_LONG);
+
+  const digests = leadingHexRun(manifest.text, digestLength);
+  if (digests.length === 0) return NO_CHAIN;
+
+  if (exceedsMaxMidxChainLayers(digests.length)) {
+    return chainFault(REASON_MIDX_CHAIN_TOO_LONG);
+  }
+  // A repeated digest would load (and retain) the same layer twice — the one
+  // shape that lets a small manifest amplify its on-disk bytes in memory. A
+  // git-written chain never repeats a digest, so refusing costs nothing.
+  if (hasDuplicateDigest(digests)) {
+    return chainFault(REASON_MIDX_CHAIN_DUPLICATE);
+  }
+
+  return loadChainLayers(ctx, packsDir, digestLength, digests);
+}
+
+/**
+ * `listing`, when supplied, is a directory listing of `packsDir` — its
+ * entries' `name`s only, taken as a `ReadonlySet`. `probeFlat`/`loadChain`
+ * use it to skip a `stat`/manifest read whose answer the listing already
+ * settles; every direct caller that omits it (about 40 in this module's own
+ * test suite) keeps exercising today's unconditional stat path.
+ */
+export async function loadMidxSet(
+  ctx: Context,
+  packsDir: string,
+  listing?: ReadonlySet<string>,
+): Promise<MidxLoadResult> {
   const digestLength = ctx.hashConfig.digestLength;
   const flatPath = multiPackIndexPath(packsDir);
-  const presence = await probeFlat(ctx, flatPath);
+  const presence = await probeFlat(ctx, flatPath, listing);
 
   if (presence.kind === 'absent') {
-    const chain = await loadChain(ctx, packsDir, digestLength);
+    const chain = await loadChain(ctx, packsDir, digestLength, listing);
     return { set: chain.set, faults: chain.faults, flatFilePresent: false };
   }
 
   if (presence.kind === 'fault') {
-    const chain = await loadChain(ctx, packsDir, digestLength);
+    const chain = await loadChain(ctx, packsDir, digestLength, listing);
     return {
       set: chain.set,
       faults: [presence.fault, ...chain.faults],
@@ -368,7 +417,7 @@ export async function loadMidxSet(ctx: Context, packsDir: string): Promise<MidxL
     };
   }
 
-  const chain = await loadChain(ctx, packsDir, digestLength);
+  const chain = await loadChain(ctx, packsDir, digestLength, listing);
   return {
     set: chain.set,
     faults: [flatOutcome.fault, ...chain.faults],

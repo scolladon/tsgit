@@ -31,6 +31,7 @@ import {
   serializeHeader,
 } from '../../../../src/domain/objects/index.js';
 import type { LruCache } from '../../../../src/domain/storage/index.js';
+import { computeLooseObjectPath } from '../../../../src/domain/storage/loose-path.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { buildMidx, type MidxSpec } from '../../domain/storage/arbitraries.js';
 import {
@@ -174,6 +175,7 @@ function unusedPack(): RegisteredPack {
   };
   return {
     name: 'unused',
+    instanceKey: 'unused#0',
     index: boom,
     packPath: 'unused',
     idxPath: 'unused',
@@ -214,6 +216,7 @@ async function stubRegistry(
     const packPath = match.packPath;
     const pack: RegisteredPack = {
       name: 'stub',
+      instanceKey: 'stub#0',
       index: async () => fillerIndex,
       packPath,
       idxPath: `${packPath}.idx`,
@@ -237,6 +240,7 @@ async function stubRegistry(
     fileNames: async () => new Set(),
     assertLoadable: async () => {},
     refresh: () => undefined,
+    reprepare: async () => {},
     settleRefresh: async () => {},
     lookup,
     dispose: noopDispose,
@@ -400,6 +404,165 @@ describe('object-resolver', () => {
           expect(error).toBeInstanceOf(TsgitError);
           expect((error as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
         }
+      });
+    });
+  });
+
+  describe('Given a pack written directly to disk after the registry already scanned an empty pack directory', () => {
+    describe('When resolveObject is called for the newly-packed id', () => {
+      it('Then it resolves via one re-scan retry, mirroring reprepare_packed_git', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const registry = await createPackRegistry(ctx);
+        await registry.all(); // force the (empty) generation the writeSyntheticPack below bypasses
+        const content = new TextEncoder().encode('packed after scan\n');
+        const [id] = await writeSyntheticPack(ctx, 'late-pack', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+
+        // Act
+        const result = await resolveObject(ctx, registry, id as ObjectId, true);
+
+        // Assert
+        expect(result.type).toBe('blob');
+        expect((result as Blob).content).toEqual(content);
+      });
+    });
+  });
+
+  describe('Given the registry still misses after a re-scan (id genuinely absent everywhere)', () => {
+    describe('When resolveObject is called', () => {
+      it('Then it throws OBJECT_NOT_FOUND after exactly one re-scan (one extra pack-directory listing)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const { ctx: instrumented, calls } = instrumentedContext(ctx);
+        const registry = await createPackRegistry(instrumented);
+        await registry.all();
+        const packDir = `${ctx.layout.gitDir}/objects/pack`;
+        const baseline = calls().length; // ignore the arrange-time listing
+
+        // Act
+        try {
+          await resolveObject(instrumented, registry, 'f'.repeat(40) as ObjectId, true);
+          expect.unreachable();
+        } catch (error) {
+          // Assert
+          expect(error).toBeInstanceOf(TsgitError);
+          expect((error as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
+        }
+        const packDirListings = calls()
+          .slice(baseline)
+          .filter((call) => call.method === 'readdir' && call.path === packDir);
+        expect(packDirListings).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given many concurrent full misses for objects packed after the registry already scanned', () => {
+    describe('When resolveObject is called concurrently for each', () => {
+      it('Then every read resolves and the pack directory is only re-listed once', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const { ctx: instrumented, calls } = instrumentedContext(ctx);
+        const registry = await createPackRegistry(instrumented);
+        await registry.all();
+        const packDir = `${ctx.layout.gitDir}/objects/pack`;
+        const entries = await Promise.all(
+          Array.from({ length: 5 }, async (_unused, i) => {
+            const content = new TextEncoder().encode(`concurrent-late-pack-${i}\n`);
+            const [id] = await writeSyntheticPack(instrumented, `concurrent-late-pack-${i}`, [
+              { kind: 'base', type: 'blob', content },
+            ]);
+            return { id: id as ObjectId, content };
+          }),
+        );
+        const baseline = calls().length; // ignore the writes' own bookkeeping reads
+
+        // Act
+        const results = await Promise.all(
+          entries.map(({ id }) => resolveObject(instrumented, registry, id, true)),
+        );
+
+        // Assert
+        results.forEach((result, i) => {
+          expect(result.type).toBe('blob');
+          expect((result as Blob).content).toEqual(entries[i]?.content);
+        });
+        const packDirListings = calls()
+          .slice(baseline)
+          .filter((call) => call.method === 'readdir' && call.path === packDir);
+        expect(packDirListings).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given a signal that aborts while the full-miss re-scan is in flight, and the retry would otherwise succeed', () => {
+    describe('When resolveObject is called for the missing id', () => {
+      it('Then OPERATION_ABORTED wins over the now-available object', async () => {
+        // Arrange — the loose file lands DURING the re-scan's own readdir
+        // (bypassing writeObject, so the loose-oid cache is untouched by
+        // the write itself), so a retry that skipped the abort check would
+        // find it and succeed. The FIRST readdir is the registry's own
+        // construction scan; the SECOND is the miss-triggered re-scan
+        // (reprepare()) — abort, and write the object, exactly there.
+        const content = new TextEncoder().encode('abort-wins-over-late-loose-write');
+        const header = serializeHeader('blob', content.length);
+        const bytes = new Uint8Array(header.length + content.length);
+        bytes.set(header, 0);
+        bytes.set(content, header.length);
+        const controller = new AbortController();
+        const ctx = await buildSeededContext({ signal: controller.signal });
+        const id = (await ctx.hash.hashHex(bytes)) as ObjectId;
+        const packDir = `${ctx.layout.gitDir}/objects/pack`;
+        const loosePath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(id)}`;
+        let packDirReaddirCount = 0;
+        const wrapped: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            readdir: async (path: string) => {
+              if (path === packDir) {
+                packDirReaddirCount += 1;
+                // The SECOND pack-dir listing is the miss-triggered
+                // re-scan (reprepare()) — abort, and write the object,
+                // exactly there, never on the construction scan.
+                if (packDirReaddirCount === 2) {
+                  controller.abort();
+                  const compressed = await ctx.compressor.deflate(bytes);
+                  await ctx.fs.write(loosePath, compressed);
+                }
+              }
+              return ctx.fs.readdir(path);
+            },
+          },
+        };
+        const { ctx: instrumented, calls } = instrumentedContext(wrapped);
+        const registry = await createPackRegistry(instrumented);
+        await registry.all(); // consumes the construction scan's own readdir
+        const lookupSpy = vi.spyOn(registry, 'lookup');
+
+        // Act
+        try {
+          await resolveObject(instrumented, registry, id, true);
+          expect.unreachable();
+        } catch (error) {
+          // Assert
+          expect(error).toBeInstanceOf(TsgitError);
+          expect((error as TsgitError).data.code).toBe('OPERATION_ABORTED');
+        }
+
+        // Assert — `retryOnceAfterRescan`'s OWN `checkAborted`, run right
+        // after the re-scan and BEFORE its retry `attempt()`, is what wins:
+        // exactly the one lookup the original miss made, never a second one
+        // the retry would have made, and the just-written loose file is
+        // never read — proves the abort fired before `attempt()` ran at all,
+        // not merely somewhere later inside it (`resolveLooseArm`'s own
+        // `checkAborted` would also throw OPERATION_ABORTED, but only AFTER
+        // reading the file).
+        expect(lookupSpy).toHaveBeenCalledTimes(1);
+        expect(calls().some((call) => call.method === 'read' && call.path === loosePath)).toBe(
+          false,
+        );
       });
     });
   });
@@ -882,6 +1045,35 @@ describe('object-resolver', () => {
               expect.fail(`expected OBJECT_TOO_LARGE, got ${data.code}`);
             }
             expect(data.id).toBe(fakeId);
+            expect(data.actualSize).toBe(10);
+            expect(data.limit).toBe(5);
+          }
+        });
+      });
+    });
+
+    describe('Given a loose (never-packed) object whose content exceeds maxBytes', () => {
+      describe('When resolveObject is called with a maxBytes cap', () => {
+        it('Then throws OBJECT_TOO_LARGE from the loose-arm cap, not a silent pass-through', async () => {
+          // Arrange — 10 content bytes on disk, cap = 5. Only a loose read
+          // exercises `enforceLooseCap`; the pack arms have their own caps.
+          const content = new Uint8Array(10).fill(0x41);
+          const ctx = await buildSeededContext();
+          const id = await writeRawObjectBytes(ctx, 'blob', content);
+          const registry = await createPackRegistry(ctx);
+
+          // Act
+          try {
+            await resolveObject(ctx, registry, id, false, 5);
+            // Assert
+            expect.unreachable();
+          } catch (error) {
+            const data = (error as TsgitError).data;
+            expect(data.code).toBe('OBJECT_TOO_LARGE');
+            if (data.code !== 'OBJECT_TOO_LARGE') {
+              expect.fail(`expected OBJECT_TOO_LARGE, got ${data.code}`);
+            }
+            expect(data.id).toBe(id);
             expect(data.actualSize).toBe(10);
             expect(data.limit).toBe(5);
           }
@@ -1380,6 +1572,48 @@ describe('object-resolver', () => {
     });
   });
 
+  describe('Given a signal that aborts right after a loose read resolves, with a size-lying commit header', () => {
+    describe('When resolveObjectContentWithDepth is called', () => {
+      it('Then it throws OPERATION_ABORTED, not the size-mismatch the lying header would otherwise trigger', async () => {
+        // Arrange — the abort fires inside the loose read's own inflate call,
+        // landing strictly between `tryLoose` resolving and the size-lying
+        // header ever being parsed. Without its own poll right there, the
+        // synchronous split/assert work would run first and surface
+        // INVALID_OBJECT_HEADER instead of the abort already in flight.
+        const controller = new AbortController();
+        const ctx = await buildSeededContext({ signal: controller.signal });
+        const content = ENC.encode('commit body');
+        const id = await writeRawObjectBytes(ctx, 'commit', content);
+        await writeLooseWithDeclaredSize(ctx, id, 'commit', 400, content);
+        const registry = await createPackRegistry(ctx);
+        const baseInflate = ctx.compressor.inflate.bind(ctx.compressor);
+        const abortingCtx: Context = {
+          ...ctx,
+          compressor: {
+            ...ctx.compressor,
+            inflate: (async (bytes: Uint8Array) => {
+              controller.abort();
+              return baseInflate(bytes);
+            }) as typeof ctx.compressor.inflate,
+          },
+        };
+
+        // Act
+        let caught: unknown;
+        try {
+          await resolveObjectContentWithDepth(abortingCtx, registry, id, false, undefined, 0);
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('OPERATION_ABORTED');
+      });
+    });
+  });
+
   describe('Given a loose blob whose header size claim disagrees with its body length, read with verifyHash true', () => {
     describe('When resolveObjectContentWithDepth is called', () => {
       it('Then it throws OBJECT_HASH_MISMATCH hashing the stored (lying) header', async () => {
@@ -1542,7 +1776,7 @@ describe('object-resolver', () => {
 
   describe('Given a cold Context whose requested object is loose', () => {
     describe('When resolveObject reads it', () => {
-      it('Then no readdir targets objects/pack and no .idx path is ever statted or read', async () => {
+      it('Then objects/pack is listed once and every unclaimed pack index is consulted before the loose fallback', async () => {
         // Arrange
         const blob: Blob = {
           type: 'blob',
@@ -1570,15 +1804,24 @@ describe('object-resolver', () => {
         const packDirReaddirCalls = calls().filter(
           (call) => call.method === 'readdir' && call.path.endsWith('/objects/pack'),
         );
-        expect(packDirReaddirCalls).toEqual([]);
+        expect(packDirReaddirCalls).toHaveLength(1);
         // `exists` never fires for a stronger reason than "the scan didn't run
         // this time": scanPacks no longer calls it at all (the readdir fold
         // below replaced it), so this count is zero by construction, not by
         // this read happening to take the loose branch.
         const existsCalls = calls().filter((call) => call.method === 'exists');
         expect(existsCalls).toEqual([]);
+        // Neither pack claims this loose-only id, so the pack-first order
+        // must rule BOTH out via their own `.idx` before falling to loose —
+        // the price a mixed store pays for consulting packs first, matching
+        // git's own find_pack_entry over unclaimed packs.
         const idxTouches = calls().filter((call) => call.path.endsWith('.idx'));
-        expect(idxTouches).toEqual([]);
+        expect(idxTouches).toEqual([
+          { method: 'stat', path: `${ctx.layout.gitDir}/objects/pack/pack-cold-read-a.idx` },
+          { method: 'read', path: `${ctx.layout.gitDir}/objects/pack/pack-cold-read-a.idx` },
+          { method: 'stat', path: `${ctx.layout.gitDir}/objects/pack/pack-cold-read-b.idx` },
+          { method: 'read', path: `${ctx.layout.gitDir}/objects/pack/pack-cold-read-b.idx` },
+        ]);
       });
     });
   });
@@ -1694,7 +1937,7 @@ describe('object-resolver', () => {
 
   describe('Given a Tier-B multi-pack-index (truncated) and a loose object that exists', () => {
     describe('When resolveObject reads it', () => {
-      it('Then the blob resolves, the discard warn fires once, and objects/pack is never listed', async () => {
+      it('Then the blob resolves, the discard warn fires once, and objects/pack is listed only once for the shared listing', async () => {
         // Arrange
         const blob: Blob = {
           type: 'blob',
@@ -1721,7 +1964,7 @@ describe('object-resolver', () => {
         const packDirReaddirCalls = calls().filter(
           (call) => call.method === 'readdir' && call.path.endsWith('/objects/pack'),
         );
-        expect(packDirReaddirCalls).toEqual([]);
+        expect(packDirReaddirCalls).toHaveLength(1);
       });
     });
   });
@@ -1729,7 +1972,7 @@ describe('object-resolver', () => {
   describe('loose-oid probe (A2/B7b — per-fanout-dir cache)', () => {
     describe('Given several seeded loose blobs', () => {
       describe('When resolveObject reads each of them, then reads every one again', () => {
-        it('Then each touched fanout dir is readdir-ed at most once and the pack store is never probed', async () => {
+        it('Then each touched fanout dir is readdir-ed at most once, objects/pack is listed once for the shared listing, and the pack scan is never forced', async () => {
           // Arrange
           const blobs: Blob[] = Array.from({ length: 5 }, (_, i) => ({
             type: 'blob',
@@ -1758,12 +2001,14 @@ describe('object-resolver', () => {
 
           // Assert — one readdir per DISTINCT touched prefix, never per object
           // or per read; the old per-object exists/realpath probe is gone.
-          // exists() never fires at all: resolveObjectContentWithDepth's assertLoadable
-          // gate is now the multi-pack-index load alone, and the pack
-          // directory's own `exists` presence check moved behind the
-          // deferred scan, which a loose HIT never forces.
+          // Plus exactly one more: assertLoadable's gate now shares
+          // packDirListing with the scan, so the FIRST read of this
+          // generation lists objects/pack once — memoised, so the second
+          // pass over the same ids adds none. exists() never fires at all:
+          // the pack directory's own `exists` presence check moved behind
+          // the deferred scan, which a loose HIT never forces.
           const touchedPrefixes = new Set(ids.map((id) => id.slice(0, 2)));
-          expect(readdirSpy.mock.calls.length).toBe(touchedPrefixes.size);
+          expect(readdirSpy.mock.calls.length).toBe(touchedPrefixes.size + 1);
           expect(existsSpy.mock.calls.length).toBe(0);
         });
       });
@@ -2045,6 +2290,52 @@ describe('object-resolver', () => {
       });
     });
 
+    describe('Given a pack retired by reprepare() and a same-named pack later reappearing', () => {
+      describe('When the new pack is read at the same on-disk offset the retired one cached', () => {
+        it('Then the new bytes are served, never the retired instance’s cached delta base', async () => {
+          // Arrange — gen1 (P0) is a real delta chain, so reading its tip
+          // populates the offset-keyed delta-base cache for its base entry —
+          // always the pack's very first offset, right after the fixed
+          // header, regardless of entry count or content (see the sibling
+          // refresh() test above). reprepare() — unlike refresh() — never
+          // clears that cache, by design: it is what lets a reused instance
+          // stay warm. Retiring P0 (its files vanish, so a bare reprepare()
+          // finds nothing left under that name) and only THEN writing a
+          // same-named P1 with different bytes at that same offset means P1
+          // is a genuinely FRESH RegisteredPack — reprepare()'s reuse map
+          // never carried the name across the gap — so a cache keyed by name
+          // alone cannot tell P0's stale entry from P1's real one.
+          const ctx = await buildSeededContext();
+          const contentA = ENC.encode('generation one base content');
+          const gen1 = await writeSyntheticPack(ctx, 'reprepare-instance-swap', [
+            { kind: 'base', type: 'blob', content: contentA },
+            { kind: 'ofs-delta', baseIndex: 0, targetContent: ENC.encode('generation one tip') },
+          ]);
+          const tip1Id = gen1[1]! as ObjectId;
+          const registry = await createPackRegistry(ctx);
+          await resolveObject(ctx, registry, tip1Id, true);
+
+          // Act — retire P0, let it fully vanish, then reappear under the
+          // SAME name with unrelated bytes.
+          const dir = `${ctx.layout.gitDir}/objects/pack`;
+          await ctx.fs.rm(`${dir}/pack-reprepare-instance-swap.pack`);
+          await ctx.fs.rm(`${dir}/pack-reprepare-instance-swap.idx`);
+          await registry.reprepare();
+          await registry.settleRefresh();
+          const contentB = ENC.encode('generation two — completely unrelated bytes');
+          const gen2 = await writeSyntheticPack(ctx, 'reprepare-instance-swap', [
+            { kind: 'base', type: 'blob', content: contentB },
+          ]);
+          const newBaseId = gen2[0]! as ObjectId;
+          await registry.reprepare();
+          const result = await resolveObject(ctx, registry, newBaseId, false);
+
+          // Assert
+          expect((result as Blob).content).toEqual(contentB);
+        });
+      });
+    });
+
     describe('Given an intermediate larger than the byte cap', () => {
       describe('When resolveObject is called', () => {
         it('Then it is not cached and the read still succeeds', async () => {
@@ -2075,20 +2366,21 @@ describe('object-resolver', () => {
           const baseOffset = built.offsets[0]!;
           const midOffset = built.offsets[1]!;
           const registry = await createPackRegistry(ctx);
+          const [pack] = await registry.all();
 
           // Act
           const result = await resolveObject(ctx, registry, tipId, true);
 
           // Assert — the 1-byte base fits under the cap and IS cached
-          // (proving the key/pack-name shape used below is right, so the
+          // (proving the key/instance shape used below is right, so the
           // mid's absence is the size cap, not a lookup miss); the 64-byte
           // mid is not.
           expect((result as Blob).content).toEqual(tipContent);
           expect(
-            registry.deltaBaseCache.get(deltaBaseCacheKey('pack-oversize-mid', baseOffset)),
+            registry.deltaBaseCache.get(deltaBaseCacheKey(pack!.instanceKey, baseOffset)),
           ).toBeDefined();
           expect(
-            registry.deltaBaseCache.get(deltaBaseCacheKey('pack-oversize-mid', midOffset)),
+            registry.deltaBaseCache.get(deltaBaseCacheKey(pack!.instanceKey, midOffset)),
           ).toBeUndefined();
         });
       });
@@ -2116,6 +2408,7 @@ describe('object-resolver', () => {
           const tipId = built.ids[2]! as ObjectId;
           const midOffset = built.offsets[1]!;
           const registry = await createPackRegistry(ctx);
+          const [pack] = await registry.all();
 
           // Act
           const result = await resolveObject(ctx, registry, tipId, true);
@@ -2123,7 +2416,9 @@ describe('object-resolver', () => {
           // Assert — the read succeeds AND the entry is genuinely retained,
           // not merely "didn't crash".
           expect((result as Blob).content).toEqual(tipContent);
-          const cached = registry.deltaBaseCache.get(deltaBaseCacheKey('pack-zero-mid', midOffset));
+          const cached = registry.deltaBaseCache.get(
+            deltaBaseCacheKey(pack!.instanceKey, midOffset),
+          );
           expect(cached).toBeDefined();
           expect(cached!.content.length).toBe(0);
         });
@@ -2205,6 +2500,7 @@ describe('object-resolver', () => {
         const tipId = built.ids[3]! as ObjectId;
         const [baseOffset, mid1Offset, mid2Offset, tipOffset] = built.offsets;
         const registry = await createPackRegistry(ctx);
+        const [pack] = await registry.all();
 
         // Act
         const result = await resolveObject(ctx, registry, tipId, true);
@@ -2214,16 +2510,16 @@ describe('object-resolver', () => {
         // Assert — nearest-base-first: base and mid1 resident, mid2 and the
         // tip's own delta level pruned.
         expect(
-          registry.deltaBaseCache.get(deltaBaseCacheKey('pack-budget-chain', baseOffset!)),
+          registry.deltaBaseCache.get(deltaBaseCacheKey(pack!.instanceKey, baseOffset!)),
         ).toBeDefined();
         expect(
-          registry.deltaBaseCache.get(deltaBaseCacheKey('pack-budget-chain', mid1Offset!)),
+          registry.deltaBaseCache.get(deltaBaseCacheKey(pack!.instanceKey, mid1Offset!)),
         ).toBeDefined();
         expect(
-          registry.deltaBaseCache.get(deltaBaseCacheKey('pack-budget-chain', mid2Offset!)),
+          registry.deltaBaseCache.get(deltaBaseCacheKey(pack!.instanceKey, mid2Offset!)),
         ).toBeUndefined();
         expect(
-          registry.deltaBaseCache.get(deltaBaseCacheKey('pack-budget-chain', tipOffset!)),
+          registry.deltaBaseCache.get(deltaBaseCacheKey(pack!.instanceKey, tipOffset!)),
         ).toBeUndefined();
         expect(registry.deltaBaseCache.entryCount).toBe(2);
       });
@@ -2250,6 +2546,7 @@ describe('object-resolver', () => {
         const tipId = built.ids[1]! as ObjectId;
         const [baseOffset, tipOffset] = built.offsets;
         const registry = await createPackRegistry(ctx);
+        const [pack] = await registry.all();
 
         // Act
         const result = await resolveObject(ctx, registry, tipId, true);
@@ -2257,10 +2554,10 @@ describe('object-resolver', () => {
         // Assert
         expect((result as Blob).content).toEqual(tipContent);
         expect(
-          registry.deltaBaseCache.get(deltaBaseCacheKey('pack-oversized-base', baseOffset!)),
+          registry.deltaBaseCache.get(deltaBaseCacheKey(pack!.instanceKey, baseOffset!)),
         ).toBeUndefined();
         expect(
-          registry.deltaBaseCache.get(deltaBaseCacheKey('pack-oversized-base', tipOffset!)),
+          registry.deltaBaseCache.get(deltaBaseCacheKey(pack!.instanceKey, tipOffset!)),
         ).toBeDefined();
       });
     });
@@ -2285,13 +2582,14 @@ describe('object-resolver', () => {
         const tipId = built.ids[1]! as ObjectId;
         const [baseOffset] = built.offsets;
         const registry = await createPackRegistry(ctx);
+        const [pack] = await registry.all();
 
         // Act
         await resolveObject(ctx, registry, tipId, true);
 
         // Assert
         expect(
-          registry.deltaBaseCache.get(deltaBaseCacheKey('pack-exact-fit', baseOffset!)),
+          registry.deltaBaseCache.get(deltaBaseCacheKey(pack!.instanceKey, baseOffset!)),
         ).toBeDefined();
       });
     });
@@ -2318,13 +2616,14 @@ describe('object-resolver', () => {
         const tipId = built.ids[1]! as ObjectId;
         const [baseOffset] = built.offsets;
         const registry = await createPackRegistry(ctx);
+        const [pack] = await registry.all();
 
         // Act
         await resolveObject(ctx, registry, tipId, true);
 
         // Assert
         expect(
-          registry.deltaBaseCache.get(deltaBaseCacheKey('pack-exact-miss', baseOffset!)),
+          registry.deltaBaseCache.get(deltaBaseCacheKey(pack!.instanceKey, baseOffset!)),
         ).toBeUndefined();
       });
     });
@@ -2571,6 +2870,7 @@ describe('object-resolver', () => {
             fileNames: async () => new Set(),
             assertLoadable: async () => {},
             refresh: () => undefined,
+            reprepare: async () => {},
             settleRefresh: async () => {},
             lookup: async (lookupId) =>
               lookupId === id ? { pack, offset: entryOffset } : undefined,
@@ -2627,6 +2927,7 @@ describe('object-resolver', () => {
           const fillerIndex = parsePackIndex(filler.idxBytes, 20);
           const pack: RegisteredPack = {
             name: 'stub-corrupt-slice',
+            instanceKey: 'stub-corrupt-slice#0',
             index: async () => fillerIndex,
             packPath,
             idxPath: `${packPath}.idx`,
@@ -2644,6 +2945,7 @@ describe('object-resolver', () => {
             fileNames: async () => new Set(),
             assertLoadable: async () => {},
             refresh: () => undefined,
+            reprepare: async () => {},
             settleRefresh: async () => {},
             lookup: async (id) => (id === targetId ? { pack, offset: entryOffset } : undefined),
             dispose: noopDispose,
@@ -2705,6 +3007,7 @@ describe('object-resolver', () => {
           const fillerIndex = parsePackIndex(filler.idxBytes, 20);
           const pack: RegisteredPack = {
             name: 'stub-zero-slice',
+            instanceKey: 'stub-zero-slice#0',
             index: async () => fillerIndex,
             packPath,
             idxPath: `${packPath}.idx`,
@@ -2722,6 +3025,7 @@ describe('object-resolver', () => {
             fileNames: async () => new Set(),
             assertLoadable: async () => {},
             refresh: () => undefined,
+            reprepare: async () => {},
             settleRefresh: async () => {},
             lookup: async (id) => (id === targetId ? { pack, offset: entryOffset } : undefined),
             dispose: noopDispose,
@@ -2779,6 +3083,7 @@ describe('object-resolver', () => {
           const fillerIndex = parsePackIndex(filler.idxBytes, 20);
           const pack: RegisteredPack = {
             name: 'stub-corrupt-exceeds',
+            instanceKey: 'stub-corrupt-exceeds#0',
             index: async () => fillerIndex,
             packPath,
             idxPath: `${packPath}.idx`,
@@ -2796,6 +3101,7 @@ describe('object-resolver', () => {
             fileNames: async () => new Set(),
             assertLoadable: async () => {},
             refresh: () => undefined,
+            reprepare: async () => {},
             settleRefresh: async () => {},
             lookup: async (id) => (id === targetId ? { pack, offset: entryOffset } : undefined),
             dispose: noopDispose,
@@ -3524,10 +3830,14 @@ describe('object-resolver', () => {
           // 100, so `nextOffset = 12 - 100 = -88`. The `if (nextOffset < 0)`
           // guard must throw OBJECT_NOT_FOUND. Forcing the conditional `false`
           // would carry a negative offset into the next chain hop instead.
+          // Declared size 2, matching the 2-byte deflated body's real
+          // inflated length — an honest declared size, so the new
+          // declared-vs-actual check (item 2) never fires here; only the
+          // negative-offset guard this row targets does.
           const ctx = await buildSeededContext();
           const deltaBody = await ctx.compressor.deflate(new Uint8Array([0x00, 0x00]));
           const entry = new Uint8Array([
-            ...encodePackEntryHeader(PACK_ENTRY_TYPE.OFS_DELTA, 0),
+            ...encodePackEntryHeader(PACK_ENTRY_TYPE.OFS_DELTA, 2),
             ...encodeOfsDistance(100),
             ...deltaBody,
           ]);
@@ -3559,10 +3869,14 @@ describe('object-resolver', () => {
           // → the walker continues with offset 0 → nextOffsetForEntry cannot find 0
           // in sortedOffsets → INVALID_PACK_INDEX. The `<=` mutant makes `0 <= 0`
           // true → throws OBJECT_NOT_FOUND before reaching nextOffsetForEntry.
+          // Declared size 2, matching the 2-byte deflated body's real
+          // inflated length — an honest declared size, so the new
+          // declared-vs-actual check (item 2) never fires here; only the
+          // offset-0 guard this row targets does.
           const ctx = await buildSeededContext();
           const deltaBody = await ctx.compressor.deflate(new Uint8Array([0x00, 0x00]));
           const entry = new Uint8Array([
-            ...encodePackEntryHeader(PACK_ENTRY_TYPE.OFS_DELTA, 0),
+            ...encodePackEntryHeader(PACK_ENTRY_TYPE.OFS_DELTA, 2),
             ...encodeOfsDistance(12),
             ...deltaBody,
           ]);
@@ -3590,12 +3904,14 @@ describe('object-resolver', () => {
 
   describe('Given a pack base entry whose declared size lies small but inflates large', () => {
     describe('When a capped resolveObject runs', () => {
-      it('Then the post-apply cap throws OBJECT_TOO_LARGE', async () => {
+      it('Then the declared-size check throws INVALID_PACK_ENTRY, ahead of the post-apply cap', async () => {
         // Arrange — a base blob entry whose header declares size 1 (so the
         // pre-inflate `enforcePackBaseCap` passes the cap of 4) while the zlib
-        // body inflates to 40 bytes. With no deltas the post-apply check in
-        // `resolvePackChain` is the only guard left; emptying its block lets the
-        // oversized object through silently.
+        // body inflates to 40 bytes. The unconditional declared-vs-actual
+        // check now catches this lie before the post-apply OBJECT_TOO_LARGE
+        // cap ever runs — mirroring git's `unpack_entry_data`
+        // (`stream.total_out != size`), which refuses the SAME shape the
+        // same way regardless of any caller-side size cap.
         const ctx = await buildSeededContext();
         const bigContent = new TextEncoder().encode('A'.repeat(40));
         const deflated = await ctx.compressor.deflate(bigContent);
@@ -3615,12 +3931,75 @@ describe('object-resolver', () => {
           expect.unreachable();
         } catch (error) {
           const data = (error as TsgitError).data;
-          expect(data.code).toBe('OBJECT_TOO_LARGE');
-          if (data.code !== 'OBJECT_TOO_LARGE') {
-            expect.fail(`expected OBJECT_TOO_LARGE, got ${data.code}`);
+          expect(data.code).toBe('INVALID_PACK_ENTRY');
+          if (data.code !== 'INVALID_PACK_ENTRY') {
+            expect.fail(`expected INVALID_PACK_ENTRY, got ${data.code}`);
           }
-          expect(data.actualSize).toBe(40);
-          expect(data.limit).toBe(4);
+          expect(data.reason).toBe('bad object: inflated size differs from declared size');
+          expect(data.offset).toBe(12);
+        }
+      });
+    });
+  });
+
+  describe('Given a pack base entry whose declared size mismatches its actual inflated size, with no maxBytes cap', () => {
+    describe('When resolveObject is called', () => {
+      it('Then throws INVALID_PACK_ENTRY unconditionally — not gated on a size cap', async () => {
+        // Arrange — an honest zlib body, but the header's declared size is
+        // one byte short of the real content length.
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('honest body, dishonest declared size\n');
+        const [id] = await writeSyntheticPack(ctx, 'base-declared-size-lie', [
+          { kind: 'base', type: 'blob', content, declaredSizeOverride: content.length - 1 },
+        ]);
+        const registry = await createPackRegistry(ctx);
+
+        // Act — no maxBytes argument at all.
+        try {
+          await resolveObject(ctx, registry, id as ObjectId, false);
+          expect.unreachable();
+        } catch (error) {
+          // Assert
+          expect(error).toBeInstanceOf(TsgitError);
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('INVALID_PACK_ENTRY');
+          if (data.code !== 'INVALID_PACK_ENTRY') {
+            expect.fail(`expected INVALID_PACK_ENTRY, got ${data.code}`);
+          }
+          expect(data.reason).toBe('bad object: inflated size differs from declared size');
+        }
+      });
+    });
+  });
+
+  describe("Given an OFS_DELTA entry whose declared size mismatches its instruction stream's actual inflated size", () => {
+    describe('When resolveObject is called', () => {
+      it('Then throws INVALID_PACK_ENTRY: bad object: inflated size differs from declared size', async () => {
+        // Arrange — an honest delta instruction stream, but the entry
+        // header's declared size lies.
+        const ctx = await buildSeededContext();
+        const baseContent = new TextEncoder().encode('base content for a delta size lie\n');
+        const targetContent = new TextEncoder().encode('reconstructed target, different length\n');
+        const ids = await writeSyntheticPack(ctx, 'delta-declared-size-lie', [
+          { kind: 'base', type: 'blob', content: baseContent },
+          { kind: 'ofs-delta', baseIndex: 0, targetContent, declaredSizeOverride: 1 },
+        ]);
+        const deltaId = ids[1] as ObjectId;
+        const registry = await createPackRegistry(ctx);
+
+        // Act
+        try {
+          await resolveObject(ctx, registry, deltaId, false);
+          expect.unreachable();
+        } catch (error) {
+          // Assert
+          expect(error).toBeInstanceOf(TsgitError);
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('INVALID_PACK_ENTRY');
+          if (data.code !== 'INVALID_PACK_ENTRY') {
+            expect.fail(`expected INVALID_PACK_ENTRY, got ${data.code}`);
+          }
+          expect(data.reason).toBe('bad object: inflated size differs from declared size');
         }
       });
     });
@@ -3999,6 +4378,97 @@ describe('object-resolver', () => {
           // Assert
           expect(parseCallsSince(parseSpy, baseline)).toBe(2);
           parseSpy.mockRestore();
+        });
+      });
+    });
+  });
+
+  describe('pack-first precedence (buffered reads)', () => {
+    describe('Given a synthetic pack with a base blob and no loose copy', () => {
+      describe('When resolveObject reads it', () => {
+        it('Then its loose fanout directory is never listed', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const content = ENC.encode('pack-first fanout probe');
+          const [id] = await writeSyntheticPack(ctx, 'pack-first-fanout', [
+            { kind: 'base', type: 'blob', content },
+          ]);
+          const { ctx: instrumented, calls } = instrumentedContext(ctx);
+          const registry = await createPackRegistry(instrumented);
+
+          // Act
+          const result = await resolveObject(instrumented, registry, id as ObjectId, true);
+
+          // Assert
+          expect((result as Blob).content).toEqual(content);
+          const fanoutReaddirCalls = calls().filter(
+            (call) =>
+              call.method === 'readdir' &&
+              call.path.endsWith(`/objects/${(id as string).slice(0, 2)}`),
+          );
+          expect(fanoutReaddirCalls).toEqual([]);
+        });
+      });
+    });
+
+    describe('Given an object that exists only loosely (no pack copy)', () => {
+      describe('When resolveObject reads it', () => {
+        it('Then the pack registry is consulted first and the loose read follows the miss', async () => {
+          // Arrange
+          const blob: Blob = {
+            type: 'blob',
+            content: ENC.encode('pack-miss-falls-to-loose'),
+            id: '' as ObjectId,
+          };
+          const ctx = await buildSeededContext({ objects: [blob] });
+          const { serializeObject } = await import('../../../../src/domain/objects/index.js');
+          const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
+          const registry = await createPackRegistry(ctx);
+          const lookupSpy = vi.spyOn(registry, 'lookup');
+          const readSpy = vi.spyOn(ctx.fs, 'read');
+
+          // Act
+          const result = await resolveObject(ctx, registry, id, true);
+
+          // Assert
+          expect((result as Blob).content).toEqual(blob.content);
+          expect(lookupSpy).toHaveBeenCalledTimes(1);
+          expect(readSpy).toHaveBeenCalledTimes(1);
+          const lookupOrder = lookupSpy.mock.invocationCallOrder[0];
+          const readOrder = readSpy.mock.invocationCallOrder[0];
+          expect(lookupOrder).toBeDefined();
+          expect(readOrder).toBeDefined();
+          expect(lookupOrder as number).toBeLessThan(readOrder as number);
+        });
+      });
+    });
+
+    describe('Given a packed object with a corrupt loose copy at the same id', () => {
+      describe('When resolveObject reads it', () => {
+        it('Then it returns the pack content and the corrupt loose file is never read', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const content = ENC.encode('pack-served-despite-corrupt-loose');
+          const [id] = await writeSyntheticPack(ctx, 'corrupt-loose-shadow', [
+            { kind: 'base', type: 'blob', content },
+          ]);
+          const { computeLooseObjectPath } = await import(
+            '../../../../src/domain/storage/loose-path.js'
+          );
+          const loosePath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(id as ObjectId)}`;
+          await ctx.fs.write(loosePath, ENC.encode('not-a-zlib-stream'));
+          const { ctx: instrumented, calls } = instrumentedContext(ctx);
+          const registry = await createPackRegistry(instrumented);
+
+          // Act
+          const result = await resolveObject(instrumented, registry, id as ObjectId, true);
+
+          // Assert
+          expect((result as Blob).content).toEqual(content);
+          const looseReadCalls = calls().filter(
+            (call) => call.method === 'read' && call.path === loosePath,
+          );
+          expect(looseReadCalls).toEqual([]);
         });
       });
     });

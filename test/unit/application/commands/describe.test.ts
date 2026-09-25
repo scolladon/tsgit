@@ -1138,6 +1138,10 @@ describe('describe --contains', () => {
 });
 
 const withCountedObjectReads = (ctx: Context): { counted: Context; reads: () => number } => {
+  // Arrange already warmed ctx.deltaCache (ref-target verification runs
+  // inside every commit()/tagCreate() call); clear it so the count below
+  // reflects the walk's own reads, not arrange's leftovers.
+  ctx.deltaCache.clear();
   let count = 0;
   const baseFs = ctx.fs;
   const countedFs: Context['fs'] = {
@@ -1185,10 +1189,13 @@ describe('Given a deep chain with an annotated tag three commits below HEAD', ()
       // Act
       await describeCmd(counted);
 
-      // Assert — the resolver caches every loose commit read, so cross-pass rereads
-      // within describe's own algorithm now hit the delta cache instead of
-      // touching disk again; the walk still stops short of the full chain.
-      expect(reads()).toBe(2);
+      // Assert — withCountedObjectReads clears ctx.deltaCache before the Act
+      // phase, so arrange's ref-target-verification residue (every commit
+      // and the tag were re-verified when their ref was written) cannot mask
+      // the walk's own reads. 5 real touches (the tag object plus HEAD, its
+      // two ancestors and the tagged commit) proves the walk stopped well
+      // short of the 30-commit chain.
+      expect(reads()).toBe(5);
     });
   });
 });
@@ -1209,12 +1216,13 @@ describe('Given only a lightweight tag on a deep chain in tags mode', () => {
       // Act
       const result = await describeCmd(counted, undefined, { tags: true });
 
-      // Assert — the resolver caches every loose commit read, so cross-pass rereads
-      // within describe's own algorithm now hit the delta cache instead of
-      // touching disk again.
+      // Assert — with ctx.deltaCache cleared before the Act phase, the walk
+      // touches every one of the 10 commits: no annotated candidate exists to
+      // let it freeze early, so it reads the full chain — in contrast to the
+      // bounded 5-read walk above.
       expect(result.name).toBe('light');
       expect(result.distance).toBe(3);
-      expect(reads()).toBe(1);
+      expect(reads()).toBe(10);
     });
   });
 });
@@ -1241,12 +1249,14 @@ describe('Given two annotated tags tied on sibling legs above a deep ancestry', 
       // Act
       const result = await describeCmd(counted, m);
 
-      // Assert — the resolver caches every loose commit read, so cross-pass rereads
-      // within describe's own algorithm now hit the delta cache instead of
-      // touching disk again.
+      // Assert — with ctx.deltaCache cleared before the Act phase, the walk
+      // still touches only 6 objects: both tag objects (peeled to build the
+      // candidate map) plus `m`, `x`, `y` and `base` — the finalisation stops
+      // once the last path is covered, never descending into the 5-commit
+      // tail below `base`.
       expect(result.name).toBe('ty');
       expect(result.distance).toBe(2);
-      expect(reads()).toBe(5);
+      expect(reads()).toBe(6);
     });
   });
 });
@@ -1271,12 +1281,14 @@ describe('Given a frozen winner whose coverage reaches the frontier only later',
       // Act
       const result = await describeCmd(counted, m);
 
-      // Assert — the resolver caches every loose commit read, so cross-pass rereads
-      // within describe's own algorithm now hit the delta cache instead of
-      // touching disk again.
+      // Assert — with ctx.deltaCache cleared before the Act phase, the walk
+      // still touches only 5 objects: the tag object (peeled to build the
+      // candidate map) plus `m`, `x`, `side` and `base` — the finalisation
+      // walks past the uncovered frontier (`side`) and stops once it is
+      // covered, never descending into the 5-commit tail below `base`.
       expect(result.name).toBe('tx');
       expect(result.distance).toBe(2);
-      expect(reads()).toBe(4);
+      expect(reads()).toBe(5);
     });
   });
 });
@@ -1301,12 +1313,15 @@ describe('Given an annotated tag on a side leg that does not cover the deeper ch
       // Act
       const result = await describeCmd(counted, m);
 
-      // Assert — the resolver caches every loose commit read, so cross-pass rereads
-      // within describe's own algorithm now hit the delta cache instead of
-      // touching disk again.
+      // Assert — with ctx.deltaCache cleared before the Act phase, the walk
+      // touches all 7 objects in this DAG (both tag objects plus `root`,
+      // `x1`, `x2`, `y` and `m`): `t-root` cannot be registered until `root`
+      // itself is popped, so the collection keeps walking past `x2`'s and
+      // `x1`'s frontier-empty pops instead of stopping once `ty`'s leg alone
+      // looks covered.
       expect(result.name).toBe('ty');
       expect(result.distance).toBe(3);
-      expect(reads()).toBe(6);
+      expect(reads()).toBe(7);
     });
   });
 });
@@ -1442,9 +1457,10 @@ describe('Given no names and a deep history to walk', () => {
       // Act
       const error = await catchError(() => describeCmd(counted));
 
-      // Assert — the empty freeze stops immediately; it never descends the
-      // chain. The resolver also caches HEAD's own loose read, collapsing a repeated
-      // touch into a cache hit.
+      // Assert — with ctx.deltaCache cleared before the Act phase, the empty
+      // freeze still costs only 1 real read (resolving HEAD's own commit);
+      // it never descends the 8-commit chain to look for names that don't
+      // exist.
       expect(error.data).toMatchObject({ code: 'NO_NAMES' });
       expect(reads()).toBe(1);
     });

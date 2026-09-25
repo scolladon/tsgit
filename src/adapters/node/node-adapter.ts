@@ -20,6 +20,7 @@ import { NodeHashService } from './node-hash-service.js';
 import { NodeHookRunner } from './node-hook-runner.js';
 import { NodeHttpTransport } from './node-http-transport.js';
 import { NodeSshTransport } from './node-ssh-transport.js';
+import { syncIoPolicyFor } from './sync-io-budget.js';
 
 const DEFAULT_DELTA_CACHE_BYTES = 16 * 1024 * 1024;
 const DEFAULT_DELTA_CACHE_ENTRIES = 65_536;
@@ -64,6 +65,14 @@ export interface NodeAdapterOptions {
    * repository.
    */
   readonly algorithm?: 'sha1' | 'sha256';
+  /**
+   * The I/O strategy for cheap, serial filesystem calls (stat, small reads,
+   * held-handle reads). Default `'sync-fast-path'`: these run synchronously,
+   * under a per-turn budget that yields back to the event loop on its own.
+   * Pick `'threadpool'` on a network or otherwise cold filesystem, where a
+   * blocking call can stall the loop for milliseconds instead of microseconds.
+   */
+  readonly io?: 'sync-fast-path' | 'threadpool';
 }
 
 export function createNodeContext(options: NodeAdapterOptions): Context {
@@ -73,7 +82,8 @@ export function createNodeContext(options: NodeAdapterOptions): Context {
       ? nodePath.resolve(options.gitDir)
       : nodePath.join(workDir, '.git');
   const algorithm = options.algorithm ?? 'sha1';
-  const fs = new NodeFileSystem(workDir);
+  const syncIo = syncIoPolicyFor(options.io);
+  const fs = new NodeFileSystem(workDir, syncIo === undefined ? {} : { syncIo });
   const hash = new NodeHashService(algorithm);
   const compressor = new NodeCompressor();
   const transport = new NodeHttpTransport({

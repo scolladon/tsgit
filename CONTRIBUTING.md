@@ -155,7 +155,9 @@ Tests are gated by **folder**, not by `describe.skipIf(process.platform !== '…
 
 - **`test/unit/`** — cross-platform. Platform-aware behaviour is exercised
   via the `PathPolicy` ([ADR-046](docs/adr/046-path-policy-abstraction.md))
-  + `FsOperations` ([ADR-047](docs/adr/047-fs-operations-dependency-injection.md))
+  + `FsOperations` ([ADR-047](docs/adr/047-fs-operations-dependency-injection.md); the
+  constructor takes them in one options object since
+  [ADR-883](docs/adr/883-node-file-system-takes-its-injectable-operations-in-one-options-object.md))
   injection seam on `NodeFileSystem`. A simulated-Windows test runs on
   every host because the platform is data, not a `process.platform`
   read.

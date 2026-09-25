@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
-import { readObjectMetadata } from '../../../../src/application/primitives/read-object.js';
+import {
+  getPackRegistry,
+  readObjectMetadata,
+} from '../../../../src/application/primitives/read-object.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
 import type {
   Blob,
@@ -256,6 +259,49 @@ describe('readObjectMetadata', () => {
           expect(data.code).toBe('OBJECT_NOT_FOUND');
           if (data.code === 'OBJECT_NOT_FOUND') {
             expect(data.id).toBe(missingBaseId);
+          }
+        }
+      });
+    });
+  });
+
+  describe('Given a packed REF_DELTA entry whose base was written to a new pack only after the registry already scanned', () => {
+    describe('When readObjectMetadata is called', () => {
+      it('Then throws OBJECT_NOT_FOUND for the base id — the metadata walk never re-scans, matching packed_to_object_type', async () => {
+        // Arrange — git's header-only type walk (`packed_to_object_type`)
+        // resolves a REF_DELTA base via a same-pack lookup (git's
+        // `get_delta_base` / `find_pack_entry_one`), never `reprepare_packed_git`;
+        // only the CONTENT-resolving path (`oid_object_info_extended`)
+        // retries after a re-scan. A base that only lands on disk after the
+        // scan is therefore a genuine miss here, exactly like the "claimed
+        // by no pack" row above.
+        const baseContent = new TextEncoder().encode('ref base, late pack');
+        const targetContent = new TextEncoder().encode('ref target, late base — different bytes');
+        const ctx = await buildSeededContext();
+        const basePack = await buildSyntheticPack(ctx, [
+          { kind: 'base', type: 'blob', content: baseContent },
+        ]);
+        const baseId = basePack.ids[0] as string;
+        const deltaIds = await writeSyntheticPack(ctx, 'meta-ref-late-base-delta', [
+          { kind: 'ref-delta', baseId, baseUncompressed: baseContent, targetContent },
+        ]);
+        const registry = await getPackRegistry(ctx);
+        await registry.lookup(deltaIds[0] as ObjectId); // scans while the base's pack is absent
+
+        const base = `${ctx.layout.gitDir}/objects/pack/pack-meta-ref-late-base`;
+        await ctx.fs.write(`${base}.pack`, basePack.packBytes);
+        await ctx.fs.write(`${base}.idx`, basePack.idxBytes);
+
+        // Act
+        try {
+          await readObjectMetadata(ctx, deltaIds[0] as ObjectId);
+          expect.unreachable();
+        } catch (error) {
+          // Assert
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('OBJECT_NOT_FOUND');
+          if (data.code === 'OBJECT_NOT_FOUND') {
+            expect(data.id).toBe(baseId);
           }
         }
       });

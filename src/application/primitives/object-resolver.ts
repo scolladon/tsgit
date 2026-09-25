@@ -2,7 +2,7 @@
  * Internal object resolver — loose-first-then-pack, iterative delta walker.
  * Consumed only by readObject.
  */
-import { operationAborted, TsgitError } from '../../domain/error.js';
+import { TsgitError } from '../../domain/error.js';
 import { objectHashMismatch, objectNotFound, objectTooLarge } from '../../domain/objects/error.js';
 import { assertLooseSizeConsistent, splitLooseObject } from '../../domain/objects/git-object.js';
 import {
@@ -15,7 +15,12 @@ import {
   serializeHeader,
 } from '../../domain/objects/index.js';
 import { MAX_DELTA_CHAIN_DEPTH } from '../../domain/storage/delta.js';
-import { deltaChainTooDeep, invalidPackIndex } from '../../domain/storage/error.js';
+import {
+  deltaChainTooDeep,
+  invalidPackEntry,
+  invalidPackIndex,
+  PACK_ENTRY_INFLATED_SIZE_MISMATCH_REASON,
+} from '../../domain/storage/error.js';
 import {
   applyDelta,
   type LruCache,
@@ -36,6 +41,7 @@ import {
   parsedObjectMemoFor,
   probeDeltaBaseCache,
 } from './internal/object-caches.js';
+import { checkAborted, retryOnceAfterRescan } from './internal/retry-after-rescan.js';
 import {
   deltaBaseCacheKey,
   nextOffsetForEntry,
@@ -55,15 +61,17 @@ const EMPTY_TREE_CONTENT = new Uint8Array(0);
 
 /**
  * Depth-aware object-content resolution — the single entry point for every
- * caller. The arms mirror the read model: empty-tree / deltaCache hit /
- * loose read never walk a delta chain, so each reports depth 0; a pack hit
- * threads `externalDepth` into `resolvePackChain` (bounding the cap early,
- * and any further REF_DELTA recursion beneath it) and surfaces the chain's
- * true depth back out. `resolveObject` (below) and `readRawObject`
- * (read-object.ts) call it with `externalDepth` 0 on the hottest read path;
- * `resolveBaseForRefDelta` calls it with the accumulated depth of the chain
- * that reached the base, and the base's own true depth comes back out for
- * the caching loop to record accurately.
+ * caller. Buffered reads answer from the pack before loose, mirroring git's
+ * own `do_oid_object_info_extended`: the arms are empty-tree / deltaCache hit
+ * (neither ever walks a delta chain, so each reports depth 0) / a pack hit
+ * (threads `externalDepth` into `resolvePackChain`, bounding the cap early,
+ * and any further REF_DELTA recursion beneath it, surfacing the chain's true
+ * depth back out) / a pack miss falling to `resolveLooseArm` (also depth 0).
+ * `resolveObject` (below) and `readRawObject` (read-object.ts) call it with
+ * `externalDepth` 0 on the hottest read path; `resolveBaseForRefDelta` calls
+ * it with the accumulated depth of the chain that reached the base, and the
+ * base's own true depth comes back out for the caching loop to record
+ * accurately.
  */
 export async function resolveObjectContentWithDepth(
   ctx: Context,
@@ -82,39 +90,66 @@ export async function resolveObjectContentWithDepth(
   if (id === emptyTreeOid(ctx.hashConfig)) {
     return { type: 'tree', content: EMPTY_TREE_CONTENT, chainDepth: 0, declaredSize: 0 };
   }
-  const cached = ctx.deltaCache.get(id);
-  if (cached !== undefined) {
-    enforceCachedCap(id, cached, maxBytes);
-    await verifyObjectContent(ctx, id, cached.type, cached.content, verifyHash);
-    return {
-      type: cached.type,
-      content: cached.content,
-      chainDepth: 0,
-      declaredSize: cached.content.byteLength,
-    };
-  }
-  const loose = await tryLoose(ctx, id);
-  if (loose !== undefined) {
-    checkAborted(ctx);
-    const split = splitLooseObject(loose);
-    assertLooseSizeConsistent(split);
-    enforceLooseCap(id, split.content, maxBytes);
-    if (split.declaredSize === split.content.byteLength) {
-      cacheEntry(ctx.deltaCache, id, { type: split.type, content: split.content });
-    }
-    await verifyObjectContent(ctx, id, split.type, split.content, verifyHash, split.declaredSize);
-    return {
-      type: split.type,
-      content: split.content,
-      chainDepth: 0,
-      declaredSize: split.declaredSize,
-    };
-  }
+  const cached = await tryDeltaCacheHit(ctx, id, verifyHash, maxBytes);
+  if (cached !== undefined) return cached;
 
   checkAborted(ctx);
+  const first = await tryResolveViaRegistry(ctx, registry, id, verifyHash, maxBytes, externalDepth);
+  if (first !== undefined) return first;
+
+  // Full miss: as of the CURRENT generation, no pack claims `id` and no loose
+  // file exists for it either. Mirrors git's `oid_object_info_extended` →
+  // `reprepare_packed_git(r)` → retry-once: an external tool (a concurrent
+  // `git repack`, a lazy fetch outside this session) may have changed the
+  // store since the last scan. `retryOnceAfterRescan` single-flights the
+  // re-scan across concurrent misses and honours an abort raised during it.
+  const retried = await retryOnceAfterRescan(ctx, registry, id, () =>
+    tryResolveViaRegistry(ctx, registry, id, verifyHash, maxBytes, externalDepth),
+  );
+  if (retried !== undefined) return retried;
+  throw objectNotFound(id);
+}
+
+/** The deltaCache fast path: neither hop walks a delta chain, so a hit always
+ *  reports depth 0. Extracted so the entry point above stays a short list of
+ *  short-circuits, one per storage form. */
+async function tryDeltaCacheHit(
+  ctx: Context,
+  id: ObjectId,
+  verifyHash: boolean,
+  maxBytes: number | undefined,
+): Promise<(ObjectContent & { chainDepth: number; declaredSize: number }) | undefined> {
+  const cached = ctx.deltaCache.get(id);
+  if (cached === undefined) return undefined;
+  enforceCachedCap(id, cached, maxBytes);
+  await verifyObjectContent(ctx, id, cached.type, cached.content, verifyHash);
+  return {
+    type: cached.type,
+    content: cached.content,
+    chainDepth: 0,
+    declaredSize: cached.content.byteLength,
+  };
+}
+
+/**
+ * One resolution attempt against the CURRENT generation: a pack hit resolves
+ * its delta chain, a loose hit resolves its bytes, and neither claiming `id`
+ * reports `undefined` — the full-miss signal `resolveObjectContentWithDepth`
+ * retries once after a re-scan. Any OTHER error (a corrupt entry, a hash
+ * mismatch, an oversize object) propagates directly, never converted to a
+ * miss and never retried.
+ */
+async function tryResolveViaRegistry(
+  ctx: Context,
+  registry: PackRegistry,
+  id: ObjectId,
+  verifyHash: boolean,
+  maxBytes: number | undefined,
+  externalDepth: number,
+): Promise<(ObjectContent & { chainDepth: number; declaredSize: number }) | undefined> {
   const hit = await registry.lookup(id);
   if (hit === undefined) {
-    throw objectNotFound(id);
+    return resolveLooseArm(ctx, id, maxBytes, verifyHash);
   }
   checkAborted(ctx);
   const resolved = await resolvePackChainWithDepth(ctx, registry, hit, id, maxBytes, externalDepth);
@@ -125,6 +160,39 @@ export async function resolveObjectContentWithDepth(
     content: resolved.content,
     chainDepth: resolved.chainDepth,
     declaredSize: resolved.content.byteLength,
+  };
+}
+
+/**
+ * The pack-miss arm: tried only once the pack registry has answered
+ * `undefined` for `id`. Reports `undefined` — never throws — when the loose
+ * store ALSO misses: that is the full-miss signal `tryResolveViaRegistry`'s
+ * caller retries once after a re-scan, not a refusal in its own right. A
+ * loose hit never walks a delta chain, so it always reports depth 0.
+ */
+async function resolveLooseArm(
+  ctx: Context,
+  id: ObjectId,
+  maxBytes: number | undefined,
+  verifyHash: boolean,
+): Promise<(ObjectContent & { chainDepth: number; declaredSize: number }) | undefined> {
+  const loose = await tryLoose(ctx, id);
+  if (loose === undefined) {
+    return undefined;
+  }
+  checkAborted(ctx);
+  const split = splitLooseObject(loose);
+  assertLooseSizeConsistent(split);
+  enforceLooseCap(id, split.content, maxBytes);
+  if (split.declaredSize === split.content.byteLength) {
+    cacheEntry(ctx.deltaCache, id, { type: split.type, content: split.content });
+  }
+  await verifyObjectContent(ctx, id, split.type, split.content, verifyHash, split.declaredSize);
+  return {
+    type: split.type,
+    content: split.content,
+    chainDepth: 0,
+    declaredSize: split.declaredSize,
   };
 }
 
@@ -243,12 +311,6 @@ function enforcePackDeltaPreApplyCap(
 }
 // Stryker restore BlockStatement
 
-function checkAborted(ctx: Context): void {
-  if (ctx.signal?.aborted === true) {
-    throw operationAborted();
-  }
-}
-
 async function tryLoose(ctx: Context, id: ObjectId): Promise<Uint8Array | undefined> {
   const compressed = await readLooseCompressed(ctx, id);
   if (compressed === undefined) return undefined;
@@ -329,9 +391,10 @@ interface DeltaStep {
   /** Offset this step's entry was found at — the key `resolvePackChain`
    *  caches this level's reconstructed content under. */
   readonly offset: number;
-  /** The `deltaBaseCacheKey(packName, offset)` string already built to probe
-   *  this level — carried forward so `resolvePackChain`'s later cache write
-   *  for this same offset reuses it instead of rebuilding an identical key. */
+  /** The `deltaBaseCacheKey(pack.instanceKey, offset)` string already built
+   *  to probe this level — carried forward so `resolvePackChain`'s later
+   *  cache write for this same offset reuses it instead of rebuilding an
+   *  identical key. */
   readonly probeKey: string;
 }
 
@@ -391,6 +454,28 @@ export function assertChainDepthWithinCap(depth: number): void {
   }
 }
 
+/**
+ * git's uniform `unpack_entry_data` check (`stream.total_out != size`),
+ * applied on the READ path to an entry's already-inflated bytes: a zlib
+ * stream that inflates to a byte count other than its own header's declared
+ * size is refused, regardless of which side of `declaredSize` it lands on.
+ * Covers both a base entry's own content and a delta entry's instruction
+ * stream — the ONE declared-size field every `PackEntryHeader` variant
+ * carries. The WRITE path enforces the identical shape
+ * (`pack-byte-source.ts`'s `withDeclaredSizeCheck`); this is its read-side
+ * counterpart, sharing the same refusal so a `.pack` write and a `.pack`
+ * read agree on what "bad object" means.
+ */
+export function assertInflatedSizeMatches(
+  offset: number,
+  declaredSize: number,
+  actualSize: number,
+): void {
+  if (actualSize !== declaredSize) {
+    throw invalidPackEntry(offset, PACK_ENTRY_INFLATED_SIZE_MISMATCH_REASON);
+  }
+}
+
 async function collectDeltaChain(
   ctx: Context,
   registry: PackRegistry,
@@ -411,7 +496,7 @@ async function collectDeltaChain(
     // Built once per level and carried on the pushed `DeltaStep` below, so a
     // probe miss that becomes a delta level never rebuilds this same key for
     // `resolvePackChain`'s later cache write.
-    const probeKey = deltaBaseCacheKey(currentHit.pack.name, currentHit.offset);
+    const probeKey = deltaBaseCacheKey(currentHit.pack.instanceKey, currentHit.offset);
     // Probe BEFORE descending: a level cached by an earlier chain (this
     // offset reached as someone else's intermediate) short-circuits the
     // whole rest of the walk exactly as reaching a real base entry would.
@@ -442,6 +527,7 @@ async function collectDeltaChain(
     if (isBase(header)) {
       enforcePackBaseCap(targetId, header.size, maxBytes);
       const inflated = await ctx.compressor.inflate(chunk.subarray(headerEndInChunk));
+      assertInflatedSizeMatches(currentHit.offset, header.size, inflated.byteLength);
       return {
         deltas,
         baseContent: inflated,
@@ -453,6 +539,7 @@ async function collectDeltaChain(
     depth += 1;
     assertChainDepthWithinCap(externalDepth + depth);
     const instructions = await ctx.compressor.inflate(chunk.subarray(headerEndInChunk));
+    assertInflatedSizeMatches(currentHit.offset, header.size, instructions.byteLength);
     // Stryker disable next-line CallExpression: equivalent — this pre-apply cap is a documented perf-only optimisation (see enforcePackDeltaPreApplyCap's own docstring): removing the call leaves the POST-apply cap in resolvePackChainWithDepth (current.length > maxBytes) to throw the identical OBJECT_TOO_LARGE, just after the wasted apply+allocation instead of before it (full covering set — object-resolver, read-object, stream-blob, blob-source, fsck, pack-registry — passes unmutated).
     enforcePackDeltaPreApplyCap(targetId, instructions, maxBytes, depth);
 
@@ -576,7 +663,7 @@ async function resolvePackChainWithDepth(
   // above (only `DeltaStep`s did), so its key is built fresh here — the one
   // key this function still computes rather than reuses.
   if (phase1.deltas.length > 0 && phase1.baseOffset !== undefined) {
-    insertLevel(deltaBaseCacheKey(hit.pack.name, phase1.baseOffset), current, 0);
+    insertLevel(deltaBaseCacheKey(hit.pack.instanceKey, phase1.baseOffset), current, 0);
   }
   for (let i = phase1.deltas.length - 1; i >= 0; i -= 1) {
     const step = phase1.deltas[i];
@@ -739,6 +826,13 @@ function objectTypeToPackType(type: ObjectType): PackEntryHeader['type'] {
   }
 }
 
-function cacheEntry(cache: LruCache<ObjectContent>, id: ObjectId, entry: ObjectContent): void {
+/** Shared by every arm that resolves an object's full bytes (this module's
+ *  own loose and pack-chain arms, and `blob-source.ts`'s buffered arms):
+ *  charges the cache the same byte size for the same reason everywhere. */
+export function cacheEntry(
+  cache: LruCache<ObjectContent>,
+  id: ObjectId,
+  entry: ObjectContent,
+): void {
   cache.set(id, entry, entry.content.byteLength + OBJECT_CACHE_ENTRY_OVERHEAD_BYTES);
 }

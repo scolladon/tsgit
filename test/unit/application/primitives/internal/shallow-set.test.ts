@@ -288,13 +288,15 @@ describe('loadShallowSet / isShallowRepository', () => {
       it('Then the foreign error propagates unchanged', async () => {
         // Arrange
         const base = await buildSeededContext();
+        const refusal = async (): Promise<never> => {
+          throw permissionDenied(shallowFilePath(base.layout.gitDir));
+        };
         const ctx: Context = {
           ...base,
           fs: {
             ...base.fs,
-            readUtf8: async () => {
-              throw permissionDenied(shallowFilePath(base.layout.gitDir));
-            },
+            readUtf8: refusal,
+            tryReadUtf8: refusal,
           },
         };
         const sut = loadShallowSet;
@@ -344,20 +346,21 @@ describe('loadShallowSet / isShallowRepository', () => {
         await base.fs.writeUtf8(shallowFilePath(base.layout.gitDir), `${OID_A}\n`);
         let rejectFirst: ((reason: unknown) => void) | undefined;
         let reads = 0;
-        const realRead = base.fs.readUtf8.bind(base.fs);
+        const realTryRead = base.fs.tryReadUtf8?.bind(base.fs);
+        const controlledRead = (p: string): Promise<string | undefined> => {
+          reads += 1;
+          if (reads === 1) {
+            return new Promise((_resolve, reject) => {
+              rejectFirst = reject;
+            });
+          }
+          return realTryRead === undefined ? base.fs.readUtf8(p) : realTryRead(p);
+        };
         const ctx: Context = {
           ...base,
           fs: {
             ...base.fs,
-            readUtf8: (p: string): Promise<string> => {
-              reads += 1;
-              if (reads === 1) {
-                return new Promise((_resolve, reject) => {
-                  rejectFirst = reject;
-                });
-              }
-              return realRead(p);
-            },
+            tryReadUtf8: controlledRead,
           },
         };
         const stale = loadShallowSet(ctx);

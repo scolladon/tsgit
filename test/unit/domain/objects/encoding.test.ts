@@ -35,6 +35,22 @@ describe('encoding', () => {
         });
       });
     });
+
+    describe('Given every byte value from 0x00 to 0xff', () => {
+      describe('When converting to hex', () => {
+        it('Then each byte renders as two lowercase digits, zero-padded', () => {
+          // Arrange
+          const array = Uint8Array.from({ length: 256 }, (_, byte) => byte);
+          const expected = Array.from(array, (byte) => byte.toString(16).padStart(2, '0')).join('');
+
+          // Act
+          const result = bytesToHex(array);
+
+          // Assert
+          expect(result).toBe(expected);
+        });
+      });
+    });
   });
 
   describe('hexToBytes', () => {

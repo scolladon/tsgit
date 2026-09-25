@@ -130,7 +130,7 @@ const READ_WORKLOADS: Record<string, ReadWorkload> = {
   log: {
     kind: 'read',
     fixture: MEDIUM_FIXTURE,
-    iterations: 200, // 685 ticks measured
+    iterations: 800, // 926 ticks measured
     run: async (repo) => {
       await repo.log();
     },
@@ -144,7 +144,7 @@ const READ_WORKLOADS: Record<string, ReadWorkload> = {
   'log-commit-graph': {
     kind: 'read',
     fixture: MEDIUM_FIXTURE_WITH_COMMIT_GRAPH,
-    iterations: 200, // 659 ticks measured
+    iterations: 700, // 730 ticks measured
     run: async (repo) => {
       await repo.log();
     },
@@ -157,14 +157,30 @@ const READ_WORKLOADS: Record<string, ReadWorkload> = {
       await repo.status();
     },
   },
-  // 8 ticks measured @ READ_ITERATIONS (100) — each iteration pays a full
-  // `openRepository`, so ticks/iteration is far lower than a reused-handle
-  // read; needs a much larger multiple to clear the floor.
-  'pack-read': {
+  // Isolates the cost `pack-read` used to carry incidentally: a full
+  // `openRepository` + `dispose()` per iteration, nothing else — `run` does
+  // no work of its own, so every sampled tick lands on the harness's own
+  // per-iteration open/dispose (see `runReadChild` in `profile.ts`).
+  // 1 tick measured @ READ_ITERATIONS (100), 73 ticks measured @ 20 000
+  // iterations — open+dispose is cheap per call (~0.2 ms), so ticks/iteration
+  // is small; a much larger multiple is needed to clear the floor.
+  open: {
     kind: 'read',
     fixture: MEDIUM_FIXTURE,
     perIterationRepo: true,
-    iterations: 8000, // 590 ticks measured
+    iterations: 150_000, // 554 ticks measured
+    run: async () => {},
+  },
+  // Now profiles the packed-object read on an already-open repository (the
+  // open/dispose cost moved to the `open` workload above); a reused handle
+  // hits the pack-window/delta-base caches after the first read, so
+  // ticks/iteration is minuscule — 16 ticks measured @ 200 000 iterations,
+  // 502 ticks measured @ 8 000 000 iterations (too close to the floor to
+  // trust) — needing a much larger multiple to clear it with margin.
+  'pack-read': {
+    kind: 'read',
+    fixture: MEDIUM_FIXTURE,
+    iterations: 12_000_000, // 768 ticks measured
     run: async (repo, fixture) => {
       await repo.primitives.readBlob(fixture.firstBlobId as ObjectId);
     },
@@ -173,7 +189,7 @@ const READ_WORKLOADS: Record<string, ReadWorkload> = {
   describe: {
     kind: 'read',
     fixture: MEDIUM_FIXTURE,
-    iterations: 20_000, // 581 ticks measured
+    iterations: 250_000, // 738 ticks measured
     setup: (fixtureCwd, env) => ensureNearTag(fixtureCwd, env),
     run: async (repo) => {
       await repo.describe();
@@ -183,7 +199,7 @@ const READ_WORKLOADS: Record<string, ReadWorkload> = {
   'name-rev': {
     kind: 'read',
     fixture: MEDIUM_FIXTURE,
-    iterations: 30_000, // 913 ticks measured
+    iterations: 360_000, // 761 ticks measured
     setup: (fixtureCwd, env) => ensurePrunableTaggedTip(fixtureCwd, env),
     run: async (repo, _fixture, target) => {
       await repo.nameRev(target as string);
@@ -197,7 +213,7 @@ const READ_WORKLOADS: Record<string, ReadWorkload> = {
   'rev-parse': {
     kind: 'read',
     fixture: MEDIUM_FIXTURE,
-    iterations: 350_000, // 900 ticks measured
+    iterations: 4_000_000, // 832 ticks measured
     run: async (repo) => {
       await repo.revParse('HEAD');
     },
@@ -206,7 +222,7 @@ const READ_WORKLOADS: Record<string, ReadWorkload> = {
   'cat-file': {
     kind: 'read',
     fixture: MEDIUM_FIXTURE,
-    iterations: 200_000, // 1042 ticks measured
+    iterations: 1_300_000, // 733 ticks measured
     run: async (repo, fixture) => {
       await repo.catFile({ ids: [fixture.headCommitId] });
     },
@@ -215,7 +231,7 @@ const READ_WORKLOADS: Record<string, ReadWorkload> = {
   show: {
     kind: 'read',
     fixture: MEDIUM_FIXTURE,
-    iterations: 60_000, // 532 ticks measured
+    iterations: 400_000, // 791 ticks measured
     run: async (repo) => {
       await repo.show('HEAD');
     },
@@ -224,7 +240,7 @@ const READ_WORKLOADS: Record<string, ReadWorkload> = {
   diff: {
     kind: 'read',
     fixture: MEDIUM_FIXTURE,
-    iterations: 40_000, // 544 ticks measured
+    iterations: 480_000, // 900 ticks measured
     run: async (repo) => {
       await repo.diff({ from: 'HEAD~1', to: 'HEAD' });
     },
@@ -235,7 +251,7 @@ const READ_WORKLOADS: Record<string, ReadWorkload> = {
   blame: {
     kind: 'read',
     fixture: MEDIUM_FIXTURE,
-    iterations: 100, // 609 ticks measured
+    iterations: 700, // 752 ticks measured
     run: async (repo) => {
       await repo.blame(BLAME_TARGET);
     },
@@ -258,7 +274,7 @@ const WRITE_WORKLOADS: Record<string, WriteWorkload> = {
     kind: 'write',
     build: buildAddScratch,
     hoistBuild: false,
-    iterations: 6000, // 607 ticks measured
+    iterations: 12_000, // 834 ticks measured
     run: async (repo) => {
       await repo.add([], { all: true });
     },
@@ -267,7 +283,7 @@ const WRITE_WORKLOADS: Record<string, WriteWorkload> = {
   merge: {
     kind: 'write',
     build: buildMergeScratch,
-    iterations: 800, // 697 ticks measured
+    iterations: 1500, // 801 ticks measured
     run: async (repo) => {
       await repo.merge.run({
         rev: 'side',

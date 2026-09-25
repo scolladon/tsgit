@@ -179,11 +179,10 @@ async function arrangeMidxRepo(
   midxBytes.set(trailer, trailerStart);
   const midxPath = `${packDir}/multi-pack-index`;
   await repo.ctx.fs.write(midxPath, midxBytes);
-  // Best-effort on the source module graph (the local node/memory drivers);
-  // on the dist-bundle drivers this touches a parallel registry and the
-  // bundle's own registry simply takes its FIRST scan at the read below —
-  // either way the healthy read sees the midx.
-  (await getPackRegistry(repo.ctx)).refresh();
+  // No explicit `registry.refresh()` here, deliberately — the object-
+  // resolver's own full-miss re-scan retry (`pack-miss-rescan.ts`) re-scans
+  // and finds the midx on the read below, on every runtime, without needing
+  // to reach across a dist-bundle driver's own parallel registry instance.
   return { idA, idB, midxPath, midxBytes };
 }
 

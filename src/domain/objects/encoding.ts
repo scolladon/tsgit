@@ -3,13 +3,11 @@ const HEX_TABLE: ReadonlyArray<string> = Array.from({ length: 256 }, (_, i) =>
 );
 
 export function bytesToHex(bytes: Uint8Array): string {
-  // Stryker disable next-line ArrayDeclaration: equivalent — `new Array(n)` only pre-sizes; every index 0..n-1 is then assigned, so `new Array()` yields an identical filled array after the loop.
-  const parts = new Array<string>(bytes.length);
-  // Stryker disable next-line EqualityOperator: equivalent — at i=bytes.length, bytes[i] is undefined and HEX_TABLE[undefined] is undefined; parts.join('') renders a trailing undefined as '', so the result string is unchanged.
-  for (let i = 0; i < bytes.length; i++) {
-    parts[i] = HEX_TABLE[bytes[i]!]!;
+  let hex = '';
+  for (const byte of bytes) {
+    hex += HEX_TABLE[byte];
   }
-  return parts.join('');
+  return hex;
 }
 
 export function hexToBytes(hex: string): Uint8Array {

@@ -4,286 +4,286 @@
     "log": {
       "hotShares": [
         {
-          "frame": "parseObject",
-          "self": 0.39,
-          "ticks": 402
-        },
-        {
-          "frame": "from",
-          "self": 0.22,
-          "ticks": 226
+          "frame": "resolveObjectContentWithDepth",
+          "self": 0.18,
+          "ticks": 198
         },
         {
           "frame": "commitDateWalk",
-          "self": 0.05,
-          "ticks": 50
-        },
-        {
-          "frame": "parseRequiredFields",
-          "self": 0.03,
-          "ticks": 33
-        },
-        {
-          "frame": "enqueueParents",
-          "self": 0.03,
-          "ticks": 33
-        },
-        {
-          "frame": "resolveObjectBytesWithDepth",
-          "self": 0.03,
-          "ticks": 33
+          "self": 0.11,
+          "ticks": 119
         },
         {
           "frame": "readObject",
-          "self": 0.03,
-          "ticks": 27
+          "self": 0.1,
+          "ticks": 110
+        },
+        {
+          "frame": "log",
+          "self": 0.08,
+          "ticks": 87
         },
         {
           "frame": "resolveHeapEntry",
+          "self": 0.07,
+          "ticks": 77
+        },
+        {
+          "frame": "enqueueParents",
+          "self": 0.07,
+          "ticks": 71
+        },
+        {
+          "frame": "<anonymous>",
+          "self": 0.06,
+          "ticks": 66
+        },
+        {
+          "frame": "commitHeader",
+          "self": 0.05,
+          "ticks": 56
+        },
+        {
+          "frame": "next",
+          "self": 0.03,
+          "ticks": 34
+        },
+        {
+          "frame": "enqueueCommit",
+          "self": 0.03,
+          "ticks": 34
+        },
+        {
+          "frame": "addToHead",
+          "self": 0.03,
+          "ticks": 31
+        },
+        {
+          "frame": "readCommit",
           "self": 0.02,
           "ticks": 25
         },
         {
-          "frame": "parseHeader$1",
-          "self": 0.02,
-          "ticks": 25
-        },
-        {
-          "frame": "parseIdentity",
+          "frame": "parseMemoised",
           "self": 0.02,
           "ticks": 22
         },
         {
-          "frame": "<anonymous>",
-          "self": 0.02,
-          "ticks": 24
+          "frame": "verifyObjectContent",
+          "self": 0.01,
+          "ticks": 16
+        },
+        {
+          "frame": "tryDeltaCacheHit$1",
+          "self": 0.01,
+          "ticks": 16
+        },
+        {
+          "frame": "currentGate",
+          "self": 0.01,
+          "ticks": 16
         },
         {
           "frame": "resolveObject$1",
-          "self": 0.02,
-          "ticks": 20
+          "self": 0.01,
+          "ticks": 14
         },
         {
-          "frame": "log",
-          "self": 0.02,
-          "ticks": 21
+          "frame": "removeNode",
+          "self": 0.01,
+          "ticks": 14
         },
         {
-          "frame": "addToHead",
+          "frame": "acquire",
+          "self": 0.01,
+          "ticks": 13
+        },
+        {
+          "frame": "withLazyFetchRetry",
           "self": 0.01,
           "ticks": 12
         },
         {
-          "frame": "next",
+          "frame": "assertLoadable",
           "self": 0.01,
-          "ticks": 11
+          "ticks": 10
         },
         {
-          "frame": "decodeLineValue",
+          "frame": "enforceCachedCap",
           "self": 0.01,
           "ticks": 9
-        },
-        {
-          "frame": "lineStartsWithAscii",
-          "self": 0.01,
-          "ticks": 8
-        },
-        {
-          "frame": "commitHeader",
-          "self": 0.01,
-          "ticks": 8
         }
       ],
-      "totalTicks": 1026,
+      "totalTicks": 1073,
       "underSampled": false
     },
     "log-commit-graph": {
       "hotShares": [
         {
-          "frame": "from",
-          "self": 0.22,
-          "ticks": 231
-        },
-        {
-          "frame": "parseObject",
-          "self": 0.2,
-          "ticks": 212
-        },
-        {
-          "frame": "findBlankLine",
-          "self": 0.19,
-          "ticks": 203
+          "frame": "resolveObjectContentWithDepth",
+          "self": 0.18,
+          "ticks": 207
         },
         {
           "frame": "<anonymous>",
-          "self": 0.05,
-          "ticks": 50
-        },
-        {
-          "frame": "parseRequiredFields",
-          "self": 0.04,
-          "ticks": 44
-        },
-        {
-          "frame": "resolveObjectBytesWithDepth",
-          "self": 0.04,
-          "ticks": 39
-        },
-        {
-          "frame": "resolveObject$1",
-          "self": 0.03,
-          "ticks": 33
-        },
-        {
-          "frame": "enqueueParents",
-          "self": 0.03,
-          "ticks": 33
-        },
-        {
-          "frame": "resolveHeapEntry",
-          "self": 0.03,
-          "ticks": 27
-        },
-        {
-          "frame": "log",
-          "self": 0.02,
-          "ticks": 23
-        },
-        {
-          "frame": "lineStartsWithAscii",
-          "self": 0.02,
-          "ticks": 23
+          "self": 0.12,
+          "ticks": 138
         },
         {
           "frame": "commitDateWalk",
+          "self": 0.1,
+          "ticks": 122
+        },
+        {
+          "frame": "resolveHeapEntry",
+          "self": 0.09,
+          "ticks": 102
+        },
+        {
+          "frame": "readObject",
+          "self": 0.08,
+          "ticks": 97
+        },
+        {
+          "frame": "log",
+          "self": 0.08,
+          "ticks": 97
+        },
+        {
+          "frame": "commitHeader",
+          "self": 0.05,
+          "ticks": 53
+        },
+        {
+          "frame": "parseMemoised",
+          "self": 0.04,
+          "ticks": 52
+        },
+        {
+          "frame": "enqueueParents",
+          "self": 0.04,
+          "ticks": 51
+        },
+        {
+          "frame": "next",
+          "self": 0.03,
+          "ticks": 39
+        },
+        {
+          "frame": "tryDeltaCacheHit$1",
           "self": 0.02,
           "ticks": 22
         },
         {
-          "frame": "readObject",
+          "frame": "verifyObjectContent",
           "self": 0.02,
+          "ticks": 21
+        },
+        {
+          "frame": "removeNode",
+          "self": 0.02,
+          "ticks": 20
+        },
+        {
+          "frame": "enqueueCommit",
+          "self": 0.02,
+          "ticks": 20
+        },
+        {
+          "frame": "resolveObject$1",
+          "self": 0.01,
+          "ticks": 17
+        },
+        {
+          "frame": "withLazyFetchRetry",
+          "self": 0.01,
+          "ticks": 17
+        },
+        {
+          "frame": "readCommit",
+          "self": 0.01,
           "ticks": 16
-        },
-        {
-          "frame": "decodeLineValue",
-          "self": 0.01,
-          "ticks": 14
-        },
-        {
-          "frame": "parseIdentity",
-          "self": 0.01,
-          "ticks": 9
         },
         {
           "frame": "addToHead",
           "self": 0.01,
-          "ticks": 8
+          "ticks": 16
         },
         {
-          "frame": "removeNode",
+          "frame": "assertLoadable",
           "self": 0.01,
-          "ticks": 7
+          "ticks": 12
         },
         {
-          "frame": "next",
+          "frame": "currentGate",
           "self": 0.01,
           "ticks": 9
-        },
-        {
-          "frame": "decode$1",
-          "self": 0.01,
-          "ticks": 6
         }
       ],
-      "totalTicks": 1044,
+      "totalTicks": 1165,
       "underSampled": false
     },
     "status": {
       "hotShares": [
         {
           "frame": "lstat",
-          "self": 0.39,
-          "ticks": 510
-        },
-        {
-          "frame": "stepEntry",
-          "self": 0.08,
-          "ticks": 99
-        },
-        {
-          "frame": "flattenEntry",
-          "self": 0.07,
-          "ticks": 88
+          "self": 0.36,
+          "ticks": 333
         },
         {
           "frame": "<anonymous>",
-          "self": 0.07,
-          "ticks": 94
-        },
-        {
-          "frame": "statOnlyVerdict",
-          "self": 0.06,
-          "ticks": 82
-        },
-        {
-          "frame": "flattenLevel",
-          "self": 0.05,
-          "ticks": 63
+          "self": 0.13,
+          "ticks": 118
         },
         {
           "frame": "compareWorkingTreeDelta",
-          "self": 0.05,
-          "ticks": 61
+          "self": 0.11,
+          "ticks": 106
         },
         {
-          "frame": "walkWorkingTree",
-          "self": 0.05,
-          "ticks": 60
+          "frame": "stepEntry",
+          "self": 0.1,
+          "ticks": 90
         },
         {
           "frame": "run",
-          "self": 0.05,
-          "ticks": 61
+          "self": 0.08,
+          "ticks": 73
         },
         {
-          "frame": "advanceCursor",
+          "frame": "walkWorkingTree",
+          "self": 0.07,
+          "ticks": 66
+        },
+        {
+          "frame": "runWithinBudget",
           "self": 0.03,
-          "ticks": 44
+          "ticks": 31
         },
         {
           "frame": "diffIndexAgainstTree",
-          "self": 0.02,
-          "ticks": 27
-        },
-        {
-          "frame": "matchSixByteMode",
-          "self": 0.02,
-          "ticks": 23
+          "self": 0.03,
+          "ticks": 24
         },
         {
           "frame": "scanUntracked",
           "self": 0.02,
-          "ticks": 22
+          "ticks": 20
         },
         {
-          "frame": "flatTreeByteSize",
+          "frame": "runSync",
           "self": 0.02,
-          "ticks": 20
+          "ticks": 14
         },
         {
           "frame": "status",
           "self": 0.01,
-          "ticks": 13
+          "ticks": 11
         },
         {
           "frame": "groupUnmergedEntries",
           "self": 0.01,
-          "ticks": 9
-        },
-        {
-          "frame": "runFs",
-          "self": 0.01,
-          "ticks": 7
+          "ticks": 10
         },
         {
           "frame": "buildChanges",
@@ -291,1643 +291,1241 @@
           "ticks": 8
         }
       ],
-      "totalTicks": 1314,
+      "totalTicks": 924,
+      "underSampled": false
+    },
+    "open": {
+      "hotShares": [
+        {
+          "frame": "tokenizeLine",
+          "self": 0.15,
+          "ticks": 99
+        },
+        {
+          "frame": "sectionedEntries",
+          "self": 0.13,
+          "ticks": 88
+        },
+        {
+          "frame": "layoutRootsOf",
+          "self": 0.09,
+          "ticks": 58
+        },
+        {
+          "frame": "scanKey",
+          "self": 0.07,
+          "ticks": 48
+        },
+        {
+          "frame": "openRepository$1",
+          "self": 0.06,
+          "ticks": 44
+        },
+        {
+          "frame": "<anonymous>",
+          "self": 0.04,
+          "ticks": 27
+        },
+        {
+          "frame": "runWithinBudget",
+          "self": 0.03,
+          "ticks": 21
+        },
+        {
+          "frame": "openRepository",
+          "self": 0.03,
+          "ticks": 20
+        },
+        {
+          "frame": "evaluateTrust",
+          "self": 0.02,
+          "ticks": 17
+        },
+        {
+          "frame": "lstatOrUndefined",
+          "self": 0.02,
+          "ticks": 16
+        },
+        {
+          "frame": "layoutForDiscoveredGitDir",
+          "self": 0.02,
+          "ticks": 16
+        },
+        {
+          "frame": "wrapFsValidator",
+          "self": 0.02,
+          "ticks": 13
+        },
+        {
+          "frame": "lastTopLevelEntry",
+          "self": 0.02,
+          "ticks": 12
+        },
+        {
+          "frame": "resolveNodeLayout",
+          "self": 0.02,
+          "ticks": 12
+        },
+        {
+          "frame": "readUtf8OrUndefined",
+          "self": 0.02,
+          "ticks": 11
+        },
+        {
+          "frame": "readRegularFileSync",
+          "self": 0.01,
+          "ticks": 10
+        },
+        {
+          "frame": "NodeFileSystem",
+          "self": 0.01,
+          "ticks": 10
+        },
+        {
+          "frame": "scanConfigFile",
+          "self": 0.01,
+          "ticks": 10
+        },
+        {
+          "frame": "resolveFormatVersion",
+          "self": 0.01,
+          "ticks": 9
+        },
+        {
+          "frame": "finishLayout",
+          "self": 0.01,
+          "ticks": 9
+        },
+        {
+          "frame": "buildSnapshotFactory",
+          "self": 0.01,
+          "ticks": 9
+        },
+        {
+          "frame": "stat",
+          "self": 0.01,
+          "ticks": 8
+        },
+        {
+          "frame": "lstatFirstStat",
+          "self": 0.01,
+          "ticks": 10
+        },
+        {
+          "frame": "findLayout",
+          "self": 0.01,
+          "ticks": 8
+        },
+        {
+          "frame": "settleSpeculation",
+          "self": 0.01,
+          "ticks": 7
+        },
+        {
+          "frame": "readRepositoryFormat",
+          "self": 0.01,
+          "ticks": 7
+        },
+        {
+          "frame": "validateOptions$1",
+          "self": 0.01,
+          "ticks": 8
+        },
+        {
+          "frame": "resolveLayout",
+          "self": 0.01,
+          "ticks": 6
+        },
+        {
+          "frame": "statOrUndefined",
+          "self": 0.01,
+          "ticks": 5
+        },
+        {
+          "frame": "onTurnEnd",
+          "self": 0.01,
+          "ticks": 5
+        },
+        {
+          "frame": "createLruCache",
+          "self": 0.01,
+          "ticks": 5
+        },
+        {
+          "frame": "walk",
+          "self": 0.01,
+          "ticks": 4
+        },
+        {
+          "frame": "candidateSharedDirsValid",
+          "self": 0.01,
+          "ticks": 4
+        }
+      ],
+      "totalTicks": 681,
       "underSampled": false
     },
     "pack-read": {
       "hotShares": [
         {
-          "frame": "layoutRootsOf",
-          "self": 0.1,
-          "ticks": 19
+          "frame": "resolveObject$1",
+          "self": 0.3,
+          "ticks": 322
         },
         {
-          "frame": "<anonymous>",
-          "self": 0.06,
-          "ticks": 11
+          "frame": "readBlob",
+          "self": 0.25,
+          "ticks": 265
         },
         {
-          "frame": "tokenizeLine",
-          "self": 0.05,
-          "ticks": 10
-        },
-        {
-          "frame": "sectionedEntries",
-          "self": 0.05,
-          "ticks": 10
-        },
-        {
-          "frame": "openRepository",
-          "self": 0.05,
-          "ticks": 10
-        },
-        {
-          "frame": "NodeFileSystem",
-          "self": 0.04,
-          "ticks": 8
-        },
-        {
-          "frame": "resolveNodeLayout",
-          "self": 0.03,
-          "ticks": 6
-        },
-        {
-          "frame": "readRepositoryFormat",
-          "self": 0.03,
-          "ticks": 5
-        },
-        {
-          "frame": "canonicalize",
-          "self": 0.03,
-          "ticks": 5
-        },
-        {
-          "frame": "resolveCommonDir",
-          "self": 0.02,
-          "ticks": 3
-        },
-        {
-          "frame": "layoutFor",
-          "self": 0.02,
-          "ticks": 3
-        },
-        {
-          "frame": "finishLayout",
-          "self": 0.02,
-          "ticks": 3
-        },
-        {
-          "frame": "collectDeltaChain",
-          "self": 0.02,
-          "ticks": 4
-        },
-        {
-          "frame": "resolveRead",
-          "self": 0.02,
-          "ticks": 3
-        },
-        {
-          "frame": "resolvePackChainWithDepth",
-          "self": 0.02,
-          "ticks": 4
-        },
-        {
-          "frame": "get",
-          "self": 0.02,
-          "ticks": 3
-        },
-        {
-          "frame": "readSlice",
-          "self": 0.02,
-          "ticks": 4
-        },
-        {
-          "frame": "stat",
-          "self": 0.02,
-          "ticks": 3
-        },
-        {
-          "frame": "runFs",
-          "self": 0.02,
-          "ticks": 3
-        },
-        {
-          "frame": "evaluateTrust",
-          "self": 0.01,
-          "ticks": 2
-        },
-        {
-          "frame": "canonicalizeTrustedDirectories",
-          "self": 0.01,
-          "ticks": 2
-        },
-        {
-          "frame": "canonicalizeCeilings",
-          "self": 0.01,
-          "ticks": 2
-        },
-        {
-          "frame": "validateFanoutMonotonicity",
-          "self": 0.01,
-          "ticks": 2
-        },
-        {
-          "frame": "scanKey",
-          "self": 0.01,
-          "ticks": 2
-        },
-        {
-          "frame": "parsePackIndex",
-          "self": 0.01,
-          "ticks": 2
-        },
-        {
-          "frame": "lastTopLevelEntry",
-          "self": 0.01,
-          "ticks": 2
-        },
-        {
-          "frame": "disposeAdapters",
-          "self": 0.01,
-          "ticks": 2
-        },
-        {
-          "frame": "createLruCache",
-          "self": 0.01,
-          "ticks": 2
-        },
-        {
-          "frame": "tryLoose",
-          "self": 0.01,
-          "ticks": 1
-        },
-        {
-          "frame": "systemConfigPath",
-          "self": 0.01,
-          "ticks": 1
-        },
-        {
-          "frame": "scanPacks",
-          "self": 0.01,
-          "ticks": 1
-        },
-        {
-          "frame": "resolveTrustGate",
-          "self": 0.01,
-          "ticks": 1
-        },
-        {
-          "frame": "resolveLayout",
-          "self": 0.01,
-          "ticks": 1
-        },
-        {
-          "frame": "resolveIndexes",
-          "self": 0.01,
-          "ticks": 1
-        },
-        {
-          "frame": "readdir",
-          "self": 0.01,
-          "ticks": 1
-        },
-        {
-          "frame": "readChainManifest",
-          "self": 0.01,
-          "ticks": 1
-        },
-        {
-          "frame": "parsePackHeader",
-          "self": 0.01,
-          "ticks": 1
-        },
-        {
-          "frame": "parseHeader$1",
-          "self": 0.01,
-          "ticks": 1
-        },
-        {
-          "frame": "parseBlobContent",
-          "self": 0.01,
-          "ticks": 1
-        },
-        {
-          "frame": "ownerUid",
-          "self": 0.01,
-          "ticks": 1
-        },
-        {
-          "frame": "openWithNoFollow",
-          "self": 0.01,
-          "ticks": 2
-        },
-        {
-          "frame": "normalizeForCompare",
-          "self": 0.01,
-          "ticks": 1
-        },
-        {
-          "frame": "lookupViaIndexedSnapshot",
-          "self": 0.01,
-          "ticks": 1
-        },
-        {
-          "frame": "loadStoreGate",
-          "self": 0.01,
-          "ticks": 1
-        },
-        {
-          "frame": "loadPackRevIndex",
-          "self": 0.01,
-          "ticks": 1
-        },
-        {
-          "frame": "loadPack",
-          "self": 0.01,
-          "ticks": 1
-        },
-        {
-          "frame": "loadMidxSet",
-          "self": 0.01,
-          "ticks": 1
-        },
-        {
-          "frame": "isWorktreeConfigActive",
-          "self": 0.01,
-          "ticks": 1
-        },
-        {
-          "frame": "isErrnoException",
-          "self": 0.01,
-          "ticks": 1
-        },
-        {
-          "frame": "isDerivedFromCanonicalCwd",
-          "self": 0.01,
-          "ticks": 1
-        },
-        {
-          "frame": "isBase",
-          "self": 0.01,
-          "ticks": 1
-        },
-        {
-          "frame": "invalidateShallowSet",
-          "self": 0.01,
-          "ticks": 1
-        },
-        {
-          "frame": "hasValidHead",
-          "self": 0.01,
-          "ticks": 1
-        },
-        {
-          "frame": "formatRefusal",
-          "self": 0.01,
-          "ticks": 1
-        },
-        {
-          "frame": "extensionsRefusal",
-          "self": 0.01,
-          "ticks": 1
-        },
-        {
-          "frame": "exceedsMaxPackIdxBytes",
-          "self": 0.01,
-          "ticks": 2
-        },
-        {
-          "frame": "currentGate",
-          "self": 0.01,
-          "ticks": 1
-        },
-        {
-          "frame": "composeAdapters",
-          "self": 0.01,
-          "ticks": 2
-        },
-        {
-          "frame": "commonDirOf",
-          "self": 0.01,
-          "ticks": 1
-        },
-        {
-          "frame": "close",
-          "self": 0.01,
-          "ticks": 1
-        },
-        {
-          "frame": "clear",
-          "self": 0.01,
-          "ticks": 1
-        },
-        {
-          "frame": "buildOffsetTable",
-          "self": 0.01,
-          "ticks": 1
-        },
-        {
-          "frame": "bindConfigNamespace",
-          "self": 0.01,
-          "ticks": 1
-        },
-        {
-          "frame": "bindCherryPickNamespace",
-          "self": 0.01,
-          "ticks": 1
+          "frame": "resolveObjectContentWithDepth",
+          "self": 0.23,
+          "ticks": 249
         },
         {
           "frame": "assertLoadable",
-          "self": 0.01,
-          "ticks": 1
+          "self": 0.1,
+          "ticks": 102
         },
         {
-          "frame": "validateOptions$1",
-          "self": 0.01,
-          "ticks": 1
+          "frame": "tryDeltaCacheHit$1",
+          "self": 0.05,
+          "ticks": 49
         },
         {
-          "frame": "unionRootPrefixes",
-          "self": 0.01,
-          "ticks": 1
+          "frame": "withLazyFetchRetry",
+          "self": 0.03,
+          "ticks": 37
         },
         {
-          "frame": "readEntryHeaderWithChunk",
-          "self": 0.01,
-          "ticks": 1
+          "frame": "checkAborted",
+          "self": 0.02,
+          "ticks": 23
         },
         {
-          "frame": "quoteBefore",
+          "frame": "get",
           "self": 0.01,
-          "ticks": 1
-        },
-        {
-          "frame": "nextOffsetForEntry",
-          "self": 0.01,
-          "ticks": 1
-        },
-        {
-          "frame": "join",
-          "self": 0.01,
-          "ticks": 1
-        },
-        {
-          "frame": "isCandidate",
-          "self": 0.01,
-          "ticks": 1
-        },
-        {
-          "frame": "indexOf",
-          "self": 0.01,
-          "ticks": 1
-        },
-        {
-          "frame": "fileNotFound",
-          "self": 0.01,
-          "ticks": 1
-        },
-        {
-          "frame": "disposePackRegistry",
-          "self": 0.01,
-          "ticks": 1
-        },
-        {
-          "frame": "dedupe",
-          "self": 0.01,
-          "ticks": 1
-        },
-        {
-          "frame": "createPromiseMemo",
-          "self": 0.01,
-          "ticks": 1
-        },
-        {
-          "frame": "checkAborted$1",
-          "self": 0.01,
-          "ticks": 1
-        },
-        {
-          "frame": "NodeCompressor",
-          "self": 0.01,
-          "ticks": 1
+          "ticks": 14
         }
       ],
-      "totalTicks": 189,
-      "underSampled": true
+      "totalTicks": 1062,
+      "underSampled": false
     },
     "describe": {
       "hotShares": [
         {
-          "frame": "resolveObjectBytesWithDepth",
-          "self": 0.09,
-          "ticks": 21
+          "frame": "resolveRead",
+          "self": 0.12,
+          "ticks": 196
         },
         {
-          "frame": "parseLooseRef",
+          "frame": "resolveObjectContentWithDepth",
           "self": 0.08,
-          "ticks": 17
+          "ticks": 136
         },
         {
-          "frame": "readUtf8",
+          "frame": "<anonymous>",
           "self": 0.08,
-          "ticks": 17
-        },
-        {
-          "frame": "commitDateWalk",
-          "self": 0.07,
-          "ticks": 16
+          "ticks": 138
         },
         {
           "frame": "buildNameMap",
           "self": 0.07,
-          "ticks": 16
-        },
-        {
-          "frame": "readObject",
-          "self": 0.06,
-          "ticks": 14
-        },
-        {
-          "frame": "selectNearest",
-          "self": 0.06,
-          "ticks": 13
-        },
-        {
-          "frame": "enqueueParents",
-          "self": 0.04,
-          "ticks": 9
+          "ticks": 121
         },
         {
           "frame": "walkRefDir",
-          "self": 0.04,
-          "ticks": 8
+          "self": 0.06,
+          "ticks": 103
         },
         {
-          "frame": "<anonymous>",
+          "frame": "fromLooseContent",
+          "self": 0.05,
+          "ticks": 84
+        },
+        {
+          "frame": "readObject",
+          "self": 0.05,
+          "ticks": 83
+        },
+        {
+          "frame": "runWithinBudget",
           "self": 0.04,
-          "ticks": 10
+          "ticks": 62
+        },
+        {
+          "frame": "resolveDirect",
+          "self": 0.03,
+          "ticks": 57
+        },
+        {
+          "frame": "selectNearest",
+          "self": 0.03,
+          "ticks": 56
+        },
+        {
+          "frame": "commitDateWalk",
+          "self": 0.03,
+          "ticks": 50
         },
         {
           "frame": "resolveObject$1",
           "self": 0.03,
-          "ticks": 6
+          "ticks": 46
+        },
+        {
+          "frame": "readRegularLeaf",
+          "self": 0.03,
+          "ticks": 43
+        },
+        {
+          "frame": "openWithNoFollow",
+          "self": 0.03,
+          "ticks": 47
         },
         {
           "frame": "resolveHeapEntry",
-          "self": 0.03,
-          "ticks": 6
-        },
-        {
-          "frame": "describe",
-          "self": 0.03,
-          "ticks": 7
-        },
-        {
-          "frame": "validateRefName",
           "self": 0.02,
-          "ticks": 5
-        },
-        {
-          "frame": "resolveDirect",
-          "self": 0.02,
-          "ticks": 5
-        },
-        {
-          "frame": "resolveCommitIsh",
-          "self": 0.02,
-          "ticks": 4
-        },
-        {
-          "frame": "peelRefToCommit",
-          "self": 0.02,
-          "ticks": 4
-        },
-        {
-          "frame": "exists",
-          "self": 0.02,
-          "ticks": 4
+          "ticks": 41
         },
         {
           "frame": "commitHeader",
           "self": 0.02,
-          "ticks": 4
-        },
-        {
-          "frame": "walkAllLooseRefNames",
-          "self": 0.01,
-          "ticks": 3
-        },
-        {
-          "frame": "resolveRead",
-          "self": 0.01,
-          "ticks": 3
-        },
-        {
-          "frame": "enqueueSeeds",
-          "self": 0.01,
-          "ticks": 3
-        },
-        {
-          "frame": "assertLoadable",
-          "self": 0.01,
-          "ticks": 3
-        },
-        {
-          "frame": "runFs",
-          "self": 0.01,
-          "ticks": 2
-        },
-        {
-          "frame": "resolveDirectChain",
-          "self": 0.01,
-          "ticks": 2
-        },
-        {
-          "frame": "readLooseContent",
-          "self": 0.01,
-          "ticks": 2
-        },
-        {
-          "frame": "peelChain",
-          "self": 0.01,
-          "ticks": 2
-        },
-        {
-          "frame": "get",
-          "self": 0.01,
-          "ticks": 2
-        },
-        {
-          "frame": "acquire",
-          "self": 0.01,
-          "ticks": 2
-        }
-      ],
-      "totalTicks": 223,
-      "underSampled": true
-    },
-    "name-rev": {
-      "hotShares": [
-        {
-          "frame": "resolveDirect",
-          "self": 0.21,
-          "ticks": 55
-        },
-        {
-          "frame": "readUtf8",
-          "self": 0.1,
           "ticks": 26
         },
         {
-          "frame": "nameRev",
-          "self": 0.08,
+          "frame": "enqueueCommit",
+          "self": 0.01,
+          "ticks": 24
+        },
+        {
+          "frame": "describe",
+          "self": 0.01,
           "ticks": 21
-        },
-        {
-          "frame": "resolveObjectBytesWithDepth",
-          "self": 0.07,
-          "ticks": 19
-        },
-        {
-          "frame": "walkRef",
-          "self": 0.06,
-          "ticks": 16
-        },
-        {
-          "frame": "walkRefDir",
-          "self": 0.04,
-          "ticks": 11
-        },
-        {
-          "frame": "resolveObject$1",
-          "self": 0.04,
-          "ticks": 10
-        },
-        {
-          "frame": "<anonymous>",
-          "self": 0.04,
-          "ticks": 10
-        },
-        {
-          "frame": "readObject",
-          "self": 0.03,
-          "ticks": 7
-        },
-        {
-          "frame": "lstat",
-          "self": 0.03,
-          "ticks": 7
-        },
-        {
-          "frame": "revParse",
-          "self": 0.02,
-          "ticks": 6
-        },
-        {
-          "frame": "resolveRead",
-          "self": 0.02,
-          "ticks": 6
-        },
-        {
-          "frame": "evaluate",
-          "self": 0.02,
-          "ticks": 6
-        },
-        {
-          "frame": "assertOperationalRepository",
-          "self": 0.02,
-          "ticks": 5
-        },
-        {
-          "frame": "walkAllLooseRefNames",
-          "self": 0.02,
-          "ticks": 4
-        },
-        {
-          "frame": "readLooseContent",
-          "self": 0.02,
-          "ticks": 5
-        },
-        {
-          "frame": "peelRefToCommit",
-          "self": 0.02,
-          "ticks": 4
-        },
-        {
-          "frame": "exists",
-          "self": 0.02,
-          "ticks": 4
-        },
-        {
-          "frame": "assertLoadable",
-          "self": 0.02,
-          "ticks": 5
-        },
-        {
-          "frame": "withLazyFetchRetry",
-          "self": 0.02,
-          "ticks": 4
-        },
-        {
-          "frame": "stat",
-          "self": 0.01,
-          "ticks": 3
-        },
-        {
-          "frame": "seedRef",
-          "self": 0.01,
-          "ticks": 3
-        },
-        {
-          "frame": "loadShallowSet",
-          "self": 0.01,
-          "ticks": 3
         },
         {
           "frame": "collectCandidateNames",
           "self": 0.01,
-          "ticks": 3
+          "ticks": 18
         },
         {
-          "frame": "hasUsableHead",
+          "frame": "resolveDirectChain",
           "self": 0.01,
-          "ticks": 2
+          "ticks": 18
         },
         {
-          "frame": "get",
+          "frame": "peelRefToCommit",
           "self": 0.01,
-          "ticks": 2
+          "ticks": 16
         },
         {
-          "frame": "from",
+          "frame": "walkRefsRoot",
           "self": 0.01,
-          "ticks": 2
+          "ticks": 15
+        },
+        {
+          "frame": "enqueueParents",
+          "self": 0.01,
+          "ticks": 16
+        },
+        {
+          "frame": "walkAllLooseRefNames",
+          "self": 0.01,
+          "ticks": 15
+        },
+        {
+          "frame": "runSync",
+          "self": 0.01,
+          "ticks": 13
+        },
+        {
+          "frame": "withLazyFetchRetry",
+          "self": 0.01,
+          "ticks": 12
+        },
+        {
+          "frame": "runFs",
+          "self": 0.01,
+          "ticks": 12
+        },
+        {
+          "frame": "validateRefName",
+          "self": 0.01,
+          "ticks": 11
+        },
+        {
+          "frame": "assertOperationalRepository",
+          "self": 0.01,
+          "ticks": 9
         }
       ],
-      "totalTicks": 258,
-      "underSampled": true
+      "totalTicks": 1647,
+      "underSampled": false
+    },
+    "name-rev": {
+      "hotShares": [
+        {
+          "frame": "resolveRead",
+          "self": 0.15,
+          "ticks": 321
+        },
+        {
+          "frame": "<anonymous>",
+          "self": 0.1,
+          "ticks": 206
+        },
+        {
+          "frame": "resolveDirect",
+          "self": 0.09,
+          "ticks": 186
+        },
+        {
+          "frame": "walkRefDir",
+          "self": 0.07,
+          "ticks": 157
+        },
+        {
+          "frame": "resolveObjectContentWithDepth",
+          "self": 0.06,
+          "ticks": 134
+        },
+        {
+          "frame": "readRegularLeaf",
+          "self": 0.05,
+          "ticks": 102
+        },
+        {
+          "frame": "seedRef",
+          "self": 0.05,
+          "ticks": 102
+        },
+        {
+          "frame": "readObject",
+          "self": 0.05,
+          "ticks": 101
+        },
+        {
+          "frame": "runWithinBudget",
+          "self": 0.04,
+          "ticks": 95
+        },
+        {
+          "frame": "nameRev",
+          "self": 0.04,
+          "ticks": 93
+        },
+        {
+          "frame": "openWithNoFollow",
+          "self": 0.03,
+          "ticks": 70
+        },
+        {
+          "frame": "resolveObject$1",
+          "self": 0.02,
+          "ticks": 35
+        },
+        {
+          "frame": "peelRefToCommit",
+          "self": 0.02,
+          "ticks": 34
+        },
+        {
+          "frame": "readCommitMeta",
+          "self": 0.01,
+          "ticks": 29
+        },
+        {
+          "frame": "runSync",
+          "self": 0.01,
+          "ticks": 28
+        },
+        {
+          "frame": "revParse",
+          "self": 0.01,
+          "ticks": 27
+        },
+        {
+          "frame": "evaluate",
+          "self": 0.01,
+          "ticks": 24
+        },
+        {
+          "frame": "walkRef",
+          "self": 0.01,
+          "ticks": 21
+        },
+        {
+          "frame": "walkAllLooseRefNames",
+          "self": 0.01,
+          "ticks": 21
+        },
+        {
+          "frame": "validateHead",
+          "self": 0.01,
+          "ticks": 20
+        },
+        {
+          "frame": "expandParents",
+          "self": 0.01,
+          "ticks": 20
+        },
+        {
+          "frame": "assertOperationalRepository",
+          "self": 0.01,
+          "ticks": 20
+        },
+        {
+          "frame": "tryDeltaCacheHit$1",
+          "self": 0.01,
+          "ticks": 16
+        },
+        {
+          "frame": "commitMetaOf",
+          "self": 0.01,
+          "ticks": 16
+        },
+        {
+          "frame": "collectCandidateNames",
+          "self": 0.01,
+          "ticks": 16
+        },
+        {
+          "frame": "walkRefsRoot",
+          "self": 0.01,
+          "ticks": 15
+        },
+        {
+          "frame": "coalescedMtimeKey",
+          "self": 0.01,
+          "ticks": 15
+        },
+        {
+          "frame": "configMtimeKey",
+          "self": 0.01,
+          "ticks": 15
+        },
+        {
+          "frame": "assertLoadable",
+          "self": 0.01,
+          "ticks": 12
+        },
+        {
+          "frame": "runFs",
+          "self": 0.01,
+          "ticks": 11
+        },
+        {
+          "frame": "mapStat",
+          "self": 0.01,
+          "ticks": 11
+        },
+        {
+          "frame": "exists",
+          "self": 0.01,
+          "ticks": 11
+        }
+      ],
+      "totalTicks": 2124,
+      "underSampled": false
     },
     "rev-parse": {
       "hotShares": [
         {
-          "frame": "readUtf8",
-          "self": 0.28,
-          "ticks": 183
+          "frame": "openWithNoFollow",
+          "self": 0.14,
+          "ticks": 450
         },
         {
-          "frame": "parseLooseRef",
-          "self": 0.18,
-          "ticks": 115
+          "frame": "fromLooseContent",
+          "self": 0.12,
+          "ticks": 404
         },
         {
-          "frame": "<anonymous>",
-          "self": 0.09,
-          "ticks": 61
+          "frame": "stat",
+          "self": 0.1,
+          "ticks": 332
         },
         {
           "frame": "lstat",
           "self": 0.08,
-          "ticks": 49
+          "ticks": 254
         },
         {
-          "frame": "resolveDirectChain",
-          "self": 0.07,
-          "ticks": 43
+          "frame": "<anonymous>",
+          "self": 0.08,
+          "ticks": 259
+        },
+        {
+          "frame": "runWithinBudget",
+          "self": 0.06,
+          "ticks": 189
         },
         {
           "frame": "validateRefName",
-          "self": 0.06,
-          "ticks": 36
+          "self": 0.05,
+          "ticks": 173
+        },
+        {
+          "frame": "isPerWorktreeRef",
+          "self": 0.05,
+          "ticks": 161
+        },
+        {
+          "frame": "resolveDirectChain",
+          "self": 0.05,
+          "ticks": 157
         },
         {
           "frame": "revParse",
-          "self": 0.05,
-          "ticks": 35
-        },
-        {
-          "frame": "evaluate",
           "self": 0.04,
-          "ticks": 26
+          "ticks": 138
         },
         {
-          "frame": "runFs",
+          "frame": "readRegularLeaf",
           "self": 0.03,
-          "ticks": 22
+          "ticks": 106
         },
         {
           "frame": "hasUsableHead",
           "self": 0.03,
-          "ticks": 18
+          "ticks": 96
         },
         {
           "frame": "assertOperationalRepository",
           "self": 0.02,
-          "ticks": 16
+          "ticks": 63
         },
         {
-          "frame": "resolveDirect",
+          "frame": "firstResolving",
           "self": 0.02,
-          "ticks": 13
+          "ticks": 56
         },
         {
-          "frame": "resolveRef",
-          "self": 0.01,
-          "ticks": 9
+          "frame": "evaluate",
+          "self": 0.02,
+          "ticks": 56
         },
         {
-          "frame": "readLooseContent",
+          "frame": "coalescedMtimeKey",
           "self": 0.01,
-          "ticks": 9
+          "ticks": 48
         },
         {
-          "frame": "resolveBase$1",
+          "frame": "runFs",
           "self": 0.01,
-          "ticks": 8
+          "ticks": 45
+        },
+        {
+          "frame": "configMtimeKey",
+          "self": 0.01,
+          "ticks": 45
+        },
+        {
+          "frame": "runSync",
+          "self": 0.01,
+          "ticks": 29
+        },
+        {
+          "frame": "refCandidates",
+          "self": 0.01,
+          "ticks": 29
+        },
+        {
+          "frame": "validateHead",
+          "self": 0.01,
+          "ticks": 25
+        },
+        {
+          "frame": "readHeadFile",
+          "self": 0.01,
+          "ticks": 23
         }
       ],
-      "totalTicks": 648,
+      "totalTicks": 3252,
       "underSampled": false
     },
     "cat-file": {
       "hotShares": [
         {
-          "frame": "readUtf8",
-          "self": 0.14,
-          "ticks": 17
+          "frame": "lstat",
+          "self": 0.22,
+          "ticks": 194
         },
         {
           "frame": "resolveRead",
-          "self": 0.12,
-          "ticks": 14
+          "self": 0.19,
+          "ticks": 168
         },
         {
-          "frame": "coerceId",
-          "self": 0.12,
-          "ticks": 14
-        },
-        {
-          "frame": "serializeCommitContent",
-          "self": 0.1,
-          "ticks": 12
-        },
-        {
-          "frame": "hasUsableHead",
-          "self": 0.08,
-          "ticks": 10
-        },
-        {
-          "frame": "assertOperationalRepository",
-          "self": 0.08,
-          "ticks": 9
-        },
-        {
-          "frame": "readObject",
-          "self": 0.07,
-          "ticks": 8
+          "frame": "resolveObjectContentWithDepth",
+          "self": 0.09,
+          "ticks": 77
         },
         {
           "frame": "catFileBatch",
-          "self": 0.07,
-          "ticks": 8
+          "self": 0.09,
+          "ticks": 77
         },
         {
-          "frame": "resolveObjectBytesWithDepth",
-          "self": 0.04,
-          "ticks": 5
+          "frame": "coerceId",
+          "self": 0.08,
+          "ticks": 75
         },
         {
-          "frame": "resolveObject$1",
-          "self": 0.04,
-          "ticks": 5
-        },
-        {
-          "frame": "withLazyFetchRetry",
-          "self": 0.03,
-          "ticks": 4
-        },
-        {
-          "frame": "runFs",
-          "self": 0.03,
-          "ticks": 4
+          "frame": "assertOperationalRepository",
+          "self": 0.06,
+          "ticks": 57
         },
         {
           "frame": "catFile",
-          "self": 0.03,
-          "ticks": 4
-        },
-        {
-          "frame": "get",
-          "self": 0.02,
-          "ticks": 2
+          "self": 0.04,
+          "ticks": 36
         },
         {
           "frame": "<anonymous>",
+          "self": 0.04,
+          "ticks": 34
+        },
+        {
+          "frame": "readObjectWithSize",
+          "self": 0.03,
+          "ticks": 29
+        },
+        {
+          "frame": "coalescedMtimeKey",
+          "self": 0.03,
+          "ticks": 28
+        },
+        {
+          "frame": "validateHead",
+          "self": 0.03,
+          "ticks": 26
+        },
+        {
+          "frame": "runSync",
+          "self": 0.02,
+          "ticks": 20
+        },
+        {
+          "frame": "resolveObjectWithSize",
           "self": 0.01,
-          "ticks": 1
+          "ticks": 13
+        },
+        {
+          "frame": "runWithinBudget",
+          "self": 0.01,
+          "ticks": 11
+        },
+        {
+          "frame": "configMtimeKey",
+          "self": 0.01,
+          "ticks": 9
+        },
+        {
+          "frame": "hasUsableHead",
+          "self": 0.01,
+          "ticks": 7
+        },
+        {
+          "frame": "withLazyFetchRetry",
+          "self": 0.01,
+          "ticks": 6
+        },
+        {
+          "frame": "tryDeltaCacheHit$1",
+          "self": 0.01,
+          "ticks": 5
         },
         {
           "frame": "readOne",
           "self": 0.01,
-          "ticks": 1
-        },
-        {
-          "frame": "assertLoadable",
-          "self": 0.01,
-          "ticks": 1
+          "ticks": 5
         }
       ],
-      "totalTicks": 119,
-      "underSampled": true
+      "totalTicks": 888,
+      "underSampled": false
     },
     "show": {
       "hotShares": [
         {
-          "frame": "scanEntryAt",
-          "self": 0.2,
-          "ticks": 88
-        },
-        {
           "frame": "diffRawTrees",
-          "self": 0.18,
-          "ticks": 82
+          "self": 0.31,
+          "ticks": 786
         },
         {
-          "frame": "readUtf8",
-          "self": 0.07,
-          "ticks": 30
+          "frame": "scanEntryAt",
+          "self": 0.29,
+          "ticks": 752
         },
         {
-          "frame": "stat",
-          "self": 0.05,
-          "ticks": 24
+          "frame": "resolveRead",
+          "self": 0.04,
+          "ticks": 109
         },
         {
           "frame": "<anonymous>",
-          "self": 0.05,
-          "ticks": 24
-        },
-        {
-          "frame": "parseLooseRef",
           "self": 0.04,
-          "ticks": 16
+          "ticks": 96
         },
         {
-          "frame": "lstat",
-          "self": 0.04,
-          "ticks": 16
-        },
-        {
-          "frame": "runFs",
-          "self": 0.02,
-          "ticks": 11
-        },
-        {
-          "frame": "findLastInvalidMaxTreeDepth",
-          "self": 0.02,
-          "ticks": 10
-        },
-        {
-          "frame": "findFirstRejectedBoolean",
-          "self": 0.02,
-          "ticks": 10
-        },
-        {
-          "frame": "resolveDirectChain",
-          "self": 0.02,
-          "ticks": 8
-        },
-        {
-          "frame": "validateRefName",
-          "self": 0.02,
-          "ticks": 7
-        },
-        {
-          "frame": "resolveAndDiff",
-          "self": 0.02,
-          "ticks": 7
-        },
-        {
-          "frame": "hasUsableHead",
-          "self": 0.02,
-          "ticks": 8
-        },
-        {
-          "frame": "diffRecursive",
-          "self": 0.02,
-          "ticks": 7
-        },
-        {
-          "frame": "resolveObjectBytesWithDepth",
-          "self": 0.02,
-          "ticks": 7
-        },
-        {
-          "frame": "buildForRev",
-          "self": 0.01,
-          "ticks": 6
-        },
-        {
-          "frame": "boundedMap",
-          "self": 0.01,
-          "ticks": 6
-        },
-        {
-          "frame": "peelToTree",
-          "self": 0.01,
-          "ticks": 5
-        },
-        {
-          "frame": "evaluate",
-          "self": 0.01,
-          "ticks": 5
+          "frame": "resolveObjectContentWithDepth",
+          "self": 0.03,
+          "ticks": 72
         },
         {
           "frame": "cursorOid",
-          "self": 0.01,
-          "ticks": 5
+          "self": 0.02,
+          "ticks": 59
         },
         {
-          "frame": "assertOperationalRepository",
-          "self": 0.01,
-          "ticks": 4
+          "frame": "openWithNoFollow",
+          "self": 0.02,
+          "ticks": 50
         },
         {
-          "frame": "withLazyFetchRetry",
+          "frame": "runWithinBudget",
           "self": 0.01,
-          "ticks": 3
+          "ticks": 36
         },
         {
-          "frame": "resolveDirect",
+          "frame": "validateRefName",
           "self": 0.01,
-          "ticks": 3
-        },
-        {
-          "frame": "readRawTreeById",
-          "self": 0.01,
-          "ticks": 3
-        },
-        {
-          "frame": "peelChain$1",
-          "self": 0.01,
-          "ticks": 4
+          "ticks": 35
         },
         {
           "frame": "openTreeCursor",
           "self": 0.01,
-          "ticks": 3
+          "ticks": 33
+        },
+        {
+          "frame": "boundedMap",
+          "self": 0.01,
+          "ticks": 32
+        },
+        {
+          "frame": "assertOperationalRepository",
+          "self": 0.01,
+          "ticks": 28
+        },
+        {
+          "frame": "findLastInvalidMaxTreeDepth",
+          "self": 0.01,
+          "ticks": 26
+        },
+        {
+          "frame": "advanceCursor",
+          "self": 0.01,
+          "ticks": 26
+        },
+        {
+          "frame": "isValidObjectIdHex",
+          "self": 0.01,
+          "ticks": 24
+        },
+        {
+          "frame": "findFirstRejectedBoolean",
+          "self": 0.01,
+          "ticks": 24
         },
         {
           "frame": "detectRenames",
           "self": 0.01,
-          "ticks": 3
+          "ticks": 24
         },
         {
-          "frame": "revParse",
+          "frame": "validateHead",
           "self": 0.01,
-          "ticks": 3
+          "ticks": 20
         },
         {
-          "frame": "resolveObject$1",
+          "frame": "matchFileModeBytes",
           "self": 0.01,
-          "ticks": 3
+          "ticks": 18
         },
         {
-          "frame": "readLooseContent",
+          "frame": "readRawTreeById",
           "self": 0.01,
-          "ticks": 3
+          "ticks": 17
         },
         {
-          "frame": "loadShallowSet",
+          "frame": "readObject",
           "self": 0.01,
-          "ticks": 3
+          "ticks": 17
+        },
+        {
+          "frame": "peelChain",
+          "self": 0.01,
+          "ticks": 16
+        },
+        {
+          "frame": "buildForRev",
+          "self": 0.01,
+          "ticks": 16
+        },
+        {
+          "frame": "readRegularLeaf",
+          "self": 0.01,
+          "ticks": 14
         }
       ],
-      "totalTicks": 451,
-      "underSampled": true
+      "totalTicks": 2564,
+      "underSampled": false
     },
     "diff": {
       "hotShares": [
         {
           "frame": "parseTreeContent",
-          "self": 0.23,
-          "ticks": 76
-        },
-        {
-          "frame": "readUtf8",
-          "self": 0.13,
-          "ticks": 43
-        },
-        {
-          "frame": "parseLooseRef",
-          "self": 0.08,
-          "ticks": 26
-        },
-        {
-          "frame": "<anonymous>",
-          "self": 0.07,
-          "ticks": 24
-        },
-        {
-          "frame": "lstat",
-          "self": 0.05,
-          "ticks": 15
-        },
-        {
-          "frame": "resolveDirectChain",
-          "self": 0.04,
-          "ticks": 13
-        },
-        {
-          "frame": "revParse",
-          "self": 0.03,
-          "ticks": 9
+          "self": 0.44,
+          "ticks": 1206
         },
         {
           "frame": "diffTrees$1",
-          "self": 0.03,
-          "ticks": 9
+          "self": 0.1,
+          "ticks": 285
         },
         {
-          "frame": "diff",
-          "self": 0.03,
-          "ticks": 11
+          "frame": "resolveRead",
+          "self": 0.07,
+          "ticks": 199
         },
         {
-          "frame": "assertOperationalRepository",
+          "frame": "<anonymous>",
+          "self": 0.06,
+          "ticks": 175
+        },
+        {
+          "frame": "openWithNoFollow",
+          "self": 0.03,
+          "ticks": 73
+        },
+        {
+          "frame": "resolveObjectContentWithDepth",
+          "self": 0.03,
+          "ticks": 72
+        },
+        {
+          "frame": "runWithinBudget",
           "self": 0.02,
-          "ticks": 8
+          "ticks": 63
         },
         {
           "frame": "validateRefName",
           "self": 0.02,
-          "ticks": 7
-        },
-        {
-          "frame": "stat",
-          "self": 0.02,
-          "ticks": 7
-        },
-        {
-          "frame": "runFs",
-          "self": 0.02,
-          "ticks": 7
-        },
-        {
-          "frame": "resolveTreeish",
-          "self": 0.02,
-          "ticks": 7
-        },
-        {
-          "frame": "resolveObject$1",
-          "self": 0.02,
-          "ticks": 7
+          "ticks": 55
         },
         {
           "frame": "readObject",
           "self": 0.02,
-          "ticks": 7
+          "ticks": 47
         },
         {
-          "frame": "resolveObjectBytesWithDepth",
+          "frame": "isValidObjectIdHex",
           "self": 0.02,
-          "ticks": 6
+          "ticks": 46
         },
         {
-          "frame": "findFirstRejectedBoolean",
+          "frame": "diff",
           "self": 0.02,
-          "ticks": 5
+          "ticks": 43
         },
         {
-          "frame": "applyOperation",
-          "self": 0.02,
-          "ticks": 5
+          "frame": "assertOperationalRepository",
+          "self": 0.01,
+          "ticks": 38
+        },
+        {
+          "frame": "resolveDirectChain",
+          "self": 0.01,
+          "ticks": 34
+        },
+        {
+          "frame": "readRegularLeaf",
+          "self": 0.01,
+          "ticks": 36
+        },
+        {
+          "frame": "validateHead",
+          "self": 0.01,
+          "ticks": 32
         },
         {
           "frame": "evaluate",
-          "self": 0.02,
-          "ticks": 5
+          "self": 0.01,
+          "ticks": 32
         },
         {
-          "frame": "parseExpression",
+          "frame": "revParse",
           "self": 0.01,
-          "ticks": 4
+          "ticks": 30
         },
         {
-          "frame": "hasUsableHead",
+          "frame": "coalescedMtimeKey",
           "self": 0.01,
-          "ticks": 4
+          "ticks": 23
+        },
+        {
+          "frame": "resolveObject$1",
+          "self": 0.01,
+          "ticks": 22
+        },
+        {
+          "frame": "findFirstRejectedBoolean",
+          "self": 0.01,
+          "ticks": 20
+        },
+        {
+          "frame": "isPerWorktreeRef",
+          "self": 0.01,
+          "ticks": 17
         },
         {
           "frame": "getNthParent",
           "self": 0.01,
-          "ticks": 4
+          "ticks": 15
         },
         {
-          "frame": "assertValidPromisorRemoteConfig",
+          "frame": "resolveHeadDirect",
           "self": 0.01,
-          "ticks": 3
+          "ticks": 14
         },
         {
-          "frame": "resolveDirect",
+          "frame": "resolveAndDiff",
           "self": 0.01,
-          "ticks": 3
-        },
-        {
-          "frame": "resolveRef",
-          "self": 0.01,
-          "ticks": 2
-        },
-        {
-          "frame": "get",
-          "self": 0.01,
-          "ticks": 2
+          "ticks": 14
         }
       ],
-      "totalTicks": 324,
-      "underSampled": true
+      "totalTicks": 2740,
+      "underSampled": false
     },
     "blame": {
       "hotShares": [
         {
           "frame": "scanEntryAt",
-          "self": 0.55,
-          "ticks": 77
+          "self": 0.58,
+          "ticks": 447
         },
         {
           "frame": "scanRawTreeFor",
-          "self": 0.35,
-          "ticks": 48
+          "self": 0.31,
+          "ticks": 241
         },
         {
-          "frame": "resolveObjectBytesWithDepth",
-          "self": 0.01,
-          "ticks": 2
+          "frame": "diffRawTrees",
+          "self": 0.02,
+          "ticks": 17
         },
         {
-          "frame": "advanceCursor",
+          "frame": "tryDeltaCacheHit$1",
           "self": 0.01,
-          "ticks": 2
+          "ticks": 9
         },
         {
-          "frame": "<anonymous>",
+          "frame": "bytesToHex",
           "self": 0.01,
-          "ticks": 2
+          "ticks": 9
         },
         {
-          "frame": "readRawTreeById",
+          "frame": "resolveObjectContentWithDepth",
           "self": 0.01,
-          "ticks": 1
-        },
-        {
-          "frame": "lstat",
-          "self": 0.01,
-          "ticks": 1
-        },
-        {
-          "frame": "assertLoadable",
-          "self": 0.01,
-          "ticks": 1
-        },
-        {
-          "frame": "splitLines",
-          "self": 0.01,
-          "ticks": 1
+          "ticks": 8
         },
         {
           "frame": "readCommitData",
           "self": 0.01,
-          "ticks": 1
+          "ticks": 7
         },
         {
-          "frame": "offsetAtPackPosition",
+          "frame": "processSuspect",
           "self": 0.01,
-          "ticks": 1
+          "ticks": 5
         },
         {
-          "frame": "diffRawTrees",
+          "frame": "resolveInParent",
           "self": 0.01,
-          "ticks": 1
+          "ticks": 7
         },
         {
-          "frame": "cursorsSame",
+          "frame": "readRawObject",
           "self": 0.01,
-          "ticks": 1
+          "ticks": 4
+        },
+        {
+          "frame": "descendMatchingTreeChain",
+          "self": 0.01,
+          "ticks": 4
         }
       ],
-      "totalTicks": 139,
-      "underSampled": true
+      "totalTicks": 772,
+      "underSampled": false
     },
     "commit": {
       "hotShares": [
         {
           "frame": "resolveWrite",
-          "self": 0.15,
-          "ticks": 133
-        },
-        {
-          "frame": "<anonymous>",
-          "self": 0.06,
-          "ticks": 51
-        },
-        {
-          "frame": "configMtimeKey",
-          "self": 0.05,
-          "ticks": 42
+          "self": 0.24,
+          "ticks": 181
         },
         {
           "frame": "resolveRead",
-          "self": 0.04,
-          "ticks": 39
+          "self": 0.09,
+          "ticks": 67
         },
         {
-          "frame": "stat",
-          "self": 0.04,
-          "ticks": 32
+          "frame": "<anonymous>",
+          "self": 0.07,
+          "ticks": 51
         },
         {
           "frame": "writeUtf8",
           "self": 0.03,
-          "ticks": 25
+          "ticks": 22
         },
         {
-          "frame": "exists",
-          "self": 0.03,
-          "ticks": 27
+          "frame": "loadPackedRefs",
+          "self": 0.02,
+          "ticks": 15
         },
         {
-          "frame": "validateRefName",
+          "frame": "isPresent",
+          "self": 0.02,
+          "ticks": 14
+        },
+        {
+          "frame": "guard",
           "self": 0.02,
           "ticks": 16
         },
         {
-          "frame": "guard",
-          "self": 0.02,
-          "ticks": 17
-        },
-        {
-          "frame": "mkdir",
-          "self": 0.02,
-          "ticks": 19
-        },
-        {
-          "frame": "readUtf8",
-          "self": 0.02,
-          "ticks": 21
-        },
-        {
-          "frame": "commit$1",
-          "self": 0.02,
-          "ticks": 17
-        },
-        {
-          "frame": "rename",
-          "self": 0.02,
-          "ticks": 15
-        },
-        {
-          "frame": "dirname",
-          "self": 0.01,
-          "ticks": 11
-        },
-        {
-          "frame": "lstat",
-          "self": 0.01,
-          "ticks": 13
-        },
-        {
-          "frame": "findFirstValuelessEntry",
-          "self": 0.01,
-          "ticks": 9
-        },
-        {
-          "frame": "tokenizeLine",
-          "self": 0.01,
-          "ticks": 9
-        },
-        {
-          "frame": "resolveDirect",
-          "self": 0.01,
-          "ticks": 8
-        },
-        {
-          "frame": "realpathForCreation",
-          "self": 0.01,
-          "ticks": 8
-        },
-        {
-          "frame": "hasUsableHead",
-          "self": 0.01,
-          "ticks": 13
-        },
-        {
-          "frame": "stageFromStat",
-          "self": 0.01,
-          "ticks": 10
-        },
-        {
-          "frame": "realpathNearestExisting",
-          "self": 0.01,
-          "ticks": 6
-        },
-        {
-          "frame": "basename",
-          "self": 0.01,
-          "ticks": 10
-        },
-        {
-          "frame": "assertOperationalRepository",
-          "self": 0.01,
-          "ticks": 11
-        },
-        {
-          "frame": "canonicalize",
-          "self": 0.01,
-          "ticks": 5
-        },
-        {
-          "frame": "readLooseContent",
-          "self": 0.01,
-          "ticks": 7
-        },
-        {
-          "frame": "openRepository$1",
-          "self": 0.01,
-          "ticks": 5
-        },
-        {
-          "frame": "invokeHook",
-          "self": 0.01,
-          "ticks": 6
-        },
-        {
-          "frame": "findFirstRejectedBoolean",
-          "self": 0.01,
-          "ticks": 5
-        },
-        {
-          "frame": "applyRefUpdates",
-          "self": 0.01,
-          "ticks": 6
-        },
-        {
-          "frame": "applyCommitMessageHooks",
-          "self": 0.01,
-          "ticks": 6
-        },
-        {
-          "frame": "memoizeGateVerdict",
-          "self": 0.01,
-          "ticks": 7
-        },
-        {
-          "frame": "isErrnoException",
-          "self": 0.01,
-          "ticks": 5
-        },
-        {
-          "frame": "commit",
-          "self": 0.01,
-          "ticks": 9
-        },
-        {
-          "frame": "writeExclusive",
-          "self": 0.01,
-          "ticks": 6
-        },
-        {
-          "frame": "appendUtf8",
-          "self": 0.01,
-          "ticks": 6
-        }
-      ],
-      "setupShares": [
-        {
-          "frame": "cachedParentRealpath",
-          "self": 0.03,
-          "ticks": 28
-        },
-        {
-          "frame": "runFs",
-          "self": 0.01,
-          "ticks": 11
-        },
-        {
-          "frame": "isContainedIn",
-          "self": 0.01,
-          "ticks": 9
-        },
-        {
-          "frame": "bootstrapRepository",
-          "self": 0.01,
-          "ticks": 9
-        },
-        {
-          "frame": "openRepository",
-          "self": 0.01,
-          "ticks": 6
-        }
-      ],
-      "totalTicks": 894,
-      "underSampled": false
-    },
-    "add": {
-      "hotShares": [
-        {
-          "frame": "resolveWrite",
-          "self": 0.19,
-          "ticks": 130
-        },
-        {
-          "frame": "<anonymous>",
-          "self": 0.08,
-          "ticks": 54
-        },
-        {
-          "frame": "stat",
-          "self": 0.06,
-          "ticks": 41
-        },
-        {
-          "frame": "writeUtf8",
-          "self": 0.04,
-          "ticks": 26
-        },
-        {
-          "frame": "configMtimeKey",
-          "self": 0.03,
-          "ticks": 20
-        },
-        {
-          "frame": "resolveRead",
-          "self": 0.03,
-          "ticks": 19
-        },
-        {
-          "frame": "mkdir",
-          "self": 0.03,
-          "ticks": 19
-        },
-        {
-          "frame": "exists",
-          "self": 0.03,
-          "ticks": 20
-        },
-        {
-          "frame": "tokenizeLine",
-          "self": 0.02,
-          "ticks": 17
-        },
-        {
-          "frame": "guard",
-          "self": 0.02,
-          "ticks": 15
-        },
-        {
-          "frame": "findFirstRejectedBoolean",
+          "frame": "readLooseLeaf",
           "self": 0.02,
           "ticks": 12
         },
         {
-          "frame": "lstat",
+          "frame": "commit$1",
           "self": 0.02,
-          "ticks": 17
-        },
-        {
-          "frame": "stageFromStat",
-          "self": 0.02,
-          "ticks": 11
-        },
-        {
-          "frame": "loadCappedUtf8",
-          "self": 0.01,
-          "ticks": 10
-        },
-        {
-          "frame": "addAll",
-          "self": 0.01,
-          "ticks": 10
+          "ticks": 15
         },
         {
           "frame": "realpathNearestExisting",
           "self": 0.01,
-          "ticks": 8
+          "ticks": 10
         },
         {
-          "frame": "openRepository$1",
+          "frame": "readRegularLeaf",
           "self": 0.01,
           "ticks": 8
         },
         {
-          "frame": "dirname",
-          "self": 0.01,
-          "ticks": 7
-        },
-        {
-          "frame": "writeObject",
+          "frame": "openWithNoFollow",
           "self": 0.01,
           "ticks": 8
+        },
+        {
+          "frame": "validateRefName",
+          "self": 0.01,
+          "ticks": 6
+        },
+        {
+          "frame": "findFirstValuelessEntry",
+          "self": 0.01,
+          "ticks": 6
         },
         {
           "frame": "realpathForCreation",
           "self": 0.01,
-          "ticks": 5
+          "ticks": 6
         },
         {
-          "frame": "readConfigEntry",
+          "frame": "mkdir",
+          "self": 0.01,
+          "ticks": 7
+        },
+        {
+          "frame": "lstat",
+          "self": 0.01,
+          "ticks": 6
+        },
+        {
+          "frame": "createFilesRefStore",
+          "self": 0.01,
+          "ticks": 6
+        },
+        {
+          "frame": "containedByPrefix",
           "self": 0.01,
           "ticks": 5
         },
         {
           "frame": "basename",
           "self": 0.01,
-          "ticks": 6
+          "ticks": 7
         },
         {
-          "frame": "computeGateVerdict",
+          "frame": "stat",
+          "self": 0.01,
+          "ticks": 9
+        },
+        {
+          "frame": "runSyncAbsent",
           "self": 0.01,
           "ticks": 4
         },
         {
-          "frame": "validateIndexPath",
+          "frame": "resolveDirect",
           "self": 0.01,
           "ticks": 4
         },
         {
-          "frame": "readGuard",
+          "frame": "openRepository$1",
+          "self": 0.01,
+          "ticks": 4
+        },
+        {
+          "frame": "invokeHook",
+          "self": 0.01,
+          "ticks": 4
+        },
+        {
+          "frame": "createPromiseMemo",
+          "self": 0.01,
+          "ticks": 4
+        },
+        {
+          "frame": "applyRefUpdates",
+          "self": 0.01,
+          "ticks": 5
+        },
+        {
+          "frame": "updateRef",
+          "self": 0.01,
+          "ticks": 4
+        },
+        {
+          "frame": "readIndex",
+          "self": 0.01,
+          "ticks": 4
+        },
+        {
+          "frame": "commit",
           "self": 0.01,
           "ticks": 4
         },
         {
           "frame": "read",
           "self": 0.01,
-          "ticks": 5
-        },
-        {
-          "frame": "findLastInvalidMaxTreeDepth",
-          "self": 0.01,
-          "ticks": 5
-        },
-        {
-          "frame": "stageWalkedEntries",
-          "self": 0.01,
           "ticks": 4
-        },
-        {
-          "frame": "assertOperationalRepository",
-          "self": 0.01,
-          "ticks": 5
-        },
-        {
-          "frame": "removeNode",
-          "self": 0.01,
-          "ticks": 4
-        },
-        {
-          "frame": "readUtf8",
-          "self": 0.01,
-          "ticks": 5
-        },
-        {
-          "frame": "hasUsableHead",
-          "self": 0.01,
-          "ticks": 4
-        },
-        {
-          "frame": "assertValidBooleanConfigInSection",
-          "self": 0.01,
-          "ticks": 5
         }
       ],
       "setupShares": [
         {
           "frame": "cachedParentRealpath",
-          "self": 0.02,
-          "ticks": 11
+          "self": 0.05,
+          "ticks": 39
         },
         {
           "frame": "runFs",
           "self": 0.01,
-          "ticks": 10
+          "ticks": 6
         },
         {
           "frame": "isContainedIn",
@@ -1935,178 +1533,316 @@
           "ticks": 5
         },
         {
-          "frame": "openRepository",
+          "frame": "bootstrapRepository",
+          "self": 0.01,
+          "ticks": 5
+        }
+      ],
+      "totalTicks": 750,
+      "underSampled": false
+    },
+    "add": {
+      "hotShares": [
+        {
+          "frame": "resolveWrite",
+          "self": 0.38,
+          "ticks": 321
+        },
+        {
+          "frame": "writeUtf8",
+          "self": 0.07,
+          "ticks": 56
+        },
+        {
+          "frame": "<anonymous>",
+          "self": 0.06,
+          "ticks": 54
+        },
+        {
+          "frame": "mkdir",
+          "self": 0.05,
+          "ticks": 44
+        },
+        {
+          "frame": "resolveRead",
+          "self": 0.02,
+          "ticks": 17
+        },
+        {
+          "frame": "guard",
+          "self": 0.02,
+          "ticks": 18
+        },
+        {
+          "frame": "dirname",
+          "self": 0.02,
+          "ticks": 14
+        },
+        {
+          "frame": "realpathNearestExisting",
+          "self": 0.01,
+          "ticks": 12
+        },
+        {
+          "frame": "readUtf8",
+          "self": 0.01,
+          "ticks": 12
+        },
+        {
+          "frame": "openRepository$1",
+          "self": 0.01,
+          "ticks": 12
+        },
+        {
+          "frame": "realpathForCreation",
+          "self": 0.01,
+          "ticks": 7
+        },
+        {
+          "frame": "readWholeFileFast",
+          "self": 0.01,
+          "ticks": 7
+        },
+        {
+          "frame": "openWithNoFollow",
+          "self": 0.01,
+          "ticks": 8
+        },
+        {
+          "frame": "basename",
+          "self": 0.01,
+          "ticks": 7
+        },
+        {
+          "frame": "writeEntry",
+          "self": 0.01,
+          "ticks": 7
+        },
+        {
+          "frame": "tryLstat",
+          "self": 0.01,
+          "ticks": 6
+        },
+        {
+          "frame": "serializeIndex",
+          "self": 0.01,
+          "ticks": 8
+        },
+        {
+          "frame": "runSync",
+          "self": 0.01,
+          "ticks": 6
+        },
+        {
+          "frame": "addAll",
+          "self": 0.01,
+          "ticks": 7
+        },
+        {
+          "frame": "validateHead",
+          "self": 0.01,
+          "ticks": 7
+        },
+        {
+          "frame": "exists",
           "self": 0.01,
           "ticks": 5
         },
         {
-          "frame": "findLayout",
+          "frame": "processWalkEntry",
           "self": 0.01,
-          "ticks": 4
+          "ticks": 5
+        },
+        {
+          "frame": "commit",
+          "self": 0.01,
+          "ticks": 6
+        },
+        {
+          "frame": "writeObject",
+          "self": 0.01,
+          "ticks": 5
+        },
+        {
+          "frame": "assertOperationalRepository",
+          "self": 0.01,
+          "ticks": 5
         }
       ],
-      "totalTicks": 691,
+      "setupShares": [
+        {
+          "frame": "cachedParentRealpath",
+          "self": 0.04,
+          "ticks": 30
+        },
+        {
+          "frame": "isContainedIn",
+          "self": 0.02,
+          "ticks": 19
+        },
+        {
+          "frame": "init",
+          "self": 0.01,
+          "ticks": 5
+        }
+      ],
+      "totalTicks": 844,
       "underSampled": false
     },
     "merge": {
       "hotShares": [
         {
           "frame": "resolveWrite",
-          "self": 0.09,
-          "ticks": 73
+          "self": 0.14,
+          "ticks": 139
         },
         {
           "frame": "resolveRead",
-          "self": 0.08,
-          "ticks": 68
+          "self": 0.1,
+          "ticks": 97
         },
         {
           "frame": "<anonymous>",
-          "self": 0.06,
-          "ticks": 52
+          "self": 0.09,
+          "ticks": 87
         },
         {
-          "frame": "parseLooseRef",
-          "self": 0.04,
-          "ticks": 32
-        },
-        {
-          "frame": "guard",
+          "frame": "stat",
           "self": 0.03,
           "ticks": 26
         },
         {
-          "frame": "rename",
+          "frame": "guard",
+          "self": 0.02,
+          "ticks": 20
+        },
+        {
+          "frame": "realpathForCreation",
           "self": 0.02,
           "ticks": 15
         },
         {
-          "frame": "resolveDirect",
-          "self": 0.02,
+          "frame": "runWithinBudget",
+          "self": 0.01,
           "ticks": 14
         },
         {
-          "frame": "lstat",
+          "frame": "rename",
+          "self": 0.01,
+          "ticks": 13
+        },
+        {
+          "frame": "readIndex",
+          "self": 0.01,
+          "ticks": 13
+        },
+        {
+          "frame": "findFirstValuelessEntry",
           "self": 0.01,
           "ticks": 11
         },
         {
-          "frame": "dirname",
-          "self": 0.01,
-          "ticks": 10
-        },
-        {
-          "frame": "realpathForCreation",
+          "frame": "isPresentSync",
           "self": 0.01,
           "ticks": 9
         },
         {
-          "frame": "coalescedMtimeKey",
+          "frame": "readRegularLeaf",
           "self": 0.01,
           "ticks": 9
-        },
-        {
-          "frame": "readLooseCompressed",
-          "self": 0.01,
-          "ticks": 11
         },
         {
           "frame": "commit$1",
           "self": 0.01,
-          "ticks": 7
+          "ticks": 11
         },
         {
-          "frame": "hasUsableHead",
-          "self": 0.01,
-          "ticks": 12
-        },
-        {
-          "frame": "assertOperationalRepository",
-          "self": 0.01,
-          "ticks": 9
-        },
-        {
-          "frame": "loadIndex",
+          "frame": "updateRef",
           "self": 0.01,
           "ticks": 7
         },
         {
-          "frame": "basename",
+          "frame": "invokeHook",
           "self": 0.01,
-          "ticks": 8
+          "ticks": 7
         },
         {
-          "frame": "readHeadRaw",
+          "frame": "createFilesRefStore",
           "self": 0.01,
           "ticks": 6
         },
         {
-          "frame": "resolveObjectBytesWithDepth",
+          "frame": "resolveCommitIsh",
+          "self": 0.01,
+          "ticks": 5
+        },
+        {
+          "frame": "verifiedTargetType",
+          "self": 0.01,
+          "ticks": 6
+        },
+        {
+          "frame": "validateRefName",
+          "self": 0.01,
+          "ticks": 5
+        },
+        {
+          "frame": "validateHead",
+          "self": 0.01,
+          "ticks": 5
+        },
+        {
+          "frame": "runSync",
           "self": 0.01,
           "ticks": 5
         },
         {
           "frame": "resolveDirectChain",
           "self": 0.01,
-          "ticks": 6
-        },
-        {
-          "frame": "readUtf8",
-          "self": 0.01,
           "ticks": 5
         },
         {
           "frame": "exists",
           "self": 0.01,
+          "ticks": 5
+        },
+        {
+          "frame": "dirname",
+          "self": 0.01,
+          "ticks": 5
+        },
+        {
+          "frame": "resolveDirect",
+          "self": 0.01,
+          "ticks": 5
+        },
+        {
+          "frame": "mkdir",
+          "self": 0.01,
           "ticks": 7
         },
         {
-          "frame": "applyReflog",
-          "self": 0.01,
-          "ticks": 8
-        },
-        {
-          "frame": "writeObject",
+          "frame": "indexEntryFromStat",
           "self": 0.01,
           "ticks": 6
         },
         {
-          "frame": "serializeObject",
-          "self": 0.01,
-          "ticks": 5
-        },
-        {
-          "frame": "readConfigEntry",
-          "self": 0.01,
-          "ticks": 5
-        },
-        {
-          "frame": "invokeHook",
-          "self": 0.01,
-          "ticks": 6
-        },
-        {
-          "frame": "findFirstRejectedBoolean",
-          "self": 0.01,
-          "ticks": 5
-        },
-        {
-          "frame": "writeUtf8",
+          "frame": "basename",
           "self": 0.01,
           "ticks": 5
         },
         {
           "frame": "writeExclusive",
           "self": 0.01,
-          "ticks": 7
+          "ticks": 5
         },
         {
-          "frame": "updateRef",
+          "frame": "sanitizeMessage",
           "self": 0.01,
           "ticks": 5
         },
         {
-          "frame": "mkdir",
+          "frame": "appendUtf8",
           "self": 0.01,
           "ticks": 5
         }
@@ -2114,21 +1850,21 @@
       "setupShares": [
         {
           "frame": "cachedParentRealpath",
-          "self": 0.03,
-          "ticks": 21
-        },
-        {
-          "frame": "runFs",
-          "self": 0.02,
-          "ticks": 18
+          "self": 0.06,
+          "ticks": 55
         },
         {
           "frame": "isContainedIn",
           "self": 0.01,
-          "ticks": 6
+          "ticks": 10
+        },
+        {
+          "frame": "runFs",
+          "self": 0.01,
+          "ticks": 9
         }
       ],
-      "totalTicks": 811,
+      "totalTicks": 985,
       "underSampled": false
     }
   }

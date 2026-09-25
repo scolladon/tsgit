@@ -29,6 +29,8 @@ import { readableStreamToAsyncIterable } from '../../../operators/readable-strea
 import type { Context } from '../../../ports/context.js';
 import type { Hasher } from '../../../ports/hash-service.js';
 import {
+  assertInflatedSizeMatches,
+  cacheEntry,
   isBase,
   looseCompressedBytes,
   readEntryHeaderWithChunk,
@@ -38,6 +40,7 @@ import {
 import { nextOffsetForEntry, type PackLookupHit, type PackRegistry } from '../pack-registry.js';
 import { getPackRegistry, peekPackRegistry, withLazyFetchRetry } from '../read-object.js';
 import type { StreamBlobOptions } from '../stream-blob.js';
+import { checkAborted, retryOnceAfterRescan } from './retry-after-rescan.js';
 
 /** 64 KiB of compressed/on-disk bytes — the uniform buffered/streamed gate. */
 export const MAX_BUFFERED_BLOB_BYTES = 65_536;
@@ -84,18 +87,55 @@ export async function openBlobSource(
   const gate: BufferGate = { maxBufferedBytes, verifyHash: options?.verifyHash ?? false };
 
   checkAborted(ctx);
+  const registry = peekPackRegistry(ctx) ?? (await getPackRegistry(ctx));
   // Same store-setup gate as resolveObjectContentWithDepth: a structurally
   // self-inconsistent multi-pack-index denies streamed loose reads too —
   // otherwise the two read paths would disagree about a corrupt store.
-  await (peekPackRegistry(ctx) ?? (await getPackRegistry(ctx))).assertLoadable();
+  await registry.assertLoadable();
 
-  if (gate.maxBufferedBytes > 0) {
-    const cached = ctx.deltaCache.get(id);
-    if (cached !== undefined) {
-      return await resolveFromCache(ctx, id, cached, gate);
-    }
-  }
+  const cached = await tryDeltaCacheHit(ctx, id, gate);
+  if (cached !== undefined) return cached;
 
+  const first = await tryOpenBlobSource(ctx, id, gate);
+  if (first !== undefined) return first;
+
+  // Full miss: as of the CURRENT generation, no pack claims `id` and no loose
+  // file exists for it either. Mirrors `resolveObjectContentWithDepth`'s own
+  // retry — `retryOnceAfterRescan` single-flights the re-scan across
+  // concurrent misses and honours an abort raised during it.
+  const retried = await retryOnceAfterRescan(ctx, registry, id, () =>
+    tryOpenBlobSource(ctx, id, gate),
+  );
+  if (retried !== undefined) return retried;
+  throw objectNotFound(id);
+}
+
+/** The deltaCache fast path, gated at zero (`NEVER_BUFFER` skips it too — see
+ *  its own doc). Extracted so the entry point above stays a short list of
+ *  short-circuits, one per storage form. */
+async function tryDeltaCacheHit(
+  ctx: Context,
+  id: ObjectId,
+  gate: BufferGate,
+): Promise<BlobSource | undefined> {
+  if (gate.maxBufferedBytes <= 0) return undefined;
+  const cached = ctx.deltaCache.get(id);
+  if (cached === undefined) return undefined;
+  return resolveFromCache(ctx, id, cached, gate);
+}
+
+/**
+ * One resolution attempt against the CURRENT generation — loose first, then
+ * pack, mirroring `openBlobSource`'s own original order — reporting
+ * `undefined` when NEITHER claims `id`: the full-miss signal `openBlobSource`
+ * retries once after a re-scan. Any OTHER error (a corrupt entry, a hash
+ * mismatch) propagates directly, never converted to a miss.
+ */
+async function tryOpenBlobSource(
+  ctx: Context,
+  id: ObjectId,
+  gate: BufferGate,
+): Promise<BlobSource | undefined> {
   const compressed = await looseCompressedBytes(ctx, id);
   if (compressed !== undefined) {
     checkAborted(ctx);
@@ -105,7 +145,7 @@ export async function openBlobSource(
   checkAborted(ctx);
   const registry = peekPackRegistry(ctx) ?? (await getPackRegistry(ctx));
   const hit = await registry.lookup(id);
-  if (hit === undefined) throw objectNotFound(id);
+  if (hit === undefined) return undefined;
 
   const table = await hit.pack.offsetTable();
   const nextOffset = nextOffsetForEntry(table, hit.offset);
@@ -124,6 +164,7 @@ export async function openBlobSource(
       header.size,
       chunk.subarray(headerEndInChunk),
       gate,
+      hit.offset,
     );
   }
 
@@ -187,19 +228,28 @@ async function hashStoredObject(
   return { type: source.type, acceptance };
 }
 
-function checkAborted(ctx: Context): void {
-  if (ctx.signal?.aborted === true) {
-    throw operationAborted();
-  }
-}
-
 function fitsBuffer(byteLength: number, maxBufferedBytes: number): boolean {
   return byteLength <= maxBufferedBytes;
 }
 
-function toBytesSource(looseFormatBytes: Uint8Array): BlobSource {
+/** Splits an inflated loose-format buffer into a bytes source and, when the
+ *  header's declared size was honest (matches the actual content length) AND
+ *  the object is NOT a blob, warms `ctx.deltaCache` under `id` — mirroring
+ *  `resolveObjectContentWithDepth`'s own loose arm. A size-lying header
+ *  (tolerated only for a blob) is never cached: a later consumer keyed on
+ *  `id` would read the wrong claim. Blobs are excluded on purpose (measured:
+ *  a checkout-scale buffered-blob walk — 300×60 KiB, exceeding the default
+ *  16 MiB budget — evicted every tree/commit entry the walk had warmed,
+ *  forcing them to re-read) — this seam is reached once per blob per caller
+ *  (a diff's whitespace-drop predicate, a ref target's hash verification),
+ *  so caching them only spends budget a repeatedly-walked tree or commit
+ *  would otherwise keep warm. */
+function toCachedBytesSource(ctx: Context, id: ObjectId, looseFormatBytes: Uint8Array): BlobSource {
   const split = splitLooseObject(looseFormatBytes);
   assertLooseSizeConsistent(split);
+  if (split.type !== 'blob' && split.declaredSize === split.content.byteLength) {
+    cacheEntry(ctx.deltaCache, id, { type: split.type, content: split.content });
+  }
   return { kind: 'bytes', type: split.type, content: split.content };
 }
 
@@ -241,7 +291,7 @@ async function resolveLoose(
   if (fitsBuffer(compressed.length, gate.maxBufferedBytes)) {
     const inflated = await ctx.compressor.inflate(compressed);
     await verifyBufferedBytes(ctx, id, inflated, gate.verifyHash);
-    return toBytesSource(inflated);
+    return toCachedBytesSource(ctx, id, inflated);
   }
   const iterator = readableStreamToAsyncIterable(inflateOneShot(ctx, compressed))[
     Symbol.asyncIterator
@@ -278,6 +328,7 @@ async function resolvePackBase(
   declaredSize: number,
   payload: Uint8Array,
   gate: BufferGate,
+  offset: number,
 ): Promise<BlobSource> {
   const type = packTypeName(baseType);
   // Both conditions: the compressed payload is the gated quantity everywhere,
@@ -288,16 +339,27 @@ async function resolvePackBase(
   // What this actually buys, stated honestly: `declaredSize` is read from the
   // entry header, so it holds an HONEST entry to the gate and nothing more. A
   // crafted entry can declare a tiny size and carry a maximally-compressible
-  // payload, pass both tests, and still inflate to ~64 MiB before the hash
-  // check rejects it. That is no worse than the loose arm, whose ceiling is the
-  // same 64 KiB-compressed bound, and both sit under the compressor port's
-  // 2 GiB inflate cap. Bounding a lying header would take streaming the entry
-  // and counting bytes, which is a different gate than this one.
+  // payload, pass both tests, and still force a ~64 MiB inflate — the cost of
+  // that single inflate call is not bounded ahead of time; only its result is.
+  // `assertInflatedSizeMatches`, right below, refuses the object as soon as the
+  // inflated byte count disagrees with the declared one, before either the
+  // cache write or the hash check runs. That is no worse than the loose arm,
+  // whose ceiling is the same 64 KiB-compressed bound, and both sit under the
+  // compressor port's 2 GiB inflate cap. Bounding the inflate call's own cost
+  // ahead of time would take streaming the entry and counting bytes as it
+  // decompresses, which is a different gate than this one.
   if (
     fitsBuffer(payload.length, gate.maxBufferedBytes) &&
     fitsBuffer(declaredSize, gate.maxBufferedBytes)
   ) {
     const content = await ctx.compressor.inflate(payload);
+    assertInflatedSizeMatches(offset, declaredSize, content.byteLength);
+    // Blobs excluded: see `toCachedBytesSource`'s doc — a read-once buffered
+    // blob only spends the shared cache's budget a repeatedly-walked tree or
+    // commit would otherwise keep warm.
+    if (type !== 'blob') {
+      cacheEntry(ctx.deltaCache, id, { type, content });
+    }
     await verifyObjectContent(ctx, id, type, content, gate.verifyHash);
     return { kind: 'bytes', type, content };
   }
@@ -313,6 +375,7 @@ async function resolvePackBase(
       type,
       declaredSize,
       gate.verifyHash,
+      offset,
     ),
     release: () => cancelUnread(inflated),
   };
@@ -466,9 +529,14 @@ async function* yieldAndVerifyLooseChunks(
  * bytes (no loose-format header in the inflated output). The canonical header
  * `<type> <declaredSize>\0` is built from the pack entry header's own type and
  * declared inflated size — both known before inflation — so chunks can be
- * yielded as they arrive. A wrong declared size is caught: the incremental hash
- * over the synthetic header plus the true inflated bytes will not equal id, so
- * objectHashMismatch fires.
+ * yielded as they arrive. The inflated length is known only once the stream
+ * ends, so the declared-size check — the same structural refusal the buffered
+ * arm and the index-pack write path enforce (`assertInflatedSizeMatches`,
+ * `PACK_ENTRY_INFLATED_SIZE_MISMATCH_REASON`) — runs after the last chunk,
+ * over a running byte count rather than the buffered bytes themselves. A hash
+ * mismatch cannot substitute for it: `verifyObjectContent`/`finalizeHash`
+ * rehash the object's OWN true content length, which a lying declared size
+ * never changes.
  */
 async function* yieldAndVerifyPackedBaseChunks(
   ctx: Context,
@@ -477,18 +545,22 @@ async function* yieldAndVerifyPackedBaseChunks(
   type: ObjectType,
   declaredSize: number,
   verifyHash: boolean,
+  offset: number,
 ): AsyncIterable<Uint8Array> {
   const hasher: Hasher | undefined = verifyHash ? ctx.hash.createHasher() : undefined;
 
   hasher?.update(syntheticObjectHeader(type, declaredSize));
 
+  let total = 0;
   for await (const chunk of chunks) {
     if (ctx.signal?.aborted === true) {
       throw operationAborted();
     }
+    total += chunk.byteLength;
     hasher?.update(chunk);
     yield chunk;
   }
+  assertInflatedSizeMatches(offset, declaredSize, total);
 
   await finalizeHash(hasher, id);
 }

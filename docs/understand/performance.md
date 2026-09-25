@@ -75,6 +75,57 @@ Four caches share one `Context`'s lifetime; each is sized independently since [A
 
 `deltaCacheMaxBytes` scales the parsed-object memo and the FlatTree cache (each derives its own budget from it); only `core.deltaBaseCacheLimit` or the explicit `deltaBaseCacheMaxBytes` option scales the delta-base cache — it no longer tracks `deltaCacheMaxBytes` at all. The memo valve is priced at the **measured** retained cost of a typical entry (1 206 B at sha1 — 32 768 entries × 1 206 = 39 518 208 B), not at the 512 B a message-and-parents sizer charges; that correction alone is why the family total reads ≈ 158 MiB and not the ≈ 136 MiB the charged figure used to suggest, with no change to how many entries the default dial admits. Both derived caches carry a width surcharge, so the same reference workload is admitted at either hash width: the FlatTree default admits a HEAD tree of roughly 50 000 tracked files at sha1 (8 388 608 B) and at sha256 (9 588 608 B, where the boundary sits at 51 002 files), where the un-surcharged share admitted only ~44 600 sha256 files and refused a 50 000-file sha256 HEAD outright. A HEAD past the boundary still never caches — `status`/`rm` work, they simply never get a cache hit for that repository. See [`internals.md`](../use/primitives/internals.md#parsedobjectmemofor--cachedeltabase--probedeltabasecache--deltabasecachingenabled) and [`readHeadTree`](../use/primitives/internals.md#readheadtree) for the mechanics, and [`openRepository`'s cache options](../get-started/node.md#cache-budgets) for how to size each one.
 
+## I/O strategy
+
+Node's default I/O strategy (`io: 'sync-fast-path'`, see [get-started/node.md#io-strategy](../get-started/node.md#io-strategy)) serves cheap, serial filesystem calls — `stat`, `lstat`, `exists`, `readlink`, reads up to 64 KiB, and reads through an already-open handle — synchronously instead of through `fs.promises`. The reason is per-call cost, not style: a libuv threadpool round trip runs roughly ten times what the equivalent synchronous call costs on local disk, and opening a repository or reading one small object is a dozen-plus of these calls back to back, none of them CPU-bound enough to want the pool's concurrency.
+
+| Node file operation | Threadpool (`fs.promises`) | Synchronous |
+|---|---|---|
+| `lstat` | 10.6–11.7 µs | 1.7–1.8 µs |
+| `readUtf8` (small file) | 50.9 µs | 13.3 µs |
+| Read through a held handle | 9.0 µs | 0.73 µs |
+
+The budget is **one millisecond of clock time per repository per event-loop turn** — not per call — measured from the first admitted synchronous operation in a turn; once it is spent, the arm awaits one `setImmediate` before its next call, so a long sweep holds the loop for one budget at a time. The bound scales with concurrently active repositories: two `Context`s each doing sync-fast-path work in the same turn can together hold the loop for up to two budgets. `readdir`, every write, and any read above the 64 KiB gate stay on the threadpool in both modes — an unbounded directory listing or a blob-sized read is exactly the shape the pool exists for.
+
+### Cold-path throughput (local measurement)
+
+Recorded on one developer machine, Node 22, via `npm run bench:ab main vs branch` — **not** the CI nightly artifact this page cites elsewhere, and not subject to the ±20% advisory variance the Methodology section budgets for that runner. Read these as directional, local measurements, not as a citable ratio; re-run `bench:ab` on your own hardware before trusting the absolute numbers.
+
+| Scenario | main | branch |
+|---|---|---|
+| Cold `cat-file`, HEAD commit | 0.03 ms | 0.01 ms |
+| Loose read, fresh open | 0.58 ms | 0.25 ms |
+| Pack read, cold, medium repo | 0.92 ms | 0.62 ms |
+| Many packs, cold open, with a multi-pack-index | 1.05 ms | 0.64 ms |
+| Many packs, cold open, without one | 3.84 ms | 1.29 ms |
+| `status`, medium repo, clean | 130.7 ms | 84.4 ms |
+| Cold delta-chain leaf | 1.59 ms | 0.68 ms |
+
+Warm rows (a cache-hot read of the same object) are unchanged by this slice — the sync fast path only pays off on the cold, syscall-bound path these rows measure.
+
+### Pack-first reads, lazy `.idx`, and pack windows
+
+Buffered reads (`readObject`, `readBlob`, tree and commit reads) now check the pack registry before the loose store (see the [upgrade note](../get-started/upgrade-to-v5.md#object-reads)), which turns the loose-only cold path's `stat midx · stat chain · readdir fanout` into `readdir pack · readdir fanout` — one shared pack-directory listing feeds both the multi-pack-index probe and the pack scan. `.idx` files load lazily, one pack at a time in candidate order, stopping at the first hit: with many packs and no multi-pack-index, a hit in the first pack now reads exactly one `.idx` file, where it used to read every pack's index (49 files) and `stat` every candidate path (53) before answering.
+
+Delta resolution reads through a per-pack window cache (git's `use_pack` shape: bounded windows, LRU-evicted under one registry-wide byte limit) instead of one `pread` per delta level — 44 of them for a 43-deep leaf. The deepest leaf of the depth-v3 delta-chain fixture now resolves through exactly 3 pack reads with the window cache warmed. `core.packedGitWindowSize` and `core.packedGitLimit` are honoured as upper bounds on the cache's 64 KiB window and 16 MiB registry-wide limit: either key can only **lower** those defaults, never raise them, because git's own figures are mmap reservations sized for lazy paging that an eager heap-backed cache cannot honour as a larger reservation — see the [upgrade note](../get-started/upgrade-to-v5.md#config).
+
+A content read's full-miss re-scan (see the [upgrade note](../get-started/upgrade-to-v5.md#object-reads)) is incremental, not a second cold open: every pack the registry already knows, its parsed `.idx`, its handle, its window-cache entries, and a loaded multi-pack-index all survive the re-scan — only a vanished or newly-listed pack changes. Local measurement (`npm run bench:ab main vs branch`, same caveats as the table below), per miss on a fixture carrying an 8.4 MB multi-pack-index: sequential misses fell from 2.05–3.72 ms to 0.13–0.29 ms; with 8 concurrent workers sharing the re-scan single-flight, from 443–686 µs to 46–68 µs per miss.
+
+### Event-loop stall: sync-fast-path vs threadpool
+
+Local measurement (event-loop delay histogram, warm, 5 `status` calls on the medium repo):
+
+| Mode | max | p99 |
+|---|---|---|
+| `sync-fast-path` | 8.3–8.6 ms | 3.0–3.1 ms |
+| `threadpool` | 4.1–4.7 ms | 2.4–2.7 ms |
+
+Honestly: the 1 ms budget bounds the bulk of the stall, but a residual stretch of roughly 7 ms sits between the budget's own checkpoints on this workload. **Located** (`node --cpu-prof`, sync mode, 40 warm `status()` iterations on `medium-v3`): the residual is `status.ts`'s own in-memory index-vs-tree diff pass — `collectStagedKinds` → `diffIndexAgainstTree` (`stage0IndexMap` + `unionPaths` + a `sortByPath` call), chained straight into `buildChanges`'s own union-and-sort — plus V8 GC pauses measured alongside it (≈2.2 ms self time/iteration on average, worse at the tail; the diff/union/sort functions alone average ≈3.7 ms/iteration). Neither class touches a filesystem call, so `sync-io-budget.ts`'s `admit()` — wired only at fs syscall boundaries — never runs during them, and a GC pause cannot be paused or checked from JS at all: the budget has no checkpoint to yield at inside this stretch, on either the Node adapter or the browser one (this code runs unmodified there, with no event loop or `setImmediate` to yield through in the first place). This is accepted as CPU work outside the sync-arm's remit — canonical git's own `status`/`diff-index` runs the identical uninterruptible pass — rather than threaded through a Node-only yield primitive at the cost of every platform's build (see [ADR-880](../adr/880-the-sync-budget-is-one-millisecond-of-clock-time-and-reads-are-gated-at-64-kib.md)). Pick `io: 'threadpool'` when the process cares more about event-loop latency than this workload's own throughput — other traffic sharing the loop, say. Pick the default when wall-clock time is what matters and nothing else shares the loop.
+
+### Browser: directory-handle caching (OPFS)
+
+The browser adapter memoises directory handles in an LRU keyed by parent path instead of re-resolving every path segment from the OPFS root on each call. Reading a depth-10 delta chain now makes 4 directory-handle lookups instead of 52.
+
 ## Why status:clean / readBlob:cold / delta-chain:cold trailed in the table above
 
 - **`status:clean`, `readBlob:cold-cache` (small pack), and `delta-chain` (cold):** the earlier claim here — that tsgit pays an inherent containment tax "because iso-git skips the security check entirely" — is superseded. The check these three scenarios used to pay (a `realpath` per read path, verifying the resolved location stayed inside the working tree) was **stricter than canonical git itself**: git reads through a symlink freely on every one of these paths and never re-validates the resolution against its roots (see [security.md](security.md)) — git skips it too. Under the git-parity prime directive, a tsgit check stricter than git is a divergence to close, not a security property to defend, so the git-parity containment change made the read side lexical and syscall-free instead of amortising a check that shouldn't have existed. What each scenario pays now: `status:clean` carries three independent contributions — the containment-check collapse, the working-tree walker's per-entry `lstat`/`joinPath` removal, and a per-invocation invariant that each tracked path is stated at most once across both scan passes. Only the first two are visible in a wall-clock bench; the one-sample-per-path invariant is proved by call count in the unit suite, not by timing, so a `status:clean` result must not be read as evidence for or against it. On the nightly, `status:clean` moved 0.45× → 0.54× (small) and 0.40× → 0.58× (medium): the containment collapse and walker changes landed, and what remains is per-entry stat work. `readBlob:cold-cache` (small pack) moved 0.60× → 0.81× for the same reason — fewer packed reads on this fixture leave repository-open fixed cost still dominant, so the row narrows the gap without reaching parity. `delta-chain` (cold) moved 0.35× → 0.32×, a shift inside the runner's own noise rather than a regression to read into.

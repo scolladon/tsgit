@@ -73,6 +73,17 @@ export interface ParsedConfig {
      * for `LruCache`, never arithmetic, so the inexactness is harmless.
      */
     readonly deltaBaseCacheLimit?: number;
+    /**
+     * `core.packedGitWindowSize` — bytes; an upper bound on the pack window
+     * cache's per-window size. Absent when unset or malformed (lenient read).
+     */
+    readonly packedGitWindowSize?: number;
+    /**
+     * `core.packedGitLimit` — bytes; an upper bound on the pack window
+     * cache's registry-wide byte budget. Absent when unset or malformed
+     * (lenient read).
+     */
+    readonly packedGitLimit?: number;
   };
   readonly user?: { readonly name?: string; readonly email?: string; readonly signingKey?: string };
   readonly remote?: ReadonlyMap<
@@ -1170,6 +1181,43 @@ export const findLastInvalidDeltaBaseCacheLimit = async (
   return { key, source: path, value: last.value ?? '', reason: checked.reason };
 };
 
+/**
+ * Cold-path detection for `core.packedGitWindowSize` / `core.packedGitLimit`:
+ * walk the cached `[core]` (subsectionless) tokens in file order and return
+ * the FIRST entry of EITHER key whose value fails `checkPackWindowMemoryBound`
+ * — unlike `deltaBaseCacheLimit`'s last-write-wins resolution, git validates
+ * both these keys in the streaming `git_default_core_config` callback, so the
+ * first malformed line in file order is fatal regardless of what follows it.
+ * Returns `undefined` when every recognised entry is valid or none is
+ * present. Runs ONLY on a command's refusal path — `readConfig` stays
+ * lenient.
+ */
+export const findFirstInvalidPackedGitBound = async (
+  ctx: Context,
+): Promise<(InvalidNumericEntry & { readonly line: number }) | undefined> => {
+  const { tokens, source: path } = await readConfigEntry(ctx);
+  let inSection = false;
+  for (const token of tokens) {
+    if (token.kind === 'header') {
+      inSection = matchesSection(token.section, token.subsection, 'core', undefined);
+      continue;
+    }
+    if (!inSection || token.kind !== 'entry') continue;
+    const lowered = token.key.toLowerCase();
+    if (lowered !== PACKED_GIT_WINDOW_SIZE_KEY && lowered !== PACKED_GIT_LIMIT_KEY) continue;
+    const checked = checkPackWindowMemoryBound(token.value);
+    if (checked.ok) continue;
+    return {
+      key: `core.${lowered}`,
+      source: path,
+      value: token.value ?? '',
+      reason: checked.reason,
+      line: token.startLine + 1,
+    };
+  }
+  return undefined;
+};
+
 type MutableGpg = {
   format?: 'openpgp' | 'ssh' | 'x509';
   program?: string;
@@ -1269,6 +1317,8 @@ type MutableCore = {
   maxTreeDepth?: number;
   sshCommand?: string;
   deltaBaseCacheLimit?: number;
+  packedGitWindowSize?: number;
+  packedGitLimit?: number;
   /** Transient: true when looseCompression was set via loosecompression key (not compression).
    *  Dropped by finalizeCore. Guards order-independent precedence: loosecompression > compression. */
   looseCompressionFromLoose?: boolean;
@@ -1326,6 +1376,25 @@ const applyDeltaBaseCacheLimitEntry = (
   return checked.ok ? { ...core, deltaBaseCacheLimit: checked.value } : undefined;
 };
 
+const PACKED_GIT_WINDOW_SIZE_KEY = 'packedgitwindowsize';
+const PACKED_GIT_LIMIT_KEY = 'packedgitlimit';
+
+/**
+ * Apply `core.packedGitWindowSize` / `core.packedGitLimit`: git's
+ * unsigned-long grammar, reusing `checkPackWindowMemoryBound` exactly as
+ * {@link applyDeltaBaseCacheLimitEntry} does. Merges as absent on any
+ * failure — this is the LENIENT read only; the eager refusal for a
+ * malformed value is `findFirstInvalidPackedGitBound`, not added here.
+ */
+const applyPackedGitBoundEntry = (
+  core: MutableCore,
+  field: 'packedGitWindowSize' | 'packedGitLimit',
+  value: string,
+): MutableCore | undefined => {
+  const checked = checkPackWindowMemoryBound(value);
+  return checked.ok ? { ...core, [field]: checked.value } : undefined;
+};
+
 // One map is BOTH the key set and the field dispatch: a new boolean key
 // cannot join the set without naming its target field, so a silent
 // mis-assignment is structurally impossible.
@@ -1380,6 +1449,11 @@ const applyCoreEntry = (
   }
   if (lowered === MAX_TREE_DEPTH_KEY) return applyMaxTreeDepthEntry(core, value);
   if (lowered === DELTA_BASE_CACHE_LIMIT_KEY) return applyDeltaBaseCacheLimitEntry(core, value);
+  if (lowered === PACKED_GIT_WINDOW_SIZE_KEY) {
+    return applyPackedGitBoundEntry(core, 'packedGitWindowSize', value);
+  }
+  if (lowered === PACKED_GIT_LIMIT_KEY)
+    return applyPackedGitBoundEntry(core, 'packedGitLimit', value);
   return undefined;
 };
 
@@ -1908,6 +1982,10 @@ const finalizeCore = (core: MutableCore | undefined): ParsedConfig['core'] => {
     ...(core.deltaBaseCacheLimit !== undefined
       ? { deltaBaseCacheLimit: core.deltaBaseCacheLimit }
       : {}),
+    ...(core.packedGitWindowSize !== undefined
+      ? { packedGitWindowSize: core.packedGitWindowSize }
+      : {}),
+    ...(core.packedGitLimit !== undefined ? { packedGitLimit: core.packedGitLimit } : {}),
   };
 };
 

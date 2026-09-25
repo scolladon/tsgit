@@ -90,5 +90,14 @@ export async function writeScenarioPackPair(
   // removing it makes the pack the object's only source.
   await repo.ctx.fs.rm(`${repo.ctx.layout.gitDir}/objects/${computeLooseObjectPath(id)}`);
 
+  // No explicit `registry.refresh()` here, deliberately: this writes
+  // objects/pack directly, bypassing the registry entirely, so a later read
+  // of `id` through a Context whose store gate an earlier read already
+  // forced would otherwise miss against the stale (pre-write) listing.
+  // The object-resolver's own full-miss re-scan retry (`pack-miss-rescan.ts`,
+  // mirroring git's `reprepare_packed_git`) now re-scans and finds it — a
+  // caller whose OWN assertions need the fresh generation ahead of a read
+  // (fsck's pack enumeration, say) still forces its own refresh().
+
   return { id, packBase };
 }

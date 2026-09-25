@@ -6,6 +6,7 @@ import { gitfileInvalidFormat, gitfileNoPath } from '../domain/worktree/error.js
 import { parseCommondir, parseGitfilePointer } from '../domain/worktree/gitfile.js';
 import type { LayoutProbe } from '../ports/layout-probe.js';
 import { longestStrictAncestor } from './ceiling-stop.js';
+import { type Speculated, settleSpeculation, speculate } from './speculate.js';
 
 /**
  * The walk's raw structural finding: where the gitDir (and, if different, the
@@ -51,6 +52,39 @@ export type WalkOutcome =
 interface GitDirLocation {
   readonly gitDir: string;
   readonly commonDir?: string;
+}
+
+/** The settled shape `LayoutProbe['stat']` resolves to. */
+type ProbeStat = Awaited<ReturnType<LayoutProbe['stat']>>;
+
+/**
+ * The three probes only worth starting when there is no caller-supplied
+ * common dir to make them moot: `<gitDir>/commondir`, `<gitDir>/objects` and
+ * `<gitDir>/refs` — always started, and always read, together.
+ */
+interface SharedDirProbes {
+  readonly commondir: Promise<Speculated<ProbeStat>>;
+  readonly objects: Promise<Speculated<ProbeStat>>;
+  readonly refs: Promise<Speculated<ProbeStat>>;
+}
+
+/**
+ * Where the candidate's common dir comes from: the caller's own override
+ * (the speculative `SharedDirProbes` were never even started), or the
+ * speculative `commondir`/`objects`/`refs` reads fired alongside `HEAD`'s. A
+ * discriminated union rather than an optional `SharedDirProbes` field so
+ * every reader narrows by `kind` instead of asserting non-null against an
+ * invariant `startCandidateProbes` enforces three functions away.
+ */
+type CommonDirSource =
+  | { readonly kind: 'override'; readonly commonDir: string }
+  | { readonly kind: 'speculative'; readonly probes: SharedDirProbes };
+
+/** Every probe `layoutForDiscoveredGitDir` fires before evaluating anything. */
+interface CandidateProbes {
+  readonly linkText: Promise<Speculated<string | undefined>>;
+  readonly head: Promise<Speculated<ProbeStat>>;
+  readonly commonDirSource: CommonDirSource;
 }
 
 /**
@@ -115,7 +149,12 @@ export const findLayout = async (
     // stat, not lstat — a .git symlink to a real gitdir behaves as a directory.
     const stat = await probe.stat(candidate);
     if (stat?.isDirectory === true) {
-      const located = await layoutFor(probe, candidate, pathPolicy, commonDirOverride);
+      const located = await layoutForDiscoveredGitDir(
+        probe,
+        candidate,
+        pathPolicy,
+        commonDirOverride,
+      );
       if (located !== undefined) {
         return { ...located, route: 'DISCOVERED', origin: current, ...marker };
       }
@@ -285,19 +324,159 @@ const layoutFor = async (
     if (commonDirOverride !== undefined) throw notARepository(gitDir as FilePath);
     return undefined;
   }
-  return {
+  return finishLocation(gitDir, commonDir, pathPolicy);
+};
+
+/** Two paths naming the same directory, modulo the policy's own case/separator rules. */
+const sameDir = (pathPolicy: PathPolicy, a: string, b: string): boolean =>
+  pathPolicy.normalizeForCompare(a) === pathPolicy.normalizeForCompare(b);
+
+/**
+ * Assembles the located candidate's result. `commonDir` is omitted (not set
+ * to `undefined` — `exactOptionalPropertyTypes` forbids the explicit-undefined
+ * form) when it equals `gitDir`, keeping a normal repo's layout byte-identical
+ * to today's; this also performs the degenerate-override normalisation for
+ * free, since an override resolving equal to `gitDir` is omitted exactly like
+ * a same-valued file-derived one.
+ */
+const finishLocation = (
+  gitDir: string,
+  commonDir: string,
+  pathPolicy: PathPolicy,
+): GitDirLocation => ({
+  gitDir,
+  ...(sameDir(pathPolicy, commonDir, gitDir) ? {} : { commonDir }),
+});
+
+/**
+ * The batched counterpart to `layoutFor`, used ONLY for the walk's `.git`
+ * DIRECTORY candidate (DC-3): every climbed level that has no `.git` entry,
+ * and the cwd-is-gitdir check, stay on the fully serial `layoutFor` — this
+ * function targets critical-path DEPTH on a cold filesystem, where the
+ * candidate check's five reads would otherwise cost five network round trips
+ * instead of one. It fires every probe the candidate could possibly need
+ * BEFORE awaiting any of them, then evaluates them in exactly `layoutFor`'s
+ * own order and reaches exactly its own answer — see `headValidFromProbes`,
+ * `candidateCommonDir` and `candidateSharedDirsValid`, which share their
+ * decision logic with the serial helpers below. A speculative read that the
+ * decision never needs (say, `stat(HEAD)` when the link text alone already
+ * qualifies the directory) is still issued, but its settlement — success OR
+ * rejection — is never read, so a hostile or erroring probe there can never
+ * surface through this call (`speculate`'s whole reason to exist).
+ */
+const layoutForDiscoveredGitDir = async (
+  probe: LayoutProbe,
+  gitDir: string,
+  pathPolicy: PathPolicy,
+  commonDirOverride?: string,
+): Promise<GitDirLocation | undefined> => {
+  const headPath = pathPolicy.join(gitDir, 'HEAD');
+  const probes = startCandidateProbes(probe, gitDir, pathPolicy, headPath, commonDirOverride);
+  if (!(await headValidFromProbes(probe, headPath, probes))) return undefined;
+  const commonDir = await candidateCommonDir(probe, gitDir, pathPolicy, probes.commonDirSource);
+  const valid = await candidateSharedDirsValid(
+    probe,
     gitDir,
-    // Omitted (not set to undefined) when equal to gitDir — exactOptionalPropertyTypes
-    // forbids the explicit-undefined form, and omission keeps a normal repo's
-    // layout byte-identical to today's. This also performs the degenerate-
-    // override normalisation for free: an override resolving equal to
-    // gitDir is omitted here exactly like a same-valued file-derived one.
-    // Compared via `normalizeForCompare` so a case-mismatched spelling of
-    // the same directory cannot smuggle a degenerate value onto the layout.
-    ...(pathPolicy.normalizeForCompare(commonDir) !== pathPolicy.normalizeForCompare(gitDir)
-      ? { commonDir }
-      : {}),
-  };
+    commonDir,
+    pathPolicy,
+    probes.commonDirSource,
+  );
+  if (!valid) {
+    if (probes.commonDirSource.kind === 'override') throw notARepository(gitDir as FilePath);
+    return undefined;
+  }
+  return finishLocation(gitDir, commonDir, pathPolicy);
+};
+
+/**
+ * Starts every candidate probe without awaiting any of them: the HEAD link
+ * text, the followed HEAD stat, and — only when there is no caller-supplied
+ * common dir to make them moot — the `commondir`/`objects`/`refs` stats
+ * rooted at THIS `gitDir` (not yet the resolved common dir, which is not
+ * known until the `commondir` read settles).
+ */
+const startCandidateProbes = (
+  probe: LayoutProbe,
+  gitDir: string,
+  pathPolicy: PathPolicy,
+  headPath: string,
+  commonDirOverride: string | undefined,
+): CandidateProbes => ({
+  linkText: speculate(probe.readLink?.(headPath) ?? Promise.resolve(undefined)),
+  head: speculate(probe.stat(headPath)),
+  commonDirSource:
+    commonDirOverride === undefined
+      ? { kind: 'speculative', probes: startSharedDirProbes(probe, gitDir, pathPolicy) }
+      : { kind: 'override', commonDir: commonDirOverride },
+});
+
+const startSharedDirProbes = (
+  probe: LayoutProbe,
+  gitDir: string,
+  pathPolicy: PathPolicy,
+): SharedDirProbes => ({
+  commondir: speculate(probe.stat(pathPolicy.join(gitDir, 'commondir'))),
+  objects: speculate(probe.stat(pathPolicy.join(gitDir, 'objects'))),
+  refs: speculate(probe.stat(pathPolicy.join(gitDir, 'refs'))),
+});
+
+/**
+ * `hasValidHead`'s decision logic, over the speculative results instead of
+ * fresh reads: link text first (`decideByLinkText`); the content read still
+ * runs only after the followed stat confirms a regular file (FIFO safety —
+ * `readUtf8` is never spec'd, since a `HEAD` read is a commitment the
+ * decision must make in order, not a probe worth firing blind).
+ */
+const headValidFromProbes = async (
+  probe: LayoutProbe,
+  headPath: string,
+  probes: CandidateProbes,
+): Promise<boolean> => {
+  const byLinkText = decideByLinkText(await settleSpeculation(probes.linkText));
+  if (byLinkText !== undefined) return byLinkText;
+  const head = await settleSpeculation(probes.head);
+  if (head?.isFile !== true) return false;
+  const content = await probe.readUtf8(headPath);
+  return content !== undefined && isValidHeadContent(content);
+};
+
+/**
+ * The common dir for a batched candidate: the override wins outright (the
+ * speculative `commondir` stat was never even started); otherwise the
+ * already-settled speculative stat feeds `resolveCommonDirFrom` — no fresh
+ * `stat` call.
+ */
+const candidateCommonDir = async (
+  probe: LayoutProbe,
+  gitDir: string,
+  pathPolicy: PathPolicy,
+  source: CommonDirSource,
+): Promise<string> => {
+  if (source.kind === 'override') return source.commonDir;
+  const commondirStat = await settleSpeculation(source.probes.commondir);
+  return resolveCommonDirFrom(probe, gitDir, pathPolicy, commondirStat);
+};
+
+/**
+ * `sharedDirsValid`'s decision, reusing the speculative `objects`/`refs`
+ * stats ONLY when the resolved common dir turns out to equal `gitDir` — the
+ * shape the speculation actually targeted. A linked worktree's differing
+ * common dir falls back to fresh reads under that dir, paying two stats the
+ * speculation could not have avoided (it started before the common dir was
+ * known).
+ */
+const candidateSharedDirsValid = async (
+  probe: LayoutProbe,
+  gitDir: string,
+  commonDir: string,
+  pathPolicy: PathPolicy,
+  source: CommonDirSource,
+): Promise<boolean> => {
+  if (source.kind === 'override' || !sameDir(pathPolicy, commonDir, gitDir)) {
+    return sharedDirsValid(probe, commonDir, pathPolicy);
+  }
+  if (!isSharedDirectory(await settleSpeculation(source.probes.objects))) return false;
+  return isSharedDirectory(await settleSpeculation(source.probes.refs));
 };
 
 /**
@@ -312,6 +491,22 @@ export const resolveCommonDir = async (
 ): Promise<string> => {
   const commondirPath = pathPolicy.join(gitDir, 'commondir');
   const stat = await probe.stat(commondirPath);
+  return resolveCommonDirFrom(probe, gitDir, pathPolicy, stat);
+};
+
+/**
+ * `resolveCommonDir`'s decision over an ALREADY-FETCHED `commondir` stat —
+ * shared by the serial route above (which just fetched it) and the batched
+ * `.git`-directory candidate (`candidateCommonDir`), which fetched it
+ * speculatively before `HEAD` was even validated.
+ */
+const resolveCommonDirFrom = async (
+  probe: LayoutProbe,
+  gitDir: string,
+  pathPolicy: PathPolicy,
+  stat: ProbeStat,
+): Promise<string> => {
+  const commondirPath = pathPolicy.join(gitDir, 'commondir');
   if (stat === undefined) return gitDir;
   // A non-regular `commondir` (a directory, or a FIFO/device on the node
   // probe) is treated as absent, never read: `readUtf8` on a FIFO would
@@ -381,8 +576,8 @@ const hasValidHead = async (
   // target does not exist, anything else disqualifies even when it does.
   // Adapters without the capability (or a non-symlink `HEAD`, where
   // `readLink` collapses to undefined) fall through to the content check.
-  const linkText = await probe.readLink?.(headPath);
-  if (linkText !== undefined) return isRefsLinkText(linkText);
+  const byLinkText = decideByLinkText(await probe.readLink?.(headPath));
+  if (byLinkText !== undefined) return byLinkText;
   const head = await probe.stat(headPath);
   if (head?.isFile !== true) return false;
   // No size gate: git validates only the first 255 bytes of HEAD and never
@@ -395,6 +590,15 @@ const hasValidHead = async (
   return content !== undefined && isValidHeadContent(content);
 };
 
+/**
+ * `undefined` when the link text itself cannot decide (the capability is
+ * absent, or `HEAD` is not a symlink) — the caller then escalates to the
+ * followed stat. Shared by `hasValidHead` (serial) and `headValidFromProbes`
+ * (batched) so both routes read the same grammar off the same link text.
+ */
+const decideByLinkText = (linkText: string | undefined): boolean | undefined =>
+  linkText === undefined ? undefined : isRefsLinkText(linkText);
+
 /** The shared-dir half of git's `is_git_directory`: `objects/` and `refs/` at the common dir. */
 const sharedDirsValid = async (
   probe: LayoutProbe,
@@ -402,7 +606,10 @@ const sharedDirsValid = async (
   pathPolicy: PathPolicy,
 ): Promise<boolean> => {
   const objects = await probe.stat(pathPolicy.join(commonDir, 'objects'));
-  if (objects?.isDirectory !== true) return false;
+  if (!isSharedDirectory(objects)) return false;
   const refs = await probe.stat(pathPolicy.join(commonDir, 'refs'));
-  return refs?.isDirectory === true;
+  return isSharedDirectory(refs);
 };
+
+/** Shared by the serial and batched shared-dir checks: a directory qualifies as `objects/`/`refs/`. */
+const isSharedDirectory = (stat: ProbeStat): boolean => stat?.isDirectory === true;

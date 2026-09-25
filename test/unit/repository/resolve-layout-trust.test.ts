@@ -706,11 +706,13 @@ describe('resolveLayout — the ownership-trust gate', () => {
 
     describe('Given two checked paths foreign — the repository path and the common dir', () => {
       describe('When resolveLayout runs at the worktree path', () => {
-        it('Then foreignPath names the repository path, first in the documented check order', async () => {
+        it('Then foreignPath names the repository path, first in the documented check order, though every checked path was queried', async () => {
           // Arrange — chosen so the two candidates are distinguishable: if the
-          // check order were reversed, foreignPath would name the common dir
+          // decision order were reversed, foreignPath would name the common dir
           // instead. Written off the documented order, not the implementation's
-          // array, so a reordering mutant dies here.
+          // array, so a reordering mutant dies here. Every checked path is
+          // queried (the gate starts them all at once), but only the FIRST
+          // one reported unowned decides the verdict.
           const fs = new MemoryFileSystem({ rootDir: '/repo' });
           await makeGitDir(fs, '/repo/bare.git');
           await fs.writeUtf8('/repo/bare.git/worktrees/wt/HEAD', 'ref: refs/heads/main\n');
@@ -724,7 +726,7 @@ describe('resolveLayout — the ownership-trust gate', () => {
 
           // Assert
           expect(result?.foreignPath).toBe('/repo/wt');
-          expect(ownershipQueries).toStrictEqual(['/repo/wt']);
+          expect(ownershipQueries).toStrictEqual(['/repo/wt', admin, '/repo/bare.git']);
         });
       });
     });

@@ -35,9 +35,11 @@ import {
   findFirstInvalidBooleanInSection,
   findFirstInvalidCompression,
   findFirstInvalidLogAllRefUpdates,
+  findFirstInvalidPackedGitBound,
   findFirstValuelessEntry,
   type InvalidBooleanEntry,
   type InvalidCompressionEntry,
+  type InvalidNumericEntry,
   memoizeGateVerdict,
   openConfigEpoch,
   type ValuelessEntry,
@@ -145,7 +147,8 @@ const DIFF_BOOLEAN_KEYS: ReadonlyArray<string> = ['cachetextconv'];
 type EagerCandidate =
   | { readonly kind: 'valueless'; readonly line: number; readonly entry: ValuelessEntry }
   | { readonly kind: 'compression'; readonly line: number; readonly entry: InvalidCompressionEntry }
-  | { readonly kind: 'boolean'; readonly line: number; readonly entry: InvalidBooleanEntry };
+  | { readonly kind: 'boolean'; readonly line: number; readonly entry: InvalidBooleanEntry }
+  | { readonly kind: 'numeric'; readonly line: number; readonly entry: InvalidNumericEntry };
 
 const throwEagerCandidate = (candidate: EagerCandidate): never => {
   if (candidate.kind === 'valueless') {
@@ -155,6 +158,10 @@ const throwEagerCandidate = (candidate: EagerCandidate): never => {
   if (candidate.kind === 'boolean') {
     const { entry } = candidate;
     throw configBadBooleanValue(entry.key, entry.source, entry.value);
+  }
+  if (candidate.kind === 'numeric') {
+    const { entry } = candidate;
+    throw configBadNumericValue(entry.key, entry.source, entry.value, entry.reason);
   }
   const { entry } = candidate;
   if (entry.failure.kind === 'numeric') {
@@ -186,14 +193,14 @@ const throwEagerCandidate = (candidate: EagerCandidate): never => {
  * boundaries (`internal/repo-settings-gate.ts`'s `assertRepoSettingsValid`),
  * validated independently of this gate.
  *
- * Cross-class ordering (the five classes below): run all five finders in
+ * Cross-class ordering (the six classes below): run all six finders in
  * parallel and throw the LOWEST-line entry's shape — string
- * (`CONFIG_MISSING_VALUE`), compression (`CONFIG_BAD_NUMERIC_VALUE` /
- * `CONFIG_BAD_ZLIB_LEVEL`), or boolean (`CONFIG_BAD_BOOLEAN_VALUE`). No-op
- * when every class is valid or absent.
+ * (`CONFIG_MISSING_VALUE`), compression or packed-git-bound
+ * (`CONFIG_BAD_NUMERIC_VALUE` / `CONFIG_BAD_ZLIB_LEVEL`), or boolean
+ * (`CONFIG_BAD_BOOLEAN_VALUE`). No-op when every class is valid or absent.
  */
 export const assertEagerConfigValid = async (ctx: Context): Promise<void> => {
-  const [str, comp, boolCore, logAllRefUpdates, boolDiff] = await Promise.all([
+  const [str, comp, boolCore, logAllRefUpdates, boolDiff, packedGitBound] = await Promise.all([
     findFirstValuelessEntry(ctx, 'core', undefined, CORE_STRING_KEYS),
     findFirstInvalidCompression(ctx),
     findFirstInvalidBoolean(ctx, 'core', undefined, CORE_BOOLEAN_KEYS),
@@ -201,6 +208,7 @@ export const assertEagerConfigValid = async (ctx: Context): Promise<void> => {
     // git ignores a subsectionless `[diff] cachetextconv` (the key only exists
     // per-driver), so only subsectioned entries can refuse here.
     findFirstInvalidBooleanInSection(ctx, 'diff', DIFF_BOOLEAN_KEYS, { requireSubsection: true }),
+    findFirstInvalidPackedGitBound(ctx),
   ]);
   const candidates: ReadonlyArray<EagerCandidate | undefined> = [
     str === undefined ? undefined : { kind: 'valueless', line: str.line, entry: str },
@@ -210,6 +218,9 @@ export const assertEagerConfigValid = async (ctx: Context): Promise<void> => {
       ? undefined
       : { kind: 'boolean', line: logAllRefUpdates.line, entry: logAllRefUpdates },
     boolDiff === undefined ? undefined : { kind: 'boolean', line: boolDiff.line, entry: boolDiff },
+    packedGitBound === undefined
+      ? undefined
+      : { kind: 'numeric', line: packedGitBound.line, entry: packedGitBound },
   ];
   const selected = candidates.reduce<EagerCandidate | undefined>(
     (winner, candidate) => pickLowerLine(winner, candidate),

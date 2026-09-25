@@ -22,11 +22,11 @@ import {
   parsePackHeader,
 } from '../../domain/storage/pack-entry.js';
 import type { Context } from '../../ports/context.js';
+import type { DirEntry } from '../../ports/file-system.js';
 import {
   bindMidx,
   computeMidxHealth,
   findMidxHit,
-  type LoadedMidx,
   type MidxHealth,
 } from './internal/midx-binding.js';
 import { loadMidxSet, type MidxLoadResult } from './internal/midx-source.js';
@@ -38,6 +38,7 @@ import {
 } from './internal/pack-artefact-source.js';
 import {
   emptyGeneration,
+  type IndexedPack,
   NO_PACKS,
   type PackGeneration,
   resolveIndexes,
@@ -56,6 +57,11 @@ import {
   isSkippablePackFault,
   packBaseName,
 } from './internal/pack-shared.js';
+import {
+  createPackWindowCache,
+  type PackWindowCache,
+  packWindowBudgetFor,
+} from './internal/pack-window-cache.js';
 import { createPromiseMemo, type PromiseMemo } from './internal/promise-memo.js';
 import { assertRepoSettingsValid } from './internal/repo-settings-gate.js';
 import { deltaBaseCacheBudgetFor } from './internal/resolve-delta-base-cache-limit.js';
@@ -80,6 +86,16 @@ function isUnsupportedOperation(err: unknown): boolean {
 
 export interface RegisteredPack {
   readonly name: string;
+  /**
+   * This instance's own identity — `${name}#<token>`, the SAME string
+   * `readSlice`'s window-cache key is built from. A same-named successor
+   * created after this instance is retired always carries a different
+   * token, so any offset-keyed cache keyed by `instanceKey` (not `name`
+   * alone) naturally stops matching once this instance is gone — no
+   * eviction needed, exactly the window cache's own posture. See
+   * {@link deltaBaseCacheKey}.
+   */
+  readonly instanceKey: string;
   /**
    * Memoised `.idx` read + parse — one bounded read per pack, on first use,
    * never at scan time. A rejection is **not** memoised (the next caller
@@ -114,7 +130,7 @@ export interface RegisteredPack {
    * completeness rests on every pack-byte read passing through `lookup` first,
    * and nothing here structurally forces that to stay true.
    */
-  readonly readSlice: (offset: number, length: number) => Promise<Uint8Array>;
+  readonly readSlice: (offset: number, length: number) => Promise<Readonly<Uint8Array>>;
   /** Release the persistent handle, if one was ever opened. Idempotent. */
   readonly close: () => Promise<void>;
   /** Whether this pack's `.rev` sibling was present in the scan's own file
@@ -182,9 +198,9 @@ export interface PackLookupHit {
 /**
  * A resolved OFS/REF-delta chain level's `(type, content)` — already
  * header-split, so a hit never re-runs the loose-format split a raw-bytes
- * cache would need. `(packName, offset)` is only meaningful within the
- * generation that produced it, which is exactly the registry's lifetime
- * between one `refresh()` and the next.
+ * cache would need. Keyed by `(instanceKey, offset)`: an entry belongs to
+ * the one pack instance that produced it, so a pack retired by `refresh()`
+ * or `reprepare()` can never answer for a successor of the same name.
  */
 export interface DeltaBaseCacheEntry {
   readonly type: PackEntryHeader['type'];
@@ -200,10 +216,18 @@ export interface DeltaBaseCacheEntry {
   readonly chainDepth: number;
 }
 
-/** The one key shape for {@link PackRegistry.deltaBaseCache} — a pack name and
- *  an on-disk byte offset are only meaningful together, within one generation. */
-export function deltaBaseCacheKey(packName: string, offset: number): string {
-  return `${packName}:${offset}`;
+/**
+ * The one key shape for {@link PackRegistry.deltaBaseCache} — a pack
+ * INSTANCE and an on-disk byte offset are only meaningful together, for as
+ * long as that instance lives. Takes `RegisteredPack.instanceKey`, never
+ * `name` alone: `reprepare()` deliberately leaves this cache warm across a
+ * re-scan (unlike `refresh()`), so a retired instance's entries must become
+ * unreachable on their own once a same-named successor takes over — the
+ * same reasoning `loadPack`'s `windowCacheKey` already applies to the
+ * window cache.
+ */
+export function deltaBaseCacheKey(instanceKey: string, offset: number): string {
+  return `${instanceKey}:${offset}`;
 }
 
 /**
@@ -253,10 +277,26 @@ export interface PackRegistry {
    *  which may ship a new midx as well as new packs. */
   refresh(): void;
   /**
-   * Await every handle close a prior `refresh()` parked for background
-   * completion, without disposing the registry. A caller about to unlink a
-   * retired pack must drain first: on Windows an open `FileHandle` may
-   * refuse the unlink outright, and on every platform an unlinked-but-open
+   * Incremental re-scan for a full-object-miss retry — git's
+   * `reprepare_packed_git`, never `refresh()`'s teardown. Re-lists
+   * `objects/pack` and the multi-pack-index gate, but REUSES the existing
+   * `RegisteredPack` instance (same `.idx` memo, handle, window keys) for
+   * every pack whose NAME the new listing still carries — git's own
+   * `pack_map` identity, keyed by path/name, never mtime or size. A pack
+   * whose name vanished from the listing is retired (closed, in the
+   * background — see `settleRefresh`); a newly-listed name is loaded fresh.
+   * Deliberately leaves the delta-base cache and the pack window cache
+   * untouched: a reused instance's per-instance window keys stay valid, and
+   * a retired instance's keys become unreachable on their own, so nothing
+   * needs evicting. Never call from a caller that just WROTE a pack — that
+   * caller wants `refresh()`'s full teardown, not a reuse-preserving rescan.
+   */
+  reprepare(): Promise<void>;
+  /**
+   * Await every handle close a prior `refresh()`/`reprepare()` parked for
+   * background completion, without disposing the registry. A caller about to
+   * unlink a retired pack must drain first: on Windows an open `FileHandle`
+   * may refuse the unlink outright, and on every platform an unlinked-but-open
    * pack keeps its bytes allocated until the fd closes.
    */
   settleRefresh(): Promise<void>;
@@ -307,9 +347,9 @@ export interface PackRegistry {
    * Offset-keyed cache for delta-chain intermediates — every OFS/REF-delta
    * level `collectDeltaChain`/`resolvePackChain` (object-resolver.ts) walks
    * through, not just a chain's tip. Lives here, per-registry, rather than
-   * on a `Context`: `(packName, offset)` is only meaningful within the
-   * generation that produced it, and `refresh()`/`dispose()` clear it
-   * alongside everything else generation-scoped. Sized once, from the
+   * on a `Context`: `(instanceKey, offset)` is only meaningful for the pack
+   * instance that produced it; `refresh()`/`dispose()` clear it to free
+   * memory, `reprepare()` keeps it for the instances it reuses. Sized once, from the
    * Context that first creates this registry — see `createPackRegistry`.
    */
   readonly deltaBaseCache: LruCache<DeltaBaseCacheEntry>;
@@ -378,14 +418,28 @@ async function readBoundedIdx(ctx: Context, idxPath: string): Promise<Uint8Array
   return bytes;
 }
 
+// Every `loadPack` call gets its own token — a replaced pack reuses the same
+// NAME, but never the same token, so a late window fill from an outgoing
+// pack's in-flight read can never land under a successor's own cache key
+// (see `loadPack`'s `windowCacheKey`).
+let nextPackInstanceToken = 0;
+
 function loadPack(
   ctx: Context,
   dir: string,
   entryName: string,
   fileNames: ReadonlySet<string>,
+  windowCache: PackWindowCache,
 ): RegisteredPack {
   const idxPath = `${dir}/${entryName}`;
   const name = packBaseName(entryName);
+  // Distinct from `name`: `name` is the stable, human-facing pack identity
+  // (`RegisteredPack.name`, log context); this is the per-INSTANCE key,
+  // scoped to this one `loadPack` call so a same-named successor never
+  // shares a cached window — or a cached delta base, via
+  // `RegisteredPack.instanceKey` below — with the pack it replaced.
+  // Stryker disable next-line UpdateOperator: equivalent — the token is only ever embedded in a string key (never compared by order or parsed back to a number), so a decrementing sequence is just as unique per instance as an incrementing one.
+  const windowCacheKey = `${name}#${nextPackInstanceToken++}`;
   const packPath = `${dir}/${name}.pack`;
   const revPath = `${dir}/${name}.rev`;
   const hasRevIndex = fileNames.has(`${name}.rev`);
@@ -447,36 +501,6 @@ function loadPack(
     return packPositionMap(index);
   });
 
-  const headerMemo = createPromiseMemo(async (): Promise<PackHeader> => {
-    const index = await indexMemo.get();
-    const header = parsePackHeader(await ctx.fs.readSlice(packPath, 0, PACK_HEADER_SIZE));
-    if (header.objectCount !== index.objectCount) {
-      throw invalidPackHeader(
-        `object count disagrees with index: pack ${header.objectCount}, index ${index.objectCount}`,
-      );
-    }
-    return header;
-  });
-
-  const buildOffsetTable = async (): Promise<PackOffsetTable> => {
-    const index = await indexMemo.get();
-    const stat = await ctx.fs.stat(packPath);
-    const packFileSize = stat.size;
-    // The pack file trailer is a single pack-checksum digest (SHA-1: 20 bytes,
-    // SHA-256: 32 bytes). The last entry's data ends exactly at trailerStart.
-    const trailerStart = packFileSize - ctx.hashConfig.digestLength;
-    if (trailerStart < 0) {
-      throw invalidPackIndex('pack file too small to contain a trailer');
-    }
-    // A present, loadable `.rev` always wins — resolveOffsetTable answers
-    // with a lazy, `.rev`-backed table and never materialises an O(n) sorted
-    // array for it. `revIndexMemo.get` is passed through rather than
-    // awaited here, so the SAME single-flight `.rev` load this pack's other
-    // consumers (packPositionsMemo) share is reused, not duplicated.
-    return resolveOffsetTable(ctx, name, index, revIndexMemo.get, packFileSize, trailerStart);
-  };
-  const offsetTable = createPromiseMemo(buildOffsetTable).get;
-
   // Lazily-opened, memoised persistent handle for this pack's slice reads.
   // The memo clears itself on any open rejection (a transient EMFILE must
   // not pin later reads — or dispose() — to a stale fault), and the
@@ -491,14 +515,68 @@ function loadPack(
   const inFlight = new Set<Promise<unknown>>();
   let retired = false;
 
+  // The handle-based half of `packSize` — split out so its whole span (open
+  // + fstat) can be tracked in `inFlight` the same way `readSlice` tracks its
+  // own reads: without that, `close()`'s `Promise.allSettled(inFlight)` drain
+  // sails past a probe still mid-`fstat`, and the handle it closes underneath
+  // that probe surfaces as a raw, unmapped fault instead of a clean size.
+  const sizeViaHandle = async (): Promise<number> => {
+    const handle = await handleMemo.get();
+    return (await handle.stat()).size;
+  };
+
+  // Pack file size via fstat on the held handle — one syscall cheaper than a
+  // path stat, and consistent with every other read now going through this
+  // same handle. A retired pack (closed by refresh()) never reopens one, so
+  // it stats by path instead, mirroring readSlice's own retired arm; the
+  // browser-shaped UNSUPPORTED_OPERATION arm (no persistent handles) falls
+  // back to the same path stat.
+  const packSize = async (): Promise<number> => {
+    if (retired) return (await ctx.fs.stat(packPath)).size;
+    const probe = sizeViaHandle();
+    inFlight.add(probe);
+    try {
+      return await probe;
+    } catch (err) {
+      if (!isUnsupportedOperation(err)) throw err;
+      // Stryker disable next-line CallExpression: equivalent — `isUnsupportedOperation` only matches an error tagged `operation: 'openWithNoFollow'`, which can only come from `handleMemo`'s own factory rejecting; `createPromiseMemo`'s `get()` already clears its slot on ANY rejection before this catch ever runs, so this call finds the slot already empty.
+      handleMemo.clear();
+      return (await ctx.fs.stat(packPath)).size;
+    } finally {
+      // NOTE: this block's BlockStatement mutant (`{}`) is equivalent — inFlight's only
+      // reader is close()'s `Promise.allSettled(inFlight)`, which settles identically
+      // whether or not already-settled entries remain (an already-settled promise adds no
+      // wait and its outcome is discarded), so dropping this deletion cannot change any
+      // observable return value or thrown error — only when the settled reference becomes
+      // eligible for GC. No inline ignore-comment can attach here and stay equivalent-only,
+      // scoped: a comment placed before this block (outside the catch clause) would need
+      // `} finally {` split across lines, which the formatter always collapses back onto
+      // one line, and a comment placed inside the block (as here) attaches to the first
+      // STATEMENT's line, not the block's own line, so it can never target this exact
+      // mutant's reported location (verified against the instrumenter's comment handling).
+      inFlight.delete(probe);
+    }
+  };
+  const sizeMemo = createPromiseMemo(packSize);
+
+  // Loads `size` bytes at `base` through the held handle into a FRESH
+  // buffer — no per-call zero-fill of a caller-supplied length, since the
+  // window cache owns the allocation and reuses it across every request the
+  // window covers. Clamped to the pack's own end, mirroring the window
+  // cache's "a short window at file end returns a short view" contract.
+  const loadWindow = async (base: number, size: number): Promise<Uint8Array> => {
+    const handle = await handleMemo.get();
+    const packFileSize = await sizeMemo.get();
+    // Stryker disable next-line ArithmeticOperator: equivalent — this clamp is a perf/allocation optimization only; `handle.read`'s own `bytesRead` already truncates to whatever the file actually holds (see the memory adapter's own `subarray` clamp), so an unclamped `size` here still yields the identical returned byte range below, just via a larger scratch buffer and a doomed-past-EOF read attempt instead of a skipped one.
+    const clampedSize = Math.max(0, Math.min(size, packFileSize - base));
+    const buffer = new Uint8Array(clampedSize);
+    const bytesRead = await handle.read(buffer, 0, clampedSize, base);
+    return buffer.subarray(0, bytesRead);
+  };
+
   const readSlice = async (offset: number, length: number): Promise<Uint8Array> => {
     if (retired) return ctx.fs.readSlice(packPath, offset, length);
-    const read = (async (): Promise<Uint8Array> => {
-      const handle = await handleMemo.get();
-      const buffer = new Uint8Array(length);
-      const bytesRead = await handle.read(buffer, 0, length, offset);
-      return buffer.subarray(0, bytesRead);
-    })();
+    const read = windowCache.read(windowCacheKey, offset, length, loadWindow);
     inFlight.add(read);
     try {
       return await read;
@@ -522,6 +600,41 @@ function loadPack(
     }
   };
 
+  // The header now rides the pack window cache, sharing its window with
+  // whatever else falls in [0, windowBytes) — the header is no longer a
+  // special path-based read, so a scan that only ever probes headers still
+  // opens the pack exactly once. The browser-shaped UNSUPPORTED_OPERATION
+  // arm inside readSlice already falls back to a path read, so this needs
+  // no fallback of its own.
+  const headerMemo = createPromiseMemo(async (): Promise<PackHeader> => {
+    const index = await indexMemo.get();
+    const header = parsePackHeader(await readSlice(0, PACK_HEADER_SIZE));
+    if (header.objectCount !== index.objectCount) {
+      throw invalidPackHeader(
+        `object count disagrees with index: pack ${header.objectCount}, index ${index.objectCount}`,
+      );
+    }
+    return header;
+  });
+
+  const buildOffsetTable = async (): Promise<PackOffsetTable> => {
+    const index = await indexMemo.get();
+    const packFileSize = await sizeMemo.get();
+    // The pack file trailer is a single pack-checksum digest (SHA-1: 20 bytes,
+    // SHA-256: 32 bytes). The last entry's data ends exactly at trailerStart.
+    const trailerStart = packFileSize - ctx.hashConfig.digestLength;
+    if (trailerStart < 0) {
+      throw invalidPackIndex('pack file too small to contain a trailer');
+    }
+    // A present, loadable `.rev` always wins — resolveOffsetTable answers
+    // with a lazy, `.rev`-backed table and never materialises an O(n) sorted
+    // array for it. `revIndexMemo.get` is passed through rather than
+    // awaited here, so the SAME single-flight `.rev` load this pack's other
+    // consumers (packPositionsMemo) share is reused, not duplicated.
+    return resolveOffsetTable(ctx, name, index, revIndexMemo.get, packFileSize, trailerStart);
+  };
+  const offsetTable = createPromiseMemo(buildOffsetTable).get;
+
   const close = async (): Promise<void> => {
     retired = true;
     const pending = handleMemo.clear();
@@ -538,6 +651,7 @@ function loadPack(
 
   return {
     name,
+    instanceKey: windowCacheKey,
     index: indexMemo.get,
     packPath,
     idxPath,
@@ -560,12 +674,20 @@ function loadPack(
  * because it needs no I/O to detect. The pack's `.idx` itself is not read
  * here — that happens lazily, the first time something forces `pack.index()`
  * (see `resolveIndexes`).
+ *
+ * `reusable` is `reprepare()`'s carry-forward set, keyed by pack name — the
+ * SAME identity git's `pack_map` uses. A name still present there is served
+ * its EXISTING instance (warm `.idx` memo, handle, window keys) instead of a
+ * freshly constructed one; `undefined` (the cold-scan and `refresh()` path)
+ * always constructs fresh.
  */
 function loadCandidatePack(
   ctx: Context,
   dir: string,
   entry: { readonly name: string },
   fileNames: ReadonlySet<string>,
+  windowCache: PackWindowCache,
+  reusable: ReadonlyMap<string, RegisteredPack> | undefined,
 ): RegisteredPack | undefined {
   const name = packBaseName(entry.name);
   if (!fileNames.has(`${name}.pack`)) {
@@ -574,7 +696,7 @@ function loadCandidatePack(
     });
     return undefined;
   }
-  return loadPack(ctx, dir, entry.name, fileNames);
+  return reusable?.get(name) ?? loadPack(ctx, dir, entry.name, fileNames, windowCache);
 }
 
 const unusableEntry = (
@@ -584,12 +706,19 @@ const unusableEntry = (
 ): UnusablePack => ({ name, layer, data });
 
 /**
- * `readdir` on a missing directory maps to `FILE_NOT_FOUND` on every
- * adapter. `NOT_A_DIRECTORY` covers the other real shape this tolerates: a
- * regular file sitting where `objects/pack` should be a directory (node's
- * `ENOTDIR`). Both mean the same thing here — there are no packs to list —
- * and canonical git agrees, serving a loose read at exit 0 while printing
- * `error: unable to open object pack directory: …: Not a directory`.
+ * List `objects/pack` once per generation — the single listing the store
+ * gate and the scan now share. `readdir` on a missing directory maps to
+ * `FILE_NOT_FOUND` on every adapter; `NOT_A_DIRECTORY` covers a regular file
+ * sitting where the directory should be (node's `ENOTDIR`); `PERMISSION_DENIED`
+ * and any other coded errno fold the same way. Canonical git agrees on every
+ * one of these shapes: it prints an `error: unable to open object pack
+ * directory: …` line and keeps serving loose reads at exit 0, never
+ * refusing. An absent directory is the ordinary state of a young repository
+ * and stays silent, as git's `opendir` ENOENT path does; every other coded
+ * fault is reported once here, through `ctx.logger?.warn` with the fault
+ * attached (no logger → silent, never a refusal), where git prints its
+ * `unable to open object pack directory` line. An error carrying no data code is a programming error and is
+ * rethrown, never folded.
  *
  * Structural on `data.code`, never `instanceof`: this classifies an error
  * thrown by `ctx.fs`, so in a mixed-module-graph harness (a source-graph
@@ -598,9 +727,18 @@ const unusableEntry = (
  * `domain/error-data-code.ts` documents, and the reason every `ctx.fs`
  * absence probe shares `errorDataCode`.
  */
-function isMissingPackDir(error: unknown): boolean {
-  const code = errorDataCode(error);
-  return code === 'FILE_NOT_FOUND' || code === 'NOT_A_DIRECTORY';
+async function listPackDir(ctx: Context): Promise<ReadonlyArray<DirEntry>> {
+  const dir = packsDir(commonGitDir(ctx));
+  try {
+    return await ctx.fs.readdir(dir);
+  } catch (error) {
+    const code = errorDataCode(error);
+    if (code === undefined) throw error;
+    if (code === 'FILE_NOT_FOUND') return [];
+    const { data } = error as { readonly data: TsgitErrorData };
+    ctx.logger?.warn?.('packRegistry: unreadable pack directory', { dir, ...faultContext(data) });
+    return [];
+  }
 }
 
 // git dies during object-store setup ahead of every read, and the ONLY
@@ -608,10 +746,21 @@ function isMissingPackDir(error: unknown): boolean {
 // the directory listing and pack construction below are invisible to a
 // successful loose read's outcome. So the gate is exactly the midx load,
 // and its Tier-B discard diagnostic belongs here too: git prints that one
-// on a loose read.
-function createStoreGate(ctx: Context): PromiseMemo<MidxLoadResult> {
+// on a loose read. `listing` is the shared `packDirListing` memo's `get` —
+// forcing the gate now also answers "does objects/pack name a
+// multi-pack-index (or a chain)" for `loadMidxSet`, at no I/O beyond the one
+// listing every read already pays.
+function createStoreGate(
+  ctx: Context,
+  listing: () => Promise<ReadonlyArray<DirEntry>>,
+): PromiseMemo<MidxLoadResult> {
   const loadStoreGate = async (): Promise<MidxLoadResult> => {
-    const midxLoad = await loadMidxSet(ctx, packsDir(commonGitDir(ctx)));
+    const entries = await listing();
+    const midxLoad = await loadMidxSet(
+      ctx,
+      packsDir(commonGitDir(ctx)),
+      new Set(entries.map((entry) => entry.name)),
+    );
     for (const fault of midxLoad.faults) {
       ctx.logger?.warn?.('packRegistry: discarding unusable multi-pack-index', {
         artefact: fault.artefact,
@@ -624,6 +773,65 @@ function createStoreGate(ctx: Context): PromiseMemo<MidxLoadResult> {
 }
 
 /**
+ * Passive promotion onto the settled (synchronous) lookup walk — for the
+ * plain read-walk shape (log, checkout, diff) that never calls `all()`/
+ * `health()` and so never forces `generation.indexed`'s own bounded-parallel
+ * scan. Tracks each UNCLAIMED candidate's own `index()` outcome as
+ * `lookupUnsettled`'s lazy loop resolves it organically, one lookup at a
+ * time; once every unclaimed candidate in a generation has settled —
+ * typically once enough misses have walked the whole list — a later lookup
+ * takes the cheap synchronous walk with zero further `pack.index()` calls,
+ * exactly like the `all()`/`health()`-forced case already does. Never forces
+ * anything itself: an untouched pack simply never contributes an entry, and
+ * settlement never completes until it does. Keyed by generation OBJECT
+ * identity, so a `refresh()`/`reprepare()`'s new generation starts tracking
+ * from empty; no explicit cleanup is needed; the old generation's entry
+ * drops once nothing else references it.
+ *
+ * Measured (30 packs, no midx, 20k sequential misses, in-memory adapter):
+ * ~30% faster once settled than staying on the per-pack-await walk forever.
+ */
+interface UnclaimedProgress {
+  readonly results: Map<RegisteredPack, PackIndex | undefined>;
+  readonly total: number;
+  settledPacks: ReadonlyArray<IndexedPack> | undefined;
+}
+
+const unclaimedProgressByGeneration = new WeakMap<PackGeneration, UnclaimedProgress>();
+
+function unclaimedProgressFor(
+  generation: PackGeneration,
+  isClaimed: (pack: RegisteredPack) => boolean,
+): UnclaimedProgress {
+  const existing = unclaimedProgressByGeneration.get(generation);
+  if (existing !== undefined) return existing;
+  const total = generation.packs.reduce((count, pack) => (isClaimed(pack) ? count : count + 1), 0);
+  const created: UnclaimedProgress = { results: new Map(), total, settledPacks: undefined };
+  unclaimedProgressByGeneration.set(generation, created);
+  return created;
+}
+
+/** Records one candidate's outcome and, once every candidate has one,
+ *  materialises the synchronous-walk snapshot exactly once — later fixes to
+ *  a since-repaired `.idx` are out of scope: a pack's bytes never change
+ *  without a new generation, which tracks fresh under its own object. */
+function recordUnclaimedResult(
+  generation: PackGeneration,
+  progress: UnclaimedProgress,
+  pack: RegisteredPack,
+  index: PackIndex | undefined,
+): void {
+  progress.results.set(pack, index);
+  if (progress.settledPacks !== undefined || progress.results.size < progress.total) return;
+  const settled: IndexedPack[] = [];
+  for (const candidate of generation.packs) {
+    const result = progress.results.get(candidate);
+    if (result !== undefined) settled.push({ pack: candidate, index: result });
+  }
+  progress.settledPacks = settled;
+}
+
+/**
  * Entry-count ceiling for the delta-base cache, mirroring the parsed-object
  * memo and the commit-graph header cache's own caps — a byte cap alone
  * under-defends a repo of many small, cheap-to-cache intermediates.
@@ -632,7 +840,17 @@ const DELTA_BASE_CACHE_MAX_ENTRIES = 65_536;
 
 export async function createPackRegistry(ctx: Context): Promise<PackRegistry> {
   await assertRepoSettingsValid(ctx);
-  const storeGate = createStoreGate(ctx);
+  const packDirListing = createPromiseMemo(() => listPackDir(ctx));
+  const storeGate = createStoreGate(ctx, packDirListing.get);
+  // Both budgets read `core.*` config independently, but NEVER sequentially:
+  // run concurrently, their two `readConfig` calls fall inside the same
+  // coalescing window (`config-read.ts`'s per-session single-flight stat),
+  // so construction pays one shared stat for the pair instead of two
+  // separate ones stacked after the repo-settings gate's own.
+  const [deltaBaseCacheBudget, windowBudget] = await Promise.all([
+    deltaBaseCacheBudgetFor(ctx),
+    packWindowBudgetFor(ctx),
+  ]);
   // A SEPARATE, ADDITIONAL byte budget from the ordinary delta cache's own —
   // not a share carved out of it. The two caches hold different things (raw
   // loose-format bytes vs. header-split reconstructed delta bases) and
@@ -641,11 +859,25 @@ export async function createPackRegistry(ctx: Context): Promise<PackRegistry> {
   // once here, at construction — never re-derived on `refresh()`), an
   // explicit `ctx.cacheBudgets` override, or git's 96 MiB default.
   const deltaBaseCache = createLruCache<DeltaBaseCacheEntry>(
-    await deltaBaseCacheBudgetFor(ctx),
+    deltaBaseCacheBudget,
     DELTA_BASE_CACHE_MAX_ENTRIES,
   );
+  // Registry-wide window cache backing every RegisteredPack.readSlice — one
+  // LRU shared across every pack this registry loads, so a window evicted
+  // for one pack can make room for another's. Sized once here, at
+  // construction; never re-derived on `refresh()`.
+  const windowCache = createPackWindowCache(windowBudget);
+
+  // `reprepare()`'s carry-forward set, consumed exactly once by the NEXT
+  // `scanPacks` run it triggers — set and read with no `await` between, so no
+  // other caller can observe or steal it mid-flight. `undefined` for every
+  // other path (the cold first scan, and `refresh()`), which always builds
+  // fresh instances.
+  let reuseFrom: ReadonlyMap<string, RegisteredPack> | undefined;
 
   const scanPacks = async (): Promise<PackGeneration> => {
+    const priorPacks = reuseFrom;
+    reuseFrom = undefined;
     const dir = packsDir(commonGitDir(ctx));
     // storeGate.get() directly, not currentGate(): scanPacks is reachable
     // only through currentGeneration(), which already refuses to start once
@@ -664,19 +896,12 @@ export async function createPackRegistry(ctx: Context): Promise<PackRegistry> {
     // costs a packed cold read the round-trip the two used to share, which is
     // the accepted price of not listing the directory on a loose hit.
     //
-    // No separate `exists(dir)` guard: a missing (or non-directory)
-    // `objects/pack` folds to an empty listing right here, inside the same
-    // `Promise.all` arm — never a sequential probe-then-list round trip.
-    // Everything else (PERMISSION_DENIED, …) is a real fault and propagates
-    // to the only consumers that actually need the pack store — `all()` and
-    // `lookup()` — never to a loose-only read, which never forces this scan.
-    const [midxLoad, entries] = await Promise.all([
-      storeGate.get(),
-      ctx.fs.readdir(dir).catch((error: unknown) => {
-        if (isMissingPackDir(error)) return [];
-        throw error;
-      }),
-    ]);
+    // packDirListing is the SAME memo the store gate above forces to build
+    // loadMidxSet's entry set — a directory fault (a missing directory,
+    // PERMISSION_DENIED, …) already folded to an empty listing there, with
+    // its own warn; scanPacks never re-classifies it and never sees it as a
+    // rejection.
+    const [midxLoad, entries] = await Promise.all([storeGate.get(), packDirListing.get()]);
     // git registers a pack only when its .pack exists by name — an orphaned
     // .idx is garbage, never a pack. The listing already in hand is the same
     // data, so the check costs no I/O.
@@ -686,7 +911,7 @@ export async function createPackRegistry(ctx: Context): Promise<PackRegistry> {
     const packs: RegisteredPack[] = [];
     for (const entry of entries) {
       if (!isCandidate(entry)) continue;
-      const pack = loadCandidatePack(ctx, dir, entry, fileNames);
+      const pack = loadCandidatePack(ctx, dir, entry, fileNames, windowCache, priorPacks);
       if (pack !== undefined) packs.push(pack);
     }
     const midx =
@@ -707,12 +932,17 @@ export async function createPackRegistry(ctx: Context): Promise<PackRegistry> {
       );
       return { artefact, midx: head, ...load };
     });
+    // Created before `indexed` below so both share the SAME set: a lazy
+    // lookup's `unclaimedIndexOrSkip` and this generation's bulk
+    // `resolveIndexes` warn into it interchangeably, and whichever runs
+    // first claims the one warn for a given `.idx`.
+    const warnedIdx = new Set<string>();
     return {
       packs,
       midxLoad,
       midx,
-      indexed: createPromiseMemo(() => resolveIndexes(ctx, packs)),
-      warnedIdx: new Set(),
+      indexed: createPromiseMemo(() => resolveIndexes(ctx, packs, warnedIdx)),
+      warnedIdx,
       fileNames,
       midxBitmap: midxBitmapMemo,
     };
@@ -794,35 +1024,11 @@ export async function createPackRegistry(ctx: Context): Promise<PackRegistry> {
     }
   };
 
-  // Step 3 of lookup: the ordinary .idx scan over packs the midx does not
-  // claim. With no midx, the generation's classified snapshot is forced once
-  // and walked synchronously (every parse already settled). With a midx,
-  // ONLY unclaimed packs are touched — git never opens a midx-covered `.idx`
-  // in find_pack_entry, and forcing the snapshot here would re-pay the P
-  // eager reads the lazy scan exists to avoid. Each unclaimed `.idx` loads
-  // lazily; a classified-corrupt one is skipped per pack, mirroring the
-  // snapshot's own classification.
-  // No midx: force the generation's classified snapshot once, then walk it
-  // synchronously — every parse already settled, and the header probe is
-  // awaited only on the index match, so a full-scan miss costs zero awaits.
-  const lookupViaIndexedSnapshot = async (
-    generation: PackGeneration,
-    id: ObjectId,
-  ): Promise<PackLookupHit | undefined> => {
-    const { packs } = await generation.indexed.get();
-    for (const { pack, index } of packs) {
-      const offset = lookupPackIndex(index, id);
-      if (offset === undefined) continue;
-      const fault = await probeHeader(pack);
-      if (fault !== undefined) continue;
-      return { pack, offset };
-    }
-    return undefined;
-  };
-
-  // The one lazy per-pack classification site outside the snapshot: an
-  // unclaimed pack's corrupt `.idx` is skipped exactly as `resolveIndexes`
-  // would skip it, with the same warn shape.
+  // The one lazy per-pack classification site every lookup shares, whether
+  // or not a midx exists: a corrupt `.idx` is skipped exactly as
+  // `resolveIndexes` would skip it, with the same warn shape, deduped
+  // against the generation's own set so a pack `resolveIndexes` already
+  // warned about (or vice versa) never warns twice.
   const unclaimedIndexOrSkip = async (
     pack: RegisteredPack,
     warnedIdx: Set<string>,
@@ -843,14 +1049,53 @@ export async function createPackRegistry(ctx: Context): Promise<PackRegistry> {
     }
   };
 
-  const lookupViaUnclaimedPacks = async (
-    generation: PackGeneration,
-    midx: LoadedMidx,
+  // The fast half of lookupLazily: every candidate's `.idx` has ALREADY
+  // settled (someone forced `generation.indexed` first — `all()`, `health()`
+  // — or `lookupUnsettled`'s own passive tracking completed it), so the walk
+  // needs no per-pack await at all until an actual index hit forces one —
+  // the common "settled full miss" case pays zero awaits instead of one per
+  // pack. `isClaimed` and the header-fault continue both mirror
+  // `lookupLazily`'s own loop exactly. Takes a plain array, not the full
+  // `IndexedPacks` shape: the passive path never builds `indexFaults`, and
+  // this walk never reads it either.
+  const lookupSettled = async (
+    packs: ReadonlyArray<IndexedPack>,
     id: ObjectId,
+    isClaimed: (pack: RegisteredPack) => boolean,
   ): Promise<PackLookupHit | undefined> => {
+    for (const { pack, index } of packs) {
+      if (isClaimed(pack)) continue;
+      const offset = lookupPackIndex(index, id);
+      if (offset === undefined) continue;
+      const fault = await probeHeader(pack);
+      if (fault !== undefined) continue;
+      return { pack, offset };
+    }
+    return undefined;
+  };
+
+  // Step 3 of lookup: one `.idx` at a time, in candidate order, stopping at
+  // the first hit — never a snapshot forced ahead of need. `isClaimed` is
+  // the only difference between the no-midx and midx-present shapes: git
+  // never opens a midx-covered `.idx` in find_pack_entry, so a midx routes
+  // straight past every pack it claims and only walks the rest this way.
+  // Takes the settled synchronous walk above when `generation.indexed` has
+  // already resolved; otherwise falls back to the lazy, per-pack await —
+  // this is the ONE place forcing `generation.indexed` would defeat the
+  // point of loading indexes lazily, so it only ever PEEKS. Each step also
+  // feeds the passive settled-walk tracker (`recordUnclaimedResult`), so a
+  // plain read-walk that never calls `all()`/`health()` still promotes onto
+  // the synchronous walk once it has organically settled every candidate.
+  const lookupUnsettled = async (
+    generation: PackGeneration,
+    id: ObjectId,
+    isClaimed: (pack: RegisteredPack) => boolean,
+  ): Promise<PackLookupHit | undefined> => {
+    const progress = unclaimedProgressFor(generation, isClaimed);
     for (const pack of generation.packs) {
-      if (midx.claimedNames.has(`${pack.name}.idx`)) continue;
+      if (isClaimed(pack)) continue;
       const index = await unclaimedIndexOrSkip(pack, generation.warnedIdx);
+      recordUnclaimedResult(generation, progress, pack, index);
       if (index === undefined) continue;
       const offset = lookupPackIndex(index, id);
       if (offset === undefined) continue;
@@ -861,14 +1106,25 @@ export async function createPackRegistry(ctx: Context): Promise<PackRegistry> {
     return undefined;
   };
 
+  const lookupLazily = (
+    generation: PackGeneration,
+    id: ObjectId,
+    isClaimed: (pack: RegisteredPack) => boolean,
+  ): Promise<PackLookupHit | undefined> => {
+    const settled = generation.indexed.peekSettled();
+    if (settled !== undefined) return lookupSettled(settled.packs, id, isClaimed);
+    const passivelySettled = unclaimedProgressByGeneration.get(generation)?.settledPacks;
+    if (passivelySettled !== undefined) return lookupSettled(passivelySettled, id, isClaimed);
+    return lookupUnsettled(generation, id, isClaimed);
+  };
+
   const lookupViaIdxScan = (
     generation: PackGeneration,
     id: ObjectId,
   ): Promise<PackLookupHit | undefined> => {
     const midx = generation.midx;
-    return midx === undefined
-      ? lookupViaIndexedSnapshot(generation, id)
-      : lookupViaUnclaimedPacks(generation, midx, id);
+    if (midx === undefined) return lookupLazily(generation, id, () => false);
+    return lookupLazily(generation, id, (pack) => midx.claimedNames.has(`${pack.name}.idx`));
   };
 
   const computeHealth = async (): Promise<PackHealth> => {
@@ -913,18 +1169,29 @@ export async function createPackRegistry(ctx: Context): Promise<PackRegistry> {
     },
     refresh(): void {
       if (disposed) return;
+      // A full teardown must never reuse an in-flight reprepare()'s carry-
+      // forward set — this always builds every instance fresh.
+      reuseFrom = undefined;
       healthMemo.clear();
       midxHealthMemo.clear();
-      // (packName, offset) pairs are only meaningful within the generation
-      // that produced them — a replaced pack can reuse the same name and
-      // offset for entirely different bytes, so this MUST clear alongside
-      // the scan, not survive into the next generation.
+      // `(instanceKey, offset)` pairs are only meaningful within the
+      // generation that produced them, but the key is already
+      // instance-scoped on its own (see `deltaBaseCacheKey`) — a retired
+      // instance's entries are unreachable under a same-named successor's
+      // own key regardless. This clear now only frees that memory promptly;
+      // it no longer guards against a replaced pack serving the old bytes.
       deltaBaseCache.clear();
+      // Same reasoning as deltaBaseCache above: `windowCacheKey` already
+      // carries the retired instance's own token, so this too now only
+      // frees memory promptly, not prevents stale bytes.
+      windowCache.clear();
       // Cleared before the early return below: a Context that only ever
       // called assertLoadable (a loose-only read) never forces the scan, so
-      // clearing the gate here — not after the guard — is the only way a
-      // stale multi-pack-index load doesn't outlive this refresh().
+      // clearing the gate — and the listing it shares with the scan — here,
+      // not after the guard, is the only way a stale multi-pack-index load
+      // or a stale directory listing doesn't outlive this refresh().
       storeGate.clear();
+      packDirListing.clear();
       // The outgoing packs may hold open persistent handles; close them before
       // dropping the references or every refresh leaks one fd per touched pack.
       const outgoing = scan.clear();
@@ -939,6 +1206,64 @@ export async function createPackRegistry(ctx: Context): Promise<PackRegistry> {
           () => NO_PACKS,
         ),
       );
+    },
+    async reprepare(): Promise<void> {
+      if (disposed) return;
+      // The OUTGOING generation's packs are the reuse candidates — captured
+      // before anything is cleared, by name (git's own `pack_map` identity:
+      // keyed by path, never mtime/size — a repack always mints a new name,
+      // so a same-named pack is the same bytes). The FLIGHT itself, not just
+      // its value, is captured too: a concurrent refresh() (or another
+      // reprepare()) can clear and replace `scan` while this awaits, and
+      // reusing a generation that is no longer the live one would resurrect
+      // an instance the concurrent caller is already retiring in the
+      // background. `scan.peek() !== flight` below is that check —
+      // identity-guarded exactly as a single-flight memo's own reject arm is.
+      const flight = currentGeneration();
+      const previous = await flight;
+      if (disposed || scan.peek() !== flight) return;
+      const priorByName = new Map(previous.packs.map((pack) => [pack.name, pack] as const));
+      // Generation-scoped verdicts, reset alongside the scan they were
+      // computed against — same reasoning as refresh()'s own clear.
+      healthMemo.clear();
+      midxHealthMemo.clear();
+      // Unlike refresh(): deltaBaseCache and windowCache are NOT cleared. A
+      // reused RegisteredPack instance keeps its own window keys valid; a
+      // retired one's keys simply become unreachable once closed below —
+      // nothing needs evicting either way.
+      //
+      // storeGate is left settled ONLY when a multi-pack-index is actually
+      // loaded — git's own `reprepare_packed_git` (`prepare_multi_pack_index_one`)
+      // returns early exactly then, never re-reading and re-parsing an
+      // already-loaded midx on every miss wave (measured: 1.32 ms/miss on an
+      // 8.4 MB midx under the old teardown, 0 further I/O once kept).
+      // `scanPacks` still rebinds this SAME midx set against the fresh pack
+      // listing below (`bindMidx`), so a pack that appeared after the midx
+      // loaded becomes a non-midx candidate rather than an invisible one.
+      // When NO midx is bound — none on disk at this scan, or every
+      // candidate was a Tier-B discard — the settled value still carries
+      // `set: undefined` (a REJECTED, Tier-A gate is different: the
+      // promise-memo's own clear-on-rejection already emptied it), so it is
+      // captured and cleared here rather than kept: git calls
+      // `load_multi_pack_index` again whenever none is already loaded,
+      // which is what lets a midx written mid-session (`git
+      // multi-pack-index write`, `repack --write-midx`) get picked up on
+      // the very next re-scan instead of staying invisible for the rest of
+      // the session.
+      const settledMidxLoad = storeGate.peekSettled();
+      if (settledMidxLoad?.set === undefined) storeGate.clear();
+      packDirListing.clear();
+      scan.clear();
+      // Set and consumed with no `await` between: scanPacks reads this
+      // before its own first await, so nothing else can observe or steal it.
+      reuseFrom = priorByName;
+      const fresh = await scan.get();
+      const freshNames = new Set(fresh.packs.map((pack) => pack.name));
+      const vanished = [...priorByName.values()].filter((pack) => !freshNames.has(pack.name));
+      if (vanished.length === 0) return;
+      // Same background-close discipline as refresh(): a vanished pack's
+      // handle closes off the read path, drained by settleRefresh().
+      trackClose(Promise.allSettled(vanished.map((pack) => pack.close())));
     },
     settleRefresh: drainPendingCloses,
     async lookup(id: ObjectId): Promise<PackLookupHit | undefined> {
@@ -962,6 +1287,7 @@ export async function createPackRegistry(ctx: Context): Promise<PackRegistry> {
     async dispose(): Promise<void> {
       disposed = true;
       deltaBaseCache.clear();
+      windowCache.clear();
       // A registry that never scanned the pack directory has no handles to
       // close — skip the scan entirely rather than triggering one just to
       // find nothing. Peek, not clear: all() keeps returning the closed,

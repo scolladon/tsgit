@@ -193,17 +193,20 @@ describe('isIgnored', () => {
       it('Then it returns an empty result without touching the fs', async () => {
         // Arrange — the `length === 0` short-circuit must return before
         // buildIgnoreEvaluator performs any fs read (git check-ignore with no
-        // paths touches nothing). A Proxy flags the first lstat the evaluator
-        // would make, so a mutant that drops the short-circuit is caught.
+        // paths touches nothing). The ignore-file readers prefer the
+        // non-throwing `tryLstat`/`tryReadUtf8` twins over `lstat`/`readUtf8`,
+        // so the Proxy flags all four — a mutant that drops the short-circuit
+        // is caught regardless of which probe the reader reaches for.
         const ctx = await seedRepo();
-        const baseLstat = ctx.fs.lstat;
+        const IO_MEMBERS = ['lstat', 'tryLstat', 'readUtf8', 'tryReadUtf8'] as const;
         let touchedFs = false;
         const wrappedFs = new Proxy(ctx.fs, {
           get(target, prop, receiver) {
-            if (prop === 'lstat') {
+            if (IO_MEMBERS.includes(prop as (typeof IO_MEMBERS)[number])) {
+              const base = Reflect.get(target, prop, receiver) as (p: string) => unknown;
               return (p: string) => {
                 touchedFs = true;
-                return baseLstat(p);
+                return base(p);
               };
             }
             return Reflect.get(target, prop, receiver);

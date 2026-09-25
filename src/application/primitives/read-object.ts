@@ -376,10 +376,17 @@ async function walkDeltaBaseType(
 /**
  * One hop down a delta chain by HEADER alone: OFS_DELTA stays in the same
  * pack at a computed offset; REF_DELTA looks its base up by id, which may
- * land in a different pack. A base a pack claims but cannot supply is a
- * corrupt pack — this throws OBJECT_NOT_FOUND for the base id, fail-loud
- * like every other read here, and retried by the same `withLazyFetchRetry`
- * a missing REF_DELTA base already gets via `resolveObject`/`readRawObject`.
+ * land in a different pack. git's own header-only type walk
+ * (`packed_to_object_type` in `packfile.c`) resolves a REF_DELTA base with a
+ * plain `find_pack_entry` lookup against the packs already known — it never
+ * calls `reprepare_packed_git`; only the CONTENT-resolving path
+ * (`oid_object_info_extended` / `do_oid_object_info_extended`) retries after
+ * a re-scan, which `resolveBaseForRefDelta` (object-resolver.ts) already
+ * gets via `resolveObjectContentWithDepth`. A base the registry cannot find
+ * here is a corrupt pack — this throws OBJECT_NOT_FOUND for the base id,
+ * fail-loud like every other read here, and retried by the same
+ * `withLazyFetchRetry` a missing REF_DELTA base already gets via
+ * `resolveObject`/`readRawObject`.
  */
 async function nextDeltaHit(
   registry: PackRegistry,

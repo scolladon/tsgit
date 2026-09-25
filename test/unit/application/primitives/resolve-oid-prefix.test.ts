@@ -4,8 +4,9 @@ import {
   resolveOidPrefix,
 } from '../../../../src/application/primitives/resolve-oid-prefix.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
-import { TsgitError } from '../../../../src/domain/error.js';
+import { permissionDenied, TsgitError } from '../../../../src/domain/error.js';
 import type { Blob, ObjectId } from '../../../../src/domain/objects/index.js';
+import type { Context } from '../../../../src/ports/context.js';
 import { buildSeededContext, instrumentedContext } from './fixtures.js';
 import { writeSyntheticPack } from './pack-fixture.js';
 
@@ -275,15 +276,66 @@ describe('resolveOidPrefix', () => {
 
   describe('Given a fanout directory that does not exist', () => {
     describe('When resolveOidPrefix scans a 4-hex prefix', () => {
-      it('Then returns undefined without faulting on the absent directory', async () => {
+      it('Then returns undefined without an exists probe or faulting on the absent directory', async () => {
         // Arrange — nothing was written under objects/ff.
-        const ctx = await buildSeededContext();
+        const base = await buildSeededContext();
+        const { ctx, calls } = instrumentedContext(base);
 
         // Act
         const result = await resolveOidPrefix(ctx, 'ffff');
 
         // Assert
         expect(result).toBeUndefined();
+        expect(calls().filter((c) => c.method === 'exists')).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a fanout path occupied by a regular file instead of a directory', () => {
+    describe('When resolveOidPrefix scans that prefix', () => {
+      it('Then returns undefined without faulting on the NOT_A_DIRECTORY readdir', async () => {
+        // Arrange — `objects/ff` exists as a plain file, not a directory.
+        const ctx = await buildSeededContext();
+        await ctx.fs.write(`${ctx.layout.gitDir}/objects/ff`, new Uint8Array([0]));
+
+        // Act
+        const result = await resolveOidPrefix(ctx, 'ffff');
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a fanout directory whose readdir rejects with PERMISSION_DENIED', () => {
+    describe('When resolveOidPrefix scans that prefix', () => {
+      it('Then the fault is rethrown, never folded to an empty scan', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const fanoutDir = `${base.layout.gitDir}/objects/ff`;
+        const ctx: Context = {
+          ...base,
+          fs: {
+            ...base.fs,
+            readdir: async (path: string) => {
+              if (path === fanoutDir) throw permissionDenied(fanoutDir);
+              return base.fs.readdir(path);
+            },
+          },
+        };
+
+        // Act
+        let caught: unknown;
+        try {
+          await resolveOidPrefix(ctx, 'ffff');
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('PERMISSION_DENIED');
       });
     });
   });

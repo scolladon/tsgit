@@ -14,7 +14,7 @@ import { EMPTY_TREE_OID } from '../../../../../src/domain/objects/index.js';
 import { parseAcceptanceVerdict } from '../../../../../src/domain/objects/parse-acceptance.js';
 import { computeLooseObjectPath } from '../../../../../src/domain/storage/loose-path.js';
 import type { Context } from '../../../../../src/ports/context.js';
-import { buildSeededContext, writeRawObjectBytes } from '../fixtures.js';
+import { buildSeededContext, instrumentedContext, writeRawObjectBytes } from '../fixtures.js';
 import { buildSyntheticPack, corruptIdxOffset, writeSyntheticPack } from '../pack-fixture.js';
 
 const ZERO_ID = '0'.repeat(40) as ObjectId;
@@ -434,6 +434,152 @@ describe('openBlobSource', () => {
     });
   });
 
+  describe('Given a packed base blob whose header declares a size LONGER than its real inflated bytes', () => {
+    describe('When openBlobSource is called with a gate wide enough to buffer it', () => {
+      it('Then throws INVALID_PACK_ENTRY with the inflated-size-mismatch reason', async () => {
+        // Arrange
+        const content = ENC.encode('abcdefgh');
+        const ctx = await buildSeededContext();
+        const built = await buildSyntheticPack(ctx, [
+          { kind: 'base', type: 'blob', content, declaredSizeOverride: content.length + 5 },
+        ]);
+        const base = `${ctx.layout.gitDir}/objects/pack/pack-blob-source-long-declared-buffered`;
+        await ctx.fs.write(`${base}.pack`, built.packBytes);
+        await ctx.fs.write(`${base}.idx`, built.idxBytes);
+        const id = built.ids[0] as ObjectId;
+
+        // Act
+        let caught: unknown;
+        try {
+          await openBlobSource(ctx, id, MAX_BUFFERED_BLOB_BYTES);
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('INVALID_PACK_ENTRY');
+        if (data.code !== 'INVALID_PACK_ENTRY') {
+          expect.fail(`expected INVALID_PACK_ENTRY, got ${data.code}`);
+        }
+        expect(data.reason).toBe('bad object: inflated size differs from declared size');
+        expect(data.offset).toBe(built.offsets[0]);
+      });
+    });
+
+    describe('When openBlobSource is called with the gate closed (forces streaming)', () => {
+      it('Then throws INVALID_PACK_ENTRY at stream end, without buffering the whole blob', async () => {
+        // Arrange
+        const content = ENC.encode('abcdefgh');
+        const ctx = await buildSeededContext();
+        const built = await buildSyntheticPack(ctx, [
+          { kind: 'base', type: 'blob', content, declaredSizeOverride: content.length + 5 },
+        ]);
+        const base = `${ctx.layout.gitDir}/objects/pack/pack-blob-source-long-declared-streamed`;
+        await ctx.fs.write(`${base}.pack`, built.packBytes);
+        await ctx.fs.write(`${base}.idx`, built.idxBytes);
+        const id = built.ids[0] as ObjectId;
+
+        // Act
+        const result = await openBlobSource(ctx, id, 0);
+        expect(result.kind).toBe('stream');
+        let caught: unknown;
+        try {
+          if (result.kind === 'stream') {
+            await collect(result.stream);
+          }
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('INVALID_PACK_ENTRY');
+        if (data.code !== 'INVALID_PACK_ENTRY') {
+          expect.fail(`expected INVALID_PACK_ENTRY, got ${data.code}`);
+        }
+        expect(data.reason).toBe('bad object: inflated size differs from declared size');
+        expect(data.offset).toBe(built.offsets[0]);
+      });
+    });
+  });
+
+  describe('Given a packed base blob whose header declares a size SHORTER than its real inflated bytes', () => {
+    describe('When openBlobSource is called with a gate wide enough to buffer it', () => {
+      it('Then throws INVALID_PACK_ENTRY with the inflated-size-mismatch reason', async () => {
+        // Arrange
+        const content = ENC.encode('abcdefgh');
+        const ctx = await buildSeededContext();
+        const built = await buildSyntheticPack(ctx, [
+          { kind: 'base', type: 'blob', content, declaredSizeOverride: content.length - 3 },
+        ]);
+        const base = `${ctx.layout.gitDir}/objects/pack/pack-blob-source-short-declared-buffered`;
+        await ctx.fs.write(`${base}.pack`, built.packBytes);
+        await ctx.fs.write(`${base}.idx`, built.idxBytes);
+        const id = built.ids[0] as ObjectId;
+
+        // Act
+        let caught: unknown;
+        try {
+          await openBlobSource(ctx, id, MAX_BUFFERED_BLOB_BYTES);
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('INVALID_PACK_ENTRY');
+        if (data.code !== 'INVALID_PACK_ENTRY') {
+          expect.fail(`expected INVALID_PACK_ENTRY, got ${data.code}`);
+        }
+        expect(data.reason).toBe('bad object: inflated size differs from declared size');
+      });
+    });
+
+    describe('When openBlobSource is called with the gate closed (forces streaming)', () => {
+      it('Then throws INVALID_PACK_ENTRY at stream end, without buffering the whole blob', async () => {
+        // Arrange
+        const content = ENC.encode('abcdefgh');
+        const ctx = await buildSeededContext();
+        const built = await buildSyntheticPack(ctx, [
+          { kind: 'base', type: 'blob', content, declaredSizeOverride: content.length - 3 },
+        ]);
+        const base = `${ctx.layout.gitDir}/objects/pack/pack-blob-source-short-declared-streamed`;
+        await ctx.fs.write(`${base}.pack`, built.packBytes);
+        await ctx.fs.write(`${base}.idx`, built.idxBytes);
+        const id = built.ids[0] as ObjectId;
+
+        // Act
+        const result = await openBlobSource(ctx, id, 0);
+        expect(result.kind).toBe('stream');
+        let caught: unknown;
+        try {
+          if (result.kind === 'stream') {
+            await collect(result.stream);
+          }
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('INVALID_PACK_ENTRY');
+        if (data.code !== 'INVALID_PACK_ENTRY') {
+          expect.fail(`expected INVALID_PACK_ENTRY, got ${data.code}`);
+        }
+        expect(data.reason).toBe('bad object: inflated size differs from declared size');
+      });
+    });
+  });
+
   describe('Given a deltified packed blob', () => {
     describe('When openBlobSource is called with the gate at 0', () => {
       it('Then resolves as a bytes source (the gate is a no-op for deltas)', async () => {
@@ -483,6 +629,95 @@ describe('openBlobSource', () => {
     });
   });
 
+  describe('Given a pack written directly to disk after openBlobSource already forced a registry scan', () => {
+    describe('When openBlobSource is called for the newly-packed id', () => {
+      it('Then it resolves via one re-scan retry, mirroring reprepare_packed_git', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const registry = await getPackRegistry(ctx);
+        await registry.all(); // force the (empty) generation the write below bypasses
+        const content = ENC.encode('packed after scan\n');
+        const [id] = await writeSyntheticPack(ctx, 'blob-source-late-pack', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+
+        // Act
+        const source = await openBlobSource(ctx, id as ObjectId, MAX_BUFFERED_BLOB_BYTES);
+
+        // Assert
+        expect(source.kind).toBe('bytes');
+        if (source.kind === 'bytes') {
+          expect(source.content).toEqual(content);
+        }
+      });
+    });
+  });
+
+  describe('Given a signal that aborts while the full-miss re-scan is in flight, and the retry would otherwise succeed', () => {
+    describe('When openBlobSource is called for the missing id', () => {
+      it('Then OPERATION_ABORTED wins over the now-available object', async () => {
+        // Arrange — the loose file lands DURING the re-scan's own readdir
+        // (bypassing writeObject, so the loose-oid cache is untouched by
+        // the write itself), so a retry that skipped the abort check would
+        // find it and succeed. The FIRST pack-dir readdir is the registry's
+        // own construction scan; the SECOND is the miss-triggered re-scan
+        // (reprepare()) — abort, and write the object, exactly there.
+        const content = ENC.encode('abort-wins-over-late-loose-write');
+        const bytes = looseFormatBytes('blob', content);
+        const controller = new AbortController();
+        const ctx = await buildSeededContext({ signal: controller.signal });
+        const id = (await ctx.hash.hashHex(bytes)) as ObjectId;
+        const packDir = `${ctx.layout.gitDir}/objects/pack`;
+        const loosePath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(id)}`;
+        let packDirReaddirCount = 0;
+        const wrapped: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            readdir: async (path: string) => {
+              if (path === packDir) {
+                packDirReaddirCount += 1;
+                if (packDirReaddirCount === 2) {
+                  controller.abort();
+                  const compressed = await ctx.compressor.deflate(bytes);
+                  await ctx.fs.write(loosePath, compressed);
+                }
+              }
+              return ctx.fs.readdir(path);
+            },
+          },
+        };
+        const { ctx: instrumented, calls } = instrumentedContext(wrapped);
+        // openBlobSource resolves its registry via the session memo
+        // (getPackRegistry) — warm THAT instance, not a standalone one.
+        const registry = await getPackRegistry(instrumented);
+        await registry.all(); // consumes the construction scan's own readdir
+        const lookupSpy = vi.spyOn(registry, 'lookup');
+
+        // Act
+        try {
+          await openBlobSource(instrumented, id, MAX_BUFFERED_BLOB_BYTES);
+          expect.unreachable();
+        } catch (error) {
+          // Assert
+          expect(error).toBeInstanceOf(TsgitError);
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('OPERATION_ABORTED');
+        }
+
+        // Assert — `retryOnceAfterRescan`'s OWN `checkAborted`, run right
+        // after the re-scan and BEFORE its retry `attempt()`, is what wins:
+        // exactly the one lookup the original miss made, never a second one
+        // the retry would have made, and the just-written loose file is
+        // never read.
+        expect(lookupSpy).toHaveBeenCalledTimes(1);
+        expect(calls().some((call) => call.method === 'read' && call.path === loosePath)).toBe(
+          false,
+        );
+      });
+    });
+  });
+
   describe('Given the empty-tree oid, absent from both loose and pack storage', () => {
     describe('When openBlobSource is called', () => {
       it('Then throws objectNotFound, never unexpectedObjectType (no virtual short-circuit)', async () => {
@@ -507,7 +742,7 @@ describe('openBlobSource', () => {
 
   describe('Given a loose non-blob (commit) object', () => {
     describe('When openBlobSource resolves it buffered (gate at the compressed length)', () => {
-      it('Then reports the real type without refusing', async () => {
+      it('Then reports the real type without refusing, and caches it (non-blob types are reused, not read-once)', async () => {
         // Arrange
         const { ctx, id } = await buildLooseCommit();
         const compressedLen = await looseCompressedLength(ctx, id);
@@ -519,6 +754,7 @@ describe('openBlobSource', () => {
         expect(result.kind).toBe('bytes');
         if (result.kind === 'bytes') {
           expect(result.type).toBe('commit');
+          expect(ctx.deltaCache.get(id)).toEqual({ type: 'commit', content: result.content });
         }
       });
     });
@@ -569,7 +805,7 @@ describe('openBlobSource', () => {
     });
 
     describe('When openBlobSource resolves it buffered (gate over the entry size)', () => {
-      it('Then reports the real type instead of failing the blob-shaped hash', async () => {
+      it('Then reports the real type instead of failing the blob-shaped hash, and caches it (non-blob types are reused, not read-once)', async () => {
         // Arrange — the seam only REPORTS type, so a non-blob must reach the
         // caller's refusal rather than dying on a hash rebuilt as `blob <n>`.
         const content = ENC.encode('tree-like content for the buffered type test');
@@ -587,6 +823,7 @@ describe('openBlobSource', () => {
         if (result.kind === 'bytes') {
           expect(result.type).toBe('tree');
           expect(result.content).toEqual(content);
+          expect(ctx.deltaCache.get(id)).toEqual({ type: 'tree', content });
         }
       });
     });
@@ -931,6 +1168,121 @@ describe('openBlobSource', () => {
           const data = (error as TsgitError).data;
           expect(data.code).toBe('OPERATION_ABORTED');
         }
+      });
+    });
+  });
+
+  describe('Given a loose blob resolved buffered', () => {
+    describe('When openBlobSource is called with the gate at the compressed length', () => {
+      it('Then it is never cached in ctx.deltaCache — a read-once blob would only evict hotter tree/commit entries', async () => {
+        // Arrange
+        const blob: Blob = {
+          type: 'blob',
+          content: ENC.encode('loose buffered caching content'),
+          id: '' as ObjectId,
+        };
+        const ctx = await buildSeededContext({ objects: [blob] });
+        const id = await writeObject(ctx, blob);
+        const compressedLen = await looseCompressedLength(ctx, id);
+
+        // Act
+        await openBlobSource(ctx, id, compressedLen);
+
+        // Assert
+        expect(ctx.deltaCache.get(id)).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a loose blob resolved streamed (gate one byte under the compressed length)', () => {
+    describe('When the returned stream is fully drained', () => {
+      it('Then it is never cached in ctx.deltaCache', async () => {
+        // Arrange
+        const blob: Blob = {
+          type: 'blob',
+          content: ENC.encode('loose streamed caching content'),
+          id: '' as ObjectId,
+        };
+        const ctx = await buildSeededContext({ objects: [blob] });
+        const id = await writeObject(ctx, blob);
+        const compressedLen = await looseCompressedLength(ctx, id);
+
+        // Act
+        const result = await openBlobSource(ctx, id, compressedLen - 1);
+        if (result.kind === 'stream') {
+          await collect(result.stream);
+        }
+
+        // Assert
+        expect(result.kind).toBe('stream');
+        expect(ctx.deltaCache.get(id)).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a loose blob whose header size claim disagrees with its body length', () => {
+    describe('When openBlobSource is called with the gate at the compressed length', () => {
+      it('Then the size-lying entry is never cached in ctx.deltaCache', async () => {
+        // Arrange
+        const blob: Blob = {
+          type: 'blob',
+          content: ENC.encode('size-lying loose blob content'),
+          id: '' as ObjectId,
+        };
+        const ctx = await buildSeededContext({ objects: [blob] });
+        const id = await writeObject(ctx, blob);
+        await overwriteLoose(ctx, id, looseFormatBytesWithClaim('blob', 3, blob.content));
+        const compressedLen = await looseCompressedLength(ctx, id);
+
+        // Act
+        await openBlobSource(ctx, id, compressedLen);
+
+        // Assert
+        expect(ctx.deltaCache.get(id)).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a packed base (non-delta) blob', () => {
+    describe('When openBlobSource is called with the gate at the payload length', () => {
+      it('Then it is never cached in ctx.deltaCache — a read-once blob would only evict hotter tree/commit entries', async () => {
+        // Arrange
+        const content = ENC.encode('packed base content for the caching test');
+        const ctx = await buildSeededContext();
+        const ids = await writeSyntheticPack(ctx, 'cache-base', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const id = ids[0] as ObjectId;
+        const payloadLen = (await ctx.compressor.deflate(content)).length;
+
+        // Act
+        await openBlobSource(ctx, id, payloadLen);
+
+        // Assert
+        expect(ctx.deltaCache.get(id)).toBeUndefined();
+      });
+    });
+
+    describe('When openBlobSource is called with the gate one byte under the payload length', () => {
+      it('Then the streamed result is never cached in ctx.deltaCache', async () => {
+        // Arrange
+        const content = ENC.encode('packed base content for the streamed caching test');
+        const ctx = await buildSeededContext();
+        const ids = await writeSyntheticPack(ctx, 'cache-base-stream', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const id = ids[0] as ObjectId;
+        const payloadLen = (await ctx.compressor.deflate(content)).length;
+
+        // Act
+        const result = await openBlobSource(ctx, id, payloadLen - 1);
+        if (result.kind === 'stream') {
+          await collect(result.stream);
+        }
+
+        // Assert
+        expect(result.kind).toBe('stream');
+        expect(ctx.deltaCache.get(id)).toBeUndefined();
       });
     });
   });

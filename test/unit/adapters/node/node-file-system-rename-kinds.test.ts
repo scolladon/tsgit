@@ -40,7 +40,7 @@ describe('NodeFileSystem.rename — Windows rename-kind emulation (DI)', () => {
           rmdir: rmdirSpy,
           rename: renameSpy,
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         await sut.rename(src, dst);
@@ -72,7 +72,7 @@ describe('NodeFileSystem.rename — Windows rename-kind emulation (DI)', () => {
           rmdir: rmdirSpy,
           rename: renameSpy,
         });
-        const sut = new NodeFileSystem(rootDir, posixPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps: fsOps });
 
         // Act
         await sut.rename(src, dst);
@@ -104,7 +104,7 @@ describe('NodeFileSystem.rename — Windows rename-kind emulation (DI)', () => {
           rmdir: rmdirSpy,
           rename: renameSpy,
         });
-        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         await sut.rename(src, dst);
@@ -134,7 +134,7 @@ describe('NodeFileSystem.rename — Windows rename-kind emulation (DI)', () => {
             .mockResolvedValueOnce(entry('file', 2)),
           rename: renameSpy,
         });
-        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         let caught: unknown;
@@ -169,7 +169,7 @@ describe('NodeFileSystem.rename — Windows rename-kind emulation (DI)', () => {
           rmdir: rmdirSpy,
           rename: renameSpy,
         });
-        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         await sut.rename(src, dst);
@@ -204,7 +204,7 @@ describe('NodeFileSystem.rename — Windows rename-kind emulation (DI)', () => {
           rmdir: rmdirSpy,
           rename: renameSpy,
         });
-        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         await sut.rename(src, dst);
@@ -232,7 +232,7 @@ describe('NodeFileSystem.rename — Windows rename-kind emulation (DI)', () => {
           rmdir: rmdirSpy,
           rename: vi.fn().mockRejectedValue(einval()),
         });
-        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         let caught: unknown;
@@ -268,7 +268,7 @@ describe('NodeFileSystem.rename — Windows rename-kind emulation (DI)', () => {
           rmdir: rmdirSpy,
           rename: renameSpy,
         });
-        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         await sut.rename(src, dst);
@@ -298,7 +298,7 @@ describe('NodeFileSystem.rename — Windows rename-kind emulation (DI)', () => {
           rmdir: rmdirSpy,
           rename: renameSpy,
         });
-        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         await sut.rename(src, dst);
@@ -324,7 +324,7 @@ describe('NodeFileSystem.rename — Windows rename-kind emulation (DI)', () => {
           lstat: vi.fn().mockRejectedValue(enoent()),
           rename: renameSpy,
         });
-        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         await sut.rename(src, dst);
@@ -354,7 +354,7 @@ describe('NodeFileSystem.rename — Windows rename-kind emulation (DI)', () => {
           rmdir: rmdirSpy,
           rename: renameSpy,
         });
-        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         await sut.rename(src, dst);
@@ -384,7 +384,7 @@ describe('NodeFileSystem.rename — Windows rename-kind emulation (DI)', () => {
           rmdir: rmdirSpy,
           rename: renameSpy,
         });
-        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         await sut.rename(src, dst);
@@ -415,7 +415,7 @@ describe('NodeFileSystem.rename — Windows rename-kind emulation (DI)', () => {
           rmdir: rmdirSpy,
           rename: renameSpy,
         });
-        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         let caught: unknown;
@@ -449,7 +449,7 @@ describe('NodeFileSystem.rename — Windows rename-kind emulation (DI)', () => {
             .mockRejectedValueOnce(eacces()),
           rename: renameSpy,
         });
-        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         let caught: unknown;
@@ -485,7 +485,7 @@ describe('NodeFileSystem.rename — Windows rename-kind emulation (DI)', () => {
           rmdir: rmdirSpy,
           rename: renameSpy,
         });
-        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         let caught: unknown;
@@ -522,7 +522,7 @@ describe('NodeFileSystem.rename — Windows rename-kind emulation (DI)', () => {
           rmdir: rmdirSpy,
           rename: renameSpy,
         });
-        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         let caught: unknown;
@@ -558,7 +558,7 @@ describe('NodeFileSystem.rename — Windows rename-kind emulation (DI)', () => {
           rmdir: vi.fn().mockRejectedValue(enotempty()),
           rename: renameSpy,
         });
-        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         let caught: unknown;
@@ -593,7 +593,7 @@ describe('NodeFileSystem.rename — Windows rename-kind emulation (DI)', () => {
           rmdir: vi.fn().mockRejectedValue(eacces()),
           rename: renameSpy,
         });
-        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         let caught: unknown;
@@ -633,7 +633,7 @@ describe('NodeFileSystem.rename — Windows rename-kind emulation (DI)', () => {
           rename: renameSpy,
           readdir: readdirSpy,
         });
-        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         await sut.rename(src, dst);
@@ -669,7 +669,7 @@ describe('NodeFileSystem.rename — Windows rename-kind emulation (DI)', () => {
           rmdir: vi.fn().mockResolvedValue(undefined),
           rename: vi.fn().mockRejectedValue(eacces()),
         });
-        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         let caught: unknown;
@@ -711,7 +711,7 @@ describe('NodeFileSystem.rename — Windows rename-kind emulation (DI)', () => {
             .mockResolvedValueOnce(entry('file', 117)),
           rename: renameSpy,
         });
-        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         let caught: unknown;
@@ -748,7 +748,7 @@ describe('NodeFileSystem.rename — Windows rename-kind emulation (DI)', () => {
           rmdir: rmdirSpy,
           rename: vi.fn().mockRejectedValue(eacces()),
         });
-        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         let caught: unknown;
@@ -786,7 +786,7 @@ describe('NodeFileSystem.rename — Windows rename-kind emulation (DI)', () => {
           rmdir: vi.fn().mockResolvedValue(undefined),
           rename: vi.fn().mockRejectedValue(enotdir()),
         });
-        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         let caught: unknown;
@@ -819,7 +819,7 @@ describe('NodeFileSystem.rename — Windows rename-kind emulation (DI)', () => {
           rmdir: vi.fn().mockRejectedValue(enoent()),
           rename: renameSpy,
         });
-        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         await sut.rename(src, dst);
@@ -849,7 +849,7 @@ describe('NodeFileSystem.rename — Windows rename-kind emulation (DI)', () => {
           rmdir: rmdirSpy,
           rename: renameSpy,
         });
-        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         await sut.rename(src, src);
@@ -883,7 +883,7 @@ describe('NodeFileSystem.rename — Windows rename-kind emulation (DI)', () => {
           rmdir: rmdirSpy,
           rename: renameSpy,
         });
-        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         await sut.rename(src, dst);
@@ -913,7 +913,7 @@ describe('NodeFileSystem.rename — Windows rename-kind emulation (DI)', () => {
           rmdir: rmdirSpy,
           rename: renameSpy,
         });
-        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         await sut.rename(src, dst);
@@ -943,7 +943,7 @@ describe('NodeFileSystem.rename — Windows rename-kind emulation (DI)', () => {
           rmdir: vi.fn().mockRejectedValue(thrown),
           rename: renameSpy,
         });
-        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         let caught: unknown;
@@ -978,7 +978,7 @@ describe('NodeFileSystem.rename — Windows rename-kind emulation (DI)', () => {
           rmdir: vi.fn().mockRejectedValue(enoent()),
           rename: vi.fn().mockRejectedValue(eacces()),
         });
-        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         let caught: unknown;
@@ -1014,7 +1014,7 @@ describe('NodeFileSystem.rename — Windows rename-kind emulation (DI)', () => {
           rmdir: rmdirSpy,
           rename: renameSpy,
         });
-        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         await sut.rename(src, dst);
@@ -1046,7 +1046,7 @@ describe('NodeFileSystem.rename — Windows rename-kind emulation (DI)', () => {
           rmdir: rmdirSpy,
           rename: renameSpy,
         });
-        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         await sut.rename(src, dst);
@@ -1076,7 +1076,7 @@ describe('NodeFileSystem.rename — Windows rename-kind emulation (DI)', () => {
           rmdir: vi.fn().mockResolvedValue(undefined),
           rename: vi.fn().mockRejectedValue(eacces()),
         });
-        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         let caught: unknown;
@@ -1112,7 +1112,7 @@ describe('NodeFileSystem.rename — Windows rename-kind emulation (DI)', () => {
           rmdir: vi.fn().mockRejectedValue(enoent()),
           rename: renameSpy,
         });
-        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         await sut.rename(src, dst);
@@ -1146,7 +1146,7 @@ describe('NodeFileSystem.rename — Windows rename-kind emulation (DI)', () => {
           rmdir: rmdirSpy,
           rename: renameSpy,
         });
-        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         let caught: unknown;
@@ -1184,7 +1184,7 @@ describe('NodeFileSystem.rename — Windows rename-kind emulation (DI)', () => {
           rmdir: vi.fn().mockRejectedValue(enoent()),
           rename: renameSpy,
         });
-        const sut = new NodeFileSystem(rootDir, windowsPolicy, fsOps);
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: windowsPolicy, fsOps: fsOps });
 
         // Act
         await sut.rename(src, dst);

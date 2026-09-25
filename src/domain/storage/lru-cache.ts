@@ -1,5 +1,9 @@
 export interface LruCache<V> {
   get(key: string): V | undefined;
+  /** Every currently resident key — never one already dropped by eviction or `delete`.
+   *  A thin wrapper over the cache's own key index: no separate tracking structure,
+   *  and no cost for callers that never call it. */
+  keys(): IterableIterator<string>;
   /**
    * Store `value` under `key`. Returns `true` when the entry is now resident,
    * `false` when it was REFUSED because `byteSize` exceeds the cache's whole
@@ -95,6 +99,10 @@ export function createLruCache<V>(
         addToHead(node);
       }
       return node.value;
+    },
+
+    keys(): IterableIterator<string> {
+      return map.keys();
     },
 
     set(key: string, value: V, byteSize: number): boolean {

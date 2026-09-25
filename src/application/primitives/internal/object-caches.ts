@@ -289,7 +289,7 @@ export function deltaBaseCachingEnabled(ctx: Context): boolean {
  * The `collectDeltaChain` loop's probe, extracted so the loop body stays
  * flat: a hit enforces the same size cap a freshly-read base entry would,
  * so a warm chain cannot bypass a cap a cold one would have rejected at.
- * Takes the already-built key rather than `(packName, offset)` — the
+ * Takes the already-built key rather than `(instanceKey, offset)` — the
  * caller needs that same key again if this probe misses and the level goes
  * on to become a `DeltaStep` (see `DeltaStep.probeKey`), so it is built once
  * and passed in rather than rebuilt here.
@@ -310,7 +310,7 @@ export function probeDeltaBaseCache(
 
 /**
  * Fixed per-entry overhead the raw content length alone doesn't account for:
- * the `${packName}:${offset}` key string, the LRU's own node object, and the
+ * the `${instanceKey}:${offset}` key string, the LRU's own node object, and the
  * `{ type, content, chainDepth }` wrapper. Its presence alone keeps the
  * result positive — `LruCache.set` requires a positive `byteSize`, and a
  * genuinely empty reconstructed intermediate (an empty blob mid-chain) is

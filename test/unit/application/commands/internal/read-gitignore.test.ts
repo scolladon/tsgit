@@ -262,7 +262,7 @@ describe('readGlobalExcludes', () => {
         const ctx = await seed();
         const hostileFs = new Proxy(ctx.fs, {
           get(target, prop, receiver) {
-            if (prop === 'lstat') {
+            if (prop === 'lstat' || prop === 'tryLstat') {
               return async () => {
                 throw new Error('unexpected I/O failure');
               };
@@ -314,7 +314,7 @@ describe('readGlobalExcludes', () => {
         const permError = new TsgitError({ code: 'PERMISSION_DENIED', path: '/repo/.gitignore' });
         const hostileFs = new Proxy(ctx.fs, {
           get(target, prop, receiver) {
-            if (prop === 'lstat') {
+            if (prop === 'lstat' || prop === 'tryLstat') {
               return async () => {
                 throw permError;
               };

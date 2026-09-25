@@ -82,6 +82,80 @@ describe('NodeCompressor', () => {
       });
     });
 
+    describe('Given inflateSync returns an output that exactly fills its own buffer', () => {
+      describe('When inflate runs', () => {
+        it('Then the result is a zero-copy view over that same ArrayBuffer', async () => {
+          // Arrange — how node:zlib sizes its output varies across Node
+          // versions, so the exact-fit case is supplied rather than provoked.
+          const sut = new NodeCompressor();
+          const payload = new Uint8Array(20000).fill(0x41);
+          const deflated = await sut.deflate(payload);
+          const exactFit = Buffer.alloc(payload.length, 0x41);
+          inflateSyncSpy.mockReturnValueOnce(exactFit);
+
+          // Act
+          const result = await sut.inflate(deflated);
+
+          // Assert
+          expect(result.buffer).toBe(exactFit.buffer);
+          expect(Array.from(result)).toEqual(Array.from(payload));
+        });
+      });
+    });
+
+    describe('Given inflateSync returns an output that is a slice of a larger buffer', () => {
+      describe('When inflate runs', () => {
+        it('Then the result is copied into its own buffer, distinct from the larger one', async () => {
+          // Arrange — a slice aliases an allocation that may still be written to.
+          const sut = new NodeCompressor();
+          const payload = new Uint8Array(100).fill(0x41);
+          const deflated = await sut.deflate(payload);
+          const larger = Buffer.alloc(payload.length * 4, 0x41);
+          const slice = larger.subarray(0, payload.length);
+          inflateSyncSpy.mockReturnValueOnce(slice);
+
+          // Act
+          const result = await sut.inflate(deflated);
+
+          // Assert
+          expect(result.buffer).not.toBe(larger.buffer);
+          expect(Array.from(result)).toEqual(Array.from(payload));
+        });
+      });
+    });
+
+    describe('Given two small members decoded through separate createInflateStream calls, one after the other', () => {
+      describe('When the second decode has finished', () => {
+        it('Then the first result still holds its own bytes, unaffected by the second decode', async () => {
+          // Arrange
+          const sut = new NodeCompressor();
+          const firstPayload = new Uint8Array(100).fill(0x41);
+          const secondPayload = new Uint8Array(100).fill(0x42);
+          const firstDeflated = await sut.deflate(firstPayload);
+          const secondDeflated = await sut.deflate(secondPayload);
+
+          const decodeOneMember = async (deflated: Uint8Array): Promise<Uint8Array> => {
+            const source = new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(deflated);
+                controller.close();
+              },
+            });
+            const reader = source.pipeThrough(sut.createInflateStream()).getReader();
+            const { value } = await reader.read();
+            return value as Uint8Array;
+          };
+
+          // Act
+          const firstOutput = await decodeOneMember(firstDeflated);
+          await decodeOneMember(secondDeflated);
+
+          // Assert
+          expect(Array.from(firstOutput)).toEqual(Array.from(firstPayload));
+        });
+      });
+    });
+
     describe('describeError', () => {
       describe('Given an Error instance', () => {
         describe('When describing', () => {

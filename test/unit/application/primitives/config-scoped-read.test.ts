@@ -303,6 +303,7 @@ describe('isWorktreeScopeActive', () => {
         const original = permissionDenied('/repo/.git/config');
         const ctx = withFsOverride(createMemoryContext(), {
           readUtf8: () => Promise.reject(original),
+          tryReadUtf8: () => Promise.reject(original),
         });
 
         // Act
@@ -321,6 +322,7 @@ describe('isWorktreeScopeActive', () => {
         const original = new Error('disk on fire');
         const ctx = withFsOverride(createMemoryContext(), {
           readUtf8: () => Promise.reject(original),
+          tryReadUtf8: () => Promise.reject(original),
         });
         let caught: unknown;
 

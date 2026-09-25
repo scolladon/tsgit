@@ -1,6 +1,7 @@
-import { TsgitError } from '../../../domain/error.js';
+import type { TsgitError } from '../../../domain/error.js';
 import type { FilePath } from '../../../domain/objects/object-id.js';
 import type { Context } from '../../../ports/context.js';
+import { lstatIfPresent } from './fs-probes.js';
 
 /**
  * Expand a `~`/`~/…` config-driven path against `layout.homeDir`. Returns the
@@ -43,13 +44,8 @@ export const loadCappedUtf8 = async (
   limit: number,
   tooLarge: (path: FilePath, size: number, limit: number) => TsgitError,
 ): Promise<string | undefined> => {
-  let stat: Awaited<ReturnType<Context['fs']['lstat']>>;
-  try {
-    stat = await ctx.fs.lstat(path);
-  } catch (err) {
-    if (err instanceof TsgitError && err.data.code === 'FILE_NOT_FOUND') return undefined;
-    throw err;
-  }
+  const stat = await lstatIfPresent(ctx.fs, path);
+  if (stat === undefined) return undefined;
   if (!stat.isFile || stat.isSymbolicLink) return undefined;
   if (stat.size > limit) {
     throw tooLarge(sanitizedErrorPath(path), stat.size, limit);

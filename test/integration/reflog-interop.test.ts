@@ -2390,8 +2390,10 @@ describe.skipIf(!GIT_AVAILABLE)(
           // call, so the same pair is driven as two calls in the same order.
           const peer = await caseDir('reach-gone-pair-peer');
           const ours = await caseDir('reach-gone-pair-ours');
+          // Both logs are compared byte for byte, so both creations are
+          // pinned to one instant rather than straddling a clock second.
           for (const dir of [peer, ours]) {
-            git(dir, 'branch', 'gone');
+            runGit(['-C', dir, 'branch', 'gone'], { env: pinnedCommitterEnv(BASE_EPOCH) });
             await rm(refPath(dir, 'refs/heads/gone'));
           }
           const ctx = createNodeContext({ workDir: ours });

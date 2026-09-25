@@ -86,6 +86,20 @@ export const invalidPackIndex = (reason: string): TsgitError =>
 export const invalidPackEntry = (offset: number, reason: string): TsgitError =>
   new TsgitError({ code: 'INVALID_PACK_ENTRY', offset, reason });
 
+/**
+ * git's own reason (worded loosely, never byte-for-byte — this library ships
+ * structured data, never rendered text) for a pack entry whose zlib stream
+ * inflates to a byte count other than its own header-declared size. Shared by
+ * every site that enforces this: the index-pack write path
+ * (`pack-byte-source.ts`'s `withDeclaredSizeCheck`) and the object-read path
+ * (`object-resolver.ts`'s `collectDeltaChain`), so a `.pack` read and a
+ * `.pack` write refuse the identical shape for the identical reason —
+ * mirroring git's own uniform `unpack_entry_data` check
+ * (`stream.total_out != size`), applied on both sides of the file.
+ */
+export const PACK_ENTRY_INFLATED_SIZE_MISMATCH_REASON =
+  'bad object: inflated size differs from declared size';
+
 export const invalidDelta = (reason: string): TsgitError =>
   new TsgitError({ code: 'INVALID_DELTA', reason });
 

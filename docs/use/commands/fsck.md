@@ -158,7 +158,13 @@ reconstructed from git's stderr text.
   instead of resolving. The second is a malformed `remote.<n>.promisor` value
   — checked once, only when the run has at least one root or an
   absent-ref-target fault to walk, exactly where git's own promisor-config
-  load happens (see [Throws](#throws)).
+  load happens (see [Throws](#throws)). A pack window read landing past the
+  pack's own end — a truncated `.pack`, or a corrupt `.idx` offset pointing
+  beyond it — loads as empty bytes rather than raising a raw allocation
+  error; the entry-header parse then fails in the ordinary structured way
+  (`INVALID_PACK_ENTRY`), which this classification degrades to a
+  `dangling`/`'unknown'` finding (warned as `pack entry unreadable`) exactly
+  like any other corrupt entry, never an abort.
 - **Exit code carries severity, not exception — outside that one case.** A
   repo with missing or corrupt objects returns a non-zero `exitCode` in a
   successfully-resolved `FsckResult` — it does **not** reject, except for the

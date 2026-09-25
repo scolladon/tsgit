@@ -56,6 +56,40 @@ const guardedLexists = (
 };
 
 /**
+ * `tryLstat` is optional on the port for the same reason `lexists` is: an absent probe stays
+ * absent behind the wrapper, so a caller that finds it missing takes its `lstat` fallback. It is
+ * invoked on the adapter itself, because a class-based adapter's method reads its own receiver.
+ */
+const guardedTryLstat = (
+  fs: FileSystem,
+  readGuard: (path: string) => void,
+): Pick<FileSystem, 'tryLstat'> => {
+  const { tryLstat } = fs;
+  if (tryLstat === undefined) return {};
+  return {
+    tryLstat: (p) => {
+      readGuard(p);
+      return tryLstat.call(fs, p);
+    },
+  };
+};
+
+/** `tryReadUtf8`'s twin of {@link guardedTryLstat}. */
+const guardedTryReadUtf8 = (
+  fs: FileSystem,
+  readGuard: (path: string) => void,
+): Pick<FileSystem, 'tryReadUtf8'> => {
+  const { tryReadUtf8 } = fs;
+  if (tryReadUtf8 === undefined) return {};
+  return {
+    tryReadUtf8: (p) => {
+      readGuard(p);
+      return tryReadUtf8.call(fs, p);
+    },
+  };
+};
+
+/**
  * `atomicRename` is optional on the port for the same reason: an adapter that omits it (OPFS) has
  * to stay without it behind the wrapper, so lock-file protocols keep their degraded path there,
  * while an adapter that provides it keeps its atomic commit. Both paths get `rename`'s guard.
@@ -189,6 +223,8 @@ export const wrapFsValidator = (
       return fs.lstat(p);
     },
     ...guardedLexists(fs, readGuard),
+    ...guardedTryLstat(fs, readGuard),
+    ...guardedTryReadUtf8(fs, readGuard),
     readdir: (p) => {
       readGuard(p);
       return fs.readdir(p);

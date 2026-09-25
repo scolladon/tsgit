@@ -11,8 +11,15 @@ export interface ConcurrencyLimiter {
   run<T>(task: () => Promise<T>): Promise<T>;
 }
 
+/** `release()` walks the queue with a head cursor instead of `Array#shift()`
+ *  (an O(n) copy per call, O(n²) over a long queue). The dead prefix behind
+ *  the cursor is spliced away only once it exceeds this floor — small queues
+ *  never pay a compaction, and a long-lived one amortises it. */
+const QUEUE_COMPACTION_MIN = 1024;
+
 export function createConcurrencyLimiter(limit: number): ConcurrencyLimiter {
   let active = 0;
+  let head = 0;
   const queue: Array<() => void> = [];
 
   function acquire(): Promise<void> {
@@ -25,16 +32,37 @@ export function createConcurrencyLimiter(limit: number): ConcurrencyLimiter {
     });
   }
 
+  // Drops the dead prefix behind `head` once it is both past the floor and
+  // past half the live queue — bounding the splice's own cost to the same
+  // order as the dead entries it reclaims. Called only after the resolver at
+  // `head` has already been read into a local, so no index into `queue`
+  // survives the splice.
+  // equivalent-mutant: compaction only reclaims the dead prefix; splice(0, head)
+  // followed by head = 0 preserves `queue[head..]` as the live FIFO suffix for
+  // ANY head in [0, queue.length], so shifting when it fires (guard always-on,
+  // always-off, boundary, or formula) changes cost, never order or results.
+  // Stryker disable next-line BlockStatement: equivalent — emptying the whole function body only skips the reclaim; FIFO order and results are unaffected (see proof above)
+  function compactQueueIfNeeded(): void {
+    // Stryker disable next-line ConditionalExpression,LogicalOperator,EqualityOperator,ArithmeticOperator: equivalent — any guard change here only shifts WHEN compaction fires; splice(0, head) + head = 0 stays order-preserving regardless (see proof above)
+    if (head > QUEUE_COMPACTION_MIN && head > queue.length / 2) {
+      queue.splice(0, head);
+      head = 0;
+    }
+  }
+
   // Hands the freed slot directly to the next waiter (if any) rather than
   // decrementing `active` and letting a fresh `acquire()` re-increment it —
   // keeps the released slot's ownership uninterrupted, so no third caller
   // can slip in between a release and the queued waiter it was meant for.
   function release(): void {
-    const next = queue.shift();
+    const next = queue[head];
     if (next === undefined) {
       active -= 1;
       return;
     }
+    head += 1;
+    // Stryker disable next-line CallExpression: equivalent — skipping the call never compacts; the dead prefix just grows, FIFO order and results are unaffected (see proof above compactQueueIfNeeded)
+    compactQueueIfNeeded();
     next();
   }
 

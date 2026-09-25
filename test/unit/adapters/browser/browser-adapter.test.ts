@@ -109,3 +109,95 @@ describe('createBrowserContext', () => {
     });
   });
 });
+
+describe('BrowserHashService', () => {
+  describe('Given a digest, When rendering it through hashHex', () => {
+    it('Then hashHex renders the hash() bytes as byte.toString(16).padStart(2, "0")', async () => {
+      // Arrange
+      const sut = new BrowserHashService('sha1');
+      const data = new Uint8Array([1, 2, 3]);
+      const digestBytes = await sut.hash(data);
+      const expected = Array.from(digestBytes, (byte) => byte.toString(16).padStart(2, '0')).join(
+        '',
+      );
+
+      // Act
+      const result = await sut.hashHex(data);
+
+      // Assert
+      expect(result).toBe(expected);
+    });
+  });
+
+  describe('Given a hasher fed three chunks, When comparing the streamed digest to the one-shot digest', () => {
+    it('Then the streamed digest equals the one-shot digest of the concatenation', async () => {
+      // Arrange
+      const sut = new BrowserHashService('sha1');
+      const chunk1 = new Uint8Array([1, 2, 3]);
+      const chunk2 = new Uint8Array([4, 5]);
+      const chunk3 = new Uint8Array([6, 7, 8, 9]);
+      const concatenated = new Uint8Array([...chunk1, ...chunk2, ...chunk3]);
+      const hasher = sut.createHasher();
+
+      // Act
+      hasher.update(chunk1);
+      hasher.update(chunk2);
+      hasher.update(chunk3);
+      const streamed = await hasher.digestHex();
+      const oneShot = await sut.hashHex(concatenated);
+
+      // Assert
+      expect(streamed).toBe(oneShot);
+    });
+  });
+
+  describe('Given a chunk mutated after update() but before digest(), When digestHex() runs', () => {
+    it('Then the digest covers the bytes as they were at update() time', async () => {
+      // Arrange
+      const sut = new BrowserHashService('sha1');
+      const chunk = new Uint8Array([1, 2, 3]);
+      const hasher = sut.createHasher();
+      hasher.update(chunk);
+      chunk[0] = 99;
+      const expected = await sut.hashHex(new Uint8Array([1, 2, 3]));
+
+      // Act
+      const result = await hasher.digestHex();
+
+      // Assert
+      expect(result).toBe(expected);
+    });
+  });
+
+  describe('Given a hasher never fed a chunk, When digestHex() runs', () => {
+    it('Then it equals the one-shot digest of empty input', async () => {
+      // Arrange
+      const sut = new BrowserHashService('sha1');
+      const hasher = sut.createHasher();
+      const expected = await sut.hashHex(new Uint8Array(0));
+
+      // Act
+      const result = await hasher.digestHex();
+
+      // Assert
+      expect(result).toBe(expected);
+    });
+  });
+
+  describe('Given a hasher fed a single chunk, When comparing the streamed digest to the one-shot digest', () => {
+    it('Then the streamed digest equals the one-shot digest', async () => {
+      // Arrange
+      const sut = new BrowserHashService('sha256');
+      const chunk = new Uint8Array([10, 20, 30, 40]);
+      const hasher = sut.createHasher();
+      hasher.update(chunk);
+      const expected = await sut.hashHex(new Uint8Array([10, 20, 30, 40]));
+
+      // Act
+      const result = await hasher.digestHex();
+
+      // Assert
+      expect(result).toBe(expected);
+    });
+  });
+});

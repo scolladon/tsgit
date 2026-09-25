@@ -4,6 +4,8 @@ import * as os from 'node:os';
 import * as nodePath from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { FsOperations } from '../../../../src/adapters/node/fs-operations.js';
+import { realSyncFsOps } from '../../../../src/adapters/node/fs-operations.js';
+import type { NodeFileSystemOptions } from '../../../../src/adapters/node/node-file-system.js';
 import {
   isCreationLeafSymlink,
   isErrnoException,
@@ -12,13 +14,20 @@ import {
   mapErrno,
   mapStat,
   NodeFileSystem,
+  nonBlockFlag,
   pathContains,
   realpathNearestExisting,
   runFs,
   toAbsolute,
 } from '../../../../src/adapters/node/node-file-system.js';
 import { posixPolicy, windowsPolicy } from '../../../../src/adapters/node/path-policy.js';
+import type { SyncIoPolicy } from '../../../../src/adapters/node/sync-io-budget.js';
+import {
+  createSyncIoPolicy,
+  createTurnBudget,
+} from '../../../../src/adapters/node/sync-io-budget.js';
 import { TsgitError } from '../../../../src/domain/index.js';
+import type { FileSystemContractEnv } from '../../ports/file-system.contract.js';
 import { fileSystemContractTests } from '../../ports/file-system.contract.js';
 
 const WINDOWS_PLATFORM = 'win32';
@@ -61,44 +70,59 @@ function fakeRemoveTreeFsOps(
   return { fsOps, getMaxInFlight: () => maxInFlight };
 }
 
+/**
+ * Builds a throwaway root and sibling directory and returns the
+ * `FileSystemContractEnv` the shared port contract suite drives, backed by
+ * a `NodeFileSystem` constructed with `options` — `{}` runs the async path,
+ * `{ syncIo: createSyncIoPolicy() }` runs the sync fast path, so both arms
+ * of the port's refusal matrix are proven identical.
+ */
+async function buildContractEnv(
+  options: NodeFileSystemOptions = {},
+): Promise<FileSystemContractEnv> {
+  const tempRoot = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-'));
+  // macOS os.tmpdir() returns /var/... which is a symlink to /private/var/...
+  // Resolve once so the stored rootDir matches realpath output on all platforms.
+  const rootDir = await fsPromises.realpath(tempRoot);
+  const siblingDir = `${rootDir}-evil`;
+  await fsPromises.mkdir(siblingDir, { recursive: true });
+  await fsPromises.writeFile(nodePath.join(siblingDir, 'file.txt'), '');
+  const existingFile = nodePath.join(rootDir, 'existing.txt');
+  await fsPromises.writeFile(existingFile, Buffer.from([1, 2, 3]));
+
+  const fs = new NodeFileSystem(rootDir, options);
+
+  return {
+    fs,
+    rootDir,
+    getRootDirSibling: async () => nodePath.join(siblingDir, 'file.txt'),
+    getExistingInRoot: async () => existingFile,
+    symlinkReadEscape: {
+      create: async () => {
+        const escapeTarget = nodePath.join(siblingDir, 'escape-read-target.txt');
+        await fsPromises.writeFile(escapeTarget, Buffer.from('escape-read'));
+        const link = nodePath.join(rootDir, 'escape-read-link');
+        await fsPromises.symlink(escapeTarget, link);
+        return link;
+      },
+      expected: 'allowed' as const,
+    },
+    // The segment refusal codes are pinned on POSIX hosts only: Windows reports a file used
+    // as a directory as ENOENT or EINVAL rather than ENOTDIR, and its reparse-point loops
+    // do not surface ELOOP on every surface.
+    ...(process.platform === WINDOWS_PLATFORM ? {} : { segmentRefusals: 'pinned' as const }),
+    cleanup: async () => {
+      await fsPromises.rm(rootDir, { recursive: true, force: true });
+      await fsPromises.rm(siblingDir, { recursive: true, force: true });
+    },
+  };
+}
+
 describe('NodeFileSystem', () => {
-  fileSystemContractTests(async () => {
-    const tempRoot = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-'));
-    // macOS os.tmpdir() returns /var/... which is a symlink to /private/var/...
-    // Resolve once so the stored rootDir matches realpath output on all platforms.
-    const rootDir = await fsPromises.realpath(tempRoot);
-    const siblingDir = `${rootDir}-evil`;
-    await fsPromises.mkdir(siblingDir, { recursive: true });
-    await fsPromises.writeFile(nodePath.join(siblingDir, 'file.txt'), '');
-    const existingFile = nodePath.join(rootDir, 'existing.txt');
-    await fsPromises.writeFile(existingFile, Buffer.from([1, 2, 3]));
+  fileSystemContractTests(() => buildContractEnv());
 
-    const fs = new NodeFileSystem(rootDir);
-
-    return {
-      fs,
-      rootDir,
-      getRootDirSibling: async () => nodePath.join(siblingDir, 'file.txt'),
-      getExistingInRoot: async () => existingFile,
-      symlinkReadEscape: {
-        create: async () => {
-          const escapeTarget = nodePath.join(siblingDir, 'escape-read-target.txt');
-          await fsPromises.writeFile(escapeTarget, Buffer.from('escape-read'));
-          const link = nodePath.join(rootDir, 'escape-read-link');
-          await fsPromises.symlink(escapeTarget, link);
-          return link;
-        },
-        expected: 'allowed' as const,
-      },
-      // The segment refusal codes are pinned on POSIX hosts only: Windows reports a file used
-      // as a directory as ENOENT or EINVAL rather than ENOTDIR, and its reparse-point loops
-      // do not surface ELOOP on every surface.
-      ...(process.platform === WINDOWS_PLATFORM ? {} : { segmentRefusals: 'pinned' as const }),
-      cleanup: async () => {
-        await fsPromises.rm(rootDir, { recursive: true, force: true });
-        await fsPromises.rm(siblingDir, { recursive: true, force: true });
-      },
-    };
+  describe('NodeFileSystem with the sync fast path', () => {
+    fileSystemContractTests(() => buildContractEnv({ syncIo: createSyncIoPolicy() }));
   });
 
   describe('node-specific behaviors', () => {
@@ -720,7 +744,7 @@ describe('NodeFileSystem', () => {
               throw original;
             }) as FsOperations['rm'],
           };
-          const fs = new NodeFileSystem(rootDir, undefined, fsOps);
+          const fs = new NodeFileSystem(rootDir, { fsOps });
 
           // Act
           let caught: unknown;
@@ -804,7 +828,7 @@ describe('NodeFileSystem', () => {
           const tempRoot = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-node-'));
           const rootDir = await fsPromises.realpath(tempRoot);
           const { fsOps, getMaxInFlight } = fakeRemoveTreeFsOps(rootDir, width);
-          const fs = new NodeFileSystem(rootDir, undefined, fsOps, undefined, concurrency);
+          const fs = new NodeFileSystem(rootDir, { fsOps, removeTreeConcurrency: concurrency });
 
           // Act
           try {
@@ -829,7 +853,7 @@ describe('NodeFileSystem', () => {
           const tempRoot = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-node-'));
           const rootDir = await fsPromises.realpath(tempRoot);
           const { fsOps, getMaxInFlight } = fakeRemoveTreeFsOps(rootDir, width);
-          const fs = new NodeFileSystem(rootDir, undefined, fsOps);
+          const fs = new NodeFileSystem(rootDir, { fsOps });
 
           // Act
           try {
@@ -1224,6 +1248,32 @@ describe('NodeFileSystem', () => {
             // Assert
             expect(result.data.code).toBe(expectedCode);
             extra?.(result.data);
+          });
+        });
+      });
+    });
+
+    describe('nonBlockFlag', () => {
+      describe('Given a `constants` object with O_NONBLOCK set', () => {
+        describe('When computing the flag', () => {
+          it('Then it returns O_NONBLOCK unchanged', () => {
+            // Arrange & Act
+            const result = nonBlockFlag({ O_NONBLOCK: 2048 });
+
+            // Assert
+            expect(result).toBe(2048);
+          });
+        });
+      });
+
+      describe('Given a `constants` object with no O_NONBLOCK (Windows)', () => {
+        describe('When computing the flag', () => {
+          it('Then it falls back to 0', () => {
+            // Arrange & Act
+            const result = nonBlockFlag({});
+
+            // Assert
+            expect(result).toBe(0);
           });
         });
       });
@@ -1654,7 +1704,7 @@ describe('NodeFileSystem config-path capabilities', () => {
         // Arrange
         const tmp = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-fs-'));
         try {
-          const fs = new NodeFileSystem(tmp, posixPolicy);
+          const fs = new NodeFileSystem(tmp, { pathPolicy: posixPolicy });
 
           // Act
           const result = fs.homedir();
@@ -1694,7 +1744,7 @@ describe('NodeFileSystem config-path capabilities', () => {
         try {
           if (envValue === undefined) delete process.env['XDG_CONFIG_HOME'];
           else process.env['XDG_CONFIG_HOME'] = envValue;
-          const fs = new NodeFileSystem(tmp, posixPolicy);
+          const fs = new NodeFileSystem(tmp, { pathPolicy: posixPolicy });
 
           // Act
           const result = fs.xdgConfigHome();
@@ -1743,7 +1793,7 @@ describe('NodeFileSystem config-path capabilities', () => {
           Object.defineProperty(process, 'platform', { value: platform, configurable: true });
           if (programData === undefined) delete process.env['ProgramData'];
           else process.env['ProgramData'] = programData;
-          const fs = new NodeFileSystem(tmp, policy);
+          const fs = new NodeFileSystem(tmp, { pathPolicy: policy });
 
           // Act
           const result = fs.systemConfigPath();
@@ -2048,6 +2098,123 @@ describe('NodeFileSystem multi-root containment', () => {
         // Assert
         expect(await fsPromises.readFile(nodePath.join(pending, 'file.txt'), 'utf-8')).toBe('late');
         await cleanup();
+      });
+    });
+  });
+});
+
+describe('NodeFileSystem — sync fast path real-timer interleaving', () => {
+  describe('Given a real timer scheduled before a 5000-lstat sweep through a policy-bearing adapter', () => {
+    describe('When the sweep runs', () => {
+      it('Then the timer fires before the sweep resolves (the turn budget actually yields)', async () => {
+        // Arrange — real timers and a real `createSyncIoPolicy()`: a fake
+        // clock/scheduler cannot prove the event loop truly got a turn.
+        // Ordering, not elapsed time, is asserted (real-timer durations are
+        // not reproducible across CI runners).
+        const tempRoot = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-real-timer-'));
+        const rootDir = await fsPromises.realpath(tempRoot);
+        const file = nodePath.join(rootDir, 'existing.txt');
+        await fsPromises.writeFile(file, 'x');
+        const sut = new NodeFileSystem(rootDir, { syncIo: createSyncIoPolicy() });
+        const order: Array<'timer' | 'sweep'> = [];
+        const sweepCount = 5000;
+
+        try {
+          // Act
+          setTimeout(() => order.push('timer'), 0);
+          for (let i = 0; i < sweepCount; i += 1) {
+            await sut.lstat(file);
+          }
+          order.push('sweep');
+
+          // Assert
+          expect(order[0]).toBe('timer');
+        } finally {
+          await fsPromises.rm(rootDir, { recursive: true, force: true });
+        }
+      });
+    });
+  });
+});
+
+describe('NodeFileSystem — tryReadUtf8 sync-arm ineligibility', () => {
+  describe('Given a policy-bearing adapter and a file over the sync read gate', () => {
+    describe('When tryReadUtf8 is called', () => {
+      it('Then it falls back to the async arm and still returns the full content', async () => {
+        // Arrange — a `maxSyncReadBytes` gate far below the file's size forces
+        // `readRegularFileSync` to report "not eligible", which must be told
+        // apart from a confirmed ENOENT absence: the async fallback still has
+        // to run and return the real bytes, never `undefined`.
+        const tempRoot = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-gate-'));
+        const rootDir = await fsPromises.realpath(tempRoot);
+        const file = nodePath.join(rootDir, 'oversized.txt');
+        const content = 'x'.repeat(64);
+        await fsPromises.writeFile(file, content);
+        const syncIo: SyncIoPolicy = {
+          ops: realSyncFsOps,
+          budget: createTurnBudget(1),
+          maxSyncReadBytes: 4,
+        };
+        const sut = new NodeFileSystem(rootDir, { syncIo });
+
+        try {
+          // Act
+          const result = await sut.tryReadUtf8(file);
+
+          // Assert
+          expect(result).toBe(content);
+        } finally {
+          await fsPromises.rm(rootDir, { recursive: true, force: true });
+        }
+      });
+    });
+  });
+});
+
+describe('NodeFileSystem — read over the sync gate, real fs', () => {
+  describe('Given a policy-bearing adapter and a real file over the sync read gate', () => {
+    describe('When read is called', () => {
+      it('Then it returns the full content via the real async-on-held-fd handoff', async () => {
+        // Arrange — a real `realSyncFsOps` policy with the gate set far below the
+        // file's size, so the sync probe opens the fd, sees it is over the gate,
+        // and the production `readAsync` (promisified `fs.read` on that same fd)
+        // must finish the read for real.
+        const tempRoot = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-gate-read-'));
+        const rootDir = await fsPromises.realpath(tempRoot);
+        const file = nodePath.join(rootDir, 'oversized.bin');
+        const content = 'y'.repeat(64);
+        await fsPromises.writeFile(file, content);
+        const syncIo: SyncIoPolicy = {
+          ops: realSyncFsOps,
+          budget: createTurnBudget(1),
+          maxSyncReadBytes: 4,
+        };
+        const sut = new NodeFileSystem(rootDir, { syncIo });
+
+        try {
+          // Act
+          const result = await sut.read(file);
+
+          // Assert
+          expect(Buffer.from(result).toString('utf8')).toBe(content);
+        } finally {
+          await fsPromises.rm(rootDir, { recursive: true, force: true });
+        }
+      });
+    });
+  });
+
+  describe('Given a descriptor that is not open', () => {
+    describe('When realSyncFsOps.readAsync is called on it', () => {
+      it('Then the returned promise rejects with the underlying errno', async () => {
+        // Arrange — a syntactically valid but never-opened descriptor number.
+        const closedFd = 999_999;
+
+        // Act
+        const attempt = realSyncFsOps.readAsync(closedFd, Buffer.alloc(1), 0, 1, 0);
+
+        // Assert
+        await expect(attempt).rejects.toMatchObject({ code: 'EBADF' });
       });
     });
   });

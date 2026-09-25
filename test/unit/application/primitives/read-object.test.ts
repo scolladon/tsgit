@@ -401,8 +401,14 @@ describe('readObject', () => {
         // Arrange
         // The WeakMap<Context, PackRegistry> cache in read-object.ts avoids
         // re-scanning the pack directory across many lookups during a walk.
-        // If the guard is broken, readdir runs once per readObject call.
-        const ctx = await buildSeededContext();
+        // If the guard is broken, readdir runs once per readObject call. A
+        // PRESENT id is used deliberately — a full miss now pays its own
+        // one-time re-scan retry (see pack-miss-rescan.ts), which would
+        // otherwise be conflated with the registry-caching invariant this
+        // row exists to prove.
+        const blob: Blob = { type: 'blob', content: new Uint8Array([7, 8, 9]), id: '' as ObjectId };
+        const ctx = await buildSeededContext({ objects: [blob] });
+        const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
         // Seed the pack dir so readdir has something to enumerate.
         await ctx.fs.write('/repo/.git/objects/pack/.gitkeep', new Uint8Array([0]));
         let readdirCount = 0;
@@ -419,13 +425,8 @@ describe('readObject', () => {
         };
 
         // Act — two readObject calls on the same wrapped context.
-        const missingId = 'f'.repeat(40) as ObjectId;
         for (let i = 0; i < 2; i += 1) {
-          try {
-            await readObject(wrapped, missingId);
-          } catch {
-            // OBJECT_NOT_FOUND — expected.
-          }
+          await readObject(wrapped, id);
         }
 
         // Assert — at most one readdir on the pack dir (cache is honored).
@@ -437,15 +438,14 @@ describe('readObject', () => {
   describe('Given a pack registry populated through the opening Context', () => {
     describe('When read through a Context derived by deriveContext (same session)', () => {
       it('Then the derived Context hits the shared registry (readdir runs at most once)', async () => {
-        // Arrange
-        const ctx = await buildSeededContext();
+        // Arrange — a PRESENT id: a full miss now pays its own one-time
+        // re-scan retry (see pack-miss-rescan.ts), which would otherwise be
+        // conflated with the registry-caching invariant this row proves.
+        const blob: Blob = { type: 'blob', content: new Uint8Array([1, 2, 3]), id: '' as ObjectId };
+        const ctx = await buildSeededContext({ objects: [blob] });
+        const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
         await ctx.fs.write('/repo/.git/objects/pack/.gitkeep', new Uint8Array([0]));
-        const missingId = 'f'.repeat(40) as ObjectId;
-        try {
-          await readObject(ctx, missingId);
-        } catch {
-          // OBJECT_NOT_FOUND — expected; this is only priming the registry.
-        }
+        await readObject(ctx, id); // primes the registry
         // No fields change — a no-op derivation still keeps the session,
         // and (unlike the other tests here) leaves `fs` identical too, so a
         // spy on the SHARED object observes calls made through either.
@@ -453,11 +453,7 @@ describe('readObject', () => {
         const spy = vi.spyOn(ctx.fs, 'readdir');
 
         // Act
-        try {
-          await readObject(derived, missingId);
-        } catch {
-          // OBJECT_NOT_FOUND — expected.
-        }
+        await readObject(derived, id);
 
         // Assert — session unchanged ⇒ same registry, no re-scan.
         expect(derived.session).toBe(ctx.session);
@@ -469,16 +465,15 @@ describe('readObject', () => {
   describe('Given a pack registry populated through a Context derived by deriveContext (same session)', () => {
     describe('When read through the opening Context', () => {
       it('Then the opening Context hits the shared registry (readdir runs at most once)', async () => {
-        // Arrange
-        const ctx = await buildSeededContext();
+        // Arrange — a PRESENT id: a full miss now pays its own one-time
+        // re-scan retry (see pack-miss-rescan.ts), which would otherwise be
+        // conflated with the registry-caching invariant this row proves.
+        const blob: Blob = { type: 'blob', content: new Uint8Array([3, 2, 1]), id: '' as ObjectId };
+        const ctx = await buildSeededContext({ objects: [blob] });
+        const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
         await ctx.fs.write('/repo/.git/objects/pack/.gitkeep', new Uint8Array([0]));
         const derived = deriveContext(ctx, { deltaCache: ctx.deltaCache });
-        const missingId = 'f'.repeat(40) as ObjectId;
-        try {
-          await readObject(derived, missingId);
-        } catch {
-          // OBJECT_NOT_FOUND — expected; this is only priming the registry.
-        }
+        await readObject(derived, id); // primes the registry
         let readdirCount = 0;
         const originalReaddir = ctx.fs.readdir.bind(ctx.fs);
         const instrumented: Context = {
@@ -493,11 +488,7 @@ describe('readObject', () => {
         };
 
         // Act
-        try {
-          await readObject(instrumented, missingId);
-        } catch {
-          // OBJECT_NOT_FOUND — expected.
-        }
+        await readObject(instrumented, id);
 
         // Assert
         expect(readdirCount).toBe(0);
@@ -550,9 +541,14 @@ describe('readObject', () => {
           // OBJECT_NOT_FOUND — expected.
         }
 
-        // Assert — a fresh session starts the registry cache cold.
+        // Assert — a fresh session starts the registry cache cold. Two
+        // listings, not one: `missingId` is a genuine full miss, and a full
+        // miss now pays its own one-time re-scan retry (pack-miss-rescan.ts,
+        // mirroring git's reprepare_packed_git) on top of the construction
+        // scan — both against the FRESH session's own registry, proving it
+        // is not shared with `ctx`'s (a shared registry would need zero).
         expect(fresh.session).not.toBe(ctx.session);
-        expect(readdirCount).toBe(1);
+        expect(readdirCount).toBe(2);
       });
     });
   });
@@ -658,9 +654,13 @@ describe('getPackRegistry — repo-settings class boundary', () => {
 
   describe('Given a bare Context with cacheBudgets.deltaBaseCacheMaxBytes supplied and no gate opened', () => {
     describe('When readObject runs twice', () => {
-      it('Then the first read issues exactly one stat and one readUtf8 of config, and the finder runs once across both reads', async () => {
+      it('Then the first read issues one stat, one readUtf8 and one more stat (the window budget) of config, and the finder runs once across both reads', async () => {
         // Arrange — the finder spy is installed BEFORE the first read, so its
-        // count covers the compute that read triggers.
+        // count covers the compute that read triggers. The option overrides
+        // the delta-base cache's own config read, but the pack window cache
+        // has no equivalent override — it always resolves
+        // `core.packedGitWindowSize`/`core.packedGitLimit`, paying one more
+        // mtime-freshness stat against the same warm parse cache.
         const blob: Blob = { type: 'blob', content: new Uint8Array([10]), id: '' as ObjectId };
         const base = await buildSeededContext({ objects: [blob] });
         const id = (await base.hash.hashHex(serializeObject(blob, base.hashConfig))) as ObjectId;
@@ -678,6 +678,7 @@ describe('getPackRegistry — repo-settings class boundary', () => {
         expect(firstReadConfigCalls).toEqual([
           { method: 'stat', path: configPath },
           { method: 'readUtf8', path: configPath },
+          { method: 'stat', path: configPath },
         ]);
         expect(spy).toHaveBeenCalledTimes(1);
       });
@@ -686,8 +687,13 @@ describe('getPackRegistry — repo-settings class boundary', () => {
 
   describe('Given a bare Context with no cacheBudgets override and no gate opened', () => {
     describe('When readObject runs twice', () => {
-      it('Then the first read issues stat, readUtf8, stat of config, and the finder runs once across both reads', async () => {
-        // Arrange
+      it('Then the first read issues stat, readUtf8, stat of config (delta-base + window budgets sharing one coalesced stat), and the finder runs once across both reads', async () => {
+        // Arrange — both derived caches resolve their own config-backed
+        // budget CONCURRENTLY, so their two `readConfig` calls fall inside
+        // the same coalescing window (`config-read.ts`'s per-session
+        // single-flight stat) and share ONE mtime-freshness stat, beyond the
+        // repo-settings check's own stat + readUtf8 — two stats total, not
+        // three.
         const blob: Blob = { type: 'blob', content: new Uint8Array([11]), id: '' as ObjectId };
         const base = await buildSeededContext({ objects: [blob] });
         const id = (await base.hash.hashHex(serializeObject(blob, base.hashConfig))) as ObjectId;
@@ -1374,8 +1380,13 @@ describe('readObject — lazy-fetch (partial clone)', () => {
           expect((error as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
         }
 
-        // Assert — the guard short-circuited: one scan, no refresh + re-resolve.
-        expect(packReaddirCount).toBe(1);
+        // Assert — the guard short-circuited: the object-resolver's OWN
+        // full-miss retry (pack-miss-rescan.ts) already re-scans once before
+        // `withLazyFetchRetry` ever inspects the error, so two listings are
+        // expected here (construction + that one internal re-scan); the
+        // `attempted=false` guard's whole job is refusing to add a THIRD via
+        // its own refresh()+re-resolve.
+        expect(packReaddirCount).toBe(2);
       });
     });
   });

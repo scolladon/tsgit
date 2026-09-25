@@ -126,6 +126,25 @@ export interface FileSystem {
    */
   readonly lexists?: (path: string) => Promise<boolean>;
 
+  /**
+   * Get file/directory metadata without following symlinks, exactly as {@link lstat} does,
+   * except that it resolves `undefined` exactly where `lstat` refuses FILE_NOT_FOUND — every
+   * other refusal `lstat` raises still rejects. OPTIONAL: a miss probe that spends no refusal on
+   * a path that is usually absent (`omitting the method changes cost, never the answer`). A
+   * caller that finds it absent calls `lstat` and reads FILE_NOT_FOUND as absence, which answers
+   * identically.
+   */
+  readonly tryLstat?: (path: string) => Promise<FileStat | undefined>;
+
+  /**
+   * Read entire file as a UTF-8 string, exactly as {@link readUtf8} does, except that it
+   * resolves `undefined` exactly where `readUtf8` refuses FILE_NOT_FOUND — every other refusal
+   * `readUtf8` raises still rejects, a directory included. OPTIONAL: a miss probe that spends no
+   * refusal on a path that is usually absent. A caller that finds it absent calls `readUtf8` and
+   * reads FILE_NOT_FOUND as absence, which answers identically.
+   */
+  readonly tryReadUtf8?: (path: string) => Promise<string | undefined>;
+
   /** List directory entries. Throws NOT_A_DIRECTORY if not a directory, FILE_NOT_FOUND if absent. */
   readonly readdir: (path: string) => Promise<ReadonlyArray<DirEntry>>;
 

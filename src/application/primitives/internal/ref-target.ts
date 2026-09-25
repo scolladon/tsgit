@@ -79,6 +79,16 @@ const rememberVerified = (
 const verifiedTargetType = async (ctx: Context, id: ObjectId): Promise<ObjectType> => {
   const memo = verifiedTargetsOf(ctx);
   const known = memo.get(id);
+  // Quick probe only: a miss here falls straight through to
+  // `verifyStoredObject` below, whose own content read already re-scans once
+  // on a full miss (`retryOnceAfterRescan`) — the SAME one retry
+  // `hasObject`'s own `'recheck'` mode would pay here, so gating on
+  // `'recheck'` would cost a SECOND re-scan wave on a genuine miss for no
+  // different verdict. This still runs for every ref write, including the
+  // fetch/clone-driven ones that land right after a pack just landed on
+  // disk — git's `update_local_ref` calls `odb_has_object` with
+  // `HAS_OBJECT_RECHECK_PACKED`, and one re-scan (paid below, not here) is
+  // exactly that.
   if (known !== undefined && (await hasObject(ctx, id))) return known;
   const { type, acceptance } = await verifyStoredObject(ctx, id);
   if (acceptance !== undefined) await assertParseAccepted(ctx, id, acceptance);

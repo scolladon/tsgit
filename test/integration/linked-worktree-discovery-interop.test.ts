@@ -676,4 +676,69 @@ describe.skipIf(!GIT_AVAILABLE)('linked-worktree discovery interop', () => {
       });
     });
   });
+
+  describe('Given a directory whose .git file is prefixed with a UTF-8 BOM (scenario I)', () => {
+    let root: string;
+    let dir: string;
+
+    beforeAll(async () => {
+      root = await mkRoot('i');
+      const outer = path.join(root, 'outer');
+      runGit(['init', '-q', '-b', 'main', outer]);
+      await writeFile(path.join(outer, 'a.txt'), 'x\n');
+      git(outer, 'add', 'a.txt');
+      commit(outer, 'c1');
+
+      dir = path.join(outer, 'bombed');
+      await mkdir(dir);
+      // Git requires the exact `gitdir: ` prefix at byte 0 of a `.git`
+      // gitfile; a leading BOM breaks that, and git itself refuses it
+      // (pinned below) rather than treating the BOM as skippable noise.
+      const bomPointer = Buffer.concat([
+        Buffer.from([0xef, 0xbb, 0xbf]),
+        Buffer.from(`gitdir: ${path.join(outer, '.git')}\n`),
+      ]);
+      await writeFile(path.join(dir, '.git'), bomPointer);
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      if (root !== undefined) await rm(root, { recursive: true, force: true });
+    });
+
+    /** Opens `dir` under `io` and returns the rejection — fails the test if it resolves. */
+    const openAndCatchWithIo = async (io: 'sync-fast-path' | 'threadpool'): Promise<unknown> => {
+      try {
+        await openTrackedRepository({ cwd: dir, io });
+      } catch (err) {
+        return err;
+      }
+      expect.unreachable('expected openRepository to reject');
+    };
+
+    describe('When opened under io: sync-fast-path and io: threadpool', () => {
+      it('Then both refuse GITFILE_INVALID_FORMAT identically, matching git rev-parse --git-dir (exit 128)', async () => {
+        // Arrange — the BOM-prefixed gitfile written in beforeAll
+        const gitfilePath = path.join(dir, '.git');
+
+        // Act
+        const syncCaught = await openAndCatchWithIo('sync-fast-path');
+        const threadpoolCaught = await openAndCatchWithIo('threadpool');
+
+        // Assert — same verdict under both io strategies
+        const syncData = (syncCaught as { data: { code: string; path: string } }).data;
+        const threadpoolData = (threadpoolCaught as { data: { code: string; path: string } }).data;
+        expect(syncData.code).toBe('GITFILE_INVALID_FORMAT');
+        expect(syncData.path).toBe(gitfilePath);
+        expect(threadpoolData.code).toBe(syncData.code);
+        expect(threadpoolData.path).toBe(syncData.path);
+
+        // Assert — git co-refuses the same BOM-prefixed gitfile with its own
+        // "invalid gitfile format" fatal, tying the exit code to the specific
+        // refusal tsgit's GITFILE_INVALID_FORMAT names, not just any 128 exit.
+        const gitRefusal = tryRunGitWithExit(['-C', dir, 'rev-parse', '--git-dir']);
+        expect(gitRefusal.exitCode).toBe(128);
+        expect(gitRefusal.stderr).toContain('invalid gitfile format');
+      });
+    });
+  });
 });

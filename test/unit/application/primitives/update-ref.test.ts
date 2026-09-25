@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
+import { forgetLooseOidPrefix } from '../../../../src/application/primitives/internal/loose-oid-cache.js';
 import { invalidateShallowSet } from '../../../../src/application/primitives/internal/shallow-set.js';
 import {
   commonGitDir,
@@ -2001,12 +2002,15 @@ describe('updateRef', () => {
           // Act
           await sut(ctx, MAIN, commit, { reflogMessage: REASON });
 
-          // Assert
+          // Assert — the presence re-probe now lists the fanout dir (a
+          // session-cached membership check) instead of stat-ing this exact
+          // path, so the second verification never touches the object's own
+          // path at all — its bytes are read even less than before.
           const touches = calls()
             .slice(before)
             .filter((call) => call.path === loosePath)
             .map((call) => call.method);
-          expect(touches).toEqual(['exists']);
+          expect(touches).toEqual([]);
           expect(await resolveRef(ctx, MAIN)).toBe(commit);
         });
       });
@@ -2015,11 +2019,20 @@ describe('updateRef', () => {
     describe('Given a verified commit whose loose object is removed afterwards', () => {
       describe('When updateRef writes it to another ref on the same Context', () => {
         it('Then it refuses OBJECT_NOT_FOUND and the ref stays absent', async () => {
-          // Arrange
+          // Arrange — a removal must invalidate the two caches the first
+          // verification warmed, the same way tsgit's own pruner does: the
+          // loose-existence listing (`probeLooseOid`, via
+          // `forgetLooseOidPrefix`) and the buffered-read content cache
+          // (`ctx.deltaCache`, populated by `openBlobSource`'s buffered arm).
+          // An external actor removing the file WITHOUT going through those
+          // hooks is the same tolerated staleness window the loose-existence
+          // cache already accepts for a concurrent `git gc`.
           const ctx = await buildSeededContext();
           const commit = await writeCommit(ctx, 'verified then removed');
           await updateRef(ctx, 'refs/tags/first' as RefName, commit, { reflogMessage: REASON });
           await ctx.fs.rm(`${ctx.layout.gitDir}/objects/${computeLooseObjectPath(commit)}`);
+          forgetLooseOidPrefix(ctx, commit);
+          ctx.deltaCache.delete(commit);
           const sut = updateRef;
 
           // Act
