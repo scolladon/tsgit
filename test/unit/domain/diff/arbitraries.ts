@@ -1,6 +1,15 @@
 import fc from 'fast-check';
+import { primaryPath } from '../../../../src/domain/diff/change-path.js';
+import type { DiffChange, TreeDiff } from '../../../../src/domain/diff/diff-change.js';
+import { sortByPath } from '../../../../src/domain/diff/path-compare.js';
 import type { LineKey, WhitespaceMode } from '../../../../src/domain/diff/whitespace.js';
-import type { FileMode, ObjectId, Tree, TreeEntry } from '../../../../src/domain/objects/index.js';
+import type {
+  FileMode,
+  FilePath,
+  ObjectId,
+  Tree,
+  TreeEntry,
+} from '../../../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import {
@@ -65,6 +74,57 @@ export function arbTree(): fc.Arbitrary<Tree> {
       entries: Array.from(byName.values()),
     };
   });
+}
+
+// Small pools force id and basename collisions, so the exact pass's one-shot,
+// basename-preference and mode-rule branches are all reachable.
+const EXACT_RENAME_IDS: ReadonlyArray<ObjectId> = ['a', 'b', 'c'].map(
+  (c) => c.repeat(40) as ObjectId,
+);
+const EXACT_RENAME_KINDS: ReadonlyArray<'add' | 'delete' | 'modify'> = ['add', 'delete', 'modify'];
+const EXACT_RENAME_PATHS: ReadonlyArray<FilePath> = ['', 'a/', 'b/'].flatMap((prefix) =>
+  ['Foo.meta', 'Bar.meta', 'xFoo.meta'].map((name) => `${prefix}${name}` as FilePath),
+);
+
+interface RawExactRenameEntry {
+  readonly kind: 'add' | 'delete' | 'modify';
+  readonly path: FilePath;
+  readonly id: ObjectId;
+  readonly mode: FileMode;
+}
+
+function toDiffChange(entry: RawExactRenameEntry): DiffChange {
+  if (entry.kind === 'add') {
+    return { type: 'add', newPath: entry.path, newId: entry.id, newMode: entry.mode };
+  }
+  if (entry.kind === 'delete') {
+    return { type: 'delete', oldPath: entry.path, oldId: entry.id, oldMode: entry.mode };
+  }
+  return {
+    type: 'modify',
+    path: entry.path,
+    oldId: entry.id,
+    newId: entry.id,
+    oldMode: entry.mode,
+    newMode: entry.mode,
+  };
+}
+
+/** A raw tree diff (no rename/copy entries) whose adds/deletes collide on id
+ *  and/or basename — the input shape `detectRenames` consumes. Paths are
+ *  unique (a raw diff never repeats a path) and sorted like a real one. */
+export function arbExactRenameDiff(): fc.Arbitrary<TreeDiff> {
+  return fc
+    .uniqueArray(
+      fc.record({
+        kind: fc.constantFrom(...EXACT_RENAME_KINDS),
+        path: fc.constantFrom(...EXACT_RENAME_PATHS),
+        id: fc.constantFrom(...EXACT_RENAME_IDS),
+        mode: arbNonDirMode(),
+      }),
+      { selector: (entry) => entry.path, maxLength: EXACT_RENAME_PATHS.length },
+    )
+    .map((entries) => ({ changes: sortByPath(entries.map(toDiffChange), primaryPath) }));
 }
 
 // Unlike arbTree (deliberately non-directory, above), this family includes
