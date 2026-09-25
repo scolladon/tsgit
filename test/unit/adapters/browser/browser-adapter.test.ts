@@ -169,6 +169,21 @@ describe('BrowserHashService', () => {
     });
   });
 
+  describe('Given a hasher never fed a chunk, When digestHex() runs', () => {
+    it('Then it equals the one-shot digest of empty input', async () => {
+      // Arrange
+      const sut = new BrowserHashService('sha1');
+      const hasher = sut.createHasher();
+      const expected = await sut.hashHex(new Uint8Array(0));
+
+      // Act
+      const result = await hasher.digestHex();
+
+      // Assert
+      expect(result).toBe(expected);
+    });
+  });
+
   describe('Given a hasher fed a single chunk, When comparing the streamed digest to the one-shot digest', () => {
     it('Then the streamed digest equals the one-shot digest', async () => {
       // Arrange
