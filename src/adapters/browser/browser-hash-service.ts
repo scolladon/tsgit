@@ -63,8 +63,8 @@ export class BrowserHashService implements HashService {
 }
 
 function joinChunks(chunks: ReadonlyArray<Uint8Array>, total: number): Uint8Array {
-  const [only, ...rest] = chunks;
-  if (only !== undefined && rest.length === 0) return only;
+  const only = chunks.length === 1 ? chunks[0] : undefined;
+  if (only !== undefined) return only;
   const joined = new Uint8Array(total);
   let offset = 0;
   for (const chunk of chunks) {
