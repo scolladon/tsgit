@@ -63,6 +63,27 @@ describe('rescanOnFullMiss', () => {
     });
   });
 
+  describe('Given a rescan wave whose reprepare rejects', () => {
+    describe('When a second miss arrives after the rejection has settled', () => {
+      it('Then a fresh wave runs its own reprepare and resolves', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const registry = await createPackRegistry(ctx);
+        const reprepareSpy = vi
+          .spyOn(registry, 'reprepare')
+          .mockRejectedValueOnce(new Error('boom'))
+          .mockResolvedValueOnce(undefined);
+
+        // Act
+        await expect(rescanOnFullMiss(ctx, registry, idOf(0))).rejects.toThrow('boom');
+        await rescanOnFullMiss(ctx, registry, idOf(1));
+
+        // Assert
+        expect(reprepareSpy).toHaveBeenCalledTimes(2);
+      });
+    });
+  });
+
   describe('Given a miss for id B, in a DIFFERENT fanout prefix than an in-flight wave, joining right as that wave forgets its own ids', () => {
     describe("When B's loose file is written directly to disk before the wave settles", () => {
       it('Then B resolves on its retry — its own prefix was forgotten too', async () => {
