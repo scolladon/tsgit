@@ -47,6 +47,8 @@ function exactKey(id: ObjectId, mode: FileMode): string {
 
 // Bucketing by mode class up front keeps git's candidate order among compatible
 // sources while letting the cap bound the scan: incompatible ones are never visited.
+// Each group is stored last-candidate-first, so consuming a source near git's scan
+// front shifts at most the cap's worth of entries instead of the whole group.
 function buildExactSources(deletes: ReadonlyArray<DeleteChange>): Map<string, DeleteChange[]> {
   const byKey = new Map<string, DeleteChange[]>();
   for (const del of deletes) {
@@ -58,6 +60,7 @@ function buildExactSources(deletes: ReadonlyArray<DeleteChange>): Map<string, De
       group.push(del);
     }
   }
+  for (const group of byKey.values()) group.reverse();
   return byKey;
 }
 
@@ -69,12 +72,13 @@ function hasSameBasename(oldPath: FilePath, newPath: FilePath): boolean {
 }
 
 // Transcribes git's find_identical_files: a basename match within the capped
-// scan wins, otherwise the first candidate in order.
+// scan wins, otherwise the first candidate in order (the group's tail).
 function pickExactSource(add: AddChange, group: ReadonlyArray<DeleteChange>): number {
   const basenameMatch = group
-    .slice(0, EXACT_CANDIDATE_CAP)
+    .slice(-EXACT_CANDIDATE_CAP)
+    .reverse()
     .findIndex((candidate) => hasSameBasename(candidate.oldPath, add.newPath));
-  return Math.max(basenameMatch, 0);
+  return group.length - 1 - Math.max(basenameMatch, 0);
 }
 
 /**
