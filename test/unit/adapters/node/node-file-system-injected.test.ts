@@ -9,7 +9,7 @@
  * `FileSystemContract` suite against the REAL filesystem.
  */
 import * as fs from 'node:fs';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type {
   FsOperations,
   SyncFsOperations,
@@ -35,6 +35,12 @@ import {
   fakeSyncFsOps,
   fakeSyncIoPolicy,
 } from './node-fs-fakes.js';
+
+// Stryker's vitest runner does not apply the config's restoreMocks; spies
+// (Buffer.allocUnsafeSlow among them) would otherwise leak into later rows.
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 /** A fabricated `NodeJS.ErrnoException` carrying an arbitrary `code`. */
 const errnoOf = (code: string): NodeJS.ErrnoException => Object.assign(new Error(code), { code });
