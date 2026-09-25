@@ -5685,3 +5685,40 @@ describe('NodeFileSystem.read — async arm view vs copy (DI)', () => {
     });
   });
 });
+
+describe('NodeFileSystem.tryReadUtf8 — sync arm above the gate (DI)', () => {
+  const rootDir = '/root';
+  const target = '/root/child.txt';
+  const FD = 11;
+  const GATE = 8;
+
+  describe('Given a policy-bearing adapter and a file larger than the sync gate, When tryReadUtf8 runs', () => {
+    it('Then the probe descriptor is closed exactly once and the pooled read serves the content', async () => {
+      // Arrange
+      const openSync = vi.fn().mockReturnValue(FD);
+      const fstatSync = vi.fn().mockReturnValue({ isFile: () => true, size: GATE + 1 });
+      const readSync = vi.fn();
+      const closeSync = vi.fn();
+      const readFile = vi.fn().mockResolvedValue('over the gate');
+      const fsOps = fakeFsOps({
+        realpath: vi.fn().mockImplementation(async (input: string) => input),
+        readFile,
+      });
+      const syncIo: SyncIoPolicy = {
+        ops: fakeSyncFsOps({ openSync, fstatSync, readSync, closeSync }),
+        budget: alwaysAdmit(),
+        maxSyncReadBytes: GATE,
+      };
+      const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps, syncIo });
+
+      // Act
+      const result = await sut.tryReadUtf8(target);
+
+      // Assert
+      expect(result).toBe('over the gate');
+      expect(readSync).not.toHaveBeenCalled();
+      expect(closeSync).toHaveBeenCalledTimes(1);
+      expect(closeSync).toHaveBeenCalledWith(FD);
+    });
+  });
+});
