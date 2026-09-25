@@ -5716,6 +5716,7 @@ describe('NodeFileSystem.tryReadUtf8 — sync arm above the gate (DI)', () => {
 
       // Assert
       expect(result).toBe('over the gate');
+      expect(readFile).toHaveBeenCalledWith(target, 'utf-8');
       expect(readSync).not.toHaveBeenCalled();
       expect(closeSync).toHaveBeenCalledTimes(1);
       expect(closeSync).toHaveBeenCalledWith(FD);
