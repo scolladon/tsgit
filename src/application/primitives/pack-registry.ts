@@ -198,9 +198,9 @@ export interface PackLookupHit {
 /**
  * A resolved OFS/REF-delta chain level's `(type, content)` — already
  * header-split, so a hit never re-runs the loose-format split a raw-bytes
- * cache would need. `(packName, offset)` is only meaningful within the
- * generation that produced it, which is exactly the registry's lifetime
- * between one `refresh()` and the next.
+ * cache would need. Keyed by `(instanceKey, offset)`: an entry belongs to
+ * the one pack instance that produced it, so a pack retired by `refresh()`
+ * or `reprepare()` can never answer for a successor of the same name.
  */
 export interface DeltaBaseCacheEntry {
   readonly type: PackEntryHeader['type'];
@@ -347,9 +347,9 @@ export interface PackRegistry {
    * Offset-keyed cache for delta-chain intermediates — every OFS/REF-delta
    * level `collectDeltaChain`/`resolvePackChain` (object-resolver.ts) walks
    * through, not just a chain's tip. Lives here, per-registry, rather than
-   * on a `Context`: `(packName, offset)` is only meaningful within the
-   * generation that produced it, and `refresh()`/`dispose()` clear it
-   * alongside everything else generation-scoped. Sized once, from the
+   * on a `Context`: `(instanceKey, offset)` is only meaningful for the pack
+   * instance that produced it; `refresh()`/`dispose()` clear it to free
+   * memory, `reprepare()` keeps it for the instances it reuses. Sized once, from the
    * Context that first creates this registry — see `createPackRegistry`.
    */
   readonly deltaBaseCache: LruCache<DeltaBaseCacheEntry>;
