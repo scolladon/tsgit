@@ -130,7 +130,7 @@ const READ_WORKLOADS: Record<string, ReadWorkload> = {
   log: {
     kind: 'read',
     fixture: MEDIUM_FIXTURE,
-    iterations: 200, // 685 ticks measured
+    iterations: 800, // 926 ticks measured
     run: async (repo) => {
       await repo.log();
     },
@@ -144,7 +144,7 @@ const READ_WORKLOADS: Record<string, ReadWorkload> = {
   'log-commit-graph': {
     kind: 'read',
     fixture: MEDIUM_FIXTURE_WITH_COMMIT_GRAPH,
-    iterations: 200, // 659 ticks measured
+    iterations: 700, // 730 ticks measured
     run: async (repo) => {
       await repo.log();
     },
@@ -189,7 +189,7 @@ const READ_WORKLOADS: Record<string, ReadWorkload> = {
   describe: {
     kind: 'read',
     fixture: MEDIUM_FIXTURE,
-    iterations: 20_000, // 581 ticks measured
+    iterations: 250_000, // 738 ticks measured
     setup: (fixtureCwd, env) => ensureNearTag(fixtureCwd, env),
     run: async (repo) => {
       await repo.describe();
@@ -199,7 +199,7 @@ const READ_WORKLOADS: Record<string, ReadWorkload> = {
   'name-rev': {
     kind: 'read',
     fixture: MEDIUM_FIXTURE,
-    iterations: 30_000, // 913 ticks measured
+    iterations: 360_000, // 761 ticks measured
     setup: (fixtureCwd, env) => ensurePrunableTaggedTip(fixtureCwd, env),
     run: async (repo, _fixture, target) => {
       await repo.nameRev(target as string);
@@ -213,7 +213,7 @@ const READ_WORKLOADS: Record<string, ReadWorkload> = {
   'rev-parse': {
     kind: 'read',
     fixture: MEDIUM_FIXTURE,
-    iterations: 350_000, // 900 ticks measured
+    iterations: 4_000_000, // 832 ticks measured
     run: async (repo) => {
       await repo.revParse('HEAD');
     },
@@ -222,7 +222,7 @@ const READ_WORKLOADS: Record<string, ReadWorkload> = {
   'cat-file': {
     kind: 'read',
     fixture: MEDIUM_FIXTURE,
-    iterations: 200_000, // 1042 ticks measured
+    iterations: 1_300_000, // 733 ticks measured
     run: async (repo, fixture) => {
       await repo.catFile({ ids: [fixture.headCommitId] });
     },
@@ -231,7 +231,7 @@ const READ_WORKLOADS: Record<string, ReadWorkload> = {
   show: {
     kind: 'read',
     fixture: MEDIUM_FIXTURE,
-    iterations: 60_000, // 532 ticks measured
+    iterations: 400_000, // 791 ticks measured
     run: async (repo) => {
       await repo.show('HEAD');
     },
@@ -240,7 +240,7 @@ const READ_WORKLOADS: Record<string, ReadWorkload> = {
   diff: {
     kind: 'read',
     fixture: MEDIUM_FIXTURE,
-    iterations: 40_000, // 544 ticks measured
+    iterations: 480_000, // 900 ticks measured
     run: async (repo) => {
       await repo.diff({ from: 'HEAD~1', to: 'HEAD' });
     },
@@ -251,7 +251,7 @@ const READ_WORKLOADS: Record<string, ReadWorkload> = {
   blame: {
     kind: 'read',
     fixture: MEDIUM_FIXTURE,
-    iterations: 100, // 609 ticks measured
+    iterations: 700, // 752 ticks measured
     run: async (repo) => {
       await repo.blame(BLAME_TARGET);
     },
@@ -274,7 +274,7 @@ const WRITE_WORKLOADS: Record<string, WriteWorkload> = {
     kind: 'write',
     build: buildAddScratch,
     hoistBuild: false,
-    iterations: 6000, // 607 ticks measured
+    iterations: 12_000, // 834 ticks measured
     run: async (repo) => {
       await repo.add([], { all: true });
     },
@@ -283,7 +283,7 @@ const WRITE_WORKLOADS: Record<string, WriteWorkload> = {
   merge: {
     kind: 'write',
     build: buildMergeScratch,
-    iterations: 800, // 697 ticks measured
+    iterations: 1500, // 801 ticks measured
     run: async (repo) => {
       await repo.merge.run({
         rev: 'side',

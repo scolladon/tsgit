@@ -115,7 +115,7 @@ describe('resolveWorkloads', () => {
         const sut = WORKLOADS;
 
         // Assert
-        expect(sut.blame?.iterations).toBe(100);
+        expect(sut.blame?.iterations).toBe(700);
       });
 
       it('Then status has no iteration override (its default already clears the tick floor)', () => {
