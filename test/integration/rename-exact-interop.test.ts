@@ -140,7 +140,7 @@ function gitPeerNameStatus(dir: string, row: Row): string {
 
 const ROWS: ReadonlyArray<Row> = [
   {
-    label: '1 source, 2 identical adds — first in path order folds (R Foo→Bar ; A Baz) [#1]',
+    label: '1 source, 2 identical adds — first in path order folds (R Foo→Bar ; A Baz)',
     before: [{ path: 'a/Foo.meta', content: DEFAULT_CONTENT }],
     after: [
       { path: 'b/Bar.meta', content: DEFAULT_CONTENT },
@@ -148,8 +148,7 @@ const ROWS: ReadonlyArray<Row> = [
     ],
   },
   {
-    label:
-      'basename-matching add processed second — path order still wins (R Foo→Bar ; A b/Foo) [#2]',
+    label: 'basename-matching add processed second — path order still wins (R Foo→Bar ; A b/Foo)',
     before: [{ path: 'a/Foo.meta', content: DEFAULT_CONTENT }],
     after: [
       { path: 'b/Bar.meta', content: DEFAULT_CONTENT },
@@ -158,7 +157,7 @@ const ROWS: ReadonlyArray<Row> = [
   },
   {
     label:
-      '2 sources sharing an id, no basename match — first in path order folds (D Qux ; R Foo→Bar) [#3]',
+      '2 sources sharing an id, no basename match — first in path order folds (D Qux ; R Foo→Bar)',
     before: [
       { path: 'a/Foo.meta', content: DEFAULT_CONTENT },
       { path: 'a/Qux.meta', content: DEFAULT_CONTENT },
@@ -166,7 +165,7 @@ const ROWS: ReadonlyArray<Row> = [
     after: [{ path: 'b/Bar.meta', content: DEFAULT_CONTENT }],
   },
   {
-    label: '2 sources sharing an id, basename = second delete (D Foo ; R Qux→Qux) [#4]',
+    label: '2 sources sharing an id, basename = second delete (D Foo ; R Qux→Qux)',
     before: [
       { path: 'a/Foo.meta', content: DEFAULT_CONTENT },
       { path: 'a/Qux.meta', content: DEFAULT_CONTENT },
@@ -174,7 +173,7 @@ const ROWS: ReadonlyArray<Row> = [
     after: [{ path: 'b/Qux.meta', content: DEFAULT_CONTENT }],
   },
   {
-    label: '2 sources, 2 adds, no basename overlap (R Foo→Bar ; R Qux→Baz) [#5]',
+    label: '2 sources, 2 adds, no basename overlap (R Foo→Bar ; R Qux→Baz)',
     before: [
       { path: 'a/Foo.meta', content: DEFAULT_CONTENT },
       { path: 'a/Qux.meta', content: DEFAULT_CONTENT },
@@ -185,7 +184,7 @@ const ROWS: ReadonlyArray<Row> = [
     ],
   },
   {
-    label: '1 source, 3 identical adds — first in path order folds (R Foo→A ; A B ; A C) [#6]',
+    label: '1 source, 3 identical adds — first in path order folds (R Foo→A ; A B ; A C)',
     before: [{ path: 'a/Foo.meta', content: DEFAULT_CONTENT }],
     after: [
       { path: 'b/A.meta', content: DEFAULT_CONTENT },
@@ -194,7 +193,7 @@ const ROWS: ReadonlyArray<Row> = [
     ],
   },
   {
-    label: '2 sources, 2 adds, basename preference per add (R Qux→Qux ; R Foo→Zed) [#7]',
+    label: '2 sources, 2 adds, basename preference per add (R Qux→Qux ; R Foo→Zed)',
     before: [
       { path: 'a/Foo.meta', content: DEFAULT_CONTENT },
       { path: 'a/Qux.meta', content: DEFAULT_CONTENT },
@@ -205,7 +204,8 @@ const ROWS: ReadonlyArray<Row> = [
     ],
   },
   {
-    label: '#3 with rename limit 1 — exact pairing unaffected (D Qux ; R Foo→Bar) [#8]',
+    label:
+      '2 sources sharing an id with rename limit 1 — exact pairing unaffected (D Qux ; R Foo→Bar)',
     before: [
       { path: 'a/Foo.meta', content: DEFAULT_CONTENT },
       { path: 'a/Qux.meta', content: DEFAULT_CONTENT },
@@ -216,7 +216,7 @@ const ROWS: ReadonlyArray<Row> = [
   },
   {
     label:
-      'symlink source pairs with the symlink add, not the mode-incompatible regular add (A b/file ; R link→link2) [#12]',
+      'symlink source pairs with the symlink add, not the mode-incompatible regular add (A b/file ; R link→link2)',
     before: [{ path: 'a/link', content: 'target', kind: 'symlink' }],
     after: [
       { path: 'b/file', content: 'target' },
@@ -224,7 +224,7 @@ const ROWS: ReadonlyArray<Row> = [
     ],
   },
   {
-    label: 'regular source pairs across the executable bit (R Foo→Bar ; A Baz) [#13]',
+    label: 'regular source pairs across the executable bit (R Foo→Bar ; A Baz)',
     before: [{ path: 'a/Foo.sh', content: DEFAULT_CONTENT }],
     after: [
       { path: 'b/Bar.sh', content: DEFAULT_CONTENT, kind: 'exec' },
@@ -232,7 +232,7 @@ const ROWS: ReadonlyArray<Row> = [
     ],
   },
   {
-    label: 'empty blob — 1 source, 2 adds (R Foo→Bar ; A Baz) [#14]',
+    label: 'empty blob — 1 source, 2 adds (R Foo→Bar ; A Baz)',
     before: [{ path: 'a/Foo.meta', content: '' }],
     after: [
       { path: 'b/Bar.meta', content: '' },
@@ -241,37 +241,37 @@ const ROWS: ReadonlyArray<Row> = [
   },
   {
     label:
-      '101 sources sharing an id, no basename match — cap holds the first (R F001→Bar + 100 D) [#15]',
+      '101 sources sharing an id, no basename match — cap holds the first (R F001→Bar + 100 D)',
     before: manyFiles(101),
     after: [{ path: 'b/Bar.meta', content: DEFAULT_CONTENT }],
   },
   {
     label:
-      '101 sources + a basename match as the 102nd eligible — cap hides it (R F001→Zzz + D Zzz) [#16]',
+      '101 sources + a basename match as the 102nd eligible — cap hides it (R F001→Zzz + D Zzz)',
     before: [...manyFiles(101), { path: 'a/Zzz.meta', content: DEFAULT_CONTENT }],
     after: [{ path: 'b/Zzz.meta', content: DEFAULT_CONTENT }],
   },
   {
     label:
-      '99 sources + a basename match as the 100th eligible — the cap is not yet reached (R Zzz→Zzz) [#16a]',
+      '99 sources + a basename match as the 100th eligible — the cap is not yet reached (R Zzz→Zzz)',
     before: [...manyFiles(99), { path: 'a/Zzz.meta', content: DEFAULT_CONTENT }],
     after: [{ path: 'b/Zzz.meta', content: DEFAULT_CONTENT }],
   },
   {
-    label:
-      '100 sources + a basename match as the 101st eligible — cap hides it (R F001→Zzz) [#16b]',
+    label: '100 sources + a basename match as the 101st eligible — cap hides it (R F001→Zzz)',
     before: [...manyFiles(100), { path: 'a/Zzz.meta', content: DEFAULT_CONTENT }],
     after: [{ path: 'b/Zzz.meta', content: DEFAULT_CONTENT }],
   },
   {
-    label: '#15 with rename limit 1 — exact pairing unaffected (R F001→Bar + 100 D) [#17]',
+    label:
+      '101 sources sharing an id with rename limit 1 — exact pairing unaffected (R F001→Bar + 100 D)',
     before: manyFiles(101),
     after: [{ path: 'b/Bar.meta', content: DEFAULT_CONTENT }],
     gitFlags: ['-l1'],
     renameOptions: { limit: 1 },
   },
   {
-    label: '3 sources sharing an id, basename = third delete (D Foo ; D Qux ; R Zed→Zed) [#18]',
+    label: '3 sources sharing an id, basename = third delete (D Foo ; D Qux ; R Zed→Zed)',
     before: [
       { path: 'a/Foo.meta', content: DEFAULT_CONTENT },
       { path: 'a/Qux.meta', content: DEFAULT_CONTENT },
@@ -281,7 +281,7 @@ const ROWS: ReadonlyArray<Row> = [
   },
   {
     label:
-      'directory rename + copy, diff-tree non-recursive — tree entries pair by id (R x→y ; A z) [D1]',
+      'directory rename + copy, diff-tree non-recursive — tree entries pair by id (R x→y ; A z)',
     before: [
       { path: 'x/f', content: 'l1\n' },
       { path: 'x/g', content: 'l2\n' },
@@ -297,7 +297,7 @@ const ROWS: ReadonlyArray<Row> = [
   },
   {
     label:
-      'directory rename + copy, recursive — every leaf pairs by id (R x/f→y/f ; R x/g→y/g ; A z/f ; A z/g) [D1r]',
+      'directory rename + copy, recursive — every leaf pairs by id (R x/f→y/f ; R x/g→y/g ; A z/f ; A z/g)',
     before: [
       { path: 'x/f', content: 'l1\n' },
       { path: 'x/g', content: 'l2\n' },

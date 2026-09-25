@@ -113,14 +113,16 @@ function toDiffChange(entry: RawExactRenameEntry): DiffChange {
 /** A raw tree diff (no rename/copy entries) whose adds/deletes collide on id
  *  and/or basename — the input shape `detectRenames` consumes. Paths are
  *  unique (a raw diff never repeats a path) and sorted like a real one. */
-export function arbExactRenameDiff(): fc.Arbitrary<TreeDiff> {
+export function arbExactRenameDiff(
+  pools: { readonly ids?: ReadonlyArray<ObjectId>; readonly modes?: ReadonlyArray<FileMode> } = {},
+): fc.Arbitrary<TreeDiff> {
   return fc
     .uniqueArray(
       fc.record({
         kind: fc.constantFrom(...EXACT_RENAME_KINDS),
         path: fc.constantFrom(...EXACT_RENAME_PATHS),
-        id: fc.constantFrom(...EXACT_RENAME_IDS),
-        mode: arbNonDirMode(),
+        id: fc.constantFrom(...(pools.ids ?? EXACT_RENAME_IDS)),
+        mode: fc.constantFrom(...(pools.modes ?? NON_DIR_MODES)),
       }),
       { selector: (entry) => entry.path, maxLength: EXACT_RENAME_PATHS.length },
     )

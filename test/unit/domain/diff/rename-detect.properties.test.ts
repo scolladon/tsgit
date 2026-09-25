@@ -8,7 +8,8 @@ import type {
 import { kindOf } from '../../../../src/domain/diff/mode-kind.js';
 import { detectRenames } from '../../../../src/domain/diff/rename-detect.js';
 import { MAX_SCORE } from '../../../../src/domain/diff/similarity.js';
-import type { FileMode } from '../../../../src/domain/objects/index.js';
+import type { FileMode, ObjectId } from '../../../../src/domain/objects/index.js';
+import { FILE_MODE } from '../../../../src/domain/objects/index.js';
 import { arbExactRenameDiff } from './arbitraries.js';
 
 // Spec predicate for the exact-mode rule (git's `mode_similarity`): both sides
@@ -19,6 +20,16 @@ function isExactModeCompatible(oldMode: FileMode, newMode: FileMode): boolean {
   if (kindOf(oldMode) === 'file' && kindOf(newMode) === 'file') return true;
   return oldMode === newMode;
 }
+
+function basenameOf(path: string): string {
+  return path.slice(path.lastIndexOf('/') + 1);
+}
+
+// One id, one mode: every add competes for every delete, so basename ties are common.
+const SINGLE_REGULAR_POOL = {
+  ids: ['a'.repeat(40) as ObjectId],
+  modes: [FILE_MODE.REGULAR],
+};
 
 const sut = detectRenames;
 
@@ -35,6 +46,31 @@ describe('Given an arbitrary diff with colliding ids and paths', () => {
             .map((r) => r.oldPath);
 
           expect(new Set(renameOldPaths).size).toBe(renameOldPaths.length);
+        }),
+        { numRuns: 100 },
+      );
+    });
+
+    it('Then a source with a different basename is never picked over a leftover basename match', () => {
+      // Arrange + Assert
+      fc.assert(
+        fc.property(arbExactRenameDiff(SINGLE_REGULAR_POOL), (input) => {
+          const result = sut(input);
+
+          const leftoverDeletes = result.changes.filter(
+            (c): c is DeleteChange => c.type === 'delete',
+          );
+          const renames = result.changes.filter((c): c is RenameChange => c.type === 'rename');
+          for (const rename of renames) {
+            if (basenameOf(rename.oldPath) === basenameOf(rename.newPath)) continue;
+            const skippedBasenameMatch = leftoverDeletes.some(
+              (d) =>
+                d.oldId === rename.newId &&
+                isExactModeCompatible(d.oldMode, rename.newMode) &&
+                basenameOf(d.oldPath) === basenameOf(rename.newPath),
+            );
+            expect(skippedBasenameMatch).toBe(false);
+          }
         }),
         { numRuns: 100 },
       );

@@ -249,7 +249,7 @@ describe.skipIf(!GIT_AVAILABLE)('blame interop', () => {
     emptyFile = { dir: emptyFileDir, ctx: createNodeContext({ workDir: emptyFileDir }) };
 
     // Fan-out: one delete, three adds with the identical bytes in one commit —
-    // git blame's single_follow means every copy blames back to Foo.txt (row B1).
+    // git blame's single_follow means every copy blames back to Foo.txt.
     const fanOutDir = await makeRepo('fan-out');
     await commitContent(fanOutDir, 'Foo.txt', 'l1\nl2\n');
     git(fanOutDir, 'rm', '-q', 'Foo.txt');

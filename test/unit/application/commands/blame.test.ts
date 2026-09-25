@@ -965,35 +965,39 @@ describe('Given a deleted file whose content two added files each partially keep
 });
 
 describe('Given a file deleted and its identical content added at three paths in one commit', () => {
+  const buildFanOutCopies = async () => {
+    const ctx = await seed();
+    const c1 = await commitFile(ctx, 'c1', 'a/Foo.meta', 'x\n');
+    await rm(ctx, ['a/Foo.meta']);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b/A.meta`, 'x\n');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b/B.meta`, 'x\n');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b/C.meta`, 'x\n');
+    await add(ctx, ['b/A.meta', 'b/B.meta', 'b/C.meta']);
+    clock += 60;
+    await commit(ctx, {
+      message: 'c2 fan-out copy',
+      author: ident('c2', clock),
+      committer: ident('c2', clock),
+    });
+    return { ctx, c1 };
+  };
+
   describe('When blaming each added copy', () => {
-    it('Then every copy follows to the deleted source', async () => {
-      // Arrange
-      const sut = blame;
-      const ctx = await seed();
-      const c1 = await commitFile(ctx, 'c1', 'a/Foo.meta', 'x\n');
-      await rm(ctx, ['a/Foo.meta']);
-      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b/A.meta`, 'x\n');
-      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b/B.meta`, 'x\n');
-      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b/C.meta`, 'x\n');
-      await add(ctx, ['b/A.meta', 'b/B.meta', 'b/C.meta']);
-      clock += 60;
-      await commit(ctx, {
-        message: 'c2 fan-out copy',
-        author: ident('c2', clock),
-        committer: ident('c2', clock),
-      });
+    it.each(['b/A.meta', 'b/B.meta', 'b/C.meta'])(
+      'Then %s follows to the deleted source',
+      async (copy) => {
+        // Arrange
+        const sut = blame;
+        const { ctx, c1 } = await buildFanOutCopies();
 
-      // Act
-      const blameA = await sut(ctx, 'b/A.meta');
-      const blameB = await sut(ctx, 'b/B.meta');
-      const blameC = await sut(ctx, 'b/C.meta');
+        // Act
+        const result = await sut(ctx, copy);
 
-      // Assert
-      for (const result of [blameA, blameB, blameC]) {
+        // Assert
         expect(committedLines(result).map((l) => l.commit)).toEqual([c1]);
         expect(result.lines[0]!.sourcePath).toBe('a/Foo.meta');
-      }
-    });
+      },
+    );
   });
 });
 
