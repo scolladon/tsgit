@@ -5111,6 +5111,175 @@ describe('Given a packed object whose entry reads reject with PERMISSION_DENIED,
   });
 });
 
+// Kill: object-cache.ts warrantsRecovery (lines 375-376) — isDecodeFault
+// short-circuit, the instanceof guard and the && itself all folding to an
+// unconditional true. Any one of those bugs widens recovery onto an object
+// with NO stale loose copy at all, which the doc comment forbids ("no
+// widening, no probe").
+describe('Given a packed object whose entry reads reject with PERMISSION_DENIED, with NO loose copy at all at the same id', () => {
+  describe('When fsck runs with connectivityOnly: true', () => {
+    it("Then resolves with dangling/'unknown' and never runs the recovery probe", async () => {
+      // Arrange — no loose file exists anywhere for this id, so
+      // `probeLooseOid` must gate the widened recovery trigger off;
+      // `warrantsRecovery` returning true regardless would still land on
+      // 'unknown' (the pack re-lookup fails the same way), but it would log
+      // a probe-degraded warning that must never fire here.
+      const ctx = await initBareCtx();
+      const [blobId] = await writeSyntheticPack(
+        ctx,
+        'd13-no-shadow',
+        onePackEntry('d13-no-shadow-content'),
+      );
+      const id = blobId as ObjectId;
+      const packPath = packFilePath(ctx, 'd13-no-shadow');
+      const wrapped: Context = {
+        ...ctx,
+        fs: {
+          ...ctx.fs,
+          openWithNoFollow: async (path: string, mode: 'read' | 'write') => {
+            if (path === packPath) throw permissionDenied(path);
+            return ctx.fs.openWithNoFollow(path, mode);
+          },
+        },
+      };
+      const { ctx: logged, calls } = withWarnLog(wrapped);
+
+      // Act
+      const result = await fsck(logged, { connectivityOnly: true });
+
+      // Assert
+      const dangling = result.findings.find(
+        (f) => f.type === 'dangling' && (f as { id: ObjectId }).id === id,
+      );
+      expect(dangling).toBeDefined();
+      expect((dangling as { objectType: string }).objectType).toBe('unknown');
+      expect(result.exitCode).toBe(0);
+      expect(calls.find((c) => c.context?.objectId === id)).toBeUndefined();
+    });
+  });
+});
+
+// Kill: object-cache.ts looseDecodeFault (line 347) — the
+// `looseBytes.length === 0` disjunct folding to `false`. An EMPTY stale loose
+// shadow must short-circuit to `undefined` WITHOUT ever inflating it; the
+// fault-injected inflate below proves that guard actually fires.
+describe('Given a packed object whose entry reads reject with PERMISSION_DENIED, with an EMPTY stale loose file at the same id', () => {
+  describe('When fsck runs with connectivityOnly: true', () => {
+    it("Then resolves with dangling/'unknown' without ever inflating the empty shadow", async () => {
+      // Arrange — an existing-but-empty loose file still counts as present
+      // for `probeLooseOid`'s membership check, widening recovery onto it;
+      // `looseDecodeFault`'s own empty-bytes guard must return early before
+      // ever calling `inflate` on it.
+      const ctx = await initBareCtx();
+      const [blobId] = await writeSyntheticPack(
+        ctx,
+        'd13-empty-shadow',
+        onePackEntry('d13-empty-shadow-content'),
+      );
+      const id = blobId as ObjectId;
+      const loosePath = looseObjectPath(ctx.layout.gitDir, id);
+      await ctx.fs.write(loosePath, new Uint8Array(0));
+      const packPath = packFilePath(ctx, 'd13-empty-shadow');
+      const wrapped: Context = {
+        ...ctx,
+        fs: {
+          ...ctx.fs,
+          openWithNoFollow: async (path: string, mode: 'read' | 'write') => {
+            if (path === packPath) throw permissionDenied(path);
+            return ctx.fs.openWithNoFollow(path, mode);
+          },
+        },
+        compressor: {
+          ...ctx.compressor,
+          inflate: async (bytes: Uint8Array) => {
+            if (bytes.length === 0) {
+              throw unsupportedOperation('filesystem', 'simulated inflate-of-empty-bytes');
+            }
+            return ctx.compressor.inflate(bytes);
+          },
+        },
+      };
+
+      // Act
+      const result = await fsck(wrapped, { connectivityOnly: true });
+
+      // Assert
+      const dangling = result.findings.find(
+        (f) => f.type === 'dangling' && (f as { id: ObjectId }).id === id,
+      );
+      expect(dangling).toBeDefined();
+      expect((dangling as { objectType: string }).objectType).toBe('unknown');
+      expect(result.exitCode).toBe(0);
+    });
+  });
+});
+
+// Kill: object-cache.ts looseDecodeFault's own catch (line 355) — the
+// `!isRecoveryCandidate(err)` rethrow guard folding to `false`. Swallowing an
+// unrelated fault there instead of rethrowing lets `recoverStoredType`'s own,
+// independent (and here successful) second inflate silently recover a type
+// instead of the fault surfacing.
+describe('Given a loose-only object whose main read hits PERMISSION_DENIED, whose recovery reread succeeds but whose OWN first inflate hits an unrelated fault', () => {
+  describe('When fsck runs with connectivityOnly: true', () => {
+    it('Then fsck rejects with that first-probe fault instead of silently recovering through the second inflate', async () => {
+      // Arrange — never packed, so the main read's own loose attempt is the
+      // ONLY route (no pack-vs-loose routing ambiguity); its `ctx.fs.read`
+      // fails once (PERMISSION_DENIED), a non-decode fault. `probeLooseOid`'s
+      // membership check still sees the file (it never reads content), so
+      // recovery widens onto it. `looseDecodeFault`'s own reread succeeds
+      // (2nd `fs.read` call) and reaches its own inflate — the FIRST inflate
+      // call in this flow — where an unrelated fault must propagate
+      // immediately, never being swallowed and re-derived through
+      // `recoverStoredType`'s own, independent second inflate of the same
+      // bytes (which would otherwise succeed and silently recover 'blob').
+      const ctx = await initBareCtx();
+      const content = 'd13-loose-first-probe-fault-content';
+      const id = await writeObject(ctx, makeBlob(content));
+      const loosePath = looseObjectPath(ctx.layout.gitDir, id);
+      let readCalls = 0;
+      let inflateCalls = 0;
+      const wrapped: Context = {
+        ...ctx,
+        fs: {
+          ...ctx.fs,
+          read: async (path: string) => {
+            if (path !== loosePath) return ctx.fs.read(path);
+            readCalls += 1;
+            if (readCalls === 1) throw permissionDenied(path);
+            return ctx.fs.read(path);
+          },
+        },
+        compressor: {
+          ...ctx.compressor,
+          inflate: async (bytes: Uint8Array) => {
+            inflateCalls += 1;
+            if (inflateCalls === 1) {
+              throw unsupportedOperation('filesystem', 'simulated first-probe fault');
+            }
+            return ctx.compressor.inflate(bytes);
+          },
+        },
+      };
+
+      // Act
+      let caught: unknown;
+      try {
+        await fsck(wrapped, { connectivityOnly: true });
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data).toEqual({
+        code: 'UNSUPPORTED_OPERATION',
+        operation: 'filesystem',
+        reason: 'simulated first-probe fault',
+      });
+    });
+  });
+});
+
 describe('Given a packed object whose entry reads reject with UNSUPPORTED_OPERATION, with a stale loose garbled copy at the same id', () => {
   describe('When fsck runs with connectivityOnly: true', () => {
     it('Then fsck rejects with that exact fault — environmental faults are never degraded', async () => {

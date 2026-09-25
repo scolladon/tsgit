@@ -43,6 +43,7 @@ import type { FsckFinding, FsckOptions, FsckResult } from './internal/fsck/types
 function createNoDeltaCache(): LruCache<ObjectContent> {
   return {
     get: () => undefined,
+    // Stryker disable next-line ArrayDeclaration: equivalent — nothing in src/** ever calls .keys() on a Context's deltaCache (only .get()/.set(), via object-resolver.ts and blob-source.ts), so this arm's body never executes for the audit's no-op cache.
     keys: () => [].values(),
     // Stryker disable next-line BooleanLiteral: equivalent — every write to a Context's deltaCache goes through object-resolver.ts's `cacheEntry`, a void helper that discards what `.set()` returns, so this arm's return value is unobservable.
     set: () => false,
