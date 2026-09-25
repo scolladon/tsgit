@@ -37,7 +37,15 @@ export function createConcurrencyLimiter(limit: number): ConcurrencyLimiter {
   // order as the dead entries it reclaims. Called only after the resolver at
   // `head` has already been read into a local, so no index into `queue`
   // survives the splice.
+  // equivalent-mutant: compaction only reclaims the dead prefix; splice(0, head)
+  // followed by head = 0 preserves `queue[head..]` as the live FIFO suffix for
+  // ANY head in [0, queue.length], so shifting when it fires (guard always-on,
+  // always-off, boundary, or formula) changes cost, never order or results —
+  // the two large-queue tests below specifically probe this and still can't
+  // observe a difference.
+  // Stryker disable next-line BlockStatement: equivalent — emptying the whole function body only skips the reclaim; FIFO order and results are unaffected (see proof above)
   function compactQueueIfNeeded(): void {
+    // Stryker disable next-line ConditionalExpression,LogicalOperator,EqualityOperator,ArithmeticOperator: equivalent — any guard change here only shifts WHEN compaction fires; splice(0, head) + head = 0 stays order-preserving regardless (see proof above)
     if (head > QUEUE_COMPACTION_MIN && head > queue.length / 2) {
       queue.splice(0, head);
       head = 0;
@@ -55,6 +63,7 @@ export function createConcurrencyLimiter(limit: number): ConcurrencyLimiter {
       return;
     }
     head += 1;
+    // Stryker disable next-line CallExpression: equivalent — skipping the call never compacts; the dead prefix just grows, FIFO order and results are unaffected (see proof above compactQueueIfNeeded)
     compactQueueIfNeeded();
     next();
   }
