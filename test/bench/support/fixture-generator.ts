@@ -9,7 +9,7 @@
  * benchmarks have a real working tree to scan.
  */
 import { execFile, spawn } from 'node:child_process';
-import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { Writable } from 'node:stream';
@@ -666,10 +666,12 @@ const reportUnverified = async (
   if (await gitAvailable()) warnUnverifiable(spec, cacheDir, reason);
 };
 
-const runFastImport = async (
+/** Spawns `git fast-import` and streams `write` into its stdin — the spec-free
+ *  half of `runFastImport`, shared with the rename-fixture builders below
+ *  (which have no `FixtureSpec` to carry). */
+const runFastImportRaw = async (
   repoDir: string,
-  spec: FixtureSpec,
-  stream: (stdin: Writable, spec: FixtureSpec) => Promise<void>,
+  write: (stdin: Writable) => Promise<void>,
 ): Promise<void> => {
   const importer = spawn('git', ['-C', repoDir, 'fast-import', '--quiet'], {
     stdio: ['pipe', 'ignore', 'inherit'],
@@ -684,7 +686,7 @@ const runFastImport = async (
     );
   });
   try {
-    await stream(stdin, spec);
+    await write(stdin);
     stdin.end();
     await finished;
   } catch (err) {
@@ -695,6 +697,12 @@ const runFastImport = async (
     throw err;
   }
 };
+
+const runFastImport = (
+  repoDir: string,
+  spec: FixtureSpec,
+  stream: (stdin: Writable, spec: FixtureSpec) => Promise<void>,
+): Promise<void> => runFastImportRaw(repoDir, (stdin) => stream(stdin, spec));
 
 /** Locates the (single, post-repack) pack index inside a fixture repo. */
 const packIndexPath = async (repoDir: string): Promise<string> => {
@@ -963,4 +971,233 @@ export const ensureScaledFixture = async (spec: FixtureSpec): Promise<ScaledFixt
   // git first: never destroy a cache directory we could not rebuild.
   await assertGitAvailable();
   return rebuildCache(cacheDir, spec);
+};
+
+// ─── Rename-detection bench fixtures ───────────────────────────────────────
+//
+// Three shapes for `detectRenames`: `common` prices the size-pass overhead on
+// a small, typical diff; `wide` scales the matrix to hundreds of
+// renamed-and-edited files; `hostile` is the worst case the hydration gate
+// exists for — hundreds of megabyte-sized deletes that must never be read in
+// full just to be scored against one tiny add. Two commits each (seed, then
+// the mutation `HEAD~1..HEAD` diffs over), built via `git fast-import` for
+// the same reason the scaled fixtures are.
+
+export type RenameFixtureShape = 'common' | 'wide' | 'hostile';
+export type RenameFixtureStorage = 'loose' | 'packed';
+
+export interface RenameFixture {
+  readonly cwd: string;
+}
+
+const RENAME_COMMIT_MESSAGE_SEED = 'seed\n';
+
+const COMMON_FILE_COUNT = 50;
+const COMMON_RENAMED_COUNT = 3;
+const COMMON_EDITED_LINE_COUNT = 5;
+const COMMON_BODY_LINE_COUNT = 20;
+
+const commonBodyLines = (fileIndex: number): string[] =>
+  Array.from({ length: COMMON_BODY_LINE_COUNT }, (_, i) => `body line ${i} file ${fileIndex}`);
+
+const commonEditedLines = (fileIndex: number): string[] => {
+  const lines = commonBodyLines(fileIndex);
+  for (let i = 0; i < COMMON_EDITED_LINE_COUNT; i += 1) {
+    lines[i] = `edited line ${i} file ${fileIndex}`;
+  }
+  return lines;
+};
+
+const textBlob = (lines: readonly string[]): Buffer => Buffer.from(`${lines.join('\n')}\n`, 'utf8');
+
+const commonPath = (fileIndex: number): string =>
+  `common/f${fileIndex.toString().padStart(2, '0')}.txt`;
+const commonRenamedPath = (fileIndex: number): string =>
+  `common/moved-f${fileIndex.toString().padStart(2, '0')}.txt`;
+
+/** 50 small text files seeded, then 3 renamed AND edited (near-exact, not identical) — the everyday `show`/`log -M` shape. */
+const streamCommonRenameFastImport = async (stdin: Writable): Promise<void> => {
+  let seedChanges = '';
+  for (let i = 0; i < COMMON_FILE_COUNT; i += 1) {
+    await writeBlobEntry(stdin, i + 1, textBlob(commonBodyLines(i)));
+    seedChanges += `M 100644 :${i + 1} ${commonPath(i)}\n`;
+  }
+  await writeCommitEntry(stdin, {
+    message: RENAME_COMMIT_MESSAGE_SEED,
+    timestamp: BASE_TIMESTAMP,
+    changes: seedChanges,
+  });
+
+  let mutateChanges = '';
+  let mark = COMMON_FILE_COUNT + 1;
+  for (let i = 0; i < COMMON_RENAMED_COUNT; i += 1) {
+    await writeBlobEntry(stdin, mark, textBlob(commonEditedLines(i)));
+    mutateChanges += `D ${commonPath(i)}\n`;
+    mutateChanges += `M 100644 :${mark} ${commonRenamedPath(i)}\n`;
+    mark += 1;
+  }
+  await writeCommitEntry(stdin, {
+    message: 'rename and edit\n',
+    timestamp: BASE_TIMESTAMP + 1,
+    changes: mutateChanges,
+  });
+};
+
+const WIDE_FILE_COUNT = 300;
+const WIDE_BLOB_BYTES = 4_096;
+// Distinct from the evolving-fixture seed (0) — an unrelated fixture, kept
+// deterministic on its own.
+const WIDE_MUTATION_SEED = 1;
+// A handful of byte flips, not `EVOLVING_MUTATION_RATE`'s ~1%: content-defined
+// chunking corrupts every chunk a flip lands near, so 1% of 4 KiB (~41 flips)
+// scatters across most chunks and drags similarity toward the rename
+// threshold — measured at ~52%, well below it for a fifth of the fixture.
+// This fixture wants a genuine, SMALL edit that still clears the threshold by
+// a wide margin, so the pairing (and the matrix work it costs) is stable.
+const WIDE_EDIT_BYTE_FLIPS = 4;
+
+const widePath = (fileIndex: number): string =>
+  `wide/f${fileIndex.toString().padStart(3, '0')}.dat`;
+const wideMovedPath = (fileIndex: number): string =>
+  `wide/moved-f${fileIndex.toString().padStart(3, '0')}.dat`;
+
+/** Flips `count` bytes at pseudo-random offsets — a small, bounded edit (unlike `mutateEvolvingContent`'s rate-based flip count, sized for deep delta chains, not for staying well above a similarity threshold). */
+const flipFewBytes = (previous: Buffer, next: () => number, count: number): Buffer => {
+  const buf = Buffer.from(previous);
+  for (let i = 0; i < count; i += 1) {
+    const offset = next() % buf.byteLength;
+    buf[offset] = next() & 0xff;
+  }
+  return buf;
+};
+
+/** 300 4 KiB files seeded, then every one moved AND edited — scales the matrix (not the hydration gate: every pair is regular-sized). */
+const streamWideRenameFastImport = async (stdin: Writable): Promise<void> => {
+  let seedChanges = '';
+  for (let i = 0; i < WIDE_FILE_COUNT; i += 1) {
+    await writeBlobEntry(stdin, i + 1, blobContent(i, WIDE_BLOB_BYTES));
+    seedChanges += `M 100644 :${i + 1} ${widePath(i)}\n`;
+  }
+  await writeCommitEntry(stdin, {
+    message: RENAME_COMMIT_MESSAGE_SEED,
+    timestamp: BASE_TIMESTAMP,
+    changes: seedChanges,
+  });
+
+  const next = makeXorshift32(WIDE_MUTATION_SEED);
+  let mutateChanges = '';
+  let mark = WIDE_FILE_COUNT + 1;
+  for (let i = 0; i < WIDE_FILE_COUNT; i += 1) {
+    const edited = flipFewBytes(blobContent(i, WIDE_BLOB_BYTES), next, WIDE_EDIT_BYTE_FLIPS);
+    await writeBlobEntry(stdin, mark, edited);
+    mutateChanges += `D ${widePath(i)}\n`;
+    mutateChanges += `M 100644 :${mark} ${wideMovedPath(i)}\n`;
+    mark += 1;
+  }
+  await writeCommitEntry(stdin, {
+    message: 'move and edit\n',
+    timestamp: BASE_TIMESTAMP + 1,
+    changes: mutateChanges,
+  });
+};
+
+// 300 distinct incompressible 1 MiB deletes against one tiny add — the shape
+// that forces the hydration gate to drop every delete on size alone rather
+// than reading 300 MiB of blob content.
+const HOSTILE_FILE_COUNT = 300;
+const HOSTILE_BLOB_BYTES = 1_048_576;
+const HOSTILE_ADD_PATH = 'hostile/added.txt';
+// Exactly 6 bytes, matching the "one 6-byte file added" hostile shape.
+const HOSTILE_ADD_CONTENT = Buffer.from('D300!\n', 'utf8');
+
+const hostilePath = (fileIndex: number): string =>
+  `hostile/f${fileIndex.toString().padStart(3, '0')}.bin`;
+
+/** 300 distinct 1 MiB blobs seeded, then all deleted plus one 6-byte add. */
+const streamHostileRenameFastImport = async (stdin: Writable): Promise<void> => {
+  let seedChanges = '';
+  for (let i = 0; i < HOSTILE_FILE_COUNT; i += 1) {
+    await writeBlobEntry(stdin, i + 1, blobContent(i, HOSTILE_BLOB_BYTES));
+    seedChanges += `M 100644 :${i + 1} ${hostilePath(i)}\n`;
+  }
+  await writeCommitEntry(stdin, {
+    message: RENAME_COMMIT_MESSAGE_SEED,
+    timestamp: BASE_TIMESTAMP,
+    changes: seedChanges,
+  });
+
+  let mutateChanges = '';
+  for (let i = 0; i < HOSTILE_FILE_COUNT; i += 1) {
+    mutateChanges += `D ${hostilePath(i)}\n`;
+  }
+  const addMark = HOSTILE_FILE_COUNT + 1;
+  await writeBlobEntry(stdin, addMark, HOSTILE_ADD_CONTENT);
+  mutateChanges += `M 100644 :${addMark} ${HOSTILE_ADD_PATH}\n`;
+  await writeCommitEntry(stdin, {
+    message: 'delete and add\n',
+    timestamp: BASE_TIMESTAMP + 1,
+    changes: mutateChanges,
+  });
+};
+
+const RENAME_FIXTURE_STREAMS: Record<RenameFixtureShape, (stdin: Writable) => Promise<void>> = {
+  common: streamCommonRenameFastImport,
+  wide: streamWideRenameFastImport,
+  hostile: streamHostileRenameFastImport,
+};
+
+const renameFixtureCacheDir = (shape: RenameFixtureShape, storage: RenameFixtureStorage): string =>
+  path.join(cacheRoot(), `rename-${shape}-${storage}-v${FIXTURE_GENERATOR_VERSION}`);
+
+const buildRenameFixtureInto = async (
+  repoDir: string,
+  shape: RenameFixtureShape,
+  storage: RenameFixtureStorage,
+): Promise<void> => {
+  await mkdir(repoDir, { recursive: true });
+  await runGit(repoDir, ['init', '--initial-branch=main', '--quiet']);
+  await runFastImportRaw(repoDir, RENAME_FIXTURE_STREAMS[shape]);
+  await runGit(repoDir, ['checkout', '-f', 'main']);
+  if (storage === 'packed') await runGit(repoDir, ['repack', '-adq']);
+};
+
+/** A build never lands at `cacheDir` except through the atomic `rename` below,
+ *  so the directory's mere presence already proves it is a complete build —
+ *  unlike `ensureScaledFixture`'s cache, nothing in this suite ever mutates a
+ *  rename fixture in place (every bench scenario only reads it), so there is
+ *  no drift to detect and no identity re-verification to run on a hit. */
+const renameFixtureCached = async (cacheDir: string): Promise<boolean> => {
+  try {
+    await access(cacheDir);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Returns the cached rename-detection fixture for `shape`/`storage`, building
+ * it on first use with `git fast-import`. Mirrors `ensureScaledFixture`'s
+ * build-in-a-unique-temp-directory-then-atomically-rename recipe: a build
+ * never overwrites a live cache directly, and a losing race against a
+ * concurrent builder simply reuses whatever the winner left behind, since a
+ * completed build is deterministic for the same `shape`/`storage` pair.
+ */
+export const ensureRenameFixture = async (
+  shape: RenameFixtureShape,
+  storage: RenameFixtureStorage,
+): Promise<RenameFixture> => {
+  const cacheDir = renameFixtureCacheDir(shape, storage);
+  if (await renameFixtureCached(cacheDir)) return { cwd: cacheDir };
+  await assertGitAvailable();
+  const tmpDir = leftoverDirName(cacheDir, 'tmp');
+  try {
+    await buildRenameFixtureInto(tmpDir, shape, storage);
+    await rename(tmpDir, cacheDir);
+  } catch (err) {
+    await discardTempBuild(tmpDir);
+    if (await renameFixtureCached(cacheDir)) return { cwd: cacheDir };
+    throw err;
+  }
+  return { cwd: cacheDir };
 };

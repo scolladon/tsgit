@@ -6,6 +6,7 @@
  *                                                     # + fsck object cache + clone quarantine
  *                                                     # (incl. the index-pass base cache's
  *                                                     # own delta-chain fixture) + gc residency
+ *                                                     # + rename hydration
  *   TSGIT_BENCH_LARGE=1 npm run bench:memory          # + large-pack spread workload
  *   TSGIT_BENCH_HEADER_CACHE=1 npm run bench:memory   # + above-cap header-cache eviction workload
  *
@@ -37,6 +38,7 @@ import type { ObjectId } from '../src/domain/objects/index.ts';
 import type { HttpRequest, HttpResponse, HttpTransport } from '../src/ports/http-transport.ts';
 import {
   DELTA_CHAIN_FIXTURE,
+  ensureRenameFixture,
   ensureScaledFixture,
   type FixtureSpec,
   HEADER_CACHE_FIXTURE,
@@ -330,6 +332,41 @@ const runFsckObjectCacheWorkload = async (
   const after = gcBaseline(gc);
 
   return toReport(`fsck-object-cache-${spec.label}`, before, peak, after);
+};
+
+/**
+ * Peak RSS for one `repo.diff({ ..., detectRenames: true })` over the
+ * `hostile` rename fixture (300 distinct 1 MiB deletes against one 6-byte
+ * add) — the shape the rename-detection hydration gate exists for. Polled
+ * the same way as `runFsckObjectCacheWorkload`: a single non-streaming call
+ * whose internal blob reads give the event loop ticks to run a concurrent
+ * poller on, which a post-hoc sample alone could read below.
+ */
+const runRenameHydrationWorkload = async (
+  gc: () => void,
+  openRepository: OpenRepository,
+): Promise<WorkloadReport> => {
+  const fixture = await ensureRenameFixture('hostile', 'loose');
+
+  const before = gcBaseline(gc);
+  let peak = before;
+  const poll = setInterval(() => {
+    peak = maxSample(peak, sampleMemory());
+  }, PEAK_POLL_INTERVAL_MS);
+  try {
+    const repo = await openRepository({ cwd: fixture.cwd });
+    try {
+      await repo.diff({ from: 'HEAD~1', to: 'HEAD', recursive: true, detectRenames: true });
+      peak = maxSample(peak, sampleMemory());
+    } finally {
+      await repo.dispose();
+    }
+  } finally {
+    clearInterval(poll);
+  }
+  const after = gcBaseline(gc);
+
+  return toReport('rename-hydration', before, peak, after);
 };
 
 // Two pack sizes differing >= 4x — the oracle for clone's quarantine
@@ -969,6 +1006,7 @@ const main = async (): Promise<void> => {
     reports.push(...(await runCloneWorkload(gc, openRepository)));
     reports.push(...(await runIndexPassResidencyWorkload()));
     reports.push(await runGcResidencyWorkload(gc, openRepository));
+    reports.push(await runRenameHydrationWorkload(gc, openRepository));
     if (process.env.TSGIT_BENCH_LARGE !== undefined) {
       reports.push(await runLargePackWorkload(gc, openRepository));
     }
