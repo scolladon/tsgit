@@ -128,7 +128,9 @@ const noBlank = await repo.diff({ from: 'HEAD~1', ignoreBlankLines: true });
 - Under plain `-M` (`copies: 'off'`, nothing left to break, `threshold` below
   100%), a delete and an add whose basename is unique on both sides pair
   first — ahead of the general similarity matrix — once their similarity
-  reaches the midpoint between `threshold` and 100%.
+  reaches the midpoint between `threshold` and 100%. In the general matrix,
+  two candidates with equal similarity are ranked by whether the basename
+  matches, then by path order — never by traversal order.
 - `withStat` reads blob contents and runs a line diff per file; without it the
   diff is purely tree-level (no blob reads).
 - A unified patch reconstructed from the `TreeDiff` matches `git diff
