@@ -1204,6 +1204,26 @@ describe.skipIf(RUNNING_UNDER_STRYKER || !HAS_GIT)('ensureRenameFixture', () => 
     });
   });
 
+  describe('Given a cached size-overridden hostile fixture carrying a sentinel file', () => {
+    describe('When ensureRenameFixture resolves the same shape with a different size override', () => {
+      it('Then it builds a separate fixture instead of handing back the cached one', async () => {
+        // Arrange
+        const cached = await ensureRenameFixture('hostile', 'loose', SMALL_SIZE);
+        await writeFile(path.join(cached.cwd, 'sentinel.txt'), 'sentinel');
+        const sut = ensureRenameFixture;
+
+        // Act
+        const result = await sut('hostile', 'loose', { fileCount: SMALL_SIZE.fileCount });
+
+        // Assert
+        expect(result.cwd).not.toBe(cached.cwd);
+        await expect(access(path.join(result.cwd, 'sentinel.txt'))).rejects.toMatchObject({
+          code: 'ENOENT',
+        });
+      });
+    });
+  });
+
   describe('Given access rejecting the cache probe with a non-ENOENT error', () => {
     describe('When ensureRenameFixture checks whether the fixture is cached', () => {
       it('Then the access error rethrows instead of being treated as a cache miss', async () => {
