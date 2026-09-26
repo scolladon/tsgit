@@ -249,6 +249,19 @@ class BitReader {
     return slice;
   }
 
+  /** Like `readBytes`, but never throws on a shortfall: returns fewer than
+   * `count` bytes once the input runs out, advancing past only what it
+   * actually returned. A stored block's body is a 1:1 copy into the output,
+   * so a truncating decode may already have everything it needs from a
+   * short read; the caller decides whether the shortfall itself is
+   * tolerable. */
+  readAvailableBytes(count: number): Uint8Array {
+    const available = Math.min(count, this.bytes.length - this.bytePos);
+    const slice = this.bytes.subarray(this.bytePos, this.bytePos + available);
+    this.bytePos += available;
+    return slice;
+  }
+
   /** Load whole bytes into the accumulator until it holds at least `count`
    * bits or the input is exhausted. Never throws: a genuine shortfall is
    * reported via `PeekResult.availableBits` and raised by callers that
@@ -519,6 +532,17 @@ function parseZlibHeader(reader: BitReader): void {
   }
 }
 
+/**
+ * Copies a STORED block's declared `len` bytes from input to `output`. Reads
+ * whatever the input actually has (`readAvailableBytes`), never demanding
+ * the full declared length up front: a truncating `output` may throw
+ * `HeadComplete` from inside `append` once it holds enough — before the
+ * shortfall below would even matter — so a bound satisfiable from the bytes
+ * present succeeds without the rest of the block ever needing to exist. A
+ * genuine shortfall (fewer bytes available than declared, and the output
+ * never reached its cap) still faults, exactly as the all-or-nothing read
+ * this replaces did.
+ */
 function decodeStoredBlock(reader: BitReader, output: GrowableBuffer): void {
   reader.alignToByte();
   const len = readUint16LE(reader.readBytes(LENGTH_FIELD_BYTES));
@@ -526,7 +550,11 @@ function decodeStoredBlock(reader: BitReader, output: GrowableBuffer): void {
   if (nlen !== (~len & NLEN_MASK)) {
     throw decompressFailed('stored block length mismatch');
   }
-  output.append(reader.readBytes(len));
+  const chunk = reader.readAvailableBytes(len);
+  output.append(chunk);
+  if (chunk.length < len) {
+    throw decompressFailed('unexpected end of deflate stream');
+  }
 }
 
 /** Canonical Huffman decode structure: per-length code counts plus symbols

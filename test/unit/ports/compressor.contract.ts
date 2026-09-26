@@ -309,6 +309,26 @@ export function compressorContractTests(createSut: () => Promise<Compressor>): v
       expect(result).toEqual(new Uint8Array(bound));
     });
 
+    it("Given a stored block's declared length reaching past the compressed INPUT's own end, When inflateHead is called with a bound that fits inside the bytes actually present, Then it returns exactly the bound bytes without ever needing the full declared length", async () => {
+      // Arrange — the block's own LEN field claims 1000 live bytes, but the
+      // member (deliberately, not a corrupt trailer) simply ends after 15 of
+      // them: a stored block's output is a 1:1 copy of its input, so the cap
+      // (10) is satisfiable from the 15 bytes present, well short of the
+      // declared 1000 the naive all-or-nothing read would otherwise demand
+      // up front.
+      const sut = await createSut();
+      const declaredLen = 1000;
+      const availableByteCount = 15;
+      const bound = 10;
+      const member = buildTruncatedStoredZlibMember(declaredLen, availableByteCount);
+
+      // Act
+      const result = await sut.inflateHead(member, bound);
+
+      // Assert
+      expect(result).toEqual(new Uint8Array(bound).fill(0x41));
+    });
+
     it('Given a stream whose output is truncated inside a long-distance back-reference match, When inflateHead is called with a bound inside that match, Then it returns exactly the truncated leading bytes', async () => {
       // Arrange — the trailing "abcdefghij" repeats the leading one 510
       // bytes back, so deflate encodes it as a single back-reference whose
@@ -445,6 +465,32 @@ function buildOverCapStoredZlibMember(literalByteCount: number): Uint8Array {
     (nlen >> 8) & 0xff,
     ...new Array(literalByteCount).fill(0),
     RESERVED_BLOCK_HEADER,
+  ]);
+}
+
+/**
+ * A zlib member whose single STORED block declares `declaredLen` live bytes
+ * but the member itself ends after only `availableByteCount` of them —
+ * unlike `buildOverCapStoredZlibMember`, there is no corrupted trailer
+ * because there is nothing after the available bytes at all: the compressed
+ * INPUT is simply shorter than the block's own LEN field promises, the way
+ * a `readSlice`-bounded probe of a larger on-disk file would be.
+ */
+function buildTruncatedStoredZlibMember(
+  declaredLen: number,
+  availableByteCount: number,
+): Uint8Array {
+  const ZLIB_HEADER = [0x78, 0x9c];
+  const STORED_BLOCK_HEADER = 0x00; // BFINAL=0, BTYPE=00 (stored)
+  const nlen = ~declaredLen & 0xffff;
+  return new Uint8Array([
+    ...ZLIB_HEADER,
+    STORED_BLOCK_HEADER,
+    declaredLen & 0xff,
+    (declaredLen >> 8) & 0xff,
+    nlen & 0xff,
+    (nlen >> 8) & 0xff,
+    ...new Array(availableByteCount).fill(0x41),
   ]);
 }
 

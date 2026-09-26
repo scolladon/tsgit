@@ -608,21 +608,17 @@ describe('readDeclaredObjectSize', () => {
 
   describe('Given a large loose file whose header decodes to more than 32 bytes with no NUL', () => {
     describe('When readDeclaredObjectSize is called', () => {
-      it('Then rejects header-too-long, falling back to one whole-file read for THIS object — never a whole-repo scan', async () => {
+      it('Then rejects header-too-long directly from the probed prefix — no whole-file fallback needed', async () => {
         // Arrange — deterministic, poorly-compressible bytes (never 0x00) push the
         // compressed size past the 1024-byte probe window, mirroring a hostile
-        // large loose object whose header never terminates. Known consequence of
-        // routing through `inflateHead`: incompressible content like this stores
-        // as one giant DEFLATE stored block, and the zero-dependency decoder
-        // (`decodeStoredBlock`) reads a stored block's declared length in one
-        // shot — unlike Node's own `inflateHead` (Z_SYNC_FLUSH), it cannot return
-        // a short, partial decode of a block cut off mid-length, so probing the
-        // on-disk PREFIX throws instead of resolving directly. The prefix being
-        // truncated (real file bigger than the probe budget) routes that fault to
-        // the SAME whole-file fallback the ambiguous "incomplete" outcome already
-        // used above — one bounded read of THIS object's own bytes (here, ~2 KiB;
-        // in the wild, up to the hostile object's own size), never a re-scan of
-        // the whole repository and never a second, unbounded inflate.
+        // large loose object whose header never terminates. Incompressible content
+        // like this stores as one giant DEFLATE stored block, and the
+        // zero-dependency decoder's truncating mode (`decodeStoredBlock`) reads
+        // only as much of that block as the input actually has, stopping cleanly
+        // once its 32-byte cap is satisfied — it never demands the block's full
+        // declared length up front. The probe's 1024-byte on-disk PREFIX already
+        // has far more than 32 bytes past the header, so the cap resolves directly
+        // from it: no whole-file read, no second inflate.
         const ctx = await buildSeededContext();
         const junk = new Uint8Array(2000);
         let state = 1;
@@ -652,8 +648,7 @@ describe('readDeclaredObjectSize', () => {
             expect(data.reason).toBe(`header for ${id} too long, exceeds 32 bytes`);
           }
         }
-        expect(readSpy).toHaveBeenCalledTimes(1);
-        expect(readSpy).toHaveBeenCalledWith(loosePathOf(ctx, id));
+        expect(readSpy).not.toHaveBeenCalled();
         expect(inflateSpy).not.toHaveBeenCalled();
       });
     });
