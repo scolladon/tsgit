@@ -139,8 +139,8 @@ function buildSourceGroups(
   return byKey;
 }
 
-function candidateScore(source: RenameSource, destination: AddChange, isUsed: boolean): number {
-  const unusedBonus = isUsed ? 0 : 1;
+function candidateScore(source: RenameSource, destination: AddChange, useCount: number): number {
+  const unusedBonus = useCount > 0 ? 0 : 1;
   const basenameBonus = hasSameBasename(source.path, destination.newPath) ? 1 : 0;
   return unusedBonus + basenameBonus;
 }
@@ -163,8 +163,8 @@ function findBestCandidate(
 
   for (let position = group.length - 1; position >= scanStart; position--) {
     const sourceIndex = group[position] as number;
-    const isUsed = (uses[sourceIndex] as number) > 0;
-    const score = candidateScore(sources[sourceIndex] as RenameSource, destination, isUsed);
+    const useCount = uses[sourceIndex] as number;
+    const score = candidateScore(sources[sourceIndex] as RenameSource, destination, useCount);
     if (score > bestScore) {
       bestScore = score;
       bestPosition = position;
@@ -229,34 +229,44 @@ export interface SelectPairsResult {
 
 type SelectionPass = 'rename' | 'copy';
 
+interface SelectionPassResult {
+  readonly pairs: ReadonlyArray<SourcePair>;
+  readonly uses: ReadonlyArray<number>;
+  readonly paired: ReadonlySet<AddChange>;
+}
+
 /**
  * One greedy scan over `sorted` (score-descending): pairs a destination with
- * the first candidate that clears both guards, in place, mutating `uses` and
- * `pairedDestinations` as it goes. Stops at the first below-threshold
+ * the first candidate that clears both guards. Returns a fresh `{pairs,
+ * uses, paired}` rather than mutating `uses`/`paired` — the caller folds one
+ * pass's result into the next's input. Stops at the first below-threshold
  * candidate — `sorted` is score-descending, so every later one is too.
  */
 function runSelectionPass(
   sorted: ReadonlyArray<MatrixCandidate>,
-  uses: number[],
+  uses: ReadonlyArray<number>,
+  paired: ReadonlySet<AddChange>,
   threshold: number,
-  pairedDestinations: Set<AddChange>,
   pass: SelectionPass,
-): SourcePair[] {
+): SelectionPassResult {
   const pairs: SourcePair[] = [];
+  const workingUses = [...uses];
+  const workingPaired = new Set(paired);
+
   for (const candidate of sorted) {
     if (candidate.score < threshold) break;
-    if (pairedDestinations.has(candidate.destination)) continue;
-    if (pass === 'rename' && (uses[candidate.source] as number) > 0) continue;
+    if (workingPaired.has(candidate.destination)) continue;
+    if (pass === 'rename' && (workingUses[candidate.source] as number) > 0) continue;
 
-    pairedDestinations.add(candidate.destination);
-    uses[candidate.source] = (uses[candidate.source] as number) + 1;
+    workingPaired.add(candidate.destination);
+    workingUses[candidate.source] = (workingUses[candidate.source] as number) + 1;
     pairs.push({
       source: candidate.source,
       destination: candidate.destination,
       score: candidate.score,
     });
   }
-  return pairs;
+  return { pairs, uses: workingUses, paired: workingPaired };
 }
 
 /**
@@ -264,28 +274,31 @@ function runSelectionPass(
  * Pass 1 (rename) skips a source already used and stops at the first
  * below-threshold candidate. Pass 2 (copy, only when `options.copies`) skips
  * only a destination pass 1 already claimed — any source, used or not, is
- * eligible. `uses` seeds both passes and accumulates every recorded pair.
+ * eligible. `uses` seeds both passes; pass 2 folds pass 1's own `{uses,
+ * paired}` forward instead of sharing mutable state with it.
  */
 export function selectPairs(
   sorted: ReadonlyArray<MatrixCandidate>,
   uses: ReadonlyArray<number>,
   options: SelectPairsOptions,
 ): SelectPairsResult {
-  const workingUses = [...uses];
-  const pairedDestinations = new Set<AddChange>();
-
-  const renamePairs = runSelectionPass(
+  const renamePass = runSelectionPass(
     sorted,
-    workingUses,
+    uses,
+    new Set<AddChange>(),
     options.threshold,
-    pairedDestinations,
     'rename',
   );
-  const copyPairs = options.copies
-    ? runSelectionPass(sorted, workingUses, options.threshold, pairedDestinations, 'copy')
-    : [];
+  if (!options.copies) return { pairs: renamePass.pairs, uses: renamePass.uses };
 
-  return { pairs: [...renamePairs, ...copyPairs], uses: workingUses };
+  const copyPass = runSelectionPass(
+    sorted,
+    renamePass.uses,
+    renamePass.paired,
+    options.threshold,
+    'copy',
+  );
+  return { pairs: [...renamePass.pairs, ...copyPass.pairs], uses: copyPass.uses };
 }
 
 export interface LabelledPair {

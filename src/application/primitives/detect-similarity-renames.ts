@@ -251,6 +251,62 @@ function registerOtherChange(
   if (copies !== 'off') registered.push({ source: toModifiedSource(change) });
 }
 
+/** The setup loop's own working state, before any `copies: 'harder'`
+ *  unchanged-source registration runs. */
+interface ClassifiedChanges {
+  readonly destinations: ReadonlyArray<AddChange>;
+  readonly other: ReadonlyArray<DiffChange>;
+  readonly registered: ReadonlyArray<RegisteredSource>;
+  readonly touchedPaths: ReadonlySet<FilePath>;
+}
+
+/** Visits every change once: an add becomes a destination, a delete always
+ *  registers (seeding its origin from any matching broken record), and
+ *  everything else defers to `registerOtherChange`. */
+function classifyChanges(
+  workingDiff: TreeDiff,
+  brokenByDel: ReadonlyMap<DeleteChange, BrokenRecord>,
+  copies: 'off' | 'on' | 'harder',
+  mergeScore: number,
+): ClassifiedChanges {
+  const destinations: AddChange[] = [];
+  const other: DiffChange[] = [];
+  const registered: RegisteredSource[] = [];
+  const touchedPaths = new Set<FilePath>();
+
+  for (const change of workingDiff.changes) {
+    if (change.type === 'add') destinations.push(change);
+    else if (change.type === 'delete') {
+      registered.push({
+        source: toDeletedSource(change, brokenByDel, mergeScore),
+        originalDelete: change,
+      });
+      touchedPaths.add(change.oldPath);
+    } else registerOtherChange(change, copies, other, registered, touchedPaths);
+  }
+
+  return { destinations, other, registered, touchedPaths };
+}
+
+/** Path-orders every registered source (the setup loop's own, plus any
+ *  `copies: 'harder'` unchanged sources) and assembles the registry. */
+function buildRegistry(
+  classified: ClassifiedChanges,
+  unchangedSources: ReadonlyArray<RenameSource>,
+): CandidateRegistry {
+  const registered: RegisteredSource[] = [
+    ...classified.registered,
+    ...unchangedSources.map((source) => ({ source })),
+  ];
+  const ordered = sortByPath(registered, (entry) => entry.source.path);
+  return {
+    sources: ordered.map((entry) => entry.source),
+    originalDeletes: ordered.map((entry) => entry.originalDelete),
+    destinations: classified.destinations,
+    other: classified.other,
+  };
+}
+
 /**
  * git's source registration (`diffcore_rename_extended`'s setup loop),
  * generalised over every origin: a delete always registers; a modify/type-change
@@ -268,34 +324,10 @@ function registerCandidates(
   mergeScore: number,
 ): CandidateRegistry {
   const brokenByDel = new Map(broken.map((record) => [record.del, record] as const));
-  const destinations: AddChange[] = [];
-  const other: DiffChange[] = [];
-  const registered: RegisteredSource[] = [];
-  const touchedPaths = new Set<FilePath>();
-
-  for (const change of workingDiff.changes) {
-    if (change.type === 'add') destinations.push(change);
-    else if (change.type === 'delete') {
-      registered.push({
-        source: toDeletedSource(change, brokenByDel, mergeScore),
-        originalDelete: change,
-      });
-      touchedPaths.add(change.oldPath);
-    } else registerOtherChange(change, copies, other, registered, touchedPaths);
-  }
-
-  if (copies === 'harder') {
-    for (const source of collectUnchangedSources(preimage, touchedPaths))
-      registered.push({ source });
-  }
-
-  const ordered = sortByPath(registered, (entry) => entry.source.path);
-  return {
-    sources: ordered.map((entry) => entry.source),
-    originalDeletes: ordered.map((entry) => entry.originalDelete),
-    destinations,
-    other,
-  };
+  const classified = classifyChanges(workingDiff, brokenByDel, copies, mergeScore);
+  const unchangedSources =
+    copies === 'harder' ? collectUnchangedSources(preimage, classified.touchedPaths) : [];
+  return buildRegistry(classified, unchangedSources);
 }
 
 /**
@@ -550,9 +582,10 @@ interface InexactMatrixResult {
 
 /**
  * Runs one inexact pass over `matrixIndices` (the registry sources the cull
- * step, `resolveMatrixPlan`, kept — used sources included when `keepEverySource`
- * held): hydrates fingerprints, builds the shared-cap matrix, sorts it, and
- * lets `selectPairs` run rename-then-copy selection over the whole thing.
+ * step, `resolveMatrixPlan`, kept — used sources included when the cull was
+ * `'keep-all'`): hydrates fingerprints, builds the shared-cap matrix, sorts
+ * it, and lets `selectPairs` run rename-then-copy selection over the whole
+ * thing.
  */
 async function runInexactMatrix(
   ctx: Context,
@@ -560,8 +593,7 @@ async function runInexactMatrix(
   matrixIndices: ReadonlyArray<number>,
   destinations: ReadonlyArray<AddChange>,
   uses: ReadonlyArray<number>,
-  threshold: number,
-  copies: 'off' | 'on' | 'harder',
+  options: InexactPassOptions,
   knownFingerprints: ReadonlyMap<ObjectId, BlobFingerprint>,
 ): Promise<InexactMatrixResult | null> {
   if (matrixIndices.length === 0) return null;
@@ -579,13 +611,22 @@ async function runInexactMatrix(
     .map(({ source }) => source.id);
   if (srcIds.length === 0) return null;
   const dstIds = destinations.map((d) => d.newId);
-  const neededIds = await selectHydrationIds(ctx, srcIds, dstIds, threshold, knownFingerprints);
+  const neededIds = await selectHydrationIds(
+    ctx,
+    srcIds,
+    dstIds,
+    options.threshold,
+    knownFingerprints,
+  );
   const fingerprints = await hydrateFingerprints(ctx, neededIds, knownFingerprints);
 
-  const candidates = buildMatrix(matrixSources, destinations, fingerprints, threshold);
+  const candidates = buildMatrix(matrixSources, destinations, fingerprints, options.threshold);
   candidates.sort(compareCandidates);
 
-  const selected = selectPairs(candidates, uses, { copies: copies !== 'off', threshold });
+  const selected = selectPairs(candidates, uses, {
+    copies: options.copies !== 'off',
+    threshold: options.threshold,
+  });
   return {
     pairs: selected.pairs,
     consumedAdds: new Set<AddChange>(selected.pairs.map((pair) => pair.destination)),
@@ -881,19 +922,76 @@ function isSelfPair(pair: SourcePair, add: AddChange, sourceIndex: number): bool
   return pair.destination === add && pair.source === sourceIndex;
 }
 
+type WriteBackVerdict =
+  | { readonly kind: 'self-paired'; readonly rejoinedChange: DiffChange }
+  | { readonly kind: 'claimed-elsewhere' }
+  | { readonly kind: 'absorbed'; readonly rejoinedChange: DiffChange };
+
 /**
- * git's write back (`diffcore-rename.c:1669`, `diff.c:6697`). Three outcomes
- * per broken record, decided by what claimed its add half:
- * - nothing (still unpaired): the halves rejoin (`rejoinBroken`), counting as
- *   one more use of the delete-half's source.
- * - its own delete half (a same-path self-pair): git's `resolve_rename_copy`
- *   turns the pair back into a modify at the delete's own break score and,
- *   unlike a real rename or copy, never decrements the source's use count —
- *   the pair is dropped from `pairs` with the use count `selectPairs` already
- *   gave it left untouched.
- * - any other source: the pairing stands in for the broken change, so the
- *   delete drops whatever its own use count.
+ * One broken record's write-back verdict, decided by what claimed its add
+ * half: its own delete half (a same-path self-pair) resolves back to a
+ * modify at the delete's own break score, unlike a real rename or copy never
+ * decrementing the source's use count; any other source drops the delete
+ * (whatever its own use count); nothing (still unpaired) rejoins, counting
+ * as one more use of the delete-half's source.
  */
+function writeBackVerdict(
+  record: BrokenRecord,
+  sourceIndex: number,
+  pairByDestination: ReadonlyMap<AddChange, SourcePair>,
+  unpairedSet: ReadonlySet<AddChange>,
+  mergeScore: number,
+): WriteBackVerdict {
+  const claim = pairByDestination.get(record.add);
+  if (claim !== undefined && isSelfPair(claim, record.add, sourceIndex)) {
+    return { kind: 'self-paired', rejoinedChange: rejoinBroken(record, mergeScore) };
+  }
+  if (!unpairedSet.has(record.add)) return { kind: 'claimed-elsewhere' };
+  return { kind: 'absorbed', rejoinedChange: rejoinBroken(record, mergeScore) };
+}
+
+interface WriteBackLookups {
+  readonly sourceIndexByDelete: ReadonlyMap<DeleteChange, number>;
+  readonly pairByDestination: ReadonlyMap<AddChange, SourcePair>;
+  readonly unpairedSet: ReadonlySet<AddChange>;
+}
+
+/** The write-back loop's own working accumulator — `uses`/`rejoined`/the two
+ *  add-sets, folded one broken record at a time by `applyWriteBackVerdict`. */
+interface WriteBackFold {
+  readonly uses: number[];
+  readonly rejoined: DiffChange[];
+  readonly absorbedAdds: Set<AddChange>;
+  readonly selfPairedAdds: Set<AddChange>;
+}
+
+/** Applies one broken record's `writeBackVerdict` to `fold`, in place. */
+function applyWriteBackVerdict(
+  fold: WriteBackFold,
+  record: BrokenRecord,
+  lookups: WriteBackLookups,
+  mergeScore: number,
+): void {
+  const sourceIndex = lookups.sourceIndexByDelete.get(record.del) as number;
+  const verdict = writeBackVerdict(
+    record,
+    sourceIndex,
+    lookups.pairByDestination,
+    lookups.unpairedSet,
+    mergeScore,
+  );
+  if (verdict.kind === 'claimed-elsewhere') return;
+
+  fold.rejoined.push(verdict.rejoinedChange);
+  if (verdict.kind === 'self-paired') fold.selfPairedAdds.add(record.add);
+  else {
+    fold.absorbedAdds.add(record.add);
+    fold.uses[sourceIndex] = (fold.uses[sourceIndex] as number) + 1;
+  }
+}
+
+/** git's write back (`diffcore-rename.c:1669`, `diff.c:6697`): folds every
+ *  broken record's `writeBackVerdict` into the working pairs/unpaired/uses. */
 function writeBackBroken(
   broken: ReadonlyArray<BrokenRecord>,
   originalDeletes: ReadonlyArray<DeleteChange | undefined>,
@@ -902,75 +1000,26 @@ function writeBackBroken(
   uses: ReadonlyArray<number>,
   mergeScore: number,
 ): WriteBackOutcome {
-  const sourceIndexByDelete = indexBrokenSources(originalDeletes);
-  const pairByDestination = new Map(pairs.map((pair) => [pair.destination, pair] as const));
-  const unpairedSet = new Set(unpaired);
-  const workingUses = [...uses];
-  const rejoined: DiffChange[] = [];
-  const absorbedAdds = new Set<AddChange>();
-  const selfPairedAdds = new Set<AddChange>();
-
-  for (const record of broken) {
-    const sourceIndex = sourceIndexByDelete.get(record.del) as number;
-    const claim = pairByDestination.get(record.add);
-    if (claim !== undefined && isSelfPair(claim, record.add, sourceIndex)) {
-      rejoined.push(rejoinBroken(record, mergeScore));
-      selfPairedAdds.add(record.add);
-      continue;
-    }
-    if (!unpairedSet.has(record.add)) continue; // add half paired elsewhere: drop the delete
-
-    rejoined.push(rejoinBroken(record, mergeScore));
-    absorbedAdds.add(record.add);
-    workingUses[sourceIndex] = (workingUses[sourceIndex] as number) + 1;
-  }
+  const lookups: WriteBackLookups = {
+    sourceIndexByDelete: indexBrokenSources(originalDeletes),
+    pairByDestination: new Map(pairs.map((pair) => [pair.destination, pair] as const)),
+    unpairedSet: new Set(unpaired),
+  };
+  const fold: WriteBackFold = {
+    uses: [...uses],
+    rejoined: [],
+    absorbedAdds: new Set(),
+    selfPairedAdds: new Set(),
+  };
+  for (const record of broken) applyWriteBackVerdict(fold, record, lookups, mergeScore);
 
   return {
-    pairs: pairs.filter((pair) => !selfPairedAdds.has(pair.destination)),
-    unpaired: unpaired.filter((add) => !absorbedAdds.has(add)),
-    uses: workingUses,
-    rejoined,
+    pairs: pairs.filter((pair) => !fold.selfPairedAdds.has(pair.destination)),
+    unpaired: unpaired.filter((add) => !fold.absorbedAdds.has(add)),
+    uses: fold.uses,
+    rejoined: fold.rejoined,
   };
 }
-
-/**
- * Detect exact and inexact (content-similarity) renames, and optionally
- * copies, with optional -B break-rewrite detection.
- *
- * Fixed order when breakRewrites is set:
- * 1. Break-attempt: split dissimilar modifies into synthetic delete+add halves so
- *    they feed the registry. This runs BEFORE registration.
- * 2. registerCandidates: one path-ordered RenameSource registry (deletes,
- *    broken-delete halves, and — under copies — modify/type-change preimages
- *    and, under `harder`, every untouched preimage path).
- * 3. pairIdenticalFiles: the copy-aware exact pass, never limited — 'rename'
- *    mode when copies is off, 'copy' mode otherwise.
- * 4. Cull: copies on or any broken pair keeps every source; otherwise only
- *    unused sources feed the matrix.
- * 5. Rename-limit gate on the leftovers: num_dst times num_src over limit
- *    squared skips the inexact pass; under `harder` a retry drops `unchanged`
- *    sources first.
- * 6. Size-gate the candidate pool above SIZE_GATE_MIN_IDS unique ids, then
- *    fingerprint-and-drop each needed blob via a bounded concurrency pool —
- *    only the fingerprint escapes the worker, never the blob's own bytes.
- * 7. buildMatrix: one shared NUM_CANDIDATE_PER_DST-slot candidate matrix per
- *    destination over every matrix source (used ones included) — gitlinks
- *    drop out on both sides, since content scoring cannot read a gitlink's
- *    commit object as bytes.
- * 8. selectPairs: pass 1 pairs only zero-use sources; pass 2 (copies on)
- *    pairs any remaining source against any remaining destination.
- * 9. writeBack: a broken-delete's add half paired elsewhere drops its delete
- *    (whatever its own use count); paired with its OWN delete half (a
- *    same-path self-pair), it resolves back to a modify at the delete's own
- *    break score and is dropped from the pair list untouched-use-count;
- *    otherwise the halves rejoin into a modify (plain or broken) and the
- *    rejoin counts as one more use of the delete-half's source —
- *    this runs BEFORE labelRenameCopy.
- * 10. labelRenameCopy: every exact+inexact pair becomes a rename or copy by
- *     final use count (post write back) in destination-path order; unpaired
- *     destinations stay adds; a deleted source's delete survives iff nothing
- *     beyond its seed used it.
- */
 
 /** Resolve the effective merge score from the breakRewrites option (or defaults). */
 function resolveEffectiveMergeScore(breakRewrites: RenameDetectOptions['breakRewrites']): number {
@@ -1019,6 +1068,11 @@ interface DetectOptions {
   readonly breakRewrites: RenameDetectOptions['breakRewrites'];
 }
 
+/** The subset of `DetectOptions` the inexact-matrix pipeline needs, grouped
+ *  into one value instead of three positional parameters threaded through
+ *  `runInexactMatrix` / `runInexactMatrixIfPlanned` / `runInexactPhase`. */
+type InexactPassOptions = Pick<DetectOptions, 'threshold' | 'limit' | 'copies'>;
+
 /** Resolve all detection options from the public RenameDetectOptions with defaults. */
 function resolveDetectOptions(options: RenameDetectOptions | undefined): DetectOptions {
   return {
@@ -1029,13 +1083,17 @@ function resolveDetectOptions(options: RenameDetectOptions | undefined): DetectO
   };
 }
 
+/** Whether the matrix keeps every registry source (copies on, or any broken
+ *  pair) or only the ones the exact pass left unused. */
+type SourceCull = 'keep-all' | 'unused-only';
+
 function cullMatrixSourceIndices(
   sourceCount: number,
   uses: ReadonlyArray<number>,
-  keepEverySource: boolean,
+  cull: SourceCull,
 ): number[] {
   const indices = Array.from({ length: sourceCount }, (_, index) => index);
-  return keepEverySource ? indices : indices.filter((index) => uses[index] === 0);
+  return cull === 'keep-all' ? indices : indices.filter((index) => uses[index] === 0);
 }
 
 // git's rename_limit <= 0 means unlimited (diffcore-rename.c:1105) — a
@@ -1063,12 +1121,12 @@ function resolveMatrixPlan(
   sources: ReadonlyArray<RenameSource>,
   numDst: number,
   uses: ReadonlyArray<number>,
-  keepEverySource: boolean,
+  cull: SourceCull,
   copies: 'off' | 'on' | 'harder',
   limit: number,
 ): MatrixPlan | null {
   if (numDst === 0) return null;
-  const indices = cullMatrixSourceIndices(sources.length, uses, keepEverySource);
+  const indices = cullMatrixSourceIndices(sources.length, uses, cull);
   if (indices.length === 0) return null;
   if (!isOverLimit(numDst, indices.length, limit)) return { indices };
   if (copies !== 'harder') return null;
@@ -1167,19 +1225,17 @@ async function runInexactMatrixIfPlanned(
   ctx: Context,
   registry: CandidateRegistry,
   exact: ExactPairing,
-  copies: 'off' | 'on' | 'harder',
-  threshold: number,
-  limit: number,
-  keepEverySource: boolean,
+  options: InexactPassOptions,
+  cull: SourceCull,
   knownFingerprints: ReadonlyMap<ObjectId, BlobFingerprint>,
 ): Promise<InexactMatrixResult | null> {
   const plan = resolveMatrixPlan(
     registry.sources,
     exact.unpaired.length,
     exact.uses,
-    keepEverySource,
-    copies,
-    limit,
+    cull,
+    options.copies,
+    options.limit,
   );
   if (plan === null) return null;
 
@@ -1190,8 +1246,7 @@ async function runInexactMatrixIfPlanned(
     plan.indices,
     matrixDestinations,
     exact.uses,
-    threshold,
-    copies,
+    options,
     knownFingerprints,
   );
 }
@@ -1212,7 +1267,7 @@ function regularBasenameCandidates(
   uses: ReadonlyArray<number>,
   destinations: ReadonlyArray<AddChange>,
 ): BasenameCandidate[] {
-  const unusedIndices = cullMatrixSourceIndices(sources.length, uses, false);
+  const unusedIndices = cullMatrixSourceIndices(sources.length, uses, 'unused-only');
   const unusedSources = unusedIndices.map((index) => sources[index] as RenameSource);
 
   return uniqueBasenamePairs(unusedSources, destinations)
@@ -1379,9 +1434,7 @@ async function runInexactPhase(
   registry: CandidateRegistry,
   exact: ExactPairing,
   broken: ReadonlyArray<BrokenRecord>,
-  copies: 'off' | 'on' | 'harder',
-  threshold: number,
-  limit: number,
+  options: InexactPassOptions,
   knownFingerprints: ReadonlyMap<ObjectId, BlobFingerprint>,
 ): Promise<InexactPhaseOutcome> {
   // git's "Did we only want exact renames?" (`diffcore-rename.c:1480`): once
@@ -1389,45 +1442,40 @@ async function runInexactPhase(
   // beyond "identical", and the exact pass already caught every identical
   // pair — running the matrix here could only ever manufacture a false
   // MAX_SCORE match (e.g. same lines, reverse-sorted) for non-identical bytes.
-  if (threshold >= MAX_SCORE) return mergeInexactOutcome(exact, null);
-  const keepEverySource = copies !== 'off' || broken.length > 0;
+  if (options.threshold >= MAX_SCORE) return mergeInexactOutcome(exact, null);
+  const cull: SourceCull =
+    options.copies !== 'off' || broken.length > 0 ? 'keep-all' : 'unused-only';
   const inexact = await runInexactMatrixIfPlanned(
     ctx,
     registry,
     exact,
-    copies,
-    threshold,
-    limit,
-    keepEverySource,
+    options,
+    cull,
     knownFingerprints,
   );
   return mergeInexactOutcome(exact, inexact);
 }
 
-export async function detectSimilarityRenames(
+interface ExactAndBasenameOutcome {
+  readonly pairing: ExactPairing;
+  readonly fingerprints: ReadonlyMap<ObjectId, BlobFingerprint>;
+}
+
+/**
+ * The exact pass (never limited; always sees every registered source), then
+ * the plain-`-M` basename pre-pass between it and the cull-plus-limit gate —
+ * folded into one pairing, plus whatever fingerprints the basename pass
+ * hydrated so the matrix phase never re-reads an already-hydrated blob.
+ */
+async function runExactAndBasenamePasses(
   ctx: Context,
-  diff: TreeDiff,
-  options?: RenameDetectOptions,
-  preimage?: ReadonlyMap<FilePath, FlatTreeEntry>,
-): Promise<TreeDiff> {
-  const { threshold, limit, copies, breakRewrites } = resolveDetectOptions(options);
-  const mergeScore = resolveEffectiveMergeScore(breakRewrites);
-
-  // Break-attempt pass: runs BEFORE registration so halves feed the registry.
-  const {
-    broken,
-    workingDiff,
-    fingerprints: breakFingerprints,
-  } = await runBreakPass(ctx, diff, breakRewrites);
-  const registry = registerCandidates(workingDiff, broken, copies, preimage, mergeScore);
-
-  // The exact pass is never limited; it always sees every registered source.
+  registry: CandidateRegistry,
+  broken: ReadonlyArray<BrokenRecord>,
+  copies: 'off' | 'on' | 'harder',
+  threshold: number,
+): Promise<ExactAndBasenameOutcome> {
   const exactMode = copies === 'off' ? 'rename' : 'copy';
   const exact = pairIdenticalFiles(registry.sources, registry.destinations, exactMode);
-
-  // The basename pass runs between the exact pass and the cull-plus-limit
-  // gate (plain -M only) — never limited, and its fingerprints carry forward
-  // so the matrix phase below never re-hydrates the same blob.
   const basename = await runBasenamePassIfEligible(
     ctx,
     registry.sources,
@@ -1436,38 +1484,118 @@ export async function detectSimilarityRenames(
     copies,
     threshold,
   );
-  const afterBasename: ExactPairing = {
-    pairs: [...exact.pairs, ...basename.pairs],
-    unpaired: basename.unpaired,
-    uses: basename.uses,
+  return {
+    pairing: {
+      pairs: [...exact.pairs, ...basename.pairs],
+      unpaired: basename.unpaired,
+      uses: basename.uses,
+    },
+    fingerprints: basename.fingerprints,
   };
+}
 
-  const outcome = await runInexactPhase(
-    ctx,
-    registry,
-    afterBasename,
-    broken,
-    copies,
-    threshold,
-    limit,
-    mergeFingerprintMaps(breakFingerprints, basename.fingerprints),
-  );
-  const writeBack = writeBackBroken(
-    broken,
-    registry.originalDeletes,
-    outcome.pairs,
-    outcome.unpaired,
-    outcome.uses,
+/**
+ * Detect exact and inexact (content-similarity) renames, and optionally
+ * copies, with optional -B break-rewrite detection.
+ *
+ * Fixed order when breakRewrites is set:
+ * 1. Break-attempt: split dissimilar modifies into synthetic delete+add halves so
+ *    they feed the registry. This runs BEFORE registration.
+ * 2. registerCandidates: one path-ordered RenameSource registry (deletes,
+ *    broken-delete halves, and — under copies — modify/type-change preimages
+ *    and, under `harder`, every untouched preimage path).
+ * 3. pairIdenticalFiles: the copy-aware exact pass, never limited — 'rename'
+ *    mode when copies is off, 'copy' mode otherwise.
+ * 4. Cull: copies on or any broken pair keeps every source; otherwise only
+ *    unused sources feed the matrix.
+ * 5. Rename-limit gate on the leftovers: num_dst times num_src over limit
+ *    squared skips the inexact pass; under `harder` a retry drops `unchanged`
+ *    sources first.
+ * 6. Size-gate the candidate pool above SIZE_GATE_MIN_IDS unique ids, then
+ *    fingerprint-and-drop each needed blob via a bounded concurrency pool —
+ *    only the fingerprint escapes the worker, never the blob's own bytes.
+ * 7. buildMatrix: one shared NUM_CANDIDATE_PER_DST-slot candidate matrix per
+ *    destination over every matrix source (used ones included) — gitlinks
+ *    drop out on both sides, since content scoring cannot read a gitlink's
+ *    commit object as bytes.
+ * 8. selectPairs: pass 1 pairs only zero-use sources; pass 2 (copies on)
+ *    pairs any remaining source against any remaining destination.
+ * 9. writeBack: a broken-delete's add half paired elsewhere drops its delete
+ *    (whatever its own use count); paired with its OWN delete half (a
+ *    same-path self-pair), it resolves back to a modify at the delete's own
+ *    break score and is dropped from the pair list untouched-use-count;
+ *    otherwise the halves rejoin into a modify (plain or broken) and the
+ *    rejoin counts as one more use of the delete-half's source —
+ *    this runs BEFORE labelRenameCopy.
+ * 10. labelRenameCopy: every exact+inexact pair becomes a rename or copy by
+ *     final use count (post write back) in destination-path order; unpaired
+ *     destinations stay adds; a deleted source's delete survives iff nothing
+ *     beyond its seed used it.
+ */
+/**
+ * Detect exact and inexact (content-similarity) renames, and optionally
+ * copies, with optional -B break-rewrite detection. A thin orchestrator over
+ * six named steps: break, register, exact+basename, matrix, write-back,
+ * assemble — each already its own function; this wires them in order.
+ */
+export async function detectSimilarityRenames(
+  ctx: Context,
+  diff: TreeDiff,
+  options?: RenameDetectOptions,
+  preimage?: ReadonlyMap<FilePath, FlatTreeEntry>,
+): Promise<TreeDiff> {
+  const detectOptions = resolveDetectOptions(options);
+  const mergeScore = resolveEffectiveMergeScore(detectOptions.breakRewrites);
+
+  // Break, then register: the break pass runs BEFORE registration so its
+  // synthetic delete+add halves feed the registry.
+  const breakOutcome = await runBreakPass(ctx, diff, detectOptions.breakRewrites);
+  const registry = registerCandidates(
+    breakOutcome.workingDiff,
+    breakOutcome.broken,
+    detectOptions.copies,
+    preimage,
     mergeScore,
   );
-  const changes = assembleFromRegistry(
+
+  // Exact pass, then the basename pre-pass.
+  const exactAndBasename = await runExactAndBasenamePasses(
+    ctx,
     registry,
-    writeBack.pairs,
-    writeBack.unpaired,
-    writeBack.uses,
-    writeBack.rejoined,
+    breakOutcome.broken,
+    detectOptions.copies,
+    detectOptions.threshold,
   );
-  return finalizeWithBroken(changes);
+
+  // Matrix: the cull-plus-limit gate, size-gated hydration, and selection.
+  const inexact = await runInexactPhase(
+    ctx,
+    registry,
+    exactAndBasename.pairing,
+    breakOutcome.broken,
+    detectOptions,
+    mergeFingerprintMaps(breakOutcome.fingerprints, exactAndBasename.fingerprints),
+  );
+
+  // Write-back, then assemble: reconciles every broken pair against its
+  // final pairing, then labels renames vs copies and reassembles the list.
+  const writeBack = writeBackBroken(
+    breakOutcome.broken,
+    registry.originalDeletes,
+    inexact.pairs,
+    inexact.unpaired,
+    inexact.uses,
+    mergeScore,
+  );
+  return finalizeWithBroken(
+    assembleFromRegistry(
+      registry,
+      writeBack.pairs,
+      writeBack.unpaired,
+      writeBack.uses,
+      writeBack.rejoined,
+    ),
+  );
 }
 
 /** Replace each broken record's ORIGINAL change (still in `diff.changes`, never
