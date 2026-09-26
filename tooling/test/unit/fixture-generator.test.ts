@@ -1,6 +1,16 @@
 import { execFileSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
-import { access, chmod, mkdtemp, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import {
+  access,
+  chmod,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
@@ -28,6 +38,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
   return {
     ...actual,
     access: vi.fn(actual.access),
+    mkdir: vi.fn(actual.mkdir),
     readFile: vi.fn(actual.readFile),
     rename: vi.fn(actual.rename),
     rm: vi.fn(actual.rm),
@@ -1042,13 +1053,15 @@ describe.skipIf(RUNNING_UNDER_STRYKER || !HAS_GIT)('ensureRenameFixture', () => 
    * invariant. `loose` skips that repack, but `git fast-import` itself packs
    * once its own object count/size heuristic is crossed, so the
    * zero-packs-stay-loose half only holds for shapes small enough to stay
-   * under that undocumented threshold (`looseGuaranteed`; `wide`'s 300 files
-   * cross it even at bench scale, so it opts out).
+   * under that undocumented threshold (`'loose-guaranteed'`; `wide`'s 300
+   * files cross it even at bench scale, so it opts into `'loose-best-effort'`).
    */
+  type LooseExpectation = 'loose-guaranteed' | 'loose-best-effort';
+
   const expectStorageShape = async (
     cwd: string,
     storage: RenameFixtureStorage,
-    looseGuaranteed = true,
+    looseExpectation: LooseExpectation = 'loose-guaranteed',
   ): Promise<void> => {
     const packs = await packFileCount(cwd);
     const looseObjects = await looseObjectCount(cwd);
@@ -1057,7 +1070,7 @@ describe.skipIf(RUNNING_UNDER_STRYKER || !HAS_GIT)('ensureRenameFixture', () => 
       expect(looseObjects).toBe(0);
       return;
     }
-    if (!looseGuaranteed) return;
+    if (looseExpectation === 'loose-best-effort') return;
     expect(packs).toBe(0);
     expect(looseObjects).toBeGreaterThan(0);
   };
@@ -1110,7 +1123,7 @@ describe.skipIf(RUNNING_UNDER_STRYKER || !HAS_GIT)('ensureRenameFixture', () => 
           expect(blobSizeAt(result.cwd, 'HEAD', 'wide/moved-f000.dat')).toBe(4096);
           // wide's 300 files cross fast-import's own auto-pack threshold even
           // under 'loose' storage — see expectStorageShape's doc comment.
-          await expectStorageShape(result.cwd, storage, false);
+          await expectStorageShape(result.cwd, storage, 'loose-best-effort');
         },
       );
     });
@@ -1164,7 +1177,7 @@ describe.skipIf(RUNNING_UNDER_STRYKER || !HAS_GIT)('ensureRenameFixture', () => 
     });
   });
 
-  describe('Given a pristine cached rename fixture carrying a sentinel file', () => {
+  describe('Given a cached rename fixture carrying a sentinel file', () => {
     describe('When ensureRenameFixture resolves it again', () => {
       it('Then the cache hit path returns it without rebuilding', async () => {
         // Arrange
@@ -1172,13 +1185,21 @@ describe.skipIf(RUNNING_UNDER_STRYKER || !HAS_GIT)('ensureRenameFixture', () => 
         const sentinelPath = path.join(original.cwd, 'sentinel.txt');
         await writeFile(sentinelPath, 'sentinel');
         const sut = ensureRenameFixture;
+        const mkdirMock = vi.mocked(mkdir);
+        const renameMock = vi.mocked(rename);
+        mkdirMock.mockClear();
+        renameMock.mockClear();
 
         // Act
         await sut('common', 'loose');
 
-        // Assert
+        // Assert — a rebuild would mkdir the temp build dir then rename it
+        // into place; neither ever runs on a cache hit, so the sentinel
+        // surviving isn't just a lucky coincidence of an in-place rebuild.
         const sentinelContent = await readFile(sentinelPath, 'utf8');
         expect(sentinelContent).toBe('sentinel');
+        expect(mkdirMock).not.toHaveBeenCalled();
+        expect(renameMock).not.toHaveBeenCalled();
       });
     });
   });

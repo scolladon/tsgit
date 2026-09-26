@@ -1218,8 +1218,23 @@ const RENAME_FIXTURE_STREAMS: Record<
   'hostile-basename': streamHostileBasenameRenameFastImport,
 };
 
-const renameFixtureCacheDir = (shape: RenameFixtureShape, storage: RenameFixtureStorage): string =>
-  path.join(cacheRoot(), `rename-${shape}-${storage}-v${FIXTURE_GENERATOR_VERSION}`);
+/** A `size` override (a test shrinking `hostile`/`hostile-basename` well
+ *  below bench scale) must never share a cache slot with the bench-scale
+ *  default — folded into the key whenever given, so an overridden build
+ *  can never be handed back to a caller expecting the full-scale fixture,
+ *  or vice versa. */
+const renameFixtureCacheDir = (
+  shape: RenameFixtureShape,
+  storage: RenameFixtureStorage,
+  size?: RenameFixtureSize,
+): string => {
+  const sizeSuffix =
+    size === undefined ? '' : `-f${size.fileCount ?? 'd'}-b${size.blobBytes ?? 'd'}`;
+  return path.join(
+    cacheRoot(),
+    `rename-${shape}-${storage}${sizeSuffix}-v${FIXTURE_GENERATOR_VERSION}`,
+  );
+};
 
 const buildRenameFixtureInto = async (
   repoDir: string,
@@ -1262,7 +1277,7 @@ export const ensureRenameFixture = async (
   storage: RenameFixtureStorage,
   size?: RenameFixtureSize,
 ): Promise<RenameFixture> => {
-  const cacheDir = renameFixtureCacheDir(shape, storage);
+  const cacheDir = renameFixtureCacheDir(shape, storage, size);
   if (await renameFixtureCached(cacheDir)) return { cwd: cacheDir };
   await assertGitAvailable();
   const tmpDir = leftoverDirName(cacheDir, 'tmp');

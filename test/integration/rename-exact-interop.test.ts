@@ -337,4 +337,6 @@ const ROWS: ReadonlyArray<RenameRow> = [
   },
 ];
 
-describeRenameRows('exact rename pass interop', ROWS, TMP_PREFIX, SETUP_TIMEOUT);
+describeRenameRows('exact rename pass interop', ROWS, TMP_PREFIX, SETUP_TIMEOUT, {
+  given: 'Given a raw diff pair exercising the exact rename pass',
+});

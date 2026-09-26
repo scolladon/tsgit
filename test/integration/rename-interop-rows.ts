@@ -191,20 +191,33 @@ export async function runRenameRow(
   return { ours, peer };
 }
 
+/** The Given/When wording for one row-table suite — `when` only picks the
+ *  inner "When" title; per-row rename detection is each row's own
+ *  `RenameRow.detectRenames` field, unaffected by this. */
+export interface RenameRowSuiteTitles {
+  readonly given: string;
+  readonly when?: string;
+}
+
+const DEFAULT_WHEN = 'When diff is called with detectRenames';
+
+const DEFAULT_SUITE_TITLES: RenameRowSuiteTitles = {
+  given: "the suite's raw diff-pair fixtures",
+  when: DEFAULT_WHEN,
+};
+
 /**
  * Registers one row-table suite: builds every row's repo in a shared
  * `beforeAll`, tears every one down in `afterAll`, and asserts `ours ===
- * peer` for each row via one `it.each`. `detectRenames` (default `true`)
- * only picks the inner "When" wording — per-row rename detection is each
- * row's own `RenameRow.detectRenames` field, unaffected by this flag.
- * Skips silently when `git` is absent, matching every row-table suite.
+ * peer` for each row via one `it.each`. Skips silently when `git` is
+ * absent, matching every row-table suite.
  */
 export function describeRenameRows(
   name: string,
   rows: ReadonlyArray<RenameRow>,
   tmpPrefix: string,
   timeout: number,
-  detectRenames = true,
+  titles: RenameRowSuiteTitles = DEFAULT_SUITE_TITLES,
 ): void {
   const fixtures = new Map<string, { readonly dir: string }>();
   const fixtureOf = (label: string): { readonly dir: string } => {
@@ -226,8 +239,8 @@ export function describeRenameRows(
       }
     });
 
-    describe("Given the suite's raw diff-pair fixtures", () => {
-      describe(`When diff is called ${detectRenames ? 'with' : 'without'} detectRenames`, () => {
+    describe(titles.given, () => {
+      describe(titles.when ?? DEFAULT_WHEN, () => {
         it.each(rows)('Then name-status matches live git for: $label', async (row) => {
           // Arrange
           const { dir } = fixtureOf(row.label);

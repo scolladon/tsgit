@@ -1328,7 +1328,7 @@ describe('diffTrees', () => {
 
   describe('Given copies:"on" with treeA present (buildPreimage should return undefined)', () => {
     describe('When diffTrees is called with detectRenames:true and renameOptions:{copies:"on"}', () => {
-      it('Then no preimage is built and unchanged files are NOT copy sources (L70 ConditionalExpression "false")', async () => {
+      it('Then no preimage is built and an absent treeA never crashes the copy pass', async () => {
         // Arrange — copies:'on' with treeA=undefined; the guard must short-circuit so
         // flattenTree is never called with undefined (which would crash)
         const ctx = await buildSeededContext();
@@ -1351,7 +1351,7 @@ describe('diffTrees', () => {
 
   describe('Given copies:"harder" but treeA is undefined (buildPreimage returns undefined)', () => {
     describe('When diffTrees is called', () => {
-      it('Then buildPreimage returns undefined and no crash occurs (L70 treeA===undefined arm)', async () => {
+      it('Then buildPreimage returns undefined and an absent treeA never crashes the harder pass', async () => {
         // Arrange — copies:'harder' but treeA=undefined; the treeA===undefined arm of the guard
         // must prevent flattenTree from being called with undefined (which would crash)
         const ctx = await buildSeededContext();

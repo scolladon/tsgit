@@ -2669,6 +2669,9 @@ describeRenameRows(
   NAME_SCORE_ROWS,
   TMP_PREFIX,
   SETUP_TIMEOUT,
+  {
+    given: 'Given a raw diff pair exercising the name_score matrix tie-break',
+  },
 );
 
 /**
@@ -2703,6 +2706,10 @@ describeRenameRows(
   SLOT_SEMANTICS_ROWS,
   SLOT_SEMANTICS_TMP_PREFIX,
   SLOT_SEMANTICS_SETUP_TIMEOUT,
+  {
+    given:
+      'Given a raw diff pair exercising below-threshold candidates sharing the matrix with the real ones',
+  },
 );
 
 /**
@@ -2907,6 +2914,11 @@ describeRenameRows(
   EXACT_ONLY_ROWS,
   EXACT_ONLY_TMP_PREFIX,
   EXACT_ONLY_SETUP_TIMEOUT,
+  {
+    given:
+      'Given a raw diff pair where an approximate score could reach the rename ceiling for non-identical bytes',
+    when: 'When diff is called with detectRenames at a 100% threshold',
+  },
 );
 
 describeRenameRows(
@@ -2914,6 +2926,7 @@ describeRenameRows(
   USE_COUNT_ROWS,
   USE_COUNT_TMP_PREFIX,
   USE_COUNT_SETUP_TIMEOUT,
+  { given: 'Given a raw diff pair exercising use-count labelling or the gitlink-counted limit' },
 );
 
 /**
@@ -2958,6 +2971,7 @@ describeRenameRows(
   HARDER_RETRY_ROWS,
   HARDER_RETRY_TMP_PREFIX,
   HARDER_RETRY_SETUP_TIMEOUT,
+  { given: 'Given a raw diff pair where the "harder" retry set still clears the rename limit' },
 );
 
 /**
@@ -3081,6 +3095,7 @@ describeRenameRows(
   WRITE_BACK_ROWS,
   WRITE_BACK_TMP_PREFIX,
   WRITE_BACK_SETUP_TIMEOUT,
+  { given: 'Given a raw diff pair exercising -B write back (a broken delete drop or a rejoin)' },
 );
 
 /**
@@ -3250,6 +3265,9 @@ describeRenameRows(
   NON_REGULAR_ROWS,
   NON_REGULAR_TMP_PREFIX,
   NON_REGULAR_SETUP_TIMEOUT,
+  {
+    given: 'Given a raw diff pair exercising a non-regular (symlink) side of the rename/copy pools',
+  },
 );
 
 /**
@@ -3489,6 +3507,7 @@ describeRenameRows(
   TYPE_CHANGE_ROWS,
   TYPE_CHANGE_TMP_PREFIX,
   TYPE_CHANGE_SETUP_TIMEOUT,
+  { given: 'Given a raw diff pair exercising a file↔symlink type change under -B' },
 );
 
 describe.skipIf(!GIT_AVAILABLE)('-B type-change break patch/numstat interop', () => {
@@ -3783,6 +3802,7 @@ describeRenameRows(
   BASENAME_PASS_ROWS,
   BASENAME_PASS_TMP_PREFIX,
   BASENAME_PASS_SETUP_TIMEOUT,
+  { given: 'Given a raw diff pair where a delete shares its destination basename uniquely' },
 );
 
 /**
@@ -3874,7 +3894,10 @@ describeRenameRows(
   NO_RENAME_BREAK_ROWS,
   NO_RENAME_BREAK_TMP_PREFIX,
   NO_RENAME_BREAK_SETUP_TIMEOUT,
-  false,
+  {
+    given: 'Given a raw diff pair exercising -B with rename detection off',
+    when: 'When diff is called without detectRenames',
+  },
 );
 
 /**

@@ -1060,12 +1060,12 @@ describe('detectSimilarityRenames', () => {
 
   describe('Given copies: "harder" whose retry set is empty (every registered source is unchanged)', () => {
     describe('When detectSimilarityRenames is called', () => {
-      it('Then resolveMatrixPlan finds no plan, matching the exact-only outcome', async () => {
+      it('Then the inexact pass finds nothing, matching the exact-only outcome', async () => {
         // Arrange — zero real deletes/modifies: every registered source comes
         // from the preimage under 'harder', so dropping 'unchanged' sources on
-        // retry empties the retry set outright (retryIndices.length === 0).
+        // retry empties the retry set outright.
         // 5 unpaired adds * 5 harder sources = 25 > limit^2(1) -> retry; the
-        // retry set is then empty, so the plan is null both times.
+        // retry set is then empty, so no matrix candidate is ever built.
         const ctx = await buildSeededContext();
         const preimageEntries = await Promise.all(
           Array.from({ length: 5 }, async (_unused, i) => {

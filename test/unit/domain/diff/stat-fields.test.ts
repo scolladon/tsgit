@@ -202,8 +202,11 @@ describe('computeStatFields', () => {
           expected: { added: 0, deleted: 0, binary: false },
         },
       ])('Then $label', ({ old, next, options, expected }) => {
-        // Arrange + Act
-        const result = computeStatFields(old, next, options);
+        // Arrange
+        const sut = computeStatFields;
+
+        // Act
+        const result = sut(old, next, options);
 
         // Assert
         expect(result).toEqual(expected);
@@ -217,10 +220,11 @@ describe('computeStatFields', () => {
         // Arrange
         const old = enc('a  b\n');
         const next = enc('a    b\n');
+        const sut = computeStatFields;
         // Act
-        const result = computeStatFields(old, next);
-        const resultUndefined = computeStatFields(old, next, undefined);
-        const resultEmpty = computeStatFields(old, next, {});
+        const result = sut(old, next);
+        const resultUndefined = sut(old, next, undefined);
+        const resultEmpty = sut(old, next, {});
         // Assert — all three forms must produce the same counts (regression guard)
         expect(resultUndefined).toEqual(result);
         expect(resultEmpty).toEqual(result);
@@ -236,12 +240,13 @@ describe('computeStatFields', () => {
         const next = enc('a\n   \n');
         const keyNone: LineKey = { mode: 'none', ignoreCrAtEol: false };
         const keyAll: LineKey = { mode: 'all', ignoreCrAtEol: false };
+        const sut = computeStatFields;
         // Act
-        const resultNone = computeStatFields(old, next, {
+        const resultNone = sut(old, next, {
           lineKey: keyNone,
           ignoreBlankLines: true,
         });
-        const resultAll = computeStatFields(old, next, { lineKey: keyAll, ignoreBlankLines: true });
+        const resultAll = sut(old, next, { lineKey: keyAll, ignoreBlankLines: true });
         // Assert — active lineKey determines blank definition
         expect(resultNone).toEqual({ added: 1, deleted: 0, binary: false });
         expect(resultAll).toEqual({ added: 0, deleted: 0, binary: false });

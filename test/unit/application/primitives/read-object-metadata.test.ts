@@ -693,7 +693,7 @@ describe('readDeclaredObjectSize', () => {
 
   describe('Given a cached membership hit whose loose file was pruned before the size read', () => {
     describe('When readDeclaredObjectSize is called for the pruned id', () => {
-      it('Then forgets the stale membership and rejects OBJECT_NOT_FOUND with the id', async () => {
+      it('Then forgets the stale membership: the next probe re-reads the directory instead of retrying readSlice', async () => {
         // Arrange — warm the fanout membership cache with a real HIT, then
         // remove the file underneath it (an external `git gc` prune) so the
         // next size read's readSlice meets a FILE_NOT_FOUND the membership
@@ -717,10 +717,24 @@ describe('readDeclaredObjectSize', () => {
           }
         }
 
-        // Assert — the stale membership was forgotten: a fresh loose write
-        // under the same id is found again rather than staying a phantom miss.
-        await writeRawObjectBytes(ctx, 'blob', content);
-        await expect(readDeclaredObjectSize(ctx, id)).resolves.toBe(content.length);
+        // Assert — the stale membership was forgotten: without a fresh write,
+        // the next probe re-reads the (still empty) fanout directory and
+        // reports a miss WITHOUT ever retrying readSlice. Rewriting the same
+        // content and observing success again would be vacuous — a cache
+        // that still (wrongly) believed the id was present would retry
+        // readSlice, find the file back, and succeed too.
+        const readSliceSpy = vi.spyOn(ctx.fs, 'readSlice');
+        try {
+          await readDeclaredObjectSize(ctx, id);
+          expect.unreachable();
+        } catch (error) {
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('OBJECT_NOT_FOUND');
+          if (data.code === 'OBJECT_NOT_FOUND') {
+            expect(data.id).toBe(id);
+          }
+        }
+        expect(readSliceSpy).not.toHaveBeenCalled();
       });
     });
   });
