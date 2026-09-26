@@ -2783,6 +2783,18 @@ const SHARED_MODIFY_SOURCE_LINES = Array.from(
   (_, i) => `c20-shared-${String(i).padStart(2, '0')}: alpha beta gamma delta\n`,
 );
 
+/** Lines shared between four retained (modified) sources, one deleted source
+ *  and one destination — used to prove the shared per-destination candidate
+ *  cap evicts the deleted source ahead of the retained ones. */
+const CULL_COMMON_LINES = Array.from(
+  { length: 16 },
+  (_, i) => `cull-common-${String(i).padStart(2, '0')}: alpha beta gamma delta epsilon\n`,
+);
+const cullRetainedTail = (n: number): string[] =>
+  Array.from({ length: 4 }, (_, i) => `cull-r${n}-tail-${i}: theta iota\n`);
+const CULL_N_TAIL = Array.from({ length: 4 }, (_, i) => `cull-n-tail-${i}: zeta eta\n`);
+const CULL_D_TAIL = Array.from({ length: 12 }, (_, i) => `cull-d-tail-${i}: kappa lambda\n`);
+
 const USE_COUNT_ROWS: ReadonlyArray<RenameRow> = [
   {
     label:
@@ -2896,6 +2908,23 @@ const USE_COUNT_ROWS: ReadonlyArray<RenameRow> = [
     ],
     gitFlags: ['-C'],
     renameOptions: { copies: 'on' },
+  },
+  {
+    label:
+      '-C30%: four higher-scoring retained sources and one lower-scoring deleted source compete for one destination — the shared per-destination cap evicts the deleted source before the retained sources ever get to lose, so a retained source wins the copy (live git: C087 r4.txt→n.txt)',
+    before: [
+      ...[1, 2, 3, 4].map((n) => ({
+        path: `r${n}.txt`,
+        content: [...CULL_COMMON_LINES, ...cullRetainedTail(n)].join(''),
+      })),
+      { path: 'd.txt', content: [...CULL_COMMON_LINES.slice(0, 8), ...CULL_D_TAIL].join('') },
+    ],
+    after: [
+      ...[1, 2, 3, 4].map((n) => ({ path: `r${n}.txt`, content: `cull-r${n}-new content only\n` })),
+      { path: 'n.txt', content: [...CULL_COMMON_LINES, ...CULL_N_TAIL].join('') },
+    ],
+    gitFlags: ['-C30%'],
+    renameOptions: { copies: 'on', threshold: 18000 },
   },
 ];
 
@@ -3612,8 +3641,17 @@ describe.skipIf(!GIT_AVAILABLE)('-B type-change break interop', () => {
         expect(statDiff.changes).toHaveLength(1);
         const [statChange] = statDiff.changes;
         expect(statChange?.type).toBe('type-change');
-        expect(statChange?.added).toBe(20);
-        expect(statChange?.deleted).toBe(1);
+        const livePeerNumstat = git(
+          dir,
+          'diff',
+          '--no-ext-diff',
+          '--numstat',
+          '-M',
+          '-B',
+          'HEAD~1',
+          'HEAD',
+        ).trim();
+        expect(numstatFrom(statDiff.changes)).toBe(livePeerNumstat);
       } finally {
         await rmDir(dir, { recursive: true, force: true });
       }

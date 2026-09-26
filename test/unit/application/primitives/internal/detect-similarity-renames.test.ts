@@ -116,7 +116,7 @@ describe('hydrateFingerprints', () => {
         // Assert
         expect(readSpy.mock.calls.some(([, id]) => id === knownId)).toBe(false);
         expect(result.get(knownId)).toEqual({ chunkMap: new Map(), size: 999 });
-        expect(result.get(freshId)).toBeDefined();
+        expect(result.get(freshId)?.size).toBe('freshly-hydrated'.length);
         readSpy.mockRestore();
       });
     });

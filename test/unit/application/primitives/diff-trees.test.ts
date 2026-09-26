@@ -1176,7 +1176,8 @@ describe('diffTrees', () => {
         expect(result.changes).toHaveLength(1);
         const change = result.changes[0];
         expect(change).toMatchObject({ type: 'modify', added: 20, deleted: 20, binary: false });
-        if (change?.type === 'modify') expect(change.broken).toBeDefined();
+        // ~65% dissimilarity — see partialRewrite's doc comment.
+        if (change?.type === 'modify') expect(change.broken?.score).toBe(39000);
       });
     });
   });
@@ -1707,7 +1708,7 @@ describe('diffTrees', () => {
         expect(result.changes).toHaveLength(1);
         const change = result.changes[0];
         expect(change?.type).toBe('modify');
-        if (change?.type === 'modify') expect(change.broken).toBeDefined();
+        if (change?.type === 'modify') expect(change.broken?.score).toBe(MAX_SCORE);
       });
     });
   });

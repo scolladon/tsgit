@@ -1655,9 +1655,12 @@ describe('detectSimilarityRenames', () => {
         const copies = result.changes.filter((c) => c.type === 'copy');
         expect(copies).toHaveLength(1);
         if (copies[0]?.type === 'copy') {
+          const encoder = new TextEncoder();
           expect(copies[0].oldPath).toBe('m.txt');
           expect(copies[0].newPath).toBe('q.txt');
-          expect(copies[0].similarity.score).toBeLessThan(MAX_SCORE);
+          expect(copies[0].similarity.score).toBe(
+            estimateSimilarity(encoder.encode(oldContent), encoder.encode(nearMatchContent)),
+          );
         }
         expect(result.changes.filter((c) => c.type === 'rename')).toHaveLength(0);
         expect(result.changes.filter((c) => c.type === 'add')).toHaveLength(0);
@@ -2516,11 +2519,12 @@ describe('detectSimilarityRenames', () => {
           threshold: Math.trunc(MAX_SCORE * 0.3),
         });
 
-        // Assert — a retained source wins n.txt as a copy; d.txt never pairs
+        // Assert — a retained source wins n.txt as a copy; d.txt never pairs.
+        // r4.txt is the exact source live git picks too (C087 r4.txt→n.txt).
         const copies = result.changes.filter((c) => c.type === 'copy');
         expect(copies).toHaveLength(1);
         if (copies[0]?.type === 'copy') {
-          expect(['r1.txt', 'r2.txt', 'r3.txt', 'r4.txt']).toContain(copies[0].oldPath);
+          expect(copies[0].oldPath).toBe('r4.txt');
           expect(copies[0].newPath).toBe('n.txt');
         }
         const deletes = result.changes.filter((c) => c.type === 'delete');
@@ -4966,9 +4970,12 @@ describe('detectSimilarityRenames', () => {
         const copies = result.changes.filter((c) => c.type === 'copy');
         expect(copies).toHaveLength(1);
         if (copies[0]?.type === 'copy') {
+          const encoder = new TextEncoder();
           expect(copies[0].oldPath).toBe('a/p');
           expect(copies[0].newPath).toBe('b/q');
-          expect(copies[0].similarity.score).toBeLessThan(MAX_SCORE);
+          expect(copies[0].similarity.score).toBe(
+            estimateSimilarity(encoder.encode(oldContent), encoder.encode(nearMatchContent)),
+          );
         }
         expect(result.changes.filter((c) => c.type === 'rename')).toHaveLength(0);
         expect(result.changes.filter((c) => c.type === 'add')).toHaveLength(0);
@@ -5113,9 +5120,12 @@ describe('detectSimilarityRenames', () => {
         const change = result.changes[0];
         expect(change?.type).toBe('rename');
         if (change?.type === 'rename') {
+          const encoder = new TextEncoder();
           expect(change.oldPath).toBe('a/old');
           expect(change.newPath).toBe('a/p');
-          expect(change.similarity.score).toBeLessThan(MAX_SCORE);
+          expect(change.similarity.score).toBe(
+            estimateSimilarity(encoder.encode(regularContent), encoder.encode(nearMatchContent)),
+          );
         }
       });
     });
