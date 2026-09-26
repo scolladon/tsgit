@@ -12,6 +12,7 @@ import type { FlatTreeEntry } from '../../domain/diff/flat-tree.js';
 import { isGitlink } from '../../domain/diff/index.js';
 import { sortByPath } from '../../domain/diff/path-compare.js';
 import { detectRenames, type RenameDetectOptions } from '../../domain/diff/rename-detect.js';
+import { compareCandidates, hasSameBasename } from '../../domain/diff/rename-pairing.js';
 import {
   buildChunkMap,
   countSpanhashChanges,
@@ -85,19 +86,22 @@ export type ScoredTriple =
       readonly src: DeleteChange;
       readonly add: AddChange;
       readonly score: number;
+      readonly nameScore: 0 | 1;
     }
   | {
       readonly kind: 'copy';
       readonly src: CopySource;
       readonly add: AddChange;
       readonly score: number;
+      readonly nameScore: 0 | 1;
     };
 
 /**
  * Maximum candidates retained per destination, matching git's NUM_CANDIDATE_PER_DST.
- * git's record_if_better keeps only the top 4 scoring sources per destination;
- * when the slot array is full, a new entry replaces the current minimum only if
- * strictly better (score > min). Equal-score entries do not replace.
+ * git's record_if_better keeps only the top 4 candidates per destination, ranked by
+ * compareCandidates (score, then nameScore); when the slot array is full, a new
+ * entry replaces the current worst-ranked slot only when it ranks strictly better.
+ * A tie on both score and nameScore does not displace an existing entry.
  *
  * @internal — exported for direct unit testing.
  */
@@ -105,27 +109,21 @@ export const NUM_CANDIDATE_PER_DST = 4;
 
 /**
  * Maintain the top-N candidates for one destination.
- * Mirrors git's record_if_better: a new score replaces the current minimum only
- * when strictly greater; equal scores do not displace an existing entry.
+ * Mirrors git's record_if_better: the worst-ranked slot (compareCandidates order;
+ * a tie keeps the lowest index) is replaced only when the candidate outranks it.
  */
 export function recordIfBetter(slots: ScoredTriple[], candidate: ScoredTriple): void {
   if (slots.length < NUM_CANDIDATE_PER_DST) {
     slots.push(candidate);
     return;
   }
-  // Find the slot with the minimum score.
   // slots is always full (length === NUM_CANDIDATE_PER_DST) here; each element is defined.
-  let minIdx = 0;
-  // Stryker disable next-line EqualityOperator: equivalent — the extra iteration reads slots[NUM_CANDIDATE_PER_DST] === undefined, which the `cur !== undefined` guard below skips, leaving minIdx unchanged.
+  let worst = 0;
   for (let i = 1; i < slots.length; i++) {
-    const cur = slots[i];
-    const min = slots[minIdx];
-    if (cur !== undefined && min !== undefined && cur.score < min.score) minIdx = i;
+    if (compareCandidates(slots[i] as ScoredTriple, slots[worst] as ScoredTriple) > 0) worst = i;
   }
-  // Replace only when strictly better (not equal).
-  const minSlot = slots[minIdx];
-  if (minSlot !== undefined && candidate.score > minSlot.score) {
-    slots[minIdx] = candidate;
+  if (compareCandidates(slots[worst] as ScoredTriple, candidate) > 0) {
+    slots[worst] = candidate;
   }
 }
 
@@ -182,8 +180,16 @@ function buildRenameTriples(
     const slots: ScoredTriple[] = [];
     for (const del of deletes) {
       const sf = fingerprints.get(del.oldId);
-      if (sf !== undefined)
-        scoreAndRecord(sf, df, threshold, { kind: 'rename', src: del, add, score: 0 }, slots);
+      if (sf !== undefined) {
+        const nameScore = hasSameBasename(del.oldPath, add.newPath) ? 1 : 0;
+        scoreAndRecord(
+          sf,
+          df,
+          threshold,
+          { kind: 'rename', src: del, add, score: 0, nameScore },
+          slots,
+        );
+      }
     }
     for (const triple of slots) triples.push(triple);
   }
@@ -209,8 +215,10 @@ function buildCopyTriples(
     const slots: ScoredTriple[] = [];
     for (const src of copySources) {
       const sf = fingerprints.get(src.oldId);
-      if (sf !== undefined)
-        scoreAndRecord(sf, df, threshold, { kind: 'copy', src, add, score: 0 }, slots);
+      if (sf !== undefined) {
+        const nameScore = hasSameBasename(src.oldPath, add.newPath) ? 1 : 0;
+        scoreAndRecord(sf, df, threshold, { kind: 'copy', src, add, score: 0, nameScore }, slots);
+      }
     }
     for (const triple of slots) triples.push(triple);
   }
@@ -218,13 +226,15 @@ function buildCopyTriples(
 }
 
 /**
- * Sort triples score-descending; at equal score a rename sorts AHEAD of a
- * copy, so a deleted source claims the destination before an unchanged one.
+ * Sort triples by compareCandidates (score, then nameScore); at a full tie a
+ * rename sorts AHEAD of a copy, so a deleted source claims the destination
+ * before an unchanged one.
  */
 function sortTriples(triples: ScoredTriple[]): void {
   triples.sort((a, b) => {
-    if (b.score !== a.score) return b.score - a.score;
-    // Rename candidate wins over copy at equal score.
+    const rankDiff = compareCandidates(a, b);
+    if (rankDiff !== 0) return rankDiff;
+    // Rename candidate wins over copy at equal score and equal nameScore.
     // Stryker disable next-line UnaryOperator: equivalent — build order concatenates all rename triples before all copy triples, so V8's stable insertion sort (each pivot compared against already-placed elements) never invokes this comparator with a=rename, b=copy; the arm is unreached and its sign is unobservable.
     if (a.kind === 'rename' && b.kind === 'copy') return -1;
     // Stryker disable next-line ConditionalExpression,LogicalOperator,EqualityOperator: equivalent — the only reached call is compare(copy, rename) when a copy is inserted after the renames; returning 1 or 0 both keep the copy after the rename via build order + stable sort, and the same-kind variants only reaffirm the stable a-after-b order, so no pairing changes.

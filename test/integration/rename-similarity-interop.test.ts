@@ -15,10 +15,10 @@
  *   unique:  inexact rename R-scores, patch body, limit semantics match upstream git + frozen goldens
  *   interopSurface: diff
  */
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm as rmDir, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import * as url from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../src/adapters/memory/memory-adapter.js';
 import { add } from '../../src/application/commands/add.js';
 import { commit } from '../../src/application/commands/commit.js';
@@ -31,6 +31,7 @@ import { toSimilarityPercent } from '../../src/domain/diff/similarity.js';
 import type { AuthorIdentity } from '../../src/domain/objects/index.js';
 import { reconstructPatch } from './diff-reconstruct.js';
 import { GIT_AVAILABLE, git, makePeerPair, runGit, runGitEnv } from './interop-helpers.js';
+import { buildRenameRow, type RenameRow, runRenameRow } from './rename-interop-rows.js';
 
 const fixturesDir = path.join(
   path.dirname(url.fileURLToPath(import.meta.url)),
@@ -2497,6 +2498,193 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
       } finally {
         await pair.dispose();
       }
+    });
+  });
+});
+
+/**
+ * name_score matrix tie-break interop: `git diff -M` (some rows also `-C`)
+ * breaks an equal-score tie between inexact candidates on a matching
+ * basename (`score_compare` / `record_if_better`), never on build order.
+ *
+ * Content follows the shared "body"/"edit window" convention: a line-per-row
+ * body of uniform-length lines so the spanhash scorer's percentage is a
+ * simple function of how many lines were replaced — independent of WHICH
+ * lines, letting several distinct sources tie at the same score.
+ */
+const NAME_SCORE_BODY_LINES = 20;
+const NAME_SCORE_WIDE_LINES = 100;
+const NAME_SCORE_WINDOW_61_PERCENT = 39;
+const NAME_SCORE_WINDOW_52_PERCENT = 48;
+const NAME_SCORE_WINDOW_STRIDE = 12;
+
+const nameScoreBody = (): string =>
+  `${Array.from(
+    { length: NAME_SCORE_BODY_LINES },
+    (_, i) => `body line ${String(i).padStart(2, '0')}`,
+  ).join('\n')}\n`;
+
+const nameScoreBodyPlus = (extra: string): string => `${nameScoreBody()}${extra}\n`;
+
+const nameScoreWideBody = (): string =>
+  `${Array.from(
+    { length: NAME_SCORE_WIDE_LINES },
+    (_, i) => `body line ${String(i).padStart(3, '0')}`,
+  ).join('\n')}\n`;
+
+/** Replaces a contiguous `count`-line window starting at `offset` (wrapping)
+ *  with edited lines; the REST stays byte-identical to `nameScoreWideBody()`.
+ *  Because only the edited-line COUNT drives the spanhash score, not which
+ *  lines, every offset at the same `count` ties at the same percentage. */
+const nameScoreEditWindow = (offset: number, count: number): string =>
+  `${Array.from({ length: NAME_SCORE_WIDE_LINES }, (_, i) => {
+    const inWindow = (i - offset + NAME_SCORE_WIDE_LINES) % NAME_SCORE_WIDE_LINES < count;
+    const label = inWindow ? 'edit' : 'body';
+    return `${label} line ${String(i).padStart(3, '0')}`;
+  }).join('\n')}\n`;
+
+const TMP_PREFIX = 'tsgit-rename-name-score-';
+const SETUP_TIMEOUT = 60_000;
+
+const NAME_SCORE_ROWS: ReadonlyArray<RenameRow> = [
+  {
+    label:
+      'two sources sharing a blob, only one basename-matching — the match wins the tie (D Aaa ; R097 Foo→Foo)',
+    before: [
+      { path: 'a/Aaa.cls-meta.xml', content: nameScoreBody() },
+      { path: 'a/Foo.cls-meta.xml', content: nameScoreBody() },
+    ],
+    after: [{ path: 'b/Foo.cls-meta.xml', content: nameScoreBodyPlus('extra') }],
+  },
+  {
+    label:
+      'the same tie under -C — name_score still resolves it in the matrix (D Aaa ; R097 Foo→Foo)',
+    before: [
+      { path: 'a/Aaa.cls-meta.xml', content: nameScoreBody() },
+      { path: 'a/Foo.cls-meta.xml', content: nameScoreBody() },
+    ],
+    after: [{ path: 'b/Foo.cls-meta.xml', content: nameScoreBodyPlus('extra') }],
+    gitFlags: ['-C'],
+    renameOptions: { copies: 'on' },
+  },
+  {
+    label:
+      'must-stay: 3 identical same-named sources map 1:1 onto 3 edited same-named destinations (R097 x3)',
+    before: [
+      { path: 'a/One/Foo.meta', content: nameScoreBody() },
+      { path: 'a/Two/Foo.meta', content: nameScoreBody() },
+      { path: 'a/Three/Foo.meta', content: nameScoreBody() },
+    ],
+    after: [
+      { path: 'b/One/Foo.meta', content: nameScoreBodyPlus('extra') },
+      { path: 'b/Two/Foo.meta', content: nameScoreBodyPlus('spare') },
+      { path: 'b/Three/Foo.meta', content: nameScoreBodyPlus('bonus') },
+    ],
+  },
+  {
+    label:
+      'two DISTINCT sources tied by score, only the second basename-matches (D Aaa ; R052 Foo→Foo)',
+    before: [
+      { path: 'a/Aaa.xml', content: nameScoreEditWindow(0, NAME_SCORE_WINDOW_52_PERCENT) },
+      { path: 'a/Foo.xml', content: nameScoreEditWindow(50, NAME_SCORE_WINDOW_52_PERCENT) },
+    ],
+    after: [{ path: 'b/Foo.xml', content: nameScoreWideBody() }],
+  },
+  {
+    label:
+      '5 equal-score sources beyond the top-4 cap, only the 5th basename-matches — it still wins the slot (4x D ; R061 E→E)',
+    before: [
+      { path: 'a/A.c', content: nameScoreEditWindow(0, NAME_SCORE_WINDOW_61_PERCENT) },
+      {
+        path: 'a/B.c',
+        content: nameScoreEditWindow(NAME_SCORE_WINDOW_STRIDE, NAME_SCORE_WINDOW_61_PERCENT),
+      },
+      {
+        path: 'a/C.c',
+        content: nameScoreEditWindow(NAME_SCORE_WINDOW_STRIDE * 2, NAME_SCORE_WINDOW_61_PERCENT),
+      },
+      {
+        path: 'a/D.c',
+        content: nameScoreEditWindow(NAME_SCORE_WINDOW_STRIDE * 3, NAME_SCORE_WINDOW_61_PERCENT),
+      },
+      {
+        path: 'a/E.c',
+        content: nameScoreEditWindow(NAME_SCORE_WINDOW_STRIDE * 4, NAME_SCORE_WINDOW_61_PERCENT),
+      },
+    ],
+    after: [{ path: 'b/E.c', content: nameScoreWideBody() }],
+  },
+  {
+    label: 'the same 5-way tie under -C — the cap still keeps the basename match (4x D ; R061 E→E)',
+    before: [
+      { path: 'a/A.c', content: nameScoreEditWindow(0, NAME_SCORE_WINDOW_61_PERCENT) },
+      {
+        path: 'a/B.c',
+        content: nameScoreEditWindow(NAME_SCORE_WINDOW_STRIDE, NAME_SCORE_WINDOW_61_PERCENT),
+      },
+      {
+        path: 'a/C.c',
+        content: nameScoreEditWindow(NAME_SCORE_WINDOW_STRIDE * 2, NAME_SCORE_WINDOW_61_PERCENT),
+      },
+      {
+        path: 'a/D.c',
+        content: nameScoreEditWindow(NAME_SCORE_WINDOW_STRIDE * 3, NAME_SCORE_WINDOW_61_PERCENT),
+      },
+      {
+        path: 'a/E.c',
+        content: nameScoreEditWindow(NAME_SCORE_WINDOW_STRIDE * 4, NAME_SCORE_WINDOW_61_PERCENT),
+      },
+    ],
+    after: [{ path: 'b/E.c', content: nameScoreWideBody() }],
+    gitFlags: ['-C'],
+    renameOptions: { copies: 'on' },
+  },
+  {
+    label: '2 equal-score sources, only the second basename-matches (D A ; R061 B→B)',
+    before: [
+      { path: 'a/A.c', content: nameScoreEditWindow(0, NAME_SCORE_WINDOW_61_PERCENT) },
+      {
+        path: 'a/B.c',
+        content: nameScoreEditWindow(NAME_SCORE_WINDOW_STRIDE, NAME_SCORE_WINDOW_61_PERCENT),
+      },
+    ],
+    after: [{ path: 'b/B.c', content: nameScoreWideBody() }],
+  },
+];
+
+const nameScoreFixtures = new Map<string, { readonly dir: string }>();
+
+function nameScoreFixtureOf(label: string): { readonly dir: string } {
+  const found = nameScoreFixtures.get(label);
+  if (found === undefined) throw new Error(`fixture not built for row: ${label}`);
+  return found;
+}
+
+describe.skipIf(!GIT_AVAILABLE)('name_score matrix tie-break interop', () => {
+  beforeAll(async () => {
+    for (const row of NAME_SCORE_ROWS) {
+      nameScoreFixtures.set(row.label, await buildRenameRow(row, TMP_PREFIX));
+    }
+  }, SETUP_TIMEOUT);
+
+  afterAll(async () => {
+    for (const { dir } of nameScoreFixtures.values()) {
+      await rmDir(dir, { recursive: true, force: true });
+    }
+  });
+
+  describe('Given a raw diff pair exercising the name_score matrix tie-break', () => {
+    describe('When diff is called with detectRenames', () => {
+      it.each(NAME_SCORE_ROWS)('Then name-status matches live git for: $label', async (row) => {
+        // Arrange
+        const { dir } = nameScoreFixtureOf(row.label);
+
+        // Act
+        const { ours, peer } = await runRenameRow(row, dir);
+
+        // Assert
+        expect(ours).toBe(peer);
+      });
     });
   });
 });

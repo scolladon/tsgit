@@ -144,6 +144,63 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
+  describe('Given two leftover deletes tied at the same inexact score, the second basename-matching', () => {
+    describe('When detectSimilarityRenames is called', () => {
+      it('Then the basename-matching source wins — nameScore breaks the score tie, not build order', async () => {
+        // Arrange — del1 and del2 each differ from dst by exactly one (distinct)
+        // line, so both tie at the same inexact score; only del2's basename
+        // ('Foo.txt') matches the destination's, and it is examined SECOND.
+        const ctx = await buildSeededContext();
+        const dstContent = tenLines(-1);
+        const del1Content = tenLines(0);
+        const del2Content = tenLines(5);
+        const dstId = await writeBlob(ctx, dstContent);
+        const del1Id = await writeBlob(ctx, del1Content);
+        const del2Id = await writeBlob(ctx, del2Content);
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'delete',
+              oldPath: 'a/Aaa.txt' as FilePath,
+              oldId: del1Id,
+              oldMode: FILE_MODE.REGULAR,
+            },
+            {
+              type: 'delete',
+              oldPath: 'a/Foo.txt' as FilePath,
+              oldId: del2Id,
+              oldMode: FILE_MODE.REGULAR,
+            },
+            {
+              type: 'add',
+              newPath: 'b/Foo.txt' as FilePath,
+              newId: dstId,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act
+        const result = await detectSimilarityRenames(ctx, diff);
+
+        // Assert — the tie is genuine (both candidates score identically)
+        const rename = result.changes.find((c) => c.type === 'rename');
+        const encoder = new TextEncoder();
+        const del1Score = estimateSimilarity(
+          encoder.encode(del1Content),
+          encoder.encode(dstContent),
+        );
+        const del2Score = estimateSimilarity(
+          encoder.encode(del2Content),
+          encoder.encode(dstContent),
+        );
+        expect(del1Score).toBe(del2Score);
+        expect(rename?.oldPath).toBe('a/Foo.txt');
+        expect(result.changes.find((c) => c.type === 'delete')?.oldPath).toBe('a/Aaa.txt');
+      });
+    });
+  });
+
   describe('Given a leftover add/delete pair with score exactly at the threshold', () => {
     describe('When detectSimilarityRenames is called with that threshold', () => {
       it('Then the pair folds into a rename (inclusive >= threshold)', async () => {
@@ -3746,7 +3803,7 @@ describe('detectSimilarityRenames', () => {
 });
 
 const oidOf = (c: string): ObjectId => c.repeat(40) as ObjectId;
-const renameTriple = (score: number): ScoredTriple => ({
+const renameTriple = (score: number, nameScore: 0 | 1 = 0): ScoredTriple => ({
   kind: 'rename',
   src: {
     type: 'delete',
@@ -3761,6 +3818,7 @@ const renameTriple = (score: number): ScoredTriple => ({
     newMode: FILE_MODE.REGULAR,
   } satisfies AddChange,
   score,
+  nameScore,
 });
 
 describe('Given the per-destination candidate matrix helper recordIfBetter', () => {
@@ -3816,6 +3874,47 @@ describe('Given the per-destination candidate matrix helper recordIfBetter', () 
 
       // Assert — equal score does not displace; the original object is retained
       expect(slots[1]).toBe(original);
+    });
+  });
+
+  describe('When a fifth equal-score, basename-matching candidate arrives at four equal-score, non-basename-matching slots', () => {
+    it('Then it displaces the slot at the lowest index — nameScore breaks the score tie', () => {
+      // Arrange — git's name_score in score_compare: on a score tie, the
+      // lowest-ranked (worst) slot is the lowest index, since none of the
+      // four outranks another; a matching basename then beats that tie.
+      const slots: ScoredTriple[] = [
+        renameTriple(50, 0),
+        renameTriple(50, 0),
+        renameTriple(50, 0),
+        renameTriple(50, 0),
+      ];
+      const fifth = renameTriple(50, 1);
+
+      // Act
+      recordIfBetter(slots, fifth);
+
+      // Assert
+      expect(slots[0]).toBe(fifth);
+      expect(slots.map((s) => s.nameScore)).toEqual([1, 0, 0, 0]);
+    });
+  });
+
+  describe('When a strictly higher-scoring candidate arrives at a full slot array whose minimum also ties on nameScore', () => {
+    it('Then score still outranks nameScore — the candidate replaces the lowest-scoring slot', () => {
+      // Arrange
+      const slots: ScoredTriple[] = [
+        renameTriple(50, 1),
+        renameTriple(10, 1),
+        renameTriple(30, 0),
+        renameTriple(20, 0),
+      ];
+      const candidate = renameTriple(25, 0);
+
+      // Act
+      recordIfBetter(slots, candidate);
+
+      // Assert
+      expect(slots[1]).toBe(candidate);
     });
   });
 

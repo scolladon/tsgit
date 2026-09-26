@@ -27,6 +27,22 @@ export interface SourcePair {
   readonly score: number;
 }
 
+/** One candidate's rank inputs for git's matrix ordering (`score_compare`). */
+export interface RankedCandidate {
+  readonly score: number;
+  /** 1 when the candidate's source and destination share a basename, else 0. */
+  readonly nameScore: 0 | 1;
+}
+
+/**
+ * git's `score_compare`: orders candidates score-descending, then
+ * nameScore-descending on a score tie. A negative result means `a` ranks
+ * ahead of `b`; 0 means neither outranks the other.
+ */
+export function compareCandidates(a: RankedCandidate, b: RankedCandidate): number {
+  return a.score === b.score ? b.nameScore - a.nameScore : b.score - a.score;
+}
+
 export interface ExactPairing {
   /** Every pair scores MAX_SCORE — the exact pass only ever pairs identical content. */
   readonly pairs: ReadonlyArray<SourcePair>;
@@ -45,7 +61,7 @@ function exactKey(id: ObjectId, mode: FileMode): string {
 }
 
 // Last path segment equality; 'Foo' ≡ 'b/Foo', 'xFoo' ≢ 'Foo' (git's basename_same).
-function hasSameBasename(oldPath: FilePath, newPath: FilePath): boolean {
+export function hasSameBasename(oldPath: FilePath, newPath: FilePath): boolean {
   const oldBasename = oldPath.slice(oldPath.lastIndexOf('/') + 1);
   const newBasename = newPath.slice(newPath.lastIndexOf('/') + 1);
   return oldBasename === newBasename;

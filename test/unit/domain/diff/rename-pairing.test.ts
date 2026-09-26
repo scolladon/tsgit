@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import type { AddChange } from '../../../../src/domain/diff/diff-change.js';
-import type { RenameSource, SourceOrigin } from '../../../../src/domain/diff/rename-pairing.js';
-import { pairIdenticalFiles } from '../../../../src/domain/diff/rename-pairing.js';
+import type {
+  RankedCandidate,
+  RenameSource,
+  SourceOrigin,
+} from '../../../../src/domain/diff/rename-pairing.js';
+import {
+  compareCandidates,
+  pairIdenticalFiles,
+} from '../../../../src/domain/diff/rename-pairing.js';
 import { MAX_SCORE } from '../../../../src/domain/diff/similarity.js';
 import type { FileMode, FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
@@ -179,6 +186,74 @@ describe('pairIdenticalFiles', () => {
         // Assert
         expect(result.pairs).toEqual([{ source: 0, destination, score: MAX_SCORE }]);
         expect(result.uses[100]).toBe(0);
+      });
+    });
+  });
+});
+
+function candidate(score: number, nameScore: 0 | 1): RankedCandidate {
+  return { score, nameScore };
+}
+
+describe('compareCandidates', () => {
+  describe('Given two candidates with different scores', () => {
+    describe('When compareCandidates is called', () => {
+      it('Then the higher-scoring candidate ranks first regardless of nameScore', () => {
+        // Arrange
+        const higher = candidate(90, 0);
+        const lower = candidate(10, 1);
+
+        // Act
+        const result = compareCandidates(higher, lower);
+
+        // Assert
+        expect(result).toBeLessThan(0);
+      });
+    });
+  });
+
+  describe('Given two candidates tied on score but not on nameScore', () => {
+    describe('When compareCandidates is called with the basename-matching candidate first', () => {
+      it('Then the basename-matching candidate ranks first', () => {
+        // Arrange
+        const matching = candidate(50, 1);
+        const nonMatching = candidate(50, 0);
+
+        // Act
+        const result = compareCandidates(matching, nonMatching);
+
+        // Assert
+        expect(result).toBeLessThan(0);
+      });
+    });
+
+    describe('When compareCandidates is called with the basename-matching candidate second', () => {
+      it('Then the basename-matching candidate still ranks first', () => {
+        // Arrange
+        const matching = candidate(50, 1);
+        const nonMatching = candidate(50, 0);
+
+        // Act
+        const result = compareCandidates(nonMatching, matching);
+
+        // Assert
+        expect(result).toBeGreaterThan(0);
+      });
+    });
+  });
+
+  describe('Given two candidates tied on both score and nameScore', () => {
+    describe('When compareCandidates is called', () => {
+      it('Then neither ranks ahead of the other', () => {
+        // Arrange
+        const a = candidate(50, 1);
+        const b = candidate(50, 1);
+
+        // Act
+        const result = compareCandidates(a, b);
+
+        // Assert
+        expect(result).toBe(0);
       });
     });
   });
