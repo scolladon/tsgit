@@ -401,6 +401,24 @@ describe('selectPairs', () => {
       });
     });
   });
+
+  describe('Given a candidate scoring exactly the threshold', () => {
+    describe('When selectPairs runs pass 1', () => {
+      it('Then the candidate pairs — the boundary is inclusive', () => {
+        // Arrange
+        const destination = addChange('dst.meta', ID_A);
+        const sorted = [matrixCandidate(0, destination, 50)];
+        const uses = [0];
+
+        // Act
+        const result = sutSelectPairs(sorted, uses, { copies: false, threshold: 50 });
+
+        // Assert
+        expect(result.pairs).toEqual([{ source: 0, destination, score: 50 }]);
+        expect(result.uses).toEqual([1]);
+      });
+    });
+  });
 });
 
 const sutUniqueBasenamePairs = uniqueBasenamePairs;

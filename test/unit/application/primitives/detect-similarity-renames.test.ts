@@ -6238,3 +6238,54 @@ describe('Given the size prefilter isSizeRejected', () => {
     });
   });
 });
+
+describe('Given a diff that already carries a resolved rename, alongside an add matching its source content', () => {
+  describe('When detectSimilarityRenames is called with copies:"on"', () => {
+    it('Then the resolved rename is passed through untouched and is never re-registered as a copy source', async () => {
+      // Arrange — a caller composing detectSimilarityRenames directly (not through
+      // diffTrees, whose raw diff never contains 'rename'/'copy') can hand it an
+      // already-resolved rename. Its oldId must NOT become a copy-source candidate:
+      // an add sharing that content stays a plain add, not a copy.
+      const ctx = await buildSeededContext();
+      const sharedContent = 'shared-content-for-the-resolved-rename-source\n'.repeat(10);
+      const sharedId = await writeBlob(ctx, sharedContent);
+      const renamedNewId = await writeBlob(
+        ctx,
+        'unrelated-rename-destination-content\n'.repeat(10),
+      );
+      const resolvedRename: DiffChange = {
+        type: 'rename',
+        oldPath: 'already-renamed-old.txt' as FilePath,
+        newPath: 'already-renamed-new.txt' as FilePath,
+        oldId: sharedId,
+        newId: renamedNewId,
+        oldMode: FILE_MODE.REGULAR,
+        newMode: FILE_MODE.REGULAR,
+        similarity: { score: MAX_SCORE, maxScore: MAX_SCORE },
+      };
+      const diff: TreeDiff = {
+        changes: [
+          resolvedRename,
+          {
+            type: 'add',
+            newPath: 'candidate-copy-dst.txt' as FilePath,
+            newId: sharedId,
+            newMode: FILE_MODE.REGULAR,
+          },
+        ],
+      };
+
+      // Act
+      const result = await detectSimilarityRenames(ctx, diff, { copies: 'on' });
+
+      // Assert — no copy was formed from the resolved rename's oldId
+      expect(result.changes.filter((c) => c.type === 'copy')).toHaveLength(0);
+      const add = result.changes.find((c) => c.type === 'add');
+      expect(add?.type).toBe('add');
+      if (add?.type === 'add') expect(add.newPath).toBe('candidate-copy-dst.txt');
+      // Assert — the resolved rename passed through unchanged
+      const passedThrough = result.changes.find((c) => c.type === 'rename');
+      expect(passedThrough).toEqual(resolvedRename);
+    });
+  });
+});
