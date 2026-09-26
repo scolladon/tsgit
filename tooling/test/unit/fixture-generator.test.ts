@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
-import { chmod, mkdtemp, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdtemp, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
@@ -8,21 +8,26 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import {
   DEEP_ANCESTRY_SMALL,
+  ensureRenameFixture,
   ensureScaledFixture,
   FIXTURE_GENERATOR_VERSION,
   isFixtureUnavailable,
+  type RenameFixtureSize,
+  type RenameFixtureStorage,
   SMALL_FIXTURE,
   toScaledFixture,
 } from '../../../test/bench/support/fixture-generator.ts';
 
-// `rename` defaults to the real implementation for every test; only the two
-// race tests override it (and restore it in a `finally`). The mock is file-wide
-// (hoisted above every import), so the generator under test sees the same
-// module and every other test still performs a genuine rename.
+// `rename`/`access` default to the real implementation for every test; only
+// the tests that exercise a race or a filesystem failure override one (and
+// restore it in a `finally`). The mock is file-wide (hoisted above every
+// import), so the generator under test sees the same module and every other
+// test still performs genuine filesystem operations.
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
   return {
     ...actual,
+    access: vi.fn(actual.access),
     readFile: vi.fn(actual.readFile),
     rename: vi.fn(actual.rename),
     rm: vi.fn(actual.rm),
@@ -976,6 +981,235 @@ describe('toScaledFixture', () => {
         // Assert
         expect(Object.hasOwn(result, 'lastBlobId')).toBe(true);
         expect(result.lastBlobId).toBe(lastBlobId);
+      });
+    });
+  });
+});
+
+describe.skipIf(RUNNING_UNDER_STRYKER || !HAS_GIT)('ensureRenameFixture', () => {
+  let originalXdgCacheHome: string | undefined;
+  let isolatedCacheHome: string;
+
+  beforeAll(async () => {
+    originalXdgCacheHome = process.env.XDG_CACHE_HOME;
+    isolatedCacheHome = await mkdtemp(
+      path.join(os.tmpdir(), 'tsgit-fixture-generator-rename-test-'),
+    );
+    process.env.XDG_CACHE_HOME = isolatedCacheHome;
+  });
+
+  afterAll(async () => {
+    if (originalXdgCacheHome === undefined) {
+      delete process.env.XDG_CACHE_HOME;
+    } else {
+      process.env.XDG_CACHE_HOME = originalXdgCacheHome;
+    }
+    await rm(isolatedCacheHome, { recursive: true, force: true });
+  });
+
+  // Shrinks the two hostile shapes well below "hundreds of MiB" — `common`
+  // and `wide` ignore this (their bench-scale defaults are already cheap).
+  const SMALL_SIZE: RenameFixtureSize = { fileCount: 2, blobBytes: 64 };
+
+  const lsTreePaths = (cwd: string): string[] =>
+    gitOut(cwd, ['ls-tree', '-r', 'HEAD', '--name-only'])
+      .split('\n')
+      .filter((line) => line !== '');
+
+  const blobSizeAt = (cwd: string, ref: string, blobPathArg: string): number =>
+    Number(gitOut(cwd, ['cat-file', '-s', `${ref}:${blobPathArg}`]));
+
+  const packFileCount = async (cwd: string): Promise<number> => {
+    const packDir = path.join(cwd, '.git', 'objects', 'pack');
+    const entries = await readdir(packDir).catch(() => [] as string[]);
+    return entries.filter((entry) => entry.endsWith('.pack')).length;
+  };
+
+  const looseObjectCount = async (cwd: string): Promise<number> => {
+    const objectsDir = path.join(cwd, '.git', 'objects');
+    const shards = await readdir(objectsDir).catch(() => [] as string[]);
+    let count = 0;
+    for (const shard of shards) {
+      if (shard === 'pack' || shard === 'info') continue;
+      count += (await readdir(path.join(objectsDir, shard)).catch(() => [] as string[])).length;
+    }
+    return count;
+  };
+
+  /**
+   * `packed` always ran an explicit `repack -adq`, which consolidates every
+   * object into one pack and removes the loose originals — a guaranteed
+   * invariant. `loose` skips that repack, but `git fast-import` itself packs
+   * once its own object count/size heuristic is crossed, so the
+   * zero-packs-stay-loose half only holds for shapes small enough to stay
+   * under that undocumented threshold (`looseGuaranteed`; `wide`'s 300 files
+   * cross it even at bench scale, so it opts out).
+   */
+  const expectStorageShape = async (
+    cwd: string,
+    storage: RenameFixtureStorage,
+    looseGuaranteed = true,
+  ): Promise<void> => {
+    const packs = await packFileCount(cwd);
+    const looseObjects = await looseObjectCount(cwd);
+    if (storage === 'packed') {
+      expect(packs).toBeGreaterThan(0);
+      expect(looseObjects).toBe(0);
+      return;
+    }
+    if (!looseGuaranteed) return;
+    expect(packs).toBe(0);
+    expect(looseObjects).toBeGreaterThan(0);
+  };
+
+  describe('Given the common shape', () => {
+    describe('When ensureRenameFixture builds it loose or packed', () => {
+      it.each<RenameFixtureStorage>(['loose', 'packed'])(
+        'Then the 3 renamed-and-edited files replace their originals under %s storage',
+        async (storage) => {
+          // Arrange
+          const sut = ensureRenameFixture;
+
+          // Act
+          const result = await sut('common', storage);
+
+          // Assert
+          const paths = lsTreePaths(result.cwd);
+          expect(paths).toHaveLength(50);
+          expect(paths).toEqual(
+            expect.arrayContaining([
+              'common/moved-f00.txt',
+              'common/moved-f01.txt',
+              'common/moved-f02.txt',
+            ]),
+          );
+          expect(paths).not.toContain('common/f00.txt');
+          expect(paths).not.toContain('common/f01.txt');
+          expect(paths).not.toContain('common/f02.txt');
+          await expectStorageShape(result.cwd, storage);
+        },
+      );
+    });
+  });
+
+  describe('Given the wide shape', () => {
+    describe('When ensureRenameFixture builds it loose or packed', () => {
+      it.each<RenameFixtureStorage>(['loose', 'packed'])(
+        'Then every one of the 300 files moves to its own moved-path under %s storage',
+        async (storage) => {
+          // Arrange
+          const sut = ensureRenameFixture;
+
+          // Act
+          const result = await sut('wide', storage);
+
+          // Assert
+          const paths = lsTreePaths(result.cwd);
+          expect(paths).toHaveLength(300);
+          expect(paths.every((path_) => path_.startsWith('wide/moved-f'))).toBe(true);
+          expect(blobSizeAt(result.cwd, 'HEAD', 'wide/moved-f000.dat')).toBe(4096);
+          // wide's 300 files cross fast-import's own auto-pack threshold even
+          // under 'loose' storage — see expectStorageShape's doc comment.
+          await expectStorageShape(result.cwd, storage, false);
+        },
+      );
+    });
+  });
+
+  describe('Given the hostile shape at a small override size', () => {
+    describe('When ensureRenameFixture builds it loose or packed', () => {
+      it.each<RenameFixtureStorage>(['loose', 'packed'])(
+        'Then every delete is dropped and the tiny 6-byte add alone survives under %s storage',
+        async (storage) => {
+          // Arrange
+          const sut = ensureRenameFixture;
+
+          // Act
+          const result = await sut('hostile', storage, SMALL_SIZE);
+
+          // Assert
+          expect(lsTreePaths(result.cwd)).toEqual(['hostile/added.txt']);
+          expect(blobSizeAt(result.cwd, 'HEAD', 'hostile/added.txt')).toBe(6);
+          expect(blobSizeAt(result.cwd, 'HEAD~1', 'hostile/f000.bin')).toBe(SMALL_SIZE.blobBytes);
+          expect(blobSizeAt(result.cwd, 'HEAD~1', 'hostile/f001.bin')).toBe(SMALL_SIZE.blobBytes);
+          await expectStorageShape(result.cwd, storage);
+        },
+      );
+    });
+  });
+
+  describe('Given the hostile-basename shape at a small override size', () => {
+    describe('When ensureRenameFixture builds it loose or packed', () => {
+      it.each<RenameFixtureStorage>(['loose', 'packed'])(
+        'Then each pair keeps its own same-basename destination under %s storage',
+        async (storage) => {
+          // Arrange
+          const sut = ensureRenameFixture;
+
+          // Act
+          const result = await sut('hostile-basename', storage, SMALL_SIZE);
+
+          // Assert
+          expect([...lsTreePaths(result.cwd)].sort()).toEqual([
+            'hostile-basename/new/f000.bin',
+            'hostile-basename/new/f001.bin',
+          ]);
+          expect(blobSizeAt(result.cwd, 'HEAD', 'hostile-basename/new/f000.bin')).toBe(5);
+          expect(blobSizeAt(result.cwd, 'HEAD~1', 'hostile-basename/old/f000.bin')).toBe(
+            SMALL_SIZE.blobBytes,
+          );
+          await expectStorageShape(result.cwd, storage);
+        },
+      );
+    });
+  });
+
+  describe('Given a pristine cached rename fixture carrying a sentinel file', () => {
+    describe('When ensureRenameFixture resolves it again', () => {
+      it('Then the cache hit path returns it without rebuilding', async () => {
+        // Arrange
+        const original = await ensureRenameFixture('common', 'loose');
+        const sentinelPath = path.join(original.cwd, 'sentinel.txt');
+        await writeFile(sentinelPath, 'sentinel');
+        const sut = ensureRenameFixture;
+
+        // Act
+        await sut('common', 'loose');
+
+        // Assert
+        const sentinelContent = await readFile(sentinelPath, 'utf8');
+        expect(sentinelContent).toBe('sentinel');
+      });
+    });
+  });
+
+  describe('Given access rejecting the cache probe with a non-ENOENT error', () => {
+    describe('When ensureRenameFixture checks whether the fixture is cached', () => {
+      it('Then the access error rethrows instead of being treated as a cache miss', async () => {
+        // Arrange
+        const actualFs =
+          await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+        const mockedAccess = vi.mocked(access);
+        const eacces = Object.assign(new Error('EACCES: simulated permission failure'), {
+          code: 'EACCES',
+        });
+        mockedAccess.mockImplementation(async () => {
+          throw eacces;
+        });
+        const sut = ensureRenameFixture;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut('common', 'loose');
+        } catch (err) {
+          caught = err;
+        } finally {
+          mockedAccess.mockImplementation(actualFs.access);
+        }
+
+        // Assert
+        expect(caught).toBe(eacces);
       });
     });
   });

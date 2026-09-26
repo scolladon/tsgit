@@ -990,6 +990,15 @@ export interface RenameFixture {
   readonly cwd: string;
 }
 
+/** Overrides for the `hostile`/`hostile-basename` shapes' file count and
+ *  per-blob byte size — defaults reproduce the bench-scale fixture; a test
+ *  passes small values so it never builds hundreds of MiB. `common`/`wide`
+ *  ignore this: their bench-scale defaults are already unit-test-cheap. */
+export interface RenameFixtureSize {
+  readonly fileCount?: number;
+  readonly blobBytes?: number;
+}
+
 const RENAME_COMMIT_MESSAGE_SEED = 'seed\n';
 
 const COMMON_FILE_COUNT = 50;
@@ -1113,11 +1122,15 @@ const HOSTILE_ADD_CONTENT = Buffer.from('D300!\n', 'utf8');
 const hostilePath = (fileIndex: number): string =>
   `hostile/f${fileIndex.toString().padStart(3, '0')}.bin`;
 
-/** 300 distinct 1 MiB blobs seeded, then all deleted plus one 6-byte add. */
-const streamHostileRenameFastImport = async (stdin: Writable): Promise<void> => {
+/** N distinct 1 MiB blobs (bench scale) seeded, then all deleted plus one
+ *  6-byte add. */
+const streamHostileRenameFastImport = async (
+  stdin: Writable,
+  { fileCount = HOSTILE_FILE_COUNT, blobBytes = HOSTILE_BLOB_BYTES }: RenameFixtureSize = {},
+): Promise<void> => {
   let seedChanges = '';
-  for (let i = 0; i < HOSTILE_FILE_COUNT; i += 1) {
-    await writeBlobEntry(stdin, i + 1, blobContent(i, HOSTILE_BLOB_BYTES));
+  for (let i = 0; i < fileCount; i += 1) {
+    await writeBlobEntry(stdin, i + 1, blobContent(i, blobBytes));
     seedChanges += `M 100644 :${i + 1} ${hostilePath(i)}\n`;
   }
   await writeCommitEntry(stdin, {
@@ -1127,10 +1140,10 @@ const streamHostileRenameFastImport = async (stdin: Writable): Promise<void> => 
   });
 
   let mutateChanges = '';
-  for (let i = 0; i < HOSTILE_FILE_COUNT; i += 1) {
+  for (let i = 0; i < fileCount; i += 1) {
     mutateChanges += `D ${hostilePath(i)}\n`;
   }
-  const addMark = HOSTILE_FILE_COUNT + 1;
+  const addMark = fileCount + 1;
   await writeBlobEntry(stdin, addMark, HOSTILE_ADD_CONTENT);
   mutateChanges += `M 100644 :${addMark} ${HOSTILE_ADD_PATH}\n`;
   await writeCommitEntry(stdin, {
@@ -1160,12 +1173,18 @@ const hostileBasenameNewPath = (fileIndex: number): string =>
 const hostileBasenameAddContent = (fileIndex: number): Buffer =>
   Buffer.from(`h${fileIndex.toString().padStart(3, '0')}\n`, 'utf8');
 
-/** N distinct 1 MiB blobs seeded, then each deleted and replaced by its own
- *  same-basename 6-byte add in a sibling directory. */
-const streamHostileBasenameRenameFastImport = async (stdin: Writable): Promise<void> => {
+/** N distinct 1 MiB (bench scale) blobs seeded, then each deleted and
+ *  replaced by its own same-basename 6-byte add in a sibling directory. */
+const streamHostileBasenameRenameFastImport = async (
+  stdin: Writable,
+  {
+    fileCount = HOSTILE_BASENAME_PAIR_COUNT,
+    blobBytes = HOSTILE_BASENAME_BLOB_BYTES,
+  }: RenameFixtureSize = {},
+): Promise<void> => {
   let seedChanges = '';
-  for (let i = 0; i < HOSTILE_BASENAME_PAIR_COUNT; i += 1) {
-    await writeBlobEntry(stdin, i + 1, blobContent(i, HOSTILE_BASENAME_BLOB_BYTES));
+  for (let i = 0; i < fileCount; i += 1) {
+    await writeBlobEntry(stdin, i + 1, blobContent(i, blobBytes));
     seedChanges += `M 100644 :${i + 1} ${hostileBasenameOldPath(i)}\n`;
   }
   await writeCommitEntry(stdin, {
@@ -1175,8 +1194,8 @@ const streamHostileBasenameRenameFastImport = async (stdin: Writable): Promise<v
   });
 
   let mutateChanges = '';
-  let mark = HOSTILE_BASENAME_PAIR_COUNT + 1;
-  for (let i = 0; i < HOSTILE_BASENAME_PAIR_COUNT; i += 1) {
+  let mark = fileCount + 1;
+  for (let i = 0; i < fileCount; i += 1) {
     mutateChanges += `D ${hostileBasenameOldPath(i)}\n`;
     await writeBlobEntry(stdin, mark, hostileBasenameAddContent(i));
     mutateChanges += `M 100644 :${mark} ${hostileBasenameNewPath(i)}\n`;
@@ -1189,7 +1208,10 @@ const streamHostileBasenameRenameFastImport = async (stdin: Writable): Promise<v
   });
 };
 
-const RENAME_FIXTURE_STREAMS: Record<RenameFixtureShape, (stdin: Writable) => Promise<void>> = {
+const RENAME_FIXTURE_STREAMS: Record<
+  RenameFixtureShape,
+  (stdin: Writable, size?: RenameFixtureSize) => Promise<void>
+> = {
   common: streamCommonRenameFastImport,
   wide: streamWideRenameFastImport,
   hostile: streamHostileRenameFastImport,
@@ -1203,10 +1225,11 @@ const buildRenameFixtureInto = async (
   repoDir: string,
   shape: RenameFixtureShape,
   storage: RenameFixtureStorage,
+  size?: RenameFixtureSize,
 ): Promise<void> => {
   await mkdir(repoDir, { recursive: true });
   await runGit(repoDir, ['init', '--initial-branch=main', '--quiet']);
-  await runFastImportRaw(repoDir, RENAME_FIXTURE_STREAMS[shape]);
+  await runFastImportRaw(repoDir, (stdin) => RENAME_FIXTURE_STREAMS[shape](stdin, size));
   await runGit(repoDir, ['checkout', '-f', 'main']);
   if (storage === 'packed') await runGit(repoDir, ['repack', '-adq']);
 };
@@ -1237,13 +1260,14 @@ const renameFixtureCached = async (cacheDir: string): Promise<boolean> => {
 export const ensureRenameFixture = async (
   shape: RenameFixtureShape,
   storage: RenameFixtureStorage,
+  size?: RenameFixtureSize,
 ): Promise<RenameFixture> => {
   const cacheDir = renameFixtureCacheDir(shape, storage);
   if (await renameFixtureCached(cacheDir)) return { cwd: cacheDir };
   await assertGitAvailable();
   const tmpDir = leftoverDirName(cacheDir, 'tmp');
   try {
-    await buildRenameFixtureInto(tmpDir, shape, storage);
+    await buildRenameFixtureInto(tmpDir, shape, storage, size);
     await rename(tmpDir, cacheDir);
   } catch (err) {
     await discardTempBuild(tmpDir);
