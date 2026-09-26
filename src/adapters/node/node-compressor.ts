@@ -6,10 +6,12 @@ import {
   deflateRawSync,
   deflateSync,
   inflateSync,
+  constants as zlibConstants,
 } from 'node:zlib';
 import { compressFailed, decompressFailed } from '../../domain/index.js';
 import { concatBytes } from '../../domain/objects/encoding.js';
 import type { Compressor, InflateStreamResult } from '../../ports/compressor.js';
+import { INFLATE_CAP_EXCEEDED_REASON, MAX_INFLATE_OUTPUT_BYTES } from '../../ports/compressor.js';
 
 const deflateAsync = promisify(deflateCallback);
 const deflateRawAsync = promisify(deflateRawCallback);
@@ -19,11 +21,14 @@ export function describeError(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/**
- * Hard cap on inflated output to defeat zip-bomb amplification. Mirrors the
- * delta `targetLength` cap (2 GiB) so a single object cannot exhaust heap.
- */
-const MAX_INFLATED_OBJECT_BYTES = 2 * 1024 * 1024 * 1024;
+/** Node's own signal that `inflateSync`'s `maxOutputLength` was exceeded —
+ *  detected structurally via `code`, never via `message`, for the same
+ *  reason `isTruncatedStreamError` below avoids node's own wording. */
+function isBufferTooLargeError(err: unknown): boolean {
+  return (
+    err instanceof RangeError && (err as NodeJS.ErrnoException).code === 'ERR_BUFFER_TOO_LARGE'
+  );
+}
 
 /**
  * This gate applies to `deflate`/`deflateRaw` ONLY — see the design note
@@ -112,6 +117,16 @@ function toResultView(out: Buffer): Uint8Array {
     : new Uint8Array(out);
 }
 
+/** `inflateHead`'s starting input-prefix length: a zlib header needs only 2
+ *  bytes, but a dynamic-Huffman block header can exceed 30, so the smallest
+ *  probe that reliably clears a real header is git's own `MAX_HEADER_LEN`. */
+const HEAD_PROBE_INPUT_BYTES = 32;
+
+/** How much the input prefix grows each time a probe under-decodes: large
+ *  enough that a handful of passes covers even a multi-megabyte header run,
+ *  without probing so finely that a typical short header needs many passes. */
+const HEAD_PROBE_GROWTH_FACTOR = 4;
+
 interface NodeCompressorOptions {
   /** Override the inflated-output cap. Tests use a small value to exercise the overflow branch. */
   readonly maxInflatedBytes?: number;
@@ -121,7 +136,7 @@ export class NodeCompressor implements Compressor {
   private readonly maxInflatedBytes: number;
 
   constructor(options?: NodeCompressorOptions) {
-    this.maxInflatedBytes = options?.maxInflatedBytes ?? MAX_INFLATED_OBJECT_BYTES;
+    this.maxInflatedBytes = options?.maxInflatedBytes ?? MAX_INFLATE_OUTPUT_BYTES;
   }
 
   /** Clamps a caller-supplied `streamInflate` bound to this instance's own
@@ -181,9 +196,35 @@ export class NodeCompressor implements Compressor {
   // libuv threadpool hop never pays off in the measured range — see
   // CALLBACK_DISPATCH_THRESHOLD_BYTES. Unlike deflate/deflateRaw, inflate
   // does not gate on payload size.
-  inflate = async (data: Uint8Array): Promise<Uint8Array> => {
+  inflate = async (data: Uint8Array, maxOutputBytes?: number): Promise<Uint8Array> => {
     try {
-      return toResultView(inflateSync(data, { maxOutputLength: this.maxInflatedBytes }));
+      return toResultView(
+        inflateSync(data, { maxOutputLength: this.effectiveCap(maxOutputBytes) }),
+      );
+    } catch (err) {
+      throw decompressFailed(
+        isBufferTooLargeError(err) ? INFLATE_CAP_EXCEEDED_REASON : describeError(err),
+      );
+    }
+  };
+
+  // Probes a growing prefix of the compressed input with Z_SYNC_FLUSH, which
+  // decodes whatever whole output the prefix already yields without
+  // requiring the stream to be complete. Growing ×4 from a 32-byte prefix
+  // reaches most headers in one or two passes; the loop's last pass always
+  // covers the whole input, so a legitimately short stream still decodes in
+  // full.
+  inflateHead = async (data: Uint8Array, maxOutputBytes: number): Promise<Uint8Array> => {
+    try {
+      let probeLength = HEAD_PROBE_INPUT_BYTES;
+      for (;;) {
+        const prefix = data.subarray(0, probeLength);
+        const out = inflateSync(prefix, { finishFlush: zlibConstants.Z_SYNC_FLUSH });
+        if (out.length >= maxOutputBytes || prefix.length >= data.length) {
+          return toResultView(out).subarray(0, maxOutputBytes);
+        }
+        probeLength *= HEAD_PROBE_GROWTH_FACTOR;
+      }
     } catch (err) {
       throw decompressFailed(describeError(err));
     }
@@ -208,7 +249,7 @@ export class NodeCompressor implements Compressor {
         total += chunk.length;
         if (total > cap) {
           inflate.destroy();
-          reject(decompressFailed('inflated output exceeds safety cap'));
+          reject(decompressFailed(INFLATE_CAP_EXCEEDED_REASON));
           return;
         }
         chunks.push(new Uint8Array(chunk));
@@ -282,7 +323,7 @@ export class NodeCompressor implements Compressor {
         inflate.on('data', (chunk: Buffer) => {
           total += chunk.length;
           if (total > cap) {
-            controller?.error(decompressFailed('inflated output exceeds safety cap'));
+            controller?.error(decompressFailed(INFLATE_CAP_EXCEEDED_REASON));
             inflate.destroy();
             // destroy() means no 'end' will ever fire, so an in-flight flush()
             // would wait forever. RESOLVE, never reject: the controller already

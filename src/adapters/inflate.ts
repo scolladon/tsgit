@@ -9,6 +9,7 @@
  */
 
 import { decompressFailed } from '../domain/index.js';
+import { INFLATE_CAP_EXCEEDED_REASON, MAX_INFLATE_OUTPUT_BYTES } from '../ports/compressor.js';
 import { adler32 } from './adler32.js';
 
 const BITS_PER_BYTE = 8;
@@ -48,11 +49,12 @@ const BUFFER_GROWTH_FACTOR = 2;
 const INITIAL_CAPACITY_CEILING = 1 << 20;
 
 /**
- * Cap on inflated output to defeat decompression-bomb amplification. Mirrors
- * NodeCompressor's 2 GiB output cap so all three adapters refuse the same
- * malicious member with the same error, instead of exhausting memory.
+ * Cap on inflated output to defeat decompression-bomb amplification. Kept as
+ * its own export (this module's established name) but backed by the port's
+ * single owned ceiling, so every adapter refuses the same malicious member
+ * at the same size instead of restating the literal.
  */
-export const MAX_INFLATED_OUTPUT_BYTES = 2 * 1024 * 1024 * 1024;
+export const MAX_INFLATED_OUTPUT_BYTES = MAX_INFLATE_OUTPUT_BYTES;
 
 /** How much larger than its output an inflate buffer may be and still be handed out as a view. */
 const MAX_RETAINED_SLACK_FACTOR = 2;
@@ -301,17 +303,56 @@ function initialBufferCapacity(maxBytes: number): number {
 }
 
 /**
+ * How a `GrowableBuffer` reacts to a write that would push it past
+ * `maxBytes`: `'refuse'` (the decoder's default) throws `DECOMPRESS_FAILED`,
+ * the safety-cap contract every whole-member decode relies on. `'truncate'`
+ * instead writes only the bytes that still fit, then throws the
+ * module-private `HeadComplete` sentinel — `inflateZlibHead`'s signal to
+ * stop decoding a stream once it has captured exactly `maxBytes` output
+ * bytes, without treating a legitimately short stream as an error.
+ */
+export interface GrowableBufferOverflowPolicy {
+  readonly onOverflow: 'refuse' | 'truncate';
+}
+
+const REFUSE_ON_OVERFLOW: GrowableBufferOverflowPolicy = { onOverflow: 'refuse' };
+
+/**
+ * Thrown by a `'truncate'`-policy `GrowableBuffer` once it holds exactly its
+ * `maxBytes` output bytes. Never escapes `inflateZlibHead`, which is the
+ * only thing that constructs a `'truncate'` buffer and catches this by
+ * identity — nothing else in the module ever throws this class, so it can
+ * never be mistaken for a genuine decode failure.
+ */
+class HeadComplete {}
+const HEAD_COMPLETE = new HeadComplete();
+
+/**
  * Growable byte accumulator: doubles capacity on overflow, trims on
  * read-out. Exported so tests can pin the pre-sizing formula directly,
  * without decoding a full member.
+ *
+ * `append`/`appendByte`/`copyBackReference` each open on one monomorphic
+ * `this.truncates` check before falling through to the unchanged `'refuse'`
+ * body: every whole-member decode runs that body on every literal and
+ * back-reference symbol, so it must stay exactly today's cost, and a single
+ * boolean read on a shared prototype method (rather than a per-instance
+ * closure a JIT cannot speculate across separately-constructed buffers)
+ * measures as free. Only a `'truncate'` buffer (built solely by
+ * `inflateZlibHead`) ever takes the delegated bounds-clamping branch.
  * @internal
  */
 export class GrowableBuffer {
   private buffer: Uint8Array;
   private length = 0;
+  private readonly truncates: boolean;
 
-  constructor(private readonly maxBytes: number) {
+  constructor(
+    private readonly maxBytes: number,
+    overflow: GrowableBufferOverflowPolicy = REFUSE_ON_OVERFLOW,
+  ) {
     this.buffer = new Uint8Array(initialBufferCapacity(maxBytes));
+    this.truncates = overflow.onOverflow === 'truncate';
   }
 
   /** @internal Exposed only so tests can assert the pre-sized initial capacity. */
@@ -320,12 +361,37 @@ export class GrowableBuffer {
   }
 
   append(chunk: Uint8Array): void {
+    if (this.truncates) {
+      this.appendTruncating(chunk);
+      return;
+    }
     this.ensureCapacity(this.length + chunk.length);
     this.buffer.set(chunk, this.length);
     this.length += chunk.length;
   }
 
+  private appendTruncating(chunk: Uint8Array): void {
+    const writable = Math.min(chunk.length, this.maxBytes - this.length);
+    this.ensureCapacity(this.length + writable);
+    this.buffer.set(writable === chunk.length ? chunk : chunk.subarray(0, writable), this.length);
+    this.length += writable;
+    if (writable < chunk.length) throw HEAD_COMPLETE;
+  }
+
   appendByte(byte: number): void {
+    if (this.truncates) {
+      this.appendByteTruncating(byte);
+      return;
+    }
+    this.ensureCapacity(this.length + 1);
+    this.buffer[this.length] = byte;
+    this.length += 1;
+  }
+
+  private appendByteTruncating(byte: number): void {
+    if (this.length >= this.maxBytes) {
+      throw HEAD_COMPLETE;
+    }
     this.ensureCapacity(this.length + 1);
     this.buffer[this.length] = byte;
     this.length += 1;
@@ -338,6 +404,10 @@ export class GrowableBuffer {
   copyBackReference(distance: number, length: number): void {
     if (distance > this.length) {
       throw decompressFailed('distance exceeds output');
+    }
+    if (this.truncates) {
+      this.copyBackReferenceTruncating(distance, length);
+      return;
     }
     this.ensureCapacity(this.length + length);
     const readIndex = this.length - distance;
@@ -353,6 +423,19 @@ export class GrowableBuffer {
       return;
     }
     this.copyOverlapping(readIndex, length);
+  }
+
+  private copyBackReferenceTruncating(distance: number, length: number): void {
+    const writable = Math.min(length, this.maxBytes - this.length);
+    this.ensureCapacity(this.length + writable);
+    const readIndex = this.length - distance;
+    if (distance >= writable) {
+      this.buffer.copyWithin(this.length, readIndex, readIndex + writable);
+      this.length += writable;
+    } else {
+      this.copyOverlapping(readIndex, writable);
+    }
+    if (writable < length) throw HEAD_COMPLETE;
   }
 
   private copyOverlapping(readIndex: number, length: number): void {
@@ -378,7 +461,7 @@ export class GrowableBuffer {
 
   private ensureCapacity(required: number): void {
     if (required > this.maxBytes) {
-      throw decompressFailed('inflated output exceeds safety cap');
+      throw decompressFailed(INFLATE_CAP_EXCEEDED_REASON);
     }
     // equivalent-mutant: skipping this guard forces a redundant reallocation
     // (nextCapacity/grown.set below faithfully copies the used prefix into a
@@ -900,4 +983,35 @@ export function inflateZlibMember(
   verifyTrailer(reader, result);
 
   return { output: result, bytesConsumed: reader.position - offset };
+}
+
+/**
+ * Inflate at most the leading `maxOutputBytes` of a zlib member's output,
+ * without requiring the member to be complete. Reaching the bound is not an
+ * error: decoding simply stops (via the `HeadComplete` sentinel) and the
+ * first `maxOutputBytes` bytes are returned, with no trailer check — the
+ * rest of the member was never decoded, so there is nothing to verify. A
+ * member that ends before the bound is decoded to completion and its
+ * adler32 trailer is verified as `inflateZlibMember` does, same as any
+ * other whole-member decode.
+ */
+export function inflateZlibHead(
+  bytes: Uint8Array,
+  offset: number,
+  maxOutputBytes: number,
+): Uint8Array {
+  const reader = new BitReader(bytes, offset);
+  parseZlibHeader(reader);
+
+  const output = new GrowableBuffer(maxOutputBytes, { onOverflow: 'truncate' });
+  try {
+    decodeBlocks(reader, output);
+  } catch (err) {
+    if (err !== HEAD_COMPLETE) throw err;
+    return output.toUint8Array();
+  }
+
+  const result = output.toUint8Array();
+  verifyTrailer(reader, result);
+  return result;
 }

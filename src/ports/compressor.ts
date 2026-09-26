@@ -1,3 +1,18 @@
+/**
+ * Reason `DECOMPRESS_FAILED` carries when `inflate` or `streamInflate` hits
+ * its output cap — owned once here so every adapter reports the identical
+ * wording and a caller (e.g. `fetch-pack.ts`'s window-growth retry) can
+ * classify a cap hit by reason alone.
+ */
+export const INFLATE_CAP_EXCEEDED_REASON = 'inflated output exceeds safety cap';
+
+/**
+ * Hard ceiling on one-shot inflated output across every adapter, defeating
+ * decompression-bomb amplification. A caller-supplied `maxOutputBytes` can
+ * only narrow this ceiling, never raise it.
+ */
+export const MAX_INFLATE_OUTPUT_BYTES = 2 * 1024 * 1024 * 1024;
+
 export interface InflateStreamResult {
   /** The fully-inflated output bytes. */
   readonly output: Uint8Array;
@@ -20,8 +35,30 @@ export interface Compressor {
    */
   readonly deflateRaw: (data: Uint8Array, level?: number) => Promise<Uint8Array>;
 
-  /** Inflate (decompress) zlib-compressed data. */
-  readonly inflate: (data: Uint8Array) => Promise<Uint8Array>;
+  /**
+   * Inflate (decompress) zlib-compressed data. `maxOutputBytes`, when given,
+   * bounds the inflated output: the adapter must abort as soon as
+   * cumulative output exceeds it, incrementally during decode — never by
+   * inflating in full and then checking the result's length. The effective
+   * cap is always the minimum of `maxOutputBytes` and the adapter's own
+   * default cap; a caller can only narrow the cap, never raise it. Omitting
+   * it preserves the adapter's own default behaviour. Throws
+   * DECOMPRESS_FAILED with reason INFLATE_CAP_EXCEEDED_REASON when the
+   * effective cap is exceeded.
+   */
+  readonly inflate: (data: Uint8Array, maxOutputBytes?: number) => Promise<Uint8Array>;
+
+  /**
+   * Inflate at most the leading `maxOutputBytes` of a zlib stream's output,
+   * without requiring the stream to be complete. Unlike `inflate` and
+   * `streamInflate`, reaching the bound is never an error: the call
+   * truncates and returns exactly `maxOutputBytes` bytes, or the stream's
+   * whole output when that is shorter. Throws DECOMPRESS_FAILED only when
+   * the input decoded so far is not valid zlib data. Used to probe a
+   * stream's leading bytes (e.g. a loose object's header) without inflating
+   * the rest of it.
+   */
+  readonly inflateHead: (data: Uint8Array, maxOutputBytes: number) => Promise<Uint8Array>;
 
   /**
    * Inflate one zlib stream starting at `offset` in `bytes`, stopping at the

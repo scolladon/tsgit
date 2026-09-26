@@ -211,7 +211,16 @@ done
 # pipeline's steps, replacing boolean flags with named unions and making the
 # selection passes return their state instead of mutating it — readability
 # the review required, shipped in every distribution form.
-SIZE_CAP=$((995 * 1024))
+# Raised 995 -> 997 KiB by the Compressor port's capped inflate and truncating
+# head inflate: the measured tarball lands at 1 020 546 B, 1 666 B over the
+# old cap, attributable to inflate's new optional output-cap parameter and
+# its cap-exceeded error mapping across all three adapters, the new
+# inflateHead port member and its node growing-prefix probe, and
+# GrowableBuffer's overflow-policy write path (refuse vs. truncate) —
+# runtime code every distribution form ships, none removable without
+# dropping the bounded, non-throwing header read the capped inflate exists
+# to provide.
+SIZE_CAP=$((997 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
