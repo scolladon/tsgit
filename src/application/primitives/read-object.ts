@@ -27,6 +27,7 @@ import {
   assertChainDepthWithinCap,
   isBase,
   LOOSE_HEADER_WINDOW,
+  looseHeaderTooLong,
   ofsDeltaBaseOffset,
   readEntryHeaderWithChunk,
   resolveObject,
@@ -395,10 +396,6 @@ function noNulTerminator(id: ObjectId): TsgitError {
   return invalidObjectHeader(`no NUL terminator found in inflated object ${id}`);
 }
 
-function headerTooLong(id: ObjectId): TsgitError {
-  return invalidObjectHeader(`header for ${id} too long, exceeds ${LOOSE_HEADER_WINDOW} bytes`);
-}
-
 /** One header probe's outcome: the declared size once a NUL is found within
  *  `LOOSE_HEADER_WINDOW`; `tooLong` once the probe's own output fills that
  *  window without one; `incomplete` when the probed bytes ran out first,
@@ -457,7 +454,7 @@ async function resolveDeclaredSizeFromPrefix(
     throw error;
   }
   if (outcome.status === 'found') return outcome.size;
-  if (outcome.status === 'tooLong') throw headerTooLong(id);
+  if (outcome.status === 'tooLong') throw looseHeaderTooLong(id);
   if (isPrefixTruncated) return readDeclaredSizeFromWholeFile(ctx, id);
   throw noNulTerminator(id);
 }
@@ -471,7 +468,7 @@ async function readDeclaredSizeFromWholeFile(ctx: Context, id: ObjectId): Promis
   const compressed = await ctx.fs.read(loosePathFor(ctx, id));
   const outcome = await probeDeclaredSize(ctx, compressed);
   if (outcome.status === 'found') return outcome.size;
-  if (outcome.status === 'tooLong') throw headerTooLong(id);
+  if (outcome.status === 'tooLong') throw looseHeaderTooLong(id);
   throw noNulTerminator(id);
 }
 

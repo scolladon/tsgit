@@ -113,6 +113,27 @@ function truncateMidxTo8(bytes: Uint8Array): Uint8Array {
 }
 
 /**
+ * Writes a loose object whose header is built from a raw header STRING —
+ * never a JS number — so its exact byte length is under the caller's
+ * control. Some boundary claims (e.g. a 26-digit size) can never round-trip
+ * through `Number`, so `writeLooseWithDeclaredSize`'s numeric `declaredSize`
+ * cannot express them.
+ */
+async function writeLooseWithRawHeader(
+  ctx: Context,
+  id: ObjectId,
+  header: string,
+  content: Uint8Array,
+): Promise<void> {
+  const headerBytes = ENC.encode(header);
+  const bytes = new Uint8Array(headerBytes.length + content.length);
+  bytes.set(headerBytes, 0);
+  bytes.set(content, headerBytes.length);
+  const loosePath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(id)}`;
+  await ctx.fs.write(loosePath, await ctx.compressor.deflate(bytes));
+}
+
+/**
  * Build a single-entry packfile (header + `entryBytes` + trailer) and write it
  * to the memory fs. Returns the on-disk pack path so a stub registry can read
  * slices from it at a controlled offset.
@@ -1611,6 +1632,61 @@ describe('object-resolver', () => {
         // Assert
         expect(result.content).toEqual(content);
         expect(result.declaredSize).toBe(claim);
+      });
+    });
+  });
+
+  describe("Given a loose header whose NUL terminator sits exactly at git's 32-byte window boundary", () => {
+    describe('When resolveObjectContentWithDepth is called for a header that fits the window (NUL at byte 32)', () => {
+      it("Then the window guard lets it through — parseHeader's own size round-trip is what refuses it", async () => {
+        // Arrange — 'blob ' (5) + 26 nines + NUL = 32 bytes, the longest a
+        // header can be while still fitting git's hdr[32]. A 26-digit claim
+        // can never round-trip through `Number`, so parseHeader's OWN
+        // size-validation is what refuses this, never the window guard.
+        const digits = '9'.repeat(26);
+        const ctx = await buildSeededContext();
+        const id = 'd'.repeat(40) as ObjectId;
+        await writeLooseWithRawHeader(ctx, id, `blob ${digits}\0`, ENC.encode('irrelevant'));
+        const registry = await createPackRegistry(ctx);
+
+        // Act
+        try {
+          await resolveObjectContentWithDepth(ctx, registry, id, false, undefined, 0);
+          expect.unreachable();
+        } catch (error) {
+          // Assert
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('INVALID_OBJECT_HEADER');
+          if (data.code === 'INVALID_OBJECT_HEADER') {
+            expect(data.reason).toBe(`invalid size: ${digits}`);
+          }
+        }
+      });
+    });
+
+    describe('When resolveObjectContentWithDepth is called for a header one byte past the window (NUL at byte 33)', () => {
+      it('Then it refuses header-too-long before parseHeader ever runs', async () => {
+        // Arrange — one more digit than the accepted row above: git's
+        // hdr[32] buffer could never hold this header's NUL, regardless of
+        // whether the digits would otherwise be a valid size.
+        const digits = '9'.repeat(27);
+        const ctx = await buildSeededContext();
+        const id = 'e'.repeat(40) as ObjectId;
+        await writeLooseWithRawHeader(ctx, id, `blob ${digits}\0`, ENC.encode('irrelevant'));
+        const registry = await createPackRegistry(ctx);
+
+        // Act
+        try {
+          await resolveObjectContentWithDepth(ctx, registry, id, false, undefined, 0);
+          expect.unreachable();
+        } catch (error) {
+          // Assert
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('INVALID_OBJECT_HEADER');
+          if (data.code === 'INVALID_OBJECT_HEADER') {
+            expect(data.reason).toBe(`header for ${id} too long, exceeds 32 bytes`);
+          }
+        }
       });
     });
   });

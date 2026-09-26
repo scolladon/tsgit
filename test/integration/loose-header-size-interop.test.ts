@@ -252,6 +252,56 @@ describe.skipIf(!GIT_AVAILABLE)('loose-object header size lying interop', () => 
     });
   });
 
+  describe("Given a loose header whose NUL terminator sits exactly at git's 32-byte window boundary, When git and tsgit both read it", () => {
+    it.each([
+      {
+        label: 'NUL at byte 32 (26-digit claim, fits the window) — the recorded residual',
+        digitCount: 26,
+        gitStderrContains: 'size_t overflow',
+        tsgitReason: (digits: string) => `invalid size: ${digits}`,
+      },
+      {
+        label: 'NUL at byte 33 (27-digit claim, one byte past the window)',
+        digitCount: 27,
+        gitStderrContains: 'header for',
+        tsgitReason: (_digits: string, id: string) => `header for ${id} too long, exceeds 32 bytes`,
+      },
+    ])('Then both refuse ($label)', async ({ digitCount, gitStderrContains, tsgitReason }) => {
+      // Arrange — git's own hdr[32] scans for the header's NUL before it ever
+      // parses the digits, so a header needing a 33rd byte to terminate is
+      // refused before the (also invalid) 27-digit claim is ever examined;
+      // a header that fits the window at 32 bytes reaches numeric parsing,
+      // where its 26-digit claim overflows git's own size_t.
+      const dir = await caseDir(`header-boundary-${digitCount}`);
+      const digits = '9'.repeat(digitCount);
+      await forgeLoose(dir, smallId, 'blob', digits, SMALL_CONTENT);
+      const ctx = createNodeContext({ workDir: dir });
+      const id = smallId as ObjectId;
+
+      // Act — git side
+      const gitResult = tryRunGitWithExit(['-C', dir, 'cat-file', '-s', smallId]);
+
+      // Act — tsgit side
+      let caught: unknown;
+      try {
+        await readObject(ctx, id);
+        expect.unreachable();
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect(gitResult.exitCode).toBe(128);
+      expect(gitResult.stderr).toContain(gitStderrContains);
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data;
+      expect(data.code).toBe('INVALID_OBJECT_HEADER');
+      if (data.code === 'INVALID_OBJECT_HEADER') {
+        expect(data.reason).toBe(tsgitReason(digits, id));
+      }
+    });
+  });
+
   describe('Given a medium (1880-byte) blob whose header claim under-runs its body (claim 4000), When git and tsgit both read it — the recorded residual', () => {
     it('Then git and tsgit both serve the real 1880-byte body', async () => {
       // Arrange — an under-run (claim 4000 > 1880) never trips the buffered

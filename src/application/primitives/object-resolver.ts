@@ -3,6 +3,7 @@
  * Consumed only by readObject.
  */
 import { TsgitError } from '../../domain/error.js';
+import { indexOf } from '../../domain/objects/encoding.js';
 import {
   invalidObjectHeader,
   objectHashMismatch,
@@ -90,8 +91,15 @@ export type LooseReadMode = 'buffered' | 'streamed';
  *  window-truncation (Part 4) are both measured against. */
 export const LOOSE_HEADER_WINDOW = 32;
 
-/** One probe byte past the window: a header whose NUL falls exactly on byte
- *  32 still fits; one that needs a 33rd byte to terminate does not. */
+/**
+ * One probe byte past the window: whether the WHOLE object (header + body)
+ * has already ended by byte 32 decides window-truncation (`inflateLooseBuffered`
+ * below), so the probe reads one byte further than the header bound itself.
+ * The header's own NUL must still fall within the first `LOOSE_HEADER_WINDOW`
+ * bytes — one needing this 33rd probed byte to terminate does not fit git's
+ * `hdr[32]` and is refused as `looseHeaderTooLong`, never handed to
+ * `parseHeader`.
+ */
 const LOOSE_HEADER_PROBE_BYTES = LOOSE_HEADER_WINDOW + 1;
 
 export interface LooseBufferedRead {
@@ -102,6 +110,17 @@ export interface LooseBufferedRead {
 
 function contentExceedsDeclaredSize(size: number): TsgitError {
   return invalidObjectHeader(`content exceeds declared size ${size}`);
+}
+
+/**
+ * git's own `hdr[32]` buffer (`unpack_loose_header`, `object-file.c`):
+ * scanning stops once `LOOSE_HEADER_WINDOW` bytes have gone by with no NUL
+ * found. Shared by every loose-header probe that enforces this bound —
+ * `inflateLooseBuffered` here and `readDeclaredObjectSize`'s own probe
+ * (read-object.ts) — so the rule and its exact wording live in one place.
+ */
+export function looseHeaderTooLong(id: ObjectId): TsgitError {
+  return invalidObjectHeader(`header for ${id} too long, exceeds ${LOOSE_HEADER_WINDOW} bytes`);
 }
 
 /**
@@ -134,14 +153,24 @@ async function inflateBoundToClaim(
  * `unpack_loose_rest`): probe the header through `inflateHead` — never more
  * than `LOOSE_HEADER_PROBE_BYTES` of OUTPUT, whatever the compressed input
  * size — then bound the full inflate to header + declared size. A body that
- * overruns that bound throws `INVALID_OBJECT_HEADER`; window-truncation of an
- * overrun that fits inside `LOOSE_HEADER_WINDOW` is Part 4.
+ * overruns that bound throws `INVALID_OBJECT_HEADER`; an overrun that fits
+ * inside `LOOSE_HEADER_WINDOW` is truncated to the claim, not refused
+ * (`applyLooseVerdict`'s `'truncate'` verdict).
  */
 export async function inflateLooseBuffered(
   ctx: Context,
+  id: ObjectId,
   compressed: Uint8Array,
 ): Promise<LooseBufferedRead> {
   const head = await ctx.compressor.inflateHead(compressed, LOOSE_HEADER_PROBE_BYTES);
+  // git's hdr[32] never resolves a NUL past LOOSE_HEADER_WINDOW: a NUL that
+  // needed this probe's 33rd byte to appear means the header itself could
+  // never have terminated inside git's fixed buffer, so it is refused here
+  // — BEFORE parseHeader ever runs — regardless of what its digits would
+  // otherwise parse to.
+  if (indexOf(head, 0x00, 0) === LOOSE_HEADER_WINDOW) {
+    throw looseHeaderTooLong(id);
+  }
   // The header bytes (through the NUL) are identical between `head` and the
   // full inflate below — both come from the same compressed stream, and
   // `parseHeader` already succeeded on `head` alone. Building the split from
@@ -484,7 +513,7 @@ async function tryLoose(
   if (mode === 'streamed') {
     return splitLooseObject(await ctx.compressor.inflate(compressed));
   }
-  return (await inflateLooseBuffered(ctx, compressed)).split;
+  return (await inflateLooseBuffered(ctx, id, compressed)).split;
 }
 
 /**
