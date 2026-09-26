@@ -19,9 +19,11 @@ import {
   hasSameBasename,
   type LabelledPair,
   labelRenameCopy,
+  type MatrixCandidate,
   pairIdenticalFiles,
   type RenameSource,
   type SourcePair,
+  selectPairs,
 } from '../../domain/diff/rename-pairing.js';
 import {
   buildChunkMap,
@@ -32,7 +34,7 @@ import {
   estimateSimilarityFromMaps,
   MAX_SCORE,
 } from '../../domain/diff/similarity.js';
-import type { FileMode, FilePath, ObjectId } from '../../domain/objects/index.js';
+import type { FilePath, ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { boundedMapFor } from './internal/concurrency.js';
 import { readBlob } from './read-blob.js';
@@ -40,35 +42,6 @@ import { readDeclaredObjectSize } from './read-object.js';
 
 /** git's default `diff.renameLimit`. */
 const DEFAULT_LIMIT = 1000;
-
-/**
- * Interim shape for the matrix triple-builders below (`buildRenameTriples`,
- * `buildCopyTriples`), unchanged since before the registry existed. `registerCandidates`
- * and its adapters (`toDeleteChangeShape`, `toCopySourceShape`) are the sole producers
- * now — Part 8 removes both this shape and the builders that consume it.
- */
-interface CopySource {
-  readonly oldPath: FilePath;
-  readonly oldId: ObjectId;
-  readonly oldMode: FileMode;
-}
-
-/** @internal — exported for direct unit testing of the matrix helpers. */
-export type ScoredTriple =
-  | {
-      readonly kind: 'rename';
-      readonly src: DeleteChange;
-      readonly add: AddChange;
-      readonly score: number;
-      readonly nameScore: 0 | 1;
-    }
-  | {
-      readonly kind: 'copy';
-      readonly src: CopySource;
-      readonly add: AddChange;
-      readonly score: number;
-      readonly nameScore: 0 | 1;
-    };
 
 /**
  * Maximum candidates retained per destination, matching git's NUM_CANDIDATE_PER_DST.
@@ -86,7 +59,7 @@ export const NUM_CANDIDATE_PER_DST = 4;
  * Mirrors git's record_if_better: the worst-ranked slot (compareCandidates order;
  * a tie keeps the lowest index) is replaced only when the candidate outranks it.
  */
-export function recordIfBetter(slots: ScoredTriple[], candidate: ScoredTriple): void {
+export function recordIfBetter(slots: MatrixCandidate[], candidate: MatrixCandidate): void {
   if (slots.length < NUM_CANDIDATE_PER_DST) {
     slots.push(candidate);
     return;
@@ -94,9 +67,10 @@ export function recordIfBetter(slots: ScoredTriple[], candidate: ScoredTriple): 
   // slots is always full (length === NUM_CANDIDATE_PER_DST) here; each element is defined.
   let worst = 0;
   for (let i = 1; i < slots.length; i++) {
-    if (compareCandidates(slots[i] as ScoredTriple, slots[worst] as ScoredTriple) > 0) worst = i;
+    if (compareCandidates(slots[i] as MatrixCandidate, slots[worst] as MatrixCandidate) > 0)
+      worst = i;
   }
-  if (compareCandidates(slots[worst] as ScoredTriple, candidate) > 0) {
+  if (compareCandidates(slots[worst] as MatrixCandidate, candidate) > 0) {
     slots[worst] = candidate;
   }
 }
@@ -124,146 +98,13 @@ function scoreAndRecord(
   sf: BlobFingerprint,
   df: BlobFingerprint,
   threshold: number,
-  candidate: ScoredTriple,
-  slots: ScoredTriple[],
+  candidate: MatrixCandidate,
+  slots: MatrixCandidate[],
 ): void {
   // Stryker disable next-line ConditionalExpression: equivalent — a conservative necessary condition for `score >= threshold`; every pair it rejects also scores below threshold, so skipping the early return still records nothing at the gate below. Distinct from the id-level size gate upstream (`sizeCompatibleIds`, `selectHydrationIds`), whose own rejections ARE independently observable — a rejected id is never fingerprinted, never passed to `readBlob` at all — and which has its own dedicated tests; this per-PAIR check runs only on ids that already cleared that coarser gate.
   if (isSizeRejected(sf.size, df.size, threshold)) return;
   const score = estimateSimilarityFromMaps(sf.chunkMap, sf.size, df.chunkMap, df.size);
   if (score >= threshold) recordIfBetter(slots, { ...candidate, score });
-}
-
-/**
- * Build rename-candidate triples using git's dst-outer / src-inner iteration order
- * with a per-destination cap of NUM_CANDIDATE_PER_DST (= 4) top-scoring sources.
- * Mirrors diffcore-rename.c's record_if_better matrix construction.
- *
- * Accepts precomputed fingerprints so each blob is hashed at most once regardless
- * of how many (src, dst) pairs reference it.
- */
-function buildRenameTriples(
-  deletes: ReadonlyArray<DeleteChange>,
-  adds: ReadonlyArray<AddChange>,
-  fingerprints: ReadonlyMap<ObjectId, BlobFingerprint>,
-  threshold: number,
-): ScoredTriple[] {
-  const triples: ScoredTriple[] = [];
-  for (const add of adds) {
-    const df = fingerprints.get(add.newId);
-    if (df === undefined) continue;
-    const slots: ScoredTriple[] = [];
-    for (const del of deletes) {
-      const sf = fingerprints.get(del.oldId);
-      if (sf !== undefined) {
-        const nameScore = hasSameBasename(del.oldPath, add.newPath) ? 1 : 0;
-        scoreAndRecord(
-          sf,
-          df,
-          threshold,
-          { kind: 'rename', src: del, add, score: 0, nameScore },
-          slots,
-        );
-      }
-    }
-    for (const triple of slots) triples.push(triple);
-  }
-  return triples;
-}
-
-/**
- * Build copy-candidate triples using git's dst-outer / src-inner iteration order
- * with a per-destination cap of NUM_CANDIDATE_PER_DST (= 4) top-scoring sources.
- *
- * Accepts precomputed fingerprints so each blob is hashed at most once.
- */
-function buildCopyTriples(
-  copySources: ReadonlyArray<CopySource>,
-  adds: ReadonlyArray<AddChange>,
-  fingerprints: ReadonlyMap<ObjectId, BlobFingerprint>,
-  threshold: number,
-): ScoredTriple[] {
-  const triples: ScoredTriple[] = [];
-  for (const add of adds) {
-    const df = fingerprints.get(add.newId);
-    if (df === undefined) continue;
-    const slots: ScoredTriple[] = [];
-    for (const src of copySources) {
-      const sf = fingerprints.get(src.oldId);
-      if (sf !== undefined) {
-        const nameScore = hasSameBasename(src.oldPath, add.newPath) ? 1 : 0;
-        scoreAndRecord(sf, df, threshold, { kind: 'copy', src, add, score: 0, nameScore }, slots);
-      }
-    }
-    for (const triple of slots) triples.push(triple);
-  }
-  return triples;
-}
-
-/**
- * Sort triples by compareCandidates (score, then nameScore); at a full tie a
- * rename sorts AHEAD of a copy, so a deleted source claims the destination
- * before an unchanged one.
- */
-function sortTriples(triples: ScoredTriple[]): void {
-  triples.sort((a, b) => {
-    const rankDiff = compareCandidates(a, b);
-    if (rankDiff !== 0) return rankDiff;
-    // Rename candidate wins over copy at equal score and equal nameScore.
-    // Stryker disable next-line UnaryOperator: equivalent — build order concatenates all rename triples before all copy triples, so V8's stable insertion sort (each pivot compared against already-placed elements) never invokes this comparator with a=rename, b=copy; the arm is unreached and its sign is unobservable.
-    if (a.kind === 'rename' && b.kind === 'copy') return -1;
-    // Stryker disable next-line ConditionalExpression,LogicalOperator,EqualityOperator: equivalent — the only reached call is compare(copy, rename) when a copy is inserted after the renames; returning 1 or 0 both keep the copy after the rename via build order + stable sort, and the same-kind variants only reaffirm the stable a-after-b order, so no pairing changes.
-    if (a.kind === 'copy' && b.kind === 'rename') return 1;
-    return 0;
-  });
-}
-
-interface RenameMatch {
-  readonly kind: 'rename';
-  readonly change: RenameChange;
-  readonly del: DeleteChange;
-  readonly add: AddChange;
-}
-
-interface CopyMatch {
-  readonly kind: 'copy';
-  readonly change: CopyChange;
-  readonly add: AddChange;
-}
-
-type GreedyMatch = RenameMatch | CopyMatch;
-
-/** Builds the candidate change `greedySelect` carries a matched triple's score in
- *  (interim — Part 8 removes this alongside `ScoredTriple`); the FINAL emitted
- *  change is `buildRenameChange`/`buildCopyChange` below, generalised over the
- *  registry's `RenameSource`. */
-function buildCandidateRenameChange(
-  del: DeleteChange,
-  add: AddChange,
-  score: number,
-): RenameChange {
-  return {
-    type: 'rename',
-    oldPath: del.oldPath,
-    newPath: add.newPath,
-    oldId: del.oldId,
-    newId: add.newId,
-    oldMode: del.oldMode,
-    newMode: add.newMode,
-    similarity: { score, maxScore: MAX_SCORE },
-  };
-}
-
-function buildCandidateCopyChange(src: CopySource, add: AddChange, score: number): CopyChange {
-  return {
-    type: 'copy',
-    oldPath: src.oldPath,
-    newPath: add.newPath,
-    oldId: src.oldId,
-    newId: add.newId,
-    oldMode: src.oldMode,
-    newMode: add.newMode,
-    similarity: { score, maxScore: MAX_SCORE },
-  };
 }
 
 /** Final emitted change for a labelled pair, generalised over the registry's
@@ -296,40 +137,6 @@ function buildCopyChange(source: RenameSource, destination: AddChange, score: nu
     newMode: destination.newMode,
     similarity: { score, maxScore: MAX_SCORE },
   };
-}
-
-function greedySelect(triples: ReadonlyArray<ScoredTriple>): ReadonlyArray<GreedyMatch> {
-  const usedDeletes = new Set<DeleteChange>();
-  const usedAdds = new Set<AddChange>();
-  const matches: GreedyMatch[] = [];
-
-  for (const triple of triples) {
-    if (usedAdds.has(triple.add)) continue;
-
-    if (triple.kind === 'rename') {
-      // Discriminated union: triple.src is DeleteChange here — no cast needed.
-      if (usedDeletes.has(triple.src)) continue;
-      usedDeletes.add(triple.src);
-      usedAdds.add(triple.add);
-      matches.push({
-        kind: 'rename',
-        change: buildCandidateRenameChange(triple.src, triple.add, triple.score),
-        del: triple.src,
-        add: triple.add,
-      });
-    } else {
-      // Copy: only the add is consumed; the copy source is NOT consumed (retained in result set).
-      // Discriminated union: triple.src is CopySource here — no cast needed.
-      usedAdds.add(triple.add);
-      matches.push({
-        kind: 'copy',
-        change: buildCandidateCopyChange(triple.src, triple.add, triple.score),
-        add: triple.add,
-      });
-    }
-  }
-
-  return matches;
 }
 
 /** git's `find_identical_files` seeding for a delete: a plain delete seeds 0
@@ -629,125 +436,83 @@ export async function hydrateFingerprints(
   return merged;
 }
 
-/** Build and sort all rename+copy triples for one inexact pass. */
-function buildAllTriples(
-  deletes: ReadonlyArray<DeleteChange>,
-  adds: ReadonlyArray<AddChange>,
-  copySources: ReadonlyArray<CopySource>,
-  copies: 'off' | 'on' | 'harder',
-  threshold: number,
-  fingerprints: ReadonlyMap<ObjectId, BlobFingerprint>,
-): ScoredTriple[] {
-  const renameTriples = buildRenameTriples(deletes, adds, fingerprints, threshold);
-  const copyTriples =
-    // Stryker disable next-line ConditionalExpression: equivalent — buildMatrixSourceSets already returns an empty copySources whenever copies==='off', so buildCopyTriples over it yields [], identical to the : [] arm.
-    copies !== 'off' ? buildCopyTriples(copySources, adds, fingerprints, threshold) : [];
-  const allTriples: ScoredTriple[] = [...renameTriples, ...copyTriples];
-  sortTriples(allTriples);
-  return allTriples;
-}
-
-/** Adapts one matrix source into the shape `buildRenameTriples` expects. */
-function toDeleteChangeShape(source: RenameSource): DeleteChange {
-  return { type: 'delete', oldPath: source.path, oldId: source.id, oldMode: source.mode };
-}
-
-/** Adapts one matrix source into the shape `buildCopyTriples` expects. */
-function toCopySourceShape(source: RenameSource): CopySource {
-  return { oldPath: source.path, oldId: source.id, oldMode: source.mode };
-}
-
-function isRenameEligible(source: RenameSource, uses: number): boolean {
-  return (source.origin === 'deleted' || source.origin === 'broken-delete') && uses === 0;
-}
-
+/** One (index, source) pair from the registry — `buildMatrix` scores every
+ *  matrix-eligible source against every destination, regardless of use
+ *  count; `selectPairs` alone decides which candidates each pass may take. */
 interface IndexedSource {
   readonly index: number;
   readonly source: RenameSource;
 }
 
-interface MatrixSourceSets {
-  readonly renameDeletes: ReadonlyArray<DeleteChange>;
-  readonly copySources: ReadonlyArray<CopySource>;
-}
-
 /**
- * Interim matrix adapter (Part 8 replaces): feeds the still-unchanged triple
- * builders from the registry. Rename candidates are matrix sources with a
- * deleted/broken-delete origin still at zero uses; copy candidates (copies
- * on) are every matrix source — a used one stays eligible. Both drop
- * gitlinks: content scoring cannot read a gitlink's commit object as bytes.
+ * git's matrix construction (`diffcore-rename.c:1380` step 6): destination-major,
+ * source-inner, ONE shared `NUM_CANDIDATE_PER_DST` slot array per destination over
+ * ALL matrix sources — no separate rename/copy pools. Which pass a source may fill
+ * a slot for is `selectPairs`'s job, not this one: a used source still competes for
+ * (and can win, or evict a fresher one from) a destination's shared cap.
  */
-function buildMatrixSourceSets(
-  sources: ReadonlyArray<RenameSource>,
-  indices: ReadonlyArray<number>,
-  uses: ReadonlyArray<number>,
-  copies: 'off' | 'on' | 'harder',
-): MatrixSourceSets {
-  const eligible: IndexedSource[] = indices
-    .map((index) => ({ index, source: sources[index] as RenameSource }))
-    .filter(({ source }) => !isGitlink(source.mode));
-  const renameDeletes = eligible
-    .filter(({ index, source }) => isRenameEligible(source, uses[index] as number))
-    .map(({ source }) => toDeleteChangeShape(source));
-  const copySources =
-    copies !== 'off' ? eligible.map(({ source }) => toCopySourceShape(source)) : [];
-  return { renameDeletes, copySources };
+function buildMatrix(
+  sources: ReadonlyArray<IndexedSource>,
+  destinations: ReadonlyArray<AddChange>,
+  fingerprints: ReadonlyMap<ObjectId, BlobFingerprint>,
+  threshold: number,
+): MatrixCandidate[] {
+  const candidates: MatrixCandidate[] = [];
+  for (const destination of destinations) {
+    const df = fingerprints.get(destination.newId);
+    if (df === undefined) continue;
+    const slots: MatrixCandidate[] = [];
+    for (const { index, source } of sources) {
+      const sf = fingerprints.get(source.id);
+      if (sf === undefined) continue;
+      const nameScore = hasSameBasename(source.path, destination.newPath) ? 1 : 0;
+      scoreAndRecord(sf, df, threshold, { source: index, destination, score: 0, nameScore }, slots);
+    }
+    for (const candidate of slots) candidates.push(candidate);
+  }
+  return candidates;
 }
 
 interface InexactMatrixResult {
   readonly pairs: ReadonlyArray<SourcePair>;
   readonly consumedAdds: ReadonlySet<AddChange>;
-}
-
-function buildPathIndex(sources: ReadonlyArray<RenameSource>): ReadonlyMap<FilePath, number> {
-  return new Map(sources.map((source, index) => [source.path, index]));
+  readonly uses: ReadonlyArray<number>;
 }
 
 /**
- * Recovers which registry source a `greedySelect` match actually paired: every
- * registered source has a unique path, and the adapter above set the
- * candidate change's `oldPath` from that same source, so the match's own
- * `oldPath` is enough — rename and copy matches resolve identically.
+ * Runs one inexact pass over `matrixIndices` (the registry sources the cull
+ * step, `resolveMatrixPlan`, kept — used sources included when `keepEverySource`
+ * held): hydrates fingerprints, builds the shared-cap matrix, sorts it, and
+ * lets `selectPairs` run rename-then-copy selection over the whole thing.
  */
-function toRegistryPair(match: GreedyMatch, pathIndex: ReadonlyMap<FilePath, number>): SourcePair {
-  return {
-    source: pathIndex.get(match.change.oldPath) as number,
-    destination: match.add,
-    score: match.change.similarity.score,
-  };
-}
-
 async function runInexactMatrix(
   ctx: Context,
-  sources: ReadonlyArray<RenameSource>,
-  matrixSourceSets: MatrixSourceSets,
+  registrySources: ReadonlyArray<RenameSource>,
+  matrixIndices: ReadonlyArray<number>,
   destinations: ReadonlyArray<AddChange>,
+  uses: ReadonlyArray<number>,
   threshold: number,
   copies: 'off' | 'on' | 'harder',
 ): Promise<InexactMatrixResult | null> {
-  const { renameDeletes, copySources } = matrixSourceSets;
-  // Stryker disable next-line ConditionalExpression: equivalent — with both empty the pass builds no triples and greedySelect returns [], the same as the null-defaulted caller path.
-  if (renameDeletes.length === 0 && copySources.length === 0) return null;
+  if (matrixIndices.length === 0) return null;
 
-  const allSrcIds = [...renameDeletes.map((d) => d.oldId), ...copySources.map((s) => s.oldId)];
+  const matrixSources: IndexedSource[] = matrixIndices.map((index) => ({
+    index,
+    source: registrySources[index] as RenameSource,
+  }));
+  const srcIds = matrixSources.map(({ source }) => source.id);
   const dstIds = destinations.map((d) => d.newId);
-  const neededIds = await selectHydrationIds(ctx, allSrcIds, dstIds, threshold);
+  const neededIds = await selectHydrationIds(ctx, srcIds, dstIds, threshold);
   const fingerprints = await hydrateFingerprints(ctx, neededIds, new Map());
-  const allTriples = buildAllTriples(
-    renameDeletes,
-    destinations,
-    copySources,
-    copies,
-    threshold,
-    fingerprints,
-  );
 
-  const matches = greedySelect(allTriples);
-  const pathIndex = buildPathIndex(sources);
+  const candidates = buildMatrix(matrixSources, destinations, fingerprints, threshold);
+  candidates.sort(compareCandidates);
+
+  const selected = selectPairs(candidates, uses, { copies: copies !== 'off', threshold });
   return {
-    pairs: matches.map((match) => toRegistryPair(match, pathIndex)),
-    consumedAdds: new Set<AddChange>(matches.map((match) => match.add)),
+    pairs: selected.pairs,
+    consumedAdds: new Set<AddChange>(selected.pairs.map((pair) => pair.destination)),
+    uses: selected.uses,
   };
 }
 
@@ -1000,11 +765,12 @@ function remergeOrKeepBroken(
  * 6. Size-gate the candidate pool above SIZE_GATE_MIN_IDS unique ids, then
  *    fingerprint-and-drop each needed blob via a bounded concurrency pool —
  *    only the fingerprint escapes the worker, never the blob's own bytes.
- * 7. Build scored triples: rename candidates are zero-use deleted/broken-delete
- *    sources, copy candidates (copies on) are every matrix source (used ones
- *    stay eligible). Both drop gitlinks — content scoring cannot read a
- *    gitlink's commit object as bytes.
- * 8. Greedy score-descending selection (`greedySelect`, unchanged).
+ * 7. buildMatrix: one shared NUM_CANDIDATE_PER_DST-slot candidate matrix per
+ *    destination over every matrix source (used ones included) — gitlinks
+ *    drop out on both sides, since content scoring cannot read a gitlink's
+ *    commit object as bytes.
+ * 8. selectPairs: pass 1 pairs only zero-use sources; pass 2 (copies on)
+ *    pairs any remaining source against any remaining destination.
  * 9. labelRenameCopy: every exact+inexact pair becomes a rename or copy by
  *    final use count in destination-path order; unpaired destinations stay
  *    adds; a deleted/broken-delete source's delete survives iff nothing
@@ -1111,15 +877,6 @@ function resolveMatrixPlan(
   return { indices: retryIndices };
 }
 
-function applyMatchUses(
-  pairs: ReadonlyArray<SourcePair>,
-  baseUses: ReadonlyArray<number>,
-): number[] {
-  const uses = [...baseUses];
-  for (const pair of pairs) uses[pair.source] = (uses[pair.source] as number) + 1;
-  return uses;
-}
-
 /**
  * A `deleted`/`broken-delete` source's delete survives iff nothing beyond its
  * seed used it — for a plain delete (seed 0) that means zero real pairs; for
@@ -1210,18 +967,16 @@ async function runInexactMatrixIfPlanned(
   );
   if (plan === null) return null;
 
-  const matrixSourceSets = buildMatrixSourceSets(
-    registry.sources,
-    plan.indices,
-    exact.uses,
-    copies,
+  const matrixIndices = plan.indices.filter(
+    (index) => !isGitlink((registry.sources[index] as RenameSource).mode),
   );
   const matrixDestinations = exact.unpaired.filter((add) => !isGitlink(add.newMode));
   return runInexactMatrix(
     ctx,
     registry.sources,
-    matrixSourceSets,
+    matrixIndices,
     matrixDestinations,
+    exact.uses,
     threshold,
     copies,
   );
@@ -1237,7 +992,7 @@ function mergeInexactOutcome(
   return {
     pairs: [...exact.pairs, ...inexact.pairs],
     unpaired: exact.unpaired.filter((add) => !inexact.consumedAdds.has(add)),
-    uses: applyMatchUses(inexact.pairs, exact.uses),
+    uses: inexact.uses,
   };
 }
 

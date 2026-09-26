@@ -2701,6 +2701,12 @@ const USE_COUNT_TMP_PREFIX = 'tsgit-rename-use-count-';
 const USE_COUNT_SETUP_TIMEOUT = 60_000;
 const USE_COUNT_GITLINK_OID = '3'.repeat(40);
 
+/** Lines shared between C20's modify source and its exact/inexact destinations. */
+const C20_SHARED_LINES = Array.from(
+  { length: 17 },
+  (_, i) => `c20-shared-${String(i).padStart(2, '0')}: alpha beta gamma delta\n`,
+);
+
 const USE_COUNT_ROWS: ReadonlyArray<RenameRow> = [
   {
     label:
@@ -2741,6 +2747,65 @@ const USE_COUNT_ROWS: ReadonlyArray<RenameRow> = [
     after: [{ path: 'b/Bar.meta', content: tenLineContent('foo', 0) }],
     gitFlags: ['-l1'],
     renameOptions: { limit: 1 },
+  },
+  {
+    label:
+      '-C: a modified source scores higher than a deleted source against the same add — pass 1 pairs only the deleted source (design row C19: M a/M ; R<score> a/D→b/N)',
+    before: [
+      { path: 'a/M.meta', content: `${tenLineContent('c19')}extra-tail-line: zzz\n` },
+      {
+        path: 'a/D.meta',
+        content: tenLineContent('c19').replace(
+          'c19 content line 00: this is the content\n',
+          'DIFFERENT-line-0\n',
+        ),
+      },
+    ],
+    after: [
+      { path: 'a/M.meta', content: 'completely different modified content\n' },
+      { path: 'b/N.meta', content: tenLineContent('c19') },
+    ],
+    gitFlags: ['-C'],
+    renameOptions: { copies: 'on' },
+  },
+  {
+    label:
+      '-C: an exact-copy add exhausts the modified source before a second, inexact add is scored — the deleted source wins the second despite a lower score (design row C20: C100 M→N1 ; R<score> D→N2)',
+    before: [
+      {
+        path: 'a/M.meta',
+        content: [
+          ...C20_SHARED_LINES,
+          ...Array.from({ length: 3 }, (_, i) => `c20-mod-only-${i}: epsilon zeta\n`),
+        ].join(''),
+      },
+      {
+        path: 'a/D.meta',
+        content: [
+          ...C20_SHARED_LINES.slice(0, 16),
+          ...Array.from({ length: 4 }, (_, i) => `c20-d-only-${i}: iota kappa\n`),
+        ].join(''),
+      },
+    ],
+    after: [
+      { path: 'a/M.meta', content: 'c20 modify new content\n' },
+      {
+        path: 'b/N1.meta',
+        content: [
+          ...C20_SHARED_LINES,
+          ...Array.from({ length: 3 }, (_, i) => `c20-mod-only-${i}: epsilon zeta\n`),
+        ].join(''),
+      },
+      {
+        path: 'b/N2.meta',
+        content: [
+          ...C20_SHARED_LINES,
+          ...Array.from({ length: 3 }, (_, i) => `c20-n2-only-${i}: eta theta\n`),
+        ].join(''),
+      },
+    ],
+    gitFlags: ['-C'],
+    renameOptions: { copies: 'on' },
   },
 ];
 

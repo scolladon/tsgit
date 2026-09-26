@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { AddChange } from '../../../../src/domain/diff/diff-change.js';
 import type {
+  MatrixCandidate,
   RankedCandidate,
   RenameSource,
   SourceOrigin,
@@ -10,6 +11,7 @@ import {
   compareCandidates,
   labelRenameCopy,
   pairIdenticalFiles,
+  selectPairs,
 } from '../../../../src/domain/diff/rename-pairing.js';
 import { MAX_SCORE } from '../../../../src/domain/diff/similarity.js';
 import type { FileMode, FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
@@ -274,6 +276,127 @@ describe('labelRenameCopy', () => {
 
         // Assert
         expect(result).toEqual([{ pair: pairs[0], kind: 'copy' }]);
+      });
+    });
+  });
+});
+
+function matrixCandidate(
+  source: number,
+  destination: AddChange,
+  score: number,
+  nameScore: 0 | 1 = 0,
+): MatrixCandidate {
+  return { source, destination, score, nameScore };
+}
+
+const sutSelectPairs = selectPairs;
+
+describe('selectPairs', () => {
+  describe('Given a used source scoring higher than an unused source for the same destination', () => {
+    describe('When selectPairs runs pass 1 (copies off)', () => {
+      it('Then the unused source pairs despite scoring lower — pass 1 never considers a used source', () => {
+        // Arrange
+        const destination = addChange('dst.meta', ID_A);
+        const sorted = [matrixCandidate(0, destination, 90), matrixCandidate(1, destination, 40)];
+        const uses = [1, 0];
+
+        // Act
+        const result = sutSelectPairs(sorted, uses, { copies: false, threshold: 0 });
+
+        // Assert
+        expect(result.pairs).toEqual([{ source: 1, destination, score: 40 }]);
+        expect(result.uses).toEqual([1, 1]);
+      });
+    });
+  });
+
+  describe('Given every candidate source already used', () => {
+    describe('When selectPairs runs with copies off', () => {
+      it('Then the destination stays unpaired — pass 2 never runs without copies', () => {
+        // Arrange
+        const destination = addChange('dst.meta', ID_A);
+        const sorted = [matrixCandidate(0, destination, 90)];
+        const uses = [1];
+
+        // Act
+        const result = sutSelectPairs(sorted, uses, { copies: false, threshold: 0 });
+
+        // Assert
+        expect(result.pairs).toEqual([]);
+        expect(result.uses).toEqual([1]);
+      });
+    });
+
+    describe('When selectPairs runs with copies on', () => {
+      it('Then pass 2 pairs the used source as a copy candidate', () => {
+        // Arrange
+        const destination = addChange('dst.meta', ID_A);
+        const sorted = [matrixCandidate(0, destination, 90)];
+        const uses = [1];
+
+        // Act
+        const result = sutSelectPairs(sorted, uses, { copies: true, threshold: 0 });
+
+        // Assert
+        expect(result.pairs).toEqual([{ source: 0, destination, score: 90 }]);
+        expect(result.uses).toEqual([2]);
+      });
+    });
+  });
+
+  describe('Given a sorted candidate list with a below-threshold entry after an eligible one', () => {
+    describe('When selectPairs runs pass 1', () => {
+      it('Then the scan stops at the first below-threshold candidate, even for a fresh source further down the list', () => {
+        // Arrange — destB's candidate is fresh (uses=0) but scores below threshold; the
+        // scan must stop at destA's threshold boundary rather than skip ahead to it.
+        const destA = addChange('a.meta', ID_A);
+        const destB = addChange('b.meta', ID_A);
+        const sorted = [matrixCandidate(0, destA, 90), matrixCandidate(1, destB, 10)];
+        const uses = [0, 0];
+
+        // Act
+        const result = sutSelectPairs(sorted, uses, { copies: false, threshold: 50 });
+
+        // Assert
+        expect(result.pairs).toEqual([{ source: 0, destination: destA, score: 90 }]);
+        expect(result.uses).toEqual([1, 0]);
+      });
+    });
+  });
+
+  describe('Given a below-threshold candidate whose source is already used', () => {
+    describe('When selectPairs runs pass 2', () => {
+      it('Then the below-threshold candidate is never paired', () => {
+        // Arrange
+        const destination = addChange('a.meta', ID_A);
+        const sorted = [matrixCandidate(0, destination, 10)];
+        const uses = [1];
+
+        // Act
+        const result = sutSelectPairs(sorted, uses, { copies: true, threshold: 50 });
+
+        // Assert
+        expect(result.pairs).toEqual([]);
+        expect(result.uses).toEqual([1]);
+      });
+    });
+  });
+
+  describe('Given a destination already paired in pass 1 and a used source that would otherwise qualify in pass 2', () => {
+    describe('When selectPairs runs with copies on', () => {
+      it('Then pass 2 does not pair the same destination a second time', () => {
+        // Arrange
+        const destination = addChange('dst.meta', ID_A);
+        const sorted = [matrixCandidate(0, destination, 90), matrixCandidate(1, destination, 80)];
+        const uses = [0, 1];
+
+        // Act
+        const result = sutSelectPairs(sorted, uses, { copies: true, threshold: 0 });
+
+        // Assert
+        expect(result.pairs).toEqual([{ source: 0, destination, score: 90 }]);
+        expect(result.uses).toEqual([1, 1]);
       });
     });
   });

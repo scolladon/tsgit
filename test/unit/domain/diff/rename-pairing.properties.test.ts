@@ -2,9 +2,14 @@ import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import type { AddChange } from '../../../../src/domain/diff/diff-change.js';
 import { kindOf } from '../../../../src/domain/diff/mode-kind.js';
-import type { RenameSource } from '../../../../src/domain/diff/rename-pairing.js';
-import { pairIdenticalFiles } from '../../../../src/domain/diff/rename-pairing.js';
-import type { FileMode, ObjectId } from '../../../../src/domain/objects/index.js';
+import type { MatrixCandidate, RenameSource } from '../../../../src/domain/diff/rename-pairing.js';
+import {
+  compareCandidates,
+  labelRenameCopy,
+  pairIdenticalFiles,
+  selectPairs,
+} from '../../../../src/domain/diff/rename-pairing.js';
+import type { FileMode, FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
 import { arbSourcesAndDestinations } from './arbitraries.js';
 
 type PairingMode = 'rename' | 'copy';
@@ -112,6 +117,122 @@ describe('Given a small pool of rename sources and destinations colliding on id 
             });
           },
         ),
+        { numRuns: 100 },
+      );
+    });
+  });
+});
+
+const SELECT_PAIRS_MAX_SOURCES = 4;
+const SELECT_PAIRS_MAX_DESTS = 4;
+const SELECT_PAIRS_MAX_SCORE = 100;
+
+interface SelectPairsScenario {
+  readonly seedUses: ReadonlyArray<0 | 1>;
+  readonly destinations: ReadonlyArray<AddChange>;
+  readonly candidates: ReadonlyArray<MatrixCandidate>;
+}
+
+function destinationAt(index: number): AddChange {
+  return {
+    type: 'add',
+    newPath: `d${index}.txt` as FilePath,
+    newId: 'a'.repeat(40) as ObjectId,
+    newMode: '100644' as FileMode,
+  };
+}
+
+/** A small pool of sources (each either "deleted-like" seed 0 or
+ *  "retained-like" seed 1) and destinations, plus a handful of candidate
+ *  (source, destination) pairs scoring above zero — the input shape
+ *  `selectPairs` consumes once sorted by `compareCandidates`. */
+function arbSelectPairsScenario(): fc.Arbitrary<SelectPairsScenario> {
+  return fc
+    .record({
+      sourceCount: fc.integer({ min: 1, max: SELECT_PAIRS_MAX_SOURCES }),
+      destCount: fc.integer({ min: 1, max: SELECT_PAIRS_MAX_DESTS }),
+    })
+    .chain(({ sourceCount, destCount }) =>
+      fc
+        .record({
+          seedUses: fc.array(fc.constantFrom<0 | 1>(0, 1), {
+            minLength: sourceCount,
+            maxLength: sourceCount,
+          }),
+          raw: fc.array(
+            fc.record({
+              source: fc.integer({ min: 0, max: sourceCount - 1 }),
+              destIndex: fc.integer({ min: 0, max: destCount - 1 }),
+              score: fc.integer({ min: 1, max: SELECT_PAIRS_MAX_SCORE }),
+              nameScore: fc.constantFrom<0 | 1>(0, 1),
+            }),
+            { minLength: 0, maxLength: sourceCount * destCount },
+          ),
+        })
+        .map(({ seedUses, raw }) => {
+          const destinations = Array.from({ length: destCount }, (_unused, i) => destinationAt(i));
+          const candidates = raw.map((entry) => ({
+            source: entry.source,
+            destination: destinations[entry.destIndex] as AddChange,
+            score: entry.score,
+            nameScore: entry.nameScore,
+          }));
+          return { seedUses, destinations, candidates };
+        }),
+    );
+}
+
+describe('Given a small pool of sources and candidates for selectPairs', () => {
+  describe('When selectPairs runs with either copies setting', () => {
+    it('Then no destination is ever paired more than once', () => {
+      // Arrange + Assert
+      fc.assert(
+        fc.property(arbSelectPairsScenario(), fc.boolean(), ({ seedUses, candidates }, copies) => {
+          const sorted = [...candidates].sort(compareCandidates);
+
+          const result = selectPairs(sorted, seedUses, { copies, threshold: 0 });
+
+          const pairedDestinations = result.pairs.map((pair) => pair.destination);
+          expect(new Set(pairedDestinations).size).toBe(pairedDestinations.length);
+        }),
+        { numRuns: 100 },
+      );
+    });
+  });
+
+  describe('When selectPairs runs with copies on and its pairs are labelled', () => {
+    it('Then each deleted-like source yields k-1 copies and a final rename, and each retained-like source yields only copies', () => {
+      // Arrange + Assert
+      fc.assert(
+        fc.property(arbSelectPairsScenario(), ({ seedUses, candidates }) => {
+          const sorted = [...candidates].sort(compareCandidates);
+
+          const result = selectPairs(sorted, seedUses, { copies: true, threshold: 0 });
+          const labelled = labelRenameCopy(result.pairs, result.uses);
+
+          const bySource = new Map<number, Array<(typeof labelled)[number]>>();
+          for (const entry of labelled) {
+            const list = bySource.get(entry.pair.source) ?? [];
+            list.push(entry);
+            bySource.set(entry.pair.source, list);
+          }
+
+          for (const [sourceIndex, entries] of bySource) {
+            const seed = seedUses[sourceIndex] as 0 | 1;
+            if (seed === 1) {
+              expect(entries.every((entry) => entry.kind === 'copy')).toBe(true);
+              continue;
+            }
+            const renames = entries.filter((entry) => entry.kind === 'rename');
+            const copies = entries.filter((entry) => entry.kind === 'copy');
+            expect(renames).toHaveLength(1);
+            expect(copies).toHaveLength(entries.length - 1);
+            const lastByPath = [...entries].sort((a, b) =>
+              a.pair.destination.newPath < b.pair.destination.newPath ? -1 : 1,
+            );
+            expect(lastByPath[lastByPath.length - 1]?.kind).toBe('rename');
+          }
+        }),
         { numRuns: 100 },
       );
     });

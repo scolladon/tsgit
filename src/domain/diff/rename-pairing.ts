@@ -160,6 +160,84 @@ export function pairIdenticalFiles(
   return { pairs, unpaired, uses };
 }
 
+/** One inexact-matrix candidate: a ranked (score, nameScore) pair between a
+ *  registry source (by index) and a destination, as `buildMatrix` records it. */
+export type MatrixCandidate = RankedCandidate & {
+  readonly source: number;
+  readonly destination: AddChange;
+};
+
+export interface SelectPairsOptions {
+  readonly copies: boolean;
+  readonly threshold: number;
+}
+
+export interface SelectPairsResult {
+  readonly pairs: ReadonlyArray<SourcePair>;
+  readonly uses: ReadonlyArray<number>;
+}
+
+type SelectionPass = 'rename' | 'copy';
+
+/**
+ * One greedy scan over `sorted` (score-descending): pairs a destination with
+ * the first candidate that clears both guards, in place, mutating `uses` and
+ * `pairedDestinations` as it goes. Stops at the first below-threshold
+ * candidate — `sorted` is score-descending, so every later one is too.
+ */
+function runSelectionPass(
+  sorted: ReadonlyArray<MatrixCandidate>,
+  uses: number[],
+  threshold: number,
+  pairedDestinations: Set<AddChange>,
+  pass: SelectionPass,
+): SourcePair[] {
+  const pairs: SourcePair[] = [];
+  for (const candidate of sorted) {
+    if (candidate.score < threshold) break;
+    if (pairedDestinations.has(candidate.destination)) continue;
+    if (pass === 'rename' && (uses[candidate.source] as number) > 0) continue;
+
+    pairedDestinations.add(candidate.destination);
+    uses[candidate.source] = (uses[candidate.source] as number) + 1;
+    pairs.push({
+      source: candidate.source,
+      destination: candidate.destination,
+      score: candidate.score,
+    });
+  }
+  return pairs;
+}
+
+/**
+ * git's `find_renames`, run once per pass (`diffcore-rename.c:1380` step 7).
+ * Pass 1 (rename) skips a source already used and stops at the first
+ * below-threshold candidate. Pass 2 (copy, only when `options.copies`) skips
+ * only a destination pass 1 already claimed — any source, used or not, is
+ * eligible. `uses` seeds both passes and accumulates every recorded pair.
+ */
+export function selectPairs(
+  sorted: ReadonlyArray<MatrixCandidate>,
+  uses: ReadonlyArray<number>,
+  options: SelectPairsOptions,
+): SelectPairsResult {
+  const workingUses = [...uses];
+  const pairedDestinations = new Set<AddChange>();
+
+  const renamePairs = runSelectionPass(
+    sorted,
+    workingUses,
+    options.threshold,
+    pairedDestinations,
+    'rename',
+  );
+  const copyPairs = options.copies
+    ? runSelectionPass(sorted, workingUses, options.threshold, pairedDestinations, 'copy')
+    : [];
+
+  return { pairs: [...renamePairs, ...copyPairs], uses: workingUses };
+}
+
 export interface LabelledPair {
   readonly pair: SourcePair;
   readonly kind: 'rename' | 'copy';

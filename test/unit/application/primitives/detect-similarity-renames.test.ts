@@ -4,11 +4,11 @@ import {
   isSizeRejected,
   NUM_CANDIDATE_PER_DST,
   recordIfBetter,
-  type ScoredTriple,
 } from '../../../../src/application/primitives/detect-similarity-renames.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
-import type { AddChange, DeleteChange, TreeDiff } from '../../../../src/domain/diff/diff-change.js';
+import type { AddChange, TreeDiff } from '../../../../src/domain/diff/diff-change.js';
 import type { FlatTreeEntry } from '../../../../src/domain/diff/flat-tree.js';
+import type { MatrixCandidate } from '../../../../src/domain/diff/rename-pairing.js';
 import {
   DEFAULT_BREAK_SCORE,
   DEFAULT_MERGE_SCORE,
@@ -2002,29 +2002,27 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
-  // ── sortTriples comparator: score equality and kind-ordering arms ──
+  // ── selectPairs wiring: a deleted source beats a better-scoring retained one ──
 
-  describe('Given a rename and a copy candidate with DIFFERENT scores (sortTriples score branch)', () => {
-    describe('When detectSimilarityRenames is called with copies:"on"', () => {
-      it('Then the higher-scored candidate sorts first regardless of kind', async () => {
-        // Arrange — copy candidate scores HIGHER than rename candidate for the same dst.
-        // With correct sortTriples, copy (higher score) sorts before rename (lower score).
-        // The greedy pass then picks the copy first; the rename dst is consumed → no rename.
-        // Kills L267 [ConditionalExpression] "true" (always returns b.score-a.score,
-        // ignoring the score-equality rename-priority branch).
+  describe('Given copies:"on" with a modified source scoring higher than a deleted source for the same destination (design row C19)', () => {
+    describe('When detectSimilarityRenames is called', () => {
+      it('Then the deleted source wins the destination as a rename — pass 1 never lets a retained source win, no matter its score', async () => {
+        // Arrange — the modify's preimage (copy candidate, ~95%) scores higher than the
+        // delete (rename candidate, ~90%) against dst, but neither is an EXACT match (an
+        // exact match would resolve in the exact pass, ahead of this test's target — the
+        // inexact matrix). git's two-pass selection (design row C19) pairs only zero-use
+        // (deleted) sources in pass 1, so the delete wins the destination even though the
+        // retained source scores higher — a pure score-sort gets this backwards.
         const ctx = await buildSeededContext();
-        // Destination blob: 10 specific lines
         const dstContent = Array.from(
           { length: 10 },
-          (_, i) => `dst-line-${i}: copy-wins content alpha beta gamma\n`,
+          (_, i) => `dst-line-${i}: c19 content alpha beta gamma\n`,
         ).join('');
-        // Copy source (modify preimage): IDENTICAL to dst → copy score = MAX_SCORE
-        const copySourceContent = dstContent;
-        // Rename source (delete): shares only partial content → rename score < MAX_SCORE
+        const copySourceContent = `${dstContent}extra-tail-line: zzz\n`; // ~95%, not exact
         const renameSourceContent = dstContent.replace(
-          'dst-line-0: copy-wins content alpha beta gamma\n',
+          'dst-line-0: c19 content alpha beta gamma\n',
           'DIFFERENT-line-0\n',
-        );
+        ); // ~90%
 
         const dstId = await writeBlob(ctx, dstContent);
         const modOldId = await writeBlob(ctx, copySourceContent);
@@ -2056,73 +2054,10 @@ describe('detectSimilarityRenames', () => {
           ],
         };
 
-        // Act — copies:'on' so modify is a copy source; copy has higher score
+        // Act — copies:'on' so mod-src.txt's preimage is a copy candidate
         const result = await detectSimilarityRenames(ctx, diff, { copies: 'on' });
 
-        // Assert — the copy wins (higher score sorts first); the add is consumed by the copy
-        const copies = result.changes.filter((c) => c.type === 'copy');
-        expect(copies).toHaveLength(1);
-        if (copies[0]?.type === 'copy') {
-          expect(copies[0].oldPath).toBe('mod-src.txt');
-          expect(copies[0].newPath).toBe('dst.txt');
-        }
-        // del-src.txt remains as a delete (no rename; dst was consumed by copy)
-        const deletes = result.changes.filter((c) => c.type === 'delete');
-        expect(deletes.some((d) => d.type === 'delete' && d.oldPath === 'del-src.txt')).toBe(true);
-      });
-    });
-  });
-
-  describe('Given a rename and a copy candidate at equal score (sortTriples kind-priority branch)', () => {
-    describe('When detectSimilarityRenames is called with copies:"on"', () => {
-      it('Then rename sorts AHEAD of copy at equal score (L269 and L270 kind arms both exercised)', async () => {
-        // Arrange — rename and copy both score identically against dst.
-        // The rename candidate MUST sort before the copy at equal score.
-        // Kills L269 false (rename-wins arm disabled), L269 true (always fires, always returns -1),
-        //       L269 a.kind!=='rename' (negates condition, copy sorts before rename),
-        //       L270 true (always returns 1, wrong direction),
-        //       L270 LogicalOperator || (fires when only one kind matches),
-        //       L270 false (copy-loses arm disabled),
-        //       L270 b.kind!=='rename' / a.kind!=='copy' negations.
-        const ctx = await buildSeededContext();
-        const sharedContent = Array.from(
-          { length: 12 },
-          (_, i) => `sort-line-${i}: equal-score content alpha beta gamma delta\n`,
-        ).join('');
-        const dstId = await writeBlob(ctx, sharedContent);
-        const delId = await writeBlob(ctx, sharedContent); // rename source: IDENTICAL → R100
-        const modOldId = await writeBlob(ctx, sharedContent); // copy source: IDENTICAL → C100
-        const modNewId = await writeBlob(ctx, 'new content for modify target\n');
-
-        const diff: TreeDiff = {
-          changes: [
-            {
-              type: 'delete',
-              oldPath: 'del-src.txt' as FilePath,
-              oldId: delId,
-              oldMode: FILE_MODE.REGULAR,
-            },
-            {
-              type: 'modify',
-              path: 'mod-src.txt' as FilePath,
-              oldId: modOldId,
-              newId: modNewId,
-              oldMode: FILE_MODE.REGULAR,
-              newMode: FILE_MODE.REGULAR,
-            },
-            {
-              type: 'add',
-              newPath: 'dst.txt' as FilePath,
-              newId: dstId,
-              newMode: FILE_MODE.REGULAR,
-            },
-          ],
-        };
-
-        // Act — copies:'on' so mod-src.txt preimage is a copy source
-        const result = await detectSimilarityRenames(ctx, diff, { copies: 'on' });
-
-        // Assert — rename wins at equal score; copy candidate loses
+        // Assert — the DELETE wins as a rename despite the retained source's higher score
         const renames = result.changes.filter((c) => c.type === 'rename');
         const copies = result.changes.filter((c) => c.type === 'copy');
         expect(renames).toHaveLength(1);
@@ -2131,19 +2066,183 @@ describe('detectSimilarityRenames', () => {
           expect(renames[0].oldPath).toBe('del-src.txt');
           expect(renames[0].newPath).toBe('dst.txt');
         }
-        // The modify must survive (rename won; copy source not consumed)
+        // The modify survives — its preimage was never consumed (pass 2 never ran; the
+        // destination was already claimed in pass 1)
         expect(result.changes.filter((c) => c.type === 'modify')).toHaveLength(1);
       });
     });
   });
 
-  describe('Given two rename candidates from the same delete tied at equal score (sortTriples same-kind order)', () => {
+  describe('Given copies:"on" with an exactly-consumed modify source scoring higher than a deleted source for a second destination (design row C20)', () => {
+    describe('When detectSimilarityRenames is called', () => {
+      it('Then the exact pass folds the first destination into a copy and the deleted source wins the second as a rename', async () => {
+        // Arrange — mod.txt's old content is IDENTICAL to n1.txt (exact copy pass, uses
+        // the source once already) and 85%-similar to n2.txt; d.txt is 80%-similar to
+        // n2.txt. Once the exact pass consumes mod.txt's source, pass 1 (deleted-only)
+        // still wins n2.txt for d.txt despite its lower score.
+        const ctx = await buildSeededContext();
+        const sharedLines = Array.from(
+          { length: 17 },
+          (_, i) => `c20-shared-${String(i).padStart(2, '0')}: alpha beta gamma delta\n`,
+        );
+        const modOnly = Array.from({ length: 3 }, (_, i) => `c20-mod-only-${i}: epsilon zeta\n`);
+        const n2Only = Array.from({ length: 3 }, (_, i) => `c20-n2-only-${i}: eta theta\n`);
+        const dOnly = Array.from({ length: 4 }, (_, i) => `c20-d-only-${i}: iota kappa\n`);
+
+        const modOldContent = [...sharedLines, ...modOnly].join('');
+        const n1Content = modOldContent; // exact match to mod.txt's old content
+        const n2Content = [...sharedLines, ...n2Only].join('');
+        const dOldContent = [...sharedLines.slice(0, 16), ...dOnly].join('');
+
+        const modOldId = await writeBlob(ctx, modOldContent);
+        const modNewId = await writeBlob(ctx, 'c20 modify new content\n');
+        const dOldId = await writeBlob(ctx, dOldContent);
+        const n1Id = await writeBlob(ctx, n1Content);
+        const n2Id = await writeBlob(ctx, n2Content);
+
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'modify',
+              path: 'mod.txt' as FilePath,
+              oldId: modOldId,
+              newId: modNewId,
+              oldMode: FILE_MODE.REGULAR,
+              newMode: FILE_MODE.REGULAR,
+            },
+            {
+              type: 'delete',
+              oldPath: 'd.txt' as FilePath,
+              oldId: dOldId,
+              oldMode: FILE_MODE.REGULAR,
+            },
+            {
+              type: 'add',
+              newPath: 'n1.txt' as FilePath,
+              newId: n1Id,
+              newMode: FILE_MODE.REGULAR,
+            },
+            {
+              type: 'add',
+              newPath: 'n2.txt' as FilePath,
+              newId: n2Id,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act
+        const result = await detectSimilarityRenames(ctx, diff, { copies: 'on' });
+
+        // Assert — n1.txt folds into an exact copy; n2.txt is won by the deleted source
+        const copies = result.changes.filter((c) => c.type === 'copy');
+        const renames = result.changes.filter((c) => c.type === 'rename');
+        expect(copies).toHaveLength(1);
+        expect(renames).toHaveLength(1);
+        if (copies[0]?.type === 'copy') {
+          expect(copies[0].oldPath).toBe('mod.txt');
+          expect(copies[0].newPath).toBe('n1.txt');
+        }
+        if (renames[0]?.type === 'rename') {
+          expect(renames[0].oldPath).toBe('d.txt');
+          expect(renames[0].newPath).toBe('n2.txt');
+        }
+        expect(result.changes.filter((c) => c.type === 'modify')).toHaveLength(1);
+        expect(result.changes.filter((c) => c.type === 'delete')).toHaveLength(0);
+        expect(result.changes.filter((c) => c.type === 'add')).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given copies:"on" with four higher-scoring retained sources and one lower-scoring deleted source competing for one destination (cull rule keeps used sources in the shared candidate cap)', () => {
+    describe('When detectSimilarityRenames is called', () => {
+      it('Then the shared per-destination cap evicts the deleted source before pass 1 runs, so a retained source wins as a copy and the delete survives', async () => {
+        // Arrange — r1..r4's old content shares 16 of 20 lines with n.txt (~80%); d.txt
+        // shares only 8 of 20 lines with n.txt (~40%). All five compete for n.txt's
+        // shared 4-slot matrix cap: if used (retained) sources were excluded from that
+        // cap, d.txt — the only zero-use source — would win pass 1 outright. Because
+        // the cap is shared across every matrix source regardless of use count, d.txt
+        // is evicted before pass 1 ever runs, and pass 2 lets a retained source win
+        // instead.
+        const ctx = await buildSeededContext();
+        const common = Array.from(
+          { length: 16 },
+          (_, i) => `cull-common-${String(i).padStart(2, '0')}: alpha beta gamma delta epsilon\n`,
+        );
+        const nTail = Array.from({ length: 4 }, (_, i) => `cull-n-tail-${i}: zeta eta\n`);
+        const nContent = [...common, ...nTail].join('');
+        const retainedTail = (n: number): string[] =>
+          Array.from({ length: 4 }, (_, i) => `cull-r${n}-tail-${i}: theta iota\n`);
+        const dTail = Array.from({ length: 12 }, (_, i) => `cull-d-tail-${i}: kappa lambda\n`);
+        const dOldContent = [...common.slice(0, 8), ...dTail].join('');
+
+        const nId = await writeBlob(ctx, nContent);
+        const dOldId = await writeBlob(ctx, dOldContent);
+        const retained = await Promise.all(
+          [1, 2, 3, 4].map(async (n) => ({
+            path: `r${n}.txt` as FilePath,
+            oldId: await writeBlob(ctx, [...common, ...retainedTail(n)].join('')),
+            newId: await writeBlob(ctx, `cull-r${n}-new content only\n`),
+          })),
+        );
+
+        const diff: TreeDiff = {
+          changes: [
+            ...retained.map((r) => ({
+              type: 'modify' as const,
+              path: r.path,
+              oldId: r.oldId,
+              newId: r.newId,
+              oldMode: FILE_MODE.REGULAR,
+              newMode: FILE_MODE.REGULAR,
+            })),
+            {
+              type: 'delete',
+              oldPath: 'd.txt' as FilePath,
+              oldId: dOldId,
+              oldMode: FILE_MODE.REGULAR,
+            },
+            {
+              type: 'add',
+              newPath: 'n.txt' as FilePath,
+              newId: nId,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act — a low threshold (30%) admits both the ~80% retained scores and d.txt's
+        // ~40% score as legitimate candidates, isolating the cap-eviction behaviour.
+        const result = await detectSimilarityRenames(ctx, diff, {
+          copies: 'on',
+          threshold: Math.trunc(MAX_SCORE * 0.3),
+        });
+
+        // Assert — a retained source wins n.txt as a copy; d.txt never pairs
+        const copies = result.changes.filter((c) => c.type === 'copy');
+        expect(copies).toHaveLength(1);
+        if (copies[0]?.type === 'copy') {
+          expect(['r1.txt', 'r2.txt', 'r3.txt', 'r4.txt']).toContain(copies[0].oldPath);
+          expect(copies[0].newPath).toBe('n.txt');
+        }
+        const deletes = result.changes.filter((c) => c.type === 'delete');
+        expect(deletes).toHaveLength(1);
+        if (deletes[0]?.type === 'delete') {
+          expect(deletes[0].oldPath).toBe('d.txt');
+        }
+        expect(result.changes.filter((c) => c.type === 'modify')).toHaveLength(4);
+        expect(result.changes.filter((c) => c.type === 'add')).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given two rename candidates from the same delete tied at equal score (selectPairs pass 1 stable order)', () => {
     describe('When detectSimilarityRenames is called', () => {
       it('Then the first destination in build order wins the delete (rename-vs-rename tiebreak is stable)', async () => {
         // Arrange — one delete D equally similar to two adds A1 and A2 (each differs from D by
         // one distinct line → identical score, distinct content). Greedy consumes D for the
-        // FIRST candidate in build order (A1, iterated before A2). Reversing the same-kind
-        // (rename/rename) order would hand D to A2 instead.
+        // FIRST candidate in build order (A1, iterated before A2). Reversing that stable
+        // order would hand D to A2 instead.
         const ctx = await buildSeededContext();
         const dId = await writeBlob(ctx, tenLines(0));
         const a1Id = await writeBlob(ctx, tenLines(0).replace('line 5\n', 'CH1 line 5\n'));
@@ -2190,13 +2289,13 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
-  describe('Given two copy sources with identical content tied at equal score for one dst (sortTriples same-kind order)', () => {
+  describe('Given two copy sources with identical content tied at equal score for one dst (selectPairs pass 2 stable order)', () => {
     describe('When detectSimilarityRenames is called with copies:"harder"', () => {
       it('Then the first copy source in build order wins the dst (copy-vs-copy tiebreak is stable)', async () => {
         // Arrange — two unchanged files A.txt and B.txt share the SAME blob id (identical
         // content) and both match the add equally. Greedy takes the FIRST source in build
-        // order (A.txt, iterated before B.txt). Reversing the same-kind (copy/copy) order
-        // would name B.txt as the copy source instead.
+        // order (A.txt, iterated before B.txt). Reversing that stable order would name
+        // B.txt as the copy source instead.
         const ctx = await buildSeededContext();
         const sharedId = await writeBlob(ctx, tenLines(0));
         const dstId = await writeBlob(ctx, tenLines(0).replace('X line 0\n', 'CHG line 0\n'));
@@ -3804,15 +3903,9 @@ describe('detectSimilarityRenames', () => {
 });
 
 const oidOf = (c: string): ObjectId => c.repeat(40) as ObjectId;
-const renameTriple = (score: number, nameScore: 0 | 1 = 0): ScoredTriple => ({
-  kind: 'rename',
-  src: {
-    type: 'delete',
-    oldPath: 'src.txt' as FilePath,
-    oldId: oidOf('a'),
-    oldMode: FILE_MODE.REGULAR,
-  } satisfies DeleteChange,
-  add: {
+const renameTriple = (score: number, nameScore: 0 | 1 = 0): MatrixCandidate => ({
+  source: 0,
+  destination: {
     type: 'add',
     newPath: 'dst.txt' as FilePath,
     newId: oidOf('b'),
@@ -3863,7 +3956,7 @@ describe('Given the per-destination candidate matrix helper recordIfBetter', () 
     it('Then the existing entry is kept (strictly-better replacement only)', () => {
       // Arrange — the minimum (20) is a distinct object at index 1
       const original = renameTriple(20);
-      const slots: ScoredTriple[] = [
+      const slots: MatrixCandidate[] = [
         renameTriple(50),
         original,
         renameTriple(30),
@@ -3883,7 +3976,7 @@ describe('Given the per-destination candidate matrix helper recordIfBetter', () 
       // Arrange — git's name_score in score_compare: on a score tie, the
       // lowest-ranked (worst) slot is the lowest index, since none of the
       // four outranks another; a matching basename then beats that tie.
-      const slots: ScoredTriple[] = [
+      const slots: MatrixCandidate[] = [
         renameTriple(50, 0),
         renameTriple(50, 0),
         renameTriple(50, 0),
@@ -3903,7 +3996,7 @@ describe('Given the per-destination candidate matrix helper recordIfBetter', () 
   describe('When a strictly higher-scoring candidate arrives at a full slot array whose minimum also ties on nameScore', () => {
     it('Then score still outranks nameScore — the candidate replaces the lowest-scoring slot', () => {
       // Arrange
-      const slots: ScoredTriple[] = [
+      const slots: MatrixCandidate[] = [
         renameTriple(50, 1),
         renameTriple(10, 1),
         renameTriple(30, 0),
