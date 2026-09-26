@@ -126,7 +126,7 @@ async function detectChanges(
       ctx,
       rawDiff,
       options.renameOptions,
-      await buildPreimage(ctx, a, options.renameOptions),
+      await buildPreimage(ctx, a, options.renameOptions, options.recursive === true),
     );
   }
   const breakRewrites = options?.renameOptions?.breakRewrites;
@@ -411,8 +411,24 @@ function dropVerdict(
   return scanEqual(oldContent, newContent, lineKey, ignoreBlankLines, numstatBinaryOverride);
 }
 
+/** `tree`'s own entries, one level, no recursion — a subdirectory becomes a
+ *  copy source keyed by its own tree oid rather than descended into,
+ *  matching which paths a non-recursive diff's own raw pass ever offers. */
+function topLevelEntries(tree: Tree): FlatTree['entries'] {
+  const entries = new Map<FilePath, FlatTreeEntry>();
+  for (const entry of tree.entries) {
+    entries.set(entry.name as FilePath, { id: entry.id, mode: entry.mode });
+  }
+  return entries;
+}
+
 /**
- * Build the flat preimage map for copies:'harder' — all tree-A paths become copy sources.
+ * Build the flat preimage map for copies:'harder'. Recursive: every LEAF
+ * path in tree A becomes a copy source (`flattenRawTree`). Non-recursive:
+ * only tree A's OWN top-level entries do — files and subdirectories alike —
+ * since that is the finest grain a non-recursive diff's own raw pass ever
+ * pairs a same-oid destination against (git never looks inside an unchanged
+ * subdirectory there either).
  * Returns undefined when copies:'harder' is not active or `a` is absent. An `ObjectId`
  * is peeled to its tree first (a commit or tag oid must resolve exactly like the
  * tree-oid form does) — `flattenRawTree` refuses anything but a tree, so `a` cannot be
@@ -425,8 +441,13 @@ async function buildPreimage(
   ctx: Context,
   a: DiffTreesInput,
   renameOptions: RenameDetectOptions | undefined,
+  recursive: boolean,
 ): Promise<FlatTree['entries'] | undefined> {
   if (renameOptions?.copies !== 'harder' || a === undefined) return undefined;
+  if (!recursive) {
+    const tree = await resolveInput(ctx, a);
+    return tree === undefined ? undefined : topLevelEntries(tree);
+  }
   const bounds = await resolveFlattenBounds(ctx);
   if (typeof a !== 'string') {
     return (await flattenRawTree(ctx, a, bounds)).entries;

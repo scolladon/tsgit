@@ -1258,6 +1258,73 @@ describe('diffTrees', () => {
     });
   });
 
+  describe('Given copies:"harder" and a non-recursive diff, with the only similar preimage nested inside an unchanged subdirectory', () => {
+    describe('When diffTrees is called with recursive:false', () => {
+      it('Then the new top-level file stays a plain add — a nested path never offers itself as a copy source', async () => {
+        // Arrange — keep/b is unchanged, nested; the new top-level c matches
+        // its content exactly. A non-recursive diff never looks inside an
+        // unchanged subdirectory, so keep/b must never become a copy source.
+        const ctx = await buildSeededContext();
+        const sharedId = await blob(ctx, 'shared nested content\n');
+        const keepTree = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'b', sharedId)]);
+        const treeA = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'keep', keepTree)]);
+        const treeB = await writeTree(ctx, [
+          treeEntry(FILE_MODE.DIRECTORY, 'keep', keepTree),
+          treeEntry(FILE_MODE.REGULAR, 'c', sharedId),
+        ]);
+
+        // Act
+        const result = await diffTrees(ctx, treeA, treeB, {
+          detectRenames: true,
+          recursive: false,
+          renameOptions: { copies: 'harder' },
+        });
+
+        // Assert
+        expect(result.changes.filter((c) => c.type === 'copy')).toHaveLength(0);
+        const adds = result.changes.filter((c) => c.type === 'add');
+        expect(adds).toHaveLength(1);
+        expect(adds[0]?.newPath).toBe('c');
+      });
+    });
+  });
+
+  describe('Given copies:"harder" and a non-recursive diff, with a whole unchanged subdirectory copied wholesale to a new top-level path', () => {
+    describe('When diffTrees is called with recursive:false', () => {
+      it('Then the new subdirectory is detected as a copy of the unchanged one, by tree oid', async () => {
+        // Arrange — keep2 is a brand new top-level entry pointing at the SAME
+        // tree oid as the unchanged keep — a top-level subdirectory is a
+        // valid copy source in its own right under a non-recursive diff.
+        const ctx = await buildSeededContext();
+        const keepTree = await writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'b', await blob(ctx, 'nested content\n')),
+        ]);
+        const treeA = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'keep', keepTree)]);
+        const treeB = await writeTree(ctx, [
+          treeEntry(FILE_MODE.DIRECTORY, 'keep', keepTree),
+          treeEntry(FILE_MODE.DIRECTORY, 'keep2', keepTree),
+        ]);
+
+        // Act
+        const result = await diffTrees(ctx, treeA, treeB, {
+          detectRenames: true,
+          recursive: false,
+          renameOptions: { copies: 'harder' },
+        });
+
+        // Assert
+        expect(result.changes.filter((c) => c.type === 'add')).toHaveLength(0);
+        const copies = result.changes.filter((c) => c.type === 'copy');
+        expect(copies).toHaveLength(1);
+        if (copies[0]?.type === 'copy') {
+          expect(copies[0].oldPath).toBe('keep');
+          expect(copies[0].newPath).toBe('keep2');
+          expect(copies[0].similarity.score).toBe(MAX_SCORE);
+        }
+      });
+    });
+  });
+
   describe('Given copies:"on" with treeA present (buildPreimage should return undefined)', () => {
     describe('When diffTrees is called with detectRenames:true and renameOptions:{copies:"on"}', () => {
       it('Then no preimage is built and unchanged files are NOT copy sources (L70 ConditionalExpression "false")', async () => {
@@ -1402,14 +1469,24 @@ describe('diffTrees', () => {
 
   describe('Given copies:"harder" and treeA wrapped in a commit oid', () => {
     describe('When diffTrees builds the preimage', () => {
-      it('Then the terminal tree is read raw exactly once (the peeled bytes feed the preimage flatten directly)', async () => {
+      it('Then building the preimage costs exactly one extra raw read of the terminal tree (the peeled bytes feed the preimage flatten directly)', async () => {
         // Arrange — peelToTree already reads the terminal tree's raw bytes as
         // its last hop; flattenRawTree must reuse them rather than re-reading
-        // the same tree object a second time.
+        // the same tree object a second time. recursive:true is the only mode
+        // whose preimage flattens via peelToTree + flattenRawTree at all —
+        // non-recursive reads via the parsed Tree path instead
+        // (`resolveInput`), which this reuse concern never applies to. The
+        // main diff's OWN resolution independently peels treeA too, so the
+        // count isolates buildPreimage's contribution as a DELTA against a
+        // copies:'on' baseline (same main-diff reads, no preimage flatten)
+        // rather than asserting an absolute total.
         const ctx = await buildSeededContext();
         const unchangedId = await blob(ctx, 'shared content\n');
         const treeA = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'orig.txt', unchangedId)]);
-        const treeB = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'orig.txt', unchangedId)]);
+        const treeB = await writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'orig.txt', unchangedId),
+          treeEntry(FILE_MODE.REGULAR, 'extra.txt', await blob(ctx, 'extra\n')),
+        ]);
         const commitA = await writeObject(ctx, {
           type: 'commit',
           id: '' as ObjectId,
@@ -1423,16 +1500,27 @@ describe('diffTrees', () => {
           },
         });
         const readRawObjectSpy = vi.spyOn(readObjectMod, 'readRawObject');
+        const countTreeAReads = (): number =>
+          readRawObjectSpy.mock.calls.filter(([, id]) => id === treeA).length;
 
         // Act
         await diffTrees(ctx, commitA, treeB, {
           detectRenames: true,
+          recursive: true,
+          renameOptions: { copies: 'on' },
+        });
+        const baselineReads = countTreeAReads();
+        readRawObjectSpy.mockClear();
+
+        await diffTrees(ctx, commitA, treeB, {
+          detectRenames: true,
+          recursive: true,
           renameOptions: { copies: 'harder' },
         });
+        const harderReads = countTreeAReads();
 
         // Assert
-        const treeAReads = readRawObjectSpy.mock.calls.filter(([, id]) => id === treeA).length;
-        expect(treeAReads).toBe(1);
+        expect(harderReads - baselineReads).toBe(1);
         readRawObjectSpy.mockRestore();
       });
     });
