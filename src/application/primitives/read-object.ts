@@ -223,7 +223,9 @@ export async function readObject(
 
 /** Like `readObject`, but also surfaces the resolved object's declared size
  *  — `cat-file-batch.ts`'s reader, sharing the same lazy-fetch retry and
- *  parsed memo. */
+ *  parsed memo. git's `cat-file`/`--batch` route blobs to the streaming
+ *  tier, so a size-lying blob serves its real bytes here rather than
+ *  refusing an overrun. */
 export async function readObjectWithSize(
   ctx: Context,
   id: ObjectId,
@@ -232,7 +234,26 @@ export async function readObjectWithSize(
   const verifyHash = options?.verifyHash ?? false;
   const registry = peekPackRegistry(ctx) ?? (await getPackRegistry(ctx));
   return withLazyFetchRetry(ctx, id, registry, () =>
-    resolveObjectWithSize(ctx, registry, id, verifyHash, options?.maxBytes),
+    resolveObjectWithSize(ctx, registry, id, verifyHash, options?.maxBytes, 'streamed'),
+  );
+}
+
+/**
+ * `readObject` through git's streaming read tier rather than the buffered
+ * default — `show`'s blob target, which serves a size-lying blob's real
+ * bytes exactly as `cat-file -p` does. A commit, tree or tag refuses
+ * identically in both tiers, so this is never needed for them. INTERNAL:
+ * not re-exported from the primitives barrel.
+ */
+export async function readObjectStreamed(
+  ctx: Context,
+  id: ObjectId,
+  options?: ReadObjectOptions,
+): Promise<GitObject> {
+  const verifyHash = options?.verifyHash ?? false;
+  const registry = peekPackRegistry(ctx) ?? (await getPackRegistry(ctx));
+  return withLazyFetchRetry(ctx, id, registry, () =>
+    resolveObject(ctx, registry, id, verifyHash, options?.maxBytes, 'streamed'),
   );
 }
 
@@ -499,11 +520,23 @@ async function resolveObjectMetadataWithContent(
 ): Promise<ObjectMetadataWithContent> {
   const hit = await registry.lookup(id);
   if (hit === undefined) {
-    // No pack claims this id: a full inflate is the cheapest route left, and
-    // it inherits readRawObject's own partial-clone lazy-fetch retry. Hand
-    // the inflated content back too — the loose route already paid for it.
-    const raw = await readRawObject(ctx, id);
-    return { type: raw.type, uncompressedSize: raw.content.length, content: raw.content };
+    // No pack claims this id: read the streaming tier directly — this
+    // metadata stays content-derived, never the header claim a size-lying
+    // blob carries, so it must never route through the buffered default the
+    // public `readRawObject` now takes. The outer `withLazyFetchRetry` on
+    // `readObjectMetadataWithContent` already covers the partial-clone
+    // retry `readRawObject` would otherwise add. Hand the inflated content
+    // back too — the loose route already paid for it.
+    const { type, content } = await resolveObjectContentWithDepth(
+      ctx,
+      registry,
+      id,
+      false,
+      undefined,
+      0,
+      'streamed',
+    );
+    return { type, uncompressedSize: content.length, content };
   }
   return readPackedMetadata(ctx, registry, hit, id);
 }

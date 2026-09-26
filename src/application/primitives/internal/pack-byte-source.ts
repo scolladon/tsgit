@@ -21,21 +21,11 @@ import {
   parsePackHeader,
 } from '../../../domain/storage/index.js';
 import { PACK_HEADER_SIZE } from '../../../domain/storage/pack-entry.js';
-import type { InflateStreamResult } from '../../../ports/compressor.js';
+import {
+  INFLATE_CAP_EXCEEDED_REASON,
+  type InflateStreamResult,
+} from '../../../ports/compressor.js';
 import type { Context } from '../../../ports/context.js';
-
-/**
- * The reason `ctx.compressor.streamInflate` raises when its output cap is
- * exceeded — reached here specifically because every `inflateEntry` below
- * binds that cap to `declaredSize` (see the interface doc), so hitting it
- * means the entry's stream is inflating LONGER than it declared. Owned
- * independently here for the same reason `RETRYABLE_DECOMPRESS_REASON`
- * below is: a structural match against every adapter's own wording for the
- * identical condition (`inflateZlibMember`'s `GrowableBuffer.ensureCapacity`,
- * `NodeCompressor.streamInflate`'s cap check), which this module cannot
- * import across the port boundary.
- */
-const INFLATE_CAP_EXCEEDED_REASON = 'inflated output exceeds safety cap';
 
 /**
  * `TCrcContext` lets a source thread whatever it needs from `inflateEntry`
@@ -142,9 +132,13 @@ const errorDataReason = (error: unknown): string | undefined => {
   return typeof data?.reason === 'string' ? data.reason : undefined;
 };
 
-/** Whether `err` is the compressor's own declared-size output cap firing —
- *  see {@link INFLATE_CAP_EXCEEDED_REASON}. */
-const isCapExceeded = (err: unknown): boolean =>
+/**
+ * Whether `err` is the compressor's own output cap firing — see
+ * {@link INFLATE_CAP_EXCEEDED_REASON}. Exported (INTERNAL) so the object
+ * resolver's buffered loose read reuses the identical check rather than
+ * restating it against the port's own reason constant.
+ */
+export const isInflateCapExceeded = (err: unknown): boolean =>
   errorDataCode(err) === 'DECOMPRESS_FAILED' &&
   errorDataReason(err) === INFLATE_CAP_EXCEEDED_REASON;
 
@@ -168,7 +162,7 @@ const withDeclaredSizeCheck = async <TCrcContext>(
   }>,
 ): Promise<{ readonly result: InflateStreamResult; readonly crcContext: TCrcContext }> => {
   const outcome = await attempt().catch((err: unknown) => {
-    if (isCapExceeded(err)) {
+    if (isInflateCapExceeded(err)) {
       throw invalidPackEntry(offset, PACK_ENTRY_INFLATED_SIZE_MISMATCH_REASON);
     }
     throw err;

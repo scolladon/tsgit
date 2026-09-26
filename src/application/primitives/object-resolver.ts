@@ -3,14 +3,24 @@
  * Consumed only by readObject.
  */
 import { TsgitError } from '../../domain/error.js';
-import { objectHashMismatch, objectNotFound, objectTooLarge } from '../../domain/objects/error.js';
-import { assertLooseSizeConsistent, splitLooseObject } from '../../domain/objects/git-object.js';
+import {
+  invalidObjectHeader,
+  objectHashMismatch,
+  objectNotFound,
+  objectTooLarge,
+} from '../../domain/objects/error.js';
+import {
+  assertLooseSizeConsistent,
+  type LooseObjectSplit,
+  splitLooseObject,
+} from '../../domain/objects/git-object.js';
 import {
   emptyTreeOid,
   type GitObject,
   type ObjectContent,
   type ObjectId,
   type ObjectType,
+  parseHeader,
   parseObjectContent,
   serializeHeader,
 } from '../../domain/objects/index.js';
@@ -29,6 +39,7 @@ import {
   parsePackEntryHeader,
   readDeltaTargetSize,
 } from '../../domain/storage/index.js';
+import { MAX_INFLATE_OUTPUT_BYTES } from '../../ports/compressor.js';
 import type { Context } from '../../ports/context.js';
 import { forgetLooseOidPrefix, probeLooseOid } from './internal/loose-oid-cache.js';
 import {
@@ -41,6 +52,7 @@ import {
   parsedObjectMemoFor,
   probeDeltaBaseCache,
 } from './internal/object-caches.js';
+import { isInflateCapExceeded } from './internal/pack-byte-source.js';
 import { checkAborted, retryOnceAfterRescan } from './internal/retry-after-rescan.js';
 import {
   deltaBaseCacheKey,
@@ -58,6 +70,92 @@ import { commonGitDir, looseObjectPath } from './path-layout.js';
  * virtual and still misses.
  */
 const EMPTY_TREE_CONTENT = new Uint8Array(0);
+
+/**
+ * Which of git's two loose-object read tiers a resolution should take.
+ * `'buffered'` transcribes `unpack_loose_header` + `unpack_loose_rest`: the
+ * inflate is bounded to header + declared size, refusing an overrun past
+ * `LOOSE_HEADER_WINDOW` and truncating one inside it (Part 4). `'streamed'`
+ * is git's streaming tier (`cat-file -p`, `show`'s blob target): a full
+ * inflate that ignores the claim, serving a size-lying blob's real bytes.
+ * Every route defaults to `'buffered'` except the few that must match git's
+ * streaming contract, threaded explicitly by their own caller.
+ */
+export type LooseReadMode = 'buffered' | 'streamed';
+
+/** git's own fixed loose-header buffer width (`object-file.c`'s
+ *  `MAX_HEADER_LEN`) — the window `'buffered'` mode's overrun refusal and
+ *  window-truncation (Part 4) are both measured against. */
+export const LOOSE_HEADER_WINDOW = 32;
+
+/** One probe byte past the window: a header whose NUL falls exactly on byte
+ *  32 still fits; one that needs a 33rd byte to terminate does not. */
+const LOOSE_HEADER_PROBE_BYTES = LOOSE_HEADER_WINDOW + 1;
+
+export interface LooseBufferedRead {
+  /** The inflated stored bytes, header included. */
+  readonly bytes: Uint8Array;
+  readonly split: LooseObjectSplit;
+}
+
+function contentExceedsDeclaredSize(size: number): TsgitError {
+  return invalidObjectHeader(`content exceeds declared size ${size}`);
+}
+
+/**
+ * Bounds the loose object's full inflate to header + declared size, the
+ * same cap `inflateLooseBuffered` derived from the header probe. A cap hit
+ * below the port's own hard ceiling means THIS bound fired — the body
+ * genuinely overran the claim — so it is remapped to git's buffered-tier
+ * refusal; a cap hit at or above the ceiling means the adapter's own 2 GiB
+ * limit fired instead (today's behaviour for a >2 GiB object), so it
+ * propagates unchanged.
+ */
+async function inflateBoundToClaim(
+  ctx: Context,
+  compressed: Uint8Array,
+  cap: number,
+  declaredSize: number,
+): Promise<Uint8Array> {
+  try {
+    return await ctx.compressor.inflate(compressed, cap);
+  } catch (err) {
+    if (isInflateCapExceeded(err) && cap < MAX_INFLATE_OUTPUT_BYTES) {
+      throw contentExceedsDeclaredSize(declaredSize);
+    }
+    throw err;
+  }
+}
+
+/**
+ * git's buffered-tier loose read (`unpack_loose_header` +
+ * `unpack_loose_rest`): probe the header through `inflateHead` — never more
+ * than `LOOSE_HEADER_PROBE_BYTES` of OUTPUT, whatever the compressed input
+ * size — then bound the full inflate to header + declared size. A body that
+ * overruns that bound throws `INVALID_OBJECT_HEADER`; window-truncation of an
+ * overrun that fits inside `LOOSE_HEADER_WINDOW` is Part 4.
+ */
+export async function inflateLooseBuffered(
+  ctx: Context,
+  compressed: Uint8Array,
+): Promise<LooseBufferedRead> {
+  const head = await ctx.compressor.inflateHead(compressed, LOOSE_HEADER_PROBE_BYTES);
+  // The header bytes (through the NUL) are identical between `head` and the
+  // full inflate below — both come from the same compressed stream, and
+  // `parseHeader` already succeeded on `head` alone. Building the split from
+  // these already-parsed fields, rather than re-running `splitLooseObject`
+  // (which would re-parse the header from `bytes`), keeps every buffered
+  // read at one header decode, matching the streamed tier's own cost.
+  const { type, size, contentOffset } = parseHeader(head);
+  const cap = Math.max(LOOSE_HEADER_WINDOW, contentOffset + size);
+  const bytes = await inflateBoundToClaim(ctx, compressed, cap, size);
+  const split: LooseObjectSplit = {
+    type,
+    content: bytes.subarray(contentOffset),
+    declaredSize: size,
+  };
+  return { bytes, split };
+}
 
 /**
  * Depth-aware object-content resolution — the single entry point for every
@@ -80,6 +178,7 @@ export async function resolveObjectContentWithDepth(
   verifyHash: boolean,
   maxBytes: number | undefined,
   externalDepth: number,
+  mode: LooseReadMode = 'buffered',
 ): Promise<ObjectContent & { chainDepth: number; declaredSize: number }> {
   // An already-aborted read honours the abort before paying any scan I/O.
   checkAborted(ctx);
@@ -94,7 +193,15 @@ export async function resolveObjectContentWithDepth(
   if (cached !== undefined) return cached;
 
   checkAborted(ctx);
-  const first = await tryResolveViaRegistry(ctx, registry, id, verifyHash, maxBytes, externalDepth);
+  const first = await tryResolveViaRegistry(
+    ctx,
+    registry,
+    id,
+    verifyHash,
+    maxBytes,
+    externalDepth,
+    mode,
+  );
   if (first !== undefined) return first;
 
   // Full miss: as of the CURRENT generation, no pack claims `id` and no loose
@@ -104,7 +211,7 @@ export async function resolveObjectContentWithDepth(
   // store since the last scan. `retryOnceAfterRescan` single-flights the
   // re-scan across concurrent misses and honours an abort raised during it.
   const retried = await retryOnceAfterRescan(ctx, registry, id, () =>
-    tryResolveViaRegistry(ctx, registry, id, verifyHash, maxBytes, externalDepth),
+    tryResolveViaRegistry(ctx, registry, id, verifyHash, maxBytes, externalDepth, mode),
   );
   if (retried !== undefined) return retried;
   throw objectNotFound(id);
@@ -146,10 +253,11 @@ async function tryResolveViaRegistry(
   verifyHash: boolean,
   maxBytes: number | undefined,
   externalDepth: number,
+  mode: LooseReadMode,
 ): Promise<(ObjectContent & { chainDepth: number; declaredSize: number }) | undefined> {
   const hit = await registry.lookup(id);
   if (hit === undefined) {
-    return resolveLooseArm(ctx, id, maxBytes, verifyHash);
+    return resolveLooseArm(ctx, id, maxBytes, verifyHash, mode);
   }
   checkAborted(ctx);
   const resolved = await resolvePackChainWithDepth(ctx, registry, hit, id, maxBytes, externalDepth);
@@ -175,13 +283,13 @@ async function resolveLooseArm(
   id: ObjectId,
   maxBytes: number | undefined,
   verifyHash: boolean,
+  mode: LooseReadMode,
 ): Promise<(ObjectContent & { chainDepth: number; declaredSize: number }) | undefined> {
-  const loose = await tryLoose(ctx, id);
-  if (loose === undefined) {
+  const split = await tryLoose(ctx, id, mode);
+  if (split === undefined) {
     return undefined;
   }
   checkAborted(ctx);
-  const split = splitLooseObject(loose);
   assertLooseSizeConsistent(split);
   enforceLooseCap(id, split.content, maxBytes);
   if (split.declaredSize === split.content.byteLength) {
@@ -220,6 +328,7 @@ export async function resolveObject(
   id: ObjectId,
   verifyHash: boolean,
   maxBytes?: number,
+  mode: LooseReadMode = 'buffered',
 ): Promise<GitObject> {
   const { type, content } = await resolveObjectContentWithDepth(
     ctx,
@@ -228,6 +337,7 @@ export async function resolveObject(
     verifyHash,
     maxBytes,
     0,
+    mode,
   );
   return parseMemoised(ctx, id, type, content);
 }
@@ -241,6 +351,7 @@ export async function resolveObjectWithSize(
   id: ObjectId,
   verifyHash: boolean,
   maxBytes?: number,
+  mode: LooseReadMode = 'buffered',
 ): Promise<{ readonly object: GitObject; readonly size: number }> {
   const { type, content, declaredSize } = await resolveObjectContentWithDepth(
     ctx,
@@ -249,6 +360,7 @@ export async function resolveObjectWithSize(
     verifyHash,
     maxBytes,
     0,
+    mode,
   );
   return { object: parseMemoised(ctx, id, type, content), size: declaredSize };
 }
@@ -311,10 +423,21 @@ function enforcePackDeltaPreApplyCap(
 }
 // Stryker restore BlockStatement
 
-async function tryLoose(ctx: Context, id: ObjectId): Promise<Uint8Array | undefined> {
+/** Reads and splits a loose object through the requested tier. Returns
+ *  `undefined` — never throws — for a plain membership miss (see
+ *  `readLooseCompressed`); every other outcome is already the split, never
+ *  raw bytes, so no caller re-parses the header a second time. */
+async function tryLoose(
+  ctx: Context,
+  id: ObjectId,
+  mode: LooseReadMode,
+): Promise<LooseObjectSplit | undefined> {
   const compressed = await readLooseCompressed(ctx, id);
   if (compressed === undefined) return undefined;
-  return ctx.compressor.inflate(compressed);
+  if (mode === 'streamed') {
+    return splitLooseObject(await ctx.compressor.inflate(compressed));
+  }
+  return (await inflateLooseBuffered(ctx, compressed)).split;
 }
 
 /**

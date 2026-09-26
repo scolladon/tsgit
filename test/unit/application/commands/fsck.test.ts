@@ -4865,7 +4865,11 @@ describe('Given a pack with a corrupt .idx and a separate undecodable dangling l
 describe('Given an undecodable dangling loose object whose probe re-inflate hits an unrelated adapter fault', () => {
   describe('When fsck runs with connectivityOnly: true', () => {
     it('Then fsck rejects with that exact UNSUPPORTED_OPERATION, not a laundered abort', async () => {
-      // Arrange
+      // Arrange — GARBAGE_BYTES is not valid zlib, so the buffered read's own
+      // header probe (`inflateHead`, not wrapped here) is what fails the main
+      // read, never reaching this wrapped `.inflate` at all; the recovery
+      // probe's OWN reread (`recoverStoredType`) is what makes the FIRST call
+      // to `.inflate` — where this fault lands.
       const ctx = await initBareCtx();
       const garbageId = 'd9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9' as ObjectId;
       await writeGarbageLooseObject(ctx, garbageId, GARBAGE_BYTES);
@@ -4876,7 +4880,7 @@ describe('Given an undecodable dangling loose object whose probe re-inflate hits
           ...ctx.compressor,
           inflate: async (bytes: Uint8Array) => {
             inflateCalls += 1;
-            if (inflateCalls === 2) {
+            if (inflateCalls === 1) {
               throw unsupportedOperation('filesystem', 'simulated adapter fault');
             }
             return ctx.compressor.inflate(bytes);
@@ -5459,17 +5463,43 @@ describe('Given an undecodable dangling loose object whose header type token emb
   });
 });
 
-describe('Given an undecodable dangling loose object whose header type token exceeds the reason cap', () => {
+/**
+ * Wraps `inflateHead` so the buffered read's own header probe always faults
+ * with an unrelated adapter error, never reaching `parseHeader` on the
+ * 32-byte-windowed prefix. `inflate` (unmocked) stays live: the recovery
+ * probe's OWN loose reread (`looseDecodeFault` / `recoverStoredType`, which
+ * call `ctx.compressor.inflate` directly, never `inflateHead`) still decodes
+ * the object's full stored bytes with no window at all — the one seam left
+ * where a header's raw type token can still reach `sanitizeReason`
+ * unbounded, exactly as it did before Part 3 bounded the main read.
+ */
+function withFaultingHeadProbe(ctx: Context): Context {
+  return {
+    ...ctx,
+    compressor: {
+      ...ctx.compressor,
+      inflateHead: async () => {
+        throw unsupportedOperation('filesystem', 'simulated head-probe fault');
+      },
+    },
+  };
+}
+
+describe('Given an undecodable dangling loose object whose header type token exceeds the reason cap, with its header probe faulting so the recovery reread — not the bounded main read — is what decodes the raw token', () => {
   describe('When fsck runs with connectivityOnly: true', () => {
     it('Then the thrown reason is capped at exactly 200 output units', async () => {
-      // Arrange
+      // Arrange — git's own 32-byte header window bounds the MAIN read's own
+      // decode of this object, so a header-probe fault is what lets the
+      // recovery reread (never window-bounded) see the full 300-byte token
+      // this row exists to cap.
       const ctx = await initBareCtx();
       await writeMalformedLooseObject(ctx, enc.encode(`${'a'.repeat(300)} 0\0`));
+      const wrapped = withFaultingHeadProbe(ctx);
 
       // Act
       let caught: unknown;
       try {
-        await fsck(ctx, { connectivityOnly: true });
+        await fsck(wrapped, { connectivityOnly: true });
       } catch (error) {
         caught = error;
       }
@@ -5484,17 +5514,21 @@ describe('Given an undecodable dangling loose object whose header type token exc
   });
 });
 
-describe('Given an undecodable dangling loose object whose header type token is all control bytes', () => {
+describe('Given an undecodable dangling loose object whose header type token is all control bytes, with its header probe faulting so the recovery reread decodes the raw token', () => {
   describe('When fsck runs with connectivityOnly: true', () => {
     it('Then escape expansion stays inside the cap and never emits a truncated escape', async () => {
-      // Arrange
+      // Arrange — same header-probe fault as the row above: past the 32-byte
+      // window, only the recovery reread's unbounded decode ever sees a
+      // control-byte run long enough to force `sanitizeReason` to stop
+      // mid-expansion.
       const ctx = await initBareCtx();
       await writeMalformedLooseObject(ctx, enc.encode(`${'\u0001'.repeat(100)} 0\0`));
+      const wrapped = withFaultingHeadProbe(ctx);
 
       // Act
       let caught: unknown;
       try {
-        await fsck(ctx, { connectivityOnly: true });
+        await fsck(wrapped, { connectivityOnly: true });
       } catch (error) {
         caught = error;
       }

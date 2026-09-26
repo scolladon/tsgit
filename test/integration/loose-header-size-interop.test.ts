@@ -14,8 +14,11 @@ import * as path from 'node:path';
 import { deflateSync, inflateSync } from 'node:zlib';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
+import { archive } from '../../src/application/commands/archive.js';
 import { catFile } from '../../src/application/commands/cat-file.js';
 import { checkout } from '../../src/application/commands/checkout.js';
+import { diff } from '../../src/application/commands/diff.js';
+import { show } from '../../src/application/commands/show.js';
 import { status } from '../../src/application/commands/status.js';
 import { readObject } from '../../src/application/primitives/read-object.js';
 import { streamBlob } from '../../src/application/primitives/stream-blob.js';
@@ -135,6 +138,18 @@ describe.skipIf(!GIT_AVAILABLE)('loose-object header size lying interop', () => 
     return target;
   };
 
+  /** A medium-blob overrun case (claim 500, past git's 32-byte header
+   *  window) with a second commit that replaces `medium.txt`'s content —
+   *  the fixture every overrun-diff row shares. */
+  const caseDirWithOverrunSecondCommit = async (slug: string): Promise<string> => {
+    const dir = await caseDir(slug);
+    await forgeLoose(dir, mediumId, 'blob', 500, MEDIUM_CONTENT);
+    await writeFile(path.join(dir, 'medium.txt'), 'replacement content\n');
+    git(dir, 'add', '-A');
+    runGit(['-C', dir, 'commit', '-q', '-m', 'second'], { env: datedEnv() });
+    return dir;
+  };
+
   describe('Given a small blob whose header claims a size disagreeing with its 12-byte body, When git and tsgit both read it', () => {
     it.each([
       { label: 'claim 5 (smaller than body)', claim: 5 },
@@ -174,27 +189,189 @@ describe.skipIf(!GIT_AVAILABLE)('loose-object header size lying interop', () => 
     );
   });
 
-  describe('Given a medium (1880-byte) blob whose header claim disagrees with its body, When git and tsgit both read it', () => {
-    it.each([{ claim: 500 }, { claim: 4000 }])(
-      'Then git and tsgit both serve the real 1880-byte body for claim $claim',
-      async ({ claim }) => {
-        // Arrange
-        const dir = await caseDir(`medium-${claim}`);
-        await forgeLoose(dir, mediumId, 'blob', claim, MEDIUM_CONTENT);
-        const ctx = createNodeContext({ workDir: dir });
-        const id = mediumId as ObjectId;
+  describe('Given a medium (1880-byte) blob whose header claim under-runs its body (claim 4000), When git and tsgit both read it — the recorded residual', () => {
+    it('Then git and tsgit both serve the real 1880-byte body', async () => {
+      // Arrange — an under-run (claim 4000 > 1880) never trips the buffered
+      // read's cap: the whole body is inflated and served, not truncated or
+      // zero-padded (residual: git's own buffered blob consumers zero-pad).
+      const claim = 4000;
+      const dir = await caseDir(`medium-${claim}`);
+      await forgeLoose(dir, mediumId, 'blob', claim, MEDIUM_CONTENT);
+      const ctx = createNodeContext({ workDir: dir });
+      const id = mediumId as ObjectId;
 
-        // Act
-        const gitBody = runGit(['-C', dir, 'cat-file', '-p', mediumId]);
-        const object = await readObject(ctx, id);
+      // Act
+      const gitBody = runGit(['-C', dir, 'cat-file', '-p', mediumId]);
+      const object = await readObject(ctx, id);
 
-        // Assert
-        expect(Buffer.byteLength(gitBody, 'utf8')).toBe(1880);
-        expect(object.type).toBe('blob');
-        expect((object as Blob).content).toHaveLength(1880);
-        expect(Buffer.from((object as Blob).content)).toEqual(MEDIUM_CONTENT);
-      },
-    );
+      // Assert
+      expect(Buffer.byteLength(gitBody, 'utf8')).toBe(1880);
+      expect(object.type).toBe('blob');
+      expect((object as Blob).content).toHaveLength(1880);
+      expect(Buffer.from((object as Blob).content)).toEqual(MEDIUM_CONTENT);
+    });
+  });
+
+  describe("Given a medium (1880-byte) blob whose header claim of 500 overruns git's 32-byte header window, When a second commit modifies it", () => {
+    it('Then git diff --numstat refuses corrupt loose object and tsgit diff({ withStat: true }) refuses INVALID_OBJECT_HEADER', async () => {
+      // Arrange
+      const dir = await caseDirWithOverrunSecondCommit('medium-overrun-numstat');
+      const ctx = createNodeContext({ workDir: dir });
+
+      // Act
+      const gitResult = tryRunGitWithExit([
+        '-C',
+        dir,
+        'diff',
+        '--no-ext-diff',
+        '--numstat',
+        'HEAD~1',
+        'HEAD',
+      ]);
+      let caught: unknown;
+      try {
+        await diff(ctx, { from: 'HEAD~1', to: 'HEAD', withStat: true });
+        expect.unreachable();
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect(gitResult.exitCode).toBe(128);
+      expect(gitResult.stderr).toContain('corrupt loose object');
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data.code).toBe('INVALID_OBJECT_HEADER');
+    });
+
+    it('Then git diff -B --name-status refuses corrupt loose object (should_break reads both blobs in full) and tsgit break-rewrite detection refuses too', async () => {
+      // Arrange
+      const dir = await caseDirWithOverrunSecondCommit('medium-overrun-break');
+      const ctx = createNodeContext({ workDir: dir });
+
+      // Act
+      const gitResult = tryRunGitWithExit([
+        '-C',
+        dir,
+        'diff',
+        '--no-ext-diff',
+        '-B',
+        '--name-status',
+        'HEAD~1',
+        'HEAD',
+      ]);
+      let caught: unknown;
+      try {
+        await diff(ctx, {
+          from: 'HEAD~1',
+          to: 'HEAD',
+          detectRenames: true,
+          renameOptions: { breakRewrites: { score: 30_000, merge: 36_000 } },
+        });
+        expect.unreachable();
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect(gitResult.exitCode).toBe(128);
+      expect(gitResult.stderr).toContain('corrupt loose object');
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data.code).toBe('INVALID_OBJECT_HEADER');
+    });
+  });
+
+  describe('Given a medium blob header claim of 500, When git archive and tsgit archive both read it', () => {
+    it('Then both refuse — git corrupt loose object, tsgit INVALID_OBJECT_HEADER', async () => {
+      // Arrange
+      const dir = await caseDir('medium-overrun-archive');
+      await forgeLoose(dir, mediumId, 'blob', 500, MEDIUM_CONTENT);
+      const ctx = createNodeContext({ workDir: dir });
+
+      // Act
+      const gitResult = tryRunGitWithExit(['-C', dir, 'archive', 'HEAD', '--', 'medium.txt']);
+      let caught: unknown;
+      try {
+        const { entries } = await archive(ctx, { treeish: 'HEAD' });
+        for await (const _entry of entries) {
+          // Drain — the refusal fires while the walk reaches the lying blob.
+        }
+        expect.unreachable();
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect(gitResult.exitCode).toBe(128);
+      expect(gitResult.stderr).toContain('corrupt loose object');
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data.code).toBe('INVALID_OBJECT_HEADER');
+    });
+  });
+
+  describe('Given a medium blob header claim of 500 deleted and a near-copy added, When git -M and tsgit detectRenames both compare', () => {
+    it('Then neither treats the pair as a rename — the size prefilter never opens the liar', async () => {
+      // Arrange — 15 unrelated filler adds push the diff's unique-blob count
+      // past tsgit's own size-gate floor (16, `SIZE_GATE_MIN_IDS`), so this
+      // row actually exercises the size prefilter rather than the small-diff
+      // shortcut that fingerprints every candidate directly.
+      const dir = await caseDir('medium-overrun-rename-prefilter');
+      await forgeLoose(dir, mediumId, 'blob', 500, MEDIUM_CONTENT);
+      await unlink(path.join(dir, 'medium.txt'));
+      const nearCopyLines = mediumLines.slice();
+      nearCopyLines[0] = 'CHANGED-FIRST-LINE';
+      await writeFile(path.join(dir, 'medium2.txt'), `${nearCopyLines.join('\n')}\n`);
+      for (let i = 0; i < 15; i += 1) {
+        await writeFile(path.join(dir, `filler-${i}.txt`), `filler content ${i}\n`);
+      }
+      git(dir, 'add', '-A');
+      runGit(['-C', dir, 'commit', '-q', '-m', 'second'], { env: datedEnv() });
+      const ctx = createNodeContext({ workDir: dir });
+
+      // Act
+      const gitResult = git(
+        dir,
+        'diff',
+        '--no-ext-diff',
+        '-M',
+        '--name-status',
+        'HEAD~1',
+        'HEAD',
+      ).trim();
+      const result = await diff(ctx, { from: 'HEAD~1', to: 'HEAD', detectRenames: true });
+
+      // Assert — git agrees: the size prefilter (claim 500 against ~1880)
+      // rejects the pair before either tool ever opens the liar.
+      expect(gitResult).not.toContain('R1');
+      expect(gitResult).toContain('D\tmedium.txt');
+      expect(gitResult).toContain('A\tmedium2.txt');
+      const relevant = result.changes.filter(
+        (c) =>
+          ('oldPath' in c && c.oldPath === 'medium.txt') ||
+          ('newPath' in c && c.newPath === 'medium2.txt') ||
+          ('path' in c && c.path === 'medium.txt'),
+      );
+      expect(relevant.map((c) => c.type).sort()).toEqual(['add', 'delete']);
+    });
+  });
+
+  describe('Given a medium blob header claim of 500, When git show and tsgit show both read it', () => {
+    it("Then both serve the real 1880-byte body — show stays on git's streaming tier", async () => {
+      // Arrange
+      const dir = await caseDir('medium-overrun-show');
+      await forgeLoose(dir, mediumId, 'blob', 500, MEDIUM_CONTENT);
+      const ctx = createNodeContext({ workDir: dir });
+
+      // Act
+      const gitBody = runGit(['-C', dir, 'show', mediumId]);
+      const result = await show(ctx, mediumId);
+
+      // Assert
+      expect(Buffer.byteLength(gitBody, 'utf8')).toBe(1880);
+      expect(result.kind).toBe('blob');
+      if (result.kind === 'blob') {
+        expect(Buffer.from(result.content)).toEqual(MEDIUM_CONTENT);
+      }
+    });
   });
 
   describe('Given the lying small blob and its working-tree file removed, When git checkout and tsgit checkout both run', () => {
@@ -479,9 +656,10 @@ describe.skipIf(!GIT_AVAILABLE)('loose-object header size lying interop', () => 
       const data = (caught as TsgitError).data;
       expect(data.code).toBe('INVALID_OBJECT_HEADER');
       if (data.code === 'INVALID_OBJECT_HEADER') {
-        expect(data.reason).toBe(
-          `size mismatch: header says ${claim}, actual content is ${body.byteLength}`,
-        );
+        // git's buffered tier never inflates past header + claim, so the
+        // refusal reason is now the declared size, not the (never-computed)
+        // actual content length.
+        expect(data.reason).toBe(`content exceeds declared size ${claim}`);
       }
     });
   });
@@ -526,39 +704,49 @@ describe.skipIf(!GIT_AVAILABLE)('loose-object header size lying interop', () => 
 
   describe('Given a tree whose header claim disagrees with its real body, When git and tsgit both read it', () => {
     it.each([
-      { label: 'claim smaller than the body', delta: -10 },
-      { label: 'claim larger than the body', delta: 125 },
-    ])('Then git refuses ($label) and tsgit refuses INVALID_OBJECT_HEADER', async ({ delta }) => {
-      // Arrange
-      const dir = await caseDir(`tree-${delta}`);
-      const body = await honestContent(dir, treeId);
-      const claim = body.byteLength + delta;
-      await forgeLoose(dir, treeId, 'tree', claim, body);
-      const ctx = createNodeContext({ workDir: dir });
-      const id = treeId as ObjectId;
+      // Overrun past git's 32-byte header window: the buffered read never
+      // inflates past header + claim, so the refusal names the claim, never
+      // the (never-computed) actual content length.
+      { label: 'claim smaller than the body', delta: -10, reasonNamesClaim: true },
+      // Under-run: the whole body is inflated, so the refusal still names
+      // the real content length alongside the claim.
+      { label: 'claim larger than the body', delta: 125, reasonNamesClaim: false },
+    ])(
+      'Then git refuses ($label) and tsgit refuses INVALID_OBJECT_HEADER',
+      async ({ delta, reasonNamesClaim }) => {
+        // Arrange
+        const dir = await caseDir(`tree-${delta}`);
+        const body = await honestContent(dir, treeId);
+        const claim = body.byteLength + delta;
+        await forgeLoose(dir, treeId, 'tree', claim, body);
+        const ctx = createNodeContext({ workDir: dir });
+        const id = treeId as ObjectId;
 
-      // Act — git side
-      const gitResult = tryRunGitWithExit(['-C', dir, 'ls-tree', treeId]);
+        // Act — git side
+        const gitResult = tryRunGitWithExit(['-C', dir, 'ls-tree', treeId]);
 
-      // Act — tsgit side
-      let caught: unknown;
-      try {
-        await readObject(ctx, id);
-      } catch (error) {
-        caught = error;
-      }
+        // Act — tsgit side
+        let caught: unknown;
+        try {
+          await readObject(ctx, id);
+        } catch (error) {
+          caught = error;
+        }
 
-      // Assert
-      expect(gitResult.exitCode).toBe(128);
-      expect(caught).toBeInstanceOf(TsgitError);
-      const data = (caught as TsgitError).data;
-      expect(data.code).toBe('INVALID_OBJECT_HEADER');
-      if (data.code === 'INVALID_OBJECT_HEADER') {
-        expect(data.reason).toBe(
-          `size mismatch: header says ${claim}, actual content is ${body.byteLength}`,
-        );
-      }
-    });
+        // Assert
+        expect(gitResult.exitCode).toBe(128);
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('INVALID_OBJECT_HEADER');
+        if (data.code === 'INVALID_OBJECT_HEADER') {
+          expect(data.reason).toBe(
+            reasonNamesClaim
+              ? `content exceeds declared size ${claim}`
+              : `size mismatch: header says ${claim}, actual content is ${body.byteLength}`,
+          );
+        }
+      },
+    );
   });
 
   describe('Given a blob header claim of 9007199254740993 (2^53 + 1), When git and tsgit both read it — the recorded residual', () => {

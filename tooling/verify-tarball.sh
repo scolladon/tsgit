@@ -220,7 +220,14 @@ done
 # runtime code every distribution form ships, none removable without
 # dropping the bounded, non-throwing header read the capped inflate exists
 # to provide.
-SIZE_CAP=$((997 * 1024))
+# Raised 997 -> 998 KiB by the loose object resolver's buffered read tier:
+# the measured tarball lands at 1 021 208 B, 280 B over the old cap,
+# attributable to the header-probe-then-bounded-inflate read path, its
+# overrun refusal, and threading the buffered/streamed read mode through
+# the resolver, `show` and `read-object` — runtime code shipped in every
+# distribution form, none removable without dropping the bounded read that
+# refusal exists to enforce.
+SIZE_CAP=$((998 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
