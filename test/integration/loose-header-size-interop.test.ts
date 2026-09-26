@@ -391,6 +391,37 @@ describe.skipIf(!GIT_AVAILABLE)('loose-object header size lying interop', () => 
       expect(caught).toBeInstanceOf(TsgitError);
       expect((caught as TsgitError).data.code).toBe('INVALID_OBJECT_HEADER');
     });
+
+    it('Then git diff -w --name-status refuses corrupt loose object (the whitespace-drop predicate reads both blobs in full) and tsgit ignoreWhitespace refuses too', async () => {
+      // Arrange
+      const dir = await caseDirWithOverrunSecondCommit('medium-overrun-whitespace');
+      const ctx = createNodeContext({ workDir: dir });
+
+      // Act
+      const gitResult = tryRunGitWithExit([
+        '-C',
+        dir,
+        'diff',
+        '--no-ext-diff',
+        '-w',
+        '--name-status',
+        'HEAD~1',
+        'HEAD',
+      ]);
+      let caught: unknown;
+      try {
+        await diff(ctx, { from: 'HEAD~1', to: 'HEAD', ignoreWhitespace: 'all' });
+        expect.unreachable();
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect(gitResult.exitCode).toBe(128);
+      expect(gitResult.stderr).toContain('corrupt loose object');
+      expect(caught).toBeInstanceOf(TsgitError);
+      expect((caught as TsgitError).data.code).toBe('INVALID_OBJECT_HEADER');
+    });
   });
 
   describe('Given a medium blob header claim of 500, When git archive and tsgit archive both read it', () => {

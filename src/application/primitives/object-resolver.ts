@@ -108,7 +108,10 @@ export interface LooseBufferedRead {
   readonly split: LooseObjectSplit;
 }
 
-function contentExceedsDeclaredSize(size: number): TsgitError {
+/** git's buffered-tier refusal reason, shared with `blob-source.ts`'s own
+ *  buffered arms (bytes and stream) so a size-lying claim reads the same
+ *  wording everywhere it is caught. */
+export function contentExceedsDeclaredSize(size: number): TsgitError {
   return invalidObjectHeader(`content exceeds declared size ${size}`);
 }
 

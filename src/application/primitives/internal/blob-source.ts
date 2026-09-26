@@ -29,9 +29,13 @@ import { readableStreamToAsyncIterable } from '../../../operators/readable-strea
 import type { Context } from '../../../ports/context.js';
 import type { Hasher } from '../../../ports/hash-service.js';
 import {
+  applyLooseVerdict,
   assertInflatedSizeMatches,
   cacheEntry,
+  contentExceedsDeclaredSize,
+  inflateLooseBuffered,
   isBase,
+  type LooseReadMode,
   looseCompressedBytes,
   readEntryHeaderWithChunk,
   resolvePackChain,
@@ -73,18 +77,33 @@ export type BlobSource =
       release(): Promise<void>;
     };
 
+/** INTERNAL superset of the public `StreamBlobOptions`: `looseMode` selects
+ *  git's buffered vs streamed loose read tier (`object-resolver.ts`'s
+ *  `LooseReadMode`) per blob. Every public `streamBlob`/`verifyStoredObject`
+ *  caller stays on the public option shape and keeps today's `'streamed'`
+ *  default — only an internal caller (the whitespace-drop predicate) asks
+ *  for `'buffered'`. */
+interface OpenBlobSourceOptions extends StreamBlobOptions {
+  readonly looseMode?: LooseReadMode;
+}
+
 interface BufferGate {
   readonly maxBufferedBytes: number;
   readonly verifyHash: boolean;
+  readonly looseMode: LooseReadMode;
 }
 
 export async function openBlobSource(
   ctx: Context,
   id: ObjectId,
   maxBufferedBytes: number,
-  options?: StreamBlobOptions,
+  options?: OpenBlobSourceOptions,
 ): Promise<BlobSource> {
-  const gate: BufferGate = { maxBufferedBytes, verifyHash: options?.verifyHash ?? false };
+  const gate: BufferGate = {
+    maxBufferedBytes,
+    verifyHash: options?.verifyHash ?? false,
+    looseMode: options?.looseMode ?? 'streamed',
+  };
 
   checkAborted(ctx);
   const registry = peekPackRegistry(ctx) ?? (await getPackRegistry(ctx));
@@ -232,10 +251,10 @@ function fitsBuffer(byteLength: number, maxBufferedBytes: number): boolean {
   return byteLength <= maxBufferedBytes;
 }
 
-/** Splits an inflated loose-format buffer into a bytes source and, when the
- *  header's declared size was honest (matches the actual content length) AND
- *  the object is NOT a blob, warms `ctx.deltaCache` under `id` — mirroring
- *  `resolveObjectContentWithDepth`'s own loose arm. A size-lying header
+/** Caches `content` under `id` when the type is NOT a blob AND the caller's
+ *  own verdict judges it `cacheable` — the streamed arm's declared-size-equals
+ *  check and the buffered arm's `applyLooseVerdict` verdict both funnel
+ *  through this one rule so neither re-implements it. A size-lying header
  *  (tolerated only for a blob) is never cached: a later consumer keyed on
  *  `id` would read the wrong claim. Blobs are excluded on purpose (measured:
  *  a checkout-scale buffered-blob walk — 300×60 KiB, exceeding the default
@@ -244,13 +263,17 @@ function fitsBuffer(byteLength: number, maxBufferedBytes: number): boolean {
  *  (a diff's whitespace-drop predicate, a ref target's hash verification),
  *  so caching them only spends budget a repeatedly-walked tree or commit
  *  would otherwise keep warm. */
-function toCachedBytesSource(ctx: Context, id: ObjectId, looseFormatBytes: Uint8Array): BlobSource {
-  const split = splitLooseObject(looseFormatBytes);
-  assertLooseSizeConsistent(split);
-  if (split.type !== 'blob' && split.declaredSize === split.content.byteLength) {
-    cacheEntry(ctx.deltaCache, id, { type: split.type, content: split.content });
+function toCachedBytesSource(
+  ctx: Context,
+  id: ObjectId,
+  type: ObjectType,
+  content: Uint8Array,
+  cacheable: boolean,
+): BlobSource {
+  if (type !== 'blob' && cacheable) {
+    cacheEntry(ctx.deltaCache, id, { type, content });
   }
-  return { kind: 'bytes', type: split.type, content: split.content };
+  return { kind: 'bytes', type, content };
 }
 
 // The canonical loose-format header a pack entry's inflated bytes are missing.
@@ -289,19 +312,70 @@ async function resolveLoose(
   gate: BufferGate,
 ): Promise<BlobSource> {
   if (fitsBuffer(compressed.length, gate.maxBufferedBytes)) {
-    const inflated = await ctx.compressor.inflate(compressed);
-    await verifyBufferedBytes(ctx, id, inflated, gate.verifyHash);
-    return toCachedBytesSource(ctx, id, inflated);
+    return gate.looseMode === 'buffered'
+      ? resolveLooseBytesBuffered(ctx, id, compressed, gate.verifyHash)
+      : resolveLooseBytesStreamed(ctx, id, compressed, gate.verifyHash);
   }
+  return resolveLooseStreamArm(ctx, id, compressed, gate);
+}
+
+/** git's streaming-tier bytes arm: a full, uncapped inflate that ignores the
+ *  header's size claim, serving a size-lying blob's real bytes. */
+async function resolveLooseBytesStreamed(
+  ctx: Context,
+  id: ObjectId,
+  compressed: Uint8Array,
+  verifyHash: boolean,
+): Promise<BlobSource> {
+  const inflated = await ctx.compressor.inflate(compressed);
+  await verifyBufferedBytes(ctx, id, inflated, verifyHash);
+  const split = splitLooseObject(inflated);
+  assertLooseSizeConsistent(split);
+  return toCachedBytesSource(
+    ctx,
+    id,
+    split.type,
+    split.content,
+    split.declaredSize === split.content.byteLength,
+  );
+}
+
+/** git's buffered-tier bytes arm: `inflateLooseBuffered` bounds the inflate
+ *  to header + declared size, and `applyLooseVerdict` routes the resulting
+ *  split to its servable bytes — neither routing decision is re-implemented
+ *  here. */
+async function resolveLooseBytesBuffered(
+  ctx: Context,
+  id: ObjectId,
+  compressed: Uint8Array,
+  verifyHash: boolean,
+): Promise<BlobSource> {
+  const { split } = await inflateLooseBuffered(ctx, id, compressed);
+  const { content, cacheable } = applyLooseVerdict(split);
+  await verifyObjectContent(ctx, id, split.type, content, verifyHash, split.declaredSize);
+  return toCachedBytesSource(ctx, id, split.type, content, cacheable);
+}
+
+async function resolveLooseStreamArm(
+  ctx: Context,
+  id: ObjectId,
+  compressed: Uint8Array,
+  gate: BufferGate,
+): Promise<BlobSource> {
   const iterator = readableStreamToAsyncIterable(inflateOneShot(ctx, compressed))[
     Symbol.asyncIterator
   ]();
   const header = await readHeaderOrRelease(id, iterator);
+  // The whole object is already streaming, so it is well past git's 32-byte
+  // header window — `applyLooseVerdict`'s window truncation can never apply
+  // here; an overrun on this arm is always a refusal (checked incrementally
+  // by `yieldAndVerifyLooseChunks`, never by materialising the claim first).
+  const declaredSize = gate.looseMode === 'buffered' ? header.declaredSize : undefined;
   return {
     kind: 'stream',
     type: header.type,
     materialised: false,
-    stream: yieldAndVerifyLooseChunks(ctx, id, header, iterator, gate.verifyHash),
+    stream: yieldAndVerifyLooseChunks(ctx, id, header, iterator, gate.verifyHash, declaredSize),
     release: () => returnIterator(iterator),
   };
 }
@@ -444,6 +518,7 @@ interface HeaderStripped {
   readonly type: ObjectType;
   readonly headerBytes: Uint8Array;
   readonly content: Uint8Array;
+  readonly declaredSize: number;
 }
 
 /**
@@ -464,11 +539,12 @@ async function readLooseHeader(
   for (;;) {
     const nullPos = buf.indexOf(0x00);
     if (nullPos !== -1) {
-      const { type } = parseHeader(buf);
+      const { type, size } = parseHeader(buf);
       return {
         type,
         headerBytes: buf.subarray(0, nullPos + 1),
         content: buf.subarray(nullPos + 1),
+        declaredSize: size,
       };
     }
 
@@ -488,10 +564,21 @@ async function returnIterator(iterator: AsyncIterator<Uint8Array>): Promise<void
   await iterator.return?.();
 }
 
+/** The buffered tier's own bound for the STREAM arm, checked incrementally so
+ *  a small claim never buys a caller a full-size stream first — `declaredSize
+ *  === undefined` (the streamed tier) skips the check entirely. */
+function assertWithinClaim(total: number, declaredSize: number | undefined): void {
+  if (declaredSize !== undefined && total > declaredSize) {
+    throw contentExceedsDeclaredSize(declaredSize);
+  }
+}
+
 /**
  * Streaming tail for the loose path. The header is already known (read at
  * open by `readLooseHeader`); this hashes it and the remaining chunks with
- * incremental verification.
+ * incremental verification. `declaredSize` given (buffered mode) also
+ * refuses as soon as the body overruns the claim — undefined (streamed mode)
+ * ignores the claim entirely, as git's streaming tier does.
  */
 async function* yieldAndVerifyLooseChunks(
   ctx: Context,
@@ -499,13 +586,17 @@ async function* yieldAndVerifyLooseChunks(
   header: HeaderStripped,
   iterator: AsyncIterator<Uint8Array>,
   verifyHash: boolean,
+  declaredSize?: number,
 ): AsyncIterable<Uint8Array> {
   const hasher: Hasher | undefined = verifyHash ? ctx.hash.createHasher() : undefined;
+  let total = 0;
 
   try {
     hasher?.update(header.headerBytes);
 
     if (header.content.length > 0) {
+      total += header.content.length;
+      assertWithinClaim(total, declaredSize);
       hasher?.update(header.content);
       yield header.content;
     }
@@ -514,6 +605,8 @@ async function* yieldAndVerifyLooseChunks(
       if (ctx.signal?.aborted === true) {
         throw operationAborted();
       }
+      total += chunk.byteLength;
+      assertWithinClaim(total, declaredSize);
       hasher?.update(chunk);
       yield chunk;
     }

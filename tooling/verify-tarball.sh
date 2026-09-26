@@ -227,7 +227,14 @@ done
 # the resolver, `show` and `read-object` — runtime code shipped in every
 # distribution form, none removable without dropping the bounded read that
 # refusal exists to enforce.
-SIZE_CAP=$((998 * 1024))
+# Raised 998 -> 999 KiB by the diff -w whitespace-drop predicate's own
+# buffered loose read: the measured tarball lands at 1 022 143 B, 191 B over
+# the old cap, attributable to blob-source.ts's `looseMode` option, its
+# buffered bytes- and stream-arm routing through `inflateLooseBuffered` and
+# `applyLooseVerdict`, and the incremental claim bound the stream arm now
+# checks — runtime code shipped in every distribution form, none removable
+# without giving back the buffered read the whitespace-drop predicate takes.
+SIZE_CAP=$((999 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
