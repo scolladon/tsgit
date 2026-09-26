@@ -1021,6 +1021,8 @@ describe.skipIf(RUNNING_UNDER_STRYKER || !HAS_GIT)('ensureRenameFixture', () => 
   // Shrinks the two hostile shapes well below "hundreds of MiB" — `common`
   // and `wide` ignore this (their bench-scale defaults are already cheap).
   const SMALL_SIZE: RenameFixtureSize = { fileCount: 2, blobBytes: 64 };
+  // Same file count, default blob size: a distinct cache slot from SMALL_SIZE.
+  const FILE_COUNT_ONLY_SIZE: RenameFixtureSize = { fileCount: 2 };
 
   const lsTreePaths = (cwd: string): string[] =>
     gitOut(cwd, ['ls-tree', '-r', 'HEAD', '--name-only'])
@@ -1213,7 +1215,7 @@ describe.skipIf(RUNNING_UNDER_STRYKER || !HAS_GIT)('ensureRenameFixture', () => 
         const sut = ensureRenameFixture;
 
         // Act
-        const result = await sut('hostile', 'loose', { fileCount: SMALL_SIZE.fileCount });
+        const result = await sut('hostile', 'loose', FILE_COUNT_ONLY_SIZE);
 
         // Assert
         expect(result.cwd).not.toBe(cached.cwd);
