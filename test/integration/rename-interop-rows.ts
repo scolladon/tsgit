@@ -201,11 +201,6 @@ export interface RenameRowSuiteTitles {
 
 const DEFAULT_WHEN = 'When diff is called with detectRenames';
 
-const DEFAULT_SUITE_TITLES: RenameRowSuiteTitles = {
-  given: "the suite's raw diff-pair fixtures",
-  when: DEFAULT_WHEN,
-};
-
 /**
  * Registers one row-table suite: builds every row's repo in a shared
  * `beforeAll`, tears every one down in `afterAll`, and asserts `ours ===
@@ -217,7 +212,7 @@ export function describeRenameRows(
   rows: ReadonlyArray<RenameRow>,
   tmpPrefix: string,
   timeout: number,
-  titles: RenameRowSuiteTitles = DEFAULT_SUITE_TITLES,
+  titles: RenameRowSuiteTitles,
 ): void {
   const fixtures = new Map<string, { readonly dir: string }>();
   const fixtureOf = (label: string): { readonly dir: string } => {
