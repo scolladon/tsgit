@@ -192,7 +192,11 @@ done
 # two-pass candidate matrix, the -B write-back and type-change breaking —
 # runtime code every distribution form ships, none removable without dropping
 # git's rename, copy and break behaviour.
-SIZE_CAP=$((991 * 1024))
+# Raised 991 -> 993 KiB by that work's later parts: the measured tarball lands
+# at 1 016 049 B, 1 265 B over, attributable to -B without rename detection,
+# the complete-rewrite numstat of a kept-broken modify and the same-basename
+# pre-pass — runtime code every distribution form ships.
+SIZE_CAP=$((993 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
