@@ -191,8 +191,8 @@ function collectUnchangedSources(
 }
 
 /** A `RenameSource` paired with the original delete object it was built from
- *  (object identity `findPresentHalves` still keys a broken-delete's presence
- *  on) — `undefined` for a `modified`/`unchanged` source, which has no delete. */
+ *  (object identity `writeBackBroken` keys a broken-delete's source index on)
+ *  — `undefined` for a `modified`/`unchanged` source, which has no delete. */
 interface RegisteredSource {
   readonly source: RenameSource;
   readonly originalDelete?: DeleteChange;
@@ -671,78 +671,71 @@ async function attemptBreaks(
   return { broken: records, patchedDiff: patchDiffWithBroken(diff, records, paths) };
 }
 
-/**
- * After rename+copy detection, re-merge unresolved broken pairs.
- *
- * Checks the PRESENCE of synthetic halves in `changes` by object identity —
- * if `record.del` is absent from `changes`, the delete half was consumed
- * (exact or inexact pass); likewise for `record.add`.
- *
- * Cases per broken pair:
- * - Both halves present (neither consumed): decide keep-broken or re-merge.
- *   Strip both halves and emit a modify (plain or broken) in their place.
- * - One half consumed: the surviving half stays as-is (delete or add).
- * - Both consumed: expressed by rename/copy elsewhere; nothing extra to emit.
- */
-
-/** Scan `changes` and return the subset of synthetic halves that are still present. */
-function findPresentHalves(
-  changes: ReadonlyArray<DiffChange>,
-  broken: ReadonlyArray<BrokenRecord>,
-): {
-  readonly presentDels: ReadonlySet<DeleteChange>;
-  readonly presentAdds: ReadonlySet<AddChange>;
-} {
-  const syntheticDels = new Set(broken.map((r) => r.del));
-  const syntheticAdds = new Set(broken.map((r) => r.add));
-  const presentDels = new Set<DeleteChange>();
-  const presentAdds = new Set<AddChange>();
-  for (const c of changes) {
-    if (c.type === 'delete' && syntheticDels.has(c as DeleteChange))
-      presentDels.add(c as DeleteChange);
-    else if (c.type === 'add' && syntheticAdds.has(c as AddChange)) presentAdds.add(c as AddChange);
-  }
-  return { presentDels, presentAdds };
-}
-
-/** Emit the re-merged or kept-broken modify for a pair where both halves survived. */
-function emitMergedModify(record: BrokenRecord, mergeScore: number): DiffChange {
+/** Rejoin a broken pair's synthetic halves into one modify: `broken` set when
+ *  the pair's dissimilarity still clears the merge gate, plain otherwise
+ *  (git's `merge_broken`, `diffcore-break.c:239`). */
+function rejoinBroken(record: BrokenRecord, mergeScore: number): DiffChange {
   if (record.dissimilarity >= mergeScore) {
     return { ...record.original, broken: { score: record.dissimilarity, maxScore: MAX_SCORE } };
   }
   return record.original;
 }
 
-function remergeOrKeepBroken(
-  changes: ReadonlyArray<DiffChange>,
-  broken: ReadonlyArray<BrokenRecord>,
-  mergeScore: number,
-): ReadonlyArray<DiffChange> {
-  // Stryker disable next-line ConditionalExpression: equivalent — the sole caller finalizeWithBroken invokes remergeOrKeepBroken only when broken.length > 0, so this guard is never true.
-  if (broken.length === 0) return changes;
+/** Maps each broken record's synthetic delete to its registry source index —
+ *  `originalDeletes` is aligned with the registry's sources, and a
+ *  broken-delete's own synthetic delete is the object identity write back
+ *  keys on to find which source's use count to bump on a rejoin. */
+function indexBrokenSources(
+  originalDeletes: ReadonlyArray<DeleteChange | undefined>,
+): ReadonlyMap<DeleteChange, number> {
+  const bySourceDelete = new Map<DeleteChange, number>();
+  originalDeletes.forEach((del, index) => {
+    if (del !== undefined) bySourceDelete.set(del, index);
+  });
+  return bySourceDelete;
+}
 
-  const { presentDels, presentAdds } = findPresentHalves(changes, broken);
-  const toStrip = new Set<DiffChange>();
-  const reinsert: DiffChange[] = [];
+interface WriteBackOutcome {
+  readonly unpaired: ReadonlyArray<AddChange>;
+  readonly uses: ReadonlyArray<number>;
+  readonly rejoined: ReadonlyArray<DiffChange>;
+}
+
+/**
+ * git's write back (`diffcore-rename.c:1669`): a broken delete's add half
+ * paired elsewhere means the pairing stands in for the broken change, so the
+ * delete drops whatever its own use count (S2). Otherwise the halves rejoin
+ * (`rejoinBroken`) and the rejoin itself counts as one more use of the
+ * delete-half's source (K1, K2) — this runs BEFORE `labelRenameCopy`, so a
+ * rejoined source's other pairs count it as a copy, not a rename.
+ */
+function writeBackBroken(
+  broken: ReadonlyArray<BrokenRecord>,
+  originalDeletes: ReadonlyArray<DeleteChange | undefined>,
+  unpaired: ReadonlyArray<AddChange>,
+  uses: ReadonlyArray<number>,
+  mergeScore: number,
+): WriteBackOutcome {
+  const sourceIndexByDelete = indexBrokenSources(originalDeletes);
+  const unpairedSet = new Set(unpaired);
+  const workingUses = [...uses];
+  const rejoined: DiffChange[] = [];
+  const absorbedAdds = new Set<AddChange>();
 
   for (const record of broken) {
-    const delPresent = presentDels.has(record.del);
-    const addPresent = presentAdds.has(record.add);
-    // Stryker disable next-line LogicalOperator,BooleanLiteral: equivalent — this continue only short-circuits the disjoint delPresent&&addPresent strip/emit branch; each variant here still lets that branch fire iff both halves are present, so output is unchanged (ConditionalExpression left unsuppressed: its true variant is killable).
-    if (!delPresent && !addPresent) continue; // both consumed; nothing to strip or emit
-    if (delPresent && addPresent) {
-      // Both unconsumed: strip both halves; emit a modify (plain or broken).
-      toStrip.add(record.del);
-      toStrip.add(record.add);
-      reinsert.push(emitMergedModify(record, mergeScore));
-    }
-    // Exactly one half present: the surviving half stays; no modify to emit.
+    if (!unpairedSet.has(record.add)) continue; // add half paired: drop the delete, whatever its uses
+
+    rejoined.push(rejoinBroken(record, mergeScore));
+    absorbedAdds.add(record.add);
+    const sourceIndex = sourceIndexByDelete.get(record.del) as number;
+    workingUses[sourceIndex] = (workingUses[sourceIndex] as number) + 1;
   }
 
-  // Stryker disable next-line ConditionalExpression: equivalent — toStrip and reinsert are populated together, so an empty toStrip means an empty reinsert and the fallthrough returns [...changes, ...[]], the same content as returning changes.
-  if (toStrip.size === 0) return changes;
-  const stripped = changes.filter((c) => !toStrip.has(c));
-  return [...stripped, ...reinsert];
+  return {
+    unpaired: unpaired.filter((add) => !absorbedAdds.has(add)),
+    uses: workingUses,
+    rejoined,
+  };
 }
 
 /**
@@ -771,13 +764,14 @@ function remergeOrKeepBroken(
  *    commit object as bytes.
  * 8. selectPairs: pass 1 pairs only zero-use sources; pass 2 (copies on)
  *    pairs any remaining source against any remaining destination.
- * 9. labelRenameCopy: every exact+inexact pair becomes a rename or copy by
- *    final use count in destination-path order; unpaired destinations stay
- *    adds; a deleted/broken-delete source's delete survives iff nothing
- *    beyond its seed used it.
- * 10. Keep-broken/re-merge: for broken pairs with neither half consumed, emit
- *     a single modify with a broken datum (if dissimilarity >= mergeScore) or
- *     a plain modify.
+ * 9. writeBack: a broken-delete's add half paired elsewhere drops its delete
+ *    (whatever its own use count, S2); otherwise the halves rejoin into a
+ *    modify (plain or broken) and the rejoin counts as one more use of the
+ *    delete-half's source (K1, K2) — this runs BEFORE labelRenameCopy.
+ * 10. labelRenameCopy: every exact+inexact pair becomes a rename or copy by
+ *     final use count (post write back) in destination-path order; unpaired
+ *     destinations stay adds; a deleted source's delete survives iff nothing
+ *     beyond its seed used it.
  */
 
 /** Resolve the effective merge score from the breakRewrites option (or defaults). */
@@ -789,16 +783,11 @@ function resolveEffectiveMergeScore(breakRewrites: RenameDetectOptions['breakRew
   return resolveBreakGates(opts).mergeScore;
 }
 
-/** Apply re-merge/keep-broken and sort; returns the final TreeDiff. */
-function finalizeWithBroken(
-  changes: ReadonlyArray<DiffChange>,
-  broken: ReadonlyArray<BrokenRecord>,
-  mergeScore: number,
-): TreeDiff {
-  // Stryker disable next-line ConditionalExpression: equivalent — forcing this guard false routes the empty-broken case through remergeOrKeepBroken, whose own empty-broken guard returns changes unchanged, so sortByPath yields the identical TreeDiff as this early return.
-  if (broken.length === 0) return { changes: sortByPath(changes, primaryPath) };
-  const remerged = remergeOrKeepBroken(changes, broken, mergeScore);
-  return { changes: sortByPath(remerged, primaryPath) };
+/** Sort the assembled changes into git's queue order — every broken pair has
+ *  already been written back (dropped, rejoined, or replaced by its pairing)
+ *  earlier in the pipeline, so this step is a plain sort. */
+function finalizeWithBroken(changes: ReadonlyArray<DiffChange>): TreeDiff {
+  return { changes: sortByPath(changes, primaryPath) };
 }
 
 /** Run the break-attempt pass if enabled; returns broken records and patched diff. */
@@ -878,16 +867,13 @@ function resolveMatrixPlan(
 }
 
 /**
- * A `deleted`/`broken-delete` source's delete survives iff nothing beyond its
- * seed used it — for a plain delete (seed 0) that means zero real pairs; for
- * a broken-delete (seed 0 or 1) this restates git's rule: the delete drops
- * once usage exceeds the one implicit use its own seed already accounts for.
+ * A `deleted` source's delete survives iff nothing beyond its seed (always 0)
+ * used it — i.e. zero real pairs named it. A `broken-delete` source's delete
+ * is decided entirely by `writeBackBroken` (S2): it is dropped or rejoined
+ * there, and never survives standalone, so it is excluded here.
  */
 function isSourceDeletePresent(source: RenameSource, finalUses: number): boolean {
-  return (
-    (source.origin === 'deleted' || source.origin === 'broken-delete') &&
-    finalUses === source.seedUses
-  );
+  return source.origin === 'deleted' && finalUses === source.seedUses;
 }
 
 function survivingDeletes(
@@ -917,16 +903,19 @@ function toLabelledChange(
 
 /**
  * Assemble the final change list from the registry: `labelRenameCopy` turns
- * every exact+inexact pair into a rename or copy, unpaired destinations stay
- * adds, and a deleted/broken-delete source's delete survives iff nothing
- * beyond its seed used it. Modified/unchanged sources emit nothing here —
- * their change already lives in `other`.
+ * every exact+inexact pair into a rename or copy (by use count AFTER write
+ * back), unpaired destinations stay adds, and a deleted source's delete
+ * survives iff nothing beyond its seed used it. `rejoined` carries the
+ * modifies write back produced for broken pairs whose add half stayed
+ * unpaired. Modified/unchanged sources emit nothing here — their change
+ * already lives in `other`.
  */
 function assembleFromRegistry(
   registry: CandidateRegistry,
   allPairs: ReadonlyArray<SourcePair>,
   unpaired: ReadonlyArray<AddChange>,
   finalUses: ReadonlyArray<number>,
+  rejoined: ReadonlyArray<DiffChange>,
 ): DiffChange[] {
   const { sources, originalDeletes, other } = registry;
   const labelled = labelRenameCopy(allPairs, finalUses);
@@ -935,6 +924,7 @@ function assembleFromRegistry(
     ...unpaired,
     ...survivingDeletes(sources, originalDeletes, finalUses),
     ...renamesAndCopies,
+    ...rejoined,
     ...other,
   ];
 }
@@ -1036,6 +1026,19 @@ export async function detectSimilarityRenames(
   const exact = pairIdenticalFiles(registry.sources, registry.destinations, exactMode);
 
   const outcome = await runInexactPhase(ctx, registry, exact, broken, copies, threshold, limit);
-  const changes = assembleFromRegistry(registry, outcome.pairs, outcome.unpaired, outcome.uses);
-  return finalizeWithBroken(changes, broken, mergeScore);
+  const writeBack = writeBackBroken(
+    broken,
+    registry.originalDeletes,
+    outcome.unpaired,
+    outcome.uses,
+    mergeScore,
+  );
+  const changes = assembleFromRegistry(
+    registry,
+    outcome.pairs,
+    writeBack.unpaired,
+    writeBack.uses,
+    writeBack.rejoined,
+  );
+  return finalizeWithBroken(changes);
 }

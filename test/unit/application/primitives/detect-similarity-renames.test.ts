@@ -1446,20 +1446,21 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
-  describe('Given breakRewrites and a dissimilar modify whose delete-half is consumed by a rename', () => {
+  describe('Given breakRewrites and a broken modify whose old content pairs elsewhere while its new content stays unpaired (design row K1)', () => {
     describe('When detectSimilarityRenames is called', () => {
-      it('Then the add-half remains as an add (half consumed, half stays as-is)', async () => {
-        // Arrange — the delete half of the broken modify is similar to an add elsewhere,
-        // so rename detection consumes the delete half. The add half stays as-is.
+      it('Then the halves rejoin as a broken modify and the pairing becomes a copy (write back counts the rejoin as a use, live git: M100 m ; C100 m→q)', async () => {
+        // Arrange — file.txt's old content exactly matches rename-dst.txt (an unrelated
+        // add); file.txt's new content is fully disjoint and unpaired, so its add-half
+        // never pairs. Fixture kept >= 500 bytes per design so Part 11's byte-size guard
+        // still leaves it broken.
         const ctx = await buildSeededContext();
-        const sharedContent = 'shared\ncontent\nfor\nrename\ntarget\n'.repeat(5);
-        const disjointContent = 'xxxx\nyyyy\nzzzz\nwwww\n'.repeat(10);
+        const sharedContent = 'shared\ncontent\nfor\nrename\ntarget\n'.repeat(20);
+        const disjointContent = 'xxxx\nyyyy\nzzzz\nwwww\n'.repeat(30);
 
         // file.txt: old=sharedContent, new=disjointContent → dissimilarity ~MAX_SCORE → break
-        // The old half (sharedContent) will be renamed to rename-dst.txt
         const modOldId = await writeBlob(ctx, sharedContent);
         const modNewId = await writeBlob(ctx, disjointContent);
-        // rename destination: very similar to sharedContent
+        // rename-dst.txt: identical to file.txt's old content → exact pair
         const renameDstId = await writeBlob(ctx, sharedContent);
 
         const diff: TreeDiff = {
@@ -1486,23 +1487,84 @@ describe('detectSimilarityRenames', () => {
           breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
         });
 
-        // Assert — delete half consumed as rename; add half stays as an add
-        const renames = result.changes.filter((c) => c.type === 'rename');
-        expect(renames).toHaveLength(1);
-        if (renames[0]?.type === 'rename') {
-          expect(renames[0].newPath).toBe('rename-dst.txt');
-          expect(renames[0].oldPath).toBe('file.txt');
-        }
-        // Add half of the broken modify stays as an add
-        const adds = result.changes.filter((c) => c.type === 'add');
-        expect(adds).toHaveLength(1);
-        if (adds[0]?.type === 'add') {
-          expect(adds[0].newPath).toBe('file.txt');
-          expect(adds[0].newId).toBe(modNewId);
-        }
-        // No broken modify
+        // Assert — the unpaired add-half rejoins into a broken modify
         const modifies = result.changes.filter((c) => c.type === 'modify');
-        expect(modifies).toHaveLength(0);
+        expect(modifies).toHaveLength(1);
+        if (modifies[0]?.type === 'modify') {
+          expect(modifies[0].broken?.score).toBe(MAX_SCORE);
+        }
+        // The rejoin counted one extra use of file.txt's old content, so the exact
+        // pairing with rename-dst.txt labels as a copy, not a rename (K1).
+        const copies = result.changes.filter((c) => c.type === 'copy');
+        expect(copies).toHaveLength(1);
+        if (copies[0]?.type === 'copy') {
+          expect(copies[0].oldPath).toBe('file.txt');
+          expect(copies[0].newPath).toBe('rename-dst.txt');
+          expect(copies[0].similarity.score).toBe(MAX_SCORE);
+        }
+        expect(result.changes.filter((c) => c.type === 'rename')).toHaveLength(0);
+        expect(result.changes.filter((c) => c.type === 'add')).toHaveLength(0);
+        expect(result.changes.filter((c) => c.type === 'delete')).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given breakRewrites and a broken modify whose old content near-matches another add while its new content stays unpaired (design row K2)', () => {
+    describe('When detectSimilarityRenames is called', () => {
+      it('Then the halves rejoin as a broken modify and the inexact pairing becomes a copy (live git: M100 m ; C099 m→q)', async () => {
+        // Arrange — m.txt's old content near-matches (one extra tail line) q.txt, an
+        // unrelated add; m.txt's new content is fully disjoint and stays unpaired.
+        const ctx = await buildSeededContext();
+        const oldContent = 'aaaa\nbbbb\ncccc\ndddd\n'.repeat(25);
+        const newContent = 'xxxx\nyyyy\nzzzz\nwwww\n'.repeat(25);
+        const nearMatchContent = `${oldContent}extra unique tail line only in q\n`;
+
+        const oldId = await writeBlob(ctx, oldContent);
+        const newId = await writeBlob(ctx, newContent);
+        const qId = await writeBlob(ctx, nearMatchContent);
+
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'modify',
+              path: 'm.txt' as FilePath,
+              oldId,
+              newId,
+              oldMode: FILE_MODE.REGULAR,
+              newMode: FILE_MODE.REGULAR,
+            },
+            {
+              type: 'add',
+              newPath: 'q.txt' as FilePath,
+              newId: qId,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act
+        const result = await detectSimilarityRenames(ctx, diff, {
+          breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
+        });
+
+        // Assert — the unpaired add-half rejoins into a broken modify
+        const modifies = result.changes.filter((c) => c.type === 'modify');
+        expect(modifies).toHaveLength(1);
+        if (modifies[0]?.type === 'modify') {
+          expect(modifies[0].broken?.score).toBe(MAX_SCORE);
+        }
+        // The rejoin counted one extra use of m.txt's old content, so the inexact
+        // pairing with q.txt labels as a copy, not a rename (K2).
+        const copies = result.changes.filter((c) => c.type === 'copy');
+        expect(copies).toHaveLength(1);
+        if (copies[0]?.type === 'copy') {
+          expect(copies[0].oldPath).toBe('m.txt');
+          expect(copies[0].newPath).toBe('q.txt');
+          expect(copies[0].similarity.score).toBeLessThan(MAX_SCORE);
+        }
+        expect(result.changes.filter((c) => c.type === 'rename')).toHaveLength(0);
+        expect(result.changes.filter((c) => c.type === 'add')).toHaveLength(0);
+        expect(result.changes.filter((c) => c.type === 'delete')).toHaveLength(0);
       });
     });
   });
@@ -2478,7 +2540,7 @@ describe('detectSimilarityRenames', () => {
         const change = result.changes[0];
         expect(change?.type).toBe('modify');
         if (change?.type === 'modify') {
-          // dissimilarity=0 < mergeScore → emitMergedModify returns original (no broken)
+          // dissimilarity=0 < mergeScore → rejoinBroken returns original (no broken)
           expect(change.broken).toBeUndefined();
         }
       });
@@ -2635,23 +2697,24 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
-  // ── findPresentHalves: syntheticAdds membership check ──
+  // ── write back: a broken delete drops once its add half pairs (design row S2) ──
 
-  describe('Given a broken modify whose add-half is consumed but delete-half remains (findPresentHalves add side)', () => {
+  describe('Given a broken modify whose add-half pairs elsewhere (design row S2)', () => {
     describe('When detectSimilarityRenames is called with breakRewrites', () => {
-      it('Then the delete-half stays as a delete and no re-merge is emitted', async () => {
-        // Arrange — broken modify whose add-half is consumed by an exact rename; a real add
-        // remains so the synthetic-set membership check must protect it from being treated as
-        // a present synthetic half (add-half consumed, del-half survives as a plain delete)
+      it('Then the delete-half is dropped, whatever its own use count (live git: no D, only R)', async () => {
+        // Arrange — file.txt's add-half (contentB) pairs exactly with other.txt's delete;
+        // file.txt's delete-half (contentA) is unused elsewhere, so under the OLD rule it
+        // would survive as a bare delete — S2 says it must be dropped regardless, because
+        // its own add half paired. A real add (truly-new.txt) must be unaffected.
         const ctx = await buildSeededContext();
-        const contentA = 'aaa\nbbb\nccc\nddd\n'.repeat(10); // del-half content
-        const contentB = 'xxx\nyyy\nzzz\nwww\n'.repeat(10); // add-half content (fully disjoint)
+        const contentA = 'aaa\nbbb\nccc\nddd\n'.repeat(35); // del-half content, >= 500 bytes
+        const contentB = 'xxx\nyyy\nzzz\nwww\n'.repeat(35); // add-half content (fully disjoint)
 
         const modOldId = await writeBlob(ctx, contentA);
         const modNewId = await writeBlob(ctx, contentB);
-        // A delete with the same content as add-half → pairs with add-half via exact rename
+        // A delete with the same content as the add-half → pairs with it via exact rename
         const otherDelId = await writeBlob(ctx, contentB); // same SHA as modNewId
-        // A real add that is NOT a synthetic half — must not be misidentified as a present half
+        // A real add that is NOT a synthetic half — must be unaffected by write back
         const realAddId = await writeBlob(ctx, 'real-add-content unique\n'.repeat(3));
 
         const diff: TreeDiff = {
@@ -2671,7 +2734,7 @@ describe('detectSimilarityRenames', () => {
               oldId: otherDelId,
               oldMode: FILE_MODE.REGULAR,
             },
-            // Real add that must NOT be treated as a synthetic half
+            // Real add that must be unaffected by write back
             {
               type: 'add',
               newPath: 'truly-new.txt' as FilePath,
@@ -2682,27 +2745,22 @@ describe('detectSimilarityRenames', () => {
         };
 
         // Act — break fires (contentA and contentB are fully disjoint → MAX_SCORE dissimilarity).
-        // Exact pass: other.txt (oldId=B) → file.txt add-half (newId=B): exact rename, add-half consumed.
-        // del-half (file.txt/oldId=A) remains as a delete.
-        // remergeOrKeepBroken: del half present, add half NOT present → one-half-consumed path → del stays.
+        // Exact pass: other.txt (oldId=B) → file.txt add-half (newId=B): exact rename, add-half paired.
+        // Write back (S2): file.txt's delete-half is dropped because its add half paired.
         const result = await detectSimilarityRenames(ctx, diff, {
           breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
         });
 
-        // Assert — 1 rename (other.txt → file.txt via add-half); del-half remains as delete
+        // Assert — 1 rename (other.txt → file.txt via add-half); no delete for file.txt at all
         const renames = result.changes.filter((c) => c.type === 'rename');
         expect(renames).toHaveLength(1);
         if (renames[0]?.type === 'rename') {
           expect(renames[0].oldPath).toBe('other.txt');
           expect(renames[0].newPath).toBe('file.txt');
         }
-        // del-half of file.txt stays as a delete (not re-merged)
-        const deletes = result.changes.filter((c) => c.type === 'delete');
-        expect(deletes).toHaveLength(1);
-        if (deletes[0]?.type === 'delete') {
-          expect(deletes[0].oldPath).toBe('file.txt');
-        }
-        // real add truly-new.txt must survive (not misidentified as a present synthetic half)
+        // file.txt's delete-half never surfaces — S2 drops it unconditionally
+        expect(result.changes.filter((c) => c.type === 'delete')).toHaveLength(0);
+        // real add truly-new.txt must survive
         const adds = result.changes.filter((c) => c.type === 'add');
         expect(adds).toHaveLength(1);
         if (adds[0]?.type === 'add') {
@@ -2714,12 +2772,12 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
-  // ── remergeOrKeepBroken guards ──
+  // ── write back guards ──
 
-  describe('Given no broken records (remergeOrKeepBroken early return guard)', () => {
+  describe('Given no broken records', () => {
     describe('When detectSimilarityRenames is called without breakRewrites', () => {
-      it('Then changes are returned unchanged without entering remerge logic (broken.length===0 guard)', async () => {
-        // Arrange — no breakRewrites so broken is empty; the early-return guard must fire
+      it('Then changes are returned unchanged without entering write back (broken.length===0)', async () => {
+        // Arrange — no breakRewrites so broken is empty; write back must no-op
         const ctx = await buildSeededContext();
         const srcContent = tenLines(0);
         const dstContent = tenLines(0).replace('X line 0\n', 'Y line 0\n');
@@ -2742,7 +2800,7 @@ describe('detectSimilarityRenames', () => {
           ],
         };
 
-        // Act — no breakRewrites → broken=[] → guard fires
+        // Act — no breakRewrites → broken=[] → write back has nothing to do
         const result = await detectSimilarityRenames(ctx, diff);
 
         // Assert — rename detected; no extraneous changes
@@ -2756,11 +2814,12 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
-  describe('Given a broken modify where BOTH halves were consumed (remergeOrKeepBroken both-consumed path)', () => {
+  describe('Given a broken modify whose add-half pairs elsewhere and whose old content also pairs elsewhere', () => {
     describe('When detectSimilarityRenames is called with breakRewrites', () => {
-      it('Then neither half is re-merged and no extra modify appears (!delPresent && !addPresent guard)', async () => {
-        // Arrange — fully disjoint modify so both halves are broken; each half is consumed by
-        // an exact rename partner so !delPresent && !addPresent must hold and skip re-merge
+      it('Then no modify is re-emitted — write back drops the delete because its add half paired (S2)', async () => {
+        // Arrange — fully disjoint modify so both halves are broken; each half pairs with
+        // an exact rename partner. The add half pairing alone is enough for write back to
+        // drop the delete (S2); the old content separately pairs with dst1 as its own rename.
         const ctx = await buildSeededContext();
         const modOldContent = 'aaa\nbbb\nccc\n'.repeat(10);
         const modNewContent = 'xxx\nyyy\nzzz\n'.repeat(10); // fully disjoint → break
@@ -2815,11 +2874,11 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
-  describe('Given a broken modify where BOTH halves remain unconsumed (remergeOrKeepBroken toStrip guard)', () => {
+  describe('Given a broken modify whose add-half stays unpaired and has no rename candidates at all (design row K3 shape, no other source)', () => {
     describe('When detectSimilarityRenames is called with breakRewrites', () => {
-      it('Then the halves are stripped and a plain or broken modify is re-emitted (toStrip.size===0 guard)', async () => {
+      it('Then write back rejoins the halves into a plain or broken modify', async () => {
         // Arrange — fully disjoint modify so both halves survive with no rename candidates;
-        // toStrip is non-empty so the strip path runs and a broken modify is re-emitted
+        // the add half is unpaired, so write back rejoins into a broken modify
         const ctx = await buildSeededContext();
         // Fully disjoint content → break IS attempted and both halves survive (no rename candidates)
         const oldId = await writeBlob(ctx, 'aaa\nbbb\nccc\nddd\n'.repeat(5));

@@ -2845,3 +2845,86 @@ describe.skipIf(!GIT_AVAILABLE)('use-count labelling and gitlink-counted limit i
     });
   });
 });
+
+/**
+ * `-B` write back interop: git's `diffcore-rename.c:1669` drops a broken
+ * delete once its add half pairs elsewhere (S2), and otherwise rejoins the
+ * halves into one modify while counting the rejoin as one more use of the
+ * delete-half's source (K1, K2) — before use-count labelling runs. Fixtures
+ * are kept >= 500 bytes so Part 11's byte-size guard still leaves them broken.
+ */
+const WRITE_BACK_TMP_PREFIX = 'tsgit-rename-write-back-';
+const WRITE_BACK_SETUP_TIMEOUT = 60_000;
+
+const WRITE_BACK_ROWS: ReadonlyArray<RenameRow> = [
+  {
+    label:
+      '-B: a rewritten m.txt whose old content pairs exactly with an unrelated add — the rejoin counts as a use, so the pairing is a copy, not a rename (design row K1: M100 m ; C100 m→q)',
+    before: [{ path: 'm.txt', content: breakContent('old', 40, 0) }],
+    after: [
+      { path: 'm.txt', content: breakContent('new', 40, 0) },
+      { path: 'q.txt', content: breakContent('old', 40, 0) },
+    ],
+    gitFlags: ['-B'],
+    renameOptions: { breakRewrites: { score: 30000, merge: 36000 } },
+  },
+  {
+    label:
+      '-B: a rewritten m.txt whose old content near-matches (one extra line) an unrelated add — the rejoin still counts as a use, so the inexact pairing is a copy (design row K2: M100 m ; C099 m→q)',
+    before: [{ path: 'm.txt', content: breakContent('old', 40, 0) }],
+    after: [
+      { path: 'm.txt', content: breakContent('new', 40, 0) },
+      { path: 'q.txt', content: `${breakContent('old', 40, 0)}extra-tail-line-only-in-q\n` },
+    ],
+    gitFlags: ['-B'],
+    renameOptions: { breakRewrites: { score: 30000, merge: 36000 } },
+  },
+  {
+    label:
+      '-B: a/s fully rewritten to match deleted a/d exactly — write back drops the broken delete because its add half paired, whatever its own use count (design row S2: R100 a/d→a/s)',
+    before: [
+      { path: 'a/s', content: breakContent('old', 20, 0) },
+      { path: 'a/d', content: breakContent('new', 40, 0) },
+    ],
+    after: [{ path: 'a/s', content: breakContent('new', 40, 0) }],
+    gitFlags: ['-B'],
+    renameOptions: { breakRewrites: { score: 30000, merge: 36000 } },
+  },
+];
+
+const writeBackFixtures = new Map<string, { readonly dir: string }>();
+
+function writeBackFixtureOf(label: string): { readonly dir: string } {
+  const found = writeBackFixtures.get(label);
+  if (found === undefined) throw new Error(`fixture not built for row: ${label}`);
+  return found;
+}
+
+describe.skipIf(!GIT_AVAILABLE)('-B write back interop', () => {
+  beforeAll(async () => {
+    for (const row of WRITE_BACK_ROWS) {
+      writeBackFixtures.set(row.label, await buildRenameRow(row, WRITE_BACK_TMP_PREFIX));
+    }
+  }, WRITE_BACK_SETUP_TIMEOUT);
+
+  afterAll(async () => {
+    for (const { dir } of writeBackFixtures.values()) {
+      await rmDir(dir, { recursive: true, force: true });
+    }
+  });
+
+  describe('Given a raw diff pair exercising -B write back (a broken delete drop or a rejoin)', () => {
+    describe('When diff is called with detectRenames', () => {
+      it.each(WRITE_BACK_ROWS)('Then name-status matches live git for: $label', async (row) => {
+        // Arrange
+        const { dir } = writeBackFixtureOf(row.label);
+
+        // Act
+        const { ours, peer } = await runRenameRow(row, dir);
+
+        // Assert
+        expect(ours).toBe(peer);
+      });
+    });
+  });
+});
