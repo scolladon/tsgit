@@ -218,9 +218,10 @@ describe('detectSimilarityRenames', () => {
             },
           ],
         };
+        const sut = detectSimilarityRenames;
 
         // Act
-        const result = await detectSimilarityRenames(ctx, diff);
+        const result = await sut(ctx, diff);
 
         // Assert — the tie is genuine (both candidates score identically)
         const rename = result.changes.find((c) => c.type === 'rename');
@@ -428,9 +429,10 @@ describe('detectSimilarityRenames', () => {
             },
           ],
         };
+        const sut = detectSimilarityRenames;
 
         // Act
-        const result = await detectSimilarityRenames(ctx, diff, { limit: -1 });
+        const result = await sut(ctx, diff, { limit: -1 });
 
         // Assert — both pairs fold into renames, matching an unlimited run
         const types = result.changes.map((c) => c.type);
@@ -749,9 +751,10 @@ describe('detectSimilarityRenames', () => {
             },
           ],
         };
+        const sut = detectSimilarityRenames;
 
         // Act — threshold at the exact measured score: the copy-pass gate admits it
-        const result = await detectSimilarityRenames(ctx, diff, {
+        const result = await sut(ctx, diff, {
           copies: 'on',
           threshold: measuredScore,
         });
@@ -1578,9 +1581,10 @@ describe('detectSimilarityRenames', () => {
             },
           ],
         };
+        const sut = detectSimilarityRenames;
 
         // Act
-        const result = await detectSimilarityRenames(ctx, diff, {
+        const result = await sut(ctx, diff, {
           breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
         });
 
@@ -1638,9 +1642,10 @@ describe('detectSimilarityRenames', () => {
             },
           ],
         };
+        const sut = detectSimilarityRenames;
 
         // Act
-        const result = await detectSimilarityRenames(ctx, diff, {
+        const result = await sut(ctx, diff, {
           breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
         });
 
@@ -1704,9 +1709,10 @@ describe('detectSimilarityRenames', () => {
             },
           ],
         };
+        const sut = detectSimilarityRenames;
 
         // Act
-        const result = await detectSimilarityRenames(ctx, diff, {
+        const result = await sut(ctx, diff, {
           threshold: 12000,
           breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
         });
@@ -1765,9 +1771,10 @@ describe('detectSimilarityRenames', () => {
             { type: 'add', newPath: 'd.txt' as FilePath, newId: dId, newMode: FILE_MODE.REGULAR },
           ],
         };
+        const sut = detectSimilarityRenames;
 
         // Act
-        const result = await detectSimilarityRenames(ctx, diff);
+        const result = await sut(ctx, diff);
 
         // Assert — a4 wins the destination, a1 stays a plain delete
         const renames = result.changes.filter((c) => c.type === 'rename');
@@ -1796,9 +1803,10 @@ describe('detectSimilarityRenames', () => {
             { type: 'add', newPath: 'b.txt' as FilePath, newId, newMode: FILE_MODE.REGULAR },
           ],
         };
+        const sut = detectSimilarityRenames;
 
         // Act
-        const result = await detectSimilarityRenames(ctx, diff, { threshold: MAX_SCORE });
+        const result = await sut(ctx, diff, { threshold: MAX_SCORE });
 
         // Assert — the exact-only run stops right after the exact pass
         expect(result.changes.filter((c) => c.type === 'rename')).toHaveLength(0);
@@ -2354,9 +2362,10 @@ describe('detectSimilarityRenames', () => {
             },
           ],
         };
+        const sut = detectSimilarityRenames;
 
         // Act — copies:'on' so mod-src.txt's preimage is a copy candidate
-        const result = await detectSimilarityRenames(ctx, diff, { copies: 'on' });
+        const result = await sut(ctx, diff, { copies: 'on' });
 
         // Assert — the DELETE wins as a rename despite the retained source's higher score
         const renames = result.changes.filter((c) => c.type === 'rename');
@@ -2431,9 +2440,10 @@ describe('detectSimilarityRenames', () => {
             },
           ],
         };
+        const sut = detectSimilarityRenames;
 
         // Act
-        const result = await detectSimilarityRenames(ctx, diff, { copies: 'on' });
+        const result = await sut(ctx, diff, { copies: 'on' });
 
         // Assert — n1.txt folds into an exact copy; n2.txt is won by the deleted source
         const copies = result.changes.filter((c) => c.type === 'copy');
@@ -2511,10 +2521,11 @@ describe('detectSimilarityRenames', () => {
             },
           ],
         };
+        const sut = detectSimilarityRenames;
 
         // Act — a low threshold (30%) admits both the ~80% retained scores and d.txt's
         // ~40% score as legitimate candidates, isolating the cap-eviction behaviour.
-        const result = await detectSimilarityRenames(ctx, diff, {
+        const result = await sut(ctx, diff, {
           copies: 'on',
           threshold: Math.trunc(MAX_SCORE * 0.3),
         });
@@ -2730,9 +2741,10 @@ describe('detectSimilarityRenames', () => {
             },
           ],
         };
+        const sut = detectSimilarityRenames;
 
         // Act — breakScore=1 (anything > 0); the guard still forces computedBreakScore=0 < 1
-        const result = await detectSimilarityRenames(ctx, diff, {
+        const result = await sut(ctx, diff, {
           breakRewrites: { score: 1, merge: DEFAULT_MERGE_SCORE },
         });
 
@@ -2782,9 +2794,10 @@ describe('detectSimilarityRenames', () => {
             },
           ],
         };
+        const sut = detectSimilarityRenames;
 
         // Act
-        const result = await detectSimilarityRenames(ctx, diff, {
+        const result = await sut(ctx, diff, {
           breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
         });
 
@@ -2832,9 +2845,10 @@ describe('detectSimilarityRenames', () => {
             },
           ],
         };
+        const sut = detectSimilarityRenames;
 
         // Act
-        const result = await detectSimilarityRenames(ctx, diff, {
+        const result = await sut(ctx, diff, {
           breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
         });
 
@@ -2865,9 +2879,10 @@ describe('detectSimilarityRenames', () => {
             },
           ],
         };
+        const sut = detectSimilarityRenames;
 
         // Act
-        const result = await detectSimilarityRenames(ctx, diff, {
+        const result = await sut(ctx, diff, {
           breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
         });
 
@@ -3082,11 +3097,12 @@ describe('detectSimilarityRenames', () => {
             },
           ],
         };
+        const sut = detectSimilarityRenames;
 
         // Act — break fires (contentA and contentB are fully disjoint → MAX_SCORE dissimilarity).
         // Exact pass: other.txt (oldId=B) → file.txt add-half (newId=B): exact rename, add-half paired.
         // Write back: file.txt's delete-half is dropped because its add half paired.
-        const result = await detectSimilarityRenames(ctx, diff, {
+        const result = await sut(ctx, diff, {
           breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
         });
 
@@ -3138,9 +3154,10 @@ describe('detectSimilarityRenames', () => {
             },
           ],
         };
+        const sut = detectSimilarityRenames;
 
         // Act — no breakRewrites → broken=[] → write back has nothing to do
-        const result = await detectSimilarityRenames(ctx, diff);
+        const result = await sut(ctx, diff);
 
         // Assert — rename detected; no extraneous changes
         expect(result.changes).toHaveLength(1);
@@ -3197,9 +3214,10 @@ describe('detectSimilarityRenames', () => {
             },
           ],
         };
+        const sut = detectSimilarityRenames;
 
         // Act
-        const result = await detectSimilarityRenames(ctx, diff, {
+        const result = await sut(ctx, diff, {
           breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
         });
 
@@ -3235,10 +3253,11 @@ describe('detectSimilarityRenames', () => {
             },
           ],
         };
+        const sut = detectSimilarityRenames;
 
         // Act — breakRewrites enabled; dissimilarity = MAX_SCORE; mergeScore = DEFAULT_MERGE_SCORE
         // MAX_SCORE > DEFAULT_MERGE_SCORE → kept broken
-        const result = await detectSimilarityRenames(ctx, diff, {
+        const result = await sut(ctx, diff, {
           breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
         });
 
@@ -3482,9 +3501,10 @@ describe('detectSimilarityRenames', () => {
             },
           ],
         };
+        const sut = detectSimilarityRenames;
 
         // Act — copies:'on' so the unpaired delete is added to the copy-source set
-        const result = await detectSimilarityRenames(ctx, diff, { copies: 'on' });
+        const result = await sut(ctx, diff, { copies: 'on' });
 
         // Assert — copy D→A1 plus rename D→A2; no add or delete survives
         const renames = result.changes.filter((c) => c.type === 'rename');
@@ -3620,9 +3640,10 @@ describe('detectSimilarityRenames', () => {
             },
           ],
         };
+        const sut = detectSimilarityRenames;
 
         // Act — score:0 should map to DEFAULT_BREAK_SCORE so this similar modify is NOT broken
-        const result = await detectSimilarityRenames(ctx, diff, {
+        const result = await sut(ctx, diff, {
           breakRewrites: { score: 0, merge: DEFAULT_MERGE_SCORE },
         });
 
@@ -3849,9 +3870,10 @@ describe('detectSimilarityRenames', () => {
             },
           ],
         };
+        const sut = detectSimilarityRenames;
 
         // Act — copies:'off', add-only diff → early return fires
-        const result = await detectSimilarityRenames(ctx, diff, { copies: 'off' });
+        const result = await sut(ctx, diff, { copies: 'off' });
 
         // Assert — single add remains; the function returned early correctly
         expect(result.changes).toHaveLength(1);
@@ -4326,9 +4348,10 @@ describe('detectSimilarityRenames', () => {
           ],
         };
         const readSpy = vi.spyOn(readBlobMod, 'readBlob');
+        const sut = detectSimilarityRenames;
 
         // Act
-        const result = await detectSimilarityRenames(ctx, diff, { threshold: 1 });
+        const result = await sut(ctx, diff, { threshold: 1 });
 
         // Assert — no rename; the symlink source is never a matrix candidate
         try {
@@ -4366,9 +4389,10 @@ describe('detectSimilarityRenames', () => {
           ],
         };
         const readSpy = vi.spyOn(readBlobMod, 'readBlob');
+        const sut = detectSimilarityRenames;
 
         // Act
-        const result = await detectSimilarityRenames(ctx, diff, {
+        const result = await sut(ctx, diff, {
           copies: 'on',
           threshold: 1,
         });
@@ -4404,9 +4428,10 @@ describe('detectSimilarityRenames', () => {
           ],
         };
         const readSpy = vi.spyOn(readBlobMod, 'readBlob');
+        const sut = detectSimilarityRenames;
 
         // Act
-        const result = await detectSimilarityRenames(ctx, diff, { threshold: 1 });
+        const result = await sut(ctx, diff, { threshold: 1 });
 
         // Assert
         try {
@@ -4436,9 +4461,10 @@ describe('detectSimilarityRenames', () => {
           ],
         };
         const readSpy = vi.spyOn(readBlobMod, 'readBlob');
+        const sut = detectSimilarityRenames;
 
         // Act
-        const result = await detectSimilarityRenames(ctx, diff, { threshold: 1 });
+        const result = await sut(ctx, diff, { threshold: 1 });
 
         // Assert
         try {
@@ -4481,9 +4507,10 @@ describe('detectSimilarityRenames', () => {
           ],
         };
         const readSpy = vi.spyOn(readBlobMod, 'readBlob');
+        const sut = detectSimilarityRenames;
 
         // Act
-        const result = await detectSimilarityRenames(ctx, diff, {
+        const result = await sut(ctx, diff, {
           copies: 'on',
           threshold: 1,
         });
@@ -4522,14 +4549,10 @@ describe('detectSimilarityRenames', () => {
           ],
         };
         const readSpy = vi.spyOn(readBlobMod, 'readBlob');
+        const sut = detectSimilarityRenames;
 
         // Act
-        const result = await detectSimilarityRenames(
-          ctx,
-          diff,
-          { copies: 'harder', threshold: 1 },
-          preimage,
-        );
+        const result = await sut(ctx, diff, { copies: 'harder', threshold: 1 }, preimage);
 
         // Assert
         try {
@@ -4563,14 +4586,10 @@ describe('detectSimilarityRenames', () => {
             },
           ],
         };
+        const sut = detectSimilarityRenames;
 
         // Act
-        const result = await detectSimilarityRenames(
-          ctx,
-          diff,
-          { copies: 'harder', threshold: 1 },
-          preimage,
-        );
+        const result = await sut(ctx, diff, { copies: 'harder', threshold: 1 }, preimage);
 
         // Assert
         expect(result.changes.filter((c) => c.type === 'copy')).toHaveLength(0);
@@ -4609,9 +4628,10 @@ describe('detectSimilarityRenames', () => {
             },
           ],
         };
+        const sut = detectSimilarityRenames;
 
         // Act
-        const result = await detectSimilarityRenames(ctx, diff, {
+        const result = await sut(ctx, diff, {
           breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
         });
 
@@ -4654,9 +4674,10 @@ describe('detectSimilarityRenames', () => {
           ],
         };
         const readSpy = vi.spyOn(readBlobMod, 'readBlob');
+        const sut = detectSimilarityRenames;
 
         // Act
-        const result = await detectSimilarityRenames(ctx, diff, {
+        const result = await sut(ctx, diff, {
           breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
         });
 
@@ -4699,9 +4720,10 @@ describe('detectSimilarityRenames', () => {
           ],
         };
         const readSpy = vi.spyOn(readBlobMod, 'readBlob');
+        const sut = detectSimilarityRenames;
 
         // Act
-        const result = await detectSimilarityRenames(ctx, diff, {
+        const result = await sut(ctx, diff, {
           breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
         });
 
@@ -4743,9 +4765,10 @@ describe('detectSimilarityRenames', () => {
           ],
         };
         const readSpy = vi.spyOn(readBlobMod, 'readBlob');
+        const sut = detectSimilarityRenames;
 
         // Act
-        const result = await detectSimilarityRenames(ctx, diff, {
+        const result = await sut(ctx, diff, {
           breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
         });
 
@@ -4782,9 +4805,10 @@ describe('detectSimilarityRenames', () => {
             },
           ],
         };
+        const sut = detectSimilarityRenames;
 
         // Act
-        const result = await detectSimilarityRenames(ctx, diff, {
+        const result = await sut(ctx, diff, {
           breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
         });
 
@@ -4816,9 +4840,10 @@ describe('detectSimilarityRenames', () => {
             },
           ],
         };
+        const sut = detectSimilarityRenames;
 
         // Act
-        const result = await detectSimilarityRenames(ctx, diff, {
+        const result = await sut(ctx, diff, {
           breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
         });
 
@@ -4852,9 +4877,10 @@ describe('detectSimilarityRenames', () => {
           ],
         };
         const readSpy = vi.spyOn(readBlobMod, 'readBlob');
+        const sut = detectSimilarityRenames;
 
         // Act
-        const result = await detectSimilarityRenames(ctx, diff, {
+        const result = await sut(ctx, diff, {
           breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
         });
 
@@ -4902,9 +4928,10 @@ describe('detectSimilarityRenames', () => {
             },
           ],
         };
+        const sut = detectSimilarityRenames;
 
         // Act
-        const result = await detectSimilarityRenames(ctx, diff, {
+        const result = await sut(ctx, diff, {
           breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
         });
 
@@ -4955,9 +4982,10 @@ describe('detectSimilarityRenames', () => {
             },
           ],
         };
+        const sut = detectSimilarityRenames;
 
         // Act
-        const result = await detectSimilarityRenames(ctx, diff, {
+        const result = await sut(ctx, diff, {
           breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
         });
 
@@ -5006,9 +5034,10 @@ describe('detectSimilarityRenames', () => {
             { type: 'add', newPath: 'b/r' as FilePath, newId: oldId, newMode: FILE_MODE.REGULAR },
           ],
         };
+        const sut = detectSimilarityRenames;
 
         // Act
-        const result = await detectSimilarityRenames(ctx, diff, {
+        const result = await sut(ctx, diff, {
           breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
         });
 
@@ -5062,9 +5091,10 @@ describe('detectSimilarityRenames', () => {
             },
           ],
         };
+        const sut = detectSimilarityRenames;
 
         // Act
-        const result = await detectSimilarityRenames(ctx, diff, {
+        const result = await sut(ctx, diff, {
           breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
         });
 
@@ -5109,9 +5139,10 @@ describe('detectSimilarityRenames', () => {
             },
           ],
         };
+        const sut = detectSimilarityRenames;
 
         // Act
-        const result = await detectSimilarityRenames(ctx, diff, {
+        const result = await sut(ctx, diff, {
           breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
         });
 
@@ -5159,9 +5190,10 @@ describe('detectSimilarityRenames', () => {
             },
           ],
         };
+        const sut = detectSimilarityRenames;
 
         // Act
-        const result = await detectSimilarityRenames(ctx, diff, {
+        const result = await sut(ctx, diff, {
           breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
         });
 
@@ -5213,9 +5245,10 @@ describe('detectSimilarityRenames', () => {
             },
           ],
         };
+        const sut = detectSimilarityRenames;
 
         // Act
-        const result = await detectSimilarityRenames(ctx, diff, {
+        const result = await sut(ctx, diff, {
           breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
         });
 
@@ -5264,9 +5297,10 @@ describe('detectSimilarityRenames', () => {
             },
           ],
         };
+        const sut = detectSimilarityRenames;
 
         // Act
-        const result = await detectSimilarityRenames(ctx, diff, {
+        const result = await sut(ctx, diff, {
           breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
         });
 
@@ -5313,9 +5347,10 @@ describe('detectSimilarityRenames', () => {
             },
           ],
         };
+        const sut = detectSimilarityRenames;
 
         // Act
-        const result = await detectSimilarityRenames(ctx, diff, {
+        const result = await sut(ctx, diff, {
           breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
         });
 
@@ -5355,9 +5390,10 @@ describe('detectSimilarityRenames', () => {
             { type: 'add', newPath: 'b/q' as FilePath, newId: oldId, newMode: FILE_MODE.REGULAR },
           ],
         };
+        const sut = detectSimilarityRenames;
 
         // Act
-        const result = await detectSimilarityRenames(ctx, diff, {
+        const result = await sut(ctx, diff, {
           copies: 'on',
           breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
         });
@@ -5406,9 +5442,10 @@ describe('detectSimilarityRenames', () => {
             { type: 'add', newPath: 'b/Bar.meta' as FilePath, newId, newMode: FILE_MODE.REGULAR },
           ],
         };
+        const sut = detectSimilarityRenames;
 
         // Act
-        const result = await detectSimilarityRenames(ctx, diff, { limit: 1 });
+        const result = await sut(ctx, diff, { limit: 1 });
 
         // Assert — the limit gate skips the inexact pass entirely
         expect(result.changes.filter((c) => c.type === 'rename')).toHaveLength(0);
@@ -5452,9 +5489,10 @@ describe('detectSimilarityRenames', () => {
             },
           ],
         };
+        const sut = detectSimilarityRenames;
 
         // Act
-        const result = await detectSimilarityRenames(ctx, diff);
+        const result = await sut(ctx, diff);
 
         // Assert
         expect(result.changes).toHaveLength(2);
@@ -5503,9 +5541,10 @@ describe('detectSimilarityRenames', () => {
             },
           ],
         };
+        const sut = detectSimilarityRenames;
 
         // Act
-        const result = await detectSimilarityRenames(ctx, diff, { limit: 1 });
+        const result = await sut(ctx, diff, { limit: 1 });
 
         // Assert
         const rename = result.changes.find((c) => c.type === 'rename');
@@ -5560,9 +5599,10 @@ describe('detectSimilarityRenames', () => {
             },
           ],
         };
+        const sut = detectSimilarityRenames;
 
         // Act
-        const result = await detectSimilarityRenames(ctx, diff);
+        const result = await sut(ctx, diff);
 
         // Assert
         const renames = result.changes.filter((c) => c.type === 'rename');
@@ -5615,9 +5655,10 @@ describe('detectSimilarityRenames', () => {
             { type: 'add', newPath: 'b/y.c' as FilePath, newId: yId, newMode: FILE_MODE.REGULAR },
           ],
         };
+        const sut = detectSimilarityRenames;
 
         // Act
-        const result = await detectSimilarityRenames(ctx, diff, { limit: 1 });
+        const result = await sut(ctx, diff, { limit: 1 });
 
         // Assert
         const renames = result.changes.filter((c) => c.type === 'rename');
@@ -5661,9 +5702,10 @@ describe('detectSimilarityRenames', () => {
             },
           ],
         };
+        const sut = detectSimilarityRenames;
 
         // Act
-        const result = await detectSimilarityRenames(ctx, diff, { copies: 'on' });
+        const result = await sut(ctx, diff, { copies: 'on' });
 
         // Assert
         const rename = result.changes.find((c) => c.type === 'rename');
@@ -5717,9 +5759,10 @@ describe('detectSimilarityRenames', () => {
             },
           ],
         };
+        const sut = detectSimilarityRenames;
 
         // Act
-        const result = await detectSimilarityRenames(ctx, diff, {
+        const result = await sut(ctx, diff, {
           breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
         });
 
@@ -5778,9 +5821,10 @@ describe('detectSimilarityRenames', () => {
             },
           ],
         };
+        const sut = detectSimilarityRenames;
 
         // Act
-        const result = await detectSimilarityRenames(ctx, diff, {
+        const result = await sut(ctx, diff, {
           breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
         });
 
@@ -5826,9 +5870,10 @@ describe('detectSimilarityRenames', () => {
             },
           ],
         };
+        const sut = detectSimilarityRenames;
 
         // Act
-        const result = await detectSimilarityRenames(ctx, diff, { threshold: MAX_SCORE });
+        const result = await sut(ctx, diff, { threshold: MAX_SCORE });
 
         // Assert
         expect(result.changes.filter((c) => c.type === 'rename')).toHaveLength(0);
@@ -5870,9 +5915,10 @@ describe('detectSimilarityRenames', () => {
             },
           ],
         };
+        const sut = detectSimilarityRenames;
 
         // Act
-        const result = await detectSimilarityRenames(ctx, diff);
+        const result = await sut(ctx, diff);
 
         // Assert
         const rename = result.changes.find((c) => c.type === 'rename');
@@ -5920,9 +5966,10 @@ describe('detectSimilarityRenames', () => {
             },
           ],
         };
+        const sut = detectSimilarityRenames;
 
         // Act
-        const result = await detectSimilarityRenames(ctx, diff);
+        const result = await sut(ctx, diff);
 
         // Assert
         const rename = result.changes.find((c) => c.type === 'rename');
@@ -5972,9 +6019,10 @@ describe('detectSimilarityRenames', () => {
         }
         const diff: TreeDiff = { changes };
         const readSpy = vi.spyOn(readBlobMod, 'readBlob');
+        const sut = detectSimilarityRenames;
 
         // Act
-        const result = await detectSimilarityRenames(ctx, diff);
+        const result = await sut(ctx, diff);
 
         // Assert
         try {
@@ -6029,9 +6077,10 @@ describe('detectSimilarityRenames', () => {
           ],
         };
         const basenameSpy = vi.spyOn(renamePairingMod, 'hasSameBasename');
+        const sut = detectSimilarityRenames;
 
         // Act
-        await detectSimilarityRenames(ctx, diff);
+        await sut(ctx, diff);
 
         // Assert
         try {
@@ -6072,9 +6121,10 @@ describe('detectSimilarityRenames', () => {
           ],
         };
         const readSpy = vi.spyOn(readBlobMod, 'readBlob');
+        const sut = detectSimilarityRenames;
 
         // Act
-        const result = await detectSimilarityRenames(ctx, diff, {
+        const result = await sut(ctx, diff, {
           breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
         });
 
@@ -6175,9 +6225,10 @@ describe('Given the per-destination candidate matrix helper recordIfBetter', () 
         renameTriple(50, 0),
       ];
       const fifth = renameTriple(50, 1);
+      const sut = recordIfBetter;
 
       // Act
-      recordIfBetter(slots, fifth);
+      sut(slots, fifth);
 
       // Assert
       expect(slots[0]).toBe(fifth);
@@ -6195,9 +6246,10 @@ describe('Given the per-destination candidate matrix helper recordIfBetter', () 
         renameTriple(20, 0),
       ];
       const candidate = renameTriple(25, 0);
+      const sut = recordIfBetter;
 
       // Act
-      recordIfBetter(slots, candidate);
+      sut(slots, candidate);
 
       // Assert
       expect(slots[1]).toBe(candidate);
@@ -6284,9 +6336,10 @@ describe('Given a diff that already carries a resolved rename, alongside an add 
           },
         ],
       };
+      const sut = detectSimilarityRenames;
 
       // Act
-      const result = await detectSimilarityRenames(ctx, diff, { copies: 'on' });
+      const result = await sut(ctx, diff, { copies: 'on' });
 
       // Assert — no copy was formed from the resolved rename's oldId
       expect(result.changes.filter((c) => c.type === 'copy')).toHaveLength(0);

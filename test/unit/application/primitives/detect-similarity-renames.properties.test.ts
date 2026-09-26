@@ -38,12 +38,13 @@ const bruteForceCompatible = (
   );
 
 describe('sizeCompatibleIds', () => {
-  describe('Given arbitrary src/dst size pools and an arbitrary threshold', () => {
+  describe('Given an arbitrary pair of src/dst size pools and an arbitrary threshold', () => {
     describe('When sizeCompatibleIds is called', () => {
       it('Then it returns exactly the ids with at least one size-compatible partner on the other side', () => {
         fc.assert(
           fc.property(arbSizes(), arbSizes(), arbThreshold(), (srcSizes, dstSizes, threshold) => {
             // Arrange
+            const sut = sizeCompatibleIds;
             const srcIds = idsFor('src', srcSizes);
             const dstIds = idsFor('dst', dstSizes);
             const sizes = new Map<ObjectId, number>();
@@ -55,7 +56,7 @@ describe('sizeCompatibleIds', () => {
             });
 
             // Act
-            const result = sizeCompatibleIds(sizes, srcIds, dstIds, threshold);
+            const result = sut(sizes, srcIds, dstIds, threshold);
 
             // Assert
             const expectedSrc = bruteForceCompatible(srcIds, dstIds, sizes, threshold);

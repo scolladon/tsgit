@@ -49,16 +49,18 @@ function pairsUnderUnusedRule(
   });
 }
 
-const sut = pairIdenticalFiles;
-
-describe('Given a small pool of rename sources and destinations colliding on id and basename', () => {
+describe('Given an arbitrary pool of rename sources and destinations colliding on id and basename', () => {
   describe('When paired in copy mode', () => {
     it('Then every destination sharing an exact key with a source is paired', () => {
-      // Arrange + Assert
       fc.assert(
         fc.property(arbSourcesAndDestinations(), ({ sources, destinations }) => {
+          // Arrange
+          const sut = pairIdenticalFiles;
+
+          // Act
           const result = sut(sources, destinations, 'copy');
 
+          // Assert
           for (const destination of destinations) {
             const hasSameKeySource = sources.some((source) => isSameExactKey(source, destination));
             const isPaired = result.pairs.some((pair) => pair.destination === destination);
@@ -72,11 +74,15 @@ describe('Given a small pool of rename sources and destinations colliding on id 
 
   describe('When paired in rename mode', () => {
     it('Then no source is used more than one beyond its seed', () => {
-      // Arrange + Assert
       fc.assert(
         fc.property(arbSourcesAndDestinations(), ({ sources, destinations }) => {
+          // Arrange
+          const sut = pairIdenticalFiles;
+
+          // Act
           const result = sut(sources, destinations, 'rename');
 
+          // Assert
           sources.forEach((source, index) => {
             expect(result.uses[index]).toBeLessThanOrEqual(source.seedUses + 1);
           });
@@ -86,11 +92,15 @@ describe('Given a small pool of rename sources and destinations colliding on id 
     });
 
     it('Then a destination pairs iff some same-key source was unused when it was visited', () => {
-      // Arrange + Assert
       fc.assert(
         fc.property(arbSourcesAndDestinations(), ({ sources, destinations }) => {
+          // Arrange
+          const sut = pairIdenticalFiles;
+
+          // Act
           const result = sut(sources, destinations, 'rename');
 
+          // Assert
           const actuallyPaired = destinations.map((destination) =>
             result.pairs.some((pair) => pair.destination === destination),
           );
@@ -104,14 +114,18 @@ describe('Given a small pool of rename sources and destinations colliding on id 
 
   describe('When paired in either mode', () => {
     it('Then uses[i] minus its seed equals the number of pairs naming source i', () => {
-      // Arrange + Assert
       fc.assert(
         fc.property(
           arbSourcesAndDestinations(),
           fc.constantFrom<PairingMode>('rename', 'copy'),
           ({ sources, destinations }, mode) => {
+            // Arrange
+            const sut = pairIdenticalFiles;
+
+            // Act
             const result = sut(sources, destinations, mode);
 
+            // Assert
             sources.forEach((source, index) => {
               const pairCount = result.pairs.filter((pair) => pair.source === index).length;
               expect((result.uses[index] as number) - source.seedUses).toBe(pairCount);
@@ -140,20 +154,22 @@ function countByBasename<T>(
   return counts;
 }
 
-const sutUniqueBasenamePairs = uniqueBasenamePairs;
-
 describe('Given an arbitrary pool of rename sources and destinations', () => {
   describe('When uniqueBasenamePairs is called', () => {
     it('Then every returned pair shares a basename occurring exactly once on each side', () => {
-      // Arrange + Assert
       fc.assert(
         fc.property(arbSourcesAndDestinations(), ({ sources, destinations }) => {
-          const result = sutUniqueBasenamePairs(sources, destinations);
+          // Arrange
+          const sut = uniqueBasenamePairs;
           const sourceCounts = countByBasename(sources, (source) => basenameOf(source.path));
           const destinationCounts = countByBasename(destinations, (destination) =>
             basenameOf(destination.newPath),
           );
 
+          // Act
+          const result = sut(sources, destinations);
+
+          // Assert
           for (const { source, destination } of result) {
             const sourceBasename = basenameOf((sources[source] as RenameSource).path);
             const destinationBasename = basenameOf(
@@ -229,16 +245,19 @@ function arbSelectPairsScenario(): fc.Arbitrary<SelectPairsScenario> {
     );
 }
 
-describe('Given a small pool of sources and candidates for selectPairs', () => {
+describe('Given an arbitrary pool of sources and candidates for selectPairs', () => {
   describe('When selectPairs runs with either copies setting', () => {
     it('Then no destination is ever paired more than once', () => {
-      // Arrange + Assert
       fc.assert(
         fc.property(arbSelectPairsScenario(), fc.boolean(), ({ seedUses, candidates }, copies) => {
+          // Arrange
+          const sut = selectPairs;
           const sorted = [...candidates].sort(compareCandidates);
 
-          const result = selectPairs(sorted, seedUses, { copies, threshold: 0 });
+          // Act
+          const result = sut(sorted, seedUses, { copies, threshold: 0 });
 
+          // Assert
           const pairedDestinations = result.pairs.map((pair) => pair.destination);
           expect(new Set(pairedDestinations).size).toBe(pairedDestinations.length);
         }),
@@ -249,14 +268,17 @@ describe('Given a small pool of sources and candidates for selectPairs', () => {
 
   describe('When selectPairs runs with copies on and its pairs are labelled', () => {
     it('Then each deleted-like source yields k-1 copies and a final rename, and each retained-like source yields only copies', () => {
-      // Arrange + Assert
       fc.assert(
         fc.property(arbSelectPairsScenario(), ({ seedUses, candidates }) => {
+          // Arrange
+          const sut = selectPairs;
           const sorted = [...candidates].sort(compareCandidates);
 
-          const result = selectPairs(sorted, seedUses, { copies: true, threshold: 0 });
+          // Act
+          const result = sut(sorted, seedUses, { copies: true, threshold: 0 });
           const labelled = labelRenameCopy(result.pairs, result.uses);
 
+          // Assert
           const bySource = new Map<number, Array<(typeof labelled)[number]>>();
           for (const entry of labelled) {
             const list = bySource.get(entry.pair.source) ?? [];

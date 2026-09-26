@@ -228,94 +228,6 @@ describe('computeStatFields', () => {
     });
   });
 
-  describe('computeRewriteStatFields', () => {
-    describe('Given old/new byte content for a kept-broken rewrite', () => {
-      describe('When computeRewriteStatFields is called', () => {
-        it.each([
-          {
-            label:
-              'both sides end with a final LF: each side counts its own LF total, not a line-diff',
-            old: enc('a\nb\nc\n'),
-            next: enc('x\ny\n'),
-            expected: { added: 2, deleted: 3, binary: false },
-          },
-          {
-            label: 'an old side without a final LF counts its incomplete last line',
-            old: enc('a\nb'),
-            next: enc('x\n'),
-            expected: { added: 1, deleted: 2, binary: false },
-          },
-          {
-            label: 'a new side without a final LF counts its incomplete last line',
-            old: enc('a\n'),
-            next: enc('x\ny'),
-            expected: { added: 2, deleted: 1, binary: false },
-          },
-          {
-            label: 'an empty old side counts zero regardless of the new side content',
-            old: enc(''),
-            next: enc('a\nb\n'),
-            expected: { added: 2, deleted: 0, binary: false },
-          },
-          {
-            label: 'an empty new side counts zero regardless of the old side content',
-            old: enc('a\nb\n'),
-            next: enc(''),
-            expected: { added: 0, deleted: 2, binary: false },
-          },
-          {
-            label: 'both sides empty counts zero on both sides',
-            old: enc(''),
-            next: enc(''),
-            expected: { added: 0, deleted: 0, binary: false },
-          },
-          {
-            label: 'a single LF-only line counts as one line',
-            old: enc('\n'),
-            next: enc('\n'),
-            expected: { added: 1, deleted: 1, binary: false },
-          },
-          {
-            // isolates the first guard arm
-            label: 'a binary old side reports binary with zero counts, ignoring line content',
-            old: withNul(),
-            next: enc('text\n'),
-            expected: { added: 0, deleted: 0, binary: true },
-          },
-          {
-            // isolates the second guard arm
-            label: 'a binary new side reports binary with zero counts, ignoring line content',
-            old: enc('text\n'),
-            next: withNul(),
-            expected: { added: 0, deleted: 0, binary: true },
-          },
-          {
-            label:
-              "numstatBinaryOverride 'binary' over purely textual content short-circuits to binary shape without sniffing content",
-            old: enc('a\n'),
-            next: enc('b\n'),
-            override: 'binary' as const,
-            expected: { added: 0, deleted: 0, binary: true },
-          },
-          {
-            label:
-              "numstatBinaryOverride 'text' over NUL-bearing content skips the isBinary guard and counts lines even over NUL bytes",
-            old: new Uint8Array([0x61, 0x00, 0x0a]), // "a\0\n"
-            next: new Uint8Array([0x62, 0x00, 0x0a, 0x63, 0x00]), // "b\0\nc\0"
-            override: 'text' as const,
-            expected: { added: 2, deleted: 1, binary: false },
-          },
-        ])('Then $label', ({ old, next, override, expected }) => {
-          // Arrange + Act
-          const result = computeRewriteStatFields(old, next, override);
-
-          // Assert
-          expect(result).toEqual(expected);
-        });
-      });
-    });
-  });
-
   describe('Given lineKey mode all and a lineKey mode none for the same spaces-only insert', () => {
     describe('When checking blank definition reads the active lineKey', () => {
       it('Then mode:none treats spaces-only as non-blank and mode:all treats it as blank', () => {
@@ -333,6 +245,97 @@ describe('computeStatFields', () => {
         // Assert — active lineKey determines blank definition
         expect(resultNone).toEqual({ added: 1, deleted: 0, binary: false });
         expect(resultAll).toEqual({ added: 0, deleted: 0, binary: false });
+      });
+    });
+  });
+});
+
+describe('computeRewriteStatFields', () => {
+  describe('Given old/new byte content for a kept-broken rewrite', () => {
+    describe('When computeRewriteStatFields is called', () => {
+      it.each([
+        {
+          label:
+            'both sides end with a final LF: each side counts its own LF total, not a line-diff',
+          old: enc('a\nb\nc\n'),
+          next: enc('x\ny\n'),
+          expected: { added: 2, deleted: 3, binary: false },
+        },
+        {
+          label: 'an old side without a final LF counts its incomplete last line',
+          old: enc('a\nb'),
+          next: enc('x\n'),
+          expected: { added: 1, deleted: 2, binary: false },
+        },
+        {
+          label: 'a new side without a final LF counts its incomplete last line',
+          old: enc('a\n'),
+          next: enc('x\ny'),
+          expected: { added: 2, deleted: 1, binary: false },
+        },
+        {
+          label: 'an empty old side counts zero regardless of the new side content',
+          old: enc(''),
+          next: enc('a\nb\n'),
+          expected: { added: 2, deleted: 0, binary: false },
+        },
+        {
+          label: 'an empty new side counts zero regardless of the old side content',
+          old: enc('a\nb\n'),
+          next: enc(''),
+          expected: { added: 0, deleted: 2, binary: false },
+        },
+        {
+          label: 'both sides empty counts zero on both sides',
+          old: enc(''),
+          next: enc(''),
+          expected: { added: 0, deleted: 0, binary: false },
+        },
+        {
+          label: 'a single LF-only line counts as one line',
+          old: enc('\n'),
+          next: enc('\n'),
+          expected: { added: 1, deleted: 1, binary: false },
+        },
+        {
+          // isolates the first guard arm
+          label: 'a binary old side reports binary with zero counts, ignoring line content',
+          old: withNul(),
+          next: enc('text\n'),
+          expected: { added: 0, deleted: 0, binary: true },
+        },
+        {
+          // isolates the second guard arm
+          label: 'a binary new side reports binary with zero counts, ignoring line content',
+          old: enc('text\n'),
+          next: withNul(),
+          expected: { added: 0, deleted: 0, binary: true },
+        },
+        {
+          label:
+            "numstatBinaryOverride 'binary' over purely textual content short-circuits to binary shape without sniffing content",
+          old: enc('a\n'),
+          next: enc('b\n'),
+          override: 'binary' as const,
+          expected: { added: 0, deleted: 0, binary: true },
+        },
+        {
+          label:
+            "numstatBinaryOverride 'text' over NUL-bearing content skips the isBinary guard and counts lines even over NUL bytes",
+          old: new Uint8Array([0x61, 0x00, 0x0a]), // "a\0\n"
+          next: new Uint8Array([0x62, 0x00, 0x0a, 0x63, 0x00]), // "b\0\nc\0"
+          override: 'text' as const,
+          expected: { added: 2, deleted: 1, binary: false },
+        },
+      ])('Then $label', ({ old, next, override, expected }) => {
+        // Arrange
+        const sut = computeRewriteStatFields;
+
+        // Act
+        const result = sut(old, next, override);
+
+        // Assert
+        expect(result).toEqual(expected);
       });
     });
   });
