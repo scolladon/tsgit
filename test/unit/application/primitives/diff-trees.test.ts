@@ -61,6 +61,39 @@ const blob = (ctx: Ctx, content: string): Promise<ObjectId> =>
 const subTree = (ctx: Ctx, name: string, id: ObjectId, mode: FileMode): Promise<ObjectId> =>
   writeTree(ctx, [treeEntry(mode, name, id)]);
 
+const sharedRewriteLine = (i: number): string =>
+  `line-${String(i).padStart(3, '0')}: shared content alpha beta gamma delta epsilon zeta eta theta\n`;
+const differentRewriteLine = (i: number): string =>
+  `different-${String(i).padStart(3, '0')}: COMPLETELY NEW TEXT ZETA THETA KAPPA LAMBDA MU NU XI OMICRON PI RHO SIGMA\n`;
+
+/** A `total`-line file whose OLD side is all shared lines and whose NEW side
+ *  keeps the first `shared` lines identical and replaces the rest — the same
+ *  shape the similarity-interop suite pins at ~65% byte-level dissimilarity
+ *  for `total=20, shared=7`, reused here to get a "kept broken" pair whose
+ *  real line diff (13 added/13 deleted) differs from its full line count
+ *  (20/20), the case `applyStatPass`'s routing distinguishes. */
+const partialRewrite = (kind: 'old' | 'new', total: number, shared: number): string =>
+  Array.from({ length: total }, (_, i) =>
+    kind === 'old' || i < shared ? sharedRewriteLine(i) : differentRewriteLine(i),
+  ).join('');
+
+/** Above the ~65% (39000/60000) dissimilarity `partialRewrite('old'|'new', 20, 7)`
+ *  pins in the similarity-interop suite, so a pair using it re-merges to a plain
+ *  modify instead of staying kept-broken. */
+const RE_MERGE_GATE = 45_000;
+
+const WS_REWRITE_LINE_COUNT = 40;
+
+/** 40 lines whose words are separated by `gap` — comparing `wsRewrite(' ')` to
+ *  `wsRewrite('  ')` differs only in whitespace AMOUNT, which
+ *  `ignoreWhitespace: 'all'` (`dropAllWs`) erases entirely. */
+const wsRewrite = (gap: string): string =>
+  Array.from(
+    { length: WS_REWRITE_LINE_COUNT },
+    (_, i) =>
+      `word${i}a${gap}word${i}b${gap}word${i}c${gap}word${i}d${gap}word${i}e${gap}word${i}f${gap}word${i}g${gap}word${i}h\n`,
+  ).join('');
+
 /** Build a chain of `hops` real nested directory-modify levels whose
  *  innermost entry points to a phantom (never-written) id on each side — a
  *  depth guard that failed to trip surfaces as OBJECT_NOT_FOUND, not a
@@ -1120,6 +1153,60 @@ describe('diffTrees', () => {
     });
   });
 
+  describe('Given withStat:true and a kept-broken modify whose real line diff is smaller than the whole file', () => {
+    describe('When diffTrees is called with renameOptions.breakRewrites keeping the pair broken', () => {
+      it('Then the stat counts are the complete-rewrite counts, not the line-diff counts', async () => {
+        // Arrange — 20 lines each side, only the last 13 differ: a line diff would report 13/13,
+        // but a kept-broken modify's numstat is the whole-file count on each side (20/20).
+        const ctx = await buildSeededContext();
+        const oldId = await blob(ctx, partialRewrite('old', 20, 7));
+        const newId = await blob(ctx, partialRewrite('new', 20, 7));
+        const before = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'file.txt', oldId)]);
+        const after = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'file.txt', newId)]);
+
+        // Act
+        const result = await diffTrees(ctx, before, after, {
+          withStat: true,
+          renameOptions: {
+            breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
+          },
+        });
+
+        // Assert — kept broken; full-file counts, not the 13/13 a line diff would report
+        expect(result.changes).toHaveLength(1);
+        const change = result.changes[0];
+        expect(change).toMatchObject({ type: 'modify', added: 20, deleted: 20, binary: false });
+        if (change?.type === 'modify') expect(change.broken).toBeDefined();
+      });
+    });
+  });
+
+  describe('Given withStat:true and the same partially-rewritten file, When a higher merge gate re-merges the pair', () => {
+    describe('When diffTrees is called', () => {
+      it('Then the stat counts are the real line-diff counts, not the complete-rewrite counts', async () => {
+        // Arrange — same 20-line/7-shared content; RE_MERGE_GATE sits above the ~65%
+        // dissimilarity pinned for this fixture, so the pair re-merges to a plain modify.
+        const ctx = await buildSeededContext();
+        const oldId = await blob(ctx, partialRewrite('old', 20, 7));
+        const newId = await blob(ctx, partialRewrite('new', 20, 7));
+        const before = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'file.txt', oldId)]);
+        const after = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'file.txt', newId)]);
+
+        // Act
+        const result = await diffTrees(ctx, before, after, {
+          withStat: true,
+          renameOptions: { breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: RE_MERGE_GATE } },
+        });
+
+        // Assert — re-merged to a plain modify; real line-diff counts (13 lines replaced)
+        expect(result.changes).toHaveLength(1);
+        const change = result.changes[0];
+        expect(change).toMatchObject({ type: 'modify', added: 13, deleted: 13, binary: false });
+        if (change?.type === 'modify') expect(change.broken).toBeUndefined();
+      });
+    });
+  });
+
   describe('Given copies:"harder" and a file unchanged in treeA whose preimage is similar to an added file in treeB', () => {
     describe('When diffTrees is called with detectRenames:true and renameOptions:{copies:"harder"}', () => {
       it('Then the add folds into a copy from the unchanged source (preimage threading works end-to-end)', async () => {
@@ -1506,6 +1593,63 @@ describe('diffTrees', () => {
 
         // Assert — dropped (#BL-combo)
         expect(result.changes).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given a kept-broken whitespace-only rewrite and ignoreWhitespace:all with no withStat', () => {
+    describe('When diffTrees is called', () => {
+      it('Then the modify is never dropped (kept-broken is exempt from the whitespace drop pass)', async () => {
+        // Arrange — 40 lines whose only difference is the whitespace AMOUNT between
+        // words; a plain whitespace-only modify would be dropped under ignoreWhitespace:
+        // 'all', but -B classifies this pair a kept-broken rewrite first.
+        const ctx = await buildSeededContext();
+        const oldId = await blob(ctx, wsRewrite(' '));
+        const newId = await blob(ctx, wsRewrite('  '));
+        const before = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'f.txt', oldId)]);
+        const after = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'f.txt', newId)]);
+
+        // Act
+        const result = await diffTrees(ctx, before, after, {
+          ignoreWhitespace: 'all',
+          renameOptions: { breakRewrites: { score: 1, merge: 1 } },
+        });
+
+        // Assert — kept, not dropped
+        expect(result.changes).toHaveLength(1);
+        const change = result.changes[0];
+        expect(change?.type).toBe('modify');
+        if (change?.type === 'modify') expect(change.broken).toBeDefined();
+      });
+    });
+  });
+
+  describe('Given the same kept-broken whitespace-only rewrite with withStat:true', () => {
+    describe('When diffTrees is called with ignoreWhitespace:all', () => {
+      it('Then the modify survives with complete-rewrite counts, not the whitespace-normalized zero counts', async () => {
+        // Arrange — same shape as the predicate-only case above, routed through
+        // applyStatPass's dropVerdict instead of the streaming predicate.
+        const ctx = await buildSeededContext();
+        const oldId = await blob(ctx, wsRewrite(' '));
+        const newId = await blob(ctx, wsRewrite('  '));
+        const before = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'f.txt', oldId)]);
+        const after = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'f.txt', newId)]);
+
+        // Act
+        const result = await diffTrees(ctx, before, after, {
+          ignoreWhitespace: 'all',
+          withStat: true,
+          renameOptions: { breakRewrites: { score: 1, merge: 1 } },
+        });
+
+        // Assert — kept with full-file counts, not the 0/0 whitespace normalization would report
+        expect(result.changes).toHaveLength(1);
+        expect(result.changes[0]).toMatchObject({
+          type: 'modify',
+          added: 40,
+          deleted: 40,
+          binary: false,
+        });
       });
     });
   });

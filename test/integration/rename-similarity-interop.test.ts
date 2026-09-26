@@ -27,8 +27,14 @@ import { diff } from '../../src/application/commands/diff.js';
 import { init } from '../../src/application/commands/init.js';
 import { mv } from '../../src/application/commands/mv.js';
 import { rm } from '../../src/application/commands/rm.js';
-import type { CopyChange, ModifyChange, RenameChange } from '../../src/domain/diff/diff-change.js';
+import type {
+  CopyChange,
+  DiffChange,
+  ModifyChange,
+  RenameChange,
+} from '../../src/domain/diff/diff-change.js';
 import { toSimilarityPercent } from '../../src/domain/diff/similarity.js';
+import type { StatDiffChange, StatFields } from '../../src/domain/diff/stat-fields.js';
 import type { AuthorIdentity } from '../../src/domain/objects/index.js';
 import { reconstructPatch } from './diff-reconstruct.js';
 import { GIT_AVAILABLE, git, makePeerPair, runGit, runGitEnv } from './interop-helpers.js';
@@ -3556,6 +3562,217 @@ describe.skipIf(!GIT_AVAILABLE)('-B break detection without rename detection int
           expect(ours).toBe(peer);
         },
       );
+    });
+  });
+});
+
+/**
+ * A kept-broken modify's `--numstat` counts the WHOLE file on each side
+ * (git's `complete_rewrite`), never the line diff and never dropped by a
+ * whitespace-ignore mode. `runRenameRow` has no `withStat`, so this section
+ * calls `diff()` itself and reconstructs numstat locally, comparing against
+ * live `git diff --numstat -B`.
+ */
+const REWRITE_NUMSTAT_TMP_PREFIX = 'tsgit-rewrite-numstat-';
+const REWRITE_NUMSTAT_SETUP_TIMEOUT = 60_000;
+
+interface RewriteNumstatRow extends RenameRow {
+  readonly ignoreWhitespace?: 'all';
+}
+
+const wsRewriteLine = (i: number, gap: string): string =>
+  `word${i}a${gap}word${i}b${gap}word${i}c${gap}word${i}d${gap}word${i}e${gap}word${i}f${gap}word${i}g${gap}word${i}h\n`;
+
+/** 40 lines whose words are separated by `gap` — comparing `wsRewrite(' ')` to
+ *  `wsRewrite('  ')` differs only in whitespace AMOUNT, which
+ *  `ignoreWhitespace: 'all'` erases entirely but a kept-broken rewrite's
+ *  numstat does not. */
+const wsRewrite = (gap: string): string =>
+  Array.from({ length: 40 }, (_, i) => wsRewriteLine(i, gap)).join('');
+
+/** A deterministic 0..126-byte sequence with a forced NUL at index 10 (well
+ *  inside the binary-detection window), single-byte-safe under UTF-8 so the
+ *  bytes `git`/tsgit each read back are exactly the ones generated here. */
+const pseudoRandomBinary = (seed: number, length: number): string => {
+  let state = seed;
+  const bytes = Array.from({ length }, () => {
+    state = (state * 1_103_515_245 + 12_345) & 0x7fffffff;
+    return (state % 127) + 1;
+  });
+  bytes[10] = 0;
+  return String.fromCharCode(...bytes);
+};
+
+function numstatCounts(change: StatFields): string {
+  return change.binary ? '-\t-' : `${change.added}\t${change.deleted}`;
+}
+
+function numstatPath(change: DiffChange): string {
+  switch (change.type) {
+    case 'add':
+      return change.newPath;
+    case 'delete':
+      return change.oldPath;
+    case 'modify':
+    case 'type-change':
+      return change.path;
+    case 'rename':
+    case 'copy':
+      return `${change.oldPath} => ${change.newPath}`;
+  }
+}
+
+function numstatFrom(changes: ReadonlyArray<StatDiffChange>): string {
+  return changes.map((change) => `${numstatCounts(change)}\t${numstatPath(change)}`).join('\n');
+}
+
+function gitPeerNumstat(dir: string, row: RewriteNumstatRow): string {
+  const flags = row.gitFlags ?? [];
+  const renameFlag = row.detectRenames === false ? '--no-renames' : '-M';
+  return git(
+    dir,
+    'diff',
+    '--no-ext-diff',
+    '--numstat',
+    renameFlag,
+    ...flags,
+    'HEAD~1',
+    'HEAD',
+  ).trim();
+}
+
+async function runNumstatRow(
+  row: RewriteNumstatRow,
+  dir: string,
+): Promise<{ readonly ours: string; readonly peer: string }> {
+  const ctx = createNodeContext({ workDir: dir });
+  const peer = gitPeerNumstat(dir, row);
+  const result = await diff(ctx, {
+    from: 'HEAD~1',
+    to: 'HEAD',
+    recursive: true,
+    withStat: true,
+    ...(row.detectRenames !== false ? { detectRenames: true } : {}),
+    ...(row.renameOptions !== undefined ? { renameOptions: row.renameOptions } : {}),
+    ...(row.ignoreWhitespace !== undefined ? { ignoreWhitespace: row.ignoreWhitespace } : {}),
+  });
+  return { ours: numstatFrom(result.changes), peer };
+}
+
+const REWRITE_NUMSTAT_BREAK_OPTS = { breakRewrites: { score: 30000, merge: 36000 } };
+const REWRITE_NUMSTAT_ANY_BREAK_OPTS = { breakRewrites: { score: 1, merge: 1 } };
+
+const REWRITE_NUMSTAT_ROWS: ReadonlyArray<RewriteNumstatRow> = [
+  {
+    label: 'a partially-rewritten file kept broken counts the whole file on each side',
+    before: [{ path: 'm.txt', content: breakContent('old', 40, 15) }],
+    after: [{ path: 'm.txt', content: breakContent('new', 40, 15) }],
+    detectRenames: false,
+    gitFlags: ['-B'],
+    renameOptions: REWRITE_NUMSTAT_BREAK_OPTS,
+  },
+  {
+    label: 'the same partially-rewritten file re-merged counts only the real line diff',
+    before: [{ path: 'm.txt', content: breakContent('old', 40, 15) }],
+    after: [{ path: 'm.txt', content: breakContent('new', 40, 15) }],
+    detectRenames: false,
+    gitFlags: ['-B50%/70%'],
+    renameOptions: { breakRewrites: { score: 30000, merge: 42000 } },
+  },
+  {
+    label:
+      'a kept-broken rewrite whose new side ends without a final LF counts its incomplete last line',
+    before: [{ path: 'm.txt', content: breakContent('old', 40, 0) }],
+    after: [{ path: 'm.txt', content: breakContent('new', 30, 0).slice(0, -1) }],
+    detectRenames: false,
+    gitFlags: ['-B'],
+    renameOptions: REWRITE_NUMSTAT_ANY_BREAK_OPTS,
+  },
+  {
+    label: 'a kept-broken whitespace-only rewrite counts the whole file (no -w on either side)',
+    before: [{ path: 'm.txt', content: wsRewrite(' ') }],
+    after: [{ path: 'm.txt', content: wsRewrite('  ') }],
+    detectRenames: false,
+    gitFlags: ['-B'],
+    renameOptions: REWRITE_NUMSTAT_ANY_BREAK_OPTS,
+  },
+  {
+    label:
+      'the same kept-broken whitespace-only rewrite still counts the whole file under -w (never dropped)',
+    before: [{ path: 'm.txt', content: wsRewrite(' ') }],
+    after: [{ path: 'm.txt', content: wsRewrite('  ') }],
+    detectRenames: false,
+    gitFlags: ['-B', '-w'],
+    renameOptions: REWRITE_NUMSTAT_ANY_BREAK_OPTS,
+    ignoreWhitespace: 'all',
+  },
+  {
+    label: 'a kept-broken rewrite between two random binary blobs reports "- -"',
+    before: [{ path: 'm.txt', content: pseudoRandomBinary(1, 2000) }],
+    after: [{ path: 'm.txt', content: pseudoRandomBinary(2, 2000) }],
+    detectRenames: false,
+    gitFlags: ['-B'],
+    renameOptions: REWRITE_NUMSTAT_ANY_BREAK_OPTS,
+  },
+  {
+    label:
+      'a kept-broken rewrite to an empty file counts zero added and the old line count deleted',
+    before: [{ path: 'm.txt', content: breakContent('old', 40, 0) }],
+    after: [{ path: 'm.txt', content: '' }],
+    detectRenames: false,
+    gitFlags: ['-B'],
+    renameOptions: REWRITE_NUMSTAT_ANY_BREAK_OPTS,
+  },
+  {
+    label:
+      'a kept-broken modify alongside an unrelated exact rename, under -M -B, counts the whole file for the modify and zero for the rename',
+    before: [
+      { path: 'm.txt', content: breakContent('old', 40, 0) },
+      { path: 'z.txt', content: NO_RENAME_UNRELATED_CONTENT },
+    ],
+    after: [
+      { path: 'm.txt', content: breakContent('new', 40, 0) },
+      { path: 'q.txt', content: breakContent('old', 40, 0) },
+      { path: 'y.txt', content: NO_RENAME_UNRELATED_CONTENT },
+    ],
+    gitFlags: ['-B'],
+    renameOptions: REWRITE_NUMSTAT_BREAK_OPTS,
+  },
+];
+
+const rewriteNumstatFixtures = new Map<string, { readonly dir: string }>();
+
+function rewriteNumstatFixtureOf(label: string): { readonly dir: string } {
+  const found = rewriteNumstatFixtures.get(label);
+  if (found === undefined) throw new Error(`fixture not built for row: ${label}`);
+  return found;
+}
+
+describe.skipIf(!GIT_AVAILABLE)('kept-broken rewrite numstat interop', () => {
+  beforeAll(async () => {
+    for (const row of REWRITE_NUMSTAT_ROWS) {
+      rewriteNumstatFixtures.set(row.label, await buildRenameRow(row, REWRITE_NUMSTAT_TMP_PREFIX));
+    }
+  }, REWRITE_NUMSTAT_SETUP_TIMEOUT);
+
+  afterAll(async () => {
+    for (const { dir } of rewriteNumstatFixtures.values()) {
+      await rmDir(dir, { recursive: true, force: true });
+    }
+  });
+
+  describe('Given a raw diff pair exercising -B numstat with a kept-broken modify', () => {
+    describe('When diff is called with withStat:true', () => {
+      it.each(REWRITE_NUMSTAT_ROWS)('Then numstat matches live git for: $label', async (row) => {
+        // Arrange
+        const { dir } = rewriteNumstatFixtureOf(row.label);
+
+        // Act
+        const { ours, peer } = await runNumstatRow(row, dir);
+
+        // Assert
+        expect(ours).toBe(peer);
+      });
     });
   });
 });

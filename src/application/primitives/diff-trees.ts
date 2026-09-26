@@ -21,6 +21,7 @@ import {
 import { scanEqual } from '../../domain/diff/line-digest-scanner.js';
 import { diffRawTrees } from '../../domain/diff/raw-tree-diff.js';
 import type { RenameDetectOptions } from '../../domain/diff/rename-detect.js';
+import { computeRewriteStatFields } from '../../domain/diff/stat-fields.js';
 import {
   treeCycleDetected,
   treeDepthExceeded,
@@ -57,6 +58,13 @@ import type { DiffTreesInput, DiffTreesOptions } from './types.js';
 import { exceedsMaxTreeDepth, exceedsMaxTreeEntries } from './validators.js';
 
 const EMPTY = new Uint8Array(0);
+
+/** `true` for a modify `-B` kept broken (dissimilar enough, never re-merged) —
+ *  git's `complete_rewrite` path: numstat counts the whole file on each side
+ *  and the whitespace drop pass never drops it, regardless of line-key mode. */
+function isKeptBroken(change: DiffChange): boolean {
+  return change.type === 'modify' && change.broken !== undefined;
+}
 
 /**
  * Diff two tree-like targets, returning the structured `TreeDiff`. Pass
@@ -195,9 +203,12 @@ async function applyLinePassAndStat(
  * When `lineKeyActive`, drops modify changes whose drop verdict comes from
  * `dropVerdict` — the same synchronous scanner and ladder the predicate-only
  * path drives, not the stat counts computed alongside it. When `withStat`,
- * attaches per-file counts to every surviving change. Consistency between
- * the two paths holds by construction: both run the same scanner, rather
- * than two independently maintained verdicts.
+ * attaches per-file counts to every surviving change: a kept-broken modify
+ * (`isKeptBroken`) gets `computeRewriteStatFields` — the whole file counted
+ * on each side, git's `complete_rewrite` numstat — every other change keeps
+ * `computeStatFields`'s line diff. Consistency between the two drop paths
+ * holds by construction: both run the same scanner, rather than two
+ * independently maintained verdicts.
  *
  * The verdict runs BEFORE the counts, and both are pure functions of the same
  * two buffers: a dropped file's counts would be discarded, so computing them
@@ -229,11 +240,13 @@ async function applyStatPass(
         file.numstatBinaryOverride,
       );
     if (dropped) continue;
-    const stats = computeStatFields(
-      oldContent,
-      newContent,
-      statOptionsFor(lineKey, lineKeyActive, ignoreBlankLines, file.numstatBinaryOverride),
-    );
+    const stats = isKeptBroken(file.change)
+      ? computeRewriteStatFields(oldContent, newContent, file.numstatBinaryOverride)
+      : computeStatFields(
+          oldContent,
+          newContent,
+          statOptionsFor(lineKey, lineKeyActive, ignoreBlankLines, file.numstatBinaryOverride),
+        );
     surviving.push(withStat ? { ...file.change, ...stats } : file.change);
   }
   return { changes: surviving };
@@ -365,6 +378,7 @@ async function changeShouldDrop(
 ): Promise<boolean> {
   if (isDirectoryModeChange(change)) return true;
   if (change.type !== 'modify') return false;
+  if (isKeptBroken(change)) return false;
   if (await hasDiffAttribute(change, getProvider)) {
     return materialisedShouldDrop(ctx, change, lineKey, ignoreBlankLines, getProvider);
   }
@@ -375,12 +389,14 @@ async function changeShouldDrop(
  * The stat path's drop verdict — routed through the same synchronous scanner
  * and ladder the predicate-only path drives (`scanEqual`,
  * `line-digest-scanner.ts`), so the two paths cannot answer differently for
- * the same pair of blobs. Only `modify` changes are ever dropped. The
- * `.gitattributes` binary override is threaded into the scanner rather than
- * short-circuited here, so all three of its states are honoured by one decision:
- * a forced-binary side is never dropped, a forced-text side drops a
- * whitespace-only change even over NUL bytes (matching git), and an
- * unattributed path keeps git's NUL-window content sniff.
+ * the same pair of blobs. Only `modify` changes are ever dropped, and a
+ * kept-broken one never is — git's `complete_rewrite` skips xdiff (and so
+ * the whitespace drop) entirely. The `.gitattributes` binary override is
+ * threaded into the scanner rather than short-circuited here, so all three
+ * of its states are honoured by one decision: a forced-binary side is never
+ * dropped, a forced-text side drops a whitespace-only change even over NUL
+ * bytes (matching git), and an unattributed path keeps git's NUL-window
+ * content sniff.
  */
 function dropVerdict(
   change: DiffChange,
@@ -391,6 +407,7 @@ function dropVerdict(
   numstatBinaryOverride: BinaryOverride | undefined,
 ): boolean {
   if (change.type !== 'modify') return false;
+  if (isKeptBroken(change)) return false;
   return scanEqual(oldContent, newContent, lineKey, ignoreBlankLines, numstatBinaryOverride);
 }
 

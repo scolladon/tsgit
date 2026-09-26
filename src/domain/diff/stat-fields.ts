@@ -34,6 +34,41 @@ export interface StatFieldsOptions {
   readonly numstatBinaryOverride?: 'binary' | 'text';
 }
 
+const LF = 0x0a;
+
+/**
+ * git's `count_lines`: the number of LF bytes, plus one more when the
+ * content is non-empty and does not itself end with LF (an unterminated
+ * last line still counts). Empty content is zero lines.
+ */
+function countLines(bytes: Uint8Array): number {
+  if (bytes.length === 0) return 0;
+  let lineFeeds = 0;
+  for (const byte of bytes) {
+    if (byte === LF) lineFeeds++;
+  }
+  return bytes[bytes.length - 1] === LF ? lineFeeds : lineFeeds + 1;
+}
+
+/**
+ * Stat fields for a kept-broken modify — git's `complete_rewrite` path.
+ * `-B` classified the pair as a rewrite that stayed broken, so numstat
+ * reports the WHOLE file as removed-and-added: no line diff runs, and
+ * neither line-key normalization nor blank-line suppression apply (git
+ * skips xdiff entirely for a complete rewrite). A binary side still wins
+ * over the rewrite counts, matching `computeStatFields`.
+ */
+export const computeRewriteStatFields = (
+  old: Uint8Array,
+  next: Uint8Array,
+  override?: BinaryOverride,
+): StatFields => {
+  if (pairIsBinary(old, next, override)) {
+    return { added: 0, deleted: 0, binary: true };
+  }
+  return { added: countLines(next), deleted: countLines(old), binary: false };
+};
+
 function hunkHasNonBlank(diff: LineDiff, hunk: LineHunk, key: LineKey): boolean {
   if (hunk.kind === 'ours-only') {
     for (let i = hunk.oursStart; i < hunk.oursEnd; i++) {
