@@ -1441,7 +1441,7 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
-  describe('Given the git-faithful B2 fixture (total=20, shared=7, merge_score=39000 → 65%)', () => {
+  describe('Given the git-faithful fixture (total=20, shared=7, merge_score=39000 → 65%)', () => {
     describe('When detectSimilarityRenames is called with merge gate at 39000 (inclusive)', () => {
       it('Then broken.score equals 39000 and the modify is kept broken', async () => {
         // Arrange — breakContent('old',20,7) vs breakContent('new',20,7)
@@ -1543,12 +1543,12 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
-  describe('Given breakRewrites and a broken modify whose old content pairs elsewhere while its new content stays unpaired (design row K1)', () => {
+  describe('Given breakRewrites and a broken modify whose old content pairs elsewhere while its new content stays unpaired', () => {
     describe('When detectSimilarityRenames is called', () => {
       it('Then the halves rejoin as a broken modify and the pairing becomes a copy (write back counts the rejoin as a use, live git: M100 m ; C100 m→q)', async () => {
         // Arrange — file.txt's old content exactly matches rename-dst.txt (an unrelated
         // add); file.txt's new content is fully disjoint and unpaired, so its add-half
-        // never pairs. Fixture kept >= 500 bytes per design so Part 11's byte-size guard
+        // never pairs. Fixture kept >= 500 bytes so the MINIMUM_BREAK_SIZE guard
         // still leaves it broken.
         const ctx = await buildSeededContext();
         const sharedContent = 'shared\ncontent\nfor\nrename\ntarget\n'.repeat(20);
@@ -1591,7 +1591,7 @@ describe('detectSimilarityRenames', () => {
           expect(modifies[0].broken?.score).toBe(MAX_SCORE);
         }
         // The rejoin counted one extra use of file.txt's old content, so the exact
-        // pairing with rename-dst.txt labels as a copy, not a rename (K1).
+        // pairing with rename-dst.txt labels as a copy, not a rename.
         const copies = result.changes.filter((c) => c.type === 'copy');
         expect(copies).toHaveLength(1);
         if (copies[0]?.type === 'copy') {
@@ -1606,7 +1606,7 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
-  describe('Given breakRewrites and a broken modify whose old content near-matches another add while its new content stays unpaired (design row K2)', () => {
+  describe('Given breakRewrites and a broken modify whose old content near-matches another add while its new content stays unpaired', () => {
     describe('When detectSimilarityRenames is called', () => {
       it('Then the halves rejoin as a broken modify and the inexact pairing becomes a copy (live git: M100 m ; C099 m→q)', async () => {
         // Arrange — m.txt's old content near-matches (one extra tail line) q.txt, an
@@ -1651,7 +1651,7 @@ describe('detectSimilarityRenames', () => {
           expect(modifies[0].broken?.score).toBe(MAX_SCORE);
         }
         // The rejoin counted one extra use of m.txt's old content, so the inexact
-        // pairing with q.txt labels as a copy, not a rename (K2).
+        // pairing with q.txt labels as a copy, not a rename.
         const copies = result.changes.filter((c) => c.type === 'copy');
         expect(copies).toHaveLength(1);
         if (copies[0]?.type === 'copy') {
@@ -2013,51 +2013,51 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
-  // ── equivalent-mutant: L41 new Array() vs new Array(n) ──────────────────────
+  // ── equivalent-mutant: new Array() vs new Array(n) ──────────────────────
   // Workers write by index assignment; JS arrays auto-extend so .map() covers all
   // indices regardless of initial length. Proof: results[idx]=… sets length to
   // max(idx)+1; .map() then covers 0..ids.length-1 identically.
   //
-  // equivalent-mutant: L53 Math.max(MAX_CONCURRENT_OBJECT_LOADS,ids.length) as concurrency ─
+  // equivalent-mutant: Math.max(MAX_CONCURRENT_OBJECT_LOADS,ids.length) as concurrency ─
   // Extra workers spin once, see cursor≥ids.length, and return immediately.
   // Proof: cursor is shared; all ids processed before extras start.
   //
-  // equivalent-mutant: L55 i<=concurrency vs i<concurrency ───────────────────
+  // equivalent-mutant: i<=concurrency vs i<concurrency ───────────────────
   // One extra worker is spawned; it sees cursor≥ids.length on entry and exits.
   // Proof: same shared-cursor argument; final results array unchanged.
   //
-  // equivalent-mutant: L141 i<=slots.length in min-find loop ─────────────────
+  // equivalent-mutant: i<=slots.length in min-find loop ─────────────────
   // Extra iteration accesses slots[NUM_CANDIDATE_PER_DST]=undefined; the
   // `cur!==undefined` guard skips it; minIdx is unchanged.
   // Proof: undefined-check guard is the invariant.
   //
-  // equivalent-mutant: L185 Math.min(sfSize,dfSize) as maxSize ────────────────
+  // equivalent-mutant: Math.min(sfSize,dfSize) as maxSize ────────────────
   // When sfSize≤dfSize: new maxSize=sfSize<dfSize; (sfSize-dfSize)*MAX_SCORE<0;
   // LHS≥0 so LHS<RHS is always false → never rejects. Equivalent to no prefilter.
   // Proof: (min-max)*MAX_SCORE≤0; positive<non-positive = false.
   //
-  // equivalent-mutant: L186 Math.max(sfSize,dfSize) as minSize ────────────────
+  // equivalent-mutant: Math.max(sfSize,dfSize) as minSize ────────────────
   // maxSize=minSize; (maxSize-minSize)=0; RHS=0; LHS≥0 → never rejects.
   // Proof: (max-max)*MAX_SCORE=0.
   //
-  // equivalent-mutant: L187 ConditionalExpression "false" (isSizeRejected→false) ─
+  // equivalent-mutant: ConditionalExpression "false" (isSizeRejected→false) ─
   // The size prefilter is conservative: every rejected pair would also score<threshold.
   // Proof: the formula is a necessary condition derivable from the threshold formula;
   // any pair with score≥threshold has min/max≥threshold/MAX_SCORE, satisfying the
   // inequality in the non-rejected direction.
   //
-  // equivalent-mutant: L187 ArithmeticOperator "(maxSize-minSize)/MAX_SCORE" ──
+  // equivalent-mutant: ArithmeticOperator "(maxSize-minSize)/MAX_SCORE" ──
   // RHS becomes (max-min)/MAX_SCORE<1; LHS=max*(MAX_SCORE-threshold)≥0; for any
   // realistic blob (max≥1, threshold<MAX_SCORE) LHS>>RHS → never rejects. Equivalent.
   // Proof: max*(MAX_SCORE-threshold)≥(MAX_SCORE-threshold)>>1.
   //
-  // equivalent-mutant: L187 ArithmeticOperator "MAX_SCORE+threshold" ─────────
+  // equivalent-mutant: ArithmeticOperator "MAX_SCORE+threshold" ─────────
   // LHS=max*(MAX_SCORE+threshold)>max*(MAX_SCORE-threshold); even harder to be <RHS
   // → effectively never rejects. Equivalent.
   // Proof: (MAX_SCORE+threshold)>(MAX_SCORE-threshold) so LHS grows, < fails.
   //
-  // equivalent-mutant: L198 ConditionalExpression "false" (isSizeRejected guard) ─
-  // Same as L187-false: prefilter is an optimization; skipping it leaves results
+  // equivalent-mutant: ConditionalExpression "false" (isSizeRejected guard) ─
+  // Same as the isSizeRejected→false case above: prefilter is an optimization; skipping it leaves results
   // unchanged since estimateSimilarityFromMaps returns <threshold for the same pairs.
 
   describe('Given copies:"on" where copy sources alone push num_create*num_src over the limit', () => {
@@ -2124,10 +2124,10 @@ describe('detectSimilarityRenames', () => {
 
   // ── recordIfBetter slot-cap: min-tracking loop bounds and comparison operators ──
 
-  // equivalent-mutant: L141 i<=slots.length (extra iteration) ─────────────────
+  // equivalent-mutant: i<=slots.length (extra iteration) ─────────────────
   // Already documented above.
   //
-  // equivalent-mutant: L141 i>=slots.length (loop never runs → minIdx=0 always) ─
+  // equivalent-mutant: i>=slots.length (loop never runs → minIdx=0 always) ─
   // Proof: when candidate C satisfies min_score < C.score ≤ slot[0].score,
   // correct code evicts the true min and adds C; mutant keeps slot[0] and doesn't add C.
   // But in the greedy pass, D picks slot[0]'s source (score ≥ C.score) regardless,
@@ -2135,13 +2135,13 @@ describe('detectSimilarityRenames', () => {
   // both correct and mutant add C to the cap (mutant's check C>slot[0] also passes).
   // Hence the observable set of pairings is identical. QED.
   //
-  // equivalent-mutant: L141 BlockStatement empty (same as i>=) ─────────────────
+  // equivalent-mutant: BlockStatement empty (same as i>=) ─────────────────
   // Same proof: loop body never executes → minIdx=0 → same reasoning as i>=.
   //
-  // equivalent-mutant: L144 false (condition always false → minIdx=0 always) ───
+  // equivalent-mutant: false (condition always false → minIdx=0 always) ───
   // Same proof as i>=slots.length.
   //
-  // equivalent-mutant: L144 true (condition always true → minIdx=last slot) ────
+  // equivalent-mutant: true (condition always true → minIdx=last slot) ────
   // minIdx always ends at slots.length-1 (last slot). The candidate is rejected iff
   // candidate.score ≤ slots[last].score. Since the last slot has a non-minimum score
   // in general, the eviction decision differs from correct. But the same greedy-pass
@@ -2151,15 +2151,15 @@ describe('detectSimilarityRenames', () => {
   // C.score > slots[last].score, meaning C also beats the true minimum, so correct code
   // would also add C. No difference.
   //
-  // equivalent-mutant: L144 cur.score<=min.score (tracks MAX not min → minIdx=0 often) ─
+  // equivalent-mutant: cur.score<=min.score (tracks MAX not min → minIdx=0 often) ─
   // Tracking the maximum instead of minimum means slot[0] is most often "minimized".
   // Same greedy-pass equivalence argument applies.
   //
-  // equivalent-mutant: L144 cur.score>=min.score (similar argument) ────────────
+  // equivalent-mutant: cur.score>=min.score (similar argument) ────────────
   // Same equivalence: the score selected for eviction may differ but the final
   // rename assignments are unchanged by the greedy-pass argument above.
   //
-  // equivalent-mutant: L148 candidate.score>=minSlot.score (>= displaces equal) ─
+  // equivalent-mutant: candidate.score>=minSlot.score (>= displaces equal) ─
   // Equal-score entries: if C.score == minSlot.score, both candidates are equally
   // valid for the slot. Evicting the existing entry and replacing with C gives a
   // cap with the same score distribution. The greedy pass produces the same result
@@ -2179,7 +2179,7 @@ describe('detectSimilarityRenames', () => {
     describe('When detectSimilarityRenames is called', () => {
       it('Then the shared blob id is fingerprinted once and both renames are detected', async () => {
         // Arrange — two deletes with the SAME blob id (identical content, thus same SHA).
-        // buildFingerprintMap must skip the second id (has(id) guard, L170).
+        // buildFingerprintMap must skip the second id (its has(id) guard).
         // If the guard is removed (mutant: false), the second id still works — the
         // fingerprint is just overwritten with the same value — so this kills the mutant
         // via a correctness assertion on both renames being found.
@@ -2250,7 +2250,7 @@ describe('detectSimilarityRenames', () => {
         // and MAX_SCORE=60000: min/max = 1/2. Use sfSize=50 bytes, dfSize=100 bytes.
         // With correct '<': equality → NOT rejected (accepted for scoring).
         // With mutant '<=': equality → REJECTED (pair dropped → no rename).
-        // Kills L187 [EqualityOperator] "<=".
+        // Kills the [EqualityOperator] "<=" mutant on the size prefilter.
         const ctx = await buildSeededContext();
 
         // Build sfSize=50 bytes, dfSize=100 bytes, with high content similarity.
@@ -2302,13 +2302,13 @@ describe('detectSimilarityRenames', () => {
 
   // ── selectPairs wiring: a deleted source beats a better-scoring retained one ──
 
-  describe('Given copies:"on" with a modified source scoring higher than a deleted source for the same destination (design row C19)', () => {
+  describe('Given copies:"on" with a modified source scoring higher than a deleted source for the same destination', () => {
     describe('When detectSimilarityRenames is called', () => {
       it('Then the deleted source wins the destination as a rename — pass 1 never lets a retained source win, no matter its score', async () => {
         // Arrange — the modify's preimage (copy candidate, ~95%) scores higher than the
         // delete (rename candidate, ~90%) against dst, but neither is an EXACT match (an
         // exact match would resolve in the exact pass, ahead of this test's target — the
-        // inexact matrix). git's two-pass selection (design row C19) pairs only zero-use
+        // inexact matrix). git's two-pass selection pairs only zero-use
         // (deleted) sources in pass 1, so the delete wins the destination even though the
         // retained source scores higher — a pure score-sort gets this backwards.
         const ctx = await buildSeededContext();
@@ -2371,7 +2371,7 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
-  describe('Given copies:"on" with an exactly-consumed modify source scoring higher than a deleted source for a second destination (design row C20)', () => {
+  describe('Given copies:"on" with an exactly-consumed modify source scoring higher than a deleted source for a second destination', () => {
     describe('When detectSimilarityRenames is called', () => {
       it('Then the exact pass folds the first destination into a copy and the deleted source wins the second as a rename', async () => {
         // Arrange — mod.txt's old content is IDENTICAL to n1.txt (exact copy pass, uses
@@ -2743,12 +2743,12 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
-  describe('Given an empty-source modify whose new content matches an unrelated deleted file (design row S0)', () => {
+  describe('Given an empty-source modify whose new content matches an unrelated deleted file', () => {
     describe('When detectSimilarityRenames is called with breakRewrites enabled', () => {
       it('Then the empty-source guard means the modify never breaks and the deleted file stays a bare delete (live git: D a/d ; M a/e)', async () => {
         // Arrange — a/e's old content is empty; its new content is byte-identical to a/d's
-        // deleted content and kept >= MINIMUM_BREAK_SIZE, so only the empty-source guard (S0),
-        // not the size guard (S1), explains the outcome. Without the S0 guard, a/e's modify
+        // deleted content and kept >= MINIMUM_BREAK_SIZE, so only the empty-source guard,
+        // not the size guard, explains the outcome. Without the empty-source guard, a/e's modify
         // would break, its synthetic add-half would exact-pair with a/d's delete, and write
         // back would drop a/e's synthetic delete-half — turning the pair into a wrong rename.
         const ctx = await buildSeededContext();
@@ -2801,7 +2801,7 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
-  describe('Given a modify whose sizes sit one byte under the should_break minimum-size guard (design row S1)', () => {
+  describe('Given a modify whose sizes sit one byte under the should_break minimum-size guard', () => {
     describe('When detectSimilarityRenames is called with breakRewrites enabled', () => {
       it('Then a 399-byte fully-disjoint pair is never broken, even though dissimilarity would be MAX_SCORE', async () => {
         // Arrange — both sides exactly 399 bytes (< MINIMUM_BREAK_SIZE), fully disjoint content.
@@ -2885,7 +2885,7 @@ describe('detectSimilarityRenames', () => {
       it('Then max(src,dst) is the denominator so the score stays below the gate and the modify is NOT broken', async () => {
         // Arrange — src is exactly the first half of dst; dst appends an equal-sized block of new
         // lines, so srcSize = S, dstSize = 2S, srcRemoved ≈ 0, literalAdded ≈ S. Each block is
-        // 396 bytes (>= MINIMUM_BREAK_SIZE) so Part 11's size guard does not itself explain a
+        // 396 bytes (>= MINIMUM_BREAK_SIZE) so the size guard does not itself explain a
         // non-break here — only the max-denominator choice does.
         //   break_score = min(srcRemoved + literalAdded, maxSize) * MAX_SCORE / maxSize
         // With maxSize = max(src,dst) = 2S → ≈ S * MAX_SCORE / 2S = 30000 (below the 45000 gate → NOT broken).
@@ -2995,7 +2995,7 @@ describe('detectSimilarityRenames', () => {
     describe('When detectSimilarityRenames is called with breakRewrites', () => {
       it('Then no synthetic halves are created (records.length===0 guard fires)', async () => {
         // Arrange — very similar modify so dissimilarity stays below break threshold; records stays empty.
-        // manyLines (>= MINIMUM_BREAK_SIZE) so the break-attempt gate — not Part 11's size guard —
+        // manyLines (>= MINIMUM_BREAK_SIZE) so the break-attempt gate — not the size guard —
         // is what keeps records empty.
         const ctx = await buildSeededContext();
         // Very similar modify: dissimilarity low → computedBreakScore < DEFAULT_BREAK_SCORE
@@ -3032,14 +3032,14 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
-  // ── write back: a broken delete drops once its add half pairs (design row S2) ──
+  // ── write back: a broken delete drops once its add half pairs ──
 
-  describe('Given a broken modify whose add-half pairs elsewhere (design row S2)', () => {
+  describe('Given a broken modify whose add-half pairs elsewhere', () => {
     describe('When detectSimilarityRenames is called with breakRewrites', () => {
       it('Then the delete-half is dropped, whatever its own use count (live git: no D, only R)', async () => {
         // Arrange — file.txt's add-half (contentB) pairs exactly with other.txt's delete;
         // file.txt's delete-half (contentA) is unused elsewhere, so under the OLD rule it
-        // would survive as a bare delete — S2 says it must be dropped regardless, because
+        // would survive as a bare delete — but it must be dropped regardless, because
         // its own add half paired. A real add (truly-new.txt) must be unaffected.
         const ctx = await buildSeededContext();
         const contentA = 'aaa\nbbb\nccc\nddd\n'.repeat(35); // del-half content, >= 500 bytes
@@ -3081,7 +3081,7 @@ describe('detectSimilarityRenames', () => {
 
         // Act — break fires (contentA and contentB are fully disjoint → MAX_SCORE dissimilarity).
         // Exact pass: other.txt (oldId=B) → file.txt add-half (newId=B): exact rename, add-half paired.
-        // Write back (S2): file.txt's delete-half is dropped because its add half paired.
+        // Write back: file.txt's delete-half is dropped because its add half paired.
         const result = await detectSimilarityRenames(ctx, diff, {
           breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
         });
@@ -3093,7 +3093,7 @@ describe('detectSimilarityRenames', () => {
           expect(renames[0].oldPath).toBe('other.txt');
           expect(renames[0].newPath).toBe('file.txt');
         }
-        // file.txt's delete-half never surfaces — S2 drops it unconditionally
+        // file.txt's delete-half never surfaces — write back drops it unconditionally
         expect(result.changes.filter((c) => c.type === 'delete')).toHaveLength(0);
         // real add truly-new.txt must survive
         const adds = result.changes.filter((c) => c.type === 'add');
@@ -3151,10 +3151,10 @@ describe('detectSimilarityRenames', () => {
 
   describe('Given a broken modify whose add-half pairs elsewhere and whose old content also pairs elsewhere', () => {
     describe('When detectSimilarityRenames is called with breakRewrites', () => {
-      it('Then no modify is re-emitted — write back drops the delete because its add half paired (S2)', async () => {
+      it('Then no modify is re-emitted — write back drops the delete because its add half paired', async () => {
         // Arrange — fully disjoint modify so both halves are broken; each half pairs with
         // an exact rename partner. The add half pairing alone is enough for write back to
-        // drop the delete (S2); the old content separately pairs with dst1 as its own rename.
+        // drop the delete; the old content separately pairs with dst1 as its own rename.
         const ctx = await buildSeededContext();
         const modOldContent = 'aaa\nbbb\nccc\n'.repeat(35);
         const modNewContent = 'xxx\nyyy\nzzz\n'.repeat(35); // fully disjoint → break
@@ -3209,7 +3209,7 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
-  describe('Given a broken modify whose add-half stays unpaired and has no rename candidates at all (design row K3 shape, no other source)', () => {
+  describe('Given a broken modify whose add-half stays unpaired and has no rename candidates at all', () => {
     describe('When detectSimilarityRenames is called with breakRewrites', () => {
       it('Then write back rejoins the halves into a plain or broken modify', async () => {
         // Arrange — fully disjoint modify so both halves survive with no rename candidates;
@@ -3364,7 +3364,7 @@ describe('detectSimilarityRenames', () => {
   describe('Given copies:"harder" with >= at the harderOverLimit boundary', () => {
     describe('When detectSimilarityRenames is called', () => {
       it('Then when harder sources exactly equal limit^2 the pass runs (> not >=)', async () => {
-        // Kills L696 [EqualityOperator] ">=": changes ">" to ">=" at the limit boundary.
+        // Kills the [EqualityOperator] ">=" mutant: changes ">" to ">=" at the limit boundary.
         // With ">": adds.length * harderSources.length == limit^2 → NOT over limit → runs.
         // With ">=": same value → IS over limit → falls back → different copy sources.
         // Arrange: 1 add, 4 harder sources (1 modify + 3 unchanged in preimage), limit=2 (limit^2=4).
@@ -3594,10 +3594,10 @@ describe('detectSimilarityRenames', () => {
 
   describe('Given breakRewrites with score===0 (runBreakPass zero-score maps to DEFAULT_BREAK_SCORE)', () => {
     describe('When detectSimilarityRenames is called', () => {
-      it('Then score===0 uses DEFAULT_BREAK_SCORE not 0 (kills L751 ConditionalExpression "true")', async () => {
+      it('Then score===0 uses DEFAULT_BREAK_SCORE not 0 (kills the always-true break-guard mutant)', async () => {
         // Arrange — similar modify (one-line change) so computedBreakScore < DEFAULT_BREAK_SCORE;
         // score:0 must map to DEFAULT_BREAK_SCORE so the modify is NOT broken. manyLines
-        // (>= MINIMUM_BREAK_SIZE) keeps Part 11's size guard out of the way.
+        // (>= MINIMUM_BREAK_SIZE) keeps the size guard out of the way.
         const ctx = await buildSeededContext();
         const similar1 = manyLines(0);
         const similar2 = manyLines(0).replace('X line 0\n', 'Y line 0\n');
@@ -3635,7 +3635,7 @@ describe('detectSimilarityRenames', () => {
 
   // ── detectSimilarityRenames: exactResult options spreading ──
 
-  describe('Given 33 adds and 33 deletes with one exact pair (L809 {} mutant: exact-pass limit bypass)', () => {
+  describe('Given 33 adds and 33 deletes with one exact pair, exercising the exact-pass limit bypass', () => {
     describe('When detectSimilarityRenames is called', () => {
       it('Then exact rename is found even when adds*deletes exceeds the default limit of 1000', async () => {
         // Arrange — 33 adds × 33 deletes = 1089; one matching pair shares the same blob id;
@@ -3702,18 +3702,18 @@ describe('detectSimilarityRenames', () => {
 
   // ── detectSimilarityRenames: hasRenameWork / hasCopyWork guards ──
 
-  // equivalent-mutant: L812 [LogicalOperator] "adds.length>0 || deletes.length>0" ─────────
-  // equivalent-mutant: L812 [EqualityOperator] "adds.length>=0" ──────────────────────────
-  // equivalent-mutant: L812 [EqualityOperator] "deletes.length>=0" ────────────────────────
-  // equivalent-mutant: L812 [ConditionalExpression] "true" (hasRenameWork always true) ─────
-  // equivalent-mutant: L813 [LogicalOperator] "copies!=='off' || adds.length>0" ────────────
-  // equivalent-mutant: L813 [EqualityOperator] "adds.length>=0" ──────────────────────────
-  // equivalent-mutant: L813 [ConditionalExpression] "true" (hasCopyWork always true) ───────
-  // equivalent-mutant: L814 [BlockStatement] "{}" (body emptied) ──────────────────────────
-  // equivalent-mutant: L814 [ConditionalExpression] "false" (guard never fires) ────────────
+  // equivalent-mutant: hasRenameWork's [LogicalOperator] "adds.length>0 || deletes.length>0" ─
+  // equivalent-mutant: hasRenameWork's [EqualityOperator] "adds.length>=0" ────────────────
+  // equivalent-mutant: hasRenameWork's [EqualityOperator] "deletes.length>=0" ──────────────
+  // equivalent-mutant: hasRenameWork's [ConditionalExpression] "true" (always true) ────────
+  // equivalent-mutant: hasCopyWork's [LogicalOperator] "copies!=='off' || adds.length>0" ───
+  // equivalent-mutant: hasCopyWork's [EqualityOperator] "adds.length>=0" ─────────────────
+  // equivalent-mutant: hasCopyWork's [ConditionalExpression] "true" (always true) ──────────
+  // equivalent-mutant: the early-return guard's [BlockStatement] "{}" (body emptied) ───────
+  // equivalent-mutant: the early-return guard's [ConditionalExpression] "false" (never fires) ─
   // Proof: When hasRenameWork or hasCopyWork is incorrectly true, the code falls through
   // to resolveCopySources (returns [] when copies='off') and runInexactPass.
-  // runInexactPass returns null when deletes=[] AND copySources=[] (L446 guard).
+  // runInexactPass returns null when deletes=[] AND copySources=[] (its own empty-input guard).
   // assemblePostPass(adds, [], other, null) = [...adds, ...other] = exactResult.changes.
   // finalizeWithBroken sorts by path in both branches, so the output is identical.
   // When copies!='off' but adds=0, no copy sources help either; same null result.
@@ -3828,9 +3828,9 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
-  describe('Given !hasRenameWork && !hasCopyWork resolves to false (L814 BlockStatement guard)', () => {
+  describe('Given !hasRenameWork && !hasCopyWork resolves to false', () => {
     describe('When detectSimilarityRenames is called with adds, deletes, and copies:"off"', () => {
-      it('Then the early-return body runs only when both conditions are false (L814 body and guard)', async () => {
+      it('Then the early-return body runs only when both conditions are false', async () => {
         // Arrange — add-only diff with copies:'off' so hasRenameWork=false and hasCopyWork=false;
         // the early-return body must execute and return the add unchanged
         const ctx = await buildSeededContext();
@@ -3865,7 +3865,7 @@ describe('detectSimilarityRenames', () => {
   describe('Given adds.length*numSrc exactly equals limit^2 (isOverLimit >= mutant)', () => {
     describe('When detectSimilarityRenames is called', () => {
       it('Then the inexact pass runs when the product equals limit^2 (> not >=)', async () => {
-        // L824 [EqualityOperator] "adds.length * numSrc >= limit * limit":
+        // The [EqualityOperator] mutant "adds.length * numSrc >= limit * limit":
         // With ">": product == limit^2 → NOT over limit → inexact runs.
         // With ">=": product == limit^2 → IS over limit → inexact skipped → no rename.
         // Arrange: 1 add, 1 delete (numSrc=1), limit=1 → 1*1=1 == 1*1=1.
@@ -4296,9 +4296,9 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
-  // ── non-regular files leave similarity scoring (symlinks, row N1-N6b) ──
+  // ── non-regular files (symlinks) in similarity scoring ──
 
-  describe('Given a deleted symlink whose target equals a new regular file (row N1)', () => {
+  describe('Given a deleted symlink whose target equals a new regular file', () => {
     describe('When detectSimilarityRenames is called at the most permissive threshold', () => {
       it('Then the pair stays a plain delete and add, and the symlink blob is never read', async () => {
         // Arrange — same content, cross-kind: the exact pass already rejects this by
@@ -4339,7 +4339,7 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
-  describe('Given row N1 under -C (row N1c)', () => {
+  describe('Given a deleted symlink whose target equals a new regular file, under -C', () => {
     describe('When detectSimilarityRenames is called with copies: "on"', () => {
       it('Then the pair still stays a plain delete and add', async () => {
         // Arrange
@@ -4383,7 +4383,7 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
-  describe('Given a symlink deleted and a dissimilar symlink added, same kind both sides (row N2)', () => {
+  describe('Given a symlink deleted and a dissimilar symlink added, same kind both sides', () => {
     describe('When detectSimilarityRenames is called at the most permissive threshold', () => {
       it('Then the pair stays a plain delete and add, no bytes read for either side', async () => {
         // Arrange — git's estimate_similarity requires S_ISREG on BOTH sides, so a
@@ -4417,7 +4417,7 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
-  describe('Given a regular file deleted and a similar symlink added (row N3)', () => {
+  describe('Given a regular file deleted and a similar symlink added', () => {
     describe('When detectSimilarityRenames is called at the most permissive threshold', () => {
       it('Then the pair stays a plain delete and add, the symlink destination is never read', async () => {
         // Arrange — the source is regular (eligible), the destination is a symlink
@@ -4449,7 +4449,7 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
-  describe('Given a modified symlink and a regular add matching its OLD target (row N4)', () => {
+  describe('Given a modified symlink and a regular add matching its OLD target', () => {
     describe('When detectSimilarityRenames is called with copies: "on"', () => {
       it('Then the modify stays plain and the add stays unpaired, the symlink preimage is never read', async () => {
         // Arrange — under -C the symlink's old blob would normally lend itself as a
@@ -4498,7 +4498,7 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
-  describe('Given an unchanged symlink preimage and a regular add matching its target (row N5)', () => {
+  describe('Given an unchanged symlink preimage and a regular add matching its target', () => {
     describe('When detectSimilarityRenames is called with copies: "harder"', () => {
       it('Then the add stays unpaired, the unchanged symlink is never read', async () => {
         // Arrange — isolates the source-side filter for an `unchanged`-origin source.
@@ -4539,7 +4539,7 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
-  describe('Given an unchanged regular preimage and a symlink add carrying its content (row N5r)', () => {
+  describe('Given an unchanged regular preimage and a symlink add carrying its content', () => {
     describe('When detectSimilarityRenames is called with copies: "harder"', () => {
       it('Then the add stays unpaired — the symlink destination never enters the matrix', async () => {
         // Arrange — isolates the destination-side filter against a regular (eligible)
@@ -4575,7 +4575,7 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
-  describe('Given a fully-retargeted symlink modify and a regular add matching its OLD target under -M -B (row N6b)', () => {
+  describe('Given a fully-retargeted symlink modify and a regular add matching its OLD target under -M -B', () => {
     describe('When detectSimilarityRenames is called with breakRewrites', () => {
       it('Then the broken halves rejoin into one kept-broken modify, the add stays unpaired', async () => {
         // Arrange — the symlink modify still breaks (attemptBreaks keeps symlinks
@@ -4628,9 +4628,9 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
-  // ── -B breaks symlink↔regular type changes unconditionally (rows N7b, N7s) ──
+  // ── -B breaks symlink↔regular type changes unconditionally ──
 
-  describe('Given a symlink→regular type change under -M -B (row N7b)', () => {
+  describe('Given a symlink→regular type change under -M -B', () => {
     describe('When detectSimilarityRenames is called with breakRewrites', () => {
       it('Then the type change is kept broken at MAX_SCORE and neither blob is read', async () => {
         // Arrange — a type change breaks unconditionally: content size is irrelevant
@@ -4675,7 +4675,7 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
-  describe('Given a symlink→regular type change where both sides are the SAME blob under -M -B (row N7s)', () => {
+  describe('Given a symlink→regular type change where both sides are the SAME blob under -M -B', () => {
     describe('When detectSimilarityRenames is called with breakRewrites', () => {
       it('Then the type change still breaks — the check runs before the same-oid check', async () => {
         // Arrange — same blob id on both sides; a modify would short-circuit on this
@@ -4722,7 +4722,7 @@ describe('detectSimilarityRenames', () => {
   describe('Given a file↔gitlink type change under -M -B', () => {
     describe('When detectSimilarityRenames is called with breakRewrites', () => {
       it('Then the type change is never broken — a gitlink side is not breakable', async () => {
-        // Arrange — G3: gitlink type changes never break, whatever the other side is
+        // Arrange — gitlink type changes never break, whatever the other side is
         const ctx = await buildSeededContext();
         const gitlinkId = '1'.repeat(40) as ObjectId;
         const fileId = await writeBlob(ctx, 'regular content');
@@ -4868,9 +4868,9 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
-  // ── a broken type change's rejoin counts as a use of its source (rows N7d, N7e, N7m) ──
+  // ── a broken type change's rejoin counts as a use of its source ──
 
-  describe('Given a regular→symlink type change whose OLD content exactly matches an unrelated add (row N7d)', () => {
+  describe('Given a regular→symlink type change whose OLD content exactly matches an unrelated add', () => {
     describe('When detectSimilarityRenames is called with breakRewrites', () => {
       it('Then the type change stays kept-broken and the exact pairing becomes a copy, not a rename', async () => {
         // Arrange — a/p's old (regular) content exactly matches b/q; a/p's new
@@ -4923,7 +4923,7 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
-  describe('Given N7d with the add near-matching (one extra line) instead of exact (row N7e)', () => {
+  describe('Given a regular→symlink type change whose OLD content near-matches (one extra line) an unrelated add, instead of exact', () => {
     describe('When detectSimilarityRenames is called with breakRewrites', () => {
       it('Then the type change stays kept-broken and the inexact pairing becomes a copy', async () => {
         // Arrange
@@ -4976,7 +4976,7 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
-  describe('Given N7d with two identical adds matching the old content, under -M only (row N7m)', () => {
+  describe('Given a regular→symlink type change whose OLD content matches two identical adds, under -M only', () => {
     describe('When detectSimilarityRenames is called with breakRewrites and copies off', () => {
       it('Then only the first add in path order pairs; the second stays a plain add', async () => {
         // Arrange — rename mode is one-shot per source: b/q (path order first)
@@ -5025,14 +5025,14 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
-  // ── a broken type change's paired add half vanishes the T entirely (S2: rows N7f, N7j, N7g, N7h, N7k) ──
+  // ── a broken type change's paired add half vanishes the type change entirely ──
 
-  describe('Given a symlink→regular type change whose NEW content exactly matches a deleted file (row N7f)', () => {
+  describe('Given a symlink→regular type change whose NEW content exactly matches a deleted file', () => {
     describe('When detectSimilarityRenames is called with breakRewrites', () => {
       it('Then the pairing replaces the type change entirely — no T, no D', async () => {
         // Arrange — a/old's content exactly matches a/p's NEW (regular) content, so
         // the type change's synthetic add half pairs with it; write back drops the
-        // synthetic delete half whatever its own use count (S2).
+        // synthetic delete half whatever its own use count.
         const ctx = await buildSeededContext();
         const symlinkOldId = await writeBlob(ctx, 'symlink-target-before-a-p');
         const regularContent = 'regular\ncontent\nfor\na\np\nafter\nthe\ntype\nchange\n'.repeat(10);
@@ -5074,7 +5074,7 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
-  describe('Given N7f with the deleted file near-matching (one extra line) instead of exact (row N7j)', () => {
+  describe('Given a symlink→regular type change whose NEW content near-matches (one extra line) a deleted file, instead of exact', () => {
     describe('When detectSimilarityRenames is called with breakRewrites', () => {
       it('Then the inexact pairing replaces the type change entirely — no T, no D', async () => {
         // Arrange
@@ -5121,7 +5121,7 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
-  describe('Given a regular→symlink type change whose NEW content exactly matches a deleted symlink (row N7g)', () => {
+  describe('Given a regular→symlink type change whose NEW content exactly matches a deleted symlink', () => {
     describe('When detectSimilarityRenames is called with breakRewrites', () => {
       it('Then the symlink half pairs exactly and the type change vanishes — no T, no D', async () => {
         // Arrange — a/s's content exactly matches a/p's NEW (symlink) content; a
@@ -5168,10 +5168,10 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
-  describe('Given N7g plus an add matching the type change OLD content (row N7h)', () => {
+  describe('Given a regular→symlink type change whose NEW content exactly matches a deleted symlink, plus an add matching the type change OLD content', () => {
     describe('When detectSimilarityRenames is called with breakRewrites', () => {
       it('Then both halves pair independently into two renames — no T, no D, no A', async () => {
-        // Arrange — a/s pairs with a/p's NEW (symlink) half as in N7g; b/q separately
+        // Arrange — a/s pairs with a/p's NEW (symlink) half; b/q separately
         // pairs with a/p's OLD (regular) half as its own broken-delete source. Neither
         // pairing bumps the other's use count, so both stay renames (not copies).
         const ctx = await buildSeededContext();
@@ -5224,7 +5224,7 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
-  describe('Given two type changes swapping content — a/p regular→symlink, a/r symlink→regular (row N7k)', () => {
+  describe('Given two type changes swapping content — a/p regular→symlink, a/r symlink→regular', () => {
     describe('When detectSimilarityRenames is called with breakRewrites', () => {
       it('Then the two broken halves cross-pair into a swap of renames — no T, no D', async () => {
         // Arrange — a/p's NEW (symlink) content equals a/r's OLD (symlink) content,
@@ -5274,7 +5274,7 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
-  describe('Given a regular→symlink type change and an unrelated deleted regular file with the SAME content as the symlink target, cross-mode (row N7n)', () => {
+  describe('Given a regular→symlink type change and an unrelated deleted regular file with the SAME content as the symlink target, cross-mode', () => {
     describe('When detectSimilarityRenames is called with breakRewrites', () => {
       it('Then neither half pairs — the symlink half never scores against a regular-mode source', async () => {
         // Arrange — a/d is a regular file whose content equals a/p's NEW (symlink)
@@ -5322,10 +5322,10 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
-  describe('Given N7d under copies: "on" (row N7c: a broken type change registers once, never also as a modified source)', () => {
+  describe('Given a regular→symlink type change whose OLD content exactly matches an unrelated add, under copies: "on" (a broken type change registers once, never also as a modified source)', () => {
     describe('When detectSimilarityRenames is called with breakRewrites and copies on', () => {
       it('Then the type change stays kept-broken and exactly one copy pairs — no duplicate source', async () => {
-        // Arrange — identical to N7d, plus copies:'on'; a double registration
+        // Arrange — identical to the OLD-content-exact-match type change fixture, plus copies:'on'; a double registration
         // (broken-delete AND modified) would surface as a second copy or a stray
         // leftover entry for a/p.
         const ctx = await buildSeededContext();
@@ -5369,7 +5369,7 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
-  describe('Given an unrelated deleted symlink alongside a rename candidate at the rename limit (row L5)', () => {
+  describe('Given an unrelated deleted symlink alongside a rename candidate at the rename limit', () => {
     describe('When detectSimilarityRenames is called with limit: 1', () => {
       it('Then the symlink still counts toward the source count and the inexact pass is skipped', async () => {
         // Arrange — one regular delete/add pair would rename fine alone (1 source * 1
@@ -6032,10 +6032,10 @@ describe('detectSimilarityRenames', () => {
       });
     });
   });
-  describe('Given the K2 near-match break fixture, with a readBlob spy on both broken halves', () => {
+  describe('Given a broken modify whose old content near-matches another add while its new content stays unpaired, with a readBlob spy on both broken halves', () => {
     describe('When detectSimilarityRenames is called with breakRewrites enabled', () => {
       it("Then each broken half's bytes, read once by the break pass, are never read again by the matrix", async () => {
-        // Arrange — identical shape to design row K2: m.txt breaks, its old content
+        // Arrange — m.txt breaks, its old content
         // near-matches q.txt via the inexact matrix (a copy), and its new content
         // stays unpaired and rejoins — both halves are matrix participants whose
         // bytes scoreOneModify already read once for the break attempt.

@@ -149,8 +149,8 @@ const tenLineContent = (prefix: string, changed = -1, changedPrefix = 'CHANGED')
  *   total=20, shared=0  → 100% dissimilarity
  *   total=20, shared=7  → 65%  dissimilarity
  *   total=20, shared=10 → 50%  dissimilarity  (re-merged at default -B gate)
- *   total=20, shared=9  → 55%  dissimilarity  (boundary for #B4)
- *   total=50, shared=20 → 60%  dissimilarity  (boundary for #B5)
+ *   total=20, shared=9  → 55%  dissimilarity
+ *   total=50, shared=20 → 60%  dissimilarity
  */
 const breakContent = (kind: 'old' | 'new', total: number, shared: number): string =>
   Array.from({ length: total }, (_, i) =>
@@ -1909,7 +1909,7 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
   });
 
   describe('Given a pair scoring R040, When threshold is 24000 (40%)', () => {
-    it('Then tsgit detects the rename matching git -M40% and not matching -M41% (threshold #T1/#T2)', async () => {
+    it('Then tsgit detects the rename matching git -M40% and not matching -M41%', async () => {
       // Arrange — content engineered to score exactly R040 by git's spanhash:
       // 37 shared lines + 57 unique-src lines + 57 unique-dst lines (all 30 bytes each).
       // Probed: git -M40% → R040; git -M41% → A/D.
@@ -2021,8 +2021,8 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
   });
 
   describe('Given a copy pair scoring C040, When threshold is 24000 (40%)', () => {
-    it('Then tsgit detects the copy matching git -C40%; at 24600 (41%) it does not (threshold #T3)', async () => {
-      // Arrange — same shared/unique byte ratio as T1/T2 (37+57 lines).
+    it('Then tsgit detects the copy matching git -C40%; at 24600 (41%) it does not', async () => {
+      // Arrange — same shared/unique byte ratio as the rename-threshold pair above (37+57 lines).
       // source.txt is modified (preimage = original), copy.txt = new file with ~40% similarity
       // to source.txt's preimage. Plain -C uses modified-file preimage as copy source.
       // Probed: git -C40% → C040; git -C41% → A/M.
@@ -2145,7 +2145,7 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
   });
 
   describe('Given a 55%-dissimilar modify, When breakRewrites score/merge are swept', () => {
-    it('Then tsgit matches git at default gate and gate boundaries are git-faithful (threshold #T4)', async () => {
+    it('Then tsgit matches git at default gate and gate boundaries are git-faithful', async () => {
       // Arrange — 20 lines old, 9 shared in new.
       // git merge_score = (1420-639)*60000/1420 = 33000 → 55%
       // Verified: git -B/55% → M055 (kept); -B/56% → M (re-merged); default -B → M (33000 < 36000).
@@ -2777,8 +2777,8 @@ const USE_COUNT_TMP_PREFIX = 'tsgit-rename-use-count-';
 const USE_COUNT_SETUP_TIMEOUT = 60_000;
 const USE_COUNT_GITLINK_OID = '3'.repeat(40);
 
-/** Lines shared between C20's modify source and its exact/inexact destinations. */
-const C20_SHARED_LINES = Array.from(
+/** Lines shared between an exhausted modify source and its exact/inexact destinations. */
+const SHARED_MODIFY_SOURCE_LINES = Array.from(
   { length: 17 },
   (_, i) => `c20-shared-${String(i).padStart(2, '0')}: alpha beta gamma delta\n`,
 );
@@ -2840,7 +2840,7 @@ const USE_COUNT_ROWS: ReadonlyArray<RenameRow> = [
   },
   {
     label:
-      '-C: a modified source scores higher than a deleted source against the same add — pass 1 pairs only the deleted source (design row C19: M a/M ; R<score> a/D→b/N)',
+      '-C: a modified source scores higher than a deleted source against the same add — pass 1 pairs only the deleted source (live git: M a/M ; R<score> a/D→b/N)',
     before: [
       { path: 'a/M.meta', content: `${tenLineContent('c19')}extra-tail-line: zzz\n` },
       {
@@ -2860,19 +2860,19 @@ const USE_COUNT_ROWS: ReadonlyArray<RenameRow> = [
   },
   {
     label:
-      '-C: an exact-copy add exhausts the modified source before a second, inexact add is scored — the deleted source wins the second despite a lower score (design row C20: C100 M→N1 ; R<score> D→N2)',
+      '-C: an exact-copy add exhausts the modified source before a second, inexact add is scored — the deleted source wins the second despite a lower score (live git: C100 M→N1 ; R<score> D→N2)',
     before: [
       {
         path: 'a/M.meta',
         content: [
-          ...C20_SHARED_LINES,
+          ...SHARED_MODIFY_SOURCE_LINES,
           ...Array.from({ length: 3 }, (_, i) => `c20-mod-only-${i}: epsilon zeta\n`),
         ].join(''),
       },
       {
         path: 'a/D.meta',
         content: [
-          ...C20_SHARED_LINES.slice(0, 16),
+          ...SHARED_MODIFY_SOURCE_LINES.slice(0, 16),
           ...Array.from({ length: 4 }, (_, i) => `c20-d-only-${i}: iota kappa\n`),
         ].join(''),
       },
@@ -2882,14 +2882,14 @@ const USE_COUNT_ROWS: ReadonlyArray<RenameRow> = [
       {
         path: 'b/N1.meta',
         content: [
-          ...C20_SHARED_LINES,
+          ...SHARED_MODIFY_SOURCE_LINES,
           ...Array.from({ length: 3 }, (_, i) => `c20-mod-only-${i}: epsilon zeta\n`),
         ].join(''),
       },
       {
         path: 'b/N2.meta',
         content: [
-          ...C20_SHARED_LINES,
+          ...SHARED_MODIFY_SOURCE_LINES,
           ...Array.from({ length: 3 }, (_, i) => `c20-n2-only-${i}: eta theta\n`),
         ].join(''),
       },
@@ -3009,21 +3009,21 @@ describe.skipIf(!GIT_AVAILABLE)('use-count labelling and gitlink-counted limit i
 
 /**
  * `-B` write back interop: git's `diffcore-rename.c:1669` drops a broken
- * delete once its add half pairs elsewhere (S2), and otherwise rejoins the
+ * delete once its add half pairs elsewhere, and otherwise rejoins the
  * halves into one modify while counting the rejoin as one more use of the
- * delete-half's source (K1, K2) — before use-count labelling runs. Fixtures
- * are kept >= 500 bytes so Part 11's byte-size guard still leaves them broken.
- * S0/S1 pin `should_break`'s own guards: an empty source or a pair under
+ * delete-half's source — before use-count labelling runs. Fixtures
+ * are kept >= 500 bytes so the MINIMUM_BREAK_SIZE guard still leaves them broken.
+ * `should_break`'s own guards mean an empty source or a pair under
  * MINIMUM_BREAK_SIZE (400 bytes) never breaks at all, so the write-back rules
- * above never get a chance to run; K3 pins that an unrelated exact rename
- * keeps working alongside a broken modify once those guards are in place.
+ * above never get a chance to run; an unrelated exact rename keeps working
+ * alongside a broken modify once those guards are in place.
  */
 const WRITE_BACK_TMP_PREFIX = 'tsgit-rename-write-back-';
 const WRITE_BACK_SETUP_TIMEOUT = 60_000;
 
-/** Unrelated content for K3's exact-rename pair — distinct from m.txt's
- *  break content, so z.txt/q.txt never scores against m.txt. */
-const K3_UNRELATED_CONTENT = Array.from(
+/** Unrelated content for an exact-rename pair alongside a broken modify —
+ *  distinct from m.txt's break content, so z.txt/q.txt never scores against m.txt. */
+const UNRELATED_EXACT_RENAME_CONTENT = Array.from(
   { length: 20 },
   (_, i) => `z-line-${String(i).padStart(3, '0')}: unrelated marker alpha beta\n`,
 ).join('');
@@ -3031,7 +3031,7 @@ const K3_UNRELATED_CONTENT = Array.from(
 const WRITE_BACK_ROWS: ReadonlyArray<RenameRow> = [
   {
     label:
-      '-B: a rewritten m.txt whose old content pairs exactly with an unrelated add — the rejoin counts as a use, so the pairing is a copy, not a rename (design row K1: M100 m ; C100 m→q)',
+      '-B: a rewritten m.txt whose old content pairs exactly with an unrelated add — the rejoin counts as a use, so the pairing is a copy, not a rename (live git: M100 m ; C100 m→q)',
     before: [{ path: 'm.txt', content: breakContent('old', 40, 0) }],
     after: [
       { path: 'm.txt', content: breakContent('new', 40, 0) },
@@ -3042,7 +3042,7 @@ const WRITE_BACK_ROWS: ReadonlyArray<RenameRow> = [
   },
   {
     label:
-      '-B: a rewritten m.txt whose old content near-matches (one extra line) an unrelated add — the rejoin still counts as a use, so the inexact pairing is a copy (design row K2: M100 m ; C099 m→q)',
+      '-B: a rewritten m.txt whose old content near-matches (one extra line) an unrelated add — the rejoin still counts as a use, so the inexact pairing is a copy (live git: M100 m ; C099 m→q)',
     before: [{ path: 'm.txt', content: breakContent('old', 40, 0) }],
     after: [
       { path: 'm.txt', content: breakContent('new', 40, 0) },
@@ -3053,7 +3053,7 @@ const WRITE_BACK_ROWS: ReadonlyArray<RenameRow> = [
   },
   {
     label:
-      '-B: a/s fully rewritten to match deleted a/d exactly — write back drops the broken delete because its add half paired, whatever its own use count (design row S2: R100 a/d→a/s)',
+      '-B: a/s fully rewritten to match deleted a/d exactly — write back drops the broken delete because its add half paired, whatever its own use count (live git: R100 a/d→a/s)',
     before: [
       { path: 'a/s', content: breakContent('old', 20, 0) },
       { path: 'a/d', content: breakContent('new', 40, 0) },
@@ -3064,7 +3064,7 @@ const WRITE_BACK_ROWS: ReadonlyArray<RenameRow> = [
   },
   {
     label:
-      '-B: an empty a/e rewritten to match a deleted a/d exactly — the empty-source guard means the modify never breaks, so the pairing S2 would otherwise make never happens (design row S0: D a/d ; M a/e)',
+      '-B: an empty a/e rewritten to match a deleted a/d exactly — the empty-source guard means the modify never breaks, so the copy pairing that would otherwise happen never happens (live git: D a/d ; M a/e)',
     before: [
       { path: 'a/e', content: '' },
       { path: 'a/d', content: breakContent('new', 40, 0) },
@@ -3075,7 +3075,7 @@ const WRITE_BACK_ROWS: ReadonlyArray<RenameRow> = [
   },
   {
     label:
-      '-B: a small a/s fully rewritten to match a small deleted a/d exactly — both sides sit under MINIMUM_BREAK_SIZE, so the modify never breaks (design row S1: D a/d ; M a/s)',
+      '-B: a small a/s fully rewritten to match a small deleted a/d exactly — both sides sit under MINIMUM_BREAK_SIZE, so the modify never breaks (live git: D a/d ; M a/s)',
     before: [
       { path: 'a/s', content: breakContent('old', 3, 0) },
       { path: 'a/d', content: breakContent('new', 3, 0) },
@@ -3086,14 +3086,14 @@ const WRITE_BACK_ROWS: ReadonlyArray<RenameRow> = [
   },
   {
     label:
-      '-B: a rewritten m.txt with no rename candidate of its own, alongside an unrelated exact-rename pair — the broken modify and the rename never interact (design row K3, must stay: M100 m ; R100 z→q)',
+      '-B: a rewritten m.txt with no rename candidate of its own, alongside an unrelated exact-rename pair — the broken modify and the rename never interact (live git: M100 m ; R100 z→q)',
     before: [
       { path: 'm.txt', content: breakContent('old', 40, 0) },
-      { path: 'z.txt', content: K3_UNRELATED_CONTENT },
+      { path: 'z.txt', content: UNRELATED_EXACT_RENAME_CONTENT },
     ],
     after: [
       { path: 'm.txt', content: breakContent('new', 40, 0) },
-      { path: 'q.txt', content: K3_UNRELATED_CONTENT },
+      { path: 'q.txt', content: UNRELATED_EXACT_RENAME_CONTENT },
     ],
     gitFlags: ['-B'],
     renameOptions: { breakRewrites: { score: 30000, merge: 36000 } },
@@ -3179,12 +3179,12 @@ const SYMLINK_SMALL_RETARGET = `${SYMLINK_OLD_TARGET.slice(0, -5)}eeee\n`;
 const NON_REGULAR_ROWS: ReadonlyArray<RenameRow> = [
   {
     label:
-      'N1: deleted symlink target equals a new regular file — cross-kind identical content never pairs (D a/link ; A b/file)',
+      'A deleted symlink target equals a new regular file — cross-kind identical content never pairs (D a/link ; A b/file)',
     before: [{ path: 'a/link', content: 'shared-target-value', kind: 'symlink' }],
     after: [{ path: 'b/file', content: 'shared-target-value' }],
   },
   {
-    label: 'N1c: N1 under -C — still stays D ; A',
+    label: 'A deleted symlink target equals a new regular file, under -C — still stays D ; A',
     before: [{ path: 'a/link', content: 'shared-target-value-c', kind: 'symlink' }],
     after: [{ path: 'b/file', content: 'shared-target-value-c' }],
     gitFlags: ['-C'],
@@ -3192,18 +3192,18 @@ const NON_REGULAR_ROWS: ReadonlyArray<RenameRow> = [
   },
   {
     label:
-      'N2: symlink to symlink, 280-byte target plus 1 char — same non-regular kind on both sides still never scores (D ; A)',
+      'Symlink to symlink, 280-byte target plus 1 char — same non-regular kind on both sides still never scores (D ; A)',
     before: [{ path: 'a/link', content: 'a'.repeat(280), kind: 'symlink' }],
     after: [{ path: 'b/link', content: `${'a'.repeat(280)}b`, kind: 'symlink' }],
   },
   {
-    label: 'N3: regular deleted, similar symlink added — destination-side filter (D ; A)',
+    label: 'A regular file deleted, a similar symlink added — destination-side filter (D ; A)',
     before: [{ path: 'a/reg', content: tenLineContent('n3') }],
     after: [{ path: 'b/link', content: tenLineContent('n3', 0), kind: 'symlink' }],
   },
   {
     label:
-      'N4: -C modified symlink whose OLD target equals a regular add — the copy source is exact-only (M a/link ; A b/file)',
+      '-C: a modified symlink whose OLD target equals a regular add — the copy source is exact-only (M a/link ; A b/file)',
     before: [{ path: 'a/link', content: 'old-target-n4', kind: 'symlink' }],
     after: [
       { path: 'a/link', content: 'new-target-n4', kind: 'symlink' },
@@ -3214,7 +3214,7 @@ const NON_REGULAR_ROWS: ReadonlyArray<RenameRow> = [
   },
   {
     label:
-      'N5: -C -C unchanged symlink; regular add matches its target — an unchanged non-regular source never scores (A b/file)',
+      '-C -C: an unchanged symlink; a regular add matches its target — an unchanged non-regular source never scores (A b/file)',
     before: [{ path: 'a/link', content: 'unchanged-target-n5', kind: 'symlink' }],
     after: [
       { path: 'a/link', content: 'unchanged-target-n5', kind: 'symlink' },
@@ -3225,7 +3225,7 @@ const NON_REGULAR_ROWS: ReadonlyArray<RenameRow> = [
   },
   {
     label:
-      'N5r: -C -C unchanged regular; symlink add carries its content — destination-side filter on an unchanged source (A b/link)',
+      '-C -C: an unchanged regular file; a symlink add carries its content — destination-side filter on an unchanged source (A b/link)',
     before: [{ path: 'a/reg', content: 'unchanged-content-n5r' }],
     after: [
       { path: 'a/reg', content: 'unchanged-content-n5r' },
@@ -3236,7 +3236,7 @@ const NON_REGULAR_ROWS: ReadonlyArray<RenameRow> = [
   },
   {
     label:
-      'N6b: -M -B fully-retargeted symlink; regular add matches its OLD target — broken halves rejoin instead of cross-pairing (M100 a/link ; A b/file)',
+      '-M -B: a fully-retargeted symlink; a regular add matches its OLD target — broken halves rejoin instead of cross-pairing (M100 a/link ; A b/file)',
     before: [{ path: 'a/link', content: SYMLINK_OLD_TARGET, kind: 'symlink' }],
     after: [
       { path: 'a/link', content: SYMLINK_NEW_TARGET, kind: 'symlink' },
@@ -3246,8 +3246,7 @@ const NON_REGULAR_ROWS: ReadonlyArray<RenameRow> = [
     renameOptions: { breakRewrites: { score: 30000, merge: 36000 } },
   },
   {
-    label:
-      'N6 (must stay): -M -B, a small symlink retarget stays a plain modify, never broken (M a/link)',
+    label: '-M -B: a small symlink retarget stays a plain modify, never broken (M a/link)',
     before: [{ path: 'a/link', content: SYMLINK_OLD_TARGET, kind: 'symlink' }],
     after: [{ path: 'a/link', content: SYMLINK_SMALL_RETARGET, kind: 'symlink' }],
     gitFlags: ['-B'],
@@ -3293,12 +3292,12 @@ describe.skipIf(!GIT_AVAILABLE)('non-regular files leave similarity scoring inte
 });
 
 /**
- * `-B` breaks every file↔symlink type change unconditionally (rows N7b–N7n):
- * the halves feed the rename/copy matrix exactly like a broken modify's, a
+ * `-B` breaks every file↔symlink type change unconditionally: the halves
+ * feed the rename/copy matrix exactly like a broken modify's, a
  * paired add half replaces the type change entirely, and an unpaired one
  * rejoins into a kept-broken type change. A gitlink-involving type change
- * never breaks (row G3), and a broken pair anywhere in the diff switches off
- * the `-M` basename pass just as a broken modify does (row B3t).
+ * never breaks, and a broken pair anywhere in the diff switches off
+ * the `-M` basename pass just as a broken modify does.
  */
 const TYPE_CHANGE_TMP_PREFIX = 'tsgit-rename-type-change-break-';
 const TYPE_CHANGE_SETUP_TIMEOUT = 60_000;
@@ -3323,12 +3322,12 @@ const b3Edited = (edited: number): string =>
 
 const TYPE_CHANGE_ROWS: ReadonlyArray<RenameRow> = [
   {
-    label: 'N7 (must stay): a plain symlink→regular type change with no -B (T a/p)',
+    label: 'A plain symlink→regular type change with no -B (T a/p)',
     before: [{ path: 'a/p', content: tcSymlink('n7'), kind: 'symlink' }],
     after: [{ path: 'a/p', content: tcRegular('n7') }],
   },
   {
-    label: 'N7b: -M -B breaks a symlink→regular type change unconditionally (T100 a/p)',
+    label: '-M -B breaks a symlink→regular type change unconditionally (T100 a/p)',
     before: [{ path: 'a/p', content: tcSymlink('n7b'), kind: 'symlink' }],
     after: [{ path: 'a/p', content: tcRegular('n7b') }],
     gitFlags: ['-B'],
@@ -3336,7 +3335,7 @@ const TYPE_CHANGE_ROWS: ReadonlyArray<RenameRow> = [
   },
   {
     label:
-      'N7s: N7b where both sides are the SAME blob — breaks before the same-oid check (T100 a/p)',
+      '-M -B, a symlink→regular type change where both sides are the SAME blob — breaks before the same-oid check (T100 a/p)',
     before: [{ path: 'a/p', content: 'shared-blob-for-n7s', kind: 'symlink' }],
     after: [{ path: 'a/p', content: 'shared-blob-for-n7s' }],
     gitFlags: ['-B'],
@@ -3344,7 +3343,7 @@ const TYPE_CHANGE_ROWS: ReadonlyArray<RenameRow> = [
   },
   {
     label:
-      'N7d: regular→symlink a/p; an add matches its OLD content exactly (T100 a/p ; C100 a/p→b/q)',
+      '-M -B, a regular→symlink type change whose OLD content exactly matches an add (T100 a/p ; C100 a/p→b/q)',
     before: [{ path: 'a/p', content: tcRegular('n7d') }],
     after: [
       { path: 'a/p', content: tcSymlink('n7d'), kind: 'symlink' },
@@ -3355,7 +3354,7 @@ const TYPE_CHANGE_ROWS: ReadonlyArray<RenameRow> = [
   },
   {
     label:
-      'N7c: N7d under -C -B — the broken type change registers once, not also as a modified copy source (T100 a/p ; C100 a/p→b/q)',
+      'Under -C -B, a regular→symlink type change whose OLD content exactly matches an add — the broken type change registers once, not also as a modified copy source (T100 a/p ; C100 a/p→b/q)',
     before: [{ path: 'a/p', content: tcRegular('n7c') }],
     after: [
       { path: 'a/p', content: tcSymlink('n7c'), kind: 'symlink' },
@@ -3366,7 +3365,7 @@ const TYPE_CHANGE_ROWS: ReadonlyArray<RenameRow> = [
   },
   {
     label:
-      'N7e: N7d where the add near-matches (one extra line) instead of exact (T100 a/p ; C0nn a/p→b/q)',
+      '-M -B, a regular→symlink type change whose OLD content near-matches (one extra line) an add instead of exact (T100 a/p ; C0nn a/p→b/q)',
     before: [{ path: 'a/p', content: tcRegular('n7e') }],
     after: [
       { path: 'a/p', content: tcSymlink('n7e'), kind: 'symlink' },
@@ -3377,7 +3376,7 @@ const TYPE_CHANGE_ROWS: ReadonlyArray<RenameRow> = [
   },
   {
     label:
-      'N7m: N7d with two identical adds under -M (one use per source: T100 a/p ; C100 a/p→b/q ; A b/r)',
+      '-M -B, a regular→symlink type change whose OLD content matches two identical adds (one use per source: T100 a/p ; C100 a/p→b/q ; A b/r)',
     before: [{ path: 'a/p', content: tcRegular('n7m') }],
     after: [
       { path: 'a/p', content: tcSymlink('n7m'), kind: 'symlink' },
@@ -3388,7 +3387,8 @@ const TYPE_CHANGE_ROWS: ReadonlyArray<RenameRow> = [
     renameOptions: TYPE_CHANGE_BREAK_OPTS,
   },
   {
-    label: 'N7dn: N7d fixture under -M only, no -B — the type change never splits (T a/p ; A b/q)',
+    label:
+      'The OLD-content-exact-match type-change fixture under -M only, no -B — the type change never splits (T a/p ; A b/q)',
     before: [{ path: 'a/p', content: tcRegular('n7dn') }],
     after: [
       { path: 'a/p', content: tcSymlink('n7dn'), kind: 'symlink' },
@@ -3397,7 +3397,7 @@ const TYPE_CHANGE_ROWS: ReadonlyArray<RenameRow> = [
   },
   {
     label:
-      'N7f: symlink→regular a/p; a deleted file matches its NEW content exactly — the pairing replaces the type change (R100 a/old→a/p)',
+      '-M -B, a symlink→regular type change whose NEW content exactly matches a deleted file — the pairing replaces the type change (R100 a/old→a/p)',
     before: [
       { path: 'a/p', content: tcSymlink('n7f'), kind: 'symlink' },
       { path: 'a/old', content: tcRegular('n7f-new') },
@@ -3407,7 +3407,8 @@ const TYPE_CHANGE_ROWS: ReadonlyArray<RenameRow> = [
     renameOptions: TYPE_CHANGE_BREAK_OPTS,
   },
   {
-    label: 'N7j: N7f where the deleted file near-matches instead of exact (R0nn a/old→a/p)',
+    label:
+      '-M -B, a symlink→regular type change whose NEW content near-matches a deleted file instead of exact (R0nn a/old→a/p)',
     before: [
       { path: 'a/p', content: tcSymlink('n7j'), kind: 'symlink' },
       { path: 'a/old', content: tcNearMatch(tcRegular('n7j-new')) },
@@ -3417,7 +3418,8 @@ const TYPE_CHANGE_ROWS: ReadonlyArray<RenameRow> = [
     renameOptions: TYPE_CHANGE_BREAK_OPTS,
   },
   {
-    label: 'N7fn: N7f fixture under -M only, no -B — both halves stay separate (D a/old ; T a/p)',
+    label:
+      'The NEW-content-exact-match type-change fixture under -M only, no -B — both halves stay separate (D a/old ; T a/p)',
     before: [
       { path: 'a/p', content: tcSymlink('n7fn'), kind: 'symlink' },
       { path: 'a/old', content: tcRegular('n7fn-new') },
@@ -3426,7 +3428,7 @@ const TYPE_CHANGE_ROWS: ReadonlyArray<RenameRow> = [
   },
   {
     label:
-      'N7g: regular→symlink a/p; a deleted symlink matches its NEW target exactly — symlinks pair exactly only (R100 a/s→a/p)',
+      '-M -B, a regular→symlink type change whose NEW target exactly matches a deleted symlink — symlinks pair exactly only (R100 a/s→a/p)',
     before: [
       { path: 'a/p', content: tcRegular('n7g') },
       { path: 'a/s', content: tcSymlink('n7g'), kind: 'symlink' },
@@ -3437,7 +3439,7 @@ const TYPE_CHANGE_ROWS: ReadonlyArray<RenameRow> = [
   },
   {
     label:
-      'N7h: N7g plus an add matching the type change OLD content — both halves pair independently (R100 a/s→a/p ; R100 a/p→b/q)',
+      '-M -B, a regular→symlink type change whose NEW target exactly matches a deleted symlink, plus an add matching the type change OLD content — both halves pair independently (R100 a/s→a/p ; R100 a/p→b/q)',
     before: [
       { path: 'a/p', content: tcRegular('n7h') },
       { path: 'a/s', content: tcSymlink('n7h'), kind: 'symlink' },
@@ -3451,7 +3453,7 @@ const TYPE_CHANGE_ROWS: ReadonlyArray<RenameRow> = [
   },
   {
     label:
-      'N7k: two type changes swap content — a/p regular→symlink, a/r symlink→regular (R100 a/r→a/p ; R100 a/p→a/r)',
+      '-M -B, two type changes swap content — a/p regular→symlink, a/r symlink→regular (R100 a/r→a/p ; R100 a/p→a/r)',
     before: [
       { path: 'a/p', content: tcRegular('n7k') },
       { path: 'a/r', content: tcSymlink('n7k'), kind: 'symlink' },
@@ -3465,7 +3467,7 @@ const TYPE_CHANGE_ROWS: ReadonlyArray<RenameRow> = [
   },
   {
     label:
-      'N7kn: N7k fixture under -M only, no -B — both type changes stay separate (T a/p ; T a/r)',
+      'The swapped-content type-change fixture under -M only, no -B — both type changes stay separate (T a/p ; T a/r)',
     before: [
       { path: 'a/p', content: tcRegular('n7kn') },
       { path: 'a/r', content: tcSymlink('n7kn'), kind: 'symlink' },
@@ -3477,7 +3479,7 @@ const TYPE_CHANGE_ROWS: ReadonlyArray<RenameRow> = [
   },
   {
     label:
-      'N7n: regular→symlink a/p; an unrelated deleted regular file shares the symlink target STRING, cross-mode — neither half pairs (D a/d ; T100 a/p)',
+      '-M -B, a regular→symlink type change where an unrelated deleted regular file shares the symlink target STRING, cross-mode — neither half pairs (D a/d ; T100 a/p)',
     before: [
       { path: 'a/p', content: tcRegular('n7n') },
       { path: 'a/d', content: tcSymlink('n7n') },
@@ -3488,7 +3490,7 @@ const TYPE_CHANGE_ROWS: ReadonlyArray<RenameRow> = [
   },
   {
     label:
-      'N8 (must stay, -C): a regular→symlink type change lends its OLD content as a copy source (T ; C100 a/p→b/q)',
+      'Under -C, a regular→symlink type change lends its OLD content as a copy source (T ; C100 a/p→b/q)',
     before: [{ path: 'a/p', content: tcRegular('n8') }],
     after: [
       { path: 'a/p', content: tcSymlink('n8'), kind: 'symlink' },
@@ -3498,7 +3500,7 @@ const TYPE_CHANGE_ROWS: ReadonlyArray<RenameRow> = [
     renameOptions: { copies: 'on' },
   },
   {
-    label: 'G3 (must stay): a gitlink→regular type change never breaks under -B (T a/sub)',
+    label: 'A gitlink→regular type change never breaks under -B (T a/sub)',
     before: [{ path: 'a/sub', content: TYPE_CHANGE_GITLINK_OID, kind: 'gitlink' }],
     after: [{ path: 'a/sub', content: tcRegular('g3') }],
     gitFlags: ['-B'],
@@ -3506,7 +3508,7 @@ const TYPE_CHANGE_ROWS: ReadonlyArray<RenameRow> = [
   },
   {
     label:
-      'B3t (must stay): a broken type change disables the -M basename pass — the highest raw score wins over the basename match (D foo.c ; R0nn bar.c→foo.c ; T100 t)',
+      'A broken type change disables the -M basename pass — the highest raw score wins over the basename match (D foo.c ; R0nn bar.c→foo.c ; T100 t)',
     before: [
       { path: 'a/foo.c', content: b3Edited(4) },
       { path: 'a/bar.c', content: b3Edited(1) },
@@ -3557,12 +3559,12 @@ describe.skipIf(!GIT_AVAILABLE)('-B type-change break interop', () => {
     });
   });
 
-  describe('Given N7b (a broken symlink→regular type change), When the patch and numstat are reconstructed', () => {
+  describe('Given a broken symlink→regular type change under -M -B, When the patch and numstat are reconstructed', () => {
     it('Then both match git diff --no-ext-diff -p -M -B byte-for-byte', async () => {
       // Arrange — 20 new lines, a 1-line-equivalent old symlink target: an
       // unambiguous numstat independent of the shared row's own content.
       const row: RenameRow = {
-        label: 'N7b patch/numstat probe',
+        label: 'symlink→regular type-change break patch/numstat probe',
         before: [{ path: 'a/p', content: 'n7b-patch-symlink-target', kind: 'symlink' }],
         after: [
           {

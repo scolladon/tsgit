@@ -365,7 +365,7 @@ function addSizeCompatible(
 }
 
 /**
- * git's rename-limit size prefilter at the ID level (design D3): an id is
+ * git's rename-limit size prefilter at the ID level: an id is
  * needed for fingerprinting only when at least one partner on the OTHER
  * side could possibly reach `threshold` against it. `sizes` is total over
  * `srcIds ∪ dstIds` — every id passed in has an entry, guaranteed by the
@@ -421,7 +421,7 @@ async function declaredSizesReusingFingerprints(
 }
 
 /**
- * Which ids actually need fingerprinting for one inexact pass (design D3):
+ * Which ids actually need fingerprinting for one inexact pass:
  * at or below `SIZE_GATE_MIN_IDS` unique ids, every one of them (no size
  * read pays for itself below the gate — the common small-diff path never
  * touches it); above it, only the ids `sizeCompatibleIds` keeps. `known`
@@ -456,7 +456,7 @@ function dedupeMissing(
 }
 
 /**
- * Fingerprint-and-drop hydration (design D3): reads each missing blob just
+ * Fingerprint-and-drop hydration: reads each missing blob just
  * long enough to build its spanhash fingerprint, then lets the bytes go —
  * only the fingerprint (and its size) escapes the bounded worker, so a
  * blob's content never outlives the read that produced it. `ids` already
@@ -606,7 +606,7 @@ interface BrokenRecord {
 /**
  * Resolve the effective break-attempt and keep-broken gates.
  * A break score of 0 maps to DEFAULT_BREAK_SCORE (git's default -B threshold);
- * a merge value of 0 maps to DEFAULT_MERGE_SCORE (matrix B4b).
+ * a merge value of 0 maps to DEFAULT_MERGE_SCORE.
  */
 function resolveBreakGates(breakRewrites: { readonly score: number; readonly merge: number }): {
   readonly breakScore: number;
@@ -628,8 +628,8 @@ const MINIMUM_BREAK_SIZE = 400;
 
 /**
  * git's `should_break` size guards, checked against sizes the caller already
- * hydrated (no new read): a pair under MINIMUM_BREAK_SIZE never breaks (S1),
- * and neither does an empty source (S0) — both are evaluated before any
+ * hydrated (no new read): a pair under MINIMUM_BREAK_SIZE never breaks,
+ * and neither does an empty source — both are evaluated before any
  * scoring, in `should_break`'s own order (`diffcore-break.c:13`).
  */
 function isBreakSizeGuarded(srcSize: number, dstSize: number): boolean {
@@ -789,7 +789,7 @@ function patchDiffWithBroken(
 }
 
 /** Every type change whose both sides are breakable (file↔symlink) breaks
- *  unconditionally — a gitlink or directory side never does (G3). */
+ *  unconditionally — a gitlink or directory side never does. */
 function collectBreakableTypeChanges(diff: TreeDiff): TypeChangeChange[] {
   return diff.changes.filter(
     (c): c is TypeChangeChange => c.type === 'type-change' && isBreakableTypeChange(c),
@@ -885,14 +885,14 @@ function isSelfPair(pair: SourcePair, add: AddChange, sourceIndex: number): bool
  * git's write back (`diffcore-rename.c:1669`, `diff.c:6697`). Three outcomes
  * per broken record, decided by what claimed its add half:
  * - nothing (still unpaired): the halves rejoin (`rejoinBroken`), counting as
- *   one more use of the delete-half's source (K1, K2).
+ *   one more use of the delete-half's source.
  * - its own delete half (a same-path self-pair): git's `resolve_rename_copy`
  *   turns the pair back into a modify at the delete's own break score and,
  *   unlike a real rename or copy, never decrements the source's use count —
  *   the pair is dropped from `pairs` with the use count `selectPairs` already
  *   gave it left untouched.
  * - any other source: the pairing stands in for the broken change, so the
- *   delete drops whatever its own use count (S2).
+ *   delete drops whatever its own use count.
  */
 function writeBackBroken(
   broken: ReadonlyArray<BrokenRecord>,
@@ -960,11 +960,11 @@ function writeBackBroken(
  * 8. selectPairs: pass 1 pairs only zero-use sources; pass 2 (copies on)
  *    pairs any remaining source against any remaining destination.
  * 9. writeBack: a broken-delete's add half paired elsewhere drops its delete
- *    (whatever its own use count, S2); paired with its OWN delete half (a
+ *    (whatever its own use count); paired with its OWN delete half (a
  *    same-path self-pair), it resolves back to a modify at the delete's own
  *    break score and is dropped from the pair list untouched-use-count;
  *    otherwise the halves rejoin into a modify (plain or broken) and the
- *    rejoin counts as one more use of the delete-half's source (K1, K2) —
+ *    rejoin counts as one more use of the delete-half's source —
  *    this runs BEFORE labelRenameCopy.
  * 10. labelRenameCopy: every exact+inexact pair becomes a rename or copy by
  *     final use count (post write back) in destination-path order; unpaired
@@ -1083,7 +1083,7 @@ function resolveMatrixPlan(
 /**
  * A `deleted` source's delete survives iff nothing beyond its seed (always 0)
  * used it — i.e. zero real pairs named it. A `broken-delete` source's delete
- * is decided entirely by `writeBackBroken` (S2): it is dropped or rejoined
+ * is decided entirely by `writeBackBroken`: it is dropped or rejoined
  * there, and never survives standalone, so it is excluded here.
  */
 function isSourceDeletePresent(source: RenameSource, finalUses: number): boolean {
