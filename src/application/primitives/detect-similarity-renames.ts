@@ -117,22 +117,25 @@ function estimatePairSimilarity(
  * equal-ranked candidates later. `selectPairs` is where the threshold gate
  * actually applies, not here.
  *
- * `sameBasename` is read only when `score >= threshold` — git's own
- * `name_score` is computed after the score gate, never before (a candidate
- * that can't clear the threshold is never selected, so its nameScore can
- * never change `selectPairs`'s outcome; only the tie-break among candidates
- * that already share the winning score matters).
+ * git itself computes `name_score` for EVERY visited pair, unconditionally —
+ * the two basenames are compared here only when `score >= threshold`, an
+ * equivalent simplification: a below-threshold candidate's nameScore can
+ * never change `selectPairs`'s outcome (it's never selected) and can never
+ * displace a higher-scoring slot occupant either (`compareCandidates` ranks
+ * by score first), so the two candidates it actually decides among always
+ * already share the winning score.
  */
 function scoreAndRecord(
   sf: BlobFingerprint | undefined,
   df: BlobFingerprint | undefined,
   threshold: number,
   candidate: { readonly source: number; readonly destination: AddChange },
-  sameBasename: boolean,
+  sourceBasename: string,
+  destinationBasename: string,
   slots: MatrixCandidate[],
 ): void {
   const score = estimatePairSimilarity(sf, df, threshold);
-  const nameScore = score >= threshold && sameBasename ? 1 : 0;
+  const nameScore = score >= threshold && sourceBasename === destinationBasename ? 1 : 0;
   recordIfBetter(slots, { ...candidate, score, nameScore });
 }
 
@@ -573,8 +576,15 @@ function buildMatrix(
     const slots: MatrixCandidate[] = [];
     sources.forEach(({ index, source }, position) => {
       const sf = sourceIsRegular[position] ? fingerprints.get(source.id) : undefined;
-      const sameBasename = sourceBasenames[position] === destinationBasename;
-      scoreAndRecord(sf, df, threshold, { source: index, destination }, sameBasename, slots);
+      scoreAndRecord(
+        sf,
+        df,
+        threshold,
+        { source: index, destination },
+        sourceBasenames[position] as string,
+        destinationBasename,
+        slots,
+      );
     });
     for (const candidate of slots) candidates.push(candidate);
   }
@@ -861,6 +871,14 @@ function collectBreakableTypeChanges(diff: TreeDiff): TypeChangeChange[] {
   );
 }
 
+interface BreakAttemptOutcome {
+  readonly broken: ReadonlyArray<BrokenRecord>;
+  readonly patchedDiff: TreeDiff;
+  readonly fingerprints: ReadonlyMap<ObjectId, BlobFingerprint>;
+}
+
+const NO_BREAK_FINGERPRINTS: ReadonlyMap<ObjectId, BlobFingerprint> = new Map();
+
 /**
  * Attempt to break dissimilar modifies and file↔symlink type changes into
  * synthetic delete+add pairs. A type change never enters `scoreModifies` — it
@@ -870,14 +888,6 @@ function collectBreakableTypeChanges(diff: TreeDiff): TypeChangeChange[] {
  * Break-attempt runs BEFORE exact/inexact rename passes so the synthetic halves
  * feed the rename/copy matrix.
  */
-interface BreakAttemptOutcome {
-  readonly broken: ReadonlyArray<BrokenRecord>;
-  readonly patchedDiff: TreeDiff;
-  readonly fingerprints: ReadonlyMap<ObjectId, BlobFingerprint>;
-}
-
-const NO_BREAK_FINGERPRINTS: ReadonlyMap<ObjectId, BlobFingerprint> = new Map();
-
 async function attemptBreaks(
   ctx: Context,
   diff: TreeDiff,
@@ -1061,13 +1071,13 @@ function finalizeWithBroken(changes: ReadonlyArray<DiffChange>): TreeDiff {
   return { changes: sortByPath(changes, primaryPath) };
 }
 
-/** Run the break-attempt pass if enabled; returns broken records and patched diff. */
 interface BreakPassOutcome {
   readonly broken: ReadonlyArray<BrokenRecord>;
   readonly workingDiff: TreeDiff;
   readonly fingerprints: ReadonlyMap<ObjectId, BlobFingerprint>;
 }
 
+/** Run the break-attempt pass if enabled; returns broken records and patched diff. */
 async function runBreakPass(
   ctx: Context,
   diff: TreeDiff,
@@ -1123,9 +1133,6 @@ function cullMatrixSourceIndices(
 // git's rename_limit <= 0 means unlimited (diffcore-rename.c:1105) — a
 // negative limit squares to a positive number, so `limit !== 0` alone would
 // wrongly re-impose a cap here.
-// git's rename_limit <= 0 means unlimited (diffcore-rename.c:1105) — a
-// negative limit squares to a positive number, so `limit !== 0` alone would
-// wrongly re-impose a cap here.
 function isOverLimit(numDst: number, numSrc: number, limit: number): boolean {
   return limit > 0 && numDst * numSrc > limit * limit;
 }
@@ -1158,7 +1165,7 @@ function resolveMatrixPlan(
   const retryIndices = indices.filter(
     (index) => (sources[index] as RenameSource).origin !== 'unchanged',
   );
-  if (retryIndices.length === 0 || isOverLimit(numDst, retryIndices.length, limit)) return null;
+  if (isOverLimit(numDst, retryIndices.length, limit)) return null;
   return { indices: retryIndices };
 }
 
@@ -1520,7 +1527,9 @@ async function runExactAndBasenamePasses(
 
 /**
  * Detect exact and inexact (content-similarity) renames, and optionally
- * copies, with optional -B break-rewrite detection.
+ * copies, with optional -B break-rewrite detection. A thin orchestrator over
+ * six named steps: break, register, exact+basename, matrix, write-back,
+ * assemble — each already its own function; this wires them in order.
  *
  * Fixed order when breakRewrites is set:
  * 1. Break-attempt: split dissimilar modifies into synthetic delete+add halves so
@@ -1555,11 +1564,6 @@ async function runExactAndBasenamePasses(
  *     final use count (post write back) in destination-path order; unpaired
  *     destinations stay adds; a deleted source's delete survives iff nothing
  *     beyond its seed used it.
- *
- * Detect exact and inexact (content-similarity) renames, and optionally
- * copies, with optional -B break-rewrite detection. A thin orchestrator over
- * six named steps: break, register, exact+basename, matrix, write-back,
- * assemble — each already its own function; this wires them in order.
  */
 export async function detectSimilarityRenames(
   ctx: Context,

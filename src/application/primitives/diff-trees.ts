@@ -126,7 +126,12 @@ async function detectChanges(
       ctx,
       rawDiff,
       options.renameOptions,
-      await buildPreimage(ctx, a, options.renameOptions, options.recursive === true),
+      await buildPreimage(
+        ctx,
+        a,
+        options.renameOptions,
+        options.recursive === true ? 'recursive' : 'top-level',
+      ),
     );
   }
   const breakRewrites = options?.renameOptions?.breakRewrites;
@@ -439,10 +444,10 @@ async function buildPreimage(
   ctx: Context,
   a: DiffTreesInput,
   renameOptions: RenameDetectOptions | undefined,
-  recursive: boolean,
+  traversal: 'recursive' | 'top-level',
 ): Promise<FlatTree['entries'] | undefined> {
   if (renameOptions?.copies !== 'harder' || a === undefined) return undefined;
-  if (!recursive) {
+  if (traversal === 'top-level') {
     const tree = await resolveInput(ctx, a);
     return tree === undefined ? undefined : topLevelEntries(tree);
   }
