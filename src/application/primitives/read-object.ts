@@ -480,12 +480,16 @@ async function scanChunksForHeader(
 }
 
 /** The rare fallback: a header whose NUL never appeared inside the probe
- *  budget. Re-reads and inflates the WHOLE compressed file — exact by
- *  construction, at the cost this object pays once. */
+ *  budget. Re-reads the WHOLE compressed file but scans it through the SAME
+ *  capped, streaming inflate as the prefix probe — never a one-shot
+ *  whole-buffer inflate, so a hostile object whose header never terminates
+ *  still refuses after 32 output bytes instead of decompressing without limit. */
 async function readDeclaredSizeFromWholeFile(ctx: Context, id: ObjectId): Promise<number> {
   const compressed = await ctx.fs.read(loosePathFor(ctx, id));
-  const inflated = await ctx.compressor.inflate(compressed);
-  return parseHeader(inflated).size;
+  const outcome = await scanPrefixForDeclaredSize(ctx, compressed);
+  if (outcome.status === 'found') return outcome.size;
+  if (outcome.status === 'tooLong') throw headerTooLong(id);
+  throw noNulTerminator(id);
 }
 
 async function resolveObjectMetadataWithContent(

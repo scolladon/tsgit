@@ -482,6 +482,43 @@ describe('readDeclaredObjectSize', () => {
     });
   });
 
+  describe('Given a whole-file fallback whose real payload decodes to more than 32 bytes with no NUL', () => {
+    describe('When readDeclaredObjectSize is called', () => {
+      it('Then rejects header-too-long through the SAME capped scan, never a whole-buffer inflate', async () => {
+        // Arrange — the same empty-stored-block run pushes the payload past the
+        // 1024-byte probe window, forcing the whole-file fallback; the payload
+        // itself is large and has no NUL anywhere, mirroring a compressed loose
+        // object that would inflate to hundreds of megabytes. The fallback must
+        // apply the SAME 32-byte header cap via the streaming inflate, never
+        // ctx.compressor.inflate's uncapped whole-buffer route.
+        const junk = new Uint8Array(100_000);
+        let state = 7;
+        for (let i = 0; i < junk.length; i++) {
+          state = (state * 1103515245 + 12345) & 0x7fffffff;
+          junk[i] = (state % 255) + 1; // never 0x00
+        }
+        const ctx = await buildSeededContext();
+        const id = 'c'.repeat(40) as ObjectId;
+        await ctx.fs.write(loosePathOf(ctx, id), buildPrefixExhaustingLooseBytes(junk));
+        const inflateSpy = vi.spyOn(ctx.compressor, 'inflate');
+
+        // Act
+        try {
+          await readDeclaredObjectSize(ctx, id);
+          expect.unreachable();
+        } catch (error) {
+          // Assert
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('INVALID_OBJECT_HEADER');
+          if (data.code === 'INVALID_OBJECT_HEADER') {
+            expect(data.reason).toBe(`header for ${id} too long, exceeds 32 bytes`);
+          }
+        }
+        expect(inflateSpy).not.toHaveBeenCalled();
+      });
+    });
+  });
+
   describe('Given a loose file whose entire content has no NUL and decodes to more than 32 bytes', () => {
     describe('When readDeclaredObjectSize is called', () => {
       it('Then rejects INVALID_OBJECT_HEADER with the header-too-long reason, like git', async () => {
