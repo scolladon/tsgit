@@ -1606,6 +1606,62 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
+  describe('Given breakRewrites and a broken modify whose own two halves pair with each other under a lowered rename threshold', () => {
+    describe('When detectSimilarityRenames is called', () => {
+      it('Then the pair resolves back to a broken modify instead of a same-path rename', async () => {
+        // Arrange — f.txt keeps 35 of its 100 lines: dissimilarity (65%) clears
+        // both the default break gate and the default merge gate, so the delete
+        // half is unseeded and free to compete; its own add half is the only
+        // destination, and their 35% literal overlap clears a threshold lowered
+        // to 20% — the self-pair wins the slot exactly like git's matrix does.
+        const lineCount = 100;
+        const keptCount = 35;
+        const selfPairLine = (index: number, changed: boolean): string =>
+          changed
+            ? `different-${index}: completely new text zeta theta kappa\n`
+            : `line-${index}: shared content alpha beta gamma delta\n`;
+        const oldContent = Array.from({ length: lineCount }, (_, i) => selfPairLine(i, false)).join(
+          '',
+        );
+        const newContent = Array.from({ length: lineCount }, (_, i) =>
+          selfPairLine(i, i >= keptCount),
+        ).join('');
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, oldContent);
+        const newId = await writeBlob(ctx, newContent);
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'modify',
+              path: 'f.txt' as FilePath,
+              oldId,
+              newId,
+              oldMode: FILE_MODE.REGULAR,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act
+        const result = await detectSimilarityRenames(ctx, diff, {
+          threshold: 12000,
+          breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
+        });
+
+        // Assert — a modify with a high (break) dissimilarity, never a rename
+        expect(result.changes).toHaveLength(1);
+        const [change] = result.changes;
+        expect(change?.type).toBe('modify');
+        if (change?.type === 'modify') {
+          expect(change.path).toBe('f.txt');
+          expect(change.broken?.score).toBeGreaterThanOrEqual(DEFAULT_MERGE_SCORE);
+        }
+        expect(result.changes.some((c) => c.type === 'rename')).toBe(false);
+        expect(result.changes.some((c) => c.type === 'copy')).toBe(false);
+      });
+    });
+  });
+
   describe('Given a 5x5 scenario with unambiguous per-pair best scores', () => {
     describe('When detectSimilarityRenames is called', () => {
       it('Then all 5 pairs are detected as renames with no orphan', async () => {

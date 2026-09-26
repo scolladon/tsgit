@@ -759,42 +759,66 @@ function indexBrokenSources(
 }
 
 interface WriteBackOutcome {
+  readonly pairs: ReadonlyArray<SourcePair>;
   readonly unpaired: ReadonlyArray<AddChange>;
   readonly uses: ReadonlyArray<number>;
   readonly rejoined: ReadonlyArray<DiffChange>;
 }
 
+/** True when `pair` re-pairs a broken record's own add half with its own
+ *  delete half — git's `diff_resolve_rename_copy` (`diff.c:6697`) catches this
+ *  by comparing the winning source's path with the destination's, after the
+ *  destination's `one` side has already been reassigned to that source. */
+function isSelfPair(pair: SourcePair, add: AddChange, sourceIndex: number): boolean {
+  return pair.destination === add && pair.source === sourceIndex;
+}
+
 /**
- * git's write back (`diffcore-rename.c:1669`): a broken delete's add half
- * paired elsewhere means the pairing stands in for the broken change, so the
- * delete drops whatever its own use count (S2). Otherwise the halves rejoin
- * (`rejoinBroken`) and the rejoin itself counts as one more use of the
- * delete-half's source (K1, K2) — this runs BEFORE `labelRenameCopy`, so a
- * rejoined source's other pairs count it as a copy, not a rename.
+ * git's write back (`diffcore-rename.c:1669`, `diff.c:6697`). Three outcomes
+ * per broken record, decided by what claimed its add half:
+ * - nothing (still unpaired): the halves rejoin (`rejoinBroken`), counting as
+ *   one more use of the delete-half's source (K1, K2).
+ * - its own delete half (a same-path self-pair): git's `resolve_rename_copy`
+ *   turns the pair back into a modify at the delete's own break score and,
+ *   unlike a real rename or copy, never decrements the source's use count —
+ *   the pair is dropped from `pairs` with the use count `selectPairs` already
+ *   gave it left untouched.
+ * - any other source: the pairing stands in for the broken change, so the
+ *   delete drops whatever its own use count (S2).
  */
 function writeBackBroken(
   broken: ReadonlyArray<BrokenRecord>,
   originalDeletes: ReadonlyArray<DeleteChange | undefined>,
+  pairs: ReadonlyArray<SourcePair>,
   unpaired: ReadonlyArray<AddChange>,
   uses: ReadonlyArray<number>,
   mergeScore: number,
 ): WriteBackOutcome {
   const sourceIndexByDelete = indexBrokenSources(originalDeletes);
+  const pairByDestination = new Map(pairs.map((pair) => [pair.destination, pair] as const));
   const unpairedSet = new Set(unpaired);
   const workingUses = [...uses];
   const rejoined: DiffChange[] = [];
   const absorbedAdds = new Set<AddChange>();
+  const selfPairedAdds = new Set<AddChange>();
 
   for (const record of broken) {
-    if (!unpairedSet.has(record.add)) continue; // add half paired: drop the delete, whatever its uses
+    const sourceIndex = sourceIndexByDelete.get(record.del) as number;
+    const claim = pairByDestination.get(record.add);
+    if (claim !== undefined && isSelfPair(claim, record.add, sourceIndex)) {
+      rejoined.push(rejoinBroken(record, mergeScore));
+      selfPairedAdds.add(record.add);
+      continue;
+    }
+    if (!unpairedSet.has(record.add)) continue; // add half paired elsewhere: drop the delete
 
     rejoined.push(rejoinBroken(record, mergeScore));
     absorbedAdds.add(record.add);
-    const sourceIndex = sourceIndexByDelete.get(record.del) as number;
     workingUses[sourceIndex] = (workingUses[sourceIndex] as number) + 1;
   }
 
   return {
+    pairs: pairs.filter((pair) => !selfPairedAdds.has(pair.destination)),
     unpaired: unpaired.filter((add) => !absorbedAdds.has(add)),
     uses: workingUses,
     rejoined,
@@ -828,9 +852,12 @@ function writeBackBroken(
  * 8. selectPairs: pass 1 pairs only zero-use sources; pass 2 (copies on)
  *    pairs any remaining source against any remaining destination.
  * 9. writeBack: a broken-delete's add half paired elsewhere drops its delete
- *    (whatever its own use count, S2); otherwise the halves rejoin into a
- *    modify (plain or broken) and the rejoin counts as one more use of the
- *    delete-half's source (K1, K2) — this runs BEFORE labelRenameCopy.
+ *    (whatever its own use count, S2); paired with its OWN delete half (a
+ *    same-path self-pair), it resolves back to a modify at the delete's own
+ *    break score and is dropped from the pair list untouched-use-count;
+ *    otherwise the halves rejoin into a modify (plain or broken) and the
+ *    rejoin counts as one more use of the delete-half's source (K1, K2) —
+ *    this runs BEFORE labelRenameCopy.
  * 10. labelRenameCopy: every exact+inexact pair becomes a rename or copy by
  *     final use count (post write back) in destination-path order; unpaired
  *     destinations stay adds; a deleted source's delete survives iff nothing
@@ -1269,13 +1296,14 @@ export async function detectSimilarityRenames(
   const writeBack = writeBackBroken(
     broken,
     registry.originalDeletes,
+    outcome.pairs,
     outcome.unpaired,
     outcome.uses,
     mergeScore,
   );
   const changes = assembleFromRegistry(
     registry,
-    outcome.pairs,
+    writeBack.pairs,
     writeBack.unpaired,
     writeBack.uses,
     writeBack.rejoined,

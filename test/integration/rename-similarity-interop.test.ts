@@ -2944,6 +2944,29 @@ const WRITE_BACK_ROWS: ReadonlyArray<RenameRow> = [
     gitFlags: ['-B'],
     renameOptions: { breakRewrites: { score: 30000, merge: 36000 } },
   },
+  {
+    label:
+      '-B: f.txt keeps 35 of its 100 lines under a rename threshold lowered to 20% — its own two halves score high enough to pair with each other, and that self-pair resolves back to a modify, not a same-path rename',
+    before: [{ path: 'f.txt', content: breakContent('old', 100, 0) }],
+    after: [{ path: 'f.txt', content: breakContent('new', 100, 35) }],
+    gitFlags: ['-B', '-M20%'],
+    renameOptions: { threshold: 12000, breakRewrites: { score: 30000, merge: 36000 } },
+  },
+  {
+    label:
+      '-B -C: f.txt keeps 35 of its 100 lines and a new g.txt shares 30 of the original lines — f.txt self-pairs back to a modify while g.txt still copies from the same original content',
+    before: [{ path: 'f.txt', content: breakContent('old', 100, 0) }],
+    after: [
+      { path: 'f.txt', content: breakContent('new', 100, 35) },
+      { path: 'g.txt', content: breakContent('old', 30, 0) },
+    ],
+    gitFlags: ['-B', '-C20%'],
+    renameOptions: {
+      threshold: 12000,
+      copies: 'on',
+      breakRewrites: { score: 30000, merge: 36000 },
+    },
+  },
 ];
 
 const writeBackFixtures = new Map<string, { readonly dir: string }>();
