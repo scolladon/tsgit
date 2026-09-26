@@ -544,8 +544,24 @@ interface BreakScores {
   readonly dissimilarity: number;
 }
 
+/** git's `should_break` never attempts a break below this size (`diffcore-break.c:13`). */
+const MINIMUM_BREAK_SIZE = 400;
+
+/**
+ * git's `should_break` size guards, checked against sizes the caller already
+ * hydrated (no new read): a pair under MINIMUM_BREAK_SIZE never breaks (S1),
+ * and neither does an empty source (S0) — both are evaluated before any
+ * scoring, in `should_break`'s own order (`diffcore-break.c:13`).
+ */
+function isBreakSizeGuarded(srcSize: number, dstSize: number): boolean {
+  if (Math.max(srcSize, dstSize) < MINIMUM_BREAK_SIZE) return true;
+  return srcSize === 0;
+}
+
 /**
  * Compute git's break-attempt gate score and merge-score for a (src, dst) blob pair.
+ * Callers only reach this once `isBreakSizeGuarded` has cleared the pair, so
+ * maxSize and srcSize are both guaranteed positive here.
  *
  * break_score  = min(srcRemoved + literalAdded, maxSize) * MAX_SCORE / maxSize
  * merge_score  = (srcSize - srcCopied) * MAX_SCORE / srcSize   (printed as M<n>)
@@ -559,9 +575,8 @@ function computeBreakScores(src: Uint8Array, dst: Uint8Array): BreakScores {
   const { srcCopied, literalAdded } = countSpanhashChanges(src, dst);
   const srcRemoved = srcSize - srcCopied;
   const rawBreakNum = Math.min(srcRemoved + literalAdded, maxSize);
-  const computedBreakScore = maxSize > 0 ? Math.trunc((rawBreakNum * MAX_SCORE) / maxSize) : 0;
-  // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — differs only at srcSize===0, where srcRemoved===0 makes the branch NaN vs 0; dissimilarity only feeds the >= mergeScore gate (mergeScore is always >= 1 since merge:0 maps to DEFAULT_MERGE_SCORE), which both NaN and 0 fail, so the output is unchanged.
-  const dissimilarity = srcSize > 0 ? Math.trunc((srcRemoved * MAX_SCORE) / srcSize) : 0;
+  const computedBreakScore = Math.trunc((rawBreakNum * MAX_SCORE) / maxSize);
+  const dissimilarity = Math.trunc((srcRemoved * MAX_SCORE) / srcSize);
   return { computedBreakScore, dissimilarity };
 }
 
@@ -570,6 +585,10 @@ interface ModifyScore {
   readonly computedBreakScore: number;
   readonly dissimilarity: number;
 }
+
+/** A guarded pair never attempts a break: score 0 always sits below any
+ *  effective breakScore (0 maps to DEFAULT_BREAK_SCORE, never 0 itself). */
+const GUARDED_SCORES: BreakScores = { computedBreakScore: 0, dissimilarity: 0 };
 
 /**
  * Reads a modify's old and new blobs SEQUENTIALLY (never `Promise.all`) so
@@ -582,7 +601,9 @@ interface ModifyScore {
 async function scoreOneModify(ctx: Context, mod: ModifyChange): Promise<ModifyScore> {
   const { content: oldBytes } = await readBlob(ctx, mod.oldId);
   const { content: newBytes } = await readBlob(ctx, mod.newId);
-  const { computedBreakScore, dissimilarity } = computeBreakScores(oldBytes, newBytes);
+  const { computedBreakScore, dissimilarity } = isBreakSizeGuarded(oldBytes.length, newBytes.length)
+    ? GUARDED_SCORES
+    : computeBreakScores(oldBytes, newBytes);
   return { mod, computedBreakScore, dissimilarity };
 }
 

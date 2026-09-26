@@ -34,6 +34,12 @@ const writeBlob = (ctx: Ctx, content: string): Promise<ObjectId> =>
 const tenLines = (changed: number): string =>
   Array.from({ length: 10 }, (_, i) => (i === changed ? `X line ${i}\n` : `line ${i}\n`)).join('');
 
+/** Like `tenLines`, but long enough (60 lines, ~470 bytes) to clear
+ *  MINIMUM_BREAK_SIZE while a single changed line stays a low-dissimilarity
+ *  minority — used where a -B fixture needs to stay "very similar". */
+const manyLines = (changed: number): string =>
+  Array.from({ length: 60 }, (_, i) => (i === changed ? `X line ${i}\n` : `line ${i}\n`)).join('');
+
 describe('detectSimilarityRenames', () => {
   describe('Given a diff with no adds or deletes', () => {
     describe('When detectSimilarityRenames is called', () => {
@@ -1043,8 +1049,8 @@ describe('detectSimilarityRenames', () => {
       it('Then the modify is split into a synthetic delete+add for the matrix', async () => {
         // Arrange — fully disjoint content: dissimilarity = MAX_SCORE >= DEFAULT_BREAK_SCORE
         const ctx = await buildSeededContext();
-        const oldId = await writeBlob(ctx, 'aaaa\nbbbb\ncccc\ndddd\n'.repeat(10));
-        const newId = await writeBlob(ctx, 'xxxx\nyyyy\nzzzz\nwwww\n'.repeat(10));
+        const oldId = await writeBlob(ctx, 'aaaa\nbbbb\ncccc\ndddd\n'.repeat(25));
+        const newId = await writeBlob(ctx, 'xxxx\nyyyy\nzzzz\nwwww\n'.repeat(25));
         const diff: TreeDiff = {
           changes: [
             {
@@ -1081,8 +1087,8 @@ describe('detectSimilarityRenames', () => {
       it('Then dissimilarity === score attempts the break (inclusive gate)', async () => {
         // Arrange — fully disjoint content: dissimilarity = MAX_SCORE
         const ctx = await buildSeededContext();
-        const oldId = await writeBlob(ctx, 'aaaa\nbbbb\ncccc\ndddd\n'.repeat(5));
-        const newId = await writeBlob(ctx, 'xxxx\nyyyy\nzzzz\nwwww\n'.repeat(5));
+        const oldId = await writeBlob(ctx, 'aaaa\nbbbb\ncccc\ndddd\n'.repeat(25));
+        const newId = await writeBlob(ctx, 'xxxx\nyyyy\nzzzz\nwwww\n'.repeat(25));
         const diff: TreeDiff = {
           changes: [
             {
@@ -1116,8 +1122,8 @@ describe('detectSimilarityRenames', () => {
       it('Then dissimilarity === score - 1 does NOT attempt the break', async () => {
         // Arrange — fully disjoint content: dissimilarity = MAX_SCORE
         const ctx = await buildSeededContext();
-        const oldId = await writeBlob(ctx, 'aaaa\nbbbb\ncccc\ndddd\n'.repeat(5));
-        const newId = await writeBlob(ctx, 'xxxx\nyyyy\nzzzz\nwwww\n'.repeat(5));
+        const oldId = await writeBlob(ctx, 'aaaa\nbbbb\ncccc\ndddd\n'.repeat(25));
+        const newId = await writeBlob(ctx, 'xxxx\nyyyy\nzzzz\nwwww\n'.repeat(25));
         const diff: TreeDiff = {
           changes: [
             {
@@ -1151,8 +1157,8 @@ describe('detectSimilarityRenames', () => {
       it('Then dissimilarity === mergeScore keeps broken (inclusive gate)', async () => {
         // Arrange — fully disjoint: dissimilarity = MAX_SCORE; set mergeScore = MAX_SCORE
         const ctx = await buildSeededContext();
-        const oldId = await writeBlob(ctx, 'aaaa\nbbbb\ncccc\ndddd\n'.repeat(5));
-        const newId = await writeBlob(ctx, 'xxxx\nyyyy\nzzzz\nwwww\n'.repeat(5));
+        const oldId = await writeBlob(ctx, 'aaaa\nbbbb\ncccc\ndddd\n'.repeat(25));
+        const newId = await writeBlob(ctx, 'xxxx\nyyyy\nzzzz\nwwww\n'.repeat(25));
         const diff: TreeDiff = {
           changes: [
             {
@@ -1189,8 +1195,8 @@ describe('detectSimilarityRenames', () => {
         // mergeScore to MAX_SCORE + 1 so that dissimilarity < mergeScore (re-merge path).
         // Also set breakScore=1 so the break is definitely attempted.
         const ctx = await buildSeededContext();
-        const oldId = await writeBlob(ctx, 'aaaa\nbbbb\ncccc\ndddd\n'.repeat(5));
-        const newId = await writeBlob(ctx, 'xxxx\nyyyy\nzzzz\nwwww\n'.repeat(5));
+        const oldId = await writeBlob(ctx, 'aaaa\nbbbb\ncccc\ndddd\n'.repeat(25));
+        const newId = await writeBlob(ctx, 'xxxx\nyyyy\nzzzz\nwwww\n'.repeat(25));
         const diff: TreeDiff = {
           changes: [
             {
@@ -1224,8 +1230,8 @@ describe('detectSimilarityRenames', () => {
       it('Then merge:0 maps to DEFAULT_MERGE_SCORE (not zero) for the keep-broken gate', async () => {
         // Arrange — fully disjoint content: dissimilarity = MAX_SCORE
         const ctx = await buildSeededContext();
-        const oldId = await writeBlob(ctx, 'aaaa\nbbbb\ncccc\ndddd\n'.repeat(5));
-        const newId = await writeBlob(ctx, 'xxxx\nyyyy\nzzzz\nwwww\n'.repeat(5));
+        const oldId = await writeBlob(ctx, 'aaaa\nbbbb\ncccc\ndddd\n'.repeat(25));
+        const newId = await writeBlob(ctx, 'xxxx\nyyyy\nzzzz\nwwww\n'.repeat(25));
         const diff: TreeDiff = {
           changes: [
             {
@@ -1307,8 +1313,8 @@ describe('detectSimilarityRenames', () => {
         // Arrange — file1 is a fully-disjoint modify that -B keeps broken; file2 is an
         // unrelated add. Re-merge must strip ONLY file1's synthetic halves and keep file2.
         const ctx = await buildSeededContext();
-        const oldId = await writeBlob(ctx, 'aaaa\nbbbb\ncccc\ndddd\n'.repeat(5));
-        const newId = await writeBlob(ctx, 'xxxx\nyyyy\nzzzz\nwwww\n'.repeat(5));
+        const oldId = await writeBlob(ctx, 'aaaa\nbbbb\ncccc\ndddd\n'.repeat(25));
+        const newId = await writeBlob(ctx, 'xxxx\nyyyy\nzzzz\nwwww\n'.repeat(25));
         const file2Id = await writeBlob(ctx, 'brand new unrelated file body\n');
         const diff: TreeDiff = {
           changes: [
@@ -2468,10 +2474,11 @@ describe('detectSimilarityRenames', () => {
 
   // ── computeBreakScores: zero-size guards ──
 
-  describe('Given a modify where both old and new blobs are empty (computeBreakScores zero-size)', () => {
+  describe('Given a modify where both old and new blobs are empty (should_break size guard fires at maxSize=0)', () => {
     describe('When detectSimilarityRenames is called with breakRewrites enabled', () => {
-      it('Then computedBreakScore is 0 and dissimilarity is 0 (no NaN from division by zero)', async () => {
-        // Arrange — empty→empty modify so maxSize=0 and srcSize=0, exercising both size guards
+      it('Then the pair never reaches computeBreakScores, so no division by zero is possible', async () => {
+        // Arrange — empty→empty modify so maxSize=0 (< MINIMUM_BREAK_SIZE) and srcSize=0:
+        // isBreakSizeGuarded fires on both conditions before computeBreakScores ever runs.
         const ctx = await buildSeededContext();
         // Empty blobs: 0 bytes each
         const emptyId = await writeBlob(ctx, '');
@@ -2491,13 +2498,12 @@ describe('detectSimilarityRenames', () => {
           ],
         };
 
-        // Act — breakScore=1 (anything > 0) so the break is attempted;
-        // empty blobs have computedBreakScore=0 < 1 → NOT broken → plain modify
+        // Act — breakScore=1 (anything > 0); the guard still forces computedBreakScore=0 < 1
         const result = await detectSimilarityRenames(ctx, diff, {
           breakRewrites: { score: 1, merge: DEFAULT_MERGE_SCORE },
         });
 
-        // Assert — plain modify (no break attempted because computedBreakScore=0, not NaN)
+        // Assert — plain modify (guard short-circuits before any scoring)
         expect(result.changes).toHaveLength(1);
         const change = result.changes[0];
         expect(change?.type).toBe('modify');
@@ -2508,41 +2514,136 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
-  describe('Given a modify where the source blob is empty but the destination is non-empty', () => {
+  describe('Given an empty-source modify whose new content matches an unrelated deleted file (design row S0)', () => {
     describe('When detectSimilarityRenames is called with breakRewrites enabled', () => {
-      it('Then dissimilarity is 0 (srcSize=0 → guard protects division by zero)', async () => {
-        // Arrange — empty source blob but non-empty destination so srcSize=0 triggers the guard
+      it('Then the empty-source guard means the modify never breaks and the deleted file stays a bare delete (live git: D a/d ; M a/e)', async () => {
+        // Arrange — a/e's old content is empty; its new content is byte-identical to a/d's
+        // deleted content and kept >= MINIMUM_BREAK_SIZE, so only the empty-source guard (S0),
+        // not the size guard (S1), explains the outcome. Without the S0 guard, a/e's modify
+        // would break, its synthetic add-half would exact-pair with a/d's delete, and write
+        // back would drop a/e's synthetic delete-half — turning the pair into a wrong rename.
         const ctx = await buildSeededContext();
         const emptyId = await writeBlob(ctx, '');
-        const newId = await writeBlob(ctx, 'completely new content\n'.repeat(5));
+        const sharedContent = Array.from(
+          { length: 20 },
+          (_, i) =>
+            `line-${String(i).padStart(2, '0')}: shared payload alpha beta gamma delta epsilon\n`,
+        ).join('');
+        const sharedId = await writeBlob(ctx, sharedContent);
 
         const diff: TreeDiff = {
           changes: [
             {
+              type: 'delete',
+              oldPath: 'a/d' as FilePath,
+              oldId: sharedId,
+              oldMode: FILE_MODE.REGULAR,
+            },
+            {
               type: 'modify',
-              path: 'file.txt' as FilePath,
+              path: 'a/e' as FilePath,
               oldId: emptyId,
-              newId: newId,
+              newId: sharedId,
               oldMode: FILE_MODE.REGULAR,
               newMode: FILE_MODE.REGULAR,
             },
           ],
         };
 
-        // Act — low breakScore to force attempt; empty src has computedBreakScore computable
-        // (maxSize = dstSize > 0, so L513 guard passes); srcSize=0 → dissimilarity guard matters
+        // Act
         const result = await detectSimilarityRenames(ctx, diff, {
-          breakRewrites: { score: 1, merge: DEFAULT_MERGE_SCORE },
+          breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
         });
 
-        // Assert — modify is present (not NaN-broken); dissimilarity=0 means no broken datum
-        // (0 < DEFAULT_MERGE_SCORE → re-merged or not broken)
-        expect(result.changes).toHaveLength(1);
+        // Assert — a/d stays a bare delete, a/e stays an unbroken modify, no rename appears
+        const deletes = result.changes.filter((c) => c.type === 'delete');
+        expect(deletes).toHaveLength(1);
+        if (deletes[0]?.type === 'delete') {
+          expect(deletes[0].oldPath).toBe('a/d');
+        }
+        const modifies = result.changes.filter((c) => c.type === 'modify');
+        expect(modifies).toHaveLength(1);
+        if (modifies[0]?.type === 'modify') {
+          expect(modifies[0].path).toBe('a/e');
+          expect(modifies[0].broken).toBeUndefined();
+        }
+        expect(result.changes.filter((c) => c.type === 'rename')).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given a modify whose sizes sit one byte under the should_break minimum-size guard (design row S1)', () => {
+    describe('When detectSimilarityRenames is called with breakRewrites enabled', () => {
+      it('Then a 399-byte fully-disjoint pair is never broken, even though dissimilarity would be MAX_SCORE', async () => {
+        // Arrange — both sides exactly 399 bytes (< MINIMUM_BREAK_SIZE), fully disjoint content.
+        // LF-delimited short lines (not one 399-byte run of a single byte) so the spanhash
+        // chunk splitter's 64-byte forced boundary can't accidentally alias src and dst chunks.
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(
+          ctx,
+          `${'aaaa\nbbbb\ncccc\ndddd\n'.repeat(19)}${'e'.repeat(18)}\n`,
+        );
+        const newId = await writeBlob(
+          ctx,
+          `${'xxxx\nyyyy\nzzzz\nwwww\n'.repeat(19)}${'q'.repeat(18)}\n`,
+        );
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'modify',
+              path: 'file.txt' as FilePath,
+              oldId,
+              newId,
+              oldMode: FILE_MODE.REGULAR,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act
+        const result = await detectSimilarityRenames(ctx, diff, {
+          breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
+        });
+
+        // Assert — the size guard fires: no break attempted, plain modify survives
         const change = result.changes[0];
         expect(change?.type).toBe('modify');
         if (change?.type === 'modify') {
-          // dissimilarity=0 < mergeScore → rejoinBroken returns original (no broken)
           expect(change.broken).toBeUndefined();
+        }
+      });
+    });
+
+    describe('When the same fully-disjoint pair sits exactly at MINIMUM_BREAK_SIZE (400 bytes)', () => {
+      it('Then the pair breaks normally', async () => {
+        // Arrange — both sides exactly 400 bytes (the minimum-size gate is inclusive)
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, 'aaaa\nbbbb\ncccc\ndddd\n'.repeat(20));
+        const newId = await writeBlob(ctx, 'xxxx\nyyyy\nzzzz\nwwww\n'.repeat(20));
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'modify',
+              path: 'file.txt' as FilePath,
+              oldId,
+              newId,
+              oldMode: FILE_MODE.REGULAR,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act
+        const result = await detectSimilarityRenames(ctx, diff, {
+          breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
+        });
+
+        // Assert — the pair clears the size guard and breaks, kept broken at MAX_SCORE
+        const change = result.changes[0];
+        expect(change?.type).toBe('modify');
+        if (change?.type === 'modify') {
+          expect(change.broken?.score).toBe(MAX_SCORE);
+          expect(change.broken?.maxScore).toBe(MAX_SCORE);
         }
       });
     });
@@ -2554,7 +2655,9 @@ describe('detectSimilarityRenames', () => {
     describe('When detectSimilarityRenames is called with a break gate strictly between the max- and min-denominator scores', () => {
       it('Then max(src,dst) is the denominator so the score stays below the gate and the modify is NOT broken', async () => {
         // Arrange — src is exactly the first half of dst; dst appends an equal-sized block of new
-        // lines, so srcSize = S, dstSize = 2S, srcRemoved ≈ 0, literalAdded ≈ S.
+        // lines, so srcSize = S, dstSize = 2S, srcRemoved ≈ 0, literalAdded ≈ S. Each block is
+        // 396 bytes (>= MINIMUM_BREAK_SIZE) so Part 11's size guard does not itself explain a
+        // non-break here — only the max-denominator choice does.
         //   break_score = min(srcRemoved + literalAdded, maxSize) * MAX_SCORE / maxSize
         // With maxSize = max(src,dst) = 2S → ≈ S * MAX_SCORE / 2S = 30000 (below the 45000 gate → NOT broken).
         // With maxSize = min(src,dst) = S  → ≈ S * MAX_SCORE / S  = 60000 (above the gate → broken).
@@ -2563,12 +2666,12 @@ describe('detectSimilarityRenames', () => {
         // as a plain modify (no rename) pins max(src,dst) as the denominator.
         const ctx = await buildSeededContext();
         const preserved = Array.from(
-          { length: 6 },
-          (_, i) => `shared-line-${i}: alpha beta gamma\n`,
+          { length: 12 },
+          (_, i) => `shared-line-${String(i).padStart(2, '0')}: alpha beta gamma\n`,
         ).join('');
         const appended = Array.from(
-          { length: 6 },
-          (_, i) => `brand-new-line-${i}: delta epsilon\n`,
+          { length: 12 },
+          (_, i) => `brand-new-line-${String(i).padStart(2, '0')}: delta epsilon\n`,
         ).join('');
         const srcContent = preserved;
         const dstContent = `${preserved}${appended}`;
@@ -2662,11 +2765,13 @@ describe('detectSimilarityRenames', () => {
   describe('Given modifies that all score below the break-attempt gate (attemptBreaks guard on empty records)', () => {
     describe('When detectSimilarityRenames is called with breakRewrites', () => {
       it('Then no synthetic halves are created (records.length===0 guard fires)', async () => {
-        // Arrange — very similar modify so dissimilarity stays below break threshold; records stays empty
+        // Arrange — very similar modify so dissimilarity stays below break threshold; records stays empty.
+        // manyLines (>= MINIMUM_BREAK_SIZE) so the break-attempt gate — not Part 11's size guard —
+        // is what keeps records empty.
         const ctx = await buildSeededContext();
         // Very similar modify: dissimilarity low → computedBreakScore < DEFAULT_BREAK_SCORE
-        const similar1 = tenLines(0);
-        const similar2 = tenLines(0).replace('X line 0\n', 'Y line 0\n');
+        const similar1 = manyLines(0);
+        const similar2 = manyLines(0).replace('X line 0\n', 'Y line 0\n');
         const modOldId = await writeBlob(ctx, similar1);
         const modNewId = await writeBlob(ctx, similar2);
 
@@ -2822,8 +2927,8 @@ describe('detectSimilarityRenames', () => {
         // an exact rename partner. The add half pairing alone is enough for write back to
         // drop the delete (S2); the old content separately pairs with dst1 as its own rename.
         const ctx = await buildSeededContext();
-        const modOldContent = 'aaa\nbbb\nccc\n'.repeat(10);
-        const modNewContent = 'xxx\nyyy\nzzz\n'.repeat(10); // fully disjoint → break
+        const modOldContent = 'aaa\nbbb\nccc\n'.repeat(35);
+        const modNewContent = 'xxx\nyyy\nzzz\n'.repeat(35); // fully disjoint → break
 
         // Both halves are consumed: del-half → rename to dst1, add-half → rename from src2
         const modOldId = await writeBlob(ctx, modOldContent);
@@ -2882,8 +2987,8 @@ describe('detectSimilarityRenames', () => {
         // the add half is unpaired, so write back rejoins into a broken modify
         const ctx = await buildSeededContext();
         // Fully disjoint content → break IS attempted and both halves survive (no rename candidates)
-        const oldId = await writeBlob(ctx, 'aaa\nbbb\nccc\nddd\n'.repeat(5));
-        const newId = await writeBlob(ctx, 'xxx\nyyy\nzzz\nwww\n'.repeat(5));
+        const oldId = await writeBlob(ctx, 'aaa\nbbb\nccc\nddd\n'.repeat(30));
+        const newId = await writeBlob(ctx, 'xxx\nyyy\nzzz\nwww\n'.repeat(30));
 
         const diff: TreeDiff = {
           changes: [
@@ -3262,10 +3367,11 @@ describe('detectSimilarityRenames', () => {
     describe('When detectSimilarityRenames is called', () => {
       it('Then score===0 uses DEFAULT_BREAK_SCORE not 0 (kills L751 ConditionalExpression "true")', async () => {
         // Arrange — similar modify (one-line change) so computedBreakScore < DEFAULT_BREAK_SCORE;
-        // score:0 must map to DEFAULT_BREAK_SCORE so the modify is NOT broken
+        // score:0 must map to DEFAULT_BREAK_SCORE so the modify is NOT broken. manyLines
+        // (>= MINIMUM_BREAK_SIZE) keeps Part 11's size guard out of the way.
         const ctx = await buildSeededContext();
-        const similar1 = tenLines(0);
-        const similar2 = tenLines(0).replace('X line 0\n', 'Y line 0\n');
+        const similar1 = manyLines(0);
+        const similar2 = manyLines(0).replace('X line 0\n', 'Y line 0\n');
         const oldId = await writeBlob(ctx, similar1);
         const newId = await writeBlob(ctx, similar2);
 

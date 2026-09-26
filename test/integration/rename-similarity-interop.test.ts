@@ -2852,9 +2852,20 @@ describe.skipIf(!GIT_AVAILABLE)('use-count labelling and gitlink-counted limit i
  * halves into one modify while counting the rejoin as one more use of the
  * delete-half's source (K1, K2) — before use-count labelling runs. Fixtures
  * are kept >= 500 bytes so Part 11's byte-size guard still leaves them broken.
+ * S0/S1 pin `should_break`'s own guards: an empty source or a pair under
+ * MINIMUM_BREAK_SIZE (400 bytes) never breaks at all, so the write-back rules
+ * above never get a chance to run; K3 pins that an unrelated exact rename
+ * keeps working alongside a broken modify once those guards are in place.
  */
 const WRITE_BACK_TMP_PREFIX = 'tsgit-rename-write-back-';
 const WRITE_BACK_SETUP_TIMEOUT = 60_000;
+
+/** Unrelated content for K3's exact-rename pair — distinct from m.txt's
+ *  break content, so z.txt/q.txt never scores against m.txt. */
+const K3_UNRELATED_CONTENT = Array.from(
+  { length: 20 },
+  (_, i) => `z-line-${String(i).padStart(3, '0')}: unrelated marker alpha beta\n`,
+).join('');
 
 const WRITE_BACK_ROWS: ReadonlyArray<RenameRow> = [
   {
@@ -2887,6 +2898,42 @@ const WRITE_BACK_ROWS: ReadonlyArray<RenameRow> = [
       { path: 'a/d', content: breakContent('new', 40, 0) },
     ],
     after: [{ path: 'a/s', content: breakContent('new', 40, 0) }],
+    gitFlags: ['-B'],
+    renameOptions: { breakRewrites: { score: 30000, merge: 36000 } },
+  },
+  {
+    label:
+      '-B: an empty a/e rewritten to match a deleted a/d exactly — the empty-source guard means the modify never breaks, so the pairing S2 would otherwise make never happens (design row S0: D a/d ; M a/e)',
+    before: [
+      { path: 'a/e', content: '' },
+      { path: 'a/d', content: breakContent('new', 40, 0) },
+    ],
+    after: [{ path: 'a/e', content: breakContent('new', 40, 0) }],
+    gitFlags: ['-B'],
+    renameOptions: { breakRewrites: { score: 30000, merge: 36000 } },
+  },
+  {
+    label:
+      '-B: a small a/s fully rewritten to match a small deleted a/d exactly — both sides sit under MINIMUM_BREAK_SIZE, so the modify never breaks (design row S1: D a/d ; M a/s)',
+    before: [
+      { path: 'a/s', content: breakContent('old', 3, 0) },
+      { path: 'a/d', content: breakContent('new', 3, 0) },
+    ],
+    after: [{ path: 'a/s', content: breakContent('new', 3, 0) }],
+    gitFlags: ['-B'],
+    renameOptions: { breakRewrites: { score: 30000, merge: 36000 } },
+  },
+  {
+    label:
+      '-B: a rewritten m.txt with no rename candidate of its own, alongside an unrelated exact-rename pair — the broken modify and the rename never interact (design row K3, must stay: M100 m ; R100 z→q)',
+    before: [
+      { path: 'm.txt', content: breakContent('old', 40, 0) },
+      { path: 'z.txt', content: K3_UNRELATED_CONTENT },
+    ],
+    after: [
+      { path: 'm.txt', content: breakContent('new', 40, 0) },
+      { path: 'q.txt', content: K3_UNRELATED_CONTENT },
+    ],
     gitFlags: ['-B'],
     renameOptions: { breakRewrites: { score: 30000, merge: 36000 } },
   },
