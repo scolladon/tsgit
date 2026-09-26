@@ -14,9 +14,9 @@ import { kindOf } from '../../domain/diff/index.js';
 import { sortByPath } from '../../domain/diff/path-compare.js';
 import type { RenameDetectOptions } from '../../domain/diff/rename-detect.js';
 import {
+  basenameOf,
   compareCandidates,
   type ExactPairing,
-  hasSameBasename,
   type LabelledPair,
   labelRenameCopy,
   type MatrixCandidate,
@@ -116,16 +116,24 @@ function estimatePairSimilarity(
  * and that slot's position decides the stable sort's tie-break among
  * equal-ranked candidates later. `selectPairs` is where the threshold gate
  * actually applies, not here.
+ *
+ * `sameBasename` is read only when `score >= threshold` — git's own
+ * `name_score` is computed after the score gate, never before (a candidate
+ * that can't clear the threshold is never selected, so its nameScore can
+ * never change `selectPairs`'s outcome; only the tie-break among candidates
+ * that already share the winning score matters).
  */
 function scoreAndRecord(
   sf: BlobFingerprint | undefined,
   df: BlobFingerprint | undefined,
   threshold: number,
-  candidate: MatrixCandidate,
+  candidate: { readonly source: number; readonly destination: AddChange },
+  sameBasename: boolean,
   slots: MatrixCandidate[],
 ): void {
   const score = estimatePairSimilarity(sf, df, threshold);
-  recordIfBetter(slots, { ...candidate, score });
+  const nameScore = score >= threshold && sameBasename ? 1 : 0;
+  recordIfBetter(slots, { ...candidate, score, nameScore });
 }
 
 /** Final emitted change for a labelled pair, generalised over the registry's
@@ -503,15 +511,20 @@ function buildMatrix(
   threshold: number,
 ): MatrixCandidate[] {
   const candidates: MatrixCandidate[] = [];
+  // Each source's basename computed once here, not once per destination the
+  // inner loop below visits — the destination's own basename is computed
+  // once per destination for the same reason.
+  const sourceBasenames = sources.map(({ source }) => basenameOf(source.path));
   for (const destination of destinations) {
     const df = fingerprints.get(destination.newId);
     if (df === undefined) continue;
+    const destinationBasename = basenameOf(destination.newPath);
     const slots: MatrixCandidate[] = [];
-    for (const { index, source } of sources) {
+    sources.forEach(({ index, source }, position) => {
       const sf = fingerprints.get(source.id);
-      const nameScore = hasSameBasename(source.path, destination.newPath) ? 1 : 0;
-      scoreAndRecord(sf, df, threshold, { source: index, destination, score: 0, nameScore }, slots);
-    }
+      const sameBasename = sourceBasenames[position] === destinationBasename;
+      scoreAndRecord(sf, df, threshold, { source: index, destination }, sameBasename, slots);
+    });
     for (const candidate of slots) candidates.push(candidate);
   }
   return candidates;

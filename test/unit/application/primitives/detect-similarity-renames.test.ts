@@ -11,6 +11,7 @@ import { writeObject } from '../../../../src/application/primitives/write-object
 import type { AddChange, DiffChange, TreeDiff } from '../../../../src/domain/diff/diff-change.js';
 import type { FlatTreeEntry } from '../../../../src/domain/diff/flat-tree.js';
 import type { MatrixCandidate } from '../../../../src/domain/diff/rename-pairing.js';
+import * as renamePairingMod from '../../../../src/domain/diff/rename-pairing.js';
 import {
   DEFAULT_BREAK_SCORE,
   DEFAULT_MERGE_SCORE,
@@ -5973,6 +5974,60 @@ describe('detectSimilarityRenames', () => {
           expect(result.changes.filter((c) => c.type === 'add')).toHaveLength(pairCount);
         } finally {
           readSpy.mockRestore();
+        }
+      });
+    });
+  });
+  describe('Given two deletes and two adds sharing no basename with anything', () => {
+    describe('When detectSimilarityRenames runs the inexact matrix', () => {
+      it('Then the matrix never calls the shared hasSameBasename helper', async () => {
+        // Arrange — no path anywhere shares a basename with another path, so the
+        // basename pre-pass finds zero candidates and every pair reaches buildMatrix,
+        // which must compare precomputed basenames instead of calling hasSameBasename
+        // once per (source, destination) pair.
+        const ctx = await buildSeededContext();
+        const oneId = await writeBlob(ctx, tenLines(0));
+        const twoId = await writeBlob(ctx, tenLines(1));
+        const threeId = await writeBlob(ctx, tenLines(2));
+        const fourId = await writeBlob(ctx, tenLines(3));
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'delete',
+              oldPath: 'a/one.txt' as FilePath,
+              oldId: oneId,
+              oldMode: FILE_MODE.REGULAR,
+            },
+            {
+              type: 'delete',
+              oldPath: 'a/two.txt' as FilePath,
+              oldId: twoId,
+              oldMode: FILE_MODE.REGULAR,
+            },
+            {
+              type: 'add',
+              newPath: 'b/three.txt' as FilePath,
+              newId: threeId,
+              newMode: FILE_MODE.REGULAR,
+            },
+            {
+              type: 'add',
+              newPath: 'b/four.txt' as FilePath,
+              newId: fourId,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+        const basenameSpy = vi.spyOn(renamePairingMod, 'hasSameBasename');
+
+        // Act
+        await detectSimilarityRenames(ctx, diff);
+
+        // Assert
+        try {
+          expect(basenameSpy).not.toHaveBeenCalled();
+        } finally {
+          basenameSpy.mockRestore();
         }
       });
     });

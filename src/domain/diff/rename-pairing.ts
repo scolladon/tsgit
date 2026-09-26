@@ -62,7 +62,7 @@ function exactKey(id: ObjectId, mode: FileMode): string {
 }
 
 // Last path segment; 'a/Foo' and 'Foo' share basename 'Foo'.
-function basenameOf(filePath: FilePath): string {
+export function basenameOf(filePath: FilePath): string {
   return filePath.slice(filePath.lastIndexOf('/') + 1);
 }
 
