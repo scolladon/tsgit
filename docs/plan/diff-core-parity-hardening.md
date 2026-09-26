@@ -133,18 +133,18 @@ git 2.55.0, every `GIT_*` unset, `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/de
 isolated `HOME`, `mktemp -d` repos. The tsgit column is a scratch esbuild bundle of
 `git archive HEAD src` at the planning HEAD.
 
-**Directory rename (Part 16).** `oldname/{inner.txt, sub/deep.txt}` moved to `newname/`:
+**Directory rename (Part 16).** `old-dir/{inner.txt, sub/deep.txt}` moved to `new-dir/`:
 
 | Command | git output |
 |---|---|
-| `diff-tree -M` (raw, no `-r`) | `:040000 040000 <t> <t> R100 oldname newname` (one directory row) |
-| `diff-tree -M --name-status` | `R100 oldname newname` |
-| `diff-tree -M --numstat` and `diff-tree -M -r --numstat` | `0 0 {oldname => newname}/inner.txt ; 0 0 {oldname => newname}/sub/deep.txt` (recursed, paired per leaf) |
+| `diff-tree -M` (raw, no `-r`) | `:040000 040000 <t> <t> R100 old-dir new-dir` (one directory row) |
+| `diff-tree -M --name-status` | `R100 old-dir new-dir` |
+| `diff-tree -M --numstat` and `diff-tree -M -r --numstat` | `0 0 {old-dir => new-dir}/inner.txt ; 0 0 {old-dir => new-dir}/sub/deep.txt` (recursed, paired per leaf) |
 | `diff-tree -M -p` | two leaf `similarity index 100%` renames |
 | `diff-tree --numstat` (no `-M`) | leaf adds/deletes `1 0 ; 2 0 ; 0 1 ; 0 2` |
 | `diff --numstat`, `diff -M --name-status` | leaf renames (porcelain `diff` recurses) |
-| dir moved AND `inner.txt` edited, `diff-tree -M` raw | `D newname ; A renamed2` (trees differ: no directory pairing) |
-| same, `diff-tree -M --numstat` | `1 0 {newname => renamed2}/inner.txt ; 0 0 {newname => renamed2}/sub/deep.txt` (similarity pairing on leaves) |
+| dir moved AND `inner.txt` edited, `diff-tree -M` raw | `D new-dir ; A renamed2` (trees differ: no directory pairing) |
+| same, `diff-tree -M --numstat` | `1 0 {new-dir => renamed2}/inner.txt ; 0 0 {new-dir => renamed2}/sub/deep.txt` (similarity pairing on leaves) |
 
 So a content-reading output format (`--numstat`, `--stat`, `-p`) makes git recurse
 **before** rename detection (diff.c sets `flags.recursive` for any format beyond
@@ -1543,7 +1543,7 @@ the top-level entries and `expandDirectoryChanges` (diff-trees.ts `:265`) /
 `expandLevelChange` (`:636`) only expand add/delete/modify. git recurses **before**
 detection for any content-reading format (probe table above): the numstat of an exact
 directory rename is one `0 0` rename per leaf, and a moved-and-edited directory pairs
-its leaves by similarity (`1 0 {newname => renamed2}/inner.txt`).
+its leaves by similarity (`1 0 {new-dir => renamed2}/inner.txt`).
 
 Edits:
 - `src/application/primitives/diff-trees.ts`

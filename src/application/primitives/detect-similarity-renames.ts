@@ -1531,8 +1531,7 @@ async function runExactAndBasenamePasses(
  *     final use count (post write back) in destination-path order; unpaired
  *     destinations stay adds; a deleted source's delete survives iff nothing
  *     beyond its seed used it.
- */
-/**
+ *
  * Detect exact and inexact (content-similarity) renames, and optionally
  * copies, with optional -B break-rewrite detection. A thin orchestrator over
  * six named steps: break, register, exact+basename, matrix, write-back,
