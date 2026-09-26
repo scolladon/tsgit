@@ -638,11 +638,9 @@ describe.skipIf(!GIT_AVAILABLE)('diff type-change interop', () => {
     });
 
     describe('When diff called with copies:harder', () => {
-      it("Then r2_old and r2_new never pair with each other, though an unrelated unchanged gitlink sharing r2_new's oid legitimately copies (design row G2: a gitlink is an eligible, same-mode-only exact copy source)", async () => {
-        // Arrange — copies:'harder' scans the WHOLE preimage tree for copy sources,
-        // not just the two paths under test. `bump_sub` (added earlier in this shared
-        // repo, unchanged since) happens to share r2_new's oid, so it legitimately
-        // becomes r2_new's exact copy source — matching real git's own rule.
+      it('Then the name-status matches git diff -C -C, where an unchanged same-oid gitlink is the copy source', async () => {
+        // Arrange — copies:'harder' offers every preimage path as a copy source, so an
+        // unrelated unchanged gitlink sharing r2_new's oid pairs with it exactly
         const { from, to } = r2DifferentOid;
 
         // Act
@@ -653,17 +651,10 @@ describe.skipIf(!GIT_AVAILABLE)('diff type-change interop', () => {
           renameOptions: { copies: 'harder' },
         });
 
-        // Assert — r2_old (a different oid) never pairs with r2_new
-        expect(result.changes.filter((c) => c.type === 'rename')).toHaveLength(0);
-        const copyChange = result.changes.find((c) => c.type === 'copy');
-        expect(copyChange?.type).toBe('copy');
-        if (copyChange?.type === 'copy') {
-          expect(copyChange.newPath).toBe('r2_new');
-          expect(copyChange.oldPath).not.toBe('r2_old');
-        }
-        const deleteChange = result.changes.find((c) => c.type === 'delete');
-        expect(deleteChange?.type).toBe('delete');
-        if (deleteChange?.type === 'delete') expect(deleteChange.oldPath).toBe('r2_old');
+        // Assert
+        expect(nameStatusFrom(result)).toBe(
+          git(dir, 'diff', '--no-ext-diff', '--name-status', '-C', '-C', from, to).trim(),
+        );
       });
     });
   });
