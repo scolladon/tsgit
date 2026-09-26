@@ -983,7 +983,7 @@ export const ensureScaledFixture = async (spec: FixtureSpec): Promise<ScaledFixt
 // the mutation `HEAD~1..HEAD` diffs over), built via `git fast-import` for
 // the same reason the scaled fixtures are.
 
-export type RenameFixtureShape = 'common' | 'wide' | 'hostile';
+export type RenameFixtureShape = 'common' | 'wide' | 'hostile' | 'hostile-basename';
 export type RenameFixtureStorage = 'loose' | 'packed';
 
 export interface RenameFixture {
@@ -1140,10 +1140,60 @@ const streamHostileRenameFastImport = async (stdin: Writable): Promise<void> => 
   });
 };
 
+// N distinct incompressible 1 MiB deletes, each paired with its OWN
+// same-basename tiny add in a different directory — the shape that forces
+// the BASENAME PASS to drop every pair on declared size alone, never reading
+// a byte of either side. Distinct from `hostile` (one shared add, scored
+// through the ordinary matrix's own hydration gate): here every pair shares
+// a basename, so `find_basename_matches`/`runBasenamePass` is the thing
+// actually under measurement.
+const HOSTILE_BASENAME_PAIR_COUNT = 300;
+const HOSTILE_BASENAME_BLOB_BYTES = 1_048_576;
+
+const hostileBasenameOldPath = (fileIndex: number): string =>
+  `hostile-basename/old/f${fileIndex.toString().padStart(3, '0')}.bin`;
+const hostileBasenameNewPath = (fileIndex: number): string =>
+  `hostile-basename/new/f${fileIndex.toString().padStart(3, '0')}.bin`;
+// Exactly 6 bytes each — matches the "tiny add" size of the `hostile` shape;
+// distinct per pair so the exact pass never has an identical-content match
+// to short-circuit through.
+const hostileBasenameAddContent = (fileIndex: number): Buffer =>
+  Buffer.from(`h${fileIndex.toString().padStart(3, '0')}\n`, 'utf8');
+
+/** N distinct 1 MiB blobs seeded, then each deleted and replaced by its own
+ *  same-basename 6-byte add in a sibling directory. */
+const streamHostileBasenameRenameFastImport = async (stdin: Writable): Promise<void> => {
+  let seedChanges = '';
+  for (let i = 0; i < HOSTILE_BASENAME_PAIR_COUNT; i += 1) {
+    await writeBlobEntry(stdin, i + 1, blobContent(i, HOSTILE_BASENAME_BLOB_BYTES));
+    seedChanges += `M 100644 :${i + 1} ${hostileBasenameOldPath(i)}\n`;
+  }
+  await writeCommitEntry(stdin, {
+    message: RENAME_COMMIT_MESSAGE_SEED,
+    timestamp: BASE_TIMESTAMP,
+    changes: seedChanges,
+  });
+
+  let mutateChanges = '';
+  let mark = HOSTILE_BASENAME_PAIR_COUNT + 1;
+  for (let i = 0; i < HOSTILE_BASENAME_PAIR_COUNT; i += 1) {
+    mutateChanges += `D ${hostileBasenameOldPath(i)}\n`;
+    await writeBlobEntry(stdin, mark, hostileBasenameAddContent(i));
+    mutateChanges += `M 100644 :${mark} ${hostileBasenameNewPath(i)}\n`;
+    mark += 1;
+  }
+  await writeCommitEntry(stdin, {
+    message: 'delete and add, same basename\n',
+    timestamp: BASE_TIMESTAMP + 1,
+    changes: mutateChanges,
+  });
+};
+
 const RENAME_FIXTURE_STREAMS: Record<RenameFixtureShape, (stdin: Writable) => Promise<void>> = {
   common: streamCommonRenameFastImport,
   wide: streamWideRenameFastImport,
   hostile: streamHostileRenameFastImport,
+  'hostile-basename': streamHostileBasenameRenameFastImport,
 };
 
 const renameFixtureCacheDir = (shape: RenameFixtureShape, storage: RenameFixtureStorage): string =>
@@ -1170,7 +1220,8 @@ const renameFixtureCached = async (cacheDir: string): Promise<boolean> => {
   try {
     await access(cacheDir);
     return true;
-  } catch {
+  } catch (err) {
+    if (errorCodeOf(err) !== 'ENOENT') throw err;
     return false;
   }
 };
