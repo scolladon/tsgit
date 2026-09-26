@@ -13,11 +13,7 @@
  *   unique:         exact rename pairing (one-shot source, basename preference, mode rule, 100-candidate cap, limit-free) matches git diff --name-status
  *   interopSurface: diff
  */
-import { rm } from 'node:fs/promises';
-
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { GIT_AVAILABLE } from './interop-helpers.js';
-import { buildRenameRow, manyFiles, type RenameRow, runRenameRow } from './rename-interop-rows.js';
+import { describeRenameRows, manyFiles, type RenameRow } from './rename-interop-rows.js';
 
 // ~20 throwaway repos, each spawning several git processes — the shared type
 // change interop suite needs the same headroom under the full validate run's
@@ -341,39 +337,4 @@ const ROWS: ReadonlyArray<RenameRow> = [
   },
 ];
 
-const fixtures = new Map<string, { readonly dir: string }>();
-
-function fixtureOf(label: string): { readonly dir: string } {
-  const found = fixtures.get(label);
-  if (found === undefined) throw new Error(`fixture not built for row: ${label}`);
-  return found;
-}
-
-describe.skipIf(!GIT_AVAILABLE)('exact rename pass interop', () => {
-  beforeAll(async () => {
-    for (const row of ROWS) {
-      fixtures.set(row.label, await buildRenameRow(row, TMP_PREFIX));
-    }
-  }, SETUP_TIMEOUT);
-
-  afterAll(async () => {
-    for (const { dir } of fixtures.values()) {
-      await rm(dir, { recursive: true, force: true });
-    }
-  });
-
-  describe('Given a raw diff pair exercising the exact rename pass', () => {
-    describe('When diff is called with detectRenames', () => {
-      it.each(ROWS)('Then name-status matches live git for: $label', async (row) => {
-        // Arrange
-        const { dir } = fixtureOf(row.label);
-
-        // Act
-        const { ours, peer } = await runRenameRow(row, dir);
-
-        // Assert
-        expect(ours).toBe(peer);
-      });
-    });
-  });
-});
+describeRenameRows('exact rename pass interop', ROWS, TMP_PREFIX, SETUP_TIMEOUT);

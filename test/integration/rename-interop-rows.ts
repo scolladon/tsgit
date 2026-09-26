@@ -1,21 +1,21 @@
 /**
  * Shared row-table harness for the rename interop suites (exact pass,
  * similarity pass): fixture shapes, one-repo-per-row building (including
- * gitlink entries), `--name-status` reconstruction and the `diff()` call.
- *
- * Holds no test registration — each suite declares its own `ROWS`, builds
- * its own fixtures in its own `beforeAll`/`afterAll`, and runs its own
- * `it.each` block.
+ * gitlink entries), `--name-status` reconstruction, the `diff()` call, and
+ * (via `describeRenameRows`) the test registration itself — one repo-per-row
+ * fixture map, built in a shared `beforeAll` and torn down in `afterAll`,
+ * with one `it.each` asserting `ours === peer` per row.
  */
-import { chmod, mkdir, mkdtemp, realpath, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, realpath, rm as rmDir, symlink, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/index.js';
 import { diff } from '../../src/application/commands/diff.js';
 import type { DiffChange, RenameDetectOptions, TreeDiff } from '../../src/domain/diff/index.js';
 import { toSimilarityPercent } from '../../src/domain/diff/similarity.js';
-import { git, runGit, runGitEnv } from './interop-helpers.js';
+import { GIT_AVAILABLE, git, runGit, runGitEnv } from './interop-helpers.js';
 
 const DEFAULT_CONTENT = 'x\n';
 const GITLINK_MODE = '160000';
@@ -189,4 +189,56 @@ export async function runRenameRow(
   });
   const ours = nameStatusFrom(result);
   return { ours, peer };
+}
+
+/**
+ * Registers one row-table suite: builds every row's repo in a shared
+ * `beforeAll`, tears every one down in `afterAll`, and asserts `ours ===
+ * peer` for each row via one `it.each`. `detectRenames` (default `true`)
+ * only picks the inner "When" wording — per-row rename detection is each
+ * row's own `RenameRow.detectRenames` field, unaffected by this flag.
+ * Skips silently when `git` is absent, matching every row-table suite.
+ */
+export function describeRenameRows(
+  name: string,
+  rows: ReadonlyArray<RenameRow>,
+  tmpPrefix: string,
+  timeout: number,
+  detectRenames = true,
+): void {
+  const fixtures = new Map<string, { readonly dir: string }>();
+  const fixtureOf = (label: string): { readonly dir: string } => {
+    const found = fixtures.get(label);
+    if (found === undefined) throw new Error(`fixture not built for row: ${label}`);
+    return found;
+  };
+
+  describe.skipIf(!GIT_AVAILABLE)(name, () => {
+    beforeAll(async () => {
+      for (const row of rows) {
+        fixtures.set(row.label, await buildRenameRow(row, tmpPrefix));
+      }
+    }, timeout);
+
+    afterAll(async () => {
+      for (const { dir } of fixtures.values()) {
+        await rmDir(dir, { recursive: true, force: true });
+      }
+    });
+
+    describe("Given the suite's raw diff-pair fixtures", () => {
+      describe(`When diff is called ${detectRenames ? 'with' : 'without'} detectRenames`, () => {
+        it.each(rows)('Then name-status matches live git for: $label', async (row) => {
+          // Arrange
+          const { dir } = fixtureOf(row.label);
+
+          // Act
+          const { ours, peer } = await runRenameRow(row, dir);
+
+          // Assert
+          expect(ours).toBe(peer);
+        });
+      });
+    });
+  });
 }

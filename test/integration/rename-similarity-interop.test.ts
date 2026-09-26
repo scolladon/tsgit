@@ -40,9 +40,9 @@ import { reconstructPatch } from './diff-reconstruct.js';
 import { GIT_AVAILABLE, git, makePeerPair, runGit, runGitEnv } from './interop-helpers.js';
 import {
   buildRenameRow,
+  describeRenameRows,
   type FileSpec,
   type RenameRow,
-  runRenameRow,
 } from './rename-interop-rows.js';
 
 const fixturesDir = path.join(
@@ -2664,42 +2664,12 @@ const NAME_SCORE_ROWS: ReadonlyArray<RenameRow> = [
   },
 ];
 
-const nameScoreFixtures = new Map<string, { readonly dir: string }>();
-
-function nameScoreFixtureOf(label: string): { readonly dir: string } {
-  const found = nameScoreFixtures.get(label);
-  if (found === undefined) throw new Error(`fixture not built for row: ${label}`);
-  return found;
-}
-
-describe.skipIf(!GIT_AVAILABLE)('name_score matrix tie-break interop', () => {
-  beforeAll(async () => {
-    for (const row of NAME_SCORE_ROWS) {
-      nameScoreFixtures.set(row.label, await buildRenameRow(row, TMP_PREFIX));
-    }
-  }, SETUP_TIMEOUT);
-
-  afterAll(async () => {
-    for (const { dir } of nameScoreFixtures.values()) {
-      await rmDir(dir, { recursive: true, force: true });
-    }
-  });
-
-  describe('Given a raw diff pair exercising the name_score matrix tie-break', () => {
-    describe('When diff is called with detectRenames', () => {
-      it.each(NAME_SCORE_ROWS)('Then name-status matches live git for: $label', async (row) => {
-        // Arrange
-        const { dir } = nameScoreFixtureOf(row.label);
-
-        // Act
-        const { ours, peer } = await runRenameRow(row, dir);
-
-        // Assert
-        expect(ours).toBe(peer);
-      });
-    });
-  });
-});
+describeRenameRows(
+  'name_score matrix tie-break interop',
+  NAME_SCORE_ROWS,
+  TMP_PREFIX,
+  SETUP_TIMEOUT,
+);
 
 /**
  * `record_if_better` slot semantics interop: git calls `record_if_better` for
@@ -2728,42 +2698,12 @@ const SLOT_SEMANTICS_ROWS: ReadonlyArray<RenameRow> = [
   },
 ];
 
-const slotSemanticsFixtures = new Map<string, { readonly dir: string }>();
-
-function slotSemanticsFixtureOf(label: string): { readonly dir: string } {
-  const found = slotSemanticsFixtures.get(label);
-  if (found === undefined) throw new Error(`fixture not built for row: ${label}`);
-  return found;
-}
-
-describe.skipIf(!GIT_AVAILABLE)('record_if_better slot semantics interop', () => {
-  beforeAll(async () => {
-    for (const row of SLOT_SEMANTICS_ROWS) {
-      slotSemanticsFixtures.set(row.label, await buildRenameRow(row, SLOT_SEMANTICS_TMP_PREFIX));
-    }
-  }, SLOT_SEMANTICS_SETUP_TIMEOUT);
-
-  afterAll(async () => {
-    for (const { dir } of slotSemanticsFixtures.values()) {
-      await rmDir(dir, { recursive: true, force: true });
-    }
-  });
-
-  describe('Given a raw diff pair exercising below-threshold candidates sharing the matrix with the real ones', () => {
-    describe('When diff is called with detectRenames', () => {
-      it.each(SLOT_SEMANTICS_ROWS)('Then name-status matches live git for: $label', async (row) => {
-        // Arrange
-        const { dir } = slotSemanticsFixtureOf(row.label);
-
-        // Act
-        const { ours, peer } = await runRenameRow(row, dir);
-
-        // Assert
-        expect(ours).toBe(peer);
-      });
-    });
-  });
-});
+describeRenameRows(
+  'record_if_better slot semantics interop',
+  SLOT_SEMANTICS_ROWS,
+  SLOT_SEMANTICS_TMP_PREFIX,
+  SLOT_SEMANTICS_SETUP_TIMEOUT,
+);
 
 /**
  * Use-count labelling interop: `git diff -C` labels a pair by how many times
@@ -2962,79 +2902,19 @@ const EXACT_ONLY_ROWS: ReadonlyArray<RenameRow> = [
   },
 ];
 
-const exactOnlyFixtures = new Map<string, { readonly dir: string }>();
+describeRenameRows(
+  'exact-only threshold interop',
+  EXACT_ONLY_ROWS,
+  EXACT_ONLY_TMP_PREFIX,
+  EXACT_ONLY_SETUP_TIMEOUT,
+);
 
-function exactOnlyFixtureOf(label: string): { readonly dir: string } {
-  const found = exactOnlyFixtures.get(label);
-  if (found === undefined) throw new Error(`fixture not built for row: ${label}`);
-  return found;
-}
-
-describe.skipIf(!GIT_AVAILABLE)('exact-only threshold interop', () => {
-  beforeAll(async () => {
-    for (const row of EXACT_ONLY_ROWS) {
-      exactOnlyFixtures.set(row.label, await buildRenameRow(row, EXACT_ONLY_TMP_PREFIX));
-    }
-  }, EXACT_ONLY_SETUP_TIMEOUT);
-
-  afterAll(async () => {
-    for (const { dir } of exactOnlyFixtures.values()) {
-      await rmDir(dir, { recursive: true, force: true });
-    }
-  });
-
-  describe('Given a raw diff pair where an approximate score could reach the rename ceiling for non-identical bytes', () => {
-    describe('When diff is called with detectRenames at a 100% threshold', () => {
-      it.each(EXACT_ONLY_ROWS)('Then name-status matches live git for: $label', async (row) => {
-        // Arrange
-        const { dir } = exactOnlyFixtureOf(row.label);
-
-        // Act
-        const { ours, peer } = await runRenameRow(row, dir);
-
-        // Assert
-        expect(ours).toBe(peer);
-      });
-    });
-  });
-});
-
-const useCountFixtures = new Map<string, { readonly dir: string }>();
-
-function useCountFixtureOf(label: string): { readonly dir: string } {
-  const found = useCountFixtures.get(label);
-  if (found === undefined) throw new Error(`fixture not built for row: ${label}`);
-  return found;
-}
-
-describe.skipIf(!GIT_AVAILABLE)('use-count labelling and gitlink-counted limit interop', () => {
-  beforeAll(async () => {
-    for (const row of USE_COUNT_ROWS) {
-      useCountFixtures.set(row.label, await buildRenameRow(row, USE_COUNT_TMP_PREFIX));
-    }
-  }, USE_COUNT_SETUP_TIMEOUT);
-
-  afterAll(async () => {
-    for (const { dir } of useCountFixtures.values()) {
-      await rmDir(dir, { recursive: true, force: true });
-    }
-  });
-
-  describe('Given a raw diff pair exercising use-count labelling or the gitlink-counted limit', () => {
-    describe('When diff is called with detectRenames', () => {
-      it.each(USE_COUNT_ROWS)('Then name-status matches live git for: $label', async (row) => {
-        // Arrange
-        const { dir } = useCountFixtureOf(row.label);
-
-        // Act
-        const { ours, peer } = await runRenameRow(row, dir);
-
-        // Assert
-        expect(ours).toBe(peer);
-      });
-    });
-  });
-});
+describeRenameRows(
+  'use-count labelling and gitlink-counted limit interop',
+  USE_COUNT_ROWS,
+  USE_COUNT_TMP_PREFIX,
+  USE_COUNT_SETUP_TIMEOUT,
+);
 
 /**
  * `-C -C` retry-exhausted interop: when the harder source count still clears
@@ -3073,42 +2953,12 @@ const HARDER_RETRY_ROWS: ReadonlyArray<RenameRow> = [
   },
 ];
 
-const harderRetryFixtures = new Map<string, { readonly dir: string }>();
-
-function harderRetryFixtureOf(label: string): { readonly dir: string } {
-  const found = harderRetryFixtures.get(label);
-  if (found === undefined) throw new Error(`fixture not built for row: ${label}`);
-  return found;
-}
-
-describe.skipIf(!GIT_AVAILABLE)('"harder" retry-exhausted interop', () => {
-  beforeAll(async () => {
-    for (const row of HARDER_RETRY_ROWS) {
-      harderRetryFixtures.set(row.label, await buildRenameRow(row, HARDER_RETRY_TMP_PREFIX));
-    }
-  }, HARDER_RETRY_SETUP_TIMEOUT);
-
-  afterAll(async () => {
-    for (const { dir } of harderRetryFixtures.values()) {
-      await rmDir(dir, { recursive: true, force: true });
-    }
-  });
-
-  describe('Given a raw diff pair where the "harder" retry set still clears the rename limit', () => {
-    describe('When diff is called with detectRenames', () => {
-      it.each(HARDER_RETRY_ROWS)('Then name-status matches live git for: $label', async (row) => {
-        // Arrange
-        const { dir } = harderRetryFixtureOf(row.label);
-
-        // Act
-        const { ours, peer } = await runRenameRow(row, dir);
-
-        // Assert
-        expect(ours).toBe(peer);
-      });
-    });
-  });
-});
+describeRenameRows(
+  '"harder" retry-exhausted interop',
+  HARDER_RETRY_ROWS,
+  HARDER_RETRY_TMP_PREFIX,
+  HARDER_RETRY_SETUP_TIMEOUT,
+);
 
 /**
  * `-B` write back interop: git's `diffcore-rename.c:1669` drops a broken
@@ -3226,42 +3076,12 @@ const WRITE_BACK_ROWS: ReadonlyArray<RenameRow> = [
   },
 ];
 
-const writeBackFixtures = new Map<string, { readonly dir: string }>();
-
-function writeBackFixtureOf(label: string): { readonly dir: string } {
-  const found = writeBackFixtures.get(label);
-  if (found === undefined) throw new Error(`fixture not built for row: ${label}`);
-  return found;
-}
-
-describe.skipIf(!GIT_AVAILABLE)('-B write back interop', () => {
-  beforeAll(async () => {
-    for (const row of WRITE_BACK_ROWS) {
-      writeBackFixtures.set(row.label, await buildRenameRow(row, WRITE_BACK_TMP_PREFIX));
-    }
-  }, WRITE_BACK_SETUP_TIMEOUT);
-
-  afterAll(async () => {
-    for (const { dir } of writeBackFixtures.values()) {
-      await rmDir(dir, { recursive: true, force: true });
-    }
-  });
-
-  describe('Given a raw diff pair exercising -B write back (a broken delete drop or a rejoin)', () => {
-    describe('When diff is called with detectRenames', () => {
-      it.each(WRITE_BACK_ROWS)('Then name-status matches live git for: $label', async (row) => {
-        // Arrange
-        const { dir } = writeBackFixtureOf(row.label);
-
-        // Act
-        const { ours, peer } = await runRenameRow(row, dir);
-
-        // Assert
-        expect(ours).toBe(peer);
-      });
-    });
-  });
-});
+describeRenameRows(
+  '-B write back interop',
+  WRITE_BACK_ROWS,
+  WRITE_BACK_TMP_PREFIX,
+  WRITE_BACK_SETUP_TIMEOUT,
+);
 
 /**
  * Non-regular files leave similarity scoring: a symlink or gitlink is never
@@ -3357,42 +3177,12 @@ const NON_REGULAR_ROWS: ReadonlyArray<RenameRow> = [
   },
 ];
 
-const nonRegularFixtures = new Map<string, { readonly dir: string }>();
-
-function nonRegularFixtureOf(label: string): { readonly dir: string } {
-  const found = nonRegularFixtures.get(label);
-  if (found === undefined) throw new Error(`fixture not built for row: ${label}`);
-  return found;
-}
-
-describe.skipIf(!GIT_AVAILABLE)('non-regular files leave similarity scoring interop', () => {
-  beforeAll(async () => {
-    for (const row of NON_REGULAR_ROWS) {
-      nonRegularFixtures.set(row.label, await buildRenameRow(row, NON_REGULAR_TMP_PREFIX));
-    }
-  }, NON_REGULAR_SETUP_TIMEOUT);
-
-  afterAll(async () => {
-    for (const { dir } of nonRegularFixtures.values()) {
-      await rmDir(dir, { recursive: true, force: true });
-    }
-  });
-
-  describe('Given a raw diff pair exercising a non-regular (symlink) side of the rename/copy pools', () => {
-    describe('When diff is called with detectRenames', () => {
-      it.each(NON_REGULAR_ROWS)('Then name-status matches live git for: $label', async (row) => {
-        // Arrange
-        const { dir } = nonRegularFixtureOf(row.label);
-
-        // Act
-        const { ours, peer } = await runRenameRow(row, dir);
-
-        // Assert
-        expect(ours).toBe(peer);
-      });
-    });
-  });
-});
+describeRenameRows(
+  'non-regular files leave similarity scoring interop',
+  NON_REGULAR_ROWS,
+  NON_REGULAR_TMP_PREFIX,
+  NON_REGULAR_SETUP_TIMEOUT,
+);
 
 /**
  * `-B` breaks every file↔symlink type change unconditionally: the halves
@@ -3626,42 +3416,14 @@ const TYPE_CHANGE_ROWS: ReadonlyArray<RenameRow> = [
   },
 ];
 
-const typeChangeFixtures = new Map<string, { readonly dir: string }>();
+describeRenameRows(
+  '-B type-change break interop',
+  TYPE_CHANGE_ROWS,
+  TYPE_CHANGE_TMP_PREFIX,
+  TYPE_CHANGE_SETUP_TIMEOUT,
+);
 
-function typeChangeFixtureOf(label: string): { readonly dir: string } {
-  const found = typeChangeFixtures.get(label);
-  if (found === undefined) throw new Error(`fixture not built for row: ${label}`);
-  return found;
-}
-
-describe.skipIf(!GIT_AVAILABLE)('-B type-change break interop', () => {
-  beforeAll(async () => {
-    for (const row of TYPE_CHANGE_ROWS) {
-      typeChangeFixtures.set(row.label, await buildRenameRow(row, TYPE_CHANGE_TMP_PREFIX));
-    }
-  }, TYPE_CHANGE_SETUP_TIMEOUT);
-
-  afterAll(async () => {
-    for (const { dir } of typeChangeFixtures.values()) {
-      await rmDir(dir, { recursive: true, force: true });
-    }
-  });
-
-  describe('Given a raw diff pair exercising a file↔symlink type change under -B', () => {
-    describe('When diff is called with detectRenames', () => {
-      it.each(TYPE_CHANGE_ROWS)('Then name-status matches live git for: $label', async (row) => {
-        // Arrange
-        const { dir } = typeChangeFixtureOf(row.label);
-
-        // Act
-        const { ours, peer } = await runRenameRow(row, dir);
-
-        // Assert
-        expect(ours).toBe(peer);
-      });
-    });
-  });
-
+describe.skipIf(!GIT_AVAILABLE)('-B type-change break patch/numstat interop', () => {
   describe('Given a broken symlink→regular type change under -M -B, When the patch and numstat are reconstructed', () => {
     it('Then both match git diff --no-ext-diff -p -M -B byte-for-byte', async () => {
       // Arrange — 20 new lines, a 1-line-equivalent old symlink target: an
@@ -3948,42 +3710,12 @@ const BASENAME_PASS_ROWS: ReadonlyArray<RenameRow> = [
   },
 ];
 
-const basenamePassFixtures = new Map<string, { readonly dir: string }>();
-
-function basenamePassFixtureOf(label: string): { readonly dir: string } {
-  const found = basenamePassFixtures.get(label);
-  if (found === undefined) throw new Error(`fixture not built for row: ${label}`);
-  return found;
-}
-
-describe.skipIf(!GIT_AVAILABLE)('-M basename pre-pass interop', () => {
-  beforeAll(async () => {
-    for (const row of BASENAME_PASS_ROWS) {
-      basenamePassFixtures.set(row.label, await buildRenameRow(row, BASENAME_PASS_TMP_PREFIX));
-    }
-  }, BASENAME_PASS_SETUP_TIMEOUT);
-
-  afterAll(async () => {
-    for (const { dir } of basenamePassFixtures.values()) {
-      await rmDir(dir, { recursive: true, force: true });
-    }
-  });
-
-  describe('Given a raw diff pair where a delete shares its destination basename uniquely', () => {
-    describe('When diff is called with detectRenames', () => {
-      it.each(BASENAME_PASS_ROWS)('Then name-status matches live git for: $label', async (row) => {
-        // Arrange
-        const { dir } = basenamePassFixtureOf(row.label);
-
-        // Act
-        const { ours, peer } = await runRenameRow(row, dir);
-
-        // Assert
-        expect(ours).toBe(peer);
-      });
-    });
-  });
-});
+describeRenameRows(
+  '-M basename pre-pass interop',
+  BASENAME_PASS_ROWS,
+  BASENAME_PASS_TMP_PREFIX,
+  BASENAME_PASS_SETUP_TIMEOUT,
+);
 
 /**
  * `-B` alone, with rename/copy detection off (`--no-renames -B`): every
@@ -4069,45 +3801,13 @@ const NO_RENAME_BREAK_ROWS: ReadonlyArray<RenameRow> = [
   },
 ];
 
-const noRenameBreakFixtures = new Map<string, { readonly dir: string }>();
-
-function noRenameBreakFixtureOf(label: string): { readonly dir: string } {
-  const found = noRenameBreakFixtures.get(label);
-  if (found === undefined) throw new Error(`fixture not built for row: ${label}`);
-  return found;
-}
-
-describe.skipIf(!GIT_AVAILABLE)('-B break detection without rename detection interop', () => {
-  beforeAll(async () => {
-    for (const row of NO_RENAME_BREAK_ROWS) {
-      noRenameBreakFixtures.set(row.label, await buildRenameRow(row, NO_RENAME_BREAK_TMP_PREFIX));
-    }
-  }, NO_RENAME_BREAK_SETUP_TIMEOUT);
-
-  afterAll(async () => {
-    for (const { dir } of noRenameBreakFixtures.values()) {
-      await rmDir(dir, { recursive: true, force: true });
-    }
-  });
-
-  describe('Given a raw diff pair exercising -B with rename detection off', () => {
-    describe('When diff is called without detectRenames', () => {
-      it.each(NO_RENAME_BREAK_ROWS)(
-        'Then name-status matches live git for: $label',
-        async (row) => {
-          // Arrange
-          const { dir } = noRenameBreakFixtureOf(row.label);
-
-          // Act
-          const { ours, peer } = await runRenameRow(row, dir);
-
-          // Assert
-          expect(ours).toBe(peer);
-        },
-      );
-    });
-  });
-});
+describeRenameRows(
+  '-B break detection without rename detection interop',
+  NO_RENAME_BREAK_ROWS,
+  NO_RENAME_BREAK_TMP_PREFIX,
+  NO_RENAME_BREAK_SETUP_TIMEOUT,
+  false,
+);
 
 /**
  * A kept-broken modify's `--numstat` counts the WHOLE file on each side
