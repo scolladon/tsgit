@@ -3443,6 +3443,106 @@ describe.skipIf(!GIT_AVAILABLE)('-B type-change break interop', () => {
 });
 
 /**
+ * `-M`'s basename pre-pass (`find_basename_matches`): a delete and an add
+ * sharing a UNIQUE basename pair before the ordinary matrix ever runs, even
+ * when a differently-named delete scores higher against that same add. It
+ * runs only under plain `-M` — copies off, and no broken pair anywhere in
+ * the diff (row below reuses `-B` to prove a break switches it off).
+ */
+const BASENAME_PASS_TMP_PREFIX = 'tsgit-rename-basename-pass-';
+const BASENAME_PASS_SETUP_TIMEOUT = 60_000;
+const BASENAME_PASS_BREAK_OPTS = { breakRewrites: { score: 30000, merge: 36000 } };
+
+const COMPANION_BASELINE = Array.from(
+  { length: 20 },
+  (_, i) => `meta line ${i}: shared boilerplate for the basename regression probe\n`,
+).join('');
+const companionEdited = (edited: number): string =>
+  Array.from({ length: 20 }, (_, i) =>
+    i < edited
+      ? `meta-edited line ${i}: replaces the shared boilerplate for the basename regression probe\n`
+      : `meta line ${i}: shared boilerplate for the basename regression probe\n`,
+  ).join('');
+
+const BASENAME_PASS_ROWS: ReadonlyArray<RenameRow> = [
+  {
+    label:
+      'a same-basename inexact delete outscored by a differently-named delete for the same add — the basename match wins (D bar.c ; R0nn foo.c→foo.c)',
+    before: [
+      { path: 'a/foo.c', content: b3Edited(4) },
+      { path: 'a/bar.c', content: b3Edited(1) },
+    ],
+    after: [{ path: 'b/foo.c', content: B3_BASELINE }],
+  },
+  {
+    label:
+      'two components moving directory, each with a primary and a companion file: only the one keeping its basename survives the move for BOTH files, despite the other component scoring higher on both (D Aaa.cls ; D Aaa.cls-meta.xml ; R0nn Foo.cls→Foo.cls ; R0nn Foo.cls-meta.xml→Foo.cls-meta.xml)',
+    before: [
+      { path: 'a/classes/Aaa.cls', content: b3Edited(1) },
+      { path: 'a/classes/Foo.cls', content: b3Edited(4) },
+      { path: 'a/classes/Aaa.cls-meta.xml', content: companionEdited(1) },
+      { path: 'a/classes/Foo.cls-meta.xml', content: companionEdited(4) },
+    ],
+    after: [
+      { path: 'b/classes/Foo.cls', content: B3_BASELINE },
+      { path: 'b/classes/Foo.cls-meta.xml', content: COMPANION_BASELINE },
+    ],
+  },
+  {
+    label:
+      'must stay: -M -B with a fully rewritten unrelated file — a break anywhere in the diff disables the basename pass, so the higher-scoring but differently-named delete wins the matrix instead (R0nn bar.c→foo.c ; M100 m.txt)',
+    before: [
+      { path: 'a/foo.c', content: b3Edited(4) },
+      { path: 'a/bar.c', content: b3Edited(1) },
+      { path: 'm.txt', content: breakContent('old', 40, 0) },
+    ],
+    after: [
+      { path: 'b/foo.c', content: B3_BASELINE },
+      { path: 'm.txt', content: breakContent('new', 40, 0) },
+    ],
+    gitFlags: ['-B'],
+    renameOptions: BASENAME_PASS_BREAK_OPTS,
+  },
+];
+
+const basenamePassFixtures = new Map<string, { readonly dir: string }>();
+
+function basenamePassFixtureOf(label: string): { readonly dir: string } {
+  const found = basenamePassFixtures.get(label);
+  if (found === undefined) throw new Error(`fixture not built for row: ${label}`);
+  return found;
+}
+
+describe.skipIf(!GIT_AVAILABLE)('-M basename pre-pass interop', () => {
+  beforeAll(async () => {
+    for (const row of BASENAME_PASS_ROWS) {
+      basenamePassFixtures.set(row.label, await buildRenameRow(row, BASENAME_PASS_TMP_PREFIX));
+    }
+  }, BASENAME_PASS_SETUP_TIMEOUT);
+
+  afterAll(async () => {
+    for (const { dir } of basenamePassFixtures.values()) {
+      await rmDir(dir, { recursive: true, force: true });
+    }
+  });
+
+  describe('Given a raw diff pair where a delete shares its destination basename uniquely', () => {
+    describe('When diff is called with detectRenames', () => {
+      it.each(BASENAME_PASS_ROWS)('Then name-status matches live git for: $label', async (row) => {
+        // Arrange
+        const { dir } = basenamePassFixtureOf(row.label);
+
+        // Act
+        const { ours, peer } = await runRenameRow(row, dir);
+
+        // Assert
+        expect(ours).toBe(peer);
+      });
+    });
+  });
+});
+
+/**
  * `-B` alone, with rename/copy detection off (`--no-renames -B`): every
  * break-attempt/keep-broken gate still applies, but nothing the break pass
  * produces is ever registered or paired — not even an exact content match.

@@ -24,6 +24,7 @@ import {
   type RenameSource,
   type SourcePair,
   selectPairs,
+  uniqueBasenamePairs,
 } from '../../domain/diff/rename-pairing.js';
 import {
   buildChunkMap,
@@ -494,6 +495,7 @@ async function runInexactMatrix(
   uses: ReadonlyArray<number>,
   threshold: number,
   copies: 'off' | 'on' | 'harder',
+  knownFingerprints: ReadonlyMap<ObjectId, BlobFingerprint>,
 ): Promise<InexactMatrixResult | null> {
   if (matrixIndices.length === 0) return null;
 
@@ -504,7 +506,7 @@ async function runInexactMatrix(
   const srcIds = matrixSources.map(({ source }) => source.id);
   const dstIds = destinations.map((d) => d.newId);
   const neededIds = await selectHydrationIds(ctx, srcIds, dstIds, threshold);
-  const fingerprints = await hydrateFingerprints(ctx, neededIds, new Map());
+  const fingerprints = await hydrateFingerprints(ctx, neededIds, knownFingerprints);
 
   const candidates = buildMatrix(matrixSources, destinations, fingerprints, threshold);
   candidates.sort(compareCandidates);
@@ -1014,6 +1016,7 @@ async function runInexactMatrixIfPlanned(
   threshold: number,
   limit: number,
   keepEverySource: boolean,
+  knownFingerprints: ReadonlyMap<ObjectId, BlobFingerprint>,
 ): Promise<InexactMatrixResult | null> {
   const plan = resolveMatrixPlan(
     registry.sources,
@@ -1037,7 +1040,148 @@ async function runInexactMatrixIfPlanned(
     exact.uses,
     threshold,
     copies,
+    knownFingerprints,
   );
+}
+
+/** One basename-pass candidate: a still-unused source paired by basename with
+ *  an unpaired destination, both already confirmed regular files. */
+interface BasenameCandidate {
+  readonly sourceIndex: number;
+  readonly destination: AddChange;
+}
+
+/** Every basename-pass candidate whose source is still unused after the exact
+ *  pass, restricted to pairs where both sides are regular files —
+ *  `estimate_similarity` scores regular files only, and a symlink/gitlink
+ *  candidate is kept out of the score-and-hydrate loop below entirely. */
+function regularBasenameCandidates(
+  sources: ReadonlyArray<RenameSource>,
+  uses: ReadonlyArray<number>,
+  destinations: ReadonlyArray<AddChange>,
+): BasenameCandidate[] {
+  const unusedIndices = cullMatrixSourceIndices(sources.length, uses, false);
+  const unusedSources = unusedIndices.map((index) => sources[index] as RenameSource);
+
+  return uniqueBasenamePairs(unusedSources, destinations)
+    .map(({ source, destination }) => ({
+      sourceIndex: unusedIndices[source] as number,
+      destination: destinations[destination] as AddChange,
+    }))
+    .filter(
+      ({ sourceIndex, destination }) =>
+        isRegularFile((sources[sourceIndex] as RenameSource).mode) &&
+        isRegularFile(destination.newMode),
+    );
+}
+
+function basenameCandidateIds(
+  sources: ReadonlyArray<RenameSource>,
+  candidates: ReadonlyArray<BasenameCandidate>,
+): ObjectId[] {
+  return candidates.flatMap(({ sourceIndex, destination }) => [
+    (sources[sourceIndex] as RenameSource).id,
+    destination.newId,
+  ]);
+}
+
+/**
+ * git's own `find_basename_matches` scoring loop: each candidate is
+ * independent (`uniqueBasenamePairs` never repeats a source or a
+ * destination), so accepted pairs need no running use-count here — folding
+ * them into `uses`/`unpaired` is the caller's job.
+ */
+function scoreBasenameCandidates(
+  candidates: ReadonlyArray<BasenameCandidate>,
+  sources: ReadonlyArray<RenameSource>,
+  fingerprints: ReadonlyMap<ObjectId, BlobFingerprint>,
+  minBasename: number,
+): SourcePair[] {
+  const pairs: SourcePair[] = [];
+  for (const { sourceIndex, destination } of candidates) {
+    const source = sources[sourceIndex] as RenameSource;
+    const sf = fingerprints.get(source.id) as BlobFingerprint;
+    const df = fingerprints.get(destination.newId) as BlobFingerprint;
+    if (isSizeRejected(sf.size, df.size, minBasename)) continue;
+    const score = estimateSimilarityFromMaps(sf.chunkMap, sf.size, df.chunkMap, df.size);
+    if (score >= minBasename) pairs.push({ source: sourceIndex, destination, score });
+  }
+  return pairs;
+}
+
+interface BasenamePassOutcome {
+  readonly pairs: ReadonlyArray<SourcePair>;
+  readonly unpaired: ReadonlyArray<AddChange>;
+  readonly uses: ReadonlyArray<number>;
+  readonly fingerprints: ReadonlyMap<ObjectId, BlobFingerprint>;
+}
+
+/** Folds accepted basename pairs into the exact pass's uses/unpaired. */
+function applyBasenamePairs(
+  exact: ExactPairing,
+  pairs: ReadonlyArray<SourcePair>,
+): Pick<BasenamePassOutcome, 'unpaired' | 'uses'> {
+  const uses = [...exact.uses];
+  const claimed = new Set<AddChange>();
+  for (const pair of pairs) {
+    uses[pair.source] = (uses[pair.source] as number) + 1;
+    claimed.add(pair.destination);
+  }
+  return { unpaired: exact.unpaired.filter((add) => !claimed.has(add)), uses };
+}
+
+/**
+ * git's find_basename_matches pre-pass (`-M` only, run between the exact
+ * pass and the cull-plus-limit gate): a delete and an add sharing a UNIQUE
+ * basename pair at a lower gate — the midpoint between `threshold` and
+ * MAX_SCORE — before the ordinary matrix ever runs. This lets a weaker but
+ * same-named pair win over a stronger, differently-named one (the matrix
+ * alone always prefers the higher score). Never limited; its fingerprints
+ * are handed back so the matrix phase never re-reads an already-hydrated blob.
+ */
+async function runBasenamePass(
+  ctx: Context,
+  sources: ReadonlyArray<RenameSource>,
+  exact: ExactPairing,
+  threshold: number,
+): Promise<BasenamePassOutcome> {
+  const candidates = regularBasenameCandidates(sources, exact.uses, exact.unpaired);
+  if (candidates.length === 0) {
+    return { pairs: [], unpaired: exact.unpaired, uses: exact.uses, fingerprints: new Map() };
+  }
+
+  const minBasename = threshold + Math.trunc((MAX_SCORE - threshold) / 2);
+  const ids = basenameCandidateIds(sources, candidates);
+  const fingerprints = await hydrateFingerprints(ctx, ids, new Map());
+  const pairs = scoreBasenameCandidates(candidates, sources, fingerprints, minBasename);
+
+  return { pairs, ...applyBasenamePairs(exact, pairs), fingerprints };
+}
+
+/** git's basename pre-pass runs only under plain `-M`: copies off, no broken
+ *  pair anywhere in the diff (a broken modify or type change switches off
+ *  `break_idx`'s absence), and threshold below MAX_SCORE (an exact-only run
+ *  never reaches the inexact stage at all). */
+function isBasenamePassEligible(
+  copies: 'off' | 'on' | 'harder',
+  broken: ReadonlyArray<BrokenRecord>,
+  threshold: number,
+): boolean {
+  return copies === 'off' && broken.length === 0 && threshold < MAX_SCORE;
+}
+
+async function runBasenamePassIfEligible(
+  ctx: Context,
+  sources: ReadonlyArray<RenameSource>,
+  exact: ExactPairing,
+  broken: ReadonlyArray<BrokenRecord>,
+  copies: 'off' | 'on' | 'harder',
+  threshold: number,
+): Promise<BasenamePassOutcome> {
+  if (!isBasenamePassEligible(copies, broken, threshold)) {
+    return { pairs: [], unpaired: exact.unpaired, uses: exact.uses, fingerprints: new Map() };
+  }
+  return runBasenamePass(ctx, sources, exact, threshold);
 }
 
 /** Folds an inexact-matrix result into the exact pass's pairs/unpaired/uses;
@@ -1062,6 +1206,7 @@ async function runInexactPhase(
   copies: 'off' | 'on' | 'harder',
   threshold: number,
   limit: number,
+  knownFingerprints: ReadonlyMap<ObjectId, BlobFingerprint>,
 ): Promise<InexactPhaseOutcome> {
   const keepEverySource = copies !== 'off' || broken.length > 0;
   const inexact = await runInexactMatrixIfPlanned(
@@ -1072,6 +1217,7 @@ async function runInexactPhase(
     threshold,
     limit,
     keepEverySource,
+    knownFingerprints,
   );
   return mergeInexactOutcome(exact, inexact);
 }
@@ -1093,7 +1239,33 @@ export async function detectSimilarityRenames(
   const exactMode = copies === 'off' ? 'rename' : 'copy';
   const exact = pairIdenticalFiles(registry.sources, registry.destinations, exactMode);
 
-  const outcome = await runInexactPhase(ctx, registry, exact, broken, copies, threshold, limit);
+  // The basename pass runs between the exact pass and the cull-plus-limit
+  // gate (plain -M only) — never limited, and its fingerprints carry forward
+  // so the matrix phase below never re-hydrates the same blob.
+  const basename = await runBasenamePassIfEligible(
+    ctx,
+    registry.sources,
+    exact,
+    broken,
+    copies,
+    threshold,
+  );
+  const afterBasename: ExactPairing = {
+    pairs: [...exact.pairs, ...basename.pairs],
+    unpaired: basename.unpaired,
+    uses: basename.uses,
+  };
+
+  const outcome = await runInexactPhase(
+    ctx,
+    registry,
+    afterBasename,
+    broken,
+    copies,
+    threshold,
+    limit,
+    basename.fingerprints,
+  );
   const writeBack = writeBackBroken(
     broken,
     registry.originalDeletes,

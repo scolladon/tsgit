@@ -8,6 +8,7 @@ import {
   labelRenameCopy,
   pairIdenticalFiles,
   selectPairs,
+  uniqueBasenamePairs,
 } from '../../../../src/domain/diff/rename-pairing.js';
 import type { FileMode, FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
 import { arbSourcesAndDestinations } from './arbitraries.js';
@@ -117,6 +118,52 @@ describe('Given a small pool of rename sources and destinations colliding on id 
             });
           },
         ),
+        { numRuns: 100 },
+      );
+    });
+  });
+});
+
+function basenameOf(filePath: string): string {
+  return filePath.slice(filePath.lastIndexOf('/') + 1);
+}
+
+function countByBasename<T>(
+  items: ReadonlyArray<T>,
+  basenameOfItem: (item: T) => string,
+): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const item of items) {
+    const basename = basenameOfItem(item);
+    counts.set(basename, (counts.get(basename) ?? 0) + 1);
+  }
+  return counts;
+}
+
+const sutUniqueBasenamePairs = uniqueBasenamePairs;
+
+describe('Given an arbitrary pool of rename sources and destinations', () => {
+  describe('When uniqueBasenamePairs is called', () => {
+    it('Then every returned pair shares a basename occurring exactly once on each side', () => {
+      // Arrange + Assert
+      fc.assert(
+        fc.property(arbSourcesAndDestinations(), ({ sources, destinations }) => {
+          const result = sutUniqueBasenamePairs(sources, destinations);
+          const sourceCounts = countByBasename(sources, (source) => basenameOf(source.path));
+          const destinationCounts = countByBasename(destinations, (destination) =>
+            basenameOf(destination.newPath),
+          );
+
+          for (const { source, destination } of result) {
+            const sourceBasename = basenameOf((sources[source] as RenameSource).path);
+            const destinationBasename = basenameOf(
+              (destinations[destination] as AddChange).newPath,
+            );
+            expect(sourceBasename).toBe(destinationBasename);
+            expect(sourceCounts.get(sourceBasename)).toBe(1);
+            expect(destinationCounts.get(destinationBasename)).toBe(1);
+          }
+        }),
         { numRuns: 100 },
       );
     });

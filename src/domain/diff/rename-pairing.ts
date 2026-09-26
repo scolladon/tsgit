@@ -61,11 +61,61 @@ function exactKey(id: ObjectId, mode: FileMode): string {
   return `${id} ${kindOf(mode) === 'file' ? FILE_MODE.REGULAR : mode}`;
 }
 
-// Last path segment equality; 'Foo' ≡ 'b/Foo', 'xFoo' ≢ 'Foo' (git's basename_same).
+// Last path segment; 'a/Foo' and 'Foo' share basename 'Foo'.
+function basenameOf(filePath: FilePath): string {
+  return filePath.slice(filePath.lastIndexOf('/') + 1);
+}
+
+// 'Foo' ≡ 'b/Foo', 'xFoo' ≢ 'Foo' (git's basename_same).
 export function hasSameBasename(oldPath: FilePath, newPath: FilePath): boolean {
-  const oldBasename = oldPath.slice(oldPath.lastIndexOf('/') + 1);
-  const newBasename = newPath.slice(newPath.lastIndexOf('/') + 1);
-  return oldBasename === newBasename;
+  return basenameOf(oldPath) === basenameOf(newPath);
+}
+
+/** Groups item indexes by a derived basename key, in the order visited. */
+function indexByBasename<T>(
+  items: ReadonlyArray<T>,
+  basenameOfItem: (item: T) => string,
+): ReadonlyMap<string, number[]> {
+  const byBasename = new Map<string, number[]>();
+  items.forEach((item, index) => {
+    const basename = basenameOfItem(item);
+    const group = byBasename.get(basename);
+    if (group === undefined) byBasename.set(basename, [index]);
+    else group.push(index);
+  });
+  return byBasename;
+}
+
+export interface BasenamePair {
+  readonly source: number;
+  readonly destination: number;
+}
+
+/**
+ * git's find_basename_matches candidate set (`-M` only): pairs a source with
+ * the destination sharing its basename, but only when that basename occurs
+ * EXACTLY ONCE on each side — every mode counts toward uniqueness (a symlink
+ * sharing a basename makes it non-unique), so this stays pure and byte-free.
+ * Returned in source order; scoring the pairs is the primitive's job.
+ */
+export function uniqueBasenamePairs(
+  sources: ReadonlyArray<RenameSource>,
+  destinations: ReadonlyArray<AddChange>,
+): ReadonlyArray<BasenamePair> {
+  const sourcesByBasename = indexByBasename(sources, (source) => basenameOf(source.path));
+  const destinationsByBasename = indexByBasename(destinations, (dest) => basenameOf(dest.newPath));
+  const pairs: BasenamePair[] = [];
+
+  sources.forEach((source, index) => {
+    const basename = basenameOf(source.path);
+    const sourceGroup = sourcesByBasename.get(basename) as number[];
+    if (sourceGroup.length !== 1) return;
+    const destinationGroup = destinationsByBasename.get(basename);
+    if (destinationGroup === undefined || destinationGroup.length !== 1) return;
+    pairs.push({ source: index, destination: destinationGroup[0] as number });
+  });
+
+  return pairs;
 }
 
 // Groups hold source indexes keyed by exactKey, stored latest-source-first (the

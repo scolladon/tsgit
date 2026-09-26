@@ -12,6 +12,7 @@ import {
   labelRenameCopy,
   pairIdenticalFiles,
   selectPairs,
+  uniqueBasenamePairs,
 } from '../../../../src/domain/diff/rename-pairing.js';
 import { MAX_SCORE } from '../../../../src/domain/diff/similarity.js';
 import type { FileMode, FilePath, ObjectId } from '../../../../src/domain/objects/index.js';
@@ -397,6 +398,106 @@ describe('selectPairs', () => {
         // Assert
         expect(result.pairs).toEqual([{ source: 0, destination, score: 90 }]);
         expect(result.uses).toEqual([1, 1]);
+      });
+    });
+  });
+});
+
+const sutUniqueBasenamePairs = uniqueBasenamePairs;
+
+describe('uniqueBasenamePairs', () => {
+  describe('Given one source and one destination sharing a unique basename', () => {
+    describe('When uniqueBasenamePairs is called', () => {
+      it('Then the pair is returned', () => {
+        // Arrange
+        const source = renameSource('a/foo.c', ID_A);
+        const destination = addChange('b/foo.c', ID_A);
+
+        // Act
+        const result = sutUniqueBasenamePairs([source], [destination]);
+
+        // Assert
+        expect(result).toEqual([{ source: 0, destination: 0 }]);
+      });
+    });
+  });
+
+  describe('Given two sources sharing the same basename', () => {
+    describe('When uniqueBasenamePairs is called', () => {
+      it('Then neither source pairs, even though the destination basename is unique', () => {
+        // Arrange
+        const sources = [renameSource('a/foo.c', ID_A), renameSource('x/foo.c', ID_A)];
+        const destination = addChange('b/foo.c', ID_A);
+
+        // Act
+        const result = sutUniqueBasenamePairs(sources, [destination]);
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given two destinations sharing the same basename', () => {
+    describe('When uniqueBasenamePairs is called', () => {
+      it('Then the source does not pair, even though its own basename is unique', () => {
+        // Arrange
+        const source = renameSource('a/foo.c', ID_A);
+        const destinations = [addChange('b/foo.c', ID_A), addChange('x/foo.c', ID_A)];
+
+        // Act
+        const result = sutUniqueBasenamePairs([source], destinations);
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a non-regular source sharing a basename with the only regular source', () => {
+    describe('When uniqueBasenamePairs is called', () => {
+      it('Then the basename still counts as non-unique and neither source pairs', () => {
+        // Arrange — mode is irrelevant to uniqueness; only the path's basename counts.
+        const sources = [
+          renameSource('a/foo.c', ID_A),
+          renameSource('x/foo.c', ID_A, { mode: FILE_MODE.SYMLINK }),
+        ];
+        const destination = addChange('b/foo.c', ID_A);
+
+        // Act
+        const result = sutUniqueBasenamePairs(sources, [destination]);
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given several sources, only some with a uniquely-matching destination', () => {
+    describe('When uniqueBasenamePairs is called', () => {
+      it('Then the returned pairs stay in source order', () => {
+        // Arrange — bar.c has no destination at all; baz.c collides on the source side.
+        const sources = [
+          renameSource('a/foo.c', ID_A),
+          renameSource('a/bar.c', ID_A),
+          renameSource('a/baz.c', ID_A),
+          renameSource('x/baz.c', ID_A),
+          renameSource('a/qux.c', ID_A),
+        ];
+        const destinations = [
+          addChange('b/qux.c', ID_A),
+          addChange('b/baz.c', ID_A),
+          addChange('b/foo.c', ID_A),
+        ];
+
+        // Act
+        const result = sutUniqueBasenamePairs(sources, destinations);
+
+        // Assert
+        expect(result).toEqual([
+          { source: 0, destination: 2 },
+          { source: 4, destination: 0 },
+        ]);
       });
     });
   });
