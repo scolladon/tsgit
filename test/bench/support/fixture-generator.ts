@@ -337,7 +337,7 @@ const EVOLVING_PATH = 'evolving.dat';
 const EVOLVING_MUTATION_RATE = 0.01;
 
 /** xorshift32 stream, seeded once, advanced across mutate calls (closure-encapsulated state). */
-const makeXorshift32 = (seed: number): (() => number) => {
+export const makeXorshift32 = (seed: number): (() => number) => {
   let state = (seed + 1) >>> 0;
   return () => {
     state ^= state << 13;
@@ -983,7 +983,7 @@ export const ensureScaledFixture = async (spec: FixtureSpec): Promise<ScaledFixt
 // the mutation `HEAD~1..HEAD` diffs over), built via `git fast-import` for
 // the same reason the scaled fixtures are.
 
-export type RenameFixtureShape = 'common' | 'wide' | 'hostile' | 'hostile-basename';
+export type RenameFixtureShape = 'common' | 'wide' | 'hostile' | 'hostile-basename' | 'rewrite';
 export type RenameFixtureStorage = 'loose' | 'packed';
 
 export interface RenameFixture {
@@ -1208,6 +1208,48 @@ const streamHostileBasenameRenameFastImport = async (
   });
 };
 
+// 100 distinct 256 KiB files, each rewritten in full (same path, entirely new
+// content, no move) — the shape `-M -B` combined prices: `-B` must break
+// every full rewrite into a delete/create pair before `-M` decides whether
+// any pair is worth re-pairing as a rename.
+const REWRITE_FILE_COUNT = 100;
+const REWRITE_BLOB_BYTES = 262_144;
+
+const rewritePath = (fileIndex: number): string =>
+  `rewrite/f${fileIndex.toString().padStart(3, '0')}.bin`;
+
+/** N distinct 256 KiB blobs (bench scale) seeded, then every path rewritten
+ *  in full with fresh bytes (a distinct `blobContent` index, never the same
+ *  bytes twice). */
+const streamRewriteRenameFastImport = async (
+  stdin: Writable,
+  { fileCount = REWRITE_FILE_COUNT, blobBytes = REWRITE_BLOB_BYTES }: RenameFixtureSize = {},
+): Promise<void> => {
+  let seedChanges = '';
+  for (let i = 0; i < fileCount; i += 1) {
+    await writeBlobEntry(stdin, i + 1, blobContent(i, blobBytes));
+    seedChanges += `M 100644 :${i + 1} ${rewritePath(i)}\n`;
+  }
+  await writeCommitEntry(stdin, {
+    message: RENAME_COMMIT_MESSAGE_SEED,
+    timestamp: BASE_TIMESTAMP,
+    changes: seedChanges,
+  });
+
+  let mutateChanges = '';
+  let mark = fileCount + 1;
+  for (let i = 0; i < fileCount; i += 1) {
+    await writeBlobEntry(stdin, mark, blobContent(fileCount + i, blobBytes));
+    mutateChanges += `M 100644 :${mark} ${rewritePath(i)}\n`;
+    mark += 1;
+  }
+  await writeCommitEntry(stdin, {
+    message: 'rewrite in full\n',
+    timestamp: BASE_TIMESTAMP + 1,
+    changes: mutateChanges,
+  });
+};
+
 const RENAME_FIXTURE_STREAMS: Record<
   RenameFixtureShape,
   (stdin: Writable, size?: RenameFixtureSize) => Promise<void>
@@ -1216,6 +1258,7 @@ const RENAME_FIXTURE_STREAMS: Record<
   wide: streamWideRenameFastImport,
   hostile: streamHostileRenameFastImport,
   'hostile-basename': streamHostileBasenameRenameFastImport,
+  rewrite: streamRewriteRenameFastImport,
 };
 
 /** A `size` override (a test shrinking `hostile`/`hostile-basename` well

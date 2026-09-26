@@ -1,6 +1,6 @@
 /**
  * Bench: `repo.diff({ from:'HEAD~1', to:'HEAD', recursive:true,
- * detectRenames:true })` over four shapes, loose and packed:
+ * detectRenames:true })` over five shapes, loose and packed:
  *  - `common`: 50 files, 3 renamed and edited — the everyday `show`/`log -M`
  *    diff, priced to watch the size-gate's overhead on a diff too small to
  *    ever need it.
@@ -15,6 +15,9 @@
  *    same-basename 6-byte add in a sibling directory — the same worst case
  *    for the `-M` basename pre-pass specifically: every pair must be dropped
  *    on declared size alone before `runBasenamePass` ever reads a blob.
+ *  - `rewrite`: 100 files, each rewritten in full in place (same path, no
+ *    move) — priced with `detectRenames:true` AND `renameOptions.breakRewrites`
+ *    (`-M -B`), the full-rewrite shape the break pass exists for.
  */
 import { openRepository } from '../../src/index.node.js';
 import { type BenchComparison, benchScenario } from './support/bench-dsl.js';
@@ -37,6 +40,7 @@ const SHAPE_GIVEN: Record<RenameFixtureShape, string> = {
   hostile: 'Given a hostile repo (300 distinct 1 MiB deletes, one 6-byte add)',
   'hostile-basename':
     'Given a hostile-basename repo (300 distinct 1 MiB deletes, each with a same-basename 6-byte add)',
+  rewrite: 'Given a rewrite repo (100 × 256 KiB files rewritten in full)',
 };
 
 const STORAGE_GIVEN: Record<RenameFixtureStorage, string> = {
@@ -73,25 +77,69 @@ const buildRenameComparison = async (fixture: RenameFixture): Promise<BenchCompa
 const WHEN_THEN =
   'When diff() compares HEAD~1 against HEAD recursively with detectRenames:true, Then measure tsgit';
 
-const registerRenameScenario = (ctx: RenameFixtureContext): void => {
+// git's own `-B` default is 50% break / 60% re-merge, scaled to tsgit's
+// 0-100000 similarity range — the exact call the design's full-rewrite `-M
+// -B` shape prices.
+const BREAK_REWRITE_SCORE = 30_000;
+const BREAK_REWRITE_MERGE_SCORE = 36_000;
+
+const buildBreakRewriteComparison = async (fixture: RenameFixture): Promise<BenchComparison> => {
+  const repo = await openRepository({ cwd: fixture.cwd });
+
+  const sut = async (): Promise<void> => {
+    await repo.diff({
+      from: 'HEAD~1',
+      to: 'HEAD',
+      recursive: true,
+      detectRenames: true,
+      renameOptions: {
+        breakRewrites: { score: BREAK_REWRITE_SCORE, merge: BREAK_REWRITE_MERGE_SCORE },
+      },
+    });
+  };
+  return { teardown: () => repo.dispose(), sut };
+};
+
+const WHEN_THEN_BREAK_REWRITE =
+  'When diff() compares HEAD~1 against HEAD recursively with detectRenames:true and ' +
+  'breakRewrites set (-M -B), Then measure tsgit';
+
+interface RenameComparisonBuilder {
+  readonly whenThen: string;
+  readonly build: (fixture: RenameFixture) => Promise<BenchComparison>;
+}
+
+const comparisonFor = (shape: RenameFixtureShape): RenameComparisonBuilder =>
+  shape === 'rewrite'
+    ? { whenThen: WHEN_THEN_BREAK_REWRITE, build: buildBreakRewriteComparison }
+    : { whenThen: WHEN_THEN, build: buildRenameComparison };
+
+const registerRenameScenario = (ctx: RenameFixtureContext, shape: RenameFixtureShape): void => {
   const { fixture } = ctx;
+  const { whenThen, build } = comparisonFor(shape);
   benchScenario(
     ctx.given,
-    WHEN_THEN,
+    whenThen,
     () => {
       // Guaranteed present here: `skip` below is true exactly when it is undefined.
       if (fixture === undefined) throw new Error('rename fixture unavailable');
-      return buildRenameComparison(fixture);
+      return build(fixture);
     },
     { skip: fixture === undefined },
   );
 };
 
-const SHAPES: ReadonlyArray<RenameFixtureShape> = ['common', 'wide', 'hostile', 'hostile-basename'];
+const SHAPES: ReadonlyArray<RenameFixtureShape> = [
+  'common',
+  'wide',
+  'hostile',
+  'hostile-basename',
+  'rewrite',
+];
 const STORAGES: ReadonlyArray<RenameFixtureStorage> = ['loose', 'packed'];
 
 for (const shape of SHAPES) {
   for (const storage of STORAGES) {
-    registerRenameScenario(await resolveRenameContext(shape, storage));
+    registerRenameScenario(await resolveRenameContext(shape, storage), shape);
   }
 }

@@ -7,6 +7,7 @@
  *                                                     # (incl. the index-pass base cache's
  *                                                     # own delta-chain fixture) + gc residency
  *                                                     # + rename hydration
+ *                                                     # + rename break-rewrite
  *   TSGIT_BENCH_LARGE=1 npm run bench:memory          # + large-pack spread workload
  *   TSGIT_BENCH_HEADER_CACHE=1 npm run bench:memory   # + above-cap header-cache eviction workload
  *
@@ -367,6 +368,56 @@ const runRenameHydrationWorkload = async (
   const after = gcBaseline(gc);
 
   return toReport('rename-hydration', before, peak, after);
+};
+
+// git's own `-B` default is 50% break / 60% re-merge, scaled to tsgit's
+// 0-100000 similarity range.
+const RENAME_BREAK_REWRITE_SCORE = 30_000;
+const RENAME_BREAK_REWRITE_MERGE_SCORE = 36_000;
+
+/**
+ * Peak RSS for one `repo.diff({ ..., detectRenames: true, renameOptions:
+ * { breakRewrites } })` over the `rewrite` fixture (100 distinct 256 KiB
+ * files, each rewritten in full in place) — the `-M -B` combined shape,
+ * priced here for peak memory the same way `runRenameHydrationWorkload`
+ * prices the ordinary hydration gate.
+ */
+const runRenameBreakRewriteWorkload = async (
+  gc: () => void,
+  openRepository: OpenRepository,
+): Promise<WorkloadReport> => {
+  const fixture = await ensureRenameFixture('rewrite', 'loose');
+
+  const before = gcBaseline(gc);
+  let peak = before;
+  const poll = setInterval(() => {
+    peak = maxSample(peak, sampleMemory());
+  }, PEAK_POLL_INTERVAL_MS);
+  try {
+    const repo = await openRepository({ cwd: fixture.cwd });
+    try {
+      await repo.diff({
+        from: 'HEAD~1',
+        to: 'HEAD',
+        recursive: true,
+        detectRenames: true,
+        renameOptions: {
+          breakRewrites: {
+            score: RENAME_BREAK_REWRITE_SCORE,
+            merge: RENAME_BREAK_REWRITE_MERGE_SCORE,
+          },
+        },
+      });
+      peak = maxSample(peak, sampleMemory());
+    } finally {
+      await repo.dispose();
+    }
+  } finally {
+    clearInterval(poll);
+  }
+  const after = gcBaseline(gc);
+
+  return toReport('rename-break-rewrite', before, peak, after);
 };
 
 // Two pack sizes differing >= 4x — the oracle for clone's quarantine
@@ -1007,6 +1058,7 @@ const main = async (): Promise<void> => {
     reports.push(...(await runIndexPassResidencyWorkload()));
     reports.push(await runGcResidencyWorkload(gc, openRepository));
     reports.push(await runRenameHydrationWorkload(gc, openRepository));
+    reports.push(await runRenameBreakRewriteWorkload(gc, openRepository));
     if (process.env.TSGIT_BENCH_LARGE !== undefined) {
       reports.push(await runLargePackWorkload(gc, openRepository));
     }
