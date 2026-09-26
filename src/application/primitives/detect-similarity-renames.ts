@@ -555,17 +555,24 @@ function buildMatrix(
   threshold: number,
 ): MatrixCandidate[] {
   const candidates: MatrixCandidate[] = [];
-  // Each source's basename computed once here, not once per destination the
-  // inner loop below visits — the destination's own basename is computed
-  // once per destination for the same reason.
+  // Each source's basename and regularity computed once here, not once per
+  // destination the inner loop below visits — the destination's own
+  // basename is computed once per destination for the same reason. A
+  // non-regular source's fingerprint is never looked up: git's
+  // estimate_similarity checks S_ISREG on the source before ever touching
+  // either side's data, so a symlink sharing its id with a hydrated regular
+  // blob (content-addressed storage) or carrying a fingerprint seeded by an
+  // unrelated pass (the break pass fingerprints a broken record's bytes
+  // regardless of kind) must never inherit that fingerprint's score.
   const sourceBasenames = sources.map(({ source }) => basenameOf(source.path));
+  const sourceIsRegular = sources.map(({ source }) => isRegularFile(source.mode));
   for (const destination of destinations) {
     const df = fingerprints.get(destination.newId);
     if (df === undefined) continue;
     const destinationBasename = basenameOf(destination.newPath);
     const slots: MatrixCandidate[] = [];
     sources.forEach(({ index, source }, position) => {
-      const sf = fingerprints.get(source.id);
+      const sf = sourceIsRegular[position] ? fingerprints.get(source.id) : undefined;
       const sameBasename = sourceBasenames[position] === destinationBasename;
       scoreAndRecord(sf, df, threshold, { source: index, destination }, sameBasename, slots);
     });

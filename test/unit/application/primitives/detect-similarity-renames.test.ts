@@ -4770,6 +4770,126 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
+  describe('Given a symlink and a regular file sharing a blob, both deleted, and a similar file added', () => {
+    describe('When detectSimilarityRenames is called at the most permissive threshold', () => {
+      it('Then the regular source wins the rename and the symlink stays a plain delete', async () => {
+        // Arrange — a-link and b-file share an id (same blob), so the fingerprint
+        // map's lookup by id alone would hand a-link a real score once b-file's
+        // hydration populates that entry; the symlink must score 0 regardless.
+        const sharedContent = Array.from(
+          { length: 30 },
+          (_, i) => `line number ${i + 1} of the shared text\n`,
+        ).join('');
+        const ctx = await buildSeededContext();
+        const sharedId = await writeBlob(ctx, sharedContent);
+        const similarId = await writeBlob(ctx, `${sharedContent}extra\n`);
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'delete',
+              oldPath: 'a-link' as FilePath,
+              oldId: sharedId,
+              oldMode: FILE_MODE.SYMLINK,
+            },
+            {
+              type: 'delete',
+              oldPath: 'b-file' as FilePath,
+              oldId: sharedId,
+              oldMode: FILE_MODE.REGULAR,
+            },
+            {
+              type: 'add',
+              newPath: 'c-new' as FilePath,
+              newId: similarId,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+        const sut = detectSimilarityRenames;
+
+        // Act
+        const result = await sut(ctx, diff, { threshold: 1 });
+
+        // Assert
+        const rename = result.changes.find((c) => c.type === 'rename');
+        expect(rename?.type).toBe('rename');
+        if (rename?.type === 'rename') expect(rename.oldPath).toBe('b-file');
+        const del = result.changes.find((c) => c.type === 'delete');
+        expect(del?.type).toBe('delete');
+        if (del?.type === 'delete') expect(del.oldPath).toBe('a-link');
+        expect(result.changes.filter((c) => c.type === 'add')).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given a broken symlink retarget alongside an unrelated regular delete, and an add similar to the OLD target', () => {
+    describe('When detectSimilarityRenames is called with breakRewrites', () => {
+      it('Then the broken halves rejoin at M100 and the add stays a plain, unpaired add', async () => {
+        // Arrange — the break pass fingerprints a-link's OLD/NEW bytes (needed to
+        // seed the matrix for a record that goes on to break), regardless of
+        // a-link's symlink kind; "other" (regular) keeps the matrix from bailing
+        // out early on "no regular source at all". Without the mode gate,
+        // a-link's break-pass fingerprint scores against z-new as if regular.
+        const oldTarget = Array.from(
+          { length: 20 },
+          (_, i) => `alpha line ${i + 1} of the original link target text`,
+        ).join('\n');
+        const newTarget = Array.from(
+          { length: 20 },
+          (_, i) => `zzzz other ${i + 1} entirely unrelated qqqqqqqqqqqqqq`,
+        ).join('\n');
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, oldTarget);
+        const newId = await writeBlob(ctx, newTarget);
+        const otherId = await writeBlob(ctx, tenLines(0).repeat(6));
+        const similarId = await writeBlob(ctx, `${oldTarget}\ntail\n`);
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'modify',
+              path: 'a-link' as FilePath,
+              oldId,
+              newId,
+              oldMode: FILE_MODE.SYMLINK,
+              newMode: FILE_MODE.SYMLINK,
+            },
+            {
+              type: 'delete',
+              oldPath: 'other' as FilePath,
+              oldId: otherId,
+              oldMode: FILE_MODE.REGULAR,
+            },
+            {
+              type: 'add',
+              newPath: 'z-new' as FilePath,
+              newId: similarId,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+        const sut = detectSimilarityRenames;
+
+        // Act
+        const result = await sut(ctx, diff, {
+          breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
+        });
+
+        // Assert
+        expect(result.changes.filter((c) => c.type === 'copy')).toHaveLength(0);
+        expect(result.changes.filter((c) => c.type === 'rename')).toHaveLength(0);
+        const modify = result.changes.find((c) => c.type === 'modify');
+        expect(modify?.type).toBe('modify');
+        if (modify?.type === 'modify') {
+          expect(modify.path).toBe('a-link');
+          expect(modify.broken?.score).toBe(MAX_SCORE);
+        }
+        const add = result.changes.find((c) => c.type === 'add');
+        expect(add?.type).toBe('add');
+        if (add?.type === 'add') expect(add.newPath).toBe('z-new');
+      });
+    });
+  });
+
   // ── -B breaks symlink↔regular type changes unconditionally ──
 
   describe('Given a symlink→regular type change under -M -B', () => {

@@ -3098,6 +3098,18 @@ const SYMLINK_OLD_TARGET = 'aaaa\nbbbb\ncccc\ndddd\n'.repeat(27);
 const SYMLINK_NEW_TARGET = 'xxxx\nyyyy\nzzzz\nwwww\n'.repeat(27);
 // Same 540-byte length, only the trailing 5 bytes differ — well below the gate.
 const SYMLINK_SMALL_RETARGET = `${SYMLINK_OLD_TARGET.slice(0, -5)}eeee\n`;
+// The OLD target plus a couple of trailing lines — similar enough (not
+// identical, so the exact pass never intervenes) to win a matrix slot if a
+// broken symlink's fingerprint were ever allowed to score.
+const SYMLINK_OLD_TARGET_PLUS_TAIL = `${SYMLINK_OLD_TARGET}\ntail\n`;
+
+// A blob shared between a symlink and a regular file (content-addressed
+// storage: same bytes, same id, different kind), plus a similar regular add.
+const SHARED_TARGET_TEXT = Array.from(
+  { length: 30 },
+  (_, i) => `line number ${i + 1} of the shared text\n`,
+).join('');
+const SHARED_TARGET_PLUS_EXTRA = `${SHARED_TARGET_TEXT}extra\n`;
 
 const NON_REGULAR_ROWS: ReadonlyArray<RenameRow> = [
   {
@@ -3172,6 +3184,62 @@ const NON_REGULAR_ROWS: ReadonlyArray<RenameRow> = [
     label: '-M -B: a small symlink retarget stays a plain modify, never broken (M a/link)',
     before: [{ path: 'a/link', content: SYMLINK_OLD_TARGET, kind: 'symlink' }],
     after: [{ path: 'a/link', content: SYMLINK_SMALL_RETARGET, kind: 'symlink' }],
+    gitFlags: ['-B'],
+    renameOptions: { breakRewrites: { score: 30000, merge: 36000 } },
+  },
+  {
+    label:
+      'a symlink and a regular file share a blob, both deleted, a similar file added — the regular source wins (D a-link ; R096 b-file c-new)',
+    before: [
+      { path: 'a-link', content: SHARED_TARGET_TEXT, kind: 'symlink' },
+      { path: 'b-file', content: SHARED_TARGET_TEXT },
+    ],
+    after: [{ path: 'c-new', content: SHARED_TARGET_PLUS_EXTRA }],
+  },
+  {
+    label:
+      'the same shared-blob pair under -C — the symlink still never scores (D a-link ; R096 b-file c-new)',
+    before: [
+      { path: 'a-link', content: SHARED_TARGET_TEXT, kind: 'symlink' },
+      { path: 'b-file', content: SHARED_TARGET_TEXT },
+    ],
+    after: [{ path: 'c-new', content: SHARED_TARGET_PLUS_EXTRA }],
+    gitFlags: ['-C'],
+    renameOptions: { copies: 'on' },
+  },
+  {
+    label:
+      'the same shared-blob pair under -C -C — the symlink still never scores (D a-link ; R096 b-file c-new)',
+    before: [
+      { path: 'a-link', content: SHARED_TARGET_TEXT, kind: 'symlink' },
+      { path: 'b-file', content: SHARED_TARGET_TEXT },
+    ],
+    after: [{ path: 'c-new', content: SHARED_TARGET_PLUS_EXTRA }],
+    gitFlags: ['-C', '-C'],
+    renameOptions: { copies: 'harder' },
+  },
+  {
+    label:
+      'the same shared-blob pair under -B -M — the symlink still never scores (D a-link ; R096 b-file c-new)',
+    before: [
+      { path: 'a-link', content: SHARED_TARGET_TEXT, kind: 'symlink' },
+      { path: 'b-file', content: SHARED_TARGET_TEXT },
+    ],
+    after: [{ path: 'c-new', content: SHARED_TARGET_PLUS_EXTRA }],
+    gitFlags: ['-B'],
+    renameOptions: { breakRewrites: { score: 30000, merge: 36000 } },
+  },
+  {
+    label:
+      '-M -B: a broken symlink retarget alongside an unrelated regular delete, and an add similar to the OLD target — the broken halves rejoin, the add stays plain (M100 a-link ; D other ; A z-new)',
+    before: [
+      { path: 'a-link', content: SYMLINK_OLD_TARGET, kind: 'symlink' },
+      { path: 'other', content: tenLineContent('n6') },
+    ],
+    after: [
+      { path: 'a-link', content: SYMLINK_NEW_TARGET, kind: 'symlink' },
+      { path: 'z-new', content: SYMLINK_OLD_TARGET_PLUS_TAIL },
+    ],
     gitFlags: ['-B'],
     renameOptions: { breakRewrites: { score: 30000, merge: 36000 } },
   },
