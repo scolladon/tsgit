@@ -1001,6 +1001,65 @@ describe('Given a file deleted and its identical content added at three paths in
   });
 });
 
+describe('Given a deleted source whose basename matches the blamed path competing with a more similar one', () => {
+  const buildBasenameCompetition = async (): Promise<{
+    ctx: Context;
+    c1: ObjectId;
+    c2: ObjectId;
+  }> => {
+    const ctx = await seed();
+    const basenameLine = (i: number, edited: boolean): string =>
+      edited ? `edited line ${i}` : `body line ${i}`;
+    const basenameContent = (editedCount: number): string =>
+      `${Array.from({ length: 20 }, (_, i) => basenameLine(i, i < editedCount)).join('\n')}\n`;
+    clock += 60;
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a/foo.c`, basenameContent(4));
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a/bar.c`, basenameContent(1));
+    await add(ctx, ['a/foo.c', 'a/bar.c']);
+    const c1 = (
+      await commit(ctx, {
+        message: 'c1 add a/foo.c and a/bar.c',
+        author: ident('c1', clock),
+        committer: ident('c1', clock),
+      })
+    ).id;
+    await rm(ctx, ['a/foo.c', 'a/bar.c']);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b/foo.c`, basenameContent(0));
+    await add(ctx, ['b/foo.c']);
+    clock += 60;
+    const c2 = (
+      await commit(ctx, {
+        message: 'c2 move to b/foo.c',
+        author: ident('c2', clock),
+        committer: ident('c2', clock),
+      })
+    ).id;
+    return { ctx, c1, c2 };
+  };
+
+  describe('When blaming the destination path', () => {
+    it('Then the followed source path is the basename match, not the higher-scoring competitor', async () => {
+      // Arrange
+      const sut = blame;
+      const { ctx, c1, c2 } = await buildBasenameCompetition();
+
+      // Act
+      const result = await sut(ctx, 'b/foo.c');
+
+      // Assert — the 4 lines edited only in a/foo.c are new at c2; the 16 shared
+      // lines follow the basename match a/foo.c at c1, not the higher-scoring a/bar.c
+      expect(committedLines(result).map((l) => l.commit)).toEqual([
+        ...Array(4).fill(c2),
+        ...Array(16).fill(c1),
+      ]);
+      expect(result.lines.map((l) => l.sourcePath)).toEqual([
+        ...Array(4).fill('b/foo.c'),
+        ...Array(16).fill('a/foo.c'),
+      ]);
+    });
+  });
+});
+
 describe('Given a multi-commit file and a line range', () => {
   const buildThreeLineFile = async (): Promise<{
     ctx: Context;

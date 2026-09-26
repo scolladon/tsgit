@@ -15,7 +15,7 @@
  *   unique:         tsgit's blame data reconstructs canonical `git blame --porcelain`
  *   interopSurface: blame
  */
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -164,6 +164,7 @@ describe.skipIf(!GIT_AVAILABLE)('blame interop', () => {
   let emptyFile: { dir: string; ctx: Context };
   let fanOut: { dir: string; ctx: Context };
   let inexactCompetition: { dir: string; ctx: Context };
+  let basenameCompetition: { dir: string; ctx: Context };
 
   beforeAll(async () => {
     const linearDir = await makeRepo('linear');
@@ -281,6 +282,37 @@ describe.skipIf(!GIT_AVAILABLE)('blame interop', () => {
       dir: inexactCompetitionDir,
       ctx: createNodeContext({ workDir: inexactCompetitionDir }),
     };
+
+    // Basename competition: a delete sharing the destination's basename loses
+    // the raw similarity score to a differently-named delete, yet the
+    // basename pass pairs it anyway (git's rename detection prefers a
+    // matching basename over a higher-scoring competitor) — single_follow
+    // must resolve to the SAME source diff's own rename detection would.
+    const basenameCompetitionDir = await makeRepo('basename-competition');
+    const basenameLine = (i: number, edited: boolean): string =>
+      edited ? `edited line ${i}` : `body line ${i}`;
+    const basenameContent = (editedCount: number): string =>
+      `${Array.from({ length: 20 }, (_, i) => basenameLine(i, i < editedCount)).join('\n')}\n`;
+    await mkdir(path.join(basenameCompetitionDir, 'a'), { recursive: true });
+    await writeFile(path.join(basenameCompetitionDir, 'a', 'foo.c'), basenameContent(4));
+    await writeFile(path.join(basenameCompetitionDir, 'a', 'bar.c'), basenameContent(1));
+    git(basenameCompetitionDir, 'add', '-A');
+    clock += 60;
+    runGit(['-C', basenameCompetitionDir, 'commit', '-q', '-m', 'add a/foo.c and a/bar.c'], {
+      env: datedEnv(clock),
+    });
+    git(basenameCompetitionDir, 'rm', '-r', '-q', 'a');
+    await mkdir(path.join(basenameCompetitionDir, 'b'), { recursive: true });
+    await writeFile(path.join(basenameCompetitionDir, 'b', 'foo.c'), basenameContent(0));
+    git(basenameCompetitionDir, 'add', '-A');
+    clock += 60;
+    runGit(['-C', basenameCompetitionDir, 'commit', '-q', '-m', 'move to b/foo.c'], {
+      env: datedEnv(clock),
+    });
+    basenameCompetition = {
+      dir: basenameCompetitionDir,
+      ctx: createNodeContext({ workDir: basenameCompetitionDir }),
+    };
   }, SETUP_TIMEOUT);
 
   afterAll(async () => {
@@ -297,6 +329,7 @@ describe.skipIf(!GIT_AVAILABLE)('blame interop', () => {
         emptyFile,
         fanOut,
         inexactCompetition,
+        basenameCompetition,
       ].map((r) => rm(r.dir, { recursive: true, force: true })),
     );
   });
@@ -413,6 +446,11 @@ describe.skipIf(!GIT_AVAILABLE)('blame interop', () => {
       label: 'the more similar of two competing adds',
       fixture: () => inexactCompetition,
       file: 'c.txt',
+    },
+    {
+      label: 'a rename source chosen by a matching basename over a higher-scoring competitor',
+      fixture: () => basenameCompetition,
+      file: 'b/foo.c',
     },
   ];
 

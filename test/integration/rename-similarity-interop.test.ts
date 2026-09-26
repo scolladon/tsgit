@@ -3447,7 +3447,9 @@ describe.skipIf(!GIT_AVAILABLE)('-B type-change break interop', () => {
  * sharing a UNIQUE basename pair before the ordinary matrix ever runs, even
  * when a differently-named delete scores higher against that same add. It
  * runs only under plain `-M` — copies off, and no broken pair anywhere in
- * the diff (row below reuses `-B` to prove a break switches it off).
+ * the diff (rows below reuse `-B` and a rename limit to prove those switch
+ * it off or leave it unaffected) — and it only ever pairs a basename that is
+ * unique on BOTH sides, above a threshold-relative gate.
  */
 const BASENAME_PASS_TMP_PREFIX = 'tsgit-rename-basename-pass-';
 const BASENAME_PASS_SETUP_TIMEOUT = 60_000;
@@ -3463,6 +3465,30 @@ const companionEdited = (edited: number): string =>
       ? `meta-edited line ${i}: replaces the shared boilerplate for the basename regression probe\n`
       : `meta line ${i}: shared boilerplate for the basename regression probe\n`,
   ).join('');
+
+/** Edits only the LAST line of the shared baseline — a "tail edit", as opposed
+ *  to `b3Edited`'s edits from the front. */
+const b3TailEdited = (): string =>
+  Array.from({ length: 20 }, (_, i) =>
+    i === 19
+      ? `edited line ${i}: replaces the shared baseline for the basename regression probe\n`
+      : `body line ${i}: shared baseline for the basename regression probe\n`,
+  ).join('');
+
+/** A content family unrelated to the basename/companion ones above, used for a
+ *  leftover pair that must stay reachable only through the ordinary matrix. */
+const LEFTOVER_BASELINE = Array.from(
+  { length: 20 },
+  (_, i) => `leftover line ${i}: shared payload for the limited-leftover probe\n`,
+).join('');
+const leftoverEdited = (edited: number): string =>
+  Array.from({ length: 20 }, (_, i) =>
+    i < edited
+      ? `leftover-edited line ${i}: replaces the shared payload for the limited-leftover probe\n`
+      : `leftover line ${i}: shared payload for the limited-leftover probe\n`,
+  ).join('');
+
+const BASENAME_UNIQUENESS_SYMLINK_TARGET = 'symlink-target-for-basename-uniqueness-probe';
 
 const BASENAME_PASS_ROWS: ReadonlyArray<RenameRow> = [
   {
@@ -3502,6 +3528,106 @@ const BASENAME_PASS_ROWS: ReadonlyArray<RenameRow> = [
     ],
     gitFlags: ['-B'],
     renameOptions: BASENAME_PASS_BREAK_OPTS,
+  },
+  {
+    label:
+      'the same fixture under a rename limit of 1 — the basename pass still pairs because it runs before the limit gate (D bar.c ; R0nn foo.c→foo.c)',
+    before: [
+      { path: 'a/foo.c', content: b3Edited(4) },
+      { path: 'a/bar.c', content: b3Edited(1) },
+    ],
+    after: [{ path: 'b/foo.c', content: B3_BASELINE }],
+    gitFlags: ['-l1'],
+    renameOptions: { limit: 1 },
+  },
+  {
+    label:
+      'a same-basename delete scoring below the basename gate falls to the matrix and loses to a differently-named, higher-scoring delete (D foo.c ; R0nn bar.c→foo.c)',
+    before: [
+      { path: 'a/foo.c', content: b3Edited(8) },
+      { path: 'a/bar.c', content: b3Edited(1) },
+    ],
+    after: [{ path: 'b/foo.c', content: B3_BASELINE }],
+  },
+  {
+    label:
+      'must stay: two sources sharing the same basename never basename-pair, even against a uniquely-named destination — the matrix still picks the higher-scoring source (D a/x/foo.c ; R0nn a/y/foo.c→foo.c)',
+    before: [
+      { path: 'a/x/foo.c', content: b3Edited(4) },
+      { path: 'a/y/foo.c', content: b3Edited(1) },
+    ],
+    after: [{ path: 'b/foo.c', content: B3_BASELINE }],
+  },
+  {
+    label:
+      'must stay: two destinations sharing the same basename never basename-pair — the matrix assigns each source to its own best-scoring destination instead (R0nn bar.c→x/foo.c ; R0nn foo.c→y/foo.c)',
+    before: [
+      { path: 'a/foo.c', content: companionEdited(4) },
+      { path: 'a/bar.c', content: b3Edited(1) },
+    ],
+    after: [
+      { path: 'b/x/foo.c', content: B3_BASELINE },
+      { path: 'b/y/foo.c', content: COMPANION_BASELINE },
+    ],
+  },
+  {
+    label:
+      'must stay: a custom similarity threshold raises the basename gate high enough to reject a same-basename delete, so the higher-scoring, differently-named delete still wins the matrix (D foo.c ; R0nn bar.c→foo.c)',
+    before: [
+      { path: 'a/foo.c', content: b3Edited(2) },
+      { path: 'a/bar.c', content: b3Edited(1) },
+    ],
+    after: [{ path: 'b/foo.c', content: B3_BASELINE }],
+    gitFlags: ['-M90%'],
+    renameOptions: { threshold: 54000 },
+  },
+  {
+    label:
+      'a third destination the basename pass frees the other delete to reach: pairing the basename match shrinks the leftover matrix so the freed delete still pairs by score (R0nn foo.c→foo.c ; R0nn bar.c→zed.c)',
+    before: [
+      { path: 'a/foo.c', content: b3Edited(4) },
+      { path: 'a/bar.c', content: b3Edited(1) },
+    ],
+    after: [
+      { path: 'b/foo.c', content: B3_BASELINE },
+      { path: 'b/zed.c', content: b3TailEdited() },
+    ],
+  },
+  {
+    label:
+      'a rename limit of 1 with one basename-unique pair and one unrelated pair: the basename pass shrinks the leftover matrix to fit the limit (R0nn foo.c→foo.c ; R0nn x.c→y.c)',
+    before: [
+      { path: 'a/foo.c', content: b3Edited(2) },
+      { path: 'a/x.c', content: leftoverEdited(1) },
+    ],
+    after: [
+      { path: 'b/foo.c', content: B3_BASELINE },
+      { path: 'b/y.c', content: LEFTOVER_BASELINE },
+    ],
+    gitFlags: ['-l1'],
+    renameOptions: { limit: 1 },
+  },
+  {
+    label:
+      'must stay: an unrelated deleted symlink sharing the destination basename still blocks the basename pass — the matrix decides exactly as it did before the pass existed (D foo.c ; D a/x/foo.c ; R0nn bar.c→foo.c)',
+    before: [
+      { path: 'a/foo.c', content: b3Edited(4) },
+      { path: 'a/bar.c', content: b3Edited(1) },
+      { path: 'a/x/foo.c', content: BASENAME_UNIQUENESS_SYMLINK_TARGET, kind: 'symlink' },
+    ],
+    after: [{ path: 'b/foo.c', content: B3_BASELINE }],
+  },
+  {
+    label:
+      'must stay: a new symlink sharing the destination basename blocks the basename pass on the regular destination too — the matrix decides and the symlink stays an unmatched add (D foo.c ; R0nn bar.c→foo.c ; A b/x/foo.c)',
+    before: [
+      { path: 'a/foo.c', content: b3Edited(4) },
+      { path: 'a/bar.c', content: b3Edited(1) },
+    ],
+    after: [
+      { path: 'b/foo.c', content: B3_BASELINE },
+      { path: 'b/x/foo.c', content: BASENAME_UNIQUENESS_SYMLINK_TARGET, kind: 'symlink' },
+    ],
   },
 ];
 
