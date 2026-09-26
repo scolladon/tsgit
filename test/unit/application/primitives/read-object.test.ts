@@ -222,12 +222,12 @@ describe('readObject', () => {
 
     describe('Given a loose blob whose header claims 1 byte and whose body is 8', () => {
       describe('When readObject is called with maxBytes 4', () => {
-        it('Then the cap measures the actual 8 bytes and refuses OBJECT_TOO_LARGE', async () => {
+        it("Then it truncates to the 1-byte claim — the whole object fits git's 32-byte header window", async () => {
           // Arrange — forge a loose blob whose <type> <size>\0 header lies
-          // about its payload size. A lying blob is served by its real
-          // bytes (git's streaming contract), so a cap that trusted the
-          // declared size would wrongly admit it — this pins that the cap
-          // measures the ACTUAL 8 bytes instead.
+          // about its payload size. Header (7 bytes) + body (8 bytes) is 15
+          // bytes, inside git's 32-byte header window, so the buffered read
+          // truncates to the claim rather than admitting the real 8-byte
+          // body — well under the 4-byte cap, so no refusal fires.
           const ctx = await buildSeededContext();
           const fakeId = 'a'.repeat(40) as ObjectId;
           const { computeLooseObjectPath } = await import(
@@ -241,20 +241,10 @@ describe('readObject', () => {
           );
 
           // Act
-          try {
-            await readObject(ctx, fakeId, { maxBytes: 4, verifyHash: false });
-            // Assert
-            expect.unreachable();
-          } catch (error) {
-            const data = (error as TsgitError).data;
-            expect(data.code).toBe('OBJECT_TOO_LARGE');
-            if (data.code !== 'OBJECT_TOO_LARGE') {
-              expect.fail(`expected OBJECT_TOO_LARGE, got ${data.code}`);
-            }
-            expect(data.id).toBe(fakeId);
-            expect(data.actualSize).toBe(8);
-            expect(data.limit).toBe(4);
-          }
+          const result = await readObject(ctx, fakeId, { maxBytes: 4, verifyHash: false });
+
+          // Assert
+          expect((result as Blob).content).toEqual(new TextEncoder().encode('Y'));
         });
       });
     });

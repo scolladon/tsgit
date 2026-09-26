@@ -11,7 +11,9 @@ import {
 } from '../../domain/objects/error.js';
 import {
   assertLooseSizeConsistent,
+  classifyLooseBody,
   type LooseObjectSplit,
+  sizeMismatch,
   splitLooseObject,
 } from '../../domain/objects/git-object.js';
 import {
@@ -271,6 +273,50 @@ async function tryResolveViaRegistry(
   };
 }
 
+/** One arm's answer for a loose split's servable bytes, alongside whether
+ *  they may populate `ctx.deltaCache` — `resolveLooseArm`'s shared shape for
+ *  both the buffered and the streamed routing below. */
+interface LooseServable {
+  readonly content: Uint8Array;
+  readonly cacheable: boolean;
+}
+
+/**
+ * git's buffered-tier verdict (`classifyLooseBody`) routed to servable
+ * bytes: `'honest'` serves and caches as today; `'truncate'` — a blob whose
+ * body overran the claim while still fitting `LOOSE_HEADER_WINDOW` — serves
+ * only the claimed prefix and never caches (git's own `unpack_loose_rest`
+ * silently truncates here, and the truncated bytes are this object's
+ * identity everywhere else, including `verifyObjectContent` below, so
+ * caching the wrong length would poison every future read); `'underrun'`
+ * serves the real (shorter) body and never caches, a recorded residual;
+ * `'refuse'` throws git's own commit/tree/tag size-mismatch. Exported so a
+ * future buffered-tier reader can reuse the identical routing rather than
+ * re-deriving it.
+ */
+export function applyLooseVerdict(split: LooseObjectSplit): LooseServable {
+  switch (classifyLooseBody(split)) {
+    case 'honest':
+      return { content: split.content, cacheable: true };
+    case 'truncate':
+      return { content: split.content.subarray(0, split.declaredSize), cacheable: false };
+    case 'underrun':
+      return { content: split.content, cacheable: false };
+    case 'refuse':
+      throw sizeMismatch(split.declaredSize, split.content.byteLength);
+  }
+}
+
+/** The streaming tier's own routing (unchanged by this window-truncation
+ *  work): refuses a size-lying commit, tree or tag exactly as
+ *  `applyLooseVerdict` does, but a blob always serves its real bytes
+ *  regardless of over- or under-run — git's streaming routes ignore the
+ *  claim entirely. */
+function resolveStreamedContent(split: LooseObjectSplit): LooseServable {
+  assertLooseSizeConsistent(split);
+  return { content: split.content, cacheable: split.declaredSize === split.content.byteLength };
+}
+
 /**
  * The pack-miss arm: tried only once the pack registry has answered
  * `undefined` for `id`. Reports `undefined` — never throws — when the loose
@@ -290,15 +336,16 @@ async function resolveLooseArm(
     return undefined;
   }
   checkAborted(ctx);
-  assertLooseSizeConsistent(split);
-  enforceLooseCap(id, split.content, maxBytes);
-  if (split.declaredSize === split.content.byteLength) {
-    cacheEntry(ctx.deltaCache, id, { type: split.type, content: split.content });
+  const { content, cacheable } =
+    mode === 'buffered' ? applyLooseVerdict(split) : resolveStreamedContent(split);
+  enforceLooseCap(id, content, maxBytes);
+  if (cacheable) {
+    cacheEntry(ctx.deltaCache, id, { type: split.type, content });
   }
-  await verifyObjectContent(ctx, id, split.type, split.content, verifyHash, split.declaredSize);
+  await verifyObjectContent(ctx, id, split.type, content, verifyHash, split.declaredSize);
   return {
     type: split.type,
-    content: split.content,
+    content,
     chainDepth: 0,
     declaredSize: split.declaredSize,
   };

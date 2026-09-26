@@ -1509,9 +1509,9 @@ describe('object-resolver', () => {
     });
   });
 
-  describe('Given a loose blob whose header size claim disagrees with its body length', () => {
-    describe('When resolveObjectContentWithDepth is called', () => {
-      it('Then it returns the real content and the claim as declaredSize, and never caches the object', async () => {
+  describe("Given a loose blob whose body overruns its header claim while staying inside git's 32-byte header window", () => {
+    describe('When resolveObjectContentWithDepth is called (the default buffered read)', () => {
+      it('Then it truncates the content to the claim, reports the claim as declaredSize, and never caches the object', async () => {
         // Arrange
         const content = ENC.encode('hello world!'); // 12 bytes
         const ctx = await buildSeededContext();
@@ -1523,9 +1523,35 @@ describe('object-resolver', () => {
         const result = await resolveObjectContentWithDepth(ctx, registry, id, false, undefined, 0);
 
         // Assert
-        expect(result.content).toEqual(content);
+        expect(result.content).toEqual(content.subarray(0, 5));
         expect(result.declaredSize).toBe(5);
         expect(ctx.deltaCache.has(id)).toBe(false);
+      });
+    });
+
+    describe('When resolveObjectContentWithDepth is called with the streamed read mode', () => {
+      it("Then it serves the real body — git's streaming tier ignores the claim", async () => {
+        // Arrange
+        const content = ENC.encode('hello world!'); // 12 bytes
+        const ctx = await buildSeededContext();
+        const id = await writeRawObjectBytes(ctx, 'blob', content);
+        await writeLooseWithDeclaredSize(ctx, id, 'blob', 5, content);
+        const registry = await createPackRegistry(ctx);
+
+        // Act
+        const result = await resolveObjectContentWithDepth(
+          ctx,
+          registry,
+          id,
+          false,
+          undefined,
+          0,
+          'streamed',
+        );
+
+        // Assert
+        expect(result.content).toEqual(content);
+        expect(result.declaredSize).toBe(5);
       });
     });
   });
@@ -1732,11 +1758,15 @@ describe('object-resolver', () => {
         const id = await writeRawObjectBytes(ctx, 'blob', content);
         await writeLooseWithDeclaredSize(ctx, id, 'blob', 5, content);
         const registry = await createPackRegistry(ctx);
+        // The buffered read truncates the body to the claim (within git's
+        // 32-byte header window), so the hash it verifies against is over
+        // the TRUNCATED content, not the full stored body.
+        const truncated = content.subarray(0, 5);
         const storedLyingBytes = new Uint8Array(
-          serializeHeader('blob', 5).length + content.byteLength,
+          serializeHeader('blob', 5).length + truncated.byteLength,
         );
         storedLyingBytes.set(serializeHeader('blob', 5), 0);
-        storedLyingBytes.set(content, serializeHeader('blob', 5).length);
+        storedLyingBytes.set(truncated, serializeHeader('blob', 5).length);
         const expectedActual = (await ctx.hash.hashHex(storedLyingBytes)) as ObjectId;
 
         // Act

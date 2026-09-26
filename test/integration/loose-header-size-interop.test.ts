@@ -8,6 +8,7 @@
  *   unique:         a loose object whose header size disagrees with its body, against git 2.55.0
  *   interopSurface: readObject, catFile, streamBlob
  */
+import { createHash } from 'node:crypto';
 import { chmod, cp, mkdtemp, readFile, rm, unlink, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -23,6 +24,8 @@ import { status } from '../../src/application/commands/status.js';
 import { readObject } from '../../src/application/primitives/read-object.js';
 import { streamBlob } from '../../src/application/primitives/stream-blob.js';
 import { writeObject } from '../../src/application/primitives/write-object.js';
+import { tarArchive } from '../../src/domain/archive/tar.js';
+import type { StatTreeDiff } from '../../src/domain/diff/index.js';
 import { TsgitError } from '../../src/domain/error.js';
 import type { Blob, ObjectId } from '../../src/domain/objects/index.js';
 import {
@@ -30,6 +33,7 @@ import {
   GIT_AVAILABLE,
   git,
   runGit,
+  runGitBytes,
   runGitEnv,
   tryRunGitWithExit,
 } from './interop-helpers.js';
@@ -152,7 +156,6 @@ describe.skipIf(!GIT_AVAILABLE)('loose-object header size lying interop', () => 
 
   describe('Given a small blob whose header claims a size disagreeing with its 12-byte body, When git and tsgit both read it', () => {
     it.each([
-      { label: 'claim 5 (smaller than body)', claim: 5 },
       { label: 'claim 20 (larger than body)', claim: 20 },
       { label: 'claim 104857600 (far larger than body)', claim: 104_857_600 },
     ])(
@@ -187,6 +190,66 @@ describe.skipIf(!GIT_AVAILABLE)('loose-object header size lying interop', () => 
         expect(streamed).toEqual(SMALL_CONTENT);
       },
     );
+  });
+
+  describe("Given a small blob whose header claims 5 bytes but its body is the real 12 bytes, staying inside git's 32-byte header window", () => {
+    describe('When readObject and git archive both take the buffered tier', () => {
+      it("Then readObject truncates to the 5-byte claim, matching tsgit's own tar serializer reconstruction of git's archive bytes", async () => {
+        // Arrange — header (7 bytes) + body (12 bytes) = 19 ≤ 32: the whole
+        // object fits git's header window, so the buffered tier silently
+        // truncates to the claim rather than serving the real body.
+        const dir = await caseDir('small-claim5-buffered');
+        await forgeLoose(dir, smallId, 'blob', 5, SMALL_CONTENT);
+        const ctx = createNodeContext({ workDir: dir });
+        const id = smallId as ObjectId;
+
+        // Act — git side: archive also takes the buffered tier, so it
+        // truncates identically to readObject.
+        const gitTarBytes = runGitBytes(['-C', dir, 'archive', '--format=tar', 'HEAD'], {
+          env: runGitEnv(),
+        });
+
+        // Act — tsgit side
+        const object = await readObject(ctx, id);
+        const result = await archive(ctx, { treeish: 'HEAD' });
+        const tarStream = tarArchive(result, {
+          umask: 0o0002,
+          uname: 'root',
+          gname: 'root',
+          ...(result.commitTime !== undefined ? { mtime: result.commitTime } : {}),
+        });
+        const ourTarBytes = await collect(tarStream);
+
+        // Assert
+        expect(object.type).toBe('blob');
+        expect(Buffer.from((object as Blob).content)).toEqual(SMALL_CONTENT.subarray(0, 5));
+        expect(new Uint8Array(ourTarBytes)).toEqual(gitTarBytes);
+      });
+    });
+  });
+
+  describe("Given a second commit replacing the truncated small blob's content, When git diff --numstat and tsgit diff({ withStat: true }) both compare", () => {
+    it('Then both report a truncated 5-byte old side against the new 6-byte content', async () => {
+      // Arrange
+      const dir = await caseDir('small-claim5-numstat');
+      await forgeLoose(dir, smallId, 'blob', 5, SMALL_CONTENT);
+      await writeFile(path.join(dir, 'small.txt'), 'other\n');
+      git(dir, 'add', '-A');
+      runGit(['-C', dir, 'commit', '-q', '-m', 'second'], { env: datedEnv() });
+      const ctx = createNodeContext({ workDir: dir });
+
+      // Act
+      const gitNumstat = git(dir, 'diff', '--no-ext-diff', '--numstat', 'HEAD~1', 'HEAD').trim();
+      const result = await diff(ctx, { from: 'HEAD~1', to: 'HEAD', withStat: true });
+
+      // Assert — git: truncated 'hello' (no trailing LF) vs 'other\n' is a
+      // one-line-removed, one-line-added change.
+      expect(gitNumstat).toBe('1\t1\tsmall.txt');
+      const change = (result as StatTreeDiff).changes.find(
+        (c) => 'path' in c && c.path === 'small.txt',
+      );
+      expect(change).toMatchObject({ type: 'modify', added: 1, deleted: 1 });
+    });
   });
 
   describe('Given a medium (1880-byte) blob whose header claim under-runs its body (claim 4000), When git and tsgit both read it — the recorded residual', () => {
@@ -611,13 +674,19 @@ describe.skipIf(!GIT_AVAILABLE)('loose-object header size lying interop', () => 
       expect(fsck.exitCode).toBe(3);
       expect(fsck.stderr).toContain('hash-path mismatch');
 
-      // Assert — tsgit's observed answer
+      // Assert — tsgit's observed answer. readObject's buffered read
+      // truncates to the 5-byte claim (inside git's header window), so the
+      // hash it verifies against — and reports as `actual` — is over the
+      // TRUNCATED header+content, computed here independently.
+      const expectedActual = createHash('sha1')
+        .update(Buffer.concat([Buffer.from('blob 5\0'), SMALL_CONTENT.subarray(0, 5)]))
+        .digest('hex');
       expect(readError).toBeInstanceOf(TsgitError);
       const readData = (readError as TsgitError).data;
       expect(readData.code).toBe('OBJECT_HASH_MISMATCH');
       if (readData.code === 'OBJECT_HASH_MISMATCH') {
         expect(readData.expected).toBe(id);
-        expect(readData.actual).not.toBe(id);
+        expect(readData.actual).toBe(expectedActual);
       }
       expect(streamError).toBeInstanceOf(TsgitError);
       const streamData = (streamError as TsgitError).data;

@@ -5,6 +5,8 @@ import type { Commit } from '../../../../src/domain/objects/commit.js';
 import { encode } from '../../../../src/domain/objects/encoding.js';
 import {
   assertLooseSizeConsistent,
+  classifyLooseBody,
+  type LooseObjectSplit,
   parseObject,
   parseObjectContent,
   serializeObject,
@@ -556,6 +558,110 @@ describe('git-object', () => {
 
           // Act + Assert
           expect(() => sut(split)).not.toThrow();
+        });
+      });
+    });
+  });
+
+  describe('classifyLooseBody', () => {
+    describe("Given a blob split whose body overruns the claim while staying inside git's 32-byte header window", () => {
+      describe('When calling classifyLooseBody', () => {
+        it.each([
+          { label: 'body 24 bytes', bodyLength: 24 },
+          { label: 'body 25 bytes (the exact window boundary)', bodyLength: 25 },
+        ])("Then returns 'truncate' for $label", ({ bodyLength }) => {
+          // Arrange
+          const sut = classifyLooseBody;
+          const split: LooseObjectSplit = {
+            type: 'blob',
+            content: new Uint8Array(bodyLength),
+            declaredSize: 6,
+          };
+
+          // Act
+          const result = sut(split);
+
+          // Assert
+          expect(result).toBe('truncate');
+        });
+      });
+    });
+
+    describe('Given a blob split whose body length equals its declared size', () => {
+      describe('When calling classifyLooseBody', () => {
+        it("Then returns 'honest'", () => {
+          // Arrange
+          const sut = classifyLooseBody;
+          const split: LooseObjectSplit = {
+            type: 'blob',
+            content: new Uint8Array(6),
+            declaredSize: 6,
+          };
+
+          // Act
+          const result = sut(split);
+
+          // Assert
+          expect(result).toBe('honest');
+        });
+      });
+    });
+
+    describe('Given a blob split whose body is shorter than its declared size', () => {
+      describe('When calling classifyLooseBody', () => {
+        it("Then returns 'underrun'", () => {
+          // Arrange
+          const sut = classifyLooseBody;
+          const split: LooseObjectSplit = {
+            type: 'blob',
+            content: new Uint8Array(4),
+            declaredSize: 6,
+          };
+
+          // Act
+          const result = sut(split);
+
+          // Assert
+          expect(result).toBe('underrun');
+        });
+      });
+    });
+
+    describe('Given a non-blob split whose body disagrees with its declared size', () => {
+      describe('When calling classifyLooseBody', () => {
+        it.each([
+          {
+            label: 'a commit, body shorter than the claim',
+            type: 'commit' as const,
+            bodyLength: 4,
+            declaredSize: 6,
+          },
+          {
+            label: 'a commit, body longer than the claim',
+            type: 'commit' as const,
+            bodyLength: 25,
+            declaredSize: 6,
+          },
+          {
+            label: 'a tree, body longer than the claim',
+            type: 'tree' as const,
+            bodyLength: 25,
+            declaredSize: 6,
+          },
+        ])("Then returns 'refuse' for $label", ({ type, bodyLength, declaredSize }) => {
+          // Arrange
+          const sut = classifyLooseBody;
+          const split: LooseObjectSplit = {
+            type,
+            content: new Uint8Array(bodyLength),
+            declaredSize,
+          };
+
+          // Act
+          const result = sut(split);
+
+          // Assert
+          expect(result).toBe('refuse');
         });
       });
     });
