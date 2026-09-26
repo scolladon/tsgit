@@ -5,7 +5,7 @@ import {
   readDeclaredObjectSize,
   readObjectMetadata,
 } from '../../../../src/application/primitives/read-object.js';
-import type { TsgitError } from '../../../../src/domain/error.js';
+import { TsgitError } from '../../../../src/domain/error.js';
 import type {
   Blob,
   Commit,
@@ -482,11 +482,12 @@ describe('readDeclaredObjectSize', () => {
     });
   });
 
-  describe('Given a loose file whose entire content has no NUL after inflate', () => {
+  describe('Given a loose file whose entire content has no NUL and decodes to more than 32 bytes', () => {
     describe('When readDeclaredObjectSize is called', () => {
-      it('Then rejects INVALID_OBJECT_HEADER with the no-NUL-terminator reason', async () => {
-        // Arrange — the whole file fits inside the 1024-byte probe, so the
-        // "never catch" branch applies: no fallback, the error propagates.
+      it('Then rejects INVALID_OBJECT_HEADER with the header-too-long reason, like git', async () => {
+        // Arrange — the whole file fits inside the 1024-byte probe, but the
+        // decoded header alone (49 bytes, no NUL) already exceeds git's own
+        // 32-byte header buffer — refused before any fallback is even considered.
         const ctx = await buildSeededContext();
         const junk = ENC.encode('no header here, just plain text with no null byte');
         const compressed = await ctx.compressor.deflate(junk);
@@ -502,9 +503,105 @@ describe('readDeclaredObjectSize', () => {
           const data = (error as TsgitError).data;
           expect(data.code).toBe('INVALID_OBJECT_HEADER');
           if (data.code === 'INVALID_OBJECT_HEADER') {
+            expect(data.reason).toBe(`header for ${id} too long, exceeds 32 bytes`);
+          }
+        }
+      });
+    });
+  });
+
+  describe('Given a loose file whose entire content has no NUL but stays at or under 32 bytes', () => {
+    describe('When readDeclaredObjectSize is called', () => {
+      it('Then rejects INVALID_OBJECT_HEADER with the no-NUL-terminator reason', async () => {
+        // Arrange — the whole file fits inside the 1024-byte probe and never
+        // reaches the 32-byte header cap, so the "never catch" branch applies:
+        // no fallback, the plain no-NUL error propagates as-is.
+        const ctx = await buildSeededContext();
+        const junk = ENC.encode('short, no null byte here');
+        const compressed = await ctx.compressor.deflate(junk);
+        const id = 'd'.repeat(40) as ObjectId;
+        await ctx.fs.write(loosePathOf(ctx, id), compressed);
+
+        // Act
+        try {
+          await readDeclaredObjectSize(ctx, id);
+          expect.unreachable();
+        } catch (error) {
+          // Assert
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('INVALID_OBJECT_HEADER');
+          if (data.code === 'INVALID_OBJECT_HEADER') {
             expect(data.reason).toBe(`no NUL terminator found in inflated object ${id}`);
           }
         }
+      });
+    });
+  });
+
+  describe('Given a large loose file whose header decodes to more than 32 bytes with no NUL', () => {
+    describe('When readDeclaredObjectSize is called', () => {
+      it('Then rejects immediately and never falls back to a whole-file read', async () => {
+        // Arrange — deterministic, poorly-compressible bytes (never 0x00) push the
+        // compressed size past the 1024-byte probe window, mirroring a hostile
+        // large loose object whose header never terminates: the fix must refuse
+        // as soon as the decoded header passes 32 bytes, never re-reading the
+        // whole (here, ~2 KiB; in the wild, hundreds of MiB) file looking for a
+        // NUL that will never appear.
+        const ctx = await buildSeededContext();
+        const junk = new Uint8Array(2000);
+        let state = 1;
+        for (let i = 0; i < junk.length; i++) {
+          state = (state * 1103515245 + 12345) & 0x7fffffff;
+          junk[i] = (state % 255) + 1; // never 0x00
+        }
+        const compressed = await ctx.compressor.deflate(junk);
+        expect(compressed.length).toBeGreaterThan(1024);
+        const id = 'e'.repeat(40) as ObjectId;
+        await ctx.fs.write(loosePathOf(ctx, id), compressed);
+        // Warm the repo-settings verdict first so the spy below observes only
+        // the size read's own filesystem traffic (see the 64 KiB blob test above).
+        await getPackRegistry(ctx);
+        const readSpy = vi.spyOn(ctx.fs, 'read');
+
+        // Act
+        try {
+          await readDeclaredObjectSize(ctx, id);
+          expect.unreachable();
+        } catch (error) {
+          // Assert
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('INVALID_OBJECT_HEADER');
+          if (data.code === 'INVALID_OBJECT_HEADER') {
+            expect(data.reason).toBe(`header for ${id} too long, exceeds 32 bytes`);
+          }
+        }
+        expect(readSpy).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given a small loose file whose own compressed bytes are truncated mid-stream', () => {
+    describe('When readDeclaredObjectSize is called', () => {
+      it('Then the inflate fault propagates as-is — the whole file already IS the prefix', async () => {
+        // Arrange — the prefix is shorter than the probe budget, so this is the
+        // "never catch" branch even for a hard stream fault (not just a clean
+        // no-NUL end): there is no more of the file left to re-read, so nothing
+        // routes to the whole-file fallback.
+        const ctx = await buildSeededContext();
+        const header = serializeHeader('blob', 5);
+        const serialized = new Uint8Array(header.length + 5);
+        serialized.set(header, 0);
+        serialized.set(ENC.encode('hello'), header.length);
+        const compressed = await ctx.compressor.deflate(serialized);
+        const truncated = compressed.subarray(0, 5);
+        const id = 'f'.repeat(40) as ObjectId;
+        await ctx.fs.write(loosePathOf(ctx, id), truncated);
+
+        // Act
+        const rejection = readDeclaredObjectSize(ctx, id);
+
+        // Assert
+        await expect(rejection).rejects.not.toBeInstanceOf(TsgitError);
       });
     });
   });

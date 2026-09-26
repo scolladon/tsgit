@@ -371,13 +371,42 @@ async function readLooseDeclaredSize(ctx: Context, id: ObjectId): Promise<number
 }
 
 /**
+ * git's own loose-header buffer is fixed at this many bytes
+ * (`object-file.c`'s `unpack_loose_header`, `MAX_HEADER_LEN`): a header that
+ * decodes to more bytes than this without a NUL is refused outright, so a
+ * hostile or corrupt object can never force an unbounded inflate hunting for
+ * a NUL that will never appear.
+ */
+const LOOSE_HEADER_MAX_BYTES = 32;
+
+function noNulTerminator(id: ObjectId): TsgitError {
+  return invalidObjectHeader(`no NUL terminator found in inflated object ${id}`);
+}
+
+function headerTooLong(id: ObjectId): TsgitError {
+  return invalidObjectHeader(`header for ${id} too long, exceeds ${LOOSE_HEADER_MAX_BYTES} bytes`);
+}
+
+/** One header scan's outcome: the declared size once a NUL is found within
+ *  the header cap; `tooLong` once accumulated output passes the cap without
+ *  one; `incomplete` when the scan's own input ran out first, still under
+ *  the cap — the only outcome a whole-file fallback can ever help with. */
+type HeaderScanOutcome =
+  | { readonly status: 'found'; readonly size: number }
+  | { readonly status: 'tooLong' }
+  | { readonly status: 'incomplete' };
+
+/**
  * Scans the probe prefix for the header's NUL. When the prefix is shorter
- * than the probe budget, it IS the whole file — any failure (no NUL, or the
- * inflate itself rejecting on truncated input) propagates as-is, never
- * caught. Only a prefix that exhausted the full budget (the file is longer
- * than the probe) routes a failure to the whole-file fallback — the catch is
- * narrowed to exactly that case, so a genuinely malformed object is never
- * swallowed.
+ * than the probe budget, it IS the whole file — an `incomplete` outcome (or
+ * a hard fault reading a genuinely truncated compressed prefix, caught
+ * below) propagates its plain no-NUL error as-is, never routed anywhere
+ * else. Only a prefix that exhausted the full budget (the file is longer
+ * than the probe) AND stayed incomplete routes to the whole-file fallback: a
+ * `tooLong` outcome always throws immediately regardless of how much of the
+ * file is left unread — git's own fixed-size header buffer refuses the same
+ * way independent of the object's total length, so it is checked BEFORE the
+ * fallback decision, never inside the catch a hard fault shares with it.
  */
 async function resolveDeclaredSizeFromPrefix(
   ctx: Context,
@@ -385,12 +414,17 @@ async function resolveDeclaredSizeFromPrefix(
   prefix: Uint8Array,
 ): Promise<number> {
   const isPrefixTruncated = prefix.length === LOOSE_HEADER_PROBE_BYTES;
+  let outcome: HeaderScanOutcome;
   try {
-    return await scanPrefixForDeclaredSize(ctx, id, prefix);
+    outcome = await scanPrefixForDeclaredSize(ctx, prefix);
   } catch (error) {
     if (isPrefixTruncated) return readDeclaredSizeFromWholeFile(ctx, id);
     throw error;
   }
+  if (outcome.status === 'found') return outcome.size;
+  if (outcome.status === 'tooLong') throw headerTooLong(id);
+  if (isPrefixTruncated) return readDeclaredSizeFromWholeFile(ctx, id);
+  throw noNulTerminator(id);
 }
 
 function inflatePrefixStream(ctx: Context, prefix: Uint8Array): ReadableStream<Uint8Array> {
@@ -403,47 +437,45 @@ function inflatePrefixStream(ctx: Context, prefix: Uint8Array): ReadableStream<U
   return source.pipeThrough(ctx.compressor.createInflateStream());
 }
 
-/** Drives the prefix's inflate to the header's NUL, always releasing the
- *  iterator afterwards — on the success path the stream is stopped early
- *  (never drained to its own end), and on any failure path nothing is left
- *  pumping in the background. */
+/** Drives the prefix's inflate looking for the header's NUL, always
+ *  releasing the iterator afterwards — on the success path the stream is
+ *  stopped early (never drained to its own end), and on any other outcome
+ *  nothing is left pumping in the background. */
 async function scanPrefixForDeclaredSize(
   ctx: Context,
-  id: ObjectId,
   prefix: Uint8Array,
-): Promise<number> {
+): Promise<HeaderScanOutcome> {
   const iterator = readableStreamToAsyncIterable(inflatePrefixStream(ctx, prefix))[
     Symbol.asyncIterator
   ]();
   try {
-    return await accumulateUntilNul(id, iterator);
+    return await scanChunksForHeader(new Uint8Array(0), iterator);
   } finally {
     await iterator.return?.();
   }
 }
 
-function noNulTerminator(id: ObjectId): TsgitError {
-  return invalidObjectHeader(`no NUL terminator found in inflated object ${id}`);
-}
-
-async function nextInflatedChunk(
-  id: ObjectId,
+/**
+ * Grows `buf` by one inflated chunk at a time, searching only its first
+ * `LOOSE_HEADER_MAX_BYTES` bytes for the header's NUL — exactly the window
+ * git's own fixed-size buffer can ever see. Stops pulling more input the
+ * moment that window is full without a NUL (`tooLong`): the accumulated
+ * output never grows past one chunk beyond the cap, however large — or
+ * however deceptively small on disk — the object actually is.
+ */
+async function scanChunksForHeader(
+  buf: Uint8Array,
   iterator: AsyncIterator<Uint8Array>,
-): Promise<Uint8Array> {
-  const next = await iterator.next();
-  if (next.done === true) throw noNulTerminator(id);
-  return next.value;
-}
-
-async function accumulateUntilNul(
-  id: ObjectId,
-  iterator: AsyncIterator<Uint8Array>,
-): Promise<number> {
-  let buf = await nextInflatedChunk(id, iterator);
+): Promise<HeaderScanOutcome> {
   for (;;) {
-    const nullPos = indexOf(buf, 0x00, 0);
-    if (nullPos !== -1) return parseHeader(buf.subarray(0, nullPos + 1)).size;
-    buf = concatBytes([buf, await nextInflatedChunk(id, iterator)]);
+    const searchLimit = Math.min(buf.length, LOOSE_HEADER_MAX_BYTES);
+    const nullPos = indexOf(buf.subarray(0, searchLimit), 0x00, 0);
+    if (nullPos !== -1)
+      return { status: 'found', size: parseHeader(buf.subarray(0, nullPos + 1)).size };
+    if (buf.length >= LOOSE_HEADER_MAX_BYTES) return { status: 'tooLong' };
+    const next = await iterator.next();
+    if (next.done === true) return { status: 'incomplete' };
+    buf = concatBytes([buf, next.value]);
   }
 }
 
