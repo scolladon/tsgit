@@ -2,6 +2,7 @@ import type { FileMode, FilePath, ObjectId } from '../objects/index.js';
 import { FILE_MODE } from '../objects/index.js';
 import type { AddChange } from './diff-change.js';
 import { kindOf } from './mode-kind.js';
+import { sortByPath } from './path-compare.js';
 import { MAX_SCORE } from './similarity.js';
 
 // git's find_identical_files examines at most this many eligible candidates per destination.
@@ -157,4 +158,31 @@ export function pairIdenticalFiles(
   }
 
   return { pairs, unpaired, uses };
+}
+
+export interface LabelledPair {
+  readonly pair: SourcePair;
+  readonly kind: 'rename' | 'copy';
+}
+
+/**
+ * git's use-count labelling (`diff.c:6699`): walked in destination (queue)
+ * path order, each pair decrements its source's remaining-use counter — the
+ * pair that drives the counter to 0 is the rename, every earlier one is a
+ * copy. `uses` already includes any seed use (the preimage file itself),
+ * which is never a pair here, so a retained source's counter never reaches 0
+ * and it only ever yields copies.
+ */
+export function labelRenameCopy(
+  pairs: ReadonlyArray<SourcePair>,
+  uses: ReadonlyArray<number>,
+): ReadonlyArray<LabelledPair> {
+  const ordered = sortByPath(pairs, (candidate) => candidate.destination.newPath);
+  const remaining = [...uses];
+
+  return ordered.map((candidate) => {
+    const left = (remaining[candidate.source] as number) - 1;
+    remaining[candidate.source] = left;
+    return { pair: candidate, kind: left > 0 ? 'copy' : 'rename' };
+  });
 }

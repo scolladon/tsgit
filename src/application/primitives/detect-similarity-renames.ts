@@ -7,12 +7,22 @@ import type {
   ModifyChange,
   RenameChange,
   TreeDiff,
+  TypeChangeChange,
 } from '../../domain/diff/diff-change.js';
 import type { FlatTreeEntry } from '../../domain/diff/flat-tree.js';
 import { isGitlink } from '../../domain/diff/index.js';
 import { sortByPath } from '../../domain/diff/path-compare.js';
-import { detectRenames, type RenameDetectOptions } from '../../domain/diff/rename-detect.js';
-import { compareCandidates, hasSameBasename } from '../../domain/diff/rename-pairing.js';
+import type { RenameDetectOptions } from '../../domain/diff/rename-detect.js';
+import {
+  compareCandidates,
+  type ExactPairing,
+  hasSameBasename,
+  type LabelledPair,
+  labelRenameCopy,
+  pairIdenticalFiles,
+  type RenameSource,
+  type SourcePair,
+} from '../../domain/diff/rename-pairing.js';
 import {
   buildChunkMap,
   countSpanhashChanges,
@@ -31,52 +41,16 @@ import { readDeclaredObjectSize } from './read-object.js';
 /** git's default `diff.renameLimit`. */
 const DEFAULT_LIMIT = 1000;
 
+/**
+ * Interim shape for the matrix triple-builders below (`buildRenameTriples`,
+ * `buildCopyTriples`), unchanged since before the registry existed. `registerCandidates`
+ * and its adapters (`toDeleteChangeShape`, `toCopySourceShape`) are the sole producers
+ * now — Part 8 removes both this shape and the builders that consume it.
+ */
 interface CopySource {
   readonly oldPath: FilePath;
   readonly oldId: ObjectId;
   readonly oldMode: FileMode;
-}
-
-/**
- * Build the copy source set for `copies: 'on'`:
- * PREIMAGE blobs of files MODIFIED (modify/type-change) in the diff
- * plus the unpaired deletes already in the rename source set.
- * An UNCHANGED file is NOT a copy source under plain -C — only a file the
- * diff itself touches lends its preimage.
- */
-function buildCopySourcesForOn(
-  deletes: ReadonlyArray<DeleteChange>,
-  other: ReadonlyArray<DiffChange>,
-): ReadonlyArray<CopySource> {
-  const sources: CopySource[] = [];
-  for (const del of deletes) {
-    sources.push({ oldPath: del.oldPath, oldId: del.oldId, oldMode: del.oldMode });
-  }
-  for (const change of other) {
-    if (change.type === 'modify' || change.type === 'type-change') {
-      if (!isGitlink(change.oldMode))
-        sources.push({ oldPath: change.path, oldId: change.oldId, oldMode: change.oldMode });
-    }
-  }
-  return sources;
-}
-
-/**
- * Build the copy source set for `copies: 'harder'` (--find-copies-harder):
- * ALL paths in the preimage tree (tree A), unchanged included.
- * When the harder source count would push num_create * num_src over the limit,
- * git falls back to only the 'on' (changed-files) source set — this function
- * always returns the FULL harder set; the caller applies the limit fallback.
- */
-function buildCopySourcesForHarder(
-  preimage: ReadonlyMap<FilePath, FlatTreeEntry>,
-): ReadonlyArray<CopySource> {
-  const sources: CopySource[] = [];
-  for (const [path, entry] of preimage) {
-    if (!isGitlink(entry.mode))
-      sources.push({ oldPath: path, oldId: entry.id, oldMode: entry.mode });
-  }
-  return sources;
 }
 
 /** @internal — exported for direct unit testing of the matrix helpers. */
@@ -258,7 +232,15 @@ interface CopyMatch {
 
 type GreedyMatch = RenameMatch | CopyMatch;
 
-function buildRenameChange(del: DeleteChange, add: AddChange, score: number): RenameChange {
+/** Builds the candidate change `greedySelect` carries a matched triple's score in
+ *  (interim — Part 8 removes this alongside `ScoredTriple`); the FINAL emitted
+ *  change is `buildRenameChange`/`buildCopyChange` below, generalised over the
+ *  registry's `RenameSource`. */
+function buildCandidateRenameChange(
+  del: DeleteChange,
+  add: AddChange,
+  score: number,
+): RenameChange {
   return {
     type: 'rename',
     oldPath: del.oldPath,
@@ -271,7 +253,7 @@ function buildRenameChange(del: DeleteChange, add: AddChange, score: number): Re
   };
 }
 
-function buildCopyChange(src: CopySource, add: AddChange, score: number): CopyChange {
+function buildCandidateCopyChange(src: CopySource, add: AddChange, score: number): CopyChange {
   return {
     type: 'copy',
     oldPath: src.oldPath,
@@ -280,6 +262,38 @@ function buildCopyChange(src: CopySource, add: AddChange, score: number): CopyCh
     newId: add.newId,
     oldMode: src.oldMode,
     newMode: add.newMode,
+    similarity: { score, maxScore: MAX_SCORE },
+  };
+}
+
+/** Final emitted change for a labelled pair, generalised over the registry's
+ *  `RenameSource` — used after `labelRenameCopy` decides rename vs copy. */
+function buildRenameChange(
+  source: RenameSource,
+  destination: AddChange,
+  score: number,
+): RenameChange {
+  return {
+    type: 'rename',
+    oldPath: source.path,
+    newPath: destination.newPath,
+    oldId: source.id,
+    newId: destination.newId,
+    oldMode: source.mode,
+    newMode: destination.newMode,
+    similarity: { score, maxScore: MAX_SCORE },
+  };
+}
+
+function buildCopyChange(source: RenameSource, destination: AddChange, score: number): CopyChange {
+  return {
+    type: 'copy',
+    oldPath: source.path,
+    newPath: destination.newPath,
+    oldId: source.id,
+    newId: destination.newId,
+    oldMode: source.mode,
+    newMode: destination.newMode,
     similarity: { score, maxScore: MAX_SCORE },
   };
 }
@@ -299,7 +313,7 @@ function greedySelect(triples: ReadonlyArray<ScoredTriple>): ReadonlyArray<Greed
       usedAdds.add(triple.add);
       matches.push({
         kind: 'rename',
-        change: buildRenameChange(triple.src, triple.add, triple.score),
+        change: buildCandidateRenameChange(triple.src, triple.add, triple.score),
         del: triple.src,
         add: triple.add,
       });
@@ -309,7 +323,7 @@ function greedySelect(triples: ReadonlyArray<ScoredTriple>): ReadonlyArray<Greed
       usedAdds.add(triple.add);
       matches.push({
         kind: 'copy',
-        change: buildCopyChange(triple.src, triple.add, triple.score),
+        change: buildCandidateCopyChange(triple.src, triple.add, triple.score),
         add: triple.add,
       });
     }
@@ -318,41 +332,133 @@ function greedySelect(triples: ReadonlyArray<ScoredTriple>): ReadonlyArray<Greed
   return matches;
 }
 
-function partitionLeftovers(changes: ReadonlyArray<DiffChange>): {
-  readonly adds: ReadonlyArray<AddChange>;
-  readonly deletes: ReadonlyArray<DeleteChange>;
-  readonly other: ReadonlyArray<DiffChange>;
-} {
-  const adds: AddChange[] = [];
-  const deletes: DeleteChange[] = [];
-  const other: DiffChange[] = [];
-  for (const change of changes) {
-    if (change.type === 'add') {
-      if (isGitlink(change.newMode)) other.push(change);
-      else adds.push(change);
-    } else if (change.type === 'delete') {
-      if (isGitlink(change.oldMode)) other.push(change);
-      else deletes.push(change);
-    } else other.push(change);
+/** git's `find_identical_files` seeding for a delete: a plain delete seeds 0
+ *  (`deleted`); a broken record's own delete half seeds per its dissimilarity
+ *  against `mergeScore` — low dissimilarity means the pair is headed for a
+ *  re-merge, so the delete already has an implicit user (`broken-delete`). */
+function toDeletedSource(
+  del: DeleteChange,
+  brokenByDel: ReadonlyMap<DeleteChange, BrokenRecord>,
+  mergeScore: number,
+): RenameSource {
+  const record = brokenByDel.get(del);
+  if (record === undefined) {
+    return { path: del.oldPath, id: del.oldId, mode: del.oldMode, origin: 'deleted', seedUses: 0 };
   }
-  return { adds, deletes, other };
+  return {
+    path: del.oldPath,
+    id: del.oldId,
+    mode: del.oldMode,
+    origin: 'broken-delete',
+    seedUses: record.dissimilarity < mergeScore ? 1 : 0,
+  };
 }
 
-interface InexactPassOptions {
-  readonly adds: ReadonlyArray<AddChange>;
-  readonly deletes: ReadonlyArray<DeleteChange>;
+/** A modify/type-change's preimage lends its old blob as a copy source (seed 1
+ *  — the file itself is its first, implicit user). */
+function toModifiedSource(change: ModifyChange | TypeChangeChange): RenameSource {
+  return {
+    path: change.path,
+    id: change.oldId,
+    mode: change.oldMode,
+    origin: 'modified',
+    seedUses: 1,
+  };
+}
+
+function toUnchangedSource(path: FilePath, entry: FlatTreeEntry): RenameSource {
+  return { path, id: entry.id, mode: entry.mode, origin: 'unchanged', seedUses: 1 };
+}
+
+/** Every preimage path the diff itself does not touch (`copies: 'harder'` only). */
+function collectUnchangedSources(
+  preimage: ReadonlyMap<FilePath, FlatTreeEntry> | undefined,
+  touchedPaths: ReadonlySet<FilePath>,
+): RenameSource[] {
+  if (preimage === undefined) return [];
+  const sources: RenameSource[] = [];
+  for (const [path, entry] of preimage) {
+    if (!touchedPaths.has(path)) sources.push(toUnchangedSource(path, entry));
+  }
+  return sources;
+}
+
+/** A `RenameSource` paired with the original delete object it was built from
+ *  (object identity `findPresentHalves` still keys a broken-delete's presence
+ *  on) — `undefined` for a `modified`/`unchanged` source, which has no delete. */
+interface RegisteredSource {
+  readonly source: RenameSource;
+  readonly originalDelete?: DeleteChange;
+}
+
+interface CandidateRegistry {
+  readonly sources: ReadonlyArray<RenameSource>;
+  /** Aligned with `sources`; defined for `deleted`/`broken-delete` origins only. */
+  readonly originalDeletes: ReadonlyArray<DeleteChange | undefined>;
+  readonly destinations: ReadonlyArray<AddChange>;
   readonly other: ReadonlyArray<DiffChange>;
-  readonly threshold: number;
-  readonly copies: 'off' | 'on' | 'harder';
-  /** Effective copy sources resolved by the caller (after limit-fallback applied). */
-  readonly copySources: ReadonlyArray<CopySource>;
 }
 
-interface InexactPassResult {
-  readonly renames: ReadonlyArray<RenameChange>;
-  readonly copyChanges: ReadonlyArray<CopyChange>;
-  readonly consumedDeletes: ReadonlySet<DeleteChange>;
-  readonly consumedAdds: ReadonlySet<AddChange>;
+/** Classify one non-add, non-delete change: registers a copy source when
+ *  `copies` is on, always keeps the change itself in `other`, and records
+ *  its path as preimage-touched so a `harder` scan does not re-register it. */
+function registerOtherChange(
+  change: DiffChange,
+  copies: 'off' | 'on' | 'harder',
+  other: DiffChange[],
+  registered: RegisteredSource[],
+  touchedPaths: Set<FilePath>,
+): void {
+  other.push(change);
+  if (change.type !== 'modify' && change.type !== 'type-change') return;
+  touchedPaths.add(change.path);
+  if (copies !== 'off') registered.push({ source: toModifiedSource(change) });
+}
+
+/**
+ * git's source registration (`diffcore_rename_extended`'s setup loop),
+ * generalised over every origin: a delete always registers; a modify/type-change
+ * preimage registers only under copies; an untouched preimage path registers
+ * only under `copies: 'harder'`. Every mode registers — exact pairing and the
+ * rename-limit count need gitlinks too; the inexact matrix drops them again
+ * (blob-only content scoring cannot read a gitlink's commit object as bytes).
+ */
+function registerCandidates(
+  workingDiff: TreeDiff,
+  broken: ReadonlyArray<BrokenRecord>,
+  copies: 'off' | 'on' | 'harder',
+  preimage: ReadonlyMap<FilePath, FlatTreeEntry> | undefined,
+  mergeScore: number,
+): CandidateRegistry {
+  const brokenByDel = new Map(broken.map((record) => [record.del, record] as const));
+  const destinations: AddChange[] = [];
+  const other: DiffChange[] = [];
+  const registered: RegisteredSource[] = [];
+  const touchedPaths = new Set<FilePath>();
+
+  for (const change of workingDiff.changes) {
+    if (change.type === 'add') destinations.push(change);
+    else if (change.type === 'delete') {
+      registered.push({
+        source: toDeletedSource(change, brokenByDel, mergeScore),
+        originalDelete: change,
+      });
+      touchedPaths.add(change.oldPath);
+    } else registerOtherChange(change, copies, other, registered, touchedPaths);
+  }
+
+  if (copies === 'harder') {
+    for (const source of collectUnchangedSources(preimage, touchedPaths))
+      registered.push({ source });
+  }
+
+  const ordered = sortByPath(registered, (entry) => entry.source.path);
+  return {
+    sources: ordered.map((entry) => entry.source),
+    originalDeletes: ordered.map((entry) => entry.originalDelete),
+    destinations,
+    other,
+  };
 }
 
 /**
@@ -534,35 +640,114 @@ function buildAllTriples(
 ): ScoredTriple[] {
   const renameTriples = buildRenameTriples(deletes, adds, fingerprints, threshold);
   const copyTriples =
-    // Stryker disable next-line ConditionalExpression: equivalent — resolveCopySources returns [] whenever copies==='off', so buildCopyTriples over the empty copySources yields [], identical to the : [] arm.
+    // Stryker disable next-line ConditionalExpression: equivalent — buildMatrixSourceSets already returns an empty copySources whenever copies==='off', so buildCopyTriples over it yields [], identical to the : [] arm.
     copies !== 'off' ? buildCopyTriples(copySources, adds, fingerprints, threshold) : [];
   const allTriples: ScoredTriple[] = [...renameTriples, ...copyTriples];
   sortTriples(allTriples);
   return allTriples;
 }
 
-async function runInexactPass(
-  ctx: Context,
-  opts: InexactPassOptions,
-): Promise<InexactPassResult | null> {
-  const { adds, deletes, threshold, copies, copySources } = opts;
-  // Stryker disable next-line ConditionalExpression: equivalent — with deletes and copySources both empty the pass builds no triples and greedySelect returns []; assemblePostPass over that empty result equals its null-defaulted output.
-  if (deletes.length === 0 && copySources.length === 0) return null;
+/** Adapts one matrix source into the shape `buildRenameTriples` expects. */
+function toDeleteChangeShape(source: RenameSource): DeleteChange {
+  return { type: 'delete', oldPath: source.path, oldId: source.id, oldMode: source.mode };
+}
 
-  const allSrcIds = [...deletes.map((d) => d.oldId), ...copySources.map((s) => s.oldId)];
-  const dstIds = adds.map((a) => a.newId);
+/** Adapts one matrix source into the shape `buildCopyTriples` expects. */
+function toCopySourceShape(source: RenameSource): CopySource {
+  return { oldPath: source.path, oldId: source.id, oldMode: source.mode };
+}
+
+function isRenameEligible(source: RenameSource, uses: number): boolean {
+  return (source.origin === 'deleted' || source.origin === 'broken-delete') && uses === 0;
+}
+
+interface IndexedSource {
+  readonly index: number;
+  readonly source: RenameSource;
+}
+
+interface MatrixSourceSets {
+  readonly renameDeletes: ReadonlyArray<DeleteChange>;
+  readonly copySources: ReadonlyArray<CopySource>;
+}
+
+/**
+ * Interim matrix adapter (Part 8 replaces): feeds the still-unchanged triple
+ * builders from the registry. Rename candidates are matrix sources with a
+ * deleted/broken-delete origin still at zero uses; copy candidates (copies
+ * on) are every matrix source — a used one stays eligible. Both drop
+ * gitlinks: content scoring cannot read a gitlink's commit object as bytes.
+ */
+function buildMatrixSourceSets(
+  sources: ReadonlyArray<RenameSource>,
+  indices: ReadonlyArray<number>,
+  uses: ReadonlyArray<number>,
+  copies: 'off' | 'on' | 'harder',
+): MatrixSourceSets {
+  const eligible: IndexedSource[] = indices
+    .map((index) => ({ index, source: sources[index] as RenameSource }))
+    .filter(({ source }) => !isGitlink(source.mode));
+  const renameDeletes = eligible
+    .filter(({ index, source }) => isRenameEligible(source, uses[index] as number))
+    .map(({ source }) => toDeleteChangeShape(source));
+  const copySources =
+    copies !== 'off' ? eligible.map(({ source }) => toCopySourceShape(source)) : [];
+  return { renameDeletes, copySources };
+}
+
+interface InexactMatrixResult {
+  readonly pairs: ReadonlyArray<SourcePair>;
+  readonly consumedAdds: ReadonlySet<AddChange>;
+}
+
+function buildPathIndex(sources: ReadonlyArray<RenameSource>): ReadonlyMap<FilePath, number> {
+  return new Map(sources.map((source, index) => [source.path, index]));
+}
+
+/**
+ * Recovers which registry source a `greedySelect` match actually paired: every
+ * registered source has a unique path, and the adapter above set the
+ * candidate change's `oldPath` from that same source, so the match's own
+ * `oldPath` is enough — rename and copy matches resolve identically.
+ */
+function toRegistryPair(match: GreedyMatch, pathIndex: ReadonlyMap<FilePath, number>): SourcePair {
+  return {
+    source: pathIndex.get(match.change.oldPath) as number,
+    destination: match.add,
+    score: match.change.similarity.score,
+  };
+}
+
+async function runInexactMatrix(
+  ctx: Context,
+  sources: ReadonlyArray<RenameSource>,
+  matrixSourceSets: MatrixSourceSets,
+  destinations: ReadonlyArray<AddChange>,
+  threshold: number,
+  copies: 'off' | 'on' | 'harder',
+): Promise<InexactMatrixResult | null> {
+  const { renameDeletes, copySources } = matrixSourceSets;
+  // Stryker disable next-line ConditionalExpression: equivalent — with both empty the pass builds no triples and greedySelect returns [], the same as the null-defaulted caller path.
+  if (renameDeletes.length === 0 && copySources.length === 0) return null;
+
+  const allSrcIds = [...renameDeletes.map((d) => d.oldId), ...copySources.map((s) => s.oldId)];
+  const dstIds = destinations.map((d) => d.newId);
   const neededIds = await selectHydrationIds(ctx, allSrcIds, dstIds, threshold);
   const fingerprints = await hydrateFingerprints(ctx, neededIds, new Map());
-  const allTriples = buildAllTriples(deletes, adds, copySources, copies, threshold, fingerprints);
+  const allTriples = buildAllTriples(
+    renameDeletes,
+    destinations,
+    copySources,
+    copies,
+    threshold,
+    fingerprints,
+  );
 
   const matches = greedySelect(allTriples);
-  const renameMatches = matches.filter((m): m is RenameMatch => m.kind === 'rename');
-  const copyMatches = matches.filter((m): m is CopyMatch => m.kind === 'copy');
+  const pathIndex = buildPathIndex(sources);
   return {
-    renames: renameMatches.map((m) => m.change),
-    copyChanges: copyMatches.map((m) => m.change),
-    consumedDeletes: new Set<DeleteChange>(renameMatches.map((m) => m.del)),
-    consumedAdds: new Set<AddChange>(matches.map((m) => m.add)),
+    pairs: matches.map((match) => toRegistryPair(match, pathIndex)),
+    consumedAdds: new Set<AddChange>(matches.map((match) => match.add)),
   };
 }
 
@@ -796,57 +981,37 @@ function remergeOrKeepBroken(
 }
 
 /**
- * Resolve effective copy sources for the inexact pass.
- *
- * For copies:'harder', the full preimage set is used unless num_create * num_src_harder
- * exceeds the limit^2 — in that case git falls back to the 'on' source set (only
- * modified-file preimages) and warns "only found copies from modified paths due to
- * too many files". We replicate the fallback without the warning.
- */
-function resolveCopySources(
-  copies: 'off' | 'on' | 'harder',
-  adds: ReadonlyArray<AddChange>,
-  deletes: ReadonlyArray<DeleteChange>,
-  other: ReadonlyArray<DiffChange>,
-  preimage: ReadonlyMap<FilePath, FlatTreeEntry> | undefined,
-  limit: number,
-): ReadonlyArray<CopySource> {
-  if (copies === 'off') return [];
-  if (copies === 'on') return buildCopySourcesForOn(deletes, other);
-
-  // copies === 'harder'
-  const harderSources =
-    preimage !== undefined
-      ? buildCopySourcesForHarder(preimage)
-      : buildCopySourcesForOn(deletes, other);
-
-  // When harder source count causes limit breach, fall back to 'on' sources (git's fallback).
-  const isHarderOverLimit = limit !== 0 && adds.length * harderSources.length > limit * limit;
-  return isHarderOverLimit ? buildCopySourcesForOn(deletes, other) : harderSources;
-}
-
-/**
- * Detect inexact (content-similarity) renames and optionally copies,
- * with optional -B break-rewrite detection.
+ * Detect exact and inexact (content-similarity) renames, and optionally
+ * copies, with optional -B break-rewrite detection.
  *
  * Fixed order when breakRewrites is set:
  * 1. Break-attempt: split dissimilar modifies into synthetic delete+add halves so
- *    they feed the rename/copy matrix. This runs BEFORE exact/inexact passes.
- * 2. Run the pure exact `detectRenames` first (R100, never limited).
- * 3. Partition leftovers into unpaired adds (destinations) and unpaired deletes (sources).
- * 4. Apply the rename-limit guard: if num_create * num_src > limit^2, skip inexact pass.
- *    For copies:'harder', num_src includes ALL preimage paths; if this causes the limit
- *    to be exceeded, fall back to copies:'on' sources (git's fallback).
- * 5. Size-gate the candidate pool above SIZE_GATE_MIN_IDS unique ids, then
+ *    they feed the registry. This runs BEFORE registration.
+ * 2. registerCandidates: one path-ordered RenameSource registry (deletes,
+ *    broken-delete halves, and — under copies — modify/type-change preimages
+ *    and, under `harder`, every untouched preimage path).
+ * 3. pairIdenticalFiles: the copy-aware exact pass, never limited — 'rename'
+ *    mode when copies is off, 'copy' mode otherwise.
+ * 4. Cull: copies on or any broken pair keeps every source; otherwise only
+ *    unused sources feed the matrix.
+ * 5. Rename-limit gate on the leftovers: num_dst times num_src over limit
+ *    squared skips the inexact pass; under `harder` a retry drops `unchanged`
+ *    sources first.
+ * 6. Size-gate the candidate pool above SIZE_GATE_MIN_IDS unique ids, then
  *    fingerprint-and-drop each needed blob via a bounded concurrency pool —
  *    only the fingerprint escapes the worker, never the blob's own bytes.
- * 6. Build scored triples for renames (deletes vs adds) and optionally copies.
- *    At equal score, rename sorts AHEAD of copy (tiebreak).
- * 7. Greedy score-descending selection: pair when add is free AND score >= threshold.
- *    Rename also requires the delete to be free; copy retains its source.
- * 8. Emit winners; unconsumed adds/deletes remain as-is. Copy sources are never consumed.
- * 9. Keep-broken/re-merge: for broken pairs with neither half consumed, emit a single
- *    modify with a broken datum (if dissimilarity >= mergeScore) or a plain modify.
+ * 7. Build scored triples: rename candidates are zero-use deleted/broken-delete
+ *    sources, copy candidates (copies on) are every matrix source (used ones
+ *    stay eligible). Both drop gitlinks — content scoring cannot read a
+ *    gitlink's commit object as bytes.
+ * 8. Greedy score-descending selection (`greedySelect`, unchanged).
+ * 9. labelRenameCopy: every exact+inexact pair becomes a rename or copy by
+ *    final use count in destination-path order; unpaired destinations stay
+ *    adds; a deleted/broken-delete source's delete survives iff nothing
+ *    beyond its seed used it.
+ * 10. Keep-broken/re-merge: for broken pairs with neither half consumed, emit
+ *     a single modify with a broken datum (if dissimilarity >= mergeScore) or
+ *     a plain modify.
  */
 
 /** Resolve the effective merge score from the breakRewrites option (or defaults). */
@@ -901,24 +1066,201 @@ function resolveDetectOptions(options: RenameDetectOptions | undefined): DetectO
   };
 }
 
-/** Assemble the change list from inexact-pass results and unconsumed leftovers. */
-function assemblePostPass(
-  adds: ReadonlyArray<AddChange>,
-  deletes: ReadonlyArray<DeleteChange>,
-  other: ReadonlyArray<DiffChange>,
-  passResult: InexactPassResult | null,
-): ReadonlyArray<DiffChange> {
-  const consumedDeletes = passResult?.consumedDeletes ?? new Set<DeleteChange>();
-  const consumedAdds = passResult?.consumedAdds ?? new Set<AddChange>();
-  const renames = passResult?.renames ?? [];
-  const copyChanges = passResult?.copyChanges ?? [];
+function cullMatrixSourceIndices(
+  sourceCount: number,
+  uses: ReadonlyArray<number>,
+  keepEverySource: boolean,
+): number[] {
+  const indices = Array.from({ length: sourceCount }, (_, index) => index);
+  return keepEverySource ? indices : indices.filter((index) => uses[index] === 0);
+}
+
+function isOverLimit(numDst: number, numSrc: number, limit: number): boolean {
+  return limit !== 0 && numDst * numSrc > limit * limit;
+}
+
+interface MatrixPlan {
+  readonly indices: ReadonlyArray<number>;
+}
+
+/**
+ * git's rename-limit gate: num_dst is every destination the exact pass left
+ * unpaired, num_src is every matrix source after the cull step, each counted
+ * once regardless of mode — gitlinks included, the inexact pass drops them
+ * again only when actually scoring. Under `copies: 'harder'`, an over-limit
+ * retries once with `unchanged` sources dropped.
+ */
+function resolveMatrixPlan(
+  sources: ReadonlyArray<RenameSource>,
+  numDst: number,
+  uses: ReadonlyArray<number>,
+  keepEverySource: boolean,
+  copies: 'off' | 'on' | 'harder',
+  limit: number,
+): MatrixPlan | null {
+  if (numDst === 0) return null;
+  const indices = cullMatrixSourceIndices(sources.length, uses, keepEverySource);
+  if (indices.length === 0) return null;
+  if (!isOverLimit(numDst, indices.length, limit)) return { indices };
+  if (copies !== 'harder') return null;
+
+  const retryIndices = indices.filter(
+    (index) => (sources[index] as RenameSource).origin !== 'unchanged',
+  );
+  if (retryIndices.length === 0 || isOverLimit(numDst, retryIndices.length, limit)) return null;
+  return { indices: retryIndices };
+}
+
+function applyMatchUses(
+  pairs: ReadonlyArray<SourcePair>,
+  baseUses: ReadonlyArray<number>,
+): number[] {
+  const uses = [...baseUses];
+  for (const pair of pairs) uses[pair.source] = (uses[pair.source] as number) + 1;
+  return uses;
+}
+
+/**
+ * A `deleted`/`broken-delete` source's delete survives iff nothing beyond its
+ * seed used it — for a plain delete (seed 0) that means zero real pairs; for
+ * a broken-delete (seed 0 or 1) this restates git's rule: the delete drops
+ * once usage exceeds the one implicit use its own seed already accounts for.
+ */
+function isSourceDeletePresent(source: RenameSource, finalUses: number): boolean {
+  return (
+    (source.origin === 'deleted' || source.origin === 'broken-delete') &&
+    finalUses === source.seedUses
+  );
+}
+
+function survivingDeletes(
+  sources: ReadonlyArray<RenameSource>,
+  originalDeletes: ReadonlyArray<DeleteChange | undefined>,
+  finalUses: ReadonlyArray<number>,
+): DeleteChange[] {
+  const deletes: DeleteChange[] = [];
+  sources.forEach((source, index) => {
+    if (isSourceDeletePresent(source, finalUses[index] as number)) {
+      deletes.push(originalDeletes[index] as DeleteChange);
+    }
+  });
+  return deletes;
+}
+
+function toLabelledChange(
+  sources: ReadonlyArray<RenameSource>,
+  labelled: LabelledPair,
+): RenameChange | CopyChange {
+  const source = sources[labelled.pair.source] as RenameSource;
+  const { destination, score } = labelled.pair;
+  return labelled.kind === 'rename'
+    ? buildRenameChange(source, destination, score)
+    : buildCopyChange(source, destination, score);
+}
+
+/**
+ * Assemble the final change list from the registry: `labelRenameCopy` turns
+ * every exact+inexact pair into a rename or copy, unpaired destinations stay
+ * adds, and a deleted/broken-delete source's delete survives iff nothing
+ * beyond its seed used it. Modified/unchanged sources emit nothing here —
+ * their change already lives in `other`.
+ */
+function assembleFromRegistry(
+  registry: CandidateRegistry,
+  allPairs: ReadonlyArray<SourcePair>,
+  unpaired: ReadonlyArray<AddChange>,
+  finalUses: ReadonlyArray<number>,
+): DiffChange[] {
+  const { sources, originalDeletes, other } = registry;
+  const labelled = labelRenameCopy(allPairs, finalUses);
+  const renamesAndCopies = labelled.map((entry) => toLabelledChange(sources, entry));
   return [
-    ...adds.filter((a) => !consumedAdds.has(a)),
-    ...deletes.filter((d) => !consumedDeletes.has(d)),
-    ...renames,
-    ...copyChanges,
+    ...unpaired,
+    ...survivingDeletes(sources, originalDeletes, finalUses),
+    ...renamesAndCopies,
     ...other,
   ];
+}
+
+interface InexactPhaseOutcome {
+  readonly pairs: ReadonlyArray<SourcePair>;
+  readonly unpaired: ReadonlyArray<AddChange>;
+  readonly uses: ReadonlyArray<number>;
+}
+
+/** Runs the inexact matrix only when the rename-limit gate allows it — content
+ *  scoring cannot read a gitlink's commit object as bytes, so gitlink
+ *  destinations never reach it either, matching the source-side drop. */
+async function runInexactMatrixIfPlanned(
+  ctx: Context,
+  registry: CandidateRegistry,
+  exact: ExactPairing,
+  copies: 'off' | 'on' | 'harder',
+  threshold: number,
+  limit: number,
+  keepEverySource: boolean,
+): Promise<InexactMatrixResult | null> {
+  const plan = resolveMatrixPlan(
+    registry.sources,
+    exact.unpaired.length,
+    exact.uses,
+    keepEverySource,
+    copies,
+    limit,
+  );
+  if (plan === null) return null;
+
+  const matrixSourceSets = buildMatrixSourceSets(
+    registry.sources,
+    plan.indices,
+    exact.uses,
+    copies,
+  );
+  const matrixDestinations = exact.unpaired.filter((add) => !isGitlink(add.newMode));
+  return runInexactMatrix(
+    ctx,
+    registry.sources,
+    matrixSourceSets,
+    matrixDestinations,
+    threshold,
+    copies,
+  );
+}
+
+/** Folds an inexact-matrix result into the exact pass's pairs/unpaired/uses;
+ *  a pass-through of the exact pass alone when the matrix never ran. */
+function mergeInexactOutcome(
+  exact: ExactPairing,
+  inexact: InexactMatrixResult | null,
+): InexactPhaseOutcome {
+  if (inexact === null) return { pairs: exact.pairs, unpaired: exact.unpaired, uses: exact.uses };
+  return {
+    pairs: [...exact.pairs, ...inexact.pairs],
+    unpaired: exact.unpaired.filter((add) => !inexact.consumedAdds.has(add)),
+    uses: applyMatchUses(inexact.pairs, exact.uses),
+  };
+}
+
+async function runInexactPhase(
+  ctx: Context,
+  registry: CandidateRegistry,
+  exact: ExactPairing,
+  broken: ReadonlyArray<BrokenRecord>,
+  copies: 'off' | 'on' | 'harder',
+  threshold: number,
+  limit: number,
+): Promise<InexactPhaseOutcome> {
+  const keepEverySource = copies !== 'off' || broken.length > 0;
+  const inexact = await runInexactMatrixIfPlanned(
+    ctx,
+    registry,
+    exact,
+    copies,
+    threshold,
+    limit,
+    keepEverySource,
+  );
+  return mergeInexactOutcome(exact, inexact);
 }
 
 export async function detectSimilarityRenames(
@@ -930,41 +1272,15 @@ export async function detectSimilarityRenames(
   const { threshold, limit, copies, breakRewrites } = resolveDetectOptions(options);
   const mergeScore = resolveEffectiveMergeScore(breakRewrites);
 
-  // Break-attempt pass: runs BEFORE exact/inexact so halves feed the matrix.
+  // Break-attempt pass: runs BEFORE registration so halves feed the registry.
   const { broken, workingDiff } = await runBreakPass(ctx, diff, breakRewrites);
+  const registry = registerCandidates(workingDiff, broken, copies, preimage, mergeScore);
 
-  // The exact pass is never limited; the rename-limit guard below is inexact-only.
-  const exactResult = detectRenames(workingDiff);
-  const { adds, deletes, other } = partitionLeftovers(exactResult.changes);
+  // The exact pass is never limited; it always sees every registered source.
+  const exactMode = copies === 'off' ? 'rename' : 'copy';
+  const exact = pairIdenticalFiles(registry.sources, registry.destinations, exactMode);
 
-  // Stryker disable next-line ConditionalExpression,LogicalOperator,EqualityOperator: equivalent — hasRenameWork only gates the pure-optimisation early return below; every listed variant merely forces it true in more no-work cases (adds===0 or deletes===0), and falling through then builds no triples (no destinations or no sources), leaving the result unchanged.
-  const hasRenameWork = adds.length > 0 && deletes.length > 0;
-  // Stryker disable next-line ConditionalExpression,LogicalOperator,EqualityOperator: equivalent — hasCopyWork only gates the pure-optimisation early return below; every listed variant merely forces it true in more no-work cases (copies==='off' or adds===0), and falling through then builds no triples, leaving the result unchanged.
-  const hasCopyWork = copies !== 'off' && adds.length > 0;
-  // Stryker disable next-line BlockStatement,ConditionalExpression: equivalent — this early return is a pure optimisation: when it fires (no rename and no copy work) the inexact pass would build no triples and consume nothing, so skipping the return and falling through yields the identical sorted TreeDiff.
-  if (!hasRenameWork && !hasCopyWork) {
-    return finalizeWithBroken(exactResult.changes, broken, mergeScore);
-  }
-
-  // Resolve copy sources first so their count feeds the combined limit gate.
-  // Under copies:'harder', applies the harder→on fallback when harder sources alone exceed the limit.
-  const copySources = resolveCopySources(copies, adds, deletes, other, preimage, limit);
-
-  // Git's combined limit: skip the whole inexact pass when num_create * num_src > limit².
-  const numSrc = deletes.length + copySources.length;
-  const isOverLimit = limit !== 0 && adds.length * numSrc > limit * limit;
-  if (isOverLimit) {
-    return finalizeWithBroken(exactResult.changes, broken, mergeScore);
-  }
-
-  const passResult = await runInexactPass(ctx, {
-    adds,
-    deletes,
-    other,
-    threshold,
-    copies,
-    copySources,
-  });
-
-  return finalizeWithBroken(assemblePostPass(adds, deletes, other, passResult), broken, mergeScore);
+  const outcome = await runInexactPhase(ctx, registry, exact, broken, copies, threshold, limit);
+  const changes = assembleFromRegistry(registry, outcome.pairs, outcome.unpaired, outcome.uses);
+  return finalizeWithBroken(changes, broken, mergeScore);
 }

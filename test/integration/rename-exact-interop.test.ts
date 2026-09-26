@@ -26,6 +26,7 @@ const SETUP_TIMEOUT = 120_000;
 const DEFAULT_CONTENT = 'x\n';
 const TMP_PREFIX = 'tsgit-rename-exact-';
 const GITLINK_OID = '1'.repeat(40);
+const GITLINK_OID_2 = '2'.repeat(40);
 
 const ROWS: ReadonlyArray<RenameRow> = [
   {
@@ -209,6 +210,134 @@ const ROWS: ReadonlyArray<RenameRow> = [
     before: [{ path: 'a/Foo.meta', content: DEFAULT_CONTENT }],
     after: [{ path: 'b/Bar.meta', content: DEFAULT_CONTENT }],
     detectRenames: false,
+  },
+  {
+    label: '-C: 1 delete, 2 identical adds — copy then rename by use count (C Foo→Bar ; R Foo→Baz)',
+    before: [{ path: 'a/Foo.meta', content: DEFAULT_CONTENT }],
+    after: [
+      { path: 'b/Bar.meta', content: DEFAULT_CONTENT },
+      { path: 'b/Baz.meta', content: DEFAULT_CONTENT },
+    ],
+    gitFlags: ['-C'],
+    renameOptions: { copies: 'on' },
+  },
+  {
+    label: '-C -C: same as -C — 1 delete, 2 identical adds (C Foo→Bar ; R Foo→Baz)',
+    before: [{ path: 'a/Foo.meta', content: DEFAULT_CONTENT }],
+    after: [
+      { path: 'b/Bar.meta', content: DEFAULT_CONTENT },
+      { path: 'b/Baz.meta', content: DEFAULT_CONTENT },
+    ],
+    gitFlags: ['-C', '-C'],
+    renameOptions: { copies: 'harder' },
+  },
+  {
+    label:
+      '-C: 1 delete, 3 identical adds — 2 copies then a rename, last in path order (C ; C ; R)',
+    before: [{ path: 'a/Foo.meta', content: DEFAULT_CONTENT }],
+    after: [
+      { path: 'b/A.meta', content: DEFAULT_CONTENT },
+      { path: 'b/B.meta', content: DEFAULT_CONTENT },
+      { path: 'b/C.meta', content: DEFAULT_CONTENT },
+    ],
+    gitFlags: ['-C'],
+    renameOptions: { copies: 'on' },
+  },
+  {
+    label:
+      '-C: 2 identical deletes, 3 identical adds — a delete can supply both a copy and a rename (C Foo→A ; R Qux→B ; R Foo→C)',
+    before: [
+      { path: 'a/Foo.meta', content: DEFAULT_CONTENT },
+      { path: 'a/Qux.meta', content: DEFAULT_CONTENT },
+    ],
+    after: [
+      { path: 'b/A.meta', content: DEFAULT_CONTENT },
+      { path: 'b/B.meta', content: DEFAULT_CONTENT },
+      { path: 'b/C.meta', content: DEFAULT_CONTENT },
+    ],
+    gitFlags: ['-C'],
+    renameOptions: { copies: 'on' },
+  },
+  {
+    label:
+      '-C: a modified preimage (first in path order) beats a same-content delete for the one identical add (M ; C100 a/Bar→c/Bar ; D z/Aaa)',
+    before: [
+      { path: 'a/Bar', content: DEFAULT_CONTENT },
+      { path: 'z/Aaa', content: DEFAULT_CONTENT },
+    ],
+    after: [
+      { path: 'a/Bar', content: 'x-edited\n' },
+      { path: 'c/Bar', content: DEFAULT_CONTENT },
+    ],
+    gitFlags: ['-C'],
+    renameOptions: { copies: 'on' },
+  },
+  {
+    label:
+      '-C -C: an unchanged preimage (first in path order) beats a same-content delete for the one identical add (C100 a/Bar→c/Bar ; M k ; D z/Aaa)',
+    before: [
+      { path: 'a/Bar', content: DEFAULT_CONTENT },
+      { path: 'k', content: 'k1\n' },
+      { path: 'z/Aaa', content: DEFAULT_CONTENT },
+    ],
+    after: [
+      { path: 'a/Bar', content: DEFAULT_CONTENT },
+      { path: 'k', content: 'k2\n' },
+      { path: 'c/Bar', content: DEFAULT_CONTENT },
+    ],
+    gitFlags: ['-C', '-C'],
+    renameOptions: { copies: 'harder' },
+  },
+  {
+    label: '-C -l1: 1 delete, 2 identical adds — the exact copy fan-out is never limited (C ; R)',
+    before: [{ path: 'a/Foo.meta', content: DEFAULT_CONTENT }],
+    after: [
+      { path: 'b/Bar.meta', content: DEFAULT_CONTENT },
+      { path: 'b/Baz.meta', content: DEFAULT_CONTENT },
+    ],
+    gitFlags: ['-C', '-l1'],
+    renameOptions: { copies: 'on', limit: 1 },
+  },
+  {
+    label:
+      '-C -C -l1: an unchanged exact source pairs regardless of the tiny inexact limit (C100 a/Bar→c/Bar ; M k)',
+    before: [
+      { path: 'a/Bar', content: DEFAULT_CONTENT },
+      { path: 'k', content: 'k1\n' },
+    ],
+    after: [
+      { path: 'a/Bar', content: DEFAULT_CONTENT },
+      { path: 'k', content: 'k2\n' },
+      { path: 'c/Bar', content: DEFAULT_CONTENT },
+    ],
+    gitFlags: ['-C', '-C', '-l1'],
+    renameOptions: { copies: 'harder', limit: 1 },
+  },
+  {
+    label:
+      '-C: a modified gitlink preimage exact-copies to an added gitlink with the old oid (M a/sub ; C100 a/sub→b/sub2)',
+    before: [{ path: 'a/sub', content: GITLINK_OID, kind: 'gitlink' }],
+    after: [
+      { path: 'a/sub', content: GITLINK_OID_2, kind: 'gitlink' },
+      { path: 'b/sub2', content: GITLINK_OID, kind: 'gitlink' },
+    ],
+    gitFlags: ['-C'],
+    renameOptions: { copies: 'on' },
+  },
+  {
+    label:
+      '-C -C: an unchanged gitlink exact-copies to an added gitlink with the same oid (C100 a/sub→b/sub2 ; M k)',
+    before: [
+      { path: 'a/sub', content: GITLINK_OID, kind: 'gitlink' },
+      { path: 'k', content: 'k1\n' },
+    ],
+    after: [
+      { path: 'a/sub', content: GITLINK_OID, kind: 'gitlink' },
+      { path: 'k', content: 'k2\n' },
+      { path: 'b/sub2', content: GITLINK_OID, kind: 'gitlink' },
+    ],
+    gitFlags: ['-C', '-C'],
+    renameOptions: { copies: 'harder' },
   },
 ];
 

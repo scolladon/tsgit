@@ -2947,11 +2947,12 @@ describe('detectSimilarityRenames', () => {
 
   describe('Given copies:"on" and a delete whose content matches two adds (delete is also a copy source)', () => {
     describe('When detectSimilarityRenames is called', () => {
-      it('Then the delete renames to its best add and copies to the second add', async () => {
+      it('Then the delete copies to its best (first-in-path-order) add and renames to the second', async () => {
         // Arrange — matrix: an unpaired delete D is BOTH a rename source and a copy source.
-        // D is more similar to A1 (one line changed) than to A2 (three lines changed). Greedy
-        // renames D→A1 (consuming D), then the delete-derived copy source pairs the leftover
-        // A2 as a copy from D. Dropping deletes from the copy-source set leaves A2 as an add.
+        // D is more similar to A1 (one line changed) than to A2 (three lines changed), so both
+        // land D's two uses; git's use-count label (not the pass that produced a pair) decides
+        // rename vs copy: walked in destination-path order, every use but the last is a copy —
+        // A1 sorts before A2, so A1 is the copy and A2, last in path order, is the rename.
         const ctx = await buildSeededContext();
         const dId = await writeBlob(ctx, tenLines(0));
         const a1Id = await writeBlob(ctx, tenLines(0).replace('X line 0\n', 'Y line 0\n'));
@@ -2988,18 +2989,18 @@ describe('detectSimilarityRenames', () => {
         // Act — copies:'on' so the unpaired delete is added to the copy-source set
         const result = await detectSimilarityRenames(ctx, diff, { copies: 'on' });
 
-        // Assert — rename D→A1 plus copy D→A2; no add or delete survives
+        // Assert — copy D→A1 plus rename D→A2; no add or delete survives
         const renames = result.changes.filter((c) => c.type === 'rename');
         expect(renames).toHaveLength(1);
         if (renames[0]?.type === 'rename') {
           expect(renames[0].oldPath).toBe('D.txt');
-          expect(renames[0].newPath).toBe('A1.txt');
+          expect(renames[0].newPath).toBe('A2.txt');
         }
         const copies = result.changes.filter((c) => c.type === 'copy');
         expect(copies).toHaveLength(1);
         if (copies[0]?.type === 'copy') {
           expect(copies[0].oldPath).toBe('D.txt');
-          expect(copies[0].newPath).toBe('A2.txt');
+          expect(copies[0].newPath).toBe('A1.txt');
         }
         expect(result.changes.filter((c) => c.type === 'add')).toHaveLength(0);
         expect(result.changes.filter((c) => c.type === 'delete')).toHaveLength(0);

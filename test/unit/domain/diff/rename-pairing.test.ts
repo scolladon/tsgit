@@ -4,9 +4,11 @@ import type {
   RankedCandidate,
   RenameSource,
   SourceOrigin,
+  SourcePair,
 } from '../../../../src/domain/diff/rename-pairing.js';
 import {
   compareCandidates,
+  labelRenameCopy,
   pairIdenticalFiles,
 } from '../../../../src/domain/diff/rename-pairing.js';
 import { MAX_SCORE } from '../../../../src/domain/diff/similarity.js';
@@ -186,6 +188,92 @@ describe('pairIdenticalFiles', () => {
         // Assert
         expect(result.pairs).toEqual([{ source: 0, destination, score: MAX_SCORE }]);
         expect(result.uses[100]).toBe(0);
+      });
+    });
+  });
+});
+
+function pair(source: number, destination: AddChange, score: number = MAX_SCORE): SourcePair {
+  return { source, destination, score };
+}
+
+describe('labelRenameCopy', () => {
+  describe('Given one delete source used twice, both destinations produced by the exact pass', () => {
+    describe('When labelRenameCopy is called', () => {
+      it('Then the first destination in path order labels copy, the last labels rename', () => {
+        // Arrange — b/Bar sorts before b/Baz; source used twice (uses[0] = 2)
+        const bar = addChange('b/Bar.meta', ID_A);
+        const baz = addChange('b/Baz.meta', ID_A);
+        const pairs = [pair(0, bar), pair(0, baz)];
+
+        // Act
+        const result = labelRenameCopy(pairs, [2]);
+
+        // Assert
+        expect(result).toEqual([
+          { pair: pairs[0], kind: 'copy' },
+          { pair: pairs[1], kind: 'rename' },
+        ]);
+      });
+    });
+  });
+
+  describe('Given one delete source used three times', () => {
+    describe('When labelRenameCopy is called', () => {
+      it('Then the first two destinations in path order label copy, the last labels rename', () => {
+        // Arrange
+        const a = addChange('b/A.meta', ID_A);
+        const b = addChange('b/B.meta', ID_A);
+        const c = addChange('b/C.meta', ID_A);
+        const pairs = [pair(0, a), pair(0, b), pair(0, c)];
+
+        // Act
+        const result = labelRenameCopy(pairs, [3]);
+
+        // Assert
+        expect(result).toEqual([
+          { pair: pairs[0], kind: 'copy' },
+          { pair: pairs[1], kind: 'copy' },
+          { pair: pairs[2], kind: 'rename' },
+        ]);
+      });
+    });
+  });
+
+  describe('Given one delete source paired exactly to a later path and inexactly to an earlier one', () => {
+    describe('When labelRenameCopy is called', () => {
+      it('Then the rename lands on the last destination in path order regardless of which pass produced it', () => {
+        // Arrange — pairs arrive in input order Zulu (exact) then Alpha (inexact); path
+        // order is Alpha, Zulu — the rename must land on Zulu (last in path order).
+        const alpha = addChange('p/Alpha.meta', ID_A);
+        const zulu = addChange('p/Zulu.meta', ID_A);
+        const pairs = [pair(0, zulu, MAX_SCORE), pair(0, alpha, MAX_SCORE - 1000)];
+
+        // Act
+        const result = labelRenameCopy(pairs, [2]);
+
+        // Assert
+        expect(result).toEqual([
+          { pair: pairs[1], kind: 'copy' },
+          { pair: pairs[0], kind: 'rename' },
+        ]);
+      });
+    });
+  });
+
+  describe('Given a retained source (seedUses 1) used once by a pair', () => {
+    describe('When labelRenameCopy is called', () => {
+      it('Then the pair labels copy — a retained source never yields a rename', () => {
+        // Arrange — the seed use is the preimage file itself, never in `pairs`, so the
+        // one real pair can never take the counter to 0.
+        const destination = addChange('c/Bar.meta', ID_A);
+        const pairs = [pair(0, destination)];
+
+        // Act
+        const result = labelRenameCopy(pairs, [2]);
+
+        // Assert
+        expect(result).toEqual([{ pair: pairs[0], kind: 'copy' }]);
       });
     });
   });

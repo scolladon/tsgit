@@ -2688,3 +2688,95 @@ describe.skipIf(!GIT_AVAILABLE)('name_score matrix tie-break interop', () => {
     });
   });
 });
+
+/**
+ * Use-count labelling interop: `git diff -C` labels a pair by how many times
+ * its source is used (`--rename_used`), not by which pass produced it — a
+ * single content-identical exact fold and an inexact match onto the SAME
+ * source resolve to copy/rename purely by final destination-path order. The
+ * rename-limit gate counts every registered source once, gitlinks included,
+ * even though a gitlink can never be content-scored.
+ */
+const USE_COUNT_TMP_PREFIX = 'tsgit-rename-use-count-';
+const USE_COUNT_SETUP_TIMEOUT = 60_000;
+const USE_COUNT_GITLINK_OID = '3'.repeat(40);
+
+const USE_COUNT_ROWS: ReadonlyArray<RenameRow> = [
+  {
+    label:
+      '-C: one delete scores 95% against one add and 85% against another — copy the higher score, rename the lower (C095 Foo→Bar ; R085 Foo→Baz)',
+    before: [{ path: 'a/Foo.meta', content: tenLineContent('foo') }],
+    after: [
+      { path: 'b/Bar.meta', content: tenLineContent('foo', 0) },
+      { path: 'b/Baz.meta', content: tenLineContent('foo', 0, 'CHANGED CHANGED CHANGED') },
+    ],
+    gitFlags: ['-C'],
+    renameOptions: { copies: 'on' },
+  },
+  {
+    label:
+      '-C: one delete pairs exactly with one add and inexactly with another — the exact pair is the rename, last in path order (C090 Foo→Bar ; R100 Foo→Baz)',
+    before: [{ path: 'a/Foo.meta', content: tenLineContent('foo') }],
+    after: [
+      { path: 'b/Bar.meta', content: tenLineContent('foo', 0) },
+      { path: 'b/Baz.meta', content: tenLineContent('foo') },
+    ],
+    gitFlags: ['-C'],
+    renameOptions: { copies: 'on' },
+  },
+  {
+    label: '-C -l1: one delete, one 90%-similar add — the 1x1 limit fits (R090)',
+    before: [{ path: 'a/Foo.meta', content: tenLineContent('foo') }],
+    after: [{ path: 'b/Bar.meta', content: tenLineContent('foo', 0) }],
+    gitFlags: ['-C', '-l1'],
+    renameOptions: { copies: 'on', limit: 1 },
+  },
+  {
+    label:
+      '-l1: an unrelated deleted gitlink still counts toward the rename-limit source count, forcing the inexact pass to skip (D Foo ; D sub ; A Bar)',
+    before: [
+      { path: 'a/Foo.meta', content: tenLineContent('foo') },
+      { path: 'a/sub', content: USE_COUNT_GITLINK_OID, kind: 'gitlink' },
+    ],
+    after: [{ path: 'b/Bar.meta', content: tenLineContent('foo', 0) }],
+    gitFlags: ['-l1'],
+    renameOptions: { limit: 1 },
+  },
+];
+
+const useCountFixtures = new Map<string, { readonly dir: string }>();
+
+function useCountFixtureOf(label: string): { readonly dir: string } {
+  const found = useCountFixtures.get(label);
+  if (found === undefined) throw new Error(`fixture not built for row: ${label}`);
+  return found;
+}
+
+describe.skipIf(!GIT_AVAILABLE)('use-count labelling and gitlink-counted limit interop', () => {
+  beforeAll(async () => {
+    for (const row of USE_COUNT_ROWS) {
+      useCountFixtures.set(row.label, await buildRenameRow(row, USE_COUNT_TMP_PREFIX));
+    }
+  }, USE_COUNT_SETUP_TIMEOUT);
+
+  afterAll(async () => {
+    for (const { dir } of useCountFixtures.values()) {
+      await rmDir(dir, { recursive: true, force: true });
+    }
+  });
+
+  describe('Given a raw diff pair exercising use-count labelling or the gitlink-counted limit', () => {
+    describe('When diff is called with detectRenames', () => {
+      it.each(USE_COUNT_ROWS)('Then name-status matches live git for: $label', async (row) => {
+        // Arrange
+        const { dir } = useCountFixtureOf(row.label);
+
+        // Act
+        const { ours, peer } = await runRenameRow(row, dir);
+
+        // Assert
+        expect(ours).toBe(peer);
+      });
+    });
+  });
+});
