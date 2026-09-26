@@ -587,6 +587,31 @@ interface InexactMatrixResult {
   readonly uses: ReadonlyArray<number>;
 }
 
+/** git's estimate_similarity checks S_ISREG on the SOURCE before ever
+ *  touching a byte on either side — a non-regular source still stays in the
+ *  matrix for slot semantics (buildMatrix never looks its fingerprint up,
+ *  always scoring it 0), but with no regular source at all, every pair is
+ *  guaranteed 0 and no destination is worth hydrating. */
+function regularSourceIds(matrixSources: ReadonlyArray<IndexedSource>): ObjectId[] {
+  return matrixSources
+    .filter(({ source }) => isRegularFile(source.mode))
+    .map(({ source }) => source.id);
+}
+
+/** Hydrates exactly the fingerprints the matrix needs: `selectHydrationIds`'s
+ *  own size gate over the regular sources and every destination's id. */
+async function hydrateMatrixFingerprints(
+  ctx: Context,
+  srcIds: ReadonlyArray<ObjectId>,
+  destinations: ReadonlyArray<AddChange>,
+  threshold: number,
+  knownFingerprints: ReadonlyMap<ObjectId, BlobFingerprint>,
+): Promise<ReadonlyMap<ObjectId, BlobFingerprint>> {
+  const dstIds = destinations.map((d) => d.newId);
+  const neededIds = await selectHydrationIds(ctx, srcIds, dstIds, threshold, knownFingerprints);
+  return hydrateFingerprints(ctx, neededIds, knownFingerprints);
+}
+
 /**
  * Runs one inexact pass over `matrixIndices` (the registry sources the cull
  * step, `resolveMatrixPlan`, kept — used sources included when the cull was
@@ -609,23 +634,15 @@ async function runInexactMatrix(
     index,
     source: registrySources[index] as RenameSource,
   }));
-  // A non-regular source stays in the matrix for slot semantics (buildMatrix
-  // scores it 0), but git's estimate_similarity checks S_ISREG on the SOURCE
-  // before ever touching a byte on either side — with no regular source at
-  // all, every pair is guaranteed 0 and no destination is worth hydrating.
-  const srcIds = matrixSources
-    .filter(({ source }) => isRegularFile(source.mode))
-    .map(({ source }) => source.id);
+  const srcIds = regularSourceIds(matrixSources);
   if (srcIds.length === 0) return null;
-  const dstIds = destinations.map((d) => d.newId);
-  const neededIds = await selectHydrationIds(
+  const fingerprints = await hydrateMatrixFingerprints(
     ctx,
     srcIds,
-    dstIds,
+    destinations,
     options.threshold,
     knownFingerprints,
   );
-  const fingerprints = await hydrateFingerprints(ctx, neededIds, knownFingerprints);
 
   const candidates = buildMatrix(matrixSources, destinations, fingerprints, options.threshold);
   candidates.sort(compareCandidates);
