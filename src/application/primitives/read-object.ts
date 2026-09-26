@@ -1,4 +1,11 @@
-import { isObjectNotFound, objectNotFound } from '../../domain/objects/error.js';
+import { TsgitError } from '../../domain/error.js';
+import { concatBytes, indexOf } from '../../domain/objects/encoding.js';
+import {
+  invalidObjectHeader,
+  isObjectNotFound,
+  objectNotFound,
+} from '../../domain/objects/error.js';
+import { parseHeader } from '../../domain/objects/header.js';
 import type { GitObject, ObjectId, ObjectType } from '../../domain/objects/index.js';
 import {
   type OfsPackEntryHeader,
@@ -8,8 +15,10 @@ import {
   type RefPackEntryHeader,
   readDeltaTargetSize,
 } from '../../domain/storage/index.js';
+import { readableStreamToAsyncIterable } from '../../operators/readable-stream.js';
 import type { Context } from '../../ports/context.js';
 import type { PromisorRemote } from '../../ports/promisor.js';
+import { forgetLooseOidPrefix, probeLooseOid } from './internal/loose-oid-cache.js';
 import { createPromiseMemo, type PromiseMemo } from './internal/promise-memo.js';
 import {
   assertRepoSettingsValid,
@@ -30,6 +39,7 @@ import {
   type PackLookupHit,
   type PackRegistry,
 } from './pack-registry.js';
+import { commonGitDir, looseObjectPath } from './path-layout.js';
 import type { RawObject, ReadObjectOptions } from './types.js';
 
 /**
@@ -298,6 +308,152 @@ export async function readObjectMetadataWithContent(
   return withLazyFetchRetry(ctx, id, registry, () =>
     resolveObjectMetadataWithContent(ctx, registry, id),
   );
+}
+
+/**
+ * How many compressed bytes of a loose object the size-only read probes
+ * before giving up on finding the header's NUL and falling back to a whole-
+ * file inflate. A dynamic-Huffman deflate header can spend more than a few
+ * hundred compressed bytes before its first literal, so this is generous
+ * headroom for the COMMON case, not a hard structural bound.
+ */
+const LOOSE_HEADER_PROBE_BYTES = 1024;
+
+/**
+ * git's `CHECK_SIZE_ONLY` read: the loose header's declared size CLAIM,
+ * never the real content length — the opposite contract from
+ * `readObjectMetadata` (content-derived, unchanged) and exactly what the
+ * size gate (`detect-similarity-renames.ts`) needs to prefilter candidates
+ * without inflating a single blob. A packed entry's size is already
+ * header-only via `readPackedMetadata` — reused as-is.
+ */
+export async function readDeclaredObjectSize(ctx: Context, id: ObjectId): Promise<number> {
+  const registry = peekPackRegistry(ctx) ?? (await getPackRegistry(ctx));
+  return withLazyFetchRetry(ctx, id, registry, () => resolveDeclaredSize(ctx, registry, id));
+}
+
+async function resolveDeclaredSize(
+  ctx: Context,
+  registry: PackRegistry,
+  id: ObjectId,
+): Promise<number> {
+  const hit = await registry.lookup(id);
+  if (hit !== undefined) {
+    return (await readPackedMetadata(ctx, registry, hit, id)).uncompressedSize;
+  }
+  const looseSize = await readLooseDeclaredSize(ctx, id);
+  if (looseSize !== undefined) return looseSize;
+  throw objectNotFound(id);
+}
+
+const loosePathFor = (ctx: Context, id: ObjectId): string => looseObjectPath(commonGitDir(ctx), id);
+
+/**
+ * Reads only the first `LOOSE_HEADER_PROBE_BYTES` compressed bytes off disk
+ * — never the whole file — mirroring `readLooseCompressed`'s membership-
+ * gated miss handling (object-resolver.ts): an external pruner removing the
+ * file between the membership probe and this read is a git-faithful MISS,
+ * not a refusal.
+ */
+async function readLooseDeclaredSize(ctx: Context, id: ObjectId): Promise<number | undefined> {
+  if (!(await probeLooseOid(ctx, id))) return undefined;
+  let prefix: Uint8Array;
+  try {
+    prefix = await ctx.fs.readSlice(loosePathFor(ctx, id), 0, LOOSE_HEADER_PROBE_BYTES);
+  } catch (error) {
+    if (error instanceof TsgitError && error.data.code === 'FILE_NOT_FOUND') {
+      forgetLooseOidPrefix(ctx, id);
+      return undefined;
+    }
+    throw error;
+  }
+  return resolveDeclaredSizeFromPrefix(ctx, id, prefix);
+}
+
+/**
+ * Scans the probe prefix for the header's NUL. When the prefix is shorter
+ * than the probe budget, it IS the whole file — any failure (no NUL, or the
+ * inflate itself rejecting on truncated input) propagates as-is, never
+ * caught. Only a prefix that exhausted the full budget (the file is longer
+ * than the probe) routes a failure to the whole-file fallback — the catch is
+ * narrowed to exactly that case, so a genuinely malformed object is never
+ * swallowed.
+ */
+async function resolveDeclaredSizeFromPrefix(
+  ctx: Context,
+  id: ObjectId,
+  prefix: Uint8Array,
+): Promise<number> {
+  const isPrefixTruncated = prefix.length === LOOSE_HEADER_PROBE_BYTES;
+  try {
+    return await scanPrefixForDeclaredSize(ctx, id, prefix);
+  } catch (error) {
+    if (isPrefixTruncated) return readDeclaredSizeFromWholeFile(ctx, id);
+    throw error;
+  }
+}
+
+function inflatePrefixStream(ctx: Context, prefix: Uint8Array): ReadableStream<Uint8Array> {
+  const source = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(prefix);
+      controller.close();
+    },
+  });
+  return source.pipeThrough(ctx.compressor.createInflateStream());
+}
+
+/** Drives the prefix's inflate to the header's NUL, always releasing the
+ *  iterator afterwards — on the success path the stream is stopped early
+ *  (never drained to its own end), and on any failure path nothing is left
+ *  pumping in the background. */
+async function scanPrefixForDeclaredSize(
+  ctx: Context,
+  id: ObjectId,
+  prefix: Uint8Array,
+): Promise<number> {
+  const iterator = readableStreamToAsyncIterable(inflatePrefixStream(ctx, prefix))[
+    Symbol.asyncIterator
+  ]();
+  try {
+    return await accumulateUntilNul(id, iterator);
+  } finally {
+    await iterator.return?.();
+  }
+}
+
+function noNulTerminator(id: ObjectId): TsgitError {
+  return invalidObjectHeader(`no NUL terminator found in inflated object ${id}`);
+}
+
+async function nextInflatedChunk(
+  id: ObjectId,
+  iterator: AsyncIterator<Uint8Array>,
+): Promise<Uint8Array> {
+  const next = await iterator.next();
+  if (next.done === true) throw noNulTerminator(id);
+  return next.value;
+}
+
+async function accumulateUntilNul(
+  id: ObjectId,
+  iterator: AsyncIterator<Uint8Array>,
+): Promise<number> {
+  let buf = await nextInflatedChunk(id, iterator);
+  for (;;) {
+    const nullPos = indexOf(buf, 0x00, 0);
+    if (nullPos !== -1) return parseHeader(buf.subarray(0, nullPos + 1)).size;
+    buf = concatBytes([buf, await nextInflatedChunk(id, iterator)]);
+  }
+}
+
+/** The rare fallback: a header whose NUL never appeared inside the probe
+ *  budget. Re-reads and inflates the WHOLE compressed file — exact by
+ *  construction, at the cost this object pays once. */
+async function readDeclaredSizeFromWholeFile(ctx: Context, id: ObjectId): Promise<number> {
+  const compressed = await ctx.fs.read(loosePathFor(ctx, id));
+  const inflated = await ctx.compressor.inflate(compressed);
+  return parseHeader(inflated).size;
 }
 
 async function resolveObjectMetadataWithContent(

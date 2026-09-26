@@ -1,6 +1,8 @@
+import { deflateRawSync } from 'node:zlib';
 import { describe, expect, it, vi } from 'vitest';
 import {
   getPackRegistry,
+  readDeclaredObjectSize,
   readObjectMetadata,
 } from '../../../../src/application/primitives/read-object.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
@@ -12,11 +14,61 @@ import type {
   Tag,
   Tree,
 } from '../../../../src/domain/objects/index.js';
-import { parseHeader, serializeObject } from '../../../../src/domain/objects/index.js';
+import {
+  parseHeader,
+  serializeHeader,
+  serializeObject,
+} from '../../../../src/domain/objects/index.js';
+import { computeLooseObjectPath } from '../../../../src/domain/storage/loose-path.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { buildSeededContext, writeLooseWithDeclaredSize, writeRawObjectBytes } from './fixtures.js';
 import type { EntrySpec } from './pack-fixture.js';
 import { buildSyntheticPack, corruptIdxOffset, writeSyntheticPack } from './pack-fixture.js';
+
+/** git's zlib stored-block encoding of an empty block: BFINAL=0, BTYPE=00
+ *  (stored), byte-aligned; LEN=0x0000 then its one's-complement NLEN=0xFFFF.
+ *  Emits zero output bytes, so a run of these exhausts the size-probe's
+ *  compressed-byte budget before the header's own NUL ever appears. */
+const EMPTY_STORED_DEFLATE_BLOCK = new Uint8Array([0x00, 0x00, 0x00, 0xff, 0xff]);
+
+/** Enough empty stored blocks (5 bytes each) to outlast the 1024-byte probe
+ *  window on their own, before the real payload ever starts. */
+const PREFIX_EXHAUSTING_BLOCK_COUNT = 300;
+
+/** zlib (RFC1950) wraps a raw DEFLATE stream with a 2-byte header and a
+ *  trailing big-endian Adler-32 of the UNCOMPRESSED bytes. */
+const ZLIB_HEADER = new Uint8Array([0x78, 0x01]);
+
+function adler32(data: Uint8Array): number {
+  const MOD_ADLER = 65521;
+  let a = 1;
+  let b = 0;
+  for (const byte of data) {
+    a = (a + byte) % MOD_ADLER;
+    b = (b + a) % MOD_ADLER;
+  }
+  return ((b << 16) | a) >>> 0;
+}
+
+/** Hand-builds a valid zlib stream whose first 1024 compressed bytes decode
+ *  to zero output — a run of empty stored blocks precedes the real payload
+ *  — so the size-probe's prefix read can never find the header's NUL and
+ *  must fall back to a whole-file inflate. */
+function buildPrefixExhaustingLooseBytes(serialized: Uint8Array): Uint8Array {
+  const emptyBlocks = new Uint8Array(
+    EMPTY_STORED_DEFLATE_BLOCK.length * PREFIX_EXHAUSTING_BLOCK_COUNT,
+  );
+  for (let i = 0; i < PREFIX_EXHAUSTING_BLOCK_COUNT; i += 1) {
+    emptyBlocks.set(EMPTY_STORED_DEFLATE_BLOCK, i * EMPTY_STORED_DEFLATE_BLOCK.length);
+  }
+  const payload = deflateRawSync(serialized);
+  const trailer = new Uint8Array(4);
+  new DataView(trailer.buffer).setUint32(0, adler32(serialized), false);
+  return new Uint8Array([...ZLIB_HEADER, ...emptyBlocks, ...payload, ...trailer]);
+}
+
+const loosePathOf = (ctx: Context, id: ObjectId): string =>
+  `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(id)}`;
 
 const AUTHOR = { name: 'A', email: 'a@a', timestamp: 0, timezoneOffset: '+0000' };
 const ENC = new TextEncoder();
@@ -352,6 +404,154 @@ describe('readObjectMetadata', () => {
         } catch (error) {
           // Assert
           expect((error as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
+        }
+      });
+    });
+  });
+});
+
+describe('readDeclaredObjectSize', () => {
+  describe('Given a 64 KiB loose blob', () => {
+    describe('When readDeclaredObjectSize is called', () => {
+      it('Then returns 65536, reading only through readSlice', async () => {
+        // Arrange
+        const content = new Uint8Array(65536).fill(7);
+        const ctx = await buildSeededContext();
+        const id = await writeRawObjectBytes(ctx, 'blob', content);
+        // Warm the repo-settings verdict first so the spies below observe
+        // only the size read's own filesystem traffic, not the one-time
+        // config check every fresh Context pays on its first pack-registry use.
+        await getPackRegistry(ctx);
+        const readSliceSpy = vi.spyOn(ctx.fs, 'readSlice');
+        const readSpy = vi.spyOn(ctx.fs, 'read');
+
+        // Act
+        const result = await readDeclaredObjectSize(ctx, id);
+
+        // Assert
+        expect(result).toBe(65536);
+        expect(readSliceSpy).toHaveBeenCalled();
+        expect(readSpy).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given a size-lying loose blob', () => {
+    describe('When readDeclaredObjectSize is called', () => {
+      it('Then returns the header claim, while readObjectMetadata keeps returning the real length', async () => {
+        // Arrange
+        const content = ENC.encode('hello world!'); // 12 bytes
+        const ctx = await buildSeededContext();
+        const id = await writeRawObjectBytes(ctx, 'blob', content);
+        await writeLooseWithDeclaredSize(ctx, id, 'blob', 5, content);
+
+        // Act
+        const declaredSize = await readDeclaredObjectSize(ctx, id);
+        const metadata = await readObjectMetadata(ctx, id);
+
+        // Assert
+        expect(declaredSize).toBe(5);
+        expect(metadata.uncompressedSize).toBe(12);
+      });
+    });
+  });
+
+  describe('Given a loose object whose header decodes only after more than 1024 compressed bytes', () => {
+    describe('When readDeclaredObjectSize is called', () => {
+      it('Then returns the true size through the whole-file fallback', async () => {
+        // Arrange — a run of empty stored deflate blocks pushes the real
+        // payload past the 1024-byte probe window (verified against the
+        // memory adapter's own DecompressionStream: the full stream inflates
+        // to the serialized object, the truncated 1024-byte prefix alone
+        // rejects with zero output).
+        const content = ENC.encode('hello');
+        const header = serializeHeader('blob', content.length);
+        const serialized = new Uint8Array(header.length + content.length);
+        serialized.set(header, 0);
+        serialized.set(content, header.length);
+        const ctx = await buildSeededContext();
+        const id = 'b'.repeat(40) as ObjectId;
+        await ctx.fs.write(loosePathOf(ctx, id), buildPrefixExhaustingLooseBytes(serialized));
+
+        // Act
+        const result = await readDeclaredObjectSize(ctx, id);
+
+        // Assert
+        expect(result).toBe(content.length);
+      });
+    });
+  });
+
+  describe('Given a loose file whose entire content has no NUL after inflate', () => {
+    describe('When readDeclaredObjectSize is called', () => {
+      it('Then rejects INVALID_OBJECT_HEADER with the no-NUL-terminator reason', async () => {
+        // Arrange — the whole file fits inside the 1024-byte probe, so the
+        // "never catch" branch applies: no fallback, the error propagates.
+        const ctx = await buildSeededContext();
+        const junk = ENC.encode('no header here, just plain text with no null byte');
+        const compressed = await ctx.compressor.deflate(junk);
+        const id = 'a'.repeat(40) as ObjectId;
+        await ctx.fs.write(loosePathOf(ctx, id), compressed);
+
+        // Act
+        try {
+          await readDeclaredObjectSize(ctx, id);
+          expect.unreachable();
+        } catch (error) {
+          // Assert
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('INVALID_OBJECT_HEADER');
+          if (data.code === 'INVALID_OBJECT_HEADER') {
+            expect(data.reason).toBe(`no NUL terminator found in inflated object ${id}`);
+          }
+        }
+      });
+    });
+  });
+
+  describe('Given a packed base entry and an OFS_DELTA entry', () => {
+    describe('When readDeclaredObjectSize is called', () => {
+      it("Then equals readObjectMetadata's uncompressedSize for both", async () => {
+        // Arrange
+        const baseContent = new TextEncoder().encode('abcd');
+        const targetContent = new TextEncoder().encode('abcdefgh');
+        const ctx = await buildSeededContext();
+        const ids = await writeSyntheticPack(ctx, 'declared-size-ofs', [
+          { kind: 'base', type: 'blob', content: baseContent },
+          { kind: 'ofs-delta', baseIndex: 0, targetContent },
+        ]);
+        const baseId = ids[0] as ObjectId;
+        const deltaId = ids[1] as ObjectId;
+
+        // Act
+        const baseDeclaredSize = await readDeclaredObjectSize(ctx, baseId);
+        const deltaDeclaredSize = await readDeclaredObjectSize(ctx, deltaId);
+
+        // Assert
+        expect(baseDeclaredSize).toBe((await readObjectMetadata(ctx, baseId)).uncompressedSize);
+        expect(deltaDeclaredSize).toBe((await readObjectMetadata(ctx, deltaId)).uncompressedSize);
+      });
+    });
+  });
+
+  describe('Given an id neither loose nor packed', () => {
+    describe('When readDeclaredObjectSize is called', () => {
+      it('Then rejects OBJECT_NOT_FOUND with the id', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const missingId = 'f'.repeat(40) as ObjectId;
+
+        // Act
+        try {
+          await readDeclaredObjectSize(ctx, missingId);
+          expect.unreachable();
+        } catch (error) {
+          // Assert
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('OBJECT_NOT_FOUND');
+          if (data.code === 'OBJECT_NOT_FOUND') {
+            expect(data.id).toBe(missingId);
+          }
         }
       });
     });

@@ -25,24 +25,10 @@ import type { FileMode, FilePath, ObjectId } from '../../domain/objects/index.js
 import type { Context } from '../../ports/context.js';
 import { boundedMapFor } from './internal/concurrency.js';
 import { readBlob } from './read-blob.js';
+import { readDeclaredObjectSize } from './read-object.js';
 
 /** git's default `diff.renameLimit`. */
 const DEFAULT_LIMIT = 1000;
-
-interface BlobEntry {
-  readonly id: ObjectId;
-  readonly bytes: Uint8Array;
-}
-
-async function hydrateIds(
-  ctx: Context,
-  ids: ReadonlyArray<ObjectId>,
-): Promise<ReadonlyArray<BlobEntry>> {
-  return boundedMapFor(ctx, 'ioBound', ids, async (id) => ({
-    id,
-    bytes: (await readBlob(ctx, id)).content,
-  }));
-}
 
 interface CopySource {
   readonly oldPath: FilePath;
@@ -150,26 +136,6 @@ export interface BlobFingerprint {
 }
 
 /**
- * Build a fingerprint map keyed by ObjectId, hashing each unique id's bytes once.
- * Blobs that share an id (e.g., the same content under two paths) are fingerprinted
- * only once — this is free deduplication and the key optimisation for the matrix.
- */
-function buildFingerprintMap(
-  ids: ReadonlyArray<ObjectId>,
-  bytesById: Map<ObjectId, Uint8Array>,
-): Map<ObjectId, BlobFingerprint> {
-  const fingerprints = new Map<ObjectId, BlobFingerprint>();
-  for (const id of ids) {
-    // Stryker disable next-line ConditionalExpression: equivalent — the skip is a dedup optimisation; without it a repeated id is re-fingerprinted to the identical value (buildChunkMap is deterministic over the same bytes) and Map.set overwrites with an equal entry, so the returned map is unchanged.
-    if (fingerprints.has(id)) continue;
-    const bytes = bytesById.get(id);
-    if (bytes === undefined) continue;
-    fingerprints.set(id, { chunkMap: buildChunkMap(bytes), size: bytes.length });
-  }
-  return fingerprints;
-}
-
-/**
  * Git's size prefilter: returns true when the size delta alone makes it impossible
  * to reach `threshold`, so the pair can be skipped before the expensive chunk scan.
  * Mirrors git's estimate_similarity early-reject:
@@ -189,7 +155,7 @@ function scoreAndRecord(
   candidate: ScoredTriple,
   slots: ScoredTriple[],
 ): void {
-  // Stryker disable next-line ConditionalExpression: equivalent — the size prefilter is a conservative necessary condition for `score >= threshold`; every pair it rejects also scores below threshold, so skipping the early return still records nothing at the `score >= threshold` gate below.
+  // Stryker disable next-line ConditionalExpression: equivalent — a conservative necessary condition for `score >= threshold`; every pair it rejects also scores below threshold, so skipping the early return still records nothing at the gate below. Distinct from the id-level size gate upstream (`sizeCompatibleIds`, `selectHydrationIds`), whose own rejections ARE independently observable — a rejected id is never fingerprinted, never passed to `readBlob` at all — and which has its own dedicated tests; this per-PAIR check runs only on ids that already cleared that coarser gate.
   if (isSizeRejected(sf.size, df.size, threshold)) return;
   const score = estimateSimilarityFromMaps(sf.chunkMap, sf.size, df.chunkMap, df.size);
   if (score >= threshold) recordIfBetter(slots, { ...candidate, score });
@@ -206,17 +172,16 @@ function scoreAndRecord(
 function buildRenameTriples(
   deletes: ReadonlyArray<DeleteChange>,
   adds: ReadonlyArray<AddChange>,
-  srcFingerprints: Map<ObjectId, BlobFingerprint>,
-  dstFingerprints: Map<ObjectId, BlobFingerprint>,
+  fingerprints: ReadonlyMap<ObjectId, BlobFingerprint>,
   threshold: number,
 ): ScoredTriple[] {
   const triples: ScoredTriple[] = [];
   for (const add of adds) {
-    const df = dstFingerprints.get(add.newId);
+    const df = fingerprints.get(add.newId);
     if (df === undefined) continue;
     const slots: ScoredTriple[] = [];
     for (const del of deletes) {
-      const sf = srcFingerprints.get(del.oldId);
+      const sf = fingerprints.get(del.oldId);
       if (sf !== undefined)
         scoreAndRecord(sf, df, threshold, { kind: 'rename', src: del, add, score: 0 }, slots);
     }
@@ -234,17 +199,16 @@ function buildRenameTriples(
 function buildCopyTriples(
   copySources: ReadonlyArray<CopySource>,
   adds: ReadonlyArray<AddChange>,
-  srcFingerprints: Map<ObjectId, BlobFingerprint>,
-  dstFingerprints: Map<ObjectId, BlobFingerprint>,
+  fingerprints: ReadonlyMap<ObjectId, BlobFingerprint>,
   threshold: number,
 ): ScoredTriple[] {
   const triples: ScoredTriple[] = [];
   for (const add of adds) {
-    const df = dstFingerprints.get(add.newId);
+    const df = fingerprints.get(add.newId);
     if (df === undefined) continue;
     const slots: ScoredTriple[] = [];
     for (const src of copySources) {
-      const sf = srcFingerprints.get(src.oldId);
+      const sf = fingerprints.get(src.oldId);
       if (sf !== undefined)
         scoreAndRecord(sf, df, threshold, { kind: 'copy', src, add, score: 0 }, slots);
     }
@@ -381,45 +345,172 @@ interface InexactPassResult {
   readonly consumedAdds: ReadonlySet<AddChange>;
 }
 
-export interface FingerprintPair {
-  readonly srcFingerprints: Map<ObjectId, BlobFingerprint>;
-  readonly dstFingerprints: Map<ObjectId, BlobFingerprint>;
+/**
+ * git's rename-limit size gate: below this many unique ids, no id even
+ * PASSES through a size read — every candidate is fingerprinted directly
+ * (the common small-diff case never pays for it). Above it, a size read per
+ * unique id decides which ids can possibly reach `threshold` against some
+ * partner on the other side before any blob is ever read.
+ *
+ * @internal — exported for direct unit testing.
+ */
+export const SIZE_GATE_MIN_IDS = 16;
+
+/** The first index in `sortedPartnerSizes` whose value `d` satisfies
+ *  `d >= size || !isSizeRejected(size, d, threshold)` — monotone in `d`
+ *  because that band is exactly the CONTIGUOUS region `isSizeRejected`
+ *  admits around `size`, so a plain binary search finds its lower edge. */
+function firstCandidatePartnerIndex(
+  sortedPartnerSizes: ReadonlyArray<number>,
+  size: number,
+  threshold: number,
+): number {
+  let lo = 0;
+  let hi = sortedPartnerSizes.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    const d = sortedPartnerSizes[mid] as number;
+    const isCandidate = d >= size || !isSizeRejected(size, d, threshold);
+    if (isCandidate) hi = mid;
+    else lo = mid + 1;
+  }
+  return lo;
+}
+
+/** Whether `size` has at least one size-compatible partner in
+ *  `sortedPartnerSizes` — the smallest candidate the binary search finds is
+ *  the only one that needs the exact `isSizeRejected` check: every partner
+ *  before it is too small, every one after it is no better a fit. */
+function hasSizeCompatiblePartner(
+  size: number,
+  sortedPartnerSizes: ReadonlyArray<number>,
+  threshold: number,
+): boolean {
+  const index = firstCandidatePartnerIndex(sortedPartnerSizes, size, threshold);
+  const candidate = sortedPartnerSizes[index];
+  return candidate !== undefined && !isSizeRejected(size, candidate, threshold);
+}
+
+function sortedSizesOf(
+  ids: ReadonlyArray<ObjectId>,
+  sizes: ReadonlyMap<ObjectId, number>,
+): number[] {
+  return ids.map((id) => sizes.get(id) as number).sort((a, b) => a - b);
+}
+
+function addSizeCompatible(
+  ids: ReadonlyArray<ObjectId>,
+  sizes: ReadonlyMap<ObjectId, number>,
+  sortedPartnerSizes: ReadonlyArray<number>,
+  threshold: number,
+  into: Set<ObjectId>,
+): void {
+  for (const id of ids) {
+    const size = sizes.get(id) as number;
+    if (hasSizeCompatiblePartner(size, sortedPartnerSizes, threshold)) into.add(id);
+  }
 }
 
 /**
- * Hydrate blobs for all src and dst ids and build per-id fingerprint maps.
+ * git's rename-limit size prefilter at the ID level (design D3): an id is
+ * needed for fingerprinting only when at least one partner on the OTHER
+ * side could possibly reach `threshold` against it. `sizes` is total over
+ * `srcIds ∪ dstIds` — every id passed in has an entry, guaranteed by the
+ * caller (`selectHydrationIds` reads a size for every unique id first).
  *
- * Both id sets are hydrated through ONE shared `hydrateIds` call rather than
- * two `Promise.all`-nested ones — two independently-bounded pools would each
- * cap at the ioBound limit, so together they let twice that many object
- * reads run in flight at once. Concatenating first shares a single pool
- * across both arms, so the ioBound limit is the true ceiling regardless of
- * how the ids split between src and dst.
- *
- * Exported for direct unit testing (the concurrency-boundary proof above).
+ * @internal — exported for direct unit testing (property lens 2, aggregator).
  */
-export async function hydrateAndFingerprint(
+export function sizeCompatibleIds(
+  sizes: ReadonlyMap<ObjectId, number>,
+  srcIds: ReadonlyArray<ObjectId>,
+  dstIds: ReadonlyArray<ObjectId>,
+  threshold: number,
+): ReadonlySet<ObjectId> {
+  const sortedSrcSizes = sortedSizesOf(srcIds, sizes);
+  const sortedDstSizes = sortedSizesOf(dstIds, sizes);
+  const needed = new Set<ObjectId>();
+  addSizeCompatible(srcIds, sizes, sortedDstSizes, threshold, needed);
+  addSizeCompatible(dstIds, sizes, sortedSrcSizes, threshold, needed);
+  return needed;
+}
+
+async function readDeclaredSizes(
   ctx: Context,
-  allSrcIds: ReadonlyArray<ObjectId>,
-  adds: ReadonlyArray<AddChange>,
-): Promise<FingerprintPair> {
-  const dstIds = adds.map((a) => a.newId);
-  const combined = await hydrateIds(ctx, [...allSrcIds, ...dstIds]);
-  // Stryker disable next-line MethodExpression: equivalent — the store is content-addressed (id implies content), so buildFingerprintMap below only ever looks up ids explicitly passed to it (allSrcIds / adds' newIds); whether srcBytesById/dstBytesById is built from the sliced subset or the full combined array, every looked-up id resolves to the same bytes (full covering set — detect-similarity-renames ×2, diff-trees, diff — passes unmutated with both slices removed).
-  const srcEntries = combined.slice(0, allSrcIds.length);
-  // Stryker disable next-line MethodExpression: equivalent — same reasoning as srcEntries above.
-  const dstEntries = combined.slice(allSrcIds.length);
-  const srcBytesById = new Map<ObjectId, Uint8Array>(srcEntries.map((e) => [e.id, e.bytes]));
-  const dstBytesById = new Map<ObjectId, Uint8Array>(dstEntries.map((e) => [e.id, e.bytes]));
-  // Fingerprint each unique blob id once — avoids O(pairs) re-hashing and
-  // deduplicates blobs shared across multiple paths.
-  return {
-    srcFingerprints: buildFingerprintMap(allSrcIds, srcBytesById),
-    dstFingerprints: buildFingerprintMap(
-      adds.map((a) => a.newId),
-      dstBytesById,
-    ),
-  };
+  ids: ReadonlyArray<ObjectId>,
+): Promise<ReadonlyMap<ObjectId, number>> {
+  const entries = await boundedMapFor(
+    ctx,
+    'ioBound',
+    ids,
+    async (id): Promise<readonly [ObjectId, number]> => [id, await readDeclaredObjectSize(ctx, id)],
+  );
+  return new Map(entries);
+}
+
+/**
+ * Which ids actually need fingerprinting for one inexact pass (design D3):
+ * at or below `SIZE_GATE_MIN_IDS` unique ids, every one of them (no size
+ * read pays for itself below the gate — the common small-diff path never
+ * touches it); above it, only the ids `sizeCompatibleIds` keeps.
+ */
+async function selectHydrationIds(
+  ctx: Context,
+  srcIds: ReadonlyArray<ObjectId>,
+  dstIds: ReadonlyArray<ObjectId>,
+  threshold: number,
+): Promise<ReadonlyArray<ObjectId>> {
+  const unique = Array.from(new Set([...srcIds, ...dstIds]));
+  if (unique.length <= SIZE_GATE_MIN_IDS) return unique;
+  const sizes = await readDeclaredSizes(ctx, unique);
+  return Array.from(sizeCompatibleIds(sizes, srcIds, dstIds, threshold));
+}
+
+function dedupeMissing(
+  ids: ReadonlyArray<ObjectId>,
+  known: ReadonlyMap<ObjectId, BlobFingerprint>,
+): ObjectId[] {
+  const seen = new Set<ObjectId>();
+  const missing: ObjectId[] = [];
+  for (const id of ids) {
+    if (known.has(id) || seen.has(id)) continue;
+    seen.add(id);
+    missing.push(id);
+  }
+  return missing;
+}
+
+/**
+ * Fingerprint-and-drop hydration (design D3): reads each missing blob just
+ * long enough to build its spanhash fingerprint, then lets the bytes go —
+ * only the fingerprint (and its size) escapes the bounded worker, so a
+ * blob's content never outlives the read that produced it. `ids` already
+ * merges src and dst candidates into ONE array, so the single
+ * `boundedMapFor` call below is the one shared pool for both arms — no
+ * per-arm pool to double the true ioBound ceiling.
+ *
+ * Skips every id already in `known` and returns a NEW map (`known` plus the
+ * newly hydrated entries) — `known` itself is never mutated, so a caller
+ * accumulating fingerprints across phased hydration passes keeps its own
+ * map intact.
+ */
+export async function hydrateFingerprints(
+  ctx: Context,
+  ids: ReadonlyArray<ObjectId>,
+  known: ReadonlyMap<ObjectId, BlobFingerprint>,
+): Promise<ReadonlyMap<ObjectId, BlobFingerprint>> {
+  const missing = dedupeMissing(ids, known);
+  const fetched = await boundedMapFor(
+    ctx,
+    'ioBound',
+    missing,
+    async (id): Promise<readonly [ObjectId, BlobFingerprint]> => {
+      const { content } = await readBlob(ctx, id);
+      return [id, { chunkMap: buildChunkMap(content), size: content.length }];
+    },
+  );
+  const merged = new Map(known);
+  for (const [id, fingerprint] of fetched) merged.set(id, fingerprint);
+  return merged;
 }
 
 /** Build and sort all rename+copy triples for one inexact pass. */
@@ -429,20 +520,12 @@ function buildAllTriples(
   copySources: ReadonlyArray<CopySource>,
   copies: 'off' | 'on' | 'harder',
   threshold: number,
-  { srcFingerprints, dstFingerprints }: FingerprintPair,
+  fingerprints: ReadonlyMap<ObjectId, BlobFingerprint>,
 ): ScoredTriple[] {
-  const renameTriples = buildRenameTriples(
-    deletes,
-    adds,
-    srcFingerprints,
-    dstFingerprints,
-    threshold,
-  );
+  const renameTriples = buildRenameTriples(deletes, adds, fingerprints, threshold);
   const copyTriples =
     // Stryker disable next-line ConditionalExpression: equivalent — resolveCopySources returns [] whenever copies==='off', so buildCopyTriples over the empty copySources yields [], identical to the : [] arm.
-    copies !== 'off'
-      ? buildCopyTriples(copySources, adds, srcFingerprints, dstFingerprints, threshold)
-      : [];
+    copies !== 'off' ? buildCopyTriples(copySources, adds, fingerprints, threshold) : [];
   const allTriples: ScoredTriple[] = [...renameTriples, ...copyTriples];
   sortTriples(allTriples);
   return allTriples;
@@ -457,15 +540,10 @@ async function runInexactPass(
   if (deletes.length === 0 && copySources.length === 0) return null;
 
   const allSrcIds = [...deletes.map((d) => d.oldId), ...copySources.map((s) => s.oldId)];
-  const fingerprintPair = await hydrateAndFingerprint(ctx, allSrcIds, adds);
-  const allTriples = buildAllTriples(
-    deletes,
-    adds,
-    copySources,
-    copies,
-    threshold,
-    fingerprintPair,
-  );
+  const dstIds = adds.map((a) => a.newId);
+  const neededIds = await selectHydrationIds(ctx, allSrcIds, dstIds, threshold);
+  const fingerprints = await hydrateFingerprints(ctx, neededIds, new Map());
+  const allTriples = buildAllTriples(deletes, adds, copySources, copies, threshold, fingerprints);
 
   const matches = greedySelect(allTriples);
   const renameMatches = matches.filter((m): m is RenameMatch => m.kind === 'rename');
@@ -526,7 +604,41 @@ function computeBreakScores(src: Uint8Array, dst: Uint8Array): BreakScores {
   return { computedBreakScore, dissimilarity };
 }
 
-/** Score all modifies and return those that exceed breakScore as broken records. */
+interface ModifyScore {
+  readonly mod: ModifyChange;
+  readonly computedBreakScore: number;
+  readonly dissimilarity: number;
+}
+
+/**
+ * Reads a modify's old and new blobs SEQUENTIALLY (never `Promise.all`) so
+ * one worker never occupies two ioBound slots at once — `boundedMapFor`
+ * below already caps concurrent MODIFIES at the ioBound limit; a worker that
+ * fired both reads in parallel would let 2× that many object reads run in
+ * flight, the same doubled-ceiling shape `hydrateFingerprints` avoids by
+ * sharing one pool across its own src/dst arms.
+ */
+async function scoreOneModify(ctx: Context, mod: ModifyChange): Promise<ModifyScore> {
+  const { content: oldBytes } = await readBlob(ctx, mod.oldId);
+  const { content: newBytes } = await readBlob(ctx, mod.newId);
+  const { computedBreakScore, dissimilarity } = computeBreakScores(oldBytes, newBytes);
+  return { mod, computedBreakScore, dissimilarity };
+}
+
+function toSyntheticDelete(mod: ModifyChange): DeleteChange {
+  return { type: 'delete', oldPath: mod.path, oldId: mod.oldId, oldMode: mod.oldMode };
+}
+
+function toSyntheticAdd(mod: ModifyChange): AddChange {
+  return { type: 'add', newPath: mod.path, newId: mod.newId, newMode: mod.newMode };
+}
+
+/**
+ * Score all modifies and return those that exceed breakScore as broken
+ * records. git's `should_break` reads both blobs fully for every modify —
+ * no size gate here — so each modify streams its own pair through the
+ * bounded pool rather than hydrating the whole batch up front.
+ */
 async function scoreModifies(
   ctx: Context,
   modifies: ReadonlyArray<ModifyChange>,
@@ -535,30 +647,18 @@ async function scoreModifies(
   readonly records: ReadonlyArray<BrokenRecord>;
   readonly paths: ReadonlySet<FilePath>;
 }> {
-  const modifyIds = modifies.flatMap((m) => [m.oldId, m.newId]);
-  const entries = await hydrateIds(ctx, modifyIds);
-  const bytesById = new Map<ObjectId, Uint8Array>(entries.map((e) => [e.id, e.bytes]));
+  const scores = await boundedMapFor(ctx, 'ioBound', modifies, (mod) => scoreOneModify(ctx, mod));
 
   const records: BrokenRecord[] = [];
   const paths = new Set<FilePath>();
-  for (const mod of modifies) {
-    const oldBytes = bytesById.get(mod.oldId) ?? new Uint8Array(0);
-    const newBytes = bytesById.get(mod.newId) ?? new Uint8Array(0);
-    const { computedBreakScore, dissimilarity } = computeBreakScores(oldBytes, newBytes);
+  for (const { mod, computedBreakScore, dissimilarity } of scores) {
     if (computedBreakScore < breakScore) continue;
-    const del: DeleteChange = {
-      type: 'delete',
-      oldPath: mod.path,
-      oldId: mod.oldId,
-      oldMode: mod.oldMode,
-    };
-    const add: AddChange = {
-      type: 'add',
-      newPath: mod.path,
-      newId: mod.newId,
-      newMode: mod.newMode,
-    };
-    records.push({ original: mod, del, add, dissimilarity });
+    records.push({
+      original: mod,
+      del: toSyntheticDelete(mod),
+      add: toSyntheticAdd(mod),
+      dissimilarity,
+    });
     paths.add(mod.path);
   }
   return { records, paths };
@@ -727,7 +827,9 @@ function resolveCopySources(
  * 4. Apply the rename-limit guard: if num_create * num_src > limit^2, skip inexact pass.
  *    For copies:'harder', num_src includes ALL preimage paths; if this causes the limit
  *    to be exceeded, fall back to copies:'on' sources (git's fallback).
- * 5. Hydrate blob bytes for all candidates via a bounded concurrency pool.
+ * 5. Size-gate the candidate pool above SIZE_GATE_MIN_IDS unique ids, then
+ *    fingerprint-and-drop each needed blob via a bounded concurrency pool —
+ *    only the fingerprint escapes the worker, never the blob's own bytes.
  * 6. Build scored triples for renames (deletes vs adds) and optionally copies.
  *    At equal score, rename sorts AHEAD of copy (tiebreak).
  * 7. Greedy score-descending selection: pair when add is free AND score >= threshold.
