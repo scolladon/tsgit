@@ -2880,6 +2880,77 @@ const USE_COUNT_ROWS: ReadonlyArray<RenameRow> = [
   },
 ];
 
+/**
+ * Exact-only threshold interop: git's "Did we only want exact renames?"
+ * check (`diffcore-rename.c:1480`) stops right after the exact pass whenever
+ * the threshold is the ceiling — the inexact matrix never runs, even though
+ * an approximate score could otherwise reach that same ceiling for
+ * non-identical bytes (same lines, reverse-sorted keeps every per-line
+ * chunk hash but changes the file's oid).
+ */
+const EXACT_ONLY_TMP_PREFIX = 'tsgit-rename-exact-only-';
+const EXACT_ONLY_SETUP_TIMEOUT = 60_000;
+
+const EXACT_ONLY_ROWS: ReadonlyArray<RenameRow> = [
+  {
+    label:
+      'a.txt (60 lines) moved to b.txt with its lines reverse-sorted, under a 100% rename threshold — the false MAX_SCORE match never gets a chance to run (D a.txt ; A b.txt)',
+    before: [
+      {
+        path: 'a.txt',
+        content: Array.from({ length: 60 }, (_, i) => `line ${i}\n`).join(''),
+      },
+    ],
+    after: [
+      {
+        path: 'b.txt',
+        content: Array.from({ length: 60 }, (_, i) => `line ${i}\n`)
+          .reverse()
+          .join(''),
+      },
+    ],
+    gitFlags: ['-M100%'],
+    renameOptions: { threshold: 60000 },
+  },
+];
+
+const exactOnlyFixtures = new Map<string, { readonly dir: string }>();
+
+function exactOnlyFixtureOf(label: string): { readonly dir: string } {
+  const found = exactOnlyFixtures.get(label);
+  if (found === undefined) throw new Error(`fixture not built for row: ${label}`);
+  return found;
+}
+
+describe.skipIf(!GIT_AVAILABLE)('exact-only threshold interop', () => {
+  beforeAll(async () => {
+    for (const row of EXACT_ONLY_ROWS) {
+      exactOnlyFixtures.set(row.label, await buildRenameRow(row, EXACT_ONLY_TMP_PREFIX));
+    }
+  }, EXACT_ONLY_SETUP_TIMEOUT);
+
+  afterAll(async () => {
+    for (const { dir } of exactOnlyFixtures.values()) {
+      await rmDir(dir, { recursive: true, force: true });
+    }
+  });
+
+  describe('Given a raw diff pair where an approximate score could reach the rename ceiling for non-identical bytes', () => {
+    describe('When diff is called with detectRenames at a 100% threshold', () => {
+      it.each(EXACT_ONLY_ROWS)('Then name-status matches live git for: $label', async (row) => {
+        // Arrange
+        const { dir } = exactOnlyFixtureOf(row.label);
+
+        // Act
+        const { ours, peer } = await runRenameRow(row, dir);
+
+        // Assert
+        expect(ours).toBe(peer);
+      });
+    });
+  });
+});
+
 const useCountFixtures = new Map<string, { readonly dir: string }>();
 
 function useCountFixtureOf(label: string): { readonly dir: string } {

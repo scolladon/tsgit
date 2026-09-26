@@ -1262,6 +1262,12 @@ async function runInexactPhase(
   limit: number,
   knownFingerprints: ReadonlyMap<ObjectId, BlobFingerprint>,
 ): Promise<InexactPhaseOutcome> {
+  // git's "Did we only want exact renames?" (`diffcore-rename.c:1480`): once
+  // the threshold IS the ceiling, no approximate score could mean anything
+  // beyond "identical", and the exact pass already caught every identical
+  // pair — running the matrix here could only ever manufacture a false
+  // MAX_SCORE match (e.g. same lines, reverse-sorted) for non-identical bytes.
+  if (threshold >= MAX_SCORE) return mergeInexactOutcome(exact, null);
   const keepEverySource = copies !== 'off' || broken.length > 0;
   const inexact = await runInexactMatrixIfPlanned(
     ctx,

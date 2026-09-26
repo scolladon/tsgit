@@ -1717,6 +1717,34 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
+  describe('Given a file moved with its lines reverse-sorted — same per-line bytes, so the spanhash scorer reports a false MAX_SCORE match — and a threshold of MAX_SCORE', () => {
+    describe('When detectSimilarityRenames is called', () => {
+      it('Then no rename is detected — the inexact pass never runs once only exact renames are wanted', async () => {
+        // Arrange — a.txt and b.txt share every line but in reverse order: their
+        // oids differ (not an exact match), yet the per-line chunk histogram is
+        // identical, so the approximate scorer alone would call this MAX_SCORE.
+        const ctx = await buildSeededContext();
+        const lines = Array.from({ length: 60 }, (_, i) => `line ${i}\n`);
+        const oldId = await writeBlob(ctx, lines.join(''));
+        const newId = await writeBlob(ctx, [...lines].reverse().join(''));
+        const diff: TreeDiff = {
+          changes: [
+            { type: 'delete', oldPath: 'a.txt' as FilePath, oldId, oldMode: FILE_MODE.REGULAR },
+            { type: 'add', newPath: 'b.txt' as FilePath, newId, newMode: FILE_MODE.REGULAR },
+          ],
+        };
+
+        // Act
+        const result = await detectSimilarityRenames(ctx, diff, { threshold: MAX_SCORE });
+
+        // Assert — the exact-only run stops right after the exact pass
+        expect(result.changes.filter((c) => c.type === 'rename')).toHaveLength(0);
+        expect(result.changes.filter((c) => c.type === 'delete')).toHaveLength(1);
+        expect(result.changes.filter((c) => c.type === 'add')).toHaveLength(1);
+      });
+    });
+  });
+
   describe('Given a 5x5 scenario with unambiguous per-pair best scores', () => {
     describe('When detectSimilarityRenames is called', () => {
       it('Then all 5 pairs are detected as renames with no orphan', async () => {
