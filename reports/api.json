@@ -88721,7 +88721,15 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Fine-tune rename detection (limit, threshold). Only used when "
+										"text": "Fine-tune detection. "
+									},
+									{
+										"kind": "code",
+										"text": "`breakRewrites`"
+									},
+									{
+										"kind": "text",
+										"text": " also applies when "
 									},
 									{
 										"kind": "code",
@@ -88729,7 +88737,15 @@
 									},
 									{
 										"kind": "text",
-										"text": " is true."
+										"text": " is\noff (git's "
+									},
+									{
+										"kind": "code",
+										"text": "`--no-renames -B`"
+									},
+									{
+										"kind": "text",
+										"text": "); the other members only apply when it is on."
 									}
 								]
 							},

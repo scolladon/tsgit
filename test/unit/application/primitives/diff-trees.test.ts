@@ -4,6 +4,7 @@ import { diffRecursive, diffTrees } from '../../../../src/application/primitives
 import * as flattenRawMod from '../../../../src/application/primitives/internal/flatten-raw.js';
 import * as walkRawSubtreeMod from '../../../../src/application/primitives/internal/walk-raw-subtree.js';
 import * as materialisePatchFilesMod from '../../../../src/application/primitives/materialise-patch-files.js';
+import * as readBlobMod from '../../../../src/application/primitives/read-blob.js';
 import * as readObjectMod from '../../../../src/application/primitives/read-object.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { MAX_PEEL_DEPTH } from '../../../../src/application/primitives/types.js';
@@ -12,11 +13,17 @@ import { writeTree } from '../../../../src/application/primitives/write-tree.js'
 import {
   type LineKey,
   MAX_DIFF_LINES,
+  type TreeDiff,
   type WhitespaceMode,
 } from '../../../../src/domain/diff/index.js';
 import * as rawTreeDiffMod from '../../../../src/domain/diff/raw-tree-diff.js';
-import { MAX_SCORE } from '../../../../src/domain/diff/similarity.js';
+import {
+  DEFAULT_BREAK_SCORE,
+  DEFAULT_MERGE_SCORE,
+  MAX_SCORE,
+} from '../../../../src/domain/diff/similarity.js';
 import * as statFieldsMod from '../../../../src/domain/diff/stat-fields.js';
+import * as domainTreeDiffMod from '../../../../src/domain/diff/tree-diff.js';
 import * as encodingMod from '../../../../src/domain/objects/encoding.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import { SHA1_CONFIG } from '../../../../src/domain/objects/hash-config.js';
@@ -190,6 +197,171 @@ describe('diffTrees', () => {
         // `options?.detectRenames === true`.
         expect(withDetect).not.toEqual(withoutDetect);
         expect(withDetect.changes.some((c) => c.type === 'rename')).toBe(true);
+      });
+    });
+  });
+
+  describe('Given detectRenames is absent and renameOptions.breakRewrites is set', () => {
+    describe('When diffTrees is called with a fully rewritten file at least 500 bytes', () => {
+      it('Then the modify is kept broken at MAX_SCORE', async () => {
+        // Arrange — fully disjoint content, well over MINIMUM_BREAK_SIZE
+        const ctx = await buildSeededContext();
+        const oldId = await blob(ctx, 'aaaa\nbbbb\ncccc\ndddd\n'.repeat(25));
+        const newId = await blob(ctx, 'xxxx\nyyyy\nzzzz\nwwww\n'.repeat(25));
+        const before = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'file.txt', oldId)]);
+        const after = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'file.txt', newId)]);
+
+        // Act — no detectRenames key at all, only renameOptions.breakRewrites
+        const result = await diffTrees(ctx, before, after, {
+          renameOptions: {
+            breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
+          },
+        });
+
+        // Assert
+        expect(result.changes).toHaveLength(1);
+        const change = result.changes[0];
+        expect(change?.type).toBe('modify');
+        if (change?.type === 'modify') {
+          expect(change.broken?.score).toBe(MAX_SCORE);
+          expect(change.broken?.maxScore).toBe(MAX_SCORE);
+        }
+      });
+    });
+
+    describe('When diffTrees is called and the merge gate exceeds the dissimilarity', () => {
+      it('Then the modify re-merges to plain, with no broken datum', async () => {
+        // Arrange — fully disjoint content (dissimilarity = MAX_SCORE); the merge
+        // gate is set one above it, so the broken pair re-merges.
+        const ctx = await buildSeededContext();
+        const oldId = await blob(ctx, 'aaaa\nbbbb\ncccc\ndddd\n'.repeat(25));
+        const newId = await blob(ctx, 'xxxx\nyyyy\nzzzz\nwwww\n'.repeat(25));
+        const before = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'file.txt', oldId)]);
+        const after = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'file.txt', newId)]);
+
+        // Act
+        const result = await diffTrees(ctx, before, after, {
+          renameOptions: { breakRewrites: { score: 1, merge: MAX_SCORE + 1 } },
+        });
+
+        // Assert
+        expect(result.changes).toHaveLength(1);
+        const change = result.changes[0];
+        expect(change?.type).toBe('modify');
+        if (change?.type === 'modify') expect(change.broken).toBeUndefined();
+      });
+    });
+
+    describe('When diffTrees is called and an unrelated add/delete pair shares identical content', () => {
+      it('Then the add and delete stay unpaired (no rename, no copy)', async () => {
+        // Arrange — z.txt deleted and y.txt added with the SAME content: an
+        // exact-rename candidate under -M, but -B alone never registers or pairs.
+        const ctx = await buildSeededContext();
+        const sharedId = await blob(ctx, 'shared unique content for the unpaired check');
+        const before = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'z.txt', sharedId)]);
+        const after = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'y.txt', sharedId)]);
+
+        // Act
+        const result = await diffTrees(ctx, before, after, {
+          renameOptions: {
+            breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
+          },
+        });
+
+        // Assert — no pairing at all: a plain delete and a plain add
+        expect(result.changes).toHaveLength(2);
+        const del = result.changes.find((c) => c.type === 'delete');
+        expect(del?.type).toBe('delete');
+        if (del?.type === 'delete') expect(del.oldPath).toBe('z.txt');
+        const add = result.changes.find((c) => c.type === 'add');
+        expect(add?.type).toBe('add');
+        if (add?.type === 'add') expect(add.newPath).toBe('y.txt');
+        expect(result.changes.some((c) => c.type === 'rename' || c.type === 'copy')).toBe(false);
+      });
+    });
+
+    describe('When diffTrees is called with a symlink-to-regular type change', () => {
+      it('Then the type change is kept broken at MAX_SCORE and no blob is read', async () => {
+        // Arrange — a type change breaks unconditionally; content is irrelevant.
+        const ctx = await buildSeededContext();
+        const oldId = await blob(ctx, 'link-target');
+        const newId = await blob(ctx, 'regular file content');
+        const before = await writeTree(ctx, [treeEntry(FILE_MODE.SYMLINK, 'p', oldId)]);
+        const after = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'p', newId)]);
+        const readSpy = vi.spyOn(readBlobMod, 'readBlob');
+
+        // Act
+        const result = await diffTrees(ctx, before, after, {
+          renameOptions: {
+            breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
+          },
+        });
+
+        // Assert
+        try {
+          expect(result.changes).toHaveLength(1);
+          const change = result.changes[0];
+          expect(change?.type).toBe('type-change');
+          if (change?.type === 'type-change') {
+            expect(change.broken?.score).toBe(MAX_SCORE);
+            expect(change.broken?.maxScore).toBe(MAX_SCORE);
+          }
+          expect(readSpy).not.toHaveBeenCalled();
+        } finally {
+          readSpy.mockRestore();
+        }
+      });
+    });
+  });
+
+  describe('Given renameOptions.breakRewrites is explicitly false and detectRenames is absent', () => {
+    describe('When diffTrees is called', () => {
+      it('Then the raw diff passes through untouched (same object)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const oldId = await blob(ctx, 'guard-false-old-content');
+        const newId = await blob(ctx, 'guard-false-new-content');
+        const before = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'src.txt', oldId)]);
+        const after = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'dst.txt', newId)]);
+        const spy = vi.spyOn(domainTreeDiffMod, 'diffTrees');
+
+        // Act
+        const result = await diffTrees(ctx, before, after, {
+          renameOptions: { breakRewrites: false },
+        });
+
+        // Assert — the bypass branch returns the exact object the raw pass produced
+        try {
+          const rawDiff = spy.mock.results[0]?.value as TreeDiff;
+          expect(result).toBe(rawDiff);
+        } finally {
+          spy.mockRestore();
+        }
+      });
+    });
+  });
+
+  describe('Given renameOptions is absent and detectRenames is absent', () => {
+    describe('When diffTrees is called', () => {
+      it('Then the raw diff passes through untouched (same object)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const oldId = await blob(ctx, 'guard-absent-old-content');
+        const newId = await blob(ctx, 'guard-absent-new-content');
+        const before = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'src2.txt', oldId)]);
+        const after = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'dst2.txt', newId)]);
+        const spy = vi.spyOn(domainTreeDiffMod, 'diffTrees');
+
+        // Act
+        const result = await diffTrees(ctx, before, after);
+
+        // Assert
+        try {
+          const rawDiff = spy.mock.results[0]?.value as TreeDiff;
+          expect(result).toBe(rawDiff);
+        } finally {
+          spy.mockRestore();
+        }
       });
     });
   });

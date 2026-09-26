@@ -36,7 +36,7 @@ import {
   type Tree,
 } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
-import { detectSimilarityRenames } from './detect-similarity-renames.js';
+import { detectBreakRewrites, detectSimilarityRenames } from './detect-similarity-renames.js';
 import { boundedMapFor, limiterFor } from './internal/concurrency.js';
 import type { ConcurrencyLimiter } from './internal/concurrency-limiter.js';
 import {
@@ -87,15 +87,7 @@ export async function diffTrees(
   options?: DiffTreesOptions,
 ): Promise<TreeDiff | StatTreeDiff> {
   const rawDiff = await resolveAndDiff(ctx, a, b, options);
-  const diff =
-    options?.detectRenames === true
-      ? await detectSimilarityRenames(
-          ctx,
-          rawDiff,
-          options.renameOptions,
-          await buildPreimage(ctx, a, options.renameOptions),
-        )
-      : rawDiff;
+  const diff = await detectChanges(ctx, rawDiff, a, options);
 
   const lineKey = resolveLineKey(options ?? {});
   const lineKeyActive = lineKeyIsActive(lineKey);
@@ -106,6 +98,32 @@ export async function diffTrees(
     return applyLinePassAndStat(ctx, diff, lineKey, lineKeyActive, ignoreBlankLines, withStat);
   }
   return diff;
+}
+
+/**
+ * Route to the configured change-detection pass over the raw diff: full
+ * rename/copy detection when `detectRenames` is on; `-B` break detection
+ * alone when it is off but `renameOptions.breakRewrites` is set (git's
+ * `--no-renames -B` — no rename or copy pairing ever runs); the raw diff
+ * untouched otherwise.
+ */
+async function detectChanges(
+  ctx: Context,
+  rawDiff: TreeDiff,
+  a: DiffTreesInput,
+  options: DiffTreesOptions | undefined,
+): Promise<TreeDiff> {
+  if (options?.detectRenames === true) {
+    return detectSimilarityRenames(
+      ctx,
+      rawDiff,
+      options.renameOptions,
+      await buildPreimage(ctx, a, options.renameOptions),
+    );
+  }
+  const breakRewrites = options?.renameOptions?.breakRewrites;
+  if (breakRewrites === undefined || breakRewrites === false) return rawDiff;
+  return detectBreakRewrites(ctx, rawDiff, breakRewrites);
 }
 
 /**

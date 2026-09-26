@@ -3435,3 +3435,127 @@ describe.skipIf(!GIT_AVAILABLE)('-B type-change break interop', () => {
     });
   });
 });
+
+/**
+ * `-B` alone, with rename/copy detection off (`--no-renames -B`): every
+ * break-attempt/keep-broken gate still applies, but nothing the break pass
+ * produces is ever registered or paired — not even an exact content match.
+ */
+const NO_RENAME_BREAK_TMP_PREFIX = 'tsgit-rename-no-rename-break-';
+const NO_RENAME_BREAK_SETUP_TIMEOUT = 60_000;
+const NO_RENAME_BREAK_OPTS = { breakRewrites: { score: 30000, merge: 36000 } };
+
+const NO_RENAME_UNRELATED_CONTENT = Array.from(
+  { length: 20 },
+  (_, i) => `unrelated-line-${String(i).padStart(3, '0')}: shared between the delete and the add\n`,
+).join('');
+
+const NO_RENAME_BREAK_ROWS: ReadonlyArray<RenameRow> = [
+  {
+    label:
+      'a rewritten m.txt alongside an unrelated add matching its OLD content and an unrelated identical delete/add pair, under --no-renames -B: nothing pairs, not even exactly (M100 m ; A q ; A y ; D z)',
+    before: [
+      { path: 'm.txt', content: breakContent('old', 40, 0) },
+      { path: 'z.txt', content: NO_RENAME_UNRELATED_CONTENT },
+    ],
+    after: [
+      { path: 'm.txt', content: breakContent('new', 40, 0) },
+      { path: 'q.txt', content: breakContent('old', 40, 0) },
+      { path: 'y.txt', content: NO_RENAME_UNRELATED_CONTENT },
+    ],
+    detectRenames: false,
+    gitFlags: ['-B'],
+    renameOptions: NO_RENAME_BREAK_OPTS,
+  },
+  {
+    label:
+      'a partially-rewritten file under --no-renames -B: the break-attempt gate still fires and the modify stays kept-broken',
+    before: [{ path: 'm.txt', content: breakContent('old', 20, 7) }],
+    after: [{ path: 'm.txt', content: breakContent('new', 20, 7) }],
+    detectRenames: false,
+    gitFlags: ['-B'],
+    renameOptions: NO_RENAME_BREAK_OPTS,
+  },
+  {
+    label:
+      'the same partially-rewritten file under --no-renames -B with a higher merge gate: the pair re-merges to a plain modify',
+    before: [{ path: 'm.txt', content: breakContent('old', 20, 7) }],
+    after: [{ path: 'm.txt', content: breakContent('new', 20, 7) }],
+    detectRenames: false,
+    gitFlags: ['-B50%/70%'],
+    renameOptions: { breakRewrites: { score: 30000, merge: 42000 } },
+  },
+  {
+    label:
+      'a symlink→regular type change under --no-renames -B: the type change still breaks unconditionally',
+    before: [{ path: 'p', content: tcSymlink('no-rename-b'), kind: 'symlink' }],
+    after: [{ path: 'p', content: tcRegular('no-rename-b') }],
+    detectRenames: false,
+    gitFlags: ['-B'],
+    renameOptions: NO_RENAME_BREAK_OPTS,
+  },
+  {
+    label:
+      'an empty file rewritten and a small file rewritten, both under MINIMUM_BREAK_SIZE guards, under --no-renames -B: neither ever breaks (M e ; M s)',
+    before: [
+      { path: 'e', content: '' },
+      { path: 's', content: breakContent('old', 3, 0) },
+    ],
+    after: [
+      { path: 'e', content: breakContent('new', 40, 0) },
+      { path: 's', content: breakContent('new', 3, 0) },
+    ],
+    detectRenames: false,
+    gitFlags: ['-B'],
+    renameOptions: NO_RENAME_BREAK_OPTS,
+  },
+  {
+    label:
+      'an unrelated delete and add sharing identical content under --no-renames -B: no pairing at all, not even exact (D ; A)',
+    before: [{ path: 'z.txt', content: 'identical shared content for the no-pairing check' }],
+    after: [{ path: 'y.txt', content: 'identical shared content for the no-pairing check' }],
+    detectRenames: false,
+    gitFlags: ['-B'],
+    renameOptions: NO_RENAME_BREAK_OPTS,
+  },
+];
+
+const noRenameBreakFixtures = new Map<string, { readonly dir: string }>();
+
+function noRenameBreakFixtureOf(label: string): { readonly dir: string } {
+  const found = noRenameBreakFixtures.get(label);
+  if (found === undefined) throw new Error(`fixture not built for row: ${label}`);
+  return found;
+}
+
+describe.skipIf(!GIT_AVAILABLE)('-B break detection without rename detection interop', () => {
+  beforeAll(async () => {
+    for (const row of NO_RENAME_BREAK_ROWS) {
+      noRenameBreakFixtures.set(row.label, await buildRenameRow(row, NO_RENAME_BREAK_TMP_PREFIX));
+    }
+  }, NO_RENAME_BREAK_SETUP_TIMEOUT);
+
+  afterAll(async () => {
+    for (const { dir } of noRenameBreakFixtures.values()) {
+      await rmDir(dir, { recursive: true, force: true });
+    }
+  });
+
+  describe('Given a raw diff pair exercising -B with rename detection off', () => {
+    describe('When diff is called without detectRenames', () => {
+      it.each(NO_RENAME_BREAK_ROWS)(
+        'Then name-status matches live git for: $label',
+        async (row) => {
+          // Arrange
+          const { dir } = noRenameBreakFixtureOf(row.label);
+
+          // Act
+          const { ours, peer } = await runRenameRow(row, dir);
+
+          // Assert
+          expect(ours).toBe(peer);
+        },
+      );
+    });
+  });
+});

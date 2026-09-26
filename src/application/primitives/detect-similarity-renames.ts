@@ -529,14 +529,15 @@ interface BrokenRecord {
 
 /**
  * Resolve the effective break-attempt and keep-broken gates.
- * A merge value of 0 maps to DEFAULT_MERGE_SCORE (matrix B4b).
+ * A break score of 0 maps to DEFAULT_BREAK_SCORE (git's default -B threshold);
+ * a merge value of 0 maps to DEFAULT_MERGE_SCORE (matrix B4b).
  */
 function resolveBreakGates(breakRewrites: { readonly score: number; readonly merge: number }): {
   readonly breakScore: number;
   readonly mergeScore: number;
 } {
   return {
-    breakScore: breakRewrites.score,
+    breakScore: breakRewrites.score !== 0 ? breakRewrites.score : DEFAULT_BREAK_SCORE,
     mergeScore: breakRewrites.merge === 0 ? DEFAULT_MERGE_SCORE : breakRewrites.merge,
   };
 }
@@ -859,7 +860,7 @@ async function runBreakPass(
   if (breakRewrites === false || breakRewrites === undefined) {
     return { broken: [], workingDiff: diff };
   }
-  const breakScore = breakRewrites.score !== 0 ? breakRewrites.score : DEFAULT_BREAK_SCORE;
+  const { breakScore } = resolveBreakGates(breakRewrites);
   const attempt = await attemptBreaks(ctx, diff, breakScore);
   return { broken: attempt.broken, workingDiff: attempt.patchedDiff };
 }
@@ -1108,4 +1109,40 @@ export async function detectSimilarityRenames(
     writeBack.rejoined,
   );
   return finalizeWithBroken(changes);
+}
+
+/** Replace each broken record's ORIGINAL change (still in `diff.changes`, never
+ *  split into synthetic halves) with `rejoinBroken`'s verdict — every other
+ *  change, and the whole list's order, stay exactly as they were. */
+function rejoinBrokenInPlace(
+  diff: TreeDiff,
+  broken: ReadonlyArray<BrokenRecord>,
+  mergeScore: number,
+): TreeDiff {
+  const byPath = new Map(broken.map((record) => [record.original.path, record] as const));
+  const changes = diff.changes.map((change) => {
+    const isBreakableChange = change.type === 'modify' || change.type === 'type-change';
+    const record = isBreakableChange ? byPath.get(change.path) : undefined;
+    return record !== undefined ? rejoinBroken(record, mergeScore) : change;
+  });
+  return { changes };
+}
+
+/**
+ * git's `-B` break-rewrite detection alone, with rename/copy detection off
+ * (`--no-renames -B`): attempts each dissimilar modify/type-change break
+ * (`attemptBreaks`), then replaces every broken change IN PLACE with its
+ * `rejoinBroken` verdict. No registration, no exact or inexact pairing ever
+ * runs — mirrors git's `diffcore_break` immediately followed by
+ * `diffcore_merge_broken` with the rename step skipped entirely, so two
+ * otherwise-identical delete/add halves never pair.
+ */
+export async function detectBreakRewrites(
+  ctx: Context,
+  diff: TreeDiff,
+  breakRewrites: { readonly score: number; readonly merge: number },
+): Promise<TreeDiff> {
+  const { breakScore, mergeScore } = resolveBreakGates(breakRewrites);
+  const { broken } = await attemptBreaks(ctx, diff, breakScore);
+  return rejoinBrokenInPlace(diff, broken, mergeScore);
 }
