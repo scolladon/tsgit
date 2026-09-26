@@ -196,7 +196,17 @@ done
 # at 1 016 049 B, 1 265 B over, attributable to -B without rename detection,
 # the complete-rewrite numstat of a kept-broken modify and the same-basename
 # pre-pass — runtime code every distribution form ships.
-SIZE_CAP=$((993 * 1024))
+# Raised 993 -> 994 KiB by the review-round perf and correctness fixes to
+# that work: the measured tarball lands at 1 017 690 B, 858 B over the old
+# cap, attributable to the basename pre-pass's own declared-size gate ahead
+# of any blob read, the shared per-source/per-destination basename
+# precompute the inexact matrix now reuses, seeding the matrix's fingerprints
+# from bytes the -B break-attempt pass already read, and the size-only
+# loose-object read's header-length refusal (matching git's fixed-size
+# header buffer) — runtime code every distribution form ships, none
+# removable without giving back the reads or the refusal each one exists to
+# avoid or add.
+SIZE_CAP=$((994 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
