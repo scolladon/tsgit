@@ -11,7 +11,9 @@ interface DiffOptions {
   readonly from?: string;          // tree-ish, full rev grammar; default 'HEAD'
   readonly to?: string;            // tree-ish, full rev grammar; default empty tree
   readonly detectRenames?: boolean;
-  readonly renameOptions?: RenameDetectOptions;  // fine-tune detection; only used when detectRenames is true
+  readonly renameOptions?: RenameDetectOptions;  // fine-tune detection; breakRewrites also applies
+                                                  // when detectRenames is off; the other members
+                                                  // only apply when it is on
   readonly recursive?: boolean;    // recurse into sub-trees (`git diff-tree -r`); default false
   readonly withStat?: boolean;     // attach per-file { added, deleted, binary } counts
   readonly ignoreWhitespace?: 'all' | 'change' | 'at-eol';  // -w / -b / --ignore-space-at-eol
@@ -27,6 +29,8 @@ interface DiffOptions {
 //   breakRewrites?:  { score: number; merge: number } | false (default false, -B off)
 //                    score: dissimilarity gate to attempt a break; merge: gate to keep broken.
 //                    A merge value of 0 maps to the default keep-broken gate (60%).
+//                    Applies with or without `detectRenames` — git's -B alone breaks and
+//                    rejoins full rewrites; it never pairs a break with another file.
 
 interface TreeDiff {
   readonly changes: ReadonlyArray<DiffChange>;
@@ -90,19 +94,41 @@ const noBlank = await repo.diff({ from: 'HEAD~1', ignoreBlankLines: true });
 - A `rename` or `copy` change carries `oldId`/`newId`/`oldMode`/`newMode` (both
   sides of the pairing) and a `similarity` score (`SimilarityScore` with `score`
   in `0..MAX_SCORE` and `maxScore === MAX_SCORE`).
-- **Exact rename pairing** (identical content, `similarity.score === MAX_SCORE`)
-  matches git's `-M`: adds are matched in path order, and each deleted path is
-  the source of at most one rename — a second add with the same content shows
-  as an `add`, not a second `rename`. Among several same-content deletes, a
-  matching basename wins; otherwise the first delete in path order, examining
-  at most 100 candidates per add (git's fixed bound). Regular files pair
-  across the executable bit; symlinks, gitlinks, and trees pair only with an
-  identical mode. Exact pairing is never skipped by the rename limit — the
-  limit only gates similarity scoring for non-identical content.
+- **Exact pairing** (identical content, `similarity.score === MAX_SCORE`) matches
+  git's `-M`/`-C`: destinations are matched in path order against candidate
+  sources sharing their content, examining at most 100 candidates per
+  destination (git's fixed bound). Under plain renames, each source pairs at
+  most once — a second destination with the same content shows as an `add`,
+  not a second `rename`; among several same-content sources, a matching
+  basename wins, otherwise the first source in path order. Under `copies`, the
+  same source can pair repeatedly: a deleted source paired k times yields k−1
+  `copy` changes and one `rename` (the rename last in path order), and a
+  source the diff keeps (modified, or unchanged under `copies: 'harder'`) only
+  yields `copy` changes — renames are always chosen before copies over the
+  shared candidate list, as in git. Regular files pair across the executable
+  bit; symlinks, gitlinks, and trees pair only with identical content **and**
+  mode, and are never similarity-scored — but they still count toward
+  `limit`. Exact pairing is never skipped by the rename limit — the limit only
+  gates similarity scoring for non-identical content.
 - A `modify` may carry a `broken` dissimilarity datum (`SimilarityScore`) when `-B`
   break detection kept the modify broken rather than folding it into a rename. The
   `score` is git's break-detection dissimilarity (`merge_score`), which the caller
   projects to the `M<n>` / `dissimilarity index <n>%` integer percent.
+- A `type-change` may carry `broken` when `-B` broke a symlink↔regular type
+  change and its halves rejoined; `score` is always `MAX_SCORE` (git prints
+  `T100`). A broken type change whose new side pairs elsewhere as a rename or
+  copy destination is replaced by that change instead — no `type-change` is
+  emitted for it.
+- With `withStat`, a kept-broken `modify` (one carrying `broken`) counts every
+  old-side line as deleted and every new-side line as added — git's
+  complete-rewrite numstat, not a line diff — unless the pair is binary, which
+  reports `{ added: 0, deleted: 0, binary: true }` as usual. Neither
+  `ignoreWhitespace` nor `ignoreCrAtEol` drops it, even when the rewrite is
+  whitespace-only.
+- Under plain `-M` (`copies: 'off'`, nothing left to break, `threshold` below
+  100%), a delete and an add whose basename is unique on both sides pair
+  first — ahead of the general similarity matrix — once their similarity
+  reaches the midpoint between `threshold` and 100%.
 - `withStat` reads blob contents and runs a line diff per file; without it the
   diff is purely tree-level (no blob reads).
 - A unified patch reconstructed from the `TreeDiff` matches `git diff
