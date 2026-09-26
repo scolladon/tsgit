@@ -774,9 +774,12 @@ function toTypeChangeRecord(change: TypeChangeChange): BrokenRecord {
  * no size gate here — so each modify streams its own pair through the
  * bounded pool rather than hydrating the whole batch up front.
  *
- * `fingerprints` seeds the rename matrix for exactly the ids that go on to
- * break — a record that stays a plain modify never enters the registry, so
- * its bytes would never be looked up again anyway.
+ * `fingerprints` carries EVERY scored modify's bytes, not only the ones that
+ * go on to break — `scoreOneModify` already read them regardless of the
+ * outcome, and a plain modify's id can still coincide with an unrelated
+ * delete or add elsewhere in the same diff (content-addressed storage: same
+ * bytes, same id), in which case the basename pass or the matrix can reuse
+ * this fingerprint instead of reading that id again.
  */
 async function scoreModifies(
   ctx: Context,
@@ -793,6 +796,8 @@ async function scoreModifies(
   const paths = new Set<FilePath>();
   const fingerprints = new Map<ObjectId, BlobFingerprint>();
   for (const { mod, computedBreakScore, dissimilarity, oldBytes, newBytes } of scores) {
+    fingerprints.set(mod.oldId, toFingerprint(oldBytes));
+    fingerprints.set(mod.newId, toFingerprint(newBytes));
     if (computedBreakScore < breakScore) continue;
     records.push({
       original: mod,
@@ -801,8 +806,6 @@ async function scoreModifies(
       dissimilarity,
     });
     paths.add(mod.path);
-    fingerprints.set(mod.oldId, toFingerprint(oldBytes));
-    fingerprints.set(mod.newId, toFingerprint(newBytes));
   }
   return { records, paths, fingerprints };
 }
@@ -870,9 +873,9 @@ async function attemptBreaks(
 
   const scored = await scoreModifies(ctx, modifies, breakScore);
   const records = [...scored.records, ...typeChanges.map(toTypeChangeRecord)];
-  // Stryker disable next-line ConditionalExpression: equivalent — empty records means every source path set stays empty too, so patchDiffWithBroken copies changes unchanged, matching the early return.
+  // Stryker disable next-line ConditionalExpression: equivalent — empty records means every source path set stays empty too, so patchDiffWithBroken copies changes unchanged, matching the early return; scored.fingerprints (every scored modify, break or not) is returned either way.
   if (records.length === 0) {
-    return { broken: [], patchedDiff: diff, fingerprints: NO_BREAK_FINGERPRINTS };
+    return { broken: [], patchedDiff: diff, fingerprints: scored.fingerprints };
   }
 
   const paths = new Set<FilePath>([...scored.paths, ...typeChanges.map((c) => c.path)]);
@@ -1372,6 +1375,7 @@ async function runBasenamePass(
   sources: ReadonlyArray<RenameSource>,
   exact: ExactPairing,
   threshold: number,
+  knownFingerprints: ReadonlyMap<ObjectId, BlobFingerprint>,
 ): Promise<BasenamePassOutcome> {
   const candidates = regularBasenameCandidates(sources, exact.uses, exact.unpaired);
   if (candidates.length === 0) {
@@ -1380,10 +1384,10 @@ async function runBasenamePass(
 
   const minBasename = threshold + Math.trunc((MAX_SCORE - threshold) / 2);
   const candidateIds = Array.from(new Set(basenameCandidateIds(sources, candidates)));
-  const sizes = await readDeclaredSizes(ctx, candidateIds);
+  const sizes = await declaredSizesReusingFingerprints(ctx, candidateIds, knownFingerprints);
   const survivors = sizeSurvivingBasenameCandidates(candidates, sources, sizes, minBasename);
   const survivorIds = basenameCandidateIds(sources, survivors);
-  const fingerprints = await hydrateFingerprints(ctx, survivorIds, new Map());
+  const fingerprints = await hydrateFingerprints(ctx, survivorIds, knownFingerprints);
   const pairs = scoreBasenameCandidates(survivors, sources, fingerprints, minBasename);
 
   return { pairs, ...applyBasenamePairs(exact, pairs), fingerprints };
@@ -1408,11 +1412,12 @@ async function runBasenamePassIfEligible(
   broken: ReadonlyArray<BrokenRecord>,
   copies: 'off' | 'on' | 'harder',
   threshold: number,
+  knownFingerprints: ReadonlyMap<ObjectId, BlobFingerprint>,
 ): Promise<BasenamePassOutcome> {
   if (!isBasenamePassEligible(copies, broken, threshold)) {
     return { pairs: [], unpaired: exact.unpaired, uses: exact.uses, fingerprints: new Map() };
   }
-  return runBasenamePass(ctx, sources, exact, threshold);
+  return runBasenamePass(ctx, sources, exact, threshold, knownFingerprints);
 }
 
 /** Folds an inexact-matrix result into the exact pass's pairs/unpaired/uses;
@@ -1464,8 +1469,11 @@ interface ExactAndBasenameOutcome {
 /**
  * The exact pass (never limited; always sees every registered source), then
  * the plain-`-M` basename pre-pass between it and the cull-plus-limit gate —
- * folded into one pairing, plus whatever fingerprints the basename pass
- * hydrated so the matrix phase never re-reads an already-hydrated blob.
+ * folded into one pairing. The basename pass consults `breakFingerprints`
+ * (as the matrix already does), so a scored modify whose id coincides with
+ * a basename candidate is never read twice; the returned fingerprints carry
+ * whatever the basename pass itself hydrated, so the matrix phase never
+ * re-reads an already-hydrated blob either.
  */
 async function runExactAndBasenamePasses(
   ctx: Context,
@@ -1473,6 +1481,7 @@ async function runExactAndBasenamePasses(
   broken: ReadonlyArray<BrokenRecord>,
   copies: 'off' | 'on' | 'harder',
   threshold: number,
+  breakFingerprints: ReadonlyMap<ObjectId, BlobFingerprint>,
 ): Promise<ExactAndBasenameOutcome> {
   const exactMode = copies === 'off' ? 'rename' : 'copy';
   const exact = pairIdenticalFiles(registry.sources, registry.destinations, exactMode);
@@ -1483,6 +1492,7 @@ async function runExactAndBasenamePasses(
     broken,
     copies,
     threshold,
+    breakFingerprints,
   );
   return {
     pairing: {
@@ -1565,6 +1575,7 @@ export async function detectSimilarityRenames(
     breakOutcome.broken,
     detectOptions.copies,
     detectOptions.threshold,
+    breakOutcome.fingerprints,
   );
 
   // Matrix: the cull-plus-limit gate, size-gated hydration, and selection.

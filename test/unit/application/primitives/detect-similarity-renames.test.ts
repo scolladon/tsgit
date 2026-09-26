@@ -6260,6 +6260,69 @@ describe('detectSimilarityRenames', () => {
       });
     });
   });
+  describe('Given a non-breaking modify whose old content shares an id with a unique-basename delete, with a readBlob spy on that shared id', () => {
+    describe('When detectSimilarityRenames is called with breakRewrites enabled', () => {
+      it('Then the shared id, read once by the break-attempt score, is never read again by the basename pass', async () => {
+        // Arrange — m.txt's old content is byte-identical to x/dup.txt's (a
+        // plain delete), so scoreOneModify's break-attempt read and the
+        // basename pass's own hydration would otherwise both read it. m.txt's
+        // new content is unrelated and small (guarded, below
+        // MINIMUM_BREAK_SIZE), so the modify never breaks — copies stay off
+        // and broken stays empty, so the basename pass is eligible — and
+        // y/dup.txt is the unique basename match for x/dup.txt.
+        const ctx = await buildSeededContext();
+        const sharedContent = tenLines(0);
+        const modifyNewContent = tenLines(1);
+        const addContent = tenLines(0).replace('line 5\n', 'DIFFERENT line 5\n');
+
+        const sharedId = await writeBlob(ctx, sharedContent);
+        const modifyNewId = await writeBlob(ctx, modifyNewContent);
+        const addId = await writeBlob(ctx, addContent);
+
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'modify',
+              path: 'm.txt' as FilePath,
+              oldId: sharedId,
+              newId: modifyNewId,
+              oldMode: FILE_MODE.REGULAR,
+              newMode: FILE_MODE.REGULAR,
+            },
+            {
+              type: 'delete',
+              oldPath: 'x/dup.txt' as FilePath,
+              oldId: sharedId,
+              oldMode: FILE_MODE.REGULAR,
+            },
+            {
+              type: 'add',
+              newPath: 'y/dup.txt' as FilePath,
+              newId: addId,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+        const readSpy = vi.spyOn(readBlobMod, 'readBlob');
+        const sut = detectSimilarityRenames;
+
+        // Act
+        const result = await sut(ctx, diff, {
+          breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
+        });
+
+        // Assert
+        try {
+          expect(result.changes.filter((c) => c.type === 'modify')).toHaveLength(1);
+          const readsOf = (id: ObjectId): number =>
+            readSpy.mock.calls.filter(([, calledId]) => calledId === id).length;
+          expect(readsOf(sharedId)).toBe(1);
+        } finally {
+          readSpy.mockRestore();
+        }
+      });
+    });
+  });
 });
 
 const oidOf = (c: string): ObjectId => c.repeat(40) as ObjectId;
