@@ -3037,6 +3037,80 @@ describe.skipIf(!GIT_AVAILABLE)('use-count labelling and gitlink-counted limit i
 });
 
 /**
+ * `-C -C` retry-exhausted interop: when the harder source count still clears
+ * the rename limit after the retry drops every `unchanged` source, git skips
+ * the inexact pass outright — no fallback beyond the retry itself.
+ */
+const HARDER_RETRY_TMP_PREFIX = 'tsgit-rename-harder-retry-';
+const HARDER_RETRY_SETUP_TIMEOUT = 60_000;
+
+const HARDER_RETRY_ROWS: ReadonlyArray<RenameRow> = [
+  {
+    label:
+      '-C -C -l1: 4 deletes + 4 unchanged harder sources exceed the limit; dropping the unchanged ones on retry still exceeds it (4 D ; 4 A, no R/C)',
+    before: [
+      { path: 'kept0.txt', content: tenLineContent('kept0') },
+      { path: 'kept1.txt', content: tenLineContent('kept1') },
+      { path: 'kept2.txt', content: tenLineContent('kept2') },
+      { path: 'kept3.txt', content: tenLineContent('kept3') },
+      { path: 'deleted0.txt', content: tenLineContent('pair0', 0) },
+      { path: 'deleted1.txt', content: tenLineContent('pair1', 0) },
+      { path: 'deleted2.txt', content: tenLineContent('pair2', 0) },
+      { path: 'deleted3.txt', content: tenLineContent('pair3', 0) },
+    ],
+    after: [
+      { path: 'kept0.txt', content: tenLineContent('kept0') },
+      { path: 'kept1.txt', content: tenLineContent('kept1') },
+      { path: 'kept2.txt', content: tenLineContent('kept2') },
+      { path: 'kept3.txt', content: tenLineContent('kept3') },
+      { path: 'added0.txt', content: tenLineContent('pair0', 1) },
+      { path: 'added1.txt', content: tenLineContent('pair1', 1) },
+      { path: 'added2.txt', content: tenLineContent('pair2', 1) },
+      { path: 'added3.txt', content: tenLineContent('pair3', 1) },
+    ],
+    gitFlags: ['-C', '-C', '-l1'],
+    renameOptions: { copies: 'harder', limit: 1 },
+  },
+];
+
+const harderRetryFixtures = new Map<string, { readonly dir: string }>();
+
+function harderRetryFixtureOf(label: string): { readonly dir: string } {
+  const found = harderRetryFixtures.get(label);
+  if (found === undefined) throw new Error(`fixture not built for row: ${label}`);
+  return found;
+}
+
+describe.skipIf(!GIT_AVAILABLE)('"harder" retry-exhausted interop', () => {
+  beforeAll(async () => {
+    for (const row of HARDER_RETRY_ROWS) {
+      harderRetryFixtures.set(row.label, await buildRenameRow(row, HARDER_RETRY_TMP_PREFIX));
+    }
+  }, HARDER_RETRY_SETUP_TIMEOUT);
+
+  afterAll(async () => {
+    for (const { dir } of harderRetryFixtures.values()) {
+      await rmDir(dir, { recursive: true, force: true });
+    }
+  });
+
+  describe('Given a raw diff pair where the "harder" retry set still clears the rename limit', () => {
+    describe('When diff is called with detectRenames', () => {
+      it.each(HARDER_RETRY_ROWS)('Then name-status matches live git for: $label', async (row) => {
+        // Arrange
+        const { dir } = harderRetryFixtureOf(row.label);
+
+        // Act
+        const { ours, peer } = await runRenameRow(row, dir);
+
+        // Assert
+        expect(ours).toBe(peer);
+      });
+    });
+  });
+});
+
+/**
  * `-B` write back interop: git's `diffcore-rename.c:1669` drops a broken
  * delete once its add half pairs elsewhere, and otherwise rejoins the
  * halves into one modify while counting the rejoin as one more use of the

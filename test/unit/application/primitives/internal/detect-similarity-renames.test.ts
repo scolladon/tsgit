@@ -160,6 +160,45 @@ describe('detect-similarity-renames — size gate', () => {
     });
   });
 
+  describe('Given more than SIZE_GATE_MIN_IDS unique ids, with one add whose size no delete can reach', () => {
+    describe('When detectSimilarityRenames runs', () => {
+      it('Then the size-incompatible add is never passed to readBlob, and it stays an add', async () => {
+        // Arrange — 9 same-length delete/add pairs (18 mutually size-compatible
+        // ids) plus one wildly larger outlier add: 19 unique ids total, above
+        // SIZE_GATE_MIN_IDS (16), so the size gate runs on the destination side too.
+        const ctx = await buildSeededContext();
+        const { diff, uniqueIdCount } = await buildDistinctPairDiff(ctx, 9, 9);
+        const outlierId = await writeBlob(ctx, 'z'.repeat(5000));
+        const withOutlier: TreeDiff = {
+          changes: [...diff.changes, addChange('outlier.txt', outlierId)],
+        };
+        expect(uniqueIdCount + 1).toBeGreaterThan(16);
+
+        const seenIds: ObjectId[] = [];
+        const realReadBlob = readBlobMod.readBlob;
+        const spy = vi
+          .spyOn(readBlobMod, 'readBlob')
+          .mockImplementation(async (spyCtx, id, opts) => {
+            seenIds.push(id);
+            return realReadBlob(spyCtx, id, opts);
+          });
+
+        // Act
+        let result: TreeDiff;
+        try {
+          result = await detectSimilarityRenames(ctx, withOutlier);
+        } finally {
+          spy.mockRestore();
+        }
+
+        // Assert
+        expect(seenIds).not.toContain(outlierId);
+        const outlierChange = result.changes.find((c) => c.type === 'add' && c.newId === outlierId);
+        expect(outlierChange?.type).toBe('add');
+      });
+    });
+  });
+
   describe('Given exactly SIZE_GATE_MIN_IDS unique ids', () => {
     describe('When detectSimilarityRenames runs', () => {
       it('Then the size read is never called', async () => {

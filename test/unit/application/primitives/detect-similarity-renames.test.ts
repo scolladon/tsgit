@@ -8,7 +8,12 @@ import {
 } from '../../../../src/application/primitives/detect-similarity-renames.js';
 import * as readBlobMod from '../../../../src/application/primitives/read-blob.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
-import type { AddChange, DiffChange, TreeDiff } from '../../../../src/domain/diff/diff-change.js';
+import type {
+  AddChange,
+  DeleteChange,
+  DiffChange,
+  TreeDiff,
+} from '../../../../src/domain/diff/diff-change.js';
 import type { FlatTreeEntry } from '../../../../src/domain/diff/flat-tree.js';
 import type { MatrixCandidate } from '../../../../src/domain/diff/rename-pairing.js';
 import * as renamePairingMod from '../../../../src/domain/diff/rename-pairing.js';
@@ -1049,6 +1054,119 @@ describe('detectSimilarityRenames', () => {
         // The add is consumed by the copy in both cases
         expect(resultHarder.changes.filter((c) => c.type === 'add')).toHaveLength(0);
         expect(resultOn.changes.filter((c) => c.type === 'add')).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given copies: "harder" whose retry set is empty (every registered source is unchanged)', () => {
+    describe('When detectSimilarityRenames is called', () => {
+      it('Then resolveMatrixPlan finds no plan, matching the exact-only outcome', async () => {
+        // Arrange — zero real deletes/modifies: every registered source comes
+        // from the preimage under 'harder', so dropping 'unchanged' sources on
+        // retry empties the retry set outright (retryIndices.length === 0).
+        // 5 unpaired adds * 5 harder sources = 25 > limit^2(1) -> retry; the
+        // retry set is then empty, so the plan is null both times.
+        const ctx = await buildSeededContext();
+        const preimageEntries = await Promise.all(
+          Array.from({ length: 5 }, async (_unused, i) => {
+            const id = await writeBlob(
+              ctx,
+              `harder-retry-empty unchanged content ${i}\n`.repeat(3),
+            );
+            return [`kept${i}.txt` as FilePath, { id, mode: FILE_MODE.REGULAR }] as const;
+          }),
+        );
+        const preimage = new Map<FilePath, FlatTreeEntry>(preimageEntries);
+        const adds: AddChange[] = await Promise.all(
+          Array.from({ length: 5 }, async (_unused, i) => ({
+            type: 'add' as const,
+            newPath: `added${i}.txt` as FilePath,
+            newId: await writeBlob(ctx, `harder-retry-empty add content ${i}\n`.repeat(3)),
+            newMode: FILE_MODE.REGULAR,
+          })),
+        );
+        const diff: TreeDiff = { changes: adds };
+
+        // Act
+        const result = await detectSimilarityRenames(
+          ctx,
+          diff,
+          { copies: 'harder', limit: 1 },
+          preimage,
+        );
+        const exactOnly = await detectSimilarityRenames(
+          ctx,
+          diff,
+          { copies: 'harder', limit: 1, threshold: MAX_SCORE },
+          preimage,
+        );
+
+        // Assert
+        expect(result).toEqual(exactOnly);
+        expect(result.changes.filter((c) => c.type === 'add')).toHaveLength(5);
+      });
+    });
+  });
+
+  describe('Given copies: "harder" whose retry set survives but still exceeds the rename limit', () => {
+    describe('When detectSimilarityRenames is called', () => {
+      it('Then resolveMatrixPlan finds no plan, matching the exact-only outcome', async () => {
+        // Arrange — 10 real deletes survive the retry's unchanged-source drop
+        // (retryIndices.length > 0), but 10 adds * 10 retry sources = 100 still
+        // clears limit=3 (limit^2=9), so the retry itself stays over limit.
+        // Each delete/add pair is a strong (80%) inexact match tied to its OWN
+        // index (never identical, so the exact pass leaves both sides
+        // unpaired, and never coincidentally matching another pair's other
+        // half) — a bug that let the retry through would produce copies
+        // here, not merely leave the count unchanged by coincidence.
+        const ctx = await buildSeededContext();
+        const pairLine = (i: number, changed: number): string =>
+          Array.from({ length: 10 }, (_unused2, k) =>
+            k === changed ? `X pair${i} line ${k}\n` : `pair${i} line ${k}\n`,
+          ).join('');
+        const deletes: DeleteChange[] = await Promise.all(
+          Array.from({ length: 10 }, async (_unused, i) => ({
+            type: 'delete' as const,
+            oldPath: `deleted${i}.txt` as FilePath,
+            oldId: await writeBlob(ctx, pairLine(i, 0)),
+            oldMode: FILE_MODE.REGULAR,
+          })),
+        );
+        const preimageEntries = await Promise.all(
+          Array.from({ length: 10 }, async (_unused, i) => {
+            const id = await writeBlob(ctx, `harder-retry-over unchanged content ${i}\n`.repeat(3));
+            return [`kept${i}.txt` as FilePath, { id, mode: FILE_MODE.REGULAR }] as const;
+          }),
+        );
+        const preimage = new Map<FilePath, FlatTreeEntry>(preimageEntries);
+        const adds: AddChange[] = await Promise.all(
+          Array.from({ length: 10 }, async (_unused, i) => ({
+            type: 'add' as const,
+            newPath: `added${i}.txt` as FilePath,
+            newId: await writeBlob(ctx, pairLine(i, 1)),
+            newMode: FILE_MODE.REGULAR,
+          })),
+        );
+        const diff: TreeDiff = { changes: [...deletes, ...adds] };
+
+        // Act
+        const result = await detectSimilarityRenames(
+          ctx,
+          diff,
+          { copies: 'harder', limit: 3 },
+          preimage,
+        );
+        const exactOnly = await detectSimilarityRenames(
+          ctx,
+          diff,
+          { copies: 'harder', limit: 3, threshold: MAX_SCORE },
+          preimage,
+        );
+
+        // Assert
+        expect(result).toEqual(exactOnly);
+        expect(result.changes.filter((c) => c.type === 'delete')).toHaveLength(10);
+        expect(result.changes.filter((c) => c.type === 'add')).toHaveLength(10);
       });
     });
   });
