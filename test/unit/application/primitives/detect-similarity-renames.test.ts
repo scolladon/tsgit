@@ -6032,6 +6032,56 @@ describe('detectSimilarityRenames', () => {
       });
     });
   });
+  describe('Given the K2 near-match break fixture, with a readBlob spy on both broken halves', () => {
+    describe('When detectSimilarityRenames is called with breakRewrites enabled', () => {
+      it("Then each broken half's bytes, read once by the break pass, are never read again by the matrix", async () => {
+        // Arrange — identical shape to design row K2: m.txt breaks, its old content
+        // near-matches q.txt via the inexact matrix (a copy), and its new content
+        // stays unpaired and rejoins — both halves are matrix participants whose
+        // bytes scoreOneModify already read once for the break attempt.
+        const ctx = await buildSeededContext();
+        const oldContent = 'aaaa\nbbbb\ncccc\ndddd\n'.repeat(25);
+        const newContent = 'xxxx\nyyyy\nzzzz\nwwww\n'.repeat(25);
+        const nearMatchContent = `${oldContent}extra unique tail line only in q\n`;
+
+        const oldId = await writeBlob(ctx, oldContent);
+        const newId = await writeBlob(ctx, newContent);
+        const qId = await writeBlob(ctx, nearMatchContent);
+
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'modify',
+              path: 'm.txt' as FilePath,
+              oldId,
+              newId,
+              oldMode: FILE_MODE.REGULAR,
+              newMode: FILE_MODE.REGULAR,
+            },
+            { type: 'add', newPath: 'q.txt' as FilePath, newId: qId, newMode: FILE_MODE.REGULAR },
+          ],
+        };
+        const readSpy = vi.spyOn(readBlobMod, 'readBlob');
+
+        // Act
+        const result = await detectSimilarityRenames(ctx, diff, {
+          breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
+        });
+
+        // Assert
+        try {
+          expect(result.changes.filter((c) => c.type === 'copy')).toHaveLength(1);
+          const readsOf = (id: ObjectId): number =>
+            readSpy.mock.calls.filter(([, calledId]) => calledId === id).length;
+          expect(readsOf(oldId)).toBe(1);
+          expect(readsOf(newId)).toBe(1);
+          expect(readsOf(qId)).toBe(1);
+        } finally {
+          readSpy.mockRestore();
+        }
+      });
+    });
+  });
 });
 
 const oidOf = (c: string): ObjectId => c.repeat(40) as ObjectId;

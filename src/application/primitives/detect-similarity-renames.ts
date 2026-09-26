@@ -489,6 +489,18 @@ export async function hydrateFingerprints(
   return merged;
 }
 
+/** Combines two fingerprint maps — used to fold the break-attempt pass's
+ *  already-read bytes (`scoreOneModify`) together with the basename pass's
+ *  own hydration before either feeds the inexact matrix as `knownFingerprints`. */
+function mergeFingerprintMaps(
+  base: ReadonlyMap<ObjectId, BlobFingerprint>,
+  extra: ReadonlyMap<ObjectId, BlobFingerprint>,
+): ReadonlyMap<ObjectId, BlobFingerprint> {
+  if (extra.size === 0) return base;
+  if (base.size === 0) return extra;
+  return new Map([...base, ...extra]);
+}
+
 /** One (index, source) pair from the registry — `buildMatrix` scores every
  *  matrix-eligible source against every destination, regardless of use
  *  count; `selectPairs` alone decides which candidates each pass may take. */
@@ -651,6 +663,8 @@ interface ModifyScore {
   readonly mod: ModifyChange;
   readonly computedBreakScore: number;
   readonly dissimilarity: number;
+  readonly oldBytes: Uint8Array;
+  readonly newBytes: Uint8Array;
 }
 
 /** A guarded pair never attempts a break: score 0 always sits below any
@@ -664,6 +678,10 @@ const GUARDED_SCORES: BreakScores = { computedBreakScore: 0, dissimilarity: 0 };
  * fired both reads in parallel would let 2× that many object reads run in
  * flight, the same doubled-ceiling shape `hydrateFingerprints` avoids by
  * sharing one pool across its own src/dst arms.
+ *
+ * Hands both blobs' bytes back alongside the scores — a record that goes on
+ * to break needs them again to seed the rename matrix's fingerprints
+ * (`scoreModifies`), and this is the only read of either blob.
  */
 async function scoreOneModify(ctx: Context, mod: ModifyChange): Promise<ModifyScore> {
   const { content: oldBytes } = await readBlob(ctx, mod.oldId);
@@ -671,7 +689,11 @@ async function scoreOneModify(ctx: Context, mod: ModifyChange): Promise<ModifySc
   const { computedBreakScore, dissimilarity } = isBreakSizeGuarded(oldBytes.length, newBytes.length)
     ? GUARDED_SCORES
     : computeBreakScores(oldBytes, newBytes);
-  return { mod, computedBreakScore, dissimilarity };
+  return { mod, computedBreakScore, dissimilarity, oldBytes, newBytes };
+}
+
+function toFingerprint(bytes: Uint8Array): BlobFingerprint {
+  return { chunkMap: buildChunkMap(bytes), size: bytes.length };
 }
 
 function toSyntheticDelete(change: ModifyChange | TypeChangeChange): DeleteChange {
@@ -710,6 +732,10 @@ function toTypeChangeRecord(change: TypeChangeChange): BrokenRecord {
  * records. git's `should_break` reads both blobs fully for every modify —
  * no size gate here — so each modify streams its own pair through the
  * bounded pool rather than hydrating the whole batch up front.
+ *
+ * `fingerprints` seeds the rename matrix for exactly the ids that go on to
+ * break — a record that stays a plain modify never enters the registry, so
+ * its bytes would never be looked up again anyway.
  */
 async function scoreModifies(
   ctx: Context,
@@ -718,12 +744,14 @@ async function scoreModifies(
 ): Promise<{
   readonly records: ReadonlyArray<BrokenRecord>;
   readonly paths: ReadonlySet<FilePath>;
+  readonly fingerprints: ReadonlyMap<ObjectId, BlobFingerprint>;
 }> {
   const scores = await boundedMapFor(ctx, 'ioBound', modifies, (mod) => scoreOneModify(ctx, mod));
 
   const records: BrokenRecord[] = [];
   const paths = new Set<FilePath>();
-  for (const { mod, computedBreakScore, dissimilarity } of scores) {
+  const fingerprints = new Map<ObjectId, BlobFingerprint>();
+  for (const { mod, computedBreakScore, dissimilarity, oldBytes, newBytes } of scores) {
     if (computedBreakScore < breakScore) continue;
     records.push({
       original: mod,
@@ -732,8 +760,10 @@ async function scoreModifies(
       dissimilarity,
     });
     paths.add(mod.path);
+    fingerprints.set(mod.oldId, toFingerprint(oldBytes));
+    fingerprints.set(mod.newId, toFingerprint(newBytes));
   }
-  return { records, paths };
+  return { records, paths, fingerprints };
 }
 
 /** Replace broken modifies and type changes in the change list with their
@@ -775,25 +805,41 @@ function collectBreakableTypeChanges(diff: TreeDiff): TypeChangeChange[] {
  * Break-attempt runs BEFORE exact/inexact rename passes so the synthetic halves
  * feed the rename/copy matrix.
  */
+interface BreakAttemptOutcome {
+  readonly broken: ReadonlyArray<BrokenRecord>;
+  readonly patchedDiff: TreeDiff;
+  readonly fingerprints: ReadonlyMap<ObjectId, BlobFingerprint>;
+}
+
+const NO_BREAK_FINGERPRINTS: ReadonlyMap<ObjectId, BlobFingerprint> = new Map();
+
 async function attemptBreaks(
   ctx: Context,
   diff: TreeDiff,
   breakScore: number,
-): Promise<{ readonly broken: ReadonlyArray<BrokenRecord>; readonly patchedDiff: TreeDiff }> {
+): Promise<BreakAttemptOutcome> {
   const modifies = diff.changes.filter(
     (c): c is ModifyChange => c.type === 'modify' && isBreakableKind(c.oldMode),
   );
   const typeChanges = collectBreakableTypeChanges(diff);
   // Stryker disable next-line ConditionalExpression: equivalent — no breakable modify or type change produces empty records, matching the identical { broken: [], patchedDiff: diff } the records.length===0 guard below returns.
-  if (modifies.length === 0 && typeChanges.length === 0) return { broken: [], patchedDiff: diff };
+  if (modifies.length === 0 && typeChanges.length === 0) {
+    return { broken: [], patchedDiff: diff, fingerprints: NO_BREAK_FINGERPRINTS };
+  }
 
   const scored = await scoreModifies(ctx, modifies, breakScore);
   const records = [...scored.records, ...typeChanges.map(toTypeChangeRecord)];
   // Stryker disable next-line ConditionalExpression: equivalent — empty records means every source path set stays empty too, so patchDiffWithBroken copies changes unchanged, matching the early return.
-  if (records.length === 0) return { broken: [], patchedDiff: diff };
+  if (records.length === 0) {
+    return { broken: [], patchedDiff: diff, fingerprints: NO_BREAK_FINGERPRINTS };
+  }
 
   const paths = new Set<FilePath>([...scored.paths, ...typeChanges.map((c) => c.path)]);
-  return { broken: records, patchedDiff: patchDiffWithBroken(diff, records, paths) };
+  return {
+    broken: records,
+    patchedDiff: patchDiffWithBroken(diff, records, paths),
+    fingerprints: scored.fingerprints,
+  };
 }
 
 /** Rejoin a broken pair's synthetic halves into one modify: `broken` set when
@@ -943,17 +989,27 @@ function finalizeWithBroken(changes: ReadonlyArray<DiffChange>): TreeDiff {
 }
 
 /** Run the break-attempt pass if enabled; returns broken records and patched diff. */
+interface BreakPassOutcome {
+  readonly broken: ReadonlyArray<BrokenRecord>;
+  readonly workingDiff: TreeDiff;
+  readonly fingerprints: ReadonlyMap<ObjectId, BlobFingerprint>;
+}
+
 async function runBreakPass(
   ctx: Context,
   diff: TreeDiff,
   breakRewrites: RenameDetectOptions['breakRewrites'],
-): Promise<{ readonly broken: ReadonlyArray<BrokenRecord>; readonly workingDiff: TreeDiff }> {
+): Promise<BreakPassOutcome> {
   if (breakRewrites === false || breakRewrites === undefined) {
-    return { broken: [], workingDiff: diff };
+    return { broken: [], workingDiff: diff, fingerprints: NO_BREAK_FINGERPRINTS };
   }
   const { breakScore } = resolveBreakGates(breakRewrites);
   const attempt = await attemptBreaks(ctx, diff, breakScore);
-  return { broken: attempt.broken, workingDiff: attempt.patchedDiff };
+  return {
+    broken: attempt.broken,
+    workingDiff: attempt.patchedDiff,
+    fingerprints: attempt.fingerprints,
+  };
 }
 
 interface DetectOptions {
@@ -1358,7 +1414,11 @@ export async function detectSimilarityRenames(
   const mergeScore = resolveEffectiveMergeScore(breakRewrites);
 
   // Break-attempt pass: runs BEFORE registration so halves feed the registry.
-  const { broken, workingDiff } = await runBreakPass(ctx, diff, breakRewrites);
+  const {
+    broken,
+    workingDiff,
+    fingerprints: breakFingerprints,
+  } = await runBreakPass(ctx, diff, breakRewrites);
   const registry = registerCandidates(workingDiff, broken, copies, preimage, mergeScore);
 
   // The exact pass is never limited; it always sees every registered source.
@@ -1390,7 +1450,7 @@ export async function detectSimilarityRenames(
     copies,
     threshold,
     limit,
-    basename.fingerprints,
+    mergeFingerprintMaps(breakFingerprints, basename.fingerprints),
   );
   const writeBack = writeBackBroken(
     broken,
