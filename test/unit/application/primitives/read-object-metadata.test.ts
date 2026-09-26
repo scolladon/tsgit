@@ -5,7 +5,7 @@ import {
   readDeclaredObjectSize,
   readObjectMetadata,
 } from '../../../../src/application/primitives/read-object.js';
-import { TsgitError } from '../../../../src/domain/error.js';
+import { notADirectory, TsgitError } from '../../../../src/domain/error.js';
 import type {
   Blob,
   Commit,
@@ -650,6 +650,61 @@ describe('readDeclaredObjectSize', () => {
             expect(data.id).toBe(missingId);
           }
         }
+      });
+    });
+  });
+
+  describe('Given a cached membership hit whose loose file was pruned before the size read', () => {
+    describe('When readDeclaredObjectSize is called for the pruned id', () => {
+      it('Then forgets the stale membership and rejects OBJECT_NOT_FOUND with the id', async () => {
+        // Arrange — warm the fanout membership cache with a real HIT, then
+        // remove the file underneath it (an external `git gc` prune) so the
+        // next size read's readSlice meets a FILE_NOT_FOUND the membership
+        // cache didn't see coming.
+        const ctx = await buildSeededContext();
+        const content = ENC.encode('pruned-before-size-read');
+        const id = await writeRawObjectBytes(ctx, 'blob', content);
+        await readDeclaredObjectSize(ctx, id);
+        await ctx.fs.rm(loosePathOf(ctx, id));
+
+        // Act
+        try {
+          await readDeclaredObjectSize(ctx, id);
+          expect.unreachable();
+        } catch (error) {
+          // Assert
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('OBJECT_NOT_FOUND');
+          if (data.code === 'OBJECT_NOT_FOUND') {
+            expect(data.id).toBe(id);
+          }
+        }
+
+        // Assert — the stale membership was forgotten: a fresh loose write
+        // under the same id is found again rather than staying a phantom miss.
+        await writeRawObjectBytes(ctx, 'blob', content);
+        await expect(readDeclaredObjectSize(ctx, id)).resolves.toBe(content.length);
+      });
+    });
+  });
+
+  describe('Given the size read meets a non-FILE_NOT_FOUND error while probing a present loose id', () => {
+    describe('When readDeclaredObjectSize is called', () => {
+      it('Then the error propagates unchanged, never folded into OBJECT_NOT_FOUND', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = ENC.encode('a present loose object');
+        const id = await writeRawObjectBytes(ctx, 'blob', content);
+        const rejection = notADirectory(loosePathOf(ctx, id));
+        vi.spyOn(ctx.fs, 'readSlice').mockRejectedValueOnce(rejection);
+
+        // Act
+        const caught = await readDeclaredObjectSize(ctx, id).catch((error: unknown) => error);
+
+        // Assert
+        expect(caught).toBe(rejection);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('NOT_A_DIRECTORY');
       });
     });
   });
