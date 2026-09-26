@@ -2928,3 +2928,135 @@ describe.skipIf(!GIT_AVAILABLE)('-B write back interop', () => {
     });
   });
 });
+
+/**
+ * Non-regular files leave similarity scoring: a symlink or gitlink is never
+ * an inexact-matrix candidate on either side, exact-only as a copy source,
+ * and still eligible to break under `-B`.
+ */
+const NON_REGULAR_TMP_PREFIX = 'tsgit-rename-non-regular-';
+const NON_REGULAR_SETUP_TIMEOUT = 60_000;
+
+// Symlink targets stay well under the OS symlink length limit (unlike
+// `breakContent`'s ~1.3 KB, which overflows it) — 540 bytes, fully disjoint,
+// clears the default break-attempt gate.
+const SYMLINK_OLD_TARGET = 'aaaa\nbbbb\ncccc\ndddd\n'.repeat(27);
+const SYMLINK_NEW_TARGET = 'xxxx\nyyyy\nzzzz\nwwww\n'.repeat(27);
+// Same 540-byte length, only the trailing 5 bytes differ — well below the gate.
+const SYMLINK_SMALL_RETARGET = `${SYMLINK_OLD_TARGET.slice(0, -5)}eeee\n`;
+
+const NON_REGULAR_ROWS: ReadonlyArray<RenameRow> = [
+  {
+    label:
+      'N1: deleted symlink target equals a new regular file — cross-kind identical content never pairs (D a/link ; A b/file)',
+    before: [{ path: 'a/link', content: 'shared-target-value', kind: 'symlink' }],
+    after: [{ path: 'b/file', content: 'shared-target-value' }],
+  },
+  {
+    label: 'N1c: N1 under -C — still stays D ; A',
+    before: [{ path: 'a/link', content: 'shared-target-value-c', kind: 'symlink' }],
+    after: [{ path: 'b/file', content: 'shared-target-value-c' }],
+    gitFlags: ['-C'],
+    renameOptions: { copies: 'on' },
+  },
+  {
+    label:
+      'N2: symlink to symlink, 280-byte target plus 1 char — same non-regular kind on both sides still never scores (D ; A)',
+    before: [{ path: 'a/link', content: 'a'.repeat(280), kind: 'symlink' }],
+    after: [{ path: 'b/link', content: `${'a'.repeat(280)}b`, kind: 'symlink' }],
+  },
+  {
+    label: 'N3: regular deleted, similar symlink added — destination-side filter (D ; A)',
+    before: [{ path: 'a/reg', content: tenLineContent('n3') }],
+    after: [{ path: 'b/link', content: tenLineContent('n3', 0), kind: 'symlink' }],
+  },
+  {
+    label:
+      'N4: -C modified symlink whose OLD target equals a regular add — the copy source is exact-only (M a/link ; A b/file)',
+    before: [{ path: 'a/link', content: 'old-target-n4', kind: 'symlink' }],
+    after: [
+      { path: 'a/link', content: 'new-target-n4', kind: 'symlink' },
+      { path: 'b/file', content: 'old-target-n4' },
+    ],
+    gitFlags: ['-C'],
+    renameOptions: { copies: 'on' },
+  },
+  {
+    label:
+      'N5: -C -C unchanged symlink; regular add matches its target — an unchanged non-regular source never scores (A b/file)',
+    before: [{ path: 'a/link', content: 'unchanged-target-n5', kind: 'symlink' }],
+    after: [
+      { path: 'a/link', content: 'unchanged-target-n5', kind: 'symlink' },
+      { path: 'b/file', content: 'unchanged-target-n5' },
+    ],
+    gitFlags: ['-C', '-C'],
+    renameOptions: { copies: 'harder' },
+  },
+  {
+    label:
+      'N5r: -C -C unchanged regular; symlink add carries its content — destination-side filter on an unchanged source (A b/link)',
+    before: [{ path: 'a/reg', content: 'unchanged-content-n5r' }],
+    after: [
+      { path: 'a/reg', content: 'unchanged-content-n5r' },
+      { path: 'b/link', content: 'unchanged-content-n5r', kind: 'symlink' },
+    ],
+    gitFlags: ['-C', '-C'],
+    renameOptions: { copies: 'harder' },
+  },
+  {
+    label:
+      'N6b: -M -B fully-retargeted symlink; regular add matches its OLD target — broken halves rejoin instead of cross-pairing (M100 a/link ; A b/file)',
+    before: [{ path: 'a/link', content: SYMLINK_OLD_TARGET, kind: 'symlink' }],
+    after: [
+      { path: 'a/link', content: SYMLINK_NEW_TARGET, kind: 'symlink' },
+      { path: 'b/file', content: SYMLINK_OLD_TARGET },
+    ],
+    gitFlags: ['-B'],
+    renameOptions: { breakRewrites: { score: 30000, merge: 36000 } },
+  },
+  {
+    label:
+      'N6 (must stay): -M -B, a small symlink retarget stays a plain modify, never broken (M a/link)',
+    before: [{ path: 'a/link', content: SYMLINK_OLD_TARGET, kind: 'symlink' }],
+    after: [{ path: 'a/link', content: SYMLINK_SMALL_RETARGET, kind: 'symlink' }],
+    gitFlags: ['-B'],
+    renameOptions: { breakRewrites: { score: 30000, merge: 36000 } },
+  },
+];
+
+const nonRegularFixtures = new Map<string, { readonly dir: string }>();
+
+function nonRegularFixtureOf(label: string): { readonly dir: string } {
+  const found = nonRegularFixtures.get(label);
+  if (found === undefined) throw new Error(`fixture not built for row: ${label}`);
+  return found;
+}
+
+describe.skipIf(!GIT_AVAILABLE)('non-regular files leave similarity scoring interop', () => {
+  beforeAll(async () => {
+    for (const row of NON_REGULAR_ROWS) {
+      nonRegularFixtures.set(row.label, await buildRenameRow(row, NON_REGULAR_TMP_PREFIX));
+    }
+  }, NON_REGULAR_SETUP_TIMEOUT);
+
+  afterAll(async () => {
+    for (const { dir } of nonRegularFixtures.values()) {
+      await rmDir(dir, { recursive: true, force: true });
+    }
+  });
+
+  describe('Given a raw diff pair exercising a non-regular (symlink) side of the rename/copy pools', () => {
+    describe('When diff is called with detectRenames', () => {
+      it.each(NON_REGULAR_ROWS)('Then name-status matches live git for: $label', async (row) => {
+        // Arrange
+        const { dir } = nonRegularFixtureOf(row.label);
+
+        // Act
+        const { ours, peer } = await runRenameRow(row, dir);
+
+        // Assert
+        expect(ours).toBe(peer);
+      });
+    });
+  });
+});

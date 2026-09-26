@@ -10,7 +10,7 @@ import type {
   TypeChangeChange,
 } from '../../domain/diff/diff-change.js';
 import type { FlatTreeEntry } from '../../domain/diff/flat-tree.js';
-import { isGitlink } from '../../domain/diff/index.js';
+import { isGitlink, kindOf } from '../../domain/diff/index.js';
 import { sortByPath } from '../../domain/diff/path-compare.js';
 import type { RenameDetectOptions } from '../../domain/diff/rename-detect.js';
 import {
@@ -34,7 +34,7 @@ import {
   estimateSimilarityFromMaps,
   MAX_SCORE,
 } from '../../domain/diff/similarity.js';
-import type { FilePath, ObjectId } from '../../domain/objects/index.js';
+import type { FileMode, FilePath, ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { boundedMapFor } from './internal/concurrency.js';
 import { readBlob } from './read-blob.js';
@@ -227,8 +227,9 @@ function registerOtherChange(
  * generalised over every origin: a delete always registers; a modify/type-change
  * preimage registers only under copies; an untouched preimage path registers
  * only under `copies: 'harder'`. Every mode registers — exact pairing and the
- * rename-limit count need gitlinks too; the inexact matrix drops them again
- * (blob-only content scoring cannot read a gitlink's commit object as bytes).
+ * rename-limit count need non-regular sources too (symlinks, gitlinks); the
+ * inexact matrix drops them again (git's estimate_similarity scores regular
+ * files only).
  */
 function registerCandidates(
   workingDiff: TreeDiff,
@@ -841,8 +842,8 @@ interface MatrixPlan {
 /**
  * git's rename-limit gate: num_dst is every destination the exact pass left
  * unpaired, num_src is every matrix source after the cull step, each counted
- * once regardless of mode — gitlinks included, the inexact pass drops them
- * again only when actually scoring. Under `copies: 'harder'`, an over-limit
+ * once regardless of mode — symlinks and gitlinks included, the inexact pass
+ * drops them again only when actually scoring. Under `copies: 'harder'`, an over-limit
  * retries once with `unchanged` sources dropped.
  */
 function resolveMatrixPlan(
@@ -935,9 +936,16 @@ interface InexactPhaseOutcome {
   readonly uses: ReadonlyArray<number>;
 }
 
-/** Runs the inexact matrix only when the rename-limit gate allows it — content
- *  scoring cannot read a gitlink's commit object as bytes, so gitlink
- *  destinations never reach it either, matching the source-side drop. */
+/** git's estimate_similarity requires S_ISREG on both sides — a symlink or
+ *  gitlink never gets an inexact score, and its blob is never hydrated. */
+function isRegularFile(mode: FileMode): boolean {
+  return kindOf(mode) === 'file';
+}
+
+/** Runs the inexact matrix only when the rename-limit gate allows it — git's
+ *  estimate_similarity scores regular files only, so a non-regular (symlink,
+ *  gitlink) source is dropped from the matrix, and so is a non-regular
+ *  destination, matching the source-side drop. */
 async function runInexactMatrixIfPlanned(
   ctx: Context,
   registry: CandidateRegistry,
@@ -957,10 +965,10 @@ async function runInexactMatrixIfPlanned(
   );
   if (plan === null) return null;
 
-  const matrixIndices = plan.indices.filter(
-    (index) => !isGitlink((registry.sources[index] as RenameSource).mode),
+  const matrixIndices = plan.indices.filter((index) =>
+    isRegularFile((registry.sources[index] as RenameSource).mode),
   );
-  const matrixDestinations = exact.unpaired.filter((add) => !isGitlink(add.newMode));
+  const matrixDestinations = exact.unpaired.filter((add) => isRegularFile(add.newMode));
   return runInexactMatrix(
     ctx,
     registry.sources,

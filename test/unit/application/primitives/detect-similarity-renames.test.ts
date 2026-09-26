@@ -1,10 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   detectSimilarityRenames,
   isSizeRejected,
   NUM_CANDIDATE_PER_DST,
   recordIfBetter,
 } from '../../../../src/application/primitives/detect-similarity-renames.js';
+import * as readBlobMod from '../../../../src/application/primitives/read-blob.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type { AddChange, TreeDiff } from '../../../../src/domain/diff/diff-change.js';
 import type { FlatTreeEntry } from '../../../../src/domain/diff/flat-tree.js';
@@ -3956,6 +3957,377 @@ describe('detectSimilarityRenames', () => {
           expect(renames[0].oldMode).toBe(FILE_MODE.GITLINK);
           expect(renames[0].newMode).toBe(FILE_MODE.GITLINK);
         }
+      });
+    });
+  });
+
+  // ── non-regular files leave similarity scoring (symlinks, row N1-N6b) ──
+
+  describe('Given a deleted symlink whose target equals a new regular file (row N1)', () => {
+    describe('When detectSimilarityRenames is called at the most permissive threshold', () => {
+      it('Then the pair stays a plain delete and add, and the symlink blob is never read', async () => {
+        // Arrange — same content, cross-kind: the exact pass already rejects this by
+        // mode class; only the inexact matrix's own filter is under test here.
+        const ctx = await buildSeededContext();
+        const targetId = await writeBlob(ctx, 'shared-symlink-target');
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'delete',
+              oldPath: 'a/link' as FilePath,
+              oldId: targetId,
+              oldMode: FILE_MODE.SYMLINK,
+            },
+            {
+              type: 'add',
+              newPath: 'b/file' as FilePath,
+              newId: targetId,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+        const readSpy = vi.spyOn(readBlobMod, 'readBlob');
+
+        // Act
+        const result = await detectSimilarityRenames(ctx, diff, { threshold: 1 });
+
+        // Assert — no rename; the symlink source is never a matrix candidate
+        try {
+          expect(result.changes.filter((c) => c.type === 'rename')).toHaveLength(0);
+          expect(result.changes.filter((c) => c.type === 'delete')).toHaveLength(1);
+          expect(result.changes.filter((c) => c.type === 'add')).toHaveLength(1);
+          expect(readSpy).not.toHaveBeenCalled();
+        } finally {
+          readSpy.mockRestore();
+        }
+      });
+    });
+  });
+
+  describe('Given row N1 under -C (row N1c)', () => {
+    describe('When detectSimilarityRenames is called with copies: "on"', () => {
+      it('Then the pair still stays a plain delete and add', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const targetId = await writeBlob(ctx, 'shared-symlink-target-c');
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'delete',
+              oldPath: 'a/link' as FilePath,
+              oldId: targetId,
+              oldMode: FILE_MODE.SYMLINK,
+            },
+            {
+              type: 'add',
+              newPath: 'b/file' as FilePath,
+              newId: targetId,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+        const readSpy = vi.spyOn(readBlobMod, 'readBlob');
+
+        // Act
+        const result = await detectSimilarityRenames(ctx, diff, {
+          copies: 'on',
+          threshold: 1,
+        });
+
+        // Assert — no rename, no copy
+        try {
+          expect(result.changes.filter((c) => c.type === 'rename')).toHaveLength(0);
+          expect(result.changes.filter((c) => c.type === 'copy')).toHaveLength(0);
+          expect(result.changes.filter((c) => c.type === 'delete')).toHaveLength(1);
+          expect(result.changes.filter((c) => c.type === 'add')).toHaveLength(1);
+          expect(readSpy).not.toHaveBeenCalled();
+        } finally {
+          readSpy.mockRestore();
+        }
+      });
+    });
+  });
+
+  describe('Given a symlink deleted and a dissimilar symlink added, same kind both sides (row N2)', () => {
+    describe('When detectSimilarityRenames is called at the most permissive threshold', () => {
+      it('Then the pair stays a plain delete and add, no bytes read for either side', async () => {
+        // Arrange — git's estimate_similarity requires S_ISREG on BOTH sides, so a
+        // same-kind symlink pair never scores even though the content is 99%+ similar.
+        const ctx = await buildSeededContext();
+        const oldTarget = 'a'.repeat(280);
+        const newTarget = `${oldTarget}b`;
+        const oldId = await writeBlob(ctx, oldTarget);
+        const newId = await writeBlob(ctx, newTarget);
+        const diff: TreeDiff = {
+          changes: [
+            { type: 'delete', oldPath: 'a/link' as FilePath, oldId, oldMode: FILE_MODE.SYMLINK },
+            { type: 'add', newPath: 'b/link' as FilePath, newId, newMode: FILE_MODE.SYMLINK },
+          ],
+        };
+        const readSpy = vi.spyOn(readBlobMod, 'readBlob');
+
+        // Act
+        const result = await detectSimilarityRenames(ctx, diff, { threshold: 1 });
+
+        // Assert
+        try {
+          expect(result.changes.filter((c) => c.type === 'rename')).toHaveLength(0);
+          expect(result.changes.filter((c) => c.type === 'delete')).toHaveLength(1);
+          expect(result.changes.filter((c) => c.type === 'add')).toHaveLength(1);
+          expect(readSpy).not.toHaveBeenCalled();
+        } finally {
+          readSpy.mockRestore();
+        }
+      });
+    });
+  });
+
+  describe('Given a regular file deleted and a similar symlink added (row N3)', () => {
+    describe('When detectSimilarityRenames is called at the most permissive threshold', () => {
+      it('Then the pair stays a plain delete and add, the symlink destination is never read', async () => {
+        // Arrange — the source is regular (eligible), the destination is a symlink
+        // (excluded): isolates the destination-side filter.
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, tenLines(0));
+        const newId = await writeBlob(ctx, tenLines(1));
+        const diff: TreeDiff = {
+          changes: [
+            { type: 'delete', oldPath: 'a/reg' as FilePath, oldId, oldMode: FILE_MODE.REGULAR },
+            { type: 'add', newPath: 'b/link' as FilePath, newId, newMode: FILE_MODE.SYMLINK },
+          ],
+        };
+        const readSpy = vi.spyOn(readBlobMod, 'readBlob');
+
+        // Act
+        const result = await detectSimilarityRenames(ctx, diff, { threshold: 1 });
+
+        // Assert
+        try {
+          expect(result.changes.filter((c) => c.type === 'rename')).toHaveLength(0);
+          expect(result.changes.filter((c) => c.type === 'delete')).toHaveLength(1);
+          expect(result.changes.filter((c) => c.type === 'add')).toHaveLength(1);
+          expect(readSpy.mock.calls.some(([, id]) => id === newId)).toBe(false);
+        } finally {
+          readSpy.mockRestore();
+        }
+      });
+    });
+  });
+
+  describe('Given a modified symlink and a regular add matching its OLD target (row N4)', () => {
+    describe('When detectSimilarityRenames is called with copies: "on"', () => {
+      it('Then the modify stays plain and the add stays unpaired, the symlink preimage is never read', async () => {
+        // Arrange — under -C the symlink's old blob would normally lend itself as a
+        // copy source; a non-regular preimage never gets scored, only paired exactly
+        // (and the exact pass already rejects it: cross-kind, different exactKey).
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, 'old-target-content');
+        const newId = await writeBlob(ctx, 'new-target-content');
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'modify',
+              path: 'a/link' as FilePath,
+              oldId,
+              newId,
+              oldMode: FILE_MODE.SYMLINK,
+              newMode: FILE_MODE.SYMLINK,
+            },
+            {
+              type: 'add',
+              newPath: 'b/file' as FilePath,
+              newId: oldId,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+        const readSpy = vi.spyOn(readBlobMod, 'readBlob');
+
+        // Act
+        const result = await detectSimilarityRenames(ctx, diff, {
+          copies: 'on',
+          threshold: 1,
+        });
+
+        // Assert
+        try {
+          expect(result.changes.filter((c) => c.type === 'copy')).toHaveLength(0);
+          expect(result.changes.filter((c) => c.type === 'rename')).toHaveLength(0);
+          expect(result.changes.filter((c) => c.type === 'modify')).toHaveLength(1);
+          expect(result.changes.filter((c) => c.type === 'add')).toHaveLength(1);
+          expect(readSpy).not.toHaveBeenCalled();
+        } finally {
+          readSpy.mockRestore();
+        }
+      });
+    });
+  });
+
+  describe('Given an unchanged symlink preimage and a regular add matching its target (row N5)', () => {
+    describe('When detectSimilarityRenames is called with copies: "harder"', () => {
+      it('Then the add stays unpaired, the unchanged symlink is never read', async () => {
+        // Arrange — isolates the source-side filter for an `unchanged`-origin source.
+        const ctx = await buildSeededContext();
+        const targetId = await writeBlob(ctx, 'unchanged-symlink-target');
+        const preimage = new Map<FilePath, FlatTreeEntry>([
+          ['a/link' as FilePath, { id: targetId, mode: FILE_MODE.SYMLINK }],
+        ]);
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'add',
+              newPath: 'b/file' as FilePath,
+              newId: targetId,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+        const readSpy = vi.spyOn(readBlobMod, 'readBlob');
+
+        // Act
+        const result = await detectSimilarityRenames(
+          ctx,
+          diff,
+          { copies: 'harder', threshold: 1 },
+          preimage,
+        );
+
+        // Assert
+        try {
+          expect(result.changes.filter((c) => c.type === 'copy')).toHaveLength(0);
+          expect(result.changes.filter((c) => c.type === 'add')).toHaveLength(1);
+          expect(readSpy).not.toHaveBeenCalled();
+        } finally {
+          readSpy.mockRestore();
+        }
+      });
+    });
+  });
+
+  describe('Given an unchanged regular preimage and a symlink add carrying its content (row N5r)', () => {
+    describe('When detectSimilarityRenames is called with copies: "harder"', () => {
+      it('Then the add stays unpaired — the symlink destination never enters the matrix', async () => {
+        // Arrange — isolates the destination-side filter against a regular (eligible)
+        // unchanged source.
+        const ctx = await buildSeededContext();
+        const contentId = await writeBlob(ctx, 'unchanged-regular-content');
+        const preimage = new Map<FilePath, FlatTreeEntry>([
+          ['a/reg' as FilePath, { id: contentId, mode: FILE_MODE.REGULAR }],
+        ]);
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'add',
+              newPath: 'b/link' as FilePath,
+              newId: contentId,
+              newMode: FILE_MODE.SYMLINK,
+            },
+          ],
+        };
+
+        // Act
+        const result = await detectSimilarityRenames(
+          ctx,
+          diff,
+          { copies: 'harder', threshold: 1 },
+          preimage,
+        );
+
+        // Assert
+        expect(result.changes.filter((c) => c.type === 'copy')).toHaveLength(0);
+        expect(result.changes.filter((c) => c.type === 'add')).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given a fully-retargeted symlink modify and a regular add matching its OLD target under -M -B (row N6b)', () => {
+    describe('When detectSimilarityRenames is called with breakRewrites', () => {
+      it('Then the broken halves rejoin into one kept-broken modify, the add stays unpaired', async () => {
+        // Arrange — the symlink modify still breaks (attemptBreaks keeps symlinks
+        // eligible); the resulting synthetic delete half shares its OLD content with
+        // the regular add, but never pairs with it — a non-regular side never scores,
+        // so both broken halves stay unpaired and rejoin instead of cross-pairing.
+        const ctx = await buildSeededContext();
+        const oldTarget = 'aaaa\nbbbb\ncccc\ndddd\n'.repeat(27); // 540 bytes
+        const newTarget = 'xxxx\nyyyy\nzzzz\nwwww\n'.repeat(27); // 540 bytes, fully disjoint
+        const oldId = await writeBlob(ctx, oldTarget);
+        const newId = await writeBlob(ctx, newTarget);
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'modify',
+              path: 'a/link' as FilePath,
+              oldId,
+              newId,
+              oldMode: FILE_MODE.SYMLINK,
+              newMode: FILE_MODE.SYMLINK,
+            },
+            {
+              type: 'add',
+              newPath: 'b/file' as FilePath,
+              newId: oldId,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act
+        const result = await detectSimilarityRenames(ctx, diff, {
+          breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
+        });
+
+        // Assert — one kept-broken modify at a/link, plus the untouched add at b/file
+        expect(result.changes).toHaveLength(2);
+        const modify = result.changes.find((c) => c.type === 'modify');
+        expect(modify?.type).toBe('modify');
+        if (modify?.type === 'modify') {
+          expect(modify.path).toBe('a/link');
+          expect(modify.broken?.score).toBe(MAX_SCORE);
+          expect(modify.broken?.maxScore).toBe(MAX_SCORE);
+        }
+        const add = result.changes.find((c) => c.type === 'add');
+        expect(add?.type).toBe('add');
+        if (add?.type === 'add') expect(add.newPath).toBe('b/file');
+        expect(result.changes.filter((c) => c.type === 'rename')).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given an unrelated deleted symlink alongside a rename candidate at the rename limit (row L5)', () => {
+    describe('When detectSimilarityRenames is called with limit: 1', () => {
+      it('Then the symlink still counts toward the source count and the inexact pass is skipped', async () => {
+        // Arrange — one regular delete/add pair would rename fine alone (1 source * 1
+        // dest <= limit^2); the unrelated symlink delete pushes the source count to 2,
+        // tripping the gate (2 * 1 > 1^2) even though it is never itself scored.
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, tenLines(0));
+        const newId = await writeBlob(ctx, tenLines(1));
+        const linkId = await writeBlob(ctx, 'unrelated-target');
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'delete',
+              oldPath: 'a/Foo.meta' as FilePath,
+              oldId,
+              oldMode: FILE_MODE.REGULAR,
+            },
+            {
+              type: 'delete',
+              oldPath: 'a/lnk' as FilePath,
+              oldId: linkId,
+              oldMode: FILE_MODE.SYMLINK,
+            },
+            { type: 'add', newPath: 'b/Bar.meta' as FilePath, newId, newMode: FILE_MODE.REGULAR },
+          ],
+        };
+
+        // Act
+        const result = await detectSimilarityRenames(ctx, diff, { limit: 1 });
+
+        // Assert — the limit gate skips the inexact pass entirely
+        expect(result.changes.filter((c) => c.type === 'rename')).toHaveLength(0);
+        expect(result.changes.filter((c) => c.type === 'delete')).toHaveLength(2);
+        expect(result.changes.filter((c) => c.type === 'add')).toHaveLength(1);
       });
     });
   });
