@@ -185,7 +185,14 @@ done
 # and the declared-size refusals on index-pack and on buffered and streamed
 # reads. None of it is removable without dropping the behaviour
 # each one exists to provide.
-SIZE_CAP=$((987 * 1024))
+# Raised 987 -> 991 KiB by the rename-detection git-parity work: the measured
+# tarball lands at 1 014 074 B, 3 386 B over the old cap, attributable to the
+# header-claim size read and size-gated fingerprint-and-drop hydration, the
+# copy-aware exact pairing and use-count rename/copy labelling, the single
+# two-pass candidate matrix, the -B write-back and type-change breaking —
+# runtime code every distribution form ships, none removable without dropping
+# git's rename, copy and break behaviour.
+SIZE_CAP=$((991 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
