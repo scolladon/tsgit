@@ -1,9 +1,8 @@
-import type { FileMode, FilePath, ObjectId } from '../objects/index.js';
-import { FILE_MODE } from '../objects/index.js';
 import { primaryPath } from './change-path.js';
 import type { AddChange, DeleteChange, DiffChange, RenameChange, TreeDiff } from './diff-change.js';
-import { kindOf } from './mode-kind.js';
 import { sortByPath } from './path-compare.js';
+import type { RenameSource, SourcePair } from './rename-pairing.js';
+import { pairIdenticalFiles } from './rename-pairing.js';
 import { MAX_SCORE } from './similarity.js';
 
 export interface RenameDetectOptions {
@@ -21,9 +20,6 @@ export interface RenameDetectOptions {
   readonly breakRewrites?: { readonly score: number; readonly merge: number } | false;
 }
 
-// git's find_identical_files examines at most this many eligible candidates per destination.
-const EXACT_CANDIDATE_CAP = 100;
-
 function partition(changes: ReadonlyArray<DiffChange>): {
   readonly adds: ReadonlyArray<AddChange>;
   readonly deletes: ReadonlyArray<DeleteChange>;
@@ -40,69 +36,21 @@ function partition(changes: ReadonlyArray<DiffChange>): {
   return { adds, deletes, other };
 }
 
-// Regular files pair across the executable bit, so both key as REGULAR; every
-// other mode pairs only with itself.
-function exactKey(id: ObjectId, mode: FileMode): string {
-  return `${id} ${kindOf(mode) === 'file' ? FILE_MODE.REGULAR : mode}`;
+function toRenameSource(del: DeleteChange): RenameSource {
+  return { path: del.oldPath, id: del.oldId, mode: del.oldMode, origin: 'deleted', seedUses: 0 };
 }
 
-// Bucketing by mode class up front keeps git's candidate order among compatible
-// sources while letting the cap bound the scan: incompatible ones are never visited.
-// Each group is stored last-candidate-first, so consuming a source near git's scan
-// front shifts at most the cap's worth of entries instead of the whole group.
-function buildExactSources(deletes: ReadonlyArray<DeleteChange>): Map<string, DeleteChange[]> {
-  const byKey = new Map<string, DeleteChange[]>();
-  for (const del of deletes) {
-    const key = exactKey(del.oldId, del.oldMode);
-    const group = byKey.get(key);
-    if (group === undefined) {
-      byKey.set(key, [del]);
-    } else {
-      group.push(del);
-    }
-  }
-  for (const group of byKey.values()) group.reverse();
-  return byKey;
-}
-
-// Last path segment equality; 'Foo' ≡ 'b/Foo', 'xFoo' ≢ 'Foo' (git's basename_same).
-function hasSameBasename(oldPath: FilePath, newPath: FilePath): boolean {
-  const oldBasename = oldPath.slice(oldPath.lastIndexOf('/') + 1);
-  const newBasename = newPath.slice(newPath.lastIndexOf('/') + 1);
-  return oldBasename === newBasename;
-}
-
-// Transcribes git's find_identical_files: a basename match within the capped
-// scan wins, otherwise the first candidate in order (the group's tail).
-function pickExactSource(add: AddChange, group: ReadonlyArray<DeleteChange>): number {
-  const basenameMatch = group
-    .slice(-EXACT_CANDIDATE_CAP)
-    .reverse()
-    .findIndex((candidate) => hasSameBasename(candidate.oldPath, add.newPath));
-  return group.length - 1 - Math.max(basenameMatch, 0);
-}
-
-/**
- * Removes the chosen source from its group so no later add can pair with it
- * again; an emptied group yields undefined.
- */
-function consumeExactSource(
-  add: AddChange,
-  sources: Map<string, DeleteChange[]>,
-): DeleteChange | undefined {
-  const group = sources.get(exactKey(add.newId, add.newMode));
-  return group?.splice(pickExactSource(add, group), 1)[0];
-}
-
-function toExactRename(del: DeleteChange, add: AddChange): RenameChange {
+function toExactRename(sources: ReadonlyArray<RenameSource>, pair: SourcePair): RenameChange {
+  const source = sources[pair.source] as RenameSource;
+  const destination = pair.destination;
   return {
     type: 'rename',
-    oldPath: del.oldPath,
-    newPath: add.newPath,
-    oldId: del.oldId,
-    newId: add.newId,
-    oldMode: del.oldMode,
-    newMode: add.newMode,
+    oldPath: source.path,
+    newPath: destination.newPath,
+    oldId: source.id,
+    newId: destination.newId,
+    oldMode: source.mode,
+    newMode: destination.newMode,
     similarity: { score: MAX_SCORE, maxScore: MAX_SCORE },
   };
 }
@@ -110,21 +58,11 @@ function toExactRename(del: DeleteChange, add: AddChange): RenameChange {
 // Never gated by a rename limit: git's exact pass always runs, the limit only skips the inexact matrix.
 export function detectRenames(diff: TreeDiff): TreeDiff {
   const { adds, deletes, other } = partition(diff.changes);
-  const sources = buildExactSources(deletes);
-  const renames: RenameChange[] = [];
-  const unfoldedAdds: AddChange[] = [];
+  const sources = deletes.map(toRenameSource);
+  const { pairs, unpaired, uses } = pairIdenticalFiles(sources, adds, 'rename');
 
-  for (const add of adds) {
-    const source = consumeExactSource(add, sources);
-    if (source === undefined) {
-      unfoldedAdds.push(add);
-    } else {
-      renames.push(toExactRename(source, add));
-    }
-  }
-
-  // Consumed sources were spliced out, so the groups hold exactly the unfolded deletes.
-  const unfoldedDeletes = [...sources.values()].flat();
-  const merged: DiffChange[] = [...unfoldedAdds, ...unfoldedDeletes, ...renames, ...other];
+  const renames = pairs.map((pair) => toExactRename(sources, pair));
+  const unfoldedDeletes = deletes.filter((_, index) => uses[index] === 0);
+  const merged: DiffChange[] = [...unpaired, ...unfoldedDeletes, ...renames, ...other];
   return { changes: sortByPath(merged, primaryPath) };
 }

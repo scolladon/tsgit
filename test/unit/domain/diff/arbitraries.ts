@@ -1,7 +1,8 @@
 import fc from 'fast-check';
 import { primaryPath } from '../../../../src/domain/diff/change-path.js';
-import type { DiffChange, TreeDiff } from '../../../../src/domain/diff/diff-change.js';
+import type { AddChange, DiffChange, TreeDiff } from '../../../../src/domain/diff/diff-change.js';
 import { sortByPath } from '../../../../src/domain/diff/path-compare.js';
+import type { RenameSource, SourceOrigin } from '../../../../src/domain/diff/rename-pairing.js';
 import type { LineKey, WhitespaceMode } from '../../../../src/domain/diff/whitespace.js';
 import type {
   FileMode,
@@ -138,4 +139,60 @@ export function arbCanonicalTree(): fc.Arbitrary<Tree> {
     id: '0'.repeat(40) as ObjectId,
     entries: dedupeTreeEntriesByName(rawEntries),
   }));
+}
+
+// Small id/path pools force id and basename collisions between sources and
+// destinations, so pairIdenticalFiles's scoring and use-count branches are reachable.
+const PAIRING_IDS: ReadonlyArray<ObjectId> = ['a', 'b'].map((c) => c.repeat(40) as ObjectId);
+const PAIRING_PATHS: ReadonlyArray<FilePath> = ['a/Foo', 'a/Bar', 'b/Foo', 'b/Bar'].map(
+  (p) => p as FilePath,
+);
+
+// Every origin the design defines, paired with a seedUses value that origin can carry.
+const PAIRING_SEEDS: ReadonlyArray<{ readonly origin: SourceOrigin; readonly seedUses: 0 | 1 }> = [
+  { origin: 'deleted', seedUses: 0 },
+  { origin: 'broken-delete', seedUses: 0 },
+  { origin: 'broken-delete', seedUses: 1 },
+  { origin: 'modified', seedUses: 1 },
+  { origin: 'unchanged', seedUses: 1 },
+];
+
+function arbRenameSource(): fc.Arbitrary<RenameSource> {
+  return fc
+    .record({
+      path: fc.constantFrom(...PAIRING_PATHS),
+      id: fc.constantFrom(...PAIRING_IDS),
+      mode: arbNonDirMode(),
+      seed: fc.constantFrom(...PAIRING_SEEDS),
+    })
+    .map(({ path, id, mode, seed }) => ({ path, id, mode, ...seed }));
+}
+
+function arbPairingDestination(): fc.Arbitrary<AddChange> {
+  return fc
+    .record({
+      newPath: fc.constantFrom(...PAIRING_PATHS),
+      newId: fc.constantFrom(...PAIRING_IDS),
+      newMode: arbNonDirMode(),
+    })
+    .map((change) => ({ type: 'add' as const, ...change }));
+}
+
+/** A small pool of sources (every origin/seed combination) and destinations —
+ *  the input shape pairIdenticalFiles consumes. Kept well under the exact
+ *  pass's candidate cap so every property exercises scoring, not the cap. */
+export function arbSourcesAndDestinations(): fc.Arbitrary<{
+  readonly sources: ReadonlyArray<RenameSource>;
+  readonly destinations: ReadonlyArray<AddChange>;
+}> {
+  return fc.record({
+    sources: fc.uniqueArray(arbRenameSource(), {
+      selector: (source) => source.path,
+      maxLength: PAIRING_PATHS.length,
+    }),
+    destinations: fc.uniqueArray(arbPairingDestination(), {
+      selector: (destination) => destination.newPath,
+      maxLength: PAIRING_PATHS.length,
+    }),
+  });
 }
