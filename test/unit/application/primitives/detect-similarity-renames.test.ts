@@ -4399,6 +4399,747 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
+  // ── -B breaks symlink↔regular type changes unconditionally (rows N7b, N7s) ──
+
+  describe('Given a symlink→regular type change under -M -B (row N7b)', () => {
+    describe('When detectSimilarityRenames is called with breakRewrites', () => {
+      it('Then the type change is kept broken at MAX_SCORE and neither blob is read', async () => {
+        // Arrange — a type change breaks unconditionally: content size is irrelevant
+        const ctx = await buildSeededContext();
+        const oldId = await writeBlob(ctx, 'link-target');
+        const newId = await writeBlob(ctx, 'regular file content');
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'type-change',
+              path: 'a/p' as FilePath,
+              oldId,
+              newId,
+              oldMode: FILE_MODE.SYMLINK,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+        const readSpy = vi.spyOn(readBlobMod, 'readBlob');
+
+        // Act
+        const result = await detectSimilarityRenames(ctx, diff, {
+          breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
+        });
+
+        // Assert — kept-broken type change, no blob read for either side
+        try {
+          expect(result.changes).toHaveLength(1);
+          const change = result.changes[0];
+          expect(change?.type).toBe('type-change');
+          if (change?.type === 'type-change') {
+            expect(change.broken?.score).toBe(MAX_SCORE);
+            expect(change.broken?.maxScore).toBe(MAX_SCORE);
+            expect(change.oldMode).toBe(FILE_MODE.SYMLINK);
+            expect(change.newMode).toBe(FILE_MODE.REGULAR);
+          }
+          expect(readSpy).not.toHaveBeenCalled();
+        } finally {
+          readSpy.mockRestore();
+        }
+      });
+    });
+  });
+
+  describe('Given a symlink→regular type change where both sides are the SAME blob under -M -B (row N7s)', () => {
+    describe('When detectSimilarityRenames is called with breakRewrites', () => {
+      it('Then the type change still breaks — the check runs before the same-oid check', async () => {
+        // Arrange — same blob id on both sides; a modify would short-circuit on this
+        // (same oid means never dissimilar), but a type change breaks unconditionally.
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, 'shared-blob-content');
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'type-change',
+              path: 'a/p' as FilePath,
+              oldId: id,
+              newId: id,
+              oldMode: FILE_MODE.SYMLINK,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+        const readSpy = vi.spyOn(readBlobMod, 'readBlob');
+
+        // Act
+        const result = await detectSimilarityRenames(ctx, diff, {
+          breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
+        });
+
+        // Assert
+        try {
+          expect(result.changes).toHaveLength(1);
+          const change = result.changes[0];
+          expect(change?.type).toBe('type-change');
+          if (change?.type === 'type-change') {
+            expect(change.broken?.score).toBe(MAX_SCORE);
+          }
+          expect(readSpy).not.toHaveBeenCalled();
+        } finally {
+          readSpy.mockRestore();
+        }
+      });
+    });
+  });
+
+  // ── -B's isBreakableKind filter: file↔symlink breaks, other pairs never do ──
+
+  describe('Given a file↔gitlink type change under -M -B', () => {
+    describe('When detectSimilarityRenames is called with breakRewrites', () => {
+      it('Then the type change is never broken — a gitlink side is not breakable', async () => {
+        // Arrange — G3: gitlink type changes never break, whatever the other side is
+        const ctx = await buildSeededContext();
+        const gitlinkId = '1'.repeat(40) as ObjectId;
+        const fileId = await writeBlob(ctx, 'regular content');
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'type-change',
+              path: 'a/sub' as FilePath,
+              oldId: gitlinkId,
+              newId: fileId,
+              oldMode: FILE_MODE.GITLINK,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+        const readSpy = vi.spyOn(readBlobMod, 'readBlob');
+
+        // Act
+        const result = await detectSimilarityRenames(ctx, diff, {
+          breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
+        });
+
+        // Assert
+        try {
+          expect(result.changes).toHaveLength(1);
+          const change = result.changes[0];
+          expect(change?.type).toBe('type-change');
+          if (change?.type === 'type-change') expect(change.broken).toBeUndefined();
+          expect(readSpy).not.toHaveBeenCalled();
+        } finally {
+          readSpy.mockRestore();
+        }
+      });
+    });
+  });
+
+  describe('Given a symlink↔gitlink type change under -M -B', () => {
+    describe('When detectSimilarityRenames is called with breakRewrites', () => {
+      it('Then the type change is never broken — a gitlink side is not breakable', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const gitlinkId = '2'.repeat(40) as ObjectId;
+        const linkId = await writeBlob(ctx, 'symlink-target');
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'type-change',
+              path: 'a/sub' as FilePath,
+              oldId: linkId,
+              newId: gitlinkId,
+              oldMode: FILE_MODE.SYMLINK,
+              newMode: FILE_MODE.GITLINK,
+            },
+          ],
+        };
+
+        // Act
+        const result = await detectSimilarityRenames(ctx, diff, {
+          breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
+        });
+
+        // Assert
+        expect(result.changes).toHaveLength(1);
+        const change = result.changes[0];
+        expect(change?.type).toBe('type-change');
+        if (change?.type === 'type-change') expect(change.broken).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a directory↔file type change under -M -B (a non-recursive diff subtree entry)', () => {
+    describe('When detectSimilarityRenames is called with breakRewrites', () => {
+      it('Then the type change is never broken — a directory side is not breakable', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const treeId = '3'.repeat(40) as ObjectId;
+        const fileId = await writeBlob(ctx, 'regular content');
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'type-change',
+              path: 'a/sub' as FilePath,
+              oldId: treeId,
+              newId: fileId,
+              oldMode: FILE_MODE.DIRECTORY,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act
+        const result = await detectSimilarityRenames(ctx, diff, {
+          breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
+        });
+
+        // Assert
+        expect(result.changes).toHaveLength(1);
+        const change = result.changes[0];
+        expect(change?.type).toBe('type-change');
+        if (change?.type === 'type-change') expect(change.broken).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a directory-mode modify under -M -B (a non-recursive diff subtree entry)', () => {
+    describe('When detectSimilarityRenames is called with breakRewrites', () => {
+      it('Then the modify is never scored — a directory side is not breakable', async () => {
+        // Arrange — scoring a directory as a blob is nonsensical; isBreakableKind
+        // must exclude it before scoreModifies ever reads a byte.
+        const ctx = await buildSeededContext();
+        const oldTreeId = '4'.repeat(40) as ObjectId;
+        const newTreeId = '5'.repeat(40) as ObjectId;
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'modify',
+              path: 'a/sub' as FilePath,
+              oldId: oldTreeId,
+              newId: newTreeId,
+              oldMode: FILE_MODE.DIRECTORY,
+              newMode: FILE_MODE.DIRECTORY,
+            },
+          ],
+        };
+        const readSpy = vi.spyOn(readBlobMod, 'readBlob');
+
+        // Act
+        const result = await detectSimilarityRenames(ctx, diff, {
+          breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
+        });
+
+        // Assert
+        try {
+          expect(result.changes).toHaveLength(1);
+          const change = result.changes[0];
+          expect(change?.type).toBe('modify');
+          if (change?.type === 'modify') expect(change.broken).toBeUndefined();
+          expect(readSpy).not.toHaveBeenCalled();
+        } finally {
+          readSpy.mockRestore();
+        }
+      });
+    });
+  });
+
+  // ── a broken type change's rejoin counts as a use of its source (rows N7d, N7e, N7m) ──
+
+  describe('Given a regular→symlink type change whose OLD content exactly matches an unrelated add (row N7d)', () => {
+    describe('When detectSimilarityRenames is called with breakRewrites', () => {
+      it('Then the type change stays kept-broken and the exact pairing becomes a copy, not a rename', async () => {
+        // Arrange — a/p's old (regular) content exactly matches b/q; a/p's new
+        // (symlink) content is disjoint from anything else, so the add half stays
+        // unpaired and rejoins — the rejoin bumps a/p's old content to 2 uses.
+        const ctx = await buildSeededContext();
+        const oldContent = 'regular\ncontent\nfor\na\np\n'.repeat(20);
+        const oldId = await writeBlob(ctx, oldContent);
+        const newId = await writeBlob(ctx, 'a-brand-new-symlink-target');
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'type-change',
+              path: 'a/p' as FilePath,
+              oldId,
+              newId,
+              oldMode: FILE_MODE.REGULAR,
+              newMode: FILE_MODE.SYMLINK,
+            },
+            {
+              type: 'add',
+              newPath: 'b/q' as FilePath,
+              newId: oldId,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act
+        const result = await detectSimilarityRenames(ctx, diff, {
+          breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
+        });
+
+        // Assert
+        const typeChanges = result.changes.filter((c) => c.type === 'type-change');
+        expect(typeChanges).toHaveLength(1);
+        if (typeChanges[0]?.type === 'type-change') {
+          expect(typeChanges[0].broken?.score).toBe(MAX_SCORE);
+        }
+        const copies = result.changes.filter((c) => c.type === 'copy');
+        expect(copies).toHaveLength(1);
+        if (copies[0]?.type === 'copy') {
+          expect(copies[0].oldPath).toBe('a/p');
+          expect(copies[0].newPath).toBe('b/q');
+          expect(copies[0].similarity.score).toBe(MAX_SCORE);
+        }
+        expect(result.changes.filter((c) => c.type === 'rename')).toHaveLength(0);
+        expect(result.changes.filter((c) => c.type === 'add')).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given N7d with the add near-matching (one extra line) instead of exact (row N7e)', () => {
+    describe('When detectSimilarityRenames is called with breakRewrites', () => {
+      it('Then the type change stays kept-broken and the inexact pairing becomes a copy', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const oldContent = 'regular\ncontent\nfor\na\np\n'.repeat(20);
+        const oldId = await writeBlob(ctx, oldContent);
+        const newId = await writeBlob(ctx, 'a-brand-new-symlink-target');
+        const nearMatchContent = `${oldContent}extra unique tail line only in q\n`;
+        const qId = await writeBlob(ctx, nearMatchContent);
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'type-change',
+              path: 'a/p' as FilePath,
+              oldId,
+              newId,
+              oldMode: FILE_MODE.REGULAR,
+              newMode: FILE_MODE.SYMLINK,
+            },
+            {
+              type: 'add',
+              newPath: 'b/q' as FilePath,
+              newId: qId,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act
+        const result = await detectSimilarityRenames(ctx, diff, {
+          breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
+        });
+
+        // Assert
+        const typeChanges = result.changes.filter((c) => c.type === 'type-change');
+        expect(typeChanges).toHaveLength(1);
+        if (typeChanges[0]?.type === 'type-change') {
+          expect(typeChanges[0].broken?.score).toBe(MAX_SCORE);
+        }
+        const copies = result.changes.filter((c) => c.type === 'copy');
+        expect(copies).toHaveLength(1);
+        if (copies[0]?.type === 'copy') {
+          expect(copies[0].oldPath).toBe('a/p');
+          expect(copies[0].newPath).toBe('b/q');
+          expect(copies[0].similarity.score).toBeLessThan(MAX_SCORE);
+        }
+        expect(result.changes.filter((c) => c.type === 'rename')).toHaveLength(0);
+        expect(result.changes.filter((c) => c.type === 'add')).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given N7d with two identical adds matching the old content, under -M only (row N7m)', () => {
+    describe('When detectSimilarityRenames is called with breakRewrites and copies off', () => {
+      it('Then only the first add in path order pairs; the second stays a plain add', async () => {
+        // Arrange — rename mode is one-shot per source: b/q (path order first)
+        // takes the exact pairing, b/r stays unpaired even though it is identical.
+        const ctx = await buildSeededContext();
+        const oldContent = 'regular\ncontent\nfor\na\np\n'.repeat(20);
+        const oldId = await writeBlob(ctx, oldContent);
+        const newId = await writeBlob(ctx, 'a-brand-new-symlink-target');
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'type-change',
+              path: 'a/p' as FilePath,
+              oldId,
+              newId,
+              oldMode: FILE_MODE.REGULAR,
+              newMode: FILE_MODE.SYMLINK,
+            },
+            { type: 'add', newPath: 'b/q' as FilePath, newId: oldId, newMode: FILE_MODE.REGULAR },
+            { type: 'add', newPath: 'b/r' as FilePath, newId: oldId, newMode: FILE_MODE.REGULAR },
+          ],
+        };
+
+        // Act
+        const result = await detectSimilarityRenames(ctx, diff, {
+          breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
+        });
+
+        // Assert
+        const typeChanges = result.changes.filter((c) => c.type === 'type-change');
+        expect(typeChanges).toHaveLength(1);
+        if (typeChanges[0]?.type === 'type-change') {
+          expect(typeChanges[0].broken?.score).toBe(MAX_SCORE);
+        }
+        const copies = result.changes.filter((c) => c.type === 'copy');
+        expect(copies).toHaveLength(1);
+        if (copies[0]?.type === 'copy') {
+          expect(copies[0].oldPath).toBe('a/p');
+          expect(copies[0].newPath).toBe('b/q');
+        }
+        const adds = result.changes.filter((c) => c.type === 'add');
+        expect(adds).toHaveLength(1);
+        if (adds[0]?.type === 'add') expect(adds[0].newPath).toBe('b/r');
+        expect(result.changes.filter((c) => c.type === 'rename')).toHaveLength(0);
+      });
+    });
+  });
+
+  // ── a broken type change's paired add half vanishes the T entirely (S2: rows N7f, N7j, N7g, N7h, N7k) ──
+
+  describe('Given a symlink→regular type change whose NEW content exactly matches a deleted file (row N7f)', () => {
+    describe('When detectSimilarityRenames is called with breakRewrites', () => {
+      it('Then the pairing replaces the type change entirely — no T, no D', async () => {
+        // Arrange — a/old's content exactly matches a/p's NEW (regular) content, so
+        // the type change's synthetic add half pairs with it; write back drops the
+        // synthetic delete half whatever its own use count (S2).
+        const ctx = await buildSeededContext();
+        const symlinkOldId = await writeBlob(ctx, 'symlink-target-before-a-p');
+        const regularContent = 'regular\ncontent\nfor\na\np\nafter\nthe\ntype\nchange\n'.repeat(10);
+        const regularId = await writeBlob(ctx, regularContent);
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'type-change',
+              path: 'a/p' as FilePath,
+              oldId: symlinkOldId,
+              newId: regularId,
+              oldMode: FILE_MODE.SYMLINK,
+              newMode: FILE_MODE.REGULAR,
+            },
+            {
+              type: 'delete',
+              oldPath: 'a/old' as FilePath,
+              oldId: regularId,
+              oldMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act
+        const result = await detectSimilarityRenames(ctx, diff, {
+          breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
+        });
+
+        // Assert — a single rename replaces both the type change and the delete
+        expect(result.changes).toHaveLength(1);
+        const change = result.changes[0];
+        expect(change?.type).toBe('rename');
+        if (change?.type === 'rename') {
+          expect(change.oldPath).toBe('a/old');
+          expect(change.newPath).toBe('a/p');
+          expect(change.similarity.score).toBe(MAX_SCORE);
+        }
+      });
+    });
+  });
+
+  describe('Given N7f with the deleted file near-matching (one extra line) instead of exact (row N7j)', () => {
+    describe('When detectSimilarityRenames is called with breakRewrites', () => {
+      it('Then the inexact pairing replaces the type change entirely — no T, no D', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const symlinkOldId = await writeBlob(ctx, 'symlink-target-before-a-p');
+        const regularContent = 'regular\ncontent\nfor\na\np\nafter\nthe\ntype\nchange\n'.repeat(10);
+        const regularId = await writeBlob(ctx, regularContent);
+        const nearMatchContent = `${regularContent}extra unique tail line only in a-old\n`;
+        const nearMatchId = await writeBlob(ctx, nearMatchContent);
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'type-change',
+              path: 'a/p' as FilePath,
+              oldId: symlinkOldId,
+              newId: regularId,
+              oldMode: FILE_MODE.SYMLINK,
+              newMode: FILE_MODE.REGULAR,
+            },
+            {
+              type: 'delete',
+              oldPath: 'a/old' as FilePath,
+              oldId: nearMatchId,
+              oldMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act
+        const result = await detectSimilarityRenames(ctx, diff, {
+          breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
+        });
+
+        // Assert
+        expect(result.changes).toHaveLength(1);
+        const change = result.changes[0];
+        expect(change?.type).toBe('rename');
+        if (change?.type === 'rename') {
+          expect(change.oldPath).toBe('a/old');
+          expect(change.newPath).toBe('a/p');
+          expect(change.similarity.score).toBeLessThan(MAX_SCORE);
+        }
+      });
+    });
+  });
+
+  describe('Given a regular→symlink type change whose NEW content exactly matches a deleted symlink (row N7g)', () => {
+    describe('When detectSimilarityRenames is called with breakRewrites', () => {
+      it('Then the symlink half pairs exactly and the type change vanishes — no T, no D', async () => {
+        // Arrange — a/s's content exactly matches a/p's NEW (symlink) content; a
+        // symlink can only ever pair exactly, never inexactly.
+        const ctx = await buildSeededContext();
+        const regularOldContent =
+          'regular\ncontent\nbefore\na\np\nbreaks\ninto\na\nsymlink\n'.repeat(10);
+        const regularOldId = await writeBlob(ctx, regularOldContent);
+        const symlinkNewId = await writeBlob(ctx, 'symlink-target-after-a-p');
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'type-change',
+              path: 'a/p' as FilePath,
+              oldId: regularOldId,
+              newId: symlinkNewId,
+              oldMode: FILE_MODE.REGULAR,
+              newMode: FILE_MODE.SYMLINK,
+            },
+            {
+              type: 'delete',
+              oldPath: 'a/s' as FilePath,
+              oldId: symlinkNewId,
+              oldMode: FILE_MODE.SYMLINK,
+            },
+          ],
+        };
+
+        // Act
+        const result = await detectSimilarityRenames(ctx, diff, {
+          breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
+        });
+
+        // Assert
+        expect(result.changes).toHaveLength(1);
+        const change = result.changes[0];
+        expect(change?.type).toBe('rename');
+        if (change?.type === 'rename') {
+          expect(change.oldPath).toBe('a/s');
+          expect(change.newPath).toBe('a/p');
+          expect(change.similarity.score).toBe(MAX_SCORE);
+        }
+      });
+    });
+  });
+
+  describe('Given N7g plus an add matching the type change OLD content (row N7h)', () => {
+    describe('When detectSimilarityRenames is called with breakRewrites', () => {
+      it('Then both halves pair independently into two renames — no T, no D, no A', async () => {
+        // Arrange — a/s pairs with a/p's NEW (symlink) half as in N7g; b/q separately
+        // pairs with a/p's OLD (regular) half as its own broken-delete source. Neither
+        // pairing bumps the other's use count, so both stay renames (not copies).
+        const ctx = await buildSeededContext();
+        const regularOldContent =
+          'regular\ncontent\nbefore\na\np\nbreaks\ninto\na\nsymlink\n'.repeat(10);
+        const regularOldId = await writeBlob(ctx, regularOldContent);
+        const symlinkNewId = await writeBlob(ctx, 'symlink-target-after-a-p');
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'type-change',
+              path: 'a/p' as FilePath,
+              oldId: regularOldId,
+              newId: symlinkNewId,
+              oldMode: FILE_MODE.REGULAR,
+              newMode: FILE_MODE.SYMLINK,
+            },
+            {
+              type: 'delete',
+              oldPath: 'a/s' as FilePath,
+              oldId: symlinkNewId,
+              oldMode: FILE_MODE.SYMLINK,
+            },
+            {
+              type: 'add',
+              newPath: 'b/q' as FilePath,
+              newId: regularOldId,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act
+        const result = await detectSimilarityRenames(ctx, diff, {
+          breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
+        });
+
+        // Assert
+        expect(result.changes).toHaveLength(2);
+        const renames = result.changes.filter((c) => c.type === 'rename');
+        expect(renames).toHaveLength(2);
+        const bySource = new Map(renames.map((r) => [r.type === 'rename' ? r.oldPath : '', r]));
+        const first = bySource.get('a/s');
+        expect(first?.type === 'rename' ? first.newPath : undefined).toBe('a/p');
+        const second = bySource.get('a/p');
+        expect(second?.type === 'rename' ? second.newPath : undefined).toBe('b/q');
+        expect(result.changes.filter((c) => c.type === 'copy')).toHaveLength(0);
+        expect(result.changes.filter((c) => c.type === 'type-change')).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given two type changes swapping content — a/p regular→symlink, a/r symlink→regular (row N7k)', () => {
+    describe('When detectSimilarityRenames is called with breakRewrites', () => {
+      it('Then the two broken halves cross-pair into a swap of renames — no T, no D', async () => {
+        // Arrange — a/p's NEW (symlink) content equals a/r's OLD (symlink) content,
+        // and a/r's NEW (regular) content equals a/p's OLD (regular) content.
+        const ctx = await buildSeededContext();
+        const regularContent =
+          'regular\ncontent\nswapped\nwith\na\nsymlink\ntarget\nvalue\n'.repeat(10);
+        const regularId = await writeBlob(ctx, regularContent);
+        const symlinkId = await writeBlob(ctx, 'swapped-symlink-target-value');
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'type-change',
+              path: 'a/p' as FilePath,
+              oldId: regularId,
+              newId: symlinkId,
+              oldMode: FILE_MODE.REGULAR,
+              newMode: FILE_MODE.SYMLINK,
+            },
+            {
+              type: 'type-change',
+              path: 'a/r' as FilePath,
+              oldId: symlinkId,
+              newId: regularId,
+              oldMode: FILE_MODE.SYMLINK,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act
+        const result = await detectSimilarityRenames(ctx, diff, {
+          breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
+        });
+
+        // Assert
+        expect(result.changes).toHaveLength(2);
+        const renames = result.changes.filter((c) => c.type === 'rename');
+        expect(renames).toHaveLength(2);
+        const bySource = new Map(renames.map((r) => [r.type === 'rename' ? r.oldPath : '', r]));
+        const fromR = bySource.get('a/r');
+        expect(fromR?.type === 'rename' ? fromR.newPath : undefined).toBe('a/p');
+        const fromP = bySource.get('a/p');
+        expect(fromP?.type === 'rename' ? fromP.newPath : undefined).toBe('a/r');
+        expect(result.changes.filter((c) => c.type === 'type-change')).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given a regular→symlink type change and an unrelated deleted regular file with the SAME content as the symlink target, cross-mode (row N7n)', () => {
+    describe('When detectSimilarityRenames is called with breakRewrites', () => {
+      it('Then neither half pairs — the symlink half never scores against a regular-mode source', async () => {
+        // Arrange — a/d is a regular file whose content equals a/p's NEW (symlink)
+        // target string; identical bytes but a different kind never pair, exactly
+        // or inexactly (a symlink destination is excluded from the inexact matrix).
+        const ctx = await buildSeededContext();
+        const regularOldId = await writeBlob(ctx, 'regular-content-before-a-p');
+        const symlinkTarget = 'shared-target-value-cross-mode';
+        const symlinkNewId = await writeBlob(ctx, symlinkTarget);
+        const crossModeId = await writeBlob(ctx, symlinkTarget);
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'type-change',
+              path: 'a/p' as FilePath,
+              oldId: regularOldId,
+              newId: symlinkNewId,
+              oldMode: FILE_MODE.REGULAR,
+              newMode: FILE_MODE.SYMLINK,
+            },
+            {
+              type: 'delete',
+              oldPath: 'a/d' as FilePath,
+              oldId: crossModeId,
+              oldMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act
+        const result = await detectSimilarityRenames(ctx, diff, {
+          breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
+        });
+
+        // Assert — a/d stands alone, a/p stays kept-broken
+        expect(result.changes).toHaveLength(2);
+        const deleteChange = result.changes.find((c) => c.type === 'delete');
+        expect(deleteChange?.type).toBe('delete');
+        if (deleteChange?.type === 'delete') expect(deleteChange.oldPath).toBe('a/d');
+        const typeChange = result.changes.find((c) => c.type === 'type-change');
+        expect(typeChange?.type).toBe('type-change');
+        if (typeChange?.type === 'type-change') expect(typeChange.broken?.score).toBe(MAX_SCORE);
+        expect(result.changes.filter((c) => c.type === 'rename')).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given N7d under copies: "on" (row N7c: a broken type change registers once, never also as a modified source)', () => {
+    describe('When detectSimilarityRenames is called with breakRewrites and copies on', () => {
+      it('Then the type change stays kept-broken and exactly one copy pairs — no duplicate source', async () => {
+        // Arrange — identical to N7d, plus copies:'on'; a double registration
+        // (broken-delete AND modified) would surface as a second copy or a stray
+        // leftover entry for a/p.
+        const ctx = await buildSeededContext();
+        const oldContent = 'regular\ncontent\nfor\na\np\n'.repeat(20);
+        const oldId = await writeBlob(ctx, oldContent);
+        const newId = await writeBlob(ctx, 'a-brand-new-symlink-target');
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'type-change',
+              path: 'a/p' as FilePath,
+              oldId,
+              newId,
+              oldMode: FILE_MODE.REGULAR,
+              newMode: FILE_MODE.SYMLINK,
+            },
+            { type: 'add', newPath: 'b/q' as FilePath, newId: oldId, newMode: FILE_MODE.REGULAR },
+          ],
+        };
+
+        // Act
+        const result = await detectSimilarityRenames(ctx, diff, {
+          copies: 'on',
+          breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
+        });
+
+        // Assert
+        expect(result.changes).toHaveLength(2);
+        const typeChanges = result.changes.filter((c) => c.type === 'type-change');
+        expect(typeChanges).toHaveLength(1);
+        if (typeChanges[0]?.type === 'type-change') {
+          expect(typeChanges[0].broken?.score).toBe(MAX_SCORE);
+        }
+        const copies = result.changes.filter((c) => c.type === 'copy');
+        expect(copies).toHaveLength(1);
+        if (copies[0]?.type === 'copy') {
+          expect(copies[0].oldPath).toBe('a/p');
+          expect(copies[0].newPath).toBe('b/q');
+        }
+      });
+    });
+  });
+
   describe('Given an unrelated deleted symlink alongside a rename candidate at the rename limit (row L5)', () => {
     describe('When detectSimilarityRenames is called with limit: 1', () => {
       it('Then the symlink still counts toward the source count and the inexact pass is skipped', async () => {

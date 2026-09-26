@@ -20,6 +20,7 @@ import * as path from 'node:path';
 import * as url from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../src/adapters/memory/memory-adapter.js';
+import { createNodeContext } from '../../src/adapters/node/index.js';
 import { add } from '../../src/application/commands/add.js';
 import { commit } from '../../src/application/commands/commit.js';
 import { diff } from '../../src/application/commands/diff.js';
@@ -3104,6 +3105,333 @@ describe.skipIf(!GIT_AVAILABLE)('non-regular files leave similarity scoring inte
         // Assert
         expect(ours).toBe(peer);
       });
+    });
+  });
+});
+
+/**
+ * `-B` breaks every file↔symlink type change unconditionally (rows N7b–N7n):
+ * the halves feed the rename/copy matrix exactly like a broken modify's, a
+ * paired add half replaces the type change entirely, and an unpaired one
+ * rejoins into a kept-broken type change. A gitlink-involving type change
+ * never breaks (row G3), and a broken pair anywhere in the diff switches off
+ * the `-M` basename pass just as a broken modify does (row B3t).
+ */
+const TYPE_CHANGE_TMP_PREFIX = 'tsgit-rename-type-change-break-';
+const TYPE_CHANGE_SETUP_TIMEOUT = 60_000;
+const TYPE_CHANGE_BREAK_OPTS = { breakRewrites: { score: 30000, merge: 36000 } };
+const TYPE_CHANGE_GITLINK_OID = '9'.repeat(40);
+
+const tcRegular = (label: string): string =>
+  Array.from({ length: 10 }, (_, i) => `${label} regular content line ${i}\n`).join('');
+const tcNearMatch = (content: string): string => `${content}extra unique tail line only here\n`;
+const tcSymlink = (label: string): string => `symlink-target-${label}`;
+
+const B3_BASELINE = Array.from(
+  { length: 20 },
+  (_, i) => `body line ${i}: shared baseline for the basename regression probe\n`,
+).join('');
+const b3Edited = (edited: number): string =>
+  Array.from({ length: 20 }, (_, i) =>
+    i < edited
+      ? `edited line ${i}: replaces the shared baseline for the basename regression probe\n`
+      : `body line ${i}: shared baseline for the basename regression probe\n`,
+  ).join('');
+
+const TYPE_CHANGE_ROWS: ReadonlyArray<RenameRow> = [
+  {
+    label: 'N7 (must stay): a plain symlink→regular type change with no -B (T a/p)',
+    before: [{ path: 'a/p', content: tcSymlink('n7'), kind: 'symlink' }],
+    after: [{ path: 'a/p', content: tcRegular('n7') }],
+  },
+  {
+    label: 'N7b: -M -B breaks a symlink→regular type change unconditionally (T100 a/p)',
+    before: [{ path: 'a/p', content: tcSymlink('n7b'), kind: 'symlink' }],
+    after: [{ path: 'a/p', content: tcRegular('n7b') }],
+    gitFlags: ['-B'],
+    renameOptions: TYPE_CHANGE_BREAK_OPTS,
+  },
+  {
+    label:
+      'N7s: N7b where both sides are the SAME blob — breaks before the same-oid check (T100 a/p)',
+    before: [{ path: 'a/p', content: 'shared-blob-for-n7s', kind: 'symlink' }],
+    after: [{ path: 'a/p', content: 'shared-blob-for-n7s' }],
+    gitFlags: ['-B'],
+    renameOptions: TYPE_CHANGE_BREAK_OPTS,
+  },
+  {
+    label:
+      'N7d: regular→symlink a/p; an add matches its OLD content exactly (T100 a/p ; C100 a/p→b/q)',
+    before: [{ path: 'a/p', content: tcRegular('n7d') }],
+    after: [
+      { path: 'a/p', content: tcSymlink('n7d'), kind: 'symlink' },
+      { path: 'b/q', content: tcRegular('n7d') },
+    ],
+    gitFlags: ['-B'],
+    renameOptions: TYPE_CHANGE_BREAK_OPTS,
+  },
+  {
+    label:
+      'N7c: N7d under -C -B — the broken type change registers once, not also as a modified copy source (T100 a/p ; C100 a/p→b/q)',
+    before: [{ path: 'a/p', content: tcRegular('n7c') }],
+    after: [
+      { path: 'a/p', content: tcSymlink('n7c'), kind: 'symlink' },
+      { path: 'b/q', content: tcRegular('n7c') },
+    ],
+    gitFlags: ['-C', '-B'],
+    renameOptions: { copies: 'on', ...TYPE_CHANGE_BREAK_OPTS },
+  },
+  {
+    label:
+      'N7e: N7d where the add near-matches (one extra line) instead of exact (T100 a/p ; C0nn a/p→b/q)',
+    before: [{ path: 'a/p', content: tcRegular('n7e') }],
+    after: [
+      { path: 'a/p', content: tcSymlink('n7e'), kind: 'symlink' },
+      { path: 'b/q', content: tcNearMatch(tcRegular('n7e')) },
+    ],
+    gitFlags: ['-B'],
+    renameOptions: TYPE_CHANGE_BREAK_OPTS,
+  },
+  {
+    label:
+      'N7m: N7d with two identical adds under -M (one use per source: T100 a/p ; C100 a/p→b/q ; A b/r)',
+    before: [{ path: 'a/p', content: tcRegular('n7m') }],
+    after: [
+      { path: 'a/p', content: tcSymlink('n7m'), kind: 'symlink' },
+      { path: 'b/q', content: tcRegular('n7m') },
+      { path: 'b/r', content: tcRegular('n7m') },
+    ],
+    gitFlags: ['-B'],
+    renameOptions: TYPE_CHANGE_BREAK_OPTS,
+  },
+  {
+    label: 'N7dn: N7d fixture under -M only, no -B — the type change never splits (T a/p ; A b/q)',
+    before: [{ path: 'a/p', content: tcRegular('n7dn') }],
+    after: [
+      { path: 'a/p', content: tcSymlink('n7dn'), kind: 'symlink' },
+      { path: 'b/q', content: tcRegular('n7dn') },
+    ],
+  },
+  {
+    label:
+      'N7f: symlink→regular a/p; a deleted file matches its NEW content exactly — the pairing replaces the type change (R100 a/old→a/p)',
+    before: [
+      { path: 'a/p', content: tcSymlink('n7f'), kind: 'symlink' },
+      { path: 'a/old', content: tcRegular('n7f-new') },
+    ],
+    after: [{ path: 'a/p', content: tcRegular('n7f-new') }],
+    gitFlags: ['-B'],
+    renameOptions: TYPE_CHANGE_BREAK_OPTS,
+  },
+  {
+    label: 'N7j: N7f where the deleted file near-matches instead of exact (R0nn a/old→a/p)',
+    before: [
+      { path: 'a/p', content: tcSymlink('n7j'), kind: 'symlink' },
+      { path: 'a/old', content: tcNearMatch(tcRegular('n7j-new')) },
+    ],
+    after: [{ path: 'a/p', content: tcRegular('n7j-new') }],
+    gitFlags: ['-B'],
+    renameOptions: TYPE_CHANGE_BREAK_OPTS,
+  },
+  {
+    label: 'N7fn: N7f fixture under -M only, no -B — both halves stay separate (D a/old ; T a/p)',
+    before: [
+      { path: 'a/p', content: tcSymlink('n7fn'), kind: 'symlink' },
+      { path: 'a/old', content: tcRegular('n7fn-new') },
+    ],
+    after: [{ path: 'a/p', content: tcRegular('n7fn-new') }],
+  },
+  {
+    label:
+      'N7g: regular→symlink a/p; a deleted symlink matches its NEW target exactly — symlinks pair exactly only (R100 a/s→a/p)',
+    before: [
+      { path: 'a/p', content: tcRegular('n7g') },
+      { path: 'a/s', content: tcSymlink('n7g'), kind: 'symlink' },
+    ],
+    after: [{ path: 'a/p', content: tcSymlink('n7g'), kind: 'symlink' }],
+    gitFlags: ['-B'],
+    renameOptions: TYPE_CHANGE_BREAK_OPTS,
+  },
+  {
+    label:
+      'N7h: N7g plus an add matching the type change OLD content — both halves pair independently (R100 a/s→a/p ; R100 a/p→b/q)',
+    before: [
+      { path: 'a/p', content: tcRegular('n7h') },
+      { path: 'a/s', content: tcSymlink('n7h'), kind: 'symlink' },
+    ],
+    after: [
+      { path: 'a/p', content: tcSymlink('n7h'), kind: 'symlink' },
+      { path: 'b/q', content: tcRegular('n7h') },
+    ],
+    gitFlags: ['-B'],
+    renameOptions: TYPE_CHANGE_BREAK_OPTS,
+  },
+  {
+    label:
+      'N7k: two type changes swap content — a/p regular→symlink, a/r symlink→regular (R100 a/r→a/p ; R100 a/p→a/r)',
+    before: [
+      { path: 'a/p', content: tcRegular('n7k') },
+      { path: 'a/r', content: tcSymlink('n7k'), kind: 'symlink' },
+    ],
+    after: [
+      { path: 'a/p', content: tcSymlink('n7k'), kind: 'symlink' },
+      { path: 'a/r', content: tcRegular('n7k') },
+    ],
+    gitFlags: ['-B'],
+    renameOptions: TYPE_CHANGE_BREAK_OPTS,
+  },
+  {
+    label:
+      'N7kn: N7k fixture under -M only, no -B — both type changes stay separate (T a/p ; T a/r)',
+    before: [
+      { path: 'a/p', content: tcRegular('n7kn') },
+      { path: 'a/r', content: tcSymlink('n7kn'), kind: 'symlink' },
+    ],
+    after: [
+      { path: 'a/p', content: tcSymlink('n7kn'), kind: 'symlink' },
+      { path: 'a/r', content: tcRegular('n7kn') },
+    ],
+  },
+  {
+    label:
+      'N7n: regular→symlink a/p; an unrelated deleted regular file shares the symlink target STRING, cross-mode — neither half pairs (D a/d ; T100 a/p)',
+    before: [
+      { path: 'a/p', content: tcRegular('n7n') },
+      { path: 'a/d', content: tcSymlink('n7n') },
+    ],
+    after: [{ path: 'a/p', content: tcSymlink('n7n'), kind: 'symlink' }],
+    gitFlags: ['-B'],
+    renameOptions: TYPE_CHANGE_BREAK_OPTS,
+  },
+  {
+    label:
+      'N8 (must stay, -C): a regular→symlink type change lends its OLD content as a copy source (T ; C100 a/p→b/q)',
+    before: [{ path: 'a/p', content: tcRegular('n8') }],
+    after: [
+      { path: 'a/p', content: tcSymlink('n8'), kind: 'symlink' },
+      { path: 'b/q', content: tcRegular('n8') },
+    ],
+    gitFlags: ['-C'],
+    renameOptions: { copies: 'on' },
+  },
+  {
+    label: 'G3 (must stay): a gitlink→regular type change never breaks under -B (T a/sub)',
+    before: [{ path: 'a/sub', content: TYPE_CHANGE_GITLINK_OID, kind: 'gitlink' }],
+    after: [{ path: 'a/sub', content: tcRegular('g3') }],
+    gitFlags: ['-B'],
+    renameOptions: TYPE_CHANGE_BREAK_OPTS,
+  },
+  {
+    label:
+      'B3t (must stay): a broken type change disables the -M basename pass — the highest raw score wins over the basename match (D foo.c ; R0nn bar.c→foo.c ; T100 t)',
+    before: [
+      { path: 'a/foo.c', content: b3Edited(4) },
+      { path: 'a/bar.c', content: b3Edited(1) },
+      { path: 't', content: tcSymlink('b3t'), kind: 'symlink' },
+    ],
+    after: [
+      { path: 'b/foo.c', content: B3_BASELINE },
+      { path: 't', content: tcRegular('b3t') },
+    ],
+    gitFlags: ['-B'],
+    renameOptions: TYPE_CHANGE_BREAK_OPTS,
+  },
+];
+
+const typeChangeFixtures = new Map<string, { readonly dir: string }>();
+
+function typeChangeFixtureOf(label: string): { readonly dir: string } {
+  const found = typeChangeFixtures.get(label);
+  if (found === undefined) throw new Error(`fixture not built for row: ${label}`);
+  return found;
+}
+
+describe.skipIf(!GIT_AVAILABLE)('-B type-change break interop', () => {
+  beforeAll(async () => {
+    for (const row of TYPE_CHANGE_ROWS) {
+      typeChangeFixtures.set(row.label, await buildRenameRow(row, TYPE_CHANGE_TMP_PREFIX));
+    }
+  }, TYPE_CHANGE_SETUP_TIMEOUT);
+
+  afterAll(async () => {
+    for (const { dir } of typeChangeFixtures.values()) {
+      await rmDir(dir, { recursive: true, force: true });
+    }
+  });
+
+  describe('Given a raw diff pair exercising a file↔symlink type change under -B', () => {
+    describe('When diff is called with detectRenames', () => {
+      it.each(TYPE_CHANGE_ROWS)('Then name-status matches live git for: $label', async (row) => {
+        // Arrange
+        const { dir } = typeChangeFixtureOf(row.label);
+
+        // Act
+        const { ours, peer } = await runRenameRow(row, dir);
+
+        // Assert
+        expect(ours).toBe(peer);
+      });
+    });
+  });
+
+  describe('Given N7b (a broken symlink→regular type change), When the patch and numstat are reconstructed', () => {
+    it('Then both match git diff --no-ext-diff -p -M -B byte-for-byte', async () => {
+      // Arrange — 20 new lines, a 1-line-equivalent old symlink target: an
+      // unambiguous numstat independent of the shared row's own content.
+      const row: RenameRow = {
+        label: 'N7b patch/numstat probe',
+        before: [{ path: 'a/p', content: 'n7b-patch-symlink-target', kind: 'symlink' }],
+        after: [
+          {
+            path: 'a/p',
+            content: Array.from({ length: 20 }, (_, i) => `n7b patch content line ${i}\n`).join(''),
+          },
+        ],
+        gitFlags: ['-B'],
+        renameOptions: TYPE_CHANGE_BREAK_OPTS,
+      };
+      const { dir } = await buildRenameRow(row, TYPE_CHANGE_TMP_PREFIX);
+      try {
+        const livePatch = git(
+          dir,
+          'diff',
+          '--no-ext-diff',
+          '--no-color',
+          '-M',
+          '-B',
+          'HEAD~1',
+          'HEAD',
+        );
+        const ctx = createNodeContext({ workDir: dir });
+
+        // Act
+        const treeDiff = await diff(ctx, {
+          from: 'HEAD~1',
+          to: 'HEAD',
+          recursive: true,
+          detectRenames: true,
+          renameOptions: TYPE_CHANGE_BREAK_OPTS,
+        });
+        const resultPatch = await reconstructPatch(ctx, treeDiff);
+        const statDiff = await diff(ctx, {
+          from: 'HEAD~1',
+          to: 'HEAD',
+          recursive: true,
+          detectRenames: true,
+          renameOptions: TYPE_CHANGE_BREAK_OPTS,
+          withStat: true,
+        });
+
+        // Assert — the patch is byte-identical whether or not -B kept the type change broken
+        expect(resultPatch).toBe(livePatch);
+        expect(statDiff.changes).toHaveLength(1);
+        const [statChange] = statDiff.changes;
+        expect(statChange?.type).toBe('type-change');
+        expect(statChange?.added).toBe(20);
+        expect(statChange?.deleted).toBe(1);
+      } finally {
+        await rmDir(dir, { recursive: true, force: true });
+      }
     });
   });
 });

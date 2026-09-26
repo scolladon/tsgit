@@ -114,13 +114,13 @@ export async function buildRenameRow(
   return { dir };
 }
 
-function scoreLabel(kind: 'R' | 'C' | 'M', score: number): string {
+function scoreLabel(kind: 'R' | 'C' | 'M' | 'T', score: number): string {
   return `${kind}${String(toSimilarityPercent(score)).padStart(PERCENT_WIDTH, '0')}`;
 }
 
 /** Reconstruct a `--name-status` line per change. R/C print the similarity
- *  percent (exact pairs still print R100/C100); a kept-broken modify prints
- *  its dissimilarity percent, an ordinary modify stays bare `M`. */
+ *  percent (exact pairs still print R100/C100); a kept-broken modify or type
+ *  change prints its dissimilarity percent, an ordinary one stays bare. */
 function nameStatusLine(change: DiffChange): string {
   switch (change.type) {
     case 'add':
@@ -136,7 +136,9 @@ function nameStatusLine(change: DiffChange): string {
         ? `${scoreLabel('M', change.broken.score)}\t${change.path}`
         : `M\t${change.path}`;
     case 'type-change':
-      return `T\t${change.path}`;
+      return change.broken !== undefined
+        ? `${scoreLabel('T', change.broken.score)}\t${change.path}`
+        : `T\t${change.path}`;
   }
 }
 

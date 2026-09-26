@@ -10,7 +10,7 @@ import type {
   TypeChangeChange,
 } from '../../domain/diff/diff-change.js';
 import type { FlatTreeEntry } from '../../domain/diff/flat-tree.js';
-import { isGitlink, kindOf } from '../../domain/diff/index.js';
+import { kindOf } from '../../domain/diff/index.js';
 import { sortByPath } from '../../domain/diff/path-compare.js';
 import type { RenameDetectOptions } from '../../domain/diff/rename-detect.js';
 import {
@@ -517,9 +517,11 @@ async function runInexactMatrix(
   };
 }
 
-/** Tracking record for a modify that was split into synthetic delete+add halves. */
+/** Tracking record for a modify or type change that was split into synthetic
+ *  delete+add halves. A type change's record is always built at `MAX_SCORE`
+ *  (git breaks every file↔symlink type change unconditionally, no blob read). */
 interface BrokenRecord {
-  readonly original: ModifyChange;
+  readonly original: ModifyChange | TypeChangeChange;
   readonly del: DeleteChange;
   readonly add: AddChange;
   readonly dissimilarity: number;
@@ -607,12 +609,35 @@ async function scoreOneModify(ctx: Context, mod: ModifyChange): Promise<ModifySc
   return { mod, computedBreakScore, dissimilarity };
 }
 
-function toSyntheticDelete(mod: ModifyChange): DeleteChange {
-  return { type: 'delete', oldPath: mod.path, oldId: mod.oldId, oldMode: mod.oldMode };
+function toSyntheticDelete(change: ModifyChange | TypeChangeChange): DeleteChange {
+  return { type: 'delete', oldPath: change.path, oldId: change.oldId, oldMode: change.oldMode };
 }
 
-function toSyntheticAdd(mod: ModifyChange): AddChange {
-  return { type: 'add', newPath: mod.path, newId: mod.newId, newMode: mod.newMode };
+function toSyntheticAdd(change: ModifyChange | TypeChangeChange): AddChange {
+  return { type: 'add', newPath: change.path, newId: change.newId, newMode: change.newMode };
+}
+
+/** git's OBJ_BLOB check: a breakable side is a regular file or a symlink —
+ *  a gitlink or a directory-mode entry never enters the break-attempt pass. */
+function isBreakableKind(mode: FileMode): boolean {
+  const kind = kindOf(mode);
+  return kind === 'file' || kind === 'symlink';
+}
+
+function isBreakableTypeChange(change: TypeChangeChange): boolean {
+  return isBreakableKind(change.oldMode) && isBreakableKind(change.newMode);
+}
+
+/** A file↔symlink type change breaks unconditionally at MAX_SCORE, before any
+ *  oid, size or empty check — no blob is ever read (git's diffcore-break.c,
+ *  the type-change branch runs ahead of `should_break`'s own guards). */
+function toTypeChangeRecord(change: TypeChangeChange): BrokenRecord {
+  return {
+    original: change,
+    del: toSyntheticDelete(change),
+    add: toSyntheticAdd(change),
+    dissimilarity: MAX_SCORE,
+  };
 }
 
 /**
@@ -646,7 +671,8 @@ async function scoreModifies(
   return { records, paths };
 }
 
-/** Replace broken modifies in the change list with their synthetic delete+add halves. */
+/** Replace broken modifies and type changes in the change list with their
+ *  synthetic delete+add halves. */
 function patchDiffWithBroken(
   diff: TreeDiff,
   records: ReadonlyArray<BrokenRecord>,
@@ -655,10 +681,9 @@ function patchDiffWithBroken(
   const byPath = new Map<FilePath, BrokenRecord>(records.map((r) => [r.original.path, r]));
   const patchedChanges: DiffChange[] = [];
   for (const change of diff.changes) {
+    const isBreakableChange = change.type === 'modify' || change.type === 'type-change';
     const record =
-      change.type === 'modify' && brokenPaths.has(change.path)
-        ? byPath.get(change.path)
-        : undefined;
+      isBreakableChange && brokenPaths.has(change.path) ? byPath.get(change.path) : undefined;
     if (record !== undefined) {
       patchedChanges.push(record.del, record.add);
     } else {
@@ -668,9 +693,19 @@ function patchDiffWithBroken(
   return { changes: patchedChanges };
 }
 
+/** Every type change whose both sides are breakable (file↔symlink) breaks
+ *  unconditionally — a gitlink or directory side never does (G3). */
+function collectBreakableTypeChanges(diff: TreeDiff): TypeChangeChange[] {
+  return diff.changes.filter(
+    (c): c is TypeChangeChange => c.type === 'type-change' && isBreakableTypeChange(c),
+  );
+}
+
 /**
- * Attempt to break dissimilar modifies into synthetic delete+add pairs.
- * Returns the broken records and a new diff with those modifies replaced.
+ * Attempt to break dissimilar modifies and file↔symlink type changes into
+ * synthetic delete+add pairs. A type change never enters `scoreModifies` — it
+ * is unconditionally broken (`toTypeChangeRecord`), no blob ever read.
+ * Returns the broken records and a new diff with those changes replaced.
  *
  * Break-attempt runs BEFORE exact/inexact rename passes so the synthetic halves
  * feed the rename/copy matrix.
@@ -681,15 +716,18 @@ async function attemptBreaks(
   breakScore: number,
 ): Promise<{ readonly broken: ReadonlyArray<BrokenRecord>; readonly patchedDiff: TreeDiff }> {
   const modifies = diff.changes.filter(
-    (c): c is ModifyChange => c.type === 'modify' && !isGitlink(c.oldMode),
+    (c): c is ModifyChange => c.type === 'modify' && isBreakableKind(c.oldMode),
   );
-  // Stryker disable next-line ConditionalExpression: equivalent — an empty modifies list produces empty records, so the downstream records.length===0 guard returns the identical { broken: [], patchedDiff: diff }.
-  if (modifies.length === 0) return { broken: [], patchedDiff: diff };
+  const typeChanges = collectBreakableTypeChanges(diff);
+  // Stryker disable next-line ConditionalExpression: equivalent — no breakable modify or type change produces empty records, matching the identical { broken: [], patchedDiff: diff } the records.length===0 guard below returns.
+  if (modifies.length === 0 && typeChanges.length === 0) return { broken: [], patchedDiff: diff };
 
-  const { records, paths } = await scoreModifies(ctx, modifies, breakScore);
-  // Stryker disable next-line ConditionalExpression: equivalent — empty records means empty paths, so patchDiffWithBroken copies changes unchanged and broken is [], matching the early return.
+  const scored = await scoreModifies(ctx, modifies, breakScore);
+  const records = [...scored.records, ...typeChanges.map(toTypeChangeRecord)];
+  // Stryker disable next-line ConditionalExpression: equivalent — empty records means every source path set stays empty too, so patchDiffWithBroken copies changes unchanged, matching the early return.
   if (records.length === 0) return { broken: [], patchedDiff: diff };
 
+  const paths = new Set<FilePath>([...scored.paths, ...typeChanges.map((c) => c.path)]);
   return { broken: records, patchedDiff: patchDiffWithBroken(diff, records, paths) };
 }
 
