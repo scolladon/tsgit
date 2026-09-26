@@ -352,19 +352,17 @@ async function materialisedShouldDrop(
 function isDirectoryModeChange(change: DiffChange): boolean {
   if (change.type === 'add') return isDirectory(change.newMode);
   if (change.type === 'delete') return isDirectory(change.oldMode);
-  // Stryker disable next-line ConditionalExpression: equivalent — reached only by
-  // modify/type-change/rename/copy (add/delete return above). modify: guard is true
-  // either way, same body runs. type-change: classifySamePath only emits it when
-  // !isSameKind, so exactly 0 or 1 side is a directory, never both — the `&&` below
-  // is false regardless. rename/copy: buildRenameChange/buildCopyChange only complete
-  // after readBlob succeeds on both sides, which throws unexpectedObjectType for a
-  // tree oid — so a directory side can never reach a constructed RenameChange/CopyChange,
-  // isDirectory is false on both — `&&` is false either way. Every reachable case matches
-  // the unmutated `return false` fallthrough.
-  if (change.type === 'modify')
-    // Stryker disable next-line LogicalOperator: equivalent — classifySamePath only
-    // emits 'modify' when isSameKind(oldMode,newMode), so isDirectory(oldMode) ===
-    // isDirectory(newMode) always; X&&X === X||X for any X.
+  // type-change is the one case excluded here: classifySamePath only emits it when
+  // !isSameKind(oldMode, newMode), so exactly 0 or 1 side is ever a directory, never
+  // both, and it falls through to `return false` below rather than joining this branch.
+  if (change.type === 'modify' || change.type === 'rename' || change.type === 'copy')
+    // Stryker disable next-line LogicalOperator: equivalent — modify only reaches here
+    // when isSameKind(oldMode, newMode) (classifySamePath's own guard). A rename/copy
+    // pairs sources and destinations by exactKey, which uses the RAW mode for any
+    // non-file kind — and a tree has exactly one raw mode (040000) — so a directory
+    // side only ever pairs with another directory side (a non-recursive diff's exact
+    // tree-oid rename/copy, e.g. `R100 olddir newdir`). Either way isDirectory(oldMode)
+    // === isDirectory(newMode) always holds, so X&&X === X||X for any X.
     return isDirectory(change.oldMode) && isDirectory(change.newMode);
   return false;
 }

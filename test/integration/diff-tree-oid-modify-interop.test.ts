@@ -204,3 +204,74 @@ describe.skipIf(!GIT_AVAILABLE)(
     });
   },
 );
+
+let renameDir = '';
+let renameRepo: Awaited<ReturnType<typeof openRepository>>;
+let renameFrom = '';
+let renameTo = '';
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'integration — non-recursive diff over an exactly-renamed sub-directory',
+  { timeout: 60_000 },
+  () => {
+    beforeAll(async () => {
+      renameDir = await realpath(
+        await mkdtemp(path.join(os.tmpdir(), 'tsgit-treeoid-rename-interop-')),
+      );
+      await runGitAsync(['init', '-q', '-b', 'main', renameDir]);
+      await runGitAsync(['-C', renameDir, 'config', 'user.name', 'Ada']);
+      await runGitAsync(['-C', renameDir, 'config', 'user.email', 'ada@example.com']);
+
+      await mkdir(path.join(renameDir, 'oldname'));
+      await writeFile(path.join(renameDir, 'oldname', 'inner.txt'), 'shared content\n');
+      await runGitAsync(['-C', renameDir, 'add', '-A']);
+      await runGitAsync(['-C', renameDir, 'commit', '-q', '-m', 'base'], {
+        env: { ...runGitEnv(), ...IDENTITY },
+      });
+      renameFrom = (await runGitAsync(['-C', renameDir, 'rev-parse', 'HEAD'])).trim();
+
+      await runGitAsync(['-C', renameDir, 'mv', 'oldname', 'newname']);
+      await runGitAsync(['-C', renameDir, 'commit', '-q', '-m', 'rename'], {
+        env: { ...runGitEnv(), ...IDENTITY },
+      });
+      renameTo = (await runGitAsync(['-C', renameDir, 'rev-parse', 'HEAD'])).trim();
+
+      renameRepo = await openRepository({ cwd: renameDir });
+    }, 60_000);
+
+    afterAll(async () => {
+      await renameRepo.dispose();
+      await rm(renameDir, { recursive: true, force: true });
+    });
+
+    describe('Given a base commit and a rename commit that exactly renames a whole sub-directory', () => {
+      describe('When diffing non-recursively with detectRenames:true AND ignoreWhitespace:"all", comparing to `git diff-tree --no-ext-diff -w -M` (no -r)', () => {
+        it('Then both drop the directory-mode rename entirely (a tree pair cannot be line-diffed)', async () => {
+          // Arrange
+          const liveRaw = await runGitAsync([
+            '-C',
+            renameDir,
+            'diff-tree',
+            '--no-ext-diff',
+            '-w',
+            '-M',
+            renameFrom,
+            renameTo,
+          ]);
+
+          // Act
+          const result = await renameRepo.diff({
+            from: renameFrom,
+            to: renameTo,
+            detectRenames: true,
+            ignoreWhitespace: 'all',
+          });
+
+          // Assert
+          expect(liveRaw.trim()).toBe('');
+          expect(result.changes).toHaveLength(0);
+        });
+      });
+    });
+  },
+);
