@@ -946,8 +946,14 @@ function cullMatrixSourceIndices(
   return keepEverySource ? indices : indices.filter((index) => uses[index] === 0);
 }
 
+// git's rename_limit <= 0 means unlimited (diffcore-rename.c:1105) — a
+// negative limit squares to a positive number, so `limit !== 0` alone would
+// wrongly re-impose a cap here.
+// git's rename_limit <= 0 means unlimited (diffcore-rename.c:1105) — a
+// negative limit squares to a positive number, so `limit !== 0` alone would
+// wrongly re-impose a cap here.
 function isOverLimit(numDst: number, numSrc: number, limit: number): boolean {
-  return limit !== 0 && numDst * numSrc > limit * limit;
+  return limit > 0 && numDst * numSrc > limit * limit;
 }
 
 interface MatrixPlan {

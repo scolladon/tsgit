@@ -380,6 +380,64 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
+  describe('Given the same num_create * num_src that would exceed limit^2, but a negative limit', () => {
+    describe('When detectSimilarityRenames is called', () => {
+      it('Then the inexact pass runs unlimited, exactly like limit: 0', async () => {
+        // Arrange — same fixture as the positive limit:1 case above: 2 deletes * 2
+        // adds would exceed limit^2 at limit:1, but git's rename_limit <= 0 means
+        // unlimited, and -1 squared is still positive, so a naive `limit !== 0`
+        // gate would wrongly re-impose a 1x1 cap here.
+        const ctx = await buildSeededContext();
+        const del1Id = await writeBlob(ctx, 'del1 unique content that is long enough\n'.repeat(2));
+        const del2Id = await writeBlob(ctx, 'del2 unique content that is long enough\n'.repeat(2));
+        const add1Id = await writeBlob(
+          ctx,
+          'del1 unique content that is long enough\n'.repeat(2).replace('del1', 'add1'),
+        );
+        const add2Id = await writeBlob(
+          ctx,
+          'del2 unique content that is long enough\n'.repeat(2).replace('del2', 'add2'),
+        );
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'delete',
+              oldPath: 'd1.txt' as FilePath,
+              oldId: del1Id,
+              oldMode: FILE_MODE.REGULAR,
+            },
+            {
+              type: 'delete',
+              oldPath: 'd2.txt' as FilePath,
+              oldId: del2Id,
+              oldMode: FILE_MODE.REGULAR,
+            },
+            {
+              type: 'add',
+              newPath: 'a1.txt' as FilePath,
+              newId: add1Id,
+              newMode: FILE_MODE.REGULAR,
+            },
+            {
+              type: 'add',
+              newPath: 'a2.txt' as FilePath,
+              newId: add2Id,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act
+        const result = await detectSimilarityRenames(ctx, diff, { limit: -1 });
+
+        // Assert — both pairs fold into renames, matching an unlimited run
+        const types = result.changes.map((c) => c.type);
+        expect(types.filter((t) => t === 'rename')).toHaveLength(2);
+        expect(types.filter((t) => t === 'delete' || t === 'add')).toHaveLength(0);
+      });
+    });
+  });
+
   describe('Given num_create * num_src exceeds limit^2 but there is an exact pair', () => {
     describe('When detectSimilarityRenames is called', () => {
       it('Then the exact pair still emits as R100 even when the inexact pass is skipped', async () => {

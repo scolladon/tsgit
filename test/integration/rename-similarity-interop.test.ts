@@ -2821,6 +2821,20 @@ const USE_COUNT_ROWS: ReadonlyArray<RenameRow> = [
   },
   {
     label:
+      '-l-1: two similar delete/add pairs exceed a 1x1 limit square — a negative limit is unlimited, not re-capped by squaring to a positive number (R09x Foo→Bar ; R09x Qux→Baz)',
+    before: [
+      { path: 'a/Foo.meta', content: tenLineContent('foo') },
+      { path: 'a/Qux.meta', content: tenLineContent('qux') },
+    ],
+    after: [
+      { path: 'b/Bar.meta', content: tenLineContent('foo', 0) },
+      { path: 'b/Baz.meta', content: tenLineContent('qux', 0) },
+    ],
+    gitFlags: ['-l-1'],
+    renameOptions: { limit: -1 },
+  },
+  {
+    label:
       '-C: a modified source scores higher than a deleted source against the same add — pass 1 pairs only the deleted source (design row C19: M a/M ; R<score> a/D→b/N)',
     before: [
       { path: 'a/M.meta', content: `${tenLineContent('c19')}extra-tail-line: zzz\n` },
