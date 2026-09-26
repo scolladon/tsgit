@@ -1,5 +1,5 @@
 import { TsgitError } from '../../domain/error.js';
-import { concatBytes, indexOf } from '../../domain/objects/encoding.js';
+import { indexOf } from '../../domain/objects/encoding.js';
 import {
   invalidObjectHeader,
   isObjectNotFound,
@@ -15,7 +15,6 @@ import {
   type RefPackEntryHeader,
   readDeltaTargetSize,
 } from '../../domain/storage/index.js';
-import { readableStreamToAsyncIterable } from '../../operators/readable-stream.js';
 import type { Context } from '../../ports/context.js';
 import type { PromisorRemote } from '../../ports/promisor.js';
 import { forgetLooseOidPrefix, probeLooseOid } from './internal/loose-oid-cache.js';
@@ -27,6 +26,7 @@ import {
 import {
   assertChainDepthWithinCap,
   isBase,
+  LOOSE_HEADER_WINDOW,
   ofsDeltaBaseOffset,
   readEntryHeaderWithChunk,
   resolveObject,
@@ -391,43 +391,57 @@ async function readLooseDeclaredSize(ctx: Context, id: ObjectId): Promise<number
   return resolveDeclaredSizeFromPrefix(ctx, id, prefix);
 }
 
-/**
- * git's own loose-header buffer is fixed at this many bytes
- * (`object-file.c`'s `unpack_loose_header`, `MAX_HEADER_LEN`): a header that
- * decodes to more bytes than this without a NUL is refused outright, so a
- * hostile or corrupt object can never force an unbounded inflate hunting for
- * a NUL that will never appear.
- */
-const LOOSE_HEADER_MAX_BYTES = 32;
-
 function noNulTerminator(id: ObjectId): TsgitError {
   return invalidObjectHeader(`no NUL terminator found in inflated object ${id}`);
 }
 
 function headerTooLong(id: ObjectId): TsgitError {
-  return invalidObjectHeader(`header for ${id} too long, exceeds ${LOOSE_HEADER_MAX_BYTES} bytes`);
+  return invalidObjectHeader(`header for ${id} too long, exceeds ${LOOSE_HEADER_WINDOW} bytes`);
 }
 
-/** One header scan's outcome: the declared size once a NUL is found within
- *  the header cap; `tooLong` once accumulated output passes the cap without
- *  one; `incomplete` when the scan's own input ran out first, still under
- *  the cap — the only outcome a whole-file fallback can ever help with. */
-type HeaderScanOutcome =
+/** One header probe's outcome: the declared size once a NUL is found within
+ *  `LOOSE_HEADER_WINDOW`; `tooLong` once the probe's own output fills that
+ *  window without one; `incomplete` when the probed bytes ran out first,
+ *  still under the window — the only outcome a whole-file fallback can ever
+ *  help with. */
+type HeaderProbeOutcome =
   | { readonly status: 'found'; readonly size: number }
   | { readonly status: 'tooLong' }
   | { readonly status: 'incomplete' };
 
 /**
- * Scans the probe prefix for the header's NUL. When the prefix is shorter
- * than the probe budget, it IS the whole file — an `incomplete` outcome (or
- * a hard fault reading a genuinely truncated compressed prefix, caught
- * below) propagates its plain no-NUL error as-is, never routed anywhere
- * else. Only a prefix that exhausted the full budget (the file is longer
- * than the probe) AND stayed incomplete routes to the whole-file fallback: a
- * `tooLong` outcome always throws immediately regardless of how much of the
- * file is left unread — git's own fixed-size header buffer refuses the same
- * way independent of the object's total length, so it is checked BEFORE the
- * fallback decision, never inside the catch a hard fault shares with it.
+ * Probes `compressed` through the port's own bounded `inflateHead` — never a
+ * hand-rolled streaming scan — for the header's NUL, mirroring
+ * `inflateLooseBuffered`'s own probe (object-resolver.ts). `inflateHead`
+ * never returns more than `LOOSE_HEADER_WINDOW` bytes here, so reaching that
+ * many with no NUL means the header could never terminate inside git's own
+ * fixed-size buffer, however much more of `compressed` is left unread.
+ */
+async function probeDeclaredSize(
+  ctx: Context,
+  compressed: Uint8Array,
+): Promise<HeaderProbeOutcome> {
+  const head = await ctx.compressor.inflateHead(compressed, LOOSE_HEADER_WINDOW);
+  const nullPos = indexOf(head, 0x00, 0);
+  if (nullPos !== -1)
+    return { status: 'found', size: parseHeader(head.subarray(0, nullPos + 1)).size };
+  return head.length >= LOOSE_HEADER_WINDOW ? { status: 'tooLong' } : { status: 'incomplete' };
+}
+
+/**
+ * Resolves the declared size from an on-disk PREFIX read (never necessarily
+ * the whole file). The prefix given to `inflateHead` may end mid-block —
+ * `readSlice`'s on-disk cutoff, unlike a member's own natural end, is not a
+ * boundary the decoder tolerates — so a hard decode fault here is as
+ * ambiguous as a clean `incomplete` outcome: only a prefix that already hit
+ * the read budget (`LOOSE_HEADER_PROBE_BYTES`; more of the file may exist
+ * unread) routes either one to the whole-file fallback. A prefix that IS
+ * already the whole file propagates its own fault, or its plain no-NUL
+ * error, as-is. A `tooLong` outcome always throws immediately regardless of
+ * how much of the file is left unread — git's own fixed-size header buffer
+ * refuses the same way independent of the object's total length, so it is
+ * checked BEFORE the fallback decision, never inside the catch a hard fault
+ * shares with it.
  */
 async function resolveDeclaredSizeFromPrefix(
   ctx: Context,
@@ -435,9 +449,9 @@ async function resolveDeclaredSizeFromPrefix(
   prefix: Uint8Array,
 ): Promise<number> {
   const isPrefixTruncated = prefix.length === LOOSE_HEADER_PROBE_BYTES;
-  let outcome: HeaderScanOutcome;
+  let outcome: HeaderProbeOutcome;
   try {
-    outcome = await scanPrefixForDeclaredSize(ctx, prefix);
+    outcome = await probeDeclaredSize(ctx, prefix);
   } catch (error) {
     if (isPrefixTruncated) return readDeclaredSizeFromWholeFile(ctx, id);
     throw error;
@@ -448,66 +462,14 @@ async function resolveDeclaredSizeFromPrefix(
   throw noNulTerminator(id);
 }
 
-function inflatePrefixStream(ctx: Context, prefix: Uint8Array): ReadableStream<Uint8Array> {
-  const source = new ReadableStream<Uint8Array>({
-    start(controller) {
-      controller.enqueue(prefix);
-      controller.close();
-    },
-  });
-  return source.pipeThrough(ctx.compressor.createInflateStream());
-}
-
-/** Drives the prefix's inflate looking for the header's NUL, always
- *  releasing the iterator afterwards — on the success path the stream is
- *  stopped early (never drained to its own end), and on any other outcome
- *  nothing is left pumping in the background. */
-async function scanPrefixForDeclaredSize(
-  ctx: Context,
-  prefix: Uint8Array,
-): Promise<HeaderScanOutcome> {
-  const iterator = readableStreamToAsyncIterable(inflatePrefixStream(ctx, prefix))[
-    Symbol.asyncIterator
-  ]();
-  try {
-    return await scanChunksForHeader(new Uint8Array(0), iterator);
-  } finally {
-    await iterator.return?.();
-  }
-}
-
-/**
- * Grows `buf` by one inflated chunk at a time, searching only its first
- * `LOOSE_HEADER_MAX_BYTES` bytes for the header's NUL — exactly the window
- * git's own fixed-size buffer can ever see. Stops pulling more input the
- * moment that window is full without a NUL (`tooLong`): the accumulated
- * output never grows past one chunk beyond the cap, however large — or
- * however deceptively small on disk — the object actually is.
- */
-async function scanChunksForHeader(
-  buf: Uint8Array,
-  iterator: AsyncIterator<Uint8Array>,
-): Promise<HeaderScanOutcome> {
-  for (;;) {
-    const searchLimit = Math.min(buf.length, LOOSE_HEADER_MAX_BYTES);
-    const nullPos = indexOf(buf.subarray(0, searchLimit), 0x00, 0);
-    if (nullPos !== -1)
-      return { status: 'found', size: parseHeader(buf.subarray(0, nullPos + 1)).size };
-    if (buf.length >= LOOSE_HEADER_MAX_BYTES) return { status: 'tooLong' };
-    const next = await iterator.next();
-    if (next.done === true) return { status: 'incomplete' };
-    buf = concatBytes([buf, next.value]);
-  }
-}
-
 /** The rare fallback: a header whose NUL never appeared inside the probe
- *  budget. Re-reads the WHOLE compressed file but scans it through the SAME
- *  capped, streaming inflate as the prefix probe — never a one-shot
- *  whole-buffer inflate, so a hostile object whose header never terminates
- *  still refuses after 32 output bytes instead of decompressing without limit. */
+ *  budget. Re-reads the WHOLE compressed file but probes it through the SAME
+ *  bounded `inflateHead`, never a one-shot whole-buffer inflate, so a
+ *  hostile object whose header never terminates still refuses after
+ *  `LOOSE_HEADER_WINDOW` output bytes instead of decompressing without limit. */
 async function readDeclaredSizeFromWholeFile(ctx: Context, id: ObjectId): Promise<number> {
   const compressed = await ctx.fs.read(loosePathFor(ctx, id));
-  const outcome = await scanPrefixForDeclaredSize(ctx, compressed);
+  const outcome = await probeDeclaredSize(ctx, compressed);
   if (outcome.status === 'found') return outcome.size;
   if (outcome.status === 'tooLong') throw headerTooLong(id);
   throw noNulTerminator(id);

@@ -482,6 +482,37 @@ describe('readDeclaredObjectSize', () => {
     });
   });
 
+  describe('Given a whole-file fallback whose real payload decodes to under 32 bytes with no NUL', () => {
+    describe('When readDeclaredObjectSize is called', () => {
+      it('Then rejects the no-NUL-terminator reason through the SAME capped probe, never header-too-long', async () => {
+        // Arrange — the same empty-stored-block run pushes the payload past the
+        // 1024-byte probe window, forcing the whole-file fallback; unlike the
+        // "hello" row above, this payload never terminates with a NUL AND never
+        // reaches 32 bytes either, so the fallback's own probe must resolve
+        // 'incomplete' (not 'tooLong') and throw the plain no-NUL reason —
+        // pinning the fallback's OWN incomplete branch, distinct from
+        // `resolveDeclaredSizeFromPrefix`'s direct one (pinned separately below).
+        const content = ENC.encode('short');
+        const ctx = await buildSeededContext();
+        const id = 'g'.repeat(40) as ObjectId;
+        await ctx.fs.write(loosePathOf(ctx, id), buildPrefixExhaustingLooseBytes(content));
+
+        // Act
+        try {
+          await readDeclaredObjectSize(ctx, id);
+          expect.unreachable();
+        } catch (error) {
+          // Assert
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('INVALID_OBJECT_HEADER');
+          if (data.code === 'INVALID_OBJECT_HEADER') {
+            expect(data.reason).toBe(`no NUL terminator found in inflated object ${id}`);
+          }
+        }
+      });
+    });
+  });
+
   describe('Given a whole-file fallback whose real payload decodes to more than 32 bytes with no NUL', () => {
     describe('When readDeclaredObjectSize is called', () => {
       it('Then rejects header-too-long through the SAME capped scan, never a whole-buffer inflate', async () => {
@@ -577,13 +608,21 @@ describe('readDeclaredObjectSize', () => {
 
   describe('Given a large loose file whose header decodes to more than 32 bytes with no NUL', () => {
     describe('When readDeclaredObjectSize is called', () => {
-      it('Then rejects immediately and never falls back to a whole-file read', async () => {
+      it('Then rejects header-too-long, falling back to one whole-file read for THIS object — never a whole-repo scan', async () => {
         // Arrange — deterministic, poorly-compressible bytes (never 0x00) push the
         // compressed size past the 1024-byte probe window, mirroring a hostile
-        // large loose object whose header never terminates: the fix must refuse
-        // as soon as the decoded header passes 32 bytes, never re-reading the
-        // whole (here, ~2 KiB; in the wild, hundreds of MiB) file looking for a
-        // NUL that will never appear.
+        // large loose object whose header never terminates. Known consequence of
+        // routing through `inflateHead`: incompressible content like this stores
+        // as one giant DEFLATE stored block, and the zero-dependency decoder
+        // (`decodeStoredBlock`) reads a stored block's declared length in one
+        // shot — unlike Node's own `inflateHead` (Z_SYNC_FLUSH), it cannot return
+        // a short, partial decode of a block cut off mid-length, so probing the
+        // on-disk PREFIX throws instead of resolving directly. The prefix being
+        // truncated (real file bigger than the probe budget) routes that fault to
+        // the SAME whole-file fallback the ambiguous "incomplete" outcome already
+        // used above — one bounded read of THIS object's own bytes (here, ~2 KiB;
+        // in the wild, up to the hostile object's own size), never a re-scan of
+        // the whole repository and never a second, unbounded inflate.
         const ctx = await buildSeededContext();
         const junk = new Uint8Array(2000);
         let state = 1;
@@ -599,6 +638,7 @@ describe('readDeclaredObjectSize', () => {
         // the size read's own filesystem traffic (see the 64 KiB blob test above).
         await getPackRegistry(ctx);
         const readSpy = vi.spyOn(ctx.fs, 'read');
+        const inflateSpy = vi.spyOn(ctx.compressor, 'inflate');
 
         // Act
         try {
@@ -612,18 +652,33 @@ describe('readDeclaredObjectSize', () => {
             expect(data.reason).toBe(`header for ${id} too long, exceeds 32 bytes`);
           }
         }
-        expect(readSpy).not.toHaveBeenCalled();
+        expect(readSpy).toHaveBeenCalledTimes(1);
+        expect(readSpy).toHaveBeenCalledWith(loosePathOf(ctx, id));
+        expect(inflateSpy).not.toHaveBeenCalled();
       });
     });
   });
 
   describe('Given a small loose file whose own compressed bytes are truncated mid-stream', () => {
     describe('When readDeclaredObjectSize is called', () => {
-      it('Then the inflate fault propagates as-is — the whole file already IS the prefix', async () => {
+      it('Then a proper DECOMPRESS_FAILED TsgitError propagates — the whole file already IS the prefix, so nothing falls back', async () => {
         // Arrange — the prefix is shorter than the probe budget, so this is the
-        // "never catch" branch even for a hard stream fault (not just a clean
+        // "never catch" branch even for a hard decode fault (not just a clean
         // no-NUL end): there is no more of the file left to re-read, so nothing
-        // routes to the whole-file fallback.
+        // routes to the whole-file fallback. Known consequence of routing
+        // through `inflateHead`: the OLD hand-rolled scan drove a native
+        // streaming decompressor, which raised a raw (non-TsgitError) rejection
+        // for a corrupt stream; the port's `inflateHead` already maps every
+        // adapter fault to `decompressFailed`, so this is now a proper TsgitError
+        // — the better contract, no raw adapter error leaking. Live git
+        // (`git cat-file -s` on this exact truncated object, scrubbed env,
+        // mktemp, git 2.55.0) reports `error: header for <oid> too long,
+        // exceeds 32 bytes` — the SAME text it uses for a header that genuinely
+        // overruns the buffer, because `unpack_loose_header` never distinguishes
+        // "ran out of compressed input" from "the header itself is too long".
+        // tsgit's DECOMPRESS_FAILED keeps that distinction the raw decode fault
+        // it actually is, rather than reusing INVALID_OBJECT_HEADER for a
+        // different failure class.
         const ctx = await buildSeededContext();
         const header = serializeHeader('blob', 5);
         const serialized = new Uint8Array(header.length + 5);
@@ -635,10 +690,18 @@ describe('readDeclaredObjectSize', () => {
         await ctx.fs.write(loosePathOf(ctx, id), truncated);
 
         // Act
-        const rejection = readDeclaredObjectSize(ctx, id);
-
-        // Assert
-        await expect(rejection).rejects.not.toBeInstanceOf(TsgitError);
+        try {
+          await readDeclaredObjectSize(ctx, id);
+          expect.unreachable();
+        } catch (error) {
+          // Assert
+          expect(error).toBeInstanceOf(TsgitError);
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('DECOMPRESS_FAILED');
+          if (data.code === 'DECOMPRESS_FAILED') {
+            expect(data.reason).toBe('unexpected end of deflate stream');
+          }
+        }
       });
     });
   });
