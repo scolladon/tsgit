@@ -38,7 +38,12 @@ import type { StatDiffChange, StatFields } from '../../src/domain/diff/stat-fiel
 import type { AuthorIdentity } from '../../src/domain/objects/index.js';
 import { reconstructPatch } from './diff-reconstruct.js';
 import { GIT_AVAILABLE, git, makePeerPair, runGit, runGitEnv } from './interop-helpers.js';
-import { buildRenameRow, type RenameRow, runRenameRow } from './rename-interop-rows.js';
+import {
+  buildRenameRow,
+  type FileSpec,
+  type RenameRow,
+  runRenameRow,
+} from './rename-interop-rows.js';
 
 const fixturesDir = path.join(
   path.dirname(url.fileURLToPath(import.meta.url)),
@@ -3662,6 +3667,26 @@ const leftoverEdited = (edited: number): string =>
 
 const BASENAME_UNIQUENESS_SYMLINK_TARGET = 'symlink-target-for-basename-uniqueness-probe';
 
+/** Same basename, wildly different declared sizes, well above tsgit's
+ *  internal size-gate id count: every delete/add pair sharing a unique
+ *  basename is `isSizeRejected` on both sides (the basename pass's own gate
+ *  and the ordinary matrix's), so neither pass ever manufactures a rename
+ *  from declared-size-incompatible content — the "hostile-basename" shape. */
+const HOSTILE_BASENAME_PAIR_COUNT = 17;
+const hostileBasenameBigContent = (index: number): string =>
+  'B'.repeat(1994) + String(index).padStart(6, '0');
+const hostileBasenameSmallContent = (index: number): string => `s${String(index).padStart(5, '0')}`;
+const hostileBasenameBefore = (): FileSpec[] =>
+  Array.from({ length: HOSTILE_BASENAME_PAIR_COUNT }, (_, i) => ({
+    path: `a/file${String(i).padStart(3, '0')}.dat`,
+    content: hostileBasenameBigContent(i),
+  }));
+const hostileBasenameAfter = (): FileSpec[] =>
+  Array.from({ length: HOSTILE_BASENAME_PAIR_COUNT }, (_, i) => ({
+    path: `b/file${String(i).padStart(3, '0')}.dat`,
+    content: hostileBasenameSmallContent(i),
+  }));
+
 const BASENAME_PASS_ROWS: ReadonlyArray<RenameRow> = [
   {
     label:
@@ -3800,6 +3825,12 @@ const BASENAME_PASS_ROWS: ReadonlyArray<RenameRow> = [
       { path: 'b/foo.c', content: B3_BASELINE },
       { path: 'b/x/foo.c', content: BASENAME_UNIQUENESS_SYMLINK_TARGET, kind: 'symlink' },
     ],
+  },
+  {
+    label:
+      'many same-basename pairs of a large delete and a tiny add: size-incompatible on both sides, so every file stays a plain delete or add',
+    before: hostileBasenameBefore(),
+    after: hostileBasenameAfter(),
   },
 ];
 

@@ -393,20 +393,43 @@ async function readDeclaredSizes(
 }
 
 /**
+ * Declared sizes for `ids`, reusing `fingerprint.size` for any id already
+ * hydrated (`known`) instead of paying for a redundant size-only read — a
+ * blob's fingerprint already carries its exact size, the same value a size
+ * read would return.
+ */
+async function declaredSizesReusingFingerprints(
+  ctx: Context,
+  ids: ReadonlyArray<ObjectId>,
+  known: ReadonlyMap<ObjectId, BlobFingerprint>,
+): Promise<ReadonlyMap<ObjectId, number>> {
+  const unknownIds = ids.filter((id) => !known.has(id));
+  const sizes = new Map(await readDeclaredSizes(ctx, unknownIds));
+  for (const id of ids) {
+    const fingerprint = known.get(id);
+    if (fingerprint !== undefined) sizes.set(id, fingerprint.size);
+  }
+  return sizes;
+}
+
+/**
  * Which ids actually need fingerprinting for one inexact pass (design D3):
  * at or below `SIZE_GATE_MIN_IDS` unique ids, every one of them (no size
  * read pays for itself below the gate — the common small-diff path never
- * touches it); above it, only the ids `sizeCompatibleIds` keeps.
+ * touches it); above it, only the ids `sizeCompatibleIds` keeps. `known`
+ * (fingerprints already hydrated by an earlier pass, e.g. the basename pass
+ * or a broken modify's break-attempt read) seeds the size map for free.
  */
 async function selectHydrationIds(
   ctx: Context,
   srcIds: ReadonlyArray<ObjectId>,
   dstIds: ReadonlyArray<ObjectId>,
   threshold: number,
+  known: ReadonlyMap<ObjectId, BlobFingerprint>,
 ): Promise<ReadonlyArray<ObjectId>> {
   const unique = Array.from(new Set([...srcIds, ...dstIds]));
   if (unique.length <= SIZE_GATE_MIN_IDS) return unique;
-  const sizes = await readDeclaredSizes(ctx, unique);
+  const sizes = await declaredSizesReusingFingerprints(ctx, unique, known);
   return Array.from(sizeCompatibleIds(sizes, srcIds, dstIds, threshold));
 }
 
@@ -531,7 +554,7 @@ async function runInexactMatrix(
     .map(({ source }) => source.id);
   if (srcIds.length === 0) return null;
   const dstIds = destinations.map((d) => d.newId);
-  const neededIds = await selectHydrationIds(ctx, srcIds, dstIds, threshold);
+  const neededIds = await selectHydrationIds(ctx, srcIds, dstIds, threshold, knownFingerprints);
   const fingerprints = await hydrateFingerprints(ctx, neededIds, knownFingerprints);
 
   const candidates = buildMatrix(matrixSources, destinations, fingerprints, threshold);
@@ -1146,10 +1169,32 @@ function basenameCandidateIds(
 }
 
 /**
+ * git's `find_basename_matches` → `estimate_similarity` size prefilter: a
+ * pair whose DECLARED sizes alone cannot reach `minBasename` is dropped
+ * before either blob is ever read — mirrors `isSizeRejected`'s use in the
+ * ordinary matrix, applied here at the id level so a rejected pair's ids
+ * never reach `basenameCandidateIds`/`hydrateFingerprints`.
+ */
+function sizeSurvivingBasenameCandidates(
+  candidates: ReadonlyArray<BasenameCandidate>,
+  sources: ReadonlyArray<RenameSource>,
+  sizes: ReadonlyMap<ObjectId, number>,
+  minBasename: number,
+): BasenameCandidate[] {
+  return candidates.filter(({ sourceIndex, destination }) => {
+    const srcSize = sizes.get((sources[sourceIndex] as RenameSource).id) as number;
+    const dstSize = sizes.get(destination.newId) as number;
+    return !isSizeRejected(srcSize, dstSize, minBasename);
+  });
+}
+
+/**
  * git's own `find_basename_matches` scoring loop: each candidate is
  * independent (`uniqueBasenamePairs` never repeats a source or a
  * destination), so accepted pairs need no running use-count here — folding
- * them into `uses`/`unpaired` is the caller's job.
+ * them into `uses`/`unpaired` is the caller's job. Every candidate here has
+ * already cleared `sizeSurvivingBasenameCandidates`, so both fingerprints
+ * are guaranteed present.
  */
 function scoreBasenameCandidates(
   candidates: ReadonlyArray<BasenameCandidate>,
@@ -1162,7 +1207,6 @@ function scoreBasenameCandidates(
     const source = sources[sourceIndex] as RenameSource;
     const sf = fingerprints.get(source.id) as BlobFingerprint;
     const df = fingerprints.get(destination.newId) as BlobFingerprint;
-    if (isSizeRejected(sf.size, df.size, minBasename)) continue;
     const score = estimateSimilarityFromMaps(sf.chunkMap, sf.size, df.chunkMap, df.size);
     if (score >= minBasename) pairs.push({ source: sourceIndex, destination, score });
   }
@@ -1211,9 +1255,12 @@ async function runBasenamePass(
   }
 
   const minBasename = threshold + Math.trunc((MAX_SCORE - threshold) / 2);
-  const ids = basenameCandidateIds(sources, candidates);
-  const fingerprints = await hydrateFingerprints(ctx, ids, new Map());
-  const pairs = scoreBasenameCandidates(candidates, sources, fingerprints, minBasename);
+  const candidateIds = Array.from(new Set(basenameCandidateIds(sources, candidates)));
+  const sizes = await readDeclaredSizes(ctx, candidateIds);
+  const survivors = sizeSurvivingBasenameCandidates(candidates, sources, sizes, minBasename);
+  const survivorIds = basenameCandidateIds(sources, survivors);
+  const fingerprints = await hydrateFingerprints(ctx, survivorIds, new Map());
+  const pairs = scoreBasenameCandidates(survivors, sources, fingerprints, minBasename);
 
   return { pairs, ...applyBasenamePairs(exact, pairs), fingerprints };
 }

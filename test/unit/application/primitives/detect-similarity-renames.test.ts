@@ -4,10 +4,11 @@ import {
   isSizeRejected,
   NUM_CANDIDATE_PER_DST,
   recordIfBetter,
+  SIZE_GATE_MIN_IDS,
 } from '../../../../src/application/primitives/detect-similarity-renames.js';
 import * as readBlobMod from '../../../../src/application/primitives/read-blob.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
-import type { AddChange, TreeDiff } from '../../../../src/domain/diff/diff-change.js';
+import type { AddChange, DiffChange, TreeDiff } from '../../../../src/domain/diff/diff-change.js';
 import type { FlatTreeEntry } from '../../../../src/domain/diff/flat-tree.js';
 import type { MatrixCandidate } from '../../../../src/domain/diff/rename-pairing.js';
 import {
@@ -5922,6 +5923,57 @@ describe('detectSimilarityRenames', () => {
         const remainingDelete = result.changes.find((c) => c.type === 'delete');
         expect(remainingDelete?.type).toBe('delete');
         if (remainingDelete?.type === 'delete') expect(remainingDelete.oldPath).toBe('a/foo.c');
+      });
+    });
+  });
+
+  describe('Given many same-basename pairs, each a large delete and a tiny add', () => {
+    describe('When detectSimilarityRenames is called under plain -M', () => {
+      it('Then the basename pass rejects every pair by declared size alone, never reading a blob', async () => {
+        // Arrange — one unique basename per pair, well above SIZE_GATE_MIN_IDS unique
+        // ids; every delete is ~2000 bytes and every same-named add is 6 bytes, so
+        // isSizeRejected rejects every pair — at the basename gate AND at the ordinary
+        // matrix's own size gate, since no source has a size-compatible partner
+        // anywhere on the other side either.
+        const ctx = await buildSeededContext();
+        const pairCount = SIZE_GATE_MIN_IDS + 1;
+        const bigContent = (index: number): string =>
+          'B'.repeat(1994) + String(index).padStart(6, '0');
+        const smallContent = (index: number): string => `s${String(index).padStart(5, '0')}`;
+        const changes: DiffChange[] = [];
+        for (let i = 0; i < pairCount; i++) {
+          const oldId = await writeBlob(ctx, bigContent(i));
+          const newId = await writeBlob(ctx, smallContent(i));
+          changes.push(
+            {
+              type: 'delete',
+              oldPath: `a/file${i}.dat` as FilePath,
+              oldId,
+              oldMode: FILE_MODE.REGULAR,
+            },
+            {
+              type: 'add',
+              newPath: `b/file${i}.dat` as FilePath,
+              newId,
+              newMode: FILE_MODE.REGULAR,
+            },
+          );
+        }
+        const diff: TreeDiff = { changes };
+        const readSpy = vi.spyOn(readBlobMod, 'readBlob');
+
+        // Act
+        const result = await detectSimilarityRenames(ctx, diff);
+
+        // Assert
+        try {
+          expect(readSpy).not.toHaveBeenCalled();
+          expect(result.changes.filter((c) => c.type === 'rename')).toHaveLength(0);
+          expect(result.changes.filter((c) => c.type === 'delete')).toHaveLength(pairCount);
+          expect(result.changes.filter((c) => c.type === 'add')).toHaveLength(pairCount);
+        } finally {
+          readSpy.mockRestore();
+        }
       });
     });
   });
