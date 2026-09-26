@@ -2697,6 +2697,70 @@ describe.skipIf(!GIT_AVAILABLE)('name_score matrix tie-break interop', () => {
 });
 
 /**
+ * `record_if_better` slot semantics interop: git calls `record_if_better` for
+ * every visited (src, dst) pair, not only the ones clearing the threshold —
+ * a below-threshold candidate still occupies a slot, and slot position
+ * decides the stable sort's tie-break among later, equal-scoring candidates.
+ */
+const SLOT_SEMANTICS_TMP_PREFIX = 'tsgit-rename-slot-semantics-';
+const SLOT_SEMANTICS_SETUP_TIMEOUT = 60_000;
+
+const slotJunkContent = (label: string): string =>
+  `completely unrelated ${label} content block\n`.repeat(6);
+
+const SLOT_SEMANTICS_ROWS: ReadonlyArray<RenameRow> = [
+  {
+    label:
+      '5 deleted sources for one destination: 3 unrelated junk below threshold and 2 tied best matches — the junk sources still occupy a slot, shifting the tie-break to the later-visited best match (R090 a4→d)',
+    before: [
+      { path: 'a0.meta', content: slotJunkContent('zero') },
+      { path: 'a1.meta', content: tenLineContent('base', 5) },
+      { path: 'a2.meta', content: slotJunkContent('two') },
+      { path: 'a3.meta', content: slotJunkContent('three') },
+      { path: 'a4.meta', content: tenLineContent('base', 5) },
+    ],
+    after: [{ path: 'd.meta', content: tenLineContent('base') }],
+  },
+];
+
+const slotSemanticsFixtures = new Map<string, { readonly dir: string }>();
+
+function slotSemanticsFixtureOf(label: string): { readonly dir: string } {
+  const found = slotSemanticsFixtures.get(label);
+  if (found === undefined) throw new Error(`fixture not built for row: ${label}`);
+  return found;
+}
+
+describe.skipIf(!GIT_AVAILABLE)('record_if_better slot semantics interop', () => {
+  beforeAll(async () => {
+    for (const row of SLOT_SEMANTICS_ROWS) {
+      slotSemanticsFixtures.set(row.label, await buildRenameRow(row, SLOT_SEMANTICS_TMP_PREFIX));
+    }
+  }, SLOT_SEMANTICS_SETUP_TIMEOUT);
+
+  afterAll(async () => {
+    for (const { dir } of slotSemanticsFixtures.values()) {
+      await rmDir(dir, { recursive: true, force: true });
+    }
+  });
+
+  describe('Given a raw diff pair exercising below-threshold candidates sharing the matrix with the real ones', () => {
+    describe('When diff is called with detectRenames', () => {
+      it.each(SLOT_SEMANTICS_ROWS)('Then name-status matches live git for: $label', async (row) => {
+        // Arrange
+        const { dir } = slotSemanticsFixtureOf(row.label);
+
+        // Act
+        const { ours, peer } = await runRenameRow(row, dir);
+
+        // Assert
+        expect(ours).toBe(peer);
+      });
+    });
+  });
+});
+
+/**
  * Use-count labelling interop: `git diff -C` labels a pair by how many times
  * its source is used (`--rename_used`), not by which pass produced it — a
  * single content-identical exact fold and an inexact match onto the SAME

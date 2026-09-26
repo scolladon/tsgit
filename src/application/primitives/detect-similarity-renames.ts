@@ -94,18 +94,38 @@ export function isSizeRejected(sfSize: number, dfSize: number, threshold: number
   return maxSize * (MAX_SCORE - threshold) < (maxSize - minSize) * MAX_SCORE;
 }
 
-/** Score one (src, dst) fingerprint pair and record in slots if it meets the threshold. */
+/**
+ * git's `estimate_similarity`: a non-regular side (missing fingerprint, never
+ * hydrated) or a size-incompatible pair scores 0 rather than being skipped —
+ * the caller still needs a score to feed `record_if_better`.
+ */
+function estimatePairSimilarity(
+  sf: BlobFingerprint | undefined,
+  df: BlobFingerprint | undefined,
+  threshold: number,
+): number {
+  if (sf === undefined || df === undefined) return 0;
+  if (isSizeRejected(sf.size, df.size, threshold)) return 0;
+  return estimateSimilarityFromMaps(sf.chunkMap, sf.size, df.chunkMap, df.size);
+}
+
+/**
+ * git's `record_if_better` is called for EVERY (src, dst) pair the matrix
+ * loop visits, never only the ones clearing the threshold — a size-rejected,
+ * non-regular, or below-threshold candidate still occupies a slot at score 0,
+ * and that slot's position decides the stable sort's tie-break among
+ * equal-ranked candidates later. `selectPairs` is where the threshold gate
+ * actually applies, not here.
+ */
 function scoreAndRecord(
-  sf: BlobFingerprint,
-  df: BlobFingerprint,
+  sf: BlobFingerprint | undefined,
+  df: BlobFingerprint | undefined,
   threshold: number,
   candidate: MatrixCandidate,
   slots: MatrixCandidate[],
 ): void {
-  // Stryker disable next-line ConditionalExpression: equivalent — a conservative necessary condition for `score >= threshold`; every pair it rejects also scores below threshold, so skipping the early return still records nothing at the gate below. Distinct from the id-level size gate upstream (`sizeCompatibleIds`, `selectHydrationIds`), whose own rejections ARE independently observable — a rejected id is never fingerprinted, never passed to `readBlob` at all — and which has its own dedicated tests; this per-PAIR check runs only on ids that already cleared that coarser gate.
-  if (isSizeRejected(sf.size, df.size, threshold)) return;
-  const score = estimateSimilarityFromMaps(sf.chunkMap, sf.size, df.chunkMap, df.size);
-  if (score >= threshold) recordIfBetter(slots, { ...candidate, score });
+  const score = estimatePairSimilarity(sf, df, threshold);
+  recordIfBetter(slots, { ...candidate, score });
 }
 
 /** Final emitted change for a labelled pair, generalised over the registry's
@@ -466,7 +486,6 @@ function buildMatrix(
     const slots: MatrixCandidate[] = [];
     for (const { index, source } of sources) {
       const sf = fingerprints.get(source.id);
-      if (sf === undefined) continue;
       const nameScore = hasSameBasename(source.path, destination.newPath) ? 1 : 0;
       scoreAndRecord(sf, df, threshold, { source: index, destination, score: 0, nameScore }, slots);
     }
@@ -503,7 +522,14 @@ async function runInexactMatrix(
     index,
     source: registrySources[index] as RenameSource,
   }));
-  const srcIds = matrixSources.map(({ source }) => source.id);
+  // A non-regular source stays in the matrix for slot semantics (buildMatrix
+  // scores it 0), but git's estimate_similarity checks S_ISREG on the SOURCE
+  // before ever touching a byte on either side — with no regular source at
+  // all, every pair is guaranteed 0 and no destination is worth hydrating.
+  const srcIds = matrixSources
+    .filter(({ source }) => isRegularFile(source.mode))
+    .map(({ source }) => source.id);
+  if (srcIds.length === 0) return null;
   const dstIds = destinations.map((d) => d.newId);
   const neededIds = await selectHydrationIds(ctx, srcIds, dstIds, threshold);
   const fingerprints = await hydrateFingerprints(ctx, neededIds, knownFingerprints);
@@ -1031,10 +1057,14 @@ function isRegularFile(mode: FileMode): boolean {
   return kindOf(mode) === 'file';
 }
 
-/** Runs the inexact matrix only when the rename-limit gate allows it — git's
- *  estimate_similarity scores regular files only, so a non-regular (symlink,
- *  gitlink) source is dropped from the matrix, and so is a non-regular
- *  destination, matching the source-side drop. */
+/** Runs the inexact matrix only when the rename-limit gate allows it. A
+ *  non-regular (symlink, gitlink) source is never hydrated, but it still
+ *  enters the matrix — `buildMatrix` scores it 0, matching git's own
+ *  `record_if_better` call for every visited source, non-regular included
+ *  (`runInexactMatrix` filters hydration to the regular subset only). A
+ *  non-regular destination is dropped up front: its own slot array can never
+ *  select it (score 0 never clears a positive threshold), so pre-filtering
+ *  it changes nothing observable and skips hydrating it for nothing. */
 async function runInexactMatrixIfPlanned(
   ctx: Context,
   registry: CandidateRegistry,
@@ -1055,14 +1085,11 @@ async function runInexactMatrixIfPlanned(
   );
   if (plan === null) return null;
 
-  const matrixIndices = plan.indices.filter((index) =>
-    isRegularFile((registry.sources[index] as RenameSource).mode),
-  );
   const matrixDestinations = exact.unpaired.filter((add) => isRegularFile(add.newMode));
   return runInexactMatrix(
     ctx,
     registry.sources,
-    matrixIndices,
+    plan.indices,
     matrixDestinations,
     exact.uses,
     threshold,

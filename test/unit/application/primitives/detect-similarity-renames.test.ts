@@ -1662,6 +1662,61 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
+  describe('Given 5 deleted sources for one destination, 3 unrelated junk below threshold and 2 tied best matches', () => {
+    describe('When detectSimilarityRenames is called', () => {
+      it('Then the junk sources still occupy a matrix slot, shifting the tie-break to the later-visited best match', async () => {
+        // Arrange — a0/a2/a3 are junk, far below the default 50% threshold;
+        // a1 and a4 are equally similar to d (one changed line out of ten).
+        // git's record_if_better visits every source, so a0's slot survives
+        // long enough to be evicted by a4, not a1 — a4 ends up ahead of a1 in
+        // the pre-sort array, and the stable sort keeps that order on the tie.
+        const ctx = await buildSeededContext();
+        const junkContent = (label: string): string =>
+          `completely unrelated ${label} content block\n`.repeat(6);
+        const [a0Id, a1Id, a2Id, a3Id, a4Id, dId] = await Promise.all([
+          writeBlob(ctx, junkContent('zero')),
+          writeBlob(ctx, tenLines(5)),
+          writeBlob(ctx, junkContent('two')),
+          writeBlob(ctx, junkContent('three')),
+          writeBlob(ctx, tenLines(5)),
+          writeBlob(ctx, tenLines(-1)),
+        ]);
+        const deletes = [
+          ['a0.txt', a0Id],
+          ['a1.txt', a1Id],
+          ['a2.txt', a2Id],
+          ['a3.txt', a3Id],
+          ['a4.txt', a4Id],
+        ] as const;
+        const diff: TreeDiff = {
+          changes: [
+            ...deletes.map(
+              ([path, oldId]) =>
+                ({
+                  type: 'delete',
+                  oldPath: path as FilePath,
+                  oldId,
+                  oldMode: FILE_MODE.REGULAR,
+                }) as const,
+            ),
+            { type: 'add', newPath: 'd.txt' as FilePath, newId: dId, newMode: FILE_MODE.REGULAR },
+          ],
+        };
+
+        // Act
+        const result = await detectSimilarityRenames(ctx, diff);
+
+        // Assert — a4 wins the destination, a1 stays a plain delete
+        const renames = result.changes.filter((c) => c.type === 'rename');
+        expect(renames).toHaveLength(1);
+        expect(renames[0]?.oldPath).toBe('a4.txt');
+        expect(result.changes.some((c) => c.type === 'delete' && c.oldPath === 'a1.txt')).toBe(
+          true,
+        );
+      });
+    });
+  });
+
   describe('Given a 5x5 scenario with unambiguous per-pair best scores', () => {
     describe('When detectSimilarityRenames is called', () => {
       it('Then all 5 pairs are detected as renames with no orphan', async () => {
