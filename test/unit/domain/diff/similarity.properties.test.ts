@@ -1,15 +1,54 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import {
-  buildChunkMap,
+  buildFingerprint,
+  countCopied,
+  denseFingerprint,
   estimateSimilarity,
   MAX_SCORE,
+  packFingerprint,
   toSimilarityPercent,
 } from '../../../../src/domain/diff/similarity.js';
 import { arbBlobBytes } from './arbitraries.js';
+import { buildChunkMap, countSrcCopied } from './support/spanhash-map-oracle.js';
 
 /** Mirrors git's `HASHBASE` (`diffcore-delta.c`) — a prime between 2^16..2^17. */
 const HASHBASE = 107927;
+
+/** Text peppered with CRLF pairs — exercises the CR-of-CRLF skip on every
+ *  other chunk boundary, not just the plain-LF case `arbBlobBytes` covers. */
+function arbCrlfHeavyText(): fc.Arbitrary<Uint8Array> {
+  return fc
+    .array(fc.constantFrom('ab', '\r\n', 'x\r\n', '\n'), { minLength: 1, maxLength: 80 })
+    .map((parts) => new TextEncoder().encode(parts.join('')));
+}
+
+/** Byte runs with no LF at all — every chunk boundary comes from the
+ *  MAX_CHUNK_LEN (64) forced flush, never the LF shortcut. */
+function arb64ByteRunsNoLf(): fc.Arbitrary<Uint8Array> {
+  return fc
+    .array(fc.integer({ min: 1, max: 255 }), { minLength: 1, maxLength: 600 })
+    .map((codes) => new Uint8Array(codes));
+}
+
+/** Sizes straddling HASHBASE — the exact dispatch boundary between
+ *  `packFingerprint` and `denseFingerprint`. Weighted low: generating tens of
+ *  thousands of bytes per draw is the most expensive lens. */
+function arbStraddlingHashbase(): fc.Arbitrary<Uint8Array> {
+  return fc.uint8Array({ minLength: HASHBASE - 5, maxLength: HASHBASE + 5 });
+}
+
+/** Every content shape the merge-scan and the pack/dense split need to agree
+ *  on: plain small blobs, CRLF-heavy text, long LF-free runs, and sizes
+ *  straddling the pack/dense dispatch threshold. */
+function arbFingerprintContent(): fc.Arbitrary<Uint8Array> {
+  return fc.oneof(
+    { weight: 6, arbitrary: arbBlobBytes() },
+    { weight: 6, arbitrary: arbCrlfHeavyText() },
+    { weight: 6, arbitrary: arb64ByteRunsNoLf() },
+    { weight: 1, arbitrary: arbStraddlingHashbase() },
+  );
+}
 
 describe('similarity properties', () => {
   describe('Given an arbitrary blob', () => {
@@ -100,20 +139,62 @@ describe('similarity properties', () => {
       });
     });
 
-    describe('When buildChunkMap is called (bucket range)', () => {
-      it('Then every hash-map key is an integer in [0, HASHBASE), for either content kind', () => {
+    describe('When buildFingerprint is called (bucket range and ordering)', () => {
+      it('Then hashes are ascending, distinct integers in [0, HASHBASE), for either content kind', () => {
         // Arrange
         fc.assert(
-          fc.property(arbBlobBytes(), fc.constantFrom('text', 'binary'), (bytes, kind) => {
+          fc.property(arbFingerprintContent(), fc.constantFrom('text', 'binary'), (bytes, kind) => {
             // Act
-            const buckets = buildChunkMap(bytes, kind);
+            const { hashes } = buildFingerprint(bytes, kind);
 
             // Assert
-            for (const key of buckets.keys()) {
-              expect(Number.isInteger(key)).toBe(true);
-              expect(key).toBeGreaterThanOrEqual(0);
-              expect(key).toBeLessThan(HASHBASE);
+            for (let i = 0; i < hashes.length; i++) {
+              const hash = hashes[i] as number;
+              expect(Number.isInteger(hash)).toBe(true);
+              expect(hash).toBeGreaterThanOrEqual(0);
+              expect(hash).toBeLessThan(HASHBASE);
+              if (i > 0) expect(hash).toBeGreaterThan(hashes[i - 1] as number);
             }
+          }),
+          { numRuns: 100 },
+        );
+      });
+    });
+
+    describe('When countCopied is compared against the independent Map oracle', () => {
+      it('Then the typed merge-scan matches the oracle exactly', () => {
+        // Arrange
+        fc.assert(
+          fc.property(
+            arbFingerprintContent(),
+            arbFingerprintContent(),
+            fc.constantFrom('text', 'binary'),
+            (src, dst, kind) => {
+              // Act
+              const result = countCopied(packFingerprint(src, kind), packFingerprint(dst, kind));
+              const expected = countSrcCopied(buildChunkMap(src, kind), buildChunkMap(dst, kind));
+
+              // Assert
+              expect(result).toBe(expected);
+            },
+          ),
+          { numRuns: 100 },
+        );
+      });
+    });
+
+    describe('When packFingerprint and denseFingerprint are both called on the same input', () => {
+      it('Then they produce identical hashes and counts', () => {
+        // Arrange
+        fc.assert(
+          fc.property(arbFingerprintContent(), fc.constantFrom('text', 'binary'), (data, kind) => {
+            // Act
+            const packed = packFingerprint(data, kind);
+            const dense = denseFingerprint(data, kind);
+
+            // Assert
+            expect(Array.from(dense.hashes)).toEqual(Array.from(packed.hashes));
+            expect(Array.from(dense.counts)).toEqual(Array.from(packed.counts));
           }),
           { numRuns: 100 },
         );

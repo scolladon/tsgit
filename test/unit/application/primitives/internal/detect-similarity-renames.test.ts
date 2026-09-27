@@ -107,7 +107,8 @@ describe('hydrateFingerprints', () => {
         const ctx = await buildSeededContext();
         const knownId = await writeBlob(ctx, 'already-known');
         const freshId = await writeBlob(ctx, 'freshly-hydrated');
-        const known = new Map([[knownId, { chunkMap: new Map(), size: 999 }]]);
+        const knownFingerprint = { hashes: new Uint32Array(), counts: new Uint32Array() };
+        const known = new Map([[knownId, { fingerprint: knownFingerprint, size: 999 }]]);
         const readSpy = vi.spyOn(readBlobMod, 'readBlob');
 
         // Act
@@ -115,7 +116,7 @@ describe('hydrateFingerprints', () => {
 
         // Assert
         expect(readSpy.mock.calls.some(([, id]) => id === knownId)).toBe(false);
-        expect(result.get(knownId)).toEqual({ chunkMap: new Map(), size: 999 });
+        expect(result.get(knownId)).toEqual({ fingerprint: knownFingerprint, size: 999 });
         expect(result.get(freshId)?.size).toBe('freshly-hydrated'.length);
         readSpy.mockRestore();
       });

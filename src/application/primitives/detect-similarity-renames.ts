@@ -27,14 +27,15 @@ import {
   uniqueBasenamePairs,
 } from '../../domain/diff/rename-pairing.js';
 import {
-  buildChunkMap,
+  buildFingerprint,
   contentKindOf,
   countSpanhashChanges,
   DEFAULT_BREAK_SCORE,
   DEFAULT_MERGE_SCORE,
   DEFAULT_RENAME_THRESHOLD,
-  estimateSimilarityFromMaps,
+  estimateSimilarityFromFingerprints,
   MAX_SCORE,
+  type SpanFingerprint,
 } from '../../domain/diff/similarity.js';
 import type { FileMode, FilePath, ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
@@ -79,7 +80,7 @@ export function recordIfBetter(slots: MatrixCandidate[], candidate: MatrixCandid
 
 /** Precomputed spanhash fingerprint for one blob. */
 export interface BlobFingerprint {
-  readonly chunkMap: Map<number, number>;
+  readonly fingerprint: SpanFingerprint;
   readonly size: number;
 }
 
@@ -107,7 +108,7 @@ function estimatePairSimilarity(
 ): number {
   if (sf === undefined || df === undefined) return 0;
   if (isSizeRejected(sf.size, df.size, threshold)) return 0;
-  return estimateSimilarityFromMaps(sf.chunkMap, sf.size, df.chunkMap, df.size);
+  return estimateSimilarityFromFingerprints(sf.fingerprint, sf.size, df.fingerprint, df.size);
 }
 
 /**
@@ -517,10 +518,7 @@ export async function hydrateFingerprints(
     missing,
     async (id): Promise<readonly [ObjectId, BlobFingerprint]> => {
       const { content } = await readBlob(ctx, id);
-      return [
-        id,
-        { chunkMap: buildChunkMap(content, contentKindOf(content)), size: content.length },
-      ];
+      return [id, toFingerprint(content)];
     },
   );
   const merged = new Map(known);
@@ -772,7 +770,7 @@ async function scoreOneModify(ctx: Context, mod: ModifyChange): Promise<ModifySc
 }
 
 function toFingerprint(bytes: Uint8Array): BlobFingerprint {
-  return { chunkMap: buildChunkMap(bytes, contentKindOf(bytes)), size: bytes.length };
+  return { fingerprint: buildFingerprint(bytes, contentKindOf(bytes)), size: bytes.length };
 }
 
 function toSyntheticDelete(change: ModifyChange | TypeChangeChange): DeleteChange {
@@ -1366,7 +1364,12 @@ function scoreBasenameCandidates(
     const source = sources[sourceIndex] as RenameSource;
     const sf = fingerprints.get(source.id) as BlobFingerprint;
     const df = fingerprints.get(destination.newId) as BlobFingerprint;
-    const score = estimateSimilarityFromMaps(sf.chunkMap, sf.size, df.chunkMap, df.size);
+    const score = estimateSimilarityFromFingerprints(
+      sf.fingerprint,
+      sf.size,
+      df.fingerprint,
+      df.size,
+    );
     if (score >= minBasename) pairs.push({ source: sourceIndex, destination, score });
   }
   return pairs;

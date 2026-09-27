@@ -64,73 +64,138 @@ export function contentKindOf(bytes: Uint8Array): ContentKind {
 }
 
 /**
- * Combine two spanhash accumulators into a hash-map bucket.
- * git's accumulators are `unsigned int`: the sum wraps to 32 bits BEFORE the
- * modulo is taken. `Math.imul` already wraps the product to a 32-bit (signed)
- * result, so only the addition needs the explicit `>>> 0` to land on the same
- * bucket as git's `(accum1 + accum2 * 0x61) % HASHBASE` in `hash_chars`.
+ * A sorted spanhash table: `hashes` is ascending and distinct, each entry
+ * < HASHBASE; `counts[i]` is the total byte count of every chunk that hashed
+ * into `hashes[i]`. The typed-array shape `packFingerprint`/`denseFingerprint`
+ * both build and `countCopied` merge-scans, replacing a per-blob hash-map
+ * with a sorted table scored the way git's `spanhash_top` is.
  */
-function bucketOf(accum1: number, accum2: number): number {
-  return ((accum1 + Math.imul(accum2, 0x61)) >>> 0) % HASHBASE;
-}
-
-/** Whether byte `i` of `data` (sized `size`) is the CR of a CRLF pair in a
- *  text blob — git's `hash_chars` skips exactly this byte: neither
- *  accumulated nor counted. A lone CR or a trailing CR (no following byte)
- *  is hashed like any other byte. */
-function isSkippedCr(kind: ContentKind, data: Uint8Array, i: number, size: number): boolean {
-  return kind === 'text' && data[i] === CR && i + 1 < size && data[i + 1] === 0x0a;
+export interface SpanFingerprint {
+  readonly hashes: Uint32Array;
+  readonly counts: Uint32Array;
 }
 
 /**
- * Build a map from chunk-hash → total byte count for all chunks in `data`.
- * Chunks are delimited by `\n` (LF) or every `MAX_CHUNK_LEN` bytes; in a text
- * blob, the CR of a CRLF pair is skipped first. Mirrors git's `hash_chars`
- * in `diffcore-delta.c`.
+ * Walk `data` into spanhash chunks — delimited by `\n` (LF) or every
+ * `MAX_CHUNK_LEN` bytes, whichever comes first, with the CR of a CRLF pair
+ * skipped first in a text blob — and call `onChunk` once per completed
+ * chunk with its bucket and byte count. Mirrors git's `hash_chars` in
+ * `diffcore-delta.c`; shared by `packFingerprint` and `denseFingerprint` so
+ * the accumulator arithmetic lives in exactly one place.
  */
-function buildChunkMap(data: Uint8Array, kind: ContentKind): Map<number, number> {
-  const map = new Map<number, number>();
+function walkChunks(
+  data: Uint8Array,
+  kind: ContentKind,
+  onChunk: (bucket: number, n: number) => void,
+): void {
   const size = data.length;
   let accum1 = 0;
   let accum2 = 0;
   let n = 0;
-
   for (let i = 0; i < size; i++) {
-    if (isSkippedCr(kind, data, i, size)) continue;
+    // The CR of a CRLF pair is skipped in a text blob: neither accumulated
+    // nor counted. A lone CR or a trailing CR (no following byte) is hashed
+    // like any other byte.
+    if (kind === 'text' && data[i] === CR && i + 1 < size && data[i + 1] === 0x0a) continue;
     // The loop guard `i < size` ensures `data[i]` is always defined.
     const c = data[i] as number;
     const old1 = accum1;
     accum1 = (((accum1 << 7) ^ (accum2 >>> 25)) + c) >>> 0;
     accum2 = ((accum2 << 7) ^ (old1 >>> 25)) >>> 0;
     n++;
-    if (n >= MAX_CHUNK_LEN || c === 0x0a /* LF */) {
-      const hashval = bucketOf(accum1, accum2);
-      map.set(hashval, (map.get(hashval) ?? 0) + n);
-      n = 0;
-      accum1 = 0;
-      accum2 = 0;
-    }
+    if (n < MAX_CHUNK_LEN && c !== 0x0a /* LF */) continue;
+    // git's accumulators are `unsigned int`: the sum wraps to 32 bits BEFORE
+    // the modulo is taken. `Math.imul` already wraps the product to a 32-bit
+    // (signed) result, so only the addition needs the explicit `>>> 0` to
+    // land on the same bucket as git's `(accum1 + accum2 * 0x61) % HASHBASE`.
+    onChunk(((accum1 + Math.imul(accum2, 0x61)) >>> 0) % HASHBASE, n);
+    n = 0;
+    accum1 = 0;
+    accum2 = 0;
   }
-  if (n > 0) {
-    const hashval = bucketOf(accum1, accum2);
-    map.set(hashval, (map.get(hashval) ?? 0) + n);
-  }
-
-  return map;
+  if (n > 0) onChunk(((accum1 + Math.imul(accum2, 0x61)) >>> 0) % HASHBASE, n);
 }
 
 /**
- * Count how many bytes from `src` were "copied" to `dst`.
- * For each chunk hash in src, takes min(src_cnt, dst_cnt) as copied bytes.
- * Mirrors git's `diffcore_count_changes` in `diffcore-delta.c`.
+ * Below HASHBASE bytes: pack each chunk as `(bucket << 7) | n` (bucket < 2^17,
+ * n <= MAX_CHUNK_LEN < 2^7, so the low 7 bits are free for n) into one array,
+ * sort it natively, then fold runs of the same bucket together. A transient
+ * allocation proportional to the chunk count, never to HASHBASE — cheap for
+ * the common small-diff blob.
  */
-function countSrcCopied(srcMap: Map<number, number>, dstMap: Map<number, number>): number {
+export function packFingerprint(data: Uint8Array, kind: ContentKind): SpanFingerprint {
+  const packed: number[] = [];
+  walkChunks(data, kind, (bucket, n) => packed.push((bucket << 7) | n));
+  packed.sort((a, b) => a - b);
+
+  const hashes: number[] = [];
+  const counts: number[] = [];
+  packed.forEach((value) => {
+    const bucket = value >>> 7;
+    const last = hashes.length - 1;
+    if (last >= 0 && hashes[last] === bucket) {
+      counts[last] = (counts[last] as number) + (value & 127);
+    } else {
+      hashes.push(bucket);
+      counts.push(value & 127);
+    }
+  });
+  return { hashes: Uint32Array.from(hashes), counts: Uint32Array.from(counts) };
+}
+
+/**
+ * At or above HASHBASE bytes: accumulate every chunk directly into a fixed
+ * HASHBASE-sized bucket array (no per-chunk allocation, no sort — every
+ * bucket already sits at its own ascending index) and read the touched ones
+ * back out in one linear pass.
+ */
+export function denseFingerprint(data: Uint8Array, kind: ContentKind): SpanFingerprint {
+  const accum = new Uint32Array(HASHBASE);
+  walkChunks(data, kind, (bucket, n) => {
+    accum[bucket] = (accum[bucket] as number) + n;
+  });
+
+  const hashes: number[] = [];
+  const counts: number[] = [];
+  accum.forEach((n, bucket) => {
+    if (n > 0) {
+      hashes.push(bucket);
+      counts.push(n);
+    }
+  });
+  return { hashes: Uint32Array.from(hashes), counts: Uint32Array.from(counts) };
+}
+
+/**
+ * Build `data`'s spanhash fingerprint, dispatching to whichever builder fits
+ * its size: `packFingerprint` below HASHBASE bytes, `denseFingerprint` at or
+ * above it.
+ */
+export function buildFingerprint(data: Uint8Array, kind: ContentKind): SpanFingerprint {
+  return data.length < HASHBASE ? packFingerprint(data, kind) : denseFingerprint(data, kind);
+}
+
+/**
+ * Count how many bytes from `src` were "copied" to `dst`: a two-pointer
+ * merge scan over both sorted, distinct hash tables, summing min(count) for
+ * every hash present in both. Mirrors git's `diffcore_count_changes` in
+ * `diffcore-delta.c` over its sorted `spanhash_top` table.
+ */
+export function countCopied(src: SpanFingerprint, dst: SpanFingerprint): number {
   let copied = 0;
-  for (const [hashval, srcCnt] of srcMap) {
-    const dstCnt = dstMap.get(hashval) ?? 0;
-    // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — dstCnt comes from `?? 0` so it is always >= 0; forcing this guard to always-true (or relaxing `>` to `>=`) only lets the dstCnt===0 case through Math.min(srcCnt, 0), which adds 0 to copied — same result.
-    if (dstCnt > 0) {
-      copied += Math.min(srcCnt, dstCnt);
+  let i = 0;
+  let j = 0;
+  while (i < src.hashes.length && j < dst.hashes.length) {
+    const a = src.hashes[i] as number;
+    const b = dst.hashes[j] as number;
+    if (a === b) {
+      copied += Math.min(src.counts[i] as number, dst.counts[j] as number);
+      i++;
+      j++;
+    } else if (a < b) {
+      i++;
+    } else {
+      j++;
     }
   }
   return copied;
@@ -167,14 +232,15 @@ export function countSpanhashChanges(src: Uint8Array, dst: Uint8Array): Spanhash
   const srcSize = src.length;
   const dstSize = dst.length;
 
-  // Stryker disable next-line ConditionalExpression,LogicalOperator,BlockStatement: equivalent — this guard is a perf short-circuit only. Skipping it (whole/either-operand forced false, || swapped to &&, or the body emptied) still falls through to buildChunkMap on an empty src/dst, which yields an empty map; countSrcCopied over an empty map always returns 0, so srcCopied=0 and literalAdded=dstSize-0=dstSize either way — verified by hand for every documented variant.
+  // Stryker disable next-line ConditionalExpression,LogicalOperator,BlockStatement: equivalent — this guard is a perf short-circuit only. Skipping it (whole/either-operand forced false, || swapped to &&, or the body emptied) still falls through to buildFingerprint on an empty src/dst, which yields an empty SpanFingerprint; countCopied over an empty table always returns 0, so srcCopied=0 and literalAdded=dstSize-0=dstSize either way — verified by hand for every documented variant.
   if (srcSize === 0 || dstSize === 0) {
     return { srcCopied: 0, literalAdded: dstSize };
   }
 
-  const srcMap = buildChunkMap(src, contentKindOf(src));
-  const dstMap = buildChunkMap(dst, contentKindOf(dst));
-  const srcCopied = countSrcCopied(srcMap, dstMap);
+  const srcCopied = countCopied(
+    buildFingerprint(src, contentKindOf(src)),
+    buildFingerprint(dst, contentKindOf(dst)),
+  );
 
   return { srcCopied, literalAdded: dstSize - srcCopied };
 }
@@ -189,51 +255,35 @@ export function countSpanhashChanges(src: Uint8Array, dst: Uint8Array): Spanhash
  * - One empty, other non-empty → 0
  */
 export function estimateSimilarity(src: Uint8Array, dst: Uint8Array): number {
-  const srcSize = src.length;
-  const dstSize = dst.length;
-  const maxSize = Math.max(srcSize, dstSize);
-
-  if (maxSize === 0) return MAX_SCORE;
-  // Stryker disable next-line ConditionalExpression,LogicalOperator: equivalent — this guard is a perf short-circuit only. Skipping it (whole/either-operand forced false, or || swapped to &&) still falls through to buildChunkMap on an empty src/dst, which yields an empty map; countSrcCopied over an empty map always returns 0, so Math.trunc(0 * MAX_SCORE / maxSize) = 0 either way — verified by hand for every documented variant.
-  if (srcSize === 0 || dstSize === 0) return 0;
-
-  const srcMap = buildChunkMap(src, contentKindOf(src));
-  const dstMap = buildChunkMap(dst, contentKindOf(dst));
-  const srcCopied = countSrcCopied(srcMap, dstMap);
-
-  return Math.trunc((srcCopied * MAX_SCORE) / maxSize);
+  return estimateSimilarityFromFingerprints(
+    buildFingerprint(src, contentKindOf(src)),
+    src.length,
+    buildFingerprint(dst, contentKindOf(dst)),
+    dst.length,
+  );
 }
 
 /**
- * Score two blobs from their precomputed chunk maps and byte sizes.
+ * Score two blobs from their precomputed fingerprints and byte sizes.
  * Avoids re-hashing bytes when a blob is scored against multiple partners.
  *
  * Special cases mirror `estimateSimilarity`:
  * - maxSize === 0 → MAX_SCORE
  * - either size === 0 → 0
  */
-export function estimateSimilarityFromMaps(
-  srcMap: Map<number, number>,
+export function estimateSimilarityFromFingerprints(
+  src: SpanFingerprint,
   srcSize: number,
-  dstMap: Map<number, number>,
+  dst: SpanFingerprint,
   dstSize: number,
 ): number {
   const maxSize = Math.max(srcSize, dstSize);
   if (maxSize === 0) return MAX_SCORE;
-  // Stryker disable next-line ConditionalExpression,LogicalOperator: equivalent — this guard is a perf short-circuit only. Skipping it (whole/either-operand forced false, or || swapped to &&) still falls through to countSrcCopied with an empty srcMap or dstMap (well-formed callers pass maps consistent with size), which always returns 0, so Math.trunc(0 * MAX_SCORE / maxSize) = 0 either way — verified by hand for every documented variant.
+  // Stryker disable next-line ConditionalExpression,LogicalOperator: equivalent — this guard is a perf short-circuit only. Skipping it (whole/either-operand forced false, or || swapped to &&) still falls through to countCopied with an empty src or dst fingerprint (well-formed callers pass fingerprints consistent with size), which always returns 0, so Math.trunc(0 * MAX_SCORE / maxSize) = 0 either way — verified by hand for every documented variant.
   if (srcSize === 0 || dstSize === 0) return 0;
-  const srcCopied = countSrcCopied(srcMap, dstMap);
+  const srcCopied = countCopied(src, dst);
   return Math.trunc((srcCopied * MAX_SCORE) / maxSize);
 }
-
-/**
- * Build a spanhash chunk map for a byte array, given its text/binary kind
- * (see `contentKindOf`). Exported for use in the rename/copy matrix to
- * fingerprint each blob once. Mirrors `buildChunkMap` (internal) — this is
- * the public alias for callers that need to cache fingerprints across
- * multiple pair comparisons.
- */
-export { buildChunkMap };
 
 /**
  * Project a raw score to an integer percent, truncating (not rounding).
