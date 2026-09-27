@@ -279,6 +279,32 @@ async function looseBytesForRecovery(ctx: Context, id: ObjectId): Promise<Uint8A
 }
 
 /**
+ * The recovery probe's own inflate-output bound: comfortably larger than
+ * any realistic `<type> <size>\0` header (git's own type words are at most
+ * six ASCII bytes) yet a small, fixed ceiling — never the claim-sized or
+ * gigabyte-sized inflate an uncapped `ctx.compressor.inflate` call would
+ * pay for just to recover a handful of header bytes from a hostile loose
+ * object.
+ */
+export const RECOVERY_HEADER_PROBE_BYTES = 1024;
+
+/**
+ * Recovers the `<type> <size>\0` header from a loose object's own
+ * compressed bytes, bounded by `RECOVERY_HEADER_PROBE_BYTES` of INFLATED
+ * output — the shared probe for both `recoverStoredType`'s own attempt and
+ * `looseDecodeFault`'s independent re-derivation, so neither ever inflates
+ * past this window while resolving a type. Recovery only ever needs the
+ * type, never the content the header's size claim promises.
+ */
+async function recoverHeader(
+  ctx: Context,
+  looseBytes: Uint8Array,
+): Promise<{ readonly type: ObjectType }> {
+  const head = await ctx.compressor.inflateHead(looseBytes, RECOVERY_HEADER_PROBE_BYTES);
+  return parseHeader(head);
+}
+
+/**
  * Re-asks git's own question about an object's STORED form: can a
  * `<type> <size>\0` header be recovered from it? Deliberately uses
  * `parseHeader`, NOT `splitObject` — `splitObject`'s size-mismatch check
@@ -301,7 +327,7 @@ async function recoverStoredType(
     return { kind: 'untyped' };
   }
   try {
-    const { type } = parseHeader(await ctx.compressor.inflate(looseBytes));
+    const { type } = await recoverHeader(ctx, looseBytes);
     return { kind: 'typed', objectType: type };
   } catch (probeErr) {
     // Narrow: a file that changed under the probe (or any other unrecognised
@@ -346,7 +372,7 @@ async function looseDecodeFault(ctx: Context, id: ObjectId): Promise<unknown> {
   const looseBytes = await looseBytesForRecovery(ctx, id);
   if (looseBytes === undefined || looseBytes.length === 0) return undefined;
   try {
-    parseHeader(await ctx.compressor.inflate(looseBytes));
+    await recoverHeader(ctx, looseBytes);
     return undefined;
   } catch (err) {
     // Narrow, mirroring `recoverStoredType`'s own probe: any unrecognised

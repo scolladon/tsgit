@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { type FsckFinding, fsck } from '../../../../src/application/commands/fsck.js';
+import { RECOVERY_HEADER_PROBE_BYTES } from '../../../../src/application/commands/internal/fsck/object-cache.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import { loadShallowSet } from '../../../../src/application/primitives/internal/shallow-set.js';
 import { MAX_SINGLE_PASS_COMPRESSED_BYTES } from '../../../../src/application/primitives/object-resolver.js';
@@ -4875,24 +4876,24 @@ describe('Given an undecodable dangling loose object whose probe re-inflate hits
     it('Then fsck rejects with that exact UNSUPPORTED_OPERATION, not a laundered abort', async () => {
       // Arrange — HOSTILE_GARBAGE_BYTES is not valid zlib AND sized above
       // MAX_SINGLE_PASS_COMPRESSED_BYTES, so the buffered read's own header
-      // probe (`inflateHead`, not wrapped here) is what fails the main read,
-      // never reaching this wrapped `.inflate` at all; the recovery probe's
-      // OWN reread (`recoverStoredType`) is what makes the FIRST call to
-      // `.inflate` — where this fault lands.
+      // probe is `inflateHead`'s FIRST call (real, unwrapped) — it fails the
+      // main read naturally, on the garbage bytes. The recovery probe's OWN
+      // reread (`recoverStoredType`) is what makes the SECOND `inflateHead`
+      // call — where this fault lands.
       const ctx = await initBareCtx();
       const garbageId = 'd9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9' as ObjectId;
       await writeGarbageLooseObject(ctx, garbageId, HOSTILE_GARBAGE_BYTES);
-      let inflateCalls = 0;
+      let inflateHeadCalls = 0;
       const wrapped: Context = {
         ...ctx,
         compressor: {
           ...ctx.compressor,
-          inflate: async (bytes: Uint8Array) => {
-            inflateCalls += 1;
-            if (inflateCalls === 1) {
+          inflateHead: async (bytes: Uint8Array, maxOutputBytes: number) => {
+            inflateHeadCalls += 1;
+            if (inflateHeadCalls === 2) {
               throw unsupportedOperation('filesystem', 'simulated adapter fault');
             }
-            return ctx.compressor.inflate(bytes);
+            return ctx.compressor.inflateHead(bytes, maxOutputBytes);
           },
         },
       };
@@ -4920,9 +4921,9 @@ describe('Given a packed object whose entry reads reject with PERMISSION_DENIED,
   describe('When fsck runs with connectivityOnly: true', () => {
     it("Then fsck rejects with that exact UNSUPPORTED_OPERATION — the widened trigger's own reread never launders an environmental fault", async () => {
       // Arrange — the widened recovery trigger's own re-derived loose decode
-      // fault (`looseDecodeFault`) is the FIRST thing to inflate this
-      // object's stale shadow bytes (the main read never touches loose here,
-      // pack-first); an unrecognised fault from that inflate call surfaces
+      // fault (`looseDecodeFault`) is the FIRST thing to probe this object's
+      // stale shadow bytes (the main read never touches loose here,
+      // pack-first); an unrecognised fault from that header probe surfaces
       // itself instead of being silently swallowed as "no decode fault".
       const ctx = await initBareCtx();
       const [blobId] = await writeSyntheticPack(
@@ -4944,7 +4945,7 @@ describe('Given a packed object whose entry reads reject with PERMISSION_DENIED,
         },
         compressor: {
           ...ctx.compressor,
-          inflate: async () => {
+          inflateHead: async () => {
             throw unsupportedOperation('filesystem', 'simulated reprobe adapter fault');
           },
         },
@@ -5240,17 +5241,16 @@ describe('Given a loose-only object whose main read hits PERMISSION_DENIED, whos
       // fails once (PERMISSION_DENIED), a non-decode fault. `probeLooseOid`'s
       // membership check still sees the file (it never reads content), so
       // recovery widens onto it. `looseDecodeFault`'s own reread succeeds
-      // (2nd `fs.read` call) and reaches its own inflate — the FIRST inflate
-      // call in this flow — where an unrelated fault must propagate
-      // immediately, never being swallowed and re-derived through
-      // `recoverStoredType`'s own, independent second inflate of the same
+      // (2nd `fs.read` call) and reaches its own header probe — the FIRST
+      // `inflateHead` call in this flow — where an unrelated fault must
+      // propagate immediately, never being swallowed and re-derived through
+      // `recoverStoredType`'s own, independent second probe of the same
       // bytes (which would otherwise succeed and silently recover 'blob').
       const ctx = await initBareCtx();
       const content = 'd13-loose-first-probe-fault-content';
       const id = await writeObject(ctx, makeBlob(content));
       const loosePath = looseObjectPath(ctx.layout.gitDir, id);
       let readCalls = 0;
-      let inflateCalls = 0;
       const wrapped: Context = {
         ...ctx,
         fs: {
@@ -5264,12 +5264,8 @@ describe('Given a loose-only object whose main read hits PERMISSION_DENIED, whos
         },
         compressor: {
           ...ctx.compressor,
-          inflate: async (bytes: Uint8Array) => {
-            inflateCalls += 1;
-            if (inflateCalls === 1) {
-              throw unsupportedOperation('filesystem', 'simulated first-probe fault');
-            }
-            return ctx.compressor.inflate(bytes);
+          inflateHead: async () => {
+            throw unsupportedOperation('filesystem', 'simulated first-probe fault');
           },
         },
       };
@@ -5473,21 +5469,24 @@ describe('Given an undecodable dangling loose object whose header type token emb
 });
 
 /**
- * Wraps `inflateHead` so the buffered read's own header probe always faults
- * with an unrelated adapter error, never reaching `parseHeader` on the
- * 32-byte-windowed prefix. `inflate` (unmocked) stays live: the recovery
- * probe's OWN loose reread (`looseDecodeFault` / `recoverStoredType`, which
- * call `ctx.compressor.inflate` directly, never `inflateHead`) still decodes
- * the object's full stored bytes with no window at all — the one seam left
- * where a header's raw type token can still reach `sanitizeReason`
- * unbounded, exactly as it did before Part 3 bounded the main read.
+ * Wraps `inflateHead` so the MAIN buffered read's own header probe (a
+ * 33-byte cap, `LOOSE_HEADER_PROBE_BYTES` in object-resolver.ts) always
+ * faults with an unrelated adapter error, never reaching `parseHeader` on
+ * the 32-byte-windowed prefix. The recovery probe's OWN, more generous
+ * `inflateHead` call (`RECOVERY_HEADER_PROBE_BYTES`, object-cache.ts) is let
+ * through to the real decoder — the one seam left where a header's raw type
+ * token can still reach `sanitizeReason` unbounded by the 32-byte window,
+ * exactly as it did before Part 3 bounded the main read.
  */
 function withFaultingHeadProbe(ctx: Context): Context {
   return {
     ...ctx,
     compressor: {
       ...ctx.compressor,
-      inflateHead: async () => {
+      inflateHead: async (data: Uint8Array, maxOutputBytes: number) => {
+        if (maxOutputBytes === RECOVERY_HEADER_PROBE_BYTES) {
+          return ctx.compressor.inflateHead(data, maxOutputBytes);
+        }
         throw unsupportedOperation('filesystem', 'simulated head-probe fault');
       },
     },
@@ -5570,24 +5569,54 @@ describe('Given an undecodable dangling loose object whose header type token is 
   });
 });
 
+describe('Given a hostile dangling loose object with no NUL anywhere in its 128 MiB inflated body, When fsck runs with connectivityOnly: true', () => {
+  it('Then the recovery reread never calls compressor.inflate without a cap — only the bounded inflateHead probe', async () => {
+    // Arrange — a decompression-bomb shape: a repeated-byte body compresses
+    // to a few hundred bytes on disk while inflating to 128 MiB, with no
+    // NUL anywhere, so recovery is the only remaining decode attempt and
+    // its own probe is what this row proves is bounded.
+    const ctx = await initBareCtx();
+    const HOSTILE_INFLATED_BYTES = 128 * 1024 * 1024;
+    await writeMalformedLooseObject(ctx, new Uint8Array(HOSTILE_INFLATED_BYTES).fill(0x61));
+    const inflateSpy = vi.spyOn(ctx.compressor, 'inflate');
+    const inflateHeadSpy = vi.spyOn(ctx.compressor, 'inflateHead');
+
+    // Act
+    let caught: unknown;
+    try {
+      await fsck(ctx, { connectivityOnly: true });
+    } catch (error) {
+      caught = error;
+    }
+
+    // Assert — every inflate call carries an explicit cap; recovery never
+    // pays for a claim-sized (or gigabyte-sized) inflate to find a type.
+    expect(inflateSpy.mock.calls.every(([, cap]) => cap !== undefined)).toBe(true);
+    const recoveryProbe = inflateHeadSpy.mock.calls.find(
+      ([, cap]) => cap === RECOVERY_HEADER_PROBE_BYTES,
+    );
+    expect(recoveryProbe).toBeDefined();
+    expect(caught).toBeInstanceOf(TsgitError);
+  });
+});
+
 describe('Given a garbage dangling loose object whose probe re-inflate fails with a DIFFERENT candidate code', () => {
   describe('When fsck runs with connectivityOnly: true', () => {
     it('Then the reject carries the ORIGINAL read failure, not the probe-era fault', async () => {
-      // Arrange
+      // Arrange — GARBAGE_BYTES is not valid zlib, so the main read's own
+      // single-pass `.inflate` call (never `inflateHead` — this object never
+      // reaches the hostile-sized arm) fails naturally, decode-shaped;
+      // `recoverStoredType`'s OWN header probe is the ONLY `inflateHead`
+      // call in this flow — where this fault lands.
       const ctx = await initBareCtx();
       const garbageId = 'e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1' as ObjectId;
       await writeGarbageLooseObject(ctx, garbageId, GARBAGE_BYTES);
-      let inflateCalls = 0;
       const wrapped: Context = {
         ...ctx,
         compressor: {
           ...ctx.compressor,
-          inflate: async (bytes: Uint8Array) => {
-            inflateCalls += 1;
-            if (inflateCalls === 2) {
-              throw invalidObjectHeader('probe-era failure');
-            }
-            return ctx.compressor.inflate(bytes);
+          inflateHead: async () => {
+            throw invalidObjectHeader('probe-era failure');
           },
         },
       };
@@ -5612,20 +5641,21 @@ describe('Given a garbage dangling loose object whose probe re-inflate fails wit
 describe('Given a malformed loose tree (non-candidate read failure) whose probe fails with a candidate code', () => {
   describe('When fsck runs with connectivityOnly: true', () => {
     it("Then fsck resolves with dangling/'unknown' — the reject gate follows the ORIGINAL error", async () => {
-      // Arrange
+      // Arrange — a valid header over a garbage body: the main read's own
+      // single-pass `.inflate` succeeds, failing only later at tree-content
+      // parsing with a code `isDecodeFault` still widens on
+      // (`INVALID_TREE_ENTRY`), so `readErr` short-circuits to that ORIGINAL
+      // fault directly and `looseDecodeFault` never runs at all —
+      // `recoverStoredType`'s OWN, ONLY header probe of the same bytes is
+      // where this fault lands.
       const ctx = await initBareCtx();
       const treeId = await writeMalformedLooseObject(ctx, buildLooseBytes('tree', GARBAGE_BYTES));
-      let inflateCalls = 0;
       const wrapped: Context = {
         ...ctx,
         compressor: {
           ...ctx.compressor,
-          inflate: async (bytes: Uint8Array) => {
-            inflateCalls += 1;
-            if (inflateCalls === 2) {
-              throw decompressFailed('probe decayed');
-            }
-            return ctx.compressor.inflate(bytes);
+          inflateHead: async () => {
+            throw decompressFailed('probe decayed');
           },
         },
       };
