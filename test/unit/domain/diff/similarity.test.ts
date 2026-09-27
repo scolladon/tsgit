@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { BINARY_DETECTION_BYTES } from '../../../../src/domain/diff/line-diff.js';
 import {
   buildChunkMap,
+  contentKindOf,
   countSpanhashChanges,
   DEFAULT_BREAK_SCORE,
   DEFAULT_MERGE_SCORE,
@@ -364,7 +366,7 @@ describe('similarity', () => {
       it('Then returns 0 (empty dst → no shared chunks)', () => {
         // Arrange
         const srcBytes = enc.encode('hello\n');
-        const srcMap = buildChunkMap(srcBytes);
+        const srcMap = buildChunkMap(srcBytes, 'text');
         const emptyMap = new Map<number, number>();
 
         // Act
@@ -379,8 +381,8 @@ describe('similarity', () => {
       it('Then returns the same score as estimateSimilarity', () => {
         // Arrange
         const { src, dst } = makeR087Fixture();
-        const srcMap = buildChunkMap(src);
-        const dstMap = buildChunkMap(dst);
+        const srcMap = buildChunkMap(src, 'text');
+        const dstMap = buildChunkMap(dst, 'text');
 
         // Act
         const result = estimateSimilarityFromMaps(srcMap, src.length, dstMap, dst.length);
@@ -450,7 +452,7 @@ describe('similarity', () => {
         },
       ])('Then $label', ({ data, hash, count }) => {
         // Arrange + Act
-        const result = buildChunkMap(data);
+        const result = buildChunkMap(data, 'text');
 
         // Assert
         expect(result.size).toBe(1);
@@ -467,7 +469,7 @@ describe('similarity', () => {
         const data = new Uint8Array([0x61, 0x0a, 0x62]);
 
         // Act
-        const result = buildChunkMap(data);
+        const result = buildChunkMap(data, 'text');
 
         // Assert — kills mutant 2 (flush=false produces 1 entry with a different hash)
         expect(result.size).toBe(2);
@@ -486,7 +488,7 @@ describe('similarity', () => {
         const data = new Uint8Array(65).fill(0x61);
 
         // Act
-        const result = buildChunkMap(data);
+        const result = buildChunkMap(data, 'text');
 
         // Assert — kills mutant 3: mutant produces 1 entry (all 65 bytes merged into one chunk)
         expect(result.size).toBe(2);
@@ -504,7 +506,7 @@ describe('similarity', () => {
         const data = new Uint8Array([0x0a]);
 
         // Act
-        const result = buildChunkMap(data);
+        const result = buildChunkMap(data, 'text');
 
         // Assert — kills mutants 6 and 7 (spurious zero-byte entry makes size 2)
         expect(result.size).toBe(1);
@@ -523,13 +525,84 @@ describe('similarity', () => {
         const data = new Uint8Array([94, 95, 127, 124, 92, 252]);
 
         // Act
-        const result = buildChunkMap(data);
+        const result = buildChunkMap(data, 'text');
 
         // Assert — kills the `>>> 0` removal mutant: without it, the single entry's key
         // would be 32252 (the un-wrapped bucket) instead of 19921
         expect(result.size).toBe(1);
         expect(result.get(19921)).toBe(6);
         expect(result.has(32252)).toBe(false);
+      });
+    });
+
+    describe('Given a CR immediately followed by an LF, When buildChunkMap is called with kind "text"', () => {
+      it('Then the CR is skipped: neither accumulated nor counted', () => {
+        // Arrange — 'A\r\n': the CR is skipped (kind is text and the next byte is LF),
+        // so only 'A' and the LF accumulate into one 2-byte chunk.
+        // accum1 after 'A' (0x41=65): 65, accum2: 0.
+        // accum1 after LF (0x0a=10): (((65<<7)^(0>>>25))+10)>>>0 = 8330, accum2: 0.
+        // bucketOf(8330, 0) = 8330 % 107927 = 8330.
+        const data = new Uint8Array([0x41, 0x0d, 0x0a]);
+
+        // Act
+        const result = buildChunkMap(data, 'text');
+
+        // Assert — kills a mutant that hashes the CR anyway: that would produce
+        // hash 95291 with count 3 instead of 8330 with count 2.
+        expect(result.size).toBe(1);
+        expect(result.get(8330)).toBe(2);
+      });
+    });
+
+    describe('Given a lone CR not followed by an LF, When buildChunkMap is called with kind "text"', () => {
+      it('Then the CR is hashed like any other byte', () => {
+        // Arrange — '\rA': the CR is NOT followed by LF, so the skip guard never
+        // fires; both bytes accumulate into one 2-byte partial chunk.
+        // accum1 after CR (0x0d=13): 13, accum2: 0.
+        // accum1 after 'A' (0x41=65): (((13<<7)^(0>>>25))+65)>>>0 = 1729, accum2: 0.
+        // bucketOf(1729, 0) = 1729 % 107927 = 1729.
+        const data = new Uint8Array([0x0d, 0x41]);
+
+        // Act
+        const result = buildChunkMap(data, 'text');
+
+        // Assert
+        expect(result.size).toBe(1);
+        expect(result.get(1729)).toBe(2);
+      });
+    });
+
+    describe('Given a trailing CR with no following byte, When buildChunkMap is called with kind "text"', () => {
+      it('Then the CR is hashed: the skip guard needs a following LF byte', () => {
+        // Arrange — 'A\r': the CR is the LAST byte, so `i + 1 < size` is false and
+        // the skip guard never fires; both bytes accumulate into one 2-byte chunk.
+        // accum1 after 'A' (0x41=65): 65, accum2: 0.
+        // accum1 after CR (0x0d=13): (((65<<7)^(0>>>25))+13)>>>0 = 8333, accum2: 0.
+        // bucketOf(8333, 0) = 8333 % 107927 = 8333.
+        const data = new Uint8Array([0x41, 0x0d]);
+
+        // Act
+        const result = buildChunkMap(data, 'text');
+
+        // Assert
+        expect(result.size).toBe(1);
+        expect(result.get(8333)).toBe(2);
+      });
+    });
+
+    describe('Given a CR immediately followed by an LF, When buildChunkMap is called with kind "binary"', () => {
+      it('Then the CR is hashed: the skip guard only fires for text', () => {
+        // Arrange — same 'A\r\n' bytes as the text case above, but kind is binary
+        // so the CR is never skipped: all 3 bytes accumulate into one chunk.
+        // This is the pre-fix behaviour, now reachable only through kind "binary".
+        const data = new Uint8Array([0x41, 0x0d, 0x0a]);
+
+        // Act
+        const result = buildChunkMap(data, 'binary');
+
+        // Assert
+        expect(result.size).toBe(1);
+        expect(result.get(95291)).toBe(3);
       });
     });
 
@@ -636,7 +709,7 @@ describe('similarity', () => {
         // Mutant 22 (dstSize part → false): same as 20
         // All appear equivalent; included for completeness alongside existing tests
         const src = enc.encode('hello\n');
-        const srcMap = buildChunkMap(src);
+        const srcMap = buildChunkMap(src, 'text');
         const emptyMap = new Map<number, number>();
 
         // Act
@@ -645,6 +718,95 @@ describe('similarity', () => {
         // Assert
         expect(result).toBe(0);
       });
+    });
+  });
+
+  describe('contentKindOf', () => {
+    describe('Given bytes with no NUL in the first 8000 bytes, When contentKindOf is called', () => {
+      it('Then returns "text"', () => {
+        // Arrange + Act
+        const result = contentKindOf(enc.encode('hello world\n'));
+
+        // Assert
+        expect(result).toBe('text');
+      });
+    });
+
+    describe('Given bytes with a NUL in the first 8000 bytes, When contentKindOf is called', () => {
+      it('Then returns "binary"', () => {
+        // Arrange
+        const bytes = new Uint8Array(16).fill(0x61);
+        bytes[4] = 0x00;
+
+        // Act
+        const result = contentKindOf(bytes);
+
+        // Assert
+        expect(result).toBe('binary');
+      });
+    });
+
+    describe('Given a NUL at the last byte inside the detection window, When contentKindOf is called', () => {
+      it('Then returns "binary"', () => {
+        // Arrange — NUL at index BINARY_DETECTION_BYTES - 1 is inside the window
+        const bytes = new Uint8Array(BINARY_DETECTION_BYTES + 1).fill(0x61);
+        bytes[BINARY_DETECTION_BYTES - 1] = 0x00;
+
+        // Act
+        const result = contentKindOf(bytes);
+
+        // Assert
+        expect(result).toBe('binary');
+      });
+    });
+
+    describe('Given a NUL at the first byte outside the detection window, When contentKindOf is called', () => {
+      it('Then returns "text" — the window boundary is exclusive', () => {
+        // Arrange — NUL at index BINARY_DETECTION_BYTES is outside the window
+        const bytes = new Uint8Array(BINARY_DETECTION_BYTES + 1).fill(0x61);
+        bytes[BINARY_DETECTION_BYTES] = 0x00;
+
+        // Act
+        const result = contentKindOf(bytes);
+
+        // Assert
+        expect(result).toBe('text');
+      });
+    });
+  });
+
+  describe('Given a CRLF pair only on the src side, When countSpanhashChanges is called', () => {
+    it('Then the CR in src is skipped, matching a dst that never had it (srcCopied equals dstSize)', () => {
+      // Arrange — src = 'A\r\nB\n' (5 bytes), dst = 'A\nB\n' (4 bytes). Both sides are
+      // text (no NUL), so src's CR is skipped: its two chunks (hash(A,LF)=8330 and
+      // hash(B,LF)) become byte-for-byte the same chunks dst hashes, so every byte
+      // of dst is copied from src. Without the fix, src's first chunk would hash
+      // to 95291 (CR included) instead of 8330, so only the second chunk (2 bytes)
+      // would be shared and literalAdded would be 2, not 0.
+      const src = enc.encode('A\r\nB\n');
+      const dst = enc.encode('A\nB\n');
+
+      // Act
+      const result = countSpanhashChanges(src, dst);
+
+      // Assert
+      expect(result.srcCopied).toBe(4);
+      expect(result.literalAdded).toBe(0);
+    });
+  });
+
+  describe('Given a CRLF pair only on the src side, When estimateSimilarity is called', () => {
+    it('Then the score reflects the CR-skipped byte count, not the CR-counted one', () => {
+      // Arrange — same pair as above: fixed srcCopied=4, maxSize=5 → trunc(4*60000/5)=48000.
+      // Without the fix (CR counted), srcCopied would be 2 → trunc(2*60000/5)=24000.
+      const src = enc.encode('A\r\nB\n');
+      const dst = enc.encode('A\nB\n');
+
+      // Act
+      const result = estimateSimilarity(src, dst);
+
+      // Assert
+      expect(result).toBe(48000);
     });
   });
 });

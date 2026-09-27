@@ -101,12 +101,12 @@ describe('similarity properties', () => {
     });
 
     describe('When buildChunkMap is called (bucket range)', () => {
-      it('Then every hash-map key is an integer in [0, HASHBASE)', () => {
+      it('Then every hash-map key is an integer in [0, HASHBASE), for either content kind', () => {
         // Arrange
         fc.assert(
-          fc.property(arbBlobBytes(), (bytes) => {
+          fc.property(arbBlobBytes(), fc.constantFrom('text', 'binary'), (bytes, kind) => {
             // Act
-            const buckets = buildChunkMap(bytes);
+            const buckets = buildChunkMap(bytes, kind);
 
             // Assert
             for (const key of buckets.keys()) {

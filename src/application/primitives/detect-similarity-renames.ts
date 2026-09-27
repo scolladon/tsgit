@@ -28,6 +28,7 @@ import {
 } from '../../domain/diff/rename-pairing.js';
 import {
   buildChunkMap,
+  contentKindOf,
   countSpanhashChanges,
   DEFAULT_BREAK_SCORE,
   DEFAULT_MERGE_SCORE,
@@ -516,7 +517,10 @@ export async function hydrateFingerprints(
     missing,
     async (id): Promise<readonly [ObjectId, BlobFingerprint]> => {
       const { content } = await readBlob(ctx, id);
-      return [id, { chunkMap: buildChunkMap(content), size: content.length }];
+      return [
+        id,
+        { chunkMap: buildChunkMap(content, contentKindOf(content)), size: content.length },
+      ];
     },
   );
   const merged = new Map(known);
@@ -768,7 +772,7 @@ async function scoreOneModify(ctx: Context, mod: ModifyChange): Promise<ModifySc
 }
 
 function toFingerprint(bytes: Uint8Array): BlobFingerprint {
-  return { chunkMap: buildChunkMap(bytes), size: bytes.length };
+  return { chunkMap: buildChunkMap(bytes, contentKindOf(bytes)), size: bytes.length };
 }
 
 function toSyntheticDelete(change: ModifyChange | TypeChangeChange): DeleteChange {

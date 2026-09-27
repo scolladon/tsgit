@@ -1,10 +1,13 @@
+import { isBinary } from './line-diff.js';
+
 /**
  * Pure spanhash similarity scorer — git's diffcore-delta.c algorithm.
  * I/O-free; never imports platform adapters.
  *
  * Algorithm (mirrors git's `hash_chars` + `diffcore_count_changes`):
  * 1. Split each blob into chunks delimited by LF or up to 64 bytes, whichever
- *    comes first (same rule git applies for text vs binary).
+ *    comes first (same rule git applies for text vs binary). In a text blob,
+ *    the CR of a CRLF pair is skipped: neither accumulated nor counted.
  * 2. Hash each chunk with git's two-accumulator rolling hash and store its byte
  *    count in a hash-map keyed by `(accum1 + accum2 * 0x61) % HASHBASE`.
  * 3. For each chunk hash present in BOTH src and dst, count min(src_cnt, dst_cnt)
@@ -40,6 +43,26 @@ const HASHBASE = 107927;
 /** Max chunk size before forcing a hash boundary (git constant). */
 const MAX_CHUNK_LEN = 64;
 
+/** Carriage return — the byte git's spanhash chunk walk skips when it opens
+ *  a CRLF pair in a text blob. */
+const CR = 0x0d;
+
+/** Whether a blob's bytes are treated as text or binary while chunking:
+ *  text skips the CR of a CRLF pair, binary hashes every byte. Mirrors git's
+ *  `is_text` in `hash_chars`. */
+export type ContentKind = 'text' | 'binary';
+
+/**
+ * git derives `is_text` from `!diff_filespec_is_binary`, which falls back to
+ * a content sniff (`buffer_is_binary`) whenever no diff attribute already
+ * decided. This port has no attribute plumbing into the rename/break pass,
+ * so it always takes that fallback: `isBinary`'s NUL-in-the-first-8000-bytes
+ * window (`line-diff.ts`).
+ */
+export function contentKindOf(bytes: Uint8Array): ContentKind {
+  return isBinary(bytes) ? 'binary' : 'text';
+}
+
 /**
  * Combine two spanhash accumulators into a hash-map bucket.
  * git's accumulators are `unsigned int`: the sum wraps to 32 bits BEFORE the
@@ -51,12 +74,21 @@ function bucketOf(accum1: number, accum2: number): number {
   return ((accum1 + Math.imul(accum2, 0x61)) >>> 0) % HASHBASE;
 }
 
+/** Whether byte `i` of `data` (sized `size`) is the CR of a CRLF pair in a
+ *  text blob — git's `hash_chars` skips exactly this byte: neither
+ *  accumulated nor counted. A lone CR or a trailing CR (no following byte)
+ *  is hashed like any other byte. */
+function isSkippedCr(kind: ContentKind, data: Uint8Array, i: number, size: number): boolean {
+  return kind === 'text' && data[i] === CR && i + 1 < size && data[i + 1] === 0x0a;
+}
+
 /**
  * Build a map from chunk-hash → total byte count for all chunks in `data`.
- * Chunks are delimited by `\n` (LF) or every `MAX_CHUNK_LEN` bytes.
- * Mirrors git's `hash_chars` in `diffcore-delta.c`.
+ * Chunks are delimited by `\n` (LF) or every `MAX_CHUNK_LEN` bytes; in a text
+ * blob, the CR of a CRLF pair is skipped first. Mirrors git's `hash_chars`
+ * in `diffcore-delta.c`.
  */
-function buildChunkMap(data: Uint8Array): Map<number, number> {
+function buildChunkMap(data: Uint8Array, kind: ContentKind): Map<number, number> {
   const map = new Map<number, number>();
   const size = data.length;
   let accum1 = 0;
@@ -64,6 +96,7 @@ function buildChunkMap(data: Uint8Array): Map<number, number> {
   let n = 0;
 
   for (let i = 0; i < size; i++) {
+    if (isSkippedCr(kind, data, i, size)) continue;
     // The loop guard `i < size` ensures `data[i]` is always defined.
     const c = data[i] as number;
     const old1 = accum1;
@@ -139,8 +172,8 @@ export function countSpanhashChanges(src: Uint8Array, dst: Uint8Array): Spanhash
     return { srcCopied: 0, literalAdded: dstSize };
   }
 
-  const srcMap = buildChunkMap(src);
-  const dstMap = buildChunkMap(dst);
+  const srcMap = buildChunkMap(src, contentKindOf(src));
+  const dstMap = buildChunkMap(dst, contentKindOf(dst));
   const srcCopied = countSrcCopied(srcMap, dstMap);
 
   return { srcCopied, literalAdded: dstSize - srcCopied };
@@ -164,8 +197,8 @@ export function estimateSimilarity(src: Uint8Array, dst: Uint8Array): number {
   // Stryker disable next-line ConditionalExpression,LogicalOperator: equivalent — this guard is a perf short-circuit only. Skipping it (whole/either-operand forced false, or || swapped to &&) still falls through to buildChunkMap on an empty src/dst, which yields an empty map; countSrcCopied over an empty map always returns 0, so Math.trunc(0 * MAX_SCORE / maxSize) = 0 either way — verified by hand for every documented variant.
   if (srcSize === 0 || dstSize === 0) return 0;
 
-  const srcMap = buildChunkMap(src);
-  const dstMap = buildChunkMap(dst);
+  const srcMap = buildChunkMap(src, contentKindOf(src));
+  const dstMap = buildChunkMap(dst, contentKindOf(dst));
   const srcCopied = countSrcCopied(srcMap, dstMap);
 
   return Math.trunc((srcCopied * MAX_SCORE) / maxSize);
@@ -194,10 +227,11 @@ export function estimateSimilarityFromMaps(
 }
 
 /**
- * Build a spanhash chunk map for a byte array.
- * Exported for use in the rename/copy matrix to fingerprint each blob once.
- * Mirrors `buildChunkMap` (internal) — this is the public alias for callers
- * that need to cache fingerprints across multiple pair comparisons.
+ * Build a spanhash chunk map for a byte array, given its text/binary kind
+ * (see `contentKindOf`). Exported for use in the rename/copy matrix to
+ * fingerprint each blob once. Mirrors `buildChunkMap` (internal) — this is
+ * the public alias for callers that need to cache fingerprints across
+ * multiple pair comparisons.
  */
 export { buildChunkMap };
 

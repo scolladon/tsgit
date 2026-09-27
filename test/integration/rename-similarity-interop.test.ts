@@ -2577,6 +2577,95 @@ describeRenameRows(
 );
 
 /**
+ * CRLF CR-skip interop: git's `hash_chars` skips the CR of a CRLF pair when
+ * the blob is text, so the spanhash byte-copied count — and every score
+ * derived from it, rename similarity and break dissimilarity alike — counts
+ * one fewer byte per CRLF line than a scorer that hashes the CR too.
+ */
+const CRLF_SKIP_TMP_PREFIX = 'tsgit-rename-crlf-skip-';
+const CRLF_SKIP_SETUP_TIMEOUT = 60_000;
+const CRLF_TEXT_LINE_COUNT = 20;
+const CRLF_TEXT_EDIT_START = 5;
+const CRLF_TEXT_EDIT_END = 11;
+
+/** `total` CRLF-terminated lines; lines in `[editedFrom, editedTo)` carry an
+ *  "edited" prefix, every other line is byte-identical shared content. */
+const crlfTextLines = (editedFrom: number, editedTo: number): string =>
+  Array.from({ length: CRLF_TEXT_LINE_COUNT }, (_, i) => {
+    const edited = i >= editedFrom && i < editedTo;
+    const text = edited
+      ? `edited line ${String(i).padStart(2, '0')}`
+      : `line ${String(i).padStart(2, '0')} shared content`;
+    return `${text}\r\n`;
+  }).join('');
+
+/**
+ * Verified against real git 2.55.0 (scrubbed env, signing off): plain `-M`
+ * pairs this fixture as `R067`, the CR-skipped percentage; a scorer that
+ * hashes the CR too reports `R070` for the same bytes.
+ */
+const CRLF_TEXT_ROWS: ReadonlyArray<RenameRow> = [
+  {
+    label:
+      'a CRLF text file with 6 of 20 lines edited scores by the CR-skipped byte count, not the CR-counted one (R067 old→new)',
+    before: [{ path: 'old.txt', content: crlfTextLines(0, 0) }],
+    after: [{ path: 'new.txt', content: crlfTextLines(CRLF_TEXT_EDIT_START, CRLF_TEXT_EDIT_END) }],
+  },
+];
+
+describeRenameRows(
+  'CRLF text rename similarity CR-skip interop',
+  CRLF_TEXT_ROWS,
+  CRLF_SKIP_TMP_PREFIX,
+  CRLF_SKIP_SETUP_TIMEOUT,
+  {
+    given: 'Given a raw diff pair of CRLF text files exercising the rename similarity pass',
+  },
+);
+
+const CRLF_BREAK_TMP_PREFIX = 'tsgit-rename-crlf-break-skip-';
+const CRLF_BREAK_SETUP_TIMEOUT = 60_000;
+const CRLF_BREAK_OPTS = { breakRewrites: { score: 30000, merge: 36000 } };
+
+/** `total` CRLF-terminated lines for break-rewrite fixtures — the CRLF twin
+ *  of the plain-LF `breakContent` above. */
+const crlfBreakContent = (kind: 'old' | 'new', total: number, shared: number): string =>
+  Array.from({ length: total }, (_, i) =>
+    kind === 'old' || i < shared
+      ? `line-${String(i).padStart(3, '0')}: shared content alpha beta gamma delta epsilon zeta eta theta\r\n`
+      : `different-${String(i).padStart(3, '0')}: COMPLETELY NEW TEXT ZETA THETA KAPPA LAMBDA MU NU XI OMICRON PI RHO SIGMA\r\n`,
+  ).join('');
+
+/**
+ * Verified against real git 2.55.0 (scrubbed env, signing off): `--no-renames
+ * -B --name-status` keeps this rewrite broken at `M091`, the CR-skipped
+ * dissimilarity percentage; a scorer that hashes the CR too computes `M090`
+ * for the same bytes.
+ */
+const CRLF_BREAK_ROWS: ReadonlyArray<RenameRow> = [
+  {
+    label:
+      'a CRLF rewrite kept broken under --no-renames -B scores its dissimilarity by the CR-skipped byte count, not the CR-counted one (M091 m.txt)',
+    before: [{ path: 'm.txt', content: crlfBreakContent('old', 11, 1) }],
+    after: [{ path: 'm.txt', content: crlfBreakContent('new', 11, 1) }],
+    detectRenames: false,
+    gitFlags: ['-B'],
+    renameOptions: CRLF_BREAK_OPTS,
+  },
+];
+
+describeRenameRows(
+  'CRLF break-rewrite dissimilarity CR-skip interop',
+  CRLF_BREAK_ROWS,
+  CRLF_BREAK_TMP_PREFIX,
+  CRLF_BREAK_SETUP_TIMEOUT,
+  {
+    given: 'Given a raw diff pair of CRLF text files exercising the -B break-rewrite pass',
+    when: 'When diff is called without detectRenames',
+  },
+);
+
+/**
  * name_score matrix tie-break interop: `git diff -M` (some rows also `-C`)
  * breaks an equal-score tie between inexact candidates on a matching
  * basename (`score_compare` / `record_if_better`), never on build order.
