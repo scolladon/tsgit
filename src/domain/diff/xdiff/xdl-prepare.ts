@@ -168,7 +168,12 @@ function cleanupSide(
     action[i] = classifyAction(otherOccurrences[ids[i + dstart]!]!, mlim);
   }
 
-  const referenceIndex: number[] = [];
+  // `len` is the exact upper bound on kept lines, so a single pre-sized
+  // Int32Array plus a write cursor replaces a growable number[] (per-push
+  // boxing) followed by an Int32Array.from conversion pass — one allocation
+  // and one pass instead of two of each. `subarray` is a view, not a copy.
+  const referenceIndex = new Int32Array(len);
+  let keptCount = 0;
   for (let i = 0; i < len; i++) {
     const resolved =
       action[i] === ACTION.INVESTIGATE
@@ -176,10 +181,10 @@ function cleanupSide(
           ? ACTION.DISCARD
           : ACTION.KEEP
         : action[i]!;
-    if (resolved === ACTION.KEEP) referenceIndex.push(i + dstart);
+    if (resolved === ACTION.KEEP) referenceIndex[keptCount++] = i + dstart;
     else changed[i + dstart] = 1;
   }
-  return { changed, referenceIndex: Int32Array.from(referenceIndex) };
+  return { changed, referenceIndex: referenceIndex.subarray(0, keptCount) };
 }
 
 /**
