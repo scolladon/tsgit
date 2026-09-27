@@ -246,7 +246,12 @@ done
 # over the old cap, attributable to xdl-compact.ts's group-slide/measure-split/
 # score machinery — runtime code shipped in every distribution form, none
 # removable without giving back git-faithful hunk placement.
-SIZE_CAP=$((1004 * 1024))
+# Raised 1004 -> 1007 KiB by the xdiff divide-and-conquer split engine that
+# replaces the bounded Myers trace (git's own snake heuristic and cost cap):
+# the measured tarball lands at 1 030 070 B, 1 974 B over the old cap,
+# attributable to xdl-split.ts — runtime code shipped in every distribution
+# form, none removable without giving back the whole-file-bail-free engine.
+SIZE_CAP=$((1007 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders

@@ -50642,7 +50642,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " concatenates both\nsides with no markers (always clean). Binary content and a degraded diff fall\nback to a single whole-file region."
+										"text": " concatenates both\nsides with no markers (always clean). Binary content falls back to a single\nwhole-file region."
 									}
 								]
 							},
@@ -98603,6 +98603,22 @@
 							"flags": {
 								"isReadonly": true
 							},
+							"comment": {
+								"summary": [
+									{
+										"kind": "text",
+										"text": "Always "
+									},
+									{
+										"kind": "code",
+										"text": "`false`"
+									},
+									{
+										"kind": "text",
+										"text": "; kept so existing readers compile. git's xdiff engine\n never bails to a whole-file replace, however large the true edit\n distance is."
+									}
+								]
+							},
 							"type": {
 								"type": "intrinsic",
 								"name": "boolean"
@@ -142911,7 +142927,7 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Myers line diff of "
+										"text": "git's xdiff line diff of "
 									},
 									{
 										"kind": "code",
@@ -142927,15 +142943,7 @@
 									},
 									{
 										"kind": "text",
-										"text": ", degrading to a whole-file\nreplace when the pair's true edit distance exceeds "
-									},
-									{
-										"kind": "code",
-										"text": "`MAX_DIFF_EDIT_DISTANCE`"
-									},
-									{
-										"kind": "text",
-										"text": "."
+										"text": ": classify, run the\nlinear-space divide-and-conquer Myers search, then slide the resulting\nchange groups like git's own compaction pass. Never degrades to a\nwhole-file replace, however large the pair's true edit distance is."
 									}
 								]
 							},

@@ -332,11 +332,13 @@ describe('mergeContent', () => {
     });
   });
 
-  describe('Given one side forces degraded diff (iteration cap)', () => {
+  describe('Given base and ours are completely disjoint, large sides', () => {
     describe('When mergeContent called', () => {
-      it('Then whole-file fallback conflict', () => {
-        // Arrange — base and ours completely disjoint, large enough to trigger iteration cap.
-        // theirs differs slightly from base to bypass the fast-path equality shortcuts.
+      it('Then the whole-file rewrite conflicts with theirs’ small edit to the same region', () => {
+        // Arrange — base and ours share no line at all, so ours' diff against base
+        // is itself a full-region rewrite [0, N). theirs differs slightly from base
+        // (bypassing the fast-path equality shortcut) inside that same region, so the
+        // two sides' changes overlap and conflict.
         const N = 1500;
         const base = enc(Array.from({ length: N }, (_, i) => `b${i}\n`).join(''));
         const ours = enc(Array.from({ length: N }, (_, i) => `o${i}\n`).join(''));
@@ -347,7 +349,7 @@ describe('mergeContent', () => {
         // Act
         const result = mergeContent(base, ours, theirs);
 
-        // Assert — degraded path emits a whole-file content conflict
+        // Assert — ours' whole-region rewrite overlaps theirs' edit
         assertConflict(result, 'content');
       }, 60_000);
     });
@@ -447,11 +449,11 @@ describe('mergeContent', () => {
     });
   });
 
-  describe('Given only theirs diff is degraded (not ours)', () => {
+  describe('Given base and theirs are completely disjoint (not ours)', () => {
     describe('When mergeContent called', () => {
-      it('Then whole-file fallback conflict', () => {
-        // Arrange — base vs theirs is degenerate (completely disjoint, large), base vs ours is trivial (same).
-        // This kills the || → && mutation: if only theirsDiff.degraded is true, the || path must still trigger.
+      it('Then theirs’ whole-file rewrite conflicts with ours’ small edit to the same region', () => {
+        // Arrange — base vs theirs share no line at all (a full-region rewrite);
+        // base vs ours is a tiny one-line edit inside that same region.
         const N = 1500;
         const base = enc(Array.from({ length: N }, (_, i) => `b${i}\n`).join(''));
         const theirs = enc(Array.from({ length: N }, (_, i) => `t${i}\n`).join(''));
@@ -717,13 +719,14 @@ describe('mergeContent', () => {
     });
   });
 
-  describe('Given ours diff degrades while theirs only appends one line at the base end', () => {
+  describe('Given ours is a completely disjoint rewrite while theirs only appends one line at the base end', () => {
     describe('When mergeContent called', () => {
-      it('Then whole-file conflict (degraded guard fires)', () => {
-        // Arrange — base/ours exceed the diff line cap (M+N > 50000) so ours' diff degrades, while
-        // theirs is base plus a single appended line (a tiny, non-degraded diff). The degraded guard
-        // must short-circuit to a whole-file conflict: without it, the degraded whole-file change
-        // [0,baseLen) would NOT collide with theirs' zero-length end-append and wrongly merge clean.
+      it('Then whole-file conflict — the rewrite touches theirs’ end-append', () => {
+        // Arrange — base and ours share no line at all, so ours' diff against base
+        // is a full-region rewrite [0, baseLen) that reaches the very end of base.
+        // theirs is base plus a single appended line — a zero-length change at
+        // baseLen. git's touching rule (xdl_do_merge) conflicts here: ours' change
+        // ends exactly where theirs' begins, which is not "strictly before".
         const baseLen = 20_000;
         const baseText = Array.from({ length: baseLen }, (_, i) => `b${i}\n`).join('');
         const base = enc(baseText);
@@ -739,12 +742,11 @@ describe('mergeContent', () => {
     });
   });
 
-  describe('Given ours equal to base and a cap-exceeding theirs', () => {
+  describe('Given ours equal to base and a large theirs', () => {
     describe('When mergeContent called', () => {
-      it('Then the ours-unchanged fast path returns clean theirs (not the degraded conflict)', () => {
-        // Arrange — ours === base (empty); theirs has 50_001 lines so diffLines(base, theirs)
-        // degrades (M+N > 50_000). The `bytesEqual(ours, base)` fast path must short-circuit
-        // to clean; skipping it falls through to the degraded slow path → whole-file conflict.
+      it('Then the ours-unchanged fast path returns clean theirs', () => {
+        // Arrange — ours === base (empty); theirs has 50_001 lines, an add-only
+        // change the `bytesEqual(ours, base)` fast path short-circuits to clean.
         const base = new Uint8Array(0);
         const ours = new Uint8Array(0);
         const theirsText = Array.from({ length: 50_001 }, (_, i) => `line${i}\n`).join('');
@@ -753,7 +755,7 @@ describe('mergeContent', () => {
         // Act
         const result = mergeContent(base, ours, theirs);
 
-        // Assert — clean, byte-identical to theirs (slow path would yield status 'conflict')
+        // Assert — clean, byte-identical to theirs
         expect(result.status).toBe('clean');
         if (result.status === 'clean') {
           expect(decoder.decode(result.bytes)).toBe(theirsText);
@@ -762,12 +764,11 @@ describe('mergeContent', () => {
     });
   });
 
-  describe('Given theirs equal to base and a cap-exceeding ours', () => {
+  describe('Given theirs equal to base and a large ours', () => {
     describe('When mergeContent called', () => {
-      it('Then the theirs-unchanged fast path returns clean ours (not the degraded conflict)', () => {
-        // Arrange — theirs === base (empty); ours has 50_001 lines so diffLines(base, ours)
-        // degrades. The `bytesEqual(theirs, base)` fast path must short-circuit to clean;
-        // skipping it falls through to the degraded slow path → whole-file conflict.
+      it('Then the theirs-unchanged fast path returns clean ours', () => {
+        // Arrange — theirs === base (empty); ours has 50_001 lines, an add-only
+        // change the `bytesEqual(theirs, base)` fast path short-circuits to clean.
         const base = new Uint8Array(0);
         const theirs = new Uint8Array(0);
         const oursText = Array.from({ length: 50_001 }, (_, i) => `line${i}\n`).join('');
@@ -776,7 +777,7 @@ describe('mergeContent', () => {
         // Act
         const result = mergeContent(base, ours, theirs);
 
-        // Assert — clean, byte-identical to ours (slow path would yield status 'conflict')
+        // Assert — clean, byte-identical to ours
         expect(result.status).toBe('clean');
         if (result.status === 'clean') {
           expect(decoder.decode(result.bytes)).toBe(oursText);
@@ -785,12 +786,11 @@ describe('mergeContent', () => {
     });
   });
 
-  describe('Given ours equal to theirs (both cap-exceeding, base differs)', () => {
+  describe('Given ours equal to theirs, both large, base differs', () => {
     describe('When mergeContent called', () => {
-      it('Then the ours-equals-theirs fast path returns clean ours (not the degraded conflict)', () => {
-        // Arrange — ours === theirs, both 50_001 lines; base empty so both side diffs degrade.
-        // The `bytesEqual(ours, theirs)` fast path must short-circuit to clean; skipping it
-        // falls through to the degraded slow path → whole-file conflict.
+      it('Then the ours-equals-theirs fast path returns clean ours', () => {
+        // Arrange — ours === theirs, both 50_001 lines; base empty. The
+        // `bytesEqual(ours, theirs)` fast path short-circuits to clean.
         const base = new Uint8Array(0);
         const sideText = Array.from({ length: 50_001 }, (_, i) => `line${i}\n`).join('');
         const ours = enc(sideText);
@@ -799,7 +799,7 @@ describe('mergeContent', () => {
         // Act
         const result = mergeContent(base, ours, theirs);
 
-        // Assert — clean, byte-identical to ours (slow path would yield status 'conflict')
+        // Assert — clean, byte-identical to ours
         expect(result.status).toBe('clean');
         if (result.status === 'clean') {
           expect(decoder.decode(result.bytes)).toBe(sideText);
@@ -808,13 +808,12 @@ describe('mergeContent', () => {
     });
   });
 
-  describe('Given an undefined base with identical cap-exceeding ours and theirs', () => {
+  describe('Given an undefined base with identical large ours and theirs', () => {
     describe('When mergeContent called', () => {
-      it('Then the add-add identical fast path returns clean ours (not the degraded conflict)', () => {
-        // Arrange — base undefined (add-add); ours === theirs, both 50_001 lines so the empty-base
-        // diff inside mergeFromDiffs degrades (M+N > 50_000). The undefined-base `bytesEqual(ours, theirs)`
-        // fast path must short-circuit to clean; forcing it false falls through to the degraded slow
-        // path → whole-file content conflict.
+      it('Then the add-add identical fast path returns clean ours', () => {
+        // Arrange — base undefined (add-add); ours === theirs, both 50_001
+        // lines. The undefined-base `bytesEqual(ours, theirs)` fast path
+        // short-circuits to clean.
         const sideText = Array.from({ length: 50_001 }, (_, i) => `line${i}\n`).join('');
         const ours = enc(sideText);
         const theirs = enc(sideText);
@@ -822,7 +821,7 @@ describe('mergeContent', () => {
         // Act
         const result = mergeContent(undefined, ours, theirs);
 
-        // Assert — clean, byte-identical to ours (slow path would yield status 'conflict')
+        // Assert — clean, byte-identical to ours
         expect(result.status).toBe('clean');
         if (result.status === 'clean') {
           expect(decoder.decode(result.bytes)).toBe(sideText);

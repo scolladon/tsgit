@@ -1,5 +1,7 @@
 /**
- * Cross-tool interop — xdiff change compaction with the indent heuristic.
+ * Cross-tool interop — xdiff change compaction with the indent heuristic,
+ * and (below) the divide-and-conquer split engine that replaced the bounded
+ * Myers trace's whole-file bail.
  *
  * Pins tsgit's `compactChanges` against real `git diff --no-ext-diff
  * --no-index` (indent heuristic explicitly on, git's own default) on the
@@ -8,10 +10,15 @@
  * hunk placement through blame, three-way merge (clean and conflicting) and
  * patch-id, each checked against the matching real-git command.
  *
+ * The split-engine rows below pin numstat, patch text, blame and merge on
+ * inputs whose true edit distance sits past the old (now-removed)
+ * `MAX_DIFF_EDIT_DISTANCE` bail, so the engine that replaces it is checked
+ * against live git rather than against tsgit's own former behaviour.
+ *
  * @proves
  *   surface: diff.lineDiff
  *   bucket:  cross-tool-interop
- *   unique:  xdl_change_compact's slid hunk placement matches git across patch, blame, merge and patch-id
+ *   unique:  xdl_change_compact's slid hunk placement AND the xdiff split engine's counts/patch/blame/merge match git past the old edit-distance bail
  *   interopSurface: diff
  */
 import { mkdtemp, writeFile } from 'node:fs/promises';
@@ -22,6 +29,7 @@ import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { blame } from '../../src/application/commands/blame.js';
 import { computePatchId } from '../../src/application/primitives/patch-id.js';
 import { computeHunks, type OutputHunk } from '../../src/domain/diff/patch-serializer.js';
+import { computeStatFields } from '../../src/domain/diff/stat-fields.js';
 import { mergeContent } from '../../src/domain/merge/three-way-content.js';
 import type { ObjectId } from '../../src/domain/objects/index.js';
 import { GIT_AVAILABLE, git, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
@@ -37,12 +45,19 @@ function hunkText(hunk: OutputHunk): string[] {
   return [`@@ -${oldRange} +${newRange} @@`, ...body];
 }
 
+/** git optionally appends a function-context hint after the closing `@@` on
+ *  a hunk header (`@@ -a,b +c,d @@ funcname`) — display text tsgit's
+ *  structured hunks never compute, so only the range portion is comparable. */
+function stripHunkFuncContext(line: string): string {
+  return line.startsWith('@@') ? line.replace(/^(@@ -\S+ \+\S+ @@).*$/, '$1') : line;
+}
+
 /** The `@@ ...` hunk lines onward from a real `git diff` invocation — drops
  *  the `diff --git`/`index`/`---`/`+++` header this test does not pin. */
 function hunkLinesFromGitDiff(patch: string): string[] {
   const lines = patch.split('\n');
   const start = lines.findIndex((line) => line.startsWith('@@'));
-  return lines.slice(start, lines.length - 1);
+  return lines.slice(start, lines.length - 1).map(stripHunkFuncContext);
 }
 
 function tsgitHunkLines(oldBytes: Uint8Array, newBytes: Uint8Array): string[] {
@@ -313,3 +328,205 @@ describe.skipIf(!GIT_AVAILABLE)('xdiff compaction interop', () => {
     });
   });
 });
+
+function parseNumstat(stdout: string): { readonly added: number; readonly deleted: number } {
+  const [added, deleted] = stdout.split('\t');
+  return { added: Number(added), deleted: Number(deleted) };
+}
+
+function gitNumstatNoIndex(
+  oldPath: string,
+  newPath: string,
+): { readonly added: number; readonly deleted: number } {
+  const result = tryRunGitWithExit([
+    'diff',
+    '--no-ext-diff',
+    '--no-index',
+    '--numstat',
+    oldPath,
+    newPath,
+  ]);
+  return parseNumstat(result.stdout);
+}
+
+function tsgitNumstat(
+  oldBytes: Uint8Array,
+  newBytes: Uint8Array,
+): { readonly added: number; readonly deleted: number } {
+  const { added, deleted } = computeStatFields(oldBytes, newBytes);
+  return { added, deleted };
+}
+
+function uniqueLines(prefix: string, count: number): ReadonlyArray<string> {
+  return Array.from({ length: count }, (_, i) => `${prefix}${i}`);
+}
+
+/** Deterministic, seed-only PRNG — no dependency, and identical across every
+ *  call so a fixture built from it never drifts between test runs. */
+function mulberry32(seed: number): () => number {
+  let state = seed;
+  return () => {
+    state |= 0;
+    state = (state + 0x6d2b79f5) | 0;
+    let t = Math.imul(state ^ (state >>> 15), 1 | state);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4_294_967_296;
+  };
+}
+
+function shuffledCopy(items: ReadonlyArray<string>, rng: () => number): string[] {
+  const out = [...items];
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    const swapped = out[i]!;
+    out[i] = out[j]!;
+    out[j] = swapped;
+  }
+  return out;
+}
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'xdiff split engine interop — past the old edit-distance bail',
+  () => {
+    describe('Given 5001 unique lines plus one shared line on each side', () => {
+      describe('When git diff --no-index --numstat and computeStatFields run on the same bytes', () => {
+        it('Then the added/deleted counts match byte-for-byte', async () => {
+          // Arrange — true edit distance 10 002, past the removed bail
+          const oursText = `${[...uniqueLines('u', 5001), 'common'].join('\n')}\n`;
+          const theirsText = `${[...uniqueLines('v', 5001), 'common'].join('\n')}\n`;
+          const [oldPath, newPath] = await writePair('l2', oursText, theirsText);
+
+          // Act
+          const gitCounts = gitNumstatNoIndex(oldPath, newPath);
+          const tsgitCounts = tsgitNumstat(enc(oursText), enc(theirsText));
+
+          // Assert
+          expect(tsgitCounts).toEqual(gitCounts);
+          expect(gitCounts).toEqual({ added: 5001, deleted: 5001 });
+        });
+      });
+    });
+
+    describe('Given 10001 unique lines plus one shared line against just that shared line', () => {
+      describe('When git diff --no-index --numstat and computeStatFields run on the same bytes', () => {
+        it('Then the added/deleted counts match byte-for-byte', async () => {
+          // Arrange — true edit distance 10 001, past the removed bail
+          const oursText = `${[...uniqueLines('u', 10_001), 'common'].join('\n')}\n`;
+          const theirsText = 'common\n';
+          const [oldPath, newPath] = await writePair('l2-prime', oursText, theirsText);
+
+          // Act
+          const gitCounts = gitNumstatNoIndex(oldPath, newPath);
+          const tsgitCounts = tsgitNumstat(enc(oursText), enc(theirsText));
+
+          // Assert
+          expect(tsgitCounts).toEqual(gitCounts);
+          expect(gitCounts).toEqual({ added: 0, deleted: 10_001 });
+        });
+      });
+    });
+
+    describe('Given a seeded shuffle of 2000 distinct lines (past the split engine’s cost cap)', () => {
+      describe('When git diff --no-index runs alongside computeStatFields and computeHunks on the same bytes', () => {
+        it('Then numstat counts AND the patch hunk body match byte-for-byte', async () => {
+          // Arrange — every line matches exactly once on the other side
+          const base = Array.from({ length: 2000 }, (_, i) => `line${String(i).padStart(4, '0')}`);
+          const oursText = `${base.join('\n')}\n`;
+          const theirsText = `${shuffledCopy(base, mulberry32(1_234_567)).join('\n')}\n`;
+          const [oldPath, newPath] = await writePair('shuffle', oursText, theirsText);
+
+          // Act
+          const gitCounts = gitNumstatNoIndex(oldPath, newPath);
+          const tsgitCounts = tsgitNumstat(enc(oursText), enc(theirsText));
+          const gitLines = hunkLinesFromGitDiff(gitDiffNoIndex(oldPath, newPath));
+          const tsgitLines = tsgitHunkLines(enc(oursText), enc(theirsText));
+
+          // Assert
+          expect(tsgitCounts).toEqual(gitCounts);
+          expect(gitCounts).toEqual({ added: 1931, deleted: 1931 });
+          expect(tsgitLines).toEqual(gitLines);
+        });
+      });
+    });
+
+    // A 600-line block moved from the front to the back of a 1200-line file:
+    // every line still matches exactly once on the other side (a pure
+    // permutation), so — unlike a random rewrite with zero-match lines —
+    // record cleanup (Part 11) cannot change any of these four rows' answers.
+    // The design explicitly defers L1-style random-rewrite rows (zero-match-
+    // heavy, cleanup-sensitive) to Part 11.
+    function buildBlockMovePair(): { readonly base: string; readonly moved: string } {
+      const lines = Array.from({ length: 1200 }, (_, i) => `line${String(i).padStart(4, '0')}`);
+      const moved = [...lines.slice(600), ...lines.slice(0, 600)];
+      return { base: `${lines.join('\n')}\n`, moved: `${moved.join('\n')}\n` };
+    }
+
+    describe('Given a 600-line block moved from the front to the back of a 1200-line file (past the cost cap)', () => {
+      describe('When git diff --no-index runs alongside computeStatFields and computeHunks on the same bytes', () => {
+        it('Then numstat counts AND the patch hunk body match byte-for-byte', async () => {
+          // Arrange
+          const { base, moved } = buildBlockMovePair();
+          const [oldPath, newPath] = await writePair('block-move', base, moved);
+
+          // Act
+          const gitCounts = gitNumstatNoIndex(oldPath, newPath);
+          const tsgitCounts = tsgitNumstat(enc(base), enc(moved));
+          const gitLines = hunkLinesFromGitDiff(gitDiffNoIndex(oldPath, newPath));
+          const tsgitLines = tsgitHunkLines(enc(base), enc(moved));
+
+          // Assert
+          expect(tsgitCounts).toEqual(gitCounts);
+          expect(gitCounts).toEqual({ added: 600, deleted: 600 });
+          expect(tsgitLines).toEqual(gitLines);
+        });
+      });
+    });
+
+    describe('Given a repository whose HEAD moves that same 600-line block over one commit', () => {
+      describe('When blame walks the two commits', () => {
+        it('Then every final line is attributed to the same commit as git blame --porcelain', async () => {
+          // Arrange
+          const { base, moved } = buildBlockMovePair();
+          const dir = await makeRepo('block-move-blame');
+          const commit1 = await commitFile(dir, 'file.txt', base, 1_700_000_000);
+          const commit2 = await commitFile(dir, 'file.txt', moved, 1_700_000_060);
+
+          // Act
+          const ctx = createNodeContext({ workDir: dir });
+          const result = await blame(ctx, 'file.txt');
+          const tsgitShas = result.lines.map((line) => (line.committed ? line.commit : ''));
+          const porcelain = git(dir, 'blame', '--porcelain', 'HEAD', '--', 'file.txt');
+          const gitShas = shasByFinalLine(porcelain);
+
+          // Assert
+          expect(tsgitShas).toEqual(gitShas);
+          expect(new Set(tsgitShas)).toEqual(new Set([commit1, commit2]));
+        });
+      });
+    });
+
+    describe('Given a three-way merge whose ours side moves that block while theirs only appends', () => {
+      describe('When mergeContent runs', () => {
+        it('Then the result matches git merge-file -p byte-for-byte', async () => {
+          // Arrange
+          const { base, moved } = buildBlockMovePair();
+          const baseBytes = enc(base);
+          const oursBytes = enc(moved);
+          const theirsBytes = enc(`${base}appended-theirs-line\n`);
+
+          // Act
+          const result = mergeContent(baseBytes, oursBytes, theirsBytes);
+          const gitResult = await gitMergeFile('block-move', baseBytes, oursBytes, theirsBytes);
+
+          // Assert
+          expect(result.status).toBe(gitResult.exitCode === 0 ? 'clean' : 'conflict');
+          const tsgitOutput =
+            result.status === 'clean'
+              ? decode(result.bytes)
+              : decode(result.status === 'conflict' ? result.markedBytes : new Uint8Array(0));
+          expect(tsgitOutput).toBe(gitResult.stdout);
+        });
+      });
+    });
+  },
+);
