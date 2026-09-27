@@ -1,5 +1,6 @@
 import type { LineKey } from './whitespace.js';
 import { classifyLines } from './xdiff/xdl-classify.js';
+import { compactChanges } from './xdiff/xdl-compact.js';
 
 export interface LineHunk {
   readonly kind: 'common' | 'ours-only' | 'theirs-only';
@@ -206,36 +207,99 @@ function reconstructEdits(_M: number, _N: number, trace: ReadonlyArray<Int32Arra
   return edits;
 }
 
-function buildHunks(edits: ReadonlyArray<Edit>): ReadonlyArray<LineHunk> {
-  const hunks: LineHunk[] = [];
+/** The edit script as two per-side boolean maps — git's own `xdf->changed`
+ *  representation, and what `compactChanges` slides in place. */
+function changedArraysFromEdits(
+  oursLength: number,
+  theirsLength: number,
+  edits: ReadonlyArray<Edit>,
+): { readonly oursChanged: Uint8Array; readonly theirsChanged: Uint8Array } {
+  const oursChanged = new Uint8Array(oursLength);
+  const theirsChanged = new Uint8Array(theirsLength);
   let oursCursor = 0;
   let theirsCursor = 0;
-  let i = 0;
-  while (i < edits.length) {
-    const kind = edits[i]!;
-    const startOurs = oursCursor;
-    const startTheirs = theirsCursor;
-    // The `i < edits.length` bound is omitted: kind is always a defined Edit, and
-    // edits[i] past the end is undefined, so `undefined === kind` is false and the
-    // loop exits at the same point — keeping every mutant on this line killable.
-    while (edits[i] === kind) {
-      if (kind === 'equal') {
-        oursCursor++;
-        theirsCursor++;
-      } else if (kind === 'delete') {
-        oursCursor++;
-      } else {
-        theirsCursor++;
-      }
-      i++;
+  for (const edit of edits) {
+    if (edit === 'equal') {
+      oursCursor++;
+      theirsCursor++;
+    } else if (edit === 'delete') {
+      oursChanged[oursCursor++] = 1;
+    } else {
+      theirsChanged[theirsCursor++] = 1;
     }
-    hunks.push({
-      kind: kind === 'equal' ? 'common' : kind === 'delete' ? 'ours-only' : 'theirs-only',
-      oursStart: startOurs,
-      oursEnd: oursCursor,
-      theirsStart: startTheirs,
-      theirsEnd: theirsCursor,
-    });
+  }
+  return { oursChanged, theirsChanged };
+}
+
+function commonHunk(
+  oursStart: number,
+  oursEnd: number,
+  theirsStart: number,
+  theirsEnd: number,
+): LineHunk {
+  return { kind: 'common', oursStart, oursEnd, theirsStart, theirsEnd };
+}
+
+function oursOnlyHunk(oursStart: number, oursEnd: number, theirsPos: number): LineHunk {
+  return { kind: 'ours-only', oursStart, oursEnd, theirsStart: theirsPos, theirsEnd: theirsPos };
+}
+
+function theirsOnlyHunk(oursPos: number, theirsStart: number, theirsEnd: number): LineHunk {
+  return { kind: 'theirs-only', oursStart: oursPos, oursEnd: oursPos, theirsStart, theirsEnd };
+}
+
+/** Walks both post-compaction changed maps to the next common-line pair,
+ *  starting from `(i, j)`. */
+function consumeCommonRun(
+  oursChanged: Uint8Array,
+  theirsChanged: Uint8Array,
+  i: number,
+  j: number,
+): { readonly i: number; readonly j: number } {
+  let nextI = i;
+  let nextJ = j;
+  while (
+    nextI < oursChanged.length &&
+    nextJ < theirsChanged.length &&
+    oursChanged[nextI] === 0 &&
+    theirsChanged[nextJ] === 0
+  ) {
+    nextI++;
+    nextJ++;
+  }
+  return { i: nextI, j: nextJ };
+}
+
+function consumeChangedRun(changed: Uint8Array, start: number): number {
+  let i = start;
+  while (i < changed.length && changed[i] !== 0) i++;
+  return i;
+}
+
+/**
+ * Rebuilds `LineHunk`s from the two (post-compaction) changed maps: a common
+ * run, then — per gap between common runs — an `ours-only` hunk before a
+ * `theirs-only` hunk, matching git's per-side change-group ordering.
+ */
+function buildHunksFromChanged(
+  oursChanged: Uint8Array,
+  theirsChanged: Uint8Array,
+): ReadonlyArray<LineHunk> {
+  const hunks: LineHunk[] = [];
+  const M = oursChanged.length;
+  const N = theirsChanged.length;
+  let i = 0;
+  let j = 0;
+  while (i < M || j < N) {
+    const common = consumeCommonRun(oursChanged, theirsChanged, i, j);
+    if (common.i > i || common.j > j) hunks.push(commonHunk(i, common.i, j, common.j));
+    ({ i, j } = common);
+    const oursEnd = consumeChangedRun(oursChanged, i);
+    if (oursEnd > i) hunks.push(oursOnlyHunk(i, oursEnd, j));
+    i = oursEnd;
+    const theirsEnd = consumeChangedRun(theirsChanged, j);
+    if (theirsEnd > j) hunks.push(theirsOnlyHunk(i, j, theirsEnd));
+    j = theirsEnd;
   }
   return hunks;
 }
@@ -338,8 +402,14 @@ export function diffPresplitLinesWithBound(
   }
 
   const edits = reconstructEdits(M, N, myers.trace);
+  const { oursChanged, theirsChanged } = changedArraysFromEdits(M, N, edits);
+  // git's own order (xdl_diff, xdiffi.c): compact ours against theirs, then
+  // theirs against ours — a group that merges on the first pass can free up
+  // a slide on the second.
+  compactChanges(oursChanged, theirsChanged, classes.ours, oursLines);
+  compactChanges(theirsChanged, oursChanged, classes.theirs, theirsLines);
   return {
-    hunks: buildHunks(edits),
+    hunks: buildHunksFromChanged(oursChanged, theirsChanged),
     oursLines,
     theirsLines,
     degraded: false,

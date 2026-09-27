@@ -241,7 +241,12 @@ done
 # streams through — runtime code shipped in every distribution form, none
 # removable without dropping the hash-mismatch/corrupt-object parity fsck
 # now reports for a size-lying blob.
-SIZE_CAP=$((1000 * 1024))
+# Raised 1000 -> 1004 KiB by xdl_change_compact and its indent heuristic
+# (git's own default): the measured tarball lands at 1 027 076 B, 3 076 B
+# over the old cap, attributable to xdl-compact.ts's group-slide/measure-split/
+# score machinery — runtime code shipped in every distribution form, none
+# removable without giving back git-faithful hunk placement.
+SIZE_CAP=$((1004 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
