@@ -41,6 +41,17 @@ const HASHBASE = 107927;
 const MAX_CHUNK_LEN = 64;
 
 /**
+ * Combine two spanhash accumulators into a hash-map bucket.
+ * git's accumulators are `unsigned int`: the sum wraps to 32 bits BEFORE the
+ * modulo is taken. `Math.imul` already wraps the product to a 32-bit (signed)
+ * result, so only the addition needs the explicit `>>> 0` to land on the same
+ * bucket as git's `(accum1 + accum2 * 0x61) % HASHBASE` in `hash_chars`.
+ */
+function bucketOf(accum1: number, accum2: number): number {
+  return ((accum1 + Math.imul(accum2, 0x61)) >>> 0) % HASHBASE;
+}
+
+/**
  * Build a map from chunk-hash → total byte count for all chunks in `data`.
  * Chunks are delimited by `\n` (LF) or every `MAX_CHUNK_LEN` bytes.
  * Mirrors git's `hash_chars` in `diffcore-delta.c`.
@@ -60,7 +71,7 @@ function buildChunkMap(data: Uint8Array): Map<number, number> {
     accum2 = ((accum2 << 7) ^ (old1 >>> 25)) >>> 0;
     n++;
     if (n >= MAX_CHUNK_LEN || c === 0x0a /* LF */) {
-      const hashval = (accum1 + Math.imul(accum2, 0x61)) % HASHBASE;
+      const hashval = bucketOf(accum1, accum2);
       map.set(hashval, (map.get(hashval) ?? 0) + n);
       n = 0;
       accum1 = 0;
@@ -68,7 +79,7 @@ function buildChunkMap(data: Uint8Array): Map<number, number> {
     }
   }
   if (n > 0) {
-    const hashval = (accum1 + Math.imul(accum2, 0x61)) % HASHBASE;
+    const hashval = bucketOf(accum1, accum2);
     map.set(hashval, (map.get(hashval) ?? 0) + n);
   }
 

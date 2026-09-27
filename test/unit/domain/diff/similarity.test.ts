@@ -512,6 +512,27 @@ describe('similarity', () => {
       });
     });
 
+    describe('Given a 6-byte chunk whose accumulator sum overflows 2^32, When buildChunkMap is called', () => {
+      it('Then the bucket wraps to uint32 before the modulo, matching git unsigned-int arithmetic', () => {
+        // Arrange — found by search: after these 6 bytes (no LF, single partial-chunk
+        // flush), accum1=4294913788 and accum2=757. Math.imul(757, 0x61) = 73429, and
+        // accum1 + 73429 = 4294987217, which is 2^32 + 19921 — it overflows uint32.
+        // git's `unsigned int` sum wraps mod 2^32 BEFORE `% HASHBASE`: 19921 % 107927 = 19921.
+        // Without the `>>> 0` wrap, `(accum1 + 73429) % 107927` uses the un-wrapped double
+        // and lands on a different bucket (32252) — the bug this part fixes.
+        const data = new Uint8Array([94, 95, 127, 124, 92, 252]);
+
+        // Act
+        const result = buildChunkMap(data);
+
+        // Assert — kills the `>>> 0` removal mutant: without it, the single entry's key
+        // would be 32252 (the un-wrapped bucket) instead of 19921
+        expect(result.size).toBe(1);
+        expect(result.get(19921)).toBe(6);
+        expect(result.has(32252)).toBe(false);
+      });
+    });
+
     // countSrcCopied guard (mutants 10, 11, 12) via countSpanhashChanges
     // Mutant 10 inverts the guard (<=0): skips SHARED chunks, making srcCopied=0 for identical content
     // Mutants 11 and 12 are covered by the identical-content assertion below

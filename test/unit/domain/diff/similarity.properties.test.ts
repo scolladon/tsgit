@@ -1,11 +1,15 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import {
+  buildChunkMap,
   estimateSimilarity,
   MAX_SCORE,
   toSimilarityPercent,
 } from '../../../../src/domain/diff/similarity.js';
 import { arbBlobBytes } from './arbitraries.js';
+
+/** Mirrors git's `HASHBASE` (`diffcore-delta.c`) — a prime between 2^16..2^17. */
+const HASHBASE = 107927;
 
 describe('similarity properties', () => {
   describe('Given an arbitrary blob', () => {
@@ -90,6 +94,26 @@ describe('similarity properties', () => {
 
             // Assert
             expect(result).toBe(0);
+          }),
+          { numRuns: 100 },
+        );
+      });
+    });
+
+    describe('When buildChunkMap is called (bucket range)', () => {
+      it('Then every hash-map key is an integer in [0, HASHBASE)', () => {
+        // Arrange
+        fc.assert(
+          fc.property(arbBlobBytes(), (bytes) => {
+            // Act
+            const buckets = buildChunkMap(bytes);
+
+            // Assert
+            for (const key of buckets.keys()) {
+              expect(Number.isInteger(key)).toBe(true);
+              expect(key).toBeGreaterThanOrEqual(0);
+              expect(key).toBeLessThan(HASHBASE);
+            }
           }),
           { numRuns: 100 },
         );

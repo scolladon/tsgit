@@ -2515,6 +2515,68 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
 });
 
 /**
+ * Bucket-hash 32-bit wrap interop: git's spanhash bucket is `(accum1 +
+ * accum2 * 0x61) % HASHBASE`, computed in `unsigned int` — the sum wraps to
+ * 32 bits BEFORE the modulo. A blob with no LF forces every chunk to flush
+ * at the 64-byte boundary, keeping both accumulators large enough that
+ * several chunks' un-wrapped sum overflows 2^32, landing this pair's
+ * copied-byte count (and score) on a different side of the raw threshold
+ * below than git's wrapped sum does.
+ */
+const SPANHASH_WRAP_TMP_PREFIX = 'tsgit-rename-spanhash-wrap-';
+const SPANHASH_WRAP_SETUP_TIMEOUT = 60_000;
+const SPANHASH_WRAP_LEN = 4096;
+const SPANHASH_WRAP_SHARED = 1925;
+const SPANHASH_WRAP_PRINTABLE_LO = 0x21;
+const SPANHASH_WRAP_PRINTABLE_HI = 0x7e;
+
+/** Deterministic printable-ASCII (0x21..0x7e), no LF or CR — the same LCG
+ *  shape as `pseudoRandomBinary` below, restricted so this row exercises only
+ *  the bucket-hash wrap, never a later CRLF-skip fix. */
+const spanhashWrapBytes = (seed: number, length: number): string => {
+  let state = seed;
+  const span = SPANHASH_WRAP_PRINTABLE_HI - SPANHASH_WRAP_PRINTABLE_LO + 1;
+  const bytes = Array.from({ length }, () => {
+    state = (state * 1_103_515_245 + 12_345) & 0x7fffffff;
+    return SPANHASH_WRAP_PRINTABLE_LO + (state % span);
+  });
+  return String.fromCharCode(...bytes);
+};
+
+const spanhashWrapSharedPrefix = spanhashWrapBytes(15, SPANHASH_WRAP_SHARED);
+const spanhashWrapTailLength = SPANHASH_WRAP_LEN - SPANHASH_WRAP_SHARED;
+const spanhashWrapO1 = spanhashWrapSharedPrefix + spanhashWrapBytes(1015, spanhashWrapTailLength);
+const spanhashWrapN1 = spanhashWrapSharedPrefix + spanhashWrapBytes(1016, spanhashWrapTailLength);
+
+/**
+ * Verified against real git 2.55.0 (scrubbed env, signing off): `-M47500`
+ * parses to the raw threshold 28500 (a 5-digit argument with no `%` scales
+ * by 100000, so `47500 * 60000 / 100000 = 28500`); at that threshold git
+ * pairs this exact fixture as `R048`, while `-M` alone (the 50%/30000
+ * default) reports `A`+`D` for the same pair.
+ */
+const SPANHASH_WRAP_ROWS: ReadonlyArray<RenameRow> = [
+  {
+    label:
+      'a 4 KiB no-LF pair whose byte-copied count crosses a raw threshold only once the bucket sum wraps to 32 bits (R048 o1→n1)',
+    before: [{ path: 'o1.txt', content: spanhashWrapO1 }],
+    after: [{ path: 'n1.txt', content: spanhashWrapN1 }],
+    gitFlags: ['-M47500'],
+    renameOptions: { threshold: 28500 },
+  },
+];
+
+describeRenameRows(
+  'spanhash bucket-hash 32-bit wrap interop',
+  SPANHASH_WRAP_ROWS,
+  SPANHASH_WRAP_TMP_PREFIX,
+  SPANHASH_WRAP_SETUP_TIMEOUT,
+  {
+    given: 'Given a raw diff pair whose bucket sum overflows 2^32 for several spanhash chunks',
+  },
+);
+
+/**
  * name_score matrix tie-break interop: `git diff -M` (some rows also `-C`)
  * breaks an equal-score tie between inexact candidates on a matching
  * basename (`score_compare` / `record_if_better`), never on build order.
