@@ -722,28 +722,36 @@ function buildMatrix(
   threshold: number,
 ): MatrixCandidate[] {
   const candidates: MatrixCandidate[] = [];
-  // Each source's basename and regularity computed once here, not once per
-  // destination the inner loop below visits — the destination's own
-  // basename is computed once per destination for the same reason. A
-  // non-regular source's fingerprint is never looked up: git's
-  // estimate_similarity checks S_ISREG on the source before ever touching
-  // either side's data, so a symlink sharing its id with a hydrated regular
-  // blob (content-addressed storage) or carrying a fingerprint seeded by an
-  // unrelated pass (the break pass fingerprints a broken record's bytes
-  // regardless of kind) must never inherit that fingerprint's score.
+  // Each source's basename, regularity AND fingerprint computed once here,
+  // not once per destination the inner loop below visits — the destination's
+  // own basename and fingerprint are computed once per destination for the
+  // same reason. `fingerprintAt` re-derives a bucket and concatenates a
+  // fresh cache key from scratch on every call, so leaving it inside the
+  // per-destination inner loop turns an O(sources + destinations) cost into
+  // an O(sources × destinations) one; a wide, all-renamed diff (every source
+  // a matrix candidate against every destination) measurably regressed on
+  // exactly this before the fingerprint was hoisted out here. A non-regular
+  // source's fingerprint is never looked up: git's estimate_similarity
+  // checks S_ISREG on the source before ever touching either side's data, so
+  // a symlink sharing its id with a hydrated regular blob (content-addressed
+  // storage) or carrying a fingerprint seeded by an unrelated pass (the
+  // break pass fingerprints a broken record's bytes regardless of kind) must
+  // never inherit that fingerprint's score.
   const sourceBasenames = sources.map(({ source }) => basenameOf(source.path));
   const sourceIsRegular = sources.map(({ source }) => isRegularFile(source.mode));
+  const sourceFingerprints = sources.map(({ source }, position) =>
+    sourceIsRegular[position]
+      ? fingerprintAt(source.id, source.path, fingerprints, overridesByPath)
+      : undefined,
+  );
   for (const destination of destinations) {
     const df = fingerprintAt(destination.newId, destination.newPath, fingerprints, overridesByPath);
     if (df === undefined) continue;
     const destinationBasename = basenameOf(destination.newPath);
     const slots: MatrixCandidate[] = [];
-    sources.forEach(({ index, source }, position) => {
-      const sf = sourceIsRegular[position]
-        ? fingerprintAt(source.id, source.path, fingerprints, overridesByPath)
-        : undefined;
+    sources.forEach(({ index }, position) => {
       scoreAndRecord(
-        sf,
+        sourceFingerprints[position],
         df,
         threshold,
         { source: index, destination },
