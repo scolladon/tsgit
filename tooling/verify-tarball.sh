@@ -234,7 +234,14 @@ done
 # `applyLooseVerdict`, and the incremental claim bound the stream arm now
 # checks — runtime code shipped in every distribution form, none removable
 # without giving back the buffered read the whitespace-drop predicate takes.
-SIZE_CAP=$((999 * 1024))
+# Raised 999 -> 1000 KiB by fsck reporting a size-lying loose object like
+# git: the measured tarball lands at 1 023 238 B, 262 B over the old cap,
+# attributable to content-validation.ts's buffered-tier verdict routing
+# (truncate/underrun/refuse) and the zero-pad hasher an under-run claim
+# streams through — runtime code shipped in every distribution form, none
+# removable without dropping the hash-mismatch/corrupt-object parity fsck
+# now reports for a size-lying blob.
+SIZE_CAP=$((1000 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders

@@ -9,7 +9,7 @@
  *   interopSurface: readObject, catFile, streamBlob
  */
 import { createHash } from 'node:crypto';
-import { chmod, cp, mkdtemp, readFile, rm, unlink, writeFile } from 'node:fs/promises';
+import { chmod, cp, mkdir, mkdtemp, readFile, rm, unlink, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { deflateSync, inflateSync } from 'node:zlib';
@@ -19,6 +19,7 @@ import { archive } from '../../src/application/commands/archive.js';
 import { catFile } from '../../src/application/commands/cat-file.js';
 import { checkout } from '../../src/application/commands/checkout.js';
 import { diff } from '../../src/application/commands/diff.js';
+import { fsck } from '../../src/application/commands/fsck.js';
 import { show } from '../../src/application/commands/show.js';
 import { status } from '../../src/application/commands/status.js';
 import { readObject } from '../../src/application/primitives/read-object.js';
@@ -88,6 +89,20 @@ const forgeLoose = async (
   await chmod(target, 0o644);
   const header = Buffer.from(`${type} ${claim}\0`);
   await writeFile(target, deflateSync(Buffer.concat([header, body])));
+};
+
+/** Writes a NEW loose blob at the SHA-1 of its own stored bytes — a
+ *  genuinely self-consistent size liar, unlike `forgeLoose`'s overwrite of
+ *  an existing (honest) object's path with a mismatched claim. Returns the
+ *  id the object is stored at (never necessarily what fsck's hash check
+ *  recomputes for a size-lying claim). */
+const forgeOwnHash = async (dir: string, claim: number, body: Buffer): Promise<string> => {
+  const raw = Buffer.concat([Buffer.from(`blob ${claim}\0`), body]);
+  const sha1 = createHash('sha1').update(raw).digest('hex');
+  const target = loosePath(dir, sha1);
+  await mkdir(path.dirname(target), { recursive: true });
+  await writeFile(target, deflateSync(raw));
+  return sha1;
 };
 
 async function collect(iterable: AsyncIterable<Uint8Array>): Promise<Buffer> {
@@ -775,6 +790,85 @@ describe.skipIf(!GIT_AVAILABLE)('loose-object header size lying interop', () => 
       if (streamData.code === 'OBJECT_HASH_MISMATCH') {
         expect(streamData.expected).toBe(id);
       }
+    });
+  });
+
+  describe('Given a size-lying blob stored at its own hash, When git fsck --full and tsgit fsck both validate it', () => {
+    it("Then a window liar reports git's truncated hash-path mismatch", async () => {
+      // Arrange — header (7) + body (10) = 17, inside git's 32-byte window;
+      // the claim (6) truncates well short of the real 10-byte body.
+      const dir = await caseDir('fsck-window-liar');
+      const storedId = await forgeOwnHash(dir, 6, Buffer.from('HELLOWORLD'));
+      const ctx = createNodeContext({ workDir: dir });
+
+      // Act
+      const gitResult = tryRunGitWithExit(['-C', dir, 'fsck', '--full']);
+      const result = await fsck(ctx);
+
+      // Assert — git's own reported hash and exit bit
+      const expectedActual = createHash('sha1')
+        .update(Buffer.concat([Buffer.from('blob 6\0'), Buffer.from('HELLOWORLD').subarray(0, 6)]))
+        .digest('hex');
+      expect(gitResult.exitCode & 1).toBe(1);
+      expect(gitResult.stderr).toContain(
+        `${expectedActual}: hash-path mismatch, found at: .git/objects/${storedId.slice(0, 2)}/${storedId.slice(2)}`,
+      );
+
+      // Assert — tsgit's structured finding reconstructs the same line
+      expect(result.exitCode & 1).toBe(1);
+      const mismatch = result.findings.find((f) => f.type === 'hash-mismatch' && f.id === storedId);
+      expect(mismatch).toMatchObject({ actual: expectedActual });
+    });
+
+    it("Then an under-run reports git's zero-padded hash-path mismatch", async () => {
+      // Arrange — a 10-byte body against a 20-byte claim: git's own
+      // buffered-tier read pads the residual 10 bytes with zeros.
+      const dir = await caseDir('fsck-underrun-liar');
+      const storedId = await forgeOwnHash(dir, 20, Buffer.from('SHORT-BODY'));
+      const ctx = createNodeContext({ workDir: dir });
+
+      // Act
+      const gitResult = tryRunGitWithExit(['-C', dir, 'fsck', '--full']);
+      const result = await fsck(ctx);
+
+      // Assert — git's own reported hash and exit bit
+      const expectedActual = createHash('sha1')
+        .update(
+          Buffer.concat([Buffer.from('blob 20\0'), Buffer.from('SHORT-BODY'), Buffer.alloc(10)]),
+        )
+        .digest('hex');
+      expect(gitResult.exitCode & 1).toBe(1);
+      expect(gitResult.stderr).toContain(
+        `${expectedActual}: hash-path mismatch, found at: .git/objects/${storedId.slice(0, 2)}/${storedId.slice(2)}`,
+      );
+
+      // Assert — tsgit's structured finding reconstructs the same line
+      expect(result.exitCode & 1).toBe(1);
+      const mismatch = result.findings.find((f) => f.type === 'hash-mismatch' && f.id === storedId);
+      expect(mismatch).toMatchObject({ actual: expectedActual });
+    });
+
+    it('Then an overrun past the window reports the same undecodable finding as a corrupt object', async () => {
+      // Arrange — header (7) + a 40-byte body sits past the 32-byte window,
+      // so git's buffered read refuses rather than truncating.
+      const dir = await caseDir('fsck-overrun-liar');
+      const storedId = await forgeOwnHash(dir, 6, Buffer.from('x'.repeat(40)));
+      const ctx = createNodeContext({ workDir: dir });
+
+      // Act
+      const gitResult = tryRunGitWithExit(['-C', dir, 'fsck', '--full']);
+      const result = await fsck(ctx);
+
+      // Assert — git's own reconstructed line and exit bit
+      expect(gitResult.exitCode & 1).toBe(1);
+      expect(gitResult.stderr).toContain(
+        `${storedId}: object corrupt or missing: .git/objects/${storedId.slice(0, 2)}/${storedId.slice(2)}`,
+      );
+
+      // Assert — tsgit's structured finding for the same object
+      expect(result.exitCode & 1).toBe(1);
+      const badObject = result.findings.find((f) => f.type === 'bad-object' && f.id === storedId);
+      expect(badObject).toMatchObject({ objectType: 'unknown', msgId: 'unterminatedHeader' });
     });
   });
 

@@ -7,11 +7,17 @@ import type {
 } from '../../../../domain/fsck/index.js';
 import { retypeSeverity, validateObject } from '../../../../domain/fsck/index.js';
 import { bytesEqual, encode } from '../../../../domain/objects/encoding.js';
+import { classifyLooseBody, sizeMismatch } from '../../../../domain/objects/git-object.js';
 import type { HashConfig } from '../../../../domain/objects/hash-config.js';
 import type { ObjectId } from '../../../../domain/objects/index.js';
-import { parseHeader, serializeHeader } from '../../../../domain/objects/index.js';
+import { serializeHeader } from '../../../../domain/objects/index.js';
+import { MAX_INFLATE_OUTPUT_BYTES } from '../../../../ports/compressor.js';
 import type { Context } from '../../../../ports/context.js';
-import { looseCompressedBytes } from '../../../primitives/object-resolver.js';
+import {
+  inflateLooseBuffered,
+  type LooseBufferedRead,
+  looseCompressedBytes,
+} from '../../../primitives/object-resolver.js';
 import { readRawObject } from '../../../primitives/read-object.js';
 import { EXIT_CONTENT_ERROR, EXIT_CORRUPT, EXIT_HASH_MISMATCH } from './exit-codes.js';
 import type { FsckFinding } from './types.js';
@@ -36,10 +42,12 @@ type RawObjectResult = ReadableObject | { readonly ok: false; readonly msgId: st
 /** The loose arm's header-parse failure, told apart by the reason
  *  `parseHeader` refused with: an unknown type word is `unknownType`,
  *  anything else (a missing NUL above all) is `unterminatedHeader`. */
-function looseHeaderFailure(err: unknown): RawObjectResult {
+function looseHeaderFailure(err: TsgitError): RawObjectResult {
+  // A zlib decode fault (DECOMPRESS_FAILED) reaches here too, now that the
+  // buffered tier's own inflate call can fail before parseHeader ever runs
+  // — this condition is genuinely live, never equivalent-true.
   const reason =
-    // Stryker disable next-line ConditionalExpression: equivalent — parseHeader only throws TsgitError with code INVALID_OBJECT_HEADER; the condition is always true when reached.
-    err instanceof TsgitError && err.data.code === 'INVALID_OBJECT_HEADER'
+    err.data.code === 'INVALID_OBJECT_HEADER'
       ? (err.data as { reason: string }).reason
       : // Stryker disable next-line StringLiteral: equivalent — reason is read only by reason.startsWith('unknown object type'); neither '' nor 'Stryker was here!' starts with that prefix, so msgId stays 'unterminatedHeader'.
         '';
@@ -47,47 +55,135 @@ function looseHeaderFailure(err: unknown): RawObjectResult {
   return { ok: false, msgId };
 }
 
-/** The object's inflated bytes, or `undefined` when the compressed bytes are
- *  corrupt — a fault the caller reports as a type it could not even read. */
-async function inflateOrUndefined(
+/** The stored header's own byte length, derived from a buffered read's
+ *  already-known content length — never a second header parse. */
+function headerLengthOf(buffered: LooseBufferedRead): number {
+  return buffered.bytes.byteLength - buffered.split.content.byteLength;
+}
+
+/** The zero-fill chunk fed to the hasher for an under-run's residual claim —
+ *  fixed-size and shared across calls, so padding up to git's declared size
+ *  never costs one claim-sized allocation, however large the claim. */
+const ZERO_PAD_CHUNK_BYTES = 64 * 1024;
+const ZERO_PAD_CHUNK = new Uint8Array(ZERO_PAD_CHUNK_BYTES);
+
+/**
+ * git's own zero-padded hash for an under-run blob (`unpack_loose_rest`
+ * reads into a buffer already zeroed by allocation): the header, the real
+ * (shorter) body, then `declaredSize - body.length` zero bytes streamed to
+ * the hasher in fixed-size chunks — never materialised as one claim-sized
+ * buffer.
+ */
+async function hashZeroPadded(
   ctx: Context,
-  compressed: Uint8Array,
-): Promise<Uint8Array | undefined> {
-  try {
-    return await ctx.compressor.inflate(compressed);
-  } catch {
-    return undefined;
+  header: Uint8Array,
+  body: Uint8Array,
+  declaredSize: number,
+): Promise<string> {
+  const hasher = ctx.hash.createHasher();
+  hasher.update(header);
+  hasher.update(body);
+  let remaining = declaredSize - body.byteLength;
+  while (remaining > 0) {
+    const chunkSize = Math.min(remaining, ZERO_PAD_CHUNK_BYTES);
+    hasher.update(ZERO_PAD_CHUNK.subarray(0, chunkSize));
+    remaining -= chunkSize;
+  }
+  return hasher.digestHex();
+}
+
+/**
+ * A blob whose body overran its claim while still fitting git's 32-byte
+ * header window: both the catalogued body and the hash git reports use the
+ * claimed prefix, never the overrun tail — `inflateLooseBuffered` already
+ * refused anything past the window, so `rawBody`'s slice never runs short.
+ */
+function truncatedResult(
+  ctx: Context,
+  buffered: LooseBufferedRead,
+  type: FsckObjectType,
+): RawObjectResult {
+  const { bytes, split } = buffered;
+  const hashInput = bytes.subarray(0, headerLengthOf(buffered) + split.declaredSize);
+  return {
+    ok: true,
+    kind: type,
+    rawBody: split.content.subarray(0, split.declaredSize),
+    computeHash: () => ctx.hash.hashHex(hashInput),
+  };
+}
+
+/**
+ * A blob whose body under-ran its claim: the catalogue reads the real
+ * (shorter) body, while the hash git reports pads to the claim — bounded so
+ * a hostile multi-gigabyte claim is reported as undecodable instead of
+ * hashing gigabytes of padding.
+ */
+function underrunResult(
+  ctx: Context,
+  buffered: LooseBufferedRead,
+  type: FsckObjectType,
+): RawObjectResult {
+  const { split } = buffered;
+  if (split.declaredSize > MAX_INFLATE_OUTPUT_BYTES) {
+    return { ok: false, msgId: 'unterminatedHeader' };
+  }
+  const header = buffered.bytes.subarray(0, headerLengthOf(buffered));
+  return {
+    ok: true,
+    kind: type,
+    rawBody: split.content,
+    computeHash: () => hashZeroPadded(ctx, header, split.content, split.declaredSize),
+  };
+}
+
+/**
+ * git's buffered-tier verdict (`classifyLooseBody`), told into fsck's
+ * raw-body result: `'honest'` hashes the stored bytes as written; a
+ * commit/tree/tag mismatch (`'refuse'`) throws the same size-mismatch a
+ * standalone read does, folded by the caller into the SAME undecodable
+ * finding an unreadable object reports — git's buffered tier refuses it the
+ * same way regardless of type.
+ */
+function looseVerdictResult(ctx: Context, buffered: LooseBufferedRead): RawObjectResult {
+  const { bytes, split } = buffered;
+  switch (classifyLooseBody(split)) {
+    case 'honest':
+      return {
+        ok: true,
+        kind: split.type,
+        rawBody: split.content,
+        computeHash: () => ctx.hash.hashHex(bytes),
+      };
+    case 'truncate':
+      return truncatedResult(ctx, buffered, split.type);
+    case 'underrun':
+      return underrunResult(ctx, buffered, split.type);
+    case 'refuse':
+      throw sizeMismatch(split.declaredSize, split.content.byteLength);
   }
 }
 
 /**
- * The body that follows a loose object's git `<type> <size>\0` header.
- * Hashing stays on the inflated on-disk bytes AS STORED — a malformed on-disk
- * header must hash as written, never as a canonical reconstruction.
+ * A loose object's raw body, read through git's buffered tier
+ * (`inflateLooseBuffered`) so a size-lying blob reports the same identity
+ * fsck's own hash check hashes elsewhere. Hashing stays on the bytes AS
+ * STORED — a malformed on-disk header must hash as written, never as a
+ * canonical reconstruction. Rethrows anything that is not a `TsgitError`
+ * (no swallow).
  */
-function parsedLooseObject(ctx: Context, inflated: Uint8Array): RawObjectResult {
+async function looseRawObjectBody(
+  ctx: Context,
+  id: ObjectId,
+  compressed: Uint8Array,
+): Promise<RawObjectResult> {
   try {
-    const { type, contentOffset } = parseHeader(inflated);
-    return {
-      ok: true,
-      kind: type,
-      rawBody: inflated.subarray(contentOffset),
-      computeHash: () => ctx.hash.hashHex(inflated),
-    };
+    const buffered = await inflateLooseBuffered(ctx, id, compressed);
+    return looseVerdictResult(ctx, buffered);
   } catch (err) {
+    if (!(err instanceof TsgitError)) throw err;
     return looseHeaderFailure(err);
   }
-}
-
-/**
- * A loose object's raw body. Reading it from the on-disk bytes preserves
- * zero-padded file modes and other normalisation-defeated bytes that tsgit's
- * strict parsers reject, so the catalogue gets to classify them.
- */
-async function looseRawObjectBody(ctx: Context, compressed: Uint8Array): Promise<RawObjectResult> {
-  const inflated = await inflateOrUndefined(ctx, compressed);
-  if (inflated === undefined) return { ok: false, msgId: 'unterminatedHeader' };
-  return parsedLooseObject(ctx, inflated);
 }
 
 /**
@@ -126,7 +222,7 @@ async function packedRawObjectBody(ctx: Context, id: ObjectId): Promise<RawObjec
  *  whichever store holds it. */
 async function tryGetRawObjectBody(ctx: Context, id: ObjectId): Promise<RawObjectResult> {
   const compressed = await looseCompressedBytes(ctx, id);
-  if (compressed !== undefined) return looseRawObjectBody(ctx, compressed);
+  if (compressed !== undefined) return looseRawObjectBody(ctx, id, compressed);
   return packedRawObjectBody(ctx, id);
 }
 
@@ -273,11 +369,13 @@ function catalogueResult(
 
 /**
  * The object's own hash, verified from the bytes already read (no second
- * `readObject`). For loose objects this hashes the full inflated bytes
- * (header + body) as stored; for pack objects the object's own header
- * (rebuilt from its type + content) followed by its own body, not a
- * re-encoding. A mismatch does not preclude the catalogue checks, and a
- * hash that cannot be computed at all is the corrupt object those checks
+ * `readObject`). For an honest loose object this hashes the full inflated
+ * bytes (header + body) as stored; for a size-lying loose blob it hashes
+ * git's own buffered-tier bytes instead (the truncated prefix or the
+ * zero-padded claim — `looseVerdictResult`); for pack objects the object's
+ * own header (rebuilt from its type + content) followed by its own body,
+ * not a re-encoding. A mismatch does not preclude the catalogue checks, and
+ * a hash that cannot be computed at all is the corrupt object those checks
  * may already have reported.
  */
 async function hashResult(id: ObjectId, raw: ReadableObject): Promise<ContentValidationResult> {

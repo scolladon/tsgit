@@ -4,6 +4,10 @@ import {
   buildBlobFilenameMap,
   runContentValidationPass,
 } from '../../../../../../src/application/commands/internal/fsck/content-validation.js';
+import {
+  looseObjectPath,
+  objectsDir,
+} from '../../../../../../src/application/primitives/path-layout.js';
 import type { ObjectId, TreeEntry } from '../../../../../../src/domain/objects/index.js';
 import {
   FILE_MODE,
@@ -11,6 +15,7 @@ import {
   serializeObject,
 } from '../../../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../../../src/domain/objects/tree.js';
+import { MAX_INFLATE_OUTPUT_BYTES } from '../../../../../../src/ports/compressor.js';
 import { writeSyntheticPack } from '../../../primitives/pack-fixture.js';
 
 const sut = runContentValidationPass;
@@ -58,6 +63,23 @@ async function writePackedTree(content: Uint8Array): Promise<{
   const ctx = createMemoryContext();
   const ids = await writeSyntheticPack(ctx, 'p1', [{ kind: 'base', type: 'tree', content }]);
   return { ctx, treeId: ids[0] as ObjectId };
+}
+
+/** Write a loose object directly at `id`, with a header size CLAIM that may
+ *  disagree with `body`'s real length — content-validation's size-lying rows
+ *  never need the object at its own hash (the interop suite pins that). */
+async function writeLooseAtId(
+  ctx: ReturnType<typeof createMemoryContext>,
+  id: ObjectId,
+  type: string,
+  claim: number,
+  body: Uint8Array,
+): Promise<void> {
+  const raw = buildTree(ENCODER.encode(`${type} ${claim}\0`), body);
+  const compressed = await ctx.compressor.deflate(raw);
+  const dir = objectsDir(ctx.layout.gitDir, id.slice(0, 2));
+  await ctx.fs.mkdir(dir);
+  await ctx.fs.writeExclusive(looseObjectPath(ctx.layout.gitDir, id), compressed);
 }
 
 describe('Given a universe containing an object that is neither loose nor readable from a pack', () => {
@@ -369,6 +391,141 @@ describe('Given fsck.<msg-id> re-types the id an unreadable object would report'
           id: unreadableId,
           objectType: 'unknown',
           msgId: 'badType',
+          severity: 'error',
+        },
+      ]);
+      expect(result.exitBit).toBe(1);
+    });
+  });
+});
+
+describe("Given a loose blob whose body overran its claim inside git's 32-byte header window", () => {
+  describe('When runContentValidationPass validates that object', () => {
+    it('Then emits a hash-mismatch finding whose actual is SHA-1 of the header plus the truncated claim', async () => {
+      // Arrange — header (7 bytes) + body (10 bytes) = 17, inside the window;
+      // the claim (6) truncates well short of the real 10-byte body.
+      const ctx = createMemoryContext();
+      const id = 'a'.repeat(40) as ObjectId;
+      const body = ENCODER.encode('HELLOWORLD');
+      await writeLooseAtId(ctx, id, 'blob', 6, body);
+      const expectedActual = await ctx.hash.hashHex(
+        buildTree(ENCODER.encode('blob 6\0'), body.subarray(0, 6)),
+      );
+
+      // Act
+      const result = await sut(ctx, new Set([id]), false, new Map(), new Map(), NO_SKIPS);
+
+      // Assert
+      const mismatch = result.findings.find((f) => f.type === 'hash-mismatch');
+      expect(mismatch).toMatchObject({ id, actual: expectedActual });
+    });
+  });
+});
+
+describe('Given a loose blob whose body under-ran its claim', () => {
+  describe('When runContentValidationPass validates that object', () => {
+    it("Then emits a hash-mismatch finding whose actual is git's zero-padded SHA-1", async () => {
+      // Arrange — a 10-byte body against a 20-byte claim: git's own
+      // buffered-tier read pads the residual 10 bytes with zeros.
+      const ctx = createMemoryContext();
+      const id = 'b'.repeat(40) as ObjectId;
+      const body = ENCODER.encode('SHORT-BODY');
+      await writeLooseAtId(ctx, id, 'blob', 20, body);
+      const expectedActual = await ctx.hash.hashHex(
+        buildTree(ENCODER.encode('blob 20\0'), body, new Uint8Array(10)),
+      );
+
+      // Act
+      const result = await sut(ctx, new Set([id]), false, new Map(), new Map(), NO_SKIPS);
+
+      // Assert
+      const mismatch = result.findings.find((f) => f.type === 'hash-mismatch');
+      expect(mismatch).toMatchObject({ id, actual: expectedActual });
+    });
+  });
+});
+
+describe('Given a loose blob whose under-run claim exceeds the inflate ceiling', () => {
+  describe('When runContentValidationPass validates that object', () => {
+    it('Then emits a bad-object finding instead of hashing gigabytes of padding', async () => {
+      // Arrange — a claim past MAX_INFLATE_OUTPUT_BYTES over a tiny real
+      // body: the residual would be gigabytes of zero padding.
+      const ctx = createMemoryContext();
+      const id = 'c'.repeat(40) as ObjectId;
+      const body = ENCODER.encode('SHORT');
+      await writeLooseAtId(ctx, id, 'blob', MAX_INFLATE_OUTPUT_BYTES + 1, body);
+
+      // Act
+      const result = await sut(ctx, new Set([id]), false, new Map(), new Map(), NO_SKIPS);
+
+      // Assert
+      expect(result.findings).toEqual([
+        {
+          type: 'bad-object',
+          id,
+          objectType: 'unknown',
+          msgId: 'unterminatedHeader',
+          severity: 'error',
+        },
+      ]);
+      expect(result.exitBit).toBe(1);
+    });
+  });
+});
+
+describe("Given a loose blob whose body overran its claim past git's 32-byte header window", () => {
+  describe('When runContentValidationPass validates that object', () => {
+    it('Then emits a bad-object finding — the same undecodable finding git reports for a corrupt object', async () => {
+      // Arrange — header (7 bytes) + a 40-byte body sits past the 32-byte
+      // window, so the buffered read refuses rather than truncating.
+      const ctx = createMemoryContext();
+      const id = 'd'.repeat(40) as ObjectId;
+      const body = ENCODER.encode('x'.repeat(40));
+      await writeLooseAtId(ctx, id, 'blob', 6, body);
+
+      // Act
+      const result = await sut(ctx, new Set([id]), false, new Map(), new Map(), NO_SKIPS);
+
+      // Assert
+      expect(result.findings).toEqual([
+        {
+          type: 'bad-object',
+          id,
+          objectType: 'unknown',
+          msgId: 'unterminatedHeader',
+          severity: 'error',
+        },
+      ]);
+      expect(result.exitBit).toBe(1);
+    });
+  });
+});
+
+describe('Given a loose object whose compressed bytes are not valid zlib', () => {
+  describe('When runContentValidationPass validates that object', () => {
+    it('Then emits a bad-object finding via the zlib-failure path, not the header-parse path', async () => {
+      // Arrange — a zlib decode fault reaches the SAME undecodable finding
+      // as a header-parse fault, through looseHeaderFailure's non-candidate
+      // branch (its reason defaults to '', never 'unknown object type').
+      const ctx = createMemoryContext();
+      const id = 'e'.repeat(40) as ObjectId;
+      const dir = objectsDir(ctx.layout.gitDir, id.slice(0, 2));
+      await ctx.fs.mkdir(dir);
+      await ctx.fs.writeExclusive(
+        looseObjectPath(ctx.layout.gitDir, id),
+        new Uint8Array([0xde, 0xad, 0xbe, 0xef]),
+      );
+
+      // Act
+      const result = await sut(ctx, new Set([id]), false, new Map(), new Map(), NO_SKIPS);
+
+      // Assert
+      expect(result.findings).toEqual([
+        {
+          type: 'bad-object',
+          id,
+          objectType: 'unknown',
+          msgId: 'unterminatedHeader',
           severity: 'error',
         },
       ]);
