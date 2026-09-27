@@ -7,10 +7,12 @@ import {
   parsedObjectByteSize,
 } from '../../../../src/application/primitives/internal/object-caches.js';
 import {
+  MAX_SINGLE_PASS_COMPRESSED_BYTES,
   readEntryHeaderWithChunk,
   resolveObject,
   resolveObjectContentWithDepth,
   resolveObjectWithSize,
+  SINGLE_PASS_INFLATE_CAP,
 } from '../../../../src/application/primitives/object-resolver.js';
 import {
   createPackRegistry,
@@ -37,6 +39,7 @@ import {
   MAX_INFLATE_OUTPUT_BYTES,
 } from '../../../../src/ports/compressor.js';
 import type { Context } from '../../../../src/ports/context.js';
+import { pseudoRandomBytes } from '../../../fixtures/pseudo-random-bytes.js';
 import { buildMidx, type MidxSpec } from '../../domain/storage/arbitraries.js';
 import {
   buildSeededContext,
@@ -1579,10 +1582,11 @@ describe('object-resolver', () => {
 
   describe('Given a loose blob whose body overruns its header claim past the 32-byte header window', () => {
     describe('When resolveObjectContentWithDepth is called (the default buffered read)', () => {
-      it('Then it throws INVALID_OBJECT_HEADER naming the claim, and the compressor is asked to inflate no more than header length plus the claim', async () => {
-        // Arrange — claim 40 keeps header + claim (48) above the 32-byte
-        // window floor, so the bound below is exactly header + claim, never
-        // clamped to the window itself.
+      it('Then it throws INVALID_OBJECT_HEADER naming the claim, from the single-pass inflate call bounded at SINGLE_PASS_INFLATE_CAP', async () => {
+        // Arrange — this object's compressed size sits under
+        // MAX_SINGLE_PASS_COMPRESSED_BYTES, so the single-pass arm answers
+        // with one inflate call capped at SINGLE_PASS_INFLATE_CAP, never at
+        // header + claim (that bound belongs to the hostile-sized arm only).
         const claim = 40;
         const content = ENC.encode('y'.repeat(200)); // far past header + claim
         const ctx = await buildSeededContext();
@@ -1603,8 +1607,9 @@ describe('object-resolver', () => {
             expect(data.reason).toBe(`content exceeds declared size ${claim}`);
           }
         }
+        expect(inflateSpy.mock.calls.length).toBe(1);
         const boundedCall = inflateSpy.mock.calls.at(-1);
-        expect(boundedCall?.[1]).toBe(serializeHeader('blob', claim).length + claim);
+        expect(boundedCall?.[1]).toBe(SINGLE_PASS_INFLATE_CAP);
       });
     });
 
@@ -1632,6 +1637,51 @@ describe('object-resolver', () => {
         // Assert
         expect(result.content).toEqual(content);
         expect(result.declaredSize).toBe(claim);
+      });
+    });
+  });
+
+  describe('Given a loose object whose compressed size sits at or under the single-pass threshold', () => {
+    describe('When resolveObjectContentWithDepth is called (the default buffered read)', () => {
+      it('Then the compressor inflates exactly once, and inflateHead is never called', async () => {
+        // Arrange
+        const content = ENC.encode('single-pass loose read content');
+        const ctx = await buildSeededContext();
+        const id = await writeRawObjectBytes(ctx, 'blob', content);
+        const registry = await createPackRegistry(ctx);
+        const inflateSpy = vi.spyOn(ctx.compressor, 'inflate');
+        const inflateHeadSpy = vi.spyOn(ctx.compressor, 'inflateHead');
+
+        // Act
+        await resolveObjectContentWithDepth(ctx, registry, id, false, undefined, 0);
+
+        // Assert
+        expect(inflateSpy.mock.calls.length).toBe(1);
+        expect(inflateHeadSpy).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given a loose object whose compressed size sits above the single-pass threshold', () => {
+    describe('When resolveObjectContentWithDepth is called (the default buffered read)', () => {
+      it('Then it still probes the header through inflateHead before the bounded inflate', async () => {
+        // Arrange — incompressible bytes sized so the deflated file exceeds
+        // MAX_SINGLE_PASS_COMPRESSED_BYTES: the hostile-sized arm must keep
+        // paying for the head probe rather than risk one unbounded inflate.
+        const content = pseudoRandomBytes(MAX_SINGLE_PASS_COMPRESSED_BYTES + 4096, 1);
+        const ctx = await buildSeededContext();
+        const id = await writeRawObjectBytes(ctx, 'blob', content);
+        const registry = await createPackRegistry(ctx);
+        const inflateSpy = vi.spyOn(ctx.compressor, 'inflate');
+        const inflateHeadSpy = vi.spyOn(ctx.compressor, 'inflateHead');
+
+        // Act
+        const result = await resolveObjectContentWithDepth(ctx, registry, id, false, undefined, 0);
+
+        // Assert
+        expect(result.content).toEqual(content);
+        expect(inflateHeadSpy.mock.calls.length).toBe(1);
+        expect(inflateSpy.mock.calls.length).toBe(1);
       });
     });
   });
@@ -1698,8 +1748,11 @@ describe('object-resolver', () => {
         // error the real adapter would throw once the effective cap hits
         // its own hard ceiling: this call's bound (`maxOutputBytes`) reaching
         // MAX_INFLATE_OUTPUT_BYTES is the signal that fired, not the header
-        // claim, so the resolver must let it propagate as-is.
-        const content = ENC.encode('irrelevant body');
+        // claim, so the resolver must let it propagate as-is. Content sized
+        // past MAX_SINGLE_PASS_COMPRESSED_BYTES once deflated keeps this on
+        // the hostile-sized arm, the only one whose cap is still derived
+        // from the header claim.
+        const content = pseudoRandomBytes(MAX_SINGLE_PASS_COMPRESSED_BYTES + 4096, 2);
         const ctx = await buildSeededContext();
         const id = await writeRawObjectBytes(ctx, 'blob', content);
         await writeLooseWithDeclaredSize(ctx, id, 'blob', MAX_INFLATE_OUTPUT_BYTES, content);
@@ -1783,14 +1836,13 @@ describe('object-resolver', () => {
   describe('Given a signal that aborts right after a loose read resolves, with a size-lying commit header', () => {
     describe('When resolveObjectContentWithDepth is called', () => {
       it('Then it throws OPERATION_ABORTED, not the size-mismatch the lying header would otherwise trigger', async () => {
-        // Arrange — the buffered read now probes the header through
-        // `inflateHead` (not spied here) before this spied `inflate` call
-        // bounds the full read: the abort fires during THAT call, landing
-        // strictly between `tryLoose` resolving and the size-mismatch check
-        // (`assertLooseSizeConsistent`) ever running. Without its own poll
-        // right there, the synchronous split/assert work would run first and
-        // surface INVALID_OBJECT_HEADER instead of the abort already in
-        // flight.
+        // Arrange — this small object's single-pass buffered read makes its
+        // one call through this spied `inflate`: the abort fires during that
+        // call, landing strictly between `tryLoose` resolving and the
+        // size-mismatch check (`assertLooseSizeConsistent`) ever running.
+        // Without its own poll right there, the synchronous split/assert
+        // work would run first and surface INVALID_OBJECT_HEADER instead of
+        // the abort already in flight.
         const controller = new AbortController();
         const ctx = await buildSeededContext({ signal: controller.signal });
         const content = ENC.encode('commit body');

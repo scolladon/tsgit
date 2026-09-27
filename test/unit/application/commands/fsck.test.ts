@@ -3,6 +3,7 @@ import { createMemoryContext } from '../../../../src/adapters/memory/memory-adap
 import { type FsckFinding, fsck } from '../../../../src/application/commands/fsck.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import { loadShallowSet } from '../../../../src/application/primitives/internal/shallow-set.js';
+import { MAX_SINGLE_PASS_COMPRESSED_BYTES } from '../../../../src/application/primitives/object-resolver.js';
 import {
   commonGitDir,
   looseObjectPath,
@@ -40,6 +41,7 @@ import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import { invalidPackIndex } from '../../../../src/domain/storage/index.js';
 import * as packEntryMod from '../../../../src/domain/storage/pack-entry.js';
 import type { Context } from '../../../../src/ports/context.js';
+import { pseudoRandomBytes } from '../../../fixtures/pseudo-random-bytes.js';
 import {
   type BitmapSpec,
   buildBitmap,
@@ -4160,6 +4162,12 @@ async function corruptTrailingPackEntryByte(ctx: Context, packPath: string): Pro
 
 const GARBAGE_BYTES = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
 
+/** Same "never zlib-valid" contract as `GARBAGE_BYTES`, sized above
+ *  `MAX_SINGLE_PASS_COMPRESSED_BYTES` so the buffered read's hostile-sized
+ *  arm — not the single-pass one — is what reads it, keeping `inflateHead`
+ *  (never `inflate`) the first thing to fail on the main read. */
+const HOSTILE_GARBAGE_BYTES = new Uint8Array(MAX_SINGLE_PASS_COMPRESSED_BYTES + 4096).fill(0xff);
+
 interface WarnCall {
   readonly message: string;
   readonly context: Readonly<Record<string, unknown>> | undefined;
@@ -4865,14 +4873,15 @@ describe('Given a pack with a corrupt .idx and a separate undecodable dangling l
 describe('Given an undecodable dangling loose object whose probe re-inflate hits an unrelated adapter fault', () => {
   describe('When fsck runs with connectivityOnly: true', () => {
     it('Then fsck rejects with that exact UNSUPPORTED_OPERATION, not a laundered abort', async () => {
-      // Arrange — GARBAGE_BYTES is not valid zlib, so the buffered read's own
-      // header probe (`inflateHead`, not wrapped here) is what fails the main
-      // read, never reaching this wrapped `.inflate` at all; the recovery
-      // probe's OWN reread (`recoverStoredType`) is what makes the FIRST call
-      // to `.inflate` — where this fault lands.
+      // Arrange — HOSTILE_GARBAGE_BYTES is not valid zlib AND sized above
+      // MAX_SINGLE_PASS_COMPRESSED_BYTES, so the buffered read's own header
+      // probe (`inflateHead`, not wrapped here) is what fails the main read,
+      // never reaching this wrapped `.inflate` at all; the recovery probe's
+      // OWN reread (`recoverStoredType`) is what makes the FIRST call to
+      // `.inflate` — where this fault lands.
       const ctx = await initBareCtx();
       const garbageId = 'd9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9' as ObjectId;
-      await writeGarbageLooseObject(ctx, garbageId, GARBAGE_BYTES);
+      await writeGarbageLooseObject(ctx, garbageId, HOSTILE_GARBAGE_BYTES);
       let inflateCalls = 0;
       const wrapped: Context = {
         ...ctx,
@@ -5485,6 +5494,19 @@ function withFaultingHeadProbe(ctx: Context): Context {
   };
 }
 
+/** Appends incompressible trailing bytes so the loose file's deflated size
+ *  exceeds `MAX_SINGLE_PASS_COMPRESSED_BYTES`, keeping a header-probe row on
+ *  the hostile-sized arm (the one `withFaultingHeadProbe` actually reaches).
+ *  The padding sits after the header's own NUL, so it never changes what
+ *  `parseHeader` reads. */
+function pastSinglePassThreshold(rawBytes: Uint8Array): Uint8Array {
+  const padding = pseudoRandomBytes(MAX_SINGLE_PASS_COMPRESSED_BYTES + 4096, 3);
+  const out = new Uint8Array(rawBytes.length + padding.length);
+  out.set(rawBytes, 0);
+  out.set(padding, rawBytes.length);
+  return out;
+}
+
 describe('Given an undecodable dangling loose object whose header type token exceeds the reason cap, with its header probe faulting so the recovery reread — not the bounded main read — is what decodes the raw token', () => {
   describe('When fsck runs with connectivityOnly: true', () => {
     it('Then the thrown reason is capped at exactly 200 output units', async () => {
@@ -5493,7 +5515,10 @@ describe('Given an undecodable dangling loose object whose header type token exc
       // recovery reread (never window-bounded) see the full 300-byte token
       // this row exists to cap.
       const ctx = await initBareCtx();
-      await writeMalformedLooseObject(ctx, enc.encode(`${'a'.repeat(300)} 0\0`));
+      await writeMalformedLooseObject(
+        ctx,
+        pastSinglePassThreshold(enc.encode(`${'a'.repeat(300)} 0\0`)),
+      );
       const wrapped = withFaultingHeadProbe(ctx);
 
       // Act
@@ -5522,7 +5547,10 @@ describe('Given an undecodable dangling loose object whose header type token is 
       // control-byte run long enough to force `sanitizeReason` to stop
       // mid-expansion.
       const ctx = await initBareCtx();
-      await writeMalformedLooseObject(ctx, enc.encode(`${'\u0001'.repeat(100)} 0\0`));
+      await writeMalformedLooseObject(
+        ctx,
+        pastSinglePassThreshold(enc.encode(`${'\u0001'.repeat(100)} 0\0`)),
+      );
       const wrapped = withFaultingHeadProbe(ctx);
 
       // Act

@@ -152,43 +152,137 @@ async function inflateBoundToClaim(
 }
 
 /**
- * git's buffered-tier loose read (`unpack_loose_header` +
- * `unpack_loose_rest`): probe the header through `inflateHead` — never more
- * than `LOOSE_HEADER_PROBE_BYTES` of OUTPUT, whatever the compressed input
- * size — then bound the full inflate to header + declared size. A body that
- * overruns that bound throws `INVALID_OBJECT_HEADER`; an overrun that fits
- * inside `LOOSE_HEADER_WINDOW` is truncated to the claim, not refused
- * (`applyLooseVerdict`'s `'truncate'` verdict).
+ * Loose files at or below this COMPRESSED size can never inflate past
+ * `SINGLE_PASS_INFLATE_CAP` — DEFLATE's own worst-case expansion ratio
+ * bounds them there regardless of content — so their buffered read skips
+ * `inflateHead`'s separate header probe entirely and pays for one inflate
+ * instead of two. Above it (a hostile-sized loose file), the probe stays:
+ * bounding a single call's OUTPUT to a size derived from a body this large
+ * would no longer be a safety margin, it would be the whole point.
  */
-export async function inflateLooseBuffered(
-  ctx: Context,
+export const MAX_SINGLE_PASS_COMPRESSED_BYTES = 64 * 1024;
+
+/**
+ * DEFLATE's documented worst-case expansion ratio (RFC 1951's stored-block
+ * escape lets a maximally adversarial stream inflate up to roughly 1032×
+ * its own compressed size) — the constant that makes
+ * `SINGLE_PASS_INFLATE_CAP` a provable bound, never a guess about any
+ * particular file's real content.
+ */
+const DEFLATE_MAX_EXPANSION_RATIO = 1032;
+
+/**
+ * The one-shot inflate bound for `MAX_SINGLE_PASS_COMPRESSED_BYTES` of
+ * compressed input: 64 KiB × 1032 ≈ 64.5 MiB, comfortably below the
+ * port-wide `MAX_INFLATE_OUTPUT_BYTES` (2 GiB) ceiling, so a compressed
+ * file within the single-pass threshold can never reach that ceiling and
+ * trip `inflateBoundToClaim`'s hard-ceiling propagation — only the
+ * hostile-sized arm below still can.
+ */
+export const SINGLE_PASS_INFLATE_CAP =
+  MAX_SINGLE_PASS_COMPRESSED_BYTES * DEFLATE_MAX_EXPANSION_RATIO;
+
+/**
+ * Shared header derivation for both buffered-tier arms below: refuses a
+ * header whose NUL needed a 33rd probed byte to appear — git's `hdr[32]`
+ * could never have held it — before `parseHeader` ever runs, exactly as
+ * the single combined function used to.
+ */
+function parseLooseHeaderWithinWindow(
   id: ObjectId,
-  compressed: Uint8Array,
-): Promise<LooseBufferedRead> {
-  const head = await ctx.compressor.inflateHead(compressed, LOOSE_HEADER_PROBE_BYTES);
+  probe: Uint8Array,
+): { readonly type: ObjectType; readonly size: number; readonly contentOffset: number } {
   // git's hdr[32] never resolves a NUL past LOOSE_HEADER_WINDOW: a NUL that
   // needed this probe's 33rd byte to appear means the header itself could
   // never have terminated inside git's fixed buffer, so it is refused here
   // — BEFORE parseHeader ever runs — regardless of what its digits would
   // otherwise parse to.
-  if (indexOf(head, 0x00, 0) === LOOSE_HEADER_WINDOW) {
+  if (indexOf(probe, 0x00, 0) === LOOSE_HEADER_WINDOW) {
     throw looseHeaderTooLong(id);
   }
-  // The header bytes (through the NUL) are identical between `head` and the
-  // full inflate below — both come from the same compressed stream, and
-  // `parseHeader` already succeeded on `head` alone. Building the split from
-  // these already-parsed fields, rather than re-running `splitLooseObject`
-  // (which would re-parse the header from `bytes`), keeps every buffered
-  // read at one header decode, matching the streamed tier's own cost.
-  const { type, size, contentOffset } = parseHeader(head);
-  const cap = Math.max(LOOSE_HEADER_WINDOW, contentOffset + size);
-  const bytes = await inflateBoundToClaim(ctx, compressed, cap, size);
+  return parseHeader(probe);
+}
+
+/** Builds the buffered-tier split from already-inflated `bytes` and the
+ *  header fields already parsed from their leading probe window — shared
+ *  by both arms so neither re-parses the header a second time. */
+function buildBufferedSplit(
+  bytes: Uint8Array,
+  type: ObjectType,
+  size: number,
+  contentOffset: number,
+): LooseBufferedRead {
   const split: LooseObjectSplit = {
     type,
     content: bytes.subarray(contentOffset),
     declaredSize: size,
   };
   return { bytes, split };
+}
+
+/**
+ * The single-pass arm: one inflate call, capped at `SINGLE_PASS_INFLATE_CAP`
+ * — a bound the compressed input is mathematically incapable of exceeding
+ * (see `DEFLATE_MAX_EXPANSION_RATIO`), so it already carries the WHOLE
+ * object. The header is derived from its own leading bytes instead of a
+ * separate `inflateHead` probe. A body that overruns the claim past
+ * `LOOSE_HEADER_WINDOW` throws `INVALID_OBJECT_HEADER`, exactly as the
+ * hostile-sized arm's own cap-driven refusal does; an overrun that fits
+ * inside the window is left for `applyLooseVerdict`'s `'truncate'` verdict.
+ */
+async function inflateLooseSinglePass(
+  ctx: Context,
+  id: ObjectId,
+  compressed: Uint8Array,
+): Promise<LooseBufferedRead> {
+  const bytes = await ctx.compressor.inflate(compressed, SINGLE_PASS_INFLATE_CAP);
+  const { type, size, contentOffset } = parseLooseHeaderWithinWindow(
+    id,
+    bytes.subarray(0, LOOSE_HEADER_PROBE_BYTES),
+  );
+  const cap = Math.max(LOOSE_HEADER_WINDOW, contentOffset + size);
+  if (bytes.byteLength > cap) {
+    throw contentExceedsDeclaredSize(size);
+  }
+  return buildBufferedSplit(bytes, type, size, contentOffset);
+}
+
+/**
+ * The hostile-sized arm — unchanged by the single-pass optimisation above:
+ * probe the header through `inflateHead` (never more than
+ * `LOOSE_HEADER_PROBE_BYTES` of OUTPUT, whatever the compressed input size),
+ * then bound the full inflate to header + declared size. A body that
+ * overruns that bound throws `INVALID_OBJECT_HEADER`; an overrun that fits
+ * inside `LOOSE_HEADER_WINDOW` is truncated to the claim, not refused
+ * (`applyLooseVerdict`'s `'truncate'` verdict).
+ */
+async function inflateLooseHeadProbed(
+  ctx: Context,
+  id: ObjectId,
+  compressed: Uint8Array,
+): Promise<LooseBufferedRead> {
+  const head = await ctx.compressor.inflateHead(compressed, LOOSE_HEADER_PROBE_BYTES);
+  const { type, size, contentOffset } = parseLooseHeaderWithinWindow(id, head);
+  const cap = Math.max(LOOSE_HEADER_WINDOW, contentOffset + size);
+  const bytes = await inflateBoundToClaim(ctx, compressed, cap, size);
+  return buildBufferedSplit(bytes, type, size, contentOffset);
+}
+
+/**
+ * git's buffered-tier loose read (`unpack_loose_header` + `unpack_loose_rest`).
+ * Routes on the COMPRESSED size already read off disk: at or below
+ * `MAX_SINGLE_PASS_COMPRESSED_BYTES`, `inflateLooseSinglePass` answers with
+ * one inflate call; above it, `inflateLooseHeadProbed` keeps today's two-call
+ * head-probe-then-bounded-inflate shape.
+ */
+export async function inflateLooseBuffered(
+  ctx: Context,
+  id: ObjectId,
+  compressed: Uint8Array,
+): Promise<LooseBufferedRead> {
+  return compressed.byteLength <= MAX_SINGLE_PASS_COMPRESSED_BYTES
+    ? inflateLooseSinglePass(ctx, id, compressed)
+    : inflateLooseHeadProbed(ctx, id, compressed);
 }
 
 /**
