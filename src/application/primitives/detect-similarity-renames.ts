@@ -1,3 +1,4 @@
+import type { BinaryOverride } from '../../domain/diff/binary-decision.js';
 import { primaryPath } from '../../domain/diff/change-path.js';
 import type {
   AddChange,
@@ -40,6 +41,10 @@ import {
 import type { FileMode, FilePath, ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { boundedMapFor } from './internal/concurrency.js';
+import {
+  buildSimilarityContentKindResolver,
+  type SimilarityContentKindResolver,
+} from './internal/resolve-similarity-content-kind.js';
 import { readBlob } from './read-blob.js';
 import { readDeclaredObjectSize } from './read-object.js';
 
@@ -492,6 +497,41 @@ function dedupeMissing(
   return missing;
 }
 
+/** One (id, path) pair a hydration call needs — the path is what
+ *  `resolveOverridesFor` resolves a similarity content-kind override from;
+ *  the id is what the fingerprint ends up keyed by. */
+export interface PathedId {
+  readonly id: ObjectId;
+  readonly path: FilePath;
+}
+
+/**
+ * Resolve `resolver.overrideFor` for every id in `entries`, keyed by id —
+ * skipped entirely for an id already in `skip` (already-hydrated ids never
+ * need their override looked up again). A duplicated id (two entries sharing
+ * one id) resolves its FIRST occurrence's path only: `estimate_similarity`'s
+ * own per-filespec model can, in principle, disagree between two paths that
+ * happen to share a blob's exact bytes, but every occurrence of one path in
+ * a single detection call already resolves through the SAME synthetic
+ * delete+add halves (break pass) or the SAME registry source/destination
+ * (matrix/basename passes) — this only under-resolves the rare case of two
+ * genuinely distinct, differently-attributed paths sharing byte-identical
+ * content, which the exact pass already pairs before either ever reaches
+ * here.
+ */
+async function resolveOverridesFor(
+  resolver: SimilarityContentKindResolver,
+  entries: ReadonlyArray<PathedId>,
+  skip: ReadonlyMap<ObjectId, BlobFingerprint>,
+): Promise<ReadonlyMap<ObjectId, BinaryOverride | undefined>> {
+  const overrides = new Map<ObjectId, BinaryOverride | undefined>();
+  for (const { id, path } of entries) {
+    if (skip.has(id) || overrides.has(id)) continue;
+    overrides.set(id, await resolver.overrideFor(path));
+  }
+  return overrides;
+}
+
 /**
  * Fingerprint-and-drop hydration: reads each missing blob just
  * long enough to build its spanhash fingerprint, then lets the bytes go —
@@ -504,12 +544,15 @@ function dedupeMissing(
  * Skips every id already in `known` and returns a NEW map (`known` plus the
  * newly hydrated entries) — `known` itself is never mutated, so a caller
  * accumulating fingerprints across phased hydration passes keeps its own
- * map intact.
+ * map intact. `overridesById` (built by `resolveOverridesFor`) decides each
+ * fingerprinted blob's content kind — `undefined` for an id it has no entry
+ * for defers to the blob's own content sniff.
  */
 export async function hydrateFingerprints(
   ctx: Context,
   ids: ReadonlyArray<ObjectId>,
   known: ReadonlyMap<ObjectId, BlobFingerprint>,
+  overridesById: ReadonlyMap<ObjectId, BinaryOverride | undefined> = new Map(),
 ): Promise<ReadonlyMap<ObjectId, BlobFingerprint>> {
   const missing = dedupeMissing(ids, known);
   const fetched = await boundedMapFor(
@@ -518,7 +561,7 @@ export async function hydrateFingerprints(
     missing,
     async (id): Promise<readonly [ObjectId, BlobFingerprint]> => {
       const { content } = await readBlob(ctx, id);
-      return [id, toFingerprint(content)];
+      return [id, toFingerprint(content, overridesById.get(id))];
     },
   );
   const merged = new Map(known);
@@ -603,25 +646,37 @@ interface InexactMatrixResult {
  *  touching a byte on either side — a non-regular source still stays in the
  *  matrix for slot semantics (buildMatrix never looks its fingerprint up,
  *  always scoring it 0), but with no regular source at all, every pair is
- *  guaranteed 0 and no destination is worth hydrating. */
-function regularSourceIds(matrixSources: ReadonlyArray<IndexedSource>): ObjectId[] {
+ *  guaranteed 0 and no destination is worth hydrating. Keeps each source's
+ *  own path alongside its id — `hydrateMatrixFingerprints` resolves a
+ *  similarity content-kind override from the path, not the id. */
+function regularSourceEntries(matrixSources: ReadonlyArray<IndexedSource>): PathedId[] {
   return matrixSources
     .filter(({ source }) => isRegularFile(source.mode))
-    .map(({ source }) => source.id);
+    .map(({ source }) => ({ id: source.id, path: source.path }));
 }
 
 /** Hydrates exactly the fingerprints the matrix needs: `selectHydrationIds`'s
- *  own size gate over the regular sources and every destination's id. */
+ *  own size gate over the regular sources and every destination's id.
+ *  Overrides are resolved only for the ids `selectHydrationIds` actually
+ *  kept — a size-rejected path's attribute is never even looked up. */
 async function hydrateMatrixFingerprints(
   ctx: Context,
-  srcIds: ReadonlyArray<ObjectId>,
+  srcEntries: ReadonlyArray<PathedId>,
   destinations: ReadonlyArray<AddChange>,
   threshold: number,
   knownFingerprints: ReadonlyMap<ObjectId, BlobFingerprint>,
+  resolver: SimilarityContentKindResolver,
 ): Promise<ReadonlyMap<ObjectId, BlobFingerprint>> {
+  const srcIds = srcEntries.map((entry) => entry.id);
   const dstIds = destinations.map((d) => d.newId);
   const neededIds = await selectHydrationIds(ctx, srcIds, dstIds, threshold, knownFingerprints);
-  return hydrateFingerprints(ctx, neededIds, knownFingerprints);
+  const neededSet = new Set(neededIds);
+  const neededEntries = [
+    ...srcEntries,
+    ...destinations.map((d) => ({ id: d.newId, path: d.newPath })),
+  ].filter((entry) => neededSet.has(entry.id));
+  const overridesById = await resolveOverridesFor(resolver, neededEntries, knownFingerprints);
+  return hydrateFingerprints(ctx, neededIds, knownFingerprints, overridesById);
 }
 
 /**
@@ -639,6 +694,7 @@ async function runInexactMatrix(
   uses: ReadonlyArray<number>,
   options: InexactPassOptions,
   knownFingerprints: ReadonlyMap<ObjectId, BlobFingerprint>,
+  resolver: SimilarityContentKindResolver,
 ): Promise<InexactMatrixResult | null> {
   if (matrixIndices.length === 0) return null;
 
@@ -646,14 +702,15 @@ async function runInexactMatrix(
     index,
     source: registrySources[index] as RenameSource,
   }));
-  const srcIds = regularSourceIds(matrixSources);
-  if (srcIds.length === 0) return null;
+  const srcEntries = regularSourceEntries(matrixSources);
+  if (srcEntries.length === 0) return null;
   const fingerprints = await hydrateMatrixFingerprints(
     ctx,
-    srcIds,
+    srcEntries,
     destinations,
     options.threshold,
     knownFingerprints,
+    resolver,
   );
 
   const candidates = buildMatrix(matrixSources, destinations, fingerprints, options.threshold);
@@ -724,11 +781,15 @@ function isBreakSizeGuarded(srcSize: number, dstSize: number): boolean {
  *
  * Both mirror `diffcore-break.c::score_diff` and `diffcore-break.c::merge_score`.
  */
-function computeBreakScores(src: Uint8Array, dst: Uint8Array): BreakScores {
+function computeBreakScores(
+  src: Uint8Array,
+  dst: Uint8Array,
+  override: BinaryOverride | undefined,
+): BreakScores {
   const srcSize = src.length;
   const dstSize = dst.length;
   const maxSize = Math.max(srcSize, dstSize);
-  const { srcCopied, literalAdded } = countSpanhashChanges(src, dst);
+  const { srcCopied, literalAdded } = countSpanhashChanges(src, dst, override);
   const srcRemoved = srcSize - srcCopied;
   const rawBreakNum = Math.min(srcRemoved + literalAdded, maxSize);
   const computedBreakScore = Math.trunc((rawBreakNum * MAX_SCORE) / maxSize);
@@ -742,6 +803,10 @@ interface ModifyScore {
   readonly dissimilarity: number;
   readonly oldBytes: Uint8Array;
   readonly newBytes: Uint8Array;
+  /** The modify's own path resolved once here — `mod.path` covers both old
+   *  and new content, so `scoreModifies` reuses it to fingerprint a broken
+   *  record's bytes without resolving it a second time. */
+  readonly override: BinaryOverride | undefined;
 }
 
 /** A guarded pair never attempts a break: score 0 always sits below any
@@ -758,19 +823,31 @@ const GUARDED_SCORES: BreakScores = { computedBreakScore: 0, dissimilarity: 0 };
  *
  * Hands both blobs' bytes back alongside the scores — a record that goes on
  * to break needs them again to seed the rename matrix's fingerprints
- * (`scoreModifies`), and this is the only read of either blob.
+ * (`scoreModifies`), and this is the only read of either blob. `mod`'s old
+ * and new content are two states of ONE path, so one `resolver.overrideFor`
+ * call decides the content kind for both.
  */
-async function scoreOneModify(ctx: Context, mod: ModifyChange): Promise<ModifyScore> {
+async function scoreOneModify(
+  ctx: Context,
+  mod: ModifyChange,
+  resolver: SimilarityContentKindResolver,
+): Promise<ModifyScore> {
+  const override = await resolver.overrideFor(mod.path);
   const { content: oldBytes } = await readBlob(ctx, mod.oldId);
   const { content: newBytes } = await readBlob(ctx, mod.newId);
   const { computedBreakScore, dissimilarity } = isBreakSizeGuarded(oldBytes.length, newBytes.length)
     ? GUARDED_SCORES
-    : computeBreakScores(oldBytes, newBytes);
-  return { mod, computedBreakScore, dissimilarity, oldBytes, newBytes };
+    : computeBreakScores(oldBytes, newBytes, override);
+  return { mod, computedBreakScore, dissimilarity, oldBytes, newBytes, override };
 }
 
-function toFingerprint(bytes: Uint8Array): BlobFingerprint {
-  return { fingerprint: buildFingerprint(bytes, contentKindOf(bytes)), size: bytes.length };
+/** `override`, when given, decides the fingerprint's content kind outright;
+ *  `undefined` falls back to the blob's own content sniff. */
+function toFingerprint(bytes: Uint8Array, override?: BinaryOverride): BlobFingerprint {
+  return {
+    fingerprint: buildFingerprint(bytes, override ?? contentKindOf(bytes)),
+    size: bytes.length,
+  };
 }
 
 function toSyntheticDelete(change: ModifyChange | TypeChangeChange): DeleteChange {
@@ -818,17 +895,20 @@ async function scoreModifies(
   ctx: Context,
   modifies: ReadonlyArray<ModifyChange>,
   breakScore: number,
+  resolver: SimilarityContentKindResolver,
 ): Promise<{
   readonly records: ReadonlyArray<BrokenRecord>;
   readonly paths: ReadonlySet<FilePath>;
   readonly fingerprints: ReadonlyMap<ObjectId, BlobFingerprint>;
 }> {
-  const scores = await boundedMapFor(ctx, 'ioBound', modifies, (mod) => scoreOneModify(ctx, mod));
+  const scores = await boundedMapFor(ctx, 'ioBound', modifies, (mod) =>
+    scoreOneModify(ctx, mod, resolver),
+  );
 
   const records: BrokenRecord[] = [];
   const paths = new Set<FilePath>();
   const fingerprints = new Map<ObjectId, BlobFingerprint>();
-  for (const { mod, computedBreakScore, dissimilarity, oldBytes, newBytes } of scores) {
+  for (const { mod, computedBreakScore, dissimilarity, oldBytes, newBytes, override } of scores) {
     if (computedBreakScore < breakScore) continue;
     records.push({
       original: mod,
@@ -837,8 +917,8 @@ async function scoreModifies(
       dissimilarity,
     });
     paths.add(mod.path);
-    fingerprints.set(mod.oldId, toFingerprint(oldBytes));
-    fingerprints.set(mod.newId, toFingerprint(newBytes));
+    fingerprints.set(mod.oldId, toFingerprint(oldBytes, override));
+    fingerprints.set(mod.newId, toFingerprint(newBytes, override));
   }
   return { records, paths, fingerprints };
 }
@@ -894,6 +974,7 @@ async function attemptBreaks(
   ctx: Context,
   diff: TreeDiff,
   breakScore: number,
+  resolver: SimilarityContentKindResolver,
 ): Promise<BreakAttemptOutcome> {
   const modifies = diff.changes.filter(
     (c): c is ModifyChange => c.type === 'modify' && isBreakableKind(c.oldMode),
@@ -904,7 +985,7 @@ async function attemptBreaks(
     return { broken: [], patchedDiff: diff, fingerprints: NO_BREAK_FINGERPRINTS };
   }
 
-  const scored = await scoreModifies(ctx, modifies, breakScore);
+  const scored = await scoreModifies(ctx, modifies, breakScore, resolver);
   const records = [...scored.records, ...typeChanges.map(toTypeChangeRecord)];
   // Stryker disable next-line ConditionalExpression: equivalent — empty records means every source path set stays empty too, so patchDiffWithBroken copies changes unchanged, matching the early return.
   if (records.length === 0) {
@@ -1084,12 +1165,13 @@ async function runBreakPass(
   ctx: Context,
   diff: TreeDiff,
   breakRewrites: RenameDetectOptions['breakRewrites'],
+  resolver: SimilarityContentKindResolver,
 ): Promise<BreakPassOutcome> {
   if (breakRewrites === false || breakRewrites === undefined) {
     return { broken: [], workingDiff: diff, fingerprints: NO_BREAK_FINGERPRINTS };
   }
   const { breakScore } = resolveBreakGates(breakRewrites);
-  const attempt = await attemptBreaks(ctx, diff, breakScore);
+  const attempt = await attemptBreaks(ctx, diff, breakScore, resolver);
   return {
     broken: attempt.broken,
     workingDiff: attempt.patchedDiff,
@@ -1261,6 +1343,7 @@ async function runInexactMatrixIfPlanned(
   options: InexactPassOptions,
   cull: SourceCull,
   knownFingerprints: ReadonlyMap<ObjectId, BlobFingerprint>,
+  resolver: SimilarityContentKindResolver,
 ): Promise<InexactMatrixResult | null> {
   const plan = resolveMatrixPlan(
     registry.sources,
@@ -1281,6 +1364,7 @@ async function runInexactMatrixIfPlanned(
     exact.uses,
     options,
     knownFingerprints,
+    resolver,
   );
 }
 
@@ -1322,6 +1406,22 @@ function basenameCandidateIds(
   return candidates.flatMap(({ sourceIndex, destination }) => [
     (sources[sourceIndex] as RenameSource).id,
     destination.newId,
+  ]);
+}
+
+/** Like `basenameCandidateIds`, but keeps each id's own path alongside it —
+ *  `runBasenamePass` resolves a similarity content-kind override from the
+ *  path, not the id. */
+function basenameCandidateEntries(
+  sources: ReadonlyArray<RenameSource>,
+  candidates: ReadonlyArray<BasenameCandidate>,
+): PathedId[] {
+  return candidates.flatMap(({ sourceIndex, destination }) => [
+    {
+      id: (sources[sourceIndex] as RenameSource).id,
+      path: (sources[sourceIndex] as RenameSource).path,
+    },
+    { id: destination.newId, path: destination.newPath },
   ]);
 }
 
@@ -1410,6 +1510,7 @@ async function runBasenamePass(
   sources: ReadonlyArray<RenameSource>,
   exact: ExactPairing,
   threshold: number,
+  resolver: SimilarityContentKindResolver,
 ): Promise<BasenamePassOutcome> {
   const candidates = regularBasenameCandidates(sources, exact.uses, exact.unpaired);
   if (candidates.length === 0) {
@@ -1421,7 +1522,12 @@ async function runBasenamePass(
   const sizes = await readDeclaredSizes(ctx, candidateIds);
   const survivors = sizeSurvivingBasenameCandidates(candidates, sources, sizes, minBasename);
   const survivorIds = basenameCandidateIds(sources, survivors);
-  const fingerprints = await hydrateFingerprints(ctx, survivorIds, new Map());
+  const overridesById = await resolveOverridesFor(
+    resolver,
+    basenameCandidateEntries(sources, survivors),
+    new Map(),
+  );
+  const fingerprints = await hydrateFingerprints(ctx, survivorIds, new Map(), overridesById);
   const pairs = scoreBasenameCandidates(survivors, sources, fingerprints, minBasename);
 
   return { pairs, ...applyBasenamePairs(exact, pairs), fingerprints };
@@ -1446,11 +1552,12 @@ async function runBasenamePassIfEligible(
   broken: ReadonlyArray<BrokenRecord>,
   copies: 'off' | 'on' | 'harder',
   threshold: number,
+  resolver: SimilarityContentKindResolver,
 ): Promise<BasenamePassOutcome> {
   if (!isBasenamePassEligible(copies, broken, threshold)) {
     return { pairs: [], unpaired: exact.unpaired, uses: exact.uses, fingerprints: new Map() };
   }
-  return runBasenamePass(ctx, sources, exact, threshold);
+  return runBasenamePass(ctx, sources, exact, threshold, resolver);
 }
 
 /** Folds an inexact-matrix result into the exact pass's pairs/unpaired/uses;
@@ -1474,6 +1581,7 @@ async function runInexactPhase(
   broken: ReadonlyArray<BrokenRecord>,
   options: InexactPassOptions,
   knownFingerprints: ReadonlyMap<ObjectId, BlobFingerprint>,
+  resolver: SimilarityContentKindResolver,
 ): Promise<InexactPhaseOutcome> {
   // git's "Did we only want exact renames?" (`diffcore-rename.c:1480`): once
   // the threshold IS the ceiling, no approximate score could mean anything
@@ -1490,6 +1598,7 @@ async function runInexactPhase(
     options,
     cull,
     knownFingerprints,
+    resolver,
   );
   return mergeInexactOutcome(exact, inexact);
 }
@@ -1511,6 +1620,7 @@ async function runExactAndBasenamePasses(
   broken: ReadonlyArray<BrokenRecord>,
   copies: 'off' | 'on' | 'harder',
   threshold: number,
+  resolver: SimilarityContentKindResolver,
 ): Promise<ExactAndBasenameOutcome> {
   const exactMode = copies === 'off' ? 'rename' : 'copy';
   const exact = pairIdenticalFiles(registry.sources, registry.destinations, exactMode);
@@ -1521,6 +1631,7 @@ async function runExactAndBasenamePasses(
     broken,
     copies,
     threshold,
+    resolver,
   );
   return {
     pairing: {
@@ -1580,10 +1691,15 @@ export async function detectSimilarityRenames(
 ): Promise<TreeDiff> {
   const detectOptions = resolveDetectOptions(options);
   const mergeScore = resolveEffectiveMergeScore(detectOptions.breakRewrites);
+  // Built once for the whole detection call, lazily: the first path any pass
+  // actually fingerprints is what triggers `buildAttributeProvider` — an
+  // unattributed repo, or one whose diff pairs every file at the exact pass
+  // alone, never builds it at all.
+  const resolver = buildSimilarityContentKindResolver(ctx);
 
   // Break, then register: the break pass runs BEFORE registration so its
   // synthetic delete+add halves feed the registry.
-  const breakOutcome = await runBreakPass(ctx, diff, detectOptions.breakRewrites);
+  const breakOutcome = await runBreakPass(ctx, diff, detectOptions.breakRewrites, resolver);
   const registry = registerCandidates(
     breakOutcome.workingDiff,
     breakOutcome.broken,
@@ -1599,6 +1715,7 @@ export async function detectSimilarityRenames(
     breakOutcome.broken,
     detectOptions.copies,
     detectOptions.threshold,
+    resolver,
   );
 
   // Matrix: the cull-plus-limit gate, size-gated hydration, and selection.
@@ -1609,6 +1726,7 @@ export async function detectSimilarityRenames(
     breakOutcome.broken,
     detectOptions,
     mergeFingerprintMaps(breakOutcome.fingerprints, exactAndBasename.fingerprints),
+    resolver,
   );
 
   // Write-back, then assemble: reconciles every broken pair against its
@@ -1664,6 +1782,7 @@ export async function detectBreakRewrites(
   breakRewrites: { readonly score: number; readonly merge: number },
 ): Promise<TreeDiff> {
   const { breakScore, mergeScore } = resolveBreakGates(breakRewrites);
-  const { broken } = await attemptBreaks(ctx, diff, breakScore);
+  const resolver = buildSimilarityContentKindResolver(ctx);
+  const { broken } = await attemptBreaks(ctx, diff, breakScore, resolver);
   return rejoinBrokenInPlace(diff, broken, mergeScore);
 }

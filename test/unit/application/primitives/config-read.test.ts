@@ -813,6 +813,54 @@ describe('primitives/config-read', () => {
     });
   });
 
+  describe('Given a [diff "custom"] section with binary=true', () => {
+    describe('When readConfig', () => {
+      it('Then parsed.diff.get("custom").binary is true', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[diff "custom"]\n\tbinary = true\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.diff?.get('custom')?.binary).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a [diff "custom"] section with binary=false', () => {
+    describe('When readConfig', () => {
+      it('Then parsed.diff.get("custom").binary is false', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[diff "custom"]\n\tbinary = false\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.diff?.get('custom')?.binary).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a [diff "custom"] section with a malformed binary value', () => {
+    describe('When readConfig', () => {
+      it('Then binary stays undefined (the malformed value is silently skipped)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[diff "custom"]\n\tbinary = maybe\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.diff?.get('custom')?.binary).toBeUndefined();
+      });
+    });
+  });
+
   describe('Given two [diff "<name>"] sections', () => {
     describe('When readConfig', () => {
       it('Then each diff driver is parsed independently', async () => {

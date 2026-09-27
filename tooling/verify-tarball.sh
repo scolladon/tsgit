@@ -257,7 +257,15 @@ done
 # xdl-prepare.ts and the kept-space indirection it adds to xdl-split.ts —
 # runtime code shipped in every distribution form, none removable without
 # giving back the record cleanup git's own counts depend on.
-SIZE_CAP=$((1009 * 1024))
+# Raised 1009 -> 1010 KiB by honouring the diff attribute when scoring
+# rename/break similarity like git: the measured tarball lands at
+# 1 033 936 B, 720 B over the old cap, attributable to the per-path
+# content-kind resolver, the diff.<driver>.binary config field, and the
+# override threading through the fingerprint and break-score primitives —
+# runtime code shipped in every distribution form, none removable without
+# giving back the attribute-aware text/binary decision git's own scorer
+# makes.
+SIZE_CAP=$((1010 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders

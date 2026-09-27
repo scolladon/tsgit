@@ -43,6 +43,7 @@ import {
   describeRenameRows,
   type FileSpec,
   type RenameRow,
+  runRenameRow,
 } from './rename-interop-rows.js';
 
 const fixturesDir = path.join(
@@ -2661,6 +2662,153 @@ describeRenameRows(
   CRLF_BREAK_SETUP_TIMEOUT,
   {
     given: 'Given a raw diff pair of CRLF text files exercising the -B break-rewrite pass',
+    when: 'When diff is called without detectRenames',
+  },
+);
+
+/**
+ * `diff` attribute interop: git's `diff_filespec_is_binary` honours the
+ * path's `diff` attribute BEFORE any content sniff — `-diff` forces binary
+ * (the CR of a CRLF pair is hashed, not skipped), a bare `diff` forces text
+ * (CR skipped even over a NUL byte), and `diff=<name>` defers to that
+ * driver's own `diff.<name>.binary` config (row C, a standalone test below —
+ * it needs an extra `git config` step the row-table harness doesn't do).
+ * Every row here reuses `crlfTextLines`/`CRLF_TEXT_EDIT_START/END` (the plain
+ * CRLF interop rows above) so the ONLY variable is the attribute.
+ */
+const DIFF_ATTR_TMP_PREFIX = 'tsgit-rename-diff-attr-';
+const DIFF_ATTR_SETUP_TIMEOUT = 60_000;
+
+/** `crlfTextLines`, with a NUL byte spliced in after the first 10 bytes —
+ *  the `diff` (bare) row needs a NUL present for the attribute's forced-text
+ *  override to differ observably from the sniff (which would otherwise call
+ *  it binary purely from the NUL, independent of CR-skip). */
+const crlfTextLinesWithNul = (editedFrom: number, editedTo: number): string => {
+  const text = crlfTextLines(editedFrom, editedTo);
+  return `${text.slice(0, 10)}\u0000${text.slice(10)}`;
+};
+
+/**
+ * Verified against real git 2.55.0 (scrubbed env, signing off): row A pairs
+ * at `R070` (binary, CR-counted — same value `CRLF_TEXT_ROWS`'s own comment
+ * pins for a CR-counted scorer) where the unattributed sibling above scores
+ * `R067`. Row B pairs at `R067` (bare `diff` forces text despite the NUL,
+ * the SAME CR-skipped score as the unattributed baseline) where an
+ * unattributed NUL-bearing file would sniff binary. Row C (copy) pairs at
+ * `C070` under `-C` with `copies:'on'`, the source surviving as a plain
+ * modify (`M source.crlf2`) — mirroring the plain-`-C`-from-a-modified-source
+ * shape the earlier `copy-similarity-c1` test in this file exercises.
+ */
+const DIFF_ATTR_ROWS: ReadonlyArray<RenameRow> = [
+  {
+    label:
+      'a CRLF rename marked -diff scores by the binary (CR-counted) byte count, not the sniffed text one (R070 old→new)',
+    before: [{ path: 'old.crlf', content: crlfTextLines(0, 0) }],
+    after: [
+      { path: 'new.crlf', content: crlfTextLines(CRLF_TEXT_EDIT_START, CRLF_TEXT_EDIT_END) },
+      { path: '.gitattributes', content: '*.crlf -diff\n' },
+    ],
+  },
+  {
+    label:
+      'a CRLF rename with a NUL byte marked bare diff scores by the text (CR-skipped) byte count despite the NUL, not the sniffed binary one (R067 old→new)',
+    before: [{ path: 'old.nul', content: crlfTextLinesWithNul(0, 0) }],
+    after: [
+      {
+        path: 'new.nul',
+        content: crlfTextLinesWithNul(CRLF_TEXT_EDIT_START, CRLF_TEXT_EDIT_END),
+      },
+      { path: '.gitattributes', content: '*.nul diff\n' },
+    ],
+  },
+  {
+    label:
+      'a CRLF copy marked -diff scores by the binary (CR-counted) byte count under copies:"on" (C070 source→dest)',
+    before: [{ path: 'source.crlf2', content: crlfTextLines(0, 0) }],
+    after: [
+      { path: 'source.crlf2', content: crlfTextLines(15, 20) },
+      { path: 'dest.crlf2', content: crlfTextLines(CRLF_TEXT_EDIT_START, CRLF_TEXT_EDIT_END) },
+      { path: '.gitattributes', content: '*.crlf2 -diff\n' },
+    ],
+    gitFlags: ['-C'],
+    renameOptions: { copies: 'on' },
+  },
+];
+
+describeRenameRows(
+  'CRLF rename similarity diff-attribute interop',
+  DIFF_ATTR_ROWS,
+  DIFF_ATTR_TMP_PREFIX,
+  DIFF_ATTR_SETUP_TIMEOUT,
+  {
+    given: 'Given a raw diff pair of CRLF text files whose path carries a diff attribute',
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE)('CRLF rename similarity diff=<driver> config interop', () => {
+  describe('Given a CRLF rename marked diff=drv with [diff "drv"] binary=true in the repo config', () => {
+    describe('When diff is called with detectRenames', () => {
+      it('Then name-status matches live git — binary, CR-counted byte count (R070 old→new)', async () => {
+        // Arrange — verified against real git 2.55.0: unconfigured diff=drv
+        // falls back to the sniff (R067, the same as the unattributed
+        // baseline); configuring diff.drv.binary=true forces binary (R070).
+        const row: RenameRow = {
+          label: 'diff=drv config binary=true',
+          before: [{ path: 'old.drv', content: crlfTextLines(0, 0) }],
+          after: [
+            { path: 'new.drv', content: crlfTextLines(CRLF_TEXT_EDIT_START, CRLF_TEXT_EDIT_END) },
+            { path: '.gitattributes', content: '*.drv diff=drv\n' },
+          ],
+        };
+        const { dir } = await buildRenameRow(row, `${DIFF_ATTR_TMP_PREFIX}driver-`);
+        try {
+          runGit(['-C', dir, 'config', 'diff.drv.binary', 'true']);
+
+          // Act
+          const { ours, peer } = await runRenameRow(row, dir);
+
+          // Assert
+          expect(ours).toBe(peer);
+          expect(peer).toContain('R070\told.drv\tnew.drv');
+        } finally {
+          await rmDir(dir, { recursive: true, force: true });
+        }
+      });
+    });
+  });
+});
+
+const DIFF_ATTR_BREAK_TMP_PREFIX = 'tsgit-rename-diff-attr-break-';
+const DIFF_ATTR_BREAK_SETUP_TIMEOUT = 60_000;
+
+/**
+ * Verified against real git 2.55.0 (scrubbed env, signing off): `--no-renames
+ * -B --name-status` keeps this rewrite broken at `M090` (binary, CR-counted)
+ * where the unattributed sibling above (`CRLF_BREAK_ROWS`) scores `M091`.
+ */
+const DIFF_ATTR_BREAK_ROWS: ReadonlyArray<RenameRow> = [
+  {
+    label:
+      'a CRLF rewrite marked -diff kept broken under --no-renames -B scores its dissimilarity by the binary (CR-counted) byte count, not the sniffed text one (M090 m.attr)',
+    before: [{ path: 'm.attr', content: crlfBreakContent('old', 11, 1) }],
+    after: [
+      { path: 'm.attr', content: crlfBreakContent('new', 11, 1) },
+      { path: '.gitattributes', content: '*.attr -diff\n' },
+    ],
+    detectRenames: false,
+    gitFlags: ['-B'],
+    renameOptions: CRLF_BREAK_OPTS,
+  },
+];
+
+describeRenameRows(
+  'CRLF break-rewrite dissimilarity diff-attribute interop',
+  DIFF_ATTR_BREAK_ROWS,
+  DIFF_ATTR_BREAK_TMP_PREFIX,
+  DIFF_ATTR_BREAK_SETUP_TIMEOUT,
+  {
+    given:
+      'Given a raw diff pair of CRLF text files whose path carries a diff attribute, exercising the -B break-rewrite pass',
     when: 'When diff is called without detectRenames',
   },
 );

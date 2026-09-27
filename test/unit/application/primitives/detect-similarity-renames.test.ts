@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
+import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
 import {
+  detectBreakRewrites,
   detectSimilarityRenames,
   isSizeRejected,
   NUM_CANDIDATE_PER_DST,
@@ -12,6 +14,8 @@ import type {
   AddChange,
   DeleteChange,
   DiffChange,
+  ModifyChange,
+  RenameChange,
   TreeDiff,
 } from '../../../../src/domain/diff/diff-change.js';
 import type { FlatTreeEntry } from '../../../../src/domain/diff/flat-tree.js';
@@ -6587,6 +6591,207 @@ describe('Given a diff that already carries a resolved rename, alongside an add 
       // Assert — the resolved rename passed through unchanged
       const passedThrough = result.changes.find((c) => c.type === 'rename');
       expect(passedThrough).toEqual(resolvedRename);
+    });
+  });
+});
+
+/**
+ * 8 CRLF-terminated lines, line `changed` (0-indexed) replaced — no NUL byte,
+ * so `contentKindOf`'s content sniff always lands on 'text'. Stripping the CR
+ * of each CRLF pair (text) vs hashing it (binary) lands on a DIFFERENT
+ * srcCopied, pinned by hand against `buildFingerprint`/`countCopied` directly
+ * (see the sibling pin in `similarity.test.ts`'s `makeCrlfPair`).
+ */
+const crlfContent = (changed: number): string => {
+  const lines = Array.from({ length: 8 }, (_, i) =>
+    i === changed ? `CHANGED line ${i}: xyz` : `original line ${i}: filler content`,
+  );
+  return `${lines.join('\r\n')}\r\n`;
+};
+
+describe('Given a CRLF rename pair whose path matches -diff in .gitattributes', () => {
+  describe('When detectSimilarityRenames is called', () => {
+    it('Then the score is computed with binary content kind (CR not skipped)', async () => {
+      // Arrange — srcSize=264, dstSize=252, binary srcCopied=231 (pinned by
+      // hand): score = trunc(231 * 60000 / 264) = 52500.
+      const ctx = await buildSeededContext();
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.crlf -diff\n');
+      const oldId = await writeBlob(ctx, crlfContent(-1));
+      const newId = await writeBlob(ctx, crlfContent(2));
+      const diff: TreeDiff = {
+        changes: [
+          { type: 'delete', oldPath: 'src.crlf' as FilePath, oldId, oldMode: FILE_MODE.REGULAR },
+          { type: 'add', newPath: 'dst.crlf' as FilePath, newId, newMode: FILE_MODE.REGULAR },
+        ],
+      };
+
+      // Act
+      const result = await detectSimilarityRenames(ctx, diff);
+
+      // Assert
+      const rename = result.changes.find((c) => c.type === 'rename') as RenameChange | undefined;
+      expect(rename?.similarity.score).toBe(52500);
+    });
+  });
+});
+
+describe('Given the same CRLF rename pair without any gitattributes', () => {
+  describe('When detectSimilarityRenames is called', () => {
+    it('Then the score is computed with the sniffed text content kind (CR skipped)', async () => {
+      // Arrange — text srcCopied=224 (pinned by hand):
+      // score = trunc(224 * 60000 / 264) = 50909.
+      const ctx = await buildSeededContext();
+      const oldId = await writeBlob(ctx, crlfContent(-1));
+      const newId = await writeBlob(ctx, crlfContent(2));
+      const diff: TreeDiff = {
+        changes: [
+          { type: 'delete', oldPath: 'src.crlf' as FilePath, oldId, oldMode: FILE_MODE.REGULAR },
+          { type: 'add', newPath: 'dst.crlf' as FilePath, newId, newMode: FILE_MODE.REGULAR },
+        ],
+      };
+
+      // Act
+      const result = await detectSimilarityRenames(ctx, diff);
+
+      // Assert
+      const rename = result.changes.find((c) => c.type === 'rename') as RenameChange | undefined;
+      expect(rename?.similarity.score).toBe(50909);
+    });
+  });
+});
+
+describe('Given a CRLF rename pair whose path matches diff=<name> with [diff "<name>"] binary=true', () => {
+  describe('When detectSimilarityRenames is called', () => {
+    it('Then the score is computed with binary content kind, like the -diff attribute', async () => {
+      // Arrange — same binary-kind pin as the -diff row (52500).
+      const ctx = await buildSeededContext();
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.crlf diff=custom\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[diff "custom"]\n\tbinary = true\n');
+      invalidateConfigCache(ctx);
+      const oldId = await writeBlob(ctx, crlfContent(-1));
+      const newId = await writeBlob(ctx, crlfContent(2));
+      const diff: TreeDiff = {
+        changes: [
+          { type: 'delete', oldPath: 'src.crlf' as FilePath, oldId, oldMode: FILE_MODE.REGULAR },
+          { type: 'add', newPath: 'dst.crlf' as FilePath, newId, newMode: FILE_MODE.REGULAR },
+        ],
+      };
+
+      // Act
+      const result = await detectSimilarityRenames(ctx, diff);
+
+      // Assert
+      const rename = result.changes.find((c) => c.type === 'rename') as RenameChange | undefined;
+      expect(rename?.similarity.score).toBe(52500);
+    });
+  });
+});
+
+describe('Given a CRLF rename pair whose path matches diff=<name> with no [diff "<name>"] section', () => {
+  describe('When detectSimilarityRenames is called', () => {
+    it('Then the score falls back to the sniffed text content kind', async () => {
+      // Arrange — unconfigured driver: falls back to the sniff, same pin as
+      // the unattributed row (50909).
+      const ctx = await buildSeededContext();
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.crlf diff=ghost\n');
+      const oldId = await writeBlob(ctx, crlfContent(-1));
+      const newId = await writeBlob(ctx, crlfContent(2));
+      const diff: TreeDiff = {
+        changes: [
+          { type: 'delete', oldPath: 'src.crlf' as FilePath, oldId, oldMode: FILE_MODE.REGULAR },
+          { type: 'add', newPath: 'dst.crlf' as FilePath, newId, newMode: FILE_MODE.REGULAR },
+        ],
+      };
+
+      // Act
+      const result = await detectSimilarityRenames(ctx, diff);
+
+      // Assert
+      const rename = result.changes.find((c) => c.type === 'rename') as RenameChange | undefined;
+      expect(rename?.similarity.score).toBe(50909);
+    });
+  });
+});
+
+/**
+ * 40 CRLF-terminated lines, the first `shared` identical, the rest replaced —
+ * large enough to clear `MINIMUM_BREAK_SIZE` (400 bytes). Pinned by hand
+ * against `buildFingerprint`/`countCopied` directly: text dissimilarity is
+ * 37812 (unattributed sniff), binary dissimilarity is 37500 (-diff), both
+ * above `DEFAULT_MERGE_SCORE` (36000) so both stay kept-broken.
+ */
+const breakCrlfContent = (kind: 'old' | 'new', total: number, shared: number): string => {
+  const lines = Array.from({ length: total }, (_, i) =>
+    kind === 'old' || i < shared
+      ? `line-${String(i).padStart(3, '0')}: shared content alpha beta gamma delta epsilon zeta eta theta`
+      : `different-${String(i).padStart(3, '0')}: COMPLETELY NEW TEXT ZETA THETA KAPPA LAMBDA MU NU XI OMICRON PI RHO SIGMA`,
+  );
+  return `${lines.join('\r\n')}\r\n`;
+};
+
+describe('Given a CRLF modify whose path matches -diff in .gitattributes, under -B', () => {
+  describe('When detectBreakRewrites is called', () => {
+    it('Then the kept-broken dissimilarity is computed with binary content kind', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.crlf -diff\n');
+      const oldId = await writeBlob(ctx, breakCrlfContent('old', 40, 15));
+      const newId = await writeBlob(ctx, breakCrlfContent('new', 40, 15));
+      const diff: TreeDiff = {
+        changes: [
+          {
+            type: 'modify',
+            path: 'file.crlf' as FilePath,
+            oldId,
+            newId,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+          },
+        ],
+      };
+
+      // Act
+      const result = await detectBreakRewrites(ctx, diff, {
+        score: DEFAULT_BREAK_SCORE,
+        merge: DEFAULT_MERGE_SCORE,
+      });
+
+      // Assert
+      const modify = result.changes[0] as ModifyChange;
+      expect(modify.broken?.score).toBe(37500);
+    });
+  });
+});
+
+describe('Given the same CRLF modify without any gitattributes, under -B', () => {
+  describe('When detectBreakRewrites is called', () => {
+    it('Then the kept-broken dissimilarity is computed with the sniffed text content kind', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const oldId = await writeBlob(ctx, breakCrlfContent('old', 40, 15));
+      const newId = await writeBlob(ctx, breakCrlfContent('new', 40, 15));
+      const diff: TreeDiff = {
+        changes: [
+          {
+            type: 'modify',
+            path: 'file.crlf' as FilePath,
+            oldId,
+            newId,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+          },
+        ],
+      };
+
+      // Act
+      const result = await detectBreakRewrites(ctx, diff, {
+        score: DEFAULT_BREAK_SCORE,
+        merge: DEFAULT_MERGE_SCORE,
+      });
+
+      // Assert
+      const modify = result.changes[0] as ModifyChange;
+      expect(modify.broken?.score).toBe(37812);
     });
   });
 });

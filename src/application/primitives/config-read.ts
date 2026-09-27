@@ -122,10 +122,12 @@ export interface ParsedConfig {
     string,
     { readonly name?: string; readonly driver?: string; readonly recursive?: string }
   >;
-  /** `[diff "<name>"]` configured diff/textconv drivers. */
+  /** `[diff "<name>"]` configured diff/textconv drivers. `binary` is the
+   *  driver's own tristate binary-vs-text override, read by similarity/break
+   *  scoring for a `diff=<name>` attribute (`resolveSimilarityOverride`). */
   readonly diff?: ReadonlyMap<
     string,
-    { readonly textconv?: string; readonly cachetextconv?: boolean }
+    { readonly textconv?: string; readonly cachetextconv?: boolean; readonly binary?: boolean }
   >;
   /** `[filter "<name>"]` configured clean/smudge filter drivers. */
   readonly filter?: ReadonlyMap<
@@ -1241,7 +1243,7 @@ interface MutableParsedConfig {
   branch?: Map<string, { remote?: string; merge?: string; pushRemote?: string }>;
   submodule?: Map<string, { url?: string; active?: boolean; update?: string }>;
   merge?: Map<string, { name?: string; driver?: string; recursive?: string }>;
-  diff?: Map<string, { textconv?: string; cachetextconv?: boolean }>;
+  diff?: Map<string, { textconv?: string; cachetextconv?: boolean; binary?: boolean }>;
   filter?: Map<string, { clean?: string; smudge?: string; process?: string; required?: boolean }>;
   extensions?: { partialClone?: string };
   commit?: { gpgSign?: boolean };
@@ -1639,26 +1641,31 @@ const mergeMergeDriver = (
   acc.merge.set(name, next);
 };
 
+type DiffDriverEntry = { textconv?: string; cachetextconv?: boolean; binary?: boolean };
+
+const applyDiffDriverEntry = (next: DiffDriverEntry, key: string, value: string | null): void => {
+  const lowered = key.toLowerCase();
+  if (lowered === 'textconv') {
+    // String-typed field: skip null (valueless key treated as absent).
+    if (value === null) return;
+    next.textconv = value;
+  } else if (lowered === 'cachetextconv') {
+    const parsed = parseGitBoolean(value);
+    if (parsed.ok) next.cachetextconv = parsed.value;
+  } else if (lowered === 'binary') {
+    const parsed = parseGitBoolean(value);
+    if (parsed.ok) next.binary = parsed.value;
+  }
+};
+
 const mergeDiffDriver = (
-  acc: { diff?: Map<string, { textconv?: string; cachetextconv?: boolean }> },
+  acc: { diff?: Map<string, DiffDriverEntry> },
   name: string,
   sec: IniSection,
 ): void => {
   acc.diff ??= new Map();
-  const next: { textconv?: string; cachetextconv?: boolean } = {
-    ...(acc.diff.get(name) ?? {}),
-  };
-  for (const { key, value } of sec.entries) {
-    const lowered = key.toLowerCase();
-    if (lowered === 'textconv') {
-      // String-typed field: skip null (valueless key treated as absent).
-      if (value === null) continue;
-      next.textconv = value;
-    } else if (lowered === 'cachetextconv') {
-      const parsed = parseGitBoolean(value);
-      if (parsed.ok) next.cachetextconv = parsed.value;
-    }
-  }
+  const next: DiffDriverEntry = { ...(acc.diff.get(name) ?? {}) };
+  for (const { key, value } of sec.entries) applyDiffDriverEntry(next, key, value);
   acc.diff.set(name, next);
 };
 
@@ -1990,7 +1997,7 @@ const finalizeCore = (core: MutableCore | undefined): ParsedConfig['core'] => {
 };
 
 type FinalizeOut = {
-  diff?: ReadonlyMap<string, { textconv?: string; cachetextconv?: boolean }>;
+  diff?: ReadonlyMap<string, { textconv?: string; cachetextconv?: boolean; binary?: boolean }>;
   filter?: ReadonlyMap<string, FilterEntry>;
   commit?: { gpgSign?: boolean };
   tag?: { gpgSign?: boolean };
@@ -2068,7 +2075,7 @@ const finalize = (acc: MutableParsedConfig): ParsedConfig => {
     branch?: ReadonlyMap<string, { remote?: string; merge?: string; pushRemote?: string }>;
     submodule?: ReadonlyMap<string, { url?: string; active?: boolean; update?: string }>;
     merge?: ReadonlyMap<string, { name?: string; driver?: string; recursive?: string }>;
-    diff?: ReadonlyMap<string, { textconv?: string; cachetextconv?: boolean }>;
+    diff?: ReadonlyMap<string, { textconv?: string; cachetextconv?: boolean; binary?: boolean }>;
     filter?: ReadonlyMap<
       string,
       { clean?: string; smudge?: string; process?: string; required?: boolean }

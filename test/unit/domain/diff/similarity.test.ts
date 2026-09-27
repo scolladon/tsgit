@@ -55,6 +55,22 @@ function makeDisjoint256Pair(): { readonly src: Uint8Array; readonly dst: Uint8A
   };
 }
 
+/**
+ * 8 CRLF-terminated lines, line 2 (0-indexed) changed — no NUL byte, so
+ * `contentKindOf` always sniffs 'text'. Stripping the CR of each CRLF pair
+ * (text mode) vs hashing it (binary mode) lands on a DIFFERENT srcCopied,
+ * pinned by hand against `buildFingerprint(..., kind)` directly.
+ */
+function makeCrlfPair(): { readonly src: Uint8Array; readonly dst: Uint8Array } {
+  const build = (changed: number): Uint8Array => {
+    const lines = Array.from({ length: 8 }, (_, i) =>
+      i === changed ? `CHANGED line ${i}: xyz` : `original line ${i}: filler content`,
+    );
+    return enc.encode(`${lines.join('\r\n')}\r\n`);
+  };
+  return { src: build(-1), dst: build(2) };
+}
+
 // XOR complement guarantees no shared chunk hashes.
 function makeDisjoint64Pair(): { readonly src: Uint8Array; readonly dst: Uint8Array } {
   const base = new Uint8Array(Array.from({ length: 64 }, (_, i) => i));
@@ -350,6 +366,49 @@ describe('similarity', () => {
         // Assert — merge_score reproduces git's M060
         const mergeScore = Math.trunc(((srcSize - result.srcCopied) * MAX_SCORE) / srcSize);
         expect(Math.trunc((mergeScore * 100) / MAX_SCORE)).toBe(60);
+      });
+    });
+
+    describe('Given a CRLF-bearing pair with no override, When countSpanhashChanges is called', () => {
+      it('Then srcCopied matches the sniffed text kind (CR of CRLF skipped)', () => {
+        // Arrange — 8 CRLF-terminated lines, line 2 changed; no NUL so the
+        // sniff picks 'text', which skips the CR of every CRLF pair.
+        const { src, dst } = makeCrlfPair();
+
+        // Act
+        const result = countSpanhashChanges(src, dst);
+
+        // Assert — pinned by hand against buildFingerprint(..., 'text')
+        expect(result.srcCopied).toBe(224);
+        expect(result.literalAdded).toBe(dst.length - 224);
+      });
+    });
+
+    describe('Given a CRLF-bearing pair with an explicit text override, When countSpanhashChanges is called', () => {
+      it('Then srcCopied matches the no-override sniff (both land on text)', () => {
+        // Arrange
+        const { src, dst } = makeCrlfPair();
+
+        // Act
+        const result = countSpanhashChanges(src, dst, 'text');
+
+        // Assert
+        expect(result.srcCopied).toBe(224);
+        expect(result.literalAdded).toBe(dst.length - 224);
+      });
+    });
+
+    describe('Given a CRLF-bearing pair with an explicit binary override, When countSpanhashChanges is called', () => {
+      it('Then srcCopied differs from the sniff (CR bytes are hashed, not skipped)', () => {
+        // Arrange
+        const { src, dst } = makeCrlfPair();
+
+        // Act
+        const result = countSpanhashChanges(src, dst, 'binary');
+
+        // Assert — pinned by hand against buildFingerprint(..., 'binary')
+        expect(result.srcCopied).toBe(231);
+        expect(result.literalAdded).toBe(dst.length - 231);
       });
     });
   });

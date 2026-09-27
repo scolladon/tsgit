@@ -55,9 +55,12 @@ export type ContentKind = 'text' | 'binary';
 /**
  * git derives `is_text` from `!diff_filespec_is_binary`, which falls back to
  * a content sniff (`buffer_is_binary`) whenever no diff attribute already
- * decided. This port has no attribute plumbing into the rename/break pass,
- * so it always takes that fallback: `isBinary`'s NUL-in-the-first-8000-bytes
- * window (`line-diff.ts`).
+ * decided. This is exactly that fallback: `isBinary`'s NUL-in-the-first-8000-
+ * bytes window (`line-diff.ts`). The attribute-decided case is resolved
+ * upstream, per path, by `resolveSimilarityOverride`
+ * (`detect-similarity-renames.ts`'s callers thread the result in as
+ * `buildFingerprint`/`countSpanhashChanges`'s `override` — this function
+ * only ever runs when that override is absent).
  */
 export function contentKindOf(bytes: Uint8Array): ContentKind {
   return isBinary(bytes) ? 'binary' : 'text';
@@ -227,8 +230,18 @@ export interface SpanhashChangeCounts {
  * - Both empty → srcCopied = 0, literalAdded = 0
  * - src empty  → srcCopied = 0, literalAdded = dstSize
  * - dst empty  → srcCopied = 0, literalAdded = 0
+ *
+ * `override`, when given, decides BOTH sides' content kind outright — the
+ * break pass's two blobs are the old and new state of ONE path, so a single
+ * attribute-resolved override (see `resolveSimilarityOverride`) always
+ * applies uniformly to both. `undefined` (the default) falls back to each
+ * side's own content sniff, exactly as before.
  */
-export function countSpanhashChanges(src: Uint8Array, dst: Uint8Array): SpanhashChangeCounts {
+export function countSpanhashChanges(
+  src: Uint8Array,
+  dst: Uint8Array,
+  override?: ContentKind,
+): SpanhashChangeCounts {
   const srcSize = src.length;
   const dstSize = dst.length;
 
@@ -238,8 +251,8 @@ export function countSpanhashChanges(src: Uint8Array, dst: Uint8Array): Spanhash
   }
 
   const srcCopied = countCopied(
-    buildFingerprint(src, contentKindOf(src)),
-    buildFingerprint(dst, contentKindOf(dst)),
+    buildFingerprint(src, override ?? contentKindOf(src)),
+    buildFingerprint(dst, override ?? contentKindOf(dst)),
   );
 
   return { srcCopied, literalAdded: dstSize - srcCopied };
