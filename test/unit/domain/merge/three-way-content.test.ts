@@ -373,11 +373,11 @@ describe('mergeContent', () => {
   describe('Given zero-length insertion at position 5 and deletion [5,7)', () => {
     describe('When mergeContent called', () => {
       it('Then conflict detected (not silently merged)', () => {
-        // Arrange — ours inserts a line after base line 4 (zero-length at base pos 5);
-        // theirs deletes base lines 5-6 (range [5,7)).
-        // With the old rangesOverlap, a zero-length insertion at the boundary of a deletion
-        // would be missed (insertion 5..5 and range 5..7: the old code only handled both-zero-length
-        // and both-non-zero-length cases).
+        // Arrange — ours inserts a line after base line 4 (zero-length range [5,5));
+        // theirs deletes base lines 5-6 (range [5,7)). Git's closed touching rule treats
+        // two ranges as separate only when one side's base end is strictly before the
+        // other's base start: [5,5) ends at 5, which is not before [5,7)'s start (5), so
+        // they conflict.
         const base = enc('a\nb\nc\nd\ne\nf\ng\n');
         const ours = enc('a\nb\nc\nd\ne\nINSERTED\nf\ng\n');
         const theirs = enc('a\nb\nc\nd\ne\ng\n');
@@ -429,9 +429,11 @@ describe('mergeContent', () => {
 
   describe('Given theirs inserts inside a range ours deletes', () => {
     describe('When mergeContent called', () => {
-      it('Then conflict (zero-length b inside non-zero a)', () => {
-        // Arrange — ours deletes lines 1-2 (replaces with nothing); theirs inserts at line 1 (zero-length).
-        // rangesOverlap branch: b is zero-length, a is non-zero → b.baseStart >= a.baseStart && b.baseStart < a.baseEnd.
+      it('Then conflict, matching `git merge-file` (an insertion touching a deletion is not separate)', () => {
+        // Arrange — ours deletes lines 1-2 (range [1,3)); theirs inserts at line 1
+        // (zero-length range [1,1)). Neither side's base end is strictly before the
+        // other's base start (3 is not before 1, and 1 is not before 1), so git's
+        // closed touching rule conflicts.
         const base = enc('a\nb\nc\nd\n');
         const ours = enc('a\nd\n');
         const theirs = enc('a\nX\nb\nc\nd\n');
@@ -488,10 +490,11 @@ describe('mergeContent', () => {
 
   describe('Given ours inserts strictly inside a theirs replacement range', () => {
     describe('When mergeContent called', () => {
-      it('Then conflict (zero-length a vs non-zero b)', () => {
-        // Arrange — ours inserts at base pos 2; theirs replaces base[1,3). rangesOverlap takes the
-        // ternary `:` branch. If the ternary condition were forced true it would compare
-        // a.baseStart === b.baseStart (2 === 1 → false) and miss the real overlap.
+      it('Then conflict, matching `git merge-file` (an insertion strictly inside a range is not separate)', () => {
+        // Arrange — ours inserts at base pos 2 (zero-length range [2,2)); theirs replaces
+        // base[1,3). Neither side's base end is strictly before the other's base start
+        // (2 is not before 1, and 3 is not before 2), so git's closed touching rule
+        // conflicts.
         const base = enc('a\nb\nc\nd\ne\nf\ng\nh\n');
         const ours = enc('a\nb\nINS\nc\nd\ne\nf\ng\nh\n');
         const theirs = enc('a\nP\nQ\nd\ne\nf\ng\nh\n');
@@ -507,10 +510,10 @@ describe('mergeContent', () => {
 
   describe('Given two zero-length insertions at different base positions', () => {
     describe('When mergeContent called', () => {
-      it('Then clean merge (both-zero-length branch compares positions)', () => {
-        // Arrange — ours inserts at base pos 1, theirs inserts at base pos 5. Both ranges are
-        // zero-length but at distinct positions: a.baseStart === b.baseStart is false → no overlap.
-        // Forcing that comparison to true would wrongly flag a conflict.
+      it('Then clean merge (two disjoint zero-length insertions are separate)', () => {
+        // Arrange — ours inserts at base pos 1 (range [1,1)), theirs inserts at base pos 5
+        // (range [5,5)). Ours' base end (1) is strictly before theirs' base start (5), so
+        // git's closed touching rule treats them as separate and merges clean.
         const base = enc('a\nb\nc\nd\ne\nf\ng\nh\n');
         const ours = enc('a\nIO\nb\nc\nd\ne\nf\ng\nh\n');
         const theirs = enc('a\nb\nc\nd\ne\nIT\nf\ng\nh\n');
@@ -526,10 +529,10 @@ describe('mergeContent', () => {
 
   describe('Given a zero-length insertion before a disjoint non-zero theirs range', () => {
     describe('When mergeContent called', () => {
-      it('Then clean merge (a.baseStart < b.baseStart short-circuits)', () => {
-        // Arrange — ours inserts at base pos 1; theirs replaces base[3,5). The `:` branch evaluates
-        // a.baseStart >= b.baseStart (1 >= 3 → false). Forcing the branch true, or flipping && to ||,
-        // would wrongly report overlap.
+      it('Then clean merge (an insertion strictly before a range is separate)', () => {
+        // Arrange — ours inserts at base pos 1 (range [1,1)); theirs replaces base[3,5).
+        // Ours' base end (1) is strictly before theirs' base start (3), so git's closed
+        // touching rule treats them as separate and merges clean.
         const base = enc('a\nb\nc\nd\ne\nf\ng\nh\n');
         const ours = enc('a\nIO\nb\nc\nd\ne\nf\ng\nh\n');
         const theirs = enc('a\nb\nc\nP\nQ\nf\ng\nh\n');
@@ -562,12 +565,12 @@ describe('mergeContent', () => {
     });
   });
 
-  describe('Given two overlapping non-zero ranges where only the general branch detects it', () => {
+  describe('Given two overlapping non-zero ranges', () => {
     describe('When mergeContent called', () => {
-      it('Then conflict (b-non-zero path falls through to general overlap)', () => {
-        // Arrange — ours replaces base[3,5), theirs replaces base[1,4). Both ranges are non-zero,
-        // so rangesOverlap must skip the b-zero-length branch and use the general test. Forcing the
-        // `if (b.baseStart === b.baseEnd)` guard true would use the wrong (b-zero) formula → clean.
+      it('Then conflict, matching `git merge-file` (overlapping non-zero ranges are not separate)', () => {
+        // Arrange — ours replaces base[3,5), theirs replaces base[1,4). Neither side's base
+        // end is strictly before the other's base start (5 is not before 1, and 4 is not
+        // before 3), so git's closed touching rule conflicts.
         const base = enc('a\nb\nc\nd\ne\nf\ng\nh\n');
         const ours = enc('a\nb\nc\nOO\nf\ng\nh\n');
         const theirs = enc('a\nT1\nT2\ne\nf\ng\nh\n');
@@ -583,10 +586,10 @@ describe('mergeContent', () => {
 
   describe('Given a zero-length theirs insertion before a non-zero ours range', () => {
     describe('When mergeContent called', () => {
-      it('Then clean merge (b.baseStart >= a.baseStart short-circuits)', () => {
-        // Arrange — ours replaces base[3,5); theirs inserts at base pos 1. The b-zero-length branch
-        // evaluates b.baseStart >= a.baseStart (1 >= 3 → false). Forcing it true, or flipping && to
-        // ||, would wrongly report overlap.
+      it('Then clean merge (an insertion strictly before a range is separate)', () => {
+        // Arrange — ours replaces base[3,5); theirs inserts at base pos 1 (range [1,1)).
+        // Theirs' base end (1) is strictly before ours' base start (3), so git's closed
+        // touching rule treats them as separate and merges clean.
         const base = enc('a\nb\nc\nd\ne\nf\ng\nh\n');
         const ours = enc('a\nb\nc\nOO\nf\ng\nh\n');
         const theirs = enc('a\nIT\nb\nc\nd\ne\nf\ng\nh\n');
