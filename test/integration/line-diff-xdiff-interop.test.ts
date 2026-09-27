@@ -27,7 +27,9 @@ import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { blame } from '../../src/application/commands/blame.js';
+import { diff } from '../../src/application/commands/diff.js';
 import { computePatchId } from '../../src/application/primitives/patch-id.js';
+import type { StatTreeDiff } from '../../src/domain/diff/index.js';
 import { computeHunks, type OutputHunk } from '../../src/domain/diff/patch-serializer.js';
 import { computeStatFields } from '../../src/domain/diff/stat-fields.js';
 import { mergeContent } from '../../src/domain/merge/three-way-content.js';
@@ -525,6 +527,185 @@ describe.skipIf(!GIT_AVAILABLE)(
               ? decode(result.bytes)
               : decode(result.status === 'conflict' ? result.markedBytes : new Uint8Array(0));
           expect(tsgitOutput).toBe(gitResult.stdout);
+        });
+      });
+    });
+  },
+);
+
+// L4: the design's smallest row that only differs from git once record
+// cleanup runs. `L4_B`'s lone 'f' occurs 4 times in `L4_A` — meeting
+// bogosqrt(8) — so it is investigated, then discarded outright by the 7
+// no-match ('u') lines surrounding it. Every 'u' line is unconditionally
+// discarded (no match on the other side at all).
+const L4_A = 'f\nf\nf\nf\n';
+const L4_B = 'u1\nu2\nu3\nu4\nf\nu5\nu6\nu7\n';
+
+function multiTestLines(n: number, multiplier: number, offset: number): string {
+  return `${Array.from({ length: n }, (_, j) => String(j * multiplier + offset)).join('\n')}\n`;
+}
+
+const SEEDED_LINE_LENGTH = 20;
+const SEEDED_LINE_ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789';
+
+function seededToken(rng: () => number): string {
+  let token = '';
+  for (let i = 0; i < SEEDED_LINE_LENGTH; i++) {
+    token += SEEDED_LINE_ALPHABET[Math.floor(rng() * SEEDED_LINE_ALPHABET.length)];
+  }
+  return token;
+}
+
+function seededLines(count: number, seed: number): string[] {
+  const rng = mulberry32(seed);
+  return Array.from({ length: count }, () => seededToken(rng));
+}
+
+const REWRITE_PROBABILITY = 0.5;
+
+/** Replaces each line with a fresh seeded token independently at
+ *  `REWRITE_PROBABILITY` — a ~90% line-replace shape once averaged over
+ *  many lines is unlikely, but the true shape here is "roughly half
+ *  rewritten, scattered", which is exactly what stresses cleanup's per-line
+ *  no-match discard at scale (unlike the 600-line block-move rows above,
+ *  where every line still matches exactly once). */
+function rewriteLinesIndependently(lines: ReadonlyArray<string>, seed: number): string[] {
+  const decideRng = mulberry32(seed);
+  const freshRng = mulberry32(seed + 1);
+  return lines.map((line) => (decideRng() < REWRITE_PROBABILITY ? seededToken(freshRng) : line));
+}
+
+const TEXT_REWRITE_LINE_COUNT = 50_000;
+const TEXT_REWRITE_SEED = 0xc0ffee;
+const TEXT_REWRITE_SECOND_SEED = 0xdecaf;
+
+async function buildTextRewriteRepo(): Promise<string> {
+  const dir = await makeRepo('l1-shrunk');
+  const original = seededLines(TEXT_REWRITE_LINE_COUNT, TEXT_REWRITE_SEED);
+  await commitFile(dir, 'big.txt', `${original.join('\n')}\n`, 1_700_000_000);
+  const rewritten = rewriteLinesIndependently(original, TEXT_REWRITE_SECOND_SEED);
+  await commitFile(dir, 'big.txt', `${rewritten.join('\n')}\n`, 1_700_000_060);
+  return dir;
+}
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'xdiff record cleanup interop — past the split-only mismatch',
+  () => {
+    describe('Given the L4 shape (a: four "f" lines; b: seven unique lines plus one "f")', () => {
+      describe('When git diff --no-index --numstat and computeStatFields run on the same bytes', () => {
+        it('Then the added/deleted counts match byte-for-byte', async () => {
+          // Arrange
+          const [oldPath, newPath] = await writePair('l4', L4_A, L4_B);
+
+          // Act
+          const gitCounts = gitNumstatNoIndex(oldPath, newPath);
+          const tsgitCounts = tsgitNumstat(enc(L4_A), enc(L4_B));
+
+          // Assert
+          expect(tsgitCounts).toEqual(gitCounts);
+          expect(gitCounts).toEqual({ added: 8, deleted: 4 });
+        });
+      });
+    });
+
+    describe('Given a repository whose HEAD introduces the L4 shape over one commit', () => {
+      describe('When blame walks the two commits', () => {
+        it('Then every final line is attributed to the child commit, matching git blame --porcelain', async () => {
+          // Arrange
+          const dir = await makeRepo('l4-blame');
+          const commit1 = await commitFile(dir, 'file.txt', L4_A, 1_700_000_000);
+          const commit2 = await commitFile(dir, 'file.txt', L4_B, 1_700_000_060);
+
+          // Act
+          const ctx = createNodeContext({ workDir: dir });
+          const result = await blame(ctx, 'file.txt');
+          const tsgitShas = result.lines.map((line) => (line.committed ? line.commit : ''));
+          const porcelain = git(dir, 'blame', '--porcelain', 'HEAD', '--', 'file.txt');
+          const gitShas = shasByFinalLine(porcelain);
+
+          // Assert
+          expect(tsgitShas).toEqual(gitShas);
+          // The lone 'f' is discarded before the search ever runs, so nothing
+          // survives from the parent commit.
+          expect(tsgitShas.every((sha) => sha === commit2)).toBe(true);
+          expect(tsgitShas.some((sha) => sha === commit1)).toBe(false);
+        });
+      });
+    });
+
+    describe('Given a three-way merge whose ours side is the L4 "b" shape and theirs appends a line to "a"', () => {
+      describe('When mergeContent runs', () => {
+        it('Then the result matches git merge-file -p byte-for-byte', async () => {
+          // Arrange
+          const base = enc(L4_A);
+          const ours = enc(L4_B);
+          const theirs = enc('f\nf\nf\nf\ng\n');
+
+          // Act
+          const result = mergeContent(base, ours, theirs);
+          const gitResult = await gitMergeFile('l4', base, ours, theirs);
+
+          // Assert
+          expect(result.status).toBe(gitResult.exitCode === 0 ? 'clean' : 'conflict');
+          const tsgitOutput =
+            result.status === 'clean'
+              ? decode(result.bytes)
+              : decode(result.status === 'conflict' ? result.markedBytes : new Uint8Array(0));
+          expect(tsgitOutput).toBe(gitResult.stdout);
+        });
+      });
+    });
+
+    describe('Given the mt8000 shape (lines j·7 against j·13+1, n = 8000, multi-match-heavy)', () => {
+      describe('When git diff --no-index --numstat and computeStatFields run on the same bytes', () => {
+        it('Then the added/deleted counts match byte-for-byte', async () => {
+          // Arrange — most lines have no match at all on the other side; a
+          // sparse subset (where 7j ≡ 13k+1) coincide, exercising cleanup's
+          // no-match discard at a scale past the split engine's cost cap
+          const oursText = multiTestLines(8000, 7, 0);
+          const theirsText = multiTestLines(8000, 13, 1);
+          const [oldPath, newPath] = await writePair('l3-mt8000', oursText, theirsText);
+
+          // Act
+          const gitCounts = gitNumstatNoIndex(oldPath, newPath);
+          const tsgitCounts = tsgitNumstat(enc(oursText), enc(theirsText));
+
+          // Assert
+          expect(tsgitCounts).toEqual(gitCounts);
+        });
+      });
+    });
+
+    describe('Given two commits rewriting roughly half of 50 000 seeded lines independently (past the cost cap, cleanup-sensitive)', () => {
+      describe('When git diff --numstat and tsgit diff({ withStat: true }) both compare HEAD~1..HEAD', () => {
+        it('Then the added/deleted counts match byte-for-byte', async () => {
+          // Arrange
+          const dir = await buildTextRewriteRepo();
+          const ctx = createNodeContext({ workDir: dir });
+
+          // Act
+          const gitNumstat = git(
+            dir,
+            'diff',
+            '--no-ext-diff',
+            '--numstat',
+            'HEAD~1',
+            'HEAD',
+          ).trim();
+          const result = (await diff(ctx, {
+            from: 'HEAD~1',
+            to: 'HEAD',
+            withStat: true,
+          })) as StatTreeDiff;
+
+          // Assert
+          const [gitAddedText, gitDeletedText] = gitNumstat.split('\t');
+          const change = result.changes.find((c) => 'path' in c && c.path === 'big.txt');
+          expect(change).toMatchObject({
+            type: 'modify',
+            added: Number(gitAddedText),
+            deleted: Number(gitDeletedText),
+          });
         });
       });
     });

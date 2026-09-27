@@ -1308,6 +1308,7 @@
     "xmallocz",
     "xmerge",
     "xorshift",
+    "xpparam",
     "xprepare",
     "xscr",
     "xtypes",

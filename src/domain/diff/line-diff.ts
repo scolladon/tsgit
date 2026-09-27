@@ -1,6 +1,7 @@
 import type { LineKey } from './whitespace.js';
 import { classifyLines } from './xdiff/xdl-classify.js';
 import { compactChanges } from './xdiff/xdl-compact.js';
+import { cleanupRecords, type SearchMode, trimEnds } from './xdiff/xdl-prepare.js';
 import { markChanges } from './xdiff/xdl-split.js';
 
 export interface LineHunk {
@@ -184,6 +185,23 @@ export function diffPresplitLines(
   theirsLines: ReadonlyArray<Uint8Array>,
   options?: LineDiffOptions,
 ): LineDiff {
+  return diffPresplitLinesForMode(oursLines, theirsLines, 'git-default', options);
+}
+
+/**
+ * `diffPresplitLines`, parameterised by search mode.
+ *
+ * @internal — exported only for the property oracle in
+ * xdiff.properties.test.ts, which needs `'minimal'` to assert the change
+ * count against an independent LCS-based bound. Every production caller
+ * goes through `diffPresplitLines`, which always passes `'git-default'`.
+ */
+export function diffPresplitLinesForMode(
+  oursLines: ReadonlyArray<Uint8Array>,
+  theirsLines: ReadonlyArray<Uint8Array>,
+  mode: SearchMode,
+  options?: LineDiffOptions,
+): LineDiff {
   const lineKey = options?.lineKey;
   const M = oursLines.length;
   const N = theirsLines.length;
@@ -198,16 +216,16 @@ export function diffPresplitLines(
   }
 
   const classes = classifyLines(oursLines, theirsLines, lineKey);
-  const oursChanged = new Uint8Array(M);
-  const theirsChanged = new Uint8Array(N);
-  markChanges(classes, oursChanged, theirsChanged);
+  const trimmed = trimEnds(classes.ours, classes.theirs);
+  const prepared = cleanupRecords(classes, trimmed, mode);
+  markChanges(classes, prepared, mode);
   // git's own order (xdl_diff, xdiffi.c): compact ours against theirs, then
   // theirs against ours — a group that merges on the first pass can free up
   // a slide on the second.
-  compactChanges(oursChanged, theirsChanged, classes.ours, oursLines);
-  compactChanges(theirsChanged, oursChanged, classes.theirs, theirsLines);
+  compactChanges(prepared.ours.changed, prepared.theirs.changed, classes.ours, oursLines);
+  compactChanges(prepared.theirs.changed, prepared.ours.changed, classes.theirs, theirsLines);
   return {
-    hunks: buildHunksFromChanged(oursChanged, theirsChanged),
+    hunks: buildHunksFromChanged(prepared.ours.changed, prepared.theirs.changed),
     oursLines,
     theirsLines,
     degraded: false,

@@ -251,7 +251,13 @@ done
 # the measured tarball lands at 1 030 070 B, 1 974 B over the old cap,
 # attributable to xdl-split.ts — runtime code shipped in every distribution
 # form, none removable without giving back the whole-file-bail-free engine.
-SIZE_CAP=$((1007 * 1024))
+# Raised 1007 -> 1009 KiB by xdl_cleanup_records (trim ends and discard
+# multi-match/no-match lines before the search runs): the measured tarball
+# lands at 1 031 605 B, 437 B over the old cap, attributable to
+# xdl-prepare.ts and the kept-space indirection it adds to xdl-split.ts —
+# runtime code shipped in every distribution form, none removable without
+# giving back the record cleanup git's own counts depend on.
+SIZE_CAP=$((1009 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders

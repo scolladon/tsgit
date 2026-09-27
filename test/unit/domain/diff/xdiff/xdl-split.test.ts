@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { Prepared } from '../../../../../src/domain/diff/xdiff/xdl-prepare.js';
 import {
   hasBackwardSnakeRun,
   hasForwardSnakeRun,
@@ -18,14 +19,28 @@ function classesOf(ours: ReadonlyArray<number>, theirs: ReadonlyArray<number>): 
   return { ours: Int32Array.from(ours), theirs: Int32Array.from(theirs), classCount };
 }
 
+/** An identity `Prepared` view — every line kept, none pre-discarded — so
+ *  these tests exercise the split search in isolation from cleanupRecords,
+ *  exactly like calling `markChanges` before Part 11 introduced discards. */
+function identityPrepared(length: number): {
+  readonly changed: Uint8Array;
+  readonly referenceIndex: Int32Array;
+} {
+  const referenceIndex = new Int32Array(length);
+  for (let i = 0; i < length; i++) referenceIndex[i] = i;
+  return { changed: new Uint8Array(length), referenceIndex };
+}
+
 function runMarkChanges(classes: Classes): {
   readonly oursChanged: Uint8Array;
   readonly theirsChanged: Uint8Array;
 } {
-  const oursChanged = new Uint8Array(classes.ours.length);
-  const theirsChanged = new Uint8Array(classes.theirs.length);
-  markChanges(classes, oursChanged, theirsChanged);
-  return { oursChanged, theirsChanged };
+  const prepared: Prepared = {
+    ours: identityPrepared(classes.ours.length),
+    theirs: identityPrepared(classes.theirs.length),
+  };
+  markChanges(classes, prepared, 'git-default');
+  return { oursChanged: prepared.ours.changed, theirsChanged: prepared.theirs.changed };
 }
 
 describe('markChanges', () => {

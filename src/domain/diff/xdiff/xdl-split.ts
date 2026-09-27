@@ -5,11 +5,16 @@
 // fixed edit distance, its snake heuristic and cost cap return a valid,
 // possibly non-minimal script in bounded time and O(M + N) memory.
 //
-// `xdl_recs_cmp`'s `reference_index` indirection (a kept-lines view built by
-// `xdl_cleanup_records`) is Part 11's concern; here every line is kept, so
-// `get_hash(xdf, i)` is simply `classes.ours[i]` / `classes.theirs[i]`.
+// `xdl_recs_cmp`'s `reference_index` indirection is git's on-the-fly
+// `get_hash(xdf, i) = xdf->recs[xdf->reference_index[i]].minimal_perfect_hash`
+// on every comparison; here it is done once, up front, by remapping the two
+// class-id arrays through xdl-prepare.ts's `referenceIndex` into a kept-space
+// pair the rest of this module searches exactly as it always has — the
+// search core below never changes between "every line kept" and "most lines
+// discarded", only which array it is handed.
 
 import type { LineClasses } from './xdl-classify.js';
+import { bogosqrt, type Prepared, type SearchMode } from './xdl-prepare.js';
 
 const XDL_MAX_COST_MIN = 256;
 const XDL_HEUR_MIN_COST = 256;
@@ -20,15 +25,6 @@ const XDL_K_HEUR = 4;
 // this module fits comfortably under the 32-bit signed max, so it stands in
 // for "further than reachable" without needing the platform's true LONG_MAX.
 const XDL_LINE_MAX = 0x7fff_ffff;
-
-/** git's `xdl_bogosqrt` (xdiff/xutils.c:26): a cheap, monotonic sqrt-ish
- *  approximation via repeated halving of the shift exponent — not a real
- *  square root, just fast, which is all `mxcost` needs. */
-function bogosqrt(n: number): number {
-  let i = 1;
-  for (let remaining = n; remaining > 0; remaining >>>= 2) i <<= 1;
-  return i;
-}
 
 interface AlgoEnv {
   readonly mxcost: number;
@@ -574,20 +570,53 @@ function xdlRecsCmp(
   }
 }
 
+/** Builds the kept-space class-id array git reads through
+ *  `get_hash(xdf, i) = xdf->recs[xdf->reference_index[i]].minimal_perfect_hash`:
+ *  one lookup per kept line, up front, rather than one indirection per
+ *  comparison during the search. */
+function mapToKeptSpace(ids: Int32Array, referenceIndex: Int32Array): Int32Array {
+  const kept = new Int32Array(referenceIndex.length);
+  for (let i = 0; i < referenceIndex.length; i++) kept[i] = ids[referenceIndex[i]!]!;
+  return kept;
+}
+
+/** Scatters a kept-space `changed` result back through `referenceIndex` into
+ *  original-index space — the mirror of `mapToKeptSpace`, and of git's own
+ *  `xdf->changed[xdf->reference_index[off]] = true` (xdiffi.c:281, :284). */
+function scatterToOriginalSpace(
+  changedInKeptSpace: Uint8Array,
+  referenceIndex: Int32Array,
+  changed: Uint8Array,
+): void {
+  for (let i = 0; i < changedInKeptSpace.length; i++) {
+    if (changedInKeptSpace[i] !== 0) changed[referenceIndex[i]!] = 1;
+  }
+}
+
 /**
  * git's `xdl_do_diff` k-vector setup (xdiffi.c:334-359) plus `xdl_recs_cmp`:
  * marks every changed line of `ours` and `theirs` via the linear-space
  * divide-and-conquer Myers search, never bailing however large the edit
- * distance is. `oursChanged`/`theirsChanged` are mutated in place, matching
- * git's own `xdf->changed` representation.
+ * distance is. Searches the kept-space view `prepared` holds (built by
+ * xdl-prepare.ts's `cleanupRecords`) rather than every line, and mutates
+ * `prepared.ours.changed` / `prepared.theirs.changed` in place — already
+ * pre-marked with `cleanupRecords`'s own discards — matching git's own
+ * `xdf->changed` representation. `mode === 'minimal'` forces the root box
+ * to search minimally; git's own `need_min` box flag is contagious from
+ * there (every genuine crossing returns `minLo: true, minHi: true`), so no
+ * further threading is needed.
  */
-export function markChanges(
-  classes: LineClasses,
-  oursChanged: Uint8Array,
-  theirsChanged: Uint8Array,
-): void {
-  const M = oursChanged.length;
-  const N = theirsChanged.length;
+export function markChanges(classes: LineClasses, prepared: Prepared, mode: SearchMode): void {
+  const keptOurs = mapToKeptSpace(classes.ours, prepared.ours.referenceIndex);
+  const keptTheirs = mapToKeptSpace(classes.theirs, prepared.theirs.referenceIndex);
+  const keptClasses: LineClasses = {
+    ours: keptOurs,
+    theirs: keptTheirs,
+    classCount: classes.classCount,
+  };
+
+  const M = keptOurs.length;
+  const N = keptTheirs.length;
   const ndiags = M + N + 3;
   const koffset = N + 1;
   const grid: KVectorGrid = { kvd: new Int32Array(2 * ndiags + 2), ndiags, koffset };
@@ -596,11 +625,19 @@ export function markChanges(
     snakeCnt: XDL_SNAKE_CNT,
     heurMin: XDL_HEUR_MIN_COST,
   };
-  xdlRecsCmp(classes, oursChanged, theirsChanged, grid, env, {
+  const oursChangedKept = new Uint8Array(M);
+  const theirsChangedKept = new Uint8Array(N);
+  xdlRecsCmp(keptClasses, oursChangedKept, theirsChangedKept, grid, env, {
     off1: 0,
     lim1: M,
     off2: 0,
     lim2: N,
-    needMin: false,
+    needMin: mode === 'minimal',
   });
+  scatterToOriginalSpace(oursChangedKept, prepared.ours.referenceIndex, prepared.ours.changed);
+  scatterToOriginalSpace(
+    theirsChangedKept,
+    prepared.theirs.referenceIndex,
+    prepared.theirs.changed,
+  );
 }
