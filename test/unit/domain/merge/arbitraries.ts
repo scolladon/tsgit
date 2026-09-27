@@ -36,12 +36,15 @@ export const arbThreeWay = (): fc.Arbitrary<ThreeWay> =>
   });
 
 /**
- * A 3-way input where ours edits only the first half of the base lines and
- * theirs only the second half — the two edit scripts touch disjoint base ranges,
- * so the merge never conflicts.
+ * A 3-way input where ours edits only the lines before `mid` and theirs only
+ * the lines after it, leaving the line at `mid` itself untouched by either
+ * side. That untouched line is a real base line separating the two edit
+ * scripts, so git's `xdl_do_merge` sees them as genuinely disjoint (its
+ * separateness test, `i1 + chg1 < other.i1`, needs a line of slack — two
+ * ranges that merely touch at a shared boundary still conflict).
  */
 export const arbDisjointThreeWay = (): fc.Arbitrary<ThreeWay> =>
-  fc.integer({ min: 2, max: 10 }).chain((n) => {
+  fc.integer({ min: 3, max: 10 }).chain((n) => {
     const base = baseOf(n);
     const mid = Math.floor(n / 2);
     return fc
@@ -52,7 +55,7 @@ export const arbDisjointThreeWay = (): fc.Arbitrary<ThreeWay> =>
       .map(({ ours, theirs }) => ({
         base: base.join(''),
         ours: applyDecisions(base, ours, (i) => i < mid),
-        theirs: applyDecisions(base, theirs, (i) => i >= mid),
+        theirs: applyDecisions(base, theirs, (i) => i > mid),
       }));
   });
 

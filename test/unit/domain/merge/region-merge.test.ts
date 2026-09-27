@@ -462,8 +462,8 @@ describe('region-merge', () => {
           {
             a: [5, 5],
             b: [2, 5],
-            expected: false,
-            label: 'a zero-length insert at the exclusive end of a range does not overlap',
+            expected: true,
+            label: "a zero-length insert at a range's end touches it, so they overlap (git's rule)",
           },
           {
             a: [1, 1],
@@ -480,8 +480,8 @@ describe('region-merge', () => {
           {
             a: [2, 5],
             b: [5, 5],
-            expected: false,
-            label: 'a non-zero range and a zero-length insert at its exclusive end do not overlap',
+            expected: true,
+            label: 'a range and a zero-length insert at its end touch, so they overlap (git rule)',
           },
           {
             a: [1, 3],
@@ -492,8 +492,8 @@ describe('region-merge', () => {
           {
             a: [1, 3],
             b: [3, 5],
-            expected: false,
-            label: 'two non-zero ranges that only touch at a boundary do not overlap',
+            expected: true,
+            label: "two non-zero ranges that touch at a boundary overlap (git's rule)",
           },
         ])('Then $label', ({ a, b, expected }) => {
           // Arrange & Act

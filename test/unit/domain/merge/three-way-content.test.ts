@@ -208,10 +208,12 @@ describe('mergeContent', () => {
     });
   });
 
-  describe('Given non-overlapping changes at the start of base with unchanged suffix', () => {
+  describe('Given changes on the first two lines that touch at line 1 (git: xdl_do_merge)', () => {
     describe('When mergeContent called', () => {
-      it('Then clean merge retains the unchanged suffix', () => {
-        // Arrange — both changes in the first two lines; lines 2-4 of base untouched.
+      it('Then conflict, matching `git merge-file` (ours [0,1) touches theirs [1,2))', () => {
+        // Arrange — ours' change ends exactly where theirs' change starts: git's
+        // `xscr1->i1 + xscr1->chg1 < xscr2->i1` separateness test is false, so the
+        // two hunks fall through to the conflict check instead of merging clean.
         const base = enc('a\nb\nc\nd\ne\n');
         const ours = enc('X\nb\nc\nd\ne\n');
         const theirs = enc('a\nY\nc\nd\ne\n');
@@ -219,8 +221,8 @@ describe('mergeContent', () => {
         // Act
         const result = mergeContent(base, ours, theirs);
 
-        // Assert — applyPlan must copy the base suffix after the last change
-        assertClean(result, 'X\nY\nc\nd\ne\n');
+        // Assert
+        assertConflict(result, 'content');
       });
     });
   });
@@ -389,11 +391,12 @@ describe('mergeContent', () => {
     });
   });
 
-  describe('Given adjacent non-overlapping ranges [0,1) vs [1,2)', () => {
+  describe('Given adjacent ranges [0,1) vs [1,2) that touch at line 1', () => {
     describe('When mergeContent called', () => {
-      it('Then clean merge (no conflict)', () => {
-        // Arrange — ours changes line 0, theirs changes line 1. Ranges [0,1) and [1,2) are adjacent
-        // but do NOT overlap. a.baseStart (0) < b.baseEnd (2) is true, but b.baseStart (1) < a.baseEnd (1) is false.
+      it('Then conflict, matching `git merge-file` (git conflicts on touching hunks)', () => {
+        // Arrange — ours changes line 0, theirs changes line 1. Ranges [0,1) and [1,2) touch at
+        // line 1 (a.baseEnd === b.baseStart): git's xdl_do_merge only calls two hunks separate
+        // when one ends strictly before the other starts, so this falls through to conflict.
         const base = enc('a\nb\nc\n');
         const ours = enc('X\nb\nc\n');
         const theirs = enc('a\nY\nc\n');
@@ -402,7 +405,7 @@ describe('mergeContent', () => {
         const result = mergeContent(base, ours, theirs);
 
         // Assert
-        assertClean(result, 'X\nY\nc\n');
+        assertConflict(result, 'content');
       });
     });
   });
@@ -542,10 +545,10 @@ describe('mergeContent', () => {
 
   describe('Given a zero-length insertion exactly at the end of a non-zero theirs range', () => {
     describe('When mergeContent called', () => {
-      it('Then clean merge (a.baseStart < b.baseEnd is strict)', () => {
-        // Arrange — ours inserts at base pos 5; theirs replaces base[3,5). The `:` branch evaluates
-        // a.baseStart < b.baseEnd (5 < 5 → false). Relaxing `<` to `<=` (or forcing it true) would
-        // wrongly flag an overlap at the touching boundary.
+      it('Then conflict, matching `git merge-file` (an insertion touching a range is not separate)', () => {
+        // Arrange — ours inserts at base pos 5; theirs replaces base[3,5). The insertion's
+        // baseStart (5) equals theirs' baseEnd (5): git's `i1 + chg1 < other.i1` separateness
+        // test is false for a touching pair, so the two hunks conflict.
         const base = enc('a\nb\nc\nd\ne\nf\ng\nh\n');
         const ours = enc('a\nb\nc\nd\ne\nIO\nf\ng\nh\n');
         const theirs = enc('a\nb\nc\nP\nQ\nf\ng\nh\n');
@@ -554,7 +557,7 @@ describe('mergeContent', () => {
         const result = mergeContent(base, ours, theirs);
 
         // Assert
-        assertClean(result, 'a\nb\nc\nP\nQ\nIO\nf\ng\nh\n');
+        assertConflict(result, 'content');
       });
     });
   });
@@ -599,10 +602,10 @@ describe('mergeContent', () => {
 
   describe('Given a zero-length theirs insertion exactly at the end of a non-zero ours range', () => {
     describe('When mergeContent called', () => {
-      it('Then clean merge (b.baseStart < a.baseEnd is strict)', () => {
-        // Arrange — ours replaces base[3,5); theirs inserts at base pos 5. The b-zero-length branch
-        // evaluates b.baseStart < a.baseEnd (5 < 5 → false). Relaxing `<` to `<=` (or forcing it
-        // true) would wrongly flag a boundary overlap.
+      it('Then conflict, matching `git merge-file` (an insertion touching a range is not separate)', () => {
+        // Arrange — ours replaces base[3,5); theirs inserts at base pos 5. The insertion's
+        // baseStart (5) equals ours' baseEnd (5): git's `i1 + chg1 < other.i1` separateness
+        // test is false for a touching pair, so the two hunks conflict.
         const base = enc('a\nb\nc\nd\ne\nf\ng\nh\n');
         const ours = enc('a\nb\nc\nOO\nf\ng\nh\n');
         const theirs = enc('a\nb\nc\nd\ne\nIT\nf\ng\nh\n');
@@ -611,17 +614,17 @@ describe('mergeContent', () => {
         const result = mergeContent(base, ours, theirs);
 
         // Assert
-        assertClean(result, 'a\nb\nc\nOO\nIT\nf\ng\nh\n');
+        assertConflict(result, 'content');
       });
     });
   });
 
   describe('Given two touching non-zero ranges [3,5) and [1,3)', () => {
     describe('When mergeContent called', () => {
-      it('Then clean merge (general overlap test uses strict a.baseStart < b.baseEnd)', () => {
-        // Arrange — ours replaces base[3,5); theirs replaces base[1,3). They touch at boundary 3 but
-        // do not overlap: a.baseStart < b.baseEnd is 3 < 3 → false. Relaxing `<` to `<=` (or forcing
-        // it true) would wrongly flag a conflict.
+      it('Then conflict, matching `git merge-file` (touching ranges are not separate)', () => {
+        // Arrange — ours replaces base[3,5); theirs replaces base[1,3). They touch at boundary 3:
+        // git's `i1 + chg1 < other.i1` separateness test is false (3 < 3), so the two hunks
+        // conflict instead of merging clean.
         const base = enc('a\nb\nc\nd\ne\nf\ng\nh\n');
         const ours = enc('a\nb\nc\nOO\nf\ng\nh\n');
         const theirs = enc('a\nT1\nd\ne\nf\ng\nh\n');
@@ -630,7 +633,7 @@ describe('mergeContent', () => {
         const result = mergeContent(base, ours, theirs);
 
         // Assert
-        assertClean(result, 'a\nT1\nOO\nf\ng\nh\n');
+        assertConflict(result, 'content');
       });
     });
   });
