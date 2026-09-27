@@ -6795,3 +6795,74 @@ describe('Given the same CRLF modify without any gitattributes, under -B', () =>
     });
   });
 });
+
+/**
+ * 8 CRLF-terminated lines; `editedIndices` marks which get replaced — no NUL
+ * byte, so `contentKindOf`'s sniff always lands on 'text'. Two lines changed
+ * vs one line changed diverge from the shared baseline by a different
+ * magnitude, so the two edited destinations below never tie in score.
+ */
+const sharedIdLines = (editedIndices: ReadonlySet<number>): string =>
+  `${Array.from({ length: 8 }, (_, i) =>
+    editedIndices.has(i) ? `CHANGED line ${i}: xyz` : `original line ${i}: filler content`,
+  ).join('\r\n')}\r\n`;
+
+describe('Given the same CRLF blob deleted at two paths that carry different diff attributes', () => {
+  describe('When detectSimilarityRenames is called', () => {
+    it('Then each pairing is scored by its own path kind, not the first-resolved one', async () => {
+      // Arrange — sharedId is byte-identical at both delete paths. attr.src
+      // (-diff) and attr.dst (also -diff) score with the binary content kind
+      // (231-byte-class copied count, pinned by hand: 45000); plain.src
+      // (unattributed) and plain.dst (unattributed) score with the sniffed
+      // text content kind (pinned by hand: 50909). Under the bug, plain.src
+      // (sorted after attr.src by path) reuses attr.src's cached 'binary'
+      // override, and its pairing with plain.dst collapses to a cross-kind
+      // mismatch (score 0, below threshold) — plain.dst never pairs.
+      const ctx = await buildSeededContext();
+      await ctx.fs.writeUtf8(
+        `${ctx.layout.workDir}/.gitattributes`,
+        'attr.src -diff\nattr.dst -diff\n',
+      );
+      const sharedId = await writeBlob(ctx, sharedIdLines(new Set()));
+      const attrDstId = await writeBlob(ctx, sharedIdLines(new Set([0, 1])));
+      const plainDstId = await writeBlob(ctx, sharedIdLines(new Set([5])));
+      const diff: TreeDiff = {
+        changes: [
+          {
+            type: 'delete',
+            oldPath: 'attr.src' as FilePath,
+            oldId: sharedId,
+            oldMode: FILE_MODE.REGULAR,
+          },
+          {
+            type: 'delete',
+            oldPath: 'plain.src' as FilePath,
+            oldId: sharedId,
+            oldMode: FILE_MODE.REGULAR,
+          },
+          {
+            type: 'add',
+            newPath: 'attr.dst' as FilePath,
+            newId: attrDstId,
+            newMode: FILE_MODE.REGULAR,
+          },
+          {
+            type: 'add',
+            newPath: 'plain.dst' as FilePath,
+            newId: plainDstId,
+            newMode: FILE_MODE.REGULAR,
+          },
+        ],
+      };
+
+      // Act
+      const result = await detectSimilarityRenames(ctx, diff);
+
+      // Assert
+      const renames = result.changes.filter((c): c is RenameChange => c.type === 'rename');
+      const byOldPath = new Map(renames.map((rename) => [rename.oldPath, rename]));
+      expect(byOldPath.get('attr.src' as FilePath)?.similarity.score).toBe(45000);
+      expect(byOldPath.get('plain.src' as FilePath)?.similarity.score).toBe(50909);
+    });
+  });
+});

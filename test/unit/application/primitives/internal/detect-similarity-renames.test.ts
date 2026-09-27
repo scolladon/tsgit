@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   detectSimilarityRenames,
+  fingerprintKey,
   hydrateFingerprints,
+  type PathedId,
 } from '../../../../../src/application/primitives/detect-similarity-renames.js';
 import * as readBlobMod from '../../../../../src/application/primitives/read-blob.js';
 import * as readObjectMod from '../../../../../src/application/primitives/read-object.js';
@@ -23,6 +25,12 @@ const writeBlob = (ctx: Ctx, content: string): Promise<ObjectId> =>
     content: new TextEncoder().encode(content),
     id: '' as ObjectId,
   });
+
+/** Wraps each id in an unattributed `PathedId` at a distinct throwaway
+ *  path — `hydrateFingerprints` now keys its cache by (id, bucket), and an
+ *  unattributed path always resolves to the 'sniff' bucket. */
+const pathedIds = (ids: ReadonlyArray<ObjectId>): PathedId[] =>
+  ids.map((id, index) => ({ id, path: `entry-${index}.bin` as FilePath }));
 
 const addChange = (path: string, newId: ObjectId): AddChange => ({
   type: 'add',
@@ -87,7 +95,7 @@ describe('hydrateFingerprints', () => {
 
         // Act
         try {
-          await sut(ctx, ids, new Map());
+          await sut(ctx, pathedIds(ids), new Map());
 
           // Assert — reaches exactly the shared bound, proving one pool
           // serves the whole id list rather than merely staying at-or-under
@@ -108,16 +116,21 @@ describe('hydrateFingerprints', () => {
         const knownId = await writeBlob(ctx, 'already-known');
         const freshId = await writeBlob(ctx, 'freshly-hydrated');
         const knownFingerprint = { hashes: new Uint32Array(), counts: new Uint32Array() };
-        const known = new Map([[knownId, { fingerprint: knownFingerprint, size: 999 }]]);
+        const known = new Map([
+          [fingerprintKey(knownId, 'sniff'), { fingerprint: knownFingerprint, size: 999 }],
+        ]);
         const readSpy = vi.spyOn(readBlobMod, 'readBlob');
 
         // Act
-        const result = await hydrateFingerprints(ctx, [knownId, freshId], known);
+        const result = await hydrateFingerprints(ctx, pathedIds([knownId, freshId]), known);
 
         // Assert
         expect(readSpy.mock.calls.some(([, id]) => id === knownId)).toBe(false);
-        expect(result.get(knownId)).toEqual({ fingerprint: knownFingerprint, size: 999 });
-        expect(result.get(freshId)?.size).toBe('freshly-hydrated'.length);
+        expect(result.get(fingerprintKey(knownId, 'sniff'))).toEqual({
+          fingerprint: knownFingerprint,
+          size: 999,
+        });
+        expect(result.get(fingerprintKey(freshId, 'sniff'))?.size).toBe('freshly-hydrated'.length);
         readSpy.mockRestore();
       });
     });

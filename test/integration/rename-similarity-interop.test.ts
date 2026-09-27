@@ -2813,6 +2813,57 @@ describeRenameRows(
   },
 );
 
+const DIFF_ATTR_SHARED_ID_TMP_PREFIX = 'tsgit-rename-diff-attr-shared-id-';
+const DIFF_ATTR_SHARED_ID_SETUP_TIMEOUT = 60_000;
+const DIFF_ATTR_SHARED_SECOND_EDIT_START = 2;
+const DIFF_ATTR_SHARED_SECOND_EDIT_END = 8;
+
+/**
+ * `diff` attribute PER-PATH interop: git's `diff_filespec_is_binary` decides
+ * per filespec (path), never by object id — the SAME blob deleted at TWO
+ * paths that carry DIFFERENT `diff` attributes must score each of its
+ * pairings by ITS OWN path's kind, not whichever path a cache happens to
+ * resolve first. Verified against real git 2.55.0 (scrubbed env, signing
+ * off): `a.txt` (-diff) pairs with `c.txt` (also -diff) at `R070` (binary,
+ * CR-counted — same value `DIFF_ATTR_ROWS`' first row pins for one path
+ * alone); `b.dat` (unattributed) — byte-identical to `a.txt` — pairs with
+ * `d.dat` (unattributed) at `R067` (text, CR-skipped, the plain
+ * `CRLF_TEXT_ROWS` baseline). Cross-kind pairings (a.txt↔d.dat, b.dat↔c.txt)
+ * score far below threshold and are never selected — mixing a CR-counted and
+ * a CR-skipped fingerprint shifts almost every chunk boundary.
+ */
+const DIFF_ATTR_SHARED_ID_ROWS: ReadonlyArray<RenameRow> = [
+  {
+    label:
+      'the same CRLF blob deleted at an attributed and an unattributed path each scores its own rename by its own path kind (R070 a.txt→c.txt, R067 b.dat→d.dat)',
+    before: [
+      { path: 'a.txt', content: crlfTextLines(0, 0) },
+      { path: 'b.dat', content: crlfTextLines(0, 0) },
+    ],
+    after: [
+      { path: 'c.txt', content: crlfTextLines(CRLF_TEXT_EDIT_START, CRLF_TEXT_EDIT_END) },
+      {
+        path: 'd.dat',
+        content: crlfTextLines(
+          DIFF_ATTR_SHARED_SECOND_EDIT_START,
+          DIFF_ATTR_SHARED_SECOND_EDIT_END,
+        ),
+      },
+      { path: '.gitattributes', content: 'a.txt -diff\nc.txt -diff\n' },
+    ],
+  },
+];
+
+describeRenameRows(
+  'CRLF rename similarity diff-attribute interop with a blob shared across two paths',
+  DIFF_ATTR_SHARED_ID_ROWS,
+  DIFF_ATTR_SHARED_ID_TMP_PREFIX,
+  DIFF_ATTR_SHARED_ID_SETUP_TIMEOUT,
+  {
+    given: 'Given the same blob deleted at two paths that carry different diff attributes',
+  },
+);
+
 /**
  * name_score matrix tie-break interop: `git diff -M` (some rows also `-C`)
  * breaks an equal-score tie between inexact candidates on a matching

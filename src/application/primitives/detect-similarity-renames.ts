@@ -29,6 +29,7 @@ import {
 } from '../../domain/diff/rename-pairing.js';
 import {
   buildFingerprint,
+  type ContentKind,
   contentKindOf,
   countSpanhashChanges,
   DEFAULT_BREAK_SCORE,
@@ -87,6 +88,39 @@ export function recordIfBetter(slots: MatrixCandidate[], candidate: MatrixCandid
 export interface BlobFingerprint {
   readonly fingerprint: SpanFingerprint;
   readonly size: number;
+}
+
+/**
+ * Cache bucket a fingerprint is built for: an explicit `ContentKind` when a
+ * path's `diff` attribute forces one, or `'sniff'` when it defers to the
+ * blob's own content sniff. git's `diff_filespec_is_binary` decides per
+ * filespec (path), never by object id — the SAME blob can need a `'sniff'`
+ * fingerprint at one path and an explicit-kind one at another, so the cache
+ * must hold both for one id at once.
+ */
+export type CacheBucket = ContentKind | 'sniff';
+
+function bucketFor(override: BinaryOverride | undefined): CacheBucket {
+  return override ?? 'sniff';
+}
+
+/**
+ * Composite fingerprint-cache key: at most one entry per distinct (id,
+ * bucket) pair — never more than the 3 possible buckets per id. A `'sniff'`
+ * entry always ALIASES whichever explicit-kind fingerprint it resolves to
+ * rather than duplicating the build (`buildEntriesForId`), so a blob still
+ * fingerprints once per distinct CONTENT KIND — the third bucket only adds
+ * an extra index onto an already-built fingerprint, never an extra build.
+ */
+export type FingerprintKey = `${ObjectId}\u0000${CacheBucket}`;
+
+/** @internal — exported for direct unit testing. */
+export function fingerprintKey(id: ObjectId, bucket: CacheBucket): FingerprintKey {
+  return `${id}\u0000${bucket}`;
+}
+
+function idOfFingerprintKey(key: FingerprintKey): ObjectId {
+  return key.slice(0, key.indexOf('\u0000')) as ObjectId;
 }
 
 /**
@@ -443,21 +477,21 @@ async function readDeclaredSizes(
 }
 
 /**
- * Declared sizes for `ids`, reusing `fingerprint.size` for any id already
- * hydrated (`known`) instead of paying for a redundant size-only read — a
- * blob's fingerprint already carries its exact size, the same value a size
- * read would return.
+ * Declared sizes for `ids`, reusing an already-known size (`knownSizes`)
+ * instead of paying for a redundant size-only read — a size is
+ * kind-invariant, so ANY already-hydrated bucket for that id carries the
+ * same byte length a size read would return.
  */
 async function declaredSizesReusingFingerprints(
   ctx: Context,
   ids: ReadonlyArray<ObjectId>,
-  known: ReadonlyMap<ObjectId, BlobFingerprint>,
+  knownSizes: ReadonlyMap<ObjectId, number>,
 ): Promise<ReadonlyMap<ObjectId, number>> {
-  const unknownIds = ids.filter((id) => !known.has(id));
+  const unknownIds = ids.filter((id) => !knownSizes.has(id));
   const sizes = new Map(await readDeclaredSizes(ctx, unknownIds));
   for (const id of ids) {
-    const fingerprint = known.get(id);
-    if (fingerprint !== undefined) sizes.set(id, fingerprint.size);
+    const size = knownSizes.get(id);
+    if (size !== undefined) sizes.set(id, size);
   }
   return sizes;
 }
@@ -466,35 +500,21 @@ async function declaredSizesReusingFingerprints(
  * Which ids actually need fingerprinting for one inexact pass:
  * at or below `SIZE_GATE_MIN_IDS` unique ids, every one of them (no size
  * read pays for itself below the gate — the common small-diff path never
- * touches it); above it, only the ids `sizeCompatibleIds` keeps. `known`
- * (fingerprints already hydrated by an earlier pass, e.g. the basename pass
- * or a broken modify's break-attempt read) seeds the size map for free.
+ * touches it); above it, only the ids `sizeCompatibleIds` keeps. `knownSizes`
+ * (sizes already known from an earlier pass, e.g. the basename pass or a
+ * broken modify's break-attempt read) seeds the size map for free.
  */
 async function selectHydrationIds(
   ctx: Context,
   srcIds: ReadonlyArray<ObjectId>,
   dstIds: ReadonlyArray<ObjectId>,
   threshold: number,
-  known: ReadonlyMap<ObjectId, BlobFingerprint>,
+  knownSizes: ReadonlyMap<ObjectId, number>,
 ): Promise<ReadonlyArray<ObjectId>> {
   const unique = Array.from(new Set([...srcIds, ...dstIds]));
   if (unique.length <= SIZE_GATE_MIN_IDS) return unique;
-  const sizes = await declaredSizesReusingFingerprints(ctx, unique, known);
+  const sizes = await declaredSizesReusingFingerprints(ctx, unique, knownSizes);
   return Array.from(sizeCompatibleIds(sizes, srcIds, dstIds, threshold));
-}
-
-function dedupeMissing(
-  ids: ReadonlyArray<ObjectId>,
-  known: ReadonlyMap<ObjectId, BlobFingerprint>,
-): ObjectId[] {
-  const seen = new Set<ObjectId>();
-  const missing: ObjectId[] = [];
-  for (const id of ids) {
-    if (known.has(id) || seen.has(id)) continue;
-    seen.add(id);
-    missing.push(id);
-  }
-  return missing;
 }
 
 /** One (id, path) pair a hydration call needs — the path is what
@@ -506,66 +526,131 @@ export interface PathedId {
 }
 
 /**
- * Resolve `resolver.overrideFor` for every id in `entries`, keyed by id —
- * skipped entirely for an id already in `skip` (already-hydrated ids never
- * need their override looked up again). A duplicated id (two entries sharing
- * one id) resolves its FIRST occurrence's path only: `estimate_similarity`'s
- * own per-filespec model can, in principle, disagree between two paths that
- * happen to share a blob's exact bytes, but every occurrence of one path in
- * a single detection call already resolves through the SAME synthetic
- * delete+add halves (break pass) or the SAME registry source/destination
- * (matrix/basename passes) — this only under-resolves the rare case of two
- * genuinely distinct, differently-attributed paths sharing byte-identical
- * content, which the exact pass already pairs before either ever reaches
- * here.
+ * Resolve `resolver.overrideFor` for every DISTINCT path in `entries`. git's
+ * `diff_filespec_is_binary` decides per filespec (PATH), never by object id,
+ * so two paths sharing one id are resolved INDEPENDENTLY here — a path asked
+ * about again by a later pass hits the resolver's own per-path cache, so
+ * repeating the call across passes costs nothing.
  */
 async function resolveOverridesFor(
   resolver: SimilarityContentKindResolver,
   entries: ReadonlyArray<PathedId>,
-  skip: ReadonlyMap<ObjectId, BlobFingerprint>,
-): Promise<ReadonlyMap<ObjectId, BinaryOverride | undefined>> {
-  const overrides = new Map<ObjectId, BinaryOverride | undefined>();
-  for (const { id, path } of entries) {
-    if (skip.has(id) || overrides.has(id)) continue;
-    overrides.set(id, await resolver.overrideFor(path));
+): Promise<ReadonlyMap<FilePath, BinaryOverride | undefined>> {
+  const overrides = new Map<FilePath, BinaryOverride | undefined>();
+  for (const { path } of entries) {
+    if (overrides.has(path)) continue;
+    overrides.set(path, await resolver.overrideFor(path));
   }
   return overrides;
 }
 
+/** Every distinct cache bucket `paths` resolves to, via `overridesByPath`. */
+function bucketsOf(
+  paths: ReadonlyArray<FilePath>,
+  overridesByPath: ReadonlyMap<FilePath, BinaryOverride | undefined>,
+): Set<CacheBucket> {
+  return new Set(paths.map((path) => bucketFor(overridesByPath.get(path))));
+}
+
+/** Groups `entries` by id, resolving each id's required cache buckets — an
+ *  id whose entries all share one path's attribute needs exactly one; an id
+ *  split across two differently-attributed paths needs two. */
+function requiredBucketsById(
+  entries: ReadonlyArray<PathedId>,
+  overridesByPath: ReadonlyMap<FilePath, BinaryOverride | undefined>,
+): ReadonlyMap<ObjectId, ReadonlySet<CacheBucket>> {
+  const pathsById = new Map<ObjectId, FilePath[]>();
+  for (const { id, path } of entries) {
+    const paths = pathsById.get(id) ?? [];
+    paths.push(path);
+    pathsById.set(id, paths);
+  }
+  return new Map(
+    Array.from(pathsById, ([id, paths]) => [id, bucketsOf(paths, overridesByPath)] as const),
+  );
+}
+
+function isFullyKnown(
+  id: ObjectId,
+  buckets: ReadonlySet<CacheBucket>,
+  known: ReadonlyMap<FingerprintKey, BlobFingerprint>,
+): boolean {
+  for (const bucket of buckets) {
+    if (!known.has(fingerprintKey(id, bucket))) return false;
+  }
+  return true;
+}
+
+function missingIds(
+  requiredBuckets: ReadonlyMap<ObjectId, ReadonlySet<CacheBucket>>,
+  known: ReadonlyMap<FingerprintKey, BlobFingerprint>,
+): ObjectId[] {
+  const missing: ObjectId[] = [];
+  for (const [id, buckets] of requiredBuckets) {
+    if (!isFullyKnown(id, buckets, known)) missing.push(id);
+  }
+  return missing;
+}
+
+/** Builds every bucket `id` needs from ONE already-read blob: a `'sniff'`
+ *  bucket reuses whichever explicit-kind fingerprint it resolves to instead
+ *  of rebuilding it, so a blob fingerprints once per distinct CONTENT KIND
+ *  however many of its (up to 3) buckets a call actually needs. */
+function buildEntriesForId(
+  id: ObjectId,
+  buckets: ReadonlySet<CacheBucket>,
+  content: Uint8Array,
+): ReadonlyArray<readonly [FingerprintKey, BlobFingerprint]> {
+  const byKind = new Map<ContentKind, BlobFingerprint>();
+  const entries: Array<readonly [FingerprintKey, BlobFingerprint]> = [];
+  for (const bucket of buckets) {
+    const kind = bucket === 'sniff' ? contentKindOf(content) : bucket;
+    const fingerprint = byKind.get(kind) ?? buildFingerprintFor(content, kind);
+    byKind.set(kind, fingerprint);
+    entries.push([fingerprintKey(id, bucket), fingerprint]);
+  }
+  return entries;
+}
+
+async function hydrateOneId(
+  ctx: Context,
+  id: ObjectId,
+  buckets: ReadonlySet<CacheBucket>,
+): Promise<ReadonlyArray<readonly [FingerprintKey, BlobFingerprint]>> {
+  const { content } = await readBlob(ctx, id);
+  return buildEntriesForId(id, buckets, content);
+}
+
 /**
  * Fingerprint-and-drop hydration: reads each missing blob just
- * long enough to build its spanhash fingerprint, then lets the bytes go —
+ * long enough to build the fingerprints it needs, then lets the bytes go —
  * only the fingerprint (and its size) escapes the bounded worker, so a
- * blob's content never outlives the read that produced it. `ids` already
+ * blob's content never outlives the read that produced it. `entries` already
  * merges src and dst candidates into ONE array, so the single
  * `boundedMapFor` call below is the one shared pool for both arms — no
  * per-arm pool to double the true ioBound ceiling.
  *
- * Skips every id already in `known` and returns a NEW map (`known` plus the
- * newly hydrated entries) — `known` itself is never mutated, so a caller
- * accumulating fingerprints across phased hydration passes keeps its own
- * map intact. `overridesById` (built by `resolveOverridesFor`) decides each
- * fingerprinted blob's content kind — `undefined` for an id it has no entry
- * for defers to the blob's own content sniff.
+ * Skips every (id, bucket) pair already in `known` and returns a NEW map
+ * (`known` plus the newly hydrated entries) — `known` itself is never
+ * mutated, so a caller accumulating fingerprints across phased hydration
+ * passes keeps its own map intact. `overridesByPath` decides each entry's
+ * own bucket — a path with no entry defers to the blob's own content sniff.
  */
 export async function hydrateFingerprints(
   ctx: Context,
-  ids: ReadonlyArray<ObjectId>,
-  known: ReadonlyMap<ObjectId, BlobFingerprint>,
-  overridesById: ReadonlyMap<ObjectId, BinaryOverride | undefined> = new Map(),
-): Promise<ReadonlyMap<ObjectId, BlobFingerprint>> {
-  const missing = dedupeMissing(ids, known);
-  const fetched = await boundedMapFor(
-    ctx,
-    'ioBound',
-    missing,
-    async (id): Promise<readonly [ObjectId, BlobFingerprint]> => {
-      const { content } = await readBlob(ctx, id);
-      return [id, toFingerprint(content, overridesById.get(id))];
-    },
+  entries: ReadonlyArray<PathedId>,
+  known: ReadonlyMap<FingerprintKey, BlobFingerprint>,
+  overridesByPath: ReadonlyMap<FilePath, BinaryOverride | undefined> = new Map(),
+): Promise<ReadonlyMap<FingerprintKey, BlobFingerprint>> {
+  const requiredBuckets = requiredBucketsById(entries, overridesByPath);
+  const missing = missingIds(requiredBuckets, known);
+  const fetched = await boundedMapFor(ctx, 'ioBound', missing, (id) =>
+    hydrateOneId(ctx, id, requiredBuckets.get(id) as ReadonlySet<CacheBucket>),
   );
   const merged = new Map(known);
-  for (const [id, fingerprint] of fetched) merged.set(id, fingerprint);
+  for (const group of fetched) {
+    for (const [key, fingerprint] of group) merged.set(key, fingerprint);
+  }
   return merged;
 }
 
@@ -573,12 +658,34 @@ export async function hydrateFingerprints(
  *  already-read bytes (`scoreOneModify`) together with the basename pass's
  *  own hydration before either feeds the inexact matrix as `knownFingerprints`. */
 function mergeFingerprintMaps(
-  base: ReadonlyMap<ObjectId, BlobFingerprint>,
-  extra: ReadonlyMap<ObjectId, BlobFingerprint>,
-): ReadonlyMap<ObjectId, BlobFingerprint> {
+  base: ReadonlyMap<FingerprintKey, BlobFingerprint>,
+  extra: ReadonlyMap<FingerprintKey, BlobFingerprint>,
+): ReadonlyMap<FingerprintKey, BlobFingerprint> {
   if (extra.size === 0) return base;
   if (base.size === 0) return extra;
   return new Map([...base, ...extra]);
+}
+
+/** Per-id summary of an accumulated fingerprint cache: `sizeById` reuses ANY
+ *  bucket's size (kind-invariant) to skip a redundant size-only read;
+ *  `ids` lets a caller exempt an already-known id from the size gate that
+ *  decides which ids `resolveOverridesFor` even looks up — preserving
+ *  today's guarantee that an already-hydrated id's fingerprint is always
+ *  findable later, regardless of the size gate's verdict THIS pass. */
+interface KnownSummary {
+  readonly sizeById: ReadonlyMap<ObjectId, number>;
+  readonly ids: ReadonlySet<ObjectId>;
+}
+
+function summarizeKnown(known: ReadonlyMap<FingerprintKey, BlobFingerprint>): KnownSummary {
+  const sizeById = new Map<ObjectId, number>();
+  const ids = new Set<ObjectId>();
+  for (const [key, fingerprint] of known) {
+    const id = idOfFingerprintKey(key);
+    sizeById.set(id, fingerprint.size);
+    ids.add(id);
+  }
+  return { sizeById, ids };
 }
 
 /** One (index, source) pair from the registry — `buildMatrix` scores every
@@ -587,6 +694,17 @@ function mergeFingerprintMaps(
 interface IndexedSource {
   readonly index: number;
   readonly source: RenameSource;
+}
+
+/** The fingerprint `id` resolves to at `path` — `overridesByPath` decides
+ *  the bucket, `path` never needing an entry means the sniff bucket. */
+function fingerprintAt(
+  id: ObjectId,
+  path: FilePath,
+  fingerprints: ReadonlyMap<FingerprintKey, BlobFingerprint>,
+  overridesByPath: ReadonlyMap<FilePath, BinaryOverride | undefined>,
+): BlobFingerprint | undefined {
+  return fingerprints.get(fingerprintKey(id, bucketFor(overridesByPath.get(path))));
 }
 
 /**
@@ -599,7 +717,8 @@ interface IndexedSource {
 function buildMatrix(
   sources: ReadonlyArray<IndexedSource>,
   destinations: ReadonlyArray<AddChange>,
-  fingerprints: ReadonlyMap<ObjectId, BlobFingerprint>,
+  fingerprints: ReadonlyMap<FingerprintKey, BlobFingerprint>,
+  overridesByPath: ReadonlyMap<FilePath, BinaryOverride | undefined>,
   threshold: number,
 ): MatrixCandidate[] {
   const candidates: MatrixCandidate[] = [];
@@ -615,12 +734,14 @@ function buildMatrix(
   const sourceBasenames = sources.map(({ source }) => basenameOf(source.path));
   const sourceIsRegular = sources.map(({ source }) => isRegularFile(source.mode));
   for (const destination of destinations) {
-    const df = fingerprints.get(destination.newId);
+    const df = fingerprintAt(destination.newId, destination.newPath, fingerprints, overridesByPath);
     if (df === undefined) continue;
     const destinationBasename = basenameOf(destination.newPath);
     const slots: MatrixCandidate[] = [];
     sources.forEach(({ index, source }, position) => {
-      const sf = sourceIsRegular[position] ? fingerprints.get(source.id) : undefined;
+      const sf = sourceIsRegular[position]
+        ? fingerprintAt(source.id, source.path, fingerprints, overridesByPath)
+        : undefined;
       scoreAndRecord(
         sf,
         df,
@@ -655,28 +776,47 @@ function regularSourceEntries(matrixSources: ReadonlyArray<IndexedSource>): Path
     .map(({ source }) => ({ id: source.id, path: source.path }));
 }
 
+interface HydratedMatrixFingerprints {
+  readonly fingerprints: ReadonlyMap<FingerprintKey, BlobFingerprint>;
+  readonly overridesByPath: ReadonlyMap<FilePath, BinaryOverride | undefined>;
+}
+
 /** Hydrates exactly the fingerprints the matrix needs: `selectHydrationIds`'s
  *  own size gate over the regular sources and every destination's id.
- *  Overrides are resolved only for the ids `selectHydrationIds` actually
- *  kept — a size-rejected path's attribute is never even looked up. */
+ *  Overrides are resolved for the ids `selectHydrationIds` actually kept,
+ *  PLUS every id already in `knownFingerprints` (an already-hydrated id must
+ *  stay findable by `buildMatrix` regardless of THIS pass's size-gate
+ *  verdict) — a size-rejected, never-before-seen path's attribute is still
+ *  never looked up. */
 async function hydrateMatrixFingerprints(
   ctx: Context,
   srcEntries: ReadonlyArray<PathedId>,
   destinations: ReadonlyArray<AddChange>,
   threshold: number,
-  knownFingerprints: ReadonlyMap<ObjectId, BlobFingerprint>,
+  knownFingerprints: ReadonlyMap<FingerprintKey, BlobFingerprint>,
   resolver: SimilarityContentKindResolver,
-): Promise<ReadonlyMap<ObjectId, BlobFingerprint>> {
-  const srcIds = srcEntries.map((entry) => entry.id);
-  const dstIds = destinations.map((d) => d.newId);
-  const neededIds = await selectHydrationIds(ctx, srcIds, dstIds, threshold, knownFingerprints);
-  const neededSet = new Set(neededIds);
-  const neededEntries = [
+): Promise<HydratedMatrixFingerprints> {
+  const allEntries = [
     ...srcEntries,
     ...destinations.map((d) => ({ id: d.newId, path: d.newPath })),
-  ].filter((entry) => neededSet.has(entry.id));
-  const overridesById = await resolveOverridesFor(resolver, neededEntries, knownFingerprints);
-  return hydrateFingerprints(ctx, neededIds, knownFingerprints, overridesById);
+  ];
+  const srcIds = srcEntries.map((entry) => entry.id);
+  const dstIds = destinations.map((d) => d.newId);
+  const known = summarizeKnown(knownFingerprints);
+  const neededIds = await selectHydrationIds(ctx, srcIds, dstIds, threshold, known.sizeById);
+  const neededSet = new Set(neededIds);
+  const overrideEntries = allEntries.filter(
+    (entry) => neededSet.has(entry.id) || known.ids.has(entry.id),
+  );
+  const overridesByPath = await resolveOverridesFor(resolver, overrideEntries);
+  const neededEntries = allEntries.filter((entry) => neededSet.has(entry.id));
+  const fingerprints = await hydrateFingerprints(
+    ctx,
+    neededEntries,
+    knownFingerprints,
+    overridesByPath,
+  );
+  return { fingerprints, overridesByPath };
 }
 
 /**
@@ -693,7 +833,7 @@ async function runInexactMatrix(
   destinations: ReadonlyArray<AddChange>,
   uses: ReadonlyArray<number>,
   options: InexactPassOptions,
-  knownFingerprints: ReadonlyMap<ObjectId, BlobFingerprint>,
+  knownFingerprints: ReadonlyMap<FingerprintKey, BlobFingerprint>,
   resolver: SimilarityContentKindResolver,
 ): Promise<InexactMatrixResult | null> {
   if (matrixIndices.length === 0) return null;
@@ -704,7 +844,7 @@ async function runInexactMatrix(
   }));
   const srcEntries = regularSourceEntries(matrixSources);
   if (srcEntries.length === 0) return null;
-  const fingerprints = await hydrateMatrixFingerprints(
+  const hydrated = await hydrateMatrixFingerprints(
     ctx,
     srcEntries,
     destinations,
@@ -713,7 +853,13 @@ async function runInexactMatrix(
     resolver,
   );
 
-  const candidates = buildMatrix(matrixSources, destinations, fingerprints, options.threshold);
+  const candidates = buildMatrix(
+    matrixSources,
+    destinations,
+    hydrated.fingerprints,
+    hydrated.overridesByPath,
+    options.threshold,
+  );
   candidates.sort(compareCandidates);
 
   const selected = selectPairs(candidates, uses, {
@@ -841,13 +987,14 @@ async function scoreOneModify(
   return { mod, computedBreakScore, dissimilarity, oldBytes, newBytes, override };
 }
 
+function buildFingerprintFor(bytes: Uint8Array, kind: ContentKind): BlobFingerprint {
+  return { fingerprint: buildFingerprint(bytes, kind), size: bytes.length };
+}
+
 /** `override`, when given, decides the fingerprint's content kind outright;
  *  `undefined` falls back to the blob's own content sniff. */
 function toFingerprint(bytes: Uint8Array, override?: BinaryOverride): BlobFingerprint {
-  return {
-    fingerprint: buildFingerprint(bytes, override ?? contentKindOf(bytes)),
-    size: bytes.length,
-  };
+  return buildFingerprintFor(bytes, override ?? contentKindOf(bytes));
 }
 
 function toSyntheticDelete(change: ModifyChange | TypeChangeChange): DeleteChange {
@@ -899,7 +1046,7 @@ async function scoreModifies(
 ): Promise<{
   readonly records: ReadonlyArray<BrokenRecord>;
   readonly paths: ReadonlySet<FilePath>;
-  readonly fingerprints: ReadonlyMap<ObjectId, BlobFingerprint>;
+  readonly fingerprints: ReadonlyMap<FingerprintKey, BlobFingerprint>;
 }> {
   const scores = await boundedMapFor(ctx, 'ioBound', modifies, (mod) =>
     scoreOneModify(ctx, mod, resolver),
@@ -907,7 +1054,7 @@ async function scoreModifies(
 
   const records: BrokenRecord[] = [];
   const paths = new Set<FilePath>();
-  const fingerprints = new Map<ObjectId, BlobFingerprint>();
+  const fingerprints = new Map<FingerprintKey, BlobFingerprint>();
   for (const { mod, computedBreakScore, dissimilarity, oldBytes, newBytes, override } of scores) {
     if (computedBreakScore < breakScore) continue;
     records.push({
@@ -917,8 +1064,9 @@ async function scoreModifies(
       dissimilarity,
     });
     paths.add(mod.path);
-    fingerprints.set(mod.oldId, toFingerprint(oldBytes, override));
-    fingerprints.set(mod.newId, toFingerprint(newBytes, override));
+    const bucket = bucketFor(override);
+    fingerprints.set(fingerprintKey(mod.oldId, bucket), toFingerprint(oldBytes, override));
+    fingerprints.set(fingerprintKey(mod.newId, bucket), toFingerprint(newBytes, override));
   }
   return { records, paths, fingerprints };
 }
@@ -956,10 +1104,10 @@ function collectBreakableTypeChanges(diff: TreeDiff): TypeChangeChange[] {
 interface BreakAttemptOutcome {
   readonly broken: ReadonlyArray<BrokenRecord>;
   readonly patchedDiff: TreeDiff;
-  readonly fingerprints: ReadonlyMap<ObjectId, BlobFingerprint>;
+  readonly fingerprints: ReadonlyMap<FingerprintKey, BlobFingerprint>;
 }
 
-const NO_BREAK_FINGERPRINTS: ReadonlyMap<ObjectId, BlobFingerprint> = new Map();
+const NO_BREAK_FINGERPRINTS: ReadonlyMap<FingerprintKey, BlobFingerprint> = new Map();
 
 /**
  * Attempt to break dissimilar modifies and file↔symlink type changes into
@@ -1157,7 +1305,7 @@ function finalizeWithBroken(changes: ReadonlyArray<DiffChange>): TreeDiff {
 interface BreakPassOutcome {
   readonly broken: ReadonlyArray<BrokenRecord>;
   readonly workingDiff: TreeDiff;
-  readonly fingerprints: ReadonlyMap<ObjectId, BlobFingerprint>;
+  readonly fingerprints: ReadonlyMap<FingerprintKey, BlobFingerprint>;
 }
 
 /** Run the break-attempt pass if enabled; returns broken records and patched diff. */
@@ -1342,7 +1490,7 @@ async function runInexactMatrixIfPlanned(
   exact: ExactPairing,
   options: InexactPassOptions,
   cull: SourceCull,
-  knownFingerprints: ReadonlyMap<ObjectId, BlobFingerprint>,
+  knownFingerprints: ReadonlyMap<FingerprintKey, BlobFingerprint>,
   resolver: SimilarityContentKindResolver,
 ): Promise<InexactMatrixResult | null> {
   const plan = resolveMatrixPlan(
@@ -1456,14 +1604,25 @@ function sizeSurvivingBasenameCandidates(
 function scoreBasenameCandidates(
   candidates: ReadonlyArray<BasenameCandidate>,
   sources: ReadonlyArray<RenameSource>,
-  fingerprints: ReadonlyMap<ObjectId, BlobFingerprint>,
+  fingerprints: ReadonlyMap<FingerprintKey, BlobFingerprint>,
+  overridesByPath: ReadonlyMap<FilePath, BinaryOverride | undefined>,
   minBasename: number,
 ): SourcePair[] {
   const pairs: SourcePair[] = [];
   for (const { sourceIndex, destination } of candidates) {
     const source = sources[sourceIndex] as RenameSource;
-    const sf = fingerprints.get(source.id) as BlobFingerprint;
-    const df = fingerprints.get(destination.newId) as BlobFingerprint;
+    const sf = fingerprintAt(
+      source.id,
+      source.path,
+      fingerprints,
+      overridesByPath,
+    ) as BlobFingerprint;
+    const df = fingerprintAt(
+      destination.newId,
+      destination.newPath,
+      fingerprints,
+      overridesByPath,
+    ) as BlobFingerprint;
     const score = estimateSimilarityFromFingerprints(
       sf.fingerprint,
       sf.size,
@@ -1479,7 +1638,7 @@ interface BasenamePassOutcome {
   readonly pairs: ReadonlyArray<SourcePair>;
   readonly unpaired: ReadonlyArray<AddChange>;
   readonly uses: ReadonlyArray<number>;
-  readonly fingerprints: ReadonlyMap<ObjectId, BlobFingerprint>;
+  readonly fingerprints: ReadonlyMap<FingerprintKey, BlobFingerprint>;
 }
 
 /** Folds accepted basename pairs into the exact pass's uses/unpaired. */
@@ -1521,14 +1680,16 @@ async function runBasenamePass(
   const candidateIds = Array.from(new Set(basenameCandidateIds(sources, candidates)));
   const sizes = await readDeclaredSizes(ctx, candidateIds);
   const survivors = sizeSurvivingBasenameCandidates(candidates, sources, sizes, minBasename);
-  const survivorIds = basenameCandidateIds(sources, survivors);
-  const overridesById = await resolveOverridesFor(
-    resolver,
-    basenameCandidateEntries(sources, survivors),
-    new Map(),
+  const survivorEntries = basenameCandidateEntries(sources, survivors);
+  const overridesByPath = await resolveOverridesFor(resolver, survivorEntries);
+  const fingerprints = await hydrateFingerprints(ctx, survivorEntries, new Map(), overridesByPath);
+  const pairs = scoreBasenameCandidates(
+    survivors,
+    sources,
+    fingerprints,
+    overridesByPath,
+    minBasename,
   );
-  const fingerprints = await hydrateFingerprints(ctx, survivorIds, new Map(), overridesById);
-  const pairs = scoreBasenameCandidates(survivors, sources, fingerprints, minBasename);
 
   return { pairs, ...applyBasenamePairs(exact, pairs), fingerprints };
 }
@@ -1580,7 +1741,7 @@ async function runInexactPhase(
   exact: ExactPairing,
   broken: ReadonlyArray<BrokenRecord>,
   options: InexactPassOptions,
-  knownFingerprints: ReadonlyMap<ObjectId, BlobFingerprint>,
+  knownFingerprints: ReadonlyMap<FingerprintKey, BlobFingerprint>,
   resolver: SimilarityContentKindResolver,
 ): Promise<InexactPhaseOutcome> {
   // git's "Did we only want exact renames?" (`diffcore-rename.c:1480`): once
@@ -1605,7 +1766,7 @@ async function runInexactPhase(
 
 interface ExactAndBasenameOutcome {
   readonly pairing: ExactPairing;
-  readonly fingerprints: ReadonlyMap<ObjectId, BlobFingerprint>;
+  readonly fingerprints: ReadonlyMap<FingerprintKey, BlobFingerprint>;
 }
 
 /**

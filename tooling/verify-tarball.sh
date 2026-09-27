@@ -265,7 +265,13 @@ done
 # runtime code shipped in every distribution form, none removable without
 # giving back the attribute-aware text/binary decision git's own scorer
 # makes.
-SIZE_CAP=$((1010 * 1024))
+# Raised 1010 -> 1011 KiB by resolving the diff attribute PER PATH when a
+# blob sits at more than one: the measured tarball lands at 1 034 979 B,
+# 739 B over the old cap, attributable to the (id, content-kind) fingerprint
+# cache key and the per-path override resolution it replaces — runtime code
+# shipped in every distribution form, none removable without giving back
+# git's own per-filespec `diff_filespec_is_binary` model.
+SIZE_CAP=$((1011 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
