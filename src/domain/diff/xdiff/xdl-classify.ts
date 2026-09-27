@@ -1,0 +1,123 @@
+import { bytesEqual } from '../../objects/encoding.js';
+import { type LineKey, normalizeLine } from '../whitespace.js';
+
+export interface LineClasses {
+  readonly ours: Int32Array;
+  readonly theirs: Int32Array;
+  readonly classCount: number;
+}
+
+const LF = 0x0a;
+const DJB2_SEED = 5381;
+const DJB2_MULTIPLIER = 33;
+const EMPTY_SLOT = -1;
+
+// git's djb2 (`xdl_hash_record_verbatim`, xdiff/xutils.c) folded to 32 bits:
+// only bucket selection needs it, never equality — a hash hit is always
+// confirmed against the full record bytes below. The loop stops before a
+// trailing LF (git's line scan does too), so a terminated and an
+// unterminated line normally hash alike; `classify`'s byte comparison over
+// the WHOLE record (LF included) is what actually tells them apart.
+function hashLineBytes(bytes: Uint8Array): number {
+  const length = bytes.length;
+  const end = length > 0 && bytes[length - 1] === LF ? length - 1 : length;
+  let hash = DJB2_SEED;
+  for (let i = 0; i < end; i++) {
+    hash = (Math.imul(hash, DJB2_MULTIPLIER) + bytes[i]!) >>> 0;
+  }
+  return hash;
+}
+
+function nextPowerOfTwo(minimum: number): number {
+  let capacity = 1;
+  while (capacity < minimum) capacity *= 2;
+  return capacity;
+}
+
+interface ClassTable {
+  readonly slotClass: Int32Array;
+  readonly slotHash: Uint32Array;
+  readonly representative: Uint8Array[];
+}
+
+// git's classifier chains a linked list per bucket; this table is an
+// open-addressing Int32Array instead — sized so probing always terminates
+// (capacity is at least twice the line count, so a free slot always exists).
+// `slotHash` is a Uint32Array, not Int32Array: `hashLineBytes` returns an
+// unsigned 32-bit value, and a signed lane would reinterpret every hash at
+// or above 2^31 as negative, breaking the `=== hash` re-read below for
+// roughly half of all inputs.
+function createClassTable(lineCount: number): ClassTable {
+  const capacity = nextPowerOfTwo(Math.max(2 * lineCount, 1));
+  return {
+    slotClass: new Int32Array(capacity).fill(EMPTY_SLOT),
+    slotHash: new Uint32Array(capacity),
+    representative: [],
+  };
+}
+
+// Assigns `bytes` a class id: an existing one when a probed slot's stored
+// hash AND bytes both match, or the next id in first-appearance order
+// otherwise. The two typed arrays are filled in place — the hot-path
+// exception to immutability the table exists for, since a per-line
+// allocation here would undo the point of interning.
+function classify(table: ClassTable, bytes: Uint8Array): number {
+  const { slotClass, slotHash, representative } = table;
+  const mask = slotClass.length - 1;
+  const hash = hashLineBytes(bytes);
+  let slot = hash & mask;
+  while (slotClass[slot] !== EMPTY_SLOT) {
+    const candidate = slotClass[slot]!;
+    if (slotHash[slot] === hash && bytesEqual(representative[candidate]!, bytes)) {
+      return candidate;
+    }
+    slot = (slot + 1) & mask;
+  }
+  const id = representative.length;
+  slotClass[slot] = id;
+  slotHash[slot] = hash;
+  representative.push(bytes);
+  return id;
+}
+
+// Raw bytes when no lineKey is given at all; the key's normalized form
+// (LF stripped only for an active key) otherwise — mirrors what the deleted
+// `buildLineEquality` compared, so a caller passing `NONE_KEY` explicitly
+// still classifies identically to passing no key.
+function keyBytesOf(line: Uint8Array, lineKey: LineKey | undefined): Uint8Array {
+  return lineKey === undefined ? line : normalizeLine(line, lineKey);
+}
+
+function classifySide(
+  table: ClassTable,
+  lines: ReadonlyArray<Uint8Array>,
+  lineKey: LineKey | undefined,
+  ids: Int32Array,
+): void {
+  for (let i = 0; i < lines.length; i++) {
+    ids[i] = classify(table, keyBytesOf(lines[i]!, lineKey));
+  }
+}
+
+/**
+ * git's `xdl_classify_record`: every line of `ours` then every line of
+ * `theirs` gets an integer class id, assigned in first-appearance order, so
+ * that two lines share an id exactly when their (optionally normalized)
+ * bytes are equal. The Myers core compares these ids instead of re-reading
+ * or re-normalizing bytes on every probe.
+ */
+export function classifyLines(
+  ours: ReadonlyArray<Uint8Array>,
+  theirs: ReadonlyArray<Uint8Array>,
+  lineKey?: LineKey,
+): LineClasses {
+  const oursIds = new Int32Array(ours.length);
+  const theirsIds = new Int32Array(theirs.length);
+  if (ours.length + theirs.length === 0) {
+    return { ours: oursIds, theirs: theirsIds, classCount: 0 };
+  }
+  const table = createClassTable(ours.length + theirs.length);
+  classifySide(table, ours, lineKey, oursIds);
+  classifySide(table, theirs, lineKey, theirsIds);
+  return { ours: oursIds, theirs: theirsIds, classCount: table.representative.length };
+}
