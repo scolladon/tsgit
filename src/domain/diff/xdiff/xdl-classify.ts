@@ -58,13 +58,14 @@ function createClassTable(lineCount: number): ClassTable {
 
 // Assigns `bytes` a class id: an existing one when a probed slot's stored
 // hash AND bytes both match, or the next id in first-appearance order
-// otherwise. The two typed arrays are filled in place — the hot-path
-// exception to immutability the table exists for, since a per-line
-// allocation here would undo the point of interning.
-function classify(table: ClassTable, bytes: Uint8Array): number {
+// otherwise. `hash` is supplied by the caller (see `hashLineSide`) rather
+// than recomputed here, so a caller walking the same blob's lines across
+// several calls hashes them only once. The two typed arrays are filled in
+// place — the hot-path exception to immutability the table exists for,
+// since a per-line allocation here would undo the point of interning.
+function classify(table: ClassTable, bytes: Uint8Array, hash: number): number {
   const { slotClass, slotHash, representative } = table;
   const mask = slotClass.length - 1;
-  const hash = hashLineBytes(bytes);
   let slot = hash & mask;
   while (slotClass[slot] !== EMPTY_SLOT) {
     const candidate = slotClass[slot]!;
@@ -88,14 +89,33 @@ function keyBytesOf(line: Uint8Array, lineKey: LineKey | undefined): Uint8Array 
   return lineKey === undefined ? line : normalizeLine(line, lineKey);
 }
 
+/**
+ * Per-side line hashing (git's `xdl_hash_record_verbatim` loop, run once per
+ * line): a pure function of `lines` and `lineKey` alone, so equal inputs
+ * always produce an equal `Uint32Array` — the property a caller amortizing
+ * this across several classifications (see `line-diff.ts`'s hop-to-hop hash
+ * cache) depends on.
+ */
+export function hashLineSide(
+  lines: ReadonlyArray<Uint8Array>,
+  lineKey: LineKey | undefined,
+): Uint32Array {
+  const hashes = new Uint32Array(lines.length);
+  for (let i = 0; i < lines.length; i++) {
+    hashes[i] = hashLineBytes(keyBytesOf(lines[i]!, lineKey));
+  }
+  return hashes;
+}
+
 function classifySide(
   table: ClassTable,
   lines: ReadonlyArray<Uint8Array>,
   lineKey: LineKey | undefined,
+  hashes: Uint32Array,
   ids: Int32Array,
 ): void {
   for (let i = 0; i < lines.length; i++) {
-    ids[i] = classify(table, keyBytesOf(lines[i]!, lineKey));
+    ids[i] = classify(table, keyBytesOf(lines[i]!, lineKey), hashes[i]!);
   }
 }
 
@@ -105,11 +125,18 @@ function classifySide(
  * that two lines share an id exactly when their (optionally normalized)
  * bytes are equal. The Myers core compares these ids instead of re-reading
  * or re-normalizing bytes on every probe.
+ *
+ * `oursHashes`/`theirsHashes` are each side's `hashLineSide` output, aligned
+ * index-for-index with `ours`/`theirs` — supplied by the caller (rather than
+ * hashed again here) so a caller that already hashed one side elsewhere can
+ * pass that array straight through.
  */
 export function classifyLines(
   ours: ReadonlyArray<Uint8Array>,
   theirs: ReadonlyArray<Uint8Array>,
-  lineKey?: LineKey,
+  lineKey: LineKey | undefined,
+  oursHashes: Uint32Array,
+  theirsHashes: Uint32Array,
 ): LineClasses {
   const oursIds = new Int32Array(ours.length);
   const theirsIds = new Int32Array(theirs.length);
@@ -117,7 +144,7 @@ export function classifyLines(
     return { ours: oursIds, theirs: theirsIds, classCount: 0 };
   }
   const table = createClassTable(ours.length + theirs.length);
-  classifySide(table, ours, lineKey, oursIds);
-  classifySide(table, theirs, lineKey, theirsIds);
+  classifySide(table, ours, lineKey, oursHashes, oursIds);
+  classifySide(table, theirs, lineKey, theirsHashes, theirsIds);
   return { ours: oursIds, theirs: theirsIds, classCount: table.representative.length };
 }

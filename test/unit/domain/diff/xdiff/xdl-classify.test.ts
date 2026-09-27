@@ -1,7 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { classifyLines } from '../../../../../src/domain/diff/xdiff/xdl-classify.js';
+import type { LineKey } from '../../../../../src/domain/diff/whitespace.js';
+import { classifyLines, hashLineSide } from '../../../../../src/domain/diff/xdiff/xdl-classify.js';
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
+
+/** `classifyLines`, hashing both sides from scratch — this suite's default shape. */
+const classify = (
+  ours: ReadonlyArray<Uint8Array>,
+  theirs: ReadonlyArray<Uint8Array>,
+  lineKey?: LineKey,
+) =>
+  classifyLines(ours, theirs, lineKey, hashLineSide(ours, lineKey), hashLineSide(theirs, lineKey));
 
 describe('classifyLines', () => {
   describe('Given both sides empty', () => {
@@ -12,7 +21,7 @@ describe('classifyLines', () => {
         const theirs: ReadonlyArray<Uint8Array> = [];
 
         // Act
-        const result = classifyLines(ours, theirs);
+        const result = classify(ours, theirs);
 
         // Assert
         expect(Array.from(result.ours)).toEqual([]);
@@ -30,7 +39,7 @@ describe('classifyLines', () => {
         const theirs = [enc('same\n')];
 
         // Act
-        const result = classifyLines(ours, theirs);
+        const result = classify(ours, theirs);
 
         // Assert
         expect(result.ours[0]).toBe(result.theirs[0]);
@@ -47,7 +56,7 @@ describe('classifyLines', () => {
         const theirs = [enc('same')];
 
         // Act
-        const result = classifyLines(ours, theirs);
+        const result = classify(ours, theirs);
 
         // Assert
         expect(result.ours[0]).not.toBe(result.theirs[0]);
@@ -65,7 +74,7 @@ describe('classifyLines', () => {
         const lineKey = { mode: 'all' as const, ignoreCrAtEol: false };
 
         // Act
-        const result = classifyLines(ours, theirs, lineKey);
+        const result = classify(ours, theirs, lineKey);
 
         // Assert
         expect(result.ours[0]).toBe(result.theirs[0]);
@@ -80,7 +89,7 @@ describe('classifyLines', () => {
         const theirs = [enc('ab\n')];
 
         // Act
-        const result = classifyLines(ours, theirs);
+        const result = classify(ours, theirs);
 
         // Assert
         expect(result.ours[0]).not.toBe(result.theirs[0]);
@@ -99,7 +108,7 @@ describe('classifyLines', () => {
         const theirs = [enc('ae\n')];
 
         // Act
-        const result = classifyLines(ours, theirs);
+        const result = classify(ours, theirs);
 
         // Assert
         expect(result.ours[0]).not.toBe(result.theirs[0]);
@@ -116,7 +125,7 @@ describe('classifyLines', () => {
         const theirs = [enc('a\n'), enc('c\n')];
 
         // Act
-        const result = classifyLines(ours, theirs);
+        const result = classify(ours, theirs);
 
         // Assert — 'b' is class 0, 'a' is class 1 (first seen in ours), 'c' is class 2
         expect(Array.from(result.ours)).toEqual([0, 1]);
@@ -134,12 +143,38 @@ describe('classifyLines', () => {
         const theirs: ReadonlyArray<Uint8Array> = [];
 
         // Act
-        const result = classifyLines(ours, theirs);
+        const result = classify(ours, theirs);
 
         // Assert
         expect(Array.from(result.theirs)).toEqual([]);
         expect(Array.from(result.ours)).toEqual([0]);
         expect(result.classCount).toBe(1);
+      });
+    });
+  });
+
+  describe('Given a hash array already computed elsewhere for one side', () => {
+    describe('When classifyLines is given that array instead of a fresh one', () => {
+      it('Then classification is identical to hashing both sides from scratch', () => {
+        // Arrange — theirs' hash was computed once, independently, by whoever
+        // held these lines before this call (blame's hop-to-hop cache).
+        const ours = [enc('b\n'), enc('a\n')];
+        const theirs = [enc('a\n'), enc('c\n')];
+        const theirsHashes = hashLineSide(theirs, undefined);
+
+        // Act
+        const result = classifyLines(
+          ours,
+          theirs,
+          undefined,
+          hashLineSide(ours, undefined),
+          theirsHashes,
+        );
+
+        // Assert
+        expect(Array.from(result.ours)).toEqual([0, 1]);
+        expect(Array.from(result.theirs)).toEqual([1, 2]);
+        expect(result.classCount).toBe(3);
       });
     });
   });

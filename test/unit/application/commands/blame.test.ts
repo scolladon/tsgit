@@ -19,6 +19,7 @@ import { findTreeEntry } from '../../../../src/application/primitives/internal/r
 import * as readObjectMod from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import * as lineDiffMod from '../../../../src/domain/diff/line-diff.js';
+import * as xdlClassifyMod from '../../../../src/domain/diff/xdiff/xdl-classify.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { AuthorIdentity, Blob, ObjectId, Tree } from '../../../../src/domain/objects/index.js';
@@ -610,6 +611,32 @@ describe('Given a two-commit history where the parent hop actually changes the f
       expect(oursLines).toEqual(lineDiffMod.splitLines(new TextEncoder().encode('a\nb\n')));
       diffLinesSpy.mockRestore();
       diffPresplitLinesSpy.mockRestore();
+    });
+  });
+});
+
+describe('Given a linear history where every hop actually changes the file', () => {
+  describe('When the file is blamed across all four hops', () => {
+    it('Then each distinct blob is hashed once, not once per hop it appears in', async () => {
+      // Arrange — c1..c4 each append a line, so every hop diffs for real
+      // instead of short-circuiting on TREESAME; c2 and c3's blobs are each
+      // a parent-side blob at one hop and the very next hop's child-side
+      // blob, the exact reuse window this cache targets.
+      const ctx = await seed();
+      await commitFile(ctx, 'c1', 'f.txt', 'a\nb\nc\nd\ne\n');
+      await commitFile(ctx, 'c2', 'f.txt', 'a\nb\nc\nd\ne\nf\n');
+      await commitFile(ctx, 'c3', 'f.txt', 'a\nb\nc\nd\ne\nf\ng\n');
+      const c4 = await commitFile(ctx, 'c4', 'f.txt', 'a\nb\nc\nd\ne\nf\ng\nh\n');
+      const hashLineSideSpy = vi.spyOn(xdlClassifyMod, 'hashLineSide');
+
+      // Act
+      await blame(ctx, 'f.txt', { rev: c4 });
+
+      // Assert — one call per distinct blob (c1, c2, c3, c4): c2's and c3's
+      // blobs are each hashed once despite serving as both a hop's parent
+      // side and the next hop's child side.
+      expect(hashLineSideSpy).toHaveBeenCalledTimes(4);
+      hashLineSideSpy.mockRestore();
     });
   });
 });

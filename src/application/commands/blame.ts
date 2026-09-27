@@ -126,6 +126,14 @@ interface Suspect {
   readonly blobId: ObjectId;
   readonly entries: ReadonlyArray<BlameEntry>;
   readonly lines: ReadonlyArray<Uint8Array>;
+  /** `lines`' per-line hash, when a previous hop already computed it — this
+   *  suspect's blob was that hop's freshly-read parent side, and `lines` is
+   *  literally that hop's `diff.oursLines`. Undefined for a just-seeded
+   *  suspect, whose lines have never been hashed. Handed to the next hop's
+   *  diff as the child-side precomputed hash, so a blob walked across many
+   *  hops (and, on a merge, across several parents of the same suspect) is
+   *  hashed once, not once per hop or parent it appears in. */
+  readonly hashes?: Uint32Array | undefined;
   readonly oidChain: ReadonlyArray<ObjectId>;
   readonly commitData: CommitData;
 }
@@ -222,6 +230,7 @@ const seedWorkingTree = async (
       blobId: resolved.entry.id,
       entries: passed,
       lines: diff.oursLines,
+      hashes: diff.oursHashes,
       oidChain: resolved.oidChain,
       commitData: data,
     });
@@ -367,6 +376,7 @@ const applyParentResolution = (
       blobId: suspect.blobId,
       entries: remaining,
       lines: suspect.lines,
+      hashes: suspect.hashes,
       oidChain: resolved.oidChain,
       commitData: resolved.commitData,
     });
@@ -374,7 +384,12 @@ const applyParentResolution = (
   }
   // `suspect.lines` is already split (carried from whoever scheduled this
   // suspect); only `resolved.blob` — freshly read this hop — needs it.
-  const diff = diffPresplitLines(splitLines(resolved.blob), suspect.lines);
+  // `suspect.hashes`, when present, is that same carry: the previous hop
+  // already hashed these exact lines as ITS parent side, so this hop's
+  // child side is handed that array instead of re-hashing it.
+  const diff = diffPresplitLines(splitLines(resolved.blob), suspect.lines, undefined, {
+    theirs: suspect.hashes,
+  });
   const { passed, kept } = splitAgainstParent(remaining, diff);
   schedule(sb, {
     commit: parent,
@@ -383,6 +398,7 @@ const applyParentResolution = (
     blobId: resolved.blobId,
     entries: passed,
     lines: diff.oursLines,
+    hashes: diff.oursHashes,
     oidChain: resolved.oidChain,
     commitData: resolved.commitData,
   });

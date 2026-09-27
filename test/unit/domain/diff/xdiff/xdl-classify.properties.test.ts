@@ -2,9 +2,24 @@ import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import type { LineKey } from '../../../../../src/domain/diff/whitespace.js';
 import { linesEqualUnder } from '../../../../../src/domain/diff/whitespace.js';
-import { classifyLines } from '../../../../../src/domain/diff/xdiff/xdl-classify.js';
+import { classifyLines, hashLineSide } from '../../../../../src/domain/diff/xdiff/xdl-classify.js';
 import { bytesEqual } from '../../../../../src/domain/objects/encoding.js';
 import { arbLineKey } from '../arbitraries.js';
+
+/** `classifyLines`, hashing both sides from scratch — this suite's default shape. */
+function classify(
+  ours: ReadonlyArray<Uint8Array>,
+  theirs: ReadonlyArray<Uint8Array>,
+  lineKey: LineKey | undefined,
+) {
+  return classifyLines(
+    ours,
+    theirs,
+    lineKey,
+    hashLineSide(ours, lineKey),
+    hashLineSide(theirs, lineKey),
+  );
+}
 
 // A small, mostly-overlapping alphabet of line bodies — deliberately
 // collision-prone (repeated content, whitespace-only differences, presence
@@ -41,7 +56,7 @@ describe('classifyLines properties', () => {
             fc.option(arbLineKey(), { nil: undefined }),
             (ours, theirs, lineKey) => {
               // Act
-              const result = classifyLines(ours, theirs, lineKey ?? undefined);
+              const result = classify(ours, theirs, lineKey ?? undefined);
               const combined = [
                 ...ours.map((line, i) => ({ line, id: result.ours[i]! })),
                 ...theirs.map((line, j) => ({ line, id: result.theirs[j]! })),
@@ -74,7 +89,7 @@ describe('classifyLines properties', () => {
             fc.option(arbLineKey(), { nil: undefined }),
             (ours, theirs, lineKey) => {
               // Act
-              const result = classifyLines(ours, theirs, lineKey ?? undefined);
+              const result = classify(ours, theirs, lineKey ?? undefined);
               const seen = new Set<number>([...result.ours, ...result.theirs]);
 
               // Assert
@@ -83,6 +98,40 @@ describe('classifyLines properties', () => {
                 expect(id).toBeLessThan(result.classCount);
               }
               expect(seen.size).toBe(result.classCount);
+            },
+          ),
+          { numRuns: 100 },
+        );
+      });
+    });
+  });
+
+  describe('Given hash arrays computed independently ahead of time', () => {
+    describe('When classifyLines is given them instead of hashing from scratch', () => {
+      it('Then classification is identical either way', () => {
+        // Arrange
+        fc.assert(
+          fc.property(
+            arbLines(),
+            arbLines(),
+            fc.option(arbLineKey(), { nil: undefined }),
+            (ours, theirs, lineKey) => {
+              const key = lineKey ?? undefined;
+
+              // Act
+              const fromScratch = classify(ours, theirs, key);
+              const fromPrecomputed = classifyLines(
+                ours,
+                theirs,
+                key,
+                hashLineSide(ours, key),
+                hashLineSide(theirs, key),
+              );
+
+              // Assert
+              expect(Array.from(fromPrecomputed.ours)).toEqual(Array.from(fromScratch.ours));
+              expect(Array.from(fromPrecomputed.theirs)).toEqual(Array.from(fromScratch.theirs));
+              expect(fromPrecomputed.classCount).toBe(fromScratch.classCount);
             },
           ),
           { numRuns: 100 },

@@ -1,5 +1,5 @@
 import type { LineKey } from './whitespace.js';
-import { classifyLines } from './xdiff/xdl-classify.js';
+import { classifyLines, hashLineSide } from './xdiff/xdl-classify.js';
 import { compactChanges } from './xdiff/xdl-compact.js';
 import { cleanupRecords, type SearchMode, trimEnds } from './xdiff/xdl-prepare.js';
 import { markChanges } from './xdiff/xdl-split.js';
@@ -25,6 +25,31 @@ export interface LineDiff {
    *  distance is. */
   readonly degraded: boolean;
 }
+
+/**
+ * @internal — blame's hop-to-hop hash cache. A hop's parent-side blob is the
+ * next hop's child-side blob, so a caller walking many hops over the same
+ * blob lineage can hand a previous hop's `LineDiffWithHashes.oursHashes`
+ * back in as this hop's `theirs`, instead of the classifier re-hashing lines
+ * it already hashed. Absent for whichever side is genuinely new this hop.
+ */
+export interface PrecomputedLineHashes {
+  readonly ours?: Uint32Array | undefined;
+  readonly theirs?: Uint32Array | undefined;
+}
+
+/**
+ * @internal — `diffPresplitLines`'s return, widened with each side's
+ * `hashLineSide` output (aligned index-for-index with `oursLines`/
+ * `theirsLines`), so a hop-to-hop caller can carry a side's hashes forward
+ * as `PrecomputedLineHashes` for its next diff call.
+ */
+export interface LineDiffWithHashes extends LineDiff {
+  readonly oursHashes: Uint32Array;
+  readonly theirsHashes: Uint32Array;
+}
+
+const EMPTY_HASHES = new Uint32Array(0);
 
 export const BINARY_DETECTION_BYTES = 8_000;
 // Not consulted by isBinary — git's own binary rule is the NUL window alone.
@@ -172,20 +197,37 @@ export function diffLines(
   return diffPresplitLines(splitLines(ours), splitLines(theirs), options);
 }
 
+/** `precomputed` when the caller already hashed this side elsewhere; a fresh `hashLineSide` otherwise. */
+function resolveSideHashes(
+  lines: ReadonlyArray<Uint8Array>,
+  lineKey: LineKey | undefined,
+  precomputed: Uint32Array | undefined,
+): Uint32Array {
+  return precomputed ?? hashLineSide(lines, lineKey);
+}
+
 /**
  * `diffLines`'s counterpart for a caller that already holds both sides
  * split — `blame`'s changed-parent hop, where the child side is the
  * previous generation's carried `Suspect.lines` and only the parent side is
  * genuinely new. Skips `splitLines` entirely on both inputs; the returned
  * `oursLines`/`theirsLines` are the SAME array references passed in, not
- * copies.
+ * copies. `precomputedHashes` lets that same caller skip re-hashing a side
+ * whose hashes an earlier hop already computed (see `PrecomputedLineHashes`).
  */
 export function diffPresplitLines(
   oursLines: ReadonlyArray<Uint8Array>,
   theirsLines: ReadonlyArray<Uint8Array>,
   options?: LineDiffOptions,
-): LineDiff {
-  return diffPresplitLinesForMode(oursLines, theirsLines, 'git-default', options);
+  precomputedHashes?: PrecomputedLineHashes,
+): LineDiffWithHashes {
+  return diffPresplitLinesForMode(
+    oursLines,
+    theirsLines,
+    'git-default',
+    options,
+    precomputedHashes,
+  );
 }
 
 /**
@@ -201,7 +243,8 @@ export function diffPresplitLinesForMode(
   theirsLines: ReadonlyArray<Uint8Array>,
   mode: SearchMode,
   options?: LineDiffOptions,
-): LineDiff {
+  precomputedHashes?: PrecomputedLineHashes,
+): LineDiffWithHashes {
   const lineKey = options?.lineKey;
   const M = oursLines.length;
   const N = theirsLines.length;
@@ -212,10 +255,14 @@ export function diffPresplitLinesForMode(
       oursLines,
       theirsLines,
       degraded: false,
+      oursHashes: EMPTY_HASHES,
+      theirsHashes: EMPTY_HASHES,
     };
   }
 
-  const classes = classifyLines(oursLines, theirsLines, lineKey);
+  const oursHashes = resolveSideHashes(oursLines, lineKey, precomputedHashes?.ours);
+  const theirsHashes = resolveSideHashes(theirsLines, lineKey, precomputedHashes?.theirs);
+  const classes = classifyLines(oursLines, theirsLines, lineKey, oursHashes, theirsHashes);
   const trimmed = trimEnds(classes.ours, classes.theirs);
   const prepared = cleanupRecords(classes, trimmed, mode);
   markChanges(classes, prepared, mode);
@@ -229,5 +276,7 @@ export function diffPresplitLinesForMode(
     oursLines,
     theirsLines,
     degraded: false,
+    oursHashes,
+    theirsHashes,
   };
 }
