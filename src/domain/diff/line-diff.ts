@@ -197,15 +197,6 @@ export function diffLines(
   return diffPresplitLines(splitLines(ours), splitLines(theirs), options);
 }
 
-/** `precomputed` when the caller already hashed this side elsewhere; a fresh `hashLineSide` otherwise. */
-function resolveSideHashes(
-  lines: ReadonlyArray<Uint8Array>,
-  lineKey: LineKey | undefined,
-  precomputed: Uint32Array | undefined,
-): Uint32Array {
-  return precomputed ?? hashLineSide(lines, lineKey);
-}
-
 /**
  * `diffLines`'s counterpart for a caller that already holds both sides
  * split — `blame`'s changed-parent hop, where the child side is the
@@ -260,9 +251,20 @@ export function diffPresplitLinesForMode(
     };
   }
 
-  const oursHashes = resolveSideHashes(oursLines, lineKey, precomputedHashes?.ours);
-  const theirsHashes = resolveSideHashes(theirsLines, lineKey, precomputedHashes?.theirs);
-  const classes = classifyLines(oursLines, theirsLines, lineKey, oursHashes, theirsHashes);
+  const oursNormalized = lineKey === undefined ? undefined : new Array<Uint8Array>(M);
+  const theirsNormalized = lineKey === undefined ? undefined : new Array<Uint8Array>(N);
+  const oursHashes = precomputedHashes?.ours ?? hashLineSide(oursLines, lineKey, oursNormalized);
+  const theirsHashes =
+    precomputedHashes?.theirs ?? hashLineSide(theirsLines, lineKey, theirsNormalized);
+  const classes = classifyLines(
+    oursLines,
+    theirsLines,
+    lineKey,
+    oursHashes,
+    theirsHashes,
+    oursNormalized,
+    theirsNormalized,
+  );
   const trimmed = trimEnds(classes.ours, classes.theirs);
   const prepared = cleanupRecords(classes, trimmed, mode);
   markChanges(classes, prepared, mode);

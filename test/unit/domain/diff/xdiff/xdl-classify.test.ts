@@ -178,4 +178,54 @@ describe('classifyLines', () => {
       });
     });
   });
+
+  describe('Given hashLineSide is handed an output array under an active lineKey', () => {
+    describe('When hashLineSide returns', () => {
+      it('Then the array holds each line’s normalized bytes, aligned index-for-index with the input', () => {
+        // Arrange
+        const key: LineKey = { mode: 'all', ignoreCrAtEol: false };
+        const lines = [enc('  a\n'), enc('b  \n')];
+        const normalizedOut: Uint8Array[] = [];
+
+        // Act
+        hashLineSide(lines, key, normalizedOut);
+
+        // Assert
+        expect(normalizedOut).toEqual([enc('a'), enc('b')]);
+      });
+    });
+  });
+
+  describe('Given classifyLines is handed the normalized bytes hashLineSide already produced', () => {
+    describe('When classifyLines classifies using them instead of re-normalizing', () => {
+      it('Then classification is identical to the same call without them', () => {
+        // Arrange — a whitespace-only pair, so re-normalizing (or not) is the
+        // only thing that could change whether the two lines share a class.
+        const key: LineKey = { mode: 'all', ignoreCrAtEol: false };
+        const ours = [enc('  a\n')];
+        const theirs = [enc('a  \n')];
+        const oursNormalized: Uint8Array[] = [];
+        const theirsNormalized: Uint8Array[] = [];
+        const oursHashes = hashLineSide(ours, key, oursNormalized);
+        const theirsHashes = hashLineSide(theirs, key, theirsNormalized);
+
+        // Act
+        const shared = classifyLines(
+          ours,
+          theirs,
+          key,
+          oursHashes,
+          theirsHashes,
+          oursNormalized,
+          theirsNormalized,
+        );
+        const fromScratch = classify(ours, theirs, key);
+
+        // Assert
+        expect(Array.from(shared.ours)).toEqual([0]);
+        expect(Array.from(shared.theirs)).toEqual([0]);
+        expect(shared).toEqual(fromScratch);
+      });
+    });
+  });
 });

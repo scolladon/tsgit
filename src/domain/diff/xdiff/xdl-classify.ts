@@ -95,14 +95,24 @@ function keyBytesOf(line: Uint8Array, lineKey: LineKey | undefined): Uint8Array 
  * always produce an equal `Uint32Array` — the property a caller amortizing
  * this across several classifications (see `line-diff.ts`'s hop-to-hop hash
  * cache) depends on.
+ *
+ * `normalizedOut`, when given, is filled in place with each line's
+ * normalized bytes (the same `Uint8Array` `hashLineBytes` hashed) — the hot-path
+ * exception to immutability this parameter exists for. A caller that
+ * immediately classifies these same lines afterwards (`line-diff.ts`'s
+ * fresh-hash path) hands its own pre-sized array in and reuses it there,
+ * instead of `classifySide` normalizing every line a second time.
  */
 export function hashLineSide(
   lines: ReadonlyArray<Uint8Array>,
   lineKey: LineKey | undefined,
+  normalizedOut?: Uint8Array[],
 ): Uint32Array {
   const hashes = new Uint32Array(lines.length);
   for (let i = 0; i < lines.length; i++) {
-    hashes[i] = hashLineBytes(keyBytesOf(lines[i]!, lineKey));
+    const bytes = keyBytesOf(lines[i]!, lineKey);
+    hashes[i] = hashLineBytes(bytes);
+    if (normalizedOut !== undefined) normalizedOut[i] = bytes;
   }
   return hashes;
 }
@@ -113,9 +123,11 @@ function classifySide(
   lineKey: LineKey | undefined,
   hashes: Uint32Array,
   ids: Int32Array,
+  normalized: ReadonlyArray<Uint8Array> | undefined,
 ): void {
   for (let i = 0; i < lines.length; i++) {
-    ids[i] = classify(table, keyBytesOf(lines[i]!, lineKey), hashes[i]!);
+    const bytes = normalized?.[i] ?? keyBytesOf(lines[i]!, lineKey);
+    ids[i] = classify(table, bytes, hashes[i]!);
   }
 }
 
@@ -130,6 +142,12 @@ function classifySide(
  * index-for-index with `ours`/`theirs` — supplied by the caller (rather than
  * hashed again here) so a caller that already hashed one side elsewhere can
  * pass that array straight through.
+ *
+ * `oursNormalized`/`theirsNormalized`, when given, are that same `hashLineSide`
+ * call's `normalizedOut` — reused here instead of normalizing every line a
+ * second time. Absent for a side whose hashes came from elsewhere (a
+ * precomputed hop-to-hop cache never captured them), which still classifies
+ * correctly by normalizing itself.
  */
 export function classifyLines(
   ours: ReadonlyArray<Uint8Array>,
@@ -137,6 +155,8 @@ export function classifyLines(
   lineKey: LineKey | undefined,
   oursHashes: Uint32Array,
   theirsHashes: Uint32Array,
+  oursNormalized?: ReadonlyArray<Uint8Array>,
+  theirsNormalized?: ReadonlyArray<Uint8Array>,
 ): LineClasses {
   const oursIds = new Int32Array(ours.length);
   const theirsIds = new Int32Array(theirs.length);
@@ -144,7 +164,7 @@ export function classifyLines(
     return { ours: oursIds, theirs: theirsIds, classCount: 0 };
   }
   const table = createClassTable(ours.length + theirs.length);
-  classifySide(table, ours, lineKey, oursHashes, oursIds);
-  classifySide(table, theirs, lineKey, theirsHashes, theirsIds);
+  classifySide(table, ours, lineKey, oursHashes, oursIds, oursNormalized);
+  classifySide(table, theirs, lineKey, theirsHashes, theirsIds, theirsNormalized);
   return { ours: oursIds, theirs: theirsIds, classCount: table.representative.length };
 }
