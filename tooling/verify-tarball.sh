@@ -282,7 +282,13 @@ done
 # shipped in every distribution form, none removable without giving back
 # the bare-repo attribute lookup, the CR-faithful break score, or the
 # tristate config parity.
-SIZE_CAP=$((1012 * 1024))
+# Raised 1012 -> 1013 KiB by fsck's non-blob under-run fix: the measured
+# tarball lands at 1 036 308 B, 20 B over the old cap, attributable to
+# content-validation.ts's `nonBlobRefuseResult` routing — runtime code
+# shipped in every distribution form, none removable without dropping the
+# zero-padded hash-path-mismatch parity fsck now reports for a size-lying
+# commit, tree or tag, matching what it already reported for a blob.
+SIZE_CAP=$((1013 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
