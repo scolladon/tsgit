@@ -831,7 +831,11 @@ describe.skipIf(!GIT_AVAILABLE)('loose-object header size lying interop', () => 
       const gitResult = tryRunGitWithExit(['-C', dir, 'fsck', '--full']);
       const result = await fsck(ctx);
 
-      // Assert — git's own reported hash and exit bit
+      // Assert — git's own exit bit, and ONLY the deterministic part of its
+      // stderr line: git's own zero-padding comes from an uninitialised
+      // allocation (`unpack_loose_rest`'s `xmallocz`), so the hash it
+      // reports for the SAME fixture can differ run to run. tsgit's own
+      // deterministic zero-padded value is what `mismatch` below pins.
       const expectedActual = createHash('sha1')
         .update(
           Buffer.concat([Buffer.from('blob 20\0'), Buffer.from('SHORT-BODY'), Buffer.alloc(10)]),
@@ -839,7 +843,7 @@ describe.skipIf(!GIT_AVAILABLE)('loose-object header size lying interop', () => 
         .digest('hex');
       expect(gitResult.exitCode & 1).toBe(1);
       expect(gitResult.stderr).toContain(
-        `${expectedActual}: hash-path mismatch, found at: .git/objects/${storedId.slice(0, 2)}/${storedId.slice(2)}`,
+        `hash-path mismatch, found at: .git/objects/${storedId.slice(0, 2)}/${storedId.slice(2)}`,
       );
 
       // Assert — tsgit's structured finding reconstructs the same line
