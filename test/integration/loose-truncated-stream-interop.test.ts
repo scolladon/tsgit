@@ -15,7 +15,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { deflateSync } from 'node:zlib';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { readDeclaredObjectSize } from '../../src/application/primitives/read-object.js';
 import { TsgitError } from '../../src/domain/error.js';
@@ -37,11 +37,21 @@ const writeTruncatedLoose = async (dir: string, bytes: Uint8Array): Promise<void
   await writeFile(target, bytes);
 };
 
+// Every mkdtemp root this file creates (caseDir) is tracked here and removed
+// in the module-level afterAll below — a body that throws before its own
+// inline cleanup would otherwise leak the dir.
+const createdDirs: string[] = [];
+
+afterAll(async () => {
+  await Promise.all(createdDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+});
+
 describe.skipIf(!GIT_AVAILABLE)(
   "a loose object whose compressed bytes are cut short, against real git's cat-file",
   () => {
     const caseDir = async (slug: string): Promise<string> => {
       const dir = await mkdtemp(path.join(os.tmpdir(), `tsgit-loose-truncated-${slug}-`));
+      createdDirs.push(dir);
       tryRunGitWithExit(['init', '-q', dir], { env: runGitEnv() });
       return dir;
     };
@@ -81,8 +91,6 @@ describe.skipIf(!GIT_AVAILABLE)(
         if (data.code === 'INVALID_OBJECT_HEADER') {
           expect(data.reason).toBe(`no NUL terminator found in inflated object ${ID}`);
         }
-
-        await rm(dir, { recursive: true, force: true });
       });
     });
 
@@ -111,8 +119,6 @@ describe.skipIf(!GIT_AVAILABLE)(
 
         // Assert — git succeeding here means tsgit returns too, same value
         expect(size).toBe(5);
-
-        await rm(dir, { recursive: true, force: true });
       });
     });
   },
