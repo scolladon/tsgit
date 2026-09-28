@@ -2842,6 +2842,109 @@ describe('diffTrees', () => {
     });
   });
 
+  // --- withStat forces recursion before rename detection (directory rename) ---
+
+  describe('Given detectRenames:true and withStat:true over an exactly-renamed sub-directory', () => {
+    describe('When diffTrees is called without recursive', () => {
+      it('Then the directory rename expands into per-leaf renames with zero line counts (matching `git diff-tree -M --numstat`, which recurses before pairing)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const innerId = await blob(ctx, 'inner content\n');
+        const deepId = await blob(ctx, 'deep content\n');
+        const deepSub = await subTree(ctx, 'deep.txt', deepId, FILE_MODE.REGULAR);
+        const oldDir = await writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'inner.txt', innerId),
+          treeEntry(FILE_MODE.DIRECTORY, 'sub', deepSub),
+        ]);
+        const before = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'old-dir', oldDir)]);
+        const after = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'new-dir', oldDir)]);
+
+        // Act
+        const result = await diffTrees(ctx, before, after, {
+          detectRenames: true,
+          withStat: true,
+        });
+
+        // Assert
+        expect(result.changes).toHaveLength(2);
+        expect(result.changes).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              type: 'rename',
+              oldPath: 'old-dir/inner.txt',
+              newPath: 'new-dir/inner.txt',
+              added: 0,
+              deleted: 0,
+            }),
+            expect.objectContaining({
+              type: 'rename',
+              oldPath: 'old-dir/sub/deep.txt',
+              newPath: 'new-dir/sub/deep.txt',
+              added: 0,
+              deleted: 0,
+            }),
+          ]),
+        );
+      });
+    });
+  });
+
+  describe('Given the same exactly-renamed sub-directory and withStat:true, When detectRenames is omitted', () => {
+    describe('When diffTrees is called', () => {
+      it('Then the directory add/delete still expands into per-leaf add/delete changes (no pairing, unchanged)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const innerId = await blob(ctx, 'inner content\n');
+        const deepId = await blob(ctx, 'deep content\n');
+        const deepSub = await subTree(ctx, 'deep.txt', deepId, FILE_MODE.REGULAR);
+        const oldDir = await writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'inner.txt', innerId),
+          treeEntry(FILE_MODE.DIRECTORY, 'sub', deepSub),
+        ]);
+        const before = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'old-dir', oldDir)]);
+        const after = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'new-dir', oldDir)]);
+
+        // Act
+        const result = await diffTrees(ctx, before, after, { withStat: true });
+
+        // Assert
+        expect(result.changes).toHaveLength(4);
+        expect(result.changes).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ type: 'delete', oldPath: 'old-dir/inner.txt' }),
+            expect.objectContaining({ type: 'delete', oldPath: 'old-dir/sub/deep.txt' }),
+            expect.objectContaining({ type: 'add', newPath: 'new-dir/inner.txt' }),
+            expect.objectContaining({ type: 'add', newPath: 'new-dir/sub/deep.txt' }),
+          ]),
+        );
+      });
+    });
+  });
+
+  describe('Given detectRenames:true and withStat omitted over an exactly-renamed sub-directory', () => {
+    describe('When diffTrees is called without recursive', () => {
+      it('Then the directory-level rename is returned unexpanded (matching `git diff-tree -M`, which never recurses without a content-reading format)', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const innerId = await blob(ctx, 'inner content\n');
+        const oldDir = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'inner.txt', innerId)]);
+        const before = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'old-dir', oldDir)]);
+        const after = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'new-dir', oldDir)]);
+
+        // Act
+        const result = await diffTrees(ctx, before, after, { detectRenames: true });
+
+        // Assert
+        expect(result.changes).toHaveLength(1);
+        expect(result.changes[0]).toMatchObject({
+          type: 'rename',
+          oldPath: 'old-dir',
+          newPath: 'new-dir',
+        });
+      });
+    });
+  });
+
   // --- attribute-marked drop predicate, no withStat (materialisedShouldDrop unit coverage) ---
 
   describe('Given a modify change with a -diff attribute, ignoreWhitespace:all and withStat omitted', () => {

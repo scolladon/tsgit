@@ -94,18 +94,31 @@ export async function diffTrees(
   b: DiffTreesInput,
   options?: DiffTreesOptions,
 ): Promise<TreeDiff | StatTreeDiff> {
-  const rawDiff = await resolveAndDiff(ctx, a, b, options);
-  const diff = await detectChanges(ctx, rawDiff, a, options);
+  const effective = withRecursiveForStat(options);
+  const rawDiff = await resolveAndDiff(ctx, a, b, effective);
+  const diff = await detectChanges(ctx, rawDiff, a, effective);
 
-  const lineKey = resolveLineKey(options ?? {});
+  const lineKey = resolveLineKey(effective ?? {});
   const lineKeyActive = lineKeyIsActive(lineKey);
-  const ignoreBlankLines = options?.ignoreBlankLines === true;
-  const withStat = options?.withStat === true;
+  const ignoreBlankLines = effective?.ignoreBlankLines === true;
+  const withStat = effective?.withStat === true;
 
   if (lineKeyActive || withStat) {
     return applyLinePassAndStat(ctx, diff, lineKey, lineKeyActive, ignoreBlankLines, withStat);
   }
   return diff;
+}
+
+/**
+ * git recurses before rename/copy detection for any content-reading output
+ * format (`--numstat`, `--stat`, `-p`) — a tree pair has no lines to diff, so
+ * pairing must run on leaves. `withStat` is that format: force `recursive`
+ * regardless of what the caller passed, so detection never sees a
+ * directory-mode entry.
+ */
+function withRecursiveForStat(options: DiffTreesOptions | undefined): DiffTreesOptions | undefined {
+  if (options?.withStat !== true) return options;
+  return { ...options, recursive: true };
 }
 
 /**
@@ -228,8 +241,7 @@ async function applyStatPass(
   ignoreBlankLines: boolean,
   withStat: boolean,
 ): Promise<TreeDiff | StatTreeDiff> {
-  const changes = await expandDirectoryChanges(ctx, diff.changes);
-  const files = await materialisePatchFiles(ctx, changes, { applyTextconv: true });
+  const files = await materialisePatchFiles(ctx, diff.changes, { applyTextconv: true });
   const surviving: Array<DiffChange | StatDiffChange> = [];
   for (const file of files) {
     const oldContent = file.oldContent ?? EMPTY;
@@ -255,32 +267,6 @@ async function applyStatPass(
     surviving.push(withStat ? { ...file.change, ...stats } : file.change);
   }
   return { changes: surviving };
-}
-
-/**
- * Expand directory-mode add/delete/modify entries — a non-recursive diff can
- * legitimately pair two tree oids for a changed/added/removed sub-directory —
- * into full-path leaf changes before any blob content is materialised.
- * Mirrors git's own `diff-tree` behaviour: any output format that needs blob
- * content (`--numstat`/`--stat`/`-p`) implicitly recurses, because a tree
- * pair has no lines to diff. A no-op for already-recursive diffs or diffs
- * with no directory-mode entries — `expandLevelChange` passes leaf changes
- * through unchanged.
- */
-async function expandDirectoryChanges(
-  ctx: Context,
-  changes: ReadonlyArray<DiffChange>,
-): Promise<DiffChange[]> {
-  const state: DiffWalkState = {
-    counter: { value: 0 },
-    maxEntries: MAX_FLAT_TREE_ENTRIES,
-    maxDepth: await resolveMaxTreeDepth(ctx),
-    limiter: limiterFor(ctx, 'ioBound'),
-  };
-  const expanded = await boundedMapFor(ctx, 'ioBound', changes, (change) =>
-    expandLevelChange(ctx, change, ROOT_CURSOR, state),
-  );
-  return expanded.flat();
 }
 
 /**
@@ -571,10 +557,10 @@ interface DiffWalkCounter {
 interface DiffWalkState {
   readonly counter: DiffWalkCounter;
   readonly maxEntries: number;
-  /** Resolved once per `diffRecursive`/`expandDirectoryChanges` call (never
-   *  per level) from `core.maxTreeDepth` — see `diffChangedSubtree`'s guard
-   *  and `subtreeExpansionBounds`, both of which read it back from here
-   *  instead of resolving again. */
+  /** Resolved once per `diffRecursive` call (never per level) from
+   *  `core.maxTreeDepth` — see `diffChangedSubtree`'s guard and
+   *  `subtreeExpansionBounds`, both of which read it back from here instead
+   *  of resolving again. */
   readonly maxDepth: number;
   readonly limiter: ConcurrencyLimiter;
 }

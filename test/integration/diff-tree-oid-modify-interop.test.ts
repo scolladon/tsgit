@@ -58,6 +58,35 @@ const parseNumstat = (output: string): ReadonlyArray<NumstatRow> =>
     })
     .sort((a, b) => a.path.localeCompare(b.path));
 
+interface RenameNumstatRow {
+  readonly added: number;
+  readonly deleted: number;
+  readonly oldPath: string;
+  readonly newPath: string;
+}
+
+/** Every `-z` field triple below is one `<added>\t<deleted>\t\0<old-path>\0<new-path>\0`
+ *  rename record — the NUL-separated form git always emits for a numstat rename, since
+ *  the display-only `{old => new}` path never appears under `-z`. */
+const RENAME_RECORD_FIELD_COUNT = 3;
+
+/** Parse `git diff-tree -M --numstat -z` output whose every record is a rename pairing
+ *  (an all-renamed directory never mixes in a plain add/delete/modify record). */
+const parseRenameNumstatZ = (output: string): ReadonlyArray<RenameNumstatRow> => {
+  const fields = output.split('\0');
+  const rows: RenameNumstatRow[] = [];
+  for (let i = 0; i + 2 < fields.length; i += RENAME_RECORD_FIELD_COUNT) {
+    const [added, deleted] = (fields[i] ?? '').split('\t');
+    rows.push({
+      added: Number(added),
+      deleted: Number(deleted),
+      oldPath: fields[i + 1] ?? '',
+      newPath: fields[i + 2] ?? '',
+    });
+  }
+  return [...rows].sort((a, b) => a.newPath.localeCompare(b.newPath));
+};
+
 /** The single display path a `StatDiffChange` carries, regardless of change kind. */
 const pathOf = (change: StatDiffChange): string => {
   switch (change.type) {
@@ -81,6 +110,25 @@ const numstatRowsFromStatDiff = (
   changes
     .map((change) => ({ path: pathOf(change), added: change.added, deleted: change.deleted }))
     .sort((a, b) => a.path.localeCompare(b.path));
+
+const isRenameStatChange = (
+  change: StatDiffChange,
+): change is Extract<StatDiffChange, { type: 'rename' }> => change.type === 'rename';
+
+/** Reconstruct `{ added, deleted, oldPath, newPath }` rows from tsgit's rename changes,
+ *  peering `parseRenameNumstatZ`'s rows one-for-one. */
+const renameNumstatRowsFromStatDiff = (
+  changes: ReadonlyArray<StatDiffChange>,
+): ReadonlyArray<RenameNumstatRow> =>
+  changes
+    .filter(isRenameStatChange)
+    .map((change) => ({
+      added: change.added,
+      deleted: change.deleted,
+      oldPath: change.oldPath,
+      newPath: change.newPath,
+    }))
+    .sort((a, b) => a.newPath.localeCompare(b.newPath));
 
 let dir = '';
 let repo: Awaited<ReturnType<typeof openRepository>>;
@@ -209,6 +257,7 @@ let renameDir = '';
 let renameRepo: Awaited<ReturnType<typeof openRepository>>;
 let renameFrom = '';
 let renameTo = '';
+let renameTo2 = '';
 
 describe.skipIf(!GIT_AVAILABLE)(
   'integration — non-recursive diff over an exactly-renamed sub-directory',
@@ -222,8 +271,9 @@ describe.skipIf(!GIT_AVAILABLE)(
       await runGitAsync(['-C', renameDir, 'config', 'user.name', 'Ada']);
       await runGitAsync(['-C', renameDir, 'config', 'user.email', 'ada@example.com']);
 
-      await mkdir(path.join(renameDir, 'oldname'));
+      await mkdir(path.join(renameDir, 'oldname', 'sub'), { recursive: true });
       await writeFile(path.join(renameDir, 'oldname', 'inner.txt'), 'shared content\n');
+      await writeFile(path.join(renameDir, 'oldname', 'sub', 'deep.txt'), 'deep content\n');
       await runGitAsync(['-C', renameDir, 'add', '-A']);
       await runGitAsync(['-C', renameDir, 'commit', '-q', '-m', 'base'], {
         env: { ...runGitEnv(), ...IDENTITY },
@@ -235,6 +285,14 @@ describe.skipIf(!GIT_AVAILABLE)(
         env: { ...runGitEnv(), ...IDENTITY },
       });
       renameTo = (await runGitAsync(['-C', renameDir, 'rev-parse', 'HEAD'])).trim();
+
+      await writeFile(path.join(renameDir, 'newname', 'inner.txt'), 'shared content\nmore\n');
+      await runGitAsync(['-C', renameDir, 'mv', 'newname', 'renamed2']);
+      await runGitAsync(['-C', renameDir, 'add', '-A']);
+      await runGitAsync(['-C', renameDir, 'commit', '-q', '-m', 'move-and-edit'], {
+        env: { ...runGitEnv(), ...IDENTITY },
+      });
+      renameTo2 = (await runGitAsync(['-C', renameDir, 'rev-parse', 'HEAD'])).trim();
 
       renameRepo = await openRepository({ cwd: renameDir });
     }, 60_000);
@@ -270,6 +328,112 @@ describe.skipIf(!GIT_AVAILABLE)(
           // Assert
           expect(liveRaw.trim()).toBe('');
           expect(result.changes).toHaveLength(0);
+        });
+      });
+
+      describe('When diffing non-recursively with detectRenames:true AND withStat:true, comparing to `git diff-tree --no-ext-diff -M --numstat -z` (no -r)', () => {
+        it('Then both recurse before pairing, matching every leaf by similarity instead of pairing the whole directory', async () => {
+          // Arrange
+          const liveNumstatZ = await runGitAsync([
+            '-C',
+            renameDir,
+            'diff-tree',
+            '--no-ext-diff',
+            '-M',
+            '--numstat',
+            '-z',
+            renameFrom,
+            renameTo,
+          ]);
+          const liveRows = parseRenameNumstatZ(liveNumstatZ);
+
+          // Act
+          const result = await renameRepo.diff({
+            from: renameFrom,
+            to: renameTo,
+            detectRenames: true,
+            withStat: true,
+          });
+
+          // Assert
+          expect(renameNumstatRowsFromStatDiff(result.changes)).toEqual(liveRows);
+          expect(liveRows).toEqual([
+            { added: 0, deleted: 0, oldPath: 'oldname/inner.txt', newPath: 'newname/inner.txt' },
+            {
+              added: 0,
+              deleted: 0,
+              oldPath: 'oldname/sub/deep.txt',
+              newPath: 'newname/sub/deep.txt',
+            },
+          ]);
+        });
+      });
+    });
+
+    describe('Given a rename commit and a further commit that both moves the directory again and edits one leaf', () => {
+      describe('When diffing non-recursively with detectRenames:true AND withStat:true, comparing to `git diff-tree --no-ext-diff -M --numstat -z` (no -r)', () => {
+        it('Then both pair leaves by similarity, carrying real line counts on the edited leaf and 0/0 on the untouched one', async () => {
+          // Arrange
+          const liveNumstatZ = await runGitAsync([
+            '-C',
+            renameDir,
+            'diff-tree',
+            '--no-ext-diff',
+            '-M',
+            '--numstat',
+            '-z',
+            renameTo,
+            renameTo2,
+          ]);
+          const liveRows = parseRenameNumstatZ(liveNumstatZ);
+
+          // Act
+          const result = await renameRepo.diff({
+            from: renameTo,
+            to: renameTo2,
+            detectRenames: true,
+            withStat: true,
+          });
+
+          // Assert
+          expect(renameNumstatRowsFromStatDiff(result.changes)).toEqual(liveRows);
+          expect(liveRows).toEqual([
+            {
+              added: 1,
+              deleted: 0,
+              oldPath: 'newname/inner.txt',
+              newPath: 'renamed2/inner.txt',
+            },
+            {
+              added: 0,
+              deleted: 0,
+              oldPath: 'newname/sub/deep.txt',
+              newPath: 'renamed2/sub/deep.txt',
+            },
+          ]);
+        });
+      });
+
+      describe('When diffing non-recursively with --no-renames AND withStat:true, comparing to `git diff-tree --no-ext-diff --no-renames --numstat` (no -r)', () => {
+        it('Then both recurse into per-leaf add/delete pairs without any similarity pairing', async () => {
+          // Arrange
+          const liveNumstat = await runGitAsync([
+            '-C',
+            renameDir,
+            'diff-tree',
+            '--no-ext-diff',
+            '--no-renames',
+            '--numstat',
+            renameTo,
+            renameTo2,
+          ]);
+          const liveRows = parseNumstat(liveNumstat);
+
+          // Act
+          const result = await renameRepo.diff({ from: renameTo, to: renameTo2, withStat: true });
+
+          // Assert
+          expect(numstatRowsFromStatDiff(result.changes)).toEqual(liveRows);
         });
       });
     });

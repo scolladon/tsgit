@@ -304,7 +304,8 @@ export interface DiffTreesOptions {
    * Attach per-file line counts (`added` / `deleted` / `binary`) to every change
    * — the data half of git's `--numstat`. Off by default: the tree-level diff
    * reads no blob contents; `withStat` opts into the line-level pass (blob loads +
-   * line diff), so the result is a `StatTreeDiff`.
+   * line diff), so the result is a `StatTreeDiff`. Implies a recursive diff — git's
+   * `--numstat` recurses before rename detection, so pairing always runs on leaves.
    */
   readonly withStat?: boolean;
   /**

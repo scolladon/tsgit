@@ -24,6 +24,7 @@ export interface DiffOptions {
   /**
    * Attach per-file line counts (`added` / `deleted` / `binary`) to each change —
    * the data half of git's `--numstat`. Off by default (tree-level, no blob reads).
+   * Implies a recursive diff — git's `--numstat` recurses before rename detection.
    */
   readonly withStat?: boolean;
   /**
