@@ -69,6 +69,16 @@ the short-body residual; ADR-854's cache value shape.
     `broken link` line accompanies it, and the missing bit is added to the exit code (3).
 
   `--connectivity-only` keeps ADR-590's handling.
+
+  Both outcomes apply only when no pack holds a copy of the id. git's `check_object` stops at
+  `has_object_pack` ("it is in pack - forget about it"), which has three consequences:
+  - A referenced corrupt packed entry is never reported `missing`.
+  - A tag whose target is present but unreadable still reports `tagged`.
+  - A bad loose file shadowing a good packed copy leaves that object typed from the pack.
+- Known gap: git checks each packed entry's CRC against the `.idx` (`index CRC mismatch`,
+  `cannot unpack`) and sets ERROR_PACK (exit 4). tsgit's fsck has no per-entry CRC pass. It
+  reports such an entry through content validation (`bad-object`, exit 1). `EXIT_PACK` stays
+  wired only to whole-pack failures.
 - **Divergence: the padding bytes.** git's `unpack_loose_rest` pads an under-run through
   `xmallocz`, which is not zero-initialised. For the same fixture, the padding git hashes, and
   so the hash-path mismatch oid it reports, can differ from run to run (3 of 150 runs at claims
