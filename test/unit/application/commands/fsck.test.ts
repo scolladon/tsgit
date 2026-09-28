@@ -5476,7 +5476,7 @@ describe('Given an undecodable dangling loose object whose header type token emb
  * `inflateHead` call (`RECOVERY_HEADER_PROBE_BYTES`, object-cache.ts) is let
  * through to the real decoder — the one seam left where a header's raw type
  * token can still reach `sanitizeReason` unbounded by the 32-byte window,
- * exactly as it did before Part 3 bounded the main read.
+ * exactly as it did before the main read was bounded to that window.
  */
 function withFaultingHeadProbe(ctx: Context): Context {
   return {

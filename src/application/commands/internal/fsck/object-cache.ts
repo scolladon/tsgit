@@ -323,7 +323,8 @@ async function recoverStoredType(
   }
   if (looseBytes.length === 0) {
     // Git treats an empty file as one it could not read, not one whose type
-    // it failed to recover — same reserved 'unknown' verdict as Part 4.
+    // it failed to recover — the same reserved 'unknown' verdict the caller
+    // gives an unreadable object.
     return { kind: 'untyped' };
   }
   try {
