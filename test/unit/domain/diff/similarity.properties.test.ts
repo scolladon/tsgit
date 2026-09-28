@@ -162,17 +162,27 @@ describe('similarity properties', () => {
     });
 
     describe('When countCopied is compared against the independent Map oracle', () => {
-      it('Then the typed merge-scan matches the oracle exactly', () => {
-        // Arrange
+      it('Then the typed merge-scan matches the oracle exactly, including a src/dst kind mismatch', () => {
+        // Arrange — srcKind and dstKind are drawn INDEPENDENTLY: each side of
+        // a real pair is sniffed on its own (`countSpanhashChanges`'s
+        // default, undefined override), so a src/dst content-kind mismatch is
+        // a real scenario, not just a same-kind pair repeated twice.
         fc.assert(
           fc.property(
             arbFingerprintContent(),
             arbFingerprintContent(),
             fc.constantFrom('text', 'binary'),
-            (src, dst, kind) => {
+            fc.constantFrom('text', 'binary'),
+            (src, dst, srcKind, dstKind) => {
               // Act
-              const result = countCopied(packFingerprint(src, kind), packFingerprint(dst, kind));
-              const expected = countSrcCopied(buildChunkMap(src, kind), buildChunkMap(dst, kind));
+              const result = countCopied(
+                packFingerprint(src, srcKind),
+                packFingerprint(dst, dstKind),
+              );
+              const expected = countSrcCopied(
+                buildChunkMap(src, srcKind),
+                buildChunkMap(dst, dstKind),
+              );
 
               // Assert
               expect(result).toBe(expected);
