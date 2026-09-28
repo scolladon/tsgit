@@ -704,6 +704,39 @@ describe('similarity', () => {
     });
   });
 
+  describe('denseFingerprint', () => {
+    describe('Given a trailing (unflushed) chunk whose bucket was already touched by an earlier forced-flush chunk, When denseFingerprint is called', () => {
+      it('Then the trailing chunk folds into the SAME bucket entry instead of touching it as new', () => {
+        // Arrange — a 64-byte forced-flush chunk (no LF, hits MAX_CHUNK_LEN)
+        // and a 33-byte trailing leftover chunk (no LF, ends the buffer before
+        // reaching MAX_CHUNK_LEN) whose spanhash buckets collide by
+        // construction (found by search, verified against the algorithm):
+        // both land on bucket 78351. This exercises the trailing flush's OWN
+        // `accum[bucket] === 0` check taking its FALSE branch — the earlier
+        // chunk already marked the bucket touched — which no LF-terminated
+        // pair of chunks (different lengths by construction) can reach.
+        const earlier = [
+          100, 54, 124, 40, 90, 57, 112, 87, 105, 87, 90, 41, 90, 43, 109, 91, 99, 44, 77, 62, 46,
+          94, 44, 111, 78, 85, 113, 53, 126, 120, 94, 34, 44, 115, 33, 122, 125, 68, 47, 113, 34,
+          105, 97, 61, 109, 55, 77, 78, 65, 66, 48, 107, 106, 84, 80, 41, 41, 71, 63, 42, 110, 62,
+          59, 124,
+        ];
+        const leftover = [
+          32, 48, 39, 91, 86, 110, 77, 87, 71, 117, 98, 68, 125, 50, 102, 89, 51, 76, 123, 100, 59,
+          70, 98, 104, 74, 93, 68, 71, 73, 90, 74, 102, 115,
+        ];
+        const data = Uint8Array.from([...earlier, ...leftover]);
+
+        // Act
+        const result = denseFingerprint(data, 'text');
+
+        // Assert — one bucket carries both chunks' combined byte count.
+        expect(Array.from(result.hashes)).toEqual([78351]);
+        expect(Array.from(result.counts)).toEqual([earlier.length + leftover.length]);
+      });
+    });
+  });
+
   describe('buildFingerprint', () => {
     describe('Given content one byte below the pack/dense size threshold, When buildFingerprint is called', () => {
       it('Then it matches the packed builder', () => {

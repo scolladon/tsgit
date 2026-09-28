@@ -79,94 +79,119 @@ export interface SpanFingerprint {
 }
 
 /**
- * Walk `data` into spanhash chunks — delimited by `\n` (LF) or every
- * `MAX_CHUNK_LEN` bytes, whichever comes first, with the CR of a CRLF pair
- * skipped first in a text blob — and call `onChunk` once per completed
- * chunk with its bucket and byte count. Mirrors git's `hash_chars` in
- * `diffcore-delta.c`; shared by `packFingerprint` and `denseFingerprint` so
- * the accumulator arithmetic lives in exactly one place.
+ * Below HASHBASE bytes: pack each chunk as `(bucket << 7) | n` (bucket < 2^17,
+ * n <= MAX_CHUNK_LEN < 2^7, so the low 7 bits are free for n; the packed value
+ * never reaches 2^24) into a pre-sized `Uint32Array` — never a dynamically
+ * growing plain array — sort the FILLED prefix in place with the typed
+ * array's native numeric sort (no comparator: a comparator forces V8's
+ * slower generic sort path even on a typed array), then fold runs of the
+ * same bucket together into pre-sized output arrays sliced to their actual
+ * length. The walk is inlined rather than routed through `walkChunks`'s
+ * callback: a shared callback passed two DIFFERENT closures (this function's
+ * and `denseFingerprint`'s) turns that one call site megamorphic, defeating
+ * V8's inlining on the hottest loop in rename detection.
  */
-function walkChunks(
-  data: Uint8Array,
-  kind: ContentKind,
-  onChunk: (bucket: number, n: number) => void,
-): void {
+export function packFingerprint(data: Uint8Array, kind: ContentKind): SpanFingerprint {
   const size = data.length;
+  const packed = new Uint32Array(size);
+  let packedCount = 0;
+  const isText = kind === 'text';
   let accum1 = 0;
   let accum2 = 0;
   let n = 0;
   for (let i = 0; i < size; i++) {
-    // The CR of a CRLF pair is skipped in a text blob: neither accumulated
-    // nor counted. A lone CR or a trailing CR (no following byte) is hashed
-    // like any other byte.
-    if (kind === 'text' && data[i] === CR && i + 1 < size && data[i + 1] === 0x0a) continue;
-    // The loop guard `i < size` ensures `data[i]` is always defined.
+    if (isText && data[i] === CR && i + 1 < size && data[i + 1] === 0x0a) continue;
     const c = data[i] as number;
     const old1 = accum1;
     accum1 = (((accum1 << 7) ^ (accum2 >>> 25)) + c) >>> 0;
     accum2 = ((accum2 << 7) ^ (old1 >>> 25)) >>> 0;
     n++;
-    if (n < MAX_CHUNK_LEN && c !== 0x0a /* LF */) continue;
-    // git's accumulators are `unsigned int`: the sum wraps to 32 bits BEFORE
-    // the modulo is taken. `Math.imul` already wraps the product to a 32-bit
-    // (signed) result, so only the addition needs the explicit `>>> 0` to
-    // land on the same bucket as git's `(accum1 + accum2 * 0x61) % HASHBASE`.
-    onChunk(((accum1 + Math.imul(accum2, 0x61)) >>> 0) % HASHBASE, n);
+    if (n < MAX_CHUNK_LEN && c !== 0x0a) continue;
+    const bucket = ((accum1 + Math.imul(accum2, 0x61)) >>> 0) % HASHBASE;
+    packed[packedCount++] = (bucket << 7) | n;
     n = 0;
     accum1 = 0;
     accum2 = 0;
   }
-  if (n > 0) onChunk(((accum1 + Math.imul(accum2, 0x61)) >>> 0) % HASHBASE, n);
-}
+  if (n > 0) {
+    const bucket = ((accum1 + Math.imul(accum2, 0x61)) >>> 0) % HASHBASE;
+    packed[packedCount++] = (bucket << 7) | n;
+  }
 
-/**
- * Below HASHBASE bytes: pack each chunk as `(bucket << 7) | n` (bucket < 2^17,
- * n <= MAX_CHUNK_LEN < 2^7, so the low 7 bits are free for n) into one array,
- * sort it natively, then fold runs of the same bucket together. A transient
- * allocation proportional to the chunk count, never to HASHBASE — cheap for
- * the common small-diff blob.
- */
-export function packFingerprint(data: Uint8Array, kind: ContentKind): SpanFingerprint {
-  const packed: number[] = [];
-  walkChunks(data, kind, (bucket, n) => packed.push((bucket << 7) | n));
-  packed.sort((a, b) => a - b);
+  const sorted = packed.subarray(0, packedCount);
+  sorted.sort();
 
-  const hashes: number[] = [];
-  const counts: number[] = [];
-  packed.forEach((value) => {
+  const hashes = new Uint32Array(packedCount);
+  const counts = new Uint32Array(packedCount);
+  let distinct = 0;
+  for (let i = 0; i < packedCount; i++) {
+    const value = sorted[i] as number;
     const bucket = value >>> 7;
-    const last = hashes.length - 1;
-    if (last >= 0 && hashes[last] === bucket) {
-      counts[last] = (counts[last] as number) + (value & 127);
+    if (distinct > 0 && hashes[distinct - 1] === bucket) {
+      counts[distinct - 1] = (counts[distinct - 1] as number) + (value & 127);
     } else {
-      hashes.push(bucket);
-      counts.push(value & 127);
+      hashes[distinct] = bucket;
+      counts[distinct] = value & 127;
+      distinct++;
     }
-  });
-  return { hashes: Uint32Array.from(hashes), counts: Uint32Array.from(counts) };
+  }
+  return { hashes: hashes.subarray(0, distinct), counts: counts.subarray(0, distinct) };
 }
 
 /**
  * At or above HASHBASE bytes: accumulate every chunk directly into a fixed
- * HASHBASE-sized bucket array (no per-chunk allocation, no sort — every
- * bucket already sits at its own ascending index) and read the touched ones
- * back out in one linear pass.
+ * HASHBASE-sized bucket array (every bucket already sits at its own
+ * ascending index, so no per-chunk hash-map entry is needed), while ALSO
+ * recording each bucket's first touch into a pre-sized `touched` list —
+ * checking `accum[bucket] === 0` before the add is cheaper than a second
+ * full HASHBASE-sized scan afterward would be (measured: a naive
+ * count-then-fill double scan over all 107 927 buckets was SLOWER than the
+ * original `forEach`, since it pays that fixed cost twice regardless of how
+ * sparse the touched set is). Sort the touched list, then read each
+ * bucket's final count back out of `accum` in one further O(touched) pass.
+ * The walk is inlined for the same megamorphic-callsite reason
+ * `packFingerprint` inlines it.
  */
 export function denseFingerprint(data: Uint8Array, kind: ContentKind): SpanFingerprint {
+  const size = data.length;
   const accum = new Uint32Array(HASHBASE);
-  walkChunks(data, kind, (bucket, n) => {
+  const touched = new Uint32Array(size);
+  let touchedCount = 0;
+  const isText = kind === 'text';
+  let accum1 = 0;
+  let accum2 = 0;
+  let n = 0;
+  for (let i = 0; i < size; i++) {
+    if (isText && data[i] === CR && i + 1 < size && data[i + 1] === 0x0a) continue;
+    const c = data[i] as number;
+    const old1 = accum1;
+    accum1 = (((accum1 << 7) ^ (accum2 >>> 25)) + c) >>> 0;
+    accum2 = ((accum2 << 7) ^ (old1 >>> 25)) >>> 0;
+    n++;
+    if (n < MAX_CHUNK_LEN && c !== 0x0a) continue;
+    const bucket = ((accum1 + Math.imul(accum2, 0x61)) >>> 0) % HASHBASE;
+    if (accum[bucket] === 0) touched[touchedCount++] = bucket;
     accum[bucket] = (accum[bucket] as number) + n;
-  });
+    n = 0;
+    accum1 = 0;
+    accum2 = 0;
+  }
+  if (n > 0) {
+    const bucket = ((accum1 + Math.imul(accum2, 0x61)) >>> 0) % HASHBASE;
+    if (accum[bucket] === 0) touched[touchedCount++] = bucket;
+    accum[bucket] = (accum[bucket] as number) + n;
+  }
 
-  const hashes: number[] = [];
-  const counts: number[] = [];
-  accum.forEach((n, bucket) => {
-    if (n > 0) {
-      hashes.push(bucket);
-      counts.push(n);
-    }
-  });
-  return { hashes: Uint32Array.from(hashes), counts: Uint32Array.from(counts) };
+  const sortedTouched = touched.subarray(0, touchedCount);
+  sortedTouched.sort();
+  const hashes = new Uint32Array(touchedCount);
+  const counts = new Uint32Array(touchedCount);
+  for (let i = 0; i < touchedCount; i++) {
+    const bucket = sortedTouched[i] as number;
+    hashes[i] = bucket;
+    counts[i] = accum[bucket] as number;
+  }
+  return { hashes, counts };
 }
 
 /**
