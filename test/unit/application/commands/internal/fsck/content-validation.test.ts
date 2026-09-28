@@ -709,16 +709,56 @@ describe.each([
   });
 });
 
-describe("Given a loose commit whose body overran its claim inside git's 32-byte header window", () => {
+describe.each([
+  { label: 'commit', type: 'commit' },
+  { label: 'tree', type: 'tree' },
+  { label: 'tag', type: 'tag' },
+])(
+  "Given a loose $label whose body overran its claim inside git's 32-byte header window",
+  ({ type }) => {
+    describe('When runContentValidationPass validates that object', () => {
+      it('Then emits a hash-mismatch finding whose actual is SHA-1 of the header plus the truncated claim, not a bad-object finding', async () => {
+        // Arrange — header + a 10-byte body stays inside the window; git's
+        // buffered tier has no type check, so a commit/tree/tag over-run
+        // truncates to the claim and hashes the prefix exactly as a blob does.
+        const ctx = createMemoryContext();
+        const id = 'c'.repeat(40) as ObjectId;
+        const body = ENCODER.encode('HELLOWORLD');
+        await writeLooseAtId(ctx, id, type, 6, body);
+        const expectedActual = await ctx.hash.hashHex(
+          buildTree(ENCODER.encode(`${type} 6\0`), body.subarray(0, 6)),
+        );
+
+        // Act
+        const result = await sut(
+          ctx,
+          new Set([id]),
+          false,
+          new Map(),
+          new Map(),
+          NO_SKIPS,
+          DEFAULT_THRESHOLD,
+        );
+
+        // Assert
+        const mismatch = result.findings.find((f) => f.type === 'hash-mismatch');
+        expect(mismatch).toMatchObject({ id, actual: expectedActual });
+        expect(result.findings.some((f) => f.type === 'bad-object')).toBe(false);
+      });
+    });
+  },
+);
+
+describe("Given a loose commit whose body overran its claim past git's 32-byte header window", () => {
   describe('When runContentValidationPass validates that object', () => {
-    it('Then still emits a bad-object finding — only an under-run takes the zero-padded path', async () => {
-      // Arrange — header (6 bytes) + a 10-byte body = 16, inside the window;
-      // git's buffered tier refuses a size-lying commit/tree/tag on ANY
-      // disagreement except an under-run.
+    it('Then still emits a bad-object finding — only an overrun fitting the window truncates', async () => {
+      // Arrange — header (9 bytes) + a 40-byte body sits past the 32-byte
+      // window, so the buffered read refuses rather than truncating,
+      // regardless of type.
       const ctx = createMemoryContext();
       const id = 'c'.repeat(40) as ObjectId;
-      const body = ENCODER.encode('0123456789');
-      await writeLooseAtId(ctx, id, 'commit', 0, body);
+      const body = ENCODER.encode('x'.repeat(40));
+      await writeLooseAtId(ctx, id, 'commit', 6, body);
 
       // Act
       const result = await sut(

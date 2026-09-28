@@ -7,7 +7,7 @@ import type {
 } from '../../../../domain/fsck/index.js';
 import { retypeSeverity, validateObject } from '../../../../domain/fsck/index.js';
 import { bytesEqual, encode } from '../../../../domain/objects/encoding.js';
-import { classifyLooseBody, sizeMismatch } from '../../../../domain/objects/git-object.js';
+import { classifyLooseBody } from '../../../../domain/objects/git-object.js';
 import type { HashConfig } from '../../../../domain/objects/hash-config.js';
 import type { ObjectId } from '../../../../domain/objects/index.js';
 import { serializeHeader } from '../../../../domain/objects/index.js';
@@ -175,29 +175,31 @@ function blobUnderrunResult(
 
 /**
  * git's `read_loose_object` has no type check at all: a commit/tree/tag
- * whose body under-ran its claim takes the SAME zero-padded hash path a
- * blob does (`hash-path mismatch`, never corrupt) — only a body that
- * OVERRAN its claim still refuses, matching real git. `classifyLooseBody`'s
- * `'refuse'` verdict folds both directions together, so this re-derives the
- * direction from the same comparison the blob arms already make.
+ * whose body disagreed with its claim takes the SAME path a blob does —
+ * an under-run zero-pads (`hash-path mismatch`), and an over-run that still
+ * fits git's 32-byte header window truncates to the claim and hashes the
+ * prefix (also `hash-path mismatch`, never corrupt); only an over-run PAST
+ * the window still refuses, but that refusal already fired earlier inside
+ * `inflateLooseBuffered`, before `classifyLooseBody` ever ran. This
+ * `'refuse'` verdict folds both in-window directions together, so this
+ * re-derives which one applies from the same comparison the blob arms
+ * already make.
  */
 function nonBlobRefuseResult(ctx: Context, buffered: LooseBufferedRead): RawObjectResult {
   const { split } = buffered;
-  if (split.content.byteLength < split.declaredSize) {
-    return underrunResult(ctx, buffered, split.type);
-  }
-  throw sizeMismatch(split.declaredSize, split.content.byteLength);
+  return split.content.byteLength < split.declaredSize
+    ? underrunResult(ctx, buffered, split.type)
+    : truncatedResult(ctx, buffered, split.type);
 }
 
 /**
  * git's buffered-tier verdict (`classifyLooseBody`), told into fsck's
- * raw-body result: `'honest'` hashes the stored bytes as written; an
- * over-run commit/tree/tag (`'refuse'`) throws the same size-mismatch a
- * standalone read does, folded by the caller into the SAME undecodable
- * finding an unreadable object reports; an under-run one is re-routed to
- * the zero-padded hash path (`nonBlobRefuseResult`) — `classifyLooseBody`'s
- * `'underrun'` verdict is only ever a blob (a commit/tree/tag disagreeing at
- * all is `'refuse'`), so THIS is `core.bigFileThreshold`'s one gate.
+ * raw-body result: `'honest'` hashes the stored bytes as written; a
+ * commit/tree/tag disagreement (`'refuse'`) is re-routed by
+ * `nonBlobRefuseResult` to the same truncated-prefix or zero-padded path a
+ * blob takes — `classifyLooseBody`'s `'underrun'` verdict is only ever a
+ * blob (a commit/tree/tag disagreeing at all is `'refuse'`), so THIS is
+ * `core.bigFileThreshold`'s one gate.
  */
 function looseVerdictResult(
   ctx: Context,

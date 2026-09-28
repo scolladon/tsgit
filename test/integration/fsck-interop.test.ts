@@ -489,6 +489,35 @@ afterAll(async () => {
   if (nonBlobUnderrunDir !== '') await rm(nonBlobUnderrunDir, { recursive: true, force: true });
 });
 
+// --- Scenario: non-blob over-run inside git's 32-byte header window
+// (commit/tree/tag header claims LESS than its real body, but header+claim
+// still fits the window) -------------------------------------------------
+// git's `read_loose_object` has no type check: this takes the SAME
+// truncated-prefix hash-path-mismatch path a blob's in-window over-run does,
+// never the `corrupt loose object` path an over-run PAST the window takes.
+
+let nonBlobOverrunDir = '';
+let nonBlobOverrunCtx: Context;
+let overrunCommitSha = '';
+let overrunTreeSha = '';
+let overrunTagSha = '';
+
+beforeAll(async () => {
+  nonBlobOverrunDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-nonBlobOverrun-'));
+  initRepo(nonBlobOverrunDir);
+
+  const overrunBody = Buffer.from('HELLOWORLD');
+  overrunCommitSha = await writeLooseObjectWithClaim(nonBlobOverrunDir, 'commit', 6, overrunBody);
+  overrunTreeSha = await writeLooseObjectWithClaim(nonBlobOverrunDir, 'tree', 6, overrunBody);
+  overrunTagSha = await writeLooseObjectWithClaim(nonBlobOverrunDir, 'tag', 6, overrunBody);
+
+  nonBlobOverrunCtx = createNodeContext({ workDir: nonBlobOverrunDir });
+}, SETUP_TIMEOUT);
+
+afterAll(async () => {
+  if (nonBlobOverrunDir !== '') await rm(nonBlobOverrunDir, { recursive: true, force: true });
+});
+
 // --- Scenario: a loose object's hash disagrees with its path, and its
 // content would ALSO fail the catalogue — git's `read_loose_object` returns
 // before `fsck_obj` ever runs, so only the hash-path mismatch is reported. --
@@ -1001,6 +1030,52 @@ describe.skipIf(!GIT_AVAILABLE)(
           );
 
           // Reconstruct git stderr line
+          // git: "error: <actual-sha>: hash-path mismatch, found at: .git/objects/<prefix>/<suffix>"
+          if (mismatch !== undefined) {
+            const reconstructed = `${mismatch.actual}: hash-path mismatch, found at:`;
+            expect(gitResult.stderr).toContain(reconstructed);
+          }
+        },
+      );
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE)(
+  "Given a loose commit/tree/tag whose body overran its claim inside git's 32-byte header window",
+  () => {
+    describe('When fsck runs', () => {
+      it.each([
+        { label: 'commit', shaOf: () => overrunCommitSha },
+        { label: 'tree', shaOf: () => overrunTreeSha },
+        { label: 'tag', shaOf: () => overrunTagSha },
+      ])(
+        "Then emits hash-mismatch (git's truncated-prefix hash-path mismatch), never bad-object, for $label",
+        async ({ shaOf }) => {
+          // Arrange — an over-run that still fits the window is deterministic
+          // (a real slice, never uninitialised padding), so the FULL
+          // reconstructed line is pinned here, unlike the under-run family.
+          const gitResult = gitFsck(nonBlobOverrunDir);
+          const storedId = shaOf();
+
+          // Act
+          const result = await fsck(nonBlobOverrunCtx);
+
+          // Assert — exit code bit 1 matches real git on both sides
+          expect(result.exitCode & 1).toBe(1);
+          expect(gitResult.exitCode & 1).toBe(1);
+
+          // Assert — hash-mismatch finding present for the stored (lying) oid,
+          // never a bad-object/corrupt finding for that same oid
+          const mismatch = result.findings.find(
+            (f): f is FsckFinding & { type: 'hash-mismatch' } =>
+              f.type === 'hash-mismatch' && f.id === storedId,
+          );
+          expect(mismatch).toBeDefined();
+          expect(result.findings.some((f) => f.type === 'bad-object' && f.id === storedId)).toBe(
+            false,
+          );
+
           // git: "error: <actual-sha>: hash-path mismatch, found at: .git/objects/<prefix>/<suffix>"
           if (mismatch !== undefined) {
             const reconstructed = `${mismatch.actual}: hash-path mismatch, found at:`;
