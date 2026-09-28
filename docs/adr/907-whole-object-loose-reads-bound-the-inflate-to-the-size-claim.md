@@ -52,7 +52,23 @@ the short-body residual; ADR-854's cache value shape.
   verdict changes.
 - A loose blob whose claim exceeds `core.bigFileThreshold` (default 512 MiB, strict `>`) takes
   git's `check_stream_oid` route. `fsck` hashes the declared header plus the real bytes with no
-  padding. An over-run is corrupt, and the object is left untyped for reachability.
+  padding. An over-run is corrupt. git words the under-run mismatch as `hash mismatch for <path>`
+  plus `object corrupt or missing`. tsgit maps it to the same structured `hash-mismatch` finding
+  it uses for the small-file path.
+- Like git, `fsck` never types a loose object that `read_loose_object` refuses or whose hash
+  disagrees with its path, whatever the cause:
+  - a wrong path;
+  - an under-run or an in-window over-run;
+  - either big-file route;
+  - an undecodable stream.
+
+  git's `fsck_loose` returns before `parse_object_buffer`, which gives two outcomes:
+  - Unreferenced, the object is reported for its content only, with no `dangling` or
+    `unreachable` line.
+  - Referenced, it is reported `missing <type>`. The type is read from the referencing edge, no
+    `broken link` line accompanies it, and the missing bit is added to the exit code (3).
+
+  `--connectivity-only` keeps ADR-590's handling.
 - **Divergence: the padding bytes.** git's `unpack_loose_rest` pads an under-run through
   `xmallocz`, which is not zero-initialised. For the same fixture, the padding git hashes, and
   so the hash-path mismatch oid it reports, can differ from run to run (3 of 150 runs at claims
@@ -60,7 +76,12 @@ the short-body residual; ADR-854's cache value shape.
   reproduce. Interop rows therefore pin only the deterministic part of git's output: the
   `hash-path mismatch, found at: <path>` line and the exit code. tsgit's zero-padded value is
   pinned against tsgit alone.
-- Known gap: the 2 GiB zero-pad ceiling can only be reached when `core.bigFileThreshold` is
-  configured above 2 GiB. That case has not been probed against git.
+- Accepted cost, as in git: an under-running commit, tree or tag is zero-pad hashed up to its
+  claim under any config. Only blobs are gated by `core.bigFileThreshold`. A ~40-byte loose
+  commit claiming 2 GiB costs one ~2 GiB SHA pass per object, like git's `xmallocz` of the
+  declared size.
+- Known gap, not probed against git: a claim above the 2 GiB inflate ceiling is reported as
+  `unterminatedHeader`. For commits, trees and tags this is reachable under default config; for
+  blobs, only when `core.bigFileThreshold` is set above 2 GiB.
 - Divergence: an invalid `core.bigFileThreshold` is fatal in git but read as absent by tsgit,
   the existing precedent for `core.packedGitLimit` and `core.deltaBaseCacheLimit`.
