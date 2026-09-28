@@ -278,9 +278,13 @@ export const topReflogSubject = (dir: string, ref: string): string =>
  * exact exit code matters, not just success/failure. `tryRunGit` above only
  * distinguishes ok/not-ok; this reports the code so a caller can assert
  * git's documented refusal exit (128 for a structural `fatal:`, 1 for
- * `fsck`'s WARN/ERROR bits). A timeout kill is the one exception: `status`
- * is `null` (git never exits that way itself), so coercing it to `1` would
- * misreport a hang as `fsck`'s WARN/ERROR exit — this rethrows instead.
+ * `fsck`'s WARN/ERROR bits). Rethrows on EVERY spawn failure (`result.error`
+ * — a timeout kill included, but also an unresolvable binary or any other
+ * reason the child never ran) and on `status === null` (killed by a signal
+ * with no `error` set): `spawnSync`'s own invariant is that `status` is
+ * `null` exactly when the process never exited normally, so coercing either
+ * case to a fake `1` would misreport a process that never actually ran as a
+ * `fsck` WARN/ERROR exit.
  */
 export const tryRunGitWithExit = (
   args: ReadonlyArray<string>,
@@ -294,11 +298,16 @@ export const tryRunGitWithExit = (
     ...(options.input === undefined ? {} : { input: options.input }),
   };
   const result = spawnSync('git', args as string[], opts);
-  if (result.error !== undefined && isSpawnTimeout(result.error)) throw result.error;
+  if (result.error !== undefined) {
+    throw new Error(`git ${args.join(' ')} failed to spawn: ${result.error.message}`);
+  }
+  if (result.status === null) {
+    throw new Error(`git ${args.join(' ')} was killed by signal ${String(result.signal)}`);
+  }
   return {
     stdout: result.stdout ?? '',
     stderr: result.stderr ?? '',
-    exitCode: result.status ?? 1,
+    exitCode: result.status,
   };
 };
 
