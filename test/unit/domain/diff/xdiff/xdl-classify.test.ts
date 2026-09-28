@@ -17,11 +17,12 @@ describe('classifyLines', () => {
     describe('When classifyLines is called', () => {
       it('Then it returns empty class arrays and a zero class count', () => {
         // Arrange
+        const sut = classify;
         const ours: ReadonlyArray<Uint8Array> = [];
         const theirs: ReadonlyArray<Uint8Array> = [];
 
         // Act
-        const result = classify(ours, theirs);
+        const result = sut(ours, theirs);
 
         // Assert
         expect(Array.from(result.ours)).toEqual([]);
@@ -35,11 +36,12 @@ describe('classifyLines', () => {
     describe('When classifyLines is called', () => {
       it('Then the two lines share one class id', () => {
         // Arrange
+        const sut = classify;
         const ours = [enc('same\n')];
         const theirs = [enc('same\n')];
 
         // Act
-        const result = classify(ours, theirs);
+        const result = sut(ours, theirs);
 
         // Assert
         expect(result.ours[0]).toBe(result.theirs[0]);
@@ -52,11 +54,12 @@ describe('classifyLines', () => {
     describe('When classifyLines is called', () => {
       it('Then they are classified as two different lines', () => {
         // Arrange — same content, but only one side carries the trailing LF
+        const sut = classify;
         const ours = [enc('same\n')];
         const theirs = [enc('same')];
 
         // Act
-        const result = classify(ours, theirs);
+        const result = sut(ours, theirs);
 
         // Assert
         expect(result.ours[0]).not.toBe(result.theirs[0]);
@@ -69,12 +72,13 @@ describe('classifyLines', () => {
     describe('When two lines differ only by an internal space', () => {
       it('Then they share one class id', () => {
         // Arrange
+        const sut = classify;
         const ours = [enc('a b\n')];
         const theirs = [enc('ab\n')];
         const lineKey = { mode: 'all' as const, ignoreCrAtEol: false };
 
         // Act
-        const result = classify(ours, theirs, lineKey);
+        const result = sut(ours, theirs, lineKey);
 
         // Assert
         expect(result.ours[0]).toBe(result.theirs[0]);
@@ -85,11 +89,12 @@ describe('classifyLines', () => {
     describe('When no lineKey is given for the same two lines', () => {
       it('Then they are classified as two different lines', () => {
         // Arrange
+        const sut = classify;
         const ours = [enc('a b\n')];
         const theirs = [enc('ab\n')];
 
         // Act
-        const result = classify(ours, theirs);
+        const result = sut(ours, theirs);
 
         // Assert
         expect(result.ours[0]).not.toBe(result.theirs[0]);
@@ -104,11 +109,12 @@ describe('classifyLines', () => {
         // Arrange — verified by direct computation: at the capacity this
         // pair produces (2 lines total => table size 4), `aa\n` and `ae\n`
         // hash into the same bucket under the djb2 fold.
+        const sut = classify;
         const ours = [enc('aa\n')];
         const theirs = [enc('ae\n')];
 
         // Act
-        const result = classify(ours, theirs);
+        const result = sut(ours, theirs);
 
         // Assert
         expect(result.ours[0]).not.toBe(result.theirs[0]);
@@ -121,11 +127,12 @@ describe('classifyLines', () => {
     describe('When classifyLines is called', () => {
       it('Then ids are assigned in first-appearance order, ours then theirs', () => {
         // Arrange
+        const sut = classify;
         const ours = [enc('b\n'), enc('a\n')];
         const theirs = [enc('a\n'), enc('c\n')];
 
         // Act
-        const result = classify(ours, theirs);
+        const result = sut(ours, theirs);
 
         // Assert — 'b' is class 0, 'a' is class 1 (first seen in ours), 'c' is class 2
         expect(Array.from(result.ours)).toEqual([0, 1]);
@@ -139,11 +146,12 @@ describe('classifyLines', () => {
     describe('When theirs is empty', () => {
       it('Then theirs is an empty class array and ours is classified normally', () => {
         // Arrange
+        const sut = classify;
         const ours = [enc('only\n')];
         const theirs: ReadonlyArray<Uint8Array> = [];
 
         // Act
-        const result = classify(ours, theirs);
+        const result = sut(ours, theirs);
 
         // Assert
         expect(Array.from(result.theirs)).toEqual([]);
@@ -158,18 +166,13 @@ describe('classifyLines', () => {
       it('Then classification is identical to hashing both sides from scratch', () => {
         // Arrange — theirs' hash was computed once, independently, by whoever
         // held these lines before this call (blame's hop-to-hop cache).
+        const sut = classifyLines;
         const ours = [enc('b\n'), enc('a\n')];
         const theirs = [enc('a\n'), enc('c\n')];
         const theirsHashes = hashLineSide(theirs, undefined);
 
         // Act
-        const result = classifyLines(
-          ours,
-          theirs,
-          undefined,
-          hashLineSide(ours, undefined),
-          theirsHashes,
-        );
+        const result = sut(ours, theirs, undefined, hashLineSide(ours, undefined), theirsHashes);
 
         // Assert
         expect(Array.from(result.ours)).toEqual([0, 1]);
@@ -183,12 +186,13 @@ describe('classifyLines', () => {
     describe('When hashLineSide returns', () => {
       it('Then the array holds each line’s normalized bytes, aligned index-for-index with the input', () => {
         // Arrange
+        const sut = hashLineSide;
         const key: LineKey = { mode: 'all', ignoreCrAtEol: false };
         const lines = [enc('  a\n'), enc('b  \n')];
         const normalizedOut: Uint8Array[] = [];
 
         // Act
-        hashLineSide(lines, key, normalizedOut);
+        sut(lines, key, normalizedOut);
 
         // Assert
         expect(normalizedOut).toEqual([enc('a'), enc('b')]);
@@ -201,6 +205,7 @@ describe('classifyLines', () => {
       it('Then classification is identical to the same call without them', () => {
         // Arrange — a whitespace-only pair, so re-normalizing (or not) is the
         // only thing that could change whether the two lines share a class.
+        const sut = classifyLines;
         const key: LineKey = { mode: 'all', ignoreCrAtEol: false };
         const ours = [enc('  a\n')];
         const theirs = [enc('a  \n')];
@@ -210,7 +215,7 @@ describe('classifyLines', () => {
         const theirsHashes = hashLineSide(theirs, key, theirsNormalized);
 
         // Act
-        const shared = classifyLines(
+        const shared = sut(
           ours,
           theirs,
           key,

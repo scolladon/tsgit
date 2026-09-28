@@ -78,7 +78,7 @@ const EMPTY_TREE_CONTENT = new Uint8Array(0);
  * Which of git's two loose-object read tiers a resolution should take.
  * `'buffered'` transcribes `unpack_loose_header` + `unpack_loose_rest`: the
  * inflate is bounded to header + declared size, refusing an overrun past
- * `LOOSE_HEADER_WINDOW` and truncating one inside it (Part 4). `'streamed'`
+ * `LOOSE_HEADER_WINDOW` and truncating one inside it. `'streamed'`
  * is git's streaming tier (`cat-file -p`, `show`'s blob target): a full
  * inflate that ignores the claim, serving a size-lying blob's real bytes.
  * Every route defaults to `'buffered'` except the few that must match git's
@@ -88,7 +88,7 @@ export type LooseReadMode = 'buffered' | 'streamed';
 
 /** git's own fixed loose-header buffer width (`object-file.c`'s
  *  `MAX_HEADER_LEN`) — the window `'buffered'` mode's overrun refusal and
- *  window-truncation (Part 4) are both measured against. */
+ *  window-truncation are both measured against. */
 export const LOOSE_HEADER_WINDOW = 32;
 
 /**

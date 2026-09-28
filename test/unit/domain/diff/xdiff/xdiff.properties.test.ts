@@ -80,14 +80,11 @@ describe('the xdiff pipeline properties', () => {
     describe('When diffPresplitLinesForMode runs', () => {
       it('Then re-walking the hunks in order reproduces both original sequences', () => {
         // Arrange
+        const sut = diffPresplitLinesForMode;
         fc.assert(
           fc.property(arbLines(), arbLines(), arbMode(), (oursText, theirsText, mode) => {
             // Act
-            const result = diffPresplitLinesForMode(
-              encodeAll(oursText),
-              encodeAll(theirsText),
-              mode,
-            );
+            const result = sut(encodeAll(oursText), encodeAll(theirsText), mode);
             const rebuilt = reconstruct(result.hunks, result.oursLines, result.theirsLines);
 
             // Assert
@@ -100,12 +97,13 @@ describe('the xdiff pipeline properties', () => {
 
       it('Then compaction preserves the added/deleted line counts of the raw script', () => {
         // Arrange
+        const sut = diffPresplitLinesForMode;
         fc.assert(
           fc.property(arbLines(), arbLines(), arbMode(), (oursText, theirsText, mode) => {
             // Act
             const oursLines = encodeAll(oursText);
             const theirsLines = encodeAll(theirsText);
-            const result = diffPresplitLinesForMode(oursLines, theirsLines, mode);
+            const result = sut(oursLines, theirsLines, mode);
 
             // Assert — every hunk kind partitions oursLines/theirsLines exactly once
             let oursCovered = 0;
@@ -129,14 +127,11 @@ describe('the xdiff pipeline properties', () => {
         // Arrange — under 'minimal', cleanupRecords only ever discards
         // lines with literally no match on the other side (never a
         // genuine LCS member), so the search below it is provably minimal
+        const sut = diffPresplitLinesForMode;
         fc.assert(
           fc.property(arbLines(), arbLines(), (oursText, theirsText) => {
             // Act
-            const result = diffPresplitLinesForMode(
-              encodeAll(oursText),
-              encodeAll(theirsText),
-              'minimal',
-            );
+            const result = sut(encodeAll(oursText), encodeAll(theirsText), 'minimal');
             const bound = oursText.length + theirsText.length - 2 * lcsLength(oursText, theirsText);
 
             // Assert
@@ -152,14 +147,11 @@ describe('the xdiff pipeline properties', () => {
         // Arrange — the multi-match discard rule and the split's snake
         // heuristic/cost cap can only ever match fewer lines than the true
         // LCS, never more
+        const sut = diffPresplitLinesForMode;
         fc.assert(
           fc.property(arbLines(), arbLines(), (oursText, theirsText) => {
             // Act
-            const result = diffPresplitLinesForMode(
-              encodeAll(oursText),
-              encodeAll(theirsText),
-              'git-default',
-            );
+            const result = sut(encodeAll(oursText), encodeAll(theirsText), 'git-default');
             const bound = oursText.length + theirsText.length - 2 * lcsLength(oursText, theirsText);
 
             // Assert

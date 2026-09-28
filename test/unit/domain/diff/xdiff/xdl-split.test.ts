@@ -21,7 +21,7 @@ function classesOf(ours: ReadonlyArray<number>, theirs: ReadonlyArray<number>): 
 
 /** An identity `Prepared` view — every line kept, none pre-discarded — so
  *  these tests exercise the split search in isolation from cleanupRecords,
- *  exactly like calling `markChanges` before Part 11 introduced discards. */
+ *  exactly as if `cleanupRecords` had discarded nothing. */
 function identityPrepared(length: number): {
   readonly changed: Uint8Array;
   readonly referenceIndex: Int32Array;
@@ -48,10 +48,11 @@ describe('markChanges', () => {
     describe('When markChanges is called', () => {
       it('Then nothing is marked changed', () => {
         // Arrange
+        const sut = runMarkChanges;
         const classes = classesOf([0, 1, 2], [0, 1, 2]);
 
         // Act
-        const { oursChanged, theirsChanged } = runMarkChanges(classes);
+        const { oursChanged, theirsChanged } = sut(classes);
 
         // Assert
         expect(Array.from(oursChanged)).toEqual([0, 0, 0]);
@@ -64,10 +65,11 @@ describe('markChanges', () => {
     describe('When markChanges is called', () => {
       it('Then every ours line is changed and theirs stays empty', () => {
         // Arrange
+        const sut = runMarkChanges;
         const classes = classesOf([0, 1, 2], []);
 
         // Act
-        const { oursChanged, theirsChanged } = runMarkChanges(classes);
+        const { oursChanged, theirsChanged } = sut(classes);
 
         // Assert
         expect(Array.from(oursChanged)).toEqual([1, 1, 1]);
@@ -80,10 +82,11 @@ describe('markChanges', () => {
     describe('When markChanges is called', () => {
       it('Then every theirs line is changed and ours stays empty', () => {
         // Arrange
+        const sut = runMarkChanges;
         const classes = classesOf([], [0, 1, 2]);
 
         // Act
-        const { oursChanged, theirsChanged } = runMarkChanges(classes);
+        const { oursChanged, theirsChanged } = sut(classes);
 
         // Assert
         expect(Array.from(oursChanged)).toEqual([]);
@@ -97,10 +100,11 @@ describe('markChanges', () => {
       it('Then every line on both sides is changed', () => {
         // Arrange — the unequal lengths (off1-off2 !== lim1-lim2) exercise
         // the odd/even split of which direction's crossing check can fire.
+        const sut = runMarkChanges;
         const classes = classesOf([0, 1, 2, 3], [4, 5, 6]);
 
         // Act
-        const { oursChanged, theirsChanged } = runMarkChanges(classes);
+        const { oursChanged, theirsChanged } = sut(classes);
 
         // Assert
         expect(Array.from(oursChanged)).toEqual([1, 1, 1, 1]);
@@ -113,10 +117,11 @@ describe('markChanges', () => {
     describe('When markChanges is called', () => {
       it('Then only the shared id in the middle is left unmarked', () => {
         // Arrange — classic Myers LCS shape: a b c d e / a X c Y e
+        const sut = runMarkChanges;
         const classes = classesOf([0, 1, 2, 3, 4], [0, 5, 2, 6, 4]);
 
         // Act
-        const { oursChanged, theirsChanged } = runMarkChanges(classes);
+        const { oursChanged, theirsChanged } = sut(classes);
 
         // Assert
         expect(Array.from(oursChanged)).toEqual([0, 1, 0, 1, 0]);
@@ -190,10 +195,11 @@ describe('markChanges', () => {
     describe('When markChanges is called', () => {
       it('Then every disjoint-block line is changed on both sides', () => {
         // Arrange
+        const sut = runMarkChanges;
         const classes = sandwichedShare();
 
         // Act
-        const { oursChanged, theirsChanged } = runMarkChanges(classes);
+        const { oursChanged, theirsChanged } = sut(classes);
 
         // Assert — the disjoint prefix and suffix can never match anything,
         // so a valid (if not necessarily minimal) script always marks them.
@@ -211,10 +217,11 @@ describe('markChanges', () => {
 
       it('Then the result is a valid edit script (applying it to ours reproduces theirs)', () => {
         // Arrange
+        const sut = runMarkChanges;
         const classes = sandwichedShare();
 
         // Act
-        const { oursChanged, theirsChanged } = runMarkChanges(classes);
+        const { oursChanged, theirsChanged } = sut(classes);
 
         // Assert
         expect(keptIdsMatch(classes, oursChanged, theirsChanged)).toBe(true);
@@ -248,10 +255,11 @@ describe('markChanges', () => {
     describe('When markChanges is called', () => {
       it('Then the result is still a valid edit script', () => {
         // Arrange
+        const sut = runMarkChanges;
         const classes = asymmetricSandwichedShare();
 
         // Act
-        const { oursChanged, theirsChanged } = runMarkChanges(classes);
+        const { oursChanged, theirsChanged } = sut(classes);
 
         // Assert
         expect(keptIdsMatch(classes, oursChanged, theirsChanged)).toBe(true);
@@ -288,10 +296,11 @@ describe('markChanges', () => {
     describe('When markChanges is called', () => {
       it('Then the result is still a valid edit script', () => {
         // Arrange
+        const sut = runMarkChanges;
         const classes = edgeDiagonalDecoy();
 
         // Act
-        const { oursChanged, theirsChanged } = runMarkChanges(classes);
+        const { oursChanged, theirsChanged } = sut(classes);
 
         // Assert
         expect(keptIdsMatch(classes, oursChanged, theirsChanged)).toBe(true);
@@ -313,10 +322,11 @@ describe('hasForwardSnakeRun', () => {
       it('Then it confirms the snake', () => {
         // Arrange — ours/theirs agree at indices 2, 3, 4 (three consecutive matches
         // walking back from i1=5, i2=5)
+        const sut = hasForwardSnakeRun;
         const classes = classesOf([0, 1, 2, 3, 4, 5], [0, 1, 2, 3, 4, 5]);
 
         // Act
-        const result = hasForwardSnakeRun(classes, 5, 5, 3);
+        const result = sut(classes, 5, 5, 3);
 
         // Assert
         expect(result).toBe(true);
@@ -329,10 +339,11 @@ describe('hasForwardSnakeRun', () => {
       it('Then it rejects the candidate', () => {
         // Arrange — ours/theirs only agree at indices 3, 4 before diverging at
         // index 2, one short of the snakeCnt(3) confirmation
+        const sut = hasForwardSnakeRun;
         const classes = classesOf([0, 1, 2, 3, 4, 5], [0, 1, 99, 3, 4, 5]);
 
         // Act
-        const result = hasForwardSnakeRun(classes, 5, 5, 3);
+        const result = sut(classes, 5, 5, 3);
 
         // Assert
         expect(result).toBe(false);
@@ -347,10 +358,11 @@ describe('hasBackwardSnakeRun', () => {
       it('Then it confirms the snake', () => {
         // Arrange — ours/theirs agree at indices 0, 1, 2 (three consecutive matches
         // walking forward from i1=0, i2=0)
+        const sut = hasBackwardSnakeRun;
         const classes = classesOf([0, 1, 2, 8, 9], [0, 1, 2, 3, 4]);
 
         // Act
-        const result = hasBackwardSnakeRun(classes, 0, 0, 3);
+        const result = sut(classes, 0, 0, 3);
 
         // Assert
         expect(result).toBe(true);
@@ -363,10 +375,11 @@ describe('hasBackwardSnakeRun', () => {
       it('Then it rejects the candidate', () => {
         // Arrange — ours/theirs only agree at indices 0, 1 before diverging at
         // index 2, one short of the snakeCnt(3) confirmation
+        const sut = hasBackwardSnakeRun;
         const classes = classesOf([0, 1, 99, 8, 9], [0, 1, 2, 3, 4]);
 
         // Act
-        const result = hasBackwardSnakeRun(classes, 0, 0, 3);
+        const result = sut(classes, 0, 0, 3);
 
         // Assert
         expect(result).toBe(false);

@@ -25,10 +25,11 @@ describe('diffLines compaction properties', () => {
     describe('When diffLines runs compaction over the raw Myers script', () => {
       it('Then the added/deleted line counts are unchanged from the raw script’s', () => {
         // Arrange
+        const sut = diffLines;
         fc.assert(
           fc.property(arbLines(), arbLines(), (oursText, theirsText) => {
             // Act
-            const result = diffLines(enc(oursText), enc(theirsText));
+            const result = sut(enc(oursText), enc(theirsText));
 
             // Assert — every hunk kind partitions oursLines/theirsLines exactly once
             let oursCovered = 0;
@@ -46,10 +47,11 @@ describe('diffLines compaction properties', () => {
 
       it('Then the multiset of common lines is unchanged and hunks reconstruct both sides', () => {
         // Arrange
+        const sut = diffLines;
         fc.assert(
           fc.property(arbLines(), arbLines(), (oursText, theirsText) => {
             // Act
-            const result = diffLines(enc(oursText), enc(theirsText));
+            const result = sut(enc(oursText), enc(theirsText));
 
             // Assert — walking the hunks in order reproduces oursLines/theirsLines
             const decoder = new TextDecoder();
@@ -72,10 +74,11 @@ describe('diffLines compaction properties', () => {
 
       it('Then common-hunk lines are byte-equal on both sides (no lineKey)', () => {
         // Arrange
+        const sut = diffLines;
         fc.assert(
           fc.property(arbLines(), arbLines(), (oursText, theirsText) => {
             // Act
-            const result = diffLines(enc(oursText), enc(theirsText));
+            const result = sut(enc(oursText), enc(theirsText));
 
             // Assert
             for (const hunk of result.hunks) {

@@ -7,8 +7,8 @@
  * scenario's number is what a caller pays by choosing that command, not
  * the closure engine's two tiers measured in isolation.
  *
- * The `.rev` accelerator itself is not measured here — Part 6 already
- * priced it, immediately after it landed.
+ * The `.rev` accelerator itself is not measured here — its own bench, added
+ * immediately after it landed, already prices it.
  */
 import { rm } from 'node:fs/promises';
 import * as path from 'node:path';

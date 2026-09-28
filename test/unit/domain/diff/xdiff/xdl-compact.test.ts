@@ -13,6 +13,7 @@ describe('compactChanges', () => {
       it('Then it merges and slides the group to git’s +X +d +c placement', () => {
         // Arrange — raw, pre-compaction Myers picks the FIRST `d` as the LCS anchor,
         // leaving theirs split into {X} and {c,d} around a lone common `d`.
+        const sut = compactChanges;
         const oursLines = lines('a\nb\nc\nd\ne');
         const theirsLines = lines('a\nb\nc\nX\nd\nc\nd\ne');
         const oursChanged = new Uint8Array([0, 0, 0, 0, 0]);
@@ -21,8 +22,8 @@ describe('compactChanges', () => {
         const theirsIds = new Int32Array([0, 1, 2, 5, 3, 2, 3, 4]);
 
         // Act — git's own call order: compact ours against theirs, then theirs against ours
-        compactChanges(oursChanged, theirsChanged, oursIds, oursLines);
-        compactChanges(theirsChanged, oursChanged, theirsIds, theirsLines);
+        sut(oursChanged, theirsChanged, oursIds, oursLines);
+        sut(theirsChanged, oursChanged, theirsIds, theirsLines);
 
         // Assert — theirs indices 3,4,5 (X,d,c) changed; 2 and 6 (c,d) common
         expect(Array.from(theirsChanged)).toEqual([0, 0, 0, 1, 1, 1, 0, 0]);
@@ -40,6 +41,7 @@ describe('compactChanges', () => {
         // `\f` line's indent as -1 (blank) either way, but would also count it
         // as part of a surrounding blank run — sliding the group to the wrong
         // boundary. See `isSpaceByte` (git's XDL_ISSPACE: SP/TAB/CR/LF only).
+        const sut = compactChanges;
         const oursLines = lines('x\n  y\n\f\n  z');
         const theirsLines = lines('x\n  y\n\f\n  q\n  y\n\f\n  z');
         const oursChanged = new Uint8Array([0, 0, 0, 0]);
@@ -48,8 +50,8 @@ describe('compactChanges', () => {
         const theirsIds = new Int32Array([0, 1, 2, 4, 1, 2, 3]);
 
         // Act — git's own call order: compact ours against theirs, then theirs against ours
-        compactChanges(oursChanged, theirsChanged, oursIds, oursLines);
-        compactChanges(theirsChanged, oursChanged, theirsIds, theirsLines);
+        sut(oursChanged, theirsChanged, oursIds, oursLines);
+        sut(theirsChanged, oursChanged, theirsIds, theirsLines);
 
         // Assert — theirs indices 2,3,4 (\f,q,y) changed; the trailing \f (5) common
         expect(Array.from(theirsChanged)).toEqual([0, 0, 1, 1, 1, 0, 0]);
@@ -62,6 +64,7 @@ describe('compactChanges', () => {
     describe('When theirs raw-Myers matches the group’s trailing form-feed instead of its leading one', () => {
       it('Then it slides the group up to the leading form-feed, matching git’s +FF +k placement', () => {
         // Arrange — same shape as the row above, one line shorter each side.
+        const sut = compactChanges;
         const oursLines = lines('{\n\f\n}');
         const theirsLines = lines('{\n\f\n  k\n\f\n}');
         const oursChanged = new Uint8Array([0, 0, 0]);
@@ -70,8 +73,8 @@ describe('compactChanges', () => {
         const theirsIds = new Int32Array([0, 1, 3, 1, 2]);
 
         // Act
-        compactChanges(oursChanged, theirsChanged, oursIds, oursLines);
-        compactChanges(theirsChanged, oursChanged, theirsIds, theirsLines);
+        sut(oursChanged, theirsChanged, oursIds, oursLines);
+        sut(theirsChanged, oursChanged, theirsIds, theirsLines);
 
         // Assert — theirs indices 1,2 (\f,k) changed; the trailing \f (3) common
         expect(Array.from(theirsChanged)).toEqual([0, 1, 1, 0, 0]);
@@ -84,13 +87,14 @@ describe('compactChanges', () => {
     describe('When the deleted line cannot slide in either direction', () => {
       it('Then the group is left in place', () => {
         // Arrange
+        const sut = compactChanges;
         const oursLines = lines('a\nX\nb');
         const oursChanged = new Uint8Array([0, 1, 0]);
         const otherChanged = new Uint8Array([0, 0]);
         const oursIds = new Int32Array([0, 1, 2]);
 
         // Act
-        compactChanges(oursChanged, otherChanged, oursIds, oursLines);
+        sut(oursChanged, otherChanged, oursIds, oursLines);
 
         // Assert
         expect(Array.from(oursChanged)).toEqual([0, 1, 0]);
@@ -103,6 +107,7 @@ describe('compactChanges', () => {
       it('Then the indent heuristic slides the group up to the earlier comment line', () => {
         // Arrange — raw Myers marks theirs[3..7] changed (bar()'s body plus the
         // trailing "/* function */" that precedes the pre-existing foo()).
+        const sut = compactChanges;
         const oldFn = lines('1\n2\n/* function */\nfoo() {\n    foo\n}\n\n3\n4');
         const newFn = lines(
           '1\n2\n/* function */\nbar() {\n    foo\n}\n\n/* function */\nfoo() {\n    foo\n}\n\n3\n4',
@@ -114,8 +119,8 @@ describe('compactChanges', () => {
         const theirsIds = new Int32Array([0, 1, 2, 9, 4, 5, 6, 2, 3, 4, 5, 6, 7, 8]);
 
         // Act
-        compactChanges(oursChanged, theirsChanged, oursIds, oldFn);
-        compactChanges(theirsChanged, oursChanged, theirsIds, newFn);
+        sut(oursChanged, theirsChanged, oursIds, oldFn);
+        sut(theirsChanged, oursChanged, theirsIds, newFn);
 
         // Assert — the group slides up by one line: the FIRST "/* function */"
         // (index 2) joins the insertion; the duplicate at index 7 becomes common.
@@ -131,6 +136,7 @@ describe('compactChanges', () => {
         // inserted int b(), and "}" (indent 0) repeats after every function,
         // so the group can slide across both the brace and the return-value
         // lines — landing candidate splits at both indent levels.
+        const sut = compactChanges;
         const oldFn = lines('int a() {\n    return 1;\n}\nint c() {\n    return 3;\n}');
         const newFn = lines(
           'int a() {\n    return 1;\n}\nint b() {\n    return 1;\n}\nint c() {\n    return 3;\n}',
@@ -142,8 +148,8 @@ describe('compactChanges', () => {
         const theirsIds = new Int32Array([0, 1, 2, 5, 1, 2, 3, 4, 2]);
 
         // Act
-        compactChanges(oursChanged, theirsChanged, oursIds, oldFn);
-        compactChanges(theirsChanged, oursChanged, theirsIds, newFn);
+        sut(oursChanged, theirsChanged, oursIds, oldFn);
+        sut(theirsChanged, oursChanged, theirsIds, newFn);
 
         // Assert — git places the insertion identically with the indent
         // heuristic on or off: the natural down-slide already reaches the
@@ -160,6 +166,7 @@ describe('compactChanges', () => {
         // slide freely across the whole array, so bestIndentShift measures a
         // split landing on the 30-tab line (indent clamps at 200) as well as
         // on the plain "a" lines around it.
+        const sut = compactChanges;
         const tabLine = enc(`${'\t'.repeat(30)}X\n`);
         const theirsLines = [enc('a\n'), tabLine, enc('a\n'), enc('a\n'), enc('a\n')];
         const oursChanged = new Uint8Array(2);
@@ -167,7 +174,7 @@ describe('compactChanges', () => {
         const theirsIds = new Int32Array([0, 0, 0, 0, 0]);
 
         // Act
-        compactChanges(theirsChanged, oursChanged, theirsIds, theirsLines);
+        sut(theirsChanged, oursChanged, theirsIds, theirsLines);
 
         // Assert — verified by direct computation against this module
         expect(Array.from(theirsChanged)).toEqual([0, 0, 0, 0, 1]);
@@ -181,13 +188,14 @@ describe('compactChanges', () => {
         // Arrange — "X" (indent 0) sits between two runs of "    a" (indent 4);
         // a uniform class id lets it slide, so bestIndentShift measures a
         // split right where indentation dips and rises again.
+        const sut = compactChanges;
         const theirsLines = lines('    a\nX\n    a\n    a');
         const oursChanged = new Uint8Array(2);
         const theirsChanged = new Uint8Array([0, 1, 0, 0]);
         const theirsIds = new Int32Array([0, 0, 0, 0]);
 
         // Act
-        compactChanges(theirsChanged, oursChanged, theirsIds, theirsLines);
+        sut(theirsChanged, oursChanged, theirsIds, theirsLines);
 
         // Assert — verified by direct computation against this module
         expect(Array.from(theirsChanged)).toEqual([0, 0, 0, 1]);
@@ -201,13 +209,14 @@ describe('compactChanges', () => {
         // Arrange — same dip shape as the outdent case above, but a blank
         // line now sits between "X" and its nearest non-blank predecessor,
         // so anyBlanks is true where the outdent penalty is scored.
+        const sut = compactChanges;
         const theirsLines = [enc('    a\n'), enc('\n'), enc('X\n'), enc('    a\n')];
         const oursChanged = new Uint8Array(2);
         const theirsChanged = new Uint8Array([0, 0, 1, 0]);
         const theirsIds = new Int32Array([0, 0, 0, 0]);
 
         // Act
-        compactChanges(theirsChanged, oursChanged, theirsIds, theirsLines);
+        sut(theirsChanged, oursChanged, theirsIds, theirsLines);
 
         // Assert — verified by direct computation against this module
         expect(Array.from(theirsChanged)).toEqual([0, 1, 0, 0]);
@@ -221,13 +230,14 @@ describe('compactChanges', () => {
         // Arrange — a blank line sits right before the "a\na" group's
         // earliest position, and again before the indented pair further
         // down, so preBlank is 1 (not 0) for those candidate splits.
+        const sut = compactChanges;
         const theirsLines = lines('    a\n\na\na\n\n    a\n    a');
         const oursChanged = new Uint8Array(2);
         const theirsChanged = new Uint8Array([0, 0, 1, 1, 0, 0, 0]);
         const theirsIds = new Int32Array(theirsLines.length).fill(0);
 
         // Act
-        compactChanges(theirsChanged, oursChanged, theirsIds, theirsLines);
+        sut(theirsChanged, oursChanged, theirsIds, theirsLines);
 
         // Assert — verified by direct computation against this module
         expect(Array.from(theirsChanged)).toEqual([0, 0, 0, 0, 0, 1, 1]);
@@ -240,6 +250,7 @@ describe('compactChanges', () => {
       it('Then the blank-run scan caps at 20 and reports indent 0 rather than scanning further', () => {
         // Arrange — a uniform class id lets the single "X" line slide across
         // the whole run of blanks that surrounds it.
+        const sut = compactChanges;
         const blanks = Array.from({ length: 21 }, () => enc('\n'));
         const theirsLines = [enc('a\n'), ...blanks, enc('X\n'), enc('a\n')];
         const oursChanged = new Uint8Array(2);
@@ -248,7 +259,7 @@ describe('compactChanges', () => {
         const theirsIds = new Int32Array(theirsLines.length).fill(0);
 
         // Act
-        compactChanges(theirsChanged, oursChanged, theirsIds, theirsLines);
+        sut(theirsChanged, oursChanged, theirsIds, theirsLines);
 
         // Assert — verified by direct computation against this module
         const expected = new Array(theirsLines.length).fill(0);
@@ -265,13 +276,14 @@ describe('compactChanges', () => {
         // index 1 can slide down through it; the second group (index 4) sits
         // immediately after, so the slide's own merge scan (not the one in
         // group_slide_up, already exercised above) has to extend past it.
+        const sut = compactChanges;
         const theirsLines = lines('p\nq\nq\nq\nr\ns');
         const oursChanged = new Uint8Array(2);
         const theirsChanged = new Uint8Array([0, 1, 0, 0, 1, 0]);
         const theirsIds = new Int32Array([0, 1, 1, 1, 2, 3]);
 
         // Act
-        compactChanges(theirsChanged, oursChanged, theirsIds, theirsLines);
+        sut(theirsChanged, oursChanged, theirsIds, theirsLines);
 
         // Assert — verified by direct computation against this module
         expect(Array.from(theirsChanged)).toEqual([0, 0, 0, 1, 1, 0]);
@@ -285,13 +297,14 @@ describe('compactChanges', () => {
         // Arrange — the leading `a` can slide up to index 0 (exercising the
         // -1 sentinel read) and back down; START_OF_FILE_PENALTY then keeps
         // the indent heuristic from settling there.
+        const sut = compactChanges;
         const theirsLines = lines('a\na\nb');
         const oursChanged = new Uint8Array(2);
         const theirsChanged = new Uint8Array([0, 1, 0]);
         const theirsIds = new Int32Array([0, 0, 1]);
 
         // Act
-        compactChanges(theirsChanged, oursChanged, theirsIds, theirsLines);
+        sut(theirsChanged, oursChanged, theirsIds, theirsLines);
 
         // Assert
         expect(Array.from(theirsChanged)).toEqual([0, 1, 0]);
@@ -305,13 +318,14 @@ describe('compactChanges', () => {
         // Arrange — the trailing `b` could slide up to right after the first
         // `b`, but END_OF_FILE_PENALTY loses to INDENT_WEIGHT * effective
         // indent for the end-of-file candidate, so the group stays put.
+        const sut = compactChanges;
         const theirsLines = lines('a\nb\nb');
         const oursChanged = new Uint8Array(2);
         const theirsChanged = new Uint8Array([0, 0, 1]);
         const theirsIds = new Int32Array([0, 1, 1]);
 
         // Act
-        compactChanges(theirsChanged, oursChanged, theirsIds, theirsLines);
+        sut(theirsChanged, oursChanged, theirsIds, theirsLines);
 
         // Assert
         expect(Array.from(theirsChanged)).toEqual([0, 0, 1]);

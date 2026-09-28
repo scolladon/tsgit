@@ -55,10 +55,11 @@ describe('similarity properties', () => {
     describe('When estimateSimilarity(x, x) is called (identity)', () => {
       it('Then returns MAX_SCORE for any non-empty blob', () => {
         // Arrange
+        const sut = estimateSimilarity;
         fc.assert(
           fc.property(arbBlobBytes(), (x) => {
             // Act
-            const result = estimateSimilarity(x, x);
+            const result = sut(x, x);
 
             // Assert
             expect(result).toBe(MAX_SCORE);
@@ -71,10 +72,11 @@ describe('similarity properties', () => {
     describe('When estimateSimilarity(a, b) is called (bounded)', () => {
       it('Then result is always in [0, MAX_SCORE]', () => {
         // Arrange
+        const sut = estimateSimilarity;
         fc.assert(
           fc.property(arbBlobBytes(), arbBlobBytes(), (a, b) => {
             // Act
-            const result = estimateSimilarity(a, b);
+            const result = sut(a, b);
 
             // Assert
             expect(result).toBeGreaterThanOrEqual(0);
@@ -88,6 +90,7 @@ describe('similarity properties', () => {
     describe('When toSimilarityPercent is called (monotone non-decreasing)', () => {
       it('Then higher score always yields equal or higher percent', () => {
         // Arrange
+        const sut = toSimilarityPercent;
         fc.assert(
           fc.property(
             fc.integer({ min: 0, max: MAX_SCORE }),
@@ -97,8 +100,8 @@ describe('similarity properties', () => {
               const hi = Math.max(a, b);
 
               // Act
-              const pctLo = toSimilarityPercent(lo);
-              const pctHi = toSimilarityPercent(hi);
+              const pctLo = sut(lo);
+              const pctHi = sut(hi);
 
               // Assert
               expect(pctLo).toBeLessThanOrEqual(pctHi);
@@ -110,10 +113,11 @@ describe('similarity properties', () => {
 
       it('Then result is always <= 100', () => {
         // Arrange
+        const sut = toSimilarityPercent;
         fc.assert(
           fc.property(fc.integer({ min: 0, max: MAX_SCORE }), (score) => {
             // Act
-            const result = toSimilarityPercent(score);
+            const result = sut(score);
 
             // Assert
             expect(result).toBeLessThanOrEqual(100);
@@ -126,10 +130,11 @@ describe('similarity properties', () => {
     describe('When dissimilarity identity is computed', () => {
       it('Then MAX_SCORE - estimateSimilarity(x, x) is always 0', () => {
         // Arrange
+        const sut = estimateSimilarity;
         fc.assert(
           fc.property(arbBlobBytes(), (x) => {
             // Act
-            const result = MAX_SCORE - estimateSimilarity(x, x);
+            const result = MAX_SCORE - sut(x, x);
 
             // Assert
             expect(result).toBe(0);
@@ -142,10 +147,11 @@ describe('similarity properties', () => {
     describe('When buildFingerprint is called (bucket range and ordering)', () => {
       it('Then hashes are ascending, distinct integers in [0, HASHBASE), for either content kind', () => {
         // Arrange
+        const sut = buildFingerprint;
         fc.assert(
           fc.property(arbFingerprintContent(), fc.constantFrom('text', 'binary'), (bytes, kind) => {
             // Act
-            const { hashes } = buildFingerprint(bytes, kind);
+            const { hashes } = sut(bytes, kind);
 
             // Assert
             for (let i = 0; i < hashes.length; i++) {
@@ -167,6 +173,7 @@ describe('similarity properties', () => {
         // a real pair is sniffed on its own (`countSpanhashChanges`'s
         // default, undefined override), so a src/dst content-kind mismatch is
         // a real scenario, not just a same-kind pair repeated twice.
+        const sut = countCopied;
         fc.assert(
           fc.property(
             arbFingerprintContent(),
@@ -175,10 +182,7 @@ describe('similarity properties', () => {
             fc.constantFrom('text', 'binary'),
             (src, dst, srcKind, dstKind) => {
               // Act
-              const result = countCopied(
-                packFingerprint(src, srcKind),
-                packFingerprint(dst, dstKind),
-              );
+              const result = sut(packFingerprint(src, srcKind), packFingerprint(dst, dstKind));
               const expected = countSrcCopied(
                 buildChunkMap(src, srcKind),
                 buildChunkMap(dst, dstKind),
@@ -195,11 +199,13 @@ describe('similarity properties', () => {
 
     describe('When packFingerprint and denseFingerprint are both called on the same input', () => {
       it('Then they produce identical hashes and counts', () => {
-        // Arrange
+        // Arrange — packFingerprint is the sut; denseFingerprint is the
+        // alternate dispatch path checked for parity against it.
+        const sut = packFingerprint;
         fc.assert(
           fc.property(arbFingerprintContent(), fc.constantFrom('text', 'binary'), (data, kind) => {
             // Act
-            const packed = packFingerprint(data, kind);
+            const packed = sut(data, kind);
             const dense = denseFingerprint(data, kind);
 
             // Assert

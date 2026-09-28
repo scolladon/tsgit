@@ -32,10 +32,11 @@ describe('bogosqrt', () => {
     describe('When bogosqrt is called', () => {
       it(`Then it returns ${expected}`, () => {
         // Arrange
+        const sut = bogosqrt;
         const input = n;
 
         // Act
-        const result = bogosqrt(input);
+        const result = sut(input);
 
         // Assert
         expect(result).toBe(expected);
@@ -50,11 +51,12 @@ describe('trimEnds', () => {
       it('Then dstart and dend bound exactly the differing middle', () => {
         // Arrange — ours/theirs agree at indices 0,1 and at the last index,
         // differ only at index 2
+        const sut = trimEnds;
         const ours = Int32Array.from([0, 1, 2, 9]);
         const theirs = Int32Array.from([0, 1, 3, 9]);
 
         // Act
-        const result = trimEnds(ours, theirs);
+        const result = sut(ours, theirs);
 
         // Assert
         expect(result).toEqual({ dstart: 2, oursDend: 2, theirsDend: 2 });
@@ -66,11 +68,12 @@ describe('trimEnds', () => {
     describe('When trimEnds is called', () => {
       it('Then dstart runs past dend on both sides', () => {
         // Arrange
+        const sut = trimEnds;
         const ours = Int32Array.from([0, 1, 2]);
         const theirs = Int32Array.from([0, 1, 2]);
 
         // Act
-        const result = trimEnds(ours, theirs);
+        const result = sut(ours, theirs);
 
         // Assert
         expect(result).toEqual({ dstart: 3, oursDend: 2, theirsDend: 2 });
@@ -82,11 +85,12 @@ describe('trimEnds', () => {
     describe('When trimEnds is called', () => {
       it('Then dstart is 0 and dend is each side’s own last index', () => {
         // Arrange
+        const sut = trimEnds;
         const ours = Int32Array.from([0, 1]);
         const theirs = Int32Array.from([2, 3]);
 
         // Act
-        const result = trimEnds(ours, theirs);
+        const result = sut(ours, theirs);
 
         // Assert
         expect(result).toEqual({ dstart: 0, oursDend: 1, theirsDend: 1 });
@@ -99,11 +103,12 @@ describe('trimEnds', () => {
       it('Then each side’s dend is computed from its own length', () => {
         // Arrange — ours has one extra leading line, both share only the
         // final id (the second-to-last line differs: ours has 2, theirs 3)
+        const sut = trimEnds;
         const ours = Int32Array.from([1, 2, 9]);
         const theirs = Int32Array.from([3, 9]);
 
         // Act
-        const result = trimEnds(ours, theirs);
+        const result = sut(ours, theirs);
 
         // Assert — no shared prefix (ours[0]=1 vs theirs[0]=2), one shared
         // trailing line (id 9)
@@ -123,10 +128,11 @@ describe('cleanMmatch', () => {
       it('Then it declines regardless of the run after', () => {
         // Arrange — before: KEEP immediately; after: two discards (would
         // discard on its own, if reached)
+        const sut = cleanMmatch;
         const action = Uint8Array.from([KEEP, KEEP, INVESTIGATE, DISCARD, DISCARD]);
 
         // Act
-        const result = cleanMmatch(action, 2, action.length);
+        const result = sut(action, 2, action.length);
 
         // Assert
         expect(result).toBe(false);
@@ -138,10 +144,11 @@ describe('cleanMmatch', () => {
     describe('When cleanMmatch is called', () => {
       it('Then it declines even though the run before holds discards', () => {
         // Arrange — before: two discards; after: KEEP immediately
+        const sut = cleanMmatch;
         const action = Uint8Array.from([DISCARD, DISCARD, INVESTIGATE, KEEP, KEEP]);
 
         // Act
-        const result = cleanMmatch(action, 2, action.length);
+        const result = sut(action, 2, action.length);
 
         // Assert
         expect(result).toBe(false);
@@ -153,6 +160,7 @@ describe('cleanMmatch', () => {
     describe('When cleanMmatch is called', () => {
       it('Then it declines — 2·4 is not below 2 + 6', () => {
         // Arrange
+        const sut = cleanMmatch;
         const action = Uint8Array.from([
           DISCARD,
           DISCARD,
@@ -164,7 +172,7 @@ describe('cleanMmatch', () => {
         ]);
 
         // Act
-        const result = cleanMmatch(action, 3, action.length);
+        const result = sut(action, 3, action.length);
 
         // Assert
         expect(result).toBe(false);
@@ -176,6 +184,7 @@ describe('cleanMmatch', () => {
     describe('When cleanMmatch is called', () => {
       it('Then it discards — 2·4 is below 2 + 7', () => {
         // Arrange
+        const sut = cleanMmatch;
         const action = Uint8Array.from([
           DISCARD,
           DISCARD,
@@ -188,7 +197,7 @@ describe('cleanMmatch', () => {
         ]);
 
         // Act
-        const result = cleanMmatch(action, 4, action.length);
+        const result = sut(action, 4, action.length);
 
         // Assert
         expect(result).toBe(true);
@@ -213,10 +222,11 @@ describe('cleanMmatch', () => {
     describe('When cleanMmatch is called', () => {
       it('Then it declines at the tuned boundary', () => {
         // Arrange
+        const sut = cleanMmatch;
         const action = buildBeforeRun(100);
 
         // Act
-        const result = cleanMmatch(action, 100, action.length);
+        const result = sut(action, 100, action.length);
 
         // Assert
         expect(result).toBe(false);
@@ -228,10 +238,11 @@ describe('cleanMmatch', () => {
     describe('When cleanMmatch is called', () => {
       it('Then it still declines — the window caps the 101st discard out of the count', () => {
         // Arrange
+        const sut = cleanMmatch;
         const action = buildBeforeRun(101);
 
         // Act
-        const result = cleanMmatch(action, 101, action.length);
+        const result = sut(action, 101, action.length);
 
         // Assert
         expect(result).toBe(false);
@@ -250,6 +261,7 @@ describe('cleanupRecords', () => {
       it('Then the multi-match line is discarded and every no-match line is discarded', () => {
         // Arrange — theirs: u1 u2 u3 u4 f u5 u6 u7 (mlim = bogosqrt(8) = 4),
         // ours: f f f f (f occurs 4 times in ours >= mlim)
+        const sut = cleanupRecords;
         const F = 0;
         const theirs = [...uniqueClasses(1, 4), F, ...uniqueClasses(5, 3)];
         const ours = [F, F, F, F];
@@ -257,7 +269,7 @@ describe('cleanupRecords', () => {
         const trimmed = trimEnds(classes.ours, classes.theirs);
 
         // Act
-        const result = cleanupRecords(classes, trimmed, 'git-default');
+        const result = sut(classes, trimmed, 'git-default');
 
         // Assert
         expect(Array.from(result.theirs.changed)).toEqual([1, 1, 1, 1, 1, 1, 1, 1]);
@@ -272,6 +284,7 @@ describe('cleanupRecords', () => {
     describe('When cleanupRecords is called', () => {
       it('Then f is kept outright, without ever reaching the multi-match check', () => {
         // Arrange
+        const sut = cleanupRecords;
         const F = 0;
         const theirs = [...uniqueClasses(1, 4), F, ...uniqueClasses(5, 3)];
         const ours = [F, F, F];
@@ -279,7 +292,7 @@ describe('cleanupRecords', () => {
         const trimmed = trimEnds(classes.ours, classes.theirs);
 
         // Act
-        const result = cleanupRecords(classes, trimmed, 'git-default');
+        const result = sut(classes, trimmed, 'git-default');
 
         // Assert
         expect(Array.from(result.theirs.changed)).toEqual([1, 1, 1, 1, 0, 1, 1, 1]);
@@ -292,6 +305,7 @@ describe('cleanupRecords', () => {
     describe('When cleanupRecords is called', () => {
       it('Then the multi-match line stays kept', () => {
         // Arrange — theirs: u1 u2 u3 f u4 u5 u6 (3 before, 3 after)
+        const sut = cleanupRecords;
         const F = 0;
         const theirs = [...uniqueClasses(1, 3), F, ...uniqueClasses(4, 3)];
         const ours = [F, F, F, F];
@@ -299,7 +313,7 @@ describe('cleanupRecords', () => {
         const trimmed = trimEnds(classes.ours, classes.theirs);
 
         // Act
-        const result = cleanupRecords(classes, trimmed, 'git-default');
+        const result = sut(classes, trimmed, 'git-default');
 
         // Assert
         expect(Array.from(result.theirs.changed)).toEqual([1, 1, 1, 0, 1, 1, 1]);
@@ -312,11 +326,12 @@ describe('cleanupRecords', () => {
     describe('When cleanupRecords is called', () => {
       it('Then it is discarded unconditionally', () => {
         // Arrange
+        const sut = cleanupRecords;
         const classes = classesOf([0, 1], [2, 3]);
         const trimmed = trimEnds(classes.ours, classes.theirs);
 
         // Act
-        const result = cleanupRecords(classes, trimmed, 'git-default');
+        const result = sut(classes, trimmed, 'git-default');
 
         // Assert
         expect(Array.from(result.ours.changed)).toEqual([1, 1]);
@@ -331,11 +346,12 @@ describe('cleanupRecords', () => {
     describe('When cleanupRecords is called', () => {
       it('Then nothing is discarded and referenceIndex stays empty', () => {
         // Arrange
+        const sut = cleanupRecords;
         const classes = classesOf([0, 1, 2], [0, 1, 2]);
         const trimmed = trimEnds(classes.ours, classes.theirs);
 
         // Act
-        const result = cleanupRecords(classes, trimmed, 'git-default');
+        const result = sut(classes, trimmed, 'git-default');
 
         // Assert — the whole file was trimmed away before cleanupRecords
         // ever ran; nothing here is discarded OR kept, since neither array
@@ -352,6 +368,7 @@ describe('cleanupRecords', () => {
     describe('When cleanupRecords is called', () => {
       it('Then mlim is infinite, so the multi-match line is kept instead of investigated', () => {
         // Arrange — same fixture that discards under 'git-default' above
+        const sut = cleanupRecords;
         const F = 0;
         const theirs = [...uniqueClasses(1, 4), F, ...uniqueClasses(5, 3)];
         const ours = [F, F, F, F];
@@ -359,7 +376,7 @@ describe('cleanupRecords', () => {
         const trimmed = trimEnds(classes.ours, classes.theirs);
 
         // Act
-        const result = cleanupRecords(classes, trimmed, 'minimal');
+        const result = sut(classes, trimmed, 'minimal');
 
         // Assert — f is never even classified INVESTIGATE, so it is kept
         // outright regardless of the surrounding no-match lines

@@ -763,9 +763,10 @@ describe('Given a commit whose `tree` field points at a non-tree object', () => 
   describe('When blaming a path as of that revision', () => {
     it('Then refuses with UNEXPECTED_OBJECT_TYPE rather than degrading to a path-not-found', async () => {
       // Arrange — the root of the descent shares the same raw byte-scan as
-      // every other level (Part 10's consolidation); it must still assert
-      // the root is actually a tree, the way `readTree`'s own peel-chain
-      // does, instead of silently returning "not found" for the whole file.
+      // every other level (the path-descent loop's own consolidation); it
+      // must still assert the root is actually a tree, the way `readTree`'s
+      // own peel-chain does, instead of silently returning "not found" for
+      // the whole file.
       const ctx = await seed();
       const blobId = await writeObject(ctx, {
         type: 'blob',

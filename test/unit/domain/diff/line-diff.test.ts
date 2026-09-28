@@ -411,8 +411,8 @@ describe('line-diff — diffLines', () => {
 
   // git's xdl_bogosqrt-derived cost cap (XDL_MAX_COST_MIN = 256) cuts the
   // search short well before either of these inputs' true edit distance —
-  // every line matches exactly once on the other side, so record cleanup
-  // (Part 11) cannot change these counts either.
+  // every line matches exactly once on the other side, so `cleanupRecords`'s
+  // no-match discard cannot change these counts either.
   function mulberry32(seed: number): () => number {
     let state = seed;
     return () => {

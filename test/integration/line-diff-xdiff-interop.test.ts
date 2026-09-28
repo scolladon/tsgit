@@ -21,10 +21,10 @@
  *   unique:  xdl_change_compact's slid hunk placement AND the xdiff split engine's counts/patch/blame/merge match git past the old edit-distance bail
  *   interopSurface: diff
  */
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { blame } from '../../src/application/commands/blame.js';
 import { diff } from '../../src/application/commands/diff.js';
@@ -38,6 +38,10 @@ import { GIT_AVAILABLE, git, runGit, runGitEnv, tryRunGitWithExit } from './inte
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
 const CONTEXT_LINES = 3;
+
+// Every mkdtemp root this file creates (writePair/makeRepo/gitMergeFile) is
+// tracked here and removed in the module-level afterAll below.
+const createdDirs: string[] = [];
 
 function hunkText(hunk: OutputHunk): string[] {
   const oldRange = hunk.oldLen === 1 ? `${hunk.oldStart}` : `${hunk.oldStart},${hunk.oldLen}`;
@@ -86,6 +90,7 @@ async function writePair(
   newText: string,
 ): Promise<[string, string]> {
   const dir = await mkdtemp(path.join(os.tmpdir(), `tsgit-xdl-compact-${slug}-`));
+  createdDirs.push(dir);
   const oldPath = path.join(dir, 'old.txt');
   const newPath = path.join(dir, 'new.txt');
   await writeFile(oldPath, oldText);
@@ -130,6 +135,7 @@ async function commitFile(
 
 async function makeRepo(slug: string): Promise<string> {
   const dir = await mkdtemp(path.join(os.tmpdir(), `tsgit-xdl-compact-${slug}-`));
+  createdDirs.push(dir);
   git(dir, 'init', '-q', '-b', 'main');
   git(dir, 'config', 'user.name', 'A U Thor');
   git(dir, 'config', 'user.email', 'author@example.com');
@@ -143,6 +149,7 @@ async function gitMergeFile(
   theirs: Uint8Array,
 ): Promise<{ readonly stdout: string; readonly exitCode: number }> {
   const dir = await mkdtemp(path.join(os.tmpdir(), `tsgit-xdl-compact-merge-${slug}-`));
+  createdDirs.push(dir);
   const basePath = path.join(dir, 'base.txt');
   const oursPath = path.join(dir, 'ours.txt');
   const theirsPath = path.join(dir, 'theirs.txt');
@@ -197,6 +204,10 @@ const FF_SLIDE_OLD = 'x\n  y\n\f\n  z\n';
 const FF_SLIDE_NEW = 'x\n  y\n\f\n  q\n  y\n\f\n  z\n';
 const FF_BRACE_OLD = '{\n\f\n}\n';
 const FF_BRACE_NEW = '{\n\f\n  k\n\f\n}\n';
+
+afterAll(async () => {
+  await Promise.all(createdDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+});
 
 describe.skipIf(!GIT_AVAILABLE)('xdiff compaction interop', () => {
   describe('Given the L5 patch-slide row (a b c d e / a b c X d c d e)', () => {
@@ -507,9 +518,9 @@ describe.skipIf(!GIT_AVAILABLE)(
     // A 600-line block moved from the front to the back of a 1200-line file:
     // every line still matches exactly once on the other side (a pure
     // permutation), so — unlike a random rewrite with zero-match lines —
-    // record cleanup (Part 11) cannot change any of these four rows' answers.
-    // The design explicitly defers L1-style random-rewrite rows (zero-match-
-    // heavy, cleanup-sensitive) to Part 11.
+    // `cleanupRecords`'s no-match discard cannot change any of these four
+    // rows' answers. The zero-match-heavy, cleanup-sensitive random-rewrite
+    // rows live below, in the "xdiff record cleanup interop" suite.
     function buildBlockMovePair(): { readonly base: string; readonly moved: string } {
       const lines = Array.from({ length: 1200 }, (_, i) => `line${String(i).padStart(4, '0')}`);
       const moved = [...lines.slice(600), ...lines.slice(0, 600)];

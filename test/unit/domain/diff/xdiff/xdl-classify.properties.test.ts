@@ -106,6 +106,7 @@ describe('classifyLines properties', () => {
     describe('When classifyLines assigns class ids', () => {
       it('Then two lines share a class id iff their (normalized) bytes are equal', () => {
         // Arrange
+        const sut = classify;
         fc.assert(
           fc.property(
             arbLines(),
@@ -113,7 +114,7 @@ describe('classifyLines properties', () => {
             fc.option(arbLineKey(), { nil: undefined }),
             (ours, theirs, lineKey) => {
               // Act
-              const result = classify(ours, theirs, lineKey ?? undefined);
+              const result = sut(ours, theirs, lineKey ?? undefined);
               const combined = [
                 ...ours.map((line, i) => ({ line, id: result.ours[i]! })),
                 ...theirs.map((line, j) => ({ line, id: result.theirs[j]! })),
@@ -139,6 +140,7 @@ describe('classifyLines properties', () => {
 
       it('Then ids are dense in [0, classCount): every id in range appears at least once', () => {
         // Arrange
+        const sut = classify;
         fc.assert(
           fc.property(
             arbLines(),
@@ -146,7 +148,7 @@ describe('classifyLines properties', () => {
             fc.option(arbLineKey(), { nil: undefined }),
             (ours, theirs, lineKey) => {
               // Act
-              const result = classify(ours, theirs, lineKey ?? undefined);
+              const result = sut(ours, theirs, lineKey ?? undefined);
               const seen = new Set<number>([...result.ours, ...result.theirs]);
 
               // Assert
@@ -167,6 +169,7 @@ describe('classifyLines properties', () => {
     describe('When diffPresplitLines is given precomputed hashes instead of hashing from scratch', () => {
       it('Then the diff is identical to the from-scratch call in every combination', () => {
         // Arrange
+        const sut = diffPresplitLines;
         fc.assert(
           fc.property(
             arbLines(),
@@ -180,15 +183,15 @@ describe('classifyLines properties', () => {
               const theirsHashes = hashLineSide(theirs, key);
 
               // Act
-              const fromScratch = diffPresplitLines(ours, theirs, options);
-              const bothPrecomputed = diffPresplitLines(ours, theirs, options, {
+              const fromScratch = sut(ours, theirs, options);
+              const bothPrecomputed = sut(ours, theirs, options, {
                 ours: oursHashes,
                 theirs: theirsHashes,
               });
-              const oursOnlyPrecomputed = diffPresplitLines(ours, theirs, options, {
+              const oursOnlyPrecomputed = sut(ours, theirs, options, {
                 ours: oursHashes,
               });
-              const theirsOnlyPrecomputed = diffPresplitLines(ours, theirs, options, {
+              const theirsOnlyPrecomputed = sut(ours, theirs, options, {
                 theirs: theirsHashes,
               });
 
@@ -208,6 +211,7 @@ describe('classifyLines properties', () => {
     describe('When classifyLines assigns class ids', () => {
       it('Then ids are identical to an independent reference djb2 classifier', () => {
         // Arrange
+        const sut = classify;
         fc.assert(
           fc.property(
             arbLines(),
@@ -217,7 +221,7 @@ describe('classifyLines properties', () => {
               const key = lineKey ?? undefined;
 
               // Act
-              const result = classify(ours, theirs, key);
+              const result = sut(ours, theirs, key);
               const oracle = referenceClassify(ours, theirs, key);
 
               // Assert

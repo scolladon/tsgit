@@ -2889,7 +2889,7 @@ describe('diffTrees', () => {
     });
   });
 
-  describe('Given the same exactly-renamed sub-directory and withStat:true, When detectRenames is omitted', () => {
+  describe('Given the same exactly-renamed sub-directory, withStat:true and detectRenames omitted', () => {
     describe('When diffTrees is called', () => {
       it('Then the directory add/delete still expands into per-leaf add/delete changes (no pairing, unchanged)', async () => {
         // Arrange
