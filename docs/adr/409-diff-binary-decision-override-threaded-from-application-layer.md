@@ -80,3 +80,16 @@ resolver implements; `undefined` ⇒ today's content-sniff):
 - Each pinned row (design §3.4) becomes a cross-tool `*-interop` test reconstructing git's
   `Binary files … differ` / `-\t-` / text-hunk from the structured fields (ADR-249); the library
   emits no rendered display string.
+
+## Amendment — line counts and driver `binary` (2026-09-28)
+
+- This ADR decides binary versus text only. Once a path is text, git's `builtin_diffstat`
+  counts added and deleted lines, and makes the `-w` drop decision, on the raw blob. It never
+  applies the textconv. The patch hunks alone use the textconv output. `PatchFile` therefore
+  carries the raw pair (`numstatOldContent` / `numstatNewContent`) next to the converted content.
+- `diff.<driver>.binary` applies with or without a textconv:
+  - `true` forces a binary numstat. The patch is text when a textconv exists, binary otherwise.
+  - `false` forces text on both surfaces, even over NUL bytes.
+  - `auto` or unset falls back to the raw-content sniff.
+
+  Rename and break scoring read the same setting.
