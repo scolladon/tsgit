@@ -445,6 +445,72 @@ describe('Given a loose blob whose body under-ran its claim', () => {
   });
 });
 
+const VALID_COMMIT_BODY = ENCODER.encode(
+  `tree ${'0'.repeat(40)}\nauthor A <a@a.com> 0 +0000\ncommitter A <a@a.com> 0 +0000\n\nmsg\n`,
+);
+const VALID_TAG_BODY = ENCODER.encode(
+  `object ${'0'.repeat(40)}\ntype commit\ntag t\ntagger A <a@a.com> 0 +0000\n\nmsg\n`,
+);
+const VALID_TREE_BODY = buildTree(buildTreeEntry('100644', 'file.txt', BLOB_SHA_A));
+
+describe.each([
+  { label: 'commit', type: 'commit', body: VALID_COMMIT_BODY },
+  { label: 'tree', type: 'tree', body: VALID_TREE_BODY },
+  { label: 'tag', type: 'tag', body: VALID_TAG_BODY },
+])('Given a loose $label whose body under-ran its claim', ({ type, body }) => {
+  describe('When runContentValidationPass validates that object', () => {
+    it("Then emits a hash-mismatch finding whose actual is git's zero-padded SHA-1, not a bad-object finding", async () => {
+      // Arrange — git's buffered tier has no type check: a commit/tree/tag
+      // under-run takes the SAME zero-padded hash path as a blob, unlike an
+      // over-run (which still refuses).
+      const ctx = createMemoryContext();
+      const id = 'b'.repeat(40) as ObjectId;
+      const claim = body.byteLength + 10;
+      await writeLooseAtId(ctx, id, type, claim, body);
+      const expectedActual = await ctx.hash.hashHex(
+        buildTree(ENCODER.encode(`${type} ${claim}\0`), body, new Uint8Array(10)),
+      );
+
+      // Act
+      const result = await sut(ctx, new Set([id]), false, new Map(), new Map(), NO_SKIPS);
+
+      // Assert
+      const mismatch = result.findings.find((f) => f.type === 'hash-mismatch');
+      expect(mismatch).toMatchObject({ id, actual: expectedActual });
+      expect(result.findings.some((f) => f.type === 'bad-object')).toBe(false);
+    });
+  });
+});
+
+describe("Given a loose commit whose body overran its claim inside git's 32-byte header window", () => {
+  describe('When runContentValidationPass validates that object', () => {
+    it('Then still emits a bad-object finding — only an under-run takes the zero-padded path', async () => {
+      // Arrange — header (6 bytes) + a 10-byte body = 16, inside the window;
+      // git's buffered tier refuses a size-lying commit/tree/tag on ANY
+      // disagreement except an under-run.
+      const ctx = createMemoryContext();
+      const id = 'c'.repeat(40) as ObjectId;
+      const body = ENCODER.encode('0123456789');
+      await writeLooseAtId(ctx, id, 'commit', 0, body);
+
+      // Act
+      const result = await sut(ctx, new Set([id]), false, new Map(), new Map(), NO_SKIPS);
+
+      // Assert
+      expect(result.findings).toEqual([
+        {
+          type: 'bad-object',
+          id,
+          objectType: 'unknown',
+          msgId: 'unterminatedHeader',
+          severity: 'error',
+        },
+      ]);
+      expect(result.exitBit).toBe(1);
+    });
+  });
+});
+
 describe('Given a loose blob whose under-run claim exceeds the inflate ceiling', () => {
   describe('When runContentValidationPass validates that object', () => {
     it('Then emits a bad-object finding instead of hashing gigabytes of padding', async () => {

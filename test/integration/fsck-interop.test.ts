@@ -111,6 +111,27 @@ async function writeLooseObject(workDir: string, type: string, body: Buffer): Pr
   return sha1;
 }
 
+/**
+ * Writes a NEW loose object at the SHA-1 of its own stored bytes, with a
+ * header size CLAIM that disagrees with `body`'s real length — a
+ * self-consistent size-lying object at its own (honest) path, unlike
+ * `writeLooseObject`'s always-true header.
+ */
+async function writeLooseObjectWithClaim(
+  workDir: string,
+  type: string,
+  claim: number,
+  body: Buffer,
+): Promise<string> {
+  const header = Buffer.from(`${type} ${claim}\0`);
+  const raw = Buffer.concat([header, body]);
+  const sha1 = sha1Hex(raw);
+  const objDir = path.join(workDir, '.git', 'objects', sha1.slice(0, 2));
+  await mkdir(objDir, { recursive: true });
+  await writeFile(path.join(objDir, sha1.slice(2)), deflateSync(raw));
+  return sha1;
+}
+
 /** Initialize a bare git repo at dir. */
 function initRepo(dir: string): void {
   runGit(['-C', dir, 'init', '-q', '-b', 'main'], { env: SAFE_ENV });
@@ -422,6 +443,50 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (hashMismatchDir !== '') await rm(hashMismatchDir, { recursive: true, force: true });
+});
+
+// --- Scenario: non-blob under-run (commit/tree/tag header claims MORE than
+// its real body) --------------------------------------------------------------
+// git's `read_loose_object` has no type check: this takes the SAME
+// zero-padded hash-path-mismatch path a blob's under-run does, never the
+// `corrupt loose object` path an over-run still takes.
+
+let nonBlobUnderrunDir = '';
+let nonBlobUnderrunCtx: Context;
+let underrunCommitSha = '';
+let underrunTreeSha = '';
+let underrunTagSha = '';
+
+beforeAll(async () => {
+  nonBlobUnderrunDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-nonBlobUnderrun-'));
+  initRepo(nonBlobUnderrunDir);
+
+  const zeroTree = '0'.repeat(40);
+  const commitBody = Buffer.from(
+    `tree ${zeroTree}\nauthor Test <test@example.com> 0 +0000\ncommitter Test <test@example.com> 0 +0000\n\nmsg\n`,
+  );
+  underrunCommitSha = await writeLooseObjectWithClaim(
+    nonBlobUnderrunDir,
+    'commit',
+    commitBody.length + 5,
+    commitBody,
+  );
+  underrunTreeSha = await writeLooseObjectWithClaim(nonBlobUnderrunDir, 'tree', 5, Buffer.alloc(0));
+  const tagBody = Buffer.from(
+    `object ${zeroTree}\ntype commit\ntag t\ntagger Test <test@example.com> 0 +0000\n\nmsg\n`,
+  );
+  underrunTagSha = await writeLooseObjectWithClaim(
+    nonBlobUnderrunDir,
+    'tag',
+    tagBody.length + 5,
+    tagBody,
+  );
+
+  nonBlobUnderrunCtx = createNodeContext({ workDir: nonBlobUnderrunDir });
+}, SETUP_TIMEOUT);
+
+afterAll(async () => {
+  if (nonBlobUnderrunDir !== '') await rm(nonBlobUnderrunDir, { recursive: true, force: true });
 });
 
 // ---------------------------------------------------------------------------
@@ -807,6 +872,51 @@ describe.skipIf(!GIT_AVAILABLE)(
           expect(gitResult.stderr).toContain(reconstructed);
         }
       });
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given a loose commit/tree/tag whose header claims more than its real body (under-run)',
+  () => {
+    describe('When fsck runs', () => {
+      it.each([
+        { label: 'commit', shaOf: () => underrunCommitSha },
+        { label: 'tree', shaOf: () => underrunTreeSha },
+        { label: 'tag', shaOf: () => underrunTagSha },
+      ])(
+        "Then emits hash-mismatch (git's zero-padded hash-path mismatch), never bad-object, for $label",
+        async ({ shaOf }) => {
+          // Arrange
+          const gitResult = gitFsck(nonBlobUnderrunDir);
+          const storedId = shaOf();
+
+          // Act
+          const result = await fsck(nonBlobUnderrunCtx);
+
+          // Assert — exit code bit 1 matches real git on both sides
+          expect(result.exitCode & 1).toBe(1);
+          expect(gitResult.exitCode & 1).toBe(1);
+
+          // Assert — hash-mismatch finding present for the stored (lying) oid,
+          // never a bad-object/corrupt finding for that same oid
+          const mismatch = result.findings.find(
+            (f): f is FsckFinding & { type: 'hash-mismatch' } =>
+              f.type === 'hash-mismatch' && f.id === storedId,
+          );
+          expect(mismatch).toBeDefined();
+          expect(result.findings.some((f) => f.type === 'bad-object' && f.id === storedId)).toBe(
+            false,
+          );
+
+          // Reconstruct git stderr line
+          // git: "error: <actual-sha>: hash-path mismatch, found at: .git/objects/<prefix>/<suffix>"
+          if (mismatch !== undefined) {
+            const reconstructed = `${mismatch.actual}: hash-path mismatch, found at:`;
+            expect(gitResult.stderr).toContain(reconstructed);
+          }
+        },
+      );
     });
   },
 );
