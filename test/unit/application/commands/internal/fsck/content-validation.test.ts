@@ -822,6 +822,105 @@ describe("Given a loose blob whose body overran its claim past git's 32-byte hea
   });
 });
 
+describe('Given a loose commit whose header claims more than its real body, and whose truncated content would also fail the catalogue', () => {
+  describe('When runContentValidationPass validates that object', () => {
+    it('Then emits only a hash-mismatch finding, never a bad-object catalogue finding', async () => {
+      // Arrange — git's `read_loose_object` returns before `fsck_obj` ever
+      // runs when the hash disagrees with the path: an 8-byte body under a
+      // 20-byte claim (missing even a "tree " line) would fail the catalogue
+      // (missingTree) if it ran, but real git never reaches it.
+      const ctx = createMemoryContext();
+      const id = 'c'.repeat(40) as ObjectId;
+      const body = ENCODER.encode('abcdefgh');
+      await writeLooseAtId(ctx, id, 'commit', 20, body);
+
+      // Act
+      const result = await sut(
+        ctx,
+        new Set([id]),
+        false,
+        new Map(),
+        new Map(),
+        NO_SKIPS,
+        DEFAULT_THRESHOLD,
+      );
+
+      // Assert
+      expect(result.findings).toHaveLength(1);
+      expect(result.findings[0]?.type).toBe('hash-mismatch');
+    });
+  });
+});
+
+describe('Given a correctly-sized loose commit stored at the wrong path, whose content would also fail the catalogue', () => {
+  describe('When runContentValidationPass validates that object', () => {
+    it('Then emits only a hash-mismatch finding, never a bad-object catalogue finding', async () => {
+      // Arrange — the claim matches the body's real length (the 'honest'
+      // verdict), but the id is an arbitrary path, not this body's own
+      // hash; the body itself is missing a "tree " line (missingTree).
+      const ctx = createMemoryContext();
+      const id = 'd'.repeat(40) as ObjectId;
+      const body = ENCODER.encode(
+        'author A <a@a.com> 0 +0000\ncommitter A <a@a.com> 0 +0000\n\nmsg\n',
+      );
+      await writeLooseAtId(ctx, id, 'commit', body.byteLength, body);
+
+      // Act
+      const result = await sut(
+        ctx,
+        new Set([id]),
+        false,
+        new Map(),
+        new Map(),
+        NO_SKIPS,
+        DEFAULT_THRESHOLD,
+      );
+
+      // Assert
+      expect(result.findings).toHaveLength(1);
+      expect(result.findings[0]?.type).toBe('hash-mismatch');
+    });
+  });
+});
+
+describe('Given a packed tree with duplicateEntries whose bytes are ALSO indexed under the wrong id', () => {
+  describe('When runContentValidationPass validates that object', () => {
+    it('Then still emits BOTH the catalogue finding and the hash-mismatch — packed reads carry no path to gate on', async () => {
+      // Arrange — unlike loose, a packed object's hash check has no
+      // "read_loose_object returns early" analogue: git walks every packed
+      // object by offset and always runs the catalogue on it.
+      const treeBody = buildTree(
+        buildTreeEntry('100644', 'a.txt', BLOB_SHA_A),
+        buildTreeEntry('100644', 'a.txt', BLOB_SHA_B),
+      );
+      const wrongId = '0000000000000000000000000000000000000009' as ObjectId;
+      const ctx = createMemoryContext();
+      const ids = await writeSyntheticPack(ctx, 'p-wrong-id', [
+        { kind: 'base', type: 'tree', content: treeBody, idOverride: wrongId },
+      ]);
+      const treeId = ids[0] as ObjectId;
+
+      // Act
+      const result = await sut(
+        ctx,
+        new Set([treeId]),
+        false,
+        new Map(),
+        new Map(),
+        NO_SKIPS,
+        DEFAULT_THRESHOLD,
+      );
+
+      // Assert
+      const msgIds = result.findings
+        .filter((f) => f.type === 'bad-object' && f.id === treeId)
+        .map((f) => (f.type === 'bad-object' ? f.msgId : undefined));
+      expect(msgIds).toContain('duplicateEntries');
+      expect(result.findings.some((f) => f.type === 'hash-mismatch' && f.id === treeId)).toBe(true);
+    });
+  });
+});
+
 describe('Given a loose object whose compressed bytes are not valid zlib', () => {
   describe('When runContentValidationPass validates that object', () => {
     it('Then emits a bad-object finding via the zlib-failure path, not the header-parse path', async () => {

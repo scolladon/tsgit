@@ -277,16 +277,32 @@ async function packedRawObjectBody(ctx: Context, id: ObjectId): Promise<RawObjec
   }
 }
 
+/** Which store answered a `tryGetRawObjectBody` read — the one fact
+ *  `validateOneObject` needs beyond the bytes themselves, since ONLY a loose
+ *  read carries git's own hash-gates-catalogue rule (`resolvedRawObject`'s
+ *  own doc comment). */
+type ObjectStorage = 'loose' | 'packed';
+
+interface ResolvedRawObject {
+  readonly storage: ObjectStorage;
+  readonly result: RawObjectResult;
+}
+
 /** Read an object's raw decompressed body for content validation, from
- *  whichever store holds it. */
+ *  whichever store holds it — tagged with which store that was. */
 async function tryGetRawObjectBody(
   ctx: Context,
   id: ObjectId,
   bigFileThreshold: number,
-): Promise<RawObjectResult> {
+): Promise<ResolvedRawObject> {
   const compressed = await looseCompressedBytes(ctx, id);
-  if (compressed !== undefined) return looseRawObjectBody(ctx, id, compressed, bigFileThreshold);
-  return packedRawObjectBody(ctx, id);
+  if (compressed !== undefined) {
+    return {
+      storage: 'loose',
+      result: await looseRawObjectBody(ctx, id, compressed, bigFileThreshold),
+    };
+  }
+  return { storage: 'packed', result: await packedRawObjectBody(ctx, id) };
 }
 
 const GITMODULES_NAME_BYTES = encode('.gitmodules');
@@ -438,9 +454,8 @@ function catalogueResult(
  * git's own buffered-tier bytes instead (the truncated prefix or the
  * zero-padded claim — `looseVerdictResult`); for pack objects the object's
  * own header (rebuilt from its type + content) followed by its own body,
- * not a re-encoding. A mismatch does not preclude the catalogue checks, and
- * a hash that cannot be computed at all is the corrupt object those checks
- * may already have reported.
+ * not a re-encoding. A hash that cannot be computed at all is the corrupt
+ * object the catalogue checks may already have reported.
  */
 async function hashResult(id: ObjectId, raw: ReadableObject): Promise<ContentValidationResult> {
   try {
@@ -455,16 +470,32 @@ async function hashResult(id: ObjectId, raw: ReadableObject): Promise<ContentVal
   }
 }
 
+/**
+ * Whether a hash mismatch on THIS storage kind must suppress the catalogue.
+ * git's `read_loose_object` returns on a hash-path disagreement before
+ * `fsck_loose` ever calls `fsck_obj` — a loose mismatch is never catalogued.
+ * A packed read carries no comparable path to disagree with: git walks every
+ * packed object by offset and always runs its catalogue, mismatch or not.
+ */
+function catalogueSuppressedByHash(storage: ObjectStorage, hash: ContentValidationResult): boolean {
+  return storage === 'loose' && hash.findings.length > 0;
+}
+
 /** Validate one object's content and hash, accumulating findings and exit bit. */
 async function validateOneObject(
   ctx: Context,
   id: ObjectId,
   options: CatalogueOptions,
 ): Promise<ContentValidationResult> {
-  const rawResult = await tryGetRawObjectBody(ctx, id, options.bigFileThreshold);
+  const { storage, result: rawResult } = await tryGetRawObjectBody(
+    ctx,
+    id,
+    options.bigFileThreshold,
+  );
   if (!rawResult.ok) return unreadableObjectResult(id, rawResult.msgId);
-  const catalogue = catalogueResult(ctx, id, rawResult, options);
   const hash = await hashResult(id, rawResult);
+  if (catalogueSuppressedByHash(storage, hash)) return hash;
+  const catalogue = catalogueResult(ctx, id, rawResult, options);
   return {
     findings: [...catalogue.findings, ...hash.findings],
     exitBit: catalogue.exitBit | hash.exitBit,

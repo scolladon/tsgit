@@ -489,6 +489,38 @@ afterAll(async () => {
   if (nonBlobUnderrunDir !== '') await rm(nonBlobUnderrunDir, { recursive: true, force: true });
 });
 
+// --- Scenario: a loose object's hash disagrees with its path, and its
+// content would ALSO fail the catalogue — git's `read_loose_object` returns
+// before `fsck_obj` ever runs, so only the hash-path mismatch is reported. --
+
+let hashMismatchCatalogueDir = '';
+let hashMismatchCatalogueCtx: Context;
+let missingTreeCommitSha = '';
+
+beforeAll(async () => {
+  hashMismatchCatalogueDir = await mkdtemp(
+    path.join(os.tmpdir(), 'tsgit-fsck-hashMismatchCatalogue-'),
+  );
+  initRepo(hashMismatchCatalogueDir);
+
+  // A commit body missing even a "tree " line (would report missingTree if
+  // the catalogue ran), under-run against its claim so the path disagrees.
+  missingTreeCommitSha = await writeLooseObjectWithClaim(
+    hashMismatchCatalogueDir,
+    'commit',
+    20,
+    Buffer.from('abcdefgh'),
+  );
+
+  hashMismatchCatalogueCtx = createNodeContext({ workDir: hashMismatchCatalogueDir });
+}, SETUP_TIMEOUT);
+
+afterAll(async () => {
+  if (hashMismatchCatalogueDir !== '') {
+    await rm(hashMismatchCatalogueDir, { recursive: true, force: true });
+  }
+});
+
 // --- Scenario: core.bigFileThreshold gates the zero-padded hash --------------
 // Below and AT the threshold still zero-pads (git's own `size >
 // big_file_threshold` comparison is strictly greater-than); past it, git
@@ -976,6 +1008,37 @@ describe.skipIf(!GIT_AVAILABLE)(
           }
         },
       );
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given a loose object whose hash disagrees with its path, and whose content would ALSO fail the catalogue',
+  () => {
+    describe('When fsck runs', () => {
+      it('Then emits only the hash-mismatch finding — git returns before running the catalogue on a hash-path mismatch', async () => {
+        // Arrange — the commit body is missing even a "tree " line, which
+        // would report missingTree if the catalogue ran against it.
+        const gitResult = gitFsck(hashMismatchCatalogueDir);
+
+        // Act
+        const result = await fsck(hashMismatchCatalogueCtx);
+
+        // Assert — exit bit 1 matches real git on both sides
+        expect(result.exitCode & 1).toBe(1);
+        expect(gitResult.exitCode & 1).toBe(1);
+
+        // Assert — only a hash-mismatch finding for this object, no bad-object
+        const findingsForId = result.findings.filter(
+          (f) => 'id' in f && f.id === missingTreeCommitSha,
+        );
+        expect(findingsForId).toHaveLength(1);
+        expect(findingsForId[0]?.type).toBe('hash-mismatch');
+
+        // git reports only the hash-path mismatch, never a missingTree line
+        expect(gitResult.stderr).toContain('hash-path mismatch');
+        expect(gitResult.stderr).not.toContain('missingTree');
+      });
     });
   },
 );
