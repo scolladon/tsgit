@@ -91,6 +91,7 @@
     "BIDI",
     "Bidirectional",
     "bidirectional",
+    "bigfilethreshold",
     "bigints",
     "bigpush",
     "bijective",

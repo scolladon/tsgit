@@ -84,6 +84,14 @@ export interface ParsedConfig {
      * (lenient read).
      */
     readonly packedGitLimit?: number;
+    /**
+     * `core.bigFileThreshold` — bytes; a blob whose declared size exceeds
+     * this takes git's streamed verification instead of a buffered one
+     * (`read_loose_object`'s `check_stream_oid` arm). Absent when unset or
+     * malformed (lenient read); git's own default (512 MiB) is applied by
+     * the caller, not here.
+     */
+    readonly bigFileThreshold?: number;
   };
   readonly user?: { readonly name?: string; readonly email?: string; readonly signingKey?: string };
   readonly remote?: ReadonlyMap<
@@ -1321,6 +1329,7 @@ type MutableCore = {
   deltaBaseCacheLimit?: number;
   packedGitWindowSize?: number;
   packedGitLimit?: number;
+  bigFileThreshold?: number;
   /** Transient: true when looseCompression was set via loosecompression key (not compression).
    *  Dropped by finalizeCore. Guards order-independent precedence: loosecompression > compression. */
   looseCompressionFromLoose?: boolean;
@@ -1397,6 +1406,20 @@ const applyPackedGitBoundEntry = (
   return checked.ok ? { ...core, [field]: checked.value } : undefined;
 };
 
+const BIG_FILE_THRESHOLD_KEY = 'bigfilethreshold';
+
+/**
+ * Apply `core.bigFileThreshold`: git's unsigned-long grammar, reusing
+ * `checkPackWindowMemoryBound` exactly as {@link applyDeltaBaseCacheLimitEntry}
+ * does. Merges as absent on any failure — this is the LENIENT read only; no
+ * eager refusal is added for this key (mirrors `packedGitLimit`'s own
+ * lenient-only surface where no command's preflight gate needs one yet).
+ */
+const applyBigFileThresholdEntry = (core: MutableCore, value: string): MutableCore | undefined => {
+  const checked = checkPackWindowMemoryBound(value);
+  return checked.ok ? { ...core, bigFileThreshold: checked.value } : undefined;
+};
+
 // One map is BOTH the key set and the field dispatch: a new boolean key
 // cannot join the set without naming its target field, so a silent
 // mis-assignment is structurally impossible.
@@ -1456,6 +1479,7 @@ const applyCoreEntry = (
   }
   if (lowered === PACKED_GIT_LIMIT_KEY)
     return applyPackedGitBoundEntry(core, 'packedGitLimit', value);
+  if (lowered === BIG_FILE_THRESHOLD_KEY) return applyBigFileThresholdEntry(core, value);
   return undefined;
 };
 
@@ -1982,6 +2006,36 @@ const mergeGpgSsh = (acc: { gpg?: MutableGpg }, name: string, sec: IniSection): 
   }
 };
 
+/** The `[core]` fields with no numeric size/count grammar: booleans, paths and
+ *  strings. Split out of `finalizeCore` to keep each half under the
+ *  cognitive-complexity ceiling. */
+const finalizeCoreIdentityFields = (core: MutableCore): ParsedConfig['core'] => ({
+  ...(core.bare !== undefined ? { bare: core.bare } : {}),
+  ...(core.excludesFile !== undefined ? { excludesFile: core.excludesFile } : {}),
+  ...(core.attributesFile !== undefined ? { attributesFile: core.attributesFile } : {}),
+  ...(core.logAllRefUpdates !== undefined ? { logAllRefUpdates: core.logAllRefUpdates } : {}),
+  ...(core.hooksPath !== undefined ? { hooksPath: core.hooksPath } : {}),
+  ...(core.notesRef !== undefined ? { notesRef: core.notesRef } : {}),
+  ...(core.sparseCheckout !== undefined ? { sparseCheckout: core.sparseCheckout } : {}),
+  ...(core.sparseCheckoutCone !== undefined ? { sparseCheckoutCone: core.sparseCheckoutCone } : {}),
+  ...(core.sshCommand !== undefined ? { sshCommand: core.sshCommand } : {}),
+});
+
+/** The `[core]` fields with a numeric size/count/limit grammar. Split out of
+ *  `finalizeCore` to keep each half under the cognitive-complexity ceiling. */
+const finalizeCoreSizeFields = (core: MutableCore): ParsedConfig['core'] => ({
+  ...(core.looseCompression !== undefined ? { looseCompression: core.looseCompression } : {}),
+  ...(core.maxTreeDepth !== undefined ? { maxTreeDepth: core.maxTreeDepth } : {}),
+  ...(core.deltaBaseCacheLimit !== undefined
+    ? { deltaBaseCacheLimit: core.deltaBaseCacheLimit }
+    : {}),
+  ...(core.packedGitWindowSize !== undefined
+    ? { packedGitWindowSize: core.packedGitWindowSize }
+    : {}),
+  ...(core.packedGitLimit !== undefined ? { packedGitLimit: core.packedGitLimit } : {}),
+  ...(core.bigFileThreshold !== undefined ? { bigFileThreshold: core.bigFileThreshold } : {}),
+});
+
 /**
  * Finalize the `[core]` section: emit only the keys that were set, or
  * `undefined` when the section was never populated. `mergeCore` is the sole
@@ -1991,28 +2045,7 @@ const mergeGpgSsh = (acc: { gpg?: MutableGpg }, name: string, sec: IniSection): 
 const finalizeCore = (core: MutableCore | undefined): ParsedConfig['core'] => {
   if (core === undefined) return undefined;
   // looseCompressionFromLoose is transient (precedence flag) — not projected to ParsedConfig
-  return {
-    ...(core.bare !== undefined ? { bare: core.bare } : {}),
-    ...(core.excludesFile !== undefined ? { excludesFile: core.excludesFile } : {}),
-    ...(core.attributesFile !== undefined ? { attributesFile: core.attributesFile } : {}),
-    ...(core.logAllRefUpdates !== undefined ? { logAllRefUpdates: core.logAllRefUpdates } : {}),
-    ...(core.hooksPath !== undefined ? { hooksPath: core.hooksPath } : {}),
-    ...(core.notesRef !== undefined ? { notesRef: core.notesRef } : {}),
-    ...(core.sparseCheckout !== undefined ? { sparseCheckout: core.sparseCheckout } : {}),
-    ...(core.sparseCheckoutCone !== undefined
-      ? { sparseCheckoutCone: core.sparseCheckoutCone }
-      : {}),
-    ...(core.looseCompression !== undefined ? { looseCompression: core.looseCompression } : {}),
-    ...(core.maxTreeDepth !== undefined ? { maxTreeDepth: core.maxTreeDepth } : {}),
-    ...(core.sshCommand !== undefined ? { sshCommand: core.sshCommand } : {}),
-    ...(core.deltaBaseCacheLimit !== undefined
-      ? { deltaBaseCacheLimit: core.deltaBaseCacheLimit }
-      : {}),
-    ...(core.packedGitWindowSize !== undefined
-      ? { packedGitWindowSize: core.packedGitWindowSize }
-      : {}),
-    ...(core.packedGitLimit !== undefined ? { packedGitLimit: core.packedGitLimit } : {}),
-  };
+  return { ...finalizeCoreIdentityFields(core), ...finalizeCoreSizeFields(core) };
 };
 
 type FinalizeOut = {

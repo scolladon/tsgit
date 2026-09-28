@@ -2358,45 +2358,47 @@ describe('primitives/config-read', () => {
     });
   });
 
-  describe('Given a [core] section carrying a size-valued key this reading does not model', () => {
+  describe('Given a [core] section carrying core.bigFileThreshold alongside a sibling unsigned-size key', () => {
     describe('When readConfig', () => {
-      it('Then deltaBaseCacheLimit stays absent — an unmodelled key is not its value', async () => {
-        // Arrange — `core.bigFileThreshold` is a real git key with the same
-        // unsigned-size grammar, so a dispatch that stopped discriminating on
-        // the key name would silently adopt its value.
-        const ctx = createMemoryContext();
-        await seed(ctx, '[core]\n\tbare = true\n\tbigFileThreshold = 512m\n');
-
-        // Act
-        const result = await readConfig(ctx);
-
-        // Assert
-        expect(result.core?.deltaBaseCacheLimit).toBeUndefined();
-        expect(result.core?.bare).toBe(true);
-      });
-    });
-  });
-
-  describe('Given a [core] section carrying a size-valued key packedGitLimit reading does not model', () => {
-    describe('When readConfig', () => {
-      it('Then packedGitLimit stays absent — an unmodelled key is not its value', async () => {
+      it('Then bigFileThreshold populates its own field and deltaBaseCacheLimit stays absent — same grammar, different key', async () => {
         // Arrange — `core.bigFileThreshold` shares the SAME unsigned-size
-        // grammar as `packedGitLimit`, so a dispatch that stopped
-        // discriminating on the key name would silently adopt its value.
+        // grammar as `deltaBaseCacheLimit`, so a dispatch that stopped
+        // discriminating on the key name would alias one onto the other;
+        // `autocrlf` is a real git key tsgit still does not model (see the
+        // "must not promote core into existence" suite above), planted here
+        // to prove its value leaves no trace either.
         const ctx = createMemoryContext();
-        await seed(ctx, '[core]\n\tbare = true\n\tbigFileThreshold = 512m\n');
+        await seed(ctx, '[core]\n\tautocrlf = true\n\tbigFileThreshold = 512m\n');
 
         // Act
         const result = await readConfig(ctx);
 
         // Assert
-        expect(result.core?.packedGitLimit).toBeUndefined();
-        expect(result.core?.bare).toBe(true);
+        expect(result.core?.bigFileThreshold).toBe(512 * 1024 * 1024);
+        expect(result.core?.deltaBaseCacheLimit).toBeUndefined();
       });
     });
   });
 
-  describe.each(['packedGitWindowSize', 'packedGitLimit'] as const)(
+  describe('Given a [core] section carrying core.bigFileThreshold alongside packedGitLimit', () => {
+    describe('When readConfig', () => {
+      it('Then each key populates its own field — same grammar, different key', async () => {
+        // Arrange — same discrimination proof as above, against
+        // `packedGitLimit` instead of `deltaBaseCacheLimit`.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n\tpackedGitLimit = 4m\n\tbigFileThreshold = 512m\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.core?.bigFileThreshold).toBe(512 * 1024 * 1024);
+        expect(result.core?.packedGitLimit).toBe(4 * 1024 * 1024);
+      });
+    });
+  });
+
+  describe.each(['packedGitWindowSize', 'packedGitLimit', 'bigFileThreshold'] as const)(
     'Given a config with a [core] %s value',
     (key) => {
       describe('When readConfig', () => {
@@ -2421,7 +2423,7 @@ describe('primitives/config-read', () => {
     },
   );
 
-  describe.each(['packedGitWindowSize', 'packedGitLimit'] as const)(
+  describe.each(['packedGitWindowSize', 'packedGitLimit', 'bigFileThreshold'] as const)(
     'Given a [core] section with an invalid %s value',
     (key) => {
       describe('When readConfig', () => {

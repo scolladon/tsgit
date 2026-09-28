@@ -489,6 +489,65 @@ afterAll(async () => {
   if (nonBlobUnderrunDir !== '') await rm(nonBlobUnderrunDir, { recursive: true, force: true });
 });
 
+// --- Scenario: core.bigFileThreshold gates the zero-padded hash --------------
+// Below and AT the threshold still zero-pads (git's own `size >
+// big_file_threshold` comparison is strictly greater-than); past it, git
+// streams the real bytes and hashes them unpadded — each blob below is
+// stored self-consistently at THAT unpadded hash, so a tool that correctly
+// gates on the threshold reports nothing for it, and one that still
+// zero-pads reports a mismatch.
+
+let bigFileDir = '';
+let bigFileCtx: Context;
+const BIG_FILE_THRESHOLD = 1024;
+const BIG_FILE_BODY = Buffer.from('SHORT-BODY');
+let belowThresholdSha = '';
+let atThresholdSha = '';
+let aboveThresholdSha = '';
+
+beforeAll(async () => {
+  bigFileDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-bigFileThreshold-'));
+  initRepo(bigFileDir);
+  runGit(['-C', bigFileDir, 'config', 'core.bigFileThreshold', `${BIG_FILE_THRESHOLD}`], {
+    env: SAFE_ENV,
+  });
+
+  belowThresholdSha = await writeLooseObjectWithClaim(
+    bigFileDir,
+    'blob',
+    BIG_FILE_THRESHOLD - 1,
+    BIG_FILE_BODY,
+  );
+  atThresholdSha = await writeLooseObjectWithClaim(
+    bigFileDir,
+    'blob',
+    BIG_FILE_THRESHOLD,
+    BIG_FILE_BODY,
+  );
+  aboveThresholdSha = await writeLooseObjectWithClaim(
+    bigFileDir,
+    'blob',
+    BIG_FILE_THRESHOLD + 1,
+    BIG_FILE_BODY,
+  );
+
+  bigFileCtx = createNodeContext({ workDir: bigFileDir });
+}, SETUP_TIMEOUT);
+
+afterAll(async () => {
+  if (bigFileDir !== '') await rm(bigFileDir, { recursive: true, force: true });
+});
+
+/** git's zero-padded hash for a size-lying blob (`unpack_loose_rest`): the
+ *  declared-size header, the real body, then zero bytes out to the claim. */
+function zeroPaddedBlobHash(declared: number, body: Buffer): string {
+  const header = Buffer.from(`blob ${declared}\0`);
+  const padding = Buffer.alloc(declared - body.length);
+  return createHash('sha1')
+    .update(Buffer.concat([header, body, padding]))
+    .digest('hex');
+}
+
 // ---------------------------------------------------------------------------
 // Test groups
 // ---------------------------------------------------------------------------
@@ -917,6 +976,58 @@ describe.skipIf(!GIT_AVAILABLE)(
           }
         },
       );
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given loose blobs claiming sizes below, at, and above core.bigFileThreshold',
+  () => {
+    describe('When fsck runs', () => {
+      it('Then below and AT the threshold still report the zero-padded hash-path mismatch', async () => {
+        // Arrange
+        const gitResult = gitFsck(bigFileDir);
+
+        // Act
+        const result = await fsck(bigFileCtx);
+
+        // Assert — exit bit 1 matches real git on both sides
+        expect(result.exitCode & 1).toBe(1);
+        expect(gitResult.exitCode & 1).toBe(1);
+
+        for (const { sha, declared } of [
+          { sha: belowThresholdSha, declared: BIG_FILE_THRESHOLD - 1 },
+          { sha: atThresholdSha, declared: BIG_FILE_THRESHOLD },
+        ]) {
+          const expectedActual = zeroPaddedBlobHash(declared, BIG_FILE_BODY);
+          const mismatch = result.findings.find(
+            (f): f is FsckFinding & { type: 'hash-mismatch' } =>
+              f.type === 'hash-mismatch' && f.id === sha,
+          );
+          expect(mismatch).toBeDefined();
+          expect(mismatch?.actual).toBe(expectedActual);
+          expect(gitResult.stderr).toContain(`${expectedActual}: hash-path mismatch, found at:`);
+        }
+      });
+
+      it('Then past the threshold reports neither hash-mismatch nor bad-object — git skips verification, and so does tsgit', async () => {
+        // Arrange
+        const gitResult = gitFsck(bigFileDir);
+
+        // Act
+        const result = await fsck(bigFileCtx);
+
+        // Assert — git names it only as a dangling blob, never a fault
+        expect(gitResult.stdout).toContain(`dangling blob ${aboveThresholdSha}`);
+        expect(gitResult.stderr).not.toContain(aboveThresholdSha);
+
+        // Assert — tsgit reports no fault for it either
+        const faults = result.findings.filter(
+          (f) =>
+            (f.type === 'hash-mismatch' || f.type === 'bad-object') && f.id === aboveThresholdSha,
+        );
+        expect(faults).toHaveLength(0);
+      });
     });
   },
 );

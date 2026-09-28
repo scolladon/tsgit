@@ -138,6 +138,42 @@ function underrunResult(
 }
 
 /**
+ * A blob past `core.bigFileThreshold` whose body under-ran its claim: git's
+ * `check_stream_oid` streams the real bytes and hashes them under the
+ * DECLARED-size header, exactly as they are stored — never padded to the
+ * claim, so this is the SAME formula `'honest'` uses (`ctx.hash.hashHex` of
+ * the buffered bytes verbatim), just reached via a size-lying claim instead
+ * of an honest one. No `MAX_INFLATE_OUTPUT_BYTES` ceiling applies: the cost
+ * this bounds is the zero-padding `underrunResult` streams, which a big-file
+ * claim never pays in the first place.
+ */
+function bigBlobUnderrunResult(ctx: Context, buffered: LooseBufferedRead): RawObjectResult {
+  return {
+    ok: true,
+    kind: 'blob',
+    rawBody: buffered.split.content,
+    computeHash: () => ctx.hash.hashHex(buffered.bytes),
+  };
+}
+
+/**
+ * A blob whose body under-ran its claim, routed by `core.bigFileThreshold`:
+ * git's type check gates ONLY on blob (never reached for a commit/tree/tag,
+ * which always takes `underrunResult`'s zero-padded path regardless of
+ * size), so this is the loose-native classify() 'underrun' arm's own
+ * routing, never `nonBlobRefuseResult`'s.
+ */
+function blobUnderrunResult(
+  ctx: Context,
+  buffered: LooseBufferedRead,
+  bigFileThreshold: number,
+): RawObjectResult {
+  return buffered.split.declaredSize > bigFileThreshold
+    ? bigBlobUnderrunResult(ctx, buffered)
+    : underrunResult(ctx, buffered, 'blob');
+}
+
+/**
  * git's `read_loose_object` has no type check at all: a commit/tree/tag
  * whose body under-ran its claim takes the SAME zero-padded hash path a
  * blob does (`hash-path mismatch`, never corrupt) — only a body that
@@ -159,9 +195,15 @@ function nonBlobRefuseResult(ctx: Context, buffered: LooseBufferedRead): RawObje
  * over-run commit/tree/tag (`'refuse'`) throws the same size-mismatch a
  * standalone read does, folded by the caller into the SAME undecodable
  * finding an unreadable object reports; an under-run one is re-routed to
- * the zero-padded hash path (`nonBlobRefuseResult`).
+ * the zero-padded hash path (`nonBlobRefuseResult`) — `classifyLooseBody`'s
+ * `'underrun'` verdict is only ever a blob (a commit/tree/tag disagreeing at
+ * all is `'refuse'`), so THIS is `core.bigFileThreshold`'s one gate.
  */
-function looseVerdictResult(ctx: Context, buffered: LooseBufferedRead): RawObjectResult {
+function looseVerdictResult(
+  ctx: Context,
+  buffered: LooseBufferedRead,
+  bigFileThreshold: number,
+): RawObjectResult {
   const { bytes, split } = buffered;
   switch (classifyLooseBody(split)) {
     case 'honest':
@@ -174,7 +216,7 @@ function looseVerdictResult(ctx: Context, buffered: LooseBufferedRead): RawObjec
     case 'truncate':
       return truncatedResult(ctx, buffered, split.type);
     case 'underrun':
-      return underrunResult(ctx, buffered, split.type);
+      return blobUnderrunResult(ctx, buffered, bigFileThreshold);
     case 'refuse':
       return nonBlobRefuseResult(ctx, buffered);
   }
@@ -192,10 +234,11 @@ async function looseRawObjectBody(
   ctx: Context,
   id: ObjectId,
   compressed: Uint8Array,
+  bigFileThreshold: number,
 ): Promise<RawObjectResult> {
   try {
     const buffered = await inflateLooseBuffered(ctx, id, compressed);
-    return looseVerdictResult(ctx, buffered);
+    return looseVerdictResult(ctx, buffered, bigFileThreshold);
   } catch (err) {
     if (!(err instanceof TsgitError)) throw err;
     return looseHeaderFailure(err);
@@ -236,9 +279,13 @@ async function packedRawObjectBody(ctx: Context, id: ObjectId): Promise<RawObjec
 
 /** Read an object's raw decompressed body for content validation, from
  *  whichever store holds it. */
-async function tryGetRawObjectBody(ctx: Context, id: ObjectId): Promise<RawObjectResult> {
+async function tryGetRawObjectBody(
+  ctx: Context,
+  id: ObjectId,
+  bigFileThreshold: number,
+): Promise<RawObjectResult> {
   const compressed = await looseCompressedBytes(ctx, id);
-  if (compressed !== undefined) return looseRawObjectBody(ctx, id, compressed);
+  if (compressed !== undefined) return looseRawObjectBody(ctx, id, compressed, bigFileThreshold);
   return packedRawObjectBody(ctx, id);
 }
 
@@ -298,6 +345,7 @@ interface CatalogueOptions {
   readonly blobFilenames: ReadonlyMap<ObjectId, string>;
   readonly severities: FsckSeverityTable;
   readonly skipped: ReadonlySet<string>;
+  readonly bigFileThreshold: number;
 }
 
 /**
@@ -413,7 +461,7 @@ async function validateOneObject(
   id: ObjectId,
   options: CatalogueOptions,
 ): Promise<ContentValidationResult> {
-  const rawResult = await tryGetRawObjectBody(ctx, id);
+  const rawResult = await tryGetRawObjectBody(ctx, id, options.bigFileThreshold);
   if (!rawResult.ok) return unreadableObjectResult(id, rawResult.msgId);
   const catalogue = catalogueResult(ctx, id, rawResult, options);
   const hash = await hashResult(id, rawResult);
@@ -435,10 +483,17 @@ export async function runContentValidationPass(
   blobFilenames: ReadonlyMap<ObjectId, string>,
   severities: FsckSeverityTable,
   skipped: ReadonlySet<string>,
+  bigFileThreshold: number,
 ): Promise<ContentValidationResult> {
   const findings: FsckFinding[] = [];
   let exitBit = 0;
-  const options: CatalogueOptions = { strict, blobFilenames, severities, skipped };
+  const options: CatalogueOptions = {
+    strict,
+    blobFilenames,
+    severities,
+    skipped,
+    bigFileThreshold,
+  };
 
   for (const id of universe) {
     const { findings: objFindings, exitBit: objBit } = await validateOneObject(ctx, id, options);

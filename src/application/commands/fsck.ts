@@ -65,7 +65,7 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   // while it reads its configuration, so an unknown msg-id, an out-of-grammar
   // severity or an unusable `fsck.skipList` refuses the whole audit rather
   // than the entry — whichever of them the FILE holds first.
-  const { severities, skipped } = await readFsckConfiguration(ctx);
+  const { severities, skipped, bigFileThreshold } = await readFsckConfiguration(ctx);
 
   // An integrity audit observes the STORE, never the object-byte read cache: a
   // delta base cached by an earlier read (or by this walk itself) would
@@ -119,6 +119,7 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
           blobFilenames,
           severities,
           skipped,
+          bigFileThreshold,
         );
 
   // Refs-verify pass — `confirmPackAccessibility` is true exactly when the

@@ -4,6 +4,7 @@ import {
   buildBlobFilenameMap,
   runContentValidationPass,
 } from '../../../../../../src/application/commands/internal/fsck/content-validation.js';
+import { DEFAULT_BIG_FILE_THRESHOLD_BYTES } from '../../../../../../src/application/commands/internal/fsck/read-configuration.js';
 import {
   looseObjectPath,
   objectsDir,
@@ -22,6 +23,10 @@ const sut = runContentValidationPass;
 
 /** No `fsck.skipList` configured. */
 const NO_SKIPS: ReadonlySet<string> = new Set();
+
+/** git's own `core.bigFileThreshold` default — every row that does not exist
+ *  to exercise the big-file gate itself uses this, so it never fires. */
+const DEFAULT_THRESHOLD = DEFAULT_BIG_FILE_THRESHOLD_BYTES;
 
 const BLOB_SHA_A = new Uint8Array(20).fill(1);
 const BLOB_SHA_B = new Uint8Array(20).fill(2);
@@ -90,7 +95,15 @@ describe('Given a universe containing an object that is neither loose nor readab
       const unreadableId = '0000000000000000000000000000000000000001' as ObjectId;
 
       // Act
-      const result = await sut(ctx, new Set([unreadableId]), false, new Map(), new Map(), NO_SKIPS);
+      const result = await sut(
+        ctx,
+        new Set([unreadableId]),
+        false,
+        new Map(),
+        new Map(),
+        NO_SKIPS,
+        DEFAULT_THRESHOLD,
+      );
 
       // Assert
       expect(result.findings).toEqual([
@@ -122,7 +135,15 @@ describe('Given a packed blob whose bytes do not hash to its indexed id', () => 
       const blobId = ids[0] as ObjectId;
 
       // Act
-      const result = await sut(ctx, new Set([blobId]), false, new Map(), new Map(), NO_SKIPS);
+      const result = await sut(
+        ctx,
+        new Set([blobId]),
+        false,
+        new Map(),
+        new Map(),
+        NO_SKIPS,
+        DEFAULT_THRESHOLD,
+      );
 
       // Assert
       const badTypeFindings = result.findings.filter(
@@ -163,7 +184,7 @@ describe('Given a packed blob validated for content', () => {
       });
 
       // Act
-      await sut(ctx, new Set([blobId]), false, new Map(), new Map(), NO_SKIPS);
+      await sut(ctx, new Set([blobId]), false, new Map(), new Map(), NO_SKIPS, DEFAULT_THRESHOLD);
 
       // Assert
       expect(updateSpy.mock.calls).toHaveLength(2);
@@ -184,7 +205,15 @@ describe('Given a packed tree with a duplicate entry name', () => {
       const { ctx, treeId } = await writePackedTree(treeBody);
 
       // Act
-      const result = await sut(ctx, new Set([treeId]), false, new Map(), new Map(), NO_SKIPS);
+      const result = await sut(
+        ctx,
+        new Set([treeId]),
+        false,
+        new Map(),
+        new Map(),
+        NO_SKIPS,
+        DEFAULT_THRESHOLD,
+      );
 
       // Assert
       const msgIds = result.findings
@@ -204,7 +233,15 @@ describe('Given a packed tree with a non-octal byte in the mode', () => {
       const { ctx, treeId } = await writePackedTree(treeBody);
 
       // Act
-      const result = await sut(ctx, new Set([treeId]), false, new Map(), new Map(), NO_SKIPS);
+      const result = await sut(
+        ctx,
+        new Set([treeId]),
+        false,
+        new Map(),
+        new Map(),
+        NO_SKIPS,
+        DEFAULT_THRESHOLD,
+      );
 
       // Assert
       const msgIds = result.findings
@@ -224,7 +261,15 @@ describe('Given a packed tree with an entry named "."', () => {
       const { ctx, treeId } = await writePackedTree(treeBody);
 
       // Act
-      const result = await sut(ctx, new Set([treeId]), false, new Map(), new Map(), NO_SKIPS);
+      const result = await sut(
+        ctx,
+        new Set([treeId]),
+        false,
+        new Map(),
+        new Map(),
+        NO_SKIPS,
+        DEFAULT_THRESHOLD,
+      );
 
       // Assert
       const msgIds = result.findings
@@ -244,7 +289,15 @@ describe('Given a packed tree with an entry named ".."', () => {
       const { ctx, treeId } = await writePackedTree(treeBody);
 
       // Act
-      const result = await sut(ctx, new Set([treeId]), false, new Map(), new Map(), NO_SKIPS);
+      const result = await sut(
+        ctx,
+        new Set([treeId]),
+        false,
+        new Map(),
+        new Map(),
+        NO_SKIPS,
+        DEFAULT_THRESHOLD,
+      );
 
       // Assert
       const msgIds = result.findings
@@ -264,7 +317,15 @@ describe('Given a packed tree with an entry name containing "/"', () => {
       const { ctx, treeId } = await writePackedTree(treeBody);
 
       // Act
-      const result = await sut(ctx, new Set([treeId]), false, new Map(), new Map(), NO_SKIPS);
+      const result = await sut(
+        ctx,
+        new Set([treeId]),
+        false,
+        new Map(),
+        new Map(),
+        NO_SKIPS,
+        DEFAULT_THRESHOLD,
+      );
 
       // Assert
       const msgIds = result.findings
@@ -289,7 +350,15 @@ describe('Given a packed tree whose entries are not sorted', () => {
       const { ctx, treeId } = await writePackedTree(treeBody);
 
       // Act
-      const result = await sut(ctx, new Set([treeId]), false, new Map(), new Map(), NO_SKIPS);
+      const result = await sut(
+        ctx,
+        new Set([treeId]),
+        false,
+        new Map(),
+        new Map(),
+        NO_SKIPS,
+        DEFAULT_THRESHOLD,
+      );
 
       // Assert
       const msgIds = result.findings
@@ -382,6 +451,7 @@ describe('Given fsck.<msg-id> re-types the id an unreadable object would report'
         new Map(),
         severities,
         NO_SKIPS,
+        DEFAULT_THRESHOLD,
       );
 
       // Assert
@@ -413,7 +483,15 @@ describe("Given a loose blob whose body overran its claim inside git's 32-byte h
       );
 
       // Act
-      const result = await sut(ctx, new Set([id]), false, new Map(), new Map(), NO_SKIPS);
+      const result = await sut(
+        ctx,
+        new Set([id]),
+        false,
+        new Map(),
+        new Map(),
+        NO_SKIPS,
+        DEFAULT_THRESHOLD,
+      );
 
       // Assert
       const mismatch = result.findings.find((f) => f.type === 'hash-mismatch');
@@ -436,7 +514,148 @@ describe('Given a loose blob whose body under-ran its claim', () => {
       );
 
       // Act
-      const result = await sut(ctx, new Set([id]), false, new Map(), new Map(), NO_SKIPS);
+      const result = await sut(
+        ctx,
+        new Set([id]),
+        false,
+        new Map(),
+        new Map(),
+        NO_SKIPS,
+        DEFAULT_THRESHOLD,
+      );
+
+      // Assert
+      const mismatch = result.findings.find((f) => f.type === 'hash-mismatch');
+      expect(mismatch).toMatchObject({ id, actual: expectedActual });
+    });
+  });
+});
+
+describe('Given a loose blob whose declared size exceeds core.bigFileThreshold and under-ran its claim', () => {
+  describe('When runContentValidationPass validates that object', () => {
+    it("Then emits a hash-mismatch finding whose actual is UNPADDED — git's streamed hash, not the zero-padded one", async () => {
+      // Arrange — declared 2000 past a 1024-byte threshold: git's
+      // `check_stream_oid` streams the real (short) body and hashes it
+      // under the DECLARED-size header, with no padding at all.
+      const ctx = createMemoryContext();
+      const id = 'f'.repeat(40) as ObjectId;
+      const body = ENCODER.encode('SHORT');
+      const threshold = 1024;
+      const claim = threshold + 1;
+      await writeLooseAtId(ctx, id, 'blob', claim, body);
+      const expectedActual = await ctx.hash.hashHex(
+        buildTree(ENCODER.encode(`blob ${claim}\0`), body),
+      );
+
+      // Act
+      const result = await sut(
+        ctx,
+        new Set([id]),
+        false,
+        new Map(),
+        new Map(),
+        NO_SKIPS,
+        threshold,
+      );
+
+      // Assert
+      const mismatch = result.findings.find((f) => f.type === 'hash-mismatch');
+      expect(mismatch).toMatchObject({ id, actual: expectedActual });
+      expect(result.findings.some((f) => f.type === 'bad-object')).toBe(false);
+    });
+  });
+});
+
+describe('Given a loose blob whose declared size sits exactly AT core.bigFileThreshold', () => {
+  describe('When runContentValidationPass validates that object', () => {
+    it('Then still takes the small-file zero-padded path — the gate is strictly greater-than', async () => {
+      // Arrange — git's own `size > big_file_threshold` comparison (pinned
+      // against git 2.55.0): the threshold value itself stays small-file.
+      const ctx = createMemoryContext();
+      const id = 'g'.repeat(40) as ObjectId;
+      const body = ENCODER.encode('SHORT');
+      const threshold = 1024;
+      await writeLooseAtId(ctx, id, 'blob', threshold, body);
+      const expectedActual = await ctx.hash.hashHex(
+        buildTree(
+          ENCODER.encode(`blob ${threshold}\0`),
+          body,
+          new Uint8Array(threshold - body.byteLength),
+        ),
+      );
+
+      // Act
+      const result = await sut(
+        ctx,
+        new Set([id]),
+        false,
+        new Map(),
+        new Map(),
+        NO_SKIPS,
+        threshold,
+      );
+
+      // Assert
+      const mismatch = result.findings.find((f) => f.type === 'hash-mismatch');
+      expect(mismatch).toMatchObject({ id, actual: expectedActual });
+    });
+  });
+});
+
+describe('Given a loose blob past core.bigFileThreshold whose claim ALSO exceeds the inflate ceiling', () => {
+  describe('When runContentValidationPass validates that object', () => {
+    it('Then still hashes cheaply (no bad-object refusal) — the big-file gate never pays the padding cost the ceiling exists to bound', async () => {
+      // Arrange — a claim far past MAX_INFLATE_OUTPUT_BYTES, but ALSO past
+      // a threshold of 0: real git streams a claim this size exactly as
+      // readily as a small one, so the ceiling this same claim trips on the
+      // small-file path must never fire here.
+      const ctx = createMemoryContext();
+      const id = 'h'.repeat(40) as ObjectId;
+      const body = ENCODER.encode('X');
+      const claim = MAX_INFLATE_OUTPUT_BYTES + 1000;
+      await writeLooseAtId(ctx, id, 'blob', claim, body);
+      const expectedActual = await ctx.hash.hashHex(
+        buildTree(ENCODER.encode(`blob ${claim}\0`), body),
+      );
+
+      // Act
+      const result = await sut(ctx, new Set([id]), false, new Map(), new Map(), NO_SKIPS, 0);
+
+      // Assert
+      const mismatch = result.findings.find((f) => f.type === 'hash-mismatch');
+      expect(mismatch).toMatchObject({ id, actual: expectedActual });
+      expect(result.findings.some((f) => f.type === 'bad-object')).toBe(false);
+    });
+  });
+});
+
+describe('Given a loose commit whose declared size exceeds core.bigFileThreshold and under-ran its claim', () => {
+  describe('When runContentValidationPass validates that object', () => {
+    it('Then still takes the zero-padded path — the threshold gates blobs only', async () => {
+      // Arrange — git's type check on the big-file streaming arm is blob
+      // only; a commit past the SAME threshold still zero-pads.
+      const ctx = createMemoryContext();
+      const id = 'i'.repeat(40) as ObjectId;
+      const body = ENCODER.encode(
+        `tree ${'0'.repeat(40)}\nauthor A <a@a.com> 0 +0000\ncommitter A <a@a.com> 0 +0000\n\nmsg\n`,
+      );
+      const threshold = 1;
+      const claim = body.byteLength + 10;
+      await writeLooseAtId(ctx, id, 'commit', claim, body);
+      const expectedActual = await ctx.hash.hashHex(
+        buildTree(ENCODER.encode(`commit ${claim}\0`), body, new Uint8Array(10)),
+      );
+
+      // Act
+      const result = await sut(
+        ctx,
+        new Set([id]),
+        false,
+        new Map(),
+        new Map(),
+        NO_SKIPS,
+        threshold,
+      );
 
       // Assert
       const mismatch = result.findings.find((f) => f.type === 'hash-mismatch');
@@ -472,7 +691,15 @@ describe.each([
       );
 
       // Act
-      const result = await sut(ctx, new Set([id]), false, new Map(), new Map(), NO_SKIPS);
+      const result = await sut(
+        ctx,
+        new Set([id]),
+        false,
+        new Map(),
+        new Map(),
+        NO_SKIPS,
+        DEFAULT_THRESHOLD,
+      );
 
       // Assert
       const mismatch = result.findings.find((f) => f.type === 'hash-mismatch');
@@ -494,7 +721,15 @@ describe("Given a loose commit whose body overran its claim inside git's 32-byte
       await writeLooseAtId(ctx, id, 'commit', 0, body);
 
       // Act
-      const result = await sut(ctx, new Set([id]), false, new Map(), new Map(), NO_SKIPS);
+      const result = await sut(
+        ctx,
+        new Set([id]),
+        false,
+        new Map(),
+        new Map(),
+        NO_SKIPS,
+        DEFAULT_THRESHOLD,
+      );
 
       // Assert
       expect(result.findings).toEqual([
@@ -515,14 +750,26 @@ describe('Given a loose blob whose under-run claim exceeds the inflate ceiling',
   describe('When runContentValidationPass validates that object', () => {
     it('Then emits a bad-object finding instead of hashing gigabytes of padding', async () => {
       // Arrange — a claim past MAX_INFLATE_OUTPUT_BYTES over a tiny real
-      // body: the residual would be gigabytes of zero padding.
+      // body: the residual would be gigabytes of zero padding. The
+      // configured threshold sits ABOVE the claim too, so this row still
+      // exercises the small-file (zero-pad) path's own ceiling refusal,
+      // never the big-file gate this same claim would otherwise trip.
       const ctx = createMemoryContext();
       const id = 'c'.repeat(40) as ObjectId;
       const body = ENCODER.encode('SHORT');
-      await writeLooseAtId(ctx, id, 'blob', MAX_INFLATE_OUTPUT_BYTES + 1, body);
+      const claim = MAX_INFLATE_OUTPUT_BYTES + 1;
+      await writeLooseAtId(ctx, id, 'blob', claim, body);
 
       // Act
-      const result = await sut(ctx, new Set([id]), false, new Map(), new Map(), NO_SKIPS);
+      const result = await sut(
+        ctx,
+        new Set([id]),
+        false,
+        new Map(),
+        new Map(),
+        NO_SKIPS,
+        claim + 1,
+      );
 
       // Assert
       expect(result.findings).toEqual([
@@ -550,7 +797,15 @@ describe("Given a loose blob whose body overran its claim past git's 32-byte hea
       await writeLooseAtId(ctx, id, 'blob', 6, body);
 
       // Act
-      const result = await sut(ctx, new Set([id]), false, new Map(), new Map(), NO_SKIPS);
+      const result = await sut(
+        ctx,
+        new Set([id]),
+        false,
+        new Map(),
+        new Map(),
+        NO_SKIPS,
+        DEFAULT_THRESHOLD,
+      );
 
       // Assert
       expect(result.findings).toEqual([
@@ -583,7 +838,15 @@ describe('Given a loose object whose compressed bytes are not valid zlib', () =>
       );
 
       // Act
-      const result = await sut(ctx, new Set([id]), false, new Map(), new Map(), NO_SKIPS);
+      const result = await sut(
+        ctx,
+        new Set([id]),
+        false,
+        new Map(),
+        new Map(),
+        NO_SKIPS,
+        DEFAULT_THRESHOLD,
+      );
 
       // Assert
       expect(result.findings).toEqual([

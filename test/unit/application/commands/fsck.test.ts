@@ -1235,6 +1235,74 @@ describe('Given a loose object whose content hash does not match its path (hash-
 });
 
 // ---------------------------------------------------------------------------
+// core.bigFileThreshold — gates the zero-padded hash for a size-lying blob
+// ---------------------------------------------------------------------------
+
+/** A blob whose header CLAIMS `declaredSize` while `body` holds the real
+ *  (shorter) bytes — the loose-object size-lying shape every row below
+ *  plants, written self-consistently at the SHA-1 of exactly these bytes
+ *  (`writeMalformedLooseObject`'s own hash, git's unpadded streamed formula). */
+function buildDeclaredSizeLyingBlob(declaredSize: number, body: Uint8Array): Uint8Array {
+  const header = enc2.encode(`blob ${declaredSize}\0`);
+  const raw = new Uint8Array(header.length + body.length);
+  raw.set(header, 0);
+  raw.set(body, header.length);
+  return raw;
+}
+
+describe('Given a loose blob stored self-consistently under its UNPADDED size-lying hash', () => {
+  describe('When fsck runs with core.bigFileThreshold configured below its declared size', () => {
+    it('Then reports neither hash-mismatch nor bad-object for it — the gate resolves through readConfig end to end', async () => {
+      // Arrange — declared 2000 past a 1k configured threshold: git's
+      // `check_stream_oid` streams the real (short) body and hashes it
+      // under the DECLARED-size header, unpadded — the SAME bytes this
+      // object is stored at, so this row is the wiring proof: readConfig →
+      // readFsckConfiguration → runContentValidationPass → the gate itself.
+      const ctx = await initBareCtx();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tbigFileThreshold = 1k\n');
+      const id = await writeMalformedLooseObject(
+        ctx,
+        buildDeclaredSizeLyingBlob(2000, enc2.encode('X')),
+      );
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert — dangling (unreferenced) is the expected, non-error finding;
+      // only an integrity fault for this id would be a wiring failure.
+      const faults = result.findings.filter(
+        (f) => (f.type === 'hash-mismatch' || f.type === 'bad-object') && f.id === id,
+      );
+      expect(faults).toHaveLength(0);
+    });
+  });
+
+  describe('When fsck runs without core.bigFileThreshold configured (git default, 512 MiB)', () => {
+    it('Then reports a hash-mismatch for it — the same declared size still zero-pads below the default threshold', async () => {
+      // Arrange — the SAME size-lying shape as above, this time under the
+      // default (unconfigured) threshold: 2000 sits nowhere near 512 MiB, so
+      // the small-file zero-padded path still governs.
+      const ctx = await initBareCtx();
+      const id = await writeMalformedLooseObject(
+        ctx,
+        buildDeclaredSizeLyingBlob(2000, enc2.encode('X')),
+      );
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const mismatch = result.findings.find(
+        (f): f is FsckFinding & { type: 'hash-mismatch' } =>
+          f.type === 'hash-mismatch' && f.id === id,
+      );
+      expect(mismatch).toBeDefined();
+      expect(mismatch?.actual).not.toBe(id);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // CONNECTIVITY-ONLY — content validation skipped
 // ---------------------------------------------------------------------------
 
