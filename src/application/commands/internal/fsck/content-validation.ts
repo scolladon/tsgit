@@ -578,7 +578,17 @@ async function validateOneObject(
     };
   }
   const hash = await hashResult(id, rawResult);
-  if (catalogueSuppressedByHash(storage, hash)) return { ...hash, reachabilityUnknown: false };
+  // git's `read_loose_object` returns on EVERY loose hash-path disagreement
+  // before `parse_object_buffer` ever runs, not only the over-threshold
+  // over-run `bigBlobTruncateResult` refuses outright — pinned live against
+  // git 2.55.0 (scrubbed env) across an honest-body wrong-path blob, a
+  // zero-padded under-run, a truncated-prefix over-run, and the big-file
+  // streamed variant of each: real git's stdout never names any of them.
+  // `true` here is what lets fsck.ts's `withUnreadableOverrides` null this
+  // id in the reachability cache, so a REFERRER reports `missing` instead
+  // of this id getting a spurious `dangling`/`unreachable` finding of its
+  // own.
+  if (catalogueSuppressedByHash(storage, hash)) return { ...hash, reachabilityUnknown: true };
   const catalogue = catalogueResult(ctx, id, rawResult, options);
   return {
     findings: [...catalogue.findings, ...hash.findings],

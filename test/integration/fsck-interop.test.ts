@@ -142,6 +142,27 @@ async function writeLooseObjectWithClaim(
   return sha1;
 }
 
+/**
+ * Writes a loose object at an ARBITRARY, caller-chosen id — unlike
+ * `writeLooseObjectWithClaim`'s own (honest) hash of its stored bytes, this
+ * id disagrees with the object's content under every verification formula
+ * git or tsgit computes, the same "moved to a fake path" shape
+ * `writeLooseObject` produces for a well-formed body, but for a header whose
+ * size CLAIM disagrees with `body`'s real length too.
+ */
+async function writeLooseObjectAtId(
+  workDir: string,
+  id: string,
+  type: string,
+  claim: number,
+  body: Buffer,
+): Promise<void> {
+  const raw = Buffer.concat([Buffer.from(`${type} ${claim}\0`), body]);
+  const objDir = path.join(workDir, '.git', 'objects', id.slice(0, 2));
+  await mkdir(objDir, { recursive: true });
+  await writeFile(path.join(objDir, id.slice(2)), deflateSync(raw));
+}
+
 /** Initialize a bare git repo at dir. */
 function initRepo(dir: string): void {
   runGit(['-C', dir, 'init', '-q', '-b', 'main'], { env: SAFE_ENV });
@@ -641,6 +662,75 @@ afterAll(async () => {
   if (bigFileDir !== '') await rm(bigFileDir, { recursive: true, force: true });
 });
 
+// --- Scenario: an under-run blob at an arbitrary (unrelated) path, gated by
+// core.bigFileThreshold — git's check_stream_oid reports a DIFFERENT pair of
+// stderr lines ("hash mismatch for … (expected …)" + "object corrupt or
+// missing") than the small-file zero-padded "hash-path mismatch" line, but
+// must still never type the object for reachability. ------------------------
+
+let bigFileUnderrunMismatchDir = '';
+let bigFileUnderrunMismatchCtx: Context;
+const BIG_FILE_UNDERRUN_MISMATCH_THRESHOLD = 3;
+const BIG_FILE_UNDERRUN_MISMATCH_SHA = '2'.repeat(40);
+
+beforeAll(async () => {
+  bigFileUnderrunMismatchDir = await mkdtemp(
+    path.join(os.tmpdir(), 'tsgit-fsck-bigFileUnderrunMismatch-'),
+  );
+  initRepo(bigFileUnderrunMismatchDir);
+  runGit(
+    [
+      '-C',
+      bigFileUnderrunMismatchDir,
+      'config',
+      'core.bigFileThreshold',
+      `${BIG_FILE_UNDERRUN_MISMATCH_THRESHOLD}`,
+    ],
+    { env: SAFE_ENV },
+  );
+  await writeLooseObjectAtId(
+    bigFileUnderrunMismatchDir,
+    BIG_FILE_UNDERRUN_MISMATCH_SHA,
+    'blob',
+    9,
+    Buffer.from('xxx'),
+  );
+
+  bigFileUnderrunMismatchCtx = createNodeContext({ workDir: bigFileUnderrunMismatchDir });
+}, SETUP_TIMEOUT);
+
+afterAll(async () => {
+  if (bigFileUnderrunMismatchDir !== '') {
+    await rm(bigFileUnderrunMismatchDir, { recursive: true, force: true });
+  }
+});
+
+// --- Scenario: an in-window over-run blob at an arbitrary (unrelated) path,
+// default threshold — git's small-file truncated-prefix "hash-path mismatch"
+// path, unreferenced. ---------------------------------------------------------
+
+let overrunMismatchDir = '';
+let overrunMismatchCtx: Context;
+const OVERRUN_MISMATCH_SHA = '4'.repeat(40);
+
+beforeAll(async () => {
+  overrunMismatchDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-overrunMismatch-'));
+  initRepo(overrunMismatchDir);
+  await writeLooseObjectAtId(
+    overrunMismatchDir,
+    OVERRUN_MISMATCH_SHA,
+    'blob',
+    6,
+    Buffer.from('HELLOWORLD'),
+  );
+
+  overrunMismatchCtx = createNodeContext({ workDir: overrunMismatchDir });
+}, SETUP_TIMEOUT);
+
+afterAll(async () => {
+  if (overrunMismatchDir !== '') await rm(overrunMismatchDir, { recursive: true, force: true });
+});
+
 /** git's zero-padded hash for a size-lying blob (`unpack_loose_rest`): the
  *  declared-size header, the real body, then zero bytes out to the claim. */
 function zeroPaddedBlobHash(declared: number, body: Buffer): string {
@@ -1034,6 +1124,24 @@ describe.skipIf(!GIT_AVAILABLE)(
           expect(gitResult.stderr).toContain(reconstructed);
         }
       });
+
+      it('Then never reports it dangling/unreachable — git never types an object its hash-path check refused', async () => {
+        // Arrange
+        const gitResult = gitFsck(hashMismatchDir);
+
+        // Act
+        const result = await fsck(hashMismatchCtx);
+
+        // Assert — git's own stdout never names this unreferenced, refused id
+        expect(gitResult.stdout).not.toContain(pathId);
+
+        // Assert — tsgit reports no dangling/unreachable finding for it either
+        const spurious = result.findings.filter(
+          (f) =>
+            'id' in f && f.id === pathId && (f.type === 'dangling' || f.type === 'unreachable'),
+        );
+        expect(spurious).toHaveLength(0);
+      });
     });
   },
 );
@@ -1235,6 +1343,25 @@ describe.skipIf(!GIT_AVAILABLE)(
         }
       });
 
+      it('Then below and AT the threshold never report it dangling/unreachable either', async () => {
+        // Arrange
+        const gitResult = gitFsck(bigFileDir);
+
+        // Act
+        const result = await fsck(bigFileCtx);
+
+        for (const sha of [belowThresholdSha, atThresholdSha]) {
+          // Assert — git's own stdout never names this unreferenced, refused id
+          expect(gitResult.stdout).not.toContain(sha);
+
+          // Assert — tsgit reports no dangling/unreachable finding for it either
+          const spurious = result.findings.filter(
+            (f) => 'id' in f && f.id === sha && (f.type === 'dangling' || f.type === 'unreachable'),
+          );
+          expect(spurious).toHaveLength(0);
+        }
+      });
+
       it('Then past the threshold reports neither hash-mismatch nor bad-object — git skips verification, and so does tsgit', async () => {
         // Arrange
         const gitResult = gitFsck(bigFileDir);
@@ -1252,6 +1379,90 @@ describe.skipIf(!GIT_AVAILABLE)(
             (f.type === 'hash-mismatch' || f.type === 'bad-object') && f.id === aboveThresholdSha,
         );
         expect(faults).toHaveLength(0);
+      });
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given an under-run blob at an arbitrary path, gated by a lowered core.bigFileThreshold',
+  () => {
+    describe('When fsck runs', () => {
+      it("Then emits git's two-line check_stream_oid mismatch, and never reports it dangling/unreachable", async () => {
+        // Arrange
+        const gitResult = gitFsck(bigFileUnderrunMismatchDir);
+
+        // Act
+        const result = await fsck(bigFileUnderrunMismatchCtx);
+
+        // Assert — exit bit 1 matches real git on both sides
+        expect(result.exitCode & 1).toBe(1);
+        expect(gitResult.exitCode & 1).toBe(1);
+
+        // git: "error: hash mismatch for <path> (expected <fake-oid>)"
+        //      "error: <fake-oid>: object corrupt or missing: <path>"
+        expect(gitResult.stderr).toContain(
+          `hash mismatch for .git/objects/${BIG_FILE_UNDERRUN_MISMATCH_SHA.slice(0, 2)}/${BIG_FILE_UNDERRUN_MISMATCH_SHA.slice(2)}`,
+        );
+        expect(gitResult.stderr).toContain(
+          `${BIG_FILE_UNDERRUN_MISMATCH_SHA}: object corrupt or missing:`,
+        );
+
+        // Assert — git's own stdout never names this unreferenced, refused id
+        expect(gitResult.stdout).not.toContain(BIG_FILE_UNDERRUN_MISMATCH_SHA);
+
+        // Assert — tsgit reports no dangling/unreachable finding for it either
+        const spurious = result.findings.filter(
+          (f) =>
+            'id' in f &&
+            f.id === BIG_FILE_UNDERRUN_MISMATCH_SHA &&
+            (f.type === 'dangling' || f.type === 'unreachable'),
+        );
+        expect(spurious).toHaveLength(0);
+      });
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given an in-window over-run blob at an arbitrary path, default core.bigFileThreshold',
+  () => {
+    describe('When fsck runs', () => {
+      it("Then emits git's truncated-prefix hash-path mismatch, and never reports it dangling/unreachable", async () => {
+        // Arrange
+        const gitResult = gitFsck(overrunMismatchDir);
+
+        // Act
+        const result = await fsck(overrunMismatchCtx);
+
+        // Assert — exit bit 1 matches real git on both sides
+        expect(result.exitCode & 1).toBe(1);
+        expect(gitResult.exitCode & 1).toBe(1);
+
+        // Assert — hash-mismatch finding present for the stored (fake) oid
+        const mismatch = result.findings.find(
+          (f): f is FsckFinding & { type: 'hash-mismatch' } =>
+            f.type === 'hash-mismatch' && f.id === OVERRUN_MISMATCH_SHA,
+        );
+        expect(mismatch).toBeDefined();
+
+        // git: "error: <actual-sha>: hash-path mismatch, found at: .git/objects/<prefix>/<suffix>"
+        if (mismatch !== undefined) {
+          const reconstructed = `${mismatch.actual}: hash-path mismatch, found at:`;
+          expect(gitResult.stderr).toContain(reconstructed);
+        }
+
+        // Assert — git's own stdout never names this unreferenced, refused id
+        expect(gitResult.stdout).not.toContain(OVERRUN_MISMATCH_SHA);
+
+        // Assert — tsgit reports no dangling/unreachable finding for it either
+        const spurious = result.findings.filter(
+          (f) =>
+            'id' in f &&
+            f.id === OVERRUN_MISMATCH_SHA &&
+            (f.type === 'dangling' || f.type === 'unreachable'),
+        );
+        expect(spurious).toHaveLength(0);
       });
     });
   },

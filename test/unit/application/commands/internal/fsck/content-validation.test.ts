@@ -116,6 +116,9 @@ describe('Given a universe containing an object that is neither loose nor readab
         },
       ]);
       expect(result.exitBit).toBe(1);
+      // Assert — never loose, so no readObject/content-validation typing
+      // disagreement is possible; typeUnknownIds stays empty.
+      expect(result.typeUnknownIds.has(unreadableId)).toBe(false);
     });
   });
 });
@@ -161,6 +164,9 @@ describe('Given a packed blob whose bytes do not hash to its indexed id', () => 
         const realHash = await ctx.hash.hashHex(realBytes);
         expect(hashMismatchFindings[0].actual).toBe(realHash);
       }
+      // Assert — a packed mismatch carries no path to disagree with, so it
+      // never suppresses the catalogue and never marks the id unreadable.
+      expect(result.typeUnknownIds.has(blobId)).toBe(false);
     });
   });
 });
@@ -496,6 +502,9 @@ describe("Given a loose blob whose body overran its claim inside git's 32-byte h
       // Assert
       const mismatch = result.findings.find((f) => f.type === 'hash-mismatch');
       expect(mismatch).toMatchObject({ id, actual: expectedActual });
+      // Assert — git's read_loose_object returns on the mismatch before
+      // typing the object, so the reachability pass must not type it either.
+      expect(result.typeUnknownIds.has(id)).toBe(true);
     });
   });
 });
@@ -527,6 +536,9 @@ describe('Given a loose blob whose body under-ran its claim', () => {
       // Assert
       const mismatch = result.findings.find((f) => f.type === 'hash-mismatch');
       expect(mismatch).toMatchObject({ id, actual: expectedActual });
+      // Assert — git's read_loose_object returns on the mismatch before
+      // typing the object, so the reachability pass must not type it either.
+      expect(result.typeUnknownIds.has(id)).toBe(true);
     });
   });
 });
@@ -562,6 +574,9 @@ describe('Given a loose blob whose declared size exceeds core.bigFileThreshold a
       const mismatch = result.findings.find((f) => f.type === 'hash-mismatch');
       expect(mismatch).toMatchObject({ id, actual: expectedActual });
       expect(result.findings.some((f) => f.type === 'bad-object')).toBe(false);
+      // Assert — git's read_loose_object returns on the mismatch before
+      // typing the object, so the reachability pass must not type it either.
+      expect(result.typeUnknownIds.has(id)).toBe(true);
     });
   });
 });
@@ -598,6 +613,9 @@ describe('Given a loose blob whose declared size sits exactly AT core.bigFileThr
       // Assert
       const mismatch = result.findings.find((f) => f.type === 'hash-mismatch');
       expect(mismatch).toMatchObject({ id, actual: expectedActual });
+      // Assert — git's read_loose_object returns on the mismatch before
+      // typing the object, so the reachability pass must not type it either.
+      expect(result.typeUnknownIds.has(id)).toBe(true);
     });
   });
 });
@@ -637,6 +655,10 @@ describe('Given a loose blob whose declared size exceeds core.bigFileThreshold a
         },
       ]);
       expect(result.exitBit).toBe(1);
+      // Assert — git's check_stream_oid refusal denies its reachability
+      // graph the type too: this id must not be typed, so a real referrer
+      // to it is left `missing`, never `dangling`/`unreachable`.
+      expect(result.typeUnknownIds.has(id)).toBe(true);
     });
   });
 });
@@ -670,6 +692,9 @@ describe('Given a loose blob whose declared size sits exactly AT core.bigFileThr
       const mismatch = result.findings.find((f) => f.type === 'hash-mismatch');
       expect(mismatch).toMatchObject({ id, actual: expectedActual });
       expect(result.findings.some((f) => f.type === 'bad-object')).toBe(false);
+      // Assert — git's read_loose_object returns on the mismatch before
+      // typing the object, so the reachability pass must not type it either.
+      expect(result.typeUnknownIds.has(id)).toBe(true);
     });
   });
 });
@@ -697,6 +722,9 @@ describe('Given a loose blob past core.bigFileThreshold whose claim ALSO exceeds
       const mismatch = result.findings.find((f) => f.type === 'hash-mismatch');
       expect(mismatch).toMatchObject({ id, actual: expectedActual });
       expect(result.findings.some((f) => f.type === 'bad-object')).toBe(false);
+      // Assert — git's read_loose_object returns on the mismatch before
+      // typing the object, so the reachability pass must not type it either.
+      expect(result.typeUnknownIds.has(id)).toBe(true);
     });
   });
 });
@@ -732,6 +760,9 @@ describe('Given a loose commit whose declared size exceeds core.bigFileThreshold
       // Assert
       const mismatch = result.findings.find((f) => f.type === 'hash-mismatch');
       expect(mismatch).toMatchObject({ id, actual: expectedActual });
+      // Assert — git's read_loose_object returns on the mismatch before
+      // typing the object, so the reachability pass must not type it either.
+      expect(result.typeUnknownIds.has(id)).toBe(true);
     });
   });
 });
@@ -777,6 +808,9 @@ describe.each([
       const mismatch = result.findings.find((f) => f.type === 'hash-mismatch');
       expect(mismatch).toMatchObject({ id, actual: expectedActual });
       expect(result.findings.some((f) => f.type === 'bad-object')).toBe(false);
+      // Assert — git's read_loose_object returns on the mismatch before
+      // typing the object, so the reachability pass must not type it either.
+      expect(result.typeUnknownIds.has(id)).toBe(true);
     });
   });
 });
@@ -816,6 +850,9 @@ describe.each([
         const mismatch = result.findings.find((f) => f.type === 'hash-mismatch');
         expect(mismatch).toMatchObject({ id, actual: expectedActual });
         expect(result.findings.some((f) => f.type === 'bad-object')).toBe(false);
+        // Assert — git's read_loose_object returns on the mismatch before
+        // typing the object, so the reachability pass must not type it either.
+        expect(result.typeUnknownIds.has(id)).toBe(true);
       });
     });
   },
@@ -854,6 +891,9 @@ describe("Given a loose commit whose body overran its claim past git's 32-byte h
         },
       ]);
       expect(result.exitBit).toBe(1);
+      // Assert — also fails readObject's own read (same inflate call), so
+      // the general resolver never disagrees; no override is needed.
+      expect(result.typeUnknownIds.has(id)).toBe(false);
     });
   });
 });
@@ -894,6 +934,9 @@ describe('Given a loose blob whose under-run claim exceeds the inflate ceiling',
         },
       ]);
       expect(result.exitBit).toBe(1);
+      // Assert — tsgit's own safety ceiling, not a git-faithfulness gate:
+      // out of scope for the reachability-typing fix, left untyped as false.
+      expect(result.typeUnknownIds.has(id)).toBe(false);
     });
   });
 });
@@ -930,6 +973,9 @@ describe("Given a loose blob whose body overran its claim past git's 32-byte hea
         },
       ]);
       expect(result.exitBit).toBe(1);
+      // Assert — also fails readObject's own read (same inflate call), so
+      // the general resolver never disagrees; no override is needed.
+      expect(result.typeUnknownIds.has(id)).toBe(false);
     });
   });
 });
@@ -960,6 +1006,9 @@ describe('Given a loose commit whose header claims more than its real body, and 
       // Assert
       expect(result.findings).toHaveLength(1);
       expect(result.findings[0]?.type).toBe('hash-mismatch');
+      // Assert — git's read_loose_object returns on the mismatch before
+      // typing the object, so the reachability pass must not type it either.
+      expect(result.typeUnknownIds.has(id)).toBe(true);
     });
   });
 });
@@ -991,6 +1040,9 @@ describe('Given a correctly-sized loose commit stored at the wrong path, whose c
       // Assert
       expect(result.findings).toHaveLength(1);
       expect(result.findings[0]?.type).toBe('hash-mismatch');
+      // Assert — git's read_loose_object returns on the mismatch before
+      // typing the object, so the reachability pass must not type it either.
+      expect(result.typeUnknownIds.has(id)).toBe(true);
     });
   });
 });
@@ -1035,7 +1087,7 @@ describe('Given a packed tree with duplicateEntries whose bytes are ALSO indexed
 
 describe('Given a loose object whose compressed bytes are not valid zlib', () => {
   describe('When runContentValidationPass validates that object', () => {
-    it('Then emits a bad-object finding via the zlib-failure path, not the header-parse path', async () => {
+    it('Then emits a bad-object finding via the zlib-failure path, not the header-parse path, and leaves typeUnknownIds empty', async () => {
       // Arrange — a zlib decode fault reaches the SAME undecodable finding
       // as a header-parse fault, through looseHeaderFailure's non-candidate
       // branch (its reason defaults to '', never 'unknown object type').
@@ -1070,6 +1122,9 @@ describe('Given a loose object whose compressed bytes are not valid zlib', () =>
         },
       ]);
       expect(result.exitBit).toBe(1);
+      // Assert — also fails readObject's own read (same inflate call), so
+      // the general resolver never disagrees; no override is needed.
+      expect(result.typeUnknownIds.has(id)).toBe(false);
     });
   });
 });
