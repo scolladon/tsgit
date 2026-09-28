@@ -226,206 +226,228 @@ export function compressorContractTests(createSut: () => Promise<Compressor>): v
       expect(data.reason).toContain('exceeds safety cap');
     });
 
-    it('Given data whose inflated output exceeds a caller-supplied bound, When inflate is called with that bound, Then it rejects with DECOMPRESS_FAILED and the cap reason', async () => {
-      // Arrange — highly compressible so the deflated form is tiny while the
-      // inflated output (64 KiB) comfortably exceeds the 1024-byte bound.
-      const sut = await createSut();
-      const data = new Uint8Array(64 * 1024).fill(0x41);
-      const deflated = await sut.deflate(data);
+    describe('Given data whose inflated output exceeds a caller-supplied bound, When inflate is called with that bound', () => {
+      it('Then it rejects with DECOMPRESS_FAILED and the cap reason', async () => {
+        // Arrange — highly compressible so the deflated form is tiny while the
+        // inflated output (64 KiB) comfortably exceeds the 1024-byte bound.
+        const sut = await createSut();
+        const data = new Uint8Array(64 * 1024).fill(0x41);
+        const deflated = await sut.deflate(data);
 
-      // Act
-      let caught: unknown;
-      try {
-        await sut.inflate(deflated, 1024);
-      } catch (err) {
-        caught = err;
-      }
+        // Act
+        let caught: unknown;
+        try {
+          await sut.inflate(deflated, 1024);
+        } catch (err) {
+          caught = err;
+        }
 
-      // Assert
-      expect(caught).toBeInstanceOf(TsgitError);
-      const errData = (caught as TsgitError).data;
-      expect(errData.code).toBe('DECOMPRESS_FAILED');
-      if (errData.code === 'DECOMPRESS_FAILED') {
-        expect(errData.reason).toBe('inflated output exceeds safety cap');
-      }
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const errData = (caught as TsgitError).data;
+        expect(errData.code).toBe('DECOMPRESS_FAILED');
+        if (errData.code === 'DECOMPRESS_FAILED') {
+          expect(errData.reason).toBe('inflated output exceeds safety cap');
+        }
+      });
     });
 
-    it('Given data whose inflated output exactly equals a caller-supplied bound, When inflate is called with that bound, Then it returns the whole output (boundary is not exceeded)', async () => {
-      // Arrange
-      const sut = await createSut();
-      const data = new TextEncoder().encode('exact bound payload');
-      const deflated = await sut.deflate(data);
-
-      // Act
-      const result = await sut.inflate(deflated, data.length);
-
-      // Assert
-      expect(result).toEqual(data);
-    });
-
-    it('Given a stream whose whole output fits under the head bound, When inflateHead is called with a larger bound, Then it returns the whole output, not padded to the bound', async () => {
-      // Arrange
-      const sut = await createSut();
-      const data = new Uint8Array(20).fill(0x41);
-      const deflated = await sut.deflate(data);
-
-      // Act
-      const result = await sut.inflateHead(deflated, 33);
-
-      // Assert
-      expect(result).toEqual(data);
-    });
-
-    it('Given a stream whose output is truncated inside a raw stored block, When inflateHead is called with a bound inside that block, Then it returns exactly the truncated leading bytes', async () => {
-      // Arrange — reuses the hand-built stored-block member below (bypasses
-      // any adapter's own deflate, so its block layout is pinned): the bound
-      // lands inside the single STORED block's live bytes, well before the
-      // corrupted trailing header the same member also carries.
-      const sut = await createSut();
-      const literalByteCount = 40;
-      const bound = 10;
-      const member = buildOverCapStoredZlibMember(literalByteCount);
-
-      // Act
-      const result = await sut.inflateHead(member, bound);
-
-      // Assert
-      expect(result).toEqual(new Uint8Array(bound));
-    });
-
-    it('Given a stream whose output is truncated inside a SECOND raw stored block, When inflateHead is called with a bound past the whole first block, Then it returns exactly the truncated leading bytes', async () => {
-      // Arrange — a first stored block short enough to be written in full
-      // (unclamped) before a second, longer one absorbs the truncation.
-      const sut = await createSut();
-      const firstBlockByteCount = 20;
-      const secondBlockByteCount = 40;
-      const member = buildTwoStoredBlocksZlibMember(firstBlockByteCount, secondBlockByteCount);
-      const bound = firstBlockByteCount + 5;
-
-      // Act
-      const result = await sut.inflateHead(member, bound);
-
-      // Assert
-      expect(result).toEqual(new Uint8Array(bound));
-    });
-
-    it("Given a stored block's declared length reaching past the compressed INPUT's own end, When inflateHead is called with a bound that fits inside the bytes actually present, Then it returns exactly the bound bytes without ever needing the full declared length", async () => {
-      // Arrange — the block's own LEN field claims 1000 live bytes, but the
-      // member (deliberately, not a corrupt trailer) simply ends after 15 of
-      // them: a stored block's output is a 1:1 copy of its input, so the cap
-      // (10) is satisfiable from the 15 bytes present, well short of the
-      // declared 1000 the naive all-or-nothing read would otherwise demand
-      // up front.
-      const sut = await createSut();
-      const declaredLen = 1000;
-      const availableByteCount = 15;
-      const bound = 10;
-      const member = buildTruncatedStoredZlibMember(declaredLen, availableByteCount);
-
-      // Act
-      const result = await sut.inflateHead(member, bound);
-
-      // Assert
-      expect(result).toEqual(new Uint8Array(bound).fill(0x41));
-    });
-
-    it('Given a stream whose output is truncated inside a long-distance back-reference match, When inflateHead is called with a bound inside that match, Then it returns exactly the truncated leading bytes', async () => {
-      // Arrange — the trailing "abcdefghij" repeats the leading one 510
-      // bytes back, so deflate encodes it as a single back-reference whose
-      // distance (510) is well past the head bound's remaining room —
-      // exercising the truncating buffer's non-overlapping copy path.
-      const sut = await createSut();
-      const prefix = new TextEncoder().encode('abcdefghij');
-      const filler = new TextEncoder().encode('0123456789'.repeat(50));
-      const data = new Uint8Array(prefix.length + filler.length + prefix.length);
-      data.set(prefix, 0);
-      data.set(filler, prefix.length);
-      data.set(prefix, prefix.length + filler.length);
-      const deflated = await sut.deflate(data);
-      const bound = prefix.length + filler.length + 3;
-
-      // Act
-      const result = await sut.inflateHead(deflated, bound);
-
-      // Assert
-      expect(result).toEqual(data.subarray(0, bound));
-    });
-
-    it.each([
-      { label: 'highly compressible', build: () => new Uint8Array(1024 * 1024).fill(0x61) },
-      { label: 'incompressible', build: () => new Uint8Array(randomBytes(1024 * 1024)) },
-    ])(
-      'Given a 1 MiB $label stream, When inflateHead is called with a small bound, Then it returns exactly that many leading bytes',
-      async ({ build }) => {
+    describe('Given data whose inflated output exactly equals a caller-supplied bound, When inflate is called with that bound', () => {
+      it('Then it returns the whole output (boundary is not exceeded)', async () => {
         // Arrange
         const sut = await createSut();
-        const data = build();
+        const data = new TextEncoder().encode('exact bound payload');
+        const deflated = await sut.deflate(data);
+
+        // Act
+        const result = await sut.inflate(deflated, data.length);
+
+        // Assert
+        expect(result).toEqual(data);
+      });
+    });
+
+    describe('Given a stream whose whole output fits under the head bound, When inflateHead is called with a larger bound', () => {
+      it('Then it returns the whole output, not padded to the bound', async () => {
+        // Arrange
+        const sut = await createSut();
+        const data = new Uint8Array(20).fill(0x41);
         const deflated = await sut.deflate(data);
 
         // Act
         const result = await sut.inflateHead(deflated, 33);
 
         // Assert
-        expect(result).toEqual(data.subarray(0, 33));
+        expect(result).toEqual(data);
+      });
+    });
+
+    describe('Given a stream whose output is truncated inside a raw stored block, When inflateHead is called with a bound inside that block', () => {
+      it('Then it returns exactly the truncated leading bytes', async () => {
+        // Arrange — reuses the hand-built stored-block member below (bypasses
+        // any adapter's own deflate, so its block layout is pinned): the bound
+        // lands inside the single STORED block's live bytes, well before the
+        // corrupted trailing header the same member also carries.
+        const sut = await createSut();
+        const literalByteCount = 40;
+        const bound = 10;
+        const member = buildOverCapStoredZlibMember(literalByteCount);
+
+        // Act
+        const result = await sut.inflateHead(member, bound);
+
+        // Assert
+        expect(result).toEqual(new Uint8Array(bound));
+      });
+    });
+
+    describe('Given a stream whose output is truncated inside a SECOND raw stored block, When inflateHead is called with a bound past the whole first block', () => {
+      it('Then it returns exactly the truncated leading bytes', async () => {
+        // Arrange — a first stored block short enough to be written in full
+        // (unclamped) before a second, longer one absorbs the truncation.
+        const sut = await createSut();
+        const firstBlockByteCount = 20;
+        const secondBlockByteCount = 40;
+        const member = buildTwoStoredBlocksZlibMember(firstBlockByteCount, secondBlockByteCount);
+        const bound = firstBlockByteCount + 5;
+
+        // Act
+        const result = await sut.inflateHead(member, bound);
+
+        // Assert
+        expect(result).toEqual(new Uint8Array(bound));
+      });
+    });
+
+    describe("Given a stored block's declared length reaching past the compressed INPUT's own end, When inflateHead is called with a bound that fits inside the bytes actually present", () => {
+      it('Then it returns exactly the bound bytes without ever needing the full declared length', async () => {
+        // Arrange — the block's own LEN field claims 1000 live bytes, but the
+        // member (deliberately, not a corrupt trailer) simply ends after 15 of
+        // them: a stored block's output is a 1:1 copy of its input, so the cap
+        // (10) is satisfiable from the 15 bytes present, well short of the
+        // declared 1000 the naive all-or-nothing read would otherwise demand
+        // up front.
+        const sut = await createSut();
+        const declaredLen = 1000;
+        const availableByteCount = 15;
+        const bound = 10;
+        const member = buildTruncatedStoredZlibMember(declaredLen, availableByteCount);
+
+        // Act
+        const result = await sut.inflateHead(member, bound);
+
+        // Assert
+        expect(result).toEqual(new Uint8Array(bound).fill(0x41));
+      });
+    });
+
+    describe('Given a stream whose output is truncated inside a long-distance back-reference match, When inflateHead is called with a bound inside that match', () => {
+      it('Then it returns exactly the truncated leading bytes', async () => {
+        // Arrange — the trailing "abcdefghij" repeats the leading one 510
+        // bytes back, so deflate encodes it as a single back-reference whose
+        // distance (510) is well past the head bound's remaining room —
+        // exercising the truncating buffer's non-overlapping copy path.
+        const sut = await createSut();
+        const prefix = new TextEncoder().encode('abcdefghij');
+        const filler = new TextEncoder().encode('0123456789'.repeat(50));
+        const data = new Uint8Array(prefix.length + filler.length + prefix.length);
+        data.set(prefix, 0);
+        data.set(filler, prefix.length);
+        data.set(prefix, prefix.length + filler.length);
+        const deflated = await sut.deflate(data);
+        const bound = prefix.length + filler.length + 3;
+
+        // Act
+        const result = await sut.inflateHead(deflated, bound);
+
+        // Assert
+        expect(result).toEqual(data.subarray(0, bound));
+      });
+    });
+
+    describe.each([
+      { label: 'highly compressible', build: () => new Uint8Array(1024 * 1024).fill(0x61) },
+      { label: 'incompressible', build: () => new Uint8Array(randomBytes(1024 * 1024)) },
+    ])(
+      'Given a 1 MiB $label stream, When inflateHead is called with a small bound',
+      ({ build }) => {
+        it('Then it returns exactly that many leading bytes', async () => {
+          // Arrange
+          const sut = await createSut();
+          const data = build();
+          const deflated = await sut.deflate(data);
+
+          // Act
+          const result = await sut.inflateHead(deflated, 33);
+
+          // Assert
+          expect(result).toEqual(data.subarray(0, 33));
+        });
       },
     );
 
-    it('Given no valid zlib stream, When inflateHead is called, Then it rejects with DECOMPRESS_FAILED', async () => {
-      // Arrange
-      const sut = await createSut();
-      const junk = new Uint8Array([0xff, 0xfe, 0xfd, 0xfc]);
+    describe('Given no valid zlib stream, When inflateHead is called', () => {
+      it('Then it rejects with DECOMPRESS_FAILED', async () => {
+        // Arrange
+        const sut = await createSut();
+        const junk = new Uint8Array([0xff, 0xfe, 0xfd, 0xfc]);
 
-      // Act
-      let caught: unknown;
-      try {
-        await sut.inflateHead(junk, 33);
-      } catch (err) {
-        caught = err;
-      }
+        // Act
+        let caught: unknown;
+        try {
+          await sut.inflateHead(junk, 33);
+        } catch (err) {
+          caught = err;
+        }
 
-      // Assert
-      expect(caught).toBeInstanceOf(TsgitError);
-      expect((caught as TsgitError).data.code).toBe('DECOMPRESS_FAILED');
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('DECOMPRESS_FAILED');
+      });
     });
 
-    it('Given a valid zlib header followed by a corrupted block, When inflateHead is called, Then it rejects with DECOMPRESS_FAILED (a genuine decode error is never swallowed as the head bound being reached)', async () => {
-      // Arrange — a valid 2-byte zlib header followed by a reserved block
-      // type (BTYPE=11): the header alone is not enough to reach the bound,
-      // so decoding must continue and hit the corruption before any
-      // "bound reached" signal could apply.
-      const sut = await createSut();
-      const member = new Uint8Array([0x78, 0x9c, 0x06]);
+    describe('Given a valid zlib header followed by a corrupted block, When inflateHead is called', () => {
+      it('Then it rejects with DECOMPRESS_FAILED (a genuine decode error is never swallowed as the head bound being reached)', async () => {
+        // Arrange — a valid 2-byte zlib header followed by a reserved block
+        // type (BTYPE=11): the header alone is not enough to reach the bound,
+        // so decoding must continue and hit the corruption before any
+        // "bound reached" signal could apply.
+        const sut = await createSut();
+        const member = new Uint8Array([0x78, 0x9c, 0x06]);
 
-      // Act
-      let caught: unknown;
-      try {
-        await sut.inflateHead(member, 100);
-      } catch (err) {
-        caught = err;
-      }
+        // Act
+        let caught: unknown;
+        try {
+          await sut.inflateHead(member, 100);
+        } catch (err) {
+          caught = err;
+        }
 
-      // Assert
-      expect(caught).toBeInstanceOf(TsgitError);
-      expect((caught as TsgitError).data.code).toBe('DECOMPRESS_FAILED');
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data.code).toBe('DECOMPRESS_FAILED');
+      });
     });
 
-    it('Given arbitrary bytes deflated and an arbitrary bound, When inflateHead is called with that bound, Then it returns exactly the leading bytes of the original payload (port law)', async () => {
-      // Arrange
-      const sut = await createSut();
+    describe('Given arbitrary bytes deflated and an arbitrary bound, When inflateHead is called with that bound', () => {
+      it('Then it returns exactly the leading bytes of the original payload (port law)', async () => {
+        // Arrange
+        const sut = await createSut();
 
-      // Act + Assert
-      await fc.assert(
-        fc.asyncProperty(
-          fc.uint8Array({ minLength: 0, maxLength: HEAD_PROPERTY_MAX_PAYLOAD_BYTES }),
-          fc.integer({ min: 1, max: HEAD_PROPERTY_MAX_BOUND }),
-          async (payload, bound) => {
-            const deflated = await sut.deflate(payload);
-            const result = await sut.inflateHead(deflated, bound);
-            expect(result).toEqual(payload.subarray(0, bound));
-          },
-        ),
-        { numRuns: HEAD_PROPERTY_NUM_RUNS },
-      );
+        // Act + Assert
+        await fc.assert(
+          fc.asyncProperty(
+            fc.uint8Array({ minLength: 0, maxLength: HEAD_PROPERTY_MAX_PAYLOAD_BYTES }),
+            fc.integer({ min: 1, max: HEAD_PROPERTY_MAX_BOUND }),
+            async (payload, bound) => {
+              const deflated = await sut.deflate(payload);
+              const result = await sut.inflateHead(deflated, bound);
+              expect(result).toEqual(payload.subarray(0, bound));
+            },
+          ),
+          { numRuns: HEAD_PROPERTY_NUM_RUNS },
+        );
+      });
     });
 
     it('Given non-empty data, When deflateRaw vs deflate, Then outputs differ (no zlib wrapper)', async () => {
