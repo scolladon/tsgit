@@ -170,8 +170,8 @@ describe('similarity properties', () => {
     describe('When countCopied is compared against the independent Map oracle', () => {
       it('Then the typed merge-scan matches the oracle exactly, including a src/dst kind mismatch', () => {
         // Arrange — srcKind and dstKind are drawn INDEPENDENTLY: each side of
-        // a real pair is sniffed on its own (`countSpanhashChanges`'s
-        // default, undefined override), so a src/dst content-kind mismatch is
+        // a real pair is sniffed on its own (`contentKindOf`'s default,
+        // absent-override behaviour), so a src/dst content-kind mismatch is
         // a real scenario, not just a same-kind pair repeated twice.
         const sut = countCopied;
         fc.assert(

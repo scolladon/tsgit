@@ -59,8 +59,8 @@ export type ContentKind = 'text' | 'binary';
  * bytes window (`line-diff.ts`). The attribute-decided case is resolved
  * upstream, per path, by `resolveSimilarityOverride`
  * (`detect-similarity-renames.ts`'s callers thread the result in as
- * `buildFingerprint`/`countSpanhashChanges`'s `override` — this function
- * only ever runs when that override is absent).
+ * `buildFingerprint`'s `override` param — this function only ever runs
+ * when that override is absent).
  */
 export function contentKindOf(bytes: Uint8Array): ContentKind {
   return isBinary(bytes) ? 'binary' : 'text';
@@ -254,37 +254,22 @@ function sumFingerprintCounts(fp: SpanFingerprint): number {
 }
 
 /**
- * Return git's raw `diffcore_count_changes` outputs for a (src, dst) blob pair.
- * These are the load-bearing counts for break scoring (not similarity scoring):
+ * Return git's raw `diffcore_count_changes` outputs for a (src, dst)
+ * fingerprint pair. These are the load-bearing counts for break scoring
+ * (not similarity scoring):
  *
  *   merge_score  = (srcSize − srcCopied) * MAX_SCORE / srcSize   (denominator = srcSize)
  *   break_score  = min(srcSize + dstSize − 2*srcCopied, maxSize) * MAX_SCORE / maxSize
  *
- * `override`, when given, decides BOTH sides' content kind outright — the
- * break pass's two blobs are the old and new state of ONE path, so a single
- * attribute-resolved override (see `resolveSimilarityOverride`) always
- * applies uniformly to both. `undefined` (the default) falls back to each
- * side's own content sniff, exactly as before. Empty src/dst fall through to
- * the general computation below — an empty `SpanFingerprint`'s `countCopied`
- * and count-sum are both trivially 0, matching git's own empty-table walk.
- */
-export function countSpanhashChanges(
-  src: Uint8Array,
-  dst: Uint8Array,
-  override?: ContentKind,
-): SpanhashChangeCounts {
-  return countSpanhashChangesFromFingerprints(
-    buildFingerprint(src, override ?? contentKindOf(src)),
-    buildFingerprint(dst, override ?? contentKindOf(dst)),
-  );
-}
-
-/**
- * Fingerprint-level counterpart to `countSpanhashChanges` — scores two
- * ALREADY-BUILT fingerprints instead of re-hashing raw bytes. Callers that
- * build `src`/`dst` fingerprints for their own reasons (e.g. a broken-pair
- * cache) score from those same fingerprints rather than paying a second
- * `buildFingerprint` pass.
+ * Scores two ALREADY-BUILT fingerprints instead of re-hashing raw bytes —
+ * every call site builds `src`/`dst` via `buildFingerprint` itself first (a
+ * broken-pair cache, or two sides sharing one attribute-resolved content-kind
+ * override per `resolveSimilarityOverride` — the break pass's two blobs are
+ * the old and new state of ONE path, so a single override always applies
+ * uniformly to both) rather than paying a second `buildFingerprint` pass
+ * here. Empty src/dst fall through to the general computation below — an
+ * empty `SpanFingerprint`'s `countCopied` and count-sum are both trivially
+ * 0, matching git's own empty-table walk.
  */
 export function countSpanhashChangesFromFingerprints(
   srcFingerprint: SpanFingerprint,

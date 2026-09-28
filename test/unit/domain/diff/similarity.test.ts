@@ -3,7 +3,7 @@ import { BINARY_DETECTION_BYTES } from '../../../../src/domain/diff/line-diff.js
 import {
   buildFingerprint,
   contentKindOf,
-  countSpanhashChanges,
+  countSpanhashChangesFromFingerprints,
   DEFAULT_BREAK_SCORE,
   DEFAULT_MERGE_SCORE,
   DEFAULT_RENAME_THRESHOLD,
@@ -239,8 +239,8 @@ describe('similarity', () => {
     });
   });
 
-  describe('countSpanhashChanges', () => {
-    describe('Given src and dst byte content, When countSpanhashChanges is called', () => {
+  describe('countSpanhashChangesFromFingerprints', () => {
+    describe('Given src and dst byte content, When countSpanhashChangesFromFingerprints is called', () => {
       it.each([
         {
           src: new Uint8Array(0),
@@ -278,7 +278,10 @@ describe('similarity', () => {
         },
       ])('Then $label', ({ src, dst, srcCopied, literalAdded }) => {
         // Arrange + Act
-        const result = countSpanhashChanges(src, dst);
+        const result = countSpanhashChangesFromFingerprints(
+          buildFingerprint(src, contentKindOf(src)),
+          buildFingerprint(dst, contentKindOf(dst)),
+        );
 
         // Assert
         expect(result.srcCopied).toBe(srcCopied);
@@ -286,7 +289,7 @@ describe('similarity', () => {
       });
     });
 
-    describe('Given the pinned B2 fixture (total=20 lines, shared=7), When countSpanhashChanges is called', () => {
+    describe('Given the pinned B2 fixture (total=20 lines, shared=7), When countSpanhashChangesFromFingerprints is called', () => {
       it('Then srcCopied=497 and merge_score yields git-faithful M065', () => {
         // Arrange — breakContent('old',20,7) vs breakContent('new',20,7)
         // Verified against real git 2.54.0: `git diff -B --name-status` → M065
@@ -316,7 +319,10 @@ describe('similarity', () => {
         const srcSize = src.length;
 
         // Act
-        const result = countSpanhashChanges(src, dst);
+        const result = countSpanhashChangesFromFingerprints(
+          buildFingerprint(src, contentKindOf(src)),
+          buildFingerprint(dst, contentKindOf(dst)),
+        );
 
         // Assert — exact srcCopied to kill arithmetic mutants
         expect(result.srcCopied).toBe(497);
@@ -328,7 +334,7 @@ describe('similarity', () => {
       });
     });
 
-    describe('Given the pinned B5 fixture (total=50 lines, shared=20), When countSpanhashChanges is called', () => {
+    describe('Given the pinned B5 fixture (total=50 lines, shared=20), When countSpanhashChangesFromFingerprints is called', () => {
       it('Then srcCopied=1420 and merge_score yields git-faithful M060', () => {
         // Arrange — breakContent('old',50,20) vs breakContent('new',50,20)
         // Verified against real git 2.54.0: `git diff -B --name-status` → M060
@@ -357,7 +363,10 @@ describe('similarity', () => {
         const srcSize = src.length;
 
         // Act
-        const result = countSpanhashChanges(src, dst);
+        const result = countSpanhashChangesFromFingerprints(
+          buildFingerprint(src, contentKindOf(src)),
+          buildFingerprint(dst, contentKindOf(dst)),
+        );
 
         // Assert — exact srcCopied to kill arithmetic mutants
         expect(result.srcCopied).toBe(1420);
@@ -369,7 +378,7 @@ describe('similarity', () => {
       });
     });
 
-    describe('Given a CRLF-bearing pair with no override, When countSpanhashChanges is called', () => {
+    describe('Given a CRLF-bearing pair with no override, When countSpanhashChangesFromFingerprints is called', () => {
       it('Then literalAdded excludes the skipped CR bytes from dst (CR of CRLF skipped)', () => {
         // Arrange — 8 CRLF-terminated lines, line 2 changed; no NUL so the
         // sniff picks 'text', which skips the CR of every CRLF pair — dst's
@@ -378,7 +387,10 @@ describe('similarity', () => {
         const dstCrBytesSkipped = 8;
 
         // Act
-        const result = countSpanhashChanges(src, dst);
+        const result = countSpanhashChangesFromFingerprints(
+          buildFingerprint(src, contentKindOf(src)),
+          buildFingerprint(dst, contentKindOf(dst)),
+        );
 
         // Assert — pinned by hand against buildFingerprint(..., 'text')
         expect(result.srcCopied).toBe(224);
@@ -386,14 +398,17 @@ describe('similarity', () => {
       });
     });
 
-    describe('Given a CRLF-bearing pair with an explicit text override, When countSpanhashChanges is called', () => {
+    describe('Given a CRLF-bearing pair with an explicit text override, When countSpanhashChangesFromFingerprints is called', () => {
       it('Then literalAdded matches the no-override sniff (both land on text)', () => {
         // Arrange
         const { src, dst } = makeCrlfPair();
         const dstCrBytesSkipped = 8;
 
         // Act
-        const result = countSpanhashChanges(src, dst, 'text');
+        const result = countSpanhashChangesFromFingerprints(
+          buildFingerprint(src, 'text'),
+          buildFingerprint(dst, 'text'),
+        );
 
         // Assert
         expect(result.srcCopied).toBe(224);
@@ -401,13 +416,16 @@ describe('similarity', () => {
       });
     });
 
-    describe('Given a CRLF-bearing pair with an explicit binary override, When countSpanhashChanges is called', () => {
+    describe('Given a CRLF-bearing pair with an explicit binary override, When countSpanhashChangesFromFingerprints is called', () => {
       it('Then srcCopied differs from the sniff (CR bytes are hashed, not skipped)', () => {
         // Arrange
         const { src, dst } = makeCrlfPair();
 
         // Act
-        const result = countSpanhashChanges(src, dst, 'binary');
+        const result = countSpanhashChangesFromFingerprints(
+          buildFingerprint(src, 'binary'),
+          buildFingerprint(dst, 'binary'),
+        );
 
         // Assert — pinned by hand against buildFingerprint(..., 'binary')
         expect(result.srcCopied).toBe(231);
@@ -733,15 +751,18 @@ describe('similarity', () => {
     });
   });
 
-  describe('countSpanhashChanges guards', () => {
-    describe('Given identical non-empty src and dst blobs, When countSpanhashChanges is called', () => {
+  describe('countSpanhashChangesFromFingerprints guards', () => {
+    describe('Given identical non-empty src and dst blobs, When countSpanhashChangesFromFingerprints is called', () => {
       it('Then srcCopied equals the full byte count of the blob', () => {
         // Arrange — 'hello world\n' (12 bytes, one LF chunk): src and dst share
         // every chunk hash, so every byte counts as copied.
         const content = enc.encode('hello world\n');
 
         // Act
-        const result = countSpanhashChanges(content, content);
+        const result = countSpanhashChangesFromFingerprints(
+          buildFingerprint(content, contentKindOf(content)),
+          buildFingerprint(content, contentKindOf(content)),
+        );
 
         // Assert
         expect(result.srcCopied).toBe(12);
@@ -749,14 +770,17 @@ describe('similarity', () => {
       });
     });
 
-    describe('Given only dstSize is zero, When countSpanhashChanges is called', () => {
+    describe('Given only dstSize is zero, When countSpanhashChangesFromFingerprints is called', () => {
       it('Then returns srcCopied=0 and literalAdded=0 via the zero-size guard', () => {
         // Arrange
         const src = enc.encode('hello world\n');
         const dst = new Uint8Array(0);
 
         // Act
-        const result = countSpanhashChanges(src, dst);
+        const result = countSpanhashChangesFromFingerprints(
+          buildFingerprint(src, contentKindOf(src)),
+          buildFingerprint(dst, contentKindOf(dst)),
+        );
 
         // Assert
         expect(result.srcCopied).toBe(0);
@@ -764,14 +788,17 @@ describe('similarity', () => {
       });
     });
 
-    describe('Given only srcSize is zero and dst is non-empty, When countSpanhashChanges is called', () => {
+    describe('Given only srcSize is zero and dst is non-empty, When countSpanhashChangesFromFingerprints is called', () => {
       it('Then returns srcCopied=0 and literalAdded equal to dst byte count via the zero-size guard', () => {
         // Arrange
         const src = new Uint8Array(0);
         const dst = enc.encode('hello world\n');
 
         // Act
-        const result = countSpanhashChanges(src, dst);
+        const result = countSpanhashChangesFromFingerprints(
+          buildFingerprint(src, contentKindOf(src)),
+          buildFingerprint(dst, contentKindOf(dst)),
+        );
 
         // Assert
         expect(result.srcCopied).toBe(0);
@@ -865,7 +892,7 @@ describe('similarity', () => {
     });
   });
 
-  describe('Given a CRLF pair only on the src side, When countSpanhashChanges is called', () => {
+  describe('Given a CRLF pair only on the src side, When countSpanhashChangesFromFingerprints is called', () => {
     it('Then the CR in src is skipped, matching a dst that never had it (srcCopied equals dstSize)', () => {
       // Arrange — src = 'A\r\nB\n' (5 bytes), dst = 'A\nB\n' (4 bytes). Both sides are
       // text (no NUL), so src's CR is skipped: its two chunks (hash(A,LF)=8330 and
@@ -877,7 +904,10 @@ describe('similarity', () => {
       const dst = enc.encode('A\nB\n');
 
       // Act
-      const result = countSpanhashChanges(src, dst);
+      const result = countSpanhashChangesFromFingerprints(
+        buildFingerprint(src, contentKindOf(src)),
+        buildFingerprint(dst, contentKindOf(dst)),
+      );
 
       // Assert
       expect(result.srcCopied).toBe(4);
