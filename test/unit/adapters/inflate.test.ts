@@ -5,6 +5,7 @@ import { adler32 } from '../../../src/adapters/adler32.js';
 import {
   boundedInflateCap,
   GrowableBuffer,
+  inflateZlibHead,
   inflateZlibMember,
   MAX_INFLATED_OUTPUT_BYTES,
 } from '../../../src/adapters/inflate.js';
@@ -1327,6 +1328,86 @@ describe('inflateZlibMember', () => {
         // Assert
         expect(result.output.byteLength).toBe(0);
         expect(result.output.buffer.byteLength).toBe(0);
+      });
+    });
+  });
+});
+
+describe('inflateZlibHead', () => {
+  describe('Given a member truncated before its adler32 trailer is complete', () => {
+    describe('When inflateHead is called with a bound larger than the decoded output', () => {
+      it('Then it returns the decoded output instead of throwing', () => {
+        // Arrange
+        const payload = new Uint8Array([1, 2, 3, 4, 5]);
+        const member = deflateSync(payload, { level: 0 });
+        const truncated = member.subarray(0, member.length - 2);
+
+        // Act
+        const result = inflateZlibHead(truncated, 0, payload.length + 10);
+
+        // Assert
+        expect(Array.from(result)).toEqual(Array.from(payload));
+      });
+    });
+  });
+
+  describe("Given a stored block's declared length reaching past the compressed input's own end", () => {
+    describe('When inflateHead is called with a bound larger than the bytes actually available', () => {
+      it('Then it returns exactly the bytes present instead of throwing', () => {
+        // Arrange — the block's own LEN field claims 1000 live bytes and the
+        // member carries no trailer at all; only 15 body bytes ever exist, so
+        // `decodeStoredBlock`'s own shortfall check is what fires here, not
+        // `GrowableBuffer`'s truncating-cap path (the bound, 50, is never
+        // reached).
+        const [cmf, flg] = buildZlibHeader(0);
+        const declaredLen = 1000;
+        const availableByteCount = 15;
+        const nlen = ~declaredLen & 0xffff;
+        const member = new Uint8Array([
+          cmf,
+          flg,
+          0x01, // BFINAL=1, BTYPE=00 (stored)
+          declaredLen & 0xff,
+          (declaredLen >> 8) & 0xff,
+          nlen & 0xff,
+          (nlen >> 8) & 0xff,
+          ...new Array(availableByteCount).fill(0x41),
+        ]);
+
+        // Act
+        const result = inflateZlibHead(member, 0, 50);
+
+        // Assert
+        expect(Array.from(result)).toEqual(new Array(availableByteCount).fill(0x41));
+      });
+    });
+  });
+
+  describe('Given a member whose body decodes fully within the bound but whose adler32 trailer does not match the payload', () => {
+    describe('When inflateHead is called', () => {
+      it('Then it still throws DECOMPRESS_FAILED with the checksum-mismatch reason (genuine corruption is never swallowed)', () => {
+        // Arrange
+        const member = deflateSync(new Uint8Array([1, 2, 3]), { level: 0 });
+        const corrupted = new Uint8Array(member);
+        const lastIndex = corrupted.length - 1;
+        corrupted[lastIndex] = (corrupted[lastIndex] as number) ^ 0x01;
+
+        // Act & Assert
+        assertDecompressFailed(() => inflateZlibHead(corrupted, 0, 3), 'adler32 checksum mismatch');
+      });
+    });
+  });
+
+  describe('Given a block header with the reserved BTYPE (3)', () => {
+    describe('When inflateHead is called', () => {
+      it('Then it still throws DECOMPRESS_FAILED with the reserved-block-type reason (a genuine decode error is never swallowed as truncation)', () => {
+        // Arrange
+        const [cmf, flg] = buildZlibHeader(0);
+        const blockHeaderByte = 0x07; // BFINAL=1, BTYPE=11 (reserved)
+        const member = new Uint8Array([cmf, flg, blockHeaderByte]);
+
+        // Act & Assert
+        assertDecompressFailed(() => inflateZlibHead(member, 0, 100), 'reserved block type');
       });
     });
   });

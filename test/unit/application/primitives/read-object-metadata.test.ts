@@ -654,26 +654,25 @@ describe('readDeclaredObjectSize', () => {
     });
   });
 
-  describe('Given a small loose file whose own compressed bytes are truncated mid-stream', () => {
+  describe('Given a small loose file whose own compressed bytes are truncated before the header itself fully decodes', () => {
     describe('When readDeclaredObjectSize is called', () => {
-      it('Then a proper DECOMPRESS_FAILED TsgitError propagates — the whole file already IS the prefix, so nothing falls back', async () => {
+      it('Then it refuses INVALID_OBJECT_HEADER — git refuses too (cat-file -s/-t/-p all report "header … too long, exceeds 32 bytes", scrubbed env, mktemp, git 2.55.0)', async () => {
         // Arrange — the prefix is shorter than the probe budget, so this is the
-        // "never catch" branch even for a hard decode fault (not just a clean
-        // no-NUL end): there is no more of the file left to re-read, so nothing
-        // routes to the whole-file fallback. Known consequence of routing
-        // through `inflateHead`: the OLD hand-rolled scan drove a native
-        // streaming decompressor, which raised a raw (non-TsgitError) rejection
-        // for a corrupt stream; the port's `inflateHead` already maps every
-        // adapter fault to `decompressFailed`, so this is now a proper TsgitError
-        // — the better contract, no raw adapter error leaking. Live git
-        // (`git cat-file -s` on this exact truncated object, scrubbed env,
-        // mktemp, git 2.55.0) reports `error: header for <oid> too long,
-        // exceeds 32 bytes` — the SAME text it uses for a header that genuinely
-        // overruns the buffer, because `unpack_loose_header` never distinguishes
-        // "ran out of compressed input" from "the header itself is too long".
-        // tsgit's DECOMPRESS_FAILED keeps that distinction the raw decode fault
-        // it actually is, rather than reusing INVALID_OBJECT_HEADER for a
-        // different failure class.
+        // "never catch" branch even for a `noNulTerminator` refusal (not just a
+        // `tooLong` one): there is no more of the file left to re-read, so
+        // nothing routes to the whole-file fallback. `unpack_loose_header`
+        // never distinguishes "ran out of compressed input" from "the header
+        // itself is too long" — both report the SAME "too long" text and both
+        // FAIL. `inflateHead`'s port contract (`src/ports/compressor.ts`) has
+        // always said reaching truncation is not a decode fault; once the
+        // zero-dependency decoder (`inflateZlibHead`) actually honoured that
+        // contract, this input resolves the header-NUL search cleanly to "not
+        // found within what could be decoded" (`noNulTerminator`) rather than
+        // leaking the low-level DECOMPRESS_FAILED this test used to pin — a
+        // different INVALID_OBJECT_HEADER reason than git's own text, but the
+        // same refusal outcome: git failing here means tsgit refuses too. See
+        // loose-truncated-stream-interop.test.ts for the live-git probe this
+        // row and its header-decodes sibling below are both pinned against.
         const ctx = await buildSeededContext();
         const header = serializeHeader('blob', 5);
         const serialized = new Uint8Array(header.length + 5);
@@ -692,11 +691,44 @@ describe('readDeclaredObjectSize', () => {
           // Assert
           expect(error).toBeInstanceOf(TsgitError);
           const data = (error as TsgitError).data;
-          expect(data.code).toBe('DECOMPRESS_FAILED');
-          if (data.code === 'DECOMPRESS_FAILED') {
-            expect(data.reason).toBe('unexpected end of deflate stream');
+          expect(data.code).toBe('INVALID_OBJECT_HEADER');
+          if (data.code === 'INVALID_OBJECT_HEADER') {
+            expect(data.reason).toBe(`no NUL terminator found in inflated object ${id}`);
           }
         }
+      });
+    });
+  });
+
+  describe('Given a small loose file whose own compressed bytes are truncated right after the header NUL decodes (the body never starts)', () => {
+    describe('When readDeclaredObjectSize is called', () => {
+      it('Then it returns the declared size — git succeeds here too (cat-file -s/-t both report the claim at exit 0, only -p refuses, scrubbed env, mktemp, git 2.55.0)', async () => {
+        // Arrange — 10 compressed bytes is the shortest prefix whose
+        // Z_SYNC_FLUSH-tolerant decode reaches the full 7-byte "blob 5\0"
+        // header (verified independently against both node:zlib and the
+        // zero-dependency decoder): the header's own NUL is found before the
+        // input runs out, so `probeDeclaredSize` never needs the truncation
+        // tolerance at all — it resolves 'found' on the first pass, same as
+        // an honest, complete loose object would. git's cat-file -s/-t agree
+        // (report the claim, exit 0); only -p — which needs the BODY, not
+        // just the header — refuses, a different surface this primitive
+        // never reaches. See loose-truncated-stream-interop.test.ts for the
+        // live-git probe.
+        const ctx = await buildSeededContext();
+        const header = serializeHeader('blob', 5);
+        const serialized = new Uint8Array(header.length + 5);
+        serialized.set(header, 0);
+        serialized.set(ENC.encode('hello'), header.length);
+        const compressed = await ctx.compressor.deflate(serialized);
+        const truncated = compressed.subarray(0, 10);
+        const id = 'f'.repeat(40) as ObjectId;
+        await ctx.fs.write(loosePathOf(ctx, id), truncated);
+
+        // Act
+        const size = await readDeclaredObjectSize(ctx, id);
+
+        // Assert
+        expect(size).toBe(5);
       });
     });
   });

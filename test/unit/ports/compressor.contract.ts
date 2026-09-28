@@ -365,6 +365,22 @@ export function compressorContractTests(createSut: () => Promise<Compressor>): v
       });
     });
 
+    describe('Given a stream truncated before its adler32 trailer is complete, When inflateHead is called with a bound larger than the decoded output', () => {
+      it('Then it returns the decoded output instead of throwing (input exhaustion is not a decode failure)', async () => {
+        // Arrange
+        const sut = await createSut();
+        const payload = new TextEncoder().encode('truncated trailer payload');
+        const deflated = await sut.deflate(payload);
+        const truncated = deflated.subarray(0, deflated.length - 2);
+
+        // Act
+        const result = await sut.inflateHead(truncated, payload.length + 10);
+
+        // Assert
+        expect(result).toEqual(payload);
+      });
+    });
+
     describe.each([
       { label: 'highly compressible', build: () => new Uint8Array(1024 * 1024).fill(0x61) },
       { label: 'incompressible', build: () => new Uint8Array(randomBytes(1024 * 1024)) },

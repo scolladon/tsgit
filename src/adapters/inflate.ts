@@ -8,7 +8,7 @@
  * mapping to `decompressFailed` — no raw `RangeError`/`TypeError` escapes.
  */
 
-import { decompressFailed } from '../domain/index.js';
+import { decompressFailed, TsgitError } from '../domain/error.js';
 import { INFLATE_CAP_EXCEEDED_REASON, MAX_INFLATE_OUTPUT_BYTES } from '../ports/compressor.js';
 import { adler32 } from './adler32.js';
 
@@ -35,6 +35,18 @@ const LENGTH_FIELD_BYTES = 2;
 const NLEN_MASK = 0xffff;
 
 const ADLER_BYTES = 4;
+
+/**
+ * The decode failure reason that means "the input ran out before the data
+ * did" — every throw site below that signals a genuine shortfall (a bit read
+ * past the input's end, a stored block's body cut short) uses this exact
+ * string, never a bespoke one, so `inflateZlibHead` can tell a truncated
+ * input apart from genuinely invalid data structurally (by reason), matching
+ * `node-compressor.ts`'s own `TRUNCATED_STREAM_REASON` for the identical
+ * condition so both adapters report one wording regardless of which decoded
+ * the stream.
+ */
+const TRUNCATED_STREAM_REASON = 'unexpected end of deflate stream';
 
 const INITIAL_BUFFER_CAPACITY = 64;
 const BUFFER_GROWTH_FACTOR = 2;
@@ -199,7 +211,7 @@ class BitReader {
   readBits(count: number): number {
     const peeked = this.peekBits(count);
     if (peeked.availableBits < count) {
-      throw decompressFailed('unexpected end of deflate stream');
+      throw decompressFailed(TRUNCATED_STREAM_REASON);
     }
     this.dropBits(count);
     return peeked.value;
@@ -242,7 +254,7 @@ class BitReader {
 
   readBytes(count: number): Uint8Array {
     if (this.bytePos + count > this.bytes.length) {
-      throw decompressFailed('unexpected end of deflate stream');
+      throw decompressFailed(TRUNCATED_STREAM_REASON);
     }
     const slice = this.bytes.subarray(this.bytePos, this.bytePos + count);
     this.bytePos += count;
@@ -553,7 +565,7 @@ function decodeStoredBlock(reader: BitReader, output: GrowableBuffer): void {
   const chunk = reader.readAvailableBytes(len);
   output.append(chunk);
   if (chunk.length < len) {
-    throw decompressFailed('unexpected end of deflate stream');
+    throw decompressFailed(TRUNCATED_STREAM_REASON);
   }
 }
 
@@ -1014,14 +1026,39 @@ export function inflateZlibMember(
 }
 
 /**
+ * Whether `err` is this module's own signal that the INPUT ran out before
+ * its data did (`TRUNCATED_STREAM_REASON`). Checked via `instanceof` rather
+ * than the structural `data.code`/`data.reason` reads this repo otherwise
+ * prefers (`errorDataCode`): that convention exists for errors that may
+ * cross a mixed-module-graph boundary (an adapter's `TsgitError` built under
+ * a different module identity than its caller's). Every error this function
+ * inspects is thrown by `decompressFailed`, imported once, right here, in
+ * this same file — there is no second identity for `instanceof` to miss.
+ * `inflateZlibHead` uses this to tell a merely truncated stream (tolerable —
+ * return the prefix already decoded) apart from genuinely invalid data (an
+ * over-subscribed Huffman code, a bad checksum, …), which must still throw.
+ */
+function isTruncatedStreamError(err: unknown): boolean {
+  return (
+    err instanceof TsgitError &&
+    err.data.code === 'DECOMPRESS_FAILED' &&
+    err.data.reason === TRUNCATED_STREAM_REASON
+  );
+}
+
+/**
  * Inflate at most the leading `maxOutputBytes` of a zlib member's output,
- * without requiring the member to be complete. Reaching the bound is not an
- * error: decoding simply stops (via the `HeadComplete` sentinel) and the
- * first `maxOutputBytes` bytes are returned, with no trailer check — the
- * rest of the member was never decoded, so there is nothing to verify. A
- * member that ends before the bound is decoded to completion and its
- * adler32 trailer is verified as `inflateZlibMember` does, same as any
- * other whole-member decode.
+ * without requiring the member to be complete. Neither reaching the bound
+ * nor the input running out first is an error: decoding simply stops — via
+ * the `HeadComplete` sentinel for the former, via `TRUNCATED_STREAM_REASON`
+ * (raised anywhere from the first block header onward, including the
+ * trailer's own `readBytes`) for the latter — and whatever prefix was
+ * already decoded is returned, with no trailer check: the rest of the
+ * member was never decoded (or its trailer never fully read), so there is
+ * nothing to verify. Only a member that decodes to completion within the
+ * bound has its adler32 trailer verified, as `inflateZlibMember` does, same
+ * as any other whole-member decode — a checksum mismatch there is genuine
+ * corruption, never swallowed as truncation.
  */
 export function inflateZlibHead(
   bytes: Uint8Array,
@@ -1035,11 +1072,16 @@ export function inflateZlibHead(
   try {
     decodeBlocks(reader, output);
   } catch (err) {
-    if (err !== HEAD_COMPLETE) throw err;
-    return output.toUint8Array();
+    if (err === HEAD_COMPLETE || isTruncatedStreamError(err)) return output.toUint8Array();
+    throw err;
   }
 
   const result = output.toUint8Array();
-  verifyTrailer(reader, result);
+  try {
+    verifyTrailer(reader, result);
+  } catch (err) {
+    if (isTruncatedStreamError(err)) return result;
+    throw err;
+  }
   return result;
 }
