@@ -142,20 +142,24 @@ export function packFingerprint(data: Uint8Array, kind: ContentKind): SpanFinger
  * At or above HASHBASE bytes: accumulate every chunk directly into a fixed
  * HASHBASE-sized bucket array (every bucket already sits at its own
  * ascending index, so no per-chunk hash-map entry is needed), while ALSO
- * recording each bucket's first touch into a pre-sized `touched` list —
- * checking `accum[bucket] === 0` before the add is cheaper than a second
- * full HASHBASE-sized scan afterward would be (measured: a naive
- * count-then-fill double scan over all 107 927 buckets was SLOWER than the
- * original `forEach`, since it pays that fixed cost twice regardless of how
- * sparse the touched set is). Sort the touched list, then read each
- * bucket's final count back out of `accum` in one further O(touched) pass.
- * The walk is inlined for the same megamorphic-callsite reason
- * `packFingerprint` inlines it.
+ * recording each bucket's first touch into a `touched` list sized to
+ * `min(data.length, HASHBASE)` — there are at most HASHBASE distinct
+ * buckets to touch regardless of how many bytes `data` holds, so sizing
+ * `touched` to `data.length` directly would over-allocate without bound (a
+ * 256 MiB blob would cost an extra ~1 GiB, a blob near the 2 GiB inflate
+ * cap ~8 GiB). Checking `accum[bucket] === 0` before the add is cheaper
+ * than a second full HASHBASE-sized scan afterward would be (measured: a
+ * naive count-then-fill double scan over all 107 927 buckets was SLOWER
+ * than the original `forEach`, since it pays that fixed cost twice
+ * regardless of how sparse the touched set is). Sort the touched list,
+ * then read each bucket's final count back out of `accum` in one further
+ * O(touched) pass. The walk is inlined for the same megamorphic-callsite
+ * reason `packFingerprint` inlines it.
  */
 export function denseFingerprint(data: Uint8Array, kind: ContentKind): SpanFingerprint {
   const size = data.length;
   const accum = new Uint32Array(HASHBASE);
-  const touched = new Uint32Array(size);
+  const touched = new Uint32Array(Math.min(size, HASHBASE));
   let touchedCount = 0;
   const isText = kind === 'text';
   let accum1 = 0;

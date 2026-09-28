@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { BINARY_DETECTION_BYTES } from '../../../../src/domain/diff/line-diff.js';
 import {
   buildFingerprint,
@@ -719,6 +719,44 @@ describe('similarity', () => {
         // Assert — one bucket carries both chunks' combined byte count.
         expect(Array.from(result.hashes)).toEqual([78351]);
         expect(Array.from(result.counts)).toEqual([earlier.length + leftover.length]);
+      });
+    });
+
+    describe('Given data larger than HASHBASE, When denseFingerprint is called', () => {
+      it('Then every Uint32Array it allocates is at most HASHBASE buckets long, never data.length bytes', () => {
+        // Arrange — a blob just over HASHBASE bytes: large enough that a
+        // buggy `touched = new Uint32Array(size)` allocates MORE than
+        // HASHBASE buckets (the true upper bound on distinct spanhash
+        // buckets — a 256 MiB blob would over-allocate by ~1 GiB), small
+        // enough to stay a fast, deterministic unit test. A Proxy over the
+        // global constructor records every `new Uint32Array(length)` this
+        // call makes; `.subarray` views (the final hashes/counts trim)
+        // never reach it, since they resolve their species constructor off
+        // the already-constructed real instance, not the stubbed global.
+        const size = HASHBASE + 1000;
+        const data = new Uint8Array(size).fill(0x61);
+        const allocatedLengths: number[] = [];
+        const RealUint32Array = Uint32Array;
+        vi.stubGlobal(
+          'Uint32Array',
+          new Proxy(RealUint32Array, {
+            construct(target, args) {
+              allocatedLengths.push(args[0] as number);
+              return Reflect.construct(target, args);
+            },
+          }),
+        );
+        const sut = denseFingerprint;
+
+        // Act
+        try {
+          sut(data, 'text');
+        } finally {
+          vi.unstubAllGlobals();
+        }
+
+        // Assert
+        expect(allocatedLengths.every((length) => length <= HASHBASE)).toBe(true);
       });
     });
   });
