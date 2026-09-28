@@ -68,11 +68,14 @@ const ZERO_PAD_CHUNK_BYTES = 64 * 1024;
 const ZERO_PAD_CHUNK = new Uint8Array(ZERO_PAD_CHUNK_BYTES);
 
 /**
- * git's own zero-padded hash for an under-run blob (`unpack_loose_rest`
- * reads into a buffer already zeroed by allocation): the header, the real
- * (shorter) body, then `declaredSize - body.length` zero bytes streamed to
- * the hasher in fixed-size chunks — never materialised as one claim-sized
- * buffer.
+ * git's own hash for an under-run blob's zero-padded claim
+ * (`unpack_loose_rest`'s `xmallocz`, an UNINITIALISED allocation — git's own
+ * padding bytes, and so its reported hash, are not actually deterministic):
+ * the header, the real (shorter) body, then `declaredSize - body.length`
+ * zero bytes streamed to the hasher in fixed-size chunks — never
+ * materialised as one claim-sized buffer. Zero-fill is tsgit's own
+ * deterministic choice for the bytes git leaves uninitialised, not a
+ * transcription of git's actual (nondeterministic) padding.
  */
 async function hashZeroPadded(
   ctx: Context,

@@ -1071,12 +1071,15 @@ describe.skipIf(!GIT_AVAILABLE)(
             false,
           );
 
-          // Reconstruct git stderr line
-          // git: "error: <actual-sha>: hash-path mismatch, found at: .git/objects/<prefix>/<suffix>"
-          if (mismatch !== undefined) {
-            const reconstructed = `${mismatch.actual}: hash-path mismatch, found at:`;
-            expect(gitResult.stderr).toContain(reconstructed);
-          }
+          // Reconstruct only the STABLE part of git's stderr line — the
+          // reported hash itself is git's own zero-padding of uninitialised
+          // malloc (`unpack_loose_rest`'s `xmallocz`, never zeroed), so it is
+          // nondeterministic across runs; tsgit's OWN deterministic
+          // zero-padded value is what `mismatch` above already pins.
+          // git: "error: <nondeterministic-sha>: hash-path mismatch, found at: .git/objects/<prefix>/<suffix>"
+          expect(gitResult.stderr).toContain(
+            `hash-path mismatch, found at: .git/objects/${storedId.slice(0, 2)}/${storedId.slice(2)}`,
+          );
         },
       );
     });
@@ -1223,7 +1226,12 @@ describe.skipIf(!GIT_AVAILABLE)(
           );
           expect(mismatch).toBeDefined();
           expect(mismatch?.actual).toBe(expectedActual);
-          expect(gitResult.stderr).toContain(`${expectedActual}: hash-path mismatch, found at:`);
+          // Only the STABLE part is pinned against git's own output — git's
+          // zero-padded hash is nondeterministic (uninitialised malloc);
+          // tsgit's deterministic value is pinned by `mismatch` above.
+          expect(gitResult.stderr).toContain(
+            `hash-path mismatch, found at: .git/objects/${sha.slice(0, 2)}/${sha.slice(2)}`,
+          );
         }
       });
 
