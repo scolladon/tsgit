@@ -392,10 +392,11 @@ describe('normalizeLine', () => {
       it('Then the form-feed/vertical-tab byte is preserved while space/tab bytes are dropped', () => {
         // Arrange
         const key: LineKey = { mode: 'all', ignoreCrAtEol: false };
+        const sut = normalizeLine;
 
         // Act
-        const formFeed = normalizeLine(line('a \f b\n'), key);
-        const verticalTab = normalizeLine(line('a \v b\n'), key);
+        const formFeed = sut(line('a \f b\n'), key);
+        const verticalTab = sut(line('a \v b\n'), key);
 
         // Assert
         expect(formFeed).toEqual(enc('a\fb'));
@@ -409,10 +410,11 @@ describe('normalizeLine', () => {
         // none; if `\f` collapsed into a single shared run instead, both
         // sides would normalize identically.
         const key: LineKey = { mode: 'change', ignoreCrAtEol: false };
+        const sut = normalizeLine;
 
         // Act
-        const withTrailingSpace = normalizeLine(line('a \f b\n'), key);
-        const withoutTrailingSpace = normalizeLine(line('a \fb\n'), key);
+        const withTrailingSpace = sut(line('a \f b\n'), key);
+        const withoutTrailingSpace = sut(line('a \fb\n'), key);
 
         // Assert
         expect(withTrailingSpace).not.toEqual(withoutTrailingSpace);
@@ -423,9 +425,10 @@ describe('normalizeLine', () => {
       it('Then a form-feed immediately before the terminator is not dropped as trailing whitespace', () => {
         // Arrange
         const key: LineKey = { mode: 'at-eol', ignoreCrAtEol: false };
+        const sut = normalizeLine;
 
         // Act
-        const result = normalizeLine(line('a\f\n'), key);
+        const result = sut(line('a\f\n'), key);
 
         // Assert
         expect(result).toEqual(enc('a\f'));

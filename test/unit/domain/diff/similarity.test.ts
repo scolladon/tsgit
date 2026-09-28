@@ -693,9 +693,10 @@ describe('similarity', () => {
           70, 98, 104, 74, 93, 68, 71, 73, 90, 74, 102, 115,
         ];
         const data = Uint8Array.from([...earlier, ...leftover]);
+        const sut = denseFingerprint;
 
         // Act
-        const result = denseFingerprint(data, 'text');
+        const result = sut(data, 'text');
 
         // Assert — one bucket carries both chunks' combined byte count.
         expect(Array.from(result.hashes)).toEqual([78351]);

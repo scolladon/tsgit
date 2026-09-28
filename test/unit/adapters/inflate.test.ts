@@ -1341,9 +1341,10 @@ describe('inflateZlibHead', () => {
         const payload = new Uint8Array([1, 2, 3, 4, 5]);
         const member = deflateSync(payload, { level: 0 });
         const truncated = member.subarray(0, member.length - 2);
+        const sut = inflateZlibHead;
 
         // Act
-        const result = inflateZlibHead(truncated, 0, payload.length + 10);
+        const result = sut(truncated, 0, payload.length + 10);
 
         // Assert
         expect(Array.from(result)).toEqual(Array.from(payload));
@@ -1373,9 +1374,10 @@ describe('inflateZlibHead', () => {
           (nlen >> 8) & 0xff,
           ...new Array(availableByteCount).fill(0x41),
         ]);
+        const sut = inflateZlibHead;
 
         // Act
-        const result = inflateZlibHead(member, 0, 50);
+        const result = sut(member, 0, 50);
 
         // Assert
         expect(Array.from(result)).toEqual(new Array(availableByteCount).fill(0x41));
@@ -1391,9 +1393,10 @@ describe('inflateZlibHead', () => {
         const corrupted = new Uint8Array(member);
         const lastIndex = corrupted.length - 1;
         corrupted[lastIndex] = (corrupted[lastIndex] as number) ^ 0x01;
+        const sut = inflateZlibHead;
 
         // Act & Assert
-        assertDecompressFailed(() => inflateZlibHead(corrupted, 0, 3), 'adler32 checksum mismatch');
+        assertDecompressFailed(() => sut(corrupted, 0, 3), 'adler32 checksum mismatch');
       });
     });
   });
@@ -1405,9 +1408,10 @@ describe('inflateZlibHead', () => {
         const [cmf, flg] = buildZlibHeader(0);
         const blockHeaderByte = 0x07; // BFINAL=1, BTYPE=11 (reserved)
         const member = new Uint8Array([cmf, flg, blockHeaderByte]);
+        const sut = inflateZlibHead;
 
         // Act & Assert
-        assertDecompressFailed(() => inflateZlibHead(member, 0, 100), 'reserved block type');
+        assertDecompressFailed(() => sut(member, 0, 100), 'reserved block type');
       });
     });
   });
