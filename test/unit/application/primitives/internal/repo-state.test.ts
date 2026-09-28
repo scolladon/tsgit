@@ -10,7 +10,10 @@ import {
   assertOperationalRepository,
   assertRepository,
 } from '../../../../../src/application/primitives/internal/repo-state.js';
-import { updateCoreConfig } from '../../../../../src/application/primitives/update-config.js';
+import {
+  updateConfigEntries,
+  updateCoreConfig,
+} from '../../../../../src/application/primitives/update-config.js';
 import { permissionDenied, TsgitError } from '../../../../../src/domain/error.js';
 import type { Context } from '../../../../../src/ports/context.js';
 import type { FileStat } from '../../../../../src/ports/file-system.js';
@@ -102,6 +105,49 @@ describe('primitives/internal/repo-state', () => {
           key: 'core.sparsecheckout',
           value: 'bogus',
         });
+      });
+    });
+  });
+
+  describe('Given a diff.<drv>.binary write between two commands holding neither auto nor a valid boolean', () => {
+    describe('When the second command runs assertOperationalRepository', () => {
+      it('Then it refuses on the tristate-invalid value — git dies the same way on this key', async () => {
+        // Arrange
+        const ctx = await seededCtx();
+        await assertOperationalRepository(ctx);
+        await updateConfigEntries(ctx, [
+          { section: 'diff', subsection: 'MyDriver', key: 'binary', value: 'bogus' },
+        ]);
+
+        // Act
+        const caught = await catchTsgitError(() => assertOperationalRepository(ctx));
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect(caught.data).toMatchObject({
+          code: 'CONFIG_BAD_BOOLEAN_VALUE',
+          key: 'diff.MyDriver.binary',
+          value: 'bogus',
+        });
+      });
+    });
+  });
+
+  describe('Given a diff.<drv>.binary write between two commands holding "auto"', () => {
+    describe('When the second command runs assertOperationalRepository', () => {
+      it('Then it resolves — auto is the tristate literal, not a refusal', async () => {
+        // Arrange
+        const ctx = await seededCtx();
+        await assertOperationalRepository(ctx);
+        await updateConfigEntries(ctx, [
+          { section: 'diff', subsection: 'MyDriver', key: 'binary', value: 'auto' },
+        ]);
+
+        // Act
+        const result = await assertOperationalRepository(ctx);
+
+        // Assert
+        expect(typeof result).toBe('string');
       });
     });
   });

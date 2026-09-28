@@ -8,6 +8,7 @@ import {
   findFirstInvalidBoolean,
   findFirstInvalidBooleanInSection,
   findFirstInvalidCompression,
+  findFirstInvalidDiffBinary,
   findFirstInvalidGcAuto,
   findFirstInvalidLogAllRefUpdates,
   findFirstInvalidPackedGitBound,
@@ -857,6 +858,58 @@ describe('primitives/config-read', () => {
 
         // Assert
         expect(result.diff?.get('custom')?.binary).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a [diff "custom"] section with binary=auto (any case)', () => {
+    describe('When readConfig', () => {
+      it.each([
+        { value: 'auto', label: 'lower-case' },
+        { value: 'Auto', label: 'mixed-case' },
+        { value: 'AUTO', label: 'upper-case' },
+      ])('Then binary is undefined ($label)', async ({ value }) => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, `[diff "custom"]\n\tbinary = ${value}\n`);
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.diff?.get('custom')?.binary).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a [diff "custom"] section setting binary=true then binary=auto', () => {
+    describe('When readConfig', () => {
+      it('Then the later auto RESETS binary to undefined (auto is not just another accepted value)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[diff "custom"]\n\tbinary = true\n[diff "custom"]\n\tbinary = auto\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.diff?.get('custom')?.binary).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a [diff "custom"] section setting binary=true then an unparseable binary value', () => {
+    describe('When readConfig', () => {
+      it('Then the earlier true survives (an unparseable non-auto value is silently skipped, not a reset)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[diff "custom"]\n\tbinary = true\n[diff "custom"]\n\tbinary = maybe\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.diff?.get('custom')?.binary).toBe(true);
       });
     });
   });
@@ -7069,6 +7122,110 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
           // Act
           const result = await findFirstInvalidPushGpgSign(ctx);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+  });
+
+  describe('findFirstInvalidDiffBinary', () => {
+    describe('Given diff.MyDriver.binary holds a value that fails both the tri-state literal and the boolean grammar', () => {
+      describe('When findFirstInvalidDiffBinary', () => {
+        it('Then it returns the entry', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[diff "MyDriver"]\n\tbinary = maybe\n');
+
+          // Act
+          const result = await findFirstInvalidDiffBinary(ctx);
+
+          // Assert
+          expect(result?.key).toBe('diff.MyDriver.binary');
+          expect(result?.value).toBe('maybe');
+          expect(result?.line).toBe(2);
+        });
+      });
+    });
+
+    describe('Given diff.MyDriver.binary holds the tri-state literal "auto" (any case)', () => {
+      describe('When findFirstInvalidDiffBinary', () => {
+        it.each([
+          { value: 'auto', label: 'lower-case' },
+          { value: 'Auto', label: 'mixed-case' },
+          { value: 'AUTO', label: 'upper-case' },
+        ])('Then it returns undefined ($label)', async ({ value }) => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, `[diff "MyDriver"]\n\tbinary = ${value}\n`);
+
+          // Act
+          const result = await findFirstInvalidDiffBinary(ctx);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given diff.MyDriver.binary holds a valid boolean value', () => {
+      describe('When findFirstInvalidDiffBinary', () => {
+        it('Then it returns undefined', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[diff "MyDriver"]\n\tbinary = true\n');
+
+          // Act
+          const result = await findFirstInvalidDiffBinary(ctx);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe("Given a subsectionless [diff] binary holding a value git's boolean grammar refuses", () => {
+      describe('When findFirstInvalidDiffBinary', () => {
+        it('Then it returns undefined (an unrelated top-level key, not this per-driver tristate)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[diff]\n\tbinary = maybe\n');
+
+          // Act
+          const result = await findFirstInvalidDiffBinary(ctx);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given the key is absent', () => {
+      describe('When findFirstInvalidDiffBinary', () => {
+        it('Then it returns undefined', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[diff "MyDriver"]\n\ttextconv = tool\n');
+
+          // Act
+          const result = await findFirstInvalidDiffBinary(ctx);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given a malformed value sits under a non-[diff] section', () => {
+      describe('When findFirstInvalidDiffBinary', () => {
+        it('Then it returns undefined (out of section)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[other "MyDriver"]\n\tbinary = maybe\n');
+
+          // Act
+          const result = await findFirstInvalidDiffBinary(ctx);
 
           // Assert
           expect(result).toBeUndefined();

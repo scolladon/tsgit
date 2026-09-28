@@ -34,6 +34,7 @@ import {
   findFirstInvalidBoolean,
   findFirstInvalidBooleanInSection,
   findFirstInvalidCompression,
+  findFirstInvalidDiffBinary,
   findFirstInvalidLogAllRefUpdates,
   findFirstInvalidPackedGitBound,
   findFirstValuelessEntry,
@@ -176,9 +177,10 @@ const throwEagerCandidate = (candidate: EagerCandidate): never => {
  * `compression`) is present with any invalid value (valueless, bad integer,
  * or integer outside zlib's `-1..9`), or when a boolean key
  * (`core.sparseCheckout`, `core.sparseCheckoutCone`, `core.logAllRefUpdates`,
- * or any `[diff *]` subsection's `cachetextconv`) holds a value git's boolean
- * grammar refuses — mirroring git's eager `git_default_config` validation,
- * which dies on the operational surface while the `config` porcelain
+ * or any `[diff *]` subsection's `cachetextconv`/`binary` — `binary` is
+ * userdiff's own tristate, `auto` plus git's boolean grammar) holds a value
+ * git's boolean grammar refuses — mirroring git's eager `git_default_config`
+ * validation, which dies on the operational surface while the `config` porcelain
  * (`assertRepository` alone) survives. `hookspath` is NOT in this broad set:
  * it dies on a narrower surface.
  *
@@ -193,23 +195,25 @@ const throwEagerCandidate = (candidate: EagerCandidate): never => {
  * boundaries (`internal/repo-settings-gate.ts`'s `assertRepoSettingsValid`),
  * validated independently of this gate.
  *
- * Cross-class ordering (the six classes below): run all six finders in
+ * Cross-class ordering (the seven classes below): run all seven finders in
  * parallel and throw the LOWEST-line entry's shape — string
  * (`CONFIG_MISSING_VALUE`), compression or packed-git-bound
  * (`CONFIG_BAD_NUMERIC_VALUE` / `CONFIG_BAD_ZLIB_LEVEL`), or boolean
  * (`CONFIG_BAD_BOOLEAN_VALUE`). No-op when every class is valid or absent.
  */
 export const assertEagerConfigValid = async (ctx: Context): Promise<void> => {
-  const [str, comp, boolCore, logAllRefUpdates, boolDiff, packedGitBound] = await Promise.all([
-    findFirstValuelessEntry(ctx, 'core', undefined, CORE_STRING_KEYS),
-    findFirstInvalidCompression(ctx),
-    findFirstInvalidBoolean(ctx, 'core', undefined, CORE_BOOLEAN_KEYS),
-    findFirstInvalidLogAllRefUpdates(ctx),
-    // git ignores a subsectionless `[diff] cachetextconv` (the key only exists
-    // per-driver), so only subsectioned entries can refuse here.
-    findFirstInvalidBooleanInSection(ctx, 'diff', DIFF_BOOLEAN_KEYS, { requireSubsection: true }),
-    findFirstInvalidPackedGitBound(ctx),
-  ]);
+  const [str, comp, boolCore, logAllRefUpdates, boolDiff, diffBinary, packedGitBound] =
+    await Promise.all([
+      findFirstValuelessEntry(ctx, 'core', undefined, CORE_STRING_KEYS),
+      findFirstInvalidCompression(ctx),
+      findFirstInvalidBoolean(ctx, 'core', undefined, CORE_BOOLEAN_KEYS),
+      findFirstInvalidLogAllRefUpdates(ctx),
+      // git ignores a subsectionless `[diff] cachetextconv` (the key only exists
+      // per-driver), so only subsectioned entries can refuse here.
+      findFirstInvalidBooleanInSection(ctx, 'diff', DIFF_BOOLEAN_KEYS, { requireSubsection: true }),
+      findFirstInvalidDiffBinary(ctx),
+      findFirstInvalidPackedGitBound(ctx),
+    ]);
   const candidates: ReadonlyArray<EagerCandidate | undefined> = [
     str === undefined ? undefined : { kind: 'valueless', line: str.line, entry: str },
     comp === undefined ? undefined : { kind: 'compression', line: comp.line, entry: comp },
@@ -218,6 +222,9 @@ export const assertEagerConfigValid = async (ctx: Context): Promise<void> => {
       ? undefined
       : { kind: 'boolean', line: logAllRefUpdates.line, entry: logAllRefUpdates },
     boolDiff === undefined ? undefined : { kind: 'boolean', line: boolDiff.line, entry: boolDiff },
+    diffBinary === undefined
+      ? undefined
+      : { kind: 'boolean', line: diffBinary.line, entry: diffBinary },
     packedGitBound === undefined
       ? undefined
       : { kind: 'numeric', line: packedGitBound.line, entry: packedGitBound },

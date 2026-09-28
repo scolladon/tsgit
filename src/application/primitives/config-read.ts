@@ -1643,6 +1643,26 @@ const mergeMergeDriver = (
 
 type DiffDriverEntry = { textconv?: string; cachetextconv?: boolean; binary?: boolean };
 
+/**
+ * `diff.<name>.binary`'s tristate: `auto` (case-insensitively) resets the
+ * field back to "let the content sniff decide" — the SAME state an unset key
+ * already leaves it in — rather than being just another accepted literal
+ * (unlike `core.logAllRefUpdates`'s `always` or `push.gpgSign`'s
+ * `if-asked`, which are genuinely distinct third states). An eagerly-refused
+ * invalid value (`assertEagerConfigValid`'s `findFirstInvalidDiffBinary`)
+ * never reaches an operational read through this path; the `config`
+ * porcelain can, so an invalid value still just leaves the field untouched
+ * here rather than throwing.
+ */
+const applyDiffBinaryEntry = (next: DiffDriverEntry, value: string | null): void => {
+  if (value !== null && value.toLowerCase() === 'auto') {
+    delete next.binary;
+    return;
+  }
+  const parsed = parseGitBoolean(value);
+  if (parsed.ok) next.binary = parsed.value;
+};
+
 const applyDiffDriverEntry = (next: DiffDriverEntry, key: string, value: string | null): void => {
   const lowered = key.toLowerCase();
   if (lowered === 'textconv') {
@@ -1653,8 +1673,7 @@ const applyDiffDriverEntry = (next: DiffDriverEntry, key: string, value: string 
     const parsed = parseGitBoolean(value);
     if (parsed.ok) next.cachetextconv = parsed.value;
   } else if (lowered === 'binary') {
-    const parsed = parseGitBoolean(value);
-    if (parsed.ok) next.binary = parsed.value;
+    applyDiffBinaryEntry(next, value);
   }
 };
 
@@ -2264,4 +2283,24 @@ export const findFirstInvalidPushGpgSign = async (
     keys: ['gpgsign'],
     accepts: (value) => parsePushGpgSign(value) !== undefined,
     fixedKey: 'push.gpgsign',
+  });
+
+/**
+ * `diff.<name>.binary`-specific finder: the key accepts a third literal,
+ * `auto` (case-insensitive), beyond git's boolean grammar — git's userdiff
+ * reads it with `parse_tristate` (mirrors `parseDiffBinary`'s own check).
+ * `anySubsection` + `requireSubsection` scan every `[diff "<name>"]`
+ * instance and skip a subsectionless `[diff] binary`, an unrelated
+ * top-level key (whether to diff binary files at all), never this
+ * per-driver tristate.
+ */
+export const findFirstInvalidDiffBinary = async (
+  ctx: Context,
+): Promise<InvalidBooleanEntry | undefined> =>
+  findFirstRejectedBoolean(ctx, {
+    section: 'diff',
+    anySubsection: true,
+    requireSubsection: true,
+    keys: ['binary'],
+    accepts: (value) => value.toLowerCase() === 'auto' || parseGitBoolean(value).ok,
   });
