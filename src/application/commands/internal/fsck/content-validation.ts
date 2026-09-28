@@ -20,6 +20,7 @@ import {
 } from '../../../primitives/object-resolver.js';
 import { readRawObject } from '../../../primitives/read-object.js';
 import { EXIT_CONTENT_ERROR, EXIT_CORRUPT, EXIT_HASH_MISMATCH } from './exit-codes.js';
+import { hasPackCopy } from './object-cache.js';
 import type { FsckFinding } from './types.js';
 
 /** An object whose raw bytes a reader did decode, ready for the catalogue and
@@ -584,11 +585,17 @@ async function validateOneObject(
   // git 2.55.0 (scrubbed env) across an honest-body wrong-path blob, a
   // zero-padded under-run, a truncated-prefix over-run, and the big-file
   // streamed variant of each: real git's stdout never names any of them.
-  // `true` here is what lets fsck.ts's `withUnreadableOverrides` null this
-  // id in the reachability cache, so a REFERRER reports `missing` instead
-  // of this id getting a spurious `dangling`/`unreachable` finding of its
-  // own.
-  if (catalogueSuppressedByHash(storage, hash)) return { ...hash, reachabilityUnknown: true };
+  // BUT git's reachability graph (`check_object`/`has_object_pack`) never
+  // even consults this loose path when a PACK copy of the same id exists —
+  // it types the object from the pack instead, so only a loose mismatch
+  // with NO pack copy backing it is `true` here, letting fsck.ts's
+  // `withUnreadableOverrides` null this id in the reachability cache so a
+  // REFERRER reports `missing` instead of this id getting a spurious
+  // `dangling`/`unreachable` finding of its own.
+  if (catalogueSuppressedByHash(storage, hash)) {
+    const reachabilityUnknown = !(await hasPackCopy(ctx, id));
+    return { ...hash, reachabilityUnknown };
+  }
   const catalogue = catalogueResult(ctx, id, rawResult, options);
   return {
     findings: [...catalogue.findings, ...hash.findings],

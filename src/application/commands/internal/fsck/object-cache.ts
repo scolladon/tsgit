@@ -462,13 +462,15 @@ export async function buildObjectCache(
  * Overrides specific universe ids to the 'unreadable' (null) cache entry —
  * content-validation's `typeUnknownIds` signal for ids the general resolver
  * this cache is built from (`readObject`) still types, but git's own
- * combined read-and-validate function would refuse (currently: a loose blob
- * past `core.bigFileThreshold` whose body overran its claim). Applied
- * AFTER `buildObjectCache`, before the reachability pass ever reads the
- * cache, so `dangling`/`unreachable` classification sees the SAME
- * "unreadable" verdict git's own reachability graph would. Returns the
- * SAME map unchanged when there is nothing to override — the common case,
- * so an audit with no size-lying big blob never pays a full-cache copy.
+ * combined read-and-validate function would refuse: every loose object
+ * `read_loose_object` itself refuses, or whose hash disagrees with its
+ * path, PROVIDED no pack copy backs it (a pack-backed id is typed from the
+ * pack instead — see `collectUnreadablePackMemberIds`). Applied AFTER
+ * `buildObjectCache`, before the reachability pass ever reads the cache, so
+ * `dangling`/`unreachable` classification sees the SAME "unreadable" verdict
+ * git's own reachability graph would. Returns the SAME map unchanged when
+ * there is nothing to override — the common case, so an audit with no
+ * size-lying big blob never pays a full-cache copy.
  */
 export function withUnreadableOverrides(
   cache: ReadonlyMap<ObjectId, CachedGitObject>,
@@ -478,6 +480,39 @@ export function withUnreadableOverrides(
   const patched = new Map(cache);
   for (const id of overrideIds) patched.set(id, null);
   return patched;
+}
+
+/**
+ * Whether `id` is claimed by ANY pack the registry knows about — git's own
+ * `has_object_pack`: a MEMBERSHIP check against a pack's sorted oid table,
+ * never a read or a CRC verification. A store fault degrades to "not
+ * claimed" (`lookupIfClaimed`'s own tolerant policy), so a damaged registry
+ * can only ever make MORE ids look absent from a pack, never fewer.
+ */
+export async function hasPackCopy(ctx: Context, id: ObjectId): Promise<boolean> {
+  const registry = await getPackRegistry(ctx);
+  return (await lookupIfClaimed(registry, id)) !== undefined;
+}
+
+/**
+ * Which of `cache`'s UNREADABLE (null) ids are also claimed by a pack — the
+ * signal `buildReachableSet` needs to stop treating a pack-backed corrupt or
+ * hash-disagreeing object as `missing`, mirroring git's `has_object_pack`
+ * early return in `check_object`. Scoped to null entries only: a typed entry
+ * never reaches `isContentUnreadable`'s gate, so its pack membership is
+ * never read.
+ */
+export async function collectUnreadablePackMemberIds(
+  ctx: Context,
+  cache: ReadonlyMap<ObjectId, CachedGitObject>,
+): Promise<ReadonlySet<ObjectId>> {
+  const registry = await getPackRegistry(ctx);
+  const members = new Set<ObjectId>();
+  for (const [id, obj] of cache) {
+    if (obj !== null) continue;
+    if ((await lookupIfClaimed(registry, id)) !== undefined) members.add(id);
+  }
+  return members;
 }
 
 const MAX_REASON_LENGTH = 200;

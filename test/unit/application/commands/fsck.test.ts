@@ -717,6 +717,116 @@ describe('Given a ref pointing to an annotated tag whose target is missing', () 
       const missingTarget = missing.find((f) => (f as { id: ObjectId }).id === ghostTarget);
       expect(missingTarget).toMatchObject({ type: 'missing', objectType: 'commit' });
       expect(result.exitCode & 2).toBe(2);
+
+      // Assert — a genuinely ABSENT target is never `tagged`, unlike a
+      // present-but-unreadable one (see the sibling describe below).
+      const tagged = result.findings.filter((f) => f.type === 'tagged');
+      expect(tagged).toHaveLength(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TAGGED — annotated tag pointing to a PRESENT but content-unreadable target
+// ---------------------------------------------------------------------------
+// git's tag walk marks a PRESENT target reachable (and so `tagged`)
+// regardless of whether it could be typed — only a genuinely ABSENT target
+// drops the report. Pinned live against git 2.55.0 (scrubbed env): `git
+// fsck --tags` on this exact shape prints both `tagged blob <oid> (tb) in
+// <tag>` AND `missing blob <oid>`, exit 3.
+
+describe('Given a ref pointing to an annotated tag whose target is present but content-unreadable (no pack copy)', () => {
+  describe('When fsck runs', () => {
+    it('Then emits both tagged and missing for the target, exit code 3', async () => {
+      // Arrange — a tag targets a blob whose loose file is corrupt (readable
+      // in universe, but `readObject` refuses it), with no pack copy at all.
+      const ctx = await initBareCtx();
+      const blobId = await writeObject(ctx, makeBlob('tagged-then-corrupted'));
+      const blobPath = looseObjectPath(ctx.layout.gitDir, blobId);
+      await ctx.fs.write(blobPath, new Uint8Array([0xde, 0xad, 0xbe, 0xef]));
+      const tagId = await writeObject(ctx, makeTag(blobId, 'blob', 'tb'));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/tb`, `${tagId}\n`);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert — tagged finding present, typed from the tag's own record
+      const tagged = result.findings.find((f) => f.type === 'tagged');
+      expect(tagged).toMatchObject({
+        type: 'tagged',
+        id: blobId,
+        objectType: 'blob',
+        tagName: 'tb',
+        tag: tagId,
+      });
+
+      // Assert — missing finding present too — both fire for the same id
+      const missing = result.findings.find(
+        (f): f is FsckFinding & { type: 'missing' } => f.type === 'missing' && f.id === blobId,
+      );
+      expect(missing).toMatchObject({ type: 'missing', objectType: 'blob' });
+
+      // Assert — never a broken-link (the id IS present, just unreadable)
+      const brokenLink = result.findings.find(
+        (f) => f.type === 'broken-link' && (f as { toId: ObjectId }).toId === blobId,
+      );
+      expect(brokenLink).toBeUndefined();
+      expect(result.exitCode & 2).toBe(2);
+    });
+  });
+});
+
+// git's `has_object_pack` trusts a PACKED target regardless of its own
+// readability, so the tag walk marks it reachable (and so `tagged`) exactly
+// as finding 1's own gate makes the tree/commit case never `missing`.
+// Pinned live against git 2.55.0 (scrubbed env): `git fsck --tags` on this
+// exact shape prints `tagged blob <oid> (tb) in <tag>` and NO `missing`
+// line, exit 4 (git's own pack-scan bit; see `object-cache.ts`'s
+// `hasPackCopy` doc for the exit-bit gap this fix does not close).
+describe('Given a ref pointing to an annotated tag whose target is a corrupt PACKED blob', () => {
+  describe('When fsck runs', () => {
+    it('Then emits tagged and never missing, dangling, unreachable or broken-link for the target', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const blobContent = enc.encode('x'.repeat(2000));
+      const [blobId] = await writeSyntheticPack(ctx, 'tag-corrupt-entry', [
+        { kind: 'base', type: 'blob', content: blobContent },
+      ]);
+      const packPath = `${ctx.layout.gitDir}/objects/pack/pack-tag-corrupt-entry.pack`;
+      const packBytes = await ctx.fs.read(packPath);
+      const corrupted = packBytes.slice();
+      corrupted[20] = (corrupted[20] ?? 0) ^ 0xff;
+      corrupted[21] = (corrupted[21] ?? 0) ^ 0xff;
+      await ctx.fs.write(packPath, corrupted);
+      const tagId = await writeObject(ctx, makeTag(blobId as ObjectId, 'blob', 'tb'));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/tb`, `${tagId}\n`);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert — tagged finding present
+      const tagged = result.findings.find((f) => f.type === 'tagged');
+      expect(tagged).toMatchObject({
+        type: 'tagged',
+        id: blobId,
+        objectType: 'blob',
+        tagName: 'tb',
+        tag: tagId,
+      });
+
+      // Assert — no missing/dangling/unreachable/broken-link for this id
+      const spuriousTypes = result.findings
+        .filter(
+          (f) =>
+            ('id' in f && f.id === blobId) ||
+            ('toId' in f && (f as { toId: ObjectId }).toId === blobId),
+        )
+        .map((f) => f.type);
+      expect(spuriousTypes).not.toContain('missing');
+      expect(spuriousTypes).not.toContain('dangling');
+      expect(spuriousTypes).not.toContain('unreachable');
+      expect(spuriousTypes).not.toContain('broken-link');
+      expect(result.exitCode & 2).toBe(0);
     });
   });
 });
@@ -2266,13 +2376,12 @@ describe('Given tree with gitlink (submodule) entry pointing to commit not in un
   });
 });
 
-// Kill: reachability.ts line 163 (corrupt object in walk loop must be marked reached)
-// When a ref points to a corrupt object (readable in universe but null in cache),
-// the walk must mark it reached to avoid re-processing it infinitely.
-// Without reached.add(id), the worklist loop would spin forever.
+// A ref pointing to a corrupt LOOSE object with no pack copy anywhere: git's
+// `has_object_pack` gate never fires, so `read_loose_object`'s refusal is the
+// only word on this id — its referrer reports `missing`, exit bit 2.
 describe('Given ref pointing to corrupt object (null in cache)', () => {
   describe('When fsck runs', () => {
-    it('Then fsck completes without hanging and the corrupt object is not unreachable', async () => {
+    it('Then reports it missing (typed blob, exit bit 2) and never unreachable', async () => {
       // Arrange — write a blob normally, then corrupt its bytes
       const ctx = await initBareCtx();
       const blobId = await writeObject(ctx, makeBlob('corrupt-me'));
@@ -2302,6 +2411,10 @@ describe('Given ref pointing to corrupt object (null in cache)', () => {
         (f) => f.type === 'unreachable' && (f as { id: ObjectId }).id === blobId,
       );
       expect(unreachableBlob).toBeUndefined();
+      const brokenLinkBlob = result.findings.find(
+        (f) => f.type === 'broken-link' && (f as { toId: ObjectId }).toId === blobId,
+      );
+      expect(brokenLinkBlob).toBeUndefined();
 
       // Assert — git's read_loose_object refuses this REFERENCED object, so
       // its referrer (the tree) reports `missing blob <oid>`, typed from the
@@ -2314,6 +2427,178 @@ describe('Given ref pointing to corrupt object (null in cache)', () => {
       expect(missingBlob).toBeDefined();
       expect(missingBlob?.objectType).toBe('blob');
       expect(result.exitCode & 2).toBe(2);
+    });
+  });
+});
+
+// git's `check_object` returns early for any id with a pack copy
+// (`has_object_pack` → "it is in pack - forget about it"), so a REFERENCED
+// blob backed by a corrupt PACK entry gets no `missing` line at all — the
+// pack copy is trusted for reachability regardless of its own readability.
+describe('Given ref pointing to a tree whose entry is a REFERENCED blob backed only by a corrupt pack entry', () => {
+  describe('When fsck runs', () => {
+    it('Then never reports it missing, dangling, unreachable or broken-link', async () => {
+      // Arrange — corrupt the packed entry's compressed bytes in place; the
+      // .idx (and so pack MEMBERSHIP) is untouched.
+      const ctx = await initBareCtx();
+      const blobContent = enc.encode('x'.repeat(2000));
+      const [blobId] = await writeSyntheticPack(ctx, 'corrupt-entry', [
+        { kind: 'base', type: 'blob', content: blobContent },
+      ]);
+      const packPath = `${ctx.layout.gitDir}/objects/pack/pack-corrupt-entry.pack`;
+      const packBytes = await ctx.fs.read(packPath);
+      const corrupted = packBytes.slice();
+      corrupted[20] = (corrupted[20] ?? 0) ^ 0xff;
+      corrupted[21] = (corrupted[21] ?? 0) ^ 0xff;
+      await ctx.fs.write(packPath, corrupted);
+      const treeId = await writeObject(
+        ctx,
+        makeTree([treeEntry(FILE_MODE.REGULAR, 'file.txt', blobId as ObjectId)]),
+      );
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert — no missing/dangling/unreachable/broken-link for this id
+      const spuriousTypes = result.findings
+        .filter(
+          (f) =>
+            ('id' in f && f.id === blobId) ||
+            ('toId' in f && (f as { toId: ObjectId }).toId === blobId),
+        )
+        .map((f) => f.type);
+      expect(spuriousTypes).not.toContain('missing');
+      expect(spuriousTypes).not.toContain('dangling');
+      expect(spuriousTypes).not.toContain('unreachable');
+      expect(spuriousTypes).not.toContain('broken-link');
+      expect(result.exitCode & 2).toBe(0);
+    });
+  });
+});
+
+// git types this id from its PACK copy (`has_object_pack`); the shadowing
+// loose file is reported through the separate hash-mismatch finding, never
+// through a spurious `missing` — matching real git's own `dangling blob
+// <other>` / `hash-path mismatch` pairing with no `missing` line.
+describe('Given a tree referencing a packed blob whose loose path is shadowed by mismatched content', () => {
+  describe('When fsck runs', () => {
+    it('Then reports hash-mismatch and dangling for the shadow, never missing for the packed id', async () => {
+      // Arrange — a valid pack copy of blobId, then a loose file AT blobId's
+      // path holding UNRELATED (mismatched) content.
+      const ctx = await initBareCtx();
+      const packedContent = enc.encode('real packed content');
+      const [blobId] = await writeSyntheticPack(ctx, 'shadow', [
+        { kind: 'base', type: 'blob', content: packedContent },
+      ]);
+      const shadowContent = enc.encode('shadowing loose content');
+      const shadowHeader = enc.encode(`blob ${shadowContent.length}\0`);
+      const shadowBytes = new Uint8Array(shadowHeader.length + shadowContent.length);
+      shadowBytes.set(shadowHeader, 0);
+      shadowBytes.set(shadowContent, shadowHeader.length);
+      const shadowId = await ctx.hash.hashHex(shadowBytes);
+      const shadowCompressed = await ctx.compressor.deflate(shadowBytes);
+      const shadowDir = objectsDir(ctx.layout.gitDir, (blobId as ObjectId).slice(0, 2));
+      await ctx.fs.mkdir(shadowDir);
+      await ctx.fs.writeExclusive(
+        looseObjectPath(ctx.layout.gitDir, blobId as ObjectId),
+        shadowCompressed,
+      );
+      const treeId = await writeObject(
+        ctx,
+        makeTree([treeEntry(FILE_MODE.REGULAR, 'file.txt', blobId as ObjectId)]),
+      );
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert — no missing/dangling/unreachable/broken-link for the packed id
+      const spuriousTypes = result.findings
+        .filter(
+          (f) =>
+            ('id' in f && f.id === blobId) ||
+            ('toId' in f && (f as { toId: ObjectId }).toId === blobId),
+        )
+        .map((f) => f.type);
+      expect(spuriousTypes).not.toContain('missing');
+      expect(spuriousTypes).not.toContain('dangling');
+      expect(spuriousTypes).not.toContain('unreachable');
+      expect(spuriousTypes).not.toContain('broken-link');
+
+      // Assert — hash-mismatch names the packed id, actual is the shadow's real hash
+      const mismatch = result.findings.find(
+        (f): f is FsckFinding & { type: 'hash-mismatch' } =>
+          f.type === 'hash-mismatch' && f.id === blobId,
+      );
+      expect(mismatch?.actual).toBe(shadowId);
+      expect(result.exitCode & 2).toBe(0);
+      expect(result.exitCode & 1).toBe(1);
+    });
+  });
+});
+
+describe('Given a commit whose TREE is an unreadable loose object with no pack copy', () => {
+  describe('When fsck runs', () => {
+    it('Then reports it missing (typed tree), never dangling or unreachable', async () => {
+      // Arrange — a non-empty tree: the canonical EMPTY tree oid is served
+      // from a built-in constant, never read off disk, so corrupting its
+      // loose file would go unnoticed.
+      const ctx = await initBareCtx();
+      const fileBlobId = await writeObject(ctx, makeBlob('file-content'));
+      const treeId = await writeObject(
+        ctx,
+        makeTree([treeEntry(FILE_MODE.REGULAR, 'file.txt', fileBlobId)]),
+      );
+      const treePath = looseObjectPath(ctx.layout.gitDir, treeId);
+      await ctx.fs.write(treePath, new Uint8Array([0xde, 0xad, 0xbe, 0xef]));
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const missing = result.findings.find(
+        (f): f is FsckFinding & { type: 'missing' } => f.type === 'missing' && f.id === treeId,
+      );
+      expect(missing).toMatchObject({ type: 'missing', objectType: 'tree' });
+      const spuriousTypes = result.findings
+        .filter((f) => 'id' in f && f.id === treeId)
+        .map((f) => f.type);
+      expect(spuriousTypes).not.toContain('dangling');
+      expect(spuriousTypes).not.toContain('unreachable');
+    });
+  });
+});
+
+describe('Given a commit whose PARENT is an unreadable loose object with no pack copy', () => {
+  describe('When fsck runs', () => {
+    it('Then reports it missing (typed commit), never dangling or unreachable', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const treeId = await writeObject(ctx, makeTree([]));
+      const parentId = await writeObject(ctx, makeCommit(treeId, []));
+      const parentPath = looseObjectPath(ctx.layout.gitDir, parentId);
+      await ctx.fs.write(parentPath, new Uint8Array([0xde, 0xad, 0xbe, 0xef]));
+      const childId = await writeObject(ctx, makeCommit(treeId, [parentId]));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${childId}\n`);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const missing = result.findings.find(
+        (f): f is FsckFinding & { type: 'missing' } => f.type === 'missing' && f.id === parentId,
+      );
+      expect(missing).toMatchObject({ type: 'missing', objectType: 'commit' });
+      const spuriousTypes = result.findings
+        .filter((f) => 'id' in f && f.id === parentId)
+        .map((f) => f.type);
+      expect(spuriousTypes).not.toContain('dangling');
+      expect(spuriousTypes).not.toContain('unreachable');
     });
   });
 });

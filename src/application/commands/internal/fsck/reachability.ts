@@ -74,6 +74,11 @@ interface WalkState {
    *  connectivityOnly mode's own handling of a null cache entry is left
    *  untouched, so this is false there. */
   readonly contentUnreadableIsMissing: boolean;
+  /** Unreadable (null-cache) ids also claimed by a pack — git's own
+   *  `has_object_pack`: `isContentUnreadable` never fires for one of these,
+   *  since git's `check_object` trusts the pack copy and never learns the
+   *  entry is corrupt. */
+  readonly packMemberIds: ReadonlySet<ObjectId>;
   readonly reached: Set<ObjectId>;
   readonly missingIds: Set<ObjectId>;
   readonly brokenEdges: GraphEdge[];
@@ -96,11 +101,18 @@ function enqueueIfPresent(state: WalkState, id: ObjectId): void {
  * `read_loose_object` folds into the SAME refusal as an absent object, once
  * something else references it. Gated to default (non-connectivityOnly)
  * mode: connectivityOnly keeps its own handling of an unreadable object,
- * untouched here.
+ * untouched here. Also excludes any id with a pack copy: git's
+ * `check_object` (`has_object_pack`) trusts a pack's claim on an id and
+ * never even attempts the read that would learn the entry is corrupt, so
+ * that id is never reported missing — only `enqueueIfPresent`'s ordinary
+ * routing applies to it.
  */
 function isContentUnreadable(state: WalkState, id: ObjectId): boolean {
   return (
-    state.contentUnreadableIsMissing && state.universe.has(id) && state.objectCache.get(id) == null
+    state.contentUnreadableIsMissing &&
+    state.universe.has(id) &&
+    state.objectCache.get(id) == null &&
+    !state.packMemberIds.has(id)
   );
 }
 
@@ -164,7 +176,10 @@ function processTag(
 ): void {
   const { object: target, objectType: targetType, tagName } = obj;
   const edge: GraphEdge = { fromId: id, fromType: 'tag', toId: target, toType: targetType };
-  if (routeEdgeTarget(state, edge) === 'enqueued') {
+  // git's tag walk marks the target reachable — and so reports `tagged` —
+  // whenever it is PRESENT, whether or not it could be typed: only a
+  // genuinely absent (broken-link) target drops the report.
+  if (routeEdgeTarget(state, edge) !== 'broken') {
     state.tagRefs.push({ tagId: id, tagName, targetId: target, targetType });
   }
 }
@@ -188,11 +203,13 @@ export function buildReachableSet(
   seeds: ReadonlySet<ObjectId>,
   objectCache: ReadonlyMap<ObjectId, CachedGitObject>,
   unreadable: UnreadableMode,
+  packMemberIds: ReadonlySet<ObjectId>,
 ): WalkResult {
   const state: WalkState = {
     universe,
     objectCache,
     contentUnreadableIsMissing: unreadable === 'skip',
+    packMemberIds,
     reached: new Set(),
     missingIds: new Set(),
     brokenEdges: [],
@@ -211,9 +228,11 @@ export function buildReachableSet(
     }
     const obj = objectCache.get(id);
     if (obj == null) {
-      // Corrupt/unreadable ROOT (no referring edge routed it here) — mark
-      // reached, no further edges. A REFERENCED id never reaches this
-      // branch: `routeEdgeTarget` already diverted it to `missingIds` above.
+      // Corrupt/unreadable, no further edges — either a ROOT (no referring
+      // edge routed it here), or a REFERENCED id whose pack copy
+      // `routeEdgeTarget` trusted (`isContentUnreadable`'s pack-membership
+      // exclusion) and so enqueued here instead of diverting to
+      // `missingIds`.
       state.reached.add(id);
     } else {
       visitObject(state, id, obj);

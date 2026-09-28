@@ -171,6 +171,72 @@ describe('Given a packed blob whose bytes do not hash to its indexed id', () => 
   });
 });
 
+describe('Given a loose object whose hash disagrees with its path, shadowing a good packed copy of the same id', () => {
+  describe('When runContentValidationPass validates that object', () => {
+    it('Then emits hash-mismatch and leaves typeUnknownIds empty — the pack copy still types it', async () => {
+      // Arrange — git types this id from the pack (`has_object_pack`); the
+      // shadowing loose file is reported through the SEPARATE hash-mismatch
+      // finding, never through the reachability-typing override.
+      const packedContent = ENCODER.encode('real packed content');
+      const ctx = createMemoryContext();
+      const ids = await writeSyntheticPack(ctx, 'shadow', [
+        { kind: 'base', type: 'blob', content: packedContent },
+      ]);
+      const blobId = ids[0] as ObjectId;
+      const shadowingContent = ENCODER.encode('shadowing loose content');
+      await writeLooseAtId(ctx, blobId, 'blob', shadowingContent.length, shadowingContent);
+
+      // Act
+      const result = await sut(
+        ctx,
+        new Set([blobId]),
+        false,
+        new Map(),
+        new Map(),
+        NO_SKIPS,
+        DEFAULT_THRESHOLD,
+      );
+
+      // Assert
+      const hashMismatchFindings = result.findings.filter((f) => f.type === 'hash-mismatch');
+      expect(hashMismatchFindings).toHaveLength(1);
+      expect(hashMismatchFindings[0]).toMatchObject({ id: blobId });
+      expect(result.typeUnknownIds.has(blobId)).toBe(false);
+    });
+  });
+});
+
+describe('Given a loose object whose hash disagrees with its path, and NO packed copy backs it', () => {
+  describe('When runContentValidationPass validates that object', () => {
+    it('Then still marks it unreadable for reachability typing', async () => {
+      // Arrange — the ORIGINAL (pre-fix) behaviour, unaffected by the pack
+      // gate: no pack claims this id, so it is still untyped. An HONEST
+      // body (claim === length) stored at a wrong-hash path, never an
+      // under/over-run — isolates the pack gate from the size-lying arms.
+      const ctx = createMemoryContext();
+      const id = 'c'.repeat(40) as ObjectId;
+      const body = ENCODER.encode('unshadowed content');
+      await writeLooseAtId(ctx, id, 'blob', body.length, body);
+
+      // Act
+      const result = await sut(
+        ctx,
+        new Set([id]),
+        false,
+        new Map(),
+        new Map(),
+        NO_SKIPS,
+        DEFAULT_THRESHOLD,
+      );
+
+      // Assert
+      const hashMismatchFindings = result.findings.filter((f) => f.type === 'hash-mismatch');
+      expect(hashMismatchFindings).toHaveLength(1);
+      expect(result.typeUnknownIds.has(id)).toBe(true);
+    });
+  });
+});
+
 describe('Given a packed blob validated for content', () => {
   describe('When runContentValidationPass computes its hash', () => {
     it('Then the hasher receives the canonical header then the body, in that order', async () => {

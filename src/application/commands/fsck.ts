@@ -14,6 +14,7 @@ import { runMidxHealthPass } from './internal/fsck/midx-health.js';
 import {
   assertTypesRecoverable,
   buildObjectCache,
+  collectUnreadablePackMemberIds,
   withUnreadableOverrides,
 } from './internal/fsck/object-cache.js';
 import { packAccessibilityReported, runPackHealthPass } from './internal/fsck/pack-health.js';
@@ -184,17 +185,28 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   const missingEntryPointBit = missingEntryPoint ? EXIT_REFS_CONTENT : 0;
 
   // Content-validation's own git-faithful read can refuse an object the
-  // general resolver above still typed (currently: a loose blob past
-  // `core.bigFileThreshold` whose body overran its claim) — git's fsck has
-  // no separate "read for typing" pass, so a refusal there denies its
-  // reachability graph the type too. Overriding those ids to unreadable
-  // HERE, after content validation and before every reachability read
-  // below, is what keeps `dangling`/`unreachable` classification git-faithful.
+  // general resolver above still typed — every loose object
+  // `read_loose_object` itself refuses, or whose hash disagrees with its
+  // path, PROVIDED no pack copy backs it — git's fsck has no separate "read
+  // for typing" pass, so a refusal there denies its reachability graph the
+  // type too. Overriding those ids to unreadable HERE, after content
+  // validation and before every reachability read below, is what keeps
+  // `dangling`/`unreachable` classification git-faithful.
   const reachabilityCache = withUnreadableOverrides(objectCache, contentResult.typeUnknownIds);
   const inEdgePresent = buildInEdgeMap(universe, reachabilityCache);
 
+  // Which of the (rare) unreadable ids are ALSO claimed by a pack — git's
+  // `has_object_pack`: `buildReachableSet` must never report one of these
+  // `missing`, since git's own `check_object` trusts the pack copy and never
+  // learns the entry is corrupt. Skipped outside default mode: connectivityOnly
+  // never consults this set (`isContentUnreadable` is gated on `unreadable`).
+  const packMemberIds =
+    unreadable === 'skip'
+      ? await collectUnreadablePackMemberIds(auditCtx, reachabilityCache)
+      : (new Set<ObjectId>() as ReadonlySet<ObjectId>);
+
   const { reached, missingIds, brokenEdges, unreadableEdges, rootCommits, tagRefs } =
-    buildReachableSet(universe, roots, reachabilityCache, unreadable);
+    buildReachableSet(universe, roots, reachabilityCache, unreadable, packMemberIds);
 
   const { unreachable, dangling } = classifyObjects(universe, reached, inEdgePresent);
   assertTypesRecoverable(ctx, unreachable, unrecoverable);
