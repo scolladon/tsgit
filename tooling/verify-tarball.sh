@@ -271,7 +271,18 @@ done
 # cache key and the per-path override resolution it replaces — runtime code
 # shipped in every distribution form, none removable without giving back
 # git's own per-filespec `diff_filespec_is_binary` model.
-SIZE_CAP=$((1011 * 1024))
+# Raised 1011 -> 1012 KiB by the review-round bare-repo, CRLF break-score,
+# and diff.<driver>.binary batch: the measured tarball lands at
+# 1 035 475 B, 211 B over the old cap, attributable to skipping the
+# work-tree/HEAD `.gitattributes` source in a bare repository (the one
+# shared attribute provider every rename/break/patch/numstat caller reads
+# through), the CR-excluded `literalAdded` break-score fix plus its
+# `should_break` sanity clamp, and treating `diff.<driver>.binary` as
+# git's own `auto`/bool tristate instead of a plain boolean — runtime code
+# shipped in every distribution form, none removable without giving back
+# the bare-repo attribute lookup, the CR-faithful break score, or the
+# tristate config parity.
+SIZE_CAP=$((1012 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
