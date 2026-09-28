@@ -40,3 +40,27 @@ the short-body residual; ADR-854's cache value shape.
 ## Consequences
 
 - The hostile rename case drops to git's order of magnitude.
+
+## Amendment — fsck follows `read_loose_object` for every type (2026-09-28)
+
+- `fsck` checks commits, trees and tags the same way it checks blobs, as git does:
+  - an under-run is hashed with padding;
+  - an over-run inside the 32-byte window is truncated to the claim and hashed;
+  - an over-run past the window is corrupt.
+
+  `readObject` keeps ADR-863's refusal of a size-lying commit, tree or tag. Only `fsck`'s
+  verdict changes.
+- A loose blob whose claim exceeds `core.bigFileThreshold` (default 512 MiB, strict `>`) takes
+  git's `check_stream_oid` route. `fsck` hashes the declared header plus the real bytes with no
+  padding. An over-run is corrupt, and the object is left untyped for reachability.
+- **Divergence: the padding bytes.** git's `unpack_loose_rest` pads an under-run through
+  `xmallocz`, which is not zero-initialised. For the same fixture, the padding git hashes, and
+  so the hash-path mismatch oid it reports, can differ from run to run (3 of 150 runs at claims
+  1024 and 1025). tsgit pads with zero bytes, which gives one stable value for a case git cannot
+  reproduce. Interop rows therefore pin only the deterministic part of git's output: the
+  `hash-path mismatch, found at: <path>` line and the exit code. tsgit's zero-padded value is
+  pinned against tsgit alone.
+- Known gap: the 2 GiB zero-pad ceiling can only be reached when `core.bigFileThreshold` is
+  configured above 2 GiB. That case has not been probed against git.
+- Divergence: an invalid `core.bigFileThreshold` is fatal in git but read as absent by tsgit,
+  the existing precedent for `core.packedGitLimit` and `core.deltaBaseCacheLimit`.
