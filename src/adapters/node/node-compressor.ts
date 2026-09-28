@@ -6,12 +6,12 @@ import {
   deflateRawSync,
   deflateSync,
   inflateSync,
-  constants as zlibConstants,
 } from 'node:zlib';
 import { compressFailed, decompressFailed } from '../../domain/index.js';
 import { concatBytes } from '../../domain/objects/encoding.js';
 import type { Compressor, InflateStreamResult } from '../../ports/compressor.js';
 import { INFLATE_CAP_EXCEEDED_REASON, MAX_INFLATE_OUTPUT_BYTES } from '../../ports/compressor.js';
+import { inflateZlibHead } from '../inflate.js';
 
 const deflateAsync = promisify(deflateCallback);
 const deflateRawAsync = promisify(deflateRawCallback);
@@ -117,16 +117,6 @@ function toResultView(out: Buffer): Uint8Array {
     : new Uint8Array(out);
 }
 
-/** `inflateHead`'s starting input-prefix length: a zlib header needs only 2
- *  bytes, but a dynamic-Huffman block header can exceed 30, so the smallest
- *  probe that reliably clears a real header is git's own `MAX_HEADER_LEN`. */
-const HEAD_PROBE_INPUT_BYTES = 32;
-
-/** How much the input prefix grows each time a probe under-decodes: large
- *  enough that a handful of passes covers even a multi-megabyte header run,
- *  without probing so finely that a typical short header needs many passes. */
-const HEAD_PROBE_GROWTH_FACTOR = 4;
-
 interface NodeCompressorOptions {
   /** Override the inflated-output cap. Tests use a small value to exercise the overflow branch. */
   readonly maxInflatedBytes?: number;
@@ -208,27 +198,19 @@ export class NodeCompressor implements Compressor {
     }
   };
 
-  // Probes a growing prefix of the compressed input with Z_SYNC_FLUSH, which
-  // decodes whatever whole output the prefix already yields without
-  // requiring the stream to be complete. Growing ×4 from a 32-byte prefix
-  // reaches most headers in one or two passes; the loop's last pass always
-  // covers the whole input, so a legitimately short stream still decodes in
-  // full.
-  inflateHead = async (data: Uint8Array, maxOutputBytes: number): Promise<Uint8Array> => {
-    try {
-      let probeLength = HEAD_PROBE_INPUT_BYTES;
-      for (;;) {
-        const prefix = data.subarray(0, probeLength);
-        const out = inflateSync(prefix, { finishFlush: zlibConstants.Z_SYNC_FLUSH });
-        if (out.length >= maxOutputBytes || prefix.length >= data.length) {
-          return toResultView(out).subarray(0, maxOutputBytes);
-        }
-        probeLength *= HEAD_PROBE_GROWTH_FACTOR;
-      }
-    } catch (err) {
-      throw decompressFailed(describeError(err));
-    }
-  };
+  // Delegates to the zero-dependency decoder's own bounded head-probe (also
+  // used by the memory/browser adapters): it decodes block-by-block and
+  // stops the instant `maxOutputBytes` of real output has been produced, so
+  // a hostile input can never force more decode work than the bound allows.
+  // A growing-prefix probe through `inflateSync`'s `Z_SYNC_FLUSH` (this
+  // method's previous implementation) has no way to cap a SINGLE call's own
+  // output while still tolerating an incomplete stream, so a crafted prefix
+  // of "under-decoded" empty stored blocks could force one such call to
+  // inflate the input's full ~1032× DEFLATE expansion before the loop ever
+  // got to check the result against `maxOutputBytes`. `inflateZlibHead`
+  // already maps every failure to `decompressFailed`, so no re-wrap here.
+  inflateHead = async (data: Uint8Array, maxOutputBytes: number): Promise<Uint8Array> =>
+    inflateZlibHead(data, 0, maxOutputBytes);
 
   streamInflate = async (
     bytes: Uint8Array,
