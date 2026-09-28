@@ -153,11 +153,15 @@ const modifyChange = (path: string, oldId: ObjectId, newId: ObjectId): ModifyCha
 });
 
 /** `count` modifies, each old/new pair maximally dissimilar (disjoint byte
- *  alphabets) so every one clears even the lowest non-zero break threshold. */
+ *  alphabets) so every one clears even the lowest non-zero break threshold.
+ *  Every old blob's content is also DISTINCT (its own `i` prefix): content
+ *  addressing would otherwise collapse `count` identical old blobs onto one
+ *  object id, masking a regression where a later pair's read is served from
+ *  an earlier pair's already-cached bytes instead of its own. */
 async function buildBreakableModifyDiff(ctx: Ctx, count: number): Promise<TreeDiff> {
   const changes: ModifyChange[] = [];
   for (let i = 0; i < count; i += 1) {
-    const oldId = await writeBlob(ctx, 'a'.repeat(BREAK_MODIFY_BLOB_BYTES));
+    const oldId = await writeBlob(ctx, `old-${i}-${'a'.repeat(BREAK_MODIFY_BLOB_BYTES)}`);
     const newId = await writeBlob(ctx, `${i}-${'b'.repeat(BREAK_MODIFY_BLOB_BYTES)}`);
     changes.push(modifyChange(`f${i}.bin`, oldId, newId));
   }
@@ -167,7 +171,7 @@ async function buildBreakableModifyDiff(ctx: Ctx, count: number): Promise<TreeDi
 describe('detect-similarity-renames — break-rewrite blob retention', () => {
   describe('Given more breaking modifies than the ioBound limit', () => {
     describe('When detectSimilarityRenames runs with breakRewrites on', () => {
-      it('Then a pair is fingerprinted and its bytes released before the whole batch has been read', async () => {
+      it("Then a pair's own fingerprint build starts before the whole batch has finished reading (ordering, not a memory-release proof)", async () => {
         // Arrange — ioBound small and explicit so the bound below is
         // unambiguous; modifyCount well past it so a batch-then-process
         // regression (reading everything before scoring anything) is
