@@ -254,30 +254,6 @@ function sumFingerprintCounts(fp: SpanFingerprint): number {
 }
 
 /**
- * git's `should_break` sanity clamp (`diffcore-break.c`): `literalAdded`
- * can never legitimately claim more bytes than `dst` has once combined with
- * `srcCopied` — clamp it down (to `dstSize − srcCopied`, or 0 when even that
- * is negative) rather than let a caller derive an over-100% break score.
- *
- * `countSpanhashChanges` below derives `literalAdded` as (dst fingerprint's
- * own byte total) − `srcCopied`, and a fingerprint's byte total never exceeds
- * `dstSize` (a chunk walk only ever SKIPS bytes — the CR of a CRLF pair —
- * never invents them), so that caller can never actually trigger the clamp:
- * it is kept as its own faithfully-tested unit for git-parity, not because
- * `countSpanhashChanges` needs it today.
- *
- * @internal — exported for tests only.
- */
-export function clampLiteralAdded(
-  dstSize: number,
-  srcCopied: number,
-  literalAdded: number,
-): number {
-  if (dstSize >= literalAdded + srcCopied) return literalAdded;
-  return srcCopied < dstSize ? dstSize - srcCopied : 0;
-}
-
-/**
  * Return git's raw `diffcore_count_changes` outputs for a (src, dst) blob pair.
  * These are the load-bearing counts for break scoring (not similarity scoring):
  *
@@ -300,7 +276,6 @@ export function countSpanhashChanges(
   return countSpanhashChangesFromFingerprints(
     buildFingerprint(src, override ?? contentKindOf(src)),
     buildFingerprint(dst, override ?? contentKindOf(dst)),
-    dst.length,
   );
 }
 
@@ -314,12 +289,16 @@ export function countSpanhashChanges(
 export function countSpanhashChangesFromFingerprints(
   srcFingerprint: SpanFingerprint,
   dstFingerprint: SpanFingerprint,
-  dstSize: number,
 ): SpanhashChangeCounts {
   const srcCopied = countCopied(srcFingerprint, dstFingerprint);
-  const rawLiteralAdded = sumFingerprintCounts(dstFingerprint) - srcCopied;
+  // git's `should_break` clamps `literalAdded` to `dstSize − srcCopied` in
+  // case it overshoots `dst`'s real size. It never can here: `literalAdded`
+  // is `dst`'s fingerprint byte total minus `srcCopied`, and a chunk walk
+  // only ever SKIPS bytes (the CR of a CRLF pair) — its total is always
+  // ≤ `dstSize`, so `literalAdded + srcCopied` is always ≤ `dstSize` too.
+  const literalAdded = sumFingerprintCounts(dstFingerprint) - srcCopied;
 
-  return { srcCopied, literalAdded: clampLiteralAdded(dstSize, srcCopied, rawLiteralAdded) };
+  return { srcCopied, literalAdded };
 }
 
 /**

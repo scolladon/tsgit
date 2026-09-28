@@ -977,7 +977,6 @@ function computeBreakScores(src: BlobFingerprint, dst: BlobFingerprint): BreakSc
   const { srcCopied, literalAdded } = countSpanhashChangesFromFingerprints(
     src.fingerprint,
     dst.fingerprint,
-    dst.size,
   );
   const srcRemoved = src.size - srcCopied;
   const rawBreakNum = Math.min(srcRemoved + literalAdded, maxSize);
