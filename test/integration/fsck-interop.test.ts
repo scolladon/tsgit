@@ -1167,10 +1167,13 @@ describe.skipIf(!GIT_AVAILABLE)(
   "Given a loose blob past core.bigFileThreshold whose body overran its claim inside git's 32-byte header window",
   () => {
     describe('When fsck runs', () => {
-      it('Then emits bad-object, never hash-mismatch — git streams past the threshold and refuses the over-run as corrupt', async () => {
+      it('Then emits ONLY bad-object for it — never hash-mismatch, dangling or unreachable, matching git printing no dangling line at all', async () => {
         // Arrange — git's `check_stream_oid` gates on `core.bigFileThreshold`
         // for a blob regardless of body length; an over-run there reports
-        // `corrupt loose object`, never a truncated-prefix hash-path mismatch.
+        // `corrupt loose object`. git has no separate "read for typing" pass
+        // — the SAME refusal denies its reachability graph the type too, so
+        // real git's stdout never mentions this oid at all (no `dangling
+        // blob` line, pinned below alongside tsgit's own finding).
         const gitResult = gitFsck(bigFileTruncateDir);
 
         // Act
@@ -1180,21 +1183,18 @@ describe.skipIf(!GIT_AVAILABLE)(
         expect(result.exitCode & 1).toBe(1);
         expect(gitResult.exitCode & 1).toBe(1);
 
-        // Assert — content validation reports bad-object, never a
-        // hash-mismatch, for this id (the reachability pass separately
-        // still types and reports this object as dangling — it reads
-        // through the general resolver, which has no `core.bigFileThreshold`
-        // gate of its own; content-validation's gate is the one this finding
-        // asks for, so only ITS finding is pinned here).
+        // Assert — exactly one finding for this id: bad-object, never a
+        // hash-mismatch, dangling or unreachable finding alongside it.
         const findingsForId = result.findings.filter(
           (f) => 'id' in f && f.id === bigFileTruncateSha,
         );
-        const badObject = findingsForId.find((f) => f.type === 'bad-object');
-        expect(badObject).toMatchObject({ msgId: 'unterminatedHeader' });
-        expect(findingsForId.some((f) => f.type === 'hash-mismatch')).toBe(false);
+        expect(findingsForId).toHaveLength(1);
+        expect(findingsForId[0]).toMatchObject({ type: 'bad-object', msgId: 'unterminatedHeader' });
 
-        // git: "error: corrupt loose object '<oid>'"
+        // git: "error: corrupt loose object '<oid>'", never a stdout line
+        // (typed or not) naming this oid.
         expect(gitResult.stderr).toContain(`corrupt loose object '${bigFileTruncateSha}'`);
+        expect(gitResult.stdout).not.toContain(bigFileTruncateSha);
       });
     });
   },

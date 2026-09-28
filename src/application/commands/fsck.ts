@@ -11,7 +11,11 @@ import {
 } from './internal/fsck/content-validation.js';
 import { EXIT_MISSING, EXIT_REFS_CONTENT } from './internal/fsck/exit-codes.js';
 import { runMidxHealthPass } from './internal/fsck/midx-health.js';
-import { assertTypesRecoverable, buildObjectCache } from './internal/fsck/object-cache.js';
+import {
+  assertTypesRecoverable,
+  buildObjectCache,
+  withUnreadableOverrides,
+} from './internal/fsck/object-cache.js';
 import { packAccessibilityReported, runPackHealthPass } from './internal/fsck/pack-health.js';
 import {
   assembleConnectivityFindings,
@@ -111,7 +115,11 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   // verifies hash from those bytes — no additional readObject calls.
   const contentResult =
     opts.connectivityOnly === true
-      ? { findings: [] as FsckFinding[], exitBit: 0 }
+      ? {
+          findings: [] as FsckFinding[],
+          exitBit: 0,
+          typeUnknownIds: new Set<ObjectId>() as ReadonlySet<ObjectId>,
+        }
       : await runContentValidationPass(
           auditCtx,
           universe,
@@ -174,12 +182,21 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
     await assertValidPromisorRemoteConfig(ctx);
   }
   const missingEntryPointBit = missingEntryPoint ? EXIT_REFS_CONTENT : 0;
-  const inEdgePresent = buildInEdgeMap(universe, objectCache);
+
+  // Content-validation's own git-faithful read can refuse an object the
+  // general resolver above still typed (currently: a loose blob past
+  // `core.bigFileThreshold` whose body overran its claim) — git's fsck has
+  // no separate "read for typing" pass, so a refusal there denies its
+  // reachability graph the type too. Overriding those ids to unreadable
+  // HERE, after content validation and before every reachability read
+  // below, is what keeps `dangling`/`unreachable` classification git-faithful.
+  const reachabilityCache = withUnreadableOverrides(objectCache, contentResult.typeUnknownIds);
+  const inEdgePresent = buildInEdgeMap(universe, reachabilityCache);
 
   const { reached, missingIds, brokenEdges, rootCommits, tagRefs } = buildReachableSet(
     universe,
     roots,
-    objectCache,
+    reachabilityCache,
   );
 
   const { unreachable, dangling } = classifyObjects(universe, reached, inEdgePresent);
@@ -194,7 +211,7 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
     ...bitmapResult.findings,
     ...assembleConnectivityFindings(
       { missingIds, brokenEdges, unreachable, dangling, rootCommits, tagRefs },
-      { objectCache, recovered, unreadable },
+      { objectCache: reachabilityCache, recovered, unreadable },
     ),
   ];
 

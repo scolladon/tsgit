@@ -1303,6 +1303,32 @@ describe('Given a loose blob stored self-consistently under its UNPADDED size-ly
       expect(mismatch?.actual).toBe(expectedActual);
     });
   });
+
+  describe('When fsck runs on a blob past core.bigFileThreshold whose body OVERRAN its claim inside the header window', () => {
+    it('Then reports bad-object but neither dangling nor unreachable for it — git never learns this object type either', async () => {
+      // Arrange — declared 5 past a 1-byte threshold, body overruns to 8
+      // bytes while staying inside the 32-byte header window: git's
+      // `check_stream_oid` refuses this object entirely (`corrupt loose
+      // object`), so real git's OWN reachability graph never types it and
+      // prints no `dangling blob` line — the general resolver `fsck`'s
+      // object cache is built from has no such gate, so without the
+      // reachability override this id would still surface as typed.
+      const ctx = await initBareCtx();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tbigFileThreshold = 1\n');
+      const id = await writeMalformedLooseObject(
+        ctx,
+        buildDeclaredSizeLyingBlob(5, enc2.encode('abcdefgh')),
+      );
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const findingsForId = result.findings.filter((f) => (f as { id?: string }).id === id);
+      expect(findingsForId).toHaveLength(1);
+      expect(findingsForId[0]?.type).toBe('bad-object');
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

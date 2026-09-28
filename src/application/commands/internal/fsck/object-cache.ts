@@ -458,6 +458,28 @@ export async function buildObjectCache(
   return acc;
 }
 
+/**
+ * Overrides specific universe ids to the 'unreadable' (null) cache entry —
+ * content-validation's `typeUnknownIds` signal for ids the general resolver
+ * this cache is built from (`readObject`) still types, but git's own
+ * combined read-and-validate function would refuse (currently: a loose blob
+ * past `core.bigFileThreshold` whose body overran its claim). Applied
+ * AFTER `buildObjectCache`, before the reachability pass ever reads the
+ * cache, so `dangling`/`unreachable` classification sees the SAME
+ * "unreadable" verdict git's own reachability graph would. Returns the
+ * SAME map unchanged when there is nothing to override — the common case,
+ * so an audit with no size-lying big blob never pays a full-cache copy.
+ */
+export function withUnreadableOverrides(
+  cache: ReadonlyMap<ObjectId, CachedGitObject>,
+  overrideIds: ReadonlySet<ObjectId>,
+): ReadonlyMap<ObjectId, CachedGitObject> {
+  if (overrideIds.size === 0) return cache;
+  const patched = new Map(cache);
+  for (const id of overrideIds) patched.set(id, null);
+  return patched;
+}
+
 const MAX_REASON_LENGTH = 200;
 
 /**

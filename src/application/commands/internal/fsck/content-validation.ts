@@ -37,11 +37,30 @@ interface ReadableObject {
   readonly computeHash: () => Promise<string>;
 }
 
-type RawObjectResult = ReadableObject | { readonly ok: false; readonly msgId: string };
+/**
+ * The undecodable-object arm, told apart from a readable one by `ok`.
+ * `reachabilityUnknown` is git-faithfulness bookkeeping the caller
+ * (`validateOneObject`) reads to build `runContentValidationPass`'s
+ * `typeUnknownIds`: true exactly when THIS refusal is content-validation's
+ * OWN — the general object resolver (`object-cache.ts`'s `buildObjectCache`,
+ * via `readObject`) still succeeds reading the SAME object, unlike every
+ * OTHER `ok:false` cause here, which also fails `inflateLooseBuffered` /
+ * `readObject`'s own read. git's own `read_loose_object` is one combined
+ * read that types AND validates an object together, so a refusal there
+ * means git's reachability graph never learns the object's type either —
+ * `fsck.ts` nulls these ids in the shared object cache to match, before the
+ * reachability pass ever reads it. Required (not optional) so a producer
+ * that forgets to set it is a compile error, never a silent `undefined`.
+ */
+type RawObjectResult =
+  | ReadableObject
+  | { readonly ok: false; readonly msgId: string; readonly reachabilityUnknown: boolean };
 
 /** The loose arm's header-parse failure, told apart by the reason
  *  `parseHeader` refused with: an unknown type word is `unknownType`,
- *  anything else (a missing NUL above all) is `unterminatedHeader`. */
+ *  anything else (a missing NUL above all) is `unterminatedHeader`. Also
+ *  fails `readObject`'s own read (the SAME `inflateLooseBuffered` call), so
+ *  `reachabilityUnknown` is false — the general resolver never disagrees. */
 function looseHeaderFailure(err: TsgitError): RawObjectResult {
   // A zlib decode fault (DECOMPRESS_FAILED) reaches here too, now that the
   // buffered tier's own inflate call can fail before parseHeader ever runs
@@ -52,7 +71,7 @@ function looseHeaderFailure(err: TsgitError): RawObjectResult {
       : // Stryker disable next-line StringLiteral: equivalent — reason is read only by reason.startsWith('unknown object type'); neither '' nor 'Stryker was here!' starts with that prefix, so msgId stays 'unterminatedHeader'.
         '';
   const msgId = reason.startsWith('unknown object type') ? 'unknownType' : 'unterminatedHeader';
-  return { ok: false, msgId };
+  return { ok: false, msgId, reachabilityUnknown: false };
 }
 
 /** The stored header's own byte length, derived from a buffered read's
@@ -129,7 +148,13 @@ function underrunResult(
 ): RawObjectResult {
   const { split } = buffered;
   if (split.declaredSize > MAX_INFLATE_OUTPUT_BYTES) {
-    return { ok: false, msgId: 'unterminatedHeader' };
+    // tsgit's own safety ceiling, not a git-faithfulness gate: the general
+    // resolver has no matching cap (`applyLooseVerdict`'s 'underrun' arm
+    // serves the claim uncapped), so a reachability-typing divergence is
+    // POSSIBLE here too, symmetric to `bigBlobTruncateResult`'s. Left
+    // `false` (out of THIS fix's scope — no probe of git's own behaviour at
+    // this ceiling has been done, unlike the measured bigFileThreshold gap).
+    return { ok: false, msgId: 'unterminatedHeader', reachabilityUnknown: false };
   }
   const header = buffered.bytes.subarray(0, headerLengthOf(buffered));
   return {
@@ -182,10 +207,17 @@ function blobUnderrunResult(
  * inflate output — an over-run leaves undrained trailing bytes the stream
  * never accounts for, which git reports as a corrupt loose object (`error:
  * corrupt loose object '<oid>'`), the SAME undecodable finding an
- * unparseable header reports, never a truncated-prefix hash.
+ * unparseable header reports, never a truncated-prefix hash. `reachabilityUnknown`
+ * is true: `readObject`'s general (buffered-mode) read has no
+ * `core.bigFileThreshold` gate of its own and still succeeds typing this
+ * object as a blob — pinned live against git 2.55.0 (scrubbed env): with
+ * this same shape, `git fsck` prints no `dangling blob` line at all (git's
+ * `check_stream_oid` refusal denies its reachability graph the type too),
+ * while `git cat-file -t/-s/-p` succeed unrelated (a DIFFERENT, streaming
+ * code path that ignores the claim and `core.bigFileThreshold` alike).
  */
 function bigBlobTruncateResult(): RawObjectResult {
-  return { ok: false, msgId: 'unterminatedHeader' };
+  return { ok: false, msgId: 'unterminatedHeader', reachabilityUnknown: true };
 }
 
 /**
@@ -307,7 +339,12 @@ async function packedRawObjectBody(ctx: Context, id: ObjectId): Promise<RawObjec
       },
     };
   } catch {
-    return { ok: false, msgId: 'badType' };
+    // Packed objects have no path-based reachability override mechanism
+    // (`ObjectStorage` gates it to 'loose' — this function's own caller
+    // never reads `reachabilityUnknown` for a packed result), so `false`
+    // here is inert bookkeeping, not a claim that packed reads never
+    // diverge from `readObject`'s own typing.
+    return { ok: false, msgId: 'badType', reachabilityUnknown: false };
   }
 }
 
@@ -515,25 +552,47 @@ function catalogueSuppressedByHash(storage: ObjectStorage, hash: ContentValidati
   return storage === 'loose' && hash.findings.length > 0;
 }
 
+/** `validateOneObject`'s own outcome, extending the plain findings/exitBit
+ *  shape with the one extra fact `runContentValidationPass` folds into
+ *  `typeUnknownIds` — never carried on `ContentValidationResult` itself,
+ *  since nothing past `runContentValidationPass`'s own loop reads it. */
+interface ValidateOneObjectOutcome extends ContentValidationResult {
+  readonly reachabilityUnknown: boolean;
+}
+
 /** Validate one object's content and hash, accumulating findings and exit bit. */
 async function validateOneObject(
   ctx: Context,
   id: ObjectId,
   options: CatalogueOptions,
-): Promise<ContentValidationResult> {
+): Promise<ValidateOneObjectOutcome> {
   const { storage, result: rawResult } = await tryGetRawObjectBody(
     ctx,
     id,
     options.bigFileThreshold,
   );
-  if (!rawResult.ok) return unreadableObjectResult(id, rawResult.msgId);
+  if (!rawResult.ok) {
+    return {
+      ...unreadableObjectResult(id, rawResult.msgId),
+      reachabilityUnknown: rawResult.reachabilityUnknown,
+    };
+  }
   const hash = await hashResult(id, rawResult);
-  if (catalogueSuppressedByHash(storage, hash)) return hash;
+  if (catalogueSuppressedByHash(storage, hash)) return { ...hash, reachabilityUnknown: false };
   const catalogue = catalogueResult(ctx, id, rawResult, options);
   return {
     findings: [...catalogue.findings, ...hash.findings],
     exitBit: catalogue.exitBit | hash.exitBit,
+    reachabilityUnknown: false,
   };
+}
+
+/** `runContentValidationPass`'s own result, `ContentValidationResult` plus
+ *  the ids `fsck.ts` must null in the shared object cache before the
+ *  reachability pass reads it — see `RawObjectResult`'s own doc comment for
+ *  why this divergence exists at all. */
+export interface ContentValidationPassResult extends ContentValidationResult {
+  readonly typeUnknownIds: ReadonlySet<ObjectId>;
 }
 
 /**
@@ -549,9 +608,10 @@ export async function runContentValidationPass(
   severities: FsckSeverityTable,
   skipped: ReadonlySet<string>,
   bigFileThreshold: number,
-): Promise<ContentValidationResult> {
+): Promise<ContentValidationPassResult> {
   const findings: FsckFinding[] = [];
   let exitBit = 0;
+  const typeUnknownIds = new Set<ObjectId>();
   const options: CatalogueOptions = {
     strict,
     blobFilenames,
@@ -561,10 +621,11 @@ export async function runContentValidationPass(
   };
 
   for (const id of universe) {
-    const { findings: objFindings, exitBit: objBit } = await validateOneObject(ctx, id, options);
-    findings.push(...objFindings);
-    exitBit |= objBit;
+    const outcome = await validateOneObject(ctx, id, options);
+    findings.push(...outcome.findings);
+    exitBit |= outcome.exitBit;
+    if (outcome.reachabilityUnknown) typeUnknownIds.add(id);
   }
 
-  return { findings, exitBit };
+  return { findings, exitBit, typeUnknownIds };
 }
