@@ -68,6 +68,20 @@ Resolve the working-tree files, `repo.add` the resolved paths, then `repo.merge.
 
 Unsupported conflict types (`rename-rename`, `gitlink`) reject upfront with `UNSUPPORTED_OPERATION` before any disk write.
 
+### Content-conflict boundaries follow git's line-diff engine
+
+The built-in 3-way line merge derives each side's changed base ranges from the
+same git-faithful line-diff pipeline [`diff`](diff.md) uses for `withStat`
+(record cleanup, the cost-capped divide-and-conquer split, and
+indent-heuristic change compaction) — so a conflict's boundaries match `git
+merge`'s own change groups, not an independently-diffed hunk set.
+
+Two sides' changes conflict whenever their edited ranges overlap, or merely
+**touch** — share a base boundary with no unchanged line between them —
+mirroring git's `xdl_do_merge`: the only condition that keeps two changes from
+conflicting is one ending strictly before the other begins. A zero-length
+insertion sitting exactly at the other side's edge conflicts too.
+
 ### Distinct types (file vs symlink)
 
 When both sides **change** to different kinds — one a regular file and one a symlink — the conflict is `distinct-types`. The regular side is renamed to `<path>~<label>` (that side's conflict label with `/` flattened to `_`, made unique with `_0`, `_1`, … against tracked paths) while the symlink keeps the original path. Each side lands at its recorded path — no content merge, and the behaviour is identical whether or not a merge base exists:

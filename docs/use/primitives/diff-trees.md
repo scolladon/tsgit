@@ -31,6 +31,8 @@ interface TreeDiff {
 
 With `recursive: true`, both trees are flattened to full-path blob entries before classification, so a changed sub-directory surfaces as per-file changes (`src/foo.ts`) rather than a single `src` tree-entry change. This is the mode the Tier-1 `diff` and `show` commands build on.
 
+`withStat: true` (the data half of git's `--numstat`) forces `recursive: true` regardless of what was passed — git recurses before rename/copy detection runs for any output that reads blob content, because a changed sub-directory has no lines of its own to diff. See [`diff`](../commands/diff.md#recursion) for the full behaviour.
+
 ## Example
 
 ```ts
