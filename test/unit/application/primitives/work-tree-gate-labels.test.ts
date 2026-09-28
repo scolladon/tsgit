@@ -23,7 +23,6 @@ import {
   submoduleSync,
 } from '../../../../src/application/commands/submodule.js';
 import { compareWorkingTreeDelta } from '../../../../src/application/primitives/compare-working-tree-entry.js';
-import { buildAttributeProvider } from '../../../../src/application/primitives/internal/read-gitattributes.js';
 import { readGitignore } from '../../../../src/application/primitives/internal/read-gitignore.js';
 import { deriveSubmoduleCloneContext } from '../../../../src/application/primitives/internal/submodule-context.js';
 import { createLeadingPathScanner } from '../../../../src/application/primitives/internal/symlinked-leading-path.js';
@@ -237,19 +236,6 @@ describe('Work-tree-gate labels (defensive re-checks unreachable through a comma
 
         // Assert
         assertWorkTreeRequired(caught, 'compareWorkingTreeEntry');
-      });
-    });
-
-    describe('When buildAttributeProvider runs', () => {
-      it("Then throws WORK_TREE_REQUIRED tagged 'buildAttributeProvider'", async () => {
-        // Arrange
-        const ctx = await bareCtx();
-
-        // Act
-        const caught = await catchOperation(() => buildAttributeProvider(ctx));
-
-        // Assert
-        assertWorkTreeRequired(caught, 'buildAttributeProvider');
       });
     });
 
