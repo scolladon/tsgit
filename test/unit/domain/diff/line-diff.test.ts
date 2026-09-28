@@ -9,6 +9,7 @@ import {
   MAX_LINE_BYTES,
   splitLines,
 } from '../../../../src/domain/diff/line-diff.js';
+import { hashLineSide } from '../../../../src/domain/diff/xdiff/xdl-classify.js';
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
 
@@ -780,6 +781,27 @@ describe('line-diff — diffPresplitLines', () => {
 
         // Assert
         expect(result).toEqual(expected);
+      });
+    });
+  });
+
+  describe('Given a precomputed hash for one side, passed as PrecomputedLineHashes', () => {
+    describe('When diffPresplitLines is called', () => {
+      it('Then the returned oursHashes/theirsHashes for that side is the SAME array reference passed in, not a re-hash', () => {
+        // Arrange
+        const oursLines = splitLines(enc('a\nb\n'));
+        const theirsLines = splitLines(enc('a\nc\n'));
+        const oursHashes = hashLineSide(oursLines, undefined);
+        const theirsHashes = hashLineSide(theirsLines, undefined);
+        const sut = diffPresplitLines;
+
+        // Act
+        const oursResult = sut(oursLines, theirsLines, undefined, { ours: oursHashes });
+        const theirsResult = sut(oursLines, theirsLines, undefined, { theirs: theirsHashes });
+
+        // Assert
+        expect(oursResult.oursHashes).toBe(oursHashes);
+        expect(theirsResult.theirsHashes).toBe(theirsHashes);
       });
     });
   });
