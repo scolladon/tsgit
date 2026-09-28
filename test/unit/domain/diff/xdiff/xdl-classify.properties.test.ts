@@ -1,5 +1,7 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
+import type { LineDiffOptions } from '../../../../../src/domain/diff/line-diff.js';
+import { diffPresplitLines } from '../../../../../src/domain/diff/line-diff.js';
 import type { LineKey } from '../../../../../src/domain/diff/whitespace.js';
 import { linesEqualUnder, normalizeLine } from '../../../../../src/domain/diff/whitespace.js';
 import { classifyLines, hashLineSide } from '../../../../../src/domain/diff/xdiff/xdl-classify.js';
@@ -161,9 +163,9 @@ describe('classifyLines properties', () => {
     });
   });
 
-  describe('Given hash arrays computed independently ahead of time', () => {
-    describe('When classifyLines is given them instead of hashing from scratch', () => {
-      it('Then classification is identical either way', () => {
+  describe('Given a caller supplying a hop-to-hop hash cache (one side, both sides, or neither)', () => {
+    describe('When diffPresplitLines is given precomputed hashes instead of hashing from scratch', () => {
+      it('Then the diff is identical to the from-scratch call in every combination', () => {
         // Arrange
         fc.assert(
           fc.property(
@@ -172,21 +174,28 @@ describe('classifyLines properties', () => {
             fc.option(arbLineKey(), { nil: undefined }),
             (ours, theirs, lineKey) => {
               const key = lineKey ?? undefined;
+              const options: LineDiffOptions | undefined =
+                key === undefined ? undefined : { lineKey: key };
+              const oursHashes = hashLineSide(ours, key);
+              const theirsHashes = hashLineSide(theirs, key);
 
               // Act
-              const fromScratch = classify(ours, theirs, key);
-              const fromPrecomputed = classifyLines(
-                ours,
-                theirs,
-                key,
-                hashLineSide(ours, key),
-                hashLineSide(theirs, key),
-              );
+              const fromScratch = diffPresplitLines(ours, theirs, options);
+              const bothPrecomputed = diffPresplitLines(ours, theirs, options, {
+                ours: oursHashes,
+                theirs: theirsHashes,
+              });
+              const oursOnlyPrecomputed = diffPresplitLines(ours, theirs, options, {
+                ours: oursHashes,
+              });
+              const theirsOnlyPrecomputed = diffPresplitLines(ours, theirs, options, {
+                theirs: theirsHashes,
+              });
 
               // Assert
-              expect(Array.from(fromPrecomputed.ours)).toEqual(Array.from(fromScratch.ours));
-              expect(Array.from(fromPrecomputed.theirs)).toEqual(Array.from(fromScratch.theirs));
-              expect(fromPrecomputed.classCount).toBe(fromScratch.classCount);
+              expect(bothPrecomputed).toEqual(fromScratch);
+              expect(oursOnlyPrecomputed).toEqual(fromScratch);
+              expect(theirsOnlyPrecomputed).toEqual(fromScratch);
             },
           ),
           { numRuns: 100 },
