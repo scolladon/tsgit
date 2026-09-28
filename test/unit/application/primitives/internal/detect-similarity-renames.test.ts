@@ -4,7 +4,9 @@ import {
   fingerprintKey,
   hydrateFingerprints,
   type PathedId,
+  resolveOverridesFor,
 } from '../../../../../src/application/primitives/detect-similarity-renames.js';
+import type { SimilarityContentKindResolver } from '../../../../../src/application/primitives/internal/resolve-similarity-content-kind.js';
 import * as readBlobMod from '../../../../../src/application/primitives/read-blob.js';
 import * as readObjectMod from '../../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
@@ -134,6 +136,45 @@ describe('hydrateFingerprints', () => {
         });
         expect(result.get(fingerprintKey(freshId, 'sniff'))?.size).toBe('freshly-hydrated'.length);
         readSpy.mockRestore();
+      });
+    });
+  });
+});
+
+describe('resolveOverridesFor', () => {
+  describe('Given more distinct paths than the ioBound limit', () => {
+    describe('When resolveOverridesFor runs', () => {
+      it('Then the total overrideFor calls in flight never exceed the ioBound limit', async () => {
+        // Arrange — an explicit ioBound, small enough that an unbounded
+        // `Promise.all` regression (every path resolved at once) is
+        // unambiguous against the bounded pool this call must use.
+        const ioBound = 4;
+        const base = await buildSeededContext();
+        const ctx: Ctx = { ...base, concurrency: { cpuBound: 1, ioBound } };
+        const entries: PathedId[] = Array.from({ length: 12 }, (_unused, i) => ({
+          id: `id-${i}` as ObjectId,
+          path: `entry-${i}.bin` as FilePath,
+        }));
+        let inFlight = 0;
+        let maxInFlight = 0;
+        const resolver: SimilarityContentKindResolver = {
+          overrideFor: async () => {
+            inFlight += 1;
+            if (inFlight > maxInFlight) maxInFlight = inFlight;
+            await Promise.resolve();
+            inFlight -= 1;
+            return undefined;
+          },
+        };
+        const sut = resolveOverridesFor;
+
+        // Act
+        await sut(ctx, resolver, entries);
+
+        // Assert — reaches exactly the shared bound, proving the pool is
+        // sized from `ctx` rather than merely staying at-or-under an
+        // incidentally small ceiling.
+        expect(maxInFlight).toBe(ioBound);
       });
     });
   });

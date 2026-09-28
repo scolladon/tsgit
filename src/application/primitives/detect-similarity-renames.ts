@@ -559,23 +559,29 @@ export interface PathedId {
  * so two paths sharing one id are resolved INDEPENDENTLY here — a path asked
  * about again by a later pass hits the resolver's own per-path cache, so
  * repeating the call across passes costs nothing. Distinct paths are
- * resolved CONCURRENTLY (`Promise.all`), not one at a time: the resolver's
- * own per-path promise cache already dedupes a path this diff visits twice,
- * so a serial await here only slows a wide diff down without buying any
- * extra safety.
+ * resolved CONCURRENTLY, bounded by `ctx`'s `ioBound` pool (like every other
+ * fan-out in this module) rather than an unbounded `Promise.all` — the
+ * resolver's own per-path promise cache already dedupes a path this diff
+ * visits twice, so a serial await here would only slow a wide diff down
+ * without buying any extra safety, but an UNBOUNDED one lets a wide diff's
+ * attribute/config reads pile up without limit.
+ *
+ * @internal — exported for direct unit testing.
  */
-async function resolveOverridesFor(
+export async function resolveOverridesFor(
+  ctx: Context,
   resolver: SimilarityContentKindResolver,
   entries: ReadonlyArray<PathedId>,
 ): Promise<ReadonlyMap<FilePath, BinaryOverride | undefined>> {
   const distinctPaths = Array.from(new Set(entries.map(({ path }) => path)));
-  const resolved = await Promise.all(
-    distinctPaths.map(
-      async (path): Promise<readonly [FilePath, BinaryOverride | undefined]> => [
-        path,
-        await resolver.overrideFor(path),
-      ],
-    ),
+  const resolved = await boundedMapFor(
+    ctx,
+    'ioBound',
+    distinctPaths,
+    async (path): Promise<readonly [FilePath, BinaryOverride | undefined]> => [
+      path,
+      await resolver.overrideFor(path),
+    ],
   );
   return new Map(resolved);
 }
@@ -852,7 +858,7 @@ async function hydrateMatrixFingerprints(
   const overrideEntries = allEntries.filter(
     (entry) => neededSet.has(entry.id) || known.ids.has(entry.id),
   );
-  const overridesByPath = await resolveOverridesFor(resolver, overrideEntries);
+  const overridesByPath = await resolveOverridesFor(ctx, resolver, overrideEntries);
   const neededEntries = allEntries.filter((entry) => neededSet.has(entry.id));
   const fingerprints = await hydrateFingerprints(
     ctx,
@@ -1747,7 +1753,7 @@ async function runBasenamePass(
   const sizes = await readDeclaredSizes(ctx, candidateIds);
   const survivors = sizeSurvivingBasenameCandidates(candidates, sources, sizes, minBasename);
   const survivorEntries = basenameCandidateEntries(sources, survivors);
-  const overridesByPath = await resolveOverridesFor(resolver, survivorEntries);
+  const overridesByPath = await resolveOverridesFor(ctx, resolver, survivorEntries);
   const fingerprints = await hydrateFingerprints(ctx, survivorEntries, new Map(), overridesByPath);
   const pairs = scoreBasenameCandidates(
     survivors,
