@@ -46,13 +46,35 @@ const SETUP_TIMEOUT = 60_000;
 // Local helpers
 // ---------------------------------------------------------------------------
 
-/** A malformed-object shape can, for at least one git version measured
- *  (2.55.0, a lowered `core.bigFileThreshold` over an in-window over-run),
- *  drive git into a CPU-pegged hang instead of a refusal — this bounds every
- *  probe below so a regression fails the test instead of the whole suite. */
+/** Every git subprocess probe below is bounded by a timeout: a malformed
+ *  fixture reaching git's read path is not something this suite controls
+ *  the performance envelope of, so a defensive bound keeps a future
+ *  regression failing its own test instead of hanging the whole suite. */
 const GIT_PROBE_TIMEOUT_MS = 20_000;
 
-/** Run git, capturing stdout, stderr AND exit code (never throws). */
+/**
+ * `spawnSync`'s own invariant: `status` is `null` exactly when the process
+ * never exited normally — killed by a signal (this timeout firing, most
+ * likely) or never spawned at all (`result.error`). Both must fail loudly:
+ * silently mapping either to exit 1 would let a killed process, or one that
+ * never even started, pass an `exitCode & 1` assertion as if it had
+ * actually run and reported a real error.
+ */
+function assertGitProbeCompleted(
+  args: ReadonlyArray<string>,
+  result: ReturnType<typeof spawnSync>,
+): asserts result is ReturnType<typeof spawnSync> & { status: number } {
+  if (result.error !== undefined) {
+    throw new Error(`git ${args.join(' ')} failed to spawn: ${result.error.message}`);
+  }
+  if (result.status === null) {
+    throw new Error(`git ${args.join(' ')} was killed by signal ${String(result.signal)}`);
+  }
+}
+
+/** Run git, capturing stdout, stderr AND exit code. Throws if the process
+ *  never actually completed (spawn failure or signal kill) — see
+ *  `assertGitProbeCompleted`. */
 function tryRunGitWithExit(
   args: ReadonlyArray<string>,
   options: { readonly env?: NodeJS.ProcessEnv } = {},
@@ -63,10 +85,11 @@ function tryRunGitWithExit(
     encoding: 'utf8',
     timeout: GIT_PROBE_TIMEOUT_MS,
   });
+  assertGitProbeCompleted(args, result);
   return {
     stdout: result.stdout ?? '',
     stderr: result.stderr ?? '',
-    exitCode: result.status ?? 1,
+    exitCode: result.status,
   };
 }
 
@@ -173,6 +196,20 @@ function initRepo(dir: string): void {
 function gitFsck(dir: string, ...flags: string[]): ReturnType<typeof tryRunGitWithExit> {
   return tryRunGitWithExit(['-C', dir, 'fsck', ...flags], { env: SAFE_ENV });
 }
+
+describe('Given a git subprocess that cannot even be spawned', () => {
+  describe('When tryRunGitWithExit runs it', () => {
+    it('Then it throws instead of silently reporting exit code 1', () => {
+      // Arrange — an empty PATH means the 'git' binary cannot be resolved
+      const unresolvableEnv: NodeJS.ProcessEnv = { PATH: '' };
+
+      // Act / Assert
+      expect(() => tryRunGitWithExit(['--version'], { env: unresolvableEnv })).toThrow(
+        /git --version failed to spawn/,
+      );
+    });
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Scenario families — one shared repo per family (beforeAll, 60s timeout)
