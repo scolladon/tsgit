@@ -1287,6 +1287,9 @@ describe('Given a loose blob stored self-consistently under its UNPADDED size-ly
         ctx,
         buildDeclaredSizeLyingBlob(2000, enc2.encode('X')),
       );
+      const paddedBody = new Uint8Array(2000);
+      paddedBody.set(enc2.encode('X'));
+      const expectedActual = await ctx.hash.hashHex(buildDeclaredSizeLyingBlob(2000, paddedBody));
 
       // Act
       const result = await fsck(ctx);
@@ -1297,7 +1300,7 @@ describe('Given a loose blob stored self-consistently under its UNPADDED size-ly
           f.type === 'hash-mismatch' && f.id === id,
       );
       expect(mismatch).toBeDefined();
-      expect(mismatch?.actual).not.toBe(id);
+      expect(mismatch?.actual).toBe(expectedActual);
     });
   });
 });
