@@ -34,8 +34,9 @@ import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/index.js';
 import { diff } from '../../src/application/commands/diff.js';
+import { materialisePatchFiles } from '../../src/application/primitives/materialise-patch-files.js';
 import type { DiffChangeType, StatDiffChange, StatTreeDiff } from '../../src/domain/diff/index.js';
-import { toSimilarityPercent } from '../../src/domain/diff/index.js';
+import { renderPatch, toSimilarityPercent } from '../../src/domain/diff/index.js';
 import { GIT_AVAILABLE, git, runGit, runGitEnv } from './interop-helpers.js';
 
 const SETUP_TIMEOUT = 60_000;
@@ -98,6 +99,7 @@ let n3sTextconvNul: CommitPair;
 let n4TextconvBoth: CommitPair;
 let rRenameForceBinary: CommitPair;
 let t3DriverBinaryTristate: CommitPair;
+let dSeriesPair: CommitPair;
 
 describe.skipIf(!GIT_AVAILABLE)('diff-attr binary-vs-text override interop', () => {
   beforeAll(async () => {
@@ -277,6 +279,53 @@ describe.skipIf(!GIT_AVAILABLE)('diff-attr binary-vs-text override interop', () 
     const t3head = doCommit('rename old.rt to new.rt with diff=rt');
     t3DriverBinaryTristate = { from: t3base, to: t3head };
 
+    // D1-D4 — diff.<driver>.binary EXPLICITLY true/false, crossed with
+    // textconv configured/absent, pinned against live git 2.55.0 (see the
+    // probe matrix in the review notes):
+    //   D1 binary=true,  no textconv: numstat AND patch are both forced
+    //      binary, even over genuinely text (NUL-free) content.
+    //   D2 binary=true,  textconv:    numstat stays forced binary, but the
+    //      patch renders as TEXT — textconv's own output is always clean.
+    //   D3 binary=false, no textconv: numstat AND patch are both forced
+    //      TEXT, even over a raw NUL-bearing blob.
+    //   D4 binary=false, textconv:    same — forced text on both surfaces.
+    await writeFile(
+      path.join(dir, '.gitattributes'),
+      '*.forced -diff\n*.text diff\n*.up diff=up\n*.bin binary\n*.ghost -diff\n*.rt diff=rt\n*.d1 diff=d1\n*.d2 diff=d2\n*.d3 diff=d3\n*.d4 diff=d4\n',
+    );
+    git(dir, 'add', '.gitattributes');
+    git(dir, 'config', 'diff.d1.binary', 'true');
+    git(dir, 'config', 'diff.d2.binary', 'true');
+    git(dir, 'config', 'diff.d2.textconv', upperScript);
+    git(dir, 'config', 'diff.d3.binary', 'false');
+    git(dir, 'config', 'diff.d4.binary', 'false');
+    git(dir, 'config', 'diff.d4.textconv', upperScript);
+    await writeFile(path.join(dir, 'text.d1'), 'hello world\nsecond line\n');
+    await writeFile(path.join(dir, 'text.d2'), 'hello world\nsecond line\n');
+    await writeFile(
+      path.join(dir, 'nul.d3'),
+      Buffer.from('hello\x00world\nsecond line\n', 'binary'),
+    );
+    await writeFile(
+      path.join(dir, 'nul.d4'),
+      Buffer.from('hello\x00world\nsecond line\n', 'binary'),
+    );
+    git(dir, 'add', 'text.d1', 'text.d2', 'nul.d3', 'nul.d4');
+    const dSeriesBase = doCommit('add D1-D4 old content');
+    await writeFile(path.join(dir, 'text.d1'), 'hello world\nthird line\n');
+    await writeFile(path.join(dir, 'text.d2'), 'hello world\nthird line\n');
+    await writeFile(
+      path.join(dir, 'nul.d3'),
+      Buffer.from('hello\x00world\nthird line\n', 'binary'),
+    );
+    await writeFile(
+      path.join(dir, 'nul.d4'),
+      Buffer.from('hello\x00world\nthird line\n', 'binary'),
+    );
+    git(dir, 'add', 'text.d1', 'text.d2', 'nul.d3', 'nul.d4');
+    const dSeriesHead = doCommit('modify D1-D4');
+    dSeriesPair = { from: dSeriesBase, to: dSeriesHead };
+
     ctx = createNodeContext({ workDir: dir });
   }, SETUP_TIMEOUT);
 
@@ -423,6 +472,46 @@ describe.skipIf(!GIT_AVAILABLE)('diff-attr binary-vs-text override interop', () 
         expected: { type: 'modify', binary: false },
       },
     },
+    {
+      label: 'diff.<drv>.binary=true, no textconv, forces binary on text content (D1)',
+      getPair: () => dSeriesPair,
+      pathFilter: 'text.d1',
+      changeCheck: {
+        find: findByPath('text.d1'),
+        requireDefined: true,
+        expected: { type: 'modify', binary: true, added: 0, deleted: 0 },
+      },
+    },
+    {
+      label: 'diff.<drv>.binary=true WITH textconv still forces numstat binary (D2)',
+      getPair: () => dSeriesPair,
+      pathFilter: 'text.d2',
+      changeCheck: {
+        find: findByPath('text.d2'),
+        requireDefined: true,
+        expected: { type: 'modify', binary: true, added: 0, deleted: 0 },
+      },
+    },
+    {
+      label: 'diff.<drv>.binary=false, no textconv, forces text on a NUL-bearing blob (D3)',
+      getPair: () => dSeriesPair,
+      pathFilter: 'nul.d3',
+      changeCheck: {
+        find: findByPath('nul.d3'),
+        requireDefined: true,
+        expected: { type: 'modify', binary: false },
+      },
+    },
+    {
+      label: 'diff.<drv>.binary=false WITH textconv also forces text on a NUL-bearing blob (D4)',
+      getPair: () => dSeriesPair,
+      pathFilter: 'nul.d4',
+      changeCheck: {
+        find: findByPath('nul.d4'),
+        requireDefined: true,
+        expected: { type: 'modify', binary: false },
+      },
+    },
   ];
 
   describe('Given a change under a gitattributes diff/binary override (numstat family)', () => {
@@ -516,6 +605,48 @@ describe.skipIf(!GIT_AVAILABLE)('diff-attr binary-vs-text override interop', () 
           expect(toSimilarityPercent(renameChange.similarity.score)).toBe(66);
         }
       });
+    });
+  });
+
+  // D1-D4 patch rendering: the SAME driver.binary tristate decides the
+  // rendered patch, with ONE documented divergence from numstat's own
+  // verdict — a configured textconv always renders as text (its output is
+  // never NUL), even when binary=true forces numstat's binary marker (D2).
+  describe('Given diff.<drv>.binary explicitly true/false, crossed with textconv (D1-D4 patch)', () => {
+    describe('When the patch is rendered for each path', () => {
+      it.each([
+        { path: 'text.d1', label: 'D1 (binary=true, no textconv)', expectBinaryMarker: true },
+        { path: 'text.d2', label: 'D2 (binary=true, textconv)', expectBinaryMarker: false },
+        {
+          path: 'nul.d3',
+          label: 'D3 (binary=false, no textconv, NUL content)',
+          expectBinaryMarker: false,
+        },
+        {
+          path: 'nul.d4',
+          label: 'D4 (binary=false, textconv, NUL content)',
+          expectBinaryMarker: false,
+        },
+      ])(
+        'Then the "Binary files ... differ" marker presence for $label matches live git',
+        async ({ path: filePath, expectBinaryMarker }) => {
+          // Arrange
+          const { from, to } = dSeriesPair;
+          const gitPatch = git(dir, 'diff', '--no-ext-diff', from, to, '--', filePath);
+
+          // Act
+          const treeDiff = await diff(ctx, { from, to });
+          const files = await materialisePatchFiles(ctx, treeDiff.changes, { applyTextconv: true });
+          const file = files.find((f) => f.change.type === 'modify' && f.change.path === filePath);
+          const tsgitPatch = renderPatch(file !== undefined ? [file] : []);
+
+          // Assert — git
+          expect(gitPatch.includes('Binary files')).toBe(expectBinaryMarker);
+          // Assert — tsgit
+          expect(file).toBeDefined();
+          expect(tsgitPatch.includes('Binary files')).toBe(expectBinaryMarker);
+        },
+      );
     });
   });
 });

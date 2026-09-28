@@ -11,6 +11,7 @@ import { applyTextconv } from './apply-textconv.js';
 import { readConfig } from './config-read.js';
 import { boundedMapFor } from './internal/concurrency.js';
 import { type AttributeProvider, buildAttributeProvider } from './internal/read-gitattributes.js';
+import { resolveDriverBinary } from './internal/resolve-similarity-content-kind.js';
 import { readBlob } from './read-blob.js';
 import { type BinaryOverridePair, resolveBinaryOverride } from './resolve-binary-override.js';
 
@@ -84,8 +85,15 @@ async function resolveTextconvCommand(
 
 /**
  * Resolve override pair + textconv command for a path using a SINGLE
- * `sourcesForPath` call.  The `rawIsBinary` check uses the raw bytes BEFORE
- * any textconv transform so numstat always reflects blob content, not output.
+ * `sourcesForPath` call. `driverBinary` (`diff.<name>.binary`) is read via
+ * `resolveDriverBinary` — the SAME reader `resolveSimilarityOverride`'s
+ * caller uses for rename/break scoring, never duplicated here — so numstat,
+ * patch and rename scoring all honour one tristate identically. The
+ * `rawIsBinary` check uses the raw bytes BEFORE any textconv transform, and
+ * is only ever evaluated when BOTH a textconv is configured AND
+ * `driverBinary` itself leaves the answer unset (see `resolveBinaryOverride`
+ * for why that ONE combination needs it — every other combination resolves
+ * without reading blob content at all).
  *
  * Returns both the `BinaryOverridePair` and the optional textconv command string
  * (only if a configured external driver applies).
@@ -106,20 +114,27 @@ async function resolveOverrideAndCommand(
     macros,
   );
 
-  // Stryker disable next-line BooleanLiteral: equivalent — reassigned to command!==undefined on every named-driver branch (the if below), and resolveBinaryOverride ignores textconvConfigured on the false/true/unspecified branches (identical guard), so the seed is never observed
+  // Stryker disable next-line BooleanLiteral: equivalent — reassigned on every named-driver branch (the if below), and resolveBinaryOverride ignores textconvConfigured/driverBinary on the false/true/unspecified branches (identical guard), so the seed is never observed
   let textconvConfigured = false;
   let command: string | undefined;
+  let driverBinary: boolean | undefined;
   if (diffAttr !== false && diffAttr !== true && diffAttr !== 'unspecified') {
-    command = await resolveTextconvCommand(ctx, diffAttr.set);
+    [command, driverBinary] = await Promise.all([
+      resolveTextconvCommand(ctx, diffAttr.set),
+      resolveDriverBinary(ctx, diffAttr),
+    ]);
     textconvConfigured = command !== undefined;
   }
 
+  // The raw-content scan is only ever consumed by resolveBinaryOverride's own
+  // driverBinary-unset + textconv-configured branch — every other state
+  // (explicit driverBinary, or no textconv at all) resolves without it.
+  const needsRawSniff = textconvConfigured && driverBinary === undefined;
   const pair = resolveBinaryOverride(diffAttr, {
     textconvConfigured,
-    // Evaluate the raw-binary scan only when a configured named driver consumes it;
-    // every other attribute state ignores it, so non-textconv paths skip the blob scan.
-    // Stryker disable next-line BooleanLiteral: equivalent — this fallback runs only when textconvConfigured is false, but resolveBinaryOverride reads rawIsBinary only when it is true, so the fallback value is never consumed
-    rawIsBinary: textconvConfigured ? await rawIsBinary() : false,
+    driverBinary,
+    // Stryker disable next-line BooleanLiteral: equivalent — this fallback runs only when needsRawSniff is false, but resolveBinaryOverride reads rawIsBinary only when that same condition holds, so the fallback value is never consumed
+    rawIsBinary: needsRawSniff ? await rawIsBinary() : false,
   });
   return { pair, command };
 }

@@ -39,9 +39,15 @@ export interface SimilarityContentKindResolver {
   readonly overrideFor: (path: FilePath) => Promise<BinaryOverride | undefined>;
 }
 
-/** The driver's own `diff.<name>.binary` config, or `undefined` when the
- *  attribute did not name a driver at all. */
-async function resolveDriverBinary(
+/**
+ * The driver's own `diff.<name>.binary` config, or `undefined` when the
+ * attribute did not name a driver at all. Shared with `resolveBinaryOverride`
+ * (patch/numstat rendering, `materialise-patch-files.ts`) so the tristate is
+ * read from config exactly once per meaning, never duplicated — every
+ * consumer of `diff.<name>.binary` (rename/break scoring here, numstat and
+ * patch rendering there) resolves the SAME config field the SAME way.
+ */
+export async function resolveDriverBinary(
   ctx: Context,
   value: AttributeValue,
 ): Promise<boolean | undefined> {
