@@ -24,7 +24,16 @@
  */
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { appendFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  appendFile,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as zlib from 'node:zlib';
@@ -1681,7 +1690,7 @@ describe.skipIf(!GIT_AVAILABLE)(
           shaOf: () => referencedBigFileOverrunBlobSha,
         },
       ])(
-        'Then emits missing blob, exit 3, and never a dangling/unreachable finding for it ($label)',
+        'Then emits missing blob, exit 3, and never a dangling/unreachable/broken-link finding for it ($label)',
         async ({ dirOf, ctxOf, shaOf }) => {
           // Arrange
           const gitResult = gitFsck(dirOf());
@@ -1690,9 +1699,9 @@ describe.skipIf(!GIT_AVAILABLE)(
           // Act
           const result = await fsck(ctxOf());
 
-          // Assert — exit 3 (content-error bit 1 | missing bit 2) matches real git
+          // Assert — exit 3 (content-error bit 1 | missing bit 2) matches real git exactly
           expect(gitResult.exitCode).toBe(3);
-          expect(result.exitCode & 3).toBe(3);
+          expect(result.exitCode).toBe(gitResult.exitCode);
 
           // Assert — git's own "missing blob <oid>" line, reconstructed
           expect(gitResult.stdout).toContain(reconstructMissing('blob', sha));
@@ -1707,8 +1716,342 @@ describe.skipIf(!GIT_AVAILABLE)(
             (f) => 'id' in f && f.id === sha && (f.type === 'dangling' || f.type === 'unreachable'),
           );
           expect(spurious).toHaveLength(0);
+
+          // Assert — never a broken-link either (the id IS present, just unreadable)
+          expect(gitResult.stdout).not.toContain('broken link');
+          expect(result.findings.some((f) => f.type === 'broken-link' && f.toId === sha)).toBe(
+            false,
+          );
         },
       );
+    });
+  },
+);
+
+// ---------------------------------------------------------------------------
+// A REFERENCED object backed only by a corrupt PACKED entry — git's
+// `check_object` (`has_object_pack`) trusts the pack's claim on the id and
+// never even attempts the read that would learn it is corrupt, so this gets
+// NO `missing` line at all: only the pack-scan's own corruption report.
+// Pinned live against git 2.55.0 (scrubbed env): a 20 KB blob, `repack -ad`,
+// `prune-packed`, then 40 bytes flipped inside the pack entry gives
+// `index CRC mismatch …` / `cannot unpack …`, no `missing`, exit 4.
+// ---------------------------------------------------------------------------
+
+/** `git verify-pack -v <idx>`'s own row for `sha`: `<sha> <type> <size>
+ *  <size-in-packfile> <offset> [<depth> <base-sha>]` — the exact byte range
+ *  to corrupt without touching a neighbouring entry or the pack header. */
+function packEntryLocation(
+  dir: string,
+  idxPath: string,
+  sha: string,
+): { readonly offset: number; readonly sizeInPack: number } {
+  const output = runGit(['-C', dir, 'verify-pack', '-v', idxPath], { env: SAFE_ENV });
+  const line = output.split('\n').find((l) => l.startsWith(sha));
+  if (line === undefined) throw new Error(`verify-pack: no entry for ${sha}`);
+  const columns = line.trim().split(/\s+/);
+  return { sizeInPack: Number(columns[3]), offset: Number(columns[4]) };
+}
+
+/** Flip 40 bytes inside a packed entry's own compressed body (never its
+ *  first 5 header bytes, so the entry's declared type/size survives) —
+ *  breaks the zlib stream without restamping the pack's own trailer, the
+ *  same shape `index CRC mismatch` / `cannot unpack` reports. */
+async function corruptPackedEntry(packPath: string, sha: string, dir: string): Promise<void> {
+  const idxPath = packPath.replace(/\.pack$/, '.idx');
+  const { offset, sizeInPack } = packEntryLocation(dir, idxPath, sha);
+  const bytes = await readFile(packPath);
+  const start = offset + 5;
+  const end = offset + sizeInPack;
+  for (let i = start; i < end; i += 1) bytes[i] = (bytes[i] ?? 0) ^ 0xff;
+  // git writes a read-only (0o444) pack file.
+  const { chmod } = await import('node:fs/promises');
+  await chmod(packPath, 0o644);
+  await writeFile(packPath, bytes);
+}
+
+let referencedCorruptPackDir = '';
+let referencedCorruptPackCtx: Context;
+let referencedCorruptPackBlobSha = '';
+
+beforeAll(async () => {
+  referencedCorruptPackDir = await mkdtemp(
+    path.join(os.tmpdir(), 'tsgit-fsck-referencedCorruptPack-'),
+  );
+  initRepo(referencedCorruptPackDir);
+  await writeFile(path.join(referencedCorruptPackDir, 'big.bin'), 'x'.repeat(20_000));
+  runGit(['-C', referencedCorruptPackDir, 'add', 'big.bin'], { env: SAFE_ENV });
+  runGit(['-C', referencedCorruptPackDir, 'commit', '-q', '-m', '1'], { env: SAFE_ENV });
+  referencedCorruptPackBlobSha = runGit(
+    ['-C', referencedCorruptPackDir, 'rev-parse', 'HEAD:big.bin'],
+    { env: SAFE_ENV },
+  ).trim();
+  runGit(['-C', referencedCorruptPackDir, 'repack', '-ad', '-q'], { env: SAFE_ENV });
+  runGit(['-C', referencedCorruptPackDir, 'prune-packed'], { env: SAFE_ENV });
+  const packDir = path.join(referencedCorruptPackDir, '.git', 'objects', 'pack');
+  const packFile = (await readdir(packDir)).find((name) => name.endsWith('.pack'));
+  if (packFile === undefined) throw new Error('repack -ad produced no pack file');
+  await corruptPackedEntry(
+    path.join(packDir, packFile),
+    referencedCorruptPackBlobSha,
+    referencedCorruptPackDir,
+  );
+
+  referencedCorruptPackCtx = createNodeContext({ workDir: referencedCorruptPackDir });
+}, SETUP_TIMEOUT);
+
+afterAll(async () => {
+  if (referencedCorruptPackDir !== '') {
+    await rm(referencedCorruptPackDir, { recursive: true, force: true });
+  }
+});
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given a REFERENCED blob backed only by a corrupt PACKED entry',
+  () => {
+    describe('When fsck runs', () => {
+      it('Then never reports it missing, dangling, unreachable or broken-link (git exit 4; tsgit does not model ERROR_PACK for this)', async () => {
+        // Arrange
+        const gitResult = gitFsck(referencedCorruptPackDir);
+        const sha = referencedCorruptPackBlobSha;
+
+        // Act
+        const result = await fsck(referencedCorruptPackCtx);
+
+        // Assert — real git: no `missing` line, exit 4 (its own pack-scan bit)
+        expect(gitResult.stdout).not.toContain(`missing blob ${sha}`);
+        expect(gitResult.exitCode).toBe(4);
+
+        // Assert — tsgit: never missing/dangling/unreachable/broken-link for this id.
+        // tsgit's own content-validation still reports `bad-object`/badType for
+        // it (exit bit 1) — the SAME gap that predates this fix (0447291c
+        // exited 1 for this shape too); tsgit does not model git's ERROR_PACK
+        // (bit 4) for a per-entry pack corruption (see `object-cache.ts`'s
+        // `hasPackCopy` — a membership check, never a CRC verification).
+        const spuriousTypes = result.findings
+          .filter(
+            (f) =>
+              ('id' in f && f.id === sha) || ('toId' in f && (f as { toId: string }).toId === sha),
+          )
+          .map((f) => f.type);
+        expect(spuriousTypes).not.toContain('missing');
+        expect(spuriousTypes).not.toContain('dangling');
+        expect(spuriousTypes).not.toContain('unreachable');
+        expect(spuriousTypes).not.toContain('broken-link');
+        expect(result.exitCode & 2).toBe(0);
+      });
+    });
+  },
+);
+
+// ---------------------------------------------------------------------------
+// A loose mismatch file SHADOWING a good PACKED copy of the same oid — git
+// types the object from the pack (`verify_pack`/`has_object_pack`) and
+// traverses it; the shadowing loose file is reported through the SEPARATE
+// hash-path-mismatch pass, never through a spurious `missing`.
+// Pinned live against git 2.55.0 (scrubbed env): `hash-path mismatch …` +
+// `dangling blob <other>`, no `missing`, exit 1.
+// ---------------------------------------------------------------------------
+
+let shadowedPackDir = '';
+let shadowedPackCtx: Context;
+let shadowedPackBlobSha = '';
+let shadowedPackOtherSha = '';
+
+beforeAll(async () => {
+  shadowedPackDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-shadowedPack-'));
+  initRepo(shadowedPackDir);
+  await writeFile(path.join(shadowedPackDir, 'file.txt'), 'content-for-blob\n');
+  runGit(['-C', shadowedPackDir, 'add', 'file.txt'], { env: SAFE_ENV });
+  runGit(['-C', shadowedPackDir, 'commit', '-q', '-m', '1'], { env: SAFE_ENV });
+  shadowedPackBlobSha = runGit(['-C', shadowedPackDir, 'rev-parse', 'HEAD:file.txt'], {
+    env: SAFE_ENV,
+  }).trim();
+  // repack -ad also prunes the now-redundant loose copy of the blob.
+  runGit(['-C', shadowedPackDir, 'repack', '-ad', '-q'], { env: SAFE_ENV });
+
+  shadowedPackOtherSha = runGit(['-C', shadowedPackDir, 'hash-object', '-w', '--stdin'], {
+    env: SAFE_ENV,
+    input: 'other-content\n',
+  }).trim();
+  const otherPath = path.join(
+    shadowedPackDir,
+    '.git',
+    'objects',
+    shadowedPackOtherSha.slice(0, 2),
+    shadowedPackOtherSha.slice(2),
+  );
+  const blobPath = path.join(
+    shadowedPackDir,
+    '.git',
+    'objects',
+    shadowedPackBlobSha.slice(0, 2),
+    shadowedPackBlobSha.slice(2),
+  );
+  await mkdir(path.dirname(blobPath), { recursive: true });
+  await writeFile(blobPath, await readFile(otherPath));
+
+  shadowedPackCtx = createNodeContext({ workDir: shadowedPackDir });
+}, SETUP_TIMEOUT);
+
+afterAll(async () => {
+  if (shadowedPackDir !== '') await rm(shadowedPackDir, { recursive: true, force: true });
+});
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given a loose mismatch file shadowing a good PACKED copy of the same oid',
+  () => {
+    describe('When fsck runs', () => {
+      it('Then reports hash-mismatch and dangling for the shadow, never missing for the packed id, exit code matches real git', async () => {
+        // Arrange
+        const gitResult = gitFsck(shadowedPackDir);
+        const sha = shadowedPackBlobSha;
+
+        // Act
+        const result = await fsck(shadowedPackCtx);
+
+        // Assert — real git: no `missing` line, exit 1
+        expect(gitResult.stdout).not.toContain(`missing blob ${sha}`);
+        expect(gitResult.exitCode).toBe(1);
+        expect(gitResult.stderr).toContain(
+          `${shadowedPackOtherSha}: hash-path mismatch, found at:`,
+        );
+        expect(gitResult.stdout).toContain(`dangling blob ${shadowedPackOtherSha}`);
+
+        // Assert — tsgit matches exactly
+        expect(result.exitCode).toBe(gitResult.exitCode);
+        const mismatch = result.findings.find(
+          (f): f is FsckFinding & { type: 'hash-mismatch' } =>
+            f.type === 'hash-mismatch' && f.id === sha,
+        );
+        expect(mismatch?.actual).toBe(shadowedPackOtherSha);
+        const spuriousTypes = result.findings
+          .filter(
+            (f) =>
+              ('id' in f && f.id === sha) || ('toId' in f && (f as { toId: string }).toId === sha),
+          )
+          .map((f) => f.type);
+        expect(spuriousTypes).not.toContain('missing');
+        expect(spuriousTypes).not.toContain('dangling');
+        expect(spuriousTypes).not.toContain('unreachable');
+        expect(spuriousTypes).not.toContain('broken-link');
+      });
+    });
+  },
+);
+
+// ---------------------------------------------------------------------------
+// An annotated tag whose target is PRESENT but content-unreadable — git's
+// tag walk marks a present target reachable (and so `tagged`) regardless of
+// whether it could be typed; only a genuinely ABSENT target drops the
+// report. Pinned live against git 2.55.0 (scrubbed env), loose (no pack)
+// target: `git fsck --tags` prints `tagged blob <oid> (tb) in <tag>` AND
+// `missing blob <oid>`, exit 3.
+// ---------------------------------------------------------------------------
+
+function reconstructTagged(
+  objectType: string,
+  targetId: string,
+  tagName: string,
+  tagId: string,
+): string {
+  return `tagged ${objectType} ${targetId} (${tagName}) in ${tagId}`;
+}
+
+let taggedUnreadableDir = '';
+let taggedUnreadableCtx: Context;
+let taggedUnreadableBlobSha = '';
+let taggedUnreadableTagSha = '';
+
+beforeAll(async () => {
+  taggedUnreadableDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-taggedUnreadable-'));
+  initRepo(taggedUnreadableDir);
+  await writeFile(path.join(taggedUnreadableDir, 'a'), 'hi\n');
+  runGit(['-C', taggedUnreadableDir, 'add', 'a'], { env: SAFE_ENV });
+  runGit(['-C', taggedUnreadableDir, 'commit', '-q', '-m', '1'], { env: SAFE_ENV });
+  taggedUnreadableBlobSha = runGit(['-C', taggedUnreadableDir, 'hash-object', '-w', '--stdin'], {
+    env: SAFE_ENV,
+    input: 'tagged-blob\n',
+  }).trim();
+  runGit(['-C', taggedUnreadableDir, 'tag', '-a', '-m', 't', 'tb', taggedUnreadableBlobSha], {
+    env: SAFE_ENV,
+  });
+  taggedUnreadableTagSha = runGit(['-C', taggedUnreadableDir, 'rev-parse', 'refs/tags/tb'], {
+    env: SAFE_ENV,
+  }).trim();
+  const otherBlobSha = runGit(['-C', taggedUnreadableDir, 'hash-object', '-w', '--stdin'], {
+    env: SAFE_ENV,
+    input: 'other\n',
+  }).trim();
+  const blobPath = path.join(
+    taggedUnreadableDir,
+    '.git',
+    'objects',
+    taggedUnreadableBlobSha.slice(0, 2),
+    taggedUnreadableBlobSha.slice(2),
+  );
+  const otherPath = path.join(
+    taggedUnreadableDir,
+    '.git',
+    'objects',
+    otherBlobSha.slice(0, 2),
+    otherBlobSha.slice(2),
+  );
+  const { chmod } = await import('node:fs/promises');
+  await chmod(blobPath, 0o644);
+  await writeFile(blobPath, await readFile(otherPath));
+
+  taggedUnreadableCtx = createNodeContext({ workDir: taggedUnreadableDir });
+}, SETUP_TIMEOUT);
+
+afterAll(async () => {
+  if (taggedUnreadableDir !== '') await rm(taggedUnreadableDir, { recursive: true, force: true });
+});
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given an annotated tag whose target is a present but content-unreadable loose blob (no pack copy)',
+  () => {
+    describe('When fsck runs', () => {
+      it('Then emits tagged and missing for the target, exit code matches real git --tags', async () => {
+        // Arrange
+        const gitResult = gitFsck(taggedUnreadableDir, '--tags');
+        const sha = taggedUnreadableBlobSha;
+        const tagSha = taggedUnreadableTagSha;
+
+        // Act
+        const result = await fsck(taggedUnreadableCtx);
+
+        // Assert — real git prints BOTH lines, exit 3
+        expect(gitResult.stdout).toContain(reconstructTagged('blob', sha, 'tb', tagSha));
+        expect(gitResult.stdout).toContain(reconstructMissing('blob', sha));
+        expect(gitResult.exitCode).toBe(3);
+
+        // Assert — tsgit matches: tagged finding reconstructs git's own line
+        const tagged = result.findings.find(
+          (f): f is FsckFinding & { type: 'tagged' } => f.type === 'tagged' && f.id === sha,
+        );
+        expect(tagged).toBeDefined();
+        if (tagged !== undefined) {
+          const reconstructed = reconstructTagged(
+            tagged.objectType,
+            tagged.id,
+            tagged.tagName,
+            tagged.tag,
+          );
+          expect(gitResult.stdout).toContain(reconstructed);
+        }
+        const missing = result.findings.find(
+          (f): f is FsckFinding & { type: 'missing' } => f.type === 'missing' && f.id === sha,
+        );
+        expect(missing).toMatchObject({ type: 'missing', objectType: 'blob' });
+        expect(result.exitCode).toBe(gitResult.exitCode);
+
+        // Assert — never a broken-link (the id IS present, just unreadable)
+        const brokenLink = result.findings.find(
+          (f) => f.type === 'broken-link' && (f as { toId: string }).toId === sha,
+        );
+        expect(brokenLink).toBeUndefined();
+      });
     });
   },
 );
