@@ -46,13 +46,23 @@ const SETUP_TIMEOUT = 60_000;
 // Local helpers
 // ---------------------------------------------------------------------------
 
+/** A malformed-object shape can, for at least one git version measured
+ *  (2.55.0, a lowered `core.bigFileThreshold` over an in-window over-run),
+ *  drive git into a CPU-pegged hang instead of a refusal — this bounds every
+ *  probe below so a regression fails the test instead of the whole suite. */
+const GIT_PROBE_TIMEOUT_MS = 20_000;
+
 /** Run git, capturing stdout, stderr AND exit code (never throws). */
 function tryRunGitWithExit(
   args: ReadonlyArray<string>,
   options: { readonly env?: NodeJS.ProcessEnv } = {},
 ): { readonly stdout: string; readonly stderr: string; readonly exitCode: number } {
   const env = options.env ?? buildSafeEnv();
-  const result = spawnSync('git', args as string[], { env, encoding: 'utf8' });
+  const result = spawnSync('git', args as string[], {
+    env,
+    encoding: 'utf8',
+    timeout: GIT_PROBE_TIMEOUT_MS,
+  });
   return {
     stdout: result.stdout ?? '',
     stderr: result.stderr ?? '',
@@ -548,6 +558,38 @@ afterAll(async () => {
   if (hashMismatchCatalogueDir !== '') {
     await rm(hashMismatchCatalogueDir, { recursive: true, force: true });
   }
+});
+
+// --- Scenario: core.bigFileThreshold gates the truncated-prefix hash too ----
+// A blob whose declared size is past the threshold takes git's streaming
+// `check_stream_oid` regardless of body length — an over-run there reports
+// `corrupt loose object`, never a truncated-prefix hash-path mismatch.
+
+let bigFileTruncateDir = '';
+let bigFileTruncateCtx: Context;
+const BIG_FILE_TRUNCATE_THRESHOLD = 1;
+let bigFileTruncateSha = '';
+
+beforeAll(async () => {
+  bigFileTruncateDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-bigFileTruncate-'));
+  initRepo(bigFileTruncateDir);
+  runGit(
+    ['-C', bigFileTruncateDir, 'config', 'core.bigFileThreshold', `${BIG_FILE_TRUNCATE_THRESHOLD}`],
+    { env: SAFE_ENV },
+  );
+
+  bigFileTruncateSha = await writeLooseObjectWithClaim(
+    bigFileTruncateDir,
+    'blob',
+    5,
+    Buffer.from('abcdefgh'),
+  );
+
+  bigFileTruncateCtx = createNodeContext({ workDir: bigFileTruncateDir });
+}, SETUP_TIMEOUT);
+
+afterAll(async () => {
+  if (bigFileTruncateDir !== '') await rm(bigFileTruncateDir, { recursive: true, force: true });
 });
 
 // --- Scenario: core.bigFileThreshold gates the zero-padded hash --------------
@@ -1113,6 +1155,43 @@ describe.skipIf(!GIT_AVAILABLE)(
         // git reports only the hash-path mismatch, never a missingTree line
         expect(gitResult.stderr).toContain('hash-path mismatch');
         expect(gitResult.stderr).not.toContain('missingTree');
+      });
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE)(
+  "Given a loose blob past core.bigFileThreshold whose body overran its claim inside git's 32-byte header window",
+  () => {
+    describe('When fsck runs', () => {
+      it('Then emits bad-object, never hash-mismatch — git streams past the threshold and refuses the over-run as corrupt', async () => {
+        // Arrange — git's `check_stream_oid` gates on `core.bigFileThreshold`
+        // for a blob regardless of body length; an over-run there reports
+        // `corrupt loose object`, never a truncated-prefix hash-path mismatch.
+        const gitResult = gitFsck(bigFileTruncateDir);
+
+        // Act
+        const result = await fsck(bigFileTruncateCtx);
+
+        // Assert — exit bit 1 matches real git on both sides
+        expect(result.exitCode & 1).toBe(1);
+        expect(gitResult.exitCode & 1).toBe(1);
+
+        // Assert — content validation reports bad-object, never a
+        // hash-mismatch, for this id (the reachability pass separately
+        // still types and reports this object as dangling — it reads
+        // through the general resolver, which has no `core.bigFileThreshold`
+        // gate of its own; content-validation's gate is the one this finding
+        // asks for, so only ITS finding is pinned here).
+        const findingsForId = result.findings.filter(
+          (f) => 'id' in f && f.id === bigFileTruncateSha,
+        );
+        const badObject = findingsForId.find((f) => f.type === 'bad-object');
+        expect(badObject).toMatchObject({ msgId: 'unterminatedHeader' });
+        expect(findingsForId.some((f) => f.type === 'hash-mismatch')).toBe(false);
+
+        // git: "error: corrupt loose object '<oid>'"
+        expect(gitResult.stderr).toContain(`corrupt loose object '${bigFileTruncateSha}'`);
       });
     });
   },

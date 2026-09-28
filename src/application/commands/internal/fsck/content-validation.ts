@@ -174,6 +174,35 @@ function blobUnderrunResult(
 }
 
 /**
+ * A blob past `core.bigFileThreshold` whose body overran its claim: git's
+ * `check_stream_oid` streams exactly the declared-size window from the
+ * inflate output — an over-run leaves undrained trailing bytes the stream
+ * never accounts for, which git reports as a corrupt loose object (`error:
+ * corrupt loose object '<oid>'`), the SAME undecodable finding an
+ * unparseable header reports, never a truncated-prefix hash.
+ */
+function bigBlobTruncateResult(): RawObjectResult {
+  return { ok: false, msgId: 'unterminatedHeader' };
+}
+
+/**
+ * A blob whose body overran its claim, routed by `core.bigFileThreshold`:
+ * git's type check gates ONLY on blob (never reached for a commit/tree/tag,
+ * which always takes `nonBlobRefuseResult`'s truncated-prefix path
+ * regardless of size), mirroring `blobUnderrunResult`'s own routing for the
+ * opposite (under-run) direction.
+ */
+function blobTruncateResult(
+  ctx: Context,
+  buffered: LooseBufferedRead,
+  bigFileThreshold: number,
+): RawObjectResult {
+  return buffered.split.declaredSize > bigFileThreshold
+    ? bigBlobTruncateResult()
+    : truncatedResult(ctx, buffered, 'blob');
+}
+
+/**
  * git's `read_loose_object` has no type check at all: a commit/tree/tag
  * whose body disagreed with its claim takes the SAME path a blob does —
  * an under-run zero-pads (`hash-path mismatch`), and an over-run that still
@@ -197,9 +226,9 @@ function nonBlobRefuseResult(ctx: Context, buffered: LooseBufferedRead): RawObje
  * raw-body result: `'honest'` hashes the stored bytes as written; a
  * commit/tree/tag disagreement (`'refuse'`) is re-routed by
  * `nonBlobRefuseResult` to the same truncated-prefix or zero-padded path a
- * blob takes — `classifyLooseBody`'s `'underrun'` verdict is only ever a
- * blob (a commit/tree/tag disagreeing at all is `'refuse'`), so THIS is
- * `core.bigFileThreshold`'s one gate.
+ * blob takes — `classifyLooseBody`'s `'underrun'` and `'truncate'` verdicts
+ * are only ever a blob (a commit/tree/tag disagreeing at all is `'refuse'`),
+ * so THOSE two cases are `core.bigFileThreshold`'s one gate.
  */
 function looseVerdictResult(
   ctx: Context,
@@ -216,7 +245,7 @@ function looseVerdictResult(
         computeHash: () => ctx.hash.hashHex(bytes),
       };
     case 'truncate':
-      return truncatedResult(ctx, buffered, split.type);
+      return blobTruncateResult(ctx, buffered, bigFileThreshold);
     case 'underrun':
       return blobUnderrunResult(ctx, buffered, bigFileThreshold);
     case 'refuse':

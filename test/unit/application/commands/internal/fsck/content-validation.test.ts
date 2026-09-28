@@ -602,6 +602,78 @@ describe('Given a loose blob whose declared size sits exactly AT core.bigFileThr
   });
 });
 
+describe('Given a loose blob whose declared size exceeds core.bigFileThreshold and overran its claim inside the header window', () => {
+  describe('When runContentValidationPass validates that object', () => {
+    it("Then emits a bad-object finding, never hash-mismatch — git's check_stream_oid refuses the over-run as corrupt", async () => {
+      // Arrange — declared 5 past a 1-byte threshold, body overruns to 8
+      // bytes while staying inside the 32-byte header window: git's
+      // `check_stream_oid` gates on the threshold for a blob regardless of
+      // body length, and an over-run there is corrupt, not truncated.
+      const ctx = createMemoryContext();
+      const id = 'j'.repeat(40) as ObjectId;
+      const body = ENCODER.encode('abcdefgh');
+      const threshold = 1;
+      await writeLooseAtId(ctx, id, 'blob', 5, body);
+
+      // Act
+      const result = await sut(
+        ctx,
+        new Set([id]),
+        false,
+        new Map(),
+        new Map(),
+        NO_SKIPS,
+        threshold,
+      );
+
+      // Assert
+      expect(result.findings).toEqual([
+        {
+          type: 'bad-object',
+          id,
+          objectType: 'unknown',
+          msgId: 'unterminatedHeader',
+          severity: 'error',
+        },
+      ]);
+      expect(result.exitBit).toBe(1);
+    });
+  });
+});
+
+describe('Given a loose blob whose declared size sits exactly AT core.bigFileThreshold and overran its claim inside the header window', () => {
+  describe('When runContentValidationPass validates that object', () => {
+    it('Then still takes the small-file truncated-prefix path — the gate is strictly greater-than', async () => {
+      // Arrange — git's own `size > big_file_threshold` comparison stays
+      // small-file at the threshold value itself, same as the underrun gate.
+      const ctx = createMemoryContext();
+      const id = 'k'.repeat(40) as ObjectId;
+      const body = ENCODER.encode('HELLOWORLD');
+      const threshold = 6;
+      await writeLooseAtId(ctx, id, 'blob', threshold, body);
+      const expectedActual = await ctx.hash.hashHex(
+        buildTree(ENCODER.encode(`blob ${threshold}\0`), body.subarray(0, threshold)),
+      );
+
+      // Act
+      const result = await sut(
+        ctx,
+        new Set([id]),
+        false,
+        new Map(),
+        new Map(),
+        NO_SKIPS,
+        threshold,
+      );
+
+      // Assert
+      const mismatch = result.findings.find((f) => f.type === 'hash-mismatch');
+      expect(mismatch).toMatchObject({ id, actual: expectedActual });
+      expect(result.findings.some((f) => f.type === 'bad-object')).toBe(false);
+    });
+  });
+});
+
 describe('Given a loose blob past core.bigFileThreshold whose claim ALSO exceeds the inflate ceiling', () => {
   describe('When runContentValidationPass validates that object', () => {
     it('Then still hashes cheaply (no bad-object refusal) — the big-file gate never pays the padding cost the ceiling exists to bound', async () => {
