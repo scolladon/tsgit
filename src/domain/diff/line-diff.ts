@@ -20,10 +20,6 @@ export interface LineDiff {
   readonly hunks: ReadonlyArray<LineHunk>;
   readonly oursLines: ReadonlyArray<Uint8Array>;
   readonly theirsLines: ReadonlyArray<Uint8Array>;
-  /** Always `false`; kept so existing readers compile. git's xdiff engine
-   *  never bails to a whole-file replace, however large the true edit
-   *  distance is. */
-  readonly degraded: boolean;
 }
 
 /**
@@ -57,27 +53,6 @@ export const BINARY_DETECTION_BYTES = 8_000;
 // (grep.ts). It does NOT bound the regex match path, whose per-line window was
 // reverted — a text line is matched in full, at any length.
 export const MAX_LINE_BYTES = 65_536;
-// DEPRECATED — no consumer, and NOT a bound: diffLines imposes no limit on how
-// many lines either side may have. A caller reading this as a maximum will be
-// wrong. Kept at today's value only because dropping a public export breaks
-// consumers; do not add uses.
-export const MAX_LINES = 100_000;
-// DEPRECATED — no consumer, and NOT a bound: the xdiff split engine's cost
-// cap (bounded by the input size, not by this constant) replaces the old
-// bailout that used to degrade a pair past this edit distance to a
-// whole-file replace. Kept at today's value only because dropping a public
-// export breaks consumers; do not add uses.
-export const MAX_DIFF_EDIT_DISTANCE = 10_000;
-// DEPRECATED — no consumer, and NOT a bound: the Myers iteration budget is
-// MAX_DIFF_EDIT_DISTANCE alone and is not derived from any factor. Kept at
-// today's value only because dropping a public export breaks consumers; do not
-// add uses.
-export const MAX_DIFF_ITERATION_FACTOR = 1_000;
-// DEPRECATED — no consumer, and NOT a bound: diffLines no longer pre-checks
-// total input size, so a pair far past this value diffs normally. Kept at
-// today's value only because dropping a public export breaks consumers; do not
-// add uses.
-export const MAX_DIFF_LINES = 50_000;
 
 const LF = 0x0a;
 const NUL = 0x00;
@@ -245,7 +220,6 @@ export function diffPresplitLinesForMode(
       hunks: [{ kind: 'common', oursStart: 0, oursEnd: 0, theirsStart: 0, theirsEnd: 0 }],
       oursLines,
       theirsLines,
-      degraded: false,
       oursHashes: EMPTY_HASHES,
       theirsHashes: EMPTY_HASHES,
     };
@@ -277,7 +251,6 @@ export function diffPresplitLinesForMode(
     hunks: buildHunksFromChanged(prepared.ours.changed, prepared.theirs.changed),
     oursLines,
     theirsLines,
-    degraded: false,
     oursHashes,
     theirsHashes,
   };

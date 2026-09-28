@@ -6,14 +6,18 @@ import {
   diffLines,
   diffPresplitLines,
   isBinary,
-  MAX_DIFF_EDIT_DISTANCE,
-  MAX_DIFF_LINES,
   MAX_LINE_BYTES,
-  MAX_LINES,
   splitLines,
 } from '../../../../src/domain/diff/line-diff.js';
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
+
+// Historical thresholds only — no production constant binds these values any
+// more (isBinary and diffLines both dropped their size-based caps); kept as
+// named local fixtures purely to size the rows pinning that removal.
+const FORMER_MAX_LINES = 100_000;
+const FORMER_MAX_DIFF_LINES = 50_000;
+const FORMER_MAX_DIFF_EDIT_DISTANCE = 10_000;
 
 function concatBytes(chunks: ReadonlyArray<Uint8Array>): Uint8Array {
   const total = chunks.reduce((sum, c) => sum + c.length, 0);
@@ -183,22 +187,23 @@ describe('line-diff — isBinary', () => {
           'MAX_LINE_BYTES bytes on one line, no NUL, returns false (line length no longer decides)',
       },
       {
-        bytes: linesOf(MAX_LINES - 1),
+        bytes: linesOf(FORMER_MAX_LINES - 1),
         expected: false,
-        label: 'MAX_LINES - 1 lines, all short, no NUL, returns false',
+        label: 'one under the former 100 000-line cap, all short, no NUL, returns false',
       },
       {
-        bytes: linesOf(MAX_LINES),
-        expected: false,
-        label: 'MAX_LINES lines, all short, no NUL, returns false (line count no longer decides)',
-      },
-      {
-        // (MAX_LINES - 1) lines 'a\n' followed by a trailing 'a' (no LF).
-        // No longer trips isBinary — line count no longer decides.
-        bytes: linesWithTrailingIncomplete(MAX_LINES - 1),
+        bytes: linesOf(FORMER_MAX_LINES),
         expected: false,
         label:
-          'MAX_LINES reached via trailing incomplete line (no final LF), no NUL, returns false',
+          'at the former 100 000-line cap, all short, no NUL, returns false (line count no longer decides)',
+      },
+      {
+        // (FORMER_MAX_LINES - 1) lines 'a\n' followed by a trailing 'a' (no LF).
+        // No longer trips isBinary — line count no longer decides.
+        bytes: linesWithTrailingIncomplete(FORMER_MAX_LINES - 1),
+        expected: false,
+        label:
+          'former cap reached via trailing incomplete line (no final LF), no NUL, returns false',
       },
     ])('Then $label', ({ bytes, expected }) => {
       // Arrange + Act
@@ -223,7 +228,7 @@ describe('line-diff — diffLines', () => {
 
   describe('Given identical Uint8Arrays', () => {
     describe('When diffLines called', () => {
-      it('Then single common hunk covering all lines, degraded false', () => {
+      it('Then a single common hunk covers all lines', () => {
         // Arrange
         const bytes = enc('a\nb\nc\n');
 
@@ -231,7 +236,6 @@ describe('line-diff — diffLines', () => {
         const result = diffLines(bytes, bytes);
 
         // Assert
-        expect(result.degraded).toBe(false);
         expect(result.hunks).toHaveLength(1);
         expect(result.hunks[0]).toMatchObject({
           kind: 'common',
@@ -265,12 +269,11 @@ describe('line-diff — diffLines', () => {
           hunks: [{ kind: 'ours-only', oursStart: 0, oursEnd: 2, theirsStart: 0, theirsEnd: 0 }],
           label: 'ours non-empty and theirs empty yields a single ours-only hunk',
         },
-      ])('Then $label, degraded false', ({ ours, theirs, hunks }) => {
+      ])('Then $label', ({ ours, theirs, hunks }) => {
         // Arrange + Act
         const result = diffLines(ours, theirs);
 
         // Assert
-        expect(result.degraded).toBe(false);
         expect(result.hunks).toEqual(hunks);
       });
     });
@@ -314,7 +317,6 @@ describe('line-diff — diffLines', () => {
         const result = diffLines(ours, theirs);
 
         // Assert
-        expect(result.degraded).toBe(false);
         expect(result.hunks.map(hunkSummary)).toEqual(summary);
       });
     });
@@ -331,7 +333,6 @@ describe('line-diff — diffLines', () => {
         const result = diffLines(ours, theirs);
 
         // Assert — different byte sequences on the single line → modify → delete + insert pair
-        expect(result.degraded).toBe(false);
         expect(result.hunks).toEqual([
           { kind: 'ours-only', oursStart: 0, oursEnd: 1, theirsStart: 0, theirsEnd: 0 },
           { kind: 'theirs-only', oursStart: 1, oursEnd: 1, theirsStart: 0, theirsEnd: 1 },
@@ -342,7 +343,7 @@ describe('line-diff — diffLines', () => {
 
   describe('Given small inputs with a tiny edit distance', () => {
     describe('When diffLines called', () => {
-      it('Then degraded is false', () => {
+      it('Then it produces at least one hunk', () => {
         // Arrange
         const ours = enc('a\nb\nc\n');
         const theirs = enc('a\nX\nc\n');
@@ -351,7 +352,6 @@ describe('line-diff — diffLines', () => {
         const result = diffLines(ours, theirs);
 
         // Assert
-        expect(result.degraded).toBe(false);
         expect(result.hunks.length).toBeGreaterThan(0);
       });
     });
@@ -363,7 +363,7 @@ describe('line-diff — diffLines', () => {
 
   describe('Given 5001 unique lines plus one shared line on each side (past the old bail: d = 10 002)', () => {
     describe('When diffLines is called', () => {
-      it('Then it is not degraded, and added/deleted match live git (5001/5001)', () => {
+      it('Then added/deleted match live git (5001/5001)', () => {
         // Arrange
         const ours = enc(`${[...uniqueLines('u', 5001), 'common'].join('\n')}\n`);
         const theirs = enc(`${[...uniqueLines('v', 5001), 'common'].join('\n')}\n`);
@@ -372,7 +372,6 @@ describe('line-diff — diffLines', () => {
         const result = diffLines(ours, theirs);
 
         // Assert
-        expect(result.degraded).toBe(false);
         expect(changeCounts(result.hunks)).toEqual({ added: 5001, deleted: 5001 });
       });
     });
@@ -380,7 +379,7 @@ describe('line-diff — diffLines', () => {
 
   describe('Given 10001 unique lines plus one shared line against just that shared line (past the old bail: d = 10 001)', () => {
     describe('When diffLines is called', () => {
-      it('Then it is not degraded, and added/deleted match live git (0/10001)', () => {
+      it('Then added/deleted match live git (0/10001)', () => {
         // Arrange
         const ours = enc(`${[...uniqueLines('u', 10_001), 'common'].join('\n')}\n`);
         const theirs = enc('common\n');
@@ -389,7 +388,6 @@ describe('line-diff — diffLines', () => {
         const result = diffLines(ours, theirs);
 
         // Assert
-        expect(result.degraded).toBe(false);
         expect(changeCounts(result.hunks)).toEqual({ added: 0, deleted: 10_001 });
       });
     });
@@ -397,7 +395,7 @@ describe('line-diff — diffLines', () => {
 
   describe('Given 5000 unique lines plus one shared line on each side (exactly at the old bail: d = 10 000)', () => {
     describe('When diffLines is called', () => {
-      it('Then it is not degraded, and added/deleted match live git (5000/5000)', () => {
+      it('Then added/deleted match live git (5000/5000)', () => {
         // Arrange
         const ours = enc(`${[...uniqueLines('u', 5000), 'common'].join('\n')}\n`);
         const theirs = enc(`${[...uniqueLines('v', 5000), 'common'].join('\n')}\n`);
@@ -406,7 +404,6 @@ describe('line-diff — diffLines', () => {
         const result = diffLines(ours, theirs);
 
         // Assert
-        expect(result.degraded).toBe(false);
         expect(changeCounts(result.hunks)).toEqual({ added: 5000, deleted: 5000 });
       });
     });
@@ -454,7 +451,6 @@ describe('line-diff — diffLines', () => {
         const result = diffLines(ours, theirs);
 
         // Assert
-        expect(result.degraded).toBe(false);
         expect(changeCounts(result.hunks)).toEqual({ added: 1931, deleted: 1931 });
       });
     });
@@ -472,33 +468,32 @@ describe('line-diff — diffLines', () => {
         const result = diffLines(ours, theirs);
 
         // Assert
-        expect(result.degraded).toBe(false);
         expect(changeCounts(result.hunks)).toEqual({ added: 600, deleted: 600 });
       });
     });
   });
 
-  describe('Given inputs sized at what used to be MAX_DIFF_LINES, both sides identical', () => {
+  describe('Given inputs sized at the former 50 000-line diffLines cap, both sides identical', () => {
     describe('When diffLines called', () => {
-      it('Then not degraded (edit distance zero)', () => {
+      it('Then it completes (edit distance zero)', () => {
         // Arrange — 25000 identical lines per side = 50000 total. There is no
         // size-based cap any more; this pair completes because its edit distance
         // is 0, independent of how many lines it totals.
-        const content = 'a\n'.repeat(MAX_DIFF_LINES / 2);
+        const content = 'a\n'.repeat(FORMER_MAX_DIFF_LINES / 2);
         const bytes = enc(content);
 
         // Act
         const result = diffLines(bytes, bytes);
 
-        // Assert — identical inputs always produce a single common hunk, not degraded
-        expect(result.degraded).toBe(false);
+        // Assert — identical inputs always produce a single common hunk
+        expect(result.hunks).toHaveLength(1);
       }, 30_000);
     });
   });
 
-  describe('Given equal-sized identical inputs larger than what used to be MAX_DIFF_LINES', () => {
+  describe('Given equal-sized identical inputs larger than the former 50 000-line diffLines cap', () => {
     describe('When diffLines called', () => {
-      it('Then not degraded — identical content has edit distance zero regardless of size', () => {
+      it('Then it completes — identical content has edit distance zero regardless of size', () => {
         // Arrange — M === N === 25001, so M+N = 50002, over what used to be the
         // input-size cap, but the content is byte-identical so the true edit
         // distance is 0. Before this change the size-based pre-check degraded
@@ -510,8 +505,7 @@ describe('line-diff — diffLines', () => {
         // Act
         const result = diffLines(bytes, bytes);
 
-        // Assert — a single common hunk, never the whole-file fallback
-        expect(result.degraded).toBe(false);
+        // Assert — a single common hunk, never a whole-file fallback
         expect(result.hunks).toEqual([
           { kind: 'common', oursStart: 0, oursEnd: half, theirsStart: 0, theirsEnd: half },
         ]);
@@ -521,10 +515,10 @@ describe('line-diff — diffLines', () => {
 
   describe('Given a 200 002-line pair differing by a single line', () => {
     describe('When diffLines called', () => {
-      it('Then not degraded and the single-line hunk is reported', () => {
+      it('Then the single-line hunk is reported', () => {
         // Arrange — 100 001 lines per side, one line changed near the start. The
         // edit distance is 2 (one delete, one insert), far under the cap, even
-        // though the pair totals well over what used to be MAX_DIFF_LINES.
+        // though the pair totals well over the former 50 000-line diffLines cap.
         const count = 100_001;
         const changeAt = 3;
         const beforeLines = Array.from({ length: count }, (_, i) =>
@@ -539,7 +533,6 @@ describe('line-diff — diffLines', () => {
         const result = diffLines(ours, theirs);
 
         // Assert
-        expect(result.degraded).toBe(false);
         expect(result.hunks).toEqual([
           { kind: 'common', oursStart: 0, oursEnd: changeAt, theirsStart: 0, theirsEnd: changeAt },
           {
@@ -570,7 +563,7 @@ describe('line-diff — diffLines', () => {
 
   describe('Given a NUL-free 70 000-byte line pair with no active lineKey', () => {
     describe('When diffLines called', () => {
-      it('Then not degraded (a long line is still just one line to the trace)', () => {
+      it('Then a long line is still just one line to the trace', () => {
         // Arrange — one 70 000-byte line changed by a single trailing byte. The
         // line-length cap no longer feeds isBinary or diffLines; this pair's
         // edit distance is 2 (delete + insert of the one line), so it completes.
@@ -581,7 +574,6 @@ describe('line-diff — diffLines', () => {
         const result = diffLines(ours, theirs);
 
         // Assert
-        expect(result.degraded).toBe(false);
         expect(result.hunks).toEqual([
           { kind: 'ours-only', oursStart: 0, oursEnd: 1, theirsStart: 0, theirsEnd: 0 },
           { kind: 'theirs-only', oursStart: 1, oursEnd: 1, theirsStart: 0, theirsEnd: 1 },
@@ -590,7 +582,7 @@ describe('line-diff — diffLines', () => {
     });
   });
 
-  describe('Given the property "diffLines(X, X) yields a single common hunk covering all lines with degraded false"', () => {
+  describe('Given the property "diffLines(X, X) yields a single common hunk covering all lines"', () => {
     describe('When sampled', () => {
       it('Then it holds', () => {
         // Arrange + Assert
@@ -599,7 +591,6 @@ describe('line-diff — diffLines', () => {
             const input = new Uint8Array(bytes);
             const result = diffLines(input, input);
             const lineCount = splitLines(input).length;
-            if (result.degraded) return false;
             if (lineCount === 0) {
               return (
                 result.hunks.length === 1 &&
@@ -640,7 +631,6 @@ describe('line-diff — diffLines', () => {
             fc.uint8Array({ maxLength: 100 }),
             (a, b) => {
               const result = diffLines(new Uint8Array(a), new Uint8Array(b));
-              if (result.degraded) return true;
               const totals = result.hunks.reduce(
                 (acc, h) => {
                   const { ours, theirs } = hunkLen(h);
@@ -674,7 +664,6 @@ describe('line-diff — diffLines', () => {
         const result = diffLines(ours, theirs);
 
         // Assert — different lengths → not equal → one ours-only and one theirs-only hunk
-        expect(result.degraded).toBe(false);
         expect(result.hunks).toEqual([
           { kind: 'ours-only', oursStart: 0, oursEnd: 1, theirsStart: 0, theirsEnd: 0 },
           { kind: 'theirs-only', oursStart: 1, oursEnd: 1, theirsStart: 0, theirsEnd: 1 },
@@ -695,7 +684,6 @@ describe('line-diff — diffLines', () => {
         const result = diffLines(bytes, bytes);
 
         // Assert
-        expect(result.degraded).toBe(false);
         expect(result.hunks).toEqual([
           { kind: 'common', oursStart: 0, oursEnd: 4, theirsStart: 0, theirsEnd: 4 },
         ]);
@@ -703,14 +691,14 @@ describe('line-diff — diffLines', () => {
     });
   });
 
-  describe('Given fully-disjoint inputs sized at MAX_DIFF_EDIT_DISTANCE (past what used to be the bail)', () => {
+  describe('Given fully-disjoint inputs sized at the former 10 000 edit-distance bail', () => {
     describe('When diffLines called', () => {
       it('Then it completes — the removed bail no longer degrades a large disjoint pair', () => {
         // Arrange — M=N=5000 fully-disjoint lines, an edit distance of exactly
-        // the old MAX_DIFF_EDIT_DISTANCE bail. No consumer of that constant
-        // remains; this pins that a pair at its old value still diffs normally.
-        const M = MAX_DIFF_EDIT_DISTANCE / 2;
-        const N = MAX_DIFF_EDIT_DISTANCE / 2;
+        // the former edit-distance bail. No production constant binds that value
+        // any more; this pins that a pair at the old bail's value still diffs normally.
+        const M = FORMER_MAX_DIFF_EDIT_DISTANCE / 2;
+        const N = FORMER_MAX_DIFF_EDIT_DISTANCE / 2;
         const ours = enc(Array.from({ length: M }, (_, i) => `p${i}\n`).join(''));
         const theirs = enc(Array.from({ length: N }, (_, i) => `q${i}\n`).join(''));
 
@@ -718,7 +706,6 @@ describe('line-diff — diffLines', () => {
         const result = diffLines(ours, theirs);
 
         // Assert
-        expect(result.degraded).toBe(false);
         expect(result.hunks).toEqual([
           { kind: 'ours-only', oursStart: 0, oursEnd: M, theirsStart: 0, theirsEnd: 0 },
           { kind: 'theirs-only', oursStart: M, oursEnd: M, theirsStart: 0, theirsEnd: N },
@@ -793,7 +780,6 @@ describe('line-diff — diffPresplitLines', () => {
 
         // Assert
         expect(result).toEqual(expected);
-        expect(result.degraded).toBe(false);
       });
     });
   });
@@ -813,7 +799,6 @@ describe('line-diff — diffLines lineKey option', () => {
         const result = diffLines(ours, theirs, options);
 
         // Assert — whitespace-only difference on the oversized line is common under mode all
-        expect(result.degraded).toBe(false);
         expect(result.hunks).toEqual([
           { kind: 'common', oursStart: 0, oursEnd: 1, theirsStart: 0, theirsEnd: 1 },
         ]);
@@ -833,7 +818,6 @@ describe('line-diff — diffLines lineKey option', () => {
         const result = diffLines(ours, theirs, options);
 
         // Assert — ws-only line (indices 0) is common; real line (indices 1) is ours-only/theirs-only
-        expect(result.degraded).toBe(false);
         expect(result.hunks).toEqual([
           { kind: 'common', oursStart: 0, oursEnd: 1, theirsStart: 0, theirsEnd: 1 },
           { kind: 'ours-only', oursStart: 1, oursEnd: 2, theirsStart: 1, theirsEnd: 1 },
@@ -861,8 +845,6 @@ describe('line-diff — diffLines lineKey option', () => {
         // Assert — all three are byte-identical in structure
         expect(resultEmptyOpts.hunks).toEqual(resultNoOpts.hunks);
         expect(resultNoneKey.hunks).toEqual(resultNoOpts.hunks);
-        expect(resultEmptyOpts.degraded).toBe(resultNoOpts.degraded);
-        expect(resultNoneKey.degraded).toBe(resultNoOpts.degraded);
         // Under no normalization, the ws-only line change is visible
         expect(
           resultNoOpts.hunks.some((h) => h.kind === 'ours-only' || h.kind === 'theirs-only'),
@@ -890,7 +872,6 @@ describe('line-diff — classifying very long lines under an active lineKey', ()
 
         // Assert — recognized as different, never collapsed into one common line
         expect(result.hunks.every((h) => h.kind !== 'common')).toBe(true);
-        expect(result.degraded).toBe(false);
       });
     });
   });

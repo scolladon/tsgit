@@ -11,9 +11,9 @@
  * patch-id, each checked against the matching real-git command.
  *
  * The split-engine rows below pin numstat, patch text, blame and merge on
- * inputs whose true edit distance sits past the old (now-removed)
- * `MAX_DIFF_EDIT_DISTANCE` bail, so the engine that replaces it is checked
- * against live git rather than against tsgit's own former behaviour.
+ * inputs whose true edit distance sits past the old (now-removed) 10 000-edit
+ * bail, so the engine that replaces it is checked against live git rather
+ * than against tsgit's own former behaviour.
  *
  * @proves
  *   surface: diff.lineDiff

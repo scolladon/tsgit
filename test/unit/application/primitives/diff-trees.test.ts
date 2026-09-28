@@ -10,12 +10,7 @@ import { readObject } from '../../../../src/application/primitives/read-object.j
 import { MAX_PEEL_DEPTH } from '../../../../src/application/primitives/types.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
-import {
-  type LineKey,
-  MAX_DIFF_LINES,
-  type TreeDiff,
-  type WhitespaceMode,
-} from '../../../../src/domain/diff/index.js';
+import type { LineKey, TreeDiff, WhitespaceMode } from '../../../../src/domain/diff/index.js';
 import * as rawTreeDiffMod from '../../../../src/domain/diff/raw-tree-diff.js';
 import {
   DEFAULT_BREAK_SCORE,
@@ -50,6 +45,11 @@ const IDENTITY = {
   timestamp: 1_700_000_000,
   timezoneOffset: '+0000',
 } as const;
+
+// Historical threshold only — no production constant binds this value any
+// more (diffLines dropped its size-based cap); kept as a named local fixture
+// purely to size the rows pinning that removal.
+const FORMER_MAX_DIFF_LINES = 50_000;
 
 const blob = (ctx: Ctx, content: string): Promise<ObjectId> =>
   writeObject(ctx, {
@@ -1930,14 +1930,14 @@ describe('diffTrees', () => {
     });
   });
 
-  describe('Given a whitespace-only modify whose two sides together exceed MAX_DIFF_LINES, and withStat:true', () => {
+  describe('Given a whitespace-only modify whose two sides together exceed the former diffLines line cap, and withStat:true', () => {
     describe('When diffTrees is called with ignoreWhitespace:all', () => {
       it('Then the modify is dropped (the stat arm never runs diffLines to decide the verdict)', async () => {
-        // Arrange — MAX_DIFF_LINES/2 + 1 lines per side, so the combined line count
-        // exceeds MAX_DIFF_LINES and diffLines (if it still fed the verdict) would
-        // degrade to its whole-file fallback with added===deleted===lineCount
+        // Arrange — FORMER_MAX_DIFF_LINES/2 + 1 lines per side, so the combined line
+        // count exceeds the former cap and diffLines (if it still fed the verdict)
+        // would degrade to its whole-file fallback with added===deleted===lineCount
         const ctx = await buildSeededContext();
-        const lineCount = MAX_DIFF_LINES / 2 + 1;
+        const lineCount = FORMER_MAX_DIFF_LINES / 2 + 1;
         const filler = 'x\n'.repeat(lineCount - 1);
         const oldId = await blob(ctx, `mid line\n${filler}`);
         const newId = await blob(ctx, `mid  line\n${filler}`);
@@ -1956,7 +1956,7 @@ describe('diffTrees', () => {
     });
   });
 
-  describe('Given a real modify whose two sides together exceed MAX_DIFF_LINES, and withStat:true', () => {
+  describe('Given a real modify whose two sides together exceed the former diffLines line cap, and withStat:true', () => {
     describe('When diffTrees is called with ignoreWhitespace:all', () => {
       it('Then the modify survives with real counts (edit distance is tiny, so diffLines no longer degrades)', async () => {
         // Arrange — same shape as the ws-only case above, but the first line's
@@ -1966,7 +1966,7 @@ describe('diffTrees', () => {
         // one insert), far under the edit-distance bail, and the counts reflect
         // that single-line change rather than a whole-file replace.
         const ctx = await buildSeededContext();
-        const lineCount = MAX_DIFF_LINES / 2 + 1;
+        const lineCount = FORMER_MAX_DIFF_LINES / 2 + 1;
         const filler = 'x\n'.repeat(lineCount - 1);
         const oldId = await blob(ctx, `mid line\n${filler}`);
         const newId = await blob(ctx, `CHANGED\n${filler}`);

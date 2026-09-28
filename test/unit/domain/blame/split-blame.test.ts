@@ -7,7 +7,6 @@ const mkDiff = (hunks: ReadonlyArray<LineHunk>): LineDiff => ({
   hunks,
   oursLines: [],
   theirsLines: [],
-  degraded: false,
 });
 
 const common = (oursStart: number, theirsStart: number, count: number): LineHunk => ({

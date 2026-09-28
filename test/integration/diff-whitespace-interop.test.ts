@@ -1259,12 +1259,12 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
-    // C8/DC-16 — a NUL-free file with over MAX_LINES lines but a single-line real
+    // C8/DC-16 — a NUL-free file with over 100 000 lines but a single-line real
     // content change, on the plain path (no whitespace mode active). The edit
     // distance of this pair is 2 (one delete, one insert), far under the cap, so
     // it no longer degrades — numstat and the patch body now report git's real
     // values instead of a whole-file replace.
-    describe('Given a NUL-free file with over MAX_LINES lines and a single-line real content change, When diffing with no whitespace mode', () => {
+    describe('Given a NUL-free file with over 100 000 lines and a single-line real content change, When diffing with no whitespace mode', () => {
       it('Then numstat and the patch body match live git (real hunks, no Binary files)', async () => {
         // Arrange
         const pair = await makePeerPair('c8-manylines');

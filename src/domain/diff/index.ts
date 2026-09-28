@@ -39,11 +39,7 @@ export {
   BINARY_DETECTION_BYTES,
   diffLines,
   isBinary,
-  MAX_DIFF_EDIT_DISTANCE,
-  MAX_DIFF_ITERATION_FACTOR,
-  MAX_DIFF_LINES,
   MAX_LINE_BYTES,
-  MAX_LINES,
   splitLines,
 } from './line-diff.js';
 

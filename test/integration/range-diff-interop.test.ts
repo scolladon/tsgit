@@ -266,7 +266,7 @@ runs('range-diff interop', () => {
     });
   });
 
-  // C8/DC-16 — a NUL-free file with over MAX_LINES lines, differing by a single
+  // C8/DC-16 — a NUL-free file with over 100 000 lines, differing by a single
   // line on each side: the edit distance from either parent to the shared base
   // is 2 (one delete, one insert), far under the cap, so each commit's per-file
   // diff carries full text hunks instead of collapsing into a whole-file
