@@ -2060,11 +2060,11 @@ describe('diffTrees', () => {
 
   describe('Given withStat:true and a textconv driver that collapses multi-line content to one line', () => {
     describe('When diffTrees is called', () => {
-      it('Then stat counts reflect the textconv-transformed content (applyTextconv:true is forwarded)', async () => {
-        // Arrange — rawOld has 3 lines; rawNew has 1 line. Without textconv:
-        //   added=1, deleted=3. The fake textconv driver collapses BOTH sides to a
-        //   single line each (different values), so with textconv: added=1, deleted=1.
-        //   This distinguishes the two code paths.
+      it('Then stat counts reflect the RAW content, not the textconv-transformed content (git’s builtin_diffstat never applies textconv)', async () => {
+        // Arrange — rawOld has 3 lines; rawNew has 1 line: added=1, deleted=3.
+        //   The fake textconv driver collapses BOTH sides to a single (different)
+        //   line each, which would give added=1, deleted=1 if numstat counted the
+        //   converted bytes — it must not, so the raw counts are what's asserted.
         const enc = new TextEncoder();
         const rawOld = enc.encode('line1\nline2\nline3\n');
         const rawNew = enc.encode('only\n');
@@ -2100,16 +2100,64 @@ describe('diffTrees', () => {
         // Act
         const result = await diffTrees(ctx, before, after, { withStat: true });
 
-        // Assert — textconv collapses both sides to 1 line each → added=1, deleted=1.
-        // Without textconv (applyTextconv:false / {}): rawOld=3 lines, rawNew=1 line
-        // → added=1, deleted=3. The textconv path uniquely produces deleted=1.
+        // Assert — raw counts (added=1, deleted=3), not the collapsed converted
+        // counts (added=1, deleted=1) the textconv driver would produce.
         expect(result.changes).toHaveLength(1);
         expect(result.changes[0]).toMatchObject({
           type: 'modify',
           added: 1,
-          deleted: 1,
+          deleted: 3,
           binary: false,
         });
+      });
+    });
+  });
+
+  describe('Given withStat:true, ignoreWhitespace:all, and a textconv driver whose output is a real (non-whitespace) change while the RAW change is whitespace-only', () => {
+    describe('When diffTrees is called', () => {
+      it('Then the modify is dropped (the numstat drop verdict runs on RAW bytes, matching git --numstat -w, never on the textconv-converted bytes)', async () => {
+        // Arrange — raw old/new differ only by a trailing space (whitespace-only
+        // under -w); the fake textconv driver appends a genuine extra line on the
+        // new side only, so the CONVERTED bytes carry a real (non-whitespace)
+        // change. Real git's --numstat -w drops the row entirely for this raw
+        // shape (verified against live git); only a raw-bytes-based verdict here
+        // reproduces that.
+        const enc = new TextEncoder();
+        const rawOld = enc.encode('a\nb\nc\n');
+        const rawNew = enc.encode('a\nb\nc \n');
+        const convertedOld = enc.encode('a\nb\nc\n');
+        const convertedNew = enc.encode('a\nb\nc \nMARKER\n');
+
+        const runner: CommandRunner = {
+          run: async (req) => {
+            const stdout = req.command.includes('old_') ? convertedOld : convertedNew;
+            return { exitCode: 0, stdout };
+          },
+        };
+
+        const ctx = createMemoryContext({ command: runner });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.dat diff=marker\n');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[diff "marker"]\n\ttextconv = marker-cmd\n',
+        );
+
+        const writeBlobId = async (content: Uint8Array): Promise<ObjectId> =>
+          writeObject(ctx, { type: 'blob', content, id: '' as ObjectId });
+
+        const oldBlobId = await writeBlobId(rawOld);
+        const newBlobId = await writeBlobId(rawNew);
+        const before = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'file.dat', oldBlobId)]);
+        const after = await writeTree(ctx, [treeEntry(FILE_MODE.REGULAR, 'file.dat', newBlobId)]);
+
+        // Act
+        const result = await diffTrees(ctx, before, after, {
+          withStat: true,
+          ignoreWhitespace: 'all',
+        });
+
+        // Assert — dropped entirely (not a 0/0 row), matching git's raw-bytes verdict
+        expect(result.changes).toHaveLength(0);
       });
     });
   });

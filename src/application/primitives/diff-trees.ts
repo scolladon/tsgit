@@ -244,8 +244,11 @@ async function applyStatPass(
   const files = await materialisePatchFiles(ctx, diff.changes, { applyTextconv: true });
   const surviving: Array<DiffChange | StatDiffChange> = [];
   for (const file of files) {
-    const oldContent = file.oldContent ?? EMPTY;
-    const newContent = file.newContent ?? EMPTY;
+    // git's builtin_diffstat never calls fill_textconv — numstat/stat (and the
+    // whitespace-drop verdict that gates a row's presence) count the RAW blob,
+    // never the textconv OUTPUT the patch hunk (a separate call) renders.
+    const oldContent = file.numstatOldContent ?? file.oldContent ?? EMPTY;
+    const newContent = file.numstatNewContent ?? file.newContent ?? EMPTY;
     const dropped =
       lineKeyActive &&
       dropVerdict(

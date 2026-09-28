@@ -205,7 +205,7 @@ async function materialiseAdd(
     config.runner !== undefined && command !== undefined
       ? await maybeTextconv(ctx, config.runner, command, change, 'new', change.newMode, rawNew)
       : rawNew;
-  return withOverride({ change, newContent }, pair);
+  return withOverride({ change, newContent, numstatNewContent: rawNew }, pair);
 }
 
 async function materialiseDelete(
@@ -228,7 +228,7 @@ async function materialiseDelete(
     config.runner !== undefined && command !== undefined
       ? await maybeTextconv(ctx, config.runner, command, change, 'old', change.oldMode, rawOld)
       : rawOld;
-  return withOverride({ change, oldContent }, pair);
+  return withOverride({ change, oldContent, numstatOldContent: rawOld }, pair);
 }
 
 async function materialiseRenameOrCopy(
@@ -275,7 +275,16 @@ async function materialiseRenameOrCopy(
     change.oldMode,
     change.newMode,
   );
-  return withOverride({ change, oldContent, newContent }, pair);
+  return withOverride(
+    {
+      change,
+      oldContent,
+      newContent,
+      numstatOldContent: oldBlob.content,
+      numstatNewContent: newBlob.content,
+    },
+    pair,
+  );
 }
 
 async function materialiseModifySameId(
@@ -303,7 +312,10 @@ async function materialiseModifySameId(
     change.oldMode,
     change.newMode,
   );
-  return withOverride({ change, oldContent, newContent }, pair);
+  return withOverride(
+    { change, oldContent, newContent, numstatOldContent: rawBytes, numstatNewContent: rawBytes },
+    pair,
+  );
 }
 
 async function materialiseModifyDifferentIds(
@@ -337,7 +349,10 @@ async function materialiseModifyDifferentIds(
     change.oldMode,
     change.newMode,
   );
-  return withOverride({ change, oldContent, newContent }, pair);
+  return withOverride(
+    { change, oldContent, newContent, numstatOldContent: oldRaw, numstatNewContent: newRaw },
+    pair,
+  );
 }
 
 /**

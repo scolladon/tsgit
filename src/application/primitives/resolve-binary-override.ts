@@ -28,11 +28,13 @@ const TEXTCONV_BINARY_NUMSTAT: BinaryOverridePair = { patch: 'text', numstat: 'b
  * - `driverBinary === undefined` (unset): falls back to a content sniff.
  *   Without a textconv, `rawIsBinary` decides both patch and numstat
  *   identically (the caller's own bytes ARE the raw bytes). With a
- *   textconv, the PATCH bytes the caller renders are already the textconv
- *   OUTPUT (never NUL, so its own downstream sniff already resolves 'text'
- *   without an override here) but the NUMSTAT bytes are the SAME converted
- *   bytes too — so a raw-content sniff must be supplied explicitly
- *   (`named.rawIsBinary`) to keep numstat truthful to the RAW blob.
+ *   textconv, the PATCH bytes the caller renders are the textconv OUTPUT
+ *   (never NUL, so its own downstream sniff already resolves 'text' without
+ *   an override here) but the NUMSTAT bytes stay the RAW blob — git's
+ *   `builtin_diffstat` never calls `fill_textconv` — so a raw-content sniff
+ *   must be supplied explicitly (`named.rawIsBinary`) to keep the numstat
+ *   binary/text DECISION truthful to the RAW blob; the caller counts from
+ *   those same raw bytes separately, never from the converted PATCH bytes.
  */
 export const resolveBinaryOverride = (
   value: AttributeValue,

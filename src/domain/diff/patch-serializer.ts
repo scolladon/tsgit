@@ -25,6 +25,16 @@ export interface PatchFile {
   /** Override the numstat decision (consumed by computeStatFields via diff-trees, NOT by
    *  this serializer). Carried on PatchFile so a single resolve pass attaches both. */
   readonly numstatBinaryOverride?: 'binary' | 'text';
+  /**
+   * Raw pre-textconv bytes for the numstat/stat surface (consumed by diff-trees,
+   * NOT by this serializer) — present whenever `applyTextconv` resolved a
+   * driver, even when its command left the side untouched. git's
+   * `builtin_diffstat` never calls `fill_textconv`, so `--numstat`/`--stat`
+   * count these RAW bytes while `oldContent`/`newContent` above (the textconv
+   * OUTPUT) still drive the patch hunk.
+   */
+  readonly numstatOldContent?: Uint8Array;
+  readonly numstatNewContent?: Uint8Array;
 }
 
 export interface PatchPathPrefix {
