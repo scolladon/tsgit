@@ -288,7 +288,14 @@ done
 # shipped in every distribution form, none removable without dropping the
 # zero-padded hash-path-mismatch parity fsck now reports for a size-lying
 # commit, tree or tag, matching what it already reported for a blob.
-SIZE_CAP=$((1013 * 1024))
+# Raised 1013 -> 1014 KiB by the textconv numstat fix: the measured tarball
+# lands at 1 037 558 B, 246 B over the old cap, attributable to
+# `numstatOldContent`/`numstatNewContent` on `PatchFile` and the raw-bytes
+# threading through materialise-patch-files.ts's five branches — runtime code
+# shipped in every distribution form, none removable without giving back
+# git's own builtin_diffstat parity (numstat/stat count the RAW blob, never
+# the textconv OUTPUT the patch hunk renders).
+SIZE_CAP=$((1014 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders
