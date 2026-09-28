@@ -210,13 +210,46 @@ export function countCopied(src: SpanFingerprint, dst: SpanFingerprint): number 
  * - `srcCopied`: bytes of `src` whose chunk hash also appears in `dst`
  *   (min(src_cnt, dst_cnt) per hash bucket, summed). This is the "shared"
  *   byte count used by both similarity and break scoring.
- * - `literalAdded`: bytes of `dst` not accounted for by `src`
- *   (`dstSize − srcCopied`). Together with `srcCopied`, callers can derive
- *   git's break-attempt gate and merge-score without a second blob scan.
+ * - `literalAdded`: bytes of `dst`'s FINGERPRINT not accounted for by `src`
+ *   (sum of `dst`'s chunk counts, minus `srcCopied`) — NOT `dstSize −
+ *   srcCopied`: a text-mode chunk walk skips the CR of every CRLF pair, so a
+ *   CRLF-heavy `dst` has fewer fingerprinted bytes than its raw size.
  */
 export interface SpanhashChangeCounts {
   readonly srcCopied: number;
   readonly literalAdded: number;
+}
+
+/** Sum every bucket's byte count — a fingerprint's total covered bytes,
+ *  which is `data.length` minus any CR bytes a text-mode walk skipped. */
+function sumFingerprintCounts(fp: SpanFingerprint): number {
+  let total = 0;
+  for (let i = 0; i < fp.counts.length; i++) total += fp.counts[i] as number;
+  return total;
+}
+
+/**
+ * git's `should_break` sanity clamp (`diffcore-break.c`): `literalAdded`
+ * can never legitimately claim more bytes than `dst` has once combined with
+ * `srcCopied` — clamp it down (to `dstSize − srcCopied`, or 0 when even that
+ * is negative) rather than let a caller derive an over-100% break score.
+ *
+ * `countSpanhashChanges` below derives `literalAdded` as (dst fingerprint's
+ * own byte total) − `srcCopied`, and a fingerprint's byte total never exceeds
+ * `dstSize` (a chunk walk only ever SKIPS bytes — the CR of a CRLF pair —
+ * never invents them), so that caller can never actually trigger the clamp:
+ * it is kept as its own faithfully-tested unit for git-parity, not because
+ * `countSpanhashChanges` needs it today.
+ *
+ * @internal — exported for tests only.
+ */
+export function clampLiteralAdded(
+  dstSize: number,
+  srcCopied: number,
+  literalAdded: number,
+): number {
+  if (dstSize >= literalAdded + srcCopied) return literalAdded;
+  return srcCopied < dstSize ? dstSize - srcCopied : 0;
 }
 
 /**
@@ -226,36 +259,42 @@ export interface SpanhashChangeCounts {
  *   merge_score  = (srcSize − srcCopied) * MAX_SCORE / srcSize   (denominator = srcSize)
  *   break_score  = min(srcSize + dstSize − 2*srcCopied, maxSize) * MAX_SCORE / maxSize
  *
- * Special cases mirror `estimateSimilarity`:
- * - Both empty → srcCopied = 0, literalAdded = 0
- * - src empty  → srcCopied = 0, literalAdded = dstSize
- * - dst empty  → srcCopied = 0, literalAdded = 0
- *
  * `override`, when given, decides BOTH sides' content kind outright — the
  * break pass's two blobs are the old and new state of ONE path, so a single
  * attribute-resolved override (see `resolveSimilarityOverride`) always
  * applies uniformly to both. `undefined` (the default) falls back to each
- * side's own content sniff, exactly as before.
+ * side's own content sniff, exactly as before. Empty src/dst fall through to
+ * the general computation below — an empty `SpanFingerprint`'s `countCopied`
+ * and count-sum are both trivially 0, matching git's own empty-table walk.
  */
 export function countSpanhashChanges(
   src: Uint8Array,
   dst: Uint8Array,
   override?: ContentKind,
 ): SpanhashChangeCounts {
-  const srcSize = src.length;
-  const dstSize = dst.length;
-
-  // Stryker disable next-line ConditionalExpression,LogicalOperator,BlockStatement: equivalent — this guard is a perf short-circuit only. Skipping it (whole/either-operand forced false, || swapped to &&, or the body emptied) still falls through to buildFingerprint on an empty src/dst, which yields an empty SpanFingerprint; countCopied over an empty table always returns 0, so srcCopied=0 and literalAdded=dstSize-0=dstSize either way — verified by hand for every documented variant.
-  if (srcSize === 0 || dstSize === 0) {
-    return { srcCopied: 0, literalAdded: dstSize };
-  }
-
-  const srcCopied = countCopied(
+  return countSpanhashChangesFromFingerprints(
     buildFingerprint(src, override ?? contentKindOf(src)),
     buildFingerprint(dst, override ?? contentKindOf(dst)),
+    dst.length,
   );
+}
 
-  return { srcCopied, literalAdded: dstSize - srcCopied };
+/**
+ * Fingerprint-level counterpart to `countSpanhashChanges` — scores two
+ * ALREADY-BUILT fingerprints instead of re-hashing raw bytes. Callers that
+ * build `src`/`dst` fingerprints for their own reasons (e.g. a broken-pair
+ * cache) score from those same fingerprints rather than paying a second
+ * `buildFingerprint` pass.
+ */
+export function countSpanhashChangesFromFingerprints(
+  srcFingerprint: SpanFingerprint,
+  dstFingerprint: SpanFingerprint,
+  dstSize: number,
+): SpanhashChangeCounts {
+  const srcCopied = countCopied(srcFingerprint, dstFingerprint);
+  const rawLiteralAdded = sumFingerprintCounts(dstFingerprint) - srcCopied;
+
+  return { srcCopied, literalAdded: clampLiteralAdded(dstSize, srcCopied, rawLiteralAdded) };
 }
 
 /**

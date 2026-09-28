@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { BINARY_DETECTION_BYTES } from '../../../../src/domain/diff/line-diff.js';
 import {
   buildFingerprint,
+  clampLiteralAdded,
   contentKindOf,
   countSpanhashChanges,
   DEFAULT_BREAK_SCORE,
@@ -370,31 +371,34 @@ describe('similarity', () => {
     });
 
     describe('Given a CRLF-bearing pair with no override, When countSpanhashChanges is called', () => {
-      it('Then srcCopied matches the sniffed text kind (CR of CRLF skipped)', () => {
+      it('Then literalAdded excludes the skipped CR bytes from dst (CR of CRLF skipped)', () => {
         // Arrange — 8 CRLF-terminated lines, line 2 changed; no NUL so the
-        // sniff picks 'text', which skips the CR of every CRLF pair.
+        // sniff picks 'text', which skips the CR of every CRLF pair — dst's
+        // fingerprint therefore covers 8 fewer bytes than dst.length.
         const { src, dst } = makeCrlfPair();
+        const dstCrBytesSkipped = 8;
 
         // Act
         const result = countSpanhashChanges(src, dst);
 
         // Assert — pinned by hand against buildFingerprint(..., 'text')
         expect(result.srcCopied).toBe(224);
-        expect(result.literalAdded).toBe(dst.length - 224);
+        expect(result.literalAdded).toBe(dst.length - dstCrBytesSkipped - 224);
       });
     });
 
     describe('Given a CRLF-bearing pair with an explicit text override, When countSpanhashChanges is called', () => {
-      it('Then srcCopied matches the no-override sniff (both land on text)', () => {
+      it('Then literalAdded matches the no-override sniff (both land on text)', () => {
         // Arrange
         const { src, dst } = makeCrlfPair();
+        const dstCrBytesSkipped = 8;
 
         // Act
         const result = countSpanhashChanges(src, dst, 'text');
 
         // Assert
         expect(result.srcCopied).toBe(224);
-        expect(result.literalAdded).toBe(dst.length - 224);
+        expect(result.literalAdded).toBe(dst.length - dstCrBytesSkipped - 224);
       });
     });
 
@@ -409,6 +413,38 @@ describe('similarity', () => {
         // Assert — pinned by hand against buildFingerprint(..., 'binary')
         expect(result.srcCopied).toBe(231);
         expect(result.literalAdded).toBe(dst.length - 231);
+      });
+    });
+  });
+
+  describe('clampLiteralAdded', () => {
+    describe('Given a literalAdded/srcCopied pair that fits within dstSize, When clampLiteralAdded is called', () => {
+      it('Then returns literalAdded unchanged', () => {
+        // Arrange + Act
+        const result = clampLiteralAdded(100, 20, 50);
+
+        // Assert
+        expect(result).toBe(50);
+      });
+    });
+
+    describe('Given a literalAdded/srcCopied pair exceeding dstSize, with srcCopied below dstSize, When clampLiteralAdded is called', () => {
+      it('Then clamps literalAdded to dstSize minus srcCopied', () => {
+        // Arrange + Act -- should_break's clamp: 20 + 90 = 110 > dstSize(100)
+        const result = clampLiteralAdded(100, 20, 90);
+
+        // Assert
+        expect(result).toBe(80);
+      });
+    });
+
+    describe('Given srcCopied already at or above dstSize, When clampLiteralAdded is called', () => {
+      it('Then clamps literalAdded to 0', () => {
+        // Arrange + Act -- srcCopied(100) >= dstSize(100), so dstSize - srcCopied would be <= 0
+        const result = clampLiteralAdded(100, 100, 50);
+
+        // Assert
+        expect(result).toBe(0);
       });
     });
   });

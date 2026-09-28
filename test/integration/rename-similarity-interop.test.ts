@@ -2667,6 +2667,107 @@ describeRenameRows(
 );
 
 /**
+ * CRLF break-GATE (not dissimilarity) CR-skip interop: `literalAdded` — the
+ * OTHER count `should_break`'s gate is built from, alongside `srcCopied` —
+ * used to inflate to `dstSize − srcCopied` (raw byte count) instead of the
+ * CR-skipped fingerprint total. That inflation pushes `computedBreakScore`
+ * ABOVE the gate for a CRLF pair git itself keeps below it, so tsgit broke a
+ * pair git reports as a plain `M`. `CRLF_TEXT_LINE_COUNT`/`crlfTextLines`
+ * (the rename-similarity CR-skip fixture above) reused verbatim — only the
+ * gate this row exercises differs.
+ */
+const CRLF_BREAK_GATE_TMP_PREFIX = 'tsgit-rename-crlf-break-gate-';
+const CRLF_BREAK_GATE_SETUP_TIMEOUT = 60_000;
+
+/**
+ * Verified against real git 2.55.0 (scrubbed env, signing off): `--no-renames
+ * -B87%/1% --name-status` reports a plain `M` for this pair (src 480 B, dst
+ * 400 B) — the CR-skipped break score (83%) never clears the 87% gate. A
+ * scorer that hashes the CR too (the pre-fix `dstSize − srcCopied` formula)
+ * computes 87.5%, wrongly clearing the gate and breaking the pair.
+ */
+const CRLF_BREAK_GATE_ROWS: ReadonlyArray<RenameRow> = [
+  {
+    label:
+      'a CRLF pair whose CR-inflated break score would wrongly clear an 87% gate stays a plain M (m.txt)',
+    before: [{ path: 'm.txt', content: crlfTextLines(0, 0) }],
+    after: [{ path: 'm.txt', content: crlfTextLines(0, 10) }],
+    detectRenames: false,
+    gitFlags: ['-B87%/1%'],
+    // 87% and 1% of MAX_SCORE (60000): git's -B87%/1%.
+    renameOptions: { breakRewrites: { score: 52_200, merge: 600 } },
+  },
+];
+
+describeRenameRows(
+  'CRLF break-gate CR-skip interop',
+  CRLF_BREAK_GATE_ROWS,
+  CRLF_BREAK_GATE_TMP_PREFIX,
+  CRLF_BREAK_GATE_SETUP_TIMEOUT,
+  {
+    given: 'Given a raw diff pair of CRLF text files sitting just below a -B break-attempt gate',
+    when: 'When diff is called without detectRenames',
+  },
+);
+
+const CRLF_BREAK_GATE_RENAME_TMP_PREFIX = 'tsgit-rename-crlf-break-gate-rename-';
+const CRLF_BREAK_GATE_RENAME_SETUP_TIMEOUT = 60_000;
+const CRLF_BREAK_GATE_TOTAL_LINES = 200;
+const CRLF_BREAK_GATE_EDITED_LINES = 36;
+
+/** `total` CRLF-terminated lines for the break-gate + rename combination row
+ *  below — deliberately its own generator (longer, wordier lines than
+ *  `crlfTextLines`) so `CRLF_BREAK_GATE_EDITED_LINES` sits right at the 40%
+ *  gate boundary the row exercises. */
+const bigCrlfLines = (total: number, editedFrom: number, editedTo: number): string =>
+  Array.from({ length: total }, (_, i) => {
+    const edited = i >= editedFrom && i < editedTo;
+    const text = edited
+      ? `edited line ${String(i).padStart(3, '0')} with extra filler text zzz`
+      : `line ${String(i).padStart(3, '0')} shared content alpha beta gamma`;
+    return `${text}\r\n`;
+  }).join('');
+
+/**
+ * Verified against real git 2.55.0 (scrubbed env, signing off): `-B40%/10%
+ * -M --name-status` reports `M A.txt` / `A B.txt` — A's CR-skipped break
+ * score (38%) never clears the 40% gate, so A stays a plain modify and never
+ * becomes a delete candidate for B (B.txt carries A's UNCHANGED original
+ * content) to pair against. A scorer that hashes the CR too computes 40.4%,
+ * wrongly breaking A into a delete+add and letting the copy pass match the
+ * synthetic "deleted A" against B at ~100% — `A.txt` broken plus a spurious
+ * `C1.. A.txt B.txt` copy.
+ */
+const CRLF_BREAK_GATE_RENAME_ROWS: ReadonlyArray<RenameRow> = [
+  {
+    label:
+      'a CRLF self-modify sitting just below a -B break gate never becomes a delete candidate for an unrelated add carrying its old content (M A.txt / A B.txt)',
+    before: [{ path: 'A.txt', content: bigCrlfLines(CRLF_BREAK_GATE_TOTAL_LINES, 0, 0) }],
+    after: [
+      {
+        path: 'A.txt',
+        content: bigCrlfLines(CRLF_BREAK_GATE_TOTAL_LINES, 0, CRLF_BREAK_GATE_EDITED_LINES),
+      },
+      { path: 'B.txt', content: bigCrlfLines(CRLF_BREAK_GATE_TOTAL_LINES, 0, 0) },
+    ],
+    gitFlags: ['-B40%/10%'],
+    // 40% and 10% of MAX_SCORE (60000): git's -B40%/10%.
+    renameOptions: { breakRewrites: { score: 24_000, merge: 6_000 } },
+  },
+];
+
+describeRenameRows(
+  'CRLF break-gate plus rename-detection combination interop',
+  CRLF_BREAK_GATE_RENAME_ROWS,
+  CRLF_BREAK_GATE_RENAME_TMP_PREFIX,
+  CRLF_BREAK_GATE_RENAME_SETUP_TIMEOUT,
+  {
+    given:
+      'Given a CRLF self-modify just below a -B break gate, alongside an unrelated add carrying its old content',
+  },
+);
+
+/**
  * `diff` attribute interop: git's `diff_filespec_is_binary` honours the
  * path's `diff` attribute BEFORE any content sniff — `-diff` forces binary
  * (the CR of a CRLF pair is hashed, not skipped), a bare `diff` forces text
