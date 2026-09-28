@@ -22,6 +22,7 @@ import {
   labelRenameCopy,
   type MatrixCandidate,
   pairIdenticalFiles,
+  type RankedCandidate,
   type RenameSource,
   type SourcePair,
   selectPairs,
@@ -73,15 +74,35 @@ export function recordIfBetter(slots: MatrixCandidate[], candidate: MatrixCandid
     slots.push(candidate);
     return;
   }
+  const worst = worstSlot(slots, candidate);
+  if (worst !== undefined) slots[worst] = candidate;
+}
+
+/**
+ * The full slot array's worst-ranked index (`compareCandidates` order; a
+ * tie keeps the lowest index), or `undefined` when `candidate` fails to
+ * outrank even that slot — shared by `recordIfBetter` and `wouldRecord` so
+ * a caller can ask "would this be kept" from RAW score/nameScore, without
+ * building the candidate object a rejected pair would only discard.
+ */
+function worstSlot(
+  slots: ReadonlyArray<MatrixCandidate>,
+  candidate: RankedCandidate,
+): number | undefined {
   // slots is always full (length === NUM_CANDIDATE_PER_DST) here; each element is defined.
   let worst = 0;
   for (let i = 1; i < slots.length; i++) {
     if (compareCandidates(slots[i] as MatrixCandidate, slots[worst] as MatrixCandidate) > 0)
       worst = i;
   }
-  if (compareCandidates(slots[worst] as MatrixCandidate, candidate) > 0) {
-    slots[worst] = candidate;
-  }
+  return compareCandidates(slots[worst] as MatrixCandidate, candidate) > 0 ? worst : undefined;
+}
+
+/** True when `{score, nameScore}` would extend or displace a slot in
+ *  `slots` — lets a caller skip building the full candidate object for a
+ *  pair `recordIfBetter` would only discard. */
+function wouldRecord(slots: ReadonlyArray<MatrixCandidate>, candidate: RankedCandidate): boolean {
+  return slots.length < NUM_CANDIDATE_PER_DST || worstSlot(slots, candidate) !== undefined;
 }
 
 /** Precomputed spanhash fingerprint for one blob. */
@@ -165,6 +186,12 @@ function estimatePairSimilarity(
  * displace a higher-scoring slot occupant either (`compareCandidates` ranks
  * by score first), so the two candidates it actually decides among always
  * already share the winning score.
+ *
+ * `wouldRecord` gates the allocation, not just the write: a wide matrix
+ * visits far more (source, destination) pairs than the 4 any one
+ * destination keeps, so building `{ ...candidate, score, nameScore }` for
+ * every pair — most of which `recordIfBetter` would only discard — costs a
+ * measurable amount of garbage for no benefit.
  */
 function scoreAndRecord(
   sf: BlobFingerprint | undefined,
@@ -177,6 +204,7 @@ function scoreAndRecord(
 ): void {
   const score = estimatePairSimilarity(sf, df, threshold);
   const nameScore = score >= threshold && sourceBasename === destinationBasename ? 1 : 0;
+  if (!wouldRecord(slots, { score, nameScore })) return;
   recordIfBetter(slots, { ...candidate, score, nameScore });
 }
 
@@ -530,18 +558,26 @@ export interface PathedId {
  * `diff_filespec_is_binary` decides per filespec (PATH), never by object id,
  * so two paths sharing one id are resolved INDEPENDENTLY here — a path asked
  * about again by a later pass hits the resolver's own per-path cache, so
- * repeating the call across passes costs nothing.
+ * repeating the call across passes costs nothing. Distinct paths are
+ * resolved CONCURRENTLY (`Promise.all`), not one at a time: the resolver's
+ * own per-path promise cache already dedupes a path this diff visits twice,
+ * so a serial await here only slows a wide diff down without buying any
+ * extra safety.
  */
 async function resolveOverridesFor(
   resolver: SimilarityContentKindResolver,
   entries: ReadonlyArray<PathedId>,
 ): Promise<ReadonlyMap<FilePath, BinaryOverride | undefined>> {
-  const overrides = new Map<FilePath, BinaryOverride | undefined>();
-  for (const { path } of entries) {
-    if (overrides.has(path)) continue;
-    overrides.set(path, await resolver.overrideFor(path));
-  }
-  return overrides;
+  const distinctPaths = Array.from(new Set(entries.map(({ path }) => path)));
+  const resolved = await Promise.all(
+    distinctPaths.map(
+      async (path): Promise<readonly [FilePath, BinaryOverride | undefined]> => [
+        path,
+        await resolver.overrideFor(path),
+      ],
+    ),
+  );
+  return new Map(resolved);
 }
 
 /** Every distinct cache bucket `paths` resolves to, via `overridesByPath`. */
