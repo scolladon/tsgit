@@ -687,6 +687,25 @@ describe('similarity', () => {
         expect(Array.from(result.counts)).toEqual([3]);
       });
     });
+
+    describe('Given content whose chunks collapse into very few distinct buckets, When packFingerprint is called', () => {
+      it('Then the returned hashes/counts typed arrays own their entire backing buffer instead of retaining an oversized one', () => {
+        // Arrange — 1000 identical 2-byte 'a\n' chunks all hash into ONE
+        // bucket: packedCount is 1000 but distinct is 1, so a `.subarray`
+        // return would keep a 1000-entry backing buffer alive behind a
+        // 1-entry view.
+        const data = enc.encode('a\n'.repeat(1000));
+        const sut = packFingerprint;
+
+        // Act
+        const result = sut(data, 'text');
+
+        // Assert
+        expect(result.hashes.length).toBe(1);
+        expect(result.hashes.buffer.byteLength).toBe(result.hashes.byteLength);
+        expect(result.counts.buffer.byteLength).toBe(result.counts.byteLength);
+      });
+    });
   });
 
   describe('denseFingerprint', () => {

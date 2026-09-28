@@ -85,10 +85,15 @@ export interface SpanFingerprint {
  * growing plain array — sort the FILLED prefix in place with the typed
  * array's native numeric sort (no comparator: a comparator forces V8's
  * slower generic sort path even on a typed array), then fold runs of the
- * same bucket together into pre-sized output arrays sliced to their actual
- * length. The walk is inlined rather than routed through `walkChunks`'s
- * callback: a shared callback passed two DIFFERENT closures (this function's
- * and `denseFingerprint`'s) turns that one call site megamorphic, defeating
+ * same bucket together into pre-sized output arrays COPIED (`.slice`, not
+ * `.subarray`) to their actual length — a `.subarray` view keeps the whole
+ * `packedCount`-sized backing buffer alive behind it, so a blob whose
+ * chunks collapse into few distinct buckets (`distinct` << `packedCount`)
+ * would retain far more memory than its returned fingerprint needs, for as
+ * long as any caller holds onto it (e.g. the broken-pair fingerprint cache).
+ * The walk is inlined rather than routed through `walkChunks`'s callback: a
+ * shared callback passed two DIFFERENT closures (this function's and
+ * `denseFingerprint`'s) turns that one call site megamorphic, defeating
  * V8's inlining on the hottest loop in rename detection.
  */
 export function packFingerprint(data: Uint8Array, kind: ContentKind): SpanFingerprint {
@@ -135,7 +140,7 @@ export function packFingerprint(data: Uint8Array, kind: ContentKind): SpanFinger
       distinct++;
     }
   }
-  return { hashes: hashes.subarray(0, distinct), counts: counts.subarray(0, distinct) };
+  return { hashes: hashes.slice(0, distinct), counts: counts.slice(0, distinct) };
 }
 
 /**
