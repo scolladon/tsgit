@@ -951,49 +951,23 @@ function computeBreakScores(
   return { computedBreakScore, dissimilarity };
 }
 
+/** A broken pair's own two fingerprint-cache entries — empty when the pair
+ *  never cleared `breakScore`, so a plain modify's worker returns nothing
+ *  fingerprint-shaped at all. */
+type BrokenFingerprintEntries = ReadonlyArray<readonly [FingerprintKey, BlobFingerprint]>;
+
 interface ModifyScore {
   readonly mod: ModifyChange;
   readonly computedBreakScore: number;
   readonly dissimilarity: number;
-  readonly oldBytes: Uint8Array;
-  readonly newBytes: Uint8Array;
-  /** The modify's own path resolved once here — `mod.path` covers both old
-   *  and new content, so `scoreModifies` reuses it to fingerprint a broken
-   *  record's bytes without resolving it a second time. */
-  readonly override: BinaryOverride | undefined;
+  readonly brokenFingerprints: BrokenFingerprintEntries;
 }
 
 /** A guarded pair never attempts a break: score 0 always sits below any
  *  effective breakScore (0 maps to DEFAULT_BREAK_SCORE, never 0 itself). */
 const GUARDED_SCORES: BreakScores = { computedBreakScore: 0, dissimilarity: 0 };
 
-/**
- * Reads a modify's old and new blobs SEQUENTIALLY (never `Promise.all`) so
- * one worker never occupies two ioBound slots at once — `boundedMapFor`
- * below already caps concurrent MODIFIES at the ioBound limit; a worker that
- * fired both reads in parallel would let 2× that many object reads run in
- * flight, the same doubled-ceiling shape `hydrateFingerprints` avoids by
- * sharing one pool across its own src/dst arms.
- *
- * Hands both blobs' bytes back alongside the scores — a record that goes on
- * to break needs them again to seed the rename matrix's fingerprints
- * (`scoreModifies`), and this is the only read of either blob. `mod`'s old
- * and new content are two states of ONE path, so one `resolver.overrideFor`
- * call decides the content kind for both.
- */
-async function scoreOneModify(
-  ctx: Context,
-  mod: ModifyChange,
-  resolver: SimilarityContentKindResolver,
-): Promise<ModifyScore> {
-  const override = await resolver.overrideFor(mod.path);
-  const { content: oldBytes } = await readBlob(ctx, mod.oldId);
-  const { content: newBytes } = await readBlob(ctx, mod.newId);
-  const { computedBreakScore, dissimilarity } = isBreakSizeGuarded(oldBytes.length, newBytes.length)
-    ? GUARDED_SCORES
-    : computeBreakScores(oldBytes, newBytes, override);
-  return { mod, computedBreakScore, dissimilarity, oldBytes, newBytes, override };
-}
+const NO_BROKEN_FINGERPRINTS: BrokenFingerprintEntries = [];
 
 function buildFingerprintFor(bytes: Uint8Array, kind: ContentKind): BlobFingerprint {
   return { fingerprint: buildFingerprint(bytes, kind), size: bytes.length };
@@ -1003,6 +977,54 @@ function buildFingerprintFor(bytes: Uint8Array, kind: ContentKind): BlobFingerpr
  *  `undefined` falls back to the blob's own content sniff. */
 function toFingerprint(bytes: Uint8Array, override?: BinaryOverride): BlobFingerprint {
   return buildFingerprintFor(bytes, override ?? contentKindOf(bytes));
+}
+
+/** A broken pair's own two fingerprints, built from bytes read once inside
+ *  `scoreOneModify` — `mod`'s old and new content are two states of ONE
+ *  path, so one bucket (from `override`) covers both. */
+function brokenFingerprintEntries(
+  mod: ModifyChange,
+  oldBytes: Uint8Array,
+  newBytes: Uint8Array,
+  override: BinaryOverride | undefined,
+): BrokenFingerprintEntries {
+  const bucket = bucketFor(override);
+  return [
+    [fingerprintKey(mod.oldId, bucket), toFingerprint(oldBytes, override)],
+    [fingerprintKey(mod.newId, bucket), toFingerprint(newBytes, override)],
+  ];
+}
+
+/**
+ * Reads a modify's old and new blobs SEQUENTIALLY (never `Promise.all`) so
+ * one worker never occupies two ioBound slots at once — `boundedMapFor`
+ * below already caps concurrent MODIFIES at the ioBound limit; a worker that
+ * fired both reads in parallel would let 2× that many object reads run in
+ * flight, the same doubled-ceiling shape `hydrateFingerprints` avoids by
+ * sharing one pool across its own src/dst arms.
+ *
+ * A broken pair's fingerprints are built HERE, before the worker returns, so
+ * `oldBytes`/`newBytes` never escape this call — git's `diff_free_filespec_data`
+ * frees a pair's bytes as soon as it is scored, never holding the whole
+ * batch's blobs alive until `boundedMapFor` itself resolves.
+ */
+async function scoreOneModify(
+  ctx: Context,
+  mod: ModifyChange,
+  breakScore: number,
+  resolver: SimilarityContentKindResolver,
+): Promise<ModifyScore> {
+  const override = await resolver.overrideFor(mod.path);
+  const { content: oldBytes } = await readBlob(ctx, mod.oldId);
+  const { content: newBytes } = await readBlob(ctx, mod.newId);
+  const { computedBreakScore, dissimilarity } = isBreakSizeGuarded(oldBytes.length, newBytes.length)
+    ? GUARDED_SCORES
+    : computeBreakScores(oldBytes, newBytes, override);
+  const brokenFingerprints =
+    computedBreakScore < breakScore
+      ? NO_BROKEN_FINGERPRINTS
+      : brokenFingerprintEntries(mod, oldBytes, newBytes, override);
+  return { mod, computedBreakScore, dissimilarity, brokenFingerprints };
 }
 
 function toSyntheticDelete(change: ModifyChange | TypeChangeChange): DeleteChange {
@@ -1057,13 +1079,13 @@ async function scoreModifies(
   readonly fingerprints: ReadonlyMap<FingerprintKey, BlobFingerprint>;
 }> {
   const scores = await boundedMapFor(ctx, 'ioBound', modifies, (mod) =>
-    scoreOneModify(ctx, mod, resolver),
+    scoreOneModify(ctx, mod, breakScore, resolver),
   );
 
   const records: BrokenRecord[] = [];
   const paths = new Set<FilePath>();
   const fingerprints = new Map<FingerprintKey, BlobFingerprint>();
-  for (const { mod, computedBreakScore, dissimilarity, oldBytes, newBytes, override } of scores) {
+  for (const { mod, computedBreakScore, dissimilarity, brokenFingerprints } of scores) {
     if (computedBreakScore < breakScore) continue;
     records.push({
       original: mod,
@@ -1072,9 +1094,7 @@ async function scoreModifies(
       dissimilarity,
     });
     paths.add(mod.path);
-    const bucket = bucketFor(override);
-    fingerprints.set(fingerprintKey(mod.oldId, bucket), toFingerprint(oldBytes, override));
-    fingerprints.set(fingerprintKey(mod.newId, bucket), toFingerprint(newBytes, override));
+    for (const [key, fingerprint] of brokenFingerprints) fingerprints.set(key, fingerprint);
   }
   return { records, paths, fingerprints };
 }

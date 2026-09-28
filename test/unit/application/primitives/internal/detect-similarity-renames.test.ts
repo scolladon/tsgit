@@ -11,8 +11,10 @@ import { writeObject } from '../../../../../src/application/primitives/write-obj
 import type {
   AddChange,
   DeleteChange,
+  ModifyChange,
   TreeDiff,
 } from '../../../../../src/domain/diff/diff-change.js';
+import * as similarityMod from '../../../../../src/domain/diff/similarity.js';
 import { FILE_MODE } from '../../../../../src/domain/objects/file-mode.js';
 import type { FilePath, ObjectId } from '../../../../../src/domain/objects/index.js';
 import { buildSeededContext } from '../fixtures.js';
@@ -132,6 +134,86 @@ describe('hydrateFingerprints', () => {
         });
         expect(result.get(fingerprintKey(freshId, 'sniff'))?.size).toBe('freshly-hydrated'.length);
         readSpy.mockRestore();
+      });
+    });
+  });
+});
+
+// Comfortably above the break-attempt pass's own MINIMUM_BREAK_SIZE (400
+// bytes) so every pair below is eligible to break.
+const BREAK_MODIFY_BLOB_BYTES = 500;
+
+const modifyChange = (path: string, oldId: ObjectId, newId: ObjectId): ModifyChange => ({
+  type: 'modify',
+  path: path as FilePath,
+  oldId,
+  newId,
+  oldMode: FILE_MODE.REGULAR,
+  newMode: FILE_MODE.REGULAR,
+});
+
+/** `count` modifies, each old/new pair maximally dissimilar (disjoint byte
+ *  alphabets) so every one clears even the lowest non-zero break threshold. */
+async function buildBreakableModifyDiff(ctx: Ctx, count: number): Promise<TreeDiff> {
+  const changes: ModifyChange[] = [];
+  for (let i = 0; i < count; i += 1) {
+    const oldId = await writeBlob(ctx, 'a'.repeat(BREAK_MODIFY_BLOB_BYTES));
+    const newId = await writeBlob(ctx, `${i}-${'b'.repeat(BREAK_MODIFY_BLOB_BYTES)}`);
+    changes.push(modifyChange(`f${i}.bin`, oldId, newId));
+  }
+  return { changes };
+}
+
+describe('detect-similarity-renames — break-rewrite blob retention', () => {
+  describe('Given more breaking modifies than the ioBound limit', () => {
+    describe('When detectSimilarityRenames runs with breakRewrites on', () => {
+      it('Then a pair is fingerprinted and its bytes released before the whole batch has been read', async () => {
+        // Arrange — ioBound small and explicit so the bound below is
+        // unambiguous; modifyCount well past it so a batch-then-process
+        // regression (reading everything before scoring anything) is
+        // distinguishable from per-pair fingerprint-and-drop.
+        const ioBound = 3;
+        const modifyCount = 12;
+        const base = await buildSeededContext();
+        const ctx: Ctx = { ...base, concurrency: { cpuBound: 1, ioBound } };
+        const diff = await buildBreakableModifyDiff(ctx, modifyCount);
+
+        let readCompletions = 0;
+        const realReadBlob = readBlobMod.readBlob;
+        const readSpy = vi
+          .spyOn(readBlobMod, 'readBlob')
+          .mockImplementation(async (spyCtx, id, opts) => {
+            const result = await realReadBlob(spyCtx, id, opts);
+            readCompletions += 1;
+            return result;
+          });
+
+        let completionsAtFirstFingerprint: number | undefined;
+        const realBuildFingerprint = similarityMod.buildFingerprint;
+        const fingerprintSpy = vi
+          .spyOn(similarityMod, 'buildFingerprint')
+          .mockImplementation((data, kind) => {
+            completionsAtFirstFingerprint ??= readCompletions;
+            return realBuildFingerprint(data, kind);
+          });
+        const sut = detectSimilarityRenames;
+
+        // Act
+        try {
+          await sut(ctx, diff, { breakRewrites: { score: 1, merge: 1 } });
+        } finally {
+          readSpy.mockRestore();
+          fingerprintSpy.mockRestore();
+        }
+
+        // Assert — each of the (at most ioBound) concurrent workers can have
+        // completed at most its own 2 reads (old + new) before triggering
+        // its OWN first fingerprint build, so the first fingerprint anywhere
+        // is bounded by ioBound * 2 reads, never by the full batch's
+        // modifyCount * 2 — the shape a read-everything-then-score pass
+        // would produce instead.
+        expect(completionsAtFirstFingerprint).toBeLessThanOrEqual(ioBound * 2);
+        expect(completionsAtFirstFingerprint).toBeLessThan(modifyCount * 2);
       });
     });
   });
