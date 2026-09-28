@@ -35,6 +35,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/index.js';
 import { diff } from '../../src/application/commands/diff.js';
 import type { DiffChangeType, StatDiffChange, StatTreeDiff } from '../../src/domain/diff/index.js';
+import { toSimilarityPercent } from '../../src/domain/diff/index.js';
 import { GIT_AVAILABLE, git, runGit, runGitEnv } from './interop-helpers.js';
 
 const SETUP_TIMEOUT = 60_000;
@@ -96,6 +97,7 @@ let n3TextconvText: CommitPair;
 let n3sTextconvNul: CommitPair;
 let n4TextconvBoth: CommitPair;
 let rRenameForceBinary: CommitPair;
+let t3DriverBinaryTristate: CommitPair;
 
 describe.skipIf(!GIT_AVAILABLE)('diff-attr binary-vs-text override interop', () => {
   beforeAll(async () => {
@@ -252,6 +254,28 @@ describe.skipIf(!GIT_AVAILABLE)('diff-attr binary-vs-text override interop', () 
     // Use the commit immediately before the rename as `from` so file.forced content is identical
     const rbase = git(dir, 'rev-parse', 'HEAD~1').trim();
     rRenameForceBinary = { from: rbase, to: rhead };
+
+    // T3 — diff.<driver>.binary tristate: `binary = true` then `--add binary
+    // = auto` (last config VALUE wins) on a genuinely text CRLF-bearing
+    // rename pair. Resolving to the FIRST value (stuck on forced binary)
+    // instead of the last drops both numstat (real counts vs `-\t-`) and
+    // the rename similarity score (git 2.55.0: R066 with the auto override
+    // in effect, R050 if still forced binary).
+    await writeFile(
+      path.join(dir, '.gitattributes'),
+      '*.forced -diff\n*.text diff\n*.up diff=up\n*.bin binary\n*.ghost -diff\n*.rt diff=rt\n',
+    );
+    git(dir, 'add', '.gitattributes');
+    git(dir, 'config', '--add', 'diff.rt.binary', 'true');
+    git(dir, 'config', '--add', 'diff.rt.binary', 'auto');
+    await writeFile(path.join(dir, 'old.rt'), 'A\r\nB\r\n');
+    git(dir, 'add', 'old.rt');
+    const t3base = doCommit('add old.rt with diff=rt');
+    git(dir, 'rm', '-q', 'old.rt');
+    await writeFile(path.join(dir, 'new.rt'), 'A\nB\r\n');
+    git(dir, 'add', 'new.rt');
+    const t3head = doCommit('rename old.rt to new.rt with diff=rt');
+    t3DriverBinaryTristate = { from: t3base, to: t3head };
 
     ctx = createNodeContext({ workDir: dir });
   }, SETUP_TIMEOUT);
@@ -451,6 +475,46 @@ describe.skipIf(!GIT_AVAILABLE)('diff-attr binary-vs-text override interop', () 
         // git also shows `-\t-` (binary marker) for the same rename
         expect(gitRow).toBeDefined();
         expect(gitRow).toMatch(/^-\t-\t/);
+      });
+    });
+  });
+
+  // T3 — diff.<driver>.binary tristate: last config VALUE wins (true then
+  // auto), not the first. Both numstat and rename similarity scoring must
+  // resolve to the FINAL value (auto → content sniff), never the first
+  // ('true' → forced binary).
+  describe('Given diff.<drv>.binary set to true then overridden to auto (T3)', () => {
+    describe('When diff is called with detectRenames: true and withStat: true', () => {
+      it('Then numstat is text (not -\\t-) and the rename similarity score matches git R066', async () => {
+        // Arrange
+        const { from, to } = t3DriverBinaryTristate;
+        const gitNumstat = git(dir, 'diff', '--no-ext-diff', '--numstat', '-M', from, to).trim();
+        const gitNameStatus = git(
+          dir,
+          'diff',
+          '--no-ext-diff',
+          '--name-status',
+          '-M',
+          from,
+          to,
+        ).trim();
+
+        // Act
+        const result = await diff(ctx, { from, to, detectRenames: true, withStat: true });
+
+        // Assert — git: real counts (not the `-\t-` binary marker) and R066
+        expect(gitNumstat).toBe('1\t1\told.rt => new.rt');
+        expect(gitNameStatus).toBe('R066\told.rt\tnew.rt');
+        // Assert — tsgit: same rename, text fields, and the identical
+        // percentage git's own diffcore-delta computed
+        const renameChange = (result as StatTreeDiff).changes.find(
+          (c) => c.type === 'rename' && c.newPath === 'new.rt',
+        );
+        expect(renameChange).toBeDefined();
+        expect(renameChange).toMatchObject({ binary: false, added: 1, deleted: 1 });
+        if (renameChange?.type === 'rename') {
+          expect(toSimilarityPercent(renameChange.similarity.score)).toBe(66);
+        }
       });
     });
   });
