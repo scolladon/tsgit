@@ -7,6 +7,18 @@
 export const INFLATE_CAP_EXCEEDED_REASON = 'inflated output exceeds safety cap';
 
 /**
+ * Reason `DECOMPRESS_FAILED` carries when a zlib stream ends before its data
+ * does. Owned once here (rather than each adapter re-deriving its own
+ * wording, or passing node:zlib's own message through — node's wording is
+ * node's to change at any point) so `inflate.ts`'s zero-dependency decoder
+ * and `node-compressor.ts`'s node:zlib-backed one report one string
+ * regardless of which adapter decoded the stream, letting a caller that
+ * classifies `DECOMPRESS_FAILED` by reason (e.g. `fetch-pack.ts`'s
+ * window-growth retry) treat both adapters identically.
+ */
+export const TRUNCATED_STREAM_REASON = 'unexpected end of deflate stream';
+
+/**
  * Hard ceiling on one-shot inflated output across every adapter, defeating
  * decompression-bomb amplification. A caller-supplied `maxOutputBytes` can
  * only narrow this ceiling, never raise it.

@@ -9,7 +9,11 @@
  */
 
 import { decompressFailed, TsgitError } from '../domain/error.js';
-import { INFLATE_CAP_EXCEEDED_REASON, MAX_INFLATE_OUTPUT_BYTES } from '../ports/compressor.js';
+import {
+  INFLATE_CAP_EXCEEDED_REASON,
+  MAX_INFLATE_OUTPUT_BYTES,
+  TRUNCATED_STREAM_REASON,
+} from '../ports/compressor.js';
 import { adler32 } from './adler32.js';
 
 const BITS_PER_BYTE = 8;
@@ -35,18 +39,6 @@ const LENGTH_FIELD_BYTES = 2;
 const NLEN_MASK = 0xffff;
 
 const ADLER_BYTES = 4;
-
-/**
- * The decode failure reason that means "the input ran out before the data
- * did" — every throw site below that signals a genuine shortfall (a bit read
- * past the input's end, a stored block's body cut short) uses this exact
- * string, never a bespoke one, so `inflateZlibHead` can tell a truncated
- * input apart from genuinely invalid data structurally (by reason), matching
- * `node-compressor.ts`'s own `TRUNCATED_STREAM_REASON` for the identical
- * condition so both adapters report one wording regardless of which decoded
- * the stream.
- */
-const TRUNCATED_STREAM_REASON = 'unexpected end of deflate stream';
 
 const INITIAL_BUFFER_CAPACITY = 64;
 const BUFFER_GROWTH_FACTOR = 2;

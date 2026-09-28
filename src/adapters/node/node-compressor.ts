@@ -10,7 +10,11 @@ import {
 import { compressFailed, decompressFailed } from '../../domain/index.js';
 import { concatBytes } from '../../domain/objects/encoding.js';
 import type { Compressor, InflateStreamResult } from '../../ports/compressor.js';
-import { INFLATE_CAP_EXCEEDED_REASON, MAX_INFLATE_OUTPUT_BYTES } from '../../ports/compressor.js';
+import {
+  INFLATE_CAP_EXCEEDED_REASON,
+  MAX_INFLATE_OUTPUT_BYTES,
+  TRUNCATED_STREAM_REASON,
+} from '../../ports/compressor.js';
 import { inflateZlibHead } from '../inflate.js';
 
 const deflateAsync = promisify(deflateCallback);
@@ -81,18 +85,6 @@ function isBufferTooLargeError(err: unknown): boolean {
  * machine.
  */
 export const CALLBACK_DISPATCH_THRESHOLD_BYTES = 16 * 1024;
-
-/**
- * The reason `streamInflate` reports for a zlib stream that ends before its
- * data does. Owned in-repo rather than passed through from node:zlib: node's
- * own wording for this condition ("unexpected end of file") is node's to
- * change at any point, but callers that classify `DECOMPRESS_FAILED` errors
- * by reason (`fetch-pack.ts`'s window-growth retry) need a string this repo
- * controls. Matches the zero-dependency decoder's wording for the identical
- * condition (`inflateZlibMember`, `src/adapters/inflate.ts`) so both
- * adapters report one reason regardless of which one decoded the stream.
- */
-const TRUNCATED_STREAM_REASON = 'unexpected end of deflate stream';
 
 /** Whether `err` is node:zlib's own signal for "the stream ended before the
  *  data did" — detected structurally via `code`, never via `message`, which
