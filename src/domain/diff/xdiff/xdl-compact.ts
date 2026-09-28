@@ -73,16 +73,14 @@ function groupSlideUp(side: CompactionSide, g: Group): boolean {
 const MAX_INDENT = 200;
 const SPACE = 0x20;
 const TAB = 0x09;
+const LF = 0x0a;
+const CR = 0x0d;
 
+// git's XDL_ISSPACE: SP, TAB, CR, LF only — NOT VT (0x0b) or FF (0x0c). A
+// form-feed or vertical-tab byte is ordinary content to `get_indent`, same as
+// any other non-whitespace byte.
 function isSpaceByte(byte: number): boolean {
-  return (
-    byte === SPACE ||
-    byte === TAB ||
-    byte === 0x0a ||
-    byte === 0x0b ||
-    byte === 0x0c ||
-    byte === 0x0d
-  );
+  return byte === SPACE || byte === TAB || byte === LF || byte === CR;
 }
 
 /** git's `get_indent`: tabs advance to the next multiple of 8, clamped at

@@ -188,6 +188,16 @@ const FUNCTIONS_OLD = '1\n2\n/* function */\nfoo() {\n    foo\n}\n\n3\n4\n';
 const FUNCTIONS_NEW =
   '1\n2\n/* function */\nbar() {\n    foo\n}\n\n/* function */\nfoo() {\n    foo\n}\n\n3\n4\n';
 
+// FF (0x0c) rows: get_indent's XDL_ISSPACE class is SP/TAB/CR/LF only, so an
+// FF-only line reports indent -1 (blank), same as an empty line — never a
+// literal indent of 1. A get_indent that also counted FF as space would find
+// FF at a *positive* index and stop there, misreporting the surrounding
+// blank-run scan and sliding the group to the wrong line.
+const FF_SLIDE_OLD = 'x\n  y\n\f\n  z\n';
+const FF_SLIDE_NEW = 'x\n  y\n\f\n  q\n  y\n\f\n  z\n';
+const FF_BRACE_OLD = '{\n\f\n}\n';
+const FF_BRACE_NEW = '{\n\f\n  k\n\f\n}\n';
+
 describe.skipIf(!GIT_AVAILABLE)('xdiff compaction interop', () => {
   describe('Given the L5 patch-slide row (a b c d e / a b c X d c d e)', () => {
     describe('When computeHunks and git diff --no-index run on the same bytes', () => {
@@ -228,6 +238,49 @@ describe.skipIf(!GIT_AVAILABLE)('xdiff compaction interop', () => {
 
         // Assert
         expect(tsgitLines).toEqual(gitLines);
+      });
+    });
+  });
+
+  describe('Given a form-feed line bracketing an insertion (get_indent’s XDL_ISSPACE class)', () => {
+    describe('When computeHunks and git diff --no-index run on the same bytes', () => {
+      it('Then the indent-heuristic-slid hunk body matches byte-for-byte', async () => {
+        // Arrange
+        const [oldPath, newPath] = await writePair('ff-slide', FF_SLIDE_OLD, FF_SLIDE_NEW);
+
+        // Act
+        const gitLines = hunkLinesFromGitDiff(gitDiffNoIndex(oldPath, newPath));
+        const tsgitLines = tsgitHunkLines(enc(FF_SLIDE_OLD), enc(FF_SLIDE_NEW));
+
+        // Assert
+        expect(tsgitLines).toEqual(gitLines);
+        expect(tsgitLines).toEqual([
+          '@@ -1,4 +1,7 @@',
+          ' x',
+          '   y',
+          '+\f',
+          '+  q',
+          '+  y',
+          ' \f',
+          '   z',
+        ]);
+      });
+    });
+  });
+
+  describe('Given a form-feed line between two braces (get_indent’s XDL_ISSPACE class)', () => {
+    describe('When computeHunks and git diff --no-index run on the same bytes', () => {
+      it('Then the indent-heuristic-slid hunk body matches byte-for-byte', async () => {
+        // Arrange
+        const [oldPath, newPath] = await writePair('ff-brace', FF_BRACE_OLD, FF_BRACE_NEW);
+
+        // Act
+        const gitLines = hunkLinesFromGitDiff(gitDiffNoIndex(oldPath, newPath));
+        const tsgitLines = tsgitHunkLines(enc(FF_BRACE_OLD), enc(FF_BRACE_NEW));
+
+        // Assert
+        expect(tsgitLines).toEqual(gitLines);
+        expect(tsgitLines).toEqual(['@@ -1,3 +1,5 @@', ' {', '+\f', '+  k', ' \f', ' }']);
       });
     });
   });

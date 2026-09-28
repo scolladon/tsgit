@@ -31,6 +31,55 @@ describe('compactChanges', () => {
     });
   });
 
+  describe('Given a form-feed line bracketing an insertion (get_indent’s XDL_ISSPACE class)', () => {
+    describe('When theirs raw-Myers matches the group’s trailing form-feed instead of its leading one', () => {
+      it('Then it slides the group up to the leading form-feed, matching git’s +FF +q +y placement', () => {
+        // Arrange — raw, pre-compaction split anchors the LCS on the SECOND `\f`
+        // (index 5), leaving theirs split into {q,y} and a lone matched `\f`.
+        // A get_indent that (wrongly) counted `\f` as space would report the
+        // `\f` line's indent as -1 (blank) either way, but would also count it
+        // as part of a surrounding blank run — sliding the group to the wrong
+        // boundary. See `isSpaceByte` (git's XDL_ISSPACE: SP/TAB/CR/LF only).
+        const oursLines = lines('x\n  y\n\f\n  z');
+        const theirsLines = lines('x\n  y\n\f\n  q\n  y\n\f\n  z');
+        const oursChanged = new Uint8Array([0, 0, 0, 0]);
+        const theirsChanged = new Uint8Array([0, 0, 0, 1, 1, 1, 0]);
+        const oursIds = new Int32Array([0, 1, 2, 3]);
+        const theirsIds = new Int32Array([0, 1, 2, 4, 1, 2, 3]);
+
+        // Act — git's own call order: compact ours against theirs, then theirs against ours
+        compactChanges(oursChanged, theirsChanged, oursIds, oursLines);
+        compactChanges(theirsChanged, oursChanged, theirsIds, theirsLines);
+
+        // Assert — theirs indices 2,3,4 (\f,q,y) changed; the trailing \f (5) common
+        expect(Array.from(theirsChanged)).toEqual([0, 0, 1, 1, 1, 0, 0]);
+        expect(Array.from(oursChanged)).toEqual([0, 0, 0, 0]);
+      });
+    });
+  });
+
+  describe('Given a form-feed line between two braces (get_indent’s XDL_ISSPACE class)', () => {
+    describe('When theirs raw-Myers matches the group’s trailing form-feed instead of its leading one', () => {
+      it('Then it slides the group up to the leading form-feed, matching git’s +FF +k placement', () => {
+        // Arrange — same shape as the row above, one line shorter each side.
+        const oursLines = lines('{\n\f\n}');
+        const theirsLines = lines('{\n\f\n  k\n\f\n}');
+        const oursChanged = new Uint8Array([0, 0, 0]);
+        const theirsChanged = new Uint8Array([0, 0, 1, 1, 0]);
+        const oursIds = new Int32Array([0, 1, 2]);
+        const theirsIds = new Int32Array([0, 1, 3, 1, 2]);
+
+        // Act
+        compactChanges(oursChanged, theirsChanged, oursIds, oursLines);
+        compactChanges(theirsChanged, oursChanged, theirsIds, theirsLines);
+
+        // Assert — theirs indices 1,2 (\f,k) changed; the trailing \f (3) common
+        expect(Array.from(theirsChanged)).toEqual([0, 1, 1, 0, 0]);
+        expect(Array.from(oursChanged)).toEqual([0, 0, 0]);
+      });
+    });
+  });
+
   describe('Given a group with no other-file alignment and no slide (a X b / a b)', () => {
     describe('When the deleted line cannot slide in either direction', () => {
       it('Then the group is left in place', () => {
