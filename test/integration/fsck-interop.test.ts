@@ -1469,6 +1469,214 @@ describe.skipIf(!GIT_AVAILABLE)(
 );
 
 // ---------------------------------------------------------------------------
+// A REFERENCED loose object refused/mismatched by read_loose_object reports
+// `missing <type> <oid>`, exit 3 (1|2) — never a `dangling`/`unreachable`
+// finding of its own. Pinned real git 2.55.0 across three distinct refusal
+// causes: hash-path mismatch, undecodable zlib, and an over-threshold
+// over-run past core.bigFileThreshold.
+// ---------------------------------------------------------------------------
+
+// --- Scenario: a referenced blob whose file is another blob's (hash-path
+// mismatch) -------------------------------------------------------------
+
+let referencedHashMismatchDir = '';
+let referencedHashMismatchCtx: Context;
+let referencedMismatchBlobSha = '';
+
+beforeAll(async () => {
+  referencedHashMismatchDir = await mkdtemp(
+    path.join(os.tmpdir(), 'tsgit-fsck-referencedHashMismatch-'),
+  );
+  initRepo(referencedHashMismatchDir);
+  await writeFile(path.join(referencedHashMismatchDir, 'a'), 'hi\n');
+  runGit(['-C', referencedHashMismatchDir, 'add', 'a'], { env: SAFE_ENV });
+  runGit(['-C', referencedHashMismatchDir, 'commit', '-q', '-m', '1'], { env: SAFE_ENV });
+  referencedMismatchBlobSha = runGit(['-C', referencedHashMismatchDir, 'rev-parse', 'HEAD:a'], {
+    env: SAFE_ENV,
+  }).trim();
+  const otherBlobSha = runGit(['-C', referencedHashMismatchDir, 'hash-object', '-w', '--stdin'], {
+    env: SAFE_ENV,
+    input: 'other\n',
+  }).trim();
+
+  const blobPath = path.join(
+    referencedHashMismatchDir,
+    '.git',
+    'objects',
+    referencedMismatchBlobSha.slice(0, 2),
+    referencedMismatchBlobSha.slice(2),
+  );
+  const otherPath = path.join(
+    referencedHashMismatchDir,
+    '.git',
+    'objects',
+    otherBlobSha.slice(0, 2),
+    otherBlobSha.slice(2),
+  );
+  const { chmod } = await import('node:fs/promises');
+  await chmod(blobPath, 0o644);
+  await writeFile(blobPath, await readFile(otherPath));
+
+  referencedHashMismatchCtx = createNodeContext({ workDir: referencedHashMismatchDir });
+}, SETUP_TIMEOUT);
+
+afterAll(async () => {
+  if (referencedHashMismatchDir !== '') {
+    await rm(referencedHashMismatchDir, { recursive: true, force: true });
+  }
+});
+
+// --- Scenario: a referenced blob with garbage (undecodable) zlib ------------
+
+let referencedGarbageZlibDir = '';
+let referencedGarbageZlibCtx: Context;
+let referencedGarbageZlibBlobSha = '';
+
+beforeAll(async () => {
+  referencedGarbageZlibDir = await mkdtemp(
+    path.join(os.tmpdir(), 'tsgit-fsck-referencedGarbageZlib-'),
+  );
+  initRepo(referencedGarbageZlibDir);
+  await writeFile(path.join(referencedGarbageZlibDir, 'a'), 'hi\n');
+  runGit(['-C', referencedGarbageZlibDir, 'add', 'a'], { env: SAFE_ENV });
+  runGit(['-C', referencedGarbageZlibDir, 'commit', '-q', '-m', '1'], { env: SAFE_ENV });
+  referencedGarbageZlibBlobSha = runGit(['-C', referencedGarbageZlibDir, 'rev-parse', 'HEAD:a'], {
+    env: SAFE_ENV,
+  }).trim();
+
+  const blobPath = path.join(
+    referencedGarbageZlibDir,
+    '.git',
+    'objects',
+    referencedGarbageZlibBlobSha.slice(0, 2),
+    referencedGarbageZlibBlobSha.slice(2),
+  );
+  const { chmod } = await import('node:fs/promises');
+  await chmod(blobPath, 0o644);
+  await writeFile(blobPath, Buffer.from([0xde, 0xad, 0xbe, 0xef]));
+
+  referencedGarbageZlibCtx = createNodeContext({ workDir: referencedGarbageZlibDir });
+}, SETUP_TIMEOUT);
+
+afterAll(async () => {
+  if (referencedGarbageZlibDir !== '') {
+    await rm(referencedGarbageZlibDir, { recursive: true, force: true });
+  }
+});
+
+// --- Scenario: a tree referencing an over-threshold, in-window over-run
+// blob (check_stream_oid's own corrupt refusal) -------------------------
+
+let referencedBigFileOverrunDir = '';
+let referencedBigFileOverrunCtx: Context;
+let referencedBigFileOverrunBlobSha = '';
+const REFERENCED_BIG_FILE_OVERRUN_THRESHOLD = 1;
+
+beforeAll(async () => {
+  referencedBigFileOverrunDir = await mkdtemp(
+    path.join(os.tmpdir(), 'tsgit-fsck-referencedBigFileOverrun-'),
+  );
+  initRepo(referencedBigFileOverrunDir);
+  runGit(
+    [
+      '-C',
+      referencedBigFileOverrunDir,
+      'config',
+      'core.bigFileThreshold',
+      `${REFERENCED_BIG_FILE_OVERRUN_THRESHOLD}`,
+    ],
+    { env: SAFE_ENV },
+  );
+
+  referencedBigFileOverrunBlobSha = await writeLooseObjectWithClaim(
+    referencedBigFileOverrunDir,
+    'blob',
+    5,
+    Buffer.from('abcdefgh'),
+  );
+  const treeBody = Buffer.concat([
+    Buffer.from('100644 file.txt\0'),
+    Buffer.from(referencedBigFileOverrunBlobSha, 'hex'),
+  ]);
+  const treeSha = await writeLooseObject(referencedBigFileOverrunDir, 'tree', treeBody);
+  const commitBody = Buffer.from(
+    `tree ${treeSha}\nauthor Test <test@example.com> 1700000000 +0000\ncommitter Test <test@example.com> 1700000000 +0000\n\nmsg\n`,
+  );
+  const commitSha = await writeLooseObject(referencedBigFileOverrunDir, 'commit', commitBody);
+  await mkdir(path.join(referencedBigFileOverrunDir, '.git', 'refs', 'heads'), {
+    recursive: true,
+  });
+  await writeFile(
+    path.join(referencedBigFileOverrunDir, '.git', 'refs', 'heads', 'main'),
+    `${commitSha}\n`,
+  );
+
+  referencedBigFileOverrunCtx = createNodeContext({ workDir: referencedBigFileOverrunDir });
+}, SETUP_TIMEOUT);
+
+afterAll(async () => {
+  if (referencedBigFileOverrunDir !== '') {
+    await rm(referencedBigFileOverrunDir, { recursive: true, force: true });
+  }
+});
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given a REFERENCED loose blob refused by read_loose_object',
+  () => {
+    describe('When fsck runs', () => {
+      it.each([
+        {
+          label: 'hash-path mismatch',
+          dirOf: () => referencedHashMismatchDir,
+          ctxOf: () => referencedHashMismatchCtx,
+          shaOf: () => referencedMismatchBlobSha,
+        },
+        {
+          label: 'undecodable zlib',
+          dirOf: () => referencedGarbageZlibDir,
+          ctxOf: () => referencedGarbageZlibCtx,
+          shaOf: () => referencedGarbageZlibBlobSha,
+        },
+        {
+          label: 'over-threshold over-run',
+          dirOf: () => referencedBigFileOverrunDir,
+          ctxOf: () => referencedBigFileOverrunCtx,
+          shaOf: () => referencedBigFileOverrunBlobSha,
+        },
+      ])(
+        'Then emits missing blob, exit 3, and never a dangling/unreachable finding for it ($label)',
+        async ({ dirOf, ctxOf, shaOf }) => {
+          // Arrange
+          const gitResult = gitFsck(dirOf());
+          const sha = shaOf();
+
+          // Act
+          const result = await fsck(ctxOf());
+
+          // Assert — exit 3 (content-error bit 1 | missing bit 2) matches real git
+          expect(gitResult.exitCode).toBe(3);
+          expect(result.exitCode & 3).toBe(3);
+
+          // Assert — git's own "missing blob <oid>" line, reconstructed
+          expect(gitResult.stdout).toContain(reconstructMissing('blob', sha));
+          const missing = result.findings.find(
+            (f): f is FsckFinding & { type: 'missing' } => f.type === 'missing' && f.id === sha,
+          );
+          expect(missing).toBeDefined();
+          expect(missing?.objectType).toBe('blob');
+
+          // Assert — never ALSO dangling/unreachable for the same id
+          const spurious = result.findings.filter(
+            (f) => 'id' in f && f.id === sha && (f.type === 'dangling' || f.type === 'unreachable'),
+          );
+          expect(spurious).toHaveLength(0);
+        },
+      );
+    });
+  },
+);
+
+// ---------------------------------------------------------------------------
 // Refs-verify pass — a ref naming a well-formed but absent sha (exit 2)
 // ---------------------------------------------------------------------------
 // Pinned against real git 2.54.0:

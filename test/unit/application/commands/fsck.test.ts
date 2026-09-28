@@ -2302,6 +2302,18 @@ describe('Given ref pointing to corrupt object (null in cache)', () => {
         (f) => f.type === 'unreachable' && (f as { id: ObjectId }).id === blobId,
       );
       expect(unreachableBlob).toBeUndefined();
+
+      // Assert — git's read_loose_object refuses this REFERENCED object, so
+      // its referrer (the tree) reports `missing blob <oid>`, typed from the
+      // tree entry's own mode, and exit gains bit 2 alongside content-error
+      // bit 1 (git's exit 3 for this same shape).
+      const missingBlob = result.findings.find(
+        (f): f is FsckFinding & { type: 'missing' } =>
+          f.type === 'missing' && (f as { id: ObjectId }).id === blobId,
+      );
+      expect(missingBlob).toBeDefined();
+      expect(missingBlob?.objectType).toBe('blob');
+      expect(result.exitCode & 2).toBe(2);
     });
   });
 });

@@ -193,11 +193,8 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   const reachabilityCache = withUnreadableOverrides(objectCache, contentResult.typeUnknownIds);
   const inEdgePresent = buildInEdgeMap(universe, reachabilityCache);
 
-  const { reached, missingIds, brokenEdges, rootCommits, tagRefs } = buildReachableSet(
-    universe,
-    roots,
-    reachabilityCache,
-  );
+  const { reached, missingIds, brokenEdges, unreadableEdges, rootCommits, tagRefs } =
+    buildReachableSet(universe, roots, reachabilityCache, unreadable);
 
   const { unreachable, dangling } = classifyObjects(universe, reached, inEdgePresent);
   assertTypesRecoverable(ctx, unreachable, unrecoverable);
@@ -210,7 +207,7 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
     ...midxResult.findings,
     ...bitmapResult.findings,
     ...assembleConnectivityFindings(
-      { missingIds, brokenEdges, unreachable, dangling, rootCommits, tagRefs },
+      { missingIds, brokenEdges, unreadableEdges, unreachable, dangling, rootCommits, tagRefs },
       { objectCache: reachabilityCache, recovered, unreadable },
     ),
   ];
