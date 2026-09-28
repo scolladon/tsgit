@@ -31,7 +31,7 @@ import {
   buildFingerprint,
   type ContentKind,
   contentKindOf,
-  countSpanhashChanges,
+  countSpanhashChangesFromFingerprints,
   DEFAULT_BREAK_SCORE,
   DEFAULT_MERGE_SCORE,
   DEFAULT_RENAME_THRESHOLD,
@@ -926,7 +926,8 @@ function isBreakSizeGuarded(srcSize: number, dstSize: number): boolean {
 }
 
 /**
- * Compute git's break-attempt gate score and merge-score for a (src, dst) blob pair.
+ * Compute git's break-attempt gate score and merge-score for a (src, dst)
+ * fingerprint pair — ALREADY built by the caller, never re-hashed here.
  * Callers only reach this once `isBreakSizeGuarded` has cleared the pair, so
  * maxSize and srcSize are both guaranteed positive here.
  *
@@ -935,19 +936,17 @@ function isBreakSizeGuarded(srcSize: number, dstSize: number): boolean {
  *
  * Both mirror `diffcore-break.c::score_diff` and `diffcore-break.c::merge_score`.
  */
-function computeBreakScores(
-  src: Uint8Array,
-  dst: Uint8Array,
-  override: BinaryOverride | undefined,
-): BreakScores {
-  const srcSize = src.length;
-  const dstSize = dst.length;
-  const maxSize = Math.max(srcSize, dstSize);
-  const { srcCopied, literalAdded } = countSpanhashChanges(src, dst, override);
-  const srcRemoved = srcSize - srcCopied;
+function computeBreakScores(src: BlobFingerprint, dst: BlobFingerprint): BreakScores {
+  const maxSize = Math.max(src.size, dst.size);
+  const { srcCopied, literalAdded } = countSpanhashChangesFromFingerprints(
+    src.fingerprint,
+    dst.fingerprint,
+    dst.size,
+  );
+  const srcRemoved = src.size - srcCopied;
   const rawBreakNum = Math.min(srcRemoved + literalAdded, maxSize);
   const computedBreakScore = Math.trunc((rawBreakNum * MAX_SCORE) / maxSize);
-  const dissimilarity = Math.trunc((srcRemoved * MAX_SCORE) / srcSize);
+  const dissimilarity = Math.trunc((srcRemoved * MAX_SCORE) / src.size);
   return { computedBreakScore, dissimilarity };
 }
 
@@ -979,19 +978,20 @@ function toFingerprint(bytes: Uint8Array, override?: BinaryOverride): BlobFinger
   return buildFingerprintFor(bytes, override ?? contentKindOf(bytes));
 }
 
-/** A broken pair's own two fingerprints, built from bytes read once inside
- *  `scoreOneModify` — `mod`'s old and new content are two states of ONE
- *  path, so one bucket (from `override`) covers both. */
+/** A broken pair's own two fingerprint-cache entries, from the fingerprints
+ *  `scoreOneModify` already built to SCORE the pair — `mod`'s old and new
+ *  content are two states of ONE path, so one bucket (from `override`)
+ *  covers both, and neither fingerprint is ever rebuilt here. */
 function brokenFingerprintEntries(
   mod: ModifyChange,
-  oldBytes: Uint8Array,
-  newBytes: Uint8Array,
   override: BinaryOverride | undefined,
+  srcFingerprint: BlobFingerprint,
+  dstFingerprint: BlobFingerprint,
 ): BrokenFingerprintEntries {
   const bucket = bucketFor(override);
   return [
-    [fingerprintKey(mod.oldId, bucket), toFingerprint(oldBytes, override)],
-    [fingerprintKey(mod.newId, bucket), toFingerprint(newBytes, override)],
+    [fingerprintKey(mod.oldId, bucket), srcFingerprint],
+    [fingerprintKey(mod.newId, bucket), dstFingerprint],
   ];
 }
 
@@ -1017,13 +1017,16 @@ async function scoreOneModify(
   const override = await resolver.overrideFor(mod.path);
   const { content: oldBytes } = await readBlob(ctx, mod.oldId);
   const { content: newBytes } = await readBlob(ctx, mod.newId);
-  const { computedBreakScore, dissimilarity } = isBreakSizeGuarded(oldBytes.length, newBytes.length)
-    ? GUARDED_SCORES
-    : computeBreakScores(oldBytes, newBytes, override);
+  if (isBreakSizeGuarded(oldBytes.length, newBytes.length)) {
+    return { mod, ...GUARDED_SCORES, brokenFingerprints: NO_BROKEN_FINGERPRINTS };
+  }
+  const srcFingerprint = toFingerprint(oldBytes, override);
+  const dstFingerprint = toFingerprint(newBytes, override);
+  const { computedBreakScore, dissimilarity } = computeBreakScores(srcFingerprint, dstFingerprint);
   const brokenFingerprints =
     computedBreakScore < breakScore
       ? NO_BROKEN_FINGERPRINTS
-      : brokenFingerprintEntries(mod, oldBytes, newBytes, override);
+      : brokenFingerprintEntries(mod, override, srcFingerprint, dstFingerprint);
   return { mod, computedBreakScore, dissimilarity, brokenFingerprints };
 }
 
