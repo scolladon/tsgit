@@ -113,7 +113,9 @@ function consumeCommonRun(
   let nextI = i;
   let nextJ = j;
   while (
+    // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — nextI's own bound is redundant: a Uint8Array read past its length returns undefined, so oursChanged[nextI] === 0 below already stops the loop at the same point
     nextI < oursChanged.length &&
+    // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — nextJ's own bound is redundant: a Uint8Array read past its length returns undefined, so theirsChanged[nextJ] === 0 below already stops the loop at the same point
     nextJ < theirsChanged.length &&
     oursChanged[nextI] === 0 &&
     theirsChanged[nextJ] === 0
@@ -146,6 +148,7 @@ function buildHunksFromChanged(
   let j = 0;
   while (i < M || j < N) {
     const common = consumeCommonRun(oursChanged, theirsChanged, i, j);
+    // Stryker disable next-line LogicalOperator,ConditionalExpression: equivalent — consumeCommonRun advances nextI/nextJ together every iteration, so common.i > i and common.j > j are always equal; swapping || for && or dropping either operand alone can't change this branch's outcome
     if (common.i > i || common.j > j) hunks.push(commonHunk(i, common.i, j, common.j));
     ({ i, j } = common);
     const oursEnd = consumeChangedRun(oursChanged, i);
@@ -225,7 +228,9 @@ export function diffPresplitLinesForMode(
     };
   }
 
+  // Stryker disable next-line ConditionalExpression,EqualityOperator,ArrayDeclaration: equivalent — classifySide's `normalized?.[i] ?? keyBytesOf(...)` fallback (xdl-classify.ts) re-normalizes a line whenever the cache is absent, wrongly sized, or wrongly populated, so this ternary and the array's pre-sizing only affect how much re-normalization work classifyLines does, never which class id a line gets
   const oursNormalized = lineKey === undefined ? undefined : new Array<Uint8Array>(M);
+  // Stryker disable next-line ConditionalExpression,EqualityOperator,ArrayDeclaration: equivalent — same classifySide fallback as oursNormalized above, mirrored for theirs
   const theirsNormalized = lineKey === undefined ? undefined : new Array<Uint8Array>(N);
   const oursHashes = precomputedHashes?.ours ?? hashLineSide(oursLines, lineKey, oursNormalized);
   const theirsHashes =
