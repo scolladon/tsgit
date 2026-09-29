@@ -1200,6 +1200,51 @@ describe('materialiseOne', () => {
     });
   });
 
+  // --- Mutation-kill: resolveOverrideAndCommand needsRawSniff guard ---
+
+  describe('Given an R100 rename change with diff.<name>.binary explicitly set and a configured textconv driver', () => {
+    describe('When materialisePatchFiles is called with applyTextconv: true', () => {
+      it('Then the raw-content scan is skipped — a new side no blob was ever written for does not reject', async () => {
+        // Arrange — driverBinary is explicit (true), so resolveBinaryOverride's own
+        // driverBinary branch decides the pair WITHOUT ever reading named.rawIsBinary
+        // (resolve-binary-override.ts returns before that line). needsRawSniff must
+        // stay false here: were it (wrongly) true, the pure-rename branch's
+        // rawIsBinary thunk would call readBlob(ctx, change.newId) — a read this test
+        // makes fail by pointing newId at an oid the store never wrote, turning an
+        // unnecessary scan into a thrown OBJECT_NOT_FOUND that a correctly
+        // skipped-scan run never reaches.
+        const runner: CommandRunner = {
+          run: async () => ({ exitCode: 0, stdout: utf8.encode('UNUSED\n') }),
+        };
+        const ctx = createMemoryContext({ command: runner });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, 'sub diff=upper\n');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[diff "upper"]\n\ttextconv = tr a-z A-Z\n\tbinary = true\n',
+        );
+        const missingOid = 'f'.repeat(40) as ObjectId;
+        const change: RenameChange = {
+          type: 'rename',
+          oldPath: 'sub' as FilePath,
+          newPath: 'sub' as FilePath,
+          oldId: missingOid,
+          newId: missingOid,
+          oldMode: FILE_MODE.REGULAR,
+          newMode: FILE_MODE.REGULAR,
+          similarity: { score: MAX_SCORE, maxScore: MAX_SCORE },
+        };
+
+        // Act
+        const result = await materialisePatchFiles(ctx, [change], { applyTextconv: true });
+
+        // Assert — resolved without ever reading the (nonexistent) blob
+        expect(result).toHaveLength(1);
+        expect(result[0]?.patchBinaryOverride).toBe('text');
+        expect(result[0]?.numstatBinaryOverride).toBe('binary');
+      });
+    });
+  });
+
   // --- Mutation-kill: materialiseRenameOrCopy sub-100% isBinary OR (L240 NoCoverage) ---
 
   describe('Given a sub-100% rename change with only the old side binary and textconv configured', () => {

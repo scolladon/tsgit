@@ -191,6 +191,11 @@ describe('primitives/config-read', () => {
         config: '[core]\n  excludesfile\n',
         label: 'a string-typed key as a valueless entry (excludesfile skipped)',
       },
+      {
+        config: '[core]\n  autocrlf = 512m\n',
+        label:
+          'an unrecognised key whose value parses as a valid unsigned-size (bigFileThreshold key-dispatch guard)',
+      },
     ])('Then core stays undefined ($label)', async ({ config }) => {
       // Arrange
       const ctx = createMemoryContext();
@@ -766,17 +771,20 @@ describe('primitives/config-read', () => {
 
   describe('Given a [diff "upper"] section with an unrelated key', () => {
     describe('When readConfig', () => {
-      it('Then cachetextconv stays undefined (an unrelated key is not read as cachetextconv)', async () => {
-        // Arrange
+      it('Then cachetextconv and binary stay undefined (an unrelated key is read as neither)', async () => {
+        // Arrange — `unrelated`'s value ('true') deliberately parses under BOTH
+        // the cachetextconv and binary boolean grammars, so a dispatch that
+        // stopped discriminating on the key name would set one of them from it.
         const ctx = createMemoryContext();
         await seed(ctx, '[diff "upper"]\n\ttextconv = up\n\tunrelated = true\n');
 
         // Act
         const result = await readConfig(ctx);
 
-        // Assert — the cachetextconv branch must only fire for a `cachetextconv` key.
+        // Assert — the cachetextconv/binary branches must only fire for their own key.
         expect(result.diff?.get('upper')?.textconv).toBe('up');
         expect(result.diff?.get('upper')?.cachetextconv).toBeUndefined();
+        expect(result.diff?.get('upper')?.binary).toBeUndefined();
       });
     });
   });
