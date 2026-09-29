@@ -1576,6 +1576,7 @@ describe('object-resolver', () => {
         // Assert
         expect(result.content).toEqual(content);
         expect(result.declaredSize).toBe(5);
+        expect(ctx.deltaCache.has(id)).toBe(false);
       });
     });
   });
@@ -1637,6 +1638,7 @@ describe('object-resolver', () => {
         // Assert
         expect(result.content).toEqual(content);
         expect(result.declaredSize).toBe(claim);
+        expect(ctx.deltaCache.has(id)).toBe(false);
       });
     });
   });
@@ -1783,6 +1785,201 @@ describe('object-resolver', () => {
             expect(data.reason).toBe(INFLATE_CAP_EXCEEDED_REASON);
           }
         }
+      });
+    });
+  });
+
+  describe('Given a loose object whose compressed size sits EXACTLY at the single-pass threshold', () => {
+    describe('When resolveObjectContentWithDepth is called (the default buffered read)', () => {
+      it('Then the compressor inflates exactly once, and inflateHead is never called (the boundary is inclusive)', async () => {
+        // Arrange — a stub compressor answers deterministically regardless of
+        // the on-disk bytes' real validity: only the FILE's byte length
+        // (exactly MAX_SINGLE_PASS_COMPRESSED_BYTES) needs to be real, so
+        // this pins the `<=` boundary without depending on a real deflate
+        // stream landing on that exact compressed size.
+        const content = ENC.encode('boundary content');
+        const header = serializeHeader('blob', content.length);
+        const rawBytes = new Uint8Array(header.length + content.length);
+        rawBytes.set(header, 0);
+        rawBytes.set(content, header.length);
+        const ctx = await buildSeededContext();
+        const id = 'e'.repeat(40) as ObjectId;
+        const loosePath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(id)}`;
+        await ctx.fs.write(loosePath, new Uint8Array(MAX_SINGLE_PASS_COMPRESSED_BYTES));
+        const stubCtx: Context = {
+          ...ctx,
+          compressor: {
+            ...ctx.compressor,
+            inflate: (async (bytes: Uint8Array) => {
+              if (bytes.byteLength === MAX_SINGLE_PASS_COMPRESSED_BYTES) return rawBytes;
+              throw new Error(`unexpected inflate call: byteLength=${bytes.byteLength}`);
+            }) as typeof ctx.compressor.inflate,
+            inflateHead: (async () => {
+              throw new Error('inflateHead must not be called at the inclusive boundary');
+            }) as typeof ctx.compressor.inflateHead,
+          },
+        };
+        const registry = await createPackRegistry(stubCtx);
+        const inflateSpy = vi.spyOn(stubCtx.compressor, 'inflate');
+        const inflateHeadSpy = vi.spyOn(stubCtx.compressor, 'inflateHead');
+
+        // Act
+        const result = await resolveObjectContentWithDepth(
+          stubCtx,
+          registry,
+          id,
+          false,
+          undefined,
+          0,
+        );
+
+        // Assert
+        expect(result.content).toEqual(content);
+        expect(inflateSpy.mock.calls.length).toBe(1);
+        expect(inflateHeadSpy).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given a hostile-sized loose blob whose body overruns its header claim', () => {
+    describe('When resolveObjectContentWithDepth is called (the default buffered read)', () => {
+      it("Then it throws INVALID_OBJECT_HEADER naming the claim, remapped from the compressor's own cap-exceeded refusal", async () => {
+        // Arrange — content sized past MAX_SINGLE_PASS_COMPRESSED_BYTES once
+        // deflated keeps this on the hostile-sized arm (inflateLooseHeadProbed),
+        // the only one that remaps a REAL cap-exceeded error through
+        // inflateBoundToClaim; the single-pass arm's own separate byteLength
+        // check never exercises that remap.
+        const claim = 40;
+        const content = pseudoRandomBytes(MAX_SINGLE_PASS_COMPRESSED_BYTES + 4096, 4);
+        const ctx = await buildSeededContext();
+        const id = await writeRawObjectBytes(ctx, 'blob', content);
+        await writeLooseWithDeclaredSize(ctx, id, 'blob', claim, content);
+        const registry = await createPackRegistry(ctx);
+        const inflateHeadSpy = vi.spyOn(ctx.compressor, 'inflateHead');
+
+        // Act
+        try {
+          await resolveObjectContentWithDepth(ctx, registry, id, false, undefined, 0);
+          expect.unreachable();
+        } catch (error) {
+          // Assert
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('INVALID_OBJECT_HEADER');
+          if (data.code === 'INVALID_OBJECT_HEADER') {
+            expect(data.reason).toBe(`content exceeds declared size ${claim}`);
+          }
+        }
+        expect(inflateHeadSpy.mock.calls.length).toBe(1);
+      });
+    });
+  });
+
+  describe('Given a loose blob whose header claim, plus its header length, lands EXACTLY on the inflate ceiling', () => {
+    describe('When the compressor reports its own cap exceeded at that exact cap value', () => {
+      it('Then DECOMPRESS_FAILED still propagates unchanged — the ceiling check is a strict less-than', async () => {
+        // Arrange — declaredSize chosen so header.length + declaredSize ===
+        // MAX_INFLATE_OUTPUT_BYTES exactly: the ONE cap value that
+        // distinguishes `cap < ceiling` from `cap <= ceiling`. A stub fakes
+        // the cap-exceeded refusal precisely at that cap, so no real ~2 GiB
+        // payload is needed to prove which side of the boundary fires.
+        const probeHeaderLength = serializeHeader('blob', MAX_INFLATE_OUTPUT_BYTES).length;
+        const declaredSize = MAX_INFLATE_OUTPUT_BYTES - probeHeaderLength;
+        const content = pseudoRandomBytes(MAX_SINGLE_PASS_COMPRESSED_BYTES + 4096, 5);
+        const ctx = await buildSeededContext();
+        const id = await writeRawObjectBytes(ctx, 'blob', content);
+        await writeLooseWithDeclaredSize(ctx, id, 'blob', declaredSize, content);
+        const registry = await createPackRegistry(ctx);
+        const baseInflate = ctx.compressor.inflate.bind(ctx.compressor);
+        const cappedCtx: Context = {
+          ...ctx,
+          compressor: {
+            ...ctx.compressor,
+            inflate: (async (bytes: Uint8Array, maxOutputBytes?: number) => {
+              if (maxOutputBytes === MAX_INFLATE_OUTPUT_BYTES) {
+                throw decompressFailed(INFLATE_CAP_EXCEEDED_REASON);
+              }
+              return baseInflate(bytes, maxOutputBytes);
+            }) as typeof ctx.compressor.inflate,
+          },
+        };
+
+        // Act
+        try {
+          await resolveObjectContentWithDepth(cappedCtx, registry, id, false, undefined, 0);
+          expect.unreachable();
+        } catch (error) {
+          // Assert
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('DECOMPRESS_FAILED');
+          if (data.code === 'DECOMPRESS_FAILED') {
+            expect(data.reason).toBe(INFLATE_CAP_EXCEEDED_REASON);
+          }
+        }
+      });
+    });
+  });
+
+  describe('Given a loose blob whose body underruns its header claim', () => {
+    describe('When resolveObjectContentWithDepth is called (the default buffered read)', () => {
+      it('Then it serves the real (shorter) body, reports the claim as declaredSize, and never caches the object', async () => {
+        // Arrange
+        const content = ENC.encode('short'); // 5 bytes
+        const ctx = await buildSeededContext();
+        const id = await writeRawObjectBytes(ctx, 'blob', content);
+        await writeLooseWithDeclaredSize(ctx, id, 'blob', 12, content); // claims 12, actual 5
+        const registry = await createPackRegistry(ctx);
+
+        // Act
+        const result = await resolveObjectContentWithDepth(ctx, registry, id, false, undefined, 0);
+
+        // Assert
+        expect(result.content).toEqual(content);
+        expect(result.declaredSize).toBe(12);
+        expect(ctx.deltaCache.has(id)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a loose commit whose header size claim disagrees with its body length, read streamed', () => {
+    describe('When resolveObjectContentWithDepth is called with the streamed read mode', () => {
+      it('Then it still throws INVALID_OBJECT_HEADER — only a blob takes the streaming contract', async () => {
+        // Arrange
+        const content = ENC.encode('commit body'); // 11 bytes
+        const ctx = await buildSeededContext();
+        const id = await writeRawObjectBytes(ctx, 'commit', content);
+        await writeLooseWithDeclaredSize(ctx, id, 'commit', 400, content);
+        const registry = await createPackRegistry(ctx);
+
+        // Act
+        try {
+          await resolveObjectContentWithDepth(ctx, registry, id, false, undefined, 0, 'streamed');
+          expect.unreachable();
+        } catch (error) {
+          // Assert
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('INVALID_OBJECT_HEADER');
+          if (data.code === 'INVALID_OBJECT_HEADER') {
+            expect(data.reason).toBe('size mismatch: header says 400, actual content is 11');
+          }
+        }
+      });
+    });
+  });
+
+  describe('Given an honest loose blob (no size-lying header), read streamed', () => {
+    describe('When resolveObjectContentWithDepth is called with the streamed read mode', () => {
+      it('Then it caches the object under its id', async () => {
+        // Arrange
+        const content = ENC.encode('hello world, streamed and honest!');
+        const ctx = await buildSeededContext();
+        const id = await writeRawObjectBytes(ctx, 'blob', content);
+        const registry = await createPackRegistry(ctx);
+
+        // Act
+        await resolveObjectContentWithDepth(ctx, registry, id, false, undefined, 0, 'streamed');
+
+        // Assert
+        expect(ctx.deltaCache.has(id)).toBe(true);
       });
     });
   });
