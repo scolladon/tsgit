@@ -714,6 +714,52 @@ describe('line-diff — diffLines', () => {
       }, 60_000);
     });
   });
+
+  // Fixture taken from live `git diff --no-ext-diff --no-index` at authoring time
+  // (git 2.55.0, scrubbed env) — see the part's final report for the exact commands.
+  // Raw (pre-compaction) classification places the inserted block one line later
+  // than git does; `compactChanges`'s indent-heuristic slide is what pulls it up
+  // to the leading `/* function */` line, matching `@@ -2,0 +3,5 @@`.
+  describe('Given an inserted function bracketed by a repeated `/* function */` comment', () => {
+    const smaller = enc('1\n2\n/* function */\nfoo() {\n    foo\n}\n\n3\n4');
+    const larger = enc(
+      '1\n2\n/* function */\nbar() {\n    foo\n}\n\n/* function */\nfoo() {\n    foo\n}\n\n3\n4',
+    );
+
+    describe('When the insertion is on theirs (git: `@@ -2,0 +3,5 @@`)', () => {
+      it('Then the indent heuristic slides the theirs-only hunk up to the earlier comment line', () => {
+        // Arrange
+        const sut = diffLines;
+
+        // Act
+        const result = sut(smaller, larger);
+
+        // Assert
+        expect(result.hunks).toEqual([
+          { kind: 'common', oursStart: 0, oursEnd: 2, theirsStart: 0, theirsEnd: 2 },
+          { kind: 'theirs-only', oursStart: 2, oursEnd: 2, theirsStart: 2, theirsEnd: 7 },
+          { kind: 'common', oursStart: 2, oursEnd: 9, theirsStart: 7, theirsEnd: 14 },
+        ]);
+      });
+    });
+
+    describe('When the insertion is on ours (git: `@@ -3,5 +2,0 @@`)', () => {
+      it('Then the indent heuristic slides the ours-only hunk up to the earlier comment line', () => {
+        // Arrange
+        const sut = diffLines;
+
+        // Act
+        const result = sut(larger, smaller);
+
+        // Assert
+        expect(result.hunks).toEqual([
+          { kind: 'common', oursStart: 0, oursEnd: 2, theirsStart: 0, theirsEnd: 2 },
+          { kind: 'ours-only', oursStart: 2, oursEnd: 7, theirsStart: 2, theirsEnd: 2 },
+          { kind: 'common', oursStart: 7, oursEnd: 14, theirsStart: 2, theirsEnd: 9 },
+        ]);
+      });
+    });
+  });
 });
 
 describe('line-diff — diffPresplitLines', () => {
