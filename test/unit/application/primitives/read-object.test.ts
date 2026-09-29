@@ -9,6 +9,7 @@ import {
   getPackRegistry,
   peekPackRegistry,
   readObject,
+  readObjectStreamed,
   readObjectWithSize,
   readRawObject,
 } from '../../../../src/application/primitives/read-object.js';
@@ -918,6 +919,35 @@ describe('readObjectWithSize', () => {
             expect(data.id).toBe(missingId);
           }
         }
+      });
+    });
+  });
+});
+
+describe('readObjectStreamed', () => {
+  describe('Given a corrupted loose file and the default', () => {
+    describe('When readObjectStreamed is called', () => {
+      it('Then it returns the bytes', async () => {
+        // Arrange — kills the `options?.verifyHash ?? false` BooleanLiteral
+        // mutant to `true`: the default must stay unverified, matching
+        // readObject's own unverified default.
+        const ctx = await buildSeededContext();
+        const fakeId = 'a'.repeat(40) as ObjectId;
+        const { computeLooseObjectPath } = await import(
+          '../../../../src/domain/storage/loose-path.js'
+        );
+        const rawBytes = new TextEncoder().encode('blob 3\0xyz');
+        const compressed = await ctx.compressor.deflate(rawBytes);
+        await ctx.fs.write(
+          `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(fakeId)}`,
+          compressed,
+        );
+
+        // Act
+        const result = await readObjectStreamed(ctx, fakeId);
+
+        // Assert
+        expect(result.type).toBe('blob');
       });
     });
   });
