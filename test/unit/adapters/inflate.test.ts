@@ -1312,6 +1312,59 @@ describe('GrowableBuffer', () => {
       });
     });
   });
+
+  describe('Given a truncating buffer whose cap exceeds the pre-sizing ceiling', () => {
+    describe('When a single append writes past the ceiling', () => {
+      it('Then it grows the backing buffer instead of throwing an out-of-bounds error', () => {
+        // Arrange
+        const maxBytes = CAPACITY_CEILING + 1024;
+        const sut = new GrowableBuffer(maxBytes, { onOverflow: 'truncate' });
+        const chunk = new Uint8Array(maxBytes).fill(0x41);
+
+        // Act
+        sut.append(chunk);
+
+        // Assert
+        expect(sut.toUint8Array().length).toBe(maxBytes);
+      });
+    });
+  });
+
+  describe('Given a truncating buffer already holding data at the pre-sizing ceiling', () => {
+    describe('When a back-reference needs more room than the ceiling holds', () => {
+      it('Then it grows the backing buffer instead of throwing an out-of-bounds error', () => {
+        // Arrange
+        const maxBytes = CAPACITY_CEILING + 1024;
+        const sut = new GrowableBuffer(maxBytes, { onOverflow: 'truncate' });
+        sut.append(new Uint8Array(CAPACITY_CEILING).fill(0x41));
+
+        // Act
+        sut.copyBackReference(1, 1024);
+
+        // Assert
+        expect(sut.toUint8Array().length).toBe(maxBytes);
+      });
+    });
+  });
+
+  describe('Given a truncating buffer copying a non-overlapping back-reference', () => {
+    describe('When the reference distance is at least the copied length (the copyWithin fast path)', () => {
+      it('Then the copied bytes exactly match the referenced source', () => {
+        // Arrange
+        const maxBytes = 25;
+        const sut = new GrowableBuffer(maxBytes, { onOverflow: 'truncate' });
+        sut.append(Uint8Array.from({ length: 20 }, (_, i) => i + 1));
+
+        // Act — distance (10) >= length (5): the non-overlapping copyWithin fast path
+        sut.copyBackReference(10, 5);
+
+        // Assert
+        expect(Array.from(sut.toUint8Array())).toEqual([
+          1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 11, 12, 13, 14, 15,
+        ]);
+      });
+    });
+  });
 });
 
 describe('inflateZlibMember', () => {

@@ -613,6 +613,67 @@ describe('NodeCompressor', () => {
       });
     });
 
+    describe('Given inflateSync throws a RangeError unrelated to the output-length cap', () => {
+      describe('When inflate runs', () => {
+        it('Then DECOMPRESS_FAILED carries the original message, not the cap-exceeded reason', async () => {
+          // Arrange — a RangeError node:zlib could plausibly raise for a
+          // reason other than maxOutputLength, distinguished by its code.
+          const sut = new NodeCompressor();
+          const err = Object.assign(new RangeError('invalid array length'), {
+            code: 'ERR_OUT_OF_RANGE',
+          });
+          inflateSyncSpy.mockImplementationOnce(() => {
+            throw err;
+          });
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut.inflate(new Uint8Array([0, 0]));
+          } catch (caughtErr) {
+            caught = caughtErr;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as { code: string; reason?: string };
+          expect(data.code).toBe('DECOMPRESS_FAILED');
+          expect(data.reason).toBe('invalid array length');
+        });
+      });
+    });
+
+    describe('Given inflateSync throws a non-RangeError error carrying the buffer-too-large code', () => {
+      describe('When inflate runs', () => {
+        it('Then DECOMPRESS_FAILED carries the original message, not the cap-exceeded reason', async () => {
+          // Arrange — the code alone must not be enough to classify a cap
+          // hit; the error must also be the RangeError node:zlib actually
+          // throws for it.
+          const sut = new NodeCompressor();
+          const err = Object.assign(new Error('mocked buffer overflow'), {
+            code: 'ERR_BUFFER_TOO_LARGE',
+          });
+          inflateSyncSpy.mockImplementationOnce(() => {
+            throw err;
+          });
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut.inflate(new Uint8Array([0, 0]));
+          } catch (caughtErr) {
+            caught = caughtErr;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as { code: string; reason?: string };
+          expect(data.code).toBe('DECOMPRESS_FAILED');
+          expect(data.reason).toBe('mocked buffer overflow');
+        });
+      });
+    });
+
     describe('Given invalid input (not a Uint8Array) to deflateRaw', () => {
       describe('When deflateRaw', () => {
         it('Then throws COMPRESS_FAILED', async () => {
