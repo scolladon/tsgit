@@ -88,9 +88,9 @@ the short-body residual; ADR-854's cache value shape.
   pinned against tsgit alone.
 - Accepted cost, as in git: an under-running commit, tree or tag is zero-pad hashed up to its
   claim under any config. Only blobs are gated by `core.bigFileThreshold`. A ~40-byte loose
-  commit claiming 2 GiB costs one ~2 GiB SHA pass per object, like git's `xmallocz` of the
+  commit claiming just under 2 GiB costs one ~2 GiB SHA pass per object, like git's `xmallocz` of the
   declared size.
-- Known gap, not probed against git: a claim above the 2 GiB inflate ceiling is reported as
+- Known gap, not probed against git: a claim at or above the 2 GiB inflate ceiling is reported as
   `unterminatedHeader`. For commits, trees and tags this is reachable under default config; for
   blobs, only when `core.bigFileThreshold` is set above 2 GiB.
 - Divergence: an invalid `core.bigFileThreshold` is fatal in git but read as absent by tsgit,
