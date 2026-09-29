@@ -1279,6 +1279,80 @@ describe('detectSimilarityRenames', () => {
     });
   });
 
+  describe('Given copies: "harder", a delete whose path is ALSO in the preimage, and a limit the delete alone would tip over', () => {
+    describe('When detectSimilarityRenames is called with preimage', () => {
+      it('Then the delete does not double-count as an unchanged source and the genuinely-unchanged copy is still found', async () => {
+        // Arrange — a delete's own oldPath is always present in the preimage (that
+        // is where it was deleted from): it must count ONCE toward the harder
+        // source set, not twice. 2 destinations * 2 sources (the delete + one
+        // genuinely-unchanged file) = 4, exactly at limit^2(4) — NOT over. If the
+        // delete's path leaked into the unchanged scan too, num_src would be 3,
+        // 2*3=6 > 4 IS over, and the harder retry then drops every 'unchanged'
+        // source (the genuine one included), losing the copy this test expects.
+        const ctx = await buildSeededContext();
+        const deletedContent = 'totally-different-deleted-content-for-p\n'.repeat(5);
+        const unchangedContent = tenLines(0);
+        const dstContent = tenLines(0).replace('X line 0\n', 'COPY DST line 0\n');
+        const noMatchContent = 'zzzz-unrelated-content-for-d2\n'.repeat(5);
+        const deletedId = await writeBlob(ctx, deletedContent);
+        const unchangedId = await writeBlob(ctx, unchangedContent);
+        const dstId = await writeBlob(ctx, dstContent);
+        const noMatchId = await writeBlob(ctx, noMatchContent);
+        // The preimage carries BOTH the deleted path (its pre-diff state) and the
+        // genuinely-unchanged path — exactly what diff-trees would pass.
+        const preimage = new Map<FilePath, FlatTreeEntry>([
+          ['deleted-src.txt' as FilePath, { id: deletedId, mode: FILE_MODE.REGULAR }],
+          ['unchanged-src.txt' as FilePath, { id: unchangedId, mode: FILE_MODE.REGULAR }],
+        ]);
+        const diff: TreeDiff = {
+          changes: [
+            {
+              type: 'delete',
+              oldPath: 'deleted-src.txt' as FilePath,
+              oldId: deletedId,
+              oldMode: FILE_MODE.REGULAR,
+            },
+            {
+              type: 'add',
+              newPath: 'copy-dst.txt' as FilePath,
+              newId: dstId,
+              newMode: FILE_MODE.REGULAR,
+            },
+            {
+              type: 'add',
+              newPath: 'no-match-dst.txt' as FilePath,
+              newId: noMatchId,
+              newMode: FILE_MODE.REGULAR,
+            },
+          ],
+        };
+
+        // Act
+        const result = await detectSimilarityRenames(
+          ctx,
+          diff,
+          { copies: 'harder', limit: 2 },
+          preimage,
+        );
+
+        // Assert — the unchanged file is still a copy source for the matching add
+        const copies = result.changes.filter((c) => c.type === 'copy');
+        expect(copies).toHaveLength(1);
+        if (copies[0]?.type === 'copy') {
+          expect(copies[0].oldPath).toBe('unchanged-src.txt');
+          expect(copies[0].newPath).toBe('copy-dst.txt');
+        }
+        // The unrelated add and the delete are both untouched by the copy
+        expect(
+          result.changes.filter((c) => c.type === 'add' && c.newPath === 'no-match-dst.txt'),
+        ).toHaveLength(1);
+        expect(
+          result.changes.filter((c) => c.type === 'delete' && c.oldPath === 'deleted-src.txt'),
+        ).toHaveLength(1);
+      });
+    });
+  });
+
   describe('Given copies: "harder" whose retry set is empty (every registered source is unchanged)', () => {
     describe('When detectSimilarityRenames is called', () => {
       it('Then the inexact pass finds nothing, matching the exact-only outcome', async () => {
@@ -6747,6 +6821,71 @@ describe('detectSimilarityRenames', () => {
       });
     });
   });
+
+  describe('Given a broken modify whose old-half size is already known and >SIZE_GATE_MIN_IDS unrelated destinations', () => {
+    describe('When only one destination shares the broken half’s exact declared size', () => {
+      it('Then the size gate still keeps that destination needed and the copy is found', async () => {
+        // Arrange — the break pass already fingerprinted (and thus sized) the broken
+        // modify's old half, so it reaches the size-gate backfill as a KNOWN size, not
+        // a fresh read. `similar-dst.txt` shares that exact byte length and is one
+        // character away from the old half's content (score well above threshold);
+        // SIZE_GATE_MIN_IDS unrelated, tiny noise adds push the unique-id count past
+        // the gate without ever being size-compatible with anything, so they can only
+        // pass by relying on the backfilled known size, never on their own.
+        const ctx = await buildSeededContext();
+        const brokenOldContent = 'aaaa\nbbbb\ncccc\ndddd\n'.repeat(25);
+        const brokenNewContent = 'xxxx\nyyyy\nzzzz\nwwww\n'.repeat(25);
+        const brokenOldId = await writeBlob(ctx, brokenOldContent);
+        const brokenNewId = await writeBlob(ctx, brokenNewContent);
+        const similarId = await writeBlob(ctx, brokenOldContent.replace('aaaa\n', 'bbbb\n'));
+
+        const changes: DiffChange[] = [
+          {
+            type: 'modify',
+            path: 'broken-src.txt' as FilePath,
+            oldId: brokenOldId,
+            newId: brokenNewId,
+            oldMode: FILE_MODE.REGULAR,
+            newMode: FILE_MODE.REGULAR,
+          },
+          {
+            type: 'add',
+            newPath: 'similar-dst.txt' as FilePath,
+            newId: similarId,
+            newMode: FILE_MODE.REGULAR,
+          },
+        ];
+        for (let i = 0; i < SIZE_GATE_MIN_IDS; i++) {
+          const noiseId = await writeBlob(ctx, `noise ${i}\n`.repeat(2));
+          changes.push({
+            type: 'add',
+            newPath: `noise-${i}.txt` as FilePath,
+            newId: noiseId,
+            newMode: FILE_MODE.REGULAR,
+          });
+        }
+        const diff: TreeDiff = { changes };
+        const sut = detectSimilarityRenames;
+
+        // Act
+        const result = await sut(ctx, diff, {
+          breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
+        });
+
+        // Assert — the near-identical, same-size destination pairs with the broken
+        // delete half as a copy (the add half rejoins the modify, using the delete
+        // half a second time); every noise add stays unpaired.
+        const copy = result.changes.find((c) => c.type === 'copy');
+        expect(copy?.type).toBe('copy');
+        if (copy?.type === 'copy') {
+          expect(copy.oldPath).toBe('broken-src.txt');
+          expect(copy.newPath).toBe('similar-dst.txt');
+          expect(copy.similarity.score).toBeGreaterThanOrEqual(DEFAULT_RENAME_THRESHOLD);
+        }
+      });
+    });
+  });
+
   describe('Given two deletes and two adds sharing no basename with anything', () => {
     describe('When detectSimilarityRenames runs the inexact matrix', () => {
       it('Then the matrix never calls the shared hasSameBasename helper', async () => {
