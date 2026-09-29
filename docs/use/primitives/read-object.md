@@ -49,6 +49,8 @@ Two sizes travel with an object, and they answer different questions.
 
 The `size` [`catFile`](../commands/cat-file.md) and [`catFileBatch`](cat-file-batch.md) report is the **stored** size, exactly as `git cat-file --batch` prints it: for a loose object the header's own claim, passed through untouched. For every object whose stored header is honest — all of them, outside deliberate corruption — the two are the same number.
 
+A third, internal-only reader answers a narrower question still: `readDeclaredObjectSize` — git's `CHECK_SIZE_ONLY` read, used to prefilter rename/copy candidates by size (the [`diff`](../commands/diff.md) command's rename detection) without inflating a single blob — returns the header's declared claim alone, on the loose route probing at most the first 1024 compressed bytes rather than the whole file. **A loose object whose own compressed bytes are cut short** — the probe window (or the file itself) ends mid zlib-stream, not merely a header claim that disagrees with the body — still answers with the declared size once the `<type> <size>\0` header itself finishes decoding before the input runs out: the same claim `git cat-file -s`/`-t` report at exit 0 on the identical truncated file, even though `-p` (which needs the body) refuses. Only when the input runs out *before* the header's own NUL is found does the read refuse `INVALID_OBJECT_HEADER` — matching `git cat-file -s`/`-t`/`-p` all refusing alike on that shorter prefix, since git's `unpack_loose_header` cannot tell "ran out of compressed input" apart from "the header itself is too long" and reports both as `header … too long, exceeds 32 bytes`.
+
 ## See also
 
 - Tier-1: [`catFile`](../commands/cat-file.md), [`log`](../commands/log.md)

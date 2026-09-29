@@ -111,10 +111,10 @@ findings.filter(f => f.type === 'tagged')
 |---|---|---|
 | `dangling` | `id`, `objectType` (`FsckObjectType \| 'unknown'`) | Object present but reachable from no root and has no in-edge from another present object (tip of an unreachable subgraph). `objectType` is `'unknown'` only under `connectivityOnly: true`, and only when no stored header could be obtained for the object at all — an unopenable or empty loose file, or an id only an unusable pack supplies. Exit 0. |
 | `unreachable` | `id`, `objectType` (`FsckObjectType \| 'unknown'`) | Object present but not reachable from any root (superset of `dangling`). Same `'unknown'` rule as `dangling`. Exit 0. |
-| `missing` | `id`, `objectType` (`FsckObjectType \| 'unknown'`) | Referenced object absent from store. Exit bit 2. |
+| `missing` | `id`, `objectType` (`FsckObjectType \| 'unknown'`) | Referenced object absent from store — or present but content-unreadable/hash-mismatched with no pack copy backing it, typed from the referencing edge in either case (see "never typed" below). Exit bit 2. |
 | `broken-link` | `fromId`, `fromType`, `toId`, `toType` (`FsckObjectType \| 'unknown'`) | Edge from a present object to an absent one. Exit bit 2. |
-| `bad-object` | `id`, `objectType` (`FsckObjectType \| 'unknown'`), `msgId`, `severity` | Object-content validation failure from the named msg-id catalogue, or corrupt/undecodable object. Exit bit 1 (ERROR-class or `--strict`-upgraded). `objectType` is `'unknown'` when the object is undecodable and its type cannot be determined. A loose blob whose body overruns its header's size claim past git's 32-byte header window is undecodable for this same reason (`msgId: 'unterminatedHeader'`) — git's buffered loose tier refuses it exactly as it refuses an unparseable header, reported the way `git fsck --full` reports `object corrupt or missing`. |
-| `hash-mismatch` | `id`, `actual` | File content hashes to `actual`; file's path implies `id`. A loose blob whose body disagrees with its header's size claim, but still resolves, hashes the same bytes git's own buffered loose tier would serve — the claimed prefix when the body overran the claim but still fit the header window, or the real body zero-padded out to the claim when it under-ran — never the claim length or the real on-disk length on their own; `actual` is that hash, matching `git fsck --full`'s own "hash-path mismatch" line. Exit bit 1. |
+| `bad-object` | `id`, `objectType` (`FsckObjectType \| 'unknown'`), `msgId`, `severity` | Object-content validation failure from the named msg-id catalogue, or corrupt/undecodable object. Exit bit 1 (ERROR-class or `--strict`-upgraded). `objectType` is `'unknown'` when the object is undecodable and its type cannot be determined. A loose object — blob, commit, tree or tag alike — whose body overruns its header's size claim past git's 32-byte header window is undecodable for this same reason (`msgId: 'unterminatedHeader'`) — git's buffered loose tier refuses it exactly as it refuses an unparseable header, reported the way `git fsck --full` reports `object corrupt or missing`. A **blob** past `core.bigFileThreshold` (default 512 MiB, strict `>`) takes git's streamed route (`check_stream_oid`) instead: an over-run there is undecodable the same way; a claim at or above the 2 GiB inflate ceiling is also `unterminatedHeader` — reachable under default config for a commit, tree or tag, and for a blob only when `core.bigFileThreshold` is configured above 2 GiB. |
+| `hash-mismatch` | `id`, `actual` | File content hashes to `actual`; file's path implies `id`. A loose object — blob, commit, tree or tag alike — whose body disagrees with its header's size claim, but still resolves, hashes the same bytes git's own buffered loose tier would serve — the claimed prefix when the body overran the claim but still fit the header window, or the real body zero-padded out to the claim when it under-ran — never the claim length or the real on-disk length on their own; `actual` is that hash, matching `git fsck --full`'s own "hash-path mismatch" line. A **blob** past `core.bigFileThreshold` under-runs unpadded instead: git's streamed route hashes the declared header plus the real bytes with no padding, never a claim-sized zero fill — `core.bigFileThreshold` gates blobs only, a commit/tree/tag under-run is always zero-padded regardless of size. tsgit's zero-padding is its own deterministic choice for bytes git's `xmallocz` leaves uninitialised — git's own reported hash for the same under-run claim is not reproducible run to run, so only the `hash-path mismatch, found at: <path>` line and the exit code are git-pinned, never a specific zero-padded value. Exit bit 1. |
 | `bad-ref` | `ref`, `msgId`, `severity`, `target?` | Refs-verify pass finding: malformed ref content (`badRefContent` — exit bit 8) or ref pointing at an absent/zero OID (`badRefOid` / *invalid sha1 pointer* — exit bit 2). `target` is present when the ref had a syntactically-valid OID target. |
 | `root` | `id` | Root commit (no parents). Emitted when the caller filters for `type === 'root'`. Exit 0. |
 | `tagged` | `id`, `objectType`, `tagName`, `tag` | Tag target: `id` is the tagged object, `tag` is the tag object OID. Emitted when the caller filters for `type === 'tagged'`. Exit 0. |
@@ -164,7 +164,33 @@ reconstructed from git's stderr text.
   error; the entry-header parse then fails in the ordinary structured way
   (`INVALID_PACK_ENTRY`), which this classification degrades to a
   `dangling`/`'unknown'` finding (warned as `pack entry unreadable`) exactly
-  like any other corrupt entry, never an abort.
+  like any other corrupt entry, never an abort. Known gap: git additionally
+  verifies each packed entry's CRC against its `.idx` (`index CRC mismatch`,
+  `cannot unpack`) and sets `ERROR_PACK` (exit bit 4) on a mismatch; tsgit
+  has no per-entry CRC pass, so a CRC-lying-but-otherwise-parseable entry
+  surfaces only through this same content-validation degrade, never bit 4 —
+  that bit stays wired to whole-pack failures (`pack-inaccessible` /
+  `pack-index-unusable`) only.
+- **A loose object `read_loose_object` refuses, or whose hash disagrees with
+  its path, is never typed — unless a pack holds a copy.** Matching git's
+  `fsck_loose`, which returns before `parse_object_buffer` ever runs: an
+  unreferenced object like this is reported for its content only (the
+  `bad-object` / `hash-mismatch` finding above), never as a `dangling` or
+  `unreachable` line of its own; a *referenced* one is instead reported
+  `missing <type>` — the type read from the referencing edge, no
+  `broken-link` finding alongside it, and exit bit 2 set. `--connectivity-only`
+  keeps its own handling (see [Throws](#throws)). This whole rule is itself
+  gated by git's `has_object_pack`: it never fires for an id a pack also
+  claims, because `check_object` trusts the pack's claim and never attempts
+  the read that would learn the loose copy is corrupt. Three consequences
+  follow, all pinned against real git: a referenced corrupt **packed** entry
+  is never reported `missing`; a tag whose target is present but unreadable
+  still reports `tagged`; and a bad loose file shadowing a good packed copy
+  is typed from the pack, not refused.
+- **A malformed `core.bigFileThreshold` is read as absent, not refused.**
+  git treats it as fatal; tsgit falls back to the 512 MiB default instead,
+  the same precedent already set for `core.packedGitLimit` and
+  `core.deltaBaseCacheLimit`.
 - **Exit code carries severity, not exception — outside that one case.** A
   repo with missing or corrupt objects returns a non-zero `exitCode` in a
   successfully-resolved `FsckResult` — it does **not** reject, except for the
@@ -336,4 +362,4 @@ process.exit(result.exitCode);
 
 - Primitives: [`readObject`](../primitives/read-object.md), [`enumerateObjects`](../primitives/internals.md#enumerateobjects), [`walkCommits`](../primitives/walk-commits.md)
 - Related commands: [`catFile`](cat-file.md), [`revParse`](rev-parse.md)
-- ADRs: [627](../../adr/627-boolean-config-values-are-refused-as-git-refuses-them.md)
+- ADRs: [627](../../adr/627-boolean-config-values-are-refused-as-git-refuses-them.md), [907](../../adr/907-whole-object-loose-reads-bound-the-inflate-to-the-size-claim.md) (amended 2026-09-28 for the commit/tree/tag hash-path parity, `core.bigFileThreshold`, and the never-typed/`has_object_pack` rule above)

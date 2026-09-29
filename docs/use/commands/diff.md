@@ -189,6 +189,13 @@ output, exactly as it does in `git diff -w --name-status`. A whitespace-only
 *rename* is not dropped: rename/copy/break similarity scoring is unaffected by
 whitespace modes (`-M -w` ≡ `-M`).
 
+**Directory-mode entries always drop under a line-key mode**, `-w` renames and
+copies included: a non-recursive diff's whole-directory add, delete, modify —
+or rename/copy paired by tree oid — carries no lines of its own to line-diff,
+so it is dropped outright regardless of `-M`/`-C`, exactly like `git diff-tree
+-w` (no `-r`), which never shows a directory-mode entry under any
+whitespace-ignore mode.
+
 **Blank-line suppression** (`ignoreBlankLines`) is a hunk/numstat suppressor, not
 a file-drop trigger. A file with only blank-line changes **stays** in
 `TreeDiff.changes` (present in name-status/raw, nonzero under `--quiet`); its
@@ -214,9 +221,15 @@ corresponding `[diff "<name>"].textconv` command is configured, the diff compare
 the **textconv output** of each side rather than the raw committed bytes — exactly
 as `git diff --no-ext-diff` does.
 
-- **Both sides transformed.** The textconv command receives each blob's raw bytes
-  and its stdout replaces the content for hunk and numstat computation. Added files
-  run textconv on the new side only; deleted files on the old side only.
+- **Both sides transformed, patch only.** The textconv command receives each blob's
+  raw bytes and its stdout replaces the content for the patch hunks. Added files run
+  textconv on the new side only; deleted files on the old side only.
+- **numstat/stat and the `-w` drop decision stay on the RAW blob.** git's
+  `builtin_diffstat` never calls `fill_textconv` — the `added`/`deleted` counts, the
+  `-w`/`-b`/`--ignore-space-at-eol` drop verdict, and the binary numstat row all count
+  the raw committed bytes, never the textconv output. Only the patch hunks see the
+  transformed content; a NUL-stripping or NUL-retaining textconv therefore never
+  changes numstat's binary/text call or its line counts.
 - **OIDs are not affected.** The structured `DiffChange` fields (`oldId`, `newId`,
   mode, rename similarity) are computed from the raw committed tree and are never
   touched by textconv. A caller rendering an `index` header line should use the raw
@@ -238,6 +251,13 @@ attribute only names it). In the browser / memory adapters, or in Node with
 `openRepository({ command: false })`, no driver is wired and the diff falls back
 to raw bytes. See the [RUNBOOK](../../../RUNBOOK.md) "Operating filter and textconv drivers"
 section for security and operator notes.
+
+**Bare repositories.** A bare repository (no work tree) has no worktree `.gitattributes`
+to read, and no `attr.tree`/`--attr-source` support to substitute a committed one — matching
+git's own default, which resolves every path `unspecified` there absent that option. Rename
+scoring, break-rewrite scoring, and every numstat/binary/textconv attribute decision above
+still read `.git/info/attributes` and `core.attributesFile`, since neither lives in the work
+tree; only the worktree-`.gitattributes` source is skipped, never the whole attribute lookup.
 
 ## Binary-vs-text decision (`diff` / `binary` attribute)
 
@@ -272,6 +292,27 @@ A few points worth noting:
   for named drivers) are honoured in the browser and in-memory adapters — they need
   no external command. Only textconv driver *execution* requires a Node `CommandRunner`
   (see the textconv section above).
+
+### `diff.<driver>.binary`
+
+A named driver's own `[diff "<name>"].binary` key is a tristate — `true` / `false` /
+`auto` (case-insensitive) or unset — that overrides the `diff=<name>` row of the table
+above, on **both** surfaces, whether or not a `textconv` is configured for that driver:
+
+| `diff.<name>.binary` | numstat (`binary`) | patch binary branch |
+|---|---|---|
+| `true` | always `true` | text hunk if a `textconv` is configured (its output is always clean text); binary otherwise |
+| `false` | always `false` | always a text hunk — even over a raw NUL-bearing blob with no `textconv` |
+| `auto` or unset | falls back to the raw-content sniff (or, with a configured `textconv`, the table above) | falls back the same way |
+
+Rename and break-rewrite scoring read this **same** tristate (see the next section) —
+`true`/`false` there scores the blob binary/text outright, and `auto`/unset falls back to
+the ordinary content sniff, independently of whether the driver's `textconv` is configured.
+
+An out-of-grammar value (anything but `true`/`false`/`auto`/git's boolean synonyms) is
+refused the same way git refuses it — `CONFIG_BAD_BOOLEAN_VALUE` (see
+[`errors.md`](../errors.md)) — at the eager operational gate every command reads, before a
+single object is diffed.
 
 ## Rename and break similarity scoring (`diff` attribute)
 
@@ -309,6 +350,7 @@ whether a `textconv` command is configured.
   tree diff) · 166–169 (the superseded patch-text format) · 378 (whitespace
   options flat enum) · 379 (`--ignore-blank-lines` in scope) · 380 (file-drop
   via line diff) · 381 (whitespace threading and similarity invariant) · 382
-  (whitespace config default) · 909 (xdiff line-diff transcription) · 910
-  (indent-heuristic change compaction) · 911 (similarity hash wraps and skips
-  CRLF carriage returns)
+  (whitespace config default) · 409 (binary-vs-text override threading, amended
+  2026-09-28 for raw-byte line counts and the `diff.<driver>.binary` tristate) ·
+  909 (xdiff line-diff transcription) · 910 (indent-heuristic change
+  compaction) · 911 (similarity hash wraps and skips CRLF carriage returns)
