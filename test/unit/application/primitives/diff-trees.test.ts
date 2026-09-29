@@ -1789,6 +1789,65 @@ describe('diffTrees', () => {
     });
   });
 
+  describe('Given a non-recursive diff with detectRenames:true where a whole sub-directory (tree-oid) was renamed, with ignoreWhitespace set', () => {
+    describe('When diffTrees is called', () => {
+      it('Then the directory-mode rename is dropped (matching `git diff-tree -w`, which never shows a directory-mode entry)', async () => {
+        // Arrange — 'sub' and 'sub2' share the SAME tree oid: the exact pass
+        // (pairIdenticalFiles) pairs delete+add by id+mode with no content
+        // read, so a directory-mode rename is reachable here, unlike a
+        // similarity-scored one.
+        const ctx = await buildSeededContext();
+        const subId = await subTree(
+          ctx,
+          'inner.txt',
+          await blob(ctx, 'line1\n'),
+          FILE_MODE.REGULAR,
+        );
+        const before = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'sub', subId)]);
+        const after = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'sub2', subId)]);
+
+        // Act
+        const result = await diffTrees(ctx, before, after, {
+          ignoreWhitespace: 'all',
+          detectRenames: true,
+        });
+
+        // Assert
+        expect(result.changes).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given copies:"harder" and a non-recursive diff where a whole unchanged sub-directory was copied to a new top-level path, with ignoreWhitespace set', () => {
+    describe('When diffTrees is called', () => {
+      it('Then the directory-mode copy is dropped (matching `git diff-tree -w`, which never shows a directory-mode entry)', async () => {
+        // Arrange — same shape as the copies:'harder' directory-copy detection
+        // test above, plus ignoreWhitespace: the exact pass pairs 'keep2' to
+        // the unchanged 'keep' by tree oid, producing a directory-mode copy.
+        const ctx = await buildSeededContext();
+        const keepTree = await writeTree(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'b', await blob(ctx, 'nested content\n')),
+        ]);
+        const treeA = await writeTree(ctx, [treeEntry(FILE_MODE.DIRECTORY, 'keep', keepTree)]);
+        const treeB = await writeTree(ctx, [
+          treeEntry(FILE_MODE.DIRECTORY, 'keep', keepTree),
+          treeEntry(FILE_MODE.DIRECTORY, 'keep2', keepTree),
+        ]);
+
+        // Act
+        const result = await diffTrees(ctx, treeA, treeB, {
+          ignoreWhitespace: 'all',
+          detectRenames: true,
+          recursive: false,
+          renameOptions: { copies: 'harder' },
+        });
+
+        // Assert
+        expect(result.changes).toHaveLength(0);
+      });
+    });
+  });
+
   describe('Given a whitespace-only modify with recursive:true and ignoreWhitespace:all', () => {
     describe('When diffTrees is called', () => {
       it('Then the ws-only nested modify is dropped (mode composes with recursive)', async () => {
