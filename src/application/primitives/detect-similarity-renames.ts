@@ -888,8 +888,6 @@ async function runInexactMatrix(
   knownFingerprints: ReadonlyMap<FingerprintKey, BlobFingerprint>,
   resolver: SimilarityContentKindResolver,
 ): Promise<InexactMatrixResult | null> {
-  if (matrixIndices.length === 0) return null;
-
   const matrixSources: IndexedSource[] = matrixIndices.map((index) => ({
     index,
     source: registrySources[index] as RenameSource,
