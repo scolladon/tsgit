@@ -5,7 +5,7 @@ import {
   readDeclaredObjectSize,
   readObjectMetadata,
 } from '../../../../src/application/primitives/read-object.js';
-import { notADirectory, TsgitError } from '../../../../src/domain/error.js';
+import { decompressFailed, notADirectory, TsgitError } from '../../../../src/domain/error.js';
 import type {
   Blob,
   Commit,
@@ -21,6 +21,7 @@ import {
 } from '../../../../src/domain/objects/index.js';
 import { computeLooseObjectPath } from '../../../../src/domain/storage/loose-path.js';
 import type { Context } from '../../../../src/ports/context.js';
+import { pseudoRandomBytes } from '../../../fixtures/pseudo-random-bytes.js';
 import { buildSeededContext, writeLooseWithDeclaredSize, writeRawObjectBytes } from './fixtures.js';
 import type { EntrySpec } from './pack-fixture.js';
 import { buildSyntheticPack, corruptIdxOffset, writeSyntheticPack } from './pack-fixture.js';
@@ -580,15 +581,19 @@ describe('readDeclaredObjectSize', () => {
 
   describe('Given a loose file whose entire content has no NUL but stays at or under 32 bytes', () => {
     describe('When readDeclaredObjectSize is called', () => {
-      it('Then rejects INVALID_OBJECT_HEADER with the no-NUL-terminator reason', async () => {
+      it('Then rejects INVALID_OBJECT_HEADER with the no-NUL-terminator reason, with no whole-file fallback read', async () => {
         // Arrange — the whole file fits inside the 1024-byte probe and never
         // reaches the 32-byte header cap, so the "never catch" branch applies:
-        // no fallback, the plain no-NUL error propagates as-is.
+        // no fallback, the plain no-NUL error propagates as-is. Warm the
+        // repo-settings verdict first so the readSpy below observes only
+        // this call's own filesystem traffic (mirrors the 64 KiB test above).
         const ctx = await buildSeededContext();
         const junk = ENC.encode('short, no null byte here');
         const compressed = await ctx.compressor.deflate(junk);
         const id = 'd'.repeat(40) as ObjectId;
         await ctx.fs.write(loosePathOf(ctx, id), compressed);
+        await getPackRegistry(ctx);
+        const readSpy = vi.spyOn(ctx.fs, 'read');
 
         // Act
         try {
@@ -602,6 +607,79 @@ describe('readDeclaredObjectSize', () => {
             expect(data.reason).toBe(`no NUL terminator found in inflated object ${id}`);
           }
         }
+        // isPrefixTruncated correctly reads false here (the prefix IS the
+        // whole file): no whole-file fallback should ever re-read the file.
+        expect(readSpy).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given the prefix probe genuinely faults (not just a clean short-output outcome)', () => {
+    describe('When the prefix is truncated (compressed size past the 1024-byte probe budget)', () => {
+      it('Then the fault still falls back to the whole file, which resolves cleanly', async () => {
+        // Arrange — a stub compressor throws ONLY for the readSlice-bounded
+        // 1024-byte prefix (simulating a genuine mid-block decode fault,
+        // which real zlib does not tolerate at an arbitrary cut), succeeding
+        // once given the whole file: proves resolveDeclaredSizeFromPrefix's
+        // catch still falls back when isPrefixTruncated is genuinely true.
+        const content = pseudoRandomBytes(4096, 11);
+        const ctx = await buildSeededContext();
+        const id = await writeRawObjectBytes(ctx, 'blob', content);
+        const baseInflateHead = ctx.compressor.inflateHead.bind(ctx.compressor);
+        const stubCtx: Context = {
+          ...ctx,
+          compressor: {
+            ...ctx.compressor,
+            inflateHead: (async (bytes: Uint8Array, maxOutputBytes: number) => {
+              if (bytes.byteLength === 1024) {
+                throw decompressFailed('simulated mid-block prefix fault');
+              }
+              return baseInflateHead(bytes, maxOutputBytes);
+            }) as typeof ctx.compressor.inflateHead,
+          },
+        };
+
+        // Act
+        const result = await readDeclaredObjectSize(stubCtx, id);
+
+        // Assert
+        expect(result).toBe(content.length);
+      });
+    });
+
+    describe('When the prefix is NOT truncated (it already IS the whole file)', () => {
+      it('Then the fault propagates unchanged, with no redundant whole-file re-read', async () => {
+        // Arrange — content small enough that readSlice's prefix already IS
+        // the whole file (isPrefixTruncated false): a fault here must
+        // propagate as-is, never trigger a second, redundant disk read.
+        const content = ENC.encode('hello');
+        const ctx = await buildSeededContext();
+        const id = await writeRawObjectBytes(ctx, 'blob', content);
+        await getPackRegistry(ctx);
+        const readSpy = vi.spyOn(ctx.fs, 'read');
+        const stubCtx: Context = {
+          ...ctx,
+          compressor: {
+            ...ctx.compressor,
+            inflateHead: (async () => {
+              throw decompressFailed('simulated decode fault');
+            }) as typeof ctx.compressor.inflateHead,
+          },
+        };
+
+        // Act
+        try {
+          await readDeclaredObjectSize(stubCtx, id);
+          expect.unreachable();
+        } catch (error) {
+          // Assert
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('DECOMPRESS_FAILED');
+          if (data.code === 'DECOMPRESS_FAILED') {
+            expect(data.reason).toBe('simulated decode fault');
+          }
+        }
+        expect(readSpy).not.toHaveBeenCalled();
       });
     });
   });
