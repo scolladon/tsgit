@@ -594,4 +594,71 @@ describe('compactChanges', () => {
       });
     });
   });
+
+  describe('Given a line whose indent hits exactly MAX_INDENT on its last tab before the trailing newline', () => {
+    describe('When the clamp check runs on that exact byte', () => {
+      it('Then "indent >= MAX_INDENT" clamps immediately, rather than "indent > MAX_INDENT" letting the loop read the newline as a blank', () => {
+        // Arrange — 25 tabs lands indent at exactly 200 with nothing after
+        // it but the implicit trailing LF: the real `>=` check clamps right
+        // there; a `>` check would skip that iteration, see the LF (which
+        // adds no indent), exhaust the line, and report -1 (blank) instead
+        // of 200 — verified by direct computation against this module.
+        const sut = compactChanges;
+        const theirsLines = ['X', 'X', '\t'.repeat(25)].map((s) => enc(`${s}\n`));
+        const theirsChanged = new Uint8Array([1, 0, 0]);
+        const oursChanged = new Uint8Array(2);
+        const ids = new Int32Array(3);
+
+        // Act
+        sut(theirsChanged, oursChanged, ids, theirsLines);
+
+        // Assert
+        expect(Array.from(theirsChanged)).toEqual([1, 0, 0]);
+      });
+    });
+  });
+
+  describe('Given two leading blank lines that reach all the way back to the start of file', () => {
+    describe('When a candidate split’s preBlank is non-zero but preIndent is still the -1 sentinel', () => {
+      it('Then the start-of-file penalty requires preBlank === 0 too, not just preIndent === -1', () => {
+        // Arrange — verified by direct computation against this module.
+        const sut = compactChanges;
+        const theirsLines = [' ', ' ', ' a', '  a', ' ', ' '].map((s) => enc(`${s}\n`));
+        const theirsChanged = new Uint8Array([1, 0, 0, 0, 0, 0]);
+        const oursChanged = new Uint8Array(6);
+        const ids = new Int32Array([0, 0, 0, 0, 2, 2]);
+
+        // Act
+        sut(theirsChanged, oursChanged, ids, theirsLines);
+
+        // Assert
+        expect(Array.from(theirsChanged)).toEqual([0, 1, 0, 0, 0, 0]);
+      });
+    });
+  });
+
+  describe('Given a first group whose indent-heuristic placement slides up from its down-slide extreme, followed by a second group', () => {
+    describe('When the up-slide-to-bestShift loop in slideToIndentHeuristic runs', () => {
+      it('Then it re-syncs the other file’s group tracker on every step, not just this file’s own array', () => {
+        // Arrange — group1 (index 0) needs two up-slides off its down-slide
+        // extreme to reach its indent-heuristic resting place; group2
+        // (index 7) then reads the other file's group tracker to decide its
+        // own placement — a skipped re-sync during group1's climb leaves
+        // that tracker stale for group2 — verified by direct computation
+        // against this module.
+        const sut = compactChanges;
+        const theirsLines = [' ', ' ', ' a', '  a', ' ', ' ', 'g', 'h'].map((s) => enc(`${s}\n`));
+        const theirsChanged = new Uint8Array([1, 0, 0, 0, 0, 0, 0, 1]);
+        const oursChanged = new Uint8Array([0, 0, 0, 0, 0, 1, 0, 0]);
+        const ids = new Int32Array([0, 0, 0, 0, 2, 2, 3, 3]);
+
+        // Act
+        sut(theirsChanged, oursChanged, ids, theirsLines);
+
+        // Assert
+        expect(Array.from(theirsChanged)).toEqual([0, 1, 0, 0, 0, 0, 1, 0]);
+        expect(Array.from(oursChanged)).toEqual([0, 0, 0, 0, 0, 1, 0, 0]);
+      });
+    });
+  });
 });
