@@ -696,16 +696,18 @@ export async function hydrateFingerprints(
   return merged;
 }
 
-/** Combines two fingerprint maps — used to fold the break-attempt pass's
- *  already-read bytes (`scoreOneModify`) together with the basename pass's
- *  own hydration before either feeds the inexact matrix as `knownFingerprints`. */
+/** Folds the break-attempt pass's already-read bytes (`scoreOneModify`)
+ *  together with the basename pass's own hydration before either feeds the
+ *  inexact matrix as `knownFingerprints`. The two are mutually exclusive:
+ *  the basename pass only runs when `broken.length === 0`
+ *  (`isBasenamePassEligible`), and the break pass only ever fingerprints
+ *  bytes for a record that ends up in `broken` — so whichever side ran, the
+ *  other is always empty, and picking the non-empty one IS the merge. */
 function mergeFingerprintMaps(
   base: ReadonlyMap<FingerprintKey, BlobFingerprint>,
   extra: ReadonlyMap<FingerprintKey, BlobFingerprint>,
 ): ReadonlyMap<FingerprintKey, BlobFingerprint> {
-  if (extra.size === 0) return base;
-  if (base.size === 0) return extra;
-  return new Map([...base, ...extra]);
+  return extra.size === 0 ? base : extra;
 }
 
 /** Per-id summary of an accumulated fingerprint cache: `sizeById` reuses ANY
