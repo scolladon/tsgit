@@ -1007,6 +1007,44 @@ describe('Given a loose blob whose under-run claim exceeds the inflate ceiling',
   });
 });
 
+describe('Given a loose blob whose under-run claim exactly equals the inflate ceiling', () => {
+  describe('When runContentValidationPass validates that object', () => {
+    it('Then emits a bad-object finding instead of hashing the ceiling worth of padding', async () => {
+      // Arrange — the boundary itself is "gigabytes of padding" too, so the
+      // ceiling refuses it inclusively rather than padding exactly up to it.
+      const ctx = createMemoryContext();
+      const id = 'e'.repeat(40) as ObjectId;
+      const body = ENCODER.encode('SHORT');
+      const claim = MAX_INFLATE_OUTPUT_BYTES;
+      await writeLooseAtId(ctx, id, 'blob', claim, body);
+
+      // Act
+      const result = await sut(
+        ctx,
+        new Set([id]),
+        false,
+        new Map(),
+        new Map(),
+        NO_SKIPS,
+        claim + 1,
+      );
+
+      // Assert
+      expect(result.findings).toEqual([
+        {
+          type: 'bad-object',
+          id,
+          objectType: 'unknown',
+          msgId: 'unterminatedHeader',
+          severity: 'error',
+        },
+      ]);
+      expect(result.exitBit).toBe(1);
+      expect(result.typeUnknownIds.has(id)).toBe(false);
+    });
+  });
+});
+
 describe("Given a loose blob whose body overran its claim past git's 32-byte header window", () => {
   describe('When runContentValidationPass validates that object', () => {
     it('Then emits a bad-object finding — the same undecodable finding git reports for a corrupt object', async () => {

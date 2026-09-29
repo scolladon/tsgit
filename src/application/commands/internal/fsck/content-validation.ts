@@ -148,7 +148,12 @@ function underrunResult(
   type: FsckObjectType,
 ): RawObjectResult {
   const { split } = buffered;
-  if (split.declaredSize > MAX_INFLATE_OUTPUT_BYTES) {
+  if (split.declaredSize >= MAX_INFLATE_OUTPUT_BYTES) {
+    // Inclusive on purpose: a claim of EXACTLY the ceiling is itself
+    // "gigabytes of padding" (this JSDoc's own phrase), the case this
+    // refusal exists to avoid — never let it slip through as the one
+    // claim size this ceiling forgets to cover.
+    //
     // tsgit's own safety ceiling, not a git-faithfulness gate: the general
     // resolver has no matching cap (`applyLooseVerdict`'s 'underrun' arm
     // serves the claim uncapped), so a reachability-typing divergence is
