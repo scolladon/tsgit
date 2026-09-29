@@ -98,6 +98,25 @@ describe('trimEnds', () => {
     });
   });
 
+  describe('Given a shared trailing run two lines long, with a differing element right before it', () => {
+    describe('When trimEnds is called', () => {
+      it('Then trailing scans both shared positions, not just the nearest one', () => {
+        // Arrange — the last two ids (8, 9) match on both sides; index 2
+        // differs (2 vs 3), so the trailing scan must advance past its first
+        // successful match to find the second one
+        const sut = trimEnds;
+        const ours = Int32Array.from([0, 1, 2, 8, 9]);
+        const theirs = Int32Array.from([0, 1, 3, 8, 9]);
+
+        // Act
+        const result = sut(ours, theirs);
+
+        // Assert
+        expect(result).toEqual({ dstart: 2, oursDend: 2, theirsDend: 2 });
+      });
+    });
+  });
+
   describe('Given sides of unequal length with a shared trailing run', () => {
     describe('When trimEnds is called', () => {
       it('Then each side’s dend is computed from its own length', () => {
@@ -243,6 +262,164 @@ describe('cleanMmatch', () => {
 
         // Act
         const result = sut(action, 101, action.length);
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given the line immediately before the investigate line is KEEP, with eight discards after', () => {
+    describe('When cleanMmatch is called', () => {
+      it('Then it declines — a KEEP breaks the before-scan instead of counting as a discard', () => {
+        // Arrange — the before-scan must stop at the KEEP with zero counted
+        // discards (declining at the "no discard at all" guard); miscounting
+        // the KEEP as a discard, or skipping the guard, both flip this to true
+        const sut = cleanMmatch;
+        const action = Uint8Array.from([
+          KEEP,
+          INVESTIGATE,
+          ...Array.from({ length: 8 }, () => DISCARD),
+        ]);
+
+        // Act
+        const result = sut(action, 1, action.length);
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a discard then a KEEP before the investigate line, with eight discards after', () => {
+    describe('When cleanMmatch is called', () => {
+      it('Then it discards — the KEEP still breaks the before-scan after one real discard', () => {
+        // Arrange — reading backward from the investigate line: one discard,
+        // then a KEEP that must stop the scan (not get counted as investigate
+        // and let the scan run on to reach the window boundary)
+        const sut = cleanMmatch;
+        const action = Uint8Array.from([
+          KEEP,
+          DISCARD,
+          INVESTIGATE,
+          ...Array.from({ length: 8 }, () => DISCARD),
+        ]);
+
+        // Act
+        const result = sut(action, 2, action.length);
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a discard then a real investigate line before the investigate line, with eight discards after', () => {
+    describe('When cleanMmatch is called', () => {
+      it('Then it declines — the investigate line must be recognized and counted, not miscounted as a discard', () => {
+        // Arrange — reading backward: one discard, then a genuine INVESTIGATE
+        // marker; losing that recognition undercounts investigateBefore and
+        // tips the ratio to discard
+        const sut = cleanMmatch;
+        const action = Uint8Array.from([
+          INVESTIGATE,
+          DISCARD,
+          INVESTIGATE,
+          ...Array.from({ length: 8 }, () => DISCARD),
+        ]);
+
+        // Act
+        const result = sut(action, 2, action.length);
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a discard then a KEEP after the investigate line, with eight discards before', () => {
+    describe('When cleanMmatch is called', () => {
+      it('Then it declines — a KEEP breaks the after-scan and the guard sees zero discards after', () => {
+        // Arrange
+        const sut = cleanMmatch;
+        const action = Uint8Array.from([
+          ...Array.from({ length: 8 }, () => DISCARD),
+          INVESTIGATE,
+          KEEP,
+        ]);
+
+        // Act
+        const result = sut(action, 8, action.length);
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a KEEP immediately after the investigate line, followed by eleven discards, with one discard before', () => {
+    describe('When cleanMmatch is called', () => {
+      it('Then it declines — the KEEP must break the after-scan instead of being counted as investigate and skipped over', () => {
+        // Arrange — a KEEP misread as investigate would let the after-scan
+        // run on into the eleven trailing discards instead of stopping
+        const sut = cleanMmatch;
+        const action = Uint8Array.from([
+          DISCARD,
+          INVESTIGATE,
+          KEEP,
+          ...Array.from({ length: 11 }, () => DISCARD),
+        ]);
+
+        // Act
+        const result = sut(action, 1, action.length);
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a discard-heavy region strictly beyond the 100-line window on the after side', () => {
+    describe('When cleanMmatch is called', () => {
+      it('Then it declines — the after-scan must stop at the window, not run to the array end', () => {
+        // Arrange — 100 discards before (window-filling); exactly 100
+        // investigate lines after (filling the window with zero discards,
+        // so the "no discard after" guard should decline); 300 more discards
+        // sit beyond the window and must never be reached
+        const sut = cleanMmatch;
+        const before = Array.from({ length: 100 }, () => DISCARD);
+        const inWindowAfter = Array.from({ length: 100 }, () => INVESTIGATE);
+        const beyondWindowAfter = Array.from({ length: 300 }, () => DISCARD);
+        const action = Uint8Array.from([
+          ...before,
+          INVESTIGATE,
+          ...inWindowAfter,
+          ...beyondWindowAfter,
+        ]);
+
+        // Act
+        const result = sut(action, 100, action.length);
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given an asymmetric before-run shorter than the after-run', () => {
+    describe('When cleanMmatch is called', () => {
+      it('Then it declines — the after-scan must read forward, not back over the before-run', () => {
+        // Arrange — the before-run is fifty discards; the after-run is one
+        // hundred investigate lines. A scan reading the wrong direction for
+        // "after" would re-read the discard-heavy before-run instead and tip
+        // the ratio to discard
+        const sut = cleanMmatch;
+        const before = Array.from({ length: 50 }, () => DISCARD);
+        const after = Array.from({ length: 100 }, () => INVESTIGATE);
+        const action = Uint8Array.from([...before, INVESTIGATE, ...after]);
+
+        // Act
+        const result = sut(action, 50, action.length);
 
         // Assert
         expect(result).toBe(false);
