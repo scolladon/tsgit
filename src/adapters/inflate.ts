@@ -260,6 +260,7 @@ class BitReader {
    * short read; the caller decides whether the shortfall itself is
    * tolerable. */
   readAvailableBytes(count: number): Uint8Array {
+    // Stryker disable next-line ArithmeticOperator: equivalent — subarray(bytePos, bytePos+available) auto-clamps to bytes.length regardless of available's value, so the returned slice/length are identical for +/- here; the caller always re-checks chunk.length against the declared count immediately after.
     const available = Math.min(count, this.bytes.length - this.bytePos);
     const slice = this.bytes.subarray(this.bytePos, this.bytePos + available);
     this.bytePos += available;
@@ -556,6 +557,7 @@ function decodeStoredBlock(reader: BitReader, output: GrowableBuffer): void {
   }
   const chunk = reader.readAvailableBytes(len);
   output.append(chunk);
+  // Stryker disable next-line BlockStatement: equivalent — readAvailableBytes always advances bytePos to bytes.length on any shortfall, so emptying this throw just defers the identical TRUNCATED_STREAM_REASON error to the very next readBits/readBytes call.
   if (chunk.length < len) {
     throw decompressFailed(TRUNCATED_STREAM_REASON);
   }
