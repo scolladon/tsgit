@@ -331,6 +331,9 @@ async function resolveLooseBytesStreamed(
   await verifyBufferedBytes(ctx, id, inflated, verifyHash);
   const split = splitLooseObject(inflated);
   assertLooseSizeConsistent(split);
+  // Stryker disable next-line ConditionalExpression: equivalent — toCachedBytesSource only
+  // reads `cacheable` when type!=='blob', and assertLooseSizeConsistent above already refused
+  // any non-blob mismatch, so this is always true whenever it matters.
   return toCachedBytesSource(
     ctx,
     id,

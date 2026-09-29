@@ -59,6 +59,8 @@ export function classifyLooseBody(split: LooseObjectSplit): LooseBodyVerdict {
   const { type, content, declaredSize } = split;
   if (content.byteLength === declaredSize) return 'honest';
   if (type !== 'blob') return 'refuse';
+  // Stryker disable next-line EqualityOperator: equivalent — the `===` branch above already
+  // returned for content.byteLength===declaredSize, so `>` and `>=` are identical here.
   return content.byteLength > declaredSize ? 'truncate' : 'underrun';
 }
 
