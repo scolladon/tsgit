@@ -509,6 +509,7 @@ export async function collectUnreadablePackMemberIds(
   const registry = await getPackRegistry(ctx);
   const members = new Set<ObjectId>();
   for (const [id, obj] of cache) {
+    // Stryker disable next-line ConditionalExpression: equivalent — isContentUnreadable also requires objectCache.get(id) == null before ever reading packMemberIds, so a typed id landing in `members` here (as `false` would allow) changes no output; skipping it is purely the perf win this function's own doc comment names.
     if (obj !== null) continue;
     if ((await lookupIfClaimed(registry, id)) !== undefined) members.add(id);
   }

@@ -201,6 +201,7 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   // learns the entry is corrupt. Skipped outside default mode: connectivityOnly
   // never consults this set (`isContentUnreadable` is gated on `unreadable`).
   const packMemberIds =
+    // Stryker disable next-line ConditionalExpression: equivalent — packMemberIds is only ever read by reachability.ts's isContentUnreadable, itself gated on the SAME `unreadable === 'skip'` check, so a 'classify'-mode populate is extra work with no observable effect.
     unreadable === 'skip'
       ? await collectUnreadablePackMemberIds(auditCtx, reachabilityCache)
       : (new Set<ObjectId>() as ReadonlySet<ObjectId>);

@@ -65,8 +65,10 @@ type RawObjectResult =
 function looseHeaderFailure(err: TsgitError): RawObjectResult {
   // A zlib decode fault (DECOMPRESS_FAILED) reaches here too, now that the
   // buffered tier's own inflate call can fail before parseHeader ever runs
-  // — this condition is genuinely live, never equivalent-true.
+  // — the branch below is genuinely reachable both ways, even though its
+  // downstream msgId turns out the same regardless (see the marker below).
   const reason =
+    // Stryker disable next-line ConditionalExpression: equivalent — looseHeaderFailure only ever receives INVALID_OBJECT_HEADER or DECOMPRESS_FAILED (inflateLooseBuffered's only throw codes); both carry .reason and no DECOMPRESS_FAILED reason starts with 'unknown object type', so msgId is unchanged either way.
     err.data.code === 'INVALID_OBJECT_HEADER'
       ? (err.data as { reason: string }).reason
       : // Stryker disable next-line StringLiteral: equivalent — reason is read only by reason.startsWith('unknown object type'); neither '' nor 'Stryker was here!' starts with that prefix, so msgId stays 'unterminatedHeader'.
@@ -257,6 +259,7 @@ function blobTruncateResult(
  */
 function nonBlobRefuseResult(ctx: Context, buffered: LooseBufferedRead): RawObjectResult {
   const { split } = buffered;
+  // Stryker disable next-line EqualityOperator: equivalent — classifyLooseBody returns 'honest' (never reaching this 'refuse' arm) whenever content.byteLength === declaredSize, so equality is already excluded here and < vs <= can never disagree.
   return split.content.byteLength < split.declaredSize
     ? underrunResult(ctx, buffered, split.type)
     : truncatedResult(ctx, buffered, split.type);

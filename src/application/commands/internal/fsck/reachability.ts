@@ -136,6 +136,7 @@ function routeEdgeTarget(state: WalkState, edge: GraphEdge): EdgeRoute {
   }
   if (isContentUnreadable(state, edge.toId)) {
     state.missingIds.add(edge.toId);
+    // Stryker disable next-line CallExpression: equivalent — collectTypeFindings (findings assembly) independently skips any id with a null cache entry in 'skip' mode, the exact pair of conditions isContentUnreadable already required to reach this branch, so a missing `reached` mark here is caught by that second guard too; kept for the belt-and-suspenders reason this function's own doc comment gives, not because it is load-bearing today.
     state.reached.add(edge.toId);
     state.unreadableEdges.push(edge);
     return 'unreadable-missing';
