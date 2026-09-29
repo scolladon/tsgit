@@ -20,9 +20,12 @@ const EMPTY_SLOT = -1;
 // the WHOLE record (LF included) is what actually tells them apart.
 function hashLineBytes(bytes: Uint8Array): number {
   const length = bytes.length;
+  // Stryker disable next-line ConditionalExpression,LogicalOperator,EqualityOperator,ArithmeticOperator: equivalent — end only picks which bytes get hashed; classify's own bytesEqual re-check (line 72) is what actually decides class equality, so any rewrite of this ternary only changes bucket placement, never which class id two lines are assigned
   const end = length > 0 && bytes[length - 1] === LF ? length - 1 : length;
   let hash = DJB2_SEED;
+  // Stryker disable next-line ConditionalExpression,EqualityOperator,BlockStatement: equivalent — the loop's bound and body only accumulate the hash value; shrinking, lengthening or emptying it still only changes bucket placement, per the same bytesEqual-is-authoritative argument above
   for (let i = 0; i < end; i++) {
+    // Stryker disable next-line ArithmeticOperator: equivalent — flips the hash accumulation's sign; still only a bucket-selection value, not a correctness input
     hash = (Math.imul(hash, DJB2_MULTIPLIER) + bytes[i]!) >>> 0;
   }
   return hash;
@@ -30,6 +33,7 @@ function hashLineBytes(bytes: Uint8Array): number {
 
 function nextPowerOfTwo(minimum: number): number {
   let capacity = 1;
+  // Stryker disable next-line EqualityOperator: equivalent — capacity only bounds probing headroom; createClassTable already sizes minimum to at least twice the line count, so one extra doubling here only grows that headroom, and classify's own bytesEqual re-check (not table size) decides correctness
   while (capacity < minimum) capacity *= 2;
   return capacity;
 }
@@ -69,9 +73,11 @@ function classify(table: ClassTable, bytes: Uint8Array, hash: number): number {
   let slot = hash & mask;
   while (slotClass[slot] !== EMPTY_SLOT) {
     const candidate = slotClass[slot]!;
+    // Stryker disable next-line ConditionalExpression: equivalent — same hash-only-selects-a-bucket argument as hashLineBytes: dropping this pre-check just re-runs bytesEqual on every occupied slot instead of skipping when hashes obviously differ — same class ids assigned, more comparisons made
     if (slotHash[slot] === hash && bytesEqual(representative[candidate]!, bytes)) {
       return candidate;
     }
+    // Stryker disable next-line ArithmeticOperator: equivalent — insert and lookup share this one probe sequence, so reversing its direction still visits every slot exactly once before wrapping (mask + 1 is a power of two) — the same slot eventually holds, or matches, an entry either way
     slot = (slot + 1) & mask;
   }
   const id = representative.length;
@@ -160,6 +166,7 @@ export function classifyLines(
 ): LineClasses {
   const oursIds = new Int32Array(ours.length);
   const theirsIds = new Int32Array(theirs.length);
+  // Stryker disable next-line ConditionalExpression,BlockStatement: equivalent — falling through instead of returning early builds a capacity-1 table and classifies zero lines on each (already-empty) side, since classifySide's own loop never runs for a length-0 array — same empty ours/theirs arrays and classCount either way; this early return is a skip-the-work optimization only
   if (ours.length + theirs.length === 0) {
     return { ours: oursIds, theirs: theirsIds, classCount: 0 };
   }

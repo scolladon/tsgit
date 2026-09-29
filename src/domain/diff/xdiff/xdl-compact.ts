@@ -54,6 +54,7 @@ function groupPrevious(changed: Uint8Array, g: Group): void {
 
 function groupSlideDown(side: CompactionSide, g: Group): boolean {
   const { changed, ids } = side;
+  // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — ids[g.end] past the array end is undefined, so ids[g.start] !== ids[g.end] is already true at (and past) the boundary; forcing the length check false or rewriting >= to > still short-circuits to the same `return false`
   if (g.end >= changed.length || ids[g.start] !== ids[g.end]) return false;
   changed[g.start++] = 0;
   changed[g.end++] = 1;
@@ -63,6 +64,7 @@ function groupSlideDown(side: CompactionSide, g: Group): boolean {
 
 function groupSlideUp(side: CompactionSide, g: Group): boolean {
   const { changed, ids } = side;
+  // Stryker disable next-line ConditionalExpression: equivalent — ids[-1] is undefined, so ids[g.start - 1] !== ids[g.end - 1] is already true when g.start === 0; forcing this check false still short-circuits to the same `return false`
   if (g.start === 0 || ids[g.start - 1] !== ids[g.end - 1]) return false;
   changed[--g.start] = 1;
   changed[--g.end] = 0;
@@ -188,6 +190,7 @@ function blankLinePenalty(preBlank: number, postBlank: number): number {
  *  git's three-way indent/outdent/dedent split of `score_add_split`. */
 function relativeIndentPenalty(indent: number, m: SplitMeasurement, anyBlanks: boolean): number {
   if (indent === -1 || m.preIndent === -1 || indent === m.preIndent) return 0;
+  // Stryker disable next-line EqualityOperator: equivalent — the guard above already returns when indent === m.preIndent, so indent !== m.preIndent is guaranteed here; rewriting > to >= can never reach its added boundary
   if (indent > m.preIndent) {
     return anyBlanks ? RELATIVE_INDENT_WITH_BLANK_PENALTY : RELATIVE_INDENT_PENALTY;
   }
@@ -290,6 +293,7 @@ function slideGroupToExtremes(
   go: Group,
 ): SlideResult {
   let earliestEnd = g.end;
+  // Stryker disable next-line BooleanLiteral: equivalent — the do-while below always runs at least once and unconditionally reassigns matchesOtherGroup before it's read, so this initial value is never observed
   let matchesOtherGroup = false;
   let groupSize: number;
   do {
@@ -339,6 +343,7 @@ function compactGroup(
   go: Group,
 ): void {
   const { earliestEnd, matchesOtherGroup } = slideGroupToExtremes(side, otherChanged, g, go);
+  // Stryker disable next-line ConditionalExpression: equivalent — when g.end === earliestEnd, slideDownFully made zero slides, so matchesOtherGroup is unchanged from matchesAtEarliest and go's state is untouched since then; slideUpToMatch's while(go.end === go.start) and slideToIndentHeuristic's bestIndentShift(..., earliestEnd, g.end) with earliestEnd === g.end both degenerate to no-ops either way
   if (g.end === earliestEnd) return;
   if (matchesOtherGroup) {
     slideUpToMatch(side, otherChanged, g, go);
