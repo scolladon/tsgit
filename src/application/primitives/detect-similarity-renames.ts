@@ -730,10 +730,12 @@ interface KnownSummary {
 function summarizeKnown(known: ReadonlyMap<FingerprintKey, BlobFingerprint>): KnownSummary {
   const sizeById = new Map<ObjectId, number>();
   const ids = new Set<ObjectId>();
+  // Stryker disable next-line BlockStatement: equivalent — see the per-statement proofs below; emptying the whole loop combines both effects, and both are independently harmless.
   for (const [key, fingerprint] of known) {
     const id = idOfFingerprintKey(key);
-    // Stryker disable next-line CallExpression: equivalent — dropping this id from sizeById only makes declaredSizesReusingFingerprints treat it as unknown and re-read its declared size fresh; a declared size is deterministic per id, so the re-read returns the identical value the cache would have (this one statement in isolation — ids.add below is untouched, so the override-bypass invariant it protects still holds).
+    // Stryker disable next-line CallExpression: equivalent — dropping this id from sizeById only makes declaredSizesReusingFingerprints treat it as unknown and re-read its declared size fresh; a declared size is deterministic per id, so the re-read returns the identical value the cache would have.
     sizeById.set(id, fingerprint.size);
+    // Stryker disable next-line CallExpression: equivalent — `ids` only lets an id already excluded by THIS round's size gate (selectHydrationIds) keep its path in overrideEntries. An id excluded from `needed` is, by sizeCompatibleIds's own definition, declared-size-incompatible (isSizeRejected) with EVERY destination in this pass; estimatePairSimilarity re-runs that identical, content-kind-independent isSizeRejected(sf.size, df.size, threshold) check per pair before ever touching a fingerprint, so it forces the same score-0 verdict whether or not this id's real, override-bucketed fingerprint was findable — dropping `ids` can only ever affect a pair the size gate already condemned to 0. Empirically confirmed: a >SIZE_GATE_MIN_IDS fixture with a broken modify's known half under a -diff attribute, excluded by the size gate, produces byte-identical output with this statement (and the BlockStatement mutant above) applied.
     ids.add(id);
   }
   return { sizeById, ids };
