@@ -869,9 +869,14 @@ describe.skipIf(!GIT_AVAILABLE)(
             '[core]\n\trepositoryformatversion = 1\n[extensions]\n\tcompatObjectFormat = sha1\n',
           );
 
-          // Act
-          const status = tryRunGitWithExit(['-C', dir, 'status', '--porcelain']);
-          const list = tryRunGitWithExit(['-C', dir, 'config', '--list']);
+          // Act — git is only consulted on a build that refuses: a Rust-compat
+          // build may abort on this config, and its outcome is not the oracle here
+          const status = GIT_HAS_RUST_COMPAT
+            ? undefined
+            : tryRunGitWithExit(['-C', dir, 'status', '--porcelain']);
+          const list = GIT_HAS_RUST_COMPAT
+            ? undefined
+            : tryRunGitWithExit(['-C', dir, 'config', '--list']);
           let caught: unknown;
           try {
             await openRow(dir);
@@ -880,7 +885,7 @@ describe.skipIf(!GIT_AVAILABLE)(
           }
 
           // Assert — git (only on a build that refuses; see GIT_HAS_RUST_COMPAT)
-          if (!GIT_HAS_RUST_COMPAT) {
+          if (status !== undefined && list !== undefined) {
             expect(status.exitCode).toBe(128);
             expect(status.stderr).toContain(
               'fatal: compatibility hash algorithm support requires Rust',
@@ -1480,8 +1485,11 @@ describe.skipIf(!GIT_AVAILABLE)(
             '[core]\n\trepositoryformatversion = 1\n[extensions]\n\tcompatObjectFormat = sha1\n',
           );
 
-          // Act
-          const list = tryRunGitWithExit(['-C', dir, 'config', '--list']);
+          // Act — git is only consulted on a build that refuses: a Rust-compat
+          // build may abort on this config, and its outcome is not the oracle here
+          const list = GIT_HAS_RUST_COMPAT
+            ? undefined
+            : tryRunGitWithExit(['-C', dir, 'config', '--list']);
           let caught: unknown;
           try {
             await openRow(dir);
@@ -1490,7 +1498,7 @@ describe.skipIf(!GIT_AVAILABLE)(
           }
 
           // Assert — git (only on a build that refuses; see GIT_HAS_RUST_COMPAT)
-          if (!GIT_HAS_RUST_COMPAT) expect(list.exitCode).toBe(128);
+          if (list !== undefined) expect(list.exitCode).toBe(128);
           // Assert — tsgit: no repository, no config surface reachable at all
           expect(caught).toBeInstanceOf(TsgitError);
           expect((caught as TsgitError).data).toMatchObject({
