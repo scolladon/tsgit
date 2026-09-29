@@ -7474,3 +7474,62 @@ describe('Given the same CRLF blob deleted at two paths that carry different dif
     });
   });
 });
+
+describe('Given a broken modify whose known half carries a -diff override AND is excluded by the size gate', () => {
+  describe('When detectSimilarityRenames is called with >SIZE_GATE_MIN_IDS unrelated destinations', () => {
+    it('Then the excluded half still pairs with nothing, matching estimatePairSimilarity’s own size-reject', async () => {
+      // Arrange — the broken modify's old half is already known (fingerprinted
+      // by the break pass under the 'binary' bucket from its -diff attribute),
+      // but its 2000-byte size is size-incompatible with every destination
+      // here (the 45-byte new half and 16 ~16-byte noise adds), so
+      // sizeCompatibleIds excludes it from `needed`. That exclusion is itself
+      // proof the pair could never reach threshold: estimatePairSimilarity
+      // re-runs the identical, content-kind-independent isSizeRejected check
+      // per pair before ever touching a fingerprint, so whether the size
+      // gate's own override-bucket bookkeeping can still find this id's real
+      // fingerprint is moot — every pairing is already condemned to score 0.
+      const ctx = await buildSeededContext();
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, 'big.attr -diff\n');
+      const oldContent = 'aaaa\nbbbb\ncccc\ndddd\n'.repeat(100);
+      const newContent = 'ZZZZ-completely-different-short-text-here!!\n';
+      const oldId = await writeBlob(ctx, oldContent);
+      const newId = await writeBlob(ctx, newContent);
+      const changes: DiffChange[] = [
+        {
+          type: 'modify',
+          path: 'big.attr' as FilePath,
+          oldId,
+          newId,
+          oldMode: FILE_MODE.REGULAR,
+          newMode: FILE_MODE.REGULAR,
+        },
+      ];
+      for (let i = 0; i < SIZE_GATE_MIN_IDS; i++) {
+        const noiseId = await writeBlob(ctx, `noise ${i}\n`.repeat(2));
+        changes.push({
+          type: 'add',
+          newPath: `noise-${i}.txt` as FilePath,
+          newId: noiseId,
+          newMode: FILE_MODE.REGULAR,
+        });
+      }
+      const diff: TreeDiff = { changes };
+      const sut = detectSimilarityRenames;
+
+      // Act
+      const result = await sut(ctx, diff, {
+        breakRewrites: { score: DEFAULT_BREAK_SCORE, merge: DEFAULT_MERGE_SCORE },
+      });
+
+      // Assert — the broken modify rejoins (nothing paired with either half)
+      // and every noise add stays unpaired; no rename or copy is found.
+      expect(result.changes.filter((c) => c.type === 'rename' || c.type === 'copy')).toHaveLength(
+        0,
+      );
+      const modify = result.changes.find((c) => c.type === 'modify');
+      expect(modify?.type).toBe('modify');
+      if (modify?.type === 'modify') expect(modify.broken?.score).toBe(MAX_SCORE);
+      expect(result.changes.filter((c) => c.type === 'add')).toHaveLength(SIZE_GATE_MIN_IDS);
+    });
+  });
+});
