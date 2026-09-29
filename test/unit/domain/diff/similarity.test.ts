@@ -1,17 +1,25 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { BINARY_DETECTION_BYTES } from '../../../../src/domain/diff/line-diff.js';
 import {
-  buildChunkMap,
-  countSpanhashChanges,
+  buildFingerprint,
+  contentKindOf,
+  countSpanhashChangesFromFingerprints,
   DEFAULT_BREAK_SCORE,
   DEFAULT_MERGE_SCORE,
   DEFAULT_RENAME_THRESHOLD,
+  denseFingerprint,
   estimateSimilarity,
-  estimateSimilarityFromMaps,
+  estimateSimilarityFromFingerprints,
   MAX_SCORE,
+  packFingerprint,
   toSimilarityPercent,
 } from '../../../../src/domain/diff/similarity.js';
 
 const enc = new TextEncoder();
+
+/** Mirrors git's `HASHBASE` (`diffcore-delta.c`) — the pack/dense dispatch
+ *  threshold in `buildFingerprint`. */
+const HASHBASE = 107927;
 
 /**
  * Pinned fixture: 10 identical lines of 'abcdefghij'*5+'\n' (51 bytes each),
@@ -45,6 +53,22 @@ function makeDisjoint256Pair(): { readonly src: Uint8Array; readonly dst: Uint8A
     src: new Uint8Array([...base, ...base, ...base, ...base]), // 1024 bytes
     dst: new Uint8Array([...flipped, ...flipped, ...flipped, ...flipped]),
   };
+}
+
+/**
+ * 8 CRLF-terminated lines, line 2 (0-indexed) changed — no NUL byte, so
+ * `contentKindOf` always sniffs 'text'. Stripping the CR of each CRLF pair
+ * (text mode) vs hashing it (binary mode) lands on a DIFFERENT srcCopied,
+ * pinned by hand against `buildFingerprint(..., kind)` directly.
+ */
+function makeCrlfPair(): { readonly src: Uint8Array; readonly dst: Uint8Array } {
+  const build = (changed: number): Uint8Array => {
+    const lines = Array.from({ length: 8 }, (_, i) =>
+      i === changed ? `CHANGED line ${i}: xyz` : `original line ${i}: filler content`,
+    );
+    return enc.encode(`${lines.join('\r\n')}\r\n`);
+  };
+  return { src: build(-1), dst: build(2) };
 }
 
 // XOR complement guarantees no shared chunk hashes.
@@ -215,8 +239,8 @@ describe('similarity', () => {
     });
   });
 
-  describe('countSpanhashChanges', () => {
-    describe('Given src and dst byte content, When countSpanhashChanges is called', () => {
+  describe('countSpanhashChangesFromFingerprints', () => {
+    describe('Given src and dst byte content, When countSpanhashChangesFromFingerprints is called', () => {
       it.each([
         {
           src: new Uint8Array(0),
@@ -254,7 +278,10 @@ describe('similarity', () => {
         },
       ])('Then $label', ({ src, dst, srcCopied, literalAdded }) => {
         // Arrange + Act
-        const result = countSpanhashChanges(src, dst);
+        const result = countSpanhashChangesFromFingerprints(
+          buildFingerprint(src, contentKindOf(src)),
+          buildFingerprint(dst, contentKindOf(dst)),
+        );
 
         // Assert
         expect(result.srcCopied).toBe(srcCopied);
@@ -262,7 +289,7 @@ describe('similarity', () => {
       });
     });
 
-    describe('Given the pinned B2 fixture (total=20 lines, shared=7), When countSpanhashChanges is called', () => {
+    describe('Given the pinned B2 fixture (total=20 lines, shared=7), When countSpanhashChangesFromFingerprints is called', () => {
       it('Then srcCopied=497 and merge_score yields git-faithful M065', () => {
         // Arrange — breakContent('old',20,7) vs breakContent('new',20,7)
         // Verified against real git 2.54.0: `git diff -B --name-status` → M065
@@ -292,7 +319,10 @@ describe('similarity', () => {
         const srcSize = src.length;
 
         // Act
-        const result = countSpanhashChanges(src, dst);
+        const result = countSpanhashChangesFromFingerprints(
+          buildFingerprint(src, contentKindOf(src)),
+          buildFingerprint(dst, contentKindOf(dst)),
+        );
 
         // Assert — exact srcCopied to kill arithmetic mutants
         expect(result.srcCopied).toBe(497);
@@ -304,7 +334,7 @@ describe('similarity', () => {
       });
     });
 
-    describe('Given the pinned B5 fixture (total=50 lines, shared=20), When countSpanhashChanges is called', () => {
+    describe('Given the pinned B5 fixture (total=50 lines, shared=20), When countSpanhashChangesFromFingerprints is called', () => {
       it('Then srcCopied=1420 and merge_score yields git-faithful M060', () => {
         // Arrange — breakContent('old',50,20) vs breakContent('new',50,20)
         // Verified against real git 2.54.0: `git diff -B --name-status` → M060
@@ -333,7 +363,10 @@ describe('similarity', () => {
         const srcSize = src.length;
 
         // Act
-        const result = countSpanhashChanges(src, dst);
+        const result = countSpanhashChangesFromFingerprints(
+          buildFingerprint(src, contentKindOf(src)),
+          buildFingerprint(dst, contentKindOf(dst)),
+        );
 
         // Assert — exact srcCopied to kill arithmetic mutants
         expect(result.srcCopied).toBe(1420);
@@ -344,46 +377,111 @@ describe('similarity', () => {
         expect(Math.trunc((mergeScore * 100) / MAX_SCORE)).toBe(60);
       });
     });
-  });
 
-  describe('estimateSimilarityFromMaps', () => {
-    describe('Given both empty maps with size 0, When estimateSimilarityFromMaps is called', () => {
-      it('Then returns MAX_SCORE (both blobs empty → trivially identical)', () => {
-        // Arrange
-        const emptyMap = new Map<number, number>();
+    describe('Given a CRLF-bearing pair with no override, When countSpanhashChangesFromFingerprints is called', () => {
+      it('Then literalAdded excludes the skipped CR bytes from dst (CR of CRLF skipped)', () => {
+        // Arrange — 8 CRLF-terminated lines, line 2 changed; no NUL so the
+        // sniff picks 'text', which skips the CR of every CRLF pair — dst's
+        // fingerprint therefore covers 8 fewer bytes than dst.length.
+        const { src, dst } = makeCrlfPair();
+        const dstCrBytesSkipped = 8;
 
         // Act
-        const result = estimateSimilarityFromMaps(emptyMap, 0, emptyMap, 0);
+        const result = countSpanhashChangesFromFingerprints(
+          buildFingerprint(src, contentKindOf(src)),
+          buildFingerprint(dst, contentKindOf(dst)),
+        );
+
+        // Assert — pinned by hand against buildFingerprint(..., 'text')
+        expect(result.srcCopied).toBe(224);
+        expect(result.literalAdded).toBe(dst.length - dstCrBytesSkipped - 224);
+      });
+    });
+
+    describe('Given a CRLF-bearing pair with an explicit text override, When countSpanhashChangesFromFingerprints is called', () => {
+      it('Then literalAdded matches the no-override sniff (both land on text)', () => {
+        // Arrange
+        const { src, dst } = makeCrlfPair();
+        const dstCrBytesSkipped = 8;
+
+        // Act
+        const result = countSpanhashChangesFromFingerprints(
+          buildFingerprint(src, 'text'),
+          buildFingerprint(dst, 'text'),
+        );
+
+        // Assert
+        expect(result.srcCopied).toBe(224);
+        expect(result.literalAdded).toBe(dst.length - dstCrBytesSkipped - 224);
+      });
+    });
+
+    describe('Given a CRLF-bearing pair with an explicit binary override, When countSpanhashChangesFromFingerprints is called', () => {
+      it('Then srcCopied differs from the sniff (CR bytes are hashed, not skipped)', () => {
+        // Arrange
+        const { src, dst } = makeCrlfPair();
+
+        // Act
+        const result = countSpanhashChangesFromFingerprints(
+          buildFingerprint(src, 'binary'),
+          buildFingerprint(dst, 'binary'),
+        );
+
+        // Assert — pinned by hand against buildFingerprint(..., 'binary')
+        expect(result.srcCopied).toBe(231);
+        expect(result.literalAdded).toBe(dst.length - 231);
+      });
+    });
+  });
+
+  describe('estimateSimilarityFromFingerprints', () => {
+    describe('Given both empty fingerprints with size 0, When estimateSimilarityFromFingerprints is called', () => {
+      it('Then returns MAX_SCORE (both blobs empty → trivially identical)', () => {
+        // Arrange
+        const empty = buildFingerprint(new Uint8Array(0), 'text');
+
+        // Act
+        const result = estimateSimilarityFromFingerprints(empty, 0, empty, 0);
 
         // Assert
         expect(result).toBe(MAX_SCORE);
       });
     });
 
-    describe('Given a non-empty src map and empty dst (size 0), When estimateSimilarityFromMaps is called', () => {
+    describe('Given a non-empty src fingerprint and empty dst (size 0), When estimateSimilarityFromFingerprints is called', () => {
       it('Then returns 0 (empty dst → no shared chunks)', () => {
         // Arrange
         const srcBytes = enc.encode('hello\n');
-        const srcMap = buildChunkMap(srcBytes);
-        const emptyMap = new Map<number, number>();
+        const srcFingerprint = buildFingerprint(srcBytes, 'text');
+        const empty = buildFingerprint(new Uint8Array(0), 'text');
 
         // Act
-        const result = estimateSimilarityFromMaps(srcMap, srcBytes.length, emptyMap, 0);
+        const result = estimateSimilarityFromFingerprints(
+          srcFingerprint,
+          srcBytes.length,
+          empty,
+          0,
+        );
 
         // Assert
         expect(result).toBe(0);
       });
     });
 
-    describe('Given two identical blobs, When estimateSimilarityFromMaps is called with their precomputed maps', () => {
+    describe('Given two identical blobs, When estimateSimilarityFromFingerprints is called with their precomputed fingerprints', () => {
       it('Then returns the same score as estimateSimilarity', () => {
         // Arrange
         const { src, dst } = makeR087Fixture();
-        const srcMap = buildChunkMap(src);
-        const dstMap = buildChunkMap(dst);
+        const srcFingerprint = buildFingerprint(src, 'text');
+        const dstFingerprint = buildFingerprint(dst, 'text');
 
         // Act
-        const result = estimateSimilarityFromMaps(srcMap, src.length, dstMap, dst.length);
+        const result = estimateSimilarityFromFingerprints(
+          srcFingerprint,
+          src.length,
+          dstFingerprint,
+          dst.length,
+        );
 
         // Assert — must match the byte-level scorer exactly
         expect(result).toBe(estimateSimilarity(src, dst));
@@ -391,11 +489,8 @@ describe('similarity', () => {
     });
   });
 
-  describe('buildChunkMap', () => {
-    // Hash accumulator arithmetic (mutants 1, 4, 5, 8, 9)
-    // and flush mechanics (mutants 2, 3, 6, 7)
-
-    describe('Given byte content that flushes to a single chunk, When buildChunkMap is called', () => {
+  describe('packFingerprint', () => {
+    describe('Given byte content that flushes to a single chunk, When packFingerprint is called', () => {
       it.each([
         {
           data: new Uint8Array([0x0a]),
@@ -403,8 +498,7 @@ describe('similarity', () => {
           count: 1,
           // Single LF: accum1 = (((0<<7)^(0>>>25)) + 0x0a)>>>0 = 10, accum2 = 0
           // hashval = (10 + imul(0, 0x61)) % 107927 = 10
-          label:
-            'a single LF byte has hash 10 and byte count 1 (kills mutant 1 +c→-c and mutant 4 %→*)',
+          label: 'a single LF byte has hash 10 and byte count 1',
         },
         {
           data: new Uint8Array([0x61]),
@@ -421,14 +515,14 @@ describe('similarity', () => {
           // 'a\n' (0x61, 0x0a): LF triggers in-loop flush with n=2
           // After 'a': accum1=97, accum2=0
           // After '\n': accum1=(((97<<7)^0)+10)>>>0=12426, accum2=((0^(97>>>25))>>>0)=0
-          label: 'two bytes ending with LF have hash 12426 and byte count 2 (kills mutant 1 +c→-c)',
+          label: 'two bytes ending with LF have hash 12426 and byte count 2',
         },
         {
           data: new Uint8Array(64).fill(0x61),
           hash: 12233,
           count: 64,
           // 64 'a' bytes: n reaches 64 (n >= 64), in-loop flush with hash 12233; no
-          // partial-chunk entry after. Mutant 3 (>= → >) would not flush at n=64.
+          // partial-chunk entry after.
           label:
             'exactly MAX_CHUNK_LEN (64) non-LF bytes flush in the loop with hash 12233 and byte count 64',
         },
@@ -438,7 +532,7 @@ describe('similarity', () => {
           count: 30,
           // 30 'a' bytes: accum2 becomes non-zero by byte 4; hashval = 23995
           label:
-            '30 non-LF bytes (partial chunk, non-zero accum2) have hash 23995 and byte count 30 (kills mutants 8 %→* and 9 +→-)',
+            '30 non-LF bytes (partial chunk, non-zero accum2) have hash 23995 and byte count 30',
         },
         {
           data: new Uint8Array([...new Uint8Array(30).fill(0x61), 0x0a]),
@@ -446,110 +540,304 @@ describe('similarity', () => {
           count: 31,
           // 30 'a' bytes + LF: accum2 is non-zero when LF triggers in-loop flush; hashval = 89031
           label:
-            '31 non-LF bytes followed by LF (in-loop flush, non-zero accum2) have hash 89031 and byte count 31 (kills mutants 4 %→* and 5 +→-)',
+            '31 non-LF bytes followed by LF (in-loop flush, non-zero accum2) have hash 89031 and byte count 31',
         },
       ])('Then $label', ({ data, hash, count }) => {
         // Arrange + Act
-        const result = buildChunkMap(data);
+        const result = packFingerprint(data, 'text');
 
         // Assert
-        expect(result.size).toBe(1);
-        expect(result.get(hash)).toBe(count);
+        expect(Array.from(result.hashes)).toEqual([hash]);
+        expect(Array.from(result.counts)).toEqual([count]);
       });
     });
 
-    describe('Given three bytes with LF in the middle, When buildChunkMap is called', () => {
-      it('Then the map has two entries: one from the LF flush and one from the partial-chunk flush', () => {
+    describe('Given three bytes with LF in the middle, When packFingerprint is called', () => {
+      it('Then the fingerprint has two entries, ascending by hash: the partial-chunk flush then the LF flush', () => {
         // Arrange
         // 'a\nb' (0x61, 0x0a, 0x62): LF flushes first chunk (n=2, hash=12426),
-        // then 'b' alone stays as partial (n=1, hash=98)
-        // Mutant 2 (flush condition → false): no in-loop flush → single entry after loop (n=3, hash≠12426)
+        // then 'b' alone stays as partial (n=1, hash=98) — ascending order puts 98 first.
         const data = new Uint8Array([0x61, 0x0a, 0x62]);
 
         // Act
-        const result = buildChunkMap(data);
+        const result = packFingerprint(data, 'text');
 
-        // Assert — kills mutant 2 (flush=false produces 1 entry with a different hash)
-        expect(result.size).toBe(2);
-        expect(result.get(12426)).toBe(2);
-        expect(result.get(98)).toBe(1);
+        // Assert
+        expect(Array.from(result.hashes)).toEqual([98, 12426]);
+        expect(Array.from(result.counts)).toEqual([1, 2]);
       });
     });
 
-    describe('Given MAX_CHUNK_LEN+1 (65) non-LF bytes, When buildChunkMap is called', () => {
-      it('Then the map has two entries: a 64-byte chunk and a 1-byte partial', () => {
+    describe('Given MAX_CHUNK_LEN+1 (65) non-LF bytes, When packFingerprint is called', () => {
+      it('Then the fingerprint has two entries: a 1-byte partial and a 64-byte chunk', () => {
         // Arrange
         // 65 'a' bytes: n=64 satisfies n>=64 → in-loop flush (hash=12233, n=64),
         //   then 65th byte processed: accum1=97, accum2=0 → partial flush (hash=97, n=1)
-        // Mutant 3 (>= → >): n=64 does NOT trigger flush (64>64=false);
-        //   n=65 triggers flush (65>64=true) with all 65 bytes → single entry, different hash
         const data = new Uint8Array(65).fill(0x61);
 
         // Act
-        const result = buildChunkMap(data);
+        const result = packFingerprint(data, 'text');
 
-        // Assert — kills mutant 3: mutant produces 1 entry (all 65 bytes merged into one chunk)
-        expect(result.size).toBe(2);
-        expect(result.get(12233)).toBe(64);
-        expect(result.get(97)).toBe(1);
+        // Assert
+        expect(Array.from(result.hashes)).toEqual([97, 12233]);
+        expect(Array.from(result.counts)).toEqual([1, 64]);
       });
     });
 
-    describe('Given data ending exactly on a flush boundary (single LF), When buildChunkMap is called', () => {
-      it('Then the map has exactly one entry (the partial-chunk guard is not triggered)', () => {
-        // Arrange
-        // Single LF: flushes in-loop (n=1), then n=0 after loop
-        // Mutant 6 (n>0 → true): fires even when n=0, adds entry {0: 0} to map → size becomes 2
-        // Mutant 7 (n>0 → n>=0): 0>=0=true, same spurious flush → size becomes 2
+    describe('Given data ending exactly on a flush boundary (single LF), When packFingerprint is called', () => {
+      it('Then the fingerprint has exactly one entry (the trailing partial-chunk flush is not triggered)', () => {
+        // Arrange — single LF: flushes in-loop (n=1), then n=0 after loop, so no
+        // spurious zero-byte entry should ever be produced.
         const data = new Uint8Array([0x0a]);
 
         // Act
-        const result = buildChunkMap(data);
+        const result = packFingerprint(data, 'text');
 
-        // Assert — kills mutants 6 and 7 (spurious zero-byte entry makes size 2)
-        expect(result.size).toBe(1);
-        expect(result.has(0)).toBe(false);
+        // Assert
+        expect(Array.from(result.hashes)).toEqual([10]);
+        expect(Array.from(result.counts)).toEqual([1]);
       });
     });
 
-    // countSrcCopied guard (mutants 10, 11, 12) via countSpanhashChanges
-    // Mutant 10 inverts the guard (<=0): skips SHARED chunks, making srcCopied=0 for identical content
-    // Mutants 11 and 12 are covered by the identical-content assertion below
+    describe('Given a 6-byte chunk whose accumulator sum overflows 2^32, When packFingerprint is called', () => {
+      it('Then the bucket wraps to uint32 before the modulo, matching git unsigned-int arithmetic', () => {
+        // Arrange — found by search: after these 6 bytes (no LF, single partial-chunk
+        // flush), accum1=4294913788 and accum2=757. Math.imul(757, 0x61) = 73429, and
+        // accum1 + 73429 = 4294987217, which is 2^32 + 19921 — it overflows uint32.
+        // git's `unsigned int` sum wraps mod 2^32 BEFORE `% HASHBASE`: 19921 % 107927 = 19921.
+        // Without the `>>> 0` wrap, `(accum1 + 73429) % 107927` uses the un-wrapped double
+        // and lands on a different bucket (32252).
+        const data = new Uint8Array([94, 95, 127, 124, 92, 252]);
 
-    describe('Given identical non-empty src and dst blobs, When countSpanhashChanges is called', () => {
-      it('Then srcCopied equals the full byte count of the blob', () => {
+        // Act
+        const result = packFingerprint(data, 'text');
+
+        // Assert
+        expect(Array.from(result.hashes)).toEqual([19921]);
+        expect(Array.from(result.counts)).toEqual([6]);
+      });
+    });
+
+    describe('Given a CR immediately followed by an LF, When packFingerprint is called with kind "text"', () => {
+      it('Then the CR is skipped: neither accumulated nor counted', () => {
+        // Arrange — 'A\r\n': the CR is skipped (kind is text and the next byte is LF),
+        // so only 'A' and the LF accumulate into one 2-byte chunk.
+        // accum1 after 'A' (0x41=65): 65, accum2: 0.
+        // accum1 after LF (0x0a=10): (((65<<7)^(0>>>25))+10)>>>0 = 8330, accum2: 0.
+        // bucketOf(8330, 0) = 8330 % 107927 = 8330.
+        const data = new Uint8Array([0x41, 0x0d, 0x0a]);
+
+        // Act
+        const result = packFingerprint(data, 'text');
+
+        // Assert — hashing the CR anyway would produce hash 95291 with count 3
+        // instead of 8330 with count 2.
+        expect(Array.from(result.hashes)).toEqual([8330]);
+        expect(Array.from(result.counts)).toEqual([2]);
+      });
+    });
+
+    describe('Given a lone CR not followed by an LF, When packFingerprint is called with kind "text"', () => {
+      it('Then the CR is hashed like any other byte', () => {
+        // Arrange — '\rA': the CR is NOT followed by LF, so the skip guard never
+        // fires; both bytes accumulate into one 2-byte partial chunk.
+        // accum1 after CR (0x0d=13): 13, accum2: 0.
+        // accum1 after 'A' (0x41=65): (((13<<7)^(0>>>25))+65)>>>0 = 1729, accum2: 0.
+        // bucketOf(1729, 0) = 1729 % 107927 = 1729.
+        const data = new Uint8Array([0x0d, 0x41]);
+
+        // Act
+        const result = packFingerprint(data, 'text');
+
+        // Assert
+        expect(Array.from(result.hashes)).toEqual([1729]);
+        expect(Array.from(result.counts)).toEqual([2]);
+      });
+    });
+
+    describe('Given a trailing CR with no following byte, When packFingerprint is called with kind "text"', () => {
+      it('Then the CR is hashed: the skip guard needs a following LF byte', () => {
+        // Arrange — 'A\r': the CR is the LAST byte, so `i + 1 < size` is false and
+        // the skip guard never fires; both bytes accumulate into one 2-byte chunk.
+        // accum1 after 'A' (0x41=65): 65, accum2: 0.
+        // accum1 after CR (0x0d=13): (((65<<7)^(0>>>25))+13)>>>0 = 8333, accum2: 0.
+        // bucketOf(8333, 0) = 8333 % 107927 = 8333.
+        const data = new Uint8Array([0x41, 0x0d]);
+
+        // Act
+        const result = packFingerprint(data, 'text');
+
+        // Assert
+        expect(Array.from(result.hashes)).toEqual([8333]);
+        expect(Array.from(result.counts)).toEqual([2]);
+      });
+    });
+
+    describe('Given a CR immediately followed by an LF, When packFingerprint is called with kind "binary"', () => {
+      it('Then the CR is hashed: the skip guard only fires for text', () => {
+        // Arrange — same 'A\r\n' bytes as the text case above, but kind is binary
+        // so the CR is never skipped: all 3 bytes accumulate into one chunk.
+        const data = new Uint8Array([0x41, 0x0d, 0x0a]);
+
+        // Act
+        const result = packFingerprint(data, 'binary');
+
+        // Assert
+        expect(Array.from(result.hashes)).toEqual([95291]);
+        expect(Array.from(result.counts)).toEqual([3]);
+      });
+    });
+
+    describe('Given content whose chunks collapse into very few distinct buckets, When packFingerprint is called', () => {
+      it('Then the returned hashes/counts typed arrays own their entire backing buffer instead of retaining an oversized one', () => {
+        // Arrange — 1000 identical 2-byte 'a\n' chunks all hash into ONE
+        // bucket: packedCount is 1000 but distinct is 1, so a `.subarray`
+        // return would keep a 1000-entry backing buffer alive behind a
+        // 1-entry view.
+        const data = enc.encode('a\n'.repeat(1000));
+        const sut = packFingerprint;
+
+        // Act
+        const result = sut(data, 'text');
+
+        // Assert
+        expect(result.hashes.length).toBe(1);
+        expect(result.hashes.buffer.byteLength).toBe(result.hashes.byteLength);
+        expect(result.counts.buffer.byteLength).toBe(result.counts.byteLength);
+      });
+    });
+  });
+
+  describe('denseFingerprint', () => {
+    describe('Given a trailing (unflushed) chunk whose bucket was already touched by an earlier forced-flush chunk, When denseFingerprint is called', () => {
+      it('Then the trailing chunk folds into the SAME bucket entry instead of touching it as new', () => {
+        // Arrange — a 64-byte forced-flush chunk (no LF, hits MAX_CHUNK_LEN)
+        // and a 33-byte trailing leftover chunk (no LF, ends the buffer before
+        // reaching MAX_CHUNK_LEN) whose spanhash buckets collide by
+        // construction (found by search, verified against the algorithm):
+        // both land on bucket 78351. This exercises the trailing flush's OWN
+        // `accum[bucket] === 0` check taking its FALSE branch — the earlier
+        // chunk already marked the bucket touched — which no LF-terminated
+        // pair of chunks (different lengths by construction) can reach.
+        const earlier = [
+          100, 54, 124, 40, 90, 57, 112, 87, 105, 87, 90, 41, 90, 43, 109, 91, 99, 44, 77, 62, 46,
+          94, 44, 111, 78, 85, 113, 53, 126, 120, 94, 34, 44, 115, 33, 122, 125, 68, 47, 113, 34,
+          105, 97, 61, 109, 55, 77, 78, 65, 66, 48, 107, 106, 84, 80, 41, 41, 71, 63, 42, 110, 62,
+          59, 124,
+        ];
+        const leftover = [
+          32, 48, 39, 91, 86, 110, 77, 87, 71, 117, 98, 68, 125, 50, 102, 89, 51, 76, 123, 100, 59,
+          70, 98, 104, 74, 93, 68, 71, 73, 90, 74, 102, 115,
+        ];
+        const data = Uint8Array.from([...earlier, ...leftover]);
+        const sut = denseFingerprint;
+
+        // Act
+        const result = sut(data, 'text');
+
+        // Assert — one bucket carries both chunks' combined byte count.
+        expect(Array.from(result.hashes)).toEqual([78351]);
+        expect(Array.from(result.counts)).toEqual([earlier.length + leftover.length]);
+      });
+    });
+
+    describe('Given data larger than HASHBASE, When denseFingerprint is called', () => {
+      it('Then every Uint32Array it allocates is at most HASHBASE buckets long, never data.length bytes', () => {
+        // Arrange — a blob just over HASHBASE bytes: large enough that a
+        // buggy `touched = new Uint32Array(size)` allocates MORE than
+        // HASHBASE buckets (the true upper bound on distinct spanhash
+        // buckets — a 256 MiB blob would over-allocate by ~1 GiB), small
+        // enough to stay a fast, deterministic unit test. A Proxy over the
+        // global constructor records every `new Uint32Array(length)` this
+        // call makes; `.subarray` views (the final hashes/counts trim)
+        // never reach it, since they resolve their species constructor off
+        // the already-constructed real instance, not the stubbed global.
+        const size = HASHBASE + 1000;
+        const data = new Uint8Array(size).fill(0x61);
+        const allocatedLengths: number[] = [];
+        const RealUint32Array = Uint32Array;
+        vi.stubGlobal(
+          'Uint32Array',
+          new Proxy(RealUint32Array, {
+            construct(target, args) {
+              allocatedLengths.push(args[0] as number);
+              return Reflect.construct(target, args);
+            },
+          }),
+        );
+        const sut = denseFingerprint;
+
+        // Act
+        try {
+          sut(data, 'text');
+        } finally {
+          vi.unstubAllGlobals();
+        }
+
+        // Assert
+        expect(allocatedLengths.every((length) => length <= HASHBASE)).toBe(true);
+      });
+    });
+  });
+
+  describe('buildFingerprint', () => {
+    describe('Given content one byte below the pack/dense size threshold, When buildFingerprint is called', () => {
+      it('Then it matches the packed builder', () => {
         // Arrange
-        // 'hello world\n' (12 bytes, one LF chunk): srcMap === dstMap in content
-        // countSrcCopied: dstCnt > 0 for each key → srcCopied = min(12, 12) = 12
-        // Mutant 10 (> → <=): dstCnt <= 0 is false for positive dstCnt → srcCopied = 0 (NOT 12)
+        const data = new Uint8Array(HASHBASE - 1).fill(0x61);
+
+        // Act
+        const result = buildFingerprint(data, 'text');
+
+        // Assert
+        expect(result).toEqual(packFingerprint(data, 'text'));
+      });
+    });
+
+    describe('Given content at the pack/dense size threshold, When buildFingerprint is called', () => {
+      it('Then it matches the dense builder', () => {
+        // Arrange
+        const data = new Uint8Array(HASHBASE).fill(0x61);
+
+        // Act
+        const result = buildFingerprint(data, 'text');
+
+        // Assert
+        expect(result).toEqual(denseFingerprint(data, 'text'));
+      });
+    });
+  });
+
+  describe('countSpanhashChangesFromFingerprints guards', () => {
+    describe('Given identical non-empty src and dst blobs, When countSpanhashChangesFromFingerprints is called', () => {
+      it('Then srcCopied equals the full byte count of the blob', () => {
+        // Arrange — 'hello world\n' (12 bytes, one LF chunk): src and dst share
+        // every chunk hash, so every byte counts as copied.
         const content = enc.encode('hello world\n');
 
         // Act
-        const result = countSpanhashChanges(content, content);
+        const result = countSpanhashChangesFromFingerprints(
+          buildFingerprint(content, contentKindOf(content)),
+          buildFingerprint(content, contentKindOf(content)),
+        );
 
-        // Assert — kills mutant 10: with <=, shared entries are skipped → srcCopied=0 ≠ 12
+        // Assert
         expect(result.srcCopied).toBe(12);
         expect(result.literalAdded).toBe(0);
       });
     });
 
-    // countSpanhashChanges guard (mutants 13-16) — the srcSize===0 || dstSize===0 arm
-
-    describe('Given only dstSize is zero, When countSpanhashChanges is called', () => {
+    describe('Given only dstSize is zero, When countSpanhashChangesFromFingerprints is called', () => {
       it('Then returns srcCopied=0 and literalAdded=0 via the zero-size guard', () => {
         // Arrange
-        // src non-empty, dst empty: guard `srcSize===0 || dstSize===0` fires (dstSize===0)
-        // Mutant 14 (|| → &&): requires BOTH to be 0 → skips guard, builds maps, srcCopied=0 anyway
-        //   but literalAdded = dstSize - 0 = 0 = same (equivalent for dst-empty case via &&)
-        // Mutant 16 (dstSize part → false): `srcSize===0 || false` → only fires when src is empty
-        //   for non-empty src: guard skips, goes to map path, computes srcCopied=0, literalAdded=0 (same)
-        // Mutant 13 (guard → false): skips guard entirely, builds maps → same result for dst-empty
-        // Mutant 15 (body → {}): guard fires but returns undefined → result is undefined, not the shape
         const src = enc.encode('hello world\n');
         const dst = new Uint8Array(0);
 
         // Act
-        const result = countSpanhashChanges(src, dst);
+        const result = countSpanhashChangesFromFingerprints(
+          buildFingerprint(src, contentKindOf(src)),
+          buildFingerprint(dst, contentKindOf(dst)),
+        );
 
         // Assert
         expect(result.srcCopied).toBe(0);
@@ -557,41 +845,29 @@ describe('similarity', () => {
       });
     });
 
-    describe('Given only srcSize is zero and dst is non-empty, When countSpanhashChanges is called', () => {
+    describe('Given only srcSize is zero and dst is non-empty, When countSpanhashChangesFromFingerprints is called', () => {
       it('Then returns srcCopied=0 and literalAdded equal to dst byte count via the zero-size guard', () => {
         // Arrange
-        // src empty, dst non-empty: guard `srcSize===0 || dstSize===0` fires (srcSize===0)
-        // Mutant 14 (|| → &&): requires BOTH zero → skips for src-empty/dst-nonempty
-        //   then builds maps; srcMap is empty → countSrcCopied returns 0
-        //   literalAdded = dstSize - 0 = dstSize → SAME result! equivalent for this arm too
-        // Mutant 16 (dstSize part → false): `srcSize===0 || false` = `srcSize===0`
-        //   → still fires when src is empty → same result
-        // Mutant 13 (guard → false): skips guard, builds maps, srcCopied=0, literalAdded=dstSize → same
-        // Mutant 15 (body → {}): guard fires but body is empty → returns undefined → fails shape check
         const src = new Uint8Array(0);
         const dst = enc.encode('hello world\n');
 
         // Act
-        const result = countSpanhashChanges(src, dst);
+        const result = countSpanhashChangesFromFingerprints(
+          buildFingerprint(src, contentKindOf(src)),
+          buildFingerprint(dst, contentKindOf(dst)),
+        );
 
-        // Assert — kills mutant 15 (empty body → undefined instead of the shape)
+        // Assert
         expect(result.srcCopied).toBe(0);
         expect(result.literalAdded).toBe(dst.length);
       });
     });
+  });
 
-    // estimateSimilarity guard (mutants 17-19) — the srcSize===0 || dstSize===0 → return 0 arm
-
+  describe('estimateSimilarity and estimateSimilarityFromFingerprints guards', () => {
     describe('Given srcSize is non-zero and dstSize is zero, When estimateSimilarity is called', () => {
-      it('Then returns 0 via the one-empty guard, not MAX_SCORE or any map-derived value', () => {
+      it('Then returns 0 via the one-empty guard, not MAX_SCORE or any fingerprint-derived value', () => {
         // Arrange
-        // src non-empty, dst empty: maxSize > 0 (bypasses maxSize===0 guard),
-        //   then `srcSize===0 || dstSize===0` fires (dstSize===0) → return 0
-        // Mutant 17 (guard → false): skips guard, builds empty dstMap, srcCopied=0, score=0 → same result
-        // Mutant 18 (|| → &&): only fires when BOTH zero → skips, but dstMap empty → score=0 → same
-        // Mutant 19 (dstSize part → false): `srcSize===0 || false` → false for non-empty src → skips
-        //   builds maps, dstMap empty, srcCopied=0, score=0 → same
-        // All three appear equivalent — covered by existing test; included here for completeness
         const src = enc.encode('hello\n');
         const dst = new Uint8Array(0);
 
@@ -603,27 +879,111 @@ describe('similarity', () => {
       });
     });
 
-    // estimateSimilarityFromMaps guard (mutants 20-22) — same pattern
-
-    describe('Given srcSize is non-zero and dstSize is zero maps, When estimateSimilarityFromMaps is called', () => {
+    describe('Given srcSize is non-zero and dstSize is zero fingerprints, When estimateSimilarityFromFingerprints is called', () => {
       it('Then returns 0 via the one-empty guard', () => {
         // Arrange
-        // srcSize > 0, dstSize = 0: maxSize > 0 (no maxSize guard), then `srcSize===0 || dstSize===0`
-        //   fires (dstSize===0) → return 0
-        // Mutant 20 (|| → &&): skips guard, dstMap empty, srcCopied=0, score=0 → same
-        // Mutant 21 (guard → false): skips guard, dstMap empty, srcCopied=0, score=0 → same
-        // Mutant 22 (dstSize part → false): same as 20
-        // All appear equivalent; included for completeness alongside existing tests
         const src = enc.encode('hello\n');
-        const srcMap = buildChunkMap(src);
-        const emptyMap = new Map<number, number>();
+        const srcFingerprint = buildFingerprint(src, 'text');
+        const empty = buildFingerprint(new Uint8Array(0), 'text');
 
         // Act
-        const result = estimateSimilarityFromMaps(srcMap, src.length, emptyMap, 0);
+        const result = estimateSimilarityFromFingerprints(srcFingerprint, src.length, empty, 0);
 
         // Assert
         expect(result).toBe(0);
       });
+    });
+  });
+
+  describe('contentKindOf', () => {
+    describe('Given bytes with no NUL in the first 8000 bytes, When contentKindOf is called', () => {
+      it('Then returns "text"', () => {
+        // Arrange + Act
+        const result = contentKindOf(enc.encode('hello world\n'));
+
+        // Assert
+        expect(result).toBe('text');
+      });
+    });
+
+    describe('Given bytes with a NUL in the first 8000 bytes, When contentKindOf is called', () => {
+      it('Then returns "binary"', () => {
+        // Arrange
+        const bytes = new Uint8Array(16).fill(0x61);
+        bytes[4] = 0x00;
+
+        // Act
+        const result = contentKindOf(bytes);
+
+        // Assert
+        expect(result).toBe('binary');
+      });
+    });
+
+    describe('Given a NUL at the last byte inside the detection window, When contentKindOf is called', () => {
+      it('Then returns "binary"', () => {
+        // Arrange — NUL at index BINARY_DETECTION_BYTES - 1 is inside the window
+        const bytes = new Uint8Array(BINARY_DETECTION_BYTES + 1).fill(0x61);
+        bytes[BINARY_DETECTION_BYTES - 1] = 0x00;
+
+        // Act
+        const result = contentKindOf(bytes);
+
+        // Assert
+        expect(result).toBe('binary');
+      });
+    });
+
+    describe('Given a NUL at the first byte outside the detection window, When contentKindOf is called', () => {
+      it('Then returns "text" — the window boundary is exclusive', () => {
+        // Arrange — NUL at index BINARY_DETECTION_BYTES is outside the window
+        const bytes = new Uint8Array(BINARY_DETECTION_BYTES + 1).fill(0x61);
+        bytes[BINARY_DETECTION_BYTES] = 0x00;
+
+        // Act
+        const result = contentKindOf(bytes);
+
+        // Assert
+        expect(result).toBe('text');
+      });
+    });
+  });
+
+  describe('Given a CRLF pair only on the src side, When countSpanhashChangesFromFingerprints is called', () => {
+    it('Then the CR in src is skipped, matching a dst that never had it (srcCopied equals dstSize)', () => {
+      // Arrange — src = 'A\r\nB\n' (5 bytes), dst = 'A\nB\n' (4 bytes). Both sides are
+      // text (no NUL), so src's CR is skipped: its two chunks (hash(A,LF)=8330 and
+      // hash(B,LF)) become byte-for-byte the same chunks dst hashes, so every byte
+      // of dst is copied from src. Without the fix, src's first chunk would hash
+      // to 95291 (CR included) instead of 8330, so only the second chunk (2 bytes)
+      // would be shared and literalAdded would be 2, not 0.
+      const src = enc.encode('A\r\nB\n');
+      const dst = enc.encode('A\nB\n');
+
+      // Act
+      const result = countSpanhashChangesFromFingerprints(
+        buildFingerprint(src, contentKindOf(src)),
+        buildFingerprint(dst, contentKindOf(dst)),
+      );
+
+      // Assert
+      expect(result.srcCopied).toBe(4);
+      expect(result.literalAdded).toBe(0);
+    });
+  });
+
+  describe('Given a CRLF pair only on the src side, When estimateSimilarity is called', () => {
+    it('Then the score reflects the CR-skipped byte count, not the CR-counted one', () => {
+      // Arrange — same pair as above: fixed srcCopied=4, maxSize=5 → trunc(4*60000/5)=48000.
+      // Without the fix (CR counted), srcCopied would be 2 → trunc(2*60000/5)=24000.
+      const src = enc.encode('A\r\nB\n');
+      const dst = enc.encode('A\nB\n');
+
+      // Act
+      const result = estimateSimilarity(src, dst);
+
+      // Assert
+      expect(result).toBe(48000);
     });
   });
 });

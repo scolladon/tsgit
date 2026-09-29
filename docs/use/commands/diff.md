@@ -11,7 +11,9 @@ interface DiffOptions {
   readonly from?: string;          // tree-ish, full rev grammar; default 'HEAD'
   readonly to?: string;            // tree-ish, full rev grammar; default empty tree
   readonly detectRenames?: boolean;
-  readonly renameOptions?: RenameDetectOptions;  // fine-tune detection; only used when detectRenames is true
+  readonly renameOptions?: RenameDetectOptions;  // fine-tune detection; breakRewrites also applies
+                                                  // when detectRenames is off; the other members
+                                                  // only apply when it is on
   readonly recursive?: boolean;    // recurse into sub-trees (`git diff-tree -r`); default false
   readonly withStat?: boolean;     // attach per-file { added, deleted, binary } counts
   readonly ignoreWhitespace?: 'all' | 'change' | 'at-eol';  // -w / -b / --ignore-space-at-eol
@@ -20,14 +22,15 @@ interface DiffOptions {
 }
 
 // RenameDetectOptions knobs:
-//   threshold?:      numeric 0..MAX_SCORE rename similarity gate (default 50%); callers map
+//   threshold?:      numeric 0..MAX_SCORE similarity gate for renames and copies (default 50%); callers map
 //                    git's -M50% / -M50 / -M0.5 forms to this number.
 //   copies?:         'off' (default) | 'on' (detect copies from modified sources, -C) |
 //                    'harder' (widen copy sources to all preimage paths, -C -C)
-//   copyThreshold?:  numeric 0..MAX_SCORE copy similarity gate; defaults to threshold.
 //   breakRewrites?:  { score: number; merge: number } | false (default false, -B off)
 //                    score: dissimilarity gate to attempt a break; merge: gate to keep broken.
 //                    A merge value of 0 maps to the default keep-broken gate (60%).
+//                    Applies with or without `detectRenames` — git's -B alone breaks and
+//                    rejoins full rewrites; it never pairs a break with another file.
 
 interface TreeDiff {
   readonly changes: ReadonlyArray<DiffChange>;
@@ -78,6 +81,10 @@ const noBlank = await repo.diff({ from: 'HEAD~1', ignoreBlankLines: true });
 - The default is **non-recursive** like `git diff-tree`: a changed sub-directory
   surfaces as a single tree-entry change. Pass `recursive: true` to expand it
   into per-file `DiffChange`s (`git diff-tree -r`).
+- `withStat: true` forces `recursive: true` regardless of what was passed —
+  git's `--numstat` recurses before rename/copy detection runs, because a
+  changed sub-directory has no lines of its own to diff; pairing only ever
+  sees leaf blobs when line counts are requested.
 - With `recursive: true`, a corrupt/fsck-invalid tree (unsorted entries,
   duplicate names, `.`/`..`/embedded-`/` names) diffs exactly like
   `git diff-tree -r` instead of throwing — only structural entry damage
@@ -91,12 +98,57 @@ const noBlank = await repo.diff({ from: 'HEAD~1', ignoreBlankLines: true });
 - A `rename` or `copy` change carries `oldId`/`newId`/`oldMode`/`newMode` (both
   sides of the pairing) and a `similarity` score (`SimilarityScore` with `score`
   in `0..MAX_SCORE` and `maxScore === MAX_SCORE`).
+- **Exact pairing** (identical content, `similarity.score === MAX_SCORE`) matches
+  git's `-M`/`-C`: destinations are matched in path order against candidate
+  sources sharing their content, examining at most 100 candidates per
+  destination (git's fixed bound). Under plain renames, each source pairs at
+  most once — a second destination with the same content shows as an `add`,
+  not a second `rename`; among several same-content sources, a matching
+  basename wins, otherwise the first source in path order. Under `copies`, the
+  same source can pair repeatedly: a deleted source paired k times yields k−1
+  `copy` changes and one `rename` (the rename last in path order), and a
+  source the diff keeps (modified, or unchanged under `copies: 'harder'`) only
+  yields `copy` changes — renames are always chosen before copies over the
+  shared candidate list, as in git. Regular files pair across the executable
+  bit; symlinks, gitlinks, and trees pair only with identical content **and**
+  mode, and are never similarity-scored — but they still count toward
+  `limit`. Exact pairing is never skipped by the rename limit — the limit only
+  gates similarity scoring for non-identical content.
 - A `modify` may carry a `broken` dissimilarity datum (`SimilarityScore`) when `-B`
   break detection kept the modify broken rather than folding it into a rename. The
   `score` is git's break-detection dissimilarity (`merge_score`), which the caller
   projects to the `M<n>` / `dissimilarity index <n>%` integer percent.
+- A `type-change` may carry `broken` when `-B` broke a symlink↔regular type
+  change and its halves rejoined; `score` is always `MAX_SCORE` (git prints
+  `T100`). A broken type change whose new side pairs elsewhere as a rename or
+  copy destination is replaced by that change instead — no `type-change` is
+  emitted for it.
+- With `withStat`, a kept-broken `modify` (one carrying `broken`) counts every
+  old-side line as deleted and every new-side line as added — git's
+  complete-rewrite numstat, not a line diff — unless the pair is binary, which
+  reports `{ added: 0, deleted: 0, binary: true }` as usual. Neither
+  `ignoreWhitespace` nor `ignoreCrAtEol` drops it, even when the rewrite is
+  whitespace-only.
+- Under plain `-M` (`copies: 'off'`, nothing left to break, `threshold` below
+  100%), a delete and an add whose basename is unique on both sides pair
+  first — ahead of the general similarity matrix — once their similarity
+  reaches the midpoint between `threshold` and 100%. In the general matrix,
+  two candidates with equal similarity are ranked by whether the basename
+  matches, then by path order — never by traversal order.
 - `withStat` reads blob contents and runs a line diff per file; without it the
   diff is purely tree-level (no blob reads).
+- The line diff follows git's own default xdiff pipeline, not a plain bounded
+  Myers search: a leading/trailing common run and any line with no match on
+  the other side are discarded before the search runs (record cleanup), the
+  search itself is git's linear-space divide-and-conquer split — its snake
+  heuristic and cost cap return a valid, possibly non-minimal script in
+  bounded time, never bailing to a whole-file replacement past a fixed edit
+  distance however large the true edit distance is — and the resulting
+  change groups are then slid by the indent heuristic exactly as
+  `xdl_change_compact` slides them (git's own default; there is no flag to
+  turn it off). Both the `added`/`deleted` counts under `withStat` and the
+  hunk boundaries a caller renders from the `TreeDiff` follow from this
+  pipeline.
 - A unified patch reconstructed from the `TreeDiff` matches `git diff
   --no-ext-diff --no-color` byte-for-byte — pinned by the integration suite,
   which reconstructs via the shared `renderPatch` serializer and double-pins
@@ -137,6 +189,13 @@ output, exactly as it does in `git diff -w --name-status`. A whitespace-only
 *rename* is not dropped: rename/copy/break similarity scoring is unaffected by
 whitespace modes (`-M -w` ≡ `-M`).
 
+**Directory-mode entries always drop under a line-key mode**, `-w` renames and
+copies included: a non-recursive diff's whole-directory add, delete, modify —
+or rename/copy paired by tree oid — carries no lines of its own to line-diff,
+so it is dropped outright regardless of `-M`/`-C`, exactly like `git diff-tree
+-w` (no `-r`), which never shows a directory-mode entry under any
+whitespace-ignore mode.
+
 **Blank-line suppression** (`ignoreBlankLines`) is a hunk/numstat suppressor, not
 a file-drop trigger. A file with only blank-line changes **stays** in
 `TreeDiff.changes` (present in name-status/raw, nonzero under `--quiet`); its
@@ -162,9 +221,15 @@ corresponding `[diff "<name>"].textconv` command is configured, the diff compare
 the **textconv output** of each side rather than the raw committed bytes — exactly
 as `git diff --no-ext-diff` does.
 
-- **Both sides transformed.** The textconv command receives each blob's raw bytes
-  and its stdout replaces the content for hunk and numstat computation. Added files
-  run textconv on the new side only; deleted files on the old side only.
+- **Both sides transformed, patch only.** The textconv command receives each blob's
+  raw bytes and its stdout replaces the content for the patch hunks. Added files run
+  textconv on the new side only; deleted files on the old side only.
+- **numstat/stat and the `-w` drop decision stay on the RAW blob.** git's
+  `builtin_diffstat` never calls `fill_textconv` — the `added`/`deleted` counts, the
+  `-w`/`-b`/`--ignore-space-at-eol` drop verdict, and the binary numstat row all count
+  the raw committed bytes, never the textconv output. Only the patch hunks see the
+  transformed content; a NUL-stripping or NUL-retaining textconv therefore never
+  changes numstat's binary/text call or its line counts.
 - **OIDs are not affected.** The structured `DiffChange` fields (`oldId`, `newId`,
   mode, rename similarity) are computed from the raw committed tree and are never
   touched by textconv. A caller rendering an `index` header line should use the raw
@@ -186,6 +251,13 @@ attribute only names it). In the browser / memory adapters, or in Node with
 `openRepository({ command: false })`, no driver is wired and the diff falls back
 to raw bytes. See the [RUNBOOK](../../../RUNBOOK.md) "Operating filter and textconv drivers"
 section for security and operator notes.
+
+**Bare repositories.** A bare repository (no work tree) has no worktree `.gitattributes`
+to read, and no `attr.tree`/`--attr-source` support to substitute a committed one — matching
+git's own default, which resolves every path `unspecified` there absent that option. Rename
+scoring, break-rewrite scoring, and every numstat/binary/textconv attribute decision above
+still read `.git/info/attributes` and `core.attributesFile`, since neither lives in the work
+tree; only the worktree-`.gitattributes` source is skipped, never the whole attribute lookup.
 
 ## Binary-vs-text decision (`diff` / `binary` attribute)
 
@@ -213,12 +285,59 @@ A few points worth noting:
   **raw** blob — so a NUL-retaining or NUL-stripping textconv still shows `-\t-` in
   numstat while the patch shows a clean text hunk. This matches git exactly.
 - **OIDs are not affected.** The `diff` / `binary` attribute never enters the
-  `DiffChange` OIDs, modes, or rename similarity scores — only the `binary` boolean
-  and the patch binary branch.
+  `DiffChange` OIDs or modes. It drives two independent decisions: the `binary`
+  boolean and the patch binary branch described above, and — separately — rename,
+  copy and break similarity scoring, described next.
 - **Off-node adapters.** `-diff` and bare `diff` (and the raw-blob numstat decision
   for named drivers) are honoured in the browser and in-memory adapters — they need
   no external command. Only textconv driver *execution* requires a Node `CommandRunner`
   (see the textconv section above).
+
+### `diff.<driver>.binary`
+
+A named driver's own `[diff "<name>"].binary` key is a tristate — `true` / `false` /
+`auto` (case-insensitive) or unset — that overrides the `diff=<name>` row of the table
+above, on **both** surfaces, whether or not a `textconv` is configured for that driver:
+
+| `diff.<name>.binary` | numstat (`binary`) | patch binary branch |
+|---|---|---|
+| `true` | always `true` | text hunk if a `textconv` is configured (its output is always clean text); binary otherwise |
+| `false` | always `false` | always a text hunk — even over a raw NUL-bearing blob with no `textconv` |
+| `auto` or unset | falls back to the raw-content sniff (or, with a configured `textconv`, the table above) | falls back the same way |
+
+Rename and break-rewrite scoring read this **same** tristate (see the next section) —
+`true`/`false` there scores the blob binary/text outright, and `auto`/unset falls back to
+the ordinary content sniff, independently of whether the driver's `textconv` is configured.
+
+An out-of-grammar value (anything but `true`/`false`/`auto`/git's boolean synonyms) is
+refused the same way git refuses it — `CONFIG_BAD_BOOLEAN_VALUE` (see
+[`errors.md`](../errors.md)) — at the eager operational gate every command reads, before a
+single object is diffed.
+
+## Rename and break similarity scoring (`diff` attribute)
+
+Rename/copy detection and `-B` break-rewrite scoring honour the same `diff`
+attribute, resolved per path, as the binary-vs-text decision above — from the worktree's
+`.gitattributes`, `.git/info/attributes` and `core.attributesFile` — but as an
+**independent** decision: textconv never enters it (the scorer always reads the raw
+blob, matching git's `diff_filespec_is_binary`), and a named driver (`diff=<name>`)
+defers directly to that driver's own `diff.<name>.binary` config value rather than to
+whether a `textconv` command is configured.
+
+- `-diff` (or the `binary` macro) scores the blob as binary; a bare `diff` scores it
+  as text; `diff=<name>` follows `diff.<name>.binary` when the driver sets it; an
+  unspecified attribute, or a named driver with no `binary` config, falls back to the
+  ordinary content sniff.
+- The override is resolved per path. A rename or copy candidate's two sides — a
+  source path and a destination path — each resolve their own path's attribute
+  independently; a `-B` break's old and new content, being two states of one path,
+  share a single resolved override.
+- **Text content skips the CR of a CRLF pair** when the scorer chunks a blob into
+  spans for hashing — the CR is neither accumulated into the hash nor counted toward
+  the chunk's byte length. Binary content hashes every byte, CR included.
+- The chunk hash's bucket, `(accum1 + accum2 * 0x61) % HASHBASE`, wraps its unsigned
+  32-bit accumulator addition to 32 bits before the modulo — matching git's
+  `unsigned int` arithmetic rather than a wider intermediate.
 
 ## See also
 
@@ -231,4 +350,7 @@ A few points worth noting:
   tree diff) · 166–169 (the superseded patch-text format) · 378 (whitespace
   options flat enum) · 379 (`--ignore-blank-lines` in scope) · 380 (file-drop
   via line diff) · 381 (whitespace threading and similarity invariant) · 382
-  (whitespace config default)
+  (whitespace config default) · 409 (binary-vs-text override threading, amended
+  2026-09-28 for raw-byte line counts and the `diff.<driver>.binary` tristate) ·
+  909 (xdiff line-diff transcription) · 910 (indent-heuristic change
+  compaction) · 911 (similarity hash wraps and skips CRLF carriage returns)

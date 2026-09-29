@@ -638,8 +638,9 @@ describe.skipIf(!GIT_AVAILABLE)('diff type-change interop', () => {
     });
 
     describe('When diff called with copies:harder', () => {
-      it('Then the gitlinks still stay as separate add and delete', async () => {
-        // Arrange
+      it('Then the name-status matches git diff -C -C, where an unchanged same-oid gitlink is the copy source', async () => {
+        // Arrange — copies:'harder' offers every preimage path as a copy source, so an
+        // unrelated unchanged gitlink sharing r2_new's oid pairs with it exactly
         const { from, to } = r2DifferentOid;
 
         // Act
@@ -651,11 +652,9 @@ describe.skipIf(!GIT_AVAILABLE)('diff type-change interop', () => {
         });
 
         // Assert
-        const types = result.changes.map((c) => c.type);
-        expect(types).toContain('add');
-        expect(types).toContain('delete');
-        expect(types).not.toContain('rename');
-        expect(types).not.toContain('copy');
+        expect(nameStatusFrom(result)).toBe(
+          git(dir, 'diff', '--no-ext-diff', '--name-status', '-C', '-C', from, to).trim(),
+        );
       });
     });
   });

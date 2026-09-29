@@ -10,6 +10,7 @@ import { resolveAttribute } from '../../../../../src/domain/attributes/index.js'
 import type { TsgitError } from '../../../../../src/domain/error.js';
 import type { FilePath } from '../../../../../src/domain/objects/object-id.js';
 import type { Context } from '../../../../../src/ports/context.js';
+import { asBareContext } from '../../commands/fixtures.js';
 
 const seed = async (ctx: Context, path: string, content: string): Promise<void> => {
   await ctx.fs.writeUtf8(path, content);
@@ -439,6 +440,72 @@ describe('buildAttributeProvider', () => {
           expect(readUtf8Spy).not.toHaveBeenCalled();
         },
       );
+    });
+  });
+
+  describe('Given a bare repository (no work tree, attr.tree unset)', () => {
+    describe('When resolving an attribute governed only by a root .gitattributes', () => {
+      it("Then yields 'unspecified' without throwing (verified against real git 2.55: a bare clone reads no work-tree/HEAD .gitattributes by default)", async () => {
+        // Arrange
+        const seeded = createMemoryContext();
+        await seed(seeded, '/repo/.gitattributes', '* merge=root\n');
+        const ctx = asBareContext(seeded);
+
+        // Act
+        const result = await merge(ctx, 'a.txt');
+
+        // Assert
+        expect(result).toBe('unspecified');
+      });
+    });
+
+    describe('When resolving an attribute governed by info/attributes', () => {
+      it('Then the rule still applies (info/attributes never lives in the work tree)', async () => {
+        // Arrange
+        const seeded = createMemoryContext();
+        await seed(seeded, '/repo/.git/info/attributes', '* merge=info\n');
+        const ctx = asBareContext(seeded);
+
+        // Act
+        const result = await merge(ctx, 'a.txt');
+
+        // Assert
+        expect(result).toEqual({ set: 'info' });
+      });
+    });
+
+    describe('When resolving an attribute governed by a global core.attributesFile', () => {
+      it('Then the rule still applies (a global file is unaffected by bareness)', async () => {
+        // Arrange
+        const seeded = createMemoryContext();
+        await seed(seeded, '/repo/.git/config', '[core]\n  attributesFile = /repo/global-attrs\n');
+        await seed(seeded, '/repo/global-attrs', '* merge=global\n');
+        const ctx = asBareContext(seeded);
+
+        // Act
+        const result = await merge(ctx, 'a.txt');
+
+        // Assert
+        expect(result).toEqual({ set: 'global' });
+      });
+    });
+
+    describe('When resolving a nested path with per-directory .gitattributes', () => {
+      it('Then every directory source is skipped, not just the root', async () => {
+        // Arrange
+        const seeded = createMemoryContext();
+        await seed(seeded, '/repo/.gitattributes', '* merge=root\n');
+        await seed(seeded, '/repo/sub/.gitattributes', '*.txt merge=sub\n');
+        const ctx = asBareContext(seeded);
+
+        // Act
+        const { sources } = await (await buildAttributeProvider(ctx)).sourcesForPath(
+          'sub/a.txt' as FilePath,
+        );
+
+        // Assert
+        expect(sources).toEqual([]);
+      });
     });
   });
 });

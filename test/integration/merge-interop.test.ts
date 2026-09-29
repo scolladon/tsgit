@@ -210,10 +210,11 @@ describe.skipIf(!GIT_AVAILABLE)('merge interop — non-conflict materialisation'
       it('Then HEAD, index, and working tree match git, with both edits merged and no conflict markers', async () => {
         // Arrange — a 100 001-line base file; theirs edits one line near the
         // start, ours edits a different line far away — non-overlapping, so
-        // both tools auto-merge cleanly. The file is over MAX_LINES and over
-        // MAX_DIFF_LINES, but each side's edit distance from base is 2 (one
-        // delete, one insert) — this is the surface a size-based diff cap
-        // would have made worse (a whole-file conflict where git merges clean).
+        // both tools auto-merge cleanly. The file is over the former 100 000-line
+        // isBinary cap and the former 50 000-line diffLines cap, but each side's
+        // edit distance from base is 2 (one delete, one insert) — this is the
+        // surface a size-based diff cap would have made worse (a whole-file
+        // conflict where git merges clean).
         const count = 100_001;
         const baseLines = Array.from({ length: count }, (_, i) => `line-${i}`);
         const base = `${baseLines.join('\n')}\n`;

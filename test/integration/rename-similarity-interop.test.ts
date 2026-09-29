@@ -15,22 +15,36 @@
  *   unique:  inexact rename R-scores, patch body, limit semantics match upstream git + frozen goldens
  *   interopSurface: diff
  */
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm as rmDir, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import * as url from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../src/adapters/memory/memory-adapter.js';
+import { createNodeContext } from '../../src/adapters/node/index.js';
 import { add } from '../../src/application/commands/add.js';
 import { commit } from '../../src/application/commands/commit.js';
 import { diff } from '../../src/application/commands/diff.js';
 import { init } from '../../src/application/commands/init.js';
 import { mv } from '../../src/application/commands/mv.js';
 import { rm } from '../../src/application/commands/rm.js';
-import type { CopyChange, ModifyChange, RenameChange } from '../../src/domain/diff/diff-change.js';
+import type {
+  CopyChange,
+  DiffChange,
+  ModifyChange,
+  RenameChange,
+} from '../../src/domain/diff/diff-change.js';
 import { toSimilarityPercent } from '../../src/domain/diff/similarity.js';
+import type { StatDiffChange, StatFields } from '../../src/domain/diff/stat-fields.js';
 import type { AuthorIdentity } from '../../src/domain/objects/index.js';
 import { reconstructPatch } from './diff-reconstruct.js';
 import { GIT_AVAILABLE, git, makePeerPair, runGit, runGitEnv } from './interop-helpers.js';
+import {
+  buildRenameRow,
+  describeRenameRows,
+  type FileSpec,
+  type RenameRow,
+  runRenameRow,
+} from './rename-interop-rows.js';
 
 const fixturesDir = path.join(
   path.dirname(url.fileURLToPath(import.meta.url)),
@@ -136,8 +150,8 @@ const tenLineContent = (prefix: string, changed = -1, changedPrefix = 'CHANGED')
  *   total=20, shared=0  → 100% dissimilarity
  *   total=20, shared=7  → 65%  dissimilarity
  *   total=20, shared=10 → 50%  dissimilarity  (re-merged at default -B gate)
- *   total=20, shared=9  → 55%  dissimilarity  (boundary for #B4)
- *   total=50, shared=20 → 60%  dissimilarity  (boundary for #B5)
+ *   total=20, shared=9  → 55%  dissimilarity
+ *   total=50, shared=20 → 60%  dissimilarity
  */
 const breakContent = (kind: 'old' | 'new', total: number, shared: number): string =>
   Array.from({ length: total }, (_, i) =>
@@ -1896,7 +1910,7 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
   });
 
   describe('Given a pair scoring R040, When threshold is 24000 (40%)', () => {
-    it('Then tsgit detects the rename matching git -M40% and not matching -M41% (threshold #T1/#T2)', async () => {
+    it('Then tsgit detects the rename matching git -M40% and not matching -M41%', async () => {
       // Arrange — content engineered to score exactly R040 by git's spanhash:
       // 37 shared lines + 57 unique-src lines + 57 unique-dst lines (all 30 bytes each).
       // Probed: git -M40% → R040; git -M41% → A/D.
@@ -2007,9 +2021,9 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
     });
   });
 
-  describe('Given a copy pair scoring C040, When copyThreshold is 24000 (40%)', () => {
-    it('Then tsgit detects the copy matching git -C40%; at 24600 (41%) it does not (threshold #T3)', async () => {
-      // Arrange — same shared/unique byte ratio as T1/T2 (37+57 lines).
+  describe('Given a copy pair scoring C040, When threshold is 24000 (40%)', () => {
+    it('Then tsgit detects the copy matching git -C40%; at 24600 (41%) it does not', async () => {
+      // Arrange — same shared/unique byte ratio as the rename-threshold pair above (37+57 lines).
       // source.txt is modified (preimage = original), copy.txt = new file with ~40% similarity
       // to source.txt's preimage. Plain -C uses modified-file preimage as copy source.
       // Probed: git -C40% → C040; git -C41% → A/M.
@@ -2081,19 +2095,19 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
         await add(ctx, ['source.txt', 'copy.txt']);
         const c2 = await commit(ctx, { message: 'second', author });
 
-        // Act — copyThreshold:24000 = 40% of MAX_SCORE
+        // Act — threshold:24000 = 40% of MAX_SCORE
         const treeDiff40 = await diff(ctx, {
           from: c1.id,
           to: c2.id,
           detectRenames: true,
-          renameOptions: { copies: 'on', copyThreshold: 24000 },
+          renameOptions: { copies: 'on', threshold: 24000 },
         });
-        // Act — copyThreshold:24600 = 41%: should NOT copy
+        // Act — threshold:24600 = 41%: should NOT copy
         const treeDiff41 = await diff(ctx, {
           from: c1.id,
           to: c2.id,
           detectRenames: true,
-          renameOptions: { copies: 'on', copyThreshold: 24600 },
+          renameOptions: { copies: 'on', threshold: 24600 },
         });
 
         const resultAt40 = reconstructNameStatus(treeDiff40.changes);
@@ -2132,7 +2146,7 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
   });
 
   describe('Given a 55%-dissimilar modify, When breakRewrites score/merge are swept', () => {
-    it('Then tsgit matches git at default gate and gate boundaries are git-faithful (threshold #T4)', async () => {
+    it('Then tsgit matches git at default gate and gate boundaries are git-faithful', async () => {
       // Arrange — 20 lines old, 9 shared in new.
       // git merge_score = (1420-639)*60000/1420 = 33000 → 55%
       // Verified: git -B/55% → M055 (kept); -B/56% → M (re-merged); default -B → M (33000 < 36000).
@@ -2497,6 +2511,2053 @@ describe.skipIf(!GIT_AVAILABLE)('integration — rename similarity detection git
       } finally {
         await pair.dispose();
       }
+    });
+  });
+});
+
+/**
+ * Bucket-hash 32-bit wrap interop: git's spanhash bucket is `(accum1 +
+ * accum2 * 0x61) % HASHBASE`, computed in `unsigned int` — the sum wraps to
+ * 32 bits BEFORE the modulo. A blob with no LF forces every chunk to flush
+ * at the 64-byte boundary, keeping both accumulators large enough that
+ * several chunks' un-wrapped sum overflows 2^32, landing this pair's
+ * copied-byte count (and score) on a different side of the raw threshold
+ * below than git's wrapped sum does.
+ */
+const SPANHASH_WRAP_TMP_PREFIX = 'tsgit-rename-spanhash-wrap-';
+const SPANHASH_WRAP_SETUP_TIMEOUT = 60_000;
+const SPANHASH_WRAP_LEN = 4096;
+const SPANHASH_WRAP_SHARED = 1925;
+const SPANHASH_WRAP_PRINTABLE_LO = 0x21;
+const SPANHASH_WRAP_PRINTABLE_HI = 0x7e;
+
+/** Deterministic printable-ASCII (0x21..0x7e), no LF or CR — the same LCG
+ *  shape as `pseudoRandomBinary` below, restricted so this row exercises only
+ *  the bucket-hash wrap, never a later CRLF-skip fix. */
+const spanhashWrapBytes = (seed: number, length: number): string => {
+  let state = seed;
+  const span = SPANHASH_WRAP_PRINTABLE_HI - SPANHASH_WRAP_PRINTABLE_LO + 1;
+  const bytes = Array.from({ length }, () => {
+    state = (state * 1_103_515_245 + 12_345) & 0x7fffffff;
+    return SPANHASH_WRAP_PRINTABLE_LO + (state % span);
+  });
+  return String.fromCharCode(...bytes);
+};
+
+const spanhashWrapSharedPrefix = spanhashWrapBytes(15, SPANHASH_WRAP_SHARED);
+const spanhashWrapTailLength = SPANHASH_WRAP_LEN - SPANHASH_WRAP_SHARED;
+const spanhashWrapO1 = spanhashWrapSharedPrefix + spanhashWrapBytes(1015, spanhashWrapTailLength);
+const spanhashWrapN1 = spanhashWrapSharedPrefix + spanhashWrapBytes(1016, spanhashWrapTailLength);
+
+/**
+ * Verified against real git 2.55.0 (scrubbed env, signing off): `-M47500`
+ * parses to the raw threshold 28500 (a 5-digit argument with no `%` scales
+ * by 100000, so `47500 * 60000 / 100000 = 28500`); at that threshold git
+ * pairs this exact fixture as `R048`, while `-M` alone (the 50%/30000
+ * default) reports `A`+`D` for the same pair.
+ */
+const SPANHASH_WRAP_ROWS: ReadonlyArray<RenameRow> = [
+  {
+    label:
+      'a 4 KiB no-LF pair whose byte-copied count crosses a raw threshold only once the bucket sum wraps to 32 bits (R048 o1→n1)',
+    before: [{ path: 'o1.txt', content: spanhashWrapO1 }],
+    after: [{ path: 'n1.txt', content: spanhashWrapN1 }],
+    gitFlags: ['-M47500'],
+    renameOptions: { threshold: 28500 },
+  },
+];
+
+describeRenameRows(
+  'spanhash bucket-hash 32-bit wrap interop',
+  SPANHASH_WRAP_ROWS,
+  SPANHASH_WRAP_TMP_PREFIX,
+  SPANHASH_WRAP_SETUP_TIMEOUT,
+  {
+    given: 'Given a raw diff pair whose bucket sum overflows 2^32 for several spanhash chunks',
+  },
+);
+
+/**
+ * CRLF CR-skip interop: git's `hash_chars` skips the CR of a CRLF pair when
+ * the blob is text, so the spanhash byte-copied count — and every score
+ * derived from it, rename similarity and break dissimilarity alike — counts
+ * one fewer byte per CRLF line than a scorer that hashes the CR too.
+ */
+const CRLF_SKIP_TMP_PREFIX = 'tsgit-rename-crlf-skip-';
+const CRLF_SKIP_SETUP_TIMEOUT = 60_000;
+const CRLF_TEXT_LINE_COUNT = 20;
+const CRLF_TEXT_EDIT_START = 5;
+const CRLF_TEXT_EDIT_END = 11;
+
+/** `total` CRLF-terminated lines; lines in `[editedFrom, editedTo)` carry an
+ *  "edited" prefix, every other line is byte-identical shared content. */
+const crlfTextLines = (editedFrom: number, editedTo: number): string =>
+  Array.from({ length: CRLF_TEXT_LINE_COUNT }, (_, i) => {
+    const edited = i >= editedFrom && i < editedTo;
+    const text = edited
+      ? `edited line ${String(i).padStart(2, '0')}`
+      : `line ${String(i).padStart(2, '0')} shared content`;
+    return `${text}\r\n`;
+  }).join('');
+
+/**
+ * Verified against real git 2.55.0 (scrubbed env, signing off): plain `-M`
+ * pairs this fixture as `R067`, the CR-skipped percentage; a scorer that
+ * hashes the CR too reports `R070` for the same bytes.
+ */
+const CRLF_TEXT_ROWS: ReadonlyArray<RenameRow> = [
+  {
+    label:
+      'a CRLF text file with 6 of 20 lines edited scores by the CR-skipped byte count, not the CR-counted one (R067 old→new)',
+    before: [{ path: 'old.txt', content: crlfTextLines(0, 0) }],
+    after: [{ path: 'new.txt', content: crlfTextLines(CRLF_TEXT_EDIT_START, CRLF_TEXT_EDIT_END) }],
+  },
+];
+
+describeRenameRows(
+  'CRLF text rename similarity CR-skip interop',
+  CRLF_TEXT_ROWS,
+  CRLF_SKIP_TMP_PREFIX,
+  CRLF_SKIP_SETUP_TIMEOUT,
+  {
+    given: 'Given a raw diff pair of CRLF text files exercising the rename similarity pass',
+  },
+);
+
+const CRLF_BREAK_TMP_PREFIX = 'tsgit-rename-crlf-break-skip-';
+const CRLF_BREAK_SETUP_TIMEOUT = 60_000;
+const CRLF_BREAK_OPTS = { breakRewrites: { score: 30000, merge: 36000 } };
+
+/** `total` CRLF-terminated lines for break-rewrite fixtures — the CRLF twin
+ *  of the plain-LF `breakContent` above. */
+const crlfBreakContent = (kind: 'old' | 'new', total: number, shared: number): string =>
+  Array.from({ length: total }, (_, i) =>
+    kind === 'old' || i < shared
+      ? `line-${String(i).padStart(3, '0')}: shared content alpha beta gamma delta epsilon zeta eta theta\r\n`
+      : `different-${String(i).padStart(3, '0')}: COMPLETELY NEW TEXT ZETA THETA KAPPA LAMBDA MU NU XI OMICRON PI RHO SIGMA\r\n`,
+  ).join('');
+
+/**
+ * Verified against real git 2.55.0 (scrubbed env, signing off): `--no-renames
+ * -B --name-status` keeps this rewrite broken at `M091`, the CR-skipped
+ * dissimilarity percentage; a scorer that hashes the CR too computes `M090`
+ * for the same bytes.
+ */
+const CRLF_BREAK_ROWS: ReadonlyArray<RenameRow> = [
+  {
+    label:
+      'a CRLF rewrite kept broken under --no-renames -B scores its dissimilarity by the CR-skipped byte count, not the CR-counted one (M091 m.txt)',
+    before: [{ path: 'm.txt', content: crlfBreakContent('old', 11, 1) }],
+    after: [{ path: 'm.txt', content: crlfBreakContent('new', 11, 1) }],
+    detectRenames: false,
+    gitFlags: ['-B'],
+    renameOptions: CRLF_BREAK_OPTS,
+  },
+];
+
+describeRenameRows(
+  'CRLF break-rewrite dissimilarity CR-skip interop',
+  CRLF_BREAK_ROWS,
+  CRLF_BREAK_TMP_PREFIX,
+  CRLF_BREAK_SETUP_TIMEOUT,
+  {
+    given: 'Given a raw diff pair of CRLF text files exercising the -B break-rewrite pass',
+    when: 'When diff is called without detectRenames',
+  },
+);
+
+/**
+ * CRLF break-GATE (not dissimilarity) CR-skip interop: `literalAdded` — the
+ * OTHER count `should_break`'s gate is built from, alongside `srcCopied` —
+ * used to inflate to `dstSize − srcCopied` (raw byte count) instead of the
+ * CR-skipped fingerprint total. That inflation pushes `computedBreakScore`
+ * ABOVE the gate for a CRLF pair git itself keeps below it, so tsgit broke a
+ * pair git reports as a plain `M`. `CRLF_TEXT_LINE_COUNT`/`crlfTextLines`
+ * (the rename-similarity CR-skip fixture above) reused verbatim — only the
+ * gate this row exercises differs.
+ */
+const CRLF_BREAK_GATE_TMP_PREFIX = 'tsgit-rename-crlf-break-gate-';
+const CRLF_BREAK_GATE_SETUP_TIMEOUT = 60_000;
+
+/**
+ * Verified against real git 2.55.0 (scrubbed env, signing off): `--no-renames
+ * -B87%/1% --name-status` reports a plain `M` for this pair (src 480 B, dst
+ * 400 B) — the CR-skipped break score (83%) never clears the 87% gate. A
+ * scorer that hashes the CR too (the pre-fix `dstSize − srcCopied` formula)
+ * computes 87.5%, wrongly clearing the gate and breaking the pair.
+ */
+const CRLF_BREAK_GATE_ROWS: ReadonlyArray<RenameRow> = [
+  {
+    label:
+      'a CRLF pair whose CR-inflated break score would wrongly clear an 87% gate stays a plain M (m.txt)',
+    before: [{ path: 'm.txt', content: crlfTextLines(0, 0) }],
+    after: [{ path: 'm.txt', content: crlfTextLines(0, 10) }],
+    detectRenames: false,
+    gitFlags: ['-B87%/1%'],
+    // 87% and 1% of MAX_SCORE (60000): git's -B87%/1%.
+    renameOptions: { breakRewrites: { score: 52_200, merge: 600 } },
+  },
+];
+
+describeRenameRows(
+  'CRLF break-gate CR-skip interop',
+  CRLF_BREAK_GATE_ROWS,
+  CRLF_BREAK_GATE_TMP_PREFIX,
+  CRLF_BREAK_GATE_SETUP_TIMEOUT,
+  {
+    given: 'Given a raw diff pair of CRLF text files sitting just below a -B break-attempt gate',
+    when: 'When diff is called without detectRenames',
+  },
+);
+
+const CRLF_BREAK_GATE_RENAME_TMP_PREFIX = 'tsgit-rename-crlf-break-gate-rename-';
+const CRLF_BREAK_GATE_RENAME_SETUP_TIMEOUT = 60_000;
+const CRLF_BREAK_GATE_TOTAL_LINES = 200;
+const CRLF_BREAK_GATE_EDITED_LINES = 36;
+
+/** `total` CRLF-terminated lines for the break-gate + rename combination row
+ *  below — deliberately its own generator (longer, wordier lines than
+ *  `crlfTextLines`) so `CRLF_BREAK_GATE_EDITED_LINES` sits right at the 40%
+ *  gate boundary the row exercises. */
+const bigCrlfLines = (total: number, editedFrom: number, editedTo: number): string =>
+  Array.from({ length: total }, (_, i) => {
+    const edited = i >= editedFrom && i < editedTo;
+    const text = edited
+      ? `edited line ${String(i).padStart(3, '0')} with extra filler text zzz`
+      : `line ${String(i).padStart(3, '0')} shared content alpha beta gamma`;
+    return `${text}\r\n`;
+  }).join('');
+
+/**
+ * Verified against real git 2.55.0 (scrubbed env, signing off): `-B40%/10%
+ * -M --name-status` reports `M A.txt` / `A B.txt` — A's CR-skipped break
+ * score (38%) never clears the 40% gate, so A stays a plain modify and never
+ * becomes a delete candidate for B (B.txt carries A's UNCHANGED original
+ * content) to pair against. A scorer that hashes the CR too computes 40.4%,
+ * wrongly breaking A into a delete+add and letting the copy pass match the
+ * synthetic "deleted A" against B at ~100% — `A.txt` broken plus a spurious
+ * `C1.. A.txt B.txt` copy.
+ */
+const CRLF_BREAK_GATE_RENAME_ROWS: ReadonlyArray<RenameRow> = [
+  {
+    label:
+      'a CRLF self-modify sitting just below a -B break gate never becomes a delete candidate for an unrelated add carrying its old content (M A.txt / A B.txt)',
+    before: [{ path: 'A.txt', content: bigCrlfLines(CRLF_BREAK_GATE_TOTAL_LINES, 0, 0) }],
+    after: [
+      {
+        path: 'A.txt',
+        content: bigCrlfLines(CRLF_BREAK_GATE_TOTAL_LINES, 0, CRLF_BREAK_GATE_EDITED_LINES),
+      },
+      { path: 'B.txt', content: bigCrlfLines(CRLF_BREAK_GATE_TOTAL_LINES, 0, 0) },
+    ],
+    gitFlags: ['-B40%/10%'],
+    // 40% and 10% of MAX_SCORE (60000): git's -B40%/10%.
+    renameOptions: { breakRewrites: { score: 24_000, merge: 6_000 } },
+  },
+];
+
+describeRenameRows(
+  'CRLF break-gate plus rename-detection combination interop',
+  CRLF_BREAK_GATE_RENAME_ROWS,
+  CRLF_BREAK_GATE_RENAME_TMP_PREFIX,
+  CRLF_BREAK_GATE_RENAME_SETUP_TIMEOUT,
+  {
+    given:
+      'Given a CRLF self-modify just below a -B break gate, alongside an unrelated add carrying its old content',
+  },
+);
+
+/**
+ * `diff` attribute interop: git's `diff_filespec_is_binary` honours the
+ * path's `diff` attribute BEFORE any content sniff — `-diff` forces binary
+ * (the CR of a CRLF pair is hashed, not skipped), a bare `diff` forces text
+ * (CR skipped even over a NUL byte), and `diff=<name>` defers to that
+ * driver's own `diff.<name>.binary` config (row C, a standalone test below —
+ * it needs an extra `git config` step the row-table harness doesn't do).
+ * Every row here reuses `crlfTextLines`/`CRLF_TEXT_EDIT_START/END` (the plain
+ * CRLF interop rows above) so the ONLY variable is the attribute.
+ */
+const DIFF_ATTR_TMP_PREFIX = 'tsgit-rename-diff-attr-';
+const DIFF_ATTR_SETUP_TIMEOUT = 60_000;
+
+/** `crlfTextLines`, with a NUL byte spliced in after the first 10 bytes —
+ *  the `diff` (bare) row needs a NUL present for the attribute's forced-text
+ *  override to differ observably from the sniff (which would otherwise call
+ *  it binary purely from the NUL, independent of CR-skip). */
+const crlfTextLinesWithNul = (editedFrom: number, editedTo: number): string => {
+  const text = crlfTextLines(editedFrom, editedTo);
+  return `${text.slice(0, 10)}\u0000${text.slice(10)}`;
+};
+
+/**
+ * Verified against real git 2.55.0 (scrubbed env, signing off): row A pairs
+ * at `R070` (binary, CR-counted — same value `CRLF_TEXT_ROWS`'s own comment
+ * pins for a CR-counted scorer) where the unattributed sibling above scores
+ * `R067`. Row B pairs at `R067` (bare `diff` forces text despite the NUL,
+ * the SAME CR-skipped score as the unattributed baseline) where an
+ * unattributed NUL-bearing file would sniff binary. Row C (copy) pairs at
+ * `C070` under `-C` with `copies:'on'`, the source surviving as a plain
+ * modify (`M source.crlf2`) — mirroring the plain-`-C`-from-a-modified-source
+ * shape the earlier `copy-similarity-c1` test in this file exercises.
+ */
+const DIFF_ATTR_ROWS: ReadonlyArray<RenameRow> = [
+  {
+    label:
+      'a CRLF rename marked -diff scores by the binary (CR-counted) byte count, not the sniffed text one (R070 old→new)',
+    before: [{ path: 'old.crlf', content: crlfTextLines(0, 0) }],
+    after: [
+      { path: 'new.crlf', content: crlfTextLines(CRLF_TEXT_EDIT_START, CRLF_TEXT_EDIT_END) },
+      { path: '.gitattributes', content: '*.crlf -diff\n' },
+    ],
+  },
+  {
+    label:
+      'a CRLF rename with a NUL byte marked bare diff scores by the text (CR-skipped) byte count despite the NUL, not the sniffed binary one (R067 old→new)',
+    before: [{ path: 'old.nul', content: crlfTextLinesWithNul(0, 0) }],
+    after: [
+      {
+        path: 'new.nul',
+        content: crlfTextLinesWithNul(CRLF_TEXT_EDIT_START, CRLF_TEXT_EDIT_END),
+      },
+      { path: '.gitattributes', content: '*.nul diff\n' },
+    ],
+  },
+  {
+    label:
+      'a CRLF copy marked -diff scores by the binary (CR-counted) byte count under copies:"on" (C070 source→dest)',
+    before: [{ path: 'source.crlf2', content: crlfTextLines(0, 0) }],
+    after: [
+      { path: 'source.crlf2', content: crlfTextLines(15, 20) },
+      { path: 'dest.crlf2', content: crlfTextLines(CRLF_TEXT_EDIT_START, CRLF_TEXT_EDIT_END) },
+      { path: '.gitattributes', content: '*.crlf2 -diff\n' },
+    ],
+    gitFlags: ['-C'],
+    renameOptions: { copies: 'on' },
+  },
+];
+
+describeRenameRows(
+  'CRLF rename similarity diff-attribute interop',
+  DIFF_ATTR_ROWS,
+  DIFF_ATTR_TMP_PREFIX,
+  DIFF_ATTR_SETUP_TIMEOUT,
+  {
+    given: 'Given a raw diff pair of CRLF text files whose path carries a diff attribute',
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE)('CRLF rename similarity diff=<driver> config interop', () => {
+  describe('Given a CRLF rename marked diff=drv with [diff "drv"] binary=true in the repo config', () => {
+    describe('When diff is called with detectRenames', () => {
+      it('Then name-status matches live git — binary, CR-counted byte count (R070 old→new)', async () => {
+        // Arrange — verified against real git 2.55.0: unconfigured diff=drv
+        // falls back to the sniff (R067, the same as the unattributed
+        // baseline); configuring diff.drv.binary=true forces binary (R070).
+        const row: RenameRow = {
+          label: 'diff=drv config binary=true',
+          before: [{ path: 'old.drv', content: crlfTextLines(0, 0) }],
+          after: [
+            { path: 'new.drv', content: crlfTextLines(CRLF_TEXT_EDIT_START, CRLF_TEXT_EDIT_END) },
+            { path: '.gitattributes', content: '*.drv diff=drv\n' },
+          ],
+        };
+        const { dir } = await buildRenameRow(row, `${DIFF_ATTR_TMP_PREFIX}driver-`);
+        try {
+          runGit(['-C', dir, 'config', 'diff.drv.binary', 'true']);
+
+          // Act
+          const { ours, peer } = await runRenameRow(row, dir);
+
+          // Assert
+          expect(ours).toBe(peer);
+          expect(peer).toContain('R070\told.drv\tnew.drv');
+        } finally {
+          await rmDir(dir, { recursive: true, force: true });
+        }
+      });
+    });
+  });
+});
+
+const DIFF_ATTR_BREAK_TMP_PREFIX = 'tsgit-rename-diff-attr-break-';
+const DIFF_ATTR_BREAK_SETUP_TIMEOUT = 60_000;
+
+/**
+ * Verified against real git 2.55.0 (scrubbed env, signing off): `--no-renames
+ * -B --name-status` keeps this rewrite broken at `M090` (binary, CR-counted)
+ * where the unattributed sibling above (`CRLF_BREAK_ROWS`) scores `M091`.
+ */
+const DIFF_ATTR_BREAK_ROWS: ReadonlyArray<RenameRow> = [
+  {
+    label:
+      'a CRLF rewrite marked -diff kept broken under --no-renames -B scores its dissimilarity by the binary (CR-counted) byte count, not the sniffed text one (M090 m.attr)',
+    before: [{ path: 'm.attr', content: crlfBreakContent('old', 11, 1) }],
+    after: [
+      { path: 'm.attr', content: crlfBreakContent('new', 11, 1) },
+      { path: '.gitattributes', content: '*.attr -diff\n' },
+    ],
+    detectRenames: false,
+    gitFlags: ['-B'],
+    renameOptions: CRLF_BREAK_OPTS,
+  },
+];
+
+describeRenameRows(
+  'CRLF break-rewrite dissimilarity diff-attribute interop',
+  DIFF_ATTR_BREAK_ROWS,
+  DIFF_ATTR_BREAK_TMP_PREFIX,
+  DIFF_ATTR_BREAK_SETUP_TIMEOUT,
+  {
+    given:
+      'Given a raw diff pair of CRLF text files whose path carries a diff attribute, exercising the -B break-rewrite pass',
+    when: 'When diff is called without detectRenames',
+  },
+);
+
+const DIFF_ATTR_SHARED_ID_TMP_PREFIX = 'tsgit-rename-diff-attr-shared-id-';
+const DIFF_ATTR_SHARED_ID_SETUP_TIMEOUT = 60_000;
+const DIFF_ATTR_SHARED_SECOND_EDIT_START = 2;
+const DIFF_ATTR_SHARED_SECOND_EDIT_END = 8;
+
+/**
+ * `diff` attribute PER-PATH interop: git's `diff_filespec_is_binary` decides
+ * per filespec (path), never by object id — the SAME blob deleted at TWO
+ * paths that carry DIFFERENT `diff` attributes must score each of its
+ * pairings by ITS OWN path's kind, not whichever path a cache happens to
+ * resolve first. Verified against real git 2.55.0 (scrubbed env, signing
+ * off): `a.txt` (-diff) pairs with `c.txt` (also -diff) at `R070` (binary,
+ * CR-counted — same value `DIFF_ATTR_ROWS`' first row pins for one path
+ * alone); `b.dat` (unattributed) — byte-identical to `a.txt` — pairs with
+ * `d.dat` (unattributed) at `R067` (text, CR-skipped, the plain
+ * `CRLF_TEXT_ROWS` baseline). Cross-kind pairings (a.txt↔d.dat, b.dat↔c.txt)
+ * score far below threshold and are never selected — mixing a CR-counted and
+ * a CR-skipped fingerprint shifts almost every chunk boundary.
+ */
+const DIFF_ATTR_SHARED_ID_ROWS: ReadonlyArray<RenameRow> = [
+  {
+    label:
+      'the same CRLF blob deleted at an attributed and an unattributed path each scores its own rename by its own path kind (R070 a.txt→c.txt, R067 b.dat→d.dat)',
+    before: [
+      { path: 'a.txt', content: crlfTextLines(0, 0) },
+      { path: 'b.dat', content: crlfTextLines(0, 0) },
+    ],
+    after: [
+      { path: 'c.txt', content: crlfTextLines(CRLF_TEXT_EDIT_START, CRLF_TEXT_EDIT_END) },
+      {
+        path: 'd.dat',
+        content: crlfTextLines(
+          DIFF_ATTR_SHARED_SECOND_EDIT_START,
+          DIFF_ATTR_SHARED_SECOND_EDIT_END,
+        ),
+      },
+      { path: '.gitattributes', content: 'a.txt -diff\nc.txt -diff\n' },
+    ],
+  },
+];
+
+describeRenameRows(
+  'CRLF rename similarity diff-attribute interop with a blob shared across two paths',
+  DIFF_ATTR_SHARED_ID_ROWS,
+  DIFF_ATTR_SHARED_ID_TMP_PREFIX,
+  DIFF_ATTR_SHARED_ID_SETUP_TIMEOUT,
+  {
+    given: 'Given the same blob deleted at two paths that carry different diff attributes',
+  },
+);
+
+/**
+ * name_score matrix tie-break interop: `git diff -M` (some rows also `-C`)
+ * breaks an equal-score tie between inexact candidates on a matching
+ * basename (`score_compare` / `record_if_better`), never on build order.
+ *
+ * Content follows the shared "body"/"edit window" convention: a line-per-row
+ * body of uniform-length lines so the spanhash scorer's percentage is a
+ * simple function of how many lines were replaced — independent of WHICH
+ * lines, letting several distinct sources tie at the same score.
+ */
+const NAME_SCORE_BODY_LINES = 20;
+const NAME_SCORE_WIDE_LINES = 100;
+const NAME_SCORE_WINDOW_61_PERCENT = 39;
+const NAME_SCORE_WINDOW_52_PERCENT = 48;
+const NAME_SCORE_WINDOW_STRIDE = 12;
+
+const nameScoreBody = (): string =>
+  `${Array.from(
+    { length: NAME_SCORE_BODY_LINES },
+    (_, i) => `body line ${String(i).padStart(2, '0')}`,
+  ).join('\n')}\n`;
+
+const nameScoreBodyPlus = (extra: string): string => `${nameScoreBody()}${extra}\n`;
+
+const nameScoreWideBody = (): string =>
+  `${Array.from(
+    { length: NAME_SCORE_WIDE_LINES },
+    (_, i) => `body line ${String(i).padStart(3, '0')}`,
+  ).join('\n')}\n`;
+
+/** Replaces a contiguous `count`-line window starting at `offset` (wrapping)
+ *  with edited lines; the REST stays byte-identical to `nameScoreWideBody()`.
+ *  Because only the edited-line COUNT drives the spanhash score, not which
+ *  lines, every offset at the same `count` ties at the same percentage. */
+const nameScoreEditWindow = (offset: number, count: number): string =>
+  `${Array.from({ length: NAME_SCORE_WIDE_LINES }, (_, i) => {
+    const inWindow = (i - offset + NAME_SCORE_WIDE_LINES) % NAME_SCORE_WIDE_LINES < count;
+    const label = inWindow ? 'edit' : 'body';
+    return `${label} line ${String(i).padStart(3, '0')}`;
+  }).join('\n')}\n`;
+
+const TMP_PREFIX = 'tsgit-rename-name-score-';
+const SETUP_TIMEOUT = 60_000;
+
+const NAME_SCORE_ROWS: ReadonlyArray<RenameRow> = [
+  {
+    label:
+      'two sources sharing a blob, only one basename-matching — the match wins the tie (D Aaa ; R097 Foo→Foo)',
+    before: [
+      { path: 'a/Aaa.cls-meta.xml', content: nameScoreBody() },
+      { path: 'a/Foo.cls-meta.xml', content: nameScoreBody() },
+    ],
+    after: [{ path: 'b/Foo.cls-meta.xml', content: nameScoreBodyPlus('extra') }],
+  },
+  {
+    label:
+      'the same tie under -C — name_score still resolves it in the matrix (D Aaa ; R097 Foo→Foo)',
+    before: [
+      { path: 'a/Aaa.cls-meta.xml', content: nameScoreBody() },
+      { path: 'a/Foo.cls-meta.xml', content: nameScoreBody() },
+    ],
+    after: [{ path: 'b/Foo.cls-meta.xml', content: nameScoreBodyPlus('extra') }],
+    gitFlags: ['-C'],
+    renameOptions: { copies: 'on' },
+  },
+  {
+    label:
+      'must-stay: 3 identical same-named sources map 1:1 onto 3 edited same-named destinations (R097 x3)',
+    before: [
+      { path: 'a/One/Foo.meta', content: nameScoreBody() },
+      { path: 'a/Two/Foo.meta', content: nameScoreBody() },
+      { path: 'a/Three/Foo.meta', content: nameScoreBody() },
+    ],
+    after: [
+      { path: 'b/One/Foo.meta', content: nameScoreBodyPlus('extra') },
+      { path: 'b/Two/Foo.meta', content: nameScoreBodyPlus('spare') },
+      { path: 'b/Three/Foo.meta', content: nameScoreBodyPlus('bonus') },
+    ],
+  },
+  {
+    label:
+      'two DISTINCT sources tied by score, only the second basename-matches (D Aaa ; R052 Foo→Foo)',
+    before: [
+      { path: 'a/Aaa.xml', content: nameScoreEditWindow(0, NAME_SCORE_WINDOW_52_PERCENT) },
+      { path: 'a/Foo.xml', content: nameScoreEditWindow(50, NAME_SCORE_WINDOW_52_PERCENT) },
+    ],
+    after: [{ path: 'b/Foo.xml', content: nameScoreWideBody() }],
+  },
+  {
+    label:
+      '5 equal-score sources beyond the top-4 cap, only the 5th basename-matches — it still wins the slot (4x D ; R061 E→E)',
+    before: [
+      { path: 'a/A.c', content: nameScoreEditWindow(0, NAME_SCORE_WINDOW_61_PERCENT) },
+      {
+        path: 'a/B.c',
+        content: nameScoreEditWindow(NAME_SCORE_WINDOW_STRIDE, NAME_SCORE_WINDOW_61_PERCENT),
+      },
+      {
+        path: 'a/C.c',
+        content: nameScoreEditWindow(NAME_SCORE_WINDOW_STRIDE * 2, NAME_SCORE_WINDOW_61_PERCENT),
+      },
+      {
+        path: 'a/D.c',
+        content: nameScoreEditWindow(NAME_SCORE_WINDOW_STRIDE * 3, NAME_SCORE_WINDOW_61_PERCENT),
+      },
+      {
+        path: 'a/E.c',
+        content: nameScoreEditWindow(NAME_SCORE_WINDOW_STRIDE * 4, NAME_SCORE_WINDOW_61_PERCENT),
+      },
+    ],
+    after: [{ path: 'b/E.c', content: nameScoreWideBody() }],
+  },
+  {
+    label: 'the same 5-way tie under -C — the cap still keeps the basename match (4x D ; R061 E→E)',
+    before: [
+      { path: 'a/A.c', content: nameScoreEditWindow(0, NAME_SCORE_WINDOW_61_PERCENT) },
+      {
+        path: 'a/B.c',
+        content: nameScoreEditWindow(NAME_SCORE_WINDOW_STRIDE, NAME_SCORE_WINDOW_61_PERCENT),
+      },
+      {
+        path: 'a/C.c',
+        content: nameScoreEditWindow(NAME_SCORE_WINDOW_STRIDE * 2, NAME_SCORE_WINDOW_61_PERCENT),
+      },
+      {
+        path: 'a/D.c',
+        content: nameScoreEditWindow(NAME_SCORE_WINDOW_STRIDE * 3, NAME_SCORE_WINDOW_61_PERCENT),
+      },
+      {
+        path: 'a/E.c',
+        content: nameScoreEditWindow(NAME_SCORE_WINDOW_STRIDE * 4, NAME_SCORE_WINDOW_61_PERCENT),
+      },
+    ],
+    after: [{ path: 'b/E.c', content: nameScoreWideBody() }],
+    gitFlags: ['-C'],
+    renameOptions: { copies: 'on' },
+  },
+  {
+    label: '2 equal-score sources, only the second basename-matches (D A ; R061 B→B)',
+    before: [
+      { path: 'a/A.c', content: nameScoreEditWindow(0, NAME_SCORE_WINDOW_61_PERCENT) },
+      {
+        path: 'a/B.c',
+        content: nameScoreEditWindow(NAME_SCORE_WINDOW_STRIDE, NAME_SCORE_WINDOW_61_PERCENT),
+      },
+    ],
+    after: [{ path: 'b/B.c', content: nameScoreWideBody() }],
+  },
+];
+
+describeRenameRows(
+  'name_score matrix tie-break interop',
+  NAME_SCORE_ROWS,
+  TMP_PREFIX,
+  SETUP_TIMEOUT,
+  {
+    given: 'Given a raw diff pair exercising the name_score matrix tie-break',
+  },
+);
+
+/**
+ * `record_if_better` slot semantics interop: git calls `record_if_better` for
+ * every visited (src, dst) pair, not only the ones clearing the threshold —
+ * a below-threshold candidate still occupies a slot, and slot position
+ * decides the stable sort's tie-break among later, equal-scoring candidates.
+ */
+const SLOT_SEMANTICS_TMP_PREFIX = 'tsgit-rename-slot-semantics-';
+const SLOT_SEMANTICS_SETUP_TIMEOUT = 60_000;
+
+const slotJunkContent = (label: string): string =>
+  `completely unrelated ${label} content block\n`.repeat(6);
+
+const SLOT_SEMANTICS_ROWS: ReadonlyArray<RenameRow> = [
+  {
+    label:
+      '5 deleted sources for one destination: 3 unrelated junk below threshold and 2 tied best matches — the junk sources still occupy a slot, shifting the tie-break to the later-visited best match (R090 a4→d)',
+    before: [
+      { path: 'a0.meta', content: slotJunkContent('zero') },
+      { path: 'a1.meta', content: tenLineContent('base', 5) },
+      { path: 'a2.meta', content: slotJunkContent('two') },
+      { path: 'a3.meta', content: slotJunkContent('three') },
+      { path: 'a4.meta', content: tenLineContent('base', 5) },
+    ],
+    after: [{ path: 'd.meta', content: tenLineContent('base') }],
+  },
+];
+
+describeRenameRows(
+  'record_if_better slot semantics interop',
+  SLOT_SEMANTICS_ROWS,
+  SLOT_SEMANTICS_TMP_PREFIX,
+  SLOT_SEMANTICS_SETUP_TIMEOUT,
+  {
+    given:
+      'Given a raw diff pair exercising below-threshold candidates sharing the matrix with the real ones',
+  },
+);
+
+/**
+ * Use-count labelling interop: `git diff -C` labels a pair by how many times
+ * its source is used (`--rename_used`), not by which pass produced it — a
+ * single content-identical exact fold and an inexact match onto the SAME
+ * source resolve to copy/rename purely by final destination-path order. The
+ * rename-limit gate counts every registered source once, gitlinks included,
+ * even though a gitlink can never be content-scored.
+ */
+const USE_COUNT_TMP_PREFIX = 'tsgit-rename-use-count-';
+const USE_COUNT_SETUP_TIMEOUT = 60_000;
+const USE_COUNT_GITLINK_OID = '3'.repeat(40);
+
+/** Lines shared between an exhausted modify source and its exact/inexact destinations. */
+const SHARED_MODIFY_SOURCE_LINES = Array.from(
+  { length: 17 },
+  (_, i) => `c20-shared-${String(i).padStart(2, '0')}: alpha beta gamma delta\n`,
+);
+
+/** Lines shared between four retained (modified) sources, one deleted source
+ *  and one destination — used to prove the shared per-destination candidate
+ *  cap evicts the deleted source ahead of the retained ones. */
+const CULL_COMMON_LINES = Array.from(
+  { length: 16 },
+  (_, i) => `cull-common-${String(i).padStart(2, '0')}: alpha beta gamma delta epsilon\n`,
+);
+const cullRetainedTail = (n: number): string[] =>
+  Array.from({ length: 4 }, (_, i) => `cull-r${n}-tail-${i}: theta iota\n`);
+const CULL_N_TAIL = Array.from({ length: 4 }, (_, i) => `cull-n-tail-${i}: zeta eta\n`);
+const CULL_D_TAIL = Array.from({ length: 12 }, (_, i) => `cull-d-tail-${i}: kappa lambda\n`);
+
+const USE_COUNT_ROWS: ReadonlyArray<RenameRow> = [
+  {
+    label:
+      '-C: one delete scores 95% against one add and 85% against another — copy the higher score, rename the lower (C095 Foo→Bar ; R085 Foo→Baz)',
+    before: [{ path: 'a/Foo.meta', content: tenLineContent('foo') }],
+    after: [
+      { path: 'b/Bar.meta', content: tenLineContent('foo', 0) },
+      { path: 'b/Baz.meta', content: tenLineContent('foo', 0, 'CHANGED CHANGED CHANGED') },
+    ],
+    gitFlags: ['-C'],
+    renameOptions: { copies: 'on' },
+  },
+  {
+    label:
+      '-C: one delete pairs exactly with one add and inexactly with another — the exact pair is the rename, last in path order (C090 Foo→Bar ; R100 Foo→Baz)',
+    before: [{ path: 'a/Foo.meta', content: tenLineContent('foo') }],
+    after: [
+      { path: 'b/Bar.meta', content: tenLineContent('foo', 0) },
+      { path: 'b/Baz.meta', content: tenLineContent('foo') },
+    ],
+    gitFlags: ['-C'],
+    renameOptions: { copies: 'on' },
+  },
+  {
+    label: '-C -l1: one delete, one 90%-similar add — the 1x1 limit fits (R090)',
+    before: [{ path: 'a/Foo.meta', content: tenLineContent('foo') }],
+    after: [{ path: 'b/Bar.meta', content: tenLineContent('foo', 0) }],
+    gitFlags: ['-C', '-l1'],
+    renameOptions: { copies: 'on', limit: 1 },
+  },
+  {
+    label:
+      '-l1: an unrelated deleted gitlink still counts toward the rename-limit source count, forcing the inexact pass to skip (D Foo ; D sub ; A Bar)',
+    before: [
+      { path: 'a/Foo.meta', content: tenLineContent('foo') },
+      { path: 'a/sub', content: USE_COUNT_GITLINK_OID, kind: 'gitlink' },
+    ],
+    after: [{ path: 'b/Bar.meta', content: tenLineContent('foo', 0) }],
+    gitFlags: ['-l1'],
+    renameOptions: { limit: 1 },
+  },
+  {
+    label:
+      '-l-1: two similar delete/add pairs exceed a 1x1 limit square — a negative limit is unlimited, not re-capped by squaring to a positive number (R09x Foo→Bar ; R09x Qux→Baz)',
+    before: [
+      { path: 'a/Foo.meta', content: tenLineContent('foo') },
+      { path: 'a/Qux.meta', content: tenLineContent('qux') },
+    ],
+    after: [
+      { path: 'b/Bar.meta', content: tenLineContent('foo', 0) },
+      { path: 'b/Baz.meta', content: tenLineContent('qux', 0) },
+    ],
+    gitFlags: ['-l-1'],
+    renameOptions: { limit: -1 },
+  },
+  {
+    label:
+      '-C: a modified source scores higher than a deleted source against the same add — pass 1 pairs only the deleted source (live git: M a/M ; R<score> a/D→b/N)',
+    before: [
+      { path: 'a/M.meta', content: `${tenLineContent('c19')}extra-tail-line: zzz\n` },
+      {
+        path: 'a/D.meta',
+        content: tenLineContent('c19').replace(
+          'c19 content line 00: this is the content\n',
+          'DIFFERENT-line-0\n',
+        ),
+      },
+    ],
+    after: [
+      { path: 'a/M.meta', content: 'completely different modified content\n' },
+      { path: 'b/N.meta', content: tenLineContent('c19') },
+    ],
+    gitFlags: ['-C'],
+    renameOptions: { copies: 'on' },
+  },
+  {
+    label:
+      '-C: an exact-copy add exhausts the modified source before a second, inexact add is scored — the deleted source wins the second despite a lower score (live git: C100 M→N1 ; R<score> D→N2)',
+    before: [
+      {
+        path: 'a/M.meta',
+        content: [
+          ...SHARED_MODIFY_SOURCE_LINES,
+          ...Array.from({ length: 3 }, (_, i) => `c20-mod-only-${i}: epsilon zeta\n`),
+        ].join(''),
+      },
+      {
+        path: 'a/D.meta',
+        content: [
+          ...SHARED_MODIFY_SOURCE_LINES.slice(0, 16),
+          ...Array.from({ length: 4 }, (_, i) => `c20-d-only-${i}: iota kappa\n`),
+        ].join(''),
+      },
+    ],
+    after: [
+      { path: 'a/M.meta', content: 'c20 modify new content\n' },
+      {
+        path: 'b/N1.meta',
+        content: [
+          ...SHARED_MODIFY_SOURCE_LINES,
+          ...Array.from({ length: 3 }, (_, i) => `c20-mod-only-${i}: epsilon zeta\n`),
+        ].join(''),
+      },
+      {
+        path: 'b/N2.meta',
+        content: [
+          ...SHARED_MODIFY_SOURCE_LINES,
+          ...Array.from({ length: 3 }, (_, i) => `c20-n2-only-${i}: eta theta\n`),
+        ].join(''),
+      },
+    ],
+    gitFlags: ['-C'],
+    renameOptions: { copies: 'on' },
+  },
+  {
+    label:
+      '-C30%: four higher-scoring retained sources and one lower-scoring deleted source compete for one destination — the shared per-destination cap evicts the deleted source before the retained sources ever get to lose, so a retained source wins the copy (live git: C087 r4.txt→n.txt)',
+    before: [
+      ...[1, 2, 3, 4].map((n) => ({
+        path: `r${n}.txt`,
+        content: [...CULL_COMMON_LINES, ...cullRetainedTail(n)].join(''),
+      })),
+      { path: 'd.txt', content: [...CULL_COMMON_LINES.slice(0, 8), ...CULL_D_TAIL].join('') },
+    ],
+    after: [
+      ...[1, 2, 3, 4].map((n) => ({ path: `r${n}.txt`, content: `cull-r${n}-new content only\n` })),
+      { path: 'n.txt', content: [...CULL_COMMON_LINES, ...CULL_N_TAIL].join('') },
+    ],
+    gitFlags: ['-C30%'],
+    renameOptions: { copies: 'on', threshold: 18000 },
+  },
+];
+
+/**
+ * Exact-only threshold interop: git's "Did we only want exact renames?"
+ * check (`diffcore-rename.c:1480`) stops right after the exact pass whenever
+ * the threshold is the ceiling — the inexact matrix never runs, even though
+ * an approximate score could otherwise reach that same ceiling for
+ * non-identical bytes (same lines, reverse-sorted keeps every per-line
+ * chunk hash but changes the file's oid).
+ */
+const EXACT_ONLY_TMP_PREFIX = 'tsgit-rename-exact-only-';
+const EXACT_ONLY_SETUP_TIMEOUT = 60_000;
+
+const EXACT_ONLY_ROWS: ReadonlyArray<RenameRow> = [
+  {
+    label:
+      'a.txt (60 lines) moved to b.txt with its lines reverse-sorted, under a 100% rename threshold — the false MAX_SCORE match never gets a chance to run (D a.txt ; A b.txt)',
+    before: [
+      {
+        path: 'a.txt',
+        content: Array.from({ length: 60 }, (_, i) => `line ${i}\n`).join(''),
+      },
+    ],
+    after: [
+      {
+        path: 'b.txt',
+        content: Array.from({ length: 60 }, (_, i) => `line ${i}\n`)
+          .reverse()
+          .join(''),
+      },
+    ],
+    gitFlags: ['-M100%'],
+    renameOptions: { threshold: 60000 },
+  },
+];
+
+describeRenameRows(
+  'exact-only threshold interop',
+  EXACT_ONLY_ROWS,
+  EXACT_ONLY_TMP_PREFIX,
+  EXACT_ONLY_SETUP_TIMEOUT,
+  {
+    given:
+      'Given a raw diff pair where an approximate score could reach the rename ceiling for non-identical bytes',
+    when: 'When diff is called with detectRenames at a 100% threshold',
+  },
+);
+
+describeRenameRows(
+  'use-count labelling and gitlink-counted limit interop',
+  USE_COUNT_ROWS,
+  USE_COUNT_TMP_PREFIX,
+  USE_COUNT_SETUP_TIMEOUT,
+  { given: 'Given a raw diff pair exercising use-count labelling or the gitlink-counted limit' },
+);
+
+/**
+ * `-C -C` retry-exhausted interop: when the harder source count still clears
+ * the rename limit after the retry drops every `unchanged` source, git skips
+ * the inexact pass outright — no fallback beyond the retry itself.
+ */
+const HARDER_RETRY_TMP_PREFIX = 'tsgit-rename-harder-retry-';
+const HARDER_RETRY_SETUP_TIMEOUT = 60_000;
+
+const HARDER_RETRY_ROWS: ReadonlyArray<RenameRow> = [
+  {
+    label:
+      '-C -C -l1: 4 deletes + 4 unchanged harder sources exceed the limit; dropping the unchanged ones on retry still exceeds it (4 D ; 4 A, no R/C)',
+    before: [
+      { path: 'kept0.txt', content: tenLineContent('kept0') },
+      { path: 'kept1.txt', content: tenLineContent('kept1') },
+      { path: 'kept2.txt', content: tenLineContent('kept2') },
+      { path: 'kept3.txt', content: tenLineContent('kept3') },
+      { path: 'deleted0.txt', content: tenLineContent('pair0', 0) },
+      { path: 'deleted1.txt', content: tenLineContent('pair1', 0) },
+      { path: 'deleted2.txt', content: tenLineContent('pair2', 0) },
+      { path: 'deleted3.txt', content: tenLineContent('pair3', 0) },
+    ],
+    after: [
+      { path: 'kept0.txt', content: tenLineContent('kept0') },
+      { path: 'kept1.txt', content: tenLineContent('kept1') },
+      { path: 'kept2.txt', content: tenLineContent('kept2') },
+      { path: 'kept3.txt', content: tenLineContent('kept3') },
+      { path: 'added0.txt', content: tenLineContent('pair0', 1) },
+      { path: 'added1.txt', content: tenLineContent('pair1', 1) },
+      { path: 'added2.txt', content: tenLineContent('pair2', 1) },
+      { path: 'added3.txt', content: tenLineContent('pair3', 1) },
+    ],
+    gitFlags: ['-C', '-C', '-l1'],
+    renameOptions: { copies: 'harder', limit: 1 },
+  },
+];
+
+describeRenameRows(
+  '"harder" retry-exhausted interop',
+  HARDER_RETRY_ROWS,
+  HARDER_RETRY_TMP_PREFIX,
+  HARDER_RETRY_SETUP_TIMEOUT,
+  { given: 'Given a raw diff pair where the "harder" retry set still clears the rename limit' },
+);
+
+/**
+ * `-B` write back interop: git's `diffcore-rename.c:1669` drops a broken
+ * delete once its add half pairs elsewhere, and otherwise rejoins the
+ * halves into one modify while counting the rejoin as one more use of the
+ * delete-half's source — before use-count labelling runs. Fixtures
+ * are kept >= 500 bytes so the MINIMUM_BREAK_SIZE guard still leaves them broken.
+ * `should_break`'s own guards mean an empty source or a pair under
+ * MINIMUM_BREAK_SIZE (400 bytes) never breaks at all, so the write-back rules
+ * above never get a chance to run; an unrelated exact rename keeps working
+ * alongside a broken modify once those guards are in place.
+ */
+const WRITE_BACK_TMP_PREFIX = 'tsgit-rename-write-back-';
+const WRITE_BACK_SETUP_TIMEOUT = 60_000;
+
+/** Unrelated content for an exact-rename pair alongside a broken modify —
+ *  distinct from m.txt's break content, so z.txt/q.txt never scores against m.txt. */
+const UNRELATED_EXACT_RENAME_CONTENT = Array.from(
+  { length: 20 },
+  (_, i) => `z-line-${String(i).padStart(3, '0')}: unrelated marker alpha beta\n`,
+).join('');
+
+const WRITE_BACK_ROWS: ReadonlyArray<RenameRow> = [
+  {
+    label:
+      '-B: a rewritten m.txt whose old content pairs exactly with an unrelated add — the rejoin counts as a use, so the pairing is a copy, not a rename (live git: M100 m ; C100 m→q)',
+    before: [{ path: 'm.txt', content: breakContent('old', 40, 0) }],
+    after: [
+      { path: 'm.txt', content: breakContent('new', 40, 0) },
+      { path: 'q.txt', content: breakContent('old', 40, 0) },
+    ],
+    gitFlags: ['-B'],
+    renameOptions: { breakRewrites: { score: 30000, merge: 36000 } },
+  },
+  {
+    label:
+      '-B: a rewritten m.txt whose old content near-matches (one extra line) an unrelated add — the rejoin still counts as a use, so the inexact pairing is a copy (live git: M100 m ; C099 m→q)',
+    before: [{ path: 'm.txt', content: breakContent('old', 40, 0) }],
+    after: [
+      { path: 'm.txt', content: breakContent('new', 40, 0) },
+      { path: 'q.txt', content: `${breakContent('old', 40, 0)}extra-tail-line-only-in-q\n` },
+    ],
+    gitFlags: ['-B'],
+    renameOptions: { breakRewrites: { score: 30000, merge: 36000 } },
+  },
+  {
+    label:
+      '-B: a/s fully rewritten to match deleted a/d exactly — write back drops the broken delete because its add half paired, whatever its own use count (live git: R100 a/d→a/s)',
+    before: [
+      { path: 'a/s', content: breakContent('old', 20, 0) },
+      { path: 'a/d', content: breakContent('new', 40, 0) },
+    ],
+    after: [{ path: 'a/s', content: breakContent('new', 40, 0) }],
+    gitFlags: ['-B'],
+    renameOptions: { breakRewrites: { score: 30000, merge: 36000 } },
+  },
+  {
+    label:
+      '-B: an empty a/e rewritten to match a deleted a/d exactly — the empty-source guard means the modify never breaks, so the copy pairing that would otherwise happen never happens (live git: D a/d ; M a/e)',
+    before: [
+      { path: 'a/e', content: '' },
+      { path: 'a/d', content: breakContent('new', 40, 0) },
+    ],
+    after: [{ path: 'a/e', content: breakContent('new', 40, 0) }],
+    gitFlags: ['-B'],
+    renameOptions: { breakRewrites: { score: 30000, merge: 36000 } },
+  },
+  {
+    label:
+      '-B: a small a/s fully rewritten to match a small deleted a/d exactly — both sides sit under MINIMUM_BREAK_SIZE, so the modify never breaks (live git: D a/d ; M a/s)',
+    before: [
+      { path: 'a/s', content: breakContent('old', 3, 0) },
+      { path: 'a/d', content: breakContent('new', 3, 0) },
+    ],
+    after: [{ path: 'a/s', content: breakContent('new', 3, 0) }],
+    gitFlags: ['-B'],
+    renameOptions: { breakRewrites: { score: 30000, merge: 36000 } },
+  },
+  {
+    label:
+      '-B: a rewritten m.txt with no rename candidate of its own, alongside an unrelated exact-rename pair — the broken modify and the rename never interact (live git: M100 m ; R100 z→q)',
+    before: [
+      { path: 'm.txt', content: breakContent('old', 40, 0) },
+      { path: 'z.txt', content: UNRELATED_EXACT_RENAME_CONTENT },
+    ],
+    after: [
+      { path: 'm.txt', content: breakContent('new', 40, 0) },
+      { path: 'q.txt', content: UNRELATED_EXACT_RENAME_CONTENT },
+    ],
+    gitFlags: ['-B'],
+    renameOptions: { breakRewrites: { score: 30000, merge: 36000 } },
+  },
+  {
+    label:
+      '-B: f.txt keeps 35 of its 100 lines under a rename threshold lowered to 20% — its own two halves score high enough to pair with each other, and that self-pair resolves back to a modify, not a same-path rename',
+    before: [{ path: 'f.txt', content: breakContent('old', 100, 0) }],
+    after: [{ path: 'f.txt', content: breakContent('new', 100, 35) }],
+    gitFlags: ['-B', '-M20%'],
+    renameOptions: { threshold: 12000, breakRewrites: { score: 30000, merge: 36000 } },
+  },
+  {
+    label:
+      '-B -C: f.txt keeps 35 of its 100 lines and a new g.txt shares 30 of the original lines — f.txt self-pairs back to a modify while g.txt still copies from the same original content',
+    before: [{ path: 'f.txt', content: breakContent('old', 100, 0) }],
+    after: [
+      { path: 'f.txt', content: breakContent('new', 100, 35) },
+      { path: 'g.txt', content: breakContent('old', 30, 0) },
+    ],
+    gitFlags: ['-B', '-C20%'],
+    renameOptions: {
+      threshold: 12000,
+      copies: 'on',
+      breakRewrites: { score: 30000, merge: 36000 },
+    },
+  },
+];
+
+describeRenameRows(
+  '-B write back interop',
+  WRITE_BACK_ROWS,
+  WRITE_BACK_TMP_PREFIX,
+  WRITE_BACK_SETUP_TIMEOUT,
+  { given: 'Given a raw diff pair exercising -B write back (a broken delete drop or a rejoin)' },
+);
+
+/**
+ * Non-regular files leave similarity scoring: a symlink or gitlink is never
+ * an inexact-matrix candidate on either side, exact-only as a copy source,
+ * and still eligible to break under `-B`.
+ */
+const NON_REGULAR_TMP_PREFIX = 'tsgit-rename-non-regular-';
+const NON_REGULAR_SETUP_TIMEOUT = 60_000;
+
+// Symlink targets stay well under the OS symlink length limit (unlike
+// `breakContent`'s ~1.3 KB, which overflows it) — 540 bytes, fully disjoint,
+// clears the default break-attempt gate.
+const SYMLINK_OLD_TARGET = 'aaaa\nbbbb\ncccc\ndddd\n'.repeat(27);
+const SYMLINK_NEW_TARGET = 'xxxx\nyyyy\nzzzz\nwwww\n'.repeat(27);
+// Same 540-byte length, only the trailing 5 bytes differ — well below the gate.
+const SYMLINK_SMALL_RETARGET = `${SYMLINK_OLD_TARGET.slice(0, -5)}eeee\n`;
+// The OLD target plus a couple of trailing lines — similar enough (not
+// identical, so the exact pass never intervenes) to win a matrix slot if a
+// broken symlink's fingerprint were ever allowed to score.
+const SYMLINK_OLD_TARGET_PLUS_TAIL = `${SYMLINK_OLD_TARGET}\ntail\n`;
+
+// A blob shared between a symlink and a regular file (content-addressed
+// storage: same bytes, same id, different kind), plus a similar regular add.
+const SHARED_TARGET_TEXT = Array.from(
+  { length: 30 },
+  (_, i) => `line number ${i + 1} of the shared text\n`,
+).join('');
+const SHARED_TARGET_PLUS_EXTRA = `${SHARED_TARGET_TEXT}extra\n`;
+
+const NON_REGULAR_ROWS: ReadonlyArray<RenameRow> = [
+  {
+    label:
+      'A deleted symlink target equals a new regular file — cross-kind identical content never pairs (D a/link ; A b/file)',
+    before: [{ path: 'a/link', content: 'shared-target-value', kind: 'symlink' }],
+    after: [{ path: 'b/file', content: 'shared-target-value' }],
+  },
+  {
+    label: 'A deleted symlink target equals a new regular file, under -C — still stays D ; A',
+    before: [{ path: 'a/link', content: 'shared-target-value-c', kind: 'symlink' }],
+    after: [{ path: 'b/file', content: 'shared-target-value-c' }],
+    gitFlags: ['-C'],
+    renameOptions: { copies: 'on' },
+  },
+  {
+    label:
+      'Symlink to symlink, 280-byte target plus 1 char — same non-regular kind on both sides still never scores (D ; A)',
+    before: [{ path: 'a/link', content: 'a'.repeat(280), kind: 'symlink' }],
+    after: [{ path: 'b/link', content: `${'a'.repeat(280)}b`, kind: 'symlink' }],
+  },
+  {
+    label: 'A regular file deleted, a similar symlink added — destination-side filter (D ; A)',
+    before: [{ path: 'a/reg', content: tenLineContent('n3') }],
+    after: [{ path: 'b/link', content: tenLineContent('n3', 0), kind: 'symlink' }],
+  },
+  {
+    label:
+      '-C: a modified symlink whose OLD target equals a regular add — the copy source is exact-only (M a/link ; A b/file)',
+    before: [{ path: 'a/link', content: 'old-target-n4', kind: 'symlink' }],
+    after: [
+      { path: 'a/link', content: 'new-target-n4', kind: 'symlink' },
+      { path: 'b/file', content: 'old-target-n4' },
+    ],
+    gitFlags: ['-C'],
+    renameOptions: { copies: 'on' },
+  },
+  {
+    label:
+      '-C -C: an unchanged symlink; a regular add matches its target — an unchanged non-regular source never scores (A b/file)',
+    before: [{ path: 'a/link', content: 'unchanged-target-n5', kind: 'symlink' }],
+    after: [
+      { path: 'a/link', content: 'unchanged-target-n5', kind: 'symlink' },
+      { path: 'b/file', content: 'unchanged-target-n5' },
+    ],
+    gitFlags: ['-C', '-C'],
+    renameOptions: { copies: 'harder' },
+  },
+  {
+    label:
+      '-C -C: an unchanged regular file; a symlink add carries its content — destination-side filter on an unchanged source (A b/link)',
+    before: [{ path: 'a/reg', content: 'unchanged-content-n5r' }],
+    after: [
+      { path: 'a/reg', content: 'unchanged-content-n5r' },
+      { path: 'b/link', content: 'unchanged-content-n5r', kind: 'symlink' },
+    ],
+    gitFlags: ['-C', '-C'],
+    renameOptions: { copies: 'harder' },
+  },
+  {
+    label:
+      '-M -B: a fully-retargeted symlink; a regular add matches its OLD target — broken halves rejoin instead of cross-pairing (M100 a/link ; A b/file)',
+    before: [{ path: 'a/link', content: SYMLINK_OLD_TARGET, kind: 'symlink' }],
+    after: [
+      { path: 'a/link', content: SYMLINK_NEW_TARGET, kind: 'symlink' },
+      { path: 'b/file', content: SYMLINK_OLD_TARGET },
+    ],
+    gitFlags: ['-B'],
+    renameOptions: { breakRewrites: { score: 30000, merge: 36000 } },
+  },
+  {
+    label: '-M -B: a small symlink retarget stays a plain modify, never broken (M a/link)',
+    before: [{ path: 'a/link', content: SYMLINK_OLD_TARGET, kind: 'symlink' }],
+    after: [{ path: 'a/link', content: SYMLINK_SMALL_RETARGET, kind: 'symlink' }],
+    gitFlags: ['-B'],
+    renameOptions: { breakRewrites: { score: 30000, merge: 36000 } },
+  },
+  {
+    label:
+      'a symlink and a regular file share a blob, both deleted, a similar file added — the regular source wins (D a-link ; R096 b-file c-new)',
+    before: [
+      { path: 'a-link', content: SHARED_TARGET_TEXT, kind: 'symlink' },
+      { path: 'b-file', content: SHARED_TARGET_TEXT },
+    ],
+    after: [{ path: 'c-new', content: SHARED_TARGET_PLUS_EXTRA }],
+  },
+  {
+    label:
+      'the same shared-blob pair under -C — the symlink still never scores (D a-link ; R096 b-file c-new)',
+    before: [
+      { path: 'a-link', content: SHARED_TARGET_TEXT, kind: 'symlink' },
+      { path: 'b-file', content: SHARED_TARGET_TEXT },
+    ],
+    after: [{ path: 'c-new', content: SHARED_TARGET_PLUS_EXTRA }],
+    gitFlags: ['-C'],
+    renameOptions: { copies: 'on' },
+  },
+  {
+    label:
+      'the same shared-blob pair under -C -C — the symlink still never scores (D a-link ; R096 b-file c-new)',
+    before: [
+      { path: 'a-link', content: SHARED_TARGET_TEXT, kind: 'symlink' },
+      { path: 'b-file', content: SHARED_TARGET_TEXT },
+    ],
+    after: [{ path: 'c-new', content: SHARED_TARGET_PLUS_EXTRA }],
+    gitFlags: ['-C', '-C'],
+    renameOptions: { copies: 'harder' },
+  },
+  {
+    label:
+      'the same shared-blob pair under -B -M — the symlink still never scores (D a-link ; R096 b-file c-new)',
+    before: [
+      { path: 'a-link', content: SHARED_TARGET_TEXT, kind: 'symlink' },
+      { path: 'b-file', content: SHARED_TARGET_TEXT },
+    ],
+    after: [{ path: 'c-new', content: SHARED_TARGET_PLUS_EXTRA }],
+    gitFlags: ['-B'],
+    renameOptions: { breakRewrites: { score: 30000, merge: 36000 } },
+  },
+  {
+    label:
+      '-M -B: a broken symlink retarget alongside an unrelated regular delete, and an add similar to the OLD target — the broken halves rejoin, the add stays plain (M100 a-link ; D other ; A z-new)',
+    before: [
+      { path: 'a-link', content: SYMLINK_OLD_TARGET, kind: 'symlink' },
+      { path: 'other', content: tenLineContent('n6') },
+    ],
+    after: [
+      { path: 'a-link', content: SYMLINK_NEW_TARGET, kind: 'symlink' },
+      { path: 'z-new', content: SYMLINK_OLD_TARGET_PLUS_TAIL },
+    ],
+    gitFlags: ['-B'],
+    renameOptions: { breakRewrites: { score: 30000, merge: 36000 } },
+  },
+];
+
+describeRenameRows(
+  'non-regular files leave similarity scoring interop',
+  NON_REGULAR_ROWS,
+  NON_REGULAR_TMP_PREFIX,
+  NON_REGULAR_SETUP_TIMEOUT,
+  {
+    given: 'Given a raw diff pair exercising a non-regular (symlink) side of the rename/copy pools',
+  },
+);
+
+/**
+ * `-B` breaks every file↔symlink type change unconditionally: the halves
+ * feed the rename/copy matrix exactly like a broken modify's, a
+ * paired add half replaces the type change entirely, and an unpaired one
+ * rejoins into a kept-broken type change. A gitlink-involving type change
+ * never breaks, and a broken pair anywhere in the diff switches off
+ * the `-M` basename pass just as a broken modify does.
+ */
+const TYPE_CHANGE_TMP_PREFIX = 'tsgit-rename-type-change-break-';
+const TYPE_CHANGE_SETUP_TIMEOUT = 60_000;
+const TYPE_CHANGE_BREAK_OPTS = { breakRewrites: { score: 30000, merge: 36000 } };
+const TYPE_CHANGE_GITLINK_OID = '9'.repeat(40);
+
+const tcRegular = (label: string): string =>
+  Array.from({ length: 10 }, (_, i) => `${label} regular content line ${i}\n`).join('');
+const tcNearMatch = (content: string): string => `${content}extra unique tail line only here\n`;
+const tcSymlink = (label: string): string => `symlink-target-${label}`;
+
+const B3_BASELINE = Array.from(
+  { length: 20 },
+  (_, i) => `body line ${i}: shared baseline for the basename regression probe\n`,
+).join('');
+const b3Edited = (edited: number): string =>
+  Array.from({ length: 20 }, (_, i) =>
+    i < edited
+      ? `edited line ${i}: replaces the shared baseline for the basename regression probe\n`
+      : `body line ${i}: shared baseline for the basename regression probe\n`,
+  ).join('');
+
+const TYPE_CHANGE_ROWS: ReadonlyArray<RenameRow> = [
+  {
+    label: 'A plain symlink→regular type change with no -B (T a/p)',
+    before: [{ path: 'a/p', content: tcSymlink('n7'), kind: 'symlink' }],
+    after: [{ path: 'a/p', content: tcRegular('n7') }],
+  },
+  {
+    label: '-M -B breaks a symlink→regular type change unconditionally (T100 a/p)',
+    before: [{ path: 'a/p', content: tcSymlink('n7b'), kind: 'symlink' }],
+    after: [{ path: 'a/p', content: tcRegular('n7b') }],
+    gitFlags: ['-B'],
+    renameOptions: TYPE_CHANGE_BREAK_OPTS,
+  },
+  {
+    label:
+      '-M -B, a symlink→regular type change where both sides are the SAME blob — breaks before the same-oid check (T100 a/p)',
+    before: [{ path: 'a/p', content: 'shared-blob-for-n7s', kind: 'symlink' }],
+    after: [{ path: 'a/p', content: 'shared-blob-for-n7s' }],
+    gitFlags: ['-B'],
+    renameOptions: TYPE_CHANGE_BREAK_OPTS,
+  },
+  {
+    label:
+      '-M -B, a regular→symlink type change whose OLD content exactly matches an add (T100 a/p ; C100 a/p→b/q)',
+    before: [{ path: 'a/p', content: tcRegular('n7d') }],
+    after: [
+      { path: 'a/p', content: tcSymlink('n7d'), kind: 'symlink' },
+      { path: 'b/q', content: tcRegular('n7d') },
+    ],
+    gitFlags: ['-B'],
+    renameOptions: TYPE_CHANGE_BREAK_OPTS,
+  },
+  {
+    label:
+      'Under -C -B, a regular→symlink type change whose OLD content exactly matches an add — the broken type change registers once, not also as a modified copy source (T100 a/p ; C100 a/p→b/q)',
+    before: [{ path: 'a/p', content: tcRegular('n7c') }],
+    after: [
+      { path: 'a/p', content: tcSymlink('n7c'), kind: 'symlink' },
+      { path: 'b/q', content: tcRegular('n7c') },
+    ],
+    gitFlags: ['-C', '-B'],
+    renameOptions: { copies: 'on', ...TYPE_CHANGE_BREAK_OPTS },
+  },
+  {
+    label:
+      '-M -B, a regular→symlink type change whose OLD content near-matches (one extra line) an add instead of exact (T100 a/p ; C0nn a/p→b/q)',
+    before: [{ path: 'a/p', content: tcRegular('n7e') }],
+    after: [
+      { path: 'a/p', content: tcSymlink('n7e'), kind: 'symlink' },
+      { path: 'b/q', content: tcNearMatch(tcRegular('n7e')) },
+    ],
+    gitFlags: ['-B'],
+    renameOptions: TYPE_CHANGE_BREAK_OPTS,
+  },
+  {
+    label:
+      '-M -B, a regular→symlink type change whose OLD content matches two identical adds (one use per source: T100 a/p ; C100 a/p→b/q ; A b/r)',
+    before: [{ path: 'a/p', content: tcRegular('n7m') }],
+    after: [
+      { path: 'a/p', content: tcSymlink('n7m'), kind: 'symlink' },
+      { path: 'b/q', content: tcRegular('n7m') },
+      { path: 'b/r', content: tcRegular('n7m') },
+    ],
+    gitFlags: ['-B'],
+    renameOptions: TYPE_CHANGE_BREAK_OPTS,
+  },
+  {
+    label:
+      'The OLD-content-exact-match type-change fixture under -M only, no -B — the type change never splits (T a/p ; A b/q)',
+    before: [{ path: 'a/p', content: tcRegular('n7dn') }],
+    after: [
+      { path: 'a/p', content: tcSymlink('n7dn'), kind: 'symlink' },
+      { path: 'b/q', content: tcRegular('n7dn') },
+    ],
+  },
+  {
+    label:
+      '-M -B, a symlink→regular type change whose NEW content exactly matches a deleted file — the pairing replaces the type change (R100 a/old→a/p)',
+    before: [
+      { path: 'a/p', content: tcSymlink('n7f'), kind: 'symlink' },
+      { path: 'a/old', content: tcRegular('n7f-new') },
+    ],
+    after: [{ path: 'a/p', content: tcRegular('n7f-new') }],
+    gitFlags: ['-B'],
+    renameOptions: TYPE_CHANGE_BREAK_OPTS,
+  },
+  {
+    label:
+      '-M -B, a symlink→regular type change whose NEW content near-matches a deleted file instead of exact (R0nn a/old→a/p)',
+    before: [
+      { path: 'a/p', content: tcSymlink('n7j'), kind: 'symlink' },
+      { path: 'a/old', content: tcNearMatch(tcRegular('n7j-new')) },
+    ],
+    after: [{ path: 'a/p', content: tcRegular('n7j-new') }],
+    gitFlags: ['-B'],
+    renameOptions: TYPE_CHANGE_BREAK_OPTS,
+  },
+  {
+    label:
+      'The NEW-content-exact-match type-change fixture under -M only, no -B — both halves stay separate (D a/old ; T a/p)',
+    before: [
+      { path: 'a/p', content: tcSymlink('n7fn'), kind: 'symlink' },
+      { path: 'a/old', content: tcRegular('n7fn-new') },
+    ],
+    after: [{ path: 'a/p', content: tcRegular('n7fn-new') }],
+  },
+  {
+    label:
+      '-M -B, a regular→symlink type change whose NEW target exactly matches a deleted symlink — symlinks pair exactly only (R100 a/s→a/p)',
+    before: [
+      { path: 'a/p', content: tcRegular('n7g') },
+      { path: 'a/s', content: tcSymlink('n7g'), kind: 'symlink' },
+    ],
+    after: [{ path: 'a/p', content: tcSymlink('n7g'), kind: 'symlink' }],
+    gitFlags: ['-B'],
+    renameOptions: TYPE_CHANGE_BREAK_OPTS,
+  },
+  {
+    label:
+      '-M -B, a regular→symlink type change whose NEW target exactly matches a deleted symlink, plus an add matching the type change OLD content — both halves pair independently (R100 a/s→a/p ; R100 a/p→b/q)',
+    before: [
+      { path: 'a/p', content: tcRegular('n7h') },
+      { path: 'a/s', content: tcSymlink('n7h'), kind: 'symlink' },
+    ],
+    after: [
+      { path: 'a/p', content: tcSymlink('n7h'), kind: 'symlink' },
+      { path: 'b/q', content: tcRegular('n7h') },
+    ],
+    gitFlags: ['-B'],
+    renameOptions: TYPE_CHANGE_BREAK_OPTS,
+  },
+  {
+    label:
+      '-M -B, two type changes swap content — a/p regular→symlink, a/r symlink→regular (R100 a/r→a/p ; R100 a/p→a/r)',
+    before: [
+      { path: 'a/p', content: tcRegular('n7k') },
+      { path: 'a/r', content: tcSymlink('n7k'), kind: 'symlink' },
+    ],
+    after: [
+      { path: 'a/p', content: tcSymlink('n7k'), kind: 'symlink' },
+      { path: 'a/r', content: tcRegular('n7k') },
+    ],
+    gitFlags: ['-B'],
+    renameOptions: TYPE_CHANGE_BREAK_OPTS,
+  },
+  {
+    label:
+      'The swapped-content type-change fixture under -M only, no -B — both type changes stay separate (T a/p ; T a/r)',
+    before: [
+      { path: 'a/p', content: tcRegular('n7kn') },
+      { path: 'a/r', content: tcSymlink('n7kn'), kind: 'symlink' },
+    ],
+    after: [
+      { path: 'a/p', content: tcSymlink('n7kn'), kind: 'symlink' },
+      { path: 'a/r', content: tcRegular('n7kn') },
+    ],
+  },
+  {
+    label:
+      '-M -B, a regular→symlink type change where an unrelated deleted regular file shares the symlink target STRING, cross-mode — neither half pairs (D a/d ; T100 a/p)',
+    before: [
+      { path: 'a/p', content: tcRegular('n7n') },
+      { path: 'a/d', content: tcSymlink('n7n') },
+    ],
+    after: [{ path: 'a/p', content: tcSymlink('n7n'), kind: 'symlink' }],
+    gitFlags: ['-B'],
+    renameOptions: TYPE_CHANGE_BREAK_OPTS,
+  },
+  {
+    label:
+      'Under -C, a regular→symlink type change lends its OLD content as a copy source (T ; C100 a/p→b/q)',
+    before: [{ path: 'a/p', content: tcRegular('n8') }],
+    after: [
+      { path: 'a/p', content: tcSymlink('n8'), kind: 'symlink' },
+      { path: 'b/q', content: tcRegular('n8') },
+    ],
+    gitFlags: ['-C'],
+    renameOptions: { copies: 'on' },
+  },
+  {
+    label: 'A gitlink→regular type change never breaks under -B (T a/sub)',
+    before: [{ path: 'a/sub', content: TYPE_CHANGE_GITLINK_OID, kind: 'gitlink' }],
+    after: [{ path: 'a/sub', content: tcRegular('g3') }],
+    gitFlags: ['-B'],
+    renameOptions: TYPE_CHANGE_BREAK_OPTS,
+  },
+  {
+    label:
+      'A broken type change disables the -M basename pass — the highest raw score wins over the basename match (D foo.c ; R0nn bar.c→foo.c ; T100 t)',
+    before: [
+      { path: 'a/foo.c', content: b3Edited(4) },
+      { path: 'a/bar.c', content: b3Edited(1) },
+      { path: 't', content: tcSymlink('b3t'), kind: 'symlink' },
+    ],
+    after: [
+      { path: 'b/foo.c', content: B3_BASELINE },
+      { path: 't', content: tcRegular('b3t') },
+    ],
+    gitFlags: ['-B'],
+    renameOptions: TYPE_CHANGE_BREAK_OPTS,
+  },
+];
+
+describeRenameRows(
+  '-B type-change break interop',
+  TYPE_CHANGE_ROWS,
+  TYPE_CHANGE_TMP_PREFIX,
+  TYPE_CHANGE_SETUP_TIMEOUT,
+  { given: 'Given a raw diff pair exercising a file↔symlink type change under -B' },
+);
+
+describe.skipIf(!GIT_AVAILABLE)('-B type-change break patch/numstat interop', () => {
+  describe('Given a broken symlink→regular type change under -M -B, When the patch and numstat are reconstructed', () => {
+    it('Then both match git diff --no-ext-diff -p -M -B byte-for-byte', async () => {
+      // Arrange — 20 new lines, a 1-line-equivalent old symlink target: an
+      // unambiguous numstat independent of the shared row's own content.
+      const row: RenameRow = {
+        label: 'symlink→regular type-change break patch/numstat probe',
+        before: [{ path: 'a/p', content: 'n7b-patch-symlink-target', kind: 'symlink' }],
+        after: [
+          {
+            path: 'a/p',
+            content: Array.from({ length: 20 }, (_, i) => `n7b patch content line ${i}\n`).join(''),
+          },
+        ],
+        gitFlags: ['-B'],
+        renameOptions: TYPE_CHANGE_BREAK_OPTS,
+      };
+      const { dir } = await buildRenameRow(row, TYPE_CHANGE_TMP_PREFIX);
+      try {
+        const livePatch = git(
+          dir,
+          'diff',
+          '--no-ext-diff',
+          '--no-color',
+          '-M',
+          '-B',
+          'HEAD~1',
+          'HEAD',
+        );
+        const ctx = createNodeContext({ workDir: dir });
+
+        // Act
+        const treeDiff = await diff(ctx, {
+          from: 'HEAD~1',
+          to: 'HEAD',
+          recursive: true,
+          detectRenames: true,
+          renameOptions: TYPE_CHANGE_BREAK_OPTS,
+        });
+        const resultPatch = await reconstructPatch(ctx, treeDiff);
+        const statDiff = await diff(ctx, {
+          from: 'HEAD~1',
+          to: 'HEAD',
+          recursive: true,
+          detectRenames: true,
+          renameOptions: TYPE_CHANGE_BREAK_OPTS,
+          withStat: true,
+        });
+
+        // Assert — the patch is byte-identical whether or not -B kept the type change broken
+        expect(resultPatch).toBe(livePatch);
+        expect(statDiff.changes).toHaveLength(1);
+        const [statChange] = statDiff.changes;
+        expect(statChange?.type).toBe('type-change');
+        const livePeerNumstat = git(
+          dir,
+          'diff',
+          '--no-ext-diff',
+          '--numstat',
+          '-M',
+          '-B',
+          'HEAD~1',
+          'HEAD',
+        ).trim();
+        expect(numstatFrom(statDiff.changes)).toBe(livePeerNumstat);
+      } finally {
+        await rmDir(dir, { recursive: true, force: true });
+      }
+    });
+  });
+});
+
+/**
+ * `-M`'s basename pre-pass (`find_basename_matches`): a delete and an add
+ * sharing a UNIQUE basename pair before the ordinary matrix ever runs, even
+ * when a differently-named delete scores higher against that same add. It
+ * runs only under plain `-M` — copies off, and no broken pair anywhere in
+ * the diff (rows below reuse `-B` and a rename limit to prove those switch
+ * it off or leave it unaffected) — and it only ever pairs a basename that is
+ * unique on BOTH sides, above a threshold-relative gate.
+ */
+const BASENAME_PASS_TMP_PREFIX = 'tsgit-rename-basename-pass-';
+const BASENAME_PASS_SETUP_TIMEOUT = 60_000;
+const BASENAME_PASS_BREAK_OPTS = { breakRewrites: { score: 30000, merge: 36000 } };
+
+const COMPANION_BASELINE = Array.from(
+  { length: 20 },
+  (_, i) => `meta line ${i}: shared boilerplate for the basename regression probe\n`,
+).join('');
+const companionEdited = (edited: number): string =>
+  Array.from({ length: 20 }, (_, i) =>
+    i < edited
+      ? `meta-edited line ${i}: replaces the shared boilerplate for the basename regression probe\n`
+      : `meta line ${i}: shared boilerplate for the basename regression probe\n`,
+  ).join('');
+
+/** Edits only the LAST line of the shared baseline — a "tail edit", as opposed
+ *  to `b3Edited`'s edits from the front. */
+const b3TailEdited = (): string =>
+  Array.from({ length: 20 }, (_, i) =>
+    i === 19
+      ? `edited line ${i}: replaces the shared baseline for the basename regression probe\n`
+      : `body line ${i}: shared baseline for the basename regression probe\n`,
+  ).join('');
+
+/** A content family unrelated to the basename/companion ones above, used for a
+ *  leftover pair that must stay reachable only through the ordinary matrix. */
+const LEFTOVER_BASELINE = Array.from(
+  { length: 20 },
+  (_, i) => `leftover line ${i}: shared payload for the limited-leftover probe\n`,
+).join('');
+const leftoverEdited = (edited: number): string =>
+  Array.from({ length: 20 }, (_, i) =>
+    i < edited
+      ? `leftover-edited line ${i}: replaces the shared payload for the limited-leftover probe\n`
+      : `leftover line ${i}: shared payload for the limited-leftover probe\n`,
+  ).join('');
+
+const BASENAME_UNIQUENESS_SYMLINK_TARGET = 'symlink-target-for-basename-uniqueness-probe';
+
+/** Same basename, wildly different declared sizes, well above tsgit's
+ *  internal size-gate id count: every delete/add pair sharing a unique
+ *  basename is `isSizeRejected` on both sides (the basename pass's own gate
+ *  and the ordinary matrix's), so neither pass ever manufactures a rename
+ *  from declared-size-incompatible content — the "hostile-basename" shape. */
+const HOSTILE_BASENAME_PAIR_COUNT = 17;
+const hostileBasenameBigContent = (index: number): string =>
+  'B'.repeat(1994) + String(index).padStart(6, '0');
+const hostileBasenameSmallContent = (index: number): string => `s${String(index).padStart(5, '0')}`;
+const hostileBasenameBefore = (): FileSpec[] =>
+  Array.from({ length: HOSTILE_BASENAME_PAIR_COUNT }, (_, i) => ({
+    path: `a/file${String(i).padStart(3, '0')}.dat`,
+    content: hostileBasenameBigContent(i),
+  }));
+const hostileBasenameAfter = (): FileSpec[] =>
+  Array.from({ length: HOSTILE_BASENAME_PAIR_COUNT }, (_, i) => ({
+    path: `b/file${String(i).padStart(3, '0')}.dat`,
+    content: hostileBasenameSmallContent(i),
+  }));
+
+const BASENAME_PASS_ROWS: ReadonlyArray<RenameRow> = [
+  {
+    label:
+      'a same-basename inexact delete outscored by a differently-named delete for the same add — the basename match wins (D bar.c ; R0nn foo.c→foo.c)',
+    before: [
+      { path: 'a/foo.c', content: b3Edited(4) },
+      { path: 'a/bar.c', content: b3Edited(1) },
+    ],
+    after: [{ path: 'b/foo.c', content: B3_BASELINE }],
+  },
+  {
+    label:
+      'two components moving directory, each with a primary and a companion file: only the one keeping its basename survives the move for BOTH files, despite the other component scoring higher on both (D Aaa.cls ; D Aaa.cls-meta.xml ; R0nn Foo.cls→Foo.cls ; R0nn Foo.cls-meta.xml→Foo.cls-meta.xml)',
+    before: [
+      { path: 'a/classes/Aaa.cls', content: b3Edited(1) },
+      { path: 'a/classes/Foo.cls', content: b3Edited(4) },
+      { path: 'a/classes/Aaa.cls-meta.xml', content: companionEdited(1) },
+      { path: 'a/classes/Foo.cls-meta.xml', content: companionEdited(4) },
+    ],
+    after: [
+      { path: 'b/classes/Foo.cls', content: B3_BASELINE },
+      { path: 'b/classes/Foo.cls-meta.xml', content: COMPANION_BASELINE },
+    ],
+  },
+  {
+    label:
+      'must stay: -M -B with a fully rewritten unrelated file — a break anywhere in the diff disables the basename pass, so the higher-scoring but differently-named delete wins the matrix instead (R0nn bar.c→foo.c ; M100 m.txt)',
+    before: [
+      { path: 'a/foo.c', content: b3Edited(4) },
+      { path: 'a/bar.c', content: b3Edited(1) },
+      { path: 'm.txt', content: breakContent('old', 40, 0) },
+    ],
+    after: [
+      { path: 'b/foo.c', content: B3_BASELINE },
+      { path: 'm.txt', content: breakContent('new', 40, 0) },
+    ],
+    gitFlags: ['-B'],
+    renameOptions: BASENAME_PASS_BREAK_OPTS,
+  },
+  {
+    label:
+      'the same fixture under a rename limit of 1 — the basename pass still pairs because it runs before the limit gate (D bar.c ; R0nn foo.c→foo.c)',
+    before: [
+      { path: 'a/foo.c', content: b3Edited(4) },
+      { path: 'a/bar.c', content: b3Edited(1) },
+    ],
+    after: [{ path: 'b/foo.c', content: B3_BASELINE }],
+    gitFlags: ['-l1'],
+    renameOptions: { limit: 1 },
+  },
+  {
+    label:
+      'a same-basename delete scoring below the basename gate falls to the matrix and loses to a differently-named, higher-scoring delete (D foo.c ; R0nn bar.c→foo.c)',
+    before: [
+      { path: 'a/foo.c', content: b3Edited(8) },
+      { path: 'a/bar.c', content: b3Edited(1) },
+    ],
+    after: [{ path: 'b/foo.c', content: B3_BASELINE }],
+  },
+  {
+    label:
+      'must stay: two sources sharing the same basename never basename-pair, even against a uniquely-named destination — the matrix still picks the higher-scoring source (D a/x/foo.c ; R0nn a/y/foo.c→foo.c)',
+    before: [
+      { path: 'a/x/foo.c', content: b3Edited(4) },
+      { path: 'a/y/foo.c', content: b3Edited(1) },
+    ],
+    after: [{ path: 'b/foo.c', content: B3_BASELINE }],
+  },
+  {
+    label:
+      'must stay: two destinations sharing the same basename never basename-pair — the matrix assigns each source to its own best-scoring destination instead (R0nn bar.c→x/foo.c ; R0nn foo.c→y/foo.c)',
+    before: [
+      { path: 'a/foo.c', content: companionEdited(4) },
+      { path: 'a/bar.c', content: b3Edited(1) },
+    ],
+    after: [
+      { path: 'b/x/foo.c', content: B3_BASELINE },
+      { path: 'b/y/foo.c', content: COMPANION_BASELINE },
+    ],
+  },
+  {
+    label:
+      'must stay: a custom similarity threshold raises the basename gate high enough to reject a same-basename delete, so the higher-scoring, differently-named delete still wins the matrix (D foo.c ; R0nn bar.c→foo.c)',
+    before: [
+      { path: 'a/foo.c', content: b3Edited(2) },
+      { path: 'a/bar.c', content: b3Edited(1) },
+    ],
+    after: [{ path: 'b/foo.c', content: B3_BASELINE }],
+    gitFlags: ['-M90%'],
+    renameOptions: { threshold: 54000 },
+  },
+  {
+    label:
+      'a third destination the basename pass frees the other delete to reach: pairing the basename match shrinks the leftover matrix so the freed delete still pairs by score (R0nn foo.c→foo.c ; R0nn bar.c→zed.c)',
+    before: [
+      { path: 'a/foo.c', content: b3Edited(4) },
+      { path: 'a/bar.c', content: b3Edited(1) },
+    ],
+    after: [
+      { path: 'b/foo.c', content: B3_BASELINE },
+      { path: 'b/zed.c', content: b3TailEdited() },
+    ],
+  },
+  {
+    label:
+      'a rename limit of 1 with one basename-unique pair and one unrelated pair: the basename pass shrinks the leftover matrix to fit the limit (R0nn foo.c→foo.c ; R0nn x.c→y.c)',
+    before: [
+      { path: 'a/foo.c', content: b3Edited(2) },
+      { path: 'a/x.c', content: leftoverEdited(1) },
+    ],
+    after: [
+      { path: 'b/foo.c', content: B3_BASELINE },
+      { path: 'b/y.c', content: LEFTOVER_BASELINE },
+    ],
+    gitFlags: ['-l1'],
+    renameOptions: { limit: 1 },
+  },
+  {
+    label:
+      'must stay: an unrelated deleted symlink sharing the destination basename still blocks the basename pass — the matrix decides exactly as it did before the pass existed (D foo.c ; D a/x/foo.c ; R0nn bar.c→foo.c)',
+    before: [
+      { path: 'a/foo.c', content: b3Edited(4) },
+      { path: 'a/bar.c', content: b3Edited(1) },
+      { path: 'a/x/foo.c', content: BASENAME_UNIQUENESS_SYMLINK_TARGET, kind: 'symlink' },
+    ],
+    after: [{ path: 'b/foo.c', content: B3_BASELINE }],
+  },
+  {
+    label:
+      'must stay: a new symlink sharing the destination basename blocks the basename pass on the regular destination too — the matrix decides and the symlink stays an unmatched add (D foo.c ; R0nn bar.c→foo.c ; A b/x/foo.c)',
+    before: [
+      { path: 'a/foo.c', content: b3Edited(4) },
+      { path: 'a/bar.c', content: b3Edited(1) },
+    ],
+    after: [
+      { path: 'b/foo.c', content: B3_BASELINE },
+      { path: 'b/x/foo.c', content: BASENAME_UNIQUENESS_SYMLINK_TARGET, kind: 'symlink' },
+    ],
+  },
+  {
+    label:
+      'many same-basename pairs of a large delete and a tiny add: size-incompatible on both sides, so every file stays a plain delete or add',
+    before: hostileBasenameBefore(),
+    after: hostileBasenameAfter(),
+  },
+];
+
+describeRenameRows(
+  '-M basename pre-pass interop',
+  BASENAME_PASS_ROWS,
+  BASENAME_PASS_TMP_PREFIX,
+  BASENAME_PASS_SETUP_TIMEOUT,
+  { given: 'Given a raw diff pair where a delete shares its destination basename uniquely' },
+);
+
+/**
+ * `-B` alone, with rename/copy detection off (`--no-renames -B`): every
+ * break-attempt/keep-broken gate still applies, but nothing the break pass
+ * produces is ever registered or paired — not even an exact content match.
+ */
+const NO_RENAME_BREAK_TMP_PREFIX = 'tsgit-rename-no-rename-break-';
+const NO_RENAME_BREAK_SETUP_TIMEOUT = 60_000;
+const NO_RENAME_BREAK_OPTS = { breakRewrites: { score: 30000, merge: 36000 } };
+
+const NO_RENAME_UNRELATED_CONTENT = Array.from(
+  { length: 20 },
+  (_, i) => `unrelated-line-${String(i).padStart(3, '0')}: shared between the delete and the add\n`,
+).join('');
+
+const NO_RENAME_BREAK_ROWS: ReadonlyArray<RenameRow> = [
+  {
+    label:
+      'a rewritten m.txt alongside an unrelated add matching its OLD content and an unrelated identical delete/add pair, under --no-renames -B: nothing pairs, not even exactly (M100 m ; A q ; A y ; D z)',
+    before: [
+      { path: 'm.txt', content: breakContent('old', 40, 0) },
+      { path: 'z.txt', content: NO_RENAME_UNRELATED_CONTENT },
+    ],
+    after: [
+      { path: 'm.txt', content: breakContent('new', 40, 0) },
+      { path: 'q.txt', content: breakContent('old', 40, 0) },
+      { path: 'y.txt', content: NO_RENAME_UNRELATED_CONTENT },
+    ],
+    detectRenames: false,
+    gitFlags: ['-B'],
+    renameOptions: NO_RENAME_BREAK_OPTS,
+  },
+  {
+    label:
+      'a partially-rewritten file under --no-renames -B: the break-attempt gate still fires and the modify stays kept-broken',
+    before: [{ path: 'm.txt', content: breakContent('old', 20, 7) }],
+    after: [{ path: 'm.txt', content: breakContent('new', 20, 7) }],
+    detectRenames: false,
+    gitFlags: ['-B'],
+    renameOptions: NO_RENAME_BREAK_OPTS,
+  },
+  {
+    label:
+      'the same partially-rewritten file under --no-renames -B with a higher merge gate: the pair re-merges to a plain modify',
+    before: [{ path: 'm.txt', content: breakContent('old', 20, 7) }],
+    after: [{ path: 'm.txt', content: breakContent('new', 20, 7) }],
+    detectRenames: false,
+    gitFlags: ['-B50%/70%'],
+    renameOptions: { breakRewrites: { score: 30000, merge: 42000 } },
+  },
+  {
+    label:
+      'a symlink→regular type change under --no-renames -B: the type change still breaks unconditionally',
+    before: [{ path: 'p', content: tcSymlink('no-rename-b'), kind: 'symlink' }],
+    after: [{ path: 'p', content: tcRegular('no-rename-b') }],
+    detectRenames: false,
+    gitFlags: ['-B'],
+    renameOptions: NO_RENAME_BREAK_OPTS,
+  },
+  {
+    label:
+      'an empty file rewritten and a small file rewritten, both under MINIMUM_BREAK_SIZE guards, under --no-renames -B: neither ever breaks (M e ; M s)',
+    before: [
+      { path: 'e', content: '' },
+      { path: 's', content: breakContent('old', 3, 0) },
+    ],
+    after: [
+      { path: 'e', content: breakContent('new', 40, 0) },
+      { path: 's', content: breakContent('new', 3, 0) },
+    ],
+    detectRenames: false,
+    gitFlags: ['-B'],
+    renameOptions: NO_RENAME_BREAK_OPTS,
+  },
+  {
+    label:
+      'an unrelated delete and add sharing identical content under --no-renames -B: no pairing at all, not even exact (D ; A)',
+    before: [{ path: 'z.txt', content: 'identical shared content for the no-pairing check' }],
+    after: [{ path: 'y.txt', content: 'identical shared content for the no-pairing check' }],
+    detectRenames: false,
+    gitFlags: ['-B'],
+    renameOptions: NO_RENAME_BREAK_OPTS,
+  },
+];
+
+describeRenameRows(
+  '-B break detection without rename detection interop',
+  NO_RENAME_BREAK_ROWS,
+  NO_RENAME_BREAK_TMP_PREFIX,
+  NO_RENAME_BREAK_SETUP_TIMEOUT,
+  {
+    given: 'Given a raw diff pair exercising -B with rename detection off',
+    when: 'When diff is called without detectRenames',
+  },
+);
+
+/**
+ * A kept-broken modify's `--numstat` counts the WHOLE file on each side
+ * (git's `complete_rewrite`), never the line diff and never dropped by a
+ * whitespace-ignore mode. `runRenameRow` has no `withStat`, so this section
+ * calls `diff()` itself and reconstructs numstat locally, comparing against
+ * live `git diff --numstat -B`.
+ */
+const REWRITE_NUMSTAT_TMP_PREFIX = 'tsgit-rewrite-numstat-';
+const REWRITE_NUMSTAT_SETUP_TIMEOUT = 60_000;
+
+interface RewriteNumstatRow extends RenameRow {
+  readonly ignoreWhitespace?: 'all';
+}
+
+const wsRewriteLine = (i: number, gap: string): string =>
+  `word${i}a${gap}word${i}b${gap}word${i}c${gap}word${i}d${gap}word${i}e${gap}word${i}f${gap}word${i}g${gap}word${i}h\n`;
+
+/** 40 lines whose words are separated by `gap` — comparing `wsRewrite(' ')` to
+ *  `wsRewrite('  ')` differs only in whitespace AMOUNT, which
+ *  `ignoreWhitespace: 'all'` erases entirely but a kept-broken rewrite's
+ *  numstat does not. */
+const wsRewrite = (gap: string): string =>
+  Array.from({ length: 40 }, (_, i) => wsRewriteLine(i, gap)).join('');
+
+/** A deterministic 0..126-byte sequence with a forced NUL at index 10 (well
+ *  inside the binary-detection window), single-byte-safe under UTF-8 so the
+ *  bytes `git`/tsgit each read back are exactly the ones generated here. */
+const pseudoRandomBinary = (seed: number, length: number): string => {
+  let state = seed;
+  const bytes = Array.from({ length }, () => {
+    state = (state * 1_103_515_245 + 12_345) & 0x7fffffff;
+    return (state % 127) + 1;
+  });
+  bytes[10] = 0;
+  return String.fromCharCode(...bytes);
+};
+
+function numstatCounts(change: StatFields): string {
+  return change.binary ? '-\t-' : `${change.added}\t${change.deleted}`;
+}
+
+function numstatPath(change: DiffChange): string {
+  switch (change.type) {
+    case 'add':
+      return change.newPath;
+    case 'delete':
+      return change.oldPath;
+    case 'modify':
+    case 'type-change':
+      return change.path;
+    case 'rename':
+    case 'copy':
+      return `${change.oldPath} => ${change.newPath}`;
+  }
+}
+
+function numstatFrom(changes: ReadonlyArray<StatDiffChange>): string {
+  return changes.map((change) => `${numstatCounts(change)}\t${numstatPath(change)}`).join('\n');
+}
+
+function gitPeerNumstat(dir: string, row: RewriteNumstatRow): string {
+  const flags = row.gitFlags ?? [];
+  const renameFlag = row.detectRenames === false ? '--no-renames' : '-M';
+  return git(
+    dir,
+    'diff',
+    '--no-ext-diff',
+    '--numstat',
+    renameFlag,
+    ...flags,
+    'HEAD~1',
+    'HEAD',
+  ).trim();
+}
+
+async function runNumstatRow(
+  row: RewriteNumstatRow,
+  dir: string,
+): Promise<{ readonly ours: string; readonly peer: string }> {
+  const ctx = createNodeContext({ workDir: dir });
+  const peer = gitPeerNumstat(dir, row);
+  const result = await diff(ctx, {
+    from: 'HEAD~1',
+    to: 'HEAD',
+    recursive: true,
+    withStat: true,
+    ...(row.detectRenames !== false ? { detectRenames: true } : {}),
+    ...(row.renameOptions !== undefined ? { renameOptions: row.renameOptions } : {}),
+    ...(row.ignoreWhitespace !== undefined ? { ignoreWhitespace: row.ignoreWhitespace } : {}),
+  });
+  return { ours: numstatFrom(result.changes), peer };
+}
+
+const REWRITE_NUMSTAT_BREAK_OPTS = { breakRewrites: { score: 30000, merge: 36000 } };
+const REWRITE_NUMSTAT_ANY_BREAK_OPTS = { breakRewrites: { score: 1, merge: 1 } };
+
+const REWRITE_NUMSTAT_ROWS: ReadonlyArray<RewriteNumstatRow> = [
+  {
+    label: 'a partially-rewritten file kept broken counts the whole file on each side',
+    before: [{ path: 'm.txt', content: breakContent('old', 40, 15) }],
+    after: [{ path: 'm.txt', content: breakContent('new', 40, 15) }],
+    detectRenames: false,
+    gitFlags: ['-B'],
+    renameOptions: REWRITE_NUMSTAT_BREAK_OPTS,
+  },
+  {
+    label: 'the same partially-rewritten file re-merged counts only the real line diff',
+    before: [{ path: 'm.txt', content: breakContent('old', 40, 15) }],
+    after: [{ path: 'm.txt', content: breakContent('new', 40, 15) }],
+    detectRenames: false,
+    gitFlags: ['-B50%/70%'],
+    renameOptions: { breakRewrites: { score: 30000, merge: 42000 } },
+  },
+  {
+    label:
+      'a kept-broken rewrite whose new side ends without a final LF counts its incomplete last line',
+    before: [{ path: 'm.txt', content: breakContent('old', 40, 0) }],
+    after: [{ path: 'm.txt', content: breakContent('new', 30, 0).slice(0, -1) }],
+    detectRenames: false,
+    gitFlags: ['-B'],
+    renameOptions: REWRITE_NUMSTAT_ANY_BREAK_OPTS,
+  },
+  {
+    label: 'a kept-broken whitespace-only rewrite counts the whole file (no -w on either side)',
+    before: [{ path: 'm.txt', content: wsRewrite(' ') }],
+    after: [{ path: 'm.txt', content: wsRewrite('  ') }],
+    detectRenames: false,
+    gitFlags: ['-B'],
+    renameOptions: REWRITE_NUMSTAT_ANY_BREAK_OPTS,
+  },
+  {
+    label:
+      'the same kept-broken whitespace-only rewrite still counts the whole file under -w (never dropped)',
+    before: [{ path: 'm.txt', content: wsRewrite(' ') }],
+    after: [{ path: 'm.txt', content: wsRewrite('  ') }],
+    detectRenames: false,
+    gitFlags: ['-B', '-w'],
+    renameOptions: REWRITE_NUMSTAT_ANY_BREAK_OPTS,
+    ignoreWhitespace: 'all',
+  },
+  {
+    label: 'a kept-broken rewrite between two random binary blobs reports "- -"',
+    before: [{ path: 'm.txt', content: pseudoRandomBinary(1, 2000) }],
+    after: [{ path: 'm.txt', content: pseudoRandomBinary(2, 2000) }],
+    detectRenames: false,
+    gitFlags: ['-B'],
+    renameOptions: REWRITE_NUMSTAT_ANY_BREAK_OPTS,
+  },
+  {
+    label:
+      'a kept-broken rewrite to an empty file counts zero added and the old line count deleted',
+    before: [{ path: 'm.txt', content: breakContent('old', 40, 0) }],
+    after: [{ path: 'm.txt', content: '' }],
+    detectRenames: false,
+    gitFlags: ['-B'],
+    renameOptions: REWRITE_NUMSTAT_ANY_BREAK_OPTS,
+  },
+  {
+    label:
+      'a kept-broken modify alongside an unrelated exact rename, under -M -B, counts the whole file for the modify and zero for the rename',
+    before: [
+      { path: 'm.txt', content: breakContent('old', 40, 0) },
+      { path: 'z.txt', content: NO_RENAME_UNRELATED_CONTENT },
+    ],
+    after: [
+      { path: 'm.txt', content: breakContent('new', 40, 0) },
+      { path: 'q.txt', content: breakContent('old', 40, 0) },
+      { path: 'y.txt', content: NO_RENAME_UNRELATED_CONTENT },
+    ],
+    gitFlags: ['-B'],
+    renameOptions: REWRITE_NUMSTAT_BREAK_OPTS,
+  },
+];
+
+const rewriteNumstatFixtures = new Map<string, { readonly dir: string }>();
+
+function rewriteNumstatFixtureOf(label: string): { readonly dir: string } {
+  const found = rewriteNumstatFixtures.get(label);
+  if (found === undefined) throw new Error(`fixture not built for row: ${label}`);
+  return found;
+}
+
+describe.skipIf(!GIT_AVAILABLE)('kept-broken rewrite numstat interop', () => {
+  beforeAll(async () => {
+    for (const row of REWRITE_NUMSTAT_ROWS) {
+      rewriteNumstatFixtures.set(row.label, await buildRenameRow(row, REWRITE_NUMSTAT_TMP_PREFIX));
+    }
+  }, REWRITE_NUMSTAT_SETUP_TIMEOUT);
+
+  afterAll(async () => {
+    for (const { dir } of rewriteNumstatFixtures.values()) {
+      await rmDir(dir, { recursive: true, force: true });
+    }
+  });
+
+  describe('Given a raw diff pair exercising -B numstat with a kept-broken modify', () => {
+    describe('When diff is called with withStat:true', () => {
+      it.each(REWRITE_NUMSTAT_ROWS)('Then numstat matches live git for: $label', async (row) => {
+        // Arrange
+        const { dir } = rewriteNumstatFixtureOf(row.label);
+
+        // Act
+        const { ours, peer } = await runNumstatRow(row, dir);
+
+        // Assert
+        expect(ours).toBe(peer);
+      });
     });
   });
 });

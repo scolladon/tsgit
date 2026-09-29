@@ -1,4 +1,11 @@
-import { isObjectNotFound, objectNotFound } from '../../domain/objects/error.js';
+import { TsgitError } from '../../domain/error.js';
+import { indexOf } from '../../domain/objects/encoding.js';
+import {
+  invalidObjectHeader,
+  isObjectNotFound,
+  objectNotFound,
+} from '../../domain/objects/error.js';
+import { parseHeader } from '../../domain/objects/header.js';
 import type { GitObject, ObjectId, ObjectType } from '../../domain/objects/index.js';
 import {
   type OfsPackEntryHeader,
@@ -10,6 +17,7 @@ import {
 } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
 import type { PromisorRemote } from '../../ports/promisor.js';
+import { forgetLooseOidPrefix, probeLooseOid } from './internal/loose-oid-cache.js';
 import { createPromiseMemo, type PromiseMemo } from './internal/promise-memo.js';
 import {
   assertRepoSettingsValid,
@@ -18,6 +26,8 @@ import {
 import {
   assertChainDepthWithinCap,
   isBase,
+  LOOSE_HEADER_WINDOW,
+  looseHeaderTooLong,
   ofsDeltaBaseOffset,
   readEntryHeaderWithChunk,
   resolveObject,
@@ -30,6 +40,7 @@ import {
   type PackLookupHit,
   type PackRegistry,
 } from './pack-registry.js';
+import { commonGitDir, looseObjectPath } from './path-layout.js';
 import type { RawObject, ReadObjectOptions } from './types.js';
 
 /**
@@ -213,7 +224,9 @@ export async function readObject(
 
 /** Like `readObject`, but also surfaces the resolved object's declared size
  *  — `cat-file-batch.ts`'s reader, sharing the same lazy-fetch retry and
- *  parsed memo. */
+ *  parsed memo. git's `cat-file`/`--batch` route blobs to the streaming
+ *  tier, so a size-lying blob serves its real bytes here rather than
+ *  refusing an overrun. */
 export async function readObjectWithSize(
   ctx: Context,
   id: ObjectId,
@@ -222,7 +235,26 @@ export async function readObjectWithSize(
   const verifyHash = options?.verifyHash ?? false;
   const registry = peekPackRegistry(ctx) ?? (await getPackRegistry(ctx));
   return withLazyFetchRetry(ctx, id, registry, () =>
-    resolveObjectWithSize(ctx, registry, id, verifyHash, options?.maxBytes),
+    resolveObjectWithSize(ctx, registry, id, verifyHash, options?.maxBytes, 'streamed'),
+  );
+}
+
+/**
+ * `readObject` through git's streaming read tier rather than the buffered
+ * default — `show`'s blob target, which serves a size-lying blob's real
+ * bytes exactly as `cat-file -p` does. A commit, tree or tag refuses
+ * identically in both tiers, so this is never needed for them. INTERNAL:
+ * not re-exported from the primitives barrel.
+ */
+export async function readObjectStreamed(
+  ctx: Context,
+  id: ObjectId,
+  options?: ReadObjectOptions,
+): Promise<GitObject> {
+  const verifyHash = options?.verifyHash ?? false;
+  const registry = peekPackRegistry(ctx) ?? (await getPackRegistry(ctx));
+  return withLazyFetchRetry(ctx, id, registry, () =>
+    resolveObject(ctx, registry, id, verifyHash, options?.maxBytes, 'streamed'),
   );
 }
 
@@ -300,6 +332,146 @@ export async function readObjectMetadataWithContent(
   );
 }
 
+/**
+ * How many compressed bytes of a loose object the size-only read probes
+ * before giving up on finding the header's NUL and falling back to a whole-
+ * file inflate. A dynamic-Huffman deflate header can spend more than a few
+ * hundred compressed bytes before its first literal, so this is generous
+ * headroom for the COMMON case, not a hard structural bound.
+ */
+const LOOSE_HEADER_PROBE_BYTES = 1024;
+
+/**
+ * git's `CHECK_SIZE_ONLY` read: the loose header's declared size CLAIM,
+ * never the real content length — the opposite contract from
+ * `readObjectMetadata` (content-derived, unchanged) and exactly what the
+ * size gate (`detect-similarity-renames.ts`) needs to prefilter candidates
+ * without inflating a single blob. A packed entry's size is already
+ * header-only via `readPackedMetadata` — reused as-is.
+ */
+export async function readDeclaredObjectSize(ctx: Context, id: ObjectId): Promise<number> {
+  const registry = peekPackRegistry(ctx) ?? (await getPackRegistry(ctx));
+  return withLazyFetchRetry(ctx, id, registry, () => resolveDeclaredSize(ctx, registry, id));
+}
+
+async function resolveDeclaredSize(
+  ctx: Context,
+  registry: PackRegistry,
+  id: ObjectId,
+): Promise<number> {
+  const hit = await registry.lookup(id);
+  if (hit !== undefined) {
+    return (await readPackedMetadata(ctx, registry, hit, id)).uncompressedSize;
+  }
+  const looseSize = await readLooseDeclaredSize(ctx, id);
+  if (looseSize !== undefined) return looseSize;
+  throw objectNotFound(id);
+}
+
+const loosePathFor = (ctx: Context, id: ObjectId): string => looseObjectPath(commonGitDir(ctx), id);
+
+/**
+ * Reads only the first `LOOSE_HEADER_PROBE_BYTES` compressed bytes off disk
+ * — never the whole file — mirroring `readLooseCompressed`'s membership-
+ * gated miss handling (object-resolver.ts): an external pruner removing the
+ * file between the membership probe and this read is a git-faithful MISS,
+ * not a refusal.
+ */
+async function readLooseDeclaredSize(ctx: Context, id: ObjectId): Promise<number | undefined> {
+  if (!(await probeLooseOid(ctx, id))) return undefined;
+  let prefix: Uint8Array;
+  try {
+    prefix = await ctx.fs.readSlice(loosePathFor(ctx, id), 0, LOOSE_HEADER_PROBE_BYTES);
+  } catch (error) {
+    if (error instanceof TsgitError && error.data.code === 'FILE_NOT_FOUND') {
+      forgetLooseOidPrefix(ctx, id);
+      return undefined;
+    }
+    throw error;
+  }
+  return resolveDeclaredSizeFromPrefix(ctx, id, prefix);
+}
+
+function noNulTerminator(id: ObjectId): TsgitError {
+  return invalidObjectHeader(`no NUL terminator found in inflated object ${id}`);
+}
+
+/** One header probe's outcome: the declared size once a NUL is found within
+ *  `LOOSE_HEADER_WINDOW`; `tooLong` once the probe's own output fills that
+ *  window without one; `incomplete` when the probed bytes ran out first,
+ *  still under the window — the only outcome a whole-file fallback can ever
+ *  help with. */
+type HeaderProbeOutcome =
+  | { readonly status: 'found'; readonly size: number }
+  | { readonly status: 'tooLong' }
+  | { readonly status: 'incomplete' };
+
+/**
+ * Probes `compressed` through the port's own bounded `inflateHead` — never a
+ * hand-rolled streaming scan — for the header's NUL, mirroring
+ * `inflateLooseBuffered`'s own probe (object-resolver.ts). `inflateHead`
+ * never returns more than `LOOSE_HEADER_WINDOW` bytes here, so reaching that
+ * many with no NUL means the header could never terminate inside git's own
+ * fixed-size buffer, however much more of `compressed` is left unread.
+ */
+async function probeDeclaredSize(
+  ctx: Context,
+  compressed: Uint8Array,
+): Promise<HeaderProbeOutcome> {
+  const head = await ctx.compressor.inflateHead(compressed, LOOSE_HEADER_WINDOW);
+  const nullPos = indexOf(head, 0x00, 0);
+  if (nullPos !== -1)
+    return { status: 'found', size: parseHeader(head.subarray(0, nullPos + 1)).size };
+  return head.length >= LOOSE_HEADER_WINDOW ? { status: 'tooLong' } : { status: 'incomplete' };
+}
+
+/**
+ * Resolves the declared size from an on-disk PREFIX read (never necessarily
+ * the whole file). The prefix given to `inflateHead` may end mid-block —
+ * `readSlice`'s on-disk cutoff, unlike a member's own natural end, is not a
+ * boundary the decoder tolerates — so a hard decode fault here is as
+ * ambiguous as a clean `incomplete` outcome: only a prefix that already hit
+ * the read budget (`LOOSE_HEADER_PROBE_BYTES`; more of the file may exist
+ * unread) routes either one to the whole-file fallback. A prefix that IS
+ * already the whole file propagates its own fault, or its plain no-NUL
+ * error, as-is. A `tooLong` outcome always throws immediately regardless of
+ * how much of the file is left unread — git's own fixed-size header buffer
+ * refuses the same way independent of the object's total length, so it is
+ * checked BEFORE the fallback decision, never inside the catch a hard fault
+ * shares with it.
+ */
+async function resolveDeclaredSizeFromPrefix(
+  ctx: Context,
+  id: ObjectId,
+  prefix: Uint8Array,
+): Promise<number> {
+  const isPrefixTruncated = prefix.length === LOOSE_HEADER_PROBE_BYTES;
+  let outcome: HeaderProbeOutcome;
+  try {
+    outcome = await probeDeclaredSize(ctx, prefix);
+  } catch (error) {
+    if (isPrefixTruncated) return readDeclaredSizeFromWholeFile(ctx, id);
+    throw error;
+  }
+  if (outcome.status === 'found') return outcome.size;
+  if (outcome.status === 'tooLong') throw looseHeaderTooLong(id);
+  if (isPrefixTruncated) return readDeclaredSizeFromWholeFile(ctx, id);
+  throw noNulTerminator(id);
+}
+
+/** The rare fallback: a header whose NUL never appeared inside the probe
+ *  budget. Re-reads the WHOLE compressed file but probes it through the SAME
+ *  bounded `inflateHead`, never a one-shot whole-buffer inflate, so a
+ *  hostile object whose header never terminates still refuses after
+ *  `LOOSE_HEADER_WINDOW` output bytes instead of decompressing without limit. */
+async function readDeclaredSizeFromWholeFile(ctx: Context, id: ObjectId): Promise<number> {
+  const compressed = await ctx.fs.read(loosePathFor(ctx, id));
+  const outcome = await probeDeclaredSize(ctx, compressed);
+  if (outcome.status === 'found') return outcome.size;
+  if (outcome.status === 'tooLong') throw looseHeaderTooLong(id);
+  throw noNulTerminator(id);
+}
+
 async function resolveObjectMetadataWithContent(
   ctx: Context,
   registry: PackRegistry,
@@ -307,11 +479,23 @@ async function resolveObjectMetadataWithContent(
 ): Promise<ObjectMetadataWithContent> {
   const hit = await registry.lookup(id);
   if (hit === undefined) {
-    // No pack claims this id: a full inflate is the cheapest route left, and
-    // it inherits readRawObject's own partial-clone lazy-fetch retry. Hand
-    // the inflated content back too — the loose route already paid for it.
-    const raw = await readRawObject(ctx, id);
-    return { type: raw.type, uncompressedSize: raw.content.length, content: raw.content };
+    // No pack claims this id: read the streaming tier directly — this
+    // metadata stays content-derived, never the header claim a size-lying
+    // blob carries, so it must never route through the buffered default the
+    // public `readRawObject` now takes. The outer `withLazyFetchRetry` on
+    // `readObjectMetadataWithContent` already covers the partial-clone
+    // retry `readRawObject` would otherwise add. Hand the inflated content
+    // back too — the loose route already paid for it.
+    const { type, content } = await resolveObjectContentWithDepth(
+      ctx,
+      registry,
+      id,
+      false,
+      undefined,
+      0,
+      'streamed',
+    );
+    return { type, uncompressedSize: content.length, content };
   }
   return readPackedMetadata(ctx, registry, hit, id);
 }

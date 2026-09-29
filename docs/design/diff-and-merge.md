@@ -414,6 +414,8 @@ interface RenameDetectOptions {
 }
 ```
 
+> **Superseded (ADR-893, ADR-894):** `maxSameIdDeletes` has been removed. The exact pass now follows git's `find_identical_files`: each add takes the best unused same-id delete, looking at no more than 100 candidates (a fixed private constant, the same limit git uses). See `docs/design/rename-exact-one-shot-delete.md` §4.1–§4.2.
+
 **Design decisions — rename detection:**
 
 - **Only exact-match in v1** — content-similarity scoring (git's `-M50%` style) requires loading blob contents and running sub-line diff on every candidate pair. Too expensive for the domain layer to attempt speculatively; also requires I/O. Deferred to Phase 7 as an application-layer primitive that composes tree-diff + blob reads. An `exactMatch: boolean` toggle was considered but rejected as vestigial — a caller that wants no renames simply doesn't call `detectRenames`.
@@ -495,6 +497,8 @@ Algorithm:
 3. Build a `Map<ObjectId, Array<DeleteChange>>` from `deletes` keyed by `oldId`. After construction, any key whose array exceeds `options.maxSameIdDeletes` (default 100) is **removed** from the map — adds matching that id will fall through to add+delete without scanning the oversized array. This closes the per-id fan-out path where hundreds of deletes share a single ObjectId.
 4. For each add, look up deletes with matching `newId`. If exactly one match exists, replace the add+delete pair with a single `rename` change. Otherwise leave them as add+delete.
 5. Return a new `TreeDiff` with rearranged changes, preserving byte-order on the _primary sort key_ per variant: `AddChange.newPath`, `DeleteChange.oldPath`, `RenameChange.newPath` (the "add" side being consumed), `ModifyChange.path`, `TypeChangeChange.path`. This matches the byte-order of the pre-rename diff — a caller that renders output from the post-rename `TreeDiff` sees changes in the same order `diffTrees` would have produced, with each exact-match rename positioned where its "add" was.
+
+> **Superseded (ADR-893, ADR-894):** `maxSameIdDeletes` has been removed. The exact pass now follows git's `find_identical_files`: each add takes the best unused same-id delete, looking at no more than 100 candidates (a fixed private constant, the same limit git uses). See `docs/design/rename-exact-one-shot-delete.md` §4.1–§4.2.
 
 **Why exact-match only:** Similarity-based rename detection (git's `-M` flag) requires blob reads and string similarity scoring (Levenshtein or histogram). Both are expensive and require I/O. Phase 7 can introduce `detectRenamesWithSimilarity(diff, blobReader, threshold)` as an application-layer primitive.
 
@@ -1003,6 +1007,7 @@ export interface RenameDetectOptions {
 }
 export function detectRenames(diff: TreeDiff, options?: RenameDetectOptions): TreeDiff;
 ```
+> **Superseded (ADR-893, ADR-894):** `maxSameIdDeletes` has been removed. The exact pass now follows git's `find_identical_files`: each add takes the best unused same-id delete, looking at no more than 100 candidates (a fixed private constant, the same limit git uses). See `docs/design/rename-exact-one-shot-delete.md` §4.1–§4.2.
 
 ### diff/line-diff.ts
 ```typescript
@@ -1096,6 +1101,8 @@ export function writeConflictMarkers(
 - `Given adds × deletes at limit + 1, When detectRenames called, Then diff returned unchanged`
 - `Given exactly maxSameIdDeletes deletes sharing one ObjectId, When detectRenames called, Then rename detected` (at boundary)
 - `Given maxSameIdDeletes + 1 deletes sharing one ObjectId, When detectRenames called, Then that id is skipped and adds remain unchanged`
+
+> **Superseded (ADR-893, ADR-894):** `maxSameIdDeletes` has been removed. The exact pass now follows git's `find_identical_files`: each add takes the best unused same-id delete, looking at no more than 100 candidates (a fixed private constant, the same limit git uses). See `docs/design/rename-exact-one-shot-delete.md` §4.1–§4.2.
 
 **index-diff.ts:**
 - Index empty, tree empty → empty diff

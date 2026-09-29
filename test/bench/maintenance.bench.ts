@@ -2,10 +2,11 @@
  * Bench: the `maintenance` command's two tasks.
  *
  * `commit-graph` is measured over the medium scaled fixture's commit count
- * (Part 2's driver). `gc` gets three scenarios: a plain write over freshly
- * seeded reachable loose objects (fresh-per-iteration, `write-scratch.ts`'s
- * model — a gc mutates the store, so it cannot loop in place any more than
- * `commit` can); a REPEAT run over unreachable loose objects already folded
+ * (the shared fixture generator's own scale driver). `gc` gets three
+ * scenarios: a plain write over freshly seeded reachable loose objects
+ * (fresh-per-iteration, `write-scratch.ts`'s model — a gc mutates the store,
+ * so it cannot loop in place any more than `commit` can); a REPEAT run over
+ * unreachable loose objects already folded
  * into a cruft pack (the carry-forward cost a first-run number would hide);
  * and a REPEAT run over the deep-delta-chain fixture — there is still no
  * "already consolidated, skip it" branch, so every run re-walks the

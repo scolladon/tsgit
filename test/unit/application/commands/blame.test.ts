@@ -13,11 +13,13 @@ import { init } from '../../../../src/application/commands/init.js';
 import * as historyRewriteMod from '../../../../src/application/commands/internal/history-rewrite.js';
 import { mergeRun } from '../../../../src/application/commands/merge.js';
 import { mv } from '../../../../src/application/commands/mv.js';
+import { rm } from '../../../../src/application/commands/rm.js';
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
 import { findTreeEntry } from '../../../../src/application/primitives/internal/resolve-tree-path.js';
 import * as readObjectMod from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import * as lineDiffMod from '../../../../src/domain/diff/line-diff.js';
+import * as xdlClassifyMod from '../../../../src/domain/diff/xdiff/xdl-classify.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { AuthorIdentity, Blob, ObjectId, Tree } from '../../../../src/domain/objects/index.js';
@@ -613,6 +615,32 @@ describe('Given a two-commit history where the parent hop actually changes the f
   });
 });
 
+describe('Given a linear history where every hop actually changes the file', () => {
+  describe('When the file is blamed across all four hops', () => {
+    it('Then each distinct blob is hashed once, not once per hop it appears in', async () => {
+      // Arrange — c1..c4 each append a line, so every hop diffs for real
+      // instead of short-circuiting on TREESAME; c2 and c3's blobs are each
+      // a parent-side blob at one hop and the very next hop's child-side
+      // blob, the exact reuse window this cache targets.
+      const ctx = await seed();
+      await commitFile(ctx, 'c1', 'f.txt', 'a\nb\nc\nd\ne\n');
+      await commitFile(ctx, 'c2', 'f.txt', 'a\nb\nc\nd\ne\nf\n');
+      await commitFile(ctx, 'c3', 'f.txt', 'a\nb\nc\nd\ne\nf\ng\n');
+      const c4 = await commitFile(ctx, 'c4', 'f.txt', 'a\nb\nc\nd\ne\nf\ng\nh\n');
+      const hashLineSideSpy = vi.spyOn(xdlClassifyMod, 'hashLineSide');
+
+      // Act
+      await blame(ctx, 'f.txt', { rev: c4 });
+
+      // Assert — one call per distinct blob (c1, c2, c3, c4): c2's and c3's
+      // blobs are each hashed once despite serving as both a hop's parent
+      // side and the next hop's child side.
+      expect(hashLineSideSpy).toHaveBeenCalledTimes(4);
+      hashLineSideSpy.mockRestore();
+    });
+  });
+});
+
 describe('Given a merge commit with two parents', () => {
   describe('When the merge tip is blamed', () => {
     it('Then each parent commit object is read once', async () => {
@@ -735,9 +763,10 @@ describe('Given a commit whose `tree` field points at a non-tree object', () => 
   describe('When blaming a path as of that revision', () => {
     it('Then refuses with UNEXPECTED_OBJECT_TYPE rather than degrading to a path-not-found', async () => {
       // Arrange — the root of the descent shares the same raw byte-scan as
-      // every other level (Part 10's consolidation); it must still assert
-      // the root is actually a tree, the way `readTree`'s own peel-chain
-      // does, instead of silently returning "not found" for the whole file.
+      // every other level (the path-descent loop's own consolidation); it
+      // must still assert the root is actually a tree, the way `readTree`'s
+      // own peel-chain does, instead of silently returning "not found" for
+      // the whole file.
       const ctx = await seed();
       const blobId = await writeObject(ctx, {
         type: 'blob',
@@ -900,6 +929,161 @@ describe('Given a commit that renames two files at once', () => {
       expect(blameX.lines[0]!.sourcePath).toBe('a.txt');
       expect(committedLines(blameY).map((l) => l.commit)).toEqual([c1]);
       expect(blameY.lines[0]!.sourcePath).toBe('b.txt');
+    });
+  });
+});
+
+describe('Given a deleted file whose content two added files each partially keep', () => {
+  const buildFanOutEdit = async (): Promise<{ ctx: Context; c1: ObjectId; c2: ObjectId }> => {
+    const ctx = await seed();
+    const original = `${Array.from({ length: 10 }, (_, i) => `l${i + 1}`).join('\n')}\n`;
+    const c1 = await commitFile(ctx, 'c1', 'a.txt', original);
+    await rm(ctx, ['a.txt']);
+    const bContent = `${[...Array.from({ length: 8 }, (_, i) => `l${i + 1}`), 'XX', 'YY'].join('\n')}\n`;
+    const cContent = `${[...Array.from({ length: 9 }, (_, i) => `l${i + 1}`), 'ZZ'].join('\n')}\n`;
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, bContent);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c.txt`, cContent);
+    await add(ctx, ['b.txt', 'c.txt']);
+    clock += 60;
+    const c2 = (
+      await commit(ctx, {
+        message: 'c2 fan-out edit',
+        author: ident('c2', clock),
+        committer: ident('c2', clock),
+      })
+    ).id;
+    return { ctx, c1, c2 };
+  };
+
+  describe('When blaming the less similar add', () => {
+    it('Then its kept lines follow to the deleted source, not the commit that added it', async () => {
+      // Arrange
+      const sut = blame;
+      const { ctx, c1, c2 } = await buildFanOutEdit();
+
+      // Act
+      const result = await sut(ctx, 'b.txt');
+
+      // Assert — the deleted source's 8 kept lines, then b.txt's own 2 new lines
+      expect(committedLines(result).map((l) => l.commit)).toEqual([
+        ...Array(8).fill(c1),
+        ...Array(2).fill(c2),
+      ]);
+      expect(result.lines.map((l) => l.sourcePath)).toEqual([
+        ...Array(8).fill('a.txt'),
+        ...Array(2).fill('b.txt'),
+      ]);
+    });
+  });
+
+  describe('When blaming the more similar add', () => {
+    it('Then the rename-with-edit is followed', async () => {
+      // Arrange
+      const sut = blame;
+      const { ctx, c1, c2 } = await buildFanOutEdit();
+
+      // Act
+      const result = await sut(ctx, 'c.txt');
+
+      // Assert — the deleted source's 9 kept lines, then c.txt's own 1 new line
+      expect(committedLines(result).map((l) => l.commit)).toEqual([...Array(9).fill(c1), c2]);
+      expect(result.lines.map((l) => l.sourcePath)).toEqual([...Array(9).fill('a.txt'), 'c.txt']);
+    });
+  });
+});
+
+describe('Given a file deleted and its identical content added at three paths in one commit', () => {
+  const buildFanOutCopies = async () => {
+    const ctx = await seed();
+    const c1 = await commitFile(ctx, 'c1', 'a/Foo.meta', 'x\n');
+    await rm(ctx, ['a/Foo.meta']);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b/A.meta`, 'x\n');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b/B.meta`, 'x\n');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b/C.meta`, 'x\n');
+    await add(ctx, ['b/A.meta', 'b/B.meta', 'b/C.meta']);
+    clock += 60;
+    await commit(ctx, {
+      message: 'c2 fan-out copy',
+      author: ident('c2', clock),
+      committer: ident('c2', clock),
+    });
+    return { ctx, c1 };
+  };
+
+  describe('When blaming each added copy', () => {
+    it.each(['b/A.meta', 'b/B.meta', 'b/C.meta'])(
+      'Then %s follows to the deleted source',
+      async (copy) => {
+        // Arrange
+        const sut = blame;
+        const { ctx, c1 } = await buildFanOutCopies();
+
+        // Act
+        const result = await sut(ctx, copy);
+
+        // Assert
+        expect(committedLines(result).map((l) => l.commit)).toEqual([c1]);
+        expect(result.lines[0]!.sourcePath).toBe('a/Foo.meta');
+      },
+    );
+  });
+});
+
+describe('Given a deleted source whose basename matches the blamed path competing with a more similar one', () => {
+  const buildBasenameCompetition = async (): Promise<{
+    ctx: Context;
+    c1: ObjectId;
+    c2: ObjectId;
+  }> => {
+    const ctx = await seed();
+    const basenameLine = (i: number, edited: boolean): string =>
+      edited ? `edited line ${i}` : `body line ${i}`;
+    const basenameContent = (editedCount: number): string =>
+      `${Array.from({ length: 20 }, (_, i) => basenameLine(i, i < editedCount)).join('\n')}\n`;
+    clock += 60;
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a/foo.c`, basenameContent(4));
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a/bar.c`, basenameContent(1));
+    await add(ctx, ['a/foo.c', 'a/bar.c']);
+    const c1 = (
+      await commit(ctx, {
+        message: 'c1 add a/foo.c and a/bar.c',
+        author: ident('c1', clock),
+        committer: ident('c1', clock),
+      })
+    ).id;
+    await rm(ctx, ['a/foo.c', 'a/bar.c']);
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b/foo.c`, basenameContent(0));
+    await add(ctx, ['b/foo.c']);
+    clock += 60;
+    const c2 = (
+      await commit(ctx, {
+        message: 'c2 move to b/foo.c',
+        author: ident('c2', clock),
+        committer: ident('c2', clock),
+      })
+    ).id;
+    return { ctx, c1, c2 };
+  };
+
+  describe('When blaming the destination path', () => {
+    it('Then the followed source path is the basename match, not the higher-scoring competitor', async () => {
+      // Arrange
+      const sut = blame;
+      const { ctx, c1, c2 } = await buildBasenameCompetition();
+
+      // Act
+      const result = await sut(ctx, 'b/foo.c');
+
+      // Assert — the 4 lines edited only in a/foo.c are new at c2; the 16 shared
+      // lines follow the basename match a/foo.c at c1, not the higher-scoring a/bar.c
+      expect(committedLines(result).map((l) => l.commit)).toEqual([
+        ...Array(4).fill(c2),
+        ...Array(16).fill(c1),
+      ]);
+      expect(result.lines.map((l) => l.sourcePath)).toEqual([
+        ...Array(4).fill('b/foo.c'),
+        ...Array(16).fill('a/foo.c'),
+      ]);
     });
   });
 });

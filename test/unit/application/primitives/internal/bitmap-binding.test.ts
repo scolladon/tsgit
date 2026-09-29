@@ -2105,7 +2105,7 @@ describe('Given a midx bitmap whose closure includes every type stream', () => {
 // ---------------------------------------------------------------------------
 // Range validation against the pseudo-pack — own it each, in both position
 // spaces, checked against MultiPackIndex.objectCount (the pseudo-pack's own
-// count) — Part 12's pack-count rows do not exercise this boundary.
+// count) — the pack-count rows above do not exercise this boundary.
 // ---------------------------------------------------------------------------
 
 async function buildMinimalMidxBitmapFixture(

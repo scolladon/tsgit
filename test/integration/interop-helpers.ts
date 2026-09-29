@@ -81,6 +81,26 @@ const buildSafeEnv = (): NodeJS.ProcessEnv => {
 const SAFE_ENV: NodeJS.ProcessEnv = buildSafeEnv();
 
 /**
+ * Ceiling on a single spawned `git` call. Every interop invocation is local
+ * (init/commit/diff/pack — never a network round trip), so 60s sits orders
+ * of magnitude above a healthy run, generous even for a loaded CI runner,
+ * and only ever trips on a genuine hang. Without it a stuck child blocks the
+ * whole suite until the runner's own outer timeout fires, reporting a vague
+ * suite-level timeout instead of which `git` call hung.
+ */
+const GIT_SPAWN_TIMEOUT_MS = 60_000;
+
+/**
+ * `true` for a `execFileSync`/`spawnSync` failure caused by the `timeout`
+ * option killing the child — `ETIMEDOUT` is never a code git itself exits
+ * with, so this is unambiguous. Callers that otherwise swallow a non-zero
+ * git exit (`tryRunGit`, `tryRunGitWithExit`) must NOT swallow this one: a
+ * hang is a test-infrastructure failure, not a git refusal, and coercing it
+ * into a normal-looking result would hide the actual problem.
+ */
+const isSpawnTimeout = (failure: NodeJS.ErrnoException): boolean => failure.code === 'ETIMEDOUT';
+
+/**
  * Spawn `git` with a sanitised env (no inherited `GIT_*` from the test
  * runner's parent). Use this for every git invocation in interop tests.
  *
@@ -96,7 +116,10 @@ export const runGit = (
   // `input` accepts raw bytes as well as text: a string `input` is written by
   // `execFileSync` as UTF-8, which silently mangles any byte >= 0x80 — malformed
   // tree bodies built from arbitrary oid bytes must go through as a Uint8Array.
-  const opts: { env: NodeJS.ProcessEnv; input?: string | Uint8Array } = { env };
+  const opts: { env: NodeJS.ProcessEnv; input?: string | Uint8Array; timeout: number } = {
+    env,
+    timeout: GIT_SPAWN_TIMEOUT_MS,
+  };
   if (options.input !== undefined) opts.input = options.input;
   return execFileSync('git', args as string[], opts).toString();
 };
@@ -134,7 +157,9 @@ export const runGitBytes = (
   options: { readonly env?: NodeJS.ProcessEnv } = {},
 ): Uint8Array => {
   const env = options.env ?? SAFE_ENV;
-  return new Uint8Array(execFileSync('git', args as string[], { env }));
+  return new Uint8Array(
+    execFileSync('git', args as string[], { env, timeout: GIT_SPAWN_TIMEOUT_MS }),
+  );
 };
 
 export const hasGit = (): boolean => {
@@ -249,10 +274,17 @@ export const topReflogSubject = (dir: string, ref: string): string =>
 
 /**
  * Run `git`, capturing stdout, stderr AND the numeric exit code (never
- * throws) — for co-refusal assertions where the exact exit code matters, not
- * just success/failure. `tryRunGit` above only distinguishes ok/not-ok; this
- * reports the code so a caller can assert git's documented refusal exit
- * (128 for a structural `fatal:`, 1 for `fsck`'s WARN/ERROR bits).
+ * throws on a normal git refusal) — for co-refusal assertions where the
+ * exact exit code matters, not just success/failure. `tryRunGit` above only
+ * distinguishes ok/not-ok; this reports the code so a caller can assert
+ * git's documented refusal exit (128 for a structural `fatal:`, 1 for
+ * `fsck`'s WARN/ERROR bits). Rethrows on EVERY spawn failure (`result.error`
+ * — a timeout kill included, but also an unresolvable binary or any other
+ * reason the child never ran) and on `status === null` (killed by a signal
+ * with no `error` set): `spawnSync`'s own invariant is that `status` is
+ * `null` exactly when the process never exited normally, so coercing either
+ * case to a fake `1` would misreport a process that never actually ran as a
+ * `fsck` WARN/ERROR exit.
  */
 export const tryRunGitWithExit = (
   args: ReadonlyArray<string>,
@@ -262,13 +294,20 @@ export const tryRunGitWithExit = (
   const opts = {
     env,
     encoding: 'utf8' as const,
+    timeout: GIT_SPAWN_TIMEOUT_MS,
     ...(options.input === undefined ? {} : { input: options.input }),
   };
   const result = spawnSync('git', args as string[], opts);
+  if (result.error !== undefined) {
+    throw new Error(`git ${args.join(' ')} failed to spawn: ${result.error.message}`);
+  }
+  if (result.status === null) {
+    throw new Error(`git ${args.join(' ')} was killed by signal ${String(result.signal)}`);
+  }
   return {
     stdout: result.stdout ?? '',
     stderr: result.stderr ?? '',
-    exitCode: result.status ?? 1,
+    exitCode: result.status,
   };
 };
 
@@ -290,10 +329,11 @@ export const tryRunGit = (
   try {
     return { ok: true, stdout: runGit(args, options), stderr: '' };
   } catch (error) {
-    const failure = error as {
+    const failure = error as NodeJS.ErrnoException & {
       readonly stdout?: Buffer | string;
       readonly stderr?: Buffer | string;
     };
+    if (isSpawnTimeout(failure)) throw error;
     return {
       ok: false,
       stdout: failure.stdout?.toString() ?? '',

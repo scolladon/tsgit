@@ -475,6 +475,42 @@ describe('materialiseOne', () => {
 
   // --- Textconv transform cases ---
 
+  describe('Given a mode-only modify (oldId === newId) with textconv configured and applyTextconv opt-in', () => {
+    describe('When materialisePatchFiles is called with applyTextconv: true', () => {
+      it('Then both sides carry the RAW blob on the numstat surface, never the textconv output', async () => {
+        // Arrange — the shared-oid short-circuit reads the blob once; the
+        // numstat surface must still see the RAW bytes on both sides.
+        const transformed = utf8.encode('HELLO WORLD\n');
+        const runner: CommandRunner = { run: async () => ({ exitCode: 0, stdout: transformed }) };
+        const ctx = createMemoryContext({ command: runner });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, 'a.x diff=upper\n');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[diff "upper"]\n\ttextconv = tr a-z A-Z\n',
+        );
+        const oid = await writeBlob(ctx, 'hello world\n');
+        const change: ModifyChange = {
+          type: 'modify',
+          path: 'a.x' as FilePath,
+          oldId: oid,
+          newId: oid,
+          oldMode: FILE_MODE.REGULAR,
+          newMode: FILE_MODE.EXECUTABLE,
+        };
+
+        // Act
+        const result = await materialisePatchFiles(ctx, [change], { applyTextconv: true });
+
+        // Assert — patch content is transformed; numstat content stays raw
+        expect(result).toHaveLength(1);
+        expect(result[0]?.oldContent).toEqual(transformed);
+        expect(result[0]?.newContent).toEqual(transformed);
+        expect(result[0]?.numstatOldContent).toEqual(utf8.encode('hello world\n'));
+        expect(result[0]?.numstatNewContent).toEqual(utf8.encode('hello world\n'));
+      });
+    });
+  });
+
   describe('Given a modify change with textconv configured and applyTextconv opt-in (display path)', () => {
     describe('When materialisePatchFiles is called with applyTextconv: true', () => {
       it('Then both sides are transformed by the textconv command output', async () => {
@@ -512,6 +548,11 @@ describe('materialiseOne', () => {
         expect(result).toHaveLength(1);
         expect(result[0]?.oldContent).toEqual(oldTransformed);
         expect(result[0]?.newContent).toEqual(newTransformed);
+        // Assert — the numstat surface carries the RAW (pre-textconv) bytes,
+        // never the transformed patch content (git's builtin_diffstat never
+        // applies textconv).
+        expect(result[0]?.numstatOldContent).toEqual(utf8.encode('hello world\n'));
+        expect(result[0]?.numstatNewContent).toEqual(utf8.encode('hello there\n'));
         // OIDs on the change are untouched
         expect(result[0]?.change.type).toBe('modify');
         if (result[0]?.change.type === 'modify') {
@@ -551,6 +592,8 @@ describe('materialiseOne', () => {
         expect(result).toHaveLength(1);
         expect(result[0]?.newContent).toEqual(newTransformed);
         expect(result[0]?.oldContent).toBeUndefined();
+        // Assert — numstat carries the RAW new side, never the converted bytes
+        expect(result[0]?.numstatNewContent).toEqual(utf8.encode('hello world\n'));
       });
     });
   });
@@ -584,6 +627,8 @@ describe('materialiseOne', () => {
         expect(result).toHaveLength(1);
         expect(result[0]?.oldContent).toEqual(oldTransformed);
         expect(result[0]?.newContent).toBeUndefined();
+        // Assert — numstat carries the RAW old side, never the converted bytes
+        expect(result[0]?.numstatOldContent).toEqual(utf8.encode('hello world\n'));
       });
     });
   });
@@ -620,6 +665,9 @@ describe('materialiseOne', () => {
         expect(result).toHaveLength(1);
         expect(result[0]?.newContent).toEqual(utf8.encode(`Subproject commit ${gitlinkOid}\n`));
         expect(runnerCalled).toBe(false);
+        // Assert — the gitlink early-return never reaches the numstat-content
+        // plumbing (there is no separate raw form to carry for a gitlink side)
+        expect(result[0]?.numstatNewContent).toBeUndefined();
       });
     });
   });
@@ -1152,6 +1200,51 @@ describe('materialiseOne', () => {
     });
   });
 
+  // --- Mutation-kill: resolveOverrideAndCommand needsRawSniff guard ---
+
+  describe('Given an R100 rename change with diff.<name>.binary explicitly set and a configured textconv driver', () => {
+    describe('When materialisePatchFiles is called with applyTextconv: true', () => {
+      it('Then the raw-content scan is skipped — a new side no blob was ever written for does not reject', async () => {
+        // Arrange — driverBinary is explicit (true), so resolveBinaryOverride's own
+        // driverBinary branch decides the pair WITHOUT ever reading named.rawIsBinary
+        // (resolve-binary-override.ts returns before that line). needsRawSniff must
+        // stay false here: were it (wrongly) true, the pure-rename branch's
+        // rawIsBinary thunk would call readBlob(ctx, change.newId) — a read this test
+        // makes fail by pointing newId at an oid the store never wrote, turning an
+        // unnecessary scan into a thrown OBJECT_NOT_FOUND that a correctly
+        // skipped-scan run never reaches.
+        const runner: CommandRunner = {
+          run: async () => ({ exitCode: 0, stdout: utf8.encode('UNUSED\n') }),
+        };
+        const ctx = createMemoryContext({ command: runner });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, 'sub diff=upper\n');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[diff "upper"]\n\ttextconv = tr a-z A-Z\n\tbinary = true\n',
+        );
+        const missingOid = 'f'.repeat(40) as ObjectId;
+        const change: RenameChange = {
+          type: 'rename',
+          oldPath: 'sub' as FilePath,
+          newPath: 'sub' as FilePath,
+          oldId: missingOid,
+          newId: missingOid,
+          oldMode: FILE_MODE.REGULAR,
+          newMode: FILE_MODE.REGULAR,
+          similarity: { score: MAX_SCORE, maxScore: MAX_SCORE },
+        };
+
+        // Act
+        const result = await materialisePatchFiles(ctx, [change], { applyTextconv: true });
+
+        // Assert — resolved without ever reading the (nonexistent) blob
+        expect(result).toHaveLength(1);
+        expect(result[0]?.patchBinaryOverride).toBe('text');
+        expect(result[0]?.numstatBinaryOverride).toBe('binary');
+      });
+    });
+  });
+
   // --- Mutation-kill: materialiseRenameOrCopy sub-100% isBinary OR (L240 NoCoverage) ---
 
   describe('Given a sub-100% rename change with only the old side binary and textconv configured', () => {
@@ -1196,6 +1289,9 @@ describe('materialiseOne', () => {
         // Both sides are textconv-transformed
         expect(result[0]?.oldContent).toEqual(cleanOutput);
         expect(result[0]?.newContent).toEqual(cleanOutput);
+        // Assert — numstat carries the RAW bytes, never the converted ones
+        expect(result[0]?.numstatOldContent).toEqual(NUL_OLD);
+        expect(result[0]?.numstatNewContent).toEqual(utf8.encode('clean text\n'));
       });
     });
   });

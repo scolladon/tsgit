@@ -13,7 +13,6 @@ import { commonGitDir } from '../path-layout.js';
 import { MAX_GITATTRIBUTES_BYTES } from '../types.js';
 import { joinPath } from './join-working-tree-path.js';
 import { expandUserPath, loadCappedUtf8 } from './read-capped-file.js';
-import { requireWorkTree } from './repo-state.js';
 
 /** Load + parse one attributes file; `undefined` when absent, symlink, or a directory. */
 const loadAndParse = async (ctx: Context, path: string): Promise<ParsedAttributes | undefined> => {
@@ -21,14 +20,23 @@ const loadAndParse = async (ctx: Context, path: string): Promise<ParsedAttribute
   return text === undefined ? undefined : parseGitattributes(text);
 };
 
-const readDir = (ctx: Context, dir: FilePath | ''): Promise<ParsedAttributes | undefined> =>
-  loadAndParse(
+/**
+ * Bare repositories (no work tree, `attr.tree` unset) read no work-tree or
+ * HEAD-tree `.gitattributes` at all — verified against real git 2.55: a
+ * committed root `.gitattributes` resolves `unspecified` in a bare clone
+ * unless `attr.tree`/`--attr-source` names a tree explicitly, which tsgit
+ * does not yet support. `info/attributes` and `core.attributesFile` are
+ * unaffected — neither lives in the work tree — so only this source is
+ * skipped, never the whole provider.
+ */
+const readDir = (ctx: Context, dir: FilePath | ''): Promise<ParsedAttributes | undefined> => {
+  const workDir = ctx.layout.workDir;
+  if (workDir === undefined) return Promise.resolve(undefined);
+  return loadAndParse(
     ctx,
-    joinPath(
-      requireWorkTree(ctx, 'buildAttributeProvider'),
-      dir === '' ? '.gitattributes' : `${dir}/.gitattributes`,
-    ),
+    joinPath(workDir, dir === '' ? '.gitattributes' : `${dir}/.gitattributes`),
   );
+};
 
 const readInfo = (ctx: Context): Promise<ParsedAttributes | undefined> =>
   loadAndParse(ctx, `${commonGitDir(ctx)}/info/attributes`);

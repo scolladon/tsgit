@@ -83,7 +83,10 @@ type BlameLine = CommittedBlameLine | UncommittedBlameLine;
   parent, the file is located under its previous name and `sourcePath` reflects it.
   Reuses the diff's content-similarity rename detection (git's default ≥50%), so a
   pure `git mv` **and** a rename-with-edit in one commit are both followed, matching
-  `git blame`'s default rename following.
+  `git blame`'s default rename following. The blamed path is the only rename
+  destination considered (git's `single_follow`), so every copy of a file made
+  alongside its delete follows back to the original, and unrelated adds in the
+  commit never compete for the source.
 - **`range` (`-L`):** restricts the reported lines to a 1-based inclusive window;
   an inverted range is swapped rather than refused (git's `-L` semantics), and
   `end` past the last line is clamped. A start below 1, a start past the last

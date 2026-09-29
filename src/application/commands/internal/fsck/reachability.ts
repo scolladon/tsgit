@@ -62,15 +62,27 @@ interface WalkResult {
   readonly reached: Set<ObjectId>;
   readonly missingIds: Set<ObjectId>;
   readonly brokenEdges: ReadonlyArray<GraphEdge>;
+  readonly unreadableEdges: ReadonlyArray<GraphEdge>;
   readonly rootCommits: ReadonlyArray<ObjectId>;
   readonly tagRefs: ReadonlyArray<TagRef>;
 }
 
 interface WalkState {
   readonly universe: ReadonlySet<ObjectId>;
+  readonly objectCache: ReadonlyMap<ObjectId, CachedGitObject>;
+  /** `unreadable === 'skip'` (default, non-connectivityOnly) — the
+   *  connectivityOnly mode's own handling of a null cache entry is left
+   *  untouched, so this is false there. */
+  readonly contentUnreadableIsMissing: boolean;
+  /** Unreadable (null-cache) ids also claimed by a pack — git's own
+   *  `has_object_pack`: `isContentUnreadable` never fires for one of these,
+   *  since git's `check_object` trusts the pack copy and never learns the
+   *  entry is corrupt. */
+  readonly packMemberIds: ReadonlySet<ObjectId>;
   readonly reached: Set<ObjectId>;
   readonly missingIds: Set<ObjectId>;
   readonly brokenEdges: GraphEdge[];
+  readonly unreadableEdges: GraphEdge[];
   readonly rootCommits: ObjectId[];
   readonly tagRefs: TagRef[];
   readonly worklist: ObjectId[];
@@ -83,25 +95,65 @@ function enqueueIfPresent(state: WalkState, id: ObjectId): void {
   }
 }
 
+/**
+ * Whether `id` is present in the universe (its loose/pack file exists and
+ * was enumerated) but no reader could type it — the class of failure git's
+ * `read_loose_object` folds into the SAME refusal as an absent object, once
+ * something else references it. Gated to default (non-connectivityOnly)
+ * mode: connectivityOnly keeps its own handling of an unreadable object,
+ * untouched here. Also excludes any id with a pack copy: git's
+ * `check_object` (`has_object_pack`) trusts a pack's claim on an id and
+ * never even attempts the read that would learn the entry is corrupt, so
+ * that id is never reported missing — only `enqueueIfPresent`'s ordinary
+ * routing applies to it.
+ */
+function isContentUnreadable(state: WalkState, id: ObjectId): boolean {
+  return (
+    state.contentUnreadableIsMissing &&
+    state.universe.has(id) &&
+    state.objectCache.get(id) == null &&
+    !state.packMemberIds.has(id)
+  );
+}
+
+type EdgeRoute = 'broken' | 'unreadable-missing' | 'enqueued';
+
+/**
+ * Route one graph edge's target, git-faithfully: absent from the universe
+ * entirely is a broken link (git's own `missing <type>` PLUS a broken-link
+ * report); present but content-unreadable in default mode is ALSO `missing`
+ * — typed from this SAME edge — but git's `read_loose_object` never learns
+ * enough about the object to consider the EDGE itself broken, so no
+ * broken-link finding follows it. Marks the target reached either way it's
+ * missing, so `classifyObjects` never ALSO reports it unreachable/dangling
+ * on top of `missing` — git prints only one line for it, never both.
+ */
+function routeEdgeTarget(state: WalkState, edge: GraphEdge): EdgeRoute {
+  if (!state.universe.has(edge.toId)) {
+    state.missingIds.add(edge.toId);
+    state.brokenEdges.push(edge);
+    return 'broken';
+  }
+  if (isContentUnreadable(state, edge.toId)) {
+    state.missingIds.add(edge.toId);
+    // Stryker disable next-line CallExpression: equivalent — collectTypeFindings (findings assembly) independently skips any id with a null cache entry in 'skip' mode, the exact pair of conditions isContentUnreadable already required to reach this branch, so a missing `reached` mark here is caught by that second guard too; kept for the belt-and-suspenders reason this function's own doc comment gives, not because it is load-bearing today.
+    state.reached.add(edge.toId);
+    state.unreadableEdges.push(edge);
+    return 'unreadable-missing';
+  }
+  enqueueIfPresent(state, edge.toId);
+  return 'enqueued';
+}
+
 function processCommit(
   state: WalkState,
   id: ObjectId,
   obj: ProjectedGitObject & { type: 'commit' },
 ): void {
   const { tree, parents } = obj;
-  if (!state.universe.has(tree)) {
-    state.missingIds.add(tree);
-    state.brokenEdges.push({ fromId: id, fromType: 'commit', toId: tree, toType: 'tree' });
-  } else {
-    enqueueIfPresent(state, tree);
-  }
+  routeEdgeTarget(state, { fromId: id, fromType: 'commit', toId: tree, toType: 'tree' });
   for (const parent of parents) {
-    if (!state.universe.has(parent)) {
-      state.missingIds.add(parent);
-      state.brokenEdges.push({ fromId: id, fromType: 'commit', toId: parent, toType: 'commit' });
-    } else {
-      enqueueIfPresent(state, parent);
-    }
+    routeEdgeTarget(state, { fromId: id, fromType: 'commit', toId: parent, toType: 'commit' });
   }
   if (parents.length === 0) state.rootCommits.push(id);
 }
@@ -114,12 +166,7 @@ function processTree(
   for (const entry of obj.entries) {
     if (entry.mode === FILE_MODE.GITLINK) continue;
     const toType: FsckObjectType = entry.mode === FILE_MODE.DIRECTORY ? 'tree' : 'blob';
-    if (!state.universe.has(entry.id)) {
-      state.missingIds.add(entry.id);
-      state.brokenEdges.push({ fromId: id, fromType: 'tree', toId: entry.id, toType });
-    } else {
-      enqueueIfPresent(state, entry.id);
-    }
+    routeEdgeTarget(state, { fromId: id, fromType: 'tree', toId: entry.id, toType });
   }
 }
 
@@ -129,11 +176,11 @@ function processTag(
   obj: ProjectedGitObject & { type: 'tag' },
 ): void {
   const { object: target, objectType: targetType, tagName } = obj;
-  if (!state.universe.has(target)) {
-    state.missingIds.add(target);
-    state.brokenEdges.push({ fromId: id, fromType: 'tag', toId: target, toType: targetType });
-  } else {
-    enqueueIfPresent(state, target);
+  const edge: GraphEdge = { fromId: id, fromType: 'tag', toId: target, toType: targetType };
+  // git's tag walk marks the target reachable — and so reports `tagged` —
+  // whenever it is PRESENT, whether or not it could be typed: only a
+  // genuinely absent (broken-link) target drops the report.
+  if (routeEdgeTarget(state, edge) !== 'broken') {
     state.tagRefs.push({ tagId: id, tagName, targetId: target, targetType });
   }
 }
@@ -148,17 +195,26 @@ function visitObject(state: WalkState, id: ObjectId, obj: ProjectedGitObject): v
 /**
  * Reachability walk over the object graph starting from `seeds`.
  * Walks commit→(tree, parents), tree→entries (non-gitlink), tag→target.
+ * `unreadable` gates whether a REACHED-but-content-unreadable id is
+ * reported `missing` (default mode) or left as a bare "reached, no edges"
+ * root the way connectivityOnly has always handled it.
  */
 export function buildReachableSet(
   universe: ReadonlySet<ObjectId>,
   seeds: ReadonlySet<ObjectId>,
   objectCache: ReadonlyMap<ObjectId, CachedGitObject>,
+  unreadable: UnreadableMode,
+  packMemberIds: ReadonlySet<ObjectId>,
 ): WalkResult {
   const state: WalkState = {
     universe,
+    objectCache,
+    contentUnreadableIsMissing: unreadable === 'skip',
+    packMemberIds,
     reached: new Set(),
     missingIds: new Set(),
     brokenEdges: [],
+    unreadableEdges: [],
     rootCommits: [],
     tagRefs: [],
     worklist: [...seeds],
@@ -173,7 +229,11 @@ export function buildReachableSet(
     }
     const obj = objectCache.get(id);
     if (obj == null) {
-      // Corrupt/unreadable — mark reached, no further edges
+      // Corrupt/unreadable, no further edges — either a ROOT (no referring
+      // edge routed it here), or a REFERENCED id whose pack copy
+      // `routeEdgeTarget` trusted (`isContentUnreadable`'s pack-membership
+      // exclusion) and so enqueued here instead of diverting to
+      // `missingIds`.
       state.reached.add(id);
     } else {
       visitObject(state, id, obj);
@@ -184,6 +244,7 @@ export function buildReachableSet(
     reached: state.reached,
     missingIds: state.missingIds,
     brokenEdges: state.brokenEdges,
+    unreadableEdges: state.unreadableEdges,
     rootCommits: state.rootCommits,
     tagRefs: state.tagRefs,
   };
@@ -247,6 +308,10 @@ function resolveObjectType(id: ObjectId, resolution: TypeResolution): FsckObject
 export interface ConnectivityClassification {
   readonly missingIds: ReadonlySet<ObjectId>;
   readonly brokenEdges: ReadonlyArray<GraphEdge>;
+  /** Edges that route a REACHED, content-unreadable id to `missingIds` —
+   *  typing-only, never rendered as their own `broken-link` finding (see
+   *  `routeEdgeTarget`'s own doc comment for why the two never double-report). */
+  readonly unreadableEdges: ReadonlyArray<GraphEdge>;
   readonly unreachable: ReadonlyArray<ObjectId>;
   readonly dangling: ReadonlyArray<ObjectId>;
   readonly rootCommits: ReadonlyArray<ObjectId>;
@@ -259,10 +324,11 @@ export interface ConnectivityClassification {
 function missingAndBrokenLinkFindings(
   missingIds: ReadonlySet<ObjectId>,
   brokenEdges: ReadonlyArray<GraphEdge>,
+  unreadableEdges: ReadonlyArray<GraphEdge>,
   resolution: TypeResolution,
 ): ReadonlyArray<FsckFinding> {
   const missingTypeFromEdge = new Map<ObjectId, FsckObjectType | 'unknown'>();
-  for (const edge of brokenEdges) {
+  for (const edge of [...brokenEdges, ...unreadableEdges]) {
     if (!missingTypeFromEdge.has(edge.toId)) {
       missingTypeFromEdge.set(edge.toId, edge.toType);
     }
@@ -306,9 +372,13 @@ export function assembleConnectivityFindings(
   classification: ConnectivityClassification,
   resolution: TypeResolution,
 ): ReadonlyArray<FsckFinding> {
-  const { missingIds, brokenEdges, unreachable, dangling, rootCommits, tagRefs } = classification;
+  const { missingIds, brokenEdges, unreadableEdges, unreachable, dangling, rootCommits, tagRefs } =
+    classification;
   const findings: FsckFinding[] = [];
-  appendAll(findings, missingAndBrokenLinkFindings(missingIds, brokenEdges, resolution));
+  appendAll(
+    findings,
+    missingAndBrokenLinkFindings(missingIds, brokenEdges, unreadableEdges, resolution),
+  );
   appendAll(findings, collectTypeFindings(unreachable, 'unreachable', resolution));
   appendAll(findings, collectTypeFindings(dangling, 'dangling', resolution));
   appendAll(findings, rootAndTagFindings(rootCommits, tagRefs));

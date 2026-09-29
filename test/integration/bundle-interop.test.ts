@@ -43,7 +43,8 @@ import { walkPackEntries } from '../../src/application/primitives/internal/index
 import { parseBundleHeader } from '../../src/domain/bundle/index.js';
 import { TsgitError } from '../../src/domain/error.js';
 import type { RefName } from '../../src/domain/objects/object-id.js';
-import { PACK_ENTRY_TYPE } from '../../src/domain/storage/pack-entry.js';
+import { PACK_ENTRY_INFLATED_SIZE_MISMATCH_REASON } from '../../src/domain/storage/index.js';
+import { PACK_ENTRY_TYPE, PACK_HEADER_SIZE } from '../../src/domain/storage/pack-entry.js';
 import {
   GIT_AVAILABLE,
   makePeerPair,
@@ -139,6 +140,35 @@ const corruptPackData = (bundleBytes: Uint8Array, packOffset: number): Uint8Arra
   const flipAt = packOffset + 100;
   result[flipAt] = (result.at(flipAt) ?? 0) ^ 0xff;
   // Recompute the 20-byte SHA-1 trailer over the modified pack body
+  const packBody = result.subarray(packOffset, result.length - 20);
+  const newTrailer = createHash('sha1').update(Buffer.from(packBody)).digest();
+  result.set(newTrailer, result.length - 20);
+  return result;
+};
+
+/**
+ * Zeroes the first pack entry's declared-size varint bits — type nibble and
+ * every continuation bit untouched, so the header's BYTE LENGTH (and every
+ * later offset) is unchanged — lying the declared size down to (near) zero.
+ * The real zlib stream that follows is untouched, so a bounded inflate
+ * genuinely overflows the compressor's own output cap instead of merely
+ * mismatching a successfully-decoded length (`corruptPackData`'s case):
+ * this is the ONLY way to reach `withDeclaredSizeCheck`'s cap-exceeded
+ * remap rather than its separate post-decode length check.
+ */
+const lieEntrySizeSmall = (bundleBytes: Uint8Array, packOffset: number): Uint8Array => {
+  const result = new Uint8Array(bundleBytes);
+  let pos = packOffset + PACK_HEADER_SIZE;
+  const first = result.at(pos) ?? 0;
+  result[pos] = first & 0xf0; // keep type nibble + continuation bit, zero the size nibble
+  let more = (first & 0x80) !== 0;
+  pos += 1;
+  while (more) {
+    const next = result.at(pos) ?? 0;
+    result[pos] = next & 0x80; // keep the continuation bit, zero the 7 size bits
+    more = (next & 0x80) !== 0;
+    pos += 1;
+  }
   const packBody = result.subarray(packOffset, result.length - 20);
   const newTrailer = createHash('sha1').update(Buffer.from(packBody)).digest();
   result.set(newTrailer, result.length - 20);
@@ -753,6 +783,37 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
       expect(caught).toBeInstanceOf(TsgitError);
       const code = (caught as TsgitError).data.code;
       expect(code).toBe('DECOMPRESS_FAILED');
+    });
+  });
+
+  describe('Given a bundle whose first pack entry declares a size far below its real inflated size, When bundleVerify is called', () => {
+    it('Then bundleVerify throws INVALID_PACK_ENTRY — the cap-exceeded refusal remapped, not a raw DECOMPRESS_FAILED', async () => {
+      // Arrange — the declared-size varint is zeroed (not the zlib stream),
+      // so the bounded inflate genuinely overflows the compressor's own
+      // output cap: the ONLY way to reach withDeclaredSizeCheck's remap,
+      // as opposed to Pin 6's post-decode length mismatch above.
+      const ctx = createNodeContext({ workDir: pair.peer });
+      const result = await bundleCreate(ctx, { all: true });
+      const hdr = parseBundleHeader(result.bytes, '<test>');
+      const lied = lieEntrySizeSmall(result.bytes, hdr.packOffset);
+      const bundleFile = path.join(bundleDir, 'pin6b-size-lie.bundle');
+      await writeFile(bundleFile, lied);
+
+      // Act
+      let caught: unknown;
+      try {
+        await bundleVerify(ctx, { path: bundleFile });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect(caught).toBeInstanceOf(TsgitError);
+      const data = (caught as TsgitError).data;
+      expect(data.code).toBe('INVALID_PACK_ENTRY');
+      if (data.code === 'INVALID_PACK_ENTRY') {
+        expect(data.reason).toBe(PACK_ENTRY_INFLATED_SIZE_MISMATCH_REASON);
+      }
     });
   });
 

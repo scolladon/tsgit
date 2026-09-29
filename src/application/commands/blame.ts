@@ -16,6 +16,7 @@ import type { BlameEntry } from '../../domain/blame/types.js';
 import { invalidOption, pathNotInTree, worktreeFileAbsent } from '../../domain/commands/error.js';
 import { BinaryHeap } from '../../domain/commit/binary-heap.js';
 import { precedes, type QueueEntry } from '../../domain/commit/priority-queue.js';
+import type { TreeDiff } from '../../domain/diff/diff-change.js';
 import { diffPresplitLines, splitLines } from '../../domain/diff/line-diff.js';
 import type { CommitData } from '../../domain/objects/commit.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
@@ -24,6 +25,7 @@ import type { AuthorIdentity, FilePath, ObjectId, TreeEntry } from '../../domain
 import { FilePath as FilePathFactory } from '../../domain/objects/object-id.js';
 import { validateWorkingTreePath } from '../../domain/working-tree-path.js';
 import type { Context } from '../../ports/context.js';
+import { detectSimilarityRenames } from '../primitives/detect-similarity-renames.js';
 import { diffTrees } from '../primitives/diff-trees.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
 import {
@@ -124,6 +126,14 @@ interface Suspect {
   readonly blobId: ObjectId;
   readonly entries: ReadonlyArray<BlameEntry>;
   readonly lines: ReadonlyArray<Uint8Array>;
+  /** `lines`' per-line hash, when a previous hop already computed it — this
+   *  suspect's blob was that hop's freshly-read parent side, and `lines` is
+   *  literally that hop's `diff.oursLines`. Undefined for a just-seeded
+   *  suspect, whose lines have never been hashed. Handed to the next hop's
+   *  diff as the child-side precomputed hash, so a blob walked across many
+   *  hops (and, on a merge, across several parents of the same suspect) is
+   *  hashed once, not once per hop or parent it appears in. */
+  readonly hashes?: Uint32Array | undefined;
   readonly oidChain: ReadonlyArray<ObjectId>;
   readonly commitData: CommitData;
 }
@@ -220,6 +230,7 @@ const seedWorkingTree = async (
       blobId: resolved.entry.id,
       entries: passed,
       lines: diff.oursLines,
+      hashes: diff.oursHashes,
       oidChain: resolved.oidChain,
       commitData: data,
     });
@@ -365,6 +376,7 @@ const applyParentResolution = (
       blobId: suspect.blobId,
       entries: remaining,
       lines: suspect.lines,
+      hashes: suspect.hashes,
       oidChain: resolved.oidChain,
       commitData: resolved.commitData,
     });
@@ -372,7 +384,12 @@ const applyParentResolution = (
   }
   // `suspect.lines` is already split (carried from whoever scheduled this
   // suspect); only `resolved.blob` — freshly read this hop — needs it.
-  const diff = diffPresplitLines(splitLines(resolved.blob), suspect.lines);
+  // `suspect.hashes`, when present, is that same carry: the previous hop
+  // already hashed these exact lines as ITS parent side, so this hop's
+  // child side is handed that array instead of re-hashing it.
+  const diff = diffPresplitLines(splitLines(resolved.blob), suspect.lines, undefined, {
+    theirs: suspect.hashes,
+  });
   const { passed, kept } = splitAgainstParent(remaining, diff);
   schedule(sb, {
     commit: parent,
@@ -381,6 +398,7 @@ const applyParentResolution = (
     blobId: resolved.blobId,
     entries: passed,
     lines: diff.oursLines,
+    hashes: diff.oursHashes,
     oidChain: resolved.oidChain,
     commitData: resolved.commitData,
   });
@@ -510,11 +528,24 @@ const resolveInParent = async (
 };
 
 /**
+ * Keep every delete plus the one add landing on `path` — git blame's
+ * `single_follow` (`blame.c` `find_rename`) registers the blamed path as the
+ * only rename destination, so sibling adds in the commit never compete for
+ * the source.
+ */
+const singleFollowDiff = (diff: TreeDiff, path: FilePath): TreeDiff => ({
+  changes: diff.changes.filter(
+    (change) => change.type === 'delete' || (change.type === 'add' && change.newPath === path),
+  ),
+});
+
+/**
  * When `path` is absent from the parent, locate the file it was renamed from
  * and its chain in ONE descent — not `diffTrees` followed by a second,
- * independent re-descent for the same path. Reuses the shared exact-content
- * rename detector — a pure `git mv` is followed, a rename-with-edit in the
- * same commit is not (treated as a fresh introduction).
+ * independent re-descent for the same path. `path` is the only rename
+ * destination considered (`singleFollowDiff`), so a pure `git mv` and a
+ * rename-with-edit in the same commit are both followed, and unrelated adds
+ * in the commit never compete for the source.
  */
 const renamedSource = async (
   ctx: Context,
@@ -529,11 +560,9 @@ const renamedSource = async (
     }
   | undefined
 > => {
-  const diff = await diffTrees(ctx, parentTree, childTree, {
-    recursive: true,
-    detectRenames: true,
-  });
-  for (const change of diff.changes) {
+  const diff = await diffTrees(ctx, parentTree, childTree, { recursive: true });
+  const { changes } = await detectSimilarityRenames(ctx, singleFollowDiff(diff, path));
+  for (const change of changes) {
     if (change.type === 'rename' && change.newPath === path) {
       const segments = pathSegments(change.oldPath);
       const chain = await findTreeEntryChain(ctx, parentTree, segments);

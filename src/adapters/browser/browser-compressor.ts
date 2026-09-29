@@ -1,7 +1,7 @@
 /// <reference lib="dom" />
 import { compressFailed, decompressFailed } from '../../domain/index.js';
 import type { Compressor, InflateStreamResult } from '../../ports/compressor.js';
-import { boundedInflateCap, inflateZlibMember } from '../inflate.js';
+import { boundedInflateCap, inflateZlibHead, inflateZlibMember } from '../inflate.js';
 
 export class BrowserCompressor implements Compressor {
   async deflate(data: Uint8Array, _level?: number): Promise<Uint8Array> {
@@ -34,7 +34,14 @@ export class BrowserCompressor implements Compressor {
     }
   }
 
-  async inflate(data: Uint8Array): Promise<Uint8Array> {
+  // With no cap, the native DecompressionStream stays the decoder (today's
+  // path). A given cap routes to the zero-dependency decoder instead: it
+  // already aborts incrementally during decode (see streamInflate below),
+  // where the native stream has no equivalent mid-decode abort.
+  async inflate(data: Uint8Array, maxOutputBytes?: number): Promise<Uint8Array> {
+    if (maxOutputBytes !== undefined) {
+      return inflateZlibMember(data, 0, boundedInflateCap(maxOutputBytes)).output;
+    }
     try {
       // pipeTo instead of pipeThrough so the writable-side promise is in scope
       // and can receive a no-op rejection handler. On workerd, closing a
@@ -62,6 +69,12 @@ export class BrowserCompressor implements Compressor {
     maxOutputBytes?: number,
   ): Promise<InflateStreamResult> {
     return inflateZlibMember(bytes, offset, boundedInflateCap(maxOutputBytes));
+  }
+
+  // Same no-re-wrap rationale as streamInflate above: inflateZlibHead already
+  // maps every failure to `decompressFailed`.
+  async inflateHead(data: Uint8Array, maxOutputBytes: number): Promise<Uint8Array> {
+    return inflateZlibHead(data, 0, maxOutputBytes);
   }
 
   createInflateStream(): TransformStream<Uint8Array, Uint8Array> {

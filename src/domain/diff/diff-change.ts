@@ -46,6 +46,9 @@ export interface TypeChangeChange {
   readonly newId: ObjectId;
   readonly oldMode: FileMode;
   readonly newMode: FileMode;
+  /** Dissimilarity datum when -B broke this type change and its halves rejoined.
+   *  git breaks every symlink↔regular type change at MAX_SCORE, so score === MAX_SCORE. */
+  readonly broken?: SimilarityScore;
 }
 
 export interface CopyChange {

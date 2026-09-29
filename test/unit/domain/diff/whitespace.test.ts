@@ -380,6 +380,61 @@ describe('normalizeLine', () => {
       });
     });
   });
+
+  // git's whitespace-ignore family treats a run of "whitespace" as SPACE/TAB
+  // only — form feed (0x0c) and vertical tab (0x0b) are ordinary content.
+  // Pinned against live `git diff --no-ext-diff --no-index -w`/`-b` (git
+  // 2.55.0): an FF between two single-space runs keeps them from merging
+  // under -b, so removing only the trailing one is a real difference, not a
+  // whitespace-amount change.
+  describe('Given a form-feed or vertical-tab byte (not whitespace, unlike SP/TAB/CR/LF)', () => {
+    describe("When normalizeLine runs under mode 'all'", () => {
+      it('Then the form-feed/vertical-tab byte is preserved while space/tab bytes are dropped', () => {
+        // Arrange
+        const key: LineKey = { mode: 'all', ignoreCrAtEol: false };
+        const sut = normalizeLine;
+
+        // Act
+        const formFeed = sut(line('a \f b\n'), key);
+        const verticalTab = sut(line('a \v b\n'), key);
+
+        // Assert
+        expect(formFeed).toEqual(enc('a\fb'));
+        expect(verticalTab).toEqual(enc('a\vb'));
+      });
+    });
+
+    describe("When normalizeLine runs under mode 'change'", () => {
+      it('Then the form-feed byte splits the line into two independent whitespace runs', () => {
+        // Arrange — the trailing run around `\f` shrinks from one space to
+        // none; if `\f` collapsed into a single shared run instead, both
+        // sides would normalize identically.
+        const key: LineKey = { mode: 'change', ignoreCrAtEol: false };
+        const sut = normalizeLine;
+
+        // Act
+        const withTrailingSpace = sut(line('a \f b\n'), key);
+        const withoutTrailingSpace = sut(line('a \fb\n'), key);
+
+        // Assert
+        expect(withTrailingSpace).not.toEqual(withoutTrailingSpace);
+      });
+    });
+
+    describe("When normalizeLine runs under mode 'at-eol'", () => {
+      it('Then a form-feed immediately before the terminator is not dropped as trailing whitespace', () => {
+        // Arrange
+        const key: LineKey = { mode: 'at-eol', ignoreCrAtEol: false };
+        const sut = normalizeLine;
+
+        // Act
+        const result = sut(line('a\f\n'), key);
+
+        // Assert
+        expect(result).toEqual(enc('a\f'));
+      });
+    });
+  });
 });
 
 describe('normalizeLine, a final-line terminator being whitespace under an active key', () => {

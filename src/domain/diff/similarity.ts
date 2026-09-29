@@ -1,10 +1,13 @@
+import { isBinary } from './line-diff.js';
+
 /**
  * Pure spanhash similarity scorer — git's diffcore-delta.c algorithm.
  * I/O-free; never imports platform adapters.
  *
  * Algorithm (mirrors git's `hash_chars` + `diffcore_count_changes`):
  * 1. Split each blob into chunks delimited by LF or up to 64 bytes, whichever
- *    comes first (same rule git applies for text vs binary).
+ *    comes first (same rule git applies for text vs binary). In a text blob,
+ *    the CR of a CRLF pair is skipped: neither accumulated nor counted.
  * 2. Hash each chunk with git's two-accumulator rolling hash and store its byte
  *    count in a hash-map keyed by `(accum1 + accum2 * 0x61) % HASHBASE`.
  * 3. For each chunk hash present in BOTH src and dst, count min(src_cnt, dst_cnt)
@@ -40,53 +43,204 @@ const HASHBASE = 107927;
 /** Max chunk size before forcing a hash boundary (git constant). */
 const MAX_CHUNK_LEN = 64;
 
+/** Carriage return — the byte git's spanhash chunk walk skips when it opens
+ *  a CRLF pair in a text blob. */
+const CR = 0x0d;
+
+/** Whether a blob's bytes are treated as text or binary while chunking:
+ *  text skips the CR of a CRLF pair, binary hashes every byte. Mirrors git's
+ *  `is_text` in `hash_chars`. */
+export type ContentKind = 'text' | 'binary';
+
 /**
- * Build a map from chunk-hash → total byte count for all chunks in `data`.
- * Chunks are delimited by `\n` (LF) or every `MAX_CHUNK_LEN` bytes.
- * Mirrors git's `hash_chars` in `diffcore-delta.c`.
+ * git derives `is_text` from `!diff_filespec_is_binary`, which falls back to
+ * a content sniff (`buffer_is_binary`) whenever no diff attribute already
+ * decided. This is exactly that fallback: `isBinary`'s NUL-in-the-first-8000-
+ * bytes window (`line-diff.ts`). The attribute-decided case is resolved
+ * upstream, per path, by `resolveSimilarityOverride`
+ * (`detect-similarity-renames.ts`'s callers thread the result in as
+ * `buildFingerprint`'s `override` param — this function only ever runs
+ * when that override is absent).
  */
-function buildChunkMap(data: Uint8Array): Map<number, number> {
-  const map = new Map<number, number>();
+export function contentKindOf(bytes: Uint8Array): ContentKind {
+  return isBinary(bytes) ? 'binary' : 'text';
+}
+
+/**
+ * A sorted spanhash table: `hashes` is ascending and distinct, each entry
+ * < HASHBASE; `counts[i]` is the total byte count of every chunk that hashed
+ * into `hashes[i]`. The typed-array shape `packFingerprint`/`denseFingerprint`
+ * both build and `countCopied` merge-scans, replacing a per-blob hash-map
+ * with a sorted table scored the way git's `spanhash_top` is.
+ */
+export interface SpanFingerprint {
+  readonly hashes: Uint32Array;
+  readonly counts: Uint32Array;
+}
+
+/**
+ * Below HASHBASE bytes: pack each chunk as `(bucket << 7) | n` (bucket < 2^17,
+ * n <= MAX_CHUNK_LEN < 2^7, so the low 7 bits are free for n; the packed value
+ * never reaches 2^24) into a pre-sized `Uint32Array` — never a dynamically
+ * growing plain array — sort the FILLED prefix in place with the typed
+ * array's native numeric sort (no comparator: a comparator forces V8's
+ * slower generic sort path even on a typed array), then fold runs of the
+ * same bucket together into pre-sized output arrays COPIED (`.slice`, not
+ * `.subarray`) to their actual length — a `.subarray` view keeps the whole
+ * `packedCount`-sized backing buffer alive behind it, so a blob whose
+ * chunks collapse into few distinct buckets (`distinct` << `packedCount`)
+ * would retain far more memory than its returned fingerprint needs, for as
+ * long as any caller holds onto it (e.g. the broken-pair fingerprint cache).
+ * The walk is inlined rather than routed through `walkChunks`'s callback: a
+ * shared callback passed two DIFFERENT closures (this function's and
+ * `denseFingerprint`'s) turns that one call site megamorphic, defeating
+ * V8's inlining on the hottest loop in rename detection.
+ */
+export function packFingerprint(data: Uint8Array, kind: ContentKind): SpanFingerprint {
   const size = data.length;
+  const packed = new Uint32Array(size);
+  let packedCount = 0;
+  const isText = kind === 'text';
   let accum1 = 0;
   let accum2 = 0;
   let n = 0;
-
   for (let i = 0; i < size; i++) {
-    // The loop guard `i < size` ensures `data[i]` is always defined.
+    // Stryker disable next-line ConditionalExpression,EqualityOperator,ArithmeticOperator: equivalent — forcing `i + 1 < size` true, its `<=` boundary, or `i - 1` (always < size inside this loop) only removes the bounds guard; the next conjunct `data[i + 1] === 0x0a` then reads out of range as `undefined`, which never equals 0x0a, so the branch outcome is unchanged for every i, size.
+    if (isText && data[i] === CR && i + 1 < size && data[i + 1] === 0x0a) continue;
     const c = data[i] as number;
     const old1 = accum1;
     accum1 = (((accum1 << 7) ^ (accum2 >>> 25)) + c) >>> 0;
     accum2 = ((accum2 << 7) ^ (old1 >>> 25)) >>> 0;
     n++;
-    if (n >= MAX_CHUNK_LEN || c === 0x0a /* LF */) {
-      const hashval = (accum1 + Math.imul(accum2, 0x61)) % HASHBASE;
-      map.set(hashval, (map.get(hashval) ?? 0) + n);
-      n = 0;
-      accum1 = 0;
-      accum2 = 0;
-    }
+    if (n < MAX_CHUNK_LEN && c !== 0x0a) continue;
+    const bucket = ((accum1 + Math.imul(accum2, 0x61)) >>> 0) % HASHBASE;
+    packed[packedCount++] = (bucket << 7) | n;
+    n = 0;
+    accum1 = 0;
+    accum2 = 0;
   }
   if (n > 0) {
-    const hashval = (accum1 + Math.imul(accum2, 0x61)) % HASHBASE;
-    map.set(hashval, (map.get(hashval) ?? 0) + n);
+    const bucket = ((accum1 + Math.imul(accum2, 0x61)) >>> 0) % HASHBASE;
+    packed[packedCount++] = (bucket << 7) | n;
   }
 
-  return map;
+  const sorted = packed.subarray(0, packedCount);
+  sorted.sort();
+
+  const hashes = new Uint32Array(packedCount);
+  const counts = new Uint32Array(packedCount);
+  let distinct = 0;
+  for (let i = 0; i < packedCount; i++) {
+    const value = sorted[i] as number;
+    const bucket = value >>> 7;
+    // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — forcing `distinct > 0` true, or its `>= 0` boundary, only lets the first iteration (distinct === 0) read hashes[-1], out of range and never equal to a real bucket number, so the else branch still runs unchanged.
+    if (distinct > 0 && hashes[distinct - 1] === bucket) {
+      counts[distinct - 1] = (counts[distinct - 1] as number) + (value & 127);
+    } else {
+      hashes[distinct] = bucket;
+      counts[distinct] = value & 127;
+      distinct++;
+    }
+  }
+  return { hashes: hashes.slice(0, distinct), counts: counts.slice(0, distinct) };
 }
 
 /**
- * Count how many bytes from `src` were "copied" to `dst`.
- * For each chunk hash in src, takes min(src_cnt, dst_cnt) as copied bytes.
- * Mirrors git's `diffcore_count_changes` in `diffcore-delta.c`.
+ * At or above HASHBASE bytes: accumulate every chunk directly into a fixed
+ * HASHBASE-sized bucket array (every bucket already sits at its own
+ * ascending index, so no per-chunk hash-map entry is needed), while ALSO
+ * recording each bucket's first touch into a `touched` list sized to
+ * `min(data.length, HASHBASE)` — there are at most HASHBASE distinct
+ * buckets to touch regardless of how many bytes `data` holds, so sizing
+ * `touched` to `data.length` directly would over-allocate without bound (a
+ * 256 MiB blob would cost an extra ~1 GiB, a blob near the 2 GiB inflate
+ * cap ~8 GiB). Checking `accum[bucket] === 0` before the add is cheaper
+ * than a second full HASHBASE-sized scan afterward would be (measured: a
+ * naive count-then-fill double scan over all 107 927 buckets was SLOWER
+ * than the original `forEach`, since it pays that fixed cost twice
+ * regardless of how sparse the touched set is). Sort the touched list,
+ * then read each bucket's final count back out of `accum` in one further
+ * O(touched) pass. The walk is inlined for the same megamorphic-callsite
+ * reason `packFingerprint` inlines it.
  */
-function countSrcCopied(srcMap: Map<number, number>, dstMap: Map<number, number>): number {
+export function denseFingerprint(data: Uint8Array, kind: ContentKind): SpanFingerprint {
+  const size = data.length;
+  const accum = new Uint32Array(HASHBASE);
+  const touched = new Uint32Array(Math.min(size, HASHBASE));
+  let touchedCount = 0;
+  const isText = kind === 'text';
+  let accum1 = 0;
+  let accum2 = 0;
+  let n = 0;
+  for (let i = 0; i < size; i++) {
+    // Stryker disable next-line ConditionalExpression,EqualityOperator,ArithmeticOperator: equivalent — forcing `i + 1 < size` true, its `<=` boundary, or `i - 1` (always < size inside this loop) only removes the bounds guard; the next conjunct `data[i + 1] === 0x0a` then reads out of range as `undefined`, which never equals 0x0a, so the branch outcome is unchanged for every i, size.
+    if (isText && data[i] === CR && i + 1 < size && data[i + 1] === 0x0a) continue;
+    const c = data[i] as number;
+    const old1 = accum1;
+    accum1 = (((accum1 << 7) ^ (accum2 >>> 25)) + c) >>> 0;
+    accum2 = ((accum2 << 7) ^ (old1 >>> 25)) >>> 0;
+    n++;
+    if (n < MAX_CHUNK_LEN && c !== 0x0a) continue;
+    const bucket = ((accum1 + Math.imul(accum2, 0x61)) >>> 0) % HASHBASE;
+    if (accum[bucket] === 0) touched[touchedCount++] = bucket;
+    accum[bucket] = (accum[bucket] as number) + n;
+    n = 0;
+    accum1 = 0;
+    accum2 = 0;
+  }
+  if (n > 0) {
+    const bucket = ((accum1 + Math.imul(accum2, 0x61)) >>> 0) % HASHBASE;
+    if (accum[bucket] === 0) touched[touchedCount++] = bucket;
+    accum[bucket] = (accum[bucket] as number) + n;
+  }
+
+  const sortedTouched = touched.subarray(0, touchedCount);
+  sortedTouched.sort();
+  const hashes = new Uint32Array(touchedCount);
+  const counts = new Uint32Array(touchedCount);
+  // Stryker disable next-line EqualityOperator: equivalent — the extra i === touchedCount iteration reads sortedTouched[touchedCount] (out of range, undefined) and writes hashes/counts at index touchedCount; both are sized exactly touchedCount, so a typed-array out-of-bounds write is a silent no-op — the returned fingerprint is unchanged.
+  for (let i = 0; i < touchedCount; i++) {
+    const bucket = sortedTouched[i] as number;
+    hashes[i] = bucket;
+    counts[i] = accum[bucket] as number;
+  }
+  return { hashes, counts };
+}
+
+/**
+ * Build `data`'s spanhash fingerprint, dispatching to whichever builder fits
+ * its size: `packFingerprint` below HASHBASE bytes, `denseFingerprint` at or
+ * above it.
+ */
+export function buildFingerprint(data: Uint8Array, kind: ContentKind): SpanFingerprint {
+  // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — packFingerprint and denseFingerprint chunk the same bytes with the identical rolling hash and reduce to the same sorted, deduped bucket→count table, so routing every input through either one is a pure perf choice (see each function's own doc comment), not a correctness one — verified by forcing every input through denseFingerprint alone (full similarity.ts suite green).
+  return data.length < HASHBASE ? packFingerprint(data, kind) : denseFingerprint(data, kind);
+}
+
+/**
+ * Count how many bytes from `src` were "copied" to `dst`: a two-pointer
+ * merge scan over both sorted, distinct hash tables, summing min(count) for
+ * every hash present in both. Mirrors git's `diffcore_count_changes` in
+ * `diffcore-delta.c` over its sorted `spanhash_top` table.
+ */
+export function countCopied(src: SpanFingerprint, dst: SpanFingerprint): number {
   let copied = 0;
-  for (const [hashval, srcCnt] of srcMap) {
-    const dstCnt = dstMap.get(hashval) ?? 0;
-    // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — dstCnt comes from `?? 0` so it is always >= 0; forcing this guard to always-true (or relaxing `>` to `>=`) only lets the dstCnt===0 case through Math.min(srcCnt, 0), which adds 0 to copied — same result.
-    if (dstCnt > 0) {
-      copied += Math.min(srcCnt, dstCnt);
+  let i = 0;
+  let j = 0;
+  // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — Stryker mutates one comparison at a time, so the OTHER pointer's bound always stays real inside the loop body; once the mutated pointer runs past its array, its read is undefined, which is never === or < the other (still in-bounds, real) value, so the loop only wastes else-branch steps draining the in-bounds pointer to its own end, adding nothing to copied.
+  while (i < src.hashes.length && j < dst.hashes.length) {
+    const a = src.hashes[i] as number;
+    const b = dst.hashes[j] as number;
+    if (a === b) {
+      copied += Math.min(src.counts[i] as number, dst.counts[j] as number);
+      i++;
+      // Stryker disable next-line UpdateOperator: equivalent — both hash tables are ascending and distinct (both builders guarantee it), so j-- here only costs two non-matching else-branch steps (or is protected by the `j < dst.hashes.length` guard when j was already 0) before i/j re-converge to exactly where j++ would have landed — hand-traced for an interior match and a j === 0 match, no infinite loop.
+      j++;
+      // Stryker disable next-line EqualityOperator: equivalent — this branch is only reached once the preceding `if (a === b)` has already failed, so `a !== b` already holds here — `a < b` and `a <= b` agree for every pair that reaches this check.
+    } else if (a < b) {
+      i++;
+    } else {
+      j++;
     }
   }
   return copied;
@@ -98,41 +252,55 @@ function countSrcCopied(srcMap: Map<number, number>, dstMap: Map<number, number>
  * - `srcCopied`: bytes of `src` whose chunk hash also appears in `dst`
  *   (min(src_cnt, dst_cnt) per hash bucket, summed). This is the "shared"
  *   byte count used by both similarity and break scoring.
- * - `literalAdded`: bytes of `dst` not accounted for by `src`
- *   (`dstSize − srcCopied`). Together with `srcCopied`, callers can derive
- *   git's break-attempt gate and merge-score without a second blob scan.
+ * - `literalAdded`: bytes of `dst`'s FINGERPRINT not accounted for by `src`
+ *   (sum of `dst`'s chunk counts, minus `srcCopied`) — NOT `dstSize −
+ *   srcCopied`: a text-mode chunk walk skips the CR of every CRLF pair, so a
+ *   CRLF-heavy `dst` has fewer fingerprinted bytes than its raw size.
  */
 export interface SpanhashChangeCounts {
   readonly srcCopied: number;
   readonly literalAdded: number;
 }
 
+/** Sum every bucket's byte count — a fingerprint's total covered bytes,
+ *  which is `data.length` minus any CR bytes a text-mode walk skipped. */
+function sumFingerprintCounts(fp: SpanFingerprint): number {
+  let total = 0;
+  for (let i = 0; i < fp.counts.length; i++) total += fp.counts[i] as number;
+  return total;
+}
+
 /**
- * Return git's raw `diffcore_count_changes` outputs for a (src, dst) blob pair.
- * These are the load-bearing counts for break scoring (not similarity scoring):
+ * Return git's raw `diffcore_count_changes` outputs for a (src, dst)
+ * fingerprint pair. These are the load-bearing counts for break scoring
+ * (not similarity scoring):
  *
  *   merge_score  = (srcSize − srcCopied) * MAX_SCORE / srcSize   (denominator = srcSize)
  *   break_score  = min(srcSize + dstSize − 2*srcCopied, maxSize) * MAX_SCORE / maxSize
  *
- * Special cases mirror `estimateSimilarity`:
- * - Both empty → srcCopied = 0, literalAdded = 0
- * - src empty  → srcCopied = 0, literalAdded = dstSize
- * - dst empty  → srcCopied = 0, literalAdded = 0
+ * Scores two ALREADY-BUILT fingerprints instead of re-hashing raw bytes —
+ * every call site builds `src`/`dst` via `buildFingerprint` itself first (a
+ * broken-pair cache, or two sides sharing one attribute-resolved content-kind
+ * override per `resolveSimilarityOverride` — the break pass's two blobs are
+ * the old and new state of ONE path, so a single override always applies
+ * uniformly to both) rather than paying a second `buildFingerprint` pass
+ * here. Empty src/dst fall through to the general computation below — an
+ * empty `SpanFingerprint`'s `countCopied` and count-sum are both trivially
+ * 0, matching git's own empty-table walk.
  */
-export function countSpanhashChanges(src: Uint8Array, dst: Uint8Array): SpanhashChangeCounts {
-  const srcSize = src.length;
-  const dstSize = dst.length;
+export function countSpanhashChangesFromFingerprints(
+  srcFingerprint: SpanFingerprint,
+  dstFingerprint: SpanFingerprint,
+): SpanhashChangeCounts {
+  const srcCopied = countCopied(srcFingerprint, dstFingerprint);
+  // git's `should_break` clamps `literalAdded` to `dstSize − srcCopied` in
+  // case it overshoots `dst`'s real size. It never can here: `literalAdded`
+  // is `dst`'s fingerprint byte total minus `srcCopied`, and a chunk walk
+  // only ever SKIPS bytes (the CR of a CRLF pair) — its total is always
+  // ≤ `dstSize`, so `literalAdded + srcCopied` is always ≤ `dstSize` too.
+  const literalAdded = sumFingerprintCounts(dstFingerprint) - srcCopied;
 
-  // Stryker disable next-line ConditionalExpression,LogicalOperator,BlockStatement: equivalent — this guard is a perf short-circuit only. Skipping it (whole/either-operand forced false, || swapped to &&, or the body emptied) still falls through to buildChunkMap on an empty src/dst, which yields an empty map; countSrcCopied over an empty map always returns 0, so srcCopied=0 and literalAdded=dstSize-0=dstSize either way — verified by hand for every documented variant.
-  if (srcSize === 0 || dstSize === 0) {
-    return { srcCopied: 0, literalAdded: dstSize };
-  }
-
-  const srcMap = buildChunkMap(src);
-  const dstMap = buildChunkMap(dst);
-  const srcCopied = countSrcCopied(srcMap, dstMap);
-
-  return { srcCopied, literalAdded: dstSize - srcCopied };
+  return { srcCopied, literalAdded };
 }
 
 /**
@@ -145,50 +313,35 @@ export function countSpanhashChanges(src: Uint8Array, dst: Uint8Array): Spanhash
  * - One empty, other non-empty → 0
  */
 export function estimateSimilarity(src: Uint8Array, dst: Uint8Array): number {
-  const srcSize = src.length;
-  const dstSize = dst.length;
-  const maxSize = Math.max(srcSize, dstSize);
-
-  if (maxSize === 0) return MAX_SCORE;
-  // Stryker disable next-line ConditionalExpression,LogicalOperator: equivalent — this guard is a perf short-circuit only. Skipping it (whole/either-operand forced false, or || swapped to &&) still falls through to buildChunkMap on an empty src/dst, which yields an empty map; countSrcCopied over an empty map always returns 0, so Math.trunc(0 * MAX_SCORE / maxSize) = 0 either way — verified by hand for every documented variant.
-  if (srcSize === 0 || dstSize === 0) return 0;
-
-  const srcMap = buildChunkMap(src);
-  const dstMap = buildChunkMap(dst);
-  const srcCopied = countSrcCopied(srcMap, dstMap);
-
-  return Math.trunc((srcCopied * MAX_SCORE) / maxSize);
+  return estimateSimilarityFromFingerprints(
+    buildFingerprint(src, contentKindOf(src)),
+    src.length,
+    buildFingerprint(dst, contentKindOf(dst)),
+    dst.length,
+  );
 }
 
 /**
- * Score two blobs from their precomputed chunk maps and byte sizes.
+ * Score two blobs from their precomputed fingerprints and byte sizes.
  * Avoids re-hashing bytes when a blob is scored against multiple partners.
  *
  * Special cases mirror `estimateSimilarity`:
  * - maxSize === 0 → MAX_SCORE
  * - either size === 0 → 0
  */
-export function estimateSimilarityFromMaps(
-  srcMap: Map<number, number>,
+export function estimateSimilarityFromFingerprints(
+  src: SpanFingerprint,
   srcSize: number,
-  dstMap: Map<number, number>,
+  dst: SpanFingerprint,
   dstSize: number,
 ): number {
   const maxSize = Math.max(srcSize, dstSize);
   if (maxSize === 0) return MAX_SCORE;
-  // Stryker disable next-line ConditionalExpression,LogicalOperator: equivalent — this guard is a perf short-circuit only. Skipping it (whole/either-operand forced false, or || swapped to &&) still falls through to countSrcCopied with an empty srcMap or dstMap (well-formed callers pass maps consistent with size), which always returns 0, so Math.trunc(0 * MAX_SCORE / maxSize) = 0 either way — verified by hand for every documented variant.
+  // Stryker disable next-line ConditionalExpression,LogicalOperator: equivalent — this guard is a perf short-circuit only. Skipping it (whole/either-operand forced false, or || swapped to &&) still falls through to countCopied with an empty src or dst fingerprint (well-formed callers pass fingerprints consistent with size), which always returns 0, so Math.trunc(0 * MAX_SCORE / maxSize) = 0 either way — verified by hand for every documented variant.
   if (srcSize === 0 || dstSize === 0) return 0;
-  const srcCopied = countSrcCopied(srcMap, dstMap);
+  const srcCopied = countCopied(src, dst);
   return Math.trunc((srcCopied * MAX_SCORE) / maxSize);
 }
-
-/**
- * Build a spanhash chunk map for a byte array.
- * Exported for use in the rename/copy matrix to fingerprint each blob once.
- * Mirrors `buildChunkMap` (internal) — this is the public alias for callers
- * that need to cache fingerprints across multiple pair comparisons.
- */
-export { buildChunkMap };
 
 /**
  * Project a raw score to an integer percent, truncating (not rounding).

@@ -15,7 +15,7 @@
  *   unique:         tsgit's blame data reconstructs canonical `git blame --porcelain`
  *   interopSurface: blame
  */
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -162,6 +162,9 @@ describe.skipIf(!GIT_AVAILABLE)('blame interop', () => {
   let rangeMatrix: { dir: string; ctx: Context };
   let rangeMatrixBase: string;
   let emptyFile: { dir: string; ctx: Context };
+  let fanOut: { dir: string; ctx: Context };
+  let inexactCompetition: { dir: string; ctx: Context };
+  let basenameCompetition: { dir: string; ctx: Context };
 
   beforeAll(async () => {
     const linearDir = await makeRepo('linear');
@@ -245,6 +248,71 @@ describe.skipIf(!GIT_AVAILABLE)('blame interop', () => {
     const emptyFileDir = await makeRepo('empty-file');
     await commitContent(emptyFileDir, 'e.txt', '');
     emptyFile = { dir: emptyFileDir, ctx: createNodeContext({ workDir: emptyFileDir }) };
+
+    // Fan-out: one delete, three adds with the identical bytes in one commit —
+    // git blame's single_follow means every copy blames back to Foo.txt.
+    const fanOutDir = await makeRepo('fan-out');
+    await commitContent(fanOutDir, 'Foo.txt', 'l1\nl2\n');
+    git(fanOutDir, 'rm', '-q', 'Foo.txt');
+    await writeFile(path.join(fanOutDir, 'A.txt'), 'l1\nl2\n');
+    await writeFile(path.join(fanOutDir, 'B.txt'), 'l1\nl2\n');
+    await writeFile(path.join(fanOutDir, 'C.txt'), 'l1\nl2\n');
+    git(fanOutDir, 'add', '-A');
+    clock += 60;
+    runGit(['-C', fanOutDir, 'commit', '-q', '-m', 'fan-out copy'], { env: datedEnv(clock) });
+    fanOut = { dir: fanOutDir, ctx: createNodeContext({ workDir: fanOutDir }) };
+
+    // Inexact competition: one delete, two adds each keeping a different share
+    // of its content — single_follow pins each add to its OWN blame lookup,
+    // so the less similar add still follows a.txt (not the sibling's add).
+    const inexactCompetitionDir = await makeRepo('inexact-competition');
+    const original = `${Array.from({ length: 10 }, (_, i) => `l${i + 1}`).join('\n')}\n`;
+    await commitContent(inexactCompetitionDir, 'a.txt', original);
+    git(inexactCompetitionDir, 'rm', '-q', 'a.txt');
+    const bContent = `${[...Array.from({ length: 8 }, (_, i) => `l${i + 1}`), 'XX', 'YY'].join('\n')}\n`;
+    const cContent = `${[...Array.from({ length: 9 }, (_, i) => `l${i + 1}`), 'ZZ'].join('\n')}\n`;
+    await writeFile(path.join(inexactCompetitionDir, 'b.txt'), bContent);
+    await writeFile(path.join(inexactCompetitionDir, 'c.txt'), cContent);
+    git(inexactCompetitionDir, 'add', '-A');
+    clock += 60;
+    runGit(['-C', inexactCompetitionDir, 'commit', '-q', '-m', 'inexact competition'], {
+      env: datedEnv(clock),
+    });
+    inexactCompetition = {
+      dir: inexactCompetitionDir,
+      ctx: createNodeContext({ workDir: inexactCompetitionDir }),
+    };
+
+    // Basename competition: a delete sharing the destination's basename loses
+    // the raw similarity score to a differently-named delete, yet the
+    // basename pass pairs it anyway (git's rename detection prefers a
+    // matching basename over a higher-scoring competitor) — single_follow
+    // must resolve to the SAME source diff's own rename detection would.
+    const basenameCompetitionDir = await makeRepo('basename-competition');
+    const basenameLine = (i: number, edited: boolean): string =>
+      edited ? `edited line ${i}` : `body line ${i}`;
+    const basenameContent = (editedCount: number): string =>
+      `${Array.from({ length: 20 }, (_, i) => basenameLine(i, i < editedCount)).join('\n')}\n`;
+    await mkdir(path.join(basenameCompetitionDir, 'a'), { recursive: true });
+    await writeFile(path.join(basenameCompetitionDir, 'a', 'foo.c'), basenameContent(4));
+    await writeFile(path.join(basenameCompetitionDir, 'a', 'bar.c'), basenameContent(1));
+    git(basenameCompetitionDir, 'add', '-A');
+    clock += 60;
+    runGit(['-C', basenameCompetitionDir, 'commit', '-q', '-m', 'add a/foo.c and a/bar.c'], {
+      env: datedEnv(clock),
+    });
+    git(basenameCompetitionDir, 'rm', '-r', '-q', 'a');
+    await mkdir(path.join(basenameCompetitionDir, 'b'), { recursive: true });
+    await writeFile(path.join(basenameCompetitionDir, 'b', 'foo.c'), basenameContent(0));
+    git(basenameCompetitionDir, 'add', '-A');
+    clock += 60;
+    runGit(['-C', basenameCompetitionDir, 'commit', '-q', '-m', 'move to b/foo.c'], {
+      env: datedEnv(clock),
+    });
+    basenameCompetition = {
+      dir: basenameCompetitionDir,
+      ctx: createNodeContext({ workDir: basenameCompetitionDir }),
+    };
   }, SETUP_TIMEOUT);
 
   afterAll(async () => {
@@ -259,6 +327,9 @@ describe.skipIf(!GIT_AVAILABLE)('blame interop', () => {
         oursMerge,
         rangeMatrix,
         emptyFile,
+        fanOut,
+        inexactCompetition,
+        basenameCompetition,
       ].map((r) => rm(r.dir, { recursive: true, force: true })),
     );
   });
@@ -362,6 +433,24 @@ describe.skipIf(!GIT_AVAILABLE)('blame interop', () => {
       fixture: () => renamed,
       file: 'renamed.txt',
       range: { start: 1, end: 1 },
+    },
+    { label: 'a fan-out copy (first in path order)', fixture: () => fanOut, file: 'A.txt' },
+    { label: 'a fan-out copy (second)', fixture: () => fanOut, file: 'B.txt' },
+    { label: 'a fan-out copy (third)', fixture: () => fanOut, file: 'C.txt' },
+    {
+      label: 'the less similar of two competing adds',
+      fixture: () => inexactCompetition,
+      file: 'b.txt',
+    },
+    {
+      label: 'the more similar of two competing adds',
+      fixture: () => inexactCompetition,
+      file: 'c.txt',
+    },
+    {
+      label: 'a rename source chosen by a matching basename over a higher-scoring competitor',
+      fixture: () => basenameCompetition,
+      file: 'b/foo.c',
     },
   ];
 

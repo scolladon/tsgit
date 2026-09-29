@@ -1,16 +1,15 @@
-import type { ObjectId } from '../objects/index.js';
 import { primaryPath } from './change-path.js';
 import type { AddChange, DeleteChange, DiffChange, RenameChange, TreeDiff } from './diff-change.js';
 import { sortByPath } from './path-compare.js';
+import type { RenameSource, SourcePair } from './rename-pairing.js';
+import { pairIdenticalFiles } from './rename-pairing.js';
 import { MAX_SCORE } from './similarity.js';
 
 export interface RenameDetectOptions {
   readonly limit?: number;
-  readonly maxSameIdDeletes?: number;
+  /** Similarity gate (0..MAX_SCORE) for both renames and copies — git's `-M<n>` / `-C<n>`; default 50%. */
   readonly threshold?: number;
   readonly copies?: 'off' | 'on' | 'harder';
-  /** Per-copy threshold (0..MAX_SCORE). Defaults to `threshold` when absent. */
-  readonly copyThreshold?: number;
   /**
    * Break-rewrite detection (-B).
    * score: dissimilarity gate (>= score → attempt break; default DEFAULT_BREAK_SCORE).
@@ -20,9 +19,6 @@ export interface RenameDetectOptions {
    */
   readonly breakRewrites?: { readonly score: number; readonly merge: number } | false;
 }
-
-const DEFAULT_LIMIT = 1000;
-const DEFAULT_MAX_SAME_ID_DELETES = 100;
 
 function partition(changes: ReadonlyArray<DiffChange>): {
   readonly adds: ReadonlyArray<AddChange>;
@@ -40,73 +36,33 @@ function partition(changes: ReadonlyArray<DiffChange>): {
   return { adds, deletes, other };
 }
 
-function buildDeletesByOldId(
-  deletes: ReadonlyArray<DeleteChange>,
-  maxSameIdDeletes: number,
-): Map<ObjectId, ReadonlyArray<DeleteChange>> {
-  const byOldId = new Map<ObjectId, DeleteChange[]>();
-  for (const del of deletes) {
-    const list = byOldId.get(del.oldId);
-    if (list === undefined) {
-      byOldId.set(del.oldId, [del]);
-    } else {
-      list.push(del);
-    }
-  }
-  // Prune keys exceeding per-id fan-out cap; freeze into read-only shape.
-  const pruned = new Map<ObjectId, ReadonlyArray<DeleteChange>>();
-  for (const [key, list] of byOldId) {
-    if (list.length <= maxSameIdDeletes) pruned.set(key, list);
-  }
-  return pruned;
+function toRenameSource(del: DeleteChange): RenameSource {
+  return { path: del.oldPath, id: del.oldId, mode: del.oldMode, origin: 'deleted', seedUses: 0 };
 }
 
-function tryFoldAdd(
-  add: AddChange,
-  deletesByOldId: Map<ObjectId, ReadonlyArray<DeleteChange>>,
-): { readonly rename: RenameChange; readonly consumedDelete: DeleteChange } | undefined {
-  const matches = deletesByOldId.get(add.newId);
-  if (matches === undefined || matches.length !== 1) return undefined;
-  // length === 1 is guaranteed by the guard above; cast is safe.
-  const del = matches[0] as DeleteChange;
+function toExactRename(sources: ReadonlyArray<RenameSource>, pair: SourcePair): RenameChange {
+  const source = sources[pair.source] as RenameSource;
+  const destination = pair.destination;
   return {
-    rename: {
-      type: 'rename',
-      oldPath: del.oldPath,
-      newPath: add.newPath,
-      oldId: del.oldId,
-      newId: add.newId,
-      oldMode: del.oldMode,
-      newMode: add.newMode,
-      similarity: { score: MAX_SCORE, maxScore: MAX_SCORE },
-    },
-    consumedDelete: del,
+    type: 'rename',
+    oldPath: source.path,
+    newPath: destination.newPath,
+    oldId: source.id,
+    newId: destination.newId,
+    oldMode: source.mode,
+    newMode: destination.newMode,
+    similarity: { score: MAX_SCORE, maxScore: MAX_SCORE },
   };
 }
 
-export function detectRenames(diff: TreeDiff, options: RenameDetectOptions = {}): TreeDiff {
-  const limit = options.limit ?? DEFAULT_LIMIT;
-  const maxSameIdDeletes = options.maxSameIdDeletes ?? DEFAULT_MAX_SAME_ID_DELETES;
+// Never gated by a rename limit: git's exact pass always runs, the limit only skips the inexact matrix.
+export function detectRenames(diff: TreeDiff): TreeDiff {
   const { adds, deletes, other } = partition(diff.changes);
+  const sources = deletes.map(toRenameSource);
+  const { pairs, unpaired, uses } = pairIdenticalFiles(sources, adds, 'rename');
 
-  if (adds.length * deletes.length > limit) return diff;
-
-  const deletesByOldId = buildDeletesByOldId(deletes, maxSameIdDeletes);
-  const consumedDeletes = new Set<DeleteChange>();
-  const renames: RenameChange[] = [];
-  const unfoldedAdds: AddChange[] = [];
-
-  for (const add of adds) {
-    const fold = tryFoldAdd(add, deletesByOldId);
-    if (fold === undefined) {
-      unfoldedAdds.push(add);
-    } else {
-      renames.push(fold.rename);
-      consumedDeletes.add(fold.consumedDelete);
-    }
-  }
-
-  const unfoldedDeletes = deletes.filter((d) => !consumedDeletes.has(d));
-  const merged: DiffChange[] = [...unfoldedAdds, ...unfoldedDeletes, ...renames, ...other];
+  const renames = pairs.map((pair) => toExactRename(sources, pair));
+  const unfoldedDeletes = deletes.filter((_, index) => uses[index] === 0);
+  const merged: DiffChange[] = [...unpaired, ...unfoldedDeletes, ...renames, ...other];
   return { changes: sortByPath(merged, primaryPath) };
 }

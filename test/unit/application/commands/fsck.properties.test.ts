@@ -523,7 +523,7 @@ describe('Given an arbitrary healthy repo plus one pack-layer-faulted pack whose
             // Arrange — a healthy repo plus one pack-layer-faulted pack whose
             // sole object exists nowhere else. Every loose object stays
             // intact, so a generated repo's failing reads are
-            // OBJECT_NOT_FOUND — outside Part 5's undecodable-bytes probe.
+            // OBJECT_NOT_FOUND — outside the separate undecodable-bytes probe.
             const ctx = await buildSeededContext();
             await seedHealthyRepo(ctx, healthyContent);
             const [packObjectId] = await writeSyntheticPack(ctx, 'i8-fault-pack', [

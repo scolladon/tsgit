@@ -103,6 +103,39 @@ describe('MemoryCompressor', () => {
       });
     });
 
+    describe('Given no maxOutputBytes cap', () => {
+      describe('When inflate runs', () => {
+        it('Then it uses the native DecompressionStream decoder, not the bounded fallback', async () => {
+          // Arrange — build with real globals, then swap DecompressionStream for one
+          // whose construction is observable, to prove which decoder ran.
+          const sut = new MemoryCompressor();
+          const data = await sut.deflate(new TextEncoder().encode('native path check'));
+          class ThrowingDecompressionStream {
+            constructor() {
+              throw new Error('native decompression stream invoked');
+            }
+          }
+          globals.DecompressionStream = ThrowingDecompressionStream;
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut.inflate(data);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const errData = (caught as TsgitError).data;
+          expect(errData.code).toBe('DECOMPRESS_FAILED');
+          if (errData.code === 'DECOMPRESS_FAILED') {
+            expect(errData.reason).toBe('native decompression stream invoked');
+          }
+        });
+      });
+    });
+
     describe('Given bytes that never form a valid zlib stream', () => {
       describe('When streamInflate', () => {
         it('Then throws DECOMPRESS_FAILED', async () => {

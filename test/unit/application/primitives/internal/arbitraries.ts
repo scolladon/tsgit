@@ -160,8 +160,8 @@ export const duplicateDirectoryArb = (): fc.Arbitrary<DuplicateDirectorySpec> =>
 /**
  * `pack-records.properties.test.ts`'s grammar (P1's round-trip lens): one
  * `PackRecordStore` record. `type` is drawn from the four base entry types
- * only — the only shape Part 3's own wiring ever appends — never the two
- * delta types, which never reach `append` directly.
+ * only — the only shape the store's own append path ever appends — never the
+ * two delta types, which never reach `append` directly.
  */
 const BASE_PACK_ENTRY_TYPES = [
   PACK_ENTRY_TYPE.COMMIT,

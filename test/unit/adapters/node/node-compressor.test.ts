@@ -30,6 +30,50 @@ const deflateCallbackSpy = vi.mocked(zlib.deflate);
 const deflateRawCallbackSpy = vi.mocked(zlib.deflateRaw);
 const inflateCallbackSpy = vi.mocked(zlib.inflate);
 
+/**
+ * A zlib member built to distinguish a BOUNDED `inflateHead` from an
+ * unbounded one, structurally rather than by timing or memory sampling:
+ *
+ *  - `EMPTY_BLOCK` (`00 00 00 ff ff`) is an empty non-final STORED block —
+ *    the exact "under-decoded" padding shape the reviewed bug exploited: it
+ *    always decodes to zero output bytes, so a probe that grows its prefix
+ *    only while `out.length` stays 0 keeps growing across this whole run.
+ *  - `bombBody` is `zlib.deflateSync(..., { finishFlush: Z_SYNC_FLUSH })`
+ *    with its own 2-byte zlib header stripped: real Huffman-compressed
+ *    content (amplifies far past its own compressed size) ending in its
+ *    OWN trailing empty non-final stored block (Z_SYNC_FLUSH's own
+ *    signature) rather than a normal BFINAL=1 terminator, so decoding
+ *    legitimately continues past it — into `CORRUPTED_MARKER` — instead of
+ *    stopping cleanly at the bomb's own end.
+ *  - `CORRUPTED_MARKER` (BFINAL=1, BTYPE=11, reserved by RFC 1951) sits
+ *    right after the bomb and is never valid input to any decoder.
+ *
+ * A decoder that stops the instant it holds `maxOutputBytes` of real output
+ * (block-by-block, the bounded contract) exhausts its bound partway through
+ * `bombBody`'s own content and never reaches `CORRUPTED_MARKER` — it
+ * succeeds. An unbounded probe that decodes an ARBITRARY, growing byte
+ * PREFIX regardless of block boundaries (the reviewed bug) eventually picks
+ * a prefix long enough to swallow the whole padding, the whole bomb, AND
+ * `CORRUPTED_MARKER` in one native call — and throws, because that call
+ * decodes past the bomb into the reserved block type before it ever gets a
+ * chance to report "enough output" back to its own caller.
+ */
+function buildHeadProbeBombAttack(): Uint8Array {
+  const ZLIB_HEADER = [0x78, 0x9c];
+  const EMPTY_BLOCK = [0x00, 0x00, 0x00, 0xff, 0xff];
+  const PADDING_BLOCK_COUNT = 8000;
+  const CORRUPTED_MARKER = 0x07; // BFINAL=1, BTYPE=11 (reserved)
+  const BOMB_DECODED_BYTES = 5000;
+
+  const padding = new Array<number>(PADDING_BLOCK_COUNT).fill(0).flatMap(() => EMPTY_BLOCK);
+  const bombDeflated = zlib.deflateSync(new Uint8Array(BOMB_DECODED_BYTES), {
+    finishFlush: zlib.constants.Z_SYNC_FLUSH,
+  });
+  const bombBody = Array.from(bombDeflated.subarray(2)); // strip the 2-byte zlib header
+
+  return new Uint8Array([...ZLIB_HEADER, ...padding, ...bombBody, CORRUPTED_MARKER]);
+}
+
 describe('NodeCompressor', () => {
   beforeEach(() => {
     deflateSyncSpy.mockClear();
@@ -212,6 +256,28 @@ describe('NodeCompressor', () => {
           // Assert
           expect(caught).toBeInstanceOf(TsgitError);
           expect((caught as TsgitError).data.code).toBe('DECOMPRESS_FAILED');
+        });
+      });
+    });
+
+    describe('Given a hostile prefix built from padded empty stored blocks followed by a deflate bomb and a corrupted trailing block', () => {
+      describe('When inflateHead is called with a small bound', () => {
+        it('Then it returns exactly the bounded prefix instead of decoding into the bomb (native inflateSync is never invoked)', async () => {
+          // Arrange
+          const sut = new NodeCompressor();
+          const attack = buildHeadProbeBombAttack();
+          inflateSyncSpy.mockClear();
+
+          // Act
+          const result = await sut.inflateHead(attack, 33);
+
+          // Assert — a decoder that ever grows an unbounded prefix into the
+          // bomb reaches CORRUPTED_MARKER within that same native call and
+          // throws (reproduced directly against the old implementation);
+          // this only resolves at all if the bound truly stopped decoding
+          // partway through the bomb's own content.
+          expect(Array.from(result)).toEqual(new Array(33).fill(0));
+          expect(inflateSyncSpy).not.toHaveBeenCalled();
         });
       });
     });
@@ -543,6 +609,67 @@ describe('NodeCompressor', () => {
           // Assert
           expect(caught).toBeInstanceOf(TsgitError);
           expect((caught as TsgitError).data.code).toBe('DECOMPRESS_FAILED');
+        });
+      });
+    });
+
+    describe('Given inflateSync throws a RangeError unrelated to the output-length cap', () => {
+      describe('When inflate runs', () => {
+        it('Then DECOMPRESS_FAILED carries the original message, not the cap-exceeded reason', async () => {
+          // Arrange — a RangeError node:zlib could plausibly raise for a
+          // reason other than maxOutputLength, distinguished by its code.
+          const sut = new NodeCompressor();
+          const err = Object.assign(new RangeError('invalid array length'), {
+            code: 'ERR_OUT_OF_RANGE',
+          });
+          inflateSyncSpy.mockImplementationOnce(() => {
+            throw err;
+          });
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut.inflate(new Uint8Array([0, 0]));
+          } catch (caughtErr) {
+            caught = caughtErr;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as { code: string; reason?: string };
+          expect(data.code).toBe('DECOMPRESS_FAILED');
+          expect(data.reason).toBe('invalid array length');
+        });
+      });
+    });
+
+    describe('Given inflateSync throws a non-RangeError error carrying the buffer-too-large code', () => {
+      describe('When inflate runs', () => {
+        it('Then DECOMPRESS_FAILED carries the original message, not the cap-exceeded reason', async () => {
+          // Arrange — the code alone must not be enough to classify a cap
+          // hit; the error must also be the RangeError node:zlib actually
+          // throws for it.
+          const sut = new NodeCompressor();
+          const err = Object.assign(new Error('mocked buffer overflow'), {
+            code: 'ERR_BUFFER_TOO_LARGE',
+          });
+          inflateSyncSpy.mockImplementationOnce(() => {
+            throw err;
+          });
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut.inflate(new Uint8Array([0, 0]));
+          } catch (caughtErr) {
+            caught = caughtErr;
+          }
+
+          // Assert
+          expect(caught).toBeInstanceOf(TsgitError);
+          const data = (caught as TsgitError).data as { code: string; reason?: string };
+          expect(data.code).toBe('DECOMPRESS_FAILED');
+          expect(data.reason).toBe('mocked buffer overflow');
         });
       });
     });

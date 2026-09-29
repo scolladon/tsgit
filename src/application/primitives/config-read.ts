@@ -84,6 +84,14 @@ export interface ParsedConfig {
      * (lenient read).
      */
     readonly packedGitLimit?: number;
+    /**
+     * `core.bigFileThreshold` — bytes; a blob whose declared size exceeds
+     * this takes git's streamed verification instead of a buffered one
+     * (`read_loose_object`'s `check_stream_oid` arm). Absent when unset or
+     * malformed (lenient read); git's own default (512 MiB) is applied by
+     * the caller, not here.
+     */
+    readonly bigFileThreshold?: number;
   };
   readonly user?: { readonly name?: string; readonly email?: string; readonly signingKey?: string };
   readonly remote?: ReadonlyMap<
@@ -122,10 +130,12 @@ export interface ParsedConfig {
     string,
     { readonly name?: string; readonly driver?: string; readonly recursive?: string }
   >;
-  /** `[diff "<name>"]` configured diff/textconv drivers. */
+  /** `[diff "<name>"]` configured diff/textconv drivers. `binary` is the
+   *  driver's own tristate binary-vs-text override, read by similarity/break
+   *  scoring for a `diff=<name>` attribute (`resolveSimilarityOverride`). */
   readonly diff?: ReadonlyMap<
     string,
-    { readonly textconv?: string; readonly cachetextconv?: boolean }
+    { readonly textconv?: string; readonly cachetextconv?: boolean; readonly binary?: boolean }
   >;
   /** `[filter "<name>"]` configured clean/smudge filter drivers. */
   readonly filter?: ReadonlyMap<
@@ -1241,7 +1251,7 @@ interface MutableParsedConfig {
   branch?: Map<string, { remote?: string; merge?: string; pushRemote?: string }>;
   submodule?: Map<string, { url?: string; active?: boolean; update?: string }>;
   merge?: Map<string, { name?: string; driver?: string; recursive?: string }>;
-  diff?: Map<string, { textconv?: string; cachetextconv?: boolean }>;
+  diff?: Map<string, { textconv?: string; cachetextconv?: boolean; binary?: boolean }>;
   filter?: Map<string, { clean?: string; smudge?: string; process?: string; required?: boolean }>;
   extensions?: { partialClone?: string };
   commit?: { gpgSign?: boolean };
@@ -1319,6 +1329,7 @@ type MutableCore = {
   deltaBaseCacheLimit?: number;
   packedGitWindowSize?: number;
   packedGitLimit?: number;
+  bigFileThreshold?: number;
   /** Transient: true when looseCompression was set via loosecompression key (not compression).
    *  Dropped by finalizeCore. Guards order-independent precedence: loosecompression > compression. */
   looseCompressionFromLoose?: boolean;
@@ -1395,6 +1406,20 @@ const applyPackedGitBoundEntry = (
   return checked.ok ? { ...core, [field]: checked.value } : undefined;
 };
 
+const BIG_FILE_THRESHOLD_KEY = 'bigfilethreshold';
+
+/**
+ * Apply `core.bigFileThreshold`: git's unsigned-long grammar, reusing
+ * `checkPackWindowMemoryBound` exactly as {@link applyDeltaBaseCacheLimitEntry}
+ * does. Merges as absent on any failure — this is the LENIENT read only; no
+ * eager refusal is added for this key (mirrors `packedGitLimit`'s own
+ * lenient-only surface where no command's preflight gate needs one yet).
+ */
+const applyBigFileThresholdEntry = (core: MutableCore, value: string): MutableCore | undefined => {
+  const checked = checkPackWindowMemoryBound(value);
+  return checked.ok ? { ...core, bigFileThreshold: checked.value } : undefined;
+};
+
 // One map is BOTH the key set and the field dispatch: a new boolean key
 // cannot join the set without naming its target field, so a silent
 // mis-assignment is structurally impossible.
@@ -1454,6 +1479,7 @@ const applyCoreEntry = (
   }
   if (lowered === PACKED_GIT_LIMIT_KEY)
     return applyPackedGitBoundEntry(core, 'packedGitLimit', value);
+  if (lowered === BIG_FILE_THRESHOLD_KEY) return applyBigFileThresholdEntry(core, value);
   return undefined;
 };
 
@@ -1639,26 +1665,50 @@ const mergeMergeDriver = (
   acc.merge.set(name, next);
 };
 
+type DiffDriverEntry = { textconv?: string; cachetextconv?: boolean; binary?: boolean };
+
+/**
+ * `diff.<name>.binary`'s tristate: `auto` (case-insensitively) resets the
+ * field back to "let the content sniff decide" — the SAME state an unset key
+ * already leaves it in — rather than being just another accepted literal
+ * (unlike `core.logAllRefUpdates`'s `always` or `push.gpgSign`'s
+ * `if-asked`, which are genuinely distinct third states). An eagerly-refused
+ * invalid value (`assertEagerConfigValid`'s `findFirstInvalidDiffBinary`)
+ * never reaches an operational read through this path; the `config`
+ * porcelain can, so an invalid value still just leaves the field untouched
+ * here rather than throwing.
+ */
+const applyDiffBinaryEntry = (next: DiffDriverEntry, value: string | null): void => {
+  if (value !== null && value.toLowerCase() === 'auto') {
+    delete next.binary;
+    return;
+  }
+  const parsed = parseGitBoolean(value);
+  if (parsed.ok) next.binary = parsed.value;
+};
+
+const applyDiffDriverEntry = (next: DiffDriverEntry, key: string, value: string | null): void => {
+  const lowered = key.toLowerCase();
+  if (lowered === 'textconv') {
+    // String-typed field: skip null (valueless key treated as absent).
+    if (value === null) return;
+    next.textconv = value;
+  } else if (lowered === 'cachetextconv') {
+    const parsed = parseGitBoolean(value);
+    if (parsed.ok) next.cachetextconv = parsed.value;
+  } else if (lowered === 'binary') {
+    applyDiffBinaryEntry(next, value);
+  }
+};
+
 const mergeDiffDriver = (
-  acc: { diff?: Map<string, { textconv?: string; cachetextconv?: boolean }> },
+  acc: { diff?: Map<string, DiffDriverEntry> },
   name: string,
   sec: IniSection,
 ): void => {
   acc.diff ??= new Map();
-  const next: { textconv?: string; cachetextconv?: boolean } = {
-    ...(acc.diff.get(name) ?? {}),
-  };
-  for (const { key, value } of sec.entries) {
-    const lowered = key.toLowerCase();
-    if (lowered === 'textconv') {
-      // String-typed field: skip null (valueless key treated as absent).
-      if (value === null) continue;
-      next.textconv = value;
-    } else if (lowered === 'cachetextconv') {
-      const parsed = parseGitBoolean(value);
-      if (parsed.ok) next.cachetextconv = parsed.value;
-    }
-  }
+  const next: DiffDriverEntry = { ...(acc.diff.get(name) ?? {}) };
+  for (const { key, value } of sec.entries) applyDiffDriverEntry(next, key, value);
   acc.diff.set(name, next);
 };
 
@@ -1956,6 +2006,36 @@ const mergeGpgSsh = (acc: { gpg?: MutableGpg }, name: string, sec: IniSection): 
   }
 };
 
+/** The `[core]` fields with no numeric size/count grammar: booleans, paths and
+ *  strings. Split out of `finalizeCore` to keep each half under the
+ *  cognitive-complexity ceiling. */
+const finalizeCoreIdentityFields = (core: MutableCore): ParsedConfig['core'] => ({
+  ...(core.bare !== undefined ? { bare: core.bare } : {}),
+  ...(core.excludesFile !== undefined ? { excludesFile: core.excludesFile } : {}),
+  ...(core.attributesFile !== undefined ? { attributesFile: core.attributesFile } : {}),
+  ...(core.logAllRefUpdates !== undefined ? { logAllRefUpdates: core.logAllRefUpdates } : {}),
+  ...(core.hooksPath !== undefined ? { hooksPath: core.hooksPath } : {}),
+  ...(core.notesRef !== undefined ? { notesRef: core.notesRef } : {}),
+  ...(core.sparseCheckout !== undefined ? { sparseCheckout: core.sparseCheckout } : {}),
+  ...(core.sparseCheckoutCone !== undefined ? { sparseCheckoutCone: core.sparseCheckoutCone } : {}),
+  ...(core.sshCommand !== undefined ? { sshCommand: core.sshCommand } : {}),
+});
+
+/** The `[core]` fields with a numeric size/count/limit grammar. Split out of
+ *  `finalizeCore` to keep each half under the cognitive-complexity ceiling. */
+const finalizeCoreSizeFields = (core: MutableCore): ParsedConfig['core'] => ({
+  ...(core.looseCompression !== undefined ? { looseCompression: core.looseCompression } : {}),
+  ...(core.maxTreeDepth !== undefined ? { maxTreeDepth: core.maxTreeDepth } : {}),
+  ...(core.deltaBaseCacheLimit !== undefined
+    ? { deltaBaseCacheLimit: core.deltaBaseCacheLimit }
+    : {}),
+  ...(core.packedGitWindowSize !== undefined
+    ? { packedGitWindowSize: core.packedGitWindowSize }
+    : {}),
+  ...(core.packedGitLimit !== undefined ? { packedGitLimit: core.packedGitLimit } : {}),
+  ...(core.bigFileThreshold !== undefined ? { bigFileThreshold: core.bigFileThreshold } : {}),
+});
+
 /**
  * Finalize the `[core]` section: emit only the keys that were set, or
  * `undefined` when the section was never populated. `mergeCore` is the sole
@@ -1965,32 +2045,11 @@ const mergeGpgSsh = (acc: { gpg?: MutableGpg }, name: string, sec: IniSection): 
 const finalizeCore = (core: MutableCore | undefined): ParsedConfig['core'] => {
   if (core === undefined) return undefined;
   // looseCompressionFromLoose is transient (precedence flag) — not projected to ParsedConfig
-  return {
-    ...(core.bare !== undefined ? { bare: core.bare } : {}),
-    ...(core.excludesFile !== undefined ? { excludesFile: core.excludesFile } : {}),
-    ...(core.attributesFile !== undefined ? { attributesFile: core.attributesFile } : {}),
-    ...(core.logAllRefUpdates !== undefined ? { logAllRefUpdates: core.logAllRefUpdates } : {}),
-    ...(core.hooksPath !== undefined ? { hooksPath: core.hooksPath } : {}),
-    ...(core.notesRef !== undefined ? { notesRef: core.notesRef } : {}),
-    ...(core.sparseCheckout !== undefined ? { sparseCheckout: core.sparseCheckout } : {}),
-    ...(core.sparseCheckoutCone !== undefined
-      ? { sparseCheckoutCone: core.sparseCheckoutCone }
-      : {}),
-    ...(core.looseCompression !== undefined ? { looseCompression: core.looseCompression } : {}),
-    ...(core.maxTreeDepth !== undefined ? { maxTreeDepth: core.maxTreeDepth } : {}),
-    ...(core.sshCommand !== undefined ? { sshCommand: core.sshCommand } : {}),
-    ...(core.deltaBaseCacheLimit !== undefined
-      ? { deltaBaseCacheLimit: core.deltaBaseCacheLimit }
-      : {}),
-    ...(core.packedGitWindowSize !== undefined
-      ? { packedGitWindowSize: core.packedGitWindowSize }
-      : {}),
-    ...(core.packedGitLimit !== undefined ? { packedGitLimit: core.packedGitLimit } : {}),
-  };
+  return { ...finalizeCoreIdentityFields(core), ...finalizeCoreSizeFields(core) };
 };
 
 type FinalizeOut = {
-  diff?: ReadonlyMap<string, { textconv?: string; cachetextconv?: boolean }>;
+  diff?: ReadonlyMap<string, { textconv?: string; cachetextconv?: boolean; binary?: boolean }>;
   filter?: ReadonlyMap<string, FilterEntry>;
   commit?: { gpgSign?: boolean };
   tag?: { gpgSign?: boolean };
@@ -2068,7 +2127,7 @@ const finalize = (acc: MutableParsedConfig): ParsedConfig => {
     branch?: ReadonlyMap<string, { remote?: string; merge?: string; pushRemote?: string }>;
     submodule?: ReadonlyMap<string, { url?: string; active?: boolean; update?: string }>;
     merge?: ReadonlyMap<string, { name?: string; driver?: string; recursive?: string }>;
-    diff?: ReadonlyMap<string, { textconv?: string; cachetextconv?: boolean }>;
+    diff?: ReadonlyMap<string, { textconv?: string; cachetextconv?: boolean; binary?: boolean }>;
     filter?: ReadonlyMap<
       string,
       { clean?: string; smudge?: string; process?: string; required?: boolean }
@@ -2257,4 +2316,24 @@ export const findFirstInvalidPushGpgSign = async (
     keys: ['gpgsign'],
     accepts: (value) => parsePushGpgSign(value) !== undefined,
     fixedKey: 'push.gpgsign',
+  });
+
+/**
+ * `diff.<name>.binary`-specific finder: the key accepts a third literal,
+ * `auto` (case-insensitive), beyond git's boolean grammar — git's userdiff
+ * reads it with `parse_tristate` (mirrors `parseDiffBinary`'s own check).
+ * `anySubsection` + `requireSubsection` scan every `[diff "<name>"]`
+ * instance and skip a subsectionless `[diff] binary`, an unrelated
+ * top-level key (whether to diff binary files at all), never this
+ * per-driver tristate.
+ */
+export const findFirstInvalidDiffBinary = async (
+  ctx: Context,
+): Promise<InvalidBooleanEntry | undefined> =>
+  findFirstRejectedBoolean(ctx, {
+    section: 'diff',
+    anySubsection: true,
+    requireSubsection: true,
+    keys: ['binary'],
+    accepts: (value) => value.toLowerCase() === 'auto' || parseGitBoolean(value).ok,
   });

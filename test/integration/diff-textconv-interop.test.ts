@@ -97,6 +97,7 @@ let textconvModify: CommitPair;
 let textconvAdd: CommitPair;
 let namedUnconfigured: CommitPair;
 let binaryMacro: CommitPair;
+let textconvLineCountChange: CommitPair;
 
 describe.skipIf(!GIT_AVAILABLE)('textconv diff interop', () => {
   beforeAll(async () => {
@@ -118,21 +119,29 @@ describe.skipIf(!GIT_AVAILABLE)('textconv diff interop', () => {
     // reads stdin, not a filename argument.
     const upperScript = path.join(dir, '.git', 'textconv-upper.sh');
     const lowerScript = path.join(dir, '.git', 'textconv-lower.sh');
+    // Appends an EXTRA line on top of the uppercase transform — the transformed line count
+    // never matches the raw line count, so a numstat computed on the wrong
+    // bytes is guaranteed to diverge from a numstat computed on the raw blob.
+    const expandScript = path.join(dir, '.git', 'textconv-expand.sh');
     await writeFile(upperScript, '#!/bin/sh\nLC_ALL=C tr a-z A-Z < "$1"\n');
     await writeFile(lowerScript, '#!/bin/sh\nLC_ALL=C tr A-Z a-z < "$1"\n');
+    await writeFile(expandScript, '#!/bin/sh\nLC_ALL=C tr a-z A-Z < "$1"\necho EXTRA\n');
     await chmod(upperScript, 0o755);
     await chmod(lowerScript, 0o755);
+    await chmod(expandScript, 0o755);
 
     // Configure local diff drivers (repo-local .git/config — no global config engaged).
     runGit(['-C', dir, 'config', 'diff.upper.textconv', upperScript]);
     runGit(['-C', dir, 'config', 'diff.lower.textconv', lowerScript]);
+    runGit(['-C', dir, 'config', 'diff.expand.textconv', expandScript]);
 
     // Seed commit — .gitattributes that assigns diff=upper to *.upper files,
     // diff=lower to *.lower files, diff=unconfigured to *.unk (T2 fallback),
-    // and treats *.bin as binary (binary macro — T-BIN).
+    // diff=expand to *.expand files (T-LC, line-count-changing textconv), and
+    // treats *.bin as binary (binary macro — T-BIN).
     await writeFile(
       path.join(dir, '.gitattributes'),
-      '*.upper diff=upper\n*.lower diff=lower\n*.unk diff=unconfigured\n*.bin binary\n',
+      '*.upper diff=upper\n*.lower diff=lower\n*.unk diff=unconfigured\n*.bin binary\n*.expand diff=expand\n',
     );
     await writeFile(path.join(dir, 'seed.upper'), 'hello world\n');
     git(dir, 'add', '.gitattributes', 'seed.upper');
@@ -169,6 +178,21 @@ describe.skipIf(!GIT_AVAILABLE)('textconv diff interop', () => {
     git(dir, 'add', 'data.bin');
     const c5 = doCommit('modify data.bin');
     binaryMacro = { from: c4, to: c5 };
+
+    // T-LC: modify a .expand file — the `expand` driver appends an extra line
+    // on top of the uppercase transform. The new side's raw content also flips line 2's
+    // case directly ('b' -> 'B'): once uppercased, that line is IDENTICAL on
+    // both converted sides, so a numstat computed on the converted bytes
+    // sees only the appended 'd' (1 insertion) while git's raw-byte numstat
+    // sees line 2 as a real change too (2 insertions, 1 deletion) — the two
+    // bases disagree on both count AND which lines moved, not just totals.
+    await writeFile(path.join(dir, 'seed.expand'), 'a\nb\nc\n');
+    git(dir, 'add', 'seed.expand');
+    const c6 = doCommit('add seed.expand');
+    await writeFile(path.join(dir, 'seed.expand'), 'a\nB\nc\nd\n');
+    git(dir, 'add', 'seed.expand');
+    const c7 = doCommit('modify seed.expand (raw vs converted line diff disagree)');
+    textconvLineCountChange = { from: c6, to: c7 };
 
     ctx = createNodeContext({ workDir: dir });
   }, SETUP_TIMEOUT);
@@ -366,6 +390,43 @@ describe.skipIf(!GIT_AVAILABLE)('textconv diff interop', () => {
 
         // Assert — both produce the same binary sentinel line
         expect(result).toBe(peer);
+      });
+    });
+  });
+
+  // T-LC — a textconv whose output has a DIFFERENT line count than the raw
+  // blob: numstat must still match git's raw-byte count, never the
+  // transformed one.
+  describe('Given a modify change whose textconv driver changes the line count (T-LC)', () => {
+    describe('When diff is called with withStat: true', () => {
+      it('Then numstat matches git diff --numstat (raw line count, not the textconv-expanded one)', async () => {
+        // Arrange
+        const { from, to } = textconvLineCountChange;
+        const peer = git(dir, 'diff', '--no-ext-diff', '--numstat', from, to).trim();
+
+        // Act
+        const result = await diff(ctx, { from, to, withStat: true });
+        const ours = numstatRowsFrom(result).join('\n');
+
+        // Assert
+        expect(ours).toBe(peer);
+      });
+    });
+
+    describe('When diff is called for the patch body', () => {
+      it('Then the reconstructed patch still shows the textconv-expanded (EXTRA-line) content', async () => {
+        // Arrange
+        const { from, to } = textconvLineCountChange;
+        const peer = git(dir, 'diff', '--no-ext-diff', '--textconv', '--no-color', from, to);
+
+        // Act
+        const treeDiff = await diff(ctx, { from, to });
+        const result = await reconstructPatch(ctx, treeDiff);
+
+        // Assert — patch hunk still reflects the textconv OUTPUT, only the
+        // numstat surface above is pinned to the raw bytes
+        expect(result).toBe(peer);
+        expect(peer).toContain('EXTRA');
       });
     });
   });

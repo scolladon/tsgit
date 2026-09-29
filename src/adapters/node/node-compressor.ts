@@ -10,6 +10,12 @@ import {
 import { compressFailed, decompressFailed } from '../../domain/index.js';
 import { concatBytes } from '../../domain/objects/encoding.js';
 import type { Compressor, InflateStreamResult } from '../../ports/compressor.js';
+import {
+  INFLATE_CAP_EXCEEDED_REASON,
+  MAX_INFLATE_OUTPUT_BYTES,
+  TRUNCATED_STREAM_REASON,
+} from '../../ports/compressor.js';
+import { inflateZlibHead } from '../inflate.js';
 
 const deflateAsync = promisify(deflateCallback);
 const deflateRawAsync = promisify(deflateRawCallback);
@@ -19,11 +25,14 @@ export function describeError(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/**
- * Hard cap on inflated output to defeat zip-bomb amplification. Mirrors the
- * delta `targetLength` cap (2 GiB) so a single object cannot exhaust heap.
- */
-const MAX_INFLATED_OBJECT_BYTES = 2 * 1024 * 1024 * 1024;
+/** Node's own signal that `inflateSync`'s `maxOutputLength` was exceeded —
+ *  detected structurally via `code`, never via `message`, for the same
+ *  reason `isTruncatedStreamError` below avoids node's own wording. */
+function isBufferTooLargeError(err: unknown): boolean {
+  return (
+    err instanceof RangeError && (err as NodeJS.ErrnoException).code === 'ERR_BUFFER_TOO_LARGE'
+  );
+}
 
 /**
  * This gate applies to `deflate`/`deflateRaw` ONLY — see the design note
@@ -77,18 +86,6 @@ const MAX_INFLATED_OBJECT_BYTES = 2 * 1024 * 1024 * 1024;
  */
 export const CALLBACK_DISPATCH_THRESHOLD_BYTES = 16 * 1024;
 
-/**
- * The reason `streamInflate` reports for a zlib stream that ends before its
- * data does. Owned in-repo rather than passed through from node:zlib: node's
- * own wording for this condition ("unexpected end of file") is node's to
- * change at any point, but callers that classify `DECOMPRESS_FAILED` errors
- * by reason (`fetch-pack.ts`'s window-growth retry) need a string this repo
- * controls. Matches the zero-dependency decoder's wording for the identical
- * condition (`inflateZlibMember`, `src/adapters/inflate.ts`) so both
- * adapters report one reason regardless of which one decoded the stream.
- */
-const TRUNCATED_STREAM_REASON = 'unexpected end of deflate stream';
-
 /** Whether `err` is node:zlib's own signal for "the stream ended before the
  *  data did" — detected structurally via `code`, never via `message`, which
  *  is the wording `TRUNCATED_STREAM_REASON` exists to stop depending on. */
@@ -121,7 +118,7 @@ export class NodeCompressor implements Compressor {
   private readonly maxInflatedBytes: number;
 
   constructor(options?: NodeCompressorOptions) {
-    this.maxInflatedBytes = options?.maxInflatedBytes ?? MAX_INFLATED_OBJECT_BYTES;
+    this.maxInflatedBytes = options?.maxInflatedBytes ?? MAX_INFLATE_OUTPUT_BYTES;
   }
 
   /** Clamps a caller-supplied `streamInflate` bound to this instance's own
@@ -181,13 +178,31 @@ export class NodeCompressor implements Compressor {
   // libuv threadpool hop never pays off in the measured range — see
   // CALLBACK_DISPATCH_THRESHOLD_BYTES. Unlike deflate/deflateRaw, inflate
   // does not gate on payload size.
-  inflate = async (data: Uint8Array): Promise<Uint8Array> => {
+  inflate = async (data: Uint8Array, maxOutputBytes?: number): Promise<Uint8Array> => {
     try {
-      return toResultView(inflateSync(data, { maxOutputLength: this.maxInflatedBytes }));
+      return toResultView(
+        inflateSync(data, { maxOutputLength: this.effectiveCap(maxOutputBytes) }),
+      );
     } catch (err) {
-      throw decompressFailed(describeError(err));
+      throw decompressFailed(
+        isBufferTooLargeError(err) ? INFLATE_CAP_EXCEEDED_REASON : describeError(err),
+      );
     }
   };
+
+  // Delegates to the zero-dependency decoder's own bounded head-probe (also
+  // used by the memory/browser adapters): it decodes block-by-block and
+  // stops the instant `maxOutputBytes` of real output has been produced, so
+  // a hostile input can never force more decode work than the bound allows.
+  // A growing-prefix probe through `inflateSync`'s `Z_SYNC_FLUSH` (this
+  // method's previous implementation) has no way to cap a SINGLE call's own
+  // output while still tolerating an incomplete stream, so a crafted prefix
+  // of "under-decoded" empty stored blocks could force one such call to
+  // inflate the input's full ~1032× DEFLATE expansion before the loop ever
+  // got to check the result against `maxOutputBytes`. `inflateZlibHead`
+  // already maps every failure to `decompressFailed`, so no re-wrap here.
+  inflateHead = async (data: Uint8Array, maxOutputBytes: number): Promise<Uint8Array> =>
+    inflateZlibHead(data, 0, maxOutputBytes);
 
   streamInflate = async (
     bytes: Uint8Array,
@@ -208,7 +223,7 @@ export class NodeCompressor implements Compressor {
         total += chunk.length;
         if (total > cap) {
           inflate.destroy();
-          reject(decompressFailed('inflated output exceeds safety cap'));
+          reject(decompressFailed(INFLATE_CAP_EXCEEDED_REASON));
           return;
         }
         chunks.push(new Uint8Array(chunk));
@@ -282,7 +297,7 @@ export class NodeCompressor implements Compressor {
         inflate.on('data', (chunk: Buffer) => {
           total += chunk.length;
           if (total > cap) {
-            controller?.error(decompressFailed('inflated output exceeds safety cap'));
+            controller?.error(decompressFailed(INFLATE_CAP_EXCEEDED_REASON));
             inflate.destroy();
             // destroy() means no 'end' will ever fire, so an in-flight flush()
             // would wait forever. RESOLVE, never reject: the controller already

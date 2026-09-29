@@ -8,7 +8,12 @@
  * mapping to `decompressFailed` — no raw `RangeError`/`TypeError` escapes.
  */
 
-import { decompressFailed } from '../domain/index.js';
+import { decompressFailed, TsgitError } from '../domain/error.js';
+import {
+  INFLATE_CAP_EXCEEDED_REASON,
+  MAX_INFLATE_OUTPUT_BYTES,
+  TRUNCATED_STREAM_REASON,
+} from '../ports/compressor.js';
 import { adler32 } from './adler32.js';
 
 const BITS_PER_BYTE = 8;
@@ -48,11 +53,12 @@ const BUFFER_GROWTH_FACTOR = 2;
 const INITIAL_CAPACITY_CEILING = 1 << 20;
 
 /**
- * Cap on inflated output to defeat decompression-bomb amplification. Mirrors
- * NodeCompressor's 2 GiB output cap so all three adapters refuse the same
- * malicious member with the same error, instead of exhausting memory.
+ * Cap on inflated output to defeat decompression-bomb amplification. Kept as
+ * its own export (this module's established name) but backed by the port's
+ * single owned ceiling, so every adapter refuses the same malicious member
+ * at the same size instead of restating the literal.
  */
-export const MAX_INFLATED_OUTPUT_BYTES = 2 * 1024 * 1024 * 1024;
+export const MAX_INFLATED_OUTPUT_BYTES = MAX_INFLATE_OUTPUT_BYTES;
 
 /** How much larger than its output an inflate buffer may be and still be handed out as a view. */
 const MAX_RETAINED_SLACK_FACTOR = 2;
@@ -197,7 +203,7 @@ class BitReader {
   readBits(count: number): number {
     const peeked = this.peekBits(count);
     if (peeked.availableBits < count) {
-      throw decompressFailed('unexpected end of deflate stream');
+      throw decompressFailed(TRUNCATED_STREAM_REASON);
     }
     this.dropBits(count);
     return peeked.value;
@@ -240,10 +246,24 @@ class BitReader {
 
   readBytes(count: number): Uint8Array {
     if (this.bytePos + count > this.bytes.length) {
-      throw decompressFailed('unexpected end of deflate stream');
+      throw decompressFailed(TRUNCATED_STREAM_REASON);
     }
     const slice = this.bytes.subarray(this.bytePos, this.bytePos + count);
     this.bytePos += count;
+    return slice;
+  }
+
+  /** Like `readBytes`, but never throws on a shortfall: returns fewer than
+   * `count` bytes once the input runs out, advancing past only what it
+   * actually returned. A stored block's body is a 1:1 copy into the output,
+   * so a truncating decode may already have everything it needs from a
+   * short read; the caller decides whether the shortfall itself is
+   * tolerable. */
+  readAvailableBytes(count: number): Uint8Array {
+    // Stryker disable next-line ArithmeticOperator: equivalent — subarray(bytePos, bytePos+available) auto-clamps to bytes.length regardless of available's value, so the returned slice/length are identical for +/- here; the caller always re-checks chunk.length against the declared count immediately after.
+    const available = Math.min(count, this.bytes.length - this.bytePos);
+    const slice = this.bytes.subarray(this.bytePos, this.bytePos + available);
+    this.bytePos += available;
     return slice;
   }
 
@@ -301,17 +321,56 @@ function initialBufferCapacity(maxBytes: number): number {
 }
 
 /**
+ * How a `GrowableBuffer` reacts to a write that would push it past
+ * `maxBytes`: `'refuse'` (the decoder's default) throws `DECOMPRESS_FAILED`,
+ * the safety-cap contract every whole-member decode relies on. `'truncate'`
+ * instead writes only the bytes that still fit, then throws the
+ * module-private `HeadComplete` sentinel — `inflateZlibHead`'s signal to
+ * stop decoding a stream once it has captured exactly `maxBytes` output
+ * bytes, without treating a legitimately short stream as an error.
+ */
+export interface GrowableBufferOverflowPolicy {
+  readonly onOverflow: 'refuse' | 'truncate';
+}
+
+const REFUSE_ON_OVERFLOW: GrowableBufferOverflowPolicy = { onOverflow: 'refuse' };
+
+/**
+ * Thrown by a `'truncate'`-policy `GrowableBuffer` once it holds exactly its
+ * `maxBytes` output bytes. Never escapes `inflateZlibHead`, which is the
+ * only thing that constructs a `'truncate'` buffer and catches this by
+ * identity — nothing else in the module ever throws this class, so it can
+ * never be mistaken for a genuine decode failure.
+ */
+class HeadComplete {}
+const HEAD_COMPLETE = new HeadComplete();
+
+/**
  * Growable byte accumulator: doubles capacity on overflow, trims on
  * read-out. Exported so tests can pin the pre-sizing formula directly,
  * without decoding a full member.
+ *
+ * `append`/`appendByte`/`copyBackReference` each open on one monomorphic
+ * `this.truncates` check before falling through to the unchanged `'refuse'`
+ * body: every whole-member decode runs that body on every literal and
+ * back-reference symbol, so it must stay exactly today's cost, and a single
+ * boolean read on a shared prototype method (rather than a per-instance
+ * closure a JIT cannot speculate across separately-constructed buffers)
+ * measures as free. Only a `'truncate'` buffer (built solely by
+ * `inflateZlibHead`) ever takes the delegated bounds-clamping branch.
  * @internal
  */
 export class GrowableBuffer {
   private buffer: Uint8Array;
   private length = 0;
+  private readonly truncates: boolean;
 
-  constructor(private readonly maxBytes: number) {
+  constructor(
+    private readonly maxBytes: number,
+    overflow: GrowableBufferOverflowPolicy = REFUSE_ON_OVERFLOW,
+  ) {
     this.buffer = new Uint8Array(initialBufferCapacity(maxBytes));
+    this.truncates = overflow.onOverflow === 'truncate';
   }
 
   /** @internal Exposed only so tests can assert the pre-sized initial capacity. */
@@ -320,12 +379,37 @@ export class GrowableBuffer {
   }
 
   append(chunk: Uint8Array): void {
+    if (this.truncates) {
+      this.appendTruncating(chunk);
+      return;
+    }
     this.ensureCapacity(this.length + chunk.length);
     this.buffer.set(chunk, this.length);
     this.length += chunk.length;
   }
 
+  private appendTruncating(chunk: Uint8Array): void {
+    const writable = Math.min(chunk.length, this.maxBytes - this.length);
+    this.ensureCapacity(this.length + writable);
+    this.buffer.set(writable === chunk.length ? chunk : chunk.subarray(0, writable), this.length);
+    this.length += writable;
+    if (writable < chunk.length) throw HEAD_COMPLETE;
+  }
+
   appendByte(byte: number): void {
+    if (this.truncates) {
+      this.appendByteTruncating(byte);
+      return;
+    }
+    this.ensureCapacity(this.length + 1);
+    this.buffer[this.length] = byte;
+    this.length += 1;
+  }
+
+  private appendByteTruncating(byte: number): void {
+    if (this.length >= this.maxBytes) {
+      throw HEAD_COMPLETE;
+    }
     this.ensureCapacity(this.length + 1);
     this.buffer[this.length] = byte;
     this.length += 1;
@@ -338,6 +422,10 @@ export class GrowableBuffer {
   copyBackReference(distance: number, length: number): void {
     if (distance > this.length) {
       throw decompressFailed('distance exceeds output');
+    }
+    if (this.truncates) {
+      this.copyBackReferenceTruncating(distance, length);
+      return;
     }
     this.ensureCapacity(this.length + length);
     const readIndex = this.length - distance;
@@ -353,6 +441,19 @@ export class GrowableBuffer {
       return;
     }
     this.copyOverlapping(readIndex, length);
+  }
+
+  private copyBackReferenceTruncating(distance: number, length: number): void {
+    const writable = Math.min(length, this.maxBytes - this.length);
+    this.ensureCapacity(this.length + writable);
+    const readIndex = this.length - distance;
+    if (distance >= writable) {
+      this.buffer.copyWithin(this.length, readIndex, readIndex + writable);
+      this.length += writable;
+    } else {
+      this.copyOverlapping(readIndex, writable);
+    }
+    if (writable < length) throw HEAD_COMPLETE;
   }
 
   private copyOverlapping(readIndex: number, length: number): void {
@@ -378,7 +479,7 @@ export class GrowableBuffer {
 
   private ensureCapacity(required: number): void {
     if (required > this.maxBytes) {
-      throw decompressFailed('inflated output exceeds safety cap');
+      throw decompressFailed(INFLATE_CAP_EXCEEDED_REASON);
     }
     // equivalent-mutant: skipping this guard forces a redundant reallocation
     // (nextCapacity/grown.set below faithfully copies the used prefix into a
@@ -436,6 +537,17 @@ function parseZlibHeader(reader: BitReader): void {
   }
 }
 
+/**
+ * Copies a STORED block's declared `len` bytes from input to `output`. Reads
+ * whatever the input actually has (`readAvailableBytes`), never demanding
+ * the full declared length up front: a truncating `output` may throw
+ * `HeadComplete` from inside `append` once it holds enough — before the
+ * shortfall below would even matter — so a bound satisfiable from the bytes
+ * present succeeds without the rest of the block ever needing to exist. A
+ * genuine shortfall (fewer bytes available than declared, and the output
+ * never reached its cap) still faults, exactly as the all-or-nothing read
+ * this replaces did.
+ */
 function decodeStoredBlock(reader: BitReader, output: GrowableBuffer): void {
   reader.alignToByte();
   const len = readUint16LE(reader.readBytes(LENGTH_FIELD_BYTES));
@@ -443,7 +555,12 @@ function decodeStoredBlock(reader: BitReader, output: GrowableBuffer): void {
   if (nlen !== (~len & NLEN_MASK)) {
     throw decompressFailed('stored block length mismatch');
   }
-  output.append(reader.readBytes(len));
+  const chunk = reader.readAvailableBytes(len);
+  output.append(chunk);
+  // Stryker disable next-line BlockStatement: equivalent — readAvailableBytes always advances bytePos to bytes.length on any shortfall, so emptying this throw just defers the identical TRUNCATED_STREAM_REASON error to the very next readBits/readBytes call.
+  if (chunk.length < len) {
+    throw decompressFailed(TRUNCATED_STREAM_REASON);
+  }
 }
 
 /** Canonical Huffman decode structure: per-length code counts plus symbols
@@ -900,4 +1017,65 @@ export function inflateZlibMember(
   verifyTrailer(reader, result);
 
   return { output: result, bytesConsumed: reader.position - offset };
+}
+
+/**
+ * Whether `err` is this module's own signal that the INPUT ran out before
+ * its data did (`TRUNCATED_STREAM_REASON`). Checked via `instanceof` rather
+ * than the structural `data.code`/`data.reason` reads this repo otherwise
+ * prefers (`errorDataCode`): that convention exists for errors that may
+ * cross a mixed-module-graph boundary (an adapter's `TsgitError` built under
+ * a different module identity than its caller's). Every error this function
+ * inspects is thrown by `decompressFailed`, imported once, right here, in
+ * this same file — there is no second identity for `instanceof` to miss.
+ * `inflateZlibHead` uses this to tell a merely truncated stream (tolerable —
+ * return the prefix already decoded) apart from genuinely invalid data (an
+ * over-subscribed Huffman code, a bad checksum, …), which must still throw.
+ */
+function isTruncatedStreamError(err: unknown): boolean {
+  return (
+    err instanceof TsgitError &&
+    err.data.code === 'DECOMPRESS_FAILED' &&
+    err.data.reason === TRUNCATED_STREAM_REASON
+  );
+}
+
+/**
+ * Inflate at most the leading `maxOutputBytes` of a zlib member's output,
+ * without requiring the member to be complete. Neither reaching the bound
+ * nor the input running out first is an error: decoding simply stops — via
+ * the `HeadComplete` sentinel for the former, via `TRUNCATED_STREAM_REASON`
+ * (raised anywhere from the first block header onward, including the
+ * trailer's own `readBytes`) for the latter — and whatever prefix was
+ * already decoded is returned, with no trailer check: the rest of the
+ * member was never decoded (or its trailer never fully read), so there is
+ * nothing to verify. Only a member that decodes to completion within the
+ * bound has its adler32 trailer verified, as `inflateZlibMember` does, same
+ * as any other whole-member decode — a checksum mismatch there is genuine
+ * corruption, never swallowed as truncation.
+ */
+export function inflateZlibHead(
+  bytes: Uint8Array,
+  offset: number,
+  maxOutputBytes: number,
+): Uint8Array {
+  const reader = new BitReader(bytes, offset);
+  parseZlibHeader(reader);
+
+  const output = new GrowableBuffer(maxOutputBytes, { onOverflow: 'truncate' });
+  try {
+    decodeBlocks(reader, output);
+  } catch (err) {
+    if (err === HEAD_COMPLETE || isTruncatedStreamError(err)) return output.toUint8Array();
+    throw err;
+  }
+
+  const result = output.toUint8Array();
+  try {
+    verifyTrailer(reader, result);
+  } catch (err) {
+    if (isTruncatedStreamError(err)) return result;
+    throw err;
+  }
+  return result;
 }

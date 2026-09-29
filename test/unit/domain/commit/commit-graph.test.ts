@@ -84,8 +84,8 @@ function chainBaseModel(): CommitGraphLayerModel {
 
 // Global positions: the base layer owns 0..2 (a0,a1,a2); the tip owns 3..4
 // (b0,b1) — parent positions here follow that concatenated numbering, which
-// is what a real chain layer records (cross-layer resolution is Part 11's
-// job, not this parser's).
+// is what a real chain layer records (cross-layer position arithmetic is the
+// chain reader's job, not this parser's).
 function chainTipModel(baseGraphHash: ObjectId): CommitGraphLayerModel {
   return {
     hashVersion: 1,

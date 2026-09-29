@@ -208,10 +208,12 @@ describe('mergeContent', () => {
     });
   });
 
-  describe('Given non-overlapping changes at the start of base with unchanged suffix', () => {
+  describe('Given changes on the first two lines that touch at line 1 (git: xdl_do_merge)', () => {
     describe('When mergeContent called', () => {
-      it('Then clean merge retains the unchanged suffix', () => {
-        // Arrange — both changes in the first two lines; lines 2-4 of base untouched.
+      it('Then conflict, matching `git merge-file` (ours [0,1) touches theirs [1,2))', () => {
+        // Arrange — ours' change ends exactly where theirs' change starts: git's
+        // `xscr1->i1 + xscr1->chg1 < xscr2->i1` separateness test is false, so the
+        // two hunks fall through to the conflict check instead of merging clean.
         const base = enc('a\nb\nc\nd\ne\n');
         const ours = enc('X\nb\nc\nd\ne\n');
         const theirs = enc('a\nY\nc\nd\ne\n');
@@ -219,8 +221,8 @@ describe('mergeContent', () => {
         // Act
         const result = mergeContent(base, ours, theirs);
 
-        // Assert — applyPlan must copy the base suffix after the last change
-        assertClean(result, 'X\nY\nc\nd\ne\n');
+        // Assert
+        assertConflict(result, 'content');
       });
     });
   });
@@ -330,11 +332,13 @@ describe('mergeContent', () => {
     });
   });
 
-  describe('Given one side forces degraded diff (iteration cap)', () => {
+  describe('Given base and ours are completely disjoint, large sides', () => {
     describe('When mergeContent called', () => {
-      it('Then whole-file fallback conflict', () => {
-        // Arrange — base and ours completely disjoint, large enough to trigger iteration cap.
-        // theirs differs slightly from base to bypass the fast-path equality shortcuts.
+      it('Then the whole-file rewrite conflicts with theirs’ small edit to the same region', () => {
+        // Arrange — base and ours share no line at all, so ours' diff against base
+        // is itself a full-region rewrite [0, N). theirs differs slightly from base
+        // (bypassing the fast-path equality shortcut) inside that same region, so the
+        // two sides' changes overlap and conflict.
         const N = 1500;
         const base = enc(Array.from({ length: N }, (_, i) => `b${i}\n`).join(''));
         const ours = enc(Array.from({ length: N }, (_, i) => `o${i}\n`).join(''));
@@ -345,7 +349,7 @@ describe('mergeContent', () => {
         // Act
         const result = mergeContent(base, ours, theirs);
 
-        // Assert — degraded path emits a whole-file content conflict
+        // Assert — ours' whole-region rewrite overlaps theirs' edit
         assertConflict(result, 'content');
       }, 60_000);
     });
@@ -371,11 +375,11 @@ describe('mergeContent', () => {
   describe('Given zero-length insertion at position 5 and deletion [5,7)', () => {
     describe('When mergeContent called', () => {
       it('Then conflict detected (not silently merged)', () => {
-        // Arrange — ours inserts a line after base line 4 (zero-length at base pos 5);
-        // theirs deletes base lines 5-6 (range [5,7)).
-        // With the old rangesOverlap, a zero-length insertion at the boundary of a deletion
-        // would be missed (insertion 5..5 and range 5..7: the old code only handled both-zero-length
-        // and both-non-zero-length cases).
+        // Arrange — ours inserts a line after base line 4 (zero-length range [5,5));
+        // theirs deletes base lines 5-6 (range [5,7)). Git's closed touching rule treats
+        // two ranges as separate only when one side's base end is strictly before the
+        // other's base start: [5,5) ends at 5, which is not before [5,7)'s start (5), so
+        // they conflict.
         const base = enc('a\nb\nc\nd\ne\nf\ng\n');
         const ours = enc('a\nb\nc\nd\ne\nINSERTED\nf\ng\n');
         const theirs = enc('a\nb\nc\nd\ne\ng\n');
@@ -389,11 +393,12 @@ describe('mergeContent', () => {
     });
   });
 
-  describe('Given adjacent non-overlapping ranges [0,1) vs [1,2)', () => {
+  describe('Given adjacent ranges [0,1) vs [1,2) that touch at line 1', () => {
     describe('When mergeContent called', () => {
-      it('Then clean merge (no conflict)', () => {
-        // Arrange — ours changes line 0, theirs changes line 1. Ranges [0,1) and [1,2) are adjacent
-        // but do NOT overlap. a.baseStart (0) < b.baseEnd (2) is true, but b.baseStart (1) < a.baseEnd (1) is false.
+      it('Then conflict, matching `git merge-file` (git conflicts on touching hunks)', () => {
+        // Arrange — ours changes line 0, theirs changes line 1. Ranges [0,1) and [1,2) touch at
+        // line 1 (a.baseEnd === b.baseStart): git's xdl_do_merge only calls two hunks separate
+        // when one ends strictly before the other starts, so this falls through to conflict.
         const base = enc('a\nb\nc\n');
         const ours = enc('X\nb\nc\n');
         const theirs = enc('a\nY\nc\n');
@@ -402,7 +407,7 @@ describe('mergeContent', () => {
         const result = mergeContent(base, ours, theirs);
 
         // Assert
-        assertClean(result, 'X\nY\nc\n');
+        assertConflict(result, 'content');
       });
     });
   });
@@ -426,9 +431,11 @@ describe('mergeContent', () => {
 
   describe('Given theirs inserts inside a range ours deletes', () => {
     describe('When mergeContent called', () => {
-      it('Then conflict (zero-length b inside non-zero a)', () => {
-        // Arrange — ours deletes lines 1-2 (replaces with nothing); theirs inserts at line 1 (zero-length).
-        // rangesOverlap branch: b is zero-length, a is non-zero → b.baseStart >= a.baseStart && b.baseStart < a.baseEnd.
+      it('Then conflict, matching `git merge-file` (an insertion touching a deletion is not separate)', () => {
+        // Arrange — ours deletes lines 1-2 (range [1,3)); theirs inserts at line 1
+        // (zero-length range [1,1)). Neither side's base end is strictly before the
+        // other's base start (3 is not before 1, and 1 is not before 1), so git's
+        // closed touching rule conflicts.
         const base = enc('a\nb\nc\nd\n');
         const ours = enc('a\nd\n');
         const theirs = enc('a\nX\nb\nc\nd\n');
@@ -442,11 +449,11 @@ describe('mergeContent', () => {
     });
   });
 
-  describe('Given only theirs diff is degraded (not ours)', () => {
+  describe('Given base and theirs are completely disjoint (not ours)', () => {
     describe('When mergeContent called', () => {
-      it('Then whole-file fallback conflict', () => {
-        // Arrange — base vs theirs is degenerate (completely disjoint, large), base vs ours is trivial (same).
-        // This kills the || → && mutation: if only theirsDiff.degraded is true, the || path must still trigger.
+      it('Then theirs’ whole-file rewrite conflicts with ours’ small edit to the same region', () => {
+        // Arrange — base vs theirs share no line at all (a full-region rewrite);
+        // base vs ours is a tiny one-line edit inside that same region.
         const N = 1500;
         const base = enc(Array.from({ length: N }, (_, i) => `b${i}\n`).join(''));
         const theirs = enc(Array.from({ length: N }, (_, i) => `t${i}\n`).join(''));
@@ -485,10 +492,11 @@ describe('mergeContent', () => {
 
   describe('Given ours inserts strictly inside a theirs replacement range', () => {
     describe('When mergeContent called', () => {
-      it('Then conflict (zero-length a vs non-zero b)', () => {
-        // Arrange — ours inserts at base pos 2; theirs replaces base[1,3). rangesOverlap takes the
-        // ternary `:` branch. If the ternary condition were forced true it would compare
-        // a.baseStart === b.baseStart (2 === 1 → false) and miss the real overlap.
+      it('Then conflict, matching `git merge-file` (an insertion strictly inside a range is not separate)', () => {
+        // Arrange — ours inserts at base pos 2 (zero-length range [2,2)); theirs replaces
+        // base[1,3). Neither side's base end is strictly before the other's base start
+        // (2 is not before 1, and 3 is not before 2), so git's closed touching rule
+        // conflicts.
         const base = enc('a\nb\nc\nd\ne\nf\ng\nh\n');
         const ours = enc('a\nb\nINS\nc\nd\ne\nf\ng\nh\n');
         const theirs = enc('a\nP\nQ\nd\ne\nf\ng\nh\n');
@@ -504,10 +512,10 @@ describe('mergeContent', () => {
 
   describe('Given two zero-length insertions at different base positions', () => {
     describe('When mergeContent called', () => {
-      it('Then clean merge (both-zero-length branch compares positions)', () => {
-        // Arrange — ours inserts at base pos 1, theirs inserts at base pos 5. Both ranges are
-        // zero-length but at distinct positions: a.baseStart === b.baseStart is false → no overlap.
-        // Forcing that comparison to true would wrongly flag a conflict.
+      it('Then clean merge (two disjoint zero-length insertions are separate)', () => {
+        // Arrange — ours inserts at base pos 1 (range [1,1)), theirs inserts at base pos 5
+        // (range [5,5)). Ours' base end (1) is strictly before theirs' base start (5), so
+        // git's closed touching rule treats them as separate and merges clean.
         const base = enc('a\nb\nc\nd\ne\nf\ng\nh\n');
         const ours = enc('a\nIO\nb\nc\nd\ne\nf\ng\nh\n');
         const theirs = enc('a\nb\nc\nd\ne\nIT\nf\ng\nh\n');
@@ -523,10 +531,10 @@ describe('mergeContent', () => {
 
   describe('Given a zero-length insertion before a disjoint non-zero theirs range', () => {
     describe('When mergeContent called', () => {
-      it('Then clean merge (a.baseStart < b.baseStart short-circuits)', () => {
-        // Arrange — ours inserts at base pos 1; theirs replaces base[3,5). The `:` branch evaluates
-        // a.baseStart >= b.baseStart (1 >= 3 → false). Forcing the branch true, or flipping && to ||,
-        // would wrongly report overlap.
+      it('Then clean merge (an insertion strictly before a range is separate)', () => {
+        // Arrange — ours inserts at base pos 1 (range [1,1)); theirs replaces base[3,5).
+        // Ours' base end (1) is strictly before theirs' base start (3), so git's closed
+        // touching rule treats them as separate and merges clean.
         const base = enc('a\nb\nc\nd\ne\nf\ng\nh\n');
         const ours = enc('a\nIO\nb\nc\nd\ne\nf\ng\nh\n');
         const theirs = enc('a\nb\nc\nP\nQ\nf\ng\nh\n');
@@ -542,10 +550,10 @@ describe('mergeContent', () => {
 
   describe('Given a zero-length insertion exactly at the end of a non-zero theirs range', () => {
     describe('When mergeContent called', () => {
-      it('Then clean merge (a.baseStart < b.baseEnd is strict)', () => {
-        // Arrange — ours inserts at base pos 5; theirs replaces base[3,5). The `:` branch evaluates
-        // a.baseStart < b.baseEnd (5 < 5 → false). Relaxing `<` to `<=` (or forcing it true) would
-        // wrongly flag an overlap at the touching boundary.
+      it('Then conflict, matching `git merge-file` (an insertion touching a range is not separate)', () => {
+        // Arrange — ours inserts at base pos 5; theirs replaces base[3,5). The insertion's
+        // baseStart (5) equals theirs' baseEnd (5): git's `i1 + chg1 < other.i1` separateness
+        // test is false for a touching pair, so the two hunks conflict.
         const base = enc('a\nb\nc\nd\ne\nf\ng\nh\n');
         const ours = enc('a\nb\nc\nd\ne\nIO\nf\ng\nh\n');
         const theirs = enc('a\nb\nc\nP\nQ\nf\ng\nh\n');
@@ -554,17 +562,17 @@ describe('mergeContent', () => {
         const result = mergeContent(base, ours, theirs);
 
         // Assert
-        assertClean(result, 'a\nb\nc\nP\nQ\nIO\nf\ng\nh\n');
+        assertConflict(result, 'content');
       });
     });
   });
 
-  describe('Given two overlapping non-zero ranges where only the general branch detects it', () => {
+  describe('Given two overlapping non-zero ranges', () => {
     describe('When mergeContent called', () => {
-      it('Then conflict (b-non-zero path falls through to general overlap)', () => {
-        // Arrange — ours replaces base[3,5), theirs replaces base[1,4). Both ranges are non-zero,
-        // so rangesOverlap must skip the b-zero-length branch and use the general test. Forcing the
-        // `if (b.baseStart === b.baseEnd)` guard true would use the wrong (b-zero) formula → clean.
+      it('Then conflict, matching `git merge-file` (overlapping non-zero ranges are not separate)', () => {
+        // Arrange — ours replaces base[3,5), theirs replaces base[1,4). Neither side's base
+        // end is strictly before the other's base start (5 is not before 1, and 4 is not
+        // before 3), so git's closed touching rule conflicts.
         const base = enc('a\nb\nc\nd\ne\nf\ng\nh\n');
         const ours = enc('a\nb\nc\nOO\nf\ng\nh\n');
         const theirs = enc('a\nT1\nT2\ne\nf\ng\nh\n');
@@ -580,10 +588,10 @@ describe('mergeContent', () => {
 
   describe('Given a zero-length theirs insertion before a non-zero ours range', () => {
     describe('When mergeContent called', () => {
-      it('Then clean merge (b.baseStart >= a.baseStart short-circuits)', () => {
-        // Arrange — ours replaces base[3,5); theirs inserts at base pos 1. The b-zero-length branch
-        // evaluates b.baseStart >= a.baseStart (1 >= 3 → false). Forcing it true, or flipping && to
-        // ||, would wrongly report overlap.
+      it('Then clean merge (an insertion strictly before a range is separate)', () => {
+        // Arrange — ours replaces base[3,5); theirs inserts at base pos 1 (range [1,1)).
+        // Theirs' base end (1) is strictly before ours' base start (3), so git's closed
+        // touching rule treats them as separate and merges clean.
         const base = enc('a\nb\nc\nd\ne\nf\ng\nh\n');
         const ours = enc('a\nb\nc\nOO\nf\ng\nh\n');
         const theirs = enc('a\nIT\nb\nc\nd\ne\nf\ng\nh\n');
@@ -599,10 +607,10 @@ describe('mergeContent', () => {
 
   describe('Given a zero-length theirs insertion exactly at the end of a non-zero ours range', () => {
     describe('When mergeContent called', () => {
-      it('Then clean merge (b.baseStart < a.baseEnd is strict)', () => {
-        // Arrange — ours replaces base[3,5); theirs inserts at base pos 5. The b-zero-length branch
-        // evaluates b.baseStart < a.baseEnd (5 < 5 → false). Relaxing `<` to `<=` (or forcing it
-        // true) would wrongly flag a boundary overlap.
+      it('Then conflict, matching `git merge-file` (an insertion touching a range is not separate)', () => {
+        // Arrange — ours replaces base[3,5); theirs inserts at base pos 5. The insertion's
+        // baseStart (5) equals ours' baseEnd (5): git's `i1 + chg1 < other.i1` separateness
+        // test is false for a touching pair, so the two hunks conflict.
         const base = enc('a\nb\nc\nd\ne\nf\ng\nh\n');
         const ours = enc('a\nb\nc\nOO\nf\ng\nh\n');
         const theirs = enc('a\nb\nc\nd\ne\nIT\nf\ng\nh\n');
@@ -611,17 +619,17 @@ describe('mergeContent', () => {
         const result = mergeContent(base, ours, theirs);
 
         // Assert
-        assertClean(result, 'a\nb\nc\nOO\nIT\nf\ng\nh\n');
+        assertConflict(result, 'content');
       });
     });
   });
 
   describe('Given two touching non-zero ranges [3,5) and [1,3)', () => {
     describe('When mergeContent called', () => {
-      it('Then clean merge (general overlap test uses strict a.baseStart < b.baseEnd)', () => {
-        // Arrange — ours replaces base[3,5); theirs replaces base[1,3). They touch at boundary 3 but
-        // do not overlap: a.baseStart < b.baseEnd is 3 < 3 → false. Relaxing `<` to `<=` (or forcing
-        // it true) would wrongly flag a conflict.
+      it('Then conflict, matching `git merge-file` (touching ranges are not separate)', () => {
+        // Arrange — ours replaces base[3,5); theirs replaces base[1,3). They touch at boundary 3:
+        // git's `i1 + chg1 < other.i1` separateness test is false (3 < 3), so the two hunks
+        // conflict instead of merging clean.
         const base = enc('a\nb\nc\nd\ne\nf\ng\nh\n');
         const ours = enc('a\nb\nc\nOO\nf\ng\nh\n');
         const theirs = enc('a\nT1\nd\ne\nf\ng\nh\n');
@@ -630,7 +638,7 @@ describe('mergeContent', () => {
         const result = mergeContent(base, ours, theirs);
 
         // Assert
-        assertClean(result, 'a\nT1\nOO\nf\ng\nh\n');
+        assertConflict(result, 'content');
       });
     });
   });
@@ -711,13 +719,14 @@ describe('mergeContent', () => {
     });
   });
 
-  describe('Given ours diff degrades while theirs only appends one line at the base end', () => {
+  describe('Given ours is a completely disjoint rewrite while theirs only appends one line at the base end', () => {
     describe('When mergeContent called', () => {
-      it('Then whole-file conflict (degraded guard fires)', () => {
-        // Arrange — base/ours exceed the diff line cap (M+N > 50000) so ours' diff degrades, while
-        // theirs is base plus a single appended line (a tiny, non-degraded diff). The degraded guard
-        // must short-circuit to a whole-file conflict: without it, the degraded whole-file change
-        // [0,baseLen) would NOT collide with theirs' zero-length end-append and wrongly merge clean.
+      it('Then whole-file conflict — the rewrite touches theirs’ end-append', () => {
+        // Arrange — base and ours share no line at all, so ours' diff against base
+        // is a full-region rewrite [0, baseLen) that reaches the very end of base.
+        // theirs is base plus a single appended line — a zero-length change at
+        // baseLen. git's touching rule (xdl_do_merge) conflicts here: ours' change
+        // ends exactly where theirs' begins, which is not "strictly before".
         const baseLen = 20_000;
         const baseText = Array.from({ length: baseLen }, (_, i) => `b${i}\n`).join('');
         const base = enc(baseText);
@@ -733,12 +742,11 @@ describe('mergeContent', () => {
     });
   });
 
-  describe('Given ours equal to base and a cap-exceeding theirs', () => {
+  describe('Given ours equal to base and a large theirs', () => {
     describe('When mergeContent called', () => {
-      it('Then the ours-unchanged fast path returns clean theirs (not the degraded conflict)', () => {
-        // Arrange — ours === base (empty); theirs has 50_001 lines so diffLines(base, theirs)
-        // degrades (M+N > 50_000). The `bytesEqual(ours, base)` fast path must short-circuit
-        // to clean; skipping it falls through to the degraded slow path → whole-file conflict.
+      it('Then the ours-unchanged fast path returns clean theirs', () => {
+        // Arrange — ours === base (empty); theirs has 50_001 lines, an add-only
+        // change the `bytesEqual(ours, base)` fast path short-circuits to clean.
         const base = new Uint8Array(0);
         const ours = new Uint8Array(0);
         const theirsText = Array.from({ length: 50_001 }, (_, i) => `line${i}\n`).join('');
@@ -747,7 +755,7 @@ describe('mergeContent', () => {
         // Act
         const result = mergeContent(base, ours, theirs);
 
-        // Assert — clean, byte-identical to theirs (slow path would yield status 'conflict')
+        // Assert — clean, byte-identical to theirs
         expect(result.status).toBe('clean');
         if (result.status === 'clean') {
           expect(decoder.decode(result.bytes)).toBe(theirsText);
@@ -756,12 +764,11 @@ describe('mergeContent', () => {
     });
   });
 
-  describe('Given theirs equal to base and a cap-exceeding ours', () => {
+  describe('Given theirs equal to base and a large ours', () => {
     describe('When mergeContent called', () => {
-      it('Then the theirs-unchanged fast path returns clean ours (not the degraded conflict)', () => {
-        // Arrange — theirs === base (empty); ours has 50_001 lines so diffLines(base, ours)
-        // degrades. The `bytesEqual(theirs, base)` fast path must short-circuit to clean;
-        // skipping it falls through to the degraded slow path → whole-file conflict.
+      it('Then the theirs-unchanged fast path returns clean ours', () => {
+        // Arrange — theirs === base (empty); ours has 50_001 lines, an add-only
+        // change the `bytesEqual(theirs, base)` fast path short-circuits to clean.
         const base = new Uint8Array(0);
         const theirs = new Uint8Array(0);
         const oursText = Array.from({ length: 50_001 }, (_, i) => `line${i}\n`).join('');
@@ -770,7 +777,7 @@ describe('mergeContent', () => {
         // Act
         const result = mergeContent(base, ours, theirs);
 
-        // Assert — clean, byte-identical to ours (slow path would yield status 'conflict')
+        // Assert — clean, byte-identical to ours
         expect(result.status).toBe('clean');
         if (result.status === 'clean') {
           expect(decoder.decode(result.bytes)).toBe(oursText);
@@ -779,12 +786,11 @@ describe('mergeContent', () => {
     });
   });
 
-  describe('Given ours equal to theirs (both cap-exceeding, base differs)', () => {
+  describe('Given ours equal to theirs, both large, base differs', () => {
     describe('When mergeContent called', () => {
-      it('Then the ours-equals-theirs fast path returns clean ours (not the degraded conflict)', () => {
-        // Arrange — ours === theirs, both 50_001 lines; base empty so both side diffs degrade.
-        // The `bytesEqual(ours, theirs)` fast path must short-circuit to clean; skipping it
-        // falls through to the degraded slow path → whole-file conflict.
+      it('Then the ours-equals-theirs fast path returns clean ours', () => {
+        // Arrange — ours === theirs, both 50_001 lines; base empty. The
+        // `bytesEqual(ours, theirs)` fast path short-circuits to clean.
         const base = new Uint8Array(0);
         const sideText = Array.from({ length: 50_001 }, (_, i) => `line${i}\n`).join('');
         const ours = enc(sideText);
@@ -793,7 +799,7 @@ describe('mergeContent', () => {
         // Act
         const result = mergeContent(base, ours, theirs);
 
-        // Assert — clean, byte-identical to ours (slow path would yield status 'conflict')
+        // Assert — clean, byte-identical to ours
         expect(result.status).toBe('clean');
         if (result.status === 'clean') {
           expect(decoder.decode(result.bytes)).toBe(sideText);
@@ -802,13 +808,12 @@ describe('mergeContent', () => {
     });
   });
 
-  describe('Given an undefined base with identical cap-exceeding ours and theirs', () => {
+  describe('Given an undefined base with identical large ours and theirs', () => {
     describe('When mergeContent called', () => {
-      it('Then the add-add identical fast path returns clean ours (not the degraded conflict)', () => {
-        // Arrange — base undefined (add-add); ours === theirs, both 50_001 lines so the empty-base
-        // diff inside mergeFromDiffs degrades (M+N > 50_000). The undefined-base `bytesEqual(ours, theirs)`
-        // fast path must short-circuit to clean; forcing it false falls through to the degraded slow
-        // path → whole-file content conflict.
+      it('Then the add-add identical fast path returns clean ours', () => {
+        // Arrange — base undefined (add-add); ours === theirs, both 50_001
+        // lines. The undefined-base `bytesEqual(ours, theirs)` fast path
+        // short-circuits to clean.
         const sideText = Array.from({ length: 50_001 }, (_, i) => `line${i}\n`).join('');
         const ours = enc(sideText);
         const theirs = enc(sideText);
@@ -816,7 +821,7 @@ describe('mergeContent', () => {
         // Act
         const result = mergeContent(undefined, ours, theirs);
 
-        // Assert — clean, byte-identical to ours (slow path would yield status 'conflict')
+        // Assert — clean, byte-identical to ours
         expect(result.status).toBe('clean');
         if (result.status === 'clean') {
           expect(decoder.decode(result.bytes)).toBe(sideText);

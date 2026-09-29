@@ -497,4 +497,46 @@ describe.skipIf(!GIT_AVAILABLE)('config boolean refusal tier interop', () => {
       expect(data.key).toBe('filter.zed.required');
     }, 60_000);
   });
+
+  describe('Given X19 — diff.<drv>.binary = bogus (tristate)', () => {
+    beforeEach(() =>
+      writeConfig('[core]\n\trepositoryformatversion = 0\n[diff "rt"]\n\tbinary = bogus\n'),
+    );
+
+    describe('When git diff and tsgit diff run', () => {
+      it('Then both refuse with exit 128 / CONFIG_BAD_BOOLEAN_VALUE naming diff.rt.binary', async () => {
+        // Arrange & Act — armed in beforeEach. The refusal fires from config
+        // validation alone, before any path is diffed — no *.rt file, no
+        // commit, needed to reach it.
+        const g = tryRunGit(['-C', ours, 'diff', '--no-ext-diff'], { env: runGitEnv() });
+        const caught = await withRepo(ours, (repo) => captureThrow(() => repo.diff()));
+
+        // Assert — git
+        expect(g.ok).toBe(false);
+        expect(g.stderr).toContain("bad boolean config value 'bogus' for 'diff.rt.binary'");
+        // Assert — tsgit
+        const data = asBadBoolean(caught);
+        expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+        expect(data.key).toBe('diff.rt.binary');
+        expect(data.value).toBe('bogus');
+      });
+    });
+
+    describe('When git status and tsgit status run', () => {
+      it('Then both refuse with exit 128 / CONFIG_BAD_BOOLEAN_VALUE naming diff.rt.binary', async () => {
+        // Arrange & Act — armed in beforeEach
+        const g = tryRunGit(['-C', ours, 'status'], { env: runGitEnv() });
+        const caught = await withRepo(ours, (repo) => captureThrow(() => repo.status()));
+
+        // Assert — git
+        expect(g.ok).toBe(false);
+        expect(g.stderr).toContain("bad boolean config value 'bogus' for 'diff.rt.binary'");
+        // Assert — tsgit
+        const data = asBadBoolean(caught);
+        expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+        expect(data.key).toBe('diff.rt.binary');
+        expect(data.value).toBe('bogus');
+      });
+    });
+  });
 });

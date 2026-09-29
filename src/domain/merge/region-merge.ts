@@ -71,20 +71,18 @@ export function changesFromHunks(
   return changes;
 }
 
-/** Does change `a` overlap base range `b` (zero-length inserts overlap at their position)? */
+/**
+ * Does change `a` overlap-or-touch base range `b`? git's `xdl_do_merge`
+ * (xmerge.c) treats two hunks as separate only when one ends strictly before
+ * the other starts (`i1 + chg1 < other.i1`); anything else — including two
+ * ranges that merely touch at a shared boundary, or a zero-length insertion
+ * sitting at the other's edge — goes through the same conflict/twin check.
+ */
 export function rangesOverlap(
   a: { readonly baseStart: number; readonly baseEnd: number },
   b: { readonly baseStart: number; readonly baseEnd: number },
 ): boolean {
-  if (a.baseStart === a.baseEnd) {
-    return b.baseStart === b.baseEnd
-      ? a.baseStart === b.baseStart
-      : a.baseStart >= b.baseStart && a.baseStart < b.baseEnd;
-  }
-  if (b.baseStart === b.baseEnd) {
-    return b.baseStart >= a.baseStart && b.baseStart < a.baseEnd;
-  }
-  return a.baseStart < b.baseEnd && b.baseStart < a.baseEnd;
+  return !(a.baseEnd < b.baseStart || b.baseEnd < a.baseStart);
 }
 
 /** Reconstruct one side's file content over base span `[start, end)`. */

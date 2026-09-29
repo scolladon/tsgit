@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { type FsckFinding, fsck } from '../../../../src/application/commands/fsck.js';
+import { RECOVERY_HEADER_PROBE_BYTES } from '../../../../src/application/commands/internal/fsck/object-cache.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import { loadShallowSet } from '../../../../src/application/primitives/internal/shallow-set.js';
+import { MAX_SINGLE_PASS_COMPRESSED_BYTES } from '../../../../src/application/primitives/object-resolver.js';
 import {
   commonGitDir,
   looseObjectPath,
@@ -40,6 +42,7 @@ import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import { invalidPackIndex } from '../../../../src/domain/storage/index.js';
 import * as packEntryMod from '../../../../src/domain/storage/pack-entry.js';
 import type { Context } from '../../../../src/ports/context.js';
+import { pseudoRandomBytes } from '../../../fixtures/pseudo-random-bytes.js';
 import {
   type BitmapSpec,
   buildBitmap,
@@ -714,6 +717,116 @@ describe('Given a ref pointing to an annotated tag whose target is missing', () 
       const missingTarget = missing.find((f) => (f as { id: ObjectId }).id === ghostTarget);
       expect(missingTarget).toMatchObject({ type: 'missing', objectType: 'commit' });
       expect(result.exitCode & 2).toBe(2);
+
+      // Assert — a genuinely ABSENT target is never `tagged`, unlike a
+      // present-but-unreadable one (see the sibling describe below).
+      const tagged = result.findings.filter((f) => f.type === 'tagged');
+      expect(tagged).toHaveLength(0);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TAGGED — annotated tag pointing to a PRESENT but content-unreadable target
+// ---------------------------------------------------------------------------
+// git's tag walk marks a PRESENT target reachable (and so `tagged`)
+// regardless of whether it could be typed — only a genuinely ABSENT target
+// drops the report. Pinned live against git 2.55.0 (scrubbed env): `git
+// fsck --tags` on this exact shape prints both `tagged blob <oid> (tb) in
+// <tag>` AND `missing blob <oid>`, exit 3.
+
+describe('Given a ref pointing to an annotated tag whose target is present but content-unreadable (no pack copy)', () => {
+  describe('When fsck runs', () => {
+    it('Then emits both tagged and missing for the target, exit code 3', async () => {
+      // Arrange — a tag targets a blob whose loose file is corrupt (readable
+      // in universe, but `readObject` refuses it), with no pack copy at all.
+      const ctx = await initBareCtx();
+      const blobId = await writeObject(ctx, makeBlob('tagged-then-corrupted'));
+      const blobPath = looseObjectPath(ctx.layout.gitDir, blobId);
+      await ctx.fs.write(blobPath, new Uint8Array([0xde, 0xad, 0xbe, 0xef]));
+      const tagId = await writeObject(ctx, makeTag(blobId, 'blob', 'tb'));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/tb`, `${tagId}\n`);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert — tagged finding present, typed from the tag's own record
+      const tagged = result.findings.find((f) => f.type === 'tagged');
+      expect(tagged).toMatchObject({
+        type: 'tagged',
+        id: blobId,
+        objectType: 'blob',
+        tagName: 'tb',
+        tag: tagId,
+      });
+
+      // Assert — missing finding present too — both fire for the same id
+      const missing = result.findings.find(
+        (f): f is FsckFinding & { type: 'missing' } => f.type === 'missing' && f.id === blobId,
+      );
+      expect(missing).toMatchObject({ type: 'missing', objectType: 'blob' });
+
+      // Assert — never a broken-link (the id IS present, just unreadable)
+      const brokenLink = result.findings.find(
+        (f) => f.type === 'broken-link' && (f as { toId: ObjectId }).toId === blobId,
+      );
+      expect(brokenLink).toBeUndefined();
+      expect(result.exitCode & 2).toBe(2);
+    });
+  });
+});
+
+// git's `has_object_pack` trusts a PACKED target regardless of its own
+// readability, so the tag walk marks it reachable (and so `tagged`) exactly
+// as finding 1's own gate makes the tree/commit case never `missing`.
+// Pinned live against git 2.55.0 (scrubbed env): `git fsck --tags` on this
+// exact shape prints `tagged blob <oid> (tb) in <tag>` and NO `missing`
+// line, exit 4 (git's own pack-scan bit; see `object-cache.ts`'s
+// `hasPackCopy` doc for the exit-bit gap this fix does not close).
+describe('Given a ref pointing to an annotated tag whose target is a corrupt PACKED blob', () => {
+  describe('When fsck runs', () => {
+    it('Then emits tagged and never missing, dangling, unreachable or broken-link for the target', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const blobContent = enc.encode('x'.repeat(2000));
+      const [blobId] = await writeSyntheticPack(ctx, 'tag-corrupt-entry', [
+        { kind: 'base', type: 'blob', content: blobContent },
+      ]);
+      const packPath = `${ctx.layout.gitDir}/objects/pack/pack-tag-corrupt-entry.pack`;
+      const packBytes = await ctx.fs.read(packPath);
+      const corrupted = packBytes.slice();
+      corrupted[20] = (corrupted[20] ?? 0) ^ 0xff;
+      corrupted[21] = (corrupted[21] ?? 0) ^ 0xff;
+      await ctx.fs.write(packPath, corrupted);
+      const tagId = await writeObject(ctx, makeTag(blobId as ObjectId, 'blob', 'tb'));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/tb`, `${tagId}\n`);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert — tagged finding present
+      const tagged = result.findings.find((f) => f.type === 'tagged');
+      expect(tagged).toMatchObject({
+        type: 'tagged',
+        id: blobId,
+        objectType: 'blob',
+        tagName: 'tb',
+        tag: tagId,
+      });
+
+      // Assert — no missing/dangling/unreachable/broken-link for this id
+      const spuriousTypes = result.findings
+        .filter(
+          (f) =>
+            ('id' in f && f.id === blobId) ||
+            ('toId' in f && (f as { toId: ObjectId }).toId === blobId),
+        )
+        .map((f) => f.type);
+      expect(spuriousTypes).not.toContain('missing');
+      expect(spuriousTypes).not.toContain('dangling');
+      expect(spuriousTypes).not.toContain('unreachable');
+      expect(spuriousTypes).not.toContain('broken-link');
+      expect(result.exitCode & 2).toBe(0);
     });
   });
 });
@@ -1227,6 +1340,103 @@ describe('Given a loose object whose content hash does not match its path (hash-
       expect((mismatch as { actual: ObjectId }).actual).toBe(blobId2);
       // hash-mismatch → exit bit 1
       expect(result.exitCode & 1).toBe(1);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// core.bigFileThreshold — gates the zero-padded hash for a size-lying blob
+// ---------------------------------------------------------------------------
+
+/** A blob whose header CLAIMS `declaredSize` while `body` holds the real
+ *  (shorter) bytes — the loose-object size-lying shape every row below
+ *  plants, written self-consistently at the SHA-1 of exactly these bytes
+ *  (`writeMalformedLooseObject`'s own hash, git's unpadded streamed formula). */
+function buildDeclaredSizeLyingBlob(declaredSize: number, body: Uint8Array): Uint8Array {
+  const header = enc2.encode(`blob ${declaredSize}\0`);
+  const raw = new Uint8Array(header.length + body.length);
+  raw.set(header, 0);
+  raw.set(body, header.length);
+  return raw;
+}
+
+describe('Given a loose blob stored self-consistently under its UNPADDED size-lying hash', () => {
+  describe('When fsck runs with core.bigFileThreshold configured below its declared size', () => {
+    it('Then reports neither hash-mismatch nor bad-object for it — the gate resolves through readConfig end to end', async () => {
+      // Arrange — declared 2000 past a 1k configured threshold: git's
+      // `check_stream_oid` streams the real (short) body and hashes it
+      // under the DECLARED-size header, unpadded — the SAME bytes this
+      // object is stored at, so this row is the wiring proof: readConfig →
+      // readFsckConfiguration → runContentValidationPass → the gate itself.
+      const ctx = await initBareCtx();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tbigFileThreshold = 1k\n');
+      const id = await writeMalformedLooseObject(
+        ctx,
+        buildDeclaredSizeLyingBlob(2000, enc2.encode('X')),
+      );
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert — dangling (unreferenced) is the expected, non-error finding;
+      // only an integrity fault for this id would be a wiring failure.
+      const faults = result.findings.filter(
+        (f) => (f.type === 'hash-mismatch' || f.type === 'bad-object') && f.id === id,
+      );
+      expect(faults).toHaveLength(0);
+    });
+  });
+
+  describe('When fsck runs without core.bigFileThreshold configured (git default, 512 MiB)', () => {
+    it('Then reports a hash-mismatch for it — the same declared size still zero-pads below the default threshold', async () => {
+      // Arrange — the SAME size-lying shape as above, this time under the
+      // default (unconfigured) threshold: 2000 sits nowhere near 512 MiB, so
+      // the small-file zero-padded path still governs.
+      const ctx = await initBareCtx();
+      const id = await writeMalformedLooseObject(
+        ctx,
+        buildDeclaredSizeLyingBlob(2000, enc2.encode('X')),
+      );
+      const paddedBody = new Uint8Array(2000);
+      paddedBody.set(enc2.encode('X'));
+      const expectedActual = await ctx.hash.hashHex(buildDeclaredSizeLyingBlob(2000, paddedBody));
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const mismatch = result.findings.find(
+        (f): f is FsckFinding & { type: 'hash-mismatch' } =>
+          f.type === 'hash-mismatch' && f.id === id,
+      );
+      expect(mismatch).toBeDefined();
+      expect(mismatch?.actual).toBe(expectedActual);
+    });
+  });
+
+  describe('When fsck runs on a blob past core.bigFileThreshold whose body OVERRAN its claim inside the header window', () => {
+    it('Then reports bad-object but neither dangling nor unreachable for it — git never learns this object type either', async () => {
+      // Arrange — declared 5 past a 1-byte threshold, body overruns to 8
+      // bytes while staying inside the 32-byte header window: git's
+      // `check_stream_oid` refuses this object entirely (`corrupt loose
+      // object`), so real git's OWN reachability graph never types it and
+      // prints no `dangling blob` line — the general resolver `fsck`'s
+      // object cache is built from has no such gate, so without the
+      // reachability override this id would still surface as typed.
+      const ctx = await initBareCtx();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tbigFileThreshold = 1\n');
+      const id = await writeMalformedLooseObject(
+        ctx,
+        buildDeclaredSizeLyingBlob(5, enc2.encode('abcdefgh')),
+      );
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const findingsForId = result.findings.filter((f) => (f as { id?: string }).id === id);
+      expect(findingsForId).toHaveLength(1);
+      expect(findingsForId[0]?.type).toBe('bad-object');
     });
   });
 });
@@ -2166,13 +2376,12 @@ describe('Given tree with gitlink (submodule) entry pointing to commit not in un
   });
 });
 
-// Kill: reachability.ts line 163 (corrupt object in walk loop must be marked reached)
-// When a ref points to a corrupt object (readable in universe but null in cache),
-// the walk must mark it reached to avoid re-processing it infinitely.
-// Without reached.add(id), the worklist loop would spin forever.
+// A ref pointing to a corrupt LOOSE object with no pack copy anywhere: git's
+// `has_object_pack` gate never fires, so `read_loose_object`'s refusal is the
+// only word on this id — its referrer reports `missing`, exit bit 2.
 describe('Given ref pointing to corrupt object (null in cache)', () => {
   describe('When fsck runs', () => {
-    it('Then fsck completes without hanging and the corrupt object is not unreachable', async () => {
+    it('Then reports it missing (typed blob, exit bit 2) and never unreachable', async () => {
       // Arrange — write a blob normally, then corrupt its bytes
       const ctx = await initBareCtx();
       const blobId = await writeObject(ctx, makeBlob('corrupt-me'));
@@ -2202,6 +2411,194 @@ describe('Given ref pointing to corrupt object (null in cache)', () => {
         (f) => f.type === 'unreachable' && (f as { id: ObjectId }).id === blobId,
       );
       expect(unreachableBlob).toBeUndefined();
+      const brokenLinkBlob = result.findings.find(
+        (f) => f.type === 'broken-link' && (f as { toId: ObjectId }).toId === blobId,
+      );
+      expect(brokenLinkBlob).toBeUndefined();
+
+      // Assert — git's read_loose_object refuses this REFERENCED object, so
+      // its referrer (the tree) reports `missing blob <oid>`, typed from the
+      // tree entry's own mode, and exit gains bit 2 alongside content-error
+      // bit 1 (git's exit 3 for this same shape).
+      const missingBlob = result.findings.find(
+        (f): f is FsckFinding & { type: 'missing' } =>
+          f.type === 'missing' && (f as { id: ObjectId }).id === blobId,
+      );
+      expect(missingBlob).toBeDefined();
+      expect(missingBlob?.objectType).toBe('blob');
+      expect(result.exitCode & 2).toBe(2);
+    });
+  });
+});
+
+// git's `check_object` returns early for any id with a pack copy
+// (`has_object_pack` → "it is in pack - forget about it"), so a REFERENCED
+// blob backed by a corrupt PACK entry gets no `missing` line at all — the
+// pack copy is trusted for reachability regardless of its own readability.
+describe('Given ref pointing to a tree whose entry is a REFERENCED blob backed only by a corrupt pack entry', () => {
+  describe('When fsck runs', () => {
+    it('Then never reports it missing, dangling, unreachable or broken-link', async () => {
+      // Arrange — corrupt the packed entry's compressed bytes in place; the
+      // .idx (and so pack MEMBERSHIP) is untouched.
+      const ctx = await initBareCtx();
+      const blobContent = enc.encode('x'.repeat(2000));
+      const [blobId] = await writeSyntheticPack(ctx, 'corrupt-entry', [
+        { kind: 'base', type: 'blob', content: blobContent },
+      ]);
+      const packPath = `${ctx.layout.gitDir}/objects/pack/pack-corrupt-entry.pack`;
+      const packBytes = await ctx.fs.read(packPath);
+      const corrupted = packBytes.slice();
+      corrupted[20] = (corrupted[20] ?? 0) ^ 0xff;
+      corrupted[21] = (corrupted[21] ?? 0) ^ 0xff;
+      await ctx.fs.write(packPath, corrupted);
+      const treeId = await writeObject(
+        ctx,
+        makeTree([treeEntry(FILE_MODE.REGULAR, 'file.txt', blobId as ObjectId)]),
+      );
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert — no missing/dangling/unreachable/broken-link for this id
+      const spuriousTypes = result.findings
+        .filter(
+          (f) =>
+            ('id' in f && f.id === blobId) ||
+            ('toId' in f && (f as { toId: ObjectId }).toId === blobId),
+        )
+        .map((f) => f.type);
+      expect(spuriousTypes).not.toContain('missing');
+      expect(spuriousTypes).not.toContain('dangling');
+      expect(spuriousTypes).not.toContain('unreachable');
+      expect(spuriousTypes).not.toContain('broken-link');
+      expect(result.exitCode & 2).toBe(0);
+    });
+  });
+});
+
+// git types this id from its PACK copy (`has_object_pack`); the shadowing
+// loose file is reported through the separate hash-mismatch finding, never
+// through a spurious `missing` — matching real git's own `dangling blob
+// <other>` / `hash-path mismatch` pairing with no `missing` line.
+describe('Given a tree referencing a packed blob whose loose path is shadowed by mismatched content', () => {
+  describe('When fsck runs', () => {
+    it('Then reports hash-mismatch and dangling for the shadow, never missing for the packed id', async () => {
+      // Arrange — a valid pack copy of blobId, then a loose file AT blobId's
+      // path holding UNRELATED (mismatched) content.
+      const ctx = await initBareCtx();
+      const packedContent = enc.encode('real packed content');
+      const [blobId] = await writeSyntheticPack(ctx, 'shadow', [
+        { kind: 'base', type: 'blob', content: packedContent },
+      ]);
+      const shadowContent = enc.encode('shadowing loose content');
+      const shadowHeader = enc.encode(`blob ${shadowContent.length}\0`);
+      const shadowBytes = new Uint8Array(shadowHeader.length + shadowContent.length);
+      shadowBytes.set(shadowHeader, 0);
+      shadowBytes.set(shadowContent, shadowHeader.length);
+      const shadowId = await ctx.hash.hashHex(shadowBytes);
+      const shadowCompressed = await ctx.compressor.deflate(shadowBytes);
+      const shadowDir = objectsDir(ctx.layout.gitDir, (blobId as ObjectId).slice(0, 2));
+      await ctx.fs.mkdir(shadowDir);
+      await ctx.fs.writeExclusive(
+        looseObjectPath(ctx.layout.gitDir, blobId as ObjectId),
+        shadowCompressed,
+      );
+      const treeId = await writeObject(
+        ctx,
+        makeTree([treeEntry(FILE_MODE.REGULAR, 'file.txt', blobId as ObjectId)]),
+      );
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert — no missing/dangling/unreachable/broken-link for the packed id
+      const spuriousTypes = result.findings
+        .filter(
+          (f) =>
+            ('id' in f && f.id === blobId) ||
+            ('toId' in f && (f as { toId: ObjectId }).toId === blobId),
+        )
+        .map((f) => f.type);
+      expect(spuriousTypes).not.toContain('missing');
+      expect(spuriousTypes).not.toContain('dangling');
+      expect(spuriousTypes).not.toContain('unreachable');
+      expect(spuriousTypes).not.toContain('broken-link');
+
+      // Assert — hash-mismatch names the packed id, actual is the shadow's real hash
+      const mismatch = result.findings.find(
+        (f): f is FsckFinding & { type: 'hash-mismatch' } =>
+          f.type === 'hash-mismatch' && f.id === blobId,
+      );
+      expect(mismatch?.actual).toBe(shadowId);
+      expect(result.exitCode & 2).toBe(0);
+      expect(result.exitCode & 1).toBe(1);
+    });
+  });
+});
+
+describe('Given a commit whose TREE is an unreadable loose object with no pack copy', () => {
+  describe('When fsck runs', () => {
+    it('Then reports it missing (typed tree), never dangling or unreachable', async () => {
+      // Arrange — a non-empty tree: the canonical EMPTY tree oid is served
+      // from a built-in constant, never read off disk, so corrupting its
+      // loose file would go unnoticed.
+      const ctx = await initBareCtx();
+      const fileBlobId = await writeObject(ctx, makeBlob('file-content'));
+      const treeId = await writeObject(
+        ctx,
+        makeTree([treeEntry(FILE_MODE.REGULAR, 'file.txt', fileBlobId)]),
+      );
+      const treePath = looseObjectPath(ctx.layout.gitDir, treeId);
+      await ctx.fs.write(treePath, new Uint8Array([0xde, 0xad, 0xbe, 0xef]));
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const missing = result.findings.find(
+        (f): f is FsckFinding & { type: 'missing' } => f.type === 'missing' && f.id === treeId,
+      );
+      expect(missing).toMatchObject({ type: 'missing', objectType: 'tree' });
+      const spuriousTypes = result.findings
+        .filter((f) => 'id' in f && f.id === treeId)
+        .map((f) => f.type);
+      expect(spuriousTypes).not.toContain('dangling');
+      expect(spuriousTypes).not.toContain('unreachable');
+    });
+  });
+});
+
+describe('Given a commit whose PARENT is an unreadable loose object with no pack copy', () => {
+  describe('When fsck runs', () => {
+    it('Then reports it missing (typed commit), never dangling or unreachable', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const treeId = await writeObject(ctx, makeTree([]));
+      const parentId = await writeObject(ctx, makeCommit(treeId, []));
+      const parentPath = looseObjectPath(ctx.layout.gitDir, parentId);
+      await ctx.fs.write(parentPath, new Uint8Array([0xde, 0xad, 0xbe, 0xef]));
+      const childId = await writeObject(ctx, makeCommit(treeId, [parentId]));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${childId}\n`);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const missing = result.findings.find(
+        (f): f is FsckFinding & { type: 'missing' } => f.type === 'missing' && f.id === parentId,
+      );
+      expect(missing).toMatchObject({ type: 'missing', objectType: 'commit' });
+      const spuriousTypes = result.findings
+        .filter((f) => 'id' in f && f.id === parentId)
+        .map((f) => f.type);
+      expect(spuriousTypes).not.toContain('dangling');
+      expect(spuriousTypes).not.toContain('unreachable');
     });
   });
 });
@@ -4160,6 +4557,12 @@ async function corruptTrailingPackEntryByte(ctx: Context, packPath: string): Pro
 
 const GARBAGE_BYTES = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
 
+/** Same "never zlib-valid" contract as `GARBAGE_BYTES`, sized above
+ *  `MAX_SINGLE_PASS_COMPRESSED_BYTES` so the buffered read's hostile-sized
+ *  arm — not the single-pass one — is what reads it, keeping `inflateHead`
+ *  (never `inflate`) the first thing to fail on the main read. */
+const HOSTILE_GARBAGE_BYTES = new Uint8Array(MAX_SINGLE_PASS_COMPRESSED_BYTES + 4096).fill(0xff);
+
 interface WarnCall {
   readonly message: string;
   readonly context: Readonly<Record<string, unknown>> | undefined;
@@ -4865,21 +5268,26 @@ describe('Given a pack with a corrupt .idx and a separate undecodable dangling l
 describe('Given an undecodable dangling loose object whose probe re-inflate hits an unrelated adapter fault', () => {
   describe('When fsck runs with connectivityOnly: true', () => {
     it('Then fsck rejects with that exact UNSUPPORTED_OPERATION, not a laundered abort', async () => {
-      // Arrange
+      // Arrange — HOSTILE_GARBAGE_BYTES is not valid zlib AND sized above
+      // MAX_SINGLE_PASS_COMPRESSED_BYTES, so the buffered read's own header
+      // probe is `inflateHead`'s FIRST call (real, unwrapped) — it fails the
+      // main read naturally, on the garbage bytes. The recovery probe's OWN
+      // reread (`recoverStoredType`) is what makes the SECOND `inflateHead`
+      // call — where this fault lands.
       const ctx = await initBareCtx();
       const garbageId = 'd9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9' as ObjectId;
-      await writeGarbageLooseObject(ctx, garbageId, GARBAGE_BYTES);
-      let inflateCalls = 0;
+      await writeGarbageLooseObject(ctx, garbageId, HOSTILE_GARBAGE_BYTES);
+      let inflateHeadCalls = 0;
       const wrapped: Context = {
         ...ctx,
         compressor: {
           ...ctx.compressor,
-          inflate: async (bytes: Uint8Array) => {
-            inflateCalls += 1;
-            if (inflateCalls === 2) {
+          inflateHead: async (bytes: Uint8Array, maxOutputBytes: number) => {
+            inflateHeadCalls += 1;
+            if (inflateHeadCalls === 2) {
               throw unsupportedOperation('filesystem', 'simulated adapter fault');
             }
-            return ctx.compressor.inflate(bytes);
+            return ctx.compressor.inflateHead(bytes, maxOutputBytes);
           },
         },
       };
@@ -4907,9 +5315,9 @@ describe('Given a packed object whose entry reads reject with PERMISSION_DENIED,
   describe('When fsck runs with connectivityOnly: true', () => {
     it("Then fsck rejects with that exact UNSUPPORTED_OPERATION — the widened trigger's own reread never launders an environmental fault", async () => {
       // Arrange — the widened recovery trigger's own re-derived loose decode
-      // fault (`looseDecodeFault`) is the FIRST thing to inflate this
-      // object's stale shadow bytes (the main read never touches loose here,
-      // pack-first); an unrecognised fault from that inflate call surfaces
+      // fault (`looseDecodeFault`) is the FIRST thing to probe this object's
+      // stale shadow bytes (the main read never touches loose here,
+      // pack-first); an unrecognised fault from that header probe surfaces
       // itself instead of being silently swallowed as "no decode fault".
       const ctx = await initBareCtx();
       const [blobId] = await writeSyntheticPack(
@@ -4931,7 +5339,7 @@ describe('Given a packed object whose entry reads reject with PERMISSION_DENIED,
         },
         compressor: {
           ...ctx.compressor,
-          inflate: async () => {
+          inflateHead: async () => {
             throw unsupportedOperation('filesystem', 'simulated reprobe adapter fault');
           },
         },
@@ -5227,17 +5635,16 @@ describe('Given a loose-only object whose main read hits PERMISSION_DENIED, whos
       // fails once (PERMISSION_DENIED), a non-decode fault. `probeLooseOid`'s
       // membership check still sees the file (it never reads content), so
       // recovery widens onto it. `looseDecodeFault`'s own reread succeeds
-      // (2nd `fs.read` call) and reaches its own inflate — the FIRST inflate
-      // call in this flow — where an unrelated fault must propagate
-      // immediately, never being swallowed and re-derived through
-      // `recoverStoredType`'s own, independent second inflate of the same
+      // (2nd `fs.read` call) and reaches its own header probe — the FIRST
+      // `inflateHead` call in this flow — where an unrelated fault must
+      // propagate immediately, never being swallowed and re-derived through
+      // `recoverStoredType`'s own, independent second probe of the same
       // bytes (which would otherwise succeed and silently recover 'blob').
       const ctx = await initBareCtx();
       const content = 'd13-loose-first-probe-fault-content';
       const id = await writeObject(ctx, makeBlob(content));
       const loosePath = looseObjectPath(ctx.layout.gitDir, id);
       let readCalls = 0;
-      let inflateCalls = 0;
       const wrapped: Context = {
         ...ctx,
         fs: {
@@ -5251,12 +5658,8 @@ describe('Given a loose-only object whose main read hits PERMISSION_DENIED, whos
         },
         compressor: {
           ...ctx.compressor,
-          inflate: async (bytes: Uint8Array) => {
-            inflateCalls += 1;
-            if (inflateCalls === 1) {
-              throw unsupportedOperation('filesystem', 'simulated first-probe fault');
-            }
-            return ctx.compressor.inflate(bytes);
+          inflateHead: async () => {
+            throw unsupportedOperation('filesystem', 'simulated first-probe fault');
           },
         },
       };
@@ -5459,17 +5862,62 @@ describe('Given an undecodable dangling loose object whose header type token emb
   });
 });
 
-describe('Given an undecodable dangling loose object whose header type token exceeds the reason cap', () => {
+/**
+ * Wraps `inflateHead` so the MAIN buffered read's own header probe (a
+ * 33-byte cap, `LOOSE_HEADER_PROBE_BYTES` in object-resolver.ts) always
+ * faults with an unrelated adapter error, never reaching `parseHeader` on
+ * the 32-byte-windowed prefix. The recovery probe's OWN, more generous
+ * `inflateHead` call (`RECOVERY_HEADER_PROBE_BYTES`, object-cache.ts) is let
+ * through to the real decoder — the one seam left where a header's raw type
+ * token can still reach `sanitizeReason` unbounded by the 32-byte window,
+ * exactly as it did before the main read was bounded to that window.
+ */
+function withFaultingHeadProbe(ctx: Context): Context {
+  return {
+    ...ctx,
+    compressor: {
+      ...ctx.compressor,
+      inflateHead: async (data: Uint8Array, maxOutputBytes: number) => {
+        if (maxOutputBytes === RECOVERY_HEADER_PROBE_BYTES) {
+          return ctx.compressor.inflateHead(data, maxOutputBytes);
+        }
+        throw unsupportedOperation('filesystem', 'simulated head-probe fault');
+      },
+    },
+  };
+}
+
+/** Appends incompressible trailing bytes so the loose file's deflated size
+ *  exceeds `MAX_SINGLE_PASS_COMPRESSED_BYTES`, keeping a header-probe row on
+ *  the hostile-sized arm (the one `withFaultingHeadProbe` actually reaches).
+ *  The padding sits after the header's own NUL, so it never changes what
+ *  `parseHeader` reads. */
+function pastSinglePassThreshold(rawBytes: Uint8Array): Uint8Array {
+  const padding = pseudoRandomBytes(MAX_SINGLE_PASS_COMPRESSED_BYTES + 4096, 3);
+  const out = new Uint8Array(rawBytes.length + padding.length);
+  out.set(rawBytes, 0);
+  out.set(padding, rawBytes.length);
+  return out;
+}
+
+describe('Given an undecodable dangling loose object whose header type token exceeds the reason cap, with its header probe faulting so the recovery reread — not the bounded main read — is what decodes the raw token', () => {
   describe('When fsck runs with connectivityOnly: true', () => {
     it('Then the thrown reason is capped at exactly 200 output units', async () => {
-      // Arrange
+      // Arrange — git's own 32-byte header window bounds the MAIN read's own
+      // decode of this object, so a header-probe fault is what lets the
+      // recovery reread (never window-bounded) see the full 300-byte token
+      // this row exists to cap.
       const ctx = await initBareCtx();
-      await writeMalformedLooseObject(ctx, enc.encode(`${'a'.repeat(300)} 0\0`));
+      await writeMalformedLooseObject(
+        ctx,
+        pastSinglePassThreshold(enc.encode(`${'a'.repeat(300)} 0\0`)),
+      );
+      const wrapped = withFaultingHeadProbe(ctx);
 
       // Act
       let caught: unknown;
       try {
-        await fsck(ctx, { connectivityOnly: true });
+        await fsck(wrapped, { connectivityOnly: true });
       } catch (error) {
         caught = error;
       }
@@ -5484,17 +5932,24 @@ describe('Given an undecodable dangling loose object whose header type token exc
   });
 });
 
-describe('Given an undecodable dangling loose object whose header type token is all control bytes', () => {
+describe('Given an undecodable dangling loose object whose header type token is all control bytes, with its header probe faulting so the recovery reread decodes the raw token', () => {
   describe('When fsck runs with connectivityOnly: true', () => {
     it('Then escape expansion stays inside the cap and never emits a truncated escape', async () => {
-      // Arrange
+      // Arrange — same header-probe fault as the row above: past the 32-byte
+      // window, only the recovery reread's unbounded decode ever sees a
+      // control-byte run long enough to force `sanitizeReason` to stop
+      // mid-expansion.
       const ctx = await initBareCtx();
-      await writeMalformedLooseObject(ctx, enc.encode(`${'\u0001'.repeat(100)} 0\0`));
+      await writeMalformedLooseObject(
+        ctx,
+        pastSinglePassThreshold(enc.encode(`${'\u0001'.repeat(100)} 0\0`)),
+      );
+      const wrapped = withFaultingHeadProbe(ctx);
 
       // Act
       let caught: unknown;
       try {
-        await fsck(ctx, { connectivityOnly: true });
+        await fsck(wrapped, { connectivityOnly: true });
       } catch (error) {
         caught = error;
       }
@@ -5508,24 +5963,54 @@ describe('Given an undecodable dangling loose object whose header type token is 
   });
 });
 
+describe('Given a hostile dangling loose object with no NUL anywhere in its 128 MiB inflated body, When fsck runs with connectivityOnly: true', () => {
+  it('Then the recovery reread never calls compressor.inflate without a cap — only the bounded inflateHead probe', async () => {
+    // Arrange — a decompression-bomb shape: a repeated-byte body compresses
+    // to a few hundred bytes on disk while inflating to 128 MiB, with no
+    // NUL anywhere, so recovery is the only remaining decode attempt and
+    // its own probe is what this row proves is bounded.
+    const ctx = await initBareCtx();
+    const HOSTILE_INFLATED_BYTES = 128 * 1024 * 1024;
+    await writeMalformedLooseObject(ctx, new Uint8Array(HOSTILE_INFLATED_BYTES).fill(0x61));
+    const inflateSpy = vi.spyOn(ctx.compressor, 'inflate');
+    const inflateHeadSpy = vi.spyOn(ctx.compressor, 'inflateHead');
+
+    // Act
+    let caught: unknown;
+    try {
+      await fsck(ctx, { connectivityOnly: true });
+    } catch (error) {
+      caught = error;
+    }
+
+    // Assert — every inflate call carries an explicit cap; recovery never
+    // pays for a claim-sized (or gigabyte-sized) inflate to find a type.
+    expect(inflateSpy.mock.calls.every(([, cap]) => cap !== undefined)).toBe(true);
+    const recoveryProbe = inflateHeadSpy.mock.calls.find(
+      ([, cap]) => cap === RECOVERY_HEADER_PROBE_BYTES,
+    );
+    expect(recoveryProbe).toBeDefined();
+    expect(caught).toBeInstanceOf(TsgitError);
+  });
+});
+
 describe('Given a garbage dangling loose object whose probe re-inflate fails with a DIFFERENT candidate code', () => {
   describe('When fsck runs with connectivityOnly: true', () => {
     it('Then the reject carries the ORIGINAL read failure, not the probe-era fault', async () => {
-      // Arrange
+      // Arrange — GARBAGE_BYTES is not valid zlib, so the main read's own
+      // single-pass `.inflate` call (never `inflateHead` — this object never
+      // reaches the hostile-sized arm) fails naturally, decode-shaped;
+      // `recoverStoredType`'s OWN header probe is the ONLY `inflateHead`
+      // call in this flow — where this fault lands.
       const ctx = await initBareCtx();
       const garbageId = 'e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1' as ObjectId;
       await writeGarbageLooseObject(ctx, garbageId, GARBAGE_BYTES);
-      let inflateCalls = 0;
       const wrapped: Context = {
         ...ctx,
         compressor: {
           ...ctx.compressor,
-          inflate: async (bytes: Uint8Array) => {
-            inflateCalls += 1;
-            if (inflateCalls === 2) {
-              throw invalidObjectHeader('probe-era failure');
-            }
-            return ctx.compressor.inflate(bytes);
+          inflateHead: async () => {
+            throw invalidObjectHeader('probe-era failure');
           },
         },
       };
@@ -5550,20 +6035,21 @@ describe('Given a garbage dangling loose object whose probe re-inflate fails wit
 describe('Given a malformed loose tree (non-candidate read failure) whose probe fails with a candidate code', () => {
   describe('When fsck runs with connectivityOnly: true', () => {
     it("Then fsck resolves with dangling/'unknown' — the reject gate follows the ORIGINAL error", async () => {
-      // Arrange
+      // Arrange — a valid header over a garbage body: the main read's own
+      // single-pass `.inflate` succeeds, failing only later at tree-content
+      // parsing with a code `isDecodeFault` still widens on
+      // (`INVALID_TREE_ENTRY`), so `readErr` short-circuits to that ORIGINAL
+      // fault directly and `looseDecodeFault` never runs at all —
+      // `recoverStoredType`'s OWN, ONLY header probe of the same bytes is
+      // where this fault lands.
       const ctx = await initBareCtx();
       const treeId = await writeMalformedLooseObject(ctx, buildLooseBytes('tree', GARBAGE_BYTES));
-      let inflateCalls = 0;
       const wrapped: Context = {
         ...ctx,
         compressor: {
           ...ctx.compressor,
-          inflate: async (bytes: Uint8Array) => {
-            inflateCalls += 1;
-            if (inflateCalls === 2) {
-              throw decompressFailed('probe decayed');
-            }
-            return ctx.compressor.inflate(bytes);
+          inflateHead: async () => {
+            throw decompressFailed('probe decayed');
           },
         },
       };

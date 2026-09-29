@@ -11,7 +11,12 @@ import {
 } from './internal/fsck/content-validation.js';
 import { EXIT_MISSING, EXIT_REFS_CONTENT } from './internal/fsck/exit-codes.js';
 import { runMidxHealthPass } from './internal/fsck/midx-health.js';
-import { assertTypesRecoverable, buildObjectCache } from './internal/fsck/object-cache.js';
+import {
+  assertTypesRecoverable,
+  buildObjectCache,
+  collectUnreadablePackMemberIds,
+  withUnreadableOverrides,
+} from './internal/fsck/object-cache.js';
 import { packAccessibilityReported, runPackHealthPass } from './internal/fsck/pack-health.js';
 import {
   assembleConnectivityFindings,
@@ -65,7 +70,7 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   // while it reads its configuration, so an unknown msg-id, an out-of-grammar
   // severity or an unusable `fsck.skipList` refuses the whole audit rather
   // than the entry — whichever of them the FILE holds first.
-  const { severities, skipped } = await readFsckConfiguration(ctx);
+  const { severities, skipped, bigFileThreshold } = await readFsckConfiguration(ctx);
 
   // An integrity audit observes the STORE, never the object-byte read cache: a
   // delta base cached by an earlier read (or by this walk itself) would
@@ -111,7 +116,11 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   // verifies hash from those bytes — no additional readObject calls.
   const contentResult =
     opts.connectivityOnly === true
-      ? { findings: [] as FsckFinding[], exitBit: 0 }
+      ? {
+          findings: [] as FsckFinding[],
+          exitBit: 0,
+          typeUnknownIds: new Set<ObjectId>() as ReadonlySet<ObjectId>,
+        }
       : await runContentValidationPass(
           auditCtx,
           universe,
@@ -119,6 +128,7 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
           blobFilenames,
           severities,
           skipped,
+          bigFileThreshold,
         );
 
   // Refs-verify pass — `confirmPackAccessibility` is true exactly when the
@@ -173,13 +183,31 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
     await assertValidPromisorRemoteConfig(ctx);
   }
   const missingEntryPointBit = missingEntryPoint ? EXIT_REFS_CONTENT : 0;
-  const inEdgePresent = buildInEdgeMap(universe, objectCache);
 
-  const { reached, missingIds, brokenEdges, rootCommits, tagRefs } = buildReachableSet(
-    universe,
-    roots,
-    objectCache,
-  );
+  // Content-validation's own git-faithful read can refuse an object the
+  // general resolver above still typed — every loose object
+  // `read_loose_object` itself refuses, or whose hash disagrees with its
+  // path, PROVIDED no pack copy backs it — git's fsck has no separate "read
+  // for typing" pass, so a refusal there denies its reachability graph the
+  // type too. Overriding those ids to unreadable HERE, after content
+  // validation and before every reachability read below, is what keeps
+  // `dangling`/`unreachable` classification git-faithful.
+  const reachabilityCache = withUnreadableOverrides(objectCache, contentResult.typeUnknownIds);
+  const inEdgePresent = buildInEdgeMap(universe, reachabilityCache);
+
+  // Which of the (rare) unreadable ids are ALSO claimed by a pack — git's
+  // `has_object_pack`: `buildReachableSet` must never report one of these
+  // `missing`, since git's own `check_object` trusts the pack copy and never
+  // learns the entry is corrupt. Skipped outside default mode: connectivityOnly
+  // never consults this set (`isContentUnreadable` is gated on `unreadable`).
+  const packMemberIds =
+    // Stryker disable next-line ConditionalExpression: equivalent — packMemberIds is only ever read by reachability.ts's isContentUnreadable, itself gated on the SAME `unreadable === 'skip'` check, so a 'classify'-mode populate is extra work with no observable effect.
+    unreadable === 'skip'
+      ? await collectUnreadablePackMemberIds(auditCtx, reachabilityCache)
+      : (new Set<ObjectId>() as ReadonlySet<ObjectId>);
+
+  const { reached, missingIds, brokenEdges, unreadableEdges, rootCommits, tagRefs } =
+    buildReachableSet(universe, roots, reachabilityCache, unreadable, packMemberIds);
 
   const { unreachable, dangling } = classifyObjects(universe, reached, inEdgePresent);
   assertTypesRecoverable(ctx, unreachable, unrecoverable);
@@ -192,8 +220,8 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
     ...midxResult.findings,
     ...bitmapResult.findings,
     ...assembleConnectivityFindings(
-      { missingIds, brokenEdges, unreachable, dangling, rootCommits, tagRefs },
-      { objectCache, recovered, unreadable },
+      { missingIds, brokenEdges, unreadableEdges, unreachable, dangling, rootCommits, tagRefs },
+      { objectCache: reachabilityCache, recovered, unreadable },
     ),
   ];
 

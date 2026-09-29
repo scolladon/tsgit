@@ -1,6 +1,8 @@
 # 563 — Bound the edit distance, not the input size
 
-- **Status:** accepted
+> Superseded by [ADR-909](909-line-diff-transcribes-xdiff.md): the edit-distance bail to a whole-file change — the line diff now transcribes git's xdiff, which caps search cost instead.
+
+- **Status:** superseded by ADR-909
 - **Date:** 2026-07-31
 - **Design:** docs/design/whitespace-drop-fast-path.md · **Supersedes/Refines:** none
 

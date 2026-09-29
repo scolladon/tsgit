@@ -1,14 +1,14 @@
 /**
- * Cross-tool interop — pins the shared closure engine's WALK tier (Parts
- * 9-10) against real git before the bitmap tier (Part 12+) exists to be
- * verified against it. An unpinned oracle is not an oracle: every later
- * bitmap-tier row compares tsgit's bitmap answer to tsgit's OWN walk
- * answer, so the walk answer must itself be proven to match canonical git
- * first.
+ * Cross-tool interop — pins the shared closure engine's WALK tier against
+ * real git before the bitmap tier exists to be verified against it. An
+ * unpinned oracle is not an oracle: every bitmap-tier row (see
+ * `rev-bitmap-fsck-interop.test.ts`) compares tsgit's bitmap answer to
+ * tsgit's OWN walk answer, so the walk answer must itself be proven to match
+ * canonical git first.
  *
- * `gitObjectSet`/`tsgitObjectSet`/`assertSameSet` are shaped for a second
- * caller (Part 15 extends this suite to the bitmap tier): `named` is the
- * TIER DETECTOR — a bitmap answer carries no names at all, so a later row
+ * `gitObjectSet`/`tsgitObjectSet`/`assertSameSet` are shaped for that second
+ * caller too: `named` is the TIER DETECTOR — a bitmap answer carries no
+ * names at all, so a later row
  * distinguishes "walk answered" from "bitmap answered" by checking whether
  * `named` is zero. Every comparison here is a SET comparison on ids —
  * `git rev-list`'s own order (and tsgit's) is deterministic but not
@@ -90,7 +90,7 @@ import {
 } from './rev-bitmap-fixture-helpers.js';
 
 // ---------------------------------------------------------------------------
-// Shared helpers — shaped for a second caller (Part 15's bitmap-tier suite).
+// Shared helpers — shaped for a second caller (rev-bitmap-fsck-interop.test.ts).
 // ---------------------------------------------------------------------------
 
 interface ObjectSet {

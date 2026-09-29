@@ -395,10 +395,10 @@ describe('computePatchId', () => {
     });
   });
 
-  describe('Given the same change padded past MAX_DIFF_LINES with identical, unrelated context, When patch-ids are computed', () => {
+  describe('Given the same change padded past the former 50 000-line diffLines cap with identical, unrelated context, When patch-ids are computed', () => {
     it('Then the patch-ids are equal — the padding never enters the diff at all', async () => {
       // Arrange — cA is a small file with the change in immediate context; cB
-      // pads well past what used to be MAX_DIFF_LINES with lines the change
+      // pads well past the former diffLines line cap with lines the change
       // never touches. Before this fix, M+N over that cap forced a whole-file
       // replace, folding every padding line into the id as a spurious
       // delete+insert pair; the true edit distance here is 2 either way, so

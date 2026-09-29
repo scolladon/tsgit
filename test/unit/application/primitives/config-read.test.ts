@@ -8,6 +8,7 @@ import {
   findFirstInvalidBoolean,
   findFirstInvalidBooleanInSection,
   findFirstInvalidCompression,
+  findFirstInvalidDiffBinary,
   findFirstInvalidGcAuto,
   findFirstInvalidLogAllRefUpdates,
   findFirstInvalidPackedGitBound,
@@ -189,6 +190,11 @@ describe('primitives/config-read', () => {
       {
         config: '[core]\n  excludesfile\n',
         label: 'a string-typed key as a valueless entry (excludesfile skipped)',
+      },
+      {
+        config: '[core]\n  autocrlf = 512m\n',
+        label:
+          'an unrecognised key whose value parses as a valid unsigned-size (bigFileThreshold key-dispatch guard)',
       },
     ])('Then core stays undefined ($label)', async ({ config }) => {
       // Arrange
@@ -765,17 +771,20 @@ describe('primitives/config-read', () => {
 
   describe('Given a [diff "upper"] section with an unrelated key', () => {
     describe('When readConfig', () => {
-      it('Then cachetextconv stays undefined (an unrelated key is not read as cachetextconv)', async () => {
-        // Arrange
+      it('Then cachetextconv and binary stay undefined (an unrelated key is read as neither)', async () => {
+        // Arrange — `unrelated`'s value ('true') deliberately parses under BOTH
+        // the cachetextconv and binary boolean grammars, so a dispatch that
+        // stopped discriminating on the key name would set one of them from it.
         const ctx = createMemoryContext();
         await seed(ctx, '[diff "upper"]\n\ttextconv = up\n\tunrelated = true\n');
 
         // Act
         const result = await readConfig(ctx);
 
-        // Assert — the cachetextconv branch must only fire for a `cachetextconv` key.
+        // Assert — the cachetextconv/binary branches must only fire for their own key.
         expect(result.diff?.get('upper')?.textconv).toBe('up');
         expect(result.diff?.get('upper')?.cachetextconv).toBeUndefined();
+        expect(result.diff?.get('upper')?.binary).toBeUndefined();
       });
     });
   });
@@ -809,6 +818,106 @@ describe('primitives/config-read', () => {
 
         // Assert
         expect(result.diff?.get('upper')?.cachetextconv).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a [diff "custom"] section with binary=true', () => {
+    describe('When readConfig', () => {
+      it('Then parsed.diff.get("custom").binary is true', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[diff "custom"]\n\tbinary = true\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.diff?.get('custom')?.binary).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a [diff "custom"] section with binary=false', () => {
+    describe('When readConfig', () => {
+      it('Then parsed.diff.get("custom").binary is false', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[diff "custom"]\n\tbinary = false\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.diff?.get('custom')?.binary).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a [diff "custom"] section with a malformed binary value', () => {
+    describe('When readConfig', () => {
+      it('Then binary stays undefined (the malformed value is silently skipped)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[diff "custom"]\n\tbinary = maybe\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.diff?.get('custom')?.binary).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a [diff "custom"] section with binary=auto (any case)', () => {
+    describe('When readConfig', () => {
+      it.each([
+        { value: 'auto', label: 'lower-case' },
+        { value: 'Auto', label: 'mixed-case' },
+        { value: 'AUTO', label: 'upper-case' },
+      ])('Then binary is undefined ($label)', async ({ value }) => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, `[diff "custom"]\n\tbinary = ${value}\n`);
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.diff?.get('custom')?.binary).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a [diff "custom"] section setting binary=true then binary=auto', () => {
+    describe('When readConfig', () => {
+      it('Then the later auto RESETS binary to undefined (auto is not just another accepted value)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[diff "custom"]\n\tbinary = true\n[diff "custom"]\n\tbinary = auto\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.diff?.get('custom')?.binary).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a [diff "custom"] section setting binary=true then an unparseable binary value', () => {
+    describe('When readConfig', () => {
+      it('Then the earlier true survives (an unparseable non-auto value is silently skipped, not a reset)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[diff "custom"]\n\tbinary = true\n[diff "custom"]\n\tbinary = maybe\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.diff?.get('custom')?.binary).toBe(true);
       });
     });
   });
@@ -2257,45 +2366,47 @@ describe('primitives/config-read', () => {
     });
   });
 
-  describe('Given a [core] section carrying a size-valued key this reading does not model', () => {
+  describe('Given a [core] section carrying core.bigFileThreshold alongside a sibling unsigned-size key', () => {
     describe('When readConfig', () => {
-      it('Then deltaBaseCacheLimit stays absent — an unmodelled key is not its value', async () => {
-        // Arrange — `core.bigFileThreshold` is a real git key with the same
-        // unsigned-size grammar, so a dispatch that stopped discriminating on
-        // the key name would silently adopt its value.
-        const ctx = createMemoryContext();
-        await seed(ctx, '[core]\n\tbare = true\n\tbigFileThreshold = 512m\n');
-
-        // Act
-        const result = await readConfig(ctx);
-
-        // Assert
-        expect(result.core?.deltaBaseCacheLimit).toBeUndefined();
-        expect(result.core?.bare).toBe(true);
-      });
-    });
-  });
-
-  describe('Given a [core] section carrying a size-valued key packedGitLimit reading does not model', () => {
-    describe('When readConfig', () => {
-      it('Then packedGitLimit stays absent — an unmodelled key is not its value', async () => {
+      it('Then bigFileThreshold populates its own field and deltaBaseCacheLimit stays absent — same grammar, different key', async () => {
         // Arrange — `core.bigFileThreshold` shares the SAME unsigned-size
-        // grammar as `packedGitLimit`, so a dispatch that stopped
-        // discriminating on the key name would silently adopt its value.
+        // grammar as `deltaBaseCacheLimit`, so a dispatch that stopped
+        // discriminating on the key name would alias one onto the other;
+        // `autocrlf` is a real git key tsgit still does not model (see the
+        // "must not promote core into existence" suite above), planted here
+        // to prove its value leaves no trace either.
         const ctx = createMemoryContext();
-        await seed(ctx, '[core]\n\tbare = true\n\tbigFileThreshold = 512m\n');
+        await seed(ctx, '[core]\n\tautocrlf = true\n\tbigFileThreshold = 512m\n');
 
         // Act
         const result = await readConfig(ctx);
 
         // Assert
-        expect(result.core?.packedGitLimit).toBeUndefined();
-        expect(result.core?.bare).toBe(true);
+        expect(result.core?.bigFileThreshold).toBe(512 * 1024 * 1024);
+        expect(result.core?.deltaBaseCacheLimit).toBeUndefined();
       });
     });
   });
 
-  describe.each(['packedGitWindowSize', 'packedGitLimit'] as const)(
+  describe('Given a [core] section carrying core.bigFileThreshold alongside packedGitLimit', () => {
+    describe('When readConfig', () => {
+      it('Then each key populates its own field — same grammar, different key', async () => {
+        // Arrange — same discrimination proof as above, against
+        // `packedGitLimit` instead of `deltaBaseCacheLimit`.
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n\tpackedGitLimit = 4m\n\tbigFileThreshold = 512m\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.core?.bigFileThreshold).toBe(512 * 1024 * 1024);
+        expect(result.core?.packedGitLimit).toBe(4 * 1024 * 1024);
+      });
+    });
+  });
+
+  describe.each(['packedGitWindowSize', 'packedGitLimit', 'bigFileThreshold'] as const)(
     'Given a config with a [core] %s value',
     (key) => {
       describe('When readConfig', () => {
@@ -2320,7 +2431,7 @@ describe('primitives/config-read', () => {
     },
   );
 
-  describe.each(['packedGitWindowSize', 'packedGitLimit'] as const)(
+  describe.each(['packedGitWindowSize', 'packedGitLimit', 'bigFileThreshold'] as const)(
     'Given a [core] section with an invalid %s value',
     (key) => {
       describe('When readConfig', () => {
@@ -7021,6 +7132,110 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
           // Act
           const result = await findFirstInvalidPushGpgSign(ctx);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+  });
+
+  describe('findFirstInvalidDiffBinary', () => {
+    describe('Given diff.MyDriver.binary holds a value that fails both the tri-state literal and the boolean grammar', () => {
+      describe('When findFirstInvalidDiffBinary', () => {
+        it('Then it returns the entry', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[diff "MyDriver"]\n\tbinary = maybe\n');
+
+          // Act
+          const result = await findFirstInvalidDiffBinary(ctx);
+
+          // Assert
+          expect(result?.key).toBe('diff.MyDriver.binary');
+          expect(result?.value).toBe('maybe');
+          expect(result?.line).toBe(2);
+        });
+      });
+    });
+
+    describe('Given diff.MyDriver.binary holds the tri-state literal "auto" (any case)', () => {
+      describe('When findFirstInvalidDiffBinary', () => {
+        it.each([
+          { value: 'auto', label: 'lower-case' },
+          { value: 'Auto', label: 'mixed-case' },
+          { value: 'AUTO', label: 'upper-case' },
+        ])('Then it returns undefined ($label)', async ({ value }) => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, `[diff "MyDriver"]\n\tbinary = ${value}\n`);
+
+          // Act
+          const result = await findFirstInvalidDiffBinary(ctx);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given diff.MyDriver.binary holds a valid boolean value', () => {
+      describe('When findFirstInvalidDiffBinary', () => {
+        it('Then it returns undefined', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[diff "MyDriver"]\n\tbinary = true\n');
+
+          // Act
+          const result = await findFirstInvalidDiffBinary(ctx);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe("Given a subsectionless [diff] binary holding a value git's boolean grammar refuses", () => {
+      describe('When findFirstInvalidDiffBinary', () => {
+        it('Then it returns undefined (an unrelated top-level key, not this per-driver tristate)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[diff]\n\tbinary = maybe\n');
+
+          // Act
+          const result = await findFirstInvalidDiffBinary(ctx);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given the key is absent', () => {
+      describe('When findFirstInvalidDiffBinary', () => {
+        it('Then it returns undefined', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[diff "MyDriver"]\n\ttextconv = tool\n');
+
+          // Act
+          const result = await findFirstInvalidDiffBinary(ctx);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given a malformed value sits under a non-[diff] section', () => {
+      describe('When findFirstInvalidDiffBinary', () => {
+        it('Then it returns undefined (out of section)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[other "MyDriver"]\n\tbinary = maybe\n');
+
+          // Act
+          const result = await findFirstInvalidDiffBinary(ctx);
 
           // Assert
           expect(result).toBeUndefined();

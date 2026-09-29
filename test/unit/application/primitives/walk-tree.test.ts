@@ -397,8 +397,8 @@ describe('walkTree', () => {
   describe('Given a tree nested three levels deep', () => {
     describe('When walkTree is iterated with a pathHasher', () => {
       it("Then each entry's nameHash equals packNameHash of its own joined path", async () => {
-        // Arrange — deep/er/churn.txt reuses Part 1's own pinned vector row
-        // (0x9a8be7c7) as a cross-layer oracle: the walker's per-frame fold
+        // Arrange — deep/er/churn.txt reuses packNameHash's own pinned vector
+        // row (0x9a8be7c7) as a cross-layer oracle: the walker's per-frame fold
         // must agree with the module it delegates to, not just with itself.
         const ctx = await buildSeededContext();
         const leaf = await writeObject(ctx, {
@@ -451,7 +451,7 @@ describe('walkTree', () => {
   describe('Given the same blob reachable under two different directory paths', () => {
     describe('When walkTree is iterated with a pathHasher', () => {
       it('Then each occurrence carries its own path-specific nameHash', async () => {
-        // Arrange — first-seen dedup is the caller's job (Part 6), not the
+        // Arrange — first-seen dedup is the caller's job, not the
         // walker's: it yields per entry, so the same object under two
         // paths is yielded twice, each with its own hash.
         const ctx = await buildSeededContext();

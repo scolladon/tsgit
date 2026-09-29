@@ -24,7 +24,16 @@
  */
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { appendFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  appendFile,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as zlib from 'node:zlib';
@@ -46,17 +55,50 @@ const SETUP_TIMEOUT = 60_000;
 // Local helpers
 // ---------------------------------------------------------------------------
 
-/** Run git, capturing stdout, stderr AND exit code (never throws). */
+/** Every git subprocess probe below is bounded by a timeout: a malformed
+ *  fixture reaching git's read path is not something this suite controls
+ *  the performance envelope of, so a defensive bound keeps a future
+ *  regression failing its own test instead of hanging the whole suite. */
+const GIT_PROBE_TIMEOUT_MS = 20_000;
+
+/**
+ * `spawnSync`'s own invariant: `status` is `null` exactly when the process
+ * never exited normally — killed by a signal (this timeout firing, most
+ * likely) or never spawned at all (`result.error`). Both must fail loudly:
+ * silently mapping either to exit 1 would let a killed process, or one that
+ * never even started, pass an `exitCode & 1` assertion as if it had
+ * actually run and reported a real error.
+ */
+function assertGitProbeCompleted(
+  args: ReadonlyArray<string>,
+  result: ReturnType<typeof spawnSync>,
+): asserts result is ReturnType<typeof spawnSync> & { status: number } {
+  if (result.error !== undefined) {
+    throw new Error(`git ${args.join(' ')} failed to spawn: ${result.error.message}`);
+  }
+  if (result.status === null) {
+    throw new Error(`git ${args.join(' ')} was killed by signal ${String(result.signal)}`);
+  }
+}
+
+/** Run git, capturing stdout, stderr AND exit code. Throws if the process
+ *  never actually completed (spawn failure or signal kill) — see
+ *  `assertGitProbeCompleted`. */
 function tryRunGitWithExit(
   args: ReadonlyArray<string>,
   options: { readonly env?: NodeJS.ProcessEnv } = {},
 ): { readonly stdout: string; readonly stderr: string; readonly exitCode: number } {
   const env = options.env ?? buildSafeEnv();
-  const result = spawnSync('git', args as string[], { env, encoding: 'utf8' });
+  const result = spawnSync('git', args as string[], {
+    env,
+    encoding: 'utf8',
+    timeout: GIT_PROBE_TIMEOUT_MS,
+  });
+  assertGitProbeCompleted(args, result);
   return {
     stdout: result.stdout ?? '',
     stderr: result.stderr ?? '',
-    exitCode: result.status ?? 1,
+    exitCode: result.status,
   };
 }
 
@@ -111,6 +153,48 @@ async function writeLooseObject(workDir: string, type: string, body: Buffer): Pr
   return sha1;
 }
 
+/**
+ * Writes a NEW loose object at the SHA-1 of its own stored bytes, with a
+ * header size CLAIM that disagrees with `body`'s real length — a
+ * self-consistent size-lying object at its own (honest) path, unlike
+ * `writeLooseObject`'s always-true header.
+ */
+async function writeLooseObjectWithClaim(
+  workDir: string,
+  type: string,
+  claim: number,
+  body: Buffer,
+): Promise<string> {
+  const header = Buffer.from(`${type} ${claim}\0`);
+  const raw = Buffer.concat([header, body]);
+  const sha1 = sha1Hex(raw);
+  const objDir = path.join(workDir, '.git', 'objects', sha1.slice(0, 2));
+  await mkdir(objDir, { recursive: true });
+  await writeFile(path.join(objDir, sha1.slice(2)), deflateSync(raw));
+  return sha1;
+}
+
+/**
+ * Writes a loose object at an ARBITRARY, caller-chosen id — unlike
+ * `writeLooseObjectWithClaim`'s own (honest) hash of its stored bytes, this
+ * id disagrees with the object's content under every verification formula
+ * git or tsgit computes, the same "moved to a fake path" shape
+ * `writeLooseObject` produces for a well-formed body, but for a header whose
+ * size CLAIM disagrees with `body`'s real length too.
+ */
+async function writeLooseObjectAtId(
+  workDir: string,
+  id: string,
+  type: string,
+  claim: number,
+  body: Buffer,
+): Promise<void> {
+  const raw = Buffer.concat([Buffer.from(`${type} ${claim}\0`), body]);
+  const objDir = path.join(workDir, '.git', 'objects', id.slice(0, 2));
+  await mkdir(objDir, { recursive: true });
+  await writeFile(path.join(objDir, id.slice(2)), deflateSync(raw));
+}
+
 /** Initialize a bare git repo at dir. */
 function initRepo(dir: string): void {
   runGit(['-C', dir, 'init', '-q', '-b', 'main'], { env: SAFE_ENV });
@@ -121,6 +205,20 @@ function initRepo(dir: string): void {
 function gitFsck(dir: string, ...flags: string[]): ReturnType<typeof tryRunGitWithExit> {
   return tryRunGitWithExit(['-C', dir, 'fsck', ...flags], { env: SAFE_ENV });
 }
+
+describe('Given a git subprocess that cannot even be spawned', () => {
+  describe('When tryRunGitWithExit runs it', () => {
+    it('Then it throws instead of silently reporting exit code 1', () => {
+      // Arrange — an empty PATH means the 'git' binary cannot be resolved
+      const unresolvableEnv: NodeJS.ProcessEnv = { PATH: '' };
+
+      // Act / Assert
+      expect(() => tryRunGitWithExit(['--version'], { env: unresolvableEnv })).toThrow(
+        /git --version failed to spawn/,
+      );
+    });
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Scenario families — one shared repo per family (beforeAll, 60s timeout)
@@ -423,6 +521,271 @@ beforeAll(async () => {
 afterAll(async () => {
   if (hashMismatchDir !== '') await rm(hashMismatchDir, { recursive: true, force: true });
 });
+
+// --- Scenario: non-blob under-run (commit/tree/tag header claims MORE than
+// its real body) --------------------------------------------------------------
+// git's `read_loose_object` has no type check: this takes the SAME
+// zero-padded hash-path-mismatch path a blob's under-run does, never the
+// `corrupt loose object` path an over-run still takes.
+
+let nonBlobUnderrunDir = '';
+let nonBlobUnderrunCtx: Context;
+let underrunCommitSha = '';
+let underrunTreeSha = '';
+let underrunTagSha = '';
+
+beforeAll(async () => {
+  nonBlobUnderrunDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-nonBlobUnderrun-'));
+  initRepo(nonBlobUnderrunDir);
+
+  const zeroTree = '0'.repeat(40);
+  const commitBody = Buffer.from(
+    `tree ${zeroTree}\nauthor Test <test@example.com> 0 +0000\ncommitter Test <test@example.com> 0 +0000\n\nmsg\n`,
+  );
+  underrunCommitSha = await writeLooseObjectWithClaim(
+    nonBlobUnderrunDir,
+    'commit',
+    commitBody.length + 5,
+    commitBody,
+  );
+  underrunTreeSha = await writeLooseObjectWithClaim(nonBlobUnderrunDir, 'tree', 5, Buffer.alloc(0));
+  const tagBody = Buffer.from(
+    `object ${zeroTree}\ntype commit\ntag t\ntagger Test <test@example.com> 0 +0000\n\nmsg\n`,
+  );
+  underrunTagSha = await writeLooseObjectWithClaim(
+    nonBlobUnderrunDir,
+    'tag',
+    tagBody.length + 5,
+    tagBody,
+  );
+
+  nonBlobUnderrunCtx = createNodeContext({ workDir: nonBlobUnderrunDir });
+}, SETUP_TIMEOUT);
+
+afterAll(async () => {
+  if (nonBlobUnderrunDir !== '') await rm(nonBlobUnderrunDir, { recursive: true, force: true });
+});
+
+// --- Scenario: non-blob over-run inside git's 32-byte header window
+// (commit/tree/tag header claims LESS than its real body, but header+claim
+// still fits the window) -------------------------------------------------
+// git's `read_loose_object` has no type check: this takes the SAME
+// truncated-prefix hash-path-mismatch path a blob's in-window over-run does,
+// never the `corrupt loose object` path an over-run PAST the window takes.
+
+let nonBlobOverrunDir = '';
+let nonBlobOverrunCtx: Context;
+let overrunCommitSha = '';
+let overrunTreeSha = '';
+let overrunTagSha = '';
+
+beforeAll(async () => {
+  nonBlobOverrunDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-nonBlobOverrun-'));
+  initRepo(nonBlobOverrunDir);
+
+  const overrunBody = Buffer.from('HELLOWORLD');
+  overrunCommitSha = await writeLooseObjectWithClaim(nonBlobOverrunDir, 'commit', 6, overrunBody);
+  overrunTreeSha = await writeLooseObjectWithClaim(nonBlobOverrunDir, 'tree', 6, overrunBody);
+  overrunTagSha = await writeLooseObjectWithClaim(nonBlobOverrunDir, 'tag', 6, overrunBody);
+
+  nonBlobOverrunCtx = createNodeContext({ workDir: nonBlobOverrunDir });
+}, SETUP_TIMEOUT);
+
+afterAll(async () => {
+  if (nonBlobOverrunDir !== '') await rm(nonBlobOverrunDir, { recursive: true, force: true });
+});
+
+// --- Scenario: a loose object's hash disagrees with its path, and its
+// content would ALSO fail the catalogue — git's `read_loose_object` returns
+// before `fsck_obj` ever runs, so only the hash-path mismatch is reported. --
+
+let hashMismatchCatalogueDir = '';
+let hashMismatchCatalogueCtx: Context;
+let missingTreeCommitSha = '';
+
+beforeAll(async () => {
+  hashMismatchCatalogueDir = await mkdtemp(
+    path.join(os.tmpdir(), 'tsgit-fsck-hashMismatchCatalogue-'),
+  );
+  initRepo(hashMismatchCatalogueDir);
+
+  // A commit body missing even a "tree " line (would report missingTree if
+  // the catalogue ran), under-run against its claim so the path disagrees.
+  missingTreeCommitSha = await writeLooseObjectWithClaim(
+    hashMismatchCatalogueDir,
+    'commit',
+    20,
+    Buffer.from('abcdefgh'),
+  );
+
+  hashMismatchCatalogueCtx = createNodeContext({ workDir: hashMismatchCatalogueDir });
+}, SETUP_TIMEOUT);
+
+afterAll(async () => {
+  if (hashMismatchCatalogueDir !== '') {
+    await rm(hashMismatchCatalogueDir, { recursive: true, force: true });
+  }
+});
+
+// --- Scenario: core.bigFileThreshold gates the truncated-prefix hash too ----
+// A blob whose declared size is past the threshold takes git's streaming
+// `check_stream_oid` regardless of body length — an over-run there reports
+// `corrupt loose object`, never a truncated-prefix hash-path mismatch.
+
+let bigFileTruncateDir = '';
+let bigFileTruncateCtx: Context;
+const BIG_FILE_TRUNCATE_THRESHOLD = 1;
+let bigFileTruncateSha = '';
+
+beforeAll(async () => {
+  bigFileTruncateDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-bigFileTruncate-'));
+  initRepo(bigFileTruncateDir);
+  runGit(
+    ['-C', bigFileTruncateDir, 'config', 'core.bigFileThreshold', `${BIG_FILE_TRUNCATE_THRESHOLD}`],
+    { env: SAFE_ENV },
+  );
+
+  bigFileTruncateSha = await writeLooseObjectWithClaim(
+    bigFileTruncateDir,
+    'blob',
+    5,
+    Buffer.from('abcdefgh'),
+  );
+
+  bigFileTruncateCtx = createNodeContext({ workDir: bigFileTruncateDir });
+}, SETUP_TIMEOUT);
+
+afterAll(async () => {
+  if (bigFileTruncateDir !== '') await rm(bigFileTruncateDir, { recursive: true, force: true });
+});
+
+// --- Scenario: core.bigFileThreshold gates the zero-padded hash --------------
+// Below and AT the threshold still zero-pads (git's own `size >
+// big_file_threshold` comparison is strictly greater-than); past it, git
+// streams the real bytes and hashes them unpadded — each blob below is
+// stored self-consistently at THAT unpadded hash, so a tool that correctly
+// gates on the threshold reports nothing for it, and one that still
+// zero-pads reports a mismatch.
+
+let bigFileDir = '';
+let bigFileCtx: Context;
+const BIG_FILE_THRESHOLD = 1024;
+const BIG_FILE_BODY = Buffer.from('SHORT-BODY');
+let belowThresholdSha = '';
+let atThresholdSha = '';
+let aboveThresholdSha = '';
+
+beforeAll(async () => {
+  bigFileDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-bigFileThreshold-'));
+  initRepo(bigFileDir);
+  runGit(['-C', bigFileDir, 'config', 'core.bigFileThreshold', `${BIG_FILE_THRESHOLD}`], {
+    env: SAFE_ENV,
+  });
+
+  belowThresholdSha = await writeLooseObjectWithClaim(
+    bigFileDir,
+    'blob',
+    BIG_FILE_THRESHOLD - 1,
+    BIG_FILE_BODY,
+  );
+  atThresholdSha = await writeLooseObjectWithClaim(
+    bigFileDir,
+    'blob',
+    BIG_FILE_THRESHOLD,
+    BIG_FILE_BODY,
+  );
+  aboveThresholdSha = await writeLooseObjectWithClaim(
+    bigFileDir,
+    'blob',
+    BIG_FILE_THRESHOLD + 1,
+    BIG_FILE_BODY,
+  );
+
+  bigFileCtx = createNodeContext({ workDir: bigFileDir });
+}, SETUP_TIMEOUT);
+
+afterAll(async () => {
+  if (bigFileDir !== '') await rm(bigFileDir, { recursive: true, force: true });
+});
+
+// --- Scenario: an under-run blob at an arbitrary (unrelated) path, gated by
+// core.bigFileThreshold — git's check_stream_oid reports a DIFFERENT pair of
+// stderr lines ("hash mismatch for … (expected …)" + "object corrupt or
+// missing") than the small-file zero-padded "hash-path mismatch" line, but
+// must still never type the object for reachability. ------------------------
+
+let bigFileUnderrunMismatchDir = '';
+let bigFileUnderrunMismatchCtx: Context;
+const BIG_FILE_UNDERRUN_MISMATCH_THRESHOLD = 3;
+const BIG_FILE_UNDERRUN_MISMATCH_SHA = '2'.repeat(40);
+
+beforeAll(async () => {
+  bigFileUnderrunMismatchDir = await mkdtemp(
+    path.join(os.tmpdir(), 'tsgit-fsck-bigFileUnderrunMismatch-'),
+  );
+  initRepo(bigFileUnderrunMismatchDir);
+  runGit(
+    [
+      '-C',
+      bigFileUnderrunMismatchDir,
+      'config',
+      'core.bigFileThreshold',
+      `${BIG_FILE_UNDERRUN_MISMATCH_THRESHOLD}`,
+    ],
+    { env: SAFE_ENV },
+  );
+  await writeLooseObjectAtId(
+    bigFileUnderrunMismatchDir,
+    BIG_FILE_UNDERRUN_MISMATCH_SHA,
+    'blob',
+    9,
+    Buffer.from('xxx'),
+  );
+
+  bigFileUnderrunMismatchCtx = createNodeContext({ workDir: bigFileUnderrunMismatchDir });
+}, SETUP_TIMEOUT);
+
+afterAll(async () => {
+  if (bigFileUnderrunMismatchDir !== '') {
+    await rm(bigFileUnderrunMismatchDir, { recursive: true, force: true });
+  }
+});
+
+// --- Scenario: an in-window over-run blob at an arbitrary (unrelated) path,
+// default threshold — git's small-file truncated-prefix "hash-path mismatch"
+// path, unreferenced. ---------------------------------------------------------
+
+let overrunMismatchDir = '';
+let overrunMismatchCtx: Context;
+const OVERRUN_MISMATCH_SHA = '4'.repeat(40);
+
+beforeAll(async () => {
+  overrunMismatchDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-overrunMismatch-'));
+  initRepo(overrunMismatchDir);
+  await writeLooseObjectAtId(
+    overrunMismatchDir,
+    OVERRUN_MISMATCH_SHA,
+    'blob',
+    6,
+    Buffer.from('HELLOWORLD'),
+  );
+
+  overrunMismatchCtx = createNodeContext({ workDir: overrunMismatchDir });
+}, SETUP_TIMEOUT);
+
+afterAll(async () => {
+  if (overrunMismatchDir !== '') await rm(overrunMismatchDir, { recursive: true, force: true });
+});
+
+/** git's zero-padded hash for a size-lying blob (`unpack_loose_rest`): the
+ *  declared-size header, the real body, then zero bytes out to the claim. */
+function zeroPaddedBlobHash(declared: number, body: Buffer): string {
+  const header = Buffer.from(`blob ${declared}\0`);
+  const padding = Buffer.alloc(declared - body.length);
+  return createHash('sha1')
+    .update(Buffer.concat([header, body, padding]))
+    .digest('hex');
+}
 
 // ---------------------------------------------------------------------------
 // Test groups
@@ -806,6 +1169,888 @@ describe.skipIf(!GIT_AVAILABLE)(
           const reconstructed = `${mismatch.actual}: hash-path mismatch, found at:`;
           expect(gitResult.stderr).toContain(reconstructed);
         }
+      });
+
+      it('Then never reports it dangling/unreachable — git never types an object its hash-path check refused', async () => {
+        // Arrange
+        const gitResult = gitFsck(hashMismatchDir);
+
+        // Act
+        const result = await fsck(hashMismatchCtx);
+
+        // Assert — git's own stdout never names this unreferenced, refused id
+        expect(gitResult.stdout).not.toContain(pathId);
+
+        // Assert — tsgit reports no dangling/unreachable finding for it either
+        const spurious = result.findings.filter(
+          (f) =>
+            'id' in f && f.id === pathId && (f.type === 'dangling' || f.type === 'unreachable'),
+        );
+        expect(spurious).toHaveLength(0);
+      });
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given a loose commit/tree/tag whose header claims more than its real body (under-run)',
+  () => {
+    describe('When fsck runs', () => {
+      it.each([
+        { label: 'commit', shaOf: () => underrunCommitSha },
+        { label: 'tree', shaOf: () => underrunTreeSha },
+        { label: 'tag', shaOf: () => underrunTagSha },
+      ])(
+        "Then emits hash-mismatch (git's zero-padded hash-path mismatch), never bad-object, for $label",
+        async ({ shaOf }) => {
+          // Arrange
+          const gitResult = gitFsck(nonBlobUnderrunDir);
+          const storedId = shaOf();
+
+          // Act
+          const result = await fsck(nonBlobUnderrunCtx);
+
+          // Assert — exit code bit 1 matches real git on both sides
+          expect(result.exitCode & 1).toBe(1);
+          expect(gitResult.exitCode & 1).toBe(1);
+
+          // Assert — hash-mismatch finding present for the stored (lying) oid,
+          // never a bad-object/corrupt finding for that same oid
+          const mismatch = result.findings.find(
+            (f): f is FsckFinding & { type: 'hash-mismatch' } =>
+              f.type === 'hash-mismatch' && f.id === storedId,
+          );
+          expect(mismatch).toBeDefined();
+          expect(result.findings.some((f) => f.type === 'bad-object' && f.id === storedId)).toBe(
+            false,
+          );
+
+          // Reconstruct only the STABLE part of git's stderr line — the
+          // reported hash itself is git's own zero-padding of uninitialised
+          // malloc (`unpack_loose_rest`'s `xmallocz`, never zeroed), so it is
+          // nondeterministic across runs; tsgit's OWN deterministic
+          // zero-padded value is what `mismatch` above already pins.
+          // git: "error: <nondeterministic-sha>: hash-path mismatch, found at: .git/objects/<prefix>/<suffix>"
+          expect(gitResult.stderr).toContain(
+            `hash-path mismatch, found at: .git/objects/${storedId.slice(0, 2)}/${storedId.slice(2)}`,
+          );
+        },
+      );
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE)(
+  "Given a loose commit/tree/tag whose body overran its claim inside git's 32-byte header window",
+  () => {
+    describe('When fsck runs', () => {
+      it.each([
+        { label: 'commit', shaOf: () => overrunCommitSha },
+        { label: 'tree', shaOf: () => overrunTreeSha },
+        { label: 'tag', shaOf: () => overrunTagSha },
+      ])(
+        "Then emits hash-mismatch (git's truncated-prefix hash-path mismatch), never bad-object, for $label",
+        async ({ shaOf }) => {
+          // Arrange — an over-run that still fits the window is deterministic
+          // (a real slice, never uninitialised padding), so the FULL
+          // reconstructed line is pinned here, unlike the under-run family.
+          const gitResult = gitFsck(nonBlobOverrunDir);
+          const storedId = shaOf();
+
+          // Act
+          const result = await fsck(nonBlobOverrunCtx);
+
+          // Assert — exit code bit 1 matches real git on both sides
+          expect(result.exitCode & 1).toBe(1);
+          expect(gitResult.exitCode & 1).toBe(1);
+
+          // Assert — hash-mismatch finding present for the stored (lying) oid,
+          // never a bad-object/corrupt finding for that same oid
+          const mismatch = result.findings.find(
+            (f): f is FsckFinding & { type: 'hash-mismatch' } =>
+              f.type === 'hash-mismatch' && f.id === storedId,
+          );
+          expect(mismatch).toBeDefined();
+          expect(result.findings.some((f) => f.type === 'bad-object' && f.id === storedId)).toBe(
+            false,
+          );
+
+          // git: "error: <actual-sha>: hash-path mismatch, found at: .git/objects/<prefix>/<suffix>"
+          if (mismatch !== undefined) {
+            const reconstructed = `${mismatch.actual}: hash-path mismatch, found at:`;
+            expect(gitResult.stderr).toContain(reconstructed);
+          }
+        },
+      );
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given a loose object whose hash disagrees with its path, and whose content would ALSO fail the catalogue',
+  () => {
+    describe('When fsck runs', () => {
+      it('Then emits only the hash-mismatch finding — git returns before running the catalogue on a hash-path mismatch', async () => {
+        // Arrange — the commit body is missing even a "tree " line, which
+        // would report missingTree if the catalogue ran against it.
+        const gitResult = gitFsck(hashMismatchCatalogueDir);
+
+        // Act
+        const result = await fsck(hashMismatchCatalogueCtx);
+
+        // Assert — exit bit 1 matches real git on both sides
+        expect(result.exitCode & 1).toBe(1);
+        expect(gitResult.exitCode & 1).toBe(1);
+
+        // Assert — only a hash-mismatch finding for this object, no bad-object
+        const findingsForId = result.findings.filter(
+          (f) => 'id' in f && f.id === missingTreeCommitSha,
+        );
+        expect(findingsForId).toHaveLength(1);
+        expect(findingsForId[0]?.type).toBe('hash-mismatch');
+
+        // git reports only the hash-path mismatch, never a missingTree line
+        expect(gitResult.stderr).toContain('hash-path mismatch');
+        expect(gitResult.stderr).not.toContain('missingTree');
+      });
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE)(
+  "Given a loose blob past core.bigFileThreshold whose body overran its claim inside git's 32-byte header window",
+  () => {
+    describe('When fsck runs', () => {
+      it('Then emits ONLY bad-object for it — never hash-mismatch, dangling or unreachable, matching git printing no dangling line at all', async () => {
+        // Arrange — git's `check_stream_oid` gates on `core.bigFileThreshold`
+        // for a blob regardless of body length; an over-run there reports
+        // `corrupt loose object`. git has no separate "read for typing" pass
+        // — the SAME refusal denies its reachability graph the type too, so
+        // real git's stdout never mentions this oid at all (no `dangling
+        // blob` line, pinned below alongside tsgit's own finding).
+        const gitResult = gitFsck(bigFileTruncateDir);
+
+        // Act
+        const result = await fsck(bigFileTruncateCtx);
+
+        // Assert — exit bit 1 matches real git on both sides
+        expect(result.exitCode & 1).toBe(1);
+        expect(gitResult.exitCode & 1).toBe(1);
+
+        // Assert — exactly one finding for this id: bad-object, never a
+        // hash-mismatch, dangling or unreachable finding alongside it.
+        const findingsForId = result.findings.filter(
+          (f) => 'id' in f && f.id === bigFileTruncateSha,
+        );
+        expect(findingsForId).toHaveLength(1);
+        expect(findingsForId[0]).toMatchObject({ type: 'bad-object', msgId: 'unterminatedHeader' });
+
+        // git: "error: corrupt loose object '<oid>'", never a stdout line
+        // (typed or not) naming this oid.
+        expect(gitResult.stderr).toContain(`corrupt loose object '${bigFileTruncateSha}'`);
+        expect(gitResult.stdout).not.toContain(bigFileTruncateSha);
+      });
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given loose blobs claiming sizes below, at, and above core.bigFileThreshold',
+  () => {
+    describe('When fsck runs', () => {
+      it('Then below and AT the threshold still report the zero-padded hash-path mismatch', async () => {
+        // Arrange
+        const gitResult = gitFsck(bigFileDir);
+
+        // Act
+        const result = await fsck(bigFileCtx);
+
+        // Assert — exit bit 1 matches real git on both sides
+        expect(result.exitCode & 1).toBe(1);
+        expect(gitResult.exitCode & 1).toBe(1);
+
+        for (const { sha, declared } of [
+          { sha: belowThresholdSha, declared: BIG_FILE_THRESHOLD - 1 },
+          { sha: atThresholdSha, declared: BIG_FILE_THRESHOLD },
+        ]) {
+          const expectedActual = zeroPaddedBlobHash(declared, BIG_FILE_BODY);
+          const mismatch = result.findings.find(
+            (f): f is FsckFinding & { type: 'hash-mismatch' } =>
+              f.type === 'hash-mismatch' && f.id === sha,
+          );
+          expect(mismatch).toBeDefined();
+          expect(mismatch?.actual).toBe(expectedActual);
+          // Only the STABLE part is pinned against git's own output — git's
+          // zero-padded hash is nondeterministic (uninitialised malloc);
+          // tsgit's deterministic value is pinned by `mismatch` above.
+          expect(gitResult.stderr).toContain(
+            `hash-path mismatch, found at: .git/objects/${sha.slice(0, 2)}/${sha.slice(2)}`,
+          );
+        }
+      });
+
+      it('Then below and AT the threshold never report it dangling/unreachable either', async () => {
+        // Arrange
+        const gitResult = gitFsck(bigFileDir);
+
+        // Act
+        const result = await fsck(bigFileCtx);
+
+        for (const sha of [belowThresholdSha, atThresholdSha]) {
+          // Assert — git's own stdout never names this unreferenced, refused id
+          expect(gitResult.stdout).not.toContain(sha);
+
+          // Assert — tsgit reports no dangling/unreachable finding for it either
+          const spurious = result.findings.filter(
+            (f) => 'id' in f && f.id === sha && (f.type === 'dangling' || f.type === 'unreachable'),
+          );
+          expect(spurious).toHaveLength(0);
+        }
+      });
+
+      it('Then past the threshold reports neither hash-mismatch nor bad-object — git skips verification, and so does tsgit', async () => {
+        // Arrange
+        const gitResult = gitFsck(bigFileDir);
+
+        // Act
+        const result = await fsck(bigFileCtx);
+
+        // Assert — git names it only as a dangling blob, never a fault
+        expect(gitResult.stdout).toContain(`dangling blob ${aboveThresholdSha}`);
+        expect(gitResult.stderr).not.toContain(aboveThresholdSha);
+
+        // Assert — tsgit reports no fault for it either
+        const faults = result.findings.filter(
+          (f) =>
+            (f.type === 'hash-mismatch' || f.type === 'bad-object') && f.id === aboveThresholdSha,
+        );
+        expect(faults).toHaveLength(0);
+      });
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given an under-run blob at an arbitrary path, gated by a lowered core.bigFileThreshold',
+  () => {
+    describe('When fsck runs', () => {
+      it("Then emits git's two-line check_stream_oid mismatch, and never reports it dangling/unreachable", async () => {
+        // Arrange
+        const gitResult = gitFsck(bigFileUnderrunMismatchDir);
+
+        // Act
+        const result = await fsck(bigFileUnderrunMismatchCtx);
+
+        // Assert — exit bit 1 matches real git on both sides
+        expect(result.exitCode & 1).toBe(1);
+        expect(gitResult.exitCode & 1).toBe(1);
+
+        // git: "error: hash mismatch for <path> (expected <fake-oid>)"
+        //      "error: <fake-oid>: object corrupt or missing: <path>"
+        expect(gitResult.stderr).toContain(
+          `hash mismatch for .git/objects/${BIG_FILE_UNDERRUN_MISMATCH_SHA.slice(0, 2)}/${BIG_FILE_UNDERRUN_MISMATCH_SHA.slice(2)}`,
+        );
+        expect(gitResult.stderr).toContain(
+          `${BIG_FILE_UNDERRUN_MISMATCH_SHA}: object corrupt or missing:`,
+        );
+
+        // Assert — git's own stdout never names this unreferenced, refused id
+        expect(gitResult.stdout).not.toContain(BIG_FILE_UNDERRUN_MISMATCH_SHA);
+
+        // Assert — tsgit reports no dangling/unreachable finding for it either
+        const spurious = result.findings.filter(
+          (f) =>
+            'id' in f &&
+            f.id === BIG_FILE_UNDERRUN_MISMATCH_SHA &&
+            (f.type === 'dangling' || f.type === 'unreachable'),
+        );
+        expect(spurious).toHaveLength(0);
+      });
+    });
+  },
+);
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given an in-window over-run blob at an arbitrary path, default core.bigFileThreshold',
+  () => {
+    describe('When fsck runs', () => {
+      it("Then emits git's truncated-prefix hash-path mismatch, and never reports it dangling/unreachable", async () => {
+        // Arrange
+        const gitResult = gitFsck(overrunMismatchDir);
+
+        // Act
+        const result = await fsck(overrunMismatchCtx);
+
+        // Assert — exit bit 1 matches real git on both sides
+        expect(result.exitCode & 1).toBe(1);
+        expect(gitResult.exitCode & 1).toBe(1);
+
+        // Assert — hash-mismatch finding present for the stored (fake) oid
+        const mismatch = result.findings.find(
+          (f): f is FsckFinding & { type: 'hash-mismatch' } =>
+            f.type === 'hash-mismatch' && f.id === OVERRUN_MISMATCH_SHA,
+        );
+        expect(mismatch).toBeDefined();
+
+        // git: "error: <actual-sha>: hash-path mismatch, found at: .git/objects/<prefix>/<suffix>"
+        if (mismatch !== undefined) {
+          const reconstructed = `${mismatch.actual}: hash-path mismatch, found at:`;
+          expect(gitResult.stderr).toContain(reconstructed);
+        }
+
+        // Assert — git's own stdout never names this unreferenced, refused id
+        expect(gitResult.stdout).not.toContain(OVERRUN_MISMATCH_SHA);
+
+        // Assert — tsgit reports no dangling/unreachable finding for it either
+        const spurious = result.findings.filter(
+          (f) =>
+            'id' in f &&
+            f.id === OVERRUN_MISMATCH_SHA &&
+            (f.type === 'dangling' || f.type === 'unreachable'),
+        );
+        expect(spurious).toHaveLength(0);
+      });
+    });
+  },
+);
+
+// ---------------------------------------------------------------------------
+// A REFERENCED loose object refused/mismatched by read_loose_object reports
+// `missing <type> <oid>`, exit 3 (1|2) — never a `dangling`/`unreachable`
+// finding of its own. Pinned real git 2.55.0 across three distinct refusal
+// causes: hash-path mismatch, undecodable zlib, and an over-threshold
+// over-run past core.bigFileThreshold.
+// ---------------------------------------------------------------------------
+
+// --- Scenario: a referenced blob whose file is another blob's (hash-path
+// mismatch) -------------------------------------------------------------
+
+let referencedHashMismatchDir = '';
+let referencedHashMismatchCtx: Context;
+let referencedMismatchBlobSha = '';
+
+beforeAll(async () => {
+  referencedHashMismatchDir = await mkdtemp(
+    path.join(os.tmpdir(), 'tsgit-fsck-referencedHashMismatch-'),
+  );
+  initRepo(referencedHashMismatchDir);
+  await writeFile(path.join(referencedHashMismatchDir, 'a'), 'hi\n');
+  runGit(['-C', referencedHashMismatchDir, 'add', 'a'], { env: SAFE_ENV });
+  runGit(['-C', referencedHashMismatchDir, 'commit', '-q', '-m', '1'], { env: SAFE_ENV });
+  referencedMismatchBlobSha = runGit(['-C', referencedHashMismatchDir, 'rev-parse', 'HEAD:a'], {
+    env: SAFE_ENV,
+  }).trim();
+  const otherBlobSha = runGit(['-C', referencedHashMismatchDir, 'hash-object', '-w', '--stdin'], {
+    env: SAFE_ENV,
+    input: 'other\n',
+  }).trim();
+
+  const blobPath = path.join(
+    referencedHashMismatchDir,
+    '.git',
+    'objects',
+    referencedMismatchBlobSha.slice(0, 2),
+    referencedMismatchBlobSha.slice(2),
+  );
+  const otherPath = path.join(
+    referencedHashMismatchDir,
+    '.git',
+    'objects',
+    otherBlobSha.slice(0, 2),
+    otherBlobSha.slice(2),
+  );
+  const { chmod } = await import('node:fs/promises');
+  await chmod(blobPath, 0o644);
+  await writeFile(blobPath, await readFile(otherPath));
+
+  referencedHashMismatchCtx = createNodeContext({ workDir: referencedHashMismatchDir });
+}, SETUP_TIMEOUT);
+
+afterAll(async () => {
+  if (referencedHashMismatchDir !== '') {
+    await rm(referencedHashMismatchDir, { recursive: true, force: true });
+  }
+});
+
+// --- Scenario: a referenced blob with garbage (undecodable) zlib ------------
+
+let referencedGarbageZlibDir = '';
+let referencedGarbageZlibCtx: Context;
+let referencedGarbageZlibBlobSha = '';
+
+beforeAll(async () => {
+  referencedGarbageZlibDir = await mkdtemp(
+    path.join(os.tmpdir(), 'tsgit-fsck-referencedGarbageZlib-'),
+  );
+  initRepo(referencedGarbageZlibDir);
+  await writeFile(path.join(referencedGarbageZlibDir, 'a'), 'hi\n');
+  runGit(['-C', referencedGarbageZlibDir, 'add', 'a'], { env: SAFE_ENV });
+  runGit(['-C', referencedGarbageZlibDir, 'commit', '-q', '-m', '1'], { env: SAFE_ENV });
+  referencedGarbageZlibBlobSha = runGit(['-C', referencedGarbageZlibDir, 'rev-parse', 'HEAD:a'], {
+    env: SAFE_ENV,
+  }).trim();
+
+  const blobPath = path.join(
+    referencedGarbageZlibDir,
+    '.git',
+    'objects',
+    referencedGarbageZlibBlobSha.slice(0, 2),
+    referencedGarbageZlibBlobSha.slice(2),
+  );
+  const { chmod } = await import('node:fs/promises');
+  await chmod(blobPath, 0o644);
+  await writeFile(blobPath, Buffer.from([0xde, 0xad, 0xbe, 0xef]));
+
+  referencedGarbageZlibCtx = createNodeContext({ workDir: referencedGarbageZlibDir });
+}, SETUP_TIMEOUT);
+
+afterAll(async () => {
+  if (referencedGarbageZlibDir !== '') {
+    await rm(referencedGarbageZlibDir, { recursive: true, force: true });
+  }
+});
+
+// --- Scenario: a tree referencing an over-threshold, in-window over-run
+// blob (check_stream_oid's own corrupt refusal) -------------------------
+
+let referencedBigFileOverrunDir = '';
+let referencedBigFileOverrunCtx: Context;
+let referencedBigFileOverrunBlobSha = '';
+const REFERENCED_BIG_FILE_OVERRUN_THRESHOLD = 1;
+
+beforeAll(async () => {
+  referencedBigFileOverrunDir = await mkdtemp(
+    path.join(os.tmpdir(), 'tsgit-fsck-referencedBigFileOverrun-'),
+  );
+  initRepo(referencedBigFileOverrunDir);
+  runGit(
+    [
+      '-C',
+      referencedBigFileOverrunDir,
+      'config',
+      'core.bigFileThreshold',
+      `${REFERENCED_BIG_FILE_OVERRUN_THRESHOLD}`,
+    ],
+    { env: SAFE_ENV },
+  );
+
+  referencedBigFileOverrunBlobSha = await writeLooseObjectWithClaim(
+    referencedBigFileOverrunDir,
+    'blob',
+    5,
+    Buffer.from('abcdefgh'),
+  );
+  const treeBody = Buffer.concat([
+    Buffer.from('100644 file.txt\0'),
+    Buffer.from(referencedBigFileOverrunBlobSha, 'hex'),
+  ]);
+  const treeSha = await writeLooseObject(referencedBigFileOverrunDir, 'tree', treeBody);
+  const commitBody = Buffer.from(
+    `tree ${treeSha}\nauthor Test <test@example.com> 1700000000 +0000\ncommitter Test <test@example.com> 1700000000 +0000\n\nmsg\n`,
+  );
+  const commitSha = await writeLooseObject(referencedBigFileOverrunDir, 'commit', commitBody);
+  await mkdir(path.join(referencedBigFileOverrunDir, '.git', 'refs', 'heads'), {
+    recursive: true,
+  });
+  await writeFile(
+    path.join(referencedBigFileOverrunDir, '.git', 'refs', 'heads', 'main'),
+    `${commitSha}\n`,
+  );
+
+  referencedBigFileOverrunCtx = createNodeContext({ workDir: referencedBigFileOverrunDir });
+}, SETUP_TIMEOUT);
+
+afterAll(async () => {
+  if (referencedBigFileOverrunDir !== '') {
+    await rm(referencedBigFileOverrunDir, { recursive: true, force: true });
+  }
+});
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given a REFERENCED loose blob refused by read_loose_object',
+  () => {
+    describe('When fsck runs', () => {
+      it.each([
+        {
+          label: 'hash-path mismatch',
+          dirOf: () => referencedHashMismatchDir,
+          ctxOf: () => referencedHashMismatchCtx,
+          shaOf: () => referencedMismatchBlobSha,
+        },
+        {
+          label: 'undecodable zlib',
+          dirOf: () => referencedGarbageZlibDir,
+          ctxOf: () => referencedGarbageZlibCtx,
+          shaOf: () => referencedGarbageZlibBlobSha,
+        },
+        {
+          label: 'over-threshold over-run',
+          dirOf: () => referencedBigFileOverrunDir,
+          ctxOf: () => referencedBigFileOverrunCtx,
+          shaOf: () => referencedBigFileOverrunBlobSha,
+        },
+      ])(
+        'Then emits missing blob, exit 3, and never a dangling/unreachable/broken-link finding for it ($label)',
+        async ({ dirOf, ctxOf, shaOf }) => {
+          // Arrange
+          const gitResult = gitFsck(dirOf());
+          const sha = shaOf();
+
+          // Act
+          const result = await fsck(ctxOf());
+
+          // Assert — exit 3 (content-error bit 1 | missing bit 2) matches real git exactly
+          expect(gitResult.exitCode).toBe(3);
+          expect(result.exitCode).toBe(gitResult.exitCode);
+
+          // Assert — git's own "missing blob <oid>" line, reconstructed
+          expect(gitResult.stdout).toContain(reconstructMissing('blob', sha));
+          const missing = result.findings.find(
+            (f): f is FsckFinding & { type: 'missing' } => f.type === 'missing' && f.id === sha,
+          );
+          expect(missing).toBeDefined();
+          expect(missing?.objectType).toBe('blob');
+
+          // Assert — never ALSO dangling/unreachable for the same id
+          const spurious = result.findings.filter(
+            (f) => 'id' in f && f.id === sha && (f.type === 'dangling' || f.type === 'unreachable'),
+          );
+          expect(spurious).toHaveLength(0);
+
+          // Assert — never a broken-link either (the id IS present, just unreadable)
+          expect(gitResult.stdout).not.toContain('broken link');
+          expect(result.findings.some((f) => f.type === 'broken-link' && f.toId === sha)).toBe(
+            false,
+          );
+        },
+      );
+    });
+  },
+);
+
+// ---------------------------------------------------------------------------
+// A REFERENCED object backed only by a corrupt PACKED entry — git's
+// `check_object` (`has_object_pack`) trusts the pack's claim on the id and
+// never even attempts the read that would learn it is corrupt, so this gets
+// NO `missing` line at all: only the pack-scan's own corruption report.
+// Pinned live against git 2.55.0 (scrubbed env): a 20 KB blob, `repack -ad`,
+// `prune-packed`, then 40 bytes flipped inside the pack entry gives
+// `index CRC mismatch …` / `cannot unpack …`, no `missing`, exit 4.
+// ---------------------------------------------------------------------------
+
+/** `git verify-pack -v <idx>`'s own row for `sha`: `<sha> <type> <size>
+ *  <size-in-packfile> <offset> [<depth> <base-sha>]` — the exact byte range
+ *  to corrupt without touching a neighbouring entry or the pack header. */
+function packEntryLocation(
+  dir: string,
+  idxPath: string,
+  sha: string,
+): { readonly offset: number; readonly sizeInPack: number } {
+  const output = runGit(['-C', dir, 'verify-pack', '-v', idxPath], { env: SAFE_ENV });
+  const line = output.split('\n').find((l) => l.startsWith(sha));
+  if (line === undefined) throw new Error(`verify-pack: no entry for ${sha}`);
+  const columns = line.trim().split(/\s+/);
+  return { sizeInPack: Number(columns[3]), offset: Number(columns[4]) };
+}
+
+/** Flip 40 bytes inside a packed entry's own compressed body (never its
+ *  first 5 header bytes, so the entry's declared type/size survives) —
+ *  breaks the zlib stream without restamping the pack's own trailer, the
+ *  same shape `index CRC mismatch` / `cannot unpack` reports. */
+async function corruptPackedEntry(packPath: string, sha: string, dir: string): Promise<void> {
+  const idxPath = packPath.replace(/\.pack$/, '.idx');
+  const { offset, sizeInPack } = packEntryLocation(dir, idxPath, sha);
+  const bytes = await readFile(packPath);
+  const start = offset + 5;
+  const end = offset + sizeInPack;
+  for (let i = start; i < end; i += 1) bytes[i] = (bytes[i] ?? 0) ^ 0xff;
+  // git writes a read-only (0o444) pack file.
+  const { chmod } = await import('node:fs/promises');
+  await chmod(packPath, 0o644);
+  await writeFile(packPath, bytes);
+}
+
+let referencedCorruptPackDir = '';
+let referencedCorruptPackCtx: Context;
+let referencedCorruptPackBlobSha = '';
+
+beforeAll(async () => {
+  referencedCorruptPackDir = await mkdtemp(
+    path.join(os.tmpdir(), 'tsgit-fsck-referencedCorruptPack-'),
+  );
+  initRepo(referencedCorruptPackDir);
+  await writeFile(path.join(referencedCorruptPackDir, 'big.bin'), 'x'.repeat(20_000));
+  runGit(['-C', referencedCorruptPackDir, 'add', 'big.bin'], { env: SAFE_ENV });
+  runGit(['-C', referencedCorruptPackDir, 'commit', '-q', '-m', '1'], { env: SAFE_ENV });
+  referencedCorruptPackBlobSha = runGit(
+    ['-C', referencedCorruptPackDir, 'rev-parse', 'HEAD:big.bin'],
+    { env: SAFE_ENV },
+  ).trim();
+  runGit(['-C', referencedCorruptPackDir, 'repack', '-ad', '-q'], { env: SAFE_ENV });
+  runGit(['-C', referencedCorruptPackDir, 'prune-packed'], { env: SAFE_ENV });
+  const packDir = path.join(referencedCorruptPackDir, '.git', 'objects', 'pack');
+  const packFile = (await readdir(packDir)).find((name) => name.endsWith('.pack'));
+  if (packFile === undefined) throw new Error('repack -ad produced no pack file');
+  await corruptPackedEntry(
+    path.join(packDir, packFile),
+    referencedCorruptPackBlobSha,
+    referencedCorruptPackDir,
+  );
+
+  referencedCorruptPackCtx = createNodeContext({ workDir: referencedCorruptPackDir });
+}, SETUP_TIMEOUT);
+
+afterAll(async () => {
+  if (referencedCorruptPackDir !== '') {
+    await rm(referencedCorruptPackDir, { recursive: true, force: true });
+  }
+});
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given a REFERENCED blob backed only by a corrupt PACKED entry',
+  () => {
+    describe('When fsck runs', () => {
+      it('Then never reports it missing, dangling, unreachable or broken-link (git exit 4; tsgit does not model ERROR_PACK for this)', async () => {
+        // Arrange
+        const gitResult = gitFsck(referencedCorruptPackDir);
+        const sha = referencedCorruptPackBlobSha;
+
+        // Act
+        const result = await fsck(referencedCorruptPackCtx);
+
+        // Assert — real git: no `missing` line, exit 4 (its own pack-scan bit)
+        expect(gitResult.stdout).not.toContain(`missing blob ${sha}`);
+        expect(gitResult.exitCode).toBe(4);
+
+        // Assert — tsgit: never missing/dangling/unreachable/broken-link for this id.
+        // tsgit's own content-validation still reports `bad-object`/badType for
+        // it (exit bit 1) — the SAME gap that predates this fix (0447291c
+        // exited 1 for this shape too); tsgit does not model git's ERROR_PACK
+        // (bit 4) for a per-entry pack corruption (see `object-cache.ts`'s
+        // `hasPackCopy` — a membership check, never a CRC verification).
+        const spuriousTypes = result.findings
+          .filter(
+            (f) =>
+              ('id' in f && f.id === sha) || ('toId' in f && (f as { toId: string }).toId === sha),
+          )
+          .map((f) => f.type);
+        expect(spuriousTypes).not.toContain('missing');
+        expect(spuriousTypes).not.toContain('dangling');
+        expect(spuriousTypes).not.toContain('unreachable');
+        expect(spuriousTypes).not.toContain('broken-link');
+        expect(result.exitCode & 2).toBe(0);
+      });
+    });
+  },
+);
+
+// ---------------------------------------------------------------------------
+// A loose mismatch file SHADOWING a good PACKED copy of the same oid — git
+// types the object from the pack (`verify_pack`/`has_object_pack`) and
+// traverses it; the shadowing loose file is reported through the SEPARATE
+// hash-path-mismatch pass, never through a spurious `missing`.
+// Pinned live against git 2.55.0 (scrubbed env): `hash-path mismatch …` +
+// `dangling blob <other>`, no `missing`, exit 1.
+// ---------------------------------------------------------------------------
+
+let shadowedPackDir = '';
+let shadowedPackCtx: Context;
+let shadowedPackBlobSha = '';
+let shadowedPackOtherSha = '';
+
+beforeAll(async () => {
+  shadowedPackDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-shadowedPack-'));
+  initRepo(shadowedPackDir);
+  await writeFile(path.join(shadowedPackDir, 'file.txt'), 'content-for-blob\n');
+  runGit(['-C', shadowedPackDir, 'add', 'file.txt'], { env: SAFE_ENV });
+  runGit(['-C', shadowedPackDir, 'commit', '-q', '-m', '1'], { env: SAFE_ENV });
+  shadowedPackBlobSha = runGit(['-C', shadowedPackDir, 'rev-parse', 'HEAD:file.txt'], {
+    env: SAFE_ENV,
+  }).trim();
+  // repack -ad also prunes the now-redundant loose copy of the blob.
+  runGit(['-C', shadowedPackDir, 'repack', '-ad', '-q'], { env: SAFE_ENV });
+
+  shadowedPackOtherSha = runGit(['-C', shadowedPackDir, 'hash-object', '-w', '--stdin'], {
+    env: SAFE_ENV,
+    input: 'other-content\n',
+  }).trim();
+  const otherPath = path.join(
+    shadowedPackDir,
+    '.git',
+    'objects',
+    shadowedPackOtherSha.slice(0, 2),
+    shadowedPackOtherSha.slice(2),
+  );
+  const blobPath = path.join(
+    shadowedPackDir,
+    '.git',
+    'objects',
+    shadowedPackBlobSha.slice(0, 2),
+    shadowedPackBlobSha.slice(2),
+  );
+  await mkdir(path.dirname(blobPath), { recursive: true });
+  await writeFile(blobPath, await readFile(otherPath));
+
+  shadowedPackCtx = createNodeContext({ workDir: shadowedPackDir });
+}, SETUP_TIMEOUT);
+
+afterAll(async () => {
+  if (shadowedPackDir !== '') await rm(shadowedPackDir, { recursive: true, force: true });
+});
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given a loose mismatch file shadowing a good PACKED copy of the same oid',
+  () => {
+    describe('When fsck runs', () => {
+      it('Then reports hash-mismatch and dangling for the shadow, never missing for the packed id, exit code matches real git', async () => {
+        // Arrange
+        const gitResult = gitFsck(shadowedPackDir);
+        const sha = shadowedPackBlobSha;
+
+        // Act
+        const result = await fsck(shadowedPackCtx);
+
+        // Assert — real git: no `missing` line, exit 1
+        expect(gitResult.stdout).not.toContain(`missing blob ${sha}`);
+        expect(gitResult.exitCode).toBe(1);
+        expect(gitResult.stderr).toContain(
+          `${shadowedPackOtherSha}: hash-path mismatch, found at:`,
+        );
+        expect(gitResult.stdout).toContain(`dangling blob ${shadowedPackOtherSha}`);
+
+        // Assert — tsgit matches exactly
+        expect(result.exitCode).toBe(gitResult.exitCode);
+        const mismatch = result.findings.find(
+          (f): f is FsckFinding & { type: 'hash-mismatch' } =>
+            f.type === 'hash-mismatch' && f.id === sha,
+        );
+        expect(mismatch?.actual).toBe(shadowedPackOtherSha);
+        const spuriousTypes = result.findings
+          .filter(
+            (f) =>
+              ('id' in f && f.id === sha) || ('toId' in f && (f as { toId: string }).toId === sha),
+          )
+          .map((f) => f.type);
+        expect(spuriousTypes).not.toContain('missing');
+        expect(spuriousTypes).not.toContain('dangling');
+        expect(spuriousTypes).not.toContain('unreachable');
+        expect(spuriousTypes).not.toContain('broken-link');
+      });
+    });
+  },
+);
+
+// ---------------------------------------------------------------------------
+// An annotated tag whose target is PRESENT but content-unreadable — git's
+// tag walk marks a present target reachable (and so `tagged`) regardless of
+// whether it could be typed; only a genuinely ABSENT target drops the
+// report. Pinned live against git 2.55.0 (scrubbed env), loose (no pack)
+// target: `git fsck --tags` prints `tagged blob <oid> (tb) in <tag>` AND
+// `missing blob <oid>`, exit 3.
+// ---------------------------------------------------------------------------
+
+function reconstructTagged(
+  objectType: string,
+  targetId: string,
+  tagName: string,
+  tagId: string,
+): string {
+  return `tagged ${objectType} ${targetId} (${tagName}) in ${tagId}`;
+}
+
+let taggedUnreadableDir = '';
+let taggedUnreadableCtx: Context;
+let taggedUnreadableBlobSha = '';
+let taggedUnreadableTagSha = '';
+
+beforeAll(async () => {
+  taggedUnreadableDir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-fsck-taggedUnreadable-'));
+  initRepo(taggedUnreadableDir);
+  await writeFile(path.join(taggedUnreadableDir, 'a'), 'hi\n');
+  runGit(['-C', taggedUnreadableDir, 'add', 'a'], { env: SAFE_ENV });
+  runGit(['-C', taggedUnreadableDir, 'commit', '-q', '-m', '1'], { env: SAFE_ENV });
+  taggedUnreadableBlobSha = runGit(['-C', taggedUnreadableDir, 'hash-object', '-w', '--stdin'], {
+    env: SAFE_ENV,
+    input: 'tagged-blob\n',
+  }).trim();
+  runGit(['-C', taggedUnreadableDir, 'tag', '-a', '-m', 't', 'tb', taggedUnreadableBlobSha], {
+    env: SAFE_ENV,
+  });
+  taggedUnreadableTagSha = runGit(['-C', taggedUnreadableDir, 'rev-parse', 'refs/tags/tb'], {
+    env: SAFE_ENV,
+  }).trim();
+  const otherBlobSha = runGit(['-C', taggedUnreadableDir, 'hash-object', '-w', '--stdin'], {
+    env: SAFE_ENV,
+    input: 'other\n',
+  }).trim();
+  const blobPath = path.join(
+    taggedUnreadableDir,
+    '.git',
+    'objects',
+    taggedUnreadableBlobSha.slice(0, 2),
+    taggedUnreadableBlobSha.slice(2),
+  );
+  const otherPath = path.join(
+    taggedUnreadableDir,
+    '.git',
+    'objects',
+    otherBlobSha.slice(0, 2),
+    otherBlobSha.slice(2),
+  );
+  const { chmod } = await import('node:fs/promises');
+  await chmod(blobPath, 0o644);
+  await writeFile(blobPath, await readFile(otherPath));
+
+  taggedUnreadableCtx = createNodeContext({ workDir: taggedUnreadableDir });
+}, SETUP_TIMEOUT);
+
+afterAll(async () => {
+  if (taggedUnreadableDir !== '') await rm(taggedUnreadableDir, { recursive: true, force: true });
+});
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given an annotated tag whose target is a present but content-unreadable loose blob (no pack copy)',
+  () => {
+    describe('When fsck runs', () => {
+      it('Then emits tagged and missing for the target, exit code matches real git --tags', async () => {
+        // Arrange
+        const gitResult = gitFsck(taggedUnreadableDir, '--tags');
+        const sha = taggedUnreadableBlobSha;
+        const tagSha = taggedUnreadableTagSha;
+
+        // Act
+        const result = await fsck(taggedUnreadableCtx);
+
+        // Assert — real git prints BOTH lines, exit 3
+        expect(gitResult.stdout).toContain(reconstructTagged('blob', sha, 'tb', tagSha));
+        expect(gitResult.stdout).toContain(reconstructMissing('blob', sha));
+        expect(gitResult.exitCode).toBe(3);
+
+        // Assert — tsgit matches: tagged finding reconstructs git's own line
+        const tagged = result.findings.find(
+          (f): f is FsckFinding & { type: 'tagged' } => f.type === 'tagged' && f.id === sha,
+        );
+        expect(tagged).toBeDefined();
+        if (tagged !== undefined) {
+          const reconstructed = reconstructTagged(
+            tagged.objectType,
+            tagged.id,
+            tagged.tagName,
+            tagged.tag,
+          );
+          expect(gitResult.stdout).toContain(reconstructed);
+        }
+        const missing = result.findings.find(
+          (f): f is FsckFinding & { type: 'missing' } => f.type === 'missing' && f.id === sha,
+        );
+        expect(missing).toMatchObject({ type: 'missing', objectType: 'blob' });
+        expect(result.exitCode).toBe(gitResult.exitCode);
+
+        // Assert — never a broken-link (the id IS present, just unreadable)
+        const brokenLink = result.findings.find(
+          (f) => f.type === 'broken-link' && (f as { toId: string }).toId === sha,
+        );
+        expect(brokenLink).toBeUndefined();
       });
     });
   },

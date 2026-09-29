@@ -312,6 +312,176 @@ describe('openBlobSource', () => {
     });
   });
 
+  describe("Given a loose blob whose header size claim disagrees with its body length past git's 32-byte header window", () => {
+    describe("When openBlobSource is called with looseMode 'buffered' at the gate at the compressed length", () => {
+      it('Then throws INVALID_OBJECT_HEADER with the content-exceeds-claim reason', async () => {
+        // Arrange
+        const blob: Blob = {
+          type: 'blob',
+          content: ENC.encode('lying loose blob content that overruns the header window'),
+          id: '' as ObjectId,
+        };
+        const ctx = await buildSeededContext({ objects: [blob] });
+        const id = await writeObject(ctx, blob);
+        await overwriteLoose(ctx, id, looseFormatBytesWithClaim('blob', 3, blob.content));
+        const compressedLen = await looseCompressedLength(ctx, id);
+
+        // Act
+        try {
+          await openBlobSource(ctx, id, compressedLen, { looseMode: 'buffered' });
+          // Assert
+          expect.unreachable();
+        } catch (error) {
+          const data = (error as TsgitError).data;
+          expect(data.code).toBe('INVALID_OBJECT_HEADER');
+          if (data.code === 'INVALID_OBJECT_HEADER') {
+            expect(data.reason).toBe('content exceeds declared size 3');
+          }
+        }
+      });
+    });
+  });
+
+  describe("Given a loose blob whose header size claim disagrees with its body length but the whole object fits inside git's 32-byte header window", () => {
+    describe("When openBlobSource is called with looseMode 'buffered' at the gate at the compressed length", () => {
+      it('Then resolves as a bytes source truncated to the claim', async () => {
+        // Arrange — header `blob 3\0` (7 bytes) plus a 25-byte body totals
+        // git's exact 32-byte window: the overrun truncates, not refuses.
+        const blob: Blob = {
+          type: 'blob',
+          content: ENC.encode('lying loose blob content'),
+          id: '' as ObjectId,
+        };
+        const ctx = await buildSeededContext({ objects: [blob] });
+        const id = await writeObject(ctx, blob);
+        await overwriteLoose(ctx, id, looseFormatBytesWithClaim('blob', 3, blob.content));
+        const compressedLen = await looseCompressedLength(ctx, id);
+
+        // Act
+        const result = await openBlobSource(ctx, id, compressedLen, { looseMode: 'buffered' });
+
+        // Assert
+        expect(result.kind).toBe('bytes');
+        if (result.kind === 'bytes') {
+          expect(result.content).toEqual(blob.content.subarray(0, 3));
+        }
+      });
+    });
+  });
+
+  describe('Given a loose blob resolved on the stream arm whose header size claim disagrees with its body length', () => {
+    describe("When openBlobSource is called with looseMode 'buffered' at a gate under the compressed length", () => {
+      it('Then the stream throws INVALID_OBJECT_HEADER as soon as the body exceeds the claim', async () => {
+        // Arrange
+        const blob: Blob = {
+          type: 'blob',
+          content: ENC.encode('loose streamed gate test content that overruns its claim'),
+          id: '' as ObjectId,
+        };
+        const ctx = await buildSeededContext({ objects: [blob] });
+        const id = await writeObject(ctx, blob);
+        await overwriteLoose(ctx, id, looseFormatBytesWithClaim('blob', 5, blob.content));
+        const compressedLen = await looseCompressedLength(ctx, id);
+
+        // Act
+        const result = await openBlobSource(ctx, id, compressedLen - 1, { looseMode: 'buffered' });
+
+        // Assert
+        expect(result.kind).toBe('stream');
+        if (result.kind === 'stream') {
+          try {
+            await collect(result.stream);
+            expect.unreachable();
+          } catch (error) {
+            const data = (error as TsgitError).data;
+            expect(data.code).toBe('INVALID_OBJECT_HEADER');
+            if (data.code === 'INVALID_OBJECT_HEADER') {
+              expect(data.reason).toBe('content exceeds declared size 5');
+            }
+          }
+        }
+      });
+    });
+  });
+
+  describe('Given a loose blob resolved on the stream arm whose header size claim disagrees with its body length', () => {
+    describe('When openBlobSource is called with the default (streamed) looseMode at a gate under the compressed length', () => {
+      it("Then the stream serves the real body — git's streaming tier ignores the claim", async () => {
+        // Arrange
+        const blob: Blob = {
+          type: 'blob',
+          content: ENC.encode('loose streamed gate test content that overruns its claim'),
+          id: '' as ObjectId,
+        };
+        const ctx = await buildSeededContext({ objects: [blob] });
+        const id = await writeObject(ctx, blob);
+        await overwriteLoose(ctx, id, looseFormatBytesWithClaim('blob', 5, blob.content));
+        const compressedLen = await looseCompressedLength(ctx, id);
+
+        // Act
+        const result = await openBlobSource(ctx, id, compressedLen - 1);
+
+        // Assert
+        expect(result.kind).toBe('stream');
+        if (result.kind === 'stream') {
+          const drained = await collect(result.stream);
+          expect(drained).toEqual(blob.content);
+        }
+      });
+    });
+  });
+
+  describe("Given a loose blob's overrun arrives on a LATER inflate chunk, not the header's own tail", () => {
+    describe("When openBlobSource is called with looseMode 'buffered' and the inflate emits the body across two chunks", () => {
+      it("Then the loop's own running total still trips the claim on the second chunk", async () => {
+        // Arrange — a stub inflate stream emits the header (plus 3 content
+        // bytes, within the claim=5) as the FIRST chunk, then 5 more content
+        // bytes as a SECOND, separate chunk: only the running total the LOOP
+        // itself accrues across chunks — not the header-tail's own check —
+        // can catch this overrun.
+        const blob: Blob = { type: 'blob', content: ENC.encode('content'), id: '' as ObjectId };
+        const ctx = await buildSeededContext({ objects: [blob] });
+        const id = await writeObject(ctx, blob);
+        const firstChunk = ENC.encode('blob 5\0abc');
+        const secondChunk = ENC.encode('12345');
+        const stubCtx: Context = {
+          ...ctx,
+          compressor: {
+            ...ctx.compressor,
+            createInflateStream: () => ({
+              readable: new ReadableStream<Uint8Array>({
+                start(controller) {
+                  controller.enqueue(firstChunk);
+                  controller.enqueue(secondChunk);
+                  controller.close();
+                },
+              }),
+              writable: new WritableStream<Uint8Array>(),
+            }),
+          },
+        };
+
+        // Act
+        const result = await openBlobSource(stubCtx, id, 0, { looseMode: 'buffered' });
+
+        // Assert
+        expect(result.kind).toBe('stream');
+        if (result.kind === 'stream') {
+          try {
+            await collect(result.stream);
+            expect.unreachable();
+          } catch (error) {
+            const data = (error as TsgitError).data;
+            expect(data.code).toBe('INVALID_OBJECT_HEADER');
+            if (data.code === 'INVALID_OBJECT_HEADER') {
+              expect(data.reason).toBe('content exceeds declared size 5');
+            }
+          }
+        }
+      });
+    });
+  });
+
   describe('Given a packed base (non-delta) blob', () => {
     describe('When openBlobSource is called with the gate at the payload length', () => {
       it('Then resolves as a bytes source with raw content and no loose-format header', async () => {

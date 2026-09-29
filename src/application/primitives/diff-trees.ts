@@ -21,6 +21,7 @@ import {
 import { scanEqual } from '../../domain/diff/line-digest-scanner.js';
 import { diffRawTrees } from '../../domain/diff/raw-tree-diff.js';
 import type { RenameDetectOptions } from '../../domain/diff/rename-detect.js';
+import { computeRewriteStatFields } from '../../domain/diff/stat-fields.js';
 import {
   treeCycleDetected,
   treeDepthExceeded,
@@ -36,7 +37,7 @@ import {
   type Tree,
 } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
-import { detectSimilarityRenames } from './detect-similarity-renames.js';
+import { detectBreakRewrites, detectSimilarityRenames } from './detect-similarity-renames.js';
 import { boundedMapFor, limiterFor } from './internal/concurrency.js';
 import type { ConcurrencyLimiter } from './internal/concurrency-limiter.js';
 import {
@@ -57,6 +58,13 @@ import type { DiffTreesInput, DiffTreesOptions } from './types.js';
 import { exceedsMaxTreeDepth, exceedsMaxTreeEntries } from './validators.js';
 
 const EMPTY = new Uint8Array(0);
+
+/** `true` for a modify `-B` kept broken (dissimilar enough, never re-merged) —
+ *  git's `complete_rewrite` path: numstat counts the whole file on each side
+ *  and the whitespace drop pass never drops it, regardless of line-key mode. */
+function isKeptBroken(change: DiffChange): boolean {
+  return change.type === 'modify' && change.broken !== undefined;
+}
 
 /**
  * Diff two tree-like targets, returning the structured `TreeDiff`. Pass
@@ -86,26 +94,62 @@ export async function diffTrees(
   b: DiffTreesInput,
   options?: DiffTreesOptions,
 ): Promise<TreeDiff | StatTreeDiff> {
-  const rawDiff = await resolveAndDiff(ctx, a, b, options);
-  const diff =
-    options?.detectRenames === true
-      ? await detectSimilarityRenames(
-          ctx,
-          rawDiff,
-          options.renameOptions,
-          await buildPreimage(ctx, a, options.renameOptions),
-        )
-      : rawDiff;
+  const effective = withRecursiveForStat(options);
+  const rawDiff = await resolveAndDiff(ctx, a, b, effective);
+  const diff = await detectChanges(ctx, rawDiff, a, effective);
 
-  const lineKey = resolveLineKey(options ?? {});
+  const lineKey = resolveLineKey(effective ?? {});
   const lineKeyActive = lineKeyIsActive(lineKey);
-  const ignoreBlankLines = options?.ignoreBlankLines === true;
-  const withStat = options?.withStat === true;
+  const ignoreBlankLines = effective?.ignoreBlankLines === true;
+  const withStat = effective?.withStat === true;
 
   if (lineKeyActive || withStat) {
     return applyLinePassAndStat(ctx, diff, lineKey, lineKeyActive, ignoreBlankLines, withStat);
   }
   return diff;
+}
+
+/**
+ * git recurses before rename/copy detection for any content-reading output
+ * format (`--numstat`, `--stat`, `-p`) — a tree pair has no lines to diff, so
+ * pairing must run on leaves. `withStat` is that format: force `recursive`
+ * regardless of what the caller passed, so detection never sees a
+ * directory-mode entry.
+ */
+function withRecursiveForStat(options: DiffTreesOptions | undefined): DiffTreesOptions | undefined {
+  if (options?.withStat !== true) return options;
+  return { ...options, recursive: true };
+}
+
+/**
+ * Route to the configured change-detection pass over the raw diff: full
+ * rename/copy detection when `detectRenames` is on; `-B` break detection
+ * alone when it is off but `renameOptions.breakRewrites` is set (git's
+ * `--no-renames -B` — no rename or copy pairing ever runs); the raw diff
+ * untouched otherwise.
+ */
+async function detectChanges(
+  ctx: Context,
+  rawDiff: TreeDiff,
+  a: DiffTreesInput,
+  options: DiffTreesOptions | undefined,
+): Promise<TreeDiff> {
+  if (options?.detectRenames === true) {
+    return detectSimilarityRenames(
+      ctx,
+      rawDiff,
+      options.renameOptions,
+      await buildPreimage(
+        ctx,
+        a,
+        options.renameOptions,
+        options.recursive === true ? 'recursive' : 'top-level',
+      ),
+    );
+  }
+  const breakRewrites = options?.renameOptions?.breakRewrites;
+  if (breakRewrites === undefined || breakRewrites === false) return rawDiff;
+  return detectBreakRewrites(ctx, rawDiff, breakRewrites);
 }
 
 /**
@@ -177,9 +221,12 @@ async function applyLinePassAndStat(
  * When `lineKeyActive`, drops modify changes whose drop verdict comes from
  * `dropVerdict` — the same synchronous scanner and ladder the predicate-only
  * path drives, not the stat counts computed alongside it. When `withStat`,
- * attaches per-file counts to every surviving change. Consistency between
- * the two paths holds by construction: both run the same scanner, rather
- * than two independently maintained verdicts.
+ * attaches per-file counts to every surviving change: a kept-broken modify
+ * (`isKeptBroken`) gets `computeRewriteStatFields` — the whole file counted
+ * on each side, git's `complete_rewrite` numstat — every other change keeps
+ * `computeStatFields`'s line diff. Consistency between the two drop paths
+ * holds by construction: both run the same scanner, rather than two
+ * independently maintained verdicts.
  *
  * The verdict runs BEFORE the counts, and both are pure functions of the same
  * two buffers: a dropped file's counts would be discarded, so computing them
@@ -194,12 +241,14 @@ async function applyStatPass(
   ignoreBlankLines: boolean,
   withStat: boolean,
 ): Promise<TreeDiff | StatTreeDiff> {
-  const changes = await expandDirectoryChanges(ctx, diff.changes);
-  const files = await materialisePatchFiles(ctx, changes, { applyTextconv: true });
+  const files = await materialisePatchFiles(ctx, diff.changes, { applyTextconv: true });
   const surviving: Array<DiffChange | StatDiffChange> = [];
   for (const file of files) {
-    const oldContent = file.oldContent ?? EMPTY;
-    const newContent = file.newContent ?? EMPTY;
+    // git's builtin_diffstat never calls fill_textconv — numstat/stat (and the
+    // whitespace-drop verdict that gates a row's presence) count the RAW blob,
+    // never the textconv OUTPUT the patch hunk (a separate call) renders.
+    const oldContent = file.numstatOldContent ?? file.oldContent ?? EMPTY;
+    const newContent = file.numstatNewContent ?? file.newContent ?? EMPTY;
     const dropped =
       lineKeyActive &&
       dropVerdict(
@@ -211,40 +260,16 @@ async function applyStatPass(
         file.numstatBinaryOverride,
       );
     if (dropped) continue;
-    const stats = computeStatFields(
-      oldContent,
-      newContent,
-      statOptionsFor(lineKey, lineKeyActive, ignoreBlankLines, file.numstatBinaryOverride),
-    );
+    const stats = isKeptBroken(file.change)
+      ? computeRewriteStatFields(oldContent, newContent, file.numstatBinaryOverride)
+      : computeStatFields(
+          oldContent,
+          newContent,
+          statOptionsFor(lineKey, lineKeyActive, ignoreBlankLines, file.numstatBinaryOverride),
+        );
     surviving.push(withStat ? { ...file.change, ...stats } : file.change);
   }
   return { changes: surviving };
-}
-
-/**
- * Expand directory-mode add/delete/modify entries — a non-recursive diff can
- * legitimately pair two tree oids for a changed/added/removed sub-directory —
- * into full-path leaf changes before any blob content is materialised.
- * Mirrors git's own `diff-tree` behaviour: any output format that needs blob
- * content (`--numstat`/`--stat`/`-p`) implicitly recurses, because a tree
- * pair has no lines to diff. A no-op for already-recursive diffs or diffs
- * with no directory-mode entries — `expandLevelChange` passes leaf changes
- * through unchanged.
- */
-async function expandDirectoryChanges(
-  ctx: Context,
-  changes: ReadonlyArray<DiffChange>,
-): Promise<DiffChange[]> {
-  const state: DiffWalkState = {
-    counter: { value: 0 },
-    maxEntries: MAX_FLAT_TREE_ENTRIES,
-    maxDepth: await resolveMaxTreeDepth(ctx),
-    limiter: limiterFor(ctx, 'ioBound'),
-  };
-  const expanded = await boundedMapFor(ctx, 'ioBound', changes, (change) =>
-    expandLevelChange(ctx, change, ROOT_CURSOR, state),
-  );
-  return expanded.flat();
 }
 
 /**
@@ -321,19 +346,17 @@ async function materialisedShouldDrop(
 function isDirectoryModeChange(change: DiffChange): boolean {
   if (change.type === 'add') return isDirectory(change.newMode);
   if (change.type === 'delete') return isDirectory(change.oldMode);
-  // Stryker disable next-line ConditionalExpression: equivalent — reached only by
-  // modify/type-change/rename/copy (add/delete return above). modify: guard is true
-  // either way, same body runs. type-change: classifySamePath only emits it when
-  // !isSameKind, so exactly 0 or 1 side is a directory, never both — the `&&` below
-  // is false regardless. rename/copy: buildRenameChange/buildCopyChange only complete
-  // after readBlob succeeds on both sides, which throws unexpectedObjectType for a
-  // tree oid — so a directory side can never reach a constructed RenameChange/CopyChange,
-  // isDirectory is false on both — `&&` is false either way. Every reachable case matches
-  // the unmutated `return false` fallthrough.
-  if (change.type === 'modify')
-    // Stryker disable next-line LogicalOperator: equivalent — classifySamePath only
-    // emits 'modify' when isSameKind(oldMode,newMode), so isDirectory(oldMode) ===
-    // isDirectory(newMode) always; X&&X === X||X for any X.
+  // type-change is the one case excluded here: classifySamePath only emits it when
+  // !isSameKind(oldMode, newMode), so exactly 0 or 1 side is ever a directory, never
+  // both, and it falls through to `return false` below rather than joining this branch.
+  if (change.type === 'modify' || change.type === 'rename' || change.type === 'copy')
+    // Stryker disable next-line LogicalOperator: equivalent — modify only reaches here
+    // when isSameKind(oldMode, newMode) (classifySamePath's own guard). A rename/copy
+    // pairs sources and destinations by exactKey, which uses the RAW mode for any
+    // non-file kind — and a tree has exactly one raw mode (040000) — so a directory
+    // side only ever pairs with another directory side (a non-recursive diff's exact
+    // tree-oid rename/copy, e.g. `R100 olddir newdir`). Either way isDirectory(oldMode)
+    // === isDirectory(newMode) always holds, so X&&X === X||X for any X.
     return isDirectory(change.oldMode) && isDirectory(change.newMode);
   return false;
 }
@@ -347,6 +370,7 @@ async function changeShouldDrop(
 ): Promise<boolean> {
   if (isDirectoryModeChange(change)) return true;
   if (change.type !== 'modify') return false;
+  if (isKeptBroken(change)) return false;
   if (await hasDiffAttribute(change, getProvider)) {
     return materialisedShouldDrop(ctx, change, lineKey, ignoreBlankLines, getProvider);
   }
@@ -357,12 +381,14 @@ async function changeShouldDrop(
  * The stat path's drop verdict — routed through the same synchronous scanner
  * and ladder the predicate-only path drives (`scanEqual`,
  * `line-digest-scanner.ts`), so the two paths cannot answer differently for
- * the same pair of blobs. Only `modify` changes are ever dropped. The
- * `.gitattributes` binary override is threaded into the scanner rather than
- * short-circuited here, so all three of its states are honoured by one decision:
- * a forced-binary side is never dropped, a forced-text side drops a
- * whitespace-only change even over NUL bytes (matching git), and an
- * unattributed path keeps git's NUL-window content sniff.
+ * the same pair of blobs. Only `modify` changes are ever dropped, and a
+ * kept-broken one never is — git's `complete_rewrite` skips xdiff (and so
+ * the whitespace drop) entirely. The `.gitattributes` binary override is
+ * threaded into the scanner rather than short-circuited here, so all three
+ * of its states are honoured by one decision: a forced-binary side is never
+ * dropped, a forced-text side drops a whitespace-only change even over NUL
+ * bytes (matching git), and an unattributed path keeps git's NUL-window
+ * content sniff.
  */
 function dropVerdict(
   change: DiffChange,
@@ -373,11 +399,28 @@ function dropVerdict(
   numstatBinaryOverride: BinaryOverride | undefined,
 ): boolean {
   if (change.type !== 'modify') return false;
+  if (isKeptBroken(change)) return false;
   return scanEqual(oldContent, newContent, lineKey, ignoreBlankLines, numstatBinaryOverride);
 }
 
+/** `tree`'s own entries, one level, no recursion — a subdirectory becomes a
+ *  copy source keyed by its own tree oid rather than descended into,
+ *  matching which paths a non-recursive diff's own raw pass ever offers. */
+function topLevelEntries(tree: Tree): FlatTree['entries'] {
+  const entries = new Map<FilePath, FlatTreeEntry>();
+  for (const entry of tree.entries) {
+    entries.set(entry.name as FilePath, { id: entry.id, mode: entry.mode });
+  }
+  return entries;
+}
+
 /**
- * Build the flat preimage map for copies:'harder' — all tree-A paths become copy sources.
+ * Build the flat preimage map for copies:'harder'. Recursive: every LEAF
+ * path in tree A becomes a copy source (`flattenRawTree`). Non-recursive:
+ * only tree A's OWN top-level entries do — files and subdirectories alike —
+ * since that is the finest grain a non-recursive diff's own raw pass ever
+ * pairs a same-oid destination against (git never looks inside an unchanged
+ * subdirectory there either).
  * Returns undefined when copies:'harder' is not active or `a` is absent. An `ObjectId`
  * is peeled to its tree first (a commit or tag oid must resolve exactly like the
  * tree-oid form does) — `flattenRawTree` refuses anything but a tree, so `a` cannot be
@@ -390,8 +433,13 @@ async function buildPreimage(
   ctx: Context,
   a: DiffTreesInput,
   renameOptions: RenameDetectOptions | undefined,
+  traversal: 'recursive' | 'top-level',
 ): Promise<FlatTree['entries'] | undefined> {
   if (renameOptions?.copies !== 'harder' || a === undefined) return undefined;
+  if (traversal === 'top-level') {
+    const tree = await resolveInput(ctx, a);
+    return tree === undefined ? undefined : topLevelEntries(tree);
+  }
   const bounds = await resolveFlattenBounds(ctx);
   if (typeof a !== 'string') {
     return (await flattenRawTree(ctx, a, bounds)).entries;
@@ -512,10 +560,10 @@ interface DiffWalkCounter {
 interface DiffWalkState {
   readonly counter: DiffWalkCounter;
   readonly maxEntries: number;
-  /** Resolved once per `diffRecursive`/`expandDirectoryChanges` call (never
-   *  per level) from `core.maxTreeDepth` — see `diffChangedSubtree`'s guard
-   *  and `subtreeExpansionBounds`, both of which read it back from here
-   *  instead of resolving again. */
+  /** Resolved once per `diffRecursive` call (never per level) from
+   *  `core.maxTreeDepth` — see `diffChangedSubtree`'s guard and
+   *  `subtreeExpansionBounds`, both of which read it back from here instead
+   *  of resolving again. */
   readonly maxDepth: number;
   readonly limiter: ConcurrencyLimiter;
 }

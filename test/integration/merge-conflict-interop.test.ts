@@ -131,6 +131,18 @@ describe.skipIf(!GIT_AVAILABLE)('merge interop — per-region conflict materiali
     );
   };
 
+  /** Run the (non-conflicting) merge on both tools; both auto-merge without markers. */
+  const mergeBothClean = async (): Promise<void> => {
+    runGit(['-C', pair.peer, 'merge', '--no-ff', '-m', 'm', 'theirs'], { env: COMMIT_ENV });
+    const result = await repo.merge.run({ rev: 'theirs', message: 'm', author: AUTHOR });
+    expect(result.kind).toBe('merge');
+  };
+
+  const expectCleanMatch = async (): Promise<void> => {
+    expect(lsStage(pair.ours)).toBe(lsStage(pair.peer));
+    expect(await read(pair.ours, 'file.txt')).toBe(await read(pair.peer, 'file.txt'));
+  };
+
   describe('Given a single overlap with shared edges', () => {
     describe('When the content merge conflicts on both tools', () => {
       it('Then only the differing middle is marked, matching git', async () => {
@@ -205,6 +217,113 @@ describe.skipIf(!GIT_AVAILABLE)('merge interop — per-region conflict materiali
         expect(normaliseMarkers(await read(pair.ours, 'file.txt'))).toBe(
           `<<<<<<<\n${oursContent}=======\n${theirsContent}>>>>>>>\n`,
         );
+      });
+    });
+  });
+
+  describe('Given one side changes the last line while the other appends after it', () => {
+    describe('When the content merge runs on both tools', () => {
+      it('Then both conflict on the touching regions, matching git', async () => {
+        // Arrange — ours' change ends exactly where theirs' zero-length append begins.
+        await divergeFile('a\nb\nc\n', 'a\nb\nX\n', 'a\nb\nc\nAPPENDED\n');
+
+        // Act
+        await mergeBothConflict();
+
+        // Assert
+        await expectConflictMatch();
+      });
+    });
+  });
+
+  describe('Given one side changes the last line without a trailing newline while the other appends a new line', () => {
+    describe('When the content merge runs on both tools', () => {
+      it('Then both conflict, matching git', async () => {
+        // Arrange — base has no trailing newline; appending after it changes the
+        // last record's terminator too, so this is a genuine overlap either way.
+        await divergeFile('a\nb\nc', 'a\nb\nX', 'a\nb\nc\nAPPENDED');
+
+        // Act
+        await mergeBothConflict();
+
+        // Assert
+        await expectConflictMatch();
+      });
+    });
+  });
+
+  describe('Given the two sides change adjacent lines', () => {
+    describe('When the content merge runs on both tools', () => {
+      it('Then both conflict on the touching regions, matching git', async () => {
+        // Arrange — ours' change [1,2) touches theirs' change [2,3) at line 2.
+        await divergeFile('a\nb\nc\nd\n', 'a\nX\nc\nd\n', 'a\nb\nY\nd\n');
+
+        // Act
+        await mergeBothConflict();
+
+        // Assert
+        await expectConflictMatch();
+      });
+    });
+  });
+
+  describe('Given one side changes the first line while the other prepends before it', () => {
+    describe('When the content merge runs on both tools', () => {
+      it('Then both conflict on the touching regions, matching git', async () => {
+        // Arrange — control: the insertion-at-start edge already conflicted before
+        // the closed-test fix and must keep conflicting after it.
+        await divergeFile('b\nc\n', 'X\nc\n', 'PRE\nb\nc\n');
+
+        // Act
+        await mergeBothConflict();
+
+        // Assert
+        await expectConflictMatch();
+      });
+    });
+  });
+
+  describe('Given one side makes a pure insertion immediately after the other side changes', () => {
+    describe('When the content merge runs on both tools', () => {
+      it('Then both conflict on the touching regions, matching git', async () => {
+        // Arrange — ours' change [1,2) touches theirs' zero-length insertion at 2.
+        await divergeFile('a\nb\nc\nd\n', 'a\nX\nc\nd\n', 'a\nb\nNEW\nc\nd\n');
+
+        // Act
+        await mergeBothConflict();
+
+        // Assert
+        await expectConflictMatch();
+      });
+    });
+  });
+
+  describe('Given the two sides edits are separated by one unchanged line', () => {
+    describe('When the content merge runs on both tools', () => {
+      it('Then both merge clean, matching git', async () => {
+        // Arrange — control: a genuine (non-touching) gap must stay clean.
+        await divergeFile('a\nb\nc\nd\ne\n', 'X\nb\nc\nd\ne\n', 'a\nb\nY\nd\ne\n');
+
+        // Act
+        await mergeBothClean();
+
+        // Assert
+        await expectCleanMatch();
+      });
+    });
+  });
+
+  describe('Given both sides make the identical change', () => {
+    describe('When the content merge runs on both tools', () => {
+      it('Then both merge clean with no conflict, matching git', async () => {
+        // Arrange
+        await divergeFile('a\nb\nc\n', 'a\nX\nc\n', 'a\nX\nc\n');
+
+        // Act
+        await mergeBothClean();
+
+        // Assert
+        await expectCleanMatch();
       });
     });
   });

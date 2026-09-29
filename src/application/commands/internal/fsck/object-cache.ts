@@ -279,6 +279,32 @@ async function looseBytesForRecovery(ctx: Context, id: ObjectId): Promise<Uint8A
 }
 
 /**
+ * The recovery probe's own inflate-output bound: comfortably larger than
+ * any realistic `<type> <size>\0` header (git's own type words are at most
+ * six ASCII bytes) yet a small, fixed ceiling — never the claim-sized or
+ * gigabyte-sized inflate an uncapped `ctx.compressor.inflate` call would
+ * pay for just to recover a handful of header bytes from a hostile loose
+ * object.
+ */
+export const RECOVERY_HEADER_PROBE_BYTES = 1024;
+
+/**
+ * Recovers the `<type> <size>\0` header from a loose object's own
+ * compressed bytes, bounded by `RECOVERY_HEADER_PROBE_BYTES` of INFLATED
+ * output — the shared probe for both `recoverStoredType`'s own attempt and
+ * `looseDecodeFault`'s independent re-derivation, so neither ever inflates
+ * past this window while resolving a type. Recovery only ever needs the
+ * type, never the content the header's size claim promises.
+ */
+async function recoverHeader(
+  ctx: Context,
+  looseBytes: Uint8Array,
+): Promise<{ readonly type: ObjectType }> {
+  const head = await ctx.compressor.inflateHead(looseBytes, RECOVERY_HEADER_PROBE_BYTES);
+  return parseHeader(head);
+}
+
+/**
  * Re-asks git's own question about an object's STORED form: can a
  * `<type> <size>\0` header be recovered from it? Deliberately uses
  * `parseHeader`, NOT `splitObject` — `splitObject`'s size-mismatch check
@@ -297,11 +323,12 @@ async function recoverStoredType(
   }
   if (looseBytes.length === 0) {
     // Git treats an empty file as one it could not read, not one whose type
-    // it failed to recover — same reserved 'unknown' verdict as Part 4.
+    // it failed to recover — the same reserved 'unknown' verdict the caller
+    // gives an unreadable object.
     return { kind: 'untyped' };
   }
   try {
-    const { type } = parseHeader(await ctx.compressor.inflate(looseBytes));
+    const { type } = await recoverHeader(ctx, looseBytes);
     return { kind: 'typed', objectType: type };
   } catch (probeErr) {
     // Narrow: a file that changed under the probe (or any other unrecognised
@@ -346,7 +373,7 @@ async function looseDecodeFault(ctx: Context, id: ObjectId): Promise<unknown> {
   const looseBytes = await looseBytesForRecovery(ctx, id);
   if (looseBytes === undefined || looseBytes.length === 0) return undefined;
   try {
-    parseHeader(await ctx.compressor.inflate(looseBytes));
+    await recoverHeader(ctx, looseBytes);
     return undefined;
   } catch (err) {
     // Narrow, mirroring `recoverStoredType`'s own probe: any unrecognised
@@ -429,6 +456,64 @@ export async function buildObjectCache(
     }
   }
   return acc;
+}
+
+/**
+ * Overrides specific universe ids to the 'unreadable' (null) cache entry —
+ * content-validation's `typeUnknownIds` signal for ids the general resolver
+ * this cache is built from (`readObject`) still types, but git's own
+ * combined read-and-validate function would refuse: every loose object
+ * `read_loose_object` itself refuses, or whose hash disagrees with its
+ * path, PROVIDED no pack copy backs it (a pack-backed id is typed from the
+ * pack instead — see `collectUnreadablePackMemberIds`). Applied AFTER
+ * `buildObjectCache`, before the reachability pass ever reads the cache, so
+ * `dangling`/`unreachable` classification sees the SAME "unreadable" verdict
+ * git's own reachability graph would. Returns the SAME map unchanged when
+ * there is nothing to override — the common case, so an audit with no
+ * size-lying big blob never pays a full-cache copy.
+ */
+export function withUnreadableOverrides(
+  cache: ReadonlyMap<ObjectId, CachedGitObject>,
+  overrideIds: ReadonlySet<ObjectId>,
+): ReadonlyMap<ObjectId, CachedGitObject> {
+  if (overrideIds.size === 0) return cache;
+  const patched = new Map(cache);
+  for (const id of overrideIds) patched.set(id, null);
+  return patched;
+}
+
+/**
+ * Whether `id` is claimed by ANY pack the registry knows about — git's own
+ * `has_object_pack`: a MEMBERSHIP check against a pack's sorted oid table,
+ * never a read or a CRC verification. A store fault degrades to "not
+ * claimed" (`lookupIfClaimed`'s own tolerant policy), so a damaged registry
+ * can only ever make MORE ids look absent from a pack, never fewer.
+ */
+export async function hasPackCopy(ctx: Context, id: ObjectId): Promise<boolean> {
+  const registry = await getPackRegistry(ctx);
+  return (await lookupIfClaimed(registry, id)) !== undefined;
+}
+
+/**
+ * Which of `cache`'s UNREADABLE (null) ids are also claimed by a pack — the
+ * signal `buildReachableSet` needs to stop treating a pack-backed corrupt or
+ * hash-disagreeing object as `missing`, mirroring git's `has_object_pack`
+ * early return in `check_object`. Scoped to null entries only: a typed entry
+ * never reaches `isContentUnreadable`'s gate, so its pack membership is
+ * never read.
+ */
+export async function collectUnreadablePackMemberIds(
+  ctx: Context,
+  cache: ReadonlyMap<ObjectId, CachedGitObject>,
+): Promise<ReadonlySet<ObjectId>> {
+  const registry = await getPackRegistry(ctx);
+  const members = new Set<ObjectId>();
+  for (const [id, obj] of cache) {
+    // Stryker disable next-line ConditionalExpression: equivalent — isContentUnreadable also requires objectCache.get(id) == null before ever reading packMemberIds, so a typed id landing in `members` here (as `false` would allow) changes no output; skipping it is purely the perf win this function's own doc comment names.
+    if (obj !== null) continue;
+    if ((await lookupIfClaimed(registry, id)) !== undefined) members.add(id);
+  }
+  return members;
 }
 
 const MAX_REASON_LENGTH = 200;

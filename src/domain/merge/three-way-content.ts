@@ -75,16 +75,11 @@ function mergeFromDiffs(
 ): ContentMergeResult {
   const oursDiff = diffLines(base, ours);
   const theirsDiff = diffLines(base, theirs);
-  const segments: ReadonlyArray<MergeSegment> =
-    oursDiff.degraded || theirsDiff.degraded
-      ? // oursDiff.theirsLines/theirsDiff.theirsLines are already splitLines(ours)/splitLines(theirs)
-        // — reuse them instead of re-splitting.
-        [{ kind: 'conflict', ours: oursDiff.theirsLines, theirs: theirsDiff.theirsLines }]
-      : buildMergeSegments(
-          oursDiff.oursLines,
-          changesFromHunks(oursDiff.hunks, oursDiff.theirsLines),
-          changesFromHunks(theirsDiff.hunks, theirsDiff.theirsLines),
-        );
+  const segments = buildMergeSegments(
+    oursDiff.oursLines,
+    changesFromHunks(oursDiff.hunks, oursDiff.theirsLines),
+    changesFromHunks(theirsDiff.hunks, theirsDiff.theirsLines),
+  );
   return options.favor === 'union' ? renderUnion(segments) : renderWithMarkers(segments, options);
 }
 
@@ -92,8 +87,8 @@ function mergeFromDiffs(
  * Three-way line merge. Produces git-faithful per-region output: clean runs are
  * applied directly, and each overlapping region is rendered by `favor` —
  * `none` (default) wraps it in conflict markers, `union` concatenates both
- * sides with no markers (always clean). Binary content and a degraded diff fall
- * back to a single whole-file region.
+ * sides with no markers (always clean). Binary content falls back to a single
+ * whole-file region.
  */
 export function mergeContent(
   base: Uint8Array | undefined,

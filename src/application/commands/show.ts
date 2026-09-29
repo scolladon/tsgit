@@ -25,7 +25,7 @@ import type {
 import type { Context } from '../../ports/context.js';
 import { assertValidPromisorRemoteConfig } from '../primitives/internal/boolean-config-guard.js';
 import { loadShallowSet } from '../primitives/internal/shallow-set.js';
-import { readObject } from '../primitives/read-object.js';
+import { readObjectStreamed } from '../primitives/read-object.js';
 import { diffCommitAgainstParent } from './internal/commit-diff.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
 import { revParse } from './rev-parse.js';
@@ -122,7 +122,7 @@ const buildForRev = async (ctx: Context, rev: string, withStat: boolean): Promis
   const id = await revParse(ctx, rev);
   // Promisor-remote guard (see assertValidPromisorRemoteConfig) — after rev resolution.
   await assertValidPromisorRemoteConfig(ctx);
-  return buildResult(ctx, await readObject(ctx, id), withStat);
+  return buildResult(ctx, await readObjectStreamed(ctx, id), withStat);
 };
 
 async function buildResult(ctx: Context, obj: GitObject, withStat: boolean): Promise<ShowResult> {
@@ -160,6 +160,6 @@ async function buildCommit(
 }
 
 async function buildTag(ctx: Context, obj: Tag, withStat: boolean): Promise<ShowTagResult> {
-  const target = await buildResult(ctx, await readObject(ctx, obj.data.object), withStat);
+  const target = await buildResult(ctx, await readObjectStreamed(ctx, obj.data.object), withStat);
   return { kind: 'tag', id: obj.id, tag: obj.data, target };
 }

@@ -11,7 +11,10 @@ export interface DiffOptions {
   readonly from?: string;
   readonly to?: string;
   readonly detectRenames?: boolean;
-  /** Fine-tune rename detection (limit, threshold). Only used when `detectRenames` is true. */
+  /**
+   * Fine-tune detection. `breakRewrites` also applies when `detectRenames` is
+   * off (git's `--no-renames -B`); the other members only apply when it is on.
+   */
   readonly renameOptions?: RenameDetectOptions;
   /**
    * Recurse into sub-directories (`git diff-tree -r`), surfacing nested blobs as
@@ -21,6 +24,7 @@ export interface DiffOptions {
   /**
    * Attach per-file line counts (`added` / `deleted` / `binary`) to each change —
    * the data half of git's `--numstat`. Off by default (tree-level, no blob reads).
+   * Implies a recursive diff — git's `--numstat` recurses before rename detection.
    */
   readonly withStat?: boolean;
   /**

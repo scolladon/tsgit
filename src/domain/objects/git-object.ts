@@ -18,7 +18,7 @@ export interface ObjectContent {
   readonly content: Uint8Array;
 }
 
-function sizeMismatch(declaredSize: number, actualSize: number) {
+export function sizeMismatch(declaredSize: number, actualSize: number) {
   return invalidObjectHeader(
     `size mismatch: header says ${declaredSize}, actual content is ${actualSize}`,
   );
@@ -38,6 +38,30 @@ export function splitLooseObject(rawBytes: Uint8Array): LooseObjectSplit {
 export function assertLooseSizeConsistent(split: LooseObjectSplit): void {
   if (split.type === 'blob' || split.declaredSize === split.content.byteLength) return;
   throw sizeMismatch(split.declaredSize, split.content.byteLength);
+}
+
+/**
+ * How a loose object's ACTUAL content length compares to its header's size
+ * claim — git's `unpack_loose_rest` verdict once the buffered tier's inflate
+ * has already bounded the body to `header + claim` (object-resolver.ts's
+ * `inflateLooseBuffered`), so `'truncate'` is only ever reachable for a body
+ * that overran the claim while still fitting inside git's 32-byte header
+ * window (a longer overrun is refused earlier, before this ever runs). A
+ * commit, tree or tag disagreeing at all is `'refuse'`.
+ */
+export type LooseBodyVerdict = 'honest' | 'truncate' | 'underrun' | 'refuse';
+
+/** Classifies a loose blob's body against its header claim for the buffered
+ *  tier (object-resolver.ts's `applyLooseVerdict`) — never enforces
+ *  anything itself, so the caller stays free to route each verdict as git's
+ *  buffered read does. */
+export function classifyLooseBody(split: LooseObjectSplit): LooseBodyVerdict {
+  const { type, content, declaredSize } = split;
+  if (content.byteLength === declaredSize) return 'honest';
+  if (type !== 'blob') return 'refuse';
+  // Stryker disable next-line EqualityOperator: equivalent — the `===` branch above already
+  // returned for content.byteLength===declaredSize, so `>` and `>=` are identical here.
+  return content.byteLength > declaredSize ? 'truncate' : 'underrun';
 }
 
 export function splitObject(rawBytes: Uint8Array): {

@@ -185,7 +185,117 @@ done
 # and the declared-size refusals on index-pack and on buffered and streamed
 # reads. None of it is removable without dropping the behaviour
 # each one exists to provide.
-SIZE_CAP=$((987 * 1024))
+# Raised 987 -> 991 KiB by the rename-detection git-parity work: the measured
+# tarball lands at 1 014 074 B, 3 386 B over the old cap, attributable to the
+# header-claim size read and size-gated fingerprint-and-drop hydration, the
+# copy-aware exact pairing and use-count rename/copy labelling, the single
+# two-pass candidate matrix, the -B write-back and type-change breaking —
+# runtime code every distribution form ships, none removable without dropping
+# git's rename, copy and break behaviour.
+# Raised 991 -> 993 KiB by that work's later parts: the measured tarball lands
+# at 1 016 049 B, 1 265 B over, attributable to -B without rename detection,
+# the complete-rewrite numstat of a kept-broken modify and the same-basename
+# pre-pass — runtime code every distribution form ships.
+# Raised 993 -> 994 KiB by the review-round perf and correctness fixes to
+# that work: the measured tarball lands at 1 017 690 B, 858 B over the old
+# cap, attributable to the basename pre-pass's own declared-size gate ahead
+# of any blob read, the shared per-source/per-destination basename
+# precompute the inexact matrix now reuses, seeding the matrix's fingerprints
+# from bytes the -B break-attempt pass already read, and the size-only
+# loose-object read's header-length refusal (matching git's fixed-size
+# header buffer) — runtime code every distribution form ships, none
+# removable without giving back the reads or the refusal each one exists to
+# avoid or add.
+# Raised 994 -> 995 KiB by that work's code-review refactor: the measured
+# tarball lands at 1 018 609 B, 753 B over, attributable to naming the rename
+# pipeline's steps, replacing boolean flags with named unions and making the
+# selection passes return their state instead of mutating it — readability
+# the review required, shipped in every distribution form.
+# Raised 995 -> 997 KiB by the Compressor port's capped inflate and truncating
+# head inflate: the measured tarball lands at 1 020 546 B, 1 666 B over the
+# old cap, attributable to inflate's new optional output-cap parameter and
+# its cap-exceeded error mapping across all three adapters, the new
+# inflateHead port member and its node growing-prefix probe, and
+# GrowableBuffer's overflow-policy write path (refuse vs. truncate) —
+# runtime code every distribution form ships, none removable without
+# dropping the bounded, non-throwing header read the capped inflate exists
+# to provide.
+# Raised 997 -> 998 KiB by the loose object resolver's buffered read tier:
+# the measured tarball lands at 1 021 208 B, 280 B over the old cap,
+# attributable to the header-probe-then-bounded-inflate read path, its
+# overrun refusal, and threading the buffered/streamed read mode through
+# the resolver, `show` and `read-object` — runtime code shipped in every
+# distribution form, none removable without dropping the bounded read that
+# refusal exists to enforce.
+# Raised 998 -> 999 KiB by the diff -w whitespace-drop predicate's own
+# buffered loose read: the measured tarball lands at 1 022 143 B, 191 B over
+# the old cap, attributable to blob-source.ts's `looseMode` option, its
+# buffered bytes- and stream-arm routing through `inflateLooseBuffered` and
+# `applyLooseVerdict`, and the incremental claim bound the stream arm now
+# checks — runtime code shipped in every distribution form, none removable
+# without giving back the buffered read the whitespace-drop predicate takes.
+# Raised 999 -> 1000 KiB by fsck reporting a size-lying loose object like
+# git: the measured tarball lands at 1 023 238 B, 262 B over the old cap,
+# attributable to content-validation.ts's buffered-tier verdict routing
+# (truncate/underrun/refuse) and the zero-pad hasher an under-run claim
+# streams through — runtime code shipped in every distribution form, none
+# removable without dropping the hash-mismatch/corrupt-object parity fsck
+# now reports for a size-lying blob.
+# Raised 1000 -> 1004 KiB by xdl_change_compact and its indent heuristic
+# (git's own default): the measured tarball lands at 1 027 076 B, 3 076 B
+# over the old cap, attributable to xdl-compact.ts's group-slide/measure-split/
+# score machinery — runtime code shipped in every distribution form, none
+# removable without giving back git-faithful hunk placement.
+# Raised 1004 -> 1007 KiB by the xdiff divide-and-conquer split engine that
+# replaces the bounded Myers trace (git's own snake heuristic and cost cap):
+# the measured tarball lands at 1 030 070 B, 1 974 B over the old cap,
+# attributable to xdl-split.ts — runtime code shipped in every distribution
+# form, none removable without giving back the whole-file-bail-free engine.
+# Raised 1007 -> 1009 KiB by xdl_cleanup_records (trim ends and discard
+# multi-match/no-match lines before the search runs): the measured tarball
+# lands at 1 031 605 B, 437 B over the old cap, attributable to
+# xdl-prepare.ts and the kept-space indirection it adds to xdl-split.ts —
+# runtime code shipped in every distribution form, none removable without
+# giving back the record cleanup git's own counts depend on.
+# Raised 1009 -> 1010 KiB by honouring the diff attribute when scoring
+# rename/break similarity like git: the measured tarball lands at
+# 1 033 936 B, 720 B over the old cap, attributable to the per-path
+# content-kind resolver, the diff.<driver>.binary config field, and the
+# override threading through the fingerprint and break-score primitives —
+# runtime code shipped in every distribution form, none removable without
+# giving back the attribute-aware text/binary decision git's own scorer
+# makes.
+# Raised 1010 -> 1011 KiB by resolving the diff attribute PER PATH when a
+# blob sits at more than one: the measured tarball lands at 1 034 979 B,
+# 739 B over the old cap, attributable to the (id, content-kind) fingerprint
+# cache key and the per-path override resolution it replaces — runtime code
+# shipped in every distribution form, none removable without giving back
+# git's own per-filespec `diff_filespec_is_binary` model.
+# Raised 1011 -> 1012 KiB by the review-round bare-repo, CRLF break-score,
+# and diff.<driver>.binary batch: the measured tarball lands at
+# 1 035 475 B, 211 B over the old cap, attributable to skipping the
+# work-tree/HEAD `.gitattributes` source in a bare repository (the one
+# shared attribute provider every rename/break/patch/numstat caller reads
+# through), the CR-excluded `literalAdded` break-score fix plus its
+# `should_break` sanity clamp, and treating `diff.<driver>.binary` as
+# git's own `auto`/bool tristate instead of a plain boolean — runtime code
+# shipped in every distribution form, none removable without giving back
+# the bare-repo attribute lookup, the CR-faithful break score, or the
+# tristate config parity.
+# Raised 1012 -> 1013 KiB by fsck's non-blob under-run fix: the measured
+# tarball lands at 1 036 308 B, 20 B over the old cap, attributable to
+# content-validation.ts's `nonBlobRefuseResult` routing — runtime code
+# shipped in every distribution form, none removable without dropping the
+# zero-padded hash-path-mismatch parity fsck now reports for a size-lying
+# commit, tree or tag, matching what it already reported for a blob.
+# Raised 1013 -> 1014 KiB by the textconv numstat fix: the measured tarball
+# lands at 1 037 558 B, 246 B over the old cap, attributable to
+# `numstatOldContent`/`numstatNewContent` on `PatchFile` and the raw-bytes
+# threading through materialise-patch-files.ts's five branches — runtime code
+# shipped in every distribution form, none removable without giving back
+# git's own builtin_diffstat parity (numstat/stat count the RAW blob, never
+# the textconv OUTPUT the patch hunk renders).
+SIZE_CAP=$((1014 * 1024))
 
 # Register cleanup before any temp file exists so a failure between two
 # creations cannot leak the earlier ones; `rm -f` on the empty placeholders

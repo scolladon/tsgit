@@ -20,6 +20,13 @@
  * (`LineDigest`). Nothing is dropped until it is confirmed against the real
  * normalized bytes: the buffered arm confirms inside `scanEqual` over blobs it
  * already holds, the streamed arm re-reads (`confirmStreamedEqual`).
+ *
+ * Both `openBlobSource` calls below also ask for `looseMode: 'buffered'` — a
+ * separate axis from the bytes/stream gate above. It selects git's own
+ * buffered loose-read tier (`object-resolver.ts`'s `LooseReadMode`), so a
+ * loose blob whose header lies about its size is refused or truncated the
+ * same way `git diff -w` reads it, never served in full the way the
+ * streaming tier (`cat-file -p`, `show`) does.
  */
 import type { ModifyChange } from '../../../domain/diff/diff-change.js';
 import {
@@ -111,8 +118,8 @@ async function openBothSources(
   maxBufferedBytes: number,
 ): Promise<readonly [BlobSource, BlobSource]> {
   const opened = [
-    openBlobSource(ctx, change.oldId, maxBufferedBytes),
-    openBlobSource(ctx, change.newId, maxBufferedBytes),
+    openBlobSource(ctx, change.oldId, maxBufferedBytes, { looseMode: 'buffered' }),
+    openBlobSource(ctx, change.newId, maxBufferedBytes, { looseMode: 'buffered' }),
   ] as const;
   try {
     const sources = await Promise.all(opened);

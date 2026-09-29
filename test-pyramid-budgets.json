@@ -132,6 +132,7 @@
         "wrapTransportValidator",
         "wrapLoggerSanitizer",
         "factoryFor",
+        "buildSimilarityContentKindResolver",
         "buildContentMerger",
         "buildGrepMatcher",
         "buildRefFilter",
