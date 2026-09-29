@@ -168,6 +168,7 @@ function findBestCandidate(
     if (score > bestScore) {
       bestScore = score;
       bestPosition = position;
+      // Stryker disable next-line ConditionalExpression: equivalent — PERFECT_CANDIDATE_SCORE is candidateScore's maximum possible value, and the update above only fires on a STRICT `score > bestScore`; once bestScore reaches it, no later candidate can satisfy `score > bestScore`, so bestPosition never changes again regardless — skipping this early exit only wastes scan time, never changes the final bestPosition.
       if (score === PERFECT_CANDIDATE_SCORE) break;
     }
   }

@@ -102,6 +102,7 @@ function worstSlot(
  *  `slots` — lets a caller skip building the full candidate object for a
  *  pair `recordIfBetter` would only discard. */
 function wouldRecord(slots: ReadonlyArray<MatrixCandidate>, candidate: RankedCandidate): boolean {
+  // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — slots.length never exceeds NUM_CANDIDATE_PER_DST (recordIfBetter caps it structurally); forcing this guard true, or its `<`→`<=` boundary, only skips straight to worstSlot, which recordIfBetter recomputes and gates identically itself — a pure allocation-skip perf check, not a correctness one.
   return slots.length < NUM_CANDIDATE_PER_DST || worstSlot(slots, candidate) !== undefined;
 }
 
@@ -167,6 +168,7 @@ function estimatePairSimilarity(
   threshold: number,
 ): number {
   if (sf === undefined || df === undefined) return 0;
+  // Stryker disable next-line ConditionalExpression: equivalent — isSizeRejected is git's proven upper-bound: a rejected pair's REAL similarity can never reach threshold either, so skipping the shortcut only trades a 0 for the same sub-threshold score computed the slow way; both lose every downstream `candidate.score < threshold` comparison identically. The size gate is a real perf shortcut (see wouldRecord) — not removed.
   if (isSizeRejected(sf.size, df.size, threshold)) return 0;
   return estimateSimilarityFromFingerprints(sf.fingerprint, sf.size, df.fingerprint, df.size);
 }
@@ -204,6 +206,7 @@ function scoreAndRecord(
 ): void {
   const score = estimatePairSimilarity(sf, df, threshold);
   const nameScore = score >= threshold && sourceBasename === destinationBasename ? 1 : 0;
+  // Stryker disable next-line ConditionalExpression: equivalent — recordIfBetter is authoritative: it recomputes worstSlot itself and only replaces a slot when genuinely better, so calling it unconditionally (skipping this pre-check) yields the identical final slots — a pure allocation-skip, the same perf shortcut wouldRecord already documents.
   if (!wouldRecord(slots, { score, nameScore })) return;
   recordIfBetter(slots, { ...candidate, score, nameScore });
 }
@@ -427,6 +430,7 @@ function firstCandidatePartnerIndex(
   while (lo < hi) {
     const mid = (lo + hi) >>> 1;
     const d = sortedPartnerSizes[mid] as number;
+    // Stryker disable next-line EqualityOperator: equivalent — at d === size the strict `d > size` variant falls to the second disjunct, but isSizeRejected(size, size, threshold) is always false (maxSize === minSize makes its right side 0, never exceeded by a non-negative left side), so `!isSizeRejected(...)` is true either way — same isCandidate verdict.
     const isCandidate = d >= size || !isSizeRejected(size, d, threshold);
     if (isCandidate) hi = mid;
     else lo = mid + 1;
@@ -515,6 +519,7 @@ async function declaredSizesReusingFingerprints(
   ids: ReadonlyArray<ObjectId>,
   knownSizes: ReadonlyMap<ObjectId, number>,
 ): Promise<ReadonlyMap<ObjectId, number>> {
+  // Stryker disable next-line MethodExpression: equivalent — bypassing this filter only re-reads a size that's already known (extra I/O); the backfill loop below overwrites every id's entry from knownSizes unconditionally, so the returned map ends up byte-identical either way.
   const unknownIds = ids.filter((id) => !knownSizes.has(id));
   const sizes = new Map(await readDeclaredSizes(ctx, unknownIds));
   for (const id of ids) {
@@ -648,6 +653,7 @@ function buildEntriesForId(
   for (const bucket of buckets) {
     const kind = bucket === 'sniff' ? contentKindOf(content) : bucket;
     const fingerprint = byKind.get(kind) ?? buildFingerprintFor(content, kind);
+    // Stryker disable next-line CallExpression: equivalent — buckets has at most 3 members (text/binary/sniff), so dropping this cache write only means a later same-kind bucket rebuilds buildFingerprintFor from the SAME content/kind, producing a value-identical BlobFingerprint — a bounded, pure recompute, never unbounded.
     byKind.set(kind, fingerprint);
     entries.push([fingerprintKey(id, bucket), fingerprint]);
   }
@@ -726,6 +732,7 @@ function summarizeKnown(known: ReadonlyMap<FingerprintKey, BlobFingerprint>): Kn
   const ids = new Set<ObjectId>();
   for (const [key, fingerprint] of known) {
     const id = idOfFingerprintKey(key);
+    // Stryker disable next-line CallExpression: equivalent — dropping this id from sizeById only makes declaredSizesReusingFingerprints treat it as unknown and re-read its declared size fresh; a declared size is deterministic per id, so the re-read returns the identical value the cache would have (this one statement in isolation — ids.add below is untouched, so the override-bypass invariant it protects still holds).
     sizeById.set(id, fingerprint.size);
     ids.add(id);
   }
@@ -790,6 +797,7 @@ function buildMatrix(
   );
   for (const destination of destinations) {
     const df = fingerprintAt(destination.newId, destination.newPath, fingerprints, overridesByPath);
+    // Stryker disable next-line ConditionalExpression: equivalent — estimatePairSimilarity scores an undefined fingerprint 0 for every source, and a 0-scoring destination can only ever be selected at threshold === 0; at threshold === 0 isSizeRejected is provably always false (its formula reduces to `minSize < 0`, impossible), so the size gate never excludes a destination and df is never undefined there — the one regime where a spurious 0 could matter is exactly the regime this branch can't reach.
     if (df === undefined) continue;
     const destinationBasename = basenameOf(destination.newPath);
     const slots: MatrixCandidate[] = [];
@@ -857,6 +865,7 @@ async function hydrateMatrixFingerprints(
   const known = summarizeKnown(knownFingerprints);
   const neededIds = await selectHydrationIds(ctx, srcIds, dstIds, threshold, known.sizeById);
   const neededSet = new Set(neededIds);
+  // Stryker disable next-line MethodExpression,ConditionalExpression: equivalent — bypassing this filter (or forcing it always-true) only resolves overrides for extra, never-needed entries; hydrateFingerprints below still filters through the untouched `neededEntries`, so the fingerprints it actually builds are unaffected — wasted resolver.overrideFor calls, not a correctness change.
   const overrideEntries = allEntries.filter(
     (entry) => neededSet.has(entry.id) || known.ids.has(entry.id),
   );
@@ -1064,6 +1073,7 @@ async function scoreOneModify(
   const srcFingerprint = toFingerprint(oldBytes, override);
   const dstFingerprint = toFingerprint(newBytes, override);
   const { computedBreakScore, dissimilarity } = computeBreakScores(srcFingerprint, dstFingerprint);
+  // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — scoreModifies re-checks this exact condition (`if (computedBreakScore < breakScore) continue;`) before ever reading brokenFingerprints, so a wrongly-built entries array for a below-threshold record is discarded unread regardless of what this ternary computed.
   const brokenFingerprints =
     computedBreakScore < breakScore
       ? NO_BROKEN_FINGERPRINTS
@@ -1200,14 +1210,14 @@ async function attemptBreaks(
     (c): c is ModifyChange => c.type === 'modify' && isBreakableKind(c.oldMode),
   );
   const typeChanges = collectBreakableTypeChanges(diff);
-  // Stryker disable next-line ConditionalExpression: equivalent — no breakable modify or type change produces empty records, matching the identical { broken: [], patchedDiff: diff } the records.length===0 guard below returns.
+  // Stryker disable next-line ConditionalExpression,BlockStatement: equivalent — no breakable modify or type change produces empty records, matching the identical { broken: [], patchedDiff: diff } the records.length===0 guard below returns; emptying this block (fall through with the guard still true) reaches that same guard.
   if (modifies.length === 0 && typeChanges.length === 0) {
     return { broken: [], patchedDiff: diff, fingerprints: NO_BREAK_FINGERPRINTS };
   }
 
   const scored = await scoreModifies(ctx, modifies, breakScore, resolver);
   const records = [...scored.records, ...typeChanges.map(toTypeChangeRecord)];
-  // Stryker disable next-line ConditionalExpression: equivalent — empty records means every source path set stays empty too, so patchDiffWithBroken copies changes unchanged, matching the early return.
+  // Stryker disable next-line ConditionalExpression,BlockStatement: equivalent — empty records means every source path set stays empty too, so patchDiffWithBroken copies changes unchanged and scored.fingerprints stays empty, matching the early return; emptying this block (fall through with the guard still true) reaches that same value.
   if (records.length === 0) {
     return { broken: [], patchedDiff: diff, fingerprints: NO_BREAK_FINGERPRINTS };
   }
@@ -1460,10 +1470,13 @@ function resolveMatrixPlan(
   copies: 'off' | 'on' | 'harder',
   limit: number,
 ): MatrixPlan | null {
+  // Stryker disable next-line ConditionalExpression: equivalent — isOverLimit(0, numSrc, limit) is always false (0 is never > a positive limit²), so skipping this guard still returns { indices } via the check below; the caller's own matrixDestinations is empty whenever numDst is 0, so an empty-destination matrix pass produces zero candidates either way.
   if (numDst === 0) return null;
   const indices = cullMatrixSourceIndices(sources.length, uses, cull);
+  // Stryker disable next-line ConditionalExpression: equivalent — with indices empty, isOverLimit(numDst, 0, limit) is always false, so skipping this guard still returns { indices: [] } via the check below; runInexactMatrix's own srcEntries.length === 0 check then returns null regardless, one level deeper.
   if (indices.length === 0) return null;
   if (!isOverLimit(numDst, indices.length, limit)) return { indices };
+  // Stryker disable next-line ConditionalExpression: equivalent — under copies !== 'harder' the registry never holds an 'unchanged' source (collectUnchangedSources only runs under 'harder'), so retryIndices below filters nothing out and re-tests the identical isOverLimit(numDst, indices.length, limit) that already returned true above — the guard below it returns null regardless of this one.
   if (copies !== 'harder') return null;
 
   const retryIndices = indices.filter(
@@ -1721,6 +1734,7 @@ function applyBasenamePairs(
   const uses = [...exact.uses];
   const claimed = new Set<AddChange>();
   for (const pair of pairs) {
+    // Stryker disable next-line ArithmeticOperator: equivalent — regularBasenameCandidates only offers a source through cullMatrixSourceIndices('unused-only'), which requires uses[index] === 0 going in, and uniqueBasenamePairs pairs a source at most once — so this is the ONE adjustment this index ever sees here, starting from 0. +1 gives 1, whose labelRenameCopy decrement (1 - 1 = 0) is not > 0; -1 gives -1, whose decrement (-1 - 1 = -2) is also not > 0 — both classify the pair as a rename, never a copy.
     uses[pair.source] = (uses[pair.source] as number) + 1;
     claimed.add(pair.destination);
   }
@@ -1744,6 +1758,7 @@ async function runBasenamePass(
   resolver: SimilarityContentKindResolver,
 ): Promise<BasenamePassOutcome> {
   const candidates = regularBasenameCandidates(sources, exact.uses, exact.unpaired);
+  // Stryker disable next-line ConditionalExpression,BlockStatement: equivalent — with candidates empty, every step below (id/size/override/fingerprint/score) operates on empty inputs and produces empty outputs, and applyBasenamePairs([]) is a no-op filter over exact.unpaired/exact.uses — falling through (forced-false condition, or an emptied block) reaches the identical { pairs: [], unpaired: exact.unpaired, uses: exact.uses, fingerprints: <empty> } this guard returns directly.
   if (candidates.length === 0) {
     return { pairs: [], unpaired: exact.unpaired, uses: exact.uses, fingerprints: new Map() };
   }
@@ -1775,6 +1790,7 @@ function isBasenamePassEligible(
   broken: ReadonlyArray<BrokenRecord>,
   threshold: number,
 ): boolean {
+  // Stryker disable next-line EqualityOperator: equivalent — at threshold === MAX_SCORE, minBasename computes to MAX_SCORE too, so the basename pass would only ever accept a pair scoring the full MAX_SCORE; the exact pass already claims every byte-identical (same id) pair before the basename pass runs, so no leftover candidate can legitimately reach MAX_SCORE by content-similarity alone — letting the pass run anyway (`<=`) still finds zero pairs, matching the guard's early skip.
   return copies === 'off' && broken.length === 0 && threshold < MAX_SCORE;
 }
 

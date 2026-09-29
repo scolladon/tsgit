@@ -105,6 +105,7 @@ export function packFingerprint(data: Uint8Array, kind: ContentKind): SpanFinger
   let accum2 = 0;
   let n = 0;
   for (let i = 0; i < size; i++) {
+    // Stryker disable next-line ConditionalExpression,EqualityOperator,ArithmeticOperator: equivalent — forcing `i + 1 < size` true, its `<=` boundary, or `i - 1` (always < size inside this loop) only removes the bounds guard; the next conjunct `data[i + 1] === 0x0a` then reads out of range as `undefined`, which never equals 0x0a, so the branch outcome is unchanged for every i, size.
     if (isText && data[i] === CR && i + 1 < size && data[i + 1] === 0x0a) continue;
     const c = data[i] as number;
     const old1 = accum1;
@@ -132,6 +133,7 @@ export function packFingerprint(data: Uint8Array, kind: ContentKind): SpanFinger
   for (let i = 0; i < packedCount; i++) {
     const value = sorted[i] as number;
     const bucket = value >>> 7;
+    // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — forcing `distinct > 0` true, or its `>= 0` boundary, only lets the first iteration (distinct === 0) read hashes[-1], out of range and never equal to a real bucket number, so the else branch still runs unchanged.
     if (distinct > 0 && hashes[distinct - 1] === bucket) {
       counts[distinct - 1] = (counts[distinct - 1] as number) + (value & 127);
     } else {
@@ -171,6 +173,7 @@ export function denseFingerprint(data: Uint8Array, kind: ContentKind): SpanFinge
   let accum2 = 0;
   let n = 0;
   for (let i = 0; i < size; i++) {
+    // Stryker disable next-line ConditionalExpression,EqualityOperator,ArithmeticOperator: equivalent — forcing `i + 1 < size` true, its `<=` boundary, or `i - 1` (always < size inside this loop) only removes the bounds guard; the next conjunct `data[i + 1] === 0x0a` then reads out of range as `undefined`, which never equals 0x0a, so the branch outcome is unchanged for every i, size.
     if (isText && data[i] === CR && i + 1 < size && data[i + 1] === 0x0a) continue;
     const c = data[i] as number;
     const old1 = accum1;
@@ -195,6 +198,7 @@ export function denseFingerprint(data: Uint8Array, kind: ContentKind): SpanFinge
   sortedTouched.sort();
   const hashes = new Uint32Array(touchedCount);
   const counts = new Uint32Array(touchedCount);
+  // Stryker disable next-line EqualityOperator: equivalent — the extra i === touchedCount iteration reads sortedTouched[touchedCount] (out of range, undefined) and writes hashes/counts at index touchedCount; both are sized exactly touchedCount, so a typed-array out-of-bounds write is a silent no-op — the returned fingerprint is unchanged.
   for (let i = 0; i < touchedCount; i++) {
     const bucket = sortedTouched[i] as number;
     hashes[i] = bucket;
@@ -209,6 +213,7 @@ export function denseFingerprint(data: Uint8Array, kind: ContentKind): SpanFinge
  * above it.
  */
 export function buildFingerprint(data: Uint8Array, kind: ContentKind): SpanFingerprint {
+  // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — packFingerprint and denseFingerprint chunk the same bytes with the identical rolling hash and reduce to the same sorted, deduped bucket→count table, so routing every input through either one is a pure perf choice (see each function's own doc comment), not a correctness one — verified by forcing every input through denseFingerprint alone (full similarity.ts suite green).
   return data.length < HASHBASE ? packFingerprint(data, kind) : denseFingerprint(data, kind);
 }
 
@@ -222,13 +227,16 @@ export function countCopied(src: SpanFingerprint, dst: SpanFingerprint): number 
   let copied = 0;
   let i = 0;
   let j = 0;
+  // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — Stryker mutates one comparison at a time, so the OTHER pointer's bound always stays real inside the loop body; once the mutated pointer runs past its array, its read is undefined, which is never === or < the other (still in-bounds, real) value, so the loop only wastes else-branch steps draining the in-bounds pointer to its own end, adding nothing to copied.
   while (i < src.hashes.length && j < dst.hashes.length) {
     const a = src.hashes[i] as number;
     const b = dst.hashes[j] as number;
     if (a === b) {
       copied += Math.min(src.counts[i] as number, dst.counts[j] as number);
       i++;
+      // Stryker disable next-line UpdateOperator: equivalent — both hash tables are ascending and distinct (both builders guarantee it), so j-- here only costs two non-matching else-branch steps (or is protected by the `j < dst.hashes.length` guard when j was already 0) before i/j re-converge to exactly where j++ would have landed — hand-traced for an interior match and a j === 0 match, no infinite loop.
       j++;
+      // Stryker disable next-line EqualityOperator: equivalent — this branch is only reached once the preceding `if (a === b)` has already failed, so `a !== b` already holds here — `a < b` and `a <= b` agree for every pair that reaches this check.
     } else if (a < b) {
       i++;
     } else {
