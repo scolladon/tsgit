@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { applyChangeset } from '../../../../src/application/primitives/apply-changeset.js';
 import type {
@@ -6,6 +6,7 @@ import type {
   ChangesetEntry,
 } from '../../../../src/application/primitives/compute-changeset.js';
 import * as blobSourceMod from '../../../../src/application/primitives/internal/blob-source.js';
+import * as concurrencyMod from '../../../../src/application/primitives/internal/concurrency.js';
 import * as readGitattributesMod from '../../../../src/application/primitives/internal/read-gitattributes.js';
 import * as writeFileMod from '../../../../src/application/primitives/internal/write-working-tree-file.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
@@ -99,6 +100,136 @@ const writeBlob = async (
   ctx: Awaited<ReturnType<typeof buildSeededContext>>,
   content: Uint8Array,
 ): Promise<ObjectId> => writeObject(ctx, { type: 'blob', content, id: '' as ObjectId });
+
+const ALTERNATE = '/repo/alt/objects';
+const FLIPPED_SIGNATURE_MIDX = Uint8Array.from([
+  0x00,
+  0x49,
+  0x44,
+  0x58,
+  1,
+  1,
+  1,
+  0,
+  ...new Array(8).fill(0),
+]);
+
+const contextWithAlternate = async (corrupt: boolean): Promise<Context> => {
+  const ctx = createMemoryContext({
+    files: { '/repo/.git/objects/info/alternates': enc(`${ALTERNATE}\n`) },
+  });
+  await ctx.fs.mkdir(ALTERNATE);
+  if (corrupt) await ctx.fs.write(`${ALTERNATE}/pack/multi-pack-index`, FLIPPED_SIGNATURE_MIDX);
+  return ctx;
+};
+
+const outcomeOf = async (attempt: Promise<unknown>): Promise<unknown> => {
+  try {
+    await attempt;
+  } catch (error) {
+    return (error as TsgitError).data;
+  }
+  return undefined;
+};
+
+describe('applyChangeset write wave and an object source', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe('Given an alternate that cannot load and entries a, base, f in that order', () => {
+    describe('When applyChangeset runs', () => {
+      it('Then a is written, base is left empty and f is never touched, every time', async () => {
+        // Arrange
+        const attempts = Array.from({ length: 20 }, (_, i) => i);
+        const seen = new Set<string>();
+
+        for (const _attempt of attempts) {
+          const ctx = await contextWithAlternate(true);
+          const a = await writeBlob(ctx, enc('aaa\n'));
+          const missing = 'b'.repeat(40) as ObjectId;
+          const changeset = makeChangeset([
+            makeAdd('f', missing),
+            makeAdd('base', missing),
+            makeAdd('a', a),
+          ]);
+
+          // Act
+          const sut = applyChangeset;
+          const data = await outcomeOf(sut(ctx, { changeset, force: false, workdir: WORKDIR }));
+
+          // Assert
+          seen.add(
+            JSON.stringify([
+              (data as { code: string }).code,
+              await ctx.fs.exists(`${WORKDIR}/a`),
+              (await ctx.fs.exists(`${WORKDIR}/base`)) &&
+                (await ctx.fs.read(`${WORKDIR}/base`)).length,
+              await ctx.fs.exists(`${WORKDIR}/f`),
+            ]),
+          );
+        }
+        expect([...seen]).toEqual([JSON.stringify(['INVALID_MULTI_PACK_INDEX', true, 0, false])]);
+      });
+    });
+  });
+
+  describe('Given every source loads', () => {
+    describe('When applyChangeset writes several entries', () => {
+      it('Then the writes go through the ioBound pool', async () => {
+        // Arrange
+        const ctx = await contextWithAlternate(false);
+        const ids = [
+          await writeBlob(ctx, enc('one')),
+          await writeBlob(ctx, enc('two')),
+          await writeBlob(ctx, enc('three')),
+        ];
+        const runs: ReturnType<typeof vi.spyOn>[] = [];
+        const realLimiterFor = concurrencyMod.limiterFor;
+        vi.spyOn(concurrencyMod, 'limiterFor').mockImplementation((...args) => {
+          const limiter = realLimiterFor(...args);
+          runs.push(vi.spyOn(limiter, 'run'));
+          return limiter;
+        });
+        const changeset = makeChangeset(ids.map((id, i) => makeAdd(`f${i}`, id)));
+
+        // Act
+        const sut = applyChangeset;
+        await sut(ctx, { changeset, force: false, workdir: WORKDIR });
+
+        // Assert
+        expect(runs.reduce((total, run) => total + run.mock.calls.length, 0)).toBe(ids.length);
+      });
+    });
+  });
+
+  describe('Given an alternate that cannot load', () => {
+    describe('When applyChangeset writes entries given out of path order', () => {
+      it('Then they are written in byte order of the path, one at a time', async () => {
+        // Arrange
+        const ctx = await contextWithAlternate(true);
+        const ids = [await writeBlob(ctx, enc('zz')), await writeBlob(ctx, enc('mm'))];
+        const order: string[] = [];
+        const realWrite = ctx.fs.writeStream.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'writeStream').mockImplementation(async (path, chunks) => {
+          order.push(path);
+          await realWrite(path, chunks);
+        });
+        const changeset = makeChangeset([
+          makeAdd('z', ids[0] as ObjectId),
+          makeAdd('m', ids[1] as ObjectId),
+        ]);
+
+        // Act
+        const sut = applyChangeset;
+        await sut(ctx, { changeset, force: false, workdir: WORKDIR });
+
+        // Assert
+        expect(order).toEqual([`${WORKDIR}/m`, `${WORKDIR}/z`]);
+      });
+    });
+  });
+});
 
 describe('applyChangeset', () => {
   describe('Given an add entry for a regular file', () => {

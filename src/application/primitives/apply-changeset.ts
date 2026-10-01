@@ -54,6 +54,7 @@ import {
   writeWorkingTreeEntry,
   writeWorkingTreeEntryStream,
 } from './internal/write-working-tree-file.js';
+import { everySourceLoadable } from './object-store.js';
 import { readBlob } from './read-blob.js';
 import { resolveFilterDriver } from './resolve-filter-driver.js';
 import { runFilterDriver } from './run-filter-driver.js';
@@ -417,6 +418,28 @@ const groupByCaseFoldedPath = (
   return order.map((key) => groups.get(key) as ChangesetEntry[]);
 };
 
+const applyWriteGroup = async (
+  ctx: Context,
+  workdir: string,
+  group: ReadonlyArray<ChangesetEntry>,
+  lazyProvider: () => Promise<AttributeProvider>,
+  scanner: LeadingPathScanner,
+  filterLimiter: ConcurrencyLimiter,
+  total: number,
+  counter: ProgressCounter,
+): Promise<ReadonlyArray<IndexEntry>> => {
+  const written: IndexEntry[] = [];
+  for (const entry of group) {
+    const provider = ctx.command !== undefined ? await lazyProvider() : undefined;
+    const indexEntry = await applyWriteEntry(ctx, workdir, entry, scanner, filterLimiter, provider);
+    reportCompletion(ctx, total, counter, entry.path);
+    if (indexEntry !== undefined) written.push(indexEntry);
+  }
+  return written;
+};
+
+const byEntryPath = (a: ChangesetEntry, b: ChangesetEntry): number => comparePaths(a.path, b.path);
+
 const applyWriteWave = async (
   ctx: Context,
   workdir: string,
@@ -427,25 +450,16 @@ const applyWriteWave = async (
   total: number,
   counter: ProgressCounter,
 ): Promise<ReadonlyArray<IndexEntry>> => {
-  const groups = groupByCaseFoldedPath(writes);
-  const grouped = await drainPooled(ctx, groups, async (group) => {
-    const written: IndexEntry[] = [];
-    for (const entry of group) {
-      const provider = ctx.command !== undefined ? await lazyProvider() : undefined;
-      const indexEntry = await applyWriteEntry(
-        ctx,
-        workdir,
-        entry,
-        scanner,
-        filterLimiter,
-        provider,
-      );
-      reportCompletion(ctx, total, counter, entry.path);
-      if (indexEntry !== undefined) written.push(indexEntry);
-    }
-    return written;
-  });
-  return grouped.flat();
+  const applyGroup = (group: ReadonlyArray<ChangesetEntry>) =>
+    applyWriteGroup(ctx, workdir, group, lazyProvider, scanner, filterLimiter, total, counter);
+  if (await everySourceLoadable(ctx)) {
+    const grouped = await drainPooled(ctx, groupByCaseFoldedPath(writes), applyGroup);
+    return grouped.flat();
+  }
+  // git writes one entry at a time in index order, so its residue under a
+  // refused object read is an exact prefix; a concurrent wave would leave an
+  // arbitrary subset.
+  return applyGroup([...writes].sort(byEntryPath));
 };
 
 const applyAllEntries = async (

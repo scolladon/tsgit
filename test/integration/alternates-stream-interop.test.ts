@@ -71,6 +71,7 @@ const REGULAR = '100644';
 const EXECUTABLE = '100755';
 const SYMLINK = '120000';
 const SUBTREE = '040000';
+const BEHIND = 'behind';
 
 let root: string;
 let fixture: Fixture;
@@ -176,6 +177,12 @@ const buildArchiveTrees = (dir: string, plainOid: string, slimOid: string): Arch
   };
 };
 
+const stashNewFile = (dir: string): void => {
+  writeFileSync(path.join(dir, 's'), 'stashed\n');
+  runGit(['-C', dir, 'add', 's']);
+  runGit(['-C', dir, 'stash', 'push', '-q']);
+};
+
 const buildBorrower = async (donor: string): Promise<Fixture> => {
   const dir = path.join(root, 'borrower');
   runGit(['clone', '-q', '--shared', donor, dir]);
@@ -188,7 +195,10 @@ const buildBorrower = async (donor: string): Promise<Fixture> => {
     path.join(dir, '.git', 'objects', looseOid.slice(0, 2), looseOid.slice(2)),
   );
   writeFileSync(path.join(dir, 'w'), 'a   b\n');
+  writeFileSync(path.join(dir, 'x'), 'exe\n', { mode: 0o755 });
   commit(dir, 'c4');
+  stashNewFile(dir);
+  runGit(['-C', dir, 'branch', BEHIND, 'HEAD~3']);
   runGit(['-C', dir, 'repack', '-ad', '-q']);
   await writeLooseObject(dir, looseOid, looseCopy);
   return {
@@ -1078,6 +1088,253 @@ describe.skipIf(!GIT_AVAILABLE)('alternates stream interop — push', () => {
           expect(refused.data).toMatchObject(REFUSAL_DATA);
           expect(refsOf(gitPeer.bare)).toBe('refs/heads/x');
           expect(refsOf(peer.bare)).toBe('refs/heads/x');
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M5i, M5x-M5ab rows: a refused streamed worktree write leaves git's residue
+// ---------------------------------------------------------------------------
+
+interface Side {
+  readonly git: Copy;
+  readonly tsgit: Copy;
+}
+
+const sides = (prepare: (dir: string) => void = () => undefined): Side => {
+  const side = { git: copyOfFixture(), tsgit: copyOfFixture() };
+  for (const copy of [side.git, side.tsgit]) prepare(copy.dir);
+  return side;
+};
+
+const removeFiles =
+  (...names: ReadonlyArray<string>) =>
+  (dir: string): void => {
+    for (const name of names) rmSync(path.join(dir, name));
+  };
+
+const emptyState = { mode: 0o644, bytes: '' };
+
+const listing = (dir: string): string[] =>
+  readdirSync(dir)
+    .filter((name) => name !== '.git')
+    .sort()
+    .map((name) => {
+      const stat = lstatSync(path.join(dir, name));
+      return `${name} ${stat.size} ${(stat.mode & 0o777).toString(8)}`;
+    });
+
+const indexOf = (dir: string): string => runGit(['-C', dir, 'ls-files', '-s']);
+
+const headOf = (dir: string): string => runGit(['-C', dir, 'symbolic-ref', 'HEAD']).trim();
+
+const hasIndexLock = (dir: string): boolean => existsSync(path.join(dir, '.git', 'index.lock'));
+
+const expectUnrecorded = (dir: string, indexBefore: string): void => {
+  expect(indexOf(dir)).toBe(indexBefore);
+  expect(hasIndexLock(dir)).toBe(false);
+};
+
+const refusedCheckout = async (
+  side: Side,
+  gitArgs: ReadonlyArray<string>,
+  options: Parameters<Repository['checkout']>[0],
+): Promise<TsgitError> => {
+  const git = gitIn(side.git.dir, ...gitArgs);
+  const repo = await side.tsgit.repo();
+  try {
+    expectGitRefused(git);
+    return await rejectionOf(() => repo.checkout(options));
+  } finally {
+    await repo.dispose();
+  }
+};
+
+describe.skipIf(!GIT_AVAILABLE)('alternates stream interop — refused worktree writes', () => {
+  describe('Given M5i: a deleted regular file whose blob only the unusable alternate path can serve', () => {
+    describe('When it is checked out', () => {
+      it(
+        'Then both tools refuse and leave an empty file',
+        async () => {
+          // Arrange
+          const side = sides(removeFiles('f'));
+
+          // Act
+          const result = await refusedCheckout(side, ['checkout', '--', 'f'], { paths: ['f'] });
+
+          // Assert
+          expect(result.data).toMatchObject(REFUSAL_DATA);
+          expect(lstatSync(path.join(side.tsgit.dir, 'f')).size).toBe(0);
+          expect(fileState(side.tsgit.dir, 'f')).toEqual(fileState(side.git.dir, 'f'));
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe('Given M5x: a deleted regular file', () => {
+    describe.each([
+      ['the index', ['checkout', '--', 'f'], { paths: ['f'] }],
+      ['HEAD', ['checkout', 'HEAD', '--', 'f'], { paths: ['f'], source: 'HEAD' }],
+    ] as const)('When it is checked out from %s', (_source, gitArgs, options) => {
+      it(
+        'Then both tools leave an empty 0644 file, the index and no lock',
+        async () => {
+          // Arrange
+          const side = sides(removeFiles('f'));
+          const before = indexOf(side.tsgit.dir);
+
+          // Act
+          const result = await refusedCheckout(side, gitArgs, options);
+
+          // Assert
+          expect(result.data).toMatchObject(REFUSAL_DATA);
+          expect(fileState(side.tsgit.dir, 'f')).toEqual(emptyState);
+          expect(fileState(side.git.dir, 'f')).toEqual(emptyState);
+          expectUnrecorded(side.tsgit.dir, before);
+          expectUnrecorded(side.git.dir, before);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe('Given M5y: a deleted executable file', () => {
+    describe('When it is checked out', () => {
+      it(
+        'Then both tools leave an empty 0755 file',
+        async () => {
+          // Arrange
+          const side = sides(removeFiles('x'));
+
+          // Act
+          const result = await refusedCheckout(side, ['checkout', '--', 'x'], { paths: ['x'] });
+
+          // Assert
+          expect(result.data).toMatchObject(REFUSAL_DATA);
+          expect(fileState(side.tsgit.dir, 'x')).toEqual({ mode: 0o755, bytes: '' });
+          expect(fileState(side.git.dir, 'x')).toEqual({ mode: 0o755, bytes: '' });
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe('Given M5z: several paths to restore', () => {
+    describe.each([
+      ['a loose-only file and a packed one are deleted', removeFiles('a', 'f')],
+      [
+        'a packed one is modified',
+        (dir: string) => writeFileSync(path.join(dir, 'f'), 'modified\n'),
+      ],
+    ] as const)('When %s and both are checked out', (_case, prepare) => {
+      it(
+        'Then both tools restore what the loose arm serves and empty the refused one',
+        async () => {
+          // Arrange
+          const side = sides(prepare);
+          const paths = ['a', 'f'];
+
+          // Act
+          const result = await refusedCheckout(side, ['checkout', '--', ...paths], { paths });
+
+          // Assert
+          expect(result.data).toMatchObject(REFUSAL_DATA);
+          expect(listing(side.tsgit.dir)).toEqual(listing(side.git.dir));
+          expect(fileState(side.tsgit.dir, 'f')).toEqual(emptyState);
+          expect(fileState(side.tsgit.dir, 'a').bytes).toBe(LOOSE_ONLY);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe('Given M5aa: an attached branch behind main with a worktree at its commit', () => {
+    const behindSide = (): Side =>
+      sides((dir) => {
+        for (const name of readdirSync(dir)) {
+          if (name !== '.git' && name !== 'd') rmSync(path.join(dir, name), { force: true });
+        }
+        runGit(['-C', dir, 'symbolic-ref', 'HEAD', `refs/heads/${BEHIND}`]);
+        runGit(['-C', dir, 'read-tree', BEHIND]);
+      });
+
+    const expectSameResidue = (side: Side, before: string): void => {
+      expect(listing(side.tsgit.dir)).toEqual(listing(side.git.dir));
+      expect(headOf(side.tsgit.dir)).toBe(headOf(side.git.dir));
+      expect(objectOf(side.tsgit.dir, BEHIND)).toBe(objectOf(side.git.dir, BEHIND));
+      expectUnrecorded(side.tsgit.dir, before);
+      expectUnrecorded(side.git.dir, before);
+    };
+
+    describe('When main is checked out', () => {
+      it(
+        'Then both tools leave the same worktree and keep HEAD, branch and index',
+        async () => {
+          // Arrange
+          const side = behindSide();
+          const before = indexOf(side.tsgit.dir);
+
+          // Act
+          const result = await refusedCheckout(side, ['checkout', 'main'], { rev: 'main' });
+
+          // Assert
+          expect(result.data).toMatchObject(REFUSAL_DATA);
+          expectSameResidue(side, before);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+
+    describe('When the worktree is hard reset to main', () => {
+      it(
+        'Then both tools leave the same worktree and keep HEAD, branch and index',
+        async () => {
+          // Arrange
+          const side = behindSide();
+          const before = indexOf(side.tsgit.dir);
+          const git = gitIn(side.git.dir, 'reset', '--hard', 'main');
+          const repo = await side.tsgit.repo();
+
+          // Act
+          const result = await rejectionOf(() => repo.reset({ mode: 'hard', rev: 'main' }));
+          await repo.dispose();
+
+          // Assert
+          expectGitRefused(git);
+          expect(result.data).toMatchObject(REFUSAL_DATA);
+          expectSameResidue(side, before);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe('Given M5ab: a stash adding a packed file', () => {
+    describe('When the stash is applied', () => {
+      it(
+        'Then both tools leave an empty file and keep HEAD and index',
+        async () => {
+          // Arrange
+          const side = sides();
+          const before = indexOf(side.tsgit.dir);
+          const git = gitIn(side.git.dir, 'stash', 'apply');
+          const repo = await side.tsgit.repo();
+
+          // Act
+          const result = await rejectionOf(() => repo.stash.apply());
+          await repo.dispose();
+
+          // Assert
+          expectGitRefused(git);
+          expect(result.data).toMatchObject(REFUSAL_DATA);
+          expect(fileState(side.tsgit.dir, 's')).toEqual(emptyState);
+          expect(fileState(side.git.dir, 's')).toEqual(emptyState);
+          expectUnrecorded(side.tsgit.dir, before);
+          expect(objectOf(side.tsgit.dir, 'HEAD')).toBe(objectOf(side.git.dir, 'HEAD'));
         },
         ROW_TIMEOUT,
       );
