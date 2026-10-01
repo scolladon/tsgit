@@ -51,6 +51,10 @@ export const perWorktreeRefDir = (ctx: Context, name: RefName): string =>
 export const looseObjectPath = (gitDir: string, id: ObjectId): string =>
   `${gitDir}/objects/${computeLooseObjectPath(id)}`;
 
+/** Loose-object path under an arbitrary `objects` directory (primary or alternate). */
+export const looseObjectPathIn = (objectsDirectory: string, id: ObjectId): string =>
+  `${objectsDirectory}/${computeLooseObjectPath(id)}`;
+
 export const looseRefPath = (gitDir: string, name: RefName): string => `${gitDir}/${name}`;
 
 export const packedRefsPath = (gitDir: string): string => `${gitDir}/packed-refs`;
@@ -75,6 +79,8 @@ export const indexPath = (gitDir: string): string => `${gitDir}/index`;
 export const objectsDir = (gitDir: string, prefix: string): string => `${gitDir}/objects/${prefix}`;
 
 export const packsDir = (gitDir: string): string => `${gitDir}/objects/pack`;
+
+export const packsDirIn = (objectsDirectory: string): string => `${objectsDirectory}/pack`;
 
 export const logsDir = (gitDir: string): string => `${gitDir}/logs`;
 

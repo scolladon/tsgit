@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import {
+  forgetLooseOidPrefix,
   invalidateLooseOid,
   probeLooseOid,
 } from '../../../../src/application/primitives/internal/loose-oid-cache.js';
+import type { SourceLocation } from '../../../../src/application/primitives/internal/source-location.js';
 import { fileNotFound, permissionDenied, TsgitError } from '../../../../src/domain/error.js';
 import type { ObjectId } from '../../../../src/domain/objects/index.js';
 
@@ -222,6 +224,148 @@ describe('loose-oid-cache', () => {
 
         // Assert
         expect(result).toBe(true);
+      });
+    });
+  });
+  describe('Given a location whose fs holds a loose object', () => {
+    describe('When probeLooseOid is called with the location', () => {
+      it('Then returns true and the primary listing is not consulted', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const altCtx = createMemoryContext();
+        const id = 'ab'.repeat(20) as ObjectId;
+        await altCtx.fs.write(
+          `${altCtx.layout.gitDir}/objects/ab/${id.slice(2)}`,
+          new Uint8Array([1]),
+        );
+        const location: SourceLocation = {
+          objectsDir: `${altCtx.layout.gitDir}/objects`,
+          fs: altCtx.fs,
+        };
+        const primaryReaddir = vi.spyOn(ctx.fs, 'readdir');
+
+        // Act
+        const result = await probeLooseOid(ctx, id, location);
+
+        // Assert
+        expect(result).toBe(true);
+        expect(primaryReaddir).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('When probed without a location', () => {
+      it('Then the primary listing is consulted and the location is not', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const altCtx = createMemoryContext();
+        const id = 'ac'.repeat(20) as ObjectId;
+        const locationReaddir = vi.spyOn(altCtx.fs, 'readdir');
+        const primaryReaddir = vi.spyOn(ctx.fs, 'readdir');
+
+        // Act
+        await probeLooseOid(ctx, id);
+
+        // Assert
+        expect(primaryReaddir).toHaveBeenCalledTimes(1);
+        expect(locationReaddir).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given the same location object probed twice', () => {
+    describe('When both probes share a prefix', () => {
+      it('Then the location is listed once', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const altCtx = createMemoryContext();
+        const id = 'ad'.repeat(20) as ObjectId;
+        const location: SourceLocation = {
+          objectsDir: `${altCtx.layout.gitDir}/objects`,
+          fs: altCtx.fs,
+        };
+        const readdir = vi.spyOn(altCtx.fs, 'readdir');
+
+        // Act
+        await probeLooseOid(ctx, id, location);
+        await probeLooseOid(ctx, id, location);
+
+        // Assert
+        expect(readdir).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Given two equal location literals', () => {
+    describe('When each is probed for the same prefix', () => {
+      it('Then each is listed (cache is keyed by object identity)', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const altCtx = createMemoryContext();
+        const id = 'ae'.repeat(20) as ObjectId;
+        const readdir = vi.spyOn(altCtx.fs, 'readdir');
+
+        // Act
+        await probeLooseOid(ctx, id, {
+          objectsDir: `${altCtx.layout.gitDir}/objects`,
+          fs: altCtx.fs,
+        });
+        await probeLooseOid(ctx, id, {
+          objectsDir: `${altCtx.layout.gitDir}/objects`,
+          fs: altCtx.fs,
+        });
+
+        // Assert
+        expect(readdir).toHaveBeenCalledTimes(2);
+      });
+    });
+  });
+
+  describe('Given a probed location and a probed primary', () => {
+    describe('When invalidateLooseOid is called with the location', () => {
+      it('Then only the location entry gains the member', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const altCtx = createMemoryContext();
+        const id = 'af'.repeat(20) as ObjectId;
+        const location: SourceLocation = {
+          objectsDir: `${altCtx.layout.gitDir}/objects`,
+          fs: altCtx.fs,
+        };
+        await probeLooseOid(ctx, id, location);
+        await probeLooseOid(ctx, id);
+
+        // Act
+        invalidateLooseOid(ctx, id, location);
+
+        // Assert
+        expect(await probeLooseOid(ctx, id, location)).toBe(true);
+        expect(await probeLooseOid(ctx, id)).toBe(false);
+      });
+    });
+
+    describe('When forgetLooseOidPrefix is called with the location', () => {
+      it('Then only the location is re-listed', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const altCtx = createMemoryContext();
+        const id = 'b0'.repeat(20) as ObjectId;
+        const location: SourceLocation = {
+          objectsDir: `${altCtx.layout.gitDir}/objects`,
+          fs: altCtx.fs,
+        };
+        await probeLooseOid(ctx, id, location);
+        await probeLooseOid(ctx, id);
+        const locationReaddir = vi.spyOn(altCtx.fs, 'readdir');
+        const primaryReaddir = vi.spyOn(ctx.fs, 'readdir');
+
+        // Act
+        forgetLooseOidPrefix(ctx, id, location);
+        await probeLooseOid(ctx, id, location);
+        await probeLooseOid(ctx, id);
+
+        // Assert
+        expect(locationReaddir).toHaveBeenCalledTimes(1);
+        expect(primaryReaddir).not.toHaveBeenCalled();
       });
     });
   });

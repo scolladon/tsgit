@@ -10,6 +10,7 @@ import {
   lockSuffix,
   logsDir,
   looseObjectPath,
+  looseObjectPathIn,
   looseRefPath,
   multiPackIndexChainPath,
   multiPackIndexLayerPath,
@@ -17,6 +18,7 @@ import {
   objectsDir,
   packedRefsPath,
   packsDir,
+  packsDirIn,
   reflogPath,
   reftableDir,
   reftableTableLockPath,
@@ -126,6 +128,31 @@ describe('path-layout', () => {
 
         // Assert
         expect(result).toBe('/g/objects/ab');
+      });
+    });
+  });
+
+  describe('Given an objects dir', () => {
+    describe('When looseObjectPathIn', () => {
+      it('Then returns <dir>/<xx>/<rest>', () => {
+        // Arrange
+        const id = ('ab' + 'cd'.repeat(19)) as ObjectId;
+
+        // Act
+        const result = looseObjectPathIn('/alt/objects', id);
+
+        // Assert
+        expect(result).toBe('/alt/objects/ab/' + 'cd'.repeat(19));
+      });
+    });
+
+    describe('When packsDirIn', () => {
+      it('Then returns <dir>/pack', () => {
+        // Arrange & Act
+        const result = packsDirIn('/alt/objects');
+
+        // Assert
+        expect(result).toBe('/alt/objects/pack');
       });
     });
   });
