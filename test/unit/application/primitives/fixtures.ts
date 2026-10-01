@@ -3,6 +3,8 @@
  */
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
+import type { ObjectStore } from '../../../../src/application/primitives/object-store.js';
+import type { PackRegistry } from '../../../../src/application/primitives/pack-registry.js';
 import {
   commitGraphChainPath,
   commitGraphPath,
@@ -662,3 +664,24 @@ export async function writeCommitGraph(
   }
   await ctx.fs.writeUtf8(commitGraphChainPath(gitDir), `${hashes.join('\n')}\n`);
 }
+
+const NO_BIG_FILE_THRESHOLD = Number.POSITIVE_INFINITY;
+
+/** A store whose only source is the primary, backed by an explicitly built `registry`. */
+export const soleSourceStore = (ctx: Context, registry: PackRegistry): ObjectStore => {
+  const primary = {
+    objectsDir: `${ctx.layout.gitDir}/objects`,
+    fs: ctx.fs,
+    local: true,
+    registry,
+  };
+  return {
+    sources: [primary],
+    primary,
+    diagnostics: [],
+    bigFileThreshold: NO_BIG_FILE_THRESHOLD,
+    refresh: () => registry.refresh(),
+    reprepare: () => registry.reprepare(),
+    dispose: () => registry.dispose(),
+  };
+};

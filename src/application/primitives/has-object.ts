@@ -9,8 +9,8 @@ import type { ObjectId } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
 import { probeLooseOid } from './internal/loose-oid-cache.js';
 import { retryOnceAfterRescan } from './internal/retry-after-rescan.js';
+import { getObjectStore, peekObjectStore } from './object-store.js';
 import type { PackRegistry } from './pack-registry.js';
-import { getPackRegistry, peekPackRegistry } from './read-object.js';
 
 /** Whether a miss re-scans the pack directory before answering — see {@link hasObject}. */
 export type HasObjectMode = 'quick' | 'recheck';
@@ -42,10 +42,11 @@ export const hasObject = async (
   id: ObjectId,
   options: HasObjectOptions = QUICK,
 ): Promise<boolean> => {
-  const registry: PackRegistry = peekPackRegistry(ctx) ?? (await getPackRegistry(ctx));
+  const store = peekObjectStore(ctx) ?? (await getObjectStore(ctx));
+  const registry: PackRegistry = store.primary.registry;
   if (await probeOnce(ctx, registry, id)) return true;
   if (options.mode === 'quick') return false;
-  const retried = await retryOnceAfterRescan(ctx, registry, id, async () =>
+  const retried = await retryOnceAfterRescan(ctx, store, id, async () =>
     (await probeOnce(ctx, registry, id)) ? true : undefined,
   );
   return retried ?? false;

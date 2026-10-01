@@ -4,7 +4,7 @@
  * retries exactly once when an object is found nowhere). Every arm that
  * classifies "no pack claims this id AND no loose file exists for it" as a
  * miss (the buffered resolver, `hasObject`, the streamed blob source) shares
- * this single choke point: it re-lists the pack directory (`registry.
+ * this single choke point: it re-lists the pack directory (`store.
  * reprepare()` — INCREMENTAL, unlike `refresh()`: known packs, their `.idx`
  * memos, their handles and their window-cache entries all survive; only new
  * packs are added and vanished ones retired) and drops the missed id's own
@@ -22,7 +22,7 @@
  */
 import type { ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
-import type { PackRegistry } from '../pack-registry.js';
+import { looseCacheLocation, type ObjectStore } from '../object-store.js';
 import { forgetLooseOidPrefix } from './loose-oid-cache.js';
 
 interface PendingRescan {
@@ -34,9 +34,22 @@ interface PendingRescan {
 
 const pendingRescanBySession = new WeakMap<Context['session'], PendingRescan>();
 
+/** Every source's loose listing may be stale: forget each missed id's prefix in all of them. */
+function forgetMissedPrefixes(
+  ctx: Context,
+  store: ObjectStore,
+  missedIds: ReadonlySet<ObjectId>,
+): void {
+  for (const id of missedIds) {
+    for (const source of store.sources) {
+      forgetLooseOidPrefix(ctx, id, looseCacheLocation(store, source));
+    }
+  }
+}
+
 export function rescanOnFullMiss(
   ctx: Context,
-  registry: PackRegistry,
+  store: ObjectStore,
   missedId: ObjectId,
 ): Promise<void> {
   const existing = pendingRescanBySession.get(ctx.session);
@@ -50,7 +63,7 @@ export function rescanOnFullMiss(
       pendingRescanBySession.delete(ctx.session);
     }
   };
-  const promise = registry
+  const promise = store
     .reprepare()
     .then(() => {
       // Drop the session entry BEFORE walking `missedIds` — not only in
@@ -62,7 +75,7 @@ export function rescanOnFullMiss(
       // Removing first means that miss instead starts a fresh wave of its
       // own, which forgets its prefix on its own terms.
       dropSessionEntry();
-      for (const id of missedIds) forgetLooseOidPrefix(ctx, id);
+      forgetMissedPrefixes(ctx, store, missedIds);
     })
     .finally(() => {
       // Safety net for the rejection path only: a rejected reprepare() skips

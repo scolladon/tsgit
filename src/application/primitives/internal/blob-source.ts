@@ -41,6 +41,7 @@ import {
   resolvePackChain,
   verifyObjectContent,
 } from '../object-resolver.js';
+import { getObjectStore, type ObjectStore, peekObjectStore } from '../object-store.js';
 import { nextOffsetForEntry, type PackLookupHit, type PackRegistry } from '../pack-registry.js';
 import { getPackRegistry, peekPackRegistry, withLazyFetchRetry } from '../read-object.js';
 import type { StreamBlobOptions } from '../stream-blob.js';
@@ -106,7 +107,8 @@ export async function openBlobSource(
   };
 
   checkAborted(ctx);
-  const registry = peekPackRegistry(ctx) ?? (await getPackRegistry(ctx));
+  const store = peekObjectStore(ctx) ?? (await getObjectStore(ctx));
+  const registry = store.primary.registry;
   // Same store-setup gate as resolveObjectContentWithDepth: a structurally
   // self-inconsistent multi-pack-index denies streamed loose reads too —
   // otherwise the two read paths would disagree about a corrupt store.
@@ -122,7 +124,7 @@ export async function openBlobSource(
   // file exists for it either. Mirrors `resolveObjectContentWithDepth`'s own
   // retry — `retryOnceAfterRescan` single-flights the re-scan across
   // concurrent misses and honours an abort raised during it.
-  const retried = await retryOnceAfterRescan(ctx, registry, id, () =>
+  const retried = await retryOnceAfterRescan(ctx, store, id, () =>
     tryOpenBlobSource(ctx, id, gate),
   );
   if (retried !== undefined) return retried;
@@ -162,7 +164,8 @@ async function tryOpenBlobSource(
   }
 
   checkAborted(ctx);
-  const registry = peekPackRegistry(ctx) ?? (await getPackRegistry(ctx));
+  const store = peekObjectStore(ctx) ?? (await getObjectStore(ctx));
+  const { registry } = store.primary;
   const hit = await registry.lookup(id);
   if (hit === undefined) return undefined;
 
@@ -188,7 +191,7 @@ async function tryOpenBlobSource(
   }
 
   checkAborted(ctx);
-  return await resolvePackDelta(ctx, registry, hit, id, gate);
+  return await resolvePackDelta(ctx, store, hit, id, gate);
 }
 
 /** The result of `verifyStoredObject`: the stored type of an object git's
@@ -460,12 +463,12 @@ async function resolvePackBase(
 
 async function resolvePackDelta(
   ctx: Context,
-  registry: PackRegistry,
+  store: ObjectStore,
   hit: PackLookupHit,
   id: ObjectId,
   gate: BufferGate,
 ): Promise<BlobSource> {
-  const resolved = await resolvePackChain(ctx, registry, hit, id, undefined);
+  const resolved = await resolvePackChain(ctx, store, store.primary, hit, id, undefined);
   await verifyObjectContent(ctx, id, resolved.type, resolved.content, gate.verifyHash);
   return { kind: 'bytes', ...resolved };
 }

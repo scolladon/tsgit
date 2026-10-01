@@ -44,6 +44,7 @@ import { buildMidx, type MidxSpec } from '../../domain/storage/arbitraries.js';
 import {
   buildSeededContext,
   instrumentedContext,
+  soleSourceStore,
   writeLooseWithDeclaredSize,
   writeRawObjectBytes,
 } from './fixtures.js';
@@ -297,7 +298,13 @@ describe('object-resolver', () => {
         const sut = resolveObject;
 
         // Act
-        const result = await sut(ctx, registry, EMPTY_TREE_OID, true, undefined);
+        const result = await sut(
+          ctx,
+          soleSourceStore(ctx, registry),
+          EMPTY_TREE_OID,
+          true,
+          undefined,
+        );
 
         // Assert
         expect(result).toEqual({ type: 'tree', id: EMPTY_TREE_OID, entries: [] });
@@ -317,7 +324,7 @@ describe('object-resolver', () => {
 
         // Act
         try {
-          await sut(ctx, registry, emptyBlobId, true);
+          await sut(ctx, soleSourceStore(ctx, registry), emptyBlobId, true);
           // Assert
           expect.unreachable();
         } catch (error) {
@@ -343,7 +350,13 @@ describe('object-resolver', () => {
         const sut = resolveObject;
 
         // Act
-        const result = await sut(ctx, registry, emptyTreeOidSha256, true, undefined);
+        const result = await sut(
+          ctx,
+          soleSourceStore(ctx, registry),
+          emptyTreeOidSha256,
+          true,
+          undefined,
+        );
 
         // Assert
         expect(result).toEqual({ type: 'tree', id: emptyTreeOidSha256, entries: [] });
@@ -363,7 +376,13 @@ describe('object-resolver', () => {
         const sut = resolveObject;
 
         // Act
-        const result = await sut(ctx, registry, emptyTreeOidSha1, true, undefined);
+        const result = await sut(
+          ctx,
+          soleSourceStore(ctx, registry),
+          emptyTreeOidSha1,
+          true,
+          undefined,
+        );
 
         // Assert
         expect(result).toEqual({ type: 'tree', id: emptyTreeOidSha1, entries: [] });
@@ -382,7 +401,7 @@ describe('object-resolver', () => {
 
         // Act
         try {
-          await sut(ctx, registry, EMPTY_TREE_OID, true);
+          await sut(ctx, soleSourceStore(ctx, registry), EMPTY_TREE_OID, true);
           // Assert
           expect.unreachable();
         } catch (error) {
@@ -407,7 +426,7 @@ describe('object-resolver', () => {
         const registry = await createPackRegistry(ctx);
 
         // Act
-        const result = await resolveObject(ctx, registry, id, true);
+        const result = await resolveObject(ctx, soleSourceStore(ctx, registry), id, true);
 
         // Assert
         expect(result.type).toBe('blob');
@@ -425,7 +444,12 @@ describe('object-resolver', () => {
 
         // Act
         try {
-          await resolveObject(ctx, registry, 'f'.repeat(40) as ObjectId, true);
+          await resolveObject(
+            ctx,
+            soleSourceStore(ctx, registry),
+            'f'.repeat(40) as ObjectId,
+            true,
+          );
           // Assert
           expect.unreachable();
         } catch (error) {
@@ -449,7 +473,12 @@ describe('object-resolver', () => {
         ]);
 
         // Act
-        const result = await resolveObject(ctx, registry, id as ObjectId, true);
+        const result = await resolveObject(
+          ctx,
+          soleSourceStore(ctx, registry),
+          id as ObjectId,
+          true,
+        );
 
         // Assert
         expect(result.type).toBe('blob');
@@ -471,7 +500,12 @@ describe('object-resolver', () => {
 
         // Act
         try {
-          await resolveObject(instrumented, registry, 'f'.repeat(40) as ObjectId, true);
+          await resolveObject(
+            instrumented,
+            soleSourceStore(instrumented, registry),
+            'f'.repeat(40) as ObjectId,
+            true,
+          );
           expect.unreachable();
         } catch (error) {
           // Assert
@@ -508,7 +542,9 @@ describe('object-resolver', () => {
 
         // Act
         const results = await Promise.all(
-          entries.map(({ id }) => resolveObject(instrumented, registry, id, true)),
+          entries.map(({ id }) =>
+            resolveObject(instrumented, soleSourceStore(instrumented, registry), id, true),
+          ),
         );
 
         // Assert
@@ -571,7 +607,7 @@ describe('object-resolver', () => {
 
         // Act
         try {
-          await resolveObject(instrumented, registry, id, true);
+          await resolveObject(instrumented, soleSourceStore(instrumented, registry), id, true);
           expect.unreachable();
         } catch (error) {
           // Assert
@@ -611,7 +647,12 @@ describe('object-resolver', () => {
         // Act
         let caught: unknown;
         try {
-          await resolveObject(instrumented, registry, 'a'.repeat(40) as ObjectId, true);
+          await resolveObject(
+            instrumented,
+            soleSourceStore(instrumented, registry),
+            'a'.repeat(40) as ObjectId,
+            true,
+          );
         } catch (error) {
           caught = error;
         }
@@ -636,7 +677,12 @@ describe('object-resolver', () => {
 
         // Act
         try {
-          await resolveObject(ctx, registry, 'a'.repeat(40) as ObjectId, true);
+          await resolveObject(
+            ctx,
+            soleSourceStore(ctx, registry),
+            'a'.repeat(40) as ObjectId,
+            true,
+          );
           // Assert
           expect.unreachable();
         } catch (error) {
@@ -663,7 +709,7 @@ describe('object-resolver', () => {
         const registry = await createPackRegistry(ctx);
 
         // Act
-        const result = await resolveObject(ctx, registry, fakeId, false);
+        const result = await resolveObject(ctx, soleSourceStore(ctx, registry), fakeId, false);
 
         // Assert
         expect(result.type).toBe('blob');
@@ -689,7 +735,7 @@ describe('object-resolver', () => {
 
         // Act
         try {
-          await resolveObject(ctx, registry, fakeId, true);
+          await resolveObject(ctx, soleSourceStore(ctx, registry), fakeId, true);
           // Assert
           expect.unreachable();
         } catch (error) {
@@ -718,7 +764,12 @@ describe('object-resolver', () => {
         const registry = await createPackRegistry(ctx);
 
         // Act
-        const result = await resolveObject(ctx, registry, id as ObjectId, true);
+        const result = await resolveObject(
+          ctx,
+          soleSourceStore(ctx, registry),
+          id as ObjectId,
+          true,
+        );
 
         // Assert
         expect(result.type).toBe('blob');
@@ -742,7 +793,12 @@ describe('object-resolver', () => {
         const registry = await createPackRegistry(ctx);
 
         // Act
-        const result = await resolveObject(ctx, registry, deltaId as ObjectId, true);
+        const result = await resolveObject(
+          ctx,
+          soleSourceStore(ctx, registry),
+          deltaId as ObjectId,
+          true,
+        );
 
         // Assert
         expect(result.type).toBe('blob');
@@ -769,7 +825,12 @@ describe('object-resolver', () => {
         const registry = await createPackRegistry(ctx);
 
         // Act
-        const result = await resolveObject(ctx, registry, deltaId as ObjectId, true);
+        const result = await resolveObject(
+          ctx,
+          soleSourceStore(ctx, registry),
+          deltaId as ObjectId,
+          true,
+        );
 
         // Assert
         expect(result.type).toBe('blob');
@@ -799,7 +860,12 @@ describe('object-resolver', () => {
         const registry = await createPackRegistry(ctx);
 
         // Act
-        const result = await resolveObject(ctx, registry, id as ObjectId, false);
+        const result = await resolveObject(
+          ctx,
+          soleSourceStore(ctx, registry),
+          id as ObjectId,
+          false,
+        );
 
         // Assert
         expect(result.type).toBe(kind);
@@ -829,10 +895,16 @@ describe('object-resolver', () => {
           ]);
           const registry = await createPackRegistry(ctx);
           // Prime the cache with the base.
-          await resolveObject(ctx, registry, baseId as ObjectId, false);
+          await resolveObject(ctx, soleSourceStore(ctx, registry), baseId as ObjectId, false);
 
           // Act — exact boundary cap=5, base size=5 → accept.
-          const result = await resolveObject(ctx, registry, deltaId as ObjectId, false, 5);
+          const result = await resolveObject(
+            ctx,
+            soleSourceStore(ctx, registry),
+            deltaId as ObjectId,
+            false,
+            5,
+          );
 
           // Assert
           expect(result.type).toBe('blob');
@@ -864,12 +936,12 @@ describe('object-resolver', () => {
           ]);
           const registry = await createPackRegistry(ctx);
           // Prime the cache: an uncapped read admits the base.
-          await resolveObject(ctx, registry, baseId as ObjectId, false);
+          await resolveObject(ctx, soleSourceStore(ctx, registry), baseId as ObjectId, false);
           expect(ctx.deltaCache.get(baseId as ObjectId)).toBeDefined();
 
           // Act — capped REF_DELTA read; base resolves via cache hit.
           try {
-            await resolveObject(ctx, registry, deltaId as ObjectId, false, 4);
+            await resolveObject(ctx, soleSourceStore(ctx, registry), deltaId as ObjectId, false, 4);
             expect.unreachable();
           } catch (error) {
             const data = (error as TsgitError).data;
@@ -907,7 +979,7 @@ describe('object-resolver', () => {
 
           // Act — cap rejects on the base, not the target.
           try {
-            await resolveObject(ctx, registry, deltaId, false, 4);
+            await resolveObject(ctx, soleSourceStore(ctx, registry), deltaId, false, 4);
             // Assert
             expect.unreachable();
           } catch (error) {
@@ -945,7 +1017,7 @@ describe('object-resolver', () => {
 
           // Act
           try {
-            await resolveObject(ctx, registry, deltaId, false, 4);
+            await resolveObject(ctx, soleSourceStore(ctx, registry), deltaId, false, 4);
             expect.unreachable();
           } catch (error) {
             const data = (error as TsgitError).data;
@@ -978,7 +1050,7 @@ describe('object-resolver', () => {
         expect(ctx.deltaCache.get(deltaId)).toBeUndefined();
 
         // Act
-        await resolveObject(ctx, registry, deltaId, true);
+        await resolveObject(ctx, soleSourceStore(ctx, registry), deltaId, true);
 
         // Assert — cacheEntry must have populated the cache; killing the
         // BlockStatement mutant that empties the function body.
@@ -1004,12 +1076,12 @@ describe('object-resolver', () => {
           ]);
           const deltaId = ids[1]! as ObjectId;
           const registry = await createPackRegistry(ctx);
-          const first = await resolveObject(ctx, registry, deltaId, true);
+          const first = await resolveObject(ctx, soleSourceStore(ctx, registry), deltaId, true);
           const lookupSpy = vi.spyOn(registry, 'lookup');
           const readSliceSpy = vi.spyOn(ctx.fs, 'readSlice');
 
           // Act
-          const second = await resolveObject(ctx, registry, deltaId, true);
+          const second = await resolveObject(ctx, soleSourceStore(ctx, registry), deltaId, true);
 
           // Assert — no re-walk of the chain: neither the registry lookup nor
           // any pack slice read fires on the warm path.
@@ -1035,7 +1107,7 @@ describe('object-resolver', () => {
 
           // Act
           try {
-            await resolveObject(ctx, registry, fakeId, true);
+            await resolveObject(ctx, soleSourceStore(ctx, registry), fakeId, true);
             // Assert
             expect.unreachable();
           } catch (error) {
@@ -1063,7 +1135,7 @@ describe('object-resolver', () => {
 
           // Act
           try {
-            await resolveObject(ctx, registry, fakeId, false, 5);
+            await resolveObject(ctx, soleSourceStore(ctx, registry), fakeId, false, 5);
             // Assert
             expect.unreachable();
           } catch (error) {
@@ -1092,7 +1164,7 @@ describe('object-resolver', () => {
 
           // Act
           try {
-            await resolveObject(ctx, registry, id, false, 5);
+            await resolveObject(ctx, soleSourceStore(ctx, registry), id, false, 5);
             // Assert
             expect.unreachable();
           } catch (error) {
@@ -1124,7 +1196,7 @@ describe('object-resolver', () => {
           // Act
           const result = await resolveObjectContentWithDepth(
             ctx,
-            registry,
+            soleSourceStore(ctx, registry),
             fakeId,
             false,
             undefined,
@@ -1159,7 +1231,14 @@ describe('object-resolver', () => {
           });
 
           // Act
-          await resolveObjectContentWithDepth(ctx, registry, fakeId, true, undefined, 0);
+          await resolveObjectContentWithDepth(
+            ctx,
+            soleSourceStore(ctx, registry),
+            fakeId,
+            true,
+            undefined,
+            0,
+          );
 
           // Assert
           expect(updateSpy.mock.calls).toHaveLength(2);
@@ -1182,7 +1261,14 @@ describe('object-resolver', () => {
           const registry = await createPackRegistry(ctx);
 
           // Act
-          await resolveObjectContentWithDepth(ctx, registry, id, false, undefined, 0);
+          await resolveObjectContentWithDepth(
+            ctx,
+            soleSourceStore(ctx, registry),
+            id,
+            false,
+            undefined,
+            0,
+          );
 
           // Assert
           expect(ctx.deltaCache.currentSize).toBe(
@@ -1212,7 +1298,14 @@ describe('object-resolver', () => {
 
           // Act
           try {
-            await resolveObjectContentWithDepth(ctx, registry, fakeId, false, undefined, 0);
+            await resolveObjectContentWithDepth(
+              ctx,
+              soleSourceStore(ctx, registry),
+              fakeId,
+              false,
+              undefined,
+              0,
+            );
             // Assert
             expect.unreachable();
           } catch (error) {
@@ -1249,7 +1342,14 @@ describe('object-resolver', () => {
           // Act
           let caught: unknown;
           try {
-            await resolveObjectContentWithDepth(abortingCtx, registry, fakeId, false, undefined, 0);
+            await resolveObjectContentWithDepth(
+              abortingCtx,
+              soleSourceStore(abortingCtx, registry),
+              fakeId,
+              false,
+              undefined,
+              0,
+            );
             expect.unreachable();
           } catch (error) {
             caught = error;
@@ -1292,7 +1392,14 @@ describe('object-resolver', () => {
           // Act
           let caught: unknown;
           try {
-            await resolveObjectContentWithDepth(ctx, registry, id as ObjectId, false, undefined, 0);
+            await resolveObjectContentWithDepth(
+              ctx,
+              soleSourceStore(ctx, registry),
+              id as ObjectId,
+              false,
+              undefined,
+              0,
+            );
             expect.unreachable();
           } catch (error) {
             caught = error;
@@ -1344,7 +1451,14 @@ describe('object-resolver', () => {
           // Act
           let caught: unknown;
           try {
-            await resolveObjectContentWithDepth(ctx, registry, id as ObjectId, true, undefined, 0);
+            await resolveObjectContentWithDepth(
+              ctx,
+              soleSourceStore(ctx, registry),
+              id as ObjectId,
+              true,
+              undefined,
+              0,
+            );
             expect.unreachable();
           } catch (error) {
             caught = error;
@@ -1387,7 +1501,14 @@ describe('object-resolver', () => {
           // Act
           let caught: unknown;
           try {
-            await resolveObjectContentWithDepth(ctx, registry, id, true, undefined, 0);
+            await resolveObjectContentWithDepth(
+              ctx,
+              soleSourceStore(ctx, registry),
+              id,
+              true,
+              undefined,
+              0,
+            );
             expect.unreachable();
           } catch (error) {
             caught = error;
@@ -1437,7 +1558,14 @@ describe('object-resolver', () => {
           // Act
           let caught: unknown;
           try {
-            await resolveObjectContentWithDepth(ctx, registry, id, false, undefined, 0);
+            await resolveObjectContentWithDepth(
+              ctx,
+              soleSourceStore(ctx, registry),
+              id,
+              false,
+              undefined,
+              0,
+            );
             expect.unreachable();
           } catch (error) {
             caught = error;
@@ -1467,7 +1595,7 @@ describe('object-resolver', () => {
           expect(ctx.deltaCache.get(id)).toBeUndefined();
 
           // Act
-          const result = await resolveObject(ctx, registry, id, true);
+          const result = await resolveObject(ctx, soleSourceStore(ctx, registry), id, true);
 
           // Assert
           expect(result.type).toBe('blob');
@@ -1494,7 +1622,7 @@ describe('object-resolver', () => {
           expect(ctx.deltaCache.get(id)).toBeUndefined();
 
           // Act
-          await resolveObject(ctx, registry, id, true);
+          await resolveObject(ctx, soleSourceStore(ctx, registry), id, true);
 
           // Assert — cacheEntry must have populated the cache from the loose
           // return path, not just the pack/REF_DELTA-base paths.
@@ -1522,8 +1650,8 @@ describe('object-resolver', () => {
           const inflateSpy = vi.spyOn(ctx.compressor, 'inflate');
 
           // Act
-          const first = await resolveObject(ctx, registry, id, true);
-          const second = await resolveObject(ctx, registry, id, true);
+          const first = await resolveObject(ctx, soleSourceStore(ctx, registry), id, true);
+          const second = await resolveObject(ctx, soleSourceStore(ctx, registry), id, true);
 
           // Assert — a warm read hits the cache instead of re-inflating.
           expect((second as Blob).content).toEqual((first as Blob).content);
@@ -1544,7 +1672,14 @@ describe('object-resolver', () => {
         const registry = await createPackRegistry(ctx);
 
         // Act
-        const result = await resolveObjectContentWithDepth(ctx, registry, id, false, undefined, 0);
+        const result = await resolveObjectContentWithDepth(
+          ctx,
+          soleSourceStore(ctx, registry),
+          id,
+          false,
+          undefined,
+          0,
+        );
 
         // Assert
         expect(result.content).toEqual(content.subarray(0, 5));
@@ -1565,7 +1700,7 @@ describe('object-resolver', () => {
         // Act
         const result = await resolveObjectContentWithDepth(
           ctx,
-          registry,
+          soleSourceStore(ctx, registry),
           id,
           false,
           undefined,
@@ -1598,7 +1733,14 @@ describe('object-resolver', () => {
 
         // Act
         try {
-          await resolveObjectContentWithDepth(ctx, registry, id, false, undefined, 0);
+          await resolveObjectContentWithDepth(
+            ctx,
+            soleSourceStore(ctx, registry),
+            id,
+            false,
+            undefined,
+            0,
+          );
           expect.unreachable();
         } catch (error) {
           // Assert
@@ -1627,7 +1769,7 @@ describe('object-resolver', () => {
         // Act
         const result = await resolveObjectContentWithDepth(
           ctx,
-          registry,
+          soleSourceStore(ctx, registry),
           id,
           false,
           undefined,
@@ -1655,7 +1797,14 @@ describe('object-resolver', () => {
         const inflateHeadSpy = vi.spyOn(ctx.compressor, 'inflateHead');
 
         // Act
-        await resolveObjectContentWithDepth(ctx, registry, id, false, undefined, 0);
+        await resolveObjectContentWithDepth(
+          ctx,
+          soleSourceStore(ctx, registry),
+          id,
+          false,
+          undefined,
+          0,
+        );
 
         // Assert
         expect(inflateSpy.mock.calls.length).toBe(1);
@@ -1678,7 +1827,14 @@ describe('object-resolver', () => {
         const inflateHeadSpy = vi.spyOn(ctx.compressor, 'inflateHead');
 
         // Act
-        const result = await resolveObjectContentWithDepth(ctx, registry, id, false, undefined, 0);
+        const result = await resolveObjectContentWithDepth(
+          ctx,
+          soleSourceStore(ctx, registry),
+          id,
+          false,
+          undefined,
+          0,
+        );
 
         // Assert
         expect(result.content).toEqual(content);
@@ -1703,7 +1859,14 @@ describe('object-resolver', () => {
 
         // Act
         try {
-          await resolveObjectContentWithDepth(ctx, registry, id, false, undefined, 0);
+          await resolveObjectContentWithDepth(
+            ctx,
+            soleSourceStore(ctx, registry),
+            id,
+            false,
+            undefined,
+            0,
+          );
           expect.unreachable();
         } catch (error) {
           // Assert
@@ -1729,7 +1892,14 @@ describe('object-resolver', () => {
 
         // Act
         try {
-          await resolveObjectContentWithDepth(ctx, registry, id, false, undefined, 0);
+          await resolveObjectContentWithDepth(
+            ctx,
+            soleSourceStore(ctx, registry),
+            id,
+            false,
+            undefined,
+            0,
+          );
           expect.unreachable();
         } catch (error) {
           // Assert
@@ -1775,7 +1945,14 @@ describe('object-resolver', () => {
 
         // Act
         try {
-          await resolveObjectContentWithDepth(cappedCtx, registry, id, false, undefined, 0);
+          await resolveObjectContentWithDepth(
+            cappedCtx,
+            soleSourceStore(cappedCtx, registry),
+            id,
+            false,
+            undefined,
+            0,
+          );
           expect.unreachable();
         } catch (error) {
           // Assert
@@ -1826,7 +2003,7 @@ describe('object-resolver', () => {
         // Act
         const result = await resolveObjectContentWithDepth(
           stubCtx,
-          registry,
+          soleSourceStore(stubCtx, registry),
           id,
           false,
           undefined,
@@ -1859,7 +2036,14 @@ describe('object-resolver', () => {
 
         // Act
         try {
-          await resolveObjectContentWithDepth(ctx, registry, id, false, undefined, 0);
+          await resolveObjectContentWithDepth(
+            ctx,
+            soleSourceStore(ctx, registry),
+            id,
+            false,
+            undefined,
+            0,
+          );
           expect.unreachable();
         } catch (error) {
           // Assert
@@ -1905,7 +2089,14 @@ describe('object-resolver', () => {
 
         // Act
         try {
-          await resolveObjectContentWithDepth(cappedCtx, registry, id, false, undefined, 0);
+          await resolveObjectContentWithDepth(
+            cappedCtx,
+            soleSourceStore(cappedCtx, registry),
+            id,
+            false,
+            undefined,
+            0,
+          );
           expect.unreachable();
         } catch (error) {
           // Assert
@@ -1930,7 +2121,14 @@ describe('object-resolver', () => {
         const registry = await createPackRegistry(ctx);
 
         // Act
-        const result = await resolveObjectContentWithDepth(ctx, registry, id, false, undefined, 0);
+        const result = await resolveObjectContentWithDepth(
+          ctx,
+          soleSourceStore(ctx, registry),
+          id,
+          false,
+          undefined,
+          0,
+        );
 
         // Assert
         expect(result.content).toEqual(content);
@@ -1952,7 +2150,15 @@ describe('object-resolver', () => {
 
         // Act
         try {
-          await resolveObjectContentWithDepth(ctx, registry, id, false, undefined, 0, 'streamed');
+          await resolveObjectContentWithDepth(
+            ctx,
+            soleSourceStore(ctx, registry),
+            id,
+            false,
+            undefined,
+            0,
+            'streamed',
+          );
           expect.unreachable();
         } catch (error) {
           // Assert
@@ -1976,7 +2182,15 @@ describe('object-resolver', () => {
         const registry = await createPackRegistry(ctx);
 
         // Act
-        await resolveObjectContentWithDepth(ctx, registry, id, false, undefined, 0, 'streamed');
+        await resolveObjectContentWithDepth(
+          ctx,
+          soleSourceStore(ctx, registry),
+          id,
+          false,
+          undefined,
+          0,
+          'streamed',
+        );
 
         // Assert
         expect(ctx.deltaCache.has(id)).toBe(true);
@@ -1994,7 +2208,14 @@ describe('object-resolver', () => {
         const registry = await createPackRegistry(ctx);
 
         // Act
-        await resolveObjectContentWithDepth(ctx, registry, id, false, undefined, 0);
+        await resolveObjectContentWithDepth(
+          ctx,
+          soleSourceStore(ctx, registry),
+          id,
+          false,
+          undefined,
+          0,
+        );
 
         // Assert
         expect(ctx.deltaCache.has(id)).toBe(true);
@@ -2014,7 +2235,14 @@ describe('object-resolver', () => {
 
         // Act
         try {
-          await resolveObjectContentWithDepth(ctx, registry, id, false, undefined, 0);
+          await resolveObjectContentWithDepth(
+            ctx,
+            soleSourceStore(ctx, registry),
+            id,
+            false,
+            undefined,
+            0,
+          );
           // Assert
           expect.unreachable();
         } catch (error) {
@@ -2061,7 +2289,14 @@ describe('object-resolver', () => {
         // Act
         let caught: unknown;
         try {
-          await resolveObjectContentWithDepth(abortingCtx, registry, id, false, undefined, 0);
+          await resolveObjectContentWithDepth(
+            abortingCtx,
+            soleSourceStore(abortingCtx, registry),
+            id,
+            false,
+            undefined,
+            0,
+          );
           expect.unreachable();
         } catch (error) {
           caught = error;
@@ -2096,7 +2331,14 @@ describe('object-resolver', () => {
 
         // Act
         try {
-          await resolveObjectContentWithDepth(ctx, registry, id, true, undefined, 0);
+          await resolveObjectContentWithDepth(
+            ctx,
+            soleSourceStore(ctx, registry),
+            id,
+            true,
+            undefined,
+            0,
+          );
           // Assert
           expect.unreachable();
         } catch (error) {
@@ -2120,11 +2362,25 @@ describe('object-resolver', () => {
         const id = await writeRawObjectBytes(ctx, 'blob', content);
         await writeLooseWithDeclaredSize(ctx, id, 'blob', 5, content);
         const registry = await createPackRegistry(ctx);
-        await resolveObjectContentWithDepth(ctx, registry, id, false, undefined, 0);
+        await resolveObjectContentWithDepth(
+          ctx,
+          soleSourceStore(ctx, registry),
+          id,
+          false,
+          undefined,
+          0,
+        );
 
         // Act
         try {
-          await resolveObjectContentWithDepth(ctx, registry, id, true, undefined, 0);
+          await resolveObjectContentWithDepth(
+            ctx,
+            soleSourceStore(ctx, registry),
+            id,
+            true,
+            undefined,
+            0,
+          );
           // Assert
           expect.unreachable();
         } catch (error) {
@@ -2144,7 +2400,7 @@ describe('object-resolver', () => {
         // Act
         const result = await resolveObjectContentWithDepth(
           ctx,
-          registry,
+          soleSourceStore(ctx, registry),
           EMPTY_TREE_OID,
           false,
           undefined,
@@ -2171,7 +2427,7 @@ describe('object-resolver', () => {
         // Act
         const result = await resolveObjectContentWithDepth(
           ctx,
-          registry,
+          soleSourceStore(ctx, registry),
           fakeId,
           false,
           undefined,
@@ -2198,7 +2454,7 @@ describe('object-resolver', () => {
         // Act
         const result = await resolveObjectContentWithDepth(
           ctx,
-          registry,
+          soleSourceStore(ctx, registry),
           id as ObjectId,
           false,
           undefined,
@@ -2227,8 +2483,8 @@ describe('object-resolver', () => {
         const registry = await createPackRegistry(ctx);
 
         // Act
-        const first = await resolveObjectWithSize(ctx, registry, id, false);
-        const second = await resolveObjectWithSize(ctx, registry, id, false);
+        const first = await resolveObjectWithSize(ctx, soleSourceStore(ctx, registry), id, false);
+        const second = await resolveObjectWithSize(ctx, soleSourceStore(ctx, registry), id, false);
 
         // Assert
         expect(first.object.type).toBe('commit');
@@ -2261,7 +2517,12 @@ describe('object-resolver', () => {
         const registry = await createPackRegistry(instrumented);
 
         // Act
-        const result = await resolveObject(instrumented, registry, id, true);
+        const result = await resolveObject(
+          instrumented,
+          soleSourceStore(instrumented, registry),
+          id,
+          true,
+        );
 
         // Assert
         expect(result.type).toBe('blob');
@@ -2322,7 +2583,7 @@ describe('object-resolver', () => {
         const registry = await createPackRegistry(stubCtx);
 
         // Act
-        const result = await resolveObject(stubCtx, registry, id, true);
+        const result = await resolveObject(stubCtx, soleSourceStore(stubCtx, registry), id, true);
 
         // Assert
         expect(result.type).toBe('blob');
@@ -2345,7 +2606,12 @@ describe('object-resolver', () => {
         const registry = await createPackRegistry(instrumented);
 
         // Act
-        const result = await resolveObject(instrumented, registry, id as ObjectId, true);
+        const result = await resolveObject(
+          instrumented,
+          soleSourceStore(instrumented, registry),
+          id as ObjectId,
+          true,
+        );
 
         // Assert
         expect(result.type).toBe('blob');
@@ -2379,7 +2645,7 @@ describe('object-resolver', () => {
         // Act
         let caught: unknown;
         try {
-          await resolveObject(instrumented, registry, id, true);
+          await resolveObject(instrumented, soleSourceStore(instrumented, registry), id, true);
         } catch (error) {
           caught = error;
         }
@@ -2420,7 +2686,12 @@ describe('object-resolver', () => {
         const registry = await createPackRegistry(instrumented);
 
         // Act
-        const result = await resolveObject(instrumented, registry, id, true);
+        const result = await resolveObject(
+          instrumented,
+          soleSourceStore(instrumented, registry),
+          id,
+          true,
+        );
 
         // Assert
         expect(result.type).toBe('blob');
@@ -2457,10 +2728,10 @@ describe('object-resolver', () => {
 
           // Act — resolve every id, then resolve every id again.
           for (const id of ids) {
-            await resolveObject(ctx, registry, id, true);
+            await resolveObject(ctx, soleSourceStore(ctx, registry), id, true);
           }
           for (const id of ids) {
-            await resolveObject(ctx, registry, id, true);
+            await resolveObject(ctx, soleSourceStore(ctx, registry), id, true);
           }
 
           // Assert — one readdir per DISTINCT touched prefix, never per object
@@ -2492,7 +2763,7 @@ describe('object-resolver', () => {
           const { serializeObject } = await import('../../../../src/domain/objects/index.js');
           const id = (await ctx.hash.hashHex(serializeObject(blob, ctx.hashConfig))) as ObjectId;
           const registry = await createPackRegistry(ctx);
-          await resolveObject(ctx, registry, id, true);
+          await resolveObject(ctx, soleSourceStore(ctx, registry), id, true);
           // A loose read also populates the delta cache on a loose read; drop that
           // entry so this probe exercises the fanout MEMBERSHIP cache's own
           // stale-hit degradation, not the (separately-tested) delta cache.
@@ -2504,7 +2775,7 @@ describe('object-resolver', () => {
 
           // Act
           try {
-            await resolveObject(ctx, registry, id, true);
+            await resolveObject(ctx, soleSourceStore(ctx, registry), id, true);
             // Assert
             expect.unreachable();
           } catch (error) {
@@ -2519,7 +2790,7 @@ describe('object-resolver', () => {
           // Assert — the stale prefix set was dropped: a THIRD probe re-reads
           // the directory, sees the object gone, and never touches the file
           const readSpy = vi.spyOn(ctx.fs, 'read');
-          await resolveObject(ctx, registry, id, true).catch(() => {});
+          await resolveObject(ctx, soleSourceStore(ctx, registry), id, true).catch(() => {});
           const loosePath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(id)}`;
           expect(readSpy.mock.calls.map((call) => call[0])).not.toContain(loosePath);
         });
@@ -2542,7 +2813,7 @@ describe('object-resolver', () => {
           const readSpy = vi.spyOn(ctx.fs, 'read');
 
           // Act
-          const result = await resolveObject(ctx, registry, id, true);
+          const result = await resolveObject(ctx, soleSourceStore(ctx, registry), id, true);
 
           // Assert
           expect(result.type).toBe('blob');
@@ -2566,7 +2837,7 @@ describe('object-resolver', () => {
 
           // Act
           try {
-            await resolveObject(ctx, registry, missingId, true);
+            await resolveObject(ctx, soleSourceStore(ctx, registry), missingId, true);
             // Assert
             expect.unreachable();
           } catch (error) {
@@ -2597,7 +2868,7 @@ describe('object-resolver', () => {
           const registry = await createPackRegistry(ctx);
           try {
             // Primes the fanout-dir cache as empty for this prefix.
-            await resolveObject(ctx, registry, decoyId, true);
+            await resolveObject(ctx, soleSourceStore(ctx, registry), decoyId, true);
             expect.unreachable();
           } catch (error) {
             expect((error as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
@@ -2605,7 +2876,7 @@ describe('object-resolver', () => {
 
           // Act
           await writeObject(ctx, blob);
-          const result = await resolveObject(ctx, registry, id, true);
+          const result = await resolveObject(ctx, soleSourceStore(ctx, registry), id, true);
 
           // Assert
           expect(result.type).toBe('blob');
@@ -2633,7 +2904,12 @@ describe('object-resolver', () => {
         const registry = await createPackRegistry(ctx);
 
         // Act
-        const result = await resolveObject(ctx, registry, tipId as ObjectId, true);
+        const result = await resolveObject(
+          ctx,
+          soleSourceStore(ctx, registry),
+          tipId as ObjectId,
+          true,
+        );
 
         // Assert
         expect(result.type).toBe('blob');
@@ -2664,11 +2940,11 @@ describe('object-resolver', () => {
           const tip1Id = ids[2]! as ObjectId;
           const tip2Id = ids[3]! as ObjectId;
           const registry = await createPackRegistry(ctx);
-          await resolveObject(ctx, registry, tip1Id, true);
+          await resolveObject(ctx, soleSourceStore(ctx, registry), tip1Id, true);
           const inflateSpy = vi.spyOn(ctx.compressor, 'inflate');
 
           // Act
-          const result = await resolveObject(ctx, registry, tip2Id, true);
+          const result = await resolveObject(ctx, soleSourceStore(ctx, registry), tip2Id, true);
 
           // Assert — only tip2's own delta instructions are inflated; the
           // shared mid level (and the base beneath it) come from the
@@ -2699,12 +2975,19 @@ describe('object-resolver', () => {
           const tip1Id = ids[2]! as ObjectId;
           const tip2Id = ids[3]! as ObjectId;
           const registry = await createPackRegistry(ctx);
-          await resolveObjectContentWithDepth(ctx, registry, tip1Id, false, undefined, 0);
+          await resolveObjectContentWithDepth(
+            ctx,
+            soleSourceStore(ctx, registry),
+            tip1Id,
+            false,
+            undefined,
+            0,
+          );
 
           // Act
           const result = await resolveObjectContentWithDepth(
             ctx,
-            registry,
+            soleSourceStore(ctx, registry),
             tip2Id,
             false,
             undefined,
@@ -2735,7 +3018,7 @@ describe('object-resolver', () => {
           ]);
           const tip1Id = gen1[1]! as ObjectId;
           const registry = await createPackRegistry(ctx);
-          await resolveObject(ctx, registry, tip1Id, true);
+          await resolveObject(ctx, soleSourceStore(ctx, registry), tip1Id, true);
 
           // Act — refresh, then replace the SAME pack name with a new
           // generation whose first entry (the same on-disk offset) is a base
@@ -2746,7 +3029,7 @@ describe('object-resolver', () => {
             { kind: 'base', type: 'blob', content: contentB },
           ]);
           const newBaseId = gen2[0]! as ObjectId;
-          const result = await resolveObject(ctx, registry, newBaseId, true);
+          const result = await resolveObject(ctx, soleSourceStore(ctx, registry), newBaseId, true);
 
           // Assert
           expect((result as Blob).content).toEqual(contentB);
@@ -2777,7 +3060,7 @@ describe('object-resolver', () => {
           ]);
           const tip1Id = gen1[1]! as ObjectId;
           const registry = await createPackRegistry(ctx);
-          await resolveObject(ctx, registry, tip1Id, true);
+          await resolveObject(ctx, soleSourceStore(ctx, registry), tip1Id, true);
 
           // Act — retire P0, let it fully vanish, then reappear under the
           // SAME name with unrelated bytes.
@@ -2792,7 +3075,7 @@ describe('object-resolver', () => {
           ]);
           const newBaseId = gen2[0]! as ObjectId;
           await registry.reprepare();
-          const result = await resolveObject(ctx, registry, newBaseId, false);
+          const result = await resolveObject(ctx, soleSourceStore(ctx, registry), newBaseId, false);
 
           // Assert
           expect((result as Blob).content).toEqual(contentB);
@@ -2833,7 +3116,7 @@ describe('object-resolver', () => {
           const [pack] = await registry.all();
 
           // Act
-          const result = await resolveObject(ctx, registry, tipId, true);
+          const result = await resolveObject(ctx, soleSourceStore(ctx, registry), tipId, true);
 
           // Assert — the 1-byte base fits under the cap and IS cached
           // (proving the key/instance shape used below is right, so the
@@ -2875,7 +3158,7 @@ describe('object-resolver', () => {
           const [pack] = await registry.all();
 
           // Act
-          const result = await resolveObject(ctx, registry, tipId, true);
+          const result = await resolveObject(ctx, soleSourceStore(ctx, registry), tipId, true);
 
           // Assert — the read succeeds AND the entry is genuinely retained,
           // not merely "didn't crash".
@@ -2901,7 +3184,12 @@ describe('object-resolver', () => {
           const registry = await createPackRegistry(ctx);
 
           // Act
-          const result = await resolveObject(ctx, registry, id as ObjectId, true);
+          const result = await resolveObject(
+            ctx,
+            soleSourceStore(ctx, registry),
+            id as ObjectId,
+            true,
+          );
 
           // Assert
           expect((result as Blob).content).toEqual(content);
@@ -2930,7 +3218,7 @@ describe('object-resolver', () => {
           deltaBaseCacheKeySpy.mockClear();
 
           // Act
-          await resolveObject(ctx, registry, tipId, false);
+          await resolveObject(ctx, soleSourceStore(ctx, registry), tipId, false);
 
           // Assert
           expect(deltaBaseCacheKeySpy).toHaveBeenCalledTimes(4);
@@ -2967,7 +3255,7 @@ describe('object-resolver', () => {
         const [pack] = await registry.all();
 
         // Act
-        const result = await resolveObject(ctx, registry, tipId, true);
+        const result = await resolveObject(ctx, soleSourceStore(ctx, registry), tipId, true);
 
         // Assert — bytes identical to an unbudgeted read.
         expect((result as Blob).content).toEqual(tipContent);
@@ -3013,7 +3301,7 @@ describe('object-resolver', () => {
         const [pack] = await registry.all();
 
         // Act
-        const result = await resolveObject(ctx, registry, tipId, true);
+        const result = await resolveObject(ctx, soleSourceStore(ctx, registry), tipId, true);
 
         // Assert
         expect((result as Blob).content).toEqual(tipContent);
@@ -3049,7 +3337,7 @@ describe('object-resolver', () => {
         const [pack] = await registry.all();
 
         // Act
-        await resolveObject(ctx, registry, tipId, true);
+        await resolveObject(ctx, soleSourceStore(ctx, registry), tipId, true);
 
         // Assert
         expect(
@@ -3083,7 +3371,7 @@ describe('object-resolver', () => {
         const [pack] = await registry.all();
 
         // Act
-        await resolveObject(ctx, registry, tipId, true);
+        await resolveObject(ctx, soleSourceStore(ctx, registry), tipId, true);
 
         // Assert
         expect(
@@ -3120,7 +3408,12 @@ describe('object-resolver', () => {
         const registry = await createPackRegistry(ctx);
 
         // Act
-        const result = await resolveObject(ctx, registry, deltaId as ObjectId, false);
+        const result = await resolveObject(
+          ctx,
+          soleSourceStore(ctx, registry),
+          deltaId as ObjectId,
+          false,
+        );
 
         // Assert
         expect(result.type).toBe(kind);
@@ -3146,7 +3439,7 @@ describe('object-resolver', () => {
         const registry = await createPackRegistry(ctx);
 
         // Act
-        const result = await resolveObject(ctx, registry, tipId, false);
+        const result = await resolveObject(ctx, soleSourceStore(ctx, registry), tipId, false);
 
         // Assert
         expect(result.type).toBe('blob');
@@ -3203,7 +3496,12 @@ describe('object-resolver', () => {
         const registry = await createPackRegistry(ctx);
 
         // Act
-        const result = await resolveObject(ctx, registry, deltaId as ObjectId, false);
+        const result = await resolveObject(
+          ctx,
+          soleSourceStore(ctx, registry),
+          deltaId as ObjectId,
+          false,
+        );
 
         // Assert — the reconstructed object must be a commit (not mis-typed as blob).
         expect(result.type).toBe('commit');
@@ -3228,7 +3526,7 @@ describe('object-resolver', () => {
           const inflateSpy = vi.spyOn(ctx.compressor, 'inflate');
 
           // Act
-          const result = await sut(ctx, registry, firstId, false);
+          const result = await sut(ctx, soleSourceStore(ctx, registry), firstId, false);
 
           // Assert — the call to inflate on the pack path uses subarray; find the
           // pack-path call (loose inflate also calls inflate; pack read is NOT the
@@ -3262,7 +3560,7 @@ describe('object-resolver', () => {
           const streamInflateSpy = vi.spyOn(ctx.compressor, 'streamInflate');
 
           // Act
-          await sut(ctx, registry, firstId, false);
+          await sut(ctx, soleSourceStore(ctx, registry), firstId, false);
 
           // Assert — streamInflate must never be called anywhere in the resolve path
           expect(streamInflateSpy.mock.calls.length).toBe(0);
@@ -3290,7 +3588,7 @@ describe('object-resolver', () => {
           const readSliceSpy = vi.spyOn(packs[0]!, 'readSlice');
 
           // Act
-          const result = await sut(ctx, registry, id, false);
+          const result = await sut(ctx, soleSourceStore(ctx, registry), id, false);
 
           // Assert — exact slice length = trailerStart - entryOffset
           expect(result.type).toBe('blob');
@@ -3355,7 +3653,7 @@ describe('object-resolver', () => {
           const sut = resolveObject;
 
           // Act
-          const result = await sut(ctx, registry, id, false);
+          const result = await sut(ctx, soleSourceStore(ctx, registry), id, false);
 
           // Assert — read proceeds at the === boundary; blob recovered intact
           expect(result.type).toBe('blob');
@@ -3430,7 +3728,7 @@ describe('object-resolver', () => {
 
           // Act
           try {
-            await sut(ctx, registry, targetId, false);
+            await sut(ctx, soleSourceStore(ctx, registry), targetId, false);
             expect.unreachable();
           } catch (error) {
             const data = (error as TsgitError).data;
@@ -3510,7 +3808,7 @@ describe('object-resolver', () => {
 
           // Act
           try {
-            await sut(ctx, registry, targetId, false);
+            await sut(ctx, soleSourceStore(ctx, registry), targetId, false);
             expect.unreachable();
           } catch (error) {
             const data = (error as TsgitError).data;
@@ -3586,7 +3884,7 @@ describe('object-resolver', () => {
 
           // Act
           try {
-            await sut(ctx, registry, targetId, false);
+            await sut(ctx, soleSourceStore(ctx, registry), targetId, false);
             expect.unreachable();
           } catch (error) {
             const data = (error as TsgitError).data;
@@ -3682,7 +3980,7 @@ describe('object-resolver', () => {
         const streamInflateSpy = vi.spyOn(ctx.compressor, 'streamInflate');
 
         // Act
-        const result = await sut(ctx, registry, deltaId, false);
+        const result = await sut(ctx, soleSourceStore(ctx, registry), deltaId, false);
 
         // Assert — correct content reconstruction
         expect(result.type).toBe('blob');
@@ -3725,7 +4023,12 @@ describe('object-resolver', () => {
           const openSpy = vi.spyOn(ctx.fs, 'openWithNoFollow');
 
           // Act
-          const result = await resolveObject(ctx, registry, tipId as ObjectId, true);
+          const result = await resolveObject(
+            ctx,
+            soleSourceStore(ctx, registry),
+            tipId as ObjectId,
+            true,
+          );
 
           // Assert — one open for the whole chain walk; byte-identical output.
           expect(result.type).toBe('blob');
@@ -3754,7 +4057,7 @@ describe('object-resolver', () => {
 
         // Act
         try {
-          await resolveObject(ctx, registry, tipId, false);
+          await resolveObject(ctx, soleSourceStore(ctx, registry), tipId, false);
           throw new Error('should not reach here');
         } catch (error) {
           if (!(error instanceof TsgitError)) throw error;
@@ -3787,10 +4090,10 @@ describe('object-resolver', () => {
         const registry = await createPackRegistry(ctx);
 
         // Act — warm the cache with the lower object first.
-        await resolveObject(ctx, registry, lowerId, false);
+        await resolveObject(ctx, soleSourceStore(ctx, registry), lowerId, false);
         let caught: unknown;
         try {
-          await resolveObject(ctx, registry, tipId, false);
+          await resolveObject(ctx, soleSourceStore(ctx, registry), tipId, false);
         } catch (error) {
           caught = error;
         }
@@ -3826,11 +4129,16 @@ describe('object-resolver', () => {
 
         // Act — warm the cache bottom-up in five 10-level steps, then read the tip.
         for (const position of [10, 20, 30, 40, 50]) {
-          await resolveObject(ctx, registry, ids[position] as ObjectId, false);
+          await resolveObject(
+            ctx,
+            soleSourceStore(ctx, registry),
+            ids[position] as ObjectId,
+            false,
+          );
         }
         let caught: unknown;
         try {
-          await resolveObject(ctx, registry, ids.at(-1) as ObjectId, false);
+          await resolveObject(ctx, soleSourceStore(ctx, registry), ids.at(-1) as ObjectId, false);
         } catch (error) {
           caught = error;
         }
@@ -3860,10 +4168,15 @@ describe('object-resolver', () => {
         }
         const ids = await writeSyntheticPack(ctx, 'shallow-after-deep', entries);
         const registry = await createPackRegistry(ctx);
-        await resolveObject(ctx, registry, ids.at(-1) as ObjectId, false);
+        await resolveObject(ctx, soleSourceStore(ctx, registry), ids.at(-1) as ObjectId, false);
 
         // Act
-        const result = await resolveObject(ctx, registry, ids[1] as ObjectId, false);
+        const result = await resolveObject(
+          ctx,
+          soleSourceStore(ctx, registry),
+          ids[1] as ObjectId,
+          false,
+        );
 
         // Assert
         expect(result.type).toBe('blob');
@@ -3913,7 +4226,7 @@ describe('object-resolver', () => {
         // Act
         let caught: unknown;
         try {
-          await resolveObject(ctx, registry, bTipId, false);
+          await resolveObject(ctx, soleSourceStore(ctx, registry), bTipId, false);
         } catch (error) {
           caught = error;
         }
@@ -3966,7 +4279,7 @@ describe('object-resolver', () => {
         // Act
         let caught: unknown;
         try {
-          await resolveObject(ctx, registry, previousId as ObjectId, false);
+          await resolveObject(ctx, soleSourceStore(ctx, registry), previousId as ObjectId, false);
         } catch (error) {
           caught = error;
         }
@@ -4018,7 +4331,7 @@ describe('object-resolver', () => {
         const registry = await createPackRegistry(ctx);
 
         // Act
-        const result = await resolveObject(ctx, registry, bTipId, false);
+        const result = await resolveObject(ctx, soleSourceStore(ctx, registry), bTipId, false);
 
         // Assert
         expect(result.type).toBe('blob');
@@ -4068,10 +4381,10 @@ describe('object-resolver', () => {
         const registry = await createPackRegistry(ctx);
 
         // Act — cold read warms the offset-keyed cache at entry 0's position.
-        await resolveObject(ctx, registry, bEntry0Id, false);
+        await resolveObject(ctx, soleSourceStore(ctx, registry), bEntry0Id, false);
         let caught: unknown;
         try {
-          await resolveObject(ctx, registry, bTipId, false);
+          await resolveObject(ctx, soleSourceStore(ctx, registry), bTipId, false);
         } catch (error) {
           caught = error;
         }
@@ -4133,10 +4446,10 @@ describe('object-resolver', () => {
         // Act — warm A's position 10 (intermediate, not the tip), then
         // resolve B's tip, which resolves A's tip for the first time as its
         // REF_DELTA base.
-        await resolveObject(ctx, registry, aPosition10Id, false);
+        await resolveObject(ctx, soleSourceStore(ctx, registry), aPosition10Id, false);
         let caught: unknown;
         try {
-          await resolveObject(ctx, registry, bTipId, false);
+          await resolveObject(ctx, soleSourceStore(ctx, registry), bTipId, false);
         } catch (error) {
           caught = error;
         }
@@ -4198,11 +4511,11 @@ describe('object-resolver', () => {
         // resolved for the first time below, as bEntry0's own REF_DELTA
         // base, so it goes through the full resolvePackChainWithDepth
         // return path rather than an id-keyed bytes-cache shortcut.
-        await resolveObject(ctx, registry, aPosition1Id, false);
-        await resolveObject(ctx, registry, bEntry0Id, false);
+        await resolveObject(ctx, soleSourceStore(ctx, registry), aPosition1Id, false);
+        await resolveObject(ctx, soleSourceStore(ctx, registry), bEntry0Id, false);
         let caught: unknown;
         try {
-          await resolveObject(ctx, registry, bTipId, false);
+          await resolveObject(ctx, soleSourceStore(ctx, registry), bTipId, false);
         } catch (error) {
           caught = error;
         }
@@ -4264,18 +4577,18 @@ describe('object-resolver', () => {
         // Act — cold read of the tip: nothing has warmed A's id-cache yet.
         let coldCaught: unknown;
         try {
-          await resolveObject(ctx, registry, bTipId, false);
+          await resolveObject(ctx, soleSourceStore(ctx, registry), bTipId, false);
         } catch (error) {
           coldCaught = error;
         }
 
         // Resolve A's tip directly — populates the id-keyed ctx.deltaCache
         // for aTipId with its raw bytes; that cache reports chainDepth 0.
-        await resolveObject(ctx, registry, aTipId, false);
+        await resolveObject(ctx, soleSourceStore(ctx, registry), aTipId, false);
 
         // A second read of the SAME tip resumes the REF hop from that warm
         // cache entry instead of walking pack A's chain again.
-        const warmResult = await resolveObject(ctx, registry, bTipId, false);
+        const warmResult = await resolveObject(ctx, soleSourceStore(ctx, registry), bTipId, false);
 
         // Assert
         expect(coldCaught).toBeInstanceOf(TsgitError);
@@ -4311,7 +4624,7 @@ describe('object-resolver', () => {
 
           // Act
           try {
-            await resolveObject(ctx, registry, targetId, false);
+            await resolveObject(ctx, soleSourceStore(ctx, registry), targetId, false);
             // Assert
             expect.unreachable();
           } catch (error) {
@@ -4351,7 +4664,7 @@ describe('object-resolver', () => {
           // Act — walker does not short-circuit at 0; nextOffsetForEntry
           // rejects offset 0 as absent from the sorted index.
           try {
-            await resolveObject(ctx, registry, targetId, false);
+            await resolveObject(ctx, soleSourceStore(ctx, registry), targetId, false);
             // Assert
             expect.unreachable();
           } catch (error) {
@@ -4390,7 +4703,7 @@ describe('object-resolver', () => {
 
         // Act — cap 4, actual inflated content 40 bytes.
         try {
-          await resolveObject(ctx, registry, targetId, false, 4);
+          await resolveObject(ctx, soleSourceStore(ctx, registry), targetId, false, 4);
           // Assert
           expect.unreachable();
         } catch (error) {
@@ -4420,7 +4733,7 @@ describe('object-resolver', () => {
 
         // Act — no maxBytes argument at all.
         try {
-          await resolveObject(ctx, registry, id as ObjectId, false);
+          await resolveObject(ctx, soleSourceStore(ctx, registry), id as ObjectId, false);
           expect.unreachable();
         } catch (error) {
           // Assert
@@ -4453,7 +4766,7 @@ describe('object-resolver', () => {
 
         // Act
         try {
-          await resolveObject(ctx, registry, deltaId, false);
+          await resolveObject(ctx, soleSourceStore(ctx, registry), deltaId, false);
           expect.unreachable();
         } catch (error) {
           // Assert
@@ -4507,7 +4820,7 @@ describe('object-resolver', () => {
         ]);
 
         // Act
-        const result = await resolveObject(ctx, registry, targetId, false);
+        const result = await resolveObject(ctx, soleSourceStore(ctx, registry), targetId, false);
 
         // Assert — base resolved unverified; the delta reconstructs the target.
         expect(result.type).toBe('blob');
@@ -4579,8 +4892,8 @@ describe('object-resolver', () => {
           const baseline = parseSpy.mock.calls.length;
 
           // Act
-          const first = await resolveObject(ctx, registry, commitId, false);
-          const second = await resolveObject(ctx, registry, commitId, false);
+          const first = await resolveObject(ctx, soleSourceStore(ctx, registry), commitId, false);
+          const second = await resolveObject(ctx, soleSourceStore(ctx, registry), commitId, false);
 
           // Assert
           expect(second).toEqual(first);
@@ -4602,8 +4915,8 @@ describe('object-resolver', () => {
           const baseline = parseSpy.mock.calls.length;
 
           // Act
-          const first = await resolveObject(ctx, registry, tagId, false);
-          const second = await resolveObject(ctx, registry, tagId, false);
+          const first = await resolveObject(ctx, soleSourceStore(ctx, registry), tagId, false);
+          const second = await resolveObject(ctx, soleSourceStore(ctx, registry), tagId, false);
 
           // Assert
           expect(second).toEqual(first);
@@ -4632,8 +4945,8 @@ describe('object-resolver', () => {
           const baseline = parseSpy.mock.calls.length;
 
           // Act
-          const first = await resolveObject(ctx, registry, commitId, false);
-          const second = await resolveObject(ctx, registry, commitId, false);
+          const first = await resolveObject(ctx, soleSourceStore(ctx, registry), commitId, false);
+          const second = await resolveObject(ctx, soleSourceStore(ctx, registry), commitId, false);
 
           // Assert — never cached, so every read re-parses.
           expect(second).toEqual(first);
@@ -4658,8 +4971,8 @@ describe('object-resolver', () => {
           const baseline = parseSpy.mock.calls.length;
 
           // Act
-          const first = await resolveObject(ctx, registry, commitId, false);
-          const second = await resolveObject(ctx, registry, commitId, false);
+          const first = await resolveObject(ctx, soleSourceStore(ctx, registry), commitId, false);
+          const second = await resolveObject(ctx, soleSourceStore(ctx, registry), commitId, false);
 
           // Assert — no throw reached this line, and the entry was genuinely
           // cached rather than silently dropped.
@@ -4719,7 +5032,7 @@ describe('object-resolver', () => {
           createLruCacheSpy.mockClear();
 
           // Act
-          await resolveObject(ctx, registry, commitId, false);
+          await resolveObject(ctx, soleSourceStore(ctx, registry), commitId, false);
 
           // Assert
           const memoCall = createLruCacheSpy.mock.calls.find(
@@ -4749,7 +5062,7 @@ describe('object-resolver', () => {
           const commitId = await writeCommitWithMessage(ctx, 'entry cap eviction seed');
           const registry = await createPackRegistry(ctx);
           createLruCacheSpy.mockClear();
-          await resolveObject(ctx, registry, commitId, false);
+          await resolveObject(ctx, soleSourceStore(ctx, registry), commitId, false);
           const memoCallIndex = createLruCacheSpy.mock.calls.findIndex(
             (call) => call[1] === derivedEntryCap,
           );
@@ -4801,19 +5114,19 @@ describe('object-resolver', () => {
           const baseline = parseSpy.mock.calls.length;
 
           // Act + Assert — interleave reads and check the running parse count.
-          await resolveObject(ctx, registry, commitA, false);
+          await resolveObject(ctx, soleSourceStore(ctx, registry), commitA, false);
           expect(parseCallsSince(parseSpy, baseline)).toBe(1);
-          await resolveObject(ctx, registry, commitB, false);
+          await resolveObject(ctx, soleSourceStore(ctx, registry), commitB, false);
           expect(parseCallsSince(parseSpy, baseline)).toBe(2);
-          await resolveObject(ctx, registry, commitC, false);
+          await resolveObject(ctx, soleSourceStore(ctx, registry), commitC, false);
           expect(parseCallsSince(parseSpy, baseline)).toBe(3);
-          await resolveObject(ctx, registry, commitA, false); // promote A to MRU
+          await resolveObject(ctx, soleSourceStore(ctx, registry), commitA, false); // promote A to MRU
           expect(parseCallsSince(parseSpy, baseline)).toBe(3);
-          await resolveObject(ctx, registry, commitD, false); // evicts B, not A
+          await resolveObject(ctx, soleSourceStore(ctx, registry), commitD, false); // evicts B, not A
           expect(parseCallsSince(parseSpy, baseline)).toBe(4);
-          await resolveObject(ctx, registry, commitB, false); // B was evicted
+          await resolveObject(ctx, soleSourceStore(ctx, registry), commitB, false); // B was evicted
           expect(parseCallsSince(parseSpy, baseline)).toBe(5);
-          await resolveObject(ctx, registry, commitA, false); // A survived
+          await resolveObject(ctx, soleSourceStore(ctx, registry), commitA, false); // A survived
           expect(parseCallsSince(parseSpy, baseline)).toBe(5);
           parseSpy.mockRestore();
         });
@@ -4836,8 +5149,8 @@ describe('object-resolver', () => {
           const baseline = parseSpy.mock.calls.length;
 
           // Act
-          await resolveObject(auditCtx, registry, commitId, false);
-          await resolveObject(auditCtx, registry, commitId, false);
+          await resolveObject(auditCtx, soleSourceStore(auditCtx, registry), commitId, false);
+          await resolveObject(auditCtx, soleSourceStore(auditCtx, registry), commitId, false);
 
           // Assert
           expect(parseCallsSince(parseSpy, baseline)).toBe(2);
@@ -4861,7 +5174,12 @@ describe('object-resolver', () => {
           const registry = await createPackRegistry(instrumented);
 
           // Act
-          const result = await resolveObject(instrumented, registry, id as ObjectId, true);
+          const result = await resolveObject(
+            instrumented,
+            soleSourceStore(instrumented, registry),
+            id as ObjectId,
+            true,
+          );
 
           // Assert
           expect((result as Blob).content).toEqual(content);
@@ -4892,7 +5210,7 @@ describe('object-resolver', () => {
           const readSpy = vi.spyOn(ctx.fs, 'read');
 
           // Act
-          const result = await resolveObject(ctx, registry, id, true);
+          const result = await resolveObject(ctx, soleSourceStore(ctx, registry), id, true);
 
           // Assert
           expect((result as Blob).content).toEqual(blob.content);
@@ -4925,7 +5243,12 @@ describe('object-resolver', () => {
           const registry = await createPackRegistry(instrumented);
 
           // Act
-          const result = await resolveObject(instrumented, registry, id as ObjectId, true);
+          const result = await resolveObject(
+            instrumented,
+            soleSourceStore(instrumented, registry),
+            id as ObjectId,
+            true,
+          );
 
           // Assert
           expect((result as Blob).content).toEqual(content);

@@ -33,6 +33,12 @@ export interface ObjectStore {
   dispose(): Promise<void>;
 }
 
+/** The loose-cache key for `source`: the primary keeps its session-keyed cache (no location). */
+export const looseCacheLocation = (
+  store: Pick<ObjectStore, 'primary'>,
+  source: ObjectSource,
+): SourceLocation | undefined => (source === store.primary ? undefined : source);
+
 const ABSENT_LIST_CODES: ReadonlySet<string | undefined> = new Set([
   'FILE_NOT_FOUND',
   'NOT_A_DIRECTORY',

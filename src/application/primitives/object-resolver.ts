@@ -57,13 +57,10 @@ import {
 } from './internal/object-caches.js';
 import { isInflateCapExceeded } from './internal/pack-byte-source.js';
 import { checkAborted, retryOnceAfterRescan } from './internal/retry-after-rescan.js';
-import {
-  deltaBaseCacheKey,
-  nextOffsetForEntry,
-  type PackLookupHit,
-  type PackRegistry,
-} from './pack-registry.js';
-import { commonGitDir, looseObjectPath } from './path-layout.js';
+import type { SourceLocation } from './internal/source-location.js';
+import { looseCacheLocation, type ObjectSource, type ObjectStore } from './object-store.js';
+import { deltaBaseCacheKey, nextOffsetForEntry, type PackLookupHit } from './pack-registry.js';
+import { commonGitDir, looseObjectPath, looseObjectPathIn } from './path-layout.js';
 
 /**
  * Git treats the empty tree as a virtual, always-present object — resolvable
@@ -301,7 +298,7 @@ export async function inflateLooseBuffered(
  */
 export async function resolveObjectContentWithDepth(
   ctx: Context,
-  registry: PackRegistry,
+  store: ObjectStore,
   id: ObjectId,
   verifyHash: boolean,
   maxBytes: number | undefined,
@@ -313,7 +310,7 @@ export async function resolveObjectContentWithDepth(
   // Git dies during object-store setup, ahead of every read — a structurally
   // self-inconsistent multi-pack-index must deny loose reads too, so this
   // gate sits before the empty-tree short-circuit and the deltaCache probe.
-  await registry.assertLoadable();
+  await store.primary.registry.assertLoadable();
   if (id === emptyTreeOid(ctx.hashConfig)) {
     return { type: 'tree', content: EMPTY_TREE_CONTENT, chainDepth: 0, declaredSize: 0 };
   }
@@ -321,9 +318,9 @@ export async function resolveObjectContentWithDepth(
   if (cached !== undefined) return cached;
 
   checkAborted(ctx);
-  const first = await tryResolveViaRegistry(
+  const first = await tryResolveViaSources(
     ctx,
-    registry,
+    store,
     id,
     verifyHash,
     maxBytes,
@@ -338,8 +335,8 @@ export async function resolveObjectContentWithDepth(
   // `git repack`, a lazy fetch outside this session) may have changed the
   // store since the last scan. `retryOnceAfterRescan` single-flights the
   // re-scan across concurrent misses and honours an abort raised during it.
-  const retried = await retryOnceAfterRescan(ctx, registry, id, () =>
-    tryResolveViaRegistry(ctx, registry, id, verifyHash, maxBytes, externalDepth, mode),
+  const retried = await retryOnceAfterRescan(ctx, store, id, () =>
+    tryResolveViaSources(ctx, store, id, verifyHash, maxBytes, externalDepth, mode),
   );
   if (retried !== undefined) return retried;
   throw objectNotFound(id);
@@ -367,28 +364,65 @@ async function tryDeltaCacheHit(
 }
 
 /**
- * One resolution attempt against the CURRENT generation: a pack hit resolves
- * its delta chain, a loose hit resolves its bytes, and neither claiming `id`
+ * One resolution attempt against the CURRENT generation, source by source in
+ * git's order (the primary first, then each alternate): a pack hit resolves
+ * its delta chain, a loose hit resolves its bytes, and no source claiming `id`
  * reports `undefined` — the full-miss signal `resolveObjectContentWithDepth`
- * retries once after a re-scan. Any OTHER error (a corrupt entry, a hash
- * mismatch, an oversize object) propagates directly, never converted to a
- * miss and never retried.
+ * retries once after a re-scan. An alternate's registry is loaded only when
+ * the walk reaches it, so a primary hit never trips over a broken alternate.
+ * Any OTHER error (a corrupt entry, a hash mismatch, an oversize object)
+ * propagates directly, never converted to a miss and never retried.
  */
-async function tryResolveViaRegistry(
+async function tryResolveViaSources(
   ctx: Context,
-  registry: PackRegistry,
+  store: ObjectStore,
   id: ObjectId,
   verifyHash: boolean,
   maxBytes: number | undefined,
   externalDepth: number,
   mode: LooseReadMode,
 ): Promise<(ObjectContent & { chainDepth: number; declaredSize: number }) | undefined> {
-  const hit = await registry.lookup(id);
+  for (const source of store.sources) {
+    if (source !== store.primary) await source.registry.assertLoadable();
+    const found = await tryResolveViaSource(
+      ctx,
+      store,
+      source,
+      id,
+      verifyHash,
+      maxBytes,
+      externalDepth,
+      mode,
+    );
+    if (found !== undefined) return found;
+  }
+  return undefined;
+}
+
+async function tryResolveViaSource(
+  ctx: Context,
+  store: ObjectStore,
+  source: ObjectSource,
+  id: ObjectId,
+  verifyHash: boolean,
+  maxBytes: number | undefined,
+  externalDepth: number,
+  mode: LooseReadMode,
+): Promise<(ObjectContent & { chainDepth: number; declaredSize: number }) | undefined> {
+  const hit = await source.registry.lookup(id);
   if (hit === undefined) {
-    return resolveLooseArm(ctx, id, maxBytes, verifyHash, mode);
+    return resolveLooseArm(ctx, looseCacheLocation(store, source), id, maxBytes, verifyHash, mode);
   }
   checkAborted(ctx);
-  const resolved = await resolvePackChainWithDepth(ctx, registry, hit, id, maxBytes, externalDepth);
+  const resolved = await resolvePackChainWithDepth(
+    ctx,
+    store,
+    source,
+    hit,
+    id,
+    maxBytes,
+    externalDepth,
+  );
   checkAborted(ctx);
   await verifyObjectContent(ctx, id, resolved.type, resolved.content, verifyHash);
   return {
@@ -450,14 +484,15 @@ function resolveStreamedContent(split: LooseObjectSplit): LooseServable {
  * caller retries once after a re-scan, not a refusal in its own right. A
  * loose hit never walks a delta chain, so it always reports depth 0.
  */
-async function resolveLooseArm(
+export async function resolveLooseArm(
   ctx: Context,
+  location: SourceLocation | undefined,
   id: ObjectId,
   maxBytes: number | undefined,
   verifyHash: boolean,
   mode: LooseReadMode,
 ): Promise<(ObjectContent & { chainDepth: number; declaredSize: number }) | undefined> {
-  const split = await tryLoose(ctx, id, mode);
+  const split = await tryLoose(ctx, location, id, mode);
   if (split === undefined) {
     return undefined;
   }
@@ -497,7 +532,7 @@ function parseMemoised(
 
 export async function resolveObject(
   ctx: Context,
-  registry: PackRegistry,
+  store: ObjectStore,
   id: ObjectId,
   verifyHash: boolean,
   maxBytes?: number,
@@ -505,7 +540,7 @@ export async function resolveObject(
 ): Promise<GitObject> {
   const { type, content } = await resolveObjectContentWithDepth(
     ctx,
-    registry,
+    store,
     id,
     verifyHash,
     maxBytes,
@@ -520,7 +555,7 @@ export async function resolveObject(
  *  every other storage form (see `resolveObjectContentWithDepth`). */
 export async function resolveObjectWithSize(
   ctx: Context,
-  registry: PackRegistry,
+  store: ObjectStore,
   id: ObjectId,
   verifyHash: boolean,
   maxBytes?: number,
@@ -528,7 +563,7 @@ export async function resolveObjectWithSize(
 ): Promise<{ readonly object: GitObject; readonly size: number }> {
   const { type, content, declaredSize } = await resolveObjectContentWithDepth(
     ctx,
-    registry,
+    store,
     id,
     verifyHash,
     maxBytes,
@@ -602,10 +637,11 @@ function enforcePackDeltaPreApplyCap(
  *  raw bytes, so no caller re-parses the header a second time. */
 async function tryLoose(
   ctx: Context,
+  location: SourceLocation | undefined,
   id: ObjectId,
   mode: LooseReadMode,
 ): Promise<LooseObjectSplit | undefined> {
-  const compressed = await readLooseCompressed(ctx, id);
+  const compressed = await readLooseCompressed(ctx, id, location);
   if (compressed === undefined) return undefined;
   if (mode === 'streamed') {
     return splitLooseObject(await ctx.compressor.inflate(compressed));
@@ -619,14 +655,19 @@ async function tryLoose(
  * read) is git-faithfully a MISS: drop the stale set and fall through to
  * the pack, exactly as git's loose-open ENOENT does.
  */
-async function readLooseCompressed(ctx: Context, id: ObjectId): Promise<Uint8Array | undefined> {
-  if (!(await probeLooseOid(ctx, id))) return undefined;
-  const path = looseObjectPath(commonGitDir(ctx), id);
+async function readLooseCompressed(
+  ctx: Context,
+  id: ObjectId,
+  location?: SourceLocation,
+): Promise<Uint8Array | undefined> {
+  if (!(await probeLooseOid(ctx, id, location))) return undefined;
   try {
-    return await ctx.fs.read(path);
+    return location === undefined
+      ? await ctx.fs.read(looseObjectPath(commonGitDir(ctx), id))
+      : await location.fs.read(looseObjectPathIn(location.objectsDir, id));
   } catch (error) {
     if (error instanceof TsgitError && error.data.code === 'FILE_NOT_FOUND') {
-      forgetLooseOidPrefix(ctx, id);
+      forgetLooseOidPrefix(ctx, id, location);
       return undefined;
     }
     throw error;
@@ -636,13 +677,15 @@ async function readLooseCompressed(ctx: Context, id: ObjectId): Promise<Uint8Arr
 /**
  * Returns the raw compressed bytes for a loose object, or undefined if it
  * does not exist. Does not inflate — callers that need streaming inflate use
- * `createInflateStream` on these bytes directly.
+ * `createInflateStream` on these bytes directly. Reads the primary unless a
+ * non-primary `location` is given.
  */
 export async function looseCompressedBytes(
   ctx: Context,
   id: ObjectId,
+  location?: SourceLocation,
 ): Promise<Uint8Array | undefined> {
-  return readLooseCompressed(ctx, id);
+  return readLooseCompressed(ctx, id, location);
 }
 
 /**
@@ -774,7 +817,8 @@ export function assertInflatedSizeMatches(
 
 async function collectDeltaChain(
   ctx: Context,
-  registry: PackRegistry,
+  store: ObjectStore,
+  source: ObjectSource,
   hit: PackLookupHit,
   targetId: ObjectId,
   maxBytes: number | undefined,
@@ -796,7 +840,7 @@ async function collectDeltaChain(
     // Probe BEFORE descending: a level cached by an earlier chain (this
     // offset reached as someone else's intermediate) short-circuits the
     // whole rest of the walk exactly as reaching a real base entry would.
-    const cached = probeDeltaBaseCache(ctx, registry, probeKey, targetId, maxBytes);
+    const cached = probeDeltaBaseCache(ctx, source.registry, probeKey, targetId, maxBytes);
     if (cached !== undefined) {
       // The hit resumes from partway down the chain — depth so far (levels
       // actually walked) plus whatever the cached entry itself still has
@@ -861,7 +905,8 @@ async function collectDeltaChain(
       // the accumulated depth at this exact point — not double-counted.
       const base = await resolveBaseForRefDelta(
         ctx,
-        registry,
+        store,
+        source,
         refDeltaBaseId,
         maxBytes,
         externalDepth + depth,
@@ -896,14 +941,16 @@ export function ofsDeltaBaseOffset(
 
 export async function resolvePackChain(
   ctx: Context,
-  registry: PackRegistry,
+  store: ObjectStore,
+  source: ObjectSource,
   hit: PackLookupHit,
   targetId: ObjectId,
   maxBytes: number | undefined,
 ): Promise<ObjectContent> {
   const { type, content } = await resolvePackChainWithDepth(
     ctx,
-    registry,
+    store,
+    source,
     hit,
     targetId,
     maxBytes,
@@ -922,13 +969,22 @@ export async function resolvePackChain(
  */
 async function resolvePackChainWithDepth(
   ctx: Context,
-  registry: PackRegistry,
+  store: ObjectStore,
+  source: ObjectSource,
   hit: PackLookupHit,
   targetId: ObjectId,
   maxBytes: number | undefined,
   externalDepth: number,
 ): Promise<ObjectContent & { chainDepth: number }> {
-  const phase1 = await collectDeltaChain(ctx, registry, hit, targetId, maxBytes, externalDepth);
+  const phase1 = await collectDeltaChain(
+    ctx,
+    store,
+    source,
+    hit,
+    targetId,
+    maxBytes,
+    externalDepth,
+  );
 
   // Bounds how many bytes THIS chain read may insert into the shared
   // offset-keyed cache — strictly below the cache's whole-budget refusal
@@ -937,6 +993,7 @@ async function resolvePackChainWithDepth(
   // `DELTA_BASE_CHAIN_INSERT_FRACTION`. Levels are offered nearest-the-base
   // first (below), so a chain that would otherwise flush the whole cache
   // instead keeps the levels most likely to be reused across future reads.
+  const { registry } = source;
   const chainBudget = registry.deltaBaseCache.maxSize * DELTA_BASE_CHAIN_INSERT_FRACTION;
   let inserted = 0;
   const insertLevel = (key: string, content: Uint8Array, chainDepth: number): void => {
@@ -1055,7 +1112,8 @@ export async function readEntryHeaderWithChunk(
 
 async function resolveBaseForRefDelta(
   ctx: Context,
-  registry: PackRegistry,
+  store: ObjectStore,
+  source: ObjectSource,
   baseId: ObjectId,
   maxBytes: number | undefined,
   externalDepth: number,
@@ -1092,7 +1150,7 @@ async function resolveBaseForRefDelta(
   // content under `baseId` — re-caching them here would be redundant.
   const resolved = await resolveObjectContentWithDepth(
     ctx,
-    registry,
+    { ...store, sources: [source] },
     baseId,
     false,
     maxBytes,

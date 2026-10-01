@@ -193,8 +193,18 @@ export async function writeSyntheticPack(
   name: string,
   entries: ReadonlyArray<EntrySpec>,
 ): Promise<ReadonlyArray<string>> {
+  return writeSyntheticPackIn(ctx, `${ctx.layout.gitDir}/objects`, name, entries);
+}
+
+/** Like `writeSyntheticPack`, into an arbitrary `objects` directory (an alternate's). */
+export async function writeSyntheticPackIn(
+  ctx: Context,
+  objectsDir: string,
+  name: string,
+  entries: ReadonlyArray<EntrySpec>,
+): Promise<ReadonlyArray<string>> {
   const result = await buildSyntheticPack(ctx, entries);
-  const base = `${ctx.layout.gitDir}/objects/pack/pack-${name}`;
+  const base = `${objectsDir}/pack/pack-${name}`;
   await ctx.fs.write(`${base}.pack`, result.packBytes);
   await ctx.fs.write(`${base}.idx`, result.idxBytes);
   return result.ids;
