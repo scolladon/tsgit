@@ -21,6 +21,14 @@ describe('MemoryFileSystem', () => {
         expected: 'refused' as const,
       },
       segmentRefusals: 'pinned' as const,
+      createBackdatedFile: async (path: string) => {
+        vi.setSystemTime(new Date('2001-01-01'));
+        try {
+          await fs.write(path, new Uint8Array([1]));
+        } finally {
+          vi.useRealTimers();
+        }
+      },
     };
   });
 

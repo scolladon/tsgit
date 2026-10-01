@@ -428,6 +428,14 @@ export class MemoryFileSystem implements FileSystem {
     if (!this.occupied(normalized)) throw fileNotFound(path);
   };
 
+  // Same refusals as `chmod`: a symlink leaf first, then a path with no entry.
+  utimeNow = async (path: string): Promise<void> => {
+    const normalized = this.walk(path, 'no-follow');
+    if (this.symlinks.has(normalized)) throw permissionDenied(path);
+    if (!this.occupied(normalized)) throw fileNotFound(path);
+    this.touch(normalized);
+  };
+
   rmRecursive = async (path: string): Promise<void> => {
     const normalized = this.walk(path, 'no-follow');
     if (this.removeLeafEntry(normalized)) return;

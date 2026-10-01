@@ -111,6 +111,11 @@ async function buildContractEnv(
     // as a directory as ENOENT or EINVAL rather than ENOTDIR, and its reparse-point loops
     // do not surface ELOOP on every surface.
     ...(process.platform === WINDOWS_PLATFORM ? {} : { segmentRefusals: 'pinned' as const }),
+    createBackdatedFile: async (path: string) => {
+      await fsPromises.writeFile(path, Buffer.from([1]));
+      const backdated = new Date('2001-01-01');
+      await fsPromises.utimes(path, backdated, backdated);
+    },
     cleanup: async () => {
       await fsPromises.rm(rootDir, { recursive: true, force: true });
       await fsPromises.rm(siblingDir, { recursive: true, force: true });

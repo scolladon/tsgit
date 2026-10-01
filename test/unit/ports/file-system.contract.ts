@@ -35,6 +35,11 @@ export interface FileSystemContractEnv {
    * `ENOENT` or `EINVAL`, so the rows are skipped there rather than asserting unpinned codes.
    */
   readonly segmentRefusals?: 'pinned';
+  /**
+   * Plants a regular file at `path` whose modification time lies far in the past, so a
+   * `utimeNow` row can observe the stamp advancing. Required by the rows that assert it.
+   */
+  readonly createBackdatedFile?: (path: string) => Promise<void>;
 }
 
 const SEGMENT_REFUSALS_UNPINNED =
@@ -87,6 +92,7 @@ const pathCalls: ReadonlyArray<PathCall> = [
   { name: 'readlink', invoke: (e, p) => e.fs.readlink(p) },
   { name: 'symlink', invoke: (e, p) => e.fs.symlink('target', p) },
   { name: 'chmod', invoke: (e, p) => e.fs.chmod(p, 0o644) },
+  { name: 'utimeNow', invoke: (e, p) => utimeNow(e.fs, p) },
   { name: 'rmRecursive', invoke: (e, p) => e.fs.rmRecursive(p) },
 ];
 
@@ -179,6 +185,12 @@ const DANGLING_COMPONENT_TARGET = 'sub/dangling-component-target';
 async function lexists(fs: FileSystem, path: string): Promise<boolean> {
   if (fs.lexists === undefined) throw new Error('the adapter under contract provides no lexists');
   return fs.lexists(path);
+}
+
+/** Every adapter this suite runs against provides the optional timestamp refresh. */
+async function utimeNow(fs: FileSystem, path: string): Promise<void> {
+  if (fs.utimeNow === undefined) throw new Error('the adapter under contract provides no utimeNow');
+  return fs.utimeNow(path);
 }
 
 /** Every adapter this suite runs against provides the optional non-throwing lstat probe. */
@@ -2049,6 +2061,83 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
 
         // Assert
         assertPermissionDenied(caught);
+      });
+    });
+
+    describe('Given a back-dated regular file', () => {
+      describe('When utimeNow', () => {
+        it('Then stat().mtimeMs advances past the back-dated value', async () => {
+          // Arrange
+          const path = `${env.rootDir}/touched.bin`;
+          if (env.createBackdatedFile === undefined) throw new Error('no createBackdatedFile hook');
+          await env.createBackdatedFile(path);
+          const before = (await env.fs.stat(path)).mtimeMs;
+
+          // Act
+          await utimeNow(env.fs, path);
+
+          // Assert
+          expect((await env.fs.stat(path)).mtimeMs).toBeGreaterThan(before);
+        });
+      });
+    });
+
+    describe('Given a directory', () => {
+      describe('When utimeNow', () => {
+        it('Then it resolves', async () => {
+          // Arrange
+          await env.fs.mkdir(`${env.rootDir}/touched-dir`);
+
+          // Act
+          const result = await utimeNow(env.fs, `${env.rootDir}/touched-dir`);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given a symlink at the leaf', () => {
+      describe('When utimeNow', () => {
+        it('Then it refuses PERMISSION_DENIED and leaves the target mtime unchanged', async () => {
+          // Arrange
+          const target = `${env.rootDir}/touched-target.bin`;
+          if (env.createBackdatedFile === undefined) throw new Error('no createBackdatedFile hook');
+          await env.createBackdatedFile(target);
+          await env.fs.symlink(target, `${env.rootDir}/touched-link`);
+          const before = (await env.fs.stat(target)).mtimeMs;
+
+          // Act
+          let caught: unknown;
+          try {
+            await utimeNow(env.fs, `${env.rootDir}/touched-link`);
+            expect.fail('expected PERMISSION_DENIED');
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          assertPermissionDenied(caught);
+          expect((await env.fs.stat(target)).mtimeMs).toBe(before);
+        });
+      });
+    });
+
+    describe('Given a path with no entry', () => {
+      describe('When utimeNow', () => {
+        it('Then it refuses FILE_NOT_FOUND', async () => {
+          // Act
+          let caught: unknown;
+          try {
+            await utimeNow(env.fs, `${env.rootDir}/touched-never-created.bin`);
+            expect.fail('expected FILE_NOT_FOUND');
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          assertFileNotFound(caught);
+        });
       });
     });
 
