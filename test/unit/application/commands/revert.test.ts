@@ -28,7 +28,7 @@ import type {
   RefName,
 } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
-import { asBareContext } from './fixtures.js';
+import { asBareContext, failSourceLoad, snapshotFiles } from './fixtures.js';
 
 const MAIN_AUTHOR: AuthorIdentity = {
   name: 'Main',
@@ -1554,6 +1554,60 @@ describe('revert mutation-hardening surfaces', () => {
         expect(merged).toBe('REVERT_MERGE_NO_MAINLINE');
         expect(second.kind).toBe('reverted');
       });
+    });
+  });
+});
+
+describe('Given an alternate that fails to load', () => {
+  describe('When revertRun', () => {
+    it('Then it rejects with the alternate error and leaves every file untouched', async () => {
+      // Arrange
+      const { ctx, c2 } = await seedLinear();
+      const before = await snapshotFiles(ctx);
+      const loadError = await failSourceLoad(ctx);
+      const sut = revertRun;
+
+      // Act
+      const attempt = sut(ctx, { commits: [c2] });
+
+      // Assert
+      await expect(attempt).rejects.toBe(loadError);
+      expect(await snapshotFiles(ctx)).toEqual(before);
+      vi.restoreAllMocks();
+    });
+  });
+  describe('When revertContinue', () => {
+    it('Then it rejects with the alternate error and leaves every file untouched', async () => {
+      // Arrange
+      const { ctx } = await seedConflictStop();
+      const before = await snapshotFiles(ctx);
+      const loadError = await failSourceLoad(ctx);
+      const sut = revertContinue;
+
+      // Act
+      const attempt = sut(ctx);
+
+      // Assert
+      await expect(attempt).rejects.toBe(loadError);
+      expect(await snapshotFiles(ctx)).toEqual(before);
+      vi.restoreAllMocks();
+    });
+  });
+  describe('When revertSkip', () => {
+    it('Then it rejects with the alternate error and leaves every file untouched', async () => {
+      // Arrange
+      const { ctx } = await seedRangeConflictStop();
+      const before = await snapshotFiles(ctx);
+      const loadError = await failSourceLoad(ctx);
+      const sut = revertSkip;
+
+      // Act
+      const attempt = sut(ctx);
+
+      // Assert
+      await expect(attempt).rejects.toBe(loadError);
+      expect(await snapshotFiles(ctx)).toEqual(before);
+      vi.restoreAllMocks();
     });
   });
 });

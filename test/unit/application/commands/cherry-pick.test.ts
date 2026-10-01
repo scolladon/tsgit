@@ -33,7 +33,7 @@ import type {
 } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
-import { asBareContext } from './fixtures.js';
+import { asBareContext, failSourceLoad, snapshotFiles } from './fixtures.js';
 
 const COMMITTER: AuthorIdentity = {
   name: 'Picker',
@@ -1712,6 +1712,60 @@ describe('cherryPickSkip — resumed conflict persists the sequencer', () => {
         expect(todoLines[0]).toContain(feature);
         expect(todoLines[0]).not.toContain(c1);
       });
+    });
+  });
+});
+
+describe('Given an alternate that fails to load', () => {
+  describe('When cherryPickRun', () => {
+    it('Then it rejects with the alternate error and leaves every file untouched', async () => {
+      // Arrange
+      const { ctx, feature } = await seedFeature();
+      const before = await snapshotFiles(ctx);
+      const loadError = await failSourceLoad(ctx);
+      const sut = cherryPickRun;
+
+      // Act
+      const attempt = sut(ctx, { commits: [feature] });
+
+      // Assert
+      await expect(attempt).rejects.toBe(loadError);
+      expect(await snapshotFiles(ctx)).toEqual(before);
+      vi.restoreAllMocks();
+    });
+  });
+  describe('When cherryPickContinue', () => {
+    it('Then it rejects with the alternate error and leaves every file untouched', async () => {
+      // Arrange
+      const { ctx } = await seedConflictPick();
+      const before = await snapshotFiles(ctx);
+      const loadError = await failSourceLoad(ctx);
+      const sut = cherryPickContinue;
+
+      // Act
+      const attempt = sut(ctx);
+
+      // Assert
+      await expect(attempt).rejects.toBe(loadError);
+      expect(await snapshotFiles(ctx)).toEqual(before);
+      vi.restoreAllMocks();
+    });
+  });
+  describe('When cherryPickSkip', () => {
+    it('Then it rejects with the alternate error and leaves every file untouched', async () => {
+      // Arrange
+      const { ctx } = await seedConflictPick();
+      const before = await snapshotFiles(ctx);
+      const loadError = await failSourceLoad(ctx);
+      const sut = cherryPickSkip;
+
+      // Act
+      const attempt = sut(ctx);
+
+      // Assert
+      await expect(attempt).rejects.toBe(loadError);
+      expect(await snapshotFiles(ctx)).toEqual(before);
+      vi.restoreAllMocks();
     });
   });
 });

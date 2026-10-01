@@ -39,6 +39,7 @@ import {
   readHeadRaw,
   requireWorkTree,
 } from '../primitives/internal/repo-state.js';
+import { assertEverySourceLoadable } from '../primitives/object-store.js';
 import { readIndex } from '../primitives/read-index.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-index.js';
@@ -432,6 +433,7 @@ export const cherryPickRun = async (
   await assertOperationalRepository(ctx);
   requireWorkTree(ctx, CHERRY_PICK);
   await assertNoPendingOperation(ctx);
+  await assertEverySourceLoadable(ctx);
   const head = await readHeadRaw(ctx);
   if (head.kind !== 'symbolic') {
     throw unsupportedOperation(CHERRY_PICK, 'cannot cherry-pick with detached HEAD');
@@ -541,6 +543,7 @@ export const cherryPickContinue = async (
   if (source === undefined && (todoOnDisk === undefined || todoOnDisk.length === 0)) {
     throw noOperationInProgress(CHERRY_PICK);
   }
+  await assertEverySourceLoadable(ctx);
   const head = await readHeadRaw(ctx);
   if (head.kind !== 'symbolic') {
     throw unsupportedOperation(CHERRY_PICK_CONTINUE, 'cannot continue with detached HEAD');
@@ -594,6 +597,7 @@ export const cherryPickSkip = async (
   if (source === undefined && (todoOnDisk === undefined || todoOnDisk.length === 0)) {
     throw noOperationInProgress(CHERRY_PICK);
   }
+  await assertEverySourceLoadable(ctx);
   const branch = await requireSymbolicHead(ctx, CHERRY_PICK_SKIP);
   const ourId = await resolveRef(ctx, branch);
   const opts = await resolveResumeOpts(ctx, input);

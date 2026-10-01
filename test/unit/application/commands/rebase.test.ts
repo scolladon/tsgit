@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { MemoryHookRunner } from '../../../../src/adapters/memory/memory-hook-runner.js';
 import { add } from '../../../../src/application/commands/add.js';
@@ -32,7 +32,7 @@ import type {
 } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
-import { asBareContext } from './fixtures.js';
+import { asBareContext, failSourceLoad, snapshotFiles } from './fixtures.js';
 
 const FEAT_AUTHOR: AuthorIdentity = {
   name: 'Feat',
@@ -2349,6 +2349,60 @@ describe('rebase at a shallow boundary', () => {
         const tipData = await readCommit(ctx, tip);
         expect(tipData.parents).toEqual([]);
       });
+    });
+  });
+});
+
+describe('Given an alternate that fails to load', () => {
+  describe('When rebaseRun', () => {
+    it('Then it rejects with the alternate error and leaves every file untouched', async () => {
+      // Arrange
+      const { ctx } = await seedDivergent();
+      const before = await snapshotFiles(ctx);
+      const loadError = await failSourceLoad(ctx);
+      const sut = rebaseRun;
+
+      // Act
+      const attempt = sut(ctx, { upstream: 'main' });
+
+      // Assert
+      await expect(attempt).rejects.toBe(loadError);
+      expect(await snapshotFiles(ctx)).toEqual(before);
+      vi.restoreAllMocks();
+    });
+  });
+  describe('When rebaseContinue', () => {
+    it('Then it rejects with the alternate error and leaves every file untouched', async () => {
+      // Arrange
+      const ctx = await seedConflict();
+      const before = await snapshotFiles(ctx);
+      const loadError = await failSourceLoad(ctx);
+      const sut = rebaseContinue;
+
+      // Act
+      const attempt = sut(ctx);
+
+      // Assert
+      await expect(attempt).rejects.toBe(loadError);
+      expect(await snapshotFiles(ctx)).toEqual(before);
+      vi.restoreAllMocks();
+    });
+  });
+  describe('When rebaseSkip', () => {
+    it('Then it rejects with the alternate error and leaves every file untouched', async () => {
+      // Arrange
+      const ctx = await seedConflict();
+      const before = await snapshotFiles(ctx);
+      const loadError = await failSourceLoad(ctx);
+      const sut = rebaseSkip;
+
+      // Act
+      const attempt = sut(ctx);
+
+      // Assert
+      await expect(attempt).rejects.toBe(loadError);
+      expect(await snapshotFiles(ctx)).toEqual(before);
+      vi.restoreAllMocks();
     });
   });
 });

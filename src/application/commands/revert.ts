@@ -40,6 +40,7 @@ import {
   readHeadRaw,
   requireWorkTree,
 } from '../primitives/internal/repo-state.js';
+import { assertEverySourceLoadable } from '../primitives/object-store.js';
 import { readIndex } from '../primitives/read-index.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-index.js';
@@ -416,6 +417,7 @@ export const revertRun = async (ctx: Context, input: RevertRunInput): Promise<Re
   await assertOperationalRepository(ctx);
   requireWorkTree(ctx, REVERT);
   await assertNoPendingOperation(ctx);
+  await assertEverySourceLoadable(ctx);
   const head = await readHeadRaw(ctx);
   if (head.kind !== 'symbolic') {
     throw unsupportedOperation(REVERT, 'cannot revert with detached HEAD');
@@ -499,6 +501,7 @@ export const revertContinue = async (ctx: Context): Promise<RevertResult> => {
   if (source === undefined && (todoOnDisk === undefined || todoOnDisk.length === 0)) {
     throw noOperationInProgress(REVERT);
   }
+  await assertEverySourceLoadable(ctx);
   const head = await readHeadRaw(ctx);
   if (head.kind !== 'symbolic') {
     throw unsupportedOperation(REVERT_CONTINUE, 'cannot continue with detached HEAD');
@@ -545,6 +548,7 @@ export const revertSkip = async (ctx: Context): Promise<RevertResult> => {
   if (source === undefined && (todoOnDisk === undefined || todoOnDisk.length === 0)) {
     throw noOperationInProgress(REVERT);
   }
+  await assertEverySourceLoadable(ctx);
   const branch = await requireSymbolicHead(ctx, REVERT_SKIP);
   const ourId = await resolveRef(ctx, branch);
   await hardResetWorktreeToCommit(ctx, ourId);

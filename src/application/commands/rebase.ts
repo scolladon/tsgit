@@ -52,6 +52,7 @@ import {
 } from '../primitives/internal/repo-state.js';
 import { materialisePatchFiles } from '../primitives/materialise-patch-files.js';
 import { mergeBase } from '../primitives/merge-base.js';
+import { assertEverySourceLoadable } from '../primitives/object-store.js';
 import { computePatchId } from '../primitives/patch-id.js';
 import { readIndex } from '../primitives/read-index.js';
 import { getRefStore } from '../primitives/ref-store.js';
@@ -458,6 +459,7 @@ export const rebaseRun = async (ctx: Context, input: RebaseRunInput): Promise<Re
   await assertOperationalRepository(ctx);
   requireWorkTree(ctx, 'rebase');
   await assertNoPendingOperation(ctx);
+  await assertEverySourceLoadable(ctx);
   const head = await readHeadRaw(ctx);
   const headCommit = head.kind === 'symbolic' ? await resolveHeadCommit(ctx, head.target) : head.id;
   const branch = branchRefFromHead(head);
@@ -534,6 +536,7 @@ export const rebaseContinue = async (ctx: Context): Promise<RebaseResult> => {
   requireWorkTree(ctx, 'rebase --continue');
   const state = await readRebaseState(ctx);
   if (state === undefined) throw noOperationInProgress('rebase');
+  await assertEverySourceLoadable(ctx);
   if (isInteractiveState(state)) return rebaseContinueInteractive(ctx, state);
   const index = await readIndex(ctx);
   rejectUnmergedIndex(index.entries);
@@ -575,6 +578,7 @@ export const rebaseSkip = async (ctx: Context): Promise<RebaseResult> => {
   requireWorkTree(ctx, 'rebase --skip');
   const state = await readRebaseState(ctx);
   if (state === undefined) throw noOperationInProgress('rebase');
+  await assertEverySourceLoadable(ctx);
   if (isInteractiveState(state)) return rebaseSkipInteractive(ctx, state);
   const currentHead = await resolveRef(ctx, HEAD);
   await hardResetWorktreeToCommit(ctx, currentHead);
