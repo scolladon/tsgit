@@ -11,6 +11,7 @@ import { writeObject } from '../../../../src/application/primitives/write-object
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId, TagData } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
+import { writeSyntheticPackIn } from '../primitives/pack-fixture.js';
 
 const author: AuthorIdentity = {
   name: 'A U Thor',
@@ -337,6 +338,112 @@ describe('show — remote.promisor guard', () => {
         expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
         expect(data.key).toBe('remote.origin.promisor');
         expect(data.value).toBe('maybe');
+      });
+    });
+  });
+});
+
+const PRIMARY_OBJECTS = '/repo/.git/objects';
+const ALT_OBJECTS = '/repo/alt/objects';
+const ENC = new TextEncoder();
+const FLIPPED_SIGNATURE_MIDX = Uint8Array.from([
+  0x00,
+  0x49,
+  0x44,
+  0x58,
+  1,
+  1,
+  1,
+  0,
+  ...new Array(8).fill(0),
+]);
+const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+const COMMIT_BYTES = ENC.encode(
+  `tree ${EMPTY_TREE}\nauthor A <a@b> 1 +0000\ncommitter A <a@b> 1 +0000\n\nm\n`,
+);
+
+const contextWithCorruptAlternate = async (): Promise<Context> => {
+  const ctx = createMemoryContext({
+    files: {
+      '/repo/.git/HEAD': ENC.encode('ref: refs/heads/main\n'),
+      [`${PRIMARY_OBJECTS}/info/alternates`]: ENC.encode(`${ALT_OBJECTS}\n`),
+    },
+  });
+  await ctx.fs.mkdir(ALT_OBJECTS);
+  await ctx.fs.write(`${ALT_OBJECTS}/pack/multi-pack-index`, FLIPPED_SIGNATURE_MIDX);
+  return ctx;
+};
+
+const packedIds = async (
+  ctx: Context,
+  entries: Parameters<typeof writeSyntheticPackIn>[3],
+): Promise<ReadonlyArray<ObjectId>> =>
+  (await writeSyntheticPackIn(ctx, PRIMARY_OBJECTS, 'p', entries)) as ReadonlyArray<ObjectId>;
+
+const rejectionData = async (attempt: Promise<unknown>): Promise<unknown> => {
+  try {
+    await attempt;
+  } catch (error) {
+    return (error as TsgitError).data;
+  }
+  return undefined;
+};
+
+describe('show in git stream order', () => {
+  describe('Given a small packed blob and a corrupt alternate', () => {
+    describe('When show() runs on the blob', () => {
+      it('Then the alternate is reached', async () => {
+        // Arrange
+        const ctx = await contextWithCorruptAlternate();
+        const [id] = await packedIds(ctx, [
+          { kind: 'base', type: 'blob', content: ENC.encode('small') },
+        ]);
+
+        // Act
+        const result = await rejectionData(show(ctx, id as string));
+
+        // Assert
+        expect(result).toMatchObject({ code: 'INVALID_MULTI_PACK_INDEX' });
+      });
+    });
+  });
+
+  describe('Given a tag over a small packed blob and a corrupt alternate', () => {
+    describe('When show() runs on the tag', () => {
+      it('Then the target blob read reaches the alternate', async () => {
+        // Arrange
+        const ctx = await contextWithCorruptAlternate();
+        const [blobId] = await packedIds(ctx, [
+          { kind: 'base', type: 'blob', content: ENC.encode('small') },
+        ]);
+        const tag = ENC.encode(`object ${blobId}\ntype blob\ntag t\ntagger A <a@b> 1 +0000\n\nm\n`);
+        const [tagId] = await writeSyntheticPackIn(ctx, PRIMARY_OBJECTS, 'q', [
+          { kind: 'base', type: 'tag', content: tag },
+        ]);
+
+        // Act
+        const result = await rejectionData(show(ctx, tagId as string));
+
+        // Assert
+        expect(result).toMatchObject({ code: 'INVALID_MULTI_PACK_INDEX' });
+      });
+    });
+  });
+
+  describe('Given a packed root commit and a corrupt alternate', () => {
+    describe('When show() runs on the commit', () => {
+      it('Then the commit is served without reaching the alternate', async () => {
+        // Arrange
+        const ctx = await contextWithCorruptAlternate();
+        const [id] = await packedIds(ctx, [
+          { kind: 'base', type: 'commit', content: COMMIT_BYTES },
+        ]);
+
+        // Act
+        const result = await show(ctx, id as string);
+
+        // Assert
+        expect(result.kind).toBe('commit');
       });
     });
   });

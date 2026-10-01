@@ -2,11 +2,13 @@ import type { ArchiveEntry, ArchiveResult } from '../../domain/archive/index.js'
 import { NO_PARSER_OFFSET, validateIndexPath } from '../../domain/git-index/path-validator.js';
 import { unexpectedObjectType } from '../../domain/objects/error.js';
 import { FILE_MODE } from '../../domain/objects/file-mode.js';
-import type { ObjectId } from '../../domain/objects/index.js';
+import type { FileMode, ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
+import { readBlobContentInStreamOrder } from '../primitives/internal/blob-source.js';
 import { peel } from '../primitives/internal/peel.js';
+import { getObjectStore } from '../primitives/object-store.js';
 import { readBlob } from '../primitives/read-blob.js';
-import { readObject } from '../primitives/read-object.js';
+import { readDeclaredObjectHeader, readObject } from '../primitives/read-object.js';
 import { walkTree } from '../primitives/walk-tree.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
 import { revParse } from './rev-parse.js';
@@ -87,6 +89,24 @@ async function classifyOid(ctx: Context, oid: ObjectId): Promise<ClassifyResult>
   throw unexpectedObjectType('tree', obj.type, oid);
 }
 
+const isRegularFileMode = (mode: FileMode): boolean =>
+  mode === FILE_MODE.REGULAR || mode === FILE_MODE.EXECUTABLE;
+
+/**
+ * git's archive streams a regular blob above `core.bigFileThreshold` and reads
+ * every other entry whole, so only the former is opened in stream order.
+ */
+async function readEntryContent(ctx: Context, id: ObjectId, mode: FileMode): Promise<Uint8Array> {
+  if (isRegularFileMode(mode)) {
+    const { type, declaredSize } = await readDeclaredObjectHeader(ctx, id);
+    const { bigFileThreshold } = await getObjectStore(ctx);
+    if (type === 'blob' && declaredSize > bigFileThreshold) {
+      return readBlobContentInStreamOrder(ctx, id);
+    }
+  }
+  return (await readBlob(ctx, id)).content;
+}
+
 /**
  * Lazy async generator over all tree entries in pre-order (dir before contents).
  * git archive imposes no entry cap — pass an effectively-unbounded maxEntries
@@ -112,8 +132,7 @@ async function* buildEntryStream(ctx: Context, tree: ObjectId): AsyncIterable<Ar
     if (mode === FILE_MODE.DIRECTORY || mode === FILE_MODE.GITLINK) {
       yield { path, mode, oid: id };
     } else {
-      const blob = await readBlob(ctx, id);
-      yield { path, mode, oid: id, content: blob.content };
+      yield { path, mode, oid: id, content: await readEntryContent(ctx, id, mode) };
     }
   }
 }

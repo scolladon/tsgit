@@ -8,6 +8,7 @@ import { FILE_MODE, type ObjectId, type TreeEntry } from '../../../../src/domain
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { buildTreeChain, instrumentedContext, seedMaxTreeDepth } from '../primitives/fixtures.js';
+import { writeSyntheticPackIn } from '../primitives/pack-fixture.js';
 
 // ---------------------------------------------------------------------------
 // Shared fixtures
@@ -697,6 +698,175 @@ describe('Given core.maxTreeDepth configured to a small cap and a tree chain one
       };
       expect(data.code).toBe('TREE_DEPTH_EXCEEDED');
       expect(data.depth).toBe(SMALL_CAP + 1);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Blob read order
+// ---------------------------------------------------------------------------
+
+const PRIMARY_OBJECTS = '/repo/.git/objects';
+const ALT_OBJECTS = '/repo/alt/objects';
+const THRESHOLD = 100;
+const FLIPPED_SIGNATURE_MIDX = Uint8Array.from([
+  0x00,
+  0x49,
+  0x44,
+  0x58,
+  1,
+  1,
+  1,
+  0,
+  ...new Array(8).fill(0),
+]);
+
+const contextWithCorruptAlternate = async (): Promise<Context> => {
+  const ctx = await initUnbornCtx();
+  await ctx.fs.writeUtf8(`${PRIMARY_OBJECTS}/info/alternates`, `${ALT_OBJECTS}\n`);
+  await ctx.fs.writeUtf8('/repo/.git/config', `[core]\n\tbigFileThreshold = ${THRESHOLD}\n`);
+  await ctx.fs.mkdir(ALT_OBJECTS);
+  await ctx.fs.write(`${ALT_OBJECTS}/pack/multi-pack-index`, FLIPPED_SIGNATURE_MIDX);
+  return ctx;
+};
+
+const bytesOf = (length: number, fill: number): Uint8Array => new Uint8Array(length).fill(fill);
+
+/** Packs a large non-delta blob and a delta over it; returns [baseId, deltaId]. */
+const packBaseAndDelta = async (
+  ctx: Context,
+  deltaSize: number,
+): Promise<readonly [ObjectId, ObjectId]> => {
+  const [base, delta] = await writeSyntheticPackIn(ctx, PRIMARY_OBJECTS, 'p', [
+    { kind: 'base', type: 'blob', content: bytesOf(THRESHOLD + 1, 1) },
+    { kind: 'ofs-delta', baseIndex: 0, targetContent: bytesOf(deltaSize, 2) },
+  ]);
+  return [base as ObjectId, delta as ObjectId];
+};
+
+const archiveEntries = async (
+  ctx: Context,
+  entries: ReadonlyArray<TreeEntry>,
+): Promise<{ readonly seen: string[]; readonly failure: unknown }> => {
+  const treeId = await writeObject(ctx, makeTree(entries));
+  const commitId = await writeObject(ctx, makeCommit(treeId));
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+  const seen: string[] = [];
+  try {
+    const result = await archive(ctx, { treeish: 'HEAD' });
+    for await (const entry of result.entries) seen.push(entry.path);
+  } catch (error) {
+    return { seen, failure: (error as TsgitError).data };
+  }
+  return { seen, failure: undefined };
+};
+
+describe('archive blob read order', () => {
+  describe('Given a regular delta blob above the threshold after a served large blob and a corrupt alternate', () => {
+    describe('When the entries are iterated', () => {
+      it('Then it rejects at the delta entry after yielding the earlier one', async () => {
+        // Arrange
+        const ctx = await contextWithCorruptAlternate();
+        const [baseId, deltaId] = await packBaseAndDelta(ctx, THRESHOLD + 2);
+
+        // Act
+        const result = await archiveEntries(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'a', baseId),
+          treeEntry(FILE_MODE.REGULAR, 'b', deltaId),
+        ]);
+
+        // Assert
+        expect(result.seen).toEqual(['a']);
+        expect(result.failure).toMatchObject({ code: 'INVALID_MULTI_PACK_INDEX' });
+      });
+    });
+  });
+
+  describe('Given a regular non-delta blob above the threshold and a corrupt alternate', () => {
+    describe('When the entries are iterated', () => {
+      it('Then it is served without reaching the alternate', async () => {
+        // Arrange
+        const ctx = await contextWithCorruptAlternate();
+        const [baseId] = await packBaseAndDelta(ctx, THRESHOLD + 2);
+
+        // Act
+        const result = await archiveEntries(ctx, [treeEntry(FILE_MODE.REGULAR, 'a', baseId)]);
+
+        // Assert
+        expect(result).toEqual({ seen: ['a'], failure: undefined });
+      });
+    });
+  });
+
+  describe('Given a regular delta blob exactly at the threshold and a corrupt alternate', () => {
+    describe('When the entries are iterated', () => {
+      it('Then it is read in the default order, without reaching the alternate', async () => {
+        // Arrange
+        const ctx = await contextWithCorruptAlternate();
+        const [, deltaId] = await packBaseAndDelta(ctx, THRESHOLD);
+
+        // Act
+        const result = await archiveEntries(ctx, [treeEntry(FILE_MODE.REGULAR, 'a', deltaId)]);
+
+        // Assert
+        expect(result).toEqual({ seen: ['a'], failure: undefined });
+      });
+    });
+  });
+
+  describe('Given a symlink delta blob above the threshold and a corrupt alternate', () => {
+    describe('When the entries are iterated', () => {
+      it('Then it is read in the default order, without reaching the alternate', async () => {
+        // Arrange
+        const ctx = await contextWithCorruptAlternate();
+        const [, deltaId] = await packBaseAndDelta(ctx, THRESHOLD + 2);
+
+        // Act
+        const result = await archiveEntries(ctx, [treeEntry(FILE_MODE.SYMLINK, 'a', deltaId)]);
+
+        // Assert
+        expect(result).toEqual({ seen: ['a'], failure: undefined });
+      });
+    });
+  });
+
+  describe('Given an executable delta blob above the threshold and a corrupt alternate', () => {
+    describe('When the entries are iterated', () => {
+      it('Then it is read in stream order and reaches the alternate', async () => {
+        // Arrange
+        const ctx = await contextWithCorruptAlternate();
+        const [, deltaId] = await packBaseAndDelta(ctx, THRESHOLD + 2);
+
+        // Act
+        const result = await archiveEntries(ctx, [treeEntry(FILE_MODE.EXECUTABLE, 'a', deltaId)]);
+
+        // Assert
+        expect(result.seen).toEqual([]);
+        expect(result.failure).toMatchObject({ code: 'INVALID_MULTI_PACK_INDEX' });
+      });
+    });
+  });
+
+  describe('Given a regular entry naming a large non-blob and a corrupt alternate', () => {
+    describe('When the entries are iterated', () => {
+      it('Then the blob read refuses its type', async () => {
+        // Arrange
+        const ctx = await contextWithCorruptAlternate();
+        const commitBytes = new TextEncoder().encode(
+          `tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904\nauthor A <a@b> 1 +0000\ncommitter A <a@b> 1 +0000\n\n${'m'.repeat(THRESHOLD)}\n`,
+        );
+        const [commitId] = await writeSyntheticPackIn(ctx, PRIMARY_OBJECTS, 'p', [
+          { kind: 'base', type: 'commit', content: commitBytes },
+        ]);
+
+        // Act
+        const result = await archiveEntries(ctx, [
+          treeEntry(FILE_MODE.REGULAR, 'a', commitId as ObjectId),
+        ]);
+
+        // Assert
+        expect(result.failure).toMatchObject({ code: 'UNEXPECTED_OBJECT_TYPE' });
+      });
     });
   });
 });

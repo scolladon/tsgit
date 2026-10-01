@@ -32,6 +32,7 @@ import { deflateSync } from 'node:zlib';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { hasObject } from '../../src/application/primitives/has-object.js';
 import { readObjectMetadata } from '../../src/application/primitives/read-object.js';
+import type { CatFileBatchEntry } from '../../src/application/primitives/types.js';
 import type { DiffChange } from '../../src/domain/diff/diff-change.js';
 import { TsgitError } from '../../src/domain/error.js';
 import type { ObjectId, RefName } from '../../src/domain/objects/index.js';
@@ -59,6 +60,11 @@ const BELOW_SMALL = '5';
 const AT_SMALL = '6';
 const BELOW_ALL = '1';
 const REFLOG = 'interop';
+const LARGE_THRESHOLD = '1000';
+const REGULAR = '100644';
+const EXECUTABLE = '100755';
+const SYMLINK = '120000';
+const SUBTREE = '040000';
 
 let root: string;
 let fixture: Fixture;
@@ -70,6 +76,14 @@ interface Fixture {
   readonly plainOid: string;
   readonly slimOid: string;
   readonly looseOid: string;
+  readonly trees: ArchiveTrees;
+}
+
+interface ArchiveTrees {
+  readonly refusing: string;
+  readonly served: string;
+  readonly exact: string;
+  readonly link: string;
 }
 
 const hexLines = (count: number): string[] =>
@@ -131,6 +145,31 @@ const assertPackPrecondition = (dir: string, plainOid: string, slimOid: string):
   expect(rows.find((row) => row.oid === slimOid)?.isDelta).toBe(true);
 };
 
+const mktree = (dir: string, rows: ReadonlyArray<readonly [string, string, string]>): string =>
+  runGit(['-C', dir, 'mktree'], {
+    input: rows
+      .map(([mode, oid, name]) => `${mode} ${mode === SUBTREE ? 'tree' : 'blob'} ${oid}\t${name}\n`)
+      .join(''),
+  }).trim();
+
+const buildArchiveTrees = (dir: string, plainOid: string, slimOid: string): ArchiveTrees => {
+  const inner = mktree(dir, [[REGULAR, plainOid, 'x']]);
+  return {
+    refusing: mktree(dir, [
+      [REGULAR, plainOid, 'a'],
+      [SUBTREE, inner, 'alpha'],
+      [REGULAR, slimOid, 'base'],
+      [REGULAR, plainOid, 'z'],
+    ]),
+    served: mktree(dir, [
+      [REGULAR, plainOid, 'plain'],
+      [EXECUTABLE, plainOid, 'tool'],
+    ]),
+    exact: mktree(dir, [[REGULAR, slimOid, 'exact']]),
+    link: mktree(dir, [[SYMLINK, slimOid, 'link']]),
+  };
+};
+
 const buildBorrower = async (donor: string): Promise<Fixture> => {
   const dir = path.join(root, 'borrower');
   runGit(['clone', '-q', '--shared', donor, dir]);
@@ -152,6 +191,7 @@ const buildBorrower = async (donor: string): Promise<Fixture> => {
     plainOid: objectOf(dir, 'HEAD:plain'),
     slimOid: objectOf(dir, 'HEAD:slim'),
     looseOid,
+    trees: buildArchiveTrees(dir, objectOf(dir, 'HEAD:plain'), objectOf(dir, 'HEAD:slim')),
   };
 };
 
@@ -570,6 +610,221 @@ describe.skipIf(!GIT_AVAILABLE)('alternates stream interop — ref targets and c
           expect(git.exitCode).toBe(0);
           expect(fileState(tsgitSide.dir, 'lnk')).toEqual(fileState(gitSide.dir, 'lnk'));
           await repo.dispose();
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M5n-M5s rows: cat-file --batch, show, archive
+// ---------------------------------------------------------------------------
+
+interface GitRun {
+  readonly exitCode: number;
+  readonly stdout: string;
+  readonly stderr: string;
+}
+
+const gitWithInput = (dir: string, args: ReadonlyArray<string>, input: string): GitRun => {
+  try {
+    return { exitCode: 0, stdout: runGit(['-C', dir, ...args], { input }), stderr: '' };
+  } catch (error) {
+    const failure = error as { status: number; stdout: Buffer; stderr: Buffer };
+    return {
+      exitCode: failure.status,
+      stdout: failure.stdout.toString(),
+      stderr: failure.stderr.toString(),
+    };
+  }
+};
+
+const batchedRefusal = async (copy: Copy, oid: string): Promise<TsgitError> => {
+  const repo = await copy.repo();
+  try {
+    return await rejectionOf(async () => {
+      for await (const _entry of repo.primitives.catFileBatch([oid as ObjectId])) {
+        // drain
+      }
+    });
+  } finally {
+    await repo.dispose();
+  }
+};
+
+const archivePaths = async (
+  copy: Copy,
+  treeish: string,
+): Promise<{ paths: string[]; contents: Map<string, string>; failure?: TsgitError }> => {
+  const repo = await copy.repo();
+  const paths: string[] = [];
+  const contents = new Map<string, string>();
+  try {
+    const { entries } = await repo.archive({ treeish });
+    for await (const entry of entries) {
+      paths.push(entry.path);
+      if ('content' in entry) contents.set(entry.path, Buffer.from(entry.content).toString('utf8'));
+    }
+    return { paths, contents };
+  } catch (error) {
+    if (!(error instanceof TsgitError)) throw error;
+    return { paths, contents, failure: error };
+  } finally {
+    await repo.dispose();
+  }
+};
+
+const worktreeText = (name: string): string => readFileSync(path.join(fixture.dir, name), 'utf8');
+
+describe.skipIf(!GIT_AVAILABLE)('alternates stream interop — cat-file batch, show, archive', () => {
+  describe('Given M5n: a small packed blob and an unusable alternate', () => {
+    describe('When it is read through the batch reader', () => {
+      it(
+        'Then both tools refuse with the alternate midx error',
+        async () => {
+          // Arrange
+          const copy = copyOfFixture();
+
+          // Act
+          const git = gitWithInput(copy.dir, ['cat-file', '--batch'], `${fixture.smallOid}\n`);
+          const result = await batchedRefusal(copy, fixture.smallOid);
+
+          // Assert
+          expectGitRefused(git);
+          expect(result.data).toMatchObject(REFUSAL_DATA);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe('Given M5o: a commit and an unusable alternate', () => {
+    describe('When it is read through the batch reader', () => {
+      it(
+        'Then both tools serve the same commit',
+        async () => {
+          // Arrange
+          const copy = copyOfFixture();
+          const repo = await copy.repo();
+          const head = objectOf(copy.dir, 'HEAD');
+
+          // Act
+          const git = gitWithInput(copy.dir, ['cat-file', '--batch'], `${head}\n`);
+          let entry: CatFileBatchEntry | undefined;
+          for await (const item of repo.primitives.catFileBatch([head as ObjectId])) entry ??= item;
+
+          // Assert
+          expect(git.exitCode).toBe(0);
+          expect(entry?.ok && entry.type).toBe('commit');
+          expect(git.stdout.startsWith(`${head} commit `)).toBe(true);
+          await repo.dispose();
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe('Given M5p: a small packed blob and an unusable alternate', () => {
+    describe('When show runs on the oid and on a path revision', () => {
+      it(
+        'Then both tools refuse with the alternate midx error each time',
+        async () => {
+          // Arrange
+          const copy = copyOfFixture();
+          const repo = await copy.repo();
+
+          // Act
+          const gitOid = gitIn(copy.dir, 'show', fixture.smallOid);
+          const gitPath = gitIn(copy.dir, 'show', 'HEAD:f');
+          const byOid = await rejectionOf(() => repo.show(fixture.smallOid));
+          const byPath = await rejectionOf(() => repo.show('HEAD:f'));
+
+          // Assert
+          expectGitRefused(gitOid);
+          expectGitRefused(gitPath);
+          expect(byOid.data).toMatchObject(REFUSAL_DATA);
+          expect(byPath.data).toMatchObject(REFUSAL_DATA);
+          await repo.dispose();
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe('Given M5q: a large delta blob named base after served entries and an unusable alternate', () => {
+    describe('When archive runs', () => {
+      it(
+        'Then tsgit yields the entries before base and both tools refuse at base',
+        async () => {
+          // Arrange
+          const copy = withThreshold(LARGE_THRESHOLD);
+          const tree = fixture.trees.refusing;
+
+          // Act
+          const git = gitIn(copy.dir, 'archive', tree);
+          const result = await archivePaths(copy, tree);
+
+          // Assert
+          expectGitRefused(git);
+          expect(result.paths).toEqual(['a', 'alpha', 'alpha/x']);
+          expect(result.failure?.data).toMatchObject(REFUSAL_DATA);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe('Given M5r: large non-delta blobs, regular and executable, and an unusable alternate', () => {
+    describe('When archive runs', () => {
+      it(
+        'Then both tools succeed and every entry equals the committed bytes',
+        async () => {
+          // Arrange
+          const copy = withThreshold(LARGE_THRESHOLD);
+          const tree = fixture.trees.served;
+
+          // Act
+          const git = gitIn(copy.dir, 'archive', tree);
+          const result = await archivePaths(copy, tree);
+
+          // Assert
+          expect(git.exitCode).toBe(0);
+          expect(result.failure).toBeUndefined();
+          expect(result.paths).toEqual(['plain', 'tool']);
+          for (const content of result.contents.values()) {
+            expect(content).toBe(worktreeText('plain'));
+          }
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe('Given M5s: delta blobs read in the default order and an unusable alternate', () => {
+    describe('When archive runs', () => {
+      it(
+        'Then both tools succeed and every entry equals the committed bytes',
+        async () => {
+          // Arrange
+          const slimSize = worktreeText('slim').length;
+          const atThreshold = withThreshold(String(slimSize));
+          const aboveThreshold = withThreshold(LARGE_THRESHOLD);
+          const { exact: exactTree, link: linkTree } = fixture.trees;
+
+          // Act
+          const gitExact = gitIn(atThreshold.dir, 'archive', exactTree);
+          const gitLink = gitIn(aboveThreshold.dir, 'archive', linkTree);
+          const exact = await archivePaths(atThreshold, exactTree);
+          const link = await archivePaths(aboveThreshold, linkTree);
+
+          // Assert
+          expect(gitExact.exitCode).toBe(0);
+          expect(gitLink.exitCode).toBe(0);
+          expect(exact.failure).toBeUndefined();
+          expect(link.failure).toBeUndefined();
+          expect(exact.contents.get('exact')).toBe(worktreeText('slim'));
+          expect(link.contents.get('link')).toBe(worktreeText('slim'));
         },
         ROW_TIMEOUT,
       );
