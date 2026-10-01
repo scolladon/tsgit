@@ -15,7 +15,10 @@
 > **revision #3** (scope folded: every git streaming reader — `cat-file --batch`, `show`,
 > `archive`, `pack-objects` — §D4.2; git's worktree residue of a refused streamed write and
 > the every-source gate where git refuses before writing, §D4.3/§D4.4; Pin M5 widened with
-> M5n … M5ac) → self-reviewed ×3 → 1 new decision candidate (§Decisions, DC-20).
+> M5n … M5ac) → DC-20 ratified (ADR-932) → **revision #4** (scope folded: `archive` honours
+> `export-ignore` and `export-subst`, ADR-933, §D14/§D15; `merge` writes `ORIG_HEAD` where git
+> does, §D16; the delta search skips objects above `core.bigFileThreshold`, §D17; Pins E, S, OH,
+> BT) → self-reviewed ×3 → 2 new decision candidates (§Decisions, DC-21, DC-22).
 >
 > **Three premises of the brief do not survive the pins, and each is load-bearing.**
 >
@@ -46,7 +49,7 @@
 > adopt both — a behaviour change for repositories without alternates too (speed only, never
 > answers).
 
-<!-- cspell:ignore chflags uchg utimes chattr incore delt typep readlen unloadable -->
+<!-- cspell:ignore chflags uchg utimes chattr incore delt typep readlen unloadable mtrunc ltrunc noexport valueonly keyonly unfold GNUPG gpgsm qqqq MUSTBEDIR mailmapped Creset Cgreen Cblue GOODSIG BADSIG EXPSIG EXPKEYSIG REVKEYSIG ERRSIG untranscoded strwidth reencode memmem -->
 
 ## Context
 
@@ -99,7 +102,9 @@ omit the hook and fall back to the repo-rooted fs.
 |---|---|
 | ADR-226 | byte-faithful data + on-disk state; divergence only by ADR |
 | ADR-249 | structured data only — no rendered stderr; warnings must be data |
-| ADR-914 … ADR-928 | this feature's ratified decisions — mapping in §Decisions |
+| ADR-914 … ADR-933 | this feature's ratified decisions — mapping in §Decisions |
+| ADR-415 / ADR-416 / ADR-418 | `archive` emits a structured entry stream (`ArchiveEntry.content` = the bytes git writes); serializers are pure and take only rendering inputs — export-subst output is entry **content**, not a rendering input (ADR-933) |
+| ADR-765 | `archive` refuses what `git archive` refuses — extended by the two `export-subst` refusals (`%(count)`, `%(total)`, Pin S) |
 | ADR-412 | fsck scope bullet *"alternate object stores (tsgit has no alternates)"* — superseded by ADR-919 |
 | ADR-138 / ADR-140 | `@writes` tag grammar and the three comparison kinds — the freshen write surface (§D11) |
 | ADR-509 | loose-first precedence + loose oid cache (`hasObject` arm, in-core blob order) — the streamed open's per-source arms are git's instead (ADR-928, §D4.1) |
@@ -169,6 +174,29 @@ omit the hook and fall back to the repo-rooted fs.
 - **R13** The `FileSystem` port gains an **optional** `utimeNow(path)` (§D11); node and memory
   implement it, the browser adapter omits it (ADR-925); an alternate's capability carries it,
   confined to that alternate's objects dir (ADR-915).
+- **R14** `archive` omits every entry whose `export-ignore` attribute is **set** (`ATTR_TRUE`;
+  `export-ignore=true` is a string value and does not count), resolved from the **archived
+  tree's** `.gitattributes` plus `info/attributes` and `core.attributesFile` — never the
+  worktree's — in bare and non-bare repositories alike; a directory is checked as `<path>/`
+  (directory-only patterns match it) and an ignored directory drops its whole subtree; a
+  directory entry is emitted only once a non-directory descendant reaches the export-ignore
+  check, so an empty subtree, or a directory whose children are all ignored directories, is not
+  emitted (ADR-933, Pin E, §D14).
+- **R15** For a regular-file entry whose `export-subst` attribute is set, when the tree-ish
+  peels to a commit, `archive` emits git's `format_subst` expansion of the blob: every
+  `$Format:<fmt>$` replaced by `repo_format_commit_message(<fmt>)` under archive's context
+  (`DATE_NORMAL`, `DEFAULT_ABBREV`, colour never, one `%(describe)` per archive, no rev, no
+  reflog, no notes), byte-for-byte on every row of Pin S; `%(count)` / `%(total)` refuse as git
+  dies; such an entry is never streamed (ADR-930's `!export-subst` conjunct) (ADR-933, §D15).
+- **R16** Attribute patterns ending in `/` match directories only (`attr.c:path_matches`,
+  `PATTERN_FLAG_MUSTBEDIR`) for every attribute caller — today `resolveAttribute` ignores
+  `AttributeRule.directoryOnly`, so `foo/ text` wrongly applies to a file `foo` (Pin E9, §D14).
+- **R17** `merge` writes `ORIG_HEAD` = the pre-merge HEAD once the merge base is computed and
+  before any outcome — up-to-date, fast-forward, `--no-ff`, clean, conflict, the ff-only
+  refusal, the would-overwrite refusal — with no reflog (`builtin/merge.c:1633`, Pin OH, §D16).
+- **R18** The pack builder's delta search neither deltifies nor offers as a base any object
+  whose size is strictly above `core.bigFileThreshold` (`builtin/pack-objects.c:2626`
+  `no_try_delta` → `should_attempt_deltas`; Pin BT, §D17).
 
 ## Design
 
@@ -479,8 +507,9 @@ Two blobs sharing the 7-hex prefix `bdd46a6`: X in the donor, Y in the borrower.
 | X2 | `rev-parse bdd46a6` in borrower | `error: short object ID bdd46a6 is ambiguous` + `hint:   bdd46a61 blob` + `hint:   bdd46a65 blob`, exit 128 |
 | X3 | `rev-parse bdd46a611cee` / `cat-file -p bdd46a611cee` | resolves to the donor object / prints it |
 
-tsgit has no abbreviation renderer (ADR-249); the interop test reconstructs X1 from
-`resolveOidPrefix`'s ambiguity data.
+Outside `archive`'s `export-subst` content (§D15, `abbreviateObjectId`) tsgit renders no
+abbreviation (ADR-249); the interop test reconstructs X1 from `resolveOidPrefix`'s ambiguity
+data.
 
 #### Pin CG — commit-graph in an alternate
 
@@ -528,6 +557,124 @@ bitmaps below come from `repack -adb` **without** `-l`. Observation: `GIT_TRACE2
 fsck: `pack-bitmap.c:verify_bitmap_files` (called from `builtin/fsck.c:1150`) checks every
 source's midx bitmap, then every source's pack bitmaps — tsgit's `bitmap-health` pass loops
 sources the same way (§D8).
+
+#### Pin E — `export-ignore` (`archive.c:write_archive_entry`, `queue_or_write_archive_entry`)
+
+Fixture root `.gitattributes`: `t1 export-ignore`, `t2 -export-ignore`, `t3 export-ignore=true`,
+`t4 !export-ignore`, `[attr]noexport export-ignore` + `t5 noexport`, `a export-ignore`,
+`b/ export-ignore`, `c/** export-ignore`, `d/e export-ignore` (`d` holds only `e/`),
+`lnk export-ignore` (symlink); `sub/.gitattributes`: `y export-ignore`. Baseline
+`git archive HEAD | tar -t` = `.gitattributes c/ g/ g/x keep sub/ sub/.gitattributes sub/x t2 t3 t4`.
+
+| # | case | git |
+|---|---|---|
+| E1 | `t1` set | omitted |
+| E2 | `t2` unset, `t3` = string `true`, `t4` unspecified | kept — only `ATTR_TRUE` counts (`check_attr_export_ignore`) |
+| E3 | macro `noexport` | `t5` omitted |
+| E4 / E5 | `a export-ignore` / `b/ export-ignore` on directories | `a/`, `b/` and every descendant omitted — the directory is checked as `a/` (trailing slash) before descent |
+| E6 | `c/** export-ignore` | `c/` emitted, `c/x` omitted — the queued directory is flushed (`write_directory`) **before** its child's export-ignore check |
+| E7 | `d/e export-ignore`, `d` holds only `e` | neither `d/` nor anything below — `d/` stays queued, no non-directory descendant ever flushes it |
+| E8 | symlink `lnk` | omitted (attributes checked for every non-directory) |
+| E9 | `foo/ export-ignore`; file `foo`, dir `x/foo/` (the only child of `x`) | `foo` kept, `x/` and `x/foo/k` omitted; `check-attr export-ignore foo x/foo x/foo/` → `unspecified`, `unspecified`, `set` |
+| E10 | tree holding an empty subtree `empty` (`git mktree`) + `keep` | `keep` only — an empty subtree is never emitted |
+| E11 | `archive HEAD:sub` | `.gitattributes x` — `sub/.gitattributes` is the root attributes file of the archived tree; the repository root's rules are invisible |
+| E12 | `archive HEAD t1`, `archive HEAD a` | exit 0, empty archive (the pathspec check ignores attributes) |
+| E13 | worktree `.gitattributes` edited, uncommitted (`keep export-ignore` added; `t1` rule deleted) | default: unchanged from the committed tree (`keep` kept, `t1` omitted); `--worktree-attributes`: `keep` omitted, `t1` kept |
+| E14 | `.git/info/attributes` = `g/x export-ignore` | `g/x` omitted, `g/` emitted |
+| E15 | `git clone --bare`, `archive HEAD` | baseline listing — tree attributes apply in a bare repository |
+| E16 | `archive <tree-id>` | baseline listing |
+| E17 | `s/.gitattributes` committed as a **symlink** to a file holding `q export-ignore` | `s/q` kept — a non-regular `.gitattributes` entry is not read |
+
+Mechanism (`archive.c:parse_treeish_arg`): without `--worktree-attributes`, git `unpack_trees`
+the archived tree into a scratch index and calls `git_attr_set_direction(GIT_ATTR_INDEX)`;
+`attr.c:read_attr` then reads every in-tree `.gitattributes` from that index only, bare or not,
+ignoring `attr.tree`. `info/attributes`, `core.attributesFile` and the system file stay in the
+stack as for any lookup.
+
+#### Pin S — `export-subst` (`archive.c:format_subst` → `pretty.c:repo_format_commit_message`)
+
+Archive context (`archive.c:write_archive` L757–770): `date_mode = DATE_NORMAL`,
+`abbrev = DEFAULT_ABBREV` (`core.abbrev`, auto when unset), `describe_status.max_invocations = 1`,
+colour zero (never), no `rev`, no `reflog_info`, no `notes_message`, no `output_encoding`.
+Fixture: parent `d948d40…` tagged `v1` (annotated); HEAD `38096f7…` (tree `f3d80e1…`), author
+`A U Thor <author@example.com> 1700000200 +0545`, committer `… 1700000300 +0000`, message
+`msg subject line\n\nbody para\n\nSigned-off-by: X <x@y>\n`, branch `main` attached, TZ=UTC.
+Each row is `<placeholder>=[$Format:<placeholder>$]` in one file; output between brackets.
+
+| placeholder | output | placeholder | output |
+|---|---|---|---|
+| `%H` | `38096f729e6651b8bb39ff91bf665623356a0e2c` | `%h` | `38096f7` |
+| `%T` / `%t` | `f3d80e15d4…` / `f3d80e1` | `%P` / `%p` | `d948d406d8…` / `d948d40` |
+| `%an %ae %al` | `A U Thor`, `author@example.com`, `author` | `%aN %aE %aL` | mailmapped (S12) — unmapped here |
+| `%ad` | `Wed Nov 15 04:01:40 2023 +0545` | `%aD` | `Wed, 15 Nov 2023 04:01:40 +0545` |
+| `%at` | `1700000200` | `%ai` | `2023-11-15 04:01:40 +0545` |
+| `%aI` | `2023-11-15T04:01:40+05:45` | `%as` / `%ah` | `2023-11-15` / `Nov 15 2023` |
+| `%ar` | `2 years, 11 months ago` (now-relative) | `%cd` | `Tue Nov 14 22:18:20 2023 +0000` |
+| `%cD` | `Tue, 14 Nov 2023 22:18:20 +0000` | `%cI` | `2023-11-14T22:18:20Z` (`Z` for `+0000`) |
+| `%s` / `%f` | `msg subject line` / `msg-subject-line` | `%e` | empty (no `encoding` header) |
+| `%b` | `body para\n\nSigned-off-by: X <x@y>\n` | `%B` | the whole message |
+| `%d` / `%D` | ` (HEAD -> main)` / `HEAD -> main` | `%(decorate:prefix=[,suffix=])` | `[HEAD -> main]` |
+| `%(describe)` | `v1-1-g38096f7` | `%(describe:abbrev=4)` (own fixture) | `v1-1-g6c4c` |
+| `%n` / `%%` / `%x41` | LF / `%` / `A` | `%x00` | one NUL byte |
+| `%m` | `>` | `%G?` / `%GT` | `N` / `undefined` (unsigned) |
+| `%GG %GS %GK %GF %GP %gd %gs %gn` | empty | `%Cred %C(red) %C(auto) %Creset %C(never,red)` | empty |
+| `%C(always,red)X` | `ESC[31mX` | `%<(8)%an\|` / `%<(3,trunc)%an\|` | `A U Thor\|` / `A..\|` |
+| `%>(8)%an\|` / `%><(9)%an\|` | `A U Thor\|` / `A U Thor \|` | `%w(10,2,4)%s` | `  msg\n    subject\n    line` |
+| `%+s` / `%-s` | `\nmsg subject line` / `msg subject line` | `x\n%-b` with empty body | `x` (preceding LFs deleted) |
+| `% s` / `% b` (empty) | ` subj` / empty | `%(trailers)` / `%(trailers:only)` | `Signed-off-by: X <x@y>\n` |
+| `%(trailers:key=Signed-off-by,valueonly)` | `X <x@y>\n` | `%<\|(12)%h` past column 12 | `6c4cdb6` (no pad) |
+
+| # | case | git |
+|---|---|---|
+| S1 | terminator | the first `$` **after** `$Format:`, anywhere later in the blob, newlines included: `unterminated $Format:%H\n$Format:$ empty` → `unterminated 38096f…\nFormat:$ empty` |
+| S2 | no later `$` | the `$Format:…` tail is kept verbatim (`tail $Format:%H` at EOF) |
+| S3 | NUL inside a format | the format is a C string: `$Format:%h\0%H$` → `b31a617` (everything from the NUL to the `$` dropped) |
+| S4 | binary blob (holds NUL) with `export-subst` | expanded — no binary test |
+| S5 | symlink with `export-subst` | not expanded (`object_file_to_archive`: `S_ISREG` only) |
+| S6 | regular file above `core.bigFileThreshold` (1000; file 2 KB) with `export-subst` | expanded — the streaming condition excludes `convert` entries |
+| S7 | tree-ish is a **tree id** | no expansion anywhere (`args->commit` is NULL); a tag tree-ish peels to its commit |
+| S8 | `%(describe)` budget | one per archive, consumed by the first occurrence in archive order (tree pre-order, then left to right) **even when describe yields nothing** (no tags → empty); every later `%(describe…)`, whatever its args, is emitted literally (`a.txt` → `A=`, `z.txt` → `Z=%(describe)`) |
+| S9 | `%(count)` / `%(total)` | `fatal: %(count) is not supported by this command` / `… %(total) …`, exit 128, no archive |
+| S10 | declined placeholders | `%` + the rest literal: `%S`, `%N` (notes present or not), `%q`, `%Zz`, `%xZZ`, `%Gx`, `%(unknown)`, `%+w(5)`; `%+N` → `N` (the magic byte is consumed, the placeholder declined) |
+| S11 | `%(describe:tags)` after the budget is spent | `%(describe:tags)` literal |
+| S12 | mailmap source | the **worktree** `.mailmap` (committed `Mapped Name <mapped@example.com> A U Thor <author@example.com>` → `Mapped Name\|mapped@example.com\|mapped`; an uncommitted edit wins; worktree file deleted → unmapped); bare → `HEAD:.mailmap` (`mailmap.blob` default) |
+| S13 | decorations | the repository's refs at archive time, not the archived tree's: attached `HEAD -> main, tag: lt2, refs/stash, o/main, side, refs/custom/x`; detached `HEAD, tag: lt2, refs/stash, o/main, side, main, refs/custom/x`; no `log.excludeDecoration` (filter NULL in `get_name_decoration`) |
+| S14 | signed commit, `gpg.program` missing | `%G?\|%GG\|%GS\|%GT` = `N\|\|\|undefined`; stderr `fatal: cannot exec …`; the archive is still produced |
+| S15 | signed commit, verifier prints no `GOODSIG` | `N`; `%GG` = the verifier's stderr |
+| S16 | commit with `encoding ISO-8859-1`, subject `caf\xe9 subj` | `%e` = `ISO-8859-1`; `%s` = bytes `caf\351 subj` (round-trip through UTF-8 back to the commit encoding) |
+| S16b | same commit encoding; file `pre-é [$Format:%h$] mid-é [$Format:%h$]` (UTF-8 `é`) | unchanged bytes — `%h` never parses the header, so no `commit_encoding`, no transcoding |
+| S16c | same; file `pre-é only\n[$Format:%e$]\n` | `pre-\351 only\n[ISO-8859-1]\n` — a header-parsing placeholder makes `repo_format_commit_message` transcode the **whole buffer so far** (file prefix + earlier expansions) UTF-8 → commit encoding; the tail after the `$` is appended untranscoded |
+| S16d | commit `encoding UTF-16`, same file | `\376\377\0p\0r\0e\0-\0\351\0 …\0[\0U\0T\0F\0-\01\06]\n` — BOM + UTF-16 for the prefix and the expansion, `]\n` raw |
+| S17 | committer date 2 h ago, author 25 h ago | `%ar` = `25 hours ago`, `%ah` = `Wed Sep 30 20:38` (now-relative modes) |
+
+#### Pin OH — `merge` and `ORIG_HEAD` (`builtin/merge.c` L1633)
+
+| # | case | exit | `ORIG_HEAD` |
+|---|---|---|---|
+| OH1 | clean true merge | 0 | pre-merge HEAD |
+| OH2 | already up to date | 0 | written = HEAD |
+| OH3 | fast-forward | 0 | pre-merge HEAD |
+| OH4 | `--no-ff` | 0 | pre-merge HEAD |
+| OH5 | `--squash` | 0 | pre-merge HEAD (tsgit has no `--squash`) |
+| OH6 | conflict | 1 | pre-merge HEAD |
+| OH7 | `--ff-only`, not fast-forwardable | 128 | written = HEAD |
+| OH8 | untracked file would be overwritten | 1 | written = HEAD |
+| OH9 | unrelated histories | 128 | written = HEAD |
+| OH10 | unresolvable argument | 1 | not written |
+| OH11 | `--ref-format=reftable` | 0 | in the reftable, no `.git/ORIG_HEAD` file |
+
+Content `<oid>\n` (41 bytes); no `logs/ORIG_HEAD` in any row.
+
+#### Pin BT — delta search and `core.bigFileThreshold` (`builtin/pack-objects.c` L2626, `should_attempt_deltas`)
+
+Two similar blobs, 13 898 and 13 893 bytes; `pack-objects --revs --no-reuse-delta --no-reuse-object`.
+
+| threshold | 13 898-byte blob | 13 893-byte blob |
+|---|---|---|
+| default (512 MiB) | whole | delta |
+| 13 898 (= larger size) | whole | delta — strict `>` |
+| 13 897 | whole | **whole** — the larger is excluded as a base too, the smaller has no candidate |
+| `repack -adf`, 100 | whole | whole |
 
 ### Shape
 
@@ -906,15 +1053,15 @@ One internal helper serves the three readers that need bytes in hand:
 |---|---|---|---|
 | `catFileBatch` `readOne` (`cat-file-batch.ts` L37) | `readObjectWithSize` (in-core order) | `readDeclaredObjectHeader(ctx, id)` → missing ⇒ `{ ok: false, reason: 'missing' }` as today; `maxBytes` < `declaredSize` ⇒ today's `objectTooLarge` refusal (no git analogue: a tsgit memory bound, now checked before the open); type `blob` ⇒ `readBlobContentInStreamOrder`, entry `{ ok: true, id, type: 'blob', size: declaredSize, object }` with the blob object shape `readObjectWithSize` returns today; any other type ⇒ `readObjectWithSize` as today | M5n/M5o |
 | `show` (`show.ts` `buildForRev` L125, `buildTag` L163 — both `readObjectStreamed`) | `readObjectStreamed` | new `readShowTarget(ctx, id)`: `readDeclaredObjectHeader` → `blob` ⇒ `readBlobContentInStreamOrder` → `{ kind: 'blob', id, content }`; else `readObjectStreamed` as today | M5p |
-| `archive` `buildEntryStream` (`archive.ts` L104–118) | `readBlob` for every non-directory entry | regular mode (`100644`/`100755`): `readDeclaredObjectHeader` → `blob` and `declaredSize > store.bigFileThreshold` ⇒ `readBlobContentInStreamOrder`; otherwise (symlink, small, non-blob) `readBlob` as today | M5q … M5t |
+| `archive` `buildEntryStream` (`archive.ts` L104–118) | `readBlob` for every non-directory entry | regular mode (`100644`/`100755`) **without `export-subst`** (§D15): `readDeclaredObjectHeader` → `blob` and `declaredSize > store.bigFileThreshold` ⇒ `readBlobContentInStreamOrder`; otherwise (symlink, small, non-blob, `export-subst`) `readBlob` as today | M5q … M5t, S6 |
 | `buildPack` (`build-pack.ts`) | `buildBaseEntries` `readObject`; deltify `readObjectMetadataWithContent` + emission `readRawObject` (`deltify.ts` L128, L428) | (1) **gate first**: `assertEverySourceLoadable(ctx)` (§D4.4) before any read — M5u–M5w; (2) a blob whose metadata `uncompressedSize > store.bigFileThreshold` and whose content is not already carried takes `readBlobContentInStreamOrder` at the emission read (L428) and in `buildBaseEntries`, which switches from `readObject` to the deltify path's `readObjectMetadataWithContent` + content read (same encoded entry: `{ type, uncompressedSize, compressedData }`) | M5u–M5w; `write_no_reuse_object` |
 
 `archive` keeps its lazy `AsyncIterable` shape: a refusal rejects the iteration **at the refused
 entry**, after every earlier entry was yielded — git's tar/zip writer likewise died after
 emitting the earlier members (M5q: zip had 62 bytes out; tar's 0 bytes is its 10 KiB block
-buffering, a serialiser artefact ADR-249 leaves to the caller). The `export-subst` conjunct of
-git's condition is constant-true for tsgit: `archive` models no `export-*` attribute (pre-existing,
-`docs/design/archive.md`; recorded, not widened).
+buffering, a serialiser artefact ADR-249 leaves to the caller). The `!export-subst` conjunct of
+git's condition is the attribute itself (`args->convert`), resolved from the archived tree
+(§D14, ADR-933) — a tree-id archive, which expands nothing, still reads such a file in-core.
 
 `buildPack` (2) is what ADR-930 adopts; the pins show its **observable** effect is narrower than
 the ADR's context assumed. Once (1) has prepared every source, the stream order can no longer
@@ -951,9 +1098,9 @@ writeStreamedBlob(ctx, fullPath, id, mode?):              // entry.c:streaming_w
   }
 ```
 
-This is DC-20's option (b), *create on refusal*: the empty file appears after the locate
-refuses rather than before it, with git's end state. Option (a), *create first*, is git's literal
-order at one extra `write` + `chmod` per streamed file. `createEmptyOutput` = `ctx.fs.write(fullPath, EMPTY)` then, when `mode` is given, `chmod` to
+This is ADR-932, *create on refusal*: the empty file appears after the locate refuses rather
+than before it (git creates it first), with git's end state and git's first error in every
+single-fault case, at no cost on the success path. `createEmptyOutput` = `ctx.fs.write(fullPath, EMPTY)` then, when `mode` is given, `chmod` to
 `0o755`/`0o644` (git's `create_file` mode less umask: M5y `0755`, M5x `0644`). A writer called
 without a mode (`merge.ts`, `apply-merge-to-worktree.ts`, `stash.ts`) leaves the adapter default,
 as its successful write does today. If `createEmptyOutput` itself fails, its error is thrown with
@@ -1000,13 +1147,14 @@ in-core retry after its unlink may also serve another copy where tsgit refuses (
 - `everySourceLoadable(ctx): Promise<boolean>` — the same, settled (§D4.3).
 
 `assertEverySourceLoadable` reproduces the refusal point of git's every-source reach where that
-reach precedes a write. tsgit computes no abbreviation (ADR-249), so it calls the gate where git
-abbreviates:
+reach precedes a write. tsgit computes no display abbreviation (ADR-249), so it calls the gate
+where git abbreviates (the one abbreviation tsgit does compute — `export-subst` content, §D15 —
+reaches every source itself, as git's does):
 
 | tsgit call site | git reach | pin |
 |---|---|---|
 | `buildPack` entry (`build-pack.ts`, before `resolveWriterPlan`) — covers `packObjects`, `bundleCreate`, `gc`, and `push` when it needs pack data | `prepare_in_pack_by_idx` at pack-objects start-up | M5u–M5w, M5af |
-| `mergeRun` (`merge.ts` L148), before its first worktree or state write | `Updating a..b` / merge abbreviation (`builtin/merge.c:1663`) | M5ac |
+| `mergeRun` (`merge.ts` L148), after the `ORIG_HEAD` write (§D16) and before every other worktree or state write | `Updating a..b` / merge abbreviation (`builtin/merge.c:1663`) | M5ac |
 | `cherryPickRun` / `revertRun` / `rebaseRun` and their `…Continue` / `…Skip`, at each pick before its first write | `sequencer.c:short_commit_name` | M5ac |
 | `checkout` (`checkout.ts` L336) switching branches **from a detached HEAD**, before the worktree update | `switch_branches`: `strbuf_add_unique_abbrev` of the old commit | M5ad |
 
@@ -1016,10 +1164,9 @@ sends an empty pack for a delete-only push; it now sends none, as git (`send-pac
 delete-only push from a borrower with an unloadable alternate updates the remote, as git's does
 (M5ae; git's later client-side fatal is exit status only, the M5k precedent).
 
-`git merge` writes `ORIG_HEAD` (L1633) before the abbreviation; tsgit's `mergeRun` writes
-`ORIG_HEAD` only on its conflict path (`persistConflictState`, L589). Under this fault git leaves
-`ORIG_HEAD` = old HEAD and tsgit leaves none — the gap is pre-existing for **every** clean merge,
-independent of alternates (Out of scope, "observed").
+`git merge` writes `ORIG_HEAD` (L1633) before the abbreviation; §D16 moves tsgit's write to
+the same point (it was conflict-path only), and the `mergeRun` gate runs after it — under this
+fault both tools leave `ORIG_HEAD` = old HEAD.
 
 Not gated (git reaches the streamed write first, M5x … M5ab): `checkout` with paths, `restore`,
 branch switch from an attached HEAD, `reset --hard`, `stash apply`. Abbreviations git prints
@@ -1297,6 +1444,203 @@ decline keeps today's semantics (the next candidate, then the walk; BM5). Caller
 artefact answered is not public data, so BM2–BM4 are unit-pinned; BM1/BM5/BM6 are interop rows
 (result set + `tier`, or the refusal).
 
+### D14 — `archive` attributes and `export-ignore` (ADR-933, Pin E)
+
+**Attribute source = the archived tree.** `internal/read-gitattributes.ts` splits today's
+`buildAttributeProvider(ctx)` into a source-agnostic core and two directory readers:
+
+```
+buildAttributeProviderFrom(ctx, readDirAttributes): AttributeProvider   // info → dirs deepest-first → global; macros: info + root + global
+buildAttributeProvider(ctx)            = …From(ctx, worktreeDirReader)  // today's behaviour, unchanged
+buildTreeAttributeProvider(ctx, tree)  = …From(ctx, treeDirReader(tree))
+treeDirReader(tree)(dir):                                   // git: GIT_ATTR_INDEX over the unpacked tree
+  entry = await findTreeEntry(ctx, tree, join(dir, '.gitattributes'))   // internal/resolve-tree-path.ts L66
+  if entry?.mode not regular (100644/100755) → undefined                 // E17: a symlinked .gitattributes is not read
+  → parseGitattributes(decode(readBlob(entry.id)))  — same cap as the worktree reader (MAX_GITATTRIBUTES_BYTES)
+```
+
+The tree reader ignores `ctx.layout.workDir` (E15: bare repositories read tree attributes) and
+`dirEscapesWorktree` (tree paths are validated by the walk). `info/attributes` and
+`core.attributesFile` are read as today (E14). No `--worktree-attributes` option is added
+(Follow-ups).
+
+**Directory-only patterns (R16).** `resolveAttribute(sources, path, name, macros)` keeps its
+signature and adopts git's calling convention: a path ending in `/` is a directory
+(`git_check_attr` on `"<dir>/"`). `resolveInSource` matches `rel` without the trailing slash
+and skips a rule whose `directoryOnly` is set unless the path is a directory (E9). Every
+existing caller passes file paths, so the change for them is exactly git's: `foo/ attr` stops
+applying to a file `foo`.
+
+**The entry stream.** `archive.ts` `buildEntryStream` becomes git's
+`queue_or_write_archive_entry` + `write_archive_entry`:
+
+```
+buildEntryStream(ctx, tree, subst):
+  attrs = await buildTreeAttributeProvider(ctx, tree)
+  queued: ArchiveEntry[] = []                      // c->bottom, root-most first
+  for await (e of walkTree(ctx, tree, { maxEntries: MAX_SAFE_INTEGER })):
+    validateIndexPath(e.path, …)                    // every walked entry, ignored subtrees included (git unpacks the whole tree)
+    if (insideIgnored(e.path)) continue
+    queued = queued.filter(isAncestorOf(e.path))   // git pops non-ancestors
+    if (e.mode is DIRECTORY):
+      if (isSet(attrs, `${e.path}/`, 'export-ignore')) { markIgnored(e.path); continue }   // E4, E5, E9
+      queued.push(dirEntry(e)); continue
+    yield* drain(queued)                            // write_directory: flushed BEFORE the child's check (E6)
+    const key = e.mode === GITLINK ? `${e.path}/` : e.path   // git appends '/' to a gitlink before the check
+    if (isSet(attrs, key, 'export-ignore')) continue          // E1, E3, E8
+    yield await entryFor(e, isSet(attrs, key, 'export-subst'), subst)    // §D15 / §D4.2
+```
+
+`isSet` = `resolveAttribute(…) === true` — `ATTR_TRUE` only (E2). A queued directory that no
+non-directory descendant flushes is never yielded (E7, E10). `ArchiveResult` and
+`ArchiveEntry` keep their shape; `entries` stays lazy.
+
+Recorded, not widened: tsgit's `archive` takes no pathspec (E12 needs none); a missing or
+invalid tree object inside an ignored subtree refuses at the walk, mid-stream — git refuses at
+`unpack_trees`, before any output (the lazy-stream posture of F7, pre-existing for every walk
+failure).
+
+### D15 — `export-subst`: git's user-format expander (ADR-933, Pin S)
+
+**Where it runs.** `entryFor` (§D14) for a regular file (`100644`/`100755`, S5) with
+`export-subst` set:
+
+```
+entryFor(e, exportSubst, subst):
+  if (regular && !exportSubst && header.type === 'blob' && header.declaredSize > threshold) → stream order   // §D4.2; S6
+  content = await readBlob(ctx, e.id)                    // in-core; S4 binary included
+  if (regular && exportSubst && subst.commit) content = await subst.expandFile(content)   // S7: tree id → none
+```
+
+The streaming conjunct is the **attribute**, as git's `!args->convert` — a tree-id archive
+(no expansion) still reads an `export-subst` file in-core.
+
+**Layering.** The expander is pure domain code; every datum that needs I/O is resolved by the
+application layer **only when a placeholder in the file asks for it** (git evaluates lazily;
+signature verification spawns a process, and the `%(describe)` budget is consumed in order).
+One tokenizer serves both passes, so the requirement scan and the expansion cannot disagree:
+
+```
+domain/pretty/
+  format-subst.ts      expandFormatSubst(blob, expandOne): Uint8Array        // S1–S3: '$Format:' … next '$'; fmt cut at NUL;
+                       //   expandOne(accumulated, fmt) → accumulated (G19 transcodes the whole buffer)
+  user-format.ts       scanPlaceholders(fmt) → tokens (git's strbuf_expand_step / format_commit_item grammar)
+                       formatRequirements(tokens, budget) → { abbrev:Set<'commit'|'tree'|'parents'>, decorations, describe?: args, mailmap, signature, now }
+                       formatCommit(tokens, view, env, budget) → { bytes, budget } | refusal('%(count)'|'%(total)')
+  commit-view.ts       parseCommitView(raw: Uint8Array) — parse_commit_header / parse_commit_message offsets over the RAW commit bytes
+  ident.ts             splitIdentLine (split_ident_line)
+  date.ts              showDate(ts, tz, mode, now, localTzOffset): normal | rfc2822 | relative | iso8601 | iso8601-strict | short | human
+  subject.ts           formatSubject (paragraph joined by ' '), formatSanitizedSubject (%f)
+  padding.ts           %<(N[,trunc|ltrunc|mtrunc]) %>(N) %><(N) %>>(N) and the |(N) column forms; FORMATTING_LIMIT
+  wrap.ts              %w(w,i1,i2) — strbuf_add_wrapped_text + rewrap_message_tail
+  utf8-width.ts        git's utf8_strwidth tables (unicode-width.h: zero-width + double-width intervals)
+  color.ts             %Cred|green|blue|reset, %C(spec) via color_parse_mem; emitted only with 'always,' (archive colour = never)
+  trailers.ts          %(trailers[:key=,only,unfold,separator=,key_value_separator=,valueonly,keyonly]) — trailer.c block detection
+  decorations.ts       %d %D %(decorate[:prefix=,suffix=,separator=,pointer=,tag=]) — log-tree.c format_decorations
+  reencode.ts          the commit-encoding round trip (DC-21)
+domain/mailmap/        parseMailmap (read_mailmap_line), mapUser (map_user: email case-insensitive, then name)
+application/primitives/
+  abbreviate-object-id.ts          abbreviateObjectId(ctx, id) — odb_find_abbrev_len over every source
+  internal/ref-decorations.ts      loadRefDecorations(ctx) — load_ref_decorations(NULL, SHORT)
+  internal/read-mailmap.ts         worktree .mailmap | mailmap.blob (bare default HEAD:.mailmap) | mailmap.file
+  internal/verify-commit-signature.ts   check_commit_signature through ctx.command (buffer file: DC-22)
+application/commands/internal/archive-subst.ts   per-archive memo: view, lazily resolved env, describe budget
+```
+
+**Placeholder semantics — git's, in archive context** (`pretty.c:format_commit_one`, `format_commit_item`, `repo_format_commit_message`):
+
+| class | rule (source → pin) |
+|---|---|
+| literals | `%n`, `%xNN` (`strbuf_expand_literal`; bad hex declines), `%%` |
+| magic | `%+X` LF before non-empty, `%-X` delete preceding LFs when empty, `% X` space before non-empty; the magic byte is consumed even when `X` declines (`%+N` → `N`); `%+w`/`%-w`/`% w` decline (S10) |
+| declined | any placeholder whose handler returns 0 emits `%` and the scan resumes after it: `%S` (no rev), `%N` (no notes), unknown letters, malformed `%C`, `%G<other>`, unparsable `%(…)` |
+| refused | `%(count)`, `%(total)` — git dies (S9); tsgit throws `formatPlaceholderUnsupported` with `{ placeholder }` (new, `src/domain/commands/error.ts`), raised when the iteration reaches the file |
+| commit ids | `%H %T %P` full; `%h %t %p` via `abbreviateObjectId` |
+| idents | `%a?`/`%c?` with `n e l t d D r i I h s` and mailmapped `N E L`; `%ad`/`%cd` use `DATE_NORMAL`; a malformed ident emits nothing for `n e t d D r i` and declines the rest (`format_person_part` `skip`) |
+| message | `%s`, `%f`, `%b`, `%B`, `%e` (the `encoding` header verbatim) over the raw commit bytes |
+| refs | `%d %D %(decorate…)` from `loadRefDecorations`: every ref + HEAD at archive time, tags peeled, `replaced` for replace refs when enabled, `grafted` for grafts/shallow; `HEAD -> <branch>` when HEAD points at a decorating branch; `tag: ` prefix; `refs/heads/`, `refs/tags/`, `refs/remotes/` shortened; no `log.excludeDecoration` (S13) |
+| describe | `%(describe[:tags,abbrev=N,match=,exclude=])` — budget 1 per archive, decremented **before** argument parsing (a malformed argument still spends it); rendered from the `describe` command's result: `name` when exact, else `name-<distance>-g<abbrev>` (abbreviation per `abbrev=`, else `abbreviateObjectId`); `abbrev=0` renders the tag name alone (describe's `--abbrev=0`, interop row); a describe refusal (no names) renders empty (git: stderr discarded, stdout empty) (S8, S11) |
+| reflog | `%gd %gD %gs %gn %gN %ge %gE` consume and emit nothing (no `reflog_info`) |
+| signature | `%G? %GG %GS %GK %GF %GP %GT` from one `verifyCommitSignature` per archive; unsigned → `N` / `undefined` / empty (S14, S15) |
+| colour | archive colour is *never*: `%Cred %Cgreen %Cblue %Creset %C(spec) %C(auto,spec)` emit nothing; `%C(always,spec)` emits `color_parse_mem`'s escape |
+| layout | padding, `%w`, colour reset bookkeeping as `format_and_pad_commit`, widths by `utf8_strwidth` |
+| `%m` | `>` (`get_revision_mark(NULL, …)`) |
+
+**Abbreviation (`abbreviate-object-id.ts`).** `odb_find_abbrev_len`: base length = `core.abbrev`
+as `environment.c` parses it (`auto` → automatic; a false boolean text → full length; an
+integer < 4 → git's config error `abbrev length out of range`; ≥ the hex length → full) or, unset/`auto`,
+`max(7, ceil((msb(n) + 1) / 2))` with `n` = the packed-object count summed over **every source**
+(`packfile_store_count_objects`, approximate); then the shortest length ≥ base at which no other
+object in any source shares the prefix (Part 7's per-source scans; the union). An unloadable
+alternate refuses here as git's every-source reach does (§D4.4) — an archive with `%h` in a
+borrower with a corrupt alternate midx refuses at that file, as git dies there. tsgit's
+fixed-7 abbreviations elsewhere stay (Follow-ups).
+
+**Describe.** `archive-subst.ts` calls the `describe` command (`commands/describe.ts`) in-process
+with the parsed options (`tags`, `match`, `exclude`) on the archived commit and renders its
+`DescribeResult` — the subprocess git spawns runs the same algorithm; its stderr is discarded,
+so every describe refusal renders as the empty string.
+
+**Mailmap.** New `domain/mailmap/` (grammar of `mailmap.c:read_mailmap_line`, lookup of
+`map_user`), read by `read-mailmap.ts` in git's `read_mailmap` order: worktree `.mailmap` (non-bare,
+working-tree root), `mailmap.blob` (bare default `HEAD:.mailmap`), `mailmap.file`. Never the
+archived tree's `.mailmap` (S12).
+
+**Signatures.** `verify-commit-signature.ts` reproduces `gpg-interface.c:check_signature` for the
+three formats through `ctx.command` (the `CommandRunner` port; OpenPGP: `gpg.program --keyid-format=long
+--status-fd=1 --verify <sig-file> -`, status lines parsed as `parse_gpg_output`; SSH:
+`ssh-keygen -Y find-principals`/`-Y verify` with `gpg.ssh.allowedSignersFile` and
+`gpg.ssh.revocationFile`; X.509: `gpgsm`). The signature is written to a transient file under
+the git dir (`<gitDir>/GIT_VERIFY_BUFFER`, beside `sign-payload.ts` L93's `GIT_SIGNING_BUFFER`; declared in a `@writes` block, ADR-138) (git uses `$TMPDIR`; tsgit has no temp
+port), removed in `finally`. Without a `CommandRunner` (browser) or when the program cannot be
+spawned, the result is git's cannot-exec outcome: `N`, empty fields, `undefined` trust (S14).
+
+**Dates.** `date.ts` reproduces `date.c:show_date` for the seven reachable modes. `now` is read
+once per archive (`Date.now()`), the local offset from `Date#getTimezoneOffset` (`HUMAN` hides
+the zone when it equals the local one) — the interop rows run both tools under `TZ=UTC`.
+
+**Encoding (DC-21).** git's rule, per `$Format:` occurrence (a fresh `format_commit_context`
+each): only when the expansion reached a header-parsing placeholder (`%a* %c* %e %B %s %f %b
+%(trailers…)` — everything after `format_commit_one`'s "parse the commit header" point) and the
+commit's `encoding` header names a non-UTF-8 encoding, the message is decoded to UTF-8 for the
+placeholders, and afterwards the **whole output buffer so far** — the file's bytes before this
+`$Format:` and every earlier expansion — is transcoded UTF-8 → that encoding; an `iconv` failure
+leaves the buffer as is (S16–S16d). `expandFormatSubst` therefore threads the accumulated
+buffer through `formatCommit`, which reports whether it parsed the header. How tsgit transcodes
+is DC-21.
+
+**Size, honestly.** This is git's whole user-format engine plus five dependencies tsgit lacks
+(unique abbreviation, ref decorations, mailmap, signature verification, date modes) and two data
+tables (Unicode widths, encoders). ~2,400 lines of `src/` and ~4,400 of tests — about as large
+as the rest of this feature combined (Parts 17a–21).
+
+### D16 — `merge` writes `ORIG_HEAD` where git does (ADR-226, Pin OH)
+
+`commands/merge.ts` `computeMerge` (L163–200): the `ourId === theirId` short-circuit (L178)
+goes — git computes the base for that case too (its Stryker note already records the
+equivalence) — and `await writeOrigHead(ctx, ourId)` (`internal/merge-state.ts` L39) runs right
+after `mergeBase`, before the up-to-date returns (OH2), the fast-forward (OH3), the ff-only
+refusal (OH7) and `mergeCommit` (OH1, OH4, OH6, OH8). `persistConflictState` (L554) drops its own
+`writeOrigHead` (L589); its write-order comment becomes `working-tree files → MERGE_HEAD →
+MERGE_MSG → index`. Its "refuse before any write" guarantee now excludes `ORIG_HEAD`, as git's
+(OH8). §D4.4's `mergeRun` gate moves after this write (git: L1633 before the L1663 abbreviation),
+so M5ac compares `ORIG_HEAD` too. `pull` and `submodule update` (merge mode) inherit it, as git's
+`pull` runs `merge`. No reflog (OH1–OH9), unchanged.
+
+### D17 — the delta search skips objects above `core.bigFileThreshold` (ADR-226, Pin BT)
+
+`domain/storage/delta-policy.ts`: `DeltaPolicy` gains `bigFileThreshold: number` and
+`resolveDeltaPolicy(config, bigFileThreshold)` takes it; a new pure
+`attemptsDelta(size, policy) = size >= DELTA_FLOOR_BYTES && size <= policy.bigFileThreshold`
+(git's `should_attempt_deltas`: `< 50` and `no_try_delta`), with `DELTA_FLOOR_BYTES` moved there
+from `deltify.ts` L144. `build-pack.ts` `resolveWriterPlan` (L129) passes
+`readBigFileThreshold(ctx)` (Part 5). `deltify.ts` `processEmissionEntry` (L421) replaces its
+`belowFloor` with `!attemptsDelta(content.length, policy)`: such an object is emitted whole and
+never admitted to the window, so it is no base either (BT row 13 897). The test is on the object
+size for every type, as git's `oe_size_greater_than`. Affects every `buildPack` caller (`gc`,
+`push`, `bundleCreate`, `packObjects`); a pack-bytes change only for repositories with objects
+above the threshold (512 MiB default).
+
 ### Perf statement
 
 - **No alternates file** (the 100 % case today): +1 `fs.read` per session, concurrent with
@@ -1342,15 +1686,35 @@ artefact answered is not public data, so BM2–BM4 are unit-pinned; BM1/BM5/BM6 
   per alternate built lazily on first reach; commit-graph: ≤ 2 `exists` per source until one
   yields a graph, ≤ 1 `exists` per source per chain layer; bitmaps: one `midxBitmap()` per source
   before any pack bitmap.
+- **`archive` attributes (§D14).** Per archive: the `info/attributes` + global reads of today's
+  provider, plus one `findTreeEntry` per directory (tree objects the walk reads anyway, served
+  by the object caches) and one `readBlob` per `.gitattributes` present; per entry one
+  `resolveAttribute` for each of the two attributes (in-memory). Directory deferral is an array
+  of ancestors (depth-bounded). A tree without `.gitattributes` pays the lookups only.
+  `bench:ab` row: a new `test/bench/archive.bench.ts` (entries iterated) on the no-attributes fixture, gated.
+- **`export-subst` (§D15).** Zero cost for a file without the attribute. For an expanded file:
+  one `memmem`-style scan per blob, the commit parsed once per archive, each I/O datum resolved
+  once per archive and only when asked: unique abbreviation = ≤ (length − base + 1) prefix scans
+  per id; decorations = one ref enumeration; describe = one describe walk; signature = one
+  process spawn. Informational bench row only (expansion is per-file, off every hot path).
+- **`ORIG_HEAD` (§D16).** One 41-byte write per merge that reaches the merge base — the
+  up-to-date and fast-forward paths gain it; the identical-commit short-circuit now pays the
+  merge-base lookup (one commit, immediate).
+- **Delta search (§D17).** One comparison per emitted object; objects above the threshold leave
+  the window, which lowers window memory for repositories that have them. `deltify.bench.ts`
+  unchanged (fixtures below the threshold).
 
 ### Part split (dependency order, TDD-sized)
 
-Each part ends green on `npm run validate`. **Seventeen parts** (Part 6b added by revision #2,
-Parts 6c and 6d by revision #3; numbering kept stable). Rough total: ~2,400 lines of `src/`
-added or changed and ~6,800 lines of tests (unit + property + interop). No single new `src/`
-module is several hundred lines: the largest are `object-store.ts` (~290) and
-`internal/alternate-chain.ts` (~220); the largest new files are the interop suites (Part 13 ~500
-+ ~650, Part 8 ~400), split per surface so none carries every row. Part 1 depends on nothing;
+Each part ends green on `npm run validate`. **Thirty parts** (Part 6b added by revision #2,
+Parts 6c and 6d by revision #3, Parts 15–23 by revision #4; numbering kept stable). Rough
+total: **~5,000 lines of `src/`** added or changed and **~12,600 lines of tests** (unit +
+property + interop) — revision #4 adds ~2,600 / ~5,800, of which the `export-subst` expander and
+its dependencies (Parts 17a–21) are ~2,400 / ~4,400. No single new `src/` module is several
+hundred lines: the largest are `object-store.ts` (~290), `verify-commit-signature.ts` (~320),
+`date.ts` (~250), `trailers.ts` (~250) and `internal/alternate-chain.ts` (~220); the width table
+is generated data. The largest new files are the interop suites (Part 13 ~500 + ~650, Part 21
+~500, Part 8 ~400), split per surface so none carries every row. Part 1 depends on nothing;
 Part 3's `ObjectSourceAccess` type needs Part 2's port member; Part 6b needs Part 6; Parts 6c
 and 6d need Part 6b; 6c and 6d are independent of each other.
 
@@ -1561,8 +1925,8 @@ and 6d need Part 6b; 6c and 6d are independent of each other.
   - `apply-changeset.ts` `applyWriteWave` (L422–450): `everySourceLoadable(ctx)` (Part 6c) decides
     between `drainPooled` (L351, today) and a sequential `for…of` over the writes sorted with
     the comparator `materialize-tree.ts` L184 uses (`compareEntryPath`).
-  - Gates (`assertEverySourceLoadable`, Part 6c): `commands/merge.ts` `mergeRun` (L148) before its
-    first write; `commands/cherry-pick.ts` (`cherryPickRun` L428, `cherryPickContinue` L533,
+  - Gates (`assertEverySourceLoadable`, Part 6c): `commands/merge.ts` `mergeRun` (L148) after Part 22's
+    `ORIG_HEAD` write and before every other write; `commands/cherry-pick.ts` (`cherryPickRun` L428, `cherryPickContinue` L533,
     `cherryPickSkip` L586), `commands/revert.ts` (L415, L494, L540), `commands/rebase.ts` (L457,
     L532, L573) — at the shared per-pick step if one exists, else at each entry before its first
     write; `commands/checkout.ts` `checkout` (L336) on the branch-switch path when HEAD is detached,
@@ -1693,7 +2057,7 @@ and 6d need Part 6b; 6c and 6d are independent of each other.
   | M5z | `checkout -- a f` 128; `checkout -- f` over a modified `f` 128 | `a` restored, `f` size 0; the modified `f` replaced by size 0 |
   | M5aa | on `side`: `checkout main`, `switch main`, `checkout -f main`, `reset --hard main` 128 | branch-switch `checkout` and hard `reset` refusal; worktree listing (name, size, mode) equal to git's — `a` 4, `base` 0, `d`, nothing else; HEAD → `side`; index = C1's; no `index.lock` |
   | M5ab | at `main`: `stash apply` 128 | `stashApply` refusal; `s` size 0; HEAD, index unchanged |
-  | M5ac | on `side`: `merge --ff-only main`, `merge --no-ff main`, `cherry-pick main`, `revert HEAD` (on `main`), `rebase main` 128 | each refusal with worktree, index, HEAD, refs and sequencer/merge state files untouched — git's `ORIG_HEAD` excluded from the comparison (§D4.4, recorded) |
+  | M5ac | on `side`: `merge --ff-only main`, `merge --no-ff main`, `cherry-pick main`, `revert HEAD` (on `main`), `rebase main` 128 | each refusal with worktree, index, HEAD, refs and sequencer/merge state files untouched; `merge` leaves `ORIG_HEAD` = the old HEAD on both (§D16) |
   | M5ad | detached at C1: `checkout main`, `merge --ff-only main`, `cherry-pick main` 128 | refusal, worktree untouched; `reset --hard main` detached behaves as M5aa |
 
   Worktree comparisons run on two peer copies of the fixture (`makePeerPair`), git on one and
@@ -1707,9 +2071,162 @@ and 6d need Part 6b; 6c and 6d are independent of each other.
   with an in-root alternate; one memory row for an out-of-root alternate (ADR-916).
 - `test/bench/`: the `bench:ab` rows of §Perf (`cat-file`, `log`, `status`, `add`).
 
+**Revision #4 parts (Parts 15–23).** Dependency order: Parts 6c and 15 → 16 → 21; Part 17a → 17b, 17c,
+18a, 18b → 21; Part 19a needs Parts 5 and 7; Part 19b and Part 20 need 17a (Part 20 also
+DC-21); Part 21 needs 6c, 16, 17a–c, 18a–b, 19a–b, 20. Part 22 depends on nothing and lands
+**before** Part 6d (6d places the `mergeRun` gate after its write). Part 23 needs Part 5.
+
+**Part 15 — directory-only patterns + the tree attribute provider (§D14, R16)** · src ~90 / tests ~300
+- Context to pre-load:
+  - `src/domain/attributes/resolve-attribute.ts`: `resolveInSource` (L22) / `resolveAttribute`
+    (L45) — a trailing `/` on `path` marks a directory; strip it for `rule.compiled.test`, skip a
+    rule with `directoryOnly` (`AttributeRule`, `parse-gitattributes.ts` L10) for a non-directory.
+  - `src/application/primitives/internal/read-gitattributes.ts`: `buildAttributeProvider` (L110)
+    → `buildAttributeProviderFrom(ctx, readDirAttributes)`; `readDir` (L32) becomes the worktree
+    reader; new `buildTreeAttributeProvider(ctx, tree: ObjectId)` with the tree reader of §D14
+    (`findTreeEntry`, `internal/resolve-tree-path.ts` L66; `readBlob`, `read-blob.ts`; modes
+    `FILE_MODE.REGULAR`/`EXECUTABLE`, `domain/objects/file-mode.ts`; cap `MAX_GITATTRIBUTES_BYTES`,
+    `primitives/types.ts`, refusal `gitattributesFileTooLarge` as `loadCappedUtf8` raises it).
+- Tests: `test/unit/domain/attributes/resolve-attribute.test.ts` — `foo/` vs file `foo`
+  (unspecified), vs `foo/` (set), nested `x/foo/` (set); existing rows unchanged.
+  `resolve-attribute.properties.test.ts`: a rule without `directoryOnly` answers the same for
+  `p` and `p/` (lens 2, 100). `test/unit/application/primitives/internal/read-gitattributes.test.ts`:
+  tree provider reads root and nested `.gitattributes` from the tree, ignores the worktree file,
+  works with `workDir` undefined (bare), ignores a symlink-mode `.gitattributes`, keeps
+  `info/attributes` precedence and macros from the tree root.
+- Mutation focus: the trailing-slash test, the `directoryOnly` conjunct, the regular-mode check.
+
+**Part 16 — `archive` honours `export-ignore` (§D14, Pin E)** · src ~90 / tests ~350 + interop ~250
+- Context to pre-load: `src/application/commands/archive.ts` `buildEntryStream` (L106–119) per
+  §D14's sketch; `walkTree` (`primitives/walk-tree.ts` L246) unchanged; `validateIndexPath`
+  stays first for every walked entry; `FILE_MODE.DIRECTORY`/`GITLINK`.
+- Unit (`test/unit/application/commands/archive.test.ts`, memory Contexts with committed
+  `.gitattributes`): one isolated test per exit — file set; unset/string/unspecified kept;
+  macro; directory by name and by `dir/`; `dir/**` (dir emitted, child not); dir with only an
+  ignored subdirectory not emitted; empty subtree not emitted; gitlink matched as `path/`;
+  symlink ignored; worktree `.gitattributes` disagreeing with the tree → tree wins; bare Context;
+  tree-id tree-ish; invalid name inside an ignored subtree still refuses.
+- Interop `test/integration/archive-export-interop.test.ts` (new; `archive-interop.test.ts`
+  helpers): E1–E11, E13 (default half), E14–E17 — entry list (path, mode) equal to
+  `git archive --format=tar | tar -t`, with git's queued-directory rule; E12 recorded only.
+- Mutation focus: flush-before-check order, the ancestor filter, the gitlink slash.
+
+**Part 17a — expander core: scanner, tokenizer, interpreter, commit view (§D15)** · src ~350 / tests ~600
+- New `src/domain/pretty/{format-subst,user-format,commit-view,ident,subject}.ts` + `index.ts`;
+  export from `src/domain/index.ts`. `FormatEnv` (resolved data, all optional) and
+  `FormatBudget` (`{ describe: 0 | 1 }`) types live in `user-format.ts`.
+- Covers: S1–S3 scanning; literals; magic (incl. `%+N` → `N`, `%+w` declined); declined `%`;
+  `%(count)`/`%(total)` refusal value; `%H %T %P %h %t %p` from env; idents `n e l t` +
+  `N E L` through an env `mapUser`; `%s %f %b %B %e %m`; `%g*` empty; `%S %N` declined.
+  `formatRequirements` uses the same tokenizer.
+- New error `formatPlaceholderUnsupported(placeholder)` in `src/domain/commands/error.ts`
+  (beside `ambiguousOidPrefix` ~L879) — data `{ placeholder }`.
+- Tests: `test/unit/domain/pretty/*.test.ts` — every Pin S row reachable without I/O as literal
+  bytes. `format-subst.properties.test.ts`: lens 3 totality on arbitrary bytes (200); identity on
+  blobs without `$Format:` (200); lens 4 — k well-formed `$Format:%H$` occurrences ↔ k
+  expansions (100). `user-format.properties.test.ts`: `formatRequirements` asks for X ⇔
+  `formatCommit` reads X (recording env, 200).
+
+**Part 17b — date modes (`domain/pretty/date.ts`)** · src ~250 / tests ~400
+- `showDate(timestamp, tzOffsetMinutes, mode, nowSeconds, localOffsetMinutes)` for `normal`,
+  `rfc2822`, `relative`, `iso8601`, `iso8601-strict` (`Z` for `+0000`), `short`, `human`
+  (`date.c:show_date`, `show_date_relative`, `show_date_normal`). Tests: Pin S date rows;
+  relative boundaries (seconds/minutes/hours/days/weeks/months/years, "N years, M months",
+  future); human same-day / same-year / other-year. Property: `iso8601-strict` round-trips
+  through `Date.parse` to the timestamp (lens 1, 200).
+
+**Part 17c — layout: colour, padding, wrap, widths** · src ~450 (≈ 200 of width table) / tests ~500
+- `domain/pretty/{color,padding,wrap,utf8-width}.ts` per §D15. The width tables are generated
+  from git's `unicode-width.h` at 2.55 (commit the generator under `tooling/`, not the network
+  fetch). Tests: Pin S colour/padding/wrap rows; `FORMATTING_LIMIT` boundary; East-Asian wide
+  and zero-width code points. Property: `%<(N)` output width == max(N, width(input)) (lens 2, 200).
+
+**Part 18a — trailers (`domain/pretty/trailers.ts`)** · src ~250 / tests ~450
+- `trailer.c` block detection (last paragraph, ≥ 25 % trailer lines or a git-generated
+  prefix, continuation lines, `trailer.separators`, configured `trailer.<token>.key`) and the
+  `%(trailers:…)` options. Config keys added to `ParsedConfig` (`primitives/config-read.ts` L53):
+  `trailer.separators`, `trailer.<token>.key`. Property: lens 1 — a message built from
+  generated trailers yields them back with `only` (200).
+
+**Part 18b — decorations format + mailmap (domain)** · src ~200 / tests ~350
+- `domain/pretty/decorations.ts` (`format_decorations`: `HEAD -> branch`, `tag: `, shortening,
+  prefix/suffix/separator/pointer/tag options with `%n`/`%xNN` expansion in values) over a
+  structured `Decoration[]`; `domain/mailmap/{parse-mailmap,map-user,index}.ts`. Property for
+  `parseMailmap`: totality (lens 3, 200); lens 4 counting of well-formed lines (100).
+
+**Part 19a — abbreviation, ref decorations, mailmap reader (application)** · src ~280 / tests ~450
+- New `src/application/primitives/abbreviate-object-id.ts` (`abbreviateObjectId(ctx, id)`;
+  base length from `core.abbrev` — add `abbrev` to `ParsedConfig.core` — or the packed count over
+  `objectSources`/`registry` per source; uniqueness via Part 7's per-source `scanLoose`/
+  `scanPacks` in `resolve-oid-prefix.ts` L67/L89, exported internally). Export from
+  `primitives/index.ts`; the browser-surface audit needs a parity-scenario call.
+- `internal/ref-decorations.ts`: `enumerateRefs` (`enumerate-refs.ts` L16) + `readHeadRaw`,
+  tag peeling via `peel` (`internal/peel.ts`), `refs/replace/<oid>` → `replaced`,
+  `loadShallowSet` (`internal/shallow-set.ts` L81) → `grafted`.
+- `internal/read-mailmap.ts`: worktree `.mailmap` (`loadCappedUtf8`), `mailmap.blob`
+  (`revParse` + `readBlob`; bare default `HEAD:.mailmap`), `mailmap.file`; add `mailmap` to
+  `ParsedConfig`.
+- Tests: abbreviation base length at count boundaries (2^13, 2^14 objects simulated through a
+  registry double), `core.abbrev` 4/12/`no`, X1-style ambiguity across sources, unloadable
+  alternate refuses; decoration order attached/detached (S13); mailmap source order and bare
+  default (S12).
+
+**Part 19b — signature verification (application)** · src ~320 / tests ~450
+- New `internal/verify-commit-signature.ts` per §D15; reuses `sign-payload.ts` program
+  resolution (`DEFAULT_OPENPGP_PROGRAM`, `DEFAULT_SSH_PROGRAM`, `gpg` config L189 of
+  `config-read.ts`) and `CommandRunner` (`src/ports/command-runner.ts`; `ctx.command`,
+  `ports/context.ts` L304). Add `gpg.ssh.allowedSignersFile` / `revocationFile` to
+  `ParsedConfig`. Tests (fake runner): `GOODSIG`, `BADSIG`, `EXPSIG`, `EXPKEYSIG`, `REVKEYSIG`,
+  `ERRSIG`, trust levels → `%GT`; ssh principal found / not found; no runner → `N`; spawn
+  failure → `N`; buffer file (DC-22 option a) removed on every exit. Interop S14/S15 with a fake `gpg.program`
+  script (both tools), and one real-`gpg` row `skipIf` no `gpg` on PATH.
+
+**Part 20 — commit-encoding round trip (§D15, DC-21)** · src ~150 / tests ~250
+- `domain/pretty/reencode.ts` per the ratified DC-21 option. Tests: S16 bytes; invalid
+  sequence → unconverted; unknown label → unconverted.
+
+**Part 21 — `archive` expands `export-subst` (§D15, R15)** · src ~150 / tests ~400 + interop ~500
+- Context to pre-load: `archive.ts` `classifyOid` (L66) already yields `commit`;
+  `buildEntryStream` gains the `subst` handle; new `commands/internal/archive-subst.ts`
+  (per-archive memo: raw commit via `readRawObject`, `parseCommitView`, lazily resolved env,
+  describe budget); the stream-order routing of Part 6c takes the `!exportSubst` conjunct;
+  `describe` (`commands/describe.ts` L78) for `%(describe)`.
+- Unit (`archive.test.ts`): tree id → bytes unchanged; tag → peeled commit; symlink unchanged;
+  file above the threshold with the attribute → expanded and read via `readBlob` (spy); budget
+  consumed by the first file in pre-order, literal in the second; malformed describe args spend
+  it; `%(count)` → iteration rejects at that file with `{ placeholder: '%(count)' }` after the
+  earlier entries; no I/O resolver called for a file without the matching placeholder (spies).
+- Interop `test/integration/archive-export-interop.test.ts` (Part 16's file, second
+  `describe`): every Pin S row — expanded bytes of each file equal `git archive | tar -xO`
+  (TZ=UTC both, fixed dates, `now`-relative rows with a ±1 s tolerance window fixed by setting the
+  commit dates relative to the test's own clock); S9 refusal on both.
+- Mutation focus: the attribute conjunct in the routing, `S_ISREG` gate, budget decrement order.
+
+**Part 22 — `merge` writes `ORIG_HEAD` before the outcome (§D16, R17)** · src ~15 / tests ~150 + interop ~150
+- Context to pre-load: `commands/merge.ts` `computeMerge` (L163–200), `persistConflictState`
+  (L554–612, `writeOrigHead` at L589), `internal/merge-state.ts` `writeOrigHead` (L39).
+- Unit (`test/unit/application/commands/merge.test.ts`): `ORIG_HEAD` = old HEAD after
+  up-to-date (identical and ancestor), fast-forward, `fastForward: 'never'`, clean merge,
+  conflict, ff-only refusal, would-overwrite refusal; not written when `opts.rev` does not
+  resolve or a merge is pending; no `logs/ORIG_HEAD`. Existing rows asserting "no ORIG_HEAD"
+  after a refusal flip — justified by OH7/OH8.
+- Interop (`test/integration/merge-interop.test.ts`): OH1–OH4, OH6–OH8 — `ORIG_HEAD` bytes
+  equal on both tools.
+
+**Part 23 — delta search skips objects above `core.bigFileThreshold` (§D17, R18)** · src ~25 / tests ~150 + interop ~100
+- Context to pre-load: `domain/storage/delta-policy.ts` `DeltaPolicy` (L61), `resolveDeltaPolicy`
+  (L76); `primitives/build-pack.ts` `resolveWriterPlan` (L129–132); `internal/deltify.ts`
+  `DELTA_FLOOR_BYTES` (L144), `processEmissionEntry` (L421–446); `readBigFileThreshold` (Part 5).
+- Unit: `test/unit/domain/storage/delta-policy.test.ts` — `attemptsDelta` at 49/50 and at
+  threshold/threshold+1; `deltify.test.ts` — an object above the threshold is emitted whole and
+  never becomes a base (the BT 13 897 shape, sizes scaled down via a low threshold).
+- Interop (`test/integration/delta-pack-interop.test.ts`): Pin BT rows — the whole/delta
+  verdict per blob equals git's `verify-pack -v` at each threshold (`core.bigFileThreshold` in the
+  repository config file for both tools).
+
 ## Decisions
 
-### Ratified (ADR-914 … ADR-931)
+### Ratified (ADR-914 … ADR-933)
 
 | DC | ADR | outcome |
 |---|---|---|
@@ -1731,6 +2248,8 @@ and 6d need Part 6b; 6c and 6d are independent of each other.
 | DC-17 | ADR-929 | `verifyStoredObject`: header-only type probe, then `'stream'` for a blob, `'in-core'` otherwise — git's `parse_object` sequence (adopted as recommended) — §D4.1 |
 | DC-18 | ADR-930 | **every git streaming reader follows the stream order**: `cat-file --batch` blob contents and `show <blob>` always, `archive` / `pack-objects` above `core.bigFileThreshold` under git's condition (user-ratified; deviates from the draft's recommendation) — §D4.2 |
 | DC-19 | ADR-931 | **a refused streamed checkout leaves git's empty file** (user-ratified; deviates from the draft's recommendation) — §D4.3 |
+| DC-20 | ADR-932 | the refused streamed write creates the empty file **on refusal** (locate first; create + rethrow on a locate refusal) — adopted as recommended (option b) — §D4.3 |
+| — | ADR-933 | **`archive` honours `export-ignore` and `export-subst`** (user-ratified; folded into this feature) — §D14, §D15 |
 
 ### Adopted under ADR-226 (faithful) — revision #3
 
@@ -1750,11 +2269,39 @@ Each sub-choice below surfaced while folding ADR-930/931 and reduced to "reprodu
 | F9 | `buildPack` routing condition | "blob above the threshold", no reuse term — tsgit always re-encodes, i.e. reads git's `--no-reuse-object` set (§D4.2) |
 | F10 | A delete-only `push` would hit F1's gate through its empty pack; git sends no pack for it | `push` skips `buildPack` and the packfile when no command needs pack data (M5ae, M5af; §D4.4) |
 
-### New decision candidates (uncovered by revision #3)
+### Adopted under ADR-226 (faithful) — revision #4
+
+Each sub-choice below surfaced while folding ADR-933 and the two pre-existing gaps, and reduced
+to "reproduce git" vs "diverge"; the faithful option is designed, none is a candidate.
+
+| # | sub-choice | adopted (pin) |
+|---|---|---|
+| G1 | Attribute source for `archive` | the archived tree's `.gitattributes` (git's `GIT_ATTR_INDEX` over the unpacked tree), bare repositories included; `info/attributes` and `core.attributesFile` kept (E11, E13–E16; §D14) |
+| G2 | What "set" means | `ATTR_TRUE` only — `export-ignore=true` and `-`/`!` forms do not count (E2) |
+| G3 | Directory and gitlink checks | checked as `<path>/`, so directory-only patterns match them (E4, E5, E9) |
+| G4 | When a directory entry is emitted | queued; flushed only when a non-directory descendant reaches its export-ignore check, before that check — empty subtrees and all-ignored-subdirectory dirs vanish (E6, E7, E10). Fixes tsgit's emission of empty subtrees, pre-existing |
+| G5 | Directory-only attribute patterns elsewhere | `resolveAttribute` honours `directoryOnly` for every caller (R16, E9) — pre-existing gap, small, on this path |
+| G6 | A symlinked `.gitattributes` in the tree | not read (E17) |
+| G7 | Path validation inside an ignored subtree | every walked entry validated — git unpacks and verifies the whole tree first |
+| G8 | Streaming conjunct | the `export-subst` attribute itself, not whether a commit exists (§D4.2, S6) |
+| G9 | `$Format:` scanning | first later `$` across lines; no `$` → verbatim; format cut at NUL; binary expanded; symlink never; tree id never (S1–S7) |
+| G10 | `%(describe)` cap | one per archive, archive order, spent before argument parsing and even when describe yields nothing (S8, S11) |
+| G11 | `%(count)` / `%(total)` | refusal at that file, after earlier entries (S9; F7 posture) |
+| G12 | Mailmap source | worktree `.mailmap` / `mailmap.blob` (bare default `HEAD:.mailmap`) / `mailmap.file` — never the archived tree's (S12) |
+| G13 | Decoration source | the repository's refs at archive time, `grafted` for shallow commits, `replaced` for replace refs, no exclusion config (S13) |
+| G14 | Colour | never, except `%C(always,…)` (Pin S colour rows) |
+| G15 | Signature verification off-Node or without the program | git's cannot-exec outcome: `N`, empty fields, `undefined` (S14) |
+| G16 | `%h %t %p` length | `odb_find_abbrev_len` over every source; an unloadable alternate refuses there as git dies (§D15) |
+| G17 | `ORIG_HEAD` timing | after the merge base, before every outcome and the ff-only / would-overwrite refusals, no reflog (OH1–OH9; §D16) |
+| G18 | Big objects in the delta search | excluded as target **and** base, strict `>`, every type (BT; §D17) |
+| G19 | Transcoding scope | whole accumulated buffer, only after a header-parsing placeholder, per occurrence (S16–S16d) — the mechanism; the label coverage is DC-21 |
+
+### New decision candidates (uncovered by revision #4)
 
 | # | Choice | Alternatives (≤3) | Recommendation | Why |
 |---|---|---|---|---|
-| DC-20 | How a streamed worktree writer produces git's empty file (ADR-931). git creates the output **before** opening the stream; tsgit's writers locate first | (a) **create first**: `write(EMPTY)` + `chmod` before the locate, then `writeStream` over it — git's literal order; (b) **create on refusal**: locate first; on a locate refusal create the empty file (with the mode) and rethrow, as §D4.3's `writeStreamedBlob`; (c) **lazy source + port contract**: hand `writeStream` a source whose locate runs on the first pull, and require every adapter to open before pulling and keep the file on a source error — a new port obligation (the memory adapter buffers first; OPFS commits only on `close`) | **(b)** | (a) and (b) leave the same end state and report the same first error in every single-fault case (the double fault "path not creatable + locate refused" reports the create error in both — (b) attaches the refusal as `cause`); they differ only in *when* the empty file appears, which no observer can see after the command returns. (a) adds one `write` and one `chmod` to **every** streamed file of every checkout, alternates or not (`checkout.bench.ts` path); (b) adds nothing on success. (c) is (a)'s order at zero cost but changes the `FileSystem.writeStream` contract on three adapters for one caller |
+| DC-21 | How `export-subst` transcodes for a commit whose `encoding` header is not UTF-8 (G19). git uses `iconv`; tsgit has no dependency and only the platform's WHATWG `TextDecoder` (decode-only, a smaller label set than `iconv`) | (a) **WHATWG-backed**: decode with `TextDecoder(label, { fatal: true })`; encoders derived from the decoder and memoised per label — single-byte labels by 256 decodes, the CJK labels (Shift_JIS, EUC-JP, EUC-KR, GBK, Big5) by one pass over their 65 536 two-byte sequences; forms outside that pass (`gb18030` four-byte, EUC-JP three-byte), labels WHATWG lacks and any failure behave as git's failed `iconv` (buffer unconverted) — the residual is recorded in the ADR; (b) **byte-transparent**: never transcode — exact for every UTF-8 commit and for non-UTF-8 commits whose files and inserted text are ASCII; diverges on the S16c/S16d shapes; (c) **refuse** expansion for a non-UTF-8 commit — a refusal git does not have | **(a)** | (a) matches git on every label both stacks know, including S16c/S16d, at ~150 `src` lines and a one-off table build only when such a commit is archived; (b) costs nothing but ships known-wrong bytes for any non-UTF-8 commit whose expansion touches the header and whose file holds non-ASCII text before it; (c) adds a divergence (ADR-226) to avoid one |
+| DC-22 | Where signature verification puts the detached signature `gpg`/`ssh-keygen` read from a file (git: a `$TMPDIR` temp file; tsgit's `FileSystem` is repo-rooted and has no temp port) | (a) **transient file under the git dir** (`<gitDir>/GIT_VERIFY_BUFFER`), removed in `finally` — the `sign-payload.ts` L93 SSH-signing precedent; `archive` gains a `@writes` entry (ADR-138) for a read-only command; (b) **adapter-owned temp file**: `CommandRunner` gains an optional "stage these bytes as a file argument" capability, the Node adapter writing under `os.tmpdir()` — git's location, a port change on one adapter; (c) **no verification**: `%G*` always renders the unsigned outcome — a divergence for signed commits | **(a)** | (a) reuses the existing signing mechanism and confines the write to the git dir; the transient file is the only observable difference from git and exists only while the process runs. (b) matches git's location at the cost of a port extension used by one caller. (c) ships wrong `%G?` bytes for every signed commit |
 
 ## Test strategy
 
@@ -1792,7 +2339,24 @@ Each sub-choice below surfaced while folding ADR-930/931 and reduced to "reprodu
   `alternates-acceleration-interop.test.ts` (Parts 9–10), `alternates-gc-fsck-interop.test.ts`
   (Part 14). Reconstruct X1 from `ambiguousOidPrefix` data and O1 from `objectSources()`; fsck rows
   compare structured findings + exit bits to git's (ADR-249). Immutable-file rows are darwin-only
-  (`chflags uchg`).
+  (`chflags uchg`). Revision #4 adds `archive-export-interop.test.ts` (Parts 16, 21) and rows in
+  `merge-interop.test.ts` (Part 22) and `delta-pack-interop.test.ts` (Part 23).
+- **Archive attributes** (Parts 15–16): attribute-resolution unit rows for directory-only
+  patterns (and a property: non-directory-only rules answer `p` and `p/` alike); tree provider
+  vs worktree; one isolated `archive` test per `buildEntryStream` exit (§Part 16); interop E-rows
+  compare entry lists with `git archive | tar -t`.
+- **Expander** (Parts 17a–20): domain rows = Pin S literal bytes per placeholder class;
+  properties — scanner totality/identity/counting, requirement-scan ⇔ evaluation equivalence
+  (recording env), padding width, ISO-strict date round trip, trailer and mailmap grammars;
+  application resolvers with doubles (registry, ref store, fake `CommandRunner`) and one
+  isolated test per resolver exit; dates and relative modes under `vi.setSystemTime`.
+- **Archive expansion** (Part 21): unit — attribute conjunct, budget order, lazy resolution
+  (spies prove a resolver is not called without its placeholder), refusal mid-stream; interop —
+  every Pin S row's bytes vs `git archive | tar -xO`, both tools under `TZ=UTC`, now-relative
+  rows built from dates relative to the test clock.
+- **`ORIG_HEAD`** (Part 22): unit per merge outcome and refusal; interop OH bytes.
+- **Big-file delta** (Part 23): `attemptsDelta` boundaries; deltify target-and-base exclusion;
+  interop whole/delta verdict per Pin BT row via `verify-pack -v`.
 - **Parity**: memory vs node for an in-root alternate; memory out-of-root → `unreachable`.
 - **Mutation**: Stryker low mode, narrowed corpus per module (`.claude/workflow/mutation.md`).
 - **Perf**: `bench:ab` rows per §Perf.
@@ -1813,14 +2377,6 @@ Each sub-choice below surfaced while folding ADR-930/931 and reduced to "reprodu
   ADR-921 scopes fsck coverage to the classes tsgit verifies today.
 - Commit-graph **writing** as a split chain on top of an alternate's layers (CG3's write half) —
   tsgit writes single-file graphs only; unchanged.
-- Observed, not changed here (discuss before scheduling): `mergeRun` writes `ORIG_HEAD` only on its
-  conflict path; git writes it for every merge before the strategy runs (`builtin/merge.c:1633`) —
-  pre-existing for every clean merge, alternates or not (surfaced by M5ac).
-- Observed, not changed here: tsgit's delta search does not exclude blobs above
-  `core.bigFileThreshold`; git marks them `no_try_delta` (`builtin/pack-objects.c:2626`) — a
-  pack-bytes difference, independent of alternates.
-- Observed, not changed here: `archive` models no `export-subst` / `export-ignore` attribute
-  (git's streaming condition includes `!export-subst`).
 - Abbreviations git prints **after** its writes (`commit`'s summary line, `reset`'s `HEAD is now
   at`): git exits 128 with the on-disk change made; tsgit succeeds — exit status only, the M5k /
   ADR-249 precedent.
@@ -1829,3 +2385,17 @@ Each sub-choice below surfaced while folding ADR-930/931 and reduced to "reprodu
 - Observed, not changed here (discuss before scheduling): tsgit's chain-file grammar
   (`parseChainLayerHashes` trims and drops blank lines) differs from git's fixed-width read
   (`invalid commit-graph chain: line '…' not a hash`, `commit-graph chain file too small`).
+
+## Follow-ups (pre-existing gaps found while pinning; not on this change's path or not small)
+
+- `archive` has no `--worktree-attributes` option (E13, second half): `ArchiveOptions` carries only `treeish`.
+- `archive` applies `convert_to_working_tree` (smudge, `eol`, `ident`, `working-tree-encoding`) to in-core regular files before `export-subst` (`archive.c:object_file_to_archive`); tsgit emits raw blob bytes, and tsgit's checkout implements smudge only.
+- Fixed 7-hex abbreviations (`checkout.ts` L94, `rebase.ts` L151, `domain/merge/merge-labels.ts` L16, `domain/diff/patch-serializer.ts` L57) where git writes `find_unique_abbrev` output into on-disk data — candidates for `abbreviateObjectId` (Part 19a).
+- `merge` of unrelated histories: git refuses (exit 128 without `--allow-unrelated-histories`, OH9); tsgit merges against the empty tree (`docs/design/commands.md` L1285, no ADR).
+- `ORIG_HEAD` in a reftable repository lives in the reftable (OH11); `writeOrigHead` (`internal/merge-state.ts` L39) writes a file — affects `merge` and `rebase`.
+- `reset` writes `ORIG_HEAD` in git; `commands/reset.ts` never references it (not pinned here).
+- Replace refs: git reads `refs/replace/` replacements on object reads (and archives the replacement commit); tsgit ignores them (Part 19a only renders the `replaced` decoration).
+- Mailmap in `shortlog`/`log` (git applies `.mailmap` by default) — `domain/mailmap/` (Part 18b) can serve them.
+- The `delta` attribute (`-delta`) disables the delta search per path (`builtin/pack-objects.c` L1514 `no_try_delta(path)`); tsgit's pack builder has no path-attribute input.
+- `merge` from a detached HEAD: tsgit refuses (`unsupportedOperation`), git merges — check whether an ADR covers it.
+- `archive` of an annotated tag that points at a **tree**: git archives the tree without commit metadata (`lookup_commit_reference_gently` fails, `parse_tree_indirect` peels); tsgit's `classifyOid` (`archive.ts` L71–82) throws `unexpectedObjectType` — not pinned here.
