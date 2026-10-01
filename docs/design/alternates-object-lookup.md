@@ -11,8 +11,11 @@
 > Status: draft → decisions ratified (ADR-914 … ADR-924) → revised against them (scope folded:
 > full git freshen on write, every acceleration file per source) → DC-13 … DC-16 ratified
 > (ADR-925 … ADR-928) → **revision #2** (scope folded: git's stream-open order for streamed
-> blob reads, §D4.1, Pin M5 widened) → self-reviewed ×3 → 3 new decision candidates
-> (§Decisions, DC-17 … DC-19).
+> blob reads, §D4.1, Pin M5 widened) → DC-17 … DC-19 ratified (ADR-929 … ADR-931) →
+> **revision #3** (scope folded: every git streaming reader — `cat-file --batch`, `show`,
+> `archive`, `pack-objects` — §D4.2; git's worktree residue of a refused streamed write and
+> the every-source gate where git refuses before writing, §D4.3/§D4.4; Pin M5 widened with
+> M5n … M5ac) → self-reviewed ×3 → 1 new decision candidate (§Decisions, DC-20).
 >
 > **Three premises of the brief do not survive the pins, and each is load-bearing.**
 >
@@ -43,7 +46,7 @@
 > adopt both — a behaviour change for repositories without alternates too (speed only, never
 > answers).
 
-<!-- cspell:ignore chflags uchg utimes chattr incore delt typep -->
+<!-- cspell:ignore chflags uchg utimes chattr incore delt typep readlen unloadable -->
 
 ## Context
 
@@ -366,8 +369,43 @@ return open_istream_incore(odb, oid)               // odb_read_object_info_exten
   of a regular file whose conversion is streamable (`entry.c:write_entry` →
   `streaming_write_entry`; a symlink or an in-core filter reads in-core), `parse_object` of a
   **blob** (`object.c:parse_object_with_flags` — type probe first, a non-blob reads in-core),
-  archive and pack-objects for blobs above the threshold only. `diff` reads in-core
-  (`diff.c:diff_populate_filespec`).
+  archive and pack-objects for blobs above the threshold only (exact conditions below). `diff`
+  reads in-core (`diff.c:diff_populate_filespec`).
+- `cat-file --batch` (`builtin/cat-file.c:print_object_or_die`): the info read
+  (`odb_read_object_info_extended`, in-core order) prints `<oid> <type> <size>`, **then** a blob's
+  contents stream; any other type reads in-core. M5n: the header line reaches stdout before the
+  fatal.
+- `show <blob>` (`builtin/log.c:show_blob_object` → `stream_blob_to_fd`, no textconv by default);
+  `show <tag>` reaches its blob target the same way.
+- `archive` (`archive.c:write_archive_entry`): streams iff `S_ISREG(mode) && !export-subst &&
+  odb_read_object_info(…) == OBJ_BLOB && size > bigFileThreshold` (`size` = the object's size, a
+  delta's result size), then `archive-tar.c:stream_blocked` / `archive-zip.c:write_zip_entry` open
+  the stream (`odb_read_stream_open`; a NULL stream is `error("cannot stream blob")`). Every other
+  entry reads in-core (`object_file_to_archive`). The pack arm then accepts every non-delta entry
+  (its header size equals the object size, already `> threshold`), so archive refuses only for a
+  blob the primary holds **as a delta** above the threshold (M5q).
+- `pack-objects` (`builtin/pack-objects.c:write_no_reuse_object`): streams a blob iff it is not
+  reused from a pack, has no usable delta, and `oe_size > bigFileThreshold`. **But** before any of
+  that, `cmd_pack_objects` → `pack-objects.c:prepare_packing_data` → `prepare_in_pack_by_idx` →
+  `repo_for_each_pack` prepares **every source's pack store** — so pack-objects in a borrower with a
+  Tier-A alternate dies at start-up, for any input, the empty one included (M5u–M5w). The stream
+  order inside pack-objects is unobservable through an alternate fault; only its copy choice
+  remains (§D4.2).
+- Checkout (`entry.c:write_entry`): a regular file whose conversion is streamable
+  (`get_stream_filter_ca` non-NULL) goes through `streaming_write_entry`: `open_output_fd` →
+  `create_file` (`O_WRONLY|O_CREAT|O_EXCL`, mode `0777` if the entry is executable else `0666`, less
+  umask) **before** `odb_stream_blob_to_fd`. A non-fatal failure (no stream: object missing; a short
+  read; a non-blob) unlinks the file and falls through to the in-core write. A `die` inside the
+  open (the Tier-A midx load) exits with the file created and empty — the M5i residue. The caller
+  (`unpack-trees.c:check_updates`) has already run the removals and writes entries one at a time in
+  index order, so the residue is: every earlier entry written, the refused one empty, every later
+  one untouched; the index lock is rolled back (index, HEAD and refs unchanged).
+- **Earlier refusals.** Some writers never reach the streamed write under this fault, because an
+  oid **abbreviation** (Pin X: every source's packs) runs first: `merge` prints `Updating a..b`
+  (`builtin/merge.c:1663`, after writing `ORIG_HEAD` at L1633); `cherry-pick`/`revert`/`rebase`
+  label the pick (`sequencer.c:short_commit_name`); `checkout`/`switch` away from a **detached** HEAD
+  abbreviate the old commit (`builtin/checkout.c:switch_branches`, `strbuf_add_unique_abbrev`) before
+  `merge_working_tree`. They die with the worktree untouched (M5aa–M5ac).
 
 Matrix. Borrower `b` (`clone --shared donor`) commits `f` (blob B = `small\n`, 6 bytes), `delt`
 (13 890 bytes, stored **non-delta**), `base` (stored as a 17-byte **delta** against `delt`) and a
@@ -385,11 +423,40 @@ Script: scratchpad `alt-probe-m5{,b,c}.sh`.
 | M5f | `-c core.bigFileThreshold=1 cat-file blob <base>` (delta) | fatal — a delta is never streamed by the pack arm, whatever its size |
 | M5g | `update-ref refs/tags/tb B` | fatal — `parse_object` streams a blob |
 | M5h | `update-ref refs/tags/tc HEAD` | exit 0 — `parse_object` reads a commit in-core |
-| M5i | `rm f; checkout -- f` | fatal; **`f` left as an empty file** (the output is opened before the stream; `die` skips the unlink), no `index.lock` |
+| M5i | `rm f; checkout -- f` | fatal; **`f` left as an empty file** (the output is opened before the stream; `die` skips the unlink), no `index.lock` — widened in M5x … M5ad |
 | M5j | `rm lnk; checkout -- lnk` | exit 0 — a symlink is read in-core |
 | M5k | `diff --stat -w HEAD~1 HEAD` | exit 0 — diff reads in-core. (`diff` with a patch or `--raw` dies, through the every-source oid **abbreviation** scan of Pin X, not through a read — tsgit renders no abbreviation, ADR-249) |
 | M5l | B **also loose** in the primary (file copied in; `hash-object -w` would freshen the pack instead, WP2) | `cat-file blob B`, `checkout -- f` exit 0 — the primary's loose arm streams it |
 | M5m | `archive HEAD` | exit 0 — archive streams only blobs above the threshold |
+
+Revision #3 rows. Same fixture plus: `a` (`aaa\n`, 4 bytes) whose **loose** file is kept in the
+primary after the repack (copied aside after `git add`, restored after `repack -ad`), `x`
+(`exe\n`, mode 100755), a stash entry adding `s` (`stashed\n`, packed by the repack), and a branch
+`side` at C1 (the donor's commit, no borrower files). `verify-pack -v`: `a` 4, `delt` 13 890,
+`base` 17-byte delta (depth 1, base `delt`), `f` 6, `x` 4, `s` 8 — all packed; only `a` also loose.
+umask 022. Scripts: scratchpad `alt-probe-m5{d,e,f,g,i,j,k}.sh` (`.out` beside each).
+
+| # | command in `b` | git |
+|---|---|---|
+| M5n | `cat-file --batch` (B) | fatal; `<B> blob 6\n` (48 bytes) already on stdout |
+| M5o | `-c core.bigFileThreshold=5 cat-file --batch` (B) | exit 0 — the primary's pack arm streams it |
+| M5p | `show B`; `show HEAD:f` | fatal, nothing on stdout |
+| M5q | `-c core.bigFileThreshold=1 archive HEAD`; same `--format=zip`; same with pathspec `base` (tar and zip) | fatal (the `base` delta declines the pack arm) |
+| M5r | `-c core.bigFileThreshold=1 archive HEAD a f x lnk`; `… archive HEAD delt` | exit 0 — non-delta entries stream from the primary's pack arm; `a` likewise (its pack copy is non-delta, served before its loose copy); `lnk` reads in-core |
+| M5s | `-c core.bigFileThreshold=5 archive HEAD f`; `=6 … f` | exit 0 / exit 0 (`size 6 > 5` streams and is accepted; `6 > 6` false reads in-core) |
+| M5t | `archive HEAD` (threshold default) | exit 0 (= M5m) |
+| M5u | `pack-objects --stdout` with stdin: empty; B; `base`; `delt`; `delt`+`base`; `--revs` HEAD; each with and without `-c core.bigFileThreshold=1`, `--no-reuse-object`, `--no-reuse-delta`, `--local` | fatal, 0 bytes out, every variant — `prepare_in_pack_by_idx` prepares every source at start-up |
+| M5v | `bundle create x.bundle HEAD` | exit 1, the same fatal (its `pack-objects` child) |
+| M5w | `repack -ad`; `gc` | exit 128, the same fatal |
+| M5x | `rm f; checkout -- f`; `rm f; checkout HEAD -- f`; `rm f; restore f` | fatal; `f` empty, `0644`; index entry unchanged; no `index.lock` |
+| M5y | `rm x; checkout -- x` (100755) | fatal; `x` empty, **`0755`** |
+| M5z | `rm a f; checkout -- a f`; `echo modified > f; checkout -- f` | fatal; `a` restored (4 bytes, loose arm), `f` empty / the modified `f` **replaced** by an empty file |
+| M5aa | on `side` (attached) at C1: `checkout main`; `switch main`; `checkout -f main`; `reset --hard main` | fatal; `a` written (4 bytes), `base` empty `0644`, `delt` `f` `lnk` `x` absent; HEAD → `side`, `side` at C1, index = C1's, no `index.lock` |
+| M5ab | at `main`, clean index: `stash apply` | fatal; `s` empty `0644`; HEAD, index unchanged |
+| M5ac | on `side` at C1: `merge --ff-only main`; `merge --no-ff main`; `cherry-pick main`; `revert HEAD` (on `main`); `rebase main` | fatal **before any worktree write**; `merge` has written `ORIG_HEAD` (= C1), the others no state file; HEAD, refs, index, worktree untouched |
+| M5ad | **detached** at C1: `checkout main`; `switch main`; `checkout -f main`; `merge --ff-only main`; `cherry-pick main` | fatal before any worktree write (the old-commit abbreviation); `reset --hard main` detached = M5aa |
+| M5ae | `push <bare r> :refs/heads/x` (delete-only) | exit 128 with the fatal, **after** the remote deleted `x` — `send_pack` runs no `pack-objects` without a non-delete command (`send-pack.c:672,745`, `need_pack_data`); the fatal comes later, client-side |
+| M5af | `push <bare r> side:refs/heads/y` | fatal; `y` not created on the remote (its `pack-objects` died at start-up) |
 
 Two consequences. (1) The stream order is a **per-caller** property: the same object read by
 `cat-file -t`, `diff` or `parse_object` of a commit never reaches a later source. (2) With **one**
@@ -771,13 +838,15 @@ source and serve the same bytes, differing only under a concurrent repack.
 
 | tsgit read | git counterpart | order |
 |---|---|---|
-| `streamBlob` (`stream-blob.ts`) — public, and the regular-file worktree writers: `apply-changeset.ts:258`, `apply-merge-to-worktree.ts:198`, `commands/merge.ts:711`, `commands/stash.ts:413` | `cat-file blob`; `entry.c:streaming_write_entry` | `'stream'` |
-| `verifyStoredObject` (`blob-source.ts`, via `ref-target.ts:assertRefTargetValid` ← `update-ref.ts`, `clone.ts`) | `object.c:parse_object_with_flags`: `odb_read_object_info` type probe; blob → stream, else in-core | type probe `readDeclaredObjectHeader`, then `'stream'` for a blob, `'in-core'` otherwise (DC-17) |
+| `streamBlob` (`stream-blob.ts`) — public | `cat-file blob` | `'stream'` |
+| the regular-file worktree writers `apply-changeset.ts:258`, `apply-merge-to-worktree.ts:198`, `commands/merge.ts:711`, `commands/stash.ts:413` — through `writeStreamedBlob` (§D4.3) | `entry.c:streaming_write_entry` | `'stream'`, split locate / serve |
+| `verifyStoredObject` (`blob-source.ts`, via `ref-target.ts:assertRefTargetValid` ← `update-ref.ts`, `clone.ts`) | `object.c:parse_object_with_flags`: `odb_read_object_info` type probe; blob → stream, else in-core | type probe `readDeclaredObjectHeader`, then `'stream'` for a blob, `'in-core'` otherwise (ADR-929) |
 | whitespace-drop predicate (`whitespace-drop-predicate.ts:121–122`) | `diff.c:diff_populate_filespec` | `'in-core'` |
 | `readBlob` for a symlink or a smudge filter (`apply-changeset.ts:226, 236`) | `entry.c:read_blob_entry`, in-core filter class | unchanged (buffered read, R1) |
-| `catFileBatch` blob entries, `show` of a blob, `archive` / `packObjects` above the threshold | stream | DC-18 |
+| `catFileBatch` blob contents, `show` of a blob (direct or a tag's target) | `print_object_or_die`; `show_blob_object` | type first, then `'stream'` for a blob (ADR-930, §D4.2) |
+| `archive` regular-file entries above the threshold; `buildPack` blob contents above the threshold | `write_archive_entry`; `write_no_reuse_object` | `'stream'` under git's condition (ADR-930, §D4.2) |
 
-A refused streamed checkout leaves no file in tsgit (the object opens before the output); git leaves an empty one (M5i) — DC-19.
+A refused streamed worktree write leaves git's empty file (ADR-931, §D4.3).
 
 `readDeclaredObjectHeader(ctx, id): Promise<{ type; declaredSize }>` (`read-object.ts`) is
 `resolveDeclaredSize` generalised — pack: `readPackedMetadata` (header, delta-base type walk);
@@ -818,6 +887,144 @@ the primary holds small or as a delta reaches every alternate — per alternate 
 `assertLoadable` (the first reach builds that registry: `readdir(pack/)` + midx load), one
 in-memory `lookup`, one cached loose probe (first probe of a fanout prefix: one `readdir`). That
 is git's own cost; a checkout of N files in a borrower pays N × alternates in-memory lookups.
+
+`openBlobSource` exposes its two halves to the worktree writers (§D4.3) as internal exports of
+`blob-source.ts`: `locateBlob(ctx, id, { order })` → `Promise<LocatedBlob | undefined>` (the gate,
+the `locate` pass and its rescan; `undefined` = absent everywhere) and `serveLocatedBlob(ctx,
+located, maxBufferedBytes, options)` → `BlobSource`. `openBlobSource` becomes their composition
+(`undefined` → `objectNotFound`), so every other caller is unchanged.
+
+### D4.2 — Every git streaming reader (ADR-930, Pin M5n … M5w)
+
+One internal helper serves the three readers that need bytes in hand:
+`readBlobContentInStreamOrder(ctx, id)` → `Promise<Uint8Array>`, in `internal/blob-source.ts` —
+`openBlobSource(ctx, id, <today's default buffering budget>, { order: 'stream', looseMode:
+'streamed' })`, its `bytes` arm returned as is, its `stream` arm drained into one buffer (the `'streamed'` loose posture keeps today's
+"a size-lying blob serves its real bytes" rule of `readObjectWithSize`/`readObjectStreamed`).
+
+| reader | today | new | git |
+|---|---|---|---|
+| `catFileBatch` `readOne` (`cat-file-batch.ts` L37) | `readObjectWithSize` (in-core order) | `readDeclaredObjectHeader(ctx, id)` → missing ⇒ `{ ok: false, reason: 'missing' }` as today; `maxBytes` < `declaredSize` ⇒ today's `objectTooLarge` refusal (no git analogue: a tsgit memory bound, now checked before the open); type `blob` ⇒ `readBlobContentInStreamOrder`, entry `{ ok: true, id, type: 'blob', size: declaredSize, object }` with the blob object shape `readObjectWithSize` returns today; any other type ⇒ `readObjectWithSize` as today | M5n/M5o |
+| `show` (`show.ts` `buildForRev` L125, `buildTag` L163 — both `readObjectStreamed`) | `readObjectStreamed` | new `readShowTarget(ctx, id)`: `readDeclaredObjectHeader` → `blob` ⇒ `readBlobContentInStreamOrder` → `{ kind: 'blob', id, content }`; else `readObjectStreamed` as today | M5p |
+| `archive` `buildEntryStream` (`archive.ts` L104–118) | `readBlob` for every non-directory entry | regular mode (`100644`/`100755`): `readDeclaredObjectHeader` → `blob` and `declaredSize > store.bigFileThreshold` ⇒ `readBlobContentInStreamOrder`; otherwise (symlink, small, non-blob) `readBlob` as today | M5q … M5t |
+| `buildPack` (`build-pack.ts`) | `buildBaseEntries` `readObject`; deltify `readObjectMetadataWithContent` + emission `readRawObject` (`deltify.ts` L128, L428) | (1) **gate first**: `assertEverySourceLoadable(ctx)` (§D4.4) before any read — M5u–M5w; (2) a blob whose metadata `uncompressedSize > store.bigFileThreshold` and whose content is not already carried takes `readBlobContentInStreamOrder` at the emission read (L428) and in `buildBaseEntries`, which switches from `readObject` to the deltify path's `readObjectMetadataWithContent` + content read (same encoded entry: `{ type, uncompressedSize, compressedData }`) | M5u–M5w; `write_no_reuse_object` |
+
+`archive` keeps its lazy `AsyncIterable` shape: a refusal rejects the iteration **at the refused
+entry**, after every earlier entry was yielded — git's tar/zip writer likewise died after
+emitting the earlier members (M5q: zip had 62 bytes out; tar's 0 bytes is its 10 KiB block
+buffering, a serialiser artefact ADR-249 leaves to the caller). The `export-subst` conjunct of
+git's condition is constant-true for tsgit: `archive` models no `export-*` attribute (pre-existing,
+`docs/design/archive.md`; recorded, not widened).
+
+`buildPack` (2) is what ADR-930 adopts; the pins show its **observable** effect is narrower than
+the ADR's context assumed. Once (1) has prepared every source, the stream order can no longer
+reach a source the in-core order would not; it changes only *which copy* serves a large blob
+(the source's non-delta pack copy before its loose copy) — visible only for a corrupt copy. git
+copies a reused pack entry without reading it at all; tsgit always re-encodes
+(`docs/design/delta-writing-packer.md`, "always re-encodes from inflated content"), so tsgit's
+read set is git's `--no-reuse-object` read set and the condition is "blob above the threshold"
+with no reuse term. The metadata pass reads a loose object's content before (2) can route it
+(corrupt-store edge, recorded with the postures of §D4.1).
+
+### D4.3 — The refused streamed worktree write (ADR-931, Pin M5i, M5x … M5ab)
+
+All four regular-file writers call one new helper in `internal/write-working-tree-file.ts`,
+replacing their `streamBlob` + `write*Stream` pairs:
+
+```
+writeStreamedBlob(ctx, fullPath, id, mode?):              // entry.c:streaming_write_entry
+  await rmIfExists(ctx, fullPath)                          // check_updates/unlink_entry before the write
+  let located
+  try { located = await locateBlob(ctx, id, { order: 'stream' }) }
+  catch (refusal) {                                        // git: die inside odb_read_stream_open
+    if (isOperationAborted(refusal)) throw refusal         // a cancellation: no git counterpart, no residue
+    await createEmptyOutput(ctx, fullPath, mode)           // git: create_file ran first; die skips unlink
+    throw refusal
+  }
+  if (located === undefined) throw objectNotFound(id)      // git: NULL stream → unlink → in-core read fails: no file
+  try {
+    await ctx.fs.writeStream(fullPath, sourceChunks(await serveLocatedBlob(ctx, located, …)))
+    if (mode !== undefined) await ctx.fs.chmod(fullPath, permFor(mode))
+  } catch (failure) {                                      // git: readlen < 0 / non-blob → unlink(path)
+    await rmIfExists(ctx, fullPath)
+    throw failure
+  }
+```
+
+This is DC-20's option (b), *create on refusal*: the empty file appears after the locate
+refuses rather than before it, with git's end state. Option (a), *create first*, is git's literal
+order at one extra `write` + `chmod` per streamed file. `createEmptyOutput` = `ctx.fs.write(fullPath, EMPTY)` then, when `mode` is given, `chmod` to
+`0o755`/`0o644` (git's `create_file` mode less umask: M5y `0755`, M5x `0644`). A writer called
+without a mode (`merge.ts`, `apply-merge-to-worktree.ts`, `stash.ts`) leaves the adapter default,
+as its successful write does today. If `createEmptyOutput` itself fails, its error is thrown with
+the refusal as `cause` (git's first error there is the create failure). An `operationAborted`
+from the locate's per-arm `checkAborted` is rethrown **without** creating the file: a caller's
+cancellation has no git counterpart (the occupant, already unlinked, stays removed — as for any
+abort after `rmIfExists` today). The non-blob refusal
+(`unexpectedObjectType`) now happens in the serve arm and unlinks, as git's `st->type != OBJ_BLOB`
+does.
+
+**Index-order residue under a concurrent wave.** `applyChangeset`'s write wave
+(`applyWriteWave` → `drainPooled`, ioBound pool) writes concurrently; git writes one entry at a
+time in index order (`check_updates`), so its residue is exact: earlier entries written, the
+refused one empty, later ones untouched (M5aa). A concurrent wave would leave an arbitrary subset.
+tsgit reproduces git's residue without taxing healthy repositories:
+
+```
+applyWriteWave(...):
+  if (await everySourceLoadable(ctx))   → today's concurrent wave           // the only refusal locate can raise
+                                                                           // after this is a corrupt-store one
+  else                                  → the same wave, concurrency 1, changeset order
+```
+
+`everySourceLoadable(ctx)` (`object-store.ts`, §D4.4) settles every source's memoised
+`assertLoadable` without throwing and answers whether all resolved. With one source it is the
+primary's already-settled memo. A borrower settles every alternate's registry here instead of at
+its first reach — no observable difference (no write, no warning). The sequential fallback runs
+only in a store with an unloadable source, where git itself is sequential. The sequential
+fallback writes in git's index order: `splitWaves` (L308) preserves the changeset's order, and
+the fallback sorts the writes with `compareEntryPath` (git's index order, as `materialize-tree.ts`
+L184 does) rather than assume the changeset arrives sorted; Part 6d asserts the M5aa residue
+against git's. Removals run in the delete wave before, as in git.
+
+Pre-existing, recorded, not widened: corrupt-store refusals raised mid-wave (a corrupt entry
+header, a loose header that does not parse) keep the concurrent wave's arbitrary residue; git's
+in-core retry after its unlink may also serve another copy where tsgit refuses (§D4.1 postures).
+
+### D4.4 — The every-source gate where git refuses before writing (Pin M5u–M5w, M5ac … M5af)
+
+`object-store.ts` gains two functions over `store.sources`:
+
+- `assertEverySourceLoadable(ctx): Promise<void>` — `await source.registry.assertLoadable()` for
+  every source, primary first; the first rejection propagates (the M3 Tier-A error data).
+- `everySourceLoadable(ctx): Promise<boolean>` — the same, settled (§D4.3).
+
+`assertEverySourceLoadable` reproduces the refusal point of git's every-source reach where that
+reach precedes a write. tsgit computes no abbreviation (ADR-249), so it calls the gate where git
+abbreviates:
+
+| tsgit call site | git reach | pin |
+|---|---|---|
+| `buildPack` entry (`build-pack.ts`, before `resolveWriterPlan`) — covers `packObjects`, `bundleCreate`, `gc`, and `push` when it needs pack data | `prepare_in_pack_by_idx` at pack-objects start-up | M5u–M5w, M5af |
+| `mergeRun` (`merge.ts` L148), before its first worktree or state write | `Updating a..b` / merge abbreviation (`builtin/merge.c:1663`) | M5ac |
+| `cherryPickRun` / `revertRun` / `rebaseRun` and their `…Continue` / `…Skip`, at each pick before its first write | `sequencer.c:short_commit_name` | M5ac |
+| `checkout` (`checkout.ts` L336) switching branches **from a detached HEAD**, before the worktree update | `switch_branches`: `strbuf_add_unique_abbrev` of the old commit | M5ad |
+
+`push` builds a pack only when git's `send_pack` would run `pack-objects`: some non-delete
+command (`need_pack_data`). Today `push.ts` (L334–341) calls `buildPack` unconditionally and
+sends an empty pack for a delete-only push; it now sends none, as git (`send-pack.c:745`) — so a
+delete-only push from a borrower with an unloadable alternate updates the remote, as git's does
+(M5ae; git's later client-side fatal is exit status only, the M5k precedent).
+
+`git merge` writes `ORIG_HEAD` (L1633) before the abbreviation; tsgit's `mergeRun` writes
+`ORIG_HEAD` only on its conflict path (`persistConflictState`, L589). Under this fault git leaves
+`ORIG_HEAD` = old HEAD and tsgit leaves none — the gap is pre-existing for **every** clean merge,
+independent of alternates (Out of scope, "observed").
+
+Not gated (git reaches the streamed write first, M5x … M5ab): `checkout` with paths, `restore`,
+branch switch from an attached HEAD, `reset --hard`, `stash apply`. Abbreviations git prints
+**after** its writes (`commit`'s summary, `reset`'s `HEAD is now at`) change only git's exit
+status, never on-disk state — the M5k precedent (ADR-249): tsgit succeeds, recorded.
 
 ### D5 — Enumeration and abbreviation
 
@@ -1107,6 +1314,19 @@ artefact answered is not public data, so BM2–BM4 are unit-pinned; BM1/BM5/BM6 
   alternate (memoised `assertLoadable`, in-memory lookup, cached loose probe) — git's cost.
   `bench:ab` rows: `streamBlob` warm/cold (packed small, packed large, loose) and a checkout of a
   tree on the no-alternates fixture; informational borrower checkout row.
+- **Streaming readers (§D4.2).** `catFileBatch`: + one header-only type probe per entry (a cached
+  pack window, or a ≤ 1 KiB loose slice), a blob's bytes read once. `show`: + one probe per
+  object shown. `archive`: + one probe per regular-file entry (git pays the same
+  `odb_read_object_info`). `buildPack`: + one memoised gate per source per build; the base-only
+  path (`push`) gains the metadata read the delta path already does — one entry-header parse per
+  packed object before its content read. `bench:ab` rows: `cat-file.bench.ts` batch, `show.bench.ts`
+  blob, `deltify.bench.ts` (delta path unchanged) and a base-only `buildPack` row.
+- **Worktree writes (§D4.3).** Success path: same calls as today (the helper reorders `rmIfExists`
+  before the locate; no extra syscall). Refusal path only: one `write` + one `chmod`. Wave: one
+  `everySourceLoadable` per `applyChangeset` (memoised promises); the sequential fallback runs only
+  with an unloadable source. `checkout.bench.ts` row on the no-alternates fixture.
+- **Gates (§D4.4).** One memoised `assertLoadable` per source per gated command; without
+  alternates, the primary's memo.
 - **Config.** `core.bigFileThreshold` is read once per store, inside the registry's existing
   `readConfig` coalescing window — no added stat.
 - **Write path (freshen).** Writing a **new** object: per source one memoised `assertLoadable`,
@@ -1125,13 +1345,14 @@ artefact answered is not public data, so BM2–BM4 are unit-pinned; BM1/BM5/BM6 
 
 ### Part split (dependency order, TDD-sized)
 
-Each part ends green on `npm run validate`. **Fifteen parts** (Part 6b added by revision #2;
-numbering kept stable). Rough total: ~2,100 lines of `src/` added or changed and ~5,500 lines
-of tests (unit + property + interop). No single new `src/` module is several hundred lines: the
-largest are `object-store.ts` (~260) and `internal/alternate-chain.ts` (~220); the largest new
-files are the interop suites (Part 13 ~750, Part 8 ~400), split per surface so none carries
-every row. Part 1 depends on nothing; Part 3's `ObjectSourceAccess` type needs Part 2's port
-member; Part 6b needs Part 6.
+Each part ends green on `npm run validate`. **Seventeen parts** (Part 6b added by revision #2,
+Parts 6c and 6d by revision #3; numbering kept stable). Rough total: ~2,400 lines of `src/`
+added or changed and ~6,800 lines of tests (unit + property + interop). No single new `src/`
+module is several hundred lines: the largest are `object-store.ts` (~290) and
+`internal/alternate-chain.ts` (~220); the largest new files are the interop suites (Part 13 ~500
++ ~650, Part 8 ~400), split per surface so none carries every row. Part 1 depends on nothing;
+Part 3's `ObjectSourceAccess` type needs Part 2's port member; Part 6b needs Part 6; Parts 6c
+and 6d need Part 6b; 6c and 6d are independent of each other.
 
 **Part 1 — `parseAlternatesFile` + `unquoteCStyle` (domain)** · src ~150 / tests ~350
 - New: `src/domain/storage/alternates.ts` (+ export from `src/domain/storage/index.ts`),
@@ -1228,8 +1449,7 @@ member; Part 6b needs Part 6.
 - Tests: memory-adapter Contexts with a hand-written alternates file; M2/M3 ordering; miss
   retry discovers a pack added to an alternate after first scan.
 
-**Part 6b — streamed blob open in git's stream order (§D4.1, ADR-928)** · src ~170 / tests ~380
-(+ ~60 / ~120 for `catFileBatch` and `show` if DC-18 (a); + ~20 / ~40 if DC-19 (b))
+**Part 6b — streamed blob open in git's stream order (§D4.1, ADR-928, ADR-929)** · src ~190 / tests ~420
 - Context to pre-load:
   - `src/application/primitives/internal/blob-source.ts`: `openBlobSource(ctx, id,
     maxBufferedBytes, options?: OpenBlobSourceOptions)` (L96) — `OpenBlobSourceOptions`
@@ -1239,7 +1459,9 @@ member; Part 6b needs Part 6.
     returning a `LocatedBlob` (`{ source, arm: 'loose', compressed } | { source, arm: 'pack',
     hit, entry }`) and `serveLocated` (the existing `resolveLoose` L308, `resolvePackBase`,
     `resolvePackDelta` — the latter takes `located.source.registry`); `verifyStoredObject`
-    (L214) / `hashStoredObject` (L225): type probe, then the order by type (DC-17).
+    (L214) / `hashStoredObject` (L225): type probe, then the order by type (ADR-929). Export
+    `locateBlob` / `serveLocatedBlob` (the two halves, §D4.1 end) and keep `openBlobSource` as
+    their composition.
   - `src/application/primitives/stream-blob.ts` `streamBlob` (L14): passes `{ ...options, order:
     'stream' }`.
   - `src/application/primitives/internal/whitespace-drop-predicate.ts` L121–122: add
@@ -1251,10 +1473,6 @@ member; Part 6b needs Part 6.
   - `object-resolver.ts`: `readEntryHeaderWithChunk` (L1032), `isBase` (L1009) — reused, not
     changed. `ObjectStore.bigFileThreshold` (Part 5).
   - Keep today's `checkAborted(ctx)` before each arm, now per source.
-  - DC-18 (a): `src/application/primitives/cat-file-batch.ts` `readOne` (L37,
-    `readObjectWithSize`) and `src/application/commands/show.ts` (L125/L163,
-    `readObjectStreamed`); tests `test/unit/application/primitives/cat-file-batch.test.ts` and the
-    show suite.
 - Unit (`test/unit/application/primitives/internal/blob-source.test.ts`, memory Contexts; an
   alternate whose registry `assertLoadable` rejects stands in for the corrupt midx), one isolated
   test per exit of `locateStream`: primary pack arm accepts (non-delta, size > threshold — the
@@ -1275,6 +1493,96 @@ member; Part 6b needs Part 6.
   in `verifyStoredObject`.
 - Bench: `pack-read.bench.ts` / `loose-read.bench.ts` `streamBlob` rows and `checkout.bench.ts`
   (§Perf).
+- Unit additions for the split: `locateBlob` returns `undefined` on a full miss after the rescan
+  (no throw); `serveLocatedBlob` of a located loose / pack-base / pack-delta entry serves today's
+  bytes; `openBlobSource` = composition (a miss → `objectNotFound`).
+
+**Part 6c — every streaming reader + the every-source gate (§D4.2, §D4.4 functions and `buildPack`/`push`, ADR-930)** · src ~165 / tests ~450
+- Context to pre-load:
+  - `src/application/primitives/object-store.ts` (Part 5): add `assertEverySourceLoadable(ctx)`
+    and `everySourceLoadable(ctx)` over `store.sources` (`source.registry.assertLoadable()`,
+    `PackRegistry` interface `pack-registry.ts` L273, impl L1162).
+  - `src/application/primitives/internal/blob-source.ts`: add `readBlobContentInStreamOrder(ctx,
+    id)` — `openBlobSource` with `{ order: 'stream', looseMode: 'streamed' }`, drained
+    (`BlobSource` `bytes` arm returned as is; `stream` arm concatenated).
+  - `src/application/primitives/cat-file-batch.ts` `readOne` (L37–50): header first
+    (`readDeclaredObjectHeader`, Part 6b), `isObjectNotFound` → `buildMissingEntry` unchanged; the
+    `maxBytes` refusal is `objectTooLarge(id, declaredSize, maxBytes)`
+    (`src/domain/objects/error.ts` L112) — same data as today's resolver cap; blob → content via the
+    helper; other types → `readObjectWithSize` (L230 of `read-object.ts`).
+  - `src/application/commands/show.ts` `buildForRev` (L122–127) and `buildTag` (L162–165): replace
+    `readObjectStreamed` with a module-local `readShowTarget`.
+  - `src/application/commands/archive.ts` `buildEntryStream` (L104–118): regular modes
+    `FILE_MODE.REGULAR` / `FILE_MODE.EXECUTABLE` (`src/domain/objects/file-mode.js`) route on
+    `readDeclaredObjectHeader` + `ObjectStore.bigFileThreshold` (strict `>`); `readBlob` otherwise.
+  - `src/application/primitives/build-pack.ts`: `buildPack` (L91) calls
+    `assertEverySourceLoadable` before `resolveWriterPlan`; `buildBaseEntries` (L144) moves to
+    `readObjectMetadataWithContent` (`read-object.ts` L325) + content (carried / helper / `readRawObject`);
+    `encodeEntry` (L164) takes `{ type, content }` instead of a `GitObject`.
+  - `src/application/commands/push.ts` L334–352: `buildPack` only when `wants.length > 0`; the
+    request body (`buildSignedRequestBody` L348 / the unsigned body L352) carries no packfile
+    otherwise — check the receive-pack request builder accepts an absent pack (git:
+    `send-pack.c:745`); unit row in `test/unit/application/commands/push.test.ts`.
+  - `src/application/primitives/internal/deltify.ts` `processEmissionEntry` (L421–428): the
+    `readRawObject` fallback routes a `blob` key (`key.type`, pack entry type) with
+    `key.uncompressedSize > threshold` through the helper; the threshold is read once per
+    `deltifyEntries` call from the store.
+- Unit tests (memory Contexts; an alternate whose `assertLoadable` rejects is the reach detector,
+  as in Part 6b):
+  - `object-store.test.ts`: `assertEverySourceLoadable` rejects with the alternate's error, primary
+    first (spy order); `everySourceLoadable` → `false` without throwing, `true` when all load.
+  - `cat-file-batch.test.ts`: blob B packed small in the primary → rejects (reach); `bigFileThreshold`
+    below B's size → served from the primary, alternate not reached; a commit → never reaches;
+    missing → `{ ok: false }`; `maxBytes` below the declared size → `objectTooLarge` data, alternate
+    not reached; size-lying loose blob → real bytes (existing row, kept green).
+  - `show.test.ts`: blob → reach; tag → blob target → reach; commit → no reach.
+  - `archive.test.ts`: regular blob above the threshold held as a delta → iteration rejects at that
+    entry after yielding the earlier ones; non-delta above → served, no reach; size == threshold →
+    `readBlob` (spy); symlink above the threshold → `readBlob`; executable above → streamed.
+  - `build-pack.test.ts`: an unloadable alternate rejects before any read (spy on `readObject*`),
+    empty `objects` included; base-only path encodes the same bytes as today (existing pack-sha rows
+    stay green); a large blob held loose + packed non-delta in one source is served from the pack copy
+    (spy on `looseCompressedBytes`). `deltify.test.ts`: emission read of a large blob uses the helper.
+- Interop: rows M5n–M5w (Part 13).
+- Mutation focus: the strict `>` in archive and deltify, the regular-mode conjunct, gate before the
+  first read in `buildPack`, `maxBytes` before the open.
+
+**Part 6d — git's residue of a refused streamed write + the pre-write gates (§D4.3, §D4.4 call sites, ADR-931)** · src ~130 / tests ~450
+- Context to pre-load:
+  - `src/application/primitives/internal/write-working-tree-file.ts`: new `writeStreamedBlob(ctx,
+    fullPath, id, mode?)` and private `createEmptyOutput`; `writeRegularFileStream` (L129) and the
+    wrappers `writeWorkingTreeFileStream` (L148) / `writeWorkingTreeEntryStream` (L168) change from
+    taking a `source` to taking the blob `id` (their scanner step `unlinkSymlinkedLeadingComponent`
+    stays first); `MODE_EXEC_PERM` / `MODE_REGULAR_PERM` reused.
+  - Callers: `apply-changeset.ts` `writeBlobToWorkingTree` (L212–258, the final
+    `streamBlob` + `writeWorkingTreeEntryStream`), `apply-merge-to-worktree.ts` L198–199,
+    `commands/merge.ts` L711–712, `commands/stash.ts` L413–414 — each pair becomes one call; the
+    `streamBlob` imports drop.
+  - `apply-changeset.ts` `applyWriteWave` (L422–450): `everySourceLoadable(ctx)` (Part 6c) decides
+    between `drainPooled` (L351, today) and a sequential `for…of` over the writes sorted with
+    the comparator `materialize-tree.ts` L184 uses (`compareEntryPath`).
+  - Gates (`assertEverySourceLoadable`, Part 6c): `commands/merge.ts` `mergeRun` (L148) before its
+    first write; `commands/cherry-pick.ts` (`cherryPickRun` L428, `cherryPickContinue` L533,
+    `cherryPickSkip` L586), `commands/revert.ts` (L415, L494, L540), `commands/rebase.ts` (L457,
+    L532, L573) — at the shared per-pick step if one exists, else at each entry before its first
+    write; `commands/checkout.ts` `checkout` (L336) on the branch-switch path when HEAD is detached,
+    before the worktree update.
+- Unit tests:
+  - `write-working-tree-file.test.ts` (memory adapter; `locateBlob` stubbed through an unloadable
+    alternate): refusal → empty file exists, `0o755` for an executable mode, `0o644` regular, no
+    chmod when mode absent; an occupant (modified file) → replaced by the empty file; full miss →
+    no file, occupant removed, `objectNotFound`; serve failure (corrupt loose body) → no file; non-blob
+    → no file, `unexpectedObjectType`; `createEmptyOutput` failure → its error with `cause` = the
+    refusal; success → bytes + mode as today.
+  - `apply-changeset.test.ts`: with an unloadable alternate and entries `a` (loose in primary),
+    `base` (packed delta), `f`: `a` written, `base` empty, `f` absent, rejection = the alternate's
+    error — deterministic over 20 runs; healthy store → `drainPooled` path (spy on the limiter).
+  - `merge.test.ts`, `cherry-pick.test.ts`, `revert.test.ts`, `rebase.test.ts`, `checkout.test.ts`:
+    unloadable alternate → refusal with the worktree, index, HEAD and state files untouched;
+    checkout from an attached HEAD → no gate (residue path); from a detached HEAD → gate.
+- Interop: rows M5i, M5x–M5ad (Part 13).
+- Mutation focus: create-on-refusal vs unlink-on-serve-failure arms, the `undefined` arm, the
+  `everySourceLoadable` switch, the detached-HEAD condition.
 
 **Part 7 — enumeration and abbreviation** · src ~100 / tests ~200
 - `enumerate-objects.ts` (`scope`), `resolve-oid-prefix.ts` (`scanLoose`, `scanPacks` per source).
@@ -1342,18 +1650,20 @@ member; Part 6b needs Part 6.
   order per `verify_bitmap_files`); finding attribution per ADR-920 (`internal/fsck/types.ts`
   pack-class variants L60–93); `docs/design/fsck.md` L238/L500/L666 per ADR-919.
 
-**Part 13 — lookup interop** · interop ~750
-- New `test/integration/alternates-interop.test.ts` using `interop-helpers.ts`
+**Part 13 — lookup interop** · interop ~500 + ~650
+- Two new files: `test/integration/alternates-interop.test.ts` (every row below except M5) and
+  `test/integration/alternates-stream-interop.test.ts` (the M5 rows, one shared fixture built once
+  per file). Both use `interop-helpers.ts`
   (`runGit`, `git`, `makePeerPair`, `disableAutoMaintenance`, `tryRunGitWithExit`),
   `pack-fixture-helpers.ts` (`flipEntryBodyByte`, `writeLooseObject`, `readSolePackPair`),
   `midx-fixture-helpers.ts` (`writeMultiPackIndex`, `mutateMidxOrThrow`).
   Remember: build the tsgit Context **after** the git subprocess writes (per-Context loose
   fanout cache).
 - Rows: A1–A5, P1–P14 (via `objectSources().sources` vs `count-objects -v`), R1–R8, N1–N4,
-  D1–D4, O1, U1–U3 (+U4/U5 as read outcomes), M1–M4, M5a–M5m, X1–X3.
-- M5 rows — fixture of Pin M5 (git builds it; assert the precondition with `verify-pack -v`:
-  `delt` non-delta, `base` a delta, no borrower loose object — pack-objects picks the delta
-  direction). The threshold rows set `core.bigFileThreshold` in the borrower's **config file**
+  D1–D4, O1, U1–U3 (+U4/U5 as read outcomes), M1–M4, M5a–M5ad, X1–X3.
+- M5 rows — the revision-#3 fixture of Pin M5 (git builds it; assert the precondition with
+  `verify-pack -v`: `delt` non-delta, `base` a delta; the only borrower loose object is `a`, restored
+  with `writeLooseObject` after the repack — pack-objects picks the delta direction). The threshold rows set `core.bigFileThreshold` in the borrower's **config file**
   (`git config`), never `-c`: tsgit reads only the repository's local config, and both tools must
   see the same value. "Refusal" = git exit 128 with the M3 fatal ⇔ tsgit rejects with the same
   Tier-A midx error data as row M3.
@@ -1365,13 +1675,31 @@ member; Part 6b needs Part 6.
   | M5c / M5d | threshold 5 → 0 / 6 → 128 | `streamBlob(B)` bytes `small\n` / refusal |
   | M5e / M5f | threshold 1: `delt` 0 / `base` 128 | `streamBlob(delt)` bytes / `streamBlob(base)` refusal |
   | M5g / M5h | `update-ref refs/tags/tb B` 128 / `… tc HEAD` 0 | `updateRef` to B refusal, ref absent / to HEAD succeeds |
-  | M5i | `checkout -- f` 128 | `checkout({ paths: ['f'] })` refusal; worktree residue per DC-19 |
+  | M5i | `checkout -- f` 128 | `checkout({ paths: ['f'] })` refusal; `f` exists, size 0 (ADR-931) |
   | M5j | `checkout -- lnk` 0 | `checkout({ paths: ['lnk'] })` restores the link |
   | M5k | `diff --stat -w HEAD~1 HEAD` 0 | `diff` with `ignoreWhitespace: 'all'` succeeds, same changed paths |
   | M5l | B also loose (copied in with `writeLooseObject`): `cat-file blob B` 0, `checkout -- f` 0 | `streamBlob(B)` bytes; checkout restores `f` |
-  | M5m | `archive HEAD` 0 | `archive` succeeds |
+  | M5m / M5t | `archive HEAD` 0 | `archive` iterates every entry |
+  | M5n / M5o | `cat-file --batch` (B) 128 / threshold 5 → 0 | `catFileBatch([B])` rejects / yields B's bytes |
+  | M5p | `show B` 128, `show HEAD:f` 128 | `show(B)`, `show('HEAD:f')` refusal |
+  | M5q | threshold 1: `archive HEAD`, `--format=zip HEAD`, `archive HEAD base` 128 | iterating `archive({ treeish: 'HEAD' }).entries` rejects at `base`, after yielding exactly the pre-order entries before it |
+  | M5r / M5s | threshold 1: `archive HEAD a f x lnk` 0, `archive HEAD delt` 0; threshold 5 / 6: `archive HEAD f` 0 | both tools archive a tree built by `git mktree` holding only those entries (tsgit's `archive` takes no pathspec): every entry's bytes equal `git cat-file blob` of it |
+  | M5u | `pack-objects --stdout` with empty stdin, B, `--revs` HEAD → 128 | `buildPack(ctx, { objects: [] })` and `packObjects({ wants: ['HEAD'] })` refusal; no new file under `objects/pack/` on either side |
+  | M5v | `bundle create` exit 1 + the fatal | `bundleCreate` refusal; no bundle file |
+  | M5w | `repack -ad` 128, `gc` 128 | `gc()` refusal; the file set under `objects/` unchanged on both |
+  | M5ae / M5af | push to a bare peer: delete-only → remote `x` deleted (git exit 128 afterwards); `side:refs/heads/y` 128, `y` absent | `push` delete-only succeeds and the remote's `x` is gone; `push` of `side` refuses, remote `y` absent |
+  | M5x | `checkout -- f`, `checkout HEAD -- f`, `restore f` 128 | `checkout` with paths (index- and HEAD-sourced) refusal; `f` size 0, mode `0644`; `ls-files -s` unchanged; no `index.lock` |
+  | M5y | `checkout -- x` 128 | `x` size 0, mode `0755` |
+  | M5z | `checkout -- a f` 128; `checkout -- f` over a modified `f` 128 | `a` restored, `f` size 0; the modified `f` replaced by size 0 |
+  | M5aa | on `side`: `checkout main`, `switch main`, `checkout -f main`, `reset --hard main` 128 | branch-switch `checkout` and hard `reset` refusal; worktree listing (name, size, mode) equal to git's — `a` 4, `base` 0, `d`, nothing else; HEAD → `side`; index = C1's; no `index.lock` |
+  | M5ab | at `main`: `stash apply` 128 | `stashApply` refusal; `s` size 0; HEAD, index unchanged |
+  | M5ac | on `side`: `merge --ff-only main`, `merge --no-ff main`, `cherry-pick main`, `revert HEAD` (on `main`), `rebase main` 128 | each refusal with worktree, index, HEAD, refs and sequencer/merge state files untouched — git's `ORIG_HEAD` excluded from the comparison (§D4.4, recorded) |
+  | M5ad | detached at C1: `checkout main`, `merge --ff-only main`, `cherry-pick main` 128 | refusal, worktree untouched; `reset --hard main` detached behaves as M5aa |
 
-  `cat-file --batch` (B) and `show B` (M5b) join the table per DC-18.
+  Worktree comparisons run on two peer copies of the fixture (`makePeerPair`), git on one and
+  tsgit on the other, umask 022 for both; mode compared as `stat.mode & 0o777` (Node adapter).
+  The option spellings of `checkout`, `reset`, `stashApply`, `bundleCreate` are the planner's to
+  confirm against their public types.
 
 **Part 14 — gc/fsck interop, parity, bench, docs** · interop ~350 / other ~200
 - `test/integration/alternates-gc-fsck-interop.test.ts`: G1–G5, F1–F5.
@@ -1381,7 +1709,7 @@ member; Part 6b needs Part 6.
 
 ## Decisions
 
-### Ratified (ADR-914 … ADR-928)
+### Ratified (ADR-914 … ADR-931)
 
 | DC | ADR | outcome |
 |---|---|---|
@@ -1400,14 +1728,33 @@ member; Part 6b needs Part 6.
 | DC-14 | ADR-926 | the freshen's loose arm consults the cached fanout listing and calls `utimeNow` only on a hit; a stale listing yields a harmless local duplicate (§D6) |
 | DC-15 | ADR-927 | commit-graph missing-layer warning → `logger.warn` only, no structured surface (§D12) |
 | DC-16 | ADR-928 | **streamed blob open follows git's per-source stream order, fall-through and refusal included** (user-ratified; deviates from the draft's recommendation) — §D4.1, Pin M5 |
+| DC-17 | ADR-929 | `verifyStoredObject`: header-only type probe, then `'stream'` for a blob, `'in-core'` otherwise — git's `parse_object` sequence (adopted as recommended) — §D4.1 |
+| DC-18 | ADR-930 | **every git streaming reader follows the stream order**: `cat-file --batch` blob contents and `show <blob>` always, `archive` / `pack-objects` above `core.bigFileThreshold` under git's condition (user-ratified; deviates from the draft's recommendation) — §D4.2 |
+| DC-19 | ADR-931 | **a refused streamed checkout leaves git's empty file** (user-ratified; deviates from the draft's recommendation) — §D4.3 |
 
-### New decision candidates (uncovered by revision #2)
+### Adopted under ADR-226 (faithful) — revision #3
+
+Each sub-choice below surfaced while folding ADR-930/931 and reduced to "reproduce git" vs
+"diverge"; the faithful option is designed, none is a candidate.
+
+| # | sub-choice | adopted (pin) |
+|---|---|---|
+| F1 | ADR-930's `pack-objects` premise: git dies at start-up on any unloadable source, before streaming (`prepare_in_pack_by_idx`) | `buildPack` gates every source before any read — covers `packObjects`, `bundleCreate`, `gc`, and `push` when it needs pack data (M5u–M5w, M5af); the stream routing of ADR-930 is kept and changes only the copy served (§D4.2) |
+| F2 | Writers that git refuses **before** writing, through an every-source abbreviation tsgit never computes | the every-source gate at git's point: `merge`, `cherry-pick`, `revert`, `rebase`, `checkout` from a detached HEAD (M5ac, M5ad; §D4.4) |
+| F3 | Residue under `applyChangeset`'s concurrent wave (arbitrary subset) vs git's index-order prefix | sequential wave in changeset order when any source is unloadable; concurrent otherwise (M5aa; §D4.3) |
+| F4 | A streamed write whose blob is absent everywhere | occupant removed first, no file left (git: unlink, create, NULL stream, unlink, in-core failure) |
+| F5 | A serve failure or a non-blob during a streamed write | output unlinked (`streaming_write_entry` L144–145) |
+| F6 | Mode of the residue | git's `create_file` mode less umask: `0755` executable, `0644` regular (M5x, M5y) |
+| F7 | `archive` refusal timing | the lazy entry stream rejects at the refused entry, after yielding every earlier one (M5q) |
+| F8 | `catFileBatch` read sequence | type first (git's info read), then the stream order for a blob, in-core for the rest (M5n) |
+| F9 | `buildPack` routing condition | "blob above the threshold", no reuse term — tsgit always re-encodes, i.e. reads git's `--no-reuse-object` set (§D4.2) |
+| F10 | A delete-only `push` would hit F1's gate through its empty pack; git sends no pack for it | `push` skips `buildPack` and the packfile when no command needs pack data (M5ae, M5af; §D4.4) |
+
+### New decision candidates (uncovered by revision #3)
 
 | # | Choice | Alternatives (≤3) | Recommendation | Why |
 |---|---|---|---|---|
-| DC-17 | How `verifyStoredObject` picks its order (git's `parse_object`: blob → stream, else in-core) | (a) git's literal sequence: header-only type probe `readDeclaredObjectHeader` (git's `odb_read_object_info`), then `openBlobSource` in `'stream'` order for a blob, `'in-core'` otherwise; (b) fused: one `locateStream` pass that, at the first holder, reads the type from the entry header (a delta: walks to its base type) and switches to in-core serving for a non-blob — no separate probe | **(a)** | both reproduce M5g/M5h; (a) is git's own call sequence (same fault order: type probe faults before stream faults), reuses `resolveDeclaredSize`'s routes, and costs one header-only probe per ref update — memoised per Context, typically a ≤ 1 KiB read of a just-written loose commit. (b) saves that probe but puts a type-dependent branch inside `locateStream`, the hottest new code, for a once-per-ref-update caller |
-| DC-18 | Scope of the stream order beyond `openBlobSource`'s callers — git also streams `cat-file --batch` blob contents and `show <blob>` (M5b: both die), and, above the threshold only, `archive` / `pack-objects` blobs. tsgit's `catFileBatch` (`readObjectWithSize`), `show` (`readObjectStreamed`), `archive` (`readBlob`) and `packObjects` read in-core | (a) fold `catFileBatch` and `show` in now, in git's sequence: type first through `readDeclaredObjectHeader` (git's `--batch` info read / `show`'s object lookup), a blob's content then through `openBlobSource(…, { order: 'stream' })` (`catFileBatch` honouring `maxBytes`), any other type through today's read; record `archive`/`packObjects` (they differ only for a blob above 512 MiB that the primary holds as a delta or not at all) in this doc; (b) none now: record all four as a fault-surface divergence in an ADR and open a follow-up backlog item; (c) all four now | **(a)** | ADR-928's intent is that the same corrupt-alternate faults refuse the same reads, and `cat-file --batch`/`show` are the direct analogues of M5b — same mechanism, ~60 src / ~120 test lines in Part 6b; cost without alternates: one header-only type probe per `catFileBatch` entry / `show` (a cached pack window, or a ≤ 1 KiB loose read) and no blob read twice. (c) re-plumbs `archive`/`packObjects` for a case git itself avoids (blobs above the threshold are never deltified by `pack-objects`). (b) leaves the most visible M5b analogue divergent |
-| DC-19 | Worktree residue of a refused streamed checkout (M5i: git leaves `f` as an **empty file** — `streaming_write_entry` opens the output before the stream and `die` skips its unlink) | (a) keep tsgit's order (open the object, then the file): the refusal leaves `f` absent; record the divergence; (b) reproduce: every streamed worktree writer creates/truncates the output before opening the blob, and leaves it on a refusal | **(a)** | the residue is an artefact of `die()` after `open()`, not a state git designs (a non-fatal stream failure unlinks the file, `entry.c:streaming_write_entry`); (b) changes every streamed checkout's failure state — a missing object would then need git's unlink-then-in-core-retry dance too — to reproduce a crash leftover. Divergence needs its ADR (prime directive) |
+| DC-20 | How a streamed worktree writer produces git's empty file (ADR-931). git creates the output **before** opening the stream; tsgit's writers locate first | (a) **create first**: `write(EMPTY)` + `chmod` before the locate, then `writeStream` over it — git's literal order; (b) **create on refusal**: locate first; on a locate refusal create the empty file (with the mode) and rethrow, as §D4.3's `writeStreamedBlob`; (c) **lazy source + port contract**: hand `writeStream` a source whose locate runs on the first pull, and require every adapter to open before pulling and keep the file on a source error — a new port obligation (the memory adapter buffers first; OPFS commits only on `close`) | **(b)** | (a) and (b) leave the same end state and report the same first error in every single-fault case (the double fault "path not creatable + locate refused" reports the create error in both — (b) attaches the refusal as `cause`); they differ only in *when* the empty file appears, which no observer can see after the command returns. (a) adds one `write` and one `chmod` to **every** streamed file of every checkout, alternates or not (`checkout.bench.ts` path); (b) adds nothing on success. (c) is (a)'s order at zero cost but changes the `FileSystem.writeStream` contract on three adapters for one caller |
 
 ## Test strategy
 
@@ -1427,13 +1774,20 @@ member; Part 6b needs Part 6.
   alternate whose `assertLoadable` rejects as the reach detector; threshold boundary (`==`
   declines, `>` accepts); delta above threshold declines; `'in-core'` callers never reach it;
   `verifyStoredObject` blob vs commit.
+- **Streaming readers and gates** (Part 6c): per reader, reach vs no-reach with the rejecting
+  alternate; the strict `>` boundary in `archive`/`buildPack`; `buildPack` rejects before its first
+  read, empty input included.
+- **Worktree residue** (Part 6d): one isolated test per `writeStreamedBlob` exit (refusal → empty
+  file with mode; miss → no file; serve failure → no file; create failure → cause chain); the wave's
+  deterministic index-order residue repeated 20×; each gated command untouched on refusal.
 - **Freshen** (Part 8): one isolated test per exit of `freshenObject` (§Part 8 list) with
   `vi.setSystemTime` back-dating; mutation targets: the cruft check, the `freshenedPacks` memo,
   the absent-`utimeNow` arm, the adapter-code vs rethrow split.
 - **Acceleration** (Parts 9–10): commit-graph CG1–CG6 shapes and the flipped missing-layer row;
   bitmap order BM2–BM6 with loader spies.
 - **gc / fsck** (Parts 11–12): unit rows mirroring G1–G5 and F1–F5/M4 with a memory store.
-- **Interop**: four files, one per surface — `alternates-interop.test.ts` (Part 13),
+- **Interop**: five files, one per surface — `alternates-interop.test.ts` and
+  `alternates-stream-interop.test.ts` (Part 13),
   `object-freshen-interop.test.ts` (Part 8, `interopSurface: objectFreshen`),
   `alternates-acceleration-interop.test.ts` (Parts 9–10), `alternates-gc-fsck-interop.test.ts`
   (Part 14). Reconstruct X1 from `ambiguousOidPrefix` data and O1 from `objectSources()`; fsck rows
@@ -1459,6 +1813,19 @@ member; Part 6b needs Part 6.
   ADR-921 scopes fsck coverage to the classes tsgit verifies today.
 - Commit-graph **writing** as a split chain on top of an alternate's layers (CG3's write half) —
   tsgit writes single-file graphs only; unchanged.
+- Observed, not changed here (discuss before scheduling): `mergeRun` writes `ORIG_HEAD` only on its
+  conflict path; git writes it for every merge before the strategy runs (`builtin/merge.c:1633`) —
+  pre-existing for every clean merge, alternates or not (surfaced by M5ac).
+- Observed, not changed here: tsgit's delta search does not exclude blobs above
+  `core.bigFileThreshold`; git marks them `no_try_delta` (`builtin/pack-objects.c:2626`) — a
+  pack-bytes difference, independent of alternates.
+- Observed, not changed here: `archive` models no `export-subst` / `export-ignore` attribute
+  (git's streaming condition includes `!export-subst`).
+- Abbreviations git prints **after** its writes (`commit`'s summary line, `reset`'s `HEAD is now
+  at`): git exits 128 with the on-disk change made; tsgit succeeds — exit status only, the M5k /
+  ADR-249 precedent.
+- `worktree add` in a borrower with an unloadable alternate: not pinned; tsgit's writes go through
+  `applyChangeset` and inherit §D4.3.
 - Observed, not changed here (discuss before scheduling): tsgit's chain-file grammar
   (`parseChainLayerHashes` trims and drops blank lines) differs from git's fixed-width read
   (`invalid commit-graph chain: line '…' not a hash`, `commit-graph chain file too small`).
