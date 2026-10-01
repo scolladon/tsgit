@@ -177,20 +177,24 @@ describe('Context.objectSourceAccess (node)', () => {
 });
 
 describe('filesystemRootOf', () => {
-  it.each([
+  describe.each([
     ['/x/y', '/'],
     ['/', '/'],
     ['C:\\x', 'C:\\'],
     ['C:/x/y', 'C:\\'],
     ['\\\\srv\\share\\x', '\\\\srv\\share\\'],
-  ])('Given %s, When derived, Then the root is %s', (input, expected) => {
-    // Arrange
-    const sut = filesystemRootOf;
+  ])('Given %s', (input, expected) => {
+    describe('When the filesystem root is derived', () => {
+      it(`Then the root is ${expected}`, () => {
+        // Arrange
+        const sut = filesystemRootOf;
 
-    // Act
-    const result = sut(input);
+        // Act
+        const result = sut(input);
 
-    // Assert
-    expect(result).toBe(expected);
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
   });
 });

@@ -35,15 +35,16 @@ describe('getObjectStore', () => {
         const read = vi.spyOn(ctx.fs, 'read');
 
         // Act
-        const sut = await getObjectStore(ctx);
+        const sut = getObjectStore;
+        const result = await sut(ctx);
 
         // Assert
-        expect(sut.sources).toHaveLength(1);
-        expect(sut.primary).toBe(sut.sources[0]);
-        expect(sut.primary.objectsDir).toBe(PRIMARY);
-        expect(sut.primary.local).toBe(true);
-        expect(sut.primary.fs).toBe(ctx.fs);
-        expect(sut.diagnostics).toEqual([]);
+        expect(result.sources).toHaveLength(1);
+        expect(result.primary).toBe(result.sources[0]);
+        expect(result.primary.objectsDir).toBe(PRIMARY);
+        expect(result.primary.local).toBe(true);
+        expect(result.primary.fs).toBe(ctx.fs);
+        expect(result.diagnostics).toEqual([]);
         expect(read.mock.calls.filter(([path]) => path === LIST)).toHaveLength(1);
       });
     });
@@ -57,14 +58,15 @@ describe('getObjectStore', () => {
         await ctx.fs.mkdir('/repo/alt/objects');
 
         // Act
-        const sut = await getObjectStore(ctx);
+        const sut = getObjectStore;
+        const result = await sut(ctx);
 
         // Assert
-        expect(sut.sources.map((s) => [s.objectsDir, s.local])).toEqual([
+        expect(result.sources.map((s) => [s.objectsDir, s.local])).toEqual([
           [PRIMARY, true],
           ['/repo/alt/objects', false],
         ]);
-        expect(sut.sources[1]?.registry).toBeDefined();
+        expect(result.sources[1]?.registry).toBeDefined();
       });
     });
   });
@@ -77,10 +79,11 @@ describe('getObjectStore', () => {
         const first = await getObjectStore(ctx);
 
         // Act
-        const sut = await getObjectStore(ctx);
+        const sut = getObjectStore;
+        const result = await sut(ctx);
 
         // Assert
-        expect(sut).toBe(first);
+        expect(result).toBe(first);
       });
     });
   });
@@ -94,11 +97,12 @@ describe('getObjectStore', () => {
 
         // Act
         const store = await getObjectStore(ctx);
-        const sut = peekObjectStore(ctx);
+        const sut = peekObjectStore;
+        const result = sut(ctx);
 
         // Assert
         expect(before).toBeUndefined();
-        expect(sut).toBe(store);
+        expect(result).toBe(store);
       });
     });
   });
@@ -145,13 +149,14 @@ describe('getObjectStore', () => {
         const ctx = contextWithAlternates('/repo/a/objects\n');
         await ctx.fs.mkdir('/repo/a/objects');
         await ctx.fs.mkdir('/repo/b/objects');
-        const sut = await getObjectStore(ctx);
-        const firstRegistry = sut.sources[1]?.registry;
+        const sut = getObjectStore;
+        const store = await sut(ctx);
+        const firstRegistry = store.sources[1]?.registry;
         await ctx.fs.writeUtf8(LIST, '/repo/a/objects\n/repo/b/objects\n');
 
         // Act
-        sut.refresh();
-        const result = await getObjectStore(ctx);
+        store.refresh();
+        const result = await sut(ctx);
 
         // Assert
         expect(result.sources.map((s) => s.objectsDir)).toEqual([
@@ -170,12 +175,13 @@ describe('getObjectStore', () => {
         // Arrange
         const ctx = contextWithAlternates('/repo/a/objects\n');
         await ctx.fs.mkdir('/repo/a/objects');
-        const sut = await getObjectStore(ctx);
+        const sut = getObjectStore;
+        const store = await sut(ctx);
         await ctx.fs.writeUtf8(LIST, '');
 
         // Act
-        sut.refresh();
-        const result = await getObjectStore(ctx);
+        store.refresh();
+        const result = await sut(ctx);
 
         // Assert
         expect(result.sources.map((s) => s.objectsDir)).toEqual([PRIMARY, '/repo/a/objects']);
@@ -188,13 +194,14 @@ describe('getObjectStore', () => {
       it('Then the list is resolved once per refresh', async () => {
         // Arrange
         const ctx = contextWithAlternates();
-        const sut = await getObjectStore(ctx);
+        const sut = getObjectStore;
+        const store = await sut(ctx);
         const read = vi.spyOn(ctx.fs, 'read');
 
         // Act
-        sut.refresh();
-        await getObjectStore(ctx);
-        await getObjectStore(ctx);
+        store.refresh();
+        await sut(ctx);
+        await sut(ctx);
 
         // Assert
         expect(read.mock.calls.filter(([path]) => path === LIST)).toHaveLength(1);
@@ -211,10 +218,11 @@ describe('getObjectStore', () => {
         store.refresh();
 
         // Act
-        const sut = peekObjectStore(ctx);
+        const sut = peekObjectStore;
+        const result = sut(ctx);
 
         // Assert
-        expect(sut).toBeUndefined();
+        expect(result).toBeUndefined();
       });
     });
   });
@@ -226,10 +234,11 @@ describe('getObjectStore', () => {
         const ctx = contextWithAlternates();
 
         // Act
-        const sut = await getObjectStore(ctx);
+        const sut = getObjectStore;
+        const result = await sut(ctx);
 
         // Assert
-        expect(sut.bigFileThreshold).toBe(512 * 1024 * 1024);
+        expect(result.bigFileThreshold).toBe(512 * 1024 * 1024);
       });
     });
   });
@@ -243,10 +252,11 @@ describe('getObjectStore', () => {
         });
 
         // Act
-        const sut = await getObjectStore(ctx);
+        const sut = getObjectStore;
+        const result = await sut(ctx);
 
         // Assert
-        expect(sut.bigFileThreshold).toBe(1024);
+        expect(result.bigFileThreshold).toBe(1024);
       });
     });
   });
@@ -256,12 +266,13 @@ describe('getObjectStore', () => {
       it('Then the threshold is not read again', async () => {
         // Arrange
         const ctx = contextWithAlternates();
-        const sut = await getObjectStore(ctx);
+        const sut = getObjectStore;
+        const store = await sut(ctx);
         const readConfig = vi.spyOn(configReadMod, 'readConfig');
 
         // Act
-        sut.refresh();
-        await getObjectStore(ctx);
+        store.refresh();
+        await sut(ctx);
 
         // Assert
         expect(readConfig).not.toHaveBeenCalled();
@@ -302,15 +313,16 @@ describe('objectSources', () => {
         const store = await getObjectStore(ctx);
 
         // Act
-        const sut = await objectSources(ctx);
+        const sut = objectSources;
+        const result = await sut(ctx);
 
         // Assert
-        expect(sut.sources).toEqual([
+        expect(result.sources).toEqual([
           { objectsDir: PRIMARY, local: true },
           { objectsDir: '/repo/alt/objects', local: false },
         ]);
-        expect(sut.unusable).toBe(store.diagnostics);
-        expect(sut.unusable).toHaveLength(1);
+        expect(result.unusable).toBe(store.diagnostics);
+        expect(result.unusable).toHaveLength(1);
       });
     });
   });
@@ -324,10 +336,11 @@ describe('narrowObjectSourceAccess', () => {
         const ctx = createMemoryContext();
 
         // Act
-        const sut = narrowObjectSourceAccess(ctx.fs, PRIMARY);
+        const sut = narrowObjectSourceAccess;
+        const result = sut(ctx.fs, PRIMARY);
 
         // Assert
-        expect(Object.keys(sut).sort()).toEqual(MEMBERS);
+        expect(Object.keys(result).sort()).toEqual(MEMBERS);
       });
     });
   });
@@ -340,10 +353,11 @@ describe('narrowObjectSourceAccess', () => {
         const fs = rest as FileSystem;
 
         // Act
-        const sut = narrowObjectSourceAccess(fs, PRIMARY);
+        const sut = narrowObjectSourceAccess;
+        const result = sut(fs, PRIMARY);
 
         // Assert
-        expect(Object.keys(sut).sort()).toEqual(MEMBERS.filter((m) => m !== 'utimeNow'));
+        expect(Object.keys(result).sort()).toEqual(MEMBERS.filter((m) => m !== 'utimeNow'));
       });
     });
   });
@@ -354,10 +368,11 @@ describe('narrowObjectSourceAccess', () => {
         // Arrange
         const ctx = createMemoryContext();
         const inner = vi.spyOn(ctx.fs, 'openWithNoFollow');
-        const sut = narrowObjectSourceAccess(ctx.fs, PRIMARY);
+        const sut = narrowObjectSourceAccess;
+        const result = sut(ctx.fs, PRIMARY);
 
         // Act
-        const data = await denial(() => sut.openWithNoFollow(`${PRIMARY}/x`, 'write'));
+        const data = await denial(() => result.openWithNoFollow(`${PRIMARY}/x`, 'write'));
 
         // Assert
         expect(data).toEqual({ code: 'PERMISSION_DENIED', path: `${PRIMARY}/x` });
@@ -372,10 +387,11 @@ describe('narrowObjectSourceAccess', () => {
         // Arrange
         const ctx = createMemoryContext();
         await ctx.fs.writeUtf8(`${PRIMARY}/x`, 'a');
-        const sut = narrowObjectSourceAccess(ctx.fs, PRIMARY);
+        const sut = narrowObjectSourceAccess;
+        const result = sut(ctx.fs, PRIMARY);
 
         // Act
-        const handle = await sut.openWithNoFollow(`${PRIMARY}/x`, 'read');
+        const handle = await result.openWithNoFollow(`${PRIMARY}/x`, 'read');
 
         // Assert
         expect(handle).toBeDefined();
@@ -390,10 +406,11 @@ describe('narrowObjectSourceAccess', () => {
         // Arrange
         const ctx = createMemoryContext();
         const inner = vi.spyOn(ctx.fs, 'utimeNow');
-        const sut = narrowObjectSourceAccess(ctx.fs, PRIMARY);
+        const sut = narrowObjectSourceAccess;
+        const result = sut(ctx.fs, PRIMARY);
 
         // Act
-        const data = await denial(() => sut.utimeNow?.(`${PRIMARY}/../x`) as Promise<void>);
+        const data = await denial(() => result.utimeNow?.(`${PRIMARY}/../x`) as Promise<void>);
 
         // Assert
         expect(data).toEqual({ code: 'PERMISSION_DENIED', path: `${PRIMARY}/../x` });
@@ -408,11 +425,12 @@ describe('narrowObjectSourceAccess', () => {
         // Arrange
         const ctx = createMemoryContext();
         const inner = vi.spyOn(ctx.fs, 'utimeNow');
-        const sut = narrowObjectSourceAccess(ctx.fs, PRIMARY);
+        const sut = narrowObjectSourceAccess;
+        const result = sut(ctx.fs, PRIMARY);
 
         // Act
         const data = await denial(
-          () => sut.utimeNow?.('/repo/.git/objects-other/x') as Promise<void>,
+          () => result.utimeNow?.('/repo/.git/objects-other/x') as Promise<void>,
         );
 
         // Assert
@@ -429,10 +447,11 @@ describe('narrowObjectSourceAccess', () => {
         const ctx = createMemoryContext();
         await ctx.fs.writeUtf8(`${PRIMARY}/x`, 'a');
         const inner = vi.spyOn(ctx.fs, 'utimeNow');
-        const sut = narrowObjectSourceAccess(ctx.fs, PRIMARY);
+        const sut = narrowObjectSourceAccess;
+        const result = sut(ctx.fs, PRIMARY);
 
         // Act
-        await sut.utimeNow?.(`${PRIMARY}/x`);
+        await result.utimeNow?.(`${PRIMARY}/x`);
 
         // Assert
         expect(inner).toHaveBeenCalledWith(`${PRIMARY}/x`);
