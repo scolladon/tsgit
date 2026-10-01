@@ -174,6 +174,7 @@ const computeMerge = async (
   }
   const ourId = await resolveRef(ctx, head.target);
   const theirId = await resolveCommitIsh(ctx, opts.rev);
+  await writeOrigHead(ctx, ourId);
   // Stryker disable next-line ConditionalExpression: equivalent — when ourId===theirId, mergeBase returns that same commit, so the `base === theirId` check below yields the identical up-to-date result.
   if (ourId === theirId) return { kind: 'up-to-date', id: ourId };
   const [base] = await mergeBase(ctx, [ourId, theirId]);
@@ -586,7 +587,6 @@ const persistConflictState = async (
   const lock = await acquireIndexLock(ctx);
   try {
     await writeConflictingWorkingTree(ctx, result.outcomes, result.conflicts, changed, matcher);
-    await writeOrigHead(ctx, ourId);
     await writeMergeHead(ctx, theirId);
     const message = sanitizeMessage(opts.message ?? `Merge ${opts.rev}`, { allowEmpty: false });
     await writeMergeMsg(ctx, message);

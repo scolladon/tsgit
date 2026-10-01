@@ -370,4 +370,118 @@ describe.skipIf(!GIT_AVAILABLE)('merge interop — non-conflict materialisation'
       });
     });
   });
+
+  const origHeadBytes = async (dir: string): Promise<string | null> =>
+    readMaybe(dir, '.git/ORIG_HEAD');
+
+  const seedDiverged = async (): Promise<void> => {
+    await writeBoth('f.txt', 'base\n');
+    await commitBoth('base', ['f.txt']);
+    await branchBoth('theirs');
+    await writeBoth('t.txt', 't\n');
+    await commitBoth('theirs-add', ['t.txt']);
+    await checkoutBoth('main');
+    await writeBoth('o.txt', 'o\n');
+    await commitBoth('ours-add', ['o.txt']);
+  };
+
+  describe('Given diverged histories', () => {
+    describe('When the clean merge, --no-ff, or an --ff-only refusal runs on both tools', () => {
+      it('Then ORIG_HEAD bytes equal git (OH1, OH4, OH7)', async () => {
+        // Arrange
+        await seedDiverged();
+        const refused = tryRunGit(['-C', pair.peer, 'merge', '--ff-only', 'theirs'], {
+          env: COMMIT_ENV,
+        });
+        await repo.merge.run({ rev: 'theirs', fastForward: 'only' }).catch(() => undefined);
+        const oursAfterRefusal = await origHeadBytes(pair.ours);
+        const peerAfterRefusal = await origHeadBytes(pair.peer);
+
+        // Act
+        await mergeBoth('theirs', 'merge theirs');
+
+        // Assert
+        expect(refused.ok).toBe(false);
+        expect(oursAfterRefusal).toBe(peerAfterRefusal);
+        expect(oursAfterRefusal).not.toBeNull();
+        expect(await origHeadBytes(pair.ours)).toBe(await origHeadBytes(pair.peer));
+        expect(await pathExists(pair.ours, '.git/logs/ORIG_HEAD')).toBe(false);
+      });
+    });
+
+    describe('When an untracked file blocks the merge on both tools', () => {
+      it('Then ORIG_HEAD bytes equal git (OH8)', async () => {
+        // Arrange
+        await seedDiverged();
+        await writeBoth('t.txt', 'untracked\n');
+
+        // Act
+        const peerResult = tryRunGit(['-C', pair.peer, 'merge', '--no-ff', '-m', 'm', 'theirs'], {
+          env: COMMIT_ENV,
+        });
+        await repo.merge
+          .run({ rev: 'theirs', message: 'm', author: AUTHOR })
+          .catch(() => undefined);
+
+        // Assert
+        expect(peerResult.ok).toBe(false);
+        expect(await origHeadBytes(pair.ours)).toBe(await origHeadBytes(pair.peer));
+        expect(await origHeadBytes(pair.ours)).not.toBeNull();
+      });
+    });
+  });
+
+  describe('Given a fast-forwardable or up-to-date target', () => {
+    describe('When merge runs on both tools', () => {
+      it('Then ORIG_HEAD bytes equal git (OH2, OH3)', async () => {
+        // Arrange
+        await writeBoth('f.txt', 'base\n');
+        await commitBoth('base', ['f.txt']);
+        await branchBoth('feature');
+        await writeBoth('m.txt', 'm\n');
+        await commitBoth('feature-add', ['m.txt']);
+        await checkoutBoth('main');
+
+        // Act — fast-forward, then up-to-date.
+        runGit(['-C', pair.peer, 'merge', '--ff-only', '-q', 'feature']);
+        await repo.merge.run({ rev: 'feature', author: AUTHOR });
+        const oursAfterFastForward = await origHeadBytes(pair.ours);
+        const peerAfterFastForward = await origHeadBytes(pair.peer);
+        runGit(['-C', pair.peer, 'merge', '-q', 'feature']);
+        await repo.merge.run({ rev: 'feature', author: AUTHOR });
+
+        // Assert
+        expect(oursAfterFastForward).toBe(peerAfterFastForward);
+        expect(oursAfterFastForward).not.toBeNull();
+        expect(await origHeadBytes(pair.ours)).toBe(await origHeadBytes(pair.peer));
+      });
+    });
+  });
+
+  describe('Given a conflicting merge', () => {
+    describe('When merge runs on both tools', () => {
+      it('Then ORIG_HEAD bytes equal git (OH6)', async () => {
+        // Arrange
+        await writeBoth('f.txt', 'base\n');
+        await commitBoth('base', ['f.txt']);
+        await branchBoth('theirs');
+        await writeBoth('f.txt', 'theirs\n');
+        await commitBoth('theirs-edit', ['f.txt']);
+        await checkoutBoth('main');
+        await writeBoth('f.txt', 'ours\n');
+        await commitBoth('ours-edit', ['f.txt']);
+
+        // Act
+        const peerResult = tryRunGit(['-C', pair.peer, 'merge', '--no-ff', '-m', 'm', 'theirs'], {
+          env: COMMIT_ENV,
+        });
+        await repo.merge.run({ rev: 'theirs', message: 'm', author: AUTHOR });
+
+        // Assert
+        expect(peerResult.ok).toBe(false);
+        expect(await origHeadBytes(pair.ours)).toBe(await origHeadBytes(pair.peer));
+        expect(await origHeadBytes(pair.ours)).not.toBeNull();
+      });
+    });
+  });
 });

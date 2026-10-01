@@ -4182,3 +4182,187 @@ describe('writeConflictToTree (direct)', () => {
     });
   });
 });
+
+describe('merge ORIG_HEAD', () => {
+  type Ctx = ReturnType<typeof createMemoryContext>;
+
+  const origHeadPath = (ctx: Ctx): string => `${ctx.layout.gitDir}/ORIG_HEAD`;
+
+  const commitFile = async (ctx: Ctx, name: string, message: string): Promise<ObjectId> => {
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${name}`, name);
+    await add(ctx, [name]);
+    return (await commit(ctx, { message, author })).id;
+  };
+
+  const seedBase = async (ctx: Ctx): Promise<ObjectId> => {
+    await init(ctx);
+    return commitFile(ctx, 'a.txt', 'base');
+  };
+
+  /** main = base, feature = base + b.txt; HEAD on main. */
+  const featureAhead = async (ctx: Ctx): Promise<{ main: ObjectId; feature: ObjectId }> => {
+    const main = await seedBase(ctx);
+    await branchCreate(ctx, { name: 'feature' });
+    await checkout(ctx, { rev: 'feature' });
+    const feature = await commitFile(ctx, 'b.txt', 'on-feature');
+    await checkout(ctx, { rev: 'main' });
+    return { main, feature };
+  };
+
+  /** feature = base, main = base + c.txt; HEAD on main. */
+  const mainAhead = async (ctx: Ctx): Promise<{ main: ObjectId }> => {
+    await seedBase(ctx);
+    await branchCreate(ctx, { name: 'feature' });
+    return { main: await commitFile(ctx, 'c.txt', 'on-main') };
+  };
+
+  /** Both branches add a different file; HEAD on main. */
+  const diverged = async (ctx: Ctx): Promise<{ main: ObjectId }> => {
+    await featureAhead(ctx);
+    return { main: await commitFile(ctx, 'c.txt', 'on-main') };
+  };
+
+  describe('Given the target is the current HEAD commit', () => {
+    describe('When merge reports up-to-date', () => {
+      it('Then ORIG_HEAD records HEAD', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const main = await seedBase(ctx);
+
+        // Act
+        await mergeRun(ctx, { rev: main });
+
+        // Assert
+        expect(await ctx.fs.readUtf8(origHeadPath(ctx))).toBe(`${main}\n`);
+      });
+    });
+  });
+
+  describe('Given the target is an ancestor of HEAD', () => {
+    describe('When merge reports up-to-date', () => {
+      it('Then ORIG_HEAD records HEAD', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { main } = await mainAhead(ctx);
+
+        // Act
+        await mergeRun(ctx, { rev: 'feature' });
+
+        // Assert
+        expect(await ctx.fs.readUtf8(origHeadPath(ctx))).toBe(`${main}\n`);
+      });
+    });
+  });
+
+  describe('Given the target is ahead of HEAD', () => {
+    describe('When merge fast-forwards', () => {
+      it('Then ORIG_HEAD records the pre-merge HEAD', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { main } = await featureAhead(ctx);
+
+        // Act
+        await mergeRun(ctx, { rev: 'feature' });
+
+        // Assert
+        expect(await ctx.fs.readUtf8(origHeadPath(ctx))).toBe(`${main}\n`);
+      });
+    });
+
+    describe("When merge runs with fastForward 'never'", () => {
+      it('Then ORIG_HEAD records the pre-merge HEAD', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { main } = await featureAhead(ctx);
+
+        // Act
+        await mergeRun(ctx, { rev: 'feature', fastForward: 'never', author });
+
+        // Assert
+        expect(await ctx.fs.readUtf8(origHeadPath(ctx))).toBe(`${main}\n`);
+      });
+    });
+
+    describe('When a clean true merge commits', () => {
+      it('Then ORIG_HEAD records the pre-merge HEAD and no reflog is written for it', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { main } = await diverged(ctx);
+
+        // Act
+        await mergeRun(ctx, { rev: 'feature', author });
+
+        // Assert
+        expect(await ctx.fs.readUtf8(origHeadPath(ctx))).toBe(`${main}\n`);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/logs/ORIG_HEAD`)).toBe(false);
+      });
+    });
+  });
+
+  describe("Given diverged histories and fastForward 'only'", () => {
+    describe('When merge refuses', () => {
+      it('Then ORIG_HEAD records HEAD', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { main } = await diverged(ctx);
+
+        // Act
+        await mergeRun(ctx, { rev: 'feature', fastForward: 'only' }).catch(() => undefined);
+
+        // Assert
+        expect(await ctx.fs.readUtf8(origHeadPath(ctx))).toBe(`${main}\n`);
+      });
+    });
+  });
+
+  describe('Given an untracked file the merge would overwrite', () => {
+    describe('When merge refuses', () => {
+      it('Then ORIG_HEAD records HEAD', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const { main } = await diverged(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/b.txt`, 'untracked');
+
+        // Act
+        await mergeRun(ctx, { rev: 'feature', author }).catch(() => undefined);
+
+        // Assert
+        expect(await ctx.fs.readUtf8(origHeadPath(ctx))).toBe(`${main}\n`);
+      });
+    });
+  });
+
+  describe('Given a rev that does not resolve', () => {
+    describe('When merge refuses', () => {
+      it('Then ORIG_HEAD is not written', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedBase(ctx);
+
+        // Act
+        await mergeRun(ctx, { rev: 'nope' }).catch(() => undefined);
+
+        // Assert
+        expect(await ctx.fs.exists(origHeadPath(ctx))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a merge already pending', () => {
+    describe('When merge refuses', () => {
+      it('Then ORIG_HEAD is not rewritten', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await diverged(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/c.txt`, 'c');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/MERGE_HEAD`, `${'a'.repeat(40)}\n`);
+
+        // Act
+        await mergeRun(ctx, { rev: 'feature', author }).catch(() => undefined);
+
+        // Assert
+        expect(await ctx.fs.exists(origHeadPath(ctx))).toBe(false);
+      });
+    });
+  });
+});
