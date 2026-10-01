@@ -18,6 +18,7 @@ import {
 } from '../../../../fixtures/digest-collision-pair.js';
 import { pseudoRandomBytes } from '../../../../fixtures/pseudo-random-bytes.js';
 import { buildSeededContext } from '../fixtures.js';
+import { writeSyntheticPackIn } from '../pack-fixture.js';
 
 const enc = new TextEncoder();
 const ALL_KEY: LineKey = { mode: 'all', ignoreCrAtEol: false };
@@ -773,6 +774,36 @@ describe('isWhitespaceOnlyModify', () => {
           const data = (error as TsgitError).data;
           expect(data.code).toBe('OPERATION_ABORTED');
         }
+      });
+    });
+  });
+});
+
+describe('isWhitespaceOnlyModify through an corrupt alternate', () => {
+  describe('Given two small packed blobs in the primary and an corrupt alternate', () => {
+    describe('When the predicate opens both sides', () => {
+      it('Then no rejection', async () => {
+        // Arrange
+        const ctx = createMemoryContext({
+          files: { '/repo/.git/objects/info/alternates': enc.encode('/repo/alt/objects\n') },
+        });
+        await ctx.fs.mkdir('/repo/alt/objects');
+        await ctx.fs.write(
+          '/repo/alt/objects/pack/multi-pack-index',
+          Uint8Array.from([0x00, 0x49, 0x44, 0x58, 1, 1, 1, 0, ...new Array(8).fill(0)]),
+        );
+        const [oldId, newId] = await writeSyntheticPackIn(ctx, '/repo/.git/objects', 'p', [
+          { kind: 'base', type: 'blob', content: enc.encode('a b\n') },
+          { kind: 'base', type: 'blob', content: enc.encode('a  b\n') },
+        ]);
+        const change = changeFor(oldId as ObjectId, newId as ObjectId);
+
+        // Act
+        const sut = isWhitespaceOnlyModify;
+        const result = await sut(ctx, change, ALL_KEY, false);
+
+        // Assert
+        expect(result).toBe(true);
       });
     });
   });

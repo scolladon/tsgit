@@ -84,15 +84,38 @@ export type BlobSource =
       release(): Promise<void>;
     };
 
+/** Which of git's two per-source search orders locates the blob. `'stream'` is
+ *  `open_istream`'s (a large non-delta pack entry wins, loose is the fallback,
+ *  the delta cache is never consulted); `'in-core'` is `read_object`'s (loose
+ *  first, then pack, the delta cache first of all). */
+export type BlobReadOrder = 'stream' | 'in-core';
+
 /** INTERNAL superset of the public `StreamBlobOptions`: `looseMode` selects
  *  git's buffered vs streamed loose read tier (`object-resolver.ts`'s
- *  `LooseReadMode`) per blob. Every public `streamBlob`/`verifyStoredObject`
- *  caller stays on the public option shape and keeps today's `'streamed'`
- *  default — only an internal caller (the whitespace-drop predicate) asks
- *  for `'buffered'`. */
+ *  `LooseReadMode`) per blob, and `order` the per-source search order. Every
+ *  public `streamBlob`/`verifyStoredObject` caller stays on the public option
+ *  shape and keeps today's `'streamed'` default — only an internal caller (the
+ *  whitespace-drop predicate) asks for `'buffered'`. */
 interface OpenBlobSourceOptions extends StreamBlobOptions {
   readonly looseMode?: LooseReadMode;
+  readonly order: BlobReadOrder;
 }
+
+type PackEntryRead = Awaited<ReturnType<typeof readEntryHeaderWithChunk>>;
+
+interface LocatedBase {
+  readonly id: ObjectId;
+  readonly store: ObjectStore;
+  readonly source: ObjectSource;
+}
+
+export type LocatedBlob =
+  | (LocatedBase & { readonly arm: 'loose'; readonly compressed: Uint8Array })
+  | (LocatedBase & {
+      readonly arm: 'pack';
+      readonly hit: PackLookupHit;
+      readonly entry: PackEntryRead;
+    });
 
 interface BufferGate {
   readonly maxBufferedBytes: number;
@@ -104,37 +127,68 @@ export async function openBlobSource(
   ctx: Context,
   id: ObjectId,
   maxBufferedBytes: number,
-  options?: OpenBlobSourceOptions,
+  options: OpenBlobSourceOptions,
 ): Promise<BlobSource> {
-  const gate: BufferGate = {
-    maxBufferedBytes,
-    verifyHash: options?.verifyHash ?? false,
-    looseMode: options?.looseMode ?? 'streamed',
-  };
+  const store = await openLoadableStore(ctx);
+  if (options.order === 'in-core') {
+    const cached = await tryDeltaCacheHit(ctx, id, gateOf(maxBufferedBytes, options));
+    if (cached !== undefined) return cached;
+  }
+  const located = await locateWithRescan(ctx, store, id, options.order);
+  if (located === undefined) throw objectNotFound(id);
+  return serveLocatedBlob(ctx, located, maxBufferedBytes, options);
+}
 
+/** Locates `id` in git's `order` with the full-miss rescan, reporting a miss
+ *  as `undefined` instead of throwing. */
+export async function locateBlob(
+  ctx: Context,
+  id: ObjectId,
+  options: { readonly order: BlobReadOrder },
+): Promise<LocatedBlob | undefined> {
+  const store = await openLoadableStore(ctx);
+  return locateWithRescan(ctx, store, id, options.order);
+}
+
+export async function serveLocatedBlob(
+  ctx: Context,
+  located: LocatedBlob,
+  maxBufferedBytes: number,
+  options: OpenBlobSourceOptions,
+): Promise<BlobSource> {
+  return serveLocated(ctx, located, gateOf(maxBufferedBytes, options));
+}
+
+const gateOf = (maxBufferedBytes: number, options: OpenBlobSourceOptions): BufferGate => ({
+  maxBufferedBytes,
+  verifyHash: options.verifyHash ?? false,
+  looseMode: options.looseMode ?? 'streamed',
+});
+
+async function openLoadableStore(ctx: Context): Promise<ObjectStore> {
   checkAborted(ctx);
   const store = peekObjectStore(ctx) ?? (await getObjectStore(ctx));
-  const registry = store.primary.registry;
   // Same store-setup gate as resolveObjectContentWithDepth: a structurally
   // self-inconsistent multi-pack-index denies streamed loose reads too —
   // otherwise the two read paths would disagree about a corrupt store.
-  await registry.assertLoadable();
+  await store.primary.registry.assertLoadable();
+  return store;
+}
 
-  const cached = await tryDeltaCacheHit(ctx, id, gate);
-  if (cached !== undefined) return cached;
-
-  const first = await tryOpenBlobSource(ctx, store, id, gate);
+async function locateWithRescan(
+  ctx: Context,
+  store: ObjectStore,
+  id: ObjectId,
+  order: BlobReadOrder,
+): Promise<LocatedBlob | undefined> {
+  const locate = order === 'stream' ? locateStream : locateInCore;
+  const first = await locate(ctx, store, id);
   if (first !== undefined) return first;
-
-  // Full miss: as of the CURRENT generation, no pack claims `id` and no loose
-  // file exists for it either. Mirrors `resolveObjectContentWithDepth`'s own
-  // retry — `retryOnceAfterRescan` single-flights the re-scan across
-  // concurrent misses and honours an abort raised during it.
-  const retried = await retryOnceAfterRescan(ctx, store, id, () =>
-    tryOpenBlobSource(ctx, store, id, gate),
-  );
-  if (retried !== undefined) return retried;
-  throw objectNotFound(id);
+  // Full miss: as of the CURRENT generation, no source claims `id`. Mirrors
+  // `resolveObjectContentWithDepth`'s own retry — `retryOnceAfterRescan`
+  // single-flights the re-scan across concurrent misses and honours an abort
+  // raised during it.
+  return retryOnceAfterRescan(ctx, store, id, () => locate(ctx, store, id));
 }
 
 /** The deltaCache fast path, gated at zero (`NEVER_BUFFER` skips it too — see
@@ -151,67 +205,91 @@ async function tryDeltaCacheHit(
   return resolveFromCache(ctx, id, cached, gate);
 }
 
+async function readPackEntry(
+  ctx: Context,
+  store: ObjectStore,
+  source: ObjectSource,
+  id: ObjectId,
+): Promise<LocatedBlob | undefined> {
+  checkAborted(ctx);
+  const hit = await source.registry.lookup(id);
+  if (hit === undefined) return undefined;
+  const table = await hit.pack.offsetTable();
+  const nextOffset = nextOffsetForEntry(table, hit.offset);
+  const entry = await readEntryHeaderWithChunk(ctx, hit, nextOffset, table.packFileSize);
+  return { arm: 'pack', id, store, source, hit, entry };
+}
+
+async function readLooseEntry(
+  ctx: Context,
+  store: ObjectStore,
+  source: ObjectSource,
+  id: ObjectId,
+): Promise<LocatedBlob | undefined> {
+  const compressed = await looseCompressedBytes(ctx, id, looseCacheLocation(store, source));
+  return compressed === undefined ? undefined : { arm: 'loose', id, store, source, compressed };
+}
+
+const isLargeBase = (located: LocatedBlob | undefined, threshold: number): boolean =>
+  located?.arm === 'pack' && isBase(located.entry.header) && located.entry.header.size > threshold;
+
 /**
- * One resolution attempt against the CURRENT generation — loose first, then
- * pack, mirroring `openBlobSource`'s own original order — reporting
- * `undefined` when NEITHER claims `id`: the full-miss signal `openBlobSource`
- * retries once after a re-scan. Any OTHER error (a corrupt entry, a hash
- * mismatch) propagates directly, never converted to a miss.
+ * git's `open_istream` order, one source at a time: a pack entry that is a
+ * non-delta larger than `core.bigFileThreshold` wins; otherwise the first
+ * source's pack entry is held back while the loose arm and every later source
+ * get their turn, and it is served only when nothing better turns up. Any
+ * other error (a corrupt entry) propagates, never a miss.
  */
-async function tryOpenBlobSource(
+async function locateStream(
   ctx: Context,
   store: ObjectStore,
   id: ObjectId,
-  gate: BufferGate,
-): Promise<BlobSource | undefined> {
+): Promise<LocatedBlob | undefined> {
+  let firstHeld: LocatedBlob | undefined;
   for (const source of store.sources) {
     if (source !== store.primary) await source.registry.assertLoadable();
-    const found = await tryOpenFromSource(ctx, store, source, id, gate);
+    const packed = await readPackEntry(ctx, store, source, id);
+    if (isLargeBase(packed, store.bigFileThreshold)) return packed;
+    firstHeld ??= packed;
+    const loose = await readLooseEntry(ctx, store, source, id);
+    if (loose !== undefined) return loose;
+  }
+  return firstHeld;
+}
+
+/** git's `read_object` order, one source at a time: loose, then pack. */
+async function locateInCore(
+  ctx: Context,
+  store: ObjectStore,
+  id: ObjectId,
+): Promise<LocatedBlob | undefined> {
+  for (const source of store.sources) {
+    if (source !== store.primary) await source.registry.assertLoadable();
+    const found =
+      (await readLooseEntry(ctx, store, source, id)) ??
+      (await readPackEntry(ctx, store, source, id));
     if (found !== undefined) return found;
   }
   return undefined;
 }
 
-async function tryOpenFromSource(
+async function serveLocated(
   ctx: Context,
-  store: ObjectStore,
-  source: ObjectSource,
-  id: ObjectId,
+  located: LocatedBlob,
   gate: BufferGate,
-): Promise<BlobSource | undefined> {
-  const compressed = await looseCompressedBytes(ctx, id, looseCacheLocation(store, source));
-  if (compressed !== undefined) {
+): Promise<BlobSource> {
+  const { id } = located;
+  if (located.arm === 'loose') {
     checkAborted(ctx);
-    return await resolveLoose(ctx, id, compressed, gate);
+    return resolveLoose(ctx, id, located.compressed, gate);
   }
-
-  checkAborted(ctx);
-  const hit = await source.registry.lookup(id);
-  if (hit === undefined) return undefined;
-
-  const table = await hit.pack.offsetTable();
-  const nextOffset = nextOffsetForEntry(table, hit.offset);
-  const { header, chunk, headerEndInChunk } = await readEntryHeaderWithChunk(
-    ctx,
-    hit,
-    nextOffset,
-    table.packFileSize,
-  );
-
+  const { header, chunk, headerEndInChunk } = located.entry;
   if (isBase(header)) {
-    return await resolvePackBase(
-      ctx,
-      id,
-      header.type,
-      header.size,
-      chunk.subarray(headerEndInChunk),
-      gate,
-      hit.offset,
-    );
+    const payload = chunk.subarray(headerEndInChunk);
+    return resolvePackBase(ctx, id, header.type, header.size, payload, gate, located.hit.offset);
   }
-
   checkAborted(ctx);
-  return await resolvePackDelta(ctx, store, source, hit, id, gate);
+  return resolvePackDelta(ctx, located.store, located.source, located.hit, id, gate);
 }
 
 /** The result of `verifyStoredObject`: the stored type of an object git's
@@ -256,7 +334,10 @@ async function hashStoredObject(
     await registry.assertLoadable();
     return VIRTUAL_EMPTY_TREE;
   }
-  const source = await openBlobSource(ctx, id, MAX_BUFFERED_BLOB_BYTES, { verifyHash: true });
+  const source = await openBlobSource(ctx, id, MAX_BUFFERED_BLOB_BYTES, {
+    verifyHash: true,
+    order: 'in-core',
+  });
   const scan = startScanFor(source.type, ctx.hashConfig.hexLength);
   if (source.kind === 'bytes') {
     return { type: source.type, acceptance: scan && feedParseAcceptance(scan, source.content) };

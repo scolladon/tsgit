@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { readBlob } from '../../../../src/application/primitives/read-blob.js';
 import { streamBlob } from '../../../../src/application/primitives/stream-blob.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
@@ -13,7 +14,7 @@ import {
   writeLooseWithDeclaredSize,
   writeRawObjectBytes,
 } from './fixtures.js';
-import { buildSyntheticPack, writeSyntheticPack } from './pack-fixture.js';
+import { buildSyntheticPack, writeSyntheticPack, writeSyntheticPackIn } from './pack-fixture.js';
 
 const ZERO_ID = '0'.repeat(40) as ObjectId;
 
@@ -996,7 +997,7 @@ describe('streamBlob', () => {
 
   describe('Given a cold Context and a loose blob', () => {
     describe('When streamBlob opens it', () => {
-      it('Then the ledger matches readObject: objects/pack listed once for the shared listing, no .idx touch', async () => {
+      it('Then objects/pack is listed once for the shared listing, and the packs are probed before the loose arm', async () => {
         // Arrange
         const blob: Blob = {
           type: 'blob',
@@ -1024,7 +1025,7 @@ describe('streamBlob', () => {
         );
         expect(packDirReaddirCalls).toHaveLength(1);
         const idxTouches = calls().filter((call) => call.path.endsWith('.idx'));
-        expect(idxTouches).toEqual([]);
+        expect(idxTouches.length).toBeGreaterThan(0);
       });
     });
   });
@@ -1061,6 +1062,39 @@ describe('streamBlob', () => {
         if (data.code === 'INVALID_MULTI_PACK_INDEX') {
           expect(data.check).toBe('signature');
         }
+      });
+    });
+  });
+});
+
+describe('streamBlob through an corrupt alternate', () => {
+  describe('Given a small packed blob in the primary and an corrupt alternate', () => {
+    describe('When streamBlob', () => {
+      it("Then it rejects with the alternate's error data", async () => {
+        // Arrange
+        const ctx = createMemoryContext({
+          files: { '/repo/.git/objects/info/alternates': ENC.encode('/repo/alt/objects\n') },
+        });
+        await ctx.fs.mkdir('/repo/alt/objects');
+        await ctx.fs.write(
+          '/repo/alt/objects/pack/multi-pack-index',
+          Uint8Array.from([0x00, 0x49, 0x44, 0x58, 1, 1, 1, 0, ...new Array(8).fill(0)]),
+        );
+        const [id] = await writeSyntheticPackIn(ctx, '/repo/.git/objects', 'p', [
+          { kind: 'base', type: 'blob', content: ENC.encode('small packed') },
+        ]);
+
+        // Act
+        const sut = streamBlob;
+        let caught: unknown;
+        try {
+          await sut(ctx, id as ObjectId);
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('INVALID_MULTI_PACK_INDEX');
       });
     });
   });
