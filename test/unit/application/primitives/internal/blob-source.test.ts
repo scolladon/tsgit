@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import {
+  type BlobSource,
   MAX_BUFFERED_BLOB_BYTES,
   openBlobSource,
   type VerifiedObject,
@@ -10,12 +12,17 @@ import { writeObject } from '../../../../../src/application/primitives/write-obj
 import { TsgitError } from '../../../../../src/domain/error.js';
 import { serializeObject } from '../../../../../src/domain/objects/git-object.js';
 import type { Blob, Commit, ObjectId, Tag } from '../../../../../src/domain/objects/index.js';
-import { EMPTY_TREE_OID } from '../../../../../src/domain/objects/index.js';
+import { EMPTY_TREE_OID, serializeHeader } from '../../../../../src/domain/objects/index.js';
 import { parseAcceptanceVerdict } from '../../../../../src/domain/objects/parse-acceptance.js';
 import { computeLooseObjectPath } from '../../../../../src/domain/storage/loose-path.js';
 import type { Context } from '../../../../../src/ports/context.js';
 import { buildSeededContext, instrumentedContext, writeRawObjectBytes } from '../fixtures.js';
-import { buildSyntheticPack, corruptIdxOffset, writeSyntheticPack } from '../pack-fixture.js';
+import {
+  buildSyntheticPack,
+  corruptIdxOffset,
+  writeSyntheticPack,
+  writeSyntheticPackIn,
+} from '../pack-fixture.js';
 
 const ZERO_ID = '0'.repeat(40) as ObjectId;
 const ENC = new TextEncoder();
@@ -1813,6 +1820,134 @@ describe('verifyStoredObject', () => {
         // Assert
         expect(result.type).toBe('blob');
         expect(calls.count).toBe(1);
+      });
+    });
+  });
+});
+
+const PRIMARY_OBJECTS = '/repo/.git/objects';
+const ALT_OBJECTS = '/repo/alt/objects';
+
+const contextWithAlternate = async (): Promise<Context> => {
+  const ctx = createMemoryContext({
+    files: { [`${PRIMARY_OBJECTS}/info/alternates`]: ENC.encode(`${ALT_OBJECTS}\n`) },
+  });
+  await ctx.fs.mkdir(ALT_OBJECTS);
+  return ctx;
+};
+
+const blobBytes = async (source: BlobSource): Promise<Uint8Array> =>
+  source.kind === 'bytes' ? source.content : collect(source.stream);
+
+describe('openBlobSource through alternates', () => {
+  describe('Given a blob only loose in an alternate', () => {
+    describe('When openBlobSource', () => {
+      it('Then the bytes are served', async () => {
+        // Arrange
+        const ctx = await contextWithAlternate();
+        const content = ENC.encode('loose in the alternate');
+        const bytes = new Uint8Array([...serializeHeader('blob', content.length), ...content]);
+        const id = (await ctx.hash.hashHex(bytes)) as ObjectId;
+        await ctx.fs.write(
+          `${ALT_OBJECTS}/${computeLooseObjectPath(id)}`,
+          await ctx.compressor.deflate(bytes),
+        );
+
+        // Act
+        const source = await openBlobSource(ctx, id, MAX_BUFFERED_BLOB_BYTES);
+
+        // Assert
+        expect(await blobBytes(source)).toEqual(content);
+      });
+    });
+  });
+
+  describe('Given a blob stored as a base entry in an alternate pack', () => {
+    describe('When openBlobSource', () => {
+      it('Then the bytes are served', async () => {
+        // Arrange
+        const ctx = await contextWithAlternate();
+        const content = ENC.encode('packed base in the alternate');
+        const [id] = await writeSyntheticPackIn(ctx, ALT_OBJECTS, 'alt', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+
+        // Act
+        const source = await openBlobSource(ctx, id as ObjectId, MAX_BUFFERED_BLOB_BYTES);
+
+        // Assert
+        expect(await blobBytes(source)).toEqual(content);
+      });
+    });
+  });
+
+  describe('Given a blob stored as a delta in an alternate pack', () => {
+    describe('When openBlobSource', () => {
+      it('Then the bytes are served', async () => {
+        // Arrange
+        const ctx = await contextWithAlternate();
+        const target = ENC.encode('delta base content, extended');
+        const [, deltaId] = await writeSyntheticPackIn(ctx, ALT_OBJECTS, 'alt', [
+          { kind: 'base', type: 'blob', content: ENC.encode('delta base content') },
+          { kind: 'ofs-delta', baseIndex: 0, targetContent: target },
+        ]);
+
+        // Act
+        const source = await openBlobSource(ctx, deltaId as ObjectId, MAX_BUFFERED_BLOB_BYTES);
+
+        // Assert
+        expect(await blobBytes(source)).toEqual(target);
+      });
+    });
+  });
+
+  describe('Given a full miss and a pack added to the alternate afterwards', () => {
+    describe('When openBlobSource', () => {
+      it('Then the rescan finds it', async () => {
+        // Arrange
+        const ctx = await contextWithAlternate();
+        await openBlobSource(ctx, ZERO_ID, MAX_BUFFERED_BLOB_BYTES).catch(() => undefined);
+        const content = ENC.encode('arrived later');
+        const [id] = await writeSyntheticPackIn(ctx, ALT_OBJECTS, 'late', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+
+        // Act
+        const source = await openBlobSource(ctx, id as ObjectId, MAX_BUFFERED_BLOB_BYTES);
+
+        // Assert
+        expect(await blobBytes(source)).toEqual(content);
+      });
+    });
+  });
+
+  describe('Given a signal aborted while the primary is searched and an alternate holds the blob', () => {
+    describe('When openBlobSource', () => {
+      it('Then it throws operationAborted before consulting the alternate', async () => {
+        // Arrange
+        const base = await contextWithAlternate();
+        const content = ENC.encode('guarded by abort');
+        const [id] = await writeSyntheticPackIn(base, ALT_OBJECTS, 'alt', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const controller = new AbortController();
+        const ctx: Context = {
+          ...base,
+          signal: controller.signal,
+          fs: {
+            ...base.fs,
+            readdir: async (path: string) => {
+              if (path.startsWith(PRIMARY_OBJECTS)) controller.abort();
+              return base.fs.readdir(path);
+            },
+          },
+        };
+
+        // Act
+        const attempt = openBlobSource(ctx, id as ObjectId, MAX_BUFFERED_BLOB_BYTES);
+
+        // Assert
+        await expect(attempt).rejects.toMatchObject({ data: { code: 'OPERATION_ABORTED' } });
       });
     });
   });

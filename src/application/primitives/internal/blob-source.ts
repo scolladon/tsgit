@@ -41,7 +41,13 @@ import {
   resolvePackChain,
   verifyObjectContent,
 } from '../object-resolver.js';
-import { getObjectStore, type ObjectStore, peekObjectStore } from '../object-store.js';
+import {
+  getObjectStore,
+  looseCacheLocation,
+  type ObjectSource,
+  type ObjectStore,
+  peekObjectStore,
+} from '../object-store.js';
 import { nextOffsetForEntry, type PackLookupHit, type PackRegistry } from '../pack-registry.js';
 import { getPackRegistry, peekPackRegistry, withLazyFetchRetry } from '../read-object.js';
 import type { StreamBlobOptions } from '../stream-blob.js';
@@ -117,7 +123,7 @@ export async function openBlobSource(
   const cached = await tryDeltaCacheHit(ctx, id, gate);
   if (cached !== undefined) return cached;
 
-  const first = await tryOpenBlobSource(ctx, id, gate);
+  const first = await tryOpenBlobSource(ctx, store, id, gate);
   if (first !== undefined) return first;
 
   // Full miss: as of the CURRENT generation, no pack claims `id` and no loose
@@ -125,7 +131,7 @@ export async function openBlobSource(
   // retry — `retryOnceAfterRescan` single-flights the re-scan across
   // concurrent misses and honours an abort raised during it.
   const retried = await retryOnceAfterRescan(ctx, store, id, () =>
-    tryOpenBlobSource(ctx, id, gate),
+    tryOpenBlobSource(ctx, store, id, gate),
   );
   if (retried !== undefined) return retried;
   throw objectNotFound(id);
@@ -154,19 +160,33 @@ async function tryDeltaCacheHit(
  */
 async function tryOpenBlobSource(
   ctx: Context,
+  store: ObjectStore,
   id: ObjectId,
   gate: BufferGate,
 ): Promise<BlobSource | undefined> {
-  const compressed = await looseCompressedBytes(ctx, id);
+  for (const source of store.sources) {
+    if (source !== store.primary) await source.registry.assertLoadable();
+    const found = await tryOpenFromSource(ctx, store, source, id, gate);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+}
+
+async function tryOpenFromSource(
+  ctx: Context,
+  store: ObjectStore,
+  source: ObjectSource,
+  id: ObjectId,
+  gate: BufferGate,
+): Promise<BlobSource | undefined> {
+  const compressed = await looseCompressedBytes(ctx, id, looseCacheLocation(store, source));
   if (compressed !== undefined) {
     checkAborted(ctx);
     return await resolveLoose(ctx, id, compressed, gate);
   }
 
   checkAborted(ctx);
-  const store = peekObjectStore(ctx) ?? (await getObjectStore(ctx));
-  const { registry } = store.primary;
-  const hit = await registry.lookup(id);
+  const hit = await source.registry.lookup(id);
   if (hit === undefined) return undefined;
 
   const table = await hit.pack.offsetTable();
@@ -191,7 +211,7 @@ async function tryOpenBlobSource(
   }
 
   checkAborted(ctx);
-  return await resolvePackDelta(ctx, store, hit, id, gate);
+  return await resolvePackDelta(ctx, store, source, hit, id, gate);
 }
 
 /** The result of `verifyStoredObject`: the stored type of an object git's
@@ -464,11 +484,12 @@ async function resolvePackBase(
 async function resolvePackDelta(
   ctx: Context,
   store: ObjectStore,
+  source: ObjectSource,
   hit: PackLookupHit,
   id: ObjectId,
   gate: BufferGate,
 ): Promise<BlobSource> {
-  const resolved = await resolvePackChain(ctx, store, store.primary, hit, id, undefined);
+  const resolved = await resolvePackChain(ctx, store, source, hit, id, undefined);
   await verifyObjectContent(ctx, id, resolved.type, resolved.content, gate.verifyHash);
   return { kind: 'bytes', ...resolved };
 }

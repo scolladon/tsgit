@@ -1,12 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
+import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { hasObject } from '../../../../src/application/primitives/has-object.js';
 import { getPackRegistry } from '../../../../src/application/primitives/read-object.js';
 import type { Blob, ObjectId } from '../../../../src/domain/objects/index.js';
-import { serializeObject } from '../../../../src/domain/objects/index.js';
+import { serializeHeader, serializeObject } from '../../../../src/domain/objects/index.js';
+import { computeLooseObjectPath } from '../../../../src/domain/storage/loose-path.js';
 import type { Context } from '../../../../src/ports/context.js';
 import type { PromisorRemote } from '../../../../src/ports/promisor.js';
 import { buildSeededContext, instrumentedContext } from './fixtures.js';
-import { writeSyntheticPack } from './pack-fixture.js';
+import { writeSyntheticPack, writeSyntheticPackIn } from './pack-fixture.js';
 
 describe('hasObject', () => {
   describe('Given an object present only as a loose file', () => {
@@ -210,6 +212,93 @@ describe('hasObject', () => {
           (call) => call.method === 'readdir' && call.path === fanoutDir,
         );
         expect(fanoutReaddirCalls).toHaveLength(1);
+      });
+    });
+  });
+});
+
+const ENC = new TextEncoder();
+const ALT_OBJECTS = '/repo/alt/objects';
+
+const contextWithAlternate = async (): Promise<Context> => {
+  const ctx = createMemoryContext({
+    files: { '/repo/.git/objects/info/alternates': ENC.encode(`${ALT_OBJECTS}\n`) },
+  });
+  await ctx.fs.mkdir(ALT_OBJECTS);
+  return ctx;
+};
+
+describe('hasObject through alternates', () => {
+  describe('Given an object only in an alternate pack', () => {
+    describe('When probing hasObject', () => {
+      it('Then it returns true', async () => {
+        // Arrange
+        const ctx = await contextWithAlternate();
+        const [id] = await writeSyntheticPackIn(ctx, ALT_OBJECTS, 'alt', [
+          { kind: 'base', type: 'blob', content: ENC.encode('alt packed') },
+        ]);
+
+        // Act
+        const result = await hasObject(ctx, id as ObjectId);
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+
+  describe('Given an object only loose in an alternate', () => {
+    describe('When probing hasObject', () => {
+      it('Then it returns true', async () => {
+        // Arrange
+        const ctx = await contextWithAlternate();
+        const content = ENC.encode('alt loose');
+        const bytes = new Uint8Array([...serializeHeader('blob', content.length), ...content]);
+        const id = (await ctx.hash.hashHex(bytes)) as ObjectId;
+        await ctx.fs.write(
+          `${ALT_OBJECTS}/${computeLooseObjectPath(id)}`,
+          await ctx.compressor.deflate(bytes),
+        );
+
+        // Act
+        const result = await hasObject(ctx, id);
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+
+  describe('Given an object in no source', () => {
+    describe('When probing hasObject', () => {
+      it('Then it returns false', async () => {
+        // Arrange
+        const ctx = await contextWithAlternate();
+
+        // Act
+        const result = await hasObject(ctx, 'e'.repeat(40) as ObjectId);
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a pack added to the alternate after the first scan', () => {
+    describe('When probing hasObject in recheck mode', () => {
+      it('Then it finds the late pack', async () => {
+        // Arrange
+        const ctx = await contextWithAlternate();
+        await hasObject(ctx, 'e'.repeat(40) as ObjectId);
+        const [id] = await writeSyntheticPackIn(ctx, ALT_OBJECTS, 'late', [
+          { kind: 'base', type: 'blob', content: ENC.encode('arrived later') },
+        ]);
+
+        // Act
+        const result = await hasObject(ctx, id as ObjectId, { mode: 'recheck' });
+
+        // Assert
+        expect(result).toBe(true);
       });
     });
   });

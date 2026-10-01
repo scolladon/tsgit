@@ -9,8 +9,12 @@ import type { ObjectId } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
 import { probeLooseOid } from './internal/loose-oid-cache.js';
 import { retryOnceAfterRescan } from './internal/retry-after-rescan.js';
-import { getObjectStore, peekObjectStore } from './object-store.js';
-import type { PackRegistry } from './pack-registry.js';
+import {
+  getObjectStore,
+  looseCacheLocation,
+  type ObjectStore,
+  peekObjectStore,
+} from './object-store.js';
 
 /** Whether a miss re-scans the pack directory before answering — see {@link hasObject}. */
 export type HasObjectMode = 'quick' | 'recheck';
@@ -22,10 +26,12 @@ export interface HasObjectOptions {
 
 const QUICK: HasObjectOptions = { mode: 'quick' };
 
-async function probeOnce(ctx: Context, registry: PackRegistry, id: ObjectId): Promise<boolean> {
-  const hit = await registry.lookup(id);
-  if (hit !== undefined) return true;
-  return probeLooseOid(ctx, id);
+async function probeOnce(ctx: Context, store: ObjectStore, id: ObjectId): Promise<boolean> {
+  for (const source of store.sources) {
+    if ((await source.registry.lookup(id)) !== undefined) return true;
+    if (await probeLooseOid(ctx, id, looseCacheLocation(store, source))) return true;
+  }
+  return false;
 }
 
 /**
@@ -43,11 +49,10 @@ export const hasObject = async (
   options: HasObjectOptions = QUICK,
 ): Promise<boolean> => {
   const store = peekObjectStore(ctx) ?? (await getObjectStore(ctx));
-  const registry: PackRegistry = store.primary.registry;
-  if (await probeOnce(ctx, registry, id)) return true;
+  if (await probeOnce(ctx, store, id)) return true;
   if (options.mode === 'quick') return false;
   const retried = await retryOnceAfterRescan(ctx, store, id, async () =>
-    (await probeOnce(ctx, registry, id)) ? true : undefined,
+    (await probeOnce(ctx, store, id)) ? true : undefined,
   );
   return retried ?? false;
 };

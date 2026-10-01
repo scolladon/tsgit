@@ -14,9 +14,9 @@ import type { Context } from '../../ports/context.js';
 import type { PromisorRemote } from '../../ports/promisor.js';
 import { readConfig } from '../primitives/config-read.js';
 import { fetchPack } from '../primitives/fetch-pack.js';
+import { hasObject } from '../primitives/has-object.js';
 import { assertValidPromisorRemoteConfig } from '../primitives/internal/boolean-config-guard.js';
-import { createPackRegistry, type PackRegistry } from '../primitives/pack-registry.js';
-import { commonGitDir, looseObjectPath } from '../primitives/path-layout.js';
+import { getObjectStore } from '../primitives/object-store.js';
 import { negotiateDiscovery, negotiatePackBytes } from './internal/fetch-negotiation.js';
 import { openGitSession } from './internal/git-service-session.js';
 import { assertPeerAlgorithm } from './internal/object-format-guard.js';
@@ -48,28 +48,20 @@ type FetchMissingOutcome =
       readonly fetched: number;
     };
 
-/** Loose-object probe + pack-registry lookup — no `readObject`, no re-entry. */
-const objectExistsLocally = async (
-  ctx: Context,
-  registry: PackRegistry,
-  id: ObjectId,
-): Promise<boolean> => {
-  if (await ctx.fs.exists(looseObjectPath(commonGitDir(ctx), id))) return true;
-  return (await registry.lookup(id)) !== undefined;
-};
-
 /** The oids not already present locally, de-duplicated, order-preserving. */
 const collectMissing = async (
   ctx: Context,
   oids: ReadonlyArray<ObjectId>,
 ): Promise<ReadonlyArray<ObjectId>> => {
-  const registry = await createPackRegistry(ctx);
+  // One rescan up front, so a pack another process landed since the last scan
+  // is seen, then a plain presence probe per oid across every source.
+  await (await getObjectStore(ctx)).reprepare();
   const seen = new Set<string>();
   const missing: ObjectId[] = [];
   for (const id of oids) {
     if (seen.has(id)) continue;
     seen.add(id);
-    if (!(await objectExistsLocally(ctx, registry, id))) missing.push(id);
+    if (!(await hasObject(ctx, id))) missing.push(id);
   }
   return missing;
 };

@@ -17,7 +17,7 @@ import type {
   HttpResponse,
   HttpTransport,
 } from '../../../../src/ports/http-transport.js';
-import { buildSyntheticPack } from '../primitives/pack-fixture.js';
+import { buildSyntheticPack, writeSyntheticPackIn } from '../primitives/pack-fixture.js';
 import { seedRepo } from './fixtures.js';
 
 const ENCODER = new TextEncoder();
@@ -366,6 +366,35 @@ describe('fetchMissing', () => {
         );
 
         // Assert — the pack registry reports it present, so nothing is fetched.
+        expect(result).toEqual({ remote: 'origin', requested: 1, fetched: 0 });
+      });
+    });
+  });
+
+  describe('Given a wanted id present only in an alternate', () => {
+    describe('When fetchMissing', () => {
+      it('Then it is not requested', async () => {
+        // Arrange
+        const altObjects = '/repo/alt/objects';
+        const ctx: Context = {
+          ...createMemoryContext({
+            files: {
+              ['/repo/.git/objects/info/alternates']: ENCODER.encode(`${altObjects}\n`),
+            },
+          }),
+          transport: forbiddenTransport(),
+        };
+        await ctx.fs.mkdir(altObjects);
+        await seedRepo(ctx, {});
+        await withConfig(ctx, PARTIAL_CONFIG);
+        const [id] = await writeSyntheticPackIn(ctx, altObjects, 'alt', [
+          { kind: 'base', type: 'blob', content: ENCODER.encode('held by the alternate') },
+        ]);
+
+        // Act
+        const result = await fetchMissing(ctx, { oids: [id as ObjectId] });
+
+        // Assert
         expect(result).toEqual({ remote: 'origin', requested: 1, fetched: 0 });
       });
     });
