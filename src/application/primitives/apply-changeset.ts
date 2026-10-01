@@ -57,7 +57,6 @@ import {
 import { readBlob } from './read-blob.js';
 import { resolveFilterDriver } from './resolve-filter-driver.js';
 import { runFilterDriver } from './run-filter-driver.js';
-import { streamBlob } from './stream-blob.js';
 
 export interface ApplyChangesetOpts {
   readonly changeset: Changeset;
@@ -255,8 +254,7 @@ const writeBlobToWorkingTree = async (
       return;
     }
   }
-  const stream = await streamBlob(ctx, id);
-  await writeWorkingTreeEntryStream(ctx, path, stream, mode, scanner);
+  await writeWorkingTreeEntryStream(ctx, path, id, mode, scanner);
 };
 
 const applyDeleteEntry = async (

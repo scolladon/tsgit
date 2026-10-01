@@ -1,13 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
-
+import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { applyChangeset } from '../../../../src/application/primitives/apply-changeset.js';
 import type {
   Changeset,
   ChangesetEntry,
 } from '../../../../src/application/primitives/compute-changeset.js';
+import * as blobSourceMod from '../../../../src/application/primitives/internal/blob-source.js';
 import * as readGitattributesMod from '../../../../src/application/primitives/internal/read-gitattributes.js';
 import * as writeFileMod from '../../../../src/application/primitives/internal/write-working-tree-file.js';
-import * as streamBlobMod from '../../../../src/application/primitives/stream-blob.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
@@ -959,12 +959,12 @@ describe('applyChangeset', () => {
 
   describe('Given a regular (100644) add entry', () => {
     describe('When applyChangeset runs', () => {
-      it('Then routes through streamBlob + writeWorkingTreeEntryStream and written file bytes match blob content', async () => {
+      it('Then routes through locateBlob + writeWorkingTreeEntryStream and written file bytes match blob content', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         const content = new TextEncoder().encode('streamed content');
         const id = await writeBlob(ctx, content);
-        const streamBlobSpy = vi.spyOn(streamBlobMod, 'streamBlob');
+        const locateBlobSpy = vi.spyOn(blobSourceMod, 'locateBlob');
         const writeStreamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeEntryStream');
         // Act
         await applyChangeset(ctx, {
@@ -974,12 +974,12 @@ describe('applyChangeset', () => {
         });
 
         // Assert
-        expect(streamBlobSpy).toHaveBeenCalledOnce();
+        expect(locateBlobSpy).toHaveBeenCalledOnce();
         expect(writeStreamSpy).toHaveBeenCalledOnce();
         const bytes = await ctx.fs.read(`${WORKDIR}/stream.txt`);
         expect(bytes).toEqual(content);
 
-        streamBlobSpy.mockRestore();
+        locateBlobSpy.mockRestore();
         writeStreamSpy.mockRestore();
       });
     });
@@ -991,7 +991,7 @@ describe('applyChangeset', () => {
         // Arrange
         const ctx = await buildSeededContext();
         const id = await writeBlob(ctx, new TextEncoder().encode('#!/bin/sh\n'));
-        const streamBlobSpy = vi.spyOn(streamBlobMod, 'streamBlob');
+        const locateBlobSpy = vi.spyOn(blobSourceMod, 'locateBlob');
         const writeStreamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeEntryStream');
         const chmodSpy = vi.fn<(path: string, mode: number) => Promise<void>>(
           async () => undefined,
@@ -1005,11 +1005,11 @@ describe('applyChangeset', () => {
         });
 
         // Assert
-        expect(streamBlobSpy).toHaveBeenCalledOnce();
+        expect(locateBlobSpy).toHaveBeenCalledOnce();
         expect(writeStreamSpy).toHaveBeenCalledOnce();
         expect(chmodSpy).toHaveBeenCalledWith(`${WORKDIR}/exec.sh`, 0o755);
 
-        streamBlobSpy.mockRestore();
+        locateBlobSpy.mockRestore();
         writeStreamSpy.mockRestore();
       });
     });
@@ -1022,7 +1022,7 @@ describe('applyChangeset', () => {
         const ctx = await buildSeededContext();
         const target = '../target.txt';
         const id = await writeBlob(ctx, new TextEncoder().encode(target));
-        const streamBlobSpy = vi.spyOn(streamBlobMod, 'streamBlob');
+        const locateBlobSpy = vi.spyOn(blobSourceMod, 'locateBlob');
         const writeStreamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeEntryStream');
         // Act
         await applyChangeset(ctx, {
@@ -1032,11 +1032,11 @@ describe('applyChangeset', () => {
         });
 
         // Assert — buffered path, not stream path
-        expect(streamBlobSpy).not.toHaveBeenCalled();
+        expect(locateBlobSpy).not.toHaveBeenCalled();
         expect(writeStreamSpy).not.toHaveBeenCalled();
         expect(await ctx.fs.readlink(`${WORKDIR}/sym.link`)).toBe(target);
 
-        streamBlobSpy.mockRestore();
+        locateBlobSpy.mockRestore();
         writeStreamSpy.mockRestore();
       });
     });
@@ -1044,10 +1044,10 @@ describe('applyChangeset', () => {
 
   describe('Given a gitlink (160000) add entry', () => {
     describe('When applyChangeset runs', () => {
-      it('Then the gitlink arm is unchanged: creates directory, does not invoke streamBlob', async () => {
+      it('Then the gitlink arm is unchanged: creates directory, does not invoke locateBlob', async () => {
         // Arrange
         const ctx = await buildSeededContext();
-        const streamBlobSpy = vi.spyOn(streamBlobMod, 'streamBlob');
+        const locateBlobSpy = vi.spyOn(blobSourceMod, 'locateBlob');
         const writeStreamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeEntryStream');
         // Act
         await applyChangeset(ctx, {
@@ -1059,10 +1059,10 @@ describe('applyChangeset', () => {
         // Assert — gitlink arm: directory placeholder, no streaming
         const stat = await ctx.fs.lstat(`${WORKDIR}/sub`);
         expect(stat.isDirectory).toBe(true);
-        expect(streamBlobSpy).not.toHaveBeenCalled();
+        expect(locateBlobSpy).not.toHaveBeenCalled();
         expect(writeStreamSpy).not.toHaveBeenCalled();
 
-        streamBlobSpy.mockRestore();
+        locateBlobSpy.mockRestore();
         writeStreamSpy.mockRestore();
       });
     });
@@ -1119,7 +1119,7 @@ describe('applyChangeset', () => {
 
   describe('Given a regular file add with a clean-only filter (no smudge configured) and a runner', () => {
     describe('When applyChangeset runs with an identity smudge', () => {
-      it('Then the worktree file contains the verbatim blob bytes and streamBlob is used', async () => {
+      it('Then the worktree file contains the verbatim blob bytes and locateBlob is used', async () => {
         // Arrange — clean-only filter: smudge is absent → identity
         const ctx = await buildSeededContext();
         const blobContent = enc('HELLO WORLD');
@@ -1131,7 +1131,7 @@ describe('applyChangeset', () => {
         );
         const runner = new FakeSmudgeRunner(0, lowercase);
         const enrichedCtx: Context = { ...ctx, command: runner };
-        const streamBlobSpy = vi.spyOn(streamBlobMod, 'streamBlob');
+        const locateBlobSpy = vi.spyOn(blobSourceMod, 'locateBlob');
         const writeStreamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeEntryStream');
         // Act
         await applyChangeset(enrichedCtx, {
@@ -1143,11 +1143,11 @@ describe('applyChangeset', () => {
         // Assert — identity: verbatim blob bytes; streaming path taken; runner not invoked
         const written = await ctx.fs.read(`${WORKDIR}/a.y`);
         expect(dec(written)).toBe('HELLO WORLD');
-        expect(streamBlobSpy).toHaveBeenCalledOnce();
+        expect(locateBlobSpy).toHaveBeenCalledOnce();
         expect(writeStreamSpy).toHaveBeenCalledOnce();
         expect(runner.calls).toHaveLength(0);
 
-        streamBlobSpy.mockRestore();
+        locateBlobSpy.mockRestore();
         writeStreamSpy.mockRestore();
       });
     });
@@ -1255,7 +1255,7 @@ describe('applyChangeset', () => {
 
   describe('Given a regular file add with a filter attribute but no ctx.command', () => {
     describe('When applyChangeset runs', () => {
-      it('Then the worktree file contains the verbatim blob bytes and streamBlob is used', async () => {
+      it('Then the worktree file contains the verbatim blob bytes and locateBlob is used', async () => {
         // Arrange — no command in ctx (ADR-408 inert fallback)
         const ctx = await buildSeededContext();
         const blobContent = enc('HELLO WORLD');
@@ -1265,7 +1265,7 @@ describe('applyChangeset', () => {
           `${ctx.layout.gitDir}/config`,
           '[filter "myf"]\n\tsmudge = lowercase\n',
         );
-        const streamBlobSpy = vi.spyOn(streamBlobMod, 'streamBlob');
+        const locateBlobSpy = vi.spyOn(blobSourceMod, 'locateBlob');
         const writeStreamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeEntryStream');
         // Act — ctx has no command
         await applyChangeset(ctx, {
@@ -1277,10 +1277,10 @@ describe('applyChangeset', () => {
         // Assert — identity (no runner): verbatim blob bytes; streaming path taken
         const written = await ctx.fs.read(`${WORKDIR}/a.y`);
         expect(dec(written)).toBe('HELLO WORLD');
-        expect(streamBlobSpy).toHaveBeenCalledOnce();
+        expect(locateBlobSpy).toHaveBeenCalledOnce();
         expect(writeStreamSpy).toHaveBeenCalledOnce();
 
-        streamBlobSpy.mockRestore();
+        locateBlobSpy.mockRestore();
         writeStreamSpy.mockRestore();
       });
     });
@@ -1473,15 +1473,15 @@ describe('applyChangeset', () => {
         }
         const ctx: Context = { ...base, concurrency: { cpuBound: 1, ioBound } };
         // The pool's genuine per-entry concurrency window spans reading the
-        // blob through writing it — `streamBlob`'s loose stream arm now
+        // blob through writing it — `locateBlob`'s loose stream arm now
         // pulls real (natively-scheduled) inflate output before it resolves,
         // so a window that starts only at the write call can land entirely
         // inside one entry's already-finished read and under-count.
         let inFlight = 0;
         let maxInFlight = 0;
-        const realStream = streamBlobMod.streamBlob;
+        const realStream = blobSourceMod.locateBlob;
         const streamSpy = vi
-          .spyOn(streamBlobMod, 'streamBlob')
+          .spyOn(blobSourceMod, 'locateBlob')
           .mockImplementation(async (...args) => {
             inFlight += 1;
             maxInFlight = Math.max(maxInFlight, inFlight);
@@ -1917,6 +1917,37 @@ describe('applyChangeset', () => {
 
         // Assert
         expect(maxActive).toBe(1);
+      });
+    });
+  });
+
+  describe('Given an unreadable alternate and a single small packed blob entry', () => {
+    describe('When applyChangeset', () => {
+      it('Then the file exists with size 0 and the call rejects with the alternate error', async () => {
+        // Arrange
+        const ctx = createMemoryContext({
+          files: {
+            '/repo/.git/objects/info/alternates': new TextEncoder().encode('/repo/alt/objects\n'),
+          },
+        });
+        await ctx.fs.mkdir('/repo/alt/objects');
+        await ctx.fs.write(
+          '/repo/alt/objects/pack/multi-pack-index',
+          Uint8Array.from([0x00, 0x49, 0x44, 0x58, 1, 1, 1, 0, ...new Array(8).fill(0)]),
+        );
+        const id = 'b'.repeat(40) as ObjectId;
+        const path = `${WORKDIR}/small.txt`;
+
+        // Act
+        const attempt = applyChangeset(ctx, {
+          changeset: makeChangeset([makeAdd('small.txt', id, FILE_MODE.REGULAR)]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        await expect(attempt).rejects.toMatchObject({ data: { code: 'INVALID_MULTI_PACK_INDEX' } });
+        expect((await ctx.fs.read(path)).length).toBe(0);
       });
     });
   });

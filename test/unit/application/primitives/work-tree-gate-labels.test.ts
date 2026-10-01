@@ -328,7 +328,7 @@ describe('Work-tree-gate labels (defensive re-checks unreachable through a comma
           writeWorkingTreeEntryStream(
             ctx,
             'a.txt' as FilePath,
-            emptySource(),
+            DUMMY_ID,
             FILE_MODE.REGULAR,
             scanner,
           ),
