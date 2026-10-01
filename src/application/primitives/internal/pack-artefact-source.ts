@@ -18,6 +18,7 @@ import {
   REV_HEADER_SIZE,
 } from '../../../domain/storage/index.js';
 import type { Context } from '../../../ports/context.js';
+import type { ObjectSourceReader } from '../../../ports/object-source-access.js';
 import { exceedsMaxBitmapBytes, REASON_BITMAP_EXCEEDS_MAX } from '../validators.js';
 
 export type ArtefactLoad<T> =
@@ -99,6 +100,7 @@ export async function loadPackRevIndex(
   present: boolean,
   digestLength: number,
   objectCount: number,
+  fs: ObjectSourceReader = ctx.fs,
 ): Promise<ArtefactLoad<PackRevIndex>> {
   if (!present) return ABSENT;
 
@@ -106,7 +108,7 @@ export async function loadPackRevIndex(
 
   let bytes: Uint8Array;
   try {
-    bytes = await ctx.fs.readSlice(revPath, 0, expectedSize + 1);
+    bytes = await fs.readSlice(revPath, 0, expectedSize + 1);
   } catch (err) {
     return classifyFault(err);
   }
@@ -143,12 +145,13 @@ export async function loadBitmapBytes(
   path: string,
   present: boolean,
   objectCount: number,
+  fs: ObjectSourceReader = ctx.fs,
 ): Promise<ArtefactLoad<Uint8Array>> {
   if (!present) return ABSENT;
 
   let statSize: number;
   try {
-    statSize = (await ctx.fs.stat(path)).size;
+    statSize = (await fs.stat(path)).size;
   } catch (err) {
     return classifyFault(err);
   }
@@ -159,7 +162,7 @@ export async function loadBitmapBytes(
 
   let bytes: Uint8Array;
   try {
-    bytes = await ctx.fs.read(path);
+    bytes = await fs.read(path);
   } catch (err) {
     return classifyFault(err);
   }

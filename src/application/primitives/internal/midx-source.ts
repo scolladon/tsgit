@@ -21,6 +21,7 @@ import {
 } from '../../../domain/storage/index.js';
 import type { Context } from '../../../ports/context.js';
 import type { FileStat } from '../../../ports/file-system.js';
+import type { ObjectSourceReader } from '../../../ports/object-source-access.js';
 import {
   multiPackIndexChainPath,
   multiPackIndexLayerPath,
@@ -141,14 +142,14 @@ type FlatPresence =
  * midx is classified exactly as it is with no listing supplied.
  */
 async function probeFlat(
-  ctx: Context,
+  fs: ObjectSourceReader,
   path: string,
   listing?: ReadonlySet<string>,
 ): Promise<FlatPresence> {
   if (listing !== undefined && !listing.has(FLAT_ARTEFACT)) return { kind: 'absent' };
   let stat: FileStat;
   try {
-    stat = await ctx.fs.stat(path);
+    stat = await fs.stat(path);
   } catch (error) {
     if (isFileNotFound(error)) return { kind: 'absent' };
     if (!isTierBMidxFault(error)) throw error;
@@ -170,7 +171,7 @@ async function probeFlat(
  *  Tier-A/Tier-B error, or an io fault from the read itself — the caller
  *  classifies via `isTierBMidxFault`. */
 async function readAndParseMidx(
-  ctx: Context,
+  fs: ObjectSourceReader,
   path: string,
   statSize: number,
   digestLength: number,
@@ -178,7 +179,7 @@ async function readAndParseMidx(
   if (exceedsMaxMidxBytes(statSize)) {
     throw invalidMultiPackIndex('size', REASON_MIDX_EXCEEDS_MAX);
   }
-  const bytes = await ctx.fs.read(path);
+  const bytes = await fs.read(path);
   if (exceedsMaxMidxBytes(bytes.length)) {
     throw invalidMultiPackIndex('size', REASON_MIDX_EXCEEDS_MAX);
   }
@@ -195,13 +196,13 @@ type FlatOutcome =
  * makes it escape `loadMidxSet` entirely (the chain is never tried).
  */
 async function loadFlatBody(
-  ctx: Context,
+  fs: ObjectSourceReader,
   flatPath: string,
   statSize: number,
   digestLength: number,
 ): Promise<FlatOutcome> {
   try {
-    const midx = await readAndParseMidx(ctx, flatPath, statSize, digestLength);
+    const midx = await readAndParseMidx(fs, flatPath, statSize, digestLength);
     return { kind: 'loaded', midx };
   } catch (error) {
     if (!isTierBMidxFault(error)) throw error;
@@ -258,14 +259,14 @@ type ChainManifest =
  * is never opened (an open would block every read).
  */
 async function readChainManifest(
-  ctx: Context,
+  fs: ObjectSourceReader,
   chainPath: string,
   digestLength: number,
 ): Promise<ChainManifest> {
   const maxBytes = maxChainManifestBytes(digestLength);
   let stat: FileStat;
   try {
-    stat = await ctx.fs.stat(chainPath);
+    stat = await fs.stat(chainPath);
   } catch (error) {
     if (isFileNotFound(error) || isTierBMidxFault(error)) return { kind: 'none' };
     throw error;
@@ -273,7 +274,7 @@ async function readChainManifest(
   if (!stat.isFile) return { kind: 'none' };
   if (stat.size > maxBytes) return { kind: 'oversized' };
   try {
-    const text = await ctx.fs.readUtf8(chainPath);
+    const text = await fs.readUtf8(chainPath);
     return text.length > maxBytes ? { kind: 'oversized' } : { kind: 'text', text };
   } catch (error) {
     if (isTierBMidxFault(error)) return { kind: 'none' };
@@ -306,7 +307,7 @@ function hasDuplicateDigest(digests: ReadonlyArray<string>): boolean {
  * for cognitive complexity on their own.
  */
 async function loadChainLayers(
-  ctx: Context,
+  fs: ObjectSourceReader,
   packsDir: string,
   digestLength: number,
   digests: ReadonlyArray<string>,
@@ -318,7 +319,7 @@ async function loadChainLayers(
   for (const digest of digests) {
     const layerPath = multiPackIndexLayerPath(packsDir, digest);
     try {
-      const stat = await ctx.fs.stat(layerPath);
+      const stat = await fs.stat(layerPath);
       if (!stat.isFile) {
         throw invalidMultiPackIndex('size', REASON_MIDX_IRREGULAR_FILE);
       }
@@ -326,7 +327,7 @@ async function loadChainLayers(
       if (exceedsMaxMidxBytes(totalLayerBytes)) {
         throw invalidMultiPackIndex('size', REASON_MIDX_EXCEEDS_MAX);
       }
-      const midx = await readAndParseMidx(ctx, layerPath, stat.size, digestLength);
+      const midx = await readAndParseMidx(fs, layerPath, stat.size, digestLength);
       layers.push(midx);
     } catch (error) {
       if (!isTierBMidxFault(error)) throw error;
@@ -350,13 +351,13 @@ async function loadChainLayers(
  * from. ANY entry of that name still runs `readChainManifest` verbatim.
  */
 async function loadChain(
-  ctx: Context,
+  fs: ObjectSourceReader,
   packsDir: string,
   digestLength: number,
   listing?: ReadonlySet<string>,
 ): Promise<ChainOutcome> {
   if (listing !== undefined && !listing.has(CHAIN_DIR_NAME)) return NO_CHAIN;
-  const manifest = await readChainManifest(ctx, multiPackIndexChainPath(packsDir), digestLength);
+  const manifest = await readChainManifest(fs, multiPackIndexChainPath(packsDir), digestLength);
   if (manifest.kind === 'none') return NO_CHAIN;
   // The manifest's bound derives from the layer cap, so overrunning it IS
   // the too-many-layers condition — not the artefact-size one.
@@ -375,7 +376,7 @@ async function loadChain(
     return chainFault(REASON_MIDX_CHAIN_DUPLICATE);
   }
 
-  return loadChainLayers(ctx, packsDir, digestLength, digests);
+  return loadChainLayers(fs, packsDir, digestLength, digests);
 }
 
 /**
@@ -389,18 +390,19 @@ export async function loadMidxSet(
   ctx: Context,
   packsDir: string,
   listing?: ReadonlySet<string>,
+  fs: ObjectSourceReader = ctx.fs,
 ): Promise<MidxLoadResult> {
   const digestLength = ctx.hashConfig.digestLength;
   const flatPath = multiPackIndexPath(packsDir);
-  const presence = await probeFlat(ctx, flatPath, listing);
+  const presence = await probeFlat(fs, flatPath, listing);
 
   if (presence.kind === 'absent') {
-    const chain = await loadChain(ctx, packsDir, digestLength, listing);
+    const chain = await loadChain(fs, packsDir, digestLength, listing);
     return { set: chain.set, faults: chain.faults, flatFilePresent: false };
   }
 
   if (presence.kind === 'fault') {
-    const chain = await loadChain(ctx, packsDir, digestLength, listing);
+    const chain = await loadChain(fs, packsDir, digestLength, listing);
     return {
       set: chain.set,
       faults: [presence.fault, ...chain.faults],
@@ -408,7 +410,7 @@ export async function loadMidxSet(
     };
   }
 
-  const flatOutcome = await loadFlatBody(ctx, flatPath, presence.stat.size, digestLength);
+  const flatOutcome = await loadFlatBody(fs, flatPath, presence.stat.size, digestLength);
   if (flatOutcome.kind === 'loaded') {
     return {
       set: { layers: [flatOutcome.midx], kind: 'flat', artefacts: [FLAT_ARTEFACT] },
@@ -417,7 +419,7 @@ export async function loadMidxSet(
     };
   }
 
-  const chain = await loadChain(ctx, packsDir, digestLength, listing);
+  const chain = await loadChain(fs, packsDir, digestLength, listing);
   return {
     set: chain.set,
     faults: [flatOutcome.fault, ...chain.faults],

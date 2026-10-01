@@ -158,6 +158,56 @@ describe('pack-registry', () => {
     });
   });
 
+  describe('Given a location whose fs holds a pack under another objects dir', () => {
+    describe('When createPackRegistry(ctx, location).lookup(id) is called', () => {
+      it('Then the entry is found and ctx.fs never touches an objects path', async () => {
+        // Arrange
+        const primary = await buildSeededContext();
+        const store = await buildSeededContext();
+        const objectsDir = `${store.layout.gitDir}/alternate/objects`;
+        const built = await buildSyntheticPack(store, [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('elsewhere') },
+        ]);
+        await store.fs.write(`${objectsDir}/pack/pack-alt.pack`, built.packBytes);
+        await store.fs.write(`${objectsDir}/pack/pack-alt.idx`, built.idxBytes);
+        const { ctx: watched, calls } = instrumentedContext(primary);
+        const sut = await createPackRegistry(watched, { objectsDir, fs: store.fs });
+
+        // Act
+        const result = await sut.lookup(built.ids[0] as ObjectId);
+
+        // Assert
+        expect(result?.pack.name).toBe('pack-alt');
+        expect(calls().filter((call) => call.path.includes('/objects/'))).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a location with a multi-pack-index', () => {
+    describe('When lookup is called', () => {
+      it('Then the midx is read through location.fs, not ctx.fs', async () => {
+        // Arrange
+        const primary = await buildSeededContext();
+        const store = await buildSeededContext();
+        const objectsDir = `${store.layout.gitDir}/alternate/objects`;
+        const midx = `${objectsDir}/pack/multi-pack-index`;
+        await store.fs.write(midx, buildMidx(healthyMidxSpec()));
+        const { ctx: watched, calls } = instrumentedContext(primary);
+        const { ctx: storeWatched, calls: storeCalls } = instrumentedContext(store);
+        const sut = await createPackRegistry(watched, { objectsDir, fs: storeWatched.fs });
+
+        // Act
+        await sut.lookup('a'.repeat(40) as ObjectId);
+
+        // Assert
+        expect(storeCalls().some((call) => call.method === 'read' && call.path === midx)).toBe(
+          true,
+        );
+        expect(calls().filter((call) => call.path.includes('/objects/'))).toEqual([]);
+      });
+    });
+  });
+
   describe('Given a pack directory whose listing carries sibling marker files', () => {
     describe('When fileNames() is called', () => {
       it('Then returns exactly the regular-file names the scan saw — the same set hasRevIndex/hasBitmap consult', async () => {
