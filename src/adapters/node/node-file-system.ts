@@ -32,7 +32,8 @@ interface RootPrefix {
 }
 
 function toRootPrefix(normalized: string, sep: string): RootPrefix {
-  return { normalized, withSep: normalized + sep };
+  // A filesystem root already ends in the separator; appending another would match no child.
+  return { normalized, withSep: normalized.endsWith(sep) ? normalized : normalized + sep };
 }
 
 /**

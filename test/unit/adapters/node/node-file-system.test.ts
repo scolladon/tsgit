@@ -2223,4 +2223,24 @@ describe('NodeFileSystem — read over the sync gate, real fs', () => {
       });
     });
   });
+
+  describe('Given an adapter rooted at the filesystem root', () => {
+    describe('When it reads a file anywhere below that root', () => {
+      it('Then the read is contained and succeeds', async () => {
+        // Arrange
+        const root = nodePath.parse(os.tmpdir()).root;
+        const sut = new NodeFileSystem([root]);
+        const dir = await fsPromises.mkdtemp(nodePath.join(os.tmpdir(), 'tsgit-root-fs-'));
+        const file = nodePath.join(dir, 'f');
+        await fsPromises.writeFile(file, 'hello');
+
+        // Act
+        const result = await sut.readUtf8(file);
+
+        // Assert
+        expect(result).toBe('hello');
+        await fsPromises.rm(dir, { recursive: true, force: true });
+      });
+    });
+  });
 });

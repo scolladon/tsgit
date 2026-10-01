@@ -20,6 +20,11 @@ export type { HookRequest, HookResult, HookRunner } from './hook-runner.js';
 export type { HttpRequest, HttpResponse, HttpTransport } from './http-transport.js';
 export type { Logger } from './logger.js';
 export { noopLogger, wrapLoggerSanitizer } from './logger.js';
+export type {
+  AlternatePathProbe,
+  ObjectSourceAccess,
+  ObjectSourceReader,
+} from './object-source-access.js';
 export type { ProgressReporter } from './progress-reporter.js';
 export type { PromisorFetchOutcome, PromisorRemote } from './promisor.js';
 export type {

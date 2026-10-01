@@ -11,6 +11,7 @@ import type { HashService } from './hash-service.js';
 import type { HookRunner } from './hook-runner.js';
 import type { HttpTransport } from './http-transport.js';
 import type { Logger } from './logger.js';
+import type { AlternatePathProbe, ObjectSourceAccess } from './object-source-access.js';
 import type { ProgressReporter } from './progress-reporter.js';
 import type { PromisorRemote } from './promisor.js';
 import type { SshTransport } from './ssh-channel.js';
@@ -326,6 +327,19 @@ export interface Context {
    * the adapter root.
    */
   readonly worktreeFs?: (worktreePath: string | ReadonlyArray<string>) => FileSystem;
+  /**
+   * Optional facade capability returning the read-only view one object source
+   * (an alternate's objects dir) is read through: confined to that directory,
+   * write-mode opens refused, and only `utimeNow` allowed to touch the disk.
+   * Absent on a hand-built `Context`; the object store then narrows `ctx.fs`.
+   */
+  readonly objectSourceAccess?: (objectsDir: string) => ObjectSourceAccess;
+  /**
+   * Optional facade capability returning a metadata-only view (`lstat`,
+   * `readlink`, `stat`) used to resolve an alternate's path wherever it lives.
+   * Absent on a hand-built `Context`; the object store then narrows `ctx.fs`.
+   */
+  readonly alternatePathProbe?: (path: string) => AlternatePathProbe;
 }
 
 export interface CreateContextParts {

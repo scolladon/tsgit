@@ -82,15 +82,18 @@ export const narrowObjectSourceAccess = (
   ...(fs.utimeNow === undefined ? {} : { utimeNow: containedUtimeNow(fs, objectsDir) }),
 });
 
-const narrowProbe = (fs: FileSystem): AlternatePathProbe => ({
+export const narrowAlternatePathProbe = (fs: FileSystem): AlternatePathProbe => ({
   lstat: fs.lstat.bind(fs),
   readlink: fs.readlink.bind(fs),
   stat: fs.stat.bind(fs),
 });
 
+const accessFor = (ctx: Context, objectsDir: string): ObjectSourceAccess =>
+  ctx.objectSourceAccess?.(objectsDir) ?? narrowObjectSourceAccess(ctx.fs, objectsDir);
+
 const chainIo = (ctx: Context): AlternateChainIo => ({
-  probe: () => narrowProbe(ctx.fs),
-  reader: (objectsDir) => narrowObjectSourceAccess(ctx.fs, objectsDir),
+  probe: (path) => ctx.alternatePathProbe?.(path) ?? narrowAlternatePathProbe(ctx.fs),
+  reader: (objectsDir) => accessFor(ctx, objectsDir),
 });
 
 const buildSource = async (
@@ -98,7 +101,7 @@ const buildSource = async (
   objectsDir: string,
   local: boolean,
 ): Promise<ObjectSource> => {
-  const fs = local ? ctx.fs : narrowObjectSourceAccess(ctx.fs, objectsDir);
+  const fs = local ? ctx.fs : accessFor(ctx, objectsDir);
   return { objectsDir, fs, local, registry: await createPackRegistry(ctx, { objectsDir, fs }) };
 };
 

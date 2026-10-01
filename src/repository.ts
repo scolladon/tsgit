@@ -9,6 +9,10 @@ import { createSingleFlightIndexResolver } from './adapters/snapshot-resolvers/s
 import * as commands from './application/commands/index.js';
 import * as primitives from './application/primitives/index.js';
 import { invalidateShallowSet } from './application/primitives/internal/shallow-set.js';
+import {
+  narrowAlternatePathProbe,
+  narrowObjectSourceAccess,
+} from './application/primitives/object-store.js';
 import { invalidateIndexCache } from './application/primitives/read-index.js';
 import { disposePackRegistry } from './application/primitives/read-object.js';
 import {
@@ -35,6 +39,7 @@ import type { HashService } from './ports/hash-service.js';
 import type { HookRunner } from './ports/hook-runner.js';
 import type { HttpTransport } from './ports/http-transport.js';
 import { type Logger, wrapLoggerSanitizer } from './ports/logger.js';
+import type { AlternatePathProbe, ObjectSourceAccess } from './ports/object-source-access.js';
 import type { ProgressReporter } from './ports/progress-reporter.js';
 import type { PromisorRemote } from './ports/promisor.js';
 import type { SshTransport } from './ports/ssh-channel.js';
@@ -42,6 +47,7 @@ import { noopProgress } from './progress.js';
 import { composeAdapters, isFirstPartyFs } from './repository/compose-adapters.js';
 import { deepFreeze } from './repository/deep-freeze.js';
 import { defaultCwd } from './repository/default-cwd.js';
+import { filesystemRootOf } from './repository/filesystem-root.js';
 import type { RepositoryLayoutInput } from './repository/layout-input.js';
 import { layoutRootsOf } from './repository/layout-roots.js';
 import { resolveAlgorithm } from './repository/resolve-algorithm.js';
@@ -299,6 +305,12 @@ export interface RuntimeFallback {
    * runtimes (memory/browser) omit it and fall back to the repo-rooted fs.
    */
   readonly makeWorktreeFs?: (worktreePaths: ReadonlyArray<string>) => FileSystem;
+  /**
+   * Builds a raw fs rooted at exactly `roots` — the read capability an alternate's
+   * objects dir (or the root an alternate path resolves under) is served through.
+   * Absent on sandboxed adapters, where the one adapter root is already the bound.
+   */
+  readonly makeConfinedFs?: (roots: ReadonlyArray<string>) => FileSystem;
 }
 
 /**
@@ -623,6 +635,19 @@ export const openRepository = async (
     worktreeFsCache.set(cacheKey, built);
     return built;
   };
+  // Narrowing is not containment: the raw fs comes from the runtime hook rooted at
+  // exactly the alternate's objects dir, so `unsafeRawAdapters` still narrows.
+  const objectSourceAccessCache = new Map<string, ObjectSourceAccess>();
+  const objectSourceAccess = (objectsDir: string): ObjectSourceAccess => {
+    const cached = objectSourceAccessCache.get(objectsDir);
+    if (cached !== undefined) return cached;
+    const raw = fallback.makeConfinedFs?.([objectsDir]) ?? detected.fs;
+    const built = narrowObjectSourceAccess(raw, objectsDir);
+    objectSourceAccessCache.set(objectsDir, built);
+    return built;
+  };
+  const alternatePathProbe = (path: string): AlternatePathProbe =>
+    narrowAlternatePathProbe(fallback.makeConfinedFs?.([filesystemRootOf(path)]) ?? detected.fs);
   const config = opts.config !== undefined ? deepFreeze({ ...opts.config }) : undefined;
   const controller = new AbortController();
   const signal =
@@ -665,6 +690,8 @@ export const openRepository = async (
     deltaCache: fallback.deltaCache,
     signal,
     worktreeFs,
+    objectSourceAccess,
+    alternatePathProbe,
   };
   const sanitizedLogger = opts.logger !== undefined ? wrapLoggerSanitizer(opts.logger) : undefined;
   // `false` fully disables hooks; otherwise an explicit runner overrides the
