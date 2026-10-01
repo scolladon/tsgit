@@ -1233,6 +1233,72 @@ describe('push — delete refspec', () => {
     });
   });
 
+  describe('Given a delete-only push', () => {
+    describe('When push runs', () => {
+      it('Then buildPack is not called and the request has no pack', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const feature = await seedCommit(ctx, [], 'feature');
+        await seedRepo(ctx, { refs: { 'refs/heads/feature': feature.id } });
+        await writeOriginConfig(ctx);
+        const { transport, requestBodies } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/feature', id: feature.id }],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/feature', status: 'ok' }] },
+        });
+        const buildPackSpy = vi.spyOn(buildPackMod, 'buildPack');
+
+        // Act
+        await push({ ...ctx, transport }, { refspecs: [':refs/heads/feature'] });
+
+        // Assert
+        expect(buildPackSpy).not.toHaveBeenCalled();
+        const decoded = new TextDecoder().decode(requestBodies[0]);
+        expect(decoded).not.toContain('PACK');
+        expect(decoded.endsWith('0000')).toBe(true);
+        buildPackSpy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given a delete plus exactly one non-delete command', () => {
+    describe('When push runs', () => {
+      it('Then buildPack is called once and the request carries a pack', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const feature = await seedCommit(ctx, [], 'feature');
+        const tip = await seedCommit(ctx, [feature.id], 'tip');
+        await seedRepo(ctx, {
+          refs: { 'refs/heads/feature': feature.id, 'refs/heads/main': tip.id },
+        });
+        await writeOriginConfig(ctx);
+        const { transport, requestBodies } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/feature', id: feature.id }],
+          reportStatus: {
+            unpack: 'ok',
+            refs: [
+              { name: 'refs/heads/feature', status: 'ok' },
+              { name: 'refs/heads/main', status: 'ok' },
+            ],
+          },
+        });
+        const buildPackSpy = vi.spyOn(buildPackMod, 'buildPack');
+
+        // Act
+        await push(
+          { ...ctx, transport },
+          { refspecs: [':refs/heads/feature', 'refs/heads/main:refs/heads/main'] },
+        );
+
+        // Assert
+        expect(buildPackSpy).toHaveBeenCalledTimes(1);
+        expect(new TextDecoder().decode(requestBodies[0])).toContain('PACK');
+        buildPackSpy.mockRestore();
+      });
+    });
+  });
+
   describe('Given a successful delete', () => {
     describe('When push completes', () => {
       it('Then refs/remotes/origin/<branch> is NOT created in the cache', async () => {

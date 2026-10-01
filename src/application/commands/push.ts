@@ -318,6 +318,19 @@ const emptyReport = (): { unpackOk: boolean; refUpdates: ReadonlyArray<RefStatus
   refUpdates: [],
 });
 
+// git's `need_pack_data` is false when every command is a delete: no pack, so
+// nothing is read from the object store.
+const buildPackfileFor = async (
+  ctx: Context,
+  wants: ReadonlyArray<ObjectId>,
+  haves: ReadonlyArray<ObjectId>,
+): Promise<Uint8Array | undefined> => {
+  if (wants.length === 0) return undefined;
+  const oids = await collectObjects(ctx, wants, haves);
+  const pack = await buildPack(ctx, { objects: oids.map((id) => ({ id })) });
+  return pack.bytes;
+};
+
 const sendUpdates = async (
   ctx: Context,
   session: GitServiceSession,
@@ -337,19 +350,18 @@ const sendUpdates = async (
   // file), so the sentinel drops out of `collectObjects`'s negatives on its
   // own — one absent negative among others, not a special case.
   const haves = adv.refs.map((r) => r.id);
-  const oids = await collectObjects(ctx, wants, haves);
-  const pack = await buildPack(ctx, { objects: oids.map((id) => ({ id })) });
+  const packfile = await buildPackfileFor(ctx, wants, haves);
   const capabilities = selectPushCapabilities(
     adv.capabilities,
     ctx.hashConfig.algorithm,
     intent.signing,
   );
   const requestBody = intent.signing
-    ? await buildSignedRequestBody(ctx, capabilities, movers, pack.bytes, url, intent.nonce)
+    ? await buildSignedRequestBody(ctx, capabilities, movers, packfile, url, intent.nonce)
     : buildReceivePackRequest({
         updates: movers.map(toRefUpdate),
         capabilities,
-        packfile: pack.bytes,
+        packfile,
       });
   const pktSource = await exchangeReceivePack(ctx, session, requestBody);
   const parsed = await parseReceiveResponse(ctx, pktSource, capabilities);
@@ -409,7 +421,7 @@ const buildSignedRequestBody = async (
   ctx: Context,
   negotiatedCapabilities: ReadonlyArray<string>,
   movers: ReadonlyArray<ResolvedRefspec>,
-  packfile: Uint8Array,
+  packfile: Uint8Array | undefined,
   url: string,
   nonce: string,
 ): Promise<Uint8Array> => {

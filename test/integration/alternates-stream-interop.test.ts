@@ -13,6 +13,7 @@
  *   unique:         tsgit opens blob streams across alternate object stores in git's stream order and refuses exactly where git dies
  *   interopSurface: packfile
  */
+import { spawnSync } from 'node:child_process';
 import {
   cpSync,
   existsSync,
@@ -30,6 +31,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { deflateSync } from 'node:zlib';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { push } from '../../src/application/commands/push.js';
 import { buildPack } from '../../src/application/primitives/build-pack.js';
 import { hasObject } from '../../src/application/primitives/has-object.js';
 import { readObjectMetadata } from '../../src/application/primitives/read-object.js';
@@ -38,11 +40,13 @@ import type { DiffChange } from '../../src/domain/diff/diff-change.js';
 import { TsgitError } from '../../src/domain/error.js';
 import type { ObjectId, RefName } from '../../src/domain/objects/index.js';
 import { openRepository } from '../../src/index.node.js';
+import type { HttpRequest, HttpResponse, HttpTransport } from '../../src/ports/http-transport.js';
 import type { Repository } from '../../src/repository.js';
 import {
   disableAutoMaintenance,
   GIT_AVAILABLE,
   runGit,
+  runGitEnv,
   tryRunGitWithExit,
 } from './interop-helpers.js';
 import { mutateMidxOrThrow, writeMultiPackIndex } from './midx-fixture-helpers.js';
@@ -933,6 +937,147 @@ describe.skipIf(!GIT_AVAILABLE)('alternates stream interop — pack builders', (
           expect(filesUnder(objectsDirOf(gitCopy.dir))).toEqual(gitBefore);
           expect(refused.data).toMatchObject(REFUSAL_DATA);
           expect(filesUnder(objectsDirOf(copy.dir))).toEqual(before);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M5ae-M5af rows: push sends a pack only when a command needs one
+// ---------------------------------------------------------------------------
+
+const PEER_URL = 'https://example.com/peer.git';
+const CGI_HEADER_SEPARATOR = '\r\n\r\n';
+
+const cgiResponse = (output: Buffer): HttpResponse => {
+  const split = output.indexOf(CGI_HEADER_SEPARATOR);
+  const headers: Record<string, string> = {};
+  for (const line of output.subarray(0, split).toString('utf8').split('\r\n')) {
+    const colon = line.indexOf(':');
+    headers[line.slice(0, colon).trim().toLowerCase()] = line.slice(colon + 1).trim();
+  }
+  const body = output.subarray(split + CGI_HEADER_SEPARATOR.length);
+  return {
+    statusCode: 200,
+    headers,
+    body: new Response(new Uint8Array(body)).body as ReadableStream<Uint8Array>,
+  };
+};
+
+const backendTransport = (projectRoot: string): HttpTransport => ({
+  request: async (req: HttpRequest): Promise<HttpResponse> => {
+    const url = new URL(req.url);
+    const body = req.body ?? new Uint8Array(0);
+    const result = spawnSync('git', ['http-backend'], {
+      input: body,
+      env: {
+        ...runGitEnv(),
+        PATH_INFO: url.pathname,
+        QUERY_STRING: url.search.slice(1),
+        REQUEST_METHOD: req.method,
+        GIT_PROJECT_ROOT: projectRoot,
+        GIT_HTTP_EXPORT_ALL: '1',
+        CONTENT_TYPE: req.headers['content-type'] ?? req.headers['Content-Type'] ?? '',
+        CONTENT_LENGTH: String(body.byteLength),
+        REMOTE_ADDR: '127.0.0.1',
+      },
+    });
+    return cgiResponse(result.stdout);
+  },
+});
+
+interface Peer {
+  readonly root: string;
+  readonly bare: string;
+}
+
+const makePeer = (): Peer => {
+  copyCount += 1;
+  const peerRoot = path.join(root, `peer-${copyCount}`);
+  const bare = path.join(peerRoot, 'peer.git');
+  runGit(['init', '-q', '--bare', '-b', 'main', bare]);
+  configureIdentity(bare);
+  runGit(['-C', bare, 'config', 'http.receivepack', 'true']);
+  const tree = runGit(['-C', bare, 'mktree'], { input: '' }).trim();
+  const tip = runGit(['-C', bare, 'commit-tree', tree, '-m', 'peer']).trim();
+  runGit(['-C', bare, 'update-ref', 'refs/heads/x', tip]);
+  return { root: peerRoot, bare };
+};
+
+const pushCopy = (): { copy: Copy; peer: Peer; gitCopy: Copy; gitPeer: Peer } => {
+  const copy = copyOfFixture();
+  const gitCopy = copyOfFixture();
+  const peer = makePeer();
+  const gitPeer = makePeer();
+  for (const dir of [copy.dir, gitCopy.dir]) runGit(['-C', dir, 'branch', 'side', 'HEAD']);
+  runGit(['-C', copy.dir, 'remote', 'set-url', 'origin', PEER_URL]);
+  runGit(['-C', gitCopy.dir, 'remote', 'set-url', 'origin', gitPeer.bare]);
+  return { copy, peer, gitCopy, gitPeer };
+};
+
+const refsOf = (bare: string): string =>
+  runGit(['-C', bare, 'for-each-ref', '--format=%(refname)']).trim();
+
+describe.skipIf(!GIT_AVAILABLE)('alternates stream interop — push', () => {
+  describe('Given M5ae: an unusable alternate and a delete-only push', () => {
+    describe('When push runs', () => {
+      it(
+        'Then both tools delete the remote ref without reading the object store',
+        async () => {
+          // Arrange
+          const { copy, peer, gitCopy, gitPeer } = pushCopy();
+          const repo = await copy.repo();
+
+          // Act
+          const git = gitIn(gitCopy.dir, 'push', 'origin', ':refs/heads/x');
+          const result = await push(
+            { ...repo.ctx, transport: backendTransport(peer.root) },
+            { remote: 'origin', refspecs: [':refs/heads/x'] },
+          );
+          await repo.dispose();
+
+          // Assert
+          // git measures its status table's oid abbreviation after the wire
+          // exchange, which loads the unusable alternate: it exits 128 once
+          // the delete has landed. That is display only, so the row pins the
+          // remote state both tools leave behind.
+          expect(git.exitCode).toBe(GIT_REFUSED);
+          expect(git.stderr).toContain(MIDX_SIGNATURE_FATAL);
+          expect(result.pushedRefs[0]?.status).toBe('ok');
+          expect(refsOf(gitPeer.bare)).toBe('');
+          expect(refsOf(peer.bare)).toBe('');
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe('Given M5af: an unusable alternate and a push that needs a pack', () => {
+    describe('When push runs', () => {
+      it(
+        'Then both tools refuse and create no remote ref',
+        async () => {
+          // Arrange
+          const { copy, peer, gitCopy, gitPeer } = pushCopy();
+          const repo = await copy.repo();
+
+          // Act
+          const git = gitIn(gitCopy.dir, 'push', 'origin', 'side:refs/heads/y');
+          const refused = await rejectionOf(() =>
+            push(
+              { ...repo.ctx, transport: backendTransport(peer.root) },
+              { remote: 'origin', refspecs: ['side:refs/heads/y'] },
+            ),
+          );
+          await repo.dispose();
+
+          // Assert
+          expect(git.exitCode).not.toBe(0);
+          expect(refused.data).toMatchObject(REFUSAL_DATA);
+          expect(refsOf(gitPeer.bare)).toBe('refs/heads/x');
+          expect(refsOf(peer.bare)).toBe('refs/heads/x');
         },
         ROW_TIMEOUT,
       );

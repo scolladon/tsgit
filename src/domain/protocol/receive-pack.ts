@@ -15,7 +15,7 @@ export interface RefUpdate {
 export interface ReceivePackRequest {
   readonly updates: ReadonlyArray<RefUpdate>;
   readonly capabilities: ReadonlyArray<string>;
-  readonly packfile: Uint8Array;
+  readonly packfile?: Uint8Array | undefined;
 }
 
 export interface RefStatus {
@@ -35,14 +35,20 @@ const updateLine = (update: RefUpdate, caps: ReadonlyArray<string>): Uint8Array 
   return TEXT_ENCODER.encode(`${update.oldId} ${update.newId} ${update.name}${tail}\n`);
 };
 
+// git sends commands + flush and no pack when every command is a delete.
+const withPackfile = (framed: Uint8Array, packfile: Uint8Array | undefined): Uint8Array => {
+  if (packfile === undefined) return framed;
+  const out = new Uint8Array(framed.byteLength + packfile.byteLength);
+  out.set(framed, 0);
+  out.set(packfile, framed.byteLength);
+  return out;
+};
+
 export const buildReceivePackRequest = (req: ReceivePackRequest): Uint8Array => {
   if (req.updates.length === 0) throw emptyReceiveUpdates();
   const payloads = req.updates.map((u, idx) => updateLine(u, idx === 0 ? req.capabilities : []));
   const framed = encodePktStream(payloads);
-  const out = new Uint8Array(framed.byteLength + req.packfile.byteLength);
-  out.set(framed, 0);
-  out.set(req.packfile, framed.byteLength);
-  return out;
+  return withPackfile(framed, req.packfile);
 };
 
 const CERT_VERSION_LINE = 'certificate version 0.1\n';
@@ -61,7 +67,7 @@ export interface SignedReceivePackRequest {
   readonly pusher: string;
   readonly pushee: string;
   readonly nonce: string;
-  readonly packfile: Uint8Array;
+  readonly packfile?: Uint8Array | undefined;
 }
 
 // The cert header (version/pusher/pushee/nonce/blank) plus the no-caps
@@ -101,10 +107,7 @@ export const buildSignedReceivePackRequest = (req: SignedReceivePackRequest): Ui
   const armorPayloads = armorLines(req.armor).map((line) => TEXT_ENCODER.encode(line));
   const endPayload = TEXT_ENCODER.encode('push-cert-end\n');
   const framed = encodePktStream([opener, ...certBodySegments(req), ...armorPayloads, endPayload]);
-  const out = new Uint8Array(framed.byteLength + req.packfile.byteLength);
-  out.set(framed, 0);
-  out.set(req.packfile, framed.byteLength);
-  return out;
+  return withPackfile(framed, req.packfile);
 };
 
 const stripTrailingNewline = (s: string): string => (s.endsWith('\n') ? s.slice(0, -1) : s);
