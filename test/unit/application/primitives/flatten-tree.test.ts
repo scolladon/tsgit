@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { flattenTree } from '../../../../src/application/primitives/flatten-tree.js';
+import { getObjectStore } from '../../../../src/application/primitives/object-store.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { walkTree } from '../../../../src/application/primitives/walk-tree.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
@@ -296,6 +297,9 @@ describe('flattenTree', () => {
           treeEntry(FILE_MODE.REGULAR, 'a.txt' as FilePath, idA),
           treeEntry(FILE_MODE.DIRECTORY, 'sub' as FilePath, subId),
         ]);
+        // The session's one-time object-store construction reads the alternates list; settle
+        // it first so only the per-object reads are compared.
+        await getObjectStore(base);
         const walkInstrument = instrumentedContext(base);
         for await (const _ of walkTree(walkInstrument.ctx, rootId)) {
           // drain

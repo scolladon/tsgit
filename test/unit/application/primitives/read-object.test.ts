@@ -522,6 +522,11 @@ describe('readObject', () => {
               if (path === '/elsewhere/.git/config') throw fileNotFound(path);
               return ctx.fs.readUtf8(path);
             },
+            // The same absence for the objects directory's alternates list.
+            read: async (path: string) => {
+              if (path === '/elsewhere/.git/objects/info/alternates') throw fileNotFound(path);
+              return ctx.fs.read(path);
+            },
           },
         });
 

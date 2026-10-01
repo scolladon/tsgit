@@ -18,11 +18,6 @@ import {
 import type { Context } from '../../ports/context.js';
 import type { PromisorRemote } from '../../ports/promisor.js';
 import { forgetLooseOidPrefix, probeLooseOid } from './internal/loose-oid-cache.js';
-import { createPromiseMemo, type PromiseMemo } from './internal/promise-memo.js';
-import {
-  assertRepoSettingsValid,
-  repoSettingsVerdictSettled,
-} from './internal/repo-settings-gate.js';
 import {
   assertChainDepthWithinCap,
   isBase,
@@ -35,37 +30,14 @@ import {
   resolveObjectWithSize,
 } from './object-resolver.js';
 import {
-  createPackRegistry,
-  nextOffsetForEntry,
-  type PackLookupHit,
-  type PackRegistry,
-} from './pack-registry.js';
+  disposeObjectStore,
+  getObjectStore,
+  peekObjectStore,
+  refreshObjectStore,
+} from './object-store.js';
+import { nextOffsetForEntry, type PackLookupHit, type PackRegistry } from './pack-registry.js';
 import { commonGitDir, looseObjectPath } from './path-layout.js';
 import type { RawObject, ReadObjectOptions } from './types.js';
-
-/**
- * Per-session single-flight registry construction. Keyed by `ctx.session`
- * (not the Context instance itself) so that every Context derived from the
- * same `openRepository()`/`createXContext()` call — a long-running walk
- * (walkCommits, walkTree), or a same-repository derivation such as fsck's
- * audit view — reuses the parsed .idx files across thousands of object reads
- * instead of re-scanning the pack directory each time. `PromiseMemo`, not a
- * plain `WeakMap<Session, PackRegistry>`: `createPackRegistry` now crosses an
- * `await` (it reads `core.deltaBaseCacheLimit`), so two concurrent first
- * reads racing on an empty cache must join the same construction instead of
- * each starting — and finishing — their own registry.
- */
-const registryMemos = new WeakMap<Context['session'], PromiseMemo<PackRegistry>>();
-
-/**
- * The settled registry for a session that has already resolved once — the
- * synchronous surface both `refreshPackRegistry` and `peekPackRegistry`
- * read, the latter on every warm object read, so this is a hot-path map and
- * not merely a refresh hook. A registry still under construction has not
- * scanned the pack directory yet, so there is nothing for a concurrent
- * `refresh()` to do and nothing for a peek to serve; both simply miss.
- */
-const resolvedRegistries = new WeakMap<Context['session'], PackRegistry>();
 
 /**
  * Per-session in-flight lazy-fetch map. Concurrent reads of the same missing
@@ -73,26 +45,8 @@ const resolvedRegistries = new WeakMap<Context['session'], PackRegistry>();
  */
 const inflightCache = new WeakMap<Context['session'], Map<string, Promise<boolean>>>();
 
-export const getPackRegistry = async (ctx: Context): Promise<PackRegistry> => {
-  if (!repoSettingsVerdictSettled(ctx)) await assertRepoSettingsValid(ctx);
-  let memo = registryMemos.get(ctx.session);
-  if (memo === undefined) {
-    // `resolvedRegistries.set` rides the CONSTRUCTION's own `.then`, not
-    // every call: once per registry build, not once per read. A call that
-    // joins an already-settled memo returns straight from `memo.get()`
-    // without ever re-touching `resolvedRegistries` — `peekPackRegistry`
-    // already served the sync case, and this async path pays a `WeakMap.set`
-    // it does not need to repeat.
-    memo = createPromiseMemo(() =>
-      createPackRegistry(ctx).then((registry) => {
-        resolvedRegistries.set(ctx.session, registry);
-        return registry;
-      }),
-    );
-    registryMemos.set(ctx.session, memo);
-  }
-  return memo.get();
-};
+export const getPackRegistry = async (ctx: Context): Promise<PackRegistry> =>
+  (await getObjectStore(ctx)).primary.registry;
 
 /**
  * The synchronous fast path `getPackRegistry` cannot be: a settled registry
@@ -110,7 +64,7 @@ export const getPackRegistry = async (ctx: Context): Promise<PackRegistry> => {
  * this peek inherits that protection instead of re-deriving it.
  */
 export const peekPackRegistry = (ctx: Context): PackRegistry | undefined =>
-  repoSettingsVerdictSettled(ctx) ? resolvedRegistries.get(ctx.session) : undefined;
+  peekObjectStore(ctx)?.primary.registry;
 
 /**
  * Drop the per-session pack-registry's cached `.idx` scan so the next read
@@ -120,7 +74,7 @@ export const peekPackRegistry = (ctx: Context): PackRegistry | undefined =>
  * exposed when its `merge` step could not see freshly-fetched commits.
  */
 export function refreshPackRegistry(ctx: Context): void {
-  resolvedRegistries.get(ctx.session)?.refresh();
+  refreshObjectStore(ctx);
 }
 
 /**
@@ -137,9 +91,7 @@ export function refreshPackRegistry(ctx: Context): void {
  * construction has nothing left to close.
  */
 export async function disposePackRegistry(ctx: Context): Promise<void> {
-  const pending = registryMemos.get(ctx.session)?.peek();
-  const registry = await pending?.catch(() => undefined);
-  await registry?.dispose();
+  await disposeObjectStore(ctx);
 }
 
 function getInflight(ctx: Context): Map<string, Promise<boolean>> {

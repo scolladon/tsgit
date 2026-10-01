@@ -10,16 +10,9 @@
 
 import type { FsckConfiguredSeverity, FsckSeverityTable } from '../../../../domain/fsck/index.js';
 import type { Context } from '../../../../ports/context.js';
-import { readConfig, readFsckConfigItems } from '../../../primitives/config-read.js';
+import { readFsckConfigItems } from '../../../primitives/config-read.js';
+import { readBigFileThreshold } from '../../../primitives/internal/big-file-threshold.js';
 import { readFsckSkipListNames } from './skip-list.js';
-
-/**
- * git's own default `core.bigFileThreshold` (512 MiB) — the boundary
- * `read_loose_object` streams a blob past rather than buffering it.
- * `readConfig` is lenient by design, so an absent OR malformed value both
- * resolve here.
- */
-export const DEFAULT_BIG_FILE_THRESHOLD_BYTES = 512 * 1024 * 1024;
 
 /** Everything an audit takes from config. */
 export interface FsckConfiguration {
@@ -44,7 +37,6 @@ export const readFsckConfiguration = async (ctx: Context): Promise<FsckConfigura
     }
     for (const name of await readFsckSkipListNames(ctx, item.path)) skipped.add(name);
   }
-  const { core } = await readConfig(ctx);
-  const bigFileThreshold = core?.bigFileThreshold ?? DEFAULT_BIG_FILE_THRESHOLD_BYTES;
+  const bigFileThreshold = await readBigFileThreshold(ctx);
   return { severities, skipped, bigFileThreshold };
 };

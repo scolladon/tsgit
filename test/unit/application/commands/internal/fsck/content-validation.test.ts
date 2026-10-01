@@ -4,7 +4,7 @@ import {
   buildBlobFilenameMap,
   runContentValidationPass,
 } from '../../../../../../src/application/commands/internal/fsck/content-validation.js';
-import { DEFAULT_BIG_FILE_THRESHOLD_BYTES } from '../../../../../../src/application/commands/internal/fsck/read-configuration.js';
+import { DEFAULT_BIG_FILE_THRESHOLD_BYTES } from '../../../../../../src/application/primitives/internal/big-file-threshold.js';
 import {
   looseObjectPath,
   objectsDir,
