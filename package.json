@@ -1075,7 +1075,9 @@
       "files": [
         "src/**/*.ts",
         "test/bench/**/*.ts",
-        "vitest.bench.config.ts"
+        "vitest.bench.config.ts",
+        "tooling/typescript-hooks.mjs",
+        "tooling/register-typescript-hooks.mjs"
       ],
       "output": [
         "reports/benchmarks/raw.json"

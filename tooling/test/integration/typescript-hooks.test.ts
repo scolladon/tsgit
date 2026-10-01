@@ -11,6 +11,8 @@ import { promisify } from 'node:util';
 
 import { describe, expect, it } from 'vitest';
 
+import benchSweepConfig from '../../../vitest.bench.config.ts';
+
 const execFileAsync = promisify(execFile);
 const REPO_ROOT = path.resolve(import.meta.dirname, '..', '..', '..');
 const REGISTER_HOOKS = path.join(REPO_ROOT, 'tooling', 'register-typescript-hooks.mjs');
@@ -71,6 +73,29 @@ describe('typescript transpile hooks (integration)', () => {
         // Assert
         expect(result.code).not.toBe(0);
         expect(result.stderr).toContain('ERR_UNKNOWN_FILE_EXTENSION');
+      });
+    });
+  });
+});
+
+describe('the real bench sweep config', () => {
+  describe('Given its test options, When the loading setup is read', () => {
+    it('Then benches load natively through the hooks with the stripper disabled', () => {
+      // Arrange
+      const sut = benchSweepConfig.test;
+
+      // Act
+      const loading = {
+        experimental: sut?.experimental,
+        execArgv: sut?.execArgv,
+        setupFiles: sut?.setupFiles,
+      };
+
+      // Assert
+      expect(loading).toEqual({
+        experimental: { viteModuleRunner: false, nodeLoader: false },
+        execArgv: [STRIPPER_OFF],
+        setupFiles: ['tooling/register-typescript-hooks.mjs'],
       });
     });
   });
