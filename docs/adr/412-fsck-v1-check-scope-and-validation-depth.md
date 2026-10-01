@@ -1,6 +1,10 @@
 # 412 — fsck v1 check scope: full refs-verify pass and full object msg-id catalogue
 
-- **Status:** accepted
+> Superseded by [ADR-919](919-fsck-audits-every-object-source.md) for the out-of-scope bullet
+> excluding alternate object stores from fsck: fsck now audits every object source. The refs-verify
+> pass, the full msg-id catalogue and the remaining out-of-scope items are carried forward unchanged.
+
+- **Status:** superseded by ADR-919
 - **Date:** 2026-06-23
 - **Design:** docs/design/fsck.md · **Refines:** ADR-226 (git-faithfulness)
 - **Decision class:** D-SCOPE user-ratified
