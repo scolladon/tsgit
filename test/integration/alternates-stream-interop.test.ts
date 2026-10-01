@@ -30,6 +30,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { deflateSync } from 'node:zlib';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { buildPack } from '../../src/application/primitives/build-pack.js';
 import { hasObject } from '../../src/application/primitives/has-object.js';
 import { readObjectMetadata } from '../../src/application/primitives/read-object.js';
 import type { CatFileBatchEntry } from '../../src/application/primitives/types.js';
@@ -50,6 +51,7 @@ import { verifyPackRows, writeLooseObject } from './pack-fixture-helpers.js';
 const SETUP_TIMEOUT = 120_000;
 const ROW_TIMEOUT = 30_000;
 const GIT_REFUSED = 128;
+const GIT_BUNDLE_REFUSED = 1;
 const MIDX_SIGNATURE_FATAL =
   'multi-pack-index signature 0x58585858 does not match signature 0x4d494458';
 const REFUSAL_DATA = { code: 'INVALID_MULTI_PACK_INDEX', check: 'signature' };
@@ -825,6 +827,112 @@ describe.skipIf(!GIT_AVAILABLE)('alternates stream interop — cat-file batch, s
           expect(link.failure).toBeUndefined();
           expect(exact.contents.get('exact')).toBe(worktreeText('slim'));
           expect(link.contents.get('link')).toBe(worktreeText('slim'));
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M5u-M5w rows: pack builders refuse whenever any object source cannot load
+// ---------------------------------------------------------------------------
+
+const filesUnder = (dir: string): string[] =>
+  readdirSync(dir, { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => path.join(path.relative(dir, entry.parentPath), entry.name))
+    .sort();
+
+const packDirOf = (dir: string): string => path.join(dir, '.git', 'objects', 'pack');
+const objectsDirOf = (dir: string): string => path.join(dir, '.git', 'objects');
+
+describe.skipIf(!GIT_AVAILABLE)('alternates stream interop — pack builders', () => {
+  describe('Given M5u: an unusable alternate and an empty object list', () => {
+    describe('When buildPack and packObjects run', () => {
+      it(
+        'Then both tools refuse and leave the pack directory untouched',
+        async () => {
+          // Arrange
+          const gitCopy = copyOfFixture();
+          const copy = copyOfFixture();
+          const gitBefore = filesUnder(packDirOf(gitCopy.dir));
+          const before = filesUnder(packDirOf(copy.dir));
+          const repo = await copy.repo();
+
+          // Act
+          const gitBase = path.join(packDirOf(gitCopy.dir), 'pack');
+          const gitEmpty = gitIn(gitCopy.dir, 'pack-objects', '--revs', gitBase);
+          const git = tryRunGitWithExit(['-C', gitCopy.dir, 'pack-objects', '--revs', gitBase], {
+            input: 'HEAD\n',
+          });
+          const built = await rejectionOf(() => buildPack(repo.ctx, { objects: [] }));
+          const packed = await rejectionOf(() => repo.packObjects({ wants: ['HEAD'] }));
+          await repo.dispose();
+
+          // Assert
+          expectGitRefused(gitEmpty);
+          expectGitRefused(git);
+          expect(filesUnder(packDirOf(gitCopy.dir))).toEqual(gitBefore);
+          expect(built.data).toMatchObject(REFUSAL_DATA);
+          expect(packed.data).toMatchObject(REFUSAL_DATA);
+          expect(filesUnder(packDirOf(copy.dir))).toEqual(before);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe('Given M5v: an unusable alternate', () => {
+    describe('When bundle create runs', () => {
+      it(
+        'Then both tools refuse and write no bundle file',
+        async () => {
+          // Arrange
+          const gitCopy = copyOfFixture();
+          const copy = copyOfFixture();
+          const bundleFile = path.join(root, `bundle-${copyCount}.bundle`);
+          const repo = await copy.repo();
+
+          // Act
+          const git = gitIn(gitCopy.dir, 'bundle', 'create', bundleFile, 'HEAD');
+          const refused = await rejectionOf(() => repo.bundle.create({ revs: [{ tip: 'HEAD' }] }));
+          await repo.dispose();
+
+          // Assert
+          expect(git.exitCode).toBe(GIT_BUNDLE_REFUSED);
+          expect(git.stderr).toContain(MIDX_SIGNATURE_FATAL);
+          expect(existsSync(bundleFile)).toBe(false);
+          expect(refused.data).toMatchObject(REFUSAL_DATA);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe('Given M5w: an unusable alternate', () => {
+    describe('When gc runs', () => {
+      it(
+        'Then both tools refuse and leave the objects directory file set unchanged',
+        async () => {
+          // Arrange
+          const gitCopy = copyOfFixture();
+          const copy = copyOfFixture();
+          const gitBefore = filesUnder(objectsDirOf(gitCopy.dir));
+          const before = filesUnder(objectsDirOf(copy.dir));
+          const repo = await copy.repo();
+
+          // Act
+          const git = gitIn(gitCopy.dir, 'gc', '-q');
+          const refused = await rejectionOf(() => repo.maintenance({ tasks: ['gc'] }));
+          await repo.dispose();
+
+          // Assert
+          expect(git.exitCode).not.toBe(0);
+          expect(git.stderr).toContain(MIDX_SIGNATURE_FATAL);
+          expect(filesUnder(objectsDirOf(gitCopy.dir))).toEqual(gitBefore);
+          expect(refused.data).toMatchObject(REFUSAL_DATA);
+          expect(filesUnder(objectsDirOf(copy.dir))).toEqual(before);
         },
         ROW_TIMEOUT,
       );

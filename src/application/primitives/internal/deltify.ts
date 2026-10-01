@@ -32,11 +32,13 @@ import {
 } from '../../../domain/storage/index.js';
 import type { Context } from '../../../ports/context.js';
 import type { PackObjectInput } from '../build-pack.js';
+import { getObjectStore } from '../object-store.js';
 import {
   type ObjectMetadataWithContent,
   readObjectMetadataWithContent,
   readRawObject,
 } from '../read-object.js';
+import { readBlobContentInStreamOrder } from './blob-source.js';
 import { boundedMapFor } from './concurrency.js';
 
 export interface DeltifiedEntry {
@@ -412,6 +414,18 @@ interface EmissionOutcome {
   readonly state: WindowState;
 }
 
+/** A blob above `core.bigFileThreshold` is read the way git streams it. */
+async function readEmissionContent(
+  ctx: Context,
+  key: EmissionEntry,
+  bigFileThreshold: number,
+): Promise<Uint8Array> {
+  if (key.type === PACK_ENTRY_TYPE.BLOB && key.uncompressedSize > bigFileThreshold) {
+    return readBlobContentInStreamOrder(ctx, key.id);
+  }
+  return (await readRawObject(ctx, key.id)).content;
+}
+
 /**
  * One object's turn in the emission loop: search for a base (unless it is
  * under the floor, in which case the search is skipped and it is emitted as
@@ -424,8 +438,9 @@ async function processEmissionEntry(
   emissionIndex: number,
   state: WindowState,
   policy: DeltaPolicy,
+  bigFileThreshold: number,
 ): Promise<EmissionOutcome> {
-  const content = key.content ?? (await readRawObject(ctx, key.id)).content;
+  const content = key.content ?? (await readEmissionContent(ctx, key, bigFileThreshold));
   const belowFloor = content.length < DELTA_FLOOR_BYTES;
   const candidate = belowFloor
     ? undefined
@@ -453,10 +468,18 @@ export async function deltifyEntries(
   policy: DeltaPolicy,
 ): Promise<ReadonlyArray<DeltifiedEntry>> {
   const order = await buildEmissionOrder(ctx, objects);
+  const { bigFileThreshold } = await getObjectStore(ctx);
   let state: WindowState = { window: [], residentBytes: 0 };
   const results: DeltifiedEntry[] = [];
   for (const [emissionIndex, key] of order.entries()) {
-    const outcome = await processEmissionEntry(ctx, key, emissionIndex, state, policy);
+    const outcome = await processEmissionEntry(
+      ctx,
+      key,
+      emissionIndex,
+      state,
+      policy,
+      bigFileThreshold,
+    );
     results.push(outcome.result);
     state = outcome.state;
   }

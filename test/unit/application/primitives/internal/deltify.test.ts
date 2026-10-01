@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
+import { __resetConfigCacheForTests } from '../../../../../src/application/primitives/config-read.js';
+import * as blobSourceModule from '../../../../../src/application/primitives/internal/blob-source.js';
 import {
   type DeltifiedEntry,
   deltifyEntries,
@@ -13,6 +15,7 @@ import * as deltaEncodeModule from '../../../../../src/domain/storage/delta-enco
 import type { DeltaPolicy } from '../../../../../src/domain/storage/delta-policy.js';
 import { PACK_ENTRY_TYPE } from '../../../../../src/domain/storage/pack-entry.js';
 import { buildSeededContext } from '../fixtures.js';
+import { writeSyntheticPackIn } from '../pack-fixture.js';
 
 /** A pure function of (seed, index) — never a stateful generator — so two
  *  calls with the same seed and different lengths always agree on their
@@ -25,6 +28,8 @@ function pseudoRandomByte(seed: number, index: number): number {
 function pseudoRandomBytes(seed: number, length: number): Uint8Array {
   return Uint8Array.from({ length }, (_unused, i) => pseudoRandomByte(seed, i));
 }
+
+const BIG_FILE_THRESHOLD = 100;
 
 const DEFAULT_POLICY: DeltaPolicy = {
   enabled: true,
@@ -1373,6 +1378,38 @@ describe('searchBound', () => {
         expect(sameDepth).toBe(100);
         expect(deeper).toBe(85);
         expect(shallower).toBe(104);
+      });
+    });
+  });
+
+  describe.each([
+    ['blob', 'above', BIG_FILE_THRESHOLD + 1, true],
+    ['blob', 'at', BIG_FILE_THRESHOLD, false],
+    ['commit', 'above', BIG_FILE_THRESHOLD + 1, false],
+  ] as const)('Given a packed %s %s bigFileThreshold', (type, _label, size, streamed) => {
+    describe('When deltifyEntries emits it', () => {
+      it(`Then the stream-order read is ${streamed ? '' : 'not '}used`, async () => {
+        // Arrange
+        const content = pseudoRandomBytes(41, size);
+        const ctx = await buildSeededContext();
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          `[core]\n\tbigFileThreshold = ${BIG_FILE_THRESHOLD}\n`,
+        );
+        __resetConfigCacheForTests();
+        const [id] = await writeSyntheticPackIn(ctx, `${ctx.layout.gitDir}/objects`, 'p', [
+          { kind: 'base', type, content },
+        ]);
+        const streamSpy = vi.spyOn(blobSourceModule, 'readBlobContentInStreamOrder');
+        const sut = deltifyEntries;
+
+        // Act
+        const result = await sut(ctx, [{ id: id as ObjectId }], DEFAULT_POLICY);
+
+        // Assert
+        expect(streamSpy).toHaveBeenCalledTimes(streamed ? 1 : 0);
+        expect(result).toHaveLength(1);
+        vi.restoreAllMocks();
       });
     });
   });
