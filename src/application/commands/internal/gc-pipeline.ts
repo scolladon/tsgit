@@ -849,7 +849,7 @@ export async function runGcTask(
   refreshPackRegistry(ctx);
 
   // --- step 1: loose count + the auto gate ---
-  const looseIds = await enumerateObjects(ctx, { includePacks: false });
+  const looseIds = await enumerateObjects(ctx, { includePacks: false, scope: 'local' });
   const looseSet = new Set(looseIds);
   const looseObjectsBefore = looseIds.length;
 

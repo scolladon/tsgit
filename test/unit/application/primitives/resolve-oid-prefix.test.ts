@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import {
   MAX_OID_PREFIX_CANDIDATES,
   resolveOidPrefix,
@@ -8,7 +9,7 @@ import { permissionDenied, TsgitError } from '../../../../src/domain/error.js';
 import type { Blob, ObjectId } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { buildSeededContext, instrumentedContext } from './fixtures.js';
-import { writeSyntheticPack } from './pack-fixture.js';
+import { writeSyntheticPack, writeSyntheticPackIn } from './pack-fixture.js';
 
 const blobOf = (content: Uint8Array): Blob => ({ type: 'blob', id: '' as ObjectId, content });
 
@@ -445,6 +446,104 @@ describe('resolveOidPrefix on an over-long hex string', () => {
 
         // Assert
         expect(result).toBeUndefined();
+      });
+    });
+  });
+});
+
+const ALT_OBJECTS = '/repo/alt/objects';
+
+const borrowerContext = async (): Promise<Context> => {
+  const ctx = createMemoryContext({
+    files: {
+      '/repo/.git/objects/info/alternates': new TextEncoder().encode(`${ALT_OBJECTS}\n`),
+    },
+  });
+  await ctx.fs.mkdir(ALT_OBJECTS);
+  return ctx;
+};
+
+const writeLooseNamedIn = async (ctx: Context, objectsDir: string, oid: string): Promise<void> => {
+  await ctx.fs.write(`${objectsDir}/${oid.slice(0, 2)}/${oid.slice(2)}`, new Uint8Array([1]));
+};
+
+describe('resolveOidPrefix through alternates', () => {
+  describe('Given a prefix matching only a loose object in an alternate', () => {
+    describe('When resolveOidPrefix is called', () => {
+      it('Then it resolves to the full id', async () => {
+        // Arrange
+        const ctx = await borrowerContext();
+        const oid = `abcdef${'0'.repeat(34)}`;
+        await writeLooseNamedIn(ctx, ALT_OBJECTS, oid);
+
+        // Act
+        const result = await resolveOidPrefix(ctx, 'abcdef');
+
+        // Assert
+        expect(result).toBe(oid);
+      });
+    });
+  });
+
+  describe('Given a prefix matching only a packed object in an alternate', () => {
+    describe('When resolveOidPrefix is called', () => {
+      it('Then it resolves to the full id', async () => {
+        // Arrange
+        const ctx = await borrowerContext();
+        const [id] = await writeSyntheticPackIn(ctx, ALT_OBJECTS, 'a', [
+          { kind: 'base', type: 'blob', content: new TextEncoder().encode('alt packed') },
+        ]);
+
+        // Act
+        const result = await resolveOidPrefix(ctx, (id as string).slice(0, 8));
+
+        // Assert
+        expect(result).toBe(id);
+      });
+    });
+  });
+
+  describe('Given the same object loose in the primary and the alternate', () => {
+    describe('When resolveOidPrefix is called', () => {
+      it('Then the union de-duplicates and it resolves', async () => {
+        // Arrange
+        const ctx = await borrowerContext();
+        const oid = `abcdef${'0'.repeat(34)}`;
+        await writeLooseNamedIn(ctx, `${ctx.layout.gitDir}/objects`, oid);
+        await writeLooseNamedIn(ctx, ALT_OBJECTS, oid);
+
+        // Act
+        const result = await resolveOidPrefix(ctx, 'abcdef');
+
+        // Assert
+        expect(result).toBe(oid);
+      });
+    });
+  });
+
+  describe('Given a prefix shared by a primary object and an alternate object', () => {
+    describe('When resolveOidPrefix is called', () => {
+      it('Then it throws AMBIGUOUS_OID_PREFIX carrying both candidates', async () => {
+        // Arrange
+        const ctx = await borrowerContext();
+        const mine = `abcdef${'0'.repeat(34)}`;
+        const theirs = `abcdef${'1'.repeat(34)}`;
+        await writeLooseNamedIn(ctx, `${ctx.layout.gitDir}/objects`, mine);
+        await writeLooseNamedIn(ctx, ALT_OBJECTS, theirs);
+
+        // Act
+        let caught: TsgitError | undefined;
+        try {
+          await resolveOidPrefix(ctx, 'abcdef');
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data.code).toBe('AMBIGUOUS_OID_PREFIX');
+        if (caught?.data.code === 'AMBIGUOUS_OID_PREFIX') {
+          expect([...caught.data.candidates].sort()).toEqual([mine, theirs]);
+        }
       });
     });
   });

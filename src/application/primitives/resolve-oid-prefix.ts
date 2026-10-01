@@ -14,8 +14,7 @@ import { isOid, type ObjectId } from '../../domain/objects/index.js';
 import { findByPrefix } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
 import { isMissingFanoutDir } from './internal/loose-oid-cache.js';
-import { commonGitDir, objectsDir } from './path-layout.js';
-import { getPackRegistry, peekPackRegistry } from './read-object.js';
+import { getObjectStore, type ObjectSource } from './object-store.js';
 
 /** Lower bound of an abbreviated-oid prefix — independent of the repository's
  *  hash width (measured against real git: a 4-char prefix resolves under
@@ -64,13 +63,17 @@ export const MAX_OID_PREFIX_CANDIDATES = 16;
  *  via `isMissingFanoutDir` (a missing directory or a file occupying the
  *  fanout path), folded to an empty scan; any other fault (e.g. a
  *  `PERMISSION_DENIED` directory) is rethrown, never silently swallowed. */
-const scanLoose = async (ctx: Context, prefix: string): Promise<ReadonlyArray<ObjectId>> => {
-  const dir = objectsDir(commonGitDir(ctx), prefix.slice(0, 2));
+export const scanLooseIn = async (
+  ctx: Context,
+  source: ObjectSource,
+  prefix: string,
+): Promise<ReadonlyArray<ObjectId>> => {
+  const dir = `${source.objectsDir}/${prefix.slice(0, 2)}`;
   const rest = prefix.slice(2);
   const looseName = patternFor(LOOSE_NAME_PATTERNS, ctx.hashConfig.algorithm);
   let entries: Awaited<ReturnType<Context['fs']['readdir']>>;
   try {
-    entries = await ctx.fs.readdir(dir);
+    entries = await source.fs.readdir(dir);
   } catch (error) {
     if (!isMissingFanoutDir(error)) throw error;
     return [];
@@ -85,10 +88,12 @@ const scanLoose = async (ctx: Context, prefix: string): Promise<ReadonlyArray<Ob
   return found;
 };
 
-/** Packed objects whose id starts with `prefix`, across every registered pack. */
-const scanPacks = async (ctx: Context, prefix: string): Promise<ReadonlyArray<ObjectId>> => {
-  const registry = peekPackRegistry(ctx) ?? (await getPackRegistry(ctx));
-  const packs = await registry.all();
+/** Packed objects whose id starts with `prefix`, across every pack registered in `source`. */
+export const scanPacksIn = async (
+  source: ObjectSource,
+  prefix: string,
+): Promise<ReadonlyArray<ObjectId>> => {
+  const packs = await source.registry.all();
   const found: ObjectId[] = [];
   for (const pack of packs) {
     const index = await pack.index();
@@ -103,8 +108,13 @@ export const resolveOidPrefix = async (
 ): Promise<ObjectId | undefined> => {
   if (isOid(prefix, ctx.hashConfig)) return prefix as ObjectId;
   if (!patternFor(OID_PREFIX_PATTERNS, ctx.hashConfig.algorithm).test(prefix)) return undefined;
-  const [loose, packed] = await Promise.all([scanLoose(ctx, prefix), scanPacks(ctx, prefix)]);
-  const unique = [...new Set<ObjectId>([...loose, ...packed])];
+  const { sources } = await getObjectStore(ctx);
+  const perSource = await Promise.all(
+    sources.map((source) =>
+      Promise.all([scanLooseIn(ctx, source, prefix), scanPacksIn(source, prefix)]),
+    ),
+  );
+  const unique = [...new Set<ObjectId>(perSource.flat(2))];
   if (unique.length === 0) return undefined;
   if (unique.length === 1) return unique[0];
   throw ambiguousOidPrefix(prefix, unique.slice(0, MAX_OID_PREFIX_CANDIDATES));

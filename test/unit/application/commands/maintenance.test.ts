@@ -242,6 +242,33 @@ async function writePromisorPack(
   return ids as ReadonlyArray<ObjectId>;
 }
 
+describe('maintenance gc with an alternate', () => {
+  describe('Given a borrower with donor loose objects', () => {
+    describe('When gc', () => {
+      it('Then no donor object is counted or touched', async () => {
+        // Arrange
+        const withoutDonor = await seedOneCommit();
+        const expectedLoose = (await maintenance(withoutDonor, { tasks: ['gc'] }))
+          .looseObjectsBefore;
+        const ctx = await seedOneCommit();
+        const donorObjects = '/repo/donor/objects';
+        await ctx.fs.mkdir(donorObjects);
+        await ctx.fs.writeUtf8(`${commonGitDir(ctx)}/objects/info/alternates`, `${donorObjects}\n`);
+        const donorPath = `${donorObjects}/ab/${'c'.repeat(38)}`;
+        await ctx.fs.write(donorPath, new Uint8Array([1]));
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(result.looseObjectsBefore).toBe(expectedLoose);
+        expect(await ctx.fs.exists(donorPath)).toBe(true);
+      });
+    });
+  });
+});
+
 describe('maintenance', () => {
   describe('Given tasks: []', () => {
     describe('When maintenance is called', () => {

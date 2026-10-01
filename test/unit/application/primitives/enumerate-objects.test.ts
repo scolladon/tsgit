@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest';
+import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { enumerateObjects } from '../../../../src/application/primitives/enumerate-objects.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type { GitObject, ObjectId } from '../../../../src/domain/objects/index.js';
+import { serializeHeader } from '../../../../src/domain/objects/index.js';
+import { computeLooseObjectPath } from '../../../../src/domain/storage/loose-path.js';
+import type { Context } from '../../../../src/ports/context.js';
 import { buildSeededContext } from './fixtures.js';
-import { restampPackHeader, writeSyntheticPack } from './pack-fixture.js';
+import { restampPackHeader, writeSyntheticPack, writeSyntheticPackIn } from './pack-fixture.js';
 
 const blob = (content: string): GitObject => ({
   type: 'blob',
@@ -303,6 +307,90 @@ describe('enumerateObjects', () => {
 
         // Assert
         expect(result).toContain(looseId);
+      });
+    });
+  });
+});
+
+const ENC = new TextEncoder();
+const ALT_OBJECTS = '/repo/alt/objects';
+
+const borrowerContext = async (): Promise<Context> => {
+  const ctx = createMemoryContext({
+    files: { '/repo/.git/objects/info/alternates': ENC.encode(`${ALT_OBJECTS}\n`) },
+  });
+  await ctx.fs.mkdir(ALT_OBJECTS);
+  return ctx;
+};
+
+const writeLooseIn = async (ctx: Context, objectsDir: string, text: string): Promise<ObjectId> => {
+  const content = ENC.encode(text);
+  const bytes = new Uint8Array([...serializeHeader('blob', content.length), ...content]);
+  const id = (await ctx.hash.hashHex(bytes)) as ObjectId;
+  await ctx.fs.write(
+    `${objectsDir}/${computeLooseObjectPath(id)}`,
+    await ctx.compressor.deflate(bytes),
+  );
+  return id;
+};
+
+describe('enumerateObjects through alternates', () => {
+  describe('Given a borrower with primary and alternate objects, loose and packed', () => {
+    describe('When enumerateObjects()', () => {
+      it('Then primary and alternate ids appear', async () => {
+        // Arrange
+        const ctx = await borrowerContext();
+        const primaryLoose = await writeLooseIn(ctx, '/repo/.git/objects', 'primary loose');
+        const altLoose = await writeLooseIn(ctx, ALT_OBJECTS, 'alt loose');
+        const [primaryPacked] = await writeSyntheticPack(ctx, 'p', [
+          { kind: 'base', type: 'blob', content: ENC.encode('primary packed') },
+        ]);
+        const [altPacked] = await writeSyntheticPackIn(ctx, ALT_OBJECTS, 'a', [
+          { kind: 'base', type: 'blob', content: ENC.encode('alt packed') },
+        ]);
+
+        // Act
+        const result = await enumerateObjects(ctx);
+
+        // Assert
+        const expected = [primaryLoose, altLoose, primaryPacked, altPacked].sort();
+        expect([...result]).toEqual(expected);
+      });
+    });
+
+    describe('When enumerateObjects() with scope local', () => {
+      it('Then only primary ids appear', async () => {
+        // Arrange
+        const ctx = await borrowerContext();
+        const primaryLoose = await writeLooseIn(ctx, '/repo/.git/objects', 'primary loose');
+        await writeLooseIn(ctx, ALT_OBJECTS, 'alt loose');
+        const [primaryPacked] = await writeSyntheticPack(ctx, 'p', [
+          { kind: 'base', type: 'blob', content: ENC.encode('primary packed') },
+        ]);
+        await writeSyntheticPackIn(ctx, ALT_OBJECTS, 'a', [
+          { kind: 'base', type: 'blob', content: ENC.encode('alt packed') },
+        ]);
+
+        // Act
+        const result = await enumerateObjects(ctx, { scope: 'local' });
+
+        // Assert
+        expect([...result]).toEqual([primaryLoose, primaryPacked].sort());
+      });
+    });
+
+    describe('When the same object is loose in both sources', () => {
+      it('Then it is listed once', async () => {
+        // Arrange
+        const ctx = await borrowerContext();
+        const id = await writeLooseIn(ctx, '/repo/.git/objects', 'shared');
+        await writeLooseIn(ctx, ALT_OBJECTS, 'shared');
+
+        // Act
+        const result = await enumerateObjects(ctx, { includePacks: false });
+
+        // Assert
+        expect([...result]).toEqual([id]);
       });
     });
   });
