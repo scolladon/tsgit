@@ -92,16 +92,27 @@ export const shallowFilePath = (gitDir: string): string => `${gitDir}/shallow`;
 
 export const shallowLockPath = (gitDir: string): string => `${gitDir}/shallow.lock`;
 
+/** The single-file commit-graph of one object store. */
+export const commitGraphPathIn = (objectsDir: string): string => `${objectsDir}/info/commit-graph`;
+
+/** Chain manifest of one object store: one lowercase-hex layer hash per line, base→tip. */
+export const commitGraphChainPathIn = (objectsDir: string): string =>
+  `${objectsDir}/info/commit-graphs/commit-graph-chain`;
+
+/** One chain layer's graph file in one object store, named by its content hash. */
+export const commitGraphLayerPathIn = (objectsDir: string, hash: string): string =>
+  `${objectsDir}/info/commit-graphs/graph-${hash}.graph`;
+
 /** The single-file commit-graph. Absent when the repo has no commit-graph or uses the chain form. */
-export const commitGraphPath = (gitDir: string): string => `${gitDir}/objects/info/commit-graph`;
+export const commitGraphPath = (gitDir: string): string => commitGraphPathIn(`${gitDir}/objects`);
 
 /** Chain manifest: one lowercase-hex layer hash per line, base→tip. */
 export const commitGraphChainPath = (gitDir: string): string =>
-  `${gitDir}/objects/info/commit-graphs/commit-graph-chain`;
+  commitGraphChainPathIn(`${gitDir}/objects`);
 
 /** One chain layer's graph file, named by its content hash. */
 export const commitGraphLayerPath = (gitDir: string, hash: string): string =>
-  `${gitDir}/objects/info/commit-graphs/graph-${hash}.graph`;
+  commitGraphLayerPathIn(`${gitDir}/objects`, hash);
 
 /**
  * The flat multi-pack-index. Absent when the repo has no midx or uses the

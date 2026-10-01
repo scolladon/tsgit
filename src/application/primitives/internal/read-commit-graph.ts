@@ -21,11 +21,11 @@ import { invalidCommitGraphChunk } from '../../../domain/commit/error.js';
 import { TsgitError } from '../../../domain/error.js';
 import { ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
+import { getObjectStore, type ObjectSource, type ObjectStore } from '../object-store.js';
 import {
-  commitGraphChainPath,
-  commitGraphLayerPath,
-  commitGraphPath,
-  commonGitDir,
+  commitGraphChainPathIn,
+  commitGraphLayerPathIn,
+  commitGraphPathIn,
 } from '../path-layout.js';
 import { assertRepoSettingsValid, repoSettingsVerdictSettled } from './repo-settings-gate.js';
 import { isShallowRepository } from './shallow-set.js';
@@ -116,6 +116,8 @@ export function insertBounded<K, V>(map: Map<K, V>, cap: number, key: K, value: 
   map.set(key, value);
 }
 
+type SourceFs = ObjectSource['fs'];
+
 function isFileNotFound(error: unknown): boolean {
   return error instanceof TsgitError && error.data.code === 'FILE_NOT_FOUND';
 }
@@ -126,20 +128,20 @@ function isFileNotFound(error: unknown): boolean {
 // object-read counts, and a commit-graph probe must not spend from that
 // budget. The read itself still guards FILE_NOT_FOUND for the narrow TOCTOU
 // window between the two calls.
-async function tryRead(ctx: Context, path: string): Promise<Uint8Array | undefined> {
-  if (!(await ctx.fs.exists(path))) return undefined;
+async function tryRead(fs: SourceFs, path: string): Promise<Uint8Array | undefined> {
+  if (!(await fs.exists(path))) return undefined;
   try {
-    return await ctx.fs.read(path);
+    return await fs.read(path);
   } catch (error) {
     if (isFileNotFound(error)) return undefined;
     throw error;
   }
 }
 
-async function tryReadUtf8(ctx: Context, path: string): Promise<string | undefined> {
-  if (!(await ctx.fs.exists(path))) return undefined;
+async function tryReadUtf8(fs: SourceFs, path: string): Promise<string | undefined> {
+  if (!(await fs.exists(path))) return undefined;
   try {
-    return await ctx.fs.readUtf8(path);
+    return await fs.readUtf8(path);
   } catch (error) {
     if (isFileNotFound(error)) return undefined;
     throw error;
@@ -154,30 +156,52 @@ function parseChainLayerHashes(chainText: string): readonly string[] {
 }
 
 /**
- * Load the chain form. A chain that references a layer file which no longer
- * exists is treated as an ABSENT graph — git's own
- * behaviour for a chain with a missing layer (warn + fall back, exit 0).
+ * Git's `load_commit_graph_chain_fd_st`: each chain line (base first) is
+ * searched in every source, first loadable file wins. A line no source
+ * satisfies warns and stops — the layers loaded so far are served, and an
+ * empty prefix is no graph (the caller moves on to the next source).
  */
-async function loadChain(ctx: Context, gitDir: string): Promise<LoadedGraph | undefined> {
-  const chainText = await tryReadUtf8(ctx, commitGraphChainPath(gitDir));
+async function loadChain(
+  ctx: Context,
+  store: ObjectStore,
+  holder: ObjectSource,
+): Promise<LoadedGraph | undefined> {
+  const chainPath = commitGraphChainPathIn(holder.objectsDir);
+  const chainText = await tryReadUtf8(holder.fs, chainPath);
   if (chainText === undefined) return undefined;
 
-  const hashes = parseChainLayerHashes(chainText);
-  // Stryker disable next-line ConditionalExpression: equivalent — dropping this
-  // guard falls through to `loadedGraph([])`, a 0-layer LoadedGraph. Every
-  // consumer treats that exactly like an absent graph: findOwnPosition's
-  // `for (i<layers.length)` runs 0 iterations and returns `undefined`, so
-  // commitHeader never reaches `commitDataAt` and the vacuously-true
-  // `correctedCommitDates` the empty `every` produces is never read.
-  if (hashes.length === 0) return undefined;
-
   const layers: CommitGraphLayer[] = [];
-  for (const hash of hashes) {
-    const bytes = await tryRead(ctx, commitGraphLayerPath(gitDir, hash));
-    if (bytes === undefined) return undefined;
-    layers.push(parseCommitGraphLayer(bytes));
+  for (const hash of parseChainLayerHashes(chainText)) {
+    const layer = await findLayer(store, hash);
+    if (layer === undefined) {
+      ctx.logger?.warn?.('commitGraph: unable to find all commit-graph files', {
+        chain: chainPath,
+        layer: hash,
+      });
+      break;
+    }
+    layers.push(layer);
   }
-  return loadedGraph(layers);
+  return layers.length > 0 ? loadedGraph(layers) : undefined;
+}
+
+async function findLayer(store: ObjectStore, hash: string): Promise<CommitGraphLayer | undefined> {
+  for (const source of store.sources) {
+    const bytes = await tryRead(source.fs, commitGraphLayerPathIn(source.objectsDir, hash));
+    const layer = bytes === undefined ? undefined : parseOrUndefined(bytes);
+    if (layer !== undefined) return layer;
+  }
+  return undefined;
+}
+
+/** A malformed graph file is "not loadable" (git warns and moves on); fs errors never reach here. */
+function parseOrUndefined(bytes: Uint8Array): CommitGraphLayer | undefined {
+  try {
+    return parseCommitGraphLayer(bytes);
+  } catch (error) {
+    if (isGraphDecodeFailure(error)) return undefined;
+    throw error;
+  }
 }
 
 function computeLayerOffsets(layers: readonly CommitGraphLayer[]): readonly number[] {
@@ -202,21 +226,25 @@ function computeLayerOffsets(layers: readonly CommitGraphLayer[]): readonly numb
 async function loadGraphUncached(ctx: Context): Promise<LoadedGraph | undefined> {
   if (await isShallowRepository(ctx)) return undefined;
 
-  const gitDir = commonGitDir(ctx);
-
-  try {
-    const single = await tryRead(ctx, commitGraphPath(gitDir));
-    if (single !== undefined) {
-      return loadedGraph([parseCommitGraphLayer(single)]);
-    }
-    return loadChain(ctx, gitDir);
-  } catch (error) {
-    // A present-but-corrupt graph is git-faithfully treated as ABSENT (git
-    // warns and falls back to object reads, exit 0). Genuine fs failures
-    // still propagate.
-    if (isGraphDecodeFailure(error)) return undefined;
-    throw error;
+  const store = await getObjectStore(ctx);
+  for (const source of store.sources) {
+    const graph = await readGraphOne(ctx, store, source);
+    if (graph !== undefined) return graph;
   }
+  return undefined;
+}
+
+/** Git's `read_commit_graph_one`: the single file, else the chain. A corrupt
+ *  single file is no graph from this source's single slot — the chain is tried. */
+async function readGraphOne(
+  ctx: Context,
+  store: ObjectStore,
+  source: ObjectSource,
+): Promise<LoadedGraph | undefined> {
+  const single = await tryRead(source.fs, commitGraphPathIn(source.objectsDir));
+  const layer = single === undefined ? undefined : parseOrUndefined(single);
+  if (layer !== undefined) return loadedGraph([layer]);
+  return loadChain(ctx, store, source);
 }
 
 /** Decode failures (malformed graph bytes) — never fs errors. `RangeError`

@@ -15,7 +15,7 @@ import type {
   ObjectId,
   Tree,
 } from '../../../../src/domain/objects/index.js';
-import type { Context } from '../../../../src/ports/context.js';
+import { type Context, createSession } from '../../../../src/ports/context.js';
 import { buildSeededContext, instrumentedContext, writeCommitGraph } from './fixtures.js';
 
 const AUTHOR: AuthorIdentity = {
@@ -1431,7 +1431,7 @@ describe('walkCommits', () => {
           const base = await buildSeededContext();
           const ids = await linearChain(base, 3);
           await writeCommitGraph(base, [await asCommits(base, ids)]);
-          const { ctx, calls } = instrumentedContext(base);
+          const { ctx, calls } = instrumentedContext({ ...base, session: createSession() });
 
           // Act
           await collect(walkCommits(ctx, { from: [ids.at(-1)!] }));
