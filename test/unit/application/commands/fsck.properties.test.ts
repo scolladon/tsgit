@@ -24,7 +24,7 @@ import { SHA1_CONFIG } from '../../../../src/domain/objects/hash-config.js';
 import type { ObjectId } from '../../../../src/domain/objects/index.js';
 import type { TreeEntry } from '../../../../src/domain/objects/tree.js';
 import { serializeTreeContent, treeEntry } from '../../../../src/domain/objects/tree.js';
-import type { Context } from '../../../../src/ports/context.js';
+import { type Context, createSession } from '../../../../src/ports/context.js';
 import { arbTreeEntryRawName } from '../../domain/objects/arbitraries.js';
 import { buildSeededContext } from '../primitives/fixtures.js';
 import { restampPackHeader, writeSyntheticPack } from '../primitives/pack-fixture.js';
@@ -405,6 +405,9 @@ const sameFindingSet = (
   return setA.size === setB.size && [...setA].every((key) => setB.has(key));
 };
 
+/** A fresh cache identity over the same disk — what a new process sees after external edits. */
+const reopen = (ctx: Context): Context => ({ ...ctx, session: createSession() });
+
 async function seedHealthyRepo(ctx: Context, content: string): Promise<void> {
   await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
   const blobId = await writeObject(ctx, makeBlob(content));
@@ -446,7 +449,7 @@ describe('Given an arbitrary healthy repo plus one unusable pack', () => {
             await applyPackFault(ctx, 'fault-pack', shape);
 
             // Act
-            const result = await fsck(ctx);
+            const result = await fsck(reopen(ctx));
 
             // Assert
             const gated = result.findings.filter(isGatedPackFinding);
@@ -488,7 +491,7 @@ describe('Given an arbitrary healthy repo plus N unusable packs', () => {
             }
 
             // Act
-            const result = await fsck(ctx);
+            const result = await fsck(reopen(ctx));
 
             // Assert
             const gated = result.findings.filter(isGatedPackFinding);
@@ -533,8 +536,8 @@ describe('Given an arbitrary healthy repo plus one pack-layer-faulted pack whose
             const packIds: ReadonlySet<ObjectId> = new Set([packObjectId as ObjectId]);
 
             // Act
-            const defaultResult = await fsck(ctx);
-            const connOnlyResult = await fsck(ctx, { connectivityOnly: true });
+            const defaultResult = await fsck(reopen(ctx));
+            const connOnlyResult = await fsck(reopen(ctx), { connectivityOnly: true });
 
             // Assert — default: ≥1 pack finding, zero findings carry an id in S
             const defaultPackFindings = defaultResult.findings.filter((f) =>

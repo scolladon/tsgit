@@ -6,7 +6,7 @@ import { writeObject } from '../../../../src/application/primitives/write-object
 import { TsgitError } from '../../../../src/domain/error.js';
 import { FILE_MODE, type ObjectId, type TreeEntry } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
-import type { Context } from '../../../../src/ports/context.js';
+import { type Context, createSession } from '../../../../src/ports/context.js';
 import { buildTreeChain, instrumentedContext, seedMaxTreeDepth } from '../primitives/fixtures.js';
 import { writeSyntheticPackIn } from '../primitives/pack-fixture.js';
 
@@ -721,12 +721,11 @@ const FLIPPED_SIGNATURE_MIDX = Uint8Array.from([
   ...new Array(8).fill(0),
 ]);
 
-const contextWithCorruptAlternate = async (): Promise<Context> => {
+const contextWithAlternate = async (): Promise<Context> => {
   const ctx = await initUnbornCtx();
   await ctx.fs.writeUtf8(`${PRIMARY_OBJECTS}/info/alternates`, `${ALT_OBJECTS}\n`);
   await ctx.fs.writeUtf8('/repo/.git/config', `[core]\n\tbigFileThreshold = ${THRESHOLD}\n`);
   await ctx.fs.mkdir(ALT_OBJECTS);
-  await ctx.fs.write(`${ALT_OBJECTS}/pack/multi-pack-index`, FLIPPED_SIGNATURE_MIDX);
   return ctx;
 };
 
@@ -751,9 +750,11 @@ const archiveEntries = async (
   const treeId = await writeObject(ctx, makeTree(entries));
   const commitId = await writeObject(ctx, makeCommit(treeId));
   await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+  // A write through an alternate that cannot load is refused, so the fault is planted after the writes.
+  await ctx.fs.write(`${ALT_OBJECTS}/pack/multi-pack-index`, FLIPPED_SIGNATURE_MIDX);
   const seen: string[] = [];
   try {
-    const result = await archive(ctx, { treeish: 'HEAD' });
+    const result = await archive({ ...ctx, session: createSession() }, { treeish: 'HEAD' });
     for await (const entry of result.entries) seen.push(entry.path);
   } catch (error) {
     return { seen, failure: (error as TsgitError).data };
@@ -766,7 +767,7 @@ describe('archive blob read order', () => {
     describe('When the entries are iterated', () => {
       it('Then it rejects at the delta entry after yielding the earlier one', async () => {
         // Arrange
-        const ctx = await contextWithCorruptAlternate();
+        const ctx = await contextWithAlternate();
         const [baseId, deltaId] = await packBaseAndDelta(ctx, THRESHOLD + 2);
 
         // Act
@@ -786,7 +787,7 @@ describe('archive blob read order', () => {
     describe('When the entries are iterated', () => {
       it('Then it is served without reaching the alternate', async () => {
         // Arrange
-        const ctx = await contextWithCorruptAlternate();
+        const ctx = await contextWithAlternate();
         const [baseId] = await packBaseAndDelta(ctx, THRESHOLD + 2);
 
         // Act
@@ -802,7 +803,7 @@ describe('archive blob read order', () => {
     describe('When the entries are iterated', () => {
       it('Then it is read in the default order, without reaching the alternate', async () => {
         // Arrange
-        const ctx = await contextWithCorruptAlternate();
+        const ctx = await contextWithAlternate();
         const [, deltaId] = await packBaseAndDelta(ctx, THRESHOLD);
 
         // Act
@@ -818,7 +819,7 @@ describe('archive blob read order', () => {
     describe('When the entries are iterated', () => {
       it('Then it is read in the default order, without reaching the alternate', async () => {
         // Arrange
-        const ctx = await contextWithCorruptAlternate();
+        const ctx = await contextWithAlternate();
         const [, deltaId] = await packBaseAndDelta(ctx, THRESHOLD + 2);
 
         // Act
@@ -834,7 +835,7 @@ describe('archive blob read order', () => {
     describe('When the entries are iterated', () => {
       it('Then it is read in stream order and reaches the alternate', async () => {
         // Arrange
-        const ctx = await contextWithCorruptAlternate();
+        const ctx = await contextWithAlternate();
         const [, deltaId] = await packBaseAndDelta(ctx, THRESHOLD + 2);
 
         // Act
@@ -851,7 +852,7 @@ describe('archive blob read order', () => {
     describe('When the entries are iterated', () => {
       it('Then the blob read refuses its type', async () => {
         // Arrange
-        const ctx = await contextWithCorruptAlternate();
+        const ctx = await contextWithAlternate();
         const commitBytes = new TextEncoder().encode(
           `tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904\nauthor A <a@b> 1 +0000\ncommitter A <a@b> 1 +0000\n\n${'m'.repeat(THRESHOLD)}\n`,
         );

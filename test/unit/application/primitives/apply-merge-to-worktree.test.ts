@@ -19,7 +19,7 @@ import type {
   TreeEntry,
 } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
-import type { Context } from '../../../../src/ports/context.js';
+import { type Context, createSession } from '../../../../src/ports/context.js';
 import { buildSeededContext } from './fixtures.js';
 
 const writeBlob = (ctx: Context, content: string): Promise<ObjectId> =>
@@ -1479,12 +1479,15 @@ describe('applyMergeToWorktree — a clean side the alternate refuses to serve',
         // Act
         let failure: unknown;
         try {
-          await applyMergeToWorktree(ctx, {
-            baseTree: base,
-            oursTree: ours,
-            theirsTree: theirs,
-            currentIndex: index([indexEntry('a', aOurs), indexEntry('b', bId)]),
-          });
+          await applyMergeToWorktree(
+            { ...ctx, session: createSession() },
+            {
+              baseTree: base,
+              oursTree: ours,
+              theirsTree: theirs,
+              currentIndex: index([indexEntry('a', aOurs), indexEntry('b', bId)]),
+            },
+          );
         } catch (error) {
           failure = error;
         }

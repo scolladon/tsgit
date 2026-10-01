@@ -1,10 +1,15 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
+import { freshenObject } from '../../../../src/application/primitives/internal/freshen-object.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
-import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import {
+  writeLooseObject,
+  writeObject,
+} from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { Blob, ObjectId } from '../../../../src/domain/objects/index.js';
 import { buildSeededContext, seedMaxTreeDepth } from './fixtures.js';
+import { writeSyntheticPack } from './pack-fixture.js';
 
 describe('writeObject', () => {
   describe('Given a fresh blob', () => {
@@ -335,6 +340,104 @@ describe('writeObject', () => {
         } catch (error) {
           expect((error as TsgitError).data.code).toBe('OPERATION_ABORTED');
         }
+      });
+    });
+  });
+
+  describe('Given the object is already packed', () => {
+    describe('When writeObject is called', () => {
+      it('Then the id is returned without deflating or writing a loose file', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('packed already\n');
+        const [packedId] = await writeSyntheticPack(ctx, 'freshen-hit', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const deflate = vi.spyOn(ctx.compressor, 'deflate');
+        const writeExclusive = vi.spyOn(ctx.fs, 'writeExclusive');
+        const blob: Blob = { type: 'blob', content, id: '' as ObjectId };
+
+        // Act
+        const sut = writeObject;
+        const result = await sut(ctx, blob);
+
+        // Assert
+        expect(result).toBe(packedId);
+        expect(deflate).not.toHaveBeenCalled();
+        expect(writeExclusive).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given the filesystem has no utimeNow and the object is already loose', () => {
+    describe('When writeObject is called', () => {
+      it('Then the id is returned and the file is not rewritten', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        Object.defineProperty(ctx.fs, 'utimeNow', { value: undefined });
+        const blob: Blob = { type: 'blob', content: new Uint8Array([9, 9]), id: '' as ObjectId };
+        const first = await writeObject(ctx, blob);
+        const writeExclusive = vi.spyOn(ctx.fs, 'writeExclusive');
+        const write = vi.spyOn(ctx.fs, 'write');
+
+        // Act
+        const sut = writeObject;
+        const result = await sut(ctx, blob);
+
+        // Assert
+        expect(result).toBe(first);
+        expect(writeExclusive).toHaveBeenCalledTimes(1);
+        expect(write).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given a loose copy another writer created after the listing was cached', () => {
+    describe('When writeObject hits FILE_EXISTS', () => {
+      it('Then the existing file is touched and the id returned', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blob: Blob = { type: 'blob', content: new Uint8Array([7, 7, 7]), id: '' as ObjectId };
+        const sut = writeObject;
+        const donor = await buildSeededContext();
+        const id = await writeObject(donor, { ...blob });
+        const path = `${ctx.layout.gitDir}/objects/${id.slice(0, 2)}/${id.slice(2)}`;
+        const donorPath = `${donor.layout.gitDir}/objects/${id.slice(0, 2)}/${id.slice(2)}`;
+        await freshenObject(ctx, id);
+        await ctx.fs.write(path, await donor.fs.read(donorPath));
+        const utimeNow = vi.spyOn(ctx.fs, 'utimeNow');
+
+        // Act
+        const result = await sut(ctx, { ...blob });
+
+        // Assert
+        expect(result).toBe(id);
+        expect(utimeNow).toHaveBeenCalledWith(path);
+      });
+    });
+  });
+
+  describe('Given the object is already packed', () => {
+    describe('When writeLooseObject is called', () => {
+      it('Then a loose copy is written regardless', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new TextEncoder().encode('forced loose\n');
+        const [packedId] = await writeSyntheticPack(ctx, 'force-loose', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const blob: Blob = { type: 'blob', content, id: '' as ObjectId };
+
+        // Act
+        const sut = writeLooseObject;
+        const result = await sut(ctx, blob);
+
+        // Assert
+        expect(result).toBe(packedId);
+        const id = result as string;
+        expect(
+          await ctx.fs.exists(`${ctx.layout.gitDir}/objects/${id.slice(0, 2)}/${id.slice(2)}`),
+        ).toBe(true);
       });
     });
   });

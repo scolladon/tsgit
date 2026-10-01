@@ -12,7 +12,7 @@ import { concatBytes, encode } from '../../../../src/domain/objects/encoding.js'
 import type { Blob, ObjectId, TreeEntry } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE, RefName } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
-import type { Context } from '../../../../src/ports/context.js';
+import { type Context, createSession } from '../../../../src/ports/context.js';
 import { buildSeededContext } from './fixtures.js';
 
 const FAKE_COMMIT_A = '1111111111111111111111111111111111111111' as ObjectId;
@@ -99,6 +99,7 @@ const setDetachedHead = async (ctx: Context, id: ObjectId): Promise<void> => {
 const submoduleStoreCtx = (ctx: Context, name: string): Context =>
   Object.freeze({
     ...ctx,
+    session: createSession(),
     layout: Object.freeze({
       ...ctx.layout,
       gitDir: `${ctx.layout.gitDir}/modules/${name}`,

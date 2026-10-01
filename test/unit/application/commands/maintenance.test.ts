@@ -56,7 +56,10 @@ import { getRefStore } from '../../../../src/application/primitives/ref-store.js
 import { MAX_REFLOG_BYTES } from '../../../../src/application/primitives/types.js';
 import * as writeCommitGraphMod from '../../../../src/application/primitives/write-commit-graph.js';
 import * as writeObjectMod from '../../../../src/application/primitives/write-object.js';
-import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import {
+  writeLooseObject,
+  writeObject,
+} from '../../../../src/application/primitives/write-object.js';
 import { fileNotFound, notADirectory, TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE } from '../../../../src/domain/objects/index.js';
@@ -2671,7 +2674,7 @@ describe('maintenance', () => {
         const ctx = await seedOneCommit();
         const blobId = await writeLooseBlob(ctx, 'already-loose-write-back');
         await appendConfig(ctx, '\n[gc]\n\tcruftPacks = false\n');
-        const writeSpy = vi.spyOn(writeObjectMod, 'writeObject');
+        const writeSpy = vi.spyOn(writeObjectMod, 'writeLooseObject');
         const sut = maintenance;
 
         // Act
@@ -3734,7 +3737,7 @@ describe('maintenance', () => {
         const packDir = packDirOf(ctx);
         await ctx.fs.write(`${packDir}/pack-${first.packId}.keep`, new Uint8Array(0));
         const commitObj = await readObject(ctx, commitId, { verifyHash: true });
-        await writeObject(ctx, commitObj);
+        await writeLooseObject(ctx, commitObj);
         expect(await isLoose(ctx, commitId)).toBe(true);
 
         // Act

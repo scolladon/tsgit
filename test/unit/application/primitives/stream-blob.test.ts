@@ -6,7 +6,7 @@ import { writeObject } from '../../../../src/application/primitives/write-object
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { Blob, Commit, ObjectId } from '../../../../src/domain/objects/index.js';
 import { computeLooseObjectPath } from '../../../../src/domain/storage/loose-path.js';
-import type { Context } from '../../../../src/ports/context.js';
+import { type Context, createSession } from '../../../../src/ports/context.js';
 import { buildMidx, type MidxSpec } from '../../domain/storage/arbitraries.js';
 import {
   buildSeededContext,
@@ -1013,7 +1013,7 @@ describe('streamBlob', () => {
           { kind: 'base', type: 'blob', content: ENC.encode('b') },
         ]);
         await writeMidxBytes(baseCtx, buildMidx(healthyMidxSpec()));
-        const { ctx, calls } = instrumentedContext(baseCtx);
+        const { ctx, calls } = instrumentedContext({ ...baseCtx, session: createSession() });
 
         // Act
         const sut = await streamBlob(ctx, id);
@@ -1049,7 +1049,7 @@ describe('streamBlob', () => {
         // Act
         let caught: unknown;
         try {
-          const sut = await streamBlob(ctx, id);
+          const sut = await streamBlob({ ...ctx, session: createSession() }, id);
           await collect(sut);
         } catch (error) {
           caught = error;

@@ -18,7 +18,7 @@ import type {
   CommandResult,
   CommandRunner,
 } from '../../../../src/ports/command-runner.js';
-import type { Context } from '../../../../src/ports/context.js';
+import { type Context, createSession } from '../../../../src/ports/context.js';
 import type { FileStat } from '../../../../src/ports/file-system.js';
 import { buildSeededContext } from './fixtures.js';
 
@@ -114,13 +114,18 @@ const FLIPPED_SIGNATURE_MIDX = Uint8Array.from([
   ...new Array(8).fill(0),
 ]);
 
-const contextWithAlternate = async (corrupt: boolean): Promise<Context> => {
+const contextWithAlternate = async (): Promise<Context> => {
   const ctx = createMemoryContext({
     files: { '/repo/.git/objects/info/alternates': enc(`${ALTERNATE}\n`) },
   });
   await ctx.fs.mkdir(ALTERNATE);
-  if (corrupt) await ctx.fs.write(`${ALTERNATE}/pack/multi-pack-index`, FLIPPED_SIGNATURE_MIDX);
   return ctx;
+};
+
+/** A write through an alternate that cannot load is refused, so the fault is planted after the writes. */
+const withCorruptAlternate = async (ctx: Context): Promise<Context> => {
+  await ctx.fs.write(`${ALTERNATE}/pack/multi-pack-index`, FLIPPED_SIGNATURE_MIDX);
+  return { ...ctx, session: createSession() };
 };
 
 const outcomeOf = async (attempt: Promise<unknown>): Promise<unknown> => {
@@ -145,8 +150,9 @@ describe('applyChangeset write wave and an object source', () => {
         const seen = new Set<string>();
 
         for (const _attempt of attempts) {
-          const ctx = await contextWithAlternate(true);
-          const a = await writeBlob(ctx, enc('aaa\n'));
+          const seeded = await contextWithAlternate();
+          const a = await writeBlob(seeded, enc('aaa\n'));
+          const ctx = await withCorruptAlternate(seeded);
           const missing = 'b'.repeat(40) as ObjectId;
           const changeset = makeChangeset([
             makeAdd('f', missing),
@@ -178,7 +184,7 @@ describe('applyChangeset write wave and an object source', () => {
     describe('When applyChangeset writes several entries', () => {
       it('Then the writes go through the ioBound pool', async () => {
         // Arrange
-        const ctx = await contextWithAlternate(false);
+        const ctx = await contextWithAlternate();
         const ids = [
           await writeBlob(ctx, enc('one')),
           await writeBlob(ctx, enc('two')),
@@ -207,8 +213,9 @@ describe('applyChangeset write wave and an object source', () => {
     describe('When applyChangeset writes entries given out of path order', () => {
       it('Then they are written in byte order of the path, one at a time', async () => {
         // Arrange
-        const ctx = await contextWithAlternate(true);
-        const ids = [await writeBlob(ctx, enc('zz')), await writeBlob(ctx, enc('mm'))];
+        const seeded = await contextWithAlternate();
+        const ids = [await writeBlob(seeded, enc('zz')), await writeBlob(seeded, enc('mm'))];
+        const ctx = await withCorruptAlternate(seeded);
         const order: string[] = [];
         const realWrite = ctx.fs.writeStream.bind(ctx.fs);
         vi.spyOn(ctx.fs, 'writeStream').mockImplementation(async (path, chunks) => {

@@ -27,7 +27,7 @@ import type {
   CommandResult,
   CommandRunner,
 } from '../../../../src/ports/command-runner.js';
-import type { Context } from '../../../../src/ports/context.js';
+import { type Context, createSession } from '../../../../src/ports/context.js';
 import { refuseReadOnSymlink } from '../primitives/fixtures.js';
 import { asBareContext } from './fixtures.js';
 
@@ -757,10 +757,6 @@ describe('stash apply', () => {
             '/repo/.git/objects/info/alternates': new TextEncoder().encode(`${alternateObjects}\n`),
           },
         });
-        await ctx.fs.write(
-          `${alternateObjects}/pack/multi-pack-index`,
-          Uint8Array.from([0x00, 0x49, 0x44, 0x58, 1, 1, 1, 0, ...new Array(8).fill(0)]),
-        );
         await init(ctx);
         await commitFile(ctx, 'a.txt', 'committed\n', 'initial commit');
         const absentBlob = 'c'.repeat(40) as ObjectId;
@@ -771,11 +767,16 @@ describe('stash apply', () => {
         });
         await pushHostileUntrackedStash(ctx, untrackedTree);
         const chmod = vi.spyOn(ctx.fs, 'chmod');
+        // A write through an alternate that cannot load is refused, so the fault is planted after the setup.
+        await ctx.fs.write(
+          `${alternateObjects}/pack/multi-pack-index`,
+          Uint8Array.from([0x00, 0x49, 0x44, 0x58, 1, 1, 1, 0, ...new Array(8).fill(0)]),
+        );
 
         // Act
         let failure: unknown;
         try {
-          await stashApply(ctx, {});
+          await stashApply({ ...ctx, session: createSession() }, {});
         } catch (error) {
           failure = error;
         }

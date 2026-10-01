@@ -6,6 +6,7 @@ import type { GitObject, ObjectId } from '../../../../src/domain/objects/index.j
 import { serializeHeader } from '../../../../src/domain/objects/index.js';
 import { computeLooseObjectPath } from '../../../../src/domain/storage/loose-path.js';
 import type { Context } from '../../../../src/ports/context.js';
+import { createSession } from '../../../../src/ports/context.js';
 import { buildSeededContext } from './fixtures.js';
 import { restampPackHeader, writeSyntheticPack, writeSyntheticPackIn } from './pack-fixture.js';
 
@@ -188,7 +189,7 @@ describe('enumerateObjects', () => {
         await restampPackHeader(ctx, refusedPackPath, { version: 99 });
 
         // Act
-        const result = await enumerateObjects(ctx);
+        const result = await enumerateObjects({ ...ctx, session: createSession() });
 
         // Assert
         expect(result).toContain(refusedIds[0] as ObjectId);
@@ -210,7 +211,10 @@ describe('enumerateObjects', () => {
         await restampPackHeader(ctx, refusedPackPath, { version: 99 });
 
         // Act
-        const result = await enumerateObjects(ctx, { accessiblePacksOnly: true });
+        const result = await enumerateObjects(
+          { ...ctx, session: createSession() },
+          { accessiblePacksOnly: true },
+        );
 
         // Assert
         expect(result).not.toContain(refusedIds[0] as ObjectId);

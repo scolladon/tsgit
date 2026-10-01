@@ -41,7 +41,7 @@ import type { FilePath } from '../../../../src/domain/objects/object-id.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import { invalidPackIndex } from '../../../../src/domain/storage/index.js';
 import * as packEntryMod from '../../../../src/domain/storage/pack-entry.js';
-import type { Context } from '../../../../src/ports/context.js';
+import { type Context, createSession } from '../../../../src/ports/context.js';
 import { pseudoRandomBytes } from '../../../fixtures/pseudo-random-bytes.js';
 import {
   type BitmapSpec,
@@ -116,6 +116,9 @@ const makeTag = (
 });
 
 /** Write an empty tree as blob, no refs: no reachable tree object. */
+/** A fresh cache identity over the same disk — what a new process sees after external edits. */
+const reopen = (ctx: Context): Context => ({ ...ctx, session: createSession() });
+
 const initBareCtx = async (options: { readonly homeDir?: string } = {}): Promise<Context> => {
   const ctx = createMemoryContext(options);
   // Seed HEAD so assertRepository passes
@@ -3421,7 +3424,7 @@ describe('Given a pack with a broken .rev alongside an unrelated missing tree', 
       await writeSyntheticRevIndex(ctx, 'unrelated-broken-rev', [0], { magic: 0 });
 
       // Act
-      const result = await fsck(ctx);
+      const result = await fsck(reopen(ctx));
 
       // Assert
       expect(result.exitCode & 2).toBe(2);
@@ -3697,7 +3700,7 @@ describe('Given every loose object deleted, main and the index both pointing at 
       await ctx.fs.rm(looseObjectPath(ctx.layout.gitDir, blobId));
 
       // Act
-      const result = await fsck(ctx);
+      const result = await fsck(reopen(ctx));
 
       // Assert
       expect(result.exitCode).toBe(10);
@@ -3777,7 +3780,7 @@ describe('Given the pack removed but an unrelated loose-backed ref still resolve
       await ctx.fs.rm(idxFilePath(ctx, 'sole'));
 
       // Act
-      const result = await fsck(ctx);
+      const result = await fsck(reopen(ctx));
 
       // Assert
       expect(result.exitCode).toBe(2);
@@ -4045,7 +4048,7 @@ describe('Given a cache-tree whose absent entry and whose refused-route entry ea
       );
 
       // Act
-      const result = await fsck(ctx);
+      const result = await fsck(reopen(ctx));
 
       // Assert
       const orphaned = result.findings.filter(
@@ -4073,7 +4076,7 @@ describe('Given a cache-tree naming only an oid a multi-pack-index routes past i
       await writeIndexWithEntry(ctx, blobId, 'a.txt', refusedRouteId);
 
       // Act
-      const result = await fsck(ctx);
+      const result = await fsck(reopen(ctx));
 
       // Assert
       const findings = result.findings.filter((f) => f.type === 'midx-unusable');
@@ -4108,7 +4111,7 @@ describe('Given a packed cache-tree oid the multi-pack-index routes past its own
       await writeIndexWithEntry(ctx, looseId, 'a.txt', packedId as ObjectId);
 
       // Act
-      const result = await fsck(ctx, { connectivityOnly: true });
+      const result = await fsck(reopen(ctx), { connectivityOnly: true });
 
       // Assert
       expect(
@@ -4139,7 +4142,7 @@ describe('Given a cache-tree oid whose multi-pack-index offset word points past 
       await writeIndexWithEntry(ctx, looseId, 'a.txt', id);
 
       // Act
-      const result = await fsck(ctx);
+      const result = await fsck(reopen(ctx));
 
       // Assert
       const findings = result.findings.filter((f) => f.type === 'midx-unusable');
@@ -4171,7 +4174,7 @@ describe('Given a cache-tree oid a multi-pack-index routes to a pack whose index
       await writeIndexWithEntry(ctx, blobId, 'a.txt', routedId);
       const idxPath = `${packsDir(commonGitDir(ctx))}/${packNameIdx}`;
       const wrapped: Context = {
-        ...ctx,
+        ...reopen(ctx),
         fs: {
           ...ctx.fs,
           read: async (path: string) =>
@@ -5750,7 +5753,7 @@ describe('Given a dangling REF_DELTA-encoded blob whose base pack was never writ
       ]);
       const deltaId = deltaIds[0] as ObjectId;
       await corruptTrailingPackEntryByte(ctx, packFilePath(ctx, 'd13-absent-base-delta'));
-      const { ctx: logged, calls } = withWarnLog(ctx);
+      const { ctx: logged, calls } = withWarnLog(reopen(ctx));
 
       // Act
       const result = await fsck(logged, { connectivityOnly: true });
@@ -7070,7 +7073,7 @@ describe('Given a midx-named pack fully deleted while a reachable commit points 
       await ctx.fs.rm(idxFilePath(ctx, 'midx-deleted'));
 
       // Act
-      const result = await fsck(ctx);
+      const result = await fsck(reopen(ctx));
 
       // Assert
       const packUnresolved = result.findings.filter((f) => f.type === 'midx-pack-unresolved');
@@ -7335,10 +7338,11 @@ describe('Given the same repository with and without its multi-pack-index', () =
       await ctx.fs.rm(idxFilePath(ctx, 'midx-diff'));
 
       // Act
-      const withMidx = await fsck(ctx);
+      const reopened = reopen(ctx);
+      const withMidx = await fsck(reopened);
       await ctx.fs.rm(multiPackIndexPath(midxDir(ctx)));
-      refreshPackRegistry(ctx);
-      const withoutMidx = await fsck(ctx);
+      refreshPackRegistry(reopened);
+      const withoutMidx = await fsck(reopened);
 
       // Assert
       expect(withMidx.exitCode & 32).toBe(32);

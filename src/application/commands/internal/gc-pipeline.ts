@@ -51,7 +51,7 @@ import {
   packsDir,
 } from '../../primitives/path-layout.js';
 import { getPackRegistry, readObject, refreshPackRegistry } from '../../primitives/read-object.js';
-import { writeObject } from '../../primitives/write-object.js';
+import { writeLooseObject } from '../../primitives/write-object.js';
 import type { MaintenanceResult } from '../maintenance.js';
 import { collectRetentionRoots } from './fsck/roots.js';
 
@@ -649,7 +649,7 @@ async function loosenIfNotLoose(
   looseSet: ReadonlySet<ObjectId>,
 ): Promise<void> {
   if (looseSet.has(id)) return;
-  await writeObject(ctx, await readObject(ctx, id));
+  await writeLooseObject(ctx, await readObject(ctx, id));
 }
 
 interface CruftOutcome {

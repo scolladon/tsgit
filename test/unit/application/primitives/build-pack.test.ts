@@ -30,6 +30,7 @@ import {
   parsePackEntryHeader,
   parsePackHeader,
 } from '../../../../src/domain/storage/index.js';
+import { createSession } from '../../../../src/ports/context.js';
 import { buildSeededContext, buildSharedSubtreeChain } from './fixtures.js';
 import { writeSyntheticPackIn } from './pack-fixture.js';
 
@@ -1007,12 +1008,14 @@ describe('buildPack', () => {
         const streamSpy = vi.spyOn(blobSourceModule, 'readBlobContentInStreamOrder');
         const rawSpy = vi.spyOn(readObjectModule, 'readRawObject');
         const sut = buildPack;
+        // The pack landed after the write, so the session that wrote has not scanned it.
+        const reopened = { ...ctx, session: createSession() };
 
         // Act
-        const result = await sut(ctx, { objects: [{ id }] });
+        const result = await sut(reopened, { objects: [{ id }] });
 
         // Assert
-        expect(streamSpy).toHaveBeenCalledWith(ctx, id);
+        expect(streamSpy).toHaveBeenCalledWith(reopened, id);
         expect(rawSpy).not.toHaveBeenCalled();
         const span = entrySpan(result.entries, 0, result.bytes);
         const header = parsePackEntryHeader(result.bytes, span.start, ctx.hashConfig);

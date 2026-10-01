@@ -45,7 +45,7 @@ import {
   REASON_REV_INDEX_CORRUPT,
 } from '../../../../src/domain/storage/index.js';
 import { PACK_HEADER_SIZE } from '../../../../src/domain/storage/pack-entry.js';
-import type { Context } from '../../../../src/ports/context.js';
+import { type Context, createSession } from '../../../../src/ports/context.js';
 import type { DirEntry, FileHandle, FileStat } from '../../../../src/ports/file-system.js';
 import { buildMidx, type MidxSpec } from '../../domain/storage/arbitraries.js';
 import { buildSeededContext, instrumentedContext } from './fixtures.js';
@@ -5337,7 +5337,7 @@ describe('PackRegistry — multi-pack-index degradation', () => {
         await writeMidxBytes(ctx, flipMidxSignature(buildMidx(healthyMidxSpec())));
 
         // Act + Assert
-        await expectMidxSignatureRejection(readObject(ctx, id));
+        await expectMidxSignatureRejection(readObject({ ...ctx, session: createSession() }, id));
       });
     });
   });
@@ -5469,7 +5469,10 @@ describe('PackRegistry — multi-pack-index degradation', () => {
         ]);
         await writeMidxBytes(ctx, buildMidx(healthyMidxSpec()));
         const looseId = await writeObject(ctx, blob('loose-only'));
-        const { ctx: instrumented, calls } = instrumentedContext(ctx);
+        const { ctx: instrumented, calls } = instrumentedContext({
+          ...ctx,
+          session: createSession(),
+        });
 
         // Act
         const result = await readObject(instrumented, looseId);
