@@ -55,7 +55,6 @@ import {
   type StashDropResult,
   type StashStackEntry,
 } from '../primitives/stash-ref.js';
-import { streamBlob } from '../primitives/stream-blob.js';
 import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-index.js';
 import { walkWorkingTree } from '../primitives/walk-working-tree.js';
 import { buildRepoIgnorePredicate } from './internal/build-ignore-evaluator.js';
@@ -410,8 +409,7 @@ const restoreUntracked = async (ctx: Context, uTree: ObjectId): Promise<void> =>
   // one `lstat` per distinct directory, not one per path.
   const scanner = createLeadingPathScanner(ctx);
   for (const [path, entry] of flat.entries) {
-    const stream = await streamBlob(ctx, entry.id);
-    await writeWorkingTreeFileStream(ctx, path, stream, scanner);
+    await writeWorkingTreeFileStream(ctx, path, entry.id, scanner);
   }
 };
 

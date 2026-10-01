@@ -77,8 +77,6 @@ const bareCtx = async (): Promise<Context> => {
   return asBareContext(ctx);
 };
 
-const emptySource = async function* (): AsyncIterable<Uint8Array> {};
-
 /**
  * A bare `Context` paired with a `LeadingPathScanner` built BEFORE going bare
  * (the scanner closes over the seeded context's real `workDir`). Passing this
@@ -310,7 +308,7 @@ describe('Work-tree-gate labels (defensive re-checks unreachable through a comma
 
         // Act
         const caught = await catchOperation(() =>
-          writeWorkingTreeFileStream(ctx, 'a.txt' as FilePath, emptySource(), scanner),
+          writeWorkingTreeFileStream(ctx, 'a.txt' as FilePath, DUMMY_ID, scanner),
         );
 
         // Assert

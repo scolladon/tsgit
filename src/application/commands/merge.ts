@@ -59,7 +59,6 @@ import { readObject } from '../primitives/read-object.js';
 import { loadSparseMatcher } from '../primitives/read-sparse-checkout.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { runInformationalHook } from '../primitives/run-hook.js';
-import { streamBlob } from '../primitives/stream-blob.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { writeObject } from '../primitives/write-object.js';
 import { writeTree } from '../primitives/write-tree.js';
@@ -708,8 +707,7 @@ export const writeOutcomeToTree = async (
   }
   if (outcome.status === 'unchanged' || outcome.status === 'resolved-known') {
     if (isExcluded(matcher, outcome.path)) return;
-    const stream = await streamBlob(ctx, outcome.id);
-    await writeWorkingTreeFileStream(ctx, outcome.path, stream, scanner);
+    await writeWorkingTreeFileStream(ctx, outcome.path, outcome.id, scanner);
     return;
   }
   if (outcome.status === 'resolved-merged') {

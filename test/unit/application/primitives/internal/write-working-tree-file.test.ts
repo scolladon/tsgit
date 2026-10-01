@@ -4,7 +4,6 @@ import { createLeadingPathScanner } from '../../../../../src/application/primiti
 import {
   removeWorkingTreeFile,
   writeRegularFile,
-  writeRegularFileStream,
   writeStreamedBlob,
   writeWorkingTreeEntry,
   writeWorkingTreeEntryStream,
@@ -19,12 +18,6 @@ import { buildSeededContext, instrumentedContext, writeRawObjectBytes } from '..
 
 const encode = (text: string): Uint8Array => new TextEncoder().encode(text);
 const decode = (bytes: Uint8Array): string => new TextDecoder().decode(bytes);
-
-async function* chunks(...parts: Uint8Array[]): AsyncIterable<Uint8Array> {
-  for (const part of parts) {
-    yield part;
-  }
-}
 
 describe('write-working-tree-file', () => {
   describe('writeWorkingTreeFile', () => {
@@ -403,10 +396,10 @@ describe('write-working-tree-file', () => {
           const ctx = await buildSeededContext();
           const dirPath = `${ctx.layout.workDir}/dir`;
           await ctx.fs.symlink('/outside/secret', dirPath);
-          const source = chunks(encode('inside'));
+          const id = await writeRawObjectBytes(ctx, 'blob', encode('inside'));
 
           // Act
-          await writeWorkingTreeFileStream(ctx, 'dir/file.txt' as FilePath, source);
+          await writeWorkingTreeFileStream(ctx, 'dir/file.txt' as FilePath, id);
 
           // Assert
           const dirStat = await ctx.fs.lstat(dirPath);
@@ -574,15 +567,15 @@ describe('write-working-tree-file', () => {
   });
 
   describe('writeWorkingTreeFileStream', () => {
-    describe('Given a multi-chunk source', () => {
+    describe('Given a loose blob', () => {
       describe('When writeWorkingTreeFileStream writes the stream', () => {
         it('Then the working-tree file byte-equals the concatenated source', async () => {
           // Arrange
           const ctx = await buildSeededContext();
-          const source = chunks(encode('hel'), encode('lo'));
+          const id = await writeRawObjectBytes(ctx, 'blob', encode('hello'));
 
           // Act
-          await writeWorkingTreeFileStream(ctx, 'out.txt' as FilePath, source);
+          await writeWorkingTreeFileStream(ctx, 'out.txt' as FilePath, id);
 
           // Assert
           const result = await ctx.fs.read(`${ctx.layout.workDir}/out.txt`);
@@ -597,92 +590,34 @@ describe('write-working-tree-file', () => {
           // Arrange
           const ctx = await buildSeededContext();
           const chmodSpy = vi.spyOn(ctx.fs, 'chmod');
-          const source = chunks(encode('x'));
+          const id = await writeRawObjectBytes(ctx, 'blob', encode('x'));
 
           // Act
-          await writeWorkingTreeFileStream(ctx, 'r.txt' as FilePath, source);
+          await writeWorkingTreeFileStream(ctx, 'r.txt' as FilePath, id);
 
           // Assert
           expect(chmodSpy).not.toHaveBeenCalled();
         });
       });
     });
-  });
-
-  describe('writeRegularFileStream', () => {
-    describe('Given an executable mode', () => {
-      describe('When writeRegularFileStream writes the stream', () => {
-        it('Then chmod is called with 0o755', async () => {
-          // Arrange
-          const ctx = await buildSeededContext();
-          const fullPath = `${ctx.layout.workDir}/x.sh`;
-          const chmodSpy = vi.spyOn(ctx.fs, 'chmod');
-          const source = chunks(encode('exec'));
-
-          // Act
-          await writeRegularFileStream(ctx, fullPath, source, FILE_MODE.EXECUTABLE);
-
-          // Assert
-          expect(chmodSpy).toHaveBeenCalledWith(fullPath, 0o755);
-        });
-      });
-    });
-
-    describe('Given a regular mode', () => {
-      describe('When writeRegularFileStream writes the stream', () => {
-        it('Then chmod is called with 0o644', async () => {
-          // Arrange
-          const ctx = await buildSeededContext();
-          const fullPath = `${ctx.layout.workDir}/r.txt`;
-          const chmodSpy = vi.spyOn(ctx.fs, 'chmod');
-          const source = chunks(encode('regular'));
-
-          // Act
-          await writeRegularFileStream(ctx, fullPath, source, FILE_MODE.REGULAR);
-
-          // Assert
-          expect(chmodSpy).toHaveBeenCalledWith(fullPath, 0o644);
-        });
-      });
-    });
-
-    describe('Given no mode argument', () => {
-      describe('When writeRegularFileStream writes the stream', () => {
-        it('Then chmod is never called', async () => {
-          // Arrange
-          const ctx = await buildSeededContext();
-          const fullPath = `${ctx.layout.workDir}/r.txt`;
-          const chmodSpy = vi.spyOn(ctx.fs, 'chmod');
-          const source = chunks(encode('data'));
-
-          // Act
-          await writeRegularFileStream(ctx, fullPath, source);
-
-          // Assert
-          expect(chmodSpy).not.toHaveBeenCalled();
-        });
-      });
-    });
-
-    describe('Given a path currently occupied', () => {
-      describe('When writeRegularFileStream runs', () => {
-        it('Then rmIfExists runs before writeStream', async () => {
+    describe('Given a path currently occupied by a symlink', () => {
+      describe('When writeWorkingTreeFileStream runs', () => {
+        it('Then the occupant is removed before the stream is written', async () => {
           // Arrange
           const ctx = await buildSeededContext();
           const fullPath = `${ctx.layout.workDir}/r.txt`;
           await ctx.fs.symlink('old-target', fullPath);
           const { ctx: instrumented, calls } = instrumentedContext(ctx);
-          const source = chunks(encode('new'));
+          const id = await writeRawObjectBytes(ctx, 'blob', encode('new'));
 
           // Act
-          await writeRegularFileStream(instrumented, fullPath, source);
+          await writeWorkingTreeFileStream(instrumented, 'r.txt' as FilePath, id);
 
           // Assert
           const log = calls();
           const rmIndex = log.findIndex((c) => c.method === 'rm');
           const writeStreamIndex = log.findIndex((c) => c.method === 'writeStream');
           expect(rmIndex).toBeGreaterThanOrEqual(0);
-          expect(writeStreamIndex).toBeGreaterThanOrEqual(0);
           expect(rmIndex).toBeLessThan(writeStreamIndex);
         });
       });

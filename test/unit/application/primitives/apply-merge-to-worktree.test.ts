@@ -1119,7 +1119,7 @@ describe('applyMergeToWorktree — writeConflictWorktree (site C) streaming', ()
 
   describe('Given a conflict merge where the clean side is resolved-known', () => {
     describe('When the merge is applied', () => {
-      it('Then the clean side routes through streamBlob + writeWorkingTreeFileStream', async () => {
+      it('Then the clean side routes through writeWorkingTreeFileStream', async () => {
         // Arrange — a conflicts (content), b is cleanly taken from theirs (resolved-known)
         const ctx = await buildSeededContext();
         const aBase = await writeBlob(ctx, 'a-base\n');
@@ -1142,7 +1142,6 @@ describe('applyMergeToWorktree — writeConflictWorktree (site C) streaming', ()
         ]);
         await ctx.fs.write(`${ctx.layout.workDir}/a`, new TextEncoder().encode('a-ours\n'));
         await ctx.fs.write(`${ctx.layout.workDir}/b`, new TextEncoder().encode('b-original\n'));
-        const streamBlobSpy = vi.spyOn(streamBlobMod, 'streamBlob');
         const writeStreamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeFileStream');
 
         // Act
@@ -1155,11 +1154,9 @@ describe('applyMergeToWorktree — writeConflictWorktree (site C) streaming', ()
 
         // Assert — conflict path reached; b's clean side used streaming
         expect(result.kind).toBe('conflict');
-        expect(streamBlobSpy).toHaveBeenCalled();
         expect(writeStreamSpy).toHaveBeenCalled();
         expect(await readWork(ctx, 'b')).toBe('b-new\n');
 
-        streamBlobSpy.mockRestore();
         writeStreamSpy.mockRestore();
       });
     });
@@ -1167,7 +1164,7 @@ describe('applyMergeToWorktree — writeConflictWorktree (site C) streaming', ()
 
   describe('Given a conflict merge where the clean side is resolved-known (uncapped write)', () => {
     describe('When the merge is applied', () => {
-      it('Then streamBlob is invoked with no maxBytes arg and the full blob is written', async () => {
+      it('Then the full blob is written with no size cap', async () => {
         // Arrange — a conflicts; b is resolved-known (theirs changed it from bBase to bNew;
         // ours unchanged). The bNew content is large enough that a small cap would throw.
         const ctx = await buildSeededContext();
@@ -1202,7 +1199,6 @@ describe('applyMergeToWorktree — writeConflictWorktree (site C) streaming', ()
         ]);
         await ctx.fs.write(`${ctx.layout.workDir}/a`, new TextEncoder().encode('a-ours\n'));
         await ctx.fs.write(`${ctx.layout.workDir}/b`, bBaseContent);
-        const streamBlobSpy = vi.spyOn(streamBlobMod, 'streamBlob');
 
         // Act — must not throw (no maxBytes cap applied)
         await applyMergeToWorktree(ctx, {
@@ -1212,18 +1208,9 @@ describe('applyMergeToWorktree — writeConflictWorktree (site C) streaming', ()
           currentIndex: index([indexEntry('a', aOurs), indexEntry('b', bBaseId)]),
         });
 
-        // Assert — streamBlob called without a third options arg (no maxBytes)
-        const blobCalls = streamBlobSpy.mock.calls;
-        // At least one call for the resolved-known b side (bNewId)
-        expect(blobCalls.length).toBeGreaterThanOrEqual(1);
-        for (const call of blobCalls) {
-          const [, , thirdArg] = call;
-          expect(thirdArg).toBeUndefined();
-        }
+        // Assert
         const written = await ctx.fs.read(`${ctx.layout.workDir}/b`);
         expect(written).toEqual(bNewContent);
-
-        streamBlobSpy.mockRestore();
       });
     });
   });
@@ -1441,6 +1428,71 @@ describe('writeMarkedConflict (direct)', () => {
 
         // Assert — no file materialised
         expect(await ctx.fs.exists(`${ctx.layout.workDir}/p`)).toBe(false);
+      });
+    });
+  });
+});
+
+describe('applyMergeToWorktree — a clean side the alternate refuses to serve', () => {
+  const ALT_OBJECTS = '/repo/alt/objects';
+  const FLIPPED_SIGNATURE_MIDX = Uint8Array.from([
+    0x00,
+    0x49,
+    0x44,
+    0x58,
+    1,
+    1,
+    1,
+    0,
+    ...new Array(8).fill(0),
+  ]);
+  const ABSENT_BLOB = 'b'.repeat(40) as ObjectId;
+
+  describe('Given an unreadable alternate and a conflict merge whose clean side is a small packed blob', () => {
+    describe('When applied', () => {
+      it("Then the path exists with size 0 and the call rejects with the alternate's error", async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const reg = FILE_MODE.REGULAR;
+        const aBase = await writeBlob(ctx, 'a-base\n');
+        const aOurs = await writeBlob(ctx, 'a-ours\n');
+        const aTheirs = await writeBlob(ctx, 'a-theirs\n');
+        const bId = await writeBlob(ctx, 'b-original\n');
+        const base = await treeWith(ctx, [
+          treeEntry(reg, 'a' as FilePath, aBase),
+          treeEntry(reg, 'b' as FilePath, bId),
+        ]);
+        const ours = await treeWith(ctx, [
+          treeEntry(reg, 'a' as FilePath, aOurs),
+          treeEntry(reg, 'b' as FilePath, bId),
+        ]);
+        const theirs = await treeWith(ctx, [
+          treeEntry(reg, 'a' as FilePath, aTheirs),
+          treeEntry(reg, 'b' as FilePath, ABSENT_BLOB),
+        ]);
+        await ctx.fs.write(`${ctx.layout.workDir}/a`, new TextEncoder().encode('a-ours\n'));
+        await ctx.fs.write(`${ctx.layout.workDir}/b`, new TextEncoder().encode('b-original\n'));
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/objects/info/alternates`, `${ALT_OBJECTS}\n`);
+        await ctx.fs.write(`${ALT_OBJECTS}/pack/multi-pack-index`, FLIPPED_SIGNATURE_MIDX);
+        const chmod = vi.spyOn(ctx.fs, 'chmod');
+
+        // Act
+        let failure: unknown;
+        try {
+          await applyMergeToWorktree(ctx, {
+            baseTree: base,
+            oursTree: ours,
+            theirsTree: theirs,
+            currentIndex: index([indexEntry('a', aOurs), indexEntry('b', bId)]),
+          });
+        } catch (error) {
+          failure = error;
+        }
+
+        // Assert
+        expect((failure as TsgitError).data).toMatchObject({ code: 'INVALID_MULTI_PACK_INDEX' });
+        expect((await ctx.fs.read(`${ctx.layout.workDir}/b`)).length).toBe(0);
+        expect(chmod).not.toHaveBeenCalled();
       });
     });
   });

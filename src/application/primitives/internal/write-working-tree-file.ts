@@ -130,47 +130,6 @@ export const writeWorkingTreeEntry = async (
   await writeRegularFile(ctx, fullPath, content, mode);
 };
 
-/**
- * Streaming sibling of `writeRegularFile`. Preserves the exact
- * `rmIfExists` → `writeStream` → `chmod` order so symlink self-heal and
- * the write guard's containment and leaf no-follow both hold. Writes
- * straight into the final path (no temp/rename).
- * `chmod` runs only when a `mode` is given.
- */
-export const writeRegularFileStream = async (
-  ctx: Context,
-  fullPath: string,
-  source: AsyncIterable<Uint8Array>,
-  mode?: FileMode,
-): Promise<void> => {
-  await rmIfExists(ctx, fullPath);
-  await ctx.fs.writeStream(fullPath, source);
-  if (mode !== undefined) {
-    await ctx.fs.chmod(
-      fullPath,
-      mode === FILE_MODE.EXECUTABLE ? MODE_EXEC_PERM : MODE_REGULAR_PERM,
-    );
-  }
-};
-
-/**
- * Streaming façade over `writeRegularFileStream` — no mode, so regular perm
- * is applied if/when the adapter defaults it. Mirrors `writeWorkingTreeFile`.
- */
-export const writeWorkingTreeFileStream = async (
-  ctx: Context,
-  path: FilePath,
-  source: AsyncIterable<Uint8Array>,
-  scanner?: LeadingPathScanner,
-): Promise<void> => {
-  await resolveScanner(ctx, scanner).unlinkSymlinkedLeadingComponent(path);
-  await writeRegularFileStream(
-    ctx,
-    joinPath(requireWorkTree(ctx, 'writeWorkingTreeFile'), path),
-    source,
-  );
-};
-
 const isOperationAborted = (failure: unknown): boolean =>
   failure instanceof TsgitError && failure.data.code === 'OPERATION_ABORTED';
 
@@ -246,6 +205,20 @@ export const writeStreamedBlob = async (
   }
   if (located === undefined) throw objectNotFound(id);
   await writeServedBlob(ctx, fullPath, located, mode);
+};
+
+/**
+ * Streaming façade over `writeStreamedBlob` — no mode, so the adapter's
+ * default permissions apply. Mirrors `writeWorkingTreeFile`.
+ */
+export const writeWorkingTreeFileStream = async (
+  ctx: Context,
+  path: FilePath,
+  id: ObjectId,
+  scanner?: LeadingPathScanner,
+): Promise<void> => {
+  await resolveScanner(ctx, scanner).unlinkSymlinkedLeadingComponent(path);
+  await writeStreamedBlob(ctx, joinPath(requireWorkTree(ctx, 'writeWorkingTreeFile'), path), id);
 };
 
 /**

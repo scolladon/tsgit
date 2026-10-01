@@ -2651,7 +2651,7 @@ describe('writeOutcomeToTree (direct) — streaming', () => {
 
   describe('Given an unchanged outcome', () => {
     describe('When writeOutcomeToTree runs', () => {
-      it('Then routes through streamBlob + writeWorkingTreeFileStream (not buffered readBlob)', async () => {
+      it('Then routes through writeWorkingTreeFileStream (not buffered readBlob)', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await init(ctx);
@@ -2663,18 +2663,15 @@ describe('writeOutcomeToTree (direct) — streaming', () => {
           id,
           mode: FILE_MODE.REGULAR,
         };
-        const streamBlobSpy = vi.spyOn(streamBlobMod, 'streamBlob');
         const writeStreamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeFileStream');
 
         // Act
         await writeOutcomeToTree(ctx, outcome, undefined);
 
         // Assert
-        expect(streamBlobSpy).toHaveBeenCalledOnce();
         expect(writeStreamSpy).toHaveBeenCalledOnce();
         expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/u.txt`)).toBe('unchanged-stream');
 
-        streamBlobSpy.mockRestore();
         writeStreamSpy.mockRestore();
       });
     });
@@ -2682,7 +2679,7 @@ describe('writeOutcomeToTree (direct) — streaming', () => {
 
   describe('Given a resolved-known outcome', () => {
     describe('When writeOutcomeToTree runs', () => {
-      it('Then routes through streamBlob + writeWorkingTreeFileStream and written bytes match blob content', async () => {
+      it('Then routes through writeWorkingTreeFileStream and written bytes match blob content', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await init(ctx);
@@ -2694,18 +2691,15 @@ describe('writeOutcomeToTree (direct) — streaming', () => {
           id,
           mode: FILE_MODE.REGULAR,
         };
-        const streamBlobSpy = vi.spyOn(streamBlobMod, 'streamBlob');
         const writeStreamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeFileStream');
 
         // Act
         await writeOutcomeToTree(ctx, outcome, undefined);
 
         // Assert
-        expect(streamBlobSpy).toHaveBeenCalledOnce();
         expect(writeStreamSpy).toHaveBeenCalledOnce();
         expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/k.txt`)).toBe('known-stream');
 
-        streamBlobSpy.mockRestore();
         writeStreamSpy.mockRestore();
       });
     });
@@ -2713,7 +2707,7 @@ describe('writeOutcomeToTree (direct) — streaming', () => {
 
   describe('Given a resolved-known outcome with a large blob (uncapped write)', () => {
     describe('When writeOutcomeToTree runs', () => {
-      it('Then streamBlob is called with no maxBytes arg and the full content is written', async () => {
+      it('Then the full content is written with no size cap', async () => {
         // Arrange — a blob large enough to fail a small explicit cap but fine uncapped
         const ctx = createMemoryContext();
         await init(ctx);
@@ -2725,19 +2719,13 @@ describe('writeOutcomeToTree (direct) — streaming', () => {
           id,
           mode: FILE_MODE.REGULAR,
         };
-        const streamBlobSpy = vi.spyOn(streamBlobMod, 'streamBlob');
 
         // Act — must not throw; uncapped streaming path
         await writeOutcomeToTree(ctx, outcome, undefined);
 
         // Assert — streamBlob called with exactly (ctx, id) — no third options arg
-        expect(streamBlobSpy).toHaveBeenCalledOnce();
-        const [, , thirdArg] = streamBlobSpy.mock.calls[0] ?? [];
-        expect(thirdArg).toBeUndefined();
         const written = await ctx.fs.read(`${ctx.layout.workDir}/large.bin`);
         expect(written).toEqual(bytes);
-
-        streamBlobSpy.mockRestore();
       });
     });
   });
