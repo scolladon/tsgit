@@ -13,6 +13,7 @@ interface Phase202Result {
   readonly ignoredCount: number;
   readonly ignoredSourceKind: string;
   readonly notIgnoredCount: number;
+  readonly objectSources: { readonly sources: number; readonly unusable: number };
 }
 
 const sampleContent = new Uint8Array([0x68, 0x69]); // 'hi'
@@ -37,6 +38,7 @@ export const standalonePrimitivesScenario: Scenario<Phase202Result> = {
     ignoredCount: 1,
     ignoredSourceKind: 'gitignore',
     notIgnoredCount: 1,
+    objectSources: { sources: 1, unusable: 0 },
   },
   run: async (repo, _inputs) => {
     await repo.init();
@@ -56,12 +58,18 @@ export const standalonePrimitivesScenario: Scenario<Phase202Result> = {
     const ignoredSourceKind = ignoreResults.find((r) => r.ignored)?.source?.kind ?? '';
     const notIgnoredCount = ignoreResults.filter((r) => !r.ignored).length;
 
+    const objectSources = await repo.primitives.objectSources();
+
     return {
       hashedOid,
       writtenOidMatchesHashed: hashedOid === writtenOid,
       ignoredCount,
       ignoredSourceKind,
       notIgnoredCount,
+      objectSources: {
+        sources: objectSources.sources.length,
+        unusable: objectSources.unusable.length,
+      },
     };
   },
 };

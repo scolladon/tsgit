@@ -51,6 +51,7 @@ export type { HasObjectMode, HasObjectOptions } from './has-object.js';
 export { hasObject } from './has-object.js';
 export type { HashBlobOptions } from './hash-blob.js';
 export { hashBlob } from './hash-blob.js';
+export type { AlternateDiagnostic, AlternateDiagnosticReason } from './internal/alternate-chain.js';
 export type {
   IsIgnoredMatch,
   IsIgnoredMatchSource,
@@ -64,6 +65,8 @@ export { materializeTree } from './materialize-tree.js';
 export { materializeWorktreeFromHead } from './materialize-worktree-from-head.js';
 export type { MergeBaseOptions } from './merge-base.js';
 export { mergeBase } from './merge-base.js';
+export type { ObjectSourcesView } from './object-store.js';
+export { objectSources } from './object-store.js';
 export { commonDirOf, commonGitDir, getRepoRoot, sparseCheckoutPath } from './path-layout.js';
 export { readBlob } from './read-blob.js';
 export { readHeadTree } from './read-head-tree.js';

@@ -325,6 +325,7 @@ describe('openRepository — Repository binding integrity', () => {
             'hashBlob',
             'isIgnored',
             'mergeBase',
+            'objectSources',
             'readBlob',
             'readIndex',
             'readObject',
@@ -1079,6 +1080,26 @@ describe('openRepository — round-trip via memory adapter', () => {
 
         // Assert
         expect(ids).toEqual([a, b]);
+      });
+    });
+  });
+});
+
+describe('openRepository — objectSources', () => {
+  describe('Given a fresh repository', () => {
+    describe('When repo.primitives.objectSources() is called', () => {
+      it('Then it lists the local store and no unusable alternate', async () => {
+        // Arrange
+        const sut = await open();
+
+        // Act
+        const result = await sut.primitives.objectSources();
+
+        // Assert
+        expect(result).toEqual({
+          sources: [{ objectsDir: expect.stringMatching(/\/objects$/), local: true }],
+          unusable: [],
+        });
       });
     });
   });

@@ -412,7 +412,7 @@ export interface Repository {
   /** Nested `repo.worktree.{list,add,move,remove}` namespace. */
   readonly worktree: commands.WorktreeNamespace;
 
-  // Tier-2 primitives (25) — bound under .primitives.* to keep the top-level
+  // Tier-2 primitives (26) — bound under .primitives.* to keep the top-level
   // surface focused on user-facing commands.
   readonly primitives: {
     readonly bisectMidpoint: BindCtx<typeof primitives.bisectMidpoint>;
@@ -425,6 +425,7 @@ export interface Repository {
     readonly hashBlob: BindCtx<typeof primitives.hashBlob>;
     readonly isIgnored: BindCtx<typeof primitives.isIgnored>;
     readonly mergeBase: BindCtx<typeof primitives.mergeBase>;
+    readonly objectSources: BindCtx<typeof primitives.objectSources>;
     readonly readBlob: BindCtx<typeof primitives.readBlob>;
     readonly readIndex: BindCtx<typeof primitives.readIndex>;
     readonly readObject: BindCtx<typeof primitives.readObject>;
@@ -995,6 +996,10 @@ export const openRepository = async (
         guard();
         return primitives.mergeBase(ctx, commits, options);
       }) as Repository['primitives']['mergeBase'],
+      objectSources: (() => {
+        guard();
+        return primitives.objectSources(ctx);
+      }) as Repository['primitives']['objectSources'],
       readBlob: ((id, options) => {
         guard();
         return primitives.readBlob(ctx, id, options);
