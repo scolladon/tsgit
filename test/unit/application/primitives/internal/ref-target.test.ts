@@ -9,11 +9,44 @@ import type { Blob, ObjectId, RefName } from '../../../../../src/domain/objects/
 import { serializeObject } from '../../../../../src/domain/objects/index.js';
 import { computeLooseObjectPath } from '../../../../../src/domain/storage/loose-path.js';
 import { buildSeededContext, instrumentedContext } from '../fixtures.js';
-import { writeSyntheticPack } from '../pack-fixture.js';
+import { writeSyntheticPack, writeSyntheticPackIn } from '../pack-fixture.js';
 
 const REMEMBERED_TARGETS = 4096;
 const TAG_REF = 'refs/tags/verified' as RefName;
 const ENCODER = new TextEncoder();
+const COMMIT_BODY = `tree ${'0'.repeat(40)}\nauthor A <a@a> 0 +0000\ncommitter A <a@a> 0 +0000\n\nm\n`;
+const PRIMARY_OBJECTS = '/repo/.git/objects';
+const ALT_OBJECTS = '/repo/alt/objects';
+// A multi-pack-index whose signature is flipped: the alternate cannot load.
+const FLIPPED_SIGNATURE_MIDX = Uint8Array.from([
+  0x00,
+  0x49,
+  0x44,
+  0x58,
+  1,
+  1,
+  1,
+  0,
+  ...new Array(8).fill(0),
+]);
+
+const contextWithUnusableAlternate = async () => {
+  const ctx = createMemoryContext({
+    files: { [`${PRIMARY_OBJECTS}/info/alternates`]: ENCODER.encode(`${ALT_OBJECTS}\n`) },
+  });
+  await ctx.fs.mkdir(ALT_OBJECTS);
+  await ctx.fs.write(`${ALT_OBJECTS}/pack/multi-pack-index`, FLIPPED_SIGNATURE_MIDX);
+  return ctx;
+};
+
+const rejectionData = async (attempt: Promise<unknown>): Promise<unknown> => {
+  try {
+    await attempt;
+  } catch (error) {
+    return (error as TsgitError).data;
+  }
+  return undefined;
+};
 
 describe('assertRefTargetValid', () => {
   describe('Given more distinct blobs verified on one Context than it remembers', () => {
@@ -111,6 +144,44 @@ describe('assertRefTargetValid', () => {
         // Assert
         expect((caught as TsgitError).data).toEqual({ code: 'OBJECT_NOT_FOUND', id });
         expect(reprepareSpy).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Given a small packed blob target and an unusable alternate', () => {
+    describe('When assertRefTargetValid', () => {
+      it("Then it rejects with the alternate's error data", async () => {
+        // Arrange
+        const ctx = await contextWithUnusableAlternate();
+        const [id] = await writeSyntheticPackIn(ctx, PRIMARY_OBJECTS, 'p', [
+          { kind: 'base', type: 'blob', content: ENCODER.encode('small') },
+        ]);
+        const sut = assertRefTargetValid;
+
+        // Act
+        const data = await rejectionData(sut(ctx, TAG_REF, id as ObjectId));
+
+        // Assert
+        expect(data).toMatchObject({ code: 'INVALID_MULTI_PACK_INDEX' });
+      });
+    });
+  });
+
+  describe('Given a packed commit target and an unusable alternate', () => {
+    describe('When assertRefTargetValid', () => {
+      it('Then the alternate is never reached', async () => {
+        // Arrange
+        const ctx = await contextWithUnusableAlternate();
+        const [id] = await writeSyntheticPackIn(ctx, PRIMARY_OBJECTS, 'p', [
+          { kind: 'base', type: 'commit', content: ENCODER.encode(COMMIT_BODY) },
+        ]);
+        const sut = assertRefTargetValid;
+
+        // Act
+        const data = await rejectionData(sut(ctx, TAG_REF, id as ObjectId));
+
+        // Assert
+        expect(data).toBeUndefined();
       });
     });
   });

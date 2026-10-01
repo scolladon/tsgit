@@ -9,7 +9,7 @@
  * included, knows its type at open: the loose arm reads its header before
  * `openBlobSource` returns.
  */
-import { operationAborted } from '../../../domain/error.js';
+import { operationAborted, TsgitError } from '../../../domain/error.js';
 import {
   invalidObjectHeader,
   type ObjectType,
@@ -49,7 +49,12 @@ import {
   peekObjectStore,
 } from '../object-store.js';
 import { nextOffsetForEntry, type PackLookupHit, type PackRegistry } from '../pack-registry.js';
-import { getPackRegistry, peekPackRegistry, withLazyFetchRetry } from '../read-object.js';
+import {
+  getPackRegistry,
+  peekPackRegistry,
+  readDeclaredObjectHeader,
+  withLazyFetchRetry,
+} from '../read-object.js';
 import type { StreamBlobOptions } from '../stream-blob.js';
 import { checkAborted, retryOnceAfterRescan } from './retry-after-rescan.js';
 
@@ -323,6 +328,21 @@ function startScanFor(type: ObjectType, hexLength: 40 | 64): ParseAcceptanceScan
   return type === 'commit' || type === 'tag' ? startParseAcceptance(type, hexLength) : undefined;
 }
 
+/** git's `parse_object` reads a blob through the object stream and every other
+ *  type in core, so the type is probed header-only before the read order is
+ *  chosen. An object with no stored header (a delta-cache entry, a pack still
+ *  to be found by a rescan) has no order to pick: the read itself owns the rescan and
+ *  the final miss. */
+async function readOrderFor(ctx: Context, id: ObjectId): Promise<BlobReadOrder> {
+  try {
+    const { type } = await readDeclaredObjectHeader(ctx, id);
+    return type === 'blob' ? 'stream' : 'in-core';
+  } catch (error) {
+    if (error instanceof TsgitError && error.data.code === 'OBJECT_NOT_FOUND') return 'in-core';
+    throw error;
+  }
+}
+
 async function hashStoredObject(
   ctx: Context,
   registry: PackRegistry,
@@ -336,7 +356,7 @@ async function hashStoredObject(
   }
   const source = await openBlobSource(ctx, id, MAX_BUFFERED_BLOB_BYTES, {
     verifyHash: true,
-    order: 'in-core',
+    order: await readOrderFor(ctx, id),
   });
   const scan = startScanFor(source.type, ctx.hashConfig.hexLength);
   if (source.kind === 'bytes') {

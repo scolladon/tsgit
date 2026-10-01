@@ -308,25 +308,41 @@ const LOOSE_HEADER_PROBE_BYTES = 1024;
  * header-only via `readPackedMetadata` — reused as-is.
  */
 export async function readDeclaredObjectSize(ctx: Context, id: ObjectId): Promise<number> {
+  return (await readDeclaredObjectHeader(ctx, id)).declaredSize;
+}
+
+/** The type and declared size of an object, read header-only: the loose
+ *  header's claim or the pack entry's own header, never an inflate of the
+ *  content. Lets a caller pick its read order by type before reading. */
+export async function readDeclaredObjectHeader(
+  ctx: Context,
+  id: ObjectId,
+): Promise<DeclaredObjectHeader> {
   const store = peekObjectStore(ctx) ?? (await getObjectStore(ctx));
   return withLazyFetchRetry(ctx, id, store.primary.registry, () =>
-    resolveDeclaredSize(ctx, store, id),
+    resolveDeclaredHeader(ctx, store, id),
   );
 }
 
-async function resolveDeclaredSize(
+export interface DeclaredObjectHeader {
+  readonly type: ObjectType;
+  readonly declaredSize: number;
+}
+
+async function resolveDeclaredHeader(
   ctx: Context,
   store: ObjectStore,
   id: ObjectId,
-): Promise<number> {
+): Promise<DeclaredObjectHeader> {
   for (const source of store.sources) {
     if (source !== store.primary) await source.registry.assertLoadable();
     const hit = await source.registry.lookup(id);
     if (hit !== undefined) {
-      return (await readPackedMetadata(ctx, source.registry, hit, id)).uncompressedSize;
+      const { type, uncompressedSize } = await readPackedMetadata(ctx, source.registry, hit, id);
+      return { type, declaredSize: uncompressedSize };
     }
-    const looseSize = await readLooseDeclaredSize(ctx, id, looseCacheLocation(store, source));
-    if (looseSize !== undefined) return looseSize;
+    const looseHeader = await readLooseDeclaredHeader(ctx, id, looseCacheLocation(store, source));
+    if (looseHeader !== undefined) return looseHeader;
   }
   throw objectNotFound(id);
 }
@@ -346,11 +362,11 @@ const looseFsFor = (ctx: Context, location?: SourceLocation): ObjectSourceReader
  * file between the membership probe and this read is a git-faithful MISS,
  * not a refusal.
  */
-async function readLooseDeclaredSize(
+async function readLooseDeclaredHeader(
   ctx: Context,
   id: ObjectId,
   location?: SourceLocation,
-): Promise<number | undefined> {
+): Promise<DeclaredObjectHeader | undefined> {
   if (!(await probeLooseOid(ctx, id, location))) return undefined;
   let prefix: Uint8Array;
   try {
@@ -366,7 +382,7 @@ async function readLooseDeclaredSize(
     }
     throw error;
   }
-  return resolveDeclaredSizeFromPrefix(ctx, id, prefix, location);
+  return resolveDeclaredHeaderFromPrefix(ctx, id, prefix, location);
 }
 
 function noNulTerminator(id: ObjectId): TsgitError {
@@ -379,7 +395,7 @@ function noNulTerminator(id: ObjectId): TsgitError {
  *  still under the window — the only outcome a whole-file fallback can ever
  *  help with. */
 type HeaderProbeOutcome =
-  | { readonly status: 'found'; readonly size: number }
+  | { readonly status: 'found'; readonly header: DeclaredObjectHeader }
   | { readonly status: 'tooLong' }
   | { readonly status: 'incomplete' };
 
@@ -391,6 +407,11 @@ type HeaderProbeOutcome =
  * many with no NUL means the header could never terminate inside git's own
  * fixed-size buffer, however much more of `compressed` is left unread.
  */
+function declaredHeaderOf(headerBytes: Uint8Array): DeclaredObjectHeader {
+  const { type, size } = parseHeader(headerBytes);
+  return { type, declaredSize: size };
+}
+
 async function probeDeclaredSize(
   ctx: Context,
   compressed: Uint8Array,
@@ -398,7 +419,7 @@ async function probeDeclaredSize(
   const head = await ctx.compressor.inflateHead(compressed, LOOSE_HEADER_WINDOW);
   const nullPos = indexOf(head, 0x00, 0);
   if (nullPos !== -1)
-    return { status: 'found', size: parseHeader(head.subarray(0, nullPos + 1)).size };
+    return { status: 'found', header: declaredHeaderOf(head.subarray(0, nullPos + 1)) };
   return head.length >= LOOSE_HEADER_WINDOW ? { status: 'tooLong' } : { status: 'incomplete' };
 }
 
@@ -417,23 +438,23 @@ async function probeDeclaredSize(
  * checked BEFORE the fallback decision, never inside the catch a hard fault
  * shares with it.
  */
-async function resolveDeclaredSizeFromPrefix(
+async function resolveDeclaredHeaderFromPrefix(
   ctx: Context,
   id: ObjectId,
   prefix: Uint8Array,
   location?: SourceLocation,
-): Promise<number> {
+): Promise<DeclaredObjectHeader> {
   const isPrefixTruncated = prefix.length === LOOSE_HEADER_PROBE_BYTES;
   let outcome: HeaderProbeOutcome;
   try {
     outcome = await probeDeclaredSize(ctx, prefix);
   } catch (error) {
-    if (isPrefixTruncated) return readDeclaredSizeFromWholeFile(ctx, id, location);
+    if (isPrefixTruncated) return readDeclaredHeaderFromWholeFile(ctx, id, location);
     throw error;
   }
-  if (outcome.status === 'found') return outcome.size;
+  if (outcome.status === 'found') return outcome.header;
   if (outcome.status === 'tooLong') throw looseHeaderTooLong(id);
-  if (isPrefixTruncated) return readDeclaredSizeFromWholeFile(ctx, id, location);
+  if (isPrefixTruncated) return readDeclaredHeaderFromWholeFile(ctx, id, location);
   throw noNulTerminator(id);
 }
 
@@ -442,14 +463,14 @@ async function resolveDeclaredSizeFromPrefix(
  *  bounded `inflateHead`, never a one-shot whole-buffer inflate, so a
  *  hostile object whose header never terminates still refuses after
  *  `LOOSE_HEADER_WINDOW` output bytes instead of decompressing without limit. */
-async function readDeclaredSizeFromWholeFile(
+async function readDeclaredHeaderFromWholeFile(
   ctx: Context,
   id: ObjectId,
   location?: SourceLocation,
-): Promise<number> {
+): Promise<DeclaredObjectHeader> {
   const compressed = await looseFsFor(ctx, location).read(loosePathFor(ctx, id, location));
   const outcome = await probeDeclaredSize(ctx, compressed);
-  if (outcome.status === 'found') return outcome.size;
+  if (outcome.status === 'found') return outcome.header;
   if (outcome.status === 'tooLong') throw looseHeaderTooLong(id);
   throw noNulTerminator(id);
 }

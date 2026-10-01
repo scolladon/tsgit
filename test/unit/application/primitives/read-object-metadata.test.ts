@@ -2,6 +2,7 @@ import { deflateRawSync } from 'node:zlib';
 import { describe, expect, it, vi } from 'vitest';
 import {
   getPackRegistry,
+  readDeclaredObjectHeader,
   readDeclaredObjectSize,
   readObjectMetadata,
 } from '../../../../src/application/primitives/read-object.js';
@@ -924,6 +925,69 @@ describe('readDeclaredObjectSize', () => {
         expect(caught).toBe(rejection);
         const data = (caught as TsgitError).data;
         expect(data.code).toBe('NOT_A_DIRECTORY');
+      });
+    });
+  });
+});
+
+describe('readDeclaredObjectHeader', () => {
+  describe('Given a loose commit', () => {
+    describe('When readDeclaredObjectHeader is called', () => {
+      it('Then returns the header type and declared size without inflating the content', async () => {
+        // Arrange
+        const content = ENC.encode('tree-ish');
+        const ctx = await buildSeededContext();
+        const id = await writeRawObjectBytes(ctx, 'commit', content);
+        const sut = readDeclaredObjectHeader;
+
+        // Act
+        const result = await sut(ctx, id);
+
+        // Assert
+        expect(result).toEqual({ type: 'commit', declaredSize: content.length });
+      });
+    });
+  });
+
+  describe('Given a size-lying loose blob', () => {
+    describe('When readDeclaredObjectHeader is called', () => {
+      it('Then returns the blob type with the header claim', async () => {
+        // Arrange
+        const content = ENC.encode('hello world!');
+        const ctx = await buildSeededContext();
+        const id = await writeRawObjectBytes(ctx, 'blob', content);
+        await writeLooseWithDeclaredSize(ctx, id, 'blob', 5, content);
+        const sut = readDeclaredObjectHeader;
+
+        // Act
+        const result = await sut(ctx, id);
+
+        // Assert
+        expect(result).toEqual({ type: 'blob', declaredSize: 5 });
+      });
+    });
+  });
+
+  describe('Given a packed base entry and a packed delta of it', () => {
+    describe('When readDeclaredObjectHeader is called on each', () => {
+      it('Then both report the base type and their own declared size', async () => {
+        // Arrange
+        const baseContent = ENC.encode('abcd');
+        const targetContent = ENC.encode('abcdefgh');
+        const ctx = await buildSeededContext();
+        const ids = await writeSyntheticPack(ctx, 'header-ofs', [
+          { kind: 'base', type: 'blob', content: baseContent },
+          { kind: 'ofs-delta', baseIndex: 0, targetContent },
+        ]);
+        const sut = readDeclaredObjectHeader;
+
+        // Act
+        const base = await sut(ctx, ids[0] as ObjectId);
+        const delta = await sut(ctx, ids[1] as ObjectId);
+
+        // Assert
+        expect(base).toEqual({ type: 'blob', declaredSize: 4 });
+        expect(delta).toEqual({ type: 'blob', declaredSize: 8 });
       });
     });
   });
