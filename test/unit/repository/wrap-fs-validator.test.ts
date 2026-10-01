@@ -807,6 +807,67 @@ describe('wrapFsValidator — the optional atomicRename capability', () => {
   });
 });
 
+describe('wrapFsValidator — the optional utimeNow capability', () => {
+  // A method that reads its own receiver, as a class-based adapter's does: the wrapper must
+  // call it on the adapter, not detached from it.
+  const fsWithUtimeNow = (): FileSystem & { readonly touched: string[] } => {
+    const touched: string[] = [];
+    return {
+      ...stubFs(),
+      touched,
+      utimeNow(this: { readonly touched: string[] }, path: string) {
+        this.touched.push(path);
+        return Promise.resolve();
+      },
+    };
+  };
+
+  describe('Given an fs with utimeNow and an in-root path', () => {
+    describe('When wrapped and utimeNow is called', () => {
+      it('Then utimeNow is forwarded on the adapter with the path', async () => {
+        // Arrange
+        const fs = fsWithUtimeNow();
+        const sut = wrapFsValidator(fs, '/repo');
+
+        // Act
+        await sut.utimeNow?.('/repo/a');
+
+        // Assert
+        expect(fs.touched).toEqual(['/repo/a']);
+      });
+    });
+  });
+
+  describe('Given an fs with utimeNow and a path outside every root', () => {
+    describe('When utimeNow is called through a wrapper that does not guard reads', () => {
+      it('Then it throws PATHSPEC_OUTSIDE_REPO before delegating', async () => {
+        // Arrange
+        const fs = fsWithUtimeNow();
+        const sut = wrapFsValidator(fs, '/repo', [], { guardReads: false });
+
+        // Act + Assert
+        await expectOutside(async () => sut.utimeNow?.('/etc/a'));
+        expect(fs.touched).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given an fs without utimeNow', () => {
+    describe('When wrapped', () => {
+      it("Then 'utimeNow' in sut is false", () => {
+        // Arrange
+        const fs = stubFs();
+
+        // Act
+        const sut = wrapFsValidator(fs, '/repo');
+
+        // Assert
+        expect('utimeNow' in sut).toBe(false);
+      });
+    });
+  });
+});
+
 const fakeFileStat = { isFile: true } as unknown as FileStat;
 
 describe('wrapFsValidator — the optional tryLstat probe', () => {

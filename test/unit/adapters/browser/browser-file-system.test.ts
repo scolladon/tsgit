@@ -5,6 +5,19 @@ import { TsgitError } from '../../../../src/domain/index.js';
 
 describe('BrowserFileSystem', () => {
   describe('Given a browser file system', () => {
+    describe('When checking for the utimeNow capability', () => {
+      it('Then the adapter does not expose utimeNow (structurally absent, not merely undefined)', () => {
+        // Arrange
+        const sut = new BrowserFileSystem({} as unknown as FileSystemDirectoryHandle);
+
+        // Act
+        const result = 'utimeNow' in sut;
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+
     describe('When checking for the atomicRename capability', () => {
       it('Then the adapter does not expose atomicRename (structurally absent, not merely undefined)', () => {
         // Arrange

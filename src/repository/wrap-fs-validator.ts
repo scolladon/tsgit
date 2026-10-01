@@ -109,6 +109,24 @@ const guardedAtomicRename = (
   };
 };
 
+/**
+ * `utimeNow` is optional on the port (OPFS omits it): the wrapper stays without it there so
+ * callers keep their write-a-fresh-copy path, and guards it as a write where it exists.
+ */
+const guardedUtimeNow = (
+  fs: FileSystem,
+  guard: (path: string) => void,
+): Pick<FileSystem, 'utimeNow'> => {
+  const { utimeNow } = fs;
+  if (utimeNow === undefined) return {};
+  return {
+    utimeNow: (p) => {
+      guard(p);
+      return utimeNow.call(fs, p);
+    },
+  };
+};
+
 /** Options controlling which surfaces {@link wrapFsValidator} guards. */
 export interface WrapFsValidatorOptions {
   /**
@@ -243,6 +261,7 @@ export const wrapFsValidator = (
       return fs.rename(s, d);
     },
     ...guardedAtomicRename(fs, guard),
+    ...guardedUtimeNow(fs, guard),
     readlink: (p) => {
       readGuard(p);
       return fs.readlink(p);
