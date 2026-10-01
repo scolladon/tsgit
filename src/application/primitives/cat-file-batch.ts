@@ -8,10 +8,11 @@
  * See `docs/design/cat-file-batch.md` and ADRs 087–090.
  */
 import { operationAborted } from '../../domain/error.js';
-import { isObjectNotFound } from '../../domain/objects/error.js';
+import { isObjectNotFound, objectTooLarge } from '../../domain/objects/error.js';
 import type { GitObject, ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
-import { readObjectWithSize } from './read-object.js';
+import { readBlobContentInStreamOrder } from './internal/blob-source.js';
+import { readDeclaredObjectHeader, readObjectWithSize } from './read-object.js';
 import type { CatFileBatchEntry, CatFileBatchOptions, ReadObjectOptions } from './types.js';
 
 const throwIfAborted = (ctx: Context): void => {
@@ -35,14 +36,36 @@ const buildMissingEntry = (id: ObjectId): CatFileBatchEntry => ({
   reason: 'missing',
 });
 
+const readBlob = async (
+  ctx: Context,
+  id: ObjectId,
+  declaredSize: number,
+): Promise<CatFileBatchEntry> => {
+  const content = await readBlobContentInStreamOrder(ctx, id);
+  return buildOkEntry(id, { object: { type: 'blob', id, content }, size: declaredSize });
+};
+
+const readByType = async (
+  ctx: Context,
+  id: ObjectId,
+  readOptions: ReadObjectOptions | undefined,
+): Promise<CatFileBatchEntry> => {
+  const { type, declaredSize } = await readDeclaredObjectHeader(ctx, id);
+  const maxBytes = readOptions?.maxBytes;
+  if (maxBytes !== undefined && declaredSize > maxBytes) {
+    throw objectTooLarge(id, declaredSize, maxBytes);
+  }
+  if (type === 'blob') return readBlob(ctx, id, declaredSize);
+  return buildOkEntry(id, await readObjectWithSize(ctx, id, readOptions));
+};
+
 const readOne = async (
   ctx: Context,
   id: ObjectId,
   readOptions: ReadObjectOptions | undefined,
 ): Promise<CatFileBatchEntry> => {
   try {
-    const resolved = await readObjectWithSize(ctx, id, readOptions);
-    return buildOkEntry(id, resolved);
+    return await readByType(ctx, id, readOptions);
   } catch (err) {
     if (isObjectNotFound(err)) return buildMissingEntry(id);
     throw err;

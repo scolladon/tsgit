@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import * as configReadMod from '../../../../src/application/primitives/config-read.js';
 import {
+  assertEverySourceLoadable,
+  everySourceLoadable,
   getObjectStore,
   narrowObjectSourceAccess,
   objectSources,
@@ -455,6 +457,142 @@ describe('narrowObjectSourceAccess', () => {
 
         // Assert
         expect(inner).toHaveBeenCalledWith(`${PRIMARY}/x`);
+      });
+    });
+  });
+});
+
+const ALTERNATE = '/repo/alt/objects';
+const FLIPPED_SIGNATURE_MIDX = Uint8Array.from([
+  0x00,
+  0x49,
+  0x44,
+  0x58,
+  1,
+  1,
+  1,
+  0,
+  ...new Array(8).fill(0),
+]);
+
+const contextWithCorruptAlternate = async (): Promise<Context> => {
+  const ctx = contextWithAlternates(`${ALTERNATE}\n`);
+  await ctx.fs.mkdir(ALTERNATE);
+  await ctx.fs.write(`${ALTERNATE}/pack/multi-pack-index`, FLIPPED_SIGNATURE_MIDX);
+  return ctx;
+};
+
+const requireAlternate = (store: Awaited<ReturnType<typeof getObjectStore>>) => {
+  const alternate = store.sources[1];
+  if (alternate === undefined) throw new Error('expected an alternate source');
+  return alternate;
+};
+
+const rejectionData = async (attempt: Promise<unknown>): Promise<unknown> => {
+  try {
+    await attempt;
+  } catch (error) {
+    return (error as TsgitError).data;
+  }
+  return undefined;
+};
+
+describe('assertEverySourceLoadable', () => {
+  describe('Given a primary and an corrupt alternate', () => {
+    describe('When asserting every source', () => {
+      it('Then it rejects with the alternate error after the primary was checked', async () => {
+        // Arrange
+        const ctx = await contextWithCorruptAlternate();
+        const store = await getObjectStore(ctx);
+        const calls: string[] = [];
+        const primary = store.primary.registry.assertLoadable.bind(store.primary.registry);
+        vi.spyOn(store.primary.registry, 'assertLoadable').mockImplementation(async () => {
+          calls.push('primary');
+          await primary();
+        });
+
+        // Act
+        const sut = assertEverySourceLoadable;
+        const data = await rejectionData(sut(ctx));
+
+        // Assert
+        expect(data).toMatchObject({ code: 'INVALID_MULTI_PACK_INDEX' });
+        expect(calls).toEqual(['primary']);
+      });
+    });
+  });
+
+  describe('Given an corrupt primary and an alternate', () => {
+    describe('When asserting every source', () => {
+      it('Then the primary rejection wins and the alternate is never asked', async () => {
+        // Arrange
+        const ctx = await contextWithCorruptAlternate();
+        const store = await getObjectStore(ctx);
+        const primaryError = new Error('primary first');
+        vi.spyOn(store.primary.registry, 'assertLoadable').mockRejectedValue(primaryError);
+        const alternate = vi.spyOn(requireAlternate(store).registry, 'assertLoadable');
+
+        // Act
+        const sut = assertEverySourceLoadable;
+        const attempt = sut(ctx);
+
+        // Assert
+        await expect(attempt).rejects.toBe(primaryError);
+        expect(alternate).not.toHaveBeenCalled();
+      });
+    });
+  });
+});
+
+describe('everySourceLoadable', () => {
+  describe('Given an corrupt alternate', () => {
+    describe('When asking', () => {
+      it('Then it resolves false', async () => {
+        // Arrange
+        const ctx = await contextWithCorruptAlternate();
+
+        // Act
+        const sut = everySourceLoadable;
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('Given every source loads', () => {
+    describe('When asking', () => {
+      it('Then it resolves true', async () => {
+        // Arrange
+        const ctx = contextWithAlternates(`${ALTERNATE}\n`);
+        await ctx.fs.mkdir(ALTERNATE);
+
+        // Act
+        const sut = everySourceLoadable;
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a source whose gate rejects with a non-tsgit error', () => {
+    describe('When asking', () => {
+      it('Then the error propagates', async () => {
+        // Arrange
+        const ctx = contextWithAlternates();
+        const store = await getObjectStore(ctx);
+        const boom = new Error('boom');
+        vi.spyOn(store.primary.registry, 'assertLoadable').mockRejectedValue(boom);
+
+        // Act
+        const sut = everySourceLoadable;
+        const attempt = sut(ctx);
+
+        // Assert
+        await expect(attempt).rejects.toBe(boom);
       });
     });
   });

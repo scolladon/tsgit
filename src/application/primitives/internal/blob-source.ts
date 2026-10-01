@@ -10,6 +10,7 @@
  * `openBlobSource` returns.
  */
 import { operationAborted, TsgitError } from '../../../domain/error.js';
+import { concatBytes } from '../../../domain/objects/encoding.js';
 import {
   invalidObjectHeader,
   type ObjectType,
@@ -142,6 +143,22 @@ export async function openBlobSource(
   const located = await locateWithRescan(ctx, store, id, options.order);
   if (located === undefined) throw objectNotFound(id);
   return serveLocatedBlob(ctx, located, maxBufferedBytes, options);
+}
+
+/** A blob's whole content, opened in git's stream order: a small packed blob
+ *  reaches every source, a large non-delta pack entry is served in place. */
+export async function readBlobContentInStreamOrder(
+  ctx: Context,
+  id: ObjectId,
+): Promise<Uint8Array> {
+  const source = await openBlobSource(ctx, id, MAX_BUFFERED_BLOB_BYTES, {
+    order: 'stream',
+    looseMode: 'streamed',
+  });
+  if (source.kind === 'bytes') return source.content;
+  const chunks: Uint8Array[] = [];
+  for await (const chunk of source.stream) chunks.push(chunk);
+  return concatBytes(chunks);
 }
 
 /** Locates `id` in git's `order` with the full-miss rescan, reporting a miss

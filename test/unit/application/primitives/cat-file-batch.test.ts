@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { catFileBatch } from '../../../../src/application/primitives/cat-file-batch.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import type { CatFileBatchEntry } from '../../../../src/application/primitives/types.js';
@@ -15,6 +16,7 @@ import {
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { buildSeededContext, writeLooseWithDeclaredSize, writeRawObjectBytes } from './fixtures.js';
+import { writeSyntheticPackIn } from './pack-fixture.js';
 
 const IDENTITY = {
   name: 'Test',
@@ -477,6 +479,180 @@ describe('catFileBatch', () => {
         expect(caught).toBeInstanceOf(TsgitError);
         if (!(caught instanceof TsgitError)) throw caught;
         expect(caught.data.code).toBe('OPERATION_ABORTED');
+      });
+    });
+  });
+});
+
+const PRIMARY_OBJECTS = '/repo/.git/objects';
+const ALT_OBJECTS = '/repo/alt/objects';
+const THRESHOLD = 100;
+const ENC = new TextEncoder();
+const FLIPPED_SIGNATURE_MIDX = Uint8Array.from([
+  0x00,
+  0x49,
+  0x44,
+  0x58,
+  1,
+  1,
+  1,
+  0,
+  ...new Array(8).fill(0),
+]);
+
+const contextWithCorruptAlternate = async (): Promise<Context> => {
+  const ctx = createMemoryContext({
+    files: {
+      [`${PRIMARY_OBJECTS}/info/alternates`]: ENC.encode(`${ALT_OBJECTS}\n`),
+      '/repo/.git/config': ENC.encode(`[core]\n\tbigFileThreshold = ${THRESHOLD}\n`),
+    },
+  });
+  await ctx.fs.mkdir(ALT_OBJECTS);
+  await ctx.fs.write(`${ALT_OBJECTS}/pack/multi-pack-index`, FLIPPED_SIGNATURE_MIDX);
+  return ctx;
+};
+
+const packedBlob = async (ctx: Context, content: Uint8Array): Promise<ObjectId> => {
+  const [id] = await writeSyntheticPackIn(ctx, PRIMARY_OBJECTS, 'p', [
+    { kind: 'base', type: 'blob', content },
+  ]);
+  return id as ObjectId;
+};
+
+const packedBlobIn = async (ctx: Context, content: Uint8Array): Promise<ObjectId> => {
+  const [id] = await writeSyntheticPackIn(ctx, `${ctx.layout.gitDir}/objects`, 'p', [
+    { kind: 'base', type: 'blob', content },
+  ]);
+  return id as ObjectId;
+};
+
+const firstEntry = async (sut: AsyncIterable<CatFileBatchEntry>): Promise<CatFileBatchEntry> => {
+  for await (const entry of sut) return entry;
+  throw new Error('no entry');
+};
+
+const rejectionData = async (attempt: Promise<unknown>): Promise<unknown> => {
+  try {
+    await attempt;
+  } catch (error) {
+    return (error as TsgitError).data;
+  }
+  return undefined;
+};
+
+describe('catFileBatch in git stream order', () => {
+  describe('Given a small packed blob and an corrupt alternate', () => {
+    describe('When iterated', () => {
+      it('Then the alternate is reached', async () => {
+        // Arrange
+        const ctx = await contextWithCorruptAlternate();
+        const id = await packedBlob(ctx, ENC.encode('small'));
+        const sut = catFileBatch(ctx, [id]);
+
+        // Act
+        const result = await rejectionData(firstEntry(sut));
+
+        // Assert
+        expect(result).toMatchObject({ code: 'INVALID_MULTI_PACK_INDEX' });
+      });
+    });
+  });
+
+  describe('Given a packed blob above bigFileThreshold and an corrupt alternate', () => {
+    describe('When iterated', () => {
+      it('Then the blob is served without reaching the alternate', async () => {
+        // Arrange
+        const ctx = await contextWithCorruptAlternate();
+        const content = new Uint8Array(THRESHOLD + 1).fill(7);
+        const id = await packedBlob(ctx, content);
+        const sut = catFileBatch(ctx, [id]);
+
+        // Act
+        const result = await firstEntry(sut);
+
+        // Assert
+        expect(result.ok && result.object.type === 'blob' && result.object.content).toEqual(
+          content,
+        );
+        expect(result.ok && result.size).toBe(content.byteLength);
+      });
+    });
+  });
+
+  describe('Given a packed commit and an corrupt alternate', () => {
+    describe('When iterated', () => {
+      it('Then the commit is served without reaching the alternate', async () => {
+        // Arrange
+        const ctx = await contextWithCorruptAlternate();
+        const [id] = await writeSyntheticPackIn(ctx, PRIMARY_OBJECTS, 'p', [
+          {
+            kind: 'base',
+            type: 'commit',
+            content: ENC.encode(
+              'tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904\nauthor A <a@b> 1 +0000\ncommitter A <a@b> 1 +0000\n\nm\n',
+            ),
+          },
+        ]);
+        const sut = catFileBatch(ctx, [id as ObjectId]);
+
+        // Act
+        const result = await firstEntry(sut);
+
+        // Assert
+        expect(result.ok && result.type).toBe('commit');
+      });
+    });
+  });
+
+  describe('Given an id stored nowhere', () => {
+    describe('When iterated', () => {
+      it('Then the entry is a missing one', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = '1'.repeat(40) as ObjectId;
+        const sut = catFileBatch(ctx, [id]);
+
+        // Act
+        const result = await firstEntry(sut);
+
+        // Assert
+        expect(result).toEqual({ ok: false, id, reason: 'missing' });
+      });
+    });
+  });
+
+  describe('Given a packed blob larger than maxBytes and an corrupt alternate', () => {
+    describe('When iterated', () => {
+      it('Then it refuses with the declared size before opening anything', async () => {
+        // Arrange
+        const ctx = await contextWithCorruptAlternate();
+        const content = ENC.encode('twelve bytes');
+        const id = await packedBlob(ctx, content);
+        const sut = catFileBatch(ctx, [id], { maxBytes: 5 });
+
+        // Act
+        const result = await rejectionData(firstEntry(sut));
+
+        // Assert
+        expect(result).toEqual({ code: 'OBJECT_TOO_LARGE', id, actualSize: 12, limit: 5 });
+      });
+    });
+  });
+
+  describe('Given a packed blob exactly maxBytes', () => {
+    describe('When iterated', () => {
+      it('Then it is served', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = ENC.encode('twelve bytes');
+        const id = await packedBlobIn(ctx, content);
+        const sut = catFileBatch(ctx, [id], { maxBytes: 12 });
+
+        // Act
+        const result = await firstEntry(sut);
+
+        // Assert
+        expect(result.ok && result.size).toBe(12);
       });
     });
   });

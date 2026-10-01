@@ -268,3 +268,21 @@ export const objectSources = async (ctx: Context): Promise<ObjectSourcesView> =>
     unusable: store.diagnostics,
   };
 };
+
+/** Gates every source's store setup, primary first; the first rejection propagates. */
+export const assertEverySourceLoadable = async (ctx: Context): Promise<void> => {
+  const store = await getObjectStore(ctx);
+  for (const source of store.sources) await source.registry.assertLoadable();
+};
+
+/** `assertEverySourceLoadable` settled to a boolean: only a coded (adapter or
+ *  `TsgitError`) rejection is a verdict, anything else is a defect and rethrows. */
+export const everySourceLoadable = async (ctx: Context): Promise<boolean> => {
+  try {
+    await assertEverySourceLoadable(ctx);
+    return true;
+  } catch (error) {
+    if (errorDataCode(error) === undefined) throw error;
+    return false;
+  }
+};

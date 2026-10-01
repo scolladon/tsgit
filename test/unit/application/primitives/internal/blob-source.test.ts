@@ -5,6 +5,7 @@ import {
   locateBlob,
   MAX_BUFFERED_BLOB_BYTES,
   openBlobSource,
+  readBlobContentInStreamOrder,
   serveLocatedBlob,
   type VerifiedObject,
   verifyStoredObject,
@@ -2328,6 +2329,69 @@ describe('locateBlob and serveLocatedBlob', () => {
         // Assert
         expect(located?.arm).toBe('pack');
         expect(new TextDecoder().decode(await blobBytes(result))).toBe(expected);
+      });
+    });
+  });
+});
+
+describe('readBlobContentInStreamOrder', () => {
+  describe('Given a loose blob', () => {
+    describe('When read', () => {
+      it('Then it returns the blob bytes', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = ENC.encode('loose bytes');
+        const id = await writeObject(ctx, {
+          type: 'blob',
+          content,
+          id: '' as ObjectId,
+        } satisfies Blob);
+
+        // Act
+        const sut = readBlobContentInStreamOrder;
+        const result = await sut(ctx, id);
+
+        // Assert
+        expect(result).toEqual(content);
+      });
+    });
+  });
+
+  describe('Given a packed blob larger than the buffered gate', () => {
+    describe('When read', () => {
+      it('Then it returns the whole blob drained from the stream', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const content = new Uint8Array(MAX_BUFFERED_BLOB_BYTES * 2).map((_, i) => (i * 31) % 251);
+        const [id] = await writeSyntheticPackIn(ctx, `${ctx.layout.gitDir}/objects`, 'p', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+
+        // Act
+        const sut = readBlobContentInStreamOrder;
+        const result = await sut(ctx, id as ObjectId);
+
+        // Assert
+        expect(result).toEqual(content);
+      });
+    });
+  });
+
+  describe('Given a small packed blob and an corrupt alternate', () => {
+    describe('When read', () => {
+      it('Then the alternate is reached', async () => {
+        // Arrange
+        const ctx = await contextWithCorruptAlternate();
+        const [id] = await writeSyntheticPackIn(ctx, PRIMARY_OBJECTS, 'p', [
+          { kind: 'base', type: 'blob', content: ENC.encode('small packed') },
+        ]);
+
+        // Act
+        const sut = readBlobContentInStreamOrder;
+        const result = await rejectionData(sut(ctx, id as ObjectId));
+
+        // Assert
+        expect(result).toMatchObject(ALT_REACHED);
       });
     });
   });
