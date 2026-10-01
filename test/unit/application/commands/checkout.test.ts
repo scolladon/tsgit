@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { MemoryHookRunner } from '../../../../src/adapters/memory/memory-hook-runner.js';
 import { add } from '../../../../src/application/commands/add.js';
@@ -6,8 +6,10 @@ import { branchCreate } from '../../../../src/application/commands/branch.js';
 import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
+import * as objectStoreMod from '../../../../src/application/primitives/object-store.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import type { AuthorIdentity, RefName } from '../../../../src/domain/objects/index.js';
+import { snapshotFiles } from './fixtures.js';
 
 const author: AuthorIdentity = {
   name: 'Ada',
@@ -1533,6 +1535,46 @@ describe('checkout — post-checkout hook', () => {
         // Assert
         expect(result.branch).toBe('refs/heads/feature');
       });
+    });
+  });
+});
+
+describe('Given an alternate that fails to load', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe('When checkout switches from an attached HEAD', () => {
+    it('Then the every-source gate is not consulted', async () => {
+      // Arrange
+      const { ctx } = await seedWithBranches();
+      const gate = vi.spyOn(objectStoreMod, 'assertEverySourceLoadable');
+      const sut = checkout;
+
+      // Act
+      await sut(ctx, { rev: 'feature' });
+
+      // Assert
+      expect(gate).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('When checkout switches from a detached HEAD', () => {
+    it('Then it rejects with the gate error and leaves HEAD and the worktree untouched', async () => {
+      // Arrange
+      const { ctx, commitId } = await seedWithBranches();
+      await checkout(ctx, { rev: commitId });
+      const before = await snapshotFiles(ctx);
+      const loadError = new Error('source cannot load');
+      vi.spyOn(objectStoreMod, 'assertEverySourceLoadable').mockRejectedValue(loadError);
+      const sut = checkout;
+
+      // Act
+      const attempt = sut(ctx, { rev: 'main' });
+
+      // Assert
+      await expect(attempt).rejects.toBe(loadError);
+      expect(await snapshotFiles(ctx)).toEqual(before);
     });
   });
 });

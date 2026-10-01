@@ -53,6 +53,7 @@ import {
 } from '../primitives/internal/write-working-tree-file.js';
 import { materializeTree } from '../primitives/materialize-tree.js';
 import { mergeBase } from '../primitives/merge-base.js';
+import { assertEverySourceLoadable } from '../primitives/object-store.js';
 import { readBlob } from '../primitives/read-blob.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
@@ -174,6 +175,7 @@ const computeMerge = async (
   const ourId = await resolveRef(ctx, head.target);
   const theirId = await resolveCommitIsh(ctx, opts.rev);
   await writeOrigHead(ctx, ourId);
+  await assertEverySourceLoadable(ctx);
   // Stryker disable next-line ConditionalExpression: equivalent — when ourId===theirId, mergeBase returns that same commit, so the `base === theirId` check below yields the identical up-to-date result.
   if (ourId === theirId) return { kind: 'up-to-date', id: ourId };
   const [base] = await mergeBase(ctx, [ourId, theirId]);

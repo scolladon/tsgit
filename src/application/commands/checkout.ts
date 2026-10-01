@@ -10,6 +10,7 @@ import { validateRefName } from '../../domain/refs/index.js';
 import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import type { Context } from '../../ports/context.js';
 import { materializeTree } from '../primitives/materialize-tree.js';
+import { assertEverySourceLoadable } from '../primitives/object-store.js';
 import { readIndex } from '../primitives/read-index.js';
 import { loadSparseMatcher } from '../primitives/read-sparse-checkout.js';
 import { readTree } from '../primitives/read-tree.js';
@@ -101,6 +102,7 @@ const headCheckoutLabel = (
 
 const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<CheckoutResult> => {
   const priorHead = await readHeadRaw(ctx);
+  if (priorHead.kind !== 'symbolic') await assertEverySourceLoadable(ctx);
   const oldOid = await resolveRef(ctx, 'HEAD' as RefName);
   // The branch lookup runs whatever `detach` says — git reads
   // `refs/heads/<arg>` before its revision ladder either way, and only the

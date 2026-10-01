@@ -1341,3 +1341,202 @@ describe.skipIf(!GIT_AVAILABLE)('alternates stream interop — refused worktree 
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// M5ac-M5ad rows: history-rewriting commands refuse before writing anything
+// ---------------------------------------------------------------------------
+
+const GIT_STATE_FILES = [
+  'ORIG_HEAD',
+  'MERGE_HEAD',
+  'MERGE_MSG',
+  'CHERRY_PICK_HEAD',
+  'REVERT_HEAD',
+  'sequencer',
+  'rebase-merge',
+  'rebase-apply',
+] as const;
+
+const gitStateOf = (dir: string): Record<string, string | null> => {
+  const gitDir = path.join(dir, '.git');
+  const entries = GIT_STATE_FILES.map((name) => {
+    const file = path.join(gitDir, name);
+    return [name, existsSync(file) ? readFileSync(file).toString('utf8') : null] as const;
+  });
+  return Object.fromEntries(entries);
+};
+
+const writeState = (dir: string): string[] => [
+  readFileSync(path.join(dir, '.git', 'HEAD'), 'utf8'),
+  indexOf(dir),
+  ...listing(dir),
+];
+
+const atBehindWorktree = (dir: string, head: () => void): void => {
+  for (const name of readdirSync(dir)) {
+    if (name !== '.git' && name !== 'd') rmSync(path.join(dir, name), { force: true });
+  }
+  head();
+  runGit(['-C', dir, 'read-tree', BEHIND]);
+};
+
+describe.skipIf(!GIT_AVAILABLE)('alternates stream interop — refused history commands', () => {
+  describe('Given M5ac: an attached branch behind main', () => {
+    const attachedBehind = (): Side =>
+      sides((dir) =>
+        atBehindWorktree(dir, () =>
+          runGit(['-C', dir, 'symbolic-ref', 'HEAD', `refs/heads/${BEHIND}`]),
+        ),
+      );
+
+    const expectSameRefusal = (side: Side, before: string[], origHead: string | null): void => {
+      expect(gitStateOf(side.tsgit.dir)).toEqual(gitStateOf(side.git.dir));
+      expect(gitStateOf(side.tsgit.dir).ORIG_HEAD).toBe(origHead);
+      expect(writeState(side.tsgit.dir)).toEqual(before);
+      expect(writeState(side.git.dir)).toEqual(before);
+      expect(hasIndexLock(side.tsgit.dir)).toBe(false);
+    };
+
+    describe.each([
+      ['merge', ['merge', 'main'], 'allow'],
+      ['merge --no-ff', ['merge', '--no-ff', 'main'], 'never'],
+      ['merge --ff-only', ['merge', '--ff-only', 'main'], 'only'],
+    ] as const)('When %s targets main', (_label, gitArgs, fastForward) => {
+      it(
+        'Then both tools refuse, write ORIG_HEAD and nothing else',
+        async () => {
+          // Arrange
+          const side = attachedBehind();
+          const before = writeState(side.tsgit.dir);
+          const git = gitIn(side.git.dir, ...gitArgs);
+          const repo = await side.tsgit.repo();
+
+          // Act
+          const result = await rejectionOf(() => repo.merge.run({ rev: 'main', fastForward }));
+          await repo.dispose();
+
+          // Assert
+          expectGitRefused(git);
+          expect(result.data).toMatchObject(REFUSAL_DATA);
+          expectSameRefusal(side, before, `${objectOf(side.tsgit.dir, BEHIND)}\n`);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe('Given M5ac: HEAD on main', () => {
+    describe.each([
+      [
+        'cherryPick',
+        ['cherry-pick', BEHIND],
+        (repo: Repository) => repo.cherryPick.run({ commits: [BEHIND] }),
+      ],
+      ['revert', ['revert', 'HEAD'], (repo: Repository) => repo.revert.run({ commits: ['HEAD'] })],
+      [
+        'rebase',
+        ['rebase', '--onto', BEHIND, 'main~1'],
+        (repo: Repository) => repo.rebase.run({ upstream: 'main~1', onto: BEHIND }),
+      ],
+    ] as const)('When %s runs', (_label, gitArgs, run) => {
+      it(
+        'Then both tools refuse and leave the same state',
+        async () => {
+          // Arrange
+          const side = sides();
+          const before = writeState(side.tsgit.dir);
+          const git = gitIn(side.git.dir, ...gitArgs);
+          const repo = await side.tsgit.repo();
+
+          // Act
+          const result = await rejectionOf(() => run(repo));
+          await repo.dispose();
+
+          // Assert
+          expectGitRefused(git);
+          expect(result.data).toMatchObject(REFUSAL_DATA);
+          expect(gitStateOf(side.tsgit.dir)).toEqual(gitStateOf(side.git.dir));
+          expect(writeState(side.tsgit.dir)).toEqual(before);
+          expect(writeState(side.git.dir)).toEqual(before);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe('Given M5ad: a detached HEAD at the first commit', () => {
+    const detachedBehind = (): Side =>
+      sides((dir) =>
+        atBehindWorktree(dir, () =>
+          runGit(['-C', dir, 'update-ref', '--no-deref', 'HEAD', objectOf(dir, BEHIND)]),
+        ),
+      );
+
+    describe('When main is checked out', () => {
+      it(
+        'Then both tools refuse and keep HEAD, index and worktree',
+        async () => {
+          // Arrange
+          const side = detachedBehind();
+          const before = writeState(side.tsgit.dir);
+
+          // Act
+          const result = await refusedCheckout(side, ['checkout', 'main'], { rev: 'main' });
+
+          // Assert
+          expect(result.data).toMatchObject(REFUSAL_DATA);
+          expect(writeState(side.tsgit.dir)).toEqual(before);
+          expect(writeState(side.git.dir)).toEqual(before);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+
+    describe('When a commit is cherry-picked', () => {
+      it(
+        'Then both tools refuse and leave the same state',
+        async () => {
+          // Arrange
+          const side = detachedBehind();
+          const before = writeState(side.tsgit.dir);
+          const git = gitIn(side.git.dir, 'cherry-pick', 'main');
+          const repo = await side.tsgit.repo();
+
+          // Act
+          const result = await rejectionOf(() => repo.cherryPick.run({ commits: ['main'] }));
+          await repo.dispose();
+
+          // Assert
+          expectGitRefused(git);
+          expect(result.data).toMatchObject(REFUSAL_DATA);
+          expect(gitStateOf(side.tsgit.dir)).toEqual(gitStateOf(side.git.dir));
+          expect(writeState(side.tsgit.dir)).toEqual(before);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+
+    describe('When merge runs', () => {
+      it(
+        'Then tsgit refuses as unsupported and keeps its state (git refuses on the object source)',
+        async () => {
+          // Arrange
+          const side = detachedBehind();
+          const before = writeState(side.tsgit.dir);
+          const stateBefore = gitStateOf(side.tsgit.dir);
+          const repo = await side.tsgit.repo();
+
+          // Act
+          const result = await rejectionOf(() => repo.merge.run({ rev: 'main' }));
+          await repo.dispose();
+
+          // Assert
+          expect(result.data).toMatchObject({ code: 'UNSUPPORTED_OPERATION', operation: 'merge' });
+          expect(writeState(side.tsgit.dir)).toEqual(before);
+          expect(gitStateOf(side.tsgit.dir)).toEqual(stateBefore);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+});

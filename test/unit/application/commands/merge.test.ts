@@ -51,6 +51,7 @@ import {
   deepIndexPath,
   seedMaxTreeDepth,
 } from '../primitives/fixtures.js';
+import { failSourceLoad, snapshotFiles } from './fixtures.js';
 
 const writeBlob = async (
   ctx: Awaited<ReturnType<typeof buildSeededContext>>,
@@ -4351,6 +4352,47 @@ describe('merge ORIG_HEAD', () => {
         // Assert
         expect(await ctx.fs.exists(origHeadPath(ctx))).toBe(false);
       });
+    });
+  });
+});
+
+describe('Given an alternate that fails to load', () => {
+  type Ctx = ReturnType<typeof createMemoryContext>;
+
+  const seedDiverged = async (): Promise<{ ctx: Ctx; main: ObjectId }> => {
+    const ctx = createMemoryContext();
+    await init(ctx);
+    const commitFile = async (name: string, message: string): Promise<ObjectId> => {
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${name}`, name);
+      await add(ctx, [name]);
+      return (await commit(ctx, { message, author })).id;
+    };
+    await commitFile('a.txt', 'base');
+    await branchCreate(ctx, { name: 'feature' });
+    await checkout(ctx, { rev: 'feature' });
+    await commitFile('b.txt', 'on-feature');
+    await checkout(ctx, { rev: 'main' });
+    return { ctx, main: await commitFile('c.txt', 'on-main') };
+  };
+
+  describe('When mergeRun targets the current HEAD commit', () => {
+    it('Then it rejects with the alternate error, writing ORIG_HEAD and nothing else', async () => {
+      // Arrange
+      const { ctx, main } = await seedDiverged();
+      const before = await snapshotFiles(ctx);
+      const loadError = await failSourceLoad(ctx);
+      const sut = mergeRun;
+
+      // Act
+      const attempt = sut(ctx, { rev: main, author });
+
+      // Assert
+      await expect(attempt).rejects.toBe(loadError);
+      const after = await snapshotFiles(ctx);
+      const expected = new Map(before);
+      expected.set(`${ctx.layout.gitDir}/ORIG_HEAD`, Buffer.from(`${main}\n`).toString('base64'));
+      expect(after).toEqual(expected);
+      vi.restoreAllMocks();
     });
   });
 });
