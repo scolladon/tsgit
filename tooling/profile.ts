@@ -32,6 +32,7 @@ import {
   MEDIUM_FIXTURE,
 } from '../test/bench/support/fixture-generator.ts';
 import { type Baseline, machineBanner, writeBaseline } from './profile-baseline.ts';
+import { profileChildArgs } from './profile-child-args.ts';
 import { parseDigest, partitionWriteDigest } from './profile-digest.ts';
 import { profileEnv } from './profile-env.ts';
 import type { ProfileWorkload } from './profile-registry.ts';
@@ -169,11 +170,7 @@ const processProfile = (isolateLog: string): Promise<string> =>
 const captureProfile = async (cmd: string): Promise<string> => {
   const workDir = await mkdtemp(path.join(os.tmpdir(), `tsgit-prof-${cmd}-`));
   try {
-    await spawnToCompletion(
-      process.execPath,
-      ['--prof', '--experimental-strip-types', SCRIPT_PATH, '--child', cmd],
-      workDir,
-    );
+    await spawnToCompletion(process.execPath, profileChildArgs(SCRIPT_PATH, cmd), workDir);
     const entries = await readdir(workDir);
     const isolateLog = entries.find((e) => e.startsWith('isolate-') && e.endsWith('.log'));
     if (isolateLog === undefined) {
