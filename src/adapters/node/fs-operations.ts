@@ -37,6 +37,7 @@ export type FsOperations = Pick<
   | 'rmdir'
   | 'stat'
   | 'symlink'
+  | 'utimes'
   | 'writeFile'
 >;
 

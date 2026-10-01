@@ -75,6 +75,7 @@ export const fakeFsOps = (overrides: Partial<FsOperations> = {}): FsOperations =
     readlink: vi.fn().mockRejectedValue(enoent()),
     symlink: vi.fn().mockResolvedValue(undefined),
     chmod: vi.fn().mockResolvedValue(undefined),
+    utimes: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   }) as unknown as FsOperations;
 

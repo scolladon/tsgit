@@ -5983,3 +5983,81 @@ describe('NodeFileSystem.tryReadUtf8 — sync arm above the gate (DI)', () => {
     });
   });
 });
+
+describe('NodeFileSystem — utimeNow (DI)', () => {
+  const rootDir = '/root';
+  const target = '/root/object';
+  const identityRealpath = () => vi.fn().mockImplementation(async (input: string) => input);
+
+  describe('Given an injected fsOps whose utimes rejects with EACCES', () => {
+    describe('When utimeNow(file) is called', () => {
+      it('Then the rejection carries the runFs-mapped code and data.path', async () => {
+        // Arrange
+        const fsOps = fakeFsOps({
+          realpath: identityRealpath(),
+          utimes: vi.fn().mockRejectedValue(eacces()),
+        });
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps });
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.utimeNow?.(target);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(dataFor(caught, 'PERMISSION_DENIED').path).toBe(target);
+      });
+    });
+  });
+
+  describe('Given an injected fsOps', () => {
+    describe('When utimeNow(file) is called', () => {
+      it('Then utimes is called once with the resolved real path and two equal Date instances', async () => {
+        // Arrange
+        const utimes = vi.fn().mockResolvedValue(undefined);
+        const fsOps = fakeFsOps({ realpath: identityRealpath(), utimes });
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps });
+
+        // Act
+        await sut.utimeNow?.(target);
+
+        // Assert
+        expect(utimes).toHaveBeenCalledTimes(1);
+        const [path, atime, mtime] = utimes.mock.calls[0] as [string, Date, Date];
+        expect(path).toBe(target);
+        expect(atime).toBeInstanceOf(Date);
+        expect(atime).toBe(mtime);
+      });
+    });
+  });
+
+  describe('Given a symlink leaf', () => {
+    describe('When utimeNow is called', () => {
+      it('Then PERMISSION_DENIED and utimes is never called', async () => {
+        // Arrange
+        const utimes = vi.fn().mockResolvedValue(undefined);
+        const fsOps = fakeFsOps({
+          realpath: identityRealpath(),
+          lstat: vi.fn().mockResolvedValue({ isSymbolicLink: () => true }),
+          utimes,
+        });
+        const sut = new NodeFileSystem(rootDir, { pathPolicy: posixPolicy, fsOps });
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.utimeNow?.(target);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as InstanceType<typeof TsgitError>).data.code).toBe('PERMISSION_DENIED');
+        expect(utimes).not.toHaveBeenCalled();
+      });
+    });
+  });
+});

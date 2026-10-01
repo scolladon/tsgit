@@ -216,6 +216,16 @@ export interface FileSystem {
   readonly chmod: (path: string, mode: number) => Promise<void>;
 
   /**
+   * Set an existing entry's access and modification times to the current time — git's
+   * `utime(path, NULL)`. Never creates the entry. Refuses a symbolic-link leaf with
+   * PERMISSION_DENIED (no portable no-follow utime exists — the `chmod` posture), a missing
+   * entry with FILE_NOT_FOUND, and a path outside the containment roots with PERMISSION_DENIED.
+   * OPTIONAL: an adapter that cannot set times omits it (OPFS). A caller that finds it absent
+   * treats the times as not set — git's freshen then writes a fresh copy instead.
+   */
+  readonly utimeNow?: (path: string) => Promise<void>;
+
+  /**
    * Recursively remove a file or directory tree.
    *
    * Idempotent: a missing path returns void (no error).
