@@ -1,5 +1,5 @@
 {
-  "$schema": "https://biomejs.dev/schemas/2.5.14/schema.json",
+  "$schema": "https://biomejs.dev/schemas/2.5.15/schema.json",
   "vcs": {
     "enabled": true,
     "clientKind": "git",
@@ -50,7 +50,13 @@
       "tooling/test/unit/test-pyramid/**/*.ts",
       "tooling/test/integration/audit-*.test.ts",
       "tooling/test/integration/bench-warmup-throw.test.ts",
-      "tooling/test/fixtures/bench/throwing-warmup.bench.ts"
+      "tooling/test/fixtures/bench/throwing-warmup.bench.ts",
+      "tooling/typescript-hooks.mjs",
+      "tooling/typescript-hooks.d.mts",
+      "tooling/register-typescript-hooks.mjs",
+      "tooling/test/unit/typescript-hooks.test.ts",
+      "tooling/test/integration/typescript-hooks.test.ts",
+      "tooling/test/fixtures/typescript-hooks/*.ts"
     ]
   },
   "formatter": {

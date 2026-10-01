@@ -84,6 +84,9 @@ blobs), medium (5k / 20k), and large (50k / 200k) — via the shared
 Non-hot operations (`show`, `diff`, `cat-file`, `rev-parse`, `commit`, `add`,
 `merge`) get a medium-only bench. A dedicated `loose-read.bench.ts`
 micro-scenario keeps the loose-object read path covered outside the tiering.
+Benches load as native ES modules through `tooling/register-typescript-hooks.mjs`,
+with Node's type stripper disabled. A bench file is plain TypeScript and must
+not rely on Vite transforms.
 
 - **Pre-warm the cache first:** `npm run bench:fixture -- medium` builds a
   5k-commit / 20k-blob repo under `~/.cache/tsgit-bench` (one-time, ~5 s;
