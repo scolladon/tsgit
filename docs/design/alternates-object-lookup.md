@@ -8,7 +8,9 @@
 > for repositories without an alternates file. Issue #302 (sfdx-git-delta discussion #1457:
 > `ParameterIsNotGitSHA` on a Bamboo cached checkout).
 >
-> Status: draft → self-reviewed ×3 → **awaiting decisions** (12 candidates, §Decision candidates).
+> Status: draft → decisions ratified (ADR-914 … ADR-924) → **revised against the ADRs** (scope
+> folded: full git freshen on write, every acceleration file per source) → self-reviewed ×3 →
+> 4 new decision candidates (§Decisions, DC-13 … DC-16).
 >
 > **Three premises of the brief do not survive the pins, and each is load-bearing.**
 >
@@ -25,11 +27,21 @@
 >    unreachable from the borrower's refs as `dangling`. Not connectivity-only — the whole donor
 >    store is in the audit universe.
 > 3. *"Writes stay in the primary … tsgit doesn't duplicate objects the alternate already holds"* —
->    git does not merely skip the write: it **freshens** the alternate's copy (`utime` on the
->    donor's loose file or `.pack`, pins W1/W2) and writes a local copy only when that freshen
->    fails (W3/W2b). tsgit has no mtime-setting port method today, and the write path has no
->    existence probe at all (it relies on `writeExclusive`'s `FILE_EXISTS`), so it already writes
->    a duplicate loose copy of any object the **primary** holds packed. DC-10.
+>    git does not merely skip the write: it **freshens** the holding copy (`utime(fn, NULL)` on
+>    the loose file or the `.pack`, in whichever source holds it — the primary included, pins
+>    W1/W2/WP1/WP2) and writes a local copy only when no source could be freshened (W2b/W3/WP2b).
+>    tsgit has no mtime-setting port operation today, and the write path has no existence probe
+>    at all (it relies on `writeExclusive`'s `FILE_EXISTS`), so it already writes a duplicate
+>    loose copy of any object the **primary** holds packed. ADR-922 adopts git's freshen (§D6, §D11).
+>
+> A fourth finding came out of the revision's pins: tsgit's commit-graph loader treats a chain
+> with a missing layer, and a corrupt single-file graph, as **absent**; git uses the chain's
+> loadable **prefix** (CG4) and, for a corrupt single file, falls through to the chain and then
+> to the next source (CG6). ADR-921 ("git's failure handling") makes the source-aware loader
+> adopt both — a behaviour change for repositories without alternates too (speed only, never
+> answers).
+
+<!-- cspell:ignore chflags uchg utimes chattr -->
 
 ## Context
 
@@ -51,9 +63,12 @@ Nothing in `src/` reads `objects/info/alternates`. Every object path is derived 
 | streamed blob | `internal/blob-source.ts` (`openBlobSource`, `verifyStoredObject`) | primary only |
 | enumeration | `enumerate-objects.ts` (`enumerateObjects`, `collectLooseObjectIds`, `collectPackedObjectIds`) | primary only |
 | abbreviation | `resolve-oid-prefix.ts` (`resolveOidPrefix`, `scanLoose`, `scanPacks`) → `ambiguousOidPrefix` (`src/domain/commands/error.ts:879`) | primary only |
-| write | `write-object.ts` (`writeObject`: serialize → deflate → `writeExclusive`; `FILE_EXISTS` ⇒ already present) | no pre-write existence probe |
+| write | `write-object.ts` (`writeObject`: serialize → deflate → `writeExclusive`; `FILE_EXISTS` ⇒ already present) | no pre-write existence probe, no freshen |
+| promisor missing-set | `commands/fetch-missing.ts:57` (`objectExistsLocally`: `ctx.fs.exists(looseObjectPath)` + `registry.lookup`) | primary only |
+| commit-graph | `internal/read-commit-graph.ts` (`loadGraphUncached` → `tryRead(commitGraphPath)` else `loadChain`; memo `graphCache`/`absentGraphs`/`headerCache` per session; callers `merge-base.ts`, `walk-commits.ts`, `internal/{shallow-set,read-commit-meta,commit-date-walk}.ts` via `commitHeader`/`correctedCommitDatesEnabled`) | `commonGitDir(ctx)` + `ctx.fs`; missing layer or corrupt file ⇒ whole graph absent |
+| bitmaps | `internal/closure-engine.ts` (`tryBitmapClosure`: primary `registry.midxBitmap()` → `loadMidxBitmapArtefact`, then each `registry.all()` pack → `loadPackBitmapArtefact`); loaders `internal/{midx,pack}-bitmap-binding.ts`, bytes via `pack-artefact-source.ts:loadBitmapBytes`; callers `push.ts:451`, `pack-objects.ts:82`, `rev-list.ts:126` (gc pins `'walk'`, `gc-pipeline.ts:60`) | primary registry only |
 | gc / prune | `commands/internal/gc-pipeline.ts` (`owned` from `enumerateObjects(ctx,{includePacks:false})` + `registry.all()`; `toNormalPackInputs`; `packedAnywhere`; `pruneLooseFiles`) | primary only |
-| fsck | `commands/fsck.ts` (universe = `enumerateObjects`), `internal/fsck/{object-cache,content-validation,pack-health,rev-index-health,midx-health,bitmap-health,object-presence}.ts` | primary only |
+| fsck | `commands/fsck.ts` (universe = `enumerateObjects`), `internal/fsck/{object-cache,content-validation,pack-health,rev-index-health,midx-health,bitmap-health,object-presence,refs-verify}.ts` | primary only; **no commit-graph verification pass exists** |
 
 ### Containment today (ADR-625, ADR-721, ADR-298)
 
@@ -79,15 +94,17 @@ omit the hook and fall back to the repo-rooted fs.
 |---|---|
 | ADR-226 | byte-faithful data + on-disk state; divergence only by ADR |
 | ADR-249 | structured data only — no rendered stderr; warnings must be data |
-| ADR-412 | fsck scope bullet *"alternate object stores (tsgit has no alternates)"* — must be amended (DC-7) |
+| ADR-914 … ADR-924 | this feature's ratified decisions — mapping in §Decisions |
+| ADR-412 | fsck scope bullet *"alternate object stores (tsgit has no alternates)"* — superseded by ADR-919 |
+| ADR-138 / ADR-140 | `@writes` tag grammar and the three comparison kinds — the freshen write surface (§D11) |
 | ADR-509 | loose-first precedence + loose oid cache (streamed blob / `hasObject` arms) |
-| ADR-584 | a pack finding carries the pack **base name** — ambiguous across sources (DC-8) |
+| ADR-584 | a pack finding carries the pack **base name** — refined by ADR-920 (`objectsDir`) |
 | ADR-592/593 | midx authoritative for its packs; Tier-A die / Tier-B discard — per source (Pin M) |
 | ADR-597 | usable midx defers `.idx` loading — per source |
 | ADR-601 | fsck reports midx findings — git runs `multi-pack-index verify --object-dir <source>` **per source** (`builtin/fsck.c` L1173) |
 | ADR-625 / ADR-721 / ADR-298 | read containment lexical, single authority in first-party adapters; widened fs via runtime hook |
-| `docs/design/midx-read-support.md` L6 / item 7 | midx-in-an-alternate to be re-decided once alternates land (DC-9) |
-| `docs/design/fsck.md` L238, L500, L666 | `full` documented as "alternates out of scope" — amended with DC-6/DC-7 |
+| `docs/design/midx-read-support.md` L6 / item 7 | midx-in-an-alternate to be re-decided once alternates land — decided by ADR-921 |
+| `docs/design/fsck.md` L238, L500, L666 | `full` documented as "alternates out of scope" — amended per ADR-919 |
 
 ### House patterns this must follow
 
@@ -116,21 +133,34 @@ omit the hook and fall back to the repo-rooted fs.
   trimmed; self and duplicates skipped silently (by realpath); depth-first; a source at depth 5
   with ≥1 normalised entry stops with *nesting too deep*; cycle-safe.
 - **R4** An unusable alternate never fails a read: it is skipped and reported as a structured
-  diagnostic (shape per DC-1), classified like git's three messages (Pin U).
+  diagnostic (ADR-914), classified like git's three messages (Pin U).
 - **R5** A full miss re-prepares **every** source's pack registry and forgets the missed id's loose
   prefix in **every** source; the alternates file itself is re-read only on `refresh()`
-  (git's `odb_reprepare`), add-only (DC-12).
-- **R6** Writes land only in the primary. The pre-write probe counts every source (DC-10).
+  (git's `odb_reprepare`), add-only (ADR-924).
+- **R6** Writes land only in the primary. Before deflate, `writeObject` runs git's
+  `odb_freshen_object` over every source (cruft packs excluded); a successful freshen of the
+  holding loose file or `.pack` skips the write; otherwise the object is written locally
+  (ADR-922, Pin W).
 - **R7** `gc` packs, crufts and prunes **local** objects only; its reachability walk reads through
   alternates; its "already packed" sweep (`packedAnywhere`) counts alternate packs (Pins G1–G5).
-- **R8** `fsck` audits every source as git does (Pins F1–F5, M1); ADR-412 amended (DC-6/DC-7).
+- **R8** `fsck` audits every source as git does (Pins F1–F5, M1); ADR-919 supersedes ADR-412's bullet.
 - **R9** All alternate I/O goes through the `FileSystem` port; no `node:` import outside
-  `src/adapters/`; behaviour on memory/browser defined (DC-3).
+  `src/adapters/`; behaviour on memory/browser defined (ADR-916).
 - **R10** A repository without `objects/info/alternates` pays one extra `read` per session
   (FILE_NOT_FOUND), issued concurrently with the primary registry construction, and nothing per
-  object **read** beyond iterating a one-element source array; the write probe (DC-10) is a
-  separate, deliberate per-write cost; `bench:ab` shows no regression (§Perf).
+  object **read** beyond iterating a one-element source array; the write path pays a pack lookup
+  + a cached loose probe per write and one `utimeNow` per write of an object that already exists
+  (§Perf); `bench:ab` shows no regression.
 - **R11** 100 % coverage, zero surviving non-equivalent mutants, interop pins for every row below.
+- **R12** Every acceleration file is honoured per source with git's search order and failure
+  handling (ADR-921): midx (Pin M), commit-graph single file and split chain (Pin CG), pack and
+  midx bitmaps (Pin BM). fsck covers each source's acceleration files to the extent tsgit's fsck
+  verifies that class today: midx and bitmaps yes; commit-graph — tsgit's fsck has no
+  commit-graph pass, so nothing is added (git's per-source `commit-graph verify` stays out, as it
+  is for the primary today).
+- **R13** The `FileSystem` port gains an **optional** `utimeNow(path)` (§D11); node and memory
+  implement it, the browser adapter omits it (DC-13); an alternate's capability carries it,
+  confined to that alternate's objects dir (ADR-915).
 
 ## Design
 
@@ -219,13 +249,45 @@ Six alternate levels are reachable.
 
 #### Pin W — the write path (`write_object_file` → `odb_freshen_object`)
 
+Source (git 2.55.0): `odb/source-loose.c:odb_source_loose_write_object` calls
+`odb_freshen_object(odb, oid)` after hashing and **before** deflating; `1` ⇒ return without
+writing. `odb.c:826 odb_freshen_object` = `odb_prepare_alternates` + every source in order,
+first `1` wins. Per source, `odb/source-files.c:151` tries **packs, then loose**:
+
+- `packfile.c:2172 packfile_store_freshen_object`: `find_pack_entry` (prepares the source's pack
+  store — midx first, then non-midx packs — and takes the **first** pack that holds the id);
+  `is_cruft` ⇒ `0` **without trying another pack**; `p->freshened` ⇒ `1` with no syscall (once
+  per pack instance per process); else `utime(p->pack_name, NULL)` — the `.pack`, never
+  `.idx`/`.rev`/`.bitmap`/`.mtimes`/`multi-pack-index`; failure (any errno) ⇒ `0`; success sets
+  `freshened`.
+- `odb/source-loose.c:576` → `object-file.c:81 check_and_freshen_file(path, 1)`:
+  `access(F_OK)` fails (any errno) ⇒ `0`; `object-file.c:69 freshen_file` = `!utime(fn, NULL)`;
+  failure ⇒ `0`.
+- A `0` in one source moves to the **next** source; nothing is written until every source has
+  returned `0`. `utime(fn, NULL)` sets atime and mtime to now; it needs ownership **or** write
+  permission.
+
+Every row: objects made **reachable** (committed) before `repack -ad`, so they really are packed;
+mtimes back-dated with `touch -t 200101010000`; immutability via `chflags uchg` (macOS).
+
 | # | setup | git |
 |---|---|---|
-| W1 | donor holds X **loose** (mtime 2001); borrower `hash-object -w` X | **no** local file; donor's loose file mtime → now (freshened) |
-| W2 | donor holds X **packed** (`.pack/.idx/.rev` mtime 2001) | no local file; donor's **`.pack`** mtime → now; `.idx`/`.rev` untouched |
-| W2b | same, donor `.pack` immutable (made immutable with a BSD file flag) | freshen fails → local loose copy written |
+| W1 | donor holds X **loose** (mtime 2001); borrower `hash-object -w` X | **no** local file; donor's loose file mtime → now |
+| W2 | donor holds X **packed** (`.pack/.idx/.rev` 2001) | no local file; donor `.pack` → now; `.idx`/`.rev` untouched |
+| W2m | donor holds X in a midx-covered pack (two packs + `multi-pack-index`, all 2001) | no local file; the `.pack` holding X → now; `multi-pack-index`, `.idx`, `.rev` and the other pack untouched |
+| W2b | W2 with the donor `.pack` immutable | freshen fails → local loose copy written; donor files unchanged |
 | W3 | donor loose X immutable | freshen fails → local loose copy written; donor mtime unchanged |
 | W4 | borrower `commit` whose tree is the donor's tree | only the new commit is written locally |
+| W5 | donor midx signature smashed; borrower `hash-object -w` a **new** object | `fatal: multi-pack-index signature 0x58585858 does not match signature 0x4d494458`, 128, nothing written — the freshen probe prepares every source's pack store (ADR-593 Tier A fires there, as M3) |
+| WP1 | **primary** holds Y loose (2001); `hash-object -w` Y | loose file mtime → now |
+| WP2 | primary holds Y packed (2001) | `.pack` → now; `.idx`/`.rev` untouched; **no loose copy** (tsgit writes one today) |
+| WP2b | WP2 with the `.pack` immutable | loose copy written; pack files unchanged |
+| WP3 | primary holds Y **only in a cruft pack** (`repack --cruft`; 2001) | loose copy written; cruft `.pack`/`.mtimes`/`.idx`/`.rev` and the normal pack untouched |
+| WP4 | primary loose Y immutable **and** donor loose Y (both 2001) | primary file unchanged; donor loose → now; nothing written — a failed freshen moves on to the next source |
+| WP5 | primary `.pack` holding Y immutable, no primary loose, donor loose Y | primary pack unchanged; donor loose → now; no local file |
+| WP6 | donor `.pack` holding Y immutable **and** donor loose Y | donor pack unchanged; donor loose → now; no local file — packs then loose within one source |
+| WP7 | primary holds Y both loose and packed (all 2001) | `.pack` → now; loose untouched — the pack arm answers first |
+| WP8 | donor `.pack` mode `0444`, owned by the caller | `.pack` → now — permission bits do not block the owner |
 | FE1 | borrower (alternate = clone of `up`) `fetch file://up main` | ref created, **zero** objects transferred/written |
 
 #### Pin G — gc / repack / prune
@@ -266,11 +328,18 @@ for `verify_pack`; midx/commit-graph verify children per source (L1158–1189).
 | M2 | donor midx signature smashed (`XXXX`); borrower reads a **local** loose object | exit 0 — the alternate's midx is never loaded |
 | M3 | same; borrower reads a **donor** object | `fatal: multi-pack-index signature 0x58585858 does not match signature 0x4d494458`, 128 — ADR-593's Tier A fires **when the lookup reaches that source** |
 | M4 | same; borrower `fsck` | same fatal, 128 |
+| M5 | same; the borrower holds blob B **packed locally** (`repack -adb`), B below `core.bigFileThreshold` | `rev-parse HEAD:f`, `cat-file -t HEAD`, `cat-file -p HEAD`, `cat-file -t B` exit 0; **`cat-file blob B` / `cat-file -p B` die with the M3 fatal**, 128 |
+
+M5 is git's streaming open (`odb.c:istream_source`): per source, the pack arm streams only a
+non-delta object above `core.bigFileThreshold` (`packfile.c:packfile_read_object_stream`),
+else the loose arm; a small packed object therefore falls through **every later source** — whose
+pack stores are prepared, midx included — before the in-core read serves it from the primary
+pack. tsgit's `openBlobSource` has no such fall-through (DC-16).
 
 M2/M3 are only consistent with git's **per-source** order (primary packs → primary loose →
 alternate packs → …). A "all packs of all sources, then all loose" order would load the
 alternate's midx before the primary's loose arm and die on M2. This rules out a merged registry
-(DC-5 option c).
+(ADR-918 option 3).
 
 #### Pin X — abbreviation across stores
 
@@ -284,6 +353,53 @@ Two blobs sharing the 7-hex prefix `bdd46a6`: X in the donor, Y in the borrower.
 
 tsgit has no abbreviation renderer (ADR-249); the interop test reconstructs X1 from
 `resolveOidPrefix`'s ambiguity data.
+
+#### Pin CG — commit-graph in an alternate
+
+Source: `commit-graph.c:738 prepare_commit_graph` — for each source in order,
+`read_commit_graph_one` (single file `info/commit-graph`, else the chain
+`info/commit-graphs/commit-graph-chain`); the **first source that yields a graph wins** — graphs
+are never merged across sources. `load_commit_graph_chain_fd_st` (L641): for each chain line
+(base first), search **every source** in order for `info/commit-graphs/graph-<hash>.graph`; the
+first source whose file loads is used (a missing or unparsable file moves to the next source); a
+line no source satisfies ⇒ `warning: unable to find all commit-graph files`, stop, and **keep the
+layers loaded so far**. A chain whose first layer is unresolvable yields no graph from that source,
+and the search moves to the next source. Observable used below: with a graph, `rev-list --count`
+parses parents from the graph and never opens covered commit objects; a deleted covered commit
+object therefore fails only without the graph (`-c core.commitGraph=false` is the control).
+
+| # | setup | `git -C borrower rev-list --count HEAD` |
+|---|---|---|
+| CG1 | donor `commit-graph write --reachable` (single file), borrower has none; donor's `HEAD~2` commit object deleted | `4`, exit 0 (control: `Could not read …`, 128) — the donor's graph is used |
+| CG2 | borrower single graph covering `c1..c2` only, donor graph covering all; donor's `c3` object deleted | `error: Could not read <c3>` / `fatal: Failed to traverse parents …`, 128 (donor alone: `4`) — the primary's graph wins, the donor's is never consulted |
+| CG3 | donor `--split` chain (layer L1); borrower commits and runs `commit-graph write --reachable --split=no-merge` | borrower's chain file lists `L1, L2`; `graph-L1.graph` exists **only in the donor**; with `c1`'s object deleted → `3`, exit 0 (control fails) — layer L1 is found in the donor |
+| CG4 | CG3, borrower's tip layer L2 file removed | `warning: unable to find all commit-graph files`, `3`, exit 0 — the loaded prefix (L1) is used |
+| CG4b | CG3, donor's base layer L1 file removed | the warning printed **twice** (borrower chain, then donor chain), then `Could not read …`, 128 — no graph |
+| CG5 | borrower chain file naming one non-existent layer; donor single graph; donor `c1` deleted | warning once, then `3`, exit 0 — an empty prefix moves on to the next source |
+| CG6 | borrower single `info/commit-graph` = garbage; donor single graph; donor `c1` deleted | `error: commit-graph file is too small`, `3`, exit 0 — corrupt file ⇒ that source's chain, then the next source |
+
+#### Pin BM — bitmaps in an alternate
+
+Source: `pack-bitmap.c:721 open_bitmap` — **one** bitmap per process: first `open_midx_bitmap`
+over **every source's** midx in order (L704), and only if none opened, `open_pack_bitmap` over
+`repo_for_each_pack` (every source's packs, source order). A later candidate is reported (trace2)
+as `ignoring extra [midx ]bitmap file` and not used. A borrower cannot write a bitmap with `-l`
+(`warning: disabling bitmap writing, as some objects are not being packed`), so the borrower-side
+bitmaps below come from `repack -adb` **without** `-l`. Observation: `GIT_TRACE2_EVENT`
+`category: bitmap` data of `rev-list --use-bitmap-index --count --objects HEAD`.
+
+| # | setup | git |
+|---|---|---|
+| BM1 | donor pack bitmap only | `opened bitmap file: <donor>/objects/pack/pack-….pack` |
+| BM2 | borrower pack bitmap + donor pack bitmap | borrower's opened; `ignoring extra bitmap file: <donor pack>` |
+| BM3 | borrower **pack** bitmap + donor **midx** bitmap | donor midx bitmap loaded (`load/num_objects: 9`); `ignoring extra bitmap file: <borrower pack>` — every source's midx bitmap outranks every pack bitmap |
+| BM4 | midx bitmap in both | borrower's loaded (12 objects); `ignoring extra midx bitmap file: <donor>/objects/pack/multi-pack-index` |
+| BM5 | donor pack bitmap with a smashed header, the only bitmap | `error: corrupted bitmap index file (wrong header)` (×2), walk fallback, same count, exit 0 |
+| BM6 | borrower pack bitmap, donor midx signature smashed | `fatal: multi-pack-index signature …`, 128 (`rev-list` without the bitmap: exit 0) — opening bitmaps prepares every source's midx |
+
+fsck: `pack-bitmap.c:verify_bitmap_files` (called from `builtin/fsck.c:1150`) checks every
+source's midx bitmap, then every source's pack bitmaps — tsgit's `bitmap-health` pass loops
+sources the same way (§D8).
 
 ### Shape
 
@@ -300,18 +416,22 @@ tsgit has no abbreviation renderer (ADR-249); the interop test reconstructs X1 f
                 │  DFS, depth ≤ 5, dedupe,     │   → trim '/' → usable? (Pin R/N/D/U)
                 │  diagnostics                 │
                 └──────────────┬───────────────┘
-                               │ ObjectSourceSpec[]  (objectsDir, local, depth, fs)
+                               │ ObjectSourceSpec[]  (objectsDir, local, depth)
                 ┌──────────────▼───────────────────────────────────────────┐
                 │ ObjectStore (per session memo, object-store.ts)          │
-                │  sources[0] = primary  { registry, loose cache }         │
-                │  sources[i] = alternate{ registry, loose cache }         │
+                │  sources[0] = primary  { fs=ctx.fs, registry, loose }    │
+                │  sources[i] = alternate{ fs=confined(objectsDir),        │
+                │                          registry, loose }               │
                 │  diagnostics                                             │
-                └──┬──────────────┬─────────────┬──────────────┬──────────┘
-                   │              │             │              │
-             read paths     hasObject /    enumerate /     gc / fsck /
-           (per source:     objectIsPresent resolveOidPrefix  write probe
-            packs→loose)    (any source)   (scope all|local) (local vs all)
+                └──┬──────────┬──────────┬───────────┬──────────┬─────────┘
+                   │          │          │           │          │
+             read paths  hasObject / enumerate /  writeObject  commit-graph /
+           (per source:  objectIsPresent resolveOid  → freshen  bitmaps / gc /
+            packs→loose) (any source)  Prefix      (utimeNow,  fsck
+                                       (all|local)  any source) (per source)
 ```
+
+A source's `fs` is its only I/O handle: reads plus the optional `utimeNow` (§D3, §D11).
 
 ### D1 — Domain parser (`src/domain/storage/alternates.ts`)
 
@@ -351,7 +471,7 @@ export type AlternateDiagnosticReason =
   | 'not-a-directory'       // U2 — git: "object directory <path> does not exist; …"
   | 'unreadable-list'       // U3 — git: "unable to access '<file>': <error text>"
   | 'nesting-too-deep'      // N1 — git: "<path>: ignoring alternate object stores, nesting too deep"
-  | 'unreachable';          // tsgit-only: the adapter refused the path (DC-3)
+  | 'unreachable';          // tsgit-only: the adapter refused the path (ADR-916)
 
 export interface AlternateDiagnostic {
   readonly reason: AlternateDiagnosticReason;
@@ -366,7 +486,14 @@ export interface ObjectSourceSpec {
   readonly depth: number;           // -1 primary, 0.. alternates
 }
 
-export const resolveObjectSources = (ctx: Context, reader: AlternateReader)
+/** The two capabilities resolution needs: a metadata probe for any path (realpath walk,
+ *  is-directory), and the confined reader of a usable source (its own `info/alternates`). */
+export interface AlternateChainIo {
+  readonly probe: (path: string) => AlternatePathProbe;
+  readonly reader: (objectsDir: string) => ObjectSourceReader;
+}
+
+export const resolveObjectSources = (ctx: Context, io: AlternateChainIo)
   : Promise<{ readonly sources: ReadonlyArray<ObjectSourceSpec>;
               readonly diagnostics: ReadonlyArray<AlternateDiagnostic> }>;
 ```
@@ -394,7 +521,7 @@ alternate levels reachable, matching N1/N2.
 `normalise(entry, base)`: absolute → entry; else `realpath(base) + '/' + entry`; then
 `realpathAllowingMissingLeaf(joined)` — git's `strbuf_realpath(…, die_on_error=0)` resolves every
 component and tolerates only a missing **last** component (R3 vs R4); then trim trailing `/`.
-How realpath is obtained is DC-4. The depth check placement reproduces N3/N4 exactly
+Realpath is emulated through the port (ADR-917) with `AlternatePathProbe`. The depth check placement reproduces N3/N4 exactly
 (`sources.nr` counts only normalised entries).
 
 Path equality (self check and dedupe) is git's `dir.c` path comparison — the `odb_path_map`
@@ -405,17 +532,26 @@ exact, or ASCII case-insensitive when `core.ignoreCase` is true. The resolver re
 ### D3 — Object store (`src/application/primitives/object-store.ts`)
 
 ```ts
-/** Every port method the pack registry, midx loader and loose readers call — nothing that writes. */
+// src/ports/object-source-access.ts — port layer, because `Context` (src/ports/context.ts) names them
+/** Every port method the pack registry, midx loader, loose readers and commit-graph loader call. */
 export type ObjectSourceReader = Pick<
   FileSystem,
   'read' | 'readUtf8' | 'readSlice' | 'readdir' | 'stat' | 'lstat' | 'exists' | 'readlink'
   | 'openWithNoFollow'
 >;
-/** Where one source lives; the ONLY thing Part 2 threads through the pack/loose layer. */
+/** A source's whole I/O capability: its reads plus git's one foreign write, the freshen. */
+export type ObjectSourceAccess = ObjectSourceReader & Pick<FileSystem, 'utimeNow'>;
+/** Metadata-only probe for the realpath walk (ADR-915, ADR-917) — opens no file content. */
+export type AlternatePathProbe = Pick<FileSystem, 'lstat' | 'readlink' | 'stat'>;
+
+// src/application/primitives/internal/source-location.ts
+/** Where one source lives; the ONLY thing Part 3 threads through the pack/loose layer. */
 export interface SourceLocation {
   readonly objectsDir: string;
-  readonly fs: ObjectSourceReader;
+  readonly fs: ObjectSourceAccess;
 }
+
+// src/application/primitives/object-store.ts
 export interface ObjectSource extends SourceLocation {
   readonly local: boolean;
   readonly registry: PackRegistry;      // per-source; midx gate per source (ADR-592/593 per source)
@@ -430,9 +566,27 @@ export interface ObjectStore {
 }
 export const getObjectStore: (ctx: Context) => Promise<ObjectStore>;
 export const peekObjectStore: (ctx: Context) => ObjectStore | undefined; // repoSettingsVerdictSettled-gated
-export const objectSources: (ctx: Context) => Promise<ObjectSourcesView>;  // public, DC-1
+export const objectSources: (ctx: Context) => Promise<ObjectSourcesView>;  // public, ADR-914
 ```
 
+- **Capability construction (ADR-915).** The primary's `fs` is `ctx.fs` (already guarded). An
+  alternate's `fs` is built by `Context.objectSourceAccess?.(objectsDir)`, which the facade
+  (`src/repository.ts`, beside `worktreeFs` L610) derives from a new runtime hook
+  `RuntimeFallback.makeConfinedFs?: (roots: ReadonlyArray<string>) => FileSystem` (Node:
+  `src/index.node.ts`, beside `makeWorktreeFs` L175 — the same `NodeFileSystem` construction
+  with `roots = [objectsDir]` and **no** layout roots). The facade does not hand the adapter out:
+  it builds a fresh object carrying exactly the `ObjectSourceAccess` members, bound to the
+  confined adapter — `openWithNoFollow(path, 'write')` refused with `PERMISSION_DENIED`, no
+  `write*`/`rm*`/`mkdir`/`rename`/`chmod`/`symlink` member at all — memoised per `objectsDir`
+  like `worktreeFsCache`. The adapter's own write guard confines `utimeNow` to the alternate's
+  objects dir; its leaf check refuses a symlink leaf (§D11). The facade also wraps `utimeNow` in a
+  lexical check — the path must lie under `objectsDir` with no `..` segment — so the confinement
+  holds when there is no hook and the capability is a narrowed `ctx.fs` (memory, browser, user
+  fs). The realpath walk uses `Context.alternatePathProbe?.(path)`: the same hook rooted at the path's filesystem root
+  (`/`, a drive root, or a UNC share), narrowed to `AlternatePathProbe`. Absent hook (memory,
+  browser, a user `opts.fs` without it): both fall back to narrowing `ctx.fs` itself — memory
+  refuses an out-of-root path and the alternate is skipped as `unreachable` (ADR-916); OPFS
+  resolves it in its sandbox.
 - `getPackRegistry`/`peekPackRegistry`/`refreshPackRegistry` keep their signatures and
   return/act on the **primary** source's registry, so every local-only consumer (gc,
   pack-objects refresh, fetch-pack refresh) is unchanged by construction.
@@ -470,8 +624,19 @@ source registry** (on-disk packs carry their bases; unchanged semantics).
 Same per-source loop in: `readObjectMetadataWithContent`, `readDeclaredObjectSize`
 (`resolveDeclaredSize`), `openBlobSource`/`verifyStoredObject` (loose-first per ADR-509 **per
 source**), `hasObject`'s `probeOnce`, fsck `objectIsPresent`/`hasPackCopy`/
-`collectUnreadablePackMemberIds`. `withLazyFetchRetry` (promisor) wraps the whole chain — git
-fetches from a promisor only after every source missed.
+`collectUnreadablePackMemberIds`, fsck `refs-verify.ts:isKnownOid` (via `objectIsPresent`), and
+`fetch-missing.ts:objectExistsLocally` (the promisor missing-set must not re-fetch an object an
+alternate holds). `withLazyFetchRetry` (promisor) wraps the whole chain — git fetches from a
+promisor only after every source missed. `ref-store.ts:1099` (`looseBodyFinding`'s loose-only
+`badRefOid`) stays primary-only: its only consumer, fsck's refs-verify, keeps `badRefContent`
+findings alone (`refs-verify.ts:collectBadContentNotices`), so it never surfaces for a borrower.
+
+**Edge — streamed blob open order (M5, DC-16).** git's stream open gives a small packed object
+no pack arm, so it falls through every later source (preparing their pack stores) before the
+in-core read; a corrupt alternate midx therefore kills `cat-file blob` of a small **primary-packed**
+blob. tsgit's `openBlobSource` resolves per source (loose-first, ADR-509) and stops at the
+primary's pack, so it serves M5's blob. The answer bytes are identical whenever git answers; only
+the fault surface differs.
 
 **Edge — an unreadable directory inside an alternate (U4/U5).** git prints `unable to open
 loose object …: Permission denied` and **continues to the next source**. tsgit's existing
@@ -493,18 +658,70 @@ not widened; the interop rows U4/U5 assert "read fails" on both tools.
   `enumerateObjects`, `hasObject`, `resolveOidPrefix` and every reader now see alternate objects.
   Repositories without an alternates file are unaffected.
 
-### D6 — Write path (DC-10)
+### D6 — Write path: git's freshen (ADR-922)
 
-Recommended shape: `writeObject` runs a dedicated write probe `presentForWrite(ctx, id)`
-**after hashing and before deflate**: every source in order, per source packs then loose —
-git's `odb_freshen_object` → `odb_source_files_freshen_object` (`odb/source-files.c:151`) — with
-no rescan (git's freshen never re-prepares), and **skipping cruft packs**: a hit in a pack with a
-`.mtimes` sibling does not count (`packfile.c:packfile_store_freshen_object` returns 0 for
-`is_cruft`, so git writes a fresh loose copy to resurrect the object). `hasObject` cannot be
-reused as-is because it counts cruft packs. Present ⇒ return the id, no write. Absent ⇒ unchanged local write. This also removes today's duplicate loose copy
-for objects the primary holds packed (a pre-existing divergence, same code path). It is the
-"probe-before-deflate" half of backlog 31.10 (d-ii); that item should consume this, not redo it.
-`fetch.ts:202` already uses `hasObject(…, 'recheck')` → FE1 holds once `hasObject` is chain-aware.
+`writeObject` (`write-object.ts`) gains one step **after hashing and before deflate**:
+
+```ts
+// src/application/primitives/internal/freshen-object.ts  (new; carries the @writes block, §D11)
+/** git's `odb_freshen_object`: true when some source holds `id` and the holding file's times
+ *  were set to now — the caller then skips the write. */
+export async function freshenObject(ctx: Context, id: ObjectId): Promise<boolean>;
+```
+
+```
+store = await getObjectStore(ctx)
+for source of store.sources:                            // primary first, then git's DFS order
+  await source.registry.assertLoadable()                // every source reached — W5: Tier A fires
+                                                        // here; for the primary this follows
+                                                        // from the same source loop (today's
+                                                        // writeObject never loads the registry,
+                                                        // so a corrupt primary midx now fails a
+                                                        // write too)
+  hit = await source.registry.lookup(id)                // midx first, then packs — first hit only
+  if hit:
+    if (await source.registry.fileNames()).has(`${hit.pack.name}.mtimes`) → fall to loose arm
+                                                        // cruft: git returns 0, tries no other pack
+    else if freshenedPacks.has(hit.pack) → return true  // git's p->freshened, per pack instance
+    else if await touch(source, `${packsDirIn(source.objectsDir)}/${hit.pack.name}.pack`)
+      freshenedPacks.add(hit.pack); return true
+  if await probeLooseOid(ctx, id, source)               // cached fanout listing (DC-14)
+     and await touch(source, looseObjectPathIn(source.objectsDir, id)) → return true
+return false
+
+touch(source, path):
+  if source.fs.utimeNow === undefined → false           // browser / user fs without it (DC-13)
+  try { await source.fs.utimeNow(path); return true }
+  catch (e) { if errorDataCode(e) === undefined → rethrow       // not an adapter refusal
+              ctx.logger?.debug?.('objectStore: freshen refused', { path, code }); return false }
+```
+
+- `freshenedPacks` is a module-level `WeakSet<RegisteredPack>`: the flag dies with the pack
+  instance, exactly git's `packed_git.freshened`.
+- A refused `utimeNow` is **git's contract, not a swallowed error**: "freshen failed ⇒ do not
+  skip the write" (`object-file.c:75` comment). Any adapter code counts (FILE_NOT_FOUND from a
+  race, PERMISSION_DENIED, EROFS-mapped codes); a non-adapter error propagates.
+- `false` ⇒ today's local write, unchanged: deflate → `writeExclusive`. `FILE_EXISTS` there (a
+  loose file another writer created after the fanout cache was loaded) additionally runs
+  `touch(primary, path)` — the freshen git's `access(F_OK)` would have performed — and returns the
+  id either way (git's `finalize_object_file` treats `EEXIST` as success).
+- Behaviour change for **every** repository: an object the primary holds packed is no longer
+  duplicated loose (WP2); its `.pack` mtime moves instead. An object held only in a cruft pack is
+  still written loose (WP3), as git resurrects it.
+- No rescan: git's freshen never re-prepares. The probe does not reuse `hasObject` (it counts
+  cruft packs and re-scans on a miss).
+- It is the "probe-before-deflate" half of backlog 31.10 (d-ii); that item consumes this.
+- `fetch.ts:202` already uses `hasObject(…, 'recheck')` → FE1 holds once `hasObject` is chain-aware.
+
+Symlinked directories inside a store: the Node write guard refuses a path whose ancestor is a
+symbolic link resolving outside the root, so an alternate whose `pack/` or fanout dir is a link
+leaving its objects dir gets a local copy where git bumps through the link (reads still work —
+ADR-625 reads are lexical). Narrow; recorded, not widened.
+
+Permission semantics: git's `utime(fn, NULL)` needs ownership **or** write permission; Node's
+`fs.utimes` with explicit times needs ownership. They differ only for a file that is writable
+but not owned — git writes every loose object and `.pack` as `0444`, so for git-written stores
+both reduce to "owner only" (WP8). Recorded, not an ADR-level divergence.
 
 ### D7 — gc / prune
 
@@ -516,68 +733,216 @@ for objects the primary holds packed (a pre-existing divergence, same code path)
   gets its own test.
 - `pruneLooseFiles` unlinks only ids from the local `looseSet` (G3).
 - `packedAnywhere(ctx, looseSet)` consults **every** source's packs (G4/G5).
-- Bitmap closure (`closure-engine.ts:337`) stays primary-only (DC-9).
+- gc's closure is pinned to `'walk'` (`gc-pipeline.ts:60`), as git's `repack` never reads
+  bitmaps for its own pack (`pack-objects` disables them when not packing to stdout); the
+  per-source bitmap search (§D13) therefore never runs under gc.
 
-### D8 — fsck (DC-6, DC-7, DC-8)
+### D8 — fsck (ADR-919, ADR-920, ADR-921)
 
 - Universe: `enumerateObjects(ctx, { scope: 'all', includePacks: full, accessiblePacksOnly })`.
 - Content validation (`content-validation.ts:378`, `object-cache.ts:274`) reads loose bytes from
   the source that holds the id (needs `looseCompressedBytesIn(source, id)`); hash-mismatch /
   corrupt findings unchanged in shape.
 - `runPackHealthPass`, `runRevIndexHealthPass`, `runMidxHealthPass`, `runBitmapHealthPass` loop
-  over `store.sources` (git: `repo_for_each_pack` over all sources; midx verify per source).
+  over `store.sources` (git: `repo_for_each_pack` over all sources; midx verify per source;
+  `verify_bitmap_files` = every source's midx bitmap, then every source's pack bitmaps).
+- Commit-graph: git runs `commit-graph verify --object-dir <source>` per source
+  (`builtin/fsck.c:1155`); tsgit's fsck has no commit-graph pass for the primary, so none is
+  added for alternates (ADR-921: "to the extent tsgit's fsck verifies that class today").
 - A Tier-A midx fault in an alternate rejects the run (M4), as for the primary.
 - Store diagnostics are not fsck findings in git (they are stderr preamble); F5's exit 10 comes
-  from the missing objects. tsgit surfaces them through DC-1's channel.
+  from the missing objects. tsgit surfaces them through the ADR-914 channel.
 
 ### D9 — Security (for the security review's sign-off)
 
 - **Read surface added**: for every path named (transitively, ≤ 6 levels) by an
   `info/alternates` inside the repository: `<alt>/info/alternates`, `<alt>/xx/<hex>`,
   `<alt>/pack/` listing, `*.idx|*.pack|*.rev|*.bitmap`, `multi-pack-index`,
-  `multi-pack-index.d/*`; plus metadata probes (`lstat`/`readlink`/`stat`) on each component of
-  each alternate path for realpath. No other file shape is ever opened.
+  `multi-pack-index.d/*`, `info/commit-graph`, `info/commit-graphs/commit-graph-chain`,
+  `info/commit-graphs/graph-<hex>.graph`; plus metadata probes (`lstat`/`readlink`/`stat`) on
+  each component of each alternate path for realpath, through `AlternatePathProbe`, which carries
+  no content-reading member. No other file shape is ever opened.
 - **Threat**: a hostile repository author can point alternates anywhere the process can read.
   Disclosure is limited to files that parse as git objects/packs at object-shaped paths and are
   then served as object content — identical to git (ADR-625 §7.2: read escapes are git's model;
   git cannot both support alternates and refuse outside reads). Loose reads do not verify the
   hash by default — same as git; fsck does.
-- **Writes**: none outside the primary under DC-10 (a). DC-10 (b) adds an mtime write outside
-  the repository and needs its own sign-off.
+- **Write surface added outside the repository (ADR-922) — needs the security review's sign-off.**
+  Exactly one operation, `utimeNow`, on exactly two path shapes inside an alternate's realpath'd
+  objects dir: `<alt>/<2 hex>/<38 hex>` (the loose file of the id being written) and
+  `<alt>/pack/pack-<hex>.pack` (the pack the lookup returned for that id). It is issued only
+  after that source's own lookup found the id there; it never creates a file, never changes a
+  byte of content, and sets atime/mtime to *now* (no caller-chosen time). Enforcement is
+  structural, three layers deep: (1) the facade hands an alternate a capability object that
+  has no other write member (§D3); (2) that capability's adapter is rooted at the alternate's
+  objects dir alone, so its write guard refuses any path outside it — `..` included; (3) the
+  adapter's leaf check refuses a symbolic-link leaf (`PERMISSION_DENIED`, as `chmod` does), so a
+  planted `xx/<hex>` link cannot redirect the bump outside. Impact if abused by a hostile
+  repository author: mtimes of object-shaped files in a directory the process can already write
+  move forward — the donor's `gc --prune=<expiry>` then keeps those objects longer, which is
+  the purpose of git's freshen. Same exposure as git.
+- **Writes inside the primary**: the same `utimeNow` on the primary's loose file / `.pack`
+  through `ctx.fs` (guarded by the main adapter, or `wrapFsValidator` for a user fs).
 - **DoS**: depth capped at 6 levels, dedupe makes cycles terminate; the list file is read whole
   (git reads it whole, no cap) — a hostile multi-GB list is the same exposure git has.
-- **Containment**: alternates do not widen the main adapter's root set; the reader capability is
-  DC-2. Windows: `isAbsolutePath` covers drive/UNC forms; `\\?\` long paths pass through the
+- **Containment**: alternates do not widen the main adapter's root set or its write guard; each
+  alternate's capability is confined to its own objects dir (ADR-915). Windows: `isAbsolutePath` covers drive/UNC forms; `\\?\` long paths pass through the
   Node adapter unchanged.
 
-### D10 — Diagnostics (DC-1)
+### D10 — Diagnostics (ADR-914)
 
-Recommended: emitted once per resolution via `ctx.logger?.warn?.('objectStore: unusable
+Adopted: emitted once per resolution via `ctx.logger?.warn?.('objectStore: unusable
 alternate', { reason, path, listedIn })` (house precedent) **and** exposed as data by
 `objectSources(ctx)` → `{ sources: [{ objectsDir, local }], unusable: AlternateDiagnostic[] }`.
 The view is also the interop oracle for O1 (`count-objects -v` `alternate:` lines).
+
+### D11 — The `utimeNow` port operation (ADR-922, ADR-915)
+
+```ts
+// src/ports/file-system.ts — FileSystem, next to `chmod`
+/**
+ * Set an existing entry's access and modification times to the current time — git's
+ * `utime(path, NULL)`. Never creates the entry. Refuses a symbolic-link leaf with
+ * PERMISSION_DENIED (no portable no-follow utime exists — the `chmod` posture), a missing
+ * entry with FILE_NOT_FOUND, and a path outside the containment roots with PERMISSION_DENIED.
+ * OPTIONAL: an adapter that cannot set times omits it (OPFS). A caller that finds it absent
+ * treats the times as not set — git's freshen then writes a fresh copy instead.
+ */
+readonly utimeNow?: (path: string) => Promise<void>;
+```
+
+Why this name and shape, not a DC: git's only call is `utime(fn, NULL)` (time = now); no
+caller needs a chosen time (YAGNI), and a chosen-time API would let a hostile repository set
+arbitrary times through the alternate capability. **Optional**, following `atomicRename`'s
+precedent: adding a required member to the public port would break every user-supplied
+`FileSystem`.
+
+| adapter | implementation |
+|---|---|
+| Node (`node-file-system.ts`) | `chmod`'s template (L1543): `resolveWrite(path)` → `assertLeafSafeToWrite(real, path)` → `runFs(() => this.fsOps.utimes(real, now, now), path)` with `now = new Date()`; `FsOperations` (`fs-operations.ts` L24) gains `'utimes'` |
+| Memory (`memory-file-system.ts`) | `chmod`'s template (L425): `walk(path, 'no-follow')`; symlink leaf → `permissionDenied`; unoccupied → `fileNotFound`; else the private `touch(normalized)` (L617), which already sets `ctimeMs`/`mtimeMs` to `Date.now()` (a real `utime` moves ctime too) |
+| Browser (`browser-file-system.ts`) | **omitted** — OPFS exposes `File.lastModified` read-only; the only way to move it is to rewrite the file (DC-13) |
+| `wrapFsValidator` (`src/repository/wrap-fs-validator.ts`) | `guardedUtimeNow`, modelled on `guardedAtomicRename` (L96–110): forwarded only when present, behind the **write** guard |
+
+Write-surface audit (`tooling/audit-write-surfaces.ts`, ADR-140 grammar): the new module
+`src/application/primitives/internal/freshen-object.ts` opens with
+
+```
+/**
+ * …
+ * @writes
+ *   surface: objectFreshen
+ *   kind:    equivalent-under-readback
+ *   format:  utime-now
+ */
+```
+
+and `test/integration/object-freshen-interop.test.ts` carries `@proves … interopSurface:
+objectFreshen` (bucket `cross-tool-interop`). No allowlist entry. `kind`: the freshen writes no
+bytes, so `byte-identical` cannot apply; what the interop proves is the readback state — the
+local object set equals git's peer (no duplicate copy) and `git fsck` accepts it — plus the set
+of files whose mtime moved. `write-object.ts` keeps its own `looseObject` block unchanged.
+
+### D12 — Commit-graph per source (ADR-921, Pin CG)
+
+`internal/read-commit-graph.ts`, `loadGraphUncached` (L203) becomes:
+
+```
+if shallow → undefined                                   // commit_graph_compatible, primary-scoped
+store = await getObjectStore(ctx)
+for source of store.sources:                             // prepare_commit_graph: first graph wins
+  graph = await readGraphOne(ctx, store, source)
+  if graph → return graph
+return undefined
+
+readGraphOne(source):                                    // read_commit_graph_one
+  single = tryRead(source.fs, commitGraphPathIn(source.objectsDir))
+  if single and decodes → return [layer]                 // decode failure: fall through (CG6)
+  return loadChain(ctx, store, source)
+
+loadChain(holder):                                       // load_commit_graph_chain_fd_st
+  hashes = chain lines of holder's commit-graph-chain    // absent/empty file → undefined
+  layers = []
+  for hash of hashes:
+    layer = first source s in store.sources whose graph-<hash>.graph exists and decodes
+    if none → ctx.logger?.warn?.('commitGraph: unable to find all commit-graph files',
+                                  { chain: <holder chain path>, layer: hash }); break
+    layers.push(layer)
+  return layers.length > 0 ? loadedGraph(layers) : undefined   // the prefix (CG4); empty → next source (CG5)
+```
+
+- Each file read goes through the source's own `fs` (`tryRead`/`tryReadUtf8` L129–147 take a
+  `SourceLocation['fs']` instead of `ctx`). The `exists`-first gate is kept per probe.
+- Decode failures (`isGraphDecodeFailure`, L222) are caught **per file**, not around the whole
+  load — the change that makes CG6 (corrupt single ⇒ chain ⇒ next source) fall out.
+- Memo (`graphCache`, `absentGraphs`, `headerCache` per session) unchanged; callers unchanged.
+- Path helpers (`path-layout.ts` L90–98): `commitGraphPathIn(objectsDir)`,
+  `commitGraphChainPathIn(objectsDir)`, `commitGraphLayerPathIn(objectsDir, hash)`; the
+  `gitDir` forms delegate (`write-commit-graph.ts:93` keeps writing the primary's single file —
+  tsgit writes no split chain, so a borrower's write is git's non-split `--reachable`).
+- Behaviour change without alternates: a chain with a missing **non-base** layer now serves its
+  prefix (today: absent), and a corrupt single file no longer hides a valid chain. Speed only.
+- The warning goes to the logger only (DC-15).
+
+### D13 — Bitmaps per source (ADR-921, Pin BM)
+
+`internal/closure-engine.ts`, `tryBitmapClosure` (L333):
+
+```
+store = await getObjectStore(ctx)
+for source of store.sources:                             // open_midx_bitmap: every source's midx
+  await source.registry.assertLoadable()                 // BM6: Tier A fires here
+  artefact = await loadMidxBitmapArtefact(ctx, await source.registry.midxBitmap())
+  if artefact → return closure(artefact)
+for source of store.sources:                             // open_pack_bitmap: repo_for_each_pack
+  for pack of await source.registry.all():
+    artefact = await loadPackBitmapArtefact(ctx, pack)
+    if artefact → return closure(artefact)
+return undefined                                         // walk
+```
+
+The loaders (`midx-bitmap-binding.ts`, `pack-bitmap-binding.ts`) are source-agnostic — the
+artefact carries its own pack/midx, so positions resolve against the source that owns them. A
+decline keeps today's semantics (the next candidate, then the walk; BM5). Callers (`push.ts`,
+`pack-objects.ts`, `rev-list.ts`) are unchanged; gc never reaches this (`'walk'`, §D7). Which
+artefact answered is not public data, so BM2–BM4 are unit-pinned; BM1/BM5/BM6 are interop rows
+(result set + `tier`, or the refusal).
 
 ### Perf statement
 
 - **No alternates file** (the 100 % case today): +1 `fs.read` per session, concurrent with
   `createPackRegistry`'s own config reads (cold path, no serial latency added beyond the
   slower of the two); per object: `peekObjectStore` (one `WeakMap.get`, replacing
-  `peekPackRegistry`'s) + a one-element `for…of`. The miss path loops one source.
+  `peekPackRegistry`'s) + a one-element `for…of`. The miss path loops one source. Commit-graph
+  and bitmap loading probe exactly what they probe today.
 - **The lookup hot path changes shape** (loop wrapper, store indirection, loose-cache re-key) →
   a `bench:ab` row is required: `cat-file`/`readBlob` warm and cold, `log` walk, `status:clean`
   on a no-alternates fixture, gated at the advisory ±envelope; plus an informational row with a
   `--shared` fixture. Run on Node 24 per #312 notes.
-- **Write path** gains a lookup before deflate (DC-10 a/b): cheaper than today when the object
-  exists (skips deflate + write); one fanout-bounded binary search + cached loose probe when it
-  does not. `add.bench.ts` row.
+- **Write path (freshen).** Writing a **new** object: per source one memoised `assertLoadable`,
+  one `registry.lookup` (fanout binary search per pack/midx, in memory), one cached loose probe —
+  the first probe of a fanout prefix in a session costs one `readdir` of that fanout dir per
+  source (DC-14) — then today's deflate + `writeExclusive`. Writing an object that **already
+  exists**: one `utimeNow` (for a pack, at most once per pack per session) and **no** deflate,
+  no write — cheaper than today, which deflates and fails `writeExclusive` on a loose hit and
+  writes a duplicate on a packed hit. New fixed cost: the first `writeObject` of a session now
+  builds the primary pack registry (one `readdir(pack/)`) if no read did so before. `bench:ab`
+  rows: `add.bench.ts` (new files; re-adding unchanged files) on a no-alternates fixture.
 - With alternates: one resolution per session (≤ components × alternates `lstat`s), one registry
-  per alternate built lazily on first reach.
+  per alternate built lazily on first reach; commit-graph: ≤ 2 `exists` per source until one
+  yields a graph, ≤ 1 `exists` per source per chain layer; bitmaps: one `midxBitmap()` per source
+  before any pack bitmap.
 
 ### Part split (dependency order, TDD-sized)
 
-Each part ends green on `npm run validate`.
+Each part ends green on `npm run validate`. **Fourteen parts.** Rough total: ~1,900 lines of
+`src/` added or changed and ~5,000 lines of tests (unit + property + interop). No single new
+`src/` module is several hundred lines: the largest are `object-store.ts` (~250) and
+`internal/alternate-chain.ts` (~220); the largest new files are the interop suites (Part 13
+~650, Part 8 ~400), split per surface so none carries every row. Part 1 depends on nothing;
+Part 3's `ObjectSourceAccess` type needs Part 2's port member.
 
-**Part 1 — `parseAlternatesFile` + `unquoteCStyle` (domain)**
+**Part 1 — `parseAlternatesFile` + `unquoteCStyle` (domain)** · src ~150 / tests ~350
 - New: `src/domain/storage/alternates.ts` (+ export from `src/domain/storage/index.ts`),
   `test/unit/domain/storage/alternates.test.ts`, `alternates.properties.test.ts`
   (shared generators in that directory's `arbitraries.ts` if present).
@@ -587,68 +952,147 @@ Each part ends green on `npm run validate`.
   against an independent test-side C-quoter for paths without `\n` (200).
 - No I/O, no `node:`.
 
-**Part 2 — per-source `SourceLocation` refactor (behaviour-preserving)**
-- `pack-registry.ts`: `createPackRegistry(ctx: Context, location?: SourceLocation)` (type declared
-  here, in `internal/source-location.ts`, with `ObjectSourceReader`); replace the 10
-  `ctx.fs.` and 3 `packsDir(commonGitDir(ctx))` sites (`listPackDir`, `createStoreGate`,
-  `scanPacks`) with `location`.
+**Part 2 — `FileSystem.utimeNow` (port + node + memory + validator; browser omits)** · src ~60 / tests ~240
+- `src/ports/file-system.ts` `FileSystem` (L50–273): add the optional member of §D11 after
+  `chmod` (~L208).
+- `src/adapters/node/node-file-system.ts` `NodeFileSystem.utimeNow`, template `chmod` (L1543–1550);
+  `src/adapters/node/fs-operations.ts` `FsOperations` Pick (L24) + `'utimes'`.
+  `cspell.json` gains `utimes` in this commit (inserted in place — never re-sort the file).
+- `src/adapters/memory/memory-file-system.ts` `utimeNow`, template `chmod` (L425–429), body ends
+  in the private `touch(normalized)` (L617).
+- `src/adapters/browser/browser-file-system.ts`: no member (structural absence).
+- `src/repository/wrap-fs-validator.ts`: `guardedUtimeNow` beside `guardedAtomicRename`
+  (L96–110), write guard, spread where `guardedAtomicRename` is spread.
+- Tests:
+  - `test/unit/ports/file-system.contract.ts` (`fileSystemContractTests`, run by the memory and
+    node suites): a `utimeNow(fs, p)` helper modelled on `lexists` (L179 — throws when absent);
+    add `{ name: 'utimeNow', … }` to `pathCalls` (L48) so the **security matrix** (L1530: `..`
+    traversal + sibling directory, ×2 rows per call) covers it; a new block beside the `chmod`
+    rows (L1999–2030): regular file → `stat().mtimeMs` advances past a back-dated value;
+    directory → resolves; symlink leaf → `PERMISSION_DENIED`; missing → `FILE_NOT_FOUND`. Back-
+    dating needs a new optional env hook `createBackdatedFile?: (path) => Promise<void>` on
+    `FileSystemContractEnv` (Node: write + `node:fs` `utimes` to 2001; memory: write under
+    `vi.setSystemTime(2001)`).
+  - `test/unit/ports/file-system.test.ts` (L56 pattern): a double omitting `utimeNow` type-checks.
+  - `test/unit/adapters/browser/browser-file-system.test.ts` (L8 pattern): structurally absent.
+  - `test/unit/repository/wrap-fs-validator.test.ts`: forwarded when present, absent when absent,
+    guard refuses an outside path before delegating.
+  - `test/unit/adapters/node/node-file-system-injected.test.ts`: an injected `utimes` rejection
+    surfaces with the `runFs`-mapped code and `data.path`.
+
+**Part 3 — per-source `SourceLocation` refactor (behaviour-preserving)** · src ~120 / tests ~60
+- `pack-registry.ts`: `createPackRegistry(ctx: Context, location?: SourceLocation)`
+  (`SourceLocation` in `internal/source-location.ts`; `ObjectSourceReader`/`ObjectSourceAccess`/
+  `AlternatePathProbe` in the new port file `src/ports/object-source-access.ts`); replace the 10 `ctx.fs.` and 3 `packsDir(commonGitDir(ctx))` sites
+  (`listPackDir`, `createStoreGate`, `scanPacks`) with `location`.
 - `internal/midx-source.ts` `loadMidxSet(ctx, packsDir, listing)` → add `fs` (5 sites);
   `internal/pack-artefact-source.ts` (3), `internal/pack-byte-source.ts` (2).
 - `internal/loose-oid-cache.ts`: functions gain an optional `SourceLocation` (absent = primary,
-  today's session-keyed map, unchanged); a present location is keyed by object identity (D3); `path-layout.ts`: add `looseObjectPathIn(objectsDir, id)`,
-  `packsDirIn(objectsDir)`.
+  today's session-keyed map, unchanged); a present location is keyed by object identity (D3);
+  `path-layout.ts`: add `looseObjectPathIn(objectsDir, id)`, `packsDirIn(objectsDir)`.
 - Gate: the existing suites unchanged and green (no expectation edits); mutation on touched lines.
 
-**Part 3 — chain resolution (`internal/alternate-chain.ts`)**
-- `resolveObjectSources` + realpath per DC-4 + diagnostics per DC-1 + comparator honouring
-  `core.ignoreCase`.
+**Part 4 — chain resolution (`internal/alternate-chain.ts`)** · src ~220 / tests ~450
+- `resolveObjectSources(ctx, io: AlternateChainIo)` + realpath walk (ADR-917) over
+  `io.probe` + diagnostics (ADR-914, ADR-916) + comparator honouring `core.ignoreCase`.
 - Unit tests on the memory adapter (symlinks supported there): Pins R, N, D, U rows; property:
   resolution terminates and yields distinct `objectsDir`s for an arbitrary directed graph of
   alternates (lens 2, 100).
 
-**Part 4 — `ObjectStore` memo + reader capability**
+**Part 5 — `ObjectStore` memo + per-alternate capability** · src ~300 / tests ~400
 - New `object-store.ts` (`getObjectStore`, `peekObjectStore`, `objectSources`); re-point
   `read-object.ts` `getPackRegistry`/`peekPackRegistry`/`refreshPackRegistry` at
   `store.primary.registry`; `disposePackRegistry` → `store.dispose()`.
-- DC-2/DC-3: `src/repository.ts` (`openRepository`, next to `worktreeFs` at L610), `RuntimeFallback`
-  (L301 `makeWorktreeFs`), `src/index.node.ts` L175, `src/ports/context.ts` (`Context` new optional
-  field), memory/browser entry points.
-- Public export of `objectSources` in `src/application/primitives/index.ts` + `repo.primitives`.
+- Capability (§D3, ADR-915/916): `src/repository.ts` `RuntimeFallback` (L301, add
+  `makeConfinedFs`), the facade beside `worktreeFs` (L595–625: narrowing + per-`objectsDir`
+  memo), `src/index.node.ts` (beside `makeWorktreeFs` L175), `src/ports/context.ts` (`Context`
+  gains optional `objectSourceAccess` and `alternatePathProbe`, beside `worktreeFs` L328),
+  memory/browser entry points (no hook → `ctx.fs` narrowed).
+- Tests: the capability object's own keys are exactly the `ObjectSourceAccess` members;
+  `openWithNoFollow(_, 'write')` refused; node: `utimeNow` on a path outside the alternate's
+  objects dir → `PERMISSION_DENIED`; memo identity per `objectsDir`; memory out-of-root →
+  `unreachable`.
+- Public export of `objectSources` in `src/application/primitives/index.ts` + `repo.primitives`;
+  the browser-surface audit (`tooling/audit-browser-surface.ts`, blocking) needs a
+  `repo.primitives.objectSources(` call in a `test/parity/scenarios/*.ts` scenario — add a
+  no-alternates scenario here (`{ sources: [primary], unusable: [] }`); Part 14 extends it.
 
-**Part 5 — read paths through the chain**
+**Part 6 — read paths through the chain** · src ~260 / tests ~450
 - `object-resolver.ts`: `resolveObjectContentWithDepth`, `tryResolveViaRegistry` →
   per-source, `readLooseCompressed`/`looseCompressedBytes` take a source.
 - `read-object.ts`: `resolveObjectMetadataWithContent`, `resolveDeclaredSize`,
   `readLooseDeclaredSize`, `loosePathFor`.
-- `internal/blob-source.ts`: `openBlobSource`, `verifyStoredObject`.
+- `internal/blob-source.ts`: `openBlobSource`, `verifyStoredObject` (per DC-16).
 - `has-object.ts`: `probeOnce`; `internal/retry-after-rescan.ts` + `internal/pack-miss-rescan.ts`:
   take the store, `store.reprepare()`, forget prefix in every source.
+- `commands/fetch-missing.ts:objectExistsLocally` (L52–59) → every source.
 - Tests: memory-adapter Contexts with a hand-written alternates file; M2/M3 ordering; miss
   retry discovers a pack added to an alternate after first scan.
 
-**Part 6 — enumeration and abbreviation**
+**Part 7 — enumeration and abbreviation** · src ~100 / tests ~200
 - `enumerate-objects.ts` (`scope`), `resolve-oid-prefix.ts` (`scanLoose`, `scanPacks` per source).
 
-**Part 7 — write probe (DC-10)**
-- `write-object.ts` `writeObject` + new `internal/present-for-write.ts` (`presentForWrite`):
-  per source `registry.lookup` → reject a hit whose pack is cruft (`classifyPackFiles`,
-  `pack-registry.ts:389`, over `registry.fileNames()` — zero extra I/O) → `probeLooseOid`.
-  `@writes` header unchanged (surface stays `looseObject`). Tests: hit in primary pack (no
-  write — today's duplicate goes away), in primary cruft pack (write), in alternate loose/pack
-  (no write), absent (write). W1/W4/FE1 interop rows. Under DC-10 (b): a port method + three
-  adapters + a write-surface audit entry.
+**Part 8 — freshen in `writeObject` + its interop** · src ~130 / tests ~350 + interop ~400
+- `src/application/primitives/write-object.ts` `writeObject` (L26–60): after the post-hash abort
+  check (L37) and before `readConfig`/deflate, `if (await freshenObject(ctx, computed)) return
+  computed;`; the `FILE_EXISTS` arm (L50–55) also runs the primary `touch` (§D6).
+- New `src/application/primitives/internal/freshen-object.ts` (`freshenObject`, `touch`,
+  `freshenedPacks`) with the `@writes` block of §D11.
+- Helpers: `getObjectStore` (Part 5); `PackRegistry.lookup`/`fileNames`/`assertLoadable`
+  (`pack-registry.ts` interface ~L253–275); `probeLooseOid(ctx, id, location)` (Part 3);
+  `looseObjectPathIn`/`packsDirIn` (Part 3); `errorDataCode` (`src/domain/error-data-code.ts`).
+- Unit (`test/unit/application/primitives/write-object.test.ts` + new
+  `internal/freshen-object.test.ts`, memory adapter, `vi.setSystemTime`): one isolated test per
+  exit — primary loose hit (mtime advanced, no write); primary pack hit (`.pack` advanced,
+  `.idx`/`.rev` not, no loose file); cruft-only (written; cruft files untouched); same pack twice
+  in a session (one `utimeNow` — spy); `utimeNow` refused (written); `utimeNow` absent (written);
+  alternate loose / alternate pack hit; refusal in the primary then alternate hit (WP4); a
+  non-adapter error propagates; `FILE_EXISTS` → `touch` called; Tier-A midx in an alternate
+  rejects the write (W5). Any existing write-object row asserting a loose file for an
+  already-packed object changes — justified by WP2.
+- Interop `test/integration/object-freshen-interop.test.ts` (`interopSurface: objectFreshen`):
+  peer pair, same operation on both tools, assert identical local object sets
+  (`cat-file --batch-all-objects --batch-check` on the primary only), identical set of files
+  whose mtime moved past a fence, and `git fsck` clean. Portable rows: W1, W2, W2m, W4, W5,
+  WP1, WP2, WP3, WP7, WP8, FE1. Rows needing an immutable file (W2b, W3, WP2b, WP4, WP5, WP6) use
+  `chflags uchg` and run `skipIf(process.platform !== 'darwin')` — Linux needs root for
+  `chattr +i`; their logic is covered portably by the unit rows above.
+- Bench: `test/bench/add.bench.ts` rows per §Perf.
 
-**Part 8 — gc / prune**
+**Part 9 — commit-graph per source** · src ~120 / tests ~300 + interop ~250
+- `src/application/primitives/internal/read-commit-graph.ts`: `tryRead`/`tryReadUtf8`
+  (L129–147) take an `fs`; `loadChain(ctx, gitDir)` (L161) → `loadChain(ctx, store, holder)`;
+  `loadGraphUncached` (L203) loops sources; `isGraphDecodeFailure` (L222) applied per file.
+- `path-layout.ts` (L90–98): the three `…In(objectsDir)` helpers of §D12.
+- Unit (`test/unit/application/primitives/internal/read-commit-graph.test.ts`): CG1–CG6 shapes
+  on memory Contexts. The row at L442–444 ("a chain whose most-recent layer file has been
+  deleted … Then the WHOLE graph is treated as absent") **flips** to "the base layer is served"
+  — expectation change justified by CG4; add a corrupt-single-with-valid-chain row (CG6, primary
+  only) and a logger-warn row.
+- Interop `test/integration/alternates-acceleration-interop.test.ts`, CG1–CG6: git's verdict
+  from the deleted-object trick; tsgit's oracle is `commitHeader(ctx, oid)` (graph-sourced header
+  defined ⇔ git succeeded) — `rev-list` success alone is not proof, as tsgit may still read the
+  commit object.
+
+**Part 10 — bitmaps per source** · src ~50 / tests ~250 + interop ~150
+- `src/application/primitives/internal/closure-engine.ts` `tryBitmapClosure` (L333–350) per §D13.
+- Unit (`test/unit/application/primitives/internal/closure-engine.test.ts`, loader spies):
+  BM2 (primary pack before donor pack), BM3 (donor midx before primary pack), BM4 (primary midx
+  before donor midx), BM5 (corrupt donor bitmap → next / walk), BM6 (corrupt donor midx → throws).
+- Interop rows BM1, BM5, BM6 in `alternates-acceleration-interop.test.ts` via
+  `revList({ useBitmapIndex: true })`: result set equal to git's, `tier: 'bitmap'` for BM1.
+
+**Part 11 — gc / prune** · src ~60 / tests ~200
 - `commands/internal/gc-pipeline.ts` L852 (`scope: 'local'`), `toNormalPackInputs` guard test,
   `packedAnywhere` across sources, `pruneLooseFiles` unchanged input.
 
-**Part 9 — fsck**
+**Part 12 — fsck** · src ~200 / tests ~400
 - `commands/fsck.ts` L90 universe; `internal/fsck/{object-cache,content-validation,object-presence,
-  pack-health,rev-index-health,midx-health,bitmap-health}.ts` per source; finding attribution per
-  DC-8 (`internal/fsck/types.ts` pack-class variants L60–93); ADR-412 amendment per DC-7;
-  `docs/design/fsck.md` L238/L500/L666.
+  pack-health,rev-index-health,midx-health,bitmap-health,refs-verify}.ts` per source (bitmap
+  order per `verify_bitmap_files`); finding attribution per ADR-920 (`internal/fsck/types.ts`
+  pack-class variants L60–93); `docs/design/fsck.md` L238/L500/L666 per ADR-919.
 
-**Part 10 — interop + parity + bench**
+**Part 13 — lookup interop** · interop ~650
 - New `test/integration/alternates-interop.test.ts` using `interop-helpers.ts`
   (`runGit`, `git`, `makePeerPair`, `disableAutoMaintenance`, `tryRunGitWithExit`),
   `pack-fixture-helpers.ts` (`flipEntryBodyByte`, `writeLooseObject`, `readSolePackPair`),
@@ -656,50 +1100,74 @@ Each part ends green on `npm run validate`.
   Remember: build the tsgit Context **after** the git subprocess writes (per-Context loose
   fanout cache).
 - Rows: A1–A5, P1–P14 (via `objectSources().sources` vs `count-objects -v`), R1–R8, N1–N4,
-  D1–D4, O1, U1–U3 (+U4/U5 as read outcomes), W1/W2/W4/FE1 (no local copy; the mtime half per
-  DC-10), G1–G5, F1–F5, M1–M4, X1–X3.
-- `test/parity/scenarios/`: one cross-adapter scenario (memory + node) with an in-root
-  alternate; one memory row for an out-of-root alternate (DC-3).
-- `test/bench/`: rows per §Perf; `npm run bench:ab`.
+  D1–D4, O1, U1–U3 (+U4/U5 as read outcomes), M1–M4, M5 per DC-16, X1–X3.
 
-## Decision candidates
+**Part 14 — gc/fsck interop, parity, bench, docs** · interop ~350 / other ~200
+- `test/integration/alternates-gc-fsck-interop.test.ts`: G1–G5, F1–F5.
+- `test/parity/scenarios/`: extend Part 5's scenario — one cross-adapter row (memory + node)
+  with an in-root alternate; one memory row for an out-of-root alternate (ADR-916).
+- `test/bench/`: the `bench:ab` rows of §Perf (`cat-file`, `log`, `status`, `add`).
+
+## Decisions
+
+### Ratified (ADR-914 … ADR-924)
+
+| DC | ADR | outcome |
+|---|---|---|
+| DC-1 | ADR-914 | unusable alternates: `logger.warn` + structured `objectSources(ctx)` view; never throw |
+| DC-2 | ADR-915 | one capability per alternate, confined to its objects dir: confined reader + confined `utimeNow`; metadata-only probe for the realpath walk (user-ratified) |
+| DC-3 | ADR-916 | an adapter-refused alternate is skipped as `unreachable`; OPFS resolves absolute paths in its sandbox |
+| DC-4 | ADR-917 | realpath emulated through the port (`lstat`+`readlink` walk, missing leaf tolerated) |
+| DC-5 | ADR-918 | explicit `ObjectSource`/`SourceLocation`; `ObjectStore` memo; `getPackRegistry` stays primary |
+| DC-6, DC-7 | ADR-919 | fsck audits every source; supersedes ADR-412's alternates bullet |
+| DC-8 | ADR-920 | pack-class fsck findings carry an optional `objectsDir` |
+| DC-9 | ADR-921 | **every acceleration file per source, exactly as git** (user-ratified; deviates from the draft's recommendation) — §D12, §D13 |
+| DC-10 | ADR-922 | **full git freshen on write, primary included** (user-ratified; deviates from the draft's recommendation) — §D6, §D11 |
+| DC-11 | ADR-923 | `GIT_ALTERNATE_OBJECT_DIRECTORIES` unsupported |
+| DC-12 | ADR-924 | chain resolved lazily, once per session; `refresh()` re-reads add-only (user-ratified) |
+
+### New decision candidates (uncovered by the revision)
 
 | # | Choice | Alternatives (≤3) | Recommendation | Why |
 |---|---|---|---|---|
-| DC-1 | How an unusable alternate (U1–U3, N1, unreachable) is surfaced — tsgit has no stderr | (a) `ctx.logger.warn` only; (b) `logger.warn` **and** a structured `objectSources(ctx)` view `{ sources, unusable[] }`; (c) throw | **(b)** | (a) is invisible without a wired logger; (c) is not git (reads continue). (b) follows the `packRegistry` warn precedent and ADR-249 (data, not text), and is the interop oracle for O1 |
-| DC-2 | Read surface for an alternate outside the layout roots (Node refuses lexically today) | (a) per-source **confined** reader from a generalised runtime hook (`makeWorktreeFs` → `makeConfinedFs(roots)`), plus a metadata-only unconfined probe for the realpath walk; (b) one unconfined read-only reader for all alternates; (c) add alternate dirs to the main adapter's root set at open | **(a)** | content reads stay confined to exactly each alternate's objects dir; (c) also widens the **write** guard; (b) is simpler but drops per-source confinement. Needs security sign-off either way |
-| DC-3 | Memory / browser behaviour for an out-of-root alternate | (a) memory: adapter `PERMISSION_DENIED` → `unreachable` diagnostic, skip; browser: OPFS resolves the absolute path as-is (readable if that sub-tree exists); (b) throw; (c) report it as git's `not-a-directory` | **(a)** | issue #302 asks "skip with warning rather than throw"; a distinct reason keeps the data honest — git never sees this case |
-| DC-4 | Path canonicalisation (git uses `strbuf_realpath`) | (a) emulate realpath through the port (`lstat` + `readlink` walk, missing leaf tolerated); (b) runtime-supplied realpath capability (Node `fs.realpath`, sandboxed lexical); (c) lexical collapse only (`collapsePosixSegments`) | **(a)** | exact on every adapter that has symlinks, lexical where none exist (OPFS); one walk per alternate per session. (c) diverges on D3/D4/O1 and on `..` after a symlinked component |
-| DC-5 | Per-source abstraction shape | (a) explicit `ObjectSource`/`SourceLocation` threaded into `createPackRegistry` and the loose cache, `ObjectStore` memo, `getPackRegistry` stays primary; (b) a per-source derived `Context` view (fs swapped) via `deriveContext`; (c) composite `PackRegistry` merging every source behind today's interface | **(a)** | (c) is falsified by M2/M3 (order) and erases local/non-local; (b) forces a fresh session (re-reads config) or a new keep-session exception in `deriveContext` |
-| DC-6 | fsck treatment of alternate objects | (a) full parity: universe, content validation, dangling/unreachable, pack/rev/midx/bitmap passes over every source; (b) alternates count for connectivity only; (c) primary only | **(a)** | Pins F2–F4c, M4 — answered by evidence; (b)/(c) would each need a divergence ADR |
-| DC-7 | ADR-412 amendment form | (a) edit ADR-412's out-of-scope bullet in place; (b) a new ADR that supersedes that one bullet with scope (ADR-721 → 541 pattern) | **(b)** | keeps 412's history; matches the house supersede-with-scope pattern |
-| DC-8 | Pack-class fsck finding attribution across sources (ADR-584 carries the base name only) | (a) add an optional `objectsDir` on pack-class findings, absent for the primary; (b) keep the base name only; (c) put the absolute pack path in `pack` | **(a)** | git prints the absolute alternate path (F4b/F4c); (b) is ambiguous when two sources share a base name; (c) changes the field's meaning for every consumer |
-| DC-9 | Acceleration artefacts in an alternate | (a) midx per source (ADR-592/593/597 apply per source — required by M1–M4); pack/midx **bitmaps** and **commit-graph** primary-only; (b) honour all per source as git does; (c) ignore alternates' midx | **(a)** | midx is correctness-bearing (authoritative), so (c) is falsified; bitmaps/commit-graph are perf-only caches — results identical without them; (b) adds bitmap-closure and commit-graph-chain source search (`commit-graph.c` L654–690) for no correctness gain |
-| DC-10 | Write path for an object an alternate (or the primary's packs) already holds | (a) probe every source before deflate (cruft packs excluded, as git), skip the write, **no** mtime freshen — divergence ADR; (b) git's freshen: new port capability to set mtime on the holding loose file / `.pack`, local write when it fails (W2b/W3); (c) probe the primary only, write a local copy when only an alternate holds it | **(a)** now, (b) as a follow-up item | cold truth: (a) leaves git's protection against the donor's `gc --prune=<expiry>` deleting a just-reused unreachable object; (b) is the faithful answer but is a port extension + a write outside the repository (security sign-off, write-surface audit) — sized beyond this fence. (c) duplicates what the brief says not to |
-| DC-11 | `GIT_ALTERNATE_OBJECT_DIRECTORIES` | (a) unsupported, recorded in an ADR; (b) explicit `openRepository` option `alternateObjectDirectories: string[]` (parsed with `PATH_SEP`, relative to cwd, depth 0); (c) read via `ctx.env` (`EnvReader` — precedent: `GIT_NOTES_REF`, `GIT_SSH_COMMAND`) | **(a)** | fenced OUT. Note the brief's premise "tsgit reads no environment" is already false (`resolve-notes-ref.ts:50`, `ssh-command.ts:20`); (c) would be cheap later |
-| DC-12 | When the chain is resolved and re-read | (a) lazily on first object-store access, memoised per session, re-read add-only on `refresh()` (git `odb_reprepare`); (b) eagerly in `openRepository`; (c) re-read on every miss retry | **(a)** | object-free commands pay nothing; (c) is not git (SECOND_READ never re-reads the file); (b) moves I/O into open for every caller. Deviates from the brief's literal "at open", same once-per-session cost |
+| DC-13 | Browser/OPFS `utimeNow` — OPFS exposes `File.lastModified` read-only | (a) **omit** the optional member: every freshen on OPFS fails, so git's own fallback runs — the object is written locally (for the primary: `FILE_EXISTS` on a loose hit, a duplicate loose copy on a packed hit — today's behaviour); (b) no-op success, as `chmod` does on OPFS: skip the write, mtime unchanged; (c) rewrite the file to move `lastModified` (`createWritable({ keepExistingData: true })` + close) | **(a)** | (a) is git's documented contract — "if freshen fails, do not assume it is safe to skip the write" — and needs no code; (b) claims a freshen that did not happen, so an OPFS `gc --prune` can drop an object a caller just relied on; (c) copies the whole file — O(pack size) per freshen — and the swap-file semantics that move `lastModified` are browser-defined, not specified |
+| DC-14 | Loose arm of the freshen probe | (a) cached fanout probe (`probeLooseOid`) then `utimeNow` on a hit; on `FILE_EXISTS` at write time, `utimeNow` the existing file; (b) git's syscall shape: `utimeNow(looseObjectPathIn(...))` directly in every source, `FILE_NOT_FOUND` ⇒ absent | **(a)** | (a) costs one `utimeNow` per write of an existing object and nothing per new object once a prefix is listed; (b) adds one failing syscall per source per **new** object (an `add` of 10 000 files in a borrower = 20 000 refused calls). Observable difference only for a loose object another process creates in an **alternate** after this session listed that fanout: (a) writes a local copy, git freshens the donor's. Hot path → perf |
+| DC-15 | Channel for git's commit-graph warnings (`unable to find all commit-graph files`) | (a) `ctx.logger?.warn` only; (b) logger + a structured view (e.g. `commitGraphStatus(ctx)`); (c) silent | **(a)** | the graph changes speed, never answers, so no caller decision hangs on it — the `packRegistry` warn precedent fits; (b) adds a public primitive nobody consumes (YAGNI); (c) drops a diagnostic git prints. ADR-914's data view exists because a skipped alternate changes **answers** |
+| DC-16 | Streamed blob open across sources (Pin M5) | (a) keep tsgit's per-source loose-first `openBlobSource` (ADR-509) and record the M5 fault-surface divergence in an ADR; (b) reproduce git's `istream_source`: per source, pack arm only for non-delta objects above `core.bigFileThreshold`, else loose, then **every later source**, then the in-core read | **(a)** | identical bytes whenever git answers; the only difference is that a corrupt **alternate** midx kills git's `cat-file blob` of a small **primary-packed** blob and tsgit serves it. (b) re-plumbs `openBlobSource` around a threshold tsgit's streaming does not use (`maxBufferedBytes`) and makes the common local read touch every alternate's pack store — a perf regression on borrowers to reproduce a failure mode. Divergence needs its ADR (prime directive) |
 
 ## Test strategy
 
 - **Domain** (Part 1): example rows = Pin P literal bytes; property sibling (lenses 1, 3, 4).
-- **Resolution** (Part 3): memory-adapter unit tests per Pin R/N/D/U row; lens-2 property on
+- **Port** (Part 2): the shared contract `test/unit/ports/file-system.contract.ts` runs `utimeNow`
+  through the security matrix and its own refusal rows on memory and node; browser asserts
+  structural absence; `wrapFsValidator` forwards it behind the write guard.
+- **Resolution** (Part 4): memory-adapter unit tests per Pin R/N/D/U row; lens-2 property on
   arbitrary alternate graphs — invariants only, no re-implemented traversal as oracle:
   terminates; `objectsDir`s distinct; every node reachable within six levels appears; every
   source appears after the source whose list named it first (pre-order); depth ≤ 5.
-- **Store / read paths** (Parts 4–6): memory-adapter Contexts; isolated guard tests for each
-  source-loop exit (hit in primary pack, primary loose, alternate pack, alternate loose, full
-  miss → rescan hit in an alternate pack); M2/M3 ordering test; `peekObjectStore` gating.
-- **gc / fsck** (Parts 8–9): unit rows mirroring G1–G5 and F1–F5/M4 with a memory store.
-- **Interop** (Part 10): `test/integration/alternates-interop.test.ts`, every pin row;
-  reconstruct X1 from `ambiguousOidPrefix` data and O1 from `objectSources()`; fsck rows compare
-  structured findings + exit bits to git's (ADR-249).
+- **Store / capability / read paths** (Parts 5–7): memory-adapter Contexts; isolated guard tests
+  for each source-loop exit (hit in primary pack, primary loose, alternate pack, alternate loose,
+  full miss → rescan hit in an alternate pack); M2/M3 ordering test; `peekObjectStore` gating;
+  capability narrowing (exact member set, write-mode open refused, out-of-dir `utimeNow` refused).
+- **Freshen** (Part 8): one isolated test per exit of `freshenObject` (§Part 8 list) with
+  `vi.setSystemTime` back-dating; mutation targets: the cruft check, the `freshenedPacks` memo,
+  the absent-`utimeNow` arm, the adapter-code vs rethrow split.
+- **Acceleration** (Parts 9–10): commit-graph CG1–CG6 shapes and the flipped missing-layer row;
+  bitmap order BM2–BM6 with loader spies.
+- **gc / fsck** (Parts 11–12): unit rows mirroring G1–G5 and F1–F5/M4 with a memory store.
+- **Interop**: four files, one per surface — `alternates-interop.test.ts` (Part 13),
+  `object-freshen-interop.test.ts` (Part 8, `interopSurface: objectFreshen`),
+  `alternates-acceleration-interop.test.ts` (Parts 9–10), `alternates-gc-fsck-interop.test.ts`
+  (Part 14). Reconstruct X1 from `ambiguousOidPrefix` data and O1 from `objectSources()`; fsck rows
+  compare structured findings + exit bits to git's (ADR-249). Immutable-file rows are darwin-only
+  (`chflags uchg`).
 - **Parity**: memory vs node for an in-root alternate; memory out-of-root → `unreachable`.
 - **Mutation**: Stryker low mode, narrowed corpus per module (`.claude/workflow/mutation.md`).
 - **Perf**: `bench:ab` rows per §Perf.
 
 ## Out of scope
 
-- `GIT_ALTERNATE_OBJECT_DIRECTORIES` — fenced; ADR-only (DC-11).
+- `GIT_ALTERNATE_OBJECT_DIRECTORIES` — ADR-923.
 - `objects/info/http-alternates`, dumb HTTP — fenced.
 - Producing borrowers: `clone --reference/--shared/--dissociate` options — fenced.
 - `repack -a -d` dissociation; a `local` option on tsgit's `packObjects` (git's default includes
@@ -708,6 +1176,11 @@ Each part ends green on `npm run validate`.
   alternates file naturally (fresh session).
 - Alternate refs as negotiation `.have`s (`core.alternateRefsCommand`, `for_each_alternate_ref`)
   — fetch negotiation optimisation; FE1's "already have" holds without it.
-- Commit-graph and bitmaps hosted in an alternate — perf-only (DC-9).
-- git's freshen (mtime) on an alternate — DC-10 (b), follow-up.
 - A rendered `count-objects` command — not needed; `objectSources()` carries the data.
+- Commit-graph **verification** in fsck — tsgit's fsck has no commit-graph pass for the primary;
+  ADR-921 scopes fsck coverage to the classes tsgit verifies today.
+- Commit-graph **writing** as a split chain on top of an alternate's layers (CG3's write half) —
+  tsgit writes single-file graphs only; unchanged.
+- Observed, not changed here (discuss before scheduling): tsgit's chain-file grammar
+  (`parseChainLayerHashes` trims and drops blank lines) differs from git's fixed-width read
+  (`invalid commit-graph chain: line '…' not a hash`, `commit-graph chain file too small`).
