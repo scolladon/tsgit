@@ -1,3 +1,5 @@
+// Alternates
+export { parseAlternatesFile, unquoteCStyle } from './alternates.js';
 // Pack bitmap
 export type { BitmapEntryHeader, PackBitmap } from './bitmap.js';
 export { bitmapEntryHeaders, parsePackBitmap } from './bitmap.js';
