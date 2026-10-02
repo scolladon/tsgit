@@ -13,7 +13,7 @@ import { boundedMapFor } from '../../../primitives/internal/concurrency.js';
 import { deriveWorktreeContext } from '../../../primitives/internal/worktree-context.js';
 import { commonGitDir } from '../../../primitives/path-layout.js';
 import { readIndex } from '../../../primitives/read-index.js';
-import { listReflogs, readReflog, readReflogLenient } from '../../../primitives/reflog-store.js';
+import { listReflogs, readReflogLenient } from '../../../primitives/reflog-store.js';
 import { resolveRef } from '../../../primitives/resolve-ref.js';
 import { objectIsPresent } from './object-presence.js';
 import type { FsckOptions } from './types.js';
@@ -158,29 +158,18 @@ function addReflogEntryRoots(
 }
 
 /**
- * `strict` (gc-only) reads every reflog LINE-grained-leniently
- * (`readReflogLenient`) and never tolerates a fault: a malformed line is
- * already absorbed inside that read (never raised as an exception here), so
+ * Root every reflog's old/new oids for gc's retention walk. Each reflog is
+ * read LINE-grained-leniently (`readReflogLenient`): a malformed line is
+ * absorbed inside that read, as git's `show_one_reflog_ent` skips it, so
  * anything that DOES throw — the size cap, or a genuine I/O fault
- * (EACCES/EIO/EMFILE) — means the read never (fully) happened and must
- * abort the run rather than silently root nothing. `collectRoots`/fsck
- * (non-strict) keeps `readReflog`'s own strict all-or-nothing parse and
- * tolerates everything here, same as before — a malformed reflog is not
- * gc's problem to solve for a caller that never asked for retention.
+ * (EACCES/EIO/EMFILE) — means the read never (fully) happened and aborts the
+ * run rather than silently rooting nothing.
  */
-async function addReflogRoots(ctx: Context, roots: Set<ObjectId>, strict?: boolean): Promise<void> {
+async function addReflogRoots(ctx: Context, roots: Set<ObjectId>): Promise<void> {
   const reflogNames = await listReflogs(ctx);
   const zero = zeroOid(ctx.hashConfig);
   await boundedMapFor(ctx, 'ioBound', reflogNames, async (ref) => {
-    if (strict === true) {
-      addReflogEntryRoots(roots, await readReflogLenient(ctx, ref), zero);
-      return;
-    }
-    try {
-      addReflogEntryRoots(roots, await readReflog(ctx, ref), zero);
-    } catch {
-      // Unreadable reflog — tolerated
-    }
+    addReflogEntryRoots(roots, await readReflogLenient(ctx, ref), zero);
   });
 }
 
@@ -588,7 +577,7 @@ async function addOtherWorktreeRoots(ctx: Context, roots: Set<ObjectId>): Promis
 export async function collectRetentionRoots(ctx: Context): Promise<ReadonlySet<ObjectId>> {
   const roots = new Set<ObjectId>();
   await addRefRoots(ctx, roots, undefined, true);
-  await addReflogRoots(ctx, roots, true);
+  await addReflogRoots(ctx, roots);
   await addIndexRoots(ctx, roots);
   await addMainWorktreeRoots(ctx, roots);
   await addOtherWorktreeRoots(ctx, roots);
