@@ -2470,8 +2470,9 @@ const registersPromisor = (key: string, value: string | null): boolean => {
 /** git's `promisor_remote_new` refuses a name starting with `/`. */
 const isRegistrablePromisorName = (name: string): boolean => !name.startsWith('/');
 
-const configuredPromisorNames = (tokens: ReadonlyArray<ConfigToken>): ReadonlyArray<string> => {
-  const names = new Set<string>();
+/** The remote name of every entry registering a promisor, in config order, repeats kept. */
+const registeringRemoteNames = (tokens: ReadonlyArray<ConfigToken>): ReadonlyArray<string> => {
+  const names: string[] = [];
   let remoteName: string | undefined;
   for (const token of tokens) {
     if (token.kind === 'header') {
@@ -2479,9 +2480,19 @@ const configuredPromisorNames = (tokens: ReadonlyArray<ConfigToken>): ReadonlyAr
       continue;
     }
     if (token.kind !== 'entry' || remoteName === undefined) continue;
-    if (registersPromisor(token.key, token.value)) names.add(remoteName);
+    if (registersPromisor(token.key, token.value)) names.push(remoteName);
   }
-  return [...names];
+  return names;
+};
+
+const SLASH_LEADING_PROMISOR_WARNING =
+  "readPromisorRemoteNames: promisor remote name cannot begin with '/'";
+
+/** git's `promisor_remote_new` warning, once per attempt to register a `/`-leading name. */
+const warnSlashLeadingNames = (ctx: Context, attempts: ReadonlyArray<string>): void => {
+  for (const remote of attempts.filter((name) => !isRegistrablePromisorName(name))) {
+    ctx.logger?.warn?.(SLASH_LEADING_PROMISOR_WARNING, { remote });
+  }
 };
 
 /**
@@ -2489,12 +2500,18 @@ const configuredPromisorNames = (tokens: ReadonlyArray<ConfigToken>): ReadonlyAr
  * `remote.<n>.partialclonefilter` ever registers — a later `promisor = false` never
  * unregisters it, a subsectionless `[remote]` registers the name `""` — in config
  * order, with the one `extensions.partialClone` names moved to (or appended at) the
- * end, the order git tries them in; a `/`-leading name is never registered.
+ * end, the order git tries them in. A `/`-leading name is never registered: git
+ * warns on each attempt to register it, so the logger hears each one.
  */
 export const readPromisorRemoteNames = async (ctx: Context): Promise<ReadonlyArray<string>> => {
   const { tokens, parsed } = await readConfigEntry(ctx);
   const partialClone = parsed.extensions?.partialClone;
-  const names = new Set(configuredPromisorNames(tokens));
+  const registering = registeringRemoteNames(tokens);
+  warnSlashLeadingNames(
+    ctx,
+    partialClone === undefined ? registering : [...registering, partialClone],
+  );
+  const names = new Set(registering);
   if (partialClone !== undefined) {
     names.delete(partialClone);
     names.add(partialClone);

@@ -404,6 +404,57 @@ describe.skipIf(!GIT_AVAILABLE)('config boolean refusal tier interop', () => {
       });
     });
   });
+  describe('Given a /-leading remote registered as a promisor by three entries', () => {
+    describe('When git and tsgit each run fsck', () => {
+      it("Then tsgit warns each registration git warns about, in git's order", async () => {
+        // Arrange
+        runGit(
+          [
+            '-C',
+            ours,
+            '-c',
+            'user.name=t',
+            '-c',
+            'user.email=t@t',
+            'commit',
+            '--allow-empty',
+            '-q',
+            '-m',
+            'c1',
+          ],
+          { env: runGitEnv() },
+        );
+        await writeConfig(
+          '[core]\n\trepositoryformatversion = 0\n[remote "/x"]\n\tpromisor = true\n' +
+            '\tpartialclonefilter = blob:none\n\tpromisor = true\n',
+        );
+        const warnings: string[] = [];
+        const logger = {
+          warn: (message: string, context?: Record<string, unknown>): void => {
+            if (message.endsWith("promisor remote name cannot begin with '/'")) {
+              warnings.push(
+                `warning: promisor remote name cannot begin with '/': ${context?.remote}`,
+              );
+            }
+          },
+        };
+
+        // Act
+        const g = tryRunGitWithExit(['-C', ours, 'fsck'], { env: runGitEnv() });
+        const repo = await openTrackedRepository({ cwd: ours, logger });
+        await repo.fsck();
+        await repo.dispose();
+
+        // Assert
+        const gitWarnings = g.stderr
+          .split('\n')
+          .filter((line) => line.includes('promisor remote name'));
+        expect(gitWarnings).toHaveLength(3);
+        expect(warnings).toEqual(gitWarnings);
+      });
+    });
+  });
+
   describe('Given X17 — remote.origin.promisor = maybe, the command-split pin', () => {
     beforeEach(() =>
       writeConfig('[core]\n\trepositoryformatversion = 0\n[remote "origin"]\n\tpromisor = maybe\n'),

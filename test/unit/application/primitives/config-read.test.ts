@@ -7018,6 +7018,54 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
         expect(result).toEqual(expected);
       });
     });
+
+    describe('Given a /-leading remote registered by each of its entries and by extensions.partialClone', () => {
+      describe('When readPromisorRemoteNames', () => {
+        it('Then it warns once per registering entry, in config order, as git does', async () => {
+          // Arrange
+          const base = createMemoryContext();
+          await seed(
+            base,
+            '[remote "/x"]\n\tpromisor = true\n\tpartialclonefilter = blob:none\n\tpromisor = false\n' +
+              '[remote "ok"]\n\tpromisor = true\n[remote "/x"]\n\tpromisor\n[extensions]\n\tpartialClone = /z\n',
+          );
+          const warn = vi.fn();
+          const ctx: Context = { ...base, logger: { warn } };
+          const sut = readPromisorRemoteNames;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result).toEqual(['ok']);
+          expect(warn.mock.calls).toEqual(
+            ['/x', '/x', '/x', '/z'].map((remote) => [
+              "readPromisorRemoteNames: promisor remote name cannot begin with '/'",
+              { remote },
+            ]),
+          );
+        });
+      });
+    });
+
+    describe('Given only registrable promisor remotes', () => {
+      describe('When readPromisorRemoteNames', () => {
+        it('Then it warns nothing', async () => {
+          // Arrange
+          const base = createMemoryContext();
+          await seed(base, '[remote "a"]\n\tpromisor = true\n[extensions]\n\tpartialClone = b\n');
+          const warn = vi.fn();
+          const ctx: Context = { ...base, logger: { warn } };
+          const sut = readPromisorRemoteNames;
+
+          // Act
+          await sut(ctx);
+
+          // Assert
+          expect(warn).not.toHaveBeenCalled();
+        });
+      });
+    });
   });
 
   describe('findFirstInvalidBooleanInSection', () => {
