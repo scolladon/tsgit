@@ -1289,6 +1289,56 @@ both reduce to "owner only" (WP8). Recorded, not an ADR-level divergence.
 - Store diagnostics are not fsck findings in git (they are stderr preamble); F5's exit 10 comes
   from the missing objects. tsgit surfaces them through the ADR-914 channel.
 
+### D8.1 — verify_pack parity
+
+Pinned against git 2.55.0 (scrubbed `GIT_*`, isolated `HOME`, signing off, `gc` with
+`gc.writeCommitGraph=false`), each row on a plain repository **and** on a `--shared`
+borrower whose donor carries the corruption — identical exit bits; the borrower's lines
+name the donor pack by absolute path, the plain repository's by `.git/objects/pack/…`.
+
+Source: `builtin/fsck.c` `cmd_fsck` (L1076–1099: `verify_pack` for every pack of
+`repo_for_each_pack`, only when `check_full` and not `connectivity_only`; any non-zero
+return sets `ERROR_PACK` = 4), `pack-check.c` `verify_pack` → `verify_pack_index` (`.idx`
+trailer) → `verify_packfile` (pack trailer, then per entry in offset order: CRC against
+the `.idx` table, `unpack_entry`, `check_object_signature`, then `fsck_obj_buffer`),
+`packfile.c` `open_packed_git_1` (L676–678, the open gate), `odb.c`
+`odb_read_object_info_extended` (L606–613, the die on a `has_packed_and_bad` object).
+
+| # | corruption | `fsck` | `--no-full` | `--connectivity-only` |
+|---|---|---|---|---|
+| V1 | pack trailer flipped (F4b) | `packfile P does not match index` ×N, `packfile P cannot be accessed`, `invalid sha1 pointer` per ref, `missing blob …` — **14** (2\|4\|8); a commit-graph on disk adds 16 (**30**: the `commit-graph verify` child, a class tsgit's fsck does not verify) | 10 | 10 (`dangling unknown …`) |
+| V2 | `.idx` trailer flipped | `Packfile index for P hash mismatch` — **4** | baseline | 0 |
+| V3 | one CRC in the `.idx` flipped, `.idx` trailer restamped | `index CRC mismatch for object O from P at offset N` — **4** | baseline | 0 |
+| V4 | body of an unreachable entry flipped, in its own pack (F4c) | `P pack checksum mismatch`, `index CRC mismatch for object O …`, `inflate: …`, `cannot unpack O from P at offset N` — **4**; O is not reported dangling | baseline | 0, `dangling blob O` |
+| V5 | body of the ref-tip commit flipped (F4) | `fatal: packed object O (stored in P) is corrupt` — **128** (`snapshot_ref` → `parse_object`) | 128 | 128 |
+| V6 | body of a tree the index cache-tree names flipped | V4's lines, then the same fatal — **128** (`fsck_index` cache-tree → `parse_object`) | 128 | 128 |
+| V7 | body of a non-tip commit flipped | V4's lines + `invalid reflog entry` — **6**; that commit's tree is `dangling` | baseline | 128 |
+| V8 | body of a tree no ref/cache-tree names flipped | V4's lines — **4** | baseline | 128 |
+| V9 | body of a reachable blob flipped | V4's lines — **4** | baseline | 0 |
+| V10 | packed tree with duplicate entries (intact pack) | `error in tree O: duplicateEntries: …` — **4**, not 1: `fsck_objects_error_func` sets no bit, `verify_pack`'s non-zero return sets `ERROR_PACK` | baseline | 0 |
+
+"baseline": git 2.55's `--no-full` on any packed repository prints `invalid reflog entry`
+for packed reflog oids and exits 2 with no corruption at all — never a `verify_pack` line.
+`pack checksum does not match its index` is unreachable once the open gate passed (both
+compare the same bytes).
+
+tsgit mapping:
+
+- Open gate (`pack-registry.ts` header memo): the pack trailer must equal the `.idx`'s
+  recorded pack checksum, else `INVALID_PACK_HEADER` — the pack is unusable for every read
+  (git's read path refuses it too) and fsck's pack-health pass reports `pack-inaccessible`
+  (V1).
+- A new pass over every source's accessible packs, full mode only: the `.idx` trailer
+  (`pack-index-checksum-mismatch`, V2); one sequential read per pack hashing it and
+  CRC-checking each entry (`pack-checksum-mismatch`, `pack-crc-mismatch`, V3/V4). Bit 4.
+- Content validation, packed arm: an unreadable entry is `pack-entry-unpackable` (V4) and a
+  hash disagreement `pack-entry-corrupt`, both bit 4 and catalogue-free; a packed object's
+  catalogue errors carry bit 4, not 1 (V10). Unpacking rides the existing per-object read —
+  no extra inflate.
+- Refusal (V5/V6; V7/V8 under `connectivityOnly`): a ref tip or cache-tree oid whose only
+  copy is an unreadable pack entry rejects with `INVALID_PACK_ENTRY` (offset, and a reason
+  naming oid and pack); under `connectivityOnly` also every reachable commit or tree.
+
 ### D9 — Security (for the security review's sign-off)
 
 - **Read surface added**: for every path named (transitively, ≤ 6 levels) by an
