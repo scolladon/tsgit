@@ -19,6 +19,7 @@ import {
   type TreeDiff,
 } from '../../domain/diff/index.js';
 import { scanEqual } from '../../domain/diff/line-digest-scanner.js';
+import { isGitlink } from '../../domain/diff/mode-kind.js';
 import { diffRawTrees } from '../../domain/diff/raw-tree-diff.js';
 import type { RenameDetectOptions } from '../../domain/diff/rename-detect.js';
 import { computeRewriteStatFields } from '../../domain/diff/stat-fields.js';
@@ -48,6 +49,7 @@ import {
 import { peelChain } from './internal/peel-chain.js';
 import { joinPath, readRawTreeById as readRawTree } from './internal/raw-tree-io.js';
 import { type AttributeProvider, buildAttributeProvider } from './internal/read-gitattributes.js';
+import { assertBigFileThresholdValid } from './internal/repo-settings-gate.js';
 import { resolveMaxTreeDepth } from './internal/resolve-max-tree-depth.js';
 import { walkRawSubtree } from './internal/walk-raw-subtree.js';
 import { isWhitespaceOnlyModify } from './internal/whitespace-drop-predicate.js';
@@ -193,6 +195,24 @@ function statOptionsFor(
   return undefined;
 }
 
+/** A change with a blob side git weighs for binary-ness — a gitlink has none. */
+const weighsContent = (change: DiffChange): boolean => {
+  if (change.type === 'add') return !isGitlink(change.newMode);
+  if (change.type === 'delete') return !isGitlink(change.oldMode);
+  return !isGitlink(change.oldMode) || !isGitlink(change.newMode);
+};
+
+/**
+ * git's `diff_filespec_is_binary` reads `core.bigFileThreshold` for a blob
+ * side whose attributes leave binary-ness open.
+ */
+const readThresholdWhenWeighing = async (
+  ctx: Context,
+  changes: ReadonlyArray<DiffChange>,
+): Promise<void> => {
+  if (changes.some(weighsContent)) await assertBigFileThresholdValid(ctx);
+};
+
 /**
  * Route the drop-pass predicate and the stat pass to the cheapest mechanism
  * for what the caller asked for. `lineKeyActive && !withStat` (the common
@@ -242,6 +262,10 @@ async function applyStatPass(
   withStat: boolean,
 ): Promise<TreeDiff | StatTreeDiff> {
   const files = await materialisePatchFiles(ctx, diff.changes, { applyTextconv: true });
+  await readThresholdWhenWeighing(
+    ctx,
+    files.filter((file) => file.numstatBinaryOverride === undefined).map((file) => file.change),
+  );
   const surviving: Array<DiffChange | StatDiffChange> = [];
   for (const file of files) {
     // git's builtin_diffstat never calls fill_textconv — numstat/stat (and the
@@ -283,6 +307,7 @@ async function applyDropPredicate(
   lineKey: LineKey,
   ignoreBlankLines: boolean,
 ): Promise<TreeDiff> {
+  await readThresholdWhenWeighing(ctx, diff.changes);
   // One lazily-built provider per drop pass: the streaming predicate is
   // blind to `.gitattributes`, so attribute-affected paths must be detected
   // up front and routed through the materialise-based verdict instead.

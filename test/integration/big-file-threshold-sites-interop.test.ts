@@ -11,7 +11,7 @@
  *   surface:        repo-state
  *   bucket:         cross-tool-interop
  *   unique:         a malformed core.bigFileThreshold refuses exactly where git reads it, per repository state
- *   interopSurface: add, status
+ *   interopSurface: add, diff, show, status
  */
 import { mkdtempSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
@@ -128,6 +128,36 @@ const ROWS: ReadonlyArray<Row> = [
     state: CLEAN_LOOSE,
     git: ['add', 'f1.txt'],
     tsgit: (r) => r.add(['f1.txt']),
+  },
+  {
+    name: 'diff --stat between commits',
+    state: CLEAN_LOOSE,
+    git: ['diff', '--stat', 'HEAD~1', 'HEAD'],
+    tsgit: (r) => r.diff({ from: 'HEAD~1', to: 'HEAD', withStat: true }),
+  },
+  {
+    name: 'diff --raw between commits',
+    state: CLEAN_LOOSE,
+    git: ['diff', '--raw', 'HEAD~1', 'HEAD'],
+    tsgit: (r) => r.diff({ from: 'HEAD~1', to: 'HEAD' }),
+  },
+  {
+    name: 'diff -w --raw between commits',
+    state: CLEAN_LOOSE,
+    git: ['diff', '-w', '--raw', 'HEAD~1', 'HEAD'],
+    tsgit: (r) => r.diff({ from: 'HEAD~1', to: 'HEAD', ignoreWhitespace: 'all' }),
+  },
+  {
+    name: 'show --stat',
+    state: CLEAN_LOOSE,
+    git: ['show', '--stat', 'HEAD'],
+    tsgit: (r) => r.show('HEAD', { withStat: true }),
+  },
+  {
+    name: 'show --raw',
+    state: CLEAN_LOOSE,
+    git: ['show', '--raw', 'HEAD'],
+    tsgit: (r) => r.show('HEAD'),
   },
 ];
 
