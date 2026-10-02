@@ -19,6 +19,7 @@
  */
 import { execFileSync } from 'node:child_process';
 import {
+  appendFile,
   cp,
   mkdir,
   mkdtemp,
@@ -863,6 +864,94 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
         // Assert
         expect(peer.exitCode).toBe(128);
         expect((caught as TsgitError).data.code).toBe(code);
+        await disposeTwin(twin);
+      });
+    });
+  });
+
+  /** Appends the same raw config text to both twins — `-c` cannot express every shape. */
+  const appendBothConfigs = async (twin: Twin, text: string): Promise<void> => {
+    for (const dir of [twin.peerDir, twin.oursDir]) {
+      await appendFile(path.join(dir, '.git', 'config'), text);
+    }
+  };
+
+  describe.each([
+    { label: 'valueless gc.pruneExpire', text: '[gc]\n\tpruneExpire\n' },
+    { label: 'valueless gc.worktreePruneExpire', text: '[gc]\n\tworktreePruneExpire\n' },
+  ])('Given a $label', ({ text }) => {
+    describe.each([
+      { run: 'gc --auto', gitArgs: ['gc', '--auto'], tasks: ['gc'] as const, auto: true },
+      {
+        run: 'the commit-graph task',
+        gitArgs: ['maintenance', 'run', '--task=commit-graph'],
+        tasks: ['commit-graph'] as const,
+        auto: false,
+      },
+    ])('When both tools run $run', ({ gitArgs, tasks, auto }) => {
+      it('Then both refuse the missing value before any task', async () => {
+        // Arrange
+        const slug = `gc-valueless-${text.replace(/\W+/g, '-')}-${gitArgs.length}`;
+        const baseDir = await initRepo(slug);
+        await addCommit(baseDir, 'c0');
+        const twin = await makeTwin(baseDir, slug);
+        await rm(baseDir, { recursive: true, force: true });
+        await appendBothConfigs(twin, text);
+        const peer = tryRunGitWithExit(['-C', twin.peerDir, ...gitArgs]);
+        const sut = maintenance;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(trackedNodeContext(twin.oursDir, 'sha1'), { tasks: [...tasks], auto });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(peer.exitCode).toBe(128);
+        expect(peer.stderr).toContain('missing value');
+        expect((caught as TsgitError).data.code).toBe('CONFIG_MISSING_VALUE');
+        await disposeTwin(twin);
+      });
+    });
+  });
+
+  describe('Given a valueless remote partialclonefilter', () => {
+    describe.each([
+      { run: 'gc', gitArgs: ['gc', '-q'], tasks: ['gc'] as const, refuses: true },
+      {
+        run: 'the commit-graph task',
+        gitArgs: ['maintenance', 'run', '--task=commit-graph'],
+        tasks: ['commit-graph'] as const,
+        refuses: false,
+      },
+    ])('When both tools run $run', ({ gitArgs, tasks, refuses }) => {
+      it('Then both refuse only where git repack loads promisor remotes, writing no pack', async () => {
+        // Arrange
+        const slug = `gc-valueless-pcf-${gitArgs.length}`;
+        const baseDir = await initRepo(slug);
+        await addCommit(baseDir, 'c0');
+        const twin = await makeTwin(baseDir, slug);
+        await rm(baseDir, { recursive: true, force: true });
+        await appendBothConfigs(twin, '[remote "x"]\n\tpartialclonefilter\n');
+        const peer = tryRunGitWithExit(['-C', twin.peerDir, ...gitArgs]);
+        const sut = maintenance;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(trackedNodeContext(twin.oursDir, 'sha1'), { tasks: [...tasks] });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(peer.exitCode).toBe(refuses ? 128 : 0);
+        expect((caught as TsgitError | undefined)?.data.code).toBe(
+          refuses ? 'CONFIG_MISSING_VALUE' : undefined,
+        );
+        expect(await packDirEntries(twin.oursDir)).toEqual(await packDirEntries(twin.peerDir));
         await disposeTwin(twin);
       });
     });

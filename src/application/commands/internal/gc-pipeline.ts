@@ -20,8 +20,10 @@ import {
   readConfig,
 } from '../../primitives/config-read.js';
 import { enumerateObjects } from '../../primitives/enumerate-objects.js';
-import { configExpiryCutoff } from '../../primitives/expiry-cutoff.js';
-import { assertValidBooleanConfig } from '../../primitives/internal/boolean-config-guard.js';
+import {
+  assertValidBooleanConfig,
+  assertValidPromisorRemoteConfig,
+} from '../../primitives/internal/boolean-config-guard.js';
 import { type ClosureTier, computeClosure } from '../../primitives/internal/closure-engine.js';
 import { boundedMapFor } from '../../primitives/internal/concurrency.js';
 import {
@@ -33,6 +35,7 @@ import {
   retireCruftPack,
   writeCruftPack,
 } from '../../primitives/internal/cruft-pack-lifecycle.js';
+import { readGcExpiryCutoff } from '../../primitives/internal/gc-config-guard.js';
 import { forgetLooseOidPrefix } from '../../primitives/internal/loose-oid-cache.js';
 import { forgetParsedObjectMemo } from '../../primitives/internal/object-caches.js';
 import {
@@ -118,13 +121,17 @@ export async function readGcSettings(ctx: Context): Promise<GcSettings> {
   await assertValidGcAutoConfig(ctx);
   await assertValidBooleanConfig(ctx, 'gc', undefined, ['cruftPacks']);
   const { gc } = await readConfig(ctx);
+  const pruneCutoff = await readGcExpiryCutoff(ctx, 'pruneExpire', DEFAULT_PRUNE_EXPIRE);
+  const worktreePruneCutoff = await readGcExpiryCutoff(
+    ctx,
+    'worktreePruneExpire',
+    DEFAULT_WORKTREE_PRUNE_EXPIRE,
+  );
   return {
     autoThreshold: gc?.auto ?? DEFAULT_GC_AUTO_THRESHOLD,
     cruftPacks: gc?.cruftPacks ?? true,
-    pruneCutoff: configExpiryCutoff(gc?.pruneExpire ?? DEFAULT_PRUNE_EXPIRE),
-    worktreePruneCutoff: configExpiryCutoff(
-      gc?.worktreePruneExpire ?? DEFAULT_WORKTREE_PRUNE_EXPIRE,
-    ),
+    pruneCutoff,
+    worktreePruneCutoff,
   };
 }
 
@@ -915,6 +922,8 @@ export async function runGcTask(
     };
   }
 
+  // git's repack loads the promisor remotes before pack-objects reads `[pack]`.
+  await assertValidPromisorRemoteConfig(ctx);
   await assertValidPackIntConfig(ctx);
 
   // --- step 1b: classify every pack, lstat every pack, before any write ---

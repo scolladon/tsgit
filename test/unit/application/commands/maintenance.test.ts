@@ -108,6 +108,9 @@ const writeLooseBlob = (ctx: Context, content: string): Promise<ObjectId> =>
 const appendConfig = (ctx: Context, text: string): Promise<void> =>
   ctx.fs.appendUtf8(`${ctx.layout.gitDir}/config`, text);
 
+const readConfigText = (ctx: Context): Promise<string> =>
+  ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`);
+
 /** Make every `readUtf8` of `denied` fail the way an unreadable file does. */
 const denyReadOf = (ctx: Context, denied: string): void => {
   const originalReadUtf8 = ctx.fs.readUtf8.bind(ctx.fs);
@@ -604,6 +607,17 @@ describe('maintenance', () => {
       config: 'worktreePruneExpire = 2099-01-01',
       code: 'CONFIG_BAD_DATE_VALUE',
     },
+    { key: 'valueless gc.pruneExpire', config: 'pruneExpire', code: 'CONFIG_MISSING_VALUE' },
+    {
+      key: 'valueless gc.worktreePruneExpire',
+      config: 'worktreePruneExpire',
+      code: 'CONFIG_MISSING_VALUE',
+    },
+    {
+      key: 'gc.pruneExpire whose last entry is valueless',
+      config: 'pruneExpire = 2.weeks.ago\n\tpruneExpire',
+      code: 'CONFIG_MISSING_VALUE',
+    },
   ])('Given a malformed $key', ({ config, code }) => {
     describe.each([
       { run: 'the gc task under an auto gate that declines', tasks: ['gc'] as const, auto: true },
@@ -630,6 +644,103 @@ describe('maintenance', () => {
       });
     });
   });
+
+  describe('Given a valueless gc.worktreePruneExpire', () => {
+    describe('When maintenance runs the gc task', () => {
+      it('Then the refusal names the key and its config line, as git does', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        await appendConfig(ctx, '\n[gc]\n\tworktreePruneExpire\n');
+        const sut = maintenance;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { tasks: ['gc'] });
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        const lines = (await readConfigText(ctx)).split('\n');
+        expect((caught as TsgitError).data).toEqual({
+          code: 'CONFIG_MISSING_VALUE',
+          key: 'gc.worktreepruneexpire',
+          source: `${ctx.layout.gitDir}/config`,
+          line: lines.indexOf('\tworktreePruneExpire') + 1,
+        });
+      });
+    });
+  });
+
+  describe('Given a valueless gc.pruneExpire followed by a valid one', () => {
+    describe('When maintenance runs the gc task', () => {
+      it('Then it runs, as git reads only the last entry', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire\n\tpruneExpire = 2.weeks.ago\n');
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(result.tasksRun).toEqual(['gc']);
+      });
+    });
+  });
+
+  describe('Given a valueless remote partialclonefilter and a malformed pack.window', () => {
+    describe('When maintenance runs the gc task', () => {
+      it('Then it refuses the filter first, where git repack loads promisor remotes', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        await appendConfig(ctx, '\n[pack]\n\twindow = abc\n[remote "x"]\n\tpartialclonefilter\n');
+        const sut = maintenance;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { tasks: ['gc'] });
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        const lines = (await readConfigText(ctx)).split('\n');
+        expect((caught as TsgitError).data).toEqual({
+          code: 'CONFIG_MISSING_VALUE',
+          key: 'remote.x.partialclonefilter',
+          source: `${ctx.layout.gitDir}/config`,
+          line: lines.indexOf('\tpartialclonefilter') + 1,
+        });
+        expect(await ctx.fs.readdir(packDirOf(ctx))).toEqual([]);
+      });
+    });
+  });
+
+  describe.each([
+    { run: 'the gc task under an auto gate that declines', tasks: ['gc'] as const, auto: true },
+    { run: 'the commit-graph task alone', tasks: ['commit-graph'] as const, auto: false },
+  ])(
+    'Given a valueless remote partialclonefilter, When maintenance runs $run',
+    ({ tasks, auto }) => {
+      it('Then it does not load promisor remotes, as git gc_config does not', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        await appendConfig(ctx, '\n[gc]\n\tauto = 100\n[remote "x"]\n\tpartialclonefilter\n');
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: [...tasks], auto });
+
+        // Assert
+        expect(result.packsAfter).toBe(0);
+      });
+    },
+  );
 
   describe('Given a malformed pack.window and an auto gate that declines', () => {
     describe('When maintenance runs the gc task', () => {

@@ -789,6 +789,38 @@ export const findFirstValuelessInSection = async (
   return undefined;
 };
 
+/** One config entry as git's config set holds it: `value` is `null` for a valueless key. */
+export interface LocatedConfigEntry extends ValuelessEntry {
+  readonly value: string | null;
+}
+
+/**
+ * git's config-set read (`repo_config_get_*`): the LAST entry, by config-file
+ * line, of `key` (case-insensitive) under the subsectionless `[<section>]` —
+ * earlier entries are never parsed, so a malformed one followed by a valid
+ * one is inert. Returns `undefined` when the key is absent.
+ */
+export const findLastEntry = async (
+  ctx: Context,
+  section: string,
+  key: string,
+): Promise<LocatedConfigEntry | undefined> => {
+  const { tokens, source } = await readConfigEntry(ctx);
+  const loweredKey = key.toLowerCase();
+  let inSection = false;
+  let last: LocatedConfigEntry | undefined;
+  for (const token of tokens) {
+    if (token.kind === 'header') {
+      inSection = matchesSection(token.section, token.subsection, section, undefined);
+      continue;
+    }
+    if (!inSection || token.kind !== 'entry' || token.key.toLowerCase() !== loweredKey) continue;
+    const qualifiedKey = `${section.toLowerCase()}.${loweredKey}`;
+    last = { key: qualifiedKey, source, line: token.startLine + 1, value: token.value };
+  }
+  return last;
+};
+
 const REFLOG_EXPIRE_SLOTS: Readonly<Record<string, 'total' | 'unreachable'>> = {
   reflogexpire: 'total',
   reflogexpireunreachable: 'unreachable',
