@@ -577,6 +577,37 @@ describe.skipIf(!GIT_AVAILABLE)('alternates fsck interop — every source is aud
       );
     });
 
+    describe('When the borrower holds its own healthy loose copy of the oid', () => {
+      it(
+        'Then both still read the donor copy and report its mismatch, exit 1',
+        async () => {
+          // Arrange
+          const { donor, borrower } = borrowerOf('f3-shadowed', false);
+          const oid = swapContent(donor);
+          writeLooseCopy(objectsOf(borrower), oid, 'unreachable blob');
+          const sut = tsgitFsck;
+
+          // Act
+          const gitResult = gitFsck(borrower);
+          const result = await sut(borrower);
+
+          // Assert
+          expect(gitResult.exitCode).toBe(1);
+          expect(result.exitCode).toBe(1);
+          const mismatches = result.findings.filter((f) => f.type === 'hash-mismatch');
+          expect(mismatches).toEqual([
+            expect.objectContaining({ id: oid, objectsDir: objectsOf(donor) }),
+          ]);
+          const actual = mismatches[0]?.type === 'hash-mismatch' ? mismatches[0].actual : '';
+          expect(gitResult.stderr).toContain(
+            `error: ${actual}: hash-path mismatch, found at: ${looseFile(objectsOf(donor), oid)}`,
+          );
+          expect(danglingLines(result.findings)).toEqual(gitDanglingLines(gitResult.stdout));
+        },
+        ROW_TIMEOUT,
+      );
+    });
+
     describe('When the borrower fsck runs connectivity-only (F3)', () => {
       it(
         'Then both exit 0 and report the same dangling objects',

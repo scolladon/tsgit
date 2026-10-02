@@ -3,6 +3,7 @@ import type { Context } from '../../../../ports/context.js';
 import { probeLooseOid } from '../../../primitives/internal/loose-oid-cache.js';
 import { looseCompressedBytes } from '../../../primitives/object-resolver.js';
 import { getObjectStore, looseCacheLocation } from '../../../primitives/object-store.js';
+import { attributeTo } from './source-attribution.js';
 
 /**
  * Whether `id` genuinely exists and is accessible — one loose-then-pack
@@ -65,4 +66,25 @@ export async function looseBytesFromHolder(
     if (bytes !== undefined) return bytes;
   }
   return undefined;
+}
+
+/** One source's loose copy of an object, and the attribution its findings carry. */
+export interface LooseCopy {
+  readonly compressed: Uint8Array;
+  readonly attribution: { readonly objectsDir?: string };
+}
+
+/**
+ * Every source's loose copy of `id`, in git's source order — `fsck_source`
+ * reads each source's loose files, so a copy behind the first is still read.
+ */
+export async function looseCopiesOf(ctx: Context, id: ObjectId): Promise<ReadonlyArray<LooseCopy>> {
+  const store = await getObjectStore(ctx);
+  const copies: LooseCopy[] = [];
+  for (const source of store.sources) {
+    const compressed = await looseCompressedBytes(ctx, id, looseCacheLocation(store, source));
+    if (compressed !== undefined)
+      copies.push({ compressed, attribution: attributeTo(store, source) });
+  }
+  return copies;
 }

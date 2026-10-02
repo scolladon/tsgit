@@ -26,7 +26,7 @@ import {
 import { readObject } from '../../../primitives/read-object.js';
 import { EXIT_CONTENT_ERROR, EXIT_CORRUPT, EXIT_HASH_MISMATCH, EXIT_PACK } from './exit-codes.js';
 import { hasPackCopy, type PackedLocation, packedLocationOf } from './object-cache.js';
-import { looseBytesFromHolder } from './object-presence.js';
+import { type LooseCopy, looseCopiesOf } from './object-presence.js';
 import type { SpecialBlobLedger, SpecialBlobName } from './special-blobs.js';
 import type { FsckFinding } from './types.js';
 
@@ -504,15 +504,36 @@ async function validateLooseObject(
   return { ...catalogueResult(ctx, id, rawResult, options), reachabilityUnknown: false };
 }
 
-/** git's `fsck_source` reads every loose object; a packed one is left to
- *  `verify_pack`, and one no store holds is the generic refusal. */
+/** Every loose copy, each read and reported on its own; the id stays
+ *  typeable for reachability while any one copy parses. */
+async function validateLooseCopies(
+  ctx: Context,
+  id: ObjectId,
+  copies: ReadonlyArray<LooseCopy>,
+  options: CatalogueOptions,
+): Promise<ValidateOneObjectOutcome> {
+  const findings: FsckFinding[] = [];
+  let exitBit = 0;
+  let reachabilityUnknown = true;
+  for (const { compressed, attribution } of copies) {
+    const own = await validateLooseObject(ctx, id, compressed, options);
+    findings.push(...own.findings.map((finding) => ({ ...finding, ...attribution })));
+    exitBit |= own.exitBit;
+    reachabilityUnknown &&= own.reachabilityUnknown;
+  }
+  return { findings, exitBit, reachabilityUnknown };
+}
+
+/** git's `fsck_source` reads every loose copy in every source; a packed-only
+ *  object is left to `verify_pack`, and one no store holds is the generic
+ *  refusal. */
 async function validateOneObject(
   ctx: Context,
   id: ObjectId,
   options: CatalogueOptions,
 ): Promise<ValidateOneObjectOutcome> {
-  const compressed = await looseBytesFromHolder(ctx, id);
-  if (compressed !== undefined) return validateLooseObject(ctx, id, compressed, options);
+  const copies = await looseCopiesOf(ctx, id);
+  if (copies.length > 0) return validateLooseCopies(ctx, id, copies, options);
   if ((await packedLocationOf(ctx, id)) !== undefined) return LEFT_TO_VERIFY_PACK;
   return { ...unreadableObjectResult(id, 'badType'), reachabilityUnknown: false };
 }

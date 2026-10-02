@@ -35,11 +35,15 @@ export type FsckFinding =
       readonly objectType: FsckObjectType | 'unknown';
       readonly msgId: string;
       readonly severity: FsckSeverity;
+      /** The alternate's objects dir the finding came from; absent for the primary. */
+      readonly objectsDir?: string;
     }
   | {
       readonly type: 'hash-mismatch';
       readonly id: ObjectId;
       readonly actual: ObjectId;
+      /** The alternate's objects dir the finding came from; absent for the primary. */
+      readonly objectsDir?: string;
     }
   | {
       readonly type: 'bad-ref';

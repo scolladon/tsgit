@@ -739,3 +739,111 @@ describe('Given a loose object whose compressed bytes are not valid zlib', () =>
     });
   });
 });
+
+const DONOR_OBJECTS = '/repo/donor/objects';
+
+const borrowerContext = async (): Promise<ReturnType<typeof createMemoryContext>> => {
+  const ctx = createMemoryContext({
+    files: { '/repo/.git/objects/info/alternates': ENCODER.encode(`${DONOR_OBJECTS}\n`) },
+  });
+  await ctx.fs.mkdir(DONOR_OBJECTS);
+  return ctx;
+};
+
+/** Write a loose object at `id` into the donor's object directory. */
+async function writeDonorLooseAtId(
+  ctx: ReturnType<typeof createMemoryContext>,
+  id: ObjectId,
+  type: string,
+  body: Uint8Array,
+): Promise<void> {
+  const raw = buildTree(ENCODER.encode(`${type} ${body.length}\0`), body);
+  await ctx.fs.mkdir(`${DONOR_OBJECTS}/${id.slice(0, 2)}`);
+  await ctx.fs.write(
+    `${DONOR_OBJECTS}/${id.slice(0, 2)}/${id.slice(2)}`,
+    await ctx.compressor.deflate(raw),
+  );
+}
+
+const idOf = async (
+  ctx: ReturnType<typeof createMemoryContext>,
+  type: string,
+  body: Uint8Array,
+): Promise<ObjectId> =>
+  (await ctx.hash.hashHex(buildTree(ENCODER.encode(`${type} ${body.length}\0`), body))) as ObjectId;
+
+describe('Given a borrower whose own loose copy is healthy and whose donor loose copy hashes elsewhere', () => {
+  describe('When runContentValidationPass validates that object', () => {
+    it('Then the donor copy reports its own hash mismatch, attributed to the donor', async () => {
+      // Arrange
+      const ctx = await borrowerContext();
+      const body = ENCODER.encode('healthy');
+      const id = await idOf(ctx, 'blob', body);
+      await writeLooseAtId(ctx, id, 'blob', body.length, body);
+      const other = ENCODER.encode('other');
+      await writeDonorLooseAtId(ctx, id, 'blob', other);
+
+      // Act
+      const result = await sut(ctx, new Set([id]), catalogueWith());
+
+      // Assert
+      expect(result.findings).toEqual([
+        {
+          type: 'hash-mismatch',
+          id,
+          actual: await idOf(ctx, 'blob', other),
+          objectsDir: DONOR_OBJECTS,
+        },
+      ]);
+      expect(result.exitBit).toBe(1);
+      expect(result.typeUnknownIds.has(id)).toBe(false);
+    });
+  });
+});
+
+describe('Given a borrower and its donor each holding a loose copy of one zero-padded tree', () => {
+  describe('When runContentValidationPass validates that object', () => {
+    it('Then each copy reports the warning once', async () => {
+      // Arrange
+      const ctx = await borrowerContext();
+      const body = buildTree(buildTreeEntry('0100644', 'f', BLOB_SHA_A));
+      const id = await idOf(ctx, 'tree', body);
+      await writeLooseAtId(ctx, id, 'tree', body.length, body);
+      await writeDonorLooseAtId(ctx, id, 'tree', body);
+      const warning = {
+        type: 'bad-object',
+        id,
+        objectType: 'tree',
+        msgId: 'zeroPaddedFilemode',
+        severity: 'warning',
+      };
+
+      // Act
+      const result = await sut(ctx, new Set([id]), catalogueWith());
+
+      // Assert
+      expect(result.findings).toEqual([warning, { ...warning, objectsDir: DONOR_OBJECTS }]);
+      expect(result.exitBit).toBe(0);
+    });
+  });
+});
+
+describe('Given a borrower and its donor each holding a loose copy that hashes elsewhere', () => {
+  describe('When runContentValidationPass validates that object', () => {
+    it('Then both copies report and the id is unreadable for reachability', async () => {
+      // Arrange
+      const ctx = await borrowerContext();
+      const id = 'd'.repeat(40) as ObjectId;
+      const body = ENCODER.encode('nowhere');
+      await writeLooseAtId(ctx, id, 'blob', body.length, body);
+      await writeDonorLooseAtId(ctx, id, 'blob', body);
+
+      // Act
+      const result = await sut(ctx, new Set([id]), catalogueWith());
+
+      // Assert
+      expect(result.findings.filter((finding) => finding.type === 'hash-mismatch')).toHaveLength(2);
+      expect(result.typeUnknownIds.has(id)).toBe(true);
+    });
+  });
+});
