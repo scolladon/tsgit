@@ -1,9 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { applyTextconv } from '../../../../src/application/primitives/apply-textconv.js';
+import type { TsgitError } from '../../../../src/domain/error.js';
 import type { CommandRequest, CommandRunner } from '../../../../src/ports/command-runner.js';
+import type { Context } from '../../../../src/ports/context.js';
 
 const utf8 = new TextEncoder();
+
+const stagedInputs = async (ctx: Context): Promise<ReadonlyArray<string>> => {
+  if (!(await ctx.fs.exists(ctx.layout.gitDir))) return [];
+  return (await ctx.fs.readdir(ctx.layout.gitDir))
+    .map((entry) => entry.name)
+    .filter((name) => name.startsWith('TEXTCONV_INPUT_'));
+};
 
 describe('applyTextconv', () => {
   describe('Given a command and content bytes', () => {
@@ -72,13 +81,69 @@ describe('applyTextconv', () => {
     });
   });
 
+  describe('Given a textconv driver that exits non-zero', () => {
+    describe('When applyTextconv is called', () => {
+      it('Then it throws TEXTCONV_FAILED with the command and exit code and removes the temp file', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const runner: CommandRunner = {
+          run: async () => ({ exitCode: 1, stdout: utf8.encode('partial\n') }),
+        };
+
+        // Act
+        let caught: unknown;
+        try {
+          await applyTextconv(ctx, runner, 'false', utf8.encode('x\n'), 'old');
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'TEXTCONV_FAILED',
+          command: 'false',
+          exitCode: 1,
+        });
+        expect(await stagedInputs(ctx)).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given an empty textconv command', () => {
+    describe('When applyTextconv is called', () => {
+      it('Then it throws TEXTCONV_FAILED without an exit code and never runs or stages anything', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        let runnerCalled = false;
+        const runner: CommandRunner = {
+          run: async () => {
+            runnerCalled = true;
+            return { exitCode: 0 };
+          },
+        };
+
+        // Act
+        let caught: unknown;
+        try {
+          await applyTextconv(ctx, runner, '', utf8.encode('x\n'), 'old');
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({ code: 'TEXTCONV_FAILED', command: '' });
+        expect(runnerCalled).toBe(false);
+        expect(await stagedInputs(ctx)).toEqual([]);
+      });
+    });
+  });
+
   describe('Given a temp file is created', () => {
     describe('When applyTextconv finishes (even on error)', () => {
       it('Then the temp file is cleaned up after the call', async () => {
         // Arrange
         const ctx = createMemoryContext();
         const content = utf8.encode('test\n');
-        const tmpPath = `${ctx.layout.gitDir}/TEXTCONV_INPUT_old`;
         const runner: CommandRunner = {
           run: async () => ({ exitCode: 0, stdout: utf8.encode('OUT\n') }),
         };
@@ -87,8 +152,43 @@ describe('applyTextconv', () => {
         await applyTextconv(ctx, runner, 'cmd', content, 'old');
 
         // Assert — temp file no longer exists after the call
-        const existsAfter = await ctx.fs.exists(tmpPath);
-        expect(existsAfter).toBe(false);
+        expect(await stagedInputs(ctx)).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given two overlapping invocations with the same token', () => {
+    describe('When the first finishes while the second still runs', () => {
+      it('Then each stages its own temp file and both succeed', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        let releaseSecond: () => void = () => undefined;
+        const secondGate = new Promise<void>((resolve) => {
+          releaseSecond = resolve;
+        });
+        const staged: string[] = [];
+        let calls = 0;
+        const runner: CommandRunner = {
+          run: async (req) => {
+            const path = req.command.split(' ').pop() ?? '';
+            staged.push(path);
+            calls += 1;
+            if (calls === 2) await secondGate;
+            return { exitCode: 0, stdout: await ctx.fs.read(path) };
+          },
+        };
+        const first = applyTextconv(ctx, runner, 'cat', utf8.encode('one\n'), 'old');
+        const second = applyTextconv(ctx, runner, 'cat', utf8.encode('two\n'), 'old');
+
+        // Act
+        const firstResult = await first;
+        releaseSecond();
+        const secondResult = await second;
+
+        // Assert
+        expect(firstResult).toEqual(utf8.encode('one\n'));
+        expect(secondResult).toEqual(utf8.encode('two\n'));
+        expect(staged[0]).not.toBe(staged[1]);
       });
     });
   });
@@ -140,7 +240,7 @@ describe('applyTextconv', () => {
         // Assert — the temp path ends with the caller-supplied token (the
         // per-side+path token is what prevents concurrent-diff collisions;
         // the cross-path collision itself is exercised in materialise-patch-files.test.ts)
-        expect(capturedTmpPath).toMatch(new RegExp(`TEXTCONV_INPUT_${token}$`));
+        expect(capturedTmpPath).toMatch(new RegExp(`/TEXTCONV_INPUT_[A-Za-z0-9]{6}_${token}$`));
       });
     });
   });

@@ -297,6 +297,7 @@ async function applyStatPass(
   const getProvider = lazyProvider(ctx);
   const files = await materialisePatchFiles(ctx, diff.changes, {
     applyTextconv: true,
+    runTextconv: false,
     getProvider,
   });
   await readThresholdWhenWeighing(ctx, diff.changes, getProvider, statWeighsBlob);

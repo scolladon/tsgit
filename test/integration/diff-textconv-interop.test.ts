@@ -28,8 +28,9 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/index.js';
 import { diff } from '../../src/application/commands/diff.js';
 import type { StatTreeDiff, TreeDiff } from '../../src/domain/diff/index.js';
+import type { TsgitError } from '../../src/domain/error.js';
 import { reconstructPatch } from './diff-reconstruct.js';
-import { GIT_AVAILABLE, git, runGit, runGitEnv } from './interop-helpers.js';
+import { GIT_AVAILABLE, git, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
 
 const SETUP_TIMEOUT = 60_000;
 
@@ -427,6 +428,99 @@ describe.skipIf(!GIT_AVAILABLE)('textconv diff interop', () => {
         // numstat surface above is pinned to the raw bytes
         expect(result).toBe(peer);
         expect(peer).toContain('EXTRA');
+      });
+    });
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)('textconv driver that cannot run', () => {
+  let failDir = '';
+  let failCtx: ReturnType<typeof createNodeContext>;
+  let from = '';
+  let to = '';
+
+  beforeAll(async () => {
+    failDir = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-textconv-fail-')));
+    runGit(['init', '-q', '-b', 'main', failDir]);
+    await writeFile(path.join(failDir, '.gitattributes'), '*.x diff=t\n');
+    await writeFile(path.join(failDir, 'f.x'), 'a b\n');
+    await writeFile(path.join(failDir, 'g.x'), 'q\n');
+    runGit(['-C', failDir, 'add', '.']);
+    runGit(['-C', failDir, 'commit', '-q', '-m', 'c'], { env: dateEnv(1_700_040_000) });
+    await writeFile(path.join(failDir, 'f.x'), 'a  b\n');
+    await writeFile(path.join(failDir, 'g.x'), 'r\n');
+    runGit(['-C', failDir, 'commit', '-q', '-a', '-m', 'd'], { env: dateEnv(1_700_040_001) });
+    from = git(failDir, 'rev-parse', 'HEAD~1').trim();
+    to = git(failDir, 'rev-parse', 'HEAD').trim();
+    failCtx = createNodeContext({ workDir: failDir });
+  }, SETUP_TIMEOUT);
+
+  afterAll(async () => {
+    await rm(failDir, { recursive: true, force: true });
+  });
+
+  const failure = async (run: () => Promise<unknown>): Promise<unknown> => {
+    try {
+      await run();
+    } catch (error) {
+      return (error as TsgitError).data;
+    }
+    return undefined;
+  };
+
+  describe.each([
+    { label: 'empty', command: '', expected: { code: 'TEXTCONV_FAILED', command: '' } },
+    {
+      label: 'failing',
+      command: 'false',
+      expected: { code: 'TEXTCONV_FAILED', command: 'false', exitCode: 1 },
+    },
+  ])('Given a $label diff.t.textconv command', ({ command, expected }) => {
+    beforeAll(() => {
+      runGit(['-C', failDir, 'config', 'diff.t.textconv', command]);
+    });
+
+    describe('When diff counts it withStat under ignoreWhitespace', () => {
+      it('Then numstat matches git diff --numstat -w, which never runs textconv', async () => {
+        // Arrange
+        const peer = git(failDir, 'diff', '--no-ext-diff', '--numstat', '-w', from, to).trim();
+
+        // Act
+        const result = await diff(failCtx, { from, to, withStat: true, ignoreWhitespace: 'all' });
+
+        // Assert
+        expect(numstatRowsFrom(result).join('\n')).toBe(peer);
+      });
+    });
+
+    describe('When diff drops whitespace-only changes without stat', () => {
+      it('Then it dies like git diff --name-only -w', async () => {
+        // Arrange
+        const peer = tryRunGitWithExit(['-C', failDir, 'diff', '--name-only', '-w', from, to]);
+
+        // Act
+        const result = await failure(() => diff(failCtx, { from, to, ignoreWhitespace: 'all' }));
+
+        // Assert
+        expect(peer.exitCode).toBe(128);
+        expect(peer.stderr).toContain('fatal: unable to read files to diff');
+        expect(result).toEqual(expected);
+      });
+    });
+
+    describe('When the patch is rendered', () => {
+      it('Then it dies like git diff', async () => {
+        // Arrange
+        const peer = tryRunGitWithExit(['-C', failDir, 'diff', '--no-ext-diff', from, to]);
+
+        // Act
+        const result = await failure(async () =>
+          reconstructPatch(failCtx, await diff(failCtx, { from, to })),
+        );
+
+        // Assert
+        expect(peer.exitCode).toBe(128);
+        expect(result).toEqual(expected);
       });
     });
   });

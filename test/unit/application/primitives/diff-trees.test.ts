@@ -10,6 +10,7 @@ import { readObject } from '../../../../src/application/primitives/read-object.j
 import { MAX_PEEL_DEPTH } from '../../../../src/application/primitives/types.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
+import { primaryPath } from '../../../../src/domain/diff/change-path.js';
 import type { LineKey, TreeDiff, WhitespaceMode } from '../../../../src/domain/diff/index.js';
 import * as rawTreeDiffMod from '../../../../src/domain/diff/raw-tree-diff.js';
 import {
@@ -19,6 +20,7 @@ import {
 } from '../../../../src/domain/diff/similarity.js';
 import * as statFieldsMod from '../../../../src/domain/diff/stat-fields.js';
 import * as domainTreeDiffMod from '../../../../src/domain/diff/tree-diff.js';
+import type { TsgitError } from '../../../../src/domain/error.js';
 import * as encodingMod from '../../../../src/domain/objects/encoding.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import { SHA1_CONFIG } from '../../../../src/domain/objects/hash-config.js';
@@ -2217,6 +2219,74 @@ describe('diffTrees', () => {
 
         // Assert — dropped entirely (not a 0/0 row), matching git's raw-bytes verdict
         expect(result.changes).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given a diff driver whose textconv command fails and a whitespace-only plus a real change', () => {
+    const arrange = async () => {
+      const enc = new TextEncoder();
+      const runs: string[] = [];
+      const runner: CommandRunner = {
+        run: async (req) => {
+          runs.push(req.command);
+          return { exitCode: 1 };
+        },
+      };
+      const ctx = createMemoryContext({ command: runner });
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.x diff=t\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[diff "t"]\n\ttextconv = false\n');
+      const blob = async (text: string): Promise<ObjectId> =>
+        writeObject(ctx, { type: 'blob', content: enc.encode(text), id: '' as ObjectId });
+      const before = await writeTree(ctx, [
+        treeEntry(FILE_MODE.REGULAR, 'f.x', await blob('a b\n')),
+        treeEntry(FILE_MODE.REGULAR, 'g.x', await blob('q\n')),
+      ]);
+      const after = await writeTree(ctx, [
+        treeEntry(FILE_MODE.REGULAR, 'f.x', await blob('a  b\n')),
+        treeEntry(FILE_MODE.REGULAR, 'g.x', await blob('r\n')),
+      ]);
+      return { ctx, runs, before, after };
+    };
+
+    describe('When diffTrees counts it withStat under ignoreWhitespace', () => {
+      it('Then it never runs textconv and counts the raw blobs, as git --numstat -w does', async () => {
+        // Arrange
+        const { ctx, runs, before, after } = await arrange();
+
+        // Act
+        const result = await diffTrees(ctx, before, after, {
+          withStat: true,
+          ignoreWhitespace: 'all',
+        });
+
+        // Assert
+        expect(result.changes.map((c) => [primaryPath(c), c.added, c.deleted])).toEqual([
+          ['g.x', 1, 1],
+        ]);
+        expect(runs).toEqual([]);
+      });
+    });
+
+    describe('When diffTrees drops whitespace-only changes without stat', () => {
+      it('Then it dies with TEXTCONV_FAILED, as git --name-only -w does', async () => {
+        // Arrange
+        const { ctx, before, after } = await arrange();
+
+        // Act
+        let caught: unknown;
+        try {
+          await diffTrees(ctx, before, after, { ignoreWhitespace: 'all' });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'TEXTCONV_FAILED',
+          command: 'false',
+          exitCode: 1,
+        });
       });
     });
   });

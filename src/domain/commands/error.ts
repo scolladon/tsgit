@@ -144,6 +144,12 @@ export type CommandError =
       readonly exitCode: number;
     }
   | {
+      readonly code: 'TEXTCONV_FAILED';
+      readonly command: string;
+      /** Absent when the command could not be run at all. */
+      readonly exitCode?: number;
+    }
+  | {
       readonly code: 'CONFIG_KEY_INVALID';
       readonly key: string;
       readonly reason: 'empty-section' | 'missing-name' | 'bad-character';
@@ -596,6 +602,13 @@ export const cleanFilterFailed = (path: FilePath, filter: string, exitCode?: num
 
 export const smudgeFilterFailed = (path: FilePath, filter: string, exitCode: number): TsgitError =>
   new TsgitError({ code: 'SMUDGE_FILTER_FAILED', path, filter, exitCode });
+
+export const textconvFailed = (command: string, exitCode?: number): TsgitError =>
+  new TsgitError({
+    code: 'TEXTCONV_FAILED',
+    command,
+    ...(exitCode !== undefined && { exitCode }),
+  });
 
 export const configKeyInvalid = (
   key: string,

@@ -15,6 +15,7 @@ import {
   signedPushUnsupported,
   signingFailed,
   smudgeFilterFailed,
+  textconvFailed,
   timestampOutOfRange,
   worktreeFileAbsent,
 } from '../../../src/domain/commands/error.js';
@@ -1349,6 +1350,34 @@ describe('domain error — AdapterError', () => {
 
         // Assert
         expect(result.message).toContain('invalid sequencer todo: bad line');
+      });
+    });
+  });
+});
+
+describe('textconvFailed error', () => {
+  describe('Given textconvFailed for a driver that exited non-zero', () => {
+    describe('When accessing .data and .message', () => {
+      it('Then data carries the command and exit code and the message names both', () => {
+        // Arrange & Act
+        const result = textconvFailed('false', 1);
+
+        // Assert
+        expect(result.data).toEqual({ code: 'TEXTCONV_FAILED', command: 'false', exitCode: 1 });
+        expect(result.message).toBe("TEXTCONV_FAILED: textconv command 'false' failed (exit 1)");
+      });
+    });
+  });
+
+  describe('Given textconvFailed for a driver that could not run', () => {
+    describe('When accessing .data and .message', () => {
+      it('Then data omits exitCode and the message names no exit', () => {
+        // Arrange & Act
+        const result = textconvFailed('');
+
+        // Assert
+        expect(result.data).toEqual({ code: 'TEXTCONV_FAILED', command: '' });
+        expect(result.message).toBe("TEXTCONV_FAILED: textconv command '' failed");
       });
     });
   });

@@ -34,6 +34,13 @@ export interface MaterialisePatchFilesOptions {
    */
   readonly applyTextconv?: boolean;
   /**
+   * Set to `false` to resolve the `diff` attribute overrides without running
+   * any textconv driver — the stat pass, since git's builtin_diffstat counts
+   * raw blobs and never calls fill_textconv. Ignored unless `applyTextconv`
+   * is `true`.
+   */
+  readonly runTextconv?: boolean;
+  /**
    * Reuse an already-built attribute provider instead of building a fresh
    * one — callers that resolve attributes themselves (the whitespace drop
    * pass) thread theirs through so a K-change pass builds one provider, not
@@ -76,11 +83,8 @@ async function resolveTextconvCommand(
   ctx: Context,
   driverName: string,
 ): Promise<string | undefined> {
-  const section = (await readConfig(ctx)).diff?.get(driverName);
-  const textconv = section?.textconv;
-  // equivalent-mutant: `true && textconv !== ''` — for textconv=undefined, both `!== undefined && !==''`
-  // and `true && !==''` evaluate identically (undefined!==''=true, so both return undefined).
-  return textconv !== undefined && textconv !== '' ? textconv : undefined;
+  // An empty value stays configured: git keeps it and then fails to run it.
+  return (await readConfig(ctx)).diff?.get(driverName)?.textconv;
 }
 
 /**
@@ -377,7 +381,7 @@ export async function materialisePatchFiles(
   const config: OverrideConfig | undefined =
     options?.applyTextconv === true
       ? {
-          runner: ctx.command,
+          runner: options.runTextconv === false ? undefined : ctx.command,
           getProvider:
             options.getProvider ?? (() => (providerPromise ??= buildAttributeProvider(ctx))),
         }
