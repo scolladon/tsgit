@@ -208,12 +208,13 @@ describe('Given a parse check asked about the same ids twice', () => {
       // Arrange
       const { ctx, tree, blob } = await misHashedTree();
       const hashes = vi.spyOn(ctx.hash, 'createHasher');
-      const sut = parseCheckOnce(ctx);
+      const sut = parseCheckOnce;
 
       // Act
-      const first = [await sut(tree), await sut(blob)];
+      const check = sut(ctx);
+      const first = [await check(tree), await check(blob)];
       const hashesAfterFirst = hashes.mock.calls.length;
-      const second = [await sut(tree), await sut(blob)];
+      const second = [await check(tree), await check(blob)];
 
       // Assert
       expect(first).toEqual([false, true]);
