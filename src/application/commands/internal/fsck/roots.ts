@@ -64,7 +64,7 @@ function isToleratedIndexFault(err: unknown): boolean {
  * permission fault, an abort, or anything unforeseen rejects it for the same
  * reason: a check that never ran must not be reported as a check that passed.
  */
-function isContainedLookupFault(err: unknown): boolean {
+export function isContainedLookupFault(err: unknown): boolean {
   if (!(err instanceof TsgitError) || err.data.code !== 'INVALID_MULTI_PACK_INDEX') return false;
   return err.data.check === 'pack-int-id' || err.data.check === 'large-offset';
 }

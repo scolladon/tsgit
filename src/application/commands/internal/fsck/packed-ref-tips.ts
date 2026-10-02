@@ -80,12 +80,17 @@ export async function assertRefTipsReadable(
   ctx: Context,
   cache: ReadonlyMap<ObjectId, CachedGitObject>,
 ): Promise<void> {
+  await assertObjectsReadable(ctx, await refTips(ctx), cache);
+}
+
+/** Every ref's own tip, in ref order — a ref naming nothing is skipped. */
+export async function refTips(ctx: Context): Promise<ReadonlyArray<ObjectId>> {
   const tips: ObjectId[] = [];
   for (const ref of await enumerateRefs(ctx)) {
     const id = await tipOf(ctx, ref);
     if (id !== undefined) tips.push(id);
   }
-  await assertObjectsReadable(ctx, tips, cache);
+  return tips;
 }
 
 /** The stored types `--connectivity-only`'s walk parses: every one but a blob's. */

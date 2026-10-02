@@ -339,6 +339,12 @@ export interface PackRegistry {
    */
   midxHealth(): Promise<MidxHealth>;
   /**
+   * The packs the in-use multi-pack-index covers, in git's pack-int-id order
+   * (base layer first) — empty without a usable one. git loads these only
+   * through the midx, never through its sorted pack-directory scan.
+   */
+  midxPacks(): Promise<ReadonlyArray<RegisteredPack>>;
+  /**
    * The in-use multi-pack-index's bitmap, or `undefined` when there is no
    * usable midx for the current generation — the state `fsck`'s bitmap pass
    * needs and nothing else needs. Memoised per **generation**, not per
@@ -1198,6 +1204,11 @@ export async function createPackRegistry(
       await currentGate();
     },
     midxHealth: midxHealthMemo.get,
+    async midxPacks(): Promise<ReadonlyArray<RegisteredPack>> {
+      const { midx } = await currentGeneration();
+      if (midx === undefined) return [];
+      return midx.packsByLayer.flat().filter((pack) => pack !== undefined);
+    },
     async midxBitmap(): Promise<MidxBitmapLoad | undefined> {
       const generation = await currentGeneration();
       return generation.midxBitmap.get();

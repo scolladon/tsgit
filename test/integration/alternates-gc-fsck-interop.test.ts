@@ -1183,6 +1183,87 @@ describe.skipIf(!GIT_AVAILABLE)('fsck interop — deferred .gitmodules checks', 
     });
   });
 
+  /** The commit and its tree — every object of `specialRepo`'s one commit but the blob. */
+  const commitAndTree = (dir: string): ReadonlyArray<string> => [
+    runGit(['-C', dir, 'rev-parse', 'HEAD']).trim(),
+    runGit(['-C', dir, 'rev-parse', 'HEAD^{tree}']).trim(),
+  ];
+
+  /** The blob packed with fillers until its pack name sorts before `rival`'s. */
+  const blobPackSortingBefore = (dir: string, rival: string): string => {
+    for (let filler = 0; ; filler += 1) {
+      const extra = runGit(['-C', dir, 'hash-object', '-w', '--stdin'], {
+        input: `filler ${filler}`,
+      }).trim();
+      const name = packObjects(dir, [blobOf(dir), extra]);
+      if (name < rival) return name;
+      for (const ext of ['pack', 'idx', 'rev']) {
+        rmSync(path.join(objectsOf(dir), 'pack', `pack-${name}.${ext}`), { force: true });
+      }
+    }
+  };
+
+  describe.each([
+    {
+      layout: 'a multi-pack-index blob pack younger than the scanned tree pack',
+      prepare: (dir: string) => {
+        const blobPack = packObjects(dir, [blobOf(dir)]);
+        runGit(['-C', dir, 'multi-pack-index', 'write']);
+        const restPack = packObjects(dir, commitAndTree(dir));
+        stampPack(dir, blobPack, NEWER_SECONDS);
+        stampPack(dir, restPack, OLDER_SECONDS);
+      },
+      exitCode: 4,
+    },
+    {
+      layout: 'two multi-pack-index packs, the blob pack younger and first by pack-int-id',
+      prepare: (dir: string) => {
+        const restPack = packObjects(dir, commitAndTree(dir));
+        const blobPack = blobPackSortingBefore(dir, restPack);
+        runGit(['-C', dir, 'multi-pack-index', 'write']);
+        stampPack(dir, blobPack, NEWER_SECONDS);
+        stampPack(dir, restPack, OLDER_SECONDS);
+      },
+      exitCode: 4,
+    },
+    {
+      layout: 'two scanned packs of one age',
+      prepare: (dir: string) => splitPacks(dir, OLDER_SECONDS, OLDER_SECONDS),
+      exitCode: 4,
+    },
+    {
+      layout: 'two scanned packs of one age and a tag on the blob',
+      prepare: (dir: string) => {
+        splitPacks(dir, OLDER_SECONDS, OLDER_SECONDS);
+        runGit(['-C', dir, 'update-ref', 'refs/tags/blob', blobOf(dir)]);
+      },
+      exitCode: 1,
+    },
+  ])('Given an evil .gitmodules in $layout', ({ layout, prepare, exitCode }) => {
+    describe('When git fsck and tsgit fsck run', () => {
+      it(
+        `Then both verify the packs in git's order and exit ${exitCode}`,
+        async () => {
+          // Arrange
+          const dir = specialRepo(layout.replaceAll(/\W+/g, '-'));
+          prepare(dir);
+          runGit(['-C', dir, 'prune-packed']);
+          const git = gitFsck(dir);
+          const sut = tsgitFsck;
+
+          // Act
+          const result = await sut(dir);
+
+          // Assert
+          expect(git.exitCode).toBe(exitCode);
+          expect(result.exitCode).toBe(exitCode);
+          expect(specialLines(result.findings)).toEqual(gitSpecialLines(git.stderr));
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
   describe('Given a borrower whose loose tree copy hashes to another object and a donor holding the valid copy', () => {
     describe('When git fsck and tsgit fsck run on the borrower', () => {
       it(

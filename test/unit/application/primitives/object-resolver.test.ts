@@ -275,6 +275,7 @@ async function stubRegistry(
     dispose: noopDispose,
     health: async () => ({ accessible: [], unusable: [] }),
     indexFaults: async () => [],
+    midxPacks: async () => [],
     midxHealth: async () => ({
       artefact: undefined,
       faults: [],
@@ -3639,6 +3640,7 @@ describe('object-resolver', () => {
             dispose: noopDispose,
             health: async () => ({ accessible: [pack], unusable: [] }),
             indexFaults: async () => [],
+            midxPacks: async () => [],
             midxHealth: async () => ({
               artefact: undefined,
               faults: [],
@@ -3713,6 +3715,7 @@ describe('object-resolver', () => {
             dispose: noopDispose,
             health: async () => ({ accessible: [pack], unusable: [] }),
             indexFaults: async () => [],
+            midxPacks: async () => [],
             midxHealth: async () => ({
               artefact: undefined,
               faults: [],
@@ -3793,6 +3796,7 @@ describe('object-resolver', () => {
             dispose: noopDispose,
             health: async () => ({ accessible: [pack], unusable: [] }),
             indexFaults: async () => [],
+            midxPacks: async () => [],
             midxHealth: async () => ({
               artefact: undefined,
               faults: [],
@@ -3869,6 +3873,7 @@ describe('object-resolver', () => {
             dispose: noopDispose,
             health: async () => ({ accessible: [pack], unusable: [] }),
             indexFaults: async () => [],
+            midxPacks: async () => [],
             midxHealth: async () => ({
               artefact: undefined,
               faults: [],

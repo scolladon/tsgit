@@ -7922,3 +7922,113 @@ describe('PackRegistry.reprepare', () => {
     });
   });
 });
+
+describe('PackRegistry.midxPacks — the packs the multi-pack-index covers', () => {
+  describe('Given packs and no multi-pack-index', () => {
+    describe('When midxPacks is called', () => {
+      it('Then it returns no pack', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeSingleBlobPack(ctx, 'A', 'midx-packs-none');
+        const sut = await createPackRegistry(ctx);
+
+        // Act
+        const result = await sut.midxPacks();
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given three packs and a multi-pack-index naming two of them', () => {
+    describe('When midxPacks is called', () => {
+      it('Then it returns the two covered packs in pack-int-id order', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const idA = await writeSingleBlobPack(ctx, 'A', 'midx-packs-a');
+        await writeSingleBlobPack(ctx, 'B', 'midx-packs-b');
+        const idC = await writeSingleBlobPack(ctx, 'C', 'midx-packs-c');
+        await writeMidxBytes(
+          ctx,
+          buildMidx(
+            healthyMidxSpec({
+              packNames: ['pack-A.idx', 'pack-C.idx'],
+              entries: [
+                { id: idA, packIndex: 0, offset: PACK_HEADER_SIZE },
+                { id: idC, packIndex: 1, offset: PACK_HEADER_SIZE },
+              ],
+            }),
+          ),
+        );
+        const sut = await createPackRegistry(ctx);
+
+        // Act
+        const result = await sut.midxPacks();
+
+        // Assert
+        expect(result.map((pack) => pack.name)).toEqual(['pack-A', 'pack-C']);
+      });
+    });
+  });
+
+  describe('Given a two-layer chain whose base names a pack sorting after the tip layer pack', () => {
+    describe('When midxPacks is called', () => {
+      it('Then the base layer pack comes first, as its pack-int-id does', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const idA = await writeSingleBlobPack(ctx, 'A', 'midx-packs-chain-a');
+        const idB = await writeSingleBlobPack(ctx, 'B', 'midx-packs-chain-b');
+        await writeMidxChain(ctx, [
+          {
+            digest: '1'.repeat(40),
+            spec: healthyMidxSpec({
+              packNames: ['pack-B.idx'],
+              entries: [{ id: idB, packIndex: 0, offset: PACK_HEADER_SIZE }],
+            }),
+          },
+          {
+            digest: '2'.repeat(40),
+            spec: healthyMidxSpec({
+              packNames: ['pack-A.idx'],
+              entries: [{ id: idA, packIndex: 0, offset: PACK_HEADER_SIZE }],
+            }),
+          },
+        ]);
+        const sut = await createPackRegistry(ctx);
+
+        // Act
+        const result = await sut.midxPacks();
+
+        // Assert
+        expect(result.map((pack) => pack.name)).toEqual(['pack-B', 'pack-A']);
+      });
+    });
+  });
+
+  describe('Given a multi-pack-index naming a pack no file carries', () => {
+    describe('When midxPacks is called', () => {
+      it('Then the unbound name is skipped', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const idA = await writeSingleBlobPack(ctx, 'A', 'midx-packs-unbound');
+        await writeMidxBytes(
+          ctx,
+          buildMidx(
+            healthyMidxSpec({
+              packNames: ['pack-A.idx', 'pack-Z.idx'],
+              entries: [{ id: idA, packIndex: 0, offset: PACK_HEADER_SIZE }],
+            }),
+          ),
+        );
+        const sut = await createPackRegistry(ctx);
+
+        // Act
+        const result = await sut.midxPacks();
+
+        // Assert
+        expect(result.map((pack) => pack.name)).toEqual(['pack-A']);
+      });
+    });
+  });
+});
