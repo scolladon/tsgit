@@ -1,3 +1,4 @@
+import { errorDataCode } from '../../../../domain/error-data-code.js';
 import type { FsckSeverityTable } from '../../../../domain/fsck/index.js';
 import { retypeSeverity } from '../../../../domain/fsck/index.js';
 import type { ObjectId, RefName } from '../../../../domain/objects/index.js';
@@ -111,13 +112,15 @@ const HEAD = 'HEAD' as RefName;
 
 type RefEntries = Awaited<ReturnType<RefStore['listRefs']>>;
 
-/** The object a ref names — a symbolic one through its chain — or
- *  `undefined` when it names none (an unborn branch). */
+/** The object a ref names — a symbolic one through its chain. A symbolic
+ *  ref whose chain ends at no ref is git's broken ref, snapshotted with the
+ *  zero oid; one git cannot resolve otherwise names none. */
 async function targetOf(ctx: Context, entry: RefEntries[number]): Promise<ObjectId | undefined> {
   if (entry.value.kind === 'direct') return entry.value.id;
   try {
     return await resolveRef(ctx, entry.name, { peel: false });
   } catch (err) {
+    if (errorDataCode(err) === 'REF_NOT_FOUND') return zeroOid(ctx.hashConfig);
     if (!isTolerableRefFault(err)) throw err;
     return undefined;
   }

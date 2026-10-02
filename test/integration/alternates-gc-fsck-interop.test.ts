@@ -1423,3 +1423,48 @@ describe.skipIf(!GIT_AVAILABLE)('fsck interop — invalid cache-tree pointers', 
     });
   });
 });
+
+describe.skipIf(!GIT_AVAILABLE)('fsck interop — symbolic refs naming no object', () => {
+  describe.each([
+    { label: 'an unborn branch', target: undefined },
+    { label: 'a branch naming an absent object', target: '1'.repeat(40) },
+  ])('Given refs/remotes/origin/HEAD pointing at $label', ({ label, target }) => {
+    describe('When git fsck and tsgit fsck run', () => {
+      it(
+        'Then both name the same invalid pointers, exit 2',
+        async () => {
+          // Arrange
+          const dir = path.join(root, `symref-${label.replaceAll(/\W+/g, '-')}`);
+          runGit(['init', '-q', '-b', 'main', dir]);
+          configure(dir);
+          commitFile(dir, 'f', 'base');
+          runGit([
+            '-C',
+            dir,
+            'symbolic-ref',
+            'refs/remotes/origin/HEAD',
+            'refs/remotes/origin/main',
+          ]);
+          if (target !== undefined) {
+            mkdirSync(path.join(dir, '.git', 'refs', 'remotes', 'origin'), { recursive: true });
+            writeFileSync(
+              path.join(dir, '.git', 'refs', 'remotes', 'origin', 'main'),
+              `${target}\n`,
+            );
+          }
+          const git = gitFsck(dir);
+          const sut = tsgitFsck;
+
+          // Act
+          const result = await sut(dir);
+
+          // Assert
+          expect(git.exitCode).toBe(2);
+          expect(result.exitCode).toBe(2);
+          expect(pointerLines(result.findings)).toEqual(gitLines(git.stderr, POINTER_LINE));
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+});

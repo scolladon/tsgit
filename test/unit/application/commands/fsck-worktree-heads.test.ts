@@ -150,3 +150,68 @@ describe('Given a worktree admin directory without a gitdir file', () => {
     });
   });
 });
+
+describe('Given a symbolic ref other than HEAD naming an unborn branch', () => {
+  describe('When fsck runs', () => {
+    it('Then it reports the symbolic ref as an invalid pointer to the zero oid', async () => {
+      // Arrange
+      const ctx = await repoWithWorktrees();
+      await ctx.fs.writeUtf8(
+        `${ctx.layout.gitDir}/refs/remotes/origin/HEAD`,
+        'ref: refs/remotes/origin/main\n',
+      );
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(pointerFindings(result.findings)).toEqual([
+        { ...pointer('refs/remotes/origin/HEAD'), target: '0'.repeat(40) },
+      ]);
+      expect(result.exitCode).toBe(EXIT_MISSING);
+    });
+  });
+});
+
+describe('Given a symbolic ref other than HEAD naming a branch that names an absent object', () => {
+  describe('When fsck runs', () => {
+    it('Then it reports both refs, each by its own name', async () => {
+      // Arrange
+      const ctx = await repoWithWorktrees();
+      await ctx.fs.writeUtf8(
+        `${ctx.layout.gitDir}/refs/remotes/origin/HEAD`,
+        'ref: refs/remotes/origin/main\n',
+      );
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/remotes/origin/main`, `${ABSENT}\n`);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(pointerFindings(result.findings)).toEqual([
+        pointer('refs/remotes/origin/HEAD'),
+        pointer('refs/remotes/origin/main'),
+      ]);
+    });
+  });
+});
+
+describe('Given a linked worktree whose gitdir file is empty', () => {
+  describe('When fsck runs', () => {
+    it('Then that worktree is skipped as git skips it', async () => {
+      // Arrange
+      const ctx = await repoWithWorktrees();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/worktrees/wt1/gitdir`, '');
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/worktrees/wt1/HEAD`, `${ABSENT}\n`);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(pointerFindings(result.findings)).toEqual([]);
+    });
+  });
+});
