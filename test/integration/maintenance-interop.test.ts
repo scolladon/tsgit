@@ -759,11 +759,16 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
     });
   });
 
-  describe('Given an unparseable gc.pruneExpire value, When gc runs on both twins', () => {
+  describe.each([
+    { label: 'an unparseable', value: 'not-a-date' },
+    { label: 'the reflog-only "all"', value: 'all' },
+    { label: 'the reflog-only "false"', value: 'false' },
+    { label: 'a future-dated', value: '2099-01-01' },
+  ])('Given $label gc.pruneExpire value, When gc runs on both twins', ({ value }) => {
     let baseDir: string;
 
     beforeAll(async () => {
-      baseDir = await initRepo('malformed-expiry');
+      baseDir = await initRepo(`malformed-expiry-${value}`);
       await addCommit(baseDir, 'c0');
       writeLooseBlobGit(baseDir, 'irrelevant');
     }, SETUP_TIMEOUT);
@@ -774,12 +779,12 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
 
     it('Then both tools refuse rather than silently defaulting the cutoff', async () => {
       // Arrange
-      const twin = await makeTwin(baseDir, 'malformed-expiry');
+      const twin = await makeTwin(baseDir, `malformed-expiry-${value}`);
       const peerResult = tryRunGitWithExit([
         '-C',
         twin.peerDir,
         '-c',
-        'gc.pruneExpire=not-a-date',
+        `gc.pruneExpire=${value}`,
         'gc',
       ]);
 
@@ -788,7 +793,7 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
       // call precedes `runOursGc`'s Context construction).
       let oursCaught: unknown;
       try {
-        await setOursGcConfig(twin.oursDir, ['gc.pruneExpire=not-a-date']);
+        await setOursGcConfig(twin.oursDir, [`gc.pruneExpire=${value}`]);
         const ctx = trackedNodeContext(twin.oursDir, 'sha1');
         await maintenance(ctx, { tasks: ['gc'] });
       } catch (error) {
@@ -796,7 +801,7 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
       }
 
       // Assert — both refuse; git with a non-zero exit, tsgit with a typed error.
-      expect(peerResult.exitCode).not.toBe(0);
+      expect(peerResult.exitCode).toBe(128);
       expect(oursCaught).toBeInstanceOf(TsgitError);
       expect((oursCaught as TsgitError).data.code).toBe('CONFIG_BAD_DATE_VALUE');
       await disposeTwin(twin);

@@ -1091,14 +1091,14 @@ describe('maintenance', () => {
         const ctx = await seedOneCommit();
         const blobId = await writeLooseBlob(ctx, 'aged');
         const { forceMtimeSeconds } = installLstatOverrides(ctx);
-        forceMtimeSeconds(looseObjectPath(commonGitDir(ctx), blobId), 2_000_000_000);
-        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = @1999999999\n');
+        forceMtimeSeconds(looseObjectPath(commonGitDir(ctx), blobId), 1_500_000_000);
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = @1499999999\n');
         const sut = maintenance;
 
         // Act
         const result = await sut(ctx, { tasks: ['gc'] });
 
-        // Assert — survives (2_000_000_000 > 1_999_999_999) into the cruft pack.
+        // Assert — survives (1_500_000_000 > 1_499_999_999) into the cruft pack.
         expect(result.cruftPackId).toBeDefined();
         expect(result.cruftObjectsAdded).toBe(1);
         expect(result.cruftObjectsExpired).toBe(0);
@@ -1144,12 +1144,12 @@ describe('maintenance', () => {
 
         // Act — write it loose again with a NEWER forced mtime ("freshen").
         await writeLooseBlob(ctx, 'freshen-loose-newer');
-        forceMtimeSeconds(loosePath, 3_000_000_000);
-        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = @2999999999\n');
+        forceMtimeSeconds(loosePath, 1_700_000_000);
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = @1699999999\n');
         const result = await sut(ctx, { tasks: ['gc'] });
 
-        // Assert — survives because the NEWER loose mtime (3e9) beats the
-        // cutoff (2_999_999_999), even though the carried value (1e9) would not.
+        // Assert — survives because the NEWER loose mtime (1.7e9) beats the
+        // cutoff (1_699_999_999), even though the carried value (1e9) would not.
         expect(result.cruftObjectsRetained).toBe(1);
         expect(result.cruftObjectsExpired).toBe(0);
       });
@@ -1164,19 +1164,19 @@ describe('maintenance', () => {
         const blobId = await writeLooseBlob(ctx, 'freshen-carried-newer');
         const { forceMtimeSeconds } = installLstatOverrides(ctx);
         const loosePath = looseObjectPath(commonGitDir(ctx), blobId);
-        forceMtimeSeconds(loosePath, 3_000_000_000);
+        forceMtimeSeconds(loosePath, 1_700_000_000);
         await appendConfig(ctx, '\n[gc]\n\tpruneExpire = never\n');
         const sut = maintenance;
-        await sut(ctx, { tasks: ['gc'] }); // crufts it with carried mtime 3_000_000_000
+        await sut(ctx, { tasks: ['gc'] }); // crufts it with carried mtime 1_700_000_000
 
         // Act — resurrect it loose with an OLDER forced mtime than the carried one.
         await writeLooseBlob(ctx, 'freshen-carried-newer');
         forceMtimeSeconds(loosePath, 1_000_000_000);
-        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = @1999999999\n');
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = @1499999999\n');
         const result = await sut(ctx, { tasks: ['gc'] });
 
-        // Assert — survives because the carried mtime (3e9) beats the cutoff
-        // (1_999_999_999), even though the fresh loose mtime (1e9) would not.
+        // Assert — survives because the carried mtime (1.7e9) beats the cutoff
+        // (1_499_999_999), even though the fresh loose mtime (1e9) would not.
         expect(result.cruftObjectsRetained).toBe(1);
         expect(result.cruftObjectsExpired).toBe(0);
       });
@@ -1737,13 +1737,18 @@ describe('maintenance', () => {
     });
   });
 
-  describe('Given a malformed gc.pruneExpire value', () => {
+  describe.each([
+    { label: 'malformed', value: 'not-a-date' },
+    { label: 'the reflog-only keyword "all"', value: 'all' },
+    { label: 'the reflog-only keyword "false"', value: 'false' },
+    { label: 'future-dated', value: '2099-01-01' },
+  ])('Given a $label gc.pruneExpire value', ({ value }) => {
     describe('When gc runs', () => {
       it('Then it refuses and writes nothing', async () => {
         // Arrange
         const ctx = await seedOneCommit();
         await writeLooseBlob(ctx, 'irrelevant');
-        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = not-a-date\n');
+        await appendConfig(ctx, `\n[gc]\n\tpruneExpire = ${value}\n`);
         const sut = maintenance;
         const packDir = packDirOf(ctx);
 
@@ -1904,23 +1909,23 @@ describe('maintenance', () => {
         const packDir = packDirOf(ctx);
 
         await writeLooseBlob(ctx, oidAContent); // freshen oidA
-        forceMtimeSeconds(loosePathA, 3_000_000_000);
+        forceMtimeSeconds(loosePathA, 1_700_000_000);
         const blobB = await writeLooseBlob(ctx, 'merge-max-b');
-        forceMtimeSeconds(looseObjectPath(commonGitDir(ctx), blobB), 3_800_000_000);
+        forceMtimeSeconds(looseObjectPath(commonGitDir(ctx), blobB), 1_750_000_000);
         const originalRm = ctx.fs.rm.bind(ctx.fs);
         const rmSpy = vi.spyOn(ctx.fs, 'rm').mockImplementation(async (path: string) => {
           if (path.startsWith(`${packDir}/pack-${c1Sha}.`)) return;
           return originalRm(path);
         });
-        const second = await sut(ctx, { tasks: ['gc'] }); // c2: oidA -> 3e9, oidB -> 3.8e9
+        const second = await sut(ctx, { tasks: ['gc'] }); // c2: oidA -> 1.7e9, oidB -> 1.75e9
         rmSpy.mockRestore();
         expect(second.cruftPackId).toBeDefined();
         expect(second.cruftPackId).not.toBe(c1Sha);
         expect(second.cruftObjectsRetained + second.cruftObjectsAdded).toBe(2);
 
         // Act — cutoff strictly between oidA's two recorded mtimes: only
-        // the MAX (3e9) beats it; oidB (3.8e9) survives regardless.
-        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = @2000000000\n');
+        // the MAX (1.7e9) beats it; oidB (1.75e9) survives regardless.
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = @1500000000\n');
         const third = await sut(ctx, { tasks: ['gc'] });
 
         // Assert
@@ -4088,7 +4093,7 @@ describe('maintenance', () => {
   // ---------------------------------------------------------------------
 
   describe('Given an object present in all three mtime sources at once', () => {
-    const CUTOFF = 2_000_000_000;
+    const CUTOFF = 1_500_000_000;
 
     /** Seeds an object that is simultaneously loose, carried forward in an
      *  existing cruft sidecar (from a prior gc run), and present inside a
@@ -4119,7 +4124,7 @@ describe('maintenance', () => {
         // Arrange
         const ctx = await seedOneCommit();
         await seedTripleSourceObject(ctx, 'triple-loose-wins', {
-          loose: 3_000_000_000,
+          loose: 1_700_000_000,
           carried: 1_000_000_000,
           normalPack: 1_000_000_000,
         });
@@ -4141,7 +4146,7 @@ describe('maintenance', () => {
         const ctx = await seedOneCommit();
         await seedTripleSourceObject(ctx, 'triple-carried-wins', {
           loose: 1_000_000_000,
-          carried: 3_000_000_000,
+          carried: 1_700_000_000,
           normalPack: 1_000_000_000,
         });
         await appendConfig(ctx, `\n[gc]\n\tpruneExpire = @${CUTOFF}\n`);
@@ -4163,7 +4168,7 @@ describe('maintenance', () => {
         await seedTripleSourceObject(ctx, 'triple-normal-pack-wins', {
           loose: 1_000_000_000,
           carried: 1_000_000_000,
-          normalPack: 3_000_000_000,
+          normalPack: 1_700_000_000,
         });
         await appendConfig(ctx, `\n[gc]\n\tpruneExpire = @${CUTOFF}\n`);
         const sut = maintenance;
@@ -4223,15 +4228,15 @@ describe('maintenance', () => {
         const { forceMtimeSeconds } = installLstatOverrides(ctx);
         const packDir = packDirOf(ctx);
         forceMtimeSeconds(`${packDir}/pack-dup-src-a.pack`, 1_000_000_000);
-        forceMtimeSeconds(`${packDir}/pack-dup-src-b.pack`, 3_000_000_000);
-        const CUTOFF = 2_000_000_000;
+        forceMtimeSeconds(`${packDir}/pack-dup-src-b.pack`, 1_700_000_000);
+        const CUTOFF = 1_500_000_000;
         await appendConfig(ctx, `\n[gc]\n\tpruneExpire = @${CUTOFF}\n`);
         const sut = maintenance;
 
         // Act
         const result = await sut(ctx, { tasks: ['gc'] });
 
-        // Assert — survives because the MAX (3e9) beats the cutoff, even
+        // Assert — survives because the MAX (1.7e9) beats the cutoff, even
         // though the MIN (1e9) would not.
         expect(result.cruftObjectsAdded).toBe(1);
         expect(result.cruftObjectsExpired).toBe(0);

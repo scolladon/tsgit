@@ -179,7 +179,7 @@ export interface ParsedConfig {
   /**
    * `[gc]` — maintenance's `gc` task settings. `auto` (git default `6700`) is
    * consulted only under `auto: true`; `pruneExpire` (git default
-   * `2.weeks.ago`) is the raw config string, resolved by `expiryCutoff`;
+   * `2.weeks.ago`) is the raw config string, resolved by `configExpiryCutoff`;
    * `cruftPacks` (git default `true`) routes surviving unreachable objects
    * to a cruft pack rather than loose files.
    */
@@ -1989,7 +1989,7 @@ const applyGcAutoEntry = (gc: MutableGc, value: string | null): MutableGc | unde
  * well-formed key from being merged. `readConfig` stays total/lenient here —
  * the eager refusal for `gc.auto` lives in `assertValidGcAutoConfig`,
  * `gc.cruftPacks`'s in `assertValidBooleanConfig`, and `gc.pruneExpire`'s
- * grammar in `expiryCutoff`, mirroring `pack.writeReverseIndex`'s split
+ * grammar in `configExpiryCutoff`, mirroring `pack.writeReverseIndex`'s split
  * between a lenient merge and a separate refusal gate.
  */
 const applyGcEntry = (
@@ -2000,7 +2000,7 @@ const applyGcEntry = (
   if (lowered === 'auto') return applyGcAutoEntry(gc, value);
   if (lowered === 'pruneexpire') {
     // String-typed field: skip null (valueless key treated as absent).
-    // Grammar validated downstream by expiryCutoff — readConfig stays lenient.
+    // Grammar validated downstream by configExpiryCutoff — readConfig stays lenient.
     return value === null ? undefined : { ...gc, pruneExpire: value };
   }
   if (lowered === 'worktreepruneexpire') {

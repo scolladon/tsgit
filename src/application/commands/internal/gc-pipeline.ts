@@ -20,7 +20,7 @@ import {
   readConfig,
 } from '../../primitives/config-read.js';
 import { enumerateObjects } from '../../primitives/enumerate-objects.js';
-import { configExpiryCutoff, expiryCutoff } from '../../primitives/expiry-cutoff.js';
+import { configExpiryCutoff } from '../../primitives/expiry-cutoff.js';
 import { assertValidBooleanConfig } from '../../primitives/internal/boolean-config-guard.js';
 import { type ClosureTier, computeClosure } from '../../primitives/internal/closure-engine.js';
 import { boundedMapFor } from '../../primitives/internal/concurrency.js';
@@ -891,7 +891,7 @@ export async function runGcTask(
   await assertValidPackIntConfig(ctx);
   const config = await readConfig(ctx);
   const cruftPacksEnabled = config.gc?.cruftPacks ?? true;
-  const cutoff = expiryCutoff(config.gc?.pruneExpire ?? DEFAULT_PRUNE_EXPIRE, {});
+  const cutoff = configExpiryCutoff(config.gc?.pruneExpire ?? DEFAULT_PRUNE_EXPIRE);
   const worktreeCutoff = configExpiryCutoff(
     config.gc?.worktreePruneExpire ?? DEFAULT_WORKTREE_PRUNE_EXPIRE,
   );
