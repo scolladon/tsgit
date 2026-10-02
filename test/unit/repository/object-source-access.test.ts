@@ -4,6 +4,10 @@ import * as path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { nativePolicy } from '../../../src/adapters/node/path-policy.js';
+import {
+  posixGitPathSyntax,
+  windowsGitPathSyntax,
+} from '../../../src/application/primitives/internal/git-path-syntax.js';
 import { objectSources } from '../../../src/application/primitives/object-store.js';
 import { openRepository as openMemoryRepository } from '../../../src/index.default.js';
 import { openRepository } from '../../../src/index.node.js';
@@ -216,17 +220,41 @@ describe('filesystemRootOf', () => {
   describe.each([
     ['/x/y', '/'],
     ['/', '/'],
-    ['C:\\x', 'C:\\'],
-    ['C:/x/y', 'C:\\'],
-    ['\\\\srv\\share\\x', '\\\\srv\\share\\'],
-  ])('Given %s', (input, expected) => {
+    ['/:x/y', '/'],
+  ])('Given the POSIX path %s', (input, expected) => {
     describe('When the filesystem root is derived', () => {
       it(`Then the root is ${expected}`, () => {
         // Arrange
         const sut = filesystemRootOf;
 
         // Act
-        const result = sut(input);
+        const result = sut(posixGitPathSyntax, input);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+
+  describe.each([
+    ['/x/y', '/'],
+    ['C:\\x', 'C:\\'],
+    ['C:/x/y', 'C:\\'],
+    ['C:x', 'C:\\'],
+    ['1:\\x', '1:\\'],
+    ['\u00e4:\\x', '\u00e4:\\'],
+    ['\u{1F600}:\\x', '\u{1F600}:\\'],
+    ['\u00e4\u00e4\u00e4:\\x', '/'],
+    ['\\\\srv\\share\\x', '\\\\srv\\share\\'],
+    ['//srv/share', '\\\\srv\\share\\'],
+  ])('Given the Windows path %s', (input, expected) => {
+    describe('When the filesystem root is derived', () => {
+      it(`Then the root is ${expected}`, () => {
+        // Arrange
+        const sut = filesystemRootOf;
+
+        // Act
+        const result = sut(windowsGitPathSyntax, input);
 
         // Assert
         expect(result).toBe(expected);

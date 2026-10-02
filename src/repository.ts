@@ -8,6 +8,7 @@ import { createRawTreeResolver } from './adapters/snapshot-resolvers/raw-tree-re
 import { createSingleFlightIndexResolver } from './adapters/snapshot-resolvers/single-flight-index-resolver.js';
 import * as commands from './application/commands/index.js';
 import * as primitives from './application/primitives/index.js';
+import { gitPathSyntaxOf } from './application/primitives/internal/git-path-syntax.js';
 import { invalidateShallowSet } from './application/primitives/internal/shallow-set.js';
 import {
   narrowAlternatePathProbe,
@@ -654,8 +655,11 @@ export const openRepository = async (
     objectSourceAccessCache.set(objectsDir, built);
     return built;
   };
+  const pathSyntax = gitPathSyntaxOf(fallback);
   const alternatePathProbe = (path: string): AlternatePathProbe =>
-    narrowAlternatePathProbe(fallback.makeConfinedFs?.([filesystemRootOf(path)]) ?? detected.fs);
+    narrowAlternatePathProbe(
+      fallback.makeConfinedFs?.([filesystemRootOf(pathSyntax, path)]) ?? detected.fs,
+    );
   const config = opts.config !== undefined ? deepFreeze({ ...opts.config }) : undefined;
   const controller = new AbortController();
   const signal =

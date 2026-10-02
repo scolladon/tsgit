@@ -9,7 +9,7 @@ import {
   resolveObjectSources,
 } from './internal/alternate-chain.js';
 import { readBigFileThreshold } from './internal/big-file-threshold.js';
-import { posixGitPathSyntax, windowsGitPathSyntax } from './internal/git-path-syntax.js';
+import { gitPathSyntaxOf } from './internal/git-path-syntax.js';
 import { createPromiseMemo, type PromiseMemo } from './internal/promise-memo.js';
 import {
   assertRepoSettingsValid,
@@ -101,7 +101,7 @@ const accessFor = (ctx: Context, objectsDir: string): ObjectSourceAccess =>
 const chainIo = (ctx: Context): AlternateChainIo => ({
   probe: (path) => ctx.alternatePathProbe?.(path) ?? narrowAlternatePathProbe(ctx.fs),
   reader: (objectsDir) => accessFor(ctx, objectsDir),
-  pathSyntax: ctx.windowsPathSyntax === true ? windowsGitPathSyntax : posixGitPathSyntax,
+  pathSyntax: gitPathSyntaxOf(ctx),
 });
 
 const buildSource = async (

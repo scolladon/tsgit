@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  gitPathSyntaxOf,
   posixGitPathSyntax,
   windowsGitPathSyntax,
 } from '../../../../../src/application/primitives/internal/git-path-syntax.js';
@@ -133,6 +134,35 @@ describe('windowsGitPathSyntax', () => {
 
         // Assert
         expect(result).toEqual(expected);
+      });
+    });
+  });
+});
+
+describe('gitPathSyntaxOf', () => {
+  describe.each([
+    {
+      title: 'a host declaring Windows syntax',
+      host: { windowsPathSyntax: true },
+      expected: windowsGitPathSyntax,
+    },
+    {
+      title: 'a host declaring POSIX syntax',
+      host: { windowsPathSyntax: false },
+      expected: posixGitPathSyntax,
+    },
+    { title: 'a host declaring nothing', host: {}, expected: posixGitPathSyntax },
+  ])('Given $title', ({ host, expected }) => {
+    describe('When its git path syntax is chosen', () => {
+      it('Then it is the syntax of the git build the host emulates', () => {
+        // Arrange
+        const sut = gitPathSyntaxOf;
+
+        // Act
+        const result = sut(host);
+
+        // Assert
+        expect(result).toBe(expected);
       });
     });
   });

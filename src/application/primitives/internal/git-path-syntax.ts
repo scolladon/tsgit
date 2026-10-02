@@ -78,3 +78,7 @@ export const windowsGitPathSyntax: GitPathSyntax = {
   },
   components: (path) => path.split(WINDOWS_SEPARATORS).filter(nonEmpty),
 };
+
+/** The syntax of the git build a host emulates: Windows when it says so, POSIX otherwise. */
+export const gitPathSyntaxOf = (host: { readonly windowsPathSyntax?: boolean }): GitPathSyntax =>
+  host.windowsPathSyntax === true ? windowsGitPathSyntax : posixGitPathSyntax;
