@@ -1297,6 +1297,30 @@ describe('Given tree bytes that are malformed or truncated', () => {
           return raw;
         },
       },
+      {
+        label: 'a whole first entry whose id holds the tail NUL, then a name with no NUL',
+        build: () => {
+          // "1 a\0" + 20-byte id + "1 abc": 29 bytes; byte 8 (29 - 21) is id byte 4,
+          // zeroed so git's tail check passes and the second entry's own NUL search fails.
+          const raw = new Uint8Array(29).fill(0x61);
+          raw.set(encode('1 a\0'), 0);
+          raw[8] = 0x00;
+          raw.set(encode('1 abc'), 24);
+          return raw;
+        },
+      },
+      {
+        label: 'a whole first entry whose id holds the tail NUL, then an id cut short',
+        build: () => {
+          // "1 a\0" + 20-byte id + "1 b\0" + 10 id bytes: 38 bytes; byte 17 (38 - 21)
+          // is id byte 13, zeroed so git's tail check passes and the second id runs short.
+          const raw = new Uint8Array(38).fill(0x61);
+          raw.set(encode('1 a\0'), 0);
+          raw[17] = 0x00;
+          raw.set(encode('1 b\0'), 24);
+          return raw;
+        },
+      },
     ])('Then emits badTree at error severity — $label', ({ build }) => {
       // Arrange
       const rawBody = build();
