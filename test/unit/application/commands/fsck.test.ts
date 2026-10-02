@@ -722,10 +722,12 @@ describe('Given a ref pointing to an annotated tag whose target is missing', () 
       expect(missingTarget).toMatchObject({ type: 'missing', objectType: 'commit' });
       expect(result.exitCode & 2).toBe(2);
 
-      // Assert — a genuinely ABSENT target is never `tagged`, unlike a
-      // present-but-unreadable one (see the sibling describe below).
+      // Assert — git's `fsck_obj` reports the tag's target by its declared
+      // type whether or not it is present.
       const tagged = result.findings.filter((f) => f.type === 'tagged');
-      expect(tagged).toHaveLength(0);
+      expect(tagged).toEqual([
+        { type: 'tagged', id: ghostTarget, objectType: 'commit', tagName: 'v1.0', tag: tagId },
+      ]);
     });
   });
 });
@@ -734,8 +736,8 @@ describe('Given a ref pointing to an annotated tag whose target is missing', () 
 // TAGGED — annotated tag pointing to a PRESENT but content-unreadable target
 // ---------------------------------------------------------------------------
 // git's tag walk marks a PRESENT target reachable (and so `tagged`)
-// regardless of whether it could be typed — only a genuinely ABSENT target
-// drops the report. Pinned live against git 2.55.0 (scrubbed env): `git
+// regardless of whether it could be typed — as it does an absent one, since
+// `fsck_obj` reports the declared target. Pinned live against git 2.55.0 (scrubbed env): `git
 // fsck --tags` on this exact shape prints both `tagged blob <oid> (tb) in
 // <tag>` AND `missing blob <oid>`, exit 3.
 

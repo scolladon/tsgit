@@ -34,6 +34,7 @@ import {
   assembleConnectivityFindings,
   buildInEdgeMap,
   buildReachableSet,
+  checkedRootsAndTags,
   classifyObjects,
   excusePackHeld,
   typedBeforeWalk,
@@ -113,6 +114,18 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
 /** Every id a pack holds under bytes that hash to another id. */
 function misHashedIds(findings: ReadonlyArray<FsckFinding>): ReadonlySet<ObjectId> {
   return new Set(findings.flatMap((f) => (f.type === 'pack-entry-corrupt' ? [f.id] : [])));
+}
+
+/** Every id whose own content check raised an error — `fsck_obj` prints
+ *  nothing more for it. A hash mismatch never reaches the check at all. */
+function contentRefusedIds(findings: ReadonlyArray<FsckFinding>): ReadonlySet<ObjectId> {
+  return new Set(
+    findings.flatMap((f) =>
+      (f.type === 'bad-object' && f.severity === 'error') || f.type === 'hash-mismatch'
+        ? [f.id]
+        : [],
+    ),
+  );
 }
 
 /** What git's connectivity-only walk types objects from; `undefined` in the
@@ -322,7 +335,7 @@ async function auditRepository(ctx: Context, opts: FsckOptions): Promise<FsckRes
   );
   // `--no-full` verifies no pack, yet git's walk forgets an object a pack
   // holds (`has_object_pack`) rather than calling it missing or broken.
-  const { reached, missingIds, brokenEdges, unreadableEdges, rootCommits, tagRefs, typeFindings } =
+  const { reached, missingIds, brokenEdges, unreadableEdges, typeFindings } =
     opts.full === false ? await excusePackHeld(walk, (id) => hasPackCopy(auditCtx, id)) : walk;
 
   if (unreadable === 'classify') {
@@ -337,6 +350,11 @@ async function auditRepository(ctx: Context, opts: FsckOptions): Promise<FsckRes
   );
   const { unreachable, dangling } = classifyObjects(universe, reached, inEdgePresent);
   assertTypesRecoverable(ctx, unreachable, unrecoverable);
+  const { rootCommits, tagRefs } = checkedRootsAndTags(
+    universe,
+    reachabilityCache,
+    contentRefusedIds(contentResult.findings),
+  );
 
   const findings: FsckFinding[] = [
     ...contentResult.findings,

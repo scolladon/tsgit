@@ -96,8 +96,6 @@ export interface WalkResult {
   readonly missingIds: Set<ObjectId>;
   readonly brokenEdges: ReadonlyArray<GraphEdge>;
   readonly unreadableEdges: ReadonlyArray<GraphEdge>;
-  readonly rootCommits: ReadonlyArray<ObjectId>;
-  readonly tagRefs: ReadonlyArray<TagRef>;
   /** Objects the walk reached but could not walk as typed, in pop order. */
   readonly typeFindings: ReadonlyArray<TypeFinding>;
 }
@@ -120,8 +118,6 @@ interface WalkState {
   readonly missingIds: Set<ObjectId>;
   readonly brokenEdges: GraphEdge[];
   readonly unreadableEdges: GraphEdge[];
-  readonly rootCommits: ObjectId[];
-  readonly tagRefs: TagRef[];
   readonly typeFindings: TypeFinding[];
   /** Undefined outside connectivityOnly, where every walked object is pre-typed. */
   readonly typing: WalkTyping | undefined;
@@ -210,7 +206,6 @@ function processCommit(
   for (const parent of parents) {
     routeEdgeTarget(state, { fromId: id, fromType: 'commit', toId: parent, toType: 'commit' });
   }
-  if (parents.length === 0) state.rootCommits.push(id);
 }
 
 function processTree(
@@ -230,14 +225,8 @@ function processTag(
   id: ObjectId,
   obj: ProjectedGitObject & { type: 'tag' },
 ): void {
-  const { object: target, objectType: targetType, tagName } = obj;
-  const edge: LinkEdge = { fromId: id, fromType: 'tag', toId: target, toType: targetType };
-  // git's tag walk marks the target reachable — and so reports `tagged` —
-  // whenever it is PRESENT, whether or not it could be typed: only a
-  // genuinely absent (broken-link) target drops the report.
-  if (routeEdgeTarget(state, edge) !== 'broken') {
-    state.tagRefs.push({ tagId: id, tagName, targetId: target, targetType });
-  }
+  const { object: target, objectType: targetType } = obj;
+  routeEdgeTarget(state, { fromId: id, fromType: 'tag', toId: target, toType: targetType });
 }
 
 /**
@@ -347,8 +336,6 @@ export function buildReachableSet(
     missingIds: new Set(),
     brokenEdges: [],
     unreadableEdges: [],
-    rootCommits: [],
-    tagRefs: [],
     typeFindings: [],
     typing:
       typing === undefined
@@ -395,8 +382,6 @@ export function buildReachableSet(
     missingIds: state.missingIds,
     brokenEdges: state.brokenEdges,
     unreadableEdges: state.unreadableEdges,
-    rootCommits: state.rootCommits,
-    tagRefs: state.tagRefs,
     typeFindings: state.typeFindings,
   };
 }
@@ -521,6 +506,33 @@ function missingAndBrokenLinkFindings(
     findings.push({ type: 'broken-link', ...edge });
   }
   return findings;
+}
+
+/**
+ * git's `fsck_obj` prints `root` and `tagged` for every object a full fsck
+ * checks — reachable or not — once its own content check raised no error
+ * (`refused`). A tag names its target by its declared type, present or not.
+ */
+export function checkedRootsAndTags(
+  universe: ReadonlySet<ObjectId>,
+  objectCache: ReadonlyMap<ObjectId, CachedGitObject>,
+  refused: ReadonlySet<ObjectId>,
+): { readonly rootCommits: ReadonlyArray<ObjectId>; readonly tagRefs: ReadonlyArray<TagRef> } {
+  const rootCommits: ObjectId[] = [];
+  const tagRefs: TagRef[] = [];
+  for (const id of universe) {
+    const obj = refused.has(id) ? undefined : objectCache.get(id);
+    if (obj?.type === 'commit' && obj.parents.length === 0) rootCommits.push(id);
+    if (obj?.type === 'tag') {
+      tagRefs.push({
+        tagId: id,
+        tagName: obj.tagName,
+        targetId: obj.object,
+        targetType: obj.objectType,
+      });
+    }
+  }
+  return { rootCommits, tagRefs };
 }
 
 function rootAndTagFindings(
