@@ -143,25 +143,34 @@ export interface ParsedColorPlaceholder {
 
 const latin1 = (bytes: Uint8Array): string => new TextDecoder('latin1').decode(bytes);
 
-const parseParenthesised = (fmt: Uint8Array, at: number): ParsedColorPlaceholder | undefined => {
+/** An `always` spec git cannot parse: it dies rather than leaving the placeholder literal. */
+export const UNPARSABLE_COLOR = { unparsable: true } as const;
+export type UnparsableColor = typeof UNPARSABLE_COLOR;
+
+const parseParenthesised = (
+  fmt: Uint8Array,
+  at: number,
+): ParsedColorPlaceholder | UnparsableColor | undefined => {
   const close = fmt.indexOf(RIGHT_PAREN, at + 2);
   if (close === -1) return undefined;
   const argument = latin1(fmt.subarray(at + 2, close));
   const length = close - at + 1;
   if (!argument.startsWith(ALWAYS_PREFIX)) return { bytes: NO_BYTES, length };
   const sequence = parseColorSpec(argument.slice(ALWAYS_PREFIX.length));
-  return sequence === undefined ? undefined : { bytes: new TextEncoder().encode(sequence), length };
+  return sequence === undefined
+    ? UNPARSABLE_COLOR
+    : { bytes: new TextEncoder().encode(sequence), length };
 };
 
 /**
  * `%C…` as archive context expands it, `at` being the `C`: colour is never wanted, so only
- * `%C(always,…)` emits; `undefined` when git leaves the placeholder literal (or, for an
- * `always` spec git cannot parse, aborts).
+ * `%C(always,…)` emits; `undefined` when git leaves the placeholder literal, and
+ * `UNPARSABLE_COLOR` for an `always` spec git cannot parse (it aborts).
  */
 export const parseColorPlaceholder = (
   fmt: Uint8Array,
   at: number,
-): ParsedColorPlaceholder | undefined => {
+): ParsedColorPlaceholder | UnparsableColor | undefined => {
   if (fmt[at + 1] === LEFT_PAREN) return parseParenthesised(fmt, at);
   const name = BASIC_NAMES.find(
     (candidate) => latin1(fmt.subarray(at + 1, at + 1 + candidate.length)) === candidate,

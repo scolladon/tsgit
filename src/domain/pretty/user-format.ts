@@ -3,6 +3,7 @@ import { parseColorPlaceholder } from './color.js';
 import type { CommitView } from './commit-view.js';
 import { splitIdentLine } from './ident.js';
 import { DATE_MODE_BY_PART, type DateClock, showIdentDate } from './ident-date.js';
+import { type PadRequest, padValue, parsePadding, type Truncation } from './padding.js';
 import { formatSanitizedSubject, formatSubject } from './subject.js';
 import {
   NO_WRAPPING,
@@ -44,6 +45,13 @@ type IdentSpec = {
 
 type Spec =
   | { readonly kind: 'literal'; readonly bytes: Uint8Array }
+  | { readonly kind: 'color'; readonly bytes: Uint8Array }
+  | {
+      readonly kind: 'padding';
+      readonly request: PadRequest;
+      readonly truncate: Truncation | undefined;
+      readonly literal: boolean;
+    }
   | { readonly kind: 'declined'; readonly parsesHeader: boolean }
   | { readonly kind: 'refused'; readonly placeholder: FormatRefusal['refused'] }
   | { readonly kind: 'id'; readonly of: AbbrevKind }
@@ -62,8 +70,9 @@ export interface FormatOutput {
   readonly parsedHeader: boolean;
 }
 
+/** Placeholders git dies on: `%C` stands for an unparsable `%C(always,…)` spec. */
 export interface FormatRefusal {
-  readonly refused: '%(count)' | '%(total)';
+  readonly refused: '%(count)' | '%(total)' | '%C';
 }
 
 const PERCENT = 0x25;
@@ -124,7 +133,7 @@ const SINGLE_BYTE_SPECS: ReadonlyMap<string, Classified> = new Map([
   ['b', one({ kind: 'message', part: 'body' })],
   ['B', one({ kind: 'message', part: 'full' })],
   ['e', one({ kind: 'message', part: 'encoding' })],
-  ...[...'SN<>dDG'].map((letter): [string, Classified] => [letter, DECLINED_UNPARSED]),
+  ...[...'SNdDG'].map((letter): [string, Classified] => [letter, DECLINED_UNPARSED]),
 ]);
 
 const classifyHex = (fmt: Uint8Array, at: number): Classified => {
@@ -135,7 +144,16 @@ const classifyHex = (fmt: Uint8Array, at: number): Classified => {
 
 const classifyColor = (fmt: Uint8Array, at: number): Classified => {
   const parsed = parseColorPlaceholder(fmt, at);
-  return parsed ? { spec: literal(parsed.bytes), length: parsed.length } : DECLINED_UNPARSED;
+  if (!parsed) return DECLINED_UNPARSED;
+  if ('unparsable' in parsed) return { spec: { kind: 'refused', placeholder: '%C' }, length: 0 };
+  return { spec: { kind: 'color', bytes: parsed.bytes }, length: parsed.length };
+};
+
+const classifyPadding = (fmt: Uint8Array, at: number): Classified => {
+  const parsed = parsePadding(fmt, at);
+  if (!parsed) return DECLINED_UNPARSED;
+  const { request, truncate, length } = parsed;
+  return { spec: { kind: 'padding', request, truncate, literal: length === 0 }, length };
 };
 
 const classifyWrap = (fmt: Uint8Array, at: number): Classified => {
@@ -177,6 +195,7 @@ const classify = (fmt: Uint8Array, at: number): Classified => {
   if (letter === 'x') return classifyHex(fmt, at);
   if (letter === 'C') return classifyColor(fmt, at);
   if (letter === 'w') return classifyWrap(fmt, at);
+  if (letter === '<' || letter === '>') return classifyPadding(fmt, at);
   if (letter === 'a' || letter === 'c') return classifyIdent(letter, fmt, at);
   if (letter === 'g') return classifyReflog(fmt, at);
   return letter === '(' ? classifyParen(fmt, at) : DECLINED_PARSING;
@@ -305,7 +324,12 @@ const fullId = (of: AbbrevKind, view: CommitView, env: FormatEnv): string => {
 const evalSpec = (spec: Spec, view: CommitView, env: FormatEnv): Uint8Array | undefined => {
   switch (spec.kind) {
     case 'literal':
+    case 'color':
       return spec.bytes;
+    case 'wrap':
+      return NO_BYTES;
+    case 'padding':
+      return spec.literal ? undefined : NO_BYTES;
     case 'id':
       return encodeAscii(fullId(spec.of, view, env));
     case 'abbrev':
@@ -327,18 +351,94 @@ const parsesHeader = (spec: Spec): boolean =>
   spec.kind === 'message' ||
   (spec.kind === 'declined' && spec.parsesHeader);
 
-const appendItem = (
-  pieces: Uint8Array[],
-  wrapping: Wrapping,
-  item: Extract<Token, { kind: 'item' }>,
-  view: CommitView,
-  env: FormatEnv,
-): Wrapping => {
-  if (item.spec.kind === 'wrap') return rewrapTail(pieces, wrapping, item.spec.layout);
+type ItemToken = Extract<Token, { kind: 'item' }>;
+
+interface Layout {
+  readonly wrapping: Wrapping;
+  readonly pad: PadRequest | undefined;
+  readonly truncate: Truncation;
+}
+
+interface Step {
+  readonly layout: Layout;
+  readonly consumed: number;
+}
+
+const START_LAYOUT: Layout = { wrapping: NO_WRAPPING, pad: undefined, truncate: 'none' };
+
+const appendPlain = (pieces: Uint8Array[], item: ItemToken, view: CommitView, env: FormatEnv) => {
   const value = evalSpec(item.spec, view, env);
   if (value === undefined) pushDeclined(pieces, item.magic, declinedSource(item.spec));
   else pushValue(pieces, item.magic, value);
-  return wrapping;
+};
+
+const isColor = (token: Token | undefined): boolean =>
+  token?.kind === 'item' && token.spec.kind === 'color';
+
+/** git pads colour modifiers together with the placeholder that follows them. */
+const paddedUnit = (tokens: ReadonlyArray<Token>, at: number): ItemToken[] => {
+  let end = at;
+  while (isColor(tokens[end]) && tokens[end + 1]?.kind === 'item') end++;
+  return tokens.slice(at, end + 1) as ItemToken[];
+};
+
+const appendPadded = (
+  pieces: Uint8Array[],
+  request: PadRequest,
+  truncate: Truncation,
+  unit: ReadonlyArray<ItemToken>,
+  context: { readonly view: CommitView; readonly env: FormatEnv },
+): void => {
+  const [first, last] = [unit[0] as ItemToken, unit[unit.length - 1] as ItemToken];
+  const values = unit.map(({ spec }) => evalSpec(spec, context.view, context.env) ?? NO_BYTES);
+  const { head, body } = padValue(concatBytes(pieces), concatBytes(values), request, truncate);
+  pieces.splice(0, pieces.length, head);
+  pushValue(pieces, first.magic, body);
+  if (evalSpec(last.spec, context.view, context.env) !== undefined) return;
+  if (unit.length === 1) pushDeclined(pieces, first.magic, declinedSource(last.spec));
+  else pieces.push(declinedSource(last.spec));
+};
+
+const armPadding = (layout: Layout, spec: Spec): Layout =>
+  spec.kind === 'padding'
+    ? { ...layout, pad: spec.request, truncate: spec.truncate ?? layout.truncate }
+    : layout;
+
+const appendToken = (
+  pieces: Uint8Array[],
+  layout: Layout,
+  tokens: ReadonlyArray<Token>,
+  at: number,
+  context: { readonly view: CommitView; readonly env: FormatEnv },
+): Step => {
+  const item = tokens[at] as Token;
+  if (item.kind === 'text') {
+    pieces.push(item.bytes);
+    return { layout, consumed: 1 };
+  }
+  const wrapping =
+    item.spec.kind === 'wrap'
+      ? rewrapTail(pieces, layout.wrapping, item.spec.layout)
+      : layout.wrapping;
+  const armed = armPadding({ ...layout, wrapping }, item.spec);
+  if (layout.pad === undefined) {
+    appendPlain(pieces, item, context.view, context.env);
+    return { layout: armed, consumed: 1 };
+  }
+  const unit = paddedUnit(tokens, at);
+  const align = item.spec.kind === 'padding' ? item.spec.request.align : layout.pad.align;
+  const request = { ...layout.pad, align };
+  appendPadded(pieces, request, armed.truncate, unit, context);
+  return { layout: { ...armed, pad: undefined }, consumed: unit.length };
+};
+
+const firstRefusal = (tokens: ReadonlyArray<Token>): FormatRefusal | undefined => {
+  for (const token of tokens) {
+    if (token.kind === 'item' && token.spec.kind === 'refused') {
+      return { refused: token.spec.placeholder };
+    }
+  }
+  return undefined;
 };
 
 export const formatCommit = (
@@ -347,19 +447,18 @@ export const formatCommit = (
   env: FormatEnv,
   budget: FormatBudget,
 ): FormatOutput | FormatRefusal => {
+  const refusal = firstRefusal(tokens);
+  if (refusal) return refusal;
   const pieces: Uint8Array[] = [];
-  let wrapping = NO_WRAPPING;
-  let parsedHeader = false;
-  for (const token of tokens) {
-    if (token.kind === 'text') {
-      pieces.push(token.bytes);
-      continue;
-    }
-    if (token.spec.kind === 'refused') return { refused: token.spec.placeholder };
-    parsedHeader ||= parsesHeader(token.spec);
-    wrapping = appendItem(pieces, wrapping, token, view, env);
+  let layout = START_LAYOUT;
+  let at = 0;
+  while (at < tokens.length) {
+    const step = appendToken(pieces, layout, tokens, at, { view, env });
+    layout = step.layout;
+    at += step.consumed;
   }
-  rewrapTail(pieces, wrapping, NO_WRAPPING.layout);
+  rewrapTail(pieces, layout.wrapping, NO_WRAPPING.layout);
+  const parsedHeader = itemSpecs(tokens).some(parsesHeader);
   return { bytes: concatBytes(pieces), budget, parsedHeader };
 };
 

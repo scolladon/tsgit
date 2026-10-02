@@ -465,7 +465,11 @@ describe('Given declined placeholders, When expanding', () => {
     '%w(5',
     '%w(5,x)',
     '%w(16385)',
-    '%<(3)',
+    '%<(3',
+    '%<(0)',
+    '%<(x)',
+    '%>(-3)',
+    '%<(16385)',
   ])('Then %s is emitted literally', (format) => {
     // Arrange
     const sut = expand;
@@ -521,7 +525,7 @@ describe('Given colour placeholders, When expanding', () => {
     expect(result).toBe(expected);
   });
 
-  it.each(['%C(always,bogus)z', '%C(always,red'])('Then %s is declined', (format) => {
+  it.each(['%C(always,red'])('Then %s is declined', (format) => {
     // Arrange
     const sut = expand;
 
@@ -541,6 +545,182 @@ describe('Given colour placeholders, When expanding', () => {
 
     // Assert
     expect(result).toBe('xting');
+  });
+});
+
+describe('Given an unparsable colour spec, When expanding', () => {
+  it.each([
+    '%C(always,bogus)z',
+    'ab%C(always,bold bogus)',
+    '%<(5)%C(always,bogus)',
+    '%C(always,red blue green)',
+  ])('Then %s is refused as git aborts on it', (format) => {
+    // Arrange
+    const sut = run;
+
+    // Act
+    const result = sut(format);
+
+    // Assert
+    expect(result).toEqual({ refused: '%C' });
+  });
+
+  it.each(['%C(bogus)', '%C(auto,bogus)', '%C(never,bogus)'])(
+    'Then %s stays silent because colour is never wanted',
+    (format) => {
+      // Arrange
+      const sut = expand;
+
+      // Act
+      const result = sut(format);
+
+      // Assert
+      expect(result).toBe('');
+    },
+  );
+});
+
+describe('Given padding placeholders, When expanding', () => {
+  it.each([
+    ['%<(10)%an|', 'A U Thor  |'],
+    ['%>(10)%an|', '  A U Thor|'],
+    ['%><(11)%an|', ' A U Thor  |'],
+    ['%<(3,trunc)%an|', 'A..|'],
+    ['%<(4,ltrunc)%an|', '..or|'],
+    ['%<(6,mtrunc)%an|', 'A ..or|'],
+    ['%<(8)%an|', 'A U Thor|'],
+    ['%<(6)%x41|', 'A     |'],
+    ['%<(4)%%|', '%|'],
+    ['%<(5)ab%an|', 'abA U Thor|'],
+    ['%<(3)|', '|'],
+  ])('Then %s yields %j', (format, expected) => {
+    // Arrange
+    const sut = expand;
+
+    // Act
+    const result = sut(format);
+
+    // Assert
+    expect(result).toBe(expected);
+  });
+
+  it.each([
+    ['ab%<|(12)%h|', 'ab38096f7   |'],
+    ['ab%<|(6)%h|', 'ab38096f7|'],
+    ['one\ntwo%<|(8)%h|', 'one\ntwo38096f7|'],
+    ['one\nab%<|(11)%h|', 'one\nab38096f7  |'],
+    ['%<|(-70)%an|', 'A U Thor  |'],
+  ])('Then the column form %s yields %j', (format, expected) => {
+    // Arrange
+    const sut = expand;
+
+    // Act
+    const result = sut(format);
+
+    // Assert
+    expect(result).toBe(expected);
+  });
+
+  it.each([
+    ['xx   %>>(4)%an|', 'xxA U Thor|'],
+    ['xx      %>>(10)%an|', 'xx        A U Thor|'],
+    ['xx  %>>(10)%an|', 'xx    A U Thor|'],
+    ['ab  %C(always,red) %>>(3)%an|', 'ab\x1b[31mA U Thor|'],
+    ['xx  %>>(8)%an|', 'xx  A U Thor|'],
+    ['xx      %>>(8)%an|', 'xx      A U Thor|'],
+  ])('Then the stealing form %s yields %j', (format, expected) => {
+    // Arrange
+    const sut = expand;
+
+    // Act
+    const result = sut(format);
+
+    // Assert
+    expect(result).toBe(expected);
+  });
+});
+
+describe('Given the placeholder after the padding is not a value, When expanding', () => {
+  it.each([
+    ['%<(5)%zz|', '     %zz|'],
+    ['%<(5)%Cx|', '     %Cx|'],
+    ['%<(5)%<(6)%an|', '     A U Thor|'],
+    ['%<(5)%w(0)%an|', '     A U Thor|'],
+    ['%<(10,foo)%an|', '%<(10,foo)A U Thor  |'],
+    ['%<(10,)%an|', '%<(10,)A U Thor  |'],
+    ['%<(3,foo)%<(3,trunc)%an|', '%<(3,foo)   A U Thor|'],
+  ])('Then %s yields %j', (format, expected) => {
+    // Arrange
+    const sut = expand;
+
+    // Act
+    const result = sut(format);
+
+    // Assert
+    expect(result).toBe(expected);
+  });
+});
+
+describe('Given colour modifiers before the value, When expanding', () => {
+  it.each([
+    ['%<(10)%C(always,red)%an|', '\x1b[31mA U Thor  |'],
+    ['%<(3,trunc)%C(always,red)%an%C(always,reset)|', '\x1b[31mA..\x1b[m|'],
+    ['%<(10)%Cred%an|', 'A U Thor  |'],
+    ['%<(10)%C(always,red)%zz|', '\x1b[31m          zz|'],
+    ['%>(10)%C(always,red)%C(always,bold)%an|', '  \x1b[31m\x1b[1mA U Thor|'],
+    ['%<(10)%C(always,red)x%an|', '\x1b[31m          x' + 'A U Thor|'],
+  ])('Then %s yields %j', (format, expected) => {
+    // Arrange
+    const sut = expand;
+
+    // Act
+    const result = sut(format);
+
+    // Assert
+    expect(result).toBe(expected);
+  });
+});
+
+describe('Given a magic byte before the padded value, When expanding', () => {
+  it.each([
+    ['%<(5)%+an|', '\nA U Thor|'],
+    ['%<(10)% an|', ' A U Thor  |'],
+    ['%+<(5)%an|', 'A U Thor|'],
+    ['a%n%-<(5)%an|', 'aA U Thor|'],
+    ['%<(5)%-e|', '     |'],
+  ])('Then %s yields %j', (format, expected) => {
+    // Arrange
+    const sut = expand;
+
+    // Act
+    const result = sut(format);
+
+    // Assert
+    expect(result).toBe(expected);
+  });
+});
+
+describe('Given the formatting limit, When expanding', () => {
+  it('Then the limit pads to its width', () => {
+    // Arrange
+    const sut = expand;
+
+    // Act
+    const result = sut('%<(16384)%an|');
+
+    // Assert
+    expect(result).toBe(`A U Thor${' '.repeat(16384 - 8)}|`);
+  });
+
+  it('Then one past the limit is no placeholder', () => {
+    // Arrange
+    const sut = expand;
+
+    // Act
+    const result = sut('%<(16385)%an|');
+
+    // Assert
+    expect(result).toBe('%<(16385)A U Thor|');
   });
 });
 

@@ -67,7 +67,8 @@ const indentLines = (text: Uint8Array, indent1: number, indent2: number): Uint8A
   return concatBytes(chunks);
 };
 
-const escapeLengthAt = (text: Uint8Array, at: number): number => {
+/** Bytes of the SGR escape (`ESC [ digits;… m`) starting at `at`, 0 when none starts there. */
+export const escapeLengthAt = (text: Uint8Array, at: number): number => {
   if (byteAt(text, at) !== ESCAPE || byteAt(text, at + 1) !== LEFT_BRACKET) return 0;
   let end = at + 2;
   while (isAsciiDigit(byteAt(text, end)) || byteAt(text, end) === SEMICOLON) end++;
