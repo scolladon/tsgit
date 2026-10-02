@@ -460,7 +460,11 @@ describe('Given declined placeholders, When expanding', () => {
     '%a',
     '%',
     '%d',
-    '%Cred',
+    '%C(red',
+    '%Cx',
+    '%w(5',
+    '%w(5,x)',
+    '%w(16385)',
     '%<(3)',
   ])('Then %s is emitted literally', (format) => {
     // Arrange
@@ -471,6 +475,130 @@ describe('Given declined placeholders, When expanding', () => {
 
     // Assert
     expect(result).toBe(format);
+  });
+});
+
+describe('Given colour placeholders, When expanding', () => {
+  it.each([
+    '%Cred',
+    '%Cgreen',
+    '%Cblue',
+    '%Creset',
+    '%C(red)',
+    '%C(auto)',
+    '%C(auto,red)',
+    '%C(never,red)',
+    '%C(bold blue)',
+    '%C(bogus)',
+    '%C(auto,bogus)',
+    '%C()',
+  ])('Then %s emits nothing because archive colour is never', (format) => {
+    // Arrange
+    const sut = expand;
+
+    // Act
+    const result = sut(`a${format}b`);
+
+    // Assert
+    expect(result).toBe('ab');
+  });
+
+  it.each([
+    ['%C(always,red)X', '\x1b[31mX'],
+    ['%C(always,bold red blue)x', '\x1b[1;31;44mx'],
+    ['%C(always,reset)', '\x1b[m'],
+    ['%C(always,)', ''],
+    ['%C(always,normal)', ''],
+    ['%C(always,#ff8000)', '\x1b[38;2;255;128;0m'],
+  ])('Then %s yields %j', (format, expected) => {
+    // Arrange
+    const sut = expand;
+
+    // Act
+    const result = sut(format);
+
+    // Assert
+    expect(result).toBe(expected);
+  });
+
+  it.each(['%C(always,bogus)z', '%C(always,red'])('Then %s is declined', (format) => {
+    // Arrange
+    const sut = expand;
+
+    // Act
+    const result = sut(format);
+
+    // Assert
+    expect(result).toBe(format);
+  });
+
+  it('Then text after a basic colour name is kept', () => {
+    // Arrange
+    const sut = expand;
+
+    // Act
+    const result = sut('%Credx%Cresetting');
+
+    // Assert
+    expect(result).toBe('xting');
+  });
+});
+
+describe('Given wrap placeholders, When expanding', () => {
+  it.each([
+    ['%w(10,2,4)%s', '  msg\n    subject\n    line'],
+    ['%w(10,2,4)the quick brown fox jumps', '  the\n    quick\n    brown\n    fox\n    jumps'],
+    ['%w(0,2,4)ab cd%nef', '  ab cd\n    ef'],
+    ['%w(5,0,0)ab%ncd ef gh', 'ab cd\nef gh'],
+    ['x%w(4,1,1)ab cd%w(0,0,0) ef  gh', 'x ab\n cd ef  gh'],
+    ['%w(5)ab cd ef%w(10)gh ij kl mn', 'ab cd\nefgh ij kl\nmn'],
+    ['%w(5,0,0)ab cd ef%x00gh ij', 'ab cd\nef'],
+    ['%w()ab cd', 'ab cd'],
+    ['%w(0,3,5)', ''],
+    ['%w(5)%C(always,red)ab cd ef%C(always,reset)', '\x1b[31mab cd\nef\x1b[m'],
+    ['a%w(5)b%nc', 'ab c'],
+  ])('Then %s yields %j', (format, expected) => {
+    // Arrange
+    const sut = expand;
+
+    // Act
+    const result = sut(format);
+
+    // Assert
+    expect(result).toBe(expected);
+  });
+
+  it('Then a magic byte before it declines the whole placeholder', () => {
+    // Arrange
+    const sut = expand;
+
+    // Act
+    const result = sut('%+w(5)ab cd ef');
+
+    // Assert
+    expect(result).toBe('%+w(5)ab cd ef');
+  });
+
+  it('Then line feeds alone are all deleted by a magic delete', () => {
+    // Arrange
+    const sut = expand;
+
+    // Act
+    const result = sut('%n%n%-e');
+
+    // Assert
+    expect(result).toBe('');
+  });
+
+  it('Then a wrap tail emptied by a deleted line feed is not wrapped', () => {
+    // Arrange
+    const sut = expand;
+
+    // Act
+    const result = sut('ab\n%w(5)%-e', rawCommit());
+
+    // Assert
+    expect(result).toBe('ab');
   });
 });
 

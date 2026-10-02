@@ -1,8 +1,16 @@
 import { concatBytes } from '../objects/encoding.js';
+import { parseColorPlaceholder } from './color.js';
 import type { CommitView } from './commit-view.js';
 import { splitIdentLine } from './ident.js';
 import { DATE_MODE_BY_PART, type DateClock, showIdentDate } from './ident-date.js';
 import { formatSanitizedSubject, formatSubject } from './subject.js';
+import {
+  NO_WRAPPING,
+  parseWrapLayout,
+  rewrapTail,
+  type WrapLayout,
+  type Wrapping,
+} from './wrap.js';
 
 export type AbbrevKind = 'commit' | 'tree' | 'parents';
 
@@ -41,6 +49,7 @@ type Spec =
   | { readonly kind: 'id'; readonly of: AbbrevKind }
   | { readonly kind: 'abbrev'; readonly of: AbbrevKind }
   | IdentSpec
+  | { readonly kind: 'wrap'; readonly layout: WrapLayout }
   | { readonly kind: 'message'; readonly part: MessagePart };
 
 export type Token =
@@ -115,13 +124,24 @@ const SINGLE_BYTE_SPECS: ReadonlyMap<string, Classified> = new Map([
   ['b', one({ kind: 'message', part: 'body' })],
   ['B', one({ kind: 'message', part: 'full' })],
   ['e', one({ kind: 'message', part: 'encoding' })],
-  ...[...'SNCw<>dDG'].map((letter): [string, Classified] => [letter, DECLINED_UNPARSED]),
+  ...[...'SN<>dDG'].map((letter): [string, Classified] => [letter, DECLINED_UNPARSED]),
 ]);
 
 const classifyHex = (fmt: Uint8Array, at: number): Classified => {
   const byte = hexByte(fmt, at + 1);
   if (byte === undefined) return DECLINED_PARSING;
   return { spec: literal(Uint8Array.of(byte)), length: 1 + HEX_PAIR_LENGTH };
+};
+
+const classifyColor = (fmt: Uint8Array, at: number): Classified => {
+  const parsed = parseColorPlaceholder(fmt, at);
+  return parsed ? { spec: literal(parsed.bytes), length: parsed.length } : DECLINED_UNPARSED;
+};
+
+const classifyWrap = (fmt: Uint8Array, at: number): Classified => {
+  const parsed = parseWrapLayout(fmt, at);
+  if (!parsed) return DECLINED_UNPARSED;
+  return { spec: { kind: 'wrap', layout: parsed.layout }, length: parsed.length };
 };
 
 const classifyIdent = (letter: IdentLetter, fmt: Uint8Array, at: number): Classified => {
@@ -155,6 +175,8 @@ const classify = (fmt: Uint8Array, at: number): Classified => {
   const single = SINGLE_BYTE_SPECS.get(letter);
   if (single) return single;
   if (letter === 'x') return classifyHex(fmt, at);
+  if (letter === 'C') return classifyColor(fmt, at);
+  if (letter === 'w') return classifyWrap(fmt, at);
   if (letter === 'a' || letter === 'c') return classifyIdent(letter, fmt, at);
   if (letter === 'g') return classifyReflog(fmt, at);
   return letter === '(' ? classifyParen(fmt, at) : DECLINED_PARSING;
@@ -171,9 +193,9 @@ const scanAfterPercent = (fmt: Uint8Array, at: number): Scanned => {
   if (fmt[at] === PERCENT) return { token: text(Uint8Array.of(PERCENT)), next: at + 1 };
   const magic = MAGIC_BY_BYTE.get(fmt[at] as number) ?? 'none';
   const itemAt = magic === 'none' ? at : at + 1;
-  const { spec, length } = classify(fmt, itemAt);
   if (magic !== 'none' && fmt[itemAt] === LOWER_W)
-    return { token: { kind: 'item', magic: 'none', spec }, next: at };
+    return { token: { kind: 'item', magic: 'none', spec: DECLINED_UNPARSED.spec }, next: at };
+  const { spec, length } = classify(fmt, itemAt);
   return { token: { kind: 'item', magic, spec }, next: itemAt + length };
 };
 
@@ -305,6 +327,20 @@ const parsesHeader = (spec: Spec): boolean =>
   spec.kind === 'message' ||
   (spec.kind === 'declined' && spec.parsesHeader);
 
+const appendItem = (
+  pieces: Uint8Array[],
+  wrapping: Wrapping,
+  item: Extract<Token, { kind: 'item' }>,
+  view: CommitView,
+  env: FormatEnv,
+): Wrapping => {
+  if (item.spec.kind === 'wrap') return rewrapTail(pieces, wrapping, item.spec.layout);
+  const value = evalSpec(item.spec, view, env);
+  if (value === undefined) pushDeclined(pieces, item.magic, declinedSource(item.spec));
+  else pushValue(pieces, item.magic, value);
+  return wrapping;
+};
+
 export const formatCommit = (
   tokens: ReadonlyArray<Token>,
   view: CommitView,
@@ -312,6 +348,7 @@ export const formatCommit = (
   budget: FormatBudget,
 ): FormatOutput | FormatRefusal => {
   const pieces: Uint8Array[] = [];
+  let wrapping = NO_WRAPPING;
   let parsedHeader = false;
   for (const token of tokens) {
     if (token.kind === 'text') {
@@ -320,10 +357,9 @@ export const formatCommit = (
     }
     if (token.spec.kind === 'refused') return { refused: token.spec.placeholder };
     parsedHeader ||= parsesHeader(token.spec);
-    const value = evalSpec(token.spec, view, env);
-    if (value === undefined) pushDeclined(pieces, token.magic, declinedSource(token.spec));
-    else pushValue(pieces, token.magic, value);
+    wrapping = appendItem(pieces, wrapping, token, view, env);
   }
+  rewrapTail(pieces, wrapping, NO_WRAPPING.layout);
   return { bytes: concatBytes(pieces), budget, parsedHeader };
 };
 

@@ -107,3 +107,14 @@ export const utf8Width = (bytes: Uint8Array): number => {
   }
   return width;
 };
+
+export interface Glyph {
+  readonly columns: number;
+  readonly length: number;
+}
+
+/** The character starting at `at` as git's `utf8_width` reads it; `undefined` when it is not valid UTF-8. */
+export const glyphAt = (bytes: Uint8Array, at: number): Glyph | undefined => {
+  const decoded = decodeAt(bytes, at);
+  return decoded && { columns: columnsOf(decoded.codePoint), length: decoded.length };
+};
