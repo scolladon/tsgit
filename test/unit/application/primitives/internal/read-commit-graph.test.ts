@@ -4,6 +4,7 @@ import { createCommit } from '../../../../../src/application/primitives/create-c
 import {
   commitHeader,
   correctedCommitDatesEnabled,
+  graphCommitIds,
   insertBounded,
   isGraphKnownAbsent,
 } from '../../../../../src/application/primitives/internal/read-commit-graph.js';
@@ -298,6 +299,46 @@ function expectHeaderMatchesCommit(
 }
 
 describe('read-commit-graph', () => {
+  describe('graphCommitIds', () => {
+    describe('Given a chain/split commit-graph (base=[c0,c1,c2], tip=[c3,c4])', () => {
+      describe('When graphCommitIds runs', () => {
+        it('Then it lists every commit the graph holds, base layer first', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const { c0, c1, c2, c3, c4 } = await buildFiveCommitHistory(ctx);
+          await writeCommitGraph(ctx, [
+            [c0, c1, c2],
+            [c3, c4],
+          ]);
+          const sut = graphCommitIds;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(new Set(result.slice(0, 3))).toEqual(new Set([c0.id, c1.id, c2.id]));
+          expect(new Set(result.slice(3))).toEqual(new Set([c3.id, c4.id]));
+        });
+      });
+    });
+
+    describe('Given no commit-graph', () => {
+      describe('When graphCommitIds runs', () => {
+        it('Then it lists nothing', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const sut = graphCommitIds;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result).toEqual([]);
+        });
+      });
+    });
+  });
+
   describe('commitHeader', () => {
     describe('Given a single-file commit-graph over a 5-commit merge history', () => {
       describe('When commitHeader is called for every commit', () => {

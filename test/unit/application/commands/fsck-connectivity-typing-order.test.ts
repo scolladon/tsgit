@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { type FsckFinding, fsck } from '../../../../src/application/commands/fsck.js';
 import { looseObjectPath } from '../../../../src/application/primitives/path-layout.js';
+import { writeCommitGraph } from '../../../../src/application/primitives/write-commit-graph.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { STAGE0_FLAGS } from '../../../../src/domain/git-index/index-entry.js';
 import { hexToBytes } from '../../../../src/domain/objects/encoding.js';
@@ -15,7 +16,7 @@ import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { ObjectId } from '../../../../src/domain/objects/index.js';
 import type { FilePath } from '../../../../src/domain/objects/object-id.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
-import type { Context } from '../../../../src/ports/context.js';
+import { type Context, createSession } from '../../../../src/ports/context.js';
 import { serializeIndexFixtureAsync } from '../primitives/fixtures.js';
 
 const AUTHOR = {
@@ -377,6 +378,52 @@ describe("Given main at c2 and c2's tree holding a blob", () => {
       expect(typeFindingsAbout(result.findings, tree)).toEqual([
         { type: 'unexpected-object-type', id: tree, expectedType: 'tree' },
       ]);
+    });
+  });
+});
+
+describe("Given main at c3, a commit-graph holding c1..c3, and c2's copy holding a blob", () => {
+  describe('When fsck runs connectivity-only', () => {
+    it('Then c2, typed by c3, is parsed from the graph: no type finding and its tree reached', async () => {
+      // Arrange
+      const { ctx, c2 } = await history();
+      await writeCommitGraph(ctx);
+      const c2Tree = await fileTree(ctx, 'f', 'v2\n');
+      const blob = await writeObject(ctx, {
+        type: 'blob',
+        id: '' as ObjectId,
+        content: enc.encode('zz\n'),
+      });
+      await serveBytesOf(ctx, c2, blob);
+      const sut = fsck;
+
+      // Act
+      const result = await sut({ ...ctx, session: createSession() }, CONNECTIVITY_ONLY);
+
+      // Assert
+      expect([
+        ...typeFindingsAbout(result.findings, c2),
+        ...findingsAbout(result.findings, c2Tree),
+      ]).toEqual([]);
+    });
+  });
+});
+
+describe("Given main at c3, a commit-graph holding c1..c3, and c2's copy holding c1", () => {
+  describe('When fsck runs connectivity-only', () => {
+    it("Then c2 is walked through the graph's tree and parents, never its served bytes", async () => {
+      // Arrange
+      const { ctx, c1, c2 } = await history();
+      await writeCommitGraph(ctx);
+      const c2Tree = await fileTree(ctx, 'f', 'v2\n');
+      await serveBytesOf(ctx, c2, c1);
+      const sut = fsck;
+
+      // Act
+      const result = await sut({ ...ctx, session: createSession() }, CONNECTIVITY_ONLY);
+
+      // Assert
+      expect(findingsAbout(result.findings, c2Tree)).toEqual([]);
     });
   });
 });

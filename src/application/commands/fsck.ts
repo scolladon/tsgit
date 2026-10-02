@@ -13,6 +13,7 @@ import {
   runDeferredSpecialBlobChecks,
 } from './internal/fsck/content-validation.js';
 import { EXIT_MISSING, EXIT_REFS_CONTENT } from './internal/fsck/exit-codes.js';
+import { readGraphCommits } from './internal/fsck/graph-commits.js';
 import { runMidxHealthPass } from './internal/fsck/midx-health.js';
 import {
   assertTypesRecoverable,
@@ -116,14 +117,15 @@ function misHashedIds(findings: ReadonlyArray<FsckFinding>): ReadonlySet<ObjectI
 
 /** What git's connectivity-only walk types objects from; `undefined` in the
  *  other modes, where loading every object typed it already. */
-function walkTyping(
+async function walkTyping(
+  ctx: Context,
   unreadable: UnreadableMode,
   cache: ReadonlyMap<ObjectId, CachedGitObject>,
   roots: Pick<
     RootsCollection,
     'refTips' | 'indexBlobIds' | 'parsedIndexIds' | 'unparseableReflogRoots'
   >,
-): WalkTypingInput | undefined {
+): Promise<WalkTypingInput | undefined> {
   if (unreadable !== 'classify') return undefined;
   const parses = {
     refTips: roots.refTips,
@@ -133,6 +135,7 @@ function walkTyping(
   return {
     typedBeforeWalk: typedBeforeWalk(cache, parses),
     unparseable: roots.unparseableReflogRoots,
+    graphCommits: await readGraphCommits(ctx),
   };
 }
 
@@ -312,7 +315,7 @@ async function auditRepository(ctx: Context, opts: FsckOptions): Promise<FsckRes
     unreadable,
     packMemberIds,
     promised,
-    walkTyping(unreadable, reachabilityCache, { ...recorded, parsedIndexIds }),
+    await walkTyping(auditCtx, unreadable, reachabilityCache, { ...recorded, parsedIndexIds }),
   );
   // `--no-full` verifies no pack, yet git's walk forgets an object a pack
   // holds (`has_object_pack`) rather than calling it missing or broken.

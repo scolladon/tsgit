@@ -369,6 +369,16 @@ function resolveParentIds(
   });
 }
 
+/** Every commit the graph holds, base layer first — empty when the graph is absent. */
+export async function graphCommitIds(ctx: Context): Promise<ReadonlyArray<ObjectId>> {
+  if (!repoSettingsVerdictSettled(ctx)) await assertRepoSettingsValid(ctx);
+  const graph = await loadGraph(ctx);
+  if (graph === undefined) return [];
+  return graph.layers.flatMap((layer) =>
+    Array.from({ length: layer.commitCount }, (_, localPos) => oidAtPosition(layer, localPos)),
+  );
+}
+
 /** True once this session's graph probe has answered "absent" (no graph, a
  *  shallow repository, or a graph degraded on a decode fault). A synchronous
  *  read, so callers can skip `commitHeader` outright. */

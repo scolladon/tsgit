@@ -268,3 +268,33 @@ describe.skipIf(!GIT_AVAILABLE)('fsck interop — connectivity-only typing order
     },
   );
 });
+
+describe.skipIf(!GIT_AVAILABLE)('fsck interop — connectivity-only walk over a commit-graph', () => {
+  describe('Given a commit-graph holding c1..c3 and c2 holding c1', () => {
+    describe('When git fsck --connectivity-only and tsgit fsck run', () => {
+      it(
+        "Then both walk c2 through the graph: no typing error and c2's tree not dangling",
+        async () => {
+          // Arrange — git's own `commit-graph verify` pass reports the
+          // graph/object mismatch and sets its exit bit; only the walk is compared.
+          const { dir, commits } = chainRepo('graph-held', 3);
+          git(dir, 'commit-graph', 'write', '--reachable');
+          serveBytesOf(dir, commits[1] as string, commits[0] as string);
+          const expected = tryRunGitWithExit(['-C', dir, 'fsck', '--connectivity-only']);
+          const repo = await openRepository({ cwd: dir });
+          const sut = repo.fsck;
+
+          // Act
+          const result = await sut({ connectivityOnly: true }).finally(() => repo.dispose());
+
+          // Assert
+          expect(typeLines(result.findings)).toEqual(gitLines(expected.stderr, TYPE_LINE));
+          expect(danglingLines(result.findings)).toEqual(
+            [...gitLines(expected.stdout, DANGLING_LINE)].sort(),
+          );
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+});

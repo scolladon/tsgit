@@ -1,6 +1,7 @@
 import type { FsckObjectType } from '../../../../domain/fsck/index.js';
 import { FILE_MODE } from '../../../../domain/objects/file-mode.js';
 import type { ObjectId } from '../../../../domain/objects/index.js';
+import type { GraphCommit } from './graph-commits.js';
 import type { CachedGitObject, ProjectedGitObject } from './object-cache.js';
 import type { FsckFinding, UnreadableMode } from './types.js';
 
@@ -80,11 +81,14 @@ export interface WalkTypingInput {
   /** Every root whose served copy hashes to another id: popped untyped, git
    *  cannot type it. */
   readonly unparseable: ReadonlySet<ObjectId>;
+  /** Every walked object the commit-graph holds, as the graph describes it. */
+  readonly graphCommits: ReadonlyMap<ObjectId, GraphCommit>;
 }
 
 interface WalkTyping {
   readonly typed: Map<ObjectId, FsckObjectType>;
   readonly unparseable: ReadonlySet<ObjectId>;
+  readonly graphCommits: ReadonlyMap<ObjectId, GraphCommit>;
 }
 
 export interface WalkResult {
@@ -254,6 +258,17 @@ function walksAsTyped(state: WalkState, id: ObjectId, obj: ProjectedGitObject): 
   return false;
 }
 
+/**
+ * git's `repo_parse_commit` under connectivityOnly: a commit its walk already
+ * typed is filled from the commit-graph when the graph holds it — tree and
+ * parents from the graph, the object's own bytes never read.
+ */
+function graphParsedCommit(state: WalkState, id: ObjectId): GraphCommit | undefined {
+  const typing = state.typing;
+  if (typing?.typed.get(id) !== 'commit') return undefined;
+  return typing.graphCommits.get(id);
+}
+
 function parsesUntyped(state: WalkState, typing: WalkTyping, id: ObjectId): boolean {
   if (!typing.unparseable.has(id)) return true;
   state.typeFindings.push({ type: 'unknown-object-type', id });
@@ -338,7 +353,11 @@ export function buildReachableSet(
     typing:
       typing === undefined
         ? undefined
-        : { typed: new Map(typing.typedBeforeWalk), unparseable: typing.unparseable },
+        : {
+            typed: new Map(typing.typedBeforeWalk),
+            unparseable: typing.unparseable,
+            graphCommits: typing.graphCommits,
+          },
     worklist: [...seeds],
     pushed: new Set(seeds),
   };
@@ -355,7 +374,8 @@ export function buildReachableSet(
       state.missingIds.add(id);
       continue;
     }
-    const obj = objectCache.get(id);
+    const graphCommit = graphParsedCommit(state, id);
+    const obj = graphCommit ?? objectCache.get(id);
     if (obj == null) {
       // Corrupt/unreadable, no further edges — either a ROOT (no referring
       // edge routed it here), or a REFERENCED id whose pack copy
