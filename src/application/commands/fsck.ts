@@ -4,6 +4,7 @@ import type { Context } from '../../ports/context.js';
 import { deriveContext } from '../primitives/derive-context.js';
 import { enumerateObjects } from '../primitives/enumerate-objects.js';
 import { assertValidPromisorRemoteConfig } from '../primitives/internal/boolean-config-guard.js';
+import { assertBigFileThresholdValid } from '../primitives/internal/repo-settings-gate.js';
 import { runBitmapHealthPass } from './internal/fsck/bitmap-health.js';
 import {
   type CatalogueOptions,
@@ -164,6 +165,8 @@ async function auditRepository(ctx: Context, opts: FsckOptions): Promise<FsckRes
     accessiblePacksOnly: packAccessibilityReported(opts),
   });
   const universe = new Set(allIds);
+  // git reads `core.bigFileThreshold` with the first object content it reads.
+  if (opts.connectivityOnly !== true && universe.size > 0) await assertBigFileThresholdValid(ctx);
 
   const unreadable: UnreadableMode = opts.connectivityOnly === true ? 'classify' : 'skip';
 

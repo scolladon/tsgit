@@ -15,6 +15,7 @@
 import { configBadNumericValue } from '../../../domain/commands/error.js';
 import type { Context } from '../../../ports/context.js';
 import {
+  findLastInvalidBigFileThreshold,
   findLastInvalidDeltaBaseCacheLimit,
   findLastInvalidMaxTreeDepth,
   findLastInvalidPackedGitBound,
@@ -43,5 +44,18 @@ const computeRepoSettingsVerdict = async (ctx: Context): Promise<void> => {
  */
 export const assertRepoSettingsValid = (ctx: Context): Promise<void> =>
   memoizeRepoSettingsVerdict(ctx, computeRepoSettingsVerdict);
+
+/**
+ * git's `repo_settings_get_big_file_threshold`: read lazily, the first time a
+ * command reads or writes an object's content past the threshold's reach —
+ * not with the rest of the class, so a command that never does (`log`,
+ * `cat-file`, `fsck --connectivity-only`) never refuses on it.
+ */
+export const assertBigFileThresholdValid = async (ctx: Context): Promise<void> => {
+  const invalid = await findLastInvalidBigFileThreshold(ctx);
+  if (invalid !== undefined) {
+    throw configBadNumericValue(invalid.key, invalid.source, invalid.value, invalid.reason);
+  }
+};
 
 export { repoSettingsVerdictSettled } from '../config-read.js';

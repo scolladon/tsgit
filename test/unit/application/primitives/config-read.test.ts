@@ -17,6 +17,7 @@ import {
   findFirstValuelessInSection,
   findInvalidGcNumber,
   findInvalidPushDefault,
+  findLastInvalidBigFileThreshold,
   findLastInvalidDeltaBaseCacheLimit,
   findLastInvalidMaxTreeDepth,
   findLastInvalidPackedGitBound,
@@ -8357,6 +8358,36 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
         });
       },
     );
+
+    describe.each([
+      ['-0', { key: 'core.bigfilethreshold', value: '-0', reason: 'invalid unit' }],
+      ['valueless', { key: 'core.bigfilethreshold', value: '', reason: 'invalid unit' }],
+      ['1m', undefined],
+      ['absent', undefined],
+    ] as const)('When findLastInvalidBigFileThreshold reads a %s entry', (label, expected) => {
+      it('Then it reports exactly the entry git refuses', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const line = {
+          '-0': '  bigFileThreshold = -0\n',
+          valueless: '  bigFileThreshold\n',
+          '1m': '  bigFileThreshold = 1m\n',
+          absent: '',
+        }[label];
+        await seed(ctx, `[core]\n${line}`);
+        const sut = findLastInvalidBigFileThreshold;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(
+          result === undefined
+            ? undefined
+            : { key: result.key, value: result.value, reason: result.reason },
+        ).toEqual(expected);
+      });
+    });
 
     describe('When readConfig reads core.bigFileThreshold = -0', () => {
       it('Then the threshold is absent, not zero', async () => {

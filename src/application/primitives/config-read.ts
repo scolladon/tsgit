@@ -1230,6 +1230,23 @@ export const findLastInvalidPackedGitBound = async (
   return undefined;
 };
 
+/**
+ * Cold-path detection for `core.bigFileThreshold`: git reads it through its
+ * config set (`repo_settings_get_big_file_threshold`), so only the LAST entry
+ * is parsed, under the unsigned-long grammar. Returns that entry when it
+ * fails, else `undefined`. Runs ONLY on a command's refusal path —
+ * `readConfig` stays lenient.
+ */
+export const findLastInvalidBigFileThreshold = async (
+  ctx: Context,
+): Promise<InvalidNumericEntry | undefined> => {
+  const last = await findLastEntry(ctx, 'core', BIG_FILE_THRESHOLD_KEY);
+  if (last === undefined) return undefined;
+  const checked = checkGitUnsignedLong(last.value);
+  if (checked.ok) return undefined;
+  return { key: last.key, source: last.source, value: last.value ?? '', reason: checked.reason };
+};
+
 type MutableGpgSsh = { program?: string; allowedSignersFile?: string; revocationFile?: string };
 
 type MutableGpg = {
@@ -1435,9 +1452,9 @@ const BIG_FILE_THRESHOLD_KEY = 'bigfilethreshold';
 /**
  * Apply `core.bigFileThreshold`: git's unsigned-long grammar, reusing
  * `checkGitUnsignedLong` exactly as {@link applyDeltaBaseCacheLimitEntry}
- * does. Merges as absent on any failure — this is the LENIENT read only; no
- * eager refusal is added for this key (mirrors `packedGitLimit`'s own
- * lenient-only surface where no command's preflight gate needs one yet).
+ * does. Merges as absent on any failure — this is the LENIENT read only; the
+ * refusal for a malformed value is `findLastInvalidBigFileThreshold`, run
+ * where git first reads the key.
  */
 const applyBigFileThresholdEntry = (core: MutableCore, value: string): MutableCore | undefined => {
   const checked = checkGitUnsignedLong(value);
