@@ -3,7 +3,8 @@
  * `tagged` lines from `fsck_obj` alone, so a full run prints them and a
  * `--connectivity-only` run never does. Each row runs real `git fsck` and
  * tsgit's on the same repository and rebuilds git's lines from tsgit's
- * structured findings.
+ * structured findings — compared as sets: git prints them in its object
+ * iteration order, a display concern the structured findings leave to the caller.
  *
  * @proves
  *   surface:        fsck
@@ -64,7 +65,8 @@ describe.skipIf(!GIT_AVAILABLE)('Given a tagged history', () => {
         const dir = taggedHistory(mode.replace(/[^a-z]+/g, '-'));
         const expected = runGit(['-C', dir, 'fsck', '--root', '--tags', ...flags])
           .split('\n')
-          .filter((line) => ROOT_OR_TAGGED_LINE.test(line));
+          .filter((line) => ROOT_OR_TAGGED_LINE.test(line))
+          .sort();
         const repo = await openRepository({ cwd: dir });
         const sut = repo.fsck;
 
@@ -72,9 +74,12 @@ describe.skipIf(!GIT_AVAILABLE)('Given a tagged history', () => {
         const result = await sut({ connectivityOnly }).finally(() => repo.dispose());
 
         // Assert
-        expect(result.findings.map(renderLine).filter((line) => line !== undefined)).toEqual(
-          expected,
-        );
+        expect(
+          result.findings
+            .map(renderLine)
+            .filter((line) => line !== undefined)
+            .sort(),
+        ).toEqual(expected);
       },
       ROW_TIMEOUT,
     );
