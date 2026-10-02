@@ -83,6 +83,8 @@ const recordingEnv = (): { readonly env: FormatEnv; readonly reads: Reads } => {
   const reads: Reads = { abbrev: new Set(), mailmap: false };
   const env: FormatEnv = {
     commitId: 'd'.repeat(40),
+    nowSeconds: 1790000000,
+    localOffsetMinutes: 0,
     abbrev: (kind) => {
       reads.abbrev.add(kind);
       return 'abbrev';

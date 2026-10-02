@@ -1,6 +1,7 @@
 import { concatBytes } from '../objects/encoding.js';
 import type { CommitView } from './commit-view.js';
 import { splitIdentLine } from './ident.js';
+import { DATE_MODE_BY_PART, type DateClock, showIdentDate } from './ident-date.js';
 import { formatSanitizedSubject, formatSubject } from './subject.js';
 
 export type AbbrevKind = 'commit' | 'tree' | 'parents';
@@ -11,7 +12,7 @@ export interface Ident {
 }
 
 /** Resolved data a format may read; each member is only consulted when a placeholder asks. */
-export interface FormatEnv {
+export interface FormatEnv extends DateClock {
   readonly commitId: string;
   readonly abbrev: (kind: AbbrevKind) => string;
   readonly mapUser?: (ident: Ident) => Ident;
@@ -235,15 +236,26 @@ const mapIdent = (part: IdentPart, ident: Ident, env: FormatEnv): Ident =>
 const blankOrDeclined = (part: IdentPart): Uint8Array | undefined =>
   BLANK_WHEN_MALFORMED_PARTS.includes(part) ? NO_BYTES : undefined;
 
+const evalIdentDate = (
+  part: IdentPart,
+  date: Uint8Array,
+  tz: Uint8Array,
+  env: FormatEnv,
+): Uint8Array | undefined => {
+  if (part === 't') return date;
+  const mode = DATE_MODE_BY_PART.get(part);
+  return mode && encodeAscii(showIdentDate(date, tz, mode, env));
+};
+
 const evalIdent = (spec: IdentSpec, view: CommitView, env: FormatEnv): Uint8Array | undefined => {
-  const { name, mail, date } = splitIdentLine(identLine(spec, view));
+  const { name, mail, date, tz } = splitIdentLine(identLine(spec, view));
   if (!name || !mail) return blankOrDeclined(spec.part);
   const mapped = mapIdent(spec.part, { name, mail }, env);
   if ('nN'.includes(spec.part)) return mapped.name;
   if ('eE'.includes(spec.part)) return mapped.mail;
   if ('lL'.includes(spec.part)) return localPart(mapped.mail);
-  if (!date) return blankOrDeclined(spec.part);
-  return spec.part === 't' ? date : undefined;
+  if (!date || !tz) return blankOrDeclined(spec.part);
+  return evalIdentDate(spec.part, date, tz, env);
 };
 
 const evalMessage = (part: MessagePart, view: CommitView): Uint8Array => {

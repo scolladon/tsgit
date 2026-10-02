@@ -27,6 +27,8 @@ const rawCommit = (message: string = MESSAGE): Uint8Array =>
 const ENV: FormatEnv = {
   commitId: COMMIT_ID,
   abbrev: (kind) => ({ commit: '38096f7', tree: 'f3d80e1', parents: 'd948d40 1111111' })[kind],
+  nowSeconds: 1790000000,
+  localOffsetMinutes: 0,
 };
 
 const run = (
@@ -310,8 +312,23 @@ describe('formatCommit idents', () => {
     });
   });
 
-  describe('Given a well-formed ident and a date placeholder wired by a later part, When expanding', () => {
-    it.each(['%ad', '%aD', '%ar', '%ai', '%aI', '%as', '%ah'])('Then %s is declined', (format) => {
+  describe.each([
+    ['%ad', 'Wed Nov 15 04:01:40 2023 +0545'],
+    ['%aD', 'Wed, 15 Nov 2023 04:01:40 +0545'],
+    ['%ai', '2023-11-15 04:01:40 +0545'],
+    ['%aI', '2023-11-15T04:01:40+05:45'],
+    ['%as', '2023-11-15'],
+    ['%ah', 'Nov 15 2023'],
+    ['%ar', '2 years, 10 months ago'],
+    ['%cd', 'Tue Nov 14 22:18:20 2023 +0000'],
+    ['%cD', 'Tue, 14 Nov 2023 22:18:20 +0000'],
+    ['%ci', '2023-11-14 22:18:20 +0000'],
+    ['%cI', '2023-11-14T22:18:20Z'],
+    ['%cs', '2023-11-14'],
+    ['%ch', 'Nov 14 2023'],
+    ['%cr', '2 years, 10 months ago'],
+  ])('Given a well-formed ident, When expanding %s', (format, expected) => {
+    it(`Then it yields ${expected}`, () => {
       // Arrange
       const sut = expand;
 
@@ -319,29 +336,47 @@ describe('formatCommit idents', () => {
       const result = sut(format);
 
       // Assert
-      expect(result).toBe(format);
+      expect(result).toBe(expected);
     });
+  });
 
-    it('Then a declined date placeholder under %+ keeps its letters', () => {
+  describe('Given a clock far from the commit, When expanding the now-relative placeholders', () => {
+    it('Then %ar and %ah follow the injected now and local offset', () => {
+      // Arrange
+      const sut = expand;
+      const env: FormatEnv = { ...ENV, nowSeconds: 1700000300 + 30 * 60, localOffsetMinutes: 0 };
+
+      // Act
+      const result = sut('%cr|%ch', undefined, env);
+
+      // Assert
+      expect(result).toBe('30 minutes ago|30 minutes ago');
+    });
+  });
+
+  describe('Given an ident west of UTC, When expanding', () => {
+    it('Then %ai and %aI render the negative zone', () => {
       // Arrange
       const sut = expand;
 
       // Act
-      const result = sut('x%+ad');
+      const result = sut('%ai|%aI', raw(['author A <a@b> 1700000200 -0130']));
 
       // Assert
-      expect(result).toBe('xad');
+      expect(result).toBe('2023-11-14 20:46:40 -0130|2023-11-14T20:46:40-01:30');
     });
+  });
 
-    it('Then a declined date placeholder under %- trims line feeds', () => {
+  describe('Given a date placeholder under a magic prefix, When expanding', () => {
+    it('Then %+as adds a line feed before the date', () => {
       // Arrange
       const sut = expand;
 
       // Act
-      const result = sut('x\n%-ad');
+      const result = sut('x%+as');
 
       // Assert
-      expect(result).toBe('xad');
+      expect(result).toBe('x\n2023-11-15');
     });
   });
 });
