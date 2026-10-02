@@ -18,6 +18,7 @@ export type FilterChoice =
       readonly name: string;
       readonly clean?: string;
       readonly smudge?: string;
+      readonly process?: string;
       readonly required: boolean;
     };
 
@@ -37,6 +38,7 @@ const namedFilterChoice = async (ctx: Context, name: string): Promise<FilterChoi
     name,
     ...(section.clean !== undefined && { clean: section.clean }),
     ...(section.smudge !== undefined && { smudge: section.smudge }),
+    ...(section.process !== undefined && { process: section.process }),
     required: section.required ?? false,
   };
 };

@@ -620,3 +620,110 @@ describe.skipIf(!GIT_AVAILABLE)('Given a required driver that configures no clea
     });
   });
 });
+
+/** A long-running v2 filter: cleans by upper-casing, refuses content holding `FAIL`. */
+const PROCESS_FILTER = `
+const pkt = (text) => Buffer.concat([Buffer.from((text.length + 4).toString(16).padStart(4, '0')), Buffer.from(text)]);
+const flush = Buffer.from('0000');
+const write = (...parts) => process.stdout.write(Buffer.concat(parts));
+const answers = [
+  () => write(pkt('git-filter-server\\n'), pkt('version=2\\n'), flush),
+  () => write(pkt('capability=clean\\n'), flush),
+  () => undefined,
+  (data) => data.includes('FAIL')
+    ? write(pkt('status=error\\n'), flush)
+    : write(pkt('status=success\\n'), flush, pkt(data.toString().toUpperCase()), flush, flush),
+];
+let buffered = Buffer.alloc(0);
+let pending = [];
+let step = 0;
+process.stdin.on('data', (chunk) => {
+  buffered = Buffer.concat([buffered, chunk]);
+  while (buffered.length >= 4) {
+    const length = parseInt(buffered.subarray(0, 4).toString(), 16);
+    if (length !== 0 && buffered.length < length) return;
+    if (length !== 0) pending.push(buffered.subarray(4, length));
+    buffered = buffered.subarray(length === 0 ? 4 : length);
+    if (length !== 0) continue;
+    answers[step](Buffer.concat(pending));
+    pending = [];
+    step = step === 3 ? 2 : step + 1;
+  }
+});
+`;
+
+describe.skipIf(!GIT_AVAILABLE)('Given a filter.<d>.process driver beside a clean command', () => {
+  let root = '';
+  let filterCommand = '';
+
+  beforeAll(async () => {
+    root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-filter-process-')));
+    const script = path.join(root, 'filter.cjs');
+    await writeFile(script, PROCESS_FILTER);
+    filterCommand = `"${process.execPath}" "${script}"`;
+  });
+
+  afterAll(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const twin = async (slug: string, content: string, required: boolean): Promise<string> => {
+    const repo = path.join(root, slug);
+    runGit(['init', '-q', '-b', 'main', repo]);
+    await writeFile(path.join(repo, '.gitattributes'), 'f filter=d\n');
+    await writeFile(path.join(repo, 'f'), content);
+    runGit(['-C', repo, 'config', 'filter.d.process', filterCommand]);
+    runGit(['-C', repo, 'config', 'filter.d.clean', 'sed s/h/X/']);
+    runGit(['-C', repo, 'config', 'filter.d.required', String(required)]);
+    return repo;
+  };
+
+  describe('When git and tsgit add f', () => {
+    it('Then both stage the process-cleaned blob, the clean command unused', async () => {
+      // Arrange
+      const gitRepo = await twin('git-ok', 'hi\n', true);
+      const tsgitRepo = await twin('tsgit-ok', 'hi\n', true);
+      const sut = add;
+
+      // Act
+      runGit(['-C', gitRepo, 'add', 'f']);
+      await sut(createNodeContext({ workDir: tsgitRepo }), ['f']);
+
+      // Assert
+      const staged = (repo: string): string => git(repo, 'rev-parse', ':f').trim();
+      expect(staged(tsgitRepo)).toBe(staged(gitRepo));
+      expect(git(tsgitRepo, 'cat-file', '-p', ':f')).toBe('HI\n');
+    });
+  });
+
+  describe.each([
+    { required: true, label: 'required' },
+    { required: false, label: 'optional' },
+  ])('When git and tsgit add f the $label process refuses', ({ required }) => {
+    it(`Then both ${required ? 'die' : 'stage the raw bytes'}`, async () => {
+      // Arrange
+      const gitRepo = await twin(`git-fail-${required}`, 'FAIL\n', required);
+      const tsgitRepo = await twin(`tsgit-fail-${required}`, 'FAIL\n', required);
+      const sut = add;
+
+      // Act
+      const g = tryRunGitWithExit(['-C', gitRepo, 'add', 'f']);
+      const result = await sut(createNodeContext({ workDir: tsgitRepo }), ['f']).catch(
+        (err: unknown) => err,
+      );
+
+      // Assert
+      expect(g.exitCode).toBe(required ? 128 : 0);
+      if (required) {
+        expect(g.stderr).toContain("fatal: f: clean filter 'd' failed");
+        expect((result as TsgitError).data).toEqual({
+          code: 'CLEAN_FILTER_FAILED',
+          path: 'f',
+          filter: 'd',
+        });
+        return;
+      }
+      expect(git(tsgitRepo, 'rev-parse', ':f')).toBe(git(gitRepo, 'rev-parse', ':f'));
+    });
+  });
+});

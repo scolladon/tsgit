@@ -69,6 +69,27 @@ describe('resolveFilterDriver', () => {
     });
   });
 
+  describe('Given *.y filter=myf with [filter "myf"] process configured', () => {
+    describe('When resolving the filter driver', () => {
+      it('Then the external driver carries the process command', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '*.y filter=myf\n', '[filter "myf"]\n\tprocess = serve\n');
+
+        // Act
+        const result = await choose(ctx, 'a.y');
+
+        // Assert
+        expect(result).toEqual({
+          kind: 'external',
+          name: 'myf',
+          process: 'serve',
+          required: false,
+        });
+      });
+    });
+  });
+
   describe('Given filter=myf with no matching [filter "myf"] section', () => {
     describe('When resolving the filter driver', () => {
       it('Then identity is chosen (unconfigured driver is inert)', async () => {
