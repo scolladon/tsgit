@@ -1,6 +1,12 @@
 import { concatBytes } from '../objects/encoding.js';
 import { parseColorPlaceholder } from './color.js';
 import { type CommitView, skipBlankLines } from './commit-view.js';
+import {
+  type Decoration,
+  type DecorationOptions,
+  formatDecorations,
+  parseDecoratePlaceholder,
+} from './decorations.js';
 import { splitIdentLine } from './ident.js';
 import { DATE_MODE_BY_PART, type DateClock, showIdentDate } from './ident-date.js';
 import { type PadRequest, padValue, parsePadding, type Truncation } from './padding.js';
@@ -32,6 +38,7 @@ export interface FormatEnv extends DateClock {
   readonly abbrev: (kind: AbbrevKind) => string;
   readonly mapUser?: (ident: Ident) => Ident;
   readonly trailer?: TrailerConfig;
+  readonly decorations?: ReadonlyArray<Decoration>;
 }
 
 export interface FormatBudget {
@@ -66,7 +73,8 @@ type Spec =
   | IdentSpec
   | { readonly kind: 'wrap'; readonly layout: WrapLayout }
   | { readonly kind: 'message'; readonly part: MessagePart }
-  | { readonly kind: 'trailers'; readonly options: TrailerOptions };
+  | { readonly kind: 'trailers'; readonly options: TrailerOptions }
+  | { readonly kind: 'decorations'; readonly options: DecorationOptions };
 
 export type Token =
   | { readonly kind: 'text'; readonly bytes: Uint8Array }
@@ -109,6 +117,7 @@ const MAPPED_IDENT_PARTS = 'NEL';
 const BLANK_WHEN_MALFORMED_PARTS = 'n e t d D r i';
 const REFUSALS = ['(count)', '(total)'] as const;
 const UNPARSED_PAREN_PREFIXES = ['(decorate', '(describe'];
+const NO_AFFIXES: DecorationOptions = { prefix: NO_BYTES, suffix: NO_BYTES };
 
 const hexByte = (fmt: Uint8Array, at: number): number | undefined => {
   const pair = new TextDecoder('latin1').decode(fmt.subarray(at, at + HEX_PAIR_LENGTH));
@@ -136,12 +145,14 @@ const SINGLE_BYTE_SPECS: ReadonlyMap<string, Classified> = new Map([
   ['t', one({ kind: 'abbrev', of: 'tree' })],
   ['p', one({ kind: 'abbrev', of: 'parents' })],
   ['m', one(literal(MERGE_MARK))],
+  ['d', one({ kind: 'decorations', options: {} })],
+  ['D', one({ kind: 'decorations', options: NO_AFFIXES })],
   ['s', one({ kind: 'message', part: 'subject' })],
   ['f', one({ kind: 'message', part: 'sanitized' })],
   ['b', one({ kind: 'message', part: 'body' })],
   ['B', one({ kind: 'message', part: 'full' })],
   ['e', one({ kind: 'message', part: 'encoding' })],
-  ...[...'SNdDG'].map((letter): [string, Classified] => [letter, DECLINED_UNPARSED]),
+  ...[...'SNG'].map((letter): [string, Classified] => [letter, DECLINED_UNPARSED]),
 ]);
 
 const classifyHex = (fmt: Uint8Array, at: number): Classified => {
@@ -191,6 +202,9 @@ const classifyParen = (fmt: Uint8Array, at: number): Classified => {
   if (refusal) {
     return { spec: { kind: 'refused', placeholder: `%${refusal}` }, length: refusal.length };
   }
+  const decorate = parseDecoratePlaceholder(fmt, at);
+  if (decorate)
+    return { spec: { kind: 'decorations', options: decorate.options }, length: decorate.length };
   const trailers = parseTrailersPlaceholder(fmt, at);
   if (trailers)
     return { spec: { kind: 'trailers', options: trailers.options }, length: trailers.length };
@@ -355,6 +369,8 @@ const evalSpec = (spec: Spec, view: CommitView, env: FormatEnv): Uint8Array | un
         spec.options,
         env.trailer,
       );
+    case 'decorations':
+      return formatDecorations(env.decorations ?? [], spec.options);
     default:
       return undefined;
   }

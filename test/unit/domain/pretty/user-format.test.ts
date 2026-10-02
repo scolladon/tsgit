@@ -459,7 +459,6 @@ describe('Given declined placeholders, When expanding', () => {
     '%gx',
     '%a',
     '%',
-    '%d',
     '%C(red',
     '%Cx',
     '%w(5',
@@ -925,4 +924,109 @@ describe('Given trailers placeholders, When expanding', () => {
       expect(result.parsedHeader).toBe(true);
     },
   );
+});
+
+describe('Given ref decorations in the environment', () => {
+  const decorated: FormatEnv = {
+    ...ENV,
+    decorations: [
+      { kind: 'head', name: 'HEAD', attachedTo: 'refs/heads/main' },
+      { kind: 'branch', name: 'refs/heads/main' },
+      { kind: 'tag', name: 'refs/tags/v1' },
+    ],
+  };
+
+  describe('When expanding %d', () => {
+    it('Then the decorations render with the default affixes', () => {
+      // Arrange
+      const sut = expand;
+
+      // Act
+      const result = sut('[%d]', undefined, decorated);
+
+      // Assert
+      expect(result).toBe('[ (HEAD -> main, tag: v1)]');
+    });
+  });
+
+  describe('When expanding %D', () => {
+    it('Then the decorations render without prefix and suffix', () => {
+      // Arrange
+      const sut = expand;
+
+      // Act
+      const result = sut('[%D]', undefined, decorated);
+
+      // Assert
+      expect(result).toBe('[HEAD -> main, tag: v1]');
+    });
+  });
+
+  describe('When expanding %(decorate) with options', () => {
+    it('Then the options replace the affixes', () => {
+      // Arrange
+      const sut = expand;
+
+      // Act
+      const result = sut('%(decorate:prefix=[,suffix=])|%(decorate)', undefined, decorated);
+
+      // Assert
+      expect(result).toBe('[HEAD -> main, tag: v1]| (HEAD -> main, tag: v1)');
+    });
+  });
+
+  describe('When expanding an unparsable %(decorate:bogus)', () => {
+    it('Then it is emitted literally', () => {
+      // Arrange
+      const sut = expand;
+
+      // Act
+      const result = sut('%(decorate:bogus)', undefined, decorated);
+
+      // Assert
+      expect(result).toBe('%(decorate:bogus)');
+    });
+  });
+
+  describe('When the commit carries no decoration', () => {
+    it('Then %d, %D and %(decorate) expand to nothing', () => {
+      // Arrange
+      const sut = expand;
+
+      // Act
+      const result = sut('[%d%D%(decorate)]');
+
+      // Assert
+      expect(result).toBe('[]');
+    });
+  });
+
+  describe('When a decoration placeholder is padded', () => {
+    it('Then the expansion is padded like any value', () => {
+      // Arrange
+      const sut = expand;
+
+      // Act
+      const result = sut('%<(14)%D|', undefined, {
+        ...ENV,
+        decorations: [{ kind: 'branch', name: 'refs/heads/x' }],
+      });
+
+      // Assert
+      expect(result).toBe('x             |');
+    });
+  });
+
+  describe('When expanding decoration placeholders', () => {
+    it('Then the commit header is not parsed', () => {
+      // Arrange
+      const tokens = scanPlaceholders(encode('%d%D%(decorate)'));
+
+      // Act
+      const result = formatCommit(tokens, parseCommitView(rawCommit()), decorated, BUDGET);
+
+      // Assert
+      expect(result).toMatchObject({ parsedHeader: false });
+    });
+  });
 });
