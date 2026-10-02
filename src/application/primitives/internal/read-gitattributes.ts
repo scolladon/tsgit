@@ -6,13 +6,17 @@ import {
   parseGitattributes,
 } from '../../../domain/attributes/index.js';
 import { gitattributesFileTooLarge } from '../../../domain/commands/error.js';
-import type { FilePath } from '../../../domain/objects/object-id.js';
+import { decode } from '../../../domain/objects/encoding.js';
+import { FILE_MODE } from '../../../domain/objects/file-mode.js';
+import type { FilePath, ObjectId } from '../../../domain/objects/object-id.js';
 import type { Context } from '../../../ports/context.js';
 import { readConfig } from '../config-read.js';
 import { commonGitDir } from '../path-layout.js';
+import { readBlob } from '../read-blob.js';
 import { MAX_GITATTRIBUTES_BYTES } from '../types.js';
 import { joinPath } from './join-working-tree-path.js';
-import { expandUserPath, loadCappedUtf8 } from './read-capped-file.js';
+import { expandUserPath, loadCappedUtf8, sanitizedErrorPath } from './read-capped-file.js';
+import { findTreeEntry } from './resolve-tree-path.js';
 
 /** Load + parse one attributes file; `undefined` when absent, symlink, or a directory. */
 const loadAndParse = async (ctx: Context, path: string): Promise<ParsedAttributes | undefined> => {
@@ -29,7 +33,7 @@ const loadAndParse = async (ctx: Context, path: string): Promise<ParsedAttribute
  * unaffected — neither lives in the work tree — so only this source is
  * skipped, never the whole provider.
  */
-const readDir = (ctx: Context, dir: FilePath | ''): Promise<ParsedAttributes | undefined> => {
+const workTreeDirReader: DirReader = (ctx, dir) => {
   const workDir = ctx.layout.workDir;
   if (workDir === undefined) return Promise.resolve(undefined);
   return loadAndParse(
@@ -37,6 +41,31 @@ const readDir = (ctx: Context, dir: FilePath | ''): Promise<ParsedAttributes | u
     joinPath(workDir, dir === '' ? '.gitattributes' : `${dir}/.gitattributes`),
   );
 };
+
+type DirReader = (ctx: Context, dir: FilePath | '') => Promise<ParsedAttributes | undefined>;
+
+const GITATTRIBUTES_FILE = '.gitattributes';
+
+/** Symlink-mode entries are never read (git refuses to follow them for attributes). */
+const isReadableMode = (mode: string): boolean =>
+  mode === FILE_MODE.REGULAR || mode === FILE_MODE.EXECUTABLE;
+
+const treeDirReader =
+  (tree: ObjectId): DirReader =>
+  async (ctx, dir) => {
+    const path = dir === '' ? GITATTRIBUTES_FILE : `${dir}/${GITATTRIBUTES_FILE}`;
+    const entry = await findTreeEntry(ctx, tree, path);
+    if (entry === undefined || !isReadableMode(entry.mode)) return undefined;
+    const { content } = await readBlob(ctx, entry.id);
+    if (content.length > MAX_GITATTRIBUTES_BYTES) {
+      throw gitattributesFileTooLarge(
+        sanitizedErrorPath(path),
+        content.length,
+        MAX_GITATTRIBUTES_BYTES,
+      );
+    }
+    return parseGitattributes(decode(content));
+  };
 
 const readInfo = (ctx: Context): Promise<ParsedAttributes | undefined> =>
   loadAndParse(ctx, `${commonGitDir(ctx)}/info/attributes`);
@@ -105,7 +134,10 @@ export interface AttributeProvider {
  * from the path's own up to the root, then global — loading and caching each
  * directory's `.gitattributes` on demand.
  */
-export const buildAttributeProvider = async (ctx: Context): Promise<AttributeProvider> => {
+const buildAttributeProviderFrom = async (
+  ctx: Context,
+  readDir: DirReader,
+): Promise<AttributeProvider> => {
   const info = await readInfo(ctx);
   const global = await readGlobal(ctx);
   const root = await readDir(ctx, '');
@@ -139,6 +171,15 @@ export const buildAttributeProvider = async (ctx: Context): Promise<AttributePro
   };
   return { sourcesForPath };
 };
+
+export const buildAttributeProvider = (ctx: Context): Promise<AttributeProvider> =>
+  buildAttributeProviderFrom(ctx, workTreeDirReader);
+
+/** Same precedence as the work-tree provider, but each `.gitattributes` is read from `tree`. */
+export const buildTreeAttributeProvider = (
+  ctx: Context,
+  tree: ObjectId,
+): Promise<AttributeProvider> => buildAttributeProviderFrom(ctx, treeDirReader(tree));
 
 export const maybeBuildAttributeProvider = (
   ctx: Context,

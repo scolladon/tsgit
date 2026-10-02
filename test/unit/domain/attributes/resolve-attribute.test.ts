@@ -30,6 +30,26 @@ describe('resolveAttribute', () => {
     });
   });
 
+  describe('Given a directory-only pattern `foo/ text`', () => {
+    describe('When resolving a path', () => {
+      it.each<{ label: string; path: string; expected: unknown }>([
+        { label: 'a file named foo', path: 'foo', expected: 'unspecified' },
+        { label: 'the directory foo/', path: 'foo/', expected: true },
+        { label: 'a nested directory x/foo/', path: 'x/foo/', expected: true },
+        { label: 'a file x/foo', path: 'x/foo', expected: 'unspecified' },
+      ])('Then $label yields $expected', ({ path, expected }) => {
+        // Arrange
+        const sources = [sourceAt('', 'foo/ text')];
+
+        // Act
+        const result = resolveAttribute(sources, path, 'text', BUILTIN_MACROS);
+
+        // Assert
+        expect(result).toEqual(expected);
+      });
+    });
+  });
+
   describe('Given a single matching set rule', () => {
     describe('When resolving the attribute', () => {
       it('Then yields the set value', () => {

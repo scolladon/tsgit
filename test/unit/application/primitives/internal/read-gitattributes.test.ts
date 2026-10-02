@@ -3,12 +3,17 @@ import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import {
   buildAttributeProvider,
+  buildTreeAttributeProvider,
   maybeBuildAttributeProvider,
 } from '../../../../../src/application/primitives/internal/read-gitattributes.js';
 import { MAX_GITATTRIBUTES_BYTES } from '../../../../../src/application/primitives/types.js';
+import { writeObject } from '../../../../../src/application/primitives/write-object.js';
+import { writeTree } from '../../../../../src/application/primitives/write-tree.js';
 import { resolveAttribute } from '../../../../../src/domain/attributes/index.js';
 import type { TsgitError } from '../../../../../src/domain/error.js';
-import type { FilePath } from '../../../../../src/domain/objects/object-id.js';
+import { FILE_MODE } from '../../../../../src/domain/objects/file-mode.js';
+import type { FilePath, ObjectId } from '../../../../../src/domain/objects/object-id.js';
+import { treeEntry } from '../../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../../src/ports/context.js';
 import { asBareContext } from '../../commands/fixtures.js';
 
@@ -540,6 +545,178 @@ describe('maybeBuildAttributeProvider', () => {
 
         // Assert
         expect(result).toBeDefined();
+      });
+    });
+  });
+});
+
+const putBlob = (ctx: Context, content: string): Promise<ObjectId> =>
+  writeObject(ctx, {
+    type: 'blob',
+    content: new TextEncoder().encode(content),
+    id: '' as ObjectId,
+  });
+
+const putTree = (
+  ctx: Context,
+  entries: ReadonlyArray<readonly [string, string, ObjectId]>,
+): Promise<ObjectId> =>
+  writeTree(
+    ctx,
+    entries.map(([mode, name, id]) => treeEntry(mode as never, name, id)),
+  );
+
+const treeResolve = async (
+  ctx: Context,
+  tree: ObjectId,
+  path: string,
+  name = 'merge',
+): Promise<unknown> => {
+  const { sources, macros } = await (await buildTreeAttributeProvider(ctx, tree)).sourcesForPath(
+    path as FilePath,
+  );
+  return resolveAttribute(sources, path, name, macros);
+};
+
+describe('buildTreeAttributeProvider', () => {
+  describe('Given a tree with a root and a nested .gitattributes', () => {
+    describe('When resolving paths', () => {
+      it.each([
+        { path: 'a.txt', expected: { set: 'root' } },
+        { path: 'sub/a.txt', expected: { set: 'sub' } },
+      ])('Then $path reads the tree files', async ({ path, expected }) => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const rootAttrs = await putBlob(ctx, '*.txt merge=root\n');
+        const subAttrs = await putBlob(ctx, '*.txt merge=sub\n');
+        const sub = await putTree(ctx, [[FILE_MODE.REGULAR, '.gitattributes', subAttrs]]);
+        const tree = await putTree(ctx, [
+          [FILE_MODE.REGULAR, '.gitattributes', rootAttrs],
+          [FILE_MODE.DIRECTORY, 'sub', sub],
+        ]);
+
+        // Act
+        const result = await treeResolve(ctx, tree, path);
+
+        // Assert
+        expect(result).toEqual(expected);
+      });
+    });
+  });
+
+  describe('Given a worktree .gitattributes and a tree without one', () => {
+    describe('When resolving', () => {
+      it('Then the worktree file is ignored', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '/repo/.gitattributes', '*.txt merge=worktree\n');
+        const tree = await putTree(ctx, []);
+
+        // Act
+        const result = await treeResolve(ctx, tree, 'a.txt');
+
+        // Assert
+        expect(result).toBe('unspecified');
+      });
+    });
+  });
+
+  describe('Given a bare context', () => {
+    describe('When resolving from a tree', () => {
+      it('Then the tree .gitattributes applies', async () => {
+        // Arrange
+        const ctx = asBareContext(createMemoryContext());
+        const attrs = await putBlob(ctx, '*.txt merge=bare\n');
+        const tree = await putTree(ctx, [[FILE_MODE.REGULAR, '.gitattributes', attrs]]);
+
+        // Act
+        const result = await treeResolve(ctx, tree, 'a.txt');
+
+        // Assert
+        expect(result).toEqual({ set: 'bare' });
+      });
+    });
+  });
+
+  describe('Given a .gitattributes entry of each mode', () => {
+    describe('When resolving', () => {
+      it.each([
+        { mode: FILE_MODE.REGULAR, expected: { set: 'x' } },
+        { mode: FILE_MODE.EXECUTABLE, expected: { set: 'x' } },
+        { mode: FILE_MODE.SYMLINK, expected: 'unspecified' },
+      ])('Then mode $mode yields $expected', async ({ mode, expected }) => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const attrs = await putBlob(ctx, '*.txt merge=x\n');
+        const tree = await putTree(ctx, [[mode, '.gitattributes', attrs]]);
+
+        // Act
+        const result = await treeResolve(ctx, tree, 'a.txt');
+
+        // Assert
+        expect(result).toEqual(expected);
+      });
+    });
+  });
+
+  describe('Given info/attributes and a tree .gitattributes both assigning merge', () => {
+    describe('When resolving', () => {
+      it('Then info/attributes wins', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '/repo/.git/info/attributes', '*.txt merge=info\n');
+        const attrs = await putBlob(ctx, '*.txt merge=tree\n');
+        const tree = await putTree(ctx, [[FILE_MODE.REGULAR, '.gitattributes', attrs]]);
+
+        // Act
+        const result = await treeResolve(ctx, tree, 'a.txt');
+
+        // Assert
+        expect(result).toEqual({ set: 'info' });
+      });
+    });
+  });
+
+  describe('Given a macro defined in the tree root .gitattributes', () => {
+    describe('When a rule uses the macro', () => {
+      it('Then the macro expands', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const attrs = await putBlob(ctx, '[attr]mine merge=macro\n*.txt mine\n');
+        const tree = await putTree(ctx, [[FILE_MODE.REGULAR, '.gitattributes', attrs]]);
+
+        // Act
+        const result = await treeResolve(ctx, tree, 'a.txt');
+
+        // Assert
+        expect(result).toEqual({ set: 'macro' });
+      });
+    });
+  });
+
+  describe('Given a tree .gitattributes over the size cap', () => {
+    describe('When building the provider', () => {
+      it('Then it throws GITATTRIBUTES_FILE_TOO_LARGE', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const attrs = await putBlob(ctx, 'x'.repeat(MAX_GITATTRIBUTES_BYTES + 1));
+        const tree = await putTree(ctx, [[FILE_MODE.REGULAR, '.gitattributes', attrs]]);
+
+        // Act
+        let caught: TsgitError | undefined;
+        try {
+          await buildTreeAttributeProvider(ctx, tree);
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data).toEqual({
+          code: 'GITATTRIBUTES_FILE_TOO_LARGE',
+          path: '.gitattributes',
+          size: MAX_GITATTRIBUTES_BYTES + 1,
+          limit: MAX_GITATTRIBUTES_BYTES,
+        });
       });
     });
   });
