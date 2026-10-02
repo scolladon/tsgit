@@ -1,5 +1,6 @@
 /// <reference lib="dom" />
 import { decompressFailed } from '../domain/error.js';
+import { describeError } from './describe-error.js';
 
 /**
  * A native `DecompressionStream` whose read side reports a bad zlib stream as
@@ -16,7 +17,7 @@ export function createNativeInflateStream(): TransformStream<Uint8Array, Uint8Ar
         if (done) controller.close();
         else controller.enqueue(value as Uint8Array);
       } catch (error) {
-        controller.error(decompressFailed(error instanceof Error ? error.message : String(error)));
+        controller.error(decompressFailed(describeError(error)));
       }
     },
     cancel: (reason) => reader.cancel(reason),

@@ -1,6 +1,7 @@
 /// <reference lib="dom" />
 import { networkError } from '../../domain/index.js';
 import type { HttpRequest, HttpResponse, HttpTransport } from '../../ports/http-transport.js';
+import { describeError } from '../describe-error.js';
 
 export class BrowserHttpTransport implements HttpTransport {
   async request(req: HttpRequest): Promise<HttpResponse> {
@@ -24,7 +25,7 @@ export class BrowserHttpTransport implements HttpTransport {
         body,
       };
     } catch (err) {
-      throw networkError(err instanceof Error ? err.message : String(err));
+      throw networkError(describeError(err));
     }
   }
 }

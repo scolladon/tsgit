@@ -1,6 +1,7 @@
 /// <reference lib="dom" />
 import { compressFailed, decompressFailed } from '../../domain/index.js';
 import type { Compressor, InflateStreamResult } from '../../ports/compressor.js';
+import { describeError } from '../describe-error.js';
 import { boundedInflateCap, inflateZlibHead, inflateZlibMember } from '../inflate.js';
 import { createNativeInflateStream } from '../native-inflate-stream.js';
 
@@ -15,7 +16,7 @@ export class BrowserCompressor implements Compressor {
         .pipeThrough(new CompressionStream('deflate'));
       return new Uint8Array(await new Response(stream).arrayBuffer());
     } catch (err) {
-      throw compressFailed(err instanceof Error ? err.message : String(err));
+      throw compressFailed(describeError(err));
     }
   }
 
@@ -31,7 +32,7 @@ export class BrowserCompressor implements Compressor {
         .pipeThrough(new CompressionStream('deflate-raw'));
       return new Uint8Array(await new Response(stream).arrayBuffer());
     } catch (err) {
-      throw compressFailed(err instanceof Error ? err.message : String(err));
+      throw compressFailed(describeError(err));
     }
   }
 
@@ -57,7 +58,7 @@ export class BrowserCompressor implements Compressor {
       await pumped;
       return output;
     } catch (err) {
-      throw decompressFailed(err instanceof Error ? err.message : String(err));
+      throw decompressFailed(describeError(err));
     }
   }
 
