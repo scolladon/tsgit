@@ -18,7 +18,6 @@ import {
   readConfig,
   readPromisorRemoteNames,
   warnSlashLeadingPromisorRemotes,
-  warnSlashLeadingRemoteShorthands,
 } from '../primitives/config-read.js';
 import { fetchPack } from '../primitives/fetch-pack.js';
 import { hasObject } from '../primitives/has-object.js';
@@ -28,6 +27,7 @@ import { updateConfigOperations } from '../primitives/update-config.js';
 import { negotiateDiscovery, negotiatePackBytes } from './internal/fetch-negotiation.js';
 import { openGitSession } from './internal/git-service-session.js';
 import { assertPeerAlgorithm } from './internal/object-format-guard.js';
+import { buildRemoteTable } from './internal/remote-config.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
 import { selectFetchCapabilities } from './internal/upload-pack-client.js';
 
@@ -88,7 +88,7 @@ const runFetchChildPrologue = async (
   remoteName: string,
   recordedFilter: string | undefined,
 ): Promise<void> => {
-  await warnSlashLeadingRemoteShorthands(ctx);
+  await buildRemoteTable(ctx);
   await warnSlashLeadingPromisorRemotes(ctx);
   if (recordedFilter !== undefined) return;
   await updateConfigOperations(ctx, [

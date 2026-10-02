@@ -23,7 +23,7 @@ import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import { shortBranchName } from '../../domain/refs/short-branch-name.js';
 import { branchCheckedOut } from '../../domain/worktree/error.js';
 import type { Context } from '../../ports/context.js';
-import { findLastEntry, warnSlashLeadingRemoteShorthands } from '../primitives/config-read.js';
+import { findLastEntry } from '../primitives/config-read.js';
 import { peelChain } from '../primitives/internal/peel-chain.js';
 import { transactionLogging } from '../primitives/internal/ref-transaction-logging.js';
 import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
@@ -43,12 +43,13 @@ import {
 import { updateRef } from '../primitives/update-ref.js';
 import { branchMerged } from './internal/branch-merged.js';
 import { worktreeHolding } from './internal/checked-out-branches.js';
+import { buildRemoteTable } from './internal/remote-config.js';
 import {
   assertOperationalRepository,
   branchRefFromHead,
   readHeadRaw,
 } from './internal/repo-state.js';
-import { resolveRevisionName, resolvingCandidates } from './internal/revision-name.js';
+import { dwimRefName, resolveRevisionName, resolvingCandidates } from './internal/revision-name.js';
 
 export interface BranchInfo {
   readonly name: RefName;
@@ -190,18 +191,25 @@ const trackingDisabled = async (ctx: Context): Promise<boolean> => {
   return parsed.ok && !parsed.value;
 };
 
+/** When `create_branch` builds the remote table, relative to writing the branch. */
+type RemoteTableRead = 'before-write' | 'after-write' | 'none';
+
 /**
- * git's `create_branch` sets up tracking — building the remote table, and so
- * warning about each `/`-named remote — for a start point that names a ref
- * (an omitted one names `HEAD`), never for a bare object name or expression.
+ * When git's `create_branch` builds the remote table — warning on each
+ * `/`-named remote, dying on an unusable refspec: `dwim_branch_start` vets a
+ * start ref outside `refs/heads/` as a remote-tracking branch before the
+ * branch is written, `setup_tracking` reads it for a local branch only after.
+ * A bare object name or expression, or `branch.autoSetupMerge = false`, never
+ * reads it. An omitted start point names `HEAD`.
  */
-const readRemoteTableForTracking = async (
+const remoteTableRead = async (
   ctx: Context,
   startPoint: string | undefined,
-): Promise<void> => {
-  if (startPoint !== undefined && (await resolvingCandidates(ctx, startPoint)).length === 0) return;
-  if (await trackingDisabled(ctx)) return;
-  await warnSlashLeadingRemoteShorthands(ctx);
+): Promise<RemoteTableRead> => {
+  if (await trackingDisabled(ctx)) return 'none';
+  const ref = await dwimRefName(ctx, startPoint ?? HEAD_NAME);
+  if (ref === undefined) return 'none';
+  return ref.startsWith(HEADS_PREFIX) ? 'after-write' : 'before-write';
 };
 
 export const branchCreate = async (
@@ -222,9 +230,11 @@ export const branchCreate = async (
       ? await resolveOmittedStartPoint(ctx, startPoint)
       : await resolveBranchTarget(ctx, input.startPoint);
   const target = await requireCommit(ctx, start);
-  await readRemoteTableForTracking(ctx, input.startPoint);
+  const tableRead = await remoteTableRead(ctx, input.startPoint);
+  if (tableRead === 'before-write') await buildRemoteTable(ctx);
   const reflogMessage = force && held ? branchResetTo(startPoint) : branchCreatedFrom(startPoint);
   await writeNewBranch(ctx, { name, target, force, reflogMessage });
+  if (tableRead === 'after-write') await buildRemoteTable(ctx);
   return { name, id: target };
 };
 

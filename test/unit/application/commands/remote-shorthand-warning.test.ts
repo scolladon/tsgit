@@ -132,3 +132,67 @@ describe('Given a repository configuring a /-named promisor remote', () => {
     });
   });
 });
+
+describe('Given an unusable refspec between two /-named remotes', () => {
+  const CONFIG =
+    '[remote "/a"]\n\turl = u\n' +
+    '[remote "y"]\n\turl = /n/y\n\tpush = refs/heads/*:refs/x\n\tfetch = bad^\n' +
+    '[remote "/b"]\n\turl = v\n';
+
+  describe.each([
+    { verb: 'remote list', run: (ctx: Context) => remoteList(ctx) },
+    { verb: 'fetch', run: (ctx: Context) => fetch(ctx, { remote: 'y' }) },
+    { verb: 'pull', run: (ctx: Context) => pull(ctx, { remote: 'y', ref: 'main' }) },
+    { verb: 'branch z', run: (ctx: Context) => branchCreate(ctx, { name: 'z' }) },
+    { verb: 'branch -d', run: (ctx: Context) => branchDelete(ctx, { name: 'side' }) },
+  ])('When $verb builds the remote table', ({ run }) => {
+    it('Then it warns up to the first unusable spec in config order and dies there', async () => {
+      // Arrange
+      const { ctx, warnings } = await repoWithSlashRemote();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, CONFIG);
+      const sut = run;
+
+      // Act
+      const [outcome] = await Promise.allSettled([sut(ctx)]);
+
+      // Assert
+      expect(remoteWarnings(warnings)).toEqual([[WARNING, { remote: '/a', key: 'url' }]]);
+      expect((outcome as PromiseRejectedResult).reason.data).toEqual({
+        code: 'REFSPEC_INVALID',
+        raw: 'refs/heads/*:refs/x',
+        reason: 'not a valid refspec',
+      });
+    });
+  });
+});
+
+describe('Given an unusable refspec in the remote table', () => {
+  const CONFIG = '[remote "y"]\n\turl = /n/y\n\tfetch = bad^\n';
+
+  describe.each([
+    { start: undefined, label: 'the omitted start point HEAD, on a branch', created: true },
+    { start: 'side', label: 'a local branch', created: true },
+    { start: 'y/main', label: 'a remote-tracking branch', created: false },
+    { start: 'v1', label: 'a tag', created: false },
+  ])('When branch z starts from $label', ({ start, created }) => {
+    it(`Then it dies on the spec, ${created ? 'after' : 'before'} writing the branch, as git does`, async () => {
+      // Arrange
+      const { ctx } = await repoWithSlashRemote();
+      const tip = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/heads/main`);
+      await seedRepo(ctx, {
+        refs: { 'refs/remotes/y/main': tip.trim(), 'refs/tags/v1': tip.trim() },
+      });
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, CONFIG);
+      const sut = branchCreate;
+
+      // Act
+      const [outcome] = await Promise.allSettled([
+        sut(ctx, { name: 'z', ...(start !== undefined ? { startPoint: start } : {}) }),
+      ]);
+
+      // Assert
+      expect((outcome as PromiseRejectedResult).reason.data.code).toBe('REFSPEC_INVALID');
+      expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/heads/z`)).toBe(created);
+    });
+  });
+});

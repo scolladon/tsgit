@@ -31,7 +31,7 @@ import {
   readConfig,
   readPromisorRemoteNames,
   tokenizeConfig,
-  warnSlashLeadingRemoteShorthands,
+  walkRemoteTable,
 } from '../../../../src/application/primitives/config-read.js';
 import {
   __resetSectionsCacheForTests,
@@ -9728,17 +9728,17 @@ describe('Given a remote whose name begins with /', () => {
     });
   });
 
-  describe('When warnSlashLeadingRemoteShorthands', () => {
+  describe('When walkRemoteTable', () => {
     it('Then it warns once per entry of that remote, with its lower-cased key, in config order', async () => {
       // Arrange
       const base = createMemoryContext();
       await seed(base, SLASH_CONFIG);
       const warn = vi.fn();
       const ctx: Context = { ...base, logger: { warn } };
-      const sut = warnSlashLeadingRemoteShorthands;
+      const sut = walkRemoteTable;
 
       // Act
-      await sut(ctx);
+      await sut(ctx, () => undefined);
 
       // Assert
       expect(warn.mock.calls).toEqual(
@@ -9748,11 +9748,48 @@ describe('Given a remote whose name begins with /', () => {
         ]),
       );
     });
+
+    it('Then it checks every other named-remote entry, in config order, key lower-cased', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seed(ctx, `${SLASH_CONFIG}[remote]\n\tpushDefault = y\n[remote "z"]\n\tFetch\n`);
+      const checked: unknown[] = [];
+      const sut = walkRemoteTable;
+
+      // Act
+      await sut(ctx, (entry) => checked.push(entry));
+
+      // Assert
+      expect(checked).toEqual([
+        { remote: 'y', key: 'url', value: 'v' },
+        { remote: 'z', key: 'fetch', value: null },
+      ]);
+    });
+
+    it('Then a throwing check stops the walk before any later entry warns', async () => {
+      // Arrange
+      const base = createMemoryContext();
+      await seed(base, '[remote "y"]\n\turl = v\n[remote "/w"]\n\turl = u\n');
+      const warn = vi.fn();
+      const ctx: Context = { ...base, logger: { warn } };
+      const sut = walkRemoteTable;
+
+      // Act
+      const [outcome] = await Promise.allSettled([
+        sut(ctx, () => {
+          throw new Error('dies here');
+        }),
+      ]);
+
+      // Assert
+      expect((outcome as PromiseRejectedResult).reason.message).toBe('dies here');
+      expect(warn).not.toHaveBeenCalled();
+    });
   });
 });
 
 describe('Given only remotes whose names do not begin with /', () => {
-  describe('When warnSlashLeadingRemoteShorthands', () => {
+  describe('When walkRemoteTable', () => {
     it('Then it warns nothing', async () => {
       // Arrange
       const base = createMemoryContext();
@@ -9762,10 +9799,10 @@ describe('Given only remotes whose names do not begin with /', () => {
       );
       const warn = vi.fn();
       const ctx: Context = { ...base, logger: { warn } };
-      const sut = warnSlashLeadingRemoteShorthands;
+      const sut = walkRemoteTable;
 
       // Act
-      await sut(ctx);
+      await sut(ctx, () => undefined);
 
       // Assert
       expect(warn).not.toHaveBeenCalled();

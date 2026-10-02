@@ -42,11 +42,7 @@ import {
 } from '../../domain/submodule/relative-url.js';
 import { parseUpdateMode, type SubmoduleUpdateMode } from '../../domain/submodule/update-mode.js';
 import type { Context } from '../../ports/context.js';
-import {
-  type ParsedConfig,
-  readConfig,
-  warnSlashLeadingRemoteShorthands,
-} from '../primitives/config-read.js';
+import { type ParsedConfig, readConfig } from '../primitives/config-read.js';
 import { assertValidBooleanConfigInSection } from '../primitives/internal/boolean-config-guard.js';
 import { indexEntryFromStat } from '../primitives/internal/index-entry-from-stat.js';
 import { acquireIndexLock } from '../primitives/internal/index-lock.js';
@@ -77,6 +73,7 @@ import { walkSubmodules } from '../primitives/walk-submodules.js';
 import { writeObject } from '../primitives/write-object.js';
 import { checkout } from './checkout.js';
 import { type CloneResult, clone } from './clone.js';
+import { buildRemoteTable } from './internal/remote-config.js';
 import {
   assertOperationalRepository,
   currentBranchRef,
@@ -185,7 +182,7 @@ type SubmoduleUrlResolver = (url: string) => Promise<string>;
 const createSubmoduleUrlResolver = (ctx: Context, workDir: string): SubmoduleUrlResolver => {
   let base: Promise<string> | undefined;
   const readBase = async (): Promise<string> => {
-    await warnSlashLeadingRemoteShorthands(ctx);
+    await buildRemoteTable(ctx);
     return resolveBaseUrl(ctx, workDir, await readConfig(ctx));
   };
   return async (url) => {

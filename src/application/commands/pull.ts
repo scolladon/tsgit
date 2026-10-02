@@ -13,11 +13,12 @@ import { noUpstreamConfigured } from '../../domain/commands/error.js';
 import { type AuthorIdentity, RefName } from '../../domain/objects/index.js';
 import { shortBranchName } from '../../domain/refs/short-branch-name.js';
 import type { Context } from '../../ports/context.js';
-import { readConfig, warnSlashLeadingRemoteShorthands } from '../primitives/config-read.js';
+import { readConfig } from '../primitives/config-read.js';
 import { assertNoValuelessConfig } from '../primitives/internal/valueless-config-guard.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { type FetchResult, fetch } from './fetch.js';
 import { defaultRemoteName } from './internal/default-remote.js';
+import { buildRemoteTable } from './internal/remote-config.js';
 import {
   assertNoPendingOperation,
   assertOperationalRepository,
@@ -78,7 +79,7 @@ const resolveUpstream = async (
   opts: PullOptions,
   fallbackRef: RefName,
 ): Promise<Upstream> => {
-  await warnSlashLeadingRemoteShorthands(ctx);
+  await buildRemoteTable(ctx);
   const config = await readConfig(ctx);
   if (currentBranch !== undefined) {
     await assertNoValuelessConfig(ctx, 'branch', currentBranch, ['remote', 'merge']);

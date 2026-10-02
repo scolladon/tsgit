@@ -2532,30 +2532,46 @@ const registrationAttempts = (
 const SLASH_LEADING_REMOTE_WARNING =
   "readRemoteConfig: config remote shorthand cannot begin with '/'";
 
-/** Every `remote.<name>.<key>` entry under a `/`-leading name, in config order, key lower-cased. */
-const slashLeadingRemoteEntries = (
+/** One `remote.<name>.<key>` entry of git's remote table, its key lower-cased. */
+export interface RemoteTableEntry {
+  readonly remote: string;
+  readonly key: string;
+  readonly value: string | null;
+}
+
+/** Every `remote.<name>.<key>` entry, in config order; a subsectionless `[remote]` names none. */
+const remoteTableEntries = (
   tokens: ReadonlyArray<ConfigToken>,
-): ReadonlyArray<{ readonly remote: string; readonly key: string }> => {
-  const entries: Array<{ readonly remote: string; readonly key: string }> = [];
+): ReadonlyArray<RemoteTableEntry> => {
+  const entries: RemoteTableEntry[] = [];
   let remote: string | undefined;
   for (const token of tokens) {
     if (token.kind === 'header') {
       remote = token.section.toLowerCase() === 'remote' ? token.subsection : undefined;
-    } else if (token.kind === 'entry' && remote?.startsWith('/') === true) {
-      entries.push({ remote, key: token.key.toLowerCase() });
+    } else if (token.kind === 'entry' && remote !== undefined) {
+      entries.push({ remote, key: token.key.toLowerCase(), value: token.value });
     }
   }
   return entries;
 };
 
 /**
- * git's `handle_config` (remote.c) warning: one per entry of a `/`-leading
- * remote, each time a command builds its remote table.
+ * git's `handle_config` (remote.c) walk, each time a command builds its remote
+ * table: one warning per entry of a `/`-leading remote — never registered —
+ * and `check` on every other entry, in config order, so a check that throws
+ * stops the walk where git dies and no later entry warns.
  */
-export const warnSlashLeadingRemoteShorthands = async (ctx: Context): Promise<void> => {
+export const walkRemoteTable = async (
+  ctx: Context,
+  check: (entry: RemoteTableEntry) => void,
+): Promise<void> => {
   const { tokens } = await readConfigEntry(ctx);
-  for (const entry of slashLeadingRemoteEntries(tokens)) {
-    ctx.logger?.warn?.(SLASH_LEADING_REMOTE_WARNING, entry);
+  for (const entry of remoteTableEntries(tokens)) {
+    if (!entry.remote.startsWith('/')) {
+      check(entry);
+      continue;
+    }
+    ctx.logger?.warn?.(SLASH_LEADING_REMOTE_WARNING, { remote: entry.remote, key: entry.key });
   }
 };
 

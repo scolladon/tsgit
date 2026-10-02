@@ -19,12 +19,12 @@ import type { ObjectId, RefName } from '../../../domain/objects/index.js';
 import { refCandidates } from '../../../domain/refs/index.js';
 import { shortBranchName } from '../../../domain/refs/short-branch-name.js';
 import type { Context } from '../../../ports/context.js';
-import { readConfig, warnSlashLeadingRemoteShorthands } from '../../primitives/config-read.js';
+import { readConfig } from '../../primitives/config-read.js';
 import { peelRefToCommit } from '../../primitives/internal/peel-ref-to-commit.js';
 import { resolveRefOrMissing } from '../../primitives/resolve-ref.js';
 import { isAncestor } from './is-ancestor.js';
 import { applyRefspec, parseRefspec } from './ref-spec.js';
-import { assertRemoteRefspecsValid } from './remote-config.js';
+import { buildRemoteTable } from './remote-config.js';
 
 const HEAD_NAME = 'HEAD' as RefName;
 
@@ -72,16 +72,12 @@ const referenceCommit = async (ctx: Context, ref: RefName): Promise<ObjectId | u
  * mapping refspec leaves no upstream to consult.
  */
 const upstreamRef = async (ctx: Context, name: RefName): Promise<RefName | undefined> => {
-  await warnSlashLeadingRemoteShorthands(ctx);
+  await buildRemoteTable(ctx);
   const config = await readConfig(ctx);
   const tracking = config.branch?.get(shortBranchName(name));
   const merge = tracking?.merge;
   const remote = tracking?.remote;
   if (merge === undefined || remote === undefined) return undefined;
-  // git reaches the remote through `remote_get`, which builds the whole remote
-  // table before answering and dies on the first unusable fetch refspec — any
-  // remote's, not only the one this branch names.
-  assertRemoteRefspecsValid(config);
   const mapped = firstMapping(config.remote?.get(remote)?.fetch, merge as RefName);
   if (mapped !== undefined || remote !== LOCAL_REMOTE) return mapped;
   return dwimLocalMerge(ctx, merge);
