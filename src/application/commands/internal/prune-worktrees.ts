@@ -19,7 +19,11 @@
 import { asciiLower } from '../../../domain/pretty/ascii.js';
 import { resolveWorktreePath } from '../../../domain/worktree/resolve-path.js';
 import type { Context } from '../../../ports/context.js';
+import type { DirEntry, FileStat } from '../../../ports/file-system.js';
+import { realpathAllowingMissingLeaf } from '../../primitives/internal/alternate-chain.js';
+import { gitPathSyntaxOf } from '../../primitives/internal/git-path-syntax.js';
 import { worktreeScopedFs } from '../../primitives/internal/worktree-context.js';
+import { narrowAlternatePathProbe } from '../../primitives/object-store.js';
 import { commonGitDir } from '../../primitives/path-layout.js';
 import { isUnopenableFile, stripGitSuffix } from './fsck/roots.js';
 
@@ -76,15 +80,55 @@ const isExpired = async (ctx: Context, adminDir: string, cutoff: number): Promis
   }
 };
 
+/** git's `stat` through a link: `undefined` where it finds nothing it can open. */
+const statFollowing = async (ctx: Context, path: string): Promise<FileStat | undefined> => {
+  try {
+    return await ctx.fs.stat(path);
+  } catch (err) {
+    if (isUnopenableFile(err)) return undefined;
+    throw err;
+  }
+};
+
+/** git's `is_directory` on a registry entry, which follows a symlink. */
+const isAdminDirectory = async (ctx: Context, path: string, entry: DirEntry): Promise<boolean> =>
+  entry.isSymbolicLink ? (await statFollowing(ctx, path))?.isDirectory === true : entry.isDirectory;
+
+/** git realpaths the admin dir, so a relative `gitdir` resolves beside a link's target. */
+const dotGitOf = async (ctx: Context, adminDir: string, pointer: string): Promise<string> =>
+  resolveWorktreePath(
+    pointer.startsWith('/') ? adminDir : await realAdminDir(ctx, adminDir),
+    pointer,
+  );
+
+const realAdminDir = async (ctx: Context, adminDir: string): Promise<string> =>
+  (await realpathAllowingMissingLeaf(
+    gitPathSyntaxOf(ctx),
+    ctx.alternatePathProbe?.(adminDir) ?? narrowAlternatePathProbe(ctx.fs),
+    adminDir,
+    adminDir,
+  )) ?? adminDir;
+
 /** git's `should_prune_worktree` for an admin directory; a locked one is kept but never compared for duplicates. */
 const verdictFor = async (ctx: Context, id: string, cutoff: number): Promise<Verdict> => {
   const adminDir = `${commonGitDir(ctx)}/worktrees/${id}`;
   if (await ctx.fs.exists(`${adminDir}/locked`)) return LOCKED;
   const pointer = await readGitdirPointer(ctx, adminDir);
   if (pointer === undefined || pointer === '') return PRUNE;
-  const dotGit = resolveWorktreePath(adminDir, pointer);
+  const dotGit = await dotGitOf(ctx, adminDir, pointer);
   if (!(await isPresent(ctx, dotGit)) && (await isExpired(ctx, adminDir, cutoff))) return PRUNE;
   return { id, dotGit };
+};
+
+/**
+ * git's `delete_git_dir`, short of following a link into the directory it
+ * names: a dangling link is left, as git finds nothing to open behind it;
+ * any other entry is removed, a link without its target.
+ */
+const deleteAdminEntry = async (ctx: Context, path: string): Promise<void> => {
+  const isLink = (await ctx.fs.lstat(path)).isSymbolicLink;
+  if (isLink && (await statFollowing(ctx, path)) === undefined) return;
+  await ctx.fs.rmRecursive(path);
 };
 
 const byDotGitThenId =
@@ -120,11 +164,13 @@ export const pruneWorktrees = async (ctx: Context, opts: PruneWorktreesOptions):
   if (!(await ctx.fs.exists(root))) return;
   const kept: KeptWorktree[] = [{ id: MAIN_WORKTREE_ID, dotGit: commonGitDir(ctx) }];
   for (const entry of await ctx.fs.readdir(root)) {
-    const verdict = entry.isDirectory ? await verdictFor(ctx, entry.name, opts.cutoff) : PRUNE;
-    if (verdict === PRUNE) await ctx.fs.rmRecursive(`${root}/${entry.name}`);
+    const path = `${root}/${entry.name}`;
+    const isAdmin = await isAdminDirectory(ctx, path, entry);
+    const verdict = isAdmin ? await verdictFor(ctx, entry.name, opts.cutoff) : PRUNE;
+    if (verdict === PRUNE) await deleteAdminEntry(ctx, path);
     else if (verdict !== LOCKED) kept.push(verdict);
   }
   const fold = opts.ignoreCase ? asciiLower : (path: string) => path;
-  for (const id of duplicateIds(kept, fold)) await ctx.fs.rmRecursive(`${root}/${id}`);
+  for (const id of duplicateIds(kept, fold)) await deleteAdminEntry(ctx, `${root}/${id}`);
   await removeIfEmpty(ctx, root);
 };

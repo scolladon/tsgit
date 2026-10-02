@@ -175,6 +175,161 @@ describe('pruneWorktrees', () => {
     });
   });
 
+  describe('Given admin entries that are symlinks', () => {
+    const outsideOf = (ctx: Context): string => `${ctx.layout.workDir}/elsewhere`;
+
+    /** A registry entry `id` linking to `target`. */
+    const link = async (ctx: Context, id: string, target: string): Promise<void> => {
+      await ctx.fs.mkdir(rootOf(ctx));
+      await ctx.fs.symlink(target, adminOf(ctx, id));
+    };
+
+    describe('When one names the admin dir of a live worktree', () => {
+      it('Then the link is kept, as git follows it', async () => {
+        // Arrange
+        const ctx = await seed();
+        const OUTSIDE = outsideOf(ctx);
+        await ctx.fs.writeUtf8(`${OUTSIDE}/live/.git`, 'gitdir: x\n');
+        await ctx.fs.writeUtf8(`${OUTSIDE}/admin/gitdir`, `${OUTSIDE}/live/.git\n`);
+        await link(ctx, 'wt', `${OUTSIDE}/admin`);
+        const sut = pruneWorktrees;
+
+        // Act
+        await sut(ctx, { cutoff: PRUNE_EVERYTHING, ignoreCase: false });
+
+        // Assert
+        expect(await entriesOf(ctx)).toEqual(['wt']);
+      });
+    });
+
+    describe('When one names an admin dir whose relative gitdir is live beside the link target', () => {
+      it('Then the pointer resolves against the target, as git realpaths the admin dir', async () => {
+        // Arrange
+        const ctx = await seed();
+        const OUTSIDE = outsideOf(ctx);
+        await ctx.fs.writeUtf8(`${OUTSIDE}/live/.git`, 'gitdir: x\n');
+        await ctx.fs.writeUtf8(`${OUTSIDE}/admin/gitdir`, '../live/.git\n');
+        await link(ctx, 'wt', `${OUTSIDE}/admin`);
+        const sut = pruneWorktrees;
+
+        // Act
+        await sut(ctx, { cutoff: PRUNE_EVERYTHING, ignoreCase: false });
+
+        // Assert
+        expect(await entriesOf(ctx)).toEqual(['wt']);
+      });
+    });
+
+    describe('When one names the admin dir of a vanished worktree past the cutoff', () => {
+      it('Then the link goes and the directory it names is left untouched', async () => {
+        // Arrange
+        const ctx = await seed();
+        const OUTSIDE = outsideOf(ctx);
+        await ctx.fs.writeUtf8(`${OUTSIDE}/admin/gitdir`, `${OUTSIDE}/gone/.git\n`);
+        await ctx.fs.writeUtf8(`${OUTSIDE}/admin/logs/HEAD`, 'log');
+        await link(ctx, 'wt', `${OUTSIDE}/admin`);
+        const sut = pruneWorktrees;
+
+        // Act
+        await sut(ctx, { cutoff: PRUNE_EVERYTHING, ignoreCase: false });
+
+        // Assert
+        expect(await ctx.fs.exists(rootOf(ctx))).toBe(false);
+        expect(await ctx.fs.readUtf8(`${OUTSIDE}/admin/logs/HEAD`)).toBe('log');
+      });
+    });
+
+    describe('When one dangles', () => {
+      it('Then the link is kept, as git finds nothing to open and nothing to unlink', async () => {
+        // Arrange
+        const ctx = await seed();
+        const OUTSIDE = outsideOf(ctx);
+        await link(ctx, 'wt', `${OUTSIDE}/nowhere`);
+        const sut = pruneWorktrees;
+
+        // Act
+        await sut(ctx, { cutoff: PRUNE_EVERYTHING, ignoreCase: false });
+
+        // Assert
+        expect(await entriesOf(ctx)).toEqual(['wt']);
+      });
+    });
+
+    describe('When stat through one fails with an unclassified fault', () => {
+      it('Then the fault propagates and the link stays', async () => {
+        // Arrange
+        const ctx = await seed();
+        await link(ctx, 'wt', `${outsideOf(ctx)}/admin`);
+        const fault = Object.assign(new Error('EIO: i/o error'), { code: 'EIO' });
+        const original = ctx.fs.stat.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'stat').mockImplementation(async (path: string) => {
+          if (path === adminOf(ctx, 'wt')) throw fault;
+          return original(path);
+        });
+        const sut = pruneWorktrees;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { cutoff: PRUNE_EVERYTHING, ignoreCase: false });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBe(fault);
+        expect(await entriesOf(ctx)).toEqual(['wt']);
+      });
+    });
+
+    describe('When the path probe cannot resolve the admin dir', () => {
+      it('Then a relative gitdir resolves against the registry path', async () => {
+        // Arrange
+        const base = await seed();
+        const OUTSIDE = outsideOf(base);
+        await base.fs.writeUtf8(`${OUTSIDE}/live/.git`, 'gitdir: x\n');
+        await base.fs.writeUtf8(`${OUTSIDE}/admin/gitdir`, '../live/.git\n');
+        await link(base, 'wt', `${OUTSIDE}/admin`);
+        const notADirectory = Object.assign(new Error('ENOTDIR'), {
+          data: { code: 'NOT_A_DIRECTORY' },
+        });
+        const ctx: Context = {
+          ...base,
+          alternatePathProbe: () => ({
+            lstat: () => Promise.reject(notADirectory),
+            readlink: base.fs.readlink.bind(base.fs),
+            stat: base.fs.stat.bind(base.fs),
+          }),
+        };
+        const sut = pruneWorktrees;
+
+        // Act
+        await sut(ctx, { cutoff: PRUNE_EVERYTHING, ignoreCase: false });
+
+        // Assert — `<registry>/wt/../live/.git` names nothing, so the entry is pruned.
+        expect(await ctx.fs.exists(rootOf(ctx))).toBe(false);
+      });
+    });
+
+    describe('When one names a file', () => {
+      it('Then the link goes and the file stays', async () => {
+        // Arrange
+        const ctx = await seed();
+        const OUTSIDE = outsideOf(ctx);
+        await ctx.fs.writeUtf8(`${OUTSIDE}/file`, 'x');
+        await link(ctx, 'wt', `${OUTSIDE}/file`);
+        const sut = pruneWorktrees;
+
+        // Act
+        await sut(ctx, { cutoff: PRUNE_EVERYTHING, ignoreCase: false });
+
+        // Assert
+        expect(await ctx.fs.exists(rootOf(ctx))).toBe(false);
+        expect(await ctx.fs.readUtf8(`${OUTSIDE}/file`)).toBe('x');
+      });
+    });
+  });
+
   describe('Given a locked admin dir whose gitdir is empty', () => {
     describe('When worktrees are pruned', () => {
       it('Then the locked admin dir is kept', async () => {

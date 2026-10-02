@@ -18,7 +18,18 @@
  *   interopSurface: gc
  */
 import { execFileSync } from 'node:child_process';
-import { cp, mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from 'node:fs/promises';
+import {
+  cp,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  symlink,
+  utimes,
+  writeFile,
+} from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
@@ -852,6 +863,76 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
         expect(peer.exitCode).toBe(128);
         expect((caught as TsgitError).data.code).toBe(code);
         await disposeTwin(twin);
+      });
+    });
+  });
+
+  describe('Given a worktrees registry entry that is a symlink', () => {
+    type LinkKind = 'live' | 'vanished' | 'dangling' | 'file';
+
+    /** A repo whose linked worktree's admin dir lives outside, `worktrees/wt` linking per `kind`. */
+    const buildLinkedAdmin = async (
+      slug: string,
+      kind: LinkKind,
+    ): Promise<{ readonly dir: string; readonly outside: string }> => {
+      const dir = await initRepo(slug);
+      await addCommit(dir, 'c0');
+      const outside = await tmpDir(`${slug}-outside`);
+      git(dir, 'worktree', 'add', '-q', '--detach', path.join(outside, 'wt'));
+      const registryEntry = path.join(dir, '.git', 'worktrees', 'wt');
+      await rename(registryEntry, path.join(outside, 'admin'));
+      if (kind === 'vanished') await rm(path.join(outside, 'wt'), { recursive: true });
+      if (kind === 'file') await writeFile(path.join(outside, 'file'), 'x');
+      const target = { live: 'admin', vanished: 'admin', dangling: 'nowhere', file: 'file' }[kind];
+      await symlink(path.join(outside, target), registryEntry);
+      return { dir, outside };
+    };
+
+    const registryOf = (dir: string): Promise<ReadonlyArray<string>> =>
+      readdir(path.join(dir, '.git', 'worktrees')).catch(() => []);
+    const adminContentOf = (outside: string): Promise<ReadonlyArray<string>> =>
+      readdir(path.join(outside, 'admin')).then((names) => names.sort());
+
+    const runBoth = async (kind: LinkKind) => {
+      const peer = await buildLinkedAdmin(`wt-link-${kind}-peer`, kind);
+      const ours = await buildLinkedAdmin(`wt-link-${kind}-ours`, kind);
+      git(peer.dir, '-c', 'gc.worktreePruneExpire=now', 'gc', '-q');
+      await setOursGcConfig(ours.dir, ['gc.worktreePruneExpire=now']);
+      const repo = await openTrackedRepository({ cwd: ours.dir });
+      await repo.maintenance({ tasks: ['gc'] });
+      await repo.dispose();
+      return { peer, ours };
+    };
+
+    describe.each(['live', 'dangling', 'file'] as const)(
+      'When it names %s and both tools gc',
+      (kind) => {
+        it('Then both leave the same registry and link target', async () => {
+          // Arrange
+          const sut = runBoth;
+
+          // Act
+          const { peer, ours } = await sut(kind);
+
+          // Assert
+          expect(await registryOf(ours.dir)).toEqual(await registryOf(peer.dir));
+          expect(await adminContentOf(ours.outside)).toEqual(await adminContentOf(peer.outside));
+        });
+      },
+    );
+
+    describe('When it names the admin dir of a vanished worktree and both tools gc', () => {
+      it('Then both drop the link, tsgit without emptying the directory outside the repository', async () => {
+        // Arrange
+        const sut = runBoth;
+
+        // Act
+        const { peer, ours } = await sut('vanished');
+
+        // Assert
+        expect(await registryOf(ours.dir)).toEqual(await registryOf(peer.dir));
+        expect(await adminContentOf(peer.outside)).toEqual([]);
+        expect(await adminContentOf(ours.outside)).not.toEqual([]);
       });
     });
   });
