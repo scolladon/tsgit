@@ -2584,6 +2584,54 @@ describe.skipIf(!GIT_AVAILABLE)(
   },
 );
 
+describe.skipIf(!GIT_AVAILABLE)(
+  'fsck interop — a shallow commit packed under another commit',
+  () => {
+    describe.each([
+      { label: 'shallow', shallow: true },
+      { label: 'not shallow', shallow: false },
+    ])(
+      'Given the tip $label, its pack copy mis-hashed beside a valid loose copy',
+      ({ shallow }) => {
+        describe('When git fsck and tsgit fsck run without reflogs', () => {
+          it(
+            'Then both name the same dangling objects and exit code',
+            async () => {
+              // Arrange
+              const dir = path.join(root, `mis-hashed-shallow-${shallow}`);
+              runGit(['init', '-q', '-b', 'main', dir]);
+              configure(dir);
+              commitFile(dir, 'a', 'a');
+              commitFile(dir, 'b', 'b');
+              const tip = runGit(['-C', dir, 'rev-parse', 'HEAD']).trim();
+              const other = runGit(['-C', dir, 'commit-tree', '-m', 'other', 'HEAD^{tree}']).trim();
+              const packDir = path.join(objectsOf(dir), 'pack');
+              const name = runGit(['-C', dir, 'pack-objects', '-q', path.join(packDir, 'pack')], {
+                input: `${other}\n`,
+              }).trim();
+              renameIdxEntry(path.join(packDir, `pack-${name}.idx`), other, tip);
+              rmSync(path.join(packDir, `pack-${name}.rev`), { force: true });
+              rmSync(looseFile(objectsOf(dir), other));
+              rmSync(path.join(dir, '.git', 'logs'), { recursive: true });
+              if (shallow) writeFileSync(path.join(dir, '.git', 'shallow'), `${tip}\n`);
+              const git = gitFsck(dir);
+              const sut = tsgitFsck;
+
+              // Act
+              const result = await sut(dir);
+
+              // Assert
+              expect(result.exitCode).toBe(git.exitCode);
+              expect(danglingLines(result.findings)).toEqual(gitDanglingLines(git.stdout));
+            },
+            ROW_TIMEOUT,
+          );
+        });
+      },
+    );
+  },
+);
+
 describe.skipIf(!GIT_AVAILABLE)('fsck interop — promisor objects named by refs and reflogs', () => {
   describe.each([
     { mode: '--full', flags: [] as ReadonlyArray<string>, options: {}, gitExit: 4 },

@@ -16,6 +16,12 @@ import type { Context } from '../../../../../../src/ports/context.js';
 import { writeSyntheticPack } from '../../../primitives/pack-fixture.js';
 
 const enc = new TextEncoder();
+const AUTHOR = {
+  name: 'Ada',
+  email: 'ada@example.com',
+  timestamp: 1_700_000_000,
+  timezoneOffset: '+0000',
+};
 
 /** A loose tree over `f`, and a pack holding its id over a blob's bytes. */
 const misHashedTree = async (): Promise<{
@@ -162,6 +168,36 @@ describe('Given a cache and the verified copies of some of its ids', () => {
 
       // Assert
       expect(result).toBe(cache);
+    });
+  });
+});
+
+describe('Given a shallow commit served from a mis-hashed pack entry beside a loose copy', () => {
+  describe('When its loose copy verifies', () => {
+    it('Then the loose copy stands in with its parents cut, as git grafts it', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const tree = await writeObject(ctx, { type: 'tree', id: '' as ObjectId, entries: [] });
+      const commitOver = (parents: ReadonlyArray<ObjectId>, message: string) =>
+        writeObject(ctx, {
+          type: 'commit',
+          id: '' as ObjectId,
+          data: { tree, parents, author: AUTHOR, committer: AUTHOR, message, extraHeaders: [] },
+        });
+      const parent = await commitOver([], 'c1');
+      const shallow = await commitOver([parent], 'c2');
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `${shallow}\n`);
+      await writeSyntheticPack(ctx, 'mis', [
+        { kind: 'base', type: 'blob', content: enc.encode('other'), idOverride: shallow },
+      ]);
+      refreshPackRegistry(ctx);
+      const sut = verifiedCopiesOf;
+
+      // Act
+      const result = await sut(ctx, new Set([shallow]));
+
+      // Assert
+      expect(result.get(shallow)).toMatchObject({ type: 'commit', tree, parents: [] });
     });
   });
 });

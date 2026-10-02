@@ -1,7 +1,9 @@
+import { applyGraft } from '../../../../domain/commit/graft.js';
 import { errorDataCode } from '../../../../domain/error-data-code.js';
 import { parseObject } from '../../../../domain/objects/git-object.js';
 import type { ObjectId } from '../../../../domain/objects/index.js';
 import type { Context } from '../../../../ports/context.js';
+import { loadShallowSet } from '../../../primitives/internal/shallow-set.js';
 import { readObject } from '../../../primitives/read-object.js';
 import { type CachedGitObject, project } from './object-cache.js';
 import { looseCopiesOf } from './object-presence.js';
@@ -39,18 +41,21 @@ export function parseCheckOnce(ctx: Context): ParseCheck {
 }
 
 /** One loose copy as `fsck_loose` reads it, or `undefined` when it fails to
- *  inflate, hash to `id` or parse — git then marks nothing it names used. */
+ *  inflate, hash to `id` or parse — git then marks nothing it names used. A
+ *  shallow commit's parents are cut, as git's parse grafts them. */
 async function verifiedCopy(
   ctx: Context,
   id: ObjectId,
   compressed: Uint8Array,
+  shallow: ReadonlySet<ObjectId>,
 ): Promise<CachedGitObject | undefined> {
   try {
     const raw = await ctx.compressor.inflate(compressed);
     const hasher = ctx.hash.createHasher();
     hasher.update(raw);
     if ((await hasher.digestHex()) !== id) return undefined;
-    return project(parseObject(id, raw, ctx.hashConfig));
+    const parsed = parseObject(id, raw, ctx.hashConfig);
+    return project(parsed.type === 'commit' ? applyGraft(parsed, shallow) : parsed);
   } catch (err) {
     if (!isStoredCorruption(err)) throw err;
     return undefined;
@@ -58,9 +63,13 @@ async function verifiedCopy(
 }
 
 /** The first loose copy of `id` that passes git's checks, or `null`. */
-async function firstVerifiedLooseCopy(ctx: Context, id: ObjectId): Promise<CachedGitObject> {
+async function firstVerifiedLooseCopy(
+  ctx: Context,
+  id: ObjectId,
+  shallow: ReadonlySet<ObjectId>,
+): Promise<CachedGitObject> {
   for (const { compressed } of await looseCopiesOf(ctx, id)) {
-    const copy = await verifiedCopy(ctx, id, compressed);
+    const copy = await verifiedCopy(ctx, id, compressed, shallow);
     if (copy !== undefined) return copy;
   }
   return null;
@@ -76,9 +85,10 @@ export async function verifiedCopiesOf(
   misHashed: ReadonlySet<ObjectId>,
 ): Promise<ReadonlyMap<ObjectId, CachedGitObject>> {
   const verified = new Map<ObjectId, CachedGitObject>();
+  const shallow = await loadShallowSet(ctx);
   for (const id of misHashed) {
     if (await hashesToItsId(ctx, id)) continue;
-    verified.set(id, await firstVerifiedLooseCopy(ctx, id));
+    verified.set(id, await firstVerifiedLooseCopy(ctx, id, shallow));
   }
   return verified;
 }
