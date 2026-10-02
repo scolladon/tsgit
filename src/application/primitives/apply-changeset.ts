@@ -35,7 +35,11 @@ import {
 import type { Context } from '../../ports/context.js';
 import type { Changeset, ChangesetEntry } from './compute-changeset.js';
 import { readConfig } from './config-read.js';
-import { applySmudgeFilter, smudgesInCore } from './internal/apply-smudge-filter.js';
+import {
+  applySmudgeFilter,
+  type CheckoutMetadata,
+  smudgesInCore,
+} from './internal/apply-smudge-filter.js';
 import { boundedMapFor, limiterFor } from './internal/concurrency.js';
 import type { ConcurrencyLimiter } from './internal/concurrency-limiter.js';
 import { withFilterProcessPool } from './internal/filter-process-pool.js';
@@ -63,6 +67,14 @@ export interface ApplyChangesetOpts {
   readonly changeset: Changeset;
   readonly force: boolean;
   readonly workdir: string;
+  /** The ref and commit the checkout moves to, told to a smudging process filter. */
+  readonly checkoutMetadata?: CheckoutMetadata;
+}
+
+/** How smudged writes run: their shared concurrency bound and checkout metadata. */
+interface Smudging {
+  readonly limiter: ConcurrencyLimiter;
+  readonly metadata?: CheckoutMetadata;
 }
 
 export interface ApplyChangesetResult {
@@ -215,7 +227,7 @@ const writeBlobToWorkingTree = async (
   id: IndexEntry['id'],
   mode: FileMode,
   scanner: LeadingPathScanner,
-  filterLimiter: ConcurrencyLimiter,
+  smudging: Smudging,
   provider?: AttributeProvider,
 ): Promise<void> => {
   if (mode === FILE_MODE.GITLINK) {
@@ -236,12 +248,14 @@ const writeBlobToWorkingTree = async (
       const blob = await readBlob(ctx, id);
       // A smudge filter spawns a subprocess — CPU/process-bound, not
       // blocking-fd-bound — so it must not inherit the write wave's wider
-      // ioBound budget: `filterLimiter` is sized off cpuBound and
+      // ioBound budget: `smudging.limiter` is sized off cpuBound and
       // shared for the whole changeset apply, bounding how many subprocess
       // spawns run at once regardless of how many writes the ioBound pool
       // has in flight. The write itself, below, stays on the full pool.
-      const content = await filterLimiter.run(() =>
-        applySmudgeFilter(ctx, command, { path, blob: id, bytes: blob.content }, choice),
+      const { metadata } = smudging;
+      const target = { path, blob: id, bytes: blob.content, ...(metadata && { metadata }) };
+      const content = await smudging.limiter.run(() =>
+        applySmudgeFilter(ctx, command, target, choice),
       );
       await writeWorkingTreeEntry(ctx, path, content, mode, scanner);
       return;
@@ -267,7 +281,7 @@ const applyWriteEntry = async (
   workdir: string,
   entry: ChangesetEntry,
   scanner: LeadingPathScanner,
-  filterLimiter: ConcurrencyLimiter,
+  smudging: Smudging,
   provider: AttributeProvider | undefined,
 ): Promise<IndexEntry | undefined> => {
   if (entry.id === undefined) return undefined;
@@ -278,7 +292,7 @@ const applyWriteEntry = async (
     entry.id as IndexEntry['id'],
     entry.mode,
     scanner,
-    filterLimiter,
+    smudging,
     provider,
   );
   return buildIndexEntry(ctx, absPath, entry.path, entry.id, entry.mode);
@@ -416,14 +430,14 @@ const applyWriteGroup = async (
   group: ReadonlyArray<ChangesetEntry>,
   lazyProvider: () => Promise<AttributeProvider | undefined>,
   scanner: LeadingPathScanner,
-  filterLimiter: ConcurrencyLimiter,
+  smudging: Smudging,
   total: number,
   counter: ProgressCounter,
 ): Promise<ReadonlyArray<IndexEntry>> => {
   const written: IndexEntry[] = [];
   for (const entry of group) {
     const provider = await lazyProvider();
-    const indexEntry = await applyWriteEntry(ctx, workdir, entry, scanner, filterLimiter, provider);
+    const indexEntry = await applyWriteEntry(ctx, workdir, entry, scanner, smudging, provider);
     reportCompletion(ctx, total, counter, entry.path);
     if (indexEntry !== undefined) written.push(indexEntry);
   }
@@ -449,12 +463,12 @@ const applyWriteWave = async (
   writes: ReadonlyArray<ChangesetEntry>,
   lazyProvider: () => Promise<AttributeProvider | undefined>,
   scanner: LeadingPathScanner,
-  filterLimiter: ConcurrencyLimiter,
+  smudging: Smudging,
   total: number,
   counter: ProgressCounter,
 ): Promise<ReadonlyArray<IndexEntry>> => {
   const applyGroup = (group: ReadonlyArray<ChangesetEntry>) =>
-    applyWriteGroup(ctx, workdir, group, lazyProvider, scanner, filterLimiter, total, counter);
+    applyWriteGroup(ctx, workdir, group, lazyProvider, scanner, smudging, total, counter);
   if ((await everySourceLoadable(ctx)) && !(await convertsThroughFilterProcess(ctx))) {
     const grouped = await drainPooled(ctx, groupByCaseFoldedPath(writes), applyGroup);
     return grouped.flat();
@@ -472,7 +486,7 @@ const applyAllEntries = async (
   workdir: string,
   lazyProvider: () => Promise<AttributeProvider | undefined>,
   scanner: LeadingPathScanner,
-  filterLimiter: ConcurrencyLimiter,
+  smudging: Smudging,
 ): Promise<ApplyChangesetResult> => {
   const total = deletes.length + writes.length;
   const counter: ProgressCounter = { current: 0 };
@@ -484,7 +498,7 @@ const applyAllEntries = async (
     writes,
     lazyProvider,
     scanner,
-    filterLimiter,
+    smudging,
     total,
     counter,
   );
@@ -532,6 +546,9 @@ const applyChangesetInScope = async (
   // Sized off cpuBound, not ioBound: a smudge subprocess spawn is
   // process/CPU-bound, not blocking-fd-bound, so it must not inherit the
   // write wave's wider ioBound budget — see `writeBlobToWorkingTree`.
-  const filterLimiter = limiterFor(ctx, 'cpuBound');
-  return applyAllEntries(ctx, deletes, writes, workdir, lazyProvider, scanner, filterLimiter);
+  const smudging: Smudging = {
+    limiter: limiterFor(ctx, 'cpuBound'),
+    ...(opts.checkoutMetadata && { metadata: opts.checkoutMetadata }),
+  };
+  return applyAllEntries(ctx, deletes, writes, workdir, lazyProvider, scanner, smudging);
 };

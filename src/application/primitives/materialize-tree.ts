@@ -47,6 +47,7 @@ import {
   type ChangesetStats,
   computeChangeset,
 } from './compute-changeset.js';
+import type { CheckoutMetadata } from './internal/apply-smudge-filter.js';
 import { requireWorkTree } from './internal/repo-state.js';
 import { walkTree } from './walk-tree.js';
 
@@ -65,6 +66,8 @@ export interface MaterializeTreeOpts {
    * 13.1 checkout behaviour: clean files are never spuriously rewritten.
    */
   readonly forceRewriteAll?: boolean;
+  /** The ref and commit the checkout moves to, told to a smudging process filter. */
+  readonly checkoutMetadata?: CheckoutMetadata;
   /**
    * Branch-switch sparse-checkout filter. Honoured ONLY when `paths` is
    * undefined. A target-tree path the matcher rejects is NOT written to the
@@ -247,6 +250,7 @@ export const materializeTree = async (
     changeset,
     force: opts.force ?? false,
     workdir: requireWorkTree(ctx, 'materializeTree'),
+    ...(opts.checkoutMetadata && { checkoutMetadata: opts.checkoutMetadata }),
   });
 
   const inScope = mergeNewIndexEntries(

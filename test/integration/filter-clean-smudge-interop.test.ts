@@ -34,12 +34,14 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/index.js';
 import { add } from '../../src/application/commands/add.js';
 import { checkout } from '../../src/application/commands/checkout.js';
+import { reset } from '../../src/application/commands/reset.js';
 import { stashPush } from '../../src/application/commands/stash.js';
 import { status } from '../../src/application/commands/status.js';
 import { readBlob } from '../../src/application/primitives/read-blob.js';
 import { readIndex } from '../../src/application/primitives/read-index.js';
 import { TsgitError } from '../../src/domain/index.js';
 import type { ObjectId } from '../../src/domain/objects/object-id.js';
+import type { Context } from '../../src/ports/context.js';
 import {
   GIT_AVAILABLE,
   git,
@@ -1105,6 +1107,86 @@ describe.skipIf(!GIT_AVAILABLE)('Given a required smudge driver that cannot star
       });
       expect(await readFile(path.join(tsgitRepo, 'a.t')).catch(() => undefined)).toBeUndefined();
       expect(await readFile(path.join(gitRepo, 'a.t')).catch(() => undefined)).toBeUndefined();
+    });
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)('Given a filter.<d>.process driver over two branches', () => {
+  let root = '';
+  let script = '';
+
+  beforeAll(async () => {
+    root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-filter-checkout-meta-')));
+    script = path.join(root, 'filter.cjs');
+    await writeFile(script, SMUDGE_PROCESS_FILTER);
+  });
+
+  afterAll(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  /** `main` and `other` disagree on `a.t`; the driver logs every request it is sent. */
+  const twin = async (slug: string) => {
+    const repo = path.join(root, slug);
+    const commit = (message: string) =>
+      runGit(['-C', repo, '-c', 'user.name=A', '-c', 'user.email=a@a', 'commit', '-qam', message]);
+    runGit(['init', '-q', '-b', 'main', repo]);
+    await writeFile(path.join(repo, '.gitattributes'), '*.t filter=d\n');
+    await writeFile(path.join(repo, 'a.t'), 'A\n');
+    runGit(['-C', repo, 'add', '.']);
+    commit('c');
+    runGit(['-C', repo, 'branch', 'other']);
+    await writeFile(path.join(repo, 'a.t'), 'B\n');
+    commit('d');
+    const log = path.join(root, `${slug}.log`);
+    runGit([
+      '-C',
+      repo,
+      'config',
+      'filter.d.process',
+      `"${process.execPath}" "${script}" clean,smudge "" "${log}"`,
+    ]);
+    // Smudge `a.t` through the driver and record its stat, as a checkout leaves it.
+    runGit(['-C', repo, 'reset', '-q', '--hard']);
+    await writeFile(log, '');
+    return {
+      repo,
+      smudges: async () =>
+        (await readFile(log, 'utf8')).split('\n').filter((line) => line.includes('smudge')),
+    };
+  };
+
+  describe.each([
+    {
+      label: 'switch to the other branch',
+      git: ['checkout', '-q', 'other'],
+      tsgit: (ctx: Context) => checkout(ctx, { rev: 'other' }),
+    },
+    {
+      label: 'detach at the other branch',
+      git: ['checkout', '-q', '--detach', 'other'],
+      tsgit: (ctx: Context) => checkout(ctx, { rev: 'other', detach: true }),
+    },
+    {
+      label: 'hard-reset to the other branch',
+      git: ['reset', '-q', '--hard', 'other'],
+      tsgit: (ctx: Context) => reset(ctx, { rev: 'other', mode: 'hard' }),
+    },
+  ])('When git and tsgit $label', ({ git: args, tsgit }) => {
+    it('Then both send the driver the same ref and treeish', async () => {
+      // Arrange
+      const gitTwin = await twin(`git-${args.join('-')}`);
+      const tsgitTwin = await twin(`tsgit-${args.join('-')}`);
+      const sut = tsgit;
+
+      // Act
+      runGit(['-C', gitTwin.repo, ...args]);
+      await sut(createNodeContext({ workDir: tsgitTwin.repo }));
+
+      // Assert
+      const gitSmudges = await gitTwin.smudges();
+      expect(gitSmudges.join()).toContain('ref=refs/heads/other');
+      expect(await tsgitTwin.smudges()).toEqual(gitSmudges);
     });
   });
 });

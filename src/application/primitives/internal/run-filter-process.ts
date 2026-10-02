@@ -45,19 +45,30 @@ export interface FilterProcessRequest {
   readonly capability: 'clean' | 'smudge';
   readonly path: FilePath;
   readonly bytes: Uint8Array;
+  /** The ref a checkout or hard reset moves to — git's `ref=` metadata. */
+  readonly ref?: string;
+  /** The commit a checkout or hard reset moves to — git's `treeish=` metadata. */
+  readonly treeish?: ObjectId;
   /** The blob a smudge checks out — git's `blob=` metadata. */
   readonly blob?: ObjectId;
 }
 
+/** git's `apply_multi_file_filter` metadata, each line only when set, in git's order. */
+const metadataLines = ({ ref, treeish, blob }: FilterProcessRequest): ReadonlyArray<string> => [
+  ...(ref === undefined ? [] : [`ref=${ref}\n`]),
+  ...(treeish === undefined ? [] : [`treeish=${treeish}\n`]),
+  ...(blob === undefined ? [] : [`blob=${blob}\n`]),
+];
+
 /** Everything git writes to a process filter for one conversion, in order. */
-const encodeRequest = ({ capability, path, bytes, blob }: FilterProcessRequest): Uint8Array =>
+const encodeRequest = (request: FilterProcessRequest): Uint8Array =>
   concatBytes([
     textStream([
-      `command=${capability}\n`,
-      `pathname=${path}\n`,
-      ...(blob === undefined ? [] : [`blob=${blob}\n`]),
+      `command=${request.capability}\n`,
+      `pathname=${request.path}\n`,
+      ...metadataLines(request),
     ]),
-    ...contentFrames(bytes),
+    ...contentFrames(request.bytes),
     FLUSH_PKT,
   ]);
 

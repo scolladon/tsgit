@@ -5,7 +5,7 @@ import {
   type FilterProcessRequest,
   runFilterProcess,
 } from '../../../../../src/application/primitives/internal/run-filter-process.js';
-import type { FilePath } from '../../../../../src/domain/objects/object-id.js';
+import type { FilePath, ObjectId } from '../../../../../src/domain/objects/object-id.js';
 import { encodePktStream, FLUSH_PKT } from '../../../../../src/domain/protocol/pkt-line.js';
 import type { CommandProcess, CommandRunner } from '../../../../../src/ports/command-runner.js';
 import type { Context } from '../../../../../src/ports/context.js';
@@ -77,6 +77,39 @@ describe('runFilterProcess', () => {
         const sent = dec(scripted.requests[0]?.stdin ?? new Uint8Array(0));
         expect(sent.match(/git-filter-client/g)).toHaveLength(1);
         expect([...sent.matchAll(/pathname=(\w)/g)].map((m) => m[1])).toEqual(['a', 'b', 'c']);
+      });
+    });
+  });
+
+  describe('Given a smudge carrying checkout metadata', () => {
+    describe('When the request is sent', () => {
+      it('Then ref, treeish and blob follow the pathname in git’s order', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const scripted = scriptedCommandRunner(concat(HANDSHAKE, success('a\n')));
+        const sut = runFilterProcess;
+
+        // Act
+        await sut(ctx, scripted.runner, 'proc', {
+          ...clean('a'),
+          capability: 'smudge',
+          ref: 'refs/heads/main',
+          treeish: 'c0' as ObjectId,
+          blob: 'b0' as ObjectId,
+        });
+
+        // Assert
+        expect(dec(scripted.requests[0]?.stdin ?? new Uint8Array(0))).toContain(
+          dec(
+            stream(
+              'command=smudge\n',
+              'pathname=a\n',
+              'ref=refs/heads/main\n',
+              'treeish=c0\n',
+              'blob=b0\n',
+            ),
+          ),
+        );
       });
     });
   });

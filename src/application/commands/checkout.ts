@@ -20,6 +20,7 @@ import { resolveRef } from '../primitives/resolve-ref.js';
 import { runInformationalHook } from '../primitives/run-hook.js';
 import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-index.js';
 import { walkTree } from '../primitives/walk-tree.js';
+import { checkoutMetadataFor } from './internal/checkout-metadata.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import {
   assertNoPendingOperation,
@@ -138,6 +139,7 @@ const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<
       targetTree: target.id,
       currentIndex,
       force: opts.force ?? false,
+      checkoutMetadata: await checkoutMetadataFor(ctx, opts.rev, oid),
       // `exactOptionalPropertyTypes`: add `sparse` only when a matcher exists.
       ...(matcher !== undefined ? { sparse: matcher } : {}),
     });

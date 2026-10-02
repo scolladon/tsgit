@@ -23,6 +23,7 @@ import { readObject } from '../primitives/read-object.js';
 import { loadSparseMatcher } from '../primitives/read-sparse-checkout.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { updateRef } from '../primitives/update-ref.js';
+import { checkoutMetadataFor } from './internal/checkout-metadata.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import {
   assertNoPendingOperation,
@@ -75,7 +76,7 @@ export const reset = async (ctx: Context, opts: ResetOptions): Promise<ResetResu
   if (opts.mode === 'mixed') {
     await rebuildIndexFromCommit(ctx, id);
   } else if (opts.mode === 'hard') {
-    await hardResetFromCommit(ctx, id);
+    await hardResetFromCommit(ctx, id, opts.rev);
   }
 
   const head = await readHeadRaw(ctx);
@@ -122,7 +123,11 @@ const rebuildIndexFromCommit = async (ctx: Context, commitId: ObjectId): Promise
   }
 };
 
-const hardResetFromCommit = async (ctx: Context, commitId: ObjectId): Promise<void> => {
+const hardResetFromCommit = async (
+  ctx: Context,
+  commitId: ObjectId,
+  rev: string,
+): Promise<void> => {
   const commit = await readObject(ctx, commitId);
   if (commit.type !== 'commit') {
     throw unexpectedObjectType('commit', commit.type, commitId);
@@ -153,6 +158,7 @@ const hardResetFromCommit = async (ctx: Context, commitId: ObjectId): Promise<vo
       // modifications that the index→target diff can't see. Without this
       // flag, dirty noop'd paths would survive the reset.
       forceRewriteAll: true,
+      checkoutMetadata: await checkoutMetadataFor(ctx, rev, commitId),
       // A defined matcher restricts materialisation to in-pattern files;
       // excluded target paths become synthesised skip-worktree index entries.
       // `exactOptionalPropertyTypes`: spread `sparse` only when defined.

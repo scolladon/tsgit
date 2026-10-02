@@ -12,6 +12,14 @@ export interface SmudgeTarget {
   readonly path: FilePath;
   readonly blob: ObjectId;
   readonly bytes: Uint8Array;
+  /** What the checkout moves to, when it moves to a commit. */
+  readonly metadata?: CheckoutMetadata;
+}
+
+/** The ref and commit a checkout or hard reset moves to, as git tells a process filter. */
+export interface CheckoutMetadata {
+  readonly ref?: string;
+  readonly treeish: ObjectId;
 }
 
 type ExternalChoice = Extract<FilterChoice, { readonly kind: 'external' }>;
@@ -32,7 +40,7 @@ export const smudgesInCore = (choice: FilterChoice): choice is ExternalChoice =>
 const runSmudgeCommand = (
   ctx: Context,
   runner: CommandRunner | undefined,
-  { path, blob, bytes }: SmudgeTarget,
+  { path, blob, bytes, metadata }: SmudgeTarget,
   choice: ExternalChoice,
 ): Promise<SmudgeOutcome> => {
   const picked = pickFilterCommand(choice.process, choice.smudge);
@@ -43,6 +51,7 @@ const runSmudgeCommand = (
       capability: 'smudge',
       path,
       bytes,
+      ...metadata,
       blob,
     });
   }

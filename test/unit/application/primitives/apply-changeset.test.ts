@@ -1379,6 +1379,43 @@ describe('applyChangeset', () => {
     });
   });
 
+  describe('Given a process driver and checkout metadata', () => {
+    describe('When applyChangeset smudges a file', () => {
+      it('Then the process is told the ref and commit the checkout moves to', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, enc('HELLO'));
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.y filter=myf\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[filter "myf"]\n\tprocess = proc\n');
+        const pkt = (text: string): string =>
+          `${(text.length + 4).toString(16).padStart(4, '0')}${text}`;
+        const response = enc(
+          `${pkt('git-filter-server\n')}${pkt('version=2\n')}0000${pkt('capability=smudge\n')}0000` +
+            `${pkt('status=success\n')}0000${pkt('hello')}00000000`,
+        );
+        const { runner, requests } = scriptedCommandRunner(response);
+        const treeish = 'c'.repeat(40) as ObjectId;
+        const sut = applyChangeset;
+
+        // Act
+        await sut(
+          { ...ctx, command: runner },
+          {
+            changeset: makeChangeset([makeAdd('a.y', id)]),
+            force: false,
+            workdir: WORKDIR,
+            checkoutMetadata: { ref: 'refs/heads/main', treeish },
+          },
+        );
+
+        // Assert
+        expect(dec(requests[0]?.stdin ?? new Uint8Array(0))).toContain(
+          `${pkt('pathname=a.y\n')}${pkt('ref=refs/heads/main\n')}${pkt(`treeish=${treeish}\n`)}`,
+        );
+      });
+    });
+  });
+
   describe('Given a context that cannot run commands', () => {
     describe('When applyChangeset checks out a file through a required smudge driver', () => {
       it('Then it refuses as git does when the driver cannot start, writing nothing', async () => {
