@@ -11,6 +11,7 @@
  *   C4 — checkout a deltified blob (site A, materialised: true upstream): byte-identical
  *   C5 — merge clean survivor (sites B/C): byte-identical to git merge result
  *   C6 — stash-apply untracked restore (site D, cap dropped): byte-identical
+ *   C7 — checkout of a corrupt loose blob: both tools refuse and leave the same empty file
  *
  * @proves
  *   surface:        checkout, merge, stash
@@ -18,9 +19,17 @@
  *   unique:         streamed writes on the write side are byte-identical to canonical git across all consumer sites
  *   interopSurface: checkout, merge, stash
  */
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { lstatSync, readdirSync, readFileSync, symlinkSync } from 'node:fs';
+import {
+  chmodSync,
+  lstatSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { copyFile, mkdir, readdir, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -99,6 +108,11 @@ function findPackFile(dir: string): string[] {
     // pack dir may not exist
   }
   return [];
+}
+
+/** `git checkout -- <path>`, tolerating the refusal this suite provokes. */
+function gitCheckoutPath(dir: string, file: string): { status: number | null } {
+  return spawnSync('git', ['-C', dir, 'checkout', '--', file], { env: runGitEnv() });
 }
 
 /** Configure a git repo with identity and disable signing. */
@@ -455,6 +469,48 @@ describe.skipIf(!GIT_AVAILABLE)(
             // Assert — the restored untracked file matches the original bytes exactly
             const restoredBuf = readFileSync(path.join(oursDir, 'untracked.bin'));
             expect(Buffer.compare(untrackedContent, restoredBuf)).toBe(0);
+          });
+        });
+      });
+    });
+    // -----------------------------------------------------------------------
+    // C7 — site A: a loose blob whose zlib stream is garbage
+    // -----------------------------------------------------------------------
+    describe('C7: checkout of a deleted file whose loose blob is corrupt', () => {
+      describe('Given both tools hold the same commit with a garbage loose blob', () => {
+        describe('When each restores the deleted file', () => {
+          it('Then both refuse and leave the same empty file', async () => {
+            // Arrange
+            const corruptLooseBlob = (dir: string): void => {
+              const id = git(dir, 'rev-parse', 'HEAD:f.txt').trim();
+              const loose = path.join(dir, '.git', 'objects', id.slice(0, 2), id.slice(2));
+              chmodSync(loose, 0o644);
+              writeFileSync(loose, 'not a zlib stream');
+              rmSync(path.join(dir, 'f.txt'));
+            };
+            await writeFile(path.join(pair.peer, 'f.txt'), 'seed\n');
+            runGit(['-C', pair.peer, 'add', 'f.txt'], { env: COMMIT_ENV });
+            runGit(['-C', pair.peer, 'commit', '-q', '-m', 'seed'], { env: COMMIT_ENV });
+            await writeFile(path.join(oursDir, 'f.txt'), 'seed\n');
+            await repo.add(['f.txt']);
+            await repo.commit({ message: 'seed', author: AUTHOR, committer: AUTHOR });
+            corruptLooseBlob(pair.peer);
+            corruptLooseBlob(oursDir);
+
+            // Act
+            const gitResult = gitCheckoutPath(pair.peer, 'f.txt');
+            const failure = await repo
+              .checkout({ paths: ['f.txt'] })
+              .catch((error: unknown) => error);
+
+            // Assert
+            expect(gitResult.status).not.toBe(0);
+            expect((failure as { data: { code: string } }).data.code).toBe('DECOMPRESS_FAILED');
+            expect(lstatSync(path.join(pair.peer, 'f.txt')).size).toBe(0);
+            expect(lstatSync(path.join(oursDir, 'f.txt')).size).toBe(0);
+            expect(lstatSync(path.join(oursDir, 'f.txt')).mode & PERM_MASK).toBe(
+              lstatSync(path.join(pair.peer, 'f.txt')).mode & PERM_MASK,
+            );
           });
         });
       });

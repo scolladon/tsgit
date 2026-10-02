@@ -2,6 +2,7 @@
 import { compressFailed, decompressFailed } from '../../domain/index.js';
 import type { Compressor, InflateStreamResult } from '../../ports/compressor.js';
 import { boundedInflateCap, inflateZlibHead, inflateZlibMember } from '../inflate.js';
+import { createNativeInflateStream } from '../native-inflate-stream.js';
 
 export class BrowserCompressor implements Compressor {
   async deflate(data: Uint8Array, _level?: number): Promise<Uint8Array> {
@@ -78,6 +79,6 @@ export class BrowserCompressor implements Compressor {
   }
 
   createInflateStream(): TransformStream<Uint8Array, Uint8Array> {
-    return new DecompressionStream('deflate') as unknown as TransformStream<Uint8Array, Uint8Array>;
+    return createNativeInflateStream();
   }
 }

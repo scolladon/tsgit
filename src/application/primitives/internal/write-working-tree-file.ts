@@ -162,14 +162,32 @@ const createEmptyOutput = async (
   }
 };
 
+/** git's `odb_read_stream_open` dies on a loose object whose header does not
+ *  unpack, after the output file was created and before any unlink: the empty
+ *  file stays. Any other arm declines to git's in-core read, which leaves no file. */
+const openServedBlob = async (
+  ctx: Context,
+  fullPath: string,
+  located: Parameters<typeof serveLocatedBlob>[1],
+  mode?: FileMode,
+): Promise<BlobSource> => {
+  try {
+    return await serveLocatedBlob(ctx, located, NEVER_BUFFER, { order: 'stream' });
+  } catch (refusal) {
+    if (located.arm !== 'loose' || isOperationAborted(refusal)) throw refusal;
+    await createEmptyOutput(ctx, fullPath, refusal, mode);
+    throw refusal;
+  }
+};
+
 const writeServedBlob = async (
   ctx: Context,
   fullPath: string,
   located: Parameters<typeof serveLocatedBlob>[1],
   mode?: FileMode,
 ): Promise<void> => {
+  const source = await openServedBlob(ctx, fullPath, located, mode);
   try {
-    const source = await serveLocatedBlob(ctx, located, NEVER_BUFFER, { order: 'stream' });
     if (source.type !== 'blob') {
       if (source.kind === 'stream') await source.release();
       throw unexpectedObjectType('blob', source.type, located.id);

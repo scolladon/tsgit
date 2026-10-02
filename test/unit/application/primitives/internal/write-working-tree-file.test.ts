@@ -15,6 +15,7 @@ import type { FilePath, ObjectId } from '../../../../../src/domain/objects/index
 import { FILE_MODE } from '../../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../../src/ports/context.js';
 import { buildSeededContext, instrumentedContext, writeRawObjectBytes } from '../fixtures.js';
+import { writeSyntheticPack } from '../pack-fixture.js';
 
 const encode = (text: string): Uint8Array => new TextEncoder().encode(text);
 const decode = (bytes: Uint8Array): string => new TextDecoder().decode(bytes);
@@ -852,7 +853,7 @@ describe('write-working-tree-file', () => {
 
     describe('Given a blob whose loose body is corrupt', () => {
       describe('When the blob is written', () => {
-        it('Then the serve failure leaves no file', async () => {
+        it("Then the refused open leaves git's empty file and reports the inflate failure", async () => {
           // Arrange
           const ctx = await buildSeededContext();
           const id = await writeRawObjectBytes(ctx, 'blob', encode('honest'));
@@ -866,7 +867,66 @@ describe('write-working-tree-file', () => {
           const failure = await rejection(writeStreamedBlob(ctx, fullPath, id, FILE_MODE.REGULAR));
 
           // Assert
-          expect(failure).toBeInstanceOf(Error);
+          expect((failure as TsgitError).data).toMatchObject({ code: 'DECOMPRESS_FAILED' });
+          expect((await ctx.fs.read(fullPath)).length).toBe(0);
+        });
+      });
+    });
+
+    describe('Given a packed delta blob whose base is in no store', () => {
+      describe('When the blob is written', () => {
+        it("Then the refused open leaves no file, as git's in-core fallback does", async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const base = encode('the absent base');
+          const [id] = await writeSyntheticPack(ctx, 'orphan', [
+            {
+              kind: 'ref-delta',
+              baseId: MISSING_ID,
+              baseUncompressed: base,
+              targetContent: encode('the delta target'),
+            },
+          ]);
+          const fullPath = `${ctx.layout.workDir}/d.txt`;
+
+          // Act
+          const failure = await rejection(
+            writeStreamedBlob(ctx, fullPath, id as ObjectId, FILE_MODE.REGULAR),
+          );
+
+          // Assert
+          expect((failure as TsgitError).data).toMatchObject({ code: 'OBJECT_NOT_FOUND' });
+          expect(await ctx.fs.exists(fullPath)).toBe(false);
+        });
+      });
+    });
+
+    describe('Given a signal aborted after the loose blob was located', () => {
+      describe('When the blob is written', () => {
+        it('Then the abort is thrown and no empty file is left', async () => {
+          // Arrange
+          const controller = new AbortController();
+          const base = await buildSeededContext({ signal: controller.signal });
+          const id = await writeRawObjectBytes(base, 'blob', encode('located then aborted'));
+          const loosePath = `${base.layout.gitDir}/objects/${id.slice(0, 2)}/${id.slice(2)}`;
+          const ctx: Context = {
+            ...base,
+            fs: {
+              ...base.fs,
+              read: async (path: string) => {
+                const bytes = await base.fs.read(path);
+                if (path === loosePath) controller.abort();
+                return bytes;
+              },
+            },
+          };
+          const fullPath = `${ctx.layout.workDir}/a.txt`;
+
+          // Act
+          const failure = await rejection(writeStreamedBlob(ctx, fullPath, id, FILE_MODE.REGULAR));
+
+          // Assert
+          expect((failure as TsgitError).data).toMatchObject({ code: 'OPERATION_ABORTED' });
           expect(await ctx.fs.exists(fullPath)).toBe(false);
         });
       });
