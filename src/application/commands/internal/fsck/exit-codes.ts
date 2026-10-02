@@ -7,6 +7,7 @@
 //           object anywhere in the repository — a whole-repository check,
 //           not a per-ref one)
 // bit 4   = pack inaccessible / index not opened (git's ERROR_PACK)
+// bit 16  = commit-graph verification failure (git's ERROR_COMMIT_GRAPH)
 // bit 32  = multi-pack-index verification failure (git's ERROR_MULTI_PACK_INDEX)
 // bit 64  = reverse index unusable, one of two independent causes (git's ERROR_PACK_REV_INDEX)
 // bit 128 = a pack's or the in-use multi-pack-index's bitmap trailer checksum disagrees with
@@ -19,6 +20,8 @@ export const EXIT_HASH_MISMATCH = 1;
 export const EXIT_MISSING = 2;
 export const EXIT_REFS_CONTENT = 8;
 export const EXIT_PACK = 4;
+/** `git commit-graph verify` failed for some object source (git's ERROR_COMMIT_GRAPH). */
+export const EXIT_COMMIT_GRAPH = 16;
 export const EXIT_MULTI_PACK_INDEX = 32;
 /**
  * A pack's reverse index is unusable, for either of two causes that never

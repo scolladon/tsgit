@@ -1,0 +1,585 @@
+/**
+ * fsck's `commit-graph verify` leg: every object source's commit-graph is
+ * checked against its own checksum, OID order and fanout, then each commit it
+ * holds against the object database — tree, parents, generation, date.
+ */
+import { describe, expect, it, vi } from 'vitest';
+import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
+import { type FsckFinding, fsck } from '../../../../src/application/commands/fsck.js';
+import { runCommitGraphVerifyPass } from '../../../../src/application/commands/internal/fsck/commit-graph-verify.js';
+import { getObjectStore } from '../../../../src/application/primitives/object-store.js';
+import {
+  commitGraphPath,
+  commonGitDir,
+} from '../../../../src/application/primitives/path-layout.js';
+import * as readObjectMod from '../../../../src/application/primitives/read-object.js';
+import { writeCommitGraph } from '../../../../src/application/primitives/write-commit-graph.js';
+import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import * as commitGraphMod from '../../../../src/domain/commit/commit-graph.js';
+import {
+  type CommitGraphLayer,
+  parseCommitGraphLayer,
+  positionOf,
+} from '../../../../src/domain/commit/commit-graph.js';
+import { serializeCommitGraph } from '../../../../src/domain/commit/commit-graph-writer.js';
+import type { ObjectId } from '../../../../src/domain/objects/index.js';
+import type { Context } from '../../../../src/ports/context.js';
+
+const EXIT_COMMIT_GRAPH = 16;
+const NO_PARENT = 0x70000000;
+const IDENT = {
+  name: 'Ada',
+  email: 'ada@example.com',
+  timestamp: 1_700_000_000,
+  timezoneOffset: '+0000',
+};
+const OTHER_TREE = 'a'.repeat(40) as ObjectId;
+const ABSENT = '1'.repeat(40) as ObjectId;
+const UNEXPECTED = new Error('unexpected');
+
+interface Fixture {
+  readonly ctx: Context;
+  readonly tree: ObjectId;
+  readonly root: ObjectId;
+  readonly tip: ObjectId;
+}
+
+const commitOn = (ctx: Context, tree: ObjectId, parents: ObjectId[]): Promise<ObjectId> =>
+  writeObject(ctx, {
+    type: 'commit',
+    id: '' as ObjectId,
+    data: { tree, parents, author: IDENT, committer: IDENT, message: 'm', extraHeaders: [] },
+  });
+
+const repoWithGraph = async (): Promise<Fixture> => {
+  const ctx = createMemoryContext();
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+  const tree = await writeObject(ctx, { type: 'tree', id: '' as ObjectId, entries: [] });
+  const root = await commitOn(ctx, tree, []);
+  const tip = await commitOn(ctx, tree, [root]);
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${tip}\n`);
+  await writeCommitGraph(ctx);
+  return { ctx, tree, root, tip };
+};
+
+type Patch = (bytes: Uint8Array, entry: number, view: DataView) => void;
+type GraphPatch = (bytes: Uint8Array, layer: CommitGraphLayer, view: DataView) => void;
+
+/** Rewrites the graph bytes, then restamps the trailer so only the patch disagrees. */
+const patchGraph = async (ctx: Context, patch: GraphPatch): Promise<void> => {
+  const path = commitGraphPath(commonGitDir(ctx));
+  const bytes = new Uint8Array(await ctx.fs.read(path));
+  const layer = parseCommitGraphLayer(bytes);
+  patch(bytes, layer, new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength));
+  const trailer = bytes.length - ctx.hashConfig.digestLength;
+  bytes.set(await ctx.hash.hash(bytes.subarray(0, trailer)), trailer);
+  await ctx.fs.write(path, bytes);
+};
+
+/** Rewrites one commit's CDAT entry. */
+const patchEntry = (ctx: Context, id: ObjectId, patch: Patch): Promise<void> =>
+  patchGraph(ctx, (bytes, layer, view) => {
+    const position = positionOf(layer, id) as number;
+    patch(bytes, layer._commitDataOffset + position * layer._commitDataEntrySize, view);
+  });
+
+/** Replaces the graph with one holding a single parentless `id`. */
+const writeGraphOf = async (ctx: Context, id: ObjectId, tree: ObjectId): Promise<void> => {
+  const graph = serializeCommitGraph(
+    [{ id, rootTree: tree, parents: [], committerDate: IDENT.timestamp }],
+    ctx.hashConfig,
+  );
+  const trailer = graph.length - ctx.hashConfig.digestLength;
+  graph.set(await ctx.hash.hash(graph.subarray(0, trailer)), trailer);
+  await ctx.fs.write(commitGraphPath(commonGitDir(ctx)), graph);
+};
+
+/** Renames the GDA2 chunk so the graph reads as topological levels only. */
+const dropGenerationData = (ctx: Context): Promise<void> =>
+  patchGraph(ctx, (bytes) => {
+    const table = bytes.subarray(0, 8 + 12 * (bytes[6] as number));
+    const at = new TextDecoder().decode(table).indexOf('GDA2');
+    bytes.set(new TextEncoder().encode('XXXX'), at);
+  });
+
+const HASH_LENGTH = 20;
+const V1_MAX_GENERATION_WORD = 0xfffffffc;
+const setParent1 =
+  (position: number): Patch =>
+  (_bytes, entry, view) =>
+    view.setUint32(entry + HASH_LENGTH, position);
+
+const graphFindings = (findings: ReadonlyArray<FsckFinding>): ReadonlyArray<FsckFinding> =>
+  findings.filter((finding) => finding.type === 'commit-graph-invalid');
+
+describe('fsck commit-graph verify', () => {
+  describe('Given a healthy commit-graph', () => {
+    describe('When fsck runs', () => {
+      it('Then no commit-graph finding is reported', async () => {
+        // Arrange
+        const { ctx } = await repoWithGraph();
+        const sut = fsck;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(graphFindings(result.findings)).toEqual([]);
+        expect(result.exitCode & EXIT_COMMIT_GRAPH).toBe(0);
+      });
+    });
+  });
+
+  describe('Given no commit-graph at all', () => {
+    describe('When the commit-graph verify pass runs', () => {
+      it('Then it reports nothing', async () => {
+        // Arrange
+        const { ctx } = await repoWithGraph();
+        await ctx.fs.rm(commitGraphPath(commonGitDir(ctx)));
+        const sut = runCommitGraphVerifyPass;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toEqual({ findings: [], exitBit: 0 });
+      });
+    });
+  });
+
+  describe('Given a commit-graph whose trailer disagrees with its bytes', () => {
+    describe('When fsck runs', () => {
+      it('Then it reports the checksum and sets bit 16', async () => {
+        // Arrange
+        const { ctx } = await repoWithGraph();
+        const path = commitGraphPath(commonGitDir(ctx));
+        const bytes = new Uint8Array(await ctx.fs.read(path));
+        bytes[bytes.length - 1] = (bytes[bytes.length - 1] as number) ^ 0xff;
+        await ctx.fs.write(path, bytes);
+        const sut = fsck;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(graphFindings(result.findings)).toEqual([
+          { type: 'commit-graph-invalid', artefact: path, check: 'checksum' },
+        ]);
+        expect(result.exitCode & EXIT_COMMIT_GRAPH).toBe(EXIT_COMMIT_GRAPH);
+      });
+    });
+  });
+
+  describe('Given a commit-graph recording another root tree', () => {
+    describe('When fsck runs', () => {
+      it('Then it reports the recorded and actual trees', async () => {
+        // Arrange
+        const { ctx, tree, root } = await repoWithGraph();
+        await patchEntry(ctx, root, (bytes, entry) =>
+          bytes.set(new Uint8Array(HASH_LENGTH).fill(0xaa), entry),
+        );
+        const sut = fsck;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(graphFindings(result.findings)).toEqual([
+          {
+            type: 'commit-graph-invalid',
+            artefact: commitGraphPath(commonGitDir(ctx)),
+            check: 'root-tree',
+            id: root,
+            recorded: OTHER_TREE,
+            actual: tree,
+          },
+        ]);
+        expect(result.exitCode & EXIT_COMMIT_GRAPH).toBe(EXIT_COMMIT_GRAPH);
+      });
+    });
+  });
+
+  describe('Given a commit-graph giving a root commit a parent', () => {
+    describe('When fsck runs', () => {
+      it('Then the parent list is too long', async () => {
+        // Arrange
+        const { ctx, root } = await repoWithGraph();
+        await patchEntry(ctx, root, setParent1(0));
+        const sut = fsck;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(graphFindings(result.findings)).toEqual([
+          {
+            type: 'commit-graph-invalid',
+            artefact: commitGraphPath(commonGitDir(ctx)),
+            check: 'parents-too-long',
+            id: root,
+          },
+        ]);
+      });
+    });
+  });
+
+  describe('Given a commit-graph dropping a commit parent', () => {
+    describe('When fsck runs', () => {
+      it('Then the parent list terminates early', async () => {
+        // Arrange
+        const { ctx, tip } = await repoWithGraph();
+        await patchEntry(ctx, tip, setParent1(NO_PARENT));
+        const sut = fsck;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(graphFindings(result.findings)).toEqual([
+          {
+            type: 'commit-graph-invalid',
+            artefact: commitGraphPath(commonGitDir(ctx)),
+            check: 'parents-terminate-early',
+            id: tip,
+          },
+        ]);
+      });
+    });
+  });
+
+  describe('Given a commit-graph recording another committer date', () => {
+    describe('When fsck runs', () => {
+      it('Then it reports the recorded and actual dates', async () => {
+        // Arrange
+        const { ctx, tip } = await repoWithGraph();
+        await patchEntry(ctx, tip, (_bytes, entry, view) =>
+          view.setUint32(entry + HASH_LENGTH + 12, IDENT.timestamp + 1),
+        );
+        const sut = fsck;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(graphFindings(result.findings)).toEqual([
+          {
+            type: 'commit-graph-invalid',
+            artefact: commitGraphPath(commonGitDir(ctx)),
+            check: 'commit-date',
+            id: tip,
+            recordedDate: IDENT.timestamp + 1,
+            actualDate: IDENT.timestamp,
+          },
+        ]);
+      });
+    });
+  });
+
+  describe('Given core.commitGraph=false over a corrupt commit-graph', () => {
+    describe('When fsck runs', () => {
+      it('Then the graph is not verified', async () => {
+        // Arrange
+        const { ctx, root } = await repoWithGraph();
+        await patchEntry(ctx, root, setParent1(0));
+        await ctx.fs.appendUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tcommitGraph = false\n');
+        const sut = fsck;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(graphFindings(result.findings)).toEqual([]);
+        expect(result.exitCode & EXIT_COMMIT_GRAPH).toBe(0);
+      });
+    });
+  });
+  describe('Given a commit-graph whose two OIDs are swapped', () => {
+    describe('When fsck runs', () => {
+      it('Then it reports the fanout, the order and each commit it cannot find, then stops', async () => {
+        // Arrange
+        const { ctx, root, tip } = await repoWithGraph();
+        const [low, high] = [root, tip].sort() as [ObjectId, ObjectId];
+        await patchGraph(ctx, (bytes, layer) => {
+          const at = layer._oidLookupOffset;
+          const first = bytes.slice(at, at + HASH_LENGTH);
+          bytes.copyWithin(at, at + HASH_LENGTH, at + 2 * HASH_LENGTH);
+          bytes.set(first, at + HASH_LENGTH);
+        });
+        const lowBucket = Number.parseInt(low.slice(0, 2), 16);
+        const highBucket = Number.parseInt(high.slice(0, 2), 16);
+        const artefact = commitGraphPath(commonGitDir(ctx));
+        const fanout = Array.from({ length: highBucket - lowBucket }, (_, offset) => ({
+          type: 'commit-graph-invalid',
+          artefact,
+          check: 'fanout',
+          bucket: lowBucket + offset,
+          recordedCount: 1,
+          expectedCount: 0,
+        }));
+        const sut = fsck;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(graphFindings(result.findings)).toEqual([
+          ...fanout,
+          { type: 'commit-graph-invalid', artefact, check: 'graph-unparsable', id: high },
+          { type: 'commit-graph-invalid', artefact, check: 'oid-order', previous: high, id: low },
+          { type: 'commit-graph-invalid', artefact, check: 'graph-unparsable', id: low },
+        ]);
+      });
+    });
+  });
+
+  describe('Given a commit-graph parent position past its last commit', () => {
+    describe('When fsck runs', () => {
+      it('Then it reports the position and verifies nothing more', async () => {
+        // Arrange
+        const { ctx, tip } = await repoWithGraph();
+        await patchEntry(ctx, tip, setParent1(7));
+        const sut = fsck;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(graphFindings(result.findings)).toEqual([
+          {
+            type: 'commit-graph-invalid',
+            artefact: commitGraphPath(commonGitDir(ctx)),
+            check: 'invalid-parent-position',
+            position: 7,
+          },
+        ]);
+        expect(result.exitCode & EXIT_COMMIT_GRAPH).toBe(EXIT_COMMIT_GRAPH);
+      });
+    });
+  });
+
+  describe('Given a commit-graph commit missing from the object database', () => {
+    describe('When fsck runs', () => {
+      it('Then it reports the commit unparsable from the object database', async () => {
+        // Arrange
+        const { ctx, tree } = await repoWithGraph();
+        await writeGraphOf(ctx, ABSENT, tree);
+        const sut = fsck;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(graphFindings(result.findings)).toEqual([
+          {
+            type: 'commit-graph-invalid',
+            artefact: commitGraphPath(commonGitDir(ctx)),
+            check: 'odb-unparsable',
+            id: ABSENT,
+          },
+        ]);
+      });
+    });
+  });
+
+  describe('Given a commit-graph naming a tree as a commit', () => {
+    describe('When fsck runs', () => {
+      it('Then the tree is unparsable as a commit', async () => {
+        // Arrange
+        const { ctx, tree } = await repoWithGraph();
+        await writeGraphOf(ctx, tree, tree);
+        const sut = fsck;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(graphFindings(result.findings)).toEqual([
+          {
+            type: 'commit-graph-invalid',
+            artefact: commitGraphPath(commonGitDir(ctx)),
+            check: 'odb-unparsable',
+            id: tree,
+          },
+        ]);
+      });
+    });
+  });
+
+  describe.each([
+    { generations: 'corrected commit dates', drop: false, generation: IDENT.timestamp + 1 },
+    { generations: 'topological levels', drop: true, generation: 2 },
+  ])(
+    'Given a commit-graph making a commit its own parent, read as $generations',
+    ({ drop, generation }) => {
+      describe('When fsck runs', () => {
+        it('Then it reports the parent and a generation below its parent', async () => {
+          // Arrange
+          const { ctx, root, tip } = await repoWithGraph();
+          if (drop) await dropGenerationData(ctx);
+          const layer = parseCommitGraphLayer(
+            await ctx.fs.read(commitGraphPath(commonGitDir(ctx))),
+          );
+          await patchEntry(ctx, tip, setParent1(positionOf(layer, tip) as number));
+          const artefact = commitGraphPath(commonGitDir(ctx));
+          const sut = fsck;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(graphFindings(result.findings)).toEqual([
+            {
+              type: 'commit-graph-invalid',
+              artefact,
+              check: 'parent',
+              id: tip,
+              recorded: tip,
+              actual: root,
+            },
+            {
+              type: 'commit-graph-invalid',
+              artefact,
+              check: 'generation',
+              id: tip,
+              generation,
+              minimum: generation + 1,
+            },
+          ]);
+        });
+      });
+    },
+  );
+
+  describe('Given topological levels where a parent sits at the v1 generation ceiling', () => {
+    describe('When fsck runs', () => {
+      it('Then the child only needs the ceiling itself', async () => {
+        // Arrange
+        const { ctx, root, tip } = await repoWithGraph();
+        await dropGenerationData(ctx);
+        await patchEntry(ctx, root, (_bytes, entry, view) =>
+          view.setUint32(entry + HASH_LENGTH + 8, V1_MAX_GENERATION_WORD),
+        );
+        const sut = fsck;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(graphFindings(result.findings)).toEqual([
+          {
+            type: 'commit-graph-invalid',
+            artefact: commitGraphPath(commonGitDir(ctx)),
+            check: 'generation',
+            id: tip,
+            generation: 2,
+            minimum: 0x3fffffff,
+          },
+        ]);
+      });
+    });
+  });
+
+  describe('Given topological levels where one commit has generation zero', () => {
+    describe('When fsck runs', () => {
+      it('Then it reports both zero and non-zero generations', async () => {
+        // Arrange
+        const { ctx, root, tip } = await repoWithGraph();
+        await dropGenerationData(ctx);
+        await patchEntry(ctx, root, (_bytes, entry, view) =>
+          view.setUint32(entry + HASH_LENGTH + 8, 0),
+        );
+        const sut = fsck;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(graphFindings(result.findings)).toEqual([
+          {
+            type: 'commit-graph-invalid',
+            artefact: commitGraphPath(commonGitDir(ctx)),
+            check: 'mixed-generations',
+            zero: root,
+            nonZero: tip,
+          },
+        ]);
+      });
+    });
+  });
+
+  describe('Given a commit-graph file that does not parse', () => {
+    describe('When fsck runs', () => {
+      it('Then it reports the graph load failure with the decode reason', async () => {
+        // Arrange
+        const { ctx } = await repoWithGraph();
+        const garbage = new TextEncoder().encode('not a graph');
+        await ctx.fs.write(commitGraphPath(commonGitDir(ctx)), garbage);
+        let reason: unknown;
+        try {
+          parseCommitGraphLayer(garbage);
+        } catch (error) {
+          reason = (error as Error).message;
+        }
+        const sut = fsck;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(graphFindings(result.findings)).toEqual([
+          {
+            type: 'commit-graph-invalid',
+            artefact: commitGraphPath(commonGitDir(ctx)),
+            check: 'load-failure',
+            reason,
+          },
+        ]);
+      });
+    });
+  });
+
+  describe.each([
+    {
+      fault: 'reading the graph is refused',
+      arrange: async (ctx: Context): Promise<void> => {
+        const { primary } = await getObjectStore(ctx);
+        vi.spyOn(primary.fs, 'read').mockRejectedValueOnce(UNEXPECTED);
+      },
+    },
+    {
+      fault: 'decoding the graph fails unexpectedly',
+      arrange: async (): Promise<void> => {
+        vi.spyOn(commitGraphMod, 'parseCommitGraphLayer').mockImplementationOnce(() => {
+          throw UNEXPECTED;
+        });
+      },
+    },
+    {
+      fault: 'reading a graph commit fails outside the object model',
+      arrange: async (): Promise<void> => {
+        vi.spyOn(readObjectMod, 'readObject').mockRejectedValueOnce(UNEXPECTED);
+      },
+    },
+  ])('Given $fault', ({ arrange }) => {
+    describe('When the commit-graph verify pass runs', () => {
+      it('Then the fault propagates', async () => {
+        // Arrange
+        const { ctx } = await repoWithGraph();
+        await arrange(ctx);
+        const sut = runCommitGraphVerifyPass;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx);
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        vi.restoreAllMocks();
+        expect(caught).toBe(UNEXPECTED);
+      });
+    });
+  });
+});

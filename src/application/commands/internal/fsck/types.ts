@@ -1,3 +1,4 @@
+import type { CommitGraphVerdict } from '../../../../domain/commit/commit-graph-verify.js';
 import type { FsckObjectType, FsckSeverity } from '../../../../domain/fsck/index.js';
 import type { ObjectId, RefName } from '../../../../domain/objects/index.js';
 
@@ -289,7 +290,14 @@ export type FsckFinding =
       readonly artefact: string;
       /** The alternate's objects dir the finding came from; absent for the primary. */
       readonly objectsDir?: string;
-    };
+    }
+  | ({
+      readonly type: 'commit-graph-invalid';
+      /** The commit-graph file the verdict is about. */
+      readonly artefact: string;
+      /** The alternate's objects dir the finding came from; absent for the primary. */
+      readonly objectsDir?: string;
+    } & CommitGraphVerdict);
 
 /**
  * How `collectTypeFindings` treats a universe object whose cache entry is

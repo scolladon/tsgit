@@ -245,7 +245,7 @@ async function loadGraphUncached(ctx: Context): Promise<LoadedGraph | undefined>
  * leaves every graph unread. A malformed value reads as enabled here; its
  * refusal belongs to git's repo-settings prologue.
  */
-async function commitGraphEnabled(ctx: Context): Promise<boolean> {
+export async function commitGraphEnabled(ctx: Context): Promise<boolean> {
   const last = await findLastEntry(ctx, 'core', COMMIT_GRAPH_KEY);
   if (last === undefined) return true;
   const parsed = parseGitBoolean(last.value);
@@ -267,7 +267,7 @@ async function readGraphOne(
 
 /** Decode failures (malformed graph bytes) — never fs errors. `RangeError`
  *  covers out-of-range `DataView` reads from crafted chunk offsets. */
-function isGraphDecodeFailure(error: unknown): boolean {
+export function isGraphDecodeFailure(error: unknown): boolean {
   if (error instanceof RangeError) return true;
   return error instanceof TsgitError && error.data.code.startsWith('INVALID_COMMIT_GRAPH');
 }
@@ -304,7 +304,7 @@ function loadGraph(ctx: Context): Promise<LoadedGraph | undefined> {
 export async function correctedCommitDatesEnabled(ctx: Context): Promise<boolean> {
   if (!repoSettingsVerdictSettled(ctx)) await assertRepoSettingsValid(ctx);
   const graph = await loadGraph(ctx);
-  return graph !== undefined && graph.correctedCommitDates;
+  return graph?.correctedCommitDates === true;
 }
 
 function getHeaderCache(ctx: Context): Map<ObjectId, CommitHeader> {

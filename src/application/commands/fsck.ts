@@ -7,6 +7,7 @@ import { enumerateObjects } from '../primitives/enumerate-objects.js';
 import { assertValidPromisorRemoteConfig } from '../primitives/internal/boolean-config-guard.js';
 import { assertBigFileThresholdValid } from '../primitives/internal/repo-settings-gate.js';
 import { runBitmapHealthPass } from './internal/fsck/bitmap-health.js';
+import { runCommitGraphVerifyPass } from './internal/fsck/commit-graph-verify.js';
 import {
   type CatalogueOptions,
   runContentValidationPass,
@@ -282,6 +283,9 @@ async function auditRepository(ctx: Context, opts: FsckOptions): Promise<FsckRes
   // step needs.
   const bitmapResult = await runBitmapHealthPass(ctx, opts);
 
+  // git's `commit-graph verify`, one per object source, gated on core.commitGraph.
+  const commitGraphResult = await runCommitGraphVerifyPass(ctx);
+
   // Content-validation's own git-faithful read can refuse an object the
   // general resolver above still typed — every loose object
   // `read_loose_object` itself refuses, or whose hash disagrees with its
@@ -409,6 +413,7 @@ async function auditRepository(ctx: Context, opts: FsckOptions): Promise<FsckRes
     ...revIndexResult.findings,
     ...midxResult.findings,
     ...bitmapResult.findings,
+    ...commitGraphResult.findings,
     ...assembleConnectivityFindings(
       { missingIds, brokenEdges, unreadableEdges, unreachable, dangling, rootCommits, tagRefs },
       { objectCache: reachabilityCache, recovered, unreadable, indexBlobs: recorded.indexBlobIds },
@@ -440,6 +445,7 @@ async function auditRepository(ctx: Context, opts: FsckOptions): Promise<FsckRes
     revIndexResult.exitBit |
     midxResult.exitBit |
     bitmapResult.exitBit |
+    commitGraphResult.exitBit |
     missingEntryPointBit;
 
   return { findings, exitCode };

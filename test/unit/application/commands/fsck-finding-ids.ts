@@ -15,5 +15,8 @@ export const findingIds = (finding: FsckFinding): ReadonlyArray<ObjectId> => {
   if ('actual' in finding) ids.push(finding.actual);
   if ('target' in finding && finding.target !== undefined) ids.push(finding.target);
   if ('tag' in finding) ids.push(finding.tag);
+  if ('recorded' in finding) ids.push(finding.recorded);
+  if ('previous' in finding) ids.push(finding.previous);
+  if ('zero' in finding) ids.push(finding.zero, finding.nonZero);
   return ids;
 };
