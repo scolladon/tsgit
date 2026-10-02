@@ -90,16 +90,42 @@ export const GC_NOT_RUN: GcResult = {
  * `git gc --auto` runs nothing, at any loose count). `auto` absent/false
  * always runs, mirroring explicit `git gc` ignoring `gc.auto` entirely.
  */
-async function shouldDeclineForAuto(
-  ctx: Context,
+function shouldDeclineForAuto(
   auto: boolean | undefined,
+  threshold: number,
   looseCount: number,
-): Promise<boolean> {
+): boolean {
   if (auto !== true) return false;
-  await assertValidGcAutoConfig(ctx);
-  const threshold = (await readConfig(ctx)).gc?.auto ?? DEFAULT_GC_AUTO_THRESHOLD;
   if (threshold === 0) return true;
   return looseCount <= threshold;
+}
+
+/** The gc settings git's `gc_config` resolves. */
+export interface GcSettings {
+  readonly autoThreshold: number;
+  readonly cruftPacks: boolean;
+  readonly pruneCutoff: number;
+  readonly worktreePruneCutoff: number;
+}
+
+/**
+ * git's `gc_config`: `git gc` and `git maintenance run` read — and refuse a
+ * malformed — `gc.auto`, `gc.cruftPacks`, `gc.pruneExpire` and
+ * `gc.worktreePruneExpire` before any task runs or any `--auto` gate
+ * declines, in that order.
+ */
+export async function readGcSettings(ctx: Context): Promise<GcSettings> {
+  await assertValidGcAutoConfig(ctx);
+  await assertValidBooleanConfig(ctx, 'gc', undefined, ['cruftPacks']);
+  const { gc } = await readConfig(ctx);
+  return {
+    autoThreshold: gc?.auto ?? DEFAULT_GC_AUTO_THRESHOLD,
+    cruftPacks: gc?.cruftPacks ?? true,
+    pruneCutoff: configExpiryCutoff(gc?.pruneExpire ?? DEFAULT_PRUNE_EXPIRE),
+    worktreePruneCutoff: configExpiryCutoff(
+      gc?.worktreePruneExpire ?? DEFAULT_WORKTREE_PRUNE_EXPIRE,
+    ),
+  };
 }
 
 const TEMP_FILE_PREFIX = 'tmp_';
@@ -857,6 +883,7 @@ async function pruneLooseFiles(ctx: Context, ids: ReadonlySet<ObjectId>): Promis
 
 interface RunGcOptions {
   readonly auto: boolean | undefined;
+  readonly settings: GcSettings;
 }
 
 export async function runGcTask(
@@ -880,21 +907,15 @@ export async function runGcTask(
   const allPacksBefore = await registry.all();
   const packsBefore = allPacksBefore.length;
 
-  if (await shouldDeclineForAuto(ctx, opts.auto, looseObjectsBefore)) {
+  const { settings } = opts;
+  if (shouldDeclineForAuto(opts.auto, settings.autoThreshold, looseObjectsBefore)) {
     return {
       ran: false,
       result: { ...GC_NOT_RUN, looseObjectsBefore, packsBefore, packsAfter: packsBefore },
     };
   }
 
-  await assertValidBooleanConfig(ctx, 'gc', undefined, ['cruftPacks']);
   await assertValidPackIntConfig(ctx);
-  const config = await readConfig(ctx);
-  const cruftPacksEnabled = config.gc?.cruftPacks ?? true;
-  const cutoff = configExpiryCutoff(config.gc?.pruneExpire ?? DEFAULT_PRUNE_EXPIRE);
-  const worktreeCutoff = configExpiryCutoff(
-    config.gc?.worktreePruneExpire ?? DEFAULT_WORKTREE_PRUNE_EXPIRE,
-  );
 
   // --- step 1b: classify every pack, lstat every pack, before any write ---
   const fileNames = await registry.fileNames();
@@ -978,7 +999,7 @@ export async function runGcTask(
     normalPackMtimeOf,
   );
   // --- step 5: the expiry cutoff ---
-  const { survivors, doomed } = partitionByCutoff(cruftCandidates, mtimes, cutoff);
+  const { survivors, doomed } = partitionByCutoff(cruftCandidates, mtimes, settings.pruneCutoff);
 
   // --- every write starts here; every refusal above leaves the store untouched ---
   const normalPack = await buildAndWriteNormalPack(
@@ -997,7 +1018,7 @@ export async function runGcTask(
   const cruftOutcome = await applyCruftOutcome(
     ctx,
     packDir,
-    cruftPacksEnabled,
+    settings.cruftPacks,
     survivors,
     existingCruft,
     looseSet,
@@ -1076,13 +1097,13 @@ export async function runGcTask(
   // retirement this run performs, the same tail-of-prune position git's own
   // `remove_temporary_files` occupies (see removeStaleTempFiles' own doc for
   // the full placement rationale).
-  await removeStaleTempFiles(ctx, packDir, cutoff);
+  await removeStaleTempFiles(ctx, packDir, settings.pruneCutoff);
 
   // --- git gc's `worktree prune --expire <gc.worktreePruneExpire>`, run
   // right after its repack and prune, as git sequences it.
   await pruneWorktrees(ctx, {
-    cutoff: worktreeCutoff,
-    ignoreCase: config.core?.ignoreCase === true,
+    cutoff: settings.worktreePruneCutoff,
+    ignoreCase: (await readConfig(ctx)).core?.ignoreCase === true,
   });
 
   // --- step 11: invalidate, refresh, packBytesAfter ---

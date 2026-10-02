@@ -28,7 +28,7 @@ import { invalidOption } from '../../domain/commands/error.js';
 import type { ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { writeCommitGraph } from '../primitives/write-commit-graph.js';
-import { GC_NOT_RUN, type GcResult, runGcTask } from './internal/gc-pipeline.js';
+import { GC_NOT_RUN, type GcResult, readGcSettings, runGcTask } from './internal/gc-pipeline.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
 
 export type MaintenanceTask = 'commit-graph' | 'gc';
@@ -108,6 +108,7 @@ export const maintenance = async (
 ): Promise<MaintenanceResult> => {
   await assertOperationalRepository(ctx);
   validateTasks(opts.tasks);
+  const gcSettings = await readGcSettings(ctx);
 
   // Pinned against git 2.55.0 (`GIT_TRACE=1 git maintenance run --task=…
   // --task=…`, both orderings): `git maintenance run` executes requested
@@ -132,7 +133,7 @@ export const maintenance = async (
       tasksRun.push('commit-graph');
       continue;
     }
-    gcOutcome = await runGcTask(ctx, { auto: opts.auto });
+    gcOutcome = await runGcTask(ctx, { auto: opts.auto, settings: gcSettings });
     if (gcOutcome.ran) tasksRun.push('gc');
   }
 

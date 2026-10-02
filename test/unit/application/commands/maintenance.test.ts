@@ -595,6 +595,59 @@ describe('maintenance', () => {
     });
   });
 
+  describe.each([
+    { key: 'gc.auto', config: 'auto = bogus', code: 'CONFIG_BAD_NUMERIC_VALUE' },
+    { key: 'gc.cruftPacks', config: 'cruftPacks = maybe', code: 'CONFIG_BAD_BOOLEAN_VALUE' },
+    { key: 'gc.pruneExpire', config: 'pruneExpire = all', code: 'CONFIG_BAD_DATE_VALUE' },
+    {
+      key: 'gc.worktreePruneExpire',
+      config: 'worktreePruneExpire = 2099-01-01',
+      code: 'CONFIG_BAD_DATE_VALUE',
+    },
+  ])('Given a malformed $key', ({ config, code }) => {
+    describe.each([
+      { run: 'the gc task under an auto gate that declines', tasks: ['gc'] as const, auto: true },
+      { run: 'the commit-graph task alone', tasks: ['commit-graph'] as const, auto: false },
+    ])('When maintenance runs $run', ({ tasks, auto }) => {
+      it('Then it refuses before any task, as git reads gc config first', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        await appendConfig(ctx, `\n[gc]\n\t${config}\n`);
+        const sut = maintenance;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { tasks: [...tasks], auto });
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe(code);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/objects/info/commit-graph`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a malformed pack.window and an auto gate that declines', () => {
+    describe('When maintenance runs the gc task', () => {
+      it('Then gc declines without reading the pack config, as git does', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        await appendConfig(ctx, '\n[gc]\n\tauto = 100\n[pack]\n\twindow = abc\n');
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'], auto: true });
+
+        // Assert
+        expect(result.tasksRun).toEqual([]);
+      });
+    });
+  });
+
   // ---------------------------------------------------------------------
   // Reachability partition
   // ---------------------------------------------------------------------

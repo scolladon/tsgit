@@ -23,7 +23,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
-import { maintenance } from '../../src/application/commands/maintenance.js';
+import { type MaintenanceTask, maintenance } from '../../src/application/commands/maintenance.js';
 import { commonGitDir, packsDir } from '../../src/application/primitives/path-layout.js';
 import { disposePackRegistry } from '../../src/application/primitives/read-object.js';
 import { TsgitError } from '../../src/domain/error.js';
@@ -805,6 +805,54 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
       expect(oursCaught).toBeInstanceOf(TsgitError);
       expect((oursCaught as TsgitError).data.code).toBe('CONFIG_BAD_DATE_VALUE');
       await disposeTwin(twin);
+    });
+  });
+
+  describe.each([
+    { kv: 'gc.auto=bogus', code: 'CONFIG_BAD_NUMERIC_VALUE' },
+    { kv: 'gc.cruftPacks=maybe', code: 'CONFIG_BAD_BOOLEAN_VALUE' },
+    { kv: 'gc.pruneExpire=all', code: 'CONFIG_BAD_DATE_VALUE' },
+    { kv: 'gc.worktreePruneExpire=2099-01-01', code: 'CONFIG_BAD_DATE_VALUE' },
+  ])('Given a malformed $kv', ({ kv, code }) => {
+    describe.each([
+      {
+        run: 'gc --auto under a declining gate',
+        gitArgs: ['gc', '--auto'],
+        opts: { tasks: ['gc'] as ReadonlyArray<MaintenanceTask>, auto: true },
+      },
+      {
+        run: 'the commit-graph maintenance task alone',
+        gitArgs: ['maintenance', 'run', '--task=commit-graph'],
+        opts: { tasks: ['commit-graph'] as ReadonlyArray<MaintenanceTask>, auto: false },
+      },
+    ])('When both tools run $run', ({ gitArgs, opts }) => {
+      it('Then both refuse before any task', async () => {
+        // Arrange
+        const slug = `gc-config-first-${kv.replace(/\W+/g, '-')}-${gitArgs.length}`;
+        const baseDir = await initRepo(slug);
+        await addCommit(baseDir, 'c0');
+        const twin = await makeTwin(baseDir, slug);
+        await rm(baseDir, { recursive: true, force: true });
+        const peer = tryRunGitWithExit(['-C', twin.peerDir, '-c', kv, ...gitArgs]);
+        await setOursGcConfig(twin.oursDir, [kv]);
+        const sut = maintenance;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(trackedNodeContext(twin.oursDir, 'sha1'), {
+            tasks: opts.tasks,
+            auto: opts.auto,
+          });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(peer.exitCode).toBe(128);
+        expect((caught as TsgitError).data.code).toBe(code);
+        await disposeTwin(twin);
+      });
     });
   });
 
