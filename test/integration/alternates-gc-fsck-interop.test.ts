@@ -2236,6 +2236,34 @@ describe.skipIf(!GIT_AVAILABLE)('fsck interop — names git reads as a special f
     });
   });
 
+  describe.each(['.gitmodules', '.gitattributes'])('Given a tree naming a directory %s', (name) => {
+    describe('When git fsck and tsgit fsck run', () => {
+      it(
+        'Then both report only the queued tree, never the tree naming it',
+        async () => {
+          // Arrange
+          const dir = path.join(root, `special-dir-${name.slice(1)}`);
+          runGit(['init', '-q', '-b', 'main', dir]);
+          configure(dir);
+          const blob = runGit(['-C', dir, 'hash-object', '-w', '--stdin'], { input: 'x' }).trim();
+          const inner = runGit(['-C', dir, 'mktree'], { input: `100644 blob ${blob}\tf\n` }).trim();
+          writeRawTree(dir, '40000', name, inner);
+          const git = gitFsck(dir);
+          const sut = tsgitFsck;
+
+          // Act
+          const result = await sut(dir);
+
+          // Assert
+          expect(result.exitCode).toBe(git.exitCode);
+          expect(reportLines(result.findings)).toEqual(gitReportLines(git.stderr));
+          expect(gitReportLines(git.stderr)).toEqual([`tree ${inner} ${name.slice(1)}Blob`]);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
   const writeBlob = (dir: string, content: string): string =>
     runGit(['-C', dir, 'hash-object', '-w', '--stdin'], { input: content }).trim();
 

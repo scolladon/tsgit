@@ -1436,12 +1436,13 @@ describe('Given tree where .mailmap is a symlink', () => {
 });
 
 // ---------------------------------------------------------------------------
-// tree — gitmodulesBlob (ERROR): .gitmodules is not a regular file
+// tree — gitmodulesBlob is never a tree-level finding: git queues the entry
+// for its deferred blob check whatever its mode
 // ---------------------------------------------------------------------------
 
 describe('Given tree where .gitmodules is a directory (non-blob)', () => {
   describe('When validateObject runs', () => {
-    it('Then emits gitmodulesBlob at error severity', () => {
+    it('Then emits no gitmodulesBlob, as git defers it to the queued object', () => {
       // Arrange
       const rawBytes = buildTree(buildTreeEntry('40000', '.gitmodules', BLOB_SHA));
 
@@ -1454,18 +1455,19 @@ describe('Given tree where .gitmodules is a directory (non-blob)', () => {
       });
 
       // Assert
-      expect(result).toContainEqual({ msgId: 'gitmodulesBlob', severity: 'error' });
+      expect(result).toEqual([]);
     });
   });
 });
 
 // ---------------------------------------------------------------------------
-// tree — gitattributesBlob (ERROR): .gitattributes is not a regular file
+// tree — gitattributesBlob is never a tree-level finding: git queues the entry
+// for its deferred blob check whatever its mode
 // ---------------------------------------------------------------------------
 
 describe('Given tree where .gitattributes is a directory (non-blob)', () => {
   describe('When validateObject runs', () => {
-    it('Then emits gitattributesBlob at error severity', () => {
+    it('Then emits no gitattributesBlob, as git defers it to the queued object', () => {
       // Arrange
       const rawBytes = buildTree(buildTreeEntry('40000', '.gitattributes', BLOB_SHA));
 
@@ -1478,7 +1480,7 @@ describe('Given tree where .gitattributes is a directory (non-blob)', () => {
       });
 
       // Assert
-      expect(result).toContainEqual({ msgId: 'gitattributesBlob', severity: 'error' });
+      expect(result).toEqual([]);
     });
   });
 });

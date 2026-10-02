@@ -11,10 +11,8 @@ import {
   MSG_BAD_TREE,
   MSG_DUPLICATE_ENTRIES,
   MSG_FULL_PATHNAME,
-  MSG_GITATTRIBUTES_BLOB,
   MSG_GITATTRIBUTES_SYMLINK,
   MSG_GITIGNORE_SYMLINK,
-  MSG_GITMODULES_BLOB,
   MSG_GITMODULES_SYMLINK,
   MSG_HAS_DOT,
   MSG_HAS_DOTDOT,
@@ -66,7 +64,7 @@ function isZeroSha(sha: Uint8Array): boolean {
  */
 function stripLeadingZeros(mode: string): string {
   let i = 0;
-  // Stryker disable next-line ConditionalExpression,EqualityOperator,ArithmeticOperator: equivalent — the boundary only changes output for an all-'0' mode, where correct strips to '0'; mutated (dropped/off-by-one bound) strips to '' instead. normMode's only readers are VALID_MODES.has(normMode) and checkSpecialFileName's mode==='120000'/'100644'/'100755' checks — no entry is '' or '0', so both '0' and '' evaluate identically everywhere — confirmed empirically across '0','00','000000','0000001'.
+  // Stryker disable next-line ConditionalExpression,EqualityOperator,ArithmeticOperator: equivalent — the boundary only changes output for an all-'0' mode, where correct strips to '0'; mutated (dropped/off-by-one bound) strips to '' instead. normMode's only readers are VALID_MODES.has(normMode) and checkSpecialFileName's mode==='120000' check — no entry is '' or '0', so both '0' and '' evaluate identically everywhere — confirmed empirically across '0','00','000000','0000001'.
   while (i < mode.length - 1 && mode[i] === '0') i++;
   return mode.slice(i);
 }
@@ -212,6 +210,10 @@ function symlinkOnlyFindings(
   return findings;
 }
 
+/**
+ * git's `fsck_tree` reports a special name only as a symlink: any other mode
+ * queues the entry for `fsck_blobs`, which judges the object itself.
+ */
 function checkSpecialFileName(
   raw: Uint8Array,
   nameStart: number,
@@ -219,37 +221,21 @@ function checkSpecialFileName(
   mode: string,
   strict: boolean,
 ): ReadonlyArray<TreeFinding> {
+  if (mode !== '120000') return [];
   const findings: TreeFinding[] = [];
-  const isSymlink = mode === '120000';
-  const isRegular = mode === '100644' || mode === '100755';
-
   if (matchesDotgitAlias(raw, nameStart, nameEnd, 'gitmodules')) {
-    if (isSymlink) {
-      findings.push({
-        msgId: MSG_GITMODULES_SYMLINK,
-        severity: resolveSeverity(MSG_GITMODULES_SYMLINK, strict),
-      });
-    } else if (!isRegular) {
-      findings.push({
-        msgId: MSG_GITMODULES_BLOB,
-        severity: resolveSeverity(MSG_GITMODULES_BLOB, strict),
-      });
-    }
+    findings.push({
+      msgId: MSG_GITMODULES_SYMLINK,
+      severity: resolveSeverity(MSG_GITMODULES_SYMLINK, strict),
+    });
   }
   if (matchesDotgitAlias(raw, nameStart, nameEnd, 'gitattributes')) {
-    if (isSymlink) {
-      findings.push({
-        msgId: MSG_GITATTRIBUTES_SYMLINK,
-        severity: resolveSeverity(MSG_GITATTRIBUTES_SYMLINK, strict),
-      });
-    } else if (!isRegular) {
-      findings.push({
-        msgId: MSG_GITATTRIBUTES_BLOB,
-        severity: resolveSeverity(MSG_GITATTRIBUTES_BLOB, strict),
-      });
-    }
+    findings.push({
+      msgId: MSG_GITATTRIBUTES_SYMLINK,
+      severity: resolveSeverity(MSG_GITATTRIBUTES_SYMLINK, strict),
+    });
   }
-  if (isSymlink) findings.push(...symlinkOnlyFindings(raw, nameStart, nameEnd, strict));
+  findings.push(...symlinkOnlyFindings(raw, nameStart, nameEnd, strict));
   return findings;
 }
 
