@@ -15,6 +15,7 @@ import { runMidxHealthPass } from './internal/fsck/midx-health.js';
 import {
   assertTypesRecoverable,
   buildObjectCache,
+  type CachedGitObject,
   collectUnreadablePackMemberIds,
   withUnreadableOverrides,
 } from './internal/fsck/object-cache.js';
@@ -68,6 +69,20 @@ function createNoDeltaCache(): LruCache<ObjectContent> {
     maxSize: 0,
     entryCount: 0,
   };
+}
+
+/**
+ * Whether git's fsck recorded `id` as an object (`HAS_OBJ`): every enumerated
+ * object under `--connectivity-only`, else only one it read — a loose object
+ * or a pack entry that unpacked, and a pack only under `--full`.
+ */
+function recordedBy(
+  universe: ReadonlySet<ObjectId>,
+  cache: ReadonlyMap<ObjectId, CachedGitObject>,
+  unreadable: UnreadableMode,
+): (id: ObjectId) => boolean {
+  if (unreadable === 'classify') return (id) => universe.has(id);
+  return (id) => universe.has(id) && (cache.get(id) ?? null) !== null;
 }
 
 export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckResult> {
@@ -201,11 +216,8 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   // bounded existence probe per cache-tree entry, deliberately independent
   // of `universe`'s own mode-narrowing — see `existsInStore`'s doc comment)
   // rather than re-scanning the store.
-  const { roots, missingEntryPoint, sawAbsentRefTarget, cacheTreeIds } = await collectRoots(
-    ctx,
-    opts,
-    universe,
-  );
+  const { roots, missingEntryPoint, sawAbsentRefTarget, cacheTreeIds, ...recorded } =
+    await collectRoots(ctx, opts, universe, recordedBy(universe, objectCache, unreadable));
   // git's `fsck_index` parses every cache-tree oid, in every mode — and dies
   // on one whose only copy is a damaged pack entry.
   await assertObjectsReadable(auditCtx, cacheTreeIds, objectCache);
@@ -257,11 +269,18 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
     ...bitmapResult.findings,
     ...assembleConnectivityFindings(
       { missingIds, brokenEdges, unreadableEdges, unreachable, dangling, rootCommits, tagRefs },
-      { objectCache: reachabilityCache, recovered, unreadable },
+      { objectCache: reachabilityCache, recovered, unreadable, indexBlobs: recorded.indexBlobIds },
     ),
+    ...recorded.invalidReflogEntries.map((entry) => ({
+      type: 'invalid-reflog-entry' as const,
+      ...entry,
+    })),
   ];
 
-  const connectivityBit = missingIds.size > 0 || brokenEdges.length > 0 ? EXIT_MISSING : 0;
+  const connectivityBit =
+    missingIds.size > 0 || brokenEdges.length > 0 || recorded.invalidReflogEntries.length > 0
+      ? EXIT_MISSING
+      : 0;
   const exitCode =
     contentResult.exitBit |
     connectivityBit |

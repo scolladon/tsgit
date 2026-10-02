@@ -192,6 +192,13 @@ interface CacheTreeWalk {
 
 const NO_CACHE_TREE: CacheTreeWalk = { unresolved: false, parsed: [] };
 
+/** The cache-tree walk, plus the index entries git looks up as blobs. */
+interface IndexWalk extends CacheTreeWalk {
+  readonly blobs: ReadonlyArray<ObjectId>;
+}
+
+const NO_INDEX: IndexWalk = { ...NO_CACHE_TREE, blobs: [] };
+
 /**
  * Walk the cache-tree, adding every entry's resolvable tree oid to `roots`
  * and reporting whether any entry names one that fails to resolve — git's
@@ -295,16 +302,14 @@ async function addIndexRoots(
   ctx: Context,
   roots: Set<ObjectId>,
   universe?: ReadonlySet<ObjectId>,
-): Promise<CacheTreeWalk> {
+): Promise<IndexWalk> {
   const index = await readIndexIfIntact(ctx);
-  if (index === undefined) return NO_CACHE_TREE;
-  for (const entry of index.entries) {
-    if (entry.flags.stage !== 0) continue;
-    roots.add(entry.id);
-  }
+  if (index === undefined) return NO_INDEX;
+  const blobs = index.entries.filter((entry) => entry.flags.stage === 0).map((entry) => entry.id);
+  for (const id of blobs) roots.add(id);
   const cacheTree = cacheTreeOf(ctx, index);
-  if (cacheTree === undefined) return NO_CACHE_TREE;
-  return walkCacheTree(ctx, cacheTree, roots, universe);
+  if (cacheTree === undefined) return { ...NO_CACHE_TREE, blobs };
+  return { ...(await walkCacheTree(ctx, cacheTree, roots, universe)), blobs };
 }
 
 export interface RootsCollection {
@@ -326,6 +331,51 @@ export interface RootsCollection {
   /** Every tree oid git's `fsck_cache_tree` parses: the cache-tree's
    *  resolvable entries, whichever store holds them. */
   readonly cacheTreeIds: ReadonlyArray<ObjectId>;
+  /** Every index entry oid — git's `fsck_index` looks each one up as a blob. */
+  readonly indexBlobIds: ReadonlySet<ObjectId>;
+  /** Every reflog oid git's fsck never recorded as an object, in reflog order. */
+  readonly invalidReflogEntries: ReadonlyArray<InvalidReflogEntry>;
+}
+
+/** A reflog side naming an object the run never recorded: git's `invalid reflog entry`. */
+export interface InvalidReflogEntry {
+  readonly ref: RefName;
+  readonly id: ObjectId;
+}
+
+/** Root every recorded oid of one reflog; return the rest, old side then new. */
+function splitReflogEntries(
+  ref: RefName,
+  entries: ReadonlyArray<ReflogEntry>,
+  isRecorded: (id: ObjectId) => boolean,
+  roots: Set<ObjectId>,
+  zero: ObjectId,
+): ReadonlyArray<InvalidReflogEntry> {
+  const invalid: InvalidReflogEntry[] = [];
+  for (const id of entries.flatMap((entry) => [entry.oldId, entry.newId])) {
+    if (id === zero) continue;
+    if (isRecorded(id)) roots.add(id);
+    else invalid.push({ ref, id });
+  }
+  return invalid;
+}
+
+/**
+ * git's `fsck_handle_reflog_oid`: an oid the run recorded as an object is
+ * marked reachable; any other is an `invalid reflog entry` — never a root,
+ * so never reported missing. A line that does not parse is skipped, as
+ * git's reflog iterator skips it.
+ */
+async function addRecordedReflogRoots(
+  ctx: Context,
+  roots: Set<ObjectId>,
+  isRecorded: (id: ObjectId) => boolean,
+): Promise<ReadonlyArray<InvalidReflogEntry>> {
+  const zero = zeroOid(ctx.hashConfig);
+  const perReflog = await boundedMapFor(ctx, 'ioBound', await listReflogs(ctx), async (ref) =>
+    splitReflogEntries(ref, await readReflogLenient(ctx, ref), isRecorded, roots, zero),
+  );
+  return perReflog.flat();
 }
 
 /**
@@ -343,17 +393,20 @@ export async function collectRoots(
   ctx: Context,
   opts: FsckOptions,
   universe: ReadonlySet<ObjectId>,
+  isRecorded: (id: ObjectId) => boolean,
 ): Promise<RootsCollection> {
   const roots = new Set<ObjectId>();
   const sawAbsentRefTarget = await addRefRoots(ctx, roots, universe);
-  if (opts.reflogRoots !== false) await addReflogRoots(ctx, roots);
-  const cacheTree =
-    opts.indexRoot !== false ? await addIndexRoots(ctx, roots, universe) : NO_CACHE_TREE;
+  const invalidReflogEntries =
+    opts.reflogRoots !== false ? await addRecordedReflogRoots(ctx, roots, isRecorded) : [];
+  const index = opts.indexRoot !== false ? await addIndexRoots(ctx, roots, universe) : NO_INDEX;
   return {
     roots,
-    missingEntryPoint: cacheTree.unresolved,
+    missingEntryPoint: index.unresolved,
     sawAbsentRefTarget,
-    cacheTreeIds: cacheTree.parsed,
+    cacheTreeIds: index.parsed,
+    indexBlobIds: new Set(index.blobs),
+    invalidReflogEntries,
   };
 }
 

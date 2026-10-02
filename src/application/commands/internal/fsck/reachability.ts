@@ -278,6 +278,8 @@ export interface TypeResolution {
   readonly objectCache: ReadonlyMap<ObjectId, CachedGitObject>;
   readonly recovered: ReadonlyMap<ObjectId, FsckObjectType>;
   readonly unreadable: UnreadableMode;
+  /** Index entry oids — git looks each one up as a blob, so a missing one is a blob. */
+  readonly indexBlobs: ReadonlySet<ObjectId>;
 }
 
 function collectTypeFindings(
@@ -303,6 +305,10 @@ function resolveObjectType(id: ObjectId, resolution: TypeResolution): FsckObject
   if (obj != null) return obj.type;
   return resolution.recovered.get(id) ?? 'unknown';
 }
+
+/** A missing id's type as git's lookup made it: a blob for an index entry. */
+const expectedType = (id: ObjectId, resolution: TypeResolution): FsckObjectType | 'unknown' =>
+  resolution.indexBlobs.has(id) ? 'blob' : resolveObjectType(id, resolution);
 
 /** The connectivity walk's classified output, as `assembleConnectivityFindings` consumes it. */
 export interface ConnectivityClassification {
@@ -335,7 +341,7 @@ function missingAndBrokenLinkFindings(
   }
   const findings: FsckFinding[] = [];
   for (const id of missingIds) {
-    const objectType = missingTypeFromEdge.get(id) ?? resolveObjectType(id, resolution);
+    const objectType = missingTypeFromEdge.get(id) ?? expectedType(id, resolution);
     findings.push({ type: 'missing', id, objectType });
   }
   for (const edge of brokenEdges) {

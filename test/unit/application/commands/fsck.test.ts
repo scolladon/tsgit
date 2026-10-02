@@ -916,9 +916,9 @@ describe('Given more reflogs than the ioBound limit', () => {
       const ctx: Context = { ...base, concurrency: { cpuBound: 1, ioBound } };
       let inFlight = 0;
       let maxInFlight = 0;
-      const realReadReflog = reflogStoreMod.readReflog;
+      const realReadReflog = reflogStoreMod.readReflogLenient;
       const spy = vi
-        .spyOn(reflogStoreMod, 'readReflog')
+        .spyOn(reflogStoreMod, 'readReflogLenient')
         .mockImplementation(async (spyCtx, name) => {
           inFlight += 1;
           if (inFlight > maxInFlight) maxInFlight = inFlight;
@@ -7383,7 +7383,8 @@ describe('Given a header-refused pack holding the only copy of a loose ref targe
         (f): f is FsckFinding & { readonly msgId: string } =>
           f.type === 'bad-ref' && (f as { msgId: string }).msgId === 'badRefOid',
       );
-      expect(badRefOid).toHaveLength(1);
+      // …and HEAD, which names main, is its own invalid pointer, as git snapshots it too.
+      expect(badRefOid.map((f) => (f as { ref: string }).ref)).toEqual(['refs/heads/main', 'HEAD']);
       expect(badRefOid[0]).toMatchObject({ ref: 'refs/heads/main', target: packedId });
       expect(result.exitCode & 2).toBe(2);
     });
@@ -8780,4 +8781,84 @@ describe('Given objects git parses before any check, stored as damaged pack entr
       });
     },
   );
+});
+
+describe('Given objects git never parsed, named by the index, a reflog or HEAD', () => {
+  const ABSENT = 'abababababababababababababababababababab' as ObjectId;
+  const ZERO = '0000000000000000000000000000000000000000';
+  const WHO = 'Ada <ada@example.com> 1700000000 +0000';
+
+  const healthyMain = async (ctx: Context): Promise<ObjectId> => {
+    const treeId = await writeObject(ctx, makeTree([]));
+    const commitId = await writeObject(ctx, makeCommit(treeId, []));
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+    return commitId;
+  };
+
+  describe('When an index entry names a blob no store holds and fsck runs', () => {
+    it('Then it reports that blob missing as a blob, as git looks it up as one', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      await healthyMain(ctx);
+      await writeIndexWithEntry(ctx, ABSENT, 'a.txt', undefined);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.findings).toContainEqual({ type: 'missing', id: ABSENT, objectType: 'blob' });
+    });
+  });
+
+  describe('When a reflog entry names an object no store holds and fsck runs', () => {
+    it('Then it reports an invalid reflog entry with bit 2 and never that object missing', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const commitId = await healthyMain(ctx);
+      await ctx.fs.mkdir(`${ctx.layout.gitDir}/logs/refs/heads`);
+      await ctx.fs.writeUtf8(
+        `${ctx.layout.gitDir}/logs/refs/heads/main`,
+        `${ZERO} ${ABSENT} ${WHO}\tone\n${ABSENT} ${commitId} ${WHO}\ttwo\n`,
+      );
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const invalid = { type: 'invalid-reflog-entry', ref: 'refs/heads/main', id: ABSENT };
+      expect(result.findings.filter((f) => f.type === 'invalid-reflog-entry')).toEqual([
+        invalid,
+        invalid,
+      ]);
+      expect(result.findings.some((f) => f.type === 'missing')).toBe(false);
+      expect(result.exitCode).toBe(2);
+    });
+  });
+
+  describe('When HEAD resolves to an object no store holds and fsck runs', () => {
+    it('Then it reports HEAD an invalid pointer beside the branch, as git snapshots HEAD too', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${ABSENT}\n`);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      const pointers = result.findings.filter(
+        (f) => f.type === 'bad-ref' && f.msgId === 'badRefOid',
+      );
+      expect(pointers).toEqual([
+        {
+          type: 'bad-ref',
+          ref: 'refs/heads/main',
+          msgId: 'badRefOid',
+          severity: 'error',
+          target: ABSENT,
+        },
+        { type: 'bad-ref', ref: 'HEAD', msgId: 'badRefOid', severity: 'error', target: ABSENT },
+      ]);
+    });
+  });
 });

@@ -1,12 +1,14 @@
 import type { FsckSeverityTable } from '../../../../domain/fsck/index.js';
 import { retypeSeverity } from '../../../../domain/fsck/index.js';
-import type { ObjectId } from '../../../../domain/objects/index.js';
+import type { ObjectId, RefName } from '../../../../domain/objects/index.js';
 import { zeroOid } from '../../../../domain/objects/index.js';
 import type { Context } from '../../../../ports/context.js';
 import type { RefIntegrityFinding, RefStore } from '../../../primitives/ref-store.js';
 import { getRefStore } from '../../../primitives/ref-store.js';
+import { resolveRef } from '../../../primitives/resolve-ref.js';
 import { EXIT_MISSING, EXIT_REFS_CONTENT } from './exit-codes.js';
 import { objectIsPresent } from './object-presence.js';
+import { isTolerableRefFault } from './roots.js';
 import type { FsckFinding } from './types.js';
 
 type BadRefFinding = FsckFinding & { readonly type: 'bad-ref' };
@@ -103,23 +105,47 @@ function collectBadContentNotices(
   return { findings, exitBit };
 }
 
-/** Every well-formed ref whose OID the object universe does not hold. */
+const HEAD = 'HEAD' as RefName;
+
+type RefEntries = Awaited<ReturnType<RefStore['listRefs']>>;
+
+/** The object a ref names — a symbolic one through its chain — or
+ *  `undefined` when it names none (an unborn branch). */
+async function targetOf(ctx: Context, entry: RefEntries[number]): Promise<ObjectId | undefined> {
+  if (entry.value.kind === 'direct') return entry.value.id;
+  try {
+    return await resolveRef(ctx, entry.name, { peel: false });
+  } catch (err) {
+    if (!isTolerableRefFault(err)) throw err;
+    return undefined;
+  }
+}
+
+/** git's snapshot order: every ref by name, then HEAD. */
+const snapshotOrder = (entries: RefEntries): RefEntries => [
+  ...entries.filter((entry) => entry.name !== HEAD),
+  ...entries.filter((entry) => entry.name === HEAD),
+];
+
+/** Every ref — symbolic ones through their chain, HEAD included — naming an
+ *  object the universe does not hold: git's `invalid sha1 pointer`. */
 async function collectAbsentTargets(
   ctx: Context,
-  entries: Awaited<ReturnType<RefStore['listRefs']>>,
+  entries: RefEntries,
   universe: ReadonlySet<ObjectId>,
   confirmPackAccessibility: boolean,
 ): Promise<PassResult> {
   const findings: BadRefFinding[] = [];
-  for (const entry of entries) {
-    if (entry.value.kind !== 'direct') continue;
-    if (await isKnownOid(ctx, universe, entry.value.id, confirmPackAccessibility)) continue;
+  for (const entry of snapshotOrder(entries)) {
+    const id = await targetOf(ctx, entry);
+    if (id === undefined) continue;
+    if (await isKnownOid(ctx, universe, id, confirmPackAccessibility)) continue;
     findings.push({
       type: 'bad-ref',
       ref: entry.name,
       msgId: 'badRefOid',
       severity: 'error',
-      target: entry.value.id,
+      target: id,
     });
   }
   return { findings, exitBit: findings.length > 0 ? EXIT_MISSING : 0 };
@@ -141,8 +167,8 @@ async function collectAbsentTargets(
  *   may admit an oid whose housing pack later fails its own header gate.
  *   Absent → `badRefOid` (bit 2), so a loose ref naming a well-formed but
  *   absent object exits 2 with AND without `--no-references`. A symbolic ref
- *   never contributes: its target may legitimately be absent, which is what an
- *   unborn branch is.
+ *   (HEAD too) is judged by the object its chain names; one naming none —
+ *   an unborn branch — never contributes.
  */
 export async function runRefsVerifyPass(
   ctx: Context,

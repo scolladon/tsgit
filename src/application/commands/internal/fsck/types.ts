@@ -48,6 +48,13 @@ export type FsckFinding =
       readonly severity: FsckSeverity;
       readonly target?: ObjectId;
     }
+  | {
+      /** A reflog side naming an object the run never recorded — git's
+       *  `invalid reflog entry`; one per side, so a line can yield two. */
+      readonly type: 'invalid-reflog-entry';
+      readonly ref: RefName;
+      readonly id: ObjectId;
+    }
   | { readonly type: 'root'; readonly id: ObjectId }
   | {
       readonly type: 'tagged';

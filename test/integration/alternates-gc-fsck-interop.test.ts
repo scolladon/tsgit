@@ -377,11 +377,29 @@ const donorPackDir = (donor: string): string => path.join(objectsOf(donor), 'pac
 
 const MISSING_LINE = /^missing (\w+) ([0-9a-f]{40})$/;
 
-const missingIds = (findings: ReadonlyArray<FsckFinding>): ReadonlyArray<string> =>
-  findings.flatMap((f) => (f.type === 'missing' ? [f.id] : []));
+const POINTER_LINE = /^error: \S+: invalid (sha1 pointer|reflog entry) [0-9a-f]{40}$/;
 
-const gitMissingIds = (stdout: string): ReadonlyArray<string> =>
-  stdout.split('\n').flatMap((line) => MISSING_LINE.exec(line)?.[2] ?? []);
+const gitLines = (output: string, line: RegExp): ReadonlyArray<string> =>
+  output
+    .split('\n')
+    .filter((text) => line.test(text))
+    .sort();
+
+const missingLines = (findings: ReadonlyArray<FsckFinding>): ReadonlyArray<string> =>
+  findings.flatMap((f) => (f.type === 'missing' ? [`missing ${f.objectType} ${f.id}`] : [])).sort();
+
+/** git's ref and reflog pointer errors, rebuilt from tsgit's structured findings. */
+const pointerLines = (findings: ReadonlyArray<FsckFinding>): ReadonlyArray<string> =>
+  findings
+    .flatMap((f) => {
+      if (f.type === 'bad-ref' && f.msgId === 'badRefOid') {
+        return [`error: ${f.ref}: invalid sha1 pointer ${f.target}`];
+      }
+      if (f.type === 'invalid-reflog-entry')
+        return [`error: ${f.ref}: invalid reflog entry ${f.id}`];
+      return [];
+    })
+    .sort();
 
 /** git's `verify_pack` / open-gate stderr, rebuilt from tsgit's structured pack findings. */
 const verifyPackLines = (
@@ -647,7 +665,7 @@ describe.skipIf(!GIT_AVAILABLE)('alternates fsck interop — every source is aud
 
     describe('When the pack trailer is corrupt (F4b)', () => {
       it(
-        'Then both exit 14 and tsgit reports the inaccessible pack and missing blobs git names',
+        'Then both exit 14 on the donor and the borrower with the missing blobs and invalid pointers git names',
         async () => {
           // Arrange — tsgit's fsck verifies no commit-graph, so the donor's
           // is removed: git's `commit-graph verify` child would add bit 16.
@@ -657,22 +675,21 @@ describe.skipIf(!GIT_AVAILABLE)('alternates fsck interop — every source is aud
           flipByteAt(pack, readFileSync(pack).length - 1);
           const sut = tsgitFsck;
 
-          // Act
-          const gitResult = gitFsck(borrower);
-          const result = await sut(borrower);
+          for (const dir of [donor, borrower]) {
+            // Act
+            const gitResult = gitFsck(dir);
+            const result = await sut(dir);
 
-          // Assert
-          expect(gitResult.exitCode).toBe(14);
-          expect(result.exitCode).toBe(gitResult.exitCode);
-          for (const line of verifyPackLines(result.findings, donorPackDir(donor))) {
-            expect(gitResult.stderr).toContain(line);
+            // Assert
+            const gitPackDir = dir === donor ? '.git/objects/pack' : donorPackDir(donor);
+            expect(gitResult.exitCode).toBe(14);
+            expect(result.exitCode).toBe(gitResult.exitCode);
+            for (const line of verifyPackLines(result.findings, gitPackDir)) {
+              expect(gitResult.stderr).toContain(line);
+            }
+            expect(missingLines(result.findings)).toEqual(gitLines(gitResult.stdout, MISSING_LINE));
+            expect(pointerLines(result.findings)).toEqual(gitLines(gitResult.stderr, POINTER_LINE));
           }
-          // Only the ids: tsgit types an index-rooted missing object
-          // `unknown` and also reports the unreadable ref tip as missing,
-          // where git reports `missing blob` and `invalid sha1 pointer`.
-          expect(missingIds(result.findings)).toEqual(
-            expect.arrayContaining([...gitMissingIds(gitResult.stdout)]),
-          );
         },
         ROW_TIMEOUT,
       );
