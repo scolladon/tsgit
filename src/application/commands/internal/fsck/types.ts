@@ -59,6 +59,12 @@ export type FsckFinding =
       readonly ref: RefName;
       readonly id: ObjectId;
     }
+  | {
+      /** A cache-tree entry naming an object no store holds — git's
+       *  `invalid sha1 pointer in cache-tree`; each one sets bit 8. */
+      readonly type: 'invalid-cache-tree-pointer';
+      readonly id: ObjectId;
+    }
   | { readonly type: 'root'; readonly id: ObjectId }
   | {
       readonly type: 'tagged';

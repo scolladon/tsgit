@@ -210,7 +210,7 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   // bounded existence probe per cache-tree entry, deliberately independent
   // of `universe`'s own mode-narrowing — see `existsInStore`'s doc comment)
   // rather than re-scanning the store.
-  const { roots, missingEntryPoint, sawAbsentRefTarget, cacheTreeIds, ...recorded } =
+  const { roots, invalidCacheTreeIds, sawAbsentRefTarget, cacheTreeIds, ...recorded } =
     await collectRoots(ctx, opts, universe, recordedBy(universe, objectCache, unreadable));
   // git's `fsck_index` parses every cache-tree oid, in every mode — and dies
   // on one whose only copy is a damaged pack entry.
@@ -219,7 +219,7 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   if (roots.size > 0 || sawAbsentRefTarget) {
     await assertValidPromisorRemoteConfig(ctx);
   }
-  const missingEntryPointBit = missingEntryPoint ? EXIT_REFS_CONTENT : 0;
+  const missingEntryPointBit = invalidCacheTreeIds.length > 0 ? EXIT_REFS_CONTENT : 0;
 
   // Content-validation's own git-faithful read can refuse an object the
   // general resolver above still typed — every loose object
@@ -273,6 +273,7 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
       type: 'invalid-reflog-entry' as const,
       ...entry,
     })),
+    ...invalidCacheTreeIds.map((id) => ({ type: 'invalid-cache-tree-pointer' as const, id })),
   ];
 
   const connectivityBit =

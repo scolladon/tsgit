@@ -3913,12 +3913,48 @@ function encodeCacheTreeNode(node: CacheTreeNode): ReadonlyArray<number> {
   return [...header, ...oid, ...node.children.flatMap(encodeCacheTreeNode)];
 }
 
+describe('Given a cache-tree whose root resolves and whose two subtrees, listed d1 then d2, name absent trees', () => {
+  describe('When fsck runs', () => {
+    it('Then it reports each absent oid as an invalid cache-tree pointer, in cache-tree order, with bit 8', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const blobId = await writeObject(ctx, makeBlob('cache-tree pointers'));
+      const rootTree = await writeObject(
+        ctx,
+        makeTree([treeEntry(FILE_MODE.REGULAR, 'a.txt', blobId)]),
+      );
+      const d1 = 'd1'.repeat(20) as ObjectId;
+      const d2 = 'd2'.repeat(20) as ObjectId;
+      const cacheTree: CacheTreeNode = {
+        path: '',
+        id: rootTree,
+        children: [
+          { path: 'd1', id: d1, children: [] },
+          { path: 'd2', id: d2, children: [] },
+        ],
+      };
+      await writeIndexWithRawCacheTree(ctx, blobId, new Uint8Array(encodeCacheTreeNode(cacheTree)));
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(result.findings.filter((f) => f.type === 'invalid-cache-tree-pointer')).toEqual([
+        { type: 'invalid-cache-tree-pointer', id: d1 },
+        { type: 'invalid-cache-tree-pointer', id: d2 },
+      ]);
+      expect(result.exitCode & 8).toBe(8);
+    });
+  });
+});
+
 describe('Given a cache-tree walk that meets an absent oid, then one no artefact can route, then a live one', () => {
   describe('When fsck runs', () => {
     it('Then the proved missing entry point still reports and the live sibling still roots its tree', async () => {
-      // Arrange — the walk pops in reverse push order, so listing the live
-      // subtree first and the absent one last makes the refused route land
-      // between them: after the verdict is proved, before the last root.
+      // Arrange — the walk visits subtrees in git's pre-order, so listing the
+      // absent subtree first and the live one last makes the refused route
+      // land between them: after the verdict is proved, before the last root.
       // What this row pins is the drainage around that landing — a proved
       // verdict is retained and the entries still queued behind the refused
       // route are still rooted. It does not discriminate the refused entry's
@@ -3940,9 +3976,9 @@ describe('Given a cache-tree walk that meets an absent oid, then one no artefact
         path: '',
         id: undefined,
         children: [
-          { path: 'live', id: treeId, children: [] },
-          { path: 'refused', id: refusedRouteId, children: [] },
           { path: 'absent', id: 'ee'.repeat(20) as ObjectId, children: [] },
+          { path: 'refused', id: refusedRouteId, children: [] },
+          { path: 'live', id: treeId, children: [] },
         ],
       };
       await writeIndexWithRawCacheTree(ctx, blobId, new Uint8Array(encodeCacheTreeNode(cacheTree)));

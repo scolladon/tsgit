@@ -184,13 +184,14 @@ async function addReflogRoots(ctx: Context, roots: Set<ObjectId>, strict?: boole
   });
 }
 
-/** A cache-tree walk's verdict, and every tree oid it went on to parse. */
+/** A cache-tree walk's unresolvable oids and every tree oid it went on to
+ *  parse, both in git's pre-order. */
 interface CacheTreeWalk {
-  readonly unresolved: boolean;
+  readonly unresolved: ReadonlyArray<ObjectId>;
   readonly parsed: ReadonlyArray<ObjectId>;
 }
 
-const NO_CACHE_TREE: CacheTreeWalk = { unresolved: false, parsed: [] };
+const NO_CACHE_TREE: CacheTreeWalk = { unresolved: [], parsed: [] };
 
 /** The cache-tree walk, plus the index entries git looks up as blobs. */
 interface IndexWalk extends CacheTreeWalk {
@@ -234,13 +235,13 @@ async function walkCacheTree(
 ): Promise<CacheTreeWalk> {
   const stack: CacheTreeEntry[] = [root];
   const parsed: ObjectId[] = [];
-  let unresolved = false;
+  const unresolved: ObjectId[] = [];
   while (stack.length > 0) {
     const entry = stack.pop() as CacheTreeEntry;
     if (entry.id !== undefined) {
       const present = await probePresence(ctx, entry.id);
       if (present === false) {
-        unresolved = true;
+        unresolved.push(entry.id);
         continue;
       }
       // `universe` membership, not the probe, is what licenses the seed —
@@ -256,7 +257,8 @@ async function walkCacheTree(
       if (universe === undefined || universe.has(entry.id)) roots.add(entry.id);
       parsed.push(entry.id);
     }
-    for (const child of entry.children) stack.push(child);
+    // Reversed so the first child pops first: git's recursive pre-order.
+    stack.push(...[...entry.children].reverse());
   }
   return { unresolved, parsed };
 }
@@ -318,13 +320,12 @@ async function addIndexRoots(
 export interface RootsCollection {
   readonly roots: ReadonlySet<ObjectId>;
   /**
-   * The repository-wide condition `fsck`'s missing-entry-point rule (bit 8)
-   * fires on: the index carries a cache-tree (`TREE` extension) AND at
-   * least one of its entries' tree oids fails to resolve. No index, or an
-   * index with no cache-tree extension, never sets this — vacuous absence
-   * is not a fault. Ref and reflog resolution have no bearing on this bit.
+   * Every cache-tree oid that fails to resolve, in git's pre-order — git's
+   * `invalid sha1 pointer in cache-tree`, each setting bit 8. No index, or
+   * an index with no cache-tree extension, yields none — vacuous absence is
+   * not a fault. Ref and reflog resolution have no bearing on it.
    */
-  readonly missingEntryPoint: boolean;
+  readonly invalidCacheTreeIds: ReadonlyArray<ObjectId>;
   /**
    * A ref resolved to an oid absent from the universe. git's fsck probes
    * that target through the promisor machinery, which is what makes the
@@ -406,7 +407,7 @@ export async function collectRoots(
   const index = opts.indexRoot !== false ? await addIndexRoots(ctx, roots, universe) : NO_INDEX;
   return {
     roots,
-    missingEntryPoint: index.unresolved,
+    invalidCacheTreeIds: index.unresolved,
     sawAbsentRefTarget: sawAbsentRef || sawAbsentHead,
     cacheTreeIds: index.parsed,
     indexBlobIds: new Set(index.blobs),

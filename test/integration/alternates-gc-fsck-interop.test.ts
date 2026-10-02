@@ -1374,3 +1374,52 @@ describe.skipIf(!GIT_AVAILABLE)('fsck interop — every worktree HEAD', () => {
     },
   );
 });
+
+describe.skipIf(!GIT_AVAILABLE)('fsck interop — invalid cache-tree pointers', () => {
+  const CACHE_TREE_LINE =
+    /^error: ([0-9a-f]{40}): invalid sha1 pointer in cache-tree of \.git\/index$/;
+
+  describe('Given a cache-tree whose subtrees d1 and d2 name trees since deleted', () => {
+    describe('When git fsck and tsgit fsck run', () => {
+      it(
+        'Then both name each absent oid in cache-tree order, exit 10',
+        async () => {
+          // Arrange
+          const dir = path.join(root, 'cache-tree-pointers');
+          runGit(['init', '-q', '-b', 'main', dir]);
+          configure(dir);
+          for (const sub of ['d1', 'd2']) {
+            mkdirSync(path.join(dir, sub));
+            writeFileSync(path.join(dir, sub, 'f'), sub);
+          }
+          commitFile(dir, 'c', 'c');
+          runGit(['-C', dir, 'add', '.']);
+          runGit(['-C', dir, 'commit', '-q', '-m', 'subtrees']);
+          runGit(['-C', dir, 'write-tree']);
+          for (const sub of ['d1', 'd2']) {
+            const oid = runGit(['-C', dir, 'rev-parse', `HEAD^{tree}:${sub}`]).trim();
+            rmSync(looseFile(objectsOf(dir), oid));
+          }
+          const git = gitFsck(dir);
+          const sut = tsgitFsck;
+
+          // Act
+          const result = await sut(dir);
+
+          // Assert
+          const gitOids = git.stderr.split('\n').flatMap((line) => {
+            const match = CACHE_TREE_LINE.exec(line);
+            return match === null ? [] : [match[1]];
+          });
+          expect(git.exitCode).toBe(10);
+          expect(result.exitCode).toBe(10);
+          expect(gitOids).toHaveLength(2);
+          expect(
+            result.findings.flatMap((f) => (f.type === 'invalid-cache-tree-pointer' ? [f.id] : [])),
+          ).toEqual(gitOids);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+});
