@@ -1,3 +1,4 @@
+import { errorDataCode } from '../../../../domain/error-data-code.js';
 import type { ObjectId, RefName } from '../../../../domain/objects/index.js';
 import { invalidPackEntry } from '../../../../domain/storage/error.js';
 import type { Context } from '../../../../ports/context.js';
@@ -35,6 +36,30 @@ export function packsWithWrongRevIndex(findings: ReadonlyArray<FsckFinding>): Re
   return keys;
 }
 
+/** The codes a read of a damaged stored entry fails with: an unusable entry
+ *  or the index routing to it,
+ *  delta chain, zlib stream or header, a body that no longer parses, a body that no longer hashes to its id,
+ *  or a delta base the pack no longer yields. Anything else — a permission or
+ *  I/O fault — says nothing about the entry and must reach the caller as-is. */
+const CORRUPTION_CODES: ReadonlySet<string | undefined> = new Set([
+  'INVALID_PACK_ENTRY',
+  'INVALID_PACK_HEADER',
+  'INVALID_PACK_INDEX',
+  'INVALID_MULTI_PACK_INDEX',
+  'INVALID_PACK_REV_INDEX',
+  'INVALID_DELTA',
+  'DELTA_CHAIN_TOO_DEEP',
+  'DECOMPRESS_FAILED',
+  'INVALID_OBJECT_HEADER',
+  'INVALID_TREE_ENTRY',
+  'INVALID_COMMIT',
+  'INVALID_TAG',
+  'INVALID_FILE_MODE',
+  'INVALID_IDENTITY',
+  'OBJECT_HASH_MISMATCH',
+  'OBJECT_NOT_FOUND',
+]);
+
 /** Refuse when `id` cannot be read and a pack claims it — git's die on a
  *  `has_packed_and_bad` object; an id no store claims is git's
  *  `invalid sha1 pointer`, reported elsewhere. */
@@ -45,7 +70,8 @@ async function assertReadableUnlessAbsent(
 ): Promise<void> {
   try {
     await readObject(ctx, id);
-  } catch {
+  } catch (err) {
+    if (!CORRUPTION_CODES.has(errorDataCode(err))) throw err;
     const location = await packedLocationOf(ctx, id);
     if (location === undefined) return;
     if (wrongRevPacks.has(packKey(location.pack, location.attribution.objectsDir))) return;
