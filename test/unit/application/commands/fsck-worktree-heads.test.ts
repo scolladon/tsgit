@@ -261,3 +261,46 @@ describe('Given a linked worktree whose gitdir read fails with an unclassified f
     });
   });
 });
+
+describe.each([
+  {
+    label: 'a cycle',
+    refs: [
+      ['refs/heads/a', 'ref: refs/heads/b'],
+      ['refs/heads/b', 'ref: refs/heads/a'],
+    ],
+    broken: ['refs/heads/a', 'refs/heads/b'],
+  },
+  {
+    label: 'a chain one symbolic hop deeper than git follows',
+    refs: [
+      ['refs/heads/c1', 'ref: refs/heads/c2'],
+      ['refs/heads/c2', 'ref: refs/heads/c3'],
+      ['refs/heads/c3', 'ref: refs/heads/c4'],
+      ['refs/heads/c4', 'ref: refs/heads/c5'],
+      ['refs/heads/c5', 'ref: refs/heads/c6'],
+      ['refs/heads/c6', 'ref: refs/heads/main'],
+    ],
+    broken: ['refs/heads/c1', 'refs/heads/c2'],
+  },
+])('Given symbolic refs forming $label', ({ refs, broken }) => {
+  describe('When fsck runs', () => {
+    it('Then each ref git cannot resolve is an invalid pointer to the zero oid', async () => {
+      // Arrange
+      const ctx = await repoWithWorktrees();
+      for (const [name, content] of refs) {
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/${name}`, `${content}\n`);
+      }
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(pointerFindings(result.findings)).toEqual(
+        broken.map((ref) => ({ ...pointer(ref), target: '0'.repeat(40) })),
+      );
+      expect(result.exitCode).toBe(EXIT_MISSING);
+    });
+  });
+});

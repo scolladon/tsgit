@@ -112,15 +112,24 @@ const HEAD = 'HEAD' as RefName;
 
 type RefEntries = Awaited<ReturnType<RefStore['listRefs']>>;
 
+/** The chain failures git's `refs_resolve_ref_unsafe` returns NULL on for a
+ *  symbolic ref: its end names no ref, it loops, or it outruns the depth git
+ *  follows. Each is a broken ref git snapshots with the zero oid. */
+const BROKEN_SYMREF_CODES: ReadonlySet<string> = new Set([
+  'REF_NOT_FOUND',
+  'REF_CYCLE_DETECTED',
+  'REF_CHAIN_TOO_DEEP',
+]);
+
 /** The object a ref names — a symbolic one through its chain. A symbolic
- *  ref whose chain ends at no ref is git's broken ref, snapshotted with the
- *  zero oid; one git cannot resolve otherwise names none. */
+ *  ref git cannot resolve to an object is its broken ref, snapshotted with
+ *  the zero oid; one whose content is malformed names none. */
 async function targetOf(ctx: Context, entry: RefEntries[number]): Promise<ObjectId | undefined> {
   if (entry.value.kind === 'direct') return entry.value.id;
   try {
     return await resolveRef(ctx, entry.name, { peel: false });
   } catch (err) {
-    if (errorDataCode(err) === 'REF_NOT_FOUND') return zeroOid(ctx.hashConfig);
+    if (BROKEN_SYMREF_CODES.has(errorDataCode(err) ?? '')) return zeroOid(ctx.hashConfig);
     if (!isTolerableRefFault(err)) throw err;
     return undefined;
   }

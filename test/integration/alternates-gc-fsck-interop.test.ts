@@ -1843,3 +1843,49 @@ describe.skipIf(!GIT_AVAILABLE)('fsck interop — names git reads as a special f
     });
   });
 });
+
+describe.skipIf(!GIT_AVAILABLE)('fsck interop — symbolic refs that never resolve', () => {
+  const writeRef = (dir: string, name: string, content: string): void =>
+    writeFileSync(path.join(dir, '.git', 'refs', 'heads', name), `${content}\n`);
+
+  describe.each([
+    {
+      label: 'a cycle',
+      spoil: (dir: string) => {
+        writeRef(dir, 'a', 'ref: refs/heads/b');
+        writeRef(dir, 'b', 'ref: refs/heads/a');
+      },
+    },
+    {
+      label: 'a chain deeper than git follows',
+      spoil: (dir: string) => {
+        for (let hop = 1; hop <= 6; hop++) writeRef(dir, `c${hop}`, `ref: refs/heads/c${hop + 1}`);
+        writeRef(dir, 'c7', runGit(['-C', dir, 'rev-parse', 'HEAD']).trim());
+      },
+    },
+  ])('Given symbolic refs forming $label', ({ label, spoil }) => {
+    describe('When git fsck and tsgit fsck run', () => {
+      it(
+        'Then both report the same zero-oid invalid pointers',
+        async () => {
+          // Arrange
+          const dir = path.join(root, `symref-${label.replace(/\W+/g, '-')}`);
+          runGit(['init', '-q', '-b', 'main', dir]);
+          configure(dir);
+          commitFile(dir, 'f', 'base');
+          spoil(dir);
+          const git = gitFsck(dir);
+          const sut = tsgitFsck;
+
+          // Act
+          const result = await sut(dir);
+
+          // Assert
+          expect(result.exitCode).toBe(git.exitCode);
+          expect(pointerLines(result.findings)).toEqual(gitLines(git.stderr, POINTER_LINE));
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+});
