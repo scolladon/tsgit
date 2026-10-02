@@ -342,6 +342,27 @@ describe('findTreeEntry', () => {
     });
   });
 
+  describe('Given a gitlink whose commit object is absent from the repository', () => {
+    describe('When findTreeEntry is asked for a path beneath it', () => {
+      it('Then returns undefined without reading the gitlink target', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const absentCommit = 'aabbccdd11223344aabbccdd11223344aabbccdd' as ObjectId;
+        const root: Tree = {
+          type: 'tree',
+          id: '' as ObjectId,
+          entries: [treeEntry(FILE_MODE.GITLINK, 'sub', absentCommit)],
+        };
+
+        // Act
+        const result = await findTreeEntry(ctx, root, 'sub/.gitattributes');
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
   describe('Given a directory holding a symlink leaf', () => {
     describe('When findTreeEntry walks to it', () => {
       it('Then returns the symlink entry verbatim', async () => {

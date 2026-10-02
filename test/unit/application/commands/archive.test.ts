@@ -4,11 +4,17 @@ import type { ArchiveEntry } from '../../../../src/application/commands/archive.
 import { archive } from '../../../../src/application/commands/archive.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/error.js';
-import { FILE_MODE, type ObjectId, type TreeEntry } from '../../../../src/domain/objects/index.js';
+import {
+  FILE_MODE,
+  type FileMode,
+  type ObjectId,
+  type TreeEntry,
+} from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import { type Context, createSession } from '../../../../src/ports/context.js';
 import { buildTreeChain, instrumentedContext, seedMaxTreeDepth } from '../primitives/fixtures.js';
 import { writeSyntheticPackIn } from '../primitives/pack-fixture.js';
+import { asBareContext } from './fixtures.js';
 
 // ---------------------------------------------------------------------------
 // Shared fixtures
@@ -391,11 +397,15 @@ describe('Given a tree with a directory and a gitlink entry', () => {
       // Arrange
       const ctx = await initUnbornCtx();
       const submoduleOid = 'aabbccdd11223344aabbccdd11223344aabbccdd' as ObjectId;
-      const innerTreeId = await writeObject(ctx, makeTree([]));
+      const innerBlobId = await writeObject(ctx, makeBlob('inner'));
+      const innerTreeId = await writeObject(
+        ctx,
+        makeTree([treeEntry(FILE_MODE.REGULAR, 'f', innerBlobId)]),
+      );
       const rootTreeId = await writeObject(
         ctx,
         makeTree([
-          treeEntry(FILE_MODE.DIRECTORY, 'emptydir', innerTreeId),
+          treeEntry(FILE_MODE.DIRECTORY, 'filled', innerTreeId),
           treeEntry(FILE_MODE.GITLINK, 'sub', submoduleOid),
         ]),
       );
@@ -410,7 +420,7 @@ describe('Given a tree with a directory and a gitlink entry', () => {
       }
 
       // Assert
-      const dirEntry = entries.find((e) => e.path === 'emptydir');
+      const dirEntry = entries.find((e) => e.path === 'filled');
       const subEntry = entries.find((e) => e.path === 'sub');
       expect(dirEntry).toBeDefined();
       expect(dirEntry?.content).toBeUndefined();
@@ -868,6 +878,319 @@ describe('archive blob read order', () => {
         // Assert
         expect(result.failure).toMatchObject({ code: 'UNEXPECTED_OBJECT_TYPE' });
       });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// export-ignore — attributes come from the archived tree
+// ---------------------------------------------------------------------------
+
+type Spec = readonly [path: string, content: string, mode?: FileMode];
+
+const SUBMODULE_OID = '1234567890abcdef1234567890abcdef12345678' as ObjectId;
+
+const leafEntry = async (ctx: Context, name: string, content: string, mode: FileMode) => {
+  if (mode === FILE_MODE.GITLINK) return treeEntry(mode, name, SUBMODULE_OID);
+  if (mode === FILE_MODE.DIRECTORY)
+    return treeEntry(mode, name, await writeObject(ctx, makeTree([])));
+  return treeEntry(mode, name, await writeObject(ctx, makeBlob(content)));
+};
+
+const writeSpecTree = async (ctx: Context, specs: ReadonlyArray<Spec>): Promise<ObjectId> => {
+  const entries: TreeEntry[] = [];
+  const nested = new Map<string, Spec[]>();
+  for (const [path, content, mode = FILE_MODE.REGULAR] of specs) {
+    const slash = path.indexOf('/');
+    if (slash === -1) {
+      entries.push(await leafEntry(ctx, path, content, mode));
+      continue;
+    }
+    const head = path.slice(0, slash);
+    nested.set(head, [...(nested.get(head) ?? []), [path.slice(slash + 1), content, mode]]);
+  }
+  for (const [name, children] of nested) {
+    entries.push(treeEntry(FILE_MODE.DIRECTORY, name, await writeSpecTree(ctx, children)));
+  }
+  return writeObject(ctx, makeTree(entries));
+};
+
+const archivedPaths = async (ctx: Context, treeish: string): Promise<string[]> => {
+  const result = await archive(ctx, { treeish });
+  const paths: string[] = [];
+  for await (const entry of result.entries) paths.push(entry.path);
+  return paths;
+};
+
+const archiveSpec = async (
+  specs: ReadonlyArray<Spec>,
+  ctx: Context = createMemoryContext(),
+): Promise<string[]> => {
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+  const tree = await writeSpecTree(ctx, specs);
+  return archivedPaths(ctx, tree);
+};
+
+describe('Given a committed .gitattributes with export-ignore rules on files', () => {
+  describe('When archive iterates entries', () => {
+    it.each([
+      { label: 'set', rules: 'f export-ignore\n', kept: false },
+      { label: 'unset', rules: 'f -export-ignore\n', kept: true },
+      { label: 'string value', rules: 'f export-ignore=true\n', kept: true },
+      { label: 'unspecified', rules: 'f !export-ignore\n', kept: true },
+      {
+        label: 'set through a macro',
+        rules: '[attr]hidden export-ignore\nf hidden\n',
+        kept: false,
+      },
+    ])('Then a file whose export-ignore is $label is kept=$kept', async ({ rules, kept }) => {
+      // Arrange
+      const specs: Spec[] = [
+        ['.gitattributes', rules],
+        ['f', 'x'],
+      ];
+
+      // Act
+      const result = await archiveSpec(specs);
+
+      // Assert
+      expect(result.includes('f')).toBe(kept);
+      expect(result).toContain('.gitattributes');
+    });
+  });
+});
+
+describe('Given a committed .gitattributes with export-ignore rules on directories', () => {
+  describe('When archive iterates entries', () => {
+    it.each([
+      { label: 'by name', rules: 'a export-ignore\n' },
+      { label: 'by name with a trailing slash', rules: 'a/ export-ignore\n' },
+    ])('Then a directory ignored $label drops itself and every descendant', async ({ rules }) => {
+      // Arrange
+      const specs: Spec[] = [
+        ['.gitattributes', rules],
+        ['a/x', '1'],
+        ['a/deep/y', '2'],
+        ['keep', '3'],
+      ];
+
+      // Act
+      const result = await archiveSpec(specs);
+
+      // Assert
+      expect(result).toEqual(['.gitattributes', 'keep']);
+    });
+  });
+
+  describe('When the rule is dir/** and the directory holds a file', () => {
+    it('Then the directory is emitted before its ignored child', async () => {
+      // Arrange
+      const specs: Spec[] = [
+        ['.gitattributes', 'c/** export-ignore\n'],
+        ['c/x', '1'],
+      ];
+
+      // Act
+      const result = await archiveSpec(specs);
+
+      // Assert
+      expect(result).toEqual(['.gitattributes', 'c']);
+    });
+  });
+
+  describe('When the only child of a directory is an ignored subdirectory', () => {
+    it('Then neither the directory nor the subdirectory is emitted', async () => {
+      // Arrange
+      const specs: Spec[] = [
+        ['.gitattributes', 'd/e export-ignore\n'],
+        ['d/e/z', '1'],
+        ['keep', '2'],
+      ];
+
+      // Act
+      const result = await archiveSpec(specs);
+
+      // Assert
+      expect(result).toEqual(['.gitattributes', 'keep']);
+    });
+  });
+
+  describe('When the tree holds an empty subtree', () => {
+    it('Then the empty subtree is never emitted', async () => {
+      // Arrange
+      const specs: Spec[] = [
+        ['empty', '', FILE_MODE.DIRECTORY],
+        ['keep', '1'],
+      ];
+
+      // Act
+      const result = await archiveSpec(specs);
+
+      // Assert
+      expect(result).toEqual(['keep']);
+    });
+  });
+
+  describe('When a directory rule sits beside a same-named file in another directory', () => {
+    it('Then only the directory is ignored', async () => {
+      // Arrange
+      const specs: Spec[] = [
+        ['.gitattributes', 'foo/ export-ignore\n'],
+        ['foo', 'file'],
+        ['x/foo/k', '1'],
+      ];
+
+      // Act
+      const result = await archiveSpec(specs);
+
+      // Assert
+      expect(result).toEqual(['.gitattributes', 'foo']);
+    });
+  });
+});
+
+describe('Given export-ignore rules on gitlinks and symlinks', () => {
+  describe('When the rule is directory-only and the entry is a gitlink', () => {
+    it('Then the gitlink is checked as a directory and omitted', async () => {
+      // Arrange
+      const specs: Spec[] = [
+        ['.gitattributes', 'sm/ export-ignore\n'],
+        ['sm', '', FILE_MODE.GITLINK],
+        ['keep', '1'],
+      ];
+
+      // Act
+      const result = await archiveSpec(specs);
+
+      // Assert
+      expect(result).toEqual(['.gitattributes', 'keep']);
+    });
+  });
+
+  describe('When an ignored gitlink is the only child of a directory', () => {
+    it('Then the directory is still emitted, flushed before the gitlink check', async () => {
+      // Arrange
+      const specs: Spec[] = [
+        ['.gitattributes', 'd/sm export-ignore\n'],
+        ['d/sm', '', FILE_MODE.GITLINK],
+      ];
+
+      // Act
+      const result = await archiveSpec(specs);
+
+      // Assert
+      expect(result).toEqual(['.gitattributes', 'd']);
+    });
+  });
+
+  describe('When a symlink matches export-ignore', () => {
+    it('Then the symlink is omitted', async () => {
+      // Arrange
+      const specs: Spec[] = [
+        ['.gitattributes', 'lnk export-ignore\n'],
+        ['lnk', 'target', FILE_MODE.SYMLINK],
+      ];
+
+      // Act
+      const result = await archiveSpec(specs);
+
+      // Assert
+      expect(result).toEqual(['.gitattributes']);
+    });
+  });
+});
+
+describe('Given attributes sourced from the archived tree', () => {
+  describe('When the worktree .gitattributes disagrees with the committed one', () => {
+    it('Then the committed rules decide', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, 'keep export-ignore\n');
+      const specs: Spec[] = [
+        ['.gitattributes', 't1 export-ignore\n'],
+        ['t1', '1'],
+        ['keep', '2'],
+      ];
+
+      // Act
+      const result = await archiveSpec(specs, ctx);
+
+      // Assert
+      expect(result).toEqual(['.gitattributes', 'keep']);
+    });
+  });
+
+  describe('When the context is bare', () => {
+    it('Then the committed .gitattributes still applies', async () => {
+      // Arrange
+      const ctx = asBareContext(createMemoryContext());
+      const specs: Spec[] = [
+        ['.gitattributes', 't1 export-ignore\n'],
+        ['t1', '1'],
+      ];
+
+      // Act
+      const result = await archiveSpec(specs, ctx);
+
+      // Assert
+      expect(result).toEqual(['.gitattributes']);
+    });
+  });
+
+  describe('When a nested .gitattributes governs only its own directory', () => {
+    it('Then the nested rule applies below it and not beside it', async () => {
+      // Arrange
+      const specs: Spec[] = [
+        ['sub/.gitattributes', 'y export-ignore\n'],
+        ['sub/y', '1'],
+        ['y', '2'],
+      ];
+
+      // Act
+      const result = await archiveSpec(specs);
+
+      // Assert
+      expect(result).toEqual(['sub', 'sub/.gitattributes', 'y']);
+    });
+  });
+
+  describe('When info/attributes names a path', () => {
+    it('Then the path is omitted and its directory is emitted', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/info/attributes`, 'g/x export-ignore\n');
+      const specs: Spec[] = [['g/x', '1']];
+
+      // Act
+      const result = await archiveSpec(specs, ctx);
+
+      // Assert
+      expect(result).toEqual(['g']);
+    });
+  });
+});
+
+describe('Given an invalid entry name inside an export-ignored subtree', () => {
+  describe('When archive iterates entries', () => {
+    it('Then the path validation still refuses it', async () => {
+      // Arrange
+      const specs: Spec[] = [
+        ['.gitattributes', 'a export-ignore\n'],
+        ['a/..', '1'],
+      ];
+
+      // Act
+      let caught: unknown;
+      try {
+        await archiveSpec(specs);
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      const data = (caught as { data?: { code?: string; reason?: string } })?.data;
+      expect(data?.code).toBe('INVALID_INDEX_ENTRY');
+      expect(data?.reason).toBe("'..' segment rejected");
     });
   });
 });

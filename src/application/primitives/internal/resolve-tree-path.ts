@@ -73,6 +73,7 @@ export const findTreeEntry = async (
   let match = matchRootLevel(rootTree, segments);
   let index = match?.consumed ?? 0;
   while (match !== undefined && index < segments.length) {
+    if (!isDirectory(match.entry.mode)) return undefined;
     match = await matchRawLevel(ctx, match.entry.id, segments, index);
     if (match !== undefined) index += match.consumed;
   }

@@ -13,6 +13,7 @@ import type { Context } from '../../../ports/context.js';
 import { readConfig } from '../config-read.js';
 import { commonGitDir } from '../path-layout.js';
 import { readBlob } from '../read-blob.js';
+import { readDeclaredObjectHeader } from '../read-object.js';
 import { MAX_GITATTRIBUTES_BYTES } from '../types.js';
 import { joinPath } from './join-working-tree-path.js';
 import { expandUserPath, loadCappedUtf8, sanitizedErrorPath } from './read-capped-file.js';
@@ -50,20 +51,30 @@ const GITATTRIBUTES_FILE = '.gitattributes';
 const isReadableMode = (mode: string): boolean =>
   mode === FILE_MODE.REGULAR || mode === FILE_MODE.EXECUTABLE;
 
+/** Refuses on the header's claim so a hostile tree never allocates an oversize blob. */
+const assertDeclaredSizeWithinCap = async (
+  ctx: Context,
+  id: ObjectId,
+  path: string,
+): Promise<void> => {
+  const { declaredSize } = await readDeclaredObjectHeader(ctx, id);
+  if (declaredSize > MAX_GITATTRIBUTES_BYTES) {
+    throw gitattributesFileTooLarge(
+      sanitizedErrorPath(path),
+      declaredSize,
+      MAX_GITATTRIBUTES_BYTES,
+    );
+  }
+};
+
 const treeDirReader =
   (tree: ObjectId): DirReader =>
   async (ctx, dir) => {
     const path = dir === '' ? GITATTRIBUTES_FILE : `${dir}/${GITATTRIBUTES_FILE}`;
     const entry = await findTreeEntry(ctx, tree, path);
     if (entry === undefined || !isReadableMode(entry.mode)) return undefined;
+    await assertDeclaredSizeWithinCap(ctx, entry.id, path);
     const { content } = await readBlob(ctx, entry.id);
-    if (content.length > MAX_GITATTRIBUTES_BYTES) {
-      throw gitattributesFileTooLarge(
-        sanitizedErrorPath(path),
-        content.length,
-        MAX_GITATTRIBUTES_BYTES,
-      );
-    }
     return parseGitattributes(decode(content));
   };
 

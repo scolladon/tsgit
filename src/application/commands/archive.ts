@@ -1,14 +1,17 @@
 import type { ArchiveEntry, ArchiveResult } from '../../domain/archive/index.js';
+import { resolveAttribute } from '../../domain/attributes/index.js';
 import { NO_PARSER_OFFSET, validateIndexPath } from '../../domain/git-index/path-validator.js';
 import { unexpectedObjectType } from '../../domain/objects/error.js';
 import { FILE_MODE } from '../../domain/objects/file-mode.js';
-import type { FileMode, ObjectId } from '../../domain/objects/index.js';
+import type { FileMode, FilePath, ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { readBlobContentInStreamOrder } from '../primitives/internal/blob-source.js';
 import { peel } from '../primitives/internal/peel.js';
+import { buildTreeAttributeProvider } from '../primitives/internal/read-gitattributes.js';
 import { getObjectStore } from '../primitives/object-store.js';
 import { readBlob } from '../primitives/read-blob.js';
 import { readDeclaredObjectHeader, readObject } from '../primitives/read-object.js';
+import type { WalkTreeEntry } from '../primitives/types.js';
 import { walkTree } from '../primitives/walk-tree.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
 import { revParse } from './rev-parse.js';
@@ -124,15 +127,59 @@ async function readEntryContent(ctx: Context, id: ObjectId, mode: FileMode): Pro
  * refusal fires at the same boundary git's own `archive` refuses it.
  */
 async function* buildEntryStream(ctx: Context, tree: ObjectId): AsyncIterable<ArchiveEntry> {
+  const plan = await createEntryPlanner(ctx, tree);
   for await (const entry of walkTree(ctx, tree, {
     maxEntries: Number.MAX_SAFE_INTEGER,
   })) {
-    const { path, id, mode } = entry;
-    validateIndexPath(path, NO_PARSER_OFFSET, mode);
-    if (mode === FILE_MODE.DIRECTORY || mode === FILE_MODE.GITLINK) {
-      yield { path, mode, oid: id };
-    } else {
-      yield { path, mode, oid: id, content: await readEntryContent(ctx, id, mode) };
-    }
+    validateIndexPath(entry.path, NO_PARSER_OFFSET, entry.mode);
+    yield* await plan(entry);
   }
 }
+
+const EXPORT_IGNORE = 'export-ignore';
+
+/** `export-ignore` counts only when set — a string value or an unset is kept. */
+const createExportIgnoreCheck = async (
+  ctx: Context,
+  tree: ObjectId,
+): Promise<(key: string) => Promise<boolean>> => {
+  const provider = await buildTreeAttributeProvider(ctx, tree);
+  return async (key) => {
+    const { sources, macros } = await provider.sourcesForPath(key as FilePath);
+    return resolveAttribute(sources, key, EXPORT_IGNORE, macros) === true;
+  };
+};
+
+const isInside = (path: string, directory: string): boolean => path.startsWith(`${directory}/`);
+
+const attributeKey = (path: string, mode: FileMode): string =>
+  mode === FILE_MODE.GITLINK ? `${path}/` : path;
+
+/**
+ * git's `queue_or_write_archive_entry`: a directory is held back until a
+ * non-directory descendant reaches its own export-ignore check, so a directory
+ * with nothing left to export is never emitted. The directory is flushed
+ * before that check, which is why `dir/**` keeps `dir` itself.
+ */
+const createEntryPlanner = async (
+  ctx: Context,
+  tree: ObjectId,
+): Promise<(entry: WalkTreeEntry) => Promise<ReadonlyArray<ArchiveEntry>>> => {
+  const isExportIgnored = await createExportIgnoreCheck(ctx, tree);
+  let queued: ArchiveEntry[] = [];
+  let ignoredDirectory: string | undefined;
+  return async ({ path, id, mode }) => {
+    if (ignoredDirectory !== undefined && isInside(path, ignoredDirectory)) return [];
+    queued = queued.filter((dir) => isInside(path, dir.path));
+    if (mode === FILE_MODE.DIRECTORY) {
+      if (await isExportIgnored(`${path}/`)) ignoredDirectory = path;
+      else queued.push({ path, mode, oid: id });
+      return [];
+    }
+    const flushed = queued;
+    queued = [];
+    if (await isExportIgnored(attributeKey(path, mode))) return flushed;
+    if (mode === FILE_MODE.GITLINK) return [...flushed, { path, mode, oid: id }];
+    return [...flushed, { path, mode, oid: id, content: await readEntryContent(ctx, id, mode) }];
+  };
+};

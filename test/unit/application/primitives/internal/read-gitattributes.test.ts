@@ -16,6 +16,7 @@ import type { FilePath, ObjectId } from '../../../../../src/domain/objects/objec
 import { treeEntry } from '../../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../../src/ports/context.js';
 import { asBareContext } from '../../commands/fixtures.js';
+import { writeLooseWithDeclaredSize, writeRawObjectBytes } from '../fixtures.js';
 
 const seed = async (ctx: Context, path: string, content: string): Promise<void> => {
   await ctx.fs.writeUtf8(path, content);
@@ -700,6 +701,35 @@ describe('buildTreeAttributeProvider', () => {
         // Arrange
         const ctx = createMemoryContext();
         const attrs = await putBlob(ctx, 'x'.repeat(MAX_GITATTRIBUTES_BYTES + 1));
+        const tree = await putTree(ctx, [[FILE_MODE.REGULAR, '.gitattributes', attrs]]);
+
+        // Act
+        let caught: TsgitError | undefined;
+        try {
+          await buildTreeAttributeProvider(ctx, tree);
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data).toEqual({
+          code: 'GITATTRIBUTES_FILE_TOO_LARGE',
+          path: '.gitattributes',
+          size: MAX_GITATTRIBUTES_BYTES + 1,
+          limit: MAX_GITATTRIBUTES_BYTES,
+        });
+      });
+    });
+  });
+
+  describe('Given a tree .gitattributes whose header declares a size over the cap', () => {
+    describe('When building the provider', () => {
+      it('Then it refuses on the declared size before reading the body', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const body = new TextEncoder().encode('x');
+        const attrs = await writeRawObjectBytes(ctx, 'blob', body);
+        await writeLooseWithDeclaredSize(ctx, attrs, 'blob', MAX_GITATTRIBUTES_BYTES + 1, body);
         const tree = await putTree(ctx, [[FILE_MODE.REGULAR, '.gitattributes', attrs]]);
 
         // Act
