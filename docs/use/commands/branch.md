@@ -13,9 +13,16 @@ interface BranchInfo {
 
 interface BranchNamespace {
   list(): Promise<{ branches: ReadonlyArray<BranchInfo> }>;
-  create(input: { name: string; startPoint?: string; force?: boolean }): Promise<{
+  create(input: {
+    name: string;
+    startPoint?: string;
+    force?: boolean;
+    noTrack?: boolean;
+    track?: 'direct' | 'inherit';
+  }): Promise<{
     name: RefName;
     id: ObjectId;
+    upstream?: { remote: string; merge: RefName; rebase: boolean };
   }>;
   delete(input: { name: string; force?: boolean }): Promise<{ name: RefName }>;
   rename(input: { from: string; to: string; force?: boolean }): Promise<{
@@ -34,7 +41,7 @@ Each method returns a concrete result — no discriminator to narrow on at the c
 | Method | Meaning |
 |---|---|
 | `list()` | List local branches (`refs/heads/*`), sorted by name; `current` flags the checked-out branch. |
-| `create({ name, startPoint?, force? })` | Create a branch. `startPoint` defaults to HEAD; `force` overwrites an existing branch with the same name. |
+| `create({ name, startPoint?, force?, noTrack?, track? })` | Create a branch. `startPoint` defaults to HEAD; `force` overwrites an existing branch with the same name; `track` / `noTrack` are git's `--track[=direct\|inherit]` / `--no-track`. `upstream` reports the tracking it recorded. |
 | `delete({ name, force? })` | Delete a local branch. |
 | `rename({ from, to, force? })` | Rename a branch, moving its reflog; updates HEAD when the renamed branch is checked out. `force` overrides an existing `to`. |
 
@@ -42,6 +49,7 @@ Each method returns a concrete result — no discriminator to narrow on at the c
 
 - **`create` refuses a start point that does not peel to a commit.** `startPoint` is resolved and, when it is a ref or an annotated tag, peeled through the tag chain; the resulting object is then typed — a tree or blob (by full oid, abbreviated oid, lightweight tag, or annotated tag pointing at one) throws `UNEXPECTED_OBJECT_TYPE` with `expected: 'commit'` and **nothing is written**. An annotated tag over a commit is accepted and peeled — the branch lands on the commit, never on the tag object. The existing-name check (`BRANCH_EXISTS`, unless `force`) runs **before** the start point resolves, so `create({ name: '<existing>', startPoint: 'nope' })` reports `BRANCH_EXISTS`, not `BRANCH_NOT_FOUND`. See [errors](../errors.md#refs-reflog-revparse) and [ADR-860](../../adr/860-branch-create-verifies-its-start-point-is-a-commit.md) / [ADR-861](../../adr/861-the-non-commit-branch-point-refusal-reuses-unexpected-object-type.md). Known divergence: annotated-tag chains are capped at a depth of 5 (the repo-wide peel-depth limit) — a legitimate 6-deep chain git accepts is refused here.
 - **`create` counts a start point's meanings before it resolves one.** Every `startPoint` spelling runs git's revision ladder, a full-width object id included, and a name two namespaces both carry refuses `REVPARSE_AMBIGUOUS` with the `expression` exactly as you passed it and every object it could mean in `candidates`. `create` is git's one surface that refuses here rather than taking the first candidate and warning, and the count is not skipped for something that already looks like an object id: with both `refs/heads/<40hex>` and `refs/tags/<40hex>` planted, `create({ startPoint: '<40hex>' })` refuses. Known divergence: with exactly **one** such ref, git resolves the 40-hex string to that *ref's* value and cuts the branch there, where tsgit cuts from the object the id names. Planting one takes deliberate effort — git itself normally never creates a ref that ends with 40 hex characters.
+- **`create` records an upstream the way git's `setup_tracking` does.** A start point some remote fetches into (`origin/main`) is tracked by default — `branch.<name>.remote = origin`, `branch.<name>.merge = refs/heads/main` — and a local branch is not, unless `track: 'direct'` or `branch.autoSetupMerge = always` asks (`remote = .`). `track: 'inherit'` (or `autoSetupMerge = inherit`) copies the start branch's own `remote`/`merge`, warning through the logger when it has none; `autoSetupMerge = simple` tracks only a remote branch of the same name; `noTrack` or `autoSetupMerge = false` records nothing. `branch.autoSetupRebase` (`always` / `local` / `remote`) adds `branch.<name>.rebase = true`. The result's `upstream` carries what was recorded — git's `branch '<name>' set up to track '<upstream>'` line is the caller's to render. `track: 'direct'` refuses a start point that is not a branch (`UPSTREAM_NOT_BRANCH`) or does not exist (`UPSTREAM_MISSING`) before writing anything; two remotes fetching into the same start ref refuse `TRACKING_AMBIGUOUS` **after** the branch is written, as git's do. A branch is never set up to track itself (a logger warning instead).
 - **`create` on an unborn HEAD names the current branch.** With no `startPoint`, the start point is HEAD; when no commit backs it the refusal is `BRANCH_NOT_FOUND` carrying the current branch's short name, matching git's `fatal: not a valid object name: '<branch>'`. An explicit `startPoint` that does not resolve is reported verbatim instead.
 - **An unforced `delete` refuses a branch that is not fully merged.** git's `branch -d` safety valve: the branch's tip must be reachable from its merge reference, or the delete refuses `BRANCH_NOT_FULLY_MERGED` and nothing is written. The reference is the branch's configured upstream when that names a commit, and HEAD otherwise — an upstream **replaces** HEAD rather than widening the test, so a branch merged into its upstream but not into HEAD counts as merged, and one merged into HEAD but behind its upstream does not. Both sides are peeled to commits first, so a tip standing on an annotated tag is measured at the commit the tag names; a tip that names no commit at all refuses on the type instead. A branch that is itself a symbolic ref is deleted unchecked, however far behind its target it stands, and with an unborn HEAD and no upstream nothing counts as merged. `force: true` skips the valve entirely.
 - **A symbolic ref is deleted as itself.** `delete` on a name that holds a symbolic ref removes that ref and leaves its target alone — git's `--no-deref` on this delete. A forced `create` goes the other way and moves the symref's **target**, keeping the symref in place; the reflog message it writes is `branch: Reset to <start point>` when the name resolves, and `branch: Created from <start point>` when it is a *dangling* symref, which reads as a creation.

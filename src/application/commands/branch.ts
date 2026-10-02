@@ -6,7 +6,6 @@
  */
 
 import { revparseAmbiguous } from '../../domain/commands/error.js';
-import { parseGitBoolean } from '../../domain/config/config-ini.js';
 import { TsgitError, unsupportedOperation } from '../../domain/error.js';
 import { errorDataCode } from '../../domain/error-data-code.js';
 import { branchExists, branchNotFound, branchNotFullyMerged } from '../../domain/index.js';
@@ -23,7 +22,6 @@ import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import { shortBranchName } from '../../domain/refs/short-branch-name.js';
 import { branchCheckedOut } from '../../domain/worktree/error.js';
 import type { Context } from '../../ports/context.js';
-import { findLastEntry } from '../primitives/config-read.js';
 import { peelChain } from '../primitives/internal/peel-chain.js';
 import { transactionLogging } from '../primitives/internal/ref-transaction-logging.js';
 import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
@@ -42,6 +40,15 @@ import {
 } from '../primitives/resolve-ref.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { branchMerged } from './internal/branch-merged.js';
+import {
+  asUpstreamMissing,
+  type BranchTrack,
+  type BranchUpstream,
+  resolveTrackMode,
+  setupTracking,
+  type TrackMode,
+  trackableStartRef,
+} from './internal/branch-tracking.js';
 import { worktreeHolding } from './internal/checked-out-branches.js';
 import { buildRemoteTable } from './internal/remote-config.js';
 import {
@@ -50,6 +57,8 @@ import {
   readHeadRaw,
 } from './internal/repo-state.js';
 import { dwimRefName, resolveRevisionName, resolvingCandidates } from './internal/revision-name.js';
+
+export type { BranchTrack, BranchUpstream } from './internal/branch-tracking.js';
 
 export interface BranchInfo {
   readonly name: RefName;
@@ -67,10 +76,14 @@ export interface BranchCreateInput {
   readonly force?: boolean;
   /** `--no-track`: set up no tracking, whatever `branch.autoSetupMerge` says. */
   readonly noTrack?: boolean;
+  /** `--track[=direct|inherit]`: track the start point (refusing one that is not a branch), or inherit its upstream. */
+  readonly track?: BranchTrack;
 }
 export interface BranchCreateResult {
   readonly name: RefName;
   readonly id: ObjectId;
+  /** The upstream recorded in `branch.<name>.*`; absent when none was set up. */
+  readonly upstream?: BranchUpstream;
 }
 
 export interface BranchDeleteInput {
@@ -185,14 +198,6 @@ const resolveOmittedStartPoint = async (ctx: Context, label: string): Promise<Ob
   return id;
 };
 
-/** `branch.autoSetupMerge = false`: git's `create_branch` sets up no tracking. */
-const trackingDisabled = async (ctx: Context): Promise<boolean> => {
-  const last = await findLastEntry(ctx, 'branch', 'autoSetupMerge');
-  if (last === undefined) return false;
-  const parsed = parseGitBoolean(last.value);
-  return parsed.ok && !parsed.value;
-};
-
 /** When `create_branch` builds the remote table, relative to writing the branch. */
 type RemoteTableRead = 'before-write' | 'after-write' | 'none';
 
@@ -208,11 +213,12 @@ type RemoteTableRead = 'before-write' | 'after-write' | 'none';
 const remoteTableRead = async (
   ctx: Context,
   input: BranchCreateInput,
+  mode: TrackMode,
 ): Promise<RemoteTableRead> => {
   const ref = await dwimRefName(ctx, input.startPoint ?? HEAD_NAME);
   if (ref === undefined) return 'none';
   if (!ref.startsWith(HEADS_PREFIX)) return 'before-write';
-  if (input.noTrack === true || (await trackingDisabled(ctx))) return 'none';
+  if (mode === 'never') return 'none';
   return 'after-write';
 };
 
@@ -228,19 +234,34 @@ export const branchCreate = async (
   const held = await refResolvesForReading(ctx, name);
   if (!force && held) throw branchExists(name);
   if (force && held) await assertNoWorktreeHolds(ctx, name);
+  const mode = await resolveTrackMode(ctx, input);
   const startPoint = input.startPoint ?? (await omittedStartPointLabel(ctx));
-  const start =
-    input.startPoint === undefined
-      ? await resolveOmittedStartPoint(ctx, startPoint)
-      : await resolveBranchTarget(ctx, input.startPoint);
+  const start = await resolveStart(ctx, input, startPoint).catch((err: unknown) => {
+    throw asUpstreamMissing(err, startPoint, mode);
+  });
   const target = await requireCommit(ctx, start);
-  const tableRead = await remoteTableRead(ctx, input);
+  const tableRead = await remoteTableRead(ctx, input, mode);
   if (tableRead === 'before-write') await buildRemoteTable(ctx);
+  const startRef =
+    mode === 'never'
+      ? undefined
+      : await trackableStartRef(ctx, input.startPoint ?? HEAD_NAME, mode);
   const reflogMessage = force && held ? branchResetTo(startPoint) : branchCreatedFrom(startPoint);
   await writeNewBranch(ctx, { name, target, force, reflogMessage });
   if (tableRead === 'after-write') await buildRemoteTable(ctx);
-  return { name, id: target };
+  const upstream =
+    startRef === undefined ? undefined : await setupTracking(ctx, input.name, startRef, mode);
+  return { name, id: target, ...(upstream !== undefined && { upstream }) };
 };
+
+const resolveStart = (
+  ctx: Context,
+  input: BranchCreateInput,
+  startPoint: string,
+): Promise<ObjectId> =>
+  input.startPoint === undefined
+    ? resolveOmittedStartPoint(ctx, startPoint)
+    : resolveBranchTarget(ctx, input.startPoint);
 
 interface NewBranch {
   readonly name: RefName;

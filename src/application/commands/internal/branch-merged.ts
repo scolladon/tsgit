@@ -115,7 +115,7 @@ const candidateResolves = async (ctx: Context, candidate: RefName): Promise<bool
  * resolves to nothing; and an empty source stands for `HEAD`, which no
  * `branch.<n>.merge` value names. Both reach the same answer by being skipped.
  */
-const mapsNamedSource = (spec: string): boolean => {
+export const mapsNamedSource = (spec: string): boolean => {
   // Stryker disable next-line MethodExpression: equivalent — `^` is a forbidden ref-name character, so no spec `assertRemoteRefspecsValid` lets through ENDS with one; the flipped probe never fires, and the colon test below then rejects the negative spec anyway, since a validated one carries no colon at all.
   if (spec.startsWith(NEGATIVE_PREFIX)) return false;
   const body = spec.startsWith(FORCE_PREFIX) ? spec.slice(1) : spec;

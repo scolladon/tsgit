@@ -44,6 +44,8 @@ export {
   type BranchListResult,
   type BranchRenameInput,
   type BranchRenameResult,
+  type BranchTrack,
+  type BranchUpstream,
   branchCreate,
   branchDelete,
   branchList,

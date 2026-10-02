@@ -17,6 +17,9 @@ import {
   smudgeFilterFailed,
   textconvFailed,
   timestampOutOfRange,
+  trackingAmbiguous,
+  upstreamMissing,
+  upstreamNotBranch,
   worktreeFileAbsent,
 } from '../../../src/domain/commands/error.js';
 import {
@@ -1350,6 +1353,41 @@ describe('domain error — AdapterError', () => {
 
         // Assert
         expect(result.message).toContain('invalid sequencer todo: bad line');
+      });
+    });
+  });
+});
+
+describe('branch tracking refusals', () => {
+  describe.each([
+    {
+      label: 'upstreamNotBranch',
+      build: () => upstreamNotBranch('t'),
+      data: { code: 'UPSTREAM_NOT_BRANCH', startPoint: 't' },
+      message:
+        "UPSTREAM_NOT_BRANCH: cannot set up tracking information; starting point 't' is not a branch",
+    },
+    {
+      label: 'upstreamMissing',
+      build: () => upstreamMissing('absent'),
+      data: { code: 'UPSTREAM_MISSING', startPoint: 'absent' },
+      message: "UPSTREAM_MISSING: the requested upstream branch 'absent' does not exist",
+    },
+    {
+      label: 'trackingAmbiguous',
+      build: () => trackingAmbiguous('refs/remotes/o/m' as never, ['o', 'p']),
+      data: { code: 'TRACKING_AMBIGUOUS', ref: 'refs/remotes/o/m', remotes: ['o', 'p'] },
+      message: "TRACKING_AMBIGUOUS: not tracking: ambiguous information for ref 'refs/remotes/o/m'",
+    },
+  ])('Given $label', ({ build, data, message }) => {
+    describe('When accessing .data and .message', () => {
+      it("Then they carry git's refusal", () => {
+        // Arrange & Act
+        const result = build();
+
+        // Assert
+        expect(result.data).toEqual(data);
+        expect(result.message).toBe(message);
       });
     });
   });

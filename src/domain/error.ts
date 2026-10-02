@@ -493,6 +493,12 @@ function extractDetail(data: TsgitErrorData): string {
       return `clean filter '${data.filter}' failed for ${basename(data.path)}${exitSuffix(data.exitCode)}`;
     case 'SMUDGE_FILTER_FAILED':
       return `smudge filter '${data.filter}' failed for ${basename(data.path)} (exit ${data.exitCode})`;
+    case 'UPSTREAM_NOT_BRANCH':
+      return `cannot set up tracking information; starting point '${data.startPoint}' is not a branch`;
+    case 'UPSTREAM_MISSING':
+      return `the requested upstream branch '${data.startPoint}' does not exist`;
+    case 'TRACKING_AMBIGUOUS':
+      return `not tracking: ambiguous information for ref '${data.ref}'`;
     case 'TEXTCONV_FAILED':
       return `textconv command '${data.command}' failed${exitSuffix(data.exitCode)}`;
     case 'INVALID_FILTER_SPEC':

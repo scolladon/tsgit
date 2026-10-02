@@ -143,6 +143,13 @@ export type CommandError =
       readonly filter: string;
       readonly exitCode: number;
     }
+  | { readonly code: 'UPSTREAM_NOT_BRANCH'; readonly startPoint: string }
+  | { readonly code: 'UPSTREAM_MISSING'; readonly startPoint: string }
+  | {
+      readonly code: 'TRACKING_AMBIGUOUS';
+      readonly ref: RefName;
+      readonly remotes: ReadonlyArray<string>;
+    }
   | {
       readonly code: 'TEXTCONV_FAILED';
       readonly command: string;
@@ -602,6 +609,15 @@ export const cleanFilterFailed = (path: FilePath, filter: string, exitCode?: num
 
 export const smudgeFilterFailed = (path: FilePath, filter: string, exitCode: number): TsgitError =>
   new TsgitError({ code: 'SMUDGE_FILTER_FAILED', path, filter, exitCode });
+
+export const upstreamNotBranch = (startPoint: string): TsgitError =>
+  new TsgitError({ code: 'UPSTREAM_NOT_BRANCH', startPoint });
+
+export const upstreamMissing = (startPoint: string): TsgitError =>
+  new TsgitError({ code: 'UPSTREAM_MISSING', startPoint });
+
+export const trackingAmbiguous = (ref: RefName, remotes: ReadonlyArray<string>): TsgitError =>
+  new TsgitError({ code: 'TRACKING_AMBIGUOUS', ref, remotes });
 
 export const textconvFailed = (command: string, exitCode?: number): TsgitError =>
   new TsgitError({
