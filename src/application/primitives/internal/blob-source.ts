@@ -9,7 +9,9 @@
  * included, knows its type at open: the loose arm reads its header before
  * `openBlobSource` returns.
  */
-import { operationAborted, TsgitError } from '../../../domain/error.js';
+
+import { operationAborted } from '../../../domain/error.js';
+import { errorDataCode } from '../../../domain/error-data-code.js';
 import { concatBytes } from '../../../domain/objects/encoding.js';
 import {
   invalidObjectHeader,
@@ -105,7 +107,12 @@ export type BlobReadOrder = 'stream' | 'in-core';
 interface OpenBlobSourceOptions extends StreamBlobOptions {
   readonly looseMode?: LooseReadMode;
   readonly order: BlobReadOrder;
+  /** `'spent'` when the caller's own probe already re-scanned for this id, so
+   *  a miss is final instead of paying git's one retry a second time. */
+  readonly missRescan?: MissRescan;
 }
+
+type MissRescan = 'pending' | 'spent';
 
 type PackEntryRead = Awaited<ReturnType<typeof readEntryHeaderWithChunk>>;
 
@@ -140,7 +147,7 @@ export async function openBlobSource(
     const cached = await tryDeltaCacheHit(ctx, id, gateOf(maxBufferedBytes, options));
     if (cached !== undefined) return cached;
   }
-  const located = await locateWithRescan(ctx, store, id, options.order);
+  const located = await locateWithRescan(ctx, store, id, options.order, options.missRescan);
   if (located === undefined) throw objectNotFound(id);
   return serveLocatedBlob(ctx, located, maxBufferedBytes, options);
 }
@@ -202,10 +209,11 @@ async function locateWithRescan(
   store: ObjectStore,
   id: ObjectId,
   order: BlobReadOrder,
+  missRescan: MissRescan = 'pending',
 ): Promise<LocatedBlob | undefined> {
   const locate = order === 'stream' ? locateStream : locateInCore;
   const first = await locate(ctx, store, id);
-  if (first !== undefined) return first;
+  if (first !== undefined || missRescan === 'spent') return first;
   // Full miss: as of the CURRENT generation, no source claims `id`. Mirrors
   // `resolveObjectContentWithDepth`'s own retry — `retryOnceAfterRescan`
   // single-flights the re-scan across concurrent misses and honours an abort
@@ -347,17 +355,34 @@ function startScanFor(type: ObjectType, hexLength: 40 | 64): ParseAcceptanceScan
 
 /** git's `parse_object` reads a blob through the object stream and every other
  *  type in core, so the type is probed header-only before the read order is
- *  chosen. An object with no stored header (a delta-cache entry, a pack still
- *  to be found by a rescan) has no order to pick: the read itself owns the rescan and
- *  the final miss. */
-async function readOrderFor(ctx: Context, id: ObjectId): Promise<BlobReadOrder> {
-  try {
-    const { type } = await readDeclaredObjectHeader(ctx, id);
-    return type === 'blob' ? 'stream' : 'in-core';
-  } catch (error) {
-    if (error instanceof TsgitError && error.data.code === 'OBJECT_NOT_FOUND') return 'in-core';
-    throw error;
-  }
+ *  chosen. The probe misses like any read: `odb_read_object_info` re-scans the
+ *  packs once before giving up. An object still without a stored header after
+ *  that (a delta-cache entry) has no order to pick: the read itself owns the
+ *  final miss. */
+async function readOrderFor(ctx: Context, id: ObjectId): Promise<ReadPlan> {
+  const type = await probeStoredType(ctx, id);
+  if (type === undefined) return { order: 'in-core', missRescan: 'spent' };
+  return { order: type === 'blob' ? 'stream' : 'in-core', missRescan: 'pending' };
+}
+
+interface ReadPlan {
+  readonly order: BlobReadOrder;
+  readonly missRescan: MissRescan;
+}
+
+async function probeStoredType(ctx: Context, id: ObjectId): Promise<ObjectType | undefined> {
+  const probe = async (): Promise<ObjectType | undefined> => {
+    try {
+      return (await readDeclaredObjectHeader(ctx, id)).type;
+    } catch (error) {
+      if (errorDataCode(error) === 'OBJECT_NOT_FOUND') return undefined;
+      throw error;
+    }
+  };
+  const first = await probe();
+  if (first !== undefined) return first;
+  const store = peekObjectStore(ctx) ?? (await getObjectStore(ctx));
+  return retryOnceAfterRescan(ctx, store, id, probe);
 }
 
 async function hashStoredObject(
@@ -373,7 +398,7 @@ async function hashStoredObject(
   }
   const source = await openBlobSource(ctx, id, MAX_BUFFERED_BLOB_BYTES, {
     verifyHash: true,
-    order: await readOrderFor(ctx, id),
+    ...(await readOrderFor(ctx, id)),
   });
   const scan = startScanFor(source.type, ctx.hashConfig.hexLength);
   if (source.kind === 'bytes') {

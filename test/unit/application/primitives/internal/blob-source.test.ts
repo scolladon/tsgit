@@ -11,6 +11,10 @@ import {
   verifyStoredObject,
 } from '../../../../../src/application/primitives/internal/blob-source.js';
 import * as objectResolver from '../../../../../src/application/primitives/object-resolver.js';
+import {
+  getObjectStore,
+  type ObjectSource,
+} from '../../../../../src/application/primitives/object-store.js';
 import { getPackRegistry } from '../../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../../src/domain/error.js';
@@ -2392,6 +2396,46 @@ describe('readBlobContentInStreamOrder', () => {
 
         // Assert
         expect(result).toMatchObject(ALT_REACHED);
+      });
+    });
+  });
+});
+
+describe('verifyStoredObject read order after a rescan', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe('Given a blob whose primary pack appears only after the first scan', () => {
+    describe('When verifyStoredObject is called', () => {
+      it('Then it re-scans once before choosing stream order, which consults the alternate', async () => {
+        // Arrange
+        const ctx = await contextWithAlternate();
+        const store = await getObjectStore(ctx);
+        await store.primary.registry.all();
+        const [id] = await writeSyntheticPackIn(ctx, PRIMARY_OBJECTS, 'late', [
+          { kind: 'base', type: 'blob', content: ENC.encode('late small blob') },
+        ]);
+        const alternate = store.sources.find((source) => source !== store.primary) as ObjectSource;
+        const events: string[] = [];
+        const alternateLookup = alternate.registry.lookup.bind(alternate.registry);
+        vi.spyOn(alternate.registry, 'lookup').mockImplementation((lookedUp) => {
+          events.push('alternate-lookup');
+          return alternateLookup(lookedUp);
+        });
+        const reprepare = store.reprepare.bind(store);
+        vi.spyOn(store, 'reprepare').mockImplementation(() => {
+          events.push('reprepare');
+          return reprepare();
+        });
+
+        // Act
+        const sut = verifyStoredObject;
+        const result = await sut(ctx, id as ObjectId);
+
+        // Assert
+        expect(result.type).toBe('blob');
+        expect(events).toEqual(['alternate-lookup', 'reprepare', 'alternate-lookup']);
       });
     });
   });
