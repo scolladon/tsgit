@@ -200,6 +200,79 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
+    describe.each(PACKED_GIT_KEYS)('Given core.%s set twice, malformed and then valid', (key) => {
+      describe('When cat-file, rev-parse and status run on both tools', () => {
+        it('Then both accept — git reads only the last entry', async () => {
+          // Arrange
+          const { dir, ctx } = await caseRepo(
+            `${key}-bad-then-valid`,
+            `\t${key} = x\n\t${key} = 1\n`,
+          );
+
+          // Act
+          const gitExits = [
+            tryRunGitWithExit(['-C', dir, 'cat-file', '-p', 'HEAD']).exitCode,
+            tryRunGitWithExit(['-C', dir, 'rev-parse', 'HEAD']).exitCode,
+            tryRunGitWithExit(['-C', dir, 'status']).exitCode,
+          ];
+
+          // Assert
+          expect(gitExits).toEqual([0, 0, 0]);
+          await expect(revParse(ctx, 'HEAD')).resolves.toBe(headId);
+          expect((await status(ctx)).changes).toEqual([]);
+        });
+      });
+
+      describe('When the valid entry comes first and rev-parse runs on both tools', () => {
+        it("Then both refuse on the last entry, matching git's fatal line", async () => {
+          // Arrange
+          const { dir, ctx } = await caseRepo(
+            `${key}-valid-then-bad`,
+            `\t${key} = 1\n\t${key} = x\n`,
+          );
+
+          // Act
+          const revParseGit = tryRunGitWithExit(['-C', dir, 'rev-parse', 'HEAD']);
+
+          // Assert
+          expect(revParseGit.exitCode).toBe(128);
+          expect(revParseGit.stderr).toBe(badNumericFatal(key, 'x', 'invalid unit'));
+          await assertRefusesWithBadNumeric(
+            () => revParse(ctx, 'HEAD'),
+            `core.${key.toLowerCase()}`,
+            path.join(dir, '.git', 'config'),
+            'x',
+            'invalid unit',
+          );
+        });
+      });
+    });
+
+    describe('Given core.packedGitLimit then core.packedGitWindowSize, both malformed', () => {
+      describe('When rev-parse runs on both tools', () => {
+        it('Then both name packedGitWindowSize, the key git reads first', async () => {
+          // Arrange
+          const lines = '\tpackedGitLimit = x\n\tpackedGitWindowSize = y\n';
+          const { dir, ctx } = await caseRepo('limit-then-window-size', lines);
+
+          // Act
+          const revParseGit = tryRunGitWithExit(['-C', dir, 'rev-parse', 'HEAD']);
+
+          // Assert
+          expect(revParseGit.stderr).toBe(
+            badNumericFatal('packedGitWindowSize', 'y', 'invalid unit'),
+          );
+          await assertRefusesWithBadNumeric(
+            () => revParse(ctx, 'HEAD'),
+            'core.packedgitwindowsize',
+            path.join(dir, '.git', 'config'),
+            'y',
+            'invalid unit',
+          );
+        });
+      });
+    });
+
     describe('Given a repo with a malformed core.packedGitWindowSize / core.packedGitLimit value', () => {
       describe.each(REFUSED_ROWS)(
         'When core.$key holds a $slug value',

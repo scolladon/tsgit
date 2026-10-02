@@ -11,7 +11,6 @@ import {
   findFirstInvalidCompression,
   findFirstInvalidDiffBinary,
   findFirstInvalidLogAllRefUpdates,
-  findFirstInvalidPackedGitBound,
   findFirstInvalidPackInt,
   findFirstInvalidPushGpgSign,
   findFirstValuelessEntry,
@@ -20,6 +19,7 @@ import {
   findInvalidPushDefault,
   findLastInvalidDeltaBaseCacheLimit,
   findLastInvalidMaxTreeDepth,
+  findLastInvalidPackedGitBound,
   type IniSection,
   invalidateConfigCache,
   memoizeGateVerdict,
@@ -6665,11 +6665,11 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     });
   });
 
-  describe('findFirstInvalidPackedGitBound', () => {
+  describe('findLastInvalidPackedGitBound', () => {
     describe.each(['packedGitWindowSize', 'packedGitLimit'] as const)(
       'Given a malformed core.%s',
       (key) => {
-        describe('When findFirstInvalidPackedGitBound', () => {
+        describe('When findLastInvalidPackedGitBound', () => {
           it.each([
             { config: `[core]\n\t${key} = abc\n`, value: 'abc', reason: 'invalid unit' as const },
             { config: `[core]\n\t${key} = -1\n`, value: '-1', reason: 'invalid unit' as const },
@@ -6687,7 +6687,7 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
               await seed(ctx, config);
 
               // Act
-              const result = await findFirstInvalidPackedGitBound(ctx);
+              const result = await findLastInvalidPackedGitBound(ctx);
 
               // Assert
               expect(result?.key).toBe(`core.${key.toLowerCase()}`);
@@ -6697,14 +6697,14 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
           );
         });
 
-        describe('When findFirstInvalidPackedGitBound runs against a valueless entry (no "=")', () => {
+        describe('When findLastInvalidPackedGitBound runs against a valueless entry (no "=")', () => {
           it("Then returns value '', reason invalid unit, and the 1-based line", async () => {
             // Arrange
             const ctx = createMemoryContext();
             await seed(ctx, `[core]\n\t${key}\n`);
 
             // Act
-            const result = await findFirstInvalidPackedGitBound(ctx);
+            const result = await findLastInvalidPackedGitBound(ctx);
 
             // Assert
             expect(result?.value).toBe('');
@@ -6713,14 +6713,14 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
           });
         });
 
-        describe('When findFirstInvalidPackedGitBound runs against a valid value (e.g. 4m)', () => {
+        describe('When findLastInvalidPackedGitBound runs against a valid value (e.g. 4m)', () => {
           it('Then returns undefined', async () => {
             // Arrange
             const ctx = createMemoryContext();
             await seed(ctx, `[core]\n\t${key} = 4m\n`);
 
             // Act
-            const result = await findFirstInvalidPackedGitBound(ctx);
+            const result = await findLastInvalidPackedGitBound(ctx);
 
             // Assert
             expect(result).toBeUndefined();
@@ -6730,31 +6730,31 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     );
 
     describe('Given packedGitLimit malformed on line 2 and packedGitWindowSize malformed on line 3', () => {
-      describe('When findFirstInvalidPackedGitBound', () => {
-        it('Then returns the earlier (packedGitLimit) entry — first in file order', async () => {
+      describe('When findLastInvalidPackedGitBound', () => {
+        it('Then returns packedGitWindowSize — git reads it before packedGitLimit, whatever the file order', async () => {
           // Arrange
           const ctx = createMemoryContext();
           await seed(ctx, '[core]\n\tpackedGitLimit = -1\n\tpackedGitWindowSize = -1\n');
 
           // Act
-          const result = await findFirstInvalidPackedGitBound(ctx);
+          const result = await findLastInvalidPackedGitBound(ctx);
 
           // Assert
-          expect(result?.key).toBe('core.packedgitlimit');
-          expect(result?.line).toBe(2);
+          expect(result?.key).toBe('core.packedgitwindowsize');
+          expect(result?.line).toBe(3);
         });
       });
     });
 
     describe('Given packedGitWindowSize malformed on line 2 and packedGitLimit malformed on line 3', () => {
-      describe('When findFirstInvalidPackedGitBound', () => {
+      describe('When findLastInvalidPackedGitBound', () => {
         it('Then returns the earlier (packedGitWindowSize) entry — first in file order', async () => {
           // Arrange
           const ctx = createMemoryContext();
           await seed(ctx, '[core]\n\tpackedGitWindowSize = -1\n\tpackedGitLimit = -1\n');
 
           // Act
-          const result = await findFirstInvalidPackedGitBound(ctx);
+          const result = await findLastInvalidPackedGitBound(ctx);
 
           // Assert
           expect(result?.key).toBe('core.packedgitwindowsize');
@@ -6763,15 +6763,81 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
       });
     });
 
+    describe.each(['packedGitWindowSize', 'packedGitLimit'] as const)(
+      'Given core.%s malformed and then valid',
+      (key) => {
+        describe('When findLastInvalidPackedGitBound', () => {
+          it('Then returns undefined — git reads only the last entry', async () => {
+            // Arrange
+            const ctx = createMemoryContext();
+            await seed(ctx, `[core]\n\t${key} = x\n\t${key} = 1\n`);
+            const sut = findLastInvalidPackedGitBound;
+
+            // Act
+            const result = await sut(ctx);
+
+            // Assert
+            expect(result).toBeUndefined();
+          });
+        });
+      },
+    );
+
+    describe.each(['packedGitWindowSize', 'packedGitLimit'] as const)(
+      'Given core.%s valid and then malformed',
+      (key) => {
+        describe('When findLastInvalidPackedGitBound', () => {
+          it('Then returns the last entry on its own line', async () => {
+            // Arrange
+            const ctx = createMemoryContext();
+            await seed(ctx, `[core]\n\t${key} = 1\n\t${key} = x\n`);
+            const sut = findLastInvalidPackedGitBound;
+
+            // Act
+            const result = await sut(ctx);
+
+            // Assert
+            expect(result).toEqual({
+              key: `core.${key.toLowerCase()}`,
+              source: `${ctx.layout.gitDir}/config`,
+              value: 'x',
+              reason: 'invalid unit',
+              line: 3,
+            });
+          });
+        });
+      },
+    );
+
+    describe('Given a valid packedGitWindowSize and packedGitLimit malformed and then valid around it', () => {
+      describe('When findLastInvalidPackedGitBound', () => {
+        it('Then returns undefined — each key is read on its own last entry', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(
+            ctx,
+            '[core]\n\tpackedGitLimit = x\n\tpackedGitWindowSize = 1\n\tpackedGitLimit = 1\n',
+          );
+          const sut = findLastInvalidPackedGitBound;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+
     describe('Given a malformed packedGitWindowSize entry outside [core]', () => {
-      describe('When findFirstInvalidPackedGitBound', () => {
+      describe('When findLastInvalidPackedGitBound', () => {
         it('Then returns undefined — a [pack] key is not a [core] key', async () => {
           // Arrange
           const ctx = createMemoryContext();
           await seed(ctx, '[pack]\n\tpackedGitWindowSize = -1\n');
 
           // Act
-          const result = await findFirstInvalidPackedGitBound(ctx);
+          const result = await findLastInvalidPackedGitBound(ctx);
 
           // Assert
           expect(result).toBeUndefined();
@@ -6780,7 +6846,7 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     });
 
     describe('Given a malformed packedGitWindowSize value that appears before any section header', () => {
-      describe('When findFirstInvalidPackedGitBound', () => {
+      describe('When findLastInvalidPackedGitBound', () => {
         it('Then returns undefined — inSection starts false and only a matching [core] header sets it', async () => {
           // Arrange — a pre-header bare key must NOT match. Mutant
           // (inSection=true) would wrongly check and return it.
@@ -6788,7 +6854,7 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
           await seed(ctx, '\tpackedGitWindowSize = -1\n[core]\n\tbare = true\n');
 
           // Act
-          const result = await findFirstInvalidPackedGitBound(ctx);
+          const result = await findLastInvalidPackedGitBound(ctx);
 
           // Assert
           expect(result).toBeUndefined();
@@ -8226,13 +8292,13 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     );
 
     describe.each(['packedGitWindowSize', 'packedGitLimit'])(
-      'When findFirstInvalidPackedGitBound reads core.%s = -0',
+      'When findLastInvalidPackedGitBound reads core.%s = -0',
       (key) => {
         it('Then it is reported with reason invalid unit', async () => {
           // Arrange
           const ctx = createMemoryContext();
           await seed(ctx, `[core]\n  ${key} = -0\n`);
-          const sut = findFirstInvalidPackedGitBound;
+          const sut = findLastInvalidPackedGitBound;
 
           // Act
           const result = await sut(ctx);

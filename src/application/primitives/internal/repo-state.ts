@@ -36,8 +36,8 @@ import {
   findFirstInvalidCompression,
   findFirstInvalidDiffBinary,
   findFirstInvalidLogAllRefUpdates,
-  findFirstInvalidPackedGitBound,
   findFirstValuelessEntry,
+  findLastInvalidPackedGitBound,
   type InvalidBooleanEntry,
   type InvalidCompressionEntry,
   type InvalidNumericEntry,
@@ -216,7 +216,7 @@ export const assertEagerConfigValid = async (ctx: Context): Promise<void> => {
       // per-driver), so only subsectioned entries can refuse here.
       findFirstInvalidBooleanInSection(ctx, 'diff', DIFF_BOOLEAN_KEYS, { requireSubsection: true }),
       findFirstInvalidDiffBinary(ctx),
-      findFirstInvalidPackedGitBound(ctx),
+      findLastInvalidPackedGitBound(ctx),
     ]);
   const candidates: ReadonlyArray<EagerCandidate | undefined> = [
     str === undefined ? undefined : { kind: 'valueless', line: str.line, entry: str },

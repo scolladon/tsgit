@@ -1205,37 +1205,24 @@ export const findLastInvalidDeltaBaseCacheLimit = async (
 
 /**
  * Cold-path detection for `core.packedGitWindowSize` / `core.packedGitLimit`:
- * walk the cached `[core]` (subsectionless) tokens in file order and return
- * the FIRST entry of EITHER key whose value fails `checkGitUnsignedLong`
- * — unlike `deltaBaseCacheLimit`'s last-write-wins resolution, git validates
- * both these keys in the streaming `git_default_core_config` callback, so the
- * first malformed line in file order is fatal regardless of what follows it.
- * Returns `undefined` when every recognised entry is valid or none is
- * present. Runs ONLY on a command's refusal path — `readConfig` stays
+ * git reads each through its config set (`prepare_repo_settings`), so only a
+ * key's LAST entry is parsed — a malformed entry a valid one follows is
+ * inert — and `packedGitWindowSize` is read before `packedGitLimit`, whatever
+ * their file order. Returns the first of the two (in that reading order)
+ * whose last value fails git's unsigned-long grammar, with its 1-based line,
+ * or `undefined`. Runs ONLY on a command's refusal path — `readConfig` stays
  * lenient.
  */
-export const findFirstInvalidPackedGitBound = async (
+export const findLastInvalidPackedGitBound = async (
   ctx: Context,
 ): Promise<(InvalidNumericEntry & { readonly line: number }) | undefined> => {
-  const { tokens, source: path } = await readConfigEntry(ctx);
-  let inSection = false;
-  for (const token of tokens) {
-    if (token.kind === 'header') {
-      inSection = matchesSection(token.section, token.subsection, 'core', undefined);
-      continue;
-    }
-    if (!inSection || token.kind !== 'entry') continue;
-    const lowered = token.key.toLowerCase();
-    if (lowered !== PACKED_GIT_WINDOW_SIZE_KEY && lowered !== PACKED_GIT_LIMIT_KEY) continue;
-    const checked = checkGitUnsignedLong(token.value);
+  for (const key of PACKED_GIT_READING_ORDER) {
+    const last = await findLastEntry(ctx, 'core', key);
+    if (last === undefined) continue;
+    const checked = checkGitUnsignedLong(last.value);
     if (checked.ok) continue;
-    return {
-      key: `core.${lowered}`,
-      source: path,
-      value: token.value ?? '',
-      reason: checked.reason,
-      line: token.startLine + 1,
-    };
+    const { key: qualifiedKey, source, line, value } = last;
+    return { key: qualifiedKey, source, value: value ?? '', reason: checked.reason, line };
   }
   return undefined;
 };
@@ -1421,13 +1408,15 @@ const applyDeltaBaseCacheLimitEntry = (
 
 const PACKED_GIT_WINDOW_SIZE_KEY = 'packedgitwindowsize';
 const PACKED_GIT_LIMIT_KEY = 'packedgitlimit';
+/** `prepare_repo_settings` reads the window size before the limit. */
+const PACKED_GIT_READING_ORDER = [PACKED_GIT_WINDOW_SIZE_KEY, PACKED_GIT_LIMIT_KEY] as const;
 
 /**
  * Apply `core.packedGitWindowSize` / `core.packedGitLimit`: git's
  * unsigned-long grammar, reusing `checkGitUnsignedLong` exactly as
  * {@link applyDeltaBaseCacheLimitEntry} does. Merges as absent on any
  * failure — this is the LENIENT read only; the eager refusal for a
- * malformed value is `findFirstInvalidPackedGitBound`, not added here.
+ * malformed value is `findLastInvalidPackedGitBound`, not added here.
  */
 const applyPackedGitBoundEntry = (
   core: MutableCore,
