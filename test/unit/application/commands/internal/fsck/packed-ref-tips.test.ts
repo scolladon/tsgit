@@ -1,9 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../../../src/adapters/memory/memory-adapter.js';
-import {
-  assertRefTipsReadable,
-  packsWithWrongRevIndex,
-} from '../../../../../../src/application/commands/internal/fsck/packed-ref-tips.js';
+import { assertRefTipsReadable } from '../../../../../../src/application/commands/internal/fsck/packed-ref-tips.js';
 import { readObject } from '../../../../../../src/application/primitives/read-object.js';
 import {
   decompressFailed,
@@ -45,7 +42,6 @@ const sut = assertRefTipsReadable;
 
 const ABSENT = '1111111111111111111111111111111111111111';
 const NO_CACHE = new Map();
-const NO_PACKS: ReadonlySet<string> = new Set();
 
 const repoWithTag = async (target: string): Promise<Context> => {
   const ctx = createMemoryContext();
@@ -61,7 +57,7 @@ describe('Given a ref whose tip no store holds', () => {
       const ctx = await repoWithTag(ABSENT);
 
       // Act
-      const result = sut(ctx, NO_CACHE, NO_PACKS);
+      const result = sut(ctx, NO_CACHE);
 
       // Assert
       await expect(result).resolves.toBeUndefined();
@@ -98,40 +94,13 @@ describe('Given a ref whose file cannot be read', () => {
       // Act
       let caught: unknown;
       try {
-        await sut(guarded, NO_CACHE, NO_PACKS);
+        await sut(guarded, NO_CACHE);
       } catch (error) {
         caught = error;
       }
 
       // Assert
       expect((caught as TsgitError).data).toEqual(fault.data);
-    });
-  });
-});
-
-describe('Given rev-index findings of every kind, one from an alternate', () => {
-  describe('When the packs with a wrong .rev are collected', () => {
-    it('Then only invalid and position-mismatch findings count, keyed by objects dir and pack', () => {
-      // Arrange
-      const sut = packsWithWrongRevIndex;
-      const findings = [
-        { type: 'pack-rev-index-invalid', pack: 'pack-a', reason: 'trailer' },
-        {
-          type: 'pack-rev-index-position-mismatch',
-          pack: 'pack-b',
-          position: 0,
-          expected: 1,
-          stored: 0,
-          objectsDir: '/donor/objects',
-        },
-        { type: 'pack-rev-index-unusable', pack: 'pack-c', reason: 'idx' },
-      ] as const;
-
-      // Act
-      const result = sut(findings);
-
-      // Assert
-      expect([...result]).toEqual(['\0pack-a', '/donor/objects\0pack-b']);
     });
   });
 });
@@ -164,7 +133,7 @@ describe('Given a pack-claimed ref tip whose read fails for an I/O reason', () =
       vi.mocked(readObject).mockRejectedValueOnce(fault);
 
       // Act
-      const caught = await rejectionOf(sut(ctx, NO_CACHE, NO_PACKS));
+      const caught = await rejectionOf(sut(ctx, NO_CACHE));
 
       // Assert
       expect(caught.data).toEqual(fault.data);
@@ -197,7 +166,7 @@ describe.each([
       vi.mocked(readObject).mockRejectedValueOnce(fault);
 
       // Act
-      const caught = await rejectionOf(sut(ctx, NO_CACHE, NO_PACKS));
+      const caught = await rejectionOf(sut(ctx, NO_CACHE));
 
       // Assert
       expect(caught.data).toMatchObject({ code: 'INVALID_PACK_ENTRY', offset: 12 });

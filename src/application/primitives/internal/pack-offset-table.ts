@@ -192,35 +192,32 @@ function locatePackPosition(
   return lo;
 }
 
+/**
+ * The `.rev`'s own answer, or `undefined` the moment it cannot be trusted:
+ * a position outside the index, an offset the search does not land on, or a
+ * successor not past the entry. git bounds no entry read by its `.rev`, so
+ * a `.rev` that disagrees with its `.idx` must never bound one here either —
+ * the caller answers from the `.idx` instead.
+ */
+function lazySuccessor(table: LazyOffsetTable, offset: number): number | undefined {
+  const { index, rev, objectCount, trailerStart } = table;
+  const rank = locatePackPosition(index, rev, objectCount, offset);
+  if (rank === 'degraded' || rank >= objectCount) return undefined;
+  if (offsetAtPackPosition(index, rev, rank) !== offset) return undefined;
+  if (rank === objectCount - 1) return trailerStart;
+  const nextOffset = offsetAtPackPosition(index, rev, rank + 1);
+  return nextOffset !== undefined && nextOffset > offset ? nextOffset : undefined;
+}
+
 function successorFromLazy(table: LazyOffsetTable, offset: number): number {
   const alreadyDegraded = degradedFallbacks.get(table);
   if (alreadyDegraded !== undefined) {
     return successorFromSorted(alreadyDegraded, table.trailerStart, offset);
   }
-  const { index, rev, objectCount, trailerStart } = table;
-  const rank = locatePackPosition(index, rev, objectCount, offset);
-  if (rank === 'degraded') {
-    return successorFromSorted(degradeToSorted(table), trailerStart, offset);
-  }
-  if (rank >= objectCount) {
-    throw invalidPackIndex('offset not in pack index: corrupt index');
-  }
-  const foundOffset = offsetAtPackPosition(index, rev, rank);
-  // Stryker disable next-line ConditionalExpression,EqualityOperator,BlockStatement: equivalent — dead by construction: locatePackPosition only ever returns a rank < objectCount via `hi = mid` after `offsetAtPackPosition(index, rev, mid)` was ALREADY confirmed defined at that exact position (its `midOffset === undefined` check returns 'degraded' first); so this re-read at the same `rank` can never itself be undefined. Hand-verified: forcing the condition false, flipping `===`→`!==`, and emptying the block all leave the full covering set green (pack-offset-table ×2 incl. the .properties fast-check suite, fetch-pack, bitmap-binding, submodule-add/-update, pack-registry).
-  if (foundOffset === undefined) {
-    return successorFromSorted(degradeToSorted(table), trailerStart, offset);
-  }
-  if (foundOffset !== offset) {
-    throw invalidPackIndex('offset not in pack index: corrupt index');
-  }
-  if (rank === objectCount - 1) {
-    return trailerStart;
-  }
-  const nextOffset = offsetAtPackPosition(index, rev, rank + 1);
-  if (nextOffset === undefined) {
-    return successorFromSorted(degradeToSorted(table), trailerStart, offset);
-  }
-  return nextOffset;
+  return (
+    lazySuccessor(table, offset) ??
+    successorFromSorted(degradeToSorted(table), table.trailerStart, offset)
+  );
 }
 
 export function nextOffsetForEntry(table: PackOffsetTable, offset: number): number {

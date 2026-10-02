@@ -8,7 +8,6 @@ import { readObject } from '../../../primitives/read-object.js';
 import { resolveRef } from '../../../primitives/resolve-ref.js';
 import { type CachedGitObject, packedLocationOf } from './object-cache.js';
 import { isTolerableRefFault } from './roots.js';
-import type { FsckFinding } from './types.js';
 
 async function tipOf(ctx: Context, ref: RefName): Promise<ObjectId | undefined> {
   try {
@@ -17,24 +16,6 @@ async function tipOf(ctx: Context, ref: RefName): Promise<ObjectId | undefined> 
     if (!isTolerableRefFault(err)) throw err;
     return undefined;
   }
-}
-
-const packKey = (pack: string, objectsDir: string | undefined): string =>
-  `${objectsDir ?? ''}\0${pack}`;
-
-/**
- * Packs whose `.rev` disagrees with their `.idx`. tsgit bounds an entry read
- * by the `.rev`; git inflates without it, so a read failure there says
- * nothing about the entry itself and must not become git's fatal.
- */
-export function packsWithWrongRevIndex(findings: ReadonlyArray<FsckFinding>): ReadonlySet<string> {
-  const keys = new Set<string>();
-  for (const f of findings) {
-    if (f.type !== 'pack-rev-index-invalid' && f.type !== 'pack-rev-index-position-mismatch')
-      continue;
-    keys.add(packKey(f.pack, f.objectsDir));
-  }
-  return keys;
 }
 
 /** The codes a read of a damaged stored entry fails with: an unusable entry
@@ -64,18 +45,13 @@ const CORRUPTION_CODES: ReadonlySet<string | undefined> = new Set([
 /** Refuse when `id` cannot be read and a pack claims it — git's die on a
  *  `has_packed_and_bad` object; an id no store claims is git's
  *  `invalid sha1 pointer`, reported elsewhere. */
-async function assertReadableUnlessAbsent(
-  ctx: Context,
-  id: ObjectId,
-  wrongRevPacks: ReadonlySet<string>,
-): Promise<void> {
+async function assertReadableUnlessAbsent(ctx: Context, id: ObjectId): Promise<void> {
   try {
     await readObject(ctx, id);
   } catch (err) {
     if (!CORRUPTION_CODES.has(errorDataCode(err))) throw err;
     const location = await packedLocationOf(ctx, id);
     if (location === undefined) return;
-    if (wrongRevPacks.has(packKey(location.pack, location.attribution.objectsDir))) return;
     throw invalidPackEntry(
       location.offset,
       `packed object ${id} (stored in ${location.pack}) is corrupt`,
@@ -89,11 +65,10 @@ export async function assertObjectsReadable(
   ctx: Context,
   ids: Iterable<ObjectId>,
   cache: ReadonlyMap<ObjectId, CachedGitObject>,
-  wrongRevPacks: ReadonlySet<string>,
 ): Promise<void> {
   for (const id of ids) {
     if ((cache.get(id) ?? null) !== null) continue;
-    await assertReadableUnlessAbsent(ctx, id, wrongRevPacks);
+    await assertReadableUnlessAbsent(ctx, id);
   }
 }
 
@@ -104,14 +79,13 @@ export async function assertObjectsReadable(
 export async function assertRefTipsReadable(
   ctx: Context,
   cache: ReadonlyMap<ObjectId, CachedGitObject>,
-  wrongRevPacks: ReadonlySet<string>,
 ): Promise<void> {
   const tips: ObjectId[] = [];
   for (const ref of await enumerateRefs(ctx)) {
     const id = await tipOf(ctx, ref);
     if (id !== undefined) tips.push(id);
   }
-  await assertObjectsReadable(ctx, tips, cache, wrongRevPacks);
+  await assertObjectsReadable(ctx, tips, cache);
 }
 
 /** The stored types `--connectivity-only`'s walk parses: every one but a blob's. */
@@ -127,8 +101,7 @@ export async function assertWalkedObjectsReadable(
   reached: ReadonlySet<ObjectId>,
   storedTypes: ReadonlyMap<ObjectId, FsckObjectType>,
   cache: ReadonlyMap<ObjectId, CachedGitObject>,
-  wrongRevPacks: ReadonlySet<string>,
 ): Promise<void> {
   const parsed = [...reached].filter((id) => PARSED_BY_WALK.has(storedTypes.get(id) ?? 'blob'));
-  await assertObjectsReadable(ctx, parsed, cache, wrongRevPacks);
+  await assertObjectsReadable(ctx, parsed, cache);
 }

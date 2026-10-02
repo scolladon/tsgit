@@ -23,7 +23,6 @@ import {
   assertObjectsReadable,
   assertRefTipsReadable,
   assertWalkedObjectsReadable,
-  packsWithWrongRevIndex,
 } from './internal/fsck/packed-ref-tips.js';
 import {
   assembleConnectivityFindings,
@@ -174,10 +173,8 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   const revIndexResult = await runRevIndexHealthPass(ctx, opts);
 
   // git parses every ref tip before it checks anything — and dies on one
-  // whose only copy is a damaged pack entry. Runs after the rev-index pass,
-  // whose verdict tells a damaged entry from a read the `.rev` bounded wrongly.
-  const wrongRevPacks = packsWithWrongRevIndex(revIndexResult.findings);
-  await assertRefTipsReadable(auditCtx, objectCache, wrongRevPacks);
+  // whose only copy is a damaged pack entry.
+  await assertRefTipsReadable(auditCtx, objectCache);
 
   // Multi-pack-index health pass — reports the midx's own accessibility and
   // integrity. Runs after enumerateObjects has already succeeded above,
@@ -211,7 +208,7 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   );
   // git's `fsck_index` parses every cache-tree oid, in every mode — and dies
   // on one whose only copy is a damaged pack entry.
-  await assertObjectsReadable(auditCtx, cacheTreeIds, objectCache, wrongRevPacks);
+  await assertObjectsReadable(auditCtx, cacheTreeIds, objectCache);
   // Promisor-remote guard (see assertValidPromisorRemoteConfig) — only when the walk has roots.
   if (roots.size > 0 || sawAbsentRefTarget) {
     await assertValidPromisorRemoteConfig(ctx);
@@ -244,7 +241,7 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
     buildReachableSet(universe, roots, reachabilityCache, unreadable, packMemberIds);
 
   if (unreadable === 'classify') {
-    await assertWalkedObjectsReadable(auditCtx, reached, recovered, objectCache, wrongRevPacks);
+    await assertWalkedObjectsReadable(auditCtx, reached, recovered, objectCache);
   }
 
   const { unreachable, dangling } = classifyObjects(universe, reached, inEdgePresent);

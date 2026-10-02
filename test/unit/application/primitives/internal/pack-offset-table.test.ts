@@ -418,6 +418,34 @@ describe('nextOffsetForEntry — the lazy .rev-backed path', () => {
   });
 });
 
+describe('nextOffsetForEntry — a .rev that disagrees with its .idx in range', () => {
+  describe('Given a lazy table whose .rev names one index position twice', () => {
+    describe.each([
+      { offset: 12, successor: 50 },
+      { offset: 50, successor: 100 },
+    ])('When the successor of the entry at $offset is requested', ({ offset, successor }) => {
+      it('Then it answers the .idx successor, as git bounds no entry read by its .rev', async () => {
+        // Arrange
+        const table = await resolveOffsetTable(
+          contextWith(vi.fn()),
+          'pack-twice',
+          buildIndex([12, 50]),
+          usableLoad(buildRev([1, 1])),
+          120,
+          100,
+        );
+        const sut = nextOffsetForEntry;
+
+        // Act
+        const result = sut(table, offset);
+
+        // Assert
+        expect(result).toBe(successor);
+      });
+    });
+  });
+});
+
 describe('nextOffsetForEntry — the sorted fallback path', () => {
   describe('Given a sorted table and an offset absent from it', () => {
     describe('When nextOffsetForEntry is called', () => {
