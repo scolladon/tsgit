@@ -129,3 +129,71 @@ describe('Given a malformed core.bigFileThreshold and a blob its attributes call
     });
   });
 });
+
+describe('Given a malformed core.bigFileThreshold and a modified blob under a diff driver', () => {
+  const underDriver = async (attribute: string, driver: string): Promise<Context> => {
+    const ctx = await malformedRepo();
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/info/attributes`, `a.txt ${attribute}\n`);
+    const configPath = `${ctx.layout.gitDir}/config`;
+    await ctx.fs.writeUtf8(configPath, `${await ctx.fs.readUtf8(configPath)}${driver}`);
+    invalidateConfigCache(ctx);
+    return ctx;
+  };
+
+  describe.each([
+    { name: 'the binary macro', attribute: 'binary', driver: '' },
+    {
+      name: 'a driver with binary set',
+      attribute: 'diff=d',
+      driver: '[diff "d"]\n\tbinary = false\n',
+    },
+    {
+      name: 'a driver with a textconv',
+      attribute: 'diff=d',
+      driver: '[diff "d"]\n\ttextconv = cat\n',
+    },
+  ])('When diffing ignoring whitespace under $name', ({ attribute, driver }) => {
+    it('Then it diffs without reading the threshold', async () => {
+      // Arrange
+      const ctx = await underDriver(attribute, driver);
+      const [from, to] = await modifiedPair(ctx, 'a.txt');
+      const sut = diffTrees;
+
+      // Act
+      const result = await sut(ctx, from, to, { ignoreWhitespace: 'all' });
+
+      // Assert
+      expect(result.changes).toHaveLength(1);
+    });
+  });
+
+  describe('When diffing ignoring whitespace under a driver that settles nothing', () => {
+    it('Then it refuses with the key', async () => {
+      // Arrange
+      const ctx = await underDriver('diff=d', '');
+      const [from, to] = await modifiedPair(ctx, 'a.txt');
+      const sut = diffTrees;
+
+      // Act
+      const result = await refusalOf(sut(ctx, from, to, { ignoreWhitespace: 'all' }));
+
+      // Assert
+      expect(result).toMatchObject(REFUSAL);
+    });
+  });
+
+  describe('When diffing with stat under a driver whose textconv leaves binary unset', () => {
+    it('Then it refuses with the key, as the stat weighs the raw blob', async () => {
+      // Arrange
+      const ctx = await underDriver('diff=d', '[diff "d"]\n\ttextconv = cat\n');
+      const [from, to] = await modifiedPair(ctx, 'a.txt');
+      const sut = diffTrees;
+
+      // Act
+      const result = await refusalOf(sut(ctx, from, to, { withStat: true }));
+
+      // Assert
+      expect(result).toMatchObject(REFUSAL);
+    });
+  });
+});

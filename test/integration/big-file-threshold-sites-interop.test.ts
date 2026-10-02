@@ -135,6 +135,40 @@ const REQUIRED_DRIVER_ROWS: ReadonlyArray<Row> = [
   },
 ];
 
+/** Marks every `.txt` with `attribute`, its driver configured by `driver`. */
+const underDiffAttribute =
+  (attribute: string, driver: string) =>
+  (dir: string): void => {
+    writeFileSync(path.join(dir, '.git', 'info', 'attributes'), `*.txt ${attribute}\n`);
+    writeFileSync(path.join(dir, '.git', 'config'), driver, { flag: 'a' });
+  };
+
+const TEXTCONV_DRIVER = '[diff "d"]\n\ttextconv = cat\n';
+
+const DIFF_ATTRIBUTE_ROWS: ReadonlyArray<Row> = [
+  {
+    name: 'diff -w --raw between commits, binary attribute',
+    state: CLEAN_LOOSE,
+    prepare: underDiffAttribute('binary', ''),
+    git: ['diff', '-w', '--raw', 'HEAD~1', 'HEAD'],
+    tsgit: (r) => r.diff({ from: 'HEAD~1', to: 'HEAD', ignoreWhitespace: 'all' }),
+  },
+  {
+    name: 'diff -w --raw between commits, textconv driver',
+    state: CLEAN_LOOSE,
+    prepare: underDiffAttribute('diff=d', TEXTCONV_DRIVER),
+    git: ['diff', '-w', '--raw', 'HEAD~1', 'HEAD'],
+    tsgit: (r) => r.diff({ from: 'HEAD~1', to: 'HEAD', ignoreWhitespace: 'all' }),
+  },
+  {
+    name: 'diff --stat between commits, textconv driver',
+    state: CLEAN_LOOSE,
+    prepare: underDiffAttribute('diff=d', TEXTCONV_DRIVER),
+    git: ['diff', '--stat', 'HEAD~1', 'HEAD'],
+    tsgit: (r) => r.diff({ from: 'HEAD~1', to: 'HEAD', withStat: true }),
+  },
+];
+
 const ROWS: ReadonlyArray<Row> = [
   {
     name: 'status, racy',
@@ -221,6 +255,7 @@ const ROWS: ReadonlyArray<Row> = [
     tsgit: (r) => r.maintenance({ tasks: ['gc'] }),
   },
   ...REQUIRED_DRIVER_ROWS,
+  ...DIFF_ATTRIBUTE_ROWS,
   ...[CLEAN_LOOSE, CLEAN_PACKED].flatMap((state): ReadonlyArray<Row> => {
     const where = state.packed ? 'packed' : 'loose';
     return [

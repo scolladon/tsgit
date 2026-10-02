@@ -41,6 +41,7 @@ import type { Context } from '../../ports/context.js';
 import { detectBreakRewrites, detectSimilarityRenames } from './detect-similarity-renames.js';
 import { boundedMapFor, limiterFor } from './internal/concurrency.js';
 import type { ConcurrencyLimiter } from './internal/concurrency-limiter.js';
+import { patchWeighsBlob, statWeighsBlob } from './internal/diff-binary-weighing.js';
 import {
   type FlattenBounds,
   flattenRawTree,
@@ -202,6 +203,25 @@ const weighsContent = (change: DiffChange): boolean => {
   return !isGitlink(change.oldMode) || !isGitlink(change.newMode);
 };
 
+type BlobWeighing = (ctx: Context, provider: AttributeProvider, path: FilePath) => Promise<boolean>;
+
+const anyBlobWeighed = async (
+  ctx: Context,
+  changes: ReadonlyArray<DiffChange>,
+  getProvider: () => Promise<AttributeProvider>,
+  weighsBlob: BlobWeighing,
+): Promise<boolean> => {
+  for (const change of changes) {
+    if (
+      weighsContent(change) &&
+      (await weighsBlob(ctx, await getProvider(), primaryPath(change)))
+    ) {
+      return true;
+    }
+  }
+  return false;
+};
+
 /**
  * git's `diff_filespec_is_binary` reads `core.bigFileThreshold` for a blob
  * side whose attributes leave binary-ness open.
@@ -209,8 +229,21 @@ const weighsContent = (change: DiffChange): boolean => {
 const readThresholdWhenWeighing = async (
   ctx: Context,
   changes: ReadonlyArray<DiffChange>,
+  getProvider: () => Promise<AttributeProvider>,
+  weighsBlob: BlobWeighing,
 ): Promise<void> => {
-  if (changes.some(weighsContent)) await assertBigFileThresholdValid(ctx);
+  if (await anyBlobWeighed(ctx, changes, getProvider, weighsBlob)) {
+    await assertBigFileThresholdValid(ctx);
+  }
+};
+
+/** One provider per pass, built on first need. */
+const lazyProvider = (ctx: Context): (() => Promise<AttributeProvider>) => {
+  let providerPromise: Promise<AttributeProvider> | undefined;
+  return () => {
+    providerPromise ??= buildAttributeProvider(ctx);
+    return providerPromise;
+  };
 };
 
 /**
@@ -261,11 +294,12 @@ async function applyStatPass(
   ignoreBlankLines: boolean,
   withStat: boolean,
 ): Promise<TreeDiff | StatTreeDiff> {
-  const files = await materialisePatchFiles(ctx, diff.changes, { applyTextconv: true });
-  await readThresholdWhenWeighing(
-    ctx,
-    files.filter((file) => file.numstatBinaryOverride === undefined).map((file) => file.change),
-  );
+  const getProvider = lazyProvider(ctx);
+  const files = await materialisePatchFiles(ctx, diff.changes, {
+    applyTextconv: true,
+    getProvider,
+  });
+  await readThresholdWhenWeighing(ctx, diff.changes, getProvider, statWeighsBlob);
   const surviving: Array<DiffChange | StatDiffChange> = [];
   for (const file of files) {
     // git's builtin_diffstat never calls fill_textconv — numstat/stat (and the
@@ -307,15 +341,11 @@ async function applyDropPredicate(
   lineKey: LineKey,
   ignoreBlankLines: boolean,
 ): Promise<TreeDiff> {
-  await readThresholdWhenWeighing(ctx, diff.changes);
   // One lazily-built provider per drop pass: the streaming predicate is
   // blind to `.gitattributes`, so attribute-affected paths must be detected
   // up front and routed through the materialise-based verdict instead.
-  let providerPromise: Promise<AttributeProvider> | undefined;
-  const getProvider = (): Promise<AttributeProvider> => {
-    providerPromise ??= buildAttributeProvider(ctx);
-    return providerPromise;
-  };
+  const getProvider = lazyProvider(ctx);
+  await readThresholdWhenWeighing(ctx, diff.changes, getProvider, patchWeighsBlob);
   const drops = await boundedMapFor(ctx, 'ioBound', diff.changes, (change) =>
     changeShouldDrop(ctx, change, lineKey, ignoreBlankLines, getProvider),
   );
