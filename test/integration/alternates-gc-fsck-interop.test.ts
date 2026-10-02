@@ -1330,6 +1330,140 @@ describe.skipIf(!GIT_AVAILABLE)('fsck interop — deferred .gitmodules checks', 
   });
 });
 
+describe.skipIf(!GIT_AVAILABLE)("fsck interop — every worktree's reflogs and index", () => {
+  const ABSENT_IDS = ['1'.repeat(40), '2'.repeat(40), '3'.repeat(40)] as const;
+  const REFLOG_LINE = /^error: (\S+): invalid reflog entry ([0-9a-f]{40})$/;
+  const RESOLVE_UNDO_LINE = /^error: ([0-9a-f]{40}): invalid sha1 pointer in resolve-undo of /;
+
+  /** A main worktree with one commit and a linked worktree beside it. */
+  const repoWithWorktree = (slug: string): { readonly main: string; readonly linked: string } => {
+    const main = path.join(root, `worktrees-${slug}`);
+    runGit(['init', '-q', '-b', 'main', main]);
+    configure(main);
+    commitFile(main, 'a', 'a');
+    const linked = path.join(root, `worktrees-${slug}-wt`);
+    runGit(['-C', main, 'worktree', 'add', '-q', linked]);
+    return { main, linked };
+  };
+
+  const appendReflog = (file: string, id: string, from: string): void => {
+    writeFileSync(
+      file,
+      `${readFileSync(file, 'utf8')}${from} ${id} Ada <ada@example.com> 1 +0000\tx\n`,
+    );
+  };
+
+  const gitMatches = (stderr: string, line: RegExp): ReadonlyArray<string> =>
+    stderr.split('\n').flatMap((text) => {
+      const match = line.exec(text);
+      return match === null ? [] : [match.slice(1).join(' ')];
+    });
+
+  describe('Given invalid entries in the main HEAD, a shared branch and the linked HEAD reflogs', () => {
+    describe.each([{ from: 'main' as const }, { from: 'linked' as const }])(
+      'When git fsck and tsgit fsck run from the $from worktree',
+      ({ from }) => {
+        it(
+          'Then both report every worktree reflog, the shared one once per worktree, with exit 2',
+          async () => {
+            // Arrange
+            const repo = repoWithWorktree(`reflogs-${from}`);
+            const gitDir = path.join(repo.main, '.git');
+            const head = runGit(['-C', repo.main, 'rev-parse', 'HEAD']).trim();
+            const linkedAdmin = path.join(gitDir, 'worktrees', path.basename(repo.linked));
+            appendReflog(path.join(linkedAdmin, 'logs', 'HEAD'), ABSENT_IDS[0], head);
+            appendReflog(path.join(gitDir, 'logs', 'refs', 'heads', 'main'), ABSENT_IDS[1], head);
+            appendReflog(path.join(gitDir, 'logs', 'HEAD'), ABSENT_IDS[2], head);
+            const git = gitFsck(repo[from]);
+            const sut = tsgitFsck;
+
+            // Act
+            const result = await sut(repo[from]);
+
+            // Assert
+            expect(git.exitCode).toBe(2);
+            expect(result.exitCode).toBe(2);
+            expect(
+              result.findings.flatMap((f) =>
+                f.type === 'invalid-reflog-entry' ? [`${f.ref} ${f.id}`] : [],
+              ),
+            ).toEqual(gitMatches(git.stderr, REFLOG_LINE));
+          },
+          ROW_TIMEOUT,
+        );
+      },
+    );
+  });
+
+  describe('Given a blob only the linked worktree index names', () => {
+    describe('When git fsck and tsgit fsck run from the main worktree', () => {
+      it(
+        'Then neither reports it dangling',
+        async () => {
+          // Arrange
+          const repo = repoWithWorktree('index');
+          writeFileSync(path.join(repo.linked, 'w'), 'only in the linked index');
+          runGit(['-C', repo.linked, 'add', 'w']);
+          const git = gitFsck(repo.main);
+          const sut = tsgitFsck;
+
+          // Act
+          const result = await sut(repo.main);
+
+          // Assert
+          expect(git.exitCode).toBe(0);
+          expect(result.exitCode).toBe(0);
+          expect(danglingLines(result.findings)).toEqual(gitDanglingLines(git.stdout));
+          expect(danglingLines(result.findings)).toEqual([]);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe('Given a resolved conflict whose resolve-undo names one stored and one absent blob', () => {
+    describe.each([{ from: 'main' as const }, { from: 'linked' as const }])(
+      'When git fsck and tsgit fsck run from the $from worktree',
+      ({ from }) => {
+        it(
+          'Then both report the absent stage with exit 8 and keep the stored one reachable',
+          async () => {
+            // Arrange
+            const repo = repoWithWorktree(`resolve-undo-${from}`);
+            const stored = runGit(['-C', repo.main, 'hash-object', '-w', '--stdin'], {
+              input: 'ours',
+            }).trim();
+            const absent = runGit(['-C', repo.main, 'hash-object', '--stdin'], {
+              input: 'theirs',
+            }).trim();
+            runGit(['-C', repo.main, 'update-index', '--index-info'], {
+              input: `100644 ${stored} 2\tf\n100644 ${absent} 3\tf\n`,
+            });
+            writeFileSync(path.join(repo.main, 'f'), 'resolved');
+            runGit(['-C', repo.main, 'update-index', '--add', 'f']);
+            const git = gitFsck(repo[from]);
+            const sut = tsgitFsck;
+
+            // Act
+            const result = await sut(repo[from]);
+
+            // Assert
+            expect(git.exitCode).toBe(8);
+            expect(result.exitCode).toBe(8);
+            expect(
+              result.findings.flatMap((f) =>
+                f.type === 'invalid-resolve-undo-pointer' ? [f.id] : [],
+              ),
+            ).toEqual(gitMatches(git.stderr, RESOLVE_UNDO_LINE));
+            expect(danglingLines(result.findings)).toEqual(gitDanglingLines(git.stdout));
+          },
+          ROW_TIMEOUT,
+        );
+      },
+    );
+  });
+});
+
 describe.skipIf(!GIT_AVAILABLE)('fsck/gc interop — index entries', () => {
   const ABSENT_COMMIT = '1111111111111111111111111111111111111111';
 

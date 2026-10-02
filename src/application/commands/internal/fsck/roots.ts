@@ -2,9 +2,11 @@ import { TsgitError } from '../../../../domain/error.js';
 import { errorDataCode } from '../../../../domain/error-data-code.js';
 import type { CacheTreeEntry, GitIndex } from '../../../../domain/git-index/index-entry.js';
 import { parseCacheTree } from '../../../../domain/git-index/index-parser.js';
+import { parseResolveUndo } from '../../../../domain/git-index/resolve-undo.js';
 import type { ObjectId, RefName } from '../../../../domain/objects/index.js';
 import { FILE_MODE, zeroOid } from '../../../../domain/objects/index.js';
 import type { ReflogEntry } from '../../../../domain/reflog/reflog-entry.js';
+import { isPerWorktreeRef } from '../../../../domain/refs/per-worktree-ref.js';
 import { resolveWorktreePath } from '../../../../domain/worktree/resolve-path.js';
 import type { Context } from '../../../../ports/context.js';
 import { deriveContext } from '../../../primitives/derive-context.js';
@@ -21,6 +23,9 @@ import type { FsckOptions } from './types.js';
 const HEAD_REF = 'HEAD' as RefName;
 
 const CACHE_TREE_SIGNATURE = 'TREE';
+const RESOLVE_UNDO_SIGNATURE = 'REUC';
+const FILE_TYPE_MASK = 0o170000;
+const REGULAR_FILE_TYPE = 0o100000;
 
 /**
  * The only faults an index read or a cache-tree decode is allowed to be
@@ -209,12 +214,14 @@ interface CacheTreeWalk {
 
 const NO_CACHE_TREE: CacheTreeWalk = { unresolved: [], parsed: [] };
 
-/** The cache-tree walk, plus the index entries git looks up as blobs. */
+/** The cache-tree walk, plus the index entries git looks up as blobs and
+ *  the regular-file resolve-undo stages it parses. */
 interface IndexWalk extends CacheTreeWalk {
   readonly blobs: ReadonlyArray<ObjectId>;
+  readonly resolveUndo: ReadonlyArray<ObjectId>;
 }
 
-const NO_INDEX: IndexWalk = { ...NO_CACHE_TREE, blobs: [] };
+const NO_INDEX: IndexWalk = { ...NO_CACHE_TREE, blobs: [], resolveUndo: [] };
 
 /**
  * Walk the cache-tree, adding every entry's resolvable tree oid to `roots`
@@ -302,6 +309,17 @@ function cacheTreeOf(ctx: Context, index: GitIndex): CacheTreeEntry | undefined 
   }
 }
 
+/** Every regular-file stage id the index's `REUC` extension records — the
+ *  ones git's `fsck_resolve_undo` parses; a malformed extension git drops. */
+function resolveUndoIdsOf(ctx: Context, index: GitIndex): ReadonlyArray<ObjectId> {
+  const extension = index.extensions.find((ext) => ext.signature === RESOLVE_UNDO_SIGNATURE);
+  if (extension === undefined) return [];
+  const records = parseResolveUndo(extension.data, ctx.hashConfig.digestLength) ?? [];
+  return records.flatMap(({ stages }) =>
+    stages.filter(({ mode }) => (mode & FILE_TYPE_MASK) === REGULAR_FILE_TYPE).map(({ id }) => id),
+  );
+}
+
 /**
  * Add every index entry's oid to `roots` — every stage, never a gitlink, as
  * git's `fsck_index` and `add_index_objects_to_pending` both do — then walk the index's
@@ -328,33 +346,41 @@ async function addIndexRoots(
     .filter((entry) => entry.mode !== FILE_MODE.GITLINK)
     .map((entry) => entry.id);
   for (const id of blobs) roots.add(id);
+  const resolveUndo = resolveUndoIdsOf(ctx, index);
   const cacheTree = cacheTreeOf(ctx, index);
-  if (cacheTree === undefined) return { ...NO_CACHE_TREE, blobs };
-  return { ...(await walkCacheTree(ctx, cacheTree, roots, universe)), blobs };
+  if (cacheTree === undefined) return { ...NO_CACHE_TREE, blobs, resolveUndo };
+  return { ...(await walkCacheTree(ctx, cacheTree, roots, universe)), blobs, resolveUndo };
 }
 
 export interface RootsCollection {
   readonly roots: ReadonlySet<ObjectId>;
   /**
-   * Every cache-tree oid that fails to resolve, in git's pre-order — git's
-   * `invalid sha1 pointer in cache-tree`, each setting bit 8. No index, or
-   * an index with no cache-tree extension, yields none — vacuous absence is
-   * not a fault. Ref and reflog resolution have no bearing on it.
+   * Every cache-tree or resolve-undo oid that fails to resolve, index by
+   * index in git's worktree order — git's `invalid sha1 pointer in
+   * cache-tree` / `in resolve-undo`, each setting bit 8. No index, or one
+   * with neither extension, yields none — vacuous absence is not a fault.
+   * Ref and reflog resolution have no bearing on it.
    */
-  readonly invalidCacheTreeIds: ReadonlyArray<ObjectId>;
+  readonly invalidIndexPointers: ReadonlyArray<InvalidIndexPointer>;
   /**
    * A ref resolved to an oid absent from the universe. git's fsck probes
    * that target through the promisor machinery, which is what makes the
    * promisor-config gate fire on a repo whose ONLY ref is broken.
    */
   readonly sawAbsentRefTarget: boolean;
-  /** Every tree oid git's `fsck_cache_tree` parses: the cache-tree's
-   *  resolvable entries, whichever store holds them. */
-  readonly cacheTreeIds: ReadonlyArray<ObjectId>;
+  /** Every oid git's `fsck_index` parses: each index's resolvable
+   *  cache-tree and resolve-undo entries, whichever store holds them. */
+  readonly parsedIndexIds: ReadonlyArray<ObjectId>;
   /** Every index entry oid — git's `fsck_index` looks each one up as a blob. */
   readonly indexBlobIds: ReadonlySet<ObjectId>;
   /** Every reflog oid git's fsck never recorded as an object, in reflog order. */
   readonly invalidReflogEntries: ReadonlyArray<InvalidReflogEntry>;
+}
+
+/** An index pointer naming an object no store holds. */
+export interface InvalidIndexPointer {
+  readonly type: 'invalid-cache-tree-pointer' | 'invalid-resolve-undo-pointer';
+  readonly id: ObjectId;
 }
 
 /** A reflog side naming an object the run never recorded: git's `invalid reflog entry`. */
@@ -392,10 +418,94 @@ async function addRecordedReflogRoots(
   isRecorded: (id: ObjectId) => boolean,
 ): Promise<ReadonlyArray<InvalidReflogEntry>> {
   const zero = zeroOid(ctx.hashConfig);
-  const perReflog = await boundedMapFor(ctx, 'ioBound', await listReflogs(ctx), async (ref) =>
-    splitReflogEntries(ref, await readReflogIfOpenable(ctx, ref), isRecorded, roots, zero),
-  );
-  return perReflog.flat();
+  const invalid: InvalidReflogEntry[] = [];
+  for (const { ref: head, worktreeCtx } of await worktreeContexts(ctx)) {
+    const prefix = head.slice(0, -HEAD_REF.length);
+    const perReflog = await boundedMapFor(
+      ctx,
+      'ioBound',
+      await listReflogs(worktreeCtx),
+      async (ref) =>
+        splitReflogEntries(
+          worktreeRefName(prefix, ref),
+          await readReflogIfOpenable(worktreeCtx, ref),
+          isRecorded,
+          roots,
+          zero,
+        ),
+    );
+    invalid.push(...perReflog.flat());
+  }
+  return invalid;
+}
+
+/** `ref` as the current worktree names it: another worktree's own refs carry its prefix. */
+const worktreeRefName = (prefix: string, ref: RefName): RefName =>
+  (isPerWorktreeRef(ref) ? `${prefix}${ref}` : ref) as RefName;
+
+/** One index's resolve-undo stages: a present one is parsed and rooted, an absent one a fault. */
+async function addResolveUndoRoots(
+  ctx: Context,
+  ids: ReadonlyArray<ObjectId>,
+  roots: Set<ObjectId>,
+  universe: ReadonlySet<ObjectId>,
+): Promise<IndexFsck> {
+  const invalid: InvalidIndexPointer[] = [];
+  const parsed: ObjectId[] = [];
+  for (const id of ids) {
+    if ((await probePresence(ctx, id)) === false) {
+      invalid.push({ type: 'invalid-resolve-undo-pointer', id });
+      continue;
+    }
+    if (universe.has(id)) roots.add(id);
+    parsed.push(id);
+  }
+  return { invalid, parsed, blobs: [] };
+}
+
+/** What git's `fsck_index` makes of the indexes it reads. */
+interface IndexFsck {
+  readonly invalid: ReadonlyArray<InvalidIndexPointer>;
+  readonly parsed: ReadonlyArray<ObjectId>;
+  readonly blobs: ReadonlyArray<ObjectId>;
+}
+
+const NO_INDEX_FSCK: IndexFsck = { invalid: [], parsed: [], blobs: [] };
+
+/** git's `fsck_index` over one worktree's index: entries, cache-tree, then resolve-undo. */
+async function fsckOneIndex(
+  ctx: Context,
+  roots: Set<ObjectId>,
+  universe: ReadonlySet<ObjectId>,
+): Promise<IndexFsck> {
+  const walk = await addIndexRoots(ctx, roots, universe);
+  const undo = await addResolveUndoRoots(ctx, walk.resolveUndo, roots, universe);
+  return {
+    invalid: [
+      ...walk.unresolved.map((id) => ({ type: 'invalid-cache-tree-pointer' as const, id })),
+      ...undo.invalid,
+    ],
+    parsed: [...walk.parsed, ...undo.parsed],
+    blobs: walk.blobs,
+  };
+}
+
+/** git's index loop: every worktree's index, in `get_worktrees` order. */
+async function fsckEveryIndex(
+  ctx: Context,
+  roots: Set<ObjectId>,
+  universe: ReadonlySet<ObjectId>,
+): Promise<IndexFsck> {
+  let all = NO_INDEX_FSCK;
+  for (const { worktreeCtx } of await worktreeContexts(ctx)) {
+    const own = await fsckOneIndex(worktreeCtx, roots, universe);
+    all = {
+      invalid: [...all.invalid, ...own.invalid],
+      parsed: [...all.parsed, ...own.parsed],
+      blobs: [...all.blobs, ...own.blobs],
+    };
+  }
+  return all;
 }
 
 /**
@@ -420,12 +530,13 @@ export async function collectRoots(
   const sawAbsentHead = await addWorktreeHeadRoots(ctx, roots, universe);
   const invalidReflogEntries =
     opts.reflogRoots !== false ? await addRecordedReflogRoots(ctx, roots, isRecorded) : [];
-  const index = opts.indexRoot !== false ? await addIndexRoots(ctx, roots, universe) : NO_INDEX;
+  const index =
+    opts.indexRoot !== false ? await fsckEveryIndex(ctx, roots, universe) : NO_INDEX_FSCK;
   return {
     roots,
-    invalidCacheTreeIds: index.unresolved,
+    invalidIndexPointers: index.invalid,
     sawAbsentRefTarget: sawAbsentRef || sawAbsentHead,
-    cacheTreeIds: index.parsed,
+    parsedIndexIds: index.parsed,
     indexBlobIds: new Set(index.blobs),
     invalidReflogEntries,
   };

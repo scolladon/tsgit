@@ -65,6 +65,12 @@ export type FsckFinding =
       readonly type: 'invalid-cache-tree-pointer';
       readonly id: ObjectId;
     }
+  | {
+      /** A regular-file resolve-undo stage naming an object no store holds —
+       *  git's `invalid sha1 pointer in resolve-undo`; each one sets bit 8. */
+      readonly type: 'invalid-resolve-undo-pointer';
+      readonly id: ObjectId;
+    }
   | { readonly type: 'root'; readonly id: ObjectId }
   | {
       readonly type: 'tagged';
