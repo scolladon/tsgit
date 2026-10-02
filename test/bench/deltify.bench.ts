@@ -17,12 +17,16 @@
  * everything else a full gc also does.
  */
 import { createMemoryContext } from '../../src/adapters/memory/memory-adapter.js';
+import { buildPack } from '../../src/application/primitives/build-pack.js';
 import { DEFAULT_BIG_FILE_THRESHOLD_BYTES } from '../../src/application/primitives/internal/big-file-threshold.js';
 import { deltifyEntries } from '../../src/application/primitives/internal/deltify.js';
 import { writeObject } from '../../src/application/primitives/write-object.js';
 import type { Blob, ObjectId } from '../../src/domain/objects/index.js';
 import { resolveDeltaPolicy } from '../../src/domain/storage/delta-policy.js';
+import { openRepository } from '../../src/index.node.js';
 import { benchScenario } from './support/bench-dsl.js';
+import { MEDIUM_FIXTURE } from './support/fixture-generator.js';
+import { resolveScaledContext, scaledScenario } from './support/scaled-bench.js';
 
 const WASTED_SEARCH_BLOB_COUNT = 3_000;
 /** Matches `fixture-generator.ts`'s `MEDIUM_FIXTURE.blobBytes`. */
@@ -67,5 +71,27 @@ benchScenario(
       await deltifyEntries(ctx, objects, policy);
     };
     return { sut };
+  },
+);
+
+const BASE_ONLY_PACK_COMMITS = 1_000;
+
+const packCtx = await resolveScaledContext(MEDIUM_FIXTURE);
+
+// Base-only: every packed object takes a metadata read plus a raw read.
+scaledScenario(
+  packCtx,
+  'When buildPack() assembles commits without deltas, Then measure tsgit',
+  async (fixture) => {
+    const repo = await openRepository({ cwd: fixture.cwd });
+    const commits = await repo.log({ limit: BASE_ONLY_PACK_COMMITS });
+    const objects = commits.map((commit) => ({ id: commit.id }));
+
+    return {
+      teardown: () => repo.dispose(),
+      sut: async (): Promise<void> => {
+        await buildPack(repo.ctx, { objects });
+      },
+    };
   },
 );
