@@ -2,9 +2,10 @@ import { bytesEqual } from '../../../../domain/objects/encoding.js';
 import { type PackRevIndex, revIndexPositionAt } from '../../../../domain/storage/index.js';
 import type { Context } from '../../../../ports/context.js';
 import { packPositionMap } from '../../../primitives/internal/pack-positions.js';
+import { getObjectStore, type ObjectSource } from '../../../primitives/object-store.js';
 import { faultReason, type RegisteredPack } from '../../../primitives/pack-registry.js';
-import { getPackRegistry } from '../../../primitives/read-object.js';
 import { EXIT_PACK_REV_INDEX } from './exit-codes.js';
+import { attributeTo } from './source-attribution.js';
 import type { FsckFinding, FsckOptions } from './types.js';
 
 const REASON_REV_INDEX_CHECKSUM = 'invalid checksum';
@@ -103,15 +104,27 @@ export async function runRevIndexHealthPass(
   ctx: Context,
   _opts: FsckOptions,
 ): Promise<{ readonly findings: ReadonlyArray<FsckFinding>; readonly exitBit: number }> {
-  const registry = await getPackRegistry(ctx);
-  const packs = await registry.all();
-
+  const store = await getObjectStore(ctx);
   const findings: FsckFinding[] = [];
   let exitBit = 0;
-  for (const pack of packs) {
+  for (const source of store.sources) {
+    const sourceFindings: FsckFinding[] = [];
+    exitBit |= await checkSourcePacks(ctx, source, sourceFindings);
+    const attribution = attributeTo(store, source);
+    for (const finding of sourceFindings) findings.push({ ...finding, ...attribution });
+  }
+  return { findings, exitBit };
+}
+
+async function checkSourcePacks(
+  ctx: Context,
+  source: ObjectSource,
+  findings: FsckFinding[],
+): Promise<number> {
+  let exitBit = 0;
+  for (const pack of await source.registry.all()) {
     if (!pack.hasRevIndex) continue;
     if (await checkOnePack(ctx, findings, pack)) exitBit = EXIT_PACK_REV_INDEX;
   }
-
-  return { findings, exitBit };
+  return exitBit;
 }

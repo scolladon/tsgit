@@ -9,7 +9,11 @@ import { packPositionMap } from '../../../../../../src/application/primitives/in
 import { permissionDenied } from '../../../../../../src/domain/error.js';
 import { entryOffsets, parsePackIndex } from '../../../../../../src/domain/storage/index.js';
 import type { Context } from '../../../../../../src/ports/context.js';
-import { writeSyntheticPack, writeSyntheticRevIndex } from '../../../primitives/pack-fixture.js';
+import {
+  writeSyntheticPack,
+  writeSyntheticPackIn,
+  writeSyntheticRevIndex,
+} from '../../../primitives/pack-fixture.js';
 
 const sut = runRevIndexHealthPass;
 
@@ -33,6 +37,11 @@ const manyPackEntries = (n: number, prefix: string) =>
  *  same reference `runRevIndexHealthPass` itself compares against. */
 async function correctBody(ctx: Context, name: string): Promise<Uint32Array> {
   const idxBytes = await ctx.fs.read(idxFilePath(ctx, name));
+  return packPositionMap(parsePackIndex(idxBytes, 20));
+}
+
+async function correctBodyAt(ctx: Context, objectsDir: string, name: string): Promise<Uint32Array> {
+  const idxBytes = await ctx.fs.read(`${objectsDir}/pack/pack-${name}.idx`);
   return packPositionMap(parsePackIndex(idxBytes, 20));
 }
 
@@ -662,6 +671,92 @@ describe('Given two packs each with a corrupt .rev', () => {
       expect(invalid).toHaveLength(2);
       expect(invalid.map((f) => f.pack).sort()).toEqual(['pack-two-a', 'pack-two-b']);
       expect(result.exitBit).toBe(64);
+    });
+  });
+});
+
+const DONOR_OBJECTS = '/repo/donor/objects';
+
+const borrowerContext = async (): Promise<Context> => {
+  const ctx = createMemoryContext({
+    files: { '/repo/.git/objects/info/alternates': enc.encode(`${DONOR_OBJECTS}\n`) },
+  });
+  await ctx.fs.mkdir(DONOR_OBJECTS);
+  return ctx;
+};
+
+const moveRevToDonor = async (ctx: Context, name: string): Promise<void> => {
+  const from = `${ctx.layout.gitDir}/objects/pack/pack-${name}.rev`;
+  await ctx.fs.write(`${DONOR_OBJECTS}/pack/pack-${name}.rev`, await ctx.fs.read(from));
+  await ctx.fs.rm(from);
+};
+
+describe('Given a donor pack whose .rev trailer is corrupt', () => {
+  describe('When the rev-index health pass runs', () => {
+    it('Then the invalid finding carries the donor objects dir and bit 64 is set', async () => {
+      // Arrange
+      const ctx = await borrowerContext();
+      await writeSyntheticPackIn(ctx, DONOR_OBJECTS, 'donor-rev', onePackEntry('donor-rev'));
+      await writeSyntheticRevIndex(ctx, 'donor-rev', [0], { flipChecksum: true });
+      await moveRevToDonor(ctx, 'donor-rev');
+
+      // Act
+      const result = await sut(ctx, {});
+
+      // Assert
+      expect(result.findings).toEqual([
+        {
+          type: 'pack-rev-index-invalid',
+          pack: 'pack-donor-rev',
+          reason: 'invalid checksum',
+          objectsDir: DONOR_OBJECTS,
+        },
+      ]);
+      expect(result.exitBit).toBe(64);
+    });
+  });
+});
+
+describe('Given a donor pack whose .rev body disagrees with its .idx', () => {
+  describe('When the rev-index health pass runs', () => {
+    it('Then the position-mismatch findings carry the donor objects dir', async () => {
+      // Arrange
+      const ctx = await borrowerContext();
+      await writeSyntheticPackIn(
+        ctx,
+        DONOR_OBJECTS,
+        'donor-body',
+        manyPackEntries(2, 'donor-body'),
+      );
+      const correct = await correctBodyAt(ctx, DONOR_OBJECTS, 'donor-body');
+      await writeSyntheticRevIndex(ctx, 'donor-body', [...correct].reverse());
+      await moveRevToDonor(ctx, 'donor-body');
+
+      // Act
+      const result = await sut(ctx, {});
+
+      // Assert
+      const mismatches = findingsOfType(result, 'pack-rev-index-position-mismatch');
+      expect(mismatches.length).toBeGreaterThan(0);
+      expect(mismatches.every((f) => f.objectsDir === DONOR_OBJECTS)).toBe(true);
+    });
+  });
+});
+
+describe('Given a primary pack whose .rev trailer is corrupt while a donor exists', () => {
+  describe('When the rev-index health pass runs', () => {
+    it('Then the finding carries no objectsDir key', async () => {
+      // Arrange
+      const ctx = await borrowerContext();
+      await writeSyntheticPack(ctx, 'own-rev', onePackEntry('own-rev'));
+      await writeSyntheticRevIndex(ctx, 'own-rev', [0], { flipChecksum: true });
+
+      // Act
+      const result = await sut(ctx, {});
+
+      // Assert
+      expect(result.findings).toHaveLength(1);
+      expect('objectsDir' in result.findings[0]!).toBe(false);
     });
   });
 });

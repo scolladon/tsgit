@@ -1,8 +1,9 @@
 import type { Context } from '../../../../ports/context.js';
 import type { MidxFault } from '../../../primitives/internal/midx-source.js';
-import { faultReason } from '../../../primitives/pack-registry.js';
-import { getPackRegistry } from '../../../primitives/read-object.js';
+import { getObjectStore, type ObjectSource } from '../../../primitives/object-store.js';
+import { faultReason, type MidxHealth } from '../../../primitives/pack-registry.js';
 import { EXIT_MULTI_PACK_INDEX } from './exit-codes.js';
+import { attributeTo } from './source-attribution.js';
 import type { FsckFinding, FsckOptions } from './types.js';
 
 // The only two `MidxCheck` members a load-time parse never settles: the
@@ -39,47 +40,54 @@ export async function runMidxHealthPass(
   ctx: Context,
   _opts: FsckOptions,
 ): Promise<{ readonly findings: ReadonlyArray<FsckFinding>; readonly exitBit: number }> {
-  const registry = await getPackRegistry(ctx);
-  const health = await registry.midxHealth();
-
+  const store = await getObjectStore(ctx);
   const findings: FsckFinding[] = [];
   let exitBit = 0;
+  for (const source of store.sources) {
+    const attribution = attributeTo(store, source);
+    const sourceFindings = await reportSourceMidx(source);
+    for (const finding of sourceFindings) findings.push({ ...finding, ...attribution });
+    if (sourceFindings.length > 0) exitBit |= EXIT_MULTI_PACK_INDEX;
+  }
+  return { findings, exitBit };
+}
 
-  const containedFault = health.faults.find(isContainedMidxFault);
+async function reportSourceMidx(source: ObjectSource): Promise<ReadonlyArray<FsckFinding>> {
+  const health = await source.registry.midxHealth();
+  const unusable = unusableFinding(health);
+  const verdicts = health.artefact === undefined ? [] : artefactFindings(health, health.artefact);
+  return unusable === undefined ? verdicts : [unusable, ...verdicts];
+}
+
+function unusableFinding(health: MidxHealth): FsckFinding | undefined {
   if (health.artefact === undefined && health.flatFilePresent) {
     // The flat file exists but nothing usable survived — its own discard
     // fault is always faults[0] here: the flat candidate is tried, and
     // recorded, before the chain ever is.
     const flatFault = health.faults[0]!;
-    findings.push({
+    return {
       type: 'midx-unusable',
       artefact: flatFault.artefact,
       reason: faultReason(flatFault.data),
-    });
-    exitBit |= EXIT_MULTI_PACK_INDEX;
-  } else if (containedFault !== undefined) {
-    findings.push({
-      type: 'midx-unusable',
-      artefact: containedFault.artefact,
-      reason: faultReason(containedFault.data),
-    });
-    exitBit |= EXIT_MULTI_PACK_INDEX;
+    };
   }
+  const containedFault = health.faults.find(isContainedMidxFault);
+  if (containedFault === undefined) return undefined;
+  return {
+    type: 'midx-unusable',
+    artefact: containedFault.artefact,
+    reason: faultReason(containedFault.data),
+  };
+}
 
-  if (health.artefact !== undefined) {
-    if (health.checksumOk === false) {
-      findings.push({ type: 'midx-checksum-mismatch', artefact: health.artefact });
-      exitBit |= EXIT_MULTI_PACK_INDEX;
-    }
-    for (const unresolved of health.unresolvedPacks) {
-      findings.push({ type: 'midx-pack-unresolved', artefact: health.artefact, ...unresolved });
-      exitBit |= EXIT_MULTI_PACK_INDEX;
-    }
-    for (const id of health.unresolvedEntries) {
-      findings.push({ type: 'midx-entry-unresolved', artefact: health.artefact, id });
-      exitBit |= EXIT_MULTI_PACK_INDEX;
-    }
+function artefactFindings(health: MidxHealth, artefact: string): ReadonlyArray<FsckFinding> {
+  const findings: FsckFinding[] = [];
+  if (health.checksumOk === false) findings.push({ type: 'midx-checksum-mismatch', artefact });
+  for (const unresolved of health.unresolvedPacks) {
+    findings.push({ type: 'midx-pack-unresolved', artefact, ...unresolved });
   }
-
-  return { findings, exitBit };
+  for (const id of health.unresolvedEntries) {
+    findings.push({ type: 'midx-entry-unresolved', artefact, id });
+  }
+  return findings;
 }

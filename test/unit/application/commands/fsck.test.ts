@@ -58,6 +58,7 @@ import {
   restampPackHeader,
   writeSyntheticBitmap,
   writeSyntheticPack,
+  writeSyntheticPackIn,
   writeSyntheticRevIndex,
 } from '../primitives/pack-fixture.js';
 import { findingIds } from './fsck-finding-ids.js';
@@ -8469,6 +8470,106 @@ describe('Given a borrower whose donor carries a corrupt multi-pack-index', () =
 
       // Assert
       expect(data).toMatchObject({ code: 'INVALID_MULTI_PACK_INDEX' });
+    });
+  });
+});
+
+describe('Given a borrower whose donor holds a pack that fails its header gate', () => {
+  describe('When fsck runs', () => {
+    it('Then the pack-inaccessible finding carries the donor objects dir', async () => {
+      // Arrange
+      const ctx = await borrowerContext();
+      await writeSyntheticPackIn(
+        ctx,
+        DONOR_OBJECTS,
+        'donor-refused',
+        onePackEntry('donor-refused'),
+      );
+      await restampPackHeader(ctx, `${DONOR_OBJECTS}/pack/pack-donor-refused.pack`, {
+        version: 99,
+      });
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      const inaccessible = result.findings.filter((f) => f.type === 'pack-inaccessible');
+      expect(inaccessible).toEqual([
+        {
+          type: 'pack-inaccessible',
+          pack: 'pack-donor-refused',
+          reason: expect.any(String),
+          objectsDir: DONOR_OBJECTS,
+        },
+      ]);
+      expect(result.exitCode & 4).toBe(4);
+    });
+  });
+});
+
+describe('Given a borrower whose own pack fails its header gate while it has a donor', () => {
+  describe('When fsck runs', () => {
+    it('Then the pack-inaccessible finding carries no objectsDir key', async () => {
+      // Arrange
+      const ctx = await borrowerContext();
+      await writeSyntheticPack(ctx, 'own-refused', onePackEntry('own-refused'));
+      await restampPackHeader(ctx, packFilePath(ctx, 'own-refused'), { version: 99 });
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      const inaccessible = result.findings.filter((f) => f.type === 'pack-inaccessible');
+      expect(inaccessible).toHaveLength(1);
+      expect('objectsDir' in inaccessible[0]!).toBe(false);
+    });
+  });
+});
+
+describe('Given a borrower whose donor multi-pack-index trailer disagrees with its bytes', () => {
+  describe('When fsck runs', () => {
+    it('Then the midx-checksum-mismatch finding carries the donor objects dir and bit 32 is set', async () => {
+      // Arrange
+      const ctx = await borrowerContext();
+      const good = await stampMidxTrailer(ctx, buildMidx(midxBaseSpec()));
+      const flipped = good.slice();
+      flipped[flipped.length - 1] = (flipped[flipped.length - 1]! ^ 0xff) & 0xff;
+      await ctx.fs.write(multiPackIndexPath(`${DONOR_OBJECTS}/pack`), flipped);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      const mismatches = result.findings.filter((f) => f.type === 'midx-checksum-mismatch');
+      expect(mismatches).toEqual([
+        { type: 'midx-checksum-mismatch', artefact: 'multi-pack-index', objectsDir: DONOR_OBJECTS },
+      ]);
+      expect(result.exitCode & 32).toBe(32);
+    });
+  });
+});
+
+describe('Given a borrower whose own multi-pack-index trailer is corrupt while a donor exists', () => {
+  describe('When fsck runs', () => {
+    it('Then the midx-checksum-mismatch finding carries no objectsDir key', async () => {
+      // Arrange
+      const ctx = await borrowerContext();
+      const good = await stampMidxTrailer(ctx, buildMidx(midxBaseSpec()));
+      const flipped = good.slice();
+      flipped[flipped.length - 1] = (flipped[flipped.length - 1]! ^ 0xff) & 0xff;
+      await ctx.fs.write(multiPackIndexPath(midxDir(ctx)), flipped);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      const mismatches = result.findings.filter((f) => f.type === 'midx-checksum-mismatch');
+      expect(mismatches).toHaveLength(1);
+      expect('objectsDir' in mismatches[0]!).toBe(false);
     });
   });
 });

@@ -68,24 +68,32 @@ export type FsckFinding =
        */
       readonly pack: string;
       readonly reason: string;
+      /** The alternate's objects dir the finding came from; absent for the primary. */
+      readonly objectsDir?: string;
     }
   | {
       readonly type: 'pack-index-unusable';
       /** Pack base name (`pack-<sha>`) — see `pack-inaccessible`'s doc-comment. */
       readonly pack: string;
       readonly reason: string;
+      /** The alternate's objects dir the finding came from; absent for the primary. */
+      readonly objectsDir?: string;
     }
   | {
       readonly type: 'pack-rev-index-unusable';
       /** Pack base name (`pack-<sha>`) — see `pack-inaccessible`'s doc-comment. */
       readonly pack: string;
       readonly reason: string;
+      /** The alternate's objects dir the finding came from; absent for the primary. */
+      readonly objectsDir?: string;
     }
   | {
       readonly type: 'pack-rev-index-invalid';
       /** Pack base name (`pack-<sha>`) — see `pack-inaccessible`'s doc-comment. */
       readonly pack: string;
       readonly reason: string;
+      /** The alternate's objects dir the finding came from; absent for the primary. */
+      readonly objectsDir?: string;
     }
   | {
       readonly type: 'pack-rev-index-position-mismatch';
@@ -97,6 +105,8 @@ export type FsckFinding =
       readonly expected: number;
       /** The index position the `.rev` file actually stores at `position`. */
       readonly stored: number;
+      /** The alternate's objects dir the finding came from; absent for the primary. */
+      readonly objectsDir?: string;
     }
   | {
       readonly type: 'midx-unusable';
@@ -104,12 +114,16 @@ export type FsckFinding =
        *  layer's own file name. */
       readonly artefact: string;
       readonly reason: string;
+      /** The alternate's objects dir the finding came from; absent for the primary. */
+      readonly objectsDir?: string;
     }
   | {
       readonly type: 'midx-checksum-mismatch';
       /** The artefact this verdict is about — always the flat file or the
        *  chain head; a base layer's trailer is never verified. */
       readonly artefact: string;
+      /** The alternate's objects dir the finding came from; absent for the primary. */
+      readonly objectsDir?: string;
     }
   | {
       readonly type: 'midx-pack-unresolved';
@@ -118,11 +132,15 @@ export type FsckFinding =
       readonly position: number;
       /** Pack base name (`pack-<sha>`) — see `pack-inaccessible`'s doc-comment. */
       readonly pack: string;
+      /** The alternate's objects dir the finding came from; absent for the primary. */
+      readonly objectsDir?: string;
     }
   | {
       readonly type: 'midx-entry-unresolved';
       readonly artefact: string;
       readonly id: ObjectId;
+      /** The alternate's objects dir the finding came from; absent for the primary. */
+      readonly objectsDir?: string;
     }
   | {
       readonly type: 'bitmap-checksum-mismatch';

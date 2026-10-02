@@ -1,7 +1,8 @@
 import type { Context } from '../../../../ports/context.js';
+import { getObjectStore, type ObjectSource } from '../../../primitives/object-store.js';
 import { faultReason } from '../../../primitives/pack-registry.js';
-import { getPackRegistry } from '../../../primitives/read-object.js';
 import { EXIT_PACK, EXIT_PACK_REV_INDEX } from './exit-codes.js';
+import { attributeTo } from './source-attribution.js';
 import type { FsckFinding, FsckOptions } from './types.js';
 
 /**
@@ -31,11 +32,26 @@ export async function runPackHealthPass(
   ctx: Context,
   opts: FsckOptions,
 ): Promise<{ readonly findings: ReadonlyArray<FsckFinding>; readonly exitBit: number }> {
-  const registry = await getPackRegistry(ctx);
-  const gated = packAccessibilityReported(opts);
-  const unusable = gated ? (await registry.health()).unusable : await registry.indexFaults();
-
+  const store = await getObjectStore(ctx);
   const findings: FsckFinding[] = [];
+  let exitBit = 0;
+  for (const source of store.sources) {
+    const attribution = attributeTo(store, source);
+    exitBit |= await reportSourcePacks(source, opts, attribution, findings);
+  }
+  return { findings, exitBit };
+}
+
+async function reportSourcePacks(
+  source: ObjectSource,
+  opts: FsckOptions,
+  attribution: { readonly objectsDir?: string },
+  findings: FsckFinding[],
+): Promise<number> {
+  const gated = packAccessibilityReported(opts);
+  const unusable = gated
+    ? (await source.registry.health()).unusable
+    : await source.registry.indexFaults();
   let exitBit = 0;
 
   for (const entry of unusable) {
@@ -46,15 +62,16 @@ export async function runPackHealthPass(
         type: entry.layer === 'index' ? 'pack-index-unusable' : 'pack-inaccessible',
         pack: entry.name,
         reason,
+        ...attribution,
       });
       exitBit |= EXIT_PACK;
     }
 
     if (entry.layer === 'index') {
-      findings.push({ type: 'pack-rev-index-unusable', pack: entry.name, reason });
+      findings.push({ type: 'pack-rev-index-unusable', pack: entry.name, reason, ...attribution });
       exitBit |= EXIT_PACK_REV_INDEX;
     }
   }
 
-  return { findings, exitBit };
+  return exitBit;
 }
