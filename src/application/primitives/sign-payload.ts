@@ -4,8 +4,8 @@ import type { Context } from '../../ports/context.js';
 import { sqQuote } from './internal/shell-quote.js';
 import { getSpawnCwd } from './path-layout.js';
 
-const DEFAULT_OPENPGP_PROGRAM = 'gpg';
-const DEFAULT_SSH_PROGRAM = 'ssh-keygen';
+export const DEFAULT_OPENPGP_PROGRAM = 'gpg';
+export const DEFAULT_SSH_PROGRAM = 'ssh-keygen';
 const SSH_SIGNING_BUFFER_PATH_SUFFIX = 'GIT_SIGNING_BUFFER';
 
 const EMPTY = new Uint8Array(0);
