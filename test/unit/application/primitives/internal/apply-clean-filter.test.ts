@@ -289,18 +289,27 @@ describe('applyCleanFilter', () => {
 
   describe('Given a required driver whose process is empty and whose clean command is set', () => {
     describe('When cleaning', () => {
-      it('Then the clean command runs, as an empty process names none', async () => {
+      it('Then nothing runs and the clean dies, as a set process shadows the clean command', async () => {
         // Arrange
         const ctx = createMemoryContext();
         const { runner, requests } = scriptedRunner(enc('CLEANED'));
         const sut = applyCleanFilter;
 
         // Act
-        const result = await sut(ctx, runner, PATH, RAW, processDriver(true, ''));
+        let caught: unknown;
+        try {
+          await sut(ctx, runner, PATH, RAW, processDriver(true, ''));
+        } catch (error) {
+          caught = error;
+        }
 
         // Assert
-        expect(dec(result)).toBe('CLEANED');
-        expect(requests.map((r) => r.command)).toEqual(['clean-cmd']);
+        expect((caught as TsgitError).data).toEqual({
+          code: 'CLEAN_FILTER_FAILED',
+          path: PATH,
+          filter: 'd',
+        });
+        expect(requests).toEqual([]);
       });
     });
   });

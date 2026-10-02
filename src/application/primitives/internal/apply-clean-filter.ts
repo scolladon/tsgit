@@ -4,6 +4,7 @@ import type { CommandRunner } from '../../../ports/command-runner.js';
 import type { Context } from '../../../ports/context.js';
 import type { FilterChoice } from '../resolve-filter-driver.js';
 import { type FilterDriverResult, runFilterDriver } from '../run-filter-driver.js';
+import { pickFilterCommand } from './pick-filter-command.js';
 import { runFilterProcess } from './run-filter-process.js';
 
 /** The outcome of a driver that configures no clean command: nothing ran. */
@@ -11,18 +12,18 @@ const NOTHING_RAN = { ok: false, exitCode: undefined } as const;
 
 type CleanOutcome = FilterDriverResult | { readonly ok: false; readonly exitCode: undefined };
 
-const isNamed = (command: string | undefined): command is string =>
-  command !== undefined && command !== '';
-
-/** `apply_filter`'s pick: a named `process` wins over a named `clean`. */
+/** `apply_filter`'s pick: a set `process` shadows the `clean` command. */
 const runCleanCommand = (
   ctx: Context,
   runner: CommandRunner,
   { path, bytes, choice }: CleanRequest,
 ): Promise<CleanOutcome> => {
-  if (isNamed(choice.process)) return runFilterProcess(ctx, runner, choice.process, path, bytes);
-  if (isNamed(choice.clean)) return runFilterDriver(ctx, runner, choice.clean, bytes);
-  return Promise.resolve(NOTHING_RAN);
+  const picked = pickFilterCommand(choice.process, choice.clean);
+  if (picked === undefined) return Promise.resolve(NOTHING_RAN);
+  if (picked.kind === 'process') {
+    return runFilterProcess(ctx, runner, picked.command, { capability: 'clean', path, bytes });
+  }
+  return runFilterDriver(ctx, runner, picked.command, bytes);
 };
 
 interface CleanRequest {
@@ -32,8 +33,8 @@ interface CleanRequest {
 }
 
 /**
- * git's `convert_to_git` clean step for a resolved driver. An empty or absent
- * process and clean command run nothing; a required driver then dies exactly as when its
+ * git's `convert_to_git` clean step for a resolved driver. An empty process,
+ * or no process and an empty or absent clean command, run nothing; a required driver then dies exactly as when its
  * command fails (`<path>: clean filter '<d>' failed`), while an optional one
  * keeps the raw bytes either way.
  */

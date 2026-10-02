@@ -21,11 +21,7 @@
  * guard is the one whole-changeset exception, matching git's own two-phase
  * split between index-build validation and the write phase.
  */
-import {
-  checkoutOverwriteDirty,
-  smudgeFilterFailed,
-  type WouldOverwriteClasses,
-} from '../../domain/commands/error.js';
+import { checkoutOverwriteDirty, type WouldOverwriteClasses } from '../../domain/commands/error.js';
 import { comparePaths } from '../../domain/diff/index.js';
 import { TsgitError } from '../../domain/error.js';
 import { type IndexEntry, STAGE0_FLAGS } from '../../domain/git-index/index.js';
@@ -39,6 +35,7 @@ import {
 import type { CommandRunner } from '../../ports/command-runner.js';
 import type { Context } from '../../ports/context.js';
 import type { Changeset, ChangesetEntry } from './compute-changeset.js';
+import { applySmudgeFilter, smudgesInCore } from './internal/apply-smudge-filter.js';
 import { boundedMapFor, limiterFor } from './internal/concurrency.js';
 import type { ConcurrencyLimiter } from './internal/concurrency-limiter.js';
 import { joinPath } from './internal/join-working-tree-path.js';
@@ -57,7 +54,6 @@ import {
 import { everySourceLoadable } from './object-store.js';
 import { readBlob } from './read-blob.js';
 import { resolveFilterDriver } from './resolve-filter-driver.js';
-import { runFilterDriver } from './run-filter-driver.js';
 
 export interface ApplyChangesetOpts {
   readonly changeset: Changeset;
@@ -232,26 +228,18 @@ const writeBlobToWorkingTree = async (
     const choice = await resolveFilterDriver(ctx, provider, path, {
       eagerSectionValidation: true,
     });
-    if (choice.kind === 'external' && choice.smudge !== undefined) {
+    if (smudgesInCore(choice)) {
       const blob = await readBlob(ctx, id);
-      const smudge = choice.smudge;
       // A smudge filter spawns a subprocess — CPU/process-bound, not
       // blocking-fd-bound — so it must not inherit the write wave's wider
       // ioBound budget: `filterLimiter` is sized off cpuBound and
       // shared for the whole changeset apply, bounding how many subprocess
       // spawns run at once regardless of how many writes the ioBound pool
       // has in flight. The write itself, below, stays on the full pool.
-      const result = await filterLimiter.run(() =>
-        runFilterDriver(ctx, command, smudge, blob.content),
+      const content = await filterLimiter.run(() =>
+        applySmudgeFilter(ctx, command, { path, blob: id, bytes: blob.content }, choice),
       );
-      if (!result.ok) {
-        if (choice.required) {
-          throw smudgeFilterFailed(path, choice.name, result.exitCode);
-        }
-        await writeWorkingTreeEntry(ctx, path, blob.content, mode, scanner);
-        return;
-      }
-      await writeWorkingTreeEntry(ctx, path, result.bytes, mode, scanner);
+      await writeWorkingTreeEntry(ctx, path, content, mode, scanner);
       return;
     }
   }

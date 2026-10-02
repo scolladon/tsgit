@@ -34028,7 +34028,16 @@
 											"variant": "declaration",
 											"kind": 1024,
 											"flags": {
+												"isOptional": true,
 												"isReadonly": true
+											},
+											"comment": {
+												"summary": [
+													{
+														"kind": "text",
+														"text": "Absent when the driver ran no smudge command, or its process answered no smudge."
+													}
+												]
 											},
 											"type": {
 												"type": "intrinsic",

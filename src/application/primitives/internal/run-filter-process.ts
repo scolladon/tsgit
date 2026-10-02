@@ -1,5 +1,5 @@
 import { concatBytes } from '../../../domain/objects/encoding.js';
-import type { FilePath } from '../../../domain/objects/object-id.js';
+import type { FilePath, ObjectId } from '../../../domain/objects/object-id.js';
 import {
   encodePktLine,
   encodePktStream,
@@ -19,7 +19,6 @@ const DECODER = new TextDecoder();
 const CLIENT_GREETING = ['git-filter-client\n', 'version=2\n'];
 const CLIENT_CAPABILITIES = ['capability=clean\n', 'capability=smudge\n', 'capability=delay\n'];
 const SERVER_GREETING = ['git-filter-server', 'version=2'];
-const CLEAN_CAPABILITY = 'capability=clean';
 const SUCCESS = 'success';
 const STATUS_PREFIX = 'status=';
 
@@ -35,12 +34,25 @@ const contentFrames = (bytes: Uint8Array): ReadonlyArray<Uint8Array> => {
 const textStream = (lines: ReadonlyArray<string>): Uint8Array =>
   encodePktStream(lines.map((line) => ENCODER.encode(line)));
 
-/** Everything git writes to a process filter for one clean, in order. */
-const cleanRequest = (path: FilePath, bytes: Uint8Array): Uint8Array =>
+/** One conversion asked of a process filter. */
+export interface FilterProcessRequest {
+  readonly capability: 'clean' | 'smudge';
+  readonly path: FilePath;
+  readonly bytes: Uint8Array;
+  /** The blob a smudge checks out — git's `blob=` metadata. */
+  readonly blob?: ObjectId;
+}
+
+/** Everything git writes to a process filter for one conversion, in order. */
+const encodeRequest = ({ capability, path, bytes, blob }: FilterProcessRequest): Uint8Array =>
   concatBytes([
     textStream(CLIENT_GREETING),
     textStream(CLIENT_CAPABILITIES),
-    textStream(['command=clean\n', `pathname=${path}\n`]),
+    textStream([
+      `command=${capability}\n`,
+      `pathname=${path}\n`,
+      ...(blob === undefined ? [] : [`blob=${blob}\n`]),
+    ]),
     ...contentFrames(bytes),
     FLUSH_PKT,
   ]);
@@ -88,55 +100,55 @@ const statusOf = (section: ReadonlyArray<Uint8Array> | undefined, previous: stri
     .filter((line) => line.startsWith(STATUS_PREFIX))
     .reduce((_, line) => line.slice(STATUS_PREFIX.length), previous);
 
-const greetedAsCleaner = (
-  greeting: ReadonlyArray<Uint8Array> | undefined,
-  capabilities: ReadonlyArray<Uint8Array> | undefined,
+const greetedWith = (
+  [greeting, capabilities]: ReadonlyArray<ReadonlyArray<Uint8Array> | undefined>,
+  capability: FilterProcessRequest['capability'],
 ): boolean => {
   const greetingLines = lines(greeting);
   return (
     greetingLines.length === SERVER_GREETING.length &&
     greetingLines.every((line, index) => line === SERVER_GREETING[index]) &&
-    lines(capabilities).includes(CLEAN_CAPABILITY)
+    lines(capabilities).includes(`capability=${capability}`)
   );
 };
 
-/** The cleaned bytes from a well-formed, successful response — git reads an
+/** The converted bytes from a well-formed, successful response — git reads an
  *  end of file before any flush it waits on as a failure. */
-const cleanedContent = (
+const convertedContent = (
   sections: ReadonlyArray<ReadonlyArray<Uint8Array>>,
+  capability: FilterProcessRequest['capability'],
 ): Uint8Array | undefined => {
-  const [greeting, capabilities, status, content, trailingStatus] = sections;
-  if (!greetedAsCleaner(greeting, capabilities) || statusOf(status, '') !== SUCCESS)
-    return undefined;
+  const [, , status, content, trailingStatus] = sections;
+  if (!greetedWith(sections, capability) || statusOf(status, '') !== SUCCESS) return undefined;
   if (content === undefined || trailingStatus === undefined) return undefined;
   return statusOf(trailingStatus, SUCCESS) === SUCCESS ? concatBytes(content) : undefined;
 };
 
 /**
- * git's `apply_multi_file_filter` for one clean, over a single run of the
- * `filter.<d>.process` command: the v2 handshake, the request and its
+ * git's `apply_multi_file_filter` for one clean or smudge, over a single run
+ * of the `filter.<d>.process` command: the v2 handshake, the request and its
  * content are written up front, and the response is read once the process
  * exits — git keeps one process per driver across paths, this runs one per
- * clean. A failed handshake, a missing clean capability, a non-success
- * status or a malformed frame all fail the clean, as in git.
+ * conversion. A failed handshake, a missing capability, a non-success
+ * status or a malformed frame all fail the conversion, as in git.
  */
 export const runFilterProcess = async (
   ctx: Context,
   runner: CommandRunner,
   command: string,
-  path: FilePath,
-  bytes: Uint8Array,
+  request: FilterProcessRequest,
 ): Promise<FilterDriverResult | { readonly ok: false; readonly exitCode: undefined }> => {
   const result = await runner.run({
     command,
     cwd: getSpawnCwd(ctx.layout),
     env: { GIT_DIR: ctx.layout.gitDir },
-    stdin: cleanRequest(path, bytes),
+    stdin: encodeRequest(request),
     ...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),
   });
   const sections = responseSections(result.stdout ?? new Uint8Array(0));
-  const cleaned = sections === undefined ? undefined : cleanedContent(sections);
-  if (cleaned !== undefined) return { ok: true, bytes: cleaned };
+  const converted =
+    sections === undefined ? undefined : convertedContent(sections, request.capability);
+  if (converted !== undefined) return { ok: true, bytes: converted };
   // A long-running filter's own exit status is never what git checks; it is
   // reported only when it explains an unusable response.
   return { ok: false, exitCode: result.exitCode === 0 ? undefined : result.exitCode };

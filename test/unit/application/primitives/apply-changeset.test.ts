@@ -1257,7 +1257,7 @@ describe('applyChangeset', () => {
 
   describe('Given a regular file add with a clean-only filter (no smudge configured) and a runner', () => {
     describe('When applyChangeset runs with an identity smudge', () => {
-      it('Then the worktree file contains the verbatim blob bytes and locateBlob is used', async () => {
+      it('Then the worktree file contains the verbatim blob bytes and no command runs', async () => {
         // Arrange — clean-only filter: smudge is absent → identity
         const ctx = await buildSeededContext();
         const blobContent = enc('HELLO WORLD');
@@ -1269,8 +1269,6 @@ describe('applyChangeset', () => {
         );
         const runner = new FakeSmudgeRunner(0, lowercase);
         const enrichedCtx: Context = { ...ctx, command: runner };
-        const locateBlobSpy = vi.spyOn(blobSourceMod, 'locateBlob');
-        const writeStreamSpy = vi.spyOn(writeFileMod, 'writeWorkingTreeEntryStream');
         // Act
         await applyChangeset(enrichedCtx, {
           changeset: makeChangeset([makeAdd('a.y', id)]),
@@ -1278,15 +1276,110 @@ describe('applyChangeset', () => {
           workdir: WORKDIR,
         });
 
-        // Assert — identity: verbatim blob bytes; streaming path taken; runner not invoked
+        // Assert
         const written = await ctx.fs.read(`${WORKDIR}/a.y`);
         expect(dec(written)).toBe('HELLO WORLD');
-        expect(locateBlobSpy).toHaveBeenCalledOnce();
-        expect(writeStreamSpy).toHaveBeenCalledOnce();
         expect(runner.calls).toHaveLength(0);
+      });
+    });
+  });
 
-        locateBlobSpy.mockRestore();
-        writeStreamSpy.mockRestore();
+  describe('Given a required filter driver that smudges nothing', () => {
+    describe.each([
+      { label: 'only a clean command', config: '\tclean = uppercase\n' },
+      {
+        label: 'an empty process and a smudge command',
+        config: '\tprocess =\n\tsmudge = lowercase\n',
+      },
+    ])('When applyChangeset checks out a file whose driver names $label', ({ config }) => {
+      it('Then it dies SMUDGE_FILTER_FAILED as convert_to_working_tree does', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, enc('HELLO WORLD'));
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.y filter=myf\n');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          `[filter "myf"]\n${config}\trequired = true\n`,
+        );
+        const enrichedCtx: Context = { ...ctx, command: new FakeSmudgeRunner(0, lowercase) };
+
+        // Act
+        const result = await applyChangeset(enrichedCtx, {
+          changeset: makeChangeset([makeAdd('a.y', id)]),
+          force: false,
+          workdir: WORKDIR,
+        }).catch((err: unknown) => err);
+
+        // Assert
+        expect((result as TsgitError).data).toEqual({
+          code: 'SMUDGE_FILTER_FAILED',
+          path: 'a.y',
+          filter: 'myf',
+        });
+      });
+    });
+  });
+
+  describe('Given a required filter driver configuring no command at all', () => {
+    describe('When applyChangeset checks out a file', () => {
+      it('Then the blob streams out untouched, as git never converts it in core', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, enc('HELLO WORLD'));
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.y filter=myf\n');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[filter "myf"]\n\trequired = true\n',
+        );
+        const runner = new FakeSmudgeRunner(0, lowercase);
+
+        // Act
+        await applyChangeset(
+          { ...ctx, command: runner },
+          { changeset: makeChangeset([makeAdd('a.y', id)]), force: false, workdir: WORKDIR },
+        );
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/a.y`))).toBe('HELLO WORLD');
+        expect(runner.calls).toHaveLength(0);
+      });
+    });
+  });
+
+  describe('Given a filter driver with a process advertising smudge', () => {
+    describe('When applyChangeset checks out a file', () => {
+      it('Then the process smudges it, asked with the path and blob id', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, enc('HELLO WORLD'));
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.y filter=myf\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[filter "myf"]\n\tprocess = proc\n');
+        const pkt = (text: string): string =>
+          `${(text.length + 4).toString(16).padStart(4, '0')}${text}`;
+        const response = enc(
+          `${pkt('git-filter-server\n')}${pkt('version=2\n')}0000${pkt('capability=smudge\n')}0000` +
+            `${pkt('status=success\n')}0000${pkt('hello world')}00000000`,
+        );
+        const requests: CommandRequest[] = [];
+        const runner: CommandRunner = {
+          run: async (request) => {
+            requests.push(request);
+            return { exitCode: 0, stdout: response };
+          },
+        };
+
+        // Act
+        await applyChangeset(
+          { ...ctx, command: runner },
+          { changeset: makeChangeset([makeAdd('a.y', id)]), force: false, workdir: WORKDIR },
+        );
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/a.y`))).toBe('hello world');
+        expect(requests.map((r) => r.command)).toEqual(['proc']);
+        expect(dec(requests[0]?.stdin ?? new Uint8Array(0))).toContain(
+          `${pkt('command=smudge\n')}${pkt('pathname=a.y\n')}${pkt(`blob=${id}\n`)}0000`,
+        );
       });
     });
   });

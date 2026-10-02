@@ -141,7 +141,8 @@ export type CommandError =
       readonly code: 'SMUDGE_FILTER_FAILED';
       readonly path: FilePath;
       readonly filter: string;
-      readonly exitCode: number;
+      /** Absent when the driver ran no smudge command, or its process answered no smudge. */
+      readonly exitCode?: number;
     }
   | { readonly code: 'UPSTREAM_NOT_BRANCH'; readonly startPoint: string }
   | { readonly code: 'UPSTREAM_MISSING'; readonly startPoint: string }
@@ -607,8 +608,13 @@ export const cleanFilterFailed = (path: FilePath, filter: string, exitCode?: num
     ...(exitCode !== undefined && { exitCode }),
   });
 
-export const smudgeFilterFailed = (path: FilePath, filter: string, exitCode: number): TsgitError =>
-  new TsgitError({ code: 'SMUDGE_FILTER_FAILED', path, filter, exitCode });
+export const smudgeFilterFailed = (path: FilePath, filter: string, exitCode?: number): TsgitError =>
+  new TsgitError({
+    code: 'SMUDGE_FILTER_FAILED',
+    path,
+    filter,
+    ...(exitCode !== undefined && { exitCode }),
+  });
 
 export const upstreamNotBranch = (startPoint: string): TsgitError =>
   new TsgitError({ code: 'UPSTREAM_NOT_BRANCH', startPoint });

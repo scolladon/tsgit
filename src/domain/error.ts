@@ -492,7 +492,7 @@ function extractDetail(data: TsgitErrorData): string {
     case 'CLEAN_FILTER_FAILED':
       return `clean filter '${data.filter}' failed for ${basename(data.path)}${exitSuffix(data.exitCode)}`;
     case 'SMUDGE_FILTER_FAILED':
-      return `smudge filter '${data.filter}' failed for ${basename(data.path)} (exit ${data.exitCode})`;
+      return `smudge filter '${data.filter}' failed for ${basename(data.path)}${exitSuffix(data.exitCode)}`;
     case 'UPSTREAM_NOT_BRANCH':
       return `cannot set up tracking information; starting point '${data.startPoint}' is not a branch`;
     case 'UPSTREAM_MISSING':

@@ -727,3 +727,191 @@ describe.skipIf(!GIT_AVAILABLE)('Given a filter.<d>.process driver beside a clea
     });
   });
 });
+
+/**
+ * A long-running v2 filter advertising the capabilities in argv[2]: smudges by
+ * lower-casing, cleans by upper-casing, refuses content holding `FAIL`, and
+ * appends one line to argv[3] per process start.
+ */
+const SMUDGE_PROCESS_FILTER = `// v2 process filter: capabilities from argv[2] (comma list); smudge => lowercase, clean => uppercase; counts processes in argv[3] file
+const fs = require('node:fs');
+const caps = (process.argv[2] || 'clean,smudge').split(',');
+if (process.argv[3]) fs.appendFileSync(process.argv[3], 'start\\n');
+const pkt = (text) => Buffer.concat([Buffer.from((Buffer.byteLength(text) + 4).toString(16).padStart(4, '0')), Buffer.from(text)]);
+const flush = Buffer.from('0000');
+const write = (...parts) => process.stdout.write(Buffer.concat(parts));
+let buffered = Buffer.alloc(0); let pending = []; let step = 0; let command = '';
+const answers = [
+  () => write(pkt('git-filter-server\\n'), pkt('version=2\\n'), flush),
+  () => write(...caps.map((c) => pkt(\`capability=\${c}\\n\`)), flush),
+  (data) => { command = data.toString(); if (process.argv[4]) fs.appendFileSync(process.argv[4], JSON.stringify(command) + '\\n'); },
+  (data) => {
+    const text = data.toString();
+    if (text.includes('FAIL')) return write(pkt('status=error\\n'), flush);
+    const out = command.includes('command=smudge') ? text.toLowerCase() : text.toUpperCase();
+    write(pkt('status=success\\n'), flush, ...(out.length ? [pkt(out)] : []), flush, flush);
+  },
+];
+process.stdin.on('data', (chunk) => {
+  buffered = Buffer.concat([buffered, chunk]);
+  while (buffered.length >= 4) {
+    const length = parseInt(buffered.subarray(0, 4).toString(), 16);
+    if (length !== 0 && buffered.length < length) return;
+    if (length !== 0) pending.push(buffered.subarray(4, length));
+    buffered = buffered.subarray(length === 0 ? 4 : length);
+    if (length !== 0) continue;
+    const data = Buffer.concat(pending);
+    pending = [];
+    if (step === 2) { answers[2](data); step = 3; continue; }
+    answers[step](data);
+    step = step === 3 ? 2 : step + 1;
+  }
+});
+`;
+
+describe.skipIf(!GIT_AVAILABLE)('Given a filter.<d>.process driver on checkout', () => {
+  let root = '';
+  let script = '';
+
+  beforeAll(async () => {
+    root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-filter-smudge-process-')));
+    script = path.join(root, 'filter.cjs');
+    await writeFile(script, SMUDGE_PROCESS_FILTER);
+  });
+
+  afterAll(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  /** A repository holding `a.t` = `MiXeD`, committed unfiltered, then armed with `config`. */
+  const twin = async (slug: string, config: ReadonlyArray<readonly [string, string]>) => {
+    const repo = path.join(root, slug);
+    runGit(['init', '-q', '-b', 'main', repo]);
+    await writeFile(path.join(repo, '.gitattributes'), '*.t filter=d\n');
+    await writeFile(path.join(repo, 'a.t'), 'MiXeD\n');
+    runGit(['-C', repo, 'add', '.']);
+    runGit(['-C', repo, '-c', 'user.name=A', '-c', 'user.email=a@a', 'commit', '-q', '-m', 'c']);
+    for (const [key, value] of config) runGit(['-C', repo, 'config', key, value]);
+    await rm(path.join(repo, 'a.t'));
+    return repo;
+  };
+
+  const processCommand = (capabilities: string): string =>
+    `"${process.execPath}" "${script}" ${capabilities}`;
+
+  const worktreeFile = async (repo: string): Promise<string | undefined> =>
+    readFile(path.join(repo, 'a.t'), 'utf8').catch(() => undefined);
+
+  describe.each([
+    {
+      label: 'a process advertising smudge',
+      config: () => [['filter.d.process', processCommand('clean,smudge')]] as const,
+      written: 'mixed\n',
+    },
+    {
+      label: 'a process advertising only clean',
+      config: () => [['filter.d.process', processCommand('clean')]] as const,
+      written: 'MiXeD\n',
+    },
+    {
+      label: 'an empty process beside a smudge command',
+      config: () =>
+        [
+          ['filter.d.process', ''],
+          ['filter.d.smudge', 'tr A-Z a-z'],
+        ] as const,
+      written: 'MiXeD\n',
+    },
+    {
+      label: 'a required driver configuring no command',
+      config: () => [['filter.d.required', 'true']] as const,
+      written: 'MiXeD\n',
+    },
+  ])('When git and tsgit check out a.t through $label', ({ label, config, written }) => {
+    it('Then both write the same working-tree bytes', async () => {
+      // Arrange
+      const slug = label.replace(/[^a-z]+/gi, '-');
+      const gitRepo = await twin(`git-${slug}`, config());
+      const tsgitRepo = await twin(`tsgit-${slug}`, config());
+      const sut = checkout;
+
+      // Act
+      runGit(['-C', gitRepo, 'checkout', '--', 'a.t']);
+      await sut(createNodeContext({ workDir: tsgitRepo }), { paths: ['a.t'] });
+
+      // Assert
+      expect(await worktreeFile(gitRepo)).toBe(written);
+      expect(await worktreeFile(tsgitRepo)).toBe(written);
+    });
+  });
+
+  describe.each([
+    {
+      label: 'a process advertising only clean',
+      config: () => [['filter.d.process', processCommand('clean')]] as const,
+    },
+    { label: 'only a clean command', config: () => [['filter.d.clean', 'cat']] as const },
+  ])(
+    'When git and tsgit check out a.t through a required driver with $label',
+    ({ label, config }) => {
+      it('Then both die and write nothing', async () => {
+        // Arrange
+        const armed = (): ReadonlyArray<readonly [string, string]> => [
+          ...config(),
+          ['filter.d.required', 'true'],
+        ];
+        const slug = label.replace(/[^a-z]+/gi, '-');
+        const gitRepo = await twin(`git-req-${slug}`, armed());
+        const tsgitRepo = await twin(`tsgit-req-${slug}`, armed());
+        const sut = checkout;
+
+        // Act
+        const g = tryRunGitWithExit(['-C', gitRepo, 'checkout', '--', 'a.t']);
+        const result = await sut(createNodeContext({ workDir: tsgitRepo }), {
+          paths: ['a.t'],
+        }).catch((err: unknown) => err);
+
+        // Assert
+        expect(g.exitCode).toBe(128);
+        expect(g.stderr).toContain('fatal: a.t: smudge filter d failed');
+        expect((result as TsgitError).data).toEqual({
+          code: 'SMUDGE_FILTER_FAILED',
+          path: 'a.t',
+          filter: 'd',
+        });
+        expect(await worktreeFile(tsgitRepo)).toBe(await worktreeFile(gitRepo));
+      });
+    },
+  );
+
+  describe('When git and tsgit add through a required driver whose empty process shadows its clean command', () => {
+    it('Then both die', async () => {
+      // Arrange
+      const config = [
+        ['filter.d.process', ''],
+        ['filter.d.clean', 'tr a-z A-Z'],
+        ['filter.d.required', 'true'],
+      ] as const;
+      const gitRepo = await twin('git-empty-process-clean', config);
+      const tsgitRepo = await twin('tsgit-empty-process-clean', config);
+      await writeFile(path.join(gitRepo, 'c.t'), 'mixed\n');
+      await writeFile(path.join(tsgitRepo, 'c.t'), 'mixed\n');
+      const sut = add;
+
+      // Act
+      const g = tryRunGitWithExit(['-C', gitRepo, 'add', 'c.t']);
+      const result = await sut(createNodeContext({ workDir: tsgitRepo }), ['c.t']).catch(
+        (err: unknown) => err,
+      );
+
+      // Assert
+      expect(g.exitCode).toBe(128);
+      expect(g.stderr).toContain("fatal: c.t: clean filter 'd' failed");
+      expect((result as TsgitError).data).toEqual({
+        code: 'CLEAN_FILTER_FAILED',
+        path: 'c.t',
+        filter: 'd',
+      });
+    });
+  });
+});
