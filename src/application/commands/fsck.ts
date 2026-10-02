@@ -202,7 +202,7 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   // cache-tree (`TREE` extension) and at least one of its entries' tree
   // oids fails to resolve. An ABSENT index, or one with no cache-tree
   // extension, never contributes (a bare or never-staged repository is
-  // healthy) — regardless of ref, reflog, or stage-0 entry resolution.
+  // healthy) — regardless of ref, reflog, or index entry resolution.
   // Measured against git 2.55.0: this bit is entirely independent of ref
   // health — a broken ref beside a healthy cache-tree never sets it, and a
   // healthy ref beside a broken cache-tree still does. `collectRoots`

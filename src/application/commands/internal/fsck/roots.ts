@@ -3,7 +3,7 @@ import { errorDataCode } from '../../../../domain/error-data-code.js';
 import type { CacheTreeEntry, GitIndex } from '../../../../domain/git-index/index-entry.js';
 import { parseCacheTree } from '../../../../domain/git-index/index-parser.js';
 import type { ObjectId, RefName } from '../../../../domain/objects/index.js';
-import { zeroOid } from '../../../../domain/objects/index.js';
+import { FILE_MODE, zeroOid } from '../../../../domain/objects/index.js';
 import type { ReflogEntry } from '../../../../domain/reflog/reflog-entry.js';
 import { resolveWorktreePath } from '../../../../domain/worktree/resolve-path.js';
 import type { Context } from '../../../../ports/context.js';
@@ -285,7 +285,8 @@ function cacheTreeOf(ctx: Context, index: GitIndex): CacheTreeEntry | undefined 
 }
 
 /**
- * Add every stage-0 index entry's oid to `roots`, then walk the index's
+ * Add every index entry's oid to `roots` — every stage, never a gitlink, as
+ * git's `fsck_index` and `add_index_objects_to_pending` both do — then walk the index's
  * cache-tree (`TREE` extension) — if it has one — for further roots and for
  * the unresolvable-tree-oid verdict. Called only when `indexRoot !== false`
  * — that option means "the index does not participate in this fsck run" for
@@ -305,7 +306,9 @@ async function addIndexRoots(
 ): Promise<IndexWalk> {
   const index = await readIndexIfIntact(ctx);
   if (index === undefined) return NO_INDEX;
-  const blobs = index.entries.filter((entry) => entry.flags.stage === 0).map((entry) => entry.id);
+  const blobs = index.entries
+    .filter((entry) => entry.mode !== FILE_MODE.GITLINK)
+    .map((entry) => entry.id);
   for (const id of blobs) roots.add(id);
   const cacheTree = cacheTreeOf(ctx, index);
   if (cacheTree === undefined) return { ...NO_CACHE_TREE, blobs };
@@ -544,8 +547,8 @@ async function addOtherWorktreeRoots(ctx: Context, roots: Set<ObjectId>): Promis
 
 /**
  * Retention roots for `maintenance`'s `gc` task: every resolvable
- * ref (HEAD included), every reflog old/new oid, the index — stage-0
- * entries plus its cache-tree, when present — the MAIN worktree's own state
+ * ref (HEAD included), every reflog old/new oid, the index — every
+ * non-gitlink entry plus its cache-tree, when present — the MAIN worktree's own state
  * (`addMainWorktreeRoots`) and every OTHER worktree's own state
  * (`addOtherWorktreeRoots`), matching git rooting reachability across every
  * worktree regardless of which one gc is invoked from. Unlike `collectRoots`,

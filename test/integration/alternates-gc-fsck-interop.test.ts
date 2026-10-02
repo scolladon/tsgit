@@ -1214,3 +1214,107 @@ describe.skipIf(!GIT_AVAILABLE)('fsck interop — deferred .gitmodules checks', 
     });
   });
 });
+
+describe.skipIf(!GIT_AVAILABLE)('fsck/gc interop — index entries', () => {
+  const ABSENT_COMMIT = '1111111111111111111111111111111111111111';
+
+  /** A committed repository whose index holds `f` conflicted at stages 1–3. */
+  const conflictedRepo = (slug: string): { readonly dir: string; readonly stages: string[] } => {
+    const dir = path.join(root, `index-${slug}`);
+    runGit(['init', '-q', '-b', 'main', dir]);
+    configure(dir);
+    commitFile(dir, 'f', 'base');
+    const stages = ['one', 'two', 'three'].map((content) =>
+      runGit(['-C', dir, 'hash-object', '-w', '--stdin'], { input: content }).trim(),
+    );
+    const info = stages.map((oid, at) => `100644 ${oid} ${at + 1}\tf`).join('\n');
+    runGit(['-C', dir, 'update-index', '--index-info'], {
+      input: `0 ${'0'.repeat(40)}\tf\n${info}\n`,
+    });
+    return { dir, stages };
+  };
+
+  describe('Given an index holding a conflicted path at stages 1, 2 and 3', () => {
+    describe('When git fsck and tsgit fsck run', () => {
+      it(
+        'Then neither reports a stage blob dangling, exit 0',
+        async () => {
+          // Arrange
+          const { dir } = conflictedRepo('fsck-stages');
+          const git = gitFsck(dir);
+          const sut = tsgitFsck;
+
+          // Act
+          const result = await sut(dir);
+
+          // Assert
+          expect(git.exitCode).toBe(0);
+          expect(result.exitCode).toBe(0);
+          expect(danglingLines(result.findings)).toEqual(gitDanglingLines(git.stdout));
+          expect(gitDanglingLines(git.stdout)).toEqual([]);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+
+    describe('When git gc and tsgit gc prune everything unreachable', () => {
+      it(
+        'Then both keep every stage blob',
+        async () => {
+          // Arrange
+          const { dir: gitSide, stages } = conflictedRepo('gc-stages-git');
+          const { dir: tsgitSide } = conflictedRepo('gc-stages-tsgit');
+          for (const dir of [gitSide, tsgitSide]) {
+            runGit(['-C', dir, 'config', 'gc.pruneExpire', 'now']);
+          }
+          runGit(['-C', gitSide, 'gc', '-q']);
+          const sut = tsgitGc;
+
+          // Act
+          await sut(tsgitSide);
+
+          // Assert
+          for (const oid of stages) {
+            expect(tryRunGitWithExit(['-C', gitSide, 'cat-file', '-e', oid]).exitCode).toBe(0);
+            expect(tryRunGitWithExit(['-C', tsgitSide, 'cat-file', '-e', oid]).exitCode).toBe(0);
+          }
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe('Given an index holding a gitlink to a commit the repository lacks', () => {
+    describe('When git fsck and tsgit fsck run', () => {
+      it(
+        'Then neither reports it missing, exit 0',
+        async () => {
+          // Arrange
+          const dir = path.join(root, 'index-gitlink');
+          runGit(['init', '-q', '-b', 'main', dir]);
+          configure(dir);
+          commitFile(dir, 'f', 'base');
+          runGit([
+            '-C',
+            dir,
+            'update-index',
+            '--add',
+            '--cacheinfo',
+            `160000,${ABSENT_COMMIT},sub`,
+          ]);
+          const git = gitFsck(dir);
+          const sut = tsgitFsck;
+
+          // Act
+          const result = await sut(dir);
+
+          // Assert
+          expect(git.exitCode).toBe(0);
+          expect(result.exitCode).toBe(0);
+          expect(missingLines(result.findings)).toEqual(gitLines(git.stdout, MISSING_LINE));
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+});

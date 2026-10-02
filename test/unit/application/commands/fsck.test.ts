@@ -2663,56 +2663,6 @@ describe('Given reflog with entry where newId is zero OID (branch deletion event
   });
 });
 
-// Kill: roots.ts line 53 (stage === 0 guard in addIndexRoots)
-// Conflict-stage entries (stage 1/2/3) must NOT be added to roots.
-// Only stage-0 entries represent the current working-tree state.
-describe('Given index with only conflict-stage entries (stage 1, 2, 3, no stage 0)', () => {
-  describe('When fsck runs', () => {
-    it('Then conflict-stage blobs are dangling (not kept reachable by index)', async () => {
-      // Arrange
-      const { STAGE0_FLAGS } = await import('../../../../src/domain/git-index/index-entry.js');
-      const tempCtx = await initBareCtx();
-      const blobId = await writeObject(tempCtx, makeBlob('conflict content'));
-
-      // Build context with blob + an index that has stage=1 entry (conflict, not stage-0)
-      const ctx = await buildSeededContext({
-        objects: [makeBlob('conflict content')],
-        index: {
-          version: 2,
-          entries: [
-            {
-              ctimeSeconds: 0,
-              ctimeNanoseconds: 0,
-              mtimeSeconds: 0,
-              mtimeNanoseconds: 0,
-              dev: 0,
-              ino: 0,
-              mode: FILE_MODE.REGULAR,
-              uid: 0,
-              gid: 0,
-              fileSize: 0,
-              id: blobId,
-              flags: { ...STAGE0_FLAGS, stage: 1 },
-              path: 'conflict.txt' as FilePath,
-            },
-          ],
-          extensions: [],
-          trailerSha: new Uint8Array(0),
-        },
-      });
-      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
-
-      // Act
-      const result = await fsck(ctx);
-
-      // Assert — stage-1 blob is NOT reachable from index; it is dangling
-      const dangling = result.findings.filter((f) => f.type === 'dangling');
-      const danglingIds = dangling.map((f) => (f as { id: ObjectId }).id);
-      expect(danglingIds).toContain(blobId);
-    });
-  });
-});
-
 // Kill: roots.ts line 74 (indexRoot !== false guard)
 // When indexRoot:false, staged blobs must NOT be kept reachable via the index.
 describe('Given staged blob with indexRoot:false', () => {
