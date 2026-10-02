@@ -524,8 +524,8 @@ function appendAll(target: FsckFinding[], source: ReadonlyArray<FsckFinding>): v
 
 /**
  * Assemble every connectivity-derived finding, in emission order: missing,
- * broken-link, unreachable/dangling (typed via `TypeResolution`), root and
- * tagged.
+ * broken-link, unreachable/dangling (typed via `TypeResolution`), then —
+ * outside connectivity-only — root and tagged.
  */
 export function assembleConnectivityFindings(
   classification: ConnectivityClassification,
@@ -540,6 +540,8 @@ export function assembleConnectivityFindings(
   );
   appendAll(findings, collectTypeFindings(unreachable, 'unreachable', resolution));
   appendAll(findings, collectTypeFindings(dangling, 'dangling', resolution));
-  appendAll(findings, rootAndTagFindings(rootCommits, tagRefs));
+  // git prints these from `fsck_obj` alone, which connectivity-only never runs.
+  if (resolution.unreadable === 'skip')
+    appendAll(findings, rootAndTagFindings(rootCommits, tagRefs));
   return findings;
 }
