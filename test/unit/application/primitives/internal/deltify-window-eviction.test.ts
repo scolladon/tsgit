@@ -8,6 +8,7 @@
  * a subsequent probe still finds it as a delta base.
  */
 import { describe, expect, it } from 'vitest';
+import { DEFAULT_BIG_FILE_THRESHOLD_BYTES } from '../../../../../src/application/primitives/internal/big-file-threshold.js';
 import { deltifyEntries } from '../../../../../src/application/primitives/internal/deltify.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import type { Blob, ObjectId } from '../../../../../src/domain/objects/index.js';
@@ -69,6 +70,7 @@ describe('deltifyEntries — window eviction accounting', () => {
           window: 10,
           maxDepth: 50,
           windowMemoryBudget: 0,
+          bigFileThreshold: DEFAULT_BIG_FILE_THRESHOLD_BYTES,
         };
         const sut = deltifyEntries;
 
@@ -102,6 +104,7 @@ describe('deltifyEntries — window eviction accounting', () => {
           window: 10,
           maxDepth: 50,
           windowMemoryBudget: chargedWeight(sharedContent) + chargedWeight(unrelatedContent),
+          bigFileThreshold: DEFAULT_BIG_FILE_THRESHOLD_BYTES,
         };
         const sut = deltifyEntries;
 
@@ -136,6 +139,7 @@ describe('deltifyEntries — window eviction accounting', () => {
           window: 10,
           maxDepth: 50,
           windowMemoryBudget: chargedWeight(sharedContent),
+          bigFileThreshold: DEFAULT_BIG_FILE_THRESHOLD_BYTES,
         };
         const sut = deltifyEntries;
 
@@ -172,6 +176,7 @@ describe('deltifyEntries — window eviction accounting', () => {
           window: 10,
           maxDepth: 50,
           windowMemoryBudget: realWeight - 1,
+          bigFileThreshold: DEFAULT_BIG_FILE_THRESHOLD_BYTES,
         };
         const sut = deltifyEntries;
 
@@ -205,6 +210,7 @@ describe('deltifyEntries — window eviction accounting', () => {
           window: 10,
           maxDepth: 50,
           windowMemoryBudget: chargedWeight(bigContent),
+          bigFileThreshold: DEFAULT_BIG_FILE_THRESHOLD_BYTES,
         };
         const sut = deltifyEntries;
 
@@ -238,6 +244,7 @@ describe('deltifyEntries — window eviction accounting', () => {
           window: 0,
           maxDepth: 50,
           windowMemoryBudget: 0,
+          bigFileThreshold: DEFAULT_BIG_FILE_THRESHOLD_BYTES,
         };
         const sut = deltifyEntries;
 
@@ -278,6 +285,7 @@ describe('deltifyEntries — window eviction accounting', () => {
           window: 2,
           maxDepth: 50,
           windowMemoryBudget: chargedWeight(contentA) + chargedWeight(contentB),
+          bigFileThreshold: DEFAULT_BIG_FILE_THRESHOLD_BYTES,
         };
         const sut = deltifyEntries;
 

@@ -1,15 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import {
   acceptsDeltaEntry,
+  attemptsDelta,
   comparePackEmissionOrder,
   DEFAULT_PACK_DEPTH,
   DEFAULT_PACK_WINDOW,
+  DELTA_FLOOR_BYTES,
   MAX_OFS_OVERHEAD_BYTES,
   NO_RECENCY,
   type PackEmissionKey,
   resolveDeltaPolicy,
 } from '../../../../src/domain/storage/delta-policy.js';
 import { PACK_ENTRY_TYPE } from '../../../../src/domain/storage/pack-entry.js';
+
+const ANY_THRESHOLD = 1_000_000;
 
 const key = (
   id: string,
@@ -343,7 +347,7 @@ describe('resolveDeltaPolicy', () => {
         const sut = resolveDeltaPolicy;
 
         // Act
-        const result = sut({});
+        const result = sut({}, ANY_THRESHOLD);
 
         // Assert
         expect(result.window).toBe(DEFAULT_PACK_WINDOW);
@@ -361,7 +365,7 @@ describe('resolveDeltaPolicy', () => {
         const sut = resolveDeltaPolicy;
 
         // Act
-        const result = sut({ window: 0 });
+        const result = sut({ window: 0 }, ANY_THRESHOLD);
 
         // Assert
         expect(result.enabled).toBe(false);
@@ -376,7 +380,7 @@ describe('resolveDeltaPolicy', () => {
         const sut = resolveDeltaPolicy;
 
         // Act
-        const result = sut({ window: -1 });
+        const result = sut({ window: -1 }, ANY_THRESHOLD);
 
         // Assert
         expect(result.enabled).toBe(false);
@@ -391,7 +395,7 @@ describe('resolveDeltaPolicy', () => {
         const sut = resolveDeltaPolicy;
 
         // Act
-        const result = sut({ depth: 0 });
+        const result = sut({ depth: 0 }, ANY_THRESHOLD);
 
         // Assert
         expect(result.enabled).toBe(false);
@@ -406,7 +410,7 @@ describe('resolveDeltaPolicy', () => {
         const sut = resolveDeltaPolicy;
 
         // Act
-        const result = sut({ depth: -1 });
+        const result = sut({ depth: -1 }, ANY_THRESHOLD);
 
         // Assert
         expect(result.enabled).toBe(false);
@@ -421,7 +425,7 @@ describe('resolveDeltaPolicy', () => {
         const sut = resolveDeltaPolicy;
 
         // Act
-        const result = sut({ depth: 250 });
+        const result = sut({ depth: 250 }, ANY_THRESHOLD);
 
         // Assert
         expect(result.maxDepth).toBe(50);
@@ -436,7 +440,7 @@ describe('resolveDeltaPolicy', () => {
         const sut = resolveDeltaPolicy;
 
         // Act
-        const result = sut({ depth: 10 });
+        const result = sut({ depth: 10 }, ANY_THRESHOLD);
 
         // Assert
         expect(result.maxDepth).toBe(10);
@@ -451,7 +455,7 @@ describe('resolveDeltaPolicy', () => {
         const sut = resolveDeltaPolicy;
 
         // Act
-        const result = sut({});
+        const result = sut({}, ANY_THRESHOLD);
 
         // Assert
         expect(result.windowMemoryBudget).toBe(0);
@@ -466,10 +470,52 @@ describe('resolveDeltaPolicy', () => {
         const sut = resolveDeltaPolicy;
 
         // Act
-        const result = sut({ windowMemory: 65536 });
+        const result = sut({ windowMemory: 65536 }, ANY_THRESHOLD);
 
         // Assert
         expect(result.windowMemoryBudget).toBe(65536);
+      });
+    });
+  });
+});
+
+describe('attemptsDelta', () => {
+  const THRESHOLD = 1000;
+  const policy = resolveDeltaPolicy({}, THRESHOLD);
+
+  describe.each([
+    ['one under the floor', DELTA_FLOOR_BYTES - 1, false],
+    ['exactly the floor', DELTA_FLOOR_BYTES, true],
+    ['exactly the big file threshold', THRESHOLD, true],
+    ['one over the big file threshold', THRESHOLD + 1, false],
+  ] as const)('Given an object of size %s', (_label, size, expected) => {
+    describe('When asked whether a delta search is attempted', () => {
+      it(`Then the answer is ${expected}`, () => {
+        // Arrange
+        const sut = attemptsDelta;
+
+        // Act
+        const result = sut(policy, size);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+});
+
+describe('resolveDeltaPolicy bigFileThreshold', () => {
+  describe('Given a threshold', () => {
+    describe('When the policy is resolved', () => {
+      it('Then the policy carries it', () => {
+        // Arrange
+        const sut = resolveDeltaPolicy;
+
+        // Act
+        const result = sut({}, 4242);
+
+        // Assert
+        expect(result.bigFileThreshold).toBe(4242);
       });
     });
   });

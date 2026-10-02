@@ -8,6 +8,7 @@
  */
 import { describe, expect, it, type MockInstance, vi } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
+import { DEFAULT_BIG_FILE_THRESHOLD_BYTES } from '../../../../../src/application/primitives/internal/big-file-threshold.js';
 import { deltifyEntries } from '../../../../../src/application/primitives/internal/deltify.js';
 import * as readObjectModule from '../../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
@@ -34,6 +35,7 @@ const DEFAULT_POLICY: DeltaPolicy = {
   window: 10,
   maxDepth: 50,
   windowMemoryBudget: 0,
+  bigFileThreshold: DEFAULT_BIG_FILE_THRESHOLD_BYTES,
 };
 
 async function writeBlob(ctx: Awaited<ReturnType<typeof buildSeededContext>>, content: Uint8Array) {

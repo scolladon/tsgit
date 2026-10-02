@@ -1162,3 +1162,92 @@ describe.skipIf(!GIT_AVAILABLE)(
     });
   },
 );
+
+// ---------------------------------------------------------------------------
+// core.bigFileThreshold — the per-blob whole/delta verdict equals git's
+// ---------------------------------------------------------------------------
+
+const BIG_FILE_LINES = 30;
+const BIG_FILE_VERSIONS = 4;
+const BIG_FILE_LINE_BYTES = 9;
+const BIG_FILE_BASE_BYTES = BIG_FILE_LINES * BIG_FILE_LINE_BYTES;
+
+/** One path, four versions each appending one fixed-width high-entropy
+ *  line, so blob sizes are 270, 279, 288 and 297 bytes — every pair is a
+ *  profitable delta, and only the threshold decides which are attempted. */
+async function buildBigFileVersionsRepo(slug: string): Promise<string> {
+  const dir = await freshRepo(slug);
+  const filePath = path.join(dir, 'big.txt');
+  const line = (index: number): string => `${mix32(index).toString(16).padStart(8, '0')}\n`;
+  for (let version = 0; version < BIG_FILE_VERSIONS; version += 1) {
+    const lines = Array.from({ length: BIG_FILE_LINES + version }, (_, i) => line(i));
+    await writeFile(filePath, lines.join(''));
+    git(dir, 'add', '-A');
+    commitAt(dir, version, `version ${version}`);
+  }
+  return dir;
+}
+
+/** Blob oid -> whether `git verify-pack -v` lists it as a delta. */
+function blobVerdicts(verifyOutput: string): ReadonlyMap<string, boolean> {
+  const verdicts = new Map<string, boolean>();
+  for (const line of verifyOutput.split('\n')) {
+    const tokens = line.trim().split(/\s+/);
+    if (tokens[1] === 'blob') verdicts.set(tokens[0] ?? '', tokens.length >= 7);
+  }
+  return verdicts;
+}
+
+async function packedBlobVerdicts(dir: string): Promise<ReadonlyMap<string, boolean>> {
+  const { idxPath } = await solePackIdx(dir);
+  return blobVerdicts(git(dir, 'verify-pack', '-v', idxPath));
+}
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'delta search honours core.bigFileThreshold, against real git',
+  () => {
+    let source: string;
+
+    beforeAll(async () => {
+      source = await buildBigFileVersionsRepo('big-file-source');
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await Promise.all(tmpDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+    });
+
+    describe.each([
+      ['below every blob', BIG_FILE_BASE_BYTES - 1],
+      ['exactly the second-smallest blob', BIG_FILE_BASE_BYTES + BIG_FILE_LINE_BYTES],
+      ['one under the second-smallest blob', BIG_FILE_BASE_BYTES + BIG_FILE_LINE_BYTES - 1],
+      ['above every blob', BIG_FILE_BASE_BYTES + BIG_FILE_VERSIONS * BIG_FILE_LINE_BYTES],
+    ] as const)('Given core.bigFileThreshold set to %s', (_label, threshold) => {
+      describe('When tsgit gc and git repack -f each pack the history', () => {
+        it(
+          'Then every blob is whole or delta in tsgit exactly as in git',
+          async () => {
+            // Arrange
+            const tsgitDir = await tmp('big-file-tsgit');
+            const gitDir = await tmp('big-file-git');
+            for (const dir of [tsgitDir, gitDir]) {
+              await cp(source, dir, { recursive: true });
+              git(dir, 'config', 'core.bigFileThreshold', String(threshold));
+            }
+            const ctx = trackedNodeContext(tsgitDir);
+            const sut = maintenance;
+
+            // Act
+            await sut(ctx, { tasks: ['gc'] });
+            await disposePackRegistry(ctx);
+            runGit(['-C', gitDir, '-c', 'pack.threads=1', 'repack', '-a', '-d', '-f', '-q']);
+            const result = await packedBlobVerdicts(tsgitDir);
+
+            // Assert
+            expect(result).toEqual(await packedBlobVerdicts(gitDir));
+          },
+          ROW_TIMEOUT,
+        );
+      });
+    });
+  },
+);

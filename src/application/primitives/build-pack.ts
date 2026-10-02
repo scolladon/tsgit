@@ -132,7 +132,10 @@ export const buildPack = async (ctx: Context, input: BuildPackInput): Promise<Bu
 async function resolveWriterPlan(ctx: Context, input: BuildPackInput): Promise<WriterPlan> {
   if (input.delta !== true) return buildBaseEntries(ctx, input.objects);
   const config = await readConfig(ctx);
-  const policy = resolveDeltaPolicy(config.pack ?? {});
+  const policy = resolveDeltaPolicy(
+    config.pack ?? {},
+    (await getObjectStore(ctx)).bigFileThreshold,
+  );
   if (!policy.enabled) return buildBaseEntries(ctx, input.objects);
   const deltified = await deltifyEntries(ctx, input.objects, policy);
   const emissionOrder = new Uint32Array(deltified.length);

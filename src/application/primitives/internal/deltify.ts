@@ -17,6 +17,7 @@ import {
 } from '../../../domain/storage/delta-encode.js';
 import {
   acceptsDeltaEntry,
+  attemptsDelta,
   comparePackEmissionOrder,
   type DeltaPolicy,
   NO_RECENCY,
@@ -32,7 +33,6 @@ import {
 } from '../../../domain/storage/index.js';
 import type { Context } from '../../../ports/context.js';
 import type { PackObjectInput } from '../build-pack.js';
-import { getObjectStore } from '../object-store.js';
 import {
   type ObjectMetadataWithContent,
   readObjectMetadataWithContent,
@@ -137,13 +137,6 @@ async function buildEmissionOrder(
  *  real chain position — git's own `try_delta` reference depth for the
  *  no-delta-yet case. */
 const NO_INCUMBENT_REF_DEPTH = 1;
-
-/** git's own `should_attempt_deltas`: an object this small is neither
- *  offered as a delta target nor admitted to the window as a prospective
- *  base — a delta's own header and instruction overhead can never pay for
- *  itself against something this small, so the search is not worth
- *  attempting either way. */
-const DELTA_FLOOR_BYTES = 50;
 
 /**
  * git's own `try_delta` byte budget: the size a candidate base at
@@ -428,9 +421,9 @@ async function readEmissionContent(
 
 /**
  * One object's turn in the emission loop: search for a base (unless it is
- * under the floor, in which case the search is skipped and it is emitted as
- * a plain base), then fold it into the window — again skipped when under
- * the floor, so it can never be offered to a later object either.
+ * under the floor or above `core.bigFileThreshold`, in which case the search
+ * is skipped and it is emitted whole), then fold it into the window — again
+ * skipped, so it can never be offered to a later object either.
  */
 async function processEmissionEntry(
   ctx: Context,
@@ -438,11 +431,10 @@ async function processEmissionEntry(
   emissionIndex: number,
   state: WindowState,
   policy: DeltaPolicy,
-  bigFileThreshold: number,
 ): Promise<EmissionOutcome> {
-  const content = key.content ?? (await readEmissionContent(ctx, key, bigFileThreshold));
-  const belowFloor = content.length < DELTA_FLOOR_BYTES;
-  const candidate = belowFloor
+  const content = key.content ?? (await readEmissionContent(ctx, key, policy.bigFileThreshold));
+  const skipsSearch = !attemptsDelta(policy, content.length);
+  const candidate = skipsSearch
     ? undefined
     : selectBestCandidate(content, state.window, key.type, policy, ctx.hash.digestLength);
   const outcome = await buildDeltifiedEntry(ctx, key.type, content, candidate);
@@ -451,7 +443,7 @@ async function processEmissionEntry(
     entry: outcome.entry,
     sourceIndex: key.sourceIndex,
   };
-  if (belowFloor) return { result, state };
+  if (skipsSearch) return { result, state };
   const pending: PendingMember = {
     id: key.id,
     type: key.type,
@@ -468,18 +460,10 @@ export async function deltifyEntries(
   policy: DeltaPolicy,
 ): Promise<ReadonlyArray<DeltifiedEntry>> {
   const order = await buildEmissionOrder(ctx, objects);
-  const { bigFileThreshold } = await getObjectStore(ctx);
   let state: WindowState = { window: [], residentBytes: 0 };
   const results: DeltifiedEntry[] = [];
   for (const [emissionIndex, key] of order.entries()) {
-    const outcome = await processEmissionEntry(
-      ctx,
-      key,
-      emissionIndex,
-      state,
-      policy,
-      bigFileThreshold,
-    );
+    const outcome = await processEmissionEntry(ctx, key, emissionIndex, state, policy);
     results.push(outcome.result);
     state = outcome.state;
   }

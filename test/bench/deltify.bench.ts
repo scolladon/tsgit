@@ -17,6 +17,7 @@
  * everything else a full gc also does.
  */
 import { createMemoryContext } from '../../src/adapters/memory/memory-adapter.js';
+import { DEFAULT_BIG_FILE_THRESHOLD_BYTES } from '../../src/application/primitives/internal/big-file-threshold.js';
 import { deltifyEntries } from '../../src/application/primitives/internal/deltify.js';
 import { writeObject } from '../../src/application/primitives/write-object.js';
 import type { Blob, ObjectId } from '../../src/domain/objects/index.js';
@@ -59,7 +60,7 @@ benchScenario(
       };
       oids.push(await writeObject(ctx, blob));
     }
-    const policy = resolveDeltaPolicy({});
+    const policy = resolveDeltaPolicy({}, DEFAULT_BIG_FILE_THRESHOLD_BYTES);
     const objects = oids.map((id) => ({ id }));
 
     const sut = async (): Promise<void> => {

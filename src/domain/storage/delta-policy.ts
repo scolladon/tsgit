@@ -64,6 +64,21 @@ export interface DeltaPolicy {
   readonly maxDepth: number;
   /** 0 = unlimited, matching git's `pack.windowMemory` unset/0. */
   readonly windowMemoryBudget: number;
+  /** `core.bigFileThreshold`: an object strictly above it is neither a delta
+   *  target nor a base, as git marks it `no_try_delta`. */
+  readonly bigFileThreshold: number;
+}
+
+/** git's own `should_attempt_deltas`: an object this small is neither
+ *  offered as a delta target nor admitted to the window as a prospective
+ *  base — a delta's own header and instruction overhead can never pay for
+ *  itself against something this small. */
+export const DELTA_FLOOR_BYTES = 50;
+
+/** Whether an object of `size` bytes takes part in the delta search, as a
+ *  target and as a base alike. */
+export function attemptsDelta(policy: DeltaPolicy, size: number): boolean {
+  return size >= DELTA_FLOOR_BYTES && size <= policy.bigFileThreshold;
 }
 
 /**
@@ -73,11 +88,14 @@ export interface DeltaPolicy {
  * no clamp-to-1: clamping a legal `0` up to `1` would silently re-enable a
  * feature the caller turned off.
  */
-export function resolveDeltaPolicy(config: {
-  readonly window?: number;
-  readonly depth?: number;
-  readonly windowMemory?: number;
-}): DeltaPolicy {
+export function resolveDeltaPolicy(
+  config: {
+    readonly window?: number;
+    readonly depth?: number;
+    readonly windowMemory?: number;
+  },
+  bigFileThreshold: number,
+): DeltaPolicy {
   const window = config.window ?? DEFAULT_PACK_WINDOW;
   const depth = config.depth ?? DEFAULT_PACK_DEPTH;
   return {
@@ -85,5 +103,6 @@ export function resolveDeltaPolicy(config: {
     window,
     maxDepth: Math.min(depth, MAX_DELTA_CHAIN_DEPTH),
     windowMemoryBudget: config.windowMemory ?? 0,
+    bigFileThreshold,
   };
 }
