@@ -27,7 +27,11 @@ import { readObject } from '../../../primitives/read-object.js';
 import { EXIT_CONTENT_ERROR, EXIT_CORRUPT, EXIT_HASH_MISMATCH, EXIT_PACK } from './exit-codes.js';
 import { hasPackCopy, type PackedLocation, packedLocationOf } from './object-cache.js';
 import { type LooseCopy, looseCopiesOf } from './object-presence.js';
-import type { SpecialBlobLedger, SpecialBlobName } from './special-blobs.js';
+import {
+  SPECIAL_BLOB_NAMES,
+  type SpecialBlobLedger,
+  type SpecialBlobName,
+} from './special-blobs.js';
 import type { FsckFinding } from './types.js';
 
 /** An object whose raw bytes a reader did decode, ready for the catalogue and
@@ -400,12 +404,31 @@ function retypedFindings(
   return { findings, exitBit };
 }
 
-/** The special filename a blob is queued under, marking its check done —
+/** Every special filename a blob is queued under, marking its check done —
  *  git's `fsck_blob`, which checks a blob's content only while it is queued. */
-function claimSpecialName(ledger: SpecialBlobLedger, id: ObjectId): string | undefined {
-  const fileName = ledger.queuedName(id);
-  if (fileName !== undefined) ledger.markDone(id);
-  return fileName;
+function claimSpecialNames(
+  ledger: SpecialBlobLedger,
+  id: ObjectId,
+): ReadonlyArray<SpecialBlobName> {
+  const fileNames = ledger.queuedNames(id);
+  ledger.markDone(id);
+  return fileNames;
+}
+
+/** An object's catalogue findings, a blob's once per special filename it is
+ *  checked under, in git's order. */
+function catalogueFindings(
+  ctx: Context,
+  body: Pick<ReadableObject, 'kind' | 'rawBody'>,
+  strict: boolean,
+  fileNames: ReadonlyArray<SpecialBlobName>,
+): ReadonlyArray<ObjectFinding> {
+  const checked = fileNames.length === 0 ? [undefined] : fileNames;
+  return checked.flatMap((fileName) =>
+    validateObject(
+      buildValidateObjectInput(ctx.hashConfig, body.kind, body.rawBody, strict, fileName),
+    ),
+  );
 }
 
 /**
@@ -425,15 +448,9 @@ function catalogueResult(
   // skip-listed tree still queues them.
   if (raw.kind === 'tree') options.specialBlobs.noteTree(id);
   if (options.skipped.has(id)) return EMPTY_RESULT;
-  const fileName = raw.kind === 'blob' ? claimSpecialName(options.specialBlobs, id) : undefined;
-  const input = buildValidateObjectInput(
-    ctx.hashConfig,
-    raw.kind,
-    raw.rawBody,
-    options.strict,
-    fileName,
-  );
-  return retypedFindings(id, raw.kind, validateObject(input), options.severities);
+  const fileNames = raw.kind === 'blob' ? claimSpecialNames(options.specialBlobs, id) : [];
+  const catalogued = catalogueFindings(ctx, raw, options.strict, fileNames);
+  return retypedFindings(id, raw.kind, catalogued, options.severities);
 }
 
 /**
@@ -677,14 +694,10 @@ async function deferredCheck(
   if (object.type !== 'blob') {
     return deferredMisfitResult(id, object.type, misfit.notBlob, options.severities);
   }
-  const input = buildValidateObjectInput(
-    ctx.hashConfig,
-    'blob',
-    object.content,
-    options.strict,
-    fileName,
-  );
-  return retypedFindings(id, 'blob', validateObject(input), options.severities);
+  const fileNames = claimSpecialNames(options.specialBlobs, id);
+  const body = { kind: 'blob', rawBody: object.content } as const;
+  const catalogued = catalogueFindings(ctx, body, options.strict, fileNames);
+  return retypedFindings(id, 'blob', catalogued, options.severities);
 }
 
 /**
@@ -698,11 +711,13 @@ export async function runDeferredSpecialBlobChecks(
 ): Promise<ContentValidationResult> {
   const findings: FsckFinding[] = [];
   let exitBit = 0;
-  for (const [id, fileName] of options.specialBlobs.pending()) {
-    if (options.skipped.has(id)) continue;
-    const own = await deferredCheck(ctx, id, fileName, options);
-    findings.push(...own.findings);
-    exitBit |= own.exitBit;
+  for (const fileName of SPECIAL_BLOB_NAMES) {
+    for (const id of options.specialBlobs.pendingUnder(fileName)) {
+      if (options.skipped.has(id)) continue;
+      const own = await deferredCheck(ctx, id, fileName, options);
+      findings.push(...own.findings);
+      exitBit |= own.exitBit;
+    }
   }
   return { findings, exitBit };
 }

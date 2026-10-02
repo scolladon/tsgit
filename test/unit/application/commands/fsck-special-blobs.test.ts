@@ -278,3 +278,105 @@ describe('Given fsck.skipList names a queued .gitmodules blob no store holds', (
     });
   });
 });
+
+const BOTH_NAMES_CONTENT = enc.encode(
+  `[submodule "x"]\n\tpath = x\n\turl = --upload-pack=evil\n# ${'a'.repeat(3000)}\n`,
+);
+
+/** Two loose trees naming `blobId`, one as `.gitmodules`, one as `.gitattributes`. */
+const writeTreesNamingBoth = async (ctx: Context, blobId: ObjectId): Promise<void> => {
+  for (const name of ['.gitmodules', '.gitattributes']) {
+    await writeObject(ctx, {
+      type: 'tree',
+      id: '' as ObjectId,
+      entries: [treeEntry(FILE_MODE.REGULAR, name, blobId)],
+    });
+  }
+};
+
+const specialMsgIds = (findings: ReadonlyArray<FsckFinding>, id: ObjectId) =>
+  findings.flatMap((finding) =>
+    finding.type === 'bad-object' && finding.id === id ? [finding.msgId] : [],
+  );
+
+const namingTreeSpec = (ctx: Context, name: string, blobId: ObjectId) => ({
+  kind: 'base' as const,
+  type: 'tree' as const,
+  content: serializeTreeContent(
+    { type: 'tree', id: '' as ObjectId, entries: [treeEntry(FILE_MODE.REGULAR, name, blobId)] },
+    ctx.hashConfig,
+  ),
+});
+
+describe('Given a pack holding a .gitmodules tree, a .gitattributes tree, then the blob both name', () => {
+  describe('When fsck runs', () => {
+    it('Then the blob is checked in place under both names, .gitmodules first', async () => {
+      // Arrange
+      const ctx = await initCtx();
+      const blobId = await blobIdOf(ctx, BOTH_NAMES_CONTENT);
+      await writeSyntheticPack(ctx, 'both-after', [
+        namingTreeSpec(ctx, '.gitattributes', blobId),
+        namingTreeSpec(ctx, '.gitmodules', blobId),
+        { kind: 'base', type: 'blob', content: BOTH_NAMES_CONTENT },
+      ]);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(specialMsgIds(result.findings, blobId)).toEqual([
+        'gitmodulesUrl',
+        'gitattributesLineLength',
+      ]);
+      expect(result.exitCode).toBe(EXIT_PACK);
+    });
+  });
+});
+
+describe('Given a pack holding a .gitattributes tree, the blob, then a .gitmodules tree naming it', () => {
+  describe('When fsck runs', () => {
+    it('Then git rechecks the blob under every name it is queued under once .gitmodules is deferred', async () => {
+      // Arrange
+      const ctx = await initCtx();
+      const blobId = await blobIdOf(ctx, BOTH_NAMES_CONTENT);
+      await writeSyntheticPack(ctx, 'blob-between', [
+        namingTreeSpec(ctx, '.gitattributes', blobId),
+        { kind: 'base', type: 'blob', content: BOTH_NAMES_CONTENT },
+        namingTreeSpec(ctx, '.gitmodules', blobId),
+      ]);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(specialMsgIds(result.findings, blobId)).toEqual([
+        'gitattributesLineLength',
+        'gitmodulesUrl',
+        'gitattributesLineLength',
+      ]);
+    });
+  });
+});
+
+describe('Given an absent blob one tree names .gitmodules and another .gitattributes', () => {
+  describe('When fsck runs', () => {
+    it('Then it is reported missing under each name', async () => {
+      // Arrange
+      const ctx = await initCtx();
+      const blobId = await blobIdOf(ctx, BOTH_NAMES_CONTENT);
+      await writeTreesNamingBoth(ctx, blobId);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(specialMsgIds(result.findings, blobId)).toEqual([
+        'gitmodulesMissing',
+        'gitattributesMissing',
+      ]);
+    });
+  });
+});

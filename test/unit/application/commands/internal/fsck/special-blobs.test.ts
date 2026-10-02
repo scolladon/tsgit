@@ -25,7 +25,7 @@ describe('Given a tree entry whose nameBytes are ".gitmodules" but whose decoded
       ledger.noteTree(TREE);
 
       // Assert
-      expect(ledger.queuedName(BLOB)).toBe('.gitmodules');
+      expect(ledger.queuedNames(BLOB)).toEqual(['.gitmodules']);
     });
   });
 });
@@ -41,7 +41,7 @@ describe('Given a tree entry whose decoded name reads ".gitmodules" but whose na
       ledger.noteTree(TREE);
 
       // Assert
-      expect(ledger.queuedName(BLOB)).toBeUndefined();
+      expect(ledger.queuedNames(BLOB)).toEqual([]);
     });
   });
 });
@@ -61,7 +61,8 @@ describe('Given a tree naming one blob .gitattributes and another plainly', () =
       ledger.noteTree(TREE);
 
       // Assert
-      expect(ledger.pending()).toEqual(new Map([[BLOB, '.gitattributes']]));
+      expect(ledger.pendingUnder('.gitattributes')).toEqual([BLOB]);
+      expect(ledger.pendingUnder('.gitmodules')).toEqual([]);
     });
   });
 });
@@ -77,7 +78,7 @@ describe('Given a queued blob whose check has run', () => {
       ledger.markDone(BLOB);
 
       // Assert
-      expect(ledger.pending()).toEqual(new Map());
+      expect(ledger.pendingUnder('.gitmodules')).toEqual([]);
     });
   });
 });
@@ -92,7 +93,7 @@ describe('Given an id the object cache does not hold as a tree', () => {
       ledger.noteTree(TREE);
 
       // Assert
-      expect(ledger.pending()).toEqual(new Map());
+      expect(ledger.pendingUnder('.gitmodules')).toEqual([]);
     });
   });
 });
@@ -119,7 +120,7 @@ describe.each([
       ledger.noteTree(TREE);
 
       // Assert
-      expect(ledger.queuedName(BLOB)).toBe(expected);
+      expect(ledger.queuedNames(BLOB)).toEqual(expected === undefined ? [] : [expected]);
     });
   });
 });
@@ -136,8 +137,93 @@ describe.each(['.gitmodules', '.gitattributes', 'a\\.gitmodules'])(
         ledger.noteTree(TREE);
 
         // Assert
-        expect(ledger.queuedName(BLOB)).toBeUndefined();
+        expect(ledger.queuedNames(BLOB)).toEqual([]);
       });
     });
   },
 );
+
+describe('Given one blob named .gitattributes by one tree and .gitmodules by another', () => {
+  const ATTRIBUTES_TREE = '0000000000000000000000000000000000000006' as ObjectId;
+  const ledgerOverBothTrees = () => {
+    const ledger = sut(
+      new Map<ObjectId, CachedGitObject>([
+        [
+          ATTRIBUTES_TREE,
+          { type: 'tree', entries: [treeEntry(FILE_MODE.REGULAR, '.gitattributes', BLOB)] },
+        ],
+        [TREE, { type: 'tree', entries: [treeEntry(FILE_MODE.REGULAR, '.gitmodules', BLOB)] }],
+      ]),
+    );
+    ledger.noteTree(ATTRIBUTES_TREE);
+    ledger.noteTree(TREE);
+    return ledger;
+  };
+
+  describe('When its names are read', () => {
+    it("Then it is queued under both, in git's check order", () => {
+      // Arrange
+      const ledger = ledgerOverBothTrees();
+
+      // Act
+      const result = ledger.queuedNames(BLOB);
+
+      // Assert
+      expect(result).toEqual(['.gitmodules', '.gitattributes']);
+    });
+  });
+
+  describe('When its check has run', () => {
+    it('Then it is pending under neither name', () => {
+      // Arrange
+      const ledger = ledgerOverBothTrees();
+
+      // Act
+      ledger.markDone(BLOB);
+
+      // Assert
+      expect(ledger.pendingUnder('.gitmodules')).toEqual([]);
+      expect(ledger.pendingUnder('.gitattributes')).toEqual([]);
+    });
+  });
+
+  describe('When nothing has checked it', () => {
+    it('Then it is pending under each name', () => {
+      // Arrange
+      const ledger = ledgerOverBothTrees();
+
+      // Act
+      const result = [ledger.pendingUnder('.gitmodules'), ledger.pendingUnder('.gitattributes')];
+
+      // Assert
+      expect(result).toEqual([[BLOB], [BLOB]]);
+    });
+  });
+});
+
+describe('Given a blob checked under .gitmodules before a later tree names it .gitattributes', () => {
+  describe('When the pending blobs are listed', () => {
+    it('Then it is still pending under .gitattributes alone', () => {
+      // Arrange
+      const attributesTree = '0000000000000000000000000000000000000007' as ObjectId;
+      const ledger = sut(
+        new Map<ObjectId, CachedGitObject>([
+          [TREE, { type: 'tree', entries: [treeEntry(FILE_MODE.REGULAR, '.gitmodules', BLOB)] }],
+          [
+            attributesTree,
+            { type: 'tree', entries: [treeEntry(FILE_MODE.REGULAR, '.gitattributes', BLOB)] },
+          ],
+        ]),
+      );
+      ledger.noteTree(TREE);
+      ledger.markDone(BLOB);
+
+      // Act
+      ledger.noteTree(attributesTree);
+
+      // Assert
+      expect(ledger.pendingUnder('.gitmodules')).toEqual([]);
+      expect(ledger.pendingUnder('.gitattributes')).toEqual([BLOB]);
+    });
+  });
+});

@@ -1738,4 +1738,108 @@ describe.skipIf(!GIT_AVAILABLE)('fsck interop — names git reads as a special f
       );
     });
   });
+
+  const writeBlob = (dir: string, content: string): string =>
+    runGit(['-C', dir, 'hash-object', '-w', '--stdin'], { input: content }).trim();
+
+  const absentOid = (dir: string, content: string): string =>
+    runGit(['-C', dir, 'hash-object', '--stdin'], { input: content }).trim();
+
+  const LONG_ATTRIBUTES_LINE = `# ${'a'.repeat(3000)}\n`;
+
+  describe.each([
+    {
+      state: 'a blob',
+      store: (dir: string) => writeBlob(dir, `${EVIL_GITMODULES}${LONG_ATTRIBUTES_LINE}`),
+    },
+    {
+      state: 'absent',
+      store: (dir: string) => absentOid(dir, `${EVIL_GITMODULES}${LONG_ATTRIBUTES_LINE}`),
+    },
+    {
+      state: 'a tree',
+      store: (dir: string) => runGit(['-C', dir, 'mktree'], { input: '' }).trim(),
+    },
+  ])(
+    'Given one object named .gitmodules by one tree and .gitattributes by another, the object being $state',
+    ({ state, store }) => {
+      describe('When git fsck and tsgit fsck run', () => {
+        it(
+          'Then both check it under both names alike',
+          async () => {
+            // Arrange
+            const dir = path.join(root, `special-both-names-${state.replace(/ /g, '-')}`);
+            runGit(['init', '-q', '-b', 'main', dir]);
+            configure(dir);
+            const oid = store(dir);
+            for (const name of ['.gitmodules', '.gitattributes']) {
+              writeRawTree(dir, '100644', name, oid);
+            }
+            const git = gitFsck(dir);
+            const sut = tsgitFsck;
+
+            // Act
+            const result = await sut(dir);
+
+            // Assert
+            expect(result.exitCode).toBe(git.exitCode);
+            expect(reportLines(result.findings)).toEqual(gitReportLines(git.stderr));
+          },
+          ROW_TIMEOUT,
+        );
+      });
+    },
+  );
+
+  describe('Given a newer pack holding a .gitattributes tree then its blob, and an older pack a .gitmodules tree naming the same blob', () => {
+    describe('When git fsck and tsgit fsck run', () => {
+      it(
+        'Then both check the blob in place, then again under both names',
+        async () => {
+          // Arrange
+          const dir = path.join(root, 'special-both-names-split');
+          runGit(['init', '-q', '-b', 'main', dir]);
+          configure(dir);
+          const blob = writeBlob(dir, `${EVIL_GITMODULES}${LONG_ATTRIBUTES_LINE}`);
+          const attributesTree = writeRawTree(dir, '100644', '.gitattributes', blob);
+          const modulesTree = writeRawTree(dir, '100644', '.gitmodules', blob);
+          const newer = runGit(
+            ['-C', dir, 'pack-objects', '-q', path.join(objectsOf(dir), 'pack', 'pack')],
+            {
+              input: `${attributesTree}\n${blob}\n`,
+            },
+          ).trim();
+          const older = runGit(
+            ['-C', dir, 'pack-objects', '-q', path.join(objectsOf(dir), 'pack', 'pack')],
+            {
+              input: `${modulesTree}\n`,
+            },
+          ).trim();
+          runGit(['-C', dir, 'prune-packed']);
+          for (const [name, seconds] of [
+            [older, YEAR_2001_SECONDS],
+            [newer, YEAR_2001_SECONDS + 86_400],
+          ] as const) {
+            for (const ext of ['pack', 'idx']) {
+              utimesSync(
+                path.join(objectsOf(dir), 'pack', `pack-${name}.${ext}`),
+                seconds,
+                seconds,
+              );
+            }
+          }
+          const git = gitFsck(dir);
+          const sut = tsgitFsck;
+
+          // Act
+          const result = await sut(dir);
+
+          // Assert
+          expect(result.exitCode).toBe(git.exitCode);
+          expect(reportLines(result.findings)).toEqual(gitReportLines(git.stderr));
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
 });
