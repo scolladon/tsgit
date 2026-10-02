@@ -1,0 +1,526 @@
+import { describe, expect, it } from 'vitest';
+import { parseCommitView } from '../../../../src/domain/pretty/commit-view.js';
+import {
+  type FormatEnv,
+  type FormatOutput,
+  formatCommit,
+  scanPlaceholders,
+} from '../../../../src/domain/pretty/user-format.js';
+
+const encode = (text: string): Uint8Array => new TextEncoder().encode(text);
+const decode = (bytes: Uint8Array): string => new TextDecoder().decode(bytes);
+
+const BUDGET = { describe: 1 } as const;
+const COMMIT_ID = '38096f729e6651b8bb39ff91bf665623356a0e2c';
+const TREE = 'f3d80e15d4aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+const PARENT_A = 'd948d406d8bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+const PARENT_B = '1111111111111111111111111111111111111111';
+const AUTHOR = 'A U Thor <author@example.com> 1700000200 +0545';
+const COMMITTER = 'C O Mitter <committer@example.com> 1700000300 +0000';
+const MESSAGE = 'msg subject line\n\nbody para\n\nSigned-off-by: X <x@y>\n';
+
+const rawCommit = (message: string = MESSAGE): Uint8Array =>
+  encode(
+    `tree ${TREE}\nparent ${PARENT_A}\nparent ${PARENT_B}\nauthor ${AUTHOR}\ncommitter ${COMMITTER}\n\n${message}`,
+  );
+
+const ENV: FormatEnv = {
+  commitId: COMMIT_ID,
+  abbrev: (kind) => ({ commit: '38096f7', tree: 'f3d80e1', parents: 'd948d40 1111111' })[kind],
+};
+
+const run = (
+  format: string,
+  raw: Uint8Array = rawCommit(),
+  env: FormatEnv = ENV,
+): FormatOutput | { readonly refused: string } => {
+  const sut = formatCommit;
+  return sut(scanPlaceholders(encode(format)), parseCommitView(raw), env, BUDGET) as
+    | FormatOutput
+    | { readonly refused: string };
+};
+
+const expand = (format: string, raw?: Uint8Array, env?: FormatEnv): string => {
+  const result = run(format, raw, env);
+  if ('refused' in result) throw new Error(`refused ${result.refused}`);
+  return decode(result.bytes);
+};
+
+describe('formatCommit literals', () => {
+  describe.each([
+    ['plain text', 'hello', 'hello'],
+    ['an empty format', '', ''],
+    ['a line feed', 'a%nb', 'a\nb'],
+    ['a percent', '100%%', '100%'],
+    ['a hex byte', '%x41', 'A'],
+    ['a lowercase hex byte', '%x4a', 'J'],
+    ['an uppercase hex byte', '%x4A', 'J'],
+    ['a hex byte at the top of the range', '%x7e', '~'],
+    ['a trailing percent', 'a%', 'a%'],
+    ['a bad hex byte', '%xZZ', '%xZZ'],
+    ['a half-bad hex byte', '%x4Z', '%x4Z'],
+    ['a short hex byte', '%x4', '%x4'],
+    ['a hex lead digit outside the alphabet', '%xG1', '%xG1'],
+    ['a hex digit just past 9', '%x:0', '%x:0'],
+    ['a hex digit just before a', '%x`0', '%x`0'],
+    ['a hex digit just before A', '%x@0', '%x@0'],
+  ])('Given %s, When expanding', (_title, format, expected) => {
+    it(`Then it yields "${expected}"`, () => {
+      // Arrange
+      const sut = expand;
+
+      // Act
+      const result = sut(format);
+
+      // Assert
+      expect(result).toBe(expected);
+    });
+  });
+
+  describe('Given %x00, When expanding', () => {
+    it('Then it yields one NUL byte', () => {
+      // Arrange
+      const sut = run;
+
+      // Act
+      const result = (sut('%x00') as FormatOutput).bytes;
+
+      // Assert
+      expect(Array.from(result)).toEqual([0]);
+    });
+  });
+});
+
+describe('formatCommit magic', () => {
+  describe.each([
+    ['%+ before a non-empty value', 'a%+n', 'a\n\n'],
+    ['%- keeps line feeds before a non-empty value', 'x\n%-n', 'x\n\n'],
+    ['% before a non-empty value', 'a% n', 'a \n'],
+    ['%- after line feeds with an empty value', 'x\n\n%-%gd', 'x'],
+    ['%+ with an empty value', 'a%+%gd', 'a'],
+    ['% with an empty value', 'a% %gd', 'a'],
+    ['%- stops at non-line-feed bytes', 'x \n%-%gd', 'x '],
+    ['a declined placeholder under %+ keeps the rest', '%+N', 'N'],
+    ['a declined placeholder under %- trims line feeds', 'x\n%-N', 'xN'],
+    ['a declined placeholder under % keeps the rest', 'a% N', 'aN'],
+    ['a declined placeholder without magic', '%N', '%N'],
+    ['a wrap placeholder under %+', '%+w(5)', '%+w(5)'],
+    ['a wrap placeholder under %-', '%-w(5)', '%-w(5)'],
+    ['a wrap placeholder under a space', '% w(5)', '% w(5)'],
+  ])('Given %s, When expanding', (_title, format, expected) => {
+    it(`Then it yields ${JSON.stringify(expected)}`, () => {
+      // Arrange
+      const sut = expand;
+
+      // Act
+      const result = sut(format);
+
+      // Assert
+      expect(result).toBe(expected);
+    });
+  });
+});
+
+const raw = (headers: ReadonlyArray<string>, message: string = MESSAGE): Uint8Array =>
+  encode(`${headers.join('\n')}\n\n${message}`);
+
+const NO_PARENT_HEADERS = [`tree ${TREE}`, `author ${AUTHOR}`, `committer ${COMMITTER}`];
+
+describe('formatCommit commit ids', () => {
+  describe.each([
+    ['%H', COMMIT_ID],
+    ['%T', TREE],
+    ['%P', `${PARENT_A} ${PARENT_B}`],
+    ['%h', '38096f7'],
+    ['%t', 'f3d80e1'],
+    ['%p', 'd948d40 1111111'],
+  ])('Given %s, When expanding', (format, expected) => {
+    it(`Then it yields ${expected}`, () => {
+      // Arrange
+      const sut = expand;
+
+      // Act
+      const result = sut(format);
+
+      // Assert
+      expect(result).toBe(expected);
+    });
+  });
+
+  describe('Given a commit without a tree line, When expanding', () => {
+    it('Then %T yields nothing', () => {
+      // Arrange
+      const sut = expand;
+
+      // Act
+      const result = sut('[%T]', raw([`author ${AUTHOR}`]));
+
+      // Assert
+      expect(result).toBe('[]');
+    });
+  });
+
+  describe('Given a commit without parents, When expanding', () => {
+    it('Then %P yields nothing', () => {
+      // Arrange
+      const sut = expand;
+
+      // Act
+      const result = sut('[%P]', raw(NO_PARENT_HEADERS));
+
+      // Assert
+      expect(result).toBe('[]');
+    });
+  });
+});
+
+describe('formatCommit idents', () => {
+  describe.each([
+    ['%an', 'A U Thor'],
+    ['%ae', 'author@example.com'],
+    ['%al', 'author'],
+    ['%at', '1700000200'],
+    ['%aN', 'A U Thor'],
+    ['%aE', 'author@example.com'],
+    ['%aL', 'author'],
+    ['%cn', 'C O Mitter'],
+    ['%ce', 'committer@example.com'],
+    ['%cl', 'committer'],
+    ['%ct', '1700000300'],
+    ['%cN', 'C O Mitter'],
+  ])('Given %s, When expanding', (format, expected) => {
+    it(`Then it yields ${expected}`, () => {
+      // Arrange
+      const sut = expand;
+
+      // Act
+      const result = sut(format);
+
+      // Assert
+      expect(result).toBe(expected);
+    });
+  });
+
+  describe('Given an address without an at sign, When expanding', () => {
+    it('Then %al yields the whole address', () => {
+      // Arrange
+      const sut = expand;
+
+      // Act
+      const result = sut('%al', raw(['author A <nohost> 1 +0000']));
+
+      // Assert
+      expect(result).toBe('nohost');
+    });
+  });
+
+  describe('Given a mailmap, When expanding', () => {
+    const mapUser: FormatEnv['mapUser'] = () => ({
+      name: encode('Mapped Name'),
+      mail: encode('mapped@example.com'),
+    });
+    const mapped: FormatEnv = { ...ENV, mapUser };
+
+    it.each([
+      ['%aN', 'Mapped Name'],
+      ['%aE', 'mapped@example.com'],
+      ['%aL', 'mapped'],
+      ['%cN', 'Mapped Name'],
+      ['%an', 'A U Thor'],
+      ['%ae', 'author@example.com'],
+      ['%al', 'author'],
+    ])('Then %s yields %s', (format, expected) => {
+      // Arrange
+      const sut = expand;
+
+      // Act
+      const result = sut(format, undefined, mapped);
+
+      // Assert
+      expect(result).toBe(expected);
+    });
+
+    it('Then the mailmap receives the ident name and address', () => {
+      // Arrange
+      const seen: string[] = [];
+      const recording: FormatEnv = {
+        ...ENV,
+        mapUser: (ident) => {
+          seen.push(`${decode(ident.name)}|${decode(ident.mail)}`);
+          return ident;
+        },
+      };
+      const sut = expand;
+
+      // Act
+      sut('%aN', undefined, recording);
+
+      // Assert
+      expect(seen).toEqual(['A U Thor|author@example.com']);
+    });
+  });
+
+  describe.each([
+    ['a missing header', ['tree x']],
+    ['an ident without an address', ['author anonymous 1700000300 +0000']],
+  ])('Given %s, When expanding', (_title, headers) => {
+    it.each([
+      ['%an', ''],
+      ['%ae', ''],
+      ['%at', ''],
+      ['%ad', ''],
+      ['%aD', ''],
+      ['%ar', ''],
+      ['%ai', ''],
+      ['%al', '%al'],
+      ['%aL', '%aL'],
+      ['%aN', '%aN'],
+      ['%aE', '%aE'],
+      ['%aI', '%aI'],
+      ['%as', '%as'],
+      ['%ah', '%ah'],
+      ['%aX', '%aX'],
+    ])('Then %s yields %s', (format, expected) => {
+      // Arrange
+      const sut = expand;
+
+      // Act
+      const result = sut(format, raw(headers));
+
+      // Assert
+      expect(result).toBe(expected);
+    });
+  });
+
+  describe('Given an ident without a date, When expanding', () => {
+    it.each([
+      ['%an', 'A'],
+      ['%at', ''],
+      ['%ad', ''],
+      ['%as', '%as'],
+    ])('Then %s yields %s', (format, expected) => {
+      // Arrange
+      const sut = expand;
+
+      // Act
+      const result = sut(format, raw(['author A <a@b>']));
+
+      // Assert
+      expect(result).toBe(expected);
+    });
+  });
+
+  describe('Given a well-formed ident and a date placeholder wired by a later part, When expanding', () => {
+    it.each(['%ad', '%aD', '%ar', '%ai', '%aI', '%as', '%ah'])('Then %s is declined', (format) => {
+      // Arrange
+      const sut = expand;
+
+      // Act
+      const result = sut(format);
+
+      // Assert
+      expect(result).toBe(format);
+    });
+
+    it('Then a declined date placeholder under %+ keeps its letters', () => {
+      // Arrange
+      const sut = expand;
+
+      // Act
+      const result = sut('x%+ad');
+
+      // Assert
+      expect(result).toBe('xad');
+    });
+
+    it('Then a declined date placeholder under %- trims line feeds', () => {
+      // Arrange
+      const sut = expand;
+
+      // Act
+      const result = sut('x\n%-ad');
+
+      // Assert
+      expect(result).toBe('xad');
+    });
+  });
+});
+
+describe('formatCommit message placeholders', () => {
+  describe.each([
+    ['%s', 'msg subject line'],
+    ['%f', 'msg-subject-line'],
+    ['%b', 'body para\n\nSigned-off-by: X <x@y>\n'],
+    ['%B', MESSAGE],
+    ['%e', ''],
+    ['%m', '>'],
+    ['%gd', ''],
+    ['%gD', ''],
+    ['%gs', ''],
+    ['%gn', ''],
+    ['%gN', ''],
+    ['%ge', ''],
+    ['%gE', ''],
+  ])('Given %s, When expanding', (format, expected) => {
+    it(`Then it yields ${JSON.stringify(expected)}`, () => {
+      // Arrange
+      const sut = expand;
+
+      // Act
+      const result = sut(format);
+
+      // Assert
+      expect(result).toBe(expected);
+    });
+  });
+
+  describe('Given a multi-line subject paragraph, When expanding', () => {
+    it('Then %s joins the lines with spaces', () => {
+      // Arrange
+      const sut = expand;
+
+      // Act
+      const result = sut('%s', rawCommit('one\ntwo\n\nbody\n'));
+
+      // Assert
+      expect(result).toBe('one two');
+    });
+  });
+
+  describe('Given an encoding header, When expanding', () => {
+    it('Then %e yields it verbatim', () => {
+      // Arrange
+      const sut = expand;
+
+      // Act
+      const result = sut('%e', raw([...NO_PARENT_HEADERS, 'encoding ISO-8859-1']));
+
+      // Assert
+      expect(result).toBe('ISO-8859-1');
+    });
+  });
+});
+
+describe('Given declined placeholders, When expanding', () => {
+  it('Then a magic byte closing the format is consumed', () => {
+    // Arrange
+    const sut = expand;
+
+    // Act
+    const result = sut('a%+');
+
+    // Assert
+    expect(result).toBe('a');
+  });
+
+  it.each([
+    '%S',
+    '%N',
+    '%q',
+    '%Zz',
+    '%xZZ',
+    '%Gx',
+    '%(unknown)',
+    '%gx',
+    '%a',
+    '%',
+    '%d',
+    '%Cred',
+    '%<(3)',
+  ])('Then %s is emitted literally', (format) => {
+    // Arrange
+    const sut = expand;
+
+    // Act
+    const result = sut(format);
+
+    // Assert
+    expect(result).toBe(format);
+  });
+});
+
+describe('Given refused placeholders, When expanding', () => {
+  it.each(['%(count)', '%(total)'])('Then %s is refused with its own name', (placeholder) => {
+    // Arrange
+    const sut = run;
+
+    // Act
+    const result = sut(`before ${placeholder} after`);
+
+    // Assert
+    expect(result).toEqual({ refused: placeholder });
+  });
+
+  it('Then a refusal under a magic byte is still refused', () => {
+    // Arrange
+    const sut = run;
+
+    // Act
+    const result = sut('%+(count)');
+
+    // Assert
+    expect(result).toEqual({ refused: '%(count)' });
+  });
+
+  it.each(['%(counter)', '%(cou)', '%(totally)', '%(count'])(
+    'Then %s is declined, not refused',
+    (format) => {
+      // Arrange
+      const sut = expand;
+
+      // Act
+      const result = sut(format);
+
+      // Assert
+      expect(result).toBe(format);
+    },
+  );
+});
+
+describe('Given header-parsing and header-free placeholders, When expanding', () => {
+  it.each([
+    ['%h', false],
+    ['%H%T%P%t%p', false],
+    ['%n%%%x41', false],
+    ['%S%N%d%D%Cred%w(5)%<(3)%>(3)%Gx', false],
+    ['%m%gd', false],
+    ['%(describe)%(decorate)', false],
+    ['plain', false],
+    ['%e', true],
+    ['%an', true],
+    ['%cn', true],
+    ['%s', true],
+    ['%f', true],
+    ['%b', true],
+    ['%B', true],
+    ['%Zz', true],
+    ['%xZZ', true],
+    ['%aX', true],
+    ['%(unknown)', true],
+    ['%', true],
+    ['%h%e', true],
+    ['%e%h', true],
+  ])('Then %s reports parsedHeader=%s', (format, expected) => {
+    // Arrange
+    const sut = run;
+
+    // Act
+    const result = sut(format) as FormatOutput;
+
+    // Assert
+    expect(result.parsedHeader).toBe(expected);
+  });
+});
+
+describe('Given the describe budget, When expanding', () => {
+  it('Then the budget is handed back untouched', () => {
+    // Arrange
+    const sut = run;
+
+    // Act
+    const result = sut('%h') as FormatOutput;
+
+    // Assert
+    expect(result.budget).toBe(BUDGET);
+  });
+});
