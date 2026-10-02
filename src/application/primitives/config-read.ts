@@ -92,6 +92,13 @@ export interface ParsedConfig {
      * the caller, not here.
      */
     readonly bigFileThreshold?: number;
+    /**
+     * `core.abbrev` — `auto`, `full` (a false-boolean text: git abbreviates to
+     * the whole hex length), or an explicit length of at least 4 that the
+     * caller clamps to its hash width. Absent when unset or unusable
+     * (lenient read); `assertValidAbbrevConfig` refuses an unusable value.
+     */
+    readonly abbrev?: 'auto' | 'full' | number;
   };
   readonly user?: { readonly name?: string; readonly email?: string; readonly signingKey?: string };
   readonly remote?: ReadonlyMap<
@@ -186,11 +193,31 @@ export interface ParsedConfig {
     readonly default?: PushDefaultMode;
   };
   /** `[gpg]` — signing backend selection and the external program(s) invoked to sign/verify. */
+  /** `[mailmap]` — extra mailmap sources layered on the worktree `.mailmap`. */
+  readonly mailmap?: {
+    /** `mailmap.file` — path of a mailmap file. */
+    readonly file?: string;
+    /** `mailmap.blob` — revision expression naming a mailmap blob. */
+    readonly blob?: string;
+  };
+  /** `[trailer]` — trailer parsing: the separator characters and per-token canonical keys. */
+  readonly trailer?: {
+    /** `trailer.separators` — characters accepted as the key/value separator. */
+    readonly separators?: string;
+    /** `trailer.<token>.key` — canonical key by token (subsection name, verbatim). */
+    readonly keys?: ReadonlyMap<string, string>;
+  };
   readonly gpg?: {
     readonly format?: 'openpgp' | 'ssh' | 'x509';
     readonly program?: string;
     /** `gpg.ssh.program` — the `ssh-keygen`-compatible binary used for `gpg.format = ssh`. */
-    readonly ssh?: { readonly program?: string };
+    readonly ssh?: {
+      readonly program?: string;
+      /** `gpg.ssh.allowedSignersFile` — signers file consulted when verifying SSH signatures. */
+      readonly allowedSignersFile?: string;
+      /** `gpg.ssh.revocationFile` — revoked-keys file consulted when verifying SSH signatures. */
+      readonly revocationFile?: string;
+    };
   };
 }
 
@@ -1228,11 +1255,22 @@ export const findFirstInvalidPackedGitBound = async (
   return undefined;
 };
 
+type MutableGpgSsh = { program?: string; allowedSignersFile?: string; revocationFile?: string };
+
 type MutableGpg = {
   format?: 'openpgp' | 'ssh' | 'x509';
   program?: string;
-  ssh?: { program?: string };
+  ssh?: MutableGpgSsh;
 };
+
+const GPG_SSH_FIELDS: ReadonlyMap<string, keyof MutableGpgSsh> = new Map(
+  (['program', 'allowedSignersFile', 'revocationFile'] as const).map((field) => [
+    field.toLowerCase(),
+    field,
+  ]),
+);
+
+type MutableTrailer = { separators?: string; keys?: ReadonlyMap<string, string> };
 
 interface MutableParsedConfig {
   core?: MutableCore;
@@ -1260,6 +1298,8 @@ interface MutableParsedConfig {
   gc?: { auto?: number; pruneExpire?: string; cruftPacks?: boolean };
   push?: { gpgSign?: 'true' | 'false' | 'if-asked'; default?: PushDefaultMode };
   gpg?: MutableGpg;
+  mailmap?: { file?: string; blob?: string };
+  trailer?: MutableTrailer;
 }
 
 const dispatchSubsection = (acc: MutableParsedConfig, sec: IniSection, name: string): void => {
@@ -1273,6 +1313,7 @@ const dispatchSubsection = (acc: MutableParsedConfig, sec: IniSection, name: str
   else if (section === 'diff') mergeDiffDriver(acc, name, sec);
   else if (section === 'filter') mergeFilterDriver(acc, name, sec);
   else if (section === 'gpg') mergeGpgSsh(acc, name, sec);
+  else if (section === 'trailer') mergeTrailerKey(acc, name, sec);
 };
 
 const dispatchSection = (acc: MutableParsedConfig, sec: IniSection): void => {
@@ -1303,6 +1344,10 @@ const dispatchSection = (acc: MutableParsedConfig, sec: IniSection): void => {
     mergePush(acc, sec);
   } else if (section === 'gpg') {
     mergeGpg(acc, sec);
+  } else if (section === 'mailmap') {
+    mergeMailmap(acc, sec);
+  } else if (section === 'trailer') {
+    mergeTrailer(acc, sec);
   }
 };
 
@@ -1330,6 +1375,7 @@ type MutableCore = {
   packedGitWindowSize?: number;
   packedGitLimit?: number;
   bigFileThreshold?: number;
+  abbrev?: 'auto' | 'full' | number;
   /** Transient: true when looseCompression was set via loosecompression key (not compression).
    *  Dropped by finalizeCore. Guards order-independent precedence: loosecompression > compression. */
   looseCompressionFromLoose?: boolean;
@@ -1420,6 +1466,56 @@ const applyBigFileThresholdEntry = (core: MutableCore, value: string): MutableCo
   return checked.ok ? { ...core, bigFileThreshold: checked.value } : undefined;
 };
 
+const ABBREV_KEY = 'abbrev';
+const MIN_ABBREV_LENGTH = 4;
+const FALSE_BOOLEAN_TEXTS: ReadonlySet<string> = new Set(['', 'no', 'false', 'off']);
+
+type AbbrevVerdict =
+  | { readonly ok: true; readonly value: 'auto' | 'full' | number }
+  | { readonly ok: false; readonly reason: 'invalid unit' | 'out of range' };
+
+/**
+ * git's `core.abbrev` grammar (`environment.c`): `auto`, a false-boolean text
+ * (full length), else an integer of at least 4 — anything else is a refusal.
+ */
+const classifyAbbrev = (value: string): AbbrevVerdict => {
+  const lowered = value.toLowerCase();
+  if (lowered === 'auto') return { ok: true, value: 'auto' };
+  if (FALSE_BOOLEAN_TEXTS.has(lowered)) return { ok: true, value: 'full' };
+  const parsed = parseGitInt(value);
+  if (!parsed.ok) return { ok: false, reason: parsed.reason };
+  if (parsed.value < MIN_ABBREV_LENGTH || parsed.value > GIT_C_INT_MAX) {
+    return { ok: false, reason: 'out of range' };
+  }
+  return { ok: true, value: parsed.value };
+};
+
+const applyAbbrevEntry = (core: MutableCore, value: string): MutableCore | undefined => {
+  const verdict = classifyAbbrev(value);
+  return verdict.ok ? { ...core, abbrev: verdict.value } : undefined;
+};
+
+/**
+ * Refuse with `CONFIG_BAD_NUMERIC_VALUE` when any `core.abbrev` entry holds a
+ * value git's grammar refuses (git dies on each entry as it reads it, so a
+ * later valid entry does not rescue an earlier bad one).
+ */
+export const assertValidAbbrevConfig = async (ctx: Context): Promise<void> => {
+  const { tokens, source } = await readConfigEntry(ctx);
+  let inSection = false;
+  for (const token of tokens) {
+    if (token.kind === 'header') {
+      inSection = matchesSection(token.section, token.subsection, 'core', undefined);
+      continue;
+    }
+    if (!inSection || token.kind !== 'entry' || token.key.toLowerCase() !== ABBREV_KEY) continue;
+    if (token.value === null) continue;
+    const verdict = classifyAbbrev(token.value);
+    if (!verdict.ok)
+      throw configBadNumericValue('core.abbrev', source, token.value, verdict.reason);
+  }
+};
+
 // One map is BOTH the key set and the field dispatch: a new boolean key
 // cannot join the set without naming its target field, so a silent
 // mis-assignment is structurally impossible.
@@ -1480,6 +1576,7 @@ const applyCoreEntry = (
   if (lowered === PACKED_GIT_LIMIT_KEY)
     return applyPackedGitBoundEntry(core, 'packedGitLimit', value);
   if (lowered === BIG_FILE_THRESHOLD_KEY) return applyBigFileThresholdEntry(core, value);
+  if (lowered === ABBREV_KEY) return applyAbbrevEntry(core, value);
   return undefined;
 };
 
@@ -1995,14 +2092,45 @@ const mergeGpg = (acc: { gpg?: MutableGpg }, sec: IniSection): void => {
   }
 };
 
+const mergeMailmap = (
+  acc: { mailmap?: { file?: string; blob?: string } },
+  sec: IniSection,
+): void => {
+  for (const { key, value } of sec.entries) {
+    if (value === null) continue;
+    const lowered = key.toLowerCase();
+    if (lowered === 'file') acc.mailmap = { ...acc.mailmap, file: value };
+    else if (lowered === 'blob') acc.mailmap = { ...acc.mailmap, blob: value };
+  }
+};
+
+const mergeTrailer = (acc: { trailer?: MutableTrailer }, sec: IniSection): void => {
+  for (const { key, value } of sec.entries) {
+    if (value === null || key.toLowerCase() !== 'separators') continue;
+    acc.trailer = { ...acc.trailer, separators: value };
+  }
+};
+
+const mergeTrailerKey = (
+  acc: { trailer?: MutableTrailer },
+  token: string,
+  sec: IniSection,
+): void => {
+  for (const { key, value } of sec.entries) {
+    if (value === null || key.toLowerCase() !== 'key') continue;
+    const keys = new Map(acc.trailer?.keys).set(token, value);
+    acc.trailer = { ...acc.trailer, keys };
+  }
+};
+
 // `[gpg "ssh"]` is the only recognised `gpg.*` subsection; any other
 // subsection name (not a real git config surface today) is a silent no-op.
 const mergeGpgSsh = (acc: { gpg?: MutableGpg }, name: string, sec: IniSection): void => {
   if (name !== 'ssh') return;
   for (const { key, value } of sec.entries) {
-    if (key.toLowerCase() === 'program' && value !== null) {
-      acc.gpg = { ...acc.gpg, ssh: { ...acc.gpg?.ssh, program: value } };
-    }
+    const field = GPG_SSH_FIELDS.get(key.toLowerCase());
+    if (field === undefined || value === null) continue;
+    acc.gpg = { ...acc.gpg, ssh: { ...acc.gpg?.ssh, [field]: value } };
   }
 };
 
@@ -2034,6 +2162,7 @@ const finalizeCoreSizeFields = (core: MutableCore): ParsedConfig['core'] => ({
     : {}),
   ...(core.packedGitLimit !== undefined ? { packedGitLimit: core.packedGitLimit } : {}),
   ...(core.bigFileThreshold !== undefined ? { bigFileThreshold: core.bigFileThreshold } : {}),
+  ...(core.abbrev !== undefined ? { abbrev: core.abbrev } : {}),
 });
 
 /**
@@ -2057,6 +2186,8 @@ type FinalizeOut = {
   gc?: { auto?: number; pruneExpire?: string; cruftPacks?: boolean };
   push?: { gpgSign?: 'true' | 'false' | 'if-asked'; default?: PushDefaultMode };
   gpg?: MutableGpg;
+  mailmap?: { file?: string; blob?: string };
+  trailer?: MutableTrailer;
 };
 
 // Extracted to keep `finalize` under the cognitive-complexity ceiling.
@@ -2096,6 +2227,8 @@ const finalizeScalarBuckets = (acc: MutableParsedConfig, out: FinalizeOut): void
   if (acc.gc !== undefined) out.gc = acc.gc;
   if (acc.push !== undefined) out.push = acc.push;
   if (acc.gpg !== undefined) out.gpg = acc.gpg;
+  if (acc.mailmap !== undefined) out.mailmap = acc.mailmap;
+  if (acc.trailer !== undefined) out.trailer = acc.trailer;
 };
 
 const finalize = (acc: MutableParsedConfig): ParsedConfig => {

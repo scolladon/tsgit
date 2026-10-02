@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import {
   __resetConfigCacheForTests,
+  assertValidAbbrevConfig,
   assertValidGcAutoConfig,
   assertValidPackIntConfig,
   type ConfigToken,
@@ -9145,6 +9146,195 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
         // Assert
         expect(read(result)).toBeUndefined();
+      });
+    });
+  });
+
+  describe.each([
+    ['auto', 'auto'],
+    ['AUTO', 'auto'],
+    ['no', 'full'],
+    ['false', 'full'],
+    ['off', 'full'],
+    ['', 'full'],
+    ['4', 4],
+    ['12', 12],
+    ['39', 39],
+    ['40', 40],
+    ['64', 64],
+    ['1k', 1024],
+  ] as const)('Given core.abbrev = %j', (raw, expected) => {
+    describe('When readConfig', () => {
+      it(`Then abbrev is ${JSON.stringify(expected)}`, async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, `[core]\n\tabbrev = ${raw}\n`);
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.core?.abbrev).toBe(expected);
+      });
+    });
+  });
+
+  describe.each(['3', '0', '-1', 'true', 'abc'])('Given an unusable core.abbrev = %s', (raw) => {
+    describe('When readConfig', () => {
+      it('Then abbrev stays absent', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, `[core]\n\tabbrev = ${raw}\n`);
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.core?.abbrev).toBeUndefined();
+      });
+    });
+  });
+
+  describe.each([
+    ['3', 'out of range'],
+    ['0', 'out of range'],
+    ['-1', 'out of range'],
+    ['true', 'invalid unit'],
+    ['abc', 'invalid unit'],
+  ] as const)('Given core.abbrev = %s', (raw, reason) => {
+    describe('When assertValidAbbrevConfig', () => {
+      it('Then it refuses with CONFIG_BAD_NUMERIC_VALUE carrying key/value/reason', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, `[core]\n\tabbrev = ${raw}\n`);
+
+        // Act
+        let caught: unknown;
+        try {
+          await assertValidAbbrevConfig(ctx);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+        if (data.code === 'CONFIG_BAD_NUMERIC_VALUE') {
+          expect(data.key).toBe('core.abbrev');
+          expect(data.value).toBe(raw);
+          expect(data.reason).toBe(reason);
+          expect(data.source).toMatch(/\/config$/);
+        }
+      });
+    });
+  });
+
+  describe.each(['auto', 'no', '4', '12'])('Given a usable core.abbrev = %s', (raw) => {
+    describe('When assertValidAbbrevConfig', () => {
+      it('Then it resolves', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, `[core]\n\tabbrev = ${raw}\n`);
+
+        // Act
+        const result = assertValidAbbrevConfig(ctx);
+
+        // Assert
+        await expect(result).resolves.toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a [mailmap] section with file and blob', () => {
+    describe('When readConfig', () => {
+      it('Then both strings populate their own fields', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[MailMap]\n\tfile = /etc/map\n\tBlob = HEAD:.mailmap\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.mailmap).toEqual({ file: '/etc/map', blob: 'HEAD:.mailmap' });
+      });
+    });
+  });
+
+  describe('Given a [mailmap] section with only a valueless key and an unknown key', () => {
+    describe('When readConfig', () => {
+      it('Then mailmap stays absent', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[mailmap]\n\tfile\n\tother = x\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.mailmap).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a [trailer] section with separators and two keyed token subsections', () => {
+    describe('When readConfig', () => {
+      it('Then separators and each token key are read, the subsection name staying verbatim', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(
+          ctx,
+          '[trailer]\n\tseparators = :=\n[trailer "Fix"]\n\tkey = Fixes-Bug\n[trailer "ack"]\n\tKey = Reviewed-by\n\tcommand = ignored\n',
+        );
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.trailer?.separators).toBe(':=');
+        expect([...(result.trailer?.keys ?? [])]).toEqual([
+          ['Fix', 'Fixes-Bug'],
+          ['ack', 'Reviewed-by'],
+        ]);
+      });
+    });
+  });
+
+  describe('Given a [trailer] section with only a valueless separators and an unknown key', () => {
+    describe('When readConfig', () => {
+      it('Then trailer stays absent', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[trailer]\n\tseparators\n\tother = x\n[trailer "t"]\n\tkey\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.trailer).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a [gpg "ssh"] section with program, allowedSignersFile and revocationFile', () => {
+    describe('When readConfig', () => {
+      it('Then all three populate gpg.ssh beside each other', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(
+          ctx,
+          '[gpg "ssh"]\n\tprogram = ssh-keygen\n\tAllowedSignersFile = /a/signers\n\trevocationFile = /a/revoked\n',
+        );
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.gpg?.ssh).toEqual({
+          program: 'ssh-keygen',
+          allowedSignersFile: '/a/signers',
+          revocationFile: '/a/revoked',
+        });
       });
     });
   });
