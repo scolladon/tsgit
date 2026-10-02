@@ -4341,3 +4341,77 @@ describe('Given a SHA-256 tree entry truncated to a 20-byte (SHA-1-width) oid', 
     });
   });
 });
+
+describe.each([
+  { name: 'a\\.git', mode: '100644', msgId: 'hasDotgit', severity: 'warning' },
+  { name: 'a\\git~1\\b', mode: '100644', msgId: 'hasDotgit', severity: 'warning' },
+  { name: 'a\\.gitmodules', mode: '120000', msgId: 'gitmodulesSymlink', severity: 'error' },
+  { name: 'a\\gi7eba~2', mode: '120000', msgId: 'gitmodulesSymlink', severity: 'error' },
+] as const)(
+  'Given a tree entry whose backslash segment $name is a dotgit alias',
+  ({ name, mode, msgId, severity }) => {
+    describe('When validateObject runs', () => {
+      it(`Then emits ${msgId}`, () => {
+        // Arrange
+        const rawBytes = buildTree(buildTreeEntry(mode, name, BLOB_SHA));
+        const sut = validateObject;
+
+        // Act
+        const result = sut({
+          kind: 'tree',
+          rawBody: rawBytes,
+          strict: false,
+          hashConfig: SHA1_CONFIG,
+        });
+
+        // Assert
+        expect(result).toEqual([{ msgId, severity }]);
+      });
+    });
+  },
+);
+
+describe('Given a symlink entry whose name and its backslash segment each read as .gitmodules', () => {
+  describe('When validateObject runs', () => {
+    it('Then emits gitmodulesSymlink once per match, as git reports each', () => {
+      // Arrange
+      const rawBytes = buildTree(buildTreeEntry('120000', '.gitmodules:\\.gitmodules', BLOB_SHA));
+      const sut = validateObject;
+
+      // Act
+      const result = sut({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
+
+      // Assert
+      expect(result).toEqual([
+        { msgId: 'gitmodulesSymlink', severity: 'error' },
+        { msgId: 'gitmodulesSymlink', severity: 'error' },
+      ]);
+    });
+  });
+});
+
+describe('Given a regular entry whose backslash segment reads as .gitmodules', () => {
+  describe('When validateObject runs', () => {
+    it('Then the tree itself carries no finding', () => {
+      // Arrange
+      const rawBytes = buildTree(buildTreeEntry('100644', 'a\\.gitmodules', BLOB_SHA));
+      const sut = validateObject;
+
+      // Act
+      const result = sut({
+        kind: 'tree',
+        rawBody: rawBytes,
+        strict: false,
+        hashConfig: SHA1_CONFIG,
+      });
+
+      // Assert
+      expect(result).toEqual([]);
+    });
+  });
+});

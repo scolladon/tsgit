@@ -96,3 +96,48 @@ describe('Given an id the object cache does not hold as a tree', () => {
     });
   });
 });
+
+describe.each([
+  { name: '.GITMODULES', expected: '.gitmodules' },
+  { name: 'gitmod~1', expected: '.gitmodules' },
+  { name: 'gi7eba~2', expected: '.gitmodules' },
+  { name: '.git‌modules', expected: '.gitmodules' },
+  { name: 'a\\.gitmodules', expected: '.gitmodules' },
+  { name: 'a\\b\\gitmod~1', expected: '.gitmodules' },
+  { name: '.GITATTRIBUTES', expected: '.gitattributes' },
+  { name: 'gi7d29~1', expected: '.gitattributes' },
+  { name: 'a\\.git‌modules', expected: undefined },
+  { name: 'a\\.gitattributes', expected: undefined },
+  { name: 'gitmod~5', expected: undefined },
+] as const)('Given a regular tree entry named $name', ({ name, expected }) => {
+  describe('When the tree is noted', () => {
+    it(`Then the blob is queued under ${expected}`, () => {
+      // Arrange
+      const ledger = sut(cacheWith([treeEntry(FILE_MODE.REGULAR, name, BLOB)]));
+
+      // Act
+      ledger.noteTree(TREE);
+
+      // Assert
+      expect(ledger.queuedName(BLOB)).toBe(expected);
+    });
+  });
+});
+
+describe.each(['.gitmodules', '.gitattributes', 'a\\.gitmodules'])(
+  'Given a symlink tree entry named %s',
+  (name) => {
+    describe('When the tree is noted', () => {
+      it('Then its blob is not queued — git checks the symlink instead', () => {
+        // Arrange
+        const ledger = sut(cacheWith([treeEntry(FILE_MODE.SYMLINK, name, BLOB)]));
+
+        // Act
+        ledger.noteTree(TREE);
+
+        // Assert
+        expect(ledger.queuedName(BLOB)).toBeUndefined();
+      });
+    });
+  },
+);

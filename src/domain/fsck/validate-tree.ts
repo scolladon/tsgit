@@ -1,5 +1,11 @@
 import { compareBytes, indexOf } from '../objects/encoding.js';
-import { entryNameKey, hasNonOctalByte, matchesDotgitAlias } from '../objects/tree-entry-bytes.js';
+import {
+  backslashSegmentStarts,
+  entryNameKey,
+  hasNonOctalByte,
+  matchesDotgitAlias,
+  matchesNtfsDotgitAlias,
+} from '../objects/tree-entry-bytes.js';
 import {
   MSG_BAD_FILEMODE,
   MSG_BAD_TREE,
@@ -130,7 +136,7 @@ function checkNameFaults(
   if (key === '..') {
     findings.push({ msgId: MSG_HAS_DOTDOT, severity: resolveSeverity(MSG_HAS_DOTDOT, strict) });
   }
-  if (matchesDotgitAlias(raw, nameStart, nameEnd, 'git')) {
+  if (namesDotgit(raw, nameStart, nameEnd)) {
     findings.push({ msgId: MSG_HAS_DOTGIT, severity: resolveSeverity(MSG_HAS_DOTGIT, strict) });
   }
   if (key.includes('/')) {
@@ -145,6 +151,54 @@ function checkNameFaults(
       severity: resolveSeverity(MSG_LARGE_PATHNAME, strict),
     });
   }
+  return findings;
+}
+
+/** git's `has_dotgit`: the whole name under either fold, or any backslash
+ *  segment under the NTFS one. */
+function namesDotgit(raw: Uint8Array, nameStart: number, nameEnd: number): boolean {
+  if (matchesDotgitAlias(raw, nameStart, nameEnd, 'git')) return true;
+  return backslashSegmentStarts(raw, nameStart, nameEnd).some((segment) =>
+    matchesNtfsDotgitAlias(raw, segment, nameEnd, 'git'),
+  );
+}
+
+/** One `gitmodulesSymlink` per backslash segment git reads as `.gitmodules`. */
+function backslashGitmodulesSymlinks(
+  raw: Uint8Array,
+  nameStart: number,
+  nameEnd: number,
+  strict: boolean,
+): ReadonlyArray<TreeFinding> {
+  return backslashSegmentStarts(raw, nameStart, nameEnd)
+    .filter((segment) => matchesNtfsDotgitAlias(raw, segment, nameEnd, 'gitmodules'))
+    .map(() => ({
+      msgId: MSG_GITMODULES_SYMLINK,
+      severity: resolveSeverity(MSG_GITMODULES_SYMLINK, strict),
+    }));
+}
+
+/** The checks git's `fsck_tree` runs only on a symlink entry, in its order. */
+function symlinkOnlyFindings(
+  raw: Uint8Array,
+  nameStart: number,
+  nameEnd: number,
+  strict: boolean,
+): ReadonlyArray<TreeFinding> {
+  const findings: TreeFinding[] = [];
+  if (matchesDotgitAlias(raw, nameStart, nameEnd, 'gitignore')) {
+    findings.push({
+      msgId: MSG_GITIGNORE_SYMLINK,
+      severity: resolveSeverity(MSG_GITIGNORE_SYMLINK, strict),
+    });
+  }
+  if (matchesDotgitAlias(raw, nameStart, nameEnd, 'mailmap')) {
+    findings.push({
+      msgId: MSG_MAILMAP_SYMLINK,
+      severity: resolveSeverity(MSG_MAILMAP_SYMLINK, strict),
+    });
+  }
+  findings.push(...backslashGitmodulesSymlinks(raw, nameStart, nameEnd, strict));
   return findings;
 }
 
@@ -185,18 +239,7 @@ function checkSpecialFileName(
       });
     }
   }
-  if (isSymlink && matchesDotgitAlias(raw, nameStart, nameEnd, 'gitignore')) {
-    findings.push({
-      msgId: MSG_GITIGNORE_SYMLINK,
-      severity: resolveSeverity(MSG_GITIGNORE_SYMLINK, strict),
-    });
-  }
-  if (isSymlink && matchesDotgitAlias(raw, nameStart, nameEnd, 'mailmap')) {
-    findings.push({
-      msgId: MSG_MAILMAP_SYMLINK,
-      severity: resolveSeverity(MSG_MAILMAP_SYMLINK, strict),
-    });
-  }
+  if (isSymlink) findings.push(...symlinkOnlyFindings(raw, nameStart, nameEnd, strict));
   return findings;
 }
 

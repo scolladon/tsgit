@@ -5,6 +5,7 @@ import {
   entryNameKey,
   hasNonOctalByte,
   matchesDotgitAlias,
+  matchesNtfsDotgitAlias,
 } from '../../../../src/domain/objects/tree-entry-bytes.js';
 
 function concatBytes(...parts: ReadonlyArray<Uint8Array>): Uint8Array {
@@ -487,6 +488,78 @@ describe('matchesDotgitAlias', () => {
         // Assert
         expect(result).toBe(false);
       });
+    });
+  });
+});
+
+describe('Given names git 2.55.0 reads as NTFS aliases of a dotgit file', () => {
+  describe.each([
+    { name: '.git:stream', alias: 'git', expected: true },
+    { name: 'git~1:stream', alias: 'git', expected: true },
+    { name: '.git\\x', alias: 'git', expected: true },
+    { name: '.git/x', alias: 'git', expected: true },
+    { name: '.git.x', alias: 'git', expected: false },
+    { name: '.gitmodules:stream', alias: 'gitmodules', expected: true },
+    { name: '.gitmodules. :x', alias: 'gitmodules', expected: true },
+    { name: '.gitmodules\\b', alias: 'gitmodules', expected: false },
+    { name: 'GI7EBA~2', alias: 'gitmodules', expected: true },
+    { name: 'gi7eba~9. ', alias: 'gitmodules', expected: true },
+    { name: 'gi7eb~12', alias: 'gitmodules', expected: true },
+    { name: 'g~123456', alias: 'gitmodules', expected: true },
+    { name: '~1234567', alias: 'gitmodules', expected: true },
+    { name: 'gi7eba~0', alias: 'gitmodules', expected: false },
+    { name: 'gi7eba~1x', alias: 'gitmodules', expected: false },
+    { name: 'gi7eb~1x', alias: 'gitmodules', expected: false },
+    { name: 'gi7eba7~1', alias: 'gitmodules', expected: false },
+    { name: 'gi7eba~', alias: 'gitmodules', expected: false },
+    { name: 'gi7ebx~1', alias: 'gitmodules', expected: false },
+    { name: 'gi7d29~1', alias: 'gitattributes', expected: true },
+    { name: 'gi250a~1', alias: 'gitignore', expected: true },
+    { name: 'maba30~1', alias: 'mailmap', expected: true },
+    { name: 'gi7d29~1', alias: 'gitmodules', expected: false },
+  ] as const)('When $name is matched against the $alias alias', ({ name, alias, expected }) => {
+    it(`Then it resolves to ${expected}`, () => {
+      // Arrange
+      const sut = matchesDotgitAlias;
+      const nameBytes = encode(name);
+
+      // Act
+      const result = sut(nameBytes, 0, nameBytes.length, alias);
+
+      // Assert
+      expect(result).toBe(expected);
+    });
+  });
+});
+
+describe('Given a name that is a dotgit alias only under the HFS fold', () => {
+  describe('When it is matched against the NTFS rule alone', () => {
+    it('Then it does not match', () => {
+      // Arrange
+      const sut = matchesNtfsDotgitAlias;
+      const nameBytes = concatBytes(encode('.git'), U200C, encode('modules'));
+
+      // Act
+      const result = sut(nameBytes, 0, nameBytes.length, 'gitmodules');
+
+      // Assert
+      expect(result).toBe(false);
+    });
+  });
+});
+
+describe('Given a name that is an NTFS short-name alias inside a wider buffer', () => {
+  describe('When only the name range is matched', () => {
+    it('Then bytes past the range never complete the short name', () => {
+      // Arrange
+      const sut = matchesNtfsDotgitAlias;
+      const buffer = encode('gi7eb~1234');
+
+      // Act
+      const result = sut(buffer, 0, 7, 'gitmodules');
+
+      // Assert
+      expect(result).toBe(false);
     });
   });
 });

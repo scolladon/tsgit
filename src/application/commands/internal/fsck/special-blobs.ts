@@ -1,22 +1,25 @@
-import { bytesEqual, encode } from '../../../../domain/objects/encoding.js';
-import type { ObjectId } from '../../../../domain/objects/index.js';
+import type { ObjectId, TreeEntry } from '../../../../domain/objects/index.js';
+import { FILE_MODE } from '../../../../domain/objects/index.js';
+import {
+  matchesDotgitAlias,
+  namesGitmodules,
+} from '../../../../domain/objects/tree-entry-bytes.js';
 import type { CachedGitObject } from './object-cache.js';
 
 /** The two filenames whose blobs fsck checks for content. */
 export type SpecialBlobName = '.gitmodules' | '.gitattributes';
 
-const GITMODULES_NAME_BYTES = encode('.gitmodules');
-const GITATTRIBUTES_NAME_BYTES = encode('.gitattributes');
-
 /**
- * The special filename `nameBytes` matches, when it matches one of fsck's
- * two dedicated blob-content checks. Compares raw bytes — never the entry's
- * decoded `name` — so a byte sequence that merely decodes to one of these
- * literals is never mistaken for it.
+ * The special filename git's `fsck_tree` queues `entry`'s blob under: a name
+ * that reads as `.gitmodules` or `.gitattributes` through git's HFS and NTFS
+ * alias folds — matched on raw bytes, never the decoded `name`. A symlink is
+ * never queued: git reports it as a symlink instead.
  */
-function specialBlobName(nameBytes: Uint8Array): SpecialBlobName | undefined {
-  if (bytesEqual(nameBytes, GITMODULES_NAME_BYTES)) return '.gitmodules';
-  if (bytesEqual(nameBytes, GITATTRIBUTES_NAME_BYTES)) return '.gitattributes';
+function specialBlobName(entry: TreeEntry): SpecialBlobName | undefined {
+  if (entry.mode === FILE_MODE.SYMLINK) return undefined;
+  const { nameBytes } = entry;
+  if (namesGitmodules(nameBytes, 0, nameBytes.length)) return '.gitmodules';
+  if (matchesDotgitAlias(nameBytes, 0, nameBytes.length, 'gitattributes')) return '.gitattributes';
   return undefined;
 }
 
@@ -49,7 +52,7 @@ export function createSpecialBlobLedger(
       const tree = objectCache.get(id);
       if (tree?.type !== 'tree') return;
       for (const entry of tree.entries) {
-        const name = specialBlobName(entry.nameBytes);
+        const name = specialBlobName(entry);
         if (name !== undefined) found.set(entry.id, name);
       }
     },

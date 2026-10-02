@@ -1670,3 +1670,72 @@ describe.skipIf(!GIT_AVAILABLE)('fsck interop — a reflog it cannot open', () =
     },
   );
 });
+
+describe.skipIf(!GIT_AVAILABLE)('fsck interop — names git reads as a special file', () => {
+  const EVIL_GITMODULES = '[submodule "x"]\n\tpath = x\n\turl = -evil\n';
+  const REPORT_LINE = /^(?:error|warning) in (\w+) ([0-9a-f]{40}): (\w+): /;
+
+  /** git's `<level> in <type> <oid>: <msg-id>` lines, rebuilt from tsgit's findings. */
+  const reportLines = (findings: ReadonlyArray<FsckFinding>): ReadonlyArray<string> =>
+    findings.flatMap((finding) =>
+      finding.type === 'bad-object' ? [`${finding.objectType} ${finding.id} ${finding.msgId}`] : [],
+    );
+
+  const gitReportLines = (stderr: string): ReadonlyArray<string> =>
+    stderr.split('\n').flatMap((line) => {
+      const match = REPORT_LINE.exec(line);
+      return match === null ? [] : [`${match[1]} ${match[2]} ${match[3]}`];
+    });
+
+  /** A tree of one `mode` entry named `name` (raw UTF-8 bytes) pointing at `oid`. */
+  const writeRawTree = (dir: string, mode: string, name: string, oid: string): string =>
+    runGit(['-C', dir, 'hash-object', '-t', 'tree', '-w', '--literally', '--stdin'], {
+      input: Buffer.concat([Buffer.from(`${mode} ${name}\0`, 'utf8'), Buffer.from(oid, 'hex')]),
+    }).trim();
+
+  describe.each([
+    '.gitmodules',
+    '.GITMODULES',
+    'gitmod~1',
+    'GI7EBA~2',
+    'gi7eb~12',
+    '.gitmodules. .',
+    '.gitmodules:stream',
+    '.git‌modules',
+    'a\\.gitmodules',
+    'a\\gitmod~1',
+    'a\\.git‌modules',
+    'a\\.gitmodules\\b',
+    'gitmod~5',
+    '.git:stream',
+    'a\\.git',
+    'a\\git~1\\b',
+  ])('Given a tree naming an evil .gitmodules blob as %j', (name) => {
+    describe.each(['100644', '120000'])('When the entry mode is %s', (mode) => {
+      it(
+        'Then git fsck and tsgit fsck report alike',
+        async () => {
+          // Arrange
+          const slug = Buffer.from(`${name}-${mode}`).toString('hex');
+          const dir = path.join(root, `special-name-${slug}`);
+          runGit(['init', '-q', '-b', 'main', dir]);
+          configure(dir);
+          const blob = runGit(['-C', dir, 'hash-object', '-w', '--stdin'], {
+            input: EVIL_GITMODULES,
+          }).trim();
+          writeRawTree(dir, mode, name, blob);
+          const git = gitFsck(dir);
+          const sut = tsgitFsck;
+
+          // Act
+          const result = await sut(dir);
+
+          // Assert
+          expect(result.exitCode).toBe(git.exitCode);
+          expect(reportLines(result.findings)).toEqual(gitReportLines(git.stderr));
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+});
