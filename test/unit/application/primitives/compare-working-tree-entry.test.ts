@@ -9,7 +9,10 @@ import {
   type WorkingTreeComparison,
 } from '../../../../src/application/primitives/compare-working-tree-entry.js';
 import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
-import { buildAttributeProvider } from '../../../../src/application/primitives/internal/read-gitattributes.js';
+import {
+  type AttributeProvider,
+  buildAttributeProvider,
+} from '../../../../src/application/primitives/internal/read-gitattributes.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
 import type { IndexEntry } from '../../../../src/domain/git-index/index-entry.js';
 import type {
@@ -875,6 +878,56 @@ describe('Given a malformed core.bigFileThreshold', () => {
 
       // Assert
       expect(result.status).toBe('unchanged');
+    });
+  });
+});
+
+describe('Given a malformed core.bigFileThreshold and a filter driver engaged on the path', () => {
+  /** `a.txt` staged under `filter=d`, the threshold malformed after the fact. */
+  const seedUnderDriver = async (
+    driver: string,
+  ): Promise<{ ctx: Context; entry: IndexEntry; provider: AttributeProvider }> => {
+    const { ctx: bare, entry } = await seedFile('a.txt', 'hello\n');
+    const ctx: Context = { ...bare, command: new FakeRunner((bytes) => bytes) };
+    await ctx.fs.writeUtf8(work(ctx, '.gitattributes'), 'a.txt filter=d\n');
+    const configPath = `${ctx.layout.gitDir}/config`;
+    const config = await ctx.fs.readUtf8(configPath);
+    await ctx.fs.writeUtf8(
+      configPath,
+      `${config}[filter "d"]\n${driver}[core]\n\tbigFileThreshold = x\n`,
+    );
+    invalidateConfigCache(ctx);
+    return { ctx, entry, provider: await buildAttributeProvider(ctx) };
+  };
+  const racyAgainst = (entry: IndexEntry) => ({ seconds: entry.mtimeSeconds, nanoseconds: 0 });
+
+  describe('When the stat cache sends the racy file under a required driver to be hashed', () => {
+    it('Then it compares without reading the threshold, as git streams it through the filter', async () => {
+      // Arrange
+      const { ctx, entry, provider } = await seedUnderDriver('\tclean = cat\n\trequired = true\n');
+      const sut = compareWorkingTreeDelta;
+
+      // Act
+      const result = await sut(ctx, entry, provider, racyAgainst(entry));
+
+      // Assert
+      expect(result.status).toBe('unchanged');
+    });
+  });
+
+  describe('When the stat cache sends the racy file under an optional driver to be hashed', () => {
+    it('Then it refuses with the key', async () => {
+      // Arrange
+      const { ctx, entry, provider } = await seedUnderDriver('\tclean = cat\n');
+      const sut = compareWorkingTreeDelta;
+
+      // Act
+      const result = await sut(ctx, entry, provider, racyAgainst(entry)).catch(
+        (err: { data: unknown }) => err.data,
+      );
+
+      // Assert
+      expect(result).toMatchObject({ code: 'CONFIG_BAD_NUMERIC_VALUE', value: 'x' });
     });
   });
 });

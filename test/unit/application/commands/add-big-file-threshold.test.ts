@@ -54,3 +54,50 @@ describe('Given a malformed core.bigFileThreshold', () => {
     });
   });
 });
+
+describe('Given a malformed core.bigFileThreshold and a filter driver engaged on the path', () => {
+  const repoUnderDriver = async (driver: string): Promise<Context> => {
+    const ctx = await repoWithMalformedThreshold();
+    const configPath = `${ctx.layout.gitDir}/config`;
+    await ctx.fs.writeUtf8(
+      configPath,
+      `${await ctx.fs.readUtf8(configPath)}[filter "d"]\n${driver}`,
+    );
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, 'a.txt filter=d\n');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a\n');
+    return {
+      ...ctx,
+      command: {
+        run: async (request) => ({ exitCode: 0, stdout: request.stdin ?? new Uint8Array() }),
+      },
+    };
+  };
+
+  describe('When add stages the file under a required driver', () => {
+    it('Then it stages it without reading the threshold, as git streams it through the filter', async () => {
+      // Arrange
+      const ctx = await repoUnderDriver('\tclean = cat\n\trequired = true\n');
+      const sut = add;
+
+      // Act
+      const result = await sut(ctx, ['a.txt']);
+
+      // Assert
+      expect(result.added).toEqual(['a.txt']);
+    });
+  });
+
+  describe('When add stages the file under an optional driver', () => {
+    it('Then it refuses with the key', async () => {
+      // Arrange
+      const ctx = await repoUnderDriver('\tclean = cat\n');
+      const sut = add;
+
+      // Act
+      const result = await sut(ctx, ['a.txt']).catch((err: { data: unknown }) => err.data);
+
+      // Assert
+      expect(result).toMatchObject({ code: 'CONFIG_BAD_NUMERIC_VALUE', value: 'x' });
+    });
+  });
+});

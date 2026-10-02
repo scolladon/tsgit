@@ -32,7 +32,7 @@ import type { AttributeProvider } from './internal/read-gitattributes.js';
 import { assertBigFileThresholdValid } from './internal/repo-settings-gate.js';
 import { requireWorkTree } from './internal/repo-state.js';
 import { serializeAndHash } from './internal/serialize-and-hash.js';
-import { resolveFilterDriver } from './resolve-filter-driver.js';
+import { resolveFilterDriver, streamsThroughFilter } from './resolve-filter-driver.js';
 import { runFilterDriver } from './run-filter-driver.js';
 
 export type WorkingTreeComparison =
@@ -125,17 +125,30 @@ const statOnlyVerdict = (
   return undefined;
 };
 
+/** The path's driver, as git's `index_fd` weighs it: an attribute-engaged
+ *  malformed driver refuses here, before any content read. */
+const streamsThroughDriver = async (
+  ctx: Context,
+  provider: AttributeProvider | undefined,
+  path: FilePath,
+): Promise<boolean> =>
+  provider !== undefined && streamsThroughFilter(await resolveFilterDriver(ctx, provider, path));
+
 /**
  * git's `index_fd` reads `core.bigFileThreshold` before hashing a regular
- * file. Only the stat-cache-armed comparison reaches a hash where git does;
- * an unarmed one hashes files git's stat cache would have settled.
+ * file it does not stream through a required filter. Only the
+ * stat-cache-armed comparison reaches a hash where git does; an unarmed one
+ * hashes files git's stat cache would have settled.
  */
 const readThresholdBeforeHashing = async (
   ctx: Context,
+  entry: IndexEntry,
   stat: FileStat,
   indexMtime: IndexMtime | undefined,
+  provider: AttributeProvider | undefined,
 ): Promise<void> => {
   if (indexMtime === undefined || stat.isSymbolicLink) return;
+  if (await streamsThroughDriver(ctx, provider, entry.path)) return;
   await assertBigFileThresholdValid(ctx);
 };
 
@@ -151,7 +164,7 @@ export const compareWorkingTreeDelta = async (
   const worktreeMode = deriveWorkingMode(stat);
   const settled = statOnlyVerdict(entry, stat, worktreeMode, indexMtime);
   if (settled !== undefined) return settled;
-  await readThresholdBeforeHashing(ctx, stat, indexMtime);
+  await readThresholdBeforeHashing(ctx, entry, stat, indexMtime, provider);
   try {
     const raw = stat.isSymbolicLink
       ? LINK_ENCODER.encode(await ctx.fs.readlink(absPath))

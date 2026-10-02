@@ -79,3 +79,11 @@ export const resolveFilterDriver = async (
   const { sources, macros } = await provider.sourcesForPath(path);
   return choiceFromFilterValue(ctx, resolveAttribute(sources, path, 'filter', macros));
 };
+
+/**
+ * git's `would_convert_to_git_filter_fd`: a configured driver marked required
+ * cleans a working file straight off its descriptor (`index_stream_convert_blob`),
+ * the one hashing path that never reads `core.bigFileThreshold`.
+ */
+export const streamsThroughFilter = (choice: FilterChoice): boolean =>
+  choice.kind === 'external' && choice.required;

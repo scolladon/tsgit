@@ -27,6 +27,7 @@ import {
 import type { FilePath } from '../../domain/objects/object-id.js';
 import { matchesPathspec, type Pathspec } from '../../domain/pathspec/index.js';
 import { CHERRY_PICK, MERGE, REBASE, REVERT } from '../../domain/sequencer/operation-labels.js';
+import type { CommandRunner } from '../../ports/command-runner.js';
 import type { Context } from '../../ports/context.js';
 import type { FileStat } from '../../ports/file-system.js';
 import { assertValidPromisorRemoteConfig } from '../primitives/internal/boolean-config-guard.js';
@@ -40,7 +41,11 @@ import {
 } from '../primitives/internal/read-gitattributes.js';
 import { assertBigFileThresholdValid } from '../primitives/internal/repo-settings-gate.js';
 import { readIndex } from '../primitives/read-index.js';
-import { resolveFilterDriver } from '../primitives/resolve-filter-driver.js';
+import {
+  type FilterChoice,
+  resolveFilterDriver,
+  streamsThroughFilter,
+} from '../primitives/resolve-filter-driver.js';
 import { runFilterDriver } from '../primitives/run-filter-driver.js';
 import { MAX_WORKING_TREE_BLOB_BYTES, type WalkWorkingTreeEntry } from '../primitives/types.js';
 import { walkWorkingTree } from '../primitives/walk-working-tree.js';
@@ -570,10 +575,12 @@ const stageFromStat = async (
   // added to `newEntries`, so the index commit never runs (git's add -A is
   // all-or-nothing: one hostile path aborts the entire batch).
   validateIndexPath(path, NO_PARSER_OFFSET, mode);
-  // git's `index_fd` reads the threshold before hashing a regular file.
-  if (!fresh.isSymbolicLink) await assertBigFileThresholdValid(ctx);
+  const conversion = await cleanConversion(ctx, path, fresh.isSymbolicLink, provider);
+  // git's `index_fd` reads the threshold before hashing a regular file it
+  // does not stream through a required filter.
+  if (!fresh.isSymbolicLink && !conversion.streams) await assertBigFileThresholdValid(ctx);
   const raw = await readContent(ctx, path, fresh);
-  const bytes = await applyCleanFilter(ctx, path, raw, fresh.isSymbolicLink, provider);
+  const bytes = await conversion.apply(raw);
   const id = (await writeObject(ctx, {
     type: 'blob',
     id: '' as ObjectId,
@@ -582,23 +589,46 @@ const stageFromStat = async (
   return indexEntryFromStat(fresh, mode, id, path);
 };
 
+/** How a path's bytes are cleaned before hashing, and whether git streams them. */
+interface CleanConversion {
+  readonly streams: boolean;
+  readonly apply: (bytes: Uint8Array) => Promise<Uint8Array>;
+}
+
+const UNCONVERTED: CleanConversion = { streams: false, apply: async (bytes) => bytes };
+
 /**
- * Apply the clean filter for `path` when a runner and provider are available.
+ * The clean conversion for `path`, when a runner and provider are available.
  * Symlinks are never filtered (git stores the link target verbatim).
- * A required driver's non-zero exit throws CLEAN_FILTER_FAILED; an optional
- * one's stages the raw bytes silently.
+ */
+const cleanConversion = async (
+  ctx: Context,
+  path: FilePath,
+  isSymbolicLink: boolean,
+  provider: AttributeProvider | undefined,
+): Promise<CleanConversion> => {
+  const runner = ctx.command;
+  if (provider === undefined || runner === undefined || isSymbolicLink) return UNCONVERTED;
+  const choice = await resolveFilterDriver(ctx, provider, path, { eagerSectionValidation: true });
+  return {
+    streams: streamsThroughFilter(choice),
+    apply: (bytes) => applyCleanFilter(ctx, runner, path, bytes, choice),
+  };
+};
+
+/**
+ * Apply the resolved clean filter. A required driver's non-zero exit throws
+ * CLEAN_FILTER_FAILED; an optional one's stages the raw bytes silently.
  */
 const applyCleanFilter = async (
   ctx: Context,
+  runner: CommandRunner,
   path: FilePath,
   bytes: Uint8Array,
-  isSymbolicLink: boolean,
-  provider: AttributeProvider | undefined,
+  choice: FilterChoice,
 ): Promise<Uint8Array> => {
-  if (provider === undefined || ctx.command === undefined || isSymbolicLink) return bytes;
-  const choice = await resolveFilterDriver(ctx, provider, path, { eagerSectionValidation: true });
   if (choice.kind !== 'external' || choice.clean === undefined) return bytes;
-  const result = await runFilterDriver(ctx, ctx.command, choice.clean, bytes);
+  const result = await runFilterDriver(ctx, runner, choice.clean, bytes);
   if (result.ok) return result.bytes;
   if (choice.required) throw cleanFilterFailed(path, choice.name, result.exitCode);
   return bytes;

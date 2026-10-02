@@ -106,6 +106,35 @@ const CLEAN_LOOSE: RepoState = { racy: false, packed: false };
 const RACY_PACKED: RepoState = { racy: true, packed: true };
 const CLEAN_PACKED: RepoState = { racy: false, packed: true };
 
+/** Engages a required clean driver on every `.txt`, which git streams through. */
+const underRequiredDriver = (dir: string): void => {
+  writeFileSync(path.join(dir, '.gitattributes'), '*.txt filter=d\n');
+  writeFileSync(
+    path.join(dir, '.git', 'config'),
+    '[filter "d"]\n\tclean = cat\n\trequired = true\n',
+    {
+      flag: 'a',
+    },
+  );
+};
+
+const REQUIRED_DRIVER_ROWS: ReadonlyArray<Row> = [
+  {
+    name: 'status, racy, under a required clean driver',
+    state: RACY_LOOSE,
+    prepare: underRequiredDriver,
+    git: ['status', '--porcelain'],
+    tsgit: (r) => r.status(),
+  },
+  {
+    name: 'add, racy, under a required clean driver',
+    state: RACY_LOOSE,
+    prepare: underRequiredDriver,
+    git: ['add', 'f1.txt'],
+    tsgit: (r) => r.add(['f1.txt']),
+  },
+];
+
 const ROWS: ReadonlyArray<Row> = [
   {
     name: 'status, racy',
@@ -191,6 +220,7 @@ const ROWS: ReadonlyArray<Row> = [
     git: ['maintenance', 'run', '--task=gc'],
     tsgit: (r) => r.maintenance({ tasks: ['gc'] }),
   },
+  ...REQUIRED_DRIVER_ROWS,
   ...[CLEAN_LOOSE, CLEAN_PACKED].flatMap((state): ReadonlyArray<Row> => {
     const where = state.packed ? 'packed' : 'loose';
     return [
