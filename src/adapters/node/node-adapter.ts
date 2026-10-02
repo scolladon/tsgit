@@ -12,6 +12,8 @@ import {
 } from '../../ports/context.js';
 import type { AlternatePathProbe } from '../../ports/object-source-access.js';
 import { noopProgress } from '../../progress.js';
+import { layoutRootsOf } from '../../repository/layout-roots.js';
+import { createWorktreeFs } from '../../repository/worktree-fs.js';
 import { NodeCommandRunner } from './node-command-runner.js';
 import { NodeCompressor } from './node-compressor.js';
 import { nativeMachineFacts } from './node-concurrency.js';
@@ -21,6 +23,7 @@ import { NodeHashService } from './node-hash-service.js';
 import { NodeHookRunner } from './node-hook-runner.js';
 import { NodeHttpTransport } from './node-http-transport.js';
 import { NodeSshTransport } from './node-ssh-transport.js';
+import { nodeWorktreeFileSystem } from './node-worktree-fs.js';
 import { type SyncIoPolicy, syncIoPolicyFor } from './sync-io-budget.js';
 
 const DEFAULT_DELTA_CACHE_BYTES = 16 * 1024 * 1024;
@@ -126,6 +129,10 @@ export function createNodeContext(options: NodeAdapterOptions): Context {
     ...(options.command === false ? {} : { command: new NodeCommandRunner() }),
     ...(options.ssh === false ? {} : { ssh: new NodeSshTransport() }),
     env: new NodeEnvReader(),
+    worktreeFs: createWorktreeFs(
+      layoutRootsOf(layout),
+      nodeWorktreeFileSystem(workDir, syncIoOptions(syncIo)),
+    ),
     alternatePathProbe: (path: string): AlternatePathProbe =>
       metadataProbe(new NodeFileSystem(nodePath.parse(path).root, syncIoOptions(syncIo))),
   };

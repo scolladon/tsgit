@@ -1,4 +1,5 @@
-import { homedir } from 'node:os';
+import { mkdir, mkdtemp, realpath, writeFile } from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
 import * as nodePath from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
@@ -51,6 +52,67 @@ describe('createNodeContext', () => {
         // Assert
         expect(result?.isDirectory).toBe(true);
         expect(Object.keys(probe ?? {}).sort()).toEqual(['lstat', 'readlink', 'stat']);
+      });
+    });
+  });
+
+  describe('Given a worktree directory outside workDir', () => {
+    const outsideTree = async (): Promise<{
+      readonly worktree: string;
+      readonly sibling: string;
+    }> => {
+      const base = await realpath(await mkdtemp(nodePath.join(tmpdir(), 'tsgit-node-wt-')));
+      const worktree = nodePath.join(base, 'wt');
+      const sibling = nodePath.join(base, 'sibling');
+      await mkdir(worktree);
+      await mkdir(sibling);
+      await writeFile(nodePath.join(worktree, 'f'), 'x');
+      await writeFile(nodePath.join(sibling, 'f'), 'y');
+      return { worktree, sibling };
+    };
+
+    describe('When its worktree fs reads inside it', () => {
+      it('Then it reaches the file there', async () => {
+        // Arrange
+        const { worktree } = await outsideTree();
+        const sut = createNodeContext({ workDir: '/tmp/tsgit-ctx-test' }).worktreeFs;
+
+        // Act
+        const result = await sut?.(worktree).readUtf8(nodePath.join(worktree, 'f'));
+
+        // Assert
+        expect(result).toBe('x');
+      });
+    });
+
+    describe('When its worktree fs reads beside it', () => {
+      it('Then it refuses the path outside the worktree', async () => {
+        // Arrange
+        const { worktree, sibling } = await outsideTree();
+        const sut = createNodeContext({ workDir: '/tmp/tsgit-ctx-test' }).worktreeFs;
+
+        // Act
+        const result = await sut?.(worktree)
+          .readUtf8(nodePath.join(sibling, 'f'))
+          .catch((error: unknown) => error);
+
+        // Assert
+        expect((result as TsgitError).data.code).toBe('PERMISSION_DENIED');
+      });
+    });
+
+    describe('When the same worktree fs is asked for twice', () => {
+      it('Then it hands back the one it built first', async () => {
+        // Arrange
+        const { worktree } = await outsideTree();
+        const sut = createNodeContext({ workDir: '/tmp/tsgit-ctx-test' }).worktreeFs;
+
+        // Act
+        const result = sut?.(worktree);
+
+        // Assert
+        expect(result).toBeDefined();
+        expect(sut?.(worktree)).toBe(result);
       });
     });
   });

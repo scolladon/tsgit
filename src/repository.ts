@@ -53,6 +53,7 @@ import type { RepositoryLayoutInput } from './repository/layout-input.js';
 import { layoutRootsOf } from './repository/layout-roots.js';
 import { resolveAlgorithm } from './repository/resolve-algorithm.js';
 import { validateOptions } from './repository/validate-options.js';
+import { createWorktreeFs } from './repository/worktree-fs.js';
 import { wrapFsValidator } from './repository/wrap-fs-validator.js';
 import { wrapTransportValidator } from './repository/wrap-transport-validator.js';
 
@@ -302,7 +303,7 @@ export interface RuntimeFallback {
    * Build a raw (adapter-level) `FileSystem` able to reach `worktreePaths`
    * (which may lie outside `workDir`) as well as the repository itself — for the
    * worktree containment escape (ADR-298). The node shim roots a fresh adapter
-   * at the common ancestor of the workDir and the worktree paths; sandboxed
+   * at the workDir plus exactly the paths asked for; sandboxed
    * runtimes (memory/browser) omit it and fall back to the repo-rooted fs.
    */
   readonly makeWorktreeFs?: (worktreePaths: ReadonlyArray<string>) => FileSystem;
@@ -614,36 +615,24 @@ export const openRepository = async (
   // ADR-298: a linked worktree lives outside workDir and a worktree Context must
   // reach BOTH the worktree path and the layout roots (workDir/gitDir/commonDir).
   // `worktreeFs` asks the runtime for a raw fs wide enough to reach the worktree
-  // paths (the node shim roots a fresh adapter at the common ancestor), then
+  // paths (the node shim roots a fresh adapter at exactly those roots), then
   // confines it with a multi-root validator to exactly those subtrees (or
   // returns the raw fs when containment is opted out).
   //
-  // Memoised by root set: `listWorktrees` calls this once per worktree, and a
-  // fresh adapter + validator pair on every call was pure waste when the same
-  // worktree (or the same handful of worktrees) gets asked for repeatedly.
-  const worktreeFsCache = new Map<string, FileSystem>();
   // `fallback.makeWorktreeFs`, when present, is ALWAYS a first-party adapter —
   // it is a runtime capability (never something `opts` can supply), so its
   // output carries the same "own read path enforces containment" guarantee
   // `fsIsFirstParty` establishes for `detected.fs`. When absent, `worktreeFs`
   // falls back to `detected.fs` itself, whose provenance is `fsIsFirstParty`.
   const worktreeRawIsFirstParty = fallback.makeWorktreeFs !== undefined || fsIsFirstParty;
-  const worktreeFs = (worktreePath: string | ReadonlyArray<string>): FileSystem => {
-    const paths = typeof worktreePath === 'string' ? [worktreePath] : worktreePath;
-    const roots = [...paths, ...layoutRoots];
-    const cacheKey = roots.join('\0');
-    const cached = worktreeFsCache.get(cacheKey);
-    if (cached !== undefined) return cached;
+  const worktreeFs = createWorktreeFs(layoutRoots, (roots) => {
     const raw = fallback.makeWorktreeFs?.(roots) ?? detected.fs;
-    const built =
-      opts.unsafeRawAdapters === true
-        ? raw
-        : wrapFsValidator(raw, roots, computeConfigScopePaths(raw), {
-            guardReads: !worktreeRawIsFirstParty,
-          });
-    worktreeFsCache.set(cacheKey, built);
-    return built;
-  };
+    return opts.unsafeRawAdapters === true
+      ? raw
+      : wrapFsValidator(raw, roots, computeConfigScopePaths(raw), {
+          guardReads: !worktreeRawIsFirstParty,
+        });
+  });
   // Narrowing is not containment: the raw fs comes from the runtime hook rooted at
   // exactly the alternate's objects dir, so `unsafeRawAdapters` still narrows.
   const objectSourceAccessCache = new Map<string, ObjectSourceAccess>();

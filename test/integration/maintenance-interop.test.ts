@@ -1077,6 +1077,27 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
       });
     });
 
+    describe.each(['live', 'vanished'] as const)(
+      'When it names the admin dir of a %s worktree and a hand-built node context gcs',
+      (kind) => {
+        it('Then it leaves the same registry and link target as git', async () => {
+          // Arrange
+          const peer = await buildLinkedAdmin(`wt-link-node-${kind}-peer`, kind);
+          const ours = await buildLinkedAdmin(`wt-link-node-${kind}-ours`, kind);
+          git(peer.dir, '-c', 'gc.worktreePruneExpire=now', 'gc', '-q');
+          await setOursGcConfig(ours.dir, ['gc.worktreePruneExpire=now']);
+          const sut = maintenance;
+
+          // Act
+          await sut(trackedNodeContext(ours.dir, 'sha1'), { tasks: ['gc'] });
+
+          // Assert
+          expect(await registryOf(ours.dir)).toEqual(await registryOf(peer.dir));
+          expect(await adminContentOf(ours.outside)).toEqual(await adminContentOf(peer.outside));
+        });
+      },
+    );
+
     describe('When its gitdir names the live worktree relatively and a hand-built node context gcs', () => {
       it('Then it resolves the pointer beside the link target and keeps the entry as git does', async () => {
         // Arrange
