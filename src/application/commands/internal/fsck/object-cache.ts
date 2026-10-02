@@ -81,7 +81,7 @@ const BLOB_PROJECTION: ProjectedGitObject = { type: 'blob' };
  * variant a compile error (TS2366, "lacks ending return statement"), the
  * same pattern as `git-object.ts`'s `parseObject`/`serializeObject`.
  */
-function project(obj: GitObject): ProjectedGitObject {
+export function project(obj: GitObject): ProjectedGitObject {
   switch (obj.type) {
     case 'blob':
       return BLOB_PROJECTION;

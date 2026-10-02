@@ -150,17 +150,18 @@ async function snapshotTargets(
 }
 
 /** Every ref — symbolic ones through their chain, every worktree's HEAD
- *  included — naming an object the universe does not hold: git's
- *  `invalid sha1 pointer`. */
+ *  included — naming an object the universe does not hold and no promisor
+ *  pack promises: git's `invalid sha1 pointer`. */
 async function collectAbsentTargets(
   ctx: Context,
   entries: RefEntries,
   universe: ReadonlySet<ObjectId>,
   check: RefTargetCheck,
+  promised: ReadonlySet<ObjectId>,
 ): Promise<PassResult> {
   const findings: BadRefFinding[] = [];
   for (const { ref, id } of await snapshotTargets(ctx, entries)) {
-    if (await isKnownOid(ctx, universe, id, check)) continue;
+    if (promised.has(id) || (await isKnownOid(ctx, universe, id, check))) continue;
     findings.push({ type: 'bad-ref', ref, msgId: 'badRefOid', severity: 'error', target: id });
   }
   return { findings, exitBit: findings.length > 0 ? EXIT_MISSING : 0 };
@@ -181,7 +182,8 @@ async function collectAbsentTargets(
  *   Absent → `badRefOid` (bit 2), so a loose ref naming a well-formed but
  *   absent object exits 2 with AND without `--no-references`. A symbolic ref
  *   (HEAD too) is judged by the object its chain names; one naming none —
- *   an unborn branch — never contributes.
+ *   an unborn branch — never contributes. A promisor object (`promised`) is
+ *   never absent, as git's `snapshot_ref` excuses it.
  */
 export async function runRefsVerifyPass(
   ctx: Context,
@@ -189,6 +191,7 @@ export async function runRefsVerifyPass(
   checkContentFormat: boolean,
   check: RefTargetCheck,
   severities: FsckSeverityTable,
+  promised: ReadonlySet<ObjectId>,
 ): Promise<PassResult> {
   const refStore = getRefStore(ctx);
   const [entries, integrityFindings] = await Promise.all([
@@ -203,7 +206,7 @@ export async function runRefsVerifyPass(
     checkContentFormat,
     severities,
   );
-  const absent = await collectAbsentTargets(ctx, entries, universe, check);
+  const absent = await collectAbsentTargets(ctx, entries, universe, check, promised);
 
   return {
     findings: [...symlinks.findings, ...badContent.findings, ...absent.findings],

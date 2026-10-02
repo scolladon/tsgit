@@ -26,6 +26,7 @@ import {
   assertRefTipsReadable,
   assertWalkedObjectsReadable,
 } from './internal/fsck/packed-ref-tips.js';
+import { collectPromisorObjects, withoutLazyFetch } from './internal/fsck/promisor-objects.js';
 import {
   assembleConnectivityFindings,
   buildInEdgeMap,
@@ -95,6 +96,10 @@ function recordedBy(
 }
 
 export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckResult> {
+  return auditRepository(withoutLazyFetch(ctx), opts);
+}
+
+async function auditRepository(ctx: Context, opts: FsckOptions): Promise<FsckResult> {
   await assertOperationalRepository(ctx);
 
   // Read up front, before a single object is decoded: git parses `[fsck]`
@@ -134,6 +139,7 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
     unrecoverable,
     recovered,
   } = await buildObjectCache(auditCtx, universe, unreadable);
+  const promised = await collectPromisorObjects(auditCtx, objectCache);
 
   // Content validation pass (skipped when connectivityOnly): every loose
   // object's own bytes, read and hashed once. Its special-blob ledger is the
@@ -161,6 +167,7 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
     opts.checkReferences !== false,
     refTargetCheck(opts),
     severities,
+    promised,
   );
 
   // Pack-health pass — reports packs the registry could not open or index.
@@ -174,7 +181,7 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   const deferredResult =
     opts.connectivityOnly === true
       ? { findings: [], exitBit: 0 }
-      : await runDeferredSpecialBlobChecks(auditCtx, catalogue);
+      : await runDeferredSpecialBlobChecks(auditCtx, catalogue, promised);
 
   // Reverse-index health pass — reports a pack's own `.rev` when it exists,
   // is readable and is wrong. Ungated, like the rest of bit 64: runs after
@@ -220,6 +227,10 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
     await assertValidPromisorRemoteConfig(ctx);
   }
   const missingEntryPointBit = invalidCacheTreeIds.length > 0 ? EXIT_REFS_CONTENT : 0;
+  // git's `fsck_handle_reflog_oid` excuses a promisor object it never recorded.
+  const invalidReflogEntries = recorded.invalidReflogEntries.filter(
+    (entry) => !promised.has(entry.id),
+  );
 
   // Content-validation's own git-faithful read can refuse an object the
   // general resolver above still typed — every loose object
@@ -243,7 +254,14 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
       ? await collectUnreadablePackMemberIds(auditCtx, reachabilityCache)
       : (new Set<ObjectId>() as ReadonlySet<ObjectId>);
 
-  const walk = buildReachableSet(universe, roots, reachabilityCache, unreadable, packMemberIds);
+  const walk = buildReachableSet(
+    universe,
+    roots,
+    reachabilityCache,
+    unreadable,
+    packMemberIds,
+    promised,
+  );
   // `--no-full` verifies no pack, yet git's walk forgets an object a pack
   // holds (`has_object_pack`) rather than calling it missing or broken.
   const { reached, missingIds, brokenEdges, unreadableEdges, rootCommits, tagRefs } =
@@ -269,7 +287,7 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
       { missingIds, brokenEdges, unreadableEdges, unreachable, dangling, rootCommits, tagRefs },
       { objectCache: reachabilityCache, recovered, unreadable, indexBlobs: recorded.indexBlobIds },
     ),
-    ...recorded.invalidReflogEntries.map((entry) => ({
+    ...invalidReflogEntries.map((entry) => ({
       type: 'invalid-reflog-entry' as const,
       ...entry,
     })),
@@ -277,7 +295,7 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   ];
 
   const connectivityBit =
-    missingIds.size > 0 || brokenEdges.length > 0 || recorded.invalidReflogEntries.length > 0
+    missingIds.size > 0 || brokenEdges.length > 0 || invalidReflogEntries.length > 0
       ? EXIT_MISSING
       : 0;
   const exitCode =

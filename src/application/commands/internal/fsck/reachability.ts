@@ -79,6 +79,8 @@ interface WalkState {
    *  since git's `check_object` trusts the pack copy and never learns the
    *  entry is corrupt. */
   readonly packMemberIds: ReadonlySet<ObjectId>;
+  /** git's promisor objects: reached, yet never descended into nor missing. */
+  readonly promised: ReadonlySet<ObjectId>;
   readonly reached: Set<ObjectId>;
   readonly missingIds: Set<ObjectId>;
   readonly brokenEdges: GraphEdge[];
@@ -129,6 +131,10 @@ type EdgeRoute = 'broken' | 'unreadable-missing' | 'enqueued';
  * on top of `missing` — git prints only one line for it, never both.
  */
 function routeEdgeTarget(state: WalkState, edge: GraphEdge): EdgeRoute {
+  if (state.promised.has(edge.toId)) {
+    enqueueIfPresent(state, edge.toId);
+    return 'enqueued';
+  }
   if (!state.universe.has(edge.toId)) {
     state.missingIds.add(edge.toId);
     state.brokenEdges.push(edge);
@@ -205,12 +211,14 @@ export function buildReachableSet(
   objectCache: ReadonlyMap<ObjectId, CachedGitObject>,
   unreadable: UnreadableMode,
   packMemberIds: ReadonlySet<ObjectId>,
+  promised: ReadonlySet<ObjectId>,
 ): WalkResult {
   const state: WalkState = {
     universe,
     objectCache,
     contentUnreadableIsMissing: unreadable === 'skip',
     packMemberIds,
+    promised,
     reached: new Set(),
     missingIds: new Set(),
     brokenEdges: [],
@@ -223,6 +231,11 @@ export function buildReachableSet(
   while (state.worklist.length > 0) {
     const id = state.worklist.pop();
     if (id === undefined || state.reached.has(id)) continue;
+    if (promised.has(id)) {
+      // git's `mark_object`: a promisor object is reached, its links never followed.
+      state.reached.add(id);
+      continue;
+    }
     if (!universe.has(id)) {
       state.missingIds.add(id);
       continue;

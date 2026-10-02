@@ -1842,6 +1842,152 @@ describe.skipIf(!GIT_AVAILABLE)('fsck interop — names git reads as a special f
       );
     });
   });
+
+  describe.each([
+    { label: 'no promisor marker', marker: false, remote: [] as ReadonlyArray<string> },
+    { label: 'a promisor pack but no promisor remote', marker: true, remote: [] },
+    {
+      label: 'a promisor pack and remote.origin.promisor',
+      marker: true,
+      remote: ['remote.origin.promisor', 'true'],
+    },
+    {
+      label: 'a promisor pack and extensions.partialClone',
+      marker: true,
+      remote: ['extensions.partialClone', 'origin'],
+    },
+  ])(
+    'Given a packed tree naming an absent .gitmodules blob, with $label',
+    ({ label, marker, remote }) => {
+      describe('When git fsck and tsgit fsck run', () => {
+        it(
+          'Then both report the blob alike',
+          async () => {
+            // Arrange
+            const dir = path.join(root, `special-promisor-${label.replace(/\W+/g, '-')}`);
+            runGit(['init', '-q', '-b', 'main', dir]);
+            configure(dir);
+            const blob = absentOid(dir, EVIL_GITMODULES);
+            const tree = writeRawTree(dir, '100644', '.gitmodules', blob);
+            const commit = runGit(['-C', dir, 'commit-tree', '-m', 'c', tree]).trim();
+            runGit(['-C', dir, 'update-ref', 'refs/heads/main', commit]);
+            const pack = runGit(
+              ['-C', dir, 'pack-objects', '-q', path.join(objectsOf(dir), 'pack', 'pack')],
+              {
+                input: `${commit}\n${tree}\n`,
+              },
+            ).trim();
+            runGit(['-C', dir, 'prune-packed']);
+            if (marker)
+              writeFileSync(path.join(objectsOf(dir), 'pack', `pack-${pack}.promisor`), '');
+            if (remote.length > 0) {
+              runGit(['-C', dir, 'config', 'remote.origin.url', 'file:///nonexistent']);
+              runGit(['-C', dir, 'config', ...remote]);
+            }
+            const git = gitFsck(dir);
+            const sut = tsgitFsck;
+
+            // Act
+            const result = await sut(dir);
+
+            // Assert
+            expect(result.exitCode).toBe(git.exitCode);
+            expect(reportLines(result.findings)).toEqual(gitReportLines(git.stderr));
+          },
+          ROW_TIMEOUT,
+        );
+      });
+    },
+  );
+
+  describe('Given a promisor pack holding only a commit whose loose tree names an absent .gitmodules blob', () => {
+    describe('When git fsck and tsgit fsck run', () => {
+      it(
+        'Then both report the blob yet walk nothing below the promisor commit',
+        async () => {
+          // Arrange
+          const dir = path.join(root, 'special-promisor-loose-tree');
+          runGit(['init', '-q', '-b', 'main', dir]);
+          configure(dir);
+          const blob = absentOid(dir, EVIL_GITMODULES);
+          const tree = writeRawTree(dir, '100644', '.gitmodules', blob);
+          const commit = runGit(['-C', dir, 'commit-tree', '-m', 'c', tree]).trim();
+          runGit(['-C', dir, 'update-ref', 'refs/heads/main', commit]);
+          const pack = runGit(
+            ['-C', dir, 'pack-objects', '-q', path.join(objectsOf(dir), 'pack', 'pack')],
+            { input: `${commit}\n` },
+          ).trim();
+          writeFileSync(path.join(objectsOf(dir), 'pack', `pack-${pack}.promisor`), '');
+          runGit(['-C', dir, 'config', 'remote.origin.promisor', 'true']);
+          const git = gitFsck(dir);
+          const sut = tsgitFsck;
+
+          // Act
+          const result = await sut(dir);
+
+          // Assert
+          expect(result.exitCode).toBe(git.exitCode);
+          expect(reportLines(result.findings)).toEqual(gitReportLines(git.stderr));
+          expect(missingLines(result.findings)).toEqual(gitLines(git.stdout, MISSING_LINE));
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)('fsck interop — promisor objects named by refs and reflogs', () => {
+  describe.each([
+    { label: 'no promisor remote', config: [] as ReadonlyArray<readonly [string, string]> },
+    { label: 'remote.origin.promisor', config: [['remote.origin.promisor', 'true']] as const },
+    {
+      label: 'remote.origin.partialclonefilter',
+      config: [['remote.origin.partialclonefilter', 'blob:none']] as const,
+    },
+  ])(
+    'Given a promisor-pack commit whose absent parent a ref and a reflog name, with $label',
+    ({ label, config }) => {
+      describe('When git fsck and tsgit fsck run', () => {
+        it(
+          'Then both report the same pointers and missing objects',
+          async () => {
+            // Arrange
+            const dir = path.join(root, `promisor-pointers-${label.replace(/\W+/g, '-')}`);
+            runGit(['init', '-q', '-b', 'main', dir]);
+            configure(dir);
+            const tree = runGit(['-C', dir, 'mktree'], { input: '' }).trim();
+            const parent = runGit(['-C', dir, 'commit-tree', '-m', 'parent', tree]).trim();
+            const commit = runGit(['-C', dir, 'commit-tree', '-m', 'c', '-p', parent, tree]).trim();
+            runGit(['-C', dir, 'update-ref', 'refs/heads/main', commit]);
+            const pack = runGit(
+              ['-C', dir, 'pack-objects', '-q', path.join(objectsOf(dir), 'pack', 'pack')],
+              { input: `${commit}\n${tree}\n` },
+            ).trim();
+            runGit(['-C', dir, 'prune-packed']);
+            rmSync(path.join(objectsOf(dir), parent.slice(0, 2), parent.slice(2)));
+            writeFileSync(path.join(dir, '.git', 'refs', 'heads', 'gone'), `${parent}\n`);
+            writeFileSync(
+              path.join(dir, '.git', 'logs', 'refs', 'heads', 'main'),
+              `${parent} ${commit} Ada <ada@example.com> 1700000000 +0000\tx\n`,
+            );
+            writeFileSync(path.join(objectsOf(dir), 'pack', `pack-${pack}.promisor`), '');
+            for (const [key, value] of config) runGit(['-C', dir, 'config', key, value]);
+            const git = gitFsck(dir);
+            const sut = tsgitFsck;
+
+            // Act
+            const result = await sut(dir);
+
+            // Assert
+            expect(result.exitCode).toBe(git.exitCode);
+            expect(pointerLines(result.findings)).toEqual(gitLines(git.stderr, POINTER_LINE));
+            expect(missingLines(result.findings)).toEqual(gitLines(git.stdout, MISSING_LINE));
+          },
+          ROW_TIMEOUT,
+        );
+      });
+    },
+  );
 });
 
 describe.skipIf(!GIT_AVAILABLE)('fsck interop — symbolic refs that never resolve', () => {

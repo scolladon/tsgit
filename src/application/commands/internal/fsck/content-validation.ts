@@ -682,10 +682,12 @@ async function deferredCheck(
   id: ObjectId,
   fileName: SpecialBlobName,
   options: CatalogueOptions,
+  promised: ReadonlySet<ObjectId>,
 ): Promise<ContentValidationResult> {
   const misfit = DEFERRED_MISFIT_MSG_IDS[fileName];
   const object = await readQueuedObject(ctx, id);
   if (object === undefined) {
+    if (promised.has(id)) return EMPTY_RESULT;
     return deferredMisfitResult(id, 'blob', misfit.missing, options.severities);
   }
   if (object.type !== 'blob') {
@@ -700,18 +702,20 @@ async function deferredCheck(
 /**
  * git's `fsck_finish`: every special blob a checked tree queued but no copy
  * met in place is read once through the store and checked — outside any
- * pack, so its errors carry bit 1, never bit 4.
+ * pack, so its errors carry bit 1, never bit 4. An absent blob a promisor
+ * pack promises (`promised`) is skipped, as git's `fsck_blobs` does.
  */
 export async function runDeferredSpecialBlobChecks(
   ctx: Context,
   options: CatalogueOptions,
+  promised: ReadonlySet<ObjectId>,
 ): Promise<ContentValidationResult> {
   const findings: FsckFinding[] = [];
   let exitBit = 0;
   for (const fileName of SPECIAL_BLOB_NAMES) {
     for (const id of options.specialBlobs.pendingUnder(fileName)) {
       if (options.skipped.has(id)) continue;
-      const own = await deferredCheck(ctx, id, fileName, options);
+      const own = await deferredCheck(ctx, id, fileName, options, promised);
       findings.push(...own.findings);
       exitBit |= own.exitBit;
     }
