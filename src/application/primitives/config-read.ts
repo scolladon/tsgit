@@ -1175,7 +1175,7 @@ export const findLastInvalidMaxTreeDepth = async (
  * Cold-path detection for `core.deltaBaseCacheLimit`: same last-wins model as
  * {@link findLastInvalidMaxTreeDepth} (git resolves both through its cached
  * config-set lookup), but git's unsigned-long grammar — reusing
- * `checkPackWindowMemoryBound`, the same bound `pack.windowMemory` uses — so
+ * `checkGitUnsignedLong`, the same bound `pack.windowMemory` uses — so
  * a negative value is `'invalid unit'` (this key has no signed
  * representation to be "out of range" of) and only a magnitude past
  * `GIT_UINT64_MAX` is `'out of range'`. Runs ONLY on a command's refusal
@@ -1198,7 +1198,7 @@ export const findLastInvalidDeltaBaseCacheLimit = async (
   }
   if (last === undefined) return undefined;
   const key = `core.${DELTA_BASE_CACHE_LIMIT_KEY}`;
-  const checked = checkPackWindowMemoryBound(last.value);
+  const checked = checkGitUnsignedLong(last.value);
   if (checked.ok) return undefined;
   return { key, source: path, value: last.value ?? '', reason: checked.reason };
 };
@@ -1206,7 +1206,7 @@ export const findLastInvalidDeltaBaseCacheLimit = async (
 /**
  * Cold-path detection for `core.packedGitWindowSize` / `core.packedGitLimit`:
  * walk the cached `[core]` (subsectionless) tokens in file order and return
- * the FIRST entry of EITHER key whose value fails `checkPackWindowMemoryBound`
+ * the FIRST entry of EITHER key whose value fails `checkGitUnsignedLong`
  * — unlike `deltaBaseCacheLimit`'s last-write-wins resolution, git validates
  * both these keys in the streaming `git_default_core_config` callback, so the
  * first malformed line in file order is fatal regardless of what follows it.
@@ -1227,7 +1227,7 @@ export const findFirstInvalidPackedGitBound = async (
     if (!inSection || token.kind !== 'entry') continue;
     const lowered = token.key.toLowerCase();
     if (lowered !== PACKED_GIT_WINDOW_SIZE_KEY && lowered !== PACKED_GIT_LIMIT_KEY) continue;
-    const checked = checkPackWindowMemoryBound(token.value);
+    const checked = checkGitUnsignedLong(token.value);
     if (checked.ok) continue;
     return {
       key: `core.${lowered}`,
@@ -1406,7 +1406,7 @@ const DELTA_BASE_CACHE_LIMIT_KEY = 'deltabasecachelimit';
 
 /**
  * Apply `core.deltaBaseCacheLimit`: git's unsigned-long grammar, reusing
- * `checkPackWindowMemoryBound` — the same bound `pack.windowMemory` uses
+ * `checkGitUnsignedLong` — the same bound `pack.windowMemory` uses
  * (decimal / hex / octal, one optional k/m/g unit, negative refused). Merges
  * as absent on any failure — this is the LENIENT read only; the eager
  * refusal for a malformed value is a separate finder, not added here.
@@ -1415,7 +1415,7 @@ const applyDeltaBaseCacheLimitEntry = (
   core: MutableCore,
   value: string,
 ): MutableCore | undefined => {
-  const checked = checkPackWindowMemoryBound(value);
+  const checked = checkGitUnsignedLong(value);
   return checked.ok ? { ...core, deltaBaseCacheLimit: checked.value } : undefined;
 };
 
@@ -1424,7 +1424,7 @@ const PACKED_GIT_LIMIT_KEY = 'packedgitlimit';
 
 /**
  * Apply `core.packedGitWindowSize` / `core.packedGitLimit`: git's
- * unsigned-long grammar, reusing `checkPackWindowMemoryBound` exactly as
+ * unsigned-long grammar, reusing `checkGitUnsignedLong` exactly as
  * {@link applyDeltaBaseCacheLimitEntry} does. Merges as absent on any
  * failure — this is the LENIENT read only; the eager refusal for a
  * malformed value is `findFirstInvalidPackedGitBound`, not added here.
@@ -1434,7 +1434,7 @@ const applyPackedGitBoundEntry = (
   field: 'packedGitWindowSize' | 'packedGitLimit',
   value: string,
 ): MutableCore | undefined => {
-  const checked = checkPackWindowMemoryBound(value);
+  const checked = checkGitUnsignedLong(value);
   return checked.ok ? { ...core, [field]: checked.value } : undefined;
 };
 
@@ -1442,13 +1442,13 @@ const BIG_FILE_THRESHOLD_KEY = 'bigfilethreshold';
 
 /**
  * Apply `core.bigFileThreshold`: git's unsigned-long grammar, reusing
- * `checkPackWindowMemoryBound` exactly as {@link applyDeltaBaseCacheLimitEntry}
+ * `checkGitUnsignedLong` exactly as {@link applyDeltaBaseCacheLimitEntry}
  * does. Merges as absent on any failure — this is the LENIENT read only; no
  * eager refusal is added for this key (mirrors `packedGitLimit`'s own
  * lenient-only surface where no command's preflight gate needs one yet).
  */
 const applyBigFileThresholdEntry = (core: MutableCore, value: string): MutableCore | undefined => {
-  const checked = checkPackWindowMemoryBound(value);
+  const checked = checkGitUnsignedLong(value);
   return checked.ok ? { ...core, bigFileThreshold: checked.value } : undefined;
 };
 
@@ -1880,18 +1880,17 @@ const checkPackCIntBound: PackIntCheck = (value) => {
   return parsed;
 };
 
-// git's own unsigned-long grammar: a negative value is a syntax refusal
-// ('invalid unit'), not a magnitude refusal — unlike `window`/`depth`'s C
-// `int`, this key has no signed representation to be "out of range" of.
-// `parseGitInt` is given the unsigned-long ceiling (GIT_UINT64_MAX) instead
-// of its own int64 default, so a magnitude between int64-max and uint64-max
-// — refused for window/depth — reads as valid here.
-const checkPackWindowMemoryBound: PackIntCheck = (value) => {
-  const parsed = parseGitInt(value, GIT_UINT64_MAX);
-  if (!parsed.ok) return parsed;
-  if (parsed.value < 0) return { ok: false, reason: 'invalid unit' };
-  return parsed;
-};
+// git's own unsigned-long grammar: `git_parse_unsigned` refuses any `-`
+// before parsing (strtoumax would wrap it) — a syntax refusal ('invalid
+// unit'), not a magnitude one, so `-0` and `-1` alike refuse here although
+// the signed grammar reads `-0` as zero. `parseGitInt` is given the
+// unsigned-long ceiling (GIT_UINT64_MAX) instead of its own int64 default,
+// so a magnitude between int64-max and uint64-max — refused for
+// window/depth — reads as valid here.
+const checkGitUnsignedLong: PackIntCheck = (value) =>
+  value?.includes('-') === true
+    ? { ok: false, reason: 'invalid unit' }
+    : parseGitInt(value, GIT_UINT64_MAX);
 
 /**
  * Which bound rule (if any) governs a `[pack]` key. `undefined` means the key
@@ -1901,16 +1900,9 @@ const checkPackWindowMemoryBound: PackIntCheck = (value) => {
  */
 const packIntChecker = (lowered: string): PackIntCheck | undefined => {
   if (lowered === PACK_WINDOW_KEY || lowered === PACK_DEPTH_KEY) return checkPackCIntBound;
-  if (lowered === PACK_WINDOW_MEMORY_KEY) return checkPackWindowMemoryBound;
+  if (lowered === PACK_WINDOW_MEMORY_KEY) return checkGitUnsignedLong;
   return undefined;
 };
-
-// git's `git_parse_unsigned` refuses any `-` before parsing (strtoumax would
-// wrap it), so `-0` is a syntax refusal the signed grammar would accept.
-const checkGitUnsignedLong: PackIntCheck = (value) =>
-  value?.includes('-') === true
-    ? { ok: false, reason: 'invalid unit' }
-    : checkPackWindowMemoryBound(value);
 
 /** The integer grammar a `[gc]` key is read with: git's `int` or `unsigned long`. */
 export type GcNumberGrammar = 'int' | 'ulong';

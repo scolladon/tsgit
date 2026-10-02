@@ -64,6 +64,7 @@ interface RefusedRow {
 const refusedRowsFor = (key: PackedGitKey): ReadonlyArray<RefusedRow> => [
   { key, slug: 'letters', lines: `\t${key} = abc\n`, reported: 'abc', reason: 'invalid unit' },
   { key, slug: 'negative', lines: `\t${key} = -1\n`, reported: '-1', reason: 'invalid unit' },
+  { key, slug: 'minus-zero', lines: `\t${key} = -0\n`, reported: '-0', reason: 'invalid unit' },
   { key, slug: 'empty', lines: `\t${key} = \n`, reported: '', reason: 'invalid unit' },
   { key, slug: 'valueless', lines: `\t${key}\n`, reported: '', reason: 'invalid unit' },
   {

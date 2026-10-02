@@ -872,6 +872,12 @@ describe.skipIf(!GIT_AVAILABLE)('repo-settings tier — cross-tool interop', () 
         reason: 'invalid unit',
       },
       {
+        slug: 'minus-zero',
+        lines: '\tdeltaBaseCacheLimit = -0\n',
+        reported: '-0',
+        reason: 'invalid unit',
+      },
+      {
         slug: 'letters',
         lines: '\tdeltaBaseCacheLimit = abc\n',
         reported: 'abc',

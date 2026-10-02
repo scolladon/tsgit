@@ -876,6 +876,7 @@ describe.skipIf(!GIT_AVAILABLE)('delta-writing packer, against real git', () => 
     { key: 'depth', value: '2147483648', reason: 'out of range' },
     { key: 'window', value: '-2147483649', reason: 'out of range' },
     { key: 'windowmemory', value: '-1', reason: 'invalid unit' },
+    { key: 'windowmemory', value: '-0', reason: 'invalid unit' },
     { key: 'windowmemory', value: '18446744073709551616', reason: 'out of range' },
   ];
 

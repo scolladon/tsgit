@@ -8185,6 +8185,81 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     });
   });
 
+  describe('Given an unsigned-long key holding a minus sign on a zero value', () => {
+    const MINUS_ZERO_VALUES = ['-0', '-0k', '"\\t-0"'] as const;
+
+    describe.each(MINUS_ZERO_VALUES)(
+      'When findFirstInvalidPackInt reads pack.windowMemory = %s',
+      (value) => {
+        it('Then it is reported with reason invalid unit, as git refuses any minus sign', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, `[pack]\n  windowMemory = ${value}\n`);
+          const sut = findFirstInvalidPackInt;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result?.key).toBe('pack.windowmemory');
+          expect(result?.reason).toBe('invalid unit');
+        });
+      },
+    );
+
+    describe.each(MINUS_ZERO_VALUES)(
+      'When findLastInvalidDeltaBaseCacheLimit reads %s',
+      (value) => {
+        it('Then it is reported with reason invalid unit', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, `[core]\n  deltaBaseCacheLimit = ${value}\n`);
+          const sut = findLastInvalidDeltaBaseCacheLimit;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result?.reason).toBe('invalid unit');
+        });
+      },
+    );
+
+    describe.each(['packedGitWindowSize', 'packedGitLimit'])(
+      'When findFirstInvalidPackedGitBound reads core.%s = -0',
+      (key) => {
+        it('Then it is reported with reason invalid unit', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, `[core]\n  ${key} = -0\n`);
+          const sut = findFirstInvalidPackedGitBound;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result?.key).toBe(`core.${key.toLowerCase()}`);
+          expect(result?.reason).toBe('invalid unit');
+        });
+      },
+    );
+
+    describe('When readConfig reads core.bigFileThreshold = -0', () => {
+      it('Then the threshold is absent, not zero', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n  bigFileThreshold = -0\n');
+        const sut = readConfig;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.core?.bigFileThreshold).toBeUndefined();
+      });
+    });
+  });
+
   describe('Given [pack] windowMemory beyond the C int range but within its own unsigned long bound', () => {
     describe('When readConfig', () => {
       it('Then pack.windowMemory is 4294967296 — accepted where the same value is out of range for pack.depth', async () => {
