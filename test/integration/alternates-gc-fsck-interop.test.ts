@@ -2632,6 +2632,55 @@ describe.skipIf(!GIT_AVAILABLE)(
   },
 );
 
+describe.skipIf(!GIT_AVAILABLE)('fsck interop — a corrupt loose tip an alternate holds', () => {
+  const FATAL_LINE = /^fatal: (loose object [0-9a-f]{40} \(stored in .+\) is corrupt)$/m;
+
+  describe.each([
+    { label: 'absolute', entry: (donor: string) => path.join(donor, '.git', 'objects') },
+    { label: 'relative', entry: () => '../../../donor/.git/objects' },
+    { label: 'dotted', entry: (donor: string) => `${donor}/./.git/../.git/objects` },
+  ])(
+    'Given a borrower whose $label alternate holds its tip loose and corrupt',
+    ({ label, entry }) => {
+      describe('When git fsck and tsgit fsck run on the borrower', () => {
+        it(
+          'Then both die naming the same stored-in path',
+          async () => {
+            // Arrange
+            const base = path.join(root, `corrupt-alternate-tip-${label}`);
+            const donor = path.join(base, 'donor');
+            const dir = path.join(base, 'borrower');
+            runGit(['init', '-q', '-b', 'main', donor]);
+            configure(donor);
+            commitFile(donor, 'a', 'a');
+            const tip = runGit(['-C', donor, 'rev-parse', 'HEAD']).trim();
+            runGit(['init', '-q', '-b', 'main', dir]);
+            configure(dir);
+            writeFileSync(path.join(objectsOf(dir), 'info', 'alternates'), `${entry(donor)}\n`);
+            runGit(['-C', dir, 'update-ref', 'refs/heads/main', tip]);
+            const tipFile = looseFile(objectsOf(donor), tip);
+            chmodSync(tipFile, 0o644);
+            writeFileSync(tipFile, 'garbage');
+            const git = gitFsck(dir);
+            const sut = tsgitFsck;
+
+            // Act
+            const result = await refusalOf(sut(dir));
+
+            // Assert
+            expect(git.exitCode).toBe(128);
+            expect(result.data).toEqual({
+              code: 'INVALID_OBJECT_HEADER',
+              reason: FATAL_LINE.exec(git.stderr)?.[1],
+            });
+          },
+          ROW_TIMEOUT,
+        );
+      });
+    },
+  );
+});
+
 describe.skipIf(!GIT_AVAILABLE)('fsck interop — promisor objects named by refs and reflogs', () => {
   describe.each([
     { mode: '--full', flags: [] as ReadonlyArray<string>, options: {}, gitExit: 4 },
