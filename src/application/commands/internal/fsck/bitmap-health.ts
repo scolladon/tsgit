@@ -1,8 +1,9 @@
 import { bytesEqual } from '../../../../domain/objects/encoding.js';
 import type { Context } from '../../../../ports/context.js';
 import type { ArtefactLoad } from '../../../primitives/internal/pack-artefact-source.js';
-import { getPackRegistry } from '../../../primitives/read-object.js';
+import { getObjectStore, type ObjectSource } from '../../../primitives/object-store.js';
 import { EXIT_BITMAP } from './exit-codes.js';
+import { attributeTo } from './source-attribution.js';
 import type { FsckFinding, FsckOptions } from './types.js';
 
 /**
@@ -24,20 +25,44 @@ async function verifyBitmapTrailer(ctx: Context, bytes: Uint8Array): Promise<boo
   return bytesEqual(digest, bytes.subarray(bodyEnd));
 }
 
-/** Pushes a `bitmap-checksum-mismatch` finding when `load` is usable but its
+type Attribution = { readonly objectsDir?: string };
+
+/** Returns a `bitmap-checksum-mismatch` finding when `load` is usable but its
  *  trailer disagrees; a non-`usable` load (absent/unreadable/refused) is
- *  silent, same as every other artefact's degradation posture here. Returns
- *  whether a finding was pushed, for the caller's exit-bit fold. */
+ *  silent, same as every other artefact's degradation posture here. */
 async function checkBitmapLoad(
   ctx: Context,
-  findings: FsckFinding[],
+  attribution: Attribution,
   artefact: string,
   load: ArtefactLoad<Uint8Array>,
-): Promise<boolean> {
-  if (load.kind !== 'usable') return false;
-  if (await verifyBitmapTrailer(ctx, load.bytes)) return false;
-  findings.push({ type: 'bitmap-checksum-mismatch', artefact });
-  return true;
+): Promise<ReadonlyArray<FsckFinding>> {
+  if (load.kind !== 'usable') return [];
+  if (await verifyBitmapTrailer(ctx, load.bytes)) return [];
+  return [{ type: 'bitmap-checksum-mismatch', artefact, ...attribution }];
+}
+
+async function midxBitmapFindings(
+  ctx: Context,
+  source: ObjectSource,
+  attribution: Attribution,
+): Promise<ReadonlyArray<FsckFinding>> {
+  const midxBitmap = await source.registry.midxBitmap();
+  if (midxBitmap === undefined) return [];
+  return checkBitmapLoad(ctx, attribution, midxBitmap.artefact, midxBitmap);
+}
+
+async function packBitmapFindings(
+  ctx: Context,
+  source: ObjectSource,
+  attribution: Attribution,
+): Promise<ReadonlyArray<FsckFinding>> {
+  const findings: FsckFinding[] = [];
+  for (const pack of await source.registry.all()) {
+    if (!pack.hasBitmap) continue;
+    const load = await pack.bitmapBytes();
+    findings.push(...(await checkBitmapLoad(ctx, attribution, `${pack.name}.bitmap`, load)));
+  }
+  return findings;
 }
 
 /**
@@ -47,6 +72,9 @@ async function checkBitmapLoad(
  * `runMidxHealthPass` (`fsck.ts`), which is what settles the in-use midx
  * layer's identity the second step needs.
  *
+ * Follows git's `verify_bitmap_files` order: every source's midx bitmap,
+ * then every source's pack bitmaps.
+ *
  * `opts` is taken for symmetry and ignored: bit 128 fires identically in
  * every mode, and the midx arm below is unconditional — tsgit declines
  * git's `core.multiPackIndex` gate on this pass as a deliberate divergence.
@@ -55,23 +83,12 @@ export async function runBitmapHealthPass(
   ctx: Context,
   _opts: FsckOptions,
 ): Promise<{ readonly findings: ReadonlyArray<FsckFinding>; readonly exitBit: number }> {
-  const registry = await getPackRegistry(ctx);
-  const packs = await registry.all();
-
+  const store = await getObjectStore(ctx);
   const findings: FsckFinding[] = [];
-  let exitBit = 0;
-
-  for (const pack of packs) {
-    if (!pack.hasBitmap) continue;
-    const load = await pack.bitmapBytes();
-    if (await checkBitmapLoad(ctx, findings, `${pack.name}.bitmap`, load)) exitBit = EXIT_BITMAP;
+  for (const arm of [midxBitmapFindings, packBitmapFindings]) {
+    for (const source of store.sources) {
+      findings.push(...(await arm(ctx, source, attributeTo(store, source))));
+    }
   }
-
-  const midxBitmap = await registry.midxBitmap();
-  if (midxBitmap !== undefined) {
-    const mismatched = await checkBitmapLoad(ctx, findings, midxBitmap.artefact, midxBitmap);
-    if (mismatched) exitBit = EXIT_BITMAP;
-  }
-
-  return { findings, exitBit };
+  return { findings, exitBit: findings.length > 0 ? EXIT_BITMAP : 0 };
 }

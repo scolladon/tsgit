@@ -6,6 +6,9 @@
  * directly (loose fan-out directories, `show-index` of local packs), so
  * borrowed objects never count as local.
  *
+ * The fsck rows (F) build the same borrower and compare tsgit's structured
+ * findings and exit bits with `git fsck` run on the identical on-disk state.
+ *
  * @proves
  *   surface:        packfile
  *   bucket:         cross-tool-interop
@@ -28,8 +31,14 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { deflateSync } from 'node:zlib';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import type { FsckFinding, FsckOptions } from '../../src/application/commands/fsck.js';
 import { openRepository } from '../../src/index.node.js';
-import { disableAutoMaintenance, GIT_AVAILABLE, runGit } from './interop-helpers.js';
+import {
+  disableAutoMaintenance,
+  GIT_AVAILABLE,
+  runGit,
+  tryRunGitWithExit,
+} from './interop-helpers.js';
 
 const ROW_TIMEOUT = 30_000;
 const LOCAL_COMMIT_COUNT = 1;
@@ -263,6 +272,354 @@ describe.skipIf(!GIT_AVAILABLE)('alternates gc interop — local-only packing', 
           // Assert
           expect(existsSync(looseFile(objectsOf(pair.tsgitSide), oid))).toBe(false);
           expect(localObjects(pair.tsgitSide)).toEqual(localObjects(pair.gitSide));
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+});
+
+interface Borrower {
+  readonly donor: string;
+  readonly borrower: string;
+}
+
+const DANGLING_LINE = /^dangling (\w+) ([0-9a-f]{40})$/;
+
+const borrowerOf = (slug: string, packDonor: boolean): Borrower => {
+  const donor = path.join(root, `${slug}-donor`);
+  runGit(['init', '-q', '-b', 'main', donor]);
+  configure(donor);
+  for (const n of [1, 2]) commitFile(donor, `d${n}.txt`, `donor ${n}`);
+  if (packDonor) runGit(['-C', donor, 'gc', '-q']);
+  const borrower = path.join(root, `${slug}-borrower`);
+  runGit(['clone', '-q', '--shared', donor, borrower]);
+  configure(borrower);
+  return { donor, borrower };
+};
+
+const unreachableDonorBlob = (donor: string): string =>
+  runGit(['-C', donor, 'hash-object', '-w', '--stdin'], { input: 'unreachable blob' }).trim();
+
+const gitFsck = (dir: string, ...flags: ReadonlyArray<string>) =>
+  tryRunGitWithExit(['-C', dir, 'fsck', ...flags]);
+
+const tsgitFsck = async (dir: string, opts: FsckOptions = {}) => {
+  const repo = await openRepository({ cwd: dir });
+  try {
+    return await repo.fsck(opts);
+  } finally {
+    await repo.dispose();
+  }
+};
+
+const danglingLines = (findings: ReadonlyArray<FsckFinding>): ReadonlyArray<string> =>
+  findings
+    .flatMap((f) => (f.type === 'dangling' ? [`dangling ${f.objectType} ${f.id}`] : []))
+    .sort();
+
+const gitDanglingLines = (stdout: string): ReadonlyArray<string> =>
+  stdout
+    .split('\n')
+    .filter((line) => DANGLING_LINE.test(line))
+    .sort();
+
+describe.skipIf(!GIT_AVAILABLE)('alternates fsck interop — every source is audited', () => {
+  describe('Given a clean --shared borrower holding no local object', () => {
+    describe('When fsck runs (F1)', () => {
+      it(
+        'Then git and tsgit are silent and exit 0',
+        async () => {
+          // Arrange
+          const { borrower } = borrowerOf('f1', true);
+          const sut = tsgitFsck;
+
+          // Act
+          const gitResult = gitFsck(borrower);
+          const result = await sut(borrower);
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          expect(gitResult.stdout).toBe('');
+          expect(result.exitCode).toBe(0);
+          expect(result.findings.filter((f) => f.type !== 'root')).toEqual([]);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe('Given a donor that gains an unreachable blob', () => {
+    describe.each([
+      { label: 'default', flags: [] as string[], opts: {} },
+      {
+        label: 'connectivity-only',
+        flags: ['--connectivity-only'],
+        opts: { connectivityOnly: true },
+      },
+    ])('When the borrower fsck runs ($label) (F2)', ({ flags, opts }) => {
+      it(
+        'Then both report the donor blob as dangling and exit 0',
+        async () => {
+          // Arrange
+          const { donor, borrower } = borrowerOf(`f2-${flags.length}`, true);
+          runGit(['-C', donor, 'hash-object', '-w', '--stdin'], { input: 'unreachable blob' });
+          const sut = tsgitFsck;
+
+          // Act
+          const gitResult = gitFsck(borrower, ...flags);
+          const result = await sut(borrower, opts);
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          expect(gitDanglingLines(gitResult.stdout)).toHaveLength(1);
+          expect(danglingLines(result.findings)).toEqual(gitDanglingLines(gitResult.stdout));
+          expect(result.exitCode).toBe(0);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe('Given a donor commit on a branch the borrower lacks', () => {
+    describe('When the borrower fsck runs (F2b)', () => {
+      it(
+        'Then both report the commit as dangling and the unreachable set matches --unreachable',
+        async () => {
+          // Arrange
+          const { donor, borrower } = borrowerOf('f2b', true);
+          runGit(['-C', donor, 'checkout', '-q', '-b', 'other']);
+          commitFile(donor, 'other.txt', 'other');
+          const sut = tsgitFsck;
+
+          // Act
+          const gitResult = gitFsck(borrower);
+          const gitUnreachable = gitFsck(borrower, '--unreachable');
+          const result = await sut(borrower);
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          expect(danglingLines(result.findings)).toEqual(gitDanglingLines(gitResult.stdout));
+          expect(danglingLines(result.findings)[0]).toMatch(/^dangling commit /);
+          const unreachableIds = result.findings.flatMap((f) =>
+            f.type === 'unreachable' ? [`${f.objectType} ${f.id}`] : [],
+          );
+          const gitUnreachableIds = gitUnreachable.stdout
+            .split('\n')
+            .flatMap(
+              (line) => /^unreachable (\w+) ([0-9a-f]{40})$/.exec(line)?.slice(1).join(' ') ?? [],
+            );
+          expect(unreachableIds.sort()).toEqual(gitUnreachableIds.sort());
+          expect(result.exitCode).toBe(0);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe('Given a donor loose file whose content hashes to a different oid', () => {
+    const swapContent = (donor: string): string => {
+      const oid = unreachableDonorBlob(donor);
+      const file = looseFile(objectsOf(donor), oid);
+      const body = Buffer.from('swapped content');
+      const raw = Buffer.concat([Buffer.from(`blob ${body.length}\0`), body]);
+      rmSync(file);
+      writeFileSync(file, deflateSync(raw));
+      return oid;
+    };
+
+    describe.each([
+      { label: 'default', flags: [] as string[], opts: {} },
+      { label: 'no-full', flags: ['--no-full'], opts: { full: false } },
+    ])('When the borrower fsck runs ($label) (F3)', ({ label, flags, opts }) => {
+      it(
+        'Then both exit 1 and name the oid and the donor path',
+        async () => {
+          // Arrange
+          const { donor, borrower } = borrowerOf(`f3-${label}`, false);
+          const oid = swapContent(donor);
+          const sut = tsgitFsck;
+
+          // Act
+          const gitResult = gitFsck(borrower, ...flags);
+          const result = await sut(borrower, opts);
+
+          // Assert
+          expect(gitResult.exitCode).toBe(1);
+          expect(result.exitCode).toBe(1);
+          const mismatch = result.findings.find((f) => f.type === 'hash-mismatch');
+          expect(mismatch?.type).toBe('hash-mismatch');
+          expect(mismatch?.type === 'hash-mismatch' ? mismatch.id : undefined).toBe(oid);
+          const actual = mismatch?.type === 'hash-mismatch' ? mismatch.actual : '';
+          const found = looseFile(objectsOf(donor), oid);
+          expect(gitResult.stderr).toContain(
+            `error: ${actual}: hash-path mismatch, found at: ${found}`,
+          );
+        },
+        ROW_TIMEOUT,
+      );
+    });
+
+    describe('When the borrower fsck runs connectivity-only (F3)', () => {
+      it(
+        'Then both exit 0 and report the same dangling objects',
+        async () => {
+          // Arrange
+          const { donor, borrower } = borrowerOf('f3-conn', false);
+          swapContent(donor);
+          const sut = tsgitFsck;
+
+          // Act
+          const gitResult = gitFsck(borrower, '--connectivity-only');
+          const result = await sut(borrower, { connectivityOnly: true });
+
+          // Assert
+          expect(gitResult.exitCode).toBe(0);
+          expect(result.exitCode).toBe(0);
+          expect(danglingLines(result.findings)).toEqual(gitDanglingLines(gitResult.stdout));
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe('Given a donor loose file with a broken zlib stream', () => {
+    describe('When the borrower fsck runs (F3b)', () => {
+      it(
+        'Then both exit 1 and name the donor path',
+        async () => {
+          // Arrange
+          const { donor, borrower } = borrowerOf('f3b', false);
+          const oid = unreachableDonorBlob(donor);
+          const file = looseFile(objectsOf(donor), oid);
+          rmSync(file);
+          writeFileSync(file, Buffer.from('not a zlib stream'));
+          const sut = tsgitFsck;
+
+          // Act
+          const gitResult = gitFsck(borrower);
+          const result = await sut(borrower);
+
+          // Assert
+          expect(gitResult.exitCode).toBe(1);
+          expect(gitResult.stderr).toContain(`${oid}: object corrupt or missing: ${file}`);
+          expect(result.exitCode).toBe(1);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe('Given a donor pack', () => {
+    const donorPack = (donor: string): string => {
+      const dir = path.join(objectsOf(donor), 'pack');
+      return path.join(dir, readdirSync(dir).find((name) => name.endsWith('.pack'))!);
+    };
+
+    const flipByteAt = (file: string, offset: number): void => {
+      const bytes = readFileSync(file);
+      bytes[offset] = bytes[offset]! ^ 0xff;
+      rmSync(file);
+      writeFileSync(file, bytes);
+    };
+
+    describe('When a reachable object body is corrupt (F4)', () => {
+      it(
+        'Then git dies with 128 naming the donor pack and tsgit audits the borrower as it audits the donor itself',
+        async () => {
+          // Arrange
+          const { donor, borrower } = borrowerOf('f4', true);
+          const pack = donorPack(donor);
+          flipByteAt(pack, 30);
+          const sut = tsgitFsck;
+
+          // Act
+          const gitResult = gitFsck(borrower);
+          const result = await sut(borrower);
+          const ownResult = await sut(donor);
+
+          // Assert
+          expect(gitResult.exitCode).toBe(128);
+          expect(gitResult.stderr).toContain(`stored in ${pack}) is corrupt`);
+          expect(result.exitCode).toBe(ownResult.exitCode);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+
+    describe('When the pack trailer is corrupt (F4b)', () => {
+      it(
+        'Then git exits like the donor own fsck and tsgit audits the borrower as it audits the donor itself',
+        async () => {
+          // Arrange
+          const { donor, borrower } = borrowerOf('f4b', true);
+          const pack = donorPack(donor);
+          flipByteAt(pack, readFileSync(pack).length - 1);
+          const sut = tsgitFsck;
+
+          // Act
+          const gitResult = gitFsck(borrower);
+          const gitDonor = gitFsck(donor);
+          const result = await sut(borrower);
+          const ownResult = await sut(donor);
+
+          // Assert
+          expect(gitResult.exitCode).toBe(gitDonor.exitCode);
+          expect(gitResult.stderr).toContain(`packfile ${pack} does not match index`);
+          expect(result.exitCode).toBe(ownResult.exitCode);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+
+    describe('When a separate pack holds only an unreachable object and is corrupt (F4c)', () => {
+      it(
+        'Then git exits 4 and tsgit audits the borrower as it audits the donor itself',
+        async () => {
+          // Arrange
+          const { donor, borrower } = borrowerOf('f4c', true);
+          const oid = unreachableDonorBlob(donor);
+          const packDir = path.join(objectsOf(donor), 'pack');
+          const before = new Set(readdirSync(packDir));
+          runGit(['-C', donor, 'pack-objects', path.join(packDir, 'pack')], { input: `${oid}\n` });
+          runGit(['-C', donor, 'prune-packed']);
+          const added = readdirSync(packDir).find(
+            (name) => !before.has(name) && name.endsWith('.pack'),
+          )!;
+          flipByteAt(path.join(packDir, added), 20);
+          const sut = tsgitFsck;
+
+          // Act
+          const gitResult = gitFsck(borrower);
+          const result = await sut(borrower);
+          const ownResult = await sut(donor);
+
+          // Assert
+          expect(gitResult.exitCode).toBe(4);
+          expect(result.exitCode).toBe(ownResult.exitCode);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe('Given a donor directory that was removed', () => {
+    describe('When the borrower fsck runs (F5)', () => {
+      it(
+        'Then both fail with the same exit bits',
+        async () => {
+          // Arrange
+          const { donor, borrower } = borrowerOf('f5', true);
+          rmSync(objectsOf(donor), { recursive: true, force: true });
+          const sut = tsgitFsck;
+
+          // Act
+          const gitResult = gitFsck(borrower);
+          const result = await sut(borrower);
+
+          // Assert
+          expect(gitResult.exitCode).toBe(10);
+          expect(result.exitCode).toBe(gitResult.exitCode);
         },
         ROW_TIMEOUT,
       );

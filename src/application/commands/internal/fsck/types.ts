@@ -147,6 +147,8 @@ export type FsckFinding =
       /** The artefact this verdict is about: a pack's `<base>.bitmap`, or
        *  the in-use multi-pack-index's `multi-pack-index-<hex>.bitmap`. */
       readonly artefact: string;
+      /** The alternate's objects dir the finding came from; absent for the primary. */
+      readonly objectsDir?: string;
     };
 
 /**

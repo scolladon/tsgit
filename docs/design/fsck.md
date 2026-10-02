@@ -235,7 +235,7 @@ toggle), and **rendering / side-effect** (ADR-249-dropped, never on the surface)
 | `--tags` | also emit tag targets | **projection** (filter; not an option) |
 | `--cache` | add the index as a reachability root | data-scope option (`indexRoot`) |
 | `--no-reflogs` | stop treating reflog entries as roots | data-scope option (`reflogRoots`) |
-| `--full` / `--no-full` | include/exclude packs + alternates (default full) | data-scope option (`full`) |
+| `--full` / `--no-full` | include/exclude packs (default full); alternates' objects are audited in every mode | data-scope option (`full`) |
 | `--connectivity-only` | skip object-content validation; check links only | data-scope option (`connectivityOnly`) |
 | `--strict` | upgrade WARN-class msg-ids to ERROR (+exit) | data-scope option (`strict`) |
 | `--references` / `--no-references` | run / skip the `git refs verify` pass | data-scope option (`checkReferences`) |
@@ -497,7 +497,7 @@ interface FsckOptions {
   readonly connectivityOnly?: boolean;   // --connectivity-only: skip object-content validation, check links only
   readonly reflogRoots?: boolean;        // --no-reflogs ⇒ false (default true): reflog oids as roots
   readonly indexRoot?: boolean;          // --cache ⇒ true; default true (git's default head set): index oids as roots
-  readonly full?: boolean;               // --no-full ⇒ false (default true): include packs (alternates out of scope)
+  readonly full?: boolean;               // --no-full ⇒ false (default true): include packs; every alternate's objects are audited regardless
   readonly strict?: boolean;             // --strict: WARN-class msg-ids → ERROR (+exit bit)
   readonly checkReferences?: boolean;    // --no-references ⇒ false (default true): the `git refs verify` ref-content pass
 }
@@ -663,8 +663,11 @@ narrows to:
 - **`--name-objects` / `--verbose` / `--progress`** — pure rendering (ADR-249);
   the library exposes the underlying path/name *field*, not the `(…)` suffix or
   trace text.
-- **Alternates / `--full` over alternate object stores** — tsgit has no alternates
-  mechanism; `--full` covers this repo's packs only.
+- **Alternates** — not a non-goal: `fsck` audits every object source the way git does
+  (loose content, every pack, midx, rev-index and bitmap), attributing donor findings
+  through `objectsDir`. [ADR-919](../adr/919-fsck-audits-every-object-source.md)
+  supersedes the alternates bullet of
+  [ADR-412](../adr/412-fsck-v1-check-scope-and-validation-depth.md).
 - **Gitlink (submodule) target verification** — `walkTree` does not descend mode
   160000; submodule object integrity belongs to the submodule's own repo (matches
   git, which does not follow gitlinks in fsck).
