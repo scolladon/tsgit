@@ -455,6 +455,41 @@ describe.skipIf(!GIT_AVAILABLE)('config boolean refusal tier interop', () => {
     });
   });
 
+  describe('Given an unborn repository with a /-leading promisor remote and nothing rooted', () => {
+    describe('When git and tsgit each run fsck', () => {
+      it('Then neither warns — no walk consults a promisor remote', async () => {
+        // Arrange
+        runGit(['-C', ours, 'hash-object', '-w', '--stdin'], { input: 'a\n', env: runGitEnv() });
+        await writeConfig(
+          '[core]\n\trepositoryformatversion = 0\n[remote "/x"]\n\tpromisor = true\n',
+        );
+        const warnings: string[] = [];
+        const logger = {
+          warn: (message: string, context?: Record<string, unknown>): void => {
+            if (message.endsWith("promisor remote name cannot begin with '/'")) {
+              warnings.push(
+                `warning: promisor remote name cannot begin with '/': ${context?.remote}`,
+              );
+            }
+          },
+        };
+
+        // Act
+        const g = tryRunGitWithExit(['-C', ours, 'fsck'], { env: runGitEnv() });
+        const repo = await openTrackedRepository({ cwd: ours, logger });
+        await repo.fsck();
+        await repo.dispose();
+
+        // Assert
+        const gitWarnings = g.stderr
+          .split('\n')
+          .filter((line) => line.includes('promisor remote name'));
+        expect(gitWarnings).toEqual([]);
+        expect(warnings).toEqual(gitWarnings);
+      });
+    });
+  });
+
   describe('Given X17 — remote.origin.promisor = maybe, the command-split pin', () => {
     beforeEach(() =>
       writeConfig('[core]\n\trepositoryformatversion = 0\n[remote "origin"]\n\tpromisor = maybe\n'),

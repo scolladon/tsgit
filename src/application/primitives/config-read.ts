@@ -2515,28 +2515,50 @@ const warnSlashLeadingNames = (ctx: Context, attempts: ReadonlyArray<string>): v
   }
 };
 
+/** Every promisor registration git attempts, in its order: each registering
+ *  entry, then the remote `extensions.partialClone` names. */
+const registrationAttempts = (
+  tokens: ReadonlyArray<ConfigToken>,
+  partialClone: string | undefined,
+): ReadonlyArray<string> => {
+  const registering = registeringRemoteNames(tokens);
+  return partialClone === undefined ? registering : [...registering, partialClone];
+};
+
+/**
+ * git's `promisor_remote_init` warnings: one per attempt to register a
+ * `/`-leading name, logged where a command first consults its promisor remotes.
+ */
+export const warnSlashLeadingPromisorRemotes = async (ctx: Context): Promise<void> => {
+  const { tokens, parsed } = await readConfigEntry(ctx);
+  warnSlashLeadingNames(ctx, registrationAttempts(tokens, parsed.extensions?.partialClone));
+};
+
 /**
  * git's `promisor_remote_init`: every remote a `remote.<n>.promisor = true` or a
  * `remote.<n>.partialclonefilter` ever registers — a later `promisor = false` never
  * unregisters it, a subsectionless `[remote]` registers the name `""` — in config
  * order, with the one `extensions.partialClone` names moved to (or appended at) the
- * end, the order git tries them in. A `/`-leading name is never registered: git
- * warns on each attempt to register it, so the logger hears each one.
+ * end, the order git tries them in. A `/`-leading name is never registered. Logs
+ * nothing: `warnSlashLeadingPromisorRemotes` is the warning half.
  */
-export const readPromisorRemoteNames = async (ctx: Context): Promise<ReadonlyArray<string>> => {
+export const readRegistrablePromisorRemoteNames = async (
+  ctx: Context,
+): Promise<ReadonlyArray<string>> => {
   const { tokens, parsed } = await readConfigEntry(ctx);
   const partialClone = parsed.extensions?.partialClone;
-  const registering = registeringRemoteNames(tokens);
-  warnSlashLeadingNames(
-    ctx,
-    partialClone === undefined ? registering : [...registering, partialClone],
-  );
-  const names = new Set(registering);
+  const names = new Set(registeringRemoteNames(tokens));
   if (partialClone !== undefined) {
     names.delete(partialClone);
     names.add(partialClone);
   }
   return [...names].filter(isRegistrablePromisorName);
+};
+
+/** `readRegistrablePromisorRemoteNames`, warning on each `/`-leading attempt as git does. */
+export const readPromisorRemoteNames = async (ctx: Context): Promise<ReadonlyArray<string>> => {
+  await warnSlashLeadingPromisorRemotes(ctx);
+  return readRegistrablePromisorRemoteNames(ctx);
 };
 
 /** The `[remote*]` entry git's `promisor_remote_config` dies on. */

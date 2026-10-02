@@ -1,6 +1,7 @@
 import type { ObjectContent, ObjectId } from '../../domain/objects/index.js';
 import type { LruCache } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
+import { warnSlashLeadingPromisorRemotes } from '../primitives/config-read.js';
 import { deriveContext } from '../primitives/derive-context.js';
 import { enumerateObjects } from '../primitives/enumerate-objects.js';
 import { assertValidPromisorRemoteConfig } from '../primitives/internal/boolean-config-guard.js';
@@ -282,8 +283,9 @@ async function auditRepository(ctx: Context, opts: FsckOptions): Promise<FsckRes
   // git's `fsck_index` parses every cache-tree oid, in every mode — and dies
   // on one whose only copy is a damaged pack entry.
   await assertObjectsReadable(auditCtx, parsedIndexIds, objectCache);
-  // Promisor-remote guard (see assertValidPromisorRemoteConfig) — only when the walk has roots.
+  // Promisor-remote load (see assertValidPromisorRemoteConfig) — only when the walk has roots.
   if (roots.size > 0 || sawAbsentRefTarget) {
+    await warnSlashLeadingPromisorRemotes(ctx);
     await assertValidPromisorRemoteConfig(ctx);
   }
   const missingEntryPointBit = invalidIndexPointers.length > 0 ? EXIT_REFS_CONTENT : 0;

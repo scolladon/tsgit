@@ -1,7 +1,7 @@
 import type { ObjectId } from '../../../../domain/objects/index.js';
 import { objectIdAt } from '../../../../domain/storage/index.js';
 import type { Context } from '../../../../ports/context.js';
-import { readPromisorRemoteNames } from '../../../primitives/config-read.js';
+import { readRegistrablePromisorRemoteNames } from '../../../primitives/config-read.js';
 import { deriveContext } from '../../../primitives/derive-context.js';
 import { packPositionMap } from '../../../primitives/internal/pack-positions.js';
 import { getObjectStore } from '../../../primitives/object-store.js';
@@ -19,9 +19,10 @@ export function withoutLazyFetch(ctx: Context): Context {
   return deriveContext(rest, {});
 }
 
-/** git's `repo_has_promisor_remote`. */
+/** git's `repo_has_promisor_remote` — its warnings are fsck's to log, where
+ *  its walk first consults a promisor remote. */
 async function hasPromisorRemote(ctx: Context): Promise<boolean> {
-  return (await readPromisorRemoteNames(ctx)).length > 0;
+  return (await readRegistrablePromisorRemoteNames(ctx)).length > 0;
 }
 
 /** Every `.promisor`-marked pack, source by source — a kept one included. */
