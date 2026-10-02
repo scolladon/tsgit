@@ -808,8 +808,10 @@ part of a name. Windows (`compat/win32/path-utils.c`): `/` and `\` both separate
 then `:`); the root is `win32_offset_1st_component` — a drive (`C:`, `C:\`), a UNC share
 (`\\server\share\`), or a single separator — and `get_root_part` converts its `\` to `/`, so
 every resolved path is in forward-slash form (`C:\x\objects` → `C:/x/objects`, `C:x` →
-`C:/x`). A share-less UNC (`\\server`) has no root; git would resolve it against its cwd,
-tsgit reports it `unresolvable`.
+`C:/x`). A share-less UNC (`\\server`) has no root, so git's realpath starts it from its cwd — the
+work tree's top (git changes into it during setup), else the directory it was started in — and
+tsgit does the same with `layout.workDir ?? ctx.cwd`; a symlink whose target is rootless stays
+`unresolvable`.
 
 Path equality (self check and dedupe) is git's `dir.c` path comparison — the `odb_path_map`
 hash map is declared with its `ignore_case`-aware hash and equality functions (`odb.c` L32):

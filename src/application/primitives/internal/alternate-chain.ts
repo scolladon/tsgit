@@ -87,18 +87,27 @@ const descend = async (
   return found.isDirectory || isLast;
 };
 
+/** git's realpath starts a rootless path (a share-less `\\server`) from its cwd. */
+const startAt = (walk: Walk, path: string, cwd: string): boolean => {
+  if (restartAt(walk, path)) return true;
+  if (!restartAt(walk, cwd)) return false;
+  walk.pending.push(...walk.syntax.components(path));
+  return true;
+};
+
 /**
  * git's `strbuf_realpath(…, die_on_error=0)` over the port: every component is resolved and only
- * the last may be missing. `undefined` when a middle component is absent, links loop, or the path
- * has no root.
+ * the last may be missing. `undefined` when a middle component is absent, links loop, or a link
+ * names a rootless target.
  */
 export const realpathAllowingMissingLeaf = async (
   syntax: GitPathSyntax,
   probe: AlternatePathProbe,
   path: string,
+  cwd: string,
 ): Promise<string | undefined> => {
   const walk: Walk = { syntax, root: '', names: [], pending: [], hops: 0 };
-  if (!restartAt(walk, path)) return undefined;
+  if (!startAt(walk, path, cwd)) return undefined;
   while (walk.pending.length > 0) {
     if (!(await descend(probe, walk, walk.pending.shift() as string))) return undefined;
   }
@@ -141,6 +150,8 @@ interface Resolution {
   readonly ctx: Context;
   readonly io: AlternateChainIo;
   readonly key: (path: string) => string;
+  /** git's cwd while it reads alternates: the work tree's top, else where it was started. */
+  readonly cwd: string;
   readonly seen: Set<string>;
   readonly sources: ObjectSourceSpec[];
   readonly diagnostics: AlternateDiagnostic[];
@@ -208,7 +219,12 @@ const normalise = async (
   const unresolvable = { reason: 'unresolvable', path: joined, listedIn: holder } as const;
   if (text === undefined) return void report(resolution, unresolvable);
   try {
-    const real = await realpathAllowingMissingLeaf(pathSyntax, probe(joined), joined);
+    const real = await realpathAllowingMissingLeaf(
+      pathSyntax,
+      probe(joined),
+      joined,
+      resolution.cwd,
+    );
     if (real === undefined) return void report(resolution, unresolvable);
     return real.replace(TRAILING_SLASHES, '');
   } catch (error) {
@@ -292,12 +308,15 @@ export const resolveObjectSources = async (
   readonly diagnostics: ReadonlyArray<AlternateDiagnostic>;
 }> => {
   const raw = `${commonGitDir(ctx)}/objects`;
-  const primary = (await realpathAllowingMissingLeaf(io.pathSyntax, io.probe(raw), raw)) ?? raw;
+  const cwd = ctx.layout.workDir ?? ctx.cwd;
+  const primary =
+    (await realpathAllowingMissingLeaf(io.pathSyntax, io.probe(raw), raw, cwd)) ?? raw;
   const key = (await readIgnoreCase(ctx)) ? asciiLower : (path: string) => path;
   const resolution: Resolution = {
     ctx,
     io,
     key,
+    cwd,
     seen: new Set([key(primary)]),
     sources: [{ objectsDir: primary, local: true, depth: PRIMARY_DEPTH }],
     diagnostics: [],

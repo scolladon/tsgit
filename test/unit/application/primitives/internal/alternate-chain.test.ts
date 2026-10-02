@@ -15,6 +15,7 @@ import type { FileStat } from '../../../../../src/ports/file-system.js';
 import type { AlternatePathProbe } from '../../../../../src/ports/object-source-access.js';
 
 const PRIMARY = '/repo/.git/objects';
+const CWD = '/repo';
 const encode = (text: string): Uint8Array => new TextEncoder().encode(text);
 const listFile = (dir: string): string => `${dir}/info/alternates`;
 
@@ -48,6 +49,7 @@ describe('realpathAllowingMissingLeaf', () => {
           posixGitPathSyntax,
           ctx.fs,
           '/repo/link/objects',
+          CWD,
         );
 
         // Assert
@@ -69,6 +71,7 @@ describe('realpathAllowingMissingLeaf', () => {
           posixGitPathSyntax,
           ctx.fs,
           '/repo/link/absent',
+          CWD,
         );
 
         // Assert
@@ -88,6 +91,7 @@ describe('realpathAllowingMissingLeaf', () => {
           posixGitPathSyntax,
           ctx.fs,
           '/repo/absent/objects',
+          CWD,
         );
 
         // Assert
@@ -107,6 +111,7 @@ describe('realpathAllowingMissingLeaf', () => {
           posixGitPathSyntax,
           ctx.fs,
           '/repo/file/objects',
+          CWD,
         );
 
         // Assert
@@ -128,6 +133,7 @@ describe('realpathAllowingMissingLeaf', () => {
           posixGitPathSyntax,
           ctx.fs,
           '/repo/a/objects',
+          CWD,
         );
 
         // Assert
@@ -153,10 +159,50 @@ describe('realpathAllowingMissingLeaf', () => {
         }
 
         // Act
-        const result = await realpathAllowingMissingLeaf(posixGitPathSyntax, ctx.fs, previous);
+        const result = await realpathAllowingMissingLeaf(posixGitPathSyntax, ctx.fs, previous, CWD);
 
         // Assert
         expect(result).toBe(expected);
+      });
+    });
+  });
+
+  describe('Given a rootless path', () => {
+    describe('When realpathAllowingMissingLeaf from a rooted cwd', () => {
+      it('Then it resolves under the cwd', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.mkdir('/repo/real');
+        await ctx.fs.symlink('/repo/real', '/repo/link');
+
+        // Act
+        const result = await realpathAllowingMissingLeaf(
+          windowsGitPathSyntax,
+          ctx.fs,
+          '\\\\server',
+          '/repo/link',
+        );
+
+        // Assert
+        expect(result).toBe('/repo/real/server');
+      });
+    });
+
+    describe('When realpathAllowingMissingLeaf from a rootless cwd', () => {
+      it('Then it is undefined', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+
+        // Act
+        const result = await realpathAllowingMissingLeaf(
+          windowsGitPathSyntax,
+          ctx.fs,
+          '\\\\server',
+          'repo',
+        );
+
+        // Assert
+        expect(result).toBeUndefined();
       });
     });
   });
@@ -175,6 +221,7 @@ describe('realpathAllowingMissingLeaf', () => {
           posixGitPathSyntax,
           ctx.fs,
           '/repo/x/y/link/./../x',
+          CWD,
         );
 
         // Assert
@@ -664,9 +711,18 @@ const windowsProbe = (volume: WindowsVolume): AlternatePathProbe => {
   return { lstat, stat: lstat, readlink: async (path) => links[path] as string };
 };
 
-const resolveOnWindows = (volume: WindowsVolume) => {
+interface WindowsOpening {
+  readonly layout?: Partial<Context['layout']>;
+  readonly cwd?: string;
+}
+
+const resolveOnWindows = (volume: WindowsVolume, opening: WindowsOpening = {}) => {
   const base = createMemoryContext();
-  const ctx: Context = { ...base, layout: { ...base.layout, gitDir: WINDOWS_GIT_DIR } };
+  const ctx: Context = {
+    ...base,
+    cwd: opening.cwd ?? base.cwd,
+    layout: { bare: false, refStorage: 'files', ...opening.layout, gitDir: WINDOWS_GIT_DIR },
+  };
   const reader = createMemoryContext().fs;
   vi.spyOn(reader, 'read').mockImplementation(async (path) => {
     const list = volume.lists[path];
@@ -765,22 +821,51 @@ describe('resolveObjectSources on a Windows filesystem', () => {
     });
   });
 
-  describe('Given a share-less UNC entry', () => {
-    describe('When the chain is resolved', () => {
-      it('Then it is unresolvable', async () => {
+  describe.each([
+    {
+      title: 'a work tree',
+      layout: { workDir: 'C:\\repo', bare: false },
+      cwd: 'C:\\repo\\sub',
+      expected: 'C:/repo/server',
+    },
+    {
+      title: 'no work tree',
+      layout: { bare: true },
+      cwd: 'C:\\elsewhere',
+      expected: 'C:/elsewhere/server',
+    },
+  ])('Given a share-less UNC entry in a repository with $title', ({ layout, cwd, expected }) => {
+    describe('When the chain is resolved and that directory is absent', () => {
+      it("Then it resolves against git's cwd and is not a directory", async () => {
         // Arrange
         const volume: WindowsVolume = {
-          directories: WINDOWS_ROOTS,
+          directories: [...WINDOWS_ROOTS, 'C:/elsewhere'],
           lists: { [listFile(WINDOWS_PRIMARY)]: '\\\\server\n' },
         };
 
         // Act
-        const result = await resolveOnWindows(volume);
+        const result = await resolveOnWindows(volume, { layout, cwd });
 
         // Assert
         expect(result.diagnostics).toEqual([
-          { reason: 'unresolvable', path: '\\\\server', listedIn: WINDOWS_PRIMARY },
+          { reason: 'not-a-directory', path: expected, listedIn: WINDOWS_PRIMARY },
         ]);
+      });
+    });
+
+    describe('When the chain is resolved and that directory exists', () => {
+      it("Then the directory under git's cwd is an alternate", async () => {
+        // Arrange
+        const volume: WindowsVolume = {
+          directories: [...WINDOWS_ROOTS, 'C:/elsewhere', expected],
+          lists: { [listFile(WINDOWS_PRIMARY)]: '\\\\server\n' },
+        };
+
+        // Act
+        const result = await resolveOnWindows(volume, { layout, cwd });
+
+        // Assert
+        expect(result.sources.map((s) => s.objectsDir)).toEqual([WINDOWS_PRIMARY, expected]);
       });
     });
   });
