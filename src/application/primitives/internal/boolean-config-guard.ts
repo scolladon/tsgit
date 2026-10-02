@@ -1,6 +1,10 @@
-import { configBadBooleanValue } from '../../../domain/commands/error.js';
+import { configBadBooleanValue, configMissingValue } from '../../../domain/commands/error.js';
 import type { Context } from '../../../ports/context.js';
-import { findFirstInvalidBoolean, findFirstInvalidBooleanInSection } from '../config-read.js';
+import {
+  findFirstInvalidBoolean,
+  findFirstInvalidBooleanInSection,
+  findFirstValuelessInSection,
+} from '../config-read.js';
 
 /**
  * Refuse with `CONFIG_BAD_BOOLEAN_VALUE` when any of `keys` (case-insensitive) under
@@ -42,5 +46,11 @@ export const assertValidBooleanConfigInSection = async (
  * and the config porcelain accept it. Each consuming command calls this at
  * the point git's own promisor-config load happens.
  */
-export const assertValidPromisorRemoteConfig = (ctx: Context): Promise<void> =>
-  assertValidBooleanConfigInSection(ctx, 'remote', ['promisor']);
+export const assertValidPromisorRemoteConfig = async (ctx: Context): Promise<void> => {
+  await assertValidBooleanConfigInSection(ctx, 'remote', ['promisor']);
+  // git's `promisor_remote_config` reads the filter as a string: no value dies.
+  const valueless = await findFirstValuelessInSection(ctx, 'remote', ['partialclonefilter']);
+  if (valueless !== undefined) {
+    throw configMissingValue(valueless.key, valueless.source, valueless.line);
+  }
+};
