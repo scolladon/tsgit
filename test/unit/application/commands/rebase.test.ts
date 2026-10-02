@@ -15,6 +15,7 @@ import {
 } from '../../../../src/application/commands/rebase.js';
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
 import { invalidateShallowSet } from '../../../../src/application/primitives/internal/shallow-set.js';
+import * as objectStoreMod from '../../../../src/application/primitives/object-store.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { readReflog } from '../../../../src/application/primitives/reflog-store.js';
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
@@ -2364,6 +2365,42 @@ describe('Given an alternate that fails to load', () => {
 
       // Act
       const attempt = sut(ctx, { upstream: 'main' });
+
+      // Assert
+      await expect(attempt).rejects.toBe(loadError);
+      expect(await snapshotFiles(ctx)).toEqual(before);
+      vi.restoreAllMocks();
+    });
+  });
+  describe('When rebaseRun has nothing to replay', () => {
+    it('Then it reports up-to-date without gating every source', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await init(ctx);
+      await setUser(ctx);
+      await writeAddCommit(ctx, 'base.txt', 'base\n', 'base');
+      const gate = vi.spyOn(objectStoreMod, 'assertEverySourceLoadable');
+      const sut = rebaseRun;
+
+      // Act
+      const result = await sut(ctx, { upstream: 'main' });
+
+      // Assert
+      expect(result).toEqual({ kind: 'up-to-date' });
+      expect(gate).not.toHaveBeenCalled();
+      vi.restoreAllMocks();
+    });
+  });
+  describe('When rebaseRun is interactive', () => {
+    it('Then it rejects with the alternate error and leaves every file untouched', async () => {
+      // Arrange
+      const { ctx, base, c1 } = await seedLinear();
+      const before = await snapshotFiles(ctx);
+      const loadError = await failSourceLoad(ctx);
+      const sut = rebaseRun;
+
+      // Act
+      const attempt = sut(ctx, { upstream: base, interactive: [{ action: 'pick', oid: c1 }] });
 
       // Assert
       await expect(attempt).rejects.toBe(loadError);

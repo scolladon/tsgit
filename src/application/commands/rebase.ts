@@ -459,7 +459,6 @@ export const rebaseRun = async (ctx: Context, input: RebaseRunInput): Promise<Re
   await assertOperationalRepository(ctx);
   requireWorkTree(ctx, 'rebase');
   await assertNoPendingOperation(ctx);
-  await assertEverySourceLoadable(ctx);
   const head = await readHeadRaw(ctx);
   const headCommit = head.kind === 'symbolic' ? await resolveHeadCommit(ctx, head.target) : head.id;
   const branch = branchRefFromHead(head);
@@ -474,6 +473,7 @@ export const rebaseRun = async (ctx: Context, input: RebaseRunInput): Promise<Re
   if (input.interactive !== undefined) {
     // An interactive rebase always has todo work (the caller supplies it), so it
     // is never the no-op "up to date" case — pre-rebase fires.
+    await assertEverySourceLoadable(ctx);
     await firePreRebase(ctx, input.upstream);
     return rebaseRunInteractive(ctx, {
       instructions: input.interactive,
@@ -488,6 +488,7 @@ export const rebaseRun = async (ctx: Context, input: RebaseRunInput): Promise<Re
   // git fires pre-rebase only when the rebase will do work; an up-to-date rebase
   // (nothing to replay or fast-forward) returns before the hook, matching git.
   if (onto === base) return { kind: 'up-to-date' };
+  await assertEverySourceLoadable(ctx);
   await firePreRebase(ctx, input.upstream);
   const toReplay = await commitsToReplay(ctx, base, headCommit);
   const kept = await dropCherryEquivalents(ctx, toReplay, base, upstream);

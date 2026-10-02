@@ -1429,14 +1429,18 @@ describe.skipIf(!GIT_AVAILABLE)('alternates stream interop — refused history c
     describe.each([
       [
         'cherryPick',
-        ['cherry-pick', BEHIND],
+        () => ['cherry-pick', BEHIND],
         (repo: Repository) => repo.cherryPick.run({ commits: [BEHIND] }),
       ],
-      ['revert', ['revert', 'HEAD'], (repo: Repository) => repo.revert.run({ commits: ['HEAD'] })],
+      [
+        'revert',
+        () => ['revert', 'HEAD'],
+        (repo: Repository) => repo.revert.run({ commits: ['HEAD'] }),
+      ],
       [
         'rebase',
-        ['rebase', '--onto', BEHIND, 'main~1'],
-        (repo: Repository) => repo.rebase.run({ upstream: 'main~1', onto: BEHIND }),
+        (parent: string) => ['rebase', '--onto', BEHIND, parent],
+        (repo: Repository, parent: string) => repo.rebase.run({ upstream: parent, onto: BEHIND }),
       ],
     ] as const)('When %s runs', (_label, gitArgs, run) => {
       it(
@@ -1445,11 +1449,12 @@ describe.skipIf(!GIT_AVAILABLE)('alternates stream interop — refused history c
           // Arrange
           const side = sides();
           const before = writeState(side.tsgit.dir);
-          const git = gitIn(side.git.dir, ...gitArgs);
+          const parent = objectOf(side.git.dir, 'main~1');
+          const git = gitIn(side.git.dir, ...gitArgs(parent));
           const repo = await side.tsgit.repo();
 
           // Act
-          const result = await rejectionOf(() => run(repo));
+          const result = await rejectionOf(() => run(repo, parent));
           await repo.dispose();
 
           // Assert
@@ -1534,6 +1539,108 @@ describe.skipIf(!GIT_AVAILABLE)('alternates stream interop — refused history c
           expect(result.data).toMatchObject({ code: 'UNSUPPORTED_OPERATION', operation: 'merge' });
           expect(writeState(side.tsgit.dir)).toEqual(before);
           expect(gitStateOf(side.tsgit.dir)).toEqual(stateBefore);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Sequencer commands refuse on an unusable source only where git reads it
+// ---------------------------------------------------------------------------
+
+const GIT_NO_OPERATION = 128;
+
+describe.skipIf(!GIT_AVAILABLE)('alternates stream interop — sequencer no-op paths', () => {
+  describe('Given HEAD on main and nothing to rebase', () => {
+    describe.each([
+      ['rebase main', ['rebase', 'main'], { upstream: 'main' }],
+      ['rebase HEAD', ['rebase', 'HEAD'], { upstream: 'HEAD' }],
+      [
+        'rebase --onto main main',
+        ['rebase', '--onto', 'main', 'main'],
+        { upstream: 'main', onto: 'main' },
+      ],
+      [
+        'rebase --onto HEAD HEAD',
+        ['rebase', '--onto', 'HEAD', 'HEAD'],
+        { upstream: 'HEAD', onto: 'HEAD' },
+      ],
+    ] as const)('When %s runs', (_label, gitArgs, input) => {
+      it(
+        'Then both tools succeed as up to date and leave the same state',
+        async () => {
+          // Arrange
+          const side = sides();
+          const before = writeState(side.tsgit.dir);
+          const git = gitIn(side.git.dir, ...gitArgs);
+          const repo = await side.tsgit.repo();
+
+          // Act
+          const result = await repo.rebase.run(input);
+          await repo.dispose();
+
+          // Assert
+          expect(git.exitCode).toBe(0);
+          expect(result).toEqual({ kind: 'up-to-date' });
+          expect(gitStateOf(side.tsgit.dir)).toEqual(gitStateOf(side.git.dir));
+          expect(writeState(side.tsgit.dir)).toEqual(before);
+          expect(writeState(side.git.dir)).toEqual(before);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe('Given no operation in progress', () => {
+    describe.each([
+      [
+        'rebase --continue',
+        ['rebase', '--continue'],
+        (r: Repository) => r.rebase.continue(),
+        'rebase',
+      ],
+      ['rebase --skip', ['rebase', '--skip'], (r: Repository) => r.rebase.skip(), 'rebase'],
+      ['rebase --abort', ['rebase', '--abort'], (r: Repository) => r.rebase.abort(), 'rebase'],
+      [
+        'cherry-pick --continue',
+        ['cherry-pick', '--continue'],
+        (r: Repository) => r.cherryPick.continue(),
+        'cherry-pick',
+      ],
+      [
+        'cherry-pick --skip',
+        ['cherry-pick', '--skip'],
+        (r: Repository) => r.cherryPick.skip(),
+        'cherry-pick',
+      ],
+      [
+        'revert --continue',
+        ['revert', '--continue'],
+        (r: Repository) => r.revert.continue(),
+        'revert',
+      ],
+      ['revert --skip', ['revert', '--skip'], (r: Repository) => r.revert.skip(), 'revert'],
+    ] as const)('When %s runs', (_label, gitArgs, run, operation) => {
+      it(
+        'Then both tools report nothing in progress rather than the object source',
+        async () => {
+          // Arrange
+          const side = sides();
+          const before = writeState(side.tsgit.dir);
+          const git = gitIn(side.git.dir, ...gitArgs);
+          const repo = await side.tsgit.repo();
+
+          // Act
+          const result = await rejectionOf(() => run(repo));
+          await repo.dispose();
+
+          // Assert
+          expect(git.exitCode).toBe(GIT_NO_OPERATION);
+          expect(git.stderr).not.toContain(MIDX_SIGNATURE_FATAL);
+          expect(result.data).toMatchObject({ code: 'NO_OPERATION_IN_PROGRESS', operation });
+          expect(writeState(side.tsgit.dir)).toEqual(before);
         },
         ROW_TIMEOUT,
       );
