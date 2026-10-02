@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../../../src/adapters/memory/memory-adapter.js';
 import { project } from '../../../../../../src/application/commands/internal/fsck/object-cache.js';
 import {
+  parseCheckOnce,
   unverifiedIds,
   verifiedCopiesOf,
   withVerifiedCopies,
@@ -161,6 +162,27 @@ describe('Given a cache and the verified copies of some of its ids', () => {
 
       // Assert
       expect(result).toBe(cache);
+    });
+  });
+});
+
+describe('Given a parse check asked about the same ids twice', () => {
+  describe('When each answer is awaited', () => {
+    it('Then each id is hashed once and keeps its verdict', async () => {
+      // Arrange
+      const { ctx, tree, blob } = await misHashedTree();
+      const hashes = vi.spyOn(ctx.hash, 'createHasher');
+      const sut = parseCheckOnce(ctx);
+
+      // Act
+      const first = [await sut(tree), await sut(blob)];
+      const hashesAfterFirst = hashes.mock.calls.length;
+      const second = [await sut(tree), await sut(blob)];
+
+      // Assert
+      expect(first).toEqual([false, true]);
+      expect(second).toEqual([false, true]);
+      expect(hashes.mock.calls.length).toBe(hashesAfterFirst);
     });
   });
 });

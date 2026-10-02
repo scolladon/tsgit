@@ -71,6 +71,7 @@ afterEach(async () => {
 
 const SETUP_TIMEOUT = 60_000;
 const PACK_DIR = '.git/objects/pack';
+const NO_DEFAULT_REFERENCES_NOTICE = 'notice: No default references';
 
 // ---------------------------------------------------------------------------
 // git-invocation helpers
@@ -387,11 +388,13 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
       expect(gitResult.exitCode).toBe(4);
       expect(occurrences(gitResult.stderr, packInaccessibleVerdict('pack-bad'))).toBe(1);
 
-      // Assert — tsgit: one pack finding, and nothing else (the bad pack's own
-      // objects never entered the universe)
+      // Assert — tsgit: one pack finding and git's no-default-references
+      // notice, nothing else (the bad pack's own objects never entered the universe)
+      expect(gitResult.stderr).toContain(NO_DEFAULT_REFERENCES_NOTICE);
       expect(result.exitCode).toBe(4);
-      expect(result.findings).toHaveLength(1);
+      expect(result.findings).toHaveLength(2);
       expect(findingsOfType(result.findings, 'pack-inaccessible')).toHaveLength(1);
+      expect(findingsOfType(result.findings, 'no-default-references')).toHaveLength(1);
     });
   });
 
@@ -599,8 +602,9 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
       // Assert
       expect(gitResult.exitCode).toBe(0);
       expect(gitResult.stderr).not.toContain('packfile');
+      expect(gitResult.stderr).toContain(NO_DEFAULT_REFERENCES_NOTICE);
       expect(result.exitCode).toBe(0);
-      expect(result.findings).toHaveLength(0);
+      expect(result.findings).toEqual([{ type: 'no-default-references' }]);
     });
   });
 
@@ -618,8 +622,9 @@ describe.skipIf(!GIT_AVAILABLE)('fsck pack-accessibility reporting, against real
       // Assert
       expect(gitResult.exitCode).toBe(0);
       expect(gitResult.stderr).not.toContain('packfile');
+      expect(gitResult.stderr).toContain(NO_DEFAULT_REFERENCES_NOTICE);
       expect(result.exitCode).toBe(0);
-      expect(result.findings).toHaveLength(0);
+      expect(result.findings).toEqual([{ type: 'no-default-references' }]);
     });
   });
 

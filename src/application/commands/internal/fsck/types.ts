@@ -75,6 +75,18 @@ export type FsckFinding =
       /** The index file naming it: one finding per worktree index that does. */
       readonly index: string;
     }
+  | {
+      /** No ref names an object git could parse — git's `No default references`
+       *  notice, after which it reports no `unreachable` object. No exit bit. */
+      readonly type: 'no-default-references';
+    }
+  | {
+      /** A reflog-reached object whose served copy hashes to another id, under
+       *  `connectivityOnly` — git's `Unknown object type for`: reached, never
+       *  walked. No exit bit. */
+      readonly type: 'unknown-object-type';
+      readonly id: ObjectId;
+    }
   | { readonly type: 'root'; readonly id: ObjectId }
   | {
       readonly type: 'tagged';

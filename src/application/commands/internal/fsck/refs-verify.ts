@@ -11,8 +11,12 @@ import { EXIT_MISSING, EXIT_REFS_CONTENT } from './exit-codes.js';
 import { objectIsPresent } from './object-presence.js';
 import { isTolerableRefFault, worktreeHeads } from './roots.js';
 import type { FsckFinding } from './types.js';
+import type { ParseCheck } from './verified-copies.js';
 
 type BadRefFinding = FsckFinding & { readonly type: 'bad-ref' };
+type RefFinding = FsckFinding & { readonly type: 'bad-ref' | 'no-default-references' };
+
+const NO_DEFAULT_REFERENCES: RefFinding = { type: 'no-default-references' };
 
 /**
  * How a ref's target is judged present. `universe`: membership is proof.
@@ -24,7 +28,7 @@ type BadRefFinding = FsckFinding & { readonly type: 'bad-ref' };
  */
 export type RefTargetCheck = 'universe' | 'confirm-packs' | 'probe-packs';
 
-async function isKnownOid(
+async function isHeld(
   ctx: Context,
   universe: ReadonlySet<ObjectId>,
   oid: ObjectId,
@@ -34,9 +38,20 @@ async function isKnownOid(
   return check === 'probe-packs' && objectIsPresent(ctx, oid);
 }
 
+/** git's `parse_object` on a ref tip: held, and the copy served first hashes to it. */
+async function isKnownOid(
+  ctx: Context,
+  universe: ReadonlySet<ObjectId>,
+  oid: ObjectId,
+  check: RefTargetCheck,
+  parses: ParseCheck,
+): Promise<boolean> {
+  return (await isHeld(ctx, universe, oid, check)) && parses(oid);
+}
+
 /** One sub-check's own findings and the exit bits they carry. */
 interface PassResult {
-  readonly findings: ReadonlyArray<BadRefFinding>;
+  readonly findings: ReadonlyArray<RefFinding>;
   readonly exitBit: number;
 }
 
@@ -151,20 +166,25 @@ async function snapshotTargets(
 
 /** Every ref — symbolic ones through their chain, every worktree's HEAD
  *  included — naming an object the universe does not hold and no promisor
- *  pack promises: git's `invalid sha1 pointer`. */
+ *  pack promises: git's `invalid sha1 pointer`. When every snapshotted ref
+ *  is one, git counts no default reference and says so. */
 async function collectAbsentTargets(
   ctx: Context,
   entries: RefEntries,
   universe: ReadonlySet<ObjectId>,
   check: RefTargetCheck,
   promised: ReadonlySet<ObjectId>,
+  parses: ParseCheck,
 ): Promise<PassResult> {
-  const findings: BadRefFinding[] = [];
-  for (const { ref, id } of await snapshotTargets(ctx, entries)) {
-    if (promised.has(id) || (await isKnownOid(ctx, universe, id, check))) continue;
+  const targets = await snapshotTargets(ctx, entries);
+  const findings: RefFinding[] = [];
+  for (const { ref, id } of targets) {
+    if (promised.has(id) || (await isKnownOid(ctx, universe, id, check, parses))) continue;
     findings.push({ type: 'bad-ref', ref, msgId: 'badRefOid', severity: 'error', target: id });
   }
-  return { findings, exitBit: findings.length > 0 ? EXIT_MISSING : 0 };
+  const exitBit = findings.length > 0 ? EXIT_MISSING : 0;
+  if (findings.length === targets.length) findings.push(NO_DEFAULT_REFERENCES);
+  return { findings, exitBit };
 }
 
 /**
@@ -178,7 +198,8 @@ async function collectAbsentTargets(
  *   object name exits 10 = 2|8.
  * - **OID presence** (always): every well-formed ref's OID (loose + packed,
  *   from `listRefs`) must be in the object universe, confirmed via
- *   `isKnownOid` as `check` says (see `RefTargetCheck`).
+ *   `isKnownOid` as `check` says (see `RefTargetCheck`), and its served copy
+ *   must hash to it (`parses`), as git's `parse_object` checks.
  *   Absent → `badRefOid` (bit 2), so a loose ref naming a well-formed but
  *   absent object exits 2 with AND without `--no-references`. A symbolic ref
  *   (HEAD too) is judged by the object its chain names; one naming none —
@@ -192,6 +213,7 @@ export async function runRefsVerifyPass(
   check: RefTargetCheck,
   severities: FsckSeverityTable,
   promised: ReadonlySet<ObjectId>,
+  parses: ParseCheck,
 ): Promise<PassResult> {
   const refStore = getRefStore(ctx);
   const [entries, integrityFindings] = await Promise.all([
@@ -206,7 +228,7 @@ export async function runRefsVerifyPass(
     checkContentFormat,
     severities,
   );
-  const absent = await collectAbsentTargets(ctx, entries, universe, check, promised);
+  const absent = await collectAbsentTargets(ctx, entries, universe, check, promised, parses);
 
   return {
     findings: [...symlinks.findings, ...badContent.findings, ...absent.findings],

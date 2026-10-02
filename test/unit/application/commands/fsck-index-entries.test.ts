@@ -101,8 +101,8 @@ describe('Given an index holding a gitlink to a commit this repository lacks', (
       // Act
       const result = await sut(ctx);
 
-      // Assert
-      expect(result.findings).toEqual([]);
+      // Assert — no ref names an object, so git notes it has no default reference.
+      expect(result.findings).toEqual([{ type: 'no-default-references' }]);
       expect(result.exitCode).toBe(0);
     });
   });

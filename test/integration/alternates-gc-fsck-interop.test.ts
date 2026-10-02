@@ -2498,6 +2498,92 @@ const renameIdxEntry = (idxPath: string, from: string, to: string): void => {
   writeFileSync(idxPath, Buffer.concat([body, createHash('sha1').update(body).digest()]));
 };
 
+describe.skipIf(!GIT_AVAILABLE)(
+  'fsck interop — a ref tip whose copy hashes to another commit',
+  () => {
+    const UNKNOWN_TYPE_LINE = /^error: Unknown object type for [0-9a-f]{40}$/;
+    const NOTICE_LINE = /^notice: No default references$/;
+
+    /** `main` at c2 over c1, c2's only copy holding c1's bytes, loose or packed. */
+    const repoWithMisHashedTip = (storage: 'loose' | 'packed', slug: string): string => {
+      const dir = path.join(root, `mis-hashed-tip-${storage}${slug}`);
+      runGit(['init', '-q', '-b', 'main', dir]);
+      configure(dir);
+      commitFile(dir, 'a', 'a');
+      commitFile(dir, 'b', 'b');
+      const tip = runGit(['-C', dir, 'rev-parse', 'HEAD']).trim();
+      const parent = runGit(['-C', dir, 'rev-parse', 'HEAD~1']).trim();
+      const tipFile = looseFile(objectsOf(dir), tip);
+      rmSync(tipFile, { force: true });
+      if (storage === 'loose') {
+        writeFileSync(tipFile, readFileSync(looseFile(objectsOf(dir), parent)));
+        return dir;
+      }
+      const packDir = path.join(objectsOf(dir), 'pack');
+      const name = runGit(['-C', dir, 'pack-objects', '-q', path.join(packDir, 'pack')], {
+        input: `${parent}\n`,
+      }).trim();
+      renameIdxEntry(path.join(packDir, `pack-${name}.idx`), parent, tip);
+      rmSync(path.join(packDir, `pack-${name}.rev`), { force: true });
+      return dir;
+    };
+
+    const linesOf = (findings: ReadonlyArray<FsckFinding>): ReadonlyArray<string> =>
+      findings.flatMap((f) => {
+        if (f.type === 'unknown-object-type') return [`error: Unknown object type for ${f.id}`];
+        if (f.type === 'no-default-references') return ['notice: No default references'];
+        return [];
+      });
+
+    describe.each([
+      { storage: 'loose', flag: '--full', opts: {}, exitCode: 3 },
+      { storage: 'loose', flag: '--no-full', opts: { full: false }, exitCode: 3 },
+      {
+        storage: 'loose',
+        flag: '--connectivity-only',
+        opts: { connectivityOnly: true },
+        exitCode: 2,
+      },
+      { storage: 'packed', flag: '--full', opts: {}, exitCode: 6 },
+      { storage: 'packed', flag: '--no-full', opts: { full: false }, exitCode: 2 },
+      {
+        storage: 'packed',
+        flag: '--connectivity-only',
+        opts: { connectivityOnly: true },
+        exitCode: 2,
+      },
+    ] as const)('Given the tip stored $storage', ({ storage, flag, opts, exitCode }) => {
+      describe(`When git fsck ${flag} and tsgit fsck run`, () => {
+        it(
+          'Then both name the same pointers, notices and exit code',
+          async () => {
+            // Arrange
+            const dir = repoWithMisHashedTip(storage, flag);
+            const git = gitFsck(dir, flag);
+            const sut = tsgitFsck;
+
+            // Act
+            const result = await sut(dir, opts);
+
+            // Assert
+            expect(git.exitCode).toBe(exitCode);
+            expect(result.exitCode).toBe(exitCode);
+            expect(pointerLines(result.findings)).toEqual(gitLines(git.stderr, POINTER_LINE));
+            expect([...linesOf(result.findings)].sort()).toEqual(
+              [
+                ...gitLines(git.stderr, UNKNOWN_TYPE_LINE),
+                ...gitLines(git.stderr, NOTICE_LINE),
+              ].sort(),
+            );
+            expect(danglingLines(result.findings)).toEqual(gitDanglingLines(git.stdout));
+          },
+          ROW_TIMEOUT,
+        );
+      });
+    });
+  },
+);
+
 describe.skipIf(!GIT_AVAILABLE)('fsck interop — promisor objects named by refs and reflogs', () => {
   describe.each([
     { mode: '--full', flags: [] as ReadonlyArray<string>, options: {}, gitExit: 4 },

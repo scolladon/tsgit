@@ -19,7 +19,7 @@ import { listReflogs, readReflogLenient } from '../../../primitives/reflog-store
 import { resolveRef } from '../../../primitives/resolve-ref.js';
 import { objectIsPresent } from './object-presence.js';
 import type { FsckOptions } from './types.js';
-import { hashesToItsId } from './verified-copies.js';
+import { hashesToItsId, type ParseCheck } from './verified-copies.js';
 
 const HEAD_REF = 'HEAD' as RefName;
 
@@ -109,13 +109,16 @@ export function isTolerableRefFault(err: unknown): boolean {
   return code !== undefined && GC_TOLERATED_REF_CODES.has(code);
 }
 
+/** Whether a ref tip roots fsck's walk: git's `snapshot_ref` keeps one it holds and can parse. */
+type TipGate = (id: ObjectId) => Promise<boolean>;
+
 /**
  * Add every resolvable ref's target to `roots`. Returns whether any ref
- * resolved to an oid ABSENT from the universe — git probes such a target
+ * resolved to an oid the gate refuses — git probes such a target
  * against the promisor machinery (`is_promisor_object`), so the caller's
  * promisor-config gate must fire for it even though it roots nothing.
  *
- * `universe` is optional: omitted, every resolved ref target is added
+ * `gate` is optional: omitted, every resolved ref target is added
  * unconditionally and the "absent target" verdict never fires — the shape
  * `collectRetentionRoots` needs (gc has no pre-built object universe to
  * bound against; unlike `collectRoots`, it never reports corruption).
@@ -127,26 +130,36 @@ export function isTolerableRefFault(err: unknown): boolean {
 async function addRefRoots(
   ctx: Context,
   roots: Set<ObjectId>,
-  universe?: ReadonlySet<ObjectId>,
+  gate?: TipGate,
   strict?: boolean,
 ): Promise<boolean> {
   const refNames = await enumerateRefs(ctx);
   let sawAbsentTarget = false;
   for (const ref of refNames) {
-    try {
-      // Stryker disable next-line ObjectLiteral: equivalent — peel defaults to false in resolveRef; {} and { peel: false } produce identical behavior.
-      const id = await resolveRef(ctx, ref, { peel: false });
-      // Only add to roots if the OID is present in the universe.
-      // Absent OIDs are reported as bad-ref(badRefOid) by the refs-verify pass
-      // and must NOT be added to roots (would produce spurious 'missing' findings).
-      if (universe === undefined || universe.has(id)) roots.add(id);
-      else sawAbsentTarget = true;
-    } catch (err) {
-      if (strict === true && !isTolerableRefFault(err)) throw err;
-      // Unresolvable ref (unborn, dangling symref, malformed content) — tolerated
-    }
+    const id = await resolveTip(ctx, ref, strict);
+    if (id === undefined) continue;
+    // A tip the gate refuses is reported as bad-ref(badRefOid) by the
+    // refs-verify pass and must NOT root the walk (spurious 'missing' findings).
+    if (gate === undefined || (await gate(id))) roots.add(id);
+    else sawAbsentTarget = true;
   }
   return sawAbsentTarget;
+}
+
+/** The object `ref` names, or `undefined` for a ref that resolves to none. */
+async function resolveTip(
+  ctx: Context,
+  ref: RefName,
+  strict?: boolean,
+): Promise<ObjectId | undefined> {
+  try {
+    // Stryker disable next-line ObjectLiteral: equivalent — peel defaults to false in resolveRef; {} and { peel: false } produce identical behavior.
+    return await resolveRef(ctx, ref, { peel: false });
+  } catch (err) {
+    if (strict === true && !isTolerableRefFault(err)) throw err;
+    // Unresolvable ref (unborn, dangling symref, malformed content) — tolerated
+    return undefined;
+  }
 }
 
 /**
@@ -385,6 +398,23 @@ export interface RootsCollection {
   readonly indexBlobIds: ReadonlySet<ObjectId>;
   /** Every reflog oid git's fsck never recorded as an object, in reflog order. */
   readonly invalidReflogEntries: ReadonlyArray<InvalidReflogEntry>;
+  /** Every root only a reflog reaches whose served copy hashes to another id,
+   *  under `connectivityOnly`: git's walk cannot type it (`Unknown object type
+   *  for`), so it is reached but never walked. */
+  readonly untypedReflogRoots: ReadonlyArray<ObjectId>;
+}
+
+/** The roots added since `before` that git's walk cannot parse. */
+async function unparseableSince(
+  roots: ReadonlySet<ObjectId>,
+  before: ReadonlySet<ObjectId>,
+  parses: ParseCheck,
+): Promise<ReadonlyArray<ObjectId>> {
+  const unparseable: ObjectId[] = [];
+  for (const id of roots) {
+    if (!before.has(id) && !(await parses(id))) unparseable.push(id);
+  }
+  return unparseable;
 }
 
 /** An index pointer naming an object no store holds. */
@@ -552,12 +582,17 @@ export async function collectRoots(
   opts: FsckOptions,
   universe: ReadonlySet<ObjectId>,
   isRecorded: (id: ObjectId) => boolean,
+  parses: ParseCheck,
 ): Promise<RootsCollection> {
   const roots = new Set<ObjectId>();
-  const sawAbsentRef = await addRefRoots(ctx, roots, universe);
-  const sawAbsentHead = await addWorktreeHeadRoots(ctx, roots, universe);
+  const gate: TipGate = async (id) => universe.has(id) && (await parses(id));
+  const sawAbsentRef = await addRefRoots(ctx, roots, gate);
+  const sawAbsentHead = await addWorktreeHeadRoots(ctx, roots, gate);
+  const refRooted = new Set(roots);
   const invalidReflogEntries =
     opts.reflogRoots !== false ? await addRecordedReflogRoots(ctx, roots, isRecorded) : [];
+  const untypedReflogRoots =
+    opts.connectivityOnly === true ? await unparseableSince(roots, refRooted, parses) : [];
   const index =
     opts.indexRoot !== false ? await fsckEveryIndex(ctx, roots, universe) : NO_INDEX_FSCK;
   return {
@@ -567,6 +602,7 @@ export async function collectRoots(
     parsedIndexIds: index.parsed,
     indexBlobIds: new Set(index.blobs),
     invalidReflogEntries,
+    untypedReflogRoots,
   };
 }
 
@@ -575,11 +611,11 @@ export async function collectRoots(
 async function addWorktreeHeadRoots(
   ctx: Context,
   roots: Set<ObjectId>,
-  universe: ReadonlySet<ObjectId>,
+  gate: TipGate,
 ): Promise<boolean> {
   let sawAbsentTarget = false;
   for (const { id } of await worktreeHeads(ctx)) {
-    if (universe.has(id)) roots.add(id);
+    if (await gate(id)) roots.add(id);
     else sawAbsentTarget = true;
   }
   return sawAbsentTarget;

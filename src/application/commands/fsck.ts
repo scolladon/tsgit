@@ -41,6 +41,7 @@ import { collectRoots } from './internal/fsck/roots.js';
 import { createSpecialBlobLedger } from './internal/fsck/special-blobs.js';
 import type { UnreadableMode } from './internal/fsck/types.js';
 import {
+  parseCheckOnce,
   unverifiedIds,
   verifiedCopiesOf,
   withVerifiedCopies,
@@ -171,6 +172,8 @@ async function auditRepository(ctx: Context, opts: FsckOptions): Promise<FsckRes
         }
       : await runContentValidationPass(auditCtx, universe, catalogue);
 
+  // git's `parse_object` on every ref tip: the copy served first must hash to it.
+  const parses = parseCheckOnce(auditCtx);
   const refsResult = await runRefsVerifyPass(
     ctx,
     universe,
@@ -178,6 +181,7 @@ async function auditRepository(ctx: Context, opts: FsckOptions): Promise<FsckRes
     refTargetCheck(opts),
     severities,
     promised,
+    parses,
   );
 
   // Pack-health pass — reports packs the registry could not open or index.
@@ -214,6 +218,18 @@ async function auditRepository(ctx: Context, opts: FsckOptions): Promise<FsckRes
   // step needs.
   const bitmapResult = await runBitmapHealthPass(ctx, opts);
 
+  // Content-validation's own git-faithful read can refuse an object the
+  // general resolver above still typed — every loose object
+  // `read_loose_object` itself refuses, or whose hash disagrees with its
+  // path, PROVIDED no pack copy backs it — git's fsck has no separate "read
+  // for typing" pass, so a refusal there denies its reachability graph the
+  // type too. Overriding those ids to unreadable HERE, after content
+  // validation and before every reachability read below, is what keeps
+  // `dangling`/`unreachable` classification git-faithful.
+  // A pack entry hashing to another id leaves git holding no copy of the object
+  // unless a loose copy verifies (`HAS_OBJ`); a held one is walked as served.
+  const verified = await verifiedCopiesOf(auditCtx, misHashedIds(verifyPackResult.findings));
+  const refused = new Set([...contentResult.typeUnknownIds, ...unverifiedIds(verified)]);
   // Roots + the missing-entry-point condition — a whole-repository check,
   // not a per-oid one: git sets bit 8 here exactly when the index carries a
   // cache-tree (`TREE` extension) and at least one of its entries' tree
@@ -228,7 +244,18 @@ async function auditRepository(ctx: Context, opts: FsckOptions): Promise<FsckRes
   // of `universe`'s own mode-narrowing — see `existsInStore`'s doc comment)
   // rather than re-scanning the store.
   const { roots, invalidIndexPointers, sawAbsentRefTarget, parsedIndexIds, ...recorded } =
-    await collectRoots(ctx, opts, universe, recordedBy(universe, objectCache, unreadable));
+    await collectRoots(
+      ctx,
+      opts,
+      universe,
+      recordedBy(universe, withUnreadableOverrides(objectCache, refused), unreadable),
+      parses,
+    );
+  const { untypedReflogRoots } = recorded;
+  const reachabilityCache = withUnreadableOverrides(
+    objectCache,
+    new Set([...refused, ...untypedReflogRoots]),
+  );
   // git's `fsck_index` parses every cache-tree oid, in every mode — and dies
   // on one whose only copy is a damaged pack entry.
   await assertObjectsReadable(auditCtx, parsedIndexIds, objectCache);
@@ -242,21 +269,6 @@ async function auditRepository(ctx: Context, opts: FsckOptions): Promise<FsckRes
     (entry) => !promised.has(entry.id),
   );
 
-  // Content-validation's own git-faithful read can refuse an object the
-  // general resolver above still typed — every loose object
-  // `read_loose_object` itself refuses, or whose hash disagrees with its
-  // path, PROVIDED no pack copy backs it — git's fsck has no separate "read
-  // for typing" pass, so a refusal there denies its reachability graph the
-  // type too. Overriding those ids to unreadable HERE, after content
-  // validation and before every reachability read below, is what keeps
-  // `dangling`/`unreachable` classification git-faithful.
-  // A pack entry hashing to another id leaves git holding no copy of the object
-  // unless a loose copy verifies (`HAS_OBJ`); a held one is walked as served.
-  const verified = await verifiedCopiesOf(auditCtx, misHashedIds(verifyPackResult.findings));
-  const reachabilityCache = withUnreadableOverrides(
-    objectCache,
-    new Set([...contentResult.typeUnknownIds, ...unverifiedIds(verified)]),
-  );
   // git marks children used only from a copy that passed its hash.
   const inEdgePresent = buildInEdgeMap(universe, withVerifiedCopies(reachabilityCache, verified));
 
@@ -309,6 +321,7 @@ async function auditRepository(ctx: Context, opts: FsckOptions): Promise<FsckRes
       ...entry,
     })),
     ...invalidIndexPointers,
+    ...untypedReflogRoots.map((id) => ({ type: 'unknown-object-type' as const, id })),
   ];
 
   const connectivityBit =

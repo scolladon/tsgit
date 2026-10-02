@@ -255,7 +255,7 @@ describe('Given a repo whose config holds an invalid core.maxTreeDepth', () => {
 
 describe('Given a repo with HEAD pointing to an unborn branch', () => {
   describe('When fsck runs', () => {
-    it('Then returns no findings and exit code 0', async () => {
+    it('Then only the no-default-references notice is returned, exit code 0', async () => {
       // Arrange
       const ctx = await initBareCtx();
       // HEAD -> refs/heads/main, no refs/heads/main file → unborn
@@ -263,8 +263,8 @@ describe('Given a repo with HEAD pointing to an unborn branch', () => {
       // Act
       const result = await fsck(ctx);
 
-      // Assert
-      expect(result.findings).toHaveLength(0);
+      // Assert — no ref names an object, so git notes it has no default reference.
+      expect(result.findings).toEqual([{ type: 'no-default-references' }]);
       expect(result.exitCode).toBe(0);
     });
   });
@@ -3201,7 +3201,7 @@ describe('Given a pack whose .idx is corrupt (magic mismatch)', () => {
 
 describe('Given an orphan .idx with no sibling .pack file', () => {
   describe('When fsck runs', () => {
-    it('Then no finding is emitted and exit code is exactly 0', async () => {
+    it('Then only the no-default-references notice is emitted and exit code is exactly 0', async () => {
       // Arrange
       const ctx = await initBareCtx();
       await writeSyntheticPack(ctx, 'orphan', onePackEntry('orphan-content'));
@@ -3210,8 +3210,8 @@ describe('Given an orphan .idx with no sibling .pack file', () => {
       // Act
       const result = await fsck(ctx);
 
-      // Assert
-      expect(result.findings).toHaveLength(0);
+      // Assert — no ref names an object, so git notes it has no default reference.
+      expect(result.findings).toEqual([{ type: 'no-default-references' }]);
       expect(result.exitCode).toBe(0);
     });
   });
@@ -7687,6 +7687,7 @@ describe('Given a dangling loose tree with a non-octal byte in the mode (full de
       // Assert — pins: `null` (unreadable) versus present in the cache, and
       // resolveObjectType's `recovered`-map fallback for a null entry.
       expect(result.findings).toEqual([
+        { type: 'no-default-references' },
         { type: 'unreachable', id: treeId, objectType: 'tree' },
         { type: 'dangling', id: treeId, objectType: 'tree' },
       ]);

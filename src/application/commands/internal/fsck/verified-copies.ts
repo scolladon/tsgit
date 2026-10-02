@@ -23,6 +23,21 @@ export async function hashesToItsId(ctx: Context, id: ObjectId): Promise<boolean
   }
 }
 
+/** Whether git's `parse_object` gets past an id's hash check, each id read once. */
+export type ParseCheck = (id: ObjectId) => Promise<boolean>;
+
+/** `hashesToItsId` remembered per id, so every ref pass shares one read of a tip. */
+export function parseCheckOnce(ctx: Context): ParseCheck {
+  const verdicts = new Map<ObjectId, Promise<boolean>>();
+  return (id) => {
+    const known = verdicts.get(id);
+    if (known !== undefined) return known;
+    const verdict = hashesToItsId(ctx, id);
+    verdicts.set(id, verdict);
+    return verdict;
+  };
+}
+
 /** One loose copy as `fsck_loose` reads it, or `undefined` when it fails to
  *  inflate, hash to `id` or parse — git then marks nothing it names used. */
 async function verifiedCopy(
