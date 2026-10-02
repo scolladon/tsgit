@@ -399,18 +399,34 @@ export async function collectRoots(
   isRecorded: (id: ObjectId) => boolean,
 ): Promise<RootsCollection> {
   const roots = new Set<ObjectId>();
-  const sawAbsentRefTarget = await addRefRoots(ctx, roots, universe);
+  const sawAbsentRef = await addRefRoots(ctx, roots, universe);
+  const sawAbsentHead = await addWorktreeHeadRoots(ctx, roots, universe);
   const invalidReflogEntries =
     opts.reflogRoots !== false ? await addRecordedReflogRoots(ctx, roots, isRecorded) : [];
   const index = opts.indexRoot !== false ? await addIndexRoots(ctx, roots, universe) : NO_INDEX;
   return {
     roots,
     missingEntryPoint: index.unresolved,
-    sawAbsentRefTarget,
+    sawAbsentRefTarget: sawAbsentRef || sawAbsentHead,
     cacheTreeIds: index.parsed,
     indexBlobIds: new Set(index.blobs),
     invalidReflogEntries,
   };
+}
+
+/** Root every other worktree's HEAD git's fsck snapshots; returns whether
+ *  one named an object the universe lacks (see `addRefRoots`). */
+async function addWorktreeHeadRoots(
+  ctx: Context,
+  roots: Set<ObjectId>,
+  universe: ReadonlySet<ObjectId>,
+): Promise<boolean> {
+  let sawAbsentTarget = false;
+  for (const { id } of await worktreeHeads(ctx)) {
+    if (universe.has(id)) roots.add(id);
+    else sawAbsentTarget = true;
+  }
+  return sawAbsentTarget;
 }
 
 /** Strip a trailing `/.git` from `dir`; absent means `dir` itself — the same
@@ -516,11 +532,15 @@ function isMainWorktreeCtx(ctx: Context): boolean {
  */
 async function addMainWorktreeRoots(ctx: Context, roots: Set<ObjectId>): Promise<void> {
   if (isMainWorktreeCtx(ctx)) return;
+  await addNonCurrentWorktreeRoots(mainWorktreeContext(ctx), roots);
+}
+
+/** A Context rooted at the main worktree's own admin dir (`commonDir`). */
+function mainWorktreeContext(ctx: Context): Context {
   const { promisor: _promisor, hooks: _hooks, command: _command, ...rest } = ctx;
-  const mainCtx = deriveContext(rest, {
+  return deriveContext(rest, {
     layout: Object.freeze({ ...ctx.layout, gitDir: commonGitDir(ctx) }),
   });
-  await addNonCurrentWorktreeRoots(mainCtx, roots);
 }
 
 /**
@@ -572,4 +592,75 @@ export async function collectRetentionRoots(ctx: Context): Promise<ReadonlySet<O
   await addMainWorktreeRoots(ctx, roots);
   await addOtherWorktreeRoots(ctx, roots);
   return roots;
+}
+
+/** One worktree's HEAD as git's fsck snapshots it. */
+export interface WorktreeHead {
+  /** `HEAD` for the current worktree, else `main-worktree/HEAD` or `worktrees/<id>/HEAD`. */
+  readonly ref: RefName;
+  readonly id: ObjectId;
+}
+
+/** The object `worktreeCtx`'s HEAD names, or `undefined` when it names none. */
+async function headOf(worktreeCtx: Context): Promise<ObjectId | undefined> {
+  try {
+    // Stryker disable next-line ObjectLiteral: equivalent — peel defaults to false in resolveRef; {} and { peel: false } produce identical behavior.
+    return await resolveRef(worktreeCtx, HEAD_REF, { peel: false });
+  } catch (err) {
+    if (!isTolerableRefFault(err)) throw err;
+    return undefined;
+  }
+}
+
+/** A linked worktree's Context, or `undefined` when its `gitdir` file is
+ *  missing or empty — git's `get_linked_worktree` skips it then. */
+async function linkedWorktreeContext(
+  ctx: Context,
+  id: string,
+  adminDir: string,
+): Promise<Context | undefined> {
+  if (adminDir === ctx.layout.gitDir) return ctx;
+  let pointer: string;
+  try {
+    pointer = (await ctx.fs.readUtf8(`${adminDir}/gitdir`)).trim();
+  } catch (err) {
+    if (isMissingGitdirFile(err)) return undefined;
+    throw err;
+  }
+  if (pointer === '') return undefined;
+  return deriveWorktreeContext(ctx, id, stripGitSuffix(resolveWorktreePath(adminDir, pointer)));
+}
+
+/** git's `get_worktrees` order: the main worktree, then each admin entry as listed. */
+async function worktreeContexts(
+  ctx: Context,
+): Promise<ReadonlyArray<{ readonly ref: RefName; readonly worktreeCtx: Context }>> {
+  const main = isMainWorktreeCtx(ctx) ? ctx : mainWorktreeContext(ctx);
+  const all = [{ ref: refFor(ctx, main, 'main-worktree/HEAD'), worktreeCtx: main }];
+  const root = `${commonGitDir(ctx)}/worktrees`;
+  if (!(await ctx.fs.exists(root))) return all;
+  for (const entry of await ctx.fs.readdir(root)) {
+    const worktreeCtx = await linkedWorktreeContext(ctx, entry.name, `${root}/${entry.name}`);
+    if (worktreeCtx === undefined) continue;
+    all.push({ ref: refFor(ctx, worktreeCtx, `worktrees/${entry.name}/HEAD`), worktreeCtx });
+  }
+  return all;
+}
+
+const refFor = (ctx: Context, worktreeCtx: Context, foreign: string): RefName =>
+  (worktreeCtx === ctx ? HEAD_REF : foreign) as RefName;
+
+/**
+ * Every worktree's HEAD that names an object — git's `snapshot_refs` worktree
+ * loop: the current one as `HEAD`, the others under their per-worktree
+ * prefix. A HEAD naming nothing (unborn, unresolvable) is skipped as git's
+ * `refs_resolve_ref_unsafe` returning NULL is.
+ */
+export async function worktreeHeads(ctx: Context): Promise<ReadonlyArray<WorktreeHead>> {
+  const heads: WorktreeHead[] = [];
+  for (const { ref, worktreeCtx } of await worktreeContexts(ctx)) {
+    const id = await headOf(worktreeCtx);
+    if (id !== undefined) heads.push({ ref, id });
+  }
+  return heads;
 }

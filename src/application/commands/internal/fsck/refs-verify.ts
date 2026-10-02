@@ -8,7 +8,7 @@ import { getRefStore } from '../../../primitives/ref-store.js';
 import { resolveRef } from '../../../primitives/resolve-ref.js';
 import { EXIT_MISSING, EXIT_REFS_CONTENT } from './exit-codes.js';
 import { objectIsPresent } from './object-presence.js';
-import { isTolerableRefFault } from './roots.js';
+import { isTolerableRefFault, worktreeHeads } from './roots.js';
 import type { FsckFinding } from './types.js';
 
 type BadRefFinding = FsckFinding & { readonly type: 'bad-ref' };
@@ -123,14 +123,23 @@ async function targetOf(ctx: Context, entry: RefEntries[number]): Promise<Object
   }
 }
 
-/** git's snapshot order: every ref by name, then HEAD. */
-const snapshotOrder = (entries: RefEntries): RefEntries => [
-  ...entries.filter((entry) => entry.name !== HEAD),
-  ...entries.filter((entry) => entry.name === HEAD),
-];
+/** git's snapshot order: every ref by name, then every worktree's HEAD. */
+async function snapshotTargets(
+  ctx: Context,
+  entries: RefEntries,
+): Promise<ReadonlyArray<{ readonly ref: RefName; readonly id: ObjectId }>> {
+  const refs: { readonly ref: RefName; readonly id: ObjectId }[] = [];
+  for (const entry of entries) {
+    if (entry.name === HEAD) continue;
+    const id = await targetOf(ctx, entry);
+    if (id !== undefined) refs.push({ ref: entry.name, id });
+  }
+  return [...refs, ...(await worktreeHeads(ctx))];
+}
 
-/** Every ref — symbolic ones through their chain, HEAD included — naming an
- *  object the universe does not hold: git's `invalid sha1 pointer`. */
+/** Every ref — symbolic ones through their chain, every worktree's HEAD
+ *  included — naming an object the universe does not hold: git's
+ *  `invalid sha1 pointer`. */
 async function collectAbsentTargets(
   ctx: Context,
   entries: RefEntries,
@@ -138,17 +147,9 @@ async function collectAbsentTargets(
   check: RefTargetCheck,
 ): Promise<PassResult> {
   const findings: BadRefFinding[] = [];
-  for (const entry of snapshotOrder(entries)) {
-    const id = await targetOf(ctx, entry);
-    if (id === undefined) continue;
+  for (const { ref, id } of await snapshotTargets(ctx, entries)) {
     if (await isKnownOid(ctx, universe, id, check)) continue;
-    findings.push({
-      type: 'bad-ref',
-      ref: entry.name,
-      msgId: 'badRefOid',
-      severity: 'error',
-      target: id,
-    });
+    findings.push({ type: 'bad-ref', ref, msgId: 'badRefOid', severity: 'error', target: id });
   }
   return { findings, exitBit: findings.length > 0 ? EXIT_MISSING : 0 };
 }

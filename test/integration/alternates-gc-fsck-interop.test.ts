@@ -1318,3 +1318,59 @@ describe.skipIf(!GIT_AVAILABLE)('fsck/gc interop — index entries', () => {
     });
   });
 });
+
+describe.skipIf(!GIT_AVAILABLE)('fsck interop — every worktree HEAD', () => {
+  const ABSENT = '1111111111111111111111111111111111111111';
+
+  /** A main checkout with linked worktrees wt1 and wt2, wt2 one commit ahead. */
+  const worktreeRepo = (
+    slug: string,
+  ): { readonly main: string; readonly wt: (id: string) => string } => {
+    const main = path.join(root, `wt-${slug}`);
+    runGit(['init', '-q', '-b', 'main', main]);
+    configure(main);
+    commitFile(main, 'f', 'base');
+    const wt = (id: string): string => path.join(root, `wt-${slug}-${id}`);
+    for (const id of ['wt1', 'wt2'])
+      runGit(['-C', main, 'worktree', 'add', '-q', '--detach', wt(id)]);
+    runGit(['-C', wt('wt2'), 'commit', '-q', '--allow-empty', '-m', 'only in wt2']);
+    writeFileSync(
+      path.join(main, '.git', 'worktrees', path.basename(wt('wt1')), 'HEAD'),
+      `${ABSENT}\n`,
+    );
+    return { main, wt };
+  };
+
+  describe.each([
+    { from: 'main', bareMainHead: false },
+    { from: 'wt1', bareMainHead: false },
+    { from: 'wt2', bareMainHead: true },
+  ])(
+    'Given wt1 HEAD names an absent object (main HEAD absent too: $bareMainHead)',
+    ({ from, bareMainHead }) => {
+      describe(`When git fsck and tsgit fsck run from ${from}`, () => {
+        it(
+          'Then both name the same invalid pointers and dangle nothing, exit 2',
+          async () => {
+            // Arrange
+            const { main, wt } = worktreeRepo(`${from}-${bareMainHead}`);
+            if (bareMainHead) writeFileSync(path.join(main, '.git', 'HEAD'), `${ABSENT}\n`);
+            const dir = from === 'main' ? main : wt(from);
+            const git = gitFsck(dir);
+            const sut = tsgitFsck;
+
+            // Act
+            const result = await sut(dir);
+
+            // Assert
+            expect(git.exitCode).toBe(2);
+            expect(result.exitCode).toBe(2);
+            expect(pointerLines(result.findings)).toEqual(gitLines(git.stderr, POINTER_LINE));
+            expect(danglingLines(result.findings)).toEqual(gitDanglingLines(git.stdout));
+          },
+          ROW_TIMEOUT,
+        );
+      });
+    },
+  );
+});
