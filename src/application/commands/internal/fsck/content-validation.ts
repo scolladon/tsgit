@@ -16,11 +16,11 @@ import type { Context } from '../../../../ports/context.js';
 import {
   inflateLooseBuffered,
   type LooseBufferedRead,
-  looseCompressedBytes,
 } from '../../../primitives/object-resolver.js';
 import { readRawObject } from '../../../primitives/read-object.js';
 import { EXIT_CONTENT_ERROR, EXIT_CORRUPT, EXIT_HASH_MISMATCH } from './exit-codes.js';
 import { hasPackCopy } from './object-cache.js';
+import { looseBytesFromHolder } from './object-presence.js';
 import type { FsckFinding } from './types.js';
 
 /** An object whose raw bytes a reader did decode, ready for the catalogue and
@@ -375,7 +375,7 @@ async function tryGetRawObjectBody(
   id: ObjectId,
   bigFileThreshold: number,
 ): Promise<ResolvedRawObject> {
-  const compressed = await looseCompressedBytes(ctx, id);
+  const compressed = await looseBytesFromHolder(ctx, id);
   if (compressed !== undefined) {
     return {
       storage: 'loose',

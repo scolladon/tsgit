@@ -17,9 +17,9 @@ import {
 import type { Context } from '../../../../ports/context.js';
 import { probeLooseOid } from '../../../primitives/internal/loose-oid-cache.js';
 import { loadShallowSet } from '../../../primitives/internal/shallow-set.js';
-import { looseCompressedBytes } from '../../../primitives/object-resolver.js';
 import type { PackLookupHit, PackRegistry } from '../../../primitives/pack-registry.js';
 import { getPackRegistry, readObject } from '../../../primitives/read-object.js';
+import { looseBytesFromHolder } from './object-presence.js';
 import type { UnreadableMode } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -271,7 +271,7 @@ async function packedStoredType(
  */
 async function looseBytesForRecovery(ctx: Context, id: ObjectId): Promise<Uint8Array | undefined> {
   try {
-    return await looseCompressedBytes(ctx, id);
+    return await looseBytesFromHolder(ctx, id);
   } catch (err) {
     if (!isStoreFault(err)) throw err;
     return undefined;

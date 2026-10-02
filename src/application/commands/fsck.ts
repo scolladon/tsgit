@@ -88,6 +88,7 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   const auditCtx: Context = deriveContext(ctx, { deltaCache: createNoDeltaCache() });
 
   const allIds = await enumerateObjects(ctx, {
+    scope: 'all',
     includePacks: opts.full !== false,
     accessiblePacksOnly: packAccessibilityReported(opts),
   });

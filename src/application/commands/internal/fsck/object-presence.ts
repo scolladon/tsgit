@@ -1,7 +1,8 @@
 import type { ObjectId } from '../../../../domain/objects/index.js';
 import type { Context } from '../../../../ports/context.js';
 import { probeLooseOid } from '../../../primitives/internal/loose-oid-cache.js';
-import { getPackRegistry } from '../../../primitives/read-object.js';
+import { looseCompressedBytes } from '../../../primitives/object-resolver.js';
+import { getObjectStore, looseCacheLocation } from '../../../primitives/object-store.js';
 
 /**
  * Whether `id` genuinely exists and is accessible — one loose-then-pack
@@ -42,6 +43,26 @@ import { getPackRegistry } from '../../../primitives/read-object.js';
  * contained through a cache-tree entry.
  */
 export async function objectIsPresent(ctx: Context, id: ObjectId): Promise<boolean> {
-  if (await probeLooseOid(ctx, id)) return true;
-  return (await (await getPackRegistry(ctx)).lookup(id)) !== undefined;
+  const store = await getObjectStore(ctx);
+  for (const source of store.sources) {
+    if (await probeLooseOid(ctx, id, looseCacheLocation(store, source))) return true;
+    if ((await source.registry.lookup(id)) !== undefined) return true;
+  }
+  return false;
+}
+
+/**
+ * The loose compressed bytes of `id` from the first source that holds it, in
+ * git's lookup order; undefined when no source holds it loose.
+ */
+export async function looseBytesFromHolder(
+  ctx: Context,
+  id: ObjectId,
+): Promise<Uint8Array | undefined> {
+  const store = await getObjectStore(ctx);
+  for (const source of store.sources) {
+    const bytes = await looseCompressedBytes(ctx, id, looseCacheLocation(store, source));
+    if (bytes !== undefined) return bytes;
+  }
+  return undefined;
 }

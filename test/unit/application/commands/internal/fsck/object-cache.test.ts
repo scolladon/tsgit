@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../../../src/adapters/memory/memory-adapter.js';
 import {
+  buildObjectCache,
   type CachedGitObject,
   collectUnreadablePackMemberIds,
   hasPackCopy,
@@ -136,6 +137,32 @@ describe('Given a cache mixing typed, unreadable pack-backed and unreadable non-
       expect(result.has(unclaimedUnreadable)).toBe(false);
       expect(result.has(BLOB_A)).toBe(false);
       expect(result.size).toBe(1);
+    });
+  });
+});
+
+describe('Given a tree whose loose bytes live only in an alternate and do not parse', () => {
+  describe('When buildObjectCache classifies unreadable objects', () => {
+    it('Then the header type is recovered from the alternate holder', async () => {
+      // Arrange
+      const donorObjects = '/repo/donor/objects';
+      const ctx = createMemoryContext({
+        files: { '/repo/.git/objects/info/alternates': enc.encode(`${donorObjects}\n`) },
+      });
+      await ctx.fs.mkdir(donorObjects);
+      const raw = enc.encode('tree 3\0abc');
+      const id = (await ctx.hash.hashHex(raw)) as ObjectId;
+      await ctx.fs.write(
+        `${donorObjects}/${id.slice(0, 2)}/${id.slice(2)}`,
+        await ctx.compressor.deflate(raw),
+      );
+      const sut = buildObjectCache;
+
+      // Act
+      const result = await sut(ctx, new Set([id]), 'classify');
+
+      // Assert
+      expect(result.recovered.get(id)).toBe('tree');
     });
   });
 });

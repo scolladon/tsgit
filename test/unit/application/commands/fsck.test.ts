@@ -8373,3 +8373,102 @@ describe('Given two fsck.skipList entries of which the first cannot be opened', 
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// ALTERNATES — the audit covers every object source
+// ---------------------------------------------------------------------------
+
+const DONOR_OBJECTS = '/repo/donor/objects';
+
+const borrowerContext = async (): Promise<Context> => {
+  const ctx = createMemoryContext({
+    files: { '/repo/.git/objects/info/alternates': enc.encode(`${DONOR_OBJECTS}\n`) },
+  });
+  await ctx.fs.mkdir(DONOR_OBJECTS);
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+  return ctx;
+};
+
+const moveLooseToDonor = async (ctx: Context, id: ObjectId): Promise<void> => {
+  const from = looseObjectPath(ctx.layout.gitDir, id);
+  const bytes = await ctx.fs.read(from);
+  await ctx.fs.write(`${DONOR_OBJECTS}/${id.slice(0, 2)}/${id.slice(2)}`, bytes);
+  await ctx.fs.rm(from);
+};
+
+describe('Given a borrower whose reachable commit lives only in a donor', () => {
+  describe('When fsck runs', () => {
+    it('Then it reports no missing finding', async () => {
+      // Arrange
+      const ctx = await borrowerContext();
+      const blobId = await writeObject(ctx, makeBlob('donor blob'));
+      const treeId = await writeObject(
+        ctx,
+        makeTree([treeEntry(FILE_MODE.REGULAR, 'a.txt', blobId)]),
+      );
+      const commitId = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+      for (const id of [blobId, treeId, commitId]) await moveLooseToDonor(ctx, id);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(result.findings.filter((f) => f.type === 'missing')).toEqual([]);
+      expect(result.exitCode).toBe(0);
+    });
+  });
+});
+
+describe('Given a borrower whose donor holds a loose object stored under the wrong hash', () => {
+  describe('When fsck runs', () => {
+    it('Then it reports the hash-mismatch finding with the actual id', async () => {
+      // Arrange
+      const ctx = await borrowerContext();
+      const expectedId = await writeObject(ctx, makeBlob('hello'));
+      const actualId = await writeObject(ctx, makeBlob('world'));
+      const wrongBytes = await ctx.fs.read(looseObjectPath(ctx.layout.gitDir, actualId));
+      await ctx.fs.rm(looseObjectPath(ctx.layout.gitDir, actualId));
+      await ctx.fs.rm(looseObjectPath(ctx.layout.gitDir, expectedId));
+      await ctx.fs.write(
+        `${DONOR_OBJECTS}/${expectedId.slice(0, 2)}/${expectedId.slice(2)}`,
+        wrongBytes,
+      );
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      const mismatch = result.findings.find((f) => f.type === 'hash-mismatch');
+      expect(mismatch).toMatchObject({ type: 'hash-mismatch', id: expectedId, actual: actualId });
+      expect(result.exitCode & 1).toBe(1);
+    });
+  });
+});
+
+describe('Given a borrower whose donor carries a corrupt multi-pack-index', () => {
+  describe('When fsck runs', () => {
+    it('Then the run rejects with INVALID_MULTI_PACK_INDEX', async () => {
+      // Arrange
+      const ctx = await borrowerContext();
+      await ctx.fs.write(
+        `${DONOR_OBJECTS}/pack/multi-pack-index`,
+        Uint8Array.from([0x00, 0x49, 0x44, 0x58, 1, 1, 1, 0, ...new Array(8).fill(0)]),
+      );
+      const sut = fsck;
+
+      // Act
+      let data: unknown;
+      try {
+        await sut(ctx);
+      } catch (error) {
+        data = (error as TsgitError).data;
+      }
+
+      // Assert
+      expect(data).toMatchObject({ code: 'INVALID_MULTI_PACK_INDEX' });
+    });
+  });
+});
