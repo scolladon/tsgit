@@ -2461,7 +2461,108 @@ describe.skipIf(!GIT_AVAILABLE)('fsck interop — names git reads as a special f
   });
 });
 
+const IDX_HEADER_BYTES = 8;
+const IDX_FANOUT_ENTRIES = 256;
+const IDX_NAMES_START = IDX_HEADER_BYTES + IDX_FANOUT_ENTRIES * 4;
+const SHA1_BYTES = 20;
+
+/** Rewrites a v2 `.idx` so the entry named `from` is named `to`, re-sorted —
+ *  its pack bytes then hash to an id the index no longer names. */
+const renameIdxEntry = (idxPath: string, from: string, to: string): void => {
+  const idx = readFileSync(idxPath);
+  const count = idx.readUInt32BE(IDX_NAMES_START - 4);
+  const at = (start: number, width: number, i: number) =>
+    idx.subarray(start + i * width, start + (i + 1) * width);
+  const rows = Array.from({ length: count }, (_, i) => {
+    const name = at(IDX_NAMES_START, SHA1_BYTES, i).toString('hex');
+    return {
+      name: name === from ? to : name,
+      crc: at(IDX_NAMES_START + count * SHA1_BYTES, 4, i),
+      offset: at(IDX_NAMES_START + count * (SHA1_BYTES + 4), 4, i),
+    };
+  }).sort((a, b) => (a.name < b.name ? -1 : 1));
+  const fanout = Buffer.alloc(IDX_FANOUT_ENTRIES * 4);
+  for (let byte = 0; byte < IDX_FANOUT_ENTRIES; byte++) {
+    const upTo = rows.filter((row) => Number.parseInt(row.name.slice(0, 2), 16) <= byte).length;
+    fanout.writeUInt32BE(upTo, byte * 4);
+  }
+  const body = Buffer.concat([
+    idx.subarray(0, IDX_HEADER_BYTES),
+    fanout,
+    ...rows.map((row) => Buffer.from(row.name, 'hex')),
+    ...rows.map((row) => row.crc),
+    ...rows.map((row) => row.offset),
+    idx.subarray(IDX_NAMES_START + count * (SHA1_BYTES + 8), idx.length - SHA1_BYTES),
+  ]);
+  chmodSync(idxPath, 0o644);
+  writeFileSync(idxPath, Buffer.concat([body, createHash('sha1').update(body).digest()]));
+};
+
 describe.skipIf(!GIT_AVAILABLE)('fsck interop — promisor objects named by refs and reflogs', () => {
+  describe.each([
+    { mode: '--full', flags: [] as ReadonlyArray<string>, options: {}, gitExit: 4 },
+    { mode: '--no-full', flags: ['--no-full'], options: { full: false }, gitExit: 0 },
+  ])(
+    'Given a promisor pack whose first entry hashes to another id, before a commit naming an absent parent',
+    ({ mode, flags, options, gitExit }) => {
+      describe(`When git fsck ${mode} and tsgit fsck run`, () => {
+        it(
+          'Then both collect past it, as git parses promisor objects without a hash check',
+          async () => {
+            // Arrange
+            const dir = path.join(root, `promisor-misnamed-first${flags.join('')}`);
+            runGit(['init', '-q', '-b', 'main', dir]);
+            configure(dir);
+            const tree = runGit(['-C', dir, 'mktree'], { input: '' }).trim();
+            const commitOn = (message: string, parent?: string): string =>
+              runGit([
+                '-C',
+                dir,
+                'commit-tree',
+                '-m',
+                message,
+                ...(parent === undefined ? [] : ['-p', parent]),
+                tree,
+              ]).trim();
+            const parents = [commitOn('p1'), commitOn('p2')];
+            const commits = [commitOn('c1', parents[0]), commitOn('c2', parents[1])];
+            const packDir = path.join(objectsOf(dir), 'pack');
+            const name = runGit(
+              ['-C', dir, 'pack-objects', '-q', '--window=0', path.join(packDir, 'pack')],
+              { input: `${commits.join('\n')}\n` },
+            ).trim();
+            const idxPath = path.join(packDir, `pack-${name}.idx`);
+            const [first] = runGit(['-C', dir, 'show-index'], { input: readFileSync(idxPath) })
+              .trim()
+              .split('\n')
+              .map((line) => line.split(' '))
+              .sort((a, b) => Number(a[0]) - Number(b[0]))
+              .map((fields) => fields[1] as string);
+            const kept = commits.find((commit) => commit !== first) as string;
+            runGit(['-C', dir, 'update-ref', 'refs/heads/main', kept]);
+            renameIdxEntry(idxPath, first as string, `${'0'.repeat(39)}1`);
+            rmSync(path.join(packDir, `pack-${name}.rev`), { force: true });
+            for (const oid of [...parents, ...commits]) rmSync(looseFile(objectsOf(dir), oid));
+            writeFileSync(path.join(packDir, `pack-${name}.promisor`), '');
+            runGit(['-C', dir, 'config', 'remote.origin.promisor', 'true']);
+            const git = gitFsck(dir, ...flags);
+            const sut = tsgitFsck;
+
+            // Act
+            const result = await sut(dir, options);
+
+            // Assert
+            expect(git.exitCode).toBe(gitExit);
+            expect(result.exitCode).toBe(git.exitCode);
+            expect(missingLines(result.findings)).toEqual(gitLines(git.stdout, MISSING_LINE));
+            expect(pointerLines(result.findings)).toEqual(gitLines(git.stderr, POINTER_LINE));
+          },
+          ROW_TIMEOUT,
+        );
+      });
+    },
+  );
+
   describe('Given a promisor pack whose only entry no longer inflates and a missing blob', () => {
     describe('When git fsck --no-full and tsgit fsck { full: false } run', () => {
       it(

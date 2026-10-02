@@ -375,18 +375,12 @@ describe('Given a promisor pack whose objects git meets in pack order', () => {
     });
   });
 
-  describe.each([
-    { label: 'an unparseable object', first: () => GARBAGE },
-    {
-      label: 'an object whose bytes hash to another id',
-      first: () => ({ ...entry('blob', enc.encode('x')), idOverride: '0'.repeat(39) + '1' }),
-    },
-  ])('When $label precedes the tag and fsck runs without --full', ({ first }) => {
+  describe('When an unparseable object precedes the tag and fsck runs without --full', () => {
     it('Then git stops collecting there instead of refusing the run', async () => {
       // Arrange
       const ctx = await initCtx();
       const target = await idOf(ctx, 'commit', commitBody(await absentBlob(ctx, 'o'), []));
-      await writePromisorPack(ctx, [first(), entry('tag', tagBody(target))]);
+      await writePromisorPack(ctx, [GARBAGE, entry('tag', tagBody(target))]);
       await writeRef(ctx, 'gone', target);
       const sut = fsck;
 
@@ -398,17 +392,41 @@ describe('Given a promisor pack whose objects git meets in pack order', () => {
     });
   });
 
+  describe.each([
+    { mode: 'with --full', options: {} },
+    { mode: 'without --full', options: { full: false } },
+  ])(
+    'When an object whose bytes hash to another id precedes the tag and fsck runs $mode',
+    ({ options }) => {
+      it('Then git collects past it, as it parses promisor objects without a hash check', async () => {
+        // Arrange
+        const ctx = await initCtx();
+        const target = await idOf(ctx, 'commit', commitBody(await absentBlob(ctx, 'o'), []));
+        const misnamed = { ...entry('blob', enc.encode('x')), idOverride: `${'0'.repeat(39)}1` };
+        await writePromisorPack(ctx, [misnamed, entry('tag', tagBody(target))]);
+        await writeRef(ctx, 'gone', target);
+        const sut = fsck;
+
+        // Act
+        const result = await sut(ctx, options);
+
+        // Assert
+        expect(badRefTargets(result.findings)).toEqual([]);
+      });
+    },
+  );
+
   describe('When reading a promisor object faults for a reason other than damage', () => {
     it('Then the fault propagates', async () => {
       // Arrange
       const ctx = await initCtx();
       const target = await idOf(ctx, 'commit', commitBody(await absentBlob(ctx, 'o'), []));
-      await writePromisorPack(ctx, [entry('tag', tagBody(target))]);
+      const [tag] = await writePromisorPack(ctx, [entry('tag', tagBody(target))]);
       await writeRef(ctx, 'gone', target);
       const fault = permissionDenied('/repo/.git/objects/pack/pack-promised.pack');
       const actual = vi.mocked(readObject).getMockImplementation() as typeof readObject;
       vi.mocked(readObject).mockImplementation((readCtx, id, options) =>
-        options?.verifyHash === true ? Promise.reject(fault) : actual(readCtx, id, options),
+        id === tag ? Promise.reject(fault) : actual(readCtx, id, options),
       );
       const sut = fsck;
 

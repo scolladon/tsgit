@@ -68,11 +68,11 @@ async function projectionOf(
   return cached === undefined ? parsedOrNull(ctx, id) : cached;
 }
 
-/** git's `parse_object` on an object the run never read: `null` when its
- *  copy does not read, parse or hash to `id`. */
+/** git's `parse_object` with `PARSE_OBJECT_SKIP_HASH_CHECK` on an object the
+ *  run never read: `null` when its copy does not read or parse. */
 async function parsedOrNull(ctx: Context, id: ObjectId): Promise<CachedGitObject> {
   try {
-    return project(await readObject(ctx, id, { verifyHash: true }));
+    return project(await readObject(ctx, id));
   } catch (err) {
     if (!isStoredCorruption(err)) throw err;
     return null;
