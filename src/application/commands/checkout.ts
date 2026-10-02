@@ -1,4 +1,4 @@
-import { branchNotFound, invalidOption } from '../../domain/commands/error.js';
+import { branchExists, branchNotFound, invalidOption } from '../../domain/commands/error.js';
 import {
   FILE_MODE,
   type FilePath,
@@ -16,10 +16,11 @@ import { readIndex } from '../primitives/read-index.js';
 import { loadSparseMatcher } from '../primitives/read-sparse-checkout.js';
 import { readTree } from '../primitives/read-tree.js';
 import { getRefStore, refExists } from '../primitives/ref-store.js';
-import { resolveRef } from '../primitives/resolve-ref.js';
+import { refResolvesForReading, resolveRef } from '../primitives/resolve-ref.js';
 import { runInformationalHook } from '../primitives/run-hook.js';
 import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-index.js';
 import { walkTree } from '../primitives/walk-tree.js';
+import { type BranchTrack, branchCreate } from './branch.js';
 import { checkoutMetadataFor } from './internal/checkout-metadata.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import {
@@ -31,10 +32,18 @@ import {
 import { enforceLiteralMustMatch, resolvePathspec } from './internal/resolve-pathspec.js';
 import { resolveRevisionName } from './internal/revision-name.js';
 
+/** git's `checkout -b <name> [--track|--no-track] <rev>`: create `name` at `rev`, then switch to it. */
+export interface CheckoutCreateBranch {
+  readonly name: string;
+  readonly track?: BranchTrack;
+  readonly noTrack?: boolean;
+}
+
 export interface CheckoutSwitchOptions {
   readonly rev: string;
   readonly detach?: boolean;
   readonly force?: boolean;
+  readonly createBranch?: CheckoutCreateBranch;
 }
 
 export interface CheckoutPathsOptions {
@@ -102,7 +111,42 @@ const headCheckoutLabel = (
   return head.target.slice(head.target.lastIndexOf('/') + 1);
 };
 
+/** git refuses `-b` with `--detach`, and an existing branch name, before the work tree moves. */
+const assertBranchCreatable = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<void> => {
+  if (opts.createBranch === undefined) return;
+  if (opts.detach === true) throw invalidOption('createBranch', 'cannot be combined with detach');
+  const name = validateRefName(`${HEADS_PREFIX}${opts.createBranch.name}`);
+  if (await refResolvesForReading(ctx, name)) throw branchExists(name);
+};
+
+const createRequestedBranch = async (
+  ctx: Context,
+  opts: CheckoutSwitchOptions,
+): Promise<RefName | undefined> => {
+  const request = opts.createBranch;
+  if (request === undefined) return undefined;
+  const created = await branchCreate(ctx, { ...request, startPoint: opts.rev });
+  return created.name;
+};
+
+interface HeadMove {
+  readonly attached: RefName | undefined;
+  readonly oid: ObjectId;
+  readonly oldOid: ObjectId;
+  readonly message: string;
+}
+
+const moveHead = (ctx: Context, move: HeadMove): Promise<void> => {
+  const reflog = { oldId: move.oldOid, newId: move.oid, message: move.message };
+  const update =
+    move.attached === undefined
+      ? { kind: 'set' as const, name: 'HEAD' as RefName, id: move.oid, reflog }
+      : { kind: 'setSymbolic' as const, name: 'HEAD' as RefName, target: move.attached, reflog };
+  return getRefStore(ctx).applyRefUpdates([update]);
+};
+
 const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<CheckoutResult> => {
+  await assertBranchCreatable(ctx, opts);
   const priorHead = await readHeadRaw(ctx);
   if (priorHead.kind !== 'symbolic') await assertEverySourceLoadable(ctx);
   const oldOid = await resolveRef(ctx, 'HEAD' as RefName);
@@ -153,43 +197,21 @@ const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<
     await lock.release();
   }
 
+  // git creates a `-b` branch only once the work tree has moved, then attaches HEAD to it.
+  const created = await createRequestedBranch(ctx, opts);
+  const attached = created ?? branchRef;
   // Move HEAD — outside the index lock (HEAD writes are atomic on their own).
-  const fromLabel = headCheckoutLabel(priorHead);
-  if (detached) {
-    await getRefStore(ctx).applyRefUpdates([
-      {
-        kind: 'set',
-        name: 'HEAD' as RefName,
-        id: oid,
-        reflog: {
-          oldId: oldOid,
-          newId: oid,
-          // git echoes the argument it was handed, abbreviated or not.
-          message: `checkout: moving from ${fromLabel} to ${opts.rev}`,
-        },
-      },
-    ]);
-  } else {
-    await getRefStore(ctx).applyRefUpdates([
-      {
-        kind: 'setSymbolic',
-        name: 'HEAD' as RefName,
-        target: branchRef as RefName,
-        reflog: {
-          oldId: oldOid,
-          newId: oid,
-          message: `checkout: moving from ${fromLabel} to ${opts.rev}`,
-        },
-      },
-    ]);
-  }
+  // git echoes the argument it was handed, abbreviated or not.
+  const label = opts.createBranch?.name ?? opts.rev;
+  const message = `checkout: moving from ${headCheckoutLabel(priorHead)} to ${label}`;
+  await moveHead(ctx, { attached, oid, oldOid, message });
   // post-checkout (informational) fires after the worktree + HEAD are updated;
   // a branch checkout (changing branches / detaching) flags `1`.
   await runInformationalHook(ctx, 'post-checkout', { args: [oldOid, oid, BRANCH_FLAG] });
   return {
-    branch: detached ? undefined : branchRef,
+    branch: attached,
     id: oid,
-    detached,
+    detached: attached === undefined,
     changedPaths: materializeResult.written + materializeResult.deleted,
   };
 };

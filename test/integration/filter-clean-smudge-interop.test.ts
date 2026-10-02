@@ -1128,8 +1128,16 @@ describe.skipIf(!GIT_AVAILABLE)('Given a filter.<d>.process driver over two bran
   /** `main` and `other` disagree on `a.t`; the driver logs every request it is sent. */
   const twin = async (slug: string) => {
     const repo = path.join(root, slug);
+    // Fixed dates: both twins must hold the same commit ids, whatever second each is built in.
+    const env = {
+      ...runGitEnv(),
+      GIT_AUTHOR_DATE: '@1700000000 +0000',
+      GIT_COMMITTER_DATE: '@1700000000 +0000',
+    };
     const commit = (message: string) =>
-      runGit(['-C', repo, '-c', 'user.name=A', '-c', 'user.email=a@a', 'commit', '-qam', message]);
+      runGit(['-C', repo, '-c', 'user.name=A', '-c', 'user.email=a@a', 'commit', '-qam', message], {
+        env,
+      });
     runGit(['init', '-q', '-b', 'main', repo]);
     await writeFile(path.join(repo, '.gitattributes'), '*.t filter=d\n');
     await writeFile(path.join(repo, 'a.t'), 'A\n');
@@ -1172,6 +1180,11 @@ describe.skipIf(!GIT_AVAILABLE)('Given a filter.<d>.process driver over two bran
       git: ['reset', '-q', '--hard', 'other'],
       tsgit: (ctx: Context) => reset(ctx, { rev: 'other', mode: 'hard' }),
     },
+    {
+      label: 'create and switch to a branch at the other branch',
+      git: ['checkout', '-q', '-b', 'topic', 'other'],
+      tsgit: (ctx: Context) => checkout(ctx, { rev: 'other', createBranch: { name: 'topic' } }),
+    },
   ])('When git and tsgit $label', ({ git: args, tsgit }) => {
     it('Then both send the driver the same ref and treeish', async () => {
       // Arrange
@@ -1187,6 +1200,43 @@ describe.skipIf(!GIT_AVAILABLE)('Given a filter.<d>.process driver over two bran
       const gitSmudges = await gitTwin.smudges();
       expect(gitSmudges.join()).toContain('ref=refs/heads/other');
       expect(await tsgitTwin.smudges()).toEqual(gitSmudges);
+    });
+  });
+
+  describe.each([
+    { label: 'no tracking', flags: [] as string[], track: undefined },
+    { label: 'direct tracking', flags: ['--track'], track: 'direct' as const },
+  ])('When git and tsgit create and switch to a branch with $label', ({ flags, track }) => {
+    it('Then both write the same branch, HEAD, reflog messages and tracking config', async () => {
+      // Arrange
+      const gitTwin = await twin(`git-create-${flags.join('')}`);
+      const tsgitTwin = await twin(`tsgit-create-${flags.join('')}`);
+      const sut = checkout;
+      const state = async (repo: string) => {
+        const lastMessage = async (log: string) =>
+          (await readFile(path.join(repo, '.git', 'logs', log), 'utf8'))
+            .trimEnd()
+            .split('\t')
+            .at(-1);
+        return {
+          head: await readFile(path.join(repo, '.git', 'HEAD'), 'utf8'),
+          headMessage: await lastMessage('HEAD'),
+          branchMessage: await lastMessage('refs/heads/topic'),
+          tracking: tryRunGitWithExit(['-C', repo, 'config', '--get-regexp', '^branch\\.topic\\.'])
+            .stdout,
+          tree: runGit(['-C', repo, 'rev-parse', 'topic^{tree}']),
+        };
+      };
+
+      // Act
+      runGit(['-C', gitTwin.repo, 'checkout', '-q', '-b', 'topic', ...flags, 'other']);
+      await sut(createNodeContext({ workDir: tsgitTwin.repo }), {
+        rev: 'other',
+        createBranch: { name: 'topic', ...(track !== undefined && { track }) },
+      });
+
+      // Assert
+      expect(await state(tsgitTwin.repo)).toEqual(await state(gitTwin.repo));
     });
   });
 });
