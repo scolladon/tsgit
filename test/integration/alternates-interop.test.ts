@@ -31,6 +31,7 @@ import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { diffTrees } from '../../src/application/primitives/diff-trees.js';
 import { enumerateObjects } from '../../src/application/primitives/enumerate-objects.js';
+import { hasObject } from '../../src/application/primitives/has-object.js';
 import { resolveOidPrefix } from '../../src/application/primitives/resolve-oid-prefix.js';
 import { TsgitError } from '../../src/domain/error.js';
 import type { ObjectId } from '../../src/domain/objects/index.js';
@@ -1106,6 +1107,51 @@ describe.skipIf(!GIT_AVAILABLE)('alternates interop — multi-pack-index in an a
         // Act
         const result = await rejectionOf(() => repo.fsck());
         const git = tryRunGitWithExit(['-C', fx.borrower.dir, 'fsck']);
+
+        // Assert
+        expect(git.exitCode).toBe(128);
+        expect(git.stderr).toContain(MIDX_SIGNATURE_FATAL);
+        expect(result.data).toMatchObject({ code: 'INVALID_MULTI_PACK_INDEX', check: 'signature' });
+        await repo.dispose();
+      });
+    });
+  });
+
+  describe('Given M5: a donor midx whose signature is smashed', () => {
+    const ABSENT_OID = '0123456789012345678901234567890123456789';
+
+    describe('When git cat-file -e and tsgit hasObject probe a local loose object', () => {
+      it('Then both find it without loading the alternate midx', async () => {
+        // Arrange
+        const fx = midxFixture('M5a');
+        smashMidxSignature(fx.donor);
+        const repo = await open(fx.borrower.dir);
+        const git = tryRunGitWithExit(['-C', fx.borrower.dir, 'cat-file', '-e', fx.localOid]);
+
+        // Act
+        const result = await hasObject(repo.ctx, fx.localOid as ObjectId);
+
+        // Assert
+        expect(git.exitCode).toBe(0);
+        expect(result).toBe(true);
+        await repo.dispose();
+      });
+    });
+
+    describe.each([
+      { probe: 'an object only the donor holds', slug: 'M5b', target: (oids: string[]) => oids[0] },
+      { probe: 'an absent object', slug: 'M5c', target: () => ABSENT_OID },
+    ])('When git cat-file -e and tsgit hasObject probe $probe', ({ slug, target }) => {
+      it('Then both refuse with the signature check', async () => {
+        // Arrange
+        const fx = midxFixture(slug);
+        smashMidxSignature(fx.donor);
+        const repo = await open(fx.borrower.dir);
+        const oid = target(fx.donorOids) as string;
+        const git = tryRunGitWithExit(['-C', fx.borrower.dir, 'cat-file', '-e', oid]);
+
+        // Act
+        const result = await rejectionOf(() => hasObject(repo.ctx, oid as ObjectId));
 
         // Assert
         expect(git.exitCode).toBe(128);
