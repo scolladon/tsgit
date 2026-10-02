@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { expandFormatSubst } from '../../../../src/domain/pretty/format-subst.js';
+import { type Expansion, expandFormatSubst } from '../../../../src/domain/pretty/format-subst.js';
 
 const encode = (text: string): Uint8Array => new TextEncoder().encode(text);
 const decode = (bytes: Uint8Array): string => new TextDecoder().decode(bytes);
@@ -10,8 +10,14 @@ const concat = (a: Uint8Array, b: Uint8Array): Uint8Array => {
   return out;
 };
 
-const upperCaseFormat = (accumulated: Uint8Array, fmt: Uint8Array): Uint8Array =>
-  concat(accumulated, encode(`<${decode(fmt)}>`));
+const plain = (bytes: Uint8Array): Expansion => ({
+  bytes,
+  parsedHeader: false,
+  encoding: undefined,
+});
+
+const upperCaseFormat = (accumulated: Uint8Array, fmt: Uint8Array): Expansion =>
+  plain(concat(accumulated, encode(`<${decode(fmt)}>`)));
 
 describe('Given a blob with $Format: placeholders', () => {
   describe('When the terminator is on a later line', () => {
@@ -100,6 +106,137 @@ describe('Given a blob with $Format: placeholders', () => {
 
       // Assert
       expect([...result]).toEqual([0, 1, ...encode('<Q>'), 2, 0]);
+    });
+  });
+});
+
+describe('Given a commit whose encoding header is not UTF-8', () => {
+  const latin1 = encode('ISO-8859-1');
+  const expandWith =
+    (parsedHeader: boolean, encoding: Uint8Array | undefined) =>
+    (accumulated: Uint8Array, fmt: Uint8Array) => ({
+      bytes: concat(accumulated, fmt.length === 0 ? new Uint8Array(0) : encode(`[${decode(fmt)}]`)),
+      parsedHeader,
+      encoding,
+    });
+
+  describe('When no occurrence parsed the header', () => {
+    it('Then the output stays UTF-8', () => {
+      // Arrange
+      const sut = expandFormatSubst;
+      const blob = encode('pre-é [$Format:h$] mid-é [$Format:h$]');
+
+      // Act
+      const result = sut(blob, expandWith(false, latin1));
+
+      // Assert
+      expect(decode(result)).toBe('pre-é [[h]] mid-é [[h]]');
+    });
+  });
+
+  describe('When an occurrence parsed the header', () => {
+    it('Then the whole accumulated buffer is transcoded and the tail stays raw', () => {
+      // Arrange
+      const sut = expandFormatSubst;
+      const blob = encode('pre-é only\n[$Format:e$]\né');
+
+      // Act
+      const result = sut(blob, expandWith(true, latin1));
+
+      // Assert
+      expect([...result]).toEqual([
+        ...encode('pre-'),
+        0xe9,
+        ...encode(' only\n[[e]'),
+        ...encode(']\n'),
+        ...encode('é'),
+      ]);
+    });
+  });
+
+  describe('When the commit encoding is UTF-8 in another spelling', () => {
+    it('Then nothing is transcoded', () => {
+      // Arrange
+      const sut = expandFormatSubst;
+      const blob = encode('é $Format:e$');
+
+      // Act
+      const result = sut(blob, expandWith(true, encode('utf8')));
+
+      // Assert
+      expect(decode(result)).toBe('é [e]');
+    });
+  });
+
+  describe('When the commit has no encoding header', () => {
+    it('Then nothing is transcoded', () => {
+      // Arrange
+      const sut = expandFormatSubst;
+      const blob = encode('é $Format:e$');
+
+      // Act
+      const result = sut(blob, expandWith(true, undefined));
+
+      // Assert
+      expect(decode(result)).toBe('é [e]');
+    });
+  });
+
+  describe('When the encoding is unknown', () => {
+    it('Then the buffer is left unconverted', () => {
+      // Arrange
+      const sut = expandFormatSubst;
+      const blob = encode('é $Format:e$');
+
+      // Act
+      const result = sut(blob, expandWith(true, encode('x-nonexistent-9')));
+
+      // Assert
+      expect(decode(result)).toBe('é [e]');
+    });
+  });
+
+  describe('When the encoding is UTF-16', () => {
+    it('Then the buffer gets a BOM and UTF-16 code units, the tail stays raw', () => {
+      // Arrange
+      const sut = expandFormatSubst;
+      const blob = encode('pé $Format:e$]\n');
+
+      // Act
+      const result = sut(blob, expandWith(true, encode('UTF-16')));
+
+      // Assert
+      expect([...result]).toEqual([
+        0xfe,
+        0xff,
+        0,
+        0x70,
+        0,
+        0xe9,
+        0,
+        0x20,
+        0,
+        0x5b,
+        0,
+        0x65,
+        0,
+        0x5d,
+        ...encode(']\n'),
+      ]);
+    });
+  });
+
+  describe('When a second occurrence follows a transcoded buffer', () => {
+    it('Then the already converted buffer fails the UTF-8 pass and stays as is', () => {
+      // Arrange
+      const sut = expandFormatSubst;
+      const blob = encode('é $Format:e$ $Format:e$');
+
+      // Act
+      const result = sut(blob, expandWith(true, latin1));
+
+      // Assert
+      expect([...result]).toEqual([0xe9, 0x20, ...encode('[e] [e]')]);
     });
   });
 });

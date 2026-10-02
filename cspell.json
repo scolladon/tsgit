@@ -944,6 +944,7 @@
     "reconstructors",
     "RECORDSIZE",
     "redactions",
+    "reencode",
     "reentrancy",
     "referencers",
     "reflog",

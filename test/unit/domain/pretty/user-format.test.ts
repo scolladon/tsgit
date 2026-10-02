@@ -1030,3 +1030,66 @@ describe('Given ref decorations in the environment', () => {
     });
   });
 });
+
+describe('formatCommit commit encoding', () => {
+  const LATIN1_E_ACUTE = 0xe9;
+  const latin1Commit = (): Uint8Array => {
+    const header = encode(
+      `tree ${TREE}\nauthor A <j@x> 1700000200 +0000\ncommitter ${COMMITTER}\nencoding ISO-8859-1\n\n`,
+    );
+    return Uint8Array.from([...header, ...encode('caf'), LATIN1_E_ACUTE, ...encode(' subj\n')]);
+  };
+
+  describe('Given a Latin-1 commit, When the subject is expanded', () => {
+    it('Then the message is decoded to UTF-8 for the placeholder', () => {
+      // Arrange
+      const sut = formatCommit;
+      const tokens = scanPlaceholders(encode('%s'));
+
+      // Act
+      const result = sut(tokens, parseCommitView(latin1Commit()), ENV, BUDGET) as FormatOutput;
+
+      // Assert
+      expect(decode(result.bytes)).toBe('café subj');
+    });
+  });
+
+  describe('Given a Shift_JIS commit with an invalid sequence, When the message is expanded', () => {
+    it('Then the bytes are left as they are', () => {
+      // Arrange
+      const sut = formatCommit;
+      const raw = encode(`tree ${TREE}\ncommitter ${COMMITTER}\nencoding Shift_JIS\n\n`);
+      const broken = Uint8Array.from([...raw, 0x81]);
+
+      // Act
+      const result = sut(
+        scanPlaceholders(encode('%B')),
+        parseCommitView(broken),
+        ENV,
+        BUDGET,
+      ) as FormatOutput;
+
+      // Assert
+      expect([...result.bytes]).toEqual([0x81]);
+    });
+  });
+
+  describe('Given a commit encoded utf8, When the subject is expanded', () => {
+    it('Then the message is not decoded', () => {
+      // Arrange
+      const sut = formatCommit;
+      const raw = encode(`tree ${TREE}\ncommitter ${COMMITTER}\nencoding utf8\n\ncafé\n`);
+
+      // Act
+      const result = sut(
+        scanPlaceholders(encode('%s')),
+        parseCommitView(raw),
+        ENV,
+        BUDGET,
+      ) as FormatOutput;
+
+      // Assert
+      expect(decode(result.bytes)).toBe('café');
+    });
+  });
+});

@@ -10,6 +10,7 @@ import {
 import { splitIdentLine } from './ident.js';
 import { DATE_MODE_BY_PART, type DateClock, showIdentDate } from './ident-date.js';
 import { type PadRequest, padValue, parsePadding, type Truncation } from './padding.js';
+import { utf8View } from './reencode.js';
 import { formatSanitizedSubject, formatSubject } from './subject.js';
 import {
   formatTrailers,
@@ -477,12 +478,13 @@ const firstRefusal = (tokens: ReadonlyArray<Token>): FormatRefusal | undefined =
 
 export const formatCommit = (
   tokens: ReadonlyArray<Token>,
-  view: CommitView,
+  rawView: CommitView,
   env: FormatEnv,
   budget: FormatBudget,
 ): FormatOutput | FormatRefusal => {
   const refusal = firstRefusal(tokens);
   if (refusal) return refusal;
+  const view = utf8View(rawView);
   const pieces: Uint8Array[] = [];
   let layout = START_LAYOUT;
   let at = 0;

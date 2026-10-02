@@ -1,6 +1,6 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
-import { expandFormatSubst } from '../../../../src/domain/pretty/format-subst.js';
+import { type Expansion, expandFormatSubst } from '../../../../src/domain/pretty/format-subst.js';
 
 const encode = (text: string): Uint8Array => new TextEncoder().encode(text);
 const TOTALITY_RUNS = 200;
@@ -18,7 +18,14 @@ const concat = (a: Uint8Array, b: Uint8Array): Uint8Array => {
 const containsMarker = (blob: Uint8Array): boolean =>
   new TextDecoder('latin1').decode(blob).includes('$Format:');
 
-const echo = (accumulated: Uint8Array, fmt: Uint8Array): Uint8Array => concat(accumulated, fmt);
+const plain = (bytes: Uint8Array): Expansion => ({
+  bytes,
+  parsedHeader: false,
+  encoding: undefined,
+});
+
+const echo = (accumulated: Uint8Array, fmt: Uint8Array): Expansion =>
+  plain(concat(accumulated, fmt));
 
 describe('Given arbitrary bytes, When expanding', () => {
   it('Then it never throws', () => {
@@ -50,7 +57,7 @@ describe('Given a blob without $Format:, When expanding', () => {
         // Act
         const result = sut(blob, (accumulated) => {
           calls += 1;
-          return accumulated;
+          return plain(accumulated);
         });
 
         // Assert
@@ -74,7 +81,7 @@ describe('Given k well-formed $Format:%H$ occurrences, When expanding', () => {
         // Act
         sut(blob, (accumulated) => {
           calls += 1;
-          return accumulated;
+          return plain(accumulated);
         });
 
         // Assert
