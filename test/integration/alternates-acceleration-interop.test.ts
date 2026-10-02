@@ -18,6 +18,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  readFileSync,
   realpathSync,
   rmSync,
   writeFileSync,
@@ -25,6 +26,7 @@ import {
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { computeClosure } from '../../src/application/primitives/internal/closure-engine.js';
 import { commitHeader } from '../../src/application/primitives/internal/read-commit-graph.js';
 import type { ObjectId } from '../../src/domain/objects/index.js';
 import { openRepository } from '../../src/index.node.js';
@@ -44,6 +46,9 @@ const MISSING_LAYER_WARNING = 'unable to find all commit-graph files';
 const TOO_SMALL_WARNING = 'commit-graph file is too small';
 const ABSENT_LAYER_HASH = 'ab'.repeat(20);
 const GARBAGE = Buffer.from([1, 2, 3]);
+const SMASHED_HEADER = Buffer.from('XXXX');
+const BITMAP_HEADER_ERROR = 'corrupted bitmap index file (wrong header)';
+const MIDX_SIGNATURE_ERROR = 'multi-pack-index signature';
 
 let root: string;
 let rowCount = 0;
@@ -147,6 +152,57 @@ const tsgitServesFromGraph = async (repo: Repo, oid: string): Promise<boolean> =
   } finally {
     await opened.dispose?.();
   }
+};
+
+const repackWithBitmap = (repo: Repo): void => {
+  runGit(['-C', repo.dir, 'repack', '-a', '-d', '-q', '--write-bitmap-index']);
+};
+
+const onlyBitmap = (repo: Repo): string => {
+  const packDir = path.join(repo.objects, 'pack');
+  const [bitmap, ...rest] = readdirSync(packDir).filter((name) => name.endsWith('.bitmap'));
+  if (bitmap === undefined || rest.length > 0) throw new Error('expected exactly one bitmap file');
+  return path.join(packDir, bitmap);
+};
+
+const gitObjects = (repo: Repo) => {
+  const result = tryRunGitWithExit([
+    '-C',
+    repo.dir,
+    'rev-list',
+    '--objects',
+    '--use-bitmap-index',
+    'HEAD',
+  ]);
+  const ids = result.stdout
+    .split('\n')
+    .map((line) => line.split(' ')[0] ?? '')
+    .filter((id) => id !== '')
+    .sort();
+  return { ...result, ids };
+};
+
+const bitmapRequest = (oid: ObjectId) =>
+  ({ tier: 'bitmap', wants: [oid], not: [], objects: true }) as const;
+
+const bitmapClosure = async (repo: Repo) => {
+  const opened = await openRepository({ cwd: repo.dir });
+  try {
+    const head = runGit(['-C', repo.dir, 'rev-parse', 'HEAD']).trim() as ObjectId;
+    const result = await computeClosure(opened.ctx, bitmapRequest(head));
+    return { tier: result.tier, ids: result.objects.map((object) => object.id).sort() };
+  } finally {
+    await opened.dispose?.();
+  }
+};
+
+const bitmapClosureRefusal = async (repo: Repo): Promise<unknown> => {
+  try {
+    await bitmapClosure(repo);
+  } catch (error) {
+    return (error as { data: unknown }).data;
+  }
+  return undefined;
 };
 
 /** The borrower gains a fifth commit and a split chain layered on the donor's chain. */
@@ -343,6 +399,94 @@ describe.skipIf(!GIT_AVAILABLE)('alternates commit-graph interop', () => {
           expect(git.exitCode).toBe(GIT_SUCCEEDED);
           expect(git.stderr).toContain(TOO_SMALL_WARNING);
           expect(served).toBe(true);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe('Given a donor pack bitmap and a bitmap-less borrower', () => {
+    describe('When a bitmap-tier closure is computed over HEAD', () => {
+      it(
+        'Then the donor bitmap answers with the object set git lists',
+        async () => {
+          // Arrange
+          const world = buildWorld();
+          repackWithBitmap(world.donor);
+
+          // Act
+          const git = gitObjects(world.borrower);
+          const closure = await bitmapClosure(world.borrower);
+
+          // Assert
+          expect(git.exitCode).toBe(GIT_SUCCEEDED);
+          expect(closure.tier).toBe('bitmap');
+          expect(closure.ids).toEqual(git.ids);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe('Given a donor pack bitmap with a smashed header, the only bitmap', () => {
+    describe('When a bitmap-tier closure is computed over HEAD', () => {
+      it(
+        'Then both fall back to the walk and list the same objects',
+        async () => {
+          // Arrange
+          const world = buildWorld();
+          repackWithBitmap(world.donor);
+          const bitmap = onlyBitmap(world.donor);
+          const original = readFileSync(bitmap);
+          rmSync(bitmap);
+          writeFileSync(bitmap, Buffer.concat([SMASHED_HEADER, original.subarray(4)]));
+
+          // Act
+          const git = gitObjects(world.borrower);
+          const closure = await bitmapClosure(world.borrower);
+
+          // Assert
+          expect(git.exitCode).toBe(GIT_SUCCEEDED);
+          expect(git.stderr).toContain(BITMAP_HEADER_ERROR);
+          expect(closure.tier).toBe('walk');
+          expect(closure.ids).toEqual(git.ids);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe('Given a borrower pack bitmap and a donor multi-pack-index with a smashed signature', () => {
+    describe('When a bitmap-tier closure is computed over HEAD', () => {
+      it(
+        'Then git refuses and tsgit refuses with the signature check',
+        async () => {
+          // Arrange
+          const world = buildWorld();
+          runGit(['-C', world.donor.dir, 'repack', '-a', '-d', '-q']);
+          runGit(['-C', world.donor.dir, 'multi-pack-index', 'write']);
+          commitEmpty(world.borrower, 'c5');
+          runGit([
+            '-C',
+            world.borrower.dir,
+            'repack',
+            '-a',
+            '-d',
+            '-l',
+            '-q',
+            '--write-bitmap-index',
+          ]);
+          const midx = path.join(world.donor.objects, 'pack', 'multi-pack-index');
+          writeFileSync(midx, Buffer.concat([SMASHED_HEADER, readFileSync(midx).subarray(4)]));
+
+          // Act
+          const git = gitObjects(world.borrower);
+          const refusal = await bitmapClosureRefusal(world.borrower);
+
+          // Assert
+          expect(git.exitCode).toBe(GIT_REFUSED);
+          expect(git.stderr).toContain(MIDX_SIGNATURE_ERROR);
+          expect(refusal).toMatchObject({ code: 'INVALID_MULTI_PACK_INDEX', check: 'signature' });
         },
         ROW_TIMEOUT,
       );

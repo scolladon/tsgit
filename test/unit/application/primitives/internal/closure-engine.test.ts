@@ -14,12 +14,16 @@
  *  - dedup across commits sharing a tree
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 
 import { enumerateBundleObjects } from '../../../../../src/application/primitives/enumerate-bundle-objects.js';
 import { computeClosure } from '../../../../../src/application/primitives/internal/closure-engine.js';
 import * as closureNotMarksModule from '../../../../../src/application/primitives/internal/closure-not-marks.js';
+import * as midxBitmapBindingModule from '../../../../../src/application/primitives/internal/midx-bitmap-binding.js';
+import * as packBitmapBindingModule from '../../../../../src/application/primitives/internal/pack-bitmap-binding.js';
 import * as readCommitMetaModule from '../../../../../src/application/primitives/internal/read-commit-meta.js';
 import * as resolveMaxTreeDepthModule from '../../../../../src/application/primitives/internal/resolve-max-tree-depth.js';
+import { getObjectStore } from '../../../../../src/application/primitives/object-store.js';
 import * as readObjectModule from '../../../../../src/application/primitives/read-object.js';
 import { getPackRegistry } from '../../../../../src/application/primitives/read-object.js';
 import { MAX_WALK_QUEUE_SIZE } from '../../../../../src/application/primitives/types.js';
@@ -56,7 +60,7 @@ import {
   seedMaxTreeDepth,
   writeCommitGraph,
 } from '../fixtures.js';
-import { writeSyntheticBitmap, writeSyntheticPack } from '../pack-fixture.js';
+import { writeSyntheticBitmap, writeSyntheticPack, writeSyntheticPackIn } from '../pack-fixture.js';
 
 const AUTHOR: AuthorIdentity = {
   name: 'A',
@@ -2680,6 +2684,237 @@ describe('computeClosure — the not-side ancestry walk consults each commit onc
       // Assert
       expect(consulted(metaSpy).filter((id) => id === missing)).toHaveLength(1);
       metaSpy.mockRestore();
+    });
+  });
+});
+
+describe('computeClosure — bitmap search across object sources', () => {
+  const ENC = new TextEncoder();
+  const DONOR_OBJECTS = '/repo/alt/objects';
+  const SHARED_CONTENT = 'shared-bitmap-content';
+  const MIDX_FLAVOUR = 'midx';
+  const PACK_FLAVOUR = 'pack';
+
+  type Flavour = typeof MIDX_FLAVOUR | typeof PACK_FLAVOUR;
+
+  const bitmapBody = (ctx: Context): Uint8Array =>
+    buildBitmap({
+      optionFlags: 1,
+      digestLength: ctx.hashConfig.digestLength,
+      checksum: new Uint8Array(ctx.hashConfig.digestLength).fill(0xbb),
+      typeStreams: [
+        { bitSize: 1, bits: [] },
+        { bitSize: 1, bits: [] },
+        { bitSize: 1, bits: [0] },
+        { bitSize: 1, bits: [] },
+      ],
+      entries: [],
+      trailingBytes: 0,
+    });
+
+  async function borrowerContext(): Promise<Context> {
+    const ctx = createMemoryContext({
+      files: { '/repo/.git/objects/info/alternates': ENC.encode(`${DONOR_OBJECTS}\n`) },
+    });
+    await ctx.fs.mkdir(DONOR_OBJECTS);
+    return ctx;
+  }
+
+  async function packWithBitmapIn(
+    ctx: Context,
+    objectsDir: string,
+    name: string,
+  ): Promise<ObjectId> {
+    const [id] = await writeSyntheticPackIn(ctx, objectsDir, name, [
+      { kind: 'base', type: 'blob', content: ENC.encode(SHARED_CONTENT) },
+    ]);
+    await writeSyntheticBitmap(ctx, `${objectsDir}/pack/pack-${name}.bitmap`, bitmapBody(ctx));
+    return id as ObjectId;
+  }
+
+  async function midxBitmapIn(
+    ctx: Context,
+    objectsDir: string,
+    name: string,
+    id: ObjectId,
+  ): Promise<void> {
+    const { digestLength } = ctx.hashConfig;
+    const index = parsePackIndex(await ctx.fs.read(`${objectsDir}/pack/pack-${name}.idx`), 20);
+    const offset = lookupPackIndex(index, id) as number;
+    const midxSpec: MidxSpec = {
+      version: 1,
+      hashVersion: digestLength === 32 ? 2 : 1,
+      digestLength,
+      numBaseFiles: 0,
+      packNames: [`pack-${name}.idx`],
+      entries: [{ id, packIndex: 0, offset }],
+      revBody: [0],
+    };
+    await ctx.fs.write(`${objectsDir}/pack/multi-pack-index`, buildMidx(midxSpec));
+    const hex = '00'.repeat(digestLength);
+    await writeSyntheticBitmap(
+      ctx,
+      `${objectsDir}/pack/multi-pack-index-${hex}.bitmap`,
+      bitmapBody(ctx),
+    );
+  }
+
+  /** The same blob packed in the primary and in the donor, each source carrying the given artefact. */
+  async function twoSources(primary: Flavour, donor: Flavour) {
+    const ctx = await borrowerContext();
+    const primaryObjects = `${ctx.layout.gitDir}/objects`;
+    const id = await packWithBitmapIn(ctx, primaryObjects, 'primary');
+    await packWithBitmapIn(ctx, DONOR_OBJECTS, 'donor');
+    if (primary === MIDX_FLAVOUR) await midxBitmapIn(ctx, primaryObjects, 'primary', id);
+    if (donor === MIDX_FLAVOUR) await midxBitmapIn(ctx, DONOR_OBJECTS, 'donor', id);
+    const { primary: primarySource, sources } = await getObjectStore(ctx);
+    const donorSource = sources.find((source) => source !== primarySource);
+    if (donorSource === undefined) throw new Error('expected a donor source');
+    return { ctx, id, primarySource, donorSource };
+  }
+
+  const request = (id: ObjectId) =>
+    ({ tier: 'bitmap', wants: [id], not: [], objects: true }) as const;
+
+  const packsLoaded = (spy: { mock: { calls: ReadonlyArray<ReadonlyArray<unknown>> } }) =>
+    spy.mock.calls.map((call) => (call[1] as { name: string }).name);
+
+  describe('Given a pack bitmap in the primary and in the donor', () => {
+    describe('When a bitmap-tier closure is requested', () => {
+      it('Then the primary pack bitmap answers and the donor pack bitmap is never loaded', async () => {
+        // Arrange
+        const { ctx, id } = await twoSources(PACK_FLAVOUR, PACK_FLAVOUR);
+        const packSpy = vi.spyOn(packBitmapBindingModule, 'loadPackBitmapArtefact');
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, request(id));
+
+        // Assert
+        expect(result.tier).toBe('bitmap');
+        expect(packsLoaded(packSpy)).toEqual(['pack-primary']);
+        packSpy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given a pack bitmap in the primary and a midx bitmap in the donor', () => {
+    describe('When a bitmap-tier closure is requested', () => {
+      it('Then the donor midx bitmap answers and no pack bitmap is loaded', async () => {
+        // Arrange
+        const { ctx, id, donorSource } = await twoSources(PACK_FLAVOUR, MIDX_FLAVOUR);
+        const midxSpy = vi.spyOn(midxBitmapBindingModule, 'loadMidxBitmapArtefact');
+        const packSpy = vi.spyOn(packBitmapBindingModule, 'loadPackBitmapArtefact');
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, request(id));
+
+        // Assert
+        expect(result.tier).toBe('bitmap');
+        expect(midxSpy.mock.calls).toHaveLength(2);
+        expect(midxSpy.mock.calls[1]?.[1]).toBe(await donorSource.registry.midxBitmap());
+        expect(packSpy).not.toHaveBeenCalled();
+        midxSpy.mockRestore();
+        packSpy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given a midx bitmap in the primary and in the donor', () => {
+    describe('When a bitmap-tier closure is requested', () => {
+      it('Then the primary midx bitmap answers and the donor midx bitmap is never loaded', async () => {
+        // Arrange
+        const { ctx, id, primarySource } = await twoSources(MIDX_FLAVOUR, MIDX_FLAVOUR);
+        const midxSpy = vi.spyOn(midxBitmapBindingModule, 'loadMidxBitmapArtefact');
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, request(id));
+
+        // Assert
+        expect(result.tier).toBe('bitmap');
+        expect(midxSpy.mock.calls).toHaveLength(1);
+        expect(midxSpy.mock.calls[0]?.[1]).toBe(await primarySource.registry.midxBitmap());
+        midxSpy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given a corrupt primary pack bitmap and a healthy donor pack bitmap', () => {
+    describe('When a bitmap-tier closure is requested', () => {
+      it('Then the donor pack bitmap answers', async () => {
+        // Arrange
+        const { ctx, id } = await twoSources(PACK_FLAVOUR, PACK_FLAVOUR);
+        await writeSyntheticBitmap(
+          ctx,
+          `${ctx.layout.gitDir}/objects/pack/pack-primary.bitmap`,
+          new Uint8Array([1, 2, 3]),
+        );
+        const packSpy = vi.spyOn(packBitmapBindingModule, 'loadPackBitmapArtefact');
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, request(id));
+
+        // Assert
+        expect(result.tier).toBe('bitmap');
+        expect(packsLoaded(packSpy)).toEqual(['pack-primary', 'pack-donor']);
+        packSpy.mockRestore();
+      });
+    });
+  });
+
+  describe('Given a corrupt donor pack bitmap as the only bitmap', () => {
+    describe('When a bitmap-tier closure is requested', () => {
+      it('Then it falls back to the walk', async () => {
+        // Arrange
+        const ctx = await borrowerContext();
+        const id = (
+          await writeSyntheticPackIn(ctx, DONOR_OBJECTS, 'donor', [
+            { kind: 'base', type: 'blob', content: ENC.encode(SHARED_CONTENT) },
+          ])
+        )[0] as ObjectId;
+        await writeSyntheticBitmap(
+          ctx,
+          `${DONOR_OBJECTS}/pack/pack-donor.bitmap`,
+          new Uint8Array([1, 2, 3]),
+        );
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, request(id));
+
+        // Assert
+        expect(result.tier).toBe('walk');
+      });
+    });
+  });
+
+  describe('Given a donor multi-pack-index with a smashed signature and a primary pack bitmap', () => {
+    describe('When a bitmap-tier closure is requested', () => {
+      it('Then it throws INVALID_MULTI_PACK_INDEX with check signature', async () => {
+        // Arrange
+        const { ctx, id } = await twoSources(PACK_FLAVOUR, PACK_FLAVOUR);
+        const badMidx = new Uint8Array(16);
+        badMidx.set([0x00, 0x49, 0x44, 0x58, 1, 1, 1, 0], 0);
+        await ctx.fs.write(`${DONOR_OBJECTS}/pack/multi-pack-index`, badMidx);
+        const sut = computeClosure;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, request(id));
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        const data = (caught as TsgitError).data;
+        expect(data.code).toBe('INVALID_MULTI_PACK_INDEX');
+        if (data.code === 'INVALID_MULTI_PACK_INDEX') expect(data.check).toBe('signature');
+      });
     });
   });
 });

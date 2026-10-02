@@ -24,12 +24,17 @@ import {
 } from '../../../domain/objects/index.js';
 import { PACK_NAME_HASH_SEED, PACK_NAME_HASH_V1 } from '../../../domain/storage/index.js';
 import type { Context } from '../../../ports/context.js';
-import { getPackRegistry, readObject } from '../read-object.js';
+import { getObjectStore } from '../object-store.js';
+import { readObject } from '../read-object.js';
 import { MAX_PUSH_OBJECTS } from '../types.js';
 import { isGitlink } from '../validators.js';
 import { walkCommits } from '../walk-commits.js';
 import { walkTree } from '../walk-tree.js';
-import { type BitmapClosureRequest, resolveBitmapClosure } from './bitmap-binding.js';
+import {
+  type BitmapClosureRequest,
+  type LoadedBitmapArtefact,
+  resolveBitmapClosure,
+} from './bitmap-binding.js';
 import {
   markBoundaryTrees,
   markNotSide,
@@ -334,19 +339,30 @@ async function tryBitmapClosure(
   ctx: Context,
   request: ClosureRequest,
 ): Promise<ClosureObject[] | undefined> {
-  const registry = await getPackRegistry(ctx);
-  const midxArtefact = await loadMidxBitmapArtefact(ctx, await registry.midxBitmap());
-  if (midxArtefact !== undefined) {
-    return [...(await resolveBitmapClosure(ctx, midxArtefact, projectedRequest(request)))];
+  const { sources } = await getObjectStore(ctx);
+  // Every source's midx is prepared (and may refuse) before any pack bitmap is
+  // opened, and every midx bitmap outranks every pack bitmap — git's order.
+  for (const { registry } of sources) {
+    await registry.assertLoadable();
+    const midxArtefact = await loadMidxBitmapArtefact(ctx, await registry.midxBitmap());
+    if (midxArtefact !== undefined) return closureFrom(ctx, midxArtefact, request);
   }
 
-  const packs = await registry.all();
-  for (const pack of packs) {
-    const artefact = await loadPackBitmapArtefact(ctx, pack);
-    if (artefact === undefined) continue;
-    return [...(await resolveBitmapClosure(ctx, artefact, projectedRequest(request)))];
+  for (const { registry } of sources) {
+    for (const pack of await registry.all()) {
+      const artefact = await loadPackBitmapArtefact(ctx, pack);
+      if (artefact !== undefined) return closureFrom(ctx, artefact, request);
+    }
   }
   return undefined;
+}
+
+async function closureFrom(
+  ctx: Context,
+  artefact: LoadedBitmapArtefact,
+  request: ClosureRequest,
+): Promise<ClosureObject[]> {
+  return [...(await resolveBitmapClosure(ctx, artefact, projectedRequest(request)))];
 }
 
 export async function computeClosure(
