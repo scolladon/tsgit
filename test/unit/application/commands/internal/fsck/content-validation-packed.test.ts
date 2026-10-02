@@ -335,3 +335,36 @@ describe('Given a packed tree whose entries are not sorted', () => {
     });
   });
 });
+
+describe('Given a packed blob whose hash cannot be computed', () => {
+  describe('When validatePackedEntry verifies its hash', () => {
+    it('Then the hashing fault propagates rather than passing the object as verified', async () => {
+      // Arrange
+      const content = ENCODER.encode('content the hasher refuses');
+      const ctx = createMemoryContext();
+      const ids = await writeSyntheticPack(ctx, 'hasher-fault', [
+        { kind: 'base', type: 'blob', content },
+      ]);
+      const blobId = ids[0] as ObjectId;
+      const fault = new Error('hasher unavailable');
+      vi.spyOn(ctx.hash, 'createHasher').mockReturnValue({
+        update: vi.fn(),
+        digest: vi.fn(),
+        digestHex: vi.fn().mockRejectedValue(fault),
+      });
+      const entry = await packedEntryOf(ctx, blobId);
+
+      // Act
+      let caught: unknown;
+      try {
+        await sut(ctx, entry, CATALOGUE);
+        expect.unreachable();
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect(caught).toBe(fault);
+    });
+  });
+});

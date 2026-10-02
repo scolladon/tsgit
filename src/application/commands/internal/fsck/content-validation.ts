@@ -460,20 +460,17 @@ function catalogueResult(
  * git's own buffered-tier bytes instead (the truncated prefix or the
  * zero-padded claim — `looseVerdictResult`); for pack objects the object's
  * own header (rebuilt from its type + content) followed by its own body,
- * not a re-encoding. A hash that cannot be computed at all is the corrupt
- * object the catalogue checks may already have reported.
+ * not a re-encoding. Every arm hashes bytes already in memory, so the only
+ * way it can fail is the hasher itself — a fault git's own hashing never
+ * has, which must abort the run rather than pass the object as verified.
  */
 async function hashResult(id: ObjectId, raw: ReadableObject): Promise<ContentValidationResult> {
-  try {
-    const computedHash = await raw.computeHash();
-    if (computedHash === id) return EMPTY_RESULT;
-    return {
-      findings: [{ type: 'hash-mismatch', id, actual: computedHash as ObjectId }],
-      exitBit: EXIT_HASH_MISMATCH,
-    };
-  } catch {
-    return EMPTY_RESULT;
-  }
+  const computedHash = await raw.computeHash();
+  if (computedHash === id) return EMPTY_RESULT;
+  return {
+    findings: [{ type: 'hash-mismatch', id, actual: computedHash as ObjectId }],
+    exitBit: EXIT_HASH_MISMATCH,
+  };
 }
 
 /** git's `verify_pack` verdict on one damaged entry: its own error, bit 4. */
