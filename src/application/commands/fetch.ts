@@ -29,7 +29,7 @@ import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import { isSafeRefName, validateRefName } from '../../domain/refs/ref-validation.js';
 import { shortBranchName } from '../../domain/refs/short-branch-name.js';
 import type { Context } from '../../ports/context.js';
-import { readConfig } from '../primitives/config-read.js';
+import { readConfig, warnSlashLeadingPromisorRemotes } from '../primitives/config-read.js';
 import { fetchPack } from '../primitives/fetch-pack.js';
 import { hasObject } from '../primitives/has-object.js';
 import { assertNoValuelessConfig } from '../primitives/internal/valueless-config-guard.js';
@@ -94,6 +94,8 @@ export const fetch = async (ctx: Context, opts: FetchOptions = {}): Promise<Fetc
   const currentBranch = branchRef !== undefined ? shortBranchName(branchRef) : undefined;
   const config = await readRemoteConfig(ctx);
   const remoteName = defaultRemoteName(config, opts.remote, currentBranch);
+  // git's single-remote fetch asks `repo_has_promisor_remote` before it fetches.
+  await warnSlashLeadingPromisorRemotes(ctx);
   const { url, filter } = await resolveRemoteUrl(ctx, remoteName);
 
   ctx.progress.start(FETCH_NEGOTIATE_OP);

@@ -22,6 +22,9 @@ const ROW_TIMEOUT = 30_000;
 const PIN = '1111111111111111111111111111111111111111';
 const WARNING_PREFIX = "warning: config remote shorthand cannot begin with '/': ";
 const TSGIT_WARNING = "readRemoteConfig: config remote shorthand cannot begin with '/'";
+const PROMISOR_PREFIX = "warning: promisor remote name cannot begin with '/': ";
+const TSGIT_PROMISOR_WARNING =
+  "readPromisorRemoteNames: promisor remote name cannot begin with '/'";
 const SLASH_REMOTE_CONFIG =
   '[remote "/x"]\n\turl = u\n\tFetch = +refs/heads/*:refs/remotes/x/*\n\tvalueless\n' +
   '[remote "y"]\n\turl = /nonexistent/y.git\n[remote "/w"]\n';
@@ -49,7 +52,7 @@ const repoWithSlashRemote = (slug: string): string => {
 const gitWarnings = (dir: string, args: ReadonlyArray<string>): ReadonlyArray<string> =>
   tryRunGitWithExit(['-C', dir, ...args])
     .stderr.split('\n')
-    .filter((line) => line.startsWith(WARNING_PREFIX));
+    .filter((line) => line.startsWith(WARNING_PREFIX) || line.startsWith(PROMISOR_PREFIX));
 
 const tsgitWarnings = async (
   dir: string,
@@ -59,6 +62,7 @@ const tsgitWarnings = async (
   const warn = (message: string, context?: Record<string, unknown>): void => {
     if (message === TSGIT_WARNING)
       lines.push(`${WARNING_PREFIX}${context?.remote}.${context?.key}`);
+    if (message === TSGIT_PROMISOR_WARNING) lines.push(`${PROMISOR_PREFIX}${context?.remote}`);
   };
   const repo = await openRepository({ cwd: dir, logger: { warn } });
   try {
@@ -209,6 +213,30 @@ describe.skipIf(!GIT_AVAILABLE)('Given a repository configuring /-named remotes'
       );
     },
   );
+
+  describe('When fetch y runs under git and tsgit with a /-named promisor remote', () => {
+    it(
+      "Then both warn the remote table's entries, then the promisor name",
+      async () => {
+        // Arrange
+        const [gitDir, tsgitDir] = ['git-fetch-promisor', 'tsgit-fetch-promisor'].map((slug) => {
+          const dir = repoWithSlashRemote(slug);
+          writeFileSync(path.join(dir, '.git', 'config'), '[remote "/p"]\n\tpromisor = true\n', {
+            flag: 'a',
+          });
+          return dir;
+        }) as [string, string];
+        const sut = (repo: Repository) => repo.fetch({ remote: 'y' });
+
+        // Act
+        const result = await tsgitWarnings(tsgitDir, sut);
+
+        // Assert
+        expect(result).toEqual(gitWarnings(gitDir, ['fetch', '-q', 'y']));
+      },
+      ROW_TIMEOUT,
+    );
+  });
 
   describe('When git and tsgit list the remotes', () => {
     it('Then neither lists a /-named one', async () => {

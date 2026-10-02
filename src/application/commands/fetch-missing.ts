@@ -17,11 +17,14 @@ import {
   type ParsedConfig,
   readConfig,
   readPromisorRemoteNames,
+  warnSlashLeadingPromisorRemotes,
+  warnSlashLeadingRemoteShorthands,
 } from '../primitives/config-read.js';
 import { fetchPack } from '../primitives/fetch-pack.js';
 import { hasObject } from '../primitives/has-object.js';
 import { assertValidPromisorRemoteConfig } from '../primitives/internal/boolean-config-guard.js';
 import { getObjectStore } from '../primitives/object-store.js';
+import { updateConfigOperations } from '../primitives/update-config.js';
 import { negotiateDiscovery, negotiatePackBytes } from './internal/fetch-negotiation.js';
 import { openGitSession } from './internal/git-service-session.js';
 import { assertPeerAlgorithm } from './internal/object-format-guard.js';
@@ -71,13 +74,45 @@ const collectMissing = async (
   return missing;
 };
 
+/** The filter git's lazy fetch passes its `git fetch` child. */
+const LAZY_FETCH_FILTER = 'blob:none';
+
+/**
+ * git lazy-fetches through a `git fetch <remote> --filter=blob:none` child: it
+ * warns as any fetch does, and its `partial_clone_register` records that
+ * filter on a promisor remote recording none — re-reading, and so re-warning,
+ * the promisor remotes — before it reaches the remote at all.
+ */
+const runFetchChildPrologue = async (
+  ctx: Context,
+  remoteName: string,
+  recordedFilter: string | undefined,
+): Promise<void> => {
+  await warnSlashLeadingRemoteShorthands(ctx);
+  await warnSlashLeadingPromisorRemotes(ctx);
+  if (recordedFilter !== undefined) return;
+  await updateConfigOperations(ctx, [
+    {
+      kind: 'set',
+      section: 'remote',
+      subsection: remoteName,
+      key: 'partialclonefilter',
+      value: LAZY_FETCH_FILTER,
+    },
+  ]);
+  await warnSlashLeadingPromisorRemotes(ctx);
+};
+
 /** Fetch `missing` from one remote, refusing one whose url is absent or empty. */
 const fetchFrom = async (
   ctx: Context,
-  url: string | undefined,
+  config: ParsedConfig,
   remoteName: string,
   missing: ReadonlyArray<ObjectId>,
 ): Promise<void> => {
+  const remote = config.remote?.get(remoteName);
+  await runFetchChildPrologue(ctx, remoteName, remote?.partialCloneFilter);
+  const url = remote?.url;
   // An absent OR empty url means the promisor remote is not usably configured;
   // surface REMOTE_NOT_CONFIGURED rather than a cryptic INVALID_BASE_URL.
   if (url === undefined || url === '') throw remoteNotConfigured(remoteName);
@@ -118,7 +153,7 @@ const fetchSucceeded = async (
   wanted: ReadonlyArray<ObjectId>,
 ): Promise<boolean> => {
   try {
-    await fetchFrom(ctx, config.remote?.get(name)?.url, name, wanted);
+    await fetchFrom(ctx, config, name, wanted);
     return true;
   } catch (err) {
     if (errorDataCode(err) === undefined) throw err;
@@ -147,7 +182,7 @@ const fetchFromFirstServing = async (
     wanted = await collectMissing(ctx, wanted);
     if (wanted.length === 0) return name;
   }
-  await fetchFrom(ctx, config.remote?.get(remotes.last)?.url, remotes.last, wanted);
+  await fetchFrom(ctx, config, remotes.last, wanted);
   return remotes.last;
 };
 

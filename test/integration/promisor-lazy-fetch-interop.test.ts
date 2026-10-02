@@ -68,6 +68,26 @@ const backendTransport = (projectRoot: string): HttpTransport => ({
   },
 });
 
+const SHORTHAND_LINE = "warning: config remote shorthand cannot begin with '/': ";
+const PROMISOR_LINE = "warning: promisor remote name cannot begin with '/': ";
+
+/** git's stderr line for each of tsgit's structured `/`-named remote warnings. */
+const SLASH_WARNING_LINES: ReadonlyMap<string, (context: Record<string, unknown>) => string> =
+  new Map([
+    [
+      "readRemoteConfig: config remote shorthand cannot begin with '/'",
+      (context) => `${SHORTHAND_LINE}${context.remote}.${context.key}`,
+    ],
+    [
+      "readPromisorRemoteNames: promisor remote name cannot begin with '/'",
+      (context) => `${PROMISOR_LINE}${context.remote}`,
+    ],
+  ]);
+
+/** Every `remote.<name>.partialclonefilter` a repository records, as git lists them. */
+const recordedFilters = (dir: string): string =>
+  runGit(['-C', dir, 'config', '--get-regexp', String.raw`^remote\..*\.partialclonefilter$`]);
+
 const objectsOf = (dir: string): ReadonlyArray<string> =>
   runGit(['-C', dir, 'cat-file', '--batch-all-objects', '--batch-check=%(objectname)'])
     .trim()
@@ -115,6 +135,49 @@ describe.skipIf(!GIT_AVAILABLE)('promisor lazy fetch — cross-tool interop', ()
     await rm(root, { recursive: true, force: true });
   });
 
+  describe('Given a partial clone also configuring a /-named promisor remote', () => {
+    describe('When both tools lazily fetch a missing blob through a dead remote first', () => {
+      it("Then both warn the same /-named lines: the lazy fetch's, then each fetch child's", async () => {
+        // Arrange
+        const slashRemote = '[remote "/x"]\n\turl = u\n\tpromisor = true\n';
+        const gitDir = partialClone(
+          'git-slash-clone',
+          `file://${root}/dead.git`,
+          `file://${root}/server.git`,
+        );
+        const oursDir = partialClone('ours-slash-clone', DEAD_URL, SERVER_URL);
+        for (const dir of [gitDir, oursDir]) {
+          await writeFile(path.join(dir, '.git', 'config'), slashRemote, { flag: 'a' });
+        }
+        const lines: string[] = [];
+        const ctx = {
+          ...createNodeContext({ workDir: oursDir }),
+          transport: backendTransport(root),
+          logger: {
+            warn: (message: string, context?: Record<string, unknown>) => {
+              const line = SLASH_WARNING_LINES.get(message)?.(context ?? {});
+              if (line !== undefined) lines.push(line);
+            },
+          },
+        };
+        const sut = fetchMissing;
+
+        // Act
+        const git = tryRunGitWithExit(['-C', gitDir, 'cat-file', '-p', blobId], {
+          env: runGitEnv(),
+        });
+        await sut(ctx, { oids: [ObjectId.from(blobId)] });
+        await disposePackRegistry(ctx);
+
+        // Assert
+        const gitLines = git.stderr
+          .split('\n')
+          .filter((line) => line.startsWith(SHORTHAND_LINE) || line.startsWith(PROMISOR_LINE));
+        expect(lines).toEqual(gitLines);
+      });
+    });
+  });
+
   describe('Given a partial clone whose first promisor remote cannot serve', () => {
     describe('When both tools lazily fetch a missing blob', () => {
       it('Then both skip the dead remote, fetch from origin and end with the same objects', async () => {
@@ -150,6 +213,7 @@ describe.skipIf(!GIT_AVAILABLE)('promisor lazy fetch — cross-tool interop', ()
         expect(result.remote).toBe('origin');
         expect(warned).toEqual(['dead']);
         expect(objectsOf(oursDir)).toEqual(objectsOf(gitDir));
+        expect(recordedFilters(oursDir)).toEqual(recordedFilters(gitDir));
       });
     });
   });

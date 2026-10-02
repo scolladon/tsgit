@@ -18,6 +18,7 @@ import { seedRepo } from './fixtures.js';
 
 const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
 const WARNING = "readRemoteConfig: config remote shorthand cannot begin with '/'";
+const PROMISOR_WARNING = "readPromisorRemoteNames: promisor remote name cannot begin with '/'";
 const SLASH_REMOTE_CONFIG =
   '[remote "/x"]\n\turl = u\n\tfetch = +refs/heads/*:refs/remotes/x/*\n' +
   '[remote "y"]\n\turl = https://example.invalid/y.git\n\tfetch = +refs/heads/*:refs/remotes/y/*\n';
@@ -104,6 +105,30 @@ describe('Given a repository whose only remote is /-named', () => {
 
       // Assert
       expect(result).toEqual({ remotes: [] });
+    });
+  });
+});
+
+describe('Given a repository configuring a /-named promisor remote', () => {
+  describe('When fetch runs', () => {
+    it("Then it warns the remote table's entries, then the promisor name git refuses", async () => {
+      // Arrange
+      const { ctx, warnings } = await repoWithSlashRemote();
+      await ctx.fs.writeUtf8(
+        `${ctx.layout.gitDir}/config`,
+        `${SLASH_REMOTE_CONFIG}[remote "/p"]\n\tpromisor = true\n`,
+      );
+      const sut = fetch;
+
+      // Act
+      await Promise.allSettled([sut(ctx, { remote: 'y' })]);
+
+      // Assert
+      expect(warnings).toEqual([
+        ...ONE_TABLE_READ,
+        [WARNING, { remote: '/p', key: 'promisor' }],
+        [PROMISOR_WARNING, { remote: '/p' }],
+      ]);
     });
   });
 });

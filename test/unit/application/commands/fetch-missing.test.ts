@@ -597,6 +597,49 @@ describe('fetchMissing', () => {
     });
   });
 
+  describe('Given a promisor remote with no partialclonefilter', () => {
+    describe('When fetchMissing fetches through it', () => {
+      it("Then it records git's lazy-fetch filter on that remote, as git's fetch child does", async () => {
+        // Arrange
+        const base = createMemoryContext();
+        await seedRepo(base, {});
+        await withConfig(base, PARTIAL_CONFIG);
+        const { packBytes, blobId } = await onePackedBlob(base, 'filtered\n');
+        const ctx: Context = { ...base, transport: fakeRemote(packBytes).transport };
+        const sut = fetchMissing;
+
+        // Act
+        await sut(ctx, { oids: [blobId] });
+
+        // Assert
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`)).toBe(
+          `${PARTIAL_CONFIG}\tpartialclonefilter = blob:none\n`,
+        );
+      });
+    });
+  });
+
+  describe('Given a promisor remote already recording a partialclonefilter', () => {
+    describe('When fetchMissing fetches through it', () => {
+      it('Then the config is left as it was', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        await seedRepo(base, {});
+        const config = `${PARTIAL_CONFIG}\tpartialclonefilter = tree:0\n`;
+        await withConfig(base, config);
+        const { packBytes, blobId } = await onePackedBlob(base, 'kept\n');
+        const ctx: Context = { ...base, transport: fakeRemote(packBytes).transport };
+        const sut = fetchMissing;
+
+        // Act
+        await sut(ctx, { oids: [blobId] });
+
+        // Assert
+        expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/config`)).toBe(config);
+      });
+    });
+  });
+
   describe('Given a configured auth credential', () => {
     describe('When fetchMissing', () => {
       it('Then the fetch carries it', async () => {
@@ -738,6 +781,48 @@ describe('fetchMissing', () => {
             statusCode: 500,
           },
         });
+      });
+    });
+
+    describe('When a /-named remote is configured and each fetch reaches a remote', () => {
+      const SHORTHAND = "readRemoteConfig: config remote shorthand cannot begin with '/'";
+      const PROMISOR = "readPromisorRemoteNames: promisor remote name cannot begin with '/'";
+
+      it("Then each attempt warns as git's fetch child does, after the lazy fetch's own warning", async () => {
+        // Arrange
+        const base = createMemoryContext();
+        await seedRepo(base, {});
+        await withConfig(
+          base,
+          `${remote('/slash', URL_SLASH)}${remote('a', URL_A)}${remote('origin', URL)}`,
+        );
+        const { packBytes, blobId } = await onePackedBlob(base, 'lazy content\n');
+        const { transport } = originOnly(packBytes);
+        const warn = vi.fn();
+        const ctx: Context = { ...base, transport, logger: { warn } };
+        const sut = fetchMissing;
+
+        // Act
+        await sut(ctx, { oids: [blobId] });
+
+        // Assert
+        const fetchChild = [
+          [SHORTHAND, { remote: '/slash', key: 'url' }],
+          [SHORTHAND, { remote: '/slash', key: 'promisor' }],
+          [PROMISOR, { remote: '/slash' }],
+          [PROMISOR, { remote: '/slash' }],
+        ];
+        expect(
+          warn.mock.calls.map(([message, context]) => [
+            message,
+            context.remote === 'a' ? 'a' : context,
+          ]),
+        ).toEqual([
+          [PROMISOR, { remote: '/slash' }],
+          ...fetchChild,
+          ['fetchMissing: promisor remote failed, trying the next', 'a'],
+          ...fetchChild,
+        ]);
       });
     });
 
