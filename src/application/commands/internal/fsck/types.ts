@@ -82,10 +82,19 @@ export type FsckFinding =
     }
   | {
       /** A reflog-reached object whose served copy hashes to another id, under
-       *  `connectivityOnly` — git's `Unknown object type for`: reached, never
-       *  walked. No exit bit. */
+       *  `connectivityOnly`, that no parse linking to it typed before the walk
+       *  reached it — git's `Unknown object type for`: reached, never walked.
+       *  No exit bit. */
       readonly type: 'unknown-object-type';
       readonly id: ObjectId;
+    }
+  | {
+      /** An object a link typed as `expectedType` whose served copy is another
+       *  type, under `connectivityOnly` — git's `Object <id> not a <type>`:
+       *  reached, never walked. No exit bit. */
+      readonly type: 'unexpected-object-type';
+      readonly id: ObjectId;
+      readonly expectedType: Exclude<FsckObjectType, 'blob'>;
     }
   | { readonly type: 'root'; readonly id: ObjectId }
   | {

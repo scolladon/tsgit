@@ -33,11 +33,13 @@ import {
   buildReachableSet,
   classifyObjects,
   excusePackHeld,
+  typedBeforeWalk,
+  type WalkTypingInput,
 } from './internal/fsck/reachability.js';
 import { readFsckConfiguration } from './internal/fsck/read-configuration.js';
 import { type RefTargetCheck, runRefsVerifyPass } from './internal/fsck/refs-verify.js';
 import { runRevIndexHealthPass } from './internal/fsck/rev-index-health.js';
-import { collectRoots } from './internal/fsck/roots.js';
+import { collectRoots, type RootsCollection } from './internal/fsck/roots.js';
 import { createSpecialBlobLedger } from './internal/fsck/special-blobs.js';
 import type { UnreadableMode } from './internal/fsck/types.js';
 import {
@@ -108,6 +110,28 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
 /** Every id a pack holds under bytes that hash to another id. */
 function misHashedIds(findings: ReadonlyArray<FsckFinding>): ReadonlySet<ObjectId> {
   return new Set(findings.flatMap((f) => (f.type === 'pack-entry-corrupt' ? [f.id] : [])));
+}
+
+/** What git's connectivity-only walk types objects from; `undefined` in the
+ *  other modes, where loading every object typed it already. */
+function walkTyping(
+  unreadable: UnreadableMode,
+  cache: ReadonlyMap<ObjectId, CachedGitObject>,
+  roots: Pick<
+    RootsCollection,
+    'refTips' | 'indexBlobIds' | 'parsedIndexIds' | 'unparseableReflogRoots'
+  >,
+): WalkTypingInput | undefined {
+  if (unreadable !== 'classify') return undefined;
+  const parses = {
+    refTips: roots.refTips,
+    indexBlobs: roots.indexBlobIds,
+    parsedIndexIds: roots.parsedIndexIds,
+  };
+  return {
+    typedBeforeWalk: typedBeforeWalk(cache, parses),
+    unparseable: roots.unparseableReflogRoots,
+  };
 }
 
 async function auditRepository(ctx: Context, opts: FsckOptions): Promise<FsckResult> {
@@ -251,11 +275,7 @@ async function auditRepository(ctx: Context, opts: FsckOptions): Promise<FsckRes
       recordedBy(universe, withUnreadableOverrides(objectCache, refused), unreadable),
       parses,
     );
-  const { untypedReflogRoots } = recorded;
-  const reachabilityCache = withUnreadableOverrides(
-    objectCache,
-    new Set([...refused, ...untypedReflogRoots]),
-  );
+  const reachabilityCache = withUnreadableOverrides(objectCache, refused);
   // git's `fsck_index` parses every cache-tree oid, in every mode — and dies
   // on one whose only copy is a damaged pack entry.
   await assertObjectsReadable(auditCtx, parsedIndexIds, objectCache);
@@ -268,9 +288,6 @@ async function auditRepository(ctx: Context, opts: FsckOptions): Promise<FsckRes
   const invalidReflogEntries = recorded.invalidReflogEntries.filter(
     (entry) => !promised.has(entry.id),
   );
-
-  // git marks children used only from a copy that passed its hash.
-  const inEdgePresent = buildInEdgeMap(universe, withVerifiedCopies(reachabilityCache, verified));
 
   // Which of the (rare) unreadable ids are ALSO claimed by a pack — git's
   // `has_object_pack`: `buildReachableSet` must never report one of these
@@ -290,16 +307,23 @@ async function auditRepository(ctx: Context, opts: FsckOptions): Promise<FsckRes
     unreadable,
     packMemberIds,
     promised,
+    walkTyping(unreadable, reachabilityCache, { ...recorded, parsedIndexIds }),
   );
   // `--no-full` verifies no pack, yet git's walk forgets an object a pack
   // holds (`has_object_pack`) rather than calling it missing or broken.
-  const { reached, missingIds, brokenEdges, unreadableEdges, rootCommits, tagRefs } =
+  const { reached, missingIds, brokenEdges, unreadableEdges, rootCommits, tagRefs, typeFindings } =
     opts.full === false ? await excusePackHeld(walk, (id) => hasPackCopy(auditCtx, id)) : walk;
 
   if (unreadable === 'classify') {
     await assertWalkedObjectsReadable(auditCtx, reached, recovered, objectCache);
   }
 
+  // git marks children used only from a copy that passed its hash.
+  const inEdgePresent = buildInEdgeMap(
+    universe,
+    withVerifiedCopies(reachabilityCache, verified),
+    unreadable === 'classify' ? reached : undefined,
+  );
   const { unreachable, dangling } = classifyObjects(universe, reached, inEdgePresent);
   assertTypesRecoverable(ctx, unreachable, unrecoverable);
 
@@ -321,7 +345,7 @@ async function auditRepository(ctx: Context, opts: FsckOptions): Promise<FsckRes
       ...entry,
     })),
     ...invalidIndexPointers,
-    ...untypedReflogRoots.map((id) => ({ type: 'unknown-object-type' as const, id })),
+    ...typeFindings,
   ];
 
   const connectivityBit =

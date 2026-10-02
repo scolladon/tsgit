@@ -26,13 +26,19 @@ function recordOutEdges(obj: ProjectedGitObject, inEdge: Set<ObjectId>): void {
  * Scan ALL universe objects to collect oids that have at least one in-edge
  * from another present (universe) object. Separate scan so that
  * unreachable objects with internal edges are not misclassified as dangling.
+ * `reached`, given under connectivityOnly, excludes the walk's objects: git
+ * marks only an unreachable object's links used there
+ * (`mark_unreachable_referents`), so a reached object it never walked names
+ * nothing.
  */
 export function buildInEdgeMap(
   universe: ReadonlySet<ObjectId>,
   objectCache: ReadonlyMap<ObjectId, CachedGitObject>,
+  reached?: ReadonlySet<ObjectId>,
 ): Set<ObjectId> {
   const inEdge = new Set<ObjectId>();
   for (const id of universe) {
+    if (reached?.has(id) === true) continue;
     const obj = objectCache.get(id);
     if (obj != null) recordOutEdges(obj, inEdge);
     // null (corrupt / unreadable) — no edges recorded
@@ -58,6 +64,29 @@ export interface TagRef {
   readonly targetType: FsckObjectType;
 }
 
+/** What git's walk reports about an object it could not walk as typed. */
+export type TypeFinding = Extract<
+  FsckFinding,
+  { readonly type: 'unknown-object-type' | 'unexpected-object-type' }
+>;
+
+/**
+ * git's connectivity-only typing: an object is typed by the first parse that
+ * links to it, and walked through whatever its copy serves — never re-hashed.
+ */
+export interface WalkTypingInput {
+  /** Every object typed before the walk pops anything (`typedBeforeWalk`). */
+  readonly typedBeforeWalk: ReadonlyMap<ObjectId, FsckObjectType>;
+  /** Every root whose served copy hashes to another id: popped untyped, git
+   *  cannot type it. */
+  readonly unparseable: ReadonlySet<ObjectId>;
+}
+
+interface WalkTyping {
+  readonly typed: Map<ObjectId, FsckObjectType>;
+  readonly unparseable: ReadonlySet<ObjectId>;
+}
+
 export interface WalkResult {
   readonly reached: Set<ObjectId>;
   readonly missingIds: Set<ObjectId>;
@@ -65,6 +94,8 @@ export interface WalkResult {
   readonly unreadableEdges: ReadonlyArray<GraphEdge>;
   readonly rootCommits: ReadonlyArray<ObjectId>;
   readonly tagRefs: ReadonlyArray<TagRef>;
+  /** Objects the walk reached but could not walk as typed, in pop order. */
+  readonly typeFindings: ReadonlyArray<TypeFinding>;
 }
 
 interface WalkState {
@@ -87,14 +118,24 @@ interface WalkState {
   readonly unreadableEdges: GraphEdge[];
   readonly rootCommits: ObjectId[];
   readonly tagRefs: TagRef[];
+  readonly typeFindings: TypeFinding[];
+  /** Undefined outside connectivityOnly, where every walked object is pre-typed. */
+  readonly typing: WalkTyping | undefined;
   readonly worklist: ObjectId[];
+  /** git's `REACHABLE` flag: set when an object is pushed, so each is pushed
+   *  once, at its first discovery — which fixes the order objects pop in. */
+  readonly pushed: Set<ObjectId>;
 }
 
 function enqueueIfPresent(state: WalkState, id: ObjectId): void {
-  // Stryker disable next-line ConditionalExpression: equivalent — already-reached ids pushed again are immediately skipped by the state.reached.has(id) guard in the main loop.
-  if (!state.reached.has(id)) {
-    state.worklist.push(id);
-  }
+  if (state.pushed.has(id)) return;
+  state.pushed.add(id);
+  state.worklist.push(id);
+}
+
+/** git's `lookup_<type>`: an object keeps the type of the first link naming it. */
+function typeOnce(typed: Map<ObjectId, FsckObjectType>, id: ObjectId, type: FsckObjectType): void {
+  if (!typed.has(id)) typed.set(id, type);
 }
 
 /**
@@ -118,6 +159,9 @@ function isContentUnreadable(state: WalkState, id: ObjectId): boolean {
   );
 }
 
+/** An edge a parse just read: its target typed by the link itself. */
+type LinkEdge = GraphEdge & { readonly toType: FsckObjectType };
+
 type EdgeRoute = 'broken' | 'unreadable-missing' | 'enqueued';
 
 /**
@@ -130,7 +174,8 @@ type EdgeRoute = 'broken' | 'unreadable-missing' | 'enqueued';
  * missing, so `classifyObjects` never ALSO reports it unreachable/dangling
  * on top of `missing` — git prints only one line for it, never both.
  */
-function routeEdgeTarget(state: WalkState, edge: GraphEdge): EdgeRoute {
+function routeEdgeTarget(state: WalkState, edge: LinkEdge): EdgeRoute {
+  if (state.typing !== undefined) typeOnce(state.typing.typed, edge.toId, edge.toType);
   if (state.promised.has(edge.toId)) {
     enqueueIfPresent(state, edge.toId);
     return 'enqueued';
@@ -182,13 +227,75 @@ function processTag(
   obj: ProjectedGitObject & { type: 'tag' },
 ): void {
   const { object: target, objectType: targetType, tagName } = obj;
-  const edge: GraphEdge = { fromId: id, fromType: 'tag', toId: target, toType: targetType };
+  const edge: LinkEdge = { fromId: id, fromType: 'tag', toId: target, toType: targetType };
   // git's tag walk marks the target reachable — and so reports `tagged` —
   // whenever it is PRESENT, whether or not it could be typed: only a
   // genuinely absent (broken-link) target drops the report.
   if (routeEdgeTarget(state, edge) !== 'broken') {
     state.tagRefs.push({ tagId: id, tagName, targetId: target, targetType });
   }
+}
+
+/**
+ * git's `fsck_walk` under connectivityOnly: a typed object is parsed as its
+ * type from whatever its copy serves — a blob is never read, any other type
+ * the copy is not is `Object <id> not a <type>`; an untyped one is
+ * `parse_object`ed, which refuses a copy hashing to another id.
+ */
+function walksAsTyped(state: WalkState, id: ObjectId, obj: ProjectedGitObject): boolean {
+  const typing = state.typing;
+  if (typing === undefined) return true;
+  const linked = typing.typed.get(id);
+  if (linked === undefined) return parsesUntyped(state, typing, id);
+  if (linked === obj.type) return true;
+  if (linked !== 'blob') {
+    state.typeFindings.push({ type: 'unexpected-object-type', id, expectedType: linked });
+  }
+  return false;
+}
+
+function parsesUntyped(state: WalkState, typing: WalkTyping, id: ObjectId): boolean {
+  if (!typing.unparseable.has(id)) return true;
+  state.typeFindings.push({ type: 'unknown-object-type', id });
+  return false;
+}
+
+/** The links git's `parse_object` types: a tree's entries wait for its walk. */
+function parsedLinks(obj: ProjectedGitObject): ReadonlyArray<readonly [ObjectId, FsckObjectType]> {
+  if (obj.type === 'commit') {
+    return [[obj.tree, 'tree'], ...obj.parents.map((parent) => [parent, 'commit'] as const)];
+  }
+  if (obj.type === 'tag') return [[obj.object, obj.objectType]];
+  return [];
+}
+
+/** Where git's fsck types objects before its walk pops anything. */
+export interface PreWalkParses {
+  /** Every ref tip `snapshot_refs` parses. */
+  readonly refTips: Iterable<ObjectId>;
+  /** Every index entry `fsck_index` looks up as a blob. */
+  readonly indexBlobs: Iterable<ObjectId>;
+  /** Every cache-tree and resolve-undo oid `fsck_index` parses. */
+  readonly parsedIndexIds: Iterable<ObjectId>;
+}
+
+/** Every object typed before the walk: each parsed object and the links its
+ *  parse types, each index entry as a blob. The first type an object gets wins. */
+export function typedBeforeWalk(
+  objectCache: ReadonlyMap<ObjectId, CachedGitObject>,
+  parses: PreWalkParses,
+): ReadonlyMap<ObjectId, FsckObjectType> {
+  const typed = new Map<ObjectId, FsckObjectType>();
+  const typeParsed = (id: ObjectId): void => {
+    const obj = objectCache.get(id);
+    if (obj == null) return;
+    typeOnce(typed, id, obj.type);
+    for (const [link, type] of parsedLinks(obj)) typeOnce(typed, link, type);
+  };
+  for (const id of parses.refTips) typeParsed(id);
+  for (const id of parses.indexBlobs) typeOnce(typed, id, 'blob');
+  for (const id of parses.parsedIndexIds) typeParsed(id);
+  return typed;
 }
 
 function visitObject(state: WalkState, id: ObjectId, obj: ProjectedGitObject): void {
@@ -203,7 +310,8 @@ function visitObject(state: WalkState, id: ObjectId, obj: ProjectedGitObject): v
  * Walks commit→(tree, parents), tree→entries (non-gitlink), tag→target.
  * `unreadable` gates whether a REACHED-but-content-unreadable id is
  * reported `missing` (default mode) or left as a bare "reached, no edges"
- * root the way connectivityOnly has always handled it.
+ * root the way connectivityOnly has always handled it. `typing`, given
+ * under connectivityOnly, types objects in git's pop order (`walksAsTyped`).
  */
 export function buildReachableSet(
   universe: ReadonlySet<ObjectId>,
@@ -212,6 +320,7 @@ export function buildReachableSet(
   unreadable: UnreadableMode,
   packMemberIds: ReadonlySet<ObjectId>,
   promised: ReadonlySet<ObjectId>,
+  typing?: WalkTypingInput,
 ): WalkResult {
   const state: WalkState = {
     universe,
@@ -225,7 +334,13 @@ export function buildReachableSet(
     unreadableEdges: [],
     rootCommits: [],
     tagRefs: [],
+    typeFindings: [],
+    typing:
+      typing === undefined
+        ? undefined
+        : { typed: new Map(typing.typedBeforeWalk), unparseable: typing.unparseable },
     worklist: [...seeds],
+    pushed: new Set(seeds),
   };
 
   while (state.worklist.length > 0) {
@@ -248,8 +363,10 @@ export function buildReachableSet(
       // exclusion) and so enqueued here instead of diverting to
       // `missingIds`.
       state.reached.add(id);
-    } else {
+    } else if (walksAsTyped(state, id, obj)) {
       visitObject(state, id, obj);
+    } else {
+      state.reached.add(id);
     }
   }
 
@@ -260,6 +377,7 @@ export function buildReachableSet(
     unreadableEdges: state.unreadableEdges,
     rootCommits: state.rootCommits,
     tagRefs: state.tagRefs,
+    typeFindings: state.typeFindings,
   };
 }
 

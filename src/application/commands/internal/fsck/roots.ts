@@ -399,9 +399,11 @@ export interface RootsCollection {
   /** Every reflog oid git's fsck never recorded as an object, in reflog order. */
   readonly invalidReflogEntries: ReadonlyArray<InvalidReflogEntry>;
   /** Every root only a reflog reaches whose served copy hashes to another id,
-   *  under `connectivityOnly`: git's walk cannot type it (`Unknown object type
-   *  for`), so it is reached but never walked. */
-  readonly untypedReflogRoots: ReadonlyArray<ObjectId>;
+   *  under `connectivityOnly`: git's walk can type it only through a link it
+   *  parses before popping it. */
+  readonly unparseableReflogRoots: ReadonlySet<ObjectId>;
+  /** Every ref tip git's `snapshot_refs` parsed, typing it and its links. */
+  readonly refTips: ReadonlySet<ObjectId>;
 }
 
 /** The roots added since `before` that git's walk cannot parse. */
@@ -409,10 +411,10 @@ async function unparseableSince(
   roots: ReadonlySet<ObjectId>,
   before: ReadonlySet<ObjectId>,
   parses: ParseCheck,
-): Promise<ReadonlyArray<ObjectId>> {
-  const unparseable: ObjectId[] = [];
+): Promise<ReadonlySet<ObjectId>> {
+  const unparseable = new Set<ObjectId>();
   for (const id of roots) {
-    if (!before.has(id) && !(await parses(id))) unparseable.push(id);
+    if (!before.has(id) && !(await parses(id))) unparseable.add(id);
   }
   return unparseable;
 }
@@ -431,21 +433,26 @@ export interface InvalidReflogEntry {
   readonly id: ObjectId;
 }
 
-/** Root every recorded oid of one reflog; return the rest, old side then new. */
+/** One reflog's oids, old side then new: the recorded ones root the walk. */
+interface ReflogSplit {
+  readonly recorded: ReadonlyArray<ObjectId>;
+  readonly invalid: ReadonlyArray<InvalidReflogEntry>;
+}
+
 function splitReflogEntries(
   ref: RefName,
   entries: ReadonlyArray<ReflogEntry>,
   isRecorded: (id: ObjectId) => boolean,
-  roots: Set<ObjectId>,
   zero: ObjectId,
-): ReadonlyArray<InvalidReflogEntry> {
+): ReflogSplit {
+  const recorded: ObjectId[] = [];
   const invalid: InvalidReflogEntry[] = [];
   for (const id of entries.flatMap((entry) => [entry.oldId, entry.newId])) {
     if (id === zero) continue;
-    if (isRecorded(id)) roots.add(id);
+    if (isRecorded(id)) recorded.push(id);
     else invalid.push({ ref, id });
   }
-  return invalid;
+  return { recorded, invalid };
 }
 
 /**
@@ -472,11 +479,14 @@ async function addRecordedReflogRoots(
           worktreeRefName(prefix, ref),
           await readReflogIfOpenable(worktreeCtx, ref),
           isRecorded,
-          roots,
           zero,
         ),
     );
-    invalid.push(...perReflog.flat());
+    // Rooted once every read is back, in reflog order: the walk pops in push order.
+    for (const split of perReflog) {
+      for (const id of split.recorded) roots.add(id);
+      invalid.push(...split.invalid);
+    }
   }
   return invalid;
 }
@@ -591,8 +601,10 @@ export async function collectRoots(
   const refRooted = new Set(roots);
   const invalidReflogEntries =
     opts.reflogRoots !== false ? await addRecordedReflogRoots(ctx, roots, isRecorded) : [];
-  const untypedReflogRoots =
-    opts.connectivityOnly === true ? await unparseableSince(roots, refRooted, parses) : [];
+  const unparseableReflogRoots =
+    opts.connectivityOnly === true
+      ? await unparseableSince(roots, refRooted, parses)
+      : new Set<ObjectId>();
   const index =
     opts.indexRoot !== false ? await fsckEveryIndex(ctx, roots, universe) : NO_INDEX_FSCK;
   return {
@@ -602,7 +614,8 @@ export async function collectRoots(
     parsedIndexIds: index.parsed,
     indexBlobIds: new Set(index.blobs),
     invalidReflogEntries,
-    untypedReflogRoots,
+    unparseableReflogRoots,
+    refTips: refRooted,
   };
 }
 
