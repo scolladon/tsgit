@@ -39,6 +39,7 @@ import {
   packFilePath,
   writePackArtifactsViaQuarantine,
 } from '../../primitives/internal/write-pack-artifacts.js';
+import { getObjectStore, type ObjectSource } from '../../primitives/object-store.js';
 import {
   classifyPackFiles,
   type PackRegistry,
@@ -410,12 +411,9 @@ function toNormalPackInputs(
   // the entry rather than costing a second hash lookup per object.
   for (const [id, entry] of reachable) {
     if (keptOids.has(id)) continue;
-    // Every remaining reachable object is owned or promisor-owned: an object
-    // is reachable only because the walk read it, and the walk reads only
-    // what is stored locally — loose, a normal pack, a carried cruft entry
-    // (all three are `owned`), a kept pack (excluded above), or a promisor
-    // pack. There is no fifth home, so the false arm is unreachable by
-    // construction rather than merely untested.
+    // A reachable object that is not owned lives only in an alternate (or a
+    // kept / promisor pack): gc repacks with `-l`, so a borrowed object must
+    // never be copied into the local pack.
     if (owned.has(id) || ownedPromisor.has(id)) {
       toNormalPack.push({ id, nameHash: entry.nameHash, recency: entry.ordinal });
     }
@@ -808,16 +806,39 @@ async function expireMidxIfNeeded(
  *  needs no change here: whatever this finds already surviving in a kept
  *  pack, the new normal pack, or the cruft pack is correct regardless of
  *  whether the packs it was ALSO duplicated in have been retired yet. */
+async function packedInSources(
+  ctx: Context,
+  sources: ReadonlyArray<ObjectSource>,
+  ids: ReadonlySet<ObjectId>,
+): Promise<ReadonlySet<ObjectId>> {
+  const idArray = [...ids];
+  const hits = await boundedMapFor(ctx, 'ioBound', idArray, async (id) => {
+    for (const source of sources) {
+      if ((await source.registry.lookup(id)) !== undefined) return id;
+    }
+    return undefined;
+  });
+  return new Set(hits.filter((id): id is ObjectId => id !== undefined));
+}
+
+async function packedInAlternates(
+  ctx: Context,
+  ids: ReadonlySet<ObjectId>,
+): Promise<ReadonlySet<ObjectId>> {
+  const store = await getObjectStore(ctx);
+  return packedInSources(
+    ctx,
+    store.sources.filter((source) => !source.local),
+    ids,
+  );
+}
+
 async function packedAnywhere(
   ctx: Context,
   looseSet: ReadonlySet<ObjectId>,
 ): Promise<ReadonlySet<ObjectId>> {
-  const registry = await getPackRegistry(ctx);
-  const looseArray = [...looseSet];
-  const hits = await boundedMapFor(ctx, 'ioBound', looseArray, async (id) =>
-    (await registry.lookup(id)) !== undefined ? id : undefined,
-  );
-  return new Set(hits.filter((id): id is ObjectId => id !== undefined));
+  const store = await getObjectStore(ctx);
+  return packedInSources(ctx, store.sources, looseSet);
 }
 
 async function pruneLooseFiles(ctx: Context, ids: ReadonlySet<ObjectId>): Promise<void> {
@@ -894,10 +915,13 @@ export async function runGcTask(
   // --- step 3/4: retention roots, reachability, the widened partition ---
   const owned = new Set<ObjectId>([...looseSet, ...existingCruft.mtimes.keys(), ...normalOids]);
   const { reachable } = await computeReachable(ctx);
+  // `repack -l` leaves out an object an alternate already packs, exactly as
+  // it leaves out a kept one, even when a local copy exists.
+  const leftOutOids = new Set([...keptOids, ...(await packedInAlternates(ctx, owned))]);
   const { toNormalPack, cruftCandidates } = partitionOwned(
     reachable,
     owned,
-    keptOids,
+    leftOutOids,
     ownedPromisor,
   );
   // toPromisorPack is the WHOLE promisor set, never intersected with

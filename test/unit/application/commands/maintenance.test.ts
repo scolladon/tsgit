@@ -62,13 +62,14 @@ import {
 } from '../../../../src/application/primitives/write-object.js';
 import { fileNotFound, notADirectory, TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
-import { FILE_MODE } from '../../../../src/domain/objects/index.js';
+import { FILE_MODE, serializeHeader } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import { packNameHash, parseCruftMtimes } from '../../../../src/domain/storage/index.js';
+import { computeLooseObjectPath } from '../../../../src/domain/storage/loose-path.js';
 import { allObjectIds } from '../../../../src/domain/storage/pack-index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { buildMidx } from '../../domain/storage/arbitraries.js';
-import { writeSyntheticPack } from '../primitives/pack-fixture.js';
+import { writeSyntheticPack, writeSyntheticPackIn } from '../primitives/pack-fixture.js';
 import { withReftableStorage } from '../primitives/reftable-fixtures.js';
 
 const AUTHOR: AuthorIdentity = {
@@ -5152,6 +5153,129 @@ describe('maintenance', () => {
 
         // Assert
         expect(await ctx.fs.exists(multiPackIndexPath(packDir))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a borrower whose closure reaches donor objects', () => {
+    const DONOR_OBJECTS = '/repo/alt/objects';
+
+    const borrower = async (): Promise<Context> => {
+      const ctx = createMemoryContext({
+        files: { '/repo/.git/objects/info/alternates': enc.encode(`${DONOR_OBJECTS}\n`) },
+      });
+      await ctx.fs.mkdir(DONOR_OBJECTS);
+      await init(ctx);
+      return ctx;
+    };
+
+    const commitTreeOf = async (ctx: Context, blobId: ObjectId): Promise<void> => {
+      const treeId = await writeObject(ctx, {
+        type: 'tree' as const,
+        id: '' as ObjectId,
+        entries: [treeEntry(FILE_MODE.REGULAR, 'f.txt', blobId)],
+      });
+      const commitId = await writeObject(ctx, {
+        type: 'commit' as const,
+        id: '' as ObjectId,
+        data: {
+          tree: treeId,
+          parents: [],
+          author: AUTHOR,
+          committer: AUTHOR,
+          message: 'borrowed',
+          extraHeaders: [],
+        },
+      });
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+    };
+
+    const looseInDonor = async (ctx: Context, content: string): Promise<ObjectId> => {
+      const bytes = enc.encode(content);
+      const raw = new Uint8Array([...serializeHeader('blob', bytes.length), ...bytes]);
+      const id = (await ctx.hash.hashHex(raw)) as ObjectId;
+      await ctx.fs.write(
+        `${DONOR_OBJECTS}/${computeLooseObjectPath(id)}`,
+        await ctx.compressor.deflate(raw),
+      );
+      return id;
+    };
+
+    describe('When gc', () => {
+      it('Then donor objects are not packed into the local pack', async () => {
+        // Arrange
+        const ctx = await borrower();
+        const donorBlob = await looseInDonor(ctx, 'donor-owned');
+        await commitTreeOf(ctx, donorBlob);
+        const sut = maintenance;
+
+        // Act
+        await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        const local = await enumerateObjectsMod.enumerateObjects(ctx, { scope: 'local' });
+        expect(local).not.toContain(donorBlob);
+        expect(local).toHaveLength(2);
+      });
+
+      it('Then a donor loose file is never unlinked', async () => {
+        // Arrange
+        const ctx = await borrower();
+        const donorBlob = await looseInDonor(ctx, 'donor-owned');
+        await commitTreeOf(ctx, donorBlob);
+        const unreachable = await looseInDonor(ctx, 'donor-garbage');
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = now\n');
+        const sut = maintenance;
+
+        // Act
+        await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        const donorFile = (id: ObjectId) => `${DONOR_OBJECTS}/${computeLooseObjectPath(id)}`;
+        expect(await ctx.fs.exists(donorFile(donorBlob))).toBe(true);
+        expect(await ctx.fs.exists(donorFile(unreachable))).toBe(true);
+      });
+    });
+
+    describe('When gc and the borrower holds a loose copy of a donor-packed object', () => {
+      it('Then the loose copy is pruned and no local pack is written', async () => {
+        // Arrange
+        const ctx = await borrower();
+        const [donorPacked] = await writeSyntheticPackIn(ctx, DONOR_OBJECTS, 'donor', [
+          { kind: 'base', type: 'blob', content: enc.encode('donor-packed') },
+        ]);
+        const looseCopy = await writeLooseObject(ctx, makeBlob('donor-packed'));
+        expect(await isLoose(ctx, looseCopy)).toBe(true);
+        await commitTreeOf(ctx, donorPacked as ObjectId);
+        const sut = maintenance;
+
+        // Act
+        await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(await isLoose(ctx, looseCopy)).toBe(false);
+        const local = await enumerateObjectsMod.enumerateObjects(ctx, { scope: 'local' });
+        expect(local).not.toContain(donorPacked);
+        expect(local).toHaveLength(2);
+      });
+
+      it('Then an unreachable loose copy is pruned rather than crufted', async () => {
+        // Arrange
+        const ctx = await borrower();
+        const [donorPacked] = await writeSyntheticPackIn(ctx, DONOR_OBJECTS, 'donor', [
+          { kind: 'base', type: 'blob', content: enc.encode('donor-packed') },
+        ]);
+        const looseCopy = await writeLooseObject(ctx, makeBlob('donor-packed'));
+        await commitTreeOf(ctx, await writeObject(ctx, makeBlob('other')));
+        const sut = maintenance;
+
+        // Act
+        await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(await isLoose(ctx, looseCopy)).toBe(false);
+        const local = await enumerateObjectsMod.enumerateObjects(ctx, { scope: 'local' });
+        expect(local).not.toContain(donorPacked);
       });
     });
   });
