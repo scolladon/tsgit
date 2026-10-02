@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   ambiguousOidPrefix,
   cleanFilterFailed,
+  formatPlaceholderUnsupported,
   grepLineTooLong,
   invalidPushDefault,
   invalidSequencerTodo,
@@ -1617,6 +1618,36 @@ describe('grepLineTooLong error', () => {
         // Assert
         expect(result.message).toBe(
           'GREP_LINE_TOO_LONG: grep line too long to decode: 536870889 bytes exceeds the 536870888-byte limit',
+        );
+      });
+    });
+  });
+});
+
+describe('formatPlaceholderUnsupported error', () => {
+  describe('Given a placeholder git does not support in this command', () => {
+    describe('When reading .message', () => {
+      it('Then message is git fatal line for it', () => {
+        // Arrange & Act
+        const result = formatPlaceholderUnsupported('%(total)');
+
+        // Assert
+        expect(result.message).toBe(
+          'FORMAT_PLACEHOLDER_UNSUPPORTED: %(total) is not supported by this command',
+        );
+      });
+    });
+  });
+
+  describe('Given an unparsable colour placeholder', () => {
+    describe('When reading .message', () => {
+      it('Then message is git pretty-format parse failure', () => {
+        // Arrange & Act
+        const result = formatPlaceholderUnsupported('%C');
+
+        // Assert
+        expect(result.message).toBe(
+          'FORMAT_PLACEHOLDER_UNSUPPORTED: unable to parse --pretty format',
         );
       });
     });

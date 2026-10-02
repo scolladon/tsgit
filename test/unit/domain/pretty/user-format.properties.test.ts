@@ -7,6 +7,7 @@ import {
   type FormatOutput,
   formatCommit,
   formatRequirements,
+  type SignatureCheck,
   scanPlaceholders,
 } from '../../../../src/domain/pretty/user-format.js';
 
@@ -70,17 +71,43 @@ const fragmentArb = fc.constantFrom(
   '%Zz',
   '%(unknown)',
   '%+w(5)',
+  '%d',
+  '%(decorate)',
+  '%G?',
+  '%GT',
+  '%Gx',
+  '%(describe)',
+  '%(describe:foo)',
 );
 
 const formatArb = fc.array(fragmentArb, { maxLength: 12 }).map((parts) => parts.join(''));
 
+const UNSIGNED: SignatureCheck = {
+  result: 'N',
+  trust: 'undefined',
+  signer: '',
+  key: '',
+  fingerprint: '',
+  primaryKeyFingerprint: '',
+  output: '',
+};
+
 interface Reads {
   readonly abbrev: Set<AbbrevKind>;
   mailmap: boolean;
+  decorations: boolean;
+  signature: boolean;
+  describe: boolean;
 }
 
 const recordingEnv = (): { readonly env: FormatEnv; readonly reads: Reads } => {
-  const reads: Reads = { abbrev: new Set(), mailmap: false };
+  const reads: Reads = {
+    abbrev: new Set(),
+    mailmap: false,
+    decorations: false,
+    signature: false,
+    describe: false,
+  };
   const env: FormatEnv = {
     commitId: 'd'.repeat(40),
     nowSeconds: 1790000000,
@@ -93,6 +120,18 @@ const recordingEnv = (): { readonly env: FormatEnv; readonly reads: Reads } => {
       reads.mailmap = true;
       return ident;
     },
+    get decorations() {
+      reads.decorations = true;
+      return [];
+    },
+    get signature() {
+      reads.signature = true;
+      return UNSIGNED;
+    },
+    get describe() {
+      reads.describe = true;
+      return 'v1';
+    },
   };
   return { env, reads };
 };
@@ -103,7 +142,7 @@ describe('Given an arbitrary format over a well-formed commit', () => {
       fc.assert(
         fc.property(formatArb, (format) => {
           // Arrange
-          const tokens = scanPlaceholders(encode(format));
+          const tokens = scanPlaceholders(encode(format), BUDGET);
           const { env, reads } = recordingEnv();
           const sut = formatRequirements;
 
@@ -114,6 +153,9 @@ describe('Given an arbitrary format over a well-formed commit', () => {
           // Assert
           expect(requirements.abbrev).toEqual(reads.abbrev);
           expect(requirements.mailmap).toBe(reads.mailmap);
+          expect(requirements.decorations).toBe(reads.decorations);
+          expect(requirements.signature).toBe(reads.signature);
+          expect(requirements.describe?.args !== undefined).toBe(reads.describe);
         }),
         { numRuns: NUM_RUNS },
       );

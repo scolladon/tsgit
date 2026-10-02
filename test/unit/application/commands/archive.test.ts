@@ -1,7 +1,18 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import type { ArchiveEntry } from '../../../../src/application/commands/archive.js';
 import { archive } from '../../../../src/application/commands/archive.js';
+import { describe as describeCommit } from '../../../../src/application/commands/describe.js';
+import {
+  abbreviateObjectId,
+  abbreviateObjectIdFrom,
+} from '../../../../src/application/primitives/abbreviate-object-id.js';
+import { readBlobContentInStreamOrder } from '../../../../src/application/primitives/internal/blob-source.js';
+import { readMailmap } from '../../../../src/application/primitives/internal/read-mailmap.js';
+import { loadRefDecorations } from '../../../../src/application/primitives/internal/ref-decorations.js';
+import { verifyCommitSignature } from '../../../../src/application/primitives/internal/verify-commit-signature.js';
+import { readBlob } from '../../../../src/application/primitives/read-blob.js';
+import { readRawObject } from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import {
@@ -15,6 +26,80 @@ import { type Context, createSession } from '../../../../src/ports/context.js';
 import { buildTreeChain, instrumentedContext, seedMaxTreeDepth } from '../primitives/fixtures.js';
 import { writeSyntheticPackIn } from '../primitives/pack-fixture.js';
 import { asBareContext } from './fixtures.js';
+
+vi.mock(
+  '../../../../src/application/primitives/abbreviate-object-id.js',
+  async (importOriginal) => {
+    const actual =
+      await importOriginal<
+        typeof import('../../../../src/application/primitives/abbreviate-object-id.js')
+      >();
+    return {
+      ...actual,
+      abbreviateObjectId: vi.fn(actual.abbreviateObjectId),
+      abbreviateObjectIdFrom: vi.fn(actual.abbreviateObjectIdFrom),
+    };
+  },
+);
+
+vi.mock(
+  '../../../../src/application/primitives/internal/ref-decorations.js',
+  async (importOriginal) => {
+    const actual =
+      await importOriginal<
+        typeof import('../../../../src/application/primitives/internal/ref-decorations.js')
+      >();
+    return { ...actual, loadRefDecorations: vi.fn(actual.loadRefDecorations) };
+  },
+);
+
+vi.mock(
+  '../../../../src/application/primitives/internal/read-mailmap.js',
+  async (importOriginal) => {
+    const actual =
+      await importOriginal<
+        typeof import('../../../../src/application/primitives/internal/read-mailmap.js')
+      >();
+    return { ...actual, readMailmap: vi.fn(actual.readMailmap) };
+  },
+);
+
+vi.mock(
+  '../../../../src/application/primitives/internal/verify-commit-signature.js',
+  async (importOriginal) => {
+    const actual =
+      await importOriginal<
+        typeof import('../../../../src/application/primitives/internal/verify-commit-signature.js')
+      >();
+    return { ...actual, verifyCommitSignature: vi.fn(actual.verifyCommitSignature) };
+  },
+);
+
+vi.mock('../../../../src/application/commands/describe.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../../../../src/application/commands/describe.js')>();
+  return { ...actual, describe: vi.fn(actual.describe) };
+});
+
+vi.mock('../../../../src/application/primitives/read-blob.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../../../../src/application/primitives/read-blob.js')>();
+  return { ...actual, readBlob: vi.fn(actual.readBlob) };
+});
+
+vi.mock(
+  '../../../../src/application/primitives/internal/blob-source.js',
+  async (importOriginal) => {
+    const actual =
+      await importOriginal<
+        typeof import('../../../../src/application/primitives/internal/blob-source.js')
+      >();
+    return {
+      ...actual,
+      readBlobContentInStreamOrder: vi.fn(actual.readBlobContentInStreamOrder),
+    };
+  },
+);
 
 // ---------------------------------------------------------------------------
 // Shared fixtures
@@ -1191,6 +1276,619 @@ describe('Given an invalid entry name inside an export-ignored subtree', () => {
       const data = (caught as { data?: { code?: string; reason?: string } })?.data;
       expect(data?.code).toBe('INVALID_INDEX_ENTRY');
       expect(data?.reason).toBe("'..' segment rejected");
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// export-subst — $Format:…$ expansion against the archived commit
+// ---------------------------------------------------------------------------
+
+const textDecoder = new TextDecoder();
+
+const seedSubstCommit = async (
+  specs: ReadonlyArray<Spec>,
+  ctx: Context = createMemoryContext(),
+): Promise<{ readonly ctx: Context; readonly tree: ObjectId; readonly commitId: ObjectId }> => {
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+  const tree = await writeSpecTree(ctx, specs);
+  const commitId = await writeObject(ctx, makeCommit(tree));
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+  return { ctx, tree, commitId };
+};
+
+const archivedText = async (ctx: Context, treeish: string): Promise<Record<string, string>> => {
+  const result = await archive(ctx, { treeish });
+  const contents: Record<string, string> = {};
+  for await (const entry of result.entries) {
+    if (entry.content) contents[entry.path] = textDecoder.decode(entry.content);
+  }
+  return contents;
+};
+
+const SUBST_ALL = '* export-subst\n';
+
+describe('archive export-subst routing', () => {
+  afterEach(() => {
+    vi.mocked(readBlob).mockClear();
+    vi.mocked(readBlobContentInStreamOrder).mockClear();
+  });
+
+  describe('Given an export-subst file archived from the raw tree id', () => {
+    describe('When the entries are iterated', () => {
+      it('Then the file is kept verbatim', async () => {
+        // Arrange
+        const { ctx, tree } = await seedSubstCommit([
+          ['.gitattributes', SUBST_ALL],
+          ['f', 'id $Format:%H$'],
+        ]);
+        const sut = archivedText;
+
+        // Act
+        const result = await sut(ctx, tree);
+
+        // Assert
+        expect(result.f).toBe('id $Format:%H$');
+      });
+    });
+  });
+
+  describe('Given an export-subst file archived through an annotated tag', () => {
+    describe('When the entries are iterated', () => {
+      it('Then the placeholder expands against the peeled commit', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedSubstCommit([
+          ['.gitattributes', SUBST_ALL],
+          ['f', 'id $Format:%H$'],
+        ]);
+        const tagId = await writeObject(ctx, makeTag(commitId, 'v1'));
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/v1`, `${tagId}\n`);
+        const sut = archivedText;
+
+        // Act
+        const result = await sut(ctx, 'v1');
+
+        // Assert
+        expect(result.f).toBe(`id ${commitId}`);
+      });
+    });
+  });
+
+  describe('Given an export-subst file with abbreviated ids', () => {
+    describe('When the entries are iterated', () => {
+      it("Then they are git's unique abbreviations", async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+        const tree = await writeSpecTree(ctx, [
+          ['.gitattributes', SUBST_ALL],
+          ['f', '$Format:%h|%t|%p$'],
+        ]);
+        const parent = await writeObject(ctx, makeCommit(tree));
+        const commitId = await writeObject(ctx, makeCommit(tree, [parent]));
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+        const sut = archivedText;
+
+        // Act
+        const result = await sut(ctx, 'HEAD');
+
+        // Assert
+        expect(result.f).toBe(`${commitId.slice(0, 7)}|${tree.slice(0, 7)}|${parent.slice(0, 7)}`);
+      });
+    });
+  });
+
+  describe('Given an executable export-subst file', () => {
+    describe('When the entries are iterated', () => {
+      it('Then the placeholder expands', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedSubstCommit([
+          ['.gitattributes', SUBST_ALL],
+          ['run', '$Format:%H$', FILE_MODE.EXECUTABLE],
+        ]);
+        const sut = archivedText;
+
+        // Act
+        const result = await sut(ctx, 'HEAD');
+
+        // Assert
+        expect(result.run).toBe(commitId);
+      });
+    });
+  });
+
+  describe('Given a symlink with export-subst', () => {
+    describe('When the entries are iterated', () => {
+      it('Then the link target is kept verbatim', async () => {
+        // Arrange
+        const { ctx } = await seedSubstCommit([
+          ['.gitattributes', SUBST_ALL],
+          ['link', '$Format:%H$', FILE_MODE.SYMLINK],
+        ]);
+        const sut = archivedText;
+
+        // Act
+        const result = await sut(ctx, 'HEAD');
+
+        // Assert
+        expect(result.link).toBe('$Format:%H$');
+      });
+    });
+  });
+
+  describe('Given an export-subst file above core.bigFileThreshold', () => {
+    const bigFormat = `${'x'.repeat(THRESHOLD)}$Format:%H$`;
+
+    describe('When it is archived from the commit', () => {
+      it('Then it is read whole and expanded, never streamed', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8('/repo/.git/config', `[core]\n\tbigFileThreshold = ${THRESHOLD}\n`);
+        const { commitId } = await seedSubstCommit(
+          [
+            ['.gitattributes', 'big export-subst\n'],
+            ['big', bigFormat],
+          ],
+          ctx,
+        );
+        const sut = archivedText;
+
+        // Act
+        const result = await sut(ctx, 'HEAD');
+
+        // Assert
+        expect(result.big).toBe(`${'x'.repeat(THRESHOLD)}${commitId}`);
+        expect(readBlobContentInStreamOrder).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('When it is archived from the raw tree id', () => {
+      it('Then it is still read whole, the attribute alone deciding', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8('/repo/.git/config', `[core]\n\tbigFileThreshold = ${THRESHOLD}\n`);
+        const { tree } = await seedSubstCommit(
+          [
+            ['.gitattributes', 'big export-subst\n'],
+            ['big', bigFormat],
+            ['other', 'y'.repeat(THRESHOLD + 1)],
+          ],
+          ctx,
+        );
+        const sut = archivedText;
+
+        // Act
+        const result = await sut(ctx, tree);
+
+        // Assert
+        expect(result.big).toBe(bigFormat);
+        expect(vi.mocked(readBlobContentInStreamOrder).mock.calls.length).toBe(1);
+      });
+    });
+  });
+});
+
+const seedTaggedHistory = async (
+  files: ReadonlyArray<Spec>,
+): Promise<{ readonly ctx: Context; readonly commitId: ObjectId }> => {
+  const ctx = createMemoryContext();
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+  const tree = await writeSpecTree(ctx, [['.gitattributes', SUBST_ALL], ...files]);
+  const parent = await writeObject(ctx, makeCommit(tree));
+  const commitId = await writeObject(ctx, makeCommit(tree, [parent]));
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+  const tagId = await writeObject(ctx, makeTag(parent, 'v1'));
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/v1`, `${tagId}\n`);
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/lw`, `${commitId}\n`);
+  return { ctx, commitId };
+};
+
+describe('archive export-subst describe budget', () => {
+  describe('Given two files each asking for a description', () => {
+    describe('When the entries are iterated', () => {
+      it('Then the first in pre-order is described and the second kept literal', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedTaggedHistory([
+          ['a.txt', 'A=$Format:%(describe)$'],
+          ['z.txt', 'Z=$Format:%(describe)$'],
+        ]);
+        const sut = archivedText;
+
+        // Act
+        const result = await sut(ctx, 'HEAD');
+
+        // Assert
+        expect(result['a.txt']).toBe(`A=v1-1-g${commitId.slice(0, 7)}`);
+        expect(result['z.txt']).toBe('Z=%(describe)');
+      });
+    });
+  });
+
+  describe('Given a malformed describe placeholder in the first file', () => {
+    describe('When the entries are iterated', () => {
+      it('Then it is kept literal and still spends the budget', async () => {
+        // Arrange
+        const { ctx } = await seedTaggedHistory([
+          ['a.txt', 'A=$Format:%(describe:foo)$'],
+          ['z.txt', 'Z=$Format:%(describe)$'],
+        ]);
+        const sut = archivedText;
+
+        // Act
+        const result = await sut(ctx, 'HEAD');
+
+        // Assert
+        expect(result['a.txt']).toBe('A=%(describe:foo)');
+        expect(result['z.txt']).toBe('Z=%(describe)');
+      });
+    });
+  });
+
+  describe('Given a repository without tags', () => {
+    describe('When two files ask for a description', () => {
+      it('Then the first expands to nothing and still spends the budget', async () => {
+        // Arrange
+        const { ctx } = await seedSubstCommit([
+          ['.gitattributes', SUBST_ALL],
+          ['a.txt', 'A=$Format:%(describe)$'],
+          ['z.txt', 'Z=$Format:%(describe)$'],
+        ]);
+        const sut = archivedText;
+
+        // Act
+        const result = await sut(ctx, 'HEAD');
+
+        // Assert
+        expect(result['a.txt']).toBe('A=');
+        expect(result['z.txt']).toBe('Z=%(describe)');
+      });
+    });
+  });
+
+  describe.each([
+    ['abbrev=0', (_id: string) => 'v1'],
+    ['abbrev=5', (id: string) => `v1-1-g${id.slice(0, 5)}`],
+    ['abbrev=-3', (id: string) => `v1-1-g${id.slice(0, 4)}`],
+    ['abbrev=99', (id: string) => `v1-1-g${id}`],
+    ['tags', (_id: string) => 'lw'],
+    ['match=x*', (_id: string) => ''],
+    ['exclude=v*', (_id: string) => ''],
+    ['tags,exclude=lw', (id: string) => `v1-1-g${id.slice(0, 7)}`],
+  ])('Given a describe placeholder with %s', (args, expected) => {
+    describe('When the entries are iterated', () => {
+      it('Then the describe options shape the description', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedTaggedHistory([['f', `$Format:%(describe:${args})$`]]);
+        const sut = archivedText;
+
+        // Act
+        const result = await sut(ctx, 'HEAD');
+
+        // Assert
+        expect(result.f).toBe(expected(commitId));
+      });
+    });
+  });
+});
+
+const iterateUntilFailure = async (
+  ctx: Context,
+): Promise<{ readonly seen: string[]; readonly failure: unknown }> => {
+  const seen: string[] = [];
+  try {
+    const result = await archive(ctx, { treeish: 'HEAD' });
+    for await (const entry of result.entries) seen.push(entry.path);
+  } catch (error) {
+    return { seen, failure: (error as TsgitError).data };
+  }
+  return { seen, failure: undefined };
+};
+
+describe('archive export-subst refusals', () => {
+  describe.each([
+    ['%(count)', 'not-supported'],
+    ['%(total)', 'not-supported'],
+    ['%C', 'unparsable'],
+  ])('Given a file whose format reaches %s', (placeholder, reason) => {
+    describe('When the entries are iterated', () => {
+      it('Then iteration rejects at that file after the earlier entries', async () => {
+        // Arrange
+        const format = placeholder === '%C' ? '%C(always,zzz)' : placeholder;
+        const { ctx } = await seedSubstCommit([
+          ['.gitattributes', SUBST_ALL],
+          ['a.txt', 'plain'],
+          ['b.txt', `$Format:%H${format}$`],
+          ['c.txt', 'never reached'],
+        ]);
+        const sut = iterateUntilFailure;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.seen).toEqual(['.gitattributes', 'a.txt']);
+        expect(result.failure).toEqual({
+          code: 'FORMAT_PLACEHOLDER_UNSUPPORTED',
+          placeholder,
+          reason,
+        });
+      });
+    });
+  });
+});
+
+const RESOLVERS = [
+  ['abbreviateObjectId', abbreviateObjectId],
+  ['abbreviateObjectIdFrom', abbreviateObjectIdFrom],
+  ['loadRefDecorations', loadRefDecorations],
+  ['readMailmap', readMailmap],
+  ['verifyCommitSignature', verifyCommitSignature],
+  ['describe', describeCommit],
+] as const;
+
+const SIGNATURE = '-----BEGIN PGP SIGNATURE-----\n\nabc\n-----END PGP SIGNATURE-----';
+
+describe('archive export-subst resolved data', () => {
+  beforeEach(() => {
+    for (const [, resolver] of RESOLVERS) vi.mocked(resolver).mockClear();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  describe.each([
+    ['an export-subst file with only the full id', SUBST_ALL, '$Format:%H$'],
+    ['a file without export-subst', '', '$Format:%h%aN%d%G?%(describe)$'],
+    ['an export-subst file without any occurrence', SUBST_ALL, 'plain %h text'],
+  ])('Given %s', (_title, attributes, content) => {
+    describe('When the entries are iterated', () => {
+      it.each(RESOLVERS)('Then %s is never called', async (_name, resolver) => {
+        // Arrange
+        const { ctx } = await seedSubstCommit([
+          ['.gitattributes', attributes],
+          ['f', content],
+        ]);
+        const sut = archivedText;
+
+        // Act
+        await sut(ctx, 'HEAD');
+
+        // Assert
+        expect(resolver).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given a worktree .mailmap and an ident placeholder read through the mailmap', () => {
+    describe('When the entries are iterated', () => {
+      it('Then the ident is mapped through the worktree mailmap', async () => {
+        // Arrange
+        const { ctx } = await seedSubstCommit([
+          ['.gitattributes', SUBST_ALL],
+          ['.mailmap', 'Ignored <ignored@example.com> Ada <ada@example.com>\n'],
+          ['f', '$Format:%aN|%aE|%an$'],
+        ]);
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.workDir}/.mailmap`,
+          'Mapped Name <mapped@example.com> Ada <ada@example.com>\n',
+        );
+        const sut = archivedText;
+
+        // Act
+        const result = await sut(ctx, 'HEAD');
+
+        // Assert
+        expect(result.f).toBe('Mapped Name|mapped@example.com|Ada');
+      });
+    });
+  });
+
+  describe('Given a decoration placeholder', () => {
+    describe('When the entries are iterated', () => {
+      it("Then it lists the repository's refs pointing at the commit", async () => {
+        // Arrange
+        const { ctx } = await seedTaggedHistory([['f', '$Format:%D$']]);
+        const sut = archivedText;
+
+        // Act
+        const result = await sut(ctx, 'HEAD');
+
+        // Assert
+        expect(result.f).toBe('HEAD -> main, tag: lw');
+      });
+    });
+  });
+
+  describe('Given an unsigned commit and signature placeholders', () => {
+    describe('When the entries are iterated', () => {
+      it('Then they read as unsigned without running a verifier', async () => {
+        // Arrange
+        const { ctx } = await seedSubstCommit([
+          ['.gitattributes', SUBST_ALL],
+          ['f', '$Format:%G?|%GT|%GS$'],
+        ]);
+        const sut = archivedText;
+
+        // Act
+        const result = await sut(ctx, 'HEAD');
+
+        // Assert
+        expect(result.f).toBe('N|undefined|');
+        expect(verifyCommitSignature).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Given a signed commit and signature placeholders', () => {
+    describe('When the entries are iterated', () => {
+      it('Then the verifier receives the commit without its signature header', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+        const tree = await writeSpecTree(ctx, [
+          ['.gitattributes', SUBST_ALL],
+          ['f', '$Format:%G?|%GT$'],
+        ]);
+        const unsigned = makeCommit(tree);
+        const commitId = await writeObject(ctx, {
+          ...unsigned,
+          data: { ...unsigned.data, gpgSignature: SIGNATURE },
+        });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+        const unsignedId = await writeObject(ctx, unsigned);
+        const { content: payload } = await readRawObject(ctx, unsignedId);
+        const sut = archivedText;
+
+        // Act
+        const result = await sut(ctx, 'HEAD');
+
+        // Assert
+        expect(result.f).toBe('N|undefined');
+        expect(verifyCommitSignature).toHaveBeenCalledTimes(1);
+        expect(vi.mocked(verifyCommitSignature).mock.calls[0]?.[1]).toEqual({
+          payload,
+          signature: `${SIGNATURE}\n`,
+        });
+      });
+    });
+  });
+
+  describe('Given a signed commit and a configured gpg program', () => {
+    describe('When the entries are iterated', () => {
+      it('Then the verifier receives the gpg configuration', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[gpg]\n\tprogram = /bin/false\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+        const tree = await writeSpecTree(ctx, [
+          ['.gitattributes', SUBST_ALL],
+          ['f', '$Format:%G?$'],
+        ]);
+        const unsigned = makeCommit(tree);
+        const commitId = await writeObject(ctx, {
+          ...unsigned,
+          data: { ...unsigned.data, gpgSignature: SIGNATURE },
+        });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+        const sut = archivedText;
+
+        // Act
+        await sut(ctx, 'HEAD');
+
+        // Assert
+        expect(vi.mocked(verifyCommitSignature).mock.calls[0]?.[1]).toMatchObject({
+          gpg: { program: '/bin/false' },
+        });
+      });
+    });
+  });
+
+  describe('Given a commit no ref points at and a decoration placeholder', () => {
+    describe('When it is archived by id', () => {
+      it('Then the decorations are empty', async () => {
+        // Arrange
+        const { ctx, tree, commitId } = await seedSubstCommit([
+          ['.gitattributes', SUBST_ALL],
+          ['f', '[$Format:%D$]'],
+        ]);
+        const orphan = await writeObject(ctx, makeCommit(tree, [commitId]));
+        const sut = archivedText;
+
+        // Act
+        const result = await sut(ctx, orphan);
+
+        // Assert
+        expect(result.f).toBe('[]');
+      });
+    });
+  });
+
+  describe('Given describe failing with an unexpected error', () => {
+    describe('When the entries are iterated', () => {
+      it('Then the error propagates', async () => {
+        // Arrange
+        const { ctx } = await seedTaggedHistory([['f', '$Format:%(describe)$']]);
+        const boom = new Error('boom');
+        vi.mocked(describeCommit).mockRejectedValueOnce(boom);
+        const sut = archivedText;
+
+        // Act
+        const result = await sut(ctx, 'HEAD').catch((error: unknown) => error);
+
+        // Assert
+        expect(result).toBe(boom);
+      });
+    });
+  });
+
+  describe('Given two files with abbreviated ids', () => {
+    describe('When the entries are iterated', () => {
+      it('Then each id is abbreviated once per archive', async () => {
+        // Arrange
+        const { ctx, commitId } = await seedSubstCommit([
+          ['.gitattributes', SUBST_ALL],
+          ['a', '$Format:%h$'],
+          ['b', '$Format:%h$'],
+        ]);
+        const sut = archivedText;
+
+        // Act
+        const result = await sut(ctx, 'HEAD');
+
+        // Assert
+        expect(result.b).toBe(commitId.slice(0, 7));
+        expect(abbreviateObjectId).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Given a relative date placeholder', () => {
+    describe('When the entries are iterated two hours after the commit', () => {
+      it('Then the date is relative to the clock read for the archive', async () => {
+        // Arrange
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime((COMMITTER_TIMESTAMP + 2 * 3600) * 1000);
+        const { ctx } = await seedSubstCommit([
+          ['.gitattributes', SUBST_ALL],
+          ['f', '$Format:%cr$'],
+        ]);
+        const sut = archivedText;
+
+        // Act
+        const result = await sut(ctx, 'HEAD');
+
+        // Assert
+        expect(result.f).toBe('2 hours ago');
+      });
+    });
+  });
+
+  describe('Given trailer.separators and a trailers placeholder', () => {
+    describe('When the entries are iterated', () => {
+      it('Then the configured separator delimits the trailer', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[trailer]\n\tseparators = "#"\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+        const tree = await writeSpecTree(ctx, [
+          ['.gitattributes', SUBST_ALL],
+          ['f', '$Format:%(trailers)$|'],
+        ]);
+        const base = makeCommit(tree);
+        const commitId = await writeObject(ctx, {
+          ...base,
+          data: { ...base.data, message: 's\n\nBug #42\n' },
+        });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitId}\n`);
+        const sut = archivedText;
+
+        // Act
+        const result = await sut(ctx, 'HEAD');
+
+        // Assert
+        expect(result.f).toBe('Bug #42\n|');
+      });
     });
   });
 });

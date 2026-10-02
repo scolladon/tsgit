@@ -212,6 +212,14 @@ function renderBundleBadHeader(data: Extract<CommandError, { code: 'BUNDLE_BAD_H
   }
 }
 
+function formatPlaceholderDetail(
+  data: Extract<TsgitErrorData, { readonly code: 'FORMAT_PLACEHOLDER_UNSUPPORTED' }>,
+): string {
+  return data.reason === 'unparsable'
+    ? 'unable to parse --pretty format'
+    : `${data.placeholder} is not supported by this command`;
+}
+
 function extractDetail(data: TsgitErrorData): string {
   switch (data.code) {
     case 'INVALID_OBJECT_ID':
@@ -638,6 +646,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `bad config variable 'push.default' in file '${data.source}' at line ${data.line}`;
     case 'GREP_LINE_TOO_LONG':
       return `grep line too long to decode: ${data.length} bytes exceeds the ${data.limit}-byte limit`;
+    case 'FORMAT_PLACEHOLDER_UNSUPPORTED':
+      return formatPlaceholderDetail(data);
     default: {
       const _exhaustive: never = data;
       return String(_exhaustive);

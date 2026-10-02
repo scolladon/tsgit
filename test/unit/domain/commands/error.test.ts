@@ -26,6 +26,7 @@ import {
   configValueInvalid,
   emptyCommitMessage,
   emptyPathspec,
+  formatPlaceholderUnsupported,
   fsckCannotDemote,
   fsckUnknownMsgId,
   gitignoreFileTooLarge,
@@ -2066,6 +2067,43 @@ describe('domain commands error — extractDetail message formatting', () => {
           code: 'GREP_LINE_TOO_LONG',
           length: 536_870_889,
           limit: 536_870_888,
+        });
+      });
+    });
+  });
+
+  describe('Given the formatPlaceholderUnsupported error helper', () => {
+    describe('When called with a placeholder git does not support in this command', () => {
+      it('Then data carries the code, the placeholder and the not-supported reason', () => {
+        // Arrange
+        const sut = formatPlaceholderUnsupported;
+
+        // Act
+        const result = sut('%(count)');
+
+        // Assert
+        expect(result).toBeInstanceOf(TsgitError);
+        expect(result.data).toEqual({
+          code: 'FORMAT_PLACEHOLDER_UNSUPPORTED',
+          placeholder: '%(count)',
+          reason: 'not-supported',
+        });
+      });
+    });
+
+    describe('When called with an unparsable colour placeholder', () => {
+      it('Then data carries the unparsable reason', () => {
+        // Arrange
+        const sut = formatPlaceholderUnsupported;
+
+        // Act
+        const result = sut('%C');
+
+        // Assert
+        expect(result.data).toEqual({
+          code: 'FORMAT_PLACEHOLDER_UNSUPPORTED',
+          placeholder: '%C',
+          reason: 'unparsable',
         });
       });
     });

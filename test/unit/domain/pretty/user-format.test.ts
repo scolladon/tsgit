@@ -4,6 +4,8 @@ import {
   type FormatEnv,
   type FormatOutput,
   formatCommit,
+  formatRequirements,
+  type SignatureCheck,
   scanPlaceholders,
 } from '../../../../src/domain/pretty/user-format.js';
 
@@ -1090,6 +1092,296 @@ describe('formatCommit commit encoding', () => {
 
       // Assert
       expect(decode(result.bytes)).toBe('café');
+    });
+  });
+});
+
+describe('formatCommit describe placeholders', () => {
+  const AVAILABLE = { describe: 1 } as const;
+  const SPENT = { describe: 0 } as const;
+  const DESCRIBED: FormatEnv = { ...ENV, describe: 'v1-2-g38096f7' };
+
+  const expandWith = (format: string, budget: { readonly describe: 0 | 1 }): FormatOutput => {
+    const tokens = scanPlaceholders(encode(format), budget);
+    return formatCommit(tokens, parseCommitView(rawCommit()), DESCRIBED, budget) as FormatOutput;
+  };
+
+  describe('Given an available budget, When two describe placeholders are expanded', () => {
+    it('Then the first is described and the second emitted literally', () => {
+      // Arrange
+      const sut = expandWith;
+
+      // Act
+      const result = sut('%(describe)|%(describe:tags)', AVAILABLE);
+
+      // Assert
+      expect(decode(result.bytes)).toBe('v1-2-g38096f7|%(describe:tags)');
+      expect(result.budget).toEqual(SPENT);
+      expect(result.parsedHeader).toBe(false);
+    });
+  });
+
+  describe('Given an available budget, When the first describe placeholder is malformed', () => {
+    it('Then it is declined and still spends the budget', () => {
+      // Arrange
+      const sut = expandWith;
+
+      // Act
+      const result = sut('%(describe:foo)|%(describe)', AVAILABLE);
+
+      // Assert
+      expect(decode(result.bytes)).toBe('%(describe:foo)|%(describe)');
+      expect(result.budget).toEqual(SPENT);
+    });
+  });
+
+  describe('Given a spent budget, When a describe placeholder holds a placeholder', () => {
+    it('Then the scan resumes after the percent sign', () => {
+      // Arrange
+      const sut = expandWith;
+
+      // Act
+      const result = sut('%(describe:match=%h)', SPENT);
+
+      // Assert
+      expect(decode(result.bytes)).toBe('%(describe:match=38096f7)');
+      expect(result.budget).toEqual(SPENT);
+    });
+  });
+
+  describe('Given an available budget, When the format holds no describe placeholder', () => {
+    it('Then the budget is handed back untouched', () => {
+      // Arrange
+      const sut = expandWith;
+
+      // Act
+      const result = sut('%h', AVAILABLE);
+
+      // Assert
+      expect(result.budget).toEqual(AVAILABLE);
+    });
+  });
+
+  describe('Given an environment without a description, When describing', () => {
+    it('Then it expands to nothing', () => {
+      // Arrange
+      const sut = formatCommit;
+      const tokens = scanPlaceholders(encode('[%(describe)]'), AVAILABLE);
+
+      // Act
+      const result = sut(tokens, parseCommitView(rawCommit()), ENV, AVAILABLE) as FormatOutput;
+
+      // Assert
+      expect(decode(result.bytes)).toBe('[]');
+    });
+  });
+});
+
+describe('formatCommit signature placeholders', () => {
+  const GOOD: SignatureCheck = {
+    result: 'G',
+    trust: 'fully',
+    signer: 'A U Thor <author@example.com>',
+    key: 'ABCDEF0123456789',
+    fingerprint: 'F1F2',
+    primaryKeyFingerprint: 'P1P2',
+    output: 'gpg: Good signature\n',
+  };
+  const expandSigned = (format: string, signature?: SignatureCheck): string =>
+    expand(format, rawCommit(), signature === undefined ? ENV : { ...ENV, signature });
+
+  describe('Given a verified signature, When every signature placeholder is expanded', () => {
+    it('Then each reads its field', () => {
+      // Arrange
+      const sut = expandSigned;
+
+      // Act
+      const result = sut('%G?|%GG|%GS|%GK|%GF|%GP|%GT', GOOD);
+
+      // Assert
+      expect(result).toBe(
+        'G|gpg: Good signature\n|A U Thor <author@example.com>|ABCDEF0123456789|F1F2|P1P2|fully',
+      );
+    });
+  });
+
+  describe.each([
+    ['undefined', 'U'],
+    ['never', 'U'],
+    ['marginal', 'G'],
+    ['ultimate', 'G'],
+  ] as const)('Given a good signature with %s trust, When %%G? is expanded', (trust, expected) => {
+    it(`Then it yields ${expected}`, () => {
+      // Arrange
+      const sut = expandSigned;
+
+      // Act
+      const result = sut('%G?', { ...GOOD, trust });
+
+      // Assert
+      expect(result).toBe(expected);
+    });
+  });
+
+  describe.each(['B', 'E', 'X', 'Y', 'R', 'N'] as const)(
+    'Given a %s verification result with undefined trust, When %%G? is expanded',
+    (letter) => {
+      it('Then it yields the result letter', () => {
+        // Arrange
+        const sut = expandSigned;
+
+        // Act
+        const result = sut('%G?', { ...GOOD, result: letter, trust: 'undefined' });
+
+        // Assert
+        expect(result).toBe(letter);
+      });
+    },
+  );
+
+  describe('Given no signature in the environment, When the placeholders are expanded', () => {
+    it('Then they read as an unsigned commit', () => {
+      // Arrange
+      const sut = expandSigned;
+
+      // Act
+      const result = sut('%G?|%GG|%GS|%GK|%GF|%GP|%GT|%Gx');
+
+      // Assert
+      expect(result).toBe('N||||||undefined|%Gx');
+    });
+  });
+
+  describe('Given a signature placeholder, When expanding', () => {
+    it('Then the commit header is not parsed', () => {
+      // Arrange
+      const sut = run;
+
+      // Act
+      const result = sut('%G?%GT') as FormatOutput;
+
+      // Assert
+      expect(result.parsedHeader).toBe(false);
+    });
+  });
+});
+
+describe('formatCommit over the buffer so far', () => {
+  const expandAfter = (prefix: string, format: string, raw: Uint8Array = rawCommit()): string => {
+    const tokens = scanPlaceholders(encode(format));
+    const result = formatCommit(tokens, parseCommitView(raw), ENV, BUDGET, encode(prefix));
+    return decode((result as FormatOutput).bytes);
+  };
+
+  describe('Given earlier output, When a plain placeholder is expanded', () => {
+    it('Then the result is the earlier output followed by the expansion', () => {
+      // Arrange
+      const sut = expandAfter;
+
+      // Act
+      const result = sut('pre ', '%h');
+
+      // Assert
+      expect(result).toBe('pre 38096f7');
+    });
+  });
+
+  describe('Given earlier output ending in line feeds, When an empty %-b is expanded', () => {
+    it('Then the line feeds of the earlier output are deleted', () => {
+      // Arrange
+      const sut = expandAfter;
+
+      // Act
+      const result = sut('x\n\n', '%-b', rawCommit('subject only\n'));
+
+      // Assert
+      expect(result).toBe('x');
+    });
+  });
+
+  describe('Given earlier output on the current line, When padding to a column', () => {
+    it('Then the column counts the earlier output', () => {
+      // Arrange
+      const sut = expandAfter;
+
+      // Act
+      const result = sut('l1\nabc', '%<|(10)%h|');
+
+      // Assert
+      expect(result).toBe('l1\nabc38096f7|');
+    });
+  });
+
+  describe('Given earlier output, When a wrap layout is applied', () => {
+    it('Then only the text after the earlier output is wrapped', () => {
+      // Arrange
+      const sut = expandAfter;
+
+      // Act
+      const result = sut('aaaa bbbb cccc', '%w(4,2,2)x y%w(0,0,0)');
+
+      // Assert
+      expect(result).toBe('aaaa bbbb cccc  x\n  y');
+    });
+  });
+});
+
+describe('formatRequirements for resolved data', () => {
+  describe.each([
+    ['%d', true],
+    ['%D', true],
+    ['%(decorate:prefix=[)', true],
+    ['%h%s', false],
+  ])('Given %s, When reading the requirements', (format, expected) => {
+    it(`Then decorations=${expected}`, () => {
+      // Arrange
+      const sut = formatRequirements;
+
+      // Act
+      const result = sut(scanPlaceholders(encode(format)));
+
+      // Assert
+      expect(result.decorations).toBe(expected);
+    });
+  });
+
+  describe.each([
+    ['%G?', true],
+    ['%GT', true],
+    ['%Gx', false],
+    ['%h', false],
+  ])('Given %s, When reading the requirements', (format, expected) => {
+    it(`Then signature=${expected}`, () => {
+      // Arrange
+      const sut = formatRequirements;
+
+      // Act
+      const result = sut(scanPlaceholders(encode(format)));
+
+      // Assert
+      expect(result.signature).toBe(expected);
+    });
+  });
+
+  describe.each([
+    [
+      '%(describe:tags)',
+      { describe: 1 } as const,
+      { args: { tags: true, abbrev: undefined, match: [], exclude: [] } },
+    ],
+    ['%(describe:foo)', { describe: 1 } as const, { args: undefined }],
+    ['%(describe)', { describe: 0 } as const, undefined],
+    ['%h', { describe: 1 } as const, undefined],
+  ])('Given %s under budget %o, When reading the requirements', (format, budget, expected) => {
+    it('Then the describe requirement is the spending placeholder', () => {
+      // Arrange
+      const sut = formatRequirements;
+
+      // Act
+      const result = sut(scanPlaceholders(encode(format), budget));
+
+      // Assert
+      expect(result.describe).toEqual(expected);
     });
   });
 });

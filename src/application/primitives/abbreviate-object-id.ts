@@ -59,14 +59,34 @@ const rivalsSharing = async (
   return [...new Set<ObjectId>(perSource.flat(2))].filter((other) => other !== id);
 };
 
-export const abbreviateObjectId = async (ctx: Context, id: ObjectId): Promise<string> => {
-  await assertValidAbbrevConfig(ctx);
-  await assertEverySourceLoadable(ctx);
-  const { sources } = await getObjectStore(ctx);
+const abbreviateFrom = async (
+  ctx: Context,
+  sources: ReadonlyArray<ObjectSource>,
+  id: ObjectId,
+  minLength: number,
+): Promise<string> => {
   const fullLength = ctx.hashConfig.hexLength;
-  const base = Math.min(await baseLength(ctx, sources), fullLength);
+  const base = Math.min(minLength, fullLength);
   if (base === fullLength) return id;
   const rivals = await rivalsSharing(ctx, sources, id, base);
   const longestShared = Math.max(base - 1, ...rivals.map((rival) => commonPrefixLength(id, rival)));
   return id.slice(0, Math.min(longestShared + 1, fullLength));
+};
+
+export const abbreviateObjectId = async (ctx: Context, id: ObjectId): Promise<string> => {
+  await assertValidAbbrevConfig(ctx);
+  await assertEverySourceLoadable(ctx);
+  const { sources } = await getObjectStore(ctx);
+  return abbreviateFrom(ctx, sources, id, await baseLength(ctx, sources));
+};
+
+/** `repo_find_unique_abbrev(oid, len)`: an explicit floor, as `describe --abbrev=<n>` asks. */
+export const abbreviateObjectIdFrom = async (
+  ctx: Context,
+  id: ObjectId,
+  minLength: number,
+): Promise<string> => {
+  await assertEverySourceLoadable(ctx);
+  const { sources } = await getObjectStore(ctx);
+  return abbreviateFrom(ctx, sources, id, minLength);
 };

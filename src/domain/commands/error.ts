@@ -347,7 +347,15 @@ export type CommandError =
       readonly source: string;
       readonly line: number;
     }
-  | { readonly code: 'GREP_LINE_TOO_LONG'; readonly length: number; readonly limit: number };
+  | { readonly code: 'GREP_LINE_TOO_LONG'; readonly length: number; readonly limit: number }
+  | {
+      readonly code: 'FORMAT_PLACEHOLDER_UNSUPPORTED';
+      readonly placeholder: string;
+      readonly reason: FormatPlaceholderReason;
+    };
+
+/** `not-supported`: git's `%(count)`/`%(total)` refusal; `unparsable`: a `%C(always,…)` it cannot parse. */
+export type FormatPlaceholderReason = 'not-supported' | 'unparsable';
 
 export const sanitize = sanitizeForDisplay;
 
@@ -1088,3 +1096,14 @@ export const invalidPushDefault = (value: string, source: string, line: number):
 // patterns never reach this: they match on raw bytes, with no decode.
 export const grepLineTooLong = (length: number, limit: number): TsgitError =>
   new TsgitError({ code: 'GREP_LINE_TOO_LONG', length, limit });
+
+const UNPARSABLE_COLOR = '%C';
+
+// `$Format:` expansion reached a placeholder git dies on. `%C` stands for an
+// unparsable `%C(always,…)` spec, which git reports as a format parse failure.
+export const formatPlaceholderUnsupported = (placeholder: string): TsgitError =>
+  new TsgitError({
+    code: 'FORMAT_PLACEHOLDER_UNSUPPORTED',
+    placeholder,
+    reason: placeholder === UNPARSABLE_COLOR ? 'unparsable' : 'not-supported',
+  });
