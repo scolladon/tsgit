@@ -1514,3 +1514,45 @@ describe('commitHeader / correctedCommitDatesEnabled — repo-settings class bou
     });
   });
 });
+
+describe('core.commitGraph', () => {
+  const graphUnder = async (value: string): Promise<{ ctx: Context; id: ObjectId }> => {
+    const ctx = await buildSeededContext();
+    const { c0, c1, c2, c3, c4 } = await buildFiveCommitHistory(ctx);
+    await writeCommitGraph(ctx, [[c0, c1, c2, c3, c4]]);
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, `[core]\n\tcommitGraph = ${value}\n`);
+    return { ctx, id: c4.id };
+  };
+
+  describe('Given a commit-graph and core.commitGraph = false', () => {
+    describe('When a graph-held commit header is asked for', () => {
+      it('Then no graph answers, as git leaves the graph unread', async () => {
+        // Arrange
+        const { ctx, id } = await graphUnder('false');
+        const sut = commitHeader;
+
+        // Act
+        const result = await sut(ctx, id);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a commit-graph and core.commitGraph = 1', () => {
+    describe('When a graph-held commit header is asked for', () => {
+      it('Then the graph answers', async () => {
+        // Arrange
+        const { ctx, id } = await graphUnder('1');
+        const sut = commitHeader;
+
+        // Act
+        const result = await sut(ctx, id);
+
+        // Assert
+        expect(result).toBeDefined();
+      });
+    });
+  });
+});

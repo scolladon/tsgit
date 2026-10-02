@@ -18,9 +18,11 @@ import {
   positionOf,
 } from '../../../domain/commit/commit-graph.js';
 import { invalidCommitGraphChunk } from '../../../domain/commit/error.js';
+import { parseGitBoolean } from '../../../domain/config/config-ini.js';
 import { TsgitError } from '../../../domain/error.js';
 import { ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
+import { findLastEntry } from '../config-read.js';
 import { getObjectStore, type ObjectSource, type ObjectStore } from '../object-store.js';
 import {
   commitGraphChainPathIn,
@@ -28,6 +30,9 @@ import {
   commitGraphPathIn,
 } from '../path-layout.js';
 import { assertRepoSettingsValid, repoSettingsVerdictSettled } from './repo-settings-gate.js';
+
+const COMMIT_GRAPH_KEY = 'commitGraph';
+
 import { isShallowRepository } from './shallow-set.js';
 
 /** Parents/root-tree/generation/date for one commit, sourced from the commit-graph. */
@@ -224,6 +229,7 @@ function computeLayerOffsets(layers: readonly CommitGraphLayer[]): readonly numb
 // inside the function whose promise `graphCache` stores — so it is paid once
 // per repo, never once per oid.
 async function loadGraphUncached(ctx: Context): Promise<LoadedGraph | undefined> {
+  if (!(await commitGraphEnabled(ctx))) return undefined;
   if (await isShallowRepository(ctx)) return undefined;
 
   const store = await getObjectStore(ctx);
@@ -232,6 +238,18 @@ async function loadGraphUncached(ctx: Context): Promise<LoadedGraph | undefined>
     if (graph !== undefined) return graph;
   }
   return undefined;
+}
+
+/**
+ * git's `core.commitGraph` (default true), read before any graph file: false
+ * leaves every graph unread. A malformed value reads as enabled here; its
+ * refusal belongs to git's repo-settings prologue.
+ */
+async function commitGraphEnabled(ctx: Context): Promise<boolean> {
+  const last = await findLastEntry(ctx, 'core', COMMIT_GRAPH_KEY);
+  if (last === undefined) return true;
+  const parsed = parseGitBoolean(last.value);
+  return !parsed.ok || parsed.value;
 }
 
 /** Git's `read_commit_graph_one`: the single file, else the chain. A corrupt
