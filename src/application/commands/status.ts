@@ -20,6 +20,7 @@ import {
 } from '../primitives/compare-working-tree-entry.js';
 import { assertValidPromisorRemoteConfig } from '../primitives/internal/boolean-config-guard.js';
 import { boundedMapFor } from '../primitives/internal/concurrency.js';
+import { withFilterProcessPool } from '../primitives/internal/filter-process-pool.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
 import {
   type AttributeProvider,
@@ -118,7 +119,10 @@ interface GranularityTracker {
  * always pairs start with end. `total` is undefined — a design choice that avoids
  * revealing repository size to non-trusted progress sinks.
  */
-export const status = async (ctx: Context): Promise<StatusResult> => {
+export const status = (ctx: Context): Promise<StatusResult> =>
+  withFilterProcessPool(ctx, () => statusInScope(ctx));
+
+const statusInScope = async (ctx: Context): Promise<StatusResult> => {
   await assertOperationalRepositorySettingsFirst(ctx);
   const workDir = requireWorkTree(ctx, 'status');
   // Promisor-remote guard (see assertValidPromisorRemoteConfig) — loaded up front.

@@ -9,7 +9,7 @@ import {
   FLUSH_PKT,
   MAX_PKT_LINE_PAYLOAD,
 } from '../../../../../src/domain/protocol/pkt-line.js';
-import type { CommandRequest, CommandRunner } from '../../../../../src/ports/command-runner.js';
+import { scriptedCommandRunner } from '../../../../fixtures/scripted-command-runner.js';
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
 const dec = (b: Uint8Array): string => new TextDecoder().decode(b);
@@ -36,21 +36,6 @@ const SERVER_GREETING = concat(
 const successResponse = (content: string): Uint8Array =>
   concat(SERVER_GREETING, stream('status=success\n'), stream(content), FLUSH_PKT);
 
-/** A runner answering every request with `stdout`, recording what it was asked. */
-const scriptedRunner = (
-  stdout: Uint8Array,
-  exitCode = 0,
-): { readonly runner: CommandRunner; readonly requests: CommandRequest[] } => {
-  const requests: CommandRequest[] = [];
-  const runner: CommandRunner = {
-    run: async (request) => {
-      requests.push(request);
-      return { exitCode, stdout };
-    },
-  };
-  return { runner, requests };
-};
-
 const processDriver = (required: boolean, process = 'proc-cmd'): FilterChoice => ({
   kind: 'external',
   name: 'd',
@@ -65,7 +50,7 @@ describe('applyCleanFilter', () => {
       it('Then the process cleans the bytes, over git’s v2 filter protocol', async () => {
         // Arrange
         const ctx = createMemoryContext();
-        const { runner, requests } = scriptedRunner(successResponse('HI\n'));
+        const { runner, requests } = scriptedCommandRunner(successResponse('HI\n'));
         const sut = applyCleanFilter;
 
         // Act
@@ -156,7 +141,7 @@ describe('applyCleanFilter', () => {
       it('Then the raw bytes are kept', async () => {
         // Arrange
         const ctx = createMemoryContext();
-        const { runner } = scriptedRunner(stdout, exitCode);
+        const { runner } = scriptedCommandRunner(stdout, exitCode);
         const sut = applyCleanFilter;
 
         // Act
@@ -171,7 +156,7 @@ describe('applyCleanFilter', () => {
       it('Then it refuses with CLEAN_FILTER_FAILED', async () => {
         // Arrange
         const ctx = createMemoryContext();
-        const { runner } = scriptedRunner(stdout, exitCode);
+        const { runner } = scriptedCommandRunner(stdout, exitCode);
         const sut = applyCleanFilter;
 
         // Act
@@ -195,7 +180,7 @@ describe('applyCleanFilter', () => {
       it('Then the response stands, as git never checks a filter process exit', async () => {
         // Arrange
         const ctx = createMemoryContext();
-        const { runner } = scriptedRunner(successResponse('HI\n'), 2);
+        const { runner } = scriptedCommandRunner(successResponse('HI\n'), 2);
         const sut = applyCleanFilter;
 
         // Act
@@ -212,7 +197,7 @@ describe('applyCleanFilter', () => {
       it('Then it refuses with the exit code', async () => {
         // Arrange
         const ctx = createMemoryContext();
-        const runner: CommandRunner = { run: async () => ({ exitCode: 9 }) };
+        const { runner } = scriptedCommandRunner(new Uint8Array(0), 9);
         const sut = applyCleanFilter;
 
         // Act
@@ -236,7 +221,7 @@ describe('applyCleanFilter', () => {
       it('Then the bytes pass through and nothing runs', async () => {
         // Arrange
         const ctx = createMemoryContext();
-        const { runner, requests } = scriptedRunner(enc('unused'));
+        const { runner, requests } = scriptedCommandRunner(enc('unused'));
         const sut = applyCleanFilter;
 
         // Act
@@ -255,7 +240,7 @@ describe('applyCleanFilter', () => {
         // Arrange
         const signal = new AbortController().signal;
         const ctx = { ...createMemoryContext(), signal };
-        const { runner, requests } = scriptedRunner(successResponse('HI\n'));
+        const { runner, requests } = scriptedCommandRunner(successResponse('HI\n'));
         const sut = applyCleanFilter;
 
         // Act
@@ -272,7 +257,7 @@ describe('applyCleanFilter', () => {
       it('Then the content is split across frames of at most one payload', async () => {
         // Arrange
         const ctx = createMemoryContext();
-        const { runner, requests } = scriptedRunner(successResponse('X'));
+        const { runner, requests } = scriptedCommandRunner(successResponse('X'));
         const big = new Uint8Array(MAX_PKT_LINE_PAYLOAD + 1).fill(0x61);
         const sut = applyCleanFilter;
 
@@ -292,7 +277,7 @@ describe('applyCleanFilter', () => {
       it('Then nothing runs and the clean dies, as a set process shadows the clean command', async () => {
         // Arrange
         const ctx = createMemoryContext();
-        const { runner, requests } = scriptedRunner(enc('CLEANED'));
+        const { runner, requests } = scriptedCommandRunner(enc('CLEANED'));
         const sut = applyCleanFilter;
 
         // Act

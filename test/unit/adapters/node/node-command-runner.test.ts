@@ -16,8 +16,10 @@ import type { CommandRequest } from '../../../../src/ports/command-runner.js';
 class FakeStdin extends EventEmitter {
   readonly chunks: Uint8Array[] = [];
   ended = false;
-  write(chunk: Uint8Array): void {
+  failure: Error | undefined;
+  write(chunk: Uint8Array, done?: (error?: Error | null) => void): void {
     this.chunks.push(chunk);
+    done?.(this.failure);
   }
   end(): void {
     this.ended = true;
@@ -308,6 +310,156 @@ describe('NodeCommandRunner', () => {
 
         // Assert
         expect(result.stdout).toEqual(new Uint8Array([1, 2, 3, 4, 5, 6]));
+      });
+    });
+  });
+
+  describe('Given a spawned conversation', () => {
+    const collect = async (output: AsyncIterable<Uint8Array>): Promise<number[]> => {
+      const bytes: number[] = [];
+      for await (const chunk of output) bytes.push(...chunk);
+      return bytes;
+    };
+
+    describe('When bytes are written and the child answers, then exits', () => {
+      it('Then the writes reach stdin, the output streams in order and close reports the exit', async () => {
+        // Arrange
+        const { runner, child, calls } = makeHarness();
+        const sut = runner.spawn;
+
+        // Act
+        const conversation = sut(baseRequest({ command: 'filter' }));
+        const output = collect(conversation.output);
+        await conversation.write(new Uint8Array([7]));
+        child.stdout.emit('data', new Uint8Array([1, 2]));
+        child.stdout.emit('data', new Uint8Array([3]));
+        const closing = conversation.close();
+        child.emit('close', 0);
+        const exit = await closing;
+
+        // Assert
+        expect(calls[0]?.args).toEqual(['-c', 'filter']);
+        expect(child.stdin.chunks).toEqual([new Uint8Array([7])]);
+        expect(child.stdin.ended).toBe(true);
+        expect(await output).toEqual([1, 2, 3]);
+        expect(exit).toEqual({ exitCode: 0 });
+      });
+    });
+
+    describe('When started on Windows', () => {
+      it('Then the command runs through `cmd /c`', () => {
+        // Arrange
+        const { runner, calls } = makeHarness('win32');
+        const sut = runner.spawn;
+
+        // Act
+        sut(baseRequest({ command: 'filter' }));
+
+        // Assert
+        expect(calls[0]?.command).toBe('cmd');
+        expect(calls[0]?.args).toEqual(['/c', 'filter']);
+      });
+    });
+
+    describe('When a write fails', () => {
+      it('Then the write rejects with the pipe error, which escalates no further', async () => {
+        // Arrange
+        const { runner, child } = makeHarness();
+        child.stdin.failure = streamError('EPIPE');
+        const sut = runner.spawn;
+
+        // Act
+        const conversation = sut(baseRequest());
+        const writing = conversation.write(new Uint8Array([1]));
+        child.stdin.emit('error', child.stdin.failure);
+        const result = await writing.catch((error: unknown) => error);
+
+        // Assert
+        expect((result as NodeJS.ErrnoException).code).toBe('EPIPE');
+      });
+    });
+
+    describe('When the child cannot be started', () => {
+      it('Then the output ends empty and close reports the spawn-failure exit', async () => {
+        // Arrange
+        const { runner, child } = makeHarness();
+        const sut = runner.spawn;
+
+        // Act
+        const conversation = sut(baseRequest());
+        child.emit('error', new Error('spawn sh ENOENT'));
+        const output = await collect(conversation.output);
+        const exit = await conversation.close();
+
+        // Assert
+        expect(output).toEqual([]);
+        expect(exit).toEqual({ exitCode: 127 });
+      });
+    });
+
+    describe('When the child is killed by a signal', () => {
+      it('Then close reports the signal exit', async () => {
+        // Arrange
+        const { runner, child } = makeHarness();
+        const sut = runner.spawn;
+
+        // Act
+        const conversation = sut(baseRequest());
+        child.emit('close', null);
+        const exit = await conversation.close();
+
+        // Assert
+        expect(exit).toEqual({ exitCode: 128 });
+      });
+    });
+
+    describe('When the signal aborts mid-conversation', () => {
+      it('Then the child is killed', async () => {
+        // Arrange
+        const { runner, child } = makeHarness();
+        const controller = new AbortController();
+        const sut = runner.spawn;
+
+        // Act
+        sut(baseRequest({ signal: controller.signal }));
+        controller.abort();
+
+        // Assert
+        expect(child.killed).toBe(true);
+      });
+    });
+
+    describe('When the signal had already aborted', () => {
+      it('Then the child is killed at once', () => {
+        // Arrange
+        const { runner, child } = makeHarness();
+        const controller = new AbortController();
+        controller.abort();
+        const sut = runner.spawn;
+
+        // Act
+        sut(baseRequest({ signal: controller.signal }));
+
+        // Assert
+        expect(child.killed).toBe(true);
+      });
+    });
+
+    describe('When the signal aborts after the child exited', () => {
+      it('Then the child is not killed', async () => {
+        // Arrange
+        const { runner, child } = makeHarness();
+        const controller = new AbortController();
+        const sut = runner.spawn;
+
+        // Act
+        const conversation = sut(baseRequest({ signal: controller.signal }));
+        child.emit('close', 0);
+        await conversation.close();
+        controller.abort();
+
+        // Assert
+        expect(child.killed).toBe(false);
       });
     });
   });

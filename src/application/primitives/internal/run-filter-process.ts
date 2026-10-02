@@ -6,10 +6,15 @@ import {
   FLUSH_PKT,
   MAX_PKT_LINE_PAYLOAD,
 } from '../../../domain/protocol/pkt-line.js';
-import type { CommandRunner } from '../../../ports/command-runner.js';
+import type { CommandProcess, CommandRunner } from '../../../ports/command-runner.js';
 import type { Context } from '../../../ports/context.js';
-import { getSpawnCwd } from '../path-layout.js';
-import type { FilterDriverResult } from '../run-filter-driver.js';
+import {
+  convertThroughPool,
+  type FilterExchange,
+  type FilterProcessOutcome,
+  type PktSections,
+  type RunningFilter,
+} from './filter-process-pool.js';
 
 const ENCODER = new TextEncoder();
 const DECODER = new TextDecoder();
@@ -21,6 +26,7 @@ const CLIENT_CAPABILITIES = ['capability=clean\n', 'capability=smudge\n', 'capab
 const SERVER_GREETING = ['git-filter-server', 'version=2'];
 const SUCCESS = 'success';
 const STATUS_PREFIX = 'status=';
+const CAPABILITY_PREFIX = 'capability=';
 
 /** The pkt-line frames that carry `bytes`, each at most one payload long. */
 const contentFrames = (bytes: Uint8Array): ReadonlyArray<Uint8Array> => {
@@ -46,8 +52,6 @@ export interface FilterProcessRequest {
 /** Everything git writes to a process filter for one conversion, in order. */
 const encodeRequest = ({ capability, path, bytes, blob }: FilterProcessRequest): Uint8Array =>
   concatBytes([
-    textStream(CLIENT_GREETING),
-    textStream(CLIENT_CAPABILITIES),
     textStream([
       `command=${capability}\n`,
       `pathname=${path}\n`,
@@ -57,99 +61,89 @@ const encodeRequest = ({ capability, path, bytes, blob }: FilterProcessRequest):
     FLUSH_PKT,
   ]);
 
-const HEX_LENGTH = /^[0-9a-f]{4}$/i;
-const LENGTH_BYTES = 4;
-const FLUSH_LENGTH = 0;
-
-/**
- * The response's flush-terminated sections, or `undefined` when a frame is
- * malformed — a bad or reserved length, or a frame running past the end:
- * git's `packet_read` failing on the filter's output.
- */
-const responseSections = (
-  stdout: Uint8Array,
-): ReadonlyArray<ReadonlyArray<Uint8Array>> | undefined => {
-  let current: Uint8Array[] = [];
-  const sections = [current];
-  let offset = 0;
-  while (offset < stdout.byteLength) {
-    const length = frameLength(stdout, offset);
-    if (length === FLUSH_LENGTH) {
-      current = [];
-      sections.push(current);
-    } else if (length < LENGTH_BYTES || offset + length > stdout.byteLength) return undefined;
-    else current.push(stdout.subarray(offset + LENGTH_BYTES, offset + length));
-    offset += Math.max(length, LENGTH_BYTES);
-  }
-  // What follows the last flush is unterminated: git never reads it as a section.
-  return sections.slice(0, -1);
-};
-
-/** The frame's declared length, or `-1` when its header is not four hex digits. */
-const frameLength = (stdout: Uint8Array, offset: number): number => {
-  const header = DECODER.decode(stdout.subarray(offset, offset + LENGTH_BYTES));
-  return HEX_LENGTH.test(header) ? Number.parseInt(header, 16) : -1;
-};
-
-const lines = (section: ReadonlyArray<Uint8Array> | undefined): ReadonlyArray<string> =>
-  (section ?? []).map((payload) => DECODER.decode(payload).replace(/\n$/, ''));
+const lines = (section: ReadonlyArray<Uint8Array>): ReadonlyArray<string> =>
+  section.map((payload) => DECODER.decode(payload).replace(/\n$/, ''));
 
 /** `subprocess_read_status`: the section's last `status=`, else `previous`. */
-const statusOf = (section: ReadonlyArray<Uint8Array> | undefined, previous: string): string =>
+const statusOf = (section: ReadonlyArray<Uint8Array>, previous: string): string =>
   lines(section)
     .filter((line) => line.startsWith(STATUS_PREFIX))
     .reduce((_, line) => line.slice(STATUS_PREFIX.length), previous);
 
-const greetedWith = (
-  [greeting, capabilities]: ReadonlyArray<ReadonlyArray<Uint8Array> | undefined>,
-  capability: FilterProcessRequest['capability'],
-): boolean => {
+const greetsAsServer = (greeting: ReadonlyArray<Uint8Array> | undefined): boolean => {
+  if (greeting === undefined) return false;
   const greetingLines = lines(greeting);
   return (
     greetingLines.length === SERVER_GREETING.length &&
-    greetingLines.every((line, index) => line === SERVER_GREETING[index]) &&
-    lines(capabilities).includes(`capability=${capability}`)
+    greetingLines.every((line, index) => line === SERVER_GREETING[index])
   );
 };
 
-/** The converted bytes from a well-formed, successful response — git reads an
- *  end of file before any flush it waits on as a failure. */
-const convertedContent = (
-  sections: ReadonlyArray<ReadonlyArray<Uint8Array>>,
-  capability: FilterProcessRequest['capability'],
-): Uint8Array | undefined => {
-  const [, , status, content, trailingStatus] = sections;
-  if (!greetedWith(sections, capability) || statusOf(status, '') !== SUCCESS) return undefined;
-  if (content === undefined || trailingStatus === undefined) return undefined;
-  return statusOf(trailingStatus, SUCCESS) === SUCCESS ? concatBytes(content) : undefined;
+const capabilityNames = (section: ReadonlyArray<Uint8Array>): ReadonlySet<string> =>
+  new Set(
+    lines(section)
+      .filter((line) => line.startsWith(CAPABILITY_PREFIX))
+      .map((line) => line.slice(CAPABILITY_PREFIX.length)),
+  );
+
+/** git's `start_multi_file_filter_fn`: version, then capabilities, each awaited in turn. */
+const handshake = async (
+  child: CommandProcess,
+  sections: PktSections,
+): Promise<ReadonlySet<string> | undefined> => {
+  await child.write(textStream(CLIENT_GREETING));
+  if (!greetsAsServer(await sections.next())) return undefined;
+  await child.write(textStream(CLIENT_CAPABILITIES));
+  const advertised = await sections.next();
+  return advertised === undefined ? undefined : capabilityNames(advertised);
 };
 
+/** `handle_filter_error`'s reading of a non-success status. */
+const failureOf = (status: string): FilterExchange => {
+  if (status === 'error' || status === 'abort') return { kind: status };
+  return { kind: 'broken' };
+};
+
+const BROKEN: FilterExchange = { kind: 'broken' };
+
+/** The response after a `success` status: the content, then its trailing status. */
+const readContent = async (sections: PktSections): Promise<FilterExchange> => {
+  const content = await sections.next();
+  const trailing = await sections.next();
+  if (content === undefined || trailing === undefined) return BROKEN;
+  const status = statusOf(trailing, SUCCESS);
+  return status === SUCCESS
+    ? { kind: 'converted', bytes: concatBytes(content) }
+    : failureOf(status);
+};
+
+/** git's `apply_multi_file_filter` conversation for one path. */
+const exchange =
+  (request: FilterProcessRequest) =>
+  async ({ child, sections }: RunningFilter): Promise<FilterExchange> => {
+    await child.write(encodeRequest(request));
+    const statusSection = await sections.next();
+    if (statusSection === undefined) return BROKEN;
+    const status = statusOf(statusSection, '');
+    return status === SUCCESS ? readContent(sections) : failureOf(status);
+  };
+
 /**
- * git's `apply_multi_file_filter` for one clean or smudge, over a single run
- * of the `filter.<d>.process` command: the v2 handshake, the request and its
- * content are written up front, and the response is read once the process
- * exits — git keeps one process per driver across paths, this runs one per
- * conversion. A failed handshake, a missing capability, a non-success
- * status or a malformed frame all fail the conversion, as in git.
+ * git's `apply_multi_file_filter` for one clean or smudge, through the
+ * `filter.<d>.process` command the running command keeps open: the first
+ * conversion starts the process and handshakes, every later one reuses it.
+ * A failed handshake, a missing capability, a non-success status or a
+ * malformed frame all fail the conversion, as in git; a process exit status
+ * is reported only when the process had to be stopped.
  */
-export const runFilterProcess = async (
+export const runFilterProcess = (
   ctx: Context,
   runner: CommandRunner,
   command: string,
   request: FilterProcessRequest,
-): Promise<FilterDriverResult | { readonly ok: false; readonly exitCode: undefined }> => {
-  const result = await runner.run({
-    command,
-    cwd: getSpawnCwd(ctx.layout),
-    env: { GIT_DIR: ctx.layout.gitDir },
-    stdin: encodeRequest(request),
-    ...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),
+): Promise<FilterProcessOutcome> =>
+  convertThroughPool(ctx, runner, command, {
+    capability: request.capability,
+    handshake,
+    exchange: exchange(request),
   });
-  const sections = responseSections(result.stdout ?? new Uint8Array(0));
-  const converted =
-    sections === undefined ? undefined : convertedContent(sections, request.capability);
-  if (converted !== undefined) return { ok: true, bytes: converted };
-  // A long-running filter's own exit status is never what git checks; it is
-  // reported only when it explains an unusable response.
-  return { ok: false, exitCode: result.exitCode === 0 ? undefined : result.exitCode };
-};

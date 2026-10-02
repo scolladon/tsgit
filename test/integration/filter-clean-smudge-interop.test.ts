@@ -915,3 +915,147 @@ describe.skipIf(!GIT_AVAILABLE)('Given a filter.<d>.process driver on checkout',
     });
   });
 });
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given a stateful filter.<d>.process driver counting its starts',
+  () => {
+    let root = '';
+    let script = '';
+
+    beforeAll(async () => {
+      root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-filter-process-pool-')));
+      script = path.join(root, 'filter.cjs');
+      await writeFile(script, SMUDGE_PROCESS_FILTER);
+    });
+
+    afterAll(async () => {
+      await rm(root, { recursive: true, force: true });
+    });
+
+    /** A repository holding three filtered files, armed with a counting process driver. */
+    const twin = async (slug: string) => {
+      const repo = path.join(root, slug);
+      runGit(['init', '-q', '-b', 'main', repo]);
+      await writeFile(path.join(repo, '.gitattributes'), '*.t filter=d\n');
+      for (const name of ['a', 'b', 'c'])
+        await writeFile(path.join(repo, `${name}.t`), `${name}\n`);
+      runGit(['-C', repo, 'add', '.']);
+      runGit(['-C', repo, '-c', 'user.name=A', '-c', 'user.email=a@a', 'commit', '-q', '-m', 'c']);
+      const counter = path.join(root, `${slug}.count`);
+      const log = path.join(root, `${slug}.log`);
+      const command = `"${process.execPath}" "${script}" clean,smudge "${counter}" "${log}"`;
+      runGit(['-C', repo, 'config', 'filter.d.process', command]);
+      return {
+        repo,
+        starts: async () => (await readFile(counter, 'utf8')).split('\n').length - 1,
+        requests: () => readFile(log, 'utf8'),
+        forgetRequests: () => writeFile(log, ''),
+      };
+    };
+
+    describe('When git and tsgit check out many filtered files of varied sizes', () => {
+      it('Then both ask the driver for every path in the same order', async () => {
+        // Arrange
+        const names = Array.from({ length: 24 }, (_, index) => `f${index}.t`);
+        const gitTwin = await twin('git-order');
+        const tsgitTwin = await twin('tsgit-order');
+        for (const repo of [gitTwin.repo, tsgitTwin.repo]) {
+          for (const [index, name] of names.entries()) {
+            await writeFile(path.join(repo, name), 'x'.repeat((index * 7919) % 50_000));
+          }
+          runGit(['-C', repo, '-c', 'filter.d.process=', 'add', '.']);
+          runGit([
+            '-C',
+            repo,
+            '-c',
+            'user.name=A',
+            '-c',
+            'user.email=a@a',
+            'commit',
+            '-qm',
+            'more',
+          ]);
+          for (const name of names) await rm(path.join(repo, name));
+        }
+        await gitTwin.forgetRequests();
+        await tsgitTwin.forgetRequests();
+        const sut = checkout;
+
+        // Act
+        runGit(['-C', gitTwin.repo, 'checkout', '--', ...names]);
+        await sut(createNodeContext({ workDir: tsgitTwin.repo }), { paths: names });
+
+        // Assert
+        const gitRequests = await gitTwin.requests();
+        expect(gitRequests.split('\n')).toHaveLength(names.length + 1);
+        expect(await tsgitTwin.requests()).toBe(gitRequests);
+      });
+    });
+
+    describe('When git and tsgit check out three filtered files', () => {
+      it('Then both start the driver once', async () => {
+        // Arrange
+        const gitTwin = await twin('git-checkout');
+        const tsgitTwin = await twin('tsgit-checkout');
+        const paths = ['a.t', 'b.t', 'c.t'];
+        for (const name of paths) {
+          await rm(path.join(gitTwin.repo, name));
+          await rm(path.join(tsgitTwin.repo, name));
+        }
+        const sut = checkout;
+
+        // Act
+        runGit(['-C', gitTwin.repo, 'checkout', '--', ...paths]);
+        await sut(createNodeContext({ workDir: tsgitTwin.repo }), { paths });
+
+        // Assert
+        expect(await gitTwin.starts()).toBe(1);
+        expect(await tsgitTwin.starts()).toBe(1);
+      });
+    });
+
+    describe('When git and tsgit add three changed filtered files', () => {
+      it('Then both start the driver once', async () => {
+        // Arrange
+        const gitTwin = await twin('git-add');
+        const tsgitTwin = await twin('tsgit-add');
+        const paths = ['a.t', 'b.t', 'c.t'];
+        for (const name of paths) {
+          await writeFile(path.join(gitTwin.repo, name), 'changed\n');
+          await writeFile(path.join(tsgitTwin.repo, name), 'changed\n');
+        }
+        const sut = add;
+
+        // Act
+        runGit(['-C', gitTwin.repo, 'add', ...paths]);
+        await sut(createNodeContext({ workDir: tsgitTwin.repo }), paths);
+
+        // Assert
+        expect(await gitTwin.starts()).toBe(1);
+        expect(await tsgitTwin.starts()).toBe(1);
+      });
+    });
+
+    describe('When git and tsgit report the status of three touched filtered files', () => {
+      it('Then both start the driver once', async () => {
+        // Arrange
+        const gitTwin = await twin('git-status');
+        const tsgitTwin = await twin('tsgit-status');
+        const later = new Date(Date.now() + 60_000);
+        for (const name of ['a.t', 'b.t', 'c.t']) {
+          await utimes(path.join(gitTwin.repo, name), later, later);
+          await utimes(path.join(tsgitTwin.repo, name), later, later);
+        }
+        const sut = status;
+
+        // Act
+        runGit(['-C', gitTwin.repo, 'status', '--porcelain']);
+        await sut(createNodeContext({ workDir: tsgitTwin.repo }));
+
+        // Assert
+        expect(await gitTwin.starts()).toBe(1);
+        expect(await tsgitTwin.starts()).toBe(1);
+      });
+    });
+  },
+);

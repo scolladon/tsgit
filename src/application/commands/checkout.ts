@@ -9,6 +9,7 @@ import { matchesPathspec } from '../../domain/pathspec/index.js';
 import { validateRefName } from '../../domain/refs/index.js';
 import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import type { Context } from '../../ports/context.js';
+import { withFilterProcessPool } from '../primitives/internal/filter-process-pool.js';
 import { materializeTree } from '../primitives/materialize-tree.js';
 import { assertEverySourceLoadable } from '../primitives/object-store.js';
 import { readIndex } from '../primitives/read-index.js';
@@ -335,7 +336,10 @@ const enumerateSourcePaths = async (
   return paths;
 };
 
-export const checkout = async (ctx: Context, opts: CheckoutOptions): Promise<CheckoutResult> => {
+export const checkout = (ctx: Context, opts: CheckoutOptions): Promise<CheckoutResult> =>
+  withFilterProcessPool(ctx, () => checkoutInScope(ctx, opts));
+
+const checkoutInScope = async (ctx: Context, opts: CheckoutOptions): Promise<CheckoutResult> => {
   await assertOperationalRepository(ctx);
   requireWorkTree(ctx, 'checkout');
   await assertNoPendingOperation(ctx);

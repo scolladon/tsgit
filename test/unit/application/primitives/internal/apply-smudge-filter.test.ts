@@ -5,7 +5,7 @@ import type { FilterChoice } from '../../../../../src/application/primitives/res
 import type { TsgitError } from '../../../../../src/domain/error.js';
 import type { FilePath, ObjectId } from '../../../../../src/domain/objects/object-id.js';
 import { encodePktStream, FLUSH_PKT } from '../../../../../src/domain/protocol/pkt-line.js';
-import type { CommandRequest, CommandRunner } from '../../../../../src/ports/command-runner.js';
+import { scriptedCommandRunner } from '../../../../fixtures/scripted-command-runner.js';
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
 const dec = (b: Uint8Array): string => new TextDecoder().decode(b);
@@ -35,20 +35,6 @@ const processResponse = (capabilities: ReadonlyArray<string>, content: string): 
     FLUSH_PKT,
   );
 
-const scriptedRunner = (
-  stdout: Uint8Array,
-  exitCode = 0,
-): { readonly runner: CommandRunner; readonly requests: CommandRequest[] } => {
-  const requests: CommandRequest[] = [];
-  const runner: CommandRunner = {
-    run: async (request) => {
-      requests.push(request);
-      return { exitCode, stdout };
-    },
-  };
-  return { runner, requests };
-};
-
 const driver = (fields: Partial<Omit<Extract<FilterChoice, { kind: 'external' }>, 'kind'>>) =>
   ({ kind: 'external', name: 'd', required: false, ...fields }) as FilterChoice;
 
@@ -67,7 +53,7 @@ describe('applySmudgeFilter', () => {
       it('Then the process smudges the blob, asked with its path and blob id', async () => {
         // Arrange
         const ctx = createMemoryContext();
-        const { runner, requests } = scriptedRunner(
+        const { runner, requests } = scriptedCommandRunner(
           processResponse(['clean', 'smudge'], 'mixed\n'),
         );
         const sut = applySmudgeFilter;
@@ -116,7 +102,7 @@ describe('applySmudgeFilter', () => {
       it('Then the blob is kept as stored', async () => {
         // Arrange
         const ctx = createMemoryContext();
-        const { runner, requests } = scriptedRunner(stdout);
+        const { runner, requests } = scriptedCommandRunner(stdout);
         const sut = applySmudgeFilter;
 
         // Act
@@ -132,7 +118,7 @@ describe('applySmudgeFilter', () => {
       it('Then it dies as convert_to_working_tree does, naming no exit', async () => {
         // Arrange
         const ctx = createMemoryContext();
-        const { runner } = scriptedRunner(stdout);
+        const { runner } = scriptedCommandRunner(stdout);
         const sut = applySmudgeFilter;
 
         // Act
@@ -151,7 +137,7 @@ describe('applySmudgeFilter', () => {
       it('Then its stdout is the smudged content', async () => {
         // Arrange
         const ctx = createMemoryContext();
-        const { runner, requests } = scriptedRunner(enc('mixed\n'));
+        const { runner, requests } = scriptedCommandRunner(enc('mixed\n'));
         const sut = applySmudgeFilter;
 
         // Act
@@ -169,7 +155,7 @@ describe('applySmudgeFilter', () => {
       it('Then it dies naming the exit', async () => {
         // Arrange
         const ctx = createMemoryContext();
-        const { runner } = scriptedRunner(enc(''), 3);
+        const { runner } = scriptedCommandRunner(enc(''), 3);
         const sut = applySmudgeFilter;
 
         // Act

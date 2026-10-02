@@ -47,4 +47,31 @@ export interface CommandResult {
  */
 export interface CommandRunner {
   readonly run: (request: CommandRequest) => Promise<CommandResult>;
+  /**
+   * Starts a long-running command the caller converses with — a
+   * `filter.<driver>.process` speaking git's filter protocol. Optional: a
+   * runtime that cannot keep a process open omits it, and a process driver
+   * then cannot start. The request's `stdin` is ignored; bytes travel
+   * through {@link CommandProcess.write}.
+   */
+  readonly spawn?: (request: CommandRequest) => CommandProcess;
+}
+
+/** The exit of a conversed-with command, once it has finished. */
+export interface CommandExit {
+  readonly exitCode: number;
+}
+
+/**
+ * A running command started by {@link CommandRunner.spawn}. A command that
+ * fails to start behaves as one that exits at once: `output` ends empty,
+ * `write` rejects and `close` reports the spawn-failure exit code.
+ */
+export interface CommandProcess {
+  /** Feeds bytes to the child's stdin; rejects once the child can no longer read them. */
+  readonly write: (bytes: Uint8Array) => Promise<void>;
+  /** The child's stdout, chunk by chunk, ending when the child exits. */
+  readonly output: AsyncIterable<Uint8Array>;
+  /** Ends the child's stdin and resolves once the child has exited. Never rejects. */
+  readonly close: () => Promise<CommandExit>;
 }

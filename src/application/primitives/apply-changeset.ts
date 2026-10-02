@@ -35,9 +35,11 @@ import {
 import type { CommandRunner } from '../../ports/command-runner.js';
 import type { Context } from '../../ports/context.js';
 import type { Changeset, ChangesetEntry } from './compute-changeset.js';
+import { readConfig } from './config-read.js';
 import { applySmudgeFilter, smudgesInCore } from './internal/apply-smudge-filter.js';
 import { boundedMapFor, limiterFor } from './internal/concurrency.js';
 import type { ConcurrencyLimiter } from './internal/concurrency-limiter.js';
+import { withFilterProcessPool } from './internal/filter-process-pool.js';
 import { joinPath } from './internal/join-working-tree-path.js';
 import { pathIsOccupied } from './internal/path-occupied.js';
 import { type AttributeProvider, buildAttributeProvider } from './internal/read-gitattributes.js';
@@ -428,6 +430,17 @@ const applyWriteGroup = async (
 
 const byEntryPath = (a: ChangesetEntry, b: ChangesetEntry): number => comparePaths(a.path, b.path);
 
+/**
+ * Whether a long-running filter could serve this checkout. git checks out
+ * such entries one at a time, so its one process sees every path in index
+ * order — a concurrent wave would ask in completion order.
+ */
+const convertsThroughFilterProcess = async (ctx: Context): Promise<boolean> => {
+  if (ctx.command?.spawn === undefined) return false;
+  const drivers = (await readConfig(ctx)).filter?.values() ?? [];
+  return [...drivers].some((driver) => driver.process !== undefined && driver.process !== '');
+};
+
 const applyWriteWave = async (
   ctx: Context,
   workdir: string,
@@ -440,7 +453,7 @@ const applyWriteWave = async (
 ): Promise<ReadonlyArray<IndexEntry>> => {
   const applyGroup = (group: ReadonlyArray<ChangesetEntry>) =>
     applyWriteGroup(ctx, workdir, group, lazyProvider, scanner, filterLimiter, total, counter);
-  if (await everySourceLoadable(ctx)) {
+  if ((await everySourceLoadable(ctx)) && !(await convertsThroughFilterProcess(ctx))) {
     const grouped = await drainPooled(ctx, groupByCaseFoldedPath(writes), applyGroup);
     return grouped.flat();
   }
@@ -477,7 +490,13 @@ const applyAllEntries = async (
   return { writtenEntries, written: writes.length, deleted };
 };
 
-export const applyChangeset = async (
+export const applyChangeset = (
+  ctx: Context,
+  opts: ApplyChangesetOpts,
+): Promise<ApplyChangesetResult> =>
+  withFilterProcessPool(ctx, () => applyChangesetInScope(ctx, opts));
+
+const applyChangesetInScope = async (
   ctx: Context,
   opts: ApplyChangesetOpts,
 ): Promise<ApplyChangesetResult> => {

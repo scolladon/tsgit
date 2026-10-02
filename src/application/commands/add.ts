@@ -28,6 +28,7 @@ import type { FileStat } from '../../ports/file-system.js';
 import { applyCleanFilter } from '../primitives/internal/apply-clean-filter.js';
 import { assertValidPromisorRemoteConfig } from '../primitives/internal/boolean-config-guard.js';
 import { limiterFor } from '../primitives/internal/concurrency.js';
+import { withFilterProcessPool } from '../primitives/internal/filter-process-pool.js';
 import { indexEntryFromStat } from '../primitives/internal/index-entry-from-stat.js';
 import { type IndexMtime, isEntryStatClean } from '../primitives/internal/is-entry-stat-clean.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
@@ -103,10 +104,16 @@ export interface AddResult {
  * Both modes acquire `.git/index.lock` once, read the existing index under
  * the lock, and commit a single replacement — no partial writes.
  */
-export const add = async (
+export const add = (
   ctx: Context,
   paths: ReadonlyArray<string>,
   opts: AddOptions = {},
+): Promise<AddResult> => withFilterProcessPool(ctx, () => addInScope(ctx, paths, opts));
+
+const addInScope = async (
+  ctx: Context,
+  paths: ReadonlyArray<string>,
+  opts: AddOptions,
 ): Promise<AddResult> => {
   await assertOperationalRepository(ctx);
   requireWorkTree(ctx, 'add');

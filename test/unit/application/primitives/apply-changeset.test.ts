@@ -20,6 +20,7 @@ import type {
 } from '../../../../src/ports/command-runner.js';
 import { type Context, createSession } from '../../../../src/ports/context.js';
 import type { FileStat } from '../../../../src/ports/file-system.js';
+import { scriptedCommandRunner } from '../../../fixtures/scripted-command-runner.js';
 import { buildSeededContext } from './fixtures.js';
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
@@ -1360,13 +1361,7 @@ describe('applyChangeset', () => {
           `${pkt('git-filter-server\n')}${pkt('version=2\n')}0000${pkt('capability=smudge\n')}0000` +
             `${pkt('status=success\n')}0000${pkt('hello world')}00000000`,
         );
-        const requests: CommandRequest[] = [];
-        const runner: CommandRunner = {
-          run: async (request) => {
-            requests.push(request);
-            return { exitCode: 0, stdout: response };
-          },
-        };
+        const { runner, requests } = scriptedCommandRunner(response);
 
         // Act
         await applyChangeset(
@@ -1380,6 +1375,77 @@ describe('applyChangeset', () => {
         expect(dec(requests[0]?.stdin ?? new Uint8Array(0))).toContain(
           `${pkt('command=smudge\n')}${pkt('pathname=a.y\n')}${pkt(`blob=${id}\n`)}0000`,
         );
+      });
+    });
+  });
+
+  describe('Given a process driver serving one of three files', () => {
+    describe('When applyChangeset writes them', () => {
+      it('Then it writes them one at a time in index order, as git does', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const filtered = await writeBlob(ctx, enc('HELLO'));
+        const plain = await writeBlob(ctx, enc('plain'));
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.y filter=myf\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[filter "myf"]\n\tprocess = proc\n');
+        const pkt = (text: string): string =>
+          `${(text.length + 4).toString(16).padStart(4, '0')}${text}`;
+        const response = enc(
+          `${pkt('git-filter-server\n')}${pkt('version=2\n')}0000${pkt('capability=smudge\n')}0000` +
+            `${pkt('status=success\n')}0000${pkt('hello')}00000000`,
+        );
+        const { runner } = scriptedCommandRunner(response);
+        const sut = applyChangeset;
+
+        // Act
+        const result = await sut(
+          { ...ctx, command: runner, concurrency: { cpuBound: 4, ioBound: 4 } },
+          {
+            changeset: makeChangeset([
+              makeAdd('a.txt', plain),
+              makeAdd('b.txt', plain),
+              makeAdd('c.y', filtered),
+            ]),
+            force: false,
+            workdir: WORKDIR,
+          },
+        );
+
+        // Assert
+        expect(result.writtenEntries.map((entry) => entry.path)).toEqual(['a.txt', 'b.txt', 'c.y']);
+        expect(dec(await ctx.fs.read(`${WORKDIR}/c.y`))).toBe('hello');
+      });
+    });
+  });
+
+  describe.each([
+    { label: 'no filter at all', config: '' },
+    { label: 'only an empty process', config: '[filter "myf"]\n\tprocess =\n' },
+  ])('Given a runner able to keep a process open and $label', ({ config }) => {
+    describe('When applyChangeset writes two files', () => {
+      it('Then both land with their stored bytes', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const first = await writeBlob(ctx, enc('first'));
+        const second = await writeBlob(ctx, enc('second'));
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, config);
+        const { runner, requests } = scriptedCommandRunner(enc(''));
+        const sut = applyChangeset;
+
+        // Act
+        const result = await sut(
+          { ...ctx, command: runner },
+          {
+            changeset: makeChangeset([makeAdd('a.y', first), makeAdd('b.y', second)]),
+            force: false,
+            workdir: WORKDIR,
+          },
+        );
+
+        // Assert
+        expect(result.written).toBe(2);
+        expect(dec(await ctx.fs.read(`${WORKDIR}/b.y`))).toBe('second');
+        expect(requests).toEqual([]);
       });
     });
   });
