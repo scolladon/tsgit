@@ -147,7 +147,7 @@ async function auditRepository(ctx: Context, opts: FsckOptions): Promise<FsckRes
   // blob is checked where git meets it after its tree — see `SpecialBlobLedger`.
   const catalogue: CatalogueOptions = {
     strict: opts.strict === true,
-    specialBlobs: createSpecialBlobLedger(objectCache),
+    specialBlobs: createSpecialBlobLedger(auditCtx.hashConfig),
     severities,
     skipped,
     bigFileThreshold,

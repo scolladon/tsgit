@@ -5,6 +5,7 @@ import { createSpecialBlobLedger } from '../../../../../../src/application/comma
 import type { FsckOptions } from '../../../../../../src/application/commands/internal/fsck/types.js';
 import { runVerifyPackPass } from '../../../../../../src/application/commands/internal/fsck/verify-pack.js';
 import { DEFAULT_BIG_FILE_THRESHOLD_BYTES } from '../../../../../../src/application/primitives/internal/big-file-threshold.js';
+import { SHA1_CONFIG } from '../../../../../../src/domain/objects/hash-config.js';
 import type { ObjectId } from '../../../../../../src/domain/objects/index.js';
 import { hexToBytes } from '../../../../../../src/domain/objects/index.js';
 import { crc32 } from '../../../../../../src/domain/storage/crc32.js';
@@ -13,7 +14,7 @@ import { writeSyntheticPack, writeSyntheticPackIn } from '../../../primitives/pa
 
 const CATALOGUE: CatalogueOptions = {
   strict: false,
-  specialBlobs: createSpecialBlobLedger(new Map()),
+  specialBlobs: createSpecialBlobLedger(SHA1_CONFIG),
   severities: new Map(),
   skipped: new Set(),
   bigFileThreshold: DEFAULT_BIG_FILE_THRESHOLD_BYTES,

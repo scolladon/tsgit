@@ -1183,6 +1183,39 @@ describe.skipIf(!GIT_AVAILABLE)('fsck interop — deferred .gitmodules checks', 
     });
   });
 
+  describe('Given a borrower whose loose tree copy hashes to another object and a donor holding the valid copy', () => {
+    describe('When git fsck and tsgit fsck run on the borrower', () => {
+      it(
+        'Then both queue the .gitmodules blob from the valid donor copy with exit 1',
+        async () => {
+          // Arrange
+          const donor = specialRepo('corrupt-tree-copy-donor');
+          const borrower = path.join(root, 'special-corrupt-tree-copy-borrower');
+          runGit(['clone', '-q', '--shared', donor, borrower]);
+          configure(borrower);
+          rmSync(path.join(borrower, '.git', 'index'));
+          const tree = runGit(['-C', borrower, 'rev-parse', 'HEAD^{tree}']).trim();
+          const other = 'other\n';
+          const treeFile = path.join(objectsOf(borrower), tree.slice(0, 2), tree.slice(2));
+          mkdirSync(path.dirname(treeFile), { recursive: true });
+          writeFileSync(treeFile, deflateSync(`blob ${other.length}\0${other}`));
+          const git = gitFsck(borrower);
+          const sut = tsgitFsck;
+
+          // Act
+          const result = await sut(borrower);
+
+          // Assert
+          expect(git.exitCode).toBe(1);
+          expect(result.exitCode).toBe(1);
+          expect(specialLines(result.findings)).toEqual(gitSpecialLines(git.stderr));
+          expect(specialLines(result.findings)).toEqual([`blob ${blobOf(donor)} gitmodulesUrl`]);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
   describe('Given a loose tree naming a .gitmodules blob no store holds', () => {
     describe('When git fsck and tsgit fsck run', () => {
       it(

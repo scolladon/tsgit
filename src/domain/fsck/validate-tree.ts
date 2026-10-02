@@ -33,7 +33,8 @@ export interface TreeFinding {
   readonly severity: FsckSeverity;
 }
 
-interface TreeEntry {
+/** One tree entry as git's `decode_tree_entry` reads it: spans into the raw body. */
+export interface RawTreeEntry {
   readonly mode: string;
   readonly nameStart: number;
   readonly nameEnd: number;
@@ -70,16 +71,25 @@ function stripLeadingZeros(mode: string): string {
   return mode.slice(i);
 }
 
-/** Parse tree bytes tolerantly, returning entries and any badTree fault. */
-function parseTreeEntriesTolerant(
+/**
+ * Parse tree bytes tolerantly, returning the entries git decodes before its
+ * first fault and whether there was one. git's `decode_tree_entry` first
+ * refuses a remaining body whose last digest is not preceded by a NUL — the
+ * remaining body always ends where the whole one does, so a body not ending
+ * in a whole entry yields no entry at all.
+ */
+export function parseTreeEntriesTolerant(
   raw: Uint8Array,
   digestLength: 20 | 32,
 ): {
-  readonly entries: ReadonlyArray<TreeEntry>;
+  readonly entries: ReadonlyArray<RawTreeEntry>;
   readonly badTree: boolean;
 } {
-  const entries: TreeEntry[] = [];
+  const entries: RawTreeEntry[] = [];
   let offset = 0;
+  if (raw.length > 0 && raw[raw.length - digestLength - 1] !== 0) {
+    return { entries, badTree: true };
+  }
 
   while (offset < raw.length) {
     const spaceIdx = indexOf(raw, 0x20, offset);
@@ -111,7 +121,7 @@ function parseTreeEntriesTolerant(
  * Compare two tree entries using git's canonical sort order.
  * Directories sort as if their name ends with '/'.
  */
-function treeEntrySortKey(raw: Uint8Array, entry: TreeEntry): Uint8Array {
+function treeEntrySortKey(raw: Uint8Array, entry: RawTreeEntry): Uint8Array {
   const isDir = entry.mode === '40000' || entry.mode === '040000';
   const nameBytes = raw.subarray(entry.nameStart, entry.nameEnd);
   if (!isDir) return nameBytes;
@@ -245,9 +255,9 @@ function checkSpecialFileName(
 
 function checkEntryFaults(
   raw: Uint8Array,
-  entry: TreeEntry,
+  entry: RawTreeEntry,
   key: string,
-  prevEntry: TreeEntry | undefined,
+  prevEntry: RawTreeEntry | undefined,
   seenNames: Set<string>,
   strict: boolean,
 ): ReadonlyArray<TreeFinding> {
@@ -315,7 +325,7 @@ export function validateTree(
 
   const findings: TreeFinding[] = [];
   const seenNames = new Set<string>();
-  let prevEntry: TreeEntry | undefined;
+  let prevEntry: RawTreeEntry | undefined;
 
   for (const entry of entries) {
     const key = entryNameKey(raw, entry.nameStart, entry.nameEnd);

@@ -446,7 +446,7 @@ function catalogueResult(
 ): ContentValidationResult {
   // git's `fsck_tree` queues a tree's special blobs before any report, so a
   // skip-listed tree still queues them.
-  if (raw.kind === 'tree') options.specialBlobs.noteTree(id);
+  if (raw.kind === 'tree') options.specialBlobs.noteTree(raw.rawBody);
   if (options.skipped.has(id)) return EMPTY_RESULT;
   const fileNames = raw.kind === 'blob' ? claimSpecialNames(options.specialBlobs, id) : [];
   const catalogued = catalogueFindings(ctx, raw, options.strict, fileNames);

@@ -10,6 +10,7 @@ import {
   looseObjectPath,
   objectsDir,
 } from '../../../../../../src/application/primitives/path-layout.js';
+import { SHA1_CONFIG } from '../../../../../../src/domain/objects/hash-config.js';
 import type { ObjectId } from '../../../../../../src/domain/objects/index.js';
 import { MAX_INFLATE_OUTPUT_BYTES } from '../../../../../../src/ports/compressor.js';
 import { writeSyntheticPack } from '../../../primitives/pack-fixture.js';
@@ -25,7 +26,7 @@ const DEFAULT_THRESHOLD = DEFAULT_BIG_FILE_THRESHOLD_BYTES;
 
 const catalogueWith = (overrides: Partial<CatalogueOptions> = {}): CatalogueOptions => ({
   strict: false,
-  specialBlobs: createSpecialBlobLedger(new Map()),
+  specialBlobs: createSpecialBlobLedger(SHA1_CONFIG),
   severities: new Map(),
   skipped: NO_SKIPS,
   bigFileThreshold: DEFAULT_THRESHOLD,

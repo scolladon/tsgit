@@ -9,6 +9,7 @@ import { packedLocationOf } from '../../../../../../src/application/commands/int
 import { createSpecialBlobLedger } from '../../../../../../src/application/commands/internal/fsck/special-blobs.js';
 import { DEFAULT_BIG_FILE_THRESHOLD_BYTES } from '../../../../../../src/application/primitives/internal/big-file-threshold.js';
 import { readRawObject } from '../../../../../../src/application/primitives/read-object.js';
+import { SHA1_CONFIG } from '../../../../../../src/domain/objects/hash-config.js';
 import type { ObjectId } from '../../../../../../src/domain/objects/index.js';
 import { serializeHeader } from '../../../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../../../src/ports/context.js';
@@ -19,7 +20,7 @@ const sut = validatePackedEntry;
 /** No strict mode, no special names, no re-typing, no skip list, git's default threshold. */
 const CATALOGUE: CatalogueOptions = {
   strict: false,
-  specialBlobs: createSpecialBlobLedger(new Map()),
+  specialBlobs: createSpecialBlobLedger(SHA1_CONFIG),
   severities: new Map(),
   skipped: new Set(),
   bigFileThreshold: DEFAULT_BIG_FILE_THRESHOLD_BYTES,

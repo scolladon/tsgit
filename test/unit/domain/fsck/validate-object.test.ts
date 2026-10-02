@@ -347,6 +347,15 @@ describe('Given a valid object', () => {
         }),
       },
       {
+        label: 'empty tree',
+        build: () => ({
+          kind: 'tree',
+          rawBody: new Uint8Array(0),
+          strict: false,
+          hashConfig: SHA1_CONFIG,
+        }),
+      },
+      {
         label: 'blob',
         build: () => ({ kind: 'blob', rawBody: encode('hello world\n'), strict: false }),
       },
