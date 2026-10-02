@@ -120,8 +120,8 @@ const addInScope = async (
   // Allow `add` during a conflicted operation — staging resolved files IS the
   // path forward for merge / cherry-pick / revert / rebase alike.
   await assertNoPendingOperation(ctx, { except: [MERGE, CHERRY_PICK, REVERT, REBASE] });
-  // Build the attribute provider ONCE per add invocation. Skip when no runner
-  // runner is wired — an absent `ctx.command` means no filter can execute.
+  // Build the attribute provider ONCE per add invocation; a runner-less
+  // context builds it only when a driver is required.
   const provider = await maybeBuildAttributeProvider(ctx);
   if (opts.all === true) {
     if (paths.length !== 0) {
@@ -596,7 +596,7 @@ interface CleanConversion {
 const UNCONVERTED: CleanConversion = { streams: false, apply: async (bytes) => bytes };
 
 /**
- * The clean conversion for `path`, when a runner and provider are available.
+ * The clean conversion for `path`, when a provider is available.
  * Symlinks are never filtered (git stores the link target verbatim).
  */
 const cleanConversion = async (
@@ -605,12 +605,11 @@ const cleanConversion = async (
   isSymbolicLink: boolean,
   provider: AttributeProvider | undefined,
 ): Promise<CleanConversion> => {
-  const runner = ctx.command;
-  if (provider === undefined || runner === undefined || isSymbolicLink) return UNCONVERTED;
+  if (provider === undefined || isSymbolicLink) return UNCONVERTED;
   const choice = await resolveFilterDriver(ctx, provider, path, { eagerSectionValidation: true });
   return {
     streams: streamsThroughFilter(choice),
-    apply: (bytes) => applyCleanFilter(ctx, runner, path, bytes, choice),
+    apply: (bytes) => applyCleanFilter(ctx, ctx.command, path, bytes, choice),
   };
 };
 

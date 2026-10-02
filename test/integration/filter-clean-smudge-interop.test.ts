@@ -1059,3 +1059,52 @@ describe.skipIf(!GIT_AVAILABLE)(
     });
   },
 );
+
+describe.skipIf(!GIT_AVAILABLE)('Given a required smudge driver that cannot start', () => {
+  let root = '';
+
+  beforeAll(async () => {
+    root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-filter-missing-command-')));
+  });
+
+  afterAll(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  describe('When git checks out through a missing command and tsgit has no command runner', () => {
+    it('Then both die and write nothing', async () => {
+      // Arrange
+      const twin = async (slug: string): Promise<string> => {
+        const repo = path.join(root, slug);
+        runGit(['init', '-q', '-b', 'main', repo]);
+        await writeFile(path.join(repo, '.gitattributes'), '*.t filter=d\n');
+        await writeFile(path.join(repo, 'a.t'), 'A\n');
+        runGit(['-C', repo, 'add', '.']);
+        runGit(['-C', repo, '-c', 'user.name=A', '-c', 'user.email=a@a', 'commit', '-qm', 'c']);
+        runGit(['-C', repo, 'config', 'filter.d.smudge', '/nonexistent/cmd']);
+        runGit(['-C', repo, 'config', 'filter.d.required', 'true']);
+        await rm(path.join(repo, 'a.t'));
+        return repo;
+      };
+      const gitRepo = await twin('git');
+      const tsgitRepo = await twin('tsgit');
+      const { command: _runner, ...withoutRunner } = createNodeContext({ workDir: tsgitRepo });
+      const sut = checkout;
+
+      // Act
+      const g = tryRunGitWithExit(['-C', gitRepo, 'checkout', '--', 'a.t']);
+      const result = await sut(withoutRunner, { paths: ['a.t'] }).catch((err: unknown) => err);
+
+      // Assert
+      expect(g.exitCode).toBe(128);
+      expect(g.stderr).toContain('fatal: a.t: smudge filter d failed');
+      expect((result as TsgitError).data).toEqual({
+        code: 'SMUDGE_FILTER_FAILED',
+        path: 'a.t',
+        filter: 'd',
+      });
+      expect(await readFile(path.join(tsgitRepo, 'a.t')).catch(() => undefined)).toBeUndefined();
+      expect(await readFile(path.join(gitRepo, 'a.t')).catch(() => undefined)).toBeUndefined();
+    });
+  });
+});

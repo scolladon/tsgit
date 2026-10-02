@@ -192,7 +192,19 @@ export const buildTreeAttributeProvider = (
   tree: ObjectId,
 ): Promise<AttributeProvider> => buildAttributeProviderFrom(ctx, treeDirReader(tree));
 
-export const maybeBuildAttributeProvider = (
+const requiresAnyFilter = async (ctx: Context): Promise<boolean> => {
+  const drivers = (await readConfig(ctx)).filter?.values() ?? [];
+  return [...drivers].some((driver) => driver.required === true);
+};
+
+/**
+ * The provider clean/smudge drivers are resolved through. A runner-less
+ * context skips it unless some driver is required: an optional driver it
+ * cannot start leaves the bytes as stored, but git refuses a required one.
+ */
+export const maybeBuildAttributeProvider = async (
   ctx: Context,
 ): Promise<AttributeProvider | undefined> =>
-  ctx.command !== undefined ? buildAttributeProvider(ctx) : Promise.resolve(undefined);
+  ctx.command !== undefined || (await requiresAnyFilter(ctx))
+    ? buildAttributeProvider(ctx)
+    : undefined;

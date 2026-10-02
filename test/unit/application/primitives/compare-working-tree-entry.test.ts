@@ -485,6 +485,33 @@ describe('compareWorkingTreeDelta', () => {
     });
   });
 
+  describe('Given a context that cannot run commands and a required clean driver', () => {
+    describe('When comparing the delta of an untouched file', () => {
+      it('Then it refuses with CLEAN_FILTER_FAILED, as the driver cannot start', async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, 'a.txt filter=d\n');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[filter "d"]\n\tclean = c\n\trequired = true\n',
+        );
+        invalidateConfigCache(ctx);
+        const provider = await buildAttributeProvider(ctx);
+        const sut = compareWorkingTreeDelta;
+
+        // Act
+        const result = await sut(ctx, entry, provider).catch((err: unknown) => err);
+
+        // Assert
+        expect((result as TsgitError).data).toEqual({
+          code: 'CLEAN_FILTER_FAILED',
+          path: 'a.txt',
+          filter: 'd',
+        });
+      });
+    });
+  });
+
   describe('Given an optional driver configuring no clean command over an untouched file', () => {
     describe('When comparing the delta', () => {
       it('Then it hashes the raw bytes and reports unchanged', async () => {

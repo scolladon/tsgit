@@ -31,8 +31,10 @@ export interface CommandResult {
 /**
  * Runs an arbitrary shell command line — the custom merge-driver / textconv /
  * clean-smudge filter command. Optional on `Context`: when absent (browser /
- * memory adapters cannot spawn a process), a configured external driver falls
- * back to the built-in behaviour.
+ * memory adapters cannot spawn a process), a configured merge or textconv
+ * driver falls back to the built-in behaviour and an optional clean/smudge
+ * driver leaves the bytes as stored, while a required clean/smudge driver
+ * refuses — git refuses a required driver it cannot start.
  *
  * NEVER rejects for a non-zero exit — interpreting the exit code is the
  * caller's policy.

@@ -1379,6 +1379,56 @@ describe('applyChangeset', () => {
     });
   });
 
+  describe('Given a context that cannot run commands', () => {
+    describe('When applyChangeset checks out a file through a required smudge driver', () => {
+      it('Then it refuses as git does when the driver cannot start, writing nothing', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, enc('HELLO'));
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.t filter=d\n');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[filter "d"]\n\tsmudge = x\n\trequired = true\n',
+        );
+        const sut = applyChangeset;
+
+        // Act
+        const result = await outcomeOf(
+          sut(ctx, {
+            changeset: makeChangeset([makeAdd('a.t', id)]),
+            force: false,
+            workdir: WORKDIR,
+          }),
+        );
+
+        // Assert
+        expect(result).toEqual({ code: 'SMUDGE_FILTER_FAILED', path: 'a.t', filter: 'd' });
+        expect(await ctx.fs.exists(`${WORKDIR}/a.t`)).toBe(false);
+      });
+    });
+
+    describe('When applyChangeset checks out a file through an optional smudge driver', () => {
+      it('Then the blob is written as stored', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await writeBlob(ctx, enc('HELLO'));
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.t filter=d\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[filter "d"]\n\tsmudge = x\n');
+        const sut = applyChangeset;
+
+        // Act
+        await sut(ctx, {
+          changeset: makeChangeset([makeAdd('a.t', id)]),
+          force: false,
+          workdir: WORKDIR,
+        });
+
+        // Assert
+        expect(dec(await ctx.fs.read(`${WORKDIR}/a.t`))).toBe('HELLO');
+      });
+    });
+  });
+
   describe('Given a process driver serving one of three files', () => {
     describe('When applyChangeset writes them', () => {
       it('Then it writes them one at a time in index order, as git does', async () => {

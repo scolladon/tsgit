@@ -32,7 +32,6 @@ import {
   type FilePath,
   type ObjectId,
 } from '../../domain/objects/index.js';
-import type { CommandRunner } from '../../ports/command-runner.js';
 import type { Context } from '../../ports/context.js';
 import type { Changeset, ChangesetEntry } from './compute-changeset.js';
 import { readConfig } from './config-read.js';
@@ -42,7 +41,10 @@ import type { ConcurrencyLimiter } from './internal/concurrency-limiter.js';
 import { withFilterProcessPool } from './internal/filter-process-pool.js';
 import { joinPath } from './internal/join-working-tree-path.js';
 import { pathIsOccupied } from './internal/path-occupied.js';
-import { type AttributeProvider, buildAttributeProvider } from './internal/read-gitattributes.js';
+import {
+  type AttributeProvider,
+  maybeBuildAttributeProvider,
+} from './internal/read-gitattributes.js';
 import { serializeAndHash } from './internal/serialize-and-hash.js';
 import {
   createLeadingPathScanner,
@@ -225,8 +227,8 @@ const writeBlobToWorkingTree = async (
     await writeWorkingTreeEntry(ctx, path, blob.content, mode, scanner);
     return;
   }
-  if (provider !== undefined && ctx.command !== undefined) {
-    const command: CommandRunner = ctx.command;
+  if (provider !== undefined) {
+    const command = ctx.command;
     const choice = await resolveFilterDriver(ctx, provider, path, {
       eagerSectionValidation: true,
     });
@@ -412,7 +414,7 @@ const applyWriteGroup = async (
   ctx: Context,
   workdir: string,
   group: ReadonlyArray<ChangesetEntry>,
-  lazyProvider: () => Promise<AttributeProvider>,
+  lazyProvider: () => Promise<AttributeProvider | undefined>,
   scanner: LeadingPathScanner,
   filterLimiter: ConcurrencyLimiter,
   total: number,
@@ -420,7 +422,7 @@ const applyWriteGroup = async (
 ): Promise<ReadonlyArray<IndexEntry>> => {
   const written: IndexEntry[] = [];
   for (const entry of group) {
-    const provider = ctx.command !== undefined ? await lazyProvider() : undefined;
+    const provider = await lazyProvider();
     const indexEntry = await applyWriteEntry(ctx, workdir, entry, scanner, filterLimiter, provider);
     reportCompletion(ctx, total, counter, entry.path);
     if (indexEntry !== undefined) written.push(indexEntry);
@@ -445,7 +447,7 @@ const applyWriteWave = async (
   ctx: Context,
   workdir: string,
   writes: ReadonlyArray<ChangesetEntry>,
-  lazyProvider: () => Promise<AttributeProvider>,
+  lazyProvider: () => Promise<AttributeProvider | undefined>,
   scanner: LeadingPathScanner,
   filterLimiter: ConcurrencyLimiter,
   total: number,
@@ -468,7 +470,7 @@ const applyAllEntries = async (
   deletes: ReadonlyArray<ChangesetEntry>,
   writes: ReadonlyArray<ChangesetEntry>,
   workdir: string,
-  lazyProvider: () => Promise<AttributeProvider>,
+  lazyProvider: () => Promise<AttributeProvider | undefined>,
   scanner: LeadingPathScanner,
   filterLimiter: ConcurrencyLimiter,
 ): Promise<ApplyChangesetResult> => {
@@ -515,12 +517,12 @@ const applyChangesetInScope = async (
     }
   }
 
-  // Build attribute provider lazily once per invocation (mirror build-content-merger.ts:48).
-  // Skip entirely when no command runner is wired: filters cannot run, so the
-  // provider would be inert anyway (ADR-408).
-  let providerPromise: Promise<AttributeProvider> | undefined;
-  const lazyProvider = (): Promise<AttributeProvider> =>
-    (providerPromise ??= buildAttributeProvider(ctx));
+  // Build the attribute provider lazily, once per invocation. A runner-less
+  // context skips it unless a driver is required: only a required driver
+  // changes what a context that cannot run filters writes.
+  let providerPromise: Promise<AttributeProvider | undefined> | undefined;
+  const lazyProvider = (): Promise<AttributeProvider | undefined> =>
+    (providerPromise ??= maybeBuildAttributeProvider(ctx));
 
   // One scanner per changeset application, shared by BOTH the delete-skip
   // check and the write-side unlink: its per-directory memo means a deep

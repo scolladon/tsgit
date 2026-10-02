@@ -2255,6 +2255,31 @@ describe('add', () => {
     });
   });
 
+  describe('Given a context that cannot run commands and a required clean driver', () => {
+    describe('When add stages the file', () => {
+      it('Then throws CLEAN_FILTER_FAILED, as git does when the driver cannot start', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'a.y': 'Hello World' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.y filter=f\n');
+        await ctx.fs.writeUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[filter "f"]\n\tclean = x\n\trequired = true\n',
+        );
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['a.y']).catch((err: unknown) => err);
+
+        // Assert
+        expect((result as TsgitError).data).toEqual({
+          code: 'CLEAN_FILTER_FAILED',
+          path: 'a.y',
+          filter: 'f',
+        });
+      });
+    });
+  });
+
   describe('Given a file under a required driver that configures no clean command', () => {
     describe('When add stages the file', () => {
       it('Then throws CLEAN_FILTER_FAILED with no exit code and nothing is staged', async () => {

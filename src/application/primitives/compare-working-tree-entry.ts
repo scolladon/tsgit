@@ -73,7 +73,7 @@ const LINK_ENCODER = new TextEncoder();
  */
 const cleanWorktreeBytes = async (
   ctx: Context,
-  runner: CommandRunner,
+  runner: CommandRunner | undefined,
   provider: AttributeProvider,
   path: FilePath,
   bytes: Uint8Array,
@@ -166,9 +166,9 @@ export const compareWorkingTreeDelta = async (
   // unverifiable file as `unchanged`; git's failed `index_path` reads changed.
   if (raw === undefined) return { status: 'modified', worktreeMode };
   // Route regular-file bytes through the clean filter before hashing when a
-  // provider and runner are available. Symlink targets are always hashed raw.
+  // provider is available. Symlink targets are always hashed raw.
   const content =
-    !stat.isSymbolicLink && provider !== undefined && ctx.command !== undefined
+    !stat.isSymbolicLink && provider !== undefined
       ? await cleanWorktreeBytes(ctx, ctx.command, provider, entry.path, raw)
       : raw;
   const { id } = await serializeAndHash(ctx, { type: 'blob', id: '' as ObjectId, content });

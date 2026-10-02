@@ -31,12 +31,13 @@ export const smudgesInCore = (choice: FilterChoice): choice is ExternalChoice =>
 /** `apply_filter`'s pick: a set `process` shadows the `smudge` command. */
 const runSmudgeCommand = (
   ctx: Context,
-  runner: CommandRunner,
+  runner: CommandRunner | undefined,
   { path, blob, bytes }: SmudgeTarget,
   choice: ExternalChoice,
 ): Promise<SmudgeOutcome> => {
   const picked = pickFilterCommand(choice.process, choice.smudge);
-  if (picked === undefined) return Promise.resolve(NOTHING_RAN);
+  // A context that cannot run commands cannot start the driver either.
+  if (picked === undefined || runner === undefined) return Promise.resolve(NOTHING_RAN);
   if (picked.kind === 'process') {
     return runFilterProcess(ctx, runner, picked.command, {
       capability: 'smudge',
@@ -55,7 +56,7 @@ const runSmudgeCommand = (
  */
 export const applySmudgeFilter = async (
   ctx: Context,
-  runner: CommandRunner,
+  runner: CommandRunner | undefined,
   target: SmudgeTarget,
   choice: FilterChoice,
 ): Promise<Uint8Array> => {

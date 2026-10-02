@@ -299,8 +299,8 @@ export interface Context {
   readonly hooks?: HookRunner;
   /**
    * Optional shell-command runner. Absent ⇒ a configured external merge driver
-   * falls back to the built-in merge (browser / memory adapters cannot spawn a
-   * process).
+   * falls back to the built-in merge and a required clean/smudge driver refuses
+   * (browser / memory adapters cannot spawn a process).
    */
   readonly command?: CommandRunner;
   /**

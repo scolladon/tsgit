@@ -85469,7 +85469,7 @@
 							},
 							{
 								"kind": "text",
-								"text": ": when absent (browser /\nmemory adapters cannot spawn a process), a configured external driver falls\nback to the built-in behaviour.\n\nNEVER rejects for a non-zero exit — interpreting the exit code is the\ncaller's policy.\n\nTwo output conventions coexist on this single port:\n- **Merge driver**: communicates via its "
+								"text": ": when absent (browser /\nmemory adapters cannot spawn a process), a configured merge or textconv\ndriver falls back to the built-in behaviour and an optional clean/smudge\ndriver leaves the bytes as stored, while a required clean/smudge driver\nrefuses — git refuses a required driver it cannot start.\n\nNEVER rejects for a non-zero exit — interpreting the exit code is the\ncaller's policy.\n\nTwo output conventions coexist on this single port:\n- **Merge driver**: communicates via its "
 							},
 							{
 								"kind": "code",
@@ -89273,7 +89273,7 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Optional shell-command runner. Absent ⇒ a configured external merge driver\nfalls back to the built-in merge (browser / memory adapters cannot spawn a\nprocess)."
+										"text": "Optional shell-command runner. Absent ⇒ a configured external merge driver\nfalls back to the built-in merge and a required clean/smudge driver refuses\n(browser / memory adapters cannot spawn a process)."
 									}
 								]
 							},

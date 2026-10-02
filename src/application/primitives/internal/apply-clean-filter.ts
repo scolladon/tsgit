@@ -15,11 +15,12 @@ type CleanOutcome = FilterDriverResult | { readonly ok: false; readonly exitCode
 /** `apply_filter`'s pick: a set `process` shadows the `clean` command. */
 const runCleanCommand = (
   ctx: Context,
-  runner: CommandRunner,
+  runner: CommandRunner | undefined,
   { path, bytes, choice }: CleanRequest,
 ): Promise<CleanOutcome> => {
   const picked = pickFilterCommand(choice.process, choice.clean);
-  if (picked === undefined) return Promise.resolve(NOTHING_RAN);
+  // A context that cannot run commands cannot start the driver either.
+  if (picked === undefined || runner === undefined) return Promise.resolve(NOTHING_RAN);
   if (picked.kind === 'process') {
     return runFilterProcess(ctx, runner, picked.command, { capability: 'clean', path, bytes });
   }
@@ -40,7 +41,7 @@ interface CleanRequest {
  */
 export const applyCleanFilter = async (
   ctx: Context,
-  runner: CommandRunner,
+  runner: CommandRunner | undefined,
   path: FilePath,
   bytes: Uint8Array,
   choice: FilterChoice,
