@@ -1208,4 +1208,32 @@ describe.skipIf(!GIT_AVAILABLE)('alternates interop — abbreviation across stor
       });
     });
   });
+
+  describe('Given X4: the collision across the stores and the donor alone', () => {
+    describe('When abbreviateObjectId runs in each repository', () => {
+      it("Then it returns git's rev-parse --short for every object", async () => {
+        // Arrange
+        const borrowerRepo = await open(borrower.dir);
+        const donorRepo = await open(donor.dir);
+        const shortIn = (dir: string, oid: string): string =>
+          runGit(['-C', dir, 'rev-parse', '--short', oid]).trim();
+
+        // Act
+        const borrowed = await Promise.all(
+          [donorOid, borrowerOid].map((oid) =>
+            borrowerRepo.primitives.abbreviateObjectId(oid as ObjectId),
+          ),
+        );
+        const alone = await donorRepo.primitives.abbreviateObjectId(donorOid as ObjectId);
+
+        // Assert
+        expect(borrowed).toEqual([donorOid, borrowerOid].map((oid) => shortIn(borrower.dir, oid)));
+        expect(borrowed[0]?.length).toBeGreaterThan(PREFIX_LENGTH);
+        expect(alone).toBe(shortIn(donor.dir, donorOid));
+        expect(alone).toBe(prefix);
+        await borrowerRepo.dispose();
+        await donorRepo.dispose();
+      });
+    });
+  });
 });

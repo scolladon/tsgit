@@ -7,6 +7,7 @@ describe('primitives barrel', () => {
       it('Then all primitives are exposed as functions', () => {
         // Arrange
         const names = [
+          'abbreviateObjectId',
           'appendReflog',
           'applyChangeset',
           'applyConfigOpInText',
@@ -105,6 +106,7 @@ describe('primitives barrel', () => {
       it('Then only expected public surface is exposed', () => {
         // Arrange
         const expected = new Set([
+          'abbreviateObjectId',
           'appendReflog',
           'applyChangeset',
           'applyConfigOpInText',

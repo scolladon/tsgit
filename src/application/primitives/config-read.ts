@@ -192,7 +192,6 @@ export interface ParsedConfig {
     /** `push.default` — canonicalized push remote-selection mode (`tracking` maps to `upstream`). */
     readonly default?: PushDefaultMode;
   };
-  /** `[gpg]` — signing backend selection and the external program(s) invoked to sign/verify. */
   /** `[mailmap]` — extra mailmap sources layered on the worktree `.mailmap`. */
   readonly mailmap?: {
     /** `mailmap.file` — path of a mailmap file. */
@@ -207,6 +206,7 @@ export interface ParsedConfig {
     /** `trailer.<token>.key` — canonical key by token (subsection name, verbatim). */
     readonly keys?: ReadonlyMap<string, string>;
   };
+  /** `[gpg]` — signing backend selection and the external program(s) invoked to sign/verify. */
   readonly gpg?: {
     readonly format?: 'openpgp' | 'ssh' | 'x509';
     readonly program?: string;

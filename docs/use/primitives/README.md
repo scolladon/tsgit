@@ -6,6 +6,7 @@ The composable building blocks every Tier-1 command is built from. Same `Context
 
 | Primitive | Summary |
 |---|---|
+| [`abbreviateObjectId`](abbreviate-object-id.md) | The shortest unambiguous prefix of an object id, as git computes it across every object source. |
 | [`bisectMidpoint`](bisect-midpoint.md) | Halve a bisect candidate set; returns structured midpoint data (`nextCommit`, counts, steps). |
 | [`catFileBatch`](cat-file-batch.md) | Streaming object reader; `AsyncIterable<CatFileBatchEntry>` in input order. |
 | [`createCommit`](create-commit.md) | Create a commit object from tree + parents. |
