@@ -741,3 +741,54 @@ describe.skipIf(!GIT_AVAILABLE)('alternates fsck interop — every source is aud
     });
   });
 });
+
+describe.skipIf(!GIT_AVAILABLE)('alternates gc/fsck interop — loose-only enumeration', () => {
+  const BAD_LIMIT = 'bogus';
+
+  const tsgitRefusal = async (dir: string, run: 'fsck' | 'gc') => {
+    const repo = await openRepository({ cwd: dir });
+    try {
+      const pending =
+        run === 'fsck' ? repo.fsck({ full: false }) : repo.maintenance({ tasks: ['gc'] });
+      return await refusalOf(pending);
+    } finally {
+      await repo.dispose();
+    }
+  };
+
+  describe.each([
+    { run: 'fsck' as const, gitArgs: ['fsck', '--no-full'] },
+    { run: 'gc' as const, gitArgs: ['gc', '-q'] },
+  ])('Given a borrower whose core.deltaBaseCacheLimit is malformed', ({ run, gitArgs }) => {
+    describe(`When git ${gitArgs.join(' ')} and tsgit ${run} run (L1)`, () => {
+      it(
+        'Then both refuse with the bad-numeric fatal',
+        async () => {
+          // Arrange
+          const { borrower } = borrowerOf(`l1-${run}`, true);
+          runGit(['-C', borrower, 'config', 'core.deltaBaseCacheLimit', BAD_LIMIT]);
+          const git = tryRunGitWithExit(['-C', borrower, ...gitArgs]);
+
+          // Act
+          const result = await tsgitRefusal(borrower, run);
+
+          // Assert
+          const data = result.data as unknown as {
+            readonly code: string;
+            readonly key: string;
+            readonly value: string;
+            readonly reason: string;
+            readonly source: string;
+          };
+          const file = path.relative(borrower, data.source);
+          expect(git.exitCode).toBe(128);
+          expect(git.stderr).toBe(
+            `fatal: bad numeric config value '${data.value}' for '${data.key}' in file ${file}: ${data.reason}\n`,
+          );
+          expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+});
