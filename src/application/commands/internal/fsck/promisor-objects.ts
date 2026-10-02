@@ -1,7 +1,7 @@
 import type { ObjectId } from '../../../../domain/objects/index.js';
 import { objectIdAt } from '../../../../domain/storage/index.js';
 import type { Context } from '../../../../ports/context.js';
-import { readConfig } from '../../../primitives/config-read.js';
+import { readPromisorRemoteNames } from '../../../primitives/config-read.js';
 import { deriveContext } from '../../../primitives/derive-context.js';
 import { packPositionMap } from '../../../primitives/internal/pack-positions.js';
 import { getObjectStore } from '../../../primitives/object-store.js';
@@ -19,14 +19,9 @@ export function withoutLazyFetch(ctx: Context): Context {
   return deriveContext(rest, {});
 }
 
-/** git's `repo_has_promisor_remote`: a remote marked `promisor` or carrying a
- *  `partialclonefilter`, or the one `extensions.partialClone` names. */
+/** git's `repo_has_promisor_remote`. */
 async function hasPromisorRemote(ctx: Context): Promise<boolean> {
-  const config = await readConfig(ctx);
-  if (config.extensions?.partialClone !== undefined) return true;
-  return [...(config.remote?.values() ?? [])].some(
-    (remote) => remote.promisor === true || remote.partialCloneFilter !== undefined,
-  );
+  return (await readPromisorRemoteNames(ctx)).length > 0;
 }
 
 /** Every `.promisor`-marked pack, source by source — a kept one included. */

@@ -2438,6 +2438,47 @@ export const findFirstInvalidBooleanInSection = async (
     accepts: acceptsGitBoolean,
   });
 
+/** A remote config key registering its remote as a promisor: `promisor` set
+ *  true, or any `partialclonefilter`. */
+const registersPromisor = (key: string, value: string | null): boolean => {
+  const lowered = key.toLowerCase();
+  if (lowered === 'partialclonefilter') return true;
+  if (lowered !== 'promisor') return false;
+  const parsed = parseGitBoolean(value);
+  return parsed.ok && parsed.value;
+};
+
+/** git's `promisor_remote_new` refuses a name starting with `/`. */
+const isRegistrablePromisorName = (name: string): boolean => !name.startsWith('/');
+
+const configuredPromisorNames = (tokens: ReadonlyArray<ConfigToken>): ReadonlyArray<string> => {
+  const names = new Set<string>();
+  let remoteName: string | undefined;
+  for (const token of tokens) {
+    if (token.kind === 'header') {
+      remoteName = token.section.toLowerCase() === 'remote' ? (token.subsection ?? '') : undefined;
+      continue;
+    }
+    if (token.kind !== 'entry' || remoteName === undefined) continue;
+    if (registersPromisor(token.key, token.value)) names.add(remoteName);
+  }
+  return [...names];
+};
+
+/**
+ * git's `promisor_remote_init`: every remote a `remote.<n>.promisor = true` or a
+ * `remote.<n>.partialclonefilter` ever registers — a later `promisor = false` never
+ * unregisters it, a subsectionless `[remote]` registers the name `""` — plus the one
+ * `extensions.partialClone` names; a `/`-leading name is never registered.
+ */
+export const readPromisorRemoteNames = async (ctx: Context): Promise<ReadonlyArray<string>> => {
+  const { tokens, parsed } = await readConfigEntry(ctx);
+  const partialClone = parsed.extensions?.partialClone;
+  const names = new Set(configuredPromisorNames(tokens));
+  if (partialClone !== undefined) names.add(partialClone);
+  return [...names].filter(isRegistrablePromisorName);
+};
+
 /**
  * `core.logAllRefUpdates`-specific finder: the key accepts a third literal,
  * `always`, beyond git's boolean grammar (mirrors `parseLogAllRefUpdates`'s own

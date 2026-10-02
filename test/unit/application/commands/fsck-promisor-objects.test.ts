@@ -115,6 +115,15 @@ describe('Given a promisor-pack commit whose parent is absent', () => {
       config: '[remote "origin"]\n\tpartialclonefilter = blob:none\n',
     },
     { remote: 'extensions.partialClone', config: '[extensions]\n\tpartialClone = origin\n' },
+    { remote: 'subsectionless remote.promisor', config: '[remote]\n\tpromisor = true\n' },
+    {
+      remote: 'subsectionless remote.partialclonefilter',
+      config: '[remote]\n\tpartialclonefilter = blob:none\n',
+    },
+    {
+      remote: 'remote.<name>.promisor true then false',
+      config: '[remote "origin"]\n\tpromisor = true\n\tpromisor = false\n',
+    },
   ])('When fsck runs with $remote naming a promisor remote', ({ config }) => {
     it('Then the commit is reached without walking below it', async () => {
       // Arrange
@@ -134,6 +143,15 @@ describe('Given a promisor-pack commit whose parent is absent', () => {
   describe.each([
     { remote: 'no promisor remote', config: '' },
     { remote: 'remote.<name>.promisor = false', config: '[remote "origin"]\n\tpromisor = false\n' },
+    { remote: 'a /-leading promisor remote', config: '[remote "/abs"]\n\tpromisor = true\n' },
+    {
+      remote: 'a /-leading partialclonefilter remote',
+      config: '[remote "/abs"]\n\tpartialclonefilter = blob:none\n',
+    },
+    {
+      remote: 'a /-leading extensions.partialClone',
+      config: '[extensions]\n\tpartialClone = /abs\n',
+    },
   ])('When fsck runs with $remote', ({ config }) => {
     it('Then the parent is reported missing', async () => {
       // Arrange

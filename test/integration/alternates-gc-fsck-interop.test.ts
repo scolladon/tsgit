@@ -2519,6 +2519,23 @@ describe.skipIf(!GIT_AVAILABLE)('fsck interop — promisor objects named by refs
       label: 'remote.origin.partialclonefilter',
       config: [['remote.origin.partialclonefilter', 'blob:none']] as const,
     },
+    { label: 'subsectionless remote.promisor', config: [['remote.promisor', 'true']] as const },
+    {
+      label: 'subsectionless remote.partialclonefilter',
+      config: [['remote.partialclonefilter', 'blob:none']] as const,
+    },
+    {
+      label: 'remote.origin.promisor true then false',
+      config: [
+        ['remote.origin.promisor', 'true'],
+        ['remote.origin.promisor', 'false'],
+      ] as const,
+    },
+    { label: 'a /-leading promisor remote', config: [['remote./abs.promisor', 'true']] as const },
+    {
+      label: 'a /-leading extensions.partialClone',
+      config: [['extensions.partialClone', '/abs']] as const,
+    },
   ])(
     'Given a promisor-pack commit whose absent parent a ref and a reflog name, with $label',
     ({ label, config }) => {
@@ -2546,7 +2563,7 @@ describe.skipIf(!GIT_AVAILABLE)('fsck interop — promisor objects named by refs
               `${parent} ${commit} Ada <ada@example.com> 1700000000 +0000\tx\n`,
             );
             writeFileSync(path.join(objectsOf(dir), 'pack', `pack-${pack}.promisor`), '');
-            for (const [key, value] of config) runGit(['-C', dir, 'config', key, value]);
+            for (const [key, value] of config) runGit(['-C', dir, 'config', '--add', key, value]);
             const git = gitFsck(dir);
             const sut = tsgitFsck;
 

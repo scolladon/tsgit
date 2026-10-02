@@ -28,6 +28,7 @@ import {
   parseGitInt,
   parseIniSections,
   readConfig,
+  readPromisorRemoteNames,
   tokenizeConfig,
 } from '../../../../src/application/primitives/config-read.js';
 import {
@@ -6879,6 +6880,76 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
           // Assert
           expect(result?.key).toBe('diff.MyDriver.cachetextconv');
         });
+      });
+    });
+  });
+
+  describe('readPromisorRemoteNames', () => {
+    describe.each([
+      { given: 'no remote config', config: '', expected: [] },
+      {
+        given: 'promisor and partialclonefilter remotes in config order',
+        config: '[remote "b"]\n\tpartialclonefilter = blob:none\n[remote "a"]\n\tPROMISOR = yes\n',
+        expected: ['b', 'a'],
+      },
+      {
+        given: 'a remote both promisor and filtered, repeated across headers',
+        config: '[remote "a"]\n\tpromisor\n[remote "a"]\n\tpartialclonefilter = blob:none\n',
+        expected: ['a'],
+      },
+      {
+        given: 'a promisor value false or outside the boolean grammar',
+        config: '[remote "a"]\n\tpromisor = false\n[remote "b"]\n\tpromisor = maybe\n',
+        expected: [],
+      },
+      {
+        given: 'a promisor then a false',
+        config: '[remote "a"]\n\tpromisor = true\n\tpromisor = false\n',
+        expected: ['a'],
+      },
+      {
+        given: 'an upper-cased subsectionless section',
+        config: '[REMOTE]\n\tpromisor = true\n',
+        expected: [''],
+      },
+      {
+        given: 'a promisor key under another section',
+        config: '[remote "a"]\n\turl = x\n[core]\n\tpromisor = true\n',
+        expected: [],
+      },
+      { given: 'an unrelated remote key', config: '[remote "a"]\n\turl = x\n', expected: [] },
+      {
+        given: 'a /-leading remote name',
+        config: '[remote "/abs"]\n\tpromisor = true\n[remote "ok"]\n\tpromisor = true\n',
+        expected: ['ok'],
+      },
+      {
+        given: 'extensions.partialClone naming a configured remote and a new one',
+        config: '[remote "a"]\n\tpromisor = true\n[extensions]\n\tpartialClone = a\n',
+        expected: ['a'],
+      },
+      {
+        given: 'extensions.partialClone alone',
+        config: '[extensions]\n\tpartialClone = o\n',
+        expected: ['o'],
+      },
+      {
+        given: 'a /-leading extensions.partialClone',
+        config: '[extensions]\n\tpartialClone = /abs\n',
+        expected: [],
+      },
+    ])('Given $given, When readPromisorRemoteNames', ({ config, expected }) => {
+      it('Then it returns the registered promisor remote names', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, config);
+        const sut = readPromisorRemoteNames;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toEqual(expected);
       });
     });
   });
