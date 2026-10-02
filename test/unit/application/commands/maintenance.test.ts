@@ -42,6 +42,7 @@ import { probeLooseOid } from '../../../../src/application/primitives/internal/l
 import { deriveWorktreeContext } from '../../../../src/application/primitives/internal/worktree-context.js';
 import * as writePackArtifactsMod from '../../../../src/application/primitives/internal/write-pack-artifacts.js';
 import {
+  commitGraphPath,
   commonGitDir,
   looseObjectPath,
   multiPackIndexPath,
@@ -358,6 +359,65 @@ describe('maintenance', () => {
         expect(result.commitGraphWritten).toBe(true);
         expect(result.commitsInGraph).toBe(1);
         expect(result.tasksRun).toEqual(['commit-graph']);
+      });
+    });
+  });
+
+  describe('Given core.commitGraph disables the commit-graph', () => {
+    describe('When maintenance runs the commit-graph task', () => {
+      it('Then it writes nothing and still reports the task ran, as git skips it', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        await appendConfig(ctx, '[core]\n\tcommitGraph = true\n\tcommitGraph = off\n');
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['commit-graph'] });
+
+        // Assert
+        expect(result.commitGraphWritten).toBe(false);
+        expect(result.commitsInGraph).toBe(0);
+        expect(result.tasksRun).toEqual(['commit-graph']);
+        expect(await ctx.fs.exists(commitGraphPath(commonGitDir(ctx)))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a valueless core.commitGraph, which git reads as true', () => {
+    describe('When maintenance runs the commit-graph task', () => {
+      it('Then the graph is written', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        await appendConfig(ctx, '[core]\n\tcommitGraph\n');
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['commit-graph'] });
+
+        // Assert
+        expect(result.commitGraphWritten).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a malformed core.commitGraph', () => {
+    describe('When maintenance runs the commit-graph task', () => {
+      it('Then it refuses on the value, as prepare_repo_settings dies', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        await appendConfig(ctx, '[core]\n\tcommitGraph = sometimes\n');
+        const sut = maintenance;
+
+        // Act
+        const [outcome] = await Promise.allSettled([sut(ctx, { tasks: ['commit-graph'] })]);
+
+        // Assert
+        expect((outcome as PromiseRejectedResult).reason.data).toMatchObject({
+          code: 'CONFIG_BAD_BOOLEAN_VALUE',
+          key: 'core.commitgraph',
+          value: 'sometimes',
+        });
+        expect(await ctx.fs.exists(commitGraphPath(commonGitDir(ctx)))).toBe(false);
       });
     });
   });

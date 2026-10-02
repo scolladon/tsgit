@@ -18,6 +18,7 @@
  *   interopSurface: gc
  */
 import { execFileSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import {
   appendFile,
   cp,
@@ -867,6 +868,52 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
         // Assert
         expect(peer.exitCode).toBe(128);
         expect((caught as TsgitError).data.code).toBe(code);
+        await disposeTwin(twin);
+      });
+    });
+  });
+
+  describe.each([
+    { kv: 'core.commitGraph=off', code: undefined },
+    { kv: 'core.commitGraph=sometimes', code: 'CONFIG_BAD_BOOLEAN_VALUE' },
+    { kv: 'index.sparse=sometimes', code: 'CONFIG_BAD_BOOLEAN_VALUE' },
+  ])('Given $kv', ({ kv, code }) => {
+    describe('When both tools run the commit-graph maintenance task', () => {
+      it('Then both write no commit-graph, refusing exactly when git dies', async () => {
+        // Arrange
+        const slug = `commit-graph-setting-${kv.replace(/\W+/g, '-')}`;
+        const baseDir = await initRepo(slug);
+        await addCommit(baseDir, 'c0');
+        const twin = await makeTwin(baseDir, slug);
+        await rm(baseDir, { recursive: true, force: true });
+        const peer = tryRunGitWithExit([
+          '-C',
+          twin.peerDir,
+          '-c',
+          kv,
+          'maintenance',
+          'run',
+          '--task=commit-graph',
+        ]);
+        const [qualified = '', value] = kv.split('=');
+        const dot = qualified.indexOf('.');
+        await appendFile(
+          path.join(twin.oursDir, '.git', 'config'),
+          `[${qualified.slice(0, dot)}]\n\t${qualified.slice(dot + 1)} = ${value}\n`,
+        );
+        const sut = maintenance;
+
+        // Act
+        const [outcome] = await Promise.allSettled([
+          sut(trackedNodeContext(twin.oursDir, 'sha1'), { tasks: ['commit-graph'], auto: false }),
+        ]);
+
+        // Assert
+        const graph = path.join('.git', 'objects', 'info', 'commit-graph');
+        expect(peer.exitCode).toBe(code === undefined ? 0 : 128);
+        expect(outcome.status === 'rejected' ? outcome.reason.data.code : undefined).toBe(code);
+        expect(existsSync(path.join(twin.oursDir, graph))).toBe(false);
+        expect(existsSync(path.join(twin.peerDir, graph))).toBe(false);
         await disposeTwin(twin);
       });
     });

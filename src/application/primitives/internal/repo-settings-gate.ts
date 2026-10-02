@@ -1,5 +1,6 @@
 /**
  * The repo-settings class (git's `prepare_repo_settings`, `repo-settings.c`):
+ * its booleans (`feature.*`, `core.commitGraph`, … `core.useReplaceRefs`),
  * `core.maxTreeDepth`, `core.deltaBaseCacheLimit`, then
  * `core.packedGitWindowSize` and `core.packedGitLimit`. Git reads these keys
  * in that one function and nowhere else — a command dies on
@@ -12,25 +13,57 @@
  * eager operational gate, which is a different tier validating a different
  * set of `[core]` classes.
  */
-import { configBadNumericValue } from '../../../domain/commands/error.js';
+import { configBadBooleanValue, configBadNumericValue } from '../../../domain/commands/error.js';
+import { parseGitBoolean } from '../../../domain/config/config-ini.js';
 import type { Context } from '../../../ports/context.js';
 import {
+  findLastEntries,
   findLastInvalidBigFileThreshold,
   findLastInvalidDeltaBaseCacheLimit,
   findLastInvalidMaxTreeDepth,
   findLastInvalidPackedGitBound,
+  type LocatedConfigEntry,
   memoizeRepoSettingsVerdict,
 } from '../config-read.js';
 
+/** The booleans `prepare_repo_settings` reads first, in its order (repo-settings.c:49-86). */
+const REPO_SETTINGS_BOOLEANS: ReadonlyArray<readonly [section: string, key: string]> = [
+  ['feature', 'manyFiles'],
+  ['feature', 'experimental'],
+  ['core', 'commitGraph'],
+  ['commitGraph', 'readChangedPaths'],
+  ['gc', 'writeCommitGraph'],
+  ['fetch', 'writeCommitGraph'],
+  ['pack', 'useSparse'],
+  ['pack', 'usePathWalk'],
+  ['core', 'multiPackIndex'],
+  ['index', 'sparse'],
+  ['index', 'skipHash'],
+  ['pack', 'readReverseIndex'],
+  ['pack', 'useBitmapBoundaryTraversal'],
+  ['core', 'useReplaceRefs'],
+];
+
+/** git's `repo_cfg_bool`: the first key whose last value its boolean grammar refuses. */
+const findInvalidRepoSettingsBoolean = async (
+  ctx: Context,
+): Promise<LocatedConfigEntry | undefined> =>
+  (await findLastEntries(ctx, REPO_SETTINGS_BOOLEANS)).find(
+    (last) => last?.value != null && !parseGitBoolean(last.value).ok,
+  );
+
 /** git's `prepare_repo_settings` (repo-settings.c): the class's keys, in its own reading order. */
 const computeRepoSettingsVerdict = async (ctx: Context): Promise<void> => {
-  const [maxTreeDepth, deltaBaseCacheLimit, packedGitBound] = await Promise.all([
+  const [boolean, maxTreeDepth, deltaBaseCacheLimit, packedGitBound] = await Promise.all([
+    findInvalidRepoSettingsBoolean(ctx), // repo-settings.c:49-86
     findLastInvalidMaxTreeDepth(ctx), // repo-settings.c:103
     ctx.cacheBudgets?.deltaBaseCacheMaxBytes === undefined // an option-overridden file value is never validated
       ? findLastInvalidDeltaBaseCacheLimit(ctx) // repo-settings.c:142
       : undefined,
     findLastInvalidPackedGitBound(ctx), // repo-settings.c:145, :155
   ]);
+  if (boolean?.value != null)
+    throw configBadBooleanValue(boolean.key, boolean.source, boolean.value);
   const invalid = maxTreeDepth ?? deltaBaseCacheLimit ?? packedGitBound; // in-function order
   if (invalid !== undefined) {
     throw configBadNumericValue(invalid.key, invalid.source, invalid.value, invalid.reason);

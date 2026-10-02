@@ -806,6 +806,24 @@ export const findLastEntry = async (
   key: string,
 ): Promise<LocatedConfigEntry | undefined> => {
   const { tokens, source } = await readConfigEntry(ctx);
+  return lastEntryIn(tokens, source, section, key);
+};
+
+/** {@link findLastEntry} for each `[section, key]`, in order, from ONE config read. */
+export const findLastEntries = async (
+  ctx: Context,
+  keys: ReadonlyArray<readonly [section: string, key: string]>,
+): Promise<ReadonlyArray<LocatedConfigEntry | undefined>> => {
+  const { tokens, source } = await readConfigEntry(ctx);
+  return keys.map(([section, key]) => lastEntryIn(tokens, source, section, key));
+};
+
+const lastEntryIn = (
+  tokens: ReadonlyArray<ConfigToken>,
+  source: string,
+  section: string,
+  key: string,
+): LocatedConfigEntry | undefined => {
   const loweredKey = key.toLowerCase();
   let inSection = false;
   let last: LocatedConfigEntry | undefined;

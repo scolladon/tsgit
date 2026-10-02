@@ -25,8 +25,11 @@
  * one.
  */
 import { invalidOption } from '../../domain/commands/error.js';
+import { parseGitBoolean } from '../../domain/config/config-ini.js';
 import type { ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
+import { findLastEntry } from '../primitives/config-read.js';
+import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
 import { writeCommitGraph } from '../primitives/write-commit-graph.js';
 import { GC_NOT_RUN, type GcResult, readGcSettings, runGcTask } from './internal/gc-pipeline.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
@@ -81,9 +84,21 @@ const validateTasks = (tasks: ReadonlyArray<MaintenanceTask>): void => {
   }
 };
 
+/** `core.commitGraph` set to a false boolean, its last value read as git's config set does. */
+const commitGraphDisabled = async (ctx: Context): Promise<boolean> => {
+  const last = await findLastEntry(ctx, 'core', 'commitGraph');
+  if (last?.value == null) return false;
+  const parsed = parseGitBoolean(last.value);
+  return parsed.ok && !parsed.value;
+};
+
+/** git's `maintenance_task_commit_graph`: `prepare_repo_settings` first, then a
+ *  disabled `core.commitGraph` skips the write, silently. */
 const runCommitGraphTask = async (
   ctx: Context,
 ): Promise<Pick<MaintenanceResult, 'commitGraphWritten' | 'commitsInGraph'>> => {
+  await assertRepoSettingsValid(ctx);
+  if (await commitGraphDisabled(ctx)) return { commitGraphWritten: false, commitsInGraph: 0 };
   const { commitCount } = await writeCommitGraph(ctx);
   return { commitGraphWritten: commitCount > 0, commitsInGraph: commitCount };
 };

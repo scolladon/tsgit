@@ -692,3 +692,47 @@ describe('internal/repo-settings-gate', () => {
     });
   });
 });
+
+describe('Given a boolean prepare_repo_settings reads', () => {
+  describe.each([
+    { config: '[core]\n\tcommitGraph = x\n', refused: { key: 'core.commitgraph', value: 'x' } },
+    {
+      config: '[feature]\n\texperimental = no-way\n',
+      refused: { key: 'feature.experimental', value: 'no-way' },
+    },
+    { config: '[index]\n\tsparse = 2x\n', refused: { key: 'index.sparse', value: '2x' } },
+    {
+      config: '[core]\n\tuseReplaceRefs = maybe\n',
+      refused: { key: 'core.usereplacerefs', value: 'maybe' },
+    },
+    {
+      config: '[core]\n\tmaxTreeDepth = 2.5\n\tcommitGraph = y\n[feature]\n\tmanyFiles = z\n',
+      refused: { key: 'feature.manyfiles', value: 'z' },
+    },
+    {
+      config: '[core]\n\tmaxTreeDepth = 2.5\n\tcommitGraph = y\n',
+      refused: { key: 'core.commitgraph', value: 'y' },
+    },
+    { config: '[core]\n\tcommitGraph = x\n\tcommitGraph = false\n', refused: undefined },
+    { config: '[core]\n\tcommitGraph\n', refused: undefined },
+  ])('When the gate reads $config', ({ config, refused }) => {
+    it(`Then it ${refused === undefined ? 'accepts it' : `refuses ${refused.key}, in git's reading order`}`, async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seedRepo(ctx);
+      await seedConfig(ctx, config);
+      const sut = assertRepoSettingsValid;
+
+      // Act
+      const [outcome] = await Promise.allSettled([sut(ctx)]);
+
+      // Assert
+      const data = outcome.status === 'rejected' ? (outcome.reason as TsgitError).data : undefined;
+      expect(data).toEqual(
+        refused === undefined
+          ? undefined
+          : { code: 'CONFIG_BAD_BOOLEAN_VALUE', ...refused, source: `${ctx.layout.gitDir}/config` },
+      );
+    });
+  });
+});
