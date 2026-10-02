@@ -891,6 +891,36 @@ describe('Given a commit reachable only via reflog (reset --hard scenario)', () 
       expect(result.exitCode).toBe(0);
     });
   });
+
+  describe('When fsck runs while that reflog cannot be opened', () => {
+    it('Then it reads the reflog as absent and the old commit IS dangling', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const treeId = await writeObject(ctx, makeTree([]));
+      const oldCommitId = await writeObject(ctx, makeCommit(treeId, [], 'old'));
+      const newCommitId = await writeObject(ctx, makeCommit(treeId, [], 'new'));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${newCommitId}\n`);
+      const reflogPath = `${ctx.layout.gitDir}/logs/refs/heads/main`;
+      await ctx.fs.writeUtf8(
+        reflogPath,
+        `${oldCommitId} ${newCommitId} Ada <ada@example.com> 1700000000 +0000\treset: moving to HEAD\n`,
+      );
+      const originalRead = ctx.fs.read.bind(ctx.fs);
+      vi.spyOn(ctx.fs, 'read').mockImplementation(async (path: string) => {
+        if (path === reflogPath) throw permissionDenied(path);
+        return originalRead(path);
+      });
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      const dangling = result.findings.filter((f) => f.type === 'dangling');
+      expect(dangling.some((f) => (f as { id: ObjectId }).id === oldCommitId)).toBe(true);
+      expect(result.exitCode).toBe(0);
+    });
+  });
 });
 
 describe('Given more reflogs than the ioBound limit', () => {

@@ -1633,3 +1633,40 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop — reads git treats as absent', () 
     },
   );
 });
+
+describe.skipIf(!GIT_AVAILABLE)('fsck interop — a reflog it cannot open', () => {
+  describe.each(UNOPENABLE_SPOILS)(
+    'Given a commit only a reflog names, that reflog being $label',
+    ({ label, spoil }) => {
+      describe('When git fsck and tsgit fsck run', () => {
+        it(
+          'Then both exit alike and agree on whether the commit dangles',
+          async () => {
+            // Arrange
+            const dir = path.join(root, `fsck-unopenable-reflog-${label}`.replace(/ /g, '-'));
+            runGit(['init', '-q', '-b', 'main', dir]);
+            configure(dir);
+            commitFile(dir, 'f', 'base');
+            const orphan = runGit(['-C', dir, 'commit-tree', '-m', 'orphan', 'HEAD^{tree}']).trim();
+            runGit(['-C', dir, 'update-ref', 'refs/heads/side', orphan]);
+            runGit(['-C', dir, 'update-ref', 'refs/heads/side', 'HEAD']);
+            const reflog = path.join(dir, '.git', 'logs', 'refs', 'heads', 'side');
+            spoil(reflog);
+            const git = gitFsck(dir);
+            const sut = tsgitFsck;
+
+            // Act
+            const result = await sut(dir);
+
+            // Assert
+            restoreMode(reflog);
+            const dangles = result.findings.some((f) => f.type === 'dangling' && f.id === orphan);
+            expect(result.exitCode).toBe(git.exitCode);
+            expect(dangles).toBe(git.stdout.includes(`dangling commit ${orphan}`));
+          },
+          ROW_TIMEOUT,
+        );
+      });
+    },
+  );
+});

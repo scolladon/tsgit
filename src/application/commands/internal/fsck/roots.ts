@@ -384,7 +384,7 @@ function splitReflogEntries(
  * git's `fsck_handle_reflog_oid`: an oid the run recorded as an object is
  * marked reachable; any other is an `invalid reflog entry` — never a root,
  * so never reported missing. A line that does not parse is skipped, as
- * git's reflog iterator skips it.
+ * git's reflog iterator skips it, and a log that cannot be opened is absent.
  */
 async function addRecordedReflogRoots(
   ctx: Context,
@@ -393,7 +393,7 @@ async function addRecordedReflogRoots(
 ): Promise<ReadonlyArray<InvalidReflogEntry>> {
   const zero = zeroOid(ctx.hashConfig);
   const perReflog = await boundedMapFor(ctx, 'ioBound', await listReflogs(ctx), async (ref) =>
-    splitReflogEntries(ref, await readReflogLenient(ctx, ref), isRecorded, roots, zero),
+    splitReflogEntries(ref, await readReflogIfOpenable(ctx, ref), isRecorded, roots, zero),
   );
   return perReflog.flat();
 }
