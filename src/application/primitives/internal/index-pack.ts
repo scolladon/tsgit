@@ -35,6 +35,7 @@ import {
   type PackByteSource,
 } from './pack-byte-source.js';
 import { createPackRecordStore, type PackRecordStore } from './pack-records.js';
+import { assertBigFileThresholdValid } from './repo-settings-gate.js';
 
 export { DISK_WALK_WINDOW_BYTES };
 
@@ -89,16 +90,32 @@ export const indexQuarantinedPack = async (
   options?: IndexPackOptions,
 ): Promise<PackIndexEntries> => {
   try {
-    return await indexPackEntries(
-      ctx,
-      diskPackByteSource(ctx, tmpPath, totalBytes),
-      undefined,
-      options,
-    );
+    return await indexPackEntries(ctx, diskPackByteSource(ctx, tmpPath, totalBytes), undefined, {
+      ...options,
+      onBlobEntry: onceOnly(() => assertBigFileThresholdValid(ctx)),
+    });
   } catch (err) {
     await onFailure(tmpPath);
     throw err;
   }
+};
+
+/** The pass-internal widening of {@link IndexPackOptions}: what the receive
+ *  path runs on reaching a non-delta blob entry. git's index-pack and
+ *  unpack-objects read `core.bigFileThreshold` there — and only there, so a
+ *  pack of commits, trees and deltas never reads it; `bundle verify` never
+ *  indexes, so `walkPackEntries` leaves it unset. */
+interface IndexPassOptions extends IndexPackOptions {
+  readonly onBlobEntry?: () => Promise<void>;
+}
+
+/** `action`, run on the first call only — git reads the threshold once. */
+const onceOnly = (action: () => Promise<void>): (() => Promise<void>) => {
+  let pending: Promise<void> | undefined;
+  return () => {
+    pending ??= action();
+    return pending;
+  };
 };
 
 interface WalkedEntry {
@@ -278,6 +295,7 @@ const scanEntries = async <TCrcContext>(
   source: PackByteSource<TCrcContext>,
   cache: LruCache<CachedBase>,
   passId: number,
+  onBlobEntry: (() => Promise<void>) | undefined,
 ): Promise<PackRecordStore> => {
   const header = await source.header();
   const objectCountCap = ctx.config?.maxObjectsPerPack ?? DEFAULT_MAX_OBJECT_COUNT;
@@ -296,6 +314,7 @@ const scanEntries = async <TCrcContext>(
   let offset = PACK_HEADER_SIZE;
   for (let i = 0; i < header.objectCount; i += 1) {
     const entryHeader = await source.entryHeader(offset);
+    if (entryHeader.type === PACK_ENTRY_TYPE.BLOB) await onBlobEntry?.();
     const inflated = await source.inflateEntry(offset, entryHeader.dataOffset, entryHeader.size);
     const entryEnd = entryHeader.dataOffset + inflated.result.bytesConsumed;
     // Defence-in-depth guard. The trailer is always verified before either
@@ -608,7 +627,7 @@ const indexPackEntries = async <TCrcContext>(
   ctx: Context,
   source: PackByteSource<TCrcContext>,
   externalBaseResolver?: ExternalBaseResolver,
-  options?: IndexPackOptions,
+  options?: IndexPassOptions,
 ): Promise<PackIndexEntries> => {
   const slot = baseCacheSlotFor(
     ctx,
@@ -619,7 +638,7 @@ const indexPackEntries = async <TCrcContext>(
   // Stryker disable next-line AssignmentOperator: equivalent — `passId` only has to be distinct per call sharing this slot, never any particular sign or direction; `-= 1` produces 0, -1, -2, ... which is exactly as injective as `+= 1`'s 0, 1, 2, ..., so cache-key disambiguation (`o:<passId>:<offset>`) holds identically either way.
   slot.passId += 1;
   try {
-    const store = await scanEntries(ctx, source, slot.cache, passId);
+    const store = await scanEntries(ctx, source, slot.cache, passId, options?.onBlobEntry);
     await resolveFromRoots(ctx, source, store, slot.cache, passId);
     // Stryker disable next-line EqualityOperator: equivalent — `resolvedCount` is monotonically bounded by `count` (each ordinal's `markResolved` fires at most once), so `<=` can never differ from `<` in practice; when they're equal, `resolveExternalBases` degenerates to a no-op (every ref-delta is already resolved, so the isResolved guard inside it skips them all).
     if (externalBaseResolver !== undefined && store.resolvedCount < store.count) {
