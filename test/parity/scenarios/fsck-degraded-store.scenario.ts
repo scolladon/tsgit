@@ -37,12 +37,14 @@ interface FsckDegradedStoreResult {
   readonly defaultExitCode: number;
   readonly packInaccessibleCount: number;
   readonly packIndexUnusableCount: number;
+  readonly packEntryUnpackableCount: number;
   readonly connectivityExitCode: number;
   readonly connectivityObjectTypeCensus: ReadonlyArray<string>;
   readonly connectivityRejectCode: string;
   readonly v99IdType: string;
   readonly corruptEntryIdType: string;
   readonly defaultAfterBadObjectCount: number;
+  readonly defaultAfterExitCode: number;
 }
 
 // Header (8) + fanout table (1024) is the parser's minimum-size gate; this
@@ -124,9 +126,13 @@ export const fsckDegradedStoreScenario: Scenario<FsckDegradedStoreResult> = {
   unsupportedRuntimes: ['workers', 'deno', 'bun', 'browser'],
   inputs: { files: [FILES.helloA], author: AUTHOR, message: MESSAGES.seed },
   expected: {
-    defaultExitCode: 69,
+    // git 2.55 exits 68 on this store: arm 3's dead body is `verify_pack`'s
+    // `cannot unpack <oid> from <pack> at offset 12` (bit 4), never an
+    // object error (bit 1).
+    defaultExitCode: 68,
     packInaccessibleCount: 1,
     packIndexUnusableCount: 1,
+    packEntryUnpackableCount: 1,
     // The corrupt-idx pack's rev-index-unusable finding is ungated — bit 64
     // reports in every mode, including connectivityOnly (unlike bit 4).
     connectivityExitCode: 64,
@@ -142,10 +148,11 @@ export const fsckDegradedStoreScenario: Scenario<FsckDegradedStoreResult> = {
     v99IdType: 'unknown',
     corruptEntryIdType: 'blob',
     // Default mode after the undecodable loose object lands: the content
-    // pass reports it as one more bad-object (arm 3's corrupt entry is the
-    // other) — the loose reject class stays a content error outside
-    // connectivityOnly.
-    defaultAfterBadObjectCount: 2,
+    // pass reports it as the one bad-object (arm 3's corrupt entry stays a
+    // pack finding) — the loose reject class stays a content error outside
+    // connectivityOnly, adding bit 1 as git 2.55's exit 69 does.
+    defaultAfterBadObjectCount: 1,
+    defaultAfterExitCode: 69,
   },
   run: async (repo, inputs) => {
     // Arrange — seed a healthy root commit so the reachable graph is
@@ -234,6 +241,9 @@ export const fsckDegradedStoreScenario: Scenario<FsckDegradedStoreResult> = {
       packIndexUnusableCount: defaultResult.findings.filter(
         (finding) => finding.type === 'pack-index-unusable',
       ).length,
+      packEntryUnpackableCount: defaultResult.findings.filter(
+        (finding) => finding.type === 'pack-entry-unpackable',
+      ).length,
       connectivityExitCode: connectivityResult.exitCode,
       connectivityObjectTypeCensus,
       connectivityRejectCode,
@@ -242,6 +252,7 @@ export const fsckDegradedStoreScenario: Scenario<FsckDegradedStoreResult> = {
       defaultAfterBadObjectCount: defaultAfter.findings.filter(
         (finding) => finding.type === 'bad-object',
       ).length,
+      defaultAfterExitCode: defaultAfter.exitCode,
     };
   },
 };

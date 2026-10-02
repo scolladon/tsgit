@@ -27,24 +27,23 @@ import {
   serializePackIndex,
   sortPackIndexEntries,
 } from '../../../src/domain/storage/index.ts';
-import { computeLooseObjectPath } from '../../../src/domain/storage/loose-path.ts';
 import type { Repository } from '../../../src/repository.ts';
 import { type BitmapEntrySpec, buildBitmap } from '../../fixtures/storage/bitmap-writers.ts';
 import { packIndexEntriesOf, sealPackIndex } from '../../fixtures/storage/pack-index-entries.ts';
 import { AUTHOR, MESSAGES } from '../fixtures.ts';
 import type { Scenario } from './types.ts';
 
-/** Object content (header stripped) as the pack expects it — serializes the
- *  SAME object literal `writeObject` just wrote (now carrying its real
- *  id), so the packed bytes are exactly what the domain serializer
- *  produces, with no second read of the store. */
-function packedContentOf(
+/** An object's id and its content (header stripped) as the pack expects it,
+ *  hashed from the domain serializer's bytes without touching the store: the
+ *  session's pack listing must first be read after the pack below exists, as
+ *  a fresh git process would read it. */
+async function hashedContentOf(
   repo: Repository,
   object: Parameters<typeof serializeObject>[0],
-): Uint8Array {
+): Promise<{ readonly id: ObjectId; readonly content: Uint8Array }> {
   const full = serializeObject(object, repo.ctx.hashConfig);
   const nul = full.indexOf(0);
-  return full.subarray(nul + 1);
+  return { id: (await repo.ctx.hash.hashHex(full)) as ObjectId, content: full.subarray(nul + 1) };
 }
 
 interface BitmapClosureResult {
@@ -82,61 +81,44 @@ interface PackedChain {
 }
 
 /**
- * Writes one blob, one tree and a 2-commit chain over it as loose objects
- * first (so `writeObject` computes each real id, including tree/commit
- * ids that depend on earlier ones), packs the whole set via the domain
- * writers, and removes the loose copies so the pack is the sole source.
+ * Hashes one blob, one tree and a 2-commit chain over it (each tree/commit
+ * id depends on earlier ones) and packs the whole set via the domain
+ * writers, so the pack is the sole source of every object.
  */
 async function buildAndPackChain(repo: Repository): Promise<PackedChain> {
-  const enc = new TextEncoder();
-  const objects: PackedObject[] = [];
-
-  const blobContent = enc.encode('bitmap parity blob\n');
-  const blobId = await repo.primitives.writeObject({
+  const blob = await hashedContentOf(repo, {
     type: 'blob',
     id: '' as ObjectId,
-    content: blobContent,
+    content: new TextEncoder().encode('bitmap parity blob\n'),
   });
-  objects.push({ id: blobId, type: PACK_ENTRY_TYPE.BLOB, content: blobContent });
-
-  const treeEntries = [treeEntry('100644' as const, 'bitmap.txt', blobId)];
-  const treeId = await repo.primitives.writeObject({
+  const tree = await hashedContentOf(repo, {
     type: 'tree',
     id: '' as ObjectId,
-    entries: treeEntries,
+    entries: [treeEntry('100644' as const, 'bitmap.txt', blob.id)],
   });
-  // Re-serialises the SAME literal just written, now carrying the real id
-  // `writeObject` computed — the packed bytes are exactly what the domain
-  // tree serializer produced, with no second read of the store.
-  objects.push({
-    id: treeId,
-    type: PACK_ENTRY_TYPE.TREE,
-    content: packedContentOf(repo, { type: 'tree', id: treeId, entries: treeEntries }),
-  });
+  const objects: PackedObject[] = [
+    { id: blob.id, type: PACK_ENTRY_TYPE.BLOB, content: blob.content },
+    { id: tree.id, type: PACK_ENTRY_TYPE.TREE, content: tree.content },
+  ];
 
   const commitIds: ObjectId[] = [];
   let parent: ObjectId | undefined;
   for (let i = 0; i < 2; i += 1) {
-    const commitData = {
-      tree: treeId,
-      parents: parent === undefined ? [] : [parent],
-      author: AUTHOR,
-      committer: AUTHOR,
-      message: i === 0 ? MESSAGES.seed : MESSAGES.second,
-      extraHeaders: [],
-    };
-    const commitId = await repo.primitives.writeObject({
+    const commit = await hashedContentOf(repo, {
       type: 'commit',
       id: '' as ObjectId,
-      data: commitData,
+      data: {
+        tree: tree.id,
+        parents: parent === undefined ? [] : [parent],
+        author: AUTHOR,
+        committer: AUTHOR,
+        message: i === 0 ? MESSAGES.seed : MESSAGES.second,
+        extraHeaders: [],
+      },
     });
-    objects.push({
-      id: commitId,
-      type: PACK_ENTRY_TYPE.COMMIT,
-      content: packedContentOf(repo, { type: 'commit', id: commitId, data: commitData }),
-    });
-    commitIds.push(commitId);
-    parent = commitId;
+    objects.push({ id: commit.id, type: PACK_ENTRY_TYPE.COMMIT, content: commit.content });
+    commitIds.push(commit.id);
+    parent = commit.id;
   }
 
   const { data, entries } = serializePackfile(
@@ -169,10 +151,6 @@ async function buildAndPackChain(repo: Repository): Promise<PackedChain> {
   const packBase = `${repo.ctx.layout.gitDir}/objects/pack/${PACK_NAME}`;
   await repo.ctx.fs.write(`${packBase}.pack`, packBytes);
   await repo.ctx.fs.write(`${packBase}.idx`, idxBytes);
-
-  for (const object of objects) {
-    await repo.ctx.fs.rm(`${repo.ctx.layout.gitDir}/objects/${computeLooseObjectPath(object.id)}`);
-  }
 
   return { ids: objects.map((object) => object.id), commitIds };
 }
