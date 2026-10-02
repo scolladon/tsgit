@@ -1,4 +1,3 @@
-import { parseGitBoolean } from '../../../domain/config/config-ini.js';
 import { errorDataCode } from '../../../domain/error-data-code.js';
 import { parseAlternatesFile } from '../../../domain/storage/alternates.js';
 import type { Context } from '../../../ports/context.js';
@@ -6,7 +5,7 @@ import type {
   AlternatePathProbe,
   ObjectSourceReader,
 } from '../../../ports/object-source-access.js';
-import { getAllConfigValues } from '../config-scoped-read.js';
+import { readConfig } from '../config-read.js';
 import { commonGitDir } from '../path-layout.js';
 import { isAbsolutePath } from './absolute-path.js';
 
@@ -133,13 +132,8 @@ const lossyUtf8 = new TextDecoder();
 
 const asciiLower = (path: string): string => path.replace(/[A-Z]/g, (c) => c.toLowerCase());
 
-const readIgnoreCase = async (ctx: Context): Promise<boolean> => {
-  const { values } = await getAllConfigValues({ ctx, key: 'core.ignorecase' });
-  const last = values[values.length - 1];
-  if (last === undefined) return false;
-  const parsed = parseGitBoolean(last.value);
-  return parsed.ok && parsed.value;
-};
+const readIgnoreCase = async (ctx: Context): Promise<boolean> =>
+  (await readConfig(ctx)).core?.ignoreCase === true;
 
 const report = (resolution: Resolution, diagnostic: AlternateDiagnostic): void => {
   resolution.diagnostics.push(diagnostic);

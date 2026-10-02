@@ -2162,6 +2162,27 @@ describe('primitives/config-read', () => {
     });
   });
 
+  describe('Given a config with a [core] ignoreCase value', () => {
+    describe('When readConfig', () => {
+      it.each([
+        { config: '[core]\n  ignorecase = true\n', expected: { ignoreCase: true } },
+        { config: '[core]\n  IgnoreCase = off\n', expected: { ignoreCase: false } },
+        { config: '[core]\n  ignorecase\n', expected: { ignoreCase: true } },
+        { config: '[core]\n  ignorecase = maybe\n', expected: undefined },
+      ])('Then $config parses to core $expected', async ({ config, expected }) => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, config);
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.core).toEqual(expected);
+      });
+    });
+  });
+
   describe('Given a [core] with bare set but no sparse keys', () => {
     describe('When readConfig', () => {
       it('Then no sparse keys are emitted', async () => {

@@ -58,10 +58,6 @@ const describeSources = async (
 
 export const alternatesScenario: Scenario<AlternatesResult> = {
   name: 'alternates',
-  // The alternate chain reads `core.ignorecase` through every config scope, and
-  // the global scope asks Deno's node shim for `homedir()`, which the runtime
-  // suite (no `--allow-sys`) denies. Node and memory parity prove the contract.
-  unsupportedRuntimes: ['deno'],
   inputs: parityInputs,
   expected: {
     donorBlobText: DONOR_CONTENT,

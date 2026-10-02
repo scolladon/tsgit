@@ -61,6 +61,8 @@ export interface ParsedConfig {
     readonly notesRef?: string;
     readonly sparseCheckout?: boolean;
     readonly sparseCheckoutCone?: boolean;
+    /** `core.ignoreCase` — path comparisons fold ASCII case (git's `ignore_case`). */
+    readonly ignoreCase?: boolean;
     readonly looseCompression?: number;
     /** `core.maxTreeDepth` — max tree-recursion depth; git defaults to 2048 when unset. */
     readonly maxTreeDepth?: number;
@@ -1368,6 +1370,7 @@ type MutableCore = {
   notesRef?: string;
   sparseCheckout?: boolean;
   sparseCheckoutCone?: boolean;
+  ignoreCase?: boolean;
   looseCompression?: number;
   maxTreeDepth?: number;
   sshCommand?: string;
@@ -1522,16 +1525,17 @@ export const assertValidAbbrevConfig = async (ctx: Context): Promise<void> => {
 // cannot join the set without naming its target field, so a silent
 // mis-assignment is structurally impossible.
 const CORE_BOOLEAN_FIELDS: Readonly<
-  Record<string, 'bare' | 'sparseCheckout' | 'sparseCheckoutCone'>
+  Record<string, 'bare' | 'sparseCheckout' | 'sparseCheckoutCone' | 'ignoreCase'>
 > = {
   bare: 'bare',
+  ignorecase: 'ignoreCase',
   sparsecheckout: 'sparseCheckout',
   sparsecheckoutcone: 'sparseCheckoutCone',
 };
 
 const CORE_BOOLEAN_KEYS = new Set(['logallrefupdates', ...Object.keys(CORE_BOOLEAN_FIELDS)]);
 
-/** Handles the four `[core]` keys whose value is boolean-typed (or the `always` tri-state). */
+/** Handles the `[core]` keys whose value is boolean-typed (or the `always` tri-state). */
 const applyCoreBooleanEntry = (
   core: MutableCore,
   lowered: string,
@@ -2148,6 +2152,7 @@ const finalizeCoreIdentityFields = (core: MutableCore): ParsedConfig['core'] => 
   ...(core.notesRef !== undefined ? { notesRef: core.notesRef } : {}),
   ...(core.sparseCheckout !== undefined ? { sparseCheckout: core.sparseCheckout } : {}),
   ...(core.sparseCheckoutCone !== undefined ? { sparseCheckoutCone: core.sparseCheckoutCone } : {}),
+  ...(core.ignoreCase !== undefined ? { ignoreCase: core.ignoreCase } : {}),
   ...(core.sshCommand !== undefined ? { sshCommand: core.sshCommand } : {}),
 });
 

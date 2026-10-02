@@ -351,6 +351,37 @@ describe('resolveObjectSources', () => {
     });
   });
 
+  describe('Given a runtime that denies access to the home directory', () => {
+    describe('When the chain is resolved', () => {
+      it('Then the alternate resolves and the local core.ignoreCase still applies', async () => {
+        // Arrange
+        const ctx = createMemoryContext({
+          files: {
+            [listFile(PRIMARY)]: encode('/repo/A/objects\n/repo/a/objects\n'),
+            '/repo/A/objects/keep': new Uint8Array(),
+            '/repo/a/objects/keep': new Uint8Array(),
+            '/repo/.git/config': encode('[core]\n\tignorecase = true\n'),
+          },
+        });
+        const notCapable = Object.assign(new Error('Requires sys access to "homedir"'), {
+          name: 'NotCapable',
+        });
+        vi.spyOn(ctx.fs, 'homedir').mockImplementation(() => {
+          throw notCapable;
+        });
+        vi.spyOn(ctx.fs, 'xdgConfigHome').mockImplementation(() => {
+          throw notCapable;
+        });
+
+        // Act
+        const result = await dirsOf(ctx);
+
+        // Assert
+        expect(result).toEqual([PRIMARY, '/repo/A/objects']);
+      });
+    });
+  });
+
   describe('Given an entry whose parent directory does not exist', () => {
     describe('When the chain is resolved', () => {
       it('Then it is unresolvable, warned once, and the other entries still resolve', async () => {
