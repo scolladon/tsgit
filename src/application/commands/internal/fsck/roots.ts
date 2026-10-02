@@ -602,8 +602,14 @@ async function headOf(worktreeCtx: Context): Promise<ObjectId | undefined> {
   }
 }
 
+/** The `gitdir` read faults git's `get_linked_worktree` skips a worktree on. */
+const UNREADABLE_GITDIR_CODES: ReadonlySet<string> = new Set([
+  'FILE_NOT_FOUND',
+  'PERMISSION_DENIED',
+]);
+
 /** A linked worktree's Context, or `undefined` when its `gitdir` file is
- *  missing or empty — git's `get_linked_worktree` skips it then. */
+ *  missing, unreadable or empty — git's `get_linked_worktree` skips it then. */
 async function linkedWorktreeContext(
   ctx: Context,
   id: string,
@@ -614,7 +620,7 @@ async function linkedWorktreeContext(
   try {
     pointer = (await ctx.fs.readUtf8(`${adminDir}/gitdir`)).trim();
   } catch (err) {
-    if (isMissingGitdirFile(err)) return undefined;
+    if (UNREADABLE_GITDIR_CODES.has(errorDataCode(err) ?? '')) return undefined;
     throw err;
   }
   if (pointer === '') return undefined;

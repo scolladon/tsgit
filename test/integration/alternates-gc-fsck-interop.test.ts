@@ -16,6 +16,7 @@
  *   interopSurface: packfile
  */
 import {
+  chmodSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -1467,4 +1468,43 @@ describe.skipIf(!GIT_AVAILABLE)('fsck interop — symbolic refs naming no object
       );
     });
   });
+});
+
+describe.skipIf(!GIT_AVAILABLE)('fsck interop — worktree admin entries git skips', () => {
+  describe.each([
+    { label: 'empty', spoil: (gitdir: string) => writeFileSync(gitdir, '') },
+    { label: 'unreadable', spoil: (gitdir: string) => chmodSync(gitdir, 0o000) },
+  ])(
+    'Given a linked worktree whose gitdir file is $label and whose HEAD names an absent object',
+    ({ label, spoil }) => {
+      describe('When git fsck and tsgit fsck run from the main worktree', () => {
+        it(
+          'Then both treat the worktree alike',
+          async () => {
+            // Arrange
+            const main = path.join(root, `wt-gitdir-${label}`);
+            const linked = `${main}-linked`;
+            runGit(['init', '-q', '-b', 'main', main]);
+            configure(main);
+            commitFile(main, 'f', 'base');
+            runGit(['-C', main, 'worktree', 'add', '-q', '--detach', linked]);
+            const admin = path.join(main, '.git', 'worktrees', path.basename(linked));
+            writeFileSync(path.join(admin, 'HEAD'), `${'1'.repeat(40)}\n`);
+            spoil(path.join(admin, 'gitdir'));
+            const git = gitFsck(main);
+            const sut = tsgitFsck;
+
+            // Act
+            const result = await sut(main);
+
+            // Assert
+            chmodSync(path.join(admin, 'gitdir'), 0o644);
+            expect(result.exitCode).toBe(git.exitCode);
+            expect(pointerLines(result.findings)).toEqual(gitLines(git.stderr, POINTER_LINE));
+          },
+          ROW_TIMEOUT,
+        );
+      });
+    },
+  );
 });

@@ -4,11 +4,12 @@
  * from a linked worktree `main-worktree/HEAD`. Each is a reachability root,
  * and one naming an absent object is an `invalid sha1 pointer` (bit 2).
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { type FsckFinding, fsck } from '../../../../src/application/commands/fsck.js';
 import { deriveWorktreeContext } from '../../../../src/application/primitives/internal/worktree-context.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import { permissionDenied } from '../../../../src/domain/error.js';
 import type { ObjectId } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 
@@ -212,6 +213,51 @@ describe('Given a linked worktree whose gitdir file is empty', () => {
 
       // Assert
       expect(pointerFindings(result.findings)).toEqual([]);
+    });
+  });
+});
+
+const failGitdirRead = (ctx: Context, fault: Error): void => {
+  const gitdirPath = `${ctx.layout.gitDir}/worktrees/wt1/gitdir`;
+  const readUtf8 = ctx.fs.readUtf8.bind(ctx.fs);
+  vi.spyOn(ctx.fs, 'readUtf8').mockImplementation(async (path: string) => {
+    if (path === gitdirPath) throw fault;
+    return readUtf8(path);
+  });
+};
+
+describe('Given a linked worktree whose gitdir file cannot be read for permission', () => {
+  describe('When fsck runs', () => {
+    it('Then that worktree is skipped as git skips it', async () => {
+      // Arrange
+      const ctx = await repoWithWorktrees();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/worktrees/wt1/HEAD`, `${ABSENT}\n`);
+      failGitdirRead(ctx, permissionDenied(`${ctx.layout.gitDir}/worktrees/wt1/gitdir`));
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(pointerFindings(result.findings)).toEqual([]);
+    });
+  });
+});
+
+describe('Given a linked worktree whose gitdir read fails with an unclassified fault', () => {
+  describe('When fsck runs', () => {
+    it('Then the fault propagates', async () => {
+      // Arrange
+      const ctx = await repoWithWorktrees();
+      const fault = new Error('EIO: i/o error');
+      failGitdirRead(ctx, fault);
+      const sut = fsck;
+
+      // Act
+      const result = sut(ctx);
+
+      // Assert
+      await expect(result).rejects.toBe(fault);
     });
   });
 });
