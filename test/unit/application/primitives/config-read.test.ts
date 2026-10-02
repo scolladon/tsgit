@@ -6,6 +6,7 @@ import {
   assertValidGcNumberConfig,
   assertValidPackIntConfig,
   type ConfigToken,
+  findFirstInvalidAutoSetupMerge,
   findFirstInvalidBoolean,
   findFirstInvalidBooleanInSection,
   findFirstInvalidCompression,
@@ -7344,6 +7345,99 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
 
           // Assert
           expect(result).toBeUndefined();
+        });
+      });
+    });
+  });
+
+  describe('findFirstInvalidAutoSetupMerge', () => {
+    describe('Given branch.autoSetupMerge holds a value that fails both its literals and the boolean grammar', () => {
+      describe('When findFirstInvalidAutoSetupMerge', () => {
+        it('Then it returns the entry', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[branch]\n\tautoSetupMerge = maybe\n');
+
+          // Act
+          const result = await findFirstInvalidAutoSetupMerge(ctx);
+
+          // Assert
+          expect(result?.key).toBe('branch.autosetupmerge');
+          expect(result?.value).toBe('maybe');
+          expect(result?.line).toBe(2);
+        });
+      });
+    });
+
+    describe('Given branch.autoSetupMerge holds one of its exact literals or a boolean', () => {
+      describe('When findFirstInvalidAutoSetupMerge', () => {
+        it.each(['always', 'inherit', 'simple', 'false', ''])(
+          'Then it returns undefined for "%s"',
+          async (value) => {
+            // Arrange
+            const ctx = createMemoryContext();
+            await seed(ctx, `[branch]\n\tautoSetupMerge = ${value}\n`);
+
+            // Act
+            const result = await findFirstInvalidAutoSetupMerge(ctx);
+
+            // Assert
+            expect(result).toBeUndefined();
+          },
+        );
+      });
+    });
+
+    describe('Given a literal spelled in another case', () => {
+      describe('When findFirstInvalidAutoSetupMerge', () => {
+        it('Then it returns the entry (the literals compare case-sensitively)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[branch]\n\tautoSetupMerge = Always\n');
+
+          // Act
+          const result = await findFirstInvalidAutoSetupMerge(ctx);
+
+          // Assert
+          expect(result?.value).toBe('Always');
+        });
+      });
+    });
+
+    describe('Given the malformed value sits under a [branch "<name>"] subsection', () => {
+      describe('When findFirstInvalidAutoSetupMerge', () => {
+        it('Then it returns undefined (a per-branch key is another variable)', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seed(ctx, '[branch "x"]\n\tautoSetupMerge = maybe\n');
+
+          // Act
+          const result = await findFirstInvalidAutoSetupMerge(ctx);
+
+          // Assert
+          expect(result).toBeUndefined();
+        });
+      });
+    });
+  });
+
+  describe('Given branch.autoSetupMerge holds a malformed value', () => {
+    describe('When assertOperationalRepository runs', () => {
+      it('Then it refuses with CONFIG_BAD_BOOLEAN_VALUE naming the key', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedHead(ctx);
+        await seed(ctx, '[branch]\n\tautoSetupMerge = maybe\n');
+
+        // Act
+        const result = await assertOperationalRepository(ctx).catch((err: unknown) => err);
+
+        // Assert
+        expect(result).toBeInstanceOf(TsgitError);
+        expect((result as TsgitError).data).toMatchObject({
+          code: 'CONFIG_BAD_BOOLEAN_VALUE',
+          key: 'branch.autosetupmerge',
+          value: 'maybe',
         });
       });
     });

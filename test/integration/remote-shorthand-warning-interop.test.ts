@@ -39,12 +39,13 @@ afterAll(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-/** A repository on `main` with a merged `side` branch and a `/`-named remote. */
+/** A repository on `main` with a merged `side` branch, a `y/main` remote-tracking branch, and a `/`-named remote. */
 const repoWithSlashRemote = (slug: string): string => {
   const dir = path.join(root, slug);
   runGit(['init', '-q', '-b', 'main', dir]);
   runGit(['-C', dir, 'commit', '-q', '--allow-empty', '-m', 'c']);
   runGit(['-C', dir, 'branch', 'side']);
+  runGit(['-C', dir, 'update-ref', 'refs/remotes/y/main', 'HEAD']);
   writeFileSync(path.join(dir, '.git', 'config'), SLASH_REMOTE_CONFIG, { flag: 'a' });
   return dir;
 };
@@ -115,6 +116,16 @@ const ROWS: ReadonlyArray<{
     verb: 'branch z side',
     git: ['branch', 'z', 'side'],
     run: (repo) => repo.branch.create({ name: 'z', startPoint: 'side' }),
+  },
+  {
+    verb: 'branch --no-track z side',
+    git: ['branch', '--no-track', 'z', 'side'],
+    run: (repo) => repo.branch.create({ name: 'z', startPoint: 'side', noTrack: true }),
+  },
+  {
+    verb: 'branch --no-track z y/main',
+    git: ['branch', '--no-track', 'z', 'y/main'],
+    run: (repo) => repo.branch.create({ name: 'z', startPoint: 'y/main', noTrack: true }),
   },
   {
     verb: 'branch z side~0',

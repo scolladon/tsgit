@@ -196,3 +196,54 @@ describe('Given an unusable refspec in the remote table', () => {
     });
   });
 });
+
+describe('Given branch creation under each tracking mode', () => {
+  describe.each([
+    { label: '--no-track from a local branch', start: 'side', noTrack: true, config: '', reads: 0 },
+    {
+      label: '--no-track from a remote-tracking branch',
+      start: 'y/main',
+      noTrack: true,
+      config: '',
+      reads: 1,
+    },
+    {
+      label: 'autoSetupMerge = false from a remote-tracking branch',
+      start: 'y/main',
+      noTrack: false,
+      config: '[branch]\n\tautoSetupMerge = false\n',
+      reads: 1,
+    },
+    {
+      label: 'autoSetupMerge = false from a local branch',
+      start: 'side',
+      noTrack: false,
+      config: '[branch]\n\tautoSetupMerge = false\n',
+      reads: 0,
+    },
+    {
+      label: 'autoSetupMerge = always from a local branch',
+      start: 'side',
+      noTrack: false,
+      config: '[branch]\n\tautoSetupMerge = always\n',
+      reads: 1,
+    },
+  ])('When branch z runs $label', ({ start, noTrack, config, reads }) => {
+    it(`Then it reads the remote table ${reads} time(s), as git does`, async () => {
+      // Arrange
+      const { ctx, warnings } = await repoWithSlashRemote();
+      const tip = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/heads/main`);
+      await seedRepo(ctx, { refs: { 'refs/remotes/y/main': tip.trim() } });
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, `${SLASH_REMOTE_CONFIG}${config}`);
+      const sut = branchCreate;
+
+      // Act
+      await sut(ctx, { name: 'z', startPoint: start, noTrack });
+
+      // Assert
+      expect(remoteWarnings(warnings)).toEqual(
+        Array.from({ length: reads }, () => ONE_TABLE_READ).flat(),
+      );
+    });
+  });
+});

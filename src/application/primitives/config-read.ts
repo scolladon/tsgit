@@ -2709,6 +2709,25 @@ export const findFirstInvalidPushGpgSign = async (
     fixedKey: 'push.gpgsign',
   });
 
+/** `branch.autoSetupMerge`'s literals, which git compares case-sensitively. */
+const AUTO_SETUP_MERGE_LITERALS: ReadonlySet<string> = new Set(['always', 'inherit', 'simple']);
+
+/**
+ * `branch.autoSetupMerge`-specific finder: `git_default_config` takes three
+ * exact literals before handing anything else to its boolean grammar, which
+ * dies — on every command, `rev-parse` included. A `[branch "<name>"]`
+ * subsection holds an unrelated per-branch variable.
+ */
+export const findFirstInvalidAutoSetupMerge = async (
+  ctx: Context,
+): Promise<InvalidBooleanEntry | undefined> =>
+  findFirstRejectedBoolean(ctx, {
+    section: 'branch',
+    keys: ['autosetupmerge'],
+    accepts: (value) => AUTO_SETUP_MERGE_LITERALS.has(value) || acceptsGitBoolean(value),
+    fixedKey: 'branch.autosetupmerge',
+  });
+
 /**
  * `diff.<name>.binary`-specific finder: the key accepts a third literal,
  * `auto` (case-insensitive), beyond git's boolean grammar — git's userdiff

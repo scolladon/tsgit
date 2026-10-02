@@ -701,4 +701,38 @@ describe.skipIf(!GIT_AVAILABLE)('config boolean refusal tier interop', () => {
       });
     });
   });
+
+  describe('Given X20 — branch.autoSetupMerge = Always (its literals compare case-sensitively)', () => {
+    beforeEach(() =>
+      writeConfig('[core]\n\trepositoryformatversion = 0\n[branch]\n\tautoSetupMerge = Always\n'),
+    );
+
+    describe.each([
+      {
+        verb: 'branch --list',
+        git: ['branch', '--list'],
+        run: (repo: Repository) => repo.branch.list(),
+      },
+      {
+        verb: 'branch --no-track z',
+        git: ['branch', '--no-track', 'z'],
+        run: (repo: Repository) => repo.branch.create({ name: 'z', noTrack: true }),
+      },
+    ])('When git $verb and tsgit run', ({ git, run }) => {
+      it('Then both refuse with exit 128 / CONFIG_BAD_BOOLEAN_VALUE naming branch.autosetupmerge', async () => {
+        // Arrange & Act — armed in beforeEach
+        const g = tryRunGitWithExit(['-C', ours, ...git], { env: runGitEnv() });
+        const caught = await withRepo(ours, (repo) => captureThrow(() => run(repo)));
+
+        // Assert — git
+        expect(g.exitCode).toBe(128);
+        expect(g.stderr).toContain("bad boolean config value 'Always' for 'branch.autosetupmerge'");
+        // Assert — tsgit
+        const data = asBadBoolean(caught);
+        expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+        expect(data.key).toBe('branch.autosetupmerge');
+        expect(data.value).toBe('Always');
+      });
+    });
+  });
 });
