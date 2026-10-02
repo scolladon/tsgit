@@ -39,7 +39,7 @@ export interface PruneWorktreesOptions {
   readonly ignoreCase: boolean;
 }
 
-/** A surviving admin entry and the `.git` path its `gitdir` names. */
+/** A surviving admin entry and the `.git` path its `gitdir` names, spelled as git compares it. */
 interface KeptWorktree {
   readonly id: string;
   readonly dotGit: string;
@@ -99,10 +99,13 @@ const statFollowing = async (ctx: Context, path: string): Promise<FileStat | und
 const isAdminDirectory = async (ctx: Context, path: string, entry: DirEntry): Promise<boolean> =>
   entry.isSymbolicLink ? (await statFollowing(ctx, path))?.isDirectory === true : entry.isDirectory;
 
+/** git keeps an absolute `gitdir` as written — only a relative one is resolved. */
+const isAbsolutePointer = (pointer: string): boolean => pointer.startsWith('/');
+
 /** git realpaths the admin dir, so a relative `gitdir` resolves beside a link's target. */
 const dotGitOf = async (ctx: Context, adminDir: string, pointer: string): Promise<string> =>
   resolveWorktreePath(
-    pointer.startsWith('/') ? adminDir : await realAdminDir(ctx, adminDir),
+    isAbsolutePointer(pointer) ? adminDir : await realAdminDir(ctx, adminDir),
     pointer,
   );
 
@@ -122,7 +125,7 @@ const verdictFor = async (ctx: Context, id: string, cutoff: number): Promise<Ver
   if (pointer === undefined || pointer === '') return PRUNE;
   const dotGit = await dotGitOf(ctx, adminDir, pointer);
   if (!(await isPresent(ctx, dotGit)) && (await isExpired(ctx, adminDir, cutoff))) return PRUNE;
-  return { id, dotGit };
+  return { id, dotGit: isAbsolutePointer(pointer) ? pointer : dotGit };
 };
 
 /**

@@ -610,6 +610,26 @@ describe('pruneWorktrees', () => {
     });
   });
 
+  describe('Given absolute gitdir pointers naming one worktree through ./ and // spellings', () => {
+    describe('When worktrees are pruned', () => {
+      it('Then every spelling is kept, as git compares an absolute pointer as written', async () => {
+        // Arrange
+        const ctx = await seed();
+        await writeLive(ctx, 'a', '/repo/wts/live');
+        await writeAdmin(ctx, 'b', '/repo/wts/live/./.git\n');
+        await writeAdmin(ctx, 'c', '/repo/wts//live/.git\n');
+        await writeAdmin(ctx, 'd', `${commonGitDir(ctx)}/.\n`);
+        const sut = pruneWorktrees;
+
+        // Act
+        await sut(ctx, OPTIONS);
+
+        // Assert
+        expect(await entriesOf(ctx)).toEqual(['a', 'b', 'c', 'd']);
+      });
+    });
+  });
+
   describe('Given two admin dirs whose live paths differ only by case', () => {
     describe('When core.ignoreCase folds paths', () => {
       it('Then the later id is removed as a duplicate', async () => {

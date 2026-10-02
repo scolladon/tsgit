@@ -1078,6 +1078,48 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
     });
   });
 
+  describe('Given admin entries whose absolute gitdir names a live worktree through ./ and // spellings', () => {
+    describe('When git and tsgit gc', () => {
+      it('Then both keep every spelling, comparing an absolute pointer as written', async () => {
+        // Arrange
+        const build = async (slug: string): Promise<string> => {
+          const dir = await realpath(await initRepo(slug));
+          await addCommit(dir, 'c0');
+          const live = `${dir}-live`;
+          git(dir, 'worktree', 'add', '-q', '--detach', live);
+          const spellings = {
+            dot: `${live}/./.git`,
+            slashes: `${path.dirname(live)}//${path.basename(live)}/.git`,
+            main: `${dir}/./.git`,
+          };
+          for (const [suffix, pointer] of Object.entries(spellings)) {
+            git(dir, 'worktree', 'add', '-q', '--detach', `${dir}-${suffix}`);
+            const admin = path.join(dir, '.git', 'worktrees', `${path.basename(dir)}-${suffix}`);
+            await writeFile(path.join(admin, 'gitdir'), `${pointer}\n`);
+          }
+          return dir;
+        };
+        const peer = await build('dup-spelling-peer');
+        const ours = await build('dup-spelling-ours');
+        git(peer, 'gc', '-q');
+        const repo = await openTrackedRepository({ cwd: ours });
+        const sut = repo.maintenance;
+
+        // Act
+        await sut({ tasks: ['gc'] });
+
+        // Assert
+        await repo.dispose();
+        const suffixesOf = async (dir: string): Promise<ReadonlyArray<string>> =>
+          (await readdir(path.join(dir, '.git', 'worktrees')))
+            .map((id) => id.slice(path.basename(dir).length))
+            .sort();
+        expect(await suffixesOf(peer)).toEqual(['-dot', '-live', '-main', '-slashes']);
+        expect(await suffixesOf(ours)).toEqual(await suffixesOf(peer));
+      });
+    });
+  });
+
   describe.each([
     { label: 'the path the repository was opened at', realpathed: false },
     { label: "the repository's resolved path", realpathed: true },
