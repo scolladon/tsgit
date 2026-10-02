@@ -7,7 +7,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { type FsckFinding, fsck } from '../../../../src/application/commands/fsck.js';
+import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import { permissionDenied } from '../../../../src/domain/error.js';
 import {
   FILE_MODE,
   type ObjectId,
@@ -17,6 +19,12 @@ import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
 import type { PromisorRemote } from '../../../../src/ports/promisor.js';
 import { type EntrySpec, writeSyntheticPack } from '../primitives/pack-fixture.js';
+
+vi.mock('../../../../src/application/primitives/read-object.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../../../../src/application/primitives/read-object.js')>();
+  return { ...actual, readObject: vi.fn(actual.readObject) };
+});
 
 const enc = new TextEncoder();
 const EXIT_OK = 0;
@@ -346,6 +354,55 @@ describe('Given a promisor pack whose objects git meets in pack order', () => {
 
       // Assert
       expect(badRefTargets(result.findings)).toEqual([target]);
+    });
+  });
+
+  describe.each([
+    { label: 'an unparseable object', first: () => GARBAGE },
+    {
+      label: 'an object whose bytes hash to another id',
+      first: () => ({ ...entry('blob', enc.encode('x')), idOverride: '0'.repeat(39) + '1' }),
+    },
+  ])('When $label precedes the tag and fsck runs without --full', ({ first }) => {
+    it('Then git stops collecting there instead of refusing the run', async () => {
+      // Arrange
+      const ctx = await initCtx();
+      const target = await idOf(ctx, 'commit', commitBody(await absentBlob(ctx, 'o'), []));
+      await writePromisorPack(ctx, [first(), entry('tag', tagBody(target))]);
+      await writeRef(ctx, 'gone', target);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx, { full: false });
+
+      // Assert
+      expect(badRefTargets(result.findings)).toEqual([target]);
+    });
+  });
+
+  describe('When reading a promisor object faults for a reason other than damage', () => {
+    it('Then the fault propagates', async () => {
+      // Arrange
+      const ctx = await initCtx();
+      const target = await idOf(ctx, 'commit', commitBody(await absentBlob(ctx, 'o'), []));
+      await writePromisorPack(ctx, [entry('tag', tagBody(target))]);
+      await writeRef(ctx, 'gone', target);
+      const fault = permissionDenied('/repo/.git/objects/pack/pack-promised.pack');
+      const actual = vi.mocked(readObject).getMockImplementation() as typeof readObject;
+      vi.mocked(readObject).mockImplementation((readCtx, id, options) =>
+        options?.verifyHash === true ? Promise.reject(fault) : actual(readCtx, id, options),
+      );
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx, { full: false }).then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+      vi.mocked(readObject).mockImplementation(actual);
+
+      // Assert
+      expect(result).toMatchObject({ data: fault.data });
     });
   });
 

@@ -8,6 +8,7 @@ import { getObjectStore } from '../../../primitives/object-store.js';
 import type { RegisteredPack } from '../../../primitives/pack-registry.js';
 import { readObject } from '../../../primitives/read-object.js';
 import { type CachedGitObject, type ProjectedGitObject, project } from './object-cache.js';
+import { isStoredCorruption } from './stored-corruption.js';
 
 const NO_PROMISOR_OBJECTS: ReadonlySet<ObjectId> = new Set();
 
@@ -69,7 +70,18 @@ async function projectionOf(
   id: ObjectId,
 ): Promise<CachedGitObject> {
   const cached = objectCache.get(id);
-  return cached === undefined ? project(await readObject(ctx, id)) : cached;
+  return cached === undefined ? parsedOrNull(ctx, id) : cached;
+}
+
+/** git's `parse_object` on an object the run never read: `null` when its
+ *  copy does not read, parse or hash to `id`. */
+async function parsedOrNull(ctx: Context, id: ObjectId): Promise<CachedGitObject> {
+  try {
+    return project(await readObject(ctx, id, { verifyHash: true }));
+  } catch (err) {
+    if (!isStoredCorruption(err)) throw err;
+    return null;
+  }
 }
 
 /**

@@ -2462,6 +2462,56 @@ describe.skipIf(!GIT_AVAILABLE)('fsck interop — names git reads as a special f
 });
 
 describe.skipIf(!GIT_AVAILABLE)('fsck interop — promisor objects named by refs and reflogs', () => {
+  describe('Given a promisor pack whose only entry no longer inflates and a missing blob', () => {
+    describe('When git fsck --no-full and tsgit fsck { full: false } run', () => {
+      it(
+        'Then both stop collecting at the entry and report the blob missing, exit 2',
+        async () => {
+          // Arrange
+          const dir = path.join(root, 'promisor-no-full-corrupt');
+          runGit(['init', '-q', '-b', 'main', dir]);
+          configure(dir);
+          writeFileSync(path.join(dir, 'a'), 'a\n');
+          writeFileSync(path.join(dir, 'b'), 'b\n');
+          runGit(['-C', dir, 'add', '.']);
+          runGit(['-C', dir, 'commit', '-q', '-m', 'c1']);
+          runGit(['-C', dir, 'config', 'remote.origin.promisor', 'true']);
+          const a = runGit(['-C', dir, 'rev-parse', 'HEAD:a']).trim();
+          const b = runGit(['-C', dir, 'rev-parse', 'HEAD:b']).trim();
+          const packDir = path.join(objectsOf(dir), 'pack');
+          const name = runGit(['-C', dir, 'pack-objects', '-q', path.join(packDir, 'pack')], {
+            input: `${a}\n`,
+          }).trim();
+          const offset = Number(
+            runGit(['-C', dir, 'show-index'], {
+              input: readFileSync(path.join(packDir, `pack-${name}.idx`)),
+            }).split(' ')[0],
+          );
+          const pack = path.join(packDir, `pack-${name}.pack`);
+          const bytes = readFileSync(pack);
+          bytes[offset + 3] = (bytes[offset + 3] as number) ^ 0xff;
+          chmodSync(pack, 0o644);
+          writeFileSync(pack, bytes);
+          writeFileSync(path.join(packDir, `pack-${name}.promisor`), '');
+          rmSync(looseFile(objectsOf(dir), a));
+          rmSync(looseFile(objectsOf(dir), b));
+          const git = gitFsck(dir, '--no-full');
+          const sut = tsgitFsck;
+
+          // Act
+          const result = await sut(dir, { full: false });
+
+          // Assert
+          expect(git.exitCode).toBe(2);
+          expect(result.exitCode).toBe(2);
+          expect(missingLines(result.findings)).toEqual(gitLines(git.stdout, MISSING_LINE));
+          expect(gitLines(git.stdout, MISSING_LINE)).toEqual([`missing blob ${b}`]);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
   describe.each([
     { label: 'no promisor remote', config: [] as ReadonlyArray<readonly [string, string]> },
     { label: 'remote.origin.promisor', config: [['remote.origin.promisor', 'true']] as const },
