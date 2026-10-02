@@ -24,6 +24,7 @@ import {
   mkdtemp,
   readdir,
   readFile,
+  realpath,
   rename,
   rm,
   symlink,
@@ -933,6 +934,42 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
         expect(await registryOf(ours.dir)).toEqual(await registryOf(peer.dir));
         expect(await adminContentOf(peer.outside)).toEqual([]);
         expect(await adminContentOf(ours.outside)).not.toEqual([]);
+      });
+    });
+  });
+
+  describe.each([
+    { label: 'the path the repository was opened at', realpathed: false },
+    { label: "the repository's resolved path", realpathed: true },
+  ])('Given an admin entry whose gitdir names the main .git through $label', ({ realpathed }) => {
+    describe('When git -C and tsgit gc', () => {
+      it('Then both keep or drop it as a duplicate of the main worktree alike', async () => {
+        // Arrange
+        const build = async (slug: string): Promise<string> => {
+          const dir = await initRepo(slug);
+          await addCommit(dir, 'c0');
+          const admin = path.join(dir, '.git', 'worktrees', 'dup');
+          await mkdir(admin, { recursive: true });
+          const main = realpathed ? await realpath(dir) : dir;
+          await writeFile(path.join(admin, 'gitdir'), `${path.join(main, '.git')}\n`);
+          await writeFile(path.join(admin, 'HEAD'), 'ref: refs/heads/main\n');
+          await writeFile(path.join(admin, 'commondir'), '../..\n');
+          return dir;
+        };
+        const peer = await build(`dup-main-${realpathed}-peer`);
+        const ours = await build(`dup-main-${realpathed}-ours`);
+        git(peer, 'gc', '-q');
+        const repo = await openTrackedRepository({ cwd: ours });
+        const sut = repo.maintenance;
+
+        // Act
+        await sut({ tasks: ['gc'] });
+
+        // Assert
+        await repo.dispose();
+        const registryOf = (dir: string) =>
+          readdir(path.join(dir, '.git', 'worktrees')).catch(() => []);
+        expect(await registryOf(ours)).toEqual(await registryOf(peer));
       });
     });
   });
