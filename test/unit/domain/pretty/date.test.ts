@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { type DateMode, showDate } from '../../../../src/domain/pretty/date.js';
 
 const AUTHOR_TIME = 1700000200;
-const AUTHOR_TZ = 5 * 60 + 45;
+const AUTHOR_TZ = 545;
 const COMMITTER_TIME = 1700000300;
 const NOW = 1790000000;
 const UTC = 0;
@@ -19,11 +19,11 @@ describe('showDate', () => {
     [
       'iso8601-strict west of UTC',
       COMMITTER_TIME,
-      -(3 * 60 + 30),
+      -330,
       'iso8601-strict',
       '2023-11-14T18:48:20-03:30',
     ],
-    ['iso8601 west of UTC', COMMITTER_TIME, -90, 'iso8601', '2023-11-14 20:48:20 -0130'],
+    ['iso8601 west of UTC', COMMITTER_TIME, -130, 'iso8601', '2023-11-14 20:48:20 -0130'],
     ['short', AUTHOR_TIME, AUTHOR_TZ, 'short', '2023-11-15'],
     [
       'normal single-digit day and fields',
@@ -38,7 +38,7 @@ describe('showDate', () => {
       const sut = showDate;
 
       // Act
-      const result = sut(timestamp, tz, mode as DateMode, NOW, UTC);
+      const result = sut(BigInt(timestamp), tz, mode as DateMode, NOW, UTC);
 
       // Assert
       expect(result).toBe(expected);
@@ -77,7 +77,7 @@ describe('showDate', () => {
       const sut = showDate;
 
       // Act
-      const result = sut(NOW - ageSeconds, AUTHOR_TZ, 'relative', NOW, UTC);
+      const result = sut(BigInt(NOW - ageSeconds), AUTHOR_TZ, 'relative', NOW, UTC);
 
       // Assert
       expect(result).toBe(expected);
@@ -90,7 +90,7 @@ describe('showDate', () => {
       const sut = showDate;
 
       // Act
-      const result = sut(NOW + 1, UTC, 'relative', NOW, UTC);
+      const result = sut(BigInt(NOW + 1), UTC, 'relative', NOW, UTC);
 
       // Assert
       expect(result).toBe('in the future');
@@ -106,7 +106,7 @@ describe('showDate', () => {
       ['the same day', ago(2 * 3600), UTC, '2 hours ago'],
       ['the same day in another zone', ago(3600), AUTHOR_TZ, '60 minutes ago'],
       ['a day earlier in the same month', ago(DAY), UTC, 'Mon 03:33'],
-      ['four days earlier in the same month, other zone', ago(4 * DAY), -60, 'Fri 02:33 -0100'],
+      ['four days earlier in the same month, other zone', ago(4 * DAY), -100, 'Fri 02:33 -0100'],
       ['five days earlier in the same month', ago(5 * DAY), UTC, 'Thu Oct 15 03:33'],
       ['an earlier month of the same year', ago(25 * DAY), UTC, 'Fri Sep 25 03:33'],
       ['an earlier year', ago(400 * DAY), UTC, 'Sep 15 2025'],
@@ -117,7 +117,7 @@ describe('showDate', () => {
         const sut = showDate;
 
         // Act
-        const result = sut(timestamp, tz, 'human', HUMAN_NOW, UTC);
+        const result = sut(BigInt(timestamp), tz, 'human', HUMAN_NOW, UTC);
 
         // Assert
         expect(result).toBe(expected);
@@ -130,7 +130,7 @@ describe('showDate', () => {
         const sut = showDate;
 
         // Act
-        const result = sut(ago(DAY), UTC, 'human', HUMAN_NOW, 120);
+        const result = sut(BigInt(ago(DAY)), UTC, 'human', HUMAN_NOW, 120);
 
         // Assert
         expect(result).toBe('Mon 03:33 +0000');
@@ -144,7 +144,7 @@ describe('showDate', () => {
         const justAfterLocalMidnight = HUMAN_NOW - 2 * 3600;
 
         // Act
-        const result = sut(justAfterLocalMidnight, UTC, 'human', HUMAN_NOW, -4 * 60);
+        const result = sut(BigInt(justAfterLocalMidnight), UTC, 'human', HUMAN_NOW, -4 * 60);
 
         // Assert
         expect(result).toBe('Tue Oct 20 01:33');

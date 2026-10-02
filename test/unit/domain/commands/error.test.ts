@@ -78,6 +78,7 @@ import {
   tagExists,
   tagNotFound,
   targetDirectoryNotEmpty,
+  timestampOutOfRange,
   tooManyRedirects,
   unsupportedScheme,
   workingTreeDirty,
@@ -2177,6 +2178,27 @@ describe('bundle header detail bound', () => {
           path: '/bad.bundle',
           reason: 'unknown-hash-algorithm',
           algorithm: 'sha\\x00256',
+        });
+      });
+    });
+  });
+
+  describe('Given the timestampOutOfRange error helper', () => {
+    describe('When called with a reason, the timestamp and the zone', () => {
+      it('Then data carries the code, the reason, the decimal timestamp and the zone', () => {
+        // Arrange
+        const sut = timestampOutOfRange;
+
+        // Act
+        const result = sut('too-large', 9223372036854781207n, 130);
+
+        // Assert
+        expect(result).toBeInstanceOf(TsgitError);
+        expect(result.data).toEqual({
+          code: 'TIMESTAMP_OUT_OF_RANGE',
+          reason: 'too-large',
+          timestamp: '9223372036854781207',
+          zone: 130,
         });
       });
     });

@@ -352,7 +352,16 @@ export type CommandError =
       readonly code: 'FORMAT_PLACEHOLDER_UNSUPPORTED';
       readonly placeholder: string;
       readonly reason: FormatPlaceholderReason;
+    }
+  | {
+      readonly code: 'TIMESTAMP_OUT_OF_RANGE';
+      readonly reason: TimestampRangeReason;
+      readonly timestamp: string;
+      readonly zone: number;
     };
+
+/** `before-epoch`: the zone puts the instant before 1970; `too-large`: the shifted instant exceeds what git's calendar holds. */
+export type TimestampRangeReason = 'before-epoch' | 'too-large';
 
 /** `not-supported`: git's `%(count)`/`%(total)` refusal; `unparsable`: a `%C(always,…)` it cannot parse. */
 export type FormatPlaceholderReason = 'not-supported' | 'unparsable';
@@ -1107,3 +1116,11 @@ export const formatPlaceholderUnsupported = (placeholder: string): TsgitError =>
     placeholder,
     reason: placeholder === UNPARSABLE_COLOR ? 'unparsable' : 'not-supported',
   });
+
+// `timestamp` is the decimal text git prints: the author's for `before-epoch`, the zone-shifted one for `too-large`.
+export const timestampOutOfRange = (
+  reason: TimestampRangeReason,
+  timestamp: bigint,
+  zone: number,
+): TsgitError =>
+  new TsgitError({ code: 'TIMESTAMP_OUT_OF_RANGE', reason, timestamp: String(timestamp), zone });

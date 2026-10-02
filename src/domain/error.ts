@@ -220,6 +220,20 @@ function formatPlaceholderDetail(
     : `${data.placeholder} is not supported by this command`;
 }
 
+// Only a negative zone can reach back before the epoch; git prints it with `%04d`, the sign counting toward the width.
+const NEGATIVE_ZONE_DIGITS = 3;
+
+const negativeZone = (zone: number): string =>
+  `-${String(-zone).padStart(NEGATIVE_ZONE_DIGITS, '0')}`;
+
+function timestampRangeDetail(
+  data: Extract<TsgitErrorData, { readonly code: 'TIMESTAMP_OUT_OF_RANGE' }>,
+): string {
+  return data.reason === 'before-epoch'
+    ? `Timestamp before Unix epoch: ${data.timestamp} ${negativeZone(data.zone)}`
+    : `Timestamp too large for this system: ${data.timestamp}`;
+}
+
 function extractDetail(data: TsgitErrorData): string {
   switch (data.code) {
     case 'INVALID_OBJECT_ID':
@@ -648,6 +662,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `grep line too long to decode: ${data.length} bytes exceeds the ${data.limit}-byte limit`;
     case 'FORMAT_PLACEHOLDER_UNSUPPORTED':
       return formatPlaceholderDetail(data);
+    case 'TIMESTAMP_OUT_OF_RANGE':
+      return timestampRangeDetail(data);
     default: {
       const _exhaustive: never = data;
       return String(_exhaustive);

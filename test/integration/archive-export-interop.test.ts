@@ -592,12 +592,20 @@ const commitAll = (dir: string, message: string, env: NodeJS.ProcessEnv = {}): v
 };
 
 /** Writes a commit object by hand, for the headers `git commit` never emits. */
-const commitRaw = (dir: string, headers: string, message: Uint8Array): string => {
+const commitRaw = (
+  dir: string,
+  headers: string,
+  message: Uint8Array,
+  idents: { readonly author: string; readonly committer: string } = {
+    author: AUTHOR_IDENT,
+    committer: COMMITTER_IDENT,
+  },
+): string => {
   runGit(['-C', dir, 'add', '-A', '-f'], { env: substEnv() });
   const tree = runGit(['-C', dir, 'write-tree'], { env: substEnv() }).trim();
-  const preamble = `tree ${tree}\nparent ${head(dir)}\nauthor ${AUTHOR_IDENT}\ncommitter ${COMMITTER_IDENT}\n${headers}\n`;
+  const preamble = `tree ${tree}\nparent ${head(dir)}\nauthor ${idents.author}\ncommitter ${idents.committer}\n${headers}\n`;
   const raw = Buffer.concat([Buffer.from(preamble), message]);
-  const oid = runGit(['-C', dir, 'hash-object', '-t', 'commit', '-w', '--stdin'], {
+  const oid = runGit(['-C', dir, 'hash-object', '-t', 'commit', '--literally', '-w', '--stdin'], {
     input: raw,
     env: substEnv(),
   }).trim();
@@ -1185,6 +1193,62 @@ describe.skipIf(!GIT_AVAILABLE)('archive export-subst interop', () => {
       });
     });
   });
+  describe('Given an author date git cannot place on the calendar the usual way', () => {
+    const DATE_PLACEHOLDERS = '[$Format:%ad|%aD|%ai|%aI|%as$]';
+    const authored = async (date: string): Promise<string> => {
+      const dir = await makeSubstRepo('odd-date', {});
+      writeLayout(dir, { r: DATE_PLACEHOLDERS });
+      commitRaw(dir, '', Buffer.from('odd\n'), {
+        author: `A U Thor <author@example.com> ${date}`,
+        committer: COMMITTER_IDENT,
+      });
+      return dir;
+    };
+
+    describe.each([
+      [
+        'a zone whose minutes exceed 59',
+        '1700000200 +0099',
+        '[Tue Nov 14 23:55:40 2023 +0099|Tue, 14 Nov 2023 23:55:40 +0099|2023-11-14 23:55:40 +0099|2023-11-14T23:55:40+00:99|2023-11-14]',
+      ],
+      [
+        'a timestamp beyond the JavaScript Date range',
+        '9007199254740991 -0075',
+        '[Mon Nov 12 06:21:31 285428751 -0075|Mon, 12 Nov 285428751 06:21:31 -0075|285428751-11-12 06:21:31 -0075|285428751-11-12T06:21:31-00:75|285428751-11-12]',
+      ],
+      [
+        'a four-digit zone far east of the date line',
+        '4294967296 +9999',
+        '[Thu Feb 11 11:07:16 2106 +9999|Thu, 11 Feb 2106 11:07:16 +9999|2106-02-11 11:07:16 +9999|2106-02-11T11:07:16+99:99|2106-02-11]',
+      ],
+    ])('When the author date is %s', (_title, date, expected) => {
+      it('Then both tools expand the same bytes', async () => {
+        // Arrange
+        const dir = await authored(date);
+
+        // Act / Assert
+        await expectSameExpansion(dir, 'HEAD', { r: expected });
+      });
+    });
+
+    describe('When the zone reaches back before the epoch', () => {
+      it('Then both tools refuse with the same message', async () => {
+        // Arrange
+        const dir = await authored('0 -0075');
+
+        // Act
+        const result = await tsgitRefusal(dir, 'HEAD');
+
+        // Assert
+        expect(gitRefusal(dir, 'HEAD')).toEqual({
+          exitCode: 128,
+          stderr: 'fatal: Timestamp before Unix epoch: 0 -075\n',
+        });
+        expect(result.message).toBe('TIMESTAMP_OUT_OF_RANGE: Timestamp before Unix epoch: 0 -075');
+      });
+    });
+  });
+
   describe('Given a borrower whose alternate multi-pack-index is unreadable', () => {
     const borrowerWith = async (files: Readonly<Record<string, string>>): Promise<string> => {
       const donor = await makeSubstRepo('refusal-donor', {});

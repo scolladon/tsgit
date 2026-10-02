@@ -15,6 +15,7 @@ import {
   signedPushUnsupported,
   signingFailed,
   smudgeFilterFailed,
+  timestampOutOfRange,
   worktreeFileAbsent,
 } from '../../../src/domain/commands/error.js';
 import {
@@ -1649,6 +1650,45 @@ describe('formatPlaceholderUnsupported error', () => {
         expect(result.message).toBe(
           'FORMAT_PLACEHOLDER_UNSUPPORTED: unable to parse --pretty format',
         );
+      });
+    });
+  });
+});
+
+describe('timestampOutOfRange error', () => {
+  describe.each([
+    [
+      'a zone that reaches before the epoch',
+      'before-epoch' as const,
+      75n,
+      -75,
+      'TIMESTAMP_OUT_OF_RANGE: Timestamp before Unix epoch: 75 -075',
+    ],
+    [
+      'a four-digit negative zone',
+      'before-epoch' as const,
+      0n,
+      -9999,
+      'TIMESTAMP_OUT_OF_RANGE: Timestamp before Unix epoch: 0 -9999',
+    ],
+    [
+      'a shifted instant beyond the calendar',
+      'too-large' as const,
+      9223372036854781207n,
+      130,
+      'TIMESTAMP_OUT_OF_RANGE: Timestamp too large for this system: 9223372036854781207',
+    ],
+  ])('Given %s', (_title, reason, timestamp, zone, expected) => {
+    describe('When reading .message', () => {
+      it('Then message is the line git dies with', () => {
+        // Arrange
+        const sut = timestampOutOfRange;
+
+        // Act
+        const result = sut(reason, timestamp, zone);
+
+        // Assert
+        expect(result.message).toBe(expected);
       });
     });
   });

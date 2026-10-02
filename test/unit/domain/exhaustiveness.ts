@@ -230,6 +230,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'INVALID_PUSH_DEFAULT':
     case 'GREP_LINE_TOO_LONG':
     case 'FORMAT_PLACEHOLDER_UNSUPPORTED':
+    case 'TIMESTAMP_OUT_OF_RANGE':
       return;
     default: {
       const _exhaustive: never = data;
