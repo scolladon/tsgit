@@ -340,6 +340,11 @@ export interface Context {
    * Absent on a hand-built `Context`; the object store then narrows `ctx.fs`.
    */
   readonly alternatePathProbe?: (path: string) => AlternatePathProbe;
+  /**
+   * True when the filesystem reads paths the Windows way — `\` separators, drive letters, UNC
+   * shares — as git for Windows does (the node adapter on Windows). Absent ⇒ POSIX paths.
+   */
+  readonly windowsPathSyntax?: boolean;
 }
 
 export interface CreateContextParts {

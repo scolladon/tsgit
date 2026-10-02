@@ -16,6 +16,7 @@ import {
 import type { TsgitError } from '../../../../src/domain/error.js';
 import type { Context } from '../../../../src/ports/context.js';
 import type { FileSystem } from '../../../../src/ports/file-system.js';
+import type { AlternatePathProbe } from '../../../../src/ports/object-source-access.js';
 
 const encode = (text: string): Uint8Array => new TextEncoder().encode(text);
 const PRIMARY = '/repo/.git/objects';
@@ -593,6 +594,36 @@ describe('everySourceLoadable', () => {
 
         // Assert
         await expect(attempt).rejects.toBe(boom);
+      });
+    });
+  });
+});
+
+describe('getObjectStore on a Windows filesystem', () => {
+  describe('Given a context whose filesystem reads paths the Windows way', () => {
+    describe('When getObjectStore', () => {
+      it('Then a drive-letter alternate is absolute and resolved in forward-slash form', async () => {
+        // Arrange
+        const base = contextWithAlternates('D:\\donor\\objects\n');
+        const directory = await base.fs.stat(PRIMARY);
+        const probe: AlternatePathProbe = {
+          lstat: async () => directory,
+          stat: async () => directory,
+          readlink: async (path) => path,
+        };
+        const ctx: Context = {
+          ...base,
+          windowsPathSyntax: true,
+          alternatePathProbe: () => probe,
+          objectSourceAccess: () => narrowObjectSourceAccess(base.fs, PRIMARY),
+        };
+
+        // Act
+        const sut = getObjectStore;
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.sources.map((s) => s.objectsDir)).toEqual([PRIMARY, 'D:/donor/objects']);
       });
     });
   });

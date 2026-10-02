@@ -7,7 +7,7 @@ import type {
 } from '../../../ports/object-source-access.js';
 import { readConfig } from '../config-read.js';
 import { commonGitDir } from '../path-layout.js';
-import { isAbsolutePath } from './absolute-path.js';
+import type { GitPathSyntax } from './git-path-syntax.js';
 
 /** Linux's symlink-follow limit: the hop budget after which git's realpath gives up on a link cycle. */
 const MAX_SYMLINK_HOPS = 40;
@@ -18,8 +18,6 @@ type Lookup =
   | { readonly kind: 'found'; readonly isLink: boolean; readonly isDirectory: boolean }
   | { readonly kind: 'absent' }
   | { readonly kind: 'blocked' };
-
-const segmentsOf = (path: string): string[] => path.split('/').filter((s) => s !== '');
 
 const lookup = async (probe: AlternatePathProbe, path: string): Promise<Lookup> => {
   try {
@@ -34,19 +32,36 @@ const lookup = async (probe: AlternatePathProbe, path: string): Promise<Lookup> 
 };
 
 interface Walk {
-  resolved: string;
+  readonly syntax: GitPathSyntax;
+  root: string;
+  readonly names: string[];
   readonly pending: string[];
   hops: number;
 }
 
-const parentOf = (path: string): string => path.slice(0, path.lastIndexOf('/'));
+/** git appends `/` after the resolved prefix unless it already ends in one (`C:` → `C:/x`). */
+const joinedPath = (root: string, names: ReadonlyArray<string>): string => {
+  if (names.length === 0) return root;
+  const separator = root.endsWith('/') ? '' : '/';
+  return `${root}${separator}${names.join('/')}`;
+};
+
+/** Restarts the walk at `path`'s root; false for a rootless one, which git resolves from its cwd. */
+const restartAt = (walk: Walk, path: string): boolean => {
+  const { root, rest } = walk.syntax.splitRoot(path);
+  if (root === '') return false;
+  walk.root = root;
+  walk.names.length = 0;
+  walk.pending.unshift(...walk.syntax.components(rest));
+  return true;
+};
 
 const follow = async (probe: AlternatePathProbe, walk: Walk, link: string): Promise<boolean> => {
   walk.hops++;
   if (walk.hops > MAX_SYMLINK_HOPS) return false;
   const target = await probe.readlink(link);
-  if (target.startsWith('/')) walk.resolved = '';
-  walk.pending.unshift(...segmentsOf(target));
+  if (walk.syntax.isAbsolute(target)) return restartAt(walk, target);
+  walk.pending.unshift(...walk.syntax.components(target));
   return true;
 };
 
@@ -57,35 +72,38 @@ const descend = async (
 ): Promise<boolean> => {
   if (segment === '.') return true;
   if (segment === '..') {
-    walk.resolved = parentOf(walk.resolved);
+    walk.names.pop();
     return true;
   }
-  const candidate = `${walk.resolved}/${segment}`;
+  const candidate = joinedPath(walk.root, [...walk.names, segment]);
   const found = await lookup(probe, candidate);
   const isLast = walk.pending.length === 0;
   if (found.kind === 'blocked') return false;
   if (found.kind === 'absent') {
-    walk.resolved = candidate;
+    walk.names.push(segment);
     return isLast;
   }
   if (found.isLink) return follow(probe, walk, candidate);
-  walk.resolved = candidate;
+  walk.names.push(segment);
   return found.isDirectory || isLast;
 };
 
 /**
  * git's `strbuf_realpath(…, die_on_error=0)` over the port: every component is resolved and only
- * the last may be missing. `undefined` when a middle component is absent or links loop.
+ * the last may be missing. `undefined` when a middle component is absent, links loop, or the path
+ * has no root.
  */
 export const realpathAllowingMissingLeaf = async (
+  syntax: GitPathSyntax,
   probe: AlternatePathProbe,
   path: string,
 ): Promise<string | undefined> => {
-  const walk: Walk = { resolved: '', pending: segmentsOf(path), hops: 0 };
+  const walk: Walk = { syntax, root: '', names: [], pending: [], hops: 0 };
+  if (!restartAt(walk, path)) return undefined;
   while (walk.pending.length > 0) {
     if (!(await descend(probe, walk, walk.pending.shift() as string))) return undefined;
   }
-  return walk.resolved === '' ? '/' : walk.resolved;
+  return joinedPath(walk.root, walk.names);
 };
 
 /** git's `odb.c` refuses to descend once a holder sits at this alternate depth. */
@@ -116,6 +134,8 @@ export interface ObjectSourceSpec {
 export interface AlternateChainIo {
   readonly probe: (path: string) => AlternatePathProbe;
   readonly reader: (objectsDir: string) => ObjectSourceReader;
+  /** How the filesystem's git build reads a path: separators, drives, UNC shares. */
+  readonly pathSyntax: GitPathSyntax;
 }
 
 interface Resolution {
@@ -176,16 +196,17 @@ const normalise = async (
   holder: string,
 ): Promise<string | undefined> => {
   const text = decodeEntry(entry);
+  const { probe, pathSyntax } = resolution.io;
   const joined =
     text === undefined
       ? lossyUtf8.decode(entry)
-      : isAbsolutePath(text)
+      : pathSyntax.isAbsolute(text)
         ? text
         : `${holder}/${text}`;
   const unresolvable = { reason: 'unresolvable', path: joined, listedIn: holder } as const;
   if (text === undefined) return void report(resolution, unresolvable);
   try {
-    const real = await realpathAllowingMissingLeaf(resolution.io.probe(joined), joined);
+    const real = await realpathAllowingMissingLeaf(pathSyntax, probe(joined), joined);
     if (real === undefined) report(resolution, unresolvable);
     return real;
   } catch (error) {
@@ -265,7 +286,7 @@ export const resolveObjectSources = async (
   readonly diagnostics: ReadonlyArray<AlternateDiagnostic>;
 }> => {
   const raw = `${commonGitDir(ctx)}/objects`;
-  const primary = (await realpathAllowingMissingLeaf(io.probe(raw), raw)) ?? raw;
+  const primary = (await realpathAllowingMissingLeaf(io.pathSyntax, io.probe(raw), raw)) ?? raw;
   const key = (await readIgnoreCase(ctx)) ? asciiLower : (path: string) => path;
   const resolution: Resolution = {
     ctx,

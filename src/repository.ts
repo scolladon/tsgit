@@ -311,6 +311,8 @@ export interface RuntimeFallback {
    * Absent on sandboxed adapters, where the one adapter root is already the bound.
    */
   readonly makeConfinedFs?: (roots: ReadonlyArray<string>) => FileSystem;
+  /** Whether the runtime's filesystem reads paths the Windows way (see `Context`). */
+  readonly windowsPathSyntax?: boolean;
 }
 
 /**
@@ -509,6 +511,7 @@ interface OptionalCtxInputs {
   readonly ssh: SshTransport | undefined;
   readonly concurrency: ConcurrencyLimits | undefined;
   readonly cacheBudgets: Context['cacheBudgets'];
+  readonly windowsPathSyntax: boolean | undefined;
 }
 
 /**
@@ -526,6 +529,9 @@ const buildOptionalCtxFields = (inputs: OptionalCtxInputs) => ({
   ...(inputs.ssh !== undefined ? { ssh: inputs.ssh } : {}),
   ...(inputs.concurrency !== undefined ? { concurrency: inputs.concurrency } : {}),
   ...(inputs.cacheBudgets !== undefined ? { cacheBudgets: inputs.cacheBudgets } : {}),
+  ...(inputs.windowsPathSyntax !== undefined
+    ? { windowsPathSyntax: inputs.windowsPathSyntax }
+    : {}),
 });
 
 /**
@@ -721,6 +727,7 @@ export const openRepository = async (
       ssh: fallback.ssh,
       concurrency: fallback.concurrency,
       cacheBudgets: fallback.cacheBudgets,
+      windowsPathSyntax: fallback.windowsPathSyntax,
     }),
     promisor,
     session: createSession(),

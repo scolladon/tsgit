@@ -735,8 +735,8 @@ Rules, each cited to `odb.c:parse_alternates` (L102–160) and `quote.c:unquote_
 Returns bytes, not strings: the primitive decodes with `TextDecoder('utf-8', { fatal: true })`;
 an entry that is not valid UTF-8 cannot be addressed through a string-path port and is reported
 `unresolvable` (tsgit-only edge, recorded in the diagnostic reason; git would address the raw
-bytes). Windows absoluteness is the primitive's job (`isAbsolutePath`,
-`src/application/primitives/internal/absolute-path.ts`) — the domain stays path-syntax-free.
+bytes). Windows absoluteness is the primitive's job (`git-path-syntax.ts`,
+`src/application/primitives/internal/`) — the domain stays path-syntax-free.
 
 ### D2 — Chain resolution (`src/application/primitives/internal/alternate-chain.ts`)
 
@@ -798,6 +798,18 @@ alternate levels reachable, matching N1/N2.
 component and tolerates only a missing **last** component (R3 vs R4); then trim trailing `/`.
 Realpath is emulated through the port (ADR-917) with `AlternatePathProbe`. The depth check placement reproduces N3/N4 exactly
 (`sources.nr` counts only normalised entries).
+
+Path syntax follows the git build the filesystem belongs to (`internal/git-path-syntax.ts`,
+selected by `Context.windowsPathSyntax`, which the Node entry point sets from its native path
+policy). POSIX: `/` is the only separator and only a leading `/` is absolute — a `\` or `C:` is
+part of a name. Windows (`compat/win32/path-utils.c`): `/` and `\` both separate
+(git's cross-platform `is_dir_sep`); `is_absolute_path` is a leading separator or a drive prefix
+(`win32_has_dos_drive_prefix`: any ASCII byte or a non-ASCII run of at most four UTF-8 bytes,
+then `:`); the root is `win32_offset_1st_component` — a drive (`C:`, `C:\`), a UNC share
+(`\\server\share\`), or a single separator — and `get_root_part` converts its `\` to `/`, so
+every resolved path is in forward-slash form (`C:\x\objects` → `C:/x/objects`, `C:x` →
+`C:/x`). A share-less UNC (`\\server`) has no root; git would resolve it against its cwd,
+tsgit reports it `unresolvable`.
 
 Path equality (self check and dedupe) is git's `dir.c` path comparison — the `odb_path_map`
 hash map is declared with its `ignore_case`-aware hash and equality functions (`odb.c` L32):
@@ -1372,7 +1384,7 @@ tsgit mapping:
 - **DoS**: depth capped at 6 levels, dedupe makes cycles terminate; the list file is read whole
   (git reads it whole, no cap) — a hostile multi-GB list is the same exposure git has.
 - **Containment**: alternates do not widen the main adapter's root set or its write guard; each
-  alternate's capability is confined to its own objects dir (ADR-915). Windows: `isAbsolutePath` covers drive/UNC forms; `\\?\` long paths pass through the
+  alternate's capability is confined to its own objects dir (ADR-915). Windows: `git-path-syntax.ts` covers drive/UNC forms; `\\?\` long paths pass through the
   Node adapter unchanged.
 
 ### D10 — Diagnostics (ADR-914)

@@ -165,6 +165,7 @@ export const openRepository = async (opts: OpenNodeRepositoryOptions = {}): Prom
       deltaBaseCacheMaxBytes: opts.deltaBaseCacheMaxBytes,
     }),
     concurrency: deriveLimits(nativeMachineFacts()),
+    windowsPathSyntax: nativePolicy.windowsSyntax,
     // A linked worktree lives outside `workDir`; root a fresh adapter at the
     // repo's own workDir PLUS every path the caller asked for (the facade
     // passes the worktree paths followed by the layout roots), so it reaches

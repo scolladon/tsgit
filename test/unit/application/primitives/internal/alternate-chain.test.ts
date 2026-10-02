@@ -5,14 +5,24 @@ import {
   realpathAllowingMissingLeaf,
   resolveObjectSources,
 } from '../../../../../src/application/primitives/internal/alternate-chain.js';
-import { permissionDenied } from '../../../../../src/domain/error.js';
+import {
+  posixGitPathSyntax,
+  windowsGitPathSyntax,
+} from '../../../../../src/application/primitives/internal/git-path-syntax.js';
+import { fileNotFound, permissionDenied } from '../../../../../src/domain/error.js';
 import type { Context } from '../../../../../src/ports/context.js';
+import type { FileStat } from '../../../../../src/ports/file-system.js';
+import type { AlternatePathProbe } from '../../../../../src/ports/object-source-access.js';
 
 const PRIMARY = '/repo/.git/objects';
 const encode = (text: string): Uint8Array => new TextEncoder().encode(text);
 const listFile = (dir: string): string => `${dir}/info/alternates`;
 
-const ioOf = (ctx: Context): AlternateChainIo => ({ probe: () => ctx.fs, reader: () => ctx.fs });
+const ioOf = (ctx: Context): AlternateChainIo => ({
+  probe: () => ctx.fs,
+  reader: () => ctx.fs,
+  pathSyntax: posixGitPathSyntax,
+});
 
 const contextWith = (lists: Readonly<Record<string, string>>): Context =>
   createMemoryContext({
@@ -34,7 +44,11 @@ describe('realpathAllowingMissingLeaf', () => {
         await ctx.fs.symlink('/repo/real', '/repo/link');
 
         // Act
-        const result = await realpathAllowingMissingLeaf(ctx.fs, '/repo/link/objects');
+        const result = await realpathAllowingMissingLeaf(
+          posixGitPathSyntax,
+          ctx.fs,
+          '/repo/link/objects',
+        );
 
         // Assert
         expect(result).toBe('/repo/real/objects');
@@ -51,7 +65,11 @@ describe('realpathAllowingMissingLeaf', () => {
         await ctx.fs.symlink('/repo/real', '/repo/link');
 
         // Act
-        const result = await realpathAllowingMissingLeaf(ctx.fs, '/repo/link/absent');
+        const result = await realpathAllowingMissingLeaf(
+          posixGitPathSyntax,
+          ctx.fs,
+          '/repo/link/absent',
+        );
 
         // Assert
         expect(result).toBe('/repo/real/absent');
@@ -66,7 +84,11 @@ describe('realpathAllowingMissingLeaf', () => {
         const ctx = createMemoryContext();
 
         // Act
-        const result = await realpathAllowingMissingLeaf(ctx.fs, '/repo/absent/objects');
+        const result = await realpathAllowingMissingLeaf(
+          posixGitPathSyntax,
+          ctx.fs,
+          '/repo/absent/objects',
+        );
 
         // Assert
         expect(result).toBeUndefined();
@@ -81,7 +103,11 @@ describe('realpathAllowingMissingLeaf', () => {
         const ctx = createMemoryContext({ files: { '/repo/file': new Uint8Array() } });
 
         // Act
-        const result = await realpathAllowingMissingLeaf(ctx.fs, '/repo/file/objects');
+        const result = await realpathAllowingMissingLeaf(
+          posixGitPathSyntax,
+          ctx.fs,
+          '/repo/file/objects',
+        );
 
         // Assert
         expect(result).toBeUndefined();
@@ -98,7 +124,11 @@ describe('realpathAllowingMissingLeaf', () => {
         await ctx.fs.symlink('/repo/a', '/repo/b');
 
         // Act
-        const result = await realpathAllowingMissingLeaf(ctx.fs, '/repo/a/objects');
+        const result = await realpathAllowingMissingLeaf(
+          posixGitPathSyntax,
+          ctx.fs,
+          '/repo/a/objects',
+        );
 
         // Assert
         expect(result).toBeUndefined();
@@ -116,7 +146,11 @@ describe('realpathAllowingMissingLeaf', () => {
         await ctx.fs.symlink('../../z', '/repo/x/y/link');
 
         // Act
-        const result = await realpathAllowingMissingLeaf(ctx.fs, '/repo/x/y/link/./../x');
+        const result = await realpathAllowingMissingLeaf(
+          posixGitPathSyntax,
+          ctx.fs,
+          '/repo/x/y/link/./../x',
+        );
 
         // Assert
         expect(result).toBe('/repo/x');
@@ -479,6 +513,7 @@ describe('resolveObjectSources', () => {
         const result = await resolveObjectSources(ctx, {
           probe: () => base.fs,
           reader: () => reader,
+          pathSyntax: posixGitPathSyntax,
         });
 
         // Assert
@@ -531,6 +566,197 @@ describe('resolveObjectSources', () => {
         // Assert
         expect(result.diagnostics.map((d) => d.reason)).toEqual(['unresolvable']);
         expect(result.sources).toHaveLength(1);
+      });
+    });
+  });
+
+  describe('Given a POSIX entry naming a backslash or a drive-like name', () => {
+    describe('When the chain is resolved', () => {
+      it('Then the backslash is part of a name and the drive-like entry is relative', async () => {
+        // Arrange
+        const ctx = contextWith({ [PRIMARY]: '/repo/a\\b/objects\nC:/objects\n' });
+        await ctx.fs.mkdir('/repo/a\\b/objects');
+        await ctx.fs.mkdir(`${PRIMARY}/C:/objects`);
+
+        // Act
+        const result = await dirsOf(ctx);
+
+        // Assert
+        expect(result).toEqual([PRIMARY, '/repo/a\\b/objects', `${PRIMARY}/C:/objects`]);
+      });
+    });
+  });
+});
+
+const WINDOWS_GIT_DIR = 'C:\\repo\\.git';
+const WINDOWS_PRIMARY = 'C:/repo/.git/objects';
+
+interface WindowsVolume {
+  readonly directories: ReadonlyArray<string>;
+  readonly links?: Readonly<Record<string, string>>;
+  readonly lists: Readonly<Record<string, string>>;
+}
+
+const statOf = (isSymbolicLink: boolean): FileStat => ({
+  ctimeMs: 0,
+  mtimeMs: 0,
+  dev: 0,
+  ino: 0,
+  mode: 0,
+  uid: 0,
+  gid: 0,
+  size: 0,
+  isFile: false,
+  isDirectory: !isSymbolicLink,
+  isSymbolicLink,
+});
+
+const windowsProbe = (volume: WindowsVolume): AlternatePathProbe => {
+  const links = volume.links ?? {};
+  const lstat = async (path: string): Promise<FileStat> => {
+    if (path in links) return statOf(true);
+    if (volume.directories.includes(path)) return statOf(false);
+    throw fileNotFound(path);
+  };
+  return { lstat, stat: lstat, readlink: async (path) => links[path] as string };
+};
+
+const resolveOnWindows = (volume: WindowsVolume) => {
+  const base = createMemoryContext();
+  const ctx: Context = { ...base, layout: { ...base.layout, gitDir: WINDOWS_GIT_DIR } };
+  const reader = createMemoryContext().fs;
+  vi.spyOn(reader, 'read').mockImplementation(async (path) => {
+    const list = volume.lists[path];
+    if (list === undefined) throw fileNotFound(path);
+    return encode(list);
+  });
+  const probe = windowsProbe(volume);
+  return resolveObjectSources(ctx, {
+    probe: () => probe,
+    reader: () => reader,
+    pathSyntax: windowsGitPathSyntax,
+  });
+};
+
+const WINDOWS_ROOTS = ['C:/repo', 'C:/repo/.git', WINDOWS_PRIMARY];
+
+describe('resolveObjectSources on a Windows filesystem', () => {
+  describe('Given entries in drive, backslash, relative and UNC forms', () => {
+    describe('When the chain is resolved', () => {
+      it('Then each resolves to git for Windows forward-slash form', async () => {
+        // Arrange
+        const volume: WindowsVolume = {
+          directories: [
+            ...WINDOWS_ROOTS,
+            'D:/donor',
+            'D:/donor/objects',
+            'C:/shared',
+            'C:/shared/objects',
+            '//server/share/objects',
+            'E:/plain',
+            'E:/plain/objects',
+          ],
+          lists: {
+            [listFile(WINDOWS_PRIMARY)]:
+              'D:\\donor\\objects\n..\\..\\..\\shared\\objects\n\\\\server\\share\\objects\nE:/plain/objects\n',
+          },
+        };
+
+        // Act
+        const result = await resolveOnWindows(volume);
+
+        // Assert
+        expect(result.diagnostics).toEqual([]);
+        expect(result.sources.map((s) => s.objectsDir)).toEqual([
+          WINDOWS_PRIMARY,
+          'D:/donor/objects',
+          'C:/shared/objects',
+          '//server/share/objects',
+          'E:/plain/objects',
+        ]);
+      });
+    });
+  });
+
+  describe('Given an entry through a link to another drive', () => {
+    describe('When the chain is resolved', () => {
+      it('Then the link target replaces the root', async () => {
+        // Arrange
+        const volume: WindowsVolume = {
+          directories: [...WINDOWS_ROOTS, 'D:/real', 'D:/real/objects'],
+          links: { 'C:/link': 'D:\\real' },
+          lists: { [listFile(WINDOWS_PRIMARY)]: 'C:\\link\\objects\n' },
+        };
+
+        // Act
+        const result = await resolveOnWindows(volume);
+
+        // Assert
+        expect(result.sources.map((s) => s.objectsDir)).toEqual([
+          WINDOWS_PRIMARY,
+          'D:/real/objects',
+        ]);
+      });
+    });
+  });
+
+  describe('Given an entry through a relative backslash link', () => {
+    describe('When the chain is resolved', () => {
+      it('Then the link resolves beside itself', async () => {
+        // Arrange
+        const volume: WindowsVolume = {
+          directories: [...WINDOWS_ROOTS, 'C:/real', 'C:/real/objects'],
+          links: { 'C:/repo/link': '..\\real' },
+          lists: { [listFile(WINDOWS_PRIMARY)]: 'C:\\repo\\link\\objects\n' },
+        };
+
+        // Act
+        const result = await resolveOnWindows(volume);
+
+        // Assert
+        expect(result.sources.map((s) => s.objectsDir)).toEqual([
+          WINDOWS_PRIMARY,
+          'C:/real/objects',
+        ]);
+      });
+    });
+  });
+
+  describe('Given a share-less UNC entry', () => {
+    describe('When the chain is resolved', () => {
+      it('Then it is unresolvable', async () => {
+        // Arrange
+        const volume: WindowsVolume = {
+          directories: WINDOWS_ROOTS,
+          lists: { [listFile(WINDOWS_PRIMARY)]: '\\\\server\n' },
+        };
+
+        // Act
+        const result = await resolveOnWindows(volume);
+
+        // Assert
+        expect(result.diagnostics).toEqual([
+          { reason: 'unresolvable', path: '\\\\server', listedIn: WINDOWS_PRIMARY },
+        ]);
+      });
+    });
+  });
+
+  describe('Given an entry through a link to a share-less UNC path', () => {
+    describe('When the chain is resolved', () => {
+      it('Then it is unresolvable', async () => {
+        // Arrange
+        const volume: WindowsVolume = {
+          directories: WINDOWS_ROOTS,
+          links: { 'C:/link': '\\\\server' },
+          lists: { [listFile(WINDOWS_PRIMARY)]: 'C:/link/objects\n' },
+        };
+
+        // Act
+        const result = await resolveOnWindows(volume);
+
+        // Assert
+        expect(result.diagnostics.map((d) => d.reason)).toEqual(['unresolvable']);
       });
     });
   });

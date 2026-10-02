@@ -3,6 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { nativePolicy } from '../../../src/adapters/node/path-policy.js';
 import { objectSources } from '../../../src/application/primitives/object-store.js';
 import { openRepository as openMemoryRepository } from '../../../src/index.default.js';
 import { openRepository } from '../../../src/index.node.js';
@@ -148,6 +149,41 @@ describe('Context.objectSourceAccess (node)', () => {
 
         // Assert
         expect(result?.isDirectory).toBe(true);
+        await repo.dispose();
+      });
+    });
+  });
+
+  describe('Given a node repository', () => {
+    describe('When its context is built', () => {
+      it('Then windowsPathSyntax mirrors the native path policy', async () => {
+        // Arrange
+        const sut = openRepository;
+
+        // Act
+        const repo = await sut({ cwd: workDir });
+
+        // Assert
+        expect(repo.ctx.windowsPathSyntax).toBe(nativePolicy.windowsSyntax);
+        await repo.dispose();
+      });
+    });
+  });
+
+  describe('Given a memory repository', () => {
+    describe('When its context is built', () => {
+      it('Then windowsPathSyntax is absent', async () => {
+        // Arrange
+        const sut = openMemoryRepository;
+
+        // Act
+        const repo = await sut({
+          cwd: '/repo',
+          files: { '/repo/.git/HEAD': encode('ref: refs/heads/main\n') },
+        });
+
+        // Assert
+        expect(repo.ctx.windowsPathSyntax).toBeUndefined();
         await repo.dispose();
       });
     });

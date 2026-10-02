@@ -2,6 +2,7 @@ import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import { resolveObjectSources } from '../../../../../src/application/primitives/internal/alternate-chain.js';
+import { posixGitPathSyntax } from '../../../../../src/application/primitives/internal/git-path-syntax.js';
 
 const PRIMARY = '/repo/.git/objects';
 const NODE_COUNT = 9;
@@ -29,7 +30,11 @@ const contextFor = (graph: ReadonlyArray<ReadonlyArray<number>>) =>
 
 const resolveGraph = async (graph: ReadonlyArray<ReadonlyArray<number>>) => {
   const ctx = contextFor(graph);
-  return resolveObjectSources(ctx, { probe: () => ctx.fs, reader: () => ctx.fs });
+  return resolveObjectSources(ctx, {
+    probe: () => ctx.fs,
+    reader: () => ctx.fs,
+    pathSyntax: posixGitPathSyntax,
+  });
 };
 
 describe('resolveObjectSources properties', () => {
