@@ -5440,6 +5440,7 @@ describe('Given a packed object whose entry reads reject with PERMISSION_DENIED,
       const id = blobId as ObjectId;
       await writeGarbageLooseObject(ctx, id, GARBAGE_BYTES);
       const packPath = packFilePath(ctx, 'd13-degrade-walk');
+      const trailerAt = (await ctx.fs.stat(packPath)).size - ctx.hashConfig.digestLength;
       const wrapped: Context = {
         ...ctx,
         fs: {
@@ -5447,8 +5448,9 @@ describe('Given a packed object whose entry reads reject with PERMISSION_DENIED,
           openWithNoFollow: async (path: string, mode: 'read' | 'write') => {
             const handle = await ctx.fs.openWithNoFollow(path, mode);
             if (path !== packPath) return handle;
-            // The 12-byte header probe (position 0) rides the SAME handle and
-            // stays healthy — only a non-header entry read fails.
+            // The open gate's reads — the 12-byte header (position 0) and the
+            // trailer — ride the SAME handle and stay healthy; only an entry
+            // read fails.
             return {
               ...handle,
               read: async (
@@ -5457,7 +5459,9 @@ describe('Given a packed object whose entry reads reject with PERMISSION_DENIED,
                 length: number,
                 position?: number,
               ) => {
-                if (position === 0) return handle.read(buffer, bufferOffset, length, position);
+                if (position === 0 || position === trailerAt) {
+                  return handle.read(buffer, bufferOffset, length, position);
+                }
                 throw permissionDenied(path);
               },
             };
@@ -6947,9 +6951,7 @@ describe('Given a packed object corrupted on disk but warm in the delta cache', 
       // oracle demands the corruption family specifically: a cache-trusting
       // audit reports this store clean.
       const corrupted = result.findings.some(
-        (f) =>
-          (f.type === 'bad-object' || f.type === 'hash-mismatch') &&
-          (f as { id: string }).id === blobId,
+        (f) => f.type === 'pack-entry-unpackable' && f.id === blobId,
       );
       expect(corrupted).toBe(true);
     });
@@ -8570,6 +8572,90 @@ describe('Given a borrower whose own multi-pack-index trailer is corrupt while a
       const mismatches = result.findings.filter((f) => f.type === 'midx-checksum-mismatch');
       expect(mismatches).toHaveLength(1);
       expect('objectsDir' in mismatches[0]!).toBe(false);
+    });
+  });
+});
+
+describe('Given a pack whose .idx trailer is corrupt', () => {
+  describe('When fsck runs', () => {
+    it('Then it reports the index checksum mismatch and sets bit 4', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      await writeSyntheticPack(ctx, 'idx-trailer', onePackEntry('idx-trailer-content'));
+      const idx = await ctx.fs.read(idxFilePath(ctx, 'idx-trailer'));
+      idx[idx.length - 1] = idx[idx.length - 1]! ^ 0xff;
+      await ctx.fs.write(idxFilePath(ctx, 'idx-trailer'), idx);
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.findings).toContainEqual({
+        type: 'pack-index-checksum-mismatch',
+        pack: 'pack-idx-trailer',
+      });
+      expect(result.exitCode & 4).toBe(4);
+    });
+  });
+});
+
+describe('Given a ref whose tip is a pack entry that cannot be unpacked', () => {
+  const damagedTip = async (): Promise<{ readonly ctx: Context; readonly id: ObjectId }> => {
+    const ctx = await initBareCtx();
+    const [id] = await writeSyntheticPack(ctx, 'tip', onePackEntry('damaged tip content'));
+    const pack = await ctx.fs.read(packFilePath(ctx, 'tip'));
+    pack[pack.length - 24] = pack[pack.length - 24]! ^ 0xff;
+    await ctx.fs.write(packFilePath(ctx, 'tip'), pack);
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/t`, `${id}\n`);
+    return { ctx, id: id as ObjectId };
+  };
+
+  describe.each([
+    { label: 'default', opts: {} },
+    { label: 'full: false', opts: { full: false } },
+    { label: 'connectivityOnly', opts: { connectivityOnly: true } },
+  ])('When fsck runs ($label)', ({ opts }) => {
+    it('Then it rejects naming the packed object and its pack, as git dies reading the ref tip', async () => {
+      // Arrange
+      const { ctx, id } = await damagedTip();
+
+      // Act
+      let caught: unknown;
+      try {
+        await fsck(ctx, opts);
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect((caught as TsgitError).data).toEqual({
+        code: 'INVALID_PACK_ENTRY',
+        offset: 12,
+        reason: `packed object ${id} (stored in pack-tip) is corrupt`,
+      });
+    });
+  });
+});
+
+describe('Given a ref tip in a pack whose .rev disagrees with its index', () => {
+  describe('When fsck runs', () => {
+    it('Then it does not refuse — git reads entries without the .rev, so its tip is not damaged', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const ids = await writeSyntheticPack(ctx, 'bad-rev', [
+        ...onePackEntry('first entry content'),
+        ...onePackEntry('second entry content'),
+      ]);
+      await writeSyntheticRevIndex(ctx, 'bad-rev', [1, 1]);
+      for (const [n, id] of ids.entries()) {
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/t${n}`, `${id}\n`);
+      }
+
+      // Act
+      const result = await fsck(ctx);
+
+      // Assert
+      expect(result.findings.some((f) => f.type === 'pack-rev-index-position-mismatch')).toBe(true);
     });
   });
 });

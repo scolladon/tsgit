@@ -21,6 +21,7 @@ import { getObjectStore } from '../../../primitives/object-store.js';
 import type { PackLookupHit, PackRegistry } from '../../../primitives/pack-registry.js';
 import { readObject } from '../../../primitives/read-object.js';
 import { looseBytesFromHolder } from './object-presence.js';
+import { attributeTo } from './source-attribution.js';
 import type { UnreadableMode } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -175,17 +176,36 @@ async function lookupIfClaimed(
 interface PackClaim {
   readonly registry: PackRegistry;
   readonly hit: PackLookupHit;
+  readonly attribution: { readonly objectsDir?: string };
 }
 
 /** First source, in git order, whose registry claims `id`. The delta walk
  *  stays on the claiming source's registry: a REF_DELTA base resolves there. */
 async function claimedBySource(ctx: Context, id: ObjectId): Promise<PackClaim | undefined> {
   const store = await getObjectStore(ctx);
-  for (const { registry } of store.sources) {
-    const hit = await lookupIfClaimed(registry, id);
-    if (hit !== undefined) return { registry, hit };
+  for (const source of store.sources) {
+    const hit = await lookupIfClaimed(source.registry, id);
+    if (hit !== undefined)
+      return { registry: source.registry, hit, attribution: attributeTo(store, source) };
   }
   return undefined;
+}
+
+/** Where a packed object lives — the pack and offset git names a damaged entry by. */
+export interface PackedLocation {
+  readonly pack: string;
+  readonly offset: number;
+  readonly attribution: { readonly objectsDir?: string };
+}
+
+/** The pack entry the store reads `id` from, when a pack claims it. */
+export async function packedLocationOf(
+  ctx: Context,
+  id: ObjectId,
+): Promise<PackedLocation | undefined> {
+  const claim = await claimedBySource(ctx, id);
+  if (claim === undefined) return undefined;
+  return { pack: claim.hit.pack.name, offset: claim.hit.offset, attribution: claim.attribution };
 }
 
 type TypedOrUntyped =

@@ -83,6 +83,8 @@ export {
   objectIdAt,
   offsetAtPackPosition,
   parsePackIndex,
+  recordedEntryCrc,
+  recordedPackChecksum,
 } from './pack-index.js';
 // Pack name hash
 export type { PathHasher } from './pack-name-hash.js';

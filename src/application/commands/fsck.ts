@@ -18,6 +18,7 @@ import {
   withUnreadableOverrides,
 } from './internal/fsck/object-cache.js';
 import { packAccessibilityReported, runPackHealthPass } from './internal/fsck/pack-health.js';
+import { assertRefTipsReadable, packsWithWrongRevIndex } from './internal/fsck/packed-ref-tips.js';
 import {
   assembleConnectivityFindings,
   buildInEdgeMap,
@@ -29,6 +30,7 @@ import { runRefsVerifyPass } from './internal/fsck/refs-verify.js';
 import { runRevIndexHealthPass } from './internal/fsck/rev-index-health.js';
 import { collectRoots } from './internal/fsck/roots.js';
 import type { UnreadableMode } from './internal/fsck/types.js';
+import { runVerifyPackPass } from './internal/fsck/verify-pack.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
 
 export type { FsckObjectType, FsckSeverity } from '../../domain/fsck/index.js';
@@ -148,10 +150,23 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   // Pack-health pass — reports packs the registry could not open or index.
   const packResult = await runPackHealthPass(ctx, opts);
 
+  // git's `verify_pack` — every accessible pack's `.idx` trailer, pack
+  // trailer and per-entry CRC, full mode only.
+  const verifyPackResult = await runVerifyPackPass(ctx, opts);
+
   // Reverse-index health pass — reports a pack's own `.rev` when it exists,
   // is readable and is wrong. Ungated, like the rest of bit 64: runs after
   // the pack-health pass, whose universe (`registry.all()`) it shares.
   const revIndexResult = await runRevIndexHealthPass(ctx, opts);
+
+  // git parses every ref tip before it checks anything — and dies on one
+  // whose only copy is a damaged pack entry. Runs after the rev-index pass,
+  // whose verdict tells a damaged entry from a read the `.rev` bounded wrongly.
+  await assertRefTipsReadable(
+    auditCtx,
+    objectCache,
+    packsWithWrongRevIndex(revIndexResult.findings),
+  );
 
   // Multi-pack-index health pass — reports the midx's own accessibility and
   // integrity. Runs after enumerateObjects has already succeeded above,
@@ -217,6 +232,7 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
     ...contentResult.findings,
     ...refsResult.findings,
     ...packResult.findings,
+    ...verifyPackResult.findings,
     ...revIndexResult.findings,
     ...midxResult.findings,
     ...bitmapResult.findings,
@@ -232,6 +248,7 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
     connectivityBit |
     refsResult.exitBit |
     packResult.exitBit |
+    verifyPackResult.exitBit |
     revIndexResult.exitBit |
     midxResult.exitBit |
     bitmapResult.exitBit |

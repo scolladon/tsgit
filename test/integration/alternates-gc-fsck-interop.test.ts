@@ -324,6 +324,55 @@ const gitDanglingLines = (stdout: string): ReadonlyArray<string> =>
     .filter((line) => DANGLING_LINE.test(line))
     .sort();
 
+const donorPackDir = (donor: string): string => path.join(objectsOf(donor), 'pack');
+
+const MISSING_LINE = /^missing (\w+) ([0-9a-f]{40})$/;
+
+const missingIds = (findings: ReadonlyArray<FsckFinding>): ReadonlyArray<string> =>
+  findings.flatMap((f) => (f.type === 'missing' ? [f.id] : []));
+
+const gitMissingIds = (stdout: string): ReadonlyArray<string> =>
+  stdout.split('\n').flatMap((line) => MISSING_LINE.exec(line)?.[2] ?? []);
+
+/** git's `verify_pack` / open-gate stderr, rebuilt from tsgit's structured pack findings. */
+const verifyPackLines = (
+  findings: ReadonlyArray<FsckFinding>,
+  packDir: string,
+): ReadonlyArray<string> =>
+  findings.flatMap((f) => {
+    const packPath = 'pack' in f ? `${packDir}/${f.pack}.pack` : '';
+    switch (f.type) {
+      case 'pack-inaccessible':
+        return [`error: packfile ${packPath} cannot be accessed`];
+      case 'pack-index-checksum-mismatch':
+        return [`error: Packfile index for ${packPath} hash mismatch`];
+      case 'pack-checksum-mismatch':
+        return [`error: ${packPath} pack checksum mismatch`];
+      case 'pack-crc-mismatch':
+        return [
+          `error: index CRC mismatch for object ${f.id} from ${packPath} at offset ${f.offset}`,
+        ];
+      case 'pack-entry-unpackable':
+        return [`error: cannot unpack ${f.id} from ${packPath} at offset ${f.offset}`];
+      case 'pack-entry-corrupt':
+        return [`error: packed ${f.id} from ${packPath} is corrupt`];
+      default:
+        return [];
+    }
+  });
+
+/** The refusal a promise rejects with — fails the row when it resolves. */
+const refusalOf = async (
+  pending: Promise<unknown>,
+): Promise<{ readonly data: { readonly code: string; readonly reason: string } }> => {
+  try {
+    await pending;
+  } catch (error) {
+    return error as { readonly data: { readonly code: string; readonly reason: string } };
+  }
+  throw new Error('expected a refusal');
+};
+
 describe.skipIf(!GIT_AVAILABLE)('alternates fsck interop — every source is audited', () => {
   describe('Given a clean --shared borrower holding no local object', () => {
     describe('When fsck runs (F1)', () => {
@@ -525,7 +574,7 @@ describe.skipIf(!GIT_AVAILABLE)('alternates fsck interop — every source is aud
 
     describe('When a reachable object body is corrupt (F4)', () => {
       it(
-        'Then git dies with 128 naming the donor pack and tsgit audits the borrower as it audits the donor itself',
+        'Then git dies with 128 and tsgit refuses naming the same packed object and pack',
         async () => {
           // Arrange
           const { donor, borrower } = borrowerOf('f4', true);
@@ -535,13 +584,13 @@ describe.skipIf(!GIT_AVAILABLE)('alternates fsck interop — every source is aud
 
           // Act
           const gitResult = gitFsck(borrower);
-          const result = await sut(borrower);
-          const ownResult = await sut(donor);
+          const caught = await refusalOf(sut(borrower));
 
           // Assert
           expect(gitResult.exitCode).toBe(128);
-          expect(gitResult.stderr).toContain(`stored in ${pack}) is corrupt`);
-          expect(result.exitCode).toBe(ownResult.exitCode);
+          expect(caught.data.code).toBe('INVALID_PACK_ENTRY');
+          const named = caught.data.reason.replace(/stored in (\S+)\)/, `stored in ${pack})`);
+          expect(gitResult.stderr).toContain(`fatal: ${named}`);
         },
         ROW_TIMEOUT,
       );
@@ -549,24 +598,32 @@ describe.skipIf(!GIT_AVAILABLE)('alternates fsck interop — every source is aud
 
     describe('When the pack trailer is corrupt (F4b)', () => {
       it(
-        'Then git exits like the donor own fsck and tsgit audits the borrower as it audits the donor itself',
+        'Then both exit 14 and tsgit reports the inaccessible pack and missing blobs git names',
         async () => {
-          // Arrange
+          // Arrange — tsgit's fsck verifies no commit-graph, so the donor's
+          // is removed: git's `commit-graph verify` child would add bit 16.
           const { donor, borrower } = borrowerOf('f4b', true);
+          rmSync(path.join(objectsOf(donor), 'info', 'commit-graph'), { force: true });
           const pack = donorPack(donor);
           flipByteAt(pack, readFileSync(pack).length - 1);
           const sut = tsgitFsck;
 
           // Act
           const gitResult = gitFsck(borrower);
-          const gitDonor = gitFsck(donor);
           const result = await sut(borrower);
-          const ownResult = await sut(donor);
 
           // Assert
-          expect(gitResult.exitCode).toBe(gitDonor.exitCode);
-          expect(gitResult.stderr).toContain(`packfile ${pack} does not match index`);
-          expect(result.exitCode).toBe(ownResult.exitCode);
+          expect(gitResult.exitCode).toBe(14);
+          expect(result.exitCode).toBe(gitResult.exitCode);
+          for (const line of verifyPackLines(result.findings, donorPackDir(donor))) {
+            expect(gitResult.stderr).toContain(line);
+          }
+          // Only the ids: tsgit types an index-rooted missing object
+          // `unknown` and also reports the unreadable ref tip as missing,
+          // where git reports `missing blob` and `invalid sha1 pointer`.
+          expect(missingIds(result.findings)).toEqual(
+            expect.arrayContaining([...gitMissingIds(gitResult.stdout)]),
+          );
         },
         ROW_TIMEOUT,
       );
@@ -574,7 +631,7 @@ describe.skipIf(!GIT_AVAILABLE)('alternates fsck interop — every source is aud
 
     describe('When a separate pack holds only an unreachable object and is corrupt (F4c)', () => {
       it(
-        'Then git exits 4 and tsgit audits the borrower as it audits the donor itself',
+        'Then both exit 4 and every verify_pack line git prints is rebuilt from tsgit findings',
         async () => {
           // Arrange
           const { donor, borrower } = borrowerOf('f4c', true);
@@ -592,11 +649,20 @@ describe.skipIf(!GIT_AVAILABLE)('alternates fsck interop — every source is aud
           // Act
           const gitResult = gitFsck(borrower);
           const result = await sut(borrower);
-          const ownResult = await sut(donor);
 
           // Assert
+          const lines = verifyPackLines(result.findings, packDir);
           expect(gitResult.exitCode).toBe(4);
-          expect(result.exitCode).toBe(ownResult.exitCode);
+          expect(result.exitCode).toBe(4);
+          expect([...lines].sort()).toEqual(
+            [
+              `error: ${packDir}/${added} pack checksum mismatch`,
+              `error: index CRC mismatch for object ${oid} from ${packDir}/${added} at offset 12`,
+              `error: cannot unpack ${oid} from ${packDir}/${added} at offset 12`,
+            ].sort(),
+          );
+          for (const line of lines) expect(gitResult.stderr).toContain(line);
+          expect(danglingLines(result.findings)).toEqual(gitDanglingLines(gitResult.stdout));
         },
         ROW_TIMEOUT,
       );

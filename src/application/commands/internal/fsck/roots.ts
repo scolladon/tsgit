@@ -95,7 +95,7 @@ const GC_TOLERATED_REF_CODES: ReadonlySet<string> = new Set([
   'REF_CYCLE_DETECTED',
 ]);
 
-function isTolerableRefFault(err: unknown): boolean {
+export function isTolerableRefFault(err: unknown): boolean {
   const code = errorDataCode(err);
   return code !== undefined && GC_TOLERATED_REF_CODES.has(code);
 }

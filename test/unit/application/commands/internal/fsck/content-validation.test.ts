@@ -10,14 +10,10 @@ import {
   objectsDir,
 } from '../../../../../../src/application/primitives/path-layout.js';
 import type { ObjectId, TreeEntry } from '../../../../../../src/domain/objects/index.js';
-import {
-  FILE_MODE,
-  serializeHeader,
-  serializeObject,
-} from '../../../../../../src/domain/objects/index.js';
+import { FILE_MODE, serializeHeader } from '../../../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../../../src/domain/objects/tree.js';
 import { MAX_INFLATE_OUTPUT_BYTES } from '../../../../../../src/ports/compressor.js';
-import { writeSyntheticPack } from '../../../primitives/pack-fixture.js';
+import { writeSyntheticPack, writeSyntheticPackIn } from '../../../primitives/pack-fixture.js';
 
 const sut = runContentValidationPass;
 
@@ -125,10 +121,9 @@ describe('Given a universe containing an object that is neither loose nor readab
 
 describe('Given a packed blob whose bytes do not hash to its indexed id', () => {
   describe('When runContentValidationPass validates that object', () => {
-    it('Then emits a hash-mismatch finding, not badType (verifyHash:false on the pack read still surfaces the mismatch)', async () => {
-      // Arrange — readRawObject with verifyHash:false (what tryGetRawObjectBody
-      // uses for pack reads) succeeds regardless of the hash, so the mismatch
-      // must be caught by validateOneObject's own hash check afterward.
+    it('Then reports the packed entry corrupt with bit 4, as verify_pack does, and runs no catalogue', async () => {
+      // Arrange — readRawObject with verifyHash:false succeeds regardless of
+      // the hash, so the mismatch is caught by the pass's own hash check.
       const content = ENCODER.encode('mismatched content');
       const ctx = createMemoryContext();
       const wrongId = '0000000000000000000000000000000000000002' as ObjectId;
@@ -149,24 +144,116 @@ describe('Given a packed blob whose bytes do not hash to its indexed id', () => 
       );
 
       // Assert
-      const badTypeFindings = result.findings.filter(
-        (f) => f.type === 'bad-object' && f.msgId === 'badType',
-      );
-      expect(badTypeFindings).toHaveLength(0);
-      const hashMismatchFindings = result.findings.filter((f) => f.type === 'hash-mismatch');
-      expect(hashMismatchFindings).toHaveLength(1);
-      expect(hashMismatchFindings[0]).toMatchObject({ id: blobId });
-      if (hashMismatchFindings[0]?.type === 'hash-mismatch') {
-        // The reported `actual` is the REAL hash of the object's own bytes
-        // (header + content, computed via the same hash service the SUT
-        // uses) — not merely "not the wrong indexed id".
-        const realBytes = serializeObject({ type: 'blob', content, id: wrongId }, ctx.hashConfig);
-        const realHash = await ctx.hash.hashHex(realBytes);
-        expect(hashMismatchFindings[0].actual).toBe(realHash);
-      }
-      // Assert — a packed mismatch carries no path to disagree with, so it
-      // never suppresses the catalogue and never marks the id unreadable.
+      expect(result.findings).toEqual([
+        { type: 'pack-entry-corrupt', pack: 'pack-p2', id: blobId },
+      ]);
+      expect(result.exitBit).toBe(4);
       expect(result.typeUnknownIds.has(blobId)).toBe(false);
+    });
+  });
+});
+
+describe('Given a packed tree with a hash disagreement and a duplicate entry name', () => {
+  describe('When runContentValidationPass validates that object', () => {
+    it('Then the corrupt entry suppresses the catalogue', async () => {
+      // Arrange
+      const treeBody = buildTree(
+        buildTreeEntry('100644', 'a.txt', BLOB_SHA_A),
+        buildTreeEntry('100644', 'a.txt', BLOB_SHA_B),
+      );
+      const ctx = createMemoryContext();
+      const wrongId = '0000000000000000000000000000000000000003' as ObjectId;
+      const [treeId] = await writeSyntheticPack(ctx, 'p3', [
+        { kind: 'base', type: 'tree', content: treeBody, idOverride: wrongId },
+      ]);
+
+      // Act
+      const result = await sut(
+        ctx,
+        new Set([treeId as ObjectId]),
+        false,
+        new Map(),
+        new Map(),
+        NO_SKIPS,
+        DEFAULT_THRESHOLD,
+      );
+
+      // Assert
+      expect(result.findings.map((f) => f.type)).toEqual(['pack-entry-corrupt']);
+    });
+  });
+});
+
+describe('Given a packed blob whose compressed body is damaged', () => {
+  describe('When runContentValidationPass validates that object', () => {
+    it('Then reports the entry unpackable by pack and offset with bit 4, as verify_pack does', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const [blobId] = await writeSyntheticPack(ctx, 'p4', [
+        { kind: 'base', type: 'blob', content: ENCODER.encode('damaged packed body') },
+      ]);
+      const packPath = `${ctx.layout.gitDir}/objects/pack/pack-p4.pack`;
+      const pack = await ctx.fs.read(packPath);
+      pack[pack.length - 24] = pack[pack.length - 24]! ^ 0xff;
+      await ctx.fs.write(packPath, pack);
+
+      // Act
+      const result = await sut(
+        ctx,
+        new Set([blobId as ObjectId]),
+        false,
+        new Map(),
+        new Map(),
+        NO_SKIPS,
+        DEFAULT_THRESHOLD,
+      );
+
+      // Assert
+      expect(result.findings).toEqual([
+        { type: 'pack-entry-unpackable', pack: 'pack-p4', id: blobId, offset: 12 },
+      ]);
+      expect(result.exitBit).toBe(4);
+    });
+  });
+});
+
+describe('Given a donor packed blob whose compressed body is damaged', () => {
+  describe('When the borrower runContentValidationPass validates that object', () => {
+    it('Then the unpackable finding carries the donor objects dir', async () => {
+      // Arrange
+      const donorObjects = '/repo/donor/objects';
+      const ctx = createMemoryContext({
+        files: { '/repo/.git/objects/info/alternates': ENCODER.encode(`${donorObjects}\n`) },
+      });
+      const [blobId] = await writeSyntheticPackIn(ctx, donorObjects, 'd1', [
+        { kind: 'base', type: 'blob', content: ENCODER.encode('damaged donor body') },
+      ]);
+      const packPath = `${donorObjects}/pack/pack-d1.pack`;
+      const pack = await ctx.fs.read(packPath);
+      pack[pack.length - 24] = pack[pack.length - 24]! ^ 0xff;
+      await ctx.fs.write(packPath, pack);
+
+      // Act
+      const result = await sut(
+        ctx,
+        new Set([blobId as ObjectId]),
+        false,
+        new Map(),
+        new Map(),
+        NO_SKIPS,
+        DEFAULT_THRESHOLD,
+      );
+
+      // Assert
+      expect(result.findings).toEqual([
+        {
+          type: 'pack-entry-unpackable',
+          pack: 'pack-d1',
+          id: blobId,
+          offset: 12,
+          objectsDir: donorObjects,
+        },
+      ]);
     });
   });
 });
@@ -293,6 +380,29 @@ describe('Given a packed tree with a duplicate entry name', () => {
         .map((f) => (f.type === 'bad-object' ? f.msgId : undefined));
       expect(msgIds).toContain('duplicateEntries');
       expect(msgIds).not.toContain('badType');
+    });
+
+    it('Then its error carries bit 4 alone, as verify_pack reports it', async () => {
+      // Arrange
+      const treeBody = buildTree(
+        buildTreeEntry('100644', 'a.txt', BLOB_SHA_A),
+        buildTreeEntry('100644', 'a.txt', BLOB_SHA_B),
+      );
+      const { ctx, treeId } = await writePackedTree(treeBody);
+
+      // Act
+      const result = await sut(
+        ctx,
+        new Set([treeId]),
+        false,
+        new Map(),
+        new Map(),
+        NO_SKIPS,
+        DEFAULT_THRESHOLD,
+      );
+
+      // Assert
+      expect(result.exitBit).toBe(4);
     });
   });
 });
@@ -1147,44 +1257,6 @@ describe('Given a correctly-sized loose commit stored at the wrong path, whose c
       // Assert — git's read_loose_object returns on the mismatch before
       // typing the object, so the reachability pass must not type it either.
       expect(result.typeUnknownIds.has(id)).toBe(true);
-    });
-  });
-});
-
-describe('Given a packed tree with duplicateEntries whose bytes are ALSO indexed under the wrong id', () => {
-  describe('When runContentValidationPass validates that object', () => {
-    it('Then still emits BOTH the catalogue finding and the hash-mismatch — packed reads carry no path to gate on', async () => {
-      // Arrange — unlike loose, a packed object's hash check has no
-      // "read_loose_object returns early" analogue: git walks every packed
-      // object by offset and always runs the catalogue on it.
-      const treeBody = buildTree(
-        buildTreeEntry('100644', 'a.txt', BLOB_SHA_A),
-        buildTreeEntry('100644', 'a.txt', BLOB_SHA_B),
-      );
-      const wrongId = '0000000000000000000000000000000000000009' as ObjectId;
-      const ctx = createMemoryContext();
-      const ids = await writeSyntheticPack(ctx, 'p-wrong-id', [
-        { kind: 'base', type: 'tree', content: treeBody, idOverride: wrongId },
-      ]);
-      const treeId = ids[0] as ObjectId;
-
-      // Act
-      const result = await sut(
-        ctx,
-        new Set([treeId]),
-        false,
-        new Map(),
-        new Map(),
-        NO_SKIPS,
-        DEFAULT_THRESHOLD,
-      );
-
-      // Assert
-      const msgIds = result.findings
-        .filter((f) => f.type === 'bad-object' && f.id === treeId)
-        .map((f) => (f.type === 'bad-object' ? f.msgId : undefined));
-      expect(msgIds).toContain('duplicateEntries');
-      expect(result.findings.some((f) => f.type === 'hash-mismatch' && f.id === treeId)).toBe(true);
     });
   });
 });

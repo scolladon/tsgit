@@ -271,6 +271,21 @@ export async function restampPackHeader(
   const checksumHex = await ctx.hash.hashHex(bytes.subarray(0, bytes.length - digestLength));
   bytes.set(hexToBytes(checksumHex), bytes.length - digestLength);
   await ctx.fs.write(packPath, bytes);
+  await recordPackChecksumInIndex(ctx, packPath.replace(/\.pack$/, '.idx'), checksumHex);
+}
+
+/** Rewrite the pack checksum an `.idx` records, then restamp the `.idx`'s own trailer. */
+export async function recordPackChecksumInIndex(
+  ctx: Context,
+  idxPath: string,
+  checksumHex: string,
+): Promise<void> {
+  const idx = await ctx.fs.read(idxPath);
+  const digestLength = ctx.hashConfig.digestLength;
+  idx.set(hexToBytes(checksumHex), idx.length - 2 * digestLength);
+  const idxChecksumHex = await ctx.hash.hashHex(idx.subarray(0, idx.length - digestLength));
+  idx.set(hexToBytes(idxChecksumHex), idx.length - digestLength);
+  await ctx.fs.write(idxPath, idx);
 }
 
 const REV_MAGIC = 0x52494458; // 'RIDX'

@@ -4,6 +4,7 @@
  */
 import { TsgitError, type TsgitErrorData } from '../../domain/error.js';
 import { errorDataCode } from '../../domain/error-data-code.js';
+import { bytesEqual } from '../../domain/objects/encoding.js';
 import type { ObjectId } from '../../domain/objects/index.js';
 import { invalidPackHeader, invalidPackIndex } from '../../domain/storage/error.js';
 import {
@@ -15,6 +16,7 @@ import {
   type PackIndex,
   type PackRevIndex,
   parsePackIndex,
+  recordedPackChecksum,
 } from '../../domain/storage/index.js';
 import {
   PACK_HEADER_SIZE,
@@ -610,6 +612,16 @@ function loadPack(
   // opens the pack exactly once. The browser-shaped UNSUPPORTED_OPERATION
   // arm inside readSlice already falls back to a path read, so this needs
   // no fallback of its own.
+  // git's `open_packed_git_1` last check: the pack's own trailing checksum
+  // must be the one its `.idx` was written for.
+  const assertTrailerMatchesIndex = async (index: PackIndex): Promise<void> => {
+    const trailerStart = (await sizeMemo.get()) - index.digestLength;
+    const trailer = await readSlice(trailerStart, index.digestLength);
+    if (!bytesEqual(trailer, recordedPackChecksum(index))) {
+      throw invalidPackHeader(PACK_DOES_NOT_MATCH_INDEX);
+    }
+  };
+
   const headerMemo = createPromiseMemo(async (): Promise<PackHeader> => {
     const index = await indexMemo.get();
     const header = parsePackHeader(await readSlice(0, PACK_HEADER_SIZE));
@@ -618,6 +630,7 @@ function loadPack(
         `object count disagrees with index: pack ${header.objectCount}, index ${index.objectCount}`,
       );
     }
+    await assertTrailerMatchesIndex(index);
     return header;
   });
 
@@ -847,6 +860,9 @@ function recordUnclaimedResult(
  * under-defends a repo of many small, cheap-to-cache intermediates.
  */
 const DELTA_BASE_CACHE_MAX_ENTRIES = 65_536;
+
+/** git's `packfile %s does not match index` refusal, without the path. */
+const PACK_DOES_NOT_MATCH_INDEX = 'pack does not match index';
 
 const primaryLocation = (ctx: Context): SourceLocation => ({
   objectsDir: `${commonGitDir(ctx)}/objects`,

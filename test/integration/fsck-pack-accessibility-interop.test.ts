@@ -1508,3 +1508,166 @@ describe.skipIf(!GIT_AVAILABLE)(
     });
   },
 );
+
+// ---------------------------------------------------------------------------
+// verify_pack — a plain repository (no alternates) whose own pack is damaged
+// ---------------------------------------------------------------------------
+
+/** git's `verify_pack` / open-gate stderr, rebuilt from tsgit's structured pack findings. */
+const verifyPackLines = (findings: ReadonlyArray<FsckFinding>): ReadonlyArray<string> =>
+  findings.flatMap((f) => {
+    const packPath = 'pack' in f ? `${PACK_DIR}/${f.pack}.pack` : '';
+    switch (f.type) {
+      case 'pack-inaccessible':
+        return [`error: packfile ${packPath} cannot be accessed`];
+      case 'pack-checksum-mismatch':
+        return [`error: ${packPath} pack checksum mismatch`];
+      case 'pack-crc-mismatch':
+        return [
+          `error: index CRC mismatch for object ${f.id} from ${packPath} at offset ${f.offset}`,
+        ];
+      case 'pack-entry-unpackable':
+        return [`error: cannot unpack ${f.id} from ${packPath} at offset ${f.offset}`];
+      default:
+        return [];
+    }
+  });
+
+describe.skipIf(!GIT_AVAILABLE)('verify_pack interop — a plain repository', () => {
+  let verifyRoot: string;
+
+  beforeAll(async () => {
+    verifyRoot = await mkdtemp(path.join(os.tmpdir(), 'tsgit-interop-verify-pack-'));
+  });
+
+  afterAll(async () => {
+    await rm(verifyRoot, { recursive: true, force: true });
+  });
+
+  /** Two commits, packed by `gc` with no commit-graph (tsgit's fsck verifies none). */
+  const packedRepo = async (slug: string): Promise<string> => {
+    const dir = path.join(verifyRoot, slug);
+    runGit(['init', '-q', '-b', 'main', dir]);
+    disableAutoMaintenance(dir);
+    for (const n of [1, 2]) {
+      await writeFile(path.join(dir, `f${n}.txt`), `content ${n}`);
+      commitSeed(dir);
+    }
+    runGit(['-C', dir, '-c', 'gc.writeCommitGraph=false', 'gc', '-q']);
+    return dir;
+  };
+
+  const packIn = async (dir: string, exclude: ReadonlySet<string> = new Set()) => {
+    const names = await readdir(path.join(dir, PACK_DIR));
+    return names.find((name) => name.endsWith('.pack') && !exclude.has(name))!;
+  };
+
+  const flipByteAt = async (file: string, at: (length: number) => number): Promise<void> => {
+    const bytes = await readFile(file);
+    const offset = at(bytes.length);
+    bytes[offset] = bytes[offset]! ^ 0xff;
+    await chmod(file, 0o644);
+    await writeFile(file, bytes);
+  };
+
+  describe('Given the ref tip commit body is corrupt in the pack', () => {
+    describe('When fsck runs', () => {
+      it(
+        'Then git dies with 128 and tsgit refuses naming the same packed object and pack',
+        async () => {
+          // Arrange
+          const dir = await packedRepo('tip');
+          const pack = await packIn(dir);
+          await flipByteAt(path.join(dir, PACK_DIR, pack), () => 30);
+          const sut = fsck;
+
+          // Act
+          const gitResult = gitFsck(dir);
+          let caught: unknown;
+          try {
+            await sut(trackedNodeContext(dir));
+          } catch (error) {
+            caught = error;
+          }
+
+          // Assert
+          expect(gitResult.exitCode).toBe(128);
+          const { code, reason } = (caught as TsgitError).data as { code: string; reason: string };
+          expect(code).toBe('INVALID_PACK_ENTRY');
+          const named = reason.replace(/stored in (\S+)\)/, `stored in ${PACK_DIR}/${pack})`);
+          expect(gitResult.stderr).toContain(`fatal: ${named}`);
+        },
+        SETUP_TIMEOUT,
+      );
+    });
+  });
+
+  describe('Given the pack trailer is corrupt', () => {
+    describe('When fsck runs', () => {
+      it(
+        'Then both exit 14 and tsgit names the inaccessible pack git names',
+        async () => {
+          // Arrange
+          const dir = await packedRepo('trailer');
+          await flipByteAt(path.join(dir, PACK_DIR, await packIn(dir)), (n) => n - 1);
+          const sut = fsck;
+
+          // Act
+          const gitResult = gitFsck(dir);
+          const result = await sut(trackedNodeContext(dir));
+
+          // Assert
+          expect(gitResult.exitCode).toBe(14);
+          expect(result.exitCode).toBe(14);
+          const lines = verifyPackLines(result.findings);
+          expect(lines).toHaveLength(1);
+          expect(gitResult.stderr).toContain(lines[0]);
+        },
+        SETUP_TIMEOUT,
+      );
+    });
+  });
+
+  describe('Given a separate pack holding only an unreachable blob, with its body corrupt', () => {
+    describe('When fsck runs', () => {
+      it(
+        'Then both exit 4 and every verify_pack line git prints is rebuilt from tsgit findings',
+        async () => {
+          // Arrange
+          const dir = await packedRepo('unreachable');
+          const oid = runGit(['-C', dir, 'hash-object', '-w', '--stdin'], {
+            input: 'unreachable blob',
+          }).trim();
+          const before = new Set([await packIn(dir)]);
+          runGit(['-C', dir, 'pack-objects', '-q', path.join(dir, PACK_DIR, 'pack')], {
+            input: `${oid}\n`,
+          });
+          runGit(['-C', dir, 'prune-packed']);
+          const added = await packIn(dir, before);
+          await flipByteAt(path.join(dir, PACK_DIR, added), () => 20);
+          const sut = fsck;
+
+          // Act
+          const gitResult = gitFsck(dir);
+          const result = await sut(trackedNodeContext(dir));
+
+          // Assert
+          const packPath = `${PACK_DIR}/${added}`;
+          expect(gitResult.exitCode).toBe(4);
+          expect(result.exitCode).toBe(4);
+          expect([...verifyPackLines(result.findings)].sort()).toEqual(
+            [
+              `error: ${packPath} pack checksum mismatch`,
+              `error: index CRC mismatch for object ${oid} from ${packPath} at offset 12`,
+              `error: cannot unpack ${oid} from ${packPath} at offset 12`,
+            ].sort(),
+          );
+          for (const line of verifyPackLines(result.findings)) {
+            expect(gitResult.stderr).toContain(line);
+          }
+        },
+        SETUP_TIMEOUT,
+      );
+    });
+  });
+});

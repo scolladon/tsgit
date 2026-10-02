@@ -4,7 +4,12 @@ import { readBlob } from '../../../../src/application/primitives/read-blob.js';
 import { streamBlob } from '../../../../src/application/primitives/stream-blob.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/error.js';
-import type { Blob, Commit, ObjectId } from '../../../../src/domain/objects/index.js';
+import {
+  type Blob,
+  bytesToHex,
+  type Commit,
+  type ObjectId,
+} from '../../../../src/domain/objects/index.js';
 import { computeLooseObjectPath } from '../../../../src/domain/storage/loose-path.js';
 import { type Context, createSession } from '../../../../src/ports/context.js';
 import { buildMidx, type MidxSpec } from '../../domain/storage/arbitraries.js';
@@ -14,7 +19,12 @@ import {
   writeLooseWithDeclaredSize,
   writeRawObjectBytes,
 } from './fixtures.js';
-import { buildSyntheticPack, writeSyntheticPack, writeSyntheticPackIn } from './pack-fixture.js';
+import {
+  buildSyntheticPack,
+  recordPackChecksumInIndex,
+  writeSyntheticPack,
+  writeSyntheticPackIn,
+} from './pack-fixture.js';
 
 const ZERO_ID = '0'.repeat(40) as ObjectId;
 
@@ -622,6 +632,12 @@ describe('streamBlob', () => {
       const packBase = `${ctxBase.layout.gitDir}/objects/pack/pack-corrupt-genuine`;
       await ctxBase.fs.write(`${packBase}.pack`, packB.packBytes);
       await ctxBase.fs.write(`${packBase}.idx`, packA.idxBytes);
+      // A's index now records B's pack checksum, so the open gate admits the pair.
+      await recordPackChecksumInIndex(
+        ctxBase,
+        `${packBase}.idx`,
+        bytesToHex(packB.packBytes.subarray(-ctxBase.hashConfig.digestLength)),
+      );
 
       const id = packA.ids[0] as ObjectId;
 
@@ -675,6 +691,12 @@ describe('streamBlob', () => {
       const packBase = `${ctxBase.layout.gitDir}/objects/pack/pack-corrupt-no-verify`;
       await ctxBase.fs.write(`${packBase}.pack`, packB.packBytes);
       await ctxBase.fs.write(`${packBase}.idx`, packA.idxBytes);
+      // A's index now records B's pack checksum, so the open gate admits the pair.
+      await recordPackChecksumInIndex(
+        ctxBase,
+        `${packBase}.idx`,
+        bytesToHex(packB.packBytes.subarray(-ctxBase.hashConfig.digestLength)),
+      );
 
       const id = packA.ids[0] as ObjectId;
 

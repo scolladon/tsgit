@@ -109,6 +109,53 @@ export type FsckFinding =
       readonly objectsDir?: string;
     }
   | {
+      /** The `.idx`'s own trailing checksum disagrees with its bytes. */
+      readonly type: 'pack-index-checksum-mismatch';
+      /** Pack base name (`pack-<sha>`) — see `pack-inaccessible`'s doc-comment. */
+      readonly pack: string;
+      /** The alternate's objects dir the finding came from; absent for the primary. */
+      readonly objectsDir?: string;
+    }
+  | {
+      /** The pack's trailing checksum disagrees with the bytes before it. */
+      readonly type: 'pack-checksum-mismatch';
+      /** Pack base name (`pack-<sha>`) — see `pack-inaccessible`'s doc-comment. */
+      readonly pack: string;
+      /** The alternate's objects dir the finding came from; absent for the primary. */
+      readonly objectsDir?: string;
+    }
+  | {
+      /** An entry's raw bytes disagree with the CRC-32 its `.idx` records. */
+      readonly type: 'pack-crc-mismatch';
+      /** Pack base name (`pack-<sha>`) — see `pack-inaccessible`'s doc-comment. */
+      readonly pack: string;
+      readonly id: ObjectId;
+      /** The entry's byte offset in the pack. */
+      readonly offset: number;
+      /** The alternate's objects dir the finding came from; absent for the primary. */
+      readonly objectsDir?: string;
+    }
+  | {
+      /** A packed entry that cannot be unpacked — git's `cannot unpack`. */
+      readonly type: 'pack-entry-unpackable';
+      /** Pack base name (`pack-<sha>`) — see `pack-inaccessible`'s doc-comment. */
+      readonly pack: string;
+      readonly id: ObjectId;
+      /** The entry's byte offset in the pack. */
+      readonly offset: number;
+      /** The alternate's objects dir the finding came from; absent for the primary. */
+      readonly objectsDir?: string;
+    }
+  | {
+      /** A packed entry whose content does not hash to its indexed id. */
+      readonly type: 'pack-entry-corrupt';
+      /** Pack base name (`pack-<sha>`) — see `pack-inaccessible`'s doc-comment. */
+      readonly pack: string;
+      readonly id: ObjectId;
+      /** The alternate's objects dir the finding came from; absent for the primary. */
+      readonly objectsDir?: string;
+    }
+  | {
       readonly type: 'midx-unusable';
       /** The artefact this verdict is about: `multi-pack-index`, or a chain
        *  layer's own file name. */

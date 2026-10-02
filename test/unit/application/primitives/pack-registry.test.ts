@@ -1451,6 +1451,39 @@ describe('PackRegistry — lazy pack-index loading', () => {
     });
   });
 
+  describe('Given a pack whose trailer disagrees with the pack checksum its index records', () => {
+    const packWithFlippedTrailer = async (): Promise<Context> => {
+      const ctx = await buildSeededContext();
+      await writeSyntheticPack(ctx, 'trailer-vs-index', [
+        { kind: 'base', type: 'blob', content: new TextEncoder().encode('t') },
+      ]);
+      const packPath = `${ctx.layout.gitDir}/objects/pack/pack-trailer-vs-index.pack`;
+      const bytes = await ctx.fs.read(packPath);
+      bytes[bytes.length - 1] = bytes[bytes.length - 1]! ^ 0xff;
+      await ctx.fs.write(packPath, bytes);
+      return ctx;
+    };
+
+    describe('When health() is called', () => {
+      it('Then it reports the pack layer as not matching its index', async () => {
+        // Arrange
+        const sut = await createPackRegistry(await packWithFlippedTrailer());
+
+        // Act
+        const result = await sut.health();
+
+        // Assert
+        expect(result.unusable).toEqual([
+          {
+            name: 'pack-trailer-vs-index',
+            layer: 'pack',
+            data: { code: 'INVALID_PACK_HEADER', reason: 'pack does not match index' },
+          },
+        ]);
+      });
+    });
+  });
+
   describe('Given a healthy pack', () => {
     describe('When readObject reads its one packed object end to end', () => {
       it('Then the bytes round-trip unchanged through the lazily loaded index', async () => {
@@ -2458,13 +2491,16 @@ describe('PackRegistry.health — per-pack accessibility', () => {
           { kind: 'base', type: 'blob', content },
         ]);
         const packPath = `${ctx.layout.gitDir}/objects/pack/pack-health-stability.pack`;
+        const idxPath = packPath.replace(/\.pack$/, '.idx');
         const goodPackBytes = await ctx.fs.read(packPath);
+        const goodIdxBytes = await ctx.fs.read(idxPath);
         await restampPackHeader(ctx, packPath, { version: 99 });
         const sut = await createPackRegistry(ctx);
 
         // Act
         const before = await sut.health();
         await ctx.fs.write(packPath, goodPackBytes);
+        await ctx.fs.write(idxPath, goodIdxBytes);
         const repairedNoRefresh = await sut.health();
         sut.refresh();
         const repairedRefreshed = await sut.health();
@@ -2562,7 +2598,7 @@ describe('RegisteredPack.header — held handle', () => {
 
   describe('Given an fs whose openWithNoFollow always throws UNSUPPORTED_OPERATION (browser-like)', () => {
     describe('When header() is called', () => {
-      it('Then it attempts the handle once and still reads the header by path', async () => {
+      it('Then it attempts the handle once per read and still reads the header and trailer by path', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         await writeSyntheticPack(ctx, 'header-browser-fallback', [
@@ -2589,7 +2625,8 @@ describe('RegisteredPack.header — held handle', () => {
 
         // Assert
         expect(header).toEqual({ version: 2, objectCount: 1 });
-        expect(openSpy).toHaveBeenCalledTimes(1);
+        // header bytes, pack size, trailer bytes
+        expect(openSpy).toHaveBeenCalledTimes(3);
       });
     });
   });
