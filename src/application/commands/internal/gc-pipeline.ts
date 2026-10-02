@@ -14,16 +14,9 @@ import { allObjectIds } from '../../../domain/storage/pack-index.js';
 import type { Context } from '../../../ports/context.js';
 import type { DirEntry, FileStat } from '../../../ports/file-system.js';
 import { buildPack, type PackObjectInput } from '../../primitives/build-pack.js';
-import {
-  assertValidGcAutoConfig,
-  assertValidPackIntConfig,
-  readConfig,
-} from '../../primitives/config-read.js';
+import { assertValidPackIntConfig, readConfig } from '../../primitives/config-read.js';
 import { enumerateObjects } from '../../primitives/enumerate-objects.js';
-import {
-  assertValidBooleanConfig,
-  assertValidPromisorRemoteConfig,
-} from '../../primitives/internal/boolean-config-guard.js';
+import { assertValidPromisorRemoteConfig } from '../../primitives/internal/boolean-config-guard.js';
 import { type ClosureTier, computeClosure } from '../../primitives/internal/closure-engine.js';
 import { boundedMapFor } from '../../primitives/internal/concurrency.js';
 import {
@@ -35,7 +28,11 @@ import {
   retireCruftPack,
   writeCruftPack,
 } from '../../primitives/internal/cruft-pack-lifecycle.js';
-import { readGcExpiryCutoff } from '../../primitives/internal/gc-config-guard.js';
+import {
+  assertValidLeadingGcConfig,
+  assertValidTrailingGcConfig,
+  readGcExpiryCutoff,
+} from '../../primitives/internal/gc-config-guard.js';
 import { forgetLooseOidPrefix } from '../../primitives/internal/loose-oid-cache.js';
 import { forgetParsedObjectMemo } from '../../primitives/internal/object-caches.js';
 import {
@@ -113,20 +110,21 @@ export interface GcSettings {
 
 /**
  * git's `gc_config`: `git gc` and `git maintenance run` read — and refuse a
- * malformed — `gc.auto`, `gc.cruftPacks`, `gc.pruneExpire` and
- * `gc.worktreePruneExpire` before any task runs or any `--auto` gate
- * declines, in that order.
+ * malformed — `gc.auto`, `gc.autoPackLimit`, `gc.cruftPacks`,
+ * `gc.pruneExpire`, `gc.worktreePruneExpire`, `gc.logExpiry` and
+ * `gc.bigPackThreshold` before any task runs or any `--auto` gate declines,
+ * in that order, each from its last entry.
  */
 export async function readGcSettings(ctx: Context): Promise<GcSettings> {
-  await assertValidGcAutoConfig(ctx);
-  await assertValidBooleanConfig(ctx, 'gc', undefined, ['cruftPacks']);
-  const { gc } = await readConfig(ctx);
+  await assertValidLeadingGcConfig(ctx);
   const pruneCutoff = await readGcExpiryCutoff(ctx, 'pruneExpire', DEFAULT_PRUNE_EXPIRE);
   const worktreePruneCutoff = await readGcExpiryCutoff(
     ctx,
     'worktreePruneExpire',
     DEFAULT_WORKTREE_PRUNE_EXPIRE,
   );
+  await assertValidTrailingGcConfig(ctx);
+  const { gc } = await readConfig(ctx);
   return {
     autoThreshold: gc?.auto ?? DEFAULT_GC_AUTO_THRESHOLD,
     cruftPacks: gc?.cruftPacks ?? true,

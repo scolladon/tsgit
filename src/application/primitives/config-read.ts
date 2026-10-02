@@ -944,57 +944,6 @@ export const findFirstInvalidCompression = async (
   return undefined;
 };
 
-const GC_AUTO_KEY = 'auto';
-
-/** One invalid `gc.auto` entry returned by `findFirstInvalidGcAuto`. */
-export interface InvalidGcAutoEntry {
-  readonly key: string;
-  readonly source: string;
-  readonly value: string;
-  readonly reason: 'invalid unit' | 'out of range';
-}
-
-/**
- * Cold-path detection: walk the cached `[gc]` (subsectionless) tokens in
- * file order and return the FIRST `auto` entry whose value fails git's
- * integer grammar or the C `int` range. Returns `undefined` when the key is
- * absent or its first entry is valid. Runs ONLY on a command's refusal
- * path — `readConfig` stays lenient and merges an invalid `gc.auto` as
- * absent (see `mergeGc`).
- */
-export const findFirstInvalidGcAuto = async (
-  ctx: Context,
-): Promise<InvalidGcAutoEntry | undefined> => {
-  const { tokens, source: path } = await readConfigEntry(ctx);
-  let inSection = false;
-  for (const token of tokens) {
-    if (token.kind === 'header') {
-      inSection = matchesSection(token.section, token.subsection, 'gc', undefined);
-      continue;
-    }
-    if (!inSection || token.kind !== 'entry') continue;
-    if (token.key.toLowerCase() !== GC_AUTO_KEY) continue;
-    const parsed = parseGitInt(token.value);
-    if (parsed.ok && parsed.value >= GIT_C_INT_MIN && parsed.value <= GIT_C_INT_MAX) continue;
-    const reason = parsed.ok ? 'out of range' : parsed.reason;
-    return { key: `gc.${GC_AUTO_KEY}`, source: path, value: token.value ?? '', reason };
-  }
-  return undefined;
-};
-
-/**
- * Refuse with `CONFIG_BAD_NUMERIC_VALUE` when `gc.auto` holds a value git's
- * integer grammar refuses — the integer sibling of `assertValidBooleanConfig`,
- * same eager-gate posture `pack.writeReverseIndex` established: a refused
- * value must never be silently read back as absent-and-defaulted.
- */
-export const assertValidGcAutoConfig = async (ctx: Context): Promise<void> => {
-  const found = await findFirstInvalidGcAuto(ctx);
-  if (found !== undefined) {
-    throw configBadNumericValue(found.key, found.source, found.value, found.reason);
-  }
-};
-
 /** The `fsck.skipList` key is not a msg-id — it names an object-name list
  *  file, and git never offers it to its severity table. Lower-cased once,
  *  like every key half this walk compares. */
@@ -1153,7 +1102,7 @@ export const findFirstInvalidPackInt = async (
 /**
  * Refuse with `CONFIG_BAD_NUMERIC_VALUE` when `pack.window`, `pack.depth` or
  * `pack.windowMemory` holds a value git's integer grammar (or that key's own
- * range) refuses — the pack-config sibling of `assertValidGcAutoConfig`.
+ * range) refuses — the pack-config sibling of `assertValidGcNumberConfig`.
  */
 export const assertValidPackIntConfig = async (ctx: Context): Promise<void> => {
   const found = await findFirstInvalidPackInt(ctx);
@@ -1956,6 +1905,63 @@ const packIntChecker = (lowered: string): PackIntCheck | undefined => {
   return undefined;
 };
 
+// git's `git_parse_unsigned` refuses any `-` before parsing (strtoumax would
+// wrap it), so `-0` is a syntax refusal the signed grammar would accept.
+const checkGitUnsignedLong: PackIntCheck = (value) =>
+  value?.includes('-') === true
+    ? { ok: false, reason: 'invalid unit' }
+    : checkPackWindowMemoryBound(value);
+
+/** The integer grammar a `[gc]` key is read with: git's `int` or `unsigned long`. */
+export type GcNumberGrammar = 'int' | 'ulong';
+
+const GC_NUMBER_CHECKS: Readonly<Record<GcNumberGrammar, PackIntCheck>> = {
+  int: checkPackCIntBound,
+  ulong: checkGitUnsignedLong,
+};
+
+/** One `[gc]` numeric entry git's `gc_config` refuses. */
+export interface InvalidGcNumberEntry {
+  readonly key: string;
+  readonly source: string;
+  readonly value: string;
+  readonly reason: 'invalid unit' | 'out of range';
+}
+
+/**
+ * Cold-path detection for git's `repo_config_get_int` / `_ulong` on a
+ * subsectionless `[gc]` key: only the LAST entry is parsed, a valueless one
+ * reading as the empty string. Returns `undefined` when the key is absent or
+ * its last entry is valid. `readConfig` stays lenient (see `mergeGc`).
+ */
+export const findInvalidGcNumber = async (
+  ctx: Context,
+  key: string,
+  grammar: GcNumberGrammar,
+): Promise<InvalidGcNumberEntry | undefined> => {
+  const entry = await findLastEntry(ctx, 'gc', key);
+  if (entry === undefined) return undefined;
+  const checked = GC_NUMBER_CHECKS[grammar](entry.value);
+  if (checked.ok) return undefined;
+  return { key: entry.key, source: entry.source, value: entry.value ?? '', reason: checked.reason };
+};
+
+/**
+ * Refuse with `CONFIG_BAD_NUMERIC_VALUE` when a `[gc]` numeric key holds a
+ * value git's grammar refuses — a refused value must never be silently read
+ * back as absent-and-defaulted.
+ */
+export const assertValidGcNumberConfig = async (
+  ctx: Context,
+  key: string,
+  grammar: GcNumberGrammar,
+): Promise<void> => {
+  const found = await findInvalidGcNumber(ctx, key, grammar);
+  if (found !== undefined) {
+    throw configBadNumericValue(found.key, found.source, found.value, found.reason);
+  }
+};
+
 const applyPackWriteReverseIndexEntry = (
   pack: MutablePack,
   value: string | null,
@@ -2019,7 +2025,7 @@ const applyGcAutoEntry = (gc: MutableGc, value: string | null): MutableGc | unde
  * when the key is not recognised or its value fails validation — the same
  * shape `applyCoreEntry` uses, so a malformed sibling never blocks a
  * well-formed key from being merged. `readConfig` stays total/lenient here —
- * the eager refusal for `gc.auto` lives in `assertValidGcAutoConfig`,
+ * the eager refusal for `gc.auto` lives in `assertValidGcNumberConfig`,
  * `gc.cruftPacks`'s in `assertValidBooleanConfig`, and `gc.pruneExpire`'s
  * grammar in `configExpiryCutoff`, mirroring `pack.writeReverseIndex`'s split
  * between a lenient merge and a separate refusal gate.

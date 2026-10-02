@@ -826,6 +826,9 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
     { kv: 'gc.cruftPacks=maybe', code: 'CONFIG_BAD_BOOLEAN_VALUE' },
     { kv: 'gc.pruneExpire=all', code: 'CONFIG_BAD_DATE_VALUE' },
     { kv: 'gc.worktreePruneExpire=2099-01-01', code: 'CONFIG_BAD_DATE_VALUE' },
+    { kv: 'gc.autoPackLimit=3g', code: 'CONFIG_BAD_NUMERIC_VALUE' },
+    { kv: 'gc.logExpiry=garbage', code: 'CONFIG_BAD_DATE_VALUE' },
+    { kv: 'gc.bigPackThreshold=-0', code: 'CONFIG_BAD_NUMERIC_VALUE' },
   ])('Given a malformed $kv', ({ kv, code }) => {
     describe.each([
       {
@@ -879,6 +882,7 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
   describe.each([
     { label: 'valueless gc.pruneExpire', text: '[gc]\n\tpruneExpire\n' },
     { label: 'valueless gc.worktreePruneExpire', text: '[gc]\n\tworktreePruneExpire\n' },
+    { label: 'valueless gc.logExpiry', text: '[gc]\n\tlogExpiry\n' },
   ])('Given a $label', ({ text }) => {
     describe.each([
       { run: 'gc --auto', gitArgs: ['gc', '--auto'], tasks: ['gc'] as const, auto: true },
@@ -912,6 +916,46 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
         expect(peer.exitCode).toBe(128);
         expect(peer.stderr).toContain('missing value');
         expect((caught as TsgitError).data.code).toBe('CONFIG_MISSING_VALUE');
+        await disposeTwin(twin);
+      });
+    });
+  });
+
+  describe('Given each numeric, boolean and expiry gc key malformed and then set validly', () => {
+    describe('When both tools run gc', () => {
+      it('Then both run, as git reads only the last entry', async () => {
+        // Arrange
+        const slug = 'gc-config-last-wins';
+        const baseDir = await initRepo(slug);
+        await addCommit(baseDir, 'c0');
+        const twin = await makeTwin(baseDir, slug);
+        await rm(baseDir, { recursive: true, force: true });
+        await appendBothConfigs(
+          twin,
+          [
+            '[gc]',
+            'auto = abc',
+            'auto = 0',
+            'autoPackLimit = abc',
+            'autoPackLimit = 50',
+            'cruftPacks = maybe',
+            'cruftPacks = true',
+            'logExpiry = garbage',
+            'logExpiry = never',
+            'bigPackThreshold = abc',
+            'bigPackThreshold = +5',
+            '',
+          ].join('\n\t'),
+        );
+        const peer = tryRunGitWithExit(['-C', twin.peerDir, 'gc', '-q']);
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(trackedNodeContext(twin.oursDir, 'sha1'), { tasks: ['gc'] });
+
+        // Assert
+        expect(peer.exitCode).toBe(0);
+        expect(result.tasksRun).toEqual(['gc']);
         await disposeTwin(twin);
       });
     });

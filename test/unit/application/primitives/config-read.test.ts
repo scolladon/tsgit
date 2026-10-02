@@ -3,20 +3,20 @@ import { createMemoryContext } from '../../../../src/adapters/memory/memory-adap
 import {
   __resetConfigCacheForTests,
   assertValidAbbrevConfig,
-  assertValidGcAutoConfig,
+  assertValidGcNumberConfig,
   assertValidPackIntConfig,
   type ConfigToken,
   findFirstInvalidBoolean,
   findFirstInvalidBooleanInSection,
   findFirstInvalidCompression,
   findFirstInvalidDiffBinary,
-  findFirstInvalidGcAuto,
   findFirstInvalidLogAllRefUpdates,
   findFirstInvalidPackedGitBound,
   findFirstInvalidPackInt,
   findFirstInvalidPushGpgSign,
   findFirstValuelessEntry,
   findFirstValuelessInSection,
+  findInvalidGcNumber,
   findInvalidPushDefault,
   findLastInvalidDeltaBaseCacheLimit,
   findLastInvalidMaxTreeDepth,
@@ -8468,14 +8468,14 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
       });
     });
 
-    describe('When findFirstInvalidGcAuto', () => {
+    describe('When findInvalidGcNumber', () => {
       it('Then it returns the entry with reason invalid unit', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await seed(ctx, '[gc]\n  auto = abc\n');
 
         // Act
-        const result = await findFirstInvalidGcAuto(ctx);
+        const result = await findInvalidGcNumber(ctx, 'auto', 'int');
 
         // Assert
         expect(result?.key).toBe('gc.auto');
@@ -8484,7 +8484,7 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
       });
     });
 
-    describe('When assertValidGcAutoConfig', () => {
+    describe('When assertValidGcNumberConfig', () => {
       it('Then it refuses with CONFIG_BAD_NUMERIC_VALUE carrying key/source/value/reason', async () => {
         // Arrange
         const ctx = createMemoryContext();
@@ -8493,7 +8493,7 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
         // Act
         let caught: unknown;
         try {
-          await assertValidGcAutoConfig(ctx);
+          await assertValidGcNumberConfig(ctx, 'auto', 'int');
         } catch (err) {
           caught = err;
         }
@@ -8513,14 +8513,14 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
   });
 
   describe('Given [gc] auto beyond the C int range', () => {
-    describe('When findFirstInvalidGcAuto', () => {
+    describe('When findInvalidGcNumber', () => {
       it('Then it returns the entry with reason out of range', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await seed(ctx, '[gc]\n  auto = 99999999999999999999\n');
 
         // Act
-        const result = await findFirstInvalidGcAuto(ctx);
+        const result = await findInvalidGcNumber(ctx, 'auto', 'int');
 
         // Assert
         expect(result?.reason).toBe('out of range');
@@ -8529,7 +8529,7 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
   });
 
   describe('Given an orphan auto key before any section header', () => {
-    describe('When findFirstInvalidGcAuto', () => {
+    describe('When findInvalidGcNumber', () => {
       it('Then it is ignored — the orphan region is not inside [gc]', async () => {
         // Arrange — `inSection` must start `false`: an orphan entry (before
         // any header at all) is never inside `[gc]`, however it spells.
@@ -8537,7 +8537,7 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
         await seed(ctx, 'auto = 99999999999999999999\n[core]\n  bare = true\n');
 
         // Act
-        const result = await findFirstInvalidGcAuto(ctx);
+        const result = await findInvalidGcNumber(ctx, 'auto', 'int');
 
         // Assert
         expect(result).toBeUndefined();
@@ -8546,7 +8546,7 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
   });
 
   describe('Given a [gc] section with an unrelated key holding a non-numeric value', () => {
-    describe('When findFirstInvalidGcAuto', () => {
+    describe('When findInvalidGcNumber', () => {
       it('Then it is ignored — only the auto key is checked, not every entry in the section', async () => {
         // Arrange — without the key guard, `pruneExpire`'s own (non-integer)
         // value would be handed to `parseGitInt` and misreported as gc.auto.
@@ -8554,7 +8554,7 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
         await seed(ctx, '[gc]\n  pruneExpire = 30.days.ago\n');
 
         // Act
-        const result = await findFirstInvalidGcAuto(ctx);
+        const result = await findInvalidGcNumber(ctx, 'auto', 'int');
 
         // Assert
         expect(result).toBeUndefined();
@@ -8563,14 +8563,14 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
   });
 
   describe('Given [gc] auto just above the C int max (but within the 64-bit int grammar)', () => {
-    describe('When findFirstInvalidGcAuto', () => {
+    describe('When findInvalidGcNumber', () => {
       it('Then it is reported out of range — the C int ceiling, not the 64-bit one, gates auto', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await seed(ctx, '[gc]\n  auto = 3000000000\n');
 
         // Act
-        const result = await findFirstInvalidGcAuto(ctx);
+        const result = await findInvalidGcNumber(ctx, 'auto', 'int');
 
         // Assert
         expect(result?.reason).toBe('out of range');
@@ -8579,14 +8579,14 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
   });
 
   describe('Given [gc] auto exactly at the C int max', () => {
-    describe('When findFirstInvalidGcAuto', () => {
+    describe('When findInvalidGcNumber', () => {
       it('Then it is accepted — the ceiling is inclusive', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await seed(ctx, '[gc]\n  auto = 2147483647\n');
 
         // Act
-        const result = await findFirstInvalidGcAuto(ctx);
+        const result = await findInvalidGcNumber(ctx, 'auto', 'int');
 
         // Assert
         expect(result).toBeUndefined();
@@ -8595,14 +8595,14 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
   });
 
   describe('Given [gc] auto just below the C int min (but within the 64-bit int grammar)', () => {
-    describe('When findFirstInvalidGcAuto', () => {
+    describe('When findInvalidGcNumber', () => {
       it('Then it is reported out of range — the C int floor, not the 64-bit one, gates auto', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await seed(ctx, '[gc]\n  auto = -3000000000\n');
 
         // Act
-        const result = await findFirstInvalidGcAuto(ctx);
+        const result = await findInvalidGcNumber(ctx, 'auto', 'int');
 
         // Assert
         expect(result?.reason).toBe('out of range');
@@ -8611,14 +8611,14 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
   });
 
   describe('Given [gc] auto exactly at the C int min', () => {
-    describe('When findFirstInvalidGcAuto', () => {
+    describe('When findInvalidGcNumber', () => {
       it('Then it is accepted — the floor is inclusive', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await seed(ctx, '[gc]\n  auto = -2147483648\n');
 
         // Act
-        const result = await findFirstInvalidGcAuto(ctx);
+        const result = await findInvalidGcNumber(ctx, 'auto', 'int');
 
         // Assert
         expect(result).toBeUndefined();
@@ -8627,7 +8627,7 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
   });
 
   describe('Given [gc] auto is valueless', () => {
-    describe('When findFirstInvalidGcAuto', () => {
+    describe('When findInvalidGcNumber', () => {
       it("Then it is reported with value '' — a valueless entry has no token.value to report", async () => {
         // Arrange — a bare `auto` key (no `=`) parses to `token.value === null`;
         // the reported `value` falls back to `''`, never `null` or the literal token.
@@ -8635,7 +8635,7 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
         await seed(ctx, '[gc]\n  auto\n');
 
         // Act
-        const result = await findFirstInvalidGcAuto(ctx);
+        const result = await findInvalidGcNumber(ctx, 'auto', 'int');
 
         // Assert
         expect(result?.value).toBe('');
@@ -8644,28 +8644,28 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
   });
 
   describe('Given no [gc] section', () => {
-    describe('When findFirstInvalidGcAuto', () => {
+    describe('When findInvalidGcNumber', () => {
       it('Then it returns undefined', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await seed(ctx, '[core]\n  bare = false\n');
 
         // Act
-        const result = await findFirstInvalidGcAuto(ctx);
+        const result = await findInvalidGcNumber(ctx, 'auto', 'int');
 
         // Assert
         expect(result).toBeUndefined();
       });
     });
 
-    describe('When assertValidGcAutoConfig', () => {
+    describe('When assertValidGcNumberConfig', () => {
       it('Then it resolves (no throw)', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await seed(ctx, '[core]\n  bare = false\n');
 
         // Act + Assert
-        await assertValidGcAutoConfig(ctx);
+        await assertValidGcNumberConfig(ctx, 'auto', 'int');
       });
     });
 
@@ -8685,14 +8685,14 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
   });
 
   describe('Given [gc] auto under a [GC] block in a different case', () => {
-    describe('When findFirstInvalidGcAuto', () => {
+    describe('When findInvalidGcNumber', () => {
       it('Then it reports the entry, because [GC] is [gc]', async () => {
         // Arrange
         const ctx = createMemoryContext();
         await seed(ctx, '[GC]\n  auto = abc\n');
 
         // Act
-        const result = await findFirstInvalidGcAuto(ctx);
+        const result = await findInvalidGcNumber(ctx, 'auto', 'int');
 
         // Assert
         expect(result?.key).toBe('gc.auto');

@@ -613,6 +613,29 @@ describe('maintenance', () => {
       config: 'worktreePruneExpire',
       code: 'CONFIG_MISSING_VALUE',
     },
+    { key: 'gc.logExpiry', config: 'logExpiry = garbage', code: 'CONFIG_BAD_DATE_VALUE' },
+    { key: 'valueless gc.logExpiry', config: 'logExpiry', code: 'CONFIG_MISSING_VALUE' },
+    { key: 'gc.autoPackLimit', config: 'autoPackLimit = abc', code: 'CONFIG_BAD_NUMERIC_VALUE' },
+    {
+      key: 'gc.autoPackLimit beyond a C int',
+      config: 'autoPackLimit = 3g',
+      code: 'CONFIG_BAD_NUMERIC_VALUE',
+    },
+    {
+      key: 'gc.bigPackThreshold',
+      config: 'bigPackThreshold = abc',
+      code: 'CONFIG_BAD_NUMERIC_VALUE',
+    },
+    {
+      key: 'signed gc.bigPackThreshold',
+      config: 'bigPackThreshold = -0',
+      code: 'CONFIG_BAD_NUMERIC_VALUE',
+    },
+    {
+      key: 'valueless gc.bigPackThreshold',
+      config: 'bigPackThreshold',
+      code: 'CONFIG_BAD_NUMERIC_VALUE',
+    },
     {
       key: 'gc.pruneExpire whose last entry is valueless',
       config: 'pruneExpire = 2.weeks.ago\n\tpruneExpire',
@@ -670,6 +693,68 @@ describe('maintenance', () => {
           source: `${ctx.layout.gitDir}/config`,
           line: lines.indexOf('\tworktreePruneExpire') + 1,
         });
+      });
+    });
+  });
+
+  describe.each([
+    { label: 'gc.auto', config: 'auto = abc\n\tauto = 0' },
+    { label: 'gc.autoPackLimit', config: 'autoPackLimit = abc\n\tautoPackLimit = 50' },
+    { label: 'gc.cruftPacks', config: 'cruftPacks = maybe\n\tcruftPacks = true' },
+    { label: 'gc.logExpiry', config: 'logExpiry = garbage\n\tlogExpiry = never' },
+    { label: 'gc.bigPackThreshold', config: 'bigPackThreshold = abc\n\tbigPackThreshold = +5' },
+  ])('Given a malformed $label followed by a valid one', ({ config }) => {
+    describe('When maintenance runs the gc task', () => {
+      it('Then it runs, as git reads only the last entry', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        await appendConfig(ctx, `\n[gc]\n\t${config}\n`);
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(result.tasksRun).toEqual(['gc']);
+      });
+    });
+  });
+
+  describe.each([
+    {
+      label: 'a malformed gc.cruftPacks before a malformed gc.autoPackLimit',
+      config: 'cruftPacks = maybe\n\tautoPackLimit = abc',
+      expected: { code: 'CONFIG_BAD_NUMERIC_VALUE', key: 'gc.autopacklimit', value: 'abc' },
+    },
+    {
+      label: 'a malformed gc.bigPackThreshold before a malformed gc.logExpiry',
+      config: 'bigPackThreshold = abc\n\tlogExpiry = garbage',
+      expected: { code: 'CONFIG_BAD_DATE_VALUE', value: 'garbage' },
+    },
+    {
+      label: 'a malformed gc.logExpiry before a malformed gc.worktreePruneExpire',
+      config: 'logExpiry = garbage\n\tworktreePruneExpire = rubbish',
+      expected: { code: 'CONFIG_BAD_DATE_VALUE', value: 'rubbish' },
+    },
+  ])('Given $label', ({ config, expected }) => {
+    describe('When maintenance runs the gc task', () => {
+      it("Then it refuses the key git's gc_config reads first", async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        await appendConfig(ctx, `\n[gc]\n\t${config}\n`);
+        const sut = maintenance;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { tasks: ['gc'] });
+          expect.unreachable();
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toMatchObject(expected);
       });
     });
   });
