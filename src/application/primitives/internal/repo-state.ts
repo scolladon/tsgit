@@ -142,7 +142,11 @@ const CORE_STRING_KEYS: ReadonlyArray<string> = ['excludesfile', 'attributesfile
 // `logallrefupdates` is deliberately excluded: it accepts a third literal
 // ("always") beyond git's boolean grammar, so it takes its own tri-state-aware
 // finder (`findFirstInvalidLogAllRefUpdates`) rather than this plain set.
-const CORE_BOOLEAN_KEYS: ReadonlyArray<string> = ['sparsecheckout', 'sparsecheckoutcone'];
+const CORE_BOOLEAN_KEYS: ReadonlyArray<string> = [
+  'ignorecase',
+  'sparsecheckout',
+  'sparsecheckoutcone',
+];
 const DIFF_BOOLEAN_KEYS: ReadonlyArray<string> = ['cachetextconv'];
 
 type EagerCandidate =
@@ -175,8 +179,8 @@ const throwEagerCandidate = (candidate: EagerCandidate): never => {
  * Refuse when a `[core]` path-like (`excludesfile`/`attributesfile`) is
  * present-but-valueless, when a compression key (`loosecompression`/
  * `compression`) is present with any invalid value (valueless, bad integer,
- * or integer outside zlib's `-1..9`), or when a boolean key
- * (`core.sparseCheckout`, `core.sparseCheckoutCone`, `core.logAllRefUpdates`,
+ * or integer outside zlib's `-1..9`), or when a boolean key (`core.ignoreCase`,
+ * `core.sparseCheckout`, `core.sparseCheckoutCone`, `core.logAllRefUpdates`,
  * or any `[diff *]` subsection's `cachetextconv`/`binary` — `binary` is
  * userdiff's own tristate, `auto` plus git's boolean grammar) holds a value
  * git's boolean grammar refuses — mirroring git's eager `git_default_config`

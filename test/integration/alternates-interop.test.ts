@@ -1279,3 +1279,35 @@ describe.skipIf(!GIT_AVAILABLE)('alternates interop — abbreviation across stor
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// C — a malformed core.ignoreCase on a borrower
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!GIT_AVAILABLE)('alternates interop — malformed core.ignoreCase', () => {
+  describe('Given C1: a borrower whose core.ignoreCase is not a boolean', () => {
+    describe('When git cat-file and tsgit catFile read a borrowed blob', () => {
+      it('Then both refuse with the bad-boolean fatal before reading', async () => {
+        // Arrange
+        const dd = donorAt('C1/dd.git', 'C1-dd\n');
+        const borrower = initBare('C1/b.git');
+        alternatesOf(borrower, dd.repo.objects);
+        runGit(['-C', borrower.dir, 'config', 'core.ignoreCase', 'maybe']);
+        const git = tryRunGitWithExit(['-C', borrower.dir, 'cat-file', '-e', dd.oid]);
+        const repo = await open(borrower.dir);
+
+        // Act
+        const result = await rejectionOf(() => repo.catFile({ ids: [dd.oid] }));
+
+        // Assert
+        const data = result.data as { readonly key: string; readonly value: string };
+        expect(git.exitCode).toBe(128);
+        expect(git.stderr).toBe(
+          `fatal: bad boolean config value '${data.value}' for '${data.key}'\n`,
+        );
+        expect(result.data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+        await repo.dispose();
+      });
+    });
+  });
+});

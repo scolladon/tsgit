@@ -1232,6 +1232,11 @@ describe('internal/repo-state', () => {
             label: 'core.logAllRefUpdates = maybe',
           },
           {
+            config: '[core]\n\tignoreCase = maybe\n',
+            expectedKey: 'core.ignorecase',
+            label: 'core.ignoreCase = maybe',
+          },
+          {
             config: '[diff "MyDriver"]\n\tcachetextconv = maybe\n',
             expectedKey: 'diff.MyDriver.cachetextconv',
             label: '[diff "MyDriver"] cachetextconv = maybe (subsection verbatim)',
