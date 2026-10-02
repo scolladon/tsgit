@@ -77,3 +77,45 @@ describe('Given a /-leading promisor remote and a ref naming an object no store 
     });
   });
 });
+
+const MISSING = '1'.repeat(40);
+const reflogNamingMissing = `${'0'.repeat(40)} ${MISSING} A <a@b> 1700000000 +0000\tx\n`;
+
+describe('Given an unborn repository with a /-leading promisor remote and a reflog entry naming a missing object', () => {
+  describe('When fsck runs', () => {
+    it('Then it warns once — git asks whether the missing object is promised', async () => {
+      // Arrange
+      const { ctx, warnings } = await unbornWithSlashPromisor();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/logs/HEAD`, reflogNamingMissing);
+      const sut = fsck;
+
+      // Act
+      await sut(ctx);
+
+      // Assert
+      expect(warnings.filter((line) => PROMISOR_WARNING.test(line))).toHaveLength(1);
+    });
+  });
+});
+
+describe('Given an unborn repository with a malformed remote promisor flag and a reflog entry naming a missing object', () => {
+  describe('When fsck runs', () => {
+    it('Then it refuses the flag, as git loads its promisor remotes there', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[remote "y"]\n\tpromisor = bogus\n');
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/logs/HEAD`, reflogNamingMissing);
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx).then(
+        () => undefined,
+        (err: { readonly data?: unknown }) => err.data,
+      );
+
+      // Assert
+      expect(result).toMatchObject({ code: 'CONFIG_BAD_BOOLEAN_VALUE', key: 'remote.y.promisor' });
+    });
+  });
+});

@@ -286,8 +286,11 @@ async function auditRepository(ctx: Context, opts: FsckOptions): Promise<FsckRes
   // git's `fsck_index` parses every cache-tree oid, in every mode — and dies
   // on one whose only copy is a damaged pack entry.
   await assertObjectsReadable(auditCtx, parsedIndexIds, objectCache);
-  // Promisor-remote load (see assertValidPromisorRemoteConfig) — only when the walk has roots.
-  if (roots.size > 0 || sawAbsentRefTarget) {
+  // Promisor-remote load (see assertValidPromisorRemoteConfig) — only when the walk has
+  // roots, or a reflog entry names an absent object git asks `is_promisor_object` about.
+  const consultsPromisorRemotes =
+    roots.size > 0 || sawAbsentRefTarget || recorded.invalidReflogEntries.length > 0;
+  if (consultsPromisorRemotes) {
     await warnSlashLeadingPromisorRemotes(ctx);
     await assertValidPromisorRemoteConfig(ctx);
   }

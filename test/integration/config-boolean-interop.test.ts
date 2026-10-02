@@ -12,7 +12,7 @@
  *   unique:         boolean refusal tier boundaries pinned against canonical git
  *   interopSurface: config
  */
-import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
@@ -485,6 +485,45 @@ describe.skipIf(!GIT_AVAILABLE)('config boolean refusal tier interop', () => {
           .split('\n')
           .filter((line) => line.includes('promisor remote name'));
         expect(gitWarnings).toEqual([]);
+        expect(warnings).toEqual(gitWarnings);
+      });
+    });
+  });
+
+  describe('Given an unborn repository with a /-leading promisor remote and a reflog entry naming a missing object', () => {
+    describe('When git and tsgit each run fsck', () => {
+      it('Then both warn once — git asks whether the missing object is promised', async () => {
+        // Arrange
+        await mkdir(path.join(ours, '.git', 'logs'), { recursive: true });
+        await writeFile(
+          path.join(ours, '.git', 'logs', 'HEAD'),
+          `${'0'.repeat(40)} ${'1'.repeat(40)} A <a@b> 1700000000 +0000\tx\n`,
+        );
+        await writeConfig(
+          '[core]\n\trepositoryformatversion = 0\n[remote "/x"]\n\tpromisor = true\n',
+        );
+        const warnings: string[] = [];
+        const logger = {
+          warn: (message: string, context?: Record<string, unknown>): void => {
+            if (message.endsWith("promisor remote name cannot begin with '/'")) {
+              warnings.push(
+                `warning: promisor remote name cannot begin with '/': ${context?.remote}`,
+              );
+            }
+          },
+        };
+
+        // Act
+        const g = tryRunGitWithExit(['-C', ours, 'fsck'], { env: runGitEnv() });
+        const repo = await openTrackedRepository({ cwd: ours, logger });
+        await repo.fsck();
+        await repo.dispose();
+
+        // Assert
+        const gitWarnings = g.stderr
+          .split('\n')
+          .filter((line) => line.includes('promisor remote name'));
+        expect(gitWarnings).toHaveLength(1);
         expect(warnings).toEqual(gitWarnings);
       });
     });
