@@ -22,7 +22,7 @@ export type ChainOutcome =
  *  not resolve for reading": a chain ending on a name that formats invalid, a
  *  loose file whose content is neither an oid nor `ref: …`, a cycle, and a
  *  chain longer than the reading walk's cap — git returns NULL for all four. */
-const UNREADABLE_REF_CODES = new Set([
+export const UNREADABLE_REF_CODES: ReadonlySet<string> = new Set([
   'INVALID_REF',
   'INVALID_OBJECT_ID',
   'REF_CYCLE_DETECTED',

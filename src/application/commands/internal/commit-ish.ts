@@ -4,12 +4,21 @@
  * tags), else an abbreviated oid via `resolveOidPrefix`. Extracted from `merge`
  * so both commands share one ladder.
  */
+import { errorDataCode } from '../../../domain/error-data-code.js';
 import { isOid, type ObjectId, type RefName } from '../../../domain/objects/index.js';
 import { refNotFound } from '../../../domain/refs/error.js';
 import { refCandidates } from '../../../domain/refs/index.js';
 import type { Context } from '../../../ports/context.js';
 import { resolveOidPrefix } from '../../primitives/resolve-oid-prefix.js';
-import { resolveRefOrMissing } from '../../primitives/resolve-ref.js';
+import { resolveRefOrMissing, UNREADABLE_REF_CODES } from '../../primitives/resolve-ref.js';
+
+/** What a candidate may fail with and still just not be this name: a ref
+ *  that does not parse or resolve, or whose target object is absent. Anything
+ *  else (an object source that cannot load) is a failure, not an absence. */
+const isAbsentCandidate = (error: unknown): boolean => {
+  const code = errorDataCode(error);
+  return code === 'OBJECT_NOT_FOUND' || (code !== undefined && UNREADABLE_REF_CODES.has(code));
+};
 
 export const resolveCommitIsh = async (ctx: Context, target: string): Promise<ObjectId> => {
   // A full-width oid is an object name and wins over a same-named ref: without
@@ -25,8 +34,8 @@ export const resolveCommitIsh = async (ctx: Context, target: string): Promise<Ob
     try {
       const id = await resolveRefOrMissing(ctx, candidate, { peel: true });
       if (id !== undefined) return id;
-    } catch {
-      // Not this candidate — fall through to the next namespace.
+    } catch (error) {
+      if (!isAbsentCandidate(error)) throw error;
     }
   }
   // Not a ref — try as an abbreviated object id (throws on ambiguity).

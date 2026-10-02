@@ -9,12 +9,14 @@ import * as resolveRefMod from '../../../../../src/application/primitives/resolv
 import { updateRef } from '../../../../../src/application/primitives/update-ref.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import type { TsgitError } from '../../../../../src/domain/error.js';
+import { objectNotFound } from '../../../../../src/domain/objects/error.js';
 import type {
   AuthorIdentity,
   ObjectId,
   RefName,
   Tag,
 } from '../../../../../src/domain/objects/index.js';
+import { invalidMultiPackIndex } from '../../../../../src/domain/storage/error.js';
 import type { Context } from '../../../../../src/ports/context.js';
 
 const author: AuthorIdentity = { name: 'T', email: 't@x', timestamp: 1, timezoneOffset: '+0000' };
@@ -317,6 +319,46 @@ describe('resolveCommitIsh — a symbolic chain deeper than the reading cap', ()
 
         // Act
         const result = await sut(ctx, 'y');
+
+        // Assert
+        expect(result).toBe(head);
+      });
+    });
+  });
+
+  describe('Given the object store rejects while a candidate is peeled', () => {
+    describe('When resolveCommitIsh sweeps the candidates', () => {
+      it('Then it rethrows the store failure instead of reporting the ref as not found', async () => {
+        // Arrange
+        const { ctx } = await seedCommit();
+        const failure = invalidMultiPackIndex('signature', 'bad signature');
+        vi.spyOn(resolveRefMod, 'resolveRefOrMissing').mockRejectedValue(failure);
+
+        // Act
+        const outcome = await resolveCommitIsh(ctx, 'main').catch((error: TsgitError) => error);
+
+        // Assert
+        expect(outcome).toBe(failure);
+        expect((outcome as TsgitError).data).toMatchObject({
+          code: 'INVALID_MULTI_PACK_INDEX',
+          check: 'signature',
+        });
+      });
+    });
+  });
+
+  describe('Given a ref candidate whose target object is absent ahead of a resolvable one', () => {
+    describe('When resolveCommitIsh sweeps the candidates', () => {
+      it('Then the absent candidate is swept past and the next one resolves', async () => {
+        // Arrange
+        const { ctx, head } = await seedCommit();
+        const absent = 'b'.repeat(40) as ObjectId;
+        vi.spyOn(resolveRefMod, 'resolveRefOrMissing')
+          .mockRejectedValueOnce(objectNotFound(absent))
+          .mockResolvedValueOnce(head);
+
+        // Act
+        const result = await resolveCommitIsh(ctx, 'x');
 
         // Assert
         expect(result).toBe(head);
