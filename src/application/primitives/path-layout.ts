@@ -110,6 +110,10 @@ export const commitGraphPath = (gitDir: string): string => commitGraphPathIn(`${
 export const commitGraphChainPath = (gitDir: string): string =>
   commitGraphChainPathIn(`${gitDir}/objects`);
 
+/** The directory holding the chain manifest and its layer files. */
+export const commitGraphLayersDir = (gitDir: string): string =>
+  `${gitDir}/objects/info/commit-graphs`;
+
 /** One chain layer's graph file, named by its content hash. */
 export const commitGraphLayerPath = (gitDir: string, hash: string): string =>
   commitGraphLayerPathIn(`${gitDir}/objects`, hash);

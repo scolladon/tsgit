@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
 import {
+  commitGraphChainPath,
+  commitGraphLayerPath,
+  commitGraphLayersDir,
   commitGraphPath,
   commonGitDir,
   reflogPath,
@@ -10,7 +13,7 @@ import {
 import { writeCommitGraph } from '../../../../src/application/primitives/write-commit-graph.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { parseCommitGraphLayer, positionOf } from '../../../../src/domain/commit/commit-graph.js';
-import { TsgitError } from '../../../../src/domain/error.js';
+import { notADirectory, permissionDenied, TsgitError } from '../../../../src/domain/error.js';
 import type {
   AuthorIdentity,
   ObjectId,
@@ -49,7 +52,127 @@ async function pointRef(ctx: Context, name: string, id: ObjectId): Promise<void>
   await ctx.fs.writeUtf8(`${commonGitDir(ctx)}/${name}`, `${id}\n`);
 }
 
+const LAYER_HASH = 'b'.repeat(40);
+
+async function seedChain(
+  ctx: Context,
+): Promise<{ readonly layer: string; readonly other: string }> {
+  const gitDir = commonGitDir(ctx);
+  const layer = commitGraphLayerPath(gitDir, LAYER_HASH);
+  const other = `${commitGraphLayersDir(gitDir)}/notes.txt`;
+  await ctx.fs.writeUtf8(commitGraphChainPath(gitDir), `${LAYER_HASH}\n`);
+  await ctx.fs.writeUtf8(layer, 'layer');
+  await ctx.fs.writeUtf8(other, 'kept');
+  return { layer, other };
+}
+
+const denyingRm = (ctx: Context, denied: string): Context => ({
+  ...ctx,
+  fs: {
+    ...ctx.fs,
+    rm: (path: string) =>
+      path === denied ? Promise.reject(permissionDenied(path)) : ctx.fs.rm(path),
+  },
+});
+
+const failingReaddir = (ctx: Context, failing: string, fault: TsgitError): Context => ({
+  ...ctx,
+  fs: {
+    ...ctx.fs,
+    readdir: (path: string) => (path === failing ? Promise.reject(fault) : ctx.fs.readdir(path)),
+  },
+});
+
 describe('writeCommitGraph', () => {
+  describe('Given an existing split chain beside a reachable commit', () => {
+    describe('When writeCommitGraph runs', () => {
+      it('Then the chain manifest and every .graph layer are removed, other files kept', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await pointRef(ctx, 'refs/heads/main', await rootCommit(ctx, 1_700_000_000, 'c'));
+        const { layer, other } = await seedChain(ctx);
+        const sut = writeCommitGraph;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        expect(await ctx.fs.exists(commitGraphChainPath(commonGitDir(ctx)))).toBe(false);
+        expect(await ctx.fs.exists(layer)).toBe(false);
+        expect(await ctx.fs.exists(other)).toBe(true);
+      });
+    });
+  });
+
+  describe('Given a chain layer whose removal is refused', () => {
+    describe('When writeCommitGraph runs', () => {
+      it('Then the refusal propagates', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        await pointRef(base, 'refs/heads/main', await rootCommit(base, 1_700_000_000, 'c'));
+        const { layer } = await seedChain(base);
+        const ctx = denyingRm(base, layer);
+        const sut = writeCommitGraph;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx);
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual(permissionDenied(layer).data);
+      });
+    });
+  });
+
+  describe('Given a layers directory whose listing is refused', () => {
+    describe('When writeCommitGraph runs', () => {
+      it('Then the refusal propagates', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        await pointRef(base, 'refs/heads/main', await rootCommit(base, 1_700_000_000, 'c'));
+        await seedChain(base);
+        const layersDir = commitGraphLayersDir(commonGitDir(base));
+        const ctx = failingReaddir(base, layersDir, permissionDenied(layersDir));
+        const sut = writeCommitGraph;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx);
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual(permissionDenied(layersDir).data);
+      });
+    });
+  });
+
+  describe('Given a layers directory that lists as not a directory', () => {
+    describe('When writeCommitGraph runs', () => {
+      it('Then the graph is still written', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        await pointRef(base, 'refs/heads/main', await rootCommit(base, 1_700_000_000, 'c'));
+        const layersDir = commitGraphLayersDir(commonGitDir(base));
+        const ctx = failingReaddir(base, layersDir, notADirectory(layersDir));
+        const sut = writeCommitGraph;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.commitCount).toBe(1);
+        expect(await ctx.fs.exists(commitGraphPath(commonGitDir(ctx)))).toBe(true);
+      });
+    });
+  });
+
   describe('Given a repository with no commits', () => {
     describe('When writeCommitGraph runs', () => {
       it('Then no file is written — pinned against git 2.55.0', async () => {

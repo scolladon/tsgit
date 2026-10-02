@@ -15,12 +15,18 @@ import {
   serializeCommitGraph,
 } from '../../domain/commit/commit-graph-writer.js';
 import { TsgitError } from '../../domain/error.js';
+import { errorDataCode } from '../../domain/error-data-code.js';
 import type { ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { atomicWriteFile } from './atomic-write.js';
 import { enumerateRefs } from './enumerate-refs.js';
 import { isShallowRepository } from './internal/shallow-set.js';
-import { commitGraphPath, commonGitDir } from './path-layout.js';
+import {
+  commitGraphChainPath,
+  commitGraphLayersDir,
+  commitGraphPath,
+  commonGitDir,
+} from './path-layout.js';
 import { resolveRef } from './resolve-ref.js';
 import { walkCommits } from './walk-commits.js';
 
@@ -68,6 +74,44 @@ async function collectCommits(
   return commits;
 }
 
+const GRAPH_LAYER_SUFFIX = '.graph';
+
+const isAbsent = (error: unknown): boolean => {
+  const code = errorDataCode(error);
+  return code === 'FILE_NOT_FOUND' || code === 'NOT_A_DIRECTORY';
+};
+
+async function removeIfPresent(ctx: Context, path: string): Promise<void> {
+  try {
+    await ctx.fs.rm(path);
+  } catch (error) {
+    if (!isAbsent(error)) throw error;
+  }
+}
+
+async function chainLayerNames(ctx: Context, layersDir: string): Promise<readonly string[]> {
+  try {
+    const entries = await ctx.fs.readdir(layersDir);
+    return entries.filter((entry) => entry.name.endsWith(GRAPH_LAYER_SUFFIX)).map((e) => e.name);
+  } catch (error) {
+    if (isAbsent(error)) return [];
+    throw error;
+  }
+}
+
+/**
+ * git's `expire_commit_graphs` after a non-split write: the single file now
+ * answers every lookup, so the chain manifest and every layer go.
+ */
+async function expireCommitGraphChain(ctx: Context): Promise<void> {
+  const gitDir = commonGitDir(ctx);
+  await removeIfPresent(ctx, commitGraphChainPath(gitDir));
+  const layersDir = commitGraphLayersDir(gitDir);
+  for (const name of await chainLayerNames(ctx, layersDir)) {
+    await removeIfPresent(ctx, `${layersDir}/${name}`);
+  }
+}
+
 /**
  * No file is written for a repository with no commits, or a shallow one —
  * pinned against git 2.55.0 (`git commit-graph write --reachable`, both
@@ -92,6 +136,7 @@ export async function writeCommitGraph(ctx: Context): Promise<WriteCommitGraphRe
 
   const path = commitGraphPath(commonGitDir(ctx));
   await atomicWriteFile(ctx, path, bytes, commitGraphLocked);
+  await expireCommitGraphChain(ctx);
 
   return { commitCount: commits.length };
 }

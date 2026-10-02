@@ -1008,6 +1008,48 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
     });
   });
 
+  describe.each([
+    { setting: 'no commit-graph setting', kv: [] as readonly string[], written: true },
+    { setting: 'gc.writeCommitGraph=false', kv: ['gc.writeCommitGraph=false'], written: false },
+    { setting: 'core.commitGraph=false', kv: ['core.commitGraph=false'], written: false },
+  ])('Given $setting and a split commit-graph chain', ({ kv, written }) => {
+    describe('When both tools run gc', () => {
+      it('Then gc writes the same commit-graph git writes, or none, and drops the chain only when it writes', async () => {
+        // Arrange
+        const slug = `gc-commit-graph-${kv.join('').replace(/\W+/g, '-')}`;
+        const baseDir = await initRepo(slug);
+        await addCommit(baseDir, 'c0');
+        git(baseDir, 'tag', '-a', '-m', 't', 'v0');
+        await addCommit(baseDir, 'c1');
+        git(baseDir, 'commit-graph', 'write', '--reachable', '--split');
+        const twin = await makeTwin(baseDir, slug);
+        await rm(baseDir, { recursive: true, force: true });
+        const configArgs = kv.flatMap((pair) => ['-c', pair]);
+        const peer = tryRunGitWithExit(['-C', twin.peerDir, ...configArgs, 'gc', '-q']);
+        for (const pair of kv) git(twin.oursDir, 'config', ...pair.split('='));
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(trackedNodeContext(twin.oursDir, 'sha1'), { tasks: ['gc'] });
+
+        // Assert
+        const graph = path.join('.git', 'objects', 'info', 'commit-graph');
+        const graphBytes = (dir: string) =>
+          existsSync(path.join(dir, graph)) ? readFile(path.join(dir, graph)) : undefined;
+        const chain = path.join('.git', 'objects', 'info', 'commit-graphs', 'commit-graph-chain');
+        expect(peer.exitCode).toBe(0);
+        expect(result.commitGraphWritten).toBe(written);
+        expect(existsSync(path.join(twin.peerDir, graph))).toBe(written);
+        expect(existsSync(path.join(twin.oursDir, chain))).toBe(
+          existsSync(path.join(twin.peerDir, chain)),
+        );
+        expect(existsSync(path.join(twin.oursDir, chain))).toBe(!written);
+        expect(await graphBytes(twin.oursDir)).toEqual(await graphBytes(twin.peerDir));
+        await disposeTwin(twin);
+      });
+    });
+  });
+
   describe('Given a valueless remote partialclonefilter', () => {
     describe.each([
       { run: 'gc', gitArgs: ['gc', '-q'], tasks: ['gc'] as const, refuses: true },

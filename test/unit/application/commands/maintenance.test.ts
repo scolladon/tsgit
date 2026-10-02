@@ -42,6 +42,8 @@ import { probeLooseOid } from '../../../../src/application/primitives/internal/l
 import { deriveWorktreeContext } from '../../../../src/application/primitives/internal/worktree-context.js';
 import * as writePackArtifactsMod from '../../../../src/application/primitives/internal/write-pack-artifacts.js';
 import {
+  commitGraphChainPath,
+  commitGraphLayerPath,
   commitGraphPath,
   commonGitDir,
   looseObjectPath,
@@ -447,7 +449,7 @@ describe('maintenance', () => {
 
   describe('Given tasks: ["gc"] only, against a repository with one commit', () => {
     describe('When maintenance runs', () => {
-      it('Then the commit-graph task does not run', async () => {
+      it('Then gc itself writes the reachable commit-graph, as git gc does with gc.writeCommitGraph unset', async () => {
         // Arrange
         const ctx = await seedOneCommit();
         const sut = maintenance;
@@ -457,9 +459,98 @@ describe('maintenance', () => {
 
         // Assert
         expect(result.tasksRun).toEqual(['gc']);
+        expect(result.commitGraphWritten).toBe(true);
+        expect(result.commitsInGraph).toBe(1);
+        expect(await ctx.fs.exists(commitGraphPath(commonGitDir(ctx)))).toBe(true);
+      });
+    });
+  });
+
+  describe.each([
+    {
+      setting: 'gc.writeCommitGraph=false',
+      text: '[gc]\n\twriteCommitGraph = true\n\twriteCommitGraph = false\n',
+    },
+    {
+      setting: 'core.commitGraph=false',
+      text: '[core]\n\tcommitGraph = true\n\tcommitGraph = false\n',
+    },
+  ])('Given $setting', ({ text }) => {
+    describe('When maintenance runs the gc task', () => {
+      it('Then gc packs but writes no commit-graph', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        await appendConfig(ctx, text);
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(result.tasksRun).toEqual(['gc']);
+        expect(result.packId).toBeDefined();
         expect(result.commitGraphWritten).toBe(false);
         expect(result.commitsInGraph).toBe(0);
-        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/objects/info/commit-graph`)).toBe(false);
+        expect(await ctx.fs.exists(commitGraphPath(commonGitDir(ctx)))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a gc.auto gate that declines', () => {
+    describe('When maintenance runs the gc task with auto', () => {
+      it('Then no commit-graph is written', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        await appendConfig(ctx, '[gc]\n\tauto = 0\n');
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'], auto: true });
+
+        // Assert
+        expect(result.tasksRun).toEqual([]);
+        expect(result.commitGraphWritten).toBe(false);
+        expect(await ctx.fs.exists(commitGraphPath(commonGitDir(ctx)))).toBe(false);
+      });
+    });
+  });
+
+  describe('Given an existing split commit-graph chain', () => {
+    describe('When maintenance runs the gc task', () => {
+      it('Then gc replaces it with one commit-graph file and removes the chain and its layers', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const gitDir = commonGitDir(ctx);
+        const layer = commitGraphLayerPath(gitDir, 'a'.repeat(40));
+        await ctx.fs.writeUtf8(commitGraphChainPath(gitDir), `${'a'.repeat(40)}\n`);
+        await ctx.fs.writeUtf8(layer, 'stale layer');
+        const sut = maintenance;
+
+        // Act
+        await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(await ctx.fs.exists(commitGraphPath(gitDir))).toBe(true);
+        expect(await ctx.fs.exists(commitGraphChainPath(gitDir))).toBe(false);
+        expect(await ctx.fs.exists(layer)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given tasks: ["commit-graph", "gc"] where gc.writeCommitGraph is false', () => {
+    describe('When maintenance runs', () => {
+      it('Then the commit-graph task outcome is kept', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        await appendConfig(ctx, '[gc]\n\twriteCommitGraph = false\n');
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['commit-graph', 'gc'] });
+
+        // Assert
+        expect(result.commitGraphWritten).toBe(true);
+        expect(result.commitsInGraph).toBe(1);
       });
     });
   });

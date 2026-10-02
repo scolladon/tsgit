@@ -22,7 +22,9 @@
  * aged past `gc.pruneExpire` — `tmp_`-prefixed at `objects/` root and
  * `objects/pack/`, `tmp_obj_`-prefixed within a fanout dir — but only on a
  * run that actually proceeds past the `gc.auto` gate, never on a declined
- * one.
+ * one. A `gc` that ran then rewrites the reachable commit-graph as one file,
+ * dropping any split chain, unless `gc.writeCommitGraph` or
+ * `core.commitGraph` is false.
  */
 import { invalidOption } from '../../domain/commands/error.js';
 import { parseGitBoolean } from '../../domain/config/config-ini.js';
@@ -84,23 +86,38 @@ const validateTasks = (tasks: ReadonlyArray<MaintenanceTask>): void => {
   }
 };
 
-/** `core.commitGraph` set to a false boolean, its last value read as git's config set does. */
-const commitGraphDisabled = async (ctx: Context): Promise<boolean> => {
-  const last = await findLastEntry(ctx, 'core', 'commitGraph');
+type CommitGraphOutcome = Pick<MaintenanceResult, 'commitGraphWritten' | 'commitsInGraph'>;
+
+const NO_COMMIT_GRAPH: CommitGraphOutcome = { commitGraphWritten: false, commitsInGraph: 0 };
+
+/** A boolean key set to false, its last value read as git's config set does. */
+const lastBooleanIsFalse = async (ctx: Context, section: string, key: string): Promise<boolean> => {
+  const last = await findLastEntry(ctx, section, key);
   if (last?.value == null) return false;
   const parsed = parseGitBoolean(last.value);
   return parsed.ok && !parsed.value;
 };
 
-/** git's `maintenance_task_commit_graph`: `prepare_repo_settings` first, then a
- *  disabled `core.commitGraph` skips the write, silently. */
-const runCommitGraphTask = async (
-  ctx: Context,
-): Promise<Pick<MaintenanceResult, 'commitGraphWritten' | 'commitsInGraph'>> => {
-  await assertRepoSettingsValid(ctx);
-  if (await commitGraphDisabled(ctx)) return { commitGraphWritten: false, commitsInGraph: 0 };
+const writeReachableCommitGraph = async (ctx: Context): Promise<CommitGraphOutcome> => {
   const { commitCount } = await writeCommitGraph(ctx);
   return { commitGraphWritten: commitCount > 0, commitsInGraph: commitCount };
+};
+
+/** git's `maintenance_task_commit_graph`: `prepare_repo_settings` first, then a
+ *  disabled `core.commitGraph` skips the write, silently. */
+const runCommitGraphTask = async (ctx: Context): Promise<CommitGraphOutcome> => {
+  await assertRepoSettingsValid(ctx);
+  if (await lastBooleanIsFalse(ctx, 'core', 'commitGraph')) return NO_COMMIT_GRAPH;
+  return writeReachableCommitGraph(ctx);
+};
+
+/** git's `cmd_gc` tail: a gc that ran writes the reachable commit-graph unless
+ *  `gc.writeCommitGraph` or `core.commitGraph` is false; `undefined` when it does not. */
+const writeGcCommitGraph = async (ctx: Context): Promise<CommitGraphOutcome | undefined> => {
+  await assertRepoSettingsValid(ctx);
+  if (await lastBooleanIsFalse(ctx, 'gc', 'writeCommitGraph')) return undefined;
+  if (await lastBooleanIsFalse(ctx, 'core', 'commitGraph')) return undefined;
+  return writeReachableCommitGraph(ctx);
 };
 
 /** `tasks` with later duplicates dropped, first occurrence's position kept —
@@ -131,10 +148,7 @@ export const maintenance = async (
   // `--task=commit-graph --task=gc` runs commit-graph first;
   // `--task=gc --task=commit-graph` runs gc first. Mirrored here rather
   // than hard-coding either task first.
-  let commitGraphOutcome: Pick<MaintenanceResult, 'commitGraphWritten' | 'commitsInGraph'> = {
-    commitGraphWritten: false,
-    commitsInGraph: 0,
-  };
+  let commitGraphOutcome = NO_COMMIT_GRAPH;
   // Stryker disable next-line BooleanLiteral: equivalent — `gcOutcome.ran` is read only inside the loop below, immediately after `gcOutcome` is reassigned in that same iteration's `gc` branch; the final return spreads only `.result`, never `.ran`. This initial value is therefore never observed, whichever task list is requested.
   let gcOutcome: { readonly ran: boolean; readonly result: GcResult } = {
     ran: false,
@@ -149,7 +163,9 @@ export const maintenance = async (
       continue;
     }
     gcOutcome = await runGcTask(ctx, { auto: opts.auto, settings: gcSettings });
-    if (gcOutcome.ran) tasksRun.push('gc');
+    if (!gcOutcome.ran) continue;
+    tasksRun.push('gc');
+    commitGraphOutcome = (await writeGcCommitGraph(ctx)) ?? commitGraphOutcome;
   }
 
   return { tasksRun, ...commitGraphOutcome, ...gcOutcome.result };
