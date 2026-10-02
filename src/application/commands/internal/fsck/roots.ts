@@ -176,7 +176,7 @@ const UNOPENABLE_FILE_CODES: ReadonlySet<string> = new Set([
   'NOT_A_DIRECTORY',
 ]);
 
-const isUnopenableFile = (err: unknown): boolean =>
+export const isUnopenableFile = (err: unknown): boolean =>
   UNOPENABLE_FILE_CODES.has(errorDataCode(err) ?? '');
 
 /**
@@ -560,7 +560,7 @@ async function addWorktreeHeadRoots(
 /** Strip a trailing `/.git` from `dir`; absent means `dir` itself — the same
  *  "gitdir file to working-tree path" rule `listWorktrees` uses. */
 const GIT_SUFFIX = '/.git';
-const stripGitSuffix = (dir: string): string =>
+export const stripGitSuffix = (dir: string): string =>
   dir.endsWith(GIT_SUFFIX) ? dir.slice(0, -GIT_SUFFIX.length) : dir;
 
 /**

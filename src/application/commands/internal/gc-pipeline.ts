@@ -20,7 +20,7 @@ import {
   readConfig,
 } from '../../primitives/config-read.js';
 import { enumerateObjects } from '../../primitives/enumerate-objects.js';
-import { expiryCutoff } from '../../primitives/expiry-cutoff.js';
+import { configExpiryCutoff, expiryCutoff } from '../../primitives/expiry-cutoff.js';
 import { assertValidBooleanConfig } from '../../primitives/internal/boolean-config-guard.js';
 import { type ClosureTier, computeClosure } from '../../primitives/internal/closure-engine.js';
 import { boundedMapFor } from '../../primitives/internal/concurrency.js';
@@ -55,9 +55,11 @@ import { getPackRegistry, readObject, refreshPackRegistry } from '../../primitiv
 import { writeLooseObject } from '../../primitives/write-object.js';
 import type { MaintenanceResult } from '../maintenance.js';
 import { collectRetentionRoots } from './fsck/roots.js';
+import { pruneWorktrees } from './prune-worktrees.js';
 
 const DEFAULT_GC_AUTO_THRESHOLD = 6700;
 const DEFAULT_PRUNE_EXPIRE = '2.weeks.ago';
+const DEFAULT_WORKTREE_PRUNE_EXPIRE = '3.months.ago';
 const CLOSURE_TIER: ClosureTier = 'walk';
 
 export type GcResult = Omit<
@@ -890,6 +892,9 @@ export async function runGcTask(
   const config = await readConfig(ctx);
   const cruftPacksEnabled = config.gc?.cruftPacks ?? true;
   const cutoff = expiryCutoff(config.gc?.pruneExpire ?? DEFAULT_PRUNE_EXPIRE, {});
+  const worktreeCutoff = configExpiryCutoff(
+    config.gc?.worktreePruneExpire ?? DEFAULT_WORKTREE_PRUNE_EXPIRE,
+  );
 
   // --- step 1b: classify every pack, lstat every pack, before any write ---
   const fileNames = await registry.fileNames();
@@ -1072,6 +1077,13 @@ export async function runGcTask(
   // `remove_temporary_files` occupies (see removeStaleTempFiles' own doc for
   // the full placement rationale).
   await removeStaleTempFiles(ctx, packDir, cutoff);
+
+  // --- git gc's `worktree prune --expire <gc.worktreePruneExpire>`, run
+  // right after its repack and prune, as git sequences it.
+  await pruneWorktrees(ctx, {
+    cutoff: worktreeCutoff,
+    ignoreCase: config.core?.ignoreCase === true,
+  });
 
   // --- step 11: invalidate, refresh, packBytesAfter ---
   // Stryker disable next-line CallExpression: equivalent — the registry's dirty-flag/lazy-rescan model (`refreshPackRegistry` marks dirty; the NEXT `.all()`/`.lookup()` call performs the actual re-scan) means this call is always redundant with an earlier one: every pack write in this run happens before step 8's own `refreshPackRegistry` + the registry calls inside the verify/packedAnywhere loops (so those already observe every write), and `retireSupersededPacks` performs its OWN `registry.refresh()` immediately before any unlink whenever it retires anything — so `(await getPackRegistry(ctx)).all()` below always re-scans against a state already known-fresh, with or without this line — confirmed empirically (hand-applied CallExpression removal, full covering set still green).

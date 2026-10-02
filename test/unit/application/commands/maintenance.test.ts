@@ -1072,8 +1072,10 @@ describe('maintenance', () => {
         // Act
         await sut(wtCtx, { tasks: ['gc'] });
 
-        // Assert
-        expect(readCalls.filter((p) => p === selfGitdirPath).length).toBe(0);
+        // Assert — the one read is gc's worktree-prune step, which reads every
+        // admin entry's gitdir as git's `should_prune_worktree` does; the
+        // retention scan itself adds none.
+        expect(readCalls.filter((p) => p === selfGitdirPath).length).toBe(1);
       });
     });
   });

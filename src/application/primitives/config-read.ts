@@ -186,6 +186,8 @@ export interface ParsedConfig {
   readonly gc?: {
     readonly auto?: number;
     readonly pruneExpire?: string;
+    /** `gc.worktreePruneExpire` (git default `3.months.ago`) — raw, resolved by `configExpiryCutoff`. */
+    readonly worktreePruneExpire?: string;
     readonly cruftPacks?: boolean;
   };
   readonly push?: {
@@ -1297,7 +1299,7 @@ interface MutableParsedConfig {
   commit?: { gpgSign?: boolean };
   tag?: { gpgSign?: boolean };
   pack?: MutablePack;
-  gc?: { auto?: number; pruneExpire?: string; cruftPacks?: boolean };
+  gc?: MutableGc;
   push?: { gpgSign?: 'true' | 'false' | 'if-asked'; default?: PushDefaultMode };
   gpg?: MutableGpg;
   mailmap?: { file?: string; blob?: string };
@@ -1967,7 +1969,12 @@ const mergePack = (acc: { pack?: MutablePack }, sec: IniSection): void => {
   }
 };
 
-type MutableGc = { auto?: number; pruneExpire?: string; cruftPacks?: boolean };
+type MutableGc = {
+  auto?: number;
+  pruneExpire?: string;
+  worktreePruneExpire?: string;
+  cruftPacks?: boolean;
+};
 
 const applyGcAutoEntry = (gc: MutableGc, value: string | null): MutableGc | undefined => {
   const parsed = parseGitInt(value);
@@ -1995,6 +2002,9 @@ const applyGcEntry = (
     // String-typed field: skip null (valueless key treated as absent).
     // Grammar validated downstream by expiryCutoff — readConfig stays lenient.
     return value === null ? undefined : { ...gc, pruneExpire: value };
+  }
+  if (lowered === 'worktreepruneexpire') {
+    return value === null ? undefined : { ...gc, worktreePruneExpire: value };
   }
   if (lowered === 'cruftpacks') {
     const parsed = parseGitBoolean(value);
@@ -2190,7 +2200,7 @@ type FinalizeOut = {
   commit?: { gpgSign?: boolean };
   tag?: { gpgSign?: boolean };
   pack?: MutablePack;
-  gc?: { auto?: number; pruneExpire?: string; cruftPacks?: boolean };
+  gc?: MutableGc;
   push?: { gpgSign?: 'true' | 'false' | 'if-asked'; default?: PushDefaultMode };
   gpg?: MutableGpg;
   mailmap?: { file?: string; blob?: string };
@@ -2276,7 +2286,7 @@ const finalize = (acc: MutableParsedConfig): ParsedConfig => {
     commit?: { gpgSign?: boolean };
     tag?: { gpgSign?: boolean };
     pack?: MutablePack;
-    gc?: { auto?: number; pruneExpire?: string; cruftPacks?: boolean };
+    gc?: MutableGc;
     push?: { gpgSign?: 'true' | 'false' | 'if-asked'; default?: PushDefaultMode };
     gpg?: MutableGpg;
   } = {};

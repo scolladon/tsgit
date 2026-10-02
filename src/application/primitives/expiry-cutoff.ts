@@ -41,11 +41,31 @@ export const resolveExpiryCutoff = (raw: string, nowSeconds: number): number | u
   return parseApproxidate(raw, nowSeconds);
 };
 
+const nowSecondsOf = (opts: ExpiryCutoffOptions): number =>
+  Math.floor((opts.now ?? (() => Date.now()))() / 1000);
+
 /** Resolve `pruneExpire` (a raw `gc.pruneExpire` value, already defaulted by the caller) to a unix-seconds cutoff. */
 export const expiryCutoff = (pruneExpire: string, opts: ExpiryCutoffOptions = {}): number => {
-  const now = opts.now ?? (() => Date.now());
-  const nowSeconds = Math.floor(now() / 1000);
+  const nowSeconds = nowSecondsOf(opts);
   const cutoff = resolveExpiryCutoff(pruneExpire, nowSeconds);
   if (cutoff === undefined) throw configBadDateValue(pruneExpire);
+  return cutoff;
+};
+
+/**
+ * git's `repo_config_get_expiry` gate followed by `parse_expiry_date`, for an
+ * expiry read from config (`gc.worktreePruneExpire`). Only the exact `now`
+ * may reach the present; every other value must parse to a moment strictly
+ * before it — `all` and `false` included, which git's approxidate reads as
+ * the present — or git dies on the config value (measured, git 2.55.0).
+ */
+export const configExpiryCutoff = (raw: string, opts: ExpiryCutoffOptions = {}): number => {
+  if (raw === 'now') return Number.POSITIVE_INFINITY;
+  const nowSeconds = nowSecondsOf(opts);
+  const cutoff =
+    raw.trim().toLowerCase() === 'never'
+      ? Number.NEGATIVE_INFINITY
+      : parseApproxidate(raw, nowSeconds);
+  if (cutoff === undefined || cutoff >= nowSeconds) throw configBadDateValue(raw);
   return cutoff;
 };

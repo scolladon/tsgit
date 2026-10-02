@@ -8661,6 +8661,38 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     });
   });
 
+  describe('Given [gc] worktreePruneExpire = 1.week.ago', () => {
+    describe('When readConfig', () => {
+      it('Then gc.worktreePruneExpire carries the raw string', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gc]\n  worktreePruneExpire = 1.week.ago\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.gc?.worktreePruneExpire).toBe('1.week.ago');
+      });
+    });
+  });
+
+  describe('Given [gc] worktreePruneExpire is valueless', () => {
+    describe('When readConfig', () => {
+      it('Then the valueless line is skipped and the earlier value stands', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[gc]\n  worktreePruneExpire = 1.week.ago\n  worktreePruneExpire\n');
+
+        // Act
+        const result = await readConfig(ctx);
+
+        // Assert
+        expect(result.gc?.worktreePruneExpire).toBe('1.week.ago');
+      });
+    });
+  });
+
   describe('Given [gc] cruftPacks = false', () => {
     describe('When readConfig', () => {
       it('Then gc.cruftPacks is false', async () => {

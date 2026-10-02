@@ -12,7 +12,7 @@
  *   unique:         worktree add/list/move/remove produce git-readable on-disk state
  *   interopSurface: worktree
  */
-import { readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { cp, readdir, readFile, realpath, rm, utimes, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { AuthorIdentity } from '../../src/domain/objects/index.js';
@@ -186,6 +186,51 @@ describe.skipIf(!GIT_AVAILABLE)('worktree interop', () => {
         // Assert
         expect(tsgitRefused).toBe(true);
         expect(tryRunGit(['-C', ours, 'worktree', 'remove', wt]).ok).toBe(false);
+      });
+    });
+  });
+
+  describe('Given stale and damaged worktree admin entries on both tools', () => {
+    const OLD = new Date('2000-01-01T00:00:00Z');
+
+    /** Registers worktrees under `root` with real git, then damages each the same way. */
+    const stage = async (root: string, prefix: string): Promise<void> => {
+      const admin = (id: string): string => path.join(root, '.git', 'worktrees', id);
+      for (const id of ['live', 'empty', 'missing', 'old', 'fresh', 'locked']) {
+        runGit(['-C', root, 'worktree', 'add', '-q', '--detach', path.join(prefix, id)]);
+      }
+      runGit(['-C', root, 'worktree', 'lock', path.join(prefix, 'locked')]);
+      await writeFile(path.join(admin('empty'), 'gitdir'), '');
+      await rm(path.join(admin('missing'), 'gitdir'));
+      for (const id of ['old', 'fresh', 'locked'])
+        await rm(path.join(prefix, id), { recursive: true });
+      await utimes(path.join(admin('old'), 'index'), OLD, OLD);
+      await utimes(path.join(admin('locked'), 'index'), OLD, OLD);
+      await cp(admin('live'), admin('live-dup'), { recursive: true });
+      await writeFile(path.join(root, '.git', 'worktrees', 'stray'), 'junk');
+    };
+
+    const entries = async (root: string): Promise<ReadonlyArray<string>> =>
+      (await readdir(path.join(root, '.git', 'worktrees'))).sort();
+
+    describe('When tsgit maintenance gc and git gc each run', () => {
+      it('Then both keep exactly the same admin entries', async () => {
+        // Arrange
+        const peer = await realpath(pair.peer);
+        runGit(['init', '-q', '-b', 'main', peer]);
+        await writeFile(path.join(peer, 'a.txt'), 'hello\n');
+        runGit(['-C', peer, 'add', 'a.txt'], { env: COMMIT_ENV });
+        runGit(['-C', peer, 'commit', '-q', '-m', 'seed commit'], { env: COMMIT_ENV });
+        await stage(ours, sibling('ours'));
+        await stage(peer, sibling('peer'));
+
+        // Act
+        await repo.maintenance({ tasks: ['gc'] });
+        runGit(['-C', peer, 'gc', '-q']);
+
+        // Assert
+        expect(await entries(ours)).toEqual(await entries(peer));
+        expect(await entries(ours)).toEqual(['fresh', 'live', 'locked']);
       });
     });
   });

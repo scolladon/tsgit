@@ -1333,6 +1333,7 @@
     "worklog",
     "worktree",
     "worktreeconfig",
+    "worktreepruneexpire",
     "worktrees",
     "WORLDX",
     "writeFile",

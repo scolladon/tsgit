@@ -9,3 +9,7 @@ export const isAsciiSpace = (byte: number): boolean =>
   byte === SPACE || (byte >= TAB && byte <= CARRIAGE_RETURN);
 
 export const isAsciiDigit = (byte: number): boolean => byte >= DIGIT_ZERO && byte <= DIGIT_NINE;
+
+/** C-locale lowercasing: folds `A`-`Z` only, never a non-ASCII letter. */
+export const asciiLower = (text: string): string =>
+  text.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
