@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../../../src/adapters/memory/memory-adapter.js';
 import type { CatalogueOptions } from '../../../../../../src/application/commands/internal/fsck/content-validation.js';
+import { createSpecialBlobLedger } from '../../../../../../src/application/commands/internal/fsck/special-blobs.js';
 import type { FsckOptions } from '../../../../../../src/application/commands/internal/fsck/types.js';
 import { runVerifyPackPass } from '../../../../../../src/application/commands/internal/fsck/verify-pack.js';
 import { DEFAULT_BIG_FILE_THRESHOLD_BYTES } from '../../../../../../src/application/primitives/internal/big-file-threshold.js';
@@ -12,7 +13,7 @@ import { writeSyntheticPack, writeSyntheticPackIn } from '../../../primitives/pa
 
 const CATALOGUE: CatalogueOptions = {
   strict: false,
-  blobFilenames: new Map(),
+  specialBlobs: createSpecialBlobLedger(new Map()),
   severities: new Map(),
   skipped: new Set(),
   bigFileThreshold: DEFAULT_BIG_FILE_THRESHOLD_BYTES,

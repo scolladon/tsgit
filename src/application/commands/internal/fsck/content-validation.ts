@@ -7,10 +7,15 @@ import type {
   ValidateObjectInput,
 } from '../../../../domain/fsck/index.js';
 import { retypeSeverity, validateObject } from '../../../../domain/fsck/index.js';
-import { bytesEqual, encode } from '../../../../domain/objects/encoding.js';
+import {
+  MSG_GITATTRIBUTES_BLOB,
+  MSG_GITATTRIBUTES_MISSING,
+  MSG_GITMODULES_BLOB,
+  MSG_GITMODULES_MISSING,
+} from '../../../../domain/fsck/msg-ids.js';
 import { classifyLooseBody } from '../../../../domain/objects/git-object.js';
 import type { HashConfig } from '../../../../domain/objects/hash-config.js';
-import type { ObjectContent, ObjectId } from '../../../../domain/objects/index.js';
+import type { GitObject, ObjectContent, ObjectId } from '../../../../domain/objects/index.js';
 import { serializeHeader } from '../../../../domain/objects/index.js';
 import { MAX_INFLATE_OUTPUT_BYTES } from '../../../../ports/compressor.js';
 import type { Context } from '../../../../ports/context.js';
@@ -18,9 +23,11 @@ import {
   inflateLooseBuffered,
   type LooseBufferedRead,
 } from '../../../primitives/object-resolver.js';
+import { readObject } from '../../../primitives/read-object.js';
 import { EXIT_CONTENT_ERROR, EXIT_CORRUPT, EXIT_HASH_MISMATCH, EXIT_PACK } from './exit-codes.js';
 import { hasPackCopy, type PackedLocation, packedLocationOf } from './object-cache.js';
 import { looseBytesFromHolder } from './object-presence.js';
+import type { SpecialBlobLedger, SpecialBlobName } from './special-blobs.js';
 import type { FsckFinding } from './types.js';
 
 /** An object whose raw bytes a reader did decode, ready for the catalogue and
@@ -320,48 +327,6 @@ async function looseRawObjectBody(
   }
 }
 
-const GITMODULES_NAME_BYTES = encode('.gitmodules');
-const GITATTRIBUTES_NAME_BYTES = encode('.gitattributes');
-
-/**
- * The special filename `nameBytes` matches, when it matches one of fsck's
- * two dedicated blob-content checks. Compares raw bytes — never the entry's
- * decoded `name` — so a byte sequence that merely decodes to one of these
- * literals is never mistaken for it.
- */
-function specialBlobName(nameBytes: Uint8Array): string | undefined {
-  if (bytesEqual(nameBytes, GITMODULES_NAME_BYTES)) return '.gitmodules';
-  if (bytesEqual(nameBytes, GITATTRIBUTES_NAME_BYTES)) return '.gitattributes';
-  return undefined;
-}
-
-/**
- * Scan all tree objects in the universe to record blob OIDs that appear
- * under a special filename (.gitmodules, .gitattributes) in any tree.
- *
- * Pinned real git 2.54.0: git checks .gitmodules/.gitattributes blob content
- * at any tree depth — not only the root tree. If the same blob OID appears
- * under multiple names, the last special name wins (precedence is
- * non-deterministic, but in practice each blob has one name).
- */
-export function buildBlobFilenameMap(
-  universe: ReadonlySet<ObjectId>,
-  objectCache: ReadonlyMap<ObjectId, import('./object-cache.js').CachedGitObject>,
-): ReadonlyMap<ObjectId, string> {
-  const map = new Map<ObjectId, string>();
-  for (const id of universe) {
-    const obj = objectCache.get(id);
-    if (obj == null || obj.type !== 'tree') continue;
-    for (const entry of obj.entries) {
-      const specialName = specialBlobName(entry.nameBytes);
-      if (specialName !== undefined) {
-        map.set(entry.id, specialName);
-      }
-    }
-  }
-  return map;
-}
-
 export interface ContentValidationResult {
   readonly findings: ReadonlyArray<FsckFinding>;
   readonly exitBit: number;
@@ -373,7 +338,7 @@ const EMPTY_RESULT: ContentValidationResult = { findings: [], exitBit: 0 };
 /** Everything the catalogue pass needs beyond the object itself. */
 export interface CatalogueOptions {
   readonly strict: boolean;
-  readonly blobFilenames: ReadonlyMap<ObjectId, string>;
+  readonly specialBlobs: SpecialBlobLedger;
   readonly severities: FsckSeverityTable;
   readonly skipped: ReadonlySet<string>;
   readonly bigFileThreshold: number;
@@ -435,6 +400,14 @@ function retypedFindings(
   return { findings, exitBit };
 }
 
+/** The special filename a blob is queued under, marking its check done —
+ *  git's `fsck_blob`, which checks a blob's content only while it is queued. */
+function claimSpecialName(ledger: SpecialBlobLedger, id: ObjectId): string | undefined {
+  const fileName = ledger.queuedName(id);
+  if (fileName !== undefined) ledger.markDone(id);
+  return fileName;
+}
+
 /**
  * One object's catalogue findings. `fsck.skipList` reaches exactly here: git
  * still runs every check and drops the REPORT for a listed oid, so the finding
@@ -448,10 +421,11 @@ function catalogueResult(
   raw: ReadableObject,
   options: CatalogueOptions,
 ): ContentValidationResult {
+  // git's `fsck_tree` queues a tree's special blobs before any report, so a
+  // skip-listed tree still queues them.
+  if (raw.kind === 'tree') options.specialBlobs.noteTree(id);
   if (options.skipped.has(id)) return EMPTY_RESULT;
-  // For blobs, pass filename when the blob appears under a special name
-  // (.gitmodules / .gitattributes) so content checks fire (gitmodulesUrl, …).
-  const fileName = raw.kind === 'blob' ? options.blobFilenames.get(id) : undefined;
+  const fileName = raw.kind === 'blob' ? claimSpecialName(options.specialBlobs, id) : undefined;
   const input = buildValidateObjectInput(
     ctx.hashConfig,
     raw.kind,
@@ -617,22 +591,11 @@ export interface ContentValidationPassResult extends ContentValidationResult {
 export async function runContentValidationPass(
   ctx: Context,
   universe: ReadonlySet<ObjectId>,
-  strict: boolean,
-  blobFilenames: ReadonlyMap<ObjectId, string>,
-  severities: FsckSeverityTable,
-  skipped: ReadonlySet<string>,
-  bigFileThreshold: number,
+  options: CatalogueOptions,
 ): Promise<ContentValidationPassResult> {
   const findings: FsckFinding[] = [];
   let exitBit = 0;
   const typeUnknownIds = new Set<ObjectId>();
-  const options: CatalogueOptions = {
-    strict,
-    blobFilenames,
-    severities,
-    skipped,
-    bigFileThreshold,
-  };
 
   for (const id of universe) {
     const outcome = await validateOneObject(ctx, id, options);
@@ -642,4 +605,83 @@ export async function runContentValidationPass(
   }
 
   return { findings, exitBit, typeUnknownIds };
+}
+
+/** `fsck_blobs`' own msg-ids for a queued name that reads as no blob. */
+const DEFERRED_MISFIT_MSG_IDS: Readonly<
+  Record<SpecialBlobName, { readonly missing: string; readonly notBlob: string }>
+> = {
+  '.gitmodules': { missing: MSG_GITMODULES_MISSING, notBlob: MSG_GITMODULES_BLOB },
+  '.gitattributes': { missing: MSG_GITATTRIBUTES_MISSING, notBlob: MSG_GITATTRIBUTES_BLOB },
+};
+
+/** The finding `fsck_blobs` raises for a queued special blob that is not one:
+ *  `<name>Missing` when no copy reads, `<name>Blob` when it is not a blob. */
+function deferredMisfitResult(
+  id: ObjectId,
+  objectType: FsckObjectType,
+  msgId: string,
+  severities: FsckSeverityTable,
+): ContentValidationResult {
+  const severity = retypeSeverity(severities, msgId, 'error');
+  if (severity === 'ignore') return EMPTY_RESULT;
+  return {
+    findings: [{ type: 'bad-object', id, objectType, msgId, severity }],
+    exitBit: severity === 'error' ? EXIT_CONTENT_ERROR : 0,
+  };
+}
+
+/** The object behind a queued special blob, or `undefined` when no copy reads. */
+async function readQueuedObject(ctx: Context, id: ObjectId): Promise<GitObject | undefined> {
+  try {
+    return await readObject(ctx, id);
+  } catch (err) {
+    if (errorDataCode(err) === undefined) throw err;
+    return undefined;
+  }
+}
+
+/** One queued special blob, read through the store as `fsck_blobs` does. */
+async function deferredCheck(
+  ctx: Context,
+  id: ObjectId,
+  fileName: SpecialBlobName,
+  options: CatalogueOptions,
+): Promise<ContentValidationResult> {
+  const misfit = DEFERRED_MISFIT_MSG_IDS[fileName];
+  const object = await readQueuedObject(ctx, id);
+  if (object === undefined) {
+    return deferredMisfitResult(id, 'blob', misfit.missing, options.severities);
+  }
+  if (object.type !== 'blob') {
+    return deferredMisfitResult(id, object.type, misfit.notBlob, options.severities);
+  }
+  const input = buildValidateObjectInput(
+    ctx.hashConfig,
+    'blob',
+    object.content,
+    options.strict,
+    fileName,
+  );
+  return retypedFindings(id, 'blob', validateObject(input), options.severities);
+}
+
+/**
+ * git's `fsck_finish`: every special blob a checked tree queued but no copy
+ * met in place is read once through the store and checked — outside any
+ * pack, so its errors carry bit 1, never bit 4.
+ */
+export async function runDeferredSpecialBlobChecks(
+  ctx: Context,
+  options: CatalogueOptions,
+): Promise<ContentValidationResult> {
+  const findings: FsckFinding[] = [];
+  let exitBit = 0;
+  for (const [id, fileName] of options.specialBlobs.pending()) {
+    if (options.skipped.has(id)) continue;
+    const own = await deferredCheck(ctx, id, fileName, options);
+    findings.push(...own.findings);
+    exitBit |= own.exitBit;
+  }
+  return { findings, exitBit };
 }

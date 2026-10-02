@@ -44,6 +44,7 @@ const ROW_TIMEOUT = 30_000;
 const LOCAL_COMMIT_COUNT = 1;
 const YEAR_2001_SECONDS = 978_307_200;
 const OID_RE = /^[0-9a-f]{40}$/;
+const OID_HEX_LENGTH = 40;
 
 let root: string;
 
@@ -979,6 +980,203 @@ describe.skipIf(!GIT_AVAILABLE)('alternates gc/fsck interop — loose-only enume
             `fatal: bad numeric config value '${data.value}' for '${data.key}' in file ${file}: ${data.reason}\n`,
           );
           expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)('fsck interop — deferred .gitmodules checks', () => {
+  const EVIL_GITMODULES = '[submodule "x"]\n\tpath = x\n\turl = --upload-pack=evil\n';
+  const SPECIAL_MSG_IDS = new Set(['gitmodulesUrl', 'gitmodulesMissing']);
+  const SPECIAL_LINE = /^error in (\w+) ([0-9a-f]{40}): (\w+): /;
+  const OLDER_SECONDS = YEAR_2001_SECONDS;
+  const NEWER_SECONDS = YEAR_2001_SECONDS + 86_400;
+
+  const specialRepo = (slug: string): string => {
+    const dir = path.join(root, `special-${slug}`);
+    runGit(['init', '-q', '-b', 'main', dir]);
+    configure(dir);
+    runGit(['-C', dir, 'config', 'gc.writeCommitGraph', 'false']);
+    commitFile(dir, '.gitmodules', EVIL_GITMODULES);
+    return dir;
+  };
+
+  const blobOf = (dir: string): string =>
+    runGit(['-C', dir, 'rev-parse', 'HEAD:.gitmodules']).trim();
+
+  const packObjects = (dir: string, oids: ReadonlyArray<string>): string =>
+    runGit(['-C', dir, 'pack-objects', '-q', path.join(objectsOf(dir), 'pack', 'pack')], {
+      input: `${oids.join('\n')}\n`,
+    }).trim();
+
+  const stampPack = (dir: string, name: string, seconds: number): void => {
+    for (const ext of ['pack', 'idx', 'rev']) {
+      const file = path.join(objectsOf(dir), 'pack', `pack-${name}.${ext}`);
+      if (existsSync(file)) utimesSync(file, seconds, seconds);
+    }
+  };
+
+  /** The blob alone in one pack, everything else in another, each stamped. */
+  const splitPacks = (dir: string, blobSeconds: number, restSeconds: number): void => {
+    const blob = blobOf(dir);
+    const rest = runGit(['-C', dir, 'rev-list', '--objects', 'HEAD'])
+      .split('\n')
+      .map((line) => line.slice(0, OID_HEX_LENGTH))
+      .filter((oid) => OID_RE.test(oid) && oid !== blob);
+    stampPack(dir, packObjects(dir, [blob]), blobSeconds);
+    stampPack(dir, packObjects(dir, rest), restSeconds);
+    runGit(['-C', dir, 'prune-packed']);
+  };
+
+  const specialLines = (findings: ReadonlyArray<FsckFinding>): ReadonlyArray<string> =>
+    findings.flatMap((finding) =>
+      finding.type === 'bad-object' && SPECIAL_MSG_IDS.has(finding.msgId)
+        ? [`${finding.objectType} ${finding.id} ${finding.msgId}`]
+        : [],
+    );
+
+  const gitSpecialLines = (stderr: string): ReadonlyArray<string> =>
+    stderr.split('\n').flatMap((line) => {
+      const match = SPECIAL_LINE.exec(line);
+      return match === null ? [] : [`${match[1]} ${match[2]} ${match[3]}`];
+    });
+
+  describe.each([
+    { layout: 'loose objects', prepare: (_dir: string) => undefined, exitCode: 1 },
+    {
+      layout: 'one pack holding the blob before its tree',
+      prepare: (dir: string) => runGit(['-C', dir, 'gc', '-q']),
+      exitCode: 1,
+    },
+    {
+      layout: 'two packs, the tree pack newer',
+      prepare: (dir: string) => splitPacks(dir, OLDER_SECONDS, NEWER_SECONDS),
+      exitCode: 4,
+    },
+    {
+      layout: 'two packs, the blob pack newer',
+      prepare: (dir: string) => splitPacks(dir, NEWER_SECONDS, OLDER_SECONDS),
+      exitCode: 1,
+    },
+  ])('Given an evil .gitmodules in $layout', ({ layout, prepare, exitCode }) => {
+    describe('When git fsck and tsgit fsck run', () => {
+      it(
+        `Then both report the blob once with exit ${exitCode}`,
+        async () => {
+          // Arrange
+          const dir = specialRepo(layout.replaceAll(/\W+/g, '-'));
+          prepare(dir);
+          const git = gitFsck(dir);
+          const sut = tsgitFsck;
+
+          // Act
+          const result = await sut(dir);
+
+          // Assert
+          expect(git.exitCode).toBe(exitCode);
+          expect(result.exitCode).toBe(exitCode);
+          expect(specialLines(result.findings)).toEqual(gitSpecialLines(git.stderr));
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe('Given a loose tree naming an evil .gitmodules blob only a pack holds', () => {
+    describe.each([
+      { flags: [] as ReadonlyArray<string>, opts: {}, exitCode: 4 },
+      { flags: ['--no-full'], opts: { full: false }, exitCode: 1 },
+    ])('When git fsck $flags and tsgit fsck run', ({ flags, opts, exitCode }) => {
+      it(
+        `Then both report the blob once with exit ${exitCode}`,
+        async () => {
+          // Arrange
+          const dir = path.join(root, `special-loose-tree${flags.join('')}`);
+          runGit(['init', '-q', '-b', 'main', dir]);
+          configure(dir);
+          const blob = runGit(['-C', dir, 'hash-object', '-w', '--stdin'], {
+            input: EVIL_GITMODULES,
+          }).trim();
+          packObjects(dir, [blob]);
+          runGit(['-C', dir, 'prune-packed']);
+          runGit(['-C', dir, 'mktree'], { input: `100644 blob ${blob}\t.gitmodules\n` });
+          const git = gitFsck(dir, ...flags);
+          const sut = tsgitFsck;
+
+          // Act
+          const result = await sut(dir, opts);
+
+          // Assert
+          expect(git.exitCode).toBe(exitCode);
+          expect(result.exitCode).toBe(exitCode);
+          expect(specialLines(result.findings)).toEqual(gitSpecialLines(git.stderr));
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe('Given a borrower whose own pack holds the tree and the donor pack the blob', () => {
+    describe('When git fsck and tsgit fsck run on the borrower', () => {
+      it(
+        'Then both meet the borrower pack first and report the donor blob with exit 4',
+        async () => {
+          // Arrange
+          const { donor, borrower } = borrowerOf('special-borrower', true);
+          const blob = runGit(['-C', donor, 'hash-object', '-w', '--stdin'], {
+            input: EVIL_GITMODULES,
+          }).trim();
+          packObjects(donor, [blob]);
+          runGit(['-C', donor, 'prune-packed']);
+          const tree = runGit(['-C', borrower, 'mktree'], {
+            input: `100644 blob ${blob}\t.gitmodules\n`,
+          }).trim();
+          packObjects(borrower, [tree]);
+          runGit(['-C', borrower, 'prune-packed']);
+          const git = gitFsck(borrower);
+          const sut = tsgitFsck;
+
+          // Act
+          const result = await sut(borrower);
+
+          // Assert
+          expect(git.exitCode).toBe(4);
+          expect(result.exitCode).toBe(4);
+          expect(specialLines(result.findings)).toEqual(gitSpecialLines(git.stderr));
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe('Given a loose tree naming a .gitmodules blob no store holds', () => {
+    describe('When git fsck and tsgit fsck run', () => {
+      it(
+        'Then both report gitmodulesMissing with exit 1',
+        async () => {
+          // Arrange
+          const dir = path.join(root, 'special-missing');
+          runGit(['init', '-q', '-b', 'main', dir]);
+          configure(dir);
+          const blob = runGit(['-C', dir, 'hash-object', '--stdin'], {
+            input: EVIL_GITMODULES,
+          }).trim();
+          runGit(['-C', dir, 'mktree', '--missing'], {
+            input: `100644 blob ${blob}\t.gitmodules\n`,
+          });
+          const git = gitFsck(dir);
+          const sut = tsgitFsck;
+
+          // Act
+          const result = await sut(dir);
+
+          // Assert
+          expect(git.exitCode).toBe(1);
+          expect(result.exitCode).toBe(1);
+          expect(specialLines(result.findings)).toEqual(gitSpecialLines(git.stderr));
+          expect(specialLines(result.findings)).toEqual([`blob ${blob} gitmodulesMissing`]);
         },
         ROW_TIMEOUT,
       );

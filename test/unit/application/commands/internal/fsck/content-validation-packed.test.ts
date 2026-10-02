@@ -6,6 +6,7 @@ import {
   validatePackedEntry,
 } from '../../../../../../src/application/commands/internal/fsck/content-validation.js';
 import { packedLocationOf } from '../../../../../../src/application/commands/internal/fsck/object-cache.js';
+import { createSpecialBlobLedger } from '../../../../../../src/application/commands/internal/fsck/special-blobs.js';
 import { DEFAULT_BIG_FILE_THRESHOLD_BYTES } from '../../../../../../src/application/primitives/internal/big-file-threshold.js';
 import { readRawObject } from '../../../../../../src/application/primitives/read-object.js';
 import type { ObjectId } from '../../../../../../src/domain/objects/index.js';
@@ -18,7 +19,7 @@ const sut = validatePackedEntry;
 /** No strict mode, no special names, no re-typing, no skip list, git's default threshold. */
 const CATALOGUE: CatalogueOptions = {
   strict: false,
-  blobFilenames: new Map(),
+  specialBlobs: createSpecialBlobLedger(new Map()),
   severities: new Map(),
   skipped: new Set(),
   bigFileThreshold: DEFAULT_BIG_FILE_THRESHOLD_BYTES,

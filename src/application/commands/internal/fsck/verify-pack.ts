@@ -145,6 +145,27 @@ async function verifyOnePack(
   };
 }
 
+const MS_PER_SECOND = 1000;
+
+/**
+ * One source's packs in git's `sort_pack` order: the youngest `.pack` first,
+ * by whole-second `st_mtime`, ties kept in listing order. The order is
+ * observable — a `.gitmodules` blob verified after its tree's pack is checked
+ * in place (bit 4), before it only at the end (bit 1).
+ */
+async function inGitPackOrder(
+  source: ObjectSource,
+  packs: ReadonlyArray<RegisteredPack>,
+): Promise<ReadonlyArray<RegisteredPack>> {
+  const stamped = await Promise.all(
+    packs.map(async (pack) => ({
+      pack,
+      seconds: Math.floor((await source.fs.stat(pack.packPath)).mtimeMs / MS_PER_SECOND),
+    })),
+  );
+  return stamped.sort((left, right) => right.seconds - left.seconds).map(({ pack }) => pack);
+}
+
 /**
  * Verify every accessible pack of every object source, in git's source
  * order — full mode only, as git runs `verify_pack` only under `check_full`
@@ -161,7 +182,8 @@ export async function runVerifyPackPass(
   let exitBit = 0;
   for (const source of store.sources) {
     const attribution = attributeTo(store, source);
-    for (const pack of (await source.registry.health()).accessible) {
+    const { accessible } = await source.registry.health();
+    for (const pack of await inGitPackOrder(source, accessible)) {
       const own = await verifyOnePack(ctx, { store, source, pack, catalogue });
       findings.push(...own.findings.map((finding) => ({ ...finding, ...attribution })));
       exitBit |= own.exitBit;

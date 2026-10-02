@@ -6,9 +6,9 @@ import { enumerateObjects } from '../primitives/enumerate-objects.js';
 import { assertValidPromisorRemoteConfig } from '../primitives/internal/boolean-config-guard.js';
 import { runBitmapHealthPass } from './internal/fsck/bitmap-health.js';
 import {
-  buildBlobFilenameMap,
   type CatalogueOptions,
   runContentValidationPass,
+  runDeferredSpecialBlobChecks,
 } from './internal/fsck/content-validation.js';
 import { EXIT_MISSING, EXIT_REFS_CONTENT } from './internal/fsck/exit-codes.js';
 import { runMidxHealthPass } from './internal/fsck/midx-health.js';
@@ -37,6 +37,7 @@ import { readFsckConfiguration } from './internal/fsck/read-configuration.js';
 import { type RefTargetCheck, runRefsVerifyPass } from './internal/fsck/refs-verify.js';
 import { runRevIndexHealthPass } from './internal/fsck/rev-index-health.js';
 import { collectRoots } from './internal/fsck/roots.js';
+import { createSpecialBlobLedger } from './internal/fsck/special-blobs.js';
 import type { UnreadableMode } from './internal/fsck/types.js';
 import { runVerifyPackPass } from './internal/fsck/verify-pack.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
@@ -134,20 +135,13 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
     recovered,
   } = await buildObjectCache(auditCtx, universe, unreadable);
 
-  // Build blob→filename map for special-file content checks (.gitmodules, .gitattributes).
-  // Skipped when connectivityOnly since content checks are also skipped in that mode.
-  const blobFilenames =
-    // Stryker disable next-line ConditionalExpression,BooleanLiteral: equivalent — blobFilenames is only consumed by runContentValidationPass which is independently gated by connectivityOnly at the next conditional.
-    opts.connectivityOnly === true
-      ? (new Map() as ReadonlyMap<ObjectId, string>)
-      : buildBlobFilenameMap(universe, objectCache);
-
-  // Content validation pass (skipped when connectivityOnly).
-  // Reads raw bytes separately (needed for malformed-object detection) and
-  // verifies hash from those bytes — no additional readObject calls.
+  // Content validation pass (skipped when connectivityOnly): every loose
+  // object's own bytes, read and hashed once. Its special-blob ledger is the
+  // one the verify-pack pass continues, so a `.gitmodules`/`.gitattributes`
+  // blob is checked where git meets it after its tree — see `SpecialBlobLedger`.
   const catalogue: CatalogueOptions = {
     strict: opts.strict === true,
-    blobFilenames,
+    specialBlobs: createSpecialBlobLedger(objectCache),
     severities,
     skipped,
     bigFileThreshold,
@@ -159,15 +153,7 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
           exitBit: 0,
           typeUnknownIds: new Set<ObjectId>() as ReadonlySet<ObjectId>,
         }
-      : await runContentValidationPass(
-          auditCtx,
-          universe,
-          opts.strict === true,
-          blobFilenames,
-          severities,
-          skipped,
-          bigFileThreshold,
-        );
+      : await runContentValidationPass(auditCtx, universe, catalogue);
 
   const refsResult = await runRefsVerifyPass(
     ctx,
@@ -184,6 +170,11 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   // trailer, then every entry's CRC, unpack, hash and catalogue — every
   // copy, not only the one the store reads. Full mode only.
   const verifyPackResult = await runVerifyPackPass(auditCtx, opts, catalogue);
+  // git's `fsck_finish`: the special blobs no copy met after its tree.
+  const deferredResult =
+    opts.connectivityOnly === true
+      ? { findings: [], exitBit: 0 }
+      : await runDeferredSpecialBlobChecks(auditCtx, catalogue);
 
   // Reverse-index health pass — reports a pack's own `.rev` when it exists,
   // is readable and is wrong. Ungated, like the rest of bit 64: runs after
@@ -270,6 +261,7 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
     ...refsResult.findings,
     ...packResult.findings,
     ...verifyPackResult.findings,
+    ...deferredResult.findings,
     ...revIndexResult.findings,
     ...midxResult.findings,
     ...bitmapResult.findings,
@@ -293,6 +285,7 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
     refsResult.exitBit |
     packResult.exitBit |
     verifyPackResult.exitBit |
+    deferredResult.exitBit |
     revIndexResult.exitBit |
     midxResult.exitBit |
     bitmapResult.exitBit |

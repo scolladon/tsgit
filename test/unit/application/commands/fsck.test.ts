@@ -2150,13 +2150,12 @@ describe('Given a repo with both a content-ERROR finding and a missing reference
 // MUTATION KILL TESTS
 // ---------------------------------------------------------------------------
 
-// Kill: fsck.ts line 45 (connectivityOnly skips buildBlobFilenameMap)
-// The blobFilenames map must NOT be built when connectivityOnly:true —
+// A connectivity-only run checks no content and queues no special blob —
 // otherwise a bad .gitmodules blob would trigger content findings in a
 // connectivity-only run, leaking EXIT_CONTENT_ERROR into the exit code.
 describe('Given repo .gitmodules blob with disallowed URL', () => {
   describe('When fsck runs connectivityOnly:true', () => {
-    it('Then no bad-object finding emitted (blobFilenames not built in connectivity-only mode)', async () => {
+    it('Then no bad-object finding emitted (no special blob is queued in connectivity-only mode)', async () => {
       // Arrange
       const ctx = await initBareCtx();
       const enc = new TextEncoder();
@@ -7742,8 +7741,8 @@ describe('Given a tree carrying a GITLINK entry whose target commit is absent fr
 
 describe('Given a .gitmodules blob with a disallowed URL nested below the root tree', () => {
   describe('When fsck runs', () => {
-    it('Then the findings array carries the gitmodulesUrl bad-object finding — entry.name must survive the projection for buildBlobFilenameMap', async () => {
-      // Arrange — without `name` surviving the projection, buildBlobFilenameMap
+    it('Then the findings array carries the gitmodulesUrl bad-object finding — entry names must survive the projection for the special-blob ledger', async () => {
+      // Arrange — without the entry names surviving the projection, the ledger
       // could not recognise the blob as `.gitmodules` at any tree depth, and
       // the content-validation pass would never dispatch the gitmodules checks.
       const ctx = await initBareCtx();
