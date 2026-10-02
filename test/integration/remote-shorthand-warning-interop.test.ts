@@ -8,7 +8,7 @@
  *   surface:        remote
  *   bucket:         cross-tool-interop
  *   unique:         a /-named remote is never registered and warns exactly where git builds its remote table
- *   interopSurface: remote, fetch, branch, status
+ *   interopSurface: remote, fetch, branch, status, submodule
  */
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
@@ -19,6 +19,7 @@ import { openRepository } from '../../src/index.node.js';
 import { GIT_AVAILABLE, runGit, tryRunGitWithExit } from './interop-helpers.js';
 
 const ROW_TIMEOUT = 30_000;
+const PIN = '1111111111111111111111111111111111111111';
 const WARNING_PREFIX = "warning: config remote shorthand cannot begin with '/': ";
 const TSGIT_WARNING = "readRemoteConfig: config remote shorthand cannot begin with '/'";
 const SLASH_REMOTE_CONFIG =
@@ -105,6 +106,66 @@ const ROWS: ReadonlyArray<{
   { verb: 'log -1', git: ['log', '-1'], run: (repo) => repo.log({ limit: 1 }) },
 ];
 
+const PINNED_SUBMODULES =
+  '[submodule "a"]\n\tpath = a\n\turl = ../sub\n\tupdate = none\n' +
+  '[submodule "b"]\n\tpath = b\n\turl = ./b\n\tupdate = none\n' +
+  '[submodule "c"]\n\tpath = c\n\turl = /abs/c\n\tupdate = none\n';
+
+/** The superproject every submodule row clones: three `update = none` gitlinks,
+ *  two of them under relative urls. Built once, lazily. */
+let superDir: string | undefined;
+const superproject = (): string => {
+  if (superDir !== undefined) return superDir;
+  const dir = path.join(root, 'super');
+  runGit(['init', '-q', '-b', 'main', dir]);
+  writeFileSync(path.join(dir, '.gitmodules'), PINNED_SUBMODULES);
+  for (const name of ['a', 'b', 'c']) {
+    runGit(['-C', dir, 'update-index', '--add', '--cacheinfo', `160000,${PIN},${name}`]);
+  }
+  runGit(['-C', dir, 'add', '.gitmodules']);
+  runGit(['-C', dir, 'commit', '-q', '-m', 'pins']);
+  superDir = dir;
+  return dir;
+};
+
+/** A clone of {@link superproject} configuring `/`-named remotes, its rows
+ *  registered first when `init`. */
+const cloneSuperWithSlashRemote = (slug: string, init: boolean): string => {
+  const dir = path.join(root, slug);
+  runGit(['clone', '-q', superproject(), dir]);
+  if (init) runGit(['-C', dir, 'submodule', 'init', '-q']);
+  writeFileSync(path.join(dir, '.git', 'config'), SLASH_REMOTE_CONFIG, { flag: 'a' });
+  return dir;
+};
+
+const SUBMODULE_ROWS: ReadonlyArray<{
+  readonly verb: string;
+  readonly init: boolean;
+  readonly git: ReadonlyArray<string>;
+  readonly run: (repo: Repository) => Promise<unknown>;
+}> = [
+  { verb: 'init', init: false, git: ['submodule', 'init'], run: (repo) => repo.submodule.init() },
+  {
+    verb: 'init c',
+    init: false,
+    git: ['submodule', 'init', 'c'],
+    run: (repo) => repo.submodule.init({ paths: ['c'] }),
+  },
+  {
+    verb: 'init, registered',
+    init: true,
+    git: ['submodule', 'init'],
+    run: (repo) => repo.submodule.init(),
+  },
+  {
+    verb: 'update --init',
+    init: false,
+    git: ['submodule', 'update', '--init'],
+    run: (repo) => repo.submodule.update({ init: true }),
+  },
+  { verb: 'sync', init: true, git: ['submodule', 'sync'], run: (repo) => repo.submodule.sync() },
+];
+
 describe.skipIf(!GIT_AVAILABLE)('Given a repository configuring /-named remotes', () => {
   describe.each(ROWS)('When $verb runs under git and tsgit', ({ verb, git, run }) => {
     it(
@@ -125,6 +186,29 @@ describe.skipIf(!GIT_AVAILABLE)('Given a repository configuring /-named remotes'
       ROW_TIMEOUT,
     );
   });
+
+  describe.each(SUBMODULE_ROWS)(
+    'When submodule $verb runs under git and tsgit',
+    ({ verb, init, git, run }) => {
+      it(
+        'Then both warn the same lines, once per command however many relative urls resolve',
+        async () => {
+          // Arrange
+          const slug = `submodule-${verb.replace(/[^a-z]+/g, '-')}`;
+          const gitDir = cloneSuperWithSlashRemote(`git-${slug}`, init);
+          const tsgitDir = cloneSuperWithSlashRemote(`tsgit-${slug}`, init);
+          const sut = run;
+
+          // Act
+          const result = await tsgitWarnings(tsgitDir, sut);
+
+          // Assert
+          expect(result).toEqual(gitWarnings(gitDir, git));
+        },
+        ROW_TIMEOUT,
+      );
+    },
+  );
 
   describe('When git and tsgit list the remotes', () => {
     it('Then neither lists a /-named one', async () => {

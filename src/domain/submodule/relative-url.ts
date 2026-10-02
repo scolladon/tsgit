@@ -76,4 +76,8 @@ export const relativeUrl = (remoteUrl: string, url: string): string => {
  * `/abs` — is used verbatim.
  */
 export const resolveSubmoduleUrl = (base: string, url: string): string =>
-  url.startsWith(DOT_SLASH) || url.startsWith(DOT_DOT_SLASH) ? relativeUrl(base, url) : url;
+  isRelativeSubmoduleUrl(url) ? relativeUrl(base, url) : url;
+
+/** git's `starts_with_dot_slash || starts_with_dot_dot_slash`: the urls that need a base. */
+export const isRelativeSubmoduleUrl = (url: string): boolean =>
+  url.startsWith(DOT_SLASH) || url.startsWith(DOT_DOT_SLASH);

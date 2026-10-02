@@ -36,10 +36,17 @@ import {
 } from '../../domain/submodule/error.js';
 import { submoduleCoreWorktree, submoduleGitfile } from '../../domain/submodule/gitlink-path.js';
 import { isUnsafeSubmoduleName } from '../../domain/submodule/name.js';
-import { resolveSubmoduleUrl } from '../../domain/submodule/relative-url.js';
+import {
+  isRelativeSubmoduleUrl,
+  resolveSubmoduleUrl,
+} from '../../domain/submodule/relative-url.js';
 import { parseUpdateMode, type SubmoduleUpdateMode } from '../../domain/submodule/update-mode.js';
 import type { Context } from '../../ports/context.js';
-import { type ParsedConfig, readConfig } from '../primitives/config-read.js';
+import {
+  type ParsedConfig,
+  readConfig,
+  warnSlashLeadingRemoteShorthands,
+} from '../primitives/config-read.js';
 import { assertValidBooleanConfigInSection } from '../primitives/internal/boolean-config-guard.js';
 import { indexEntryFromStat } from '../primitives/internal/index-entry-from-stat.js';
 import { acquireIndexLock } from '../primitives/internal/index-lock.js';
@@ -167,6 +174,27 @@ const resolveBaseUrl = async (
   return config.remote?.get(remoteName)?.url ?? workDir;
 };
 
+/** Resolves a `.gitmodules` url to the url a submodule is registered under. */
+type SubmoduleUrlResolver = (url: string) => Promise<string>;
+
+/**
+ * git's `resolve_relative_url`: only a relative url reads the superproject's
+ * remote table — logging its `/`-named remote warnings — and one command reads
+ * it once, however many rows resolve against it.
+ */
+const createSubmoduleUrlResolver = (ctx: Context, workDir: string): SubmoduleUrlResolver => {
+  let base: Promise<string> | undefined;
+  const readBase = async (): Promise<string> => {
+    await warnSlashLeadingRemoteShorthands(ctx);
+    return resolveBaseUrl(ctx, workDir, await readConfig(ctx));
+  };
+  return async (url) => {
+    if (!isRelativeSubmoduleUrl(url)) return url;
+    base ??= readBase();
+    return resolveSubmoduleUrl(await base, url);
+  };
+};
+
 /**
  * Build the `set` ops for registering a submodule in git's order: `active`,
  * `url`, `update`. End-of-section insertion preserves this forward order.
@@ -215,9 +243,31 @@ export interface SubmoduleInitResult {
  * url untouched (`registered: false`). Relative `.gitmodules` URLs resolve
  * against the superproject's default-remote URL.
  */
-export const submoduleInit = async (
+export const submoduleInit = (
   ctx: Context,
   opts: SubmoduleInitOptions = {},
+): Promise<SubmoduleInitResult> => initSubmodules(ctx, opts);
+
+/** One `.gitmodules` row's init outcome: its existing registration, or a fresh one. */
+const initEntry = async (
+  row: PathedRow & { readonly url: string },
+  existing: string | undefined,
+  update: SubmoduleUpdateMode | undefined,
+  resolveUrl: SubmoduleUrlResolver,
+): Promise<SubmoduleInitEntry> => ({
+  name: row.name,
+  path: row.path as FilePath,
+  url: existing ?? (await resolveUrl(row.url)),
+  registered: existing === undefined,
+  ...(update !== undefined ? { update } : {}),
+});
+
+/** {@link submoduleInit}, resolving relative urls through `shared` when a caller
+ *  inits row by row within one command. */
+const initSubmodules = async (
+  ctx: Context,
+  opts: SubmoduleInitOptions,
+  shared?: SubmoduleUrlResolver,
 ): Promise<SubmoduleInitResult> => {
   await assertOperationalRepository(ctx);
   await assertRepoSettingsValid(ctx);
@@ -226,33 +276,20 @@ export const submoduleInit = async (
   const updateModes = validateUpdateModes(rows);
   const selected = selectRows(rows, opts.paths);
   const config = await readConfig(ctx);
-  const base = await resolveBaseUrl(ctx, workDir, config);
+  const resolveUrl = shared ?? createSubmoduleUrlResolver(ctx, workDir);
   const entries: SubmoduleInitEntry[] = [];
   const ops: ConfigOperation[] = [];
   for (const row of selected) {
     if (row.url === undefined) continue;
-    const path = row.path as FilePath;
-    const update = updateModes.get(row.name);
     const existing = config.submodule?.get(row.name)?.url;
-    if (existing !== undefined) {
-      entries.push({
-        name: row.name,
-        path,
-        url: existing,
-        registered: false,
-        ...(update !== undefined ? { update } : {}),
-      });
-      continue;
-    }
-    const url = resolveSubmoduleUrl(base, row.url);
-    ops.push(...registerOps(row.name, url, update));
-    entries.push({
-      name: row.name,
-      path,
-      url,
-      registered: true,
-      ...(update !== undefined ? { update } : {}),
-    });
+    const entry = await initEntry(
+      { ...row, url: row.url },
+      existing,
+      updateModes.get(row.name),
+      resolveUrl,
+    );
+    if (entry.registered) ops.push(...registerOps(entry.name, entry.url, entry.update));
+    entries.push(entry);
   }
   if (ops.length > 0) await updateConfigOperations(ctx, ops);
   return { entries };
@@ -310,14 +347,14 @@ const syncLevel = async (
   const workDir = requireWorkTree(ctx, 'submodule sync');
   const selected = selectRows(await readWorktreeGitmodules(ctx, workDir), opts.paths);
   const config = await readConfig(ctx);
-  const base = await resolveBaseUrl(ctx, workDir, config);
+  const resolveUrl = createSubmoduleUrlResolver(ctx, workDir);
   const entries: SubmoduleSyncEntry[] = [];
   const ops: ConfigOperation[] = [];
   for (const row of selected) {
     if (row.url === undefined) continue;
     if (config.submodule?.get(row.name)?.url === undefined) continue;
     const path = row.path as FilePath;
-    const url = resolveSubmoduleUrl(base, row.url);
+    const url = await resolveUrl(row.url);
     ops.push({ kind: 'set', section: 'submodule', subsection: row.name, key: 'url', value: url });
     const syncedRemote = await syncSubmoduleRemote(ctx, row.name, path, url);
     entries.push({ name: row.name, path, url, syncedRemote });
@@ -692,9 +729,7 @@ export const submoduleAdd = async (
   // of the module gitdir.
   if (opts.branch !== undefined) validateRefName(`${HEADS_PREFIX}${opts.branch}`);
   await assertPathFree(ctx, opts.path);
-  const config = await readConfig(ctx);
-  const base = await resolveBaseUrl(ctx, workDir, config);
-  const resolved = resolveSubmoduleUrl(base, opts.url);
+  const resolved = await createSubmoduleUrlResolver(ctx, workDir)(opts.url);
   const child = deriveSubmoduleCloneContext(ctx, name, opts.path as FilePath);
   await cloneSubmoduleInto(ctx, workDir, child, resolved, name, opts.path);
   if (opts.branch !== undefined) await checkoutTrackingBranch(child, opts.branch);
@@ -820,6 +855,7 @@ export const submoduleUpdate = async (
   const updateModes = validateUpdateModes(rows);
   const index = await readIndex(ctx);
   let config = await readConfig(ctx);
+  const resolveUrl = createSubmoduleUrlResolver(ctx, workDir);
   // A subsectionless `[submodule] active` is inert in git — only the
   // per-instance `submodule.<name>.active` form can refuse.
   await assertValidBooleanConfigInSection(ctx, 'submodule', ['active'], {
@@ -836,7 +872,7 @@ export const submoduleUpdate = async (
     if (config.submodule?.get(row.name)?.url === undefined) {
       await assertNoValuelessConfig(ctx, 'submodule', row.name, ['url']);
       if (opts.init !== true) continue;
-      await submoduleInit(ctx, { paths: [row.path] });
+      await initSubmodules(ctx, { paths: [row.path] }, resolveUrl);
       config = await readConfig(ctx);
     }
     const mode = resolveUpdateMode(opts, config, updateModes.get(row.name), row.name);
