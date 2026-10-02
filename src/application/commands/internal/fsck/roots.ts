@@ -15,12 +15,11 @@ import { boundedMapFor } from '../../../primitives/internal/concurrency.js';
 import { deriveWorktreeContext } from '../../../primitives/internal/worktree-context.js';
 import { commonGitDir, indexPath } from '../../../primitives/path-layout.js';
 import { readIndex } from '../../../primitives/read-index.js';
-import { readObject } from '../../../primitives/read-object.js';
 import { listReflogs, readReflogLenient } from '../../../primitives/reflog-store.js';
 import { resolveRef } from '../../../primitives/resolve-ref.js';
 import { objectIsPresent } from './object-presence.js';
-import { isStoredCorruption } from './stored-corruption.js';
 import type { FsckOptions } from './types.js';
+import { hashesToItsId } from './verified-copies.js';
 
 const HEAD_REF = 'HEAD' as RefName;
 
@@ -75,6 +74,9 @@ export function isContainedLookupFault(err: unknown): boolean {
   if (!(err instanceof TsgitError) || err.data.code !== 'INVALID_MULTI_PACK_INDEX') return false;
   return err.data.check === 'pack-int-id' || err.data.check === 'large-offset';
 }
+
+/** Whether an index pointer resolves: `undefined` when the run cannot say. */
+type Probe = (ctx: Context, id: ObjectId) => Promise<boolean | undefined>;
 
 /** `objectIsPresent`, with the refusal above answered `undefined` — "this
  *  run cannot say", as distinct from `false`'s "the object is absent". */
@@ -256,6 +258,7 @@ async function walkCacheTree(
   ctx: Context,
   root: CacheTreeEntry,
   roots: Set<ObjectId>,
+  probe: Probe,
   universe?: ReadonlySet<ObjectId>,
 ): Promise<CacheTreeWalk> {
   const stack: CacheTreeEntry[] = [root];
@@ -264,7 +267,7 @@ async function walkCacheTree(
   while (stack.length > 0) {
     const entry = stack.pop() as CacheTreeEntry;
     if (entry.id !== undefined) {
-      const present = await probePresence(ctx, entry.id);
+      const present = await probe(ctx, entry.id);
       if (present === false) {
         unresolved.push(entry.id);
         continue;
@@ -341,6 +344,7 @@ async function addIndexRoots(
   ctx: Context,
   roots: Set<ObjectId>,
   universe?: ReadonlySet<ObjectId>,
+  probe: Probe = probePresence,
 ): Promise<IndexWalk> {
   const index = await readIndexIfIntact(ctx);
   if (index === undefined) return NO_INDEX;
@@ -351,7 +355,11 @@ async function addIndexRoots(
   const resolveUndo = resolveUndoIdsOf(ctx, index);
   const cacheTree = cacheTreeOf(ctx, index);
   if (cacheTree === undefined) return { ...NO_CACHE_TREE, blobs, resolveUndo };
-  return { ...(await walkCacheTree(ctx, cacheTree, roots, universe)), blobs, resolveUndo };
+  return {
+    ...(await walkCacheTree(ctx, cacheTree, roots, probe, universe)),
+    blobs,
+    resolveUndo,
+  };
 }
 
 export interface RootsCollection {
@@ -447,24 +455,12 @@ async function addRecordedReflogRoots(
 const worktreeRefName = (prefix: string, ref: RefName): RefName =>
   (isPerWorktreeRef(ref) ? `${prefix}${ref}` : ref) as RefName;
 
-/**
- * Whether git's `parse_object` gets past `id`'s hash check: bytes that hash
- * to another id are refused. Any other damage is left to the readability
- * assertion, which dies where git's read dies.
- */
-async function hashesToItsId(ctx: Context, id: ObjectId): Promise<boolean> {
-  try {
-    await readObject(ctx, id, { verifyHash: true });
-    return true;
-  } catch (err) {
-    if (!isStoredCorruption(err)) throw err;
-    return errorDataCode(err) !== 'OBJECT_HASH_MISMATCH';
-  }
-}
-
-/** Whether git's `parse_object` yields `id`: present, and hashing to itself. */
-async function parsesAt(ctx: Context, id: ObjectId): Promise<boolean> {
-  return (await probePresence(ctx, id)) !== false && (await hashesToItsId(ctx, id));
+/** git's `parse_object` probe: `false` when no store holds `id` or the copy
+ *  it reads first hashes to another id, `undefined` when the route cannot say. */
+async function parseProbe(ctx: Context, id: ObjectId): Promise<boolean | undefined> {
+  const present = await probePresence(ctx, id);
+  if (present !== true) return present;
+  return hashesToItsId(ctx, id);
 }
 
 /** One index's resolve-undo stages: one git parses is rooted, any other a fault. */
@@ -477,7 +473,7 @@ async function addResolveUndoRoots(
   const invalid: InvalidIndexPointer[] = [];
   const parsed: ObjectId[] = [];
   for (const id of ids) {
-    if (!(await parsesAt(ctx, id))) {
+    if ((await parseProbe(ctx, id)) === false) {
       invalid.push({
         type: 'invalid-resolve-undo-pointer',
         id,
@@ -506,7 +502,7 @@ async function fsckOneIndex(
   roots: Set<ObjectId>,
   universe: ReadonlySet<ObjectId>,
 ): Promise<IndexFsck> {
-  const walk = await addIndexRoots(ctx, roots, universe);
+  const walk = await addIndexRoots(ctx, roots, universe, parseProbe);
   const undo = await addResolveUndoRoots(ctx, walk.resolveUndo, roots, universe);
   return {
     invalid: [

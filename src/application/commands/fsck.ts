@@ -40,6 +40,11 @@ import { runRevIndexHealthPass } from './internal/fsck/rev-index-health.js';
 import { collectRoots } from './internal/fsck/roots.js';
 import { createSpecialBlobLedger } from './internal/fsck/special-blobs.js';
 import type { UnreadableMode } from './internal/fsck/types.js';
+import {
+  unverifiedIds,
+  verifiedCopiesOf,
+  withVerifiedCopies,
+} from './internal/fsck/verified-copies.js';
 import { runVerifyPackPass } from './internal/fsck/verify-pack.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
 
@@ -97,6 +102,11 @@ function recordedBy(
 
 export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckResult> {
   return auditRepository(withoutLazyFetch(ctx), opts);
+}
+
+/** Every id a pack holds under bytes that hash to another id. */
+function misHashedIds(findings: ReadonlyArray<FsckFinding>): ReadonlySet<ObjectId> {
+  return new Set(findings.flatMap((f) => (f.type === 'pack-entry-corrupt' ? [f.id] : [])));
 }
 
 async function auditRepository(ctx: Context, opts: FsckOptions): Promise<FsckResult> {
@@ -240,8 +250,15 @@ async function auditRepository(ctx: Context, opts: FsckOptions): Promise<FsckRes
   // type too. Overriding those ids to unreadable HERE, after content
   // validation and before every reachability read below, is what keeps
   // `dangling`/`unreachable` classification git-faithful.
-  const reachabilityCache = withUnreadableOverrides(objectCache, contentResult.typeUnknownIds);
-  const inEdgePresent = buildInEdgeMap(universe, reachabilityCache);
+  // A pack entry hashing to another id leaves git holding no copy of the object
+  // unless a loose copy verifies (`HAS_OBJ`); a held one is walked as served.
+  const verified = await verifiedCopiesOf(auditCtx, misHashedIds(verifyPackResult.findings));
+  const reachabilityCache = withUnreadableOverrides(
+    objectCache,
+    new Set([...contentResult.typeUnknownIds, ...unverifiedIds(verified)]),
+  );
+  // git marks children used only from a copy that passed its hash.
+  const inEdgePresent = buildInEdgeMap(universe, withVerifiedCopies(reachabilityCache, verified));
 
   // Which of the (rare) unreadable ids are ALSO claimed by a pack — git's
   // `has_object_pack`: `buildReachableSet` must never report one of these

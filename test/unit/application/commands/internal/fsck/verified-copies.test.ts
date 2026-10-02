@@ -1,0 +1,166 @@
+import { describe, expect, it } from 'vitest';
+import { createMemoryContext } from '../../../../../../src/adapters/memory/memory-adapter.js';
+import { project } from '../../../../../../src/application/commands/internal/fsck/object-cache.js';
+import {
+  unverifiedIds,
+  verifiedCopiesOf,
+  withVerifiedCopies,
+} from '../../../../../../src/application/commands/internal/fsck/verified-copies.js';
+import { looseObjectPath } from '../../../../../../src/application/primitives/path-layout.js';
+import { refreshPackRegistry } from '../../../../../../src/application/primitives/read-object.js';
+import { writeObject } from '../../../../../../src/application/primitives/write-object.js';
+import { FILE_MODE, type ObjectId } from '../../../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../../../src/domain/objects/tree.js';
+import type { Context } from '../../../../../../src/ports/context.js';
+import { writeSyntheticPack } from '../../../primitives/pack-fixture.js';
+
+const enc = new TextEncoder();
+
+/** A loose tree over `f`, and a pack holding its id over a blob's bytes. */
+const misHashedTree = async (): Promise<{
+  readonly ctx: Context;
+  readonly tree: ObjectId;
+  readonly blob: ObjectId;
+}> => {
+  const ctx = createMemoryContext();
+  const blob = await writeObject(ctx, {
+    type: 'blob',
+    id: '' as ObjectId,
+    content: enc.encode('f'),
+  });
+  const tree = await writeObject(ctx, {
+    type: 'tree',
+    id: '' as ObjectId,
+    entries: [treeEntry(FILE_MODE.REGULAR, 'f', blob)],
+  });
+  await writeSyntheticPack(ctx, 'mis', [
+    { kind: 'base', type: 'blob', content: enc.encode('other'), idOverride: tree },
+  ]);
+  refreshPackRegistry(ctx);
+  return { ctx, tree, blob };
+};
+
+describe('Given an id whose served copy hashes to it', () => {
+  describe('When its verified copy is looked up', () => {
+    it('Then nothing replaces it', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const blob = await writeObject(ctx, {
+        type: 'blob',
+        id: '' as ObjectId,
+        content: enc.encode('fine'),
+      });
+      const sut = verifiedCopiesOf;
+
+      // Act
+      const result = await sut(ctx, new Set([blob]));
+
+      // Assert
+      expect([...result]).toEqual([]);
+    });
+  });
+});
+
+describe('Given an id served from a mis-hashed pack entry', () => {
+  describe('When its loose copy verifies', () => {
+    it('Then the loose copy stands in', async () => {
+      // Arrange
+      const { ctx, tree, blob } = await misHashedTree();
+      const sut = verifiedCopiesOf;
+
+      // Act
+      const result = await sut(ctx, new Set([tree]));
+
+      // Assert
+      expect(result.get(tree)).toEqual(
+        project({ type: 'tree', id: tree, entries: [treeEntry(FILE_MODE.REGULAR, 'f', blob)] }),
+      );
+    });
+  });
+
+  describe.each([
+    { label: 'does not inflate', bytes: async () => enc.encode('garbage') },
+    {
+      label: 'hashes to another id',
+      bytes: async (ctx: Context) => ctx.compressor.deflate(enc.encode('blob 1\0x')),
+    },
+    {
+      label: 'does not parse',
+      bytes: async (ctx: Context) => ctx.compressor.deflate(enc.encode('tree 1\0x')),
+    },
+  ])('When its only loose copy $label', ({ bytes }) => {
+    it('Then no copy verifies', async () => {
+      // Arrange
+      const { ctx, tree } = await misHashedTree();
+      await ctx.fs.write(looseObjectPath(ctx.layout.gitDir, tree), await bytes(ctx));
+      const sut = verifiedCopiesOf;
+
+      // Act
+      const result = await sut(ctx, new Set([tree]));
+
+      // Assert
+      expect(result.get(tree)).toBeNull();
+      expect(unverifiedIds(result)).toEqual(new Set([tree]));
+    });
+  });
+
+  describe('When inflating its loose copy faults for a reason other than damage', () => {
+    it('Then the fault propagates', async () => {
+      // Arrange
+      const { ctx, tree } = await misHashedTree();
+      const fault = new Error('inflater crashed');
+      const faulty: Context = {
+        ...ctx,
+        compressor: { ...ctx.compressor, inflate: () => Promise.reject(fault) },
+      };
+      const sut = verifiedCopiesOf;
+
+      // Act
+      const result = await sut(faulty, new Set([tree])).then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+
+      // Assert
+      expect(result).toBe(fault);
+    });
+  });
+});
+
+describe('Given a cache and the verified copies of some of its ids', () => {
+  describe('When the verified copies are laid over it', () => {
+    it('Then each verified copy replaces its served one and the rest stay', () => {
+      // Arrange
+      const kept = 'a'.repeat(40) as ObjectId;
+      const replaced = 'b'.repeat(40) as ObjectId;
+      const cache = new Map([
+        [kept, project({ type: 'blob', id: kept, content: new Uint8Array() })],
+        [replaced, project({ type: 'blob', id: replaced, content: new Uint8Array() })],
+      ]);
+      const sut = withVerifiedCopies;
+
+      // Act
+      const result = sut(cache, new Map([[replaced, null]]));
+
+      // Assert
+      expect([...result]).toEqual([
+        [kept, cache.get(kept)],
+        [replaced, null],
+      ]);
+    });
+  });
+
+  describe('When there is no verified copy', () => {
+    it('Then the cache is returned as is', () => {
+      // Arrange
+      const cache = new Map();
+      const sut = withVerifiedCopies;
+
+      // Act
+      const result = sut(cache, new Map());
+
+      // Assert
+      expect(result).toBe(cache);
+    });
+  });
+});

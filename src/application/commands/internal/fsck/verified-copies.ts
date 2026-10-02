@@ -1,0 +1,84 @@
+import { errorDataCode } from '../../../../domain/error-data-code.js';
+import { parseObject } from '../../../../domain/objects/git-object.js';
+import type { ObjectId } from '../../../../domain/objects/index.js';
+import type { Context } from '../../../../ports/context.js';
+import { readObject } from '../../../primitives/read-object.js';
+import { type CachedGitObject, project } from './object-cache.js';
+import { looseCopiesOf } from './object-presence.js';
+import { isStoredCorruption } from './stored-corruption.js';
+
+/**
+ * Whether git's `parse_object` gets past `id`'s hash check on the copy the
+ * store serves first: bytes that hash to another id are refused. Any other
+ * damage is left to the readability assertion, which dies where git's read
+ * dies.
+ */
+export async function hashesToItsId(ctx: Context, id: ObjectId): Promise<boolean> {
+  try {
+    await readObject(ctx, id, { verifyHash: true });
+    return true;
+  } catch (err) {
+    if (!isStoredCorruption(err)) throw err;
+    return errorDataCode(err) !== 'OBJECT_HASH_MISMATCH';
+  }
+}
+
+/** One loose copy as `fsck_loose` reads it, or `undefined` when it fails to
+ *  inflate, hash to `id` or parse — git then marks nothing it names used. */
+async function verifiedCopy(
+  ctx: Context,
+  id: ObjectId,
+  compressed: Uint8Array,
+): Promise<CachedGitObject | undefined> {
+  try {
+    const raw = await ctx.compressor.inflate(compressed);
+    const hasher = ctx.hash.createHasher();
+    hasher.update(raw);
+    if ((await hasher.digestHex()) !== id) return undefined;
+    return project(parseObject(id, raw, ctx.hashConfig));
+  } catch (err) {
+    if (!isStoredCorruption(err)) throw err;
+    return undefined;
+  }
+}
+
+/** The first loose copy of `id` that passes git's checks, or `null`. */
+async function firstVerifiedLooseCopy(ctx: Context, id: ObjectId): Promise<CachedGitObject> {
+  for (const { compressed } of await looseCopiesOf(ctx, id)) {
+    const copy = await verifiedCopy(ctx, id, compressed);
+    if (copy !== undefined) return copy;
+  }
+  return null;
+}
+
+/**
+ * For each id whose served copy is a mis-hashed pack entry, the copy git's
+ * `fsck_obj` verified instead: the first loose copy that passes its hash,
+ * or `null` when none does — git then never records the object as held.
+ */
+export async function verifiedCopiesOf(
+  ctx: Context,
+  misHashed: ReadonlySet<ObjectId>,
+): Promise<ReadonlyMap<ObjectId, CachedGitObject>> {
+  const verified = new Map<ObjectId, CachedGitObject>();
+  for (const id of misHashed) {
+    if (await hashesToItsId(ctx, id)) continue;
+    verified.set(id, await firstVerifiedLooseCopy(ctx, id));
+  }
+  return verified;
+}
+
+/** The ids no copy of which passed git's checks. */
+export function unverifiedIds(
+  verified: ReadonlyMap<ObjectId, CachedGitObject>,
+): ReadonlySet<ObjectId> {
+  return new Set([...verified].flatMap(([id, copy]) => (copy === null ? [id] : [])));
+}
+
+/** `cache` with each verified copy in place of the one the store serves. */
+export function withVerifiedCopies(
+  cache: ReadonlyMap<ObjectId, CachedGitObject>,
+  verified: ReadonlyMap<ObjectId, CachedGitObject>,
+): ReadonlyMap<ObjectId, CachedGitObject> {
+  return verified.size === 0 ? cache : new Map([...cache, ...verified]);
+}

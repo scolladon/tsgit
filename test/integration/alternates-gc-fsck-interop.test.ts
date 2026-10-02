@@ -1836,6 +1836,90 @@ describe.skipIf(!GIT_AVAILABLE)('fsck interop — invalid cache-tree pointers', 
       );
     });
   });
+
+  const IDX_FANOUT_OFFSET = 8;
+  const IDX_FANOUT_SLOTS = 256;
+  const IDX_FIRST_ID_OFFSET = IDX_FANOUT_OFFSET + IDX_FANOUT_SLOTS * 4;
+
+  /** Rename the single entry of a one-object `.idx` to `id` and re-seal it. */
+  const renameOnlyIdxEntry = (idx: string, id: string): void => {
+    const bytes = Buffer.from(readFileSync(idx));
+    const first = Number.parseInt(id.slice(0, 2), 16);
+    for (let slot = 0; slot < IDX_FANOUT_SLOTS; slot += 1)
+      bytes.writeUInt32BE(slot >= first ? 1 : 0, IDX_FANOUT_OFFSET + slot * 4);
+    Buffer.from(id, 'hex').copy(bytes, IDX_FIRST_ID_OFFSET);
+    createHash('sha1')
+      .update(bytes.subarray(0, -SHA1_LENGTH))
+      .digest()
+      .copy(bytes, bytes.length - SHA1_LENGTH);
+    chmodSync(idx, 0o644);
+    writeFileSync(idx, bytes);
+  };
+
+  /** A commit over `d/a`, `b` whose root tree a pack holds under another tree's bytes. */
+  const repoWithMisHashedPackedTree = (
+    slug: string,
+  ): { readonly dir: string; readonly tree: string } => {
+    const dir = path.join(root, `mis-hashed-${slug}`);
+    runGit(['init', '-q', '-b', 'main', dir]);
+    configure(dir);
+    mkdirSync(path.join(dir, 'd'));
+    writeFileSync(path.join(dir, 'd', 'a'), 'a\n');
+    writeFileSync(path.join(dir, 'b'), 'b\n');
+    runGit(['-C', dir, 'add', '.']);
+    runGit(['-C', dir, 'commit', '-q', '-m', 'c1']);
+    const tree = runGit(['-C', dir, 'rev-parse', 'HEAD^{tree}']).trim();
+    const b = runGit(['-C', dir, 'rev-parse', 'HEAD:b']).trim();
+    const other = runGit(['-C', dir, 'mktree'], { input: `100644 blob ${b}\tzz\n` }).trim();
+    const packDir = path.join(objectsOf(dir), 'pack');
+    const name = runGit(['-C', dir, 'pack-objects', '-q', path.join(packDir, 'pack')], {
+      input: `${other}\n`,
+    }).trim();
+    renameOnlyIdxEntry(path.join(packDir, `pack-${name}.idx`), tree);
+    rmSync(looseFile(objectsOf(dir), other));
+    return { dir, tree };
+  };
+
+  describe.each([
+    { label: 'a valid loose copy and the index', looseCopy: true, index: true, exitCode: 12 },
+    { label: 'a valid loose copy and no index', looseCopy: true, index: false, exitCode: 4 },
+    { label: 'no other copy and no index', looseCopy: false, index: false, exitCode: 4 },
+  ])(
+    "Given a root tree packed under another tree's bytes, with $label",
+    ({ looseCopy, index, exitCode }) => {
+      describe('When git fsck and tsgit fsck run', () => {
+        it(
+          'Then both report the same pointers, dangling objects and exit code',
+          async () => {
+            // Arrange
+            const { dir, tree } = repoWithMisHashedPackedTree(`${looseCopy}-${index}`);
+            if (!looseCopy) rmSync(looseFile(objectsOf(dir), tree));
+            if (!index) rmSync(path.join(dir, '.git', 'index'));
+            const git = gitFsck(dir);
+            const sut = tsgitFsck;
+
+            // Act
+            const result = await sut(dir);
+
+            // Assert
+            const gitOids = git.stderr.split('\n').flatMap((line) => {
+              const match = CACHE_TREE_LINE.exec(line);
+              return match === null ? [] : [match[1]];
+            });
+            expect(git.exitCode).toBe(exitCode);
+            expect(result.exitCode).toBe(exitCode);
+            expect(
+              result.findings.flatMap((f) =>
+                f.type === 'invalid-cache-tree-pointer' ? [f.id] : [],
+              ),
+            ).toEqual(gitOids);
+            expect(danglingLines(result.findings)).toEqual(gitDanglingLines(git.stdout));
+          },
+          ROW_TIMEOUT,
+        );
+      });
+    },
+  );
 });
 
 describe.skipIf(!GIT_AVAILABLE)('fsck interop — symbolic refs naming no object', () => {
