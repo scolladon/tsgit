@@ -134,7 +134,8 @@ export type CommandError =
       readonly code: 'CLEAN_FILTER_FAILED';
       readonly path: FilePath;
       readonly filter: string;
-      readonly exitCode: number;
+      /** Absent when the driver configures no clean command to run. */
+      readonly exitCode?: number;
     }
   | {
       readonly code: 'SMUDGE_FILTER_FAILED';
@@ -585,8 +586,13 @@ export const hookFailed = (hook: HookName, exitCode: number, stderr: string): Ts
     stderr: sanitizeForDisplay(stderr).slice(0, MAX_HOOK_STDERR_IN_ERROR),
   });
 
-export const cleanFilterFailed = (path: FilePath, filter: string, exitCode: number): TsgitError =>
-  new TsgitError({ code: 'CLEAN_FILTER_FAILED', path, filter, exitCode });
+export const cleanFilterFailed = (path: FilePath, filter: string, exitCode?: number): TsgitError =>
+  new TsgitError({
+    code: 'CLEAN_FILTER_FAILED',
+    path,
+    filter,
+    ...(exitCode !== undefined && { exitCode }),
+  });
 
 export const smudgeFilterFailed = (path: FilePath, filter: string, exitCode: number): TsgitError =>
   new TsgitError({ code: 'SMUDGE_FILTER_FAILED', path, filter, exitCode });

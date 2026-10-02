@@ -14,6 +14,7 @@ import {
   buildAttributeProvider,
 } from '../../../../src/application/primitives/internal/read-gitattributes.js';
 import { readIndex } from '../../../../src/application/primitives/read-index.js';
+import type { TsgitError } from '../../../../src/domain/error.js';
 import type { IndexEntry } from '../../../../src/domain/git-index/index-entry.js';
 import type {
   CommandRequest,
@@ -406,14 +407,12 @@ describe('compareWorkingTreeDelta', () => {
 
   describe('Given a converting caller (provider + command wired) and [filter "zed"].required = maybe with NO attributes, working file otherwise unchanged', () => {
     describe('When comparing the delta', () => {
-      it('Then the content path degrades to \'modified\' — eager validation refuses even though no attribute selects "zed"', async () => {
+      it('Then it refuses the malformed value as git does, even though no attribute selects "zed"', async () => {
         // Arrange — no .gitattributes at all; only the malformed [filter "zed"]
         // section, and the working file is byte-identical to the staged blob.
-        // Real code's eager clean-tier validation throws inside
-        // cleanWorktreeBytes, which the outer try/catch converts to
-        // 'modified'. A dropped eagerSectionValidation flag would instead
-        // compute the real (matching) hash and report 'unchanged' — that's
-        // the observable difference the {}/false mutants would produce.
+        // git's re-hash of a racy or stat-dirty file runs the convert
+        // machinery and dies on the value; a dropped eagerSectionValidation
+        // flag would compute the real (matching) hash and report 'unchanged'.
         const { ctx, entry } = await seedFile('a.txt', 'hello\n');
         await ctx.fs.writeUtf8(
           `${ctx.layout.gitDir}/config`,
@@ -429,10 +428,79 @@ describe('compareWorkingTreeDelta', () => {
         const provider = await buildAttributeProvider(enrichedCtx);
 
         // Act
+        const result = await compareWorkingTreeDelta(enrichedCtx, entry, provider).catch(
+          (err: unknown) => err,
+        );
+
+        // Assert
+        expect((result as TsgitError).data).toEqual({
+          code: 'CONFIG_BAD_BOOLEAN_VALUE',
+          key: 'filter.zed.required',
+          source: expect.any(String),
+          value: 'maybe',
+        });
+      });
+    });
+  });
+
+  describe.each([
+    { label: 'configures no clean command', section: '\trequired = true\n', exitCode: undefined },
+    {
+      label: 'configures an empty clean command',
+      section: '\tclean =\n\trequired = true\n',
+      exitCode: undefined,
+    },
+    {
+      label: 'runs a clean command that fails',
+      section: '\tclean = c\n\trequired = true\n',
+      exitCode: 3,
+    },
+  ])('Given a required driver that $label over an untouched file', ({ section, exitCode }) => {
+    describe('When comparing the delta', () => {
+      it("Then it refuses with CLEAN_FILTER_FAILED, as git's convert_to_git dies", async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, 'a.txt filter=d\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, `[filter "d"]\n${section}`);
+        invalidateConfigCache(ctx);
+        const runner: CommandRunner = {
+          run: async () => ({ exitCode: 3, stdout: new Uint8Array(0) }),
+        };
+        const enrichedCtx: Context = { ...ctx, command: runner };
+        const provider = await buildAttributeProvider(enrichedCtx);
+
+        // Act
+        const result = await compareWorkingTreeDelta(enrichedCtx, entry, provider).catch(
+          (err: unknown) => err,
+        );
+
+        // Assert
+        expect((result as TsgitError).data).toEqual({
+          code: 'CLEAN_FILTER_FAILED',
+          path: 'a.txt',
+          filter: 'd',
+          ...(exitCode !== undefined && { exitCode }),
+        });
+      });
+    });
+  });
+
+  describe('Given an optional driver configuring no clean command over an untouched file', () => {
+    describe('When comparing the delta', () => {
+      it('Then it hashes the raw bytes and reports unchanged', async () => {
+        // Arrange
+        const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, 'a.txt filter=d\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[filter "d"]\n\tsmudge = s\n');
+        invalidateConfigCache(ctx);
+        const enrichedCtx: Context = { ...ctx, command: new FakeRunner() };
+        const provider = await buildAttributeProvider(enrichedCtx);
+
+        // Act
         const result = await compareWorkingTreeDelta(enrichedCtx, entry, provider);
 
         // Assert
-        expect(result.status).toBe('modified');
+        expect(result.status).toBe('unchanged');
       });
     });
   });

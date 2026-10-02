@@ -1370,6 +1370,23 @@ describe('cleanFilterFailed error', () => {
     });
   });
 
+  describe('Given cleanFilterFailed for a driver that ran no command', () => {
+    describe('When accessing .data and .message', () => {
+      it('Then data omits exitCode and the message names no exit', () => {
+        // Arrange & Act
+        const result = cleanFilterFailed('dir/file.dat' as never, 'd');
+
+        // Assert
+        expect(result.data).toEqual({
+          code: 'CLEAN_FILTER_FAILED',
+          path: 'dir/file.dat',
+          filter: 'd',
+        });
+        expect(result.message).toBe("CLEAN_FILTER_FAILED: clean filter 'd' failed for file.dat");
+      });
+    });
+  });
+
   describe('Given cleanFilterFailed with exitCode 128', () => {
     describe('When accessing .data.exitCode', () => {
       it('Then exitCode is preserved as 128', () => {

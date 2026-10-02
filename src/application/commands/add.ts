@@ -9,11 +9,7 @@
  *   kind:    equivalent-under-readback
  *   format:  git-index-tree-state
  */
-import {
-  cleanFilterFailed,
-  invalidOption,
-  workingTreeFileTooLarge,
-} from '../../domain/commands/error.js';
+import { invalidOption, workingTreeFileTooLarge } from '../../domain/commands/error.js';
 import { operationAborted, TsgitError } from '../../domain/error.js';
 import type { IndexEntry } from '../../domain/git-index/index.js';
 import { NO_PARSER_OFFSET, validateIndexPath } from '../../domain/git-index/path-validator.js';
@@ -27,9 +23,9 @@ import {
 import type { FilePath } from '../../domain/objects/object-id.js';
 import { matchesPathspec, type Pathspec } from '../../domain/pathspec/index.js';
 import { CHERRY_PICK, MERGE, REBASE, REVERT } from '../../domain/sequencer/operation-labels.js';
-import type { CommandRunner } from '../../ports/command-runner.js';
 import type { Context } from '../../ports/context.js';
 import type { FileStat } from '../../ports/file-system.js';
+import { applyCleanFilter } from '../primitives/internal/apply-clean-filter.js';
 import { assertValidPromisorRemoteConfig } from '../primitives/internal/boolean-config-guard.js';
 import { limiterFor } from '../primitives/internal/concurrency.js';
 import { indexEntryFromStat } from '../primitives/internal/index-entry-from-stat.js';
@@ -41,12 +37,7 @@ import {
 } from '../primitives/internal/read-gitattributes.js';
 import { assertBigFileThresholdValid } from '../primitives/internal/repo-settings-gate.js';
 import { readIndex } from '../primitives/read-index.js';
-import {
-  type FilterChoice,
-  resolveFilterDriver,
-  streamsThroughFilter,
-} from '../primitives/resolve-filter-driver.js';
-import { runFilterDriver } from '../primitives/run-filter-driver.js';
+import { resolveFilterDriver, streamsThroughFilter } from '../primitives/resolve-filter-driver.js';
 import { MAX_WORKING_TREE_BLOB_BYTES, type WalkWorkingTreeEntry } from '../primitives/types.js';
 import { walkWorkingTree } from '../primitives/walk-working-tree.js';
 import { writeObject } from '../primitives/write-object.js';
@@ -614,24 +605,6 @@ const cleanConversion = async (
     streams: streamsThroughFilter(choice),
     apply: (bytes) => applyCleanFilter(ctx, runner, path, bytes, choice),
   };
-};
-
-/**
- * Apply the resolved clean filter. A required driver's non-zero exit throws
- * CLEAN_FILTER_FAILED; an optional one's stages the raw bytes silently.
- */
-const applyCleanFilter = async (
-  ctx: Context,
-  runner: CommandRunner,
-  path: FilePath,
-  bytes: Uint8Array,
-  choice: FilterChoice,
-): Promise<Uint8Array> => {
-  if (choice.kind !== 'external' || choice.clean === undefined) return bytes;
-  const result = await runFilterDriver(ctx, runner, choice.clean, bytes);
-  if (result.ok) return result.bytes;
-  if (choice.required) throw cleanFilterFailed(path, choice.name, result.exitCode);
-  return bytes;
 };
 
 const readContent = async (

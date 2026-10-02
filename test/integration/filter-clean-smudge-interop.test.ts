@@ -24,9 +24,9 @@
  *   surface:        add.filters, checkout.filters
  *   bucket:         cross-tool-interop
  *   unique:         clean and smudge drivers take content on stdin with no positional argv, and required decides whether a failure is fatal
- *   interopSurface: add
+ *   interopSurface: add, status, stash
  */
-import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, realpath, rm, utimes, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
@@ -34,12 +34,20 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/index.js';
 import { add } from '../../src/application/commands/add.js';
 import { checkout } from '../../src/application/commands/checkout.js';
+import { stashPush } from '../../src/application/commands/stash.js';
 import { status } from '../../src/application/commands/status.js';
 import { readBlob } from '../../src/application/primitives/read-blob.js';
 import { readIndex } from '../../src/application/primitives/read-index.js';
 import { TsgitError } from '../../src/domain/index.js';
 import type { ObjectId } from '../../src/domain/objects/object-id.js';
-import { GIT_AVAILABLE, git, runGit, runGitEnv, tryRunGit } from './interop-helpers.js';
+import {
+  GIT_AVAILABLE,
+  git,
+  runGit,
+  runGitEnv,
+  tryRunGit,
+  tryRunGitWithExit,
+} from './interop-helpers.js';
 
 const SETUP_TIMEOUT = 120_000;
 
@@ -529,6 +537,85 @@ describe.skipIf(!GIT_AVAILABLE)('filter clean/smudge interop', () => {
         // Assert worktree bytes are lowercase (smudge driver ran stdin→stdout)
         const worktreeBytes = await readFile(path.join(dir, 'fexec-smudge.fs'), 'utf8');
         expect(worktreeBytes).toBe('hello smudge exec\n');
+      });
+    });
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)('Given a required driver that configures no clean command', () => {
+  const PAST = new Date('2020-01-01T00:00:00Z');
+  const LATER = new Date('2020-01-01T00:01:00Z');
+  let root = '';
+
+  beforeAll(async () => {
+    root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-filter-required-')));
+  });
+
+  afterAll(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  /** A committed `f` under `filter=d`, its index entry settled non-racy, then
+   *  `[filter "d"] required` armed with no clean command. */
+  const twin = async (slug: string): Promise<string> => {
+    const repo = path.join(root, slug);
+    runGit(['init', '-q', '-b', 'main', repo]);
+    await writeFile(path.join(repo, '.gitattributes'), 'f filter=d\n');
+    await writeFile(path.join(repo, 'f'), 'hi\n');
+    for (const name of ['f', '.gitattributes']) await utimes(path.join(repo, name), PAST, PAST);
+    runGit(['-C', repo, 'add', '.']);
+    runGit(['-C', repo, 'commit', '-q', '-m', 'c'], { env: dateEnv(1_700_050_000) });
+    runGit(['-C', repo, 'config', 'filter.d.required', 'true']);
+    return repo;
+  };
+
+  const makeRacy = (repo: string): Promise<void> =>
+    utimes(path.join(repo, '.git', 'index'), PAST, PAST);
+  const makeStatDirty = (repo: string): Promise<void> => utimes(path.join(repo, 'f'), LATER, LATER);
+
+  describe.each([
+    { label: 'status on a racy file', git: ['status', '--porcelain'], arm: makeRacy, run: status },
+    {
+      label: 'status on a stat-dirty file',
+      git: ['status', '--porcelain'],
+      arm: makeStatDirty,
+      run: status,
+    },
+    {
+      label: 'stash on a stat-dirty file',
+      git: ['stash'],
+      arm: makeStatDirty,
+      run: (c: ReturnType<typeof createNodeContext>) => stashPush(c),
+    },
+    {
+      label: 'add f on a stat-dirty file',
+      git: ['add', 'f'],
+      arm: makeStatDirty,
+      run: (c: ReturnType<typeof createNodeContext>) => add(c, ['f']),
+    },
+  ])('When git and tsgit run $label', ({ label, git: args, arm, run }) => {
+    it("Then both die on f's clean filter", async () => {
+      // Arrange
+      const slug = label.replace(/[^a-z]+/g, '-');
+      const gitRepo = await twin(`git-${slug}`);
+      const tsgitRepo = await twin(`tsgit-${slug}`);
+      await arm(gitRepo);
+      await arm(tsgitRepo);
+      const sut = run;
+
+      // Act
+      const g = tryRunGitWithExit(['-C', gitRepo, ...args]);
+      const result = await sut(createNodeContext({ workDir: tsgitRepo })).catch(
+        (err: unknown) => err,
+      );
+
+      // Assert
+      expect(g.exitCode).toBe(128);
+      expect(g.stderr).toContain("fatal: f: clean filter 'd' failed");
+      expect((result as TsgitError).data).toEqual({
+        code: 'CLEAN_FILTER_FAILED',
+        path: 'f',
+        filter: 'd',
       });
     });
   });

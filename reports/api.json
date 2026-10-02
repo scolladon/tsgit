@@ -33924,7 +33924,16 @@
 											"variant": "declaration",
 											"kind": 1024,
 											"flags": {
+												"isOptional": true,
 												"isReadonly": true
+											},
+											"comment": {
+												"summary": [
+													{
+														"kind": "text",
+														"text": "Absent when the driver configures no clean command to run."
+													}
+												]
 											},
 											"type": {
 												"type": "intrinsic",

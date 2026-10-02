@@ -2255,6 +2255,29 @@ describe('add', () => {
     });
   });
 
+  describe('Given a file under a required driver that configures no clean command', () => {
+    describe('When add stages the file', () => {
+      it('Then throws CLEAN_FILTER_FAILED with no exit code and nothing is staged', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'a.y': 'Hello World' });
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/.gitattributes`, '*.y filter=f\n');
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[filter "f"]\n\trequired = true\n');
+        const enrichedCtx = { ...ctx, command: new FakeRunner(0) };
+
+        // Act
+        const result = await add(enrichedCtx, ['a.y']).catch((err: unknown) => err);
+
+        // Assert
+        expect((result as TsgitError).data).toEqual({
+          code: 'CLEAN_FILTER_FAILED',
+          path: 'a.y',
+          filter: 'f',
+        });
+        expect((await readIndex(enrichedCtx)).entries.map((e) => e.path)).not.toContain('a.y');
+      });
+    });
+  });
+
   describe('Given a file with required=true clean filter that exits non-zero', () => {
     describe('When add stages the file', () => {
       it('Then throws CLEAN_FILTER_FAILED and nothing is staged', async () => {

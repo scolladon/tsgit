@@ -220,6 +220,10 @@ function formatPlaceholderDetail(
     : `${data.placeholder} is not supported by this command`;
 }
 
+/** A filter driver's exit status, when one ran. */
+const exitSuffix = (exitCode: number | undefined): string =>
+  exitCode === undefined ? '' : ` (exit ${exitCode})`;
+
 // Only a negative zone can reach back before the epoch; git prints it with `%04d`, the sign counting toward the width.
 const NEGATIVE_ZONE_DIGITS = 3;
 
@@ -486,7 +490,7 @@ function extractDetail(data: TsgitErrorData): string {
     case 'HOOK_FAILED':
       return `hook ${data.hook} failed with exit code ${data.exitCode}`;
     case 'CLEAN_FILTER_FAILED':
-      return `clean filter '${data.filter}' failed for ${basename(data.path)} (exit ${data.exitCode})`;
+      return `clean filter '${data.filter}' failed for ${basename(data.path)}${exitSuffix(data.exitCode)}`;
     case 'SMUDGE_FILTER_FAILED':
       return `smudge filter '${data.filter}' failed for ${basename(data.path)} (exit ${data.exitCode})`;
     case 'INVALID_FILTER_SPEC':
