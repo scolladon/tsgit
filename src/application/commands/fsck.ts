@@ -23,6 +23,7 @@ import {
   hasPackCopy,
   withUnreadableOverrides,
 } from './internal/fsck/object-cache.js';
+import { type ObjectTable, readObjectTable } from './internal/fsck/object-table.js';
 import { packAccessibilityReported, runPackHealthPass } from './internal/fsck/pack-health.js';
 import {
   assertObjectsReadable,
@@ -116,16 +117,31 @@ function misHashedIds(findings: ReadonlyArray<FsckFinding>): ReadonlySet<ObjectI
   return new Set(findings.flatMap((f) => (f.type === 'pack-entry-corrupt' ? [f.id] : [])));
 }
 
+/** Every id one of whose loose copies hashes to another id — which copy the
+ *  object cache projected is then unknown, so the object table leaves it untyped. */
+function misHashedLooseIds(findings: ReadonlyArray<FsckFinding>): ReadonlyArray<ObjectId> {
+  return findings.flatMap((f) => (f.type === 'hash-mismatch' ? [f.id] : []));
+}
+
 /** Every id whose own content check raised an error — `fsck_obj` prints
- *  nothing more for it. A hash mismatch never reaches the check at all. */
-function contentRefusedIds(findings: ReadonlyArray<FsckFinding>): ReadonlySet<ObjectId> {
-  return new Set(
-    findings.flatMap((f) =>
-      (f.type === 'bad-object' && f.severity === 'error') || f.type === 'hash-mismatch'
-        ? [f.id]
-        : [],
-    ),
+ *  nothing more for it. A hash mismatch never reaches the check at all, nor
+ *  does an object whose parse failed (`unparsed`). */
+function contentRefusedIds(
+  findings: ReadonlyArray<FsckFinding>,
+  unparsed: ReadonlySet<ObjectId>,
+): ReadonlySet<ObjectId> {
+  const refused = findings.flatMap((f) =>
+    (f.type === 'bad-object' && f.severity === 'error') || f.type === 'hash-mismatch' ? [f.id] : [],
   );
+  return new Set([...refused, ...unparsed]);
+}
+
+/** git never runs `fsck_obj` on an object whose parse failed: no content finding. */
+function withoutUnparsedChecks(
+  findings: ReadonlyArray<FsckFinding>,
+  table: ObjectTable,
+): ReadonlyArray<FsckFinding> {
+  return findings.filter((f) => f.type !== 'bad-object' || !table.unparsed.has(f.id));
 }
 
 /** What git's connectivity-only walk types objects from; `undefined` in the
@@ -273,7 +289,17 @@ async function auditRepository(ctx: Context, opts: FsckOptions): Promise<FsckRes
   // A pack entry hashing to another id leaves git holding no copy of the object
   // unless a loose copy verifies (`HAS_OBJ`); a held one is walked as served.
   const verified = await verifiedCopiesOf(auditCtx, misHashedIds(verifyPackResult.findings));
-  const refused = new Set([...contentResult.typeUnknownIds, ...unverifiedIds(verified)]);
+  const unchecked = new Set([...contentResult.typeUnknownIds, ...unverifiedIds(verified)]);
+  // git's object table: an object a parse or walk typed first, read as
+  // another type, never parses — and is never recorded as present.
+  const table = await readObjectTable(
+    auditCtx,
+    opts,
+    objectCache,
+    new Set([...unchecked, ...misHashedLooseIds(contentResult.findings)]),
+    verifyPackResult.copies,
+  );
+  const refused = new Set([...unchecked, ...table.unparsed]);
   // Roots + the missing-entry-point condition — a whole-repository check,
   // not a per-oid one: git sets bit 8 here exactly when the index carries a
   // cache-tree (`TREE` extension) and at least one of its entries' tree
@@ -332,6 +358,7 @@ async function auditRepository(ctx: Context, opts: FsckOptions): Promise<FsckRes
     packMemberIds,
     promised,
     await walkTyping(auditCtx, unreadable, reachabilityCache, { ...recorded, parsedIndexIds }),
+    table.unresolvedEntries,
   );
   // `--no-full` verifies no pack, yet git's walk forgets an object a pack
   // holds (`has_object_pack`) rather than calling it missing or broken.
@@ -347,17 +374,19 @@ async function auditRepository(ctx: Context, opts: FsckOptions): Promise<FsckRes
     universe,
     withVerifiedCopies(reachabilityCache, verified),
     unreadable === 'classify' ? reached : undefined,
+    table.unresolvedEntries,
   );
   const { unreachable, dangling } = classifyObjects(universe, reached, inEdgePresent);
   assertTypesRecoverable(ctx, unreachable, unrecoverable);
   const { rootCommits, tagRefs } = checkedRootsAndTags(
     universe,
     reachabilityCache,
-    contentRefusedIds(contentResult.findings),
+    contentRefusedIds(contentResult.findings, table.unparsed),
   );
 
   const findings: FsckFinding[] = [
-    ...contentResult.findings,
+    ...withoutUnparsedChecks(contentResult.findings, table),
+    ...table.findings,
     ...refsResult.findings,
     ...packResult.findings,
     ...verifyPackResult.findings,
@@ -378,11 +407,15 @@ async function auditRepository(ctx: Context, opts: FsckOptions): Promise<FsckRes
   ];
 
   const connectivityBit =
-    missingIds.size > 0 || brokenEdges.length > 0 || invalidReflogEntries.length > 0
+    missingIds.size > 0 ||
+    brokenEdges.length > 0 ||
+    invalidReflogEntries.length > 0 ||
+    typeFindings.some((f) => f.type === 'unresolved-link')
       ? EXIT_MISSING
       : 0;
   const exitCode =
     contentResult.exitBit |
+    table.exitBit |
     connectivityBit |
     refsResult.exitBit |
     packResult.exitBit |

@@ -96,6 +96,51 @@ export type FsckFinding =
       readonly id: ObjectId;
       readonly expectedType: Exclude<FsckObjectType, 'blob'>;
     }
+  | {
+      /** A lookup asking for `expectedType` of an object an earlier lookup
+       *  typed `objectType` — git's `object <id> is a <objectType>, not a
+       *  <expectedType>`: the asking parse or walk gets no object. No exit bit. */
+      readonly type: 'type-conflict';
+      readonly id: ObjectId;
+      readonly objectType: FsckObjectType;
+      readonly expectedType: FsckObjectType;
+    }
+  | {
+      /** An object whose own parse failed on a type conflict — git's `<id>:
+       *  object could not be parsed: <path>` for a loose copy, `<id>: object
+       *  corrupt or missing` for a `pack` entry: never checked, never recorded
+       *  as present. Bit 1. */
+      readonly type: 'unparseable-object';
+      readonly id: ObjectId;
+      readonly pack?: string;
+      readonly objectsDir?: string;
+    }
+  | {
+      /** A commit (`tree`, `parent`) or tag (`tag`) whose link names `target`
+       *  under a type conflict — git's `bad tree pointer <target> in commit
+       *  <id>`, `bad parent <target> in commit <id>`, `bad tag pointer to
+       *  <target> in <id>`. No exit bit of its own. */
+      readonly type: 'bad-pointer';
+      readonly id: ObjectId;
+      readonly link: 'tree' | 'parent' | 'tag';
+      readonly target: ObjectId;
+    }
+  | {
+      /** An object whose check could not look up one of its links — git's
+       *  `error in <objectType> <id>: broken links`. Bit 1. */
+      readonly type: 'broken-links';
+      readonly id: ObjectId;
+      readonly objectType: FsckObjectType;
+    }
+  | {
+      /** A link the reachability walk could not look up as `toType` — git's
+       *  `broken link from <fromType> <fromId>` / `broken link from <toType>
+       *  unknown`. Bit 2. */
+      readonly type: 'unresolved-link';
+      readonly fromId: ObjectId;
+      readonly fromType: FsckObjectType;
+      readonly toType: FsckObjectType;
+    }
   | { readonly type: 'root'; readonly id: ObjectId }
   | {
       readonly type: 'tagged';

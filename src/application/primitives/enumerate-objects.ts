@@ -92,21 +92,28 @@ async function collectPrefixObjectIds(
 }
 
 /**
- * Up to 256 fanout directories, each its own `exists`-then-`readdir` round
+ * One source's loose object ids in the order git's `for_each_loose_file_in_source`
+ * meets them: fanout directory by directory, each in its listing order. Up
+ * to 256 fanout directories, each its own `exists`-then-`readdir` round
  * trip — fanned out across the `ioBound` pool rather than walked serially,
  * since none of the 256 probes depends on another's result.
  */
+export async function listLooseObjectIds(
+  ctx: Context,
+  source: ObjectSource,
+): Promise<ReadonlyArray<ObjectId>> {
+  const perPrefix = await boundedMapFor(ctx, 'ioBound', HEX_PREFIXES, (prefix) =>
+    collectPrefixObjectIds(ctx, source, prefix),
+  );
+  return perPrefix.flat();
+}
+
 async function collectLooseObjectIds(
   ctx: Context,
   source: ObjectSource,
   ids: Set<ObjectId>,
 ): Promise<void> {
-  const perPrefix = await boundedMapFor(ctx, 'ioBound', HEX_PREFIXES, (prefix) =>
-    collectPrefixObjectIds(ctx, source, prefix),
-  );
-  for (const prefixIds of perPrefix) {
-    for (const id of prefixIds) ids.add(id);
-  }
+  for (const id of await listLooseObjectIds(ctx, source)) ids.add(id);
 }
 
 async function collectPackedObjectIds(

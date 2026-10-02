@@ -77,13 +77,37 @@ describe('Given a healthy pack', () => {
     it('Then it reports nothing and sets no bit', async () => {
       // Arrange
       const ctx = createMemoryContext();
-      await writeSyntheticPack(ctx, 'healthy', blobEntries('a', 'b'));
+      const [a, b] = await writeSyntheticPack(ctx, 'healthy', blobEntries('a', 'b'));
 
       // Act
       const result = await sut(ctx, FULL);
 
       // Assert
-      expect(result).toEqual({ findings: [], exitBit: 0 });
+      expect(result).toEqual({
+        findings: [],
+        exitBit: 0,
+        copies: [
+          { id: a, pack: 'pack-healthy' },
+          { id: b, pack: 'pack-healthy' },
+        ],
+      });
+    });
+  });
+
+  describe('When its entries sit in another order than their ids', () => {
+    it('Then it hands the entries on in pack offset order', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const [b, a] = await writeSyntheticPack(ctx, 'offsets', blobEntries('b', 'a'));
+
+      // Act
+      const result = await sut(ctx, FULL);
+
+      // Assert
+      expect(result.copies).toEqual([
+        { id: b, pack: 'pack-offsets' },
+        { id: a, pack: 'pack-offsets' },
+      ]);
     });
   });
 });
@@ -93,7 +117,7 @@ describe('Given a pack whose .idx trailer is corrupt', () => {
     it('Then it reports the index checksum mismatch with bit 4', async () => {
       // Arrange
       const ctx = createMemoryContext();
-      await writeSyntheticPack(ctx, 'idx-trailer', blobEntries('a'));
+      const [id] = await writeSyntheticPack(ctx, 'idx-trailer', blobEntries('a'));
       await flipByte(ctx, idxPathIn(primaryObjects(ctx), 'idx-trailer'), (n) => n - 1);
 
       // Act
@@ -103,6 +127,7 @@ describe('Given a pack whose .idx trailer is corrupt', () => {
       expect(result).toEqual({
         findings: [{ type: 'pack-index-checksum-mismatch', pack: 'pack-idx-trailer' }],
         exitBit: 4,
+        copies: [{ id, pack: 'pack-idx-trailer' }],
       });
     });
   });
@@ -125,6 +150,7 @@ describe('Given a pack whose .idx records a wrong CRC for one entry', () => {
       expect(result).toEqual({
         findings: [{ type: 'pack-crc-mismatch', pack: 'pack-crc', id, offset: PACK_HEADER }],
         exitBit: 4,
+        copies: [{ id, pack: 'pack-crc' }],
       });
     });
   });
@@ -154,6 +180,7 @@ describe('Given a pack whose entry body is corrupt but whose .idx CRC was recomp
           { type: 'pack-entry-unpackable', pack: 'pack-body', id: ids[0], offset: PACK_HEADER },
         ],
         exitBit: 4,
+        copies: [{ id: ids[0], pack: 'pack-body' }],
       });
     });
   });
@@ -196,7 +223,7 @@ describe('Given a corrupt pack', () => {
       const result = await sut(ctx, opts);
 
       // Assert
-      expect(result).toEqual({ findings: [], exitBit: 0 });
+      expect(result).toEqual({ findings: [], exitBit: 0, copies: [] });
     });
   });
 });
@@ -265,6 +292,7 @@ describe('Given a packed blob whose bytes do not hash to its indexed id', () => 
       expect(result).toEqual({
         findings: [{ type: 'pack-entry-corrupt', pack: 'pack-lying', id: wrongId }],
         exitBit: 4,
+        copies: [{ id: wrongId, pack: 'pack-lying' }],
       });
     });
   });

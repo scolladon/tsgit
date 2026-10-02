@@ -21,6 +21,7 @@ import {
   validatePackedEntry,
 } from './content-validation.js';
 import { EXIT_PACK } from './exit-codes.js';
+import type { ReadCopy } from './object-table.js';
 import { packAccessibilityReported } from './pack-health.js';
 import { packsInVerifyOrder } from './pack-verify-order.js';
 import { attributeTo } from './source-attribution.js';
@@ -32,7 +33,7 @@ type PackFinding = Extract<
 >;
 
 /** Index positions ordered by the pack offset each entry starts at. */
-function positionsByOffset(offsets: Float64Array): ReadonlyArray<number> {
+export function positionsByOffset(offsets: Float64Array): ReadonlyArray<number> {
   return Array.from(offsets.keys()).sort((left, right) => offsets[left]! - offsets[right]!);
 }
 
@@ -45,6 +46,12 @@ async function indexChecksumHolds(ctx: Context, index: PackIndex): Promise<boole
 interface EntryScan {
   readonly checksumHolds: boolean;
   readonly entries: ContentValidationResult;
+  readonly ids: ReadonlyArray<ObjectId>;
+}
+
+/** What verifying packs reported, and every entry it handed to `fsck_obj_buffer`. */
+export interface VerifyPackResult extends ContentValidationResult {
+  readonly copies: ReadonlyArray<ReadCopy>;
 }
 
 /** Where `verifyOnePack` stands: which pack of which source, and how to report it. */
@@ -116,6 +123,7 @@ async function scanEntries(
   return {
     checksumHolds: bytesEqual(await hasher.digest(), trailer),
     entries: { findings, exitBit },
+    ids: order.map((position) => objectIdAt(index, position)),
   };
 }
 
@@ -130,7 +138,7 @@ const crcMismatch = (pack: string, id: ObjectId, offset: number): PackFinding =>
 async function verifyOnePack(
   ctx: Context,
   target: PackUnderVerification,
-): Promise<ContentValidationResult> {
+): Promise<ContentValidationResult & Pick<EntryScan, 'ids'>> {
   const { pack } = target;
   const index = await pack.index();
   const findings: FsckFinding[] = [];
@@ -143,6 +151,7 @@ async function verifyOnePack(
   return {
     findings: [...findings, ...scan.entries.findings],
     exitBit: ownBit | scan.entries.exitBit,
+    ids: scan.ids,
   };
 }
 
@@ -155,18 +164,20 @@ export async function runVerifyPackPass(
   ctx: Context,
   opts: FsckOptions,
   catalogue: CatalogueOptions,
-): Promise<{ readonly findings: ReadonlyArray<FsckFinding>; readonly exitBit: number }> {
-  if (!packAccessibilityReported(opts)) return { findings: [], exitBit: 0 };
+): Promise<VerifyPackResult> {
+  if (!packAccessibilityReported(opts)) return { findings: [], exitBit: 0, copies: [] };
   const store = await getObjectStore(ctx);
   const findings: FsckFinding[] = [];
+  const copies: ReadCopy[] = [];
   let exitBit = 0;
   for (const [source, packs] of await packsInVerifyOrder(ctx, store)) {
     const attribution = attributeTo(store, source);
     for (const pack of packs) {
       const own = await verifyOnePack(ctx, { store, source, pack, catalogue });
       findings.push(...own.findings.map((finding) => ({ ...finding, ...attribution })));
+      for (const id of own.ids) copies.push({ id, pack: pack.name, ...attribution });
       exitBit |= own.exitBit;
     }
   }
-  return { findings, exitBit };
+  return { findings, exitBit, copies };
 }

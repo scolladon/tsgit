@@ -134,7 +134,7 @@ async function hitIn(
 }
 
 /** The ids `snapshot_refs` parses before any pack is verified: every ref tip, then every worktree HEAD. */
-async function snapshotTips(ctx: Context): Promise<ReadonlyArray<ObjectId>> {
+export async function snapshotTips(ctx: Context): Promise<ReadonlyArray<ObjectId>> {
   const heads = (await worktreeHeads(ctx)).map(({ id }) => id);
   return [...new Set([...(await refTips(ctx)), ...heads])];
 }
