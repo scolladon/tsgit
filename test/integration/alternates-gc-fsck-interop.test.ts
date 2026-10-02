@@ -123,13 +123,21 @@ const packIndexes = (objects: string): ReadonlyArray<string> => {
     .map((name) => path.join(packDir, name));
 };
 
+const indexedOids = (idx: string): ReadonlyArray<string> =>
+  runGit(['show-index'], { input: readFileSync(idx) })
+    .split('\n')
+    .map((line) => line.split(' ')[1] ?? '')
+    .filter((oid) => OID_RE.test(oid));
+
 const packedOids = (objects: string): ReadonlyArray<string> =>
-  packIndexes(objects).flatMap((idx) =>
-    runGit(['show-index'], { input: readFileSync(idx) })
-      .split('\n')
-      .map((line) => line.split(' ')[1] ?? '')
-      .filter((oid) => OID_RE.test(oid)),
-  );
+  packIndexes(objects).flatMap(indexedOids);
+
+/** Objects in cruft packs only — a cruft pack is the one with an `.mtimes` sidecar. */
+const cruftOids = (worktree: string): ReadonlyArray<string> =>
+  packIndexes(objectsOf(worktree))
+    .filter((idx) => existsSync(idx.replace(/\.idx$/, '.mtimes')))
+    .flatMap(indexedOids)
+    .sort();
 
 const localObjects = (worktree: string): ReadonlyArray<string> => {
   const objects = objectsOf(worktree);
@@ -272,6 +280,47 @@ describe.skipIf(!GIT_AVAILABLE)('alternates gc interop — local-only packing', 
           // Assert
           expect(existsSync(looseFile(objectsOf(pair.tsgitSide), oid))).toBe(false);
           expect(localObjects(pair.tsgitSide)).toEqual(localObjects(pair.gitSide));
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe('Given a borrower holding unreachable loose objects, one a copy of a donor-packed object', () => {
+    const LATER_CONTENT = 'donor later';
+    const LOCAL_GARBAGE = 'borrower garbage';
+
+    const withUnreachableCopies = (borrower: string, donor: string): void => {
+      commitFile(donor, 'later.txt', LATER_CONTENT);
+      runGit(['-C', donor, 'gc', '-q']);
+      const later = runGit(['-C', donor, 'rev-parse', 'HEAD:later.txt']).trim();
+      writeLooseCopy(objectsOf(borrower), later, LATER_CONTENT);
+      runGit(['-C', borrower, 'hash-object', '-w', '--stdin'], { input: LOCAL_GARBAGE });
+    };
+
+    describe('When gc runs on twin copies (G6)', () => {
+      it(
+        'Then the donor-packed copy is dropped and only the local garbage reaches the cruft pack',
+        async () => {
+          // Arrange
+          const pair = pairOf('g6', withUnreachableCopies);
+          const later = runGit(['-C', pair.donor, 'rev-parse', 'HEAD:later.txt']).trim();
+          const garbage = runGit(['-C', pair.gitSide, 'hash-object', '--stdin'], {
+            input: LOCAL_GARBAGE,
+          }).trim();
+          const sut = tsgitGc;
+
+          // Act
+          runGit(['-C', pair.gitSide, 'gc', '-q']);
+          await sut(pair.tsgitSide);
+
+          // Assert
+          const expected = localObjects(pair.gitSide);
+          expect(expected).toContain(garbage);
+          expect(expected).not.toContain(later);
+          expect(localObjects(pair.tsgitSide)).toEqual(expected);
+          expect(cruftOids(pair.gitSide)).toEqual([garbage]);
+          expect(cruftOids(pair.tsgitSide)).toEqual([garbage]);
         },
         ROW_TIMEOUT,
       );
