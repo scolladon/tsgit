@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
-import { branchDelete } from '../../../../src/application/commands/branch.js';
+import { branchCreate, branchDelete } from '../../../../src/application/commands/branch.js';
 import { fetch } from '../../../../src/application/commands/fetch.js';
 import { pull } from '../../../../src/application/commands/pull.js';
 import { push } from '../../../../src/application/commands/push.js';
@@ -57,6 +57,17 @@ describe('Given a repository configuring a /-named remote', () => {
     },
     { verb: 'pull', run: (ctx: Context) => pull(ctx, { remote: 'y', ref: 'main' }), reads: 2 },
     { verb: 'branch -d', run: (ctx: Context) => branchDelete(ctx, { name: 'side' }), reads: 1 },
+    { verb: 'branch z', run: (ctx: Context) => branchCreate(ctx, { name: 'z' }), reads: 1 },
+    {
+      verb: 'branch z main',
+      run: (ctx: Context) => branchCreate(ctx, { name: 'z', startPoint: 'main' }),
+      reads: 1,
+    },
+    {
+      verb: 'branch z main~0',
+      run: (ctx: Context) => branchCreate(ctx, { name: 'z', startPoint: 'main~0' }),
+      reads: 0,
+    },
     {
       verb: 'branch -D',
       run: (ctx: Context) => branchDelete(ctx, { name: 'side', force: true }),

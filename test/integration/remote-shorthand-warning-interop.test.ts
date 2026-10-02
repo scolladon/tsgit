@@ -85,6 +85,22 @@ const ROWS: ReadonlyArray<{
     git: ['branch', '-D', 'side'],
     run: (repo) => repo.branch.delete({ name: 'side', force: true }),
   },
+  { verb: 'branch z', git: ['branch', 'z'], run: (repo) => repo.branch.create({ name: 'z' }) },
+  {
+    verb: 'branch z side',
+    git: ['branch', 'z', 'side'],
+    run: (repo) => repo.branch.create({ name: 'z', startPoint: 'side' }),
+  },
+  {
+    verb: 'branch z side~0',
+    git: ['branch', 'z', 'side~0'],
+    run: (repo) => repo.branch.create({ name: 'z', startPoint: 'side~0' }),
+  },
+  {
+    verb: 'branch side',
+    git: ['branch', 'side'],
+    run: (repo) => repo.branch.create({ name: 'side' }),
+  },
   { verb: 'status --porcelain', git: ['status', '--porcelain'], run: (repo) => repo.status() },
   { verb: 'log -1', git: ['log', '-1'], run: (repo) => repo.log({ limit: 1 }) },
 ];

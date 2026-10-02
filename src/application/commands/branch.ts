@@ -6,6 +6,7 @@
  */
 
 import { revparseAmbiguous } from '../../domain/commands/error.js';
+import { parseGitBoolean } from '../../domain/config/config-ini.js';
 import { TsgitError, unsupportedOperation } from '../../domain/error.js';
 import { errorDataCode } from '../../domain/error-data-code.js';
 import { branchExists, branchNotFound, branchNotFullyMerged } from '../../domain/index.js';
@@ -22,6 +23,7 @@ import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import { shortBranchName } from '../../domain/refs/short-branch-name.js';
 import { branchCheckedOut } from '../../domain/worktree/error.js';
 import type { Context } from '../../ports/context.js';
+import { findLastEntry, warnSlashLeadingRemoteShorthands } from '../primitives/config-read.js';
 import { peelChain } from '../primitives/internal/peel-chain.js';
 import { transactionLogging } from '../primitives/internal/ref-transaction-logging.js';
 import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
@@ -180,6 +182,28 @@ const resolveOmittedStartPoint = async (ctx: Context, label: string): Promise<Ob
   return id;
 };
 
+/** `branch.autoSetupMerge = false`: git's `create_branch` sets up no tracking. */
+const trackingDisabled = async (ctx: Context): Promise<boolean> => {
+  const last = await findLastEntry(ctx, 'branch', 'autoSetupMerge');
+  if (last === undefined) return false;
+  const parsed = parseGitBoolean(last.value);
+  return parsed.ok && !parsed.value;
+};
+
+/**
+ * git's `create_branch` sets up tracking — building the remote table, and so
+ * warning about each `/`-named remote — for a start point that names a ref
+ * (an omitted one names `HEAD`), never for a bare object name or expression.
+ */
+const readRemoteTableForTracking = async (
+  ctx: Context,
+  startPoint: string | undefined,
+): Promise<void> => {
+  if (startPoint !== undefined && (await resolvingCandidates(ctx, startPoint)).length === 0) return;
+  if (await trackingDisabled(ctx)) return;
+  await warnSlashLeadingRemoteShorthands(ctx);
+};
+
 export const branchCreate = async (
   ctx: Context,
   input: BranchCreateInput,
@@ -198,6 +222,7 @@ export const branchCreate = async (
       ? await resolveOmittedStartPoint(ctx, startPoint)
       : await resolveBranchTarget(ctx, input.startPoint);
   const target = await requireCommit(ctx, start);
+  await readRemoteTableForTracking(ctx, input.startPoint);
   const reflogMessage = force && held ? branchResetTo(startPoint) : branchCreatedFrom(startPoint);
   await writeNewBranch(ctx, { name, target, force, reflogMessage });
   return { name, id: target };
