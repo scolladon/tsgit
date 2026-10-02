@@ -9229,6 +9229,29 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     });
   });
 
+  describe('Given a valueless core.abbrev key', () => {
+    describe('When assertValidAbbrevConfig', () => {
+      it('Then it refuses with CONFIG_MISSING_VALUE carrying key and line', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seed(ctx, '[core]\n\tbare = false\n\tabbrev\n');
+
+        // Act
+        let caught: unknown;
+        try {
+          await assertValidAbbrevConfig(ctx);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        const data = (caught as TsgitError).data;
+        expect(data).toMatchObject({ code: 'CONFIG_MISSING_VALUE', key: 'core.abbrev', line: 3 });
+        expect((data as { source: string }).source).toMatch(/\/config$/);
+      });
+    });
+  });
+
   describe.each(['auto', 'no', '4', '12'])('Given a usable core.abbrev = %s', (raw) => {
     describe('When assertValidAbbrevConfig', () => {
       it('Then it resolves', async () => {

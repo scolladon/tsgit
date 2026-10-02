@@ -1497,7 +1497,7 @@ const applyAbbrevEntry = (core: MutableCore, value: string): MutableCore | undef
 
 /**
  * Refuse with `CONFIG_BAD_NUMERIC_VALUE` when any `core.abbrev` entry holds a
- * value git's grammar refuses (git dies on each entry as it reads it, so a
+ * value git's grammar refuses, or `CONFIG_MISSING_VALUE` for a valueless key (git dies on each entry as it reads it, so a
  * later valid entry does not rescue an earlier bad one).
  */
 export const assertValidAbbrevConfig = async (ctx: Context): Promise<void> => {
@@ -1509,7 +1509,9 @@ export const assertValidAbbrevConfig = async (ctx: Context): Promise<void> => {
       continue;
     }
     if (!inSection || token.kind !== 'entry' || token.key.toLowerCase() !== ABBREV_KEY) continue;
-    if (token.value === null) continue;
+    if (token.value === null) {
+      throw configMissingValue('core.abbrev', source, token.startLine + 1);
+    }
     const verdict = classifyAbbrev(token.value);
     if (!verdict.ok)
       throw configBadNumericValue('core.abbrev', source, token.value, verdict.reason);
