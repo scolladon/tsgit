@@ -1,3 +1,4 @@
+import { alternatesScenario } from './alternates.scenario.ts';
 import { archiveScenario } from './archive.scenario.ts';
 import { bisectMidpointScenario } from './bisect-midpoint.scenario.ts';
 import { bitmapClosureScenario } from './bitmap-closure.scenario.ts';
@@ -48,6 +49,7 @@ import { worktreeScenario } from './worktree.scenario.ts';
 import { writePipelineScenario } from './write-pipeline.scenario.ts';
 
 export const SCENARIOS: ReadonlyArray<Scenario<unknown>> = [
+  alternatesScenario,
   archiveScenario,
   bisectMidpointScenario,
   bitmapClosureScenario,
