@@ -138,3 +138,42 @@ describe('Given a malformed record after a valid one', () => {
     });
   });
 });
+
+describe('Given mode fields git reads through strtoul', () => {
+  describe.each([
+    { field: ' 100644', mode: 0o100644 },
+    { field: '\t\n+100644', mode: 0o100644 },
+    { field: '0100644', mode: 0o100644 },
+    { field: '-100644', mode: 2 ** 32 - 0o100644 },
+    { field: '-0', mode: 0 },
+    { field: '7'.repeat(23), mode: 2 ** 32 - 1 },
+  ])('When the stage-1 mode is "$field"', ({ field, mode }) => {
+    it('Then it decodes to the unsigned int git stores', () => {
+      // Arrange
+      const ids = mode === 0 ? [OURS] : [BASE, OURS];
+      const data = record('f', [field, '100644', '0'], ids);
+      const ours = { stage: 2, mode: 0o100644, id: OURS };
+
+      // Act
+      const result = sut(data, DIGEST);
+
+      // Assert
+      expect(result).toEqual([
+        { path: 'f', stages: mode === 0 ? [ours] : [{ stage: 1, mode, id: BASE }, ours] },
+      ]);
+    });
+  });
+
+  describe.each([' ', '+', '-', ' +', '+-1', '1 '])('When the stage-1 mode is "%s"', (field) => {
+    it('Then the extension is refused as git refuses it', () => {
+      // Arrange
+      const data = record('f', [field, '0', '0'], []);
+
+      // Act
+      const result = sut(data, DIGEST);
+
+      // Assert
+      expect(result).toBeUndefined();
+    });
+  });
+});

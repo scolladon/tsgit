@@ -1,5 +1,6 @@
 import { bytesToHex, indexOf } from '../objects/encoding.js';
 import type { ObjectId } from '../objects/index.js';
+import { isAsciiSpace } from '../pretty/ascii.js';
 
 /** One conflicted stage a resolution replaced: its mode and the id it named. */
 export interface ResolveUndoStage {
@@ -17,7 +18,13 @@ export interface ResolveUndoRecord {
 const NUL = 0x00;
 const OCTAL_ZERO = 0x30;
 const OCTAL_SEVEN = 0x37;
-const OCTAL_DIGIT_BITS = 3;
+const OCTAL_RADIX = 8n;
+const PLUS = 0x2b;
+const MINUS = 0x2d;
+const ULONG_BITS = 64;
+const ULONG_RANGE = 1n << BigInt(ULONG_BITS);
+const ULONG_MAX = ULONG_RANGE - 1n;
+const UINT_BITS = 32;
 const STAGES = [1, 2, 3] as const;
 const DECODER = new TextDecoder();
 
@@ -35,15 +42,39 @@ function field(cursor: Cursor): Uint8Array | undefined {
   return bytes;
 }
 
-/** An octal mode field: at least one digit and nothing else before its NUL. */
-function octal(bytes: Uint8Array): number | undefined {
-  if (bytes.length === 0) return undefined;
-  let mode = 0;
-  for (const byte of bytes) {
+/** Past `strtoul`'s optional leading whitespace and sign: where digits start, and whether negated. */
+function signedStart(bytes: Uint8Array): { readonly start: number; readonly negative: boolean } {
+  let start = 0;
+  while (start < bytes.length && isAsciiSpace(bytes[start] as number)) start += 1;
+  const sign = bytes[start];
+  if (sign !== PLUS && sign !== MINUS) return { start, negative: false };
+  return { start: start + 1, negative: sign === MINUS };
+}
+
+/** The octal digits from `start` to the field's end, or `undefined` when any byte is not one. */
+function octalDigits(bytes: Uint8Array, start: number): bigint | undefined {
+  let value = 0n;
+  for (const byte of bytes.subarray(start)) {
     if (byte < OCTAL_ZERO || byte > OCTAL_SEVEN) return undefined;
-    mode = (mode << OCTAL_DIGIT_BITS) + (byte - OCTAL_ZERO);
+    value = value * OCTAL_RADIX + BigInt(byte - OCTAL_ZERO);
   }
-  return mode;
+  return value;
+}
+
+/**
+ * A mode field as git's `strtoul(data, &end, 8)` reads it into an unsigned
+ * int: optional whitespace and sign, at least one octal digit and nothing
+ * else before its NUL. An out-of-range value saturates to `ULONG_MAX`, a
+ * negated one wraps, and the unsigned int keeps the low 32 bits.
+ */
+function octal(bytes: Uint8Array): number | undefined {
+  const { start, negative } = signedStart(bytes);
+  if (start === bytes.length) return undefined;
+  const digits = octalDigits(bytes, start);
+  if (digits === undefined) return undefined;
+  const wide =
+    digits > ULONG_MAX ? ULONG_MAX : negative ? (ULONG_RANGE - digits) % ULONG_RANGE : digits;
+  return Number(BigInt.asUintN(UINT_BITS, wide));
 }
 
 function readModes(cursor: Cursor): ReadonlyArray<number> | undefined {

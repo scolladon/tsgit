@@ -1102,7 +1102,7 @@
     "strcmp",
     "streamable",
     "stringly",
-    "stripspace",
+    "stripspace", "strtoul",
     "strm",
     "strncasecmp",
     "strtoimax",
