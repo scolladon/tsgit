@@ -19,7 +19,12 @@ import {
   withUnreadableOverrides,
 } from './internal/fsck/object-cache.js';
 import { packAccessibilityReported, runPackHealthPass } from './internal/fsck/pack-health.js';
-import { assertRefTipsReadable, packsWithWrongRevIndex } from './internal/fsck/packed-ref-tips.js';
+import {
+  assertObjectsReadable,
+  assertRefTipsReadable,
+  assertWalkedObjectsReadable,
+  packsWithWrongRevIndex,
+} from './internal/fsck/packed-ref-tips.js';
 import {
   assembleConnectivityFindings,
   buildInEdgeMap,
@@ -171,11 +176,8 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   // git parses every ref tip before it checks anything — and dies on one
   // whose only copy is a damaged pack entry. Runs after the rev-index pass,
   // whose verdict tells a damaged entry from a read the `.rev` bounded wrongly.
-  await assertRefTipsReadable(
-    auditCtx,
-    objectCache,
-    packsWithWrongRevIndex(revIndexResult.findings),
-  );
+  const wrongRevPacks = packsWithWrongRevIndex(revIndexResult.findings);
+  await assertRefTipsReadable(auditCtx, objectCache, wrongRevPacks);
 
   // Multi-pack-index health pass — reports the midx's own accessibility and
   // integrity. Runs after enumerateObjects has already succeeded above,
@@ -202,7 +204,14 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   // bounded existence probe per cache-tree entry, deliberately independent
   // of `universe`'s own mode-narrowing — see `existsInStore`'s doc comment)
   // rather than re-scanning the store.
-  const { roots, missingEntryPoint, sawAbsentRefTarget } = await collectRoots(ctx, opts, universe);
+  const { roots, missingEntryPoint, sawAbsentRefTarget, cacheTreeIds } = await collectRoots(
+    ctx,
+    opts,
+    universe,
+  );
+  // git's `fsck_index` parses every cache-tree oid, in every mode — and dies
+  // on one whose only copy is a damaged pack entry.
+  await assertObjectsReadable(auditCtx, cacheTreeIds, objectCache, wrongRevPacks);
   // Promisor-remote guard (see assertValidPromisorRemoteConfig) — only when the walk has roots.
   if (roots.size > 0 || sawAbsentRefTarget) {
     await assertValidPromisorRemoteConfig(ctx);
@@ -233,6 +242,10 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
 
   const { reached, missingIds, brokenEdges, unreadableEdges, rootCommits, tagRefs } =
     buildReachableSet(universe, roots, reachabilityCache, unreadable, packMemberIds);
+
+  if (unreadable === 'classify') {
+    await assertWalkedObjectsReadable(auditCtx, reached, recovered, objectCache, wrongRevPacks);
+  }
 
   const { unreachable, dangling } = classifyObjects(universe, reached, inEdgePresent);
   assertTypesRecoverable(ctx, unreachable, unrecoverable);

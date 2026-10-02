@@ -184,6 +184,14 @@ async function addReflogRoots(ctx: Context, roots: Set<ObjectId>, strict?: boole
   });
 }
 
+/** A cache-tree walk's verdict, and every tree oid it went on to parse. */
+interface CacheTreeWalk {
+  readonly unresolved: boolean;
+  readonly parsed: ReadonlyArray<ObjectId>;
+}
+
+const NO_CACHE_TREE: CacheTreeWalk = { unresolved: false, parsed: [] };
+
 /**
  * Walk the cache-tree, adding every entry's resolvable tree oid to `roots`
  * and reporting whether any entry names one that fails to resolve — git's
@@ -216,8 +224,9 @@ async function walkCacheTree(
   root: CacheTreeEntry,
   roots: Set<ObjectId>,
   universe?: ReadonlySet<ObjectId>,
-): Promise<boolean> {
+): Promise<CacheTreeWalk> {
   const stack: CacheTreeEntry[] = [root];
+  const parsed: ObjectId[] = [];
   let unresolved = false;
   while (stack.length > 0) {
     const entry = stack.pop() as CacheTreeEntry;
@@ -238,10 +247,11 @@ async function walkCacheTree(
       // broken edge and no missing id can follow from it. `universe`
       // omitted (gc's unbounded callers) roots every resolvable entry.
       if (universe === undefined || universe.has(entry.id)) roots.add(entry.id);
+      parsed.push(entry.id);
     }
     for (const child of entry.children) stack.push(child);
   }
-  return unresolved;
+  return { unresolved, parsed };
 }
 
 /** The index, or `undefined` when it is absent or its bytes do not form one. */
@@ -285,15 +295,15 @@ async function addIndexRoots(
   ctx: Context,
   roots: Set<ObjectId>,
   universe?: ReadonlySet<ObjectId>,
-): Promise<boolean> {
+): Promise<CacheTreeWalk> {
   const index = await readIndexIfIntact(ctx);
-  if (index === undefined) return false;
+  if (index === undefined) return NO_CACHE_TREE;
   for (const entry of index.entries) {
     if (entry.flags.stage !== 0) continue;
     roots.add(entry.id);
   }
   const cacheTree = cacheTreeOf(ctx, index);
-  if (cacheTree === undefined) return false;
+  if (cacheTree === undefined) return NO_CACHE_TREE;
   return walkCacheTree(ctx, cacheTree, roots, universe);
 }
 
@@ -313,6 +323,9 @@ export interface RootsCollection {
    * promisor-config gate fire on a repo whose ONLY ref is broken.
    */
   readonly sawAbsentRefTarget: boolean;
+  /** Every tree oid git's `fsck_cache_tree` parses: the cache-tree's
+   *  resolvable entries, whichever store holds them. */
+  readonly cacheTreeIds: ReadonlyArray<ObjectId>;
 }
 
 /**
@@ -334,9 +347,14 @@ export async function collectRoots(
   const roots = new Set<ObjectId>();
   const sawAbsentRefTarget = await addRefRoots(ctx, roots, universe);
   if (opts.reflogRoots !== false) await addReflogRoots(ctx, roots);
-  const missingEntryPoint =
-    opts.indexRoot !== false ? await addIndexRoots(ctx, roots, universe) : false;
-  return { roots, missingEntryPoint, sawAbsentRefTarget };
+  const cacheTree =
+    opts.indexRoot !== false ? await addIndexRoots(ctx, roots, universe) : NO_CACHE_TREE;
+  return {
+    roots,
+    missingEntryPoint: cacheTree.unresolved,
+    sawAbsentRefTarget,
+    cacheTreeIds: cacheTree.parsed,
+  };
 }
 
 /** Strip a trailing `/.git` from `dir`; absent means `dir` itself — the same

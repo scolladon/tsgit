@@ -8659,3 +8659,125 @@ describe('Given a ref tip in a pack whose .rev disagrees with its index', () => 
     });
   });
 });
+
+describe('Given objects git parses before any check, stored as damaged pack entries', () => {
+  const damageLastEntry = async (ctx: Context, name: string): Promise<void> => {
+    const pack = await ctx.fs.read(packFilePath(ctx, name));
+    pack[pack.length - 24] = pack[pack.length - 24]! ^ 0xff;
+    await ctx.fs.write(packFilePath(ctx, name), pack);
+  };
+
+  const packedDamaged = async (
+    ctx: Context,
+    type: 'commit' | 'tree' | 'blob',
+    content: Uint8Array,
+  ): Promise<ObjectId> => {
+    const [id] = await writeSyntheticPack(ctx, 'damaged', [{ kind: 'base', type, content }]);
+    await damageLastEntry(ctx, 'damaged');
+    return id as ObjectId;
+  };
+
+  const refusalData = async (pending: Promise<unknown>): Promise<unknown> => {
+    try {
+      await pending;
+    } catch (error) {
+      return (error as TsgitError).data;
+    }
+    return undefined;
+  };
+
+  const corruptRefusal = (id: ObjectId) => ({
+    code: 'INVALID_PACK_ENTRY',
+    offset: 12,
+    reason: `packed object ${id} (stored in pack-damaged) is corrupt`,
+  });
+
+  const treeBody = (ctx: Context, blobId: ObjectId) =>
+    serializeTreeContent(makeTree([treeEntry(FILE_MODE.REGULAR, 'a.txt', blobId)]), ctx.hashConfig);
+
+  // Packs before any loose write: the first store access settles the pack list.
+  const LEAF = '1111111111111111111111111111111111111111' as ObjectId;
+  const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904' as ObjectId;
+
+  const commitBody = (tree: ObjectId) =>
+    enc.encode(`tree ${tree}\nauthor A <a@a> 0 +0000\ncommitter A <a@a> 0 +0000\n\nold\n`);
+
+  describe.each([
+    { label: 'default', opts: {} },
+    { label: 'full: false', opts: { full: false } },
+    { label: 'connectivityOnly', opts: { connectivityOnly: true } },
+  ])('When the index cache-tree names a damaged packed tree and fsck runs ($label)', ({ opts }) => {
+    it('Then it rejects naming that tree, as git dies parsing the cache-tree', async () => {
+      // Arrange
+      const ctx = await initBareCtx();
+      const treeId = await packedDamaged(ctx, 'tree', treeBody(ctx, LEAF));
+      await writeIndexWithEntry(ctx, LEAF, 'a.txt', treeId);
+
+      // Act
+      const result = await refusalData(fsck(ctx, opts));
+
+      // Assert
+      expect(result).toEqual(corruptRefusal(treeId));
+    });
+  });
+
+  describe('When a reachable non-tip commit is damaged', () => {
+    const arrange = async (): Promise<{ readonly ctx: Context; readonly parent: ObjectId }> => {
+      const ctx = await initBareCtx();
+      const parent = await packedDamaged(ctx, 'commit', commitBody(EMPTY_TREE));
+      const treeId = await writeObject(ctx, makeTree([]));
+      const tip = await writeObject(ctx, makeCommit(treeId, [parent]));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${tip}\n`);
+      return { ctx, parent };
+    };
+
+    it('Then connectivityOnly rejects naming it, as git dies walking it', async () => {
+      // Arrange
+      const { ctx, parent } = await arrange();
+
+      // Act
+      const result = await refusalData(fsck(ctx, { connectivityOnly: true }));
+
+      // Assert
+      expect(result).toEqual(corruptRefusal(parent));
+    });
+
+    it('Then the default run does not reject, as verify_pack reports it instead', async () => {
+      // Arrange
+      const { ctx } = await arrange();
+
+      // Act
+      const result = await refusalData(fsck(ctx));
+
+      // Assert
+      expect(result).toBeUndefined();
+    });
+  });
+
+  describe.each([
+    { type: 'tree' as const, refused: true },
+    { type: 'blob' as const, refused: false },
+  ])(
+    'When a reachable $type no ref names is damaged and fsck runs connectivityOnly',
+    ({ type, refused }) => {
+      it('Then it rejects only a tree, as git parses trees and never blobs', async () => {
+        // Arrange
+        const ctx = await initBareCtx();
+        const content = type === 'tree' ? treeBody(ctx, LEAF) : enc.encode('damaged leaf');
+        const damaged = await packedDamaged(ctx, type, content);
+        const entries = [
+          treeEntry(type === 'tree' ? FILE_MODE.DIRECTORY : FILE_MODE.REGULAR, 'd', damaged),
+        ];
+        const rootTree = await writeObject(ctx, makeTree(entries));
+        const tip = await writeObject(ctx, makeCommit(rootTree, []));
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${tip}\n`);
+
+        // Act
+        const result = await refusalData(fsck(ctx, { connectivityOnly: true }));
+
+        // Assert
+        expect(result).toEqual(refused ? corruptRefusal(damaged) : undefined);
+      });
+    },
+  );
+});

@@ -1,4 +1,5 @@
 import { errorDataCode } from '../../../../domain/error-data-code.js';
+import type { FsckObjectType } from '../../../../domain/fsck/index.js';
 import type { ObjectId, RefName } from '../../../../domain/objects/index.js';
 import { invalidPackEntry } from '../../../../domain/storage/error.js';
 import type { Context } from '../../../../ports/context.js';
@@ -82,19 +83,52 @@ async function assertReadableUnlessAbsent(
   }
 }
 
+/** git's die for every one of `ids` it parses: an id the audit's object
+ *  cache already decoded is readable — only the rest are read. */
+export async function assertObjectsReadable(
+  ctx: Context,
+  ids: Iterable<ObjectId>,
+  cache: ReadonlyMap<ObjectId, CachedGitObject>,
+  wrongRevPacks: ReadonlySet<string>,
+): Promise<void> {
+  for (const id of ids) {
+    if ((cache.get(id) ?? null) !== null) continue;
+    await assertReadableUnlessAbsent(ctx, id, wrongRevPacks);
+  }
+}
+
 /**
  * git's `snapshot_ref` parses every ref tip before any check runs, in every
- * mode; a tip whose only copy is a damaged pack entry dies there. A tip the
- * audit's object cache already decoded is readable — only the rest are read.
+ * mode; a tip whose only copy is a damaged pack entry dies there.
  */
 export async function assertRefTipsReadable(
   ctx: Context,
   cache: ReadonlyMap<ObjectId, CachedGitObject>,
   wrongRevPacks: ReadonlySet<string>,
 ): Promise<void> {
+  const tips: ObjectId[] = [];
   for (const ref of await enumerateRefs(ctx)) {
     const id = await tipOf(ctx, ref);
-    if (id === undefined || (cache.get(id) ?? null) !== null) continue;
-    await assertReadableUnlessAbsent(ctx, id, wrongRevPacks);
+    if (id !== undefined) tips.push(id);
   }
+  await assertObjectsReadable(ctx, tips, cache, wrongRevPacks);
+}
+
+/** The stored types `--connectivity-only`'s walk parses: every one but a blob's. */
+const PARSED_BY_WALK: ReadonlySet<FsckObjectType> = new Set(['commit', 'tree', 'tag']);
+
+/**
+ * `--connectivity-only` parses every reachable commit, tree and tag as it
+ * walks — never a blob — so one whose only copy is a damaged pack entry dies
+ * there. `storedTypes` types the unreadable ones from their entry headers.
+ */
+export async function assertWalkedObjectsReadable(
+  ctx: Context,
+  reached: ReadonlySet<ObjectId>,
+  storedTypes: ReadonlyMap<ObjectId, FsckObjectType>,
+  cache: ReadonlyMap<ObjectId, CachedGitObject>,
+  wrongRevPacks: ReadonlySet<string>,
+): Promise<void> {
+  const parsed = [...reached].filter((id) => PARSED_BY_WALK.has(storedTypes.get(id) ?? 'blob'));
+  await assertObjectsReadable(ctx, parsed, cache, wrongRevPacks);
 }

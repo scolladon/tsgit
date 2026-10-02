@@ -776,6 +776,58 @@ describe.skipIf(!GIT_AVAILABLE)('alternates fsck interop — every source is aud
       );
     });
 
+    describe.each([
+      {
+        label: 'the tip tree the cache-tree names (V6)',
+        slug: 'v6',
+        rev: 'HEAD^{tree}',
+        modes: ['', '--no-full', '--connectivity-only'],
+      },
+      { label: 'a non-tip commit (V7)', slug: 'v7', rev: 'HEAD~1', modes: ['--connectivity-only'] },
+      {
+        label: 'a tree no ref or cache-tree names (V8)',
+        slug: 'v8',
+        rev: 'HEAD~1^{tree}',
+        modes: ['--connectivity-only'],
+      },
+    ])('When the body of $label is corrupt', ({ slug, rev, modes }) => {
+      const OPTIONS: Readonly<Record<string, FsckOptions>> = {
+        '': {},
+        '--no-full': { full: false },
+        '--connectivity-only': { connectivityOnly: true },
+      };
+
+      it(
+        'Then git dies with 128 and tsgit refuses naming the same packed object, on the donor and the borrower',
+        async () => {
+          // Arrange
+          const { donor, borrower } = borrowerOf(slug, true);
+          rmSync(path.join(objectsOf(donor), 'info', 'commit-graph'), { force: true });
+          const oid = runGit(['-C', donor, 'rev-parse', rev]).trim();
+          const pack = donorPack(donor);
+          const offset = entryOffset(pack.replace(/\.pack$/, '.idx'), oid);
+          flipByteAt(pack, offset + DAMAGE_PAST_ENTRY_START);
+          const sut = tsgitFsck;
+
+          for (const dir of [donor, borrower]) {
+            for (const mode of modes) {
+              // Act
+              const gitResult = gitFsck(dir, ...(mode === '' ? [] : [mode]));
+              const caught = await refusalOf(sut(dir, OPTIONS[mode]));
+
+              // Assert
+              expect(gitResult.exitCode).toBe(128);
+              expect(caught.data.code).toBe('INVALID_PACK_ENTRY');
+              const shown = dir === donor ? path.relative(dir, pack) : pack;
+              const named = caught.data.reason.replace(/stored in (\S+)\)/, `stored in ${shown})`);
+              expect(gitResult.stderr).toContain(`fatal: ${named}`);
+            }
+          }
+        },
+        ROW_TIMEOUT,
+      );
+    });
+
     describe('When a separate pack holds only an unreachable object and is corrupt (F4c)', () => {
       it(
         'Then both exit 4 and every verify_pack line git prints is rebuilt from tsgit findings',
