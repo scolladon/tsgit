@@ -1508,3 +1508,128 @@ describe.skipIf(!GIT_AVAILABLE)('fsck interop — worktree admin entries git ski
     },
   );
 });
+
+/** Whether `oid` is still stored in `dir` (loose or packed). */
+const holdsObject = (dir: string, oid: string): boolean =>
+  tryRunGitWithExit(['-C', dir, 'cat-file', '-e', oid]).exitCode === 0;
+
+/** Make `file` removable again when the run left it in place (git's own
+ *  `gc` deletes a worktree admin dir whose `gitdir` it cannot use). */
+const restoreMode = (file: string): void => {
+  if (existsSync(file)) chmodSync(file, 0o755);
+};
+
+/** Twin copies of `seed`: real git runs on one, tsgit on the other. */
+const twinsOf = (seed: string): { readonly gitSide: string; readonly tsgitSide: string } => {
+  const gitSide = `${seed}-git`;
+  const tsgitSide = `${seed}-tsgit`;
+  cpSync(seed, gitSide, { recursive: true });
+  cpSync(seed, tsgitSide, { recursive: true });
+  runGit(['-C', tsgitSide, 'config', 'gc.pruneExpire', 'now']);
+  return { gitSide, tsgitSide };
+};
+
+const UNOPENABLE_SPOILS = [
+  { label: 'mode 000', spoil: (file: string) => chmodSync(file, 0o000) },
+  {
+    label: 'a directory',
+    spoil: (file: string) => {
+      rmSync(file);
+      mkdirSync(file);
+    },
+  },
+] as const;
+
+const PRUNING_GIT_COMMANDS = [
+  { label: 'git gc --prune=now', args: ['gc', '-q', '--prune=now'] },
+  { label: 'git prune --expire=now', args: ['prune', '--expire=now'] },
+] as const;
+
+describe.skipIf(!GIT_AVAILABLE)('gc interop — reads git treats as absent', () => {
+  describe.each(UNOPENABLE_SPOILS)(
+    'Given a commit only a reflog names, that reflog being $label',
+    ({ label, spoil }) => {
+      describe.each(PRUNING_GIT_COMMANDS)('When $label and tsgit gc run', ({ args }) => {
+        it(
+          'Then both prune or keep the commit alike',
+          async () => {
+            // Arrange
+            const seed = path.join(
+              root,
+              `unopenable-reflog-${label}-${args[0]}`.replace(/ /g, '-'),
+            );
+            runGit(['init', '-q', '-b', 'main', seed]);
+            configure(seed);
+            commitFile(seed, 'f', 'base');
+            const orphan = runGit([
+              '-C',
+              seed,
+              'commit-tree',
+              '-m',
+              'orphan',
+              'HEAD^{tree}',
+            ]).trim();
+            runGit(['-C', seed, 'update-ref', 'refs/heads/side', orphan]);
+            runGit(['-C', seed, 'update-ref', 'refs/heads/side', 'HEAD']);
+            const { gitSide, tsgitSide } = twinsOf(seed);
+            const reflogOf = (dir: string): string =>
+              path.join(dir, '.git', 'logs', 'refs', 'heads', 'side');
+            spoil(reflogOf(gitSide));
+            spoil(reflogOf(tsgitSide));
+            runGit(['-C', gitSide, ...args]);
+            const sut = tsgitGc;
+
+            // Act
+            await sut(tsgitSide);
+
+            // Assert
+            restoreMode(reflogOf(gitSide));
+            restoreMode(reflogOf(tsgitSide));
+            expect(holdsObject(tsgitSide, orphan)).toBe(holdsObject(gitSide, orphan));
+          },
+          ROW_TIMEOUT,
+        );
+      });
+    },
+  );
+
+  describe.each([
+    ...UNOPENABLE_SPOILS,
+    { label: 'empty', spoil: (file: string) => writeFileSync(file, '') },
+  ])(
+    'Given a commit only a linked worktree HEAD names, its gitdir file being $label',
+    ({ label, spoil }) => {
+      describe('When git gc --prune=now and tsgit gc run', () => {
+        it(
+          'Then both prune or keep the commit alike',
+          async () => {
+            // Arrange
+            const seed = path.join(root, `unopenable-gitdir-${label}`.replace(/ /g, '-'));
+            runGit(['init', '-q', '-b', 'main', seed]);
+            configure(seed);
+            commitFile(seed, 'f', 'base');
+            const detached = runGit(['-C', seed, 'commit-tree', '-m', 'wt', 'HEAD^{tree}']).trim();
+            runGit(['-C', seed, 'worktree', 'add', '-q', '--detach', `${seed}-linked`, detached]);
+            runGit(['-C', seed, 'reflog', 'expire', '--expire=now', '--all']);
+            const { gitSide, tsgitSide } = twinsOf(seed);
+            const gitdirOf = (dir: string): string =>
+              path.join(dir, '.git', 'worktrees', path.basename(`${seed}-linked`), 'gitdir');
+            spoil(gitdirOf(gitSide));
+            spoil(gitdirOf(tsgitSide));
+            runGit(['-C', gitSide, 'gc', '-q', '--prune=now']);
+            const sut = tsgitGc;
+
+            // Act
+            await sut(tsgitSide);
+
+            // Assert
+            restoreMode(gitdirOf(gitSide));
+            restoreMode(gitdirOf(tsgitSide));
+            expect(holdsObject(tsgitSide, detached)).toBe(holdsObject(gitSide, detached));
+          },
+          ROW_TIMEOUT,
+        );
+      });
+    },
+  );
+});

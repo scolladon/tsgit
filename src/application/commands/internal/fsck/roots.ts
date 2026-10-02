@@ -158,18 +158,45 @@ function addReflogEntryRoots(
 }
 
 /**
- * Root every reflog's old/new oids for gc's retention walk. Each reflog is
- * read LINE-grained-leniently (`readReflogLenient`): a malformed line is
- * absorbed inside that read, as git's `show_one_reflog_ent` skips it, so
- * anything that DOES throw — the size cap, or a genuine I/O fault
- * (EACCES/EIO/EMFILE) — means the read never (fully) happened and aborts the
- * run rather than silently rooting nothing.
+ * The open failures git's reflog and `gitdir` reads stop at without a word:
+ * `files_for_each_reflog_ent` returns -1 when it cannot open the log, which every
+ * caller discards, and `get_linked_worktree` skips a worktree whose `gitdir`
+ * `strbuf_read_file` fails. Each reads as "no such file". Anything else — the
+ * reflog size cap, an unclassified I/O fault — means the read never happened
+ * and is rethrown.
  */
+const UNOPENABLE_FILE_CODES: ReadonlySet<string> = new Set([
+  'FILE_NOT_FOUND',
+  'PERMISSION_DENIED',
+  'NOT_A_DIRECTORY',
+]);
+
+const isUnopenableFile = (err: unknown): boolean =>
+  UNOPENABLE_FILE_CODES.has(errorDataCode(err) ?? '');
+
+/**
+ * `ref`'s reflog read LINE-grained-leniently (`readReflogLenient`: a
+ * malformed line is skipped, as git's `show_one_reflog_ent` skips it), and
+ * empty when the file cannot be opened at all, as git reads a log it cannot open.
+ */
+async function readReflogIfOpenable(
+  ctx: Context,
+  ref: RefName,
+): Promise<ReadonlyArray<ReflogEntry>> {
+  try {
+    return await readReflogLenient(ctx, ref);
+  } catch (err) {
+    if (!isUnopenableFile(err)) throw err;
+    return [];
+  }
+}
+
+/** Root every reflog's old/new oids for gc's retention walk. */
 async function addReflogRoots(ctx: Context, roots: Set<ObjectId>): Promise<void> {
   const reflogNames = await listReflogs(ctx);
   const zero = zeroOid(ctx.hashConfig);
   await boundedMapFor(ctx, 'ioBound', reflogNames, async (ref) => {
-    addReflogEntryRoots(roots, await readReflogLenient(ctx, ref), zero);
+    addReflogEntryRoots(roots, await readReflogIfOpenable(ctx, ref), zero);
   });
 }
 
@@ -425,10 +452,6 @@ const GIT_SUFFIX = '/.git';
 const stripGitSuffix = (dir: string): string =>
   dir.endsWith(GIT_SUFFIX) ? dir.slice(0, -GIT_SUFFIX.length) : dir;
 
-function isMissingGitdirFile(error: unknown): boolean {
-  return errorDataCode(error) === 'FILE_NOT_FOUND';
-}
-
 /**
  * Roots a NON-CURRENT worktree's own retention state: its HEAD, its own
  * HEAD reflog, and its own index — exactly (and ONLY) what git's
@@ -444,7 +467,7 @@ function isMissingGitdirFile(error: unknown): boolean {
  * walk `addRefRoots`/`addReflogRoots` do for the CURRENT worktree — also
  * removes the redundant shared-commonDir re-walk a full walk would repeat
  * per worktree: only `adminDir`-rooted paths are ever touched here. Shared
- * by `addOneWorktreeRoots` (a linked worktree) and `addMainWorktreeRoots`
+ * by `addOtherWorktreeRoots` (each linked worktree) and `addMainWorktreeRoots`
  * (the main worktree, exactly as "non-current" as any other from a linked
  * worktree's perspective).
  */
@@ -456,37 +479,8 @@ async function addNonCurrentWorktreeRoots(ctx: Context, roots: Set<ObjectId>): P
     if (!isTolerableRefFault(err)) throw err;
     // Unborn/dangling/malformed HEAD — tolerated, same as addRefRoots.
   }
-  addReflogEntryRoots(roots, await readReflogLenient(ctx, HEAD_REF), zeroOid(ctx.hashConfig));
+  addReflogEntryRoots(roots, await readReflogIfOpenable(ctx, HEAD_REF), zeroOid(ctx.hashConfig));
   await addIndexRoots(ctx, roots);
-}
-
-/**
- * Roots one linked worktree's own retention state (`addNonCurrentWorktreeRoots`,
- * scoped to HEAD/logs/HEAD/index — see that function's own doc for what git
- * roots and what it prunes). A worktree whose `gitdir` pointer is gone
- * (prunable, `git worktree prune`'s job, not gc's) contributes nothing; any
- * OTHER fault reading it rethrows, the same strict policy
- * `addNonCurrentWorktreeRoots` already applies to everything it reads.
- */
-async function addOneWorktreeRoots(
-  ctx: Context,
-  roots: Set<ObjectId>,
-  id: string,
-  adminDir: string,
-): Promise<void> {
-  let gitdirPointer: string;
-  try {
-    gitdirPointer = resolveWorktreePath(
-      adminDir,
-      (await ctx.fs.readUtf8(`${adminDir}/gitdir`)).trim(),
-    );
-  } catch (err) {
-    if (isMissingGitdirFile(err)) return;
-    throw err;
-  }
-  const worktreePath = stripGitSuffix(gitdirPointer);
-  const worktreeCtx = deriveWorktreeContext(ctx, id, worktreePath);
-  await addNonCurrentWorktreeRoots(worktreeCtx, roots);
 }
 
 /** Whether `ctx` IS the main worktree — its own `gitDir` doubles as the
@@ -542,7 +536,9 @@ function mainWorktreeContext(ctx: Context): Context {
  * would only be a wasted, redundant read. Pinned against git 2.55.0:
  * `git gc --prune=now` keeps an object reachable ONLY from a linked
  * worktree's own (possibly detached) HEAD — without this, gc would
- * cruft-then-destroy a subgraph another worktree is actively using.
+ * cruft-then-destroy a subgraph another worktree is actively using. A
+ * worktree whose `gitdir` is missing, unopenable or empty roots nothing, as
+ * git's `get_linked_worktree` skips it.
  */
 async function addOtherWorktreeRoots(ctx: Context, roots: Set<ObjectId>): Promise<void> {
   const root = `${commonGitDir(ctx)}/worktrees`;
@@ -551,7 +547,8 @@ async function addOtherWorktreeRoots(ctx: Context, roots: Set<ObjectId>): Promis
     if (!entry.isDirectory) continue;
     const adminDir = `${root}/${entry.name}`;
     if (adminDir === ctx.layout.gitDir) continue;
-    await addOneWorktreeRoots(ctx, roots, entry.name, adminDir);
+    const worktreeCtx = await linkedWorktreeContext(ctx, entry.name, adminDir);
+    if (worktreeCtx !== undefined) await addNonCurrentWorktreeRoots(worktreeCtx, roots);
   }
 }
 
@@ -566,13 +563,14 @@ async function addOtherWorktreeRoots(ctx: Context, roots: Set<ObjectId>): Promis
  * loose/cruft candidate set the reachability walk will need, not consuming
  * a finished enumeration, so a universe would be the wrong cost shape here.
  *
- * Every collector runs in STRICT mode (see `isTolerableRefFault`): a ref or
- * reflog that genuinely isn't one roots nothing, exactly as `collectRoots`
- * tolerates, but a permission fault, an EMFILE/EIO, or any other real I/O
- * error rethrows and aborts the run rather than silently rooting nothing —
- * gc has no corruption report to raise from a miss the way fsck does, so a
- * swallowed fault here would destroy a subgraph the caller never learns it
- * lost.
+ * Every collector runs in STRICT mode (see `isTolerableRefFault`): a ref
+ * that genuinely isn't one roots nothing, exactly as `collectRoots`
+ * tolerates, and a reflog or worktree `gitdir` that cannot be opened is
+ * absent, as git's own reads treat it (`isUnopenableFile`) — so what only it
+ * named is pruned, as git prunes it. Any other fault rethrows and aborts the
+ * run rather than silently rooting nothing — gc has no corruption report to
+ * raise from a miss the way fsck does, so a swallowed fault here would
+ * destroy a subgraph the caller never learns it lost.
  */
 export async function collectRetentionRoots(ctx: Context): Promise<ReadonlySet<ObjectId>> {
   const roots = new Set<ObjectId>();
@@ -602,12 +600,6 @@ async function headOf(worktreeCtx: Context): Promise<ObjectId | undefined> {
   }
 }
 
-/** The `gitdir` read faults git's `get_linked_worktree` skips a worktree on. */
-const UNREADABLE_GITDIR_CODES: ReadonlySet<string> = new Set([
-  'FILE_NOT_FOUND',
-  'PERMISSION_DENIED',
-]);
-
 /** A linked worktree's Context, or `undefined` when its `gitdir` file is
  *  missing, unreadable or empty — git's `get_linked_worktree` skips it then. */
 async function linkedWorktreeContext(
@@ -620,7 +612,7 @@ async function linkedWorktreeContext(
   try {
     pointer = (await ctx.fs.readUtf8(`${adminDir}/gitdir`)).trim();
   } catch (err) {
-    if (UNREADABLE_GITDIR_CODES.has(errorDataCode(err) ?? '')) return undefined;
+    if (isUnopenableFile(err)) return undefined;
     throw err;
   }
   if (pointer === '') return undefined;

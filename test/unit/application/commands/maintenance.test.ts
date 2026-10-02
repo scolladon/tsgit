@@ -60,7 +60,12 @@ import {
   writeLooseObject,
   writeObject,
 } from '../../../../src/application/primitives/write-object.js';
-import { fileNotFound, notADirectory, TsgitError } from '../../../../src/domain/error.js';
+import {
+  fileNotFound,
+  notADirectory,
+  permissionDenied,
+  TsgitError,
+} from '../../../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId, RefName } from '../../../../src/domain/objects/index.js';
 import { FILE_MODE, serializeHeader } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
@@ -102,6 +107,15 @@ const writeLooseBlob = (ctx: Context, content: string): Promise<ObjectId> =>
 
 const appendConfig = (ctx: Context, text: string): Promise<void> =>
   ctx.fs.appendUtf8(`${ctx.layout.gitDir}/config`, text);
+
+/** Make every `readUtf8` of `denied` fail the way an unreadable file does. */
+const denyReadOf = (ctx: Context, denied: string): void => {
+  const originalReadUtf8 = ctx.fs.readUtf8.bind(ctx.fs);
+  vi.spyOn(ctx.fs, 'readUtf8').mockImplementation(async (path: string) => {
+    if (path === denied) throw permissionDenied(path);
+    return originalReadUtf8(path);
+  });
+};
 
 const packDirOf = (ctx: Context): string => packsDir(commonGitDir(ctx));
 
@@ -895,17 +909,17 @@ describe('maintenance', () => {
     });
   });
 
-  describe('Given a linked worktree admin dir whose gitdir file read fails with a genuine I/O fault', () => {
+  describe('Given a linked worktree admin dir whose gitdir file read fails with an unclassified I/O fault', () => {
     describe('When gc runs the retention-root scan', () => {
       it('Then the fault propagates rather than being swallowed as prunable', async () => {
-        // Arrange — only FILE_NOT_FOUND is a prunable-worktree signal; any
-        // OTHER fault means the read never happened and must abort the run.
+        // Arrange — only a file that cannot be opened skips the worktree;
+        // any OTHER fault means the read never happened and must abort the run.
         const ctx = await seedOneCommit();
         const adminDir = `${ctx.layout.gitDir}/worktrees/wt-eacces`;
         await ctx.fs.writeUtf8(`${adminDir}/gitdir`, '/tmp/nonexistent-wt-eacces/.git\n');
         const gitdirPath = `${adminDir}/gitdir`;
         const originalReadUtf8 = ctx.fs.readUtf8.bind(ctx.fs);
-        const eacces = Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+        const eacces = Object.assign(new Error('EIO: i/o error'), { code: 'EIO' });
         vi.spyOn(ctx.fs, 'readUtf8').mockImplementation(async (path: string) => {
           if (path === gitdirPath) throw eacces;
           return originalReadUtf8(path);
@@ -1428,14 +1442,14 @@ describe('maintenance', () => {
     });
   });
 
-  describe('Given a genuine EACCES fault reading one reflog during the retention-root scan', () => {
+  describe('Given an unclassified I/O fault reading one reflog during the retention-root scan', () => {
     describe('When gc runs', () => {
       it('Then it aborts rather than silently rooting nothing and destroying the subgraph', async () => {
         // Arrange
         const ctx = await seedOneCommit();
         const reflogPath = `${ctx.layout.gitDir}/logs/HEAD`;
         const originalRead = ctx.fs.read.bind(ctx.fs);
-        const eacces = Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+        const eacces = Object.assign(new Error('EIO: i/o error'), { code: 'EIO' });
         vi.spyOn(ctx.fs, 'read').mockImplementation(async (path: string) => {
           if (path === reflogPath) throw eacces;
           return originalRead(path);
@@ -1451,13 +1465,108 @@ describe('maintenance', () => {
           caught = error;
         }
 
-        // Assert — a genuine I/O fault still aborts even though a
-        // parse-shaped reflog fault is now tolerated.
+        // Assert — an I/O fault still aborts even though an unopenable
+        // reflog and a parse-shaped reflog line are tolerated.
         expect(caught).toBe(eacces);
         expect((await (await getPackRegistry(ctx)).all()).length).toBe(0);
       });
     });
   });
+
+  describe.each([
+    { label: 'PERMISSION_DENIED', fault: permissionDenied },
+    { label: 'NOT_A_DIRECTORY', fault: notADirectory },
+  ])('Given the only reflog naming a loose blob cannot be opened ($label)', ({ fault }) => {
+    describe('When gc runs with prune=now', () => {
+      it('Then it treats the reflog as absent and prunes the blob', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const blobId = await writeLooseBlob(ctx, 'named-only-by-an-unreadable-reflog');
+        const head = (await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/heads/main`)).trim();
+        const reflogPath = `${ctx.layout.gitDir}/logs/refs/heads/main`;
+        await ctx.fs.appendUtf8(
+          reflogPath,
+          `${blobId} ${head} Ada <ada@example.com> 1700000000 +0000\treset: moving\n`,
+        );
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = now\n');
+        const originalRead = ctx.fs.read.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'read').mockImplementation(async (path: string) => {
+          if (path === reflogPath) throw fault(path);
+          return originalRead(path);
+        });
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(result.cruftObjectsExpired).toBe(1);
+        expect(await probeLooseOid(ctx, blobId)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a linked worktree whose own HEAD reflog cannot be opened and is the only one naming a loose blob', () => {
+    describe('When gc runs with prune=now', () => {
+      it('Then it treats that reflog as absent and prunes the blob', async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const blobId = await writeLooseBlob(ctx, 'named-only-by-a-worktree-reflog');
+        const head = (await ctx.fs.readUtf8(`${ctx.layout.gitDir}/refs/heads/main`)).trim();
+        const adminDir = `${ctx.layout.gitDir}/worktrees/wt-reflog-denied`;
+        const reflogPath = `${adminDir}/logs/HEAD`;
+        await ctx.fs.writeUtf8(`${adminDir}/HEAD`, `${head}\n`);
+        await ctx.fs.writeUtf8(`${adminDir}/gitdir`, '/tmp/nonexistent-wt-reflog-denied/.git\n');
+        await ctx.fs.writeUtf8(
+          reflogPath,
+          `${blobId} ${head} Ada <ada@example.com> 1700000000 +0000\tcheckout: moving\n`,
+        );
+        await appendConfig(ctx, '\n[gc]\n\tpruneExpire = now\n');
+        const originalRead = ctx.fs.read.bind(ctx.fs);
+        vi.spyOn(ctx.fs, 'read').mockImplementation(async (path: string) => {
+          if (path === reflogPath) throw permissionDenied(path);
+          return originalRead(path);
+        });
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks: ['gc'] });
+
+        // Assert
+        expect(result.cruftObjectsExpired).toBe(1);
+        expect(await probeLooseOid(ctx, blobId)).toBe(false);
+      });
+    });
+  });
+
+  describe.each([
+    { label: 'unreadable', spoil: (ctx: Context, path: string) => denyReadOf(ctx, path) },
+    { label: 'empty', spoil: (ctx: Context, path: string) => ctx.fs.writeUtf8(path, '') },
+  ])(
+    'Given a linked worktree whose gitdir file is $label and whose HEAD alone names a loose blob',
+    ({ spoil }) => {
+      describe('When gc runs with prune=now', () => {
+        it('Then it skips that worktree and prunes the blob', async () => {
+          // Arrange
+          const ctx = await seedOneCommit();
+          const blobId = await writeLooseBlob(ctx, 'named-only-by-a-skipped-worktree');
+          const adminDir = `${ctx.layout.gitDir}/worktrees/wt-skipped`;
+          await ctx.fs.writeUtf8(`${adminDir}/HEAD`, `${blobId}\n`);
+          await ctx.fs.writeUtf8(`${adminDir}/gitdir`, '/tmp/nonexistent-wt-skipped/.git\n');
+          await spoil(ctx, `${adminDir}/gitdir`);
+          await appendConfig(ctx, '\n[gc]\n\tpruneExpire = now\n');
+          const sut = maintenance;
+
+          // Act
+          const result = await sut(ctx, { tasks: ['gc'] });
+
+          // Assert
+          expect(result.cruftObjectsExpired).toBe(1);
+          expect(await probeLooseOid(ctx, blobId)).toBe(false);
+        });
+      });
+    },
+  );
 
   describe('Given a reftable-backed repository where a commit is reachable only from a reflog', () => {
     describe('When gc runs with prune=now', () => {
