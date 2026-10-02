@@ -5,11 +5,14 @@
  * worktree's index roots its entries, its cache-tree and its resolve-undo
  * stages.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { type FsckFinding, fsck } from '../../../../src/application/commands/fsck.js';
 import { deriveWorktreeContext } from '../../../../src/application/primitives/internal/worktree-context.js';
+import { looseObjectPath } from '../../../../src/application/primitives/path-layout.js';
+import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import { permissionDenied } from '../../../../src/domain/error.js';
 import type { GitIndex } from '../../../../src/domain/git-index/index-entry.js';
 import { STAGE0_FLAGS } from '../../../../src/domain/git-index/index-entry.js';
 import { hexToBytes } from '../../../../src/domain/objects/encoding.js';
@@ -19,10 +22,17 @@ import type { Context } from '../../../../src/ports/context.js';
 import { serializeIndexFixtureAsync } from '../primitives/fixtures.js';
 import { writeSyntheticPack } from '../primitives/pack-fixture.js';
 
+vi.mock('../../../../src/application/primitives/read-object.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../../../../src/application/primitives/read-object.js')>();
+  return { ...actual, readObject: vi.fn(actual.readObject) };
+});
+
 const ABSENT = '1111111111111111111111111111111111111111' as ObjectId;
 const ZERO = '0000000000000000000000000000000000000000' as ObjectId;
 const EXIT_MISSING = 2;
 const EXIT_REFS_CONTENT = 8;
+const EXIT_CORRUPT = 1;
 const AUTHOR = {
   name: 'Ada',
   email: 'ada@example.com',
@@ -322,6 +332,115 @@ describe('Given an index recording resolve-undo stages', () => {
       // Assert
       expect(pointerFindings(result.findings)).toEqual([]);
       expect(result.exitCode).toBe(0);
+    });
+  });
+
+  describe('When a regular stage names a loose blob whose bytes hash to another blob', () => {
+    it('Then it reports the invalid resolve-undo pointer beside the hash mismatch', async () => {
+      // Arrange
+      const ctx = await repoWithWorktrees();
+      const merged = await writeBlob(ctx, 'merged');
+      const ours = await writeBlob(ctx, 'ours');
+      const theirs = await writeBlob(ctx, 'theirs');
+      const oursPath = looseObjectPath(ctx.layout.gitDir, ours);
+      await ctx.fs.write(oursPath, await ctx.fs.read(looseObjectPath(ctx.layout.gitDir, theirs)));
+      await writeIndexAt(
+        ctx,
+        ctx.layout.gitDir,
+        [indexEntry(merged, 'f'), indexEntry(theirs, 'g')],
+        [
+          resolveUndo([
+            ['100644', ours],
+            ['0', undefined],
+            ['0', undefined],
+          ]),
+        ],
+      );
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(pointerFindings(result.findings)).toEqual([
+        { type: 'invalid-resolve-undo-pointer', id: ours, index: `${ctx.layout.gitDir}/index` },
+      ]);
+      expect(result.exitCode).toBe(EXIT_CORRUPT | EXIT_REFS_CONTENT);
+    });
+  });
+
+  describe('When a regular stage names a loose blob whose bytes do not inflate', () => {
+    it('Then fsck refuses, as git dies on the corrupt loose object', async () => {
+      // Arrange
+      const ctx = await repoWithWorktrees();
+      const merged = await writeBlob(ctx, 'merged');
+      const ours = await writeBlob(ctx, 'ours');
+      const oursPath = looseObjectPath(ctx.layout.gitDir, ours);
+      await ctx.fs.write(oursPath, enc.encode('garbage'));
+      await writeIndexAt(
+        ctx,
+        ctx.layout.gitDir,
+        [indexEntry(merged, 'f')],
+        [
+          resolveUndo([
+            ['100644', ours],
+            ['0', undefined],
+            ['0', undefined],
+          ]),
+        ],
+      );
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx).then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+
+      // Assert
+      expect(result).toMatchObject({
+        data: {
+          code: 'INVALID_OBJECT_HEADER',
+          reason: `loose object ${ours} (stored in ${oursPath}) is corrupt`,
+        },
+      });
+    });
+  });
+
+  describe('When the hash-checked read of a regular stage fails for an I/O reason', () => {
+    it('Then the fault propagates, as a check that never ran must not pass', async () => {
+      // Arrange
+      const ctx = await repoWithWorktrees();
+      const merged = await writeBlob(ctx, 'merged');
+      const ours = await writeBlob(ctx, 'ours');
+      await writeIndexAt(
+        ctx,
+        ctx.layout.gitDir,
+        [indexEntry(merged, 'f')],
+        [
+          resolveUndo([
+            ['100644', ours],
+            ['0', undefined],
+            ['0', undefined],
+          ]),
+        ],
+      );
+      const fault = permissionDenied(looseObjectPath(ctx.layout.gitDir, ours));
+      const actual = vi.mocked(readObject).getMockImplementation() as typeof readObject;
+      vi.mocked(readObject).mockImplementation((readCtx, id, options) =>
+        options?.verifyHash === true ? Promise.reject(fault) : actual(readCtx, id, options),
+      );
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx).then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+      vi.mocked(readObject).mockImplementation(actual);
+
+      // Assert
+      expect(result).toMatchObject({ data: fault.data });
     });
   });
 

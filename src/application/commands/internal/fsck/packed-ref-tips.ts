@@ -1,5 +1,6 @@
 import { errorDataCode } from '../../../../domain/error-data-code.js';
 import type { FsckObjectType } from '../../../../domain/fsck/index.js';
+import { invalidObjectHeader } from '../../../../domain/objects/error.js';
 import type { ObjectId, RefName } from '../../../../domain/objects/index.js';
 import { invalidPackEntry } from '../../../../domain/storage/error.js';
 import type { Context } from '../../../../ports/context.js';
@@ -7,7 +8,9 @@ import { enumerateRefs } from '../../../primitives/enumerate-refs.js';
 import { readObject } from '../../../primitives/read-object.js';
 import { resolveRef } from '../../../primitives/resolve-ref.js';
 import { type CachedGitObject, packedLocationOf } from './object-cache.js';
+import { looseHolderPath } from './object-presence.js';
 import { isTolerableRefFault } from './roots.js';
+import { isStoredCorruption } from './stored-corruption.js';
 
 async function tipOf(ctx: Context, ref: RefName): Promise<ObjectId | undefined> {
   try {
@@ -18,44 +21,39 @@ async function tipOf(ctx: Context, ref: RefName): Promise<ObjectId | undefined> 
   }
 }
 
-/** The codes a read of a damaged stored entry fails with: an unusable entry
- *  or the index routing to it,
- *  delta chain, zlib stream or header, a body that no longer parses, a body that no longer hashes to its id,
- *  or a delta base the pack no longer yields. Anything else — a permission or
- *  I/O fault — says nothing about the entry and must reach the caller as-is. */
-const CORRUPTION_CODES: ReadonlySet<string | undefined> = new Set([
-  'INVALID_PACK_ENTRY',
-  'INVALID_PACK_HEADER',
-  'INVALID_PACK_INDEX',
-  'INVALID_MULTI_PACK_INDEX',
-  'INVALID_PACK_REV_INDEX',
-  'INVALID_DELTA',
-  'DELTA_CHAIN_TOO_DEEP',
+/** The codes a loose file fails with when git's own read of it cannot
+ *  inflate it or parse its header — the faults its loose reader dies on. */
+const LOOSE_UNREADABLE_CODES: ReadonlySet<string | undefined> = new Set([
   'DECOMPRESS_FAILED',
   'INVALID_OBJECT_HEADER',
-  'INVALID_TREE_ENTRY',
-  'INVALID_COMMIT',
-  'INVALID_TAG',
-  'INVALID_FILE_MODE',
-  'INVALID_IDENTITY',
-  'OBJECT_HASH_MISMATCH',
-  'OBJECT_NOT_FOUND',
 ]);
 
-/** Refuse when `id` cannot be read and a pack claims it — git's die on a
- *  `has_packed_and_bad` object; an id no store claims is git's
+/** git's die for an object it cannot read: a pack claiming it is
+ *  `has_packed_and_bad`; otherwise a loose file it cannot unpack. */
+async function corruptionDie(ctx: Context, id: ObjectId, err: unknown): Promise<Error | undefined> {
+  const location = await packedLocationOf(ctx, id);
+  if (location !== undefined)
+    return invalidPackEntry(
+      location.offset,
+      `packed object ${id} (stored in ${location.pack}) is corrupt`,
+    );
+  if (!LOOSE_UNREADABLE_CODES.has(errorDataCode(err))) return undefined;
+  const path = await looseHolderPath(ctx, id);
+  return path === undefined
+    ? undefined
+    : invalidObjectHeader(`loose object ${id} (stored in ${path}) is corrupt`);
+}
+
+/** Refuse when `id` cannot be read and a store holds it — git's die on a
+ *  packed or loose copy it cannot read; an id no store holds is git's
  *  `invalid sha1 pointer`, reported elsewhere. */
 async function assertReadableUnlessAbsent(ctx: Context, id: ObjectId): Promise<void> {
   try {
     await readObject(ctx, id);
   } catch (err) {
-    if (!CORRUPTION_CODES.has(errorDataCode(err))) throw err;
-    const location = await packedLocationOf(ctx, id);
-    if (location === undefined) return;
-    throw invalidPackEntry(
-      location.offset,
-      `packed object ${id} (stored in ${location.pack}) is corrupt`,
-    );
+    if (!isStoredCorruption(err)) throw err;
+    const die = await corruptionDie(ctx, id, err);
+    if (die !== undefined) throw die;
   }
 }
 

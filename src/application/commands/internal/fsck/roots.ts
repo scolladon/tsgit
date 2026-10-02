@@ -15,9 +15,11 @@ import { boundedMapFor } from '../../../primitives/internal/concurrency.js';
 import { deriveWorktreeContext } from '../../../primitives/internal/worktree-context.js';
 import { commonGitDir, indexPath } from '../../../primitives/path-layout.js';
 import { readIndex } from '../../../primitives/read-index.js';
+import { readObject } from '../../../primitives/read-object.js';
 import { listReflogs, readReflogLenient } from '../../../primitives/reflog-store.js';
 import { resolveRef } from '../../../primitives/resolve-ref.js';
 import { objectIsPresent } from './object-presence.js';
+import { isStoredCorruption } from './stored-corruption.js';
 import type { FsckOptions } from './types.js';
 
 const HEAD_REF = 'HEAD' as RefName;
@@ -445,7 +447,27 @@ async function addRecordedReflogRoots(
 const worktreeRefName = (prefix: string, ref: RefName): RefName =>
   (isPerWorktreeRef(ref) ? `${prefix}${ref}` : ref) as RefName;
 
-/** One index's resolve-undo stages: a present one is parsed and rooted, an absent one a fault. */
+/**
+ * Whether git's `parse_object` gets past `id`'s hash check: bytes that hash
+ * to another id are refused. Any other damage is left to the readability
+ * assertion, which dies where git's read dies.
+ */
+async function hashesToItsId(ctx: Context, id: ObjectId): Promise<boolean> {
+  try {
+    await readObject(ctx, id, { verifyHash: true });
+    return true;
+  } catch (err) {
+    if (!isStoredCorruption(err)) throw err;
+    return errorDataCode(err) !== 'OBJECT_HASH_MISMATCH';
+  }
+}
+
+/** Whether git's `parse_object` yields `id`: present, and hashing to itself. */
+async function parsesAt(ctx: Context, id: ObjectId): Promise<boolean> {
+  return (await probePresence(ctx, id)) !== false && (await hashesToItsId(ctx, id));
+}
+
+/** One index's resolve-undo stages: one git parses is rooted, any other a fault. */
 async function addResolveUndoRoots(
   ctx: Context,
   ids: ReadonlyArray<ObjectId>,
@@ -455,7 +477,7 @@ async function addResolveUndoRoots(
   const invalid: InvalidIndexPointer[] = [];
   const parsed: ObjectId[] = [];
   for (const id of ids) {
-    if ((await probePresence(ctx, id)) === false) {
+    if (!(await parsesAt(ctx, id))) {
       invalid.push({
         type: 'invalid-resolve-undo-pointer',
         id,

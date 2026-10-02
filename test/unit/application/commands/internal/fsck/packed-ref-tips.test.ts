@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../../../src/adapters/memory/memory-adapter.js';
 import { assertRefTipsReadable } from '../../../../../../src/application/commands/internal/fsck/packed-ref-tips.js';
+import { looseObjectPath } from '../../../../../../src/application/primitives/path-layout.js';
 import { readObject } from '../../../../../../src/application/primitives/read-object.js';
+import { writeObject } from '../../../../../../src/application/primitives/write-object.js';
 import {
   decompressFailed,
   permissionDenied,
@@ -170,6 +172,72 @@ describe.each([
 
       // Assert
       expect(caught.data).toMatchObject({ code: 'INVALID_PACK_ENTRY', offset: 12 });
+    });
+  });
+});
+
+const looseTip = async (): Promise<{ readonly ctx: Context; readonly id: ObjectId }> => {
+  const ctx = createMemoryContext();
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+  const id = await writeObject(ctx, {
+    type: 'blob',
+    id: '' as ObjectId,
+    content: new TextEncoder().encode('loose tip'),
+  });
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/t`, `${id}\n`);
+  return { ctx, id };
+};
+
+describe.each([
+  ['an inflate failure', decompressFailed('incorrect header check')],
+  ['a bad object header', invalidObjectHeader('bad')],
+])('Given a loose ref tip no pack claims whose read fails with %s', (_label, fault) => {
+  describe('When ref tips are checked', () => {
+    it('Then it refuses as git dies on the corrupt loose object', async () => {
+      // Arrange
+      const { ctx, id } = await looseTip();
+      vi.mocked(readObject).mockRejectedValueOnce(fault);
+
+      // Act
+      const caught = await rejectionOf(sut(ctx, NO_CACHE));
+
+      // Assert
+      expect(caught.data).toEqual({
+        code: 'INVALID_OBJECT_HEADER',
+        reason: `loose object ${id} (stored in ${looseObjectPath(ctx.layout.gitDir, id)}) is corrupt`,
+      });
+    });
+  });
+});
+
+describe('Given a loose ref tip no pack claims whose bytes hash to another id', () => {
+  describe('When ref tips are checked', () => {
+    it('Then it resolves, as git reads the loose file before it refuses the hash', async () => {
+      // Arrange
+      const { ctx, id } = await looseTip();
+      vi.mocked(readObject).mockRejectedValueOnce(objectHashMismatch(id, ABSENT as ObjectId));
+
+      // Act
+      const result = sut(ctx, NO_CACHE);
+
+      // Assert
+      await expect(result).resolves.toBeUndefined();
+    });
+  });
+});
+
+describe('Given a ref tip no store holds whose read fails to inflate', () => {
+  describe('When ref tips are checked', () => {
+    it('Then it resolves, as no loose file is there to die on', async () => {
+      // Arrange
+      const ctx = await repoWithTag(ABSENT);
+      vi.mocked(readObject).mockRejectedValueOnce(decompressFailed('incorrect header check'));
+
+      // Act
+      const result = sut(ctx, NO_CACHE);
+
+      // Assert
+      await expect(result).resolves.toBeUndefined();
     });
   });
 });

@@ -1478,6 +1478,91 @@ describe.skipIf(!GIT_AVAILABLE)("fsck interop — every worktree's reflogs and i
     );
   });
 
+  describe('Given a resolve-undo stage naming a loose blob', () => {
+    /** A repo whose index records `ours` as a resolved stage, its loose file rewritten by `damage`. */
+    const repoWithDamagedStage = (
+      slug: string,
+      damage: (file: string, dir: string) => void,
+    ): { readonly dir: string; readonly ours: string } => {
+      const dir = path.join(root, `resolve-undo-damaged-${slug}`);
+      runGit(['init', '-q', '-b', 'main', dir]);
+      configure(dir);
+      commitFile(dir, 'a', 'a');
+      const ours = runGit(['-C', dir, 'hash-object', '-w', '--stdin'], { input: 'ours' }).trim();
+      runGit(['-C', dir, 'update-index', '--index-info'], { input: `100644 ${ours} 2\tf\n` });
+      writeFileSync(path.join(dir, 'f'), 'resolved');
+      runGit(['-C', dir, 'update-index', '--add', 'f']);
+      const file = path.join(objectsOf(dir), ours.slice(0, 2), ours.slice(2));
+      chmodSync(file, 0o644);
+      damage(file, dir);
+      return { dir, ours };
+    };
+
+    describe('When its bytes hash to another blob and git fsck and tsgit fsck run', () => {
+      it(
+        'Then both report the resolve-undo pointer beside the hash mismatch with exit 9',
+        async () => {
+          // Arrange
+          const { dir, ours } = repoWithDamagedStage('swapped', (file, repo) => {
+            const theirs = runGit(['-C', repo, 'hash-object', '-w', '--stdin'], {
+              input: 'theirs',
+            }).trim();
+            writeFileSync(
+              file,
+              readFileSync(path.join(objectsOf(repo), theirs.slice(0, 2), theirs.slice(2))),
+            );
+          });
+          const git = gitFsck(dir);
+          const sut = tsgitFsck;
+
+          // Act
+          const result = await sut(dir);
+
+          // Assert
+          expect(git.exitCode).toBe(9);
+          expect(result.exitCode).toBe(9);
+          expect(gitMatches(git.stderr, RESOLVE_UNDO_LINE)).toEqual([`${ours} .git/index`]);
+          expect(
+            result.findings.flatMap((f) =>
+              f.type === 'invalid-resolve-undo-pointer' ? [f.id] : [],
+            ),
+          ).toEqual([ours]);
+          expect(danglingLines(result.findings)).toEqual(gitDanglingLines(git.stdout));
+        },
+        ROW_TIMEOUT,
+      );
+    });
+
+    describe('When its bytes do not inflate and git fsck and tsgit fsck run', () => {
+      it(
+        'Then both refuse on the corrupt loose object',
+        async () => {
+          // Arrange
+          const { dir, ours } = repoWithDamagedStage('garbage', (file) => {
+            writeFileSync(file, 'garbage');
+          });
+          const git = gitFsck(dir);
+          const sut = tsgitFsck;
+
+          // Act
+          const result = await refusalOf(sut(dir));
+
+          // Assert
+          const stored = path.join('.git', 'objects', ours.slice(0, 2), ours.slice(2));
+          const reasonAt = (file: string): string =>
+            `loose object ${ours} (stored in ${file}) is corrupt`;
+          expect(git.exitCode).toBe(128);
+          expect(git.stderr).toContain(`fatal: ${reasonAt(stored)}`);
+          expect(result.data).toEqual({
+            code: 'INVALID_OBJECT_HEADER',
+            reason: reasonAt(path.join(dir, stored)),
+          });
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
   /** Append a `REUC` record for path `f` to `index` and re-seal its checksum. */
   const appendResolveUndo = (
     index: string,

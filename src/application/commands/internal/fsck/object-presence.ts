@@ -3,6 +3,7 @@ import type { Context } from '../../../../ports/context.js';
 import { probeLooseOid } from '../../../primitives/internal/loose-oid-cache.js';
 import { looseCompressedBytes } from '../../../primitives/object-resolver.js';
 import { getObjectStore, looseCacheLocation } from '../../../primitives/object-store.js';
+import { looseObjectPathIn } from '../../../primitives/path-layout.js';
 import { attributeTo } from './source-attribution.js';
 
 /**
@@ -64,6 +65,16 @@ export async function looseBytesFromHolder(
   for (const source of store.sources) {
     const bytes = await looseCompressedBytes(ctx, id, looseCacheLocation(store, source));
     if (bytes !== undefined) return bytes;
+  }
+  return undefined;
+}
+
+/** The loose file of `id` in the first source that holds it loose, in git's lookup order. */
+export async function looseHolderPath(ctx: Context, id: ObjectId): Promise<string | undefined> {
+  const store = await getObjectStore(ctx);
+  for (const source of store.sources) {
+    if (await probeLooseOid(ctx, id, looseCacheLocation(store, source)))
+      return looseObjectPathIn(source.objectsDir, id);
   }
   return undefined;
 }
