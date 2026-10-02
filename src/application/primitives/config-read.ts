@@ -2728,6 +2728,30 @@ export const findFirstInvalidAutoSetupMerge = async (
     fixedKey: 'branch.autosetupmerge',
   });
 
+/** `branch.autoSetupRebase`'s literals, which git compares case-sensitively. */
+const AUTO_SETUP_REBASE_LITERALS: ReadonlySet<string> = new Set([
+  'never',
+  'local',
+  'remote',
+  'always',
+]);
+
+/**
+ * `branch.autoSetupRebase`-specific finder: `git_default_config` accepts only
+ * its four exact literals and dies `malformed value` on any other value — on
+ * every command, `rev-parse` included. A valueless entry is a separate refusal
+ * (`findFirstValuelessEntry`).
+ */
+export const findFirstInvalidAutoSetupRebase = async (
+  ctx: Context,
+): Promise<InvalidBooleanEntry | undefined> =>
+  findFirstRejectedBoolean(ctx, {
+    section: 'branch',
+    keys: ['autosetuprebase'],
+    accepts: (value) => AUTO_SETUP_REBASE_LITERALS.has(value),
+    fixedKey: 'branch.autosetuprebase',
+  });
+
 /**
  * `diff.<name>.binary`-specific finder: the key accepts a third literal,
  * `auto` (case-insensitive), beyond git's boolean grammar — git's userdiff

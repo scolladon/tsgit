@@ -735,4 +735,48 @@ describe.skipIf(!GIT_AVAILABLE)('config boolean refusal tier interop', () => {
       });
     });
   });
+  describe.each([
+    {
+      label: 'valueless',
+      line: '\tautoSetupRebase\n',
+      stderr: "error: missing value for 'branch.autosetuprebase'",
+      data: { code: 'CONFIG_MISSING_VALUE', key: 'branch.autosetuprebase', line: 4 },
+    },
+    {
+      label: 'outside its literals',
+      line: '\tautoSetupRebase = Always\n',
+      stderr: 'error: malformed value for branch.autosetuprebase',
+      data: {
+        code: 'CONFIG_INVALID_ENUM_VALUE',
+        key: 'branch.autosetuprebase',
+        value: 'Always',
+        line: 4,
+      },
+    },
+  ])('Given branch.autoSetupRebase $label', ({ line, stderr, data }) => {
+    beforeEach(() => writeConfig(`[core]\n\trepositoryformatversion = 0\n[branch]\n${line}`));
+
+    describe.each([
+      {
+        verb: 'branch --list',
+        git: ['branch', '--list'],
+        run: (repo: Repository) => repo.branch.list(),
+      },
+      { verb: 'status', git: ['status'], run: (repo: Repository) => repo.status() },
+    ])('When git $verb and tsgit run', ({ git, run }) => {
+      it('Then both die on the config line', async () => {
+        // Arrange & Act — armed in beforeEach
+        const g = tryRunGitWithExit(['-C', ours, ...git], { env: runGitEnv() });
+        const caught = await withRepo(ours, (repo) => captureThrow(() => run(repo)));
+
+        // Assert
+        expect(g.exitCode).toBe(128);
+        expect(g.stderr.split('\n')[0]).toBe(stderr);
+        expect(g.stderr).toContain(
+          "bad config variable 'branch.autosetuprebase' in file '.git/config' at line 4",
+        );
+        expect((caught as TsgitError).data).toMatchObject(data);
+      });
+    });
+  });
 });

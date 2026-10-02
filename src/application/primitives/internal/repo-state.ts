@@ -2,6 +2,7 @@ import {
   configBadBooleanValue,
   configBadNumericValue,
   configBadZlibLevel,
+  configInvalidEnumValue,
   configMissingValue,
   operationInProgress,
 } from '../../../domain/commands/error.js';
@@ -32,6 +33,7 @@ import {
 import type { Context, RepositoryFormatRefusal } from '../../../ports/context.js';
 import {
   findFirstInvalidAutoSetupMerge,
+  findFirstInvalidAutoSetupRebase,
   findFirstInvalidBoolean,
   findFirstInvalidBooleanInSection,
   findFirstInvalidCompression,
@@ -152,7 +154,8 @@ const DIFF_BOOLEAN_KEYS: ReadonlyArray<string> = ['cachetextconv'];
 type EagerCandidate =
   | { readonly kind: 'valueless'; readonly line: number; readonly entry: ValuelessEntry }
   | { readonly kind: 'compression'; readonly line: number; readonly entry: InvalidCompressionEntry }
-  | { readonly kind: 'boolean'; readonly line: number; readonly entry: InvalidBooleanEntry };
+  | { readonly kind: 'boolean'; readonly line: number; readonly entry: InvalidBooleanEntry }
+  | { readonly kind: 'enum'; readonly line: number; readonly entry: InvalidBooleanEntry };
 
 const throwEagerCandidate = (candidate: EagerCandidate): never => {
   if (candidate.kind === 'valueless') {
@@ -162,6 +165,10 @@ const throwEagerCandidate = (candidate: EagerCandidate): never => {
   if (candidate.kind === 'boolean') {
     const { entry } = candidate;
     throw configBadBooleanValue(entry.key, entry.source, entry.value);
+  }
+  if (candidate.kind === 'enum') {
+    const { entry } = candidate;
+    throw configInvalidEnumValue(entry.key, entry.source, entry.value, entry.line);
   }
   const { entry } = candidate;
   if (entry.failure.kind === 'numeric') {
@@ -179,7 +186,8 @@ const throwEagerCandidate = (candidate: EagerCandidate): never => {
  * or any `[diff *]` subsection's `cachetextconv`/`binary` — `binary` is
  * userdiff's own tristate, `auto` plus git's boolean grammar, and
  * `branch.autoSetupMerge`, whose three exact literals precede that grammar) holds a value
- * git's boolean grammar refuses — mirroring git's eager `git_default_config`
+ * git's boolean grammar refuses, or when `branch.autoSetupRebase` is valueless or
+ * outside its four literals — mirroring git's eager `git_default_config`
  * validation, which dies on the operational surface while the `config` porcelain
  * (`assertRepository` alone) survives. `hookspath` is NOT in this broad set:
  * it dies on a narrower surface.
@@ -218,6 +226,7 @@ export const assertEagerConfigValid = async (ctx: Context): Promise<void> => {
       findFirstInvalidDiffBinary(ctx),
       findFirstInvalidAutoSetupMerge(ctx),
     ]);
+  const branchCandidates = await autoSetupRebaseCandidates(ctx);
   const candidates: ReadonlyArray<EagerCandidate | undefined> = [
     str === undefined ? undefined : { kind: 'valueless', line: str.line, entry: str },
     comp === undefined ? undefined : { kind: 'compression', line: comp.line, entry: comp },
@@ -232,12 +241,29 @@ export const assertEagerConfigValid = async (ctx: Context): Promise<void> => {
     autoSetupMerge === undefined
       ? undefined
       : { kind: 'boolean', line: autoSetupMerge.line, entry: autoSetupMerge },
+    ...branchCandidates,
   ];
   const selected = candidates.reduce<EagerCandidate | undefined>(
     (winner, candidate) => pickLowerLine(winner, candidate),
     undefined,
   );
   if (selected !== undefined) throwEagerCandidate(selected);
+};
+
+/** `branch.autoSetupRebase`: git dies on a valueless entry and on any value outside its literals. */
+const autoSetupRebaseCandidates = async (
+  ctx: Context,
+): Promise<ReadonlyArray<EagerCandidate | undefined>> => {
+  const [valueless, malformed] = await Promise.all([
+    findFirstValuelessEntry(ctx, 'branch', undefined, ['autosetuprebase']),
+    findFirstInvalidAutoSetupRebase(ctx),
+  ]);
+  return [
+    valueless === undefined
+      ? undefined
+      : { kind: 'valueless', line: valueless.line, entry: valueless },
+    malformed === undefined ? undefined : { kind: 'enum', line: malformed.line, entry: malformed },
+  ];
 };
 
 const throwFormatRefusal = (refusal: RepositoryFormatRefusal): never => {

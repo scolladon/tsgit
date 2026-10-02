@@ -7443,6 +7443,71 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     });
   });
 
+  describe('Given branch.autoSetupRebase is set', () => {
+    describe.each([
+      {
+        label: 'valueless',
+        config: '[branch]\n\tautoSetupRebase\n',
+        data: { code: 'CONFIG_MISSING_VALUE', key: 'branch.autosetuprebase', line: 2 },
+      },
+      {
+        label: 'to a word outside its literals',
+        config: '[branch]\n\tautoSetupRebase = bogus\n',
+        data: {
+          code: 'CONFIG_INVALID_ENUM_VALUE',
+          key: 'branch.autosetuprebase',
+          value: 'bogus',
+          line: 2,
+        },
+      },
+      {
+        label: 'to a literal in another case',
+        config: '[user]\n\tname = a\n[branch]\n\tautoSetupRebase = Always\n',
+        data: {
+          code: 'CONFIG_INVALID_ENUM_VALUE',
+          key: 'branch.autosetuprebase',
+          value: 'Always',
+          line: 4,
+        },
+      },
+    ])('$label', ({ config, data }) => {
+      describe('When assertOperationalRepository runs', () => {
+        it('Then it refuses the way git_default_config dies', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedHead(ctx);
+          await seed(ctx, config);
+
+          // Act
+          const result = await assertOperationalRepository(ctx).catch((err: unknown) => err);
+
+          // Assert
+          expect((result as TsgitError).data).toMatchObject(data);
+        });
+      });
+    });
+
+    describe.each(['never', 'local', 'remote', 'always'])('to its literal %s', (value) => {
+      describe('When assertOperationalRepository runs', () => {
+        it('Then it passes', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedHead(ctx);
+          await seed(
+            ctx,
+            `[branch]\n\tautoSetupRebase = ${value}\n[branch "x"]\n\tautoSetupRebase = bogus\n`,
+          );
+
+          // Act
+          const result = await assertOperationalRepository(ctx).catch((err: unknown) => err);
+
+          // Assert
+          expect(result).not.toBeInstanceOf(TsgitError);
+        });
+      });
+    });
+  });
+
   describe('findFirstInvalidDiffBinary', () => {
     describe('Given diff.MyDriver.binary holds a value that fails both the tri-state literal and the boolean grammar', () => {
       describe('When findFirstInvalidDiffBinary', () => {
