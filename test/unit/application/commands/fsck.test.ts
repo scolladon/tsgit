@@ -8862,3 +8862,40 @@ describe('Given objects git never parsed, named by the index, a reflog or HEAD',
     });
   });
 });
+
+describe('Given loose history over packed objects, and fsck run with full: false', () => {
+  describe('When a loose tree names a packed blob and a tag names a packed commit', () => {
+    it('Then nothing is missing, broken or an invalid pointer, as git excuses what a pack holds', async () => {
+      // Arrange — packs before any loose write: the first store access settles the pack list.
+      const ctx = await initBareCtx();
+      const emptyTree = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+      const [blobId, packedCommit] = await writeSyntheticPack(ctx, 'history', [
+        { kind: 'base', type: 'blob', content: enc.encode('packed blob') },
+        {
+          kind: 'base',
+          type: 'commit',
+          content: enc.encode(
+            `tree ${emptyTree}\nauthor A <a@a> 1700000000 +0000\ncommitter A <a@a> 1700000000 +0000\n\nold\n`,
+          ),
+        },
+      ]);
+      const treeId = await writeObject(
+        ctx,
+        makeTree([treeEntry(FILE_MODE.REGULAR, 'a.txt', blobId as ObjectId)]),
+      );
+      const tip = await writeObject(ctx, makeCommit(treeId, []));
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${tip}\n`);
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/old`, `${packedCommit}\n`);
+
+      // Act
+      const result = await fsck(ctx, { full: false });
+
+      // Assert
+      const faults = result.findings.filter((f) =>
+        ['missing', 'broken-link', 'bad-ref'].includes(f.type),
+      );
+      expect(faults).toEqual([]);
+      expect(result.exitCode).toBe(0);
+    });
+  });
+});

@@ -885,6 +885,32 @@ describe.skipIf(!GIT_AVAILABLE)('alternates fsck interop — every source is aud
     });
   });
 
+  describe('Given a healthy packed donor and its borrower', () => {
+    describe('When fsck runs with --no-full (baseline)', () => {
+      it(
+        'Then both exit 2 with only the invalid reflog entries git names, nothing missing',
+        async () => {
+          // Arrange
+          const { donor, borrower } = borrowerOf('no-full', true);
+          const sut = tsgitFsck;
+
+          for (const dir of [donor, borrower]) {
+            // Act
+            const gitResult = gitFsck(dir, '--no-full');
+            const result = await sut(dir, { full: false });
+
+            // Assert
+            expect(gitResult.exitCode).toBe(2);
+            expect(result.exitCode).toBe(2);
+            expect(pointerLines(result.findings)).toEqual(gitLines(gitResult.stderr, POINTER_LINE));
+            expect(missingLines(result.findings)).toEqual(gitLines(gitResult.stdout, MISSING_LINE));
+          }
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
   describe('Given a donor directory that was removed', () => {
     describe('When the borrower fsck runs (F5)', () => {
       it(

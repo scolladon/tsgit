@@ -17,6 +17,7 @@ import {
   buildObjectCache,
   type CachedGitObject,
   collectUnreadablePackMemberIds,
+  hasPackCopy,
   withUnreadableOverrides,
 } from './internal/fsck/object-cache.js';
 import { packAccessibilityReported, runPackHealthPass } from './internal/fsck/pack-health.js';
@@ -30,9 +31,10 @@ import {
   buildInEdgeMap,
   buildReachableSet,
   classifyObjects,
+  excusePackHeld,
 } from './internal/fsck/reachability.js';
 import { readFsckConfiguration } from './internal/fsck/read-configuration.js';
-import { runRefsVerifyPass } from './internal/fsck/refs-verify.js';
+import { type RefTargetCheck, runRefsVerifyPass } from './internal/fsck/refs-verify.js';
 import { runRevIndexHealthPass } from './internal/fsck/rev-index-health.js';
 import { collectRoots } from './internal/fsck/roots.js';
 import type { UnreadableMode } from './internal/fsck/types.js';
@@ -69,6 +71,12 @@ function createNoDeltaCache(): LruCache<ObjectContent> {
     maxSize: 0,
     entryCount: 0,
   };
+}
+
+/** How the refs-verify pass judges a ref target present — see `RefTargetCheck`. */
+function refTargetCheck(opts: FsckOptions): RefTargetCheck {
+  if (opts.full === false) return 'probe-packs';
+  return packAccessibilityReported(opts) ? 'universe' : 'confirm-packs';
 }
 
 /**
@@ -161,16 +169,11 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
           bigFileThreshold,
         );
 
-  // Refs-verify pass — `confirmPackAccessibility` is true exactly when the
-  // universe above was built WITHOUT accessiblePacksOnly narrowing but WITH
-  // packs included (connectivityOnly): the only case `universe.has(oid)` can
-  // hold for an oid whose housing pack later fails its own header gate.
-  const confirmPackAccessibility = opts.full !== false && !packAccessibilityReported(opts);
   const refsResult = await runRefsVerifyPass(
     ctx,
     universe,
     opts.checkReferences !== false,
-    confirmPackAccessibility,
+    refTargetCheck(opts),
     severities,
   );
 
@@ -249,8 +252,11 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
       ? await collectUnreadablePackMemberIds(auditCtx, reachabilityCache)
       : (new Set<ObjectId>() as ReadonlySet<ObjectId>);
 
+  const walk = buildReachableSet(universe, roots, reachabilityCache, unreadable, packMemberIds);
+  // `--no-full` verifies no pack, yet git's walk forgets an object a pack
+  // holds (`has_object_pack`) rather than calling it missing or broken.
   const { reached, missingIds, brokenEdges, unreadableEdges, rootCommits, tagRefs } =
-    buildReachableSet(universe, roots, reachabilityCache, unreadable, packMemberIds);
+    opts.full === false ? await excusePackHeld(walk, (id) => hasPackCopy(auditCtx, id)) : walk;
 
   if (unreadable === 'classify') {
     await assertWalkedObjectsReadable(auditCtx, reached, recovered, objectCache);

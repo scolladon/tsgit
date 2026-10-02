@@ -14,21 +14,23 @@ import type { FsckFinding } from './types.js';
 type BadRefFinding = FsckFinding & { readonly type: 'bad-ref' };
 
 /**
- * Whether `oid` resolves to a readable object: present in `universe`, and,
- * when `universe` may optimistically admit an oid whose housing pack later
- * turns out inaccessible (`connectivityOnly`'s ungated pack half), confirmed
- * through `objectIsPresent` — the one loose-then-pack probe, shared with the
- * cache-tree check — rather than trusted at face value.
+ * How a ref's target is judged present. `universe`: membership is proof.
+ * `confirm-packs`: membership must be confirmed through `objectIsPresent`,
+ * since `connectivityOnly`'s ungated universe may admit an oid whose pack
+ * later fails its header gate. `probe-packs`: an oid outside a `--no-full`
+ * universe is still present when a pack holds it — git's `parse_object`
+ * reads packs whatever `--no-full` skipped verifying.
  */
+export type RefTargetCheck = 'universe' | 'confirm-packs' | 'probe-packs';
+
 async function isKnownOid(
   ctx: Context,
   universe: ReadonlySet<ObjectId>,
   oid: ObjectId,
-  confirmPackAccessibility: boolean,
+  check: RefTargetCheck,
 ): Promise<boolean> {
-  if (!universe.has(oid)) return false;
-  if (!confirmPackAccessibility) return true;
-  return objectIsPresent(ctx, oid);
+  if (universe.has(oid)) return check !== 'confirm-packs' || objectIsPresent(ctx, oid);
+  return check === 'probe-packs' && objectIsPresent(ctx, oid);
 }
 
 /** One sub-check's own findings and the exit bits they carry. */
@@ -133,13 +135,13 @@ async function collectAbsentTargets(
   ctx: Context,
   entries: RefEntries,
   universe: ReadonlySet<ObjectId>,
-  confirmPackAccessibility: boolean,
+  check: RefTargetCheck,
 ): Promise<PassResult> {
   const findings: BadRefFinding[] = [];
   for (const entry of snapshotOrder(entries)) {
     const id = await targetOf(ctx, entry);
     if (id === undefined) continue;
-    if (await isKnownOid(ctx, universe, id, confirmPackAccessibility)) continue;
+    if (await isKnownOid(ctx, universe, id, check)) continue;
     findings.push({
       type: 'bad-ref',
       ref: entry.name,
@@ -162,9 +164,7 @@ async function collectAbsentTargets(
  *   object name exits 10 = 2|8.
  * - **OID presence** (always): every well-formed ref's OID (loose + packed,
  *   from `listRefs`) must be in the object universe, confirmed via
- *   `isKnownOid` rather than trusted at face value — `confirmPackAccessibility`
- *   is true exactly under `connectivityOnly`, the one mode where `universe`
- *   may admit an oid whose housing pack later fails its own header gate.
+ *   `isKnownOid` as `check` says (see `RefTargetCheck`).
  *   Absent → `badRefOid` (bit 2), so a loose ref naming a well-formed but
  *   absent object exits 2 with AND without `--no-references`. A symbolic ref
  *   (HEAD too) is judged by the object its chain names; one naming none —
@@ -174,7 +174,7 @@ export async function runRefsVerifyPass(
   ctx: Context,
   universe: ReadonlySet<ObjectId>,
   checkContentFormat: boolean,
-  confirmPackAccessibility: boolean,
+  check: RefTargetCheck,
   severities: FsckSeverityTable,
 ): Promise<PassResult> {
   const refStore = getRefStore(ctx);
@@ -190,7 +190,7 @@ export async function runRefsVerifyPass(
     checkContentFormat,
     severities,
   );
-  const absent = await collectAbsentTargets(ctx, entries, universe, confirmPackAccessibility);
+  const absent = await collectAbsentTargets(ctx, entries, universe, check);
 
   return {
     findings: [...symlinks.findings, ...badContent.findings, ...absent.findings],

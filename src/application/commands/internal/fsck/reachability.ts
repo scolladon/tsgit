@@ -58,7 +58,7 @@ export interface TagRef {
   readonly targetType: FsckObjectType;
 }
 
-interface WalkResult {
+export interface WalkResult {
   readonly reached: Set<ObjectId>;
   readonly missingIds: Set<ObjectId>;
   readonly brokenEdges: ReadonlyArray<GraphEdge>;
@@ -309,6 +309,28 @@ function resolveObjectType(id: ObjectId, resolution: TypeResolution): FsckObject
 /** A missing id's type as git's lookup made it: a blob for an index entry. */
 const expectedType = (id: ObjectId, resolution: TypeResolution): FsckObjectType | 'unknown' =>
   resolution.indexBlobs.has(id) ? 'blob' : resolveObjectType(id, resolution);
+
+/**
+ * git's walk under `--no-full`: a missing object a pack holds is forgotten
+ * (`has_object_pack`) — never missing, never a broken link's target. An
+ * unreadable one the run did enumerate never gets here with a pack copy
+ * (`packMemberIds`). Returns `walk` itself when nothing is excused.
+ */
+export async function excusePackHeld(
+  walk: WalkResult,
+  packHolds: (id: ObjectId) => Promise<boolean>,
+): Promise<WalkResult> {
+  const excused = new Set<ObjectId>();
+  for (const id of walk.missingIds) {
+    if (await packHolds(id)) excused.add(id);
+  }
+  if (excused.size === 0) return walk;
+  return {
+    ...walk,
+    missingIds: new Set([...walk.missingIds].filter((id) => !excused.has(id))),
+    brokenEdges: walk.brokenEdges.filter((edge) => !excused.has(edge.toId)),
+  };
+}
 
 /** The connectivity walk's classified output, as `assembleConnectivityFindings` consumes it. */
 export interface ConnectivityClassification {
