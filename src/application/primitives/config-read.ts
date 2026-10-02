@@ -2468,14 +2468,18 @@ const configuredPromisorNames = (tokens: ReadonlyArray<ConfigToken>): ReadonlyAr
 /**
  * git's `promisor_remote_init`: every remote a `remote.<n>.promisor = true` or a
  * `remote.<n>.partialclonefilter` ever registers — a later `promisor = false` never
- * unregisters it, a subsectionless `[remote]` registers the name `""` — plus the one
- * `extensions.partialClone` names; a `/`-leading name is never registered.
+ * unregisters it, a subsectionless `[remote]` registers the name `""` — in config
+ * order, with the one `extensions.partialClone` names moved to (or appended at) the
+ * end, the order git tries them in; a `/`-leading name is never registered.
  */
 export const readPromisorRemoteNames = async (ctx: Context): Promise<ReadonlyArray<string>> => {
   const { tokens, parsed } = await readConfigEntry(ctx);
   const partialClone = parsed.extensions?.partialClone;
   const names = new Set(configuredPromisorNames(tokens));
-  if (partialClone !== undefined) names.add(partialClone);
+  if (partialClone !== undefined) {
+    names.delete(partialClone);
+    names.add(partialClone);
+  }
   return [...names].filter(isRegistrablePromisorName);
 };
 

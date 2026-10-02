@@ -648,4 +648,94 @@ describe('fetchMissing', () => {
       });
     });
   });
+
+  describe('Given several promisor remotes', () => {
+    const URL_A = 'https://example.com/a.git';
+    const URL_SLASH = 'https://example.com/slash.git';
+
+    /** `origin` serves the pack; every other url answers 500. */
+    const originOnly = (packBytes: Uint8Array) => {
+      const origin = fakeRemote(packBytes);
+      const urls: string[] = [];
+      const transport: HttpTransport = {
+        request: async (req: HttpRequest): Promise<HttpResponse> => {
+          urls.push(req.url);
+          if (req.url.startsWith(URL)) return origin.transport.request(req);
+          return { statusCode: 500, headers: {}, body: streamOf(new Uint8Array()) };
+        },
+      };
+      return { transport, urls };
+    };
+
+    const remote = (name: string, url: string, extra = '\tpromisor = true\n') =>
+      `[remote "${name}"]\n\turl = ${url}\n${extra}`;
+
+    describe.each([
+      {
+        label: 'extensions.partialClone names origin, listed first',
+        config: `[extensions]\n\tpartialClone = origin\n${remote('origin', URL, '')}${remote('a', URL_A)}`,
+        tried: [URL_A, URL],
+      },
+      {
+        label: 'no extensions.partialClone, origin a promisor listed first',
+        config: `${remote('origin', URL)}${remote('a', URL_A)}`,
+        tried: [URL],
+      },
+      {
+        label: 'a filter-only remote listed first, then origin',
+        config: `${remote('a', URL_A, '\tpartialclonefilter = blob:none\n')}${remote('origin', URL)}`,
+        tried: [URL_A, URL],
+      },
+      {
+        label: "a remote whose name begins with '/' listed first",
+        config: `${remote('/slash', URL_SLASH)}${remote('origin', URL)}`,
+        tried: [URL],
+      },
+    ])('When fetchMissing runs with $label', ({ config, tried }) => {
+      it("Then each remote is tried in git's order until one serves the object", async () => {
+        // Arrange
+        const base = createMemoryContext();
+        await seedRepo(base, {});
+        await withConfig(base, config);
+        const { packBytes, blobId } = await onePackedBlob(base, 'lazy content\n');
+        const { transport, urls } = originOnly(packBytes);
+        const ctx: Context = { ...base, transport };
+        const sut = fetchMissing;
+
+        // Act
+        const result = await sut(ctx, { oids: [blobId] });
+
+        // Assert
+        expect(result).toEqual({ remote: 'origin', requested: 1, fetched: 1 });
+        const contacted = [...new Set(urls.map((url) => url.replace(/\.git\/.*$/, '.git')))];
+        expect(contacted).toEqual(tried);
+      });
+    });
+
+    describe('When every remote fails', () => {
+      it("Then the last remote's failure propagates", async () => {
+        // Arrange
+        const base = createMemoryContext();
+        await seedRepo(base, {});
+        await withConfig(base, `${remote('a', URL_A)}${remote('b', URL_SLASH)}`);
+        const { packBytes, blobId } = await onePackedBlob(base, 'lazy content\n');
+        const { transport, urls } = originOnly(packBytes);
+        const ctx: Context = { ...base, transport };
+        const sut = fetchMissing;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { oids: [blobId] });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBeInstanceOf(TsgitError);
+        expect(urls.at(-1)?.startsWith(URL_SLASH)).toBe(true);
+        expect(urls.some((url) => url.startsWith(URL_A))).toBe(true);
+      });
+    });
+  });
 });

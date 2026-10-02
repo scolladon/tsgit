@@ -8,11 +8,16 @@
  *  - `createPromisorRemote` — the `PromisorRemote` port implementation behind
  *    `readObject`'s automatic lazy-fetch; reports `attempted: false` instead.
  */
+import { errorDataCode } from '../../domain/error-data-code.js';
 import { noPromisorRemote, remoteNotConfigured } from '../../domain/index.js';
 import type { ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import type { PromisorRemote } from '../../ports/promisor.js';
-import { readConfig } from '../primitives/config-read.js';
+import {
+  type ParsedConfig,
+  readConfig,
+  readPromisorRemoteNames,
+} from '../primitives/config-read.js';
 import { fetchPack } from '../primitives/fetch-pack.js';
 import { hasObject } from '../primitives/has-object.js';
 import { assertValidPromisorRemoteConfig } from '../primitives/internal/boolean-config-guard.js';
@@ -66,26 +71,16 @@ const collectMissing = async (
   return missing;
 };
 
-const fetchMissingInternal = async (
+/** Fetch `missing` from one remote, refusing one whose url is absent or empty. */
+const fetchFrom = async (
   ctx: Context,
-  oids: ReadonlyArray<ObjectId>,
-): Promise<FetchMissingOutcome> => {
-  await assertOperationalRepository(ctx);
-  const config = await readConfig(ctx);
-  const remoteName = config.extensions?.partialClone;
-  if (remoteName === undefined) return { kind: 'no-promisor' };
-  // Promisor-remote guard (see assertValidPromisorRemoteConfig) — on the lazy-fetch path.
-  await assertValidPromisorRemoteConfig(ctx);
-  const url = config.remote?.get(remoteName)?.url;
+  url: string | undefined,
+  remoteName: string,
+  missing: ReadonlyArray<ObjectId>,
+): Promise<void> => {
   // An absent OR empty url means the promisor remote is not usably configured;
   // surface REMOTE_NOT_CONFIGURED rather than a cryptic INVALID_BASE_URL.
   if (url === undefined || url === '') throw remoteNotConfigured(remoteName);
-
-  const missing = await collectMissing(ctx, oids);
-  if (missing.length === 0) {
-    return { kind: 'fetched', remote: remoteName, requested: oids.length, fetched: 0 };
-  }
-
   const session = openGitSession(ctx, url, 'git-upload-pack');
   try {
     const discovery = await negotiateDiscovery(ctx, session);
@@ -110,7 +105,64 @@ const fetchMissingInternal = async (
   } finally {
     await session.close();
   }
-  return { kind: 'fetched', remote: remoteName, requested: oids.length, fetched: missing.length };
+};
+
+/** One remote short of the last: a classified failure hands the fetch on, as git's does. */
+const fetchSucceeded = async (
+  ctx: Context,
+  config: ParsedConfig,
+  name: string,
+  wanted: ReadonlyArray<ObjectId>,
+): Promise<boolean> => {
+  try {
+    await fetchFrom(ctx, config.remote?.get(name)?.url, name, wanted);
+    return true;
+  } catch (err) {
+    if (errorDataCode(err) === undefined) throw err;
+    return false;
+  }
+};
+
+/**
+ * git's `try_promisor_remotes`: each remote in turn until one fetch succeeds.
+ * A failed remote passes what is still missing to the next; the last one's
+ * failure is the caller's. Returns the remote that served the fetch.
+ */
+const fetchFromFirstServing = async (
+  ctx: Context,
+  config: ParsedConfig,
+  remotes: { readonly before: ReadonlyArray<string>; readonly last: string },
+  missing: ReadonlyArray<ObjectId>,
+): Promise<string> => {
+  let wanted = missing;
+  for (const name of remotes.before) {
+    if (await fetchSucceeded(ctx, config, name, wanted)) return name;
+    wanted = await collectMissing(ctx, wanted);
+    if (wanted.length === 0) return name;
+  }
+  await fetchFrom(ctx, config.remote?.get(remotes.last)?.url, remotes.last, wanted);
+  return remotes.last;
+};
+
+const fetchMissingInternal = async (
+  ctx: Context,
+  oids: ReadonlyArray<ObjectId>,
+): Promise<FetchMissingOutcome> => {
+  await assertOperationalRepository(ctx);
+  const config = await readConfig(ctx);
+  const remotes = await readPromisorRemoteNames(ctx);
+  const [first] = remotes;
+  const last = remotes.at(-1);
+  if (first === undefined || last === undefined) return { kind: 'no-promisor' };
+  // Promisor-remote guard (see assertValidPromisorRemoteConfig) — on the lazy-fetch path.
+  await assertValidPromisorRemoteConfig(ctx);
+  const missing = await collectMissing(ctx, oids);
+  if (missing.length === 0) {
+    return { kind: 'fetched', remote: first, requested: oids.length, fetched: 0 };
+  }
+  const before = remotes.slice(0, -1);
+  const remote = await fetchFromFirstServing(ctx, config, { before, last }, missing);
+  return { kind: 'fetched', remote, requested: oids.length, fetched: missing.length };
 };
 
 /**
