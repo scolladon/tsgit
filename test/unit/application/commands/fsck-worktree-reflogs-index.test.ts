@@ -220,7 +220,11 @@ describe('Given a linked worktree index whose cache-tree names an absent tree', 
 
       // Assert
       expect(pointerFindings(result.findings)).toEqual([
-        { type: 'invalid-cache-tree-pointer', id: ABSENT },
+        {
+          type: 'invalid-cache-tree-pointer',
+          id: ABSENT,
+          index: `${ctx.layout.gitDir}/worktrees/wt1/index`,
+        },
       ]);
       expect(result.exitCode).toBe(EXIT_REFS_CONTENT);
     });
@@ -281,7 +285,7 @@ describe('Given an index recording resolve-undo stages', () => {
 
       // Assert
       expect(pointerFindings(result.findings)).toEqual([
-        { type: 'invalid-resolve-undo-pointer', id: ABSENT },
+        { type: 'invalid-resolve-undo-pointer', id: ABSENT, index: `${ctx.layout.gitDir}/index` },
       ]);
       expect(result.exitCode).toBe(EXIT_REFS_CONTENT);
     });
@@ -346,6 +350,41 @@ describe('Given an index recording resolve-undo stages', () => {
       // Assert
       expect(pointerFindings(result.findings)).toEqual([]);
       expect(result.exitCode).toBe(0);
+    });
+  });
+});
+
+describe('Given the main and a linked worktree index naming the same absent stage', () => {
+  describe('When fsck runs from the main worktree', () => {
+    it('Then each pointer finding names the index it came from', async () => {
+      // Arrange
+      const ctx = await repoWithWorktrees();
+      const merged = await writeBlob(ctx, 'merged');
+      const linkedGitDir = `${ctx.layout.gitDir}/worktrees/wt1`;
+      for (const gitDir of [ctx.layout.gitDir, linkedGitDir]) {
+        await writeIndexAt(
+          ctx,
+          gitDir,
+          [indexEntry(merged, 'f')],
+          [
+            resolveUndo([
+              ['100644', ABSENT],
+              ['0', undefined],
+              ['0', undefined],
+            ]),
+          ],
+        );
+      }
+      const sut = fsck;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(pointerFindings(result.findings)).toEqual([
+        { type: 'invalid-resolve-undo-pointer', id: ABSENT, index: `${ctx.layout.gitDir}/index` },
+        { type: 'invalid-resolve-undo-pointer', id: ABSENT, index: `${linkedGitDir}/index` },
+      ]);
     });
   });
 });

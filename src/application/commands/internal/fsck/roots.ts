@@ -13,7 +13,7 @@ import { deriveContext } from '../../../primitives/derive-context.js';
 import { enumerateRefs } from '../../../primitives/enumerate-refs.js';
 import { boundedMapFor } from '../../../primitives/internal/concurrency.js';
 import { deriveWorktreeContext } from '../../../primitives/internal/worktree-context.js';
-import { commonGitDir } from '../../../primitives/path-layout.js';
+import { commonGitDir, indexPath } from '../../../primitives/path-layout.js';
 import { readIndex } from '../../../primitives/read-index.js';
 import { listReflogs, readReflogLenient } from '../../../primitives/reflog-store.js';
 import { resolveRef } from '../../../primitives/resolve-ref.js';
@@ -381,6 +381,8 @@ export interface RootsCollection {
 export interface InvalidIndexPointer {
   readonly type: 'invalid-cache-tree-pointer' | 'invalid-resolve-undo-pointer';
   readonly id: ObjectId;
+  /** The index file naming it — git's `worktree_git_path(wt, "index")`. */
+  readonly index: string;
 }
 
 /** A reflog side naming an object the run never recorded: git's `invalid reflog entry`. */
@@ -454,7 +456,11 @@ async function addResolveUndoRoots(
   const parsed: ObjectId[] = [];
   for (const id of ids) {
     if ((await probePresence(ctx, id)) === false) {
-      invalid.push({ type: 'invalid-resolve-undo-pointer', id });
+      invalid.push({
+        type: 'invalid-resolve-undo-pointer',
+        id,
+        index: indexPath(ctx.layout.gitDir),
+      });
       continue;
     }
     if (universe.has(id)) roots.add(id);
@@ -482,7 +488,11 @@ async function fsckOneIndex(
   const undo = await addResolveUndoRoots(ctx, walk.resolveUndo, roots, universe);
   return {
     invalid: [
-      ...walk.unresolved.map((id) => ({ type: 'invalid-cache-tree-pointer' as const, id })),
+      ...walk.unresolved.map((id) => ({
+        type: 'invalid-cache-tree-pointer' as const,
+        id,
+        index: indexPath(ctx.layout.gitDir),
+      })),
       ...undo.invalid,
     ],
     parsed: [...walk.parsed, ...undo.parsed],

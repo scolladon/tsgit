@@ -3971,8 +3971,8 @@ describe('Given a cache-tree whose root resolves and whose two subtrees, listed 
 
       // Assert
       expect(result.findings.filter((f) => f.type === 'invalid-cache-tree-pointer')).toEqual([
-        { type: 'invalid-cache-tree-pointer', id: d1 },
-        { type: 'invalid-cache-tree-pointer', id: d2 },
+        { type: 'invalid-cache-tree-pointer', id: d1, index: `${ctx.layout.gitDir}/index` },
+        { type: 'invalid-cache-tree-pointer', id: d2, index: `${ctx.layout.gitDir}/index` },
       ]);
       expect(result.exitCode & 8).toBe(8);
     });

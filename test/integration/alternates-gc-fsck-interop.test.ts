@@ -1333,7 +1333,8 @@ describe.skipIf(!GIT_AVAILABLE)('fsck interop — deferred .gitmodules checks', 
 describe.skipIf(!GIT_AVAILABLE)("fsck interop — every worktree's reflogs and index", () => {
   const ABSENT_IDS = ['1'.repeat(40), '2'.repeat(40), '3'.repeat(40)] as const;
   const REFLOG_LINE = /^error: (\S+): invalid reflog entry ([0-9a-f]{40})$/;
-  const RESOLVE_UNDO_LINE = /^error: ([0-9a-f]{40}): invalid sha1 pointer in resolve-undo of /;
+  const RESOLVE_UNDO_LINE =
+    /^error: ([0-9a-f]{40}): invalid sha1 pointer in resolve-undo of (\S+)$/;
 
   /** A main worktree with one commit and a linked worktree beside it. */
   const repoWithWorktree = (slug: string): { readonly main: string; readonly linked: string } => {
@@ -1436,11 +1437,13 @@ describe.skipIf(!GIT_AVAILABLE)("fsck interop — every worktree's reflogs and i
             const absent = runGit(['-C', repo.main, 'hash-object', '--stdin'], {
               input: 'theirs',
             }).trim();
-            runGit(['-C', repo.main, 'update-index', '--index-info'], {
-              input: `100644 ${stored} 2\tf\n100644 ${absent} 3\tf\n`,
-            });
-            writeFileSync(path.join(repo.main, 'f'), 'resolved');
-            runGit(['-C', repo.main, 'update-index', '--add', 'f']);
+            for (const worktree of [repo.main, repo.linked]) {
+              runGit(['-C', worktree, 'update-index', '--index-info'], {
+                input: `100644 ${stored} 2\tf\n100644 ${absent} 3\tf\n`,
+              });
+              writeFileSync(path.join(worktree, 'f'), 'resolved');
+              runGit(['-C', worktree, 'update-index', '--add', 'f']);
+            }
             const git = gitFsck(repo[from]);
             const sut = tsgitFsck;
 
@@ -1450,11 +1453,21 @@ describe.skipIf(!GIT_AVAILABLE)("fsck interop — every worktree's reflogs and i
             // Assert
             expect(git.exitCode).toBe(8);
             expect(result.exitCode).toBe(8);
+            // git prints each index path relative to where it found the repo;
+            // both sides resolve to the same real file.
             expect(
               result.findings.flatMap((f) =>
-                f.type === 'invalid-resolve-undo-pointer' ? [f.id] : [],
+                f.type === 'invalid-resolve-undo-pointer'
+                  ? [`${f.id} ${realpathSync(f.index)}`]
+                  : [],
               ),
-            ).toEqual(gitMatches(git.stderr, RESOLVE_UNDO_LINE));
+            ).toEqual(
+              gitMatches(git.stderr, RESOLVE_UNDO_LINE).map((line) => {
+                const [id, index] = line.split(' ');
+                return `${id} ${realpathSync(path.resolve(repo[from], index as string))}`;
+              }),
+            );
+            expect(gitMatches(git.stderr, RESOLVE_UNDO_LINE)).toHaveLength(2);
             expect(danglingLines(result.findings)).toEqual(gitDanglingLines(git.stdout));
           },
           ROW_TIMEOUT,

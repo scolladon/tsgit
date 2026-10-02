@@ -64,12 +64,16 @@ export type FsckFinding =
        *  `invalid sha1 pointer in cache-tree`; each one sets bit 8. */
       readonly type: 'invalid-cache-tree-pointer';
       readonly id: ObjectId;
+      /** The index file naming it: one finding per worktree index that does. */
+      readonly index: string;
     }
   | {
       /** A regular-file resolve-undo stage naming an object no store holds —
        *  git's `invalid sha1 pointer in resolve-undo`; each one sets bit 8. */
       readonly type: 'invalid-resolve-undo-pointer';
       readonly id: ObjectId;
+      /** The index file naming it: one finding per worktree index that does. */
+      readonly index: string;
     }
   | { readonly type: 'root'; readonly id: ObjectId }
   | {

@@ -147,8 +147,18 @@ const PACK_FINDING_TYPES: ReadonlySet<FsckFinding['type']> = new Set([
 ]);
 
 /** Findings unrelated to pack accessibility — the differential rows compare these across a pair of repos. */
+const GIT_DIR_MARKER = '/.git/';
+
+/** The pack-free findings, each index path cut to its `.git/`-relative tail so
+ *  two repositories in different temp dirs compare equal. */
 function nonPackFindings(findings: ReadonlyArray<FsckFinding>): ReadonlyArray<FsckFinding> {
-  return findings.filter((finding) => !PACK_FINDING_TYPES.has(finding.type));
+  return findings
+    .filter((finding) => !PACK_FINDING_TYPES.has(finding.type))
+    .map((finding) =>
+      'index' in finding
+        ? { ...finding, index: finding.index.slice(finding.index.lastIndexOf(GIT_DIR_MARKER)) }
+        : finding,
+    );
 }
 
 // ---------------------------------------------------------------------------
