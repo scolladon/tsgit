@@ -22,7 +22,7 @@ const readFileText = (ctx: Context, path: string): Promise<string | undefined> =
 
 const readWorktreeMailmap = async (ctx: Context): Promise<string | undefined> => {
   const workDir = ctx.layout.workDir;
-  if (workDir === undefined) return undefined;
+  if (ctx.layout.bare || workDir === undefined) return undefined;
   return readFileText(ctx, joinPath(workDir, MAILMAP_FILE));
 };
 
@@ -64,7 +64,7 @@ const readConfiguredFile = async (ctx: Context, raw: string): Promise<string | u
 
 const blobExpression = (ctx: Context, configured: string | undefined): string | undefined => {
   if (configured !== undefined) return configured;
-  return ctx.layout.workDir === undefined ? BARE_DEFAULT_BLOB : undefined;
+  return ctx.layout.bare ? BARE_DEFAULT_BLOB : undefined;
 };
 
 /**

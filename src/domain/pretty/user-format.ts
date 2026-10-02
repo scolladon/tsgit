@@ -600,6 +600,8 @@ export interface FormatRequirements {
   readonly decorations: boolean;
   readonly signature: boolean;
   readonly describe: DescribeRequirement | undefined;
+  /** git dies at the refusing placeholder, so nothing after it is ever read. */
+  readonly refuses: boolean;
 }
 
 const itemSpecs = (tokens: ReadonlyArray<Token>): ReadonlyArray<Spec> =>
@@ -612,8 +614,11 @@ const describeRequirement = (specs: ReadonlyArray<Spec>): DescribeRequirement | 
 
 /** What `formatCommit` will read from the environment, from the same tokens it expands. */
 export const formatRequirements = (tokens: ReadonlyArray<Token>): FormatRequirements => {
-  const specs = itemSpecs(tokens);
+  const all = itemSpecs(tokens);
+  const refusal = all.findIndex((spec) => spec.kind === 'refused');
+  const specs = refusal === -1 ? all : all.slice(0, refusal);
   return {
+    refuses: refusal !== -1,
     abbrev: new Set(specs.flatMap((spec) => (spec.kind === 'abbrev' ? [spec.of] : []))),
     mailmap: specs.some((spec) => spec.kind === 'ident' && MAPPED_IDENT_PARTS.includes(spec.part)),
     decorations: specs.some((spec) => spec.kind === 'decorations'),

@@ -9,6 +9,8 @@ const HEX_ENCODING_LABEL = 'ascii';
  * byte field is a zero-copy slice of the input, cut at the first NUL as git reads a C string.
  */
 export interface CommitView {
+  /** The commit as git's C-string reads see it, everything from the first NUL dropped. */
+  readonly raw: Uint8Array;
   readonly tree: string | undefined;
   readonly parents: ReadonlyArray<string>;
   readonly author: Uint8Array | undefined;
@@ -135,6 +137,7 @@ export const parseCommitView = (raw: Uint8Array): CommitView => {
   const subjectStart = skipBlankLines(buf, messageStart);
   const { end, next } = subjectBounds(buf, subjectStart);
   return {
+    raw: buf,
     ...treeAndParents(buf, lines),
     author: lastValue(buf, lines, PREFIXES.author),
     committer: lastValue(buf, lines, PREFIXES.committer),

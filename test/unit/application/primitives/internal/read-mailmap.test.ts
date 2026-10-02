@@ -169,6 +169,61 @@ describe('readMailmap', () => {
     });
   });
 
+  describe('Given a bare layout that still names a work directory', () => {
+    const bareKeepingWorkDir = (ctx: Context): Context => ({
+      ...ctx,
+      layout: { ...ctx.layout, bare: true },
+    });
+
+    describe('When the mailmap is read with a committed .mailmap', () => {
+      it('Then HEAD:.mailmap applies', async () => {
+        // Arrange
+        const seeded = createMemoryContext();
+        await commitMailmap(seeded, rule('Head', 'old@example.com'));
+        const ctx = bareKeepingWorkDir(seeded);
+
+        // Act
+        const result = await mapped(ctx, 'old@example.com');
+
+        // Assert
+        expect(result).toBe('Head');
+      });
+    });
+
+    describe('When the mailmap is read with a .mailmap file in that directory', () => {
+      it('Then the file is not read', async () => {
+        // Arrange
+        const seeded = createMemoryContext();
+        await seeded.fs.writeUtf8('/repo/.mailmap', rule('Worktree', 'old@example.com'));
+        const ctx = bareKeepingWorkDir(seeded);
+
+        // Act
+        const result = await mapped(ctx, 'old@example.com');
+
+        // Assert
+        expect(result).toBe('Old');
+      });
+    });
+  });
+
+  describe('Given a non-bare layout without a work directory', () => {
+    describe('When the mailmap is read with a committed .mailmap', () => {
+      it('Then neither the work tree nor HEAD:.mailmap is consulted', async () => {
+        // Arrange
+        const seeded = createMemoryContext();
+        await commitMailmap(seeded, rule('Head', 'old@example.com'));
+        const { workDir: _workDir, ...layout } = seeded.layout;
+        const ctx: Context = { ...seeded, layout: { ...layout, bare: false } };
+
+        // Act
+        const result = await mapped(ctx, 'old@example.com');
+
+        // Assert
+        expect(result).toBe('Old');
+      });
+    });
+  });
+
   describe('Given mailmap.file', () => {
     describe('When the mailmap is read', () => {
       it('Then its rules apply', async () => {

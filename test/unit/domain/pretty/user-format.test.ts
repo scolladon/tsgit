@@ -1076,6 +1076,33 @@ describe('formatCommit commit encoding', () => {
     });
   });
 
+  describe.each([
+    ['an even-length', 'subj\n', '||UTF-16LE'],
+    ['an odd-length', 'subjX\n', 'subjX|A|UTF-16LE'],
+  ])(
+    'Given %s UTF-16LE commit with ASCII bytes, When subject and author expand',
+    (_t, message, expected) => {
+      it('Then the whole commit buffer is decoded first, or left as is when it cannot be', () => {
+        // Arrange
+        const sut = formatCommit;
+        const raw = encode(
+          `tree ${TREE}\nauthor A <j@x> 1700000200 +0000\ncommitter ${COMMITTER}\nencoding UTF-16LE\n\n${message}`,
+        );
+
+        // Act
+        const result = sut(
+          scanPlaceholders(encode('%s|%an|%e')),
+          parseCommitView(raw),
+          ENV,
+          BUDGET,
+        ) as FormatOutput;
+
+        // Assert
+        expect(decode(result.bytes)).toBe(expected);
+      });
+    },
+  );
+
   describe('Given a commit encoded utf8, When the subject is expanded', () => {
     it('Then the message is not decoded', () => {
       // Arrange
@@ -1327,6 +1354,51 @@ describe('formatCommit over the buffer so far', () => {
 });
 
 describe('formatRequirements for resolved data', () => {
+  describe.each([
+    ['%(count)%h%aN%d%G?%(describe)', false],
+    ['%(total)%h%aN%d%G?%(describe)', false],
+    ['%C(always,zzz)%h%aN%d%G?%(describe)', false],
+    ['%h%aN%d%G?%(describe)%(count)', true],
+  ])('Given %s, When reading the requirements', (format, needed) => {
+    it(`Then only placeholders before the refusal are required (${needed})`, () => {
+      // Arrange
+      const sut = formatRequirements;
+
+      // Act
+      const result = sut(scanPlaceholders(encode(format), { describe: 1 }));
+
+      // Assert
+      expect({
+        abbrev: result.abbrev.size > 0,
+        mailmap: result.mailmap,
+        decorations: result.decorations,
+        signature: result.signature,
+        describe: result.describe !== undefined,
+        refuses: result.refuses,
+      }).toEqual({
+        abbrev: needed,
+        mailmap: needed,
+        decorations: needed,
+        signature: needed,
+        describe: needed,
+        refuses: true,
+      });
+    });
+  });
+
+  describe('Given %h without a refusal, When reading the requirements', () => {
+    it('Then the format does not refuse', () => {
+      // Arrange
+      const sut = formatRequirements;
+
+      // Act
+      const result = sut(scanPlaceholders(encode('%h')));
+
+      // Assert
+      expect(result.refuses).toBe(false);
+    });
+  });
+
   describe.each([
     ['%d', true],
     ['%D', true],

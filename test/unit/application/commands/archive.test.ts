@@ -1660,6 +1660,29 @@ describe('archive export-subst resolved data', () => {
     });
   });
 
+  describe.each([
+    ['an earlier occurrence', '$Format:%(count)$ $Format:%h%aN%d%G?%(describe)$'],
+    ['the same occurrence', '$Format:%(count)%h%aN%d%G?%(describe)$'],
+  ])('Given %%(count) before every resolved placeholder in %s', (_where, content) => {
+    describe('When the entries are iterated', () => {
+      it.each(RESOLVERS)('Then %s is never called before the refusal', async (_name, resolver) => {
+        // Arrange
+        const { ctx } = await seedSubstCommit([
+          ['.gitattributes', SUBST_ALL],
+          ['f', content],
+        ]);
+        const sut = iterateUntilFailure;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result.failure).toMatchObject({ placeholder: '%(count)' });
+        expect(resolver).not.toHaveBeenCalled();
+      });
+    });
+  });
+
   describe('Given a worktree .mailmap and an ident placeholder read through the mailmap', () => {
     describe('When the entries are iterated', () => {
       it('Then the ident is mapped through the worktree mailmap', async () => {

@@ -1,4 +1,5 @@
-import type { CommitView } from './commit-view.js';
+import { type CommitView, parseCommitView } from './commit-view.js';
+import { encodeIso2022Jp, isIso2022JpLabel } from './iso-2022-jp.js';
 
 /**
  * The commit-encoding round trip behind `export-subst`. git uses `iconv`; the platform offers
@@ -7,10 +8,15 @@ import type { CommitView } from './commit-view.js';
  */
 
 type Encoder = ReadonlyMap<number, Uint8Array>;
+type ByteOrder = 'big-endian' | 'little-endian';
 
 const UTF8_LABELS: ReadonlySet<string> = new Set(['utf-8', 'utf8']);
 const LATIN1_LABELS: ReadonlySet<string> = new Set(['iso-8859-1', 'iso8859-1', 'latin1']);
 const UTF16_LABELS: ReadonlySet<string> = new Set(['utf-16', 'utf16']);
+const UTF16_FIXED_ORDER: ReadonlyMap<string, ByteOrder> = new Map([
+  ['utf-16le', 'little-endian'],
+  ['utf-16be', 'big-endian'],
+]);
 const MULTI_BYTE: ReadonlySet<string> = new Set(['shift_jis', 'euc-jp', 'euc-kr', 'gbk', 'big5']);
 const SINGLE_BYTE: ReadonlySet<string> = new Set([
   'ibm866',
@@ -131,25 +137,30 @@ const joinParts = (parts: ReadonlyArray<Uint8Array>): Uint8Array => {
   return out;
 };
 
-const utf16WithBom = (text: string): Uint8Array => {
-  const out = new Uint8Array(BOM_BIG_ENDIAN.length + text.length * 2);
-  out.set(BOM_BIG_ENDIAN, 0);
+const utf16Units = (text: string, order: ByteOrder): Uint8Array => {
+  const out = new Uint8Array(text.length * 2);
+  const [high, low] = order === 'big-endian' ? [0, 1] : [1, 0];
   for (let i = 0; i < text.length; i++) {
     const unit = text.charCodeAt(i);
-    out[BOM_BIG_ENDIAN.length + i * 2] = unit >> 8;
-    out[BOM_BIG_ENDIAN.length + i * 2 + 1] = unit & BYTE_MASK;
+    out[i * 2 + high] = unit >> 8;
+    out[i * 2 + low] = unit & BYTE_MASK;
   }
   return out;
 };
 
+/** iconv's `UTF-16`: a big-endian BOM, then big-endian code units. */
+const utf16WithBom = (text: string): Uint8Array =>
+  joinParts([Uint8Array.from(BOM_BIG_ENDIAN), utf16Units(text, 'big-endian')]);
+
 const startsWith = (bytes: Uint8Array, prefix: ReadonlyArray<number>): boolean =>
   prefix.every((byte, at) => bytes[at] === byte);
 
+/** iconv's `UTF-16` decoder: a BOM picks the byte order, big-endian without one. */
 const decodeUtf16 = (bytes: Uint8Array): string | undefined => {
-  if (startsWith(bytes, BOM_BIG_ENDIAN))
-    return tryDecode(new TextDecoder('utf-16be', { fatal: true }), bytes.subarray(BOM_LENGTH));
-  const body = startsWith(bytes, BOM_LITTLE_ENDIAN) ? bytes.subarray(BOM_LENGTH) : bytes;
-  return tryDecode(new TextDecoder('utf-16le', { fatal: true }), body);
+  if (startsWith(bytes, BOM_LITTLE_ENDIAN))
+    return tryDecode(new TextDecoder('utf-16le', { fatal: true }), bytes.subarray(BOM_LENGTH));
+  const body = startsWith(bytes, BOM_BIG_ENDIAN) ? bytes.subarray(BOM_LENGTH) : bytes;
+  return tryDecode(new TextDecoder('utf-16be', { fatal: true }), body);
 };
 
 const decodeText = (label: string, bytes: Uint8Array): string | undefined => {
@@ -172,11 +183,12 @@ export const encodeFromUtf8 = (label: string, utf8: Uint8Array): Uint8Array | un
   if (text === undefined) return undefined;
   const key = normalise(label);
   if (UTF16_LABELS.has(key)) return utf16WithBom(text);
+  const order = UTF16_FIXED_ORDER.get(key);
+  if (order !== undefined) return utf16Units(text, order);
+  if (isIso2022JpLabel(key)) return encodeIso2022Jp(text);
   const encoder = encoderFor(key);
   return encoder === undefined ? undefined : encodeWith(encoder, text);
 };
-
-const BYTE_FIELDS = ['author', 'committer', 'message', 'subject', 'body'] as const;
 
 const nonUtf8Label = (view: CommitView): string | undefined => {
   if (view.encoding === undefined) return undefined;
@@ -185,19 +197,19 @@ const nonUtf8Label = (view: CommitView): string | undefined => {
 };
 
 /**
- * The view with every byte field decoded to UTF-8 from the commit's own encoding, as git's
- * commit re-encoding does; one undecodable field leaves the whole view as is.
+ * git's commit re-encoding: the whole commit buffer decoded to UTF-8 from the commit's own
+ * encoding and parsed again — a failed decode leaves the view as is. The ids and the
+ * encoding stay the object's own, as git reads them from the parsed commit.
  */
 export const utf8View = (view: CommitView): CommitView => {
   const label = nonUtf8Label(view);
   if (label === undefined) return view;
-  const entries: Array<[string, Uint8Array]> = [];
-  for (const field of BYTE_FIELDS) {
-    const bytes = view[field];
-    if (bytes === undefined) continue;
-    const decoded = decodeToUtf8(label, bytes);
-    if (decoded === undefined) return view;
-    entries.push([field, decoded]);
-  }
-  return { ...view, ...Object.fromEntries(entries) };
+  const decoded = decodeToUtf8(label, view.raw);
+  if (decoded === undefined) return view;
+  return {
+    ...parseCommitView(decoded),
+    tree: view.tree,
+    parents: view.parents,
+    encoding: view.encoding,
+  };
 };

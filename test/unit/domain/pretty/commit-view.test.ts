@@ -236,6 +236,22 @@ describe('parseCommitView', () => {
     });
   });
 
+  describe('Given a NUL byte anywhere in the commit', () => {
+    describe('When parsing it', () => {
+      it('Then the raw buffer git re-encodes stops at the NUL', () => {
+        // Arrange
+        const raw = commit(baseHeaders, 'subject\0hidden\n');
+        const sut = parseCommitView;
+
+        // Act
+        const result = sut(raw);
+
+        // Assert
+        expect(decode(result.raw)).toBe(`${baseHeaders.join('\n')}\n\nsubject`);
+      });
+    });
+  });
+
   describe('Given a NUL byte inside a header', () => {
     describe('When parsing it', () => {
       it('Then the buffer ends at the NUL', () => {

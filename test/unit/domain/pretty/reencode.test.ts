@@ -50,8 +50,8 @@ describe('reencode', () => {
     });
   });
 
-  describe.each(['ISO-2022-JP', 'UTF-16LE', 'x-user-defined'])(
-    'Given the stateful or unsupported WHATWG label %s',
+  describe.each(['x-user-defined', 'GB18030'])(
+    'Given the WHATWG label %s without a derived encoder',
     (label) => {
       describe('When encoding', () => {
         it('Then it is unconverted', () => {
@@ -67,6 +67,82 @@ describe('reencode', () => {
       });
     },
   );
+
+  describe.each([
+    ['UTF-16LE', [0x70, 0, 0xe9, 0, 0x3d, 0xd8, 0x00, 0xde]],
+    ['UTF-16BE', [0, 0x70, 0, 0xe9, 0xd8, 0x3d, 0xde, 0x00]],
+  ])('Given the %s label, When encoding', (label, expected) => {
+    it('Then the code units carry that byte order and no BOM', () => {
+      // Arrange
+      const sut = encodeFromUtf8;
+
+      // Act
+      const result = sut(label, utf8('pé😀'));
+
+      // Assert
+      expect(result).toEqual(bytesOf(...expected));
+    });
+  });
+
+  describe('Given the ISO-2022-JP label', () => {
+    const ESC = 0x1b;
+    const TO_ASCII = [ESC, 0x28, 0x42];
+    const TO_ROMAN = [ESC, 0x28, 0x4a];
+    const TO_JIS0208 = [ESC, 0x24, 0x42];
+
+    describe.each([
+      ['ASCII only', 'pre', [...utf8('pre')]],
+      [
+        'kanji between ASCII runs',
+        'a日本 b',
+        [0x61, ...TO_JIS0208, 0x46, 0x7c, 0x4b, 0x5c, ...TO_ASCII, 0x20, 0x62],
+      ],
+      ['a trailing kanji', '日', [...TO_JIS0208, 0x46, 0x7c, ...TO_ASCII]],
+      ['the yen sign before ASCII', '¥a', [...TO_ROMAN, 0x5c, ...TO_ASCII, 0x61]],
+      ['the overline twice', '‾‾', [...TO_ROMAN, 0x7e, 0x7e, ...TO_ASCII]],
+    ])('When encoding %s', (_title, text, expected) => {
+      it('Then escape sequences switch the character set as iconv does', () => {
+        // Arrange
+        const sut = encodeFromUtf8;
+
+        // Act
+        const result = sut('ISO-2022-JP', utf8(text));
+
+        // Assert
+        expect(result).toEqual(bytesOf(...expected));
+      });
+    });
+
+    describe('When encoding through the csISO2022JP alias', () => {
+      it('Then the alias encodes as the canonical label', () => {
+        // Arrange
+        const sut = encodeFromUtf8;
+
+        // Act
+        const result = sut('csISO2022JP', utf8('a日'));
+
+        // Assert
+        expect(result).toEqual(bytesOf(0x61, ...TO_JIS0208, 0x46, 0x7c, ...TO_ASCII));
+      });
+    });
+
+    describe.each([
+      ['a Latin-1 letter', 'é'],
+      ['a half-width katakana', 'ｱ'],
+      ['a vendor extension of the JIS X 0208 rows', '①'],
+    ])('When encoding %s', (_title, text) => {
+      it('Then it is unconverted', () => {
+        // Arrange
+        const sut = encodeFromUtf8;
+
+        // Act
+        const result = sut('ISO-2022-JP', utf8(`a${text}`));
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
 
   describe('Given a Shift_JIS label, When the text holds a character outside it', () => {
     it('Then encoding is unconverted', () => {
@@ -184,13 +260,13 @@ describe('reencode', () => {
   });
 
   describe('Given a BOM-less UTF-16 text, When decoding', () => {
-    it('Then it is read as little-endian and a lone surrogate is unconverted', () => {
+    it('Then it is read as big-endian and a lone surrogate is unconverted', () => {
       // Arrange
       const sut = decodeToUtf8;
 
       // Act
-      const result = sut('UTF-16', bytesOf(0x70, 0));
-      const lone = sut('UTF-16', bytesOf(0x3d, 0xd8));
+      const result = sut('UTF-16', bytesOf(0, 0x70));
+      const lone = sut('UTF-16', bytesOf(0xd8, 0x3d));
 
       // Assert
       expect(result).toEqual(utf8('p'));

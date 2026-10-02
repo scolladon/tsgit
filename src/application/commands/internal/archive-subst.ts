@@ -151,6 +151,12 @@ const scanOccurrences = (
   return { occurrences, budget: remaining };
 };
 
+/** The occurrences git expands before it dies at the first refusing one, that one included. */
+const upToRefusal = (occurrences: ReadonlyArray<Occurrence>): ReadonlyArray<Occurrence> => {
+  const refusing = occurrences.findIndex(({ requirements }) => requirements.refuses);
+  return refusing === -1 ? occurrences : occurrences.slice(0, refusing + 1);
+};
+
 const anyRequires = (
   occurrences: ReadonlyArray<Occurrence>,
   need: 'mailmap' | 'decorations' | 'signature',
@@ -242,7 +248,8 @@ export const createSubstExpander = (ctx: Context, ids: ArchivedIds): SubstExpand
       budget = scanned.budget;
       if (scanned.occurrences.length === 0) return content;
       const { view } = await resolvers.commit();
-      const env = await resolveEnv(ctx, commitId, resolvers, scanned.occurrences, clock);
+      const reached = upToRefusal(scanned.occurrences);
+      const env = await resolveEnv(ctx, commitId, resolvers, reached, clock);
       return expandOccurrences(content, scanned.occurrences, view, env);
     },
   };
