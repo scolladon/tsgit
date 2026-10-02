@@ -48,6 +48,10 @@ import { collectRoots, type RootsCollection } from './internal/fsck/roots.js';
 import { createSpecialBlobLedger } from './internal/fsck/special-blobs.js';
 import type { UnreadableMode } from './internal/fsck/types.js';
 import {
+  connectivityReadOrder,
+  markUnreachableReferents,
+} from './internal/fsck/unreachable-referents.js';
+import {
   parseCheckOnce,
   unverifiedIds,
   verifiedCopiesOf,
@@ -362,21 +366,32 @@ async function auditRepository(ctx: Context, opts: FsckOptions): Promise<FsckRes
   );
   // `--no-full` verifies no pack, yet git's walk forgets an object a pack
   // holds (`has_object_pack`) rather than calling it missing or broken.
-  const { reached, missingIds, brokenEdges, unreadableEdges, typeFindings } =
+  const { reached, missingIds, brokenEdges, unreadableEdges, typeFindings, typed } =
     opts.full === false ? await excusePackHeld(walk, (id) => hasPackCopy(auditCtx, id)) : walk;
 
   if (unreadable === 'classify') {
     await assertWalkedObjectsReadable(auditCtx, reached, recovered, objectCache);
   }
 
-  // git marks children used only from a copy that passed its hash.
-  const inEdgePresent = buildInEdgeMap(
-    universe,
-    withVerifiedCopies(reachabilityCache, verified),
-    unreadable === 'classify' ? reached : undefined,
-    table.unresolvedEntries,
-  );
-  const { unreachable, dangling } = classifyObjects(universe, reached, inEdgePresent);
+  // git marks children used only from a copy that passed its hash; under
+  // connectivity-only, only from an unreachable object, in its listing order.
+  const referents =
+    unreadable === 'classify'
+      ? markUnreachableReferents(
+          await connectivityReadOrder(auditCtx),
+          reached,
+          typed,
+          reachabilityCache,
+        )
+      : {
+          used: buildInEdgeMap(
+            universe,
+            withVerifiedCopies(reachabilityCache, verified),
+            table.unresolvedEntries,
+          ),
+          findings: [],
+        };
+  const { unreachable, dangling } = classifyObjects(universe, reached, referents.used);
   assertTypesRecoverable(ctx, unreachable, unrecoverable);
   const { rootCommits, tagRefs } = checkedRootsAndTags(
     universe,
@@ -404,6 +419,7 @@ async function auditRepository(ctx: Context, opts: FsckOptions): Promise<FsckRes
     })),
     ...invalidIndexPointers,
     ...typeFindings,
+    ...referents.findings,
   ];
 
   const connectivityBit =

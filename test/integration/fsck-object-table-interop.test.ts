@@ -1,5 +1,5 @@
 /**
- * Cross-tool interop — full `fsck` object-table typing.
+ * Cross-tool interop — `fsck` object-table typing, full and connectivity-only.
  *
  * git's fsck keeps one in-memory table of objects: the first lookup of an
  * object fixes its type — a ref tip's parse at snapshot, then every copy in
@@ -7,7 +7,9 @@
  * another type fails. Each row plants objects whose links disagree with what
  * they name, in a chosen read order, runs real `git fsck` and tsgit's fsck on
  * the same state, and rebuilds git's conflict, parse, pointer and link lines
- * from tsgit's structured findings.
+ * from tsgit's structured findings. Under `--connectivity-only` git parses no
+ * copy: it types unreachable objects as it marks what they link to, in its
+ * listing order.
  *
  * @proves
  *   surface:        fsck
@@ -28,7 +30,7 @@ const ROW_TIMEOUT = 30_000;
 const SEARCH_LIMIT = 4096;
 const IDENT = 'Ada <ada@example.com> 1700000000 +0000';
 const ERROR_LINE =
-  /^error( in \w+ [0-9a-f]{40}: broken links|: object [0-9a-f]{40} is a |: [0-9a-f]{40}: object (could not be parsed|corrupt or missing)|: bad (tree pointer|parent|tag pointer) )/;
+  /^error( in \w+ [0-9a-f]{40}: broken links|: object [0-9a-f]{40} is a |: [0-9a-f]{40}: object (could not be parsed|corrupt or missing)|: bad (tree pointer|parent|tag pointer) |: Object [0-9a-f]{40} not a )/;
 const REPORT_LINE = /^(broken link from|missing|dangling) /;
 
 let root: string;
@@ -244,6 +246,100 @@ const ROWS: ReadonlyArray<{ readonly name: string; readonly build: (slug: string
   },
 ];
 
+/** `--connectivity-only` rows: unreachable objects only, each built in its read order. */
+const CONNECTIVITY_ROWS: ReadonlyArray<{
+  readonly name: string;
+  readonly build: (slug: string) => string;
+}> = [
+  {
+    name: 'a dangling commit whose tree is a blob read before it',
+    build: (slug) => {
+      const dir = emptyRepo(slug);
+      const leaf = blob(dir, 'leaf\n');
+      writeFirst(
+        dir,
+        'commit',
+        (n) => commitBody(leaf, [], n),
+        (id) => readBefore(leaf, id),
+      );
+      return dir;
+    },
+  },
+  {
+    name: 'a dangling commit whose tree is a blob read after it',
+    build: (slug) => {
+      const dir = emptyRepo(slug);
+      const leaf = blob(dir, 'leaf\n');
+      writeFirst(
+        dir,
+        'commit',
+        (n) => commitBody(leaf, [], n),
+        (id) => readBefore(id, leaf),
+      );
+      return dir;
+    },
+  },
+  {
+    name: 'a dangling commit whose parent is a blob read before it',
+    build: (slug) => {
+      const dir = emptyRepo(slug);
+      const leaf = blob(dir, 'leaf\n');
+      const tree = writeLiteral(dir, 'tree', Buffer.alloc(0));
+      writeFirst(
+        dir,
+        'commit',
+        (n) => commitBody(tree, [leaf], n),
+        (id) => readBefore(leaf, id) && readBefore(tree, id),
+      );
+      return dir;
+    },
+  },
+  {
+    name: 'a dangling tag declaring a tree over a blob read before it',
+    build: (slug) => {
+      const dir = emptyRepo(slug);
+      const leaf = blob(dir, 'leaf\n');
+      writeFirst(
+        dir,
+        'tag',
+        (n) => tagBody(leaf, 'tree', n),
+        (id) => readBefore(leaf, id),
+      );
+      return dir;
+    },
+  },
+  {
+    name: 'a dangling tree whose directory entry names a blob read before it',
+    build: (slug) => {
+      const dir = emptyRepo(slug);
+      const leaf = blob(dir, 'leaf\n');
+      writeFirst(
+        dir,
+        'tree',
+        (n) => treeBody('40000', `d${n}`, leaf),
+        (id) => readBefore(leaf, id),
+      );
+      return dir;
+    },
+  },
+  {
+    name: 'a dangling tree whose file and gitlink entries name trees read after it',
+    build: (slug) => {
+      const dir = emptyRepo(slug);
+      const inner = writeLiteral(dir, 'tree', treeBody('100644', 'f', blob(dir, 'leaf\n')));
+      const linked = writeLiteral(dir, 'tree', treeBody('100644', 'o', blob(dir, 'other\n')));
+      writeFirst(
+        dir,
+        'tree',
+        (n) =>
+          Buffer.concat([treeBody('100644', `f${n}`, inner), treeBody('160000', `g${n}`, linked)]),
+        (id) => readBefore(id, inner) && readBefore(id, linked),
+      );
+      return dir;
+    },
+  },
+];
+
 const looseRelativePath = (id: string): string => `.git/objects/${id.slice(0, 2)}/${id.slice(2)}`;
 
 const POINTER_LINES = {
@@ -264,6 +360,8 @@ const errorLines = (findings: ReadonlyArray<FsckFinding>): ReadonlyArray<string>
     }
     if (f.type === 'bad-pointer') return [POINTER_LINES[f.link](f.target, f.id)];
     if (f.type === 'broken-links') return [`error in ${f.objectType} ${f.id}: broken links`];
+    if (f.type === 'unexpected-object-type')
+      return [`error: Object ${f.id} not a ${f.expectedType}`];
     return [];
   });
 
@@ -302,6 +400,37 @@ describe.skipIf(!GIT_AVAILABLE)('fsck interop — object-table typing', () => {
 
             // Act
             const result = await sut().finally(() => repo.dispose());
+
+            // Assert
+            expect(result.exitCode).toBe(expected.exitCode);
+            expect(errorLines(result.findings)).toEqual(gitLines(expected.stderr, ERROR_LINE));
+            expect(reportLines(result.findings)).toEqual(
+              [...gitLines(expected.stdout, REPORT_LINE)].sort(),
+            );
+          },
+          ROW_TIMEOUT,
+        );
+      });
+    },
+  );
+});
+
+describe.skipIf(!GIT_AVAILABLE)('fsck interop — connectivity-only unreachable referents', () => {
+  describe.each(CONNECTIVITY_ROWS.map((row, index) => ({ ...row, slug: `connectivity-${index}` })))(
+    'Given $name',
+    ({ build, slug }) => {
+      describe('When git fsck --connectivity-only and tsgit fsck run', () => {
+        it(
+          'Then both report the same conflicts, pointers, typing errors, dangling objects and exit code',
+          async () => {
+            // Arrange
+            const dir = build(slug);
+            const expected = tryRunGitWithExit(['-C', dir, 'fsck', '--connectivity-only']);
+            const repo = await openRepository({ cwd: dir });
+            const sut = repo.fsck;
+
+            // Act
+            const result = await sut({ connectivityOnly: true }).finally(() => repo.dispose());
 
             // Assert
             expect(result.exitCode).toBe(expected.exitCode);

@@ -24,7 +24,7 @@ type TableFinding = Extract<
   { readonly type: 'type-conflict' | 'unparseable-object' | 'bad-pointer' | 'broken-links' }
 >;
 
-type BadPointer = Extract<FsckFinding, { readonly type: 'bad-pointer' }>;
+export type BadPointer = Extract<FsckFinding, { readonly type: 'bad-pointer' }>;
 
 /** What git's object table settled while fsck read every copy. */
 export interface ObjectTable {
@@ -46,7 +46,7 @@ interface TableState {
   readonly unresolvedEntries: Map<ObjectId, ReadonlyArray<TypeConflict>>;
 }
 
-interface Link {
+export interface Link {
   readonly link: BadPointer['link'];
   readonly target: ObjectId;
   readonly expectedType: FsckObjectType;
@@ -71,7 +71,7 @@ async function looseReadOrder(ctx: Context): Promise<ReadonlyArray<ReadCopy>> {
 }
 
 /** git's `lookup_<type>`: the first lookup types the object, another type conflicts. */
-function lookup(
+export function lookup(
   types: Map<ObjectId, FsckObjectType>,
   id: ObjectId,
   expectedType: FsckObjectType,
@@ -83,7 +83,7 @@ function lookup(
 }
 
 /** The links a commit's or tag's parse looks up, in parse order. */
-function parsedLinks(obj: ProjectedGitObject): ReadonlyArray<Link> {
+export function parsedLinks(obj: ProjectedGitObject): ReadonlyArray<Link> {
   if (obj.type === 'commit') {
     const parents = obj.parents.map((target) => ({
       link: 'parent' as const,
@@ -98,7 +98,7 @@ function parsedLinks(obj: ProjectedGitObject): ReadonlyArray<Link> {
 }
 
 /** git's `parse_<type>_buffer`: stops at the first link it cannot look up. */
-function failedLink(
+export function failedLink(
   types: Map<ObjectId, FsckObjectType>,
   id: ObjectId,
   obj: ProjectedGitObject,

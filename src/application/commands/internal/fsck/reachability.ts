@@ -3,7 +3,7 @@ import { FILE_MODE } from '../../../../domain/objects/file-mode.js';
 import type { ObjectId } from '../../../../domain/objects/index.js';
 import type { GraphCommit } from './graph-commits.js';
 import type { CachedGitObject, ProjectedGitObject } from './object-cache.js';
-import { entryType, type TypeConflict } from './object-table.js';
+import { entryType, parsedLinks, type TypeConflict } from './object-table.js';
 import type { FsckFinding, UnreadableMode } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -48,23 +48,18 @@ function recordOutEdges(
 
 /**
  * Scan ALL universe objects to collect oids that have at least one in-edge
- * from another present (universe) object. Separate scan so that
- * unreachable objects with internal edges are not misclassified as dangling.
- * `reached`, given under connectivityOnly, excludes the walk's objects: git
- * marks only an unreachable object's links used there
- * (`mark_unreachable_referents`), so a reached object it never walked names
- * nothing. A tree entry its lookup cannot resolve (`unresolvedEntries`) is
- * never marked.
+ * from another present (universe) object — git's `fsck_obj` walk of every
+ * object a full fsck checks. Separate scan so that unreachable objects with
+ * internal edges are not misclassified as dangling. A tree entry its lookup
+ * cannot resolve (`unresolvedEntries`) is never marked.
  */
 export function buildInEdgeMap(
   universe: ReadonlySet<ObjectId>,
   objectCache: ReadonlyMap<ObjectId, CachedGitObject>,
-  reached?: ReadonlySet<ObjectId>,
   unresolvedEntries: UnresolvedEntries = NO_UNRESOLVED_ENTRIES,
 ): Set<ObjectId> {
   const inEdge = new Set<ObjectId>();
   for (const id of universe) {
-    if (reached?.has(id) === true) continue;
     const obj = objectCache.get(id);
     if (obj != null) recordOutEdges(id, obj, inEdge, unresolvedEntries);
     // null (corrupt / unreadable) — no edges recorded
@@ -129,6 +124,8 @@ export interface WalkResult {
   readonly unreadableEdges: ReadonlyArray<GraphEdge>;
   /** Objects the walk reached but could not walk as typed, in pop order. */
   readonly typeFindings: ReadonlyArray<TypeFinding>;
+  /** Under connectivityOnly, the type every lookup so far gave each object. */
+  readonly typed: ReadonlyMap<ObjectId, FsckObjectType> | undefined;
 }
 
 interface WalkState {
@@ -309,15 +306,6 @@ function parsesUntyped(state: WalkState, typing: WalkTyping, id: ObjectId): bool
   return false;
 }
 
-/** The links git's `parse_object` types: a tree's entries wait for its walk. */
-function parsedLinks(obj: ProjectedGitObject): ReadonlyArray<readonly [ObjectId, FsckObjectType]> {
-  if (obj.type === 'commit') {
-    return [[obj.tree, 'tree'], ...obj.parents.map((parent) => [parent, 'commit'] as const)];
-  }
-  if (obj.type === 'tag') return [[obj.object, obj.objectType]];
-  return [];
-}
-
 /** Where git's fsck types objects before its walk pops anything. */
 export interface PreWalkParses {
   /** Every ref tip `snapshot_refs` parses. */
@@ -339,7 +327,8 @@ export function typedBeforeWalk(
     const obj = objectCache.get(id);
     if (obj == null) return;
     typeOnce(typed, id, obj.type);
-    for (const [link, type] of parsedLinks(obj)) typeOnce(typed, link, type);
+    // A tree's entries wait for its walk: its parse types none of them.
+    for (const { target, expectedType } of parsedLinks(obj)) typeOnce(typed, target, expectedType);
   };
   for (const id of parses.refTips) typeParsed(id);
   for (const id of parses.indexBlobs) typeOnce(typed, id, 'blob');
@@ -432,6 +421,7 @@ export function buildReachableSet(
     brokenEdges: state.brokenEdges,
     unreadableEdges: state.unreadableEdges,
     typeFindings: state.typeFindings,
+    typed: state.typing?.typed,
   };
 }
 
