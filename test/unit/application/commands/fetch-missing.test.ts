@@ -1,7 +1,7 @@
 /**
  * `fetchMissing` command + the `createPromisorRemote` port implementation.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import {
   createPromisorRemote,
@@ -712,15 +712,45 @@ describe('fetchMissing', () => {
       });
     });
 
+    describe('When the first remote fails and the next serves the object', () => {
+      it("Then the failure is warned with the remote's name and error, as git shows the child's stderr", async () => {
+        // Arrange
+        const base = createMemoryContext();
+        await seedRepo(base, {});
+        await withConfig(base, `${remote('a', URL_A)}${remote('origin', URL)}`);
+        const { packBytes, blobId } = await onePackedBlob(base, 'lazy content\n');
+        const { transport } = originOnly(packBytes);
+        const warn = vi.fn();
+        const ctx: Context = { ...base, transport, logger: { warn } };
+        const sut = fetchMissing;
+
+        // Act
+        const result = await sut(ctx, { oids: [blobId] });
+
+        // Assert
+        expect(result.remote).toBe('origin');
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn).toHaveBeenCalledWith('fetchMissing: promisor remote failed, trying the next', {
+          remote: 'a',
+          error: {
+            code: 'HTTP_ERROR',
+            reason: 'git-upload-pack discovery returned 500',
+            statusCode: 500,
+          },
+        });
+      });
+    });
+
     describe('When every remote fails', () => {
-      it("Then the last remote's failure propagates", async () => {
+      it("Then the last remote's failure propagates, only the earlier ones warned", async () => {
         // Arrange
         const base = createMemoryContext();
         await seedRepo(base, {});
         await withConfig(base, `${remote('a', URL_A)}${remote('b', URL_SLASH)}`);
         const { packBytes, blobId } = await onePackedBlob(base, 'lazy content\n');
         const { transport, urls } = originOnly(packBytes);
-        const ctx: Context = { ...base, transport };
+        const warn = vi.fn();
+        const ctx: Context = { ...base, transport, logger: { warn } };
         const sut = fetchMissing;
 
         // Act
@@ -735,6 +765,7 @@ describe('fetchMissing', () => {
         expect(caught).toBeInstanceOf(TsgitError);
         expect(urls.at(-1)?.startsWith(URL_SLASH)).toBe(true);
         expect(urls.some((url) => url.startsWith(URL_A))).toBe(true);
+        expect(warn.mock.calls.map(([, context]) => context.remote)).toEqual(['a']);
       });
     });
   });

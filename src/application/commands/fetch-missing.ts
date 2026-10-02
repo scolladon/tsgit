@@ -107,7 +107,10 @@ const fetchFrom = async (
   }
 };
 
-/** One remote short of the last: a classified failure hands the fetch on, as git's does. */
+/**
+ * One remote short of the last: a classified failure hands the fetch on, as
+ * git's does — warned first, where git's fetch child leaves its stderr.
+ */
 const fetchSucceeded = async (
   ctx: Context,
   config: ParsedConfig,
@@ -119,6 +122,10 @@ const fetchSucceeded = async (
     return true;
   } catch (err) {
     if (errorDataCode(err) === undefined) throw err;
+    ctx.logger?.warn?.('fetchMissing: promisor remote failed, trying the next', {
+      remote: name,
+      error: (err as { readonly data: unknown }).data,
+    });
     return false;
   }
 };
