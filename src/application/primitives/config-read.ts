@@ -2521,6 +2521,56 @@ export const readPromisorRemoteNames = async (ctx: Context): Promise<ReadonlyArr
   return [...names].filter(isRegistrablePromisorName);
 };
 
+/** The `[remote*]` entry git's `promisor_remote_config` dies on. */
+export type PromisorConfigRefusal =
+  | { readonly kind: 'bad-boolean'; readonly entry: InvalidBooleanEntry }
+  | { readonly kind: 'missing-value'; readonly entry: ValuelessEntry };
+
+type ConfigEntryToken = Extract<ConfigToken, { kind: 'entry' }>;
+
+/** git reads `promisor` as a boolean, and a registrable remote's filter as a string. */
+const promisorEntryRefusal = (
+  token: ConfigEntryToken,
+  remoteName: string,
+  source: string,
+): PromisorConfigRefusal | undefined => {
+  const key = token.key.toLowerCase();
+  const located = {
+    key: remoteName === '' ? `remote.${key}` : `remote.${remoteName}.${key}`,
+    source,
+    line: token.startLine + 1,
+  };
+  if (key === 'promisor' && token.value !== null && !acceptsGitBoolean(token.value)) {
+    return { kind: 'bad-boolean', entry: { ...located, value: token.value } };
+  }
+  const unregistered = !isRegistrablePromisorName(remoteName);
+  if (key !== 'partialclonefilter' || token.value !== null || unregistered) return undefined;
+  return { kind: 'missing-value', entry: located };
+};
+
+/**
+ * git's `promisor_remote_config` walk: the FIRST `[remote*]` entry, in file
+ * order, it dies on — a `promisor` its boolean grammar refuses, or a valueless
+ * `partialclonefilter` under a remote it registers (a `/`-leading name is
+ * never registered, so its filter is never read).
+ */
+export const findFirstPromisorConfigRefusal = async (
+  ctx: Context,
+): Promise<PromisorConfigRefusal | undefined> => {
+  const { tokens, source } = await readConfigEntry(ctx);
+  let remoteName: string | undefined;
+  for (const token of tokens) {
+    if (token.kind === 'header') {
+      remoteName = token.section.toLowerCase() === 'remote' ? (token.subsection ?? '') : undefined;
+      continue;
+    }
+    if (token.kind !== 'entry' || remoteName === undefined) continue;
+    const refusal = promisorEntryRefusal(token, remoteName, source);
+    if (refusal !== undefined) return refusal;
+  }
+  return undefined;
+};
+
 /**
  * `core.logAllRefUpdates`-specific finder: the key accepts a third literal,
  * `always`, beyond git's boolean grammar (mirrors `parseLogAllRefUpdates`'s own

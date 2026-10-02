@@ -178,3 +178,60 @@ describe('Given a remote whose partialclonefilter has no value', () => {
     });
   });
 });
+
+describe('assertValidPromisorRemoteConfig refusal order', () => {
+  describe.each([
+    {
+      label: 'a valueless partialclonefilter before a malformed promisor',
+      config: '[remote "y"]\n\tpartialclonefilter\n[remote "x"]\n\tpromisor = maybe\n',
+      expected: { code: 'CONFIG_MISSING_VALUE', key: 'remote.y.partialclonefilter', line: 2 },
+    },
+    {
+      label: 'a malformed promisor before a valueless partialclonefilter',
+      config: '[remote "x"]\n\tpromisor = maybe\n\tpartialclonefilter\n',
+      expected: { code: 'CONFIG_BAD_BOOLEAN_VALUE', key: 'remote.x.promisor', value: 'maybe' },
+    },
+    {
+      label: "a valueless partialclonefilter under a '/'-named remote before a malformed promisor",
+      config: '[remote "/x"]\n\tpartialclonefilter\n[remote "z"]\n\tpromisor = maybe\n',
+      expected: { code: 'CONFIG_BAD_BOOLEAN_VALUE', key: 'remote.z.promisor', value: 'maybe' },
+    },
+  ])('Given $label', ({ config, expected }) => {
+    describe('When the promisor config is validated', () => {
+      it('Then it refuses the entry git meets first in the file', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedConfig(ctx, config);
+        const sut = assertValidPromisorRemoteConfig;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx);
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toMatchObject(expected);
+      });
+    });
+  });
+
+  describe("Given a valueless partialclonefilter only under a '/'-named remote", () => {
+    describe('When the promisor config is validated', () => {
+      it('Then it accepts it, as git never registers that remote', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedConfig(ctx, '[remote "/x"]\n\tpartialclonefilter\n');
+        const sut = assertValidPromisorRemoteConfig;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+});

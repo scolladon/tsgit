@@ -460,6 +460,43 @@ describe.skipIf(!GIT_AVAILABLE)('config boolean refusal tier interop', () => {
       });
     });
   });
+  describe.each([
+    {
+      label: 'a valueless remote.y.partialclonefilter before a malformed remote.x.promisor',
+      config: '[remote "y"]\n\tpartialclonefilter\n[remote "x"]\n\tpromisor = maybe\n',
+      gitMessage: "missing value for 'remote.y.partialclonefilter'",
+      expected: { code: 'CONFIG_MISSING_VALUE', key: 'remote.y.partialclonefilter' },
+    },
+    {
+      label: 'a malformed remote.x.promisor before a valueless remote.x.partialclonefilter',
+      config: '[remote "x"]\n\tpromisor = maybe\n\tpartialclonefilter\n',
+      gitMessage: "bad boolean config value 'maybe' for 'remote.x.promisor'",
+      expected: { code: 'CONFIG_BAD_BOOLEAN_VALUE', key: 'remote.x.promisor' },
+    },
+    {
+      label:
+        "a valueless partialclonefilter under the '/'-named remote./x before a malformed remote.z.promisor",
+      config: '[remote "/x"]\n\tpartialclonefilter\n[remote "z"]\n\tpromisor = maybe\n',
+      gitMessage: "bad boolean config value 'maybe' for 'remote.z.promisor'",
+      expected: { code: 'CONFIG_BAD_BOOLEAN_VALUE', key: 'remote.z.promisor' },
+    },
+  ])('Given $label', ({ config, gitMessage, expected }) => {
+    describe('When git status and tsgit status run', () => {
+      it('Then both refuse the entry git meets first in the file', async () => {
+        // Arrange
+        await writeConfig(`[core]\n\trepositoryformatversion = 0\n${config}`);
+
+        // Act
+        const g = tryRunGitWithExit(['-C', ours, 'status'], { env: runGitEnv() });
+        const caught = await withRepo(ours, (repo) => captureThrow(() => repo.status()));
+
+        // Assert
+        expect(g.exitCode).toBe(128);
+        expect(g.stderr).toContain(gitMessage);
+        expect((caught as TsgitError).data).toMatchObject(expected);
+      });
+    });
+  });
   describe('Given X18 — a malformed [filter "zed"].required and a settled stat-clean index, When each tool re-adds then modifies the path', () => {
     it('Then both accept the stat-clean add and both refuse the modified one', async () => {
       // Arrange — commit a file with a healthy config, let the stat cache

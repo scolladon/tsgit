@@ -3,7 +3,7 @@ import type { Context } from '../../../ports/context.js';
 import {
   findFirstInvalidBoolean,
   findFirstInvalidBooleanInSection,
-  findFirstValuelessInSection,
+  findFirstPromisorConfigRefusal,
 } from '../config-read.js';
 
 /**
@@ -47,10 +47,10 @@ export const assertValidBooleanConfigInSection = async (
  * the point git's own promisor-config load happens.
  */
 export const assertValidPromisorRemoteConfig = async (ctx: Context): Promise<void> => {
-  await assertValidBooleanConfigInSection(ctx, 'remote', ['promisor']);
-  // git's `promisor_remote_config` reads the filter as a string: no value dies.
-  const valueless = await findFirstValuelessInSection(ctx, 'remote', ['partialclonefilter']);
-  if (valueless !== undefined) {
-    throw configMissingValue(valueless.key, valueless.source, valueless.line);
-  }
+  const refusal = await findFirstPromisorConfigRefusal(ctx);
+  if (refusal === undefined) return;
+  const { entry } = refusal;
+  if (refusal.kind === 'missing-value')
+    throw configMissingValue(entry.key, entry.source, entry.line);
+  throw configBadBooleanValue(entry.key, entry.source, refusal.entry.value);
 };
