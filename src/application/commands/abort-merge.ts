@@ -7,7 +7,7 @@ import type { Context } from '../../ports/context.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { clearMergeState, readMergeHead, readOrigHead } from './internal/merge-state.js';
 import {
-  assertOperationalRepository,
+  assertOperationalRepositorySettingsFirst,
   readHeadRaw,
   requireWorkTree,
 } from './internal/repo-state.js';
@@ -33,7 +33,7 @@ export interface MergeAbortResult {
  * fire on the very `MERGE_HEAD` we're about to clear). See ADR-170.
  */
 export const mergeAbort = async (ctx: Context): Promise<MergeAbortResult> => {
-  await assertOperationalRepository(ctx);
+  await assertOperationalRepositorySettingsFirst(ctx);
   requireWorkTree(ctx, MERGE_ABORT);
   const mergeHead = await readMergeHead(ctx);
   // Load-bearing under the ADR-027 write order: `merge`'s conflict path

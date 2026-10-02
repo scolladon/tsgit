@@ -26,7 +26,7 @@ import { type ClosureTier, computeClosure } from '../primitives/internal/closure
 import { writePackArtifacts } from '../primitives/internal/write-pack-artifacts.js';
 import { commonGitDir, packsDir } from '../primitives/path-layout.js';
 import { refreshPackRegistry } from '../primitives/read-object.js';
-import { assertOperationalRepository } from './internal/repo-state.js';
+import { assertOperationalRepositorySettingsFirst } from './internal/repo-state.js';
 import { revParse } from './rev-parse.js';
 
 export interface PackObjectsOptions {
@@ -75,7 +75,7 @@ export const packObjects = async (
   ctx: Context,
   opts: PackObjectsOptions,
 ): Promise<PackObjectsResult> => {
-  await assertOperationalRepository(ctx);
+  await assertOperationalRepositorySettingsFirst(ctx);
   await assertValidPackIntConfig(ctx);
   const wants = await Promise.all(opts.wants.map((rev) => revParse(ctx, rev)));
   const not = await Promise.all((opts.not ?? []).map((rev) => revParse(ctx, rev)));

@@ -28,20 +28,25 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
+import { mergeAbort } from '../../src/application/commands/abort-merge.js';
 import {
   branchCreate,
   branchDelete,
   branchList,
   branchRename,
 } from '../../src/application/commands/branch.js';
+import { diff } from '../../src/application/commands/diff.js';
 import { log } from '../../src/application/commands/log.js';
+import { mergeRun } from '../../src/application/commands/merge.js';
 import {
   notesAdd,
   notesList,
   notesRead,
   notesRemove,
 } from '../../src/application/commands/notes.js';
+import { packObjects } from '../../src/application/commands/pack-objects.js';
 import { packRefs } from '../../src/application/commands/pack-refs.js';
+import { rebaseAbort, rebaseRun } from '../../src/application/commands/rebase.js';
 import { reflog } from '../../src/application/commands/reflog.js';
 import { revParse } from '../../src/application/commands/rev-parse.js';
 import { show } from '../../src/application/commands/show.js';
@@ -701,6 +706,49 @@ describe.skipIf(!GIT_AVAILABLE)('repo-settings tier — cross-tool interop', () 
           caught = err;
         }
         expect(caught).toBeInstanceOf(TsgitError);
+        expect((caught as TsgitError).data).toMatchObject({
+          code: 'CONFIG_BAD_NUMERIC_VALUE',
+          key: 'core.maxtreedepth',
+        });
+      });
+    });
+
+    describe.each([
+      { verb: 'diff', git: ['diff'], run: (c: Context) => diff(c) },
+      {
+        verb: 'merge HEAD',
+        git: ['merge', 'HEAD'],
+        run: (c: Context) => mergeRun(c, { rev: 'HEAD' }),
+      },
+      { verb: 'merge --abort', git: ['merge', '--abort'], run: (c: Context) => mergeAbort(c) },
+      {
+        verb: 'rebase HEAD',
+        git: ['rebase', 'HEAD'],
+        run: (c: Context) => rebaseRun(c, { upstream: 'HEAD' }),
+      },
+      { verb: 'rebase --abort', git: ['rebase', '--abort'], run: (c: Context) => rebaseAbort(c) },
+      {
+        verb: 'pack-objects',
+        git: ['pack-objects', '--all', '--stdout'],
+        run: (c: Context) => packObjects(c, { wants: ['HEAD'] }),
+      },
+    ])('When $verb runs', ({ git: gitArgs, run }) => {
+      it('Then both name the repo-settings class (maxtreedepth) — its prologue reads it first', async () => {
+        // Arrange
+        const g = tryRunGitWithExit(['-C', dir, ...gitArgs]);
+        const sut = run;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx);
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(g.exitCode).toBe(128);
+        expect(g.stderr).toContain("'core.maxtreedepth'");
         expect((caught as TsgitError).data).toMatchObject({
           code: 'CONFIG_BAD_NUMERIC_VALUE',
           key: 'core.maxtreedepth',

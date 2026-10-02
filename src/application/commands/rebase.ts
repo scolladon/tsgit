@@ -45,7 +45,7 @@ import { createCommit } from '../primitives/create-commit.js';
 import { diffTrees } from '../primitives/diff-trees.js';
 import {
   assertNoPendingOperation,
-  assertOperationalRepository,
+  assertOperationalRepositorySettingsFirst,
   branchRefFromHead,
   readHeadRaw,
   requireWorkTree,
@@ -456,7 +456,7 @@ const replayFrom = async (
 };
 
 export const rebaseRun = async (ctx: Context, input: RebaseRunInput): Promise<RebaseResult> => {
-  await assertOperationalRepository(ctx);
+  await assertOperationalRepositorySettingsFirst(ctx);
   requireWorkTree(ctx, 'rebase');
   await assertNoPendingOperation(ctx);
   const head = await readHeadRaw(ctx);
@@ -533,7 +533,7 @@ const rejectUnmergedIndex = (entries: ReadonlyArray<IndexEntry>): void => {
  * committer, `rebase (continue)` reflog), then replay the remaining todo.
  */
 export const rebaseContinue = async (ctx: Context): Promise<RebaseResult> => {
-  await assertOperationalRepository(ctx);
+  await assertOperationalRepositorySettingsFirst(ctx);
   requireWorkTree(ctx, 'rebase --continue');
   const state = await readRebaseState(ctx);
   if (state === undefined) throw noOperationInProgress('rebase');
@@ -575,7 +575,7 @@ export const rebaseContinue = async (ctx: Context): Promise<RebaseResult> => {
 
 /** Drop the conflicted commit (hard-reset to the last good pick) and replay the rest. */
 export const rebaseSkip = async (ctx: Context): Promise<RebaseResult> => {
-  await assertOperationalRepository(ctx);
+  await assertOperationalRepositorySettingsFirst(ctx);
   requireWorkTree(ctx, 'rebase --skip');
   const state = await readRebaseState(ctx);
   if (state === undefined) throw noOperationInProgress('rebase');
@@ -602,7 +602,7 @@ export const rebaseSkip = async (ctx: Context): Promise<RebaseResult> => {
  * (the branch never moved during the replay, so it gets no entry), clear state.
  */
 export const rebaseAbort = async (ctx: Context): Promise<RebaseAbortResult> => {
-  await assertOperationalRepository(ctx);
+  await assertOperationalRepositorySettingsFirst(ctx);
   requireWorkTree(ctx, 'rebase --abort');
   const state = await readRebaseState(ctx);
   if (state === undefined) throw noOperationInProgress('rebase');

@@ -7,6 +7,7 @@ export {
   assertEagerConfigValid,
   assertNoPendingOperation,
   assertOperationalRepository,
+  assertOperationalRepositorySettingsFirst,
   assertRepository,
   branchRefFromHead,
   currentBranchRef,

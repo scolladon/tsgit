@@ -3,7 +3,7 @@ import type { Context, RepositoryConfig } from '../../ports/context.js';
 import { diffTrees } from '../primitives/diff-trees.js';
 import { assertValidPromisorRemoteConfig } from '../primitives/internal/boolean-config-guard.js';
 import type { DiffTreesOptions } from '../primitives/types.js';
-import { assertOperationalRepository } from './internal/repo-state.js';
+import { assertOperationalRepositorySettingsFirst } from './internal/repo-state.js';
 import { resolveTreeish } from './internal/resolve-rev.js';
 
 export interface DiffOptions {
@@ -54,7 +54,7 @@ export interface DiffOptions {
 export function diff(ctx: Context, opts: DiffOptions & { withStat: true }): Promise<StatTreeDiff>;
 export function diff(ctx: Context, opts?: DiffOptions): Promise<TreeDiff>;
 export async function diff(ctx: Context, opts: DiffOptions = {}): Promise<TreeDiff | StatTreeDiff> {
-  await assertOperationalRepository(ctx);
+  await assertOperationalRepositorySettingsFirst(ctx);
   const from = await resolveTreeish(ctx, opts.from ?? 'HEAD');
   const to = opts.to !== undefined ? await resolveTreeish(ctx, opts.to) : undefined;
   // Promisor-remote guard (see assertValidPromisorRemoteConfig) — after rev resolution.

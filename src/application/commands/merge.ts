@@ -69,7 +69,7 @@ import { acquireIndexLock } from './internal/index-update.js';
 import { writeMergeHead, writeMergeMsg, writeOrigHead } from './internal/merge-state.js';
 import {
   assertNoPendingOperation,
-  assertOperationalRepository,
+  assertOperationalRepositorySettingsFirst,
   readHeadRaw,
   requireWorkTree,
 } from './internal/repo-state.js';
@@ -165,7 +165,7 @@ const computeMerge = async (
   opts: MergeRunInput,
   internal: MergeInternalOptions,
 ): Promise<MergeResult> => {
-  await assertOperationalRepository(ctx);
+  await assertOperationalRepositorySettingsFirst(ctx);
   requireWorkTree(ctx, 'merge');
   await assertNoPendingOperation(ctx);
   const head = await readHeadRaw(ctx);
