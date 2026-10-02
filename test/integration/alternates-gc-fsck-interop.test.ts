@@ -678,6 +678,104 @@ describe.skipIf(!GIT_AVAILABLE)('alternates fsck interop — every source is aud
       );
     });
 
+    const entryOffset = (idx: string, oid: string): number =>
+      Number(
+        runGit(['show-index'], { input: readFileSync(idx) })
+          .split('\n')
+          .find((line) => line.split(' ')[1] === oid)
+          ?.split(' ')[0],
+      );
+
+    const unpackLines = (pack: string, oid: string, offset: number) =>
+      [
+        `error: ${pack} pack checksum mismatch`,
+        `error: index CRC mismatch for object ${oid} from ${pack} at offset ${offset}`,
+        `error: cannot unpack ${oid} from ${pack} at offset ${offset}`,
+      ].sort();
+
+    const DAMAGE_PAST_ENTRY_START = 4;
+
+    describe('When a second donor pack holds a damaged duplicate of a reachable blob (V4-dup)', () => {
+      it(
+        'Then both exit 4 on the donor and the borrower and report the damaged copy git reports',
+        async () => {
+          // Arrange
+          const { donor, borrower } = borrowerOf('v4dup', true);
+          const oid = runGit(['-C', donor, 'rev-parse', 'HEAD:d1.txt']).trim();
+          const packDir = donorPackDir(donor);
+          const name = runGit(['-C', donor, 'pack-objects', path.join(packDir, 'pack')], {
+            input: `${oid}\n`,
+          }).trim();
+          const pack = path.join(packDir, `pack-${name}.pack`);
+          const offset = entryOffset(path.join(packDir, `pack-${name}.idx`), oid);
+          flipByteAt(pack, offset + DAMAGE_PAST_ENTRY_START);
+          const sut = tsgitFsck;
+
+          for (const dir of [donor, borrower]) {
+            // Act
+            const gitResult = gitFsck(dir);
+            const result = await sut(dir);
+
+            // Assert
+            const lines = verifyPackLines(result.findings, packDir);
+            const gitPackDir = dir === donor ? '.git/objects/pack' : packDir;
+            expect(gitResult.exitCode).toBe(4);
+            expect(result.exitCode).toBe(4);
+            expect([...lines].sort()).toEqual(unpackLines(pack, oid, offset));
+            for (const line of verifyPackLines(result.findings, gitPackDir)) {
+              expect(gitResult.stderr).toContain(line);
+            }
+          }
+        },
+        ROW_TIMEOUT,
+      );
+    });
+
+    describe('When a loose copy shadows a damaged pack copy of a reachable blob (V4-loose)', () => {
+      it(
+        'Then both exit 4 on the donor and the borrower and report the hidden pack copy',
+        async () => {
+          // Arrange
+          const donor = path.join(root, 'v4loose-donor');
+          runGit(['init', '-q', '-b', 'main', donor]);
+          configure(donor);
+          for (const n of [1, 2]) commitFile(donor, `d${n}.txt`, `donor ${n}`);
+          const oid = runGit(['-C', donor, 'rev-parse', 'HEAD:d1.txt']).trim();
+          const loose = path.join(objectsOf(donor), oid.slice(0, 2), oid.slice(2));
+          const looseBytes = readFileSync(loose);
+          runGit(['-C', donor, 'gc', '-q']);
+          mkdirSync(path.dirname(loose), { recursive: true });
+          writeFileSync(loose, looseBytes);
+          const borrower = path.join(root, 'v4loose-borrower');
+          runGit(['clone', '-q', '--shared', donor, borrower]);
+          configure(borrower);
+          const pack = donorPack(donor);
+          const offset = entryOffset(pack.replace(/\.pack$/, '.idx'), oid);
+          flipByteAt(pack, offset + DAMAGE_PAST_ENTRY_START);
+          const packDir = donorPackDir(donor);
+          const sut = tsgitFsck;
+
+          for (const dir of [donor, borrower]) {
+            // Act
+            const gitResult = gitFsck(dir);
+            const result = await sut(dir);
+
+            // Assert
+            const gitPackDir = dir === donor ? '.git/objects/pack' : packDir;
+            expect(gitResult.exitCode).toBe(4);
+            expect(result.exitCode).toBe(4);
+            expect([...verifyPackLines(result.findings, packDir)].sort()).toEqual(
+              unpackLines(pack, oid, offset),
+            );
+            for (const line of verifyPackLines(result.findings, gitPackDir)) {
+              expect(gitResult.stderr).toContain(line);
+            }
+          }
+        },
+        ROW_TIMEOUT,
+      );
+    });
+
     describe('When a separate pack holds only an unreachable object and is corrupt (F4c)', () => {
       it(
         'Then both exit 4 and every verify_pack line git prints is rebuilt from tsgit findings',

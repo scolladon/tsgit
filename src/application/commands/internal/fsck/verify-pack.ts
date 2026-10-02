@@ -8,8 +8,18 @@ import {
   recordedEntryCrc,
 } from '../../../../domain/storage/index.js';
 import type { Context } from '../../../../ports/context.js';
-import { getObjectStore } from '../../../primitives/object-store.js';
+import { resolvePackChain } from '../../../primitives/object-resolver.js';
+import {
+  getObjectStore,
+  type ObjectSource,
+  type ObjectStore,
+} from '../../../primitives/object-store.js';
 import type { RegisteredPack } from '../../../primitives/pack-registry.js';
+import {
+  type CatalogueOptions,
+  type ContentValidationResult,
+  validatePackedEntry,
+} from './content-validation.js';
 import { EXIT_PACK } from './exit-codes.js';
 import { packAccessibilityReported } from './pack-health.js';
 import { attributeTo } from './source-attribution.js';
@@ -33,35 +43,79 @@ async function indexChecksumHolds(ctx: Context, index: PackIndex): Promise<boole
 
 interface EntryScan {
   readonly checksumHolds: boolean;
-  readonly crcMismatches: ReadonlyArray<PackFinding>;
+  readonly entries: ContentValidationResult;
+}
+
+/** Where `verifyOnePack` stands: which pack of which source, and how to report it. */
+interface PackUnderVerification {
+  readonly store: ObjectStore;
+  readonly source: ObjectSource;
+  readonly pack: RegisteredPack;
+  readonly catalogue: CatalogueOptions;
+}
+
+/** git's per-entry steps: the `.idx` CRC, then the entry unpacked from its own offset. */
+async function verifyEntry(
+  ctx: Context,
+  target: PackUnderVerification,
+  bytes: Uint8Array,
+  entry: { readonly id: ObjectId; readonly offset: number; readonly crc: number },
+): Promise<ContentValidationResult> {
+  const { store, source, pack } = target;
+  const { id, offset } = entry;
+  const crc = crc32(bytes) === entry.crc ? [] : [crcMismatch(pack.name, id, offset)];
+  const unpacked = await validatePackedEntry(
+    ctx,
+    {
+      id,
+      location: { pack: pack.name, offset, attribution: attributeTo(store, source) },
+      unpack: () => resolvePackChain(ctx, store, source, { pack, offset }, id, undefined),
+    },
+    target.catalogue,
+  );
+  return {
+    findings: [...crc, ...unpacked.findings],
+    exitBit: (crc.length > 0 ? EXIT_PACK : 0) | unpacked.exitBit,
+  };
 }
 
 /**
  * One sequential read of the pack: the bytes before the first entry, then
- * every entry in offset order — hashed for the trailer check and CRC'd
- * against the `.idx` on the way, so the pack is read exactly once.
+ * every entry in offset order — hashed for the trailer check, CRC'd against
+ * the `.idx` and unpacked on the way, so the pack is read exactly once.
  */
 async function scanEntries(
   ctx: Context,
-  pack: RegisteredPack,
+  target: PackUnderVerification,
   index: PackIndex,
 ): Promise<EntryScan> {
+  const { pack } = target;
   const { trailerStart } = await pack.offsetTable();
   const offsets = entryOffsetsF64(index);
   const order = positionsByOffset(offsets);
   const starts = order.map((position) => offsets[position]!);
   const hasher = ctx.hash.createHasher();
   hasher.update(await pack.readSlice(0, starts[0] ?? trailerStart));
-  const crcMismatches: PackFinding[] = [];
+  const findings: FsckFinding[] = [];
+  let exitBit = 0;
   for (const [rank, position] of order.entries()) {
-    const start = starts[rank]!;
-    const bytes = await pack.readSlice(start, (starts[rank + 1] ?? trailerStart) - start);
+    const offset = starts[rank]!;
+    const bytes = await pack.readSlice(offset, (starts[rank + 1] ?? trailerStart) - offset);
     hasher.update(bytes);
-    if (crc32(bytes) === recordedEntryCrc(index, position)) continue;
-    crcMismatches.push(crcMismatch(pack.name, objectIdAt(index, position), start));
+    const id = objectIdAt(index, position);
+    const own = await verifyEntry(ctx, target, bytes, {
+      id,
+      offset,
+      crc: recordedEntryCrc(index, position),
+    });
+    findings.push(...own.findings);
+    exitBit |= own.exitBit;
   }
   const trailer = await pack.readSlice(trailerStart, index.digestLength);
-  return { checksumHolds: bytesEqual(await hasher.digest(), trailer), crcMismatches };
+  return {
+    checksumHolds: bytesEqual(await hasher.digest(), trailer),
+    entries: { findings, exitBit },
+  };
 }
 
 const crcMismatch = (pack: string, id: ObjectId, offset: number): PackFinding => ({
@@ -71,16 +125,24 @@ const crcMismatch = (pack: string, id: ObjectId, offset: number): PackFinding =>
   offset,
 });
 
-/** git's `verify_pack` for one pack: `.idx` trailer, pack trailer, then per-entry CRC. */
-async function verifyOnePack(ctx: Context, pack: RegisteredPack): Promise<PackFinding[]> {
+/** git's `verify_pack` for one pack: `.idx` trailer, pack trailer, then every entry. */
+async function verifyOnePack(
+  ctx: Context,
+  target: PackUnderVerification,
+): Promise<ContentValidationResult> {
+  const { pack } = target;
   const index = await pack.index();
-  const findings: PackFinding[] = [];
+  const findings: FsckFinding[] = [];
   if (!(await indexChecksumHolds(ctx, index))) {
     findings.push({ type: 'pack-index-checksum-mismatch', pack: pack.name });
   }
-  const scan = await scanEntries(ctx, pack, index);
+  const scan = await scanEntries(ctx, target, index);
   if (!scan.checksumHolds) findings.push({ type: 'pack-checksum-mismatch', pack: pack.name });
-  return [...findings, ...scan.crcMismatches];
+  const ownBit = findings.length > 0 ? EXIT_PACK : 0;
+  return {
+    findings: [...findings, ...scan.entries.findings],
+    exitBit: ownBit | scan.entries.exitBit,
+  };
 }
 
 /**
@@ -91,16 +153,19 @@ async function verifyOnePack(ctx: Context, pack: RegisteredPack): Promise<PackFi
 export async function runVerifyPackPass(
   ctx: Context,
   opts: FsckOptions,
+  catalogue: CatalogueOptions,
 ): Promise<{ readonly findings: ReadonlyArray<FsckFinding>; readonly exitBit: number }> {
   if (!packAccessibilityReported(opts)) return { findings: [], exitBit: 0 };
   const store = await getObjectStore(ctx);
   const findings: FsckFinding[] = [];
+  let exitBit = 0;
   for (const source of store.sources) {
     const attribution = attributeTo(store, source);
     for (const pack of (await source.registry.health()).accessible) {
-      const own = await verifyOnePack(ctx, pack);
-      findings.push(...own.map((finding) => ({ ...finding, ...attribution })));
+      const own = await verifyOnePack(ctx, { store, source, pack, catalogue });
+      findings.push(...own.findings.map((finding) => ({ ...finding, ...attribution })));
+      exitBit |= own.exitBit;
     }
   }
-  return { findings, exitBit: findings.length > 0 ? EXIT_PACK : 0 };
+  return { findings, exitBit };
 }

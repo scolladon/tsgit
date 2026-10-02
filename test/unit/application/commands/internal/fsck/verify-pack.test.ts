@@ -1,13 +1,24 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../../../src/adapters/memory/memory-adapter.js';
+import type { CatalogueOptions } from '../../../../../../src/application/commands/internal/fsck/content-validation.js';
 import type { FsckOptions } from '../../../../../../src/application/commands/internal/fsck/types.js';
 import { runVerifyPackPass } from '../../../../../../src/application/commands/internal/fsck/verify-pack.js';
+import { DEFAULT_BIG_FILE_THRESHOLD_BYTES } from '../../../../../../src/application/primitives/internal/big-file-threshold.js';
+import type { ObjectId } from '../../../../../../src/domain/objects/index.js';
 import { hexToBytes } from '../../../../../../src/domain/objects/index.js';
 import { crc32 } from '../../../../../../src/domain/storage/crc32.js';
 import type { Context } from '../../../../../../src/ports/context.js';
 import { writeSyntheticPack, writeSyntheticPackIn } from '../../../primitives/pack-fixture.js';
 
-const sut = runVerifyPackPass;
+const CATALOGUE: CatalogueOptions = {
+  strict: false,
+  blobFilenames: new Map(),
+  severities: new Map(),
+  skipped: new Set(),
+  bigFileThreshold: DEFAULT_BIG_FILE_THRESHOLD_BYTES,
+};
+
+const sut = (ctx: Context, opts: FsckOptions) => runVerifyPackPass(ctx, opts, CATALOGUE);
 
 const enc = new TextEncoder();
 const DIGEST = 20;
@@ -119,10 +130,10 @@ describe('Given a pack whose .idx records a wrong CRC for one entry', () => {
 
 describe('Given a pack whose entry body is corrupt but whose .idx CRC was recomputed', () => {
   describe('When the verify-pack pass runs', () => {
-    it('Then it reports the pack checksum mismatch alone', async () => {
+    it('Then it reports the pack checksum mismatch and the entry it cannot unpack', async () => {
       // Arrange
       const ctx = createMemoryContext();
-      await writeSyntheticPack(ctx, 'body', blobEntries('a'));
+      const ids = await writeSyntheticPack(ctx, 'body', blobEntries('a'));
       const packPath = packPathIn(primaryObjects(ctx), 'body');
       await flipByte(ctx, packPath, () => PACK_HEADER + 3);
       const pack = await ctx.fs.read(packPath);
@@ -136,7 +147,10 @@ describe('Given a pack whose entry body is corrupt but whose .idx CRC was recomp
 
       // Assert
       expect(result).toEqual({
-        findings: [{ type: 'pack-checksum-mismatch', pack: 'pack-body' }],
+        findings: [
+          { type: 'pack-checksum-mismatch', pack: 'pack-body' },
+          { type: 'pack-entry-unpackable', pack: 'pack-body', id: ids[0], offset: PACK_HEADER },
+        ],
         exitBit: 4,
       });
     });
@@ -200,6 +214,87 @@ describe('Given a donor pack whose .idx trailer is corrupt', () => {
       expect(result.findings).toEqual([
         { type: 'pack-index-checksum-mismatch', pack: 'pack-donor', objectsDir: DONOR_OBJECTS },
       ]);
+    });
+  });
+});
+
+describe('Given the same blob in two packs, one copy with a damaged body', () => {
+  describe.each([
+    { damaged: 'first', healthy: 'second' },
+    { damaged: 'second', healthy: 'first' },
+  ])('When the verify-pack pass runs with the $damaged pack damaged', ({ damaged, healthy }) => {
+    it('Then it reports the damaged copy unpackable by pack and offset, whichever copy reads', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const [blobId] = await writeSyntheticPack(ctx, damaged, blobEntries('shared'));
+      await writeSyntheticPack(ctx, healthy, blobEntries('shared'));
+      await flipByte(ctx, packPathIn(primaryObjects(ctx), damaged), (n) => n - DIGEST - 2);
+
+      // Act
+      const result = await sut(ctx, FULL);
+
+      // Assert
+      expect(result.findings).toContainEqual({
+        type: 'pack-entry-unpackable',
+        pack: `pack-${damaged}`,
+        id: blobId,
+        offset: PACK_HEADER,
+      });
+      expect(result.findings.every((f) => 'pack' in f && f.pack === `pack-${damaged}`)).toBe(true);
+      expect(result.exitBit).toBe(4);
+    });
+  });
+});
+
+describe('Given a packed blob whose bytes do not hash to its indexed id', () => {
+  describe('When the verify-pack pass runs', () => {
+    it('Then it reports the packed entry corrupt with bit 4 and runs no catalogue', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const wrongId = '0000000000000000000000000000000000000002' as ObjectId;
+      await writeSyntheticPack(ctx, 'lying', [
+        { kind: 'base', type: 'blob', content: enc.encode('lying'), idOverride: wrongId },
+      ]);
+
+      // Act
+      const result = await sut(ctx, FULL);
+
+      // Assert
+      expect(result).toEqual({
+        findings: [{ type: 'pack-entry-corrupt', pack: 'pack-lying', id: wrongId }],
+        exitBit: 4,
+      });
+    });
+  });
+});
+
+describe('Given a tree with duplicate entries stored in two intact packs', () => {
+  describe('When the verify-pack pass runs', () => {
+    it('Then it reports the catalogue error once per copy with bit 4, as verify_pack does', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      const entry = new Uint8Array([...enc.encode('100644 a\0'), ...new Uint8Array(DIGEST)]);
+      const content = new Uint8Array([...entry, ...entry]);
+      const [treeId] = await writeSyntheticPack(ctx, 'one', [
+        { kind: 'base', type: 'tree', content },
+      ]);
+      await writeSyntheticPack(ctx, 'two', [{ kind: 'base', type: 'tree', content }]);
+
+      // Act
+      const result = await sut(ctx, FULL);
+
+      // Assert
+      const duplicate = {
+        type: 'bad-object',
+        id: treeId,
+        objectType: 'tree',
+        msgId: 'duplicateEntries',
+        severity: 'error',
+      };
+      expect(
+        result.findings.filter((f) => f.type === 'bad-object' && f.msgId === 'duplicateEntries'),
+      ).toEqual([duplicate, duplicate]);
+      expect(result.exitBit).toBe(4);
     });
   });
 });

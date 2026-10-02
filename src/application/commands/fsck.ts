@@ -7,6 +7,7 @@ import { assertValidPromisorRemoteConfig } from '../primitives/internal/boolean-
 import { runBitmapHealthPass } from './internal/fsck/bitmap-health.js';
 import {
   buildBlobFilenameMap,
+  type CatalogueOptions,
   runContentValidationPass,
 } from './internal/fsck/content-validation.js';
 import { EXIT_MISSING, EXIT_REFS_CONTENT } from './internal/fsck/exit-codes.js';
@@ -117,6 +118,13 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   // Content validation pass (skipped when connectivityOnly).
   // Reads raw bytes separately (needed for malformed-object detection) and
   // verifies hash from those bytes — no additional readObject calls.
+  const catalogue: CatalogueOptions = {
+    strict: opts.strict === true,
+    blobFilenames,
+    severities,
+    skipped,
+    bigFileThreshold,
+  };
   const contentResult =
     opts.connectivityOnly === true
       ? {
@@ -151,8 +159,9 @@ export async function fsck(ctx: Context, opts: FsckOptions = {}): Promise<FsckRe
   const packResult = await runPackHealthPass(ctx, opts);
 
   // git's `verify_pack` — every accessible pack's `.idx` trailer, pack
-  // trailer and per-entry CRC, full mode only.
-  const verifyPackResult = await runVerifyPackPass(ctx, opts);
+  // trailer, then every entry's CRC, unpack, hash and catalogue — every
+  // copy, not only the one the store reads. Full mode only.
+  const verifyPackResult = await runVerifyPackPass(auditCtx, opts, catalogue);
 
   // Reverse-index health pass — reports a pack's own `.rev` when it exists,
   // is readable and is wrong. Ungated, like the rest of bit 64: runs after

@@ -1,4 +1,5 @@
 import { TsgitError } from '../../../../domain/error.js';
+import { errorDataCode } from '../../../../domain/error-data-code.js';
 import type {
   FsckObjectType,
   FsckSeverityTable,
@@ -9,7 +10,7 @@ import { retypeSeverity, validateObject } from '../../../../domain/fsck/index.js
 import { bytesEqual, encode } from '../../../../domain/objects/encoding.js';
 import { classifyLooseBody } from '../../../../domain/objects/git-object.js';
 import type { HashConfig } from '../../../../domain/objects/hash-config.js';
-import type { ObjectId } from '../../../../domain/objects/index.js';
+import type { ObjectContent, ObjectId } from '../../../../domain/objects/index.js';
 import { serializeHeader } from '../../../../domain/objects/index.js';
 import { MAX_INFLATE_OUTPUT_BYTES } from '../../../../ports/compressor.js';
 import type { Context } from '../../../../ports/context.js';
@@ -17,7 +18,6 @@ import {
   inflateLooseBuffered,
   type LooseBufferedRead,
 } from '../../../primitives/object-resolver.js';
-import { readRawObject } from '../../../primitives/read-object.js';
 import { EXIT_CONTENT_ERROR, EXIT_CORRUPT, EXIT_HASH_MISMATCH, EXIT_PACK } from './exit-codes.js';
 import { hasPackCopy, type PackedLocation, packedLocationOf } from './object-cache.js';
 import { looseBytesFromHolder } from './object-presence.js';
@@ -320,67 +320,6 @@ async function looseRawObjectBody(
   }
 }
 
-/**
- * A packed object's raw body, read as the pre-parse bytes it is stored as.
- *
- * Going through `readObject`'s domain parser would throw on exactly the faults
- * the catalogue exists to report (duplicate name, `.`, `..`, an embedded `/`),
- * collapsing every such packed tree into `badType`; and re-serializing a parsed
- * Tree re-sorts its entries, so hashing that re-sorted form against an unsorted
- * tree's id would report a false hash-mismatch. `raw.type`/`raw.content` are
- * the object's own bytes — no re-serialisation — so hashing them (via the
- * canonical header, built fresh rather than carried as a field) avoids both,
- * without ever concatenating header and body into one buffer.
- */
-async function packedRawObjectBody(ctx: Context, id: ObjectId): Promise<RawObjectResult> {
-  try {
-    // Stryker disable next-line ObjectLiteral: equivalent — readRawObject reads `options?.verifyHash ?? false`, so an empty options object resolves to the same false.
-    const raw = await readRawObject(ctx, id, { verifyHash: false });
-    return {
-      ok: true,
-      kind: raw.type,
-      rawBody: raw.content,
-      computeHash: async () => {
-        const hasher = ctx.hash.createHasher();
-        hasher.update(serializeHeader(raw.type, raw.content.length));
-        hasher.update(raw.content);
-        return hasher.digestHex();
-      },
-    };
-  } catch {
-    // Packed objects have no path-based reachability override mechanism
-    // (`ObjectStorage` gates it to 'loose' — this function's own caller
-    // never reads `reachabilityUnknown` for a packed result), so `false`
-    // here is inert bookkeeping, not a claim that packed reads never
-    // diverge from `readObject`'s own typing.
-    return { ok: false, msgId: 'badType', reachabilityUnknown: false };
-  }
-}
-
-/** An object's raw read, plus the pack entry it came from when a pack
- *  answered — git reports a packed object's damage by pack and offset
- *  (`verify_pack`), a loose object's by path. */
-interface ResolvedRawObject {
-  readonly location?: PackedLocation;
-  readonly result: RawObjectResult;
-}
-
-/** Read an object's raw decompressed body for content validation, from
- *  whichever store holds it — tagged with the pack entry when packed. */
-async function tryGetRawObjectBody(
-  ctx: Context,
-  id: ObjectId,
-  bigFileThreshold: number,
-): Promise<ResolvedRawObject> {
-  const compressed = await looseBytesFromHolder(ctx, id);
-  if (compressed !== undefined) {
-    return { result: await looseRawObjectBody(ctx, id, compressed, bigFileThreshold) };
-  }
-  const location = await packedLocationOf(ctx, id);
-  const result = await packedRawObjectBody(ctx, id);
-  return location === undefined ? { result } : { location, result };
-}
-
 const GITMODULES_NAME_BYTES = encode('.gitmodules');
 const GITATTRIBUTES_NAME_BYTES = encode('.gitattributes');
 
@@ -423,7 +362,7 @@ export function buildBlobFilenameMap(
   return map;
 }
 
-interface ContentValidationResult {
+export interface ContentValidationResult {
   readonly findings: ReadonlyArray<FsckFinding>;
   readonly exitBit: number;
 }
@@ -432,7 +371,7 @@ interface ContentValidationResult {
 const EMPTY_RESULT: ContentValidationResult = { findings: [], exitBit: 0 };
 
 /** Everything the catalogue pass needs beyond the object itself. */
-interface CatalogueOptions {
+export interface CatalogueOptions {
   readonly strict: boolean;
   readonly blobFilenames: ReadonlyMap<ObjectId, string>;
   readonly severities: FsckSeverityTable;
@@ -551,40 +490,6 @@ const packEntryResult = (
   finding: Extract<FsckFinding, { type: 'pack-entry-unpackable' | 'pack-entry-corrupt' }>,
 ): ContentValidationResult => ({ findings: [finding], exitBit: EXIT_PACK });
 
-/** An unreadable object: git's `cannot unpack` for a pack entry, else the generic refusal. */
-function unreadableResult(id: ObjectId, resolved: ResolvedRawObject, msgId: string) {
-  const { location } = resolved;
-  if (location === undefined) return unreadableObjectResult(id, msgId);
-  const { pack, offset, attribution } = location;
-  return packEntryResult({ type: 'pack-entry-unpackable', pack, id, offset, ...attribution });
-}
-
-/**
- * A hash disagreement. Either way the catalogue never runs: git's
- * `read_loose_object` returns before `fsck_obj`, and `verify_packfile`
- * reports `packed <oid> … is corrupt` instead of calling it.
- */
-async function hashMismatchOutcome(
-  ctx: Context,
-  id: ObjectId,
-  location: PackedLocation | undefined,
-  hash: ContentValidationResult,
-): Promise<ValidateOneObjectOutcome> {
-  if (location !== undefined) {
-    const { pack, attribution } = location;
-    return {
-      ...packEntryResult({ type: 'pack-entry-corrupt', pack, id, ...attribution }),
-      reachabilityUnknown: false,
-    };
-  }
-  return { ...hash, reachabilityUnknown: !(await hasPackCopy(ctx, id)) };
-}
-
-/** A packed object's catalogue errors reach the exit code only through
- *  `verify_pack`'s own return — bit 4, never bit 1. */
-const catalogueBit = (location: PackedLocation | undefined, exitBit: number): number =>
-  location === undefined || exitBit === 0 ? exitBit : EXIT_PACK;
-
 /** `validateOneObject`'s own outcome, extending the plain findings/exitBit
  *  shape with the one extra fact `runContentValidationPass` folds into
  *  `typeUnknownIds` — never carried on `ContentValidationResult` itself,
@@ -593,41 +498,107 @@ interface ValidateOneObjectOutcome extends ContentValidationResult {
   readonly reachabilityUnknown: boolean;
 }
 
-/** Validate one object's content and hash, accumulating findings and exit bit. */
-async function validateOneObject(
+/** A packed-only object is `verify_pack`'s, copy by copy — never this pass's. */
+const LEFT_TO_VERIFY_PACK: ValidateOneObjectOutcome = {
+  ...EMPTY_RESULT,
+  reachabilityUnknown: false,
+};
+
+/** Validate one loose object's content and hash, accumulating findings and exit bit. */
+async function validateLooseObject(
   ctx: Context,
   id: ObjectId,
+  compressed: Uint8Array,
   options: CatalogueOptions,
 ): Promise<ValidateOneObjectOutcome> {
-  const resolved = await tryGetRawObjectBody(ctx, id, options.bigFileThreshold);
-  const { result: rawResult, location } = resolved;
+  const rawResult = await looseRawObjectBody(ctx, id, compressed, options.bigFileThreshold);
   if (!rawResult.ok) {
     return {
-      ...unreadableResult(id, resolved, rawResult.msgId),
+      ...unreadableObjectResult(id, rawResult.msgId),
       reachabilityUnknown: rawResult.reachabilityUnknown,
     };
   }
   const hash = await hashResult(id, rawResult);
   // git's `read_loose_object` returns on EVERY loose hash-path disagreement
-  // before `parse_object_buffer` ever runs, not only the over-threshold
-  // over-run `bigBlobTruncateResult` refuses outright — pinned live against
-  // git 2.55.0 (scrubbed env) across an honest-body wrong-path blob, a
-  // zero-padded under-run, a truncated-prefix over-run, and the big-file
-  // streamed variant of each: real git's stdout never names any of them.
-  // BUT git's reachability graph (`check_object`/`has_object_pack`) never
-  // even consults this loose path when a PACK copy of the same id exists —
-  // it types the object from the pack instead, so only a loose mismatch
-  // with NO pack copy backing it is `true` here, letting fsck.ts's
-  // `withUnreadableOverrides` null this id in the reachability cache so a
-  // REFERRER reports `missing` instead of this id getting a spurious
-  // `dangling`/`unreachable` finding of its own.
-  if (hash.findings.length > 0) return hashMismatchOutcome(ctx, id, location, hash);
-  const catalogue = catalogueResult(ctx, id, rawResult, options);
-  return {
-    findings: catalogue.findings,
-    exitBit: catalogueBit(location, catalogue.exitBit),
-    reachabilityUnknown: false,
-  };
+  // before `parse_object_buffer` ever runs — pinned live against git 2.55.0.
+  // Its reachability graph (`check_object`/`has_object_pack`) never consults
+  // this loose path when a PACK copy of the same id exists, so only a loose
+  // mismatch with NO pack copy backing it nulls the id for reachability.
+  if (hash.findings.length > 0) {
+    return { ...hash, reachabilityUnknown: !(await hasPackCopy(ctx, id)) };
+  }
+  return { ...catalogueResult(ctx, id, rawResult, options), reachabilityUnknown: false };
+}
+
+/** git's `fsck_source` reads every loose object; a packed one is left to
+ *  `verify_pack`, and one no store holds is the generic refusal. */
+async function validateOneObject(
+  ctx: Context,
+  id: ObjectId,
+  options: CatalogueOptions,
+): Promise<ValidateOneObjectOutcome> {
+  const compressed = await looseBytesFromHolder(ctx, id);
+  if (compressed !== undefined) return validateLooseObject(ctx, id, compressed, options);
+  if ((await packedLocationOf(ctx, id)) !== undefined) return LEFT_TO_VERIFY_PACK;
+  return { ...unreadableObjectResult(id, 'badType'), reachabilityUnknown: false };
+}
+
+/** One pack entry as `verify_packfile` meets it: where it sits, and how to
+ *  unpack it from exactly there — never from whichever copy the store reads. */
+export interface PackedEntry {
+  readonly id: ObjectId;
+  readonly location: PackedLocation;
+  readonly unpack: () => Promise<ObjectContent>;
+}
+
+/** The entry's own bytes, or `undefined` when they no longer unpack. Hashes
+ *  the bytes as stored (canonical header + body), never a re-serialisation. */
+async function unpackedEntry(
+  ctx: Context,
+  entry: PackedEntry,
+): Promise<ReadableObject | undefined> {
+  try {
+    const raw = await entry.unpack();
+    return {
+      ok: true,
+      kind: raw.type,
+      rawBody: raw.content,
+      computeHash: async () => {
+        const hasher = ctx.hash.createHasher();
+        hasher.update(serializeHeader(raw.type, raw.content.length));
+        hasher.update(raw.content);
+        return hasher.digestHex();
+      },
+    };
+  } catch (err) {
+    if (errorDataCode(err) === undefined) throw err;
+    return undefined;
+  }
+}
+
+/**
+ * git's per-entry `verify_packfile` step: `cannot unpack`, else `packed … is
+ * corrupt`, else `fsck_obj_buffer` — which clears `SEEN`, so every copy runs
+ * the catalogue again. Its errors reach the exit code only through
+ * `verify_pack`'s own return: bit 4, never bit 1.
+ */
+export async function validatePackedEntry(
+  ctx: Context,
+  entry: PackedEntry,
+  options: CatalogueOptions,
+): Promise<ContentValidationResult> {
+  const { id, location } = entry;
+  const { pack, offset, attribution } = location;
+  const raw = await unpackedEntry(ctx, entry);
+  if (raw === undefined) {
+    return packEntryResult({ type: 'pack-entry-unpackable', pack, id, offset, ...attribution });
+  }
+  const hash = await hashResult(id, raw);
+  if (hash.findings.length > 0) {
+    return packEntryResult({ type: 'pack-entry-corrupt', pack, id, ...attribution });
+  }
+  const catalogue = catalogueResult(ctx, id, raw, options);
+  return { findings: catalogue.findings, exitBit: catalogue.exitBit === 0 ? 0 : EXIT_PACK };
 }
 
 /** `runContentValidationPass`'s own result, `ContentValidationResult` plus
