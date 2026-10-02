@@ -303,6 +303,34 @@ describe.skipIf(!GIT_AVAILABLE)('archive export-ignore interop', () => {
         await expectParity(dir, 'HEAD', ['.gitattributes', 'k']);
       });
 
+      it.each([
+        { rule: '* export-ignore', expected: ['d/', 't'] },
+        { rule: '** export-ignore', expected: ['d/', 't'] },
+        { rule: '/* export-ignore', expected: ['d/', 't'] },
+        {
+          rule: '/ export-ignore',
+          expected: ['d/', 'd/.gitattributes', 'd/a', 'd/e/', 'd/e/b', 't'],
+        },
+        {
+          rule: '. export-ignore',
+          expected: ['d/', 'd/.gitattributes', 'd/a', 'd/e/', 'd/e/b', 't'],
+        },
+      ])(
+        "Then a directory's own '$rule' never applies to the directory itself",
+        async ({ rule, expected }) => {
+          // Arrange
+          const dir = await makeRepo('own', {
+            'd/.gitattributes': `${rule}\n`,
+            'd/a': '1',
+            'd/e/b': '2',
+            t: '3',
+          });
+
+          // Act / Assert
+          await expectParity(dir, 'HEAD', expected);
+        },
+      );
+
       it('Then a directory-only rule spares a same-named file and drops the directory (E9)', async () => {
         // Arrange
         const dir = await makeRepo('e9', {
