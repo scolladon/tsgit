@@ -1076,6 +1076,29 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
         expect(await readdir(path.join(peer.outside, 'other'))).toEqual(['kept']);
       });
     });
+
+    describe('When its gitdir names the live worktree relatively and a hand-built node context gcs', () => {
+      it('Then it resolves the pointer beside the link target and keeps the entry as git does', async () => {
+        // Arrange
+        const build = async (slug: string) => {
+          const built = await buildLinkedAdmin(slug, 'live');
+          await writeFile(path.join(built.outside, 'admin', 'gitdir'), '../wt/.git\n');
+          return built;
+        };
+        const peer = await build('wt-link-relative-peer');
+        const ours = await build('wt-link-relative-ours');
+        git(peer.dir, 'gc', '-q');
+        const sut = maintenance;
+
+        // Act
+        await sut(trackedNodeContext(ours.dir, 'sha1'), { tasks: ['gc'] });
+
+        // Assert
+        expect(await registryOf(ours.dir)).toEqual(['wt']);
+        expect(await registryOf(peer.dir)).toEqual(['wt']);
+        expect(await adminContentOf(ours.outside)).toEqual(await adminContentOf(peer.outside));
+      });
+    });
   });
 
   describe('Given admin entries whose absolute gitdir names a live worktree through ./ and // spellings', () => {

@@ -88396,7 +88396,15 @@
 									},
 									{
 										"kind": "text",
-										"text": ") used to resolve an alternate's path wherever it lives.\nAbsent on a hand-built "
+										"text": ") used to resolve an alternate's or a worktree admin\nentry's path wherever it lives. Supplied by the facade and by\n"
+									},
+									{
+										"kind": "code",
+										"text": "`createNodeContext`"
+									},
+									{
+										"kind": "text",
+										"text": "; absent on a "
 									},
 									{
 										"kind": "code",
@@ -88404,7 +88412,7 @@
 									},
 									{
 										"kind": "text",
-										"text": "; the object store then narrows "
+										"text": " assembled from bare parts,\nwhere callers then narrow "
 									},
 									{
 										"kind": "code",
@@ -141090,7 +141098,7 @@
 									},
 									{
 										"kind": "code",
-										"text": "`assertValidGcAutoConfig`"
+										"text": "`assertValidGcNumberConfig`"
 									},
 									{
 										"kind": "text",

@@ -10,6 +10,7 @@ import {
   createContext,
   type RepositoryLayout,
 } from '../../ports/context.js';
+import type { AlternatePathProbe } from '../../ports/object-source-access.js';
 import { noopProgress } from '../../progress.js';
 import { NodeCommandRunner } from './node-command-runner.js';
 import { NodeCompressor } from './node-compressor.js';
@@ -20,7 +21,7 @@ import { NodeHashService } from './node-hash-service.js';
 import { NodeHookRunner } from './node-hook-runner.js';
 import { NodeHttpTransport } from './node-http-transport.js';
 import { NodeSshTransport } from './node-ssh-transport.js';
-import { syncIoPolicyFor } from './sync-io-budget.js';
+import { type SyncIoPolicy, syncIoPolicyFor } from './sync-io-budget.js';
 
 const DEFAULT_DELTA_CACHE_BYTES = 16 * 1024 * 1024;
 const DEFAULT_DELTA_CACHE_ENTRIES = 65_536;
@@ -75,6 +76,16 @@ export interface NodeAdapterOptions {
   readonly io?: 'sync-fast-path' | 'threadpool';
 }
 
+const syncIoOptions = (syncIo: SyncIoPolicy | undefined): { readonly syncIo?: SyncIoPolicy } =>
+  syncIo === undefined ? {} : { syncIo };
+
+/** A metadata-only view, so a path is resolved wherever it lives without reading content. */
+const metadataProbe = (fs: NodeFileSystem): AlternatePathProbe => ({
+  lstat: fs.lstat.bind(fs),
+  readlink: fs.readlink.bind(fs),
+  stat: fs.stat.bind(fs),
+});
+
 export function createNodeContext(options: NodeAdapterOptions): Context {
   const workDir = nodePath.resolve(options.workDir);
   const gitDir =
@@ -83,7 +94,7 @@ export function createNodeContext(options: NodeAdapterOptions): Context {
       : nodePath.join(workDir, '.git');
   const algorithm = options.algorithm ?? 'sha1';
   const syncIo = syncIoPolicyFor(options.io);
-  const fs = new NodeFileSystem(workDir, syncIo === undefined ? {} : { syncIo });
+  const fs = new NodeFileSystem(workDir, syncIoOptions(syncIo));
   const hash = new NodeHashService(algorithm);
   const compressor = new NodeCompressor();
   const transport = new NodeHttpTransport({
@@ -115,6 +126,8 @@ export function createNodeContext(options: NodeAdapterOptions): Context {
     ...(options.command === false ? {} : { command: new NodeCommandRunner() }),
     ...(options.ssh === false ? {} : { ssh: new NodeSshTransport() }),
     env: new NodeEnvReader(),
+    alternatePathProbe: (path: string): AlternatePathProbe =>
+      metadataProbe(new NodeFileSystem(nodePath.parse(path).root, syncIoOptions(syncIo))),
   };
   return createContext(parts);
 }

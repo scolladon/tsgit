@@ -336,8 +336,10 @@ export interface Context {
   readonly objectSourceAccess?: (objectsDir: string) => ObjectSourceAccess;
   /**
    * Optional facade capability returning a metadata-only view (`lstat`,
-   * `readlink`, `stat`) used to resolve an alternate's path wherever it lives.
-   * Absent on a hand-built `Context`; the object store then narrows `ctx.fs`.
+   * `readlink`, `stat`) used to resolve an alternate's or a worktree admin
+   * entry's path wherever it lives. Supplied by the facade and by
+   * `createNodeContext`; absent on a `Context` assembled from bare parts,
+   * where callers then narrow `ctx.fs`.
    */
   readonly alternatePathProbe?: (path: string) => AlternatePathProbe;
   /**

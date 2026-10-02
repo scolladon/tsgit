@@ -36,6 +36,25 @@ describe('createNodeContext', () => {
     });
   });
 
+  describe('Given a path outside workDir', () => {
+    describe('When its alternate path probe reads it', () => {
+      it('Then it reads its metadata and nothing more', async () => {
+        // Arrange
+        const ctx = createNodeContext({ workDir: '/tmp/tsgit-ctx-test' });
+        const outside = process.cwd();
+        const sut = ctx.alternatePathProbe;
+
+        // Act
+        const probe = sut?.(outside);
+        const result = await probe?.lstat(outside);
+
+        // Assert
+        expect(result?.isDirectory).toBe(true);
+        expect(Object.keys(probe ?? {}).sort()).toEqual(['lstat', 'readlink', 'stat']);
+      });
+    });
+  });
+
   describe('Given explicit gitDir', () => {
     describe('When creating context', () => {
       it('Then uses resolved absolute gitDir', () => {
