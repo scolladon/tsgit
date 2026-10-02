@@ -1915,3 +1915,60 @@ describe('archive export-subst resolved data', () => {
     });
   });
 });
+
+describe('archive core.bigFileThreshold read', () => {
+  const malformedThresholdCtx = async (): Promise<Context> => {
+    const ctx = await initUnbornCtx();
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tbigFileThreshold = x\n');
+    return ctx;
+  };
+
+  const drain = async (ctx: Context, entries: ReadonlyArray<TreeEntry>): Promise<unknown> => {
+    const treeId = await writeObject(ctx, makeTree(entries));
+    try {
+      const result = await archive(ctx, { treeish: treeId });
+      for await (const _entry of result.entries) {
+        // draining reads every entry's content
+      }
+      return undefined;
+    } catch (error) {
+      return (error as TsgitError).data;
+    }
+  };
+
+  describe('Given a malformed core.bigFileThreshold', () => {
+    describe('When a regular blob entry is read', () => {
+      it('Then it refuses with the key', async () => {
+        // Arrange
+        const ctx = await malformedThresholdCtx();
+        const blobId = await writeObject(ctx, makeBlob('a\n'));
+        const sut = drain;
+
+        // Act
+        const result = await sut(ctx, [treeEntry(FILE_MODE.REGULAR, 'a.txt', blobId)]);
+
+        // Assert
+        expect(result).toMatchObject({
+          code: 'CONFIG_BAD_NUMERIC_VALUE',
+          key: 'core.bigfilethreshold',
+          value: 'x',
+        });
+      });
+    });
+
+    describe('When only a symlink entry is read', () => {
+      it('Then it archives without reading the threshold', async () => {
+        // Arrange
+        const ctx = await malformedThresholdCtx();
+        const blobId = await writeObject(ctx, makeBlob('target'));
+        const sut = drain;
+
+        // Act
+        const result = await sut(ctx, [treeEntry(FILE_MODE.SYMLINK, 'link', blobId)]);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+});

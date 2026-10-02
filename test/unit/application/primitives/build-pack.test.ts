@@ -1056,3 +1056,47 @@ describe('buildPack', () => {
     });
   });
 });
+
+describe('buildPack core.bigFileThreshold read', () => {
+  describe('Given a malformed core.bigFileThreshold', () => {
+    const malformedCtx = async () => {
+      const ctx = await buildSeededContext();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, '[core]\n\tbigFileThreshold = x\n');
+      __resetConfigCacheForTests();
+      return ctx;
+    };
+
+    describe('When packing an object', () => {
+      it('Then it refuses with the key', async () => {
+        // Arrange
+        const ctx = await malformedCtx();
+        const id = await writeTree(ctx, []);
+        const sut = buildPack;
+
+        // Act
+        const result = await sut(ctx, { objects: [{ id }] }).catch((err: TsgitError) => err.data);
+
+        // Assert
+        expect(result).toMatchObject({
+          code: 'CONFIG_BAD_NUMERIC_VALUE',
+          key: 'core.bigfilethreshold',
+          value: 'x',
+        });
+      });
+    });
+
+    describe('When packing nothing', () => {
+      it('Then it builds the empty pack without reading the threshold', async () => {
+        // Arrange
+        const ctx = await malformedCtx();
+        const sut = buildPack;
+
+        // Act
+        const result = await sut(ctx, { objects: [] });
+
+        // Assert
+        expect(result.objectCount).toBe(0);
+      });
+    });
+  });
+});

@@ -5,10 +5,10 @@ import { unexpectedObjectType } from '../../domain/objects/error.js';
 import { FILE_MODE } from '../../domain/objects/file-mode.js';
 import type { FileMode, FilePath, ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
+import { readStrictBigFileThreshold } from '../primitives/internal/big-file-threshold.js';
 import { readBlobContentInStreamOrder } from '../primitives/internal/blob-source.js';
 import { peel } from '../primitives/internal/peel.js';
 import { buildTreeAttributeProvider } from '../primitives/internal/read-gitattributes.js';
-import { getObjectStore } from '../primitives/object-store.js';
 import { readBlob } from '../primitives/read-blob.js';
 import { readDeclaredObjectHeader, readObject } from '../primitives/read-object.js';
 import type { WalkTreeEntry } from '../primitives/types.js';
@@ -106,8 +106,8 @@ const readInCore = async (ctx: Context, id: ObjectId): Promise<Uint8Array> =>
  */
 async function readRegularContent(ctx: Context, id: ObjectId): Promise<Uint8Array> {
   const { type, declaredSize } = await readDeclaredObjectHeader(ctx, id);
-  const { bigFileThreshold } = await getObjectStore(ctx);
-  if (type === 'blob' && declaredSize > bigFileThreshold) {
+  if (type !== 'blob') return readInCore(ctx, id);
+  if (declaredSize > (await readStrictBigFileThreshold(ctx))) {
     return readBlobContentInStreamOrder(ctx, id);
   }
   return readInCore(ctx, id);

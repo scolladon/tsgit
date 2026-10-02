@@ -11,7 +11,7 @@
  *   surface:        repo-state
  *   bucket:         cross-tool-interop
  *   unique:         a malformed core.bigFileThreshold refuses exactly where git reads it, per repository state
- *   interopSurface: add, diff, show, status
+ *   interopSurface: add, archive, diff, maintenance, packObjects, show, status
  */
 import { mkdtempSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
@@ -85,10 +85,17 @@ const tsgitFatal = async (
   }
 };
 
+/** git's first `fatal:` line, newline-terminated; a wrapper's own lines follow it. */
+const firstFatalLine = (stderr: string): string | undefined => {
+  const line = stderr.split('\n').find((candidate) => candidate.startsWith('fatal: '));
+  return line === undefined ? undefined : `${line}\n`;
+};
+
 interface Row {
   readonly name: string;
   readonly state: RepoState;
   readonly git: ReadonlyArray<string>;
+  readonly input?: string;
   readonly tsgit: (repo: Repository) => Promise<unknown>;
 }
 
@@ -159,18 +166,41 @@ const ROWS: ReadonlyArray<Row> = [
     git: ['show', '--raw', 'HEAD'],
     tsgit: (r) => r.show('HEAD'),
   },
+  {
+    name: 'archive',
+    state: CLEAN_LOOSE,
+    git: ['archive', 'HEAD'],
+    tsgit: async (r) => {
+      for await (const _entry of (await r.archive({ treeish: 'HEAD' })).entries) {
+        // draining reads every entry's content
+      }
+    },
+  },
+  {
+    name: 'pack-objects',
+    state: CLEAN_LOOSE,
+    git: ['pack-objects', '--revs', '--stdout'],
+    input: 'HEAD\n',
+    tsgit: (r) => r.packObjects({ wants: ['HEAD'] }),
+  },
+  {
+    name: 'maintenance run --task=gc',
+    state: CLEAN_LOOSE,
+    git: ['maintenance', 'run', '--task=gc'],
+    tsgit: (r) => r.maintenance({ tasks: ['gc'] }),
+  },
 ];
 
 describe.skipIf(!GIT_AVAILABLE)(
   'interop — malformed core.bigFileThreshold at git data sites',
   () => {
-    describe.each(ROWS)('Given $name', ({ state, git, tsgit }) => {
+    describe.each(ROWS)('Given $name', ({ state, git, input, tsgit }) => {
       describe('When git and tsgit run the command', () => {
         it(
           'Then both refuse with the same fatal line, or both run',
           async () => {
             // Arrange
-            const gitRun = tryRunGitWithExit(['-C', repoIn(state), ...git]);
+            const gitRun = tryRunGitWithExit(['-C', repoIn(state), ...git], { input: input ?? '' });
             const dir = repoIn(state);
             const sut = tsgitFatal;
 
@@ -178,7 +208,7 @@ describe.skipIf(!GIT_AVAILABLE)(
             const result = await sut(dir, tsgit);
 
             // Assert
-            expect(result).toBe(gitRun.exitCode === 128 ? gitRun.stderr : undefined);
+            expect(result).toBe(firstFatalLine(gitRun.stderr));
           },
           ROW_TIMEOUT,
         );

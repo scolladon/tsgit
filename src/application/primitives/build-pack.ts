@@ -25,6 +25,7 @@ import type { Context } from '../../ports/context.js';
 import { readConfig } from './config-read.js';
 import { readBlobContentInStreamOrder } from './internal/blob-source.js';
 import { deltifyEntries } from './internal/deltify.js';
+import { assertBigFileThresholdValid } from './internal/repo-settings-gate.js';
 import { assertEverySourceLoadable, getObjectStore, type ObjectStore } from './object-store.js';
 import { readObjectMetadataWithContent, readRawObject } from './read-object.js';
 
@@ -93,6 +94,8 @@ function assertUniformRecency(objects: ReadonlyArray<PackObjectInput>): void {
 export const buildPack = async (ctx: Context, input: BuildPackInput): Promise<BuildPackResult> => {
   assertUniformRecency(input.objects);
   await assertEverySourceLoadable(ctx);
+  // git's pack-objects reads the threshold for every object it is to pack.
+  if (input.objects.length > 0) await assertBigFileThresholdValid(ctx);
   const plan = await resolveWriterPlan(ctx, input);
   const packfile = serializePackfile(plan.entries);
   const trailerBytes = await ctx.hash.hash(packfile.data);
