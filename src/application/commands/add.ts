@@ -38,6 +38,7 @@ import {
   type AttributeProvider,
   maybeBuildAttributeProvider,
 } from '../primitives/internal/read-gitattributes.js';
+import { assertBigFileThresholdValid } from '../primitives/internal/repo-settings-gate.js';
 import { readIndex } from '../primitives/read-index.js';
 import { resolveFilterDriver } from '../primitives/resolve-filter-driver.js';
 import { runFilterDriver } from '../primitives/run-filter-driver.js';
@@ -569,6 +570,8 @@ const stageFromStat = async (
   // added to `newEntries`, so the index commit never runs (git's add -A is
   // all-or-nothing: one hostile path aborts the entire batch).
   validateIndexPath(path, NO_PARSER_OFFSET, mode);
+  // git's `index_fd` reads the threshold before hashing a regular file.
+  if (!fresh.isSymbolicLink) await assertBigFileThresholdValid(ctx);
   const raw = await readContent(ctx, path, fresh);
   const bytes = await applyCleanFilter(ctx, path, raw, fresh.isSymbolicLink, provider);
   const id = (await writeObject(ctx, {

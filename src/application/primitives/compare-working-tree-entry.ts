@@ -29,6 +29,7 @@ import type { FileStat } from '../../ports/file-system.js';
 import { type IndexMtime, isEntryStatClean } from './internal/is-entry-stat-clean.js';
 import { joinPath } from './internal/join-working-tree-path.js';
 import type { AttributeProvider } from './internal/read-gitattributes.js';
+import { assertBigFileThresholdValid } from './internal/repo-settings-gate.js';
 import { requireWorkTree } from './internal/repo-state.js';
 import { serializeAndHash } from './internal/serialize-and-hash.js';
 import { resolveFilterDriver } from './resolve-filter-driver.js';
@@ -124,6 +125,20 @@ const statOnlyVerdict = (
   return undefined;
 };
 
+/**
+ * git's `index_fd` reads `core.bigFileThreshold` before hashing a regular
+ * file. Only the stat-cache-armed comparison reaches a hash where git does;
+ * an unarmed one hashes files git's stat cache would have settled.
+ */
+const readThresholdBeforeHashing = async (
+  ctx: Context,
+  stat: FileStat,
+  indexMtime: IndexMtime | undefined,
+): Promise<void> => {
+  if (indexMtime === undefined || stat.isSymbolicLink) return;
+  await assertBigFileThresholdValid(ctx);
+};
+
 export const compareWorkingTreeDelta = async (
   ctx: Context,
   entry: IndexEntry,
@@ -136,6 +151,7 @@ export const compareWorkingTreeDelta = async (
   const worktreeMode = deriveWorkingMode(stat);
   const settled = statOnlyVerdict(entry, stat, worktreeMode, indexMtime);
   if (settled !== undefined) return settled;
+  await readThresholdBeforeHashing(ctx, stat, indexMtime);
   try {
     const raw = stat.isSymbolicLink
       ? LINK_ENCODER.encode(await ctx.fs.readlink(absPath))

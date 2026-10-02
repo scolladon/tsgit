@@ -798,3 +798,83 @@ describe('compareWorkingTreeDelta — lstat cost', () => {
     });
   });
 });
+
+describe('Given a malformed core.bigFileThreshold', () => {
+  const withMalformedThreshold = async (ctx: Context): Promise<void> => {
+    const configPath = `${ctx.layout.gitDir}/config`;
+    const config = await ctx.fs.readUtf8(configPath);
+    await ctx.fs.writeUtf8(configPath, `${config}[core]\n\tbigFileThreshold = x\n`);
+    invalidateConfigCache(ctx);
+  };
+  const racyAgainst = (entry: IndexEntry) => ({ seconds: entry.mtimeSeconds, nanoseconds: 0 });
+  const cleanAgainst = (entry: IndexEntry) => ({
+    seconds: entry.mtimeSeconds + 10,
+    nanoseconds: 0,
+  });
+
+  describe('When the stat cache sends a racy regular file to be hashed', () => {
+    it('Then it refuses with the key, as git reads it before hashing', async () => {
+      // Arrange
+      const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+      await withMalformedThreshold(ctx);
+      const sut = compareWorkingTreeDelta;
+
+      // Act
+      const result = await sut(ctx, entry, undefined, racyAgainst(entry)).catch(
+        (err: { data: unknown }) => err.data,
+      );
+
+      // Assert
+      expect(result).toMatchObject({
+        code: 'CONFIG_BAD_NUMERIC_VALUE',
+        key: 'core.bigfilethreshold',
+        value: 'x',
+      });
+    });
+  });
+
+  describe('When the stat cache settles a non-racy regular file', () => {
+    it('Then it compares without reading the threshold', async () => {
+      // Arrange
+      const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+      await withMalformedThreshold(ctx);
+      const sut = compareWorkingTreeDelta;
+
+      // Act
+      const result = await sut(ctx, entry, undefined, cleanAgainst(entry));
+
+      // Assert
+      expect(result.status).toBe('unchanged');
+    });
+  });
+
+  describe('When the stat cache sends a racy symlink to be hashed', () => {
+    it('Then it compares without reading the threshold', async () => {
+      // Arrange
+      const { ctx, entry } = await seedSymlink('link', 'target');
+      await withMalformedThreshold(ctx);
+      const sut = compareWorkingTreeDelta;
+
+      // Act
+      const result = await sut(ctx, entry, undefined, racyAgainst(entry));
+
+      // Assert
+      expect(result.status).toBe('unchanged');
+    });
+  });
+
+  describe('When a regular file is hashed without the stat cache', () => {
+    it('Then it compares without reading the threshold, as git would not hash it', async () => {
+      // Arrange
+      const { ctx, entry } = await seedFile('a.txt', 'hello\n');
+      await withMalformedThreshold(ctx);
+      const sut = compareWorkingTreeDelta;
+
+      // Act
+      const result = await sut(ctx, entry);
+
+      // Assert
+      expect(result.status).toBe('unchanged');
+    });
+  });
+});
