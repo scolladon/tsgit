@@ -48,6 +48,8 @@ const SETUP_TIMEOUT = 120_000;
 const ROW_TIMEOUT = 30_000;
 const POSIX = process.platform !== 'win32';
 const UNPRIVILEGED = POSIX && process.getuid?.() !== 0;
+/** glibc and musl cap nested symlinks at 20; macOS keeps git's own fallback of 32. */
+const SYMLINK_LIMIT_32 = process.platform === 'darwin';
 const MIDX_SIGNATURE_FATAL =
   'multi-pack-index signature 0x58585858 does not match signature 0x4d494458';
 
@@ -422,6 +424,19 @@ const middleAndLeaf = (
   };
 };
 
+/** `b.git` lists the last of `length` absolute symlinks, each pointing at the previous one. */
+const symlinkChainFixture = (id: string, length: number): Fixture => {
+  const dd = donorAt(`${id}/dd.git`, `${id}-dd\n`);
+  const borrower = initBare(`${id}/b.git`);
+  mkdirSync(path.join(root, id, 'chain'));
+  let previous = dd.repo.objects;
+  for (let link = 1; link <= length; link++) {
+    previous = linkTo(previous, path.join(root, id, 'chain', `l${link}`));
+  }
+  alternatesOf(borrower, previous);
+  return { borrower: borrower.dir, blobs: [dd.oid] };
+};
+
 const resolutionScenarios: ReadonlyArray<Scenario> = [
   {
     id: 'R1',
@@ -525,6 +540,24 @@ const resolutionScenarios: ReadonlyArray<Scenario> = [
     alternates: 1,
     diagnostics: [],
     readable: [false],
+  },
+  {
+    id: 'R9',
+    title: 'an entry reached through 34 chained symlinks is unresolvable',
+    build: () => symlinkChainFixture('R9', 34),
+    runnable: POSIX,
+    alternates: 0,
+    diagnostics: ['unresolvable'],
+    readable: [false],
+  },
+  {
+    id: 'R10',
+    title: 'an entry reached through 33 chained symlinks resolves (32-symlink-limit builds)',
+    build: () => symlinkChainFixture('R10', 33),
+    runnable: SYMLINK_LIMIT_32,
+    alternates: 1,
+    diagnostics: [],
+    readable: [true],
   },
 ];
 

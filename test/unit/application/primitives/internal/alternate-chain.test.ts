@@ -136,6 +136,31 @@ describe('realpathAllowingMissingLeaf', () => {
     });
   });
 
+  describe.each([
+    { links: 33, expected: '/repo/real/objects' },
+    { links: 34, expected: undefined },
+  ])('Given a chain of $links symlinks to the directory', ({ links, expected }) => {
+    describe('When realpathAllowingMissingLeaf', () => {
+      it('Then git follows at most 33 links before giving up', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await ctx.fs.mkdir('/repo/real/objects');
+        await ctx.fs.mkdir('/repo/chain');
+        let previous = '/repo/real/objects';
+        for (let link = 1; link <= links; link++) {
+          await ctx.fs.symlink(previous, `/repo/chain/l${link}`);
+          previous = `/repo/chain/l${link}`;
+        }
+
+        // Act
+        const result = await realpathAllowingMissingLeaf(posixGitPathSyntax, ctx.fs, previous);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+
   describe('Given a relative symlink and dot-dot components', () => {
     describe('When realpathAllowingMissingLeaf', () => {
       it('Then they resolve against the link holder', async () => {

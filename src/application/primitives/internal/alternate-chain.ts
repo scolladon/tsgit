@@ -9,8 +9,8 @@ import { readConfig } from '../config-read.js';
 import { commonGitDir } from '../path-layout.js';
 import type { GitPathSyntax } from './git-path-syntax.js';
 
-/** Linux's symlink-follow limit: the hop budget after which git's realpath gives up on a link cycle. */
-const MAX_SYMLINK_HOPS = 40;
+/** git's nested-symlink limit; its post-increment check lets one more link through than the limit. */
+const MAX_SYMLINKS = 32;
 const FILE_NOT_FOUND = 'FILE_NOT_FOUND';
 const NOT_A_DIRECTORY = 'NOT_A_DIRECTORY';
 
@@ -57,8 +57,7 @@ const restartAt = (walk: Walk, path: string): boolean => {
 };
 
 const follow = async (probe: AlternatePathProbe, walk: Walk, link: string): Promise<boolean> => {
-  walk.hops++;
-  if (walk.hops > MAX_SYMLINK_HOPS) return false;
+  if (walk.hops++ > MAX_SYMLINKS) return false;
   const target = await probe.readlink(link);
   if (walk.syntax.isAbsolute(target)) return restartAt(walk, target);
   walk.pending.unshift(...walk.syntax.components(target));
