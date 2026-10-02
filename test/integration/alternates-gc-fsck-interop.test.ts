@@ -15,6 +15,7 @@
  *   unique:         tsgit gc packs only local objects and prunes against every object source exactly where real git does
  *   interopSurface: packfile
  */
+import { createHash } from 'node:crypto';
 import {
   chmodSync,
   cpSync,
@@ -46,6 +47,7 @@ const LOCAL_COMMIT_COUNT = 1;
 const YEAR_2001_SECONDS = 978_307_200;
 const OID_RE = /^[0-9a-f]{40}$/;
 const OID_HEX_LENGTH = 40;
+const SHA1_LENGTH = 20;
 
 let root: string;
 
@@ -1469,6 +1471,71 @@ describe.skipIf(!GIT_AVAILABLE)("fsck interop — every worktree's reflogs and i
             );
             expect(gitMatches(git.stderr, RESOLVE_UNDO_LINE)).toHaveLength(2);
             expect(danglingLines(result.findings)).toEqual(gitDanglingLines(git.stdout));
+          },
+          ROW_TIMEOUT,
+        );
+      },
+    );
+  });
+
+  /** Append a `REUC` record for path `f` to `index` and re-seal its checksum. */
+  const appendResolveUndo = (
+    index: string,
+    modes: ReadonlyArray<string>,
+    ids: ReadonlyArray<string>,
+  ): void => {
+    const body = readFileSync(index).subarray(0, -SHA1_LENGTH);
+    const record = Buffer.concat([
+      Buffer.from(`f\0${modes.map((mode) => `${mode}\0`).join('')}`, 'latin1'),
+      ...ids.map((id) => Buffer.from(id, 'hex')),
+    ]);
+    const size = Buffer.alloc(4);
+    size.writeUInt32BE(record.length);
+    const sealed = Buffer.concat([body, Buffer.from('REUC'), size, record]);
+    writeFileSync(index, Buffer.concat([sealed, createHash('sha1').update(sealed).digest()]));
+  };
+
+  describe('Given a resolve-undo stage whose mode field git reads through strtoul', () => {
+    describe.each([
+      { field: ' 100644', exitCode: 8, pointers: 1 },
+      { field: '+100644', exitCode: 8, pointers: 1 },
+      { field: '0100644', exitCode: 8, pointers: 1 },
+      { field: '-100644', exitCode: 0, pointers: 0 },
+      { field: ' -0', exitCode: 0, pointers: 0 },
+      { field: '+', exitCode: 0, pointers: 0 },
+      { field: '9', exitCode: 0, pointers: 0 },
+    ])(
+      'When git fsck and tsgit fsck run on mode "$field" naming an absent blob',
+      ({ field, exitCode, pointers }) => {
+        it(
+          'Then both read the same stages and report the same pointers',
+          async () => {
+            // Arrange
+            const dir = path.join(root, `resolve-undo-mode-${Buffer.from(field).toString('hex')}`);
+            runGit(['init', '-q', '-b', 'main', dir]);
+            configure(dir);
+            commitFile(dir, 'a', 'a');
+            appendResolveUndo(path.join(dir, '.git', 'index'), [field, '0', '0'], [ABSENT_IDS[0]]);
+            const git = gitFsck(dir);
+            const sut = tsgitFsck;
+
+            // Act
+            const result = await sut(dir);
+
+            // Assert
+            expect(git.exitCode).toBe(exitCode);
+            expect(result.exitCode).toBe(exitCode);
+            expect(
+              result.findings.flatMap((f) =>
+                f.type === 'invalid-resolve-undo-pointer' ? [`${f.id} ${f.index}`] : [],
+              ),
+            ).toEqual(
+              gitMatches(git.stderr, RESOLVE_UNDO_LINE).map((line) => {
+                const [id, index] = line.split(' ');
+                return `${id} ${path.resolve(dir, index as string)}`;
+              }),
+            );
+            expect(gitMatches(git.stderr, RESOLVE_UNDO_LINE)).toHaveLength(pointers);
           },
           ROW_TIMEOUT,
         );
