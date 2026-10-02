@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
-import { branchCreate } from '../../../../../src/application/commands/branch.js';
+import { branchCreate, branchList } from '../../../../../src/application/commands/branch.js';
+import { commit } from '../../../../../src/application/commands/commit.js';
+import { status } from '../../../../../src/application/commands/status.js';
+import { tagList } from '../../../../../src/application/commands/tag.js';
 import {
   invalidateConfigCache,
   memoizeRepoSettingsVerdict,
@@ -55,6 +58,17 @@ const assertRefusesWithBadMaxTreeDepth = async (op: () => Promise<unknown>): Pro
   expect(data.key).toBe('core.maxtreedepth');
   expect(data.value).toBe('2.5');
   expect(data.reason).toBe('invalid unit');
+};
+
+/** The refusal `op` throws, as data; `undefined` when it resolves. */
+const refusalOf = async (op: () => Promise<unknown>): Promise<BadNumericData | undefined> => {
+  try {
+    await op();
+    return undefined;
+  } catch (err) {
+    expect(err).toBeInstanceOf(TsgitError);
+    return (err as TsgitError).data as BadNumericData;
+  }
 };
 
 describe('internal/repo-settings-gate', () => {
@@ -231,6 +245,88 @@ describe('internal/repo-settings-gate', () => {
           const data = (caught as TsgitError).data as BadNumericData;
           expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
           expect(data.key).toBe('core.maxtreedepth');
+        });
+      });
+    });
+  });
+
+  describe('assertRepoSettingsValid — the core.packedGit bounds join the class', () => {
+    describe.each(['packedGitWindowSize', 'packedGitLimit'])('Given a valueless core.%s', (key) => {
+      describe('When called', () => {
+        it('Then throws CONFIG_BAD_NUMERIC_VALUE naming the key, value empty', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, `[core]\n\t${key}\n`);
+          const sut = assertRepoSettingsValid;
+
+          // Act
+          const caught = await refusalOf(() => sut(ctx));
+
+          // Assert
+          expect(caught?.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+          expect(caught?.key).toBe(`core.${key.toLowerCase()}`);
+          expect(caught?.value).toBe('');
+          expect(caught?.reason).toBe('invalid unit');
+        });
+      });
+    });
+
+    describe('Given core.packedGitWindowSize malformed on line 2 and core.deltaBaseCacheLimit on line 3', () => {
+      describe('When called', () => {
+        it('Then names core.deltabasecachelimit — prepare_repo_settings reads it first', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\tpackedGitWindowSize = x\n\tdeltaBaseCacheLimit = x\n');
+          const sut = assertRepoSettingsValid;
+
+          // Act
+          const caught = await refusalOf(() => sut(ctx));
+
+          // Assert
+          expect(caught?.key).toBe('core.deltabasecachelimit');
+        });
+      });
+    });
+
+    describe('Given core.ignoreCase = x on line 2 and core.packedGitLimit = x on line 3', () => {
+      describe.each([
+        ['status', (ctx: Context) => status(ctx)],
+        ['commit', (ctx: Context) => commit(ctx, { message: 'm' })],
+      ] as const)('When %s runs', (_verb, sut) => {
+        it('Then it names core.packedgitlimit — its prologue reads the settings before its config', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\tignoreCase = x\n\tpackedGitLimit = x\n');
+
+          // Act
+          const caught = await refusalOf(() => sut(ctx));
+
+          // Assert
+          expect(caught?.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
+          expect(caught?.key).toBe('core.packedgitlimit');
+        });
+      });
+    });
+
+    describe('Given only a malformed core.packedGitLimit', () => {
+      describe.each([
+        ['branch list', branchList],
+        ['tag list', tagList],
+      ] as const)('When %s runs', (_verb, sut) => {
+        it('Then it lists — git reads the bound only on the way to the object store', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[core]\n\tpackedGitLimit = x\n');
+
+          // Act
+          const caught = await refusalOf(() => sut(ctx));
+
+          // Assert
+          expect(caught).toBeUndefined();
         });
       });
     });

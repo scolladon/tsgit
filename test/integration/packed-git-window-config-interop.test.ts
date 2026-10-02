@@ -1,10 +1,12 @@
 /**
- * Cross-tool interop — the eager `core.packedGitWindowSize` /
- * `core.packedGitLimit` refusal (the pack window cache's config pin). Builds
- * one clean repository, then for every accepted operand of the pinned
- * unsigned-long grammar proves cat-file, rev-parse and status all agree with
- * git; for every malformed operand proves all three refuse identically,
- * rebuilding git's own fatal line from tsgit's structured error data.
+ * Cross-tool interop — the `core.packedGitWindowSize` / `core.packedGitLimit`
+ * refusal (the pack window cache's config pin, read with git's repo
+ * settings). Builds one clean repository, then for every accepted operand of
+ * the pinned unsigned-long grammar proves cat-file, rev-parse and status all
+ * agree with git; for every malformed operand proves all three refuse
+ * identically, rebuilding git's own fatal line from tsgit's structured error
+ * data — while branch and tag listing, which never reach the object store,
+ * accept it as git does.
  *
  * @proves
  *   surface:        config-read
@@ -12,16 +14,18 @@
  *   unique:         core.packedGitWindowSize / core.packedGitLimit accept and
  *                    refuse the exact operands git 2.55.0 does, on every
  *                    command git validates the key in
- *   interopSurface: cat-file, rev-parse, status
+ *   interopSurface: cat-file, rev-parse, status, branch, tag
  */
 import { cp, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
+import { branchList } from '../../src/application/commands/branch.js';
 import { catFile } from '../../src/application/commands/cat-file.js';
 import { revParse } from '../../src/application/commands/rev-parse.js';
 import { status } from '../../src/application/commands/status.js';
+import { tagList } from '../../src/application/commands/tag.js';
 import { TsgitError } from '../../src/domain/error.js';
 import type { Commit } from '../../src/domain/objects/index.js';
 import { ObjectId, serializeIdentity } from '../../src/domain/objects/index.js';
@@ -267,6 +271,49 @@ describe.skipIf(!GIT_AVAILABLE)(
             'core.packedgitwindowsize',
             path.join(dir, '.git', 'config'),
             'y',
+            'invalid unit',
+          );
+        });
+      });
+    });
+
+    describe('Given only a malformed core.packedGitLimit', () => {
+      describe('When branch --list and tag --list run on both tools', () => {
+        it('Then both list — git reads the bound only on the way to the object store', async () => {
+          // Arrange
+          const { dir, ctx } = await caseRepo('lists', '\tpackedGitLimit = x\n');
+
+          // Act
+          const gitExits = [
+            tryRunGitWithExit(['-C', dir, 'branch', '--list']).exitCode,
+            tryRunGitWithExit(['-C', dir, 'tag', '--list']).exitCode,
+          ];
+
+          // Assert
+          expect(gitExits).toEqual([0, 0]);
+          await expect(branchList(ctx)).resolves.toBeDefined();
+          await expect(tagList(ctx)).resolves.toBeDefined();
+        });
+      });
+    });
+
+    describe('Given core.ignoreCase = x on a line before core.packedGitLimit = x', () => {
+      describe('When status runs on both tools', () => {
+        it('Then both name core.packedgitlimit — status reads the repo settings before its config', async () => {
+          // Arrange
+          const lines = '\tignoreCase = x\n\tpackedGitLimit = x\n';
+          const { dir, ctx } = await caseRepo('ignore-case-then-limit', lines);
+
+          // Act
+          const statusGit = tryRunGitWithExit(['-C', dir, 'status']);
+
+          // Assert
+          expect(statusGit.stderr).toBe(badNumericFatal('packedGitLimit', 'x', 'invalid unit'));
+          await assertRefusesWithBadNumeric(
+            () => status(ctx),
+            'core.packedgitlimit',
+            path.join(dir, '.git', 'config'),
+            'x',
             'invalid unit',
           );
         });

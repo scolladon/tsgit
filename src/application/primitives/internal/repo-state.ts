@@ -37,16 +37,15 @@ import {
   findFirstInvalidDiffBinary,
   findFirstInvalidLogAllRefUpdates,
   findFirstValuelessEntry,
-  findLastInvalidPackedGitBound,
   type InvalidBooleanEntry,
   type InvalidCompressionEntry,
-  type InvalidNumericEntry,
   memoizeGateVerdict,
   openConfigEpoch,
   type ValuelessEntry,
 } from '../config-read.js';
 import { getRefStore, type ResolveDirectResult } from '../ref-store.js';
 import { validateHead } from './head-file.js';
+import { assertRepoSettingsValid } from './repo-settings-gate.js';
 
 const HEAD_REF = RefName.from('HEAD');
 
@@ -152,8 +151,7 @@ const DIFF_BOOLEAN_KEYS: ReadonlyArray<string> = ['cachetextconv'];
 type EagerCandidate =
   | { readonly kind: 'valueless'; readonly line: number; readonly entry: ValuelessEntry }
   | { readonly kind: 'compression'; readonly line: number; readonly entry: InvalidCompressionEntry }
-  | { readonly kind: 'boolean'; readonly line: number; readonly entry: InvalidBooleanEntry }
-  | { readonly kind: 'numeric'; readonly line: number; readonly entry: InvalidNumericEntry };
+  | { readonly kind: 'boolean'; readonly line: number; readonly entry: InvalidBooleanEntry };
 
 const throwEagerCandidate = (candidate: EagerCandidate): never => {
   if (candidate.kind === 'valueless') {
@@ -163,10 +161,6 @@ const throwEagerCandidate = (candidate: EagerCandidate): never => {
   if (candidate.kind === 'boolean') {
     const { entry } = candidate;
     throw configBadBooleanValue(entry.key, entry.source, entry.value);
-  }
-  if (candidate.kind === 'numeric') {
-    const { entry } = candidate;
-    throw configBadNumericValue(entry.key, entry.source, entry.value, entry.reason);
   }
   const { entry } = candidate;
   if (entry.failure.kind === 'numeric') {
@@ -199,25 +193,27 @@ const throwEagerCandidate = (candidate: EagerCandidate): never => {
  * boundaries (`internal/repo-settings-gate.ts`'s `assertRepoSettingsValid`),
  * validated independently of this gate.
  *
- * Cross-class ordering (the seven classes below): run all seven finders in
+ * The `core.packedGit*` bounds joined that class for the same reason: git
+ * reads them in `prepare_repo_settings`, so `branch --list` and `tag --list`
+ * never see them.
+ *
+ * Cross-class ordering (the six classes below): run all six finders in
  * parallel and throw the LOWEST-line entry's shape — string
- * (`CONFIG_MISSING_VALUE`), compression or packed-git-bound
- * (`CONFIG_BAD_NUMERIC_VALUE` / `CONFIG_BAD_ZLIB_LEVEL`), or boolean
- * (`CONFIG_BAD_BOOLEAN_VALUE`). No-op when every class is valid or absent.
+ * (`CONFIG_MISSING_VALUE`), compression (`CONFIG_BAD_NUMERIC_VALUE` /
+ * `CONFIG_BAD_ZLIB_LEVEL`), or boolean (`CONFIG_BAD_BOOLEAN_VALUE`). No-op
+ * when every class is valid or absent.
  */
 export const assertEagerConfigValid = async (ctx: Context): Promise<void> => {
-  const [str, comp, boolCore, logAllRefUpdates, boolDiff, diffBinary, packedGitBound] =
-    await Promise.all([
-      findFirstValuelessEntry(ctx, 'core', undefined, CORE_STRING_KEYS),
-      findFirstInvalidCompression(ctx),
-      findFirstInvalidBoolean(ctx, 'core', undefined, CORE_BOOLEAN_KEYS),
-      findFirstInvalidLogAllRefUpdates(ctx),
-      // git ignores a subsectionless `[diff] cachetextconv` (the key only exists
-      // per-driver), so only subsectioned entries can refuse here.
-      findFirstInvalidBooleanInSection(ctx, 'diff', DIFF_BOOLEAN_KEYS, { requireSubsection: true }),
-      findFirstInvalidDiffBinary(ctx),
-      findLastInvalidPackedGitBound(ctx),
-    ]);
+  const [str, comp, boolCore, logAllRefUpdates, boolDiff, diffBinary] = await Promise.all([
+    findFirstValuelessEntry(ctx, 'core', undefined, CORE_STRING_KEYS),
+    findFirstInvalidCompression(ctx),
+    findFirstInvalidBoolean(ctx, 'core', undefined, CORE_BOOLEAN_KEYS),
+    findFirstInvalidLogAllRefUpdates(ctx),
+    // git ignores a subsectionless `[diff] cachetextconv` (the key only exists
+    // per-driver), so only subsectioned entries can refuse here.
+    findFirstInvalidBooleanInSection(ctx, 'diff', DIFF_BOOLEAN_KEYS, { requireSubsection: true }),
+    findFirstInvalidDiffBinary(ctx),
+  ]);
   const candidates: ReadonlyArray<EagerCandidate | undefined> = [
     str === undefined ? undefined : { kind: 'valueless', line: str.line, entry: str },
     comp === undefined ? undefined : { kind: 'compression', line: comp.line, entry: comp },
@@ -229,9 +225,6 @@ export const assertEagerConfigValid = async (ctx: Context): Promise<void> => {
     diffBinary === undefined
       ? undefined
       : { kind: 'boolean', line: diffBinary.line, entry: diffBinary },
-    packedGitBound === undefined
-      ? undefined
-      : { kind: 'numeric', line: packedGitBound.line, entry: packedGitBound },
   ];
   const selected = candidates.reduce<EagerCandidate | undefined>(
     (winner, candidate) => pickLowerLine(winner, candidate),
@@ -324,10 +317,28 @@ const computeGateVerdict = async (ctx: Context): Promise<FilePath> => {
  * check would read a non-repository's config before refusing it.
  */
 export const assertOperationalRepository = async (ctx: Context): Promise<FilePath> => {
+  await assertUsableHeadAndOpenEpoch(ctx);
+  return await memoizeGateVerdict(ctx, computeGateVerdict);
+};
+
+const assertUsableHeadAndOpenEpoch = async (ctx: Context): Promise<void> => {
   if (!(await hasUsableHead(ctx))) {
     throw notARepository((ctx.layout.workDir ?? ctx.layout.gitDir) as FilePath);
   }
   await openConfigEpoch(ctx);
+};
+
+/**
+ * `assertOperationalRepository` for a builtin whose prologue runs
+ * `prepare_repo_settings` before it reads its config (`cmd_status`,
+ * `cmd_commit`): setup's refusals, then the repo-settings class, then the
+ * eager `[core]` validation — so a malformed `core.packedGitLimit` is named
+ * ahead of a malformed `core.ignoreCase` on an earlier line.
+ */
+export const assertOperationalRepositorySettingsFirst = async (ctx: Context): Promise<FilePath> => {
+  await assertUsableHeadAndOpenEpoch(ctx);
+  assertTrustedAndFormat(ctx, await assertDiscoveryAndRoot(ctx));
+  await assertRepoSettingsValid(ctx);
   return await memoizeGateVerdict(ctx, computeGateVerdict);
 };
 

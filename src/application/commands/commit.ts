@@ -28,6 +28,7 @@ import {
   assertValidPromisorRemoteConfig,
 } from '../primitives/internal/boolean-config-guard.js';
 import { boundedMapFor } from '../primitives/internal/concurrency.js';
+import { assertOperationalRepositorySettingsFirst } from '../primitives/internal/repo-state.js';
 import { assertNoValuelessConfig } from '../primitives/internal/valueless-config-guard.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
@@ -54,12 +55,7 @@ import {
   readMergeHead,
   readMergeMsg,
 } from './internal/merge-state.js';
-import {
-  assertNoPendingOperation,
-  assertOperationalRepository,
-  readHeadRaw,
-  requireWorkTree,
-} from './internal/repo-state.js';
+import { assertNoPendingOperation, readHeadRaw, requireWorkTree } from './internal/repo-state.js';
 import { clearRevertHead, readRevertHead } from './internal/revert-state.js';
 import { resolveSignRequest, signOrThrow } from './internal/sign-request.js';
 
@@ -98,7 +94,7 @@ export interface CommitResult {
  * and `allowEmptyMessage` is not set.
  */
 export const commit = async (ctx: Context, opts: CommitOptions): Promise<CommitResult> => {
-  await assertOperationalRepository(ctx);
+  await assertOperationalRepositorySettingsFirst(ctx);
   requireWorkTree(ctx, 'commit');
   // git refuses a malformed commit.gpgSign before hooks run, before the tree is
   // written, and before the nothing-to-commit check — mirror that ordering.

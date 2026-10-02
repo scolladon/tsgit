@@ -1,7 +1,8 @@
 /**
  * The repo-settings class (git's `prepare_repo_settings`, `repo-settings.c`):
- * `core.maxTreeDepth` and, from commit 2, `core.deltaBaseCacheLimit`. Git
- * reads both keys in that one function and nowhere else — a command dies on
+ * `core.maxTreeDepth`, `core.deltaBaseCacheLimit`, then
+ * `core.packedGitWindowSize` and `core.packedGitLimit`. Git reads these keys
+ * in that one function and nowhere else — a command dies on
  * a malformed value iff it reaches the object store, the index, a
  * commit-graph/midx/bitmap load, or one of four builtins that call the
  * function in their own prologue.
@@ -16,18 +17,20 @@ import type { Context } from '../../../ports/context.js';
 import {
   findLastInvalidDeltaBaseCacheLimit,
   findLastInvalidMaxTreeDepth,
+  findLastInvalidPackedGitBound,
   memoizeRepoSettingsVerdict,
 } from '../config-read.js';
 
 /** git's `prepare_repo_settings` (repo-settings.c): the class's keys, in its own reading order. */
 const computeRepoSettingsVerdict = async (ctx: Context): Promise<void> => {
-  const [maxTreeDepth, deltaBaseCacheLimit] = await Promise.all([
+  const [maxTreeDepth, deltaBaseCacheLimit, packedGitBound] = await Promise.all([
     findLastInvalidMaxTreeDepth(ctx), // repo-settings.c:103
     ctx.cacheBudgets?.deltaBaseCacheMaxBytes === undefined // an option-overridden file value is never validated
       ? findLastInvalidDeltaBaseCacheLimit(ctx) // repo-settings.c:142
       : undefined,
+    findLastInvalidPackedGitBound(ctx), // repo-settings.c:145, :155
   ]);
-  const invalid = maxTreeDepth ?? deltaBaseCacheLimit; // in-function order
+  const invalid = maxTreeDepth ?? deltaBaseCacheLimit ?? packedGitBound; // in-function order
   if (invalid !== undefined) {
     throw configBadNumericValue(invalid.key, invalid.source, invalid.value, invalid.reason);
   }

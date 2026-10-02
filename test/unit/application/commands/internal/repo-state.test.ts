@@ -904,35 +904,25 @@ describe('internal/repo-state', () => {
         it.each([
           { key: 'packedGitWindowSize', label: 'core.packedGitWindowSize' },
           { key: 'packedGitLimit', label: 'core.packedGitLimit' },
-        ])('Then throws CONFIG_BAD_NUMERIC_VALUE for $label', async ({ key }) => {
+        ])("Then it resolves — $label is a repo-settings key, not this gate's", async ({ key }) => {
           // Arrange
           const ctx = createMemoryContext();
           await seedRepo(ctx);
           await seedConfig(ctx, `[core]\n\t${key}\n`);
+          const sut = assertOperationalRepository;
 
           // Act
-          let caught: unknown;
-          try {
-            await assertOperationalRepository(ctx);
-          } catch (err) {
-            caught = err;
-          }
+          const result = await sut(ctx);
 
-          // Assert — each field individually (mutation-resistant)
-          expect(caught).toBeInstanceOf(TsgitError);
-          const data = (caught as TsgitError).data as BadNumericData;
-          expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
-          expect(data.key).toBe(`core.${key.toLowerCase()}`);
-          expect(data.source).toMatch(/\/config$/);
-          expect(data.value).toBe('');
-          expect(data.reason).toBe('invalid unit');
+          // Assert
+          expect(result).toBe(ctx.layout.workDir);
         });
       });
     });
 
     describe('Given a config with core.compression (line 2) earlier than a malformed core.packedGitWindowSize (line 3)', () => {
       describe('When called', () => {
-        it('Then throws CONFIG_BAD_NUMERIC_VALUE for core.compression (earlier line wins)', async () => {
+        it('Then throws CONFIG_BAD_NUMERIC_VALUE for core.compression', async () => {
           // Arrange
           const ctx = createMemoryContext();
           await seedRepo(ctx);
@@ -959,7 +949,7 @@ describe('internal/repo-state', () => {
 
     describe('Given a config with a malformed core.packedGitWindowSize (line 2) earlier than core.compression (line 3)', () => {
       describe('When called', () => {
-        it('Then throws CONFIG_BAD_NUMERIC_VALUE for core.packedGitWindowSize (earlier line wins)', async () => {
+        it("Then throws CONFIG_BAD_NUMERIC_VALUE for core.compression — the earlier bound is not this gate's", async () => {
           // Arrange
           const ctx = createMemoryContext();
           await seedRepo(ctx);
@@ -977,8 +967,8 @@ describe('internal/repo-state', () => {
           expect(caught).toBeInstanceOf(TsgitError);
           const data = (caught as TsgitError).data as BadNumericData;
           expect(data.code).toBe('CONFIG_BAD_NUMERIC_VALUE');
-          expect(data.key).toBe('core.packedgitwindowsize');
-          expect(data.value).toBe('-1');
+          expect(data.key).toBe('core.compression');
+          expect(data.value).toBe('');
           expect(data.reason).toBe('invalid unit');
         });
       });

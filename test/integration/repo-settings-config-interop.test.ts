@@ -9,16 +9,16 @@
  * over-refused verbs now run; the two fixture-conditional verbs agree with
  * git in BOTH fixtures; the transcribed per-builtin prologues refuse on
  * their own boundary-free paths, in git's OWN measured order against the
- * work-tree requirement; and the residual two-class ordering split this
- * tier deliberately does not close.
+ * work-tree requirement; and the two-class ordering split, which status
+ * closes by reading the tier in its own prologue as git does.
  *
  * @proves
  *   surface:        repo-settings-gate
  *   bucket:         cross-tool-interop
  *   unique:         the three over-refused verbs now run, the two
  *                    fixture-conditional verbs agree with git in both
- *                    fixtures, and the residual two-class ordering split is
- *                    pinned, not silently divergent
+ *                    fixtures, and the two-class ordering split is pinned
+ *                    per command, not silently divergent
  *   interopSurface: branch, tag, rev-parse, sparse-checkout, stash, reflog,
  *                    notes, pack-refs, status, show, submodule, worktree,
  *                    hash-object, write-tree
@@ -682,7 +682,7 @@ describe.skipIf(!GIT_AVAILABLE)('repo-settings tier — cross-tool interop', () 
     afterAll(async () => rm(dir, { recursive: true, force: true }));
 
     describe('When status runs', () => {
-      it('Then git names the repo-settings class (maxtreedepth) but tsgit names the streaming class (loosecompression) — the recorded residual', async () => {
+      it('Then both name the repo-settings class (maxtreedepth) — status reads it in its prologue', async () => {
         // Arrange + Act — against the shared beforeAll repo, whose local
         // config already holds BOTH malformed classes.
         const g = tryRunGitWithExit(['-C', dir, 'status', '--porcelain']);
@@ -692,8 +692,8 @@ describe.skipIf(!GIT_AVAILABLE)('repo-settings tier — cross-tool interop', () 
         expect(g.exitCode).toBe(128);
         expect(g.stderr).toContain("'core.maxtreedepth'");
 
-        // Assert — tsgit's eager gate (the streaming five) still runs first;
-        // the repo-settings class no longer competes there.
+        // Assert — tsgit's status reads the repo-settings class before its
+        // eager gate, as git's prologue does.
         let caught: unknown;
         try {
           await status(ctx);
@@ -703,7 +703,7 @@ describe.skipIf(!GIT_AVAILABLE)('repo-settings tier — cross-tool interop', () 
         expect(caught).toBeInstanceOf(TsgitError);
         expect((caught as TsgitError).data).toMatchObject({
           code: 'CONFIG_BAD_NUMERIC_VALUE',
-          key: 'core.loosecompression',
+          key: 'core.maxtreedepth',
         });
       });
     });
@@ -711,8 +711,8 @@ describe.skipIf(!GIT_AVAILABLE)('repo-settings tier — cross-tool interop', () 
     describe('When log runs', () => {
       it('Then both name the streaming class (loosecompression) — a MAJORITY-set command where git and tsgit agree', async () => {
         // Arrange + Act — same shared beforeAll repo as the `status` case
-        // above; `status` sits in the 5-of-24 minority where git's own
-        // measured ordering diverges from tsgit's. `log` sits in the 19-of-24
+        // above; `status` sits in the 5-of-24 minority whose prologue
+        // reads the repo settings first. `log` sits in the 19-of-24
         // majority: git's `prepare_repo_settings` for `log` runs AFTER its
         // generic config validation, so git ALSO names the streaming class
         // first here — this is the majority-set row no prior test measured.

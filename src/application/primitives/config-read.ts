@@ -1216,8 +1216,11 @@ export const findLastInvalidDeltaBaseCacheLimit = async (
 export const findLastInvalidPackedGitBound = async (
   ctx: Context,
 ): Promise<(InvalidNumericEntry & { readonly line: number }) | undefined> => {
-  for (const key of PACKED_GIT_READING_ORDER) {
-    const last = await findLastEntry(ctx, 'core', key);
+  // Both reads start on one tick, so they share one config read.
+  const entries = await Promise.all(
+    PACKED_GIT_READING_ORDER.map((key) => findLastEntry(ctx, 'core', key)),
+  );
+  for (const last of entries) {
     if (last === undefined) continue;
     const checked = checkGitUnsignedLong(last.value);
     if (checked.ok) continue;

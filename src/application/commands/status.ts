@@ -25,17 +25,13 @@ import {
   type AttributeProvider,
   maybeBuildAttributeProvider,
 } from '../primitives/internal/read-gitattributes.js';
+import { assertOperationalRepositorySettingsFirst } from '../primitives/internal/repo-state.js';
 import { readHeadTree } from '../primitives/read-head-tree.js';
 import { readIndex } from '../primitives/read-index.js';
 import { walkWorkingTree } from '../primitives/walk-working-tree.js';
 import { buildRepoIgnorePredicate } from './internal/build-ignore-evaluator.js';
 import { createGranularityTracker } from './internal/progress-tracker.js';
-import {
-  assertOperationalRepository,
-  branchRefFromHead,
-  readHeadRaw,
-  requireWorkTree,
-} from './internal/repo-state.js';
+import { branchRefFromHead, readHeadRaw, requireWorkTree } from './internal/repo-state.js';
 
 export type ChangeKind = 'modified' | 'added' | 'deleted' | 'type-changed' | 'mode-changed';
 
@@ -123,7 +119,7 @@ interface GranularityTracker {
  * revealing repository size to non-trusted progress sinks.
  */
 export const status = async (ctx: Context): Promise<StatusResult> => {
-  await assertOperationalRepository(ctx);
+  await assertOperationalRepositorySettingsFirst(ctx);
   const workDir = requireWorkTree(ctx, 'status');
   // Promisor-remote guard (see assertValidPromisorRemoteConfig) — loaded up front.
   await assertValidPromisorRemoteConfig(ctx);
