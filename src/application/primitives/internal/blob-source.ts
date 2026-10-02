@@ -59,6 +59,7 @@ import {
   withLazyFetchRetry,
 } from '../read-object.js';
 import type { StreamBlobOptions } from '../stream-blob.js';
+import { readStrictBigFileThreshold } from './big-file-threshold.js';
 import { checkAborted, retryOnceAfterRescan } from './retry-after-rescan.js';
 
 /** 64 KiB of compressed/on-disk bytes — the uniform buffered/streamed gate. */
@@ -260,8 +261,13 @@ async function readLooseEntry(
   return compressed === undefined ? undefined : { arm: 'loose', id, store, source, compressed };
 }
 
-const isLargeBase = (located: LocatedBlob | undefined, threshold: number): boolean =>
-  located?.arm === 'pack' && isBase(located.entry.header) && located.entry.header.size > threshold;
+const isLargeBase = (located: LocatedBlob, threshold: number): boolean =>
+  located.arm === 'pack' && isBase(located.entry.header) && located.entry.header.size > threshold;
+
+/** git's `packfile_read_object_stream` reads the threshold for every pack hit,
+ *  before it weighs the entry's type. */
+const servesLargeBase = async (ctx: Context, packed: LocatedBlob | undefined): Promise<boolean> =>
+  packed !== undefined && isLargeBase(packed, await readStrictBigFileThreshold(ctx));
 
 /**
  * git's `open_istream` order, one source at a time: a pack entry that is a
@@ -279,7 +285,7 @@ async function locateStream(
   for (const source of store.sources) {
     if (source !== store.primary) await source.registry.assertLoadable();
     const packed = await readPackEntry(ctx, store, source, id);
-    if (isLargeBase(packed, store.bigFileThreshold)) return packed;
+    if (await servesLargeBase(ctx, packed)) return packed;
     firstHeld ??= packed;
     const loose = await readLooseEntry(ctx, store, source, id);
     if (loose !== undefined) return loose;

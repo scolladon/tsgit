@@ -11,7 +11,7 @@
  *   surface:        repo-state
  *   bucket:         cross-tool-interop
  *   unique:         a malformed core.bigFileThreshold refuses exactly where git reads it, per repository state
- *   interopSurface: add, archive, diff, maintenance, packObjects, show, status
+ *   interopSurface: add, archive, catFile, diff, maintenance, packObjects, show, status
  */
 import { mkdtempSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
@@ -96,6 +96,8 @@ interface Row {
   readonly state: RepoState;
   readonly git: ReadonlyArray<string>;
   readonly input?: string;
+  /** Working-tree edits applied to both twins before the command runs. */
+  readonly prepare?: (dir: string) => void;
   readonly tsgit: (repo: Repository) => Promise<unknown>;
 }
 
@@ -189,19 +191,47 @@ const ROWS: ReadonlyArray<Row> = [
     git: ['maintenance', 'run', '--task=gc'],
     tsgit: (r) => r.maintenance({ tasks: ['gc'] }),
   },
+  ...[CLEAN_LOOSE, CLEAN_PACKED].flatMap((state): ReadonlyArray<Row> => {
+    const where = state.packed ? 'packed' : 'loose';
+    return [
+      {
+        name: `cat-file --batch on a ${where} blob`,
+        state,
+        git: ['cat-file', '--batch'],
+        input: 'HEAD:f1.txt\n',
+        tsgit: async (r) => r.catFile({ ids: [await r.revParse('HEAD:f1.txt')] }),
+      },
+      {
+        name: `show on a ${where} blob`,
+        state,
+        git: ['show', 'HEAD:f1.txt'],
+        tsgit: (r) => r.show('HEAD:f1.txt'),
+      },
+      {
+        name: `checkout of a deleted path held by a ${where} blob`,
+        state,
+        prepare: (dir) => rmSync(path.join(dir, 'f1.txt')),
+        git: ['checkout', '--', 'f1.txt'],
+        tsgit: (r) => r.checkout({ paths: ['f1.txt'] }),
+      },
+    ];
+  }),
 ];
 
 describe.skipIf(!GIT_AVAILABLE)(
   'interop — malformed core.bigFileThreshold at git data sites',
   () => {
-    describe.each(ROWS)('Given $name', ({ state, git, input, tsgit }) => {
+    describe.each(ROWS)('Given $name', ({ state, git, input, prepare, tsgit }) => {
       describe('When git and tsgit run the command', () => {
         it(
           'Then both refuse with the same fatal line, or both run',
           async () => {
             // Arrange
-            const gitRun = tryRunGitWithExit(['-C', repoIn(state), ...git], { input: input ?? '' });
+            const gitDir = repoIn(state);
             const dir = repoIn(state);
+            prepare?.(gitDir);
+            prepare?.(dir);
+            const gitRun = tryRunGitWithExit(['-C', gitDir, ...git], { input: input ?? '' });
             const sut = tsgitFatal;
 
             // Act

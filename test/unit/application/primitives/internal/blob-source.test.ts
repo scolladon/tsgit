@@ -2440,3 +2440,108 @@ describe('verifyStoredObject read order after a rescan', () => {
     });
   });
 });
+
+describe('stream order core.bigFileThreshold read', () => {
+  const MALFORMED_REFUSAL = {
+    code: 'CONFIG_BAD_NUMERIC_VALUE',
+    key: 'core.bigfilethreshold',
+    value: 'x',
+  };
+
+  const malformedContextWithAlternate = async (): Promise<Context> => {
+    const ctx = await contextWithAlternate();
+    await ctx.fs.writeUtf8('/repo/.git/config', '[core]\n\tbigFileThreshold = x\n');
+    return ctx;
+  };
+
+  const refusalOf = (op: Promise<unknown>): Promise<unknown> =>
+    op.then(
+      () => undefined,
+      (err: TsgitError) => err.data,
+    );
+
+  describe('Given a malformed core.bigFileThreshold and a packed blob', () => {
+    describe('When it is read in stream order', () => {
+      it('Then it refuses with the key', async () => {
+        // Arrange
+        const ctx = await malformedContextWithAlternate();
+        const [id] = await writeSyntheticPackIn(ctx, PRIMARY_OBJECTS, 'p', [
+          { kind: 'base', type: 'blob', content: ENC.encode('packed\n') },
+        ]);
+        const sut = readBlobContentInStreamOrder;
+
+        // Act
+        const result = await refusalOf(sut(ctx, id as ObjectId));
+
+        // Assert
+        expect(result).toMatchObject(MALFORMED_REFUSAL);
+      });
+    });
+
+    describe('When it is read in core', () => {
+      it('Then it serves the bytes without reading the threshold', async () => {
+        // Arrange
+        const ctx = await malformedContextWithAlternate();
+        const content = ENC.encode('packed\n');
+        const [id] = await writeSyntheticPackIn(ctx, PRIMARY_OBJECTS, 'p', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const sut = openBlobSource;
+
+        // Act
+        const result = await sut(ctx, id as ObjectId, MAX_BUFFERED_BLOB_BYTES, {
+          order: 'in-core',
+        });
+
+        // Assert
+        expect(await blobBytes(result)).toEqual(content);
+      });
+    });
+  });
+
+  describe('Given a malformed core.bigFileThreshold and a packed delta blob', () => {
+    describe('When it is read in stream order', () => {
+      it('Then it refuses with the key, as git reads it before weighing the entry type', async () => {
+        // Arrange
+        const ctx = await malformedContextWithAlternate();
+        const [, deltaId] = await writeSyntheticPackIn(ctx, PRIMARY_OBJECTS, 'p', [
+          { kind: 'base', type: 'blob', content: ENC.encode('base content\n') },
+          { kind: 'ofs-delta', baseIndex: 0, targetContent: ENC.encode('base content\nmore\n') },
+        ]);
+        const sut = readBlobContentInStreamOrder;
+
+        // Act
+        const result = await refusalOf(sut(ctx, deltaId as ObjectId));
+
+        // Assert
+        expect(result).toMatchObject(MALFORMED_REFUSAL);
+      });
+    });
+  });
+
+  describe('Given a malformed core.bigFileThreshold, a loose blob and its packed alternate copy', () => {
+    describe('When it is read in stream order', () => {
+      it('Then the loose copy is served without reading the threshold', async () => {
+        // Arrange
+        const ctx = await malformedContextWithAlternate();
+        const content = ENC.encode('both\n');
+        await writeSyntheticPackIn(ctx, ALT_OBJECTS, 'alt', [
+          { kind: 'base', type: 'blob', content },
+        ]);
+        const bytes = new Uint8Array([...serializeHeader('blob', content.length), ...content]);
+        const id = (await ctx.hash.hashHex(bytes)) as ObjectId;
+        await ctx.fs.write(
+          `${PRIMARY_OBJECTS}/${computeLooseObjectPath(id)}`,
+          await ctx.compressor.deflate(bytes),
+        );
+        const sut = readBlobContentInStreamOrder;
+
+        // Act
+        const result = await sut(ctx, id);
+
+        // Assert
+        expect(result).toEqual(content);
+      });
+    });
+  });
+});
