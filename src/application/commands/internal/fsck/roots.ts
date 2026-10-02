@@ -591,7 +591,14 @@ async function addNonCurrentWorktreeRoots(ctx: Context, roots: Set<ObjectId>): P
     // Unborn/dangling/malformed HEAD — tolerated, same as addRefRoots.
   }
   addReflogEntryRoots(roots, await readReflogIfOpenable(ctx, HEAD_REF), zeroOid(ctx.hashConfig));
-  await addIndexRoots(ctx, roots);
+  await addIndexRetentionRoots(ctx, roots);
+}
+
+/** One index's gc roots: its entries and cache-tree, then every regular-file
+ *  resolve-undo stage, as git's `add_resolve_undo_to_pending` adds them. */
+async function addIndexRetentionRoots(ctx: Context, roots: Set<ObjectId>): Promise<void> {
+  const { resolveUndo } = await addIndexRoots(ctx, roots);
+  for (const id of resolveUndo) roots.add(id);
 }
 
 /** Whether `ctx` IS the main worktree — its own `gitDir` doubles as the
@@ -687,7 +694,7 @@ export async function collectRetentionRoots(ctx: Context): Promise<ReadonlySet<O
   const roots = new Set<ObjectId>();
   await addRefRoots(ctx, roots, undefined, true);
   await addReflogRoots(ctx, roots);
-  await addIndexRoots(ctx, roots);
+  await addIndexRetentionRoots(ctx, roots);
   await addMainWorktreeRoots(ctx, roots);
   await addOtherWorktreeRoots(ctx, roots);
   return roots;

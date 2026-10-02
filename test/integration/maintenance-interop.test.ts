@@ -652,6 +652,49 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
     });
   });
 
+  describe('Given blobs only the index resolve-undo record names, When gc runs on both twins at pruneExpire=now', () => {
+    let baseDir: string;
+    let regularIds: ReadonlyArray<string>;
+    let symlinkId: string;
+
+    beforeAll(async () => {
+      baseDir = await initRepo('resolve-undo-roots');
+      await addCommit(baseDir, 'c0');
+      regularIds = ['base', 'ours'].map((content) => writeLooseBlobGit(baseDir, content));
+      symlinkId = writeLooseBlobGit(baseDir, 'link-target');
+      git(baseDir, 'rm', '-q', '--cached', 'c0.txt');
+      execFileSync('git', ['-C', baseDir, 'update-index', '--index-info'], {
+        input: [
+          `100644 ${regularIds[0]} 1\tc0.txt`,
+          `100644 ${regularIds[1]} 2\tc0.txt`,
+          `120000 ${symlinkId} 3\tc0.txt`,
+          '',
+        ].join('\n'),
+        env: runGitEnv(),
+      });
+      git(baseDir, 'add', 'c0.txt');
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(baseDir, { recursive: true, force: true });
+    });
+
+    it('Then both keep the regular-file stages and prune the symlink stage', async () => {
+      // Arrange
+      const twin = await makeTwin(baseDir, 'resolve-undo-roots');
+
+      // Act
+      await runBothGc(twin, ['gc.pruneExpire=now']);
+
+      // Assert
+      const survivors = (dir: string) =>
+        [...regularIds, symlinkId].map((id) => catFileExists(dir, id));
+      expect(survivors(twin.oursDir)).toEqual(survivors(twin.peerDir));
+      expect(survivors(twin.oursDir)).toEqual([true, true, false]);
+      await disposeTwin(twin);
+    });
+  });
+
   describe("Given a repository with refs and a reflog, When tsgit's gc runs", () => {
     let baseDir: string;
 
