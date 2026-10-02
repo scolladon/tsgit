@@ -31,6 +31,7 @@ import {
   readConfig,
   readPromisorRemoteNames,
   tokenizeConfig,
+  warnSlashLeadingRemoteShorthands,
 } from '../../../../src/application/primitives/config-read.js';
 import {
   __resetSectionsCacheForTests,
@@ -9703,6 +9704,71 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
           revocationFile: '/a/revoked',
         });
       });
+    });
+  });
+});
+
+describe('Given a remote whose name begins with /', () => {
+  const SLASH_CONFIG =
+    '[remote "/x"]\n\turl = u\n\tFetch = +refs/heads/*:refs/remotes/x/*\n\tvalueless\n' +
+    '[remote "y"]\n\turl = v\n[remote "/w"]\n';
+
+  describe('When readConfig', () => {
+    it('Then only the other remotes are registered, as git never registers it', async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seed(ctx, SLASH_CONFIG);
+      const sut = readConfig;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect([...(result.remote?.keys() ?? [])]).toEqual(['y']);
+    });
+  });
+
+  describe('When warnSlashLeadingRemoteShorthands', () => {
+    it('Then it warns once per entry of that remote, with its lower-cased key, in config order', async () => {
+      // Arrange
+      const base = createMemoryContext();
+      await seed(base, SLASH_CONFIG);
+      const warn = vi.fn();
+      const ctx: Context = { ...base, logger: { warn } };
+      const sut = warnSlashLeadingRemoteShorthands;
+
+      // Act
+      await sut(ctx);
+
+      // Assert
+      expect(warn.mock.calls).toEqual(
+        ['url', 'fetch', 'valueless'].map((key) => [
+          "readRemoteConfig: config remote shorthand cannot begin with '/'",
+          { remote: '/x', key },
+        ]),
+      );
+    });
+  });
+});
+
+describe('Given only remotes whose names do not begin with /', () => {
+  describe('When warnSlashLeadingRemoteShorthands', () => {
+    it('Then it warns nothing', async () => {
+      // Arrange
+      const base = createMemoryContext();
+      await seed(
+        base,
+        '[remote "y"]\n\turl = v\n[remote]\n\tpushDefault = y\n[core]\n\tbare = false\n',
+      );
+      const warn = vi.fn();
+      const ctx: Context = { ...base, logger: { warn } };
+      const sut = warnSlashLeadingRemoteShorthands;
+
+      // Act
+      await sut(ctx);
+
+      // Assert
+      expect(warn).not.toHaveBeenCalled();
     });
   });
 });

@@ -19,7 +19,7 @@ import type { ObjectId, RefName } from '../../../domain/objects/index.js';
 import { refCandidates } from '../../../domain/refs/index.js';
 import { shortBranchName } from '../../../domain/refs/short-branch-name.js';
 import type { Context } from '../../../ports/context.js';
-import { readConfig } from '../../primitives/config-read.js';
+import { readConfig, warnSlashLeadingRemoteShorthands } from '../../primitives/config-read.js';
 import { peelRefToCommit } from '../../primitives/internal/peel-ref-to-commit.js';
 import { resolveRefOrMissing } from '../../primitives/resolve-ref.js';
 import { isAncestor } from './is-ancestor.js';
@@ -72,6 +72,7 @@ const referenceCommit = async (ctx: Context, ref: RefName): Promise<ObjectId | u
  * mapping refspec leaves no upstream to consult.
  */
 const upstreamRef = async (ctx: Context, name: RefName): Promise<RefName | undefined> => {
+  await warnSlashLeadingRemoteShorthands(ctx);
   const config = await readConfig(ctx);
   const tracking = config.branch?.get(shortBranchName(name));
   const merge = tracking?.merge;

@@ -1298,8 +1298,9 @@ const dispatchSubsection = (acc: MutableParsedConfig, sec: IniSection, name: str
   // Case-insensitive section match, as git does; the subsection `name` stays
   // case-sensitive, also as git does.
   const section = sec.section.toLowerCase();
-  if (section === 'remote') mergeRemote(acc, name, sec);
-  else if (section === 'branch') mergeBranch(acc, name, sec);
+  if (section === 'remote') {
+    if (isRegistrableRemoteName(name)) mergeRemote(acc, name, sec);
+  } else if (section === 'branch') mergeBranch(acc, name, sec);
   else if (section === 'submodule') mergeSubmodule(acc, name, sec);
   else if (section === 'merge') mergeMergeDriver(acc, name, sec);
   else if (section === 'diff') mergeDiffDriver(acc, name, sec);
@@ -1686,6 +1687,9 @@ const mergeRemote = (
   for (const { key, value } of sec.entries) applyRemoteEntry(mutable, key, value);
   acc.remote.set(name, compactRemote(mutable));
 };
+
+/** git's `handle_config` (remote.c) skips every `remote.<name>.*` entry whose name begins with `/`. */
+const isRegistrableRemoteName = (name: string): boolean => !name.startsWith('/');
 
 // `[remote]` (no subsection) — distinct from `[remote "<name>"]`. Only `pushDefault` lives here;
 // per-remote `pushDefault` is not read (pinned: `[remote "x"] pushDefault` is ignored by git).
@@ -2523,6 +2527,36 @@ const registrationAttempts = (
 ): ReadonlyArray<string> => {
   const registering = registeringRemoteNames(tokens);
   return partialClone === undefined ? registering : [...registering, partialClone];
+};
+
+const SLASH_LEADING_REMOTE_WARNING =
+  "readRemoteConfig: config remote shorthand cannot begin with '/'";
+
+/** Every `remote.<name>.<key>` entry under a `/`-leading name, in config order, key lower-cased. */
+const slashLeadingRemoteEntries = (
+  tokens: ReadonlyArray<ConfigToken>,
+): ReadonlyArray<{ readonly remote: string; readonly key: string }> => {
+  const entries: Array<{ readonly remote: string; readonly key: string }> = [];
+  let remote: string | undefined;
+  for (const token of tokens) {
+    if (token.kind === 'header') {
+      remote = token.section.toLowerCase() === 'remote' ? token.subsection : undefined;
+    } else if (token.kind === 'entry' && remote?.startsWith('/') === true) {
+      entries.push({ remote, key: token.key.toLowerCase() });
+    }
+  }
+  return entries;
+};
+
+/**
+ * git's `handle_config` (remote.c) warning: one per entry of a `/`-leading
+ * remote, each time a command builds its remote table.
+ */
+export const warnSlashLeadingRemoteShorthands = async (ctx: Context): Promise<void> => {
+  const { tokens } = await readConfigEntry(ctx);
+  for (const entry of slashLeadingRemoteEntries(tokens)) {
+    ctx.logger?.warn?.(SLASH_LEADING_REMOTE_WARNING, entry);
+  }
 };
 
 /**

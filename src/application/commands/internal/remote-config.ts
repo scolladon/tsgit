@@ -8,7 +8,11 @@ import type { RefName } from '../../../domain/objects/object-id.js';
 import { refspecInvalid } from '../../../domain/protocol/error.js';
 import { isSafeRefName } from '../../../domain/refs/ref-validation.js';
 import type { Context } from '../../../ports/context.js';
-import { type ParsedConfig, readConfig } from '../../primitives/config-read.js';
+import {
+  type ParsedConfig,
+  readConfig,
+  warnSlashLeadingRemoteShorthands,
+} from '../../primitives/config-read.js';
 import { isValidFetchRefspec, isValidPushRefspec } from './refspec-grammar.js';
 
 /** git's `valid_remote_name` probes the name as the remote component of a
@@ -107,9 +111,10 @@ const firstInvalidRefspec = (entry: {
   (entry.push ?? []).find((spec) => !isValidPushRefspec(spec));
 
 /** {@link readConfig} for a command that reaches a remote: the same read git
- *  builds its remote table from, and so the same point its refspec refusal
- *  lands at. */
+ *  builds its remote table from, and so the same point its `/`-named remote
+ *  warnings and its refspec refusal land at. */
 export const readRemoteConfig = async (ctx: Context): Promise<ParsedConfig> => {
+  await warnSlashLeadingRemoteShorthands(ctx);
   const config = await readConfig(ctx);
   assertRemoteRefspecsValid(config);
   return config;

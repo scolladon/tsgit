@@ -14,6 +14,7 @@ import { REMOTE_REMOVE_REFLOG } from '../../domain/reflog/reflog-messages.js';
 import { invalidRef, refUpdateConflict } from '../../domain/refs/error.js';
 import type { Context } from '../../ports/context.js';
 import type { ParsedConfig } from '../primitives/config-read.js';
+import { readConfig } from '../primitives/config-read.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
 import { transactionLogging } from '../primitives/internal/ref-transaction-logging.js';
 import { resolveWriteChain } from '../primitives/internal/ref-write-chain.js';
@@ -529,7 +530,7 @@ export const remoteSetUrl = async (
       value: input.url,
     },
   ]);
-  const refreshed = (await readRemoteConfig(ctx)).remote?.get(input.name);
+  const refreshed = (await readConfig(ctx)).remote?.get(input.name);
   return { remote: toRemoteInfo(input.name, refreshed) };
 };
 
