@@ -100,7 +100,7 @@ const isBlankLine = (buf: Uint8Array, start: number, end: number): boolean =>
   buf.subarray(start, end).every(isAsciiSpace);
 
 /** git's `skip_blank_lines`: whole whitespace-only lines. */
-const skipBlankLines = (buf: Uint8Array, from: number): number => {
+export const skipBlankLines = (buf: Uint8Array, from: number): number => {
   let start = from;
   while (start < buf.length) {
     const end = lineEnd(buf, start);

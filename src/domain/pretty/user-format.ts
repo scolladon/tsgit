@@ -1,10 +1,16 @@
 import { concatBytes } from '../objects/encoding.js';
 import { parseColorPlaceholder } from './color.js';
-import type { CommitView } from './commit-view.js';
+import { type CommitView, skipBlankLines } from './commit-view.js';
 import { splitIdentLine } from './ident.js';
 import { DATE_MODE_BY_PART, type DateClock, showIdentDate } from './ident-date.js';
 import { type PadRequest, padValue, parsePadding, type Truncation } from './padding.js';
 import { formatSanitizedSubject, formatSubject } from './subject.js';
+import {
+  formatTrailers,
+  parseTrailersPlaceholder,
+  type TrailerConfig,
+  type TrailerOptions,
+} from './trailers.js';
 import {
   NO_WRAPPING,
   parseWrapLayout,
@@ -25,6 +31,7 @@ export interface FormatEnv extends DateClock {
   readonly commitId: string;
   readonly abbrev: (kind: AbbrevKind) => string;
   readonly mapUser?: (ident: Ident) => Ident;
+  readonly trailer?: TrailerConfig;
 }
 
 export interface FormatBudget {
@@ -58,7 +65,8 @@ type Spec =
   | { readonly kind: 'abbrev'; readonly of: AbbrevKind }
   | IdentSpec
   | { readonly kind: 'wrap'; readonly layout: WrapLayout }
-  | { readonly kind: 'message'; readonly part: MessagePart };
+  | { readonly kind: 'message'; readonly part: MessagePart }
+  | { readonly kind: 'trailers'; readonly options: TrailerOptions };
 
 export type Token =
   | { readonly kind: 'text'; readonly bytes: Uint8Array }
@@ -183,6 +191,9 @@ const classifyParen = (fmt: Uint8Array, at: number): Classified => {
   if (refusal) {
     return { spec: { kind: 'refused', placeholder: `%${refusal}` }, length: refusal.length };
   }
+  const trailers = parseTrailersPlaceholder(fmt, at);
+  if (trailers)
+    return { spec: { kind: 'trailers', options: trailers.options }, length: trailers.length };
   return UNPARSED_PAREN_PREFIXES.some((prefix) => startsWithAt(fmt, at, prefix))
     ? DECLINED_UNPARSED
     : DECLINED_PARSING;
@@ -338,6 +349,12 @@ const evalSpec = (spec: Spec, view: CommitView, env: FormatEnv): Uint8Array | un
       return evalIdent(spec, view, env);
     case 'message':
       return evalMessage(spec.part, view);
+    case 'trailers':
+      return formatTrailers(
+        view.message.subarray(skipBlankLines(view.message, 0)),
+        spec.options,
+        env.trailer,
+      );
     default:
       return undefined;
   }
@@ -349,6 +366,7 @@ const declinedSource = (spec: Spec): Uint8Array =>
 const parsesHeader = (spec: Spec): boolean =>
   spec.kind === 'ident' ||
   spec.kind === 'message' ||
+  spec.kind === 'trailers' ||
   (spec.kind === 'declined' && spec.parsesHeader);
 
 type ItemToken = Extract<Token, { kind: 'item' }>;

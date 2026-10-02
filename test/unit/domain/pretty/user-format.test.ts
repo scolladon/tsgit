@@ -867,3 +867,62 @@ describe('Given the describe budget, When expanding', () => {
     expect(result.budget).toBe(BUDGET);
   });
 });
+
+describe('Given trailers placeholders, When expanding', () => {
+  it.each([
+    ['%(trailers)', 'Signed-off-by: X <x@y>\n'],
+    ['%(trailers:only)', 'Signed-off-by: X <x@y>\n'],
+    ['%(trailers:key=Signed-off-by,valueonly)', 'X <x@y>\n'],
+    ['[%+(trailers)]', '[\nSigned-off-by: X <x@y>\n]'],
+    ['[%(trailers:key=nope)]', '[]'],
+    ['[%-(trailers:key=nope)]', '[]'],
+    ['%(trailersx)', '%(trailersx)'],
+    ['%(trailers:bogus)', '%(trailers:bogus)'],
+  ])('Then %s expands to the block git prints', (format, expected) => {
+    // Arrange
+    const sut = expand;
+
+    // Act
+    const result = sut(format);
+
+    // Assert
+    expect(result).toBe(expected);
+  });
+
+  it('Then the trailer block is searched from the subject, after leading blank lines', () => {
+    // Arrange
+    const raw = rawCommit('\n\nsubject\n\nFixes: 1\n');
+
+    // Act
+    const result = expand('%(trailers:only)', raw);
+
+    // Assert
+    expect(result).toBe('Fixes: 1\n');
+  });
+
+  it('Then the configured separators and token keys reach the parser', () => {
+    // Arrange
+    const raw = rawCommit('subject\n\none\ntwo\nthree\nAck=me\n');
+    const env = { ...ENV, trailer: { separators: '=', keys: new Map([['ack', 'Acked-by']]) } };
+
+    // Act
+    const result = expand('%(trailers:only)', raw, env);
+
+    // Assert
+    expect(result).toBe('Acked-by= me\n');
+  });
+
+  it.each([['%(trailers)'], ['%(trailers:only)']])(
+    'Then %s reports that the header was parsed',
+    (format) => {
+      // Arrange
+      const sut = run;
+
+      // Act
+      const result = sut(format) as FormatOutput;
+
+      // Assert
+      expect(result.parsedHeader).toBe(true);
+    },
+  );
+});
