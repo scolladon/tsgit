@@ -221,12 +221,14 @@ describe('pruneWorktrees', () => {
     });
 
     describe('When one names the admin dir of a vanished worktree past the cutoff', () => {
-      it('Then the link goes and the directory it names is left untouched', async () => {
+      it('Then the directory it names is emptied through it, nested links unlinked unfollowed, and the link goes', async () => {
         // Arrange
         const ctx = await seed();
         const OUTSIDE = outsideOf(ctx);
         await ctx.fs.writeUtf8(`${OUTSIDE}/admin/gitdir`, `${OUTSIDE}/gone/.git\n`);
         await ctx.fs.writeUtf8(`${OUTSIDE}/admin/logs/HEAD`, 'log');
+        await ctx.fs.writeUtf8(`${OUTSIDE}/other/deep/f`, 'o');
+        await ctx.fs.symlink(`${OUTSIDE}/other`, `${OUTSIDE}/admin/nested`);
         await link(ctx, 'wt', `${OUTSIDE}/admin`);
         const sut = pruneWorktrees;
 
@@ -235,7 +237,36 @@ describe('pruneWorktrees', () => {
 
         // Assert
         expect(await ctx.fs.exists(rootOf(ctx))).toBe(false);
-        expect(await ctx.fs.readUtf8(`${OUTSIDE}/admin/logs/HEAD`)).toBe('log');
+        expect(await ctx.fs.readdir(`${OUTSIDE}/admin`)).toEqual([]);
+        expect(await ctx.fs.readUtf8(`${OUTSIDE}/other/deep/f`)).toBe('o');
+      });
+    });
+
+    describe('When the context offers confined filesystems and one names a vanished worktree', () => {
+      it('Then the target is emptied through the filesystem confined to it', async () => {
+        // Arrange
+        const base = await seed();
+        const OUTSIDE = outsideOf(base);
+        await base.fs.writeUtf8(`${OUTSIDE}/admin/gitdir`, `${OUTSIDE}/gone/.git\n`);
+        await link(base, 'wt', `${OUTSIDE}/admin`);
+        const removed: string[] = [];
+        const confined = {
+          ...base.fs,
+          rmRecursive: async (path: string) => {
+            removed.push(path);
+            await base.fs.rmRecursive(path);
+          },
+        };
+        const worktreeFs = vi.fn((_roots: string | ReadonlyArray<string>) => confined);
+        const ctx: Context = { ...base, worktreeFs };
+        const sut = pruneWorktrees;
+
+        // Act
+        await sut(ctx, { cutoff: PRUNE_EVERYTHING, ignoreCase: false });
+
+        // Assert
+        expect(worktreeFs).toHaveBeenCalledWith(`${OUTSIDE}/admin`);
+        expect(removed).toEqual([`${OUTSIDE}/admin/gitdir`]);
       });
     });
 

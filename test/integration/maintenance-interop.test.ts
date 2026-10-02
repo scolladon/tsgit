@@ -882,7 +882,12 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
       git(dir, 'worktree', 'add', '-q', '--detach', path.join(outside, 'wt'));
       const registryEntry = path.join(dir, '.git', 'worktrees', 'wt');
       await rename(registryEntry, path.join(outside, 'admin'));
-      if (kind === 'vanished') await rm(path.join(outside, 'wt'), { recursive: true });
+      if (kind === 'vanished') {
+        await rm(path.join(outside, 'wt'), { recursive: true });
+        await mkdir(path.join(outside, 'other'));
+        await writeFile(path.join(outside, 'other', 'kept'), 'o');
+        await symlink(path.join(outside, 'other'), path.join(outside, 'admin', 'nested'));
+      }
       if (kind === 'file') await writeFile(path.join(outside, 'file'), 'x');
       const target = { live: 'admin', vanished: 'admin', dangling: 'nowhere', file: 'file' }[kind];
       await symlink(path.join(outside, target), registryEntry);
@@ -923,7 +928,7 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
     );
 
     describe('When it names the admin dir of a vanished worktree and both tools gc', () => {
-      it('Then both drop the link, tsgit without emptying the directory outside the repository', async () => {
+      it('Then both empty the directory it names and drop the link', async () => {
         // Arrange
         const sut = runBoth;
 
@@ -933,7 +938,9 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
         // Assert
         expect(await registryOf(ours.dir)).toEqual(await registryOf(peer.dir));
         expect(await adminContentOf(peer.outside)).toEqual([]);
-        expect(await adminContentOf(ours.outside)).not.toEqual([]);
+        expect(await adminContentOf(ours.outside)).toEqual([]);
+        expect(await readdir(path.join(ours.outside, 'other'))).toEqual(['kept']);
+        expect(await readdir(path.join(peer.outside, 'other'))).toEqual(['kept']);
       });
     });
   });

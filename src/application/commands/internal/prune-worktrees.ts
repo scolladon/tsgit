@@ -11,6 +11,11 @@
  * worktree — expired when its `index` mtime is at or before the cutoff, or
  * when that `index` cannot be stat'ed at all.
  *
+ * A condemned entry that links to a directory has that directory emptied
+ * through the link before the link goes, as git deletes there: the one
+ * write this step makes outside the repository, through a capability
+ * confined to the link's target.
+ *
  * @writes
  *   surface: worktree
  *   kind:    equivalent-under-readback
@@ -121,14 +126,30 @@ const verdictFor = async (ctx: Context, id: string, cutoff: number): Promise<Ver
 };
 
 /**
- * git's `delete_git_dir`, short of following a link into the directory it
- * names: a dangling link is left, as git finds nothing to open behind it;
- * any other entry is removed, a link without its target.
+ * git's `remove_dir_recurse` opening a linked entry: everything under the
+ * directory it names goes, a nested link unlinked rather than followed, and
+ * the emptied directory stays, as its `rmdir` on the link fails. The deletes
+ * run through a capability confined to that directory.
+ */
+const emptyLinkedDirectory = async (ctx: Context, link: string): Promise<void> => {
+  const target = await realAdminDir(ctx, link);
+  const targetFs = worktreeScopedFs(ctx, target);
+  for (const entry of await targetFs.readdir(target)) {
+    await targetFs.rmRecursive(`${target}/${entry.name}`);
+  }
+};
+
+/**
+ * git's `delete_git_dir`: a dangling link is left, as git finds nothing to
+ * open behind it; a link to a directory has that directory emptied, then
+ * goes; any other entry is removed.
  */
 const deleteAdminEntry = async (ctx: Context, path: string): Promise<void> => {
-  const isLink = (await ctx.fs.lstat(path)).isSymbolicLink;
-  if (isLink && (await statFollowing(ctx, path)) === undefined) return;
-  await ctx.fs.rmRecursive(path);
+  if (!(await ctx.fs.lstat(path)).isSymbolicLink) return ctx.fs.rmRecursive(path);
+  const target = await statFollowing(ctx, path);
+  if (target === undefined) return;
+  if (target.isDirectory) await emptyLinkedDirectory(ctx, path);
+  await ctx.fs.rm(path);
 };
 
 const byDotGitThenId =
