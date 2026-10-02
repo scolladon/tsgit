@@ -488,6 +488,24 @@ describe('resolveObjectSources', () => {
     });
   });
 
+  describe.each(['/', '//', '/.'])('Given the filesystem root listed as %j', (entry) => {
+    describe('When the chain is resolved', () => {
+      it('Then its trailing slash is trimmed to an empty path that is not a directory', async () => {
+        // Arrange
+        const ctx = contextWith({ [PRIMARY]: `${entry}\n` });
+
+        // Act
+        const result = await resolveObjectSources(ctx, ioOf(ctx));
+
+        // Assert
+        expect(result.sources.map((s) => s.objectsDir)).toEqual([PRIMARY]);
+        expect(result.diagnostics).toEqual([
+          { reason: 'not-a-directory', path: '', listedIn: PRIMARY },
+        ]);
+      });
+    });
+  });
+
   describe('Given a regular file listed twice', () => {
     describe('When the chain is resolved', () => {
       it('Then each listing reports not-a-directory because the directory check precedes the duplicate check', async () => {

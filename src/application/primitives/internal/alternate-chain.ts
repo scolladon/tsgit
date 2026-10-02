@@ -146,6 +146,9 @@ interface Resolution {
   readonly diagnostics: AlternateDiagnostic[];
 }
 
+/** git trims an entry's trailing slashes, so the POSIX root becomes the empty path `stat` rejects. */
+const TRAILING_SLASHES = /\/+$/;
+const TRIMMED_ROOT = '';
 const strictUtf8 = new TextDecoder('utf-8', { fatal: true });
 const lossyUtf8 = new TextDecoder();
 
@@ -206,8 +209,8 @@ const normalise = async (
   if (text === undefined) return void report(resolution, unresolvable);
   try {
     const real = await realpathAllowingMissingLeaf(pathSyntax, probe(joined), joined);
-    if (real === undefined) report(resolution, unresolvable);
-    return real;
+    if (real === undefined) return void report(resolution, unresolvable);
+    return real.replace(TRAILING_SLASHES, '');
   } catch (error) {
     const code = errorDataCode(error);
     report(resolution, {
@@ -225,6 +228,10 @@ const isDirectory = async (
   path: string,
   holder: string,
 ): Promise<boolean> => {
+  if (path === TRIMMED_ROOT) {
+    report(resolution, { reason: 'not-a-directory', path, listedIn: holder });
+    return false;
+  }
   try {
     const stat = await resolution.io.probe(path).stat(path);
     if (!stat.isDirectory)

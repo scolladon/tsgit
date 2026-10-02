@@ -559,6 +559,15 @@ const resolutionScenarios: ReadonlyArray<Scenario> = [
     diagnostics: [],
     readable: [true],
   },
+  {
+    id: 'R11',
+    title: 'the filesystem root trims to an empty path that is not a directory',
+    build: () => fileFixture('R11', () => '/\n//\n/.\n'),
+    runnable: POSIX,
+    alternates: 0,
+    diagnostics: ['not-a-directory', 'not-a-directory', 'not-a-directory'],
+    readable: [false],
+  },
 ];
 
 const nestingScenarios: ReadonlyArray<Scenario> = [
