@@ -1,12 +1,12 @@
 /**
- * Which commits a cherry-pick / revert of ranges replays, and in what order:
+ * Which commits a cherry-pick / revert of ranges, or a rebase, replays, and in what order:
  * git seeds ONE limited walk from every argument (`limit_list`, commit-date
  * order with its SLOP give-up), so clock-skewed excluded lines and
  * equal-date branches decide the result. Each row runs git on one copy of a
  * dated history and tsgit on another, then compares the replayed subjects.
  *
  * @proves
- *   surface:        cherryPick, revert
+ *   surface:        cherryPick, revert, rebase
  *   bucket:         cross-tool-interop
  *   unique:         ranges and plain commits seed one date-ordered limited walk, so skewed exclusions, duplicates and equal-date ties pick git's commits in git's order
  */
@@ -43,6 +43,28 @@ const HISTORY: ReadonlyArray<readonly [string, number, ReadonlyArray<string>]> =
   ['tie3', 300, ['tie1']],
   ['merge', 600, ['left2', 'right2']],
   ['merge3', 700, ['tie3', 'tie2']],
+  ['up', 900, ['root']],
+  ['feat1', 200, ['root']],
+  ['side1', 300, ['root']],
+  ['side2', 350, ['side1']],
+  ['feat-merge', 400, ['feat1', 'side2']],
+  ['feat2', 500, ['feat-merge']],
+  ['skewed1', 600, ['root']],
+  ['skewed2', 250, ['skewed1']],
+  ['skewed3', 700, ['skewed2']],
+  ['tie-merge', 300, ['tie1', 'tie2']],
+  ['tie4', 300, ['tie-merge']],
+  ['yonder', 500, []],
+  ['slop1', 299, ['yonder']],
+  ['slop2', 298, ['slop1']],
+  ['slop3', 297, ['slop2']],
+  ['slop4', 296, ['slop3']],
+  ['slop5', 295, ['slop4']],
+  ['slop6', 294, ['slop5']],
+  ['bottom', 400, ['slop6']],
+  ['upper', 450, ['bottom']],
+  ['head-merge', 1000, ['bottom', 'yonder']],
+  ['head-tip', 1100, ['head-merge']],
 ];
 
 let root: string;
@@ -213,6 +235,41 @@ describe.skipIf(!GIT_AVAILABLE)('interop — an empty commit set', () => {
           // Assert
           expect(gitRun.stderr.split('\n')[0]).toBe('error: empty commit set passed');
           expect(code).toBe('EMPTY_COMMIT_SET');
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)('interop — rebase replay order', () => {
+  describe.each([
+    { head: 'feat2', upstream: 'up', expected: ['feat1', 'side1', 'side2', 'feat2'] },
+    { head: 'skewed3', upstream: 'up', expected: ['skewed1', 'skewed2', 'skewed3'] },
+    { head: 'tie4', upstream: 'up', expected: ['tie1', 'tie2', 'tie4'] },
+    { head: 'head-tip', upstream: 'upper', expected: ['head-tip'] },
+  ])('Given $head rebased onto $upstream', ({ head, upstream, expected }) => {
+    describe('When git and tsgit rebase it', () => {
+      it(
+        'Then both replay the commits git pins, in its order',
+        async () => {
+          // Arrange
+          const gitDir = copyAt(head);
+          tryRunGitWithExit(['-C', gitDir, 'rebase', upstream]);
+          const tsgitDir = copyAt(head);
+          const repo = await openRepository({ cwd: tsgitDir });
+          const sut = repo.rebase;
+
+          // Act
+          try {
+            await sut.run({ upstream });
+          } finally {
+            await repo.dispose();
+          }
+
+          // Assert
+          expect(replayed(gitDir, upstream)).toEqual(expected);
+          expect(replayed(tsgitDir, upstream)).toEqual(expected);
         },
         ROW_TIMEOUT,
       );

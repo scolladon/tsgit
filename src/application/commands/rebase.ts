@@ -53,7 +53,6 @@ import {
 import { materialisePatchFiles } from '../primitives/materialise-patch-files.js';
 import { mergeBase } from '../primitives/merge-base.js';
 import { assertEverySourceLoadable } from '../primitives/object-store.js';
-import { computePatchId } from '../primitives/patch-id.js';
 import { readIndex } from '../primitives/read-index.js';
 import { getRefStore } from '../primitives/ref-store.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
@@ -70,6 +69,7 @@ import { resolveCurrentIdentity } from './internal/current-identity.js';
 import { readCommitData, treeOf } from './internal/history-rewrite.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import { writeOrigHead } from './internal/merge-state.js';
+import { resolveRebaseReplay } from './internal/rebase-replay.js';
 import {
   clearRebaseState,
   type RebaseState,
@@ -179,28 +179,6 @@ const commitsToReplay = async (
   for await (const c of walkCommitsStoppingAt(ctx, { from: [head], until: excluded }))
     ids.push(c.id);
   return ids.reverse();
-};
-
-/**
- * Drop commits whose change is already present upstream — git's default
- * cherry-pick-equivalent skip. Compared by patch-id against the commits the
- * upstream introduced since the fork (`base..upstream`); a match is removed
- * before the replay loop, so it is never attempted (ADR-231).
- */
-const dropCherryEquivalents = async (
-  ctx: Context,
-  toReplay: ReadonlyArray<ObjectId>,
-  base: ObjectId | undefined,
-  upstream: ObjectId,
-): Promise<ReadonlyArray<ObjectId>> => {
-  const upstreamCommits = await commitsToReplay(ctx, base, upstream);
-  const upstreamPatchIds = new Set<string>();
-  for (const oid of upstreamCommits) upstreamPatchIds.add(await computePatchId(ctx, oid));
-  const kept: ObjectId[] = [];
-  for (const oid of toReplay) {
-    if (!upstreamPatchIds.has(await computePatchId(ctx, oid))) kept.push(oid);
-  }
-  return kept;
 };
 
 const buildTodoEntries = async (
@@ -491,9 +469,8 @@ export const rebaseRun = async (ctx: Context, input: RebaseRunInput): Promise<Re
   if (onto === base) return { kind: 'up-to-date' };
   await assertEverySourceLoadable(ctx);
   await firePreRebase(ctx, input.upstream);
-  const toReplay = await commitsToReplay(ctx, base, headCommit);
-  const kept = await dropCherryEquivalents(ctx, toReplay, base, upstream);
-  const todo = await buildTodoEntries(ctx, kept);
+  const toReplay = await resolveRebaseReplay(ctx, { upstream, head: headCommit });
+  const todo = await buildTodoEntries(ctx, toReplay);
   await writeOrigHead(ctx, headCommit);
   await detachHead(ctx, headCommit, onto, ontoName);
   const rc: ReplayContext = {
