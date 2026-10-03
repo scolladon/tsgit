@@ -15,6 +15,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { commitHeader } from '../../src/application/primitives/internal/read-commit-graph.js';
+import type { TsgitError } from '../../src/domain/error.js';
 import type { ObjectId } from '../../src/domain/objects/index.js';
 import { openRepository } from '../../src/index.node.js';
 import {
@@ -26,6 +27,8 @@ import {
 
 const ROW_TIMEOUT = 30_000;
 const GIT_SUCCEEDED = 0;
+const GIT_DIED = 128;
+const GENERATION_OVERFLOW_FLAG = 0x80000000;
 const WARNING_PREFIX = /^(warning|error): /;
 const LOGGER_PREFIX = 'commitGraph: ';
 
@@ -236,6 +239,52 @@ describe.skipIf(!GIT_AVAILABLE)('commit-graph read interop', () => {
             `commit-graph signature ${failure.found.toString(16).toUpperCase()} does not match signature 43475048`,
           ]);
           expect(failure.kind).toBe('signature');
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe('Given a single-file graph whose first GDA2 entry demands overflow data with no GDO2 chunk', () => {
+    describe('When both tools walk the history by date', () => {
+      it(
+        'Then both stop after the same commits and refuse with the same reason',
+        async () => {
+          // Arrange
+          const repo = linearHistory(4);
+          runGit(['-C', repo.dir, 'commit-graph', 'write', '--reachable']);
+          const file = path.join(repo.dir, '.git', 'objects', 'info', 'commit-graph');
+          chmodSync(file, 0o644);
+          const bytes = new Uint8Array(readFileSync(file));
+          const view = new DataView(bytes.buffer);
+          const rows = Buffer.from(bytes.subarray(0, 8 + 12 * ((bytes[6] as number) + 1)));
+          const gda2Start = view.getUint32(rows.indexOf('GDA2', 8, 'latin1') + 8);
+          view.setUint32(gda2Start, GENERATION_OVERFLOW_FLAG);
+          writeFileSync(file, bytes);
+          const opened = await openRepository({ cwd: repo.dir });
+          const yielded: string[] = [];
+          let caught: unknown;
+
+          // Act
+          const git = tryRunGitWithExit(['-C', repo.dir, 'log', '--format=%H']);
+          try {
+            const tip = repo.commits.at(-1) as ObjectId;
+            for await (const commit of opened.primitives.walkCommitsByDate({ from: [tip] })) {
+              yielded.push(commit.id);
+            }
+          } catch (error) {
+            caught = error;
+          } finally {
+            await opened.dispose?.();
+          }
+
+          // Assert
+          expect(git.exitCode).toBe(GIT_DIED);
+          expect(yielded).toEqual(git.stdout.split('\n').filter((line) => line.length > 0));
+          expect((caught as TsgitError).data).toEqual({
+            code: 'INVALID_COMMIT_GRAPH_CHUNK',
+            reason: git.stderr.replace(/^fatal: /, '').trimEnd(),
+          });
         },
         ROW_TIMEOUT,
       );

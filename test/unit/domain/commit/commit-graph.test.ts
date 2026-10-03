@@ -706,7 +706,7 @@ describe('commit-graph', () => {
 
     describe('Given a GDA2 entry with its overflow bit set but no GDO2 chunk', () => {
       describe('When reading commit data', () => {
-        it('Then throws INVALID_COMMIT_GRAPH_CHUNK for the missing GDO2 chunk', () => {
+        it('Then throws INVALID_COMMIT_GRAPH_CHUNK with the missing-overflow-data reason git prints', () => {
           // Arrange
           const bytes = setGda2Overflow(buildCommitGraphBytes(fiveCommitModel()), 0);
           const layer = parseCommitGraphLayer(bytes);
@@ -715,7 +715,7 @@ describe('commit-graph', () => {
           expectThrows(
             () => commitDataAt(layer, 0, { correctedCommitDates: true }),
             'INVALID_COMMIT_GRAPH_CHUNK',
-            'missing GDO2',
+            'commit-graph requires overflow generation data but has none',
           );
         });
       });
@@ -732,7 +732,7 @@ describe('commit-graph', () => {
           expectThrows(
             () => commitDataAt(layer, 1, { correctedCommitDates: true }),
             'INVALID_COMMIT_GRAPH_CHUNK',
-            'out of range',
+            'commit-graph overflow generation data is too small',
           );
         });
       });
@@ -750,7 +750,7 @@ describe('commit-graph', () => {
           expectThrows(
             () => commitDataAt(layer, 1, { correctedCommitDates: true }),
             'INVALID_COMMIT_GRAPH_CHUNK',
-            'out of range',
+            'commit-graph overflow generation data is too small',
           );
         });
       });

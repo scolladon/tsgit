@@ -361,6 +361,8 @@ const selectNearest = async (
   for await (const step of commitDateWalk(ctx, {
     from: [target],
     firstParent: plan.firstParent,
+    // git describe checks its stop conditions before parsing any parent.
+    parentReads: 'after-yield',
   })) {
     if (winner === undefined && frozen(candidates, plan.maxCandidates, totalNames)) {
       winner = pickNearest(candidates);

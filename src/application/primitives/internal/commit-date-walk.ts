@@ -43,7 +43,17 @@ export interface CommitDateWalkOptions {
   readonly firstParent?: boolean;
   readonly ignoreMissing?: boolean;
   readonly verifyHash?: boolean;
+  /**
+   * When a popped commit's parents are read. `'before-yield'` (default) is
+   * git's revision walk — `process_parents` runs before the commit is shown,
+   * so an unreadable parent refuses before its child is yielded.
+   * `'after-yield'` is git describe's loop, which checks its stop conditions
+   * before parsing any parent.
+   */
+  readonly parentReads?: ParentReads;
 }
+
+export type ParentReads = 'before-yield' | 'after-yield';
 
 /** Mutable state threaded through the date-ordered walk. */
 interface DateWalk {
@@ -55,6 +65,7 @@ interface DateWalk {
   readonly firstParent: boolean;
   readonly bodies: CommitBodies;
   readonly ignoreMissing: boolean;
+  readonly parentReads: ParentReads;
 }
 
 /**
@@ -106,6 +117,7 @@ export async function* commitDateWalk(
       readCommit(ctx, id, { verifyHash, ignoreMissing, missing, shallow }),
     ),
     ignoreMissing,
+    parentReads: options.parentReads ?? 'before-yield',
   };
   // One closure per walk, not per pop: `entries()` reads `walk.heap` live, so
   // every step's snapshot is still valid "until the iterator resumes" — the
@@ -122,13 +134,17 @@ export async function* commitDateWalk(
     // full-history drain retains every body simultaneously.
     walk.bodies.forget(oid);
     if (commit === undefined) continue;
+    // Read early or late per `parentReads`, but always pushed after the yield
+    // so the yielded frontier is the one sampled before any parent enqueues.
+    const early =
+      walk.parentReads === 'before-yield' ? await parentsOf(ctx, walk, commit, shallow) : undefined;
     yield {
       commit,
       frontierEmpty: walk.heap.size() === 0,
       frontier,
     };
-    if (shallow.has(commit.id)) continue;
-    await enqueueParents(ctx, walk, commit);
+    const parents = early ?? (await parentsOf(ctx, walk, commit, shallow));
+    for (const entry of parents) walk.heap.push(entry);
   }
 }
 
@@ -141,38 +157,52 @@ const enqueueSeeds = async (ctx: Context, walk: DateWalk): Promise<void> => {
   }
 };
 
+const NO_ENTRIES: ReadonlyArray<HeapEntry> = [];
+
+/** A shallow boundary is yielded, but its parents are not walked. */
+const parentsOf = (
+  ctx: Context,
+  walk: DateWalk,
+  commit: Commit,
+  shallow: ReadonlySet<ObjectId>,
+): Promise<ReadonlyArray<HeapEntry>> =>
+  shallow.has(commit.id) ? Promise.resolve(NO_ENTRIES) : resolveParents(ctx, walk, commit);
+
 /**
  * Every selected parent is resolved concurrently (each one's date comes from
- * the commit-graph, with no body await, or from its own body), but pushed
- * onto the heap only once ALL of them have settled — and in parent-array
- * order, not completion order. `entries()` returns the heap's backing array
- * by reference, so sibling push order becomes observable frontier order; a
- * naive "push as each resolves" fan-out would leak completion timing into
- * it. Rejections likewise rethrow in array order, not first-in-time —
- * `Promise.allSettled` already waited for every read.
+ * the commit-graph, with no body await, or from its own body), and handed
+ * back in parent-array order, not completion order. `entries()` returns the
+ * heap's backing array by reference, so sibling push order becomes observable
+ * frontier order; a naive "push as each resolves" fan-out would leak
+ * completion timing into it. Rejections likewise rethrow in array order, not
+ * first-in-time — `Promise.allSettled` already waited for every read.
  */
-const enqueueParents = async (ctx: Context, walk: DateWalk, commit: Commit): Promise<void> => {
+const resolveParents = async (
+  ctx: Context,
+  walk: DateWalk,
+  commit: Commit,
+): Promise<ReadonlyArray<HeapEntry>> => {
   const parents = selectParents(commit, walk.firstParent).filter((parent) => {
     if (walk.seen.has(parent) || walk.until.has(parent)) return false;
     walk.seen.add(parent);
     return true;
   });
-  if (parents.length === 0) return;
-  // A single parent needs no fan-out: `enqueueCommit` already awaits the same
-  // `resolveHeapEntry` and pushes, so a rejection still rethrows unwrapped.
-  if (parents.length === 1) return enqueueCommit(ctx, walk, parents[0]!);
+  if (parents.length === 0) return NO_ENTRIES;
+  // A single parent needs no fan-out, and its rejection rethrows unwrapped.
+  if (parents.length === 1) return asEntries(await resolveHeapEntry(ctx, walk, parents[0]!));
   const settled = await Promise.allSettled(
     parents.map((parent) => resolveHeapEntry(ctx, walk, parent)),
   );
+  const entries: HeapEntry[] = [];
   for (const result of settled) {
     if (result.status === 'rejected') throw result.reason;
+    if (result.value !== undefined) entries.push(result.value);
   }
-  for (const result of settled) {
-    if (result.status === 'fulfilled' && result.value !== undefined) {
-      walk.heap.push(result.value);
-    }
-  }
+  return entries;
 };
+
+const asEntries = (entry: HeapEntry | undefined): ReadonlyArray<HeapEntry> =>
+  entry === undefined ? NO_ENTRIES : [entry];
 
 const enqueueCommit = async (ctx: Context, walk: DateWalk, id: ObjectId): Promise<void> => {
   const entry = await resolveHeapEntry(ctx, walk, id);

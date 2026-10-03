@@ -665,6 +665,42 @@ export async function writeCommitGraph(
   await ctx.fs.writeUtf8(commitGraphChainPath(gitDir), `${hashes.join('\n')}\n`);
 }
 
+const GRAPH_HEADER_SIZE = 8;
+const GRAPH_CHUNK_ROW_SIZE = 12;
+const GRAPH_OID_SIZE = 20;
+const GRAPH_FANOUT_LAST_BUCKET = 255;
+const GENERATION_OVERFLOW_FLAG = 0x80000000;
+
+const graphChunkStart = (view: DataView, id: string): number => {
+  for (let row = GRAPH_HEADER_SIZE; ; row += GRAPH_CHUNK_ROW_SIZE) {
+    const rowId = String.fromCharCode(...new Uint8Array(view.buffer, view.byteOffset + row, 4));
+    if (rowId === id) return view.getUint32(row + 8);
+    if (view.getUint32(row) === 0) throw new Error(`chunk ${id} not present in fixture`);
+  }
+};
+
+/**
+ * Sets git's GDA2 overflow flag (index 0 into GDO2) on `id`'s entry of the
+ * single-file graph — a graph that, without a GDO2 chunk, demands overflow
+ * generation data it does not carry.
+ */
+export async function flagGenerationOverflow(ctx: Context, id: ObjectId): Promise<void> {
+  const path = commitGraphPath(ctx.layout.gitDir);
+  const bytes = (await ctx.fs.read(path)).slice();
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const fanout = graphChunkStart(view, 'OIDF');
+  const count = view.getUint32(fanout + GRAPH_FANOUT_LAST_BUCKET * 4);
+  const oids = graphChunkStart(view, 'OIDL');
+  const position = Array.from({ length: count }, (_, at) => at).find(
+    (at) =>
+      bytesToHex(bytes.subarray(oids + at * GRAPH_OID_SIZE, oids + (at + 1) * GRAPH_OID_SIZE)) ===
+      id,
+  );
+  if (position === undefined) throw new Error(`${id} not present in fixture graph`);
+  view.setUint32(graphChunkStart(view, 'GDA2') + position * 4, GENERATION_OVERFLOW_FLAG);
+  await ctx.fs.write(path, bytes);
+}
+
 /** As git names a layer: by the checksum it writes as the file's trailer, every base listed in BASE. */
 export async function stampTrailer(ctx: Context, bytes: Uint8Array): Promise<ObjectId> {
   const trailerStart = bytes.length - ctx.hashConfig.digestLength;

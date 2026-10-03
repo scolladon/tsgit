@@ -41,14 +41,21 @@ interface ChunkRange {
   readonly end: number;
 }
 
-export interface CommitData {
+/** A commit's graph entry short of its parents — git's `fill_commit_graph_info`. */
+export interface CommitMeta {
   readonly rootTree: ObjectId;
-  readonly parent1Pos: number | undefined;
-  readonly parent2Pos: number | undefined;
-  readonly additionalParentPositions: readonly number[];
   readonly generation: number;
   readonly committerDate: number;
 }
+
+/** The parent positions a commit's graph entry records, in parent order. */
+export interface CommitParentPositions {
+  readonly parent1Pos: number | undefined;
+  readonly parent2Pos: number | undefined;
+  readonly additionalParentPositions: readonly number[];
+}
+
+export interface CommitData extends CommitMeta, CommitParentPositions {}
 
 /** A layer's `BDAT` header, as written — the hash version unvalidated, as git reads it. */
 export interface CommitGraphBloomSettings {
@@ -328,35 +335,54 @@ export interface CommitDataOptions {
   readonly correctedCommitDates: boolean;
 }
 
+/**
+ * Reads root tree, generation, and committer date for a layer-local position,
+ * refusing as git dies when a GDA2 entry demands overflow data GDO2 lacks.
+ */
+export function commitMetaAt(
+  layer: CommitGraphLayer,
+  localPos: number,
+  options: CommitDataOptions,
+): CommitMeta {
+  const entryOffset = layer._commitDataOffset + localPos * layer._commitDataEntrySize;
+  const hashLength = layer._hashLength;
+  const rootTree = ObjectId.fromRaw(layer._bytes.subarray(entryOffset, entryOffset + hashLength));
+  const genWord = layer._view.getUint32(entryOffset + hashLength + 8);
+  const dateWord = layer._view.getUint32(entryOffset + hashLength + 12);
+  const committerDate = (genWord & 0x3) * 0x100000000 + dateWord;
+  const generationRange = options.correctedCommitDates ? layer._generationDataRange : undefined;
+  const generation = resolveGeneration(layer, generationRange, localPos, {
+    generationV1: genWord >>> 2,
+    committerDate,
+  });
+  return { rootTree, generation, committerDate };
+}
+
 /** Reads root tree, parent positions, generation, and committer date for a layer-local position. */
 export function commitDataAt(
   layer: CommitGraphLayer,
   localPos: number,
   options: CommitDataOptions,
 ): CommitData {
-  const entryOffset = layer._commitDataOffset + localPos * layer._commitDataEntrySize;
-  const view = layer._view;
-  const hashLength = layer._hashLength;
-
-  const rootTree = ObjectId.fromRaw(layer._bytes.subarray(entryOffset, entryOffset + hashLength));
-
-  const parent1Raw = view.getUint32(entryOffset + hashLength);
-  const parent2Raw = view.getUint32(entryOffset + hashLength + 4);
-  const genWord = view.getUint32(entryOffset + hashLength + 8);
-  const dateWord = view.getUint32(entryOffset + hashLength + 12);
-
-  const committerDate = (genWord & 0x3) * 0x100000000 + dateWord;
-  const generationV1 = genWord >>> 2;
-
-  const parent1Pos = parent1Raw === NO_PARENT ? undefined : parent1Raw;
-  const { parent2Pos, additionalParentPositions } = resolveSecondParent(layer, parent2Raw);
-  const generationRange = options.correctedCommitDates ? layer._generationDataRange : undefined;
-  const generation = resolveGeneration(layer, generationRange, localPos, {
-    generationV1,
-    committerDate,
-  });
-
+  const { rootTree, generation, committerDate } = commitMetaAt(layer, localPos, options);
+  const { parent1Pos, parent2Pos, additionalParentPositions } = commitParentPositionsAt(
+    layer,
+    localPos,
+  );
   return { rootTree, parent1Pos, parent2Pos, additionalParentPositions, generation, committerDate };
+}
+
+/** Reads the parent positions for a layer-local position, following EDGE for an octopus. */
+export function commitParentPositionsAt(
+  layer: CommitGraphLayer,
+  localPos: number,
+): CommitParentPositions {
+  const parentsOffset =
+    layer._commitDataOffset + localPos * layer._commitDataEntrySize + layer._hashLength;
+  const parent1Raw = layer._view.getUint32(parentsOffset);
+  const parent1Pos = parent1Raw === NO_PARENT ? undefined : parent1Raw;
+  const second = resolveSecondParent(layer, layer._view.getUint32(parentsOffset + 4));
+  return { parent1Pos, ...second };
 }
 
 function resolveSecondParent(
@@ -417,11 +443,11 @@ function resolveGeneration(
 function readOverflowOffset(layer: CommitGraphLayer, index: number): number {
   const range = layer._overflowGenerationRange;
   if (range === undefined) {
-    throw invalidCommitGraphChunk('generation overflow flag set but missing GDO2 chunk');
+    throw invalidCommitGraphChunk('commit-graph requires overflow generation data but has none');
   }
   const offset = range.start + index * GDO2_ENTRY_SIZE;
   if (offset + GDO2_ENTRY_SIZE > range.end) {
-    throw invalidCommitGraphChunk(`GDO2 index ${index} out of range`);
+    throw invalidCommitGraphChunk('commit-graph overflow generation data is too small');
   }
   return readUint64BE(layer._view, offset);
 }

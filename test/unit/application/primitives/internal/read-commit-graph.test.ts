@@ -30,6 +30,7 @@ import type { Logger } from '../../../../../src/ports/logger.js';
 import { buildCommitGraphBytes } from '../../../domain/commit/arbitraries.js';
 import {
   buildSeededContext,
+  flagGenerationOverflow,
   instrumentedContext,
   seedMaxTreeDepth,
   stampTrailer,
@@ -859,6 +860,35 @@ describe('read-commit-graph', () => {
               { path: graphPath, failure: { kind: 'signature', found: 0x58475048 } },
             ],
           ]);
+        });
+      });
+    });
+
+    describe('Given a single-file graph whose GDA2 entry demands overflow data it has no GDO2 chunk for', () => {
+      describe('When commitHeader is called for that commit', () => {
+        it("Then it refuses with git's reason and keeps the graph for every other commit", async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const { c0, c1, c2, c3, c4 } = await buildFiveCommitHistory(ctx);
+          await writeCommitGraph(ctx, [[c0, c1, c2, c3, c4]]);
+          await flagGenerationOverflow(ctx, c1.id);
+          let caught: unknown;
+
+          // Act
+          try {
+            await commitHeader(ctx, c1.id);
+          } catch (error) {
+            caught = error;
+          }
+          const other = await commitHeader(ctx, c0.id);
+
+          // Assert
+          expect((caught as TsgitError).data).toEqual({
+            code: 'INVALID_COMMIT_GRAPH_CHUNK',
+            reason: 'commit-graph requires overflow generation data but has none',
+          });
+          expect(other?.rootTree).toBe(c0.data.tree);
+          expect(isGraphKnownAbsent(ctx)).toBe(false);
         });
       });
     });

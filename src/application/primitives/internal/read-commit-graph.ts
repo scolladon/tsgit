@@ -11,9 +11,10 @@
  * This module never falls back itself — it only reads the graph.
  */
 import {
-  type CommitData,
   type CommitGraphLayer,
-  commitDataAt,
+  type CommitParentPositions,
+  commitMetaAt,
+  commitParentPositionsAt,
   oidAtPosition,
   parseCommitGraphLayer,
   positionOf,
@@ -354,7 +355,7 @@ function findLayerForGlobalPosition(
 
 function resolveParentIds(
   graph: LoadedGraph,
-  data: CommitData,
+  data: CommitParentPositions,
   ownBound: number,
 ): readonly ObjectId[] {
   const positions: number[] = [];
@@ -408,19 +409,21 @@ export async function commitHeader(ctx: Context, id: ObjectId): Promise<CommitHe
   const graph = await loadGraph(ctx);
   if (graph === undefined) return undefined;
 
+  const found = findOwnPosition(graph, id);
+  if (found === undefined) return undefined;
+  // git's `fill_commit_graph_info` dies on missing overflow data before any
+  // parent is read: that refusal is the caller's, never a graph degrade.
+  const meta = commitMetaAt(found.layer, found.localPos, {
+    correctedCommitDates: graph.correctedCommitDates,
+  });
   try {
-    const found = findOwnPosition(graph, id);
-    if (found === undefined) return undefined;
-
-    const data = commitDataAt(found.layer, found.localPos, {
-      correctedCommitDates: graph.correctedCommitDates,
-    });
+    const data = commitParentPositionsAt(found.layer, found.localPos);
     const ownBound = graph.layerOffsets[found.layerIndex]! + found.layer.commitCount;
     const header: CommitHeader = {
-      rootTree: data.rootTree,
+      rootTree: meta.rootTree,
       parents: resolveParentIds(graph, data, ownBound),
-      committerDate: data.committerDate,
-      generation: data.generation,
+      committerDate: meta.committerDate,
+      generation: meta.generation,
     };
     insertBounded(cache, HEADER_CACHE_MAX_ENTRIES, id, header);
     return header;

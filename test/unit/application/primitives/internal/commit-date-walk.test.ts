@@ -16,7 +16,7 @@ import type {
   Tree,
 } from '../../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../../src/ports/context.js';
-import { buildSeededContext, writeCommitGraph } from '../fixtures.js';
+import { buildSeededContext, flagGenerationOverflow, writeCommitGraph } from '../fixtures.js';
 
 const AUTHOR: AuthorIdentity = {
   name: 'Alice',
@@ -717,14 +717,90 @@ describe('commitDateWalk — single-parent fast path (no fan-out)', () => {
         caught = error;
       }
 
-      // Assert — child still yielded; root's rejection rethrows unwrapped
-      expect(yielded).toEqual([child]);
+      // Assert — as git, which reads a commit's parents before showing it,
+      // the child is never yielded; root's rejection rethrows unwrapped
+      expect(yielded).toEqual([]);
       const data = (caught as TsgitError).data;
       expect(data.code).toBe('OBJECT_NOT_FOUND');
       if (data.code !== 'OBJECT_NOT_FOUND') {
         expect.fail(`expected OBJECT_NOT_FOUND, got ${data.code}`);
       }
       expect(data.id).toBe(root);
+    });
+  });
+});
+
+describe('Given a graph whose parent entry demands overflow generation data it does not carry', () => {
+  describe('When walking by date from its child', () => {
+    it('Then the refusal surfaces before the child is yielded', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const { a, b, c, d } = await buildDiamond(ctx);
+      const readOpts = {
+        verifyHash: false,
+        ignoreMissing: false,
+        missing: new Set<string>(),
+        shallow: new Set<ObjectId>(),
+      };
+      const commits = await Promise.all(
+        [a, b, c, d].map(async (id) => (await readCommit(ctx, id, readOpts))!),
+      );
+      await writeCommitGraph(ctx, [commits]);
+      await flagGenerationOverflow(ctx, b);
+      const sut = commitDateWalk;
+      const yielded: ObjectId[] = [];
+      let caught: unknown;
+
+      // Act
+      try {
+        for await (const step of sut(ctx, { from: [d] })) yielded.push(step.commit.id);
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect(yielded).toEqual([]);
+      expect((caught as TsgitError).data).toEqual({
+        code: 'INVALID_COMMIT_GRAPH_CHUNK',
+        reason: 'commit-graph requires overflow generation data but has none',
+      });
+    });
+  });
+});
+
+describe('Given a graph whose parent entry demands overflow data, and parents read after the yield', () => {
+  describe('When walking by date from its child', () => {
+    it('Then the child is yielded before the refusal surfaces', async () => {
+      // Arrange
+      const ctx = await buildSeededContext();
+      const { a, b, c, d } = await buildDiamond(ctx);
+      const readOpts = {
+        verifyHash: false,
+        ignoreMissing: false,
+        missing: new Set<string>(),
+        shallow: new Set<ObjectId>(),
+      };
+      const commits = await Promise.all(
+        [a, b, c, d].map(async (id) => (await readCommit(ctx, id, readOpts))!),
+      );
+      await writeCommitGraph(ctx, [commits]);
+      await flagGenerationOverflow(ctx, b);
+      const sut = commitDateWalk;
+      const yielded: ObjectId[] = [];
+      let caught: unknown;
+
+      // Act
+      try {
+        for await (const step of sut(ctx, { from: [d], parentReads: 'after-yield' })) {
+          yielded.push(step.commit.id);
+        }
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect(yielded).toEqual([d]);
+      expect((caught as TsgitError).data.code).toBe('INVALID_COMMIT_GRAPH_CHUNK');
     });
   });
 });
