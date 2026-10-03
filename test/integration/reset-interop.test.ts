@@ -14,6 +14,7 @@
 import { readFile, stat, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { TsgitError } from '../../src/domain/error.js';
 import type { AuthorIdentity } from '../../src/domain/objects/index.js';
 import { openRepository } from '../../src/index.node.js';
 import type { Repository } from '../../src/repository.js';
@@ -25,6 +26,7 @@ import {
   runGit,
   runGitEnv,
   topReflogSubject,
+  tryRunGitWithExit,
 } from './interop-helpers.js';
 
 const AUTHOR: AuthorIdentity = {
@@ -43,6 +45,9 @@ const COMMIT_ENV: NodeJS.ProcessEnv = {
   GIT_COMMITTER_EMAIL: AUTHOR.email,
   GIT_COMMITTER_DATE: `${AUTHOR.timestamp} ${AUTHOR.timezoneOffset}`,
 };
+
+/** A full-width object id no object in either repository carries. */
+const ABSENT_OID = '1234567890123456789012345678901234567890';
 
 interface SeedFile {
   readonly path: string;
@@ -218,6 +223,49 @@ describe.skipIf(!GIT_AVAILABLE)('reset porcelain interop', () => {
         const result = topReflogSubject(pair.ours, 'HEAD');
         expect(result).toBe(`reset: moving to ${c0}`);
         expect(result).toBe(topReflogSubject(pair.peer, 'HEAD'));
+      });
+    });
+  });
+
+  describe.each([
+    {
+      rev: ABSENT_OID,
+      mode: 'soft' as const,
+      stderr: `fatal: Could not parse object '${ABSENT_OID}'.`,
+      data: { code: 'OBJECT_NOT_FOUND', id: ABSENT_OID },
+    },
+    {
+      rev: ABSENT_OID,
+      mode: 'hard' as const,
+      stderr: `fatal: Could not parse object '${ABSENT_OID}'.`,
+      data: { code: 'OBJECT_NOT_FOUND', id: ABSENT_OID },
+    },
+    {
+      rev: `${ABSENT_OID}~1`,
+      mode: 'mixed' as const,
+      stderr: `fatal: ambiguous argument '${ABSENT_OID}~1': unknown revision`,
+      data: { code: 'REVPARSE_UNRESOLVED', expression: `${ABSENT_OID}~1` },
+    },
+  ])('Given a full-width object id naming no object ($rev)', ({ rev, mode, stderr, data }) => {
+    describe(`When git and tsgit reset --${mode} to it`, () => {
+      it('Then both refuse with the matching failure and leave HEAD alone', async () => {
+        // Arrange
+        await seedTwoCommits();
+        const peerHead = runGit(['-C', pair.peer, 'rev-parse', 'HEAD']).trim();
+        const sut = repo.reset;
+
+        // Act
+        const gitResult = tryRunGitWithExit(['-C', pair.peer, 'reset', `--${mode}`, rev]);
+        const failure = await sut({ mode, rev }).then(
+          () => undefined,
+          (error: unknown) => (error as TsgitError).data,
+        );
+
+        // Assert
+        expect(gitResult.exitCode).toBe(128);
+        expect(gitResult.stderr).toContain(stderr);
+        expect(failure).toEqual(data);
+        expect(runGit(['-C', pair.ours, 'rev-parse', 'HEAD']).trim()).toBe(peerHead);
       });
     });
   });
