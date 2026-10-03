@@ -43,7 +43,25 @@ export type CommitGraphVerdict =
     }
   | { readonly check: 'mixed-generations'; readonly zero: ObjectId; readonly nonZero: ObjectId }
   /** The chain file could not be opened for a reason other than its absence — `code` names it. */
-  | { readonly check: 'chain-unopenable'; readonly code: string };
+  | { readonly check: 'chain-unopenable'; readonly code: string }
+  /** A chain layer git's loader refuses; the next source is searched for it. */
+  | {
+      readonly check: 'layer-load-failure';
+      readonly layer: string;
+      readonly failure: CommitGraphLoadFailure;
+    }
+  | { readonly check: 'chain-line-not-hash'; readonly line: string }
+  | {
+      readonly check:
+        | 'chain-too-small'
+        | 'chain-no-base-chunk'
+        | 'chain-base-chunk-too-small'
+        | 'chain-mismatch'
+        | 'chain-layer-missing'
+        | 'chain-incomplete'
+        /** No layer loaded: git's verify fails without a line of its own. */
+        | 'chain-unloaded';
+    };
 
 export interface StructuralVerdicts {
   readonly verdicts: ReadonlyArray<CommitGraphVerdict>;

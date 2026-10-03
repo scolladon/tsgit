@@ -264,6 +264,144 @@ const LOAD_ROWS: ReadonlyArray<{
   { name: 'a ragged commit data', damage: (b) => setRowOffset(b, 3, -1) },
 ];
 
+interface ChainHistory {
+  readonly dir: string;
+  readonly chain: string;
+  readonly base: string;
+  readonly tip: string;
+  readonly commits: readonly ObjectId[];
+}
+
+const layersDir = (dir: string): string =>
+  path.join(dir, '.git', 'objects', 'info', 'commit-graphs');
+const layerFile = (dir: string, hash: string): string =>
+  path.join(layersDir(dir), `graph-${hash}.graph`);
+
+/** Three commits in a base layer, a fourth in a tip layer, as git splits them. */
+const twoLayerChain = (slug: string): ChainHistory => {
+  const dir = path.join(root, slug);
+  runGit(['init', '-q', '-b', 'main', dir]);
+  disableAutoMaintenance(dir);
+  const env = { ...process.env, ...DATE_ENV };
+  const commit = (message: string) =>
+    runGit(['-C', dir, 'commit', '-q', '--allow-empty', '-m', message], { env });
+  for (const message of ['c1', 'c2', 'c3']) commit(message);
+  runGit(['-C', dir, 'commit-graph', 'write', '--reachable', '--split']);
+  commit('c4');
+  runGit(['-C', dir, 'commit-graph', 'write', '--reachable', '--split=no-merge']);
+  const chain = path.join(layersDir(dir), 'commit-graph-chain');
+  const [base, tip] = readFileSync(chain, 'utf8').split('\n') as [string, string];
+  for (const file of [chain, layerFile(dir, base), layerFile(dir, tip)]) chmodSync(file, 0o644);
+  const commits = ['HEAD~3', 'HEAD~2', 'HEAD~1', 'HEAD'].map(
+    (name) => runGit(['-C', dir, 'rev-parse', name]).trim() as ObjectId,
+  );
+  return { dir, chain, base, tip, commits };
+};
+
+const swapRootTree = (file: string, id: ObjectId, stamp: boolean): void => {
+  const bytes = new Uint8Array(readFileSync(file));
+  bytes.fill(0xaa, entryOf(bytes, id), entryOf(bytes, id) + HASH_LENGTH);
+  writeFileSync(file, stamp ? restamped(bytes) : bytes);
+};
+
+const CHAIN_LINES: Partial<Record<GraphFinding['check'], string>> = {
+  'chain-mismatch': 'warning: commit-graph chain does not match',
+  'chain-layer-missing': 'warning: unable to find all commit-graph files',
+  'chain-incomplete': 'error: one or more commit-graph chain files could not be loaded',
+  'chain-no-base-chunk': 'warning: commit-graph has no base graphs chunk',
+  'chain-base-chunk-too-small': 'warning: commit-graph base graphs chunk is too small',
+};
+
+const renderChain = (finding: GraphFinding, dir: string): string[] => {
+  const line = CHAIN_LINES[finding.check];
+  if (line !== undefined) return [line];
+  switch (finding.check) {
+    case 'chain-unloaded':
+      return [];
+    case 'chain-line-not-hash':
+      return [`warning: invalid commit-graph chain: line '${finding.line}' not a hash`];
+    case 'chain-too-small':
+      return [
+        'warning: commit-graph chain file too small',
+        `fatal: could not open commit-graph chain '${path.relative(dir, finding.artefact)}': Invalid argument`,
+      ];
+    case 'layer-load-failure':
+      return renderLoad(finding.failure);
+    default:
+      return [renderLine(finding)];
+  }
+};
+
+const CHAIN_ROWS: ReadonlyArray<{
+  readonly name: string;
+  readonly damage: (h: ChainHistory) => void;
+}> = [
+  { name: 'an intact chain', damage: () => undefined },
+  {
+    name: 'a tip root tree',
+    damage: (h) => swapRootTree(layerFile(h.dir, h.tip), h.commits[3] as ObjectId, true),
+  },
+  {
+    name: 'a restamped base root tree',
+    damage: (h) => swapRootTree(layerFile(h.dir, h.base), h.commits[0] as ObjectId, true),
+  },
+  {
+    name: 'a tip root tree over an unstamped base root tree',
+    damage: (h) => {
+      swapRootTree(layerFile(h.dir, h.tip), h.commits[3] as ObjectId, true);
+      swapRootTree(layerFile(h.dir, h.base), h.commits[0] as ObjectId, false);
+    },
+  },
+  {
+    name: 'a truncated tip',
+    damage: (h) =>
+      writeFileSync(layerFile(h.dir, h.tip), readFileSync(layerFile(h.dir, h.tip)).subarray(0, 40)),
+  },
+  { name: 'a missing base', damage: (h) => rmSync(layerFile(h.dir, h.base)) },
+  {
+    name: 'a line not a hash',
+    damage: (h) => writeFileSync(h.chain, `${h.base}\nzz${h.tip.slice(2)}\n`),
+  },
+  { name: 'swapped lines', damage: (h) => writeFileSync(h.chain, `${h.tip}\n${h.base}\n`) },
+  {
+    name: 'the tip named twice',
+    damage: (h) => writeFileSync(h.chain, `${h.base}\n${h.tip}\n${h.tip}\n`),
+  },
+  { name: 'a chain shorter than a hash', damage: (h) => writeFileSync(h.chain, 'abc\n') },
+  { name: 'one hash and no newline', damage: (h) => writeFileSync(h.chain, h.base) },
+];
+
+describe.skipIf(!GIT_AVAILABLE)('Given a two-layer commit-graph chain', () => {
+  describe.each(CHAIN_ROWS)(
+    'When the chain carries $name and both tools verify it',
+    ({ name, damage }) => {
+      it(
+        'Then tsgit rebuilds every line git verify prints and fails exactly when git does',
+        async () => {
+          // Arrange
+          const history = twoLayerChain(`chain-${name.replace(/[^a-z0-9]+/g, '-')}`);
+          damage(history);
+          const peer = tryRunGitWithExit(['-C', history.dir, 'commit-graph', 'verify']);
+          const repo = await openRepository({ cwd: history.dir });
+          const sut = repo.fsck;
+
+          // Act
+          const result = await sut().finally(() => repo.dispose());
+
+          // Assert
+          const lines = peer.stderr.split('\n').filter((line) => line.length > 0);
+          const rendered = result.findings
+            .filter(isGraphFinding)
+            .flatMap((finding) => renderChain(finding, history.dir));
+          expect(rendered).toEqual(lines);
+          expect(result.exitCode & EXIT_COMMIT_GRAPH ? 1 : 0).toBe(peer.exitCode === 0 ? 0 : 1);
+        },
+        ROW_TIMEOUT,
+      );
+    },
+  );
+});
+
 describe.skipIf(!GIT_AVAILABLE)('Given a two-commit history with a commit-graph', () => {
   describe.each(ROWS)(
     'When the graph carries $name and both tools run fsck',

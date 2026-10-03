@@ -1,15 +1,14 @@
 /**
  * git's fsck runs `git commit-graph verify --object-dir <dir>` for every
  * object source while `core.commitGraph` is on, and sets bit 16 when any of
- * them reports. This pass is that verify over each source's single-file graph.
+ * them reports. This pass is that verify over each source's single file,
+ * or its chain when there is none.
  */
 import {
   type CommitData,
   type CommitGraphLayer,
   commitDataAt,
-  parseCommitGraphLayer,
 } from '../../../../domain/commit/commit-graph.js';
-import { commitGraphLoadFailure } from '../../../../domain/commit/commit-graph-load.js';
 import {
   type CommitGraphVerdict,
   graphOidAt,
@@ -21,13 +20,15 @@ import { errorDataCode } from '../../../../domain/error-data-code.js';
 import { bytesEqual } from '../../../../domain/objects/encoding.js';
 import type { Commit, ObjectId } from '../../../../domain/objects/index.js';
 import type { Context } from '../../../../ports/context.js';
+import { commitGraphEnabled } from '../../../primitives/internal/read-commit-graph.js';
 import {
-  commitGraphEnabled,
-  isGraphDecodeFailure,
-} from '../../../primitives/internal/read-commit-graph.js';
-import { getObjectStore, type ObjectSource } from '../../../primitives/object-store.js';
+  getObjectStore,
+  type ObjectSource,
+  type ObjectStore,
+} from '../../../primitives/object-store.js';
 import { commitGraphChainPathIn, commitGraphPathIn } from '../../../primitives/path-layout.js';
 import { readObject } from '../../../primitives/read-object.js';
+import { type ChainLayer, loadChain, parseLayer } from './commit-graph-chain.js';
 import { EXIT_COMMIT_GRAPH } from './exit-codes.js';
 import { attributeTo } from './source-attribution.js';
 import type { FsckFinding } from './types.js';
@@ -44,7 +45,7 @@ export async function runCommitGraphVerifyPass(ctx: Context): Promise<PassResult
   const store = await getObjectStore(ctx);
   const findings: FsckFinding[] = [];
   for (const source of store.sources) {
-    const { artefact, verdicts } = await verifySource(ctx, source);
+    const { artefact, verdicts } = await verifySource(ctx, store, source);
     const attribution = attributeTo(store, source);
     for (const verdict of verdicts) {
       findings.push({ type: 'commit-graph-invalid', artefact, ...attribution, ...verdict });
@@ -53,29 +54,22 @@ export async function runCommitGraphVerifyPass(ctx: Context): Promise<PassResult
   return { findings, exitBit: findings.length > 0 ? EXIT_COMMIT_GRAPH : 0 };
 }
 
-async function readGraphBytes(source: ObjectSource): Promise<Uint8Array | undefined> {
+/** An absent or empty chain is no chain; any other refusal names its error code. */
+async function readGraphFile(source: ObjectSource, path: string): Promise<GraphFile> {
   try {
-    return await source.fs.read(commitGraphPathIn(source.objectsDir));
+    const bytes = await source.fs.read(path);
+    return bytes.length === 0 ? { absent: true } : { absent: false, bytes };
   } catch (error) {
-    if (errorDataCode(error) === 'FILE_NOT_FOUND') return undefined;
-    throw error;
+    const code = errorDataCode(error);
+    if (code === undefined) throw error;
+    return code === 'FILE_NOT_FOUND' ? { absent: true } : { absent: false, code };
   }
 }
 
-/** git's loader refusal first; tsgit's own decode refusal only past every check git makes. */
-function parseLayer(bytes: Uint8Array, hashLength: number): CommitGraphLayer | CommitGraphVerdict {
-  const failure = commitGraphLoadFailure(bytes, hashLength);
-  if (failure !== undefined) return { check: 'load-failure', failure };
-  try {
-    return parseCommitGraphLayer(bytes);
-  } catch (error) {
-    if (!isGraphDecodeFailure(error)) throw error;
-    return {
-      check: 'load-failure',
-      failure: { kind: 'malformed', reason: (error as Error).message },
-    };
-  }
-}
+type GraphFile =
+  | { readonly absent: true }
+  | { readonly absent: false; readonly bytes: Uint8Array }
+  | { readonly absent: false; readonly code: string };
 
 interface SourceReport {
   /** The file the verdicts are about: the single graph, or the chain when there is none. */
@@ -84,86 +78,151 @@ interface SourceReport {
 }
 
 /** git's `graph_verify`: the single file when it opens, otherwise the chain. */
-async function verifySource(ctx: Context, source: ObjectSource): Promise<SourceReport> {
-  const bytes = await readGraphBytes(source);
-  if (bytes === undefined) return chainReport(source);
-  return {
-    artefact: commitGraphPathIn(source.objectsDir),
-    verdicts: await verifyGraph(ctx, bytes),
-  };
+async function verifySource(
+  ctx: Context,
+  store: ObjectStore,
+  source: ObjectSource,
+): Promise<SourceReport> {
+  const artefact = commitGraphPathIn(source.objectsDir);
+  const single = await source.fs.read(artefact).catch(absentAsUndefined);
+  if (single === undefined) return chainReport(ctx, store, source);
+  const parsed = parseLayer(single, ctx.hashConfig.digestLength);
+  if ('check' in parsed) return { artefact, verdicts: [parsed] };
+  const run = await verifyChain(ctx, [{ layer: parsed, baseCount: 0 }]);
+  return { artefact, verdicts: run.verdicts };
 }
 
-/** An absent chain verifies nothing; one that will not open is where git's verify dies. */
-async function chainReport(source: ObjectSource): Promise<SourceReport> {
+const absentAsUndefined = (error: unknown): undefined => {
+  if (errorDataCode(error) === 'FILE_NOT_FOUND') return undefined;
+  throw error;
+};
+
+async function chainReport(
+  ctx: Context,
+  store: ObjectStore,
+  source: ObjectSource,
+): Promise<SourceReport> {
   const artefact = commitGraphChainPathIn(source.objectsDir);
-  const code = await chainOpenFailure(source, artefact);
-  return { artefact, verdicts: code === undefined ? [] : [{ check: 'chain-unopenable', code }] };
+  const file = await readGraphFile(source, artefact);
+  return { artefact, verdicts: await chainVerdicts(ctx, store, file) };
 }
 
-async function chainOpenFailure(source: ObjectSource, path: string): Promise<string | undefined> {
-  try {
-    await source.fs.read(path);
-    return undefined;
-  } catch (error) {
-    const code = errorDataCode(error);
-    if (code === undefined) throw error;
-    return code === 'FILE_NOT_FOUND' ? undefined : code;
+async function chainVerdicts(
+  ctx: Context,
+  store: ObjectStore,
+  file: GraphFile,
+): Promise<ReadonlyArray<CommitGraphVerdict>> {
+  if (file.absent) return [];
+  if ('code' in file) return [{ check: 'chain-unopenable', code: file.code }];
+  if (file.bytes.length < ctx.hashConfig.digestLength * 2) return [{ check: 'chain-too-small' }];
+  const chain = await loadChain(ctx, store.sources, file.bytes);
+  if (chain.layers.length === 0) return [...chain.verdicts, { check: 'chain-unloaded' }];
+  const run = await verifyChain(ctx, chain.layers);
+  const incomplete: CommitGraphVerdict[] =
+    chain.incomplete && !run.died ? [{ check: 'chain-incomplete' }] : [];
+  return [...chain.verdicts, ...run.verdicts, ...incomplete];
+}
+
+/** git's `verify_commit_graph_error`: one state across every layer of the verify. */
+interface VerifyRun {
+  readonly verdicts: CommitGraphVerdict[];
+  state: 'clean' | 'checksum' | 'reported';
+  died: boolean;
+}
+
+const report = (run: VerifyRun, verdict: CommitGraphVerdict): void => {
+  run.verdicts.push(verdict);
+  run.state = 'reported';
+};
+
+/** git's `verify_commit_graph`: tip to base, a die ending the whole verify. */
+async function verifyChain(ctx: Context, layers: ReadonlyArray<ChainLayer>): Promise<VerifyRun> {
+  const run: VerifyRun = { verdicts: [], state: 'clean', died: false };
+  const graph: ChainGraph = {
+    layers,
+    corrected: layers.every(({ layer }) => layer._generationDataRange !== undefined),
+  };
+  for (const entry of [...layers].reverse()) {
+    await verifyLayer(ctx, graph, entry, run);
+    if (run.died) break;
   }
+  return run;
 }
 
-async function verifyGraph(
+async function verifyLayer(
   ctx: Context,
-  bytes: Uint8Array,
-): Promise<ReadonlyArray<CommitGraphVerdict>> {
-  const layer = parseLayer(bytes, ctx.hashConfig.digestLength);
-  if ('check' in layer) return [layer];
-  const checksum = await checksumVerdicts(ctx, bytes);
-  const structure = verifyGraphStructure(layer, layer.commitCount);
-  const early = [...checksum, ...structure.verdicts];
-  if (structure.fatal || structure.verdicts.length > 0) return early;
-  return [...early, ...(await verifyAgainstObjects(ctx, layer))];
+  graph: ChainGraph,
+  entry: ChainLayer,
+  run: VerifyRun,
+): Promise<void> {
+  if (!(await checksumValid(ctx, entry.layer._bytes))) {
+    report(run, { check: 'checksum' });
+    run.state = 'checksum';
+  }
+  const structure = verifyGraphStructure(entry.layer, entry.baseCount + entry.layer.commitCount);
+  for (const verdict of structure.verdicts) report(run, verdict);
+  run.died = structure.fatal;
+  if (run.died || run.state === 'reported') return;
+  await verifyAgainstObjects(ctx, graph, entry, run);
 }
 
-async function checksumVerdicts(
-  ctx: Context,
-  bytes: Uint8Array,
-): Promise<ReadonlyArray<CommitGraphVerdict>> {
+async function checksumValid(ctx: Context, bytes: Uint8Array): Promise<boolean> {
   const trailerStart = bytes.length - ctx.hashConfig.digestLength;
   const digest = await ctx.hash.hash(bytes.subarray(0, trailerStart));
-  return bytesEqual(digest, bytes.subarray(trailerStart)) ? [] : [{ check: 'checksum' }];
+  return bytesEqual(digest, bytes.subarray(trailerStart));
 }
 
-interface OdbWalk {
-  readonly layer: CommitGraphLayer;
+interface ChainGraph {
+  readonly layers: ReadonlyArray<ChainLayer>;
   readonly corrected: boolean;
-  readonly verdicts: CommitGraphVerdict[];
+}
+
+/** The layer and layer-local position holding chain-global `position`; layers sit base first. */
+function slotOf(graph: ChainGraph, position: number): { layer: CommitGraphLayer; local: number } {
+  let owner = graph.layers[0] as ChainLayer;
+  for (const entry of graph.layers) {
+    if (entry.baseCount <= position) owner = entry;
+  }
+  return { layer: owner.layer, local: position - owner.baseCount };
+}
+
+const oidAt = (graph: ChainGraph, position: number): ObjectId => {
+  const { layer, local } = slotOf(graph, position);
+  return graphOidAt(layer, local);
+};
+
+const generationAt = (graph: ChainGraph, position: number): number => {
+  const { layer, local } = slotOf(graph, position);
+  return commitDataAt(layer, local, { correctedCommitDates: graph.corrected }).generation;
+};
+
+interface OdbWalk {
+  readonly graph: ChainGraph;
+  readonly layer: CommitGraphLayer;
+  readonly run: VerifyRun;
   seenZero: ObjectId | undefined;
   seenNonZero: ObjectId | undefined;
 }
 
 async function verifyAgainstObjects(
   ctx: Context,
-  layer: CommitGraphLayer,
-): Promise<ReadonlyArray<CommitGraphVerdict>> {
-  const corrected = layer._generationDataRange !== undefined;
+  graph: ChainGraph,
+  entry: ChainLayer,
+  run: VerifyRun,
+): Promise<void> {
   const walk: OdbWalk = {
-    layer,
-    corrected,
-    verdicts: [],
+    graph,
+    layer: entry.layer,
+    run,
     seenZero: undefined,
     seenNonZero: undefined,
   };
-  for (let position = 0; position < layer.commitCount; position += 1) {
+  for (let position = 0; position < entry.layer.commitCount; position += 1) {
     await verifyCommit(ctx, walk, position);
   }
   if (walk.seenZero !== undefined && walk.seenNonZero !== undefined) {
-    walk.verdicts.push({
-      check: 'mixed-generations',
-      zero: walk.seenZero,
-      nonZero: walk.seenNonZero,
-    });
+    report(run, { check: 'mixed-generations', zero: walk.seenZero, nonZero: walk.seenNonZero });
   }
-  return walk.verdicts;
 }
 
 /** git's `repo_parse_commit_internal` on a fresh commit: any read refusal is a parse failure. */
@@ -181,12 +240,12 @@ async function verifyCommit(ctx: Context, walk: OdbWalk, position: number): Prom
   const id = graphOidAt(walk.layer, position);
   const odb = await readOdbCommit(ctx, id);
   if (odb === undefined) {
-    walk.verdicts.push({ check: 'odb-unparsable', id });
+    report(walk.run, { check: 'odb-unparsable', id });
     return;
   }
-  const data = commitDataAt(walk.layer, position, { correctedCommitDates: walk.corrected });
+  const data = commitDataAt(walk.layer, position, { correctedCommitDates: walk.graph.corrected });
   if (data.rootTree !== odb.data.tree) {
-    walk.verdicts.push({ check: 'root-tree', id, recorded: data.rootTree, actual: odb.data.tree });
+    report(walk.run, { check: 'root-tree', id, recorded: data.rootTree, actual: odb.data.tree });
   }
   const maxGeneration = compareParents(walk, position, id, odb.data.parents);
   checkGeneration(walk, id, data, maxGeneration, odb.data.committer.timestamp);
@@ -199,24 +258,20 @@ function compareParents(
   id: ObjectId,
   odbParents: ReadonlyArray<ObjectId>,
 ): number {
-  const graphParents = graphParentPositions(walk.layer, position, walk.corrected);
+  const graphParents = graphParentPositions(walk.layer, position, walk.graph.corrected);
   let maxGeneration = 0;
   for (const [index, parentPosition] of graphParents.entries()) {
     const actual = odbParents[index];
     if (actual === undefined) {
-      walk.verdicts.push({ check: 'parents-too-long', id });
+      report(walk.run, { check: 'parents-too-long', id });
       return maxGeneration;
     }
-    const recorded = graphOidAt(walk.layer, parentPosition);
-    if (recorded !== actual) walk.verdicts.push({ check: 'parent', id, recorded, actual });
-    const options = { correctedCommitDates: walk.corrected };
-    maxGeneration = Math.max(
-      maxGeneration,
-      commitDataAt(walk.layer, parentPosition, options).generation,
-    );
+    const recorded = oidAt(walk.graph, parentPosition);
+    if (recorded !== actual) report(walk.run, { check: 'parent', id, recorded, actual });
+    maxGeneration = Math.max(maxGeneration, generationAt(walk.graph, parentPosition));
   }
   if (odbParents.length > graphParents.length) {
-    walk.verdicts.push({ check: 'parents-terminate-early', id });
+    report(walk.run, { check: 'parents-terminate-early', id });
   }
   return maxGeneration;
 }
@@ -232,19 +287,14 @@ function checkGeneration(
   else walk.seenNonZero = id;
   if (walk.seenZero !== undefined) return;
   const capped =
-    !walk.corrected && maxGeneration === GENERATION_NUMBER_V1_MAX
+    !walk.graph.corrected && maxGeneration === GENERATION_NUMBER_V1_MAX
       ? maxGeneration - 1
       : maxGeneration;
   if (data.generation < capped + 1) {
-    walk.verdicts.push({
-      check: 'generation',
-      id,
-      generation: data.generation,
-      minimum: capped + 1,
-    });
+    report(walk.run, { check: 'generation', id, generation: data.generation, minimum: capped + 1 });
   }
   if (data.committerDate !== odbDate) {
-    walk.verdicts.push({
+    report(walk.run, {
       check: 'commit-date',
       id,
       recordedDate: data.committerDate,
