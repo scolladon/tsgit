@@ -894,24 +894,29 @@ export function fileSystemContractTests(createSut: () => Promise<FileSystemContr
       expect(result).toEqual(new Uint8Array());
     });
 
-    it('Given mkdir on existing file path, When mkdir, Then throws FILE_EXISTS or NOT_A_DIRECTORY', async () => {
-      // Arrange
-      const path = `${env.rootDir}/file.txt`;
-      await env.fs.write(path, new Uint8Array([1]));
+    describe('Given a regular file occupies the mkdir target', () => {
+      for (const { label, leaf } of [
+        { label: 'the file itself', leaf: 'mkdir-file.txt' },
+        { label: 'a symlink to the file', leaf: 'mkdir-file-link' },
+      ]) {
+        it(`When mkdir is called on ${label}, Then it refuses FILE_EXISTS as POSIX mkdir does and keeps the occupant`, async () => {
+          // Arrange
+          await env.fs.write(`${env.rootDir}/mkdir-file.txt`, new Uint8Array([1]));
+          await env.fs.symlink('mkdir-file.txt', `${env.rootDir}/mkdir-file-link`);
 
-      // Act
-      let caught: unknown;
-      try {
-        await env.fs.mkdir(path);
-      } catch (err) {
-        caught = err;
+          // Act
+          let caught: unknown;
+          try {
+            await env.fs.mkdir(`${env.rootDir}/${leaf}`);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          assertFileExists(caught);
+          expect(await env.fs.read(`${env.rootDir}/${leaf}`)).toEqual(new Uint8Array([1]));
+        });
       }
-
-      // Assert — exact code is adapter-dependent: the node adapter's `mkdir -p` reports
-      // FILE_EXISTS for the file path itself, where the memory adapter keeps NOT_A_DIRECTORY.
-      expect(caught).toBeInstanceOf(TsgitError);
-      const code = (caught as TsgitError).data.code;
-      expect(['FILE_EXISTS', 'NOT_A_DIRECTORY']).toContain(code);
     });
 
     it('Given symlink, When lstat, Then isSymbolicLink is true', async () => {

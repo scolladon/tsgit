@@ -790,30 +790,6 @@ describe('MemoryFileSystem', () => {
       });
     });
 
-    describe('Given a symlink to an existing file occupies the mkdir target', () => {
-      describe('When mkdir is called', () => {
-        it('Then throws NOT_A_DIRECTORY, the code this adapter keeps for a file where a directory is created', async () => {
-          // Arrange
-          const sut = new MemoryFileSystem({ rootDir: '/repo' });
-          await sut.write('/repo/mkdir-target.txt', new Uint8Array([1]));
-          await sut.symlink('/repo/mkdir-target.txt', '/repo/mkdir-file-link');
-
-          // Act
-          let caught: unknown;
-          try {
-            await sut.mkdir('/repo/mkdir-file-link');
-          } catch (err) {
-            caught = err;
-          }
-
-          // Assert
-          expect(caught).toBeInstanceOf(TsgitError);
-          expect((caught as TsgitError).data.code).toBe('NOT_A_DIRECTORY');
-          expect((await sut.lstat('/repo/mkdir-file-link')).isSymbolicLink).toBe(true);
-        });
-      });
-    });
-
     describe('Given a symlink whose absolute target leaves the root occupies the mkdir target', () => {
       describe('When mkdir is called', () => {
         it('Then throws PERMISSION_DENIED and nothing is recorded', async () => {
@@ -2337,7 +2313,7 @@ describe('MemoryFileSystem', () => {
   describe('mkdir leaf guard', () => {
     describe('Given a relative path to an existing file', () => {
       describe('When mkdir is called', () => {
-        it('Then throws NOT_A_DIRECTORY carrying the path exactly as given', async () => {
+        it('Then throws FILE_EXISTS carrying the path exactly as given', async () => {
           // Arrange
           const sut = new MemoryFileSystem({ rootDir: '/repo' });
           await sut.write('/repo/blocker', new Uint8Array([1]));
@@ -2353,8 +2329,8 @@ describe('MemoryFileSystem', () => {
           // Assert — the leaf guard reports the caller's string, never the normalized key
           expect(caught).toBeInstanceOf(TsgitError);
           const data = (caught as TsgitError).data;
-          expect(data.code).toBe('NOT_A_DIRECTORY');
-          if (data.code === 'NOT_A_DIRECTORY') expect(data.path).toBe('blocker');
+          expect(data.code).toBe('FILE_EXISTS');
+          if (data.code === 'FILE_EXISTS') expect(data.path).toBe('blocker');
         });
       });
     });

@@ -48,7 +48,7 @@ describe('maintenance task failure', () => {
         const result = await sut(ctx, { tasks: ['commit-graph'] });
 
         // Assert
-        expect(result.tasksFailed).toEqual([{ task: 'commit-graph', code: 'NOT_A_DIRECTORY' }]);
+        expect(result.tasksFailed).toEqual([{ task: 'commit-graph', code: 'FILE_EXISTS' }]);
         expect(result.tasksRun).toEqual([]);
         expect(result.commitGraphWritten).toBe(false);
       });
@@ -64,7 +64,7 @@ describe('maintenance task failure', () => {
         const result = await sut(ctx, { tasks: ['commit-graph', 'gc'] });
 
         // Assert
-        expect(result.tasksFailed).toEqual([{ task: 'commit-graph', code: 'NOT_A_DIRECTORY' }]);
+        expect(result.tasksFailed).toEqual([{ task: 'commit-graph', code: 'FILE_EXISTS' }]);
         expect(result.tasksRun).toEqual(['gc']);
       });
     });

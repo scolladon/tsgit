@@ -1589,7 +1589,7 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Create directory and all parents. No-op if already exists."
+										"text": "Create directory and all parents. No-op if a directory (or a symlink to one) already holds\nthe leaf; a regular file (or a symlink to one) holding it refuses FILE_EXISTS, as POSIX mkdir\nreports EEXIST."
 									}
 								]
 							},
@@ -1604,7 +1604,7 @@
 										"summary": [
 											{
 												"kind": "text",
-												"text": "Create directory and all parents. No-op if already exists."
+												"text": "Create directory and all parents. No-op if a directory (or a symlink to one) already holds\nthe leaf; a regular file (or a symlink to one) holding it refuses FILE_EXISTS, as POSIX mkdir\nreports EEXIST."
 											}
 										]
 									},
@@ -6687,7 +6687,7 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Create directory and all parents. No-op if already exists."
+										"text": "Create directory and all parents. No-op if a directory (or a symlink to one) already holds\nthe leaf; a regular file (or a symlink to one) holding it refuses FILE_EXISTS, as POSIX mkdir\nreports EEXIST."
 									}
 								]
 							},
@@ -12335,7 +12335,7 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Create directory and all parents. No-op if already exists."
+										"text": "Create directory and all parents. No-op if a directory (or a symlink to one) already holds\nthe leaf; a regular file (or a symlink to one) holding it refuses FILE_EXISTS, as POSIX mkdir\nreports EEXIST."
 									}
 								]
 							},
@@ -94471,7 +94471,7 @@
 								"summary": [
 									{
 										"kind": "text",
-										"text": "Create directory and all parents. No-op if already exists."
+										"text": "Create directory and all parents. No-op if a directory (or a symlink to one) already holds\nthe leaf; a regular file (or a symlink to one) holding it refuses FILE_EXISTS, as POSIX mkdir\nreports EEXIST."
 									}
 								]
 							},

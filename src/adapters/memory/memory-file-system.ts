@@ -252,23 +252,23 @@ export class MemoryFileSystem implements FileSystem {
       this.mkdirThroughLeafSymlink(path);
       return;
     }
-    // The check below would refuse a file leaf too, but with the normalized key as its
-    // path; this guard keeps the caller's string, as every other leaf refusal does.
+    // A regular file holding the leaf is an occupant, not a blocked segment: POSIX mkdir
+    // reports EEXIST for it, which the Node adapter maps to FILE_EXISTS.
     if (this.files.has(normalized)) {
-      throw notADirectory(path);
+      throw fileExists(path);
     }
     this.addDirectoryRecursive(normalized);
   };
 
   /**
    * `mkdir` is the one write surface whose leaf follows a symlink: a link to an existing
-   * directory is a no-op, a link to a regular file keeps this adapter's own not-a-directory
-   * report, and a dangling link refuses without creating its target.
+   * directory is a no-op, a link to a regular file is an occupant as the file itself is, and a
+   * dangling link refuses without creating its target.
    */
   private mkdirThroughLeafSymlink(path: string): void {
     const followed = this.walk(path, 'follow');
     if (this.directories.has(followed)) return;
-    if (this.files.has(followed)) throw notADirectory(path);
+    if (this.files.has(followed)) throw fileExists(path);
     throw fileNotFound(path);
   }
 

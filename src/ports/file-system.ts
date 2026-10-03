@@ -148,7 +148,11 @@ export interface FileSystem {
   /** List directory entries. Throws NOT_A_DIRECTORY if not a directory, FILE_NOT_FOUND if absent. */
   readonly readdir: (path: string) => Promise<ReadonlyArray<DirEntry>>;
 
-  /** Create directory and all parents. No-op if already exists. */
+  /**
+   * Create directory and all parents. No-op if a directory (or a symlink to one) already holds
+   * the leaf; a regular file (or a symlink to one) holding it refuses FILE_EXISTS, as POSIX mkdir
+   * reports EEXIST.
+   */
   readonly mkdir: (path: string) => Promise<void>;
 
   /** Remove file or empty directory. Throws FILE_NOT_FOUND if not found. */
