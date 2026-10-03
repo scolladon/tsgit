@@ -575,6 +575,112 @@ describe('fsck commit-graph verify', () => {
     });
   });
 
+  /** A merge of the root, the tip and a side commit: its third parent lives in the EDGE chunk. */
+  const octopusGraph = async (): Promise<
+    Fixture & { readonly merge: ObjectId; readonly side: ObjectId }
+  > => {
+    const fixture = await repoWithGraph();
+    const { ctx, tree, root, tip } = fixture;
+    const side = await writeObject(ctx, {
+      type: 'commit',
+      id: '' as ObjectId,
+      data: {
+        tree,
+        parents: [root],
+        author: IDENT,
+        committer: IDENT,
+        message: 'side',
+        extraHeaders: [],
+      },
+    });
+    const merge = await commitOn(ctx, tree, [root, tip, side]);
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${merge}\n`);
+    await writeCommitGraph(ctx);
+    return { ...fixture, merge, side };
+  };
+
+  const chunkRow = (bytes: Uint8Array, id: string): number =>
+    new TextDecoder().decode(bytes.subarray(0, 8 + 12 * (bytes[6] as number))).indexOf(id);
+
+  const edgeStart = (bytes: Uint8Array, view: DataView): number =>
+    view.getUint32(chunkRow(bytes, 'EDGE') + 8);
+
+  describe.each([
+    {
+      damage: 'lost its EDGE chunk',
+      patch: ((bytes) =>
+        bytes.set(new TextEncoder().encode('XXXX'), chunkRow(bytes, 'EDGE'))) as GraphPatch,
+    },
+    {
+      damage: 'an EDGE list that never ends',
+      patch: ((bytes, _layer, view) => {
+        const at = edgeStart(bytes, view) + 4;
+        view.setUint32(at, view.getUint32(at) & 0x7fffffff);
+      }) as GraphPatch,
+    },
+  ])('Given an octopus merge whose graph has $damage', ({ patch }) => {
+    describe('When fsck runs', () => {
+      it('Then the extra-edges pointer is out of bounds and the merge fails to parse', async () => {
+        // Arrange
+        const { ctx, merge } = await octopusGraph();
+        await patchGraph(ctx, patch);
+        const artefact = commitGraphPath(commonGitDir(ctx));
+        const sut = fsck;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(graphFindings(result.findings)).toEqual([
+          { type: 'commit-graph-invalid', artefact, check: 'extra-edges-out-of-bounds' },
+          { type: 'commit-graph-invalid', artefact, check: 'graph-unparsable', id: merge },
+        ]);
+      });
+    });
+  });
+
+  describe('Given an octopus merge whose EDGE list names a position past the graph', () => {
+    describe('When fsck runs', () => {
+      it('Then git dies on the position before reaching the end of the list', async () => {
+        // Arrange
+        const { ctx } = await octopusGraph();
+        await patchGraph(ctx, (bytes, _layer, view) => {
+          view.setUint32(edgeStart(bytes, view) + 4, 0x80000000 | 9);
+        });
+        const sut = fsck;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(graphFindings(result.findings)).toEqual([
+          {
+            type: 'commit-graph-invalid',
+            artefact: commitGraphPath(commonGitDir(ctx)),
+            check: 'invalid-parent-position',
+            position: 9,
+          },
+        ]);
+      });
+    });
+  });
+
+  describe('Given a sound octopus merge in the graph', () => {
+    describe('When fsck runs', () => {
+      it('Then every parent the EDGE chunk holds verifies', async () => {
+        // Arrange
+        const { ctx } = await octopusGraph();
+        const sut = fsck;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(graphFindings(result.findings)).toEqual([]);
+      });
+    });
+  });
+
   describe('Given a commit-graph file shorter than any graph git maps', () => {
     describe('When fsck runs', () => {
       it('Then it reports the file git finds too small to load', async () => {

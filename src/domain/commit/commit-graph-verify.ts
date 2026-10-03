@@ -5,7 +5,14 @@
  */
 import { bytesToHex, compareBytes } from '../objects/encoding.js';
 import type { ObjectId } from '../objects/index.js';
-import { type CommitGraphLayer, commitDataAt } from './commit-graph.js';
+import {
+  type CommitGraphLayer,
+  commitDataAt,
+  EDGE_LAST_FLAG,
+  EDGE_POS_MASK,
+  NO_PARENT,
+  OCTOPUS_FLAG,
+} from './commit-graph.js';
 import type { CommitGraphLoadFailure } from './commit-graph-load.js';
 
 /** One disagreement `git commit-graph verify` reports, keyed by the check that failed. */
@@ -20,6 +27,8 @@ export type CommitGraphVerdict =
       readonly expectedCount: number;
     }
   | { readonly check: 'graph-unparsable'; readonly id: ObjectId }
+  /** An octopus parent list running past the EDGE chunk, or naming one that is absent. */
+  | { readonly check: 'extra-edges-out-of-bounds' }
   | { readonly check: 'invalid-parent-position'; readonly position: number }
   | { readonly check: 'odb-unparsable'; readonly id: ObjectId }
   | {
@@ -141,6 +150,38 @@ function checkOrder(layer: CommitGraphLayer, walk: Walk, position: number): void
   });
 }
 
+interface GraphParents {
+  readonly positions: ReadonlyArray<number>;
+  /** The octopus list ran past the EDGE chunk before its last entry. */
+  readonly edgesOutOfBounds: boolean;
+}
+
+const EDGE_ENTRY_SIZE = 4;
+
+/** git's `fill_commit_in_graph` parent read, stopping where git's extra-edges bound does. */
+function readGraphParents(layer: CommitGraphLayer, position: number): GraphParents {
+  const entry = layer._commitDataOffset + position * layer._commitDataEntrySize + layer._hashLength;
+  const first = layer._view.getUint32(entry);
+  if (first === NO_PARENT) return { positions: [], edgesOutOfBounds: false };
+  const second = layer._view.getUint32(entry + 4);
+  if (second === NO_PARENT) return { positions: [first], edgesOutOfBounds: false };
+  if ((second & OCTOPUS_FLAG) === 0) return { positions: [first, second], edgesOutOfBounds: false };
+  return readEdges(layer, first, second & EDGE_POS_MASK);
+}
+
+function readEdges(layer: CommitGraphLayer, first: number, start: number): GraphParents {
+  const positions = [first];
+  const range = layer._extraEdgeRange;
+  if (range === undefined) return { positions, edgesOutOfBounds: true };
+  for (let at = range.start + start * EDGE_ENTRY_SIZE; at + EDGE_ENTRY_SIZE <= range.end; ) {
+    const raw = layer._view.getUint32(at);
+    positions.push(raw & EDGE_POS_MASK);
+    if ((raw & EDGE_LAST_FLAG) !== 0) return { positions, edgesOutOfBounds: false };
+    at += EDGE_ENTRY_SIZE;
+  }
+  return { positions, edgesOutOfBounds: true };
+}
+
 /** git's `parse_commit_in_graph_one`; `false` when it dies on a parent position. */
 function parseInGraph(
   layer: CommitGraphLayer,
@@ -154,10 +195,17 @@ function parseInGraph(
     walk.verdicts.push({ check: 'graph-unparsable', id: graphOidAt(layer, position) });
     return true;
   }
-  const beyond = graphParentPositions(layer, found, false).find((parent) => parent >= total);
-  if (beyond === undefined) return true;
-  walk.verdicts.push({ check: 'invalid-parent-position', position: beyond });
-  return false;
+  const parents = readGraphParents(layer, found);
+  const beyond = parents.positions.find((parent) => parent >= total);
+  if (beyond !== undefined) {
+    walk.verdicts.push({ check: 'invalid-parent-position', position: beyond });
+    return false;
+  }
+  if (parents.edgesOutOfBounds) {
+    walk.verdicts.push({ check: 'extra-edges-out-of-bounds' });
+    walk.verdicts.push({ check: 'graph-unparsable', id: graphOidAt(layer, position) });
+  }
+  return true;
 }
 
 /** Phase one of git's `verify_one_commit_graph`, over a layer holding `total` commits in scope. */

@@ -158,6 +158,8 @@ const renderLine = (finding: GraphFinding): string => {
       return `commit-graph has incorrect OID order: ${finding.previous} then ${finding.id}`;
     case 'graph-unparsable':
       return `failed to parse commit ${finding.id} from commit-graph`;
+    case 'extra-edges-out-of-bounds':
+      return 'error: commit-graph extra-edges pointer out of bounds';
     case 'invalid-parent-position':
       return `fatal: invalid parent position ${finding.position}`;
     case 'chain-unopenable':
@@ -370,6 +372,47 @@ const CHAIN_ROWS: ReadonlyArray<{
   { name: 'a chain shorter than a hash', damage: (h) => writeFileSync(h.chain, 'abc\n') },
   { name: 'one hash and no newline', damage: (h) => writeFileSync(h.chain, h.base) },
 ];
+
+describe.skipIf(!GIT_AVAILABLE)('Given an octopus merge in a commit-graph', () => {
+  describe('When the graph loses its EDGE chunk and both tools verify it', () => {
+    it(
+      'Then tsgit reports the out-of-bounds pointer and the unparsable merge git prints',
+      async () => {
+        // Arrange
+        const dir = path.join(root, 'octopus-no-edge');
+        runGit(['init', '-q', '-b', 'main', dir]);
+        disableAutoMaintenance(dir);
+        const env = { ...process.env, ...DATE_ENV };
+        runGit(['-C', dir, 'commit', '-q', '--allow-empty', '-m', 'base'], { env });
+        for (const side of ['a', 'b', 'c']) {
+          runGit(['-C', dir, 'checkout', '-q', '-b', side, 'main'], { env });
+          runGit(['-C', dir, 'commit', '-q', '--allow-empty', '-m', side], { env });
+        }
+        runGit(['-C', dir, 'checkout', '-q', 'main'], { env });
+        runGit(['-C', dir, 'merge', '-q', '--no-edit', 'a', 'b', 'c'], { env });
+        runGit(['-C', dir, 'commit-graph', 'write', '--reachable']);
+        const graph = path.join(dir, '.git', 'objects', 'info', 'commit-graph');
+        chmodSync(graph, 0o644);
+        const bytes = new Uint8Array(readFileSync(graph));
+        renameChunk(bytes, 'EDGE', 'XXXX');
+        writeFileSync(graph, restamped(bytes));
+        const peer = tryRunGitWithExit(['-C', dir, 'commit-graph', 'verify']);
+        const repo = await openRepository({ cwd: dir });
+        const sut = repo.fsck;
+
+        // Act
+        const result = await sut().finally(() => repo.dispose());
+
+        // Assert
+        const lines = peer.stderr.split('\n').filter((line) => line.length > 0);
+        expect(result.findings.filter(isGraphFinding).map(renderLine)).toEqual(lines);
+        expect(peer.exitCode).toBe(1);
+        expect(result.exitCode & EXIT_COMMIT_GRAPH).toBe(EXIT_COMMIT_GRAPH);
+      },
+      ROW_TIMEOUT,
+    );
+  });
+});
 
 describe.skipIf(!GIT_AVAILABLE)('Given a two-layer commit-graph chain', () => {
   describe.each(CHAIN_ROWS)(
