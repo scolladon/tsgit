@@ -1331,6 +1331,82 @@ describe('internal/repo-state', () => {
       });
     });
 
+    describe('Given a diff driver string key is valueless', () => {
+      describe('When called', () => {
+        it.each(['textconv', 'command', 'funcname', 'xfuncname', 'wordregex'])(
+          'Then diff.MyDriver.%s throws CONFIG_MISSING_VALUE naming its line',
+          async (key) => {
+            // Arrange
+            const ctx = createMemoryContext();
+            await seedRepo(ctx);
+            await seedConfig(ctx, `[diff "MyDriver"]\n\tbinary = true\n\t${key}\n`);
+            const sut = assertEagerConfigValid;
+
+            // Act
+            let caught: unknown;
+            try {
+              await sut(ctx);
+            } catch (err) {
+              caught = err;
+            }
+
+            // Assert
+            const data = (caught as TsgitError).data as {
+              code: string;
+              key: string;
+              line: number;
+            };
+            expect(data.code).toBe('CONFIG_MISSING_VALUE');
+            expect(data.key).toBe(`diff.MyDriver.${key}`);
+            expect(data.line).toBe(3);
+          },
+        );
+      });
+    });
+
+    describe('Given a subsectionless [diff] textconv is valueless', () => {
+      describe('When called', () => {
+        it('Then resolves without throw — git only reads the key per driver subsection', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[diff]\n\ttextconv\n');
+          const sut = assertEagerConfigValid;
+
+          // Act
+          const result = sut(ctx);
+
+          // Assert
+          await expect(result).resolves.toBeUndefined();
+        });
+      });
+    });
+
+    describe('Given a diff driver trustExitCode holds a value git refuses', () => {
+      describe('When called', () => {
+        it('Then throws CONFIG_BAD_BOOLEAN_VALUE naming the key', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedRepo(ctx);
+          await seedConfig(ctx, '[diff "MyDriver"]\n\ttrustExitCode = maybe\n');
+          const sut = assertEagerConfigValid;
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut(ctx);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          const data = (caught as TsgitError).data as BadBooleanData;
+          expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
+          expect(data.key).toBe('diff.MyDriver.trustexitcode');
+        });
+      });
+    });
+
     describe('Given several malformed entries across the valueless, compression and boolean classes', () => {
       describe('When called', () => {
         it.each([

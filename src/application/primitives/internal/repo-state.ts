@@ -40,6 +40,7 @@ import {
   findFirstInvalidDiffBinary,
   findFirstInvalidLogAllRefUpdates,
   findFirstValuelessEntry,
+  findFirstValuelessInSection,
   type InvalidBooleanEntry,
   type InvalidCompressionEntry,
   memoizeGateVerdict,
@@ -149,7 +150,14 @@ const CORE_BOOLEAN_KEYS: ReadonlyArray<string> = [
   'sparsecheckout',
   'sparsecheckoutcone',
 ];
-const DIFF_BOOLEAN_KEYS: ReadonlyArray<string> = ['cachetextconv'];
+const DIFF_BOOLEAN_KEYS: ReadonlyArray<string> = ['cachetextconv', 'trustexitcode'];
+const DIFF_STRING_KEYS: ReadonlyArray<string> = [
+  'textconv',
+  'command',
+  'funcname',
+  'xfuncname',
+  'wordregex',
+];
 
 type EagerCandidate =
   | { readonly kind: 'valueless'; readonly line: number; readonly entry: ValuelessEntry }
@@ -179,11 +187,12 @@ const throwEagerCandidate = (candidate: EagerCandidate): never => {
 
 /**
  * Refuse when a `[core]` path-like (`excludesfile`/`attributesfile`) is
- * present-but-valueless, when a compression key (`loosecompression`/
+ * present-but-valueless, when a `[diff "<driver>"]` string key (`textconv`,
+ * `command`, `funcname`, `xfuncname`, `wordregex`) is valueless, when a compression key (`loosecompression`/
  * `compression`) is present with any invalid value (valueless, bad integer,
  * or integer outside zlib's `-1..9`), or when a boolean key (`core.ignoreCase`,
  * `core.sparseCheckout`, `core.sparseCheckoutCone`, `core.logAllRefUpdates`,
- * or any `[diff *]` subsection's `cachetextconv`/`binary` — `binary` is
+ * or any `[diff *]` subsection's `cachetextconv`/`trustexitcode`/`binary` — `binary` is
  * userdiff's own tristate, `auto` plus git's boolean grammar, and
  * `branch.autoSetupMerge`, whose three exact literals precede that grammar) holds a value
  * git's boolean grammar refuses, or when `branch.autoSetupRebase` is valueless or
@@ -214,19 +223,15 @@ const throwEagerCandidate = (candidate: EagerCandidate): never => {
  * when every class is valid or absent.
  */
 export const assertEagerConfigValid = async (ctx: Context): Promise<void> => {
-  const [str, comp, boolCore, logAllRefUpdates, boolDiff, diffBinary, autoSetupMerge] =
-    await Promise.all([
-      findFirstValuelessEntry(ctx, 'core', undefined, CORE_STRING_KEYS),
-      findFirstInvalidCompression(ctx),
-      findFirstInvalidBoolean(ctx, 'core', undefined, CORE_BOOLEAN_KEYS),
-      findFirstInvalidLogAllRefUpdates(ctx),
-      // git ignores a subsectionless `[diff] cachetextconv` (the key only exists
-      // per-driver), so only subsectioned entries can refuse here.
-      findFirstInvalidBooleanInSection(ctx, 'diff', DIFF_BOOLEAN_KEYS, { requireSubsection: true }),
-      findFirstInvalidDiffBinary(ctx),
-      findFirstInvalidAutoSetupMerge(ctx),
-    ]);
+  const [str, comp, boolCore, logAllRefUpdates, autoSetupMerge] = await Promise.all([
+    findFirstValuelessEntry(ctx, 'core', undefined, CORE_STRING_KEYS),
+    findFirstInvalidCompression(ctx),
+    findFirstInvalidBoolean(ctx, 'core', undefined, CORE_BOOLEAN_KEYS),
+    findFirstInvalidLogAllRefUpdates(ctx),
+    findFirstInvalidAutoSetupMerge(ctx),
+  ]);
   const branchCandidates = await autoSetupRebaseCandidates(ctx);
+  const diffCandidates = await diffDriverCandidates(ctx);
   const candidates: ReadonlyArray<EagerCandidate | undefined> = [
     str === undefined ? undefined : { kind: 'valueless', line: str.line, entry: str },
     comp === undefined ? undefined : { kind: 'compression', line: comp.line, entry: comp },
@@ -234,20 +239,42 @@ export const assertEagerConfigValid = async (ctx: Context): Promise<void> => {
     logAllRefUpdates === undefined
       ? undefined
       : { kind: 'boolean', line: logAllRefUpdates.line, entry: logAllRefUpdates },
-    boolDiff === undefined ? undefined : { kind: 'boolean', line: boolDiff.line, entry: boolDiff },
-    diffBinary === undefined
-      ? undefined
-      : { kind: 'boolean', line: diffBinary.line, entry: diffBinary },
     autoSetupMerge === undefined
       ? undefined
       : { kind: 'boolean', line: autoSetupMerge.line, entry: autoSetupMerge },
     ...branchCandidates,
+    ...diffCandidates,
   ];
   const selected = candidates.reduce<EagerCandidate | undefined>(
     (winner, candidate) => pickLowerLine(winner, candidate),
     undefined,
   );
   if (selected !== undefined) throwEagerCandidate(selected);
+};
+
+/**
+ * git's `userdiff_config`: a `[diff "<driver>"]` string key dies valueless and a
+ * boolean key dies on a value its grammar refuses. A subsectionless `[diff]`
+ * entry is not a driver key, so only subsectioned entries can refuse here.
+ */
+const diffDriverCandidates = async (
+  ctx: Context,
+): Promise<ReadonlyArray<EagerCandidate | undefined>> => {
+  const subsectioned = { requireSubsection: true };
+  const [valueless, boolDiff, diffBinary] = await Promise.all([
+    findFirstValuelessInSection(ctx, 'diff', DIFF_STRING_KEYS, subsectioned),
+    findFirstInvalidBooleanInSection(ctx, 'diff', DIFF_BOOLEAN_KEYS, subsectioned),
+    findFirstInvalidDiffBinary(ctx),
+  ]);
+  return [
+    valueless === undefined
+      ? undefined
+      : { kind: 'valueless', line: valueless.line, entry: valueless },
+    boolDiff === undefined ? undefined : { kind: 'boolean', line: boolDiff.line, entry: boolDiff },
+    diffBinary === undefined
+      ? undefined
+      : { kind: 'boolean', line: diffBinary.line, entry: diffBinary },
+  ];
 };
 
 /** `branch.autoSetupRebase`: git dies on a valueless entry and on any value outside its literals. */
