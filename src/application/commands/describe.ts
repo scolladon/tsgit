@@ -69,7 +69,7 @@ export function describe(
   ctx: Context,
   rev: string | undefined,
   opts: DescribeOptions & { contains: true },
-): Promise<NameRevResult>;
+): Promise<NameRevResult | undefined>;
 export function describe(
   ctx: Context,
   rev?: string,
@@ -79,7 +79,7 @@ export async function describe(
   ctx: Context,
   rev?: string,
   opts: DescribeOptions = {},
-): Promise<DescribeResult | NameRevResult> {
+): Promise<DescribeResult | NameRevResult | undefined> {
   await assertOperationalRepository(ctx);
   if (opts.contains === true) return describeContains(ctx, rev, parseContainsOptions(opts));
   const plan = parseDescribeOptions(opts, rev !== undefined);
@@ -108,12 +108,13 @@ export async function describe(
 
 // `--contains`: git runs `name-rev --tags --no-undefined` (all refs under `all`,
 // `match`/`exclude` mapped to `refs/tags/<pat>`); `always` turns the refusal back
-// into an `undefined`-ref result (the caller renders the oid).
+// into an `undefined`-ref result (the caller renders the oid). An argument
+// name-rev skips is skipped here too.
 const describeContains = async (
   ctx: Context,
   rev: string | undefined,
   plan: ContainsPlan,
-): Promise<NameRevResult> => {
+): Promise<NameRevResult | undefined> => {
   const useTags = !plan.all;
   // Under `all`, git passes no `--refs`/`--exclude` (every ref is a source); under
   // default mode each pattern is scoped to `refs/tags/`.
@@ -124,6 +125,7 @@ const describeContains = async (
     refs: scope(plan.include),
     exclude: scope(plan.exclude),
   });
+  if (result === undefined) return undefined;
   if (result.ref === undefined && !plan.always) throw cannotDescribe(result.oid);
   return result;
 };

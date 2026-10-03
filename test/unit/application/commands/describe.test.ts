@@ -1055,7 +1055,7 @@ describe('describe --contains', () => {
         const result = await describeCmd(ctx, head, { contains: true, all: true });
 
         // Assert
-        expect(result.ref).toBe(RefName.from('refs/heads/main'));
+        expect(result?.ref).toBe(RefName.from('refs/heads/main'));
       });
     });
 
@@ -1100,7 +1100,7 @@ describe('describe --contains', () => {
         const result = await describeCmd(ctx, c0, { contains: true, match: 'release-*' });
 
         // Assert
-        expect(result.ref).toBe(RefName.from('refs/tags/release-1'));
+        expect(result?.ref).toBe(RefName.from('refs/tags/release-1'));
       });
     });
   });

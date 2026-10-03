@@ -148589,10 +148589,19 @@
 								},
 								"typeArguments": [
 									{
-										"type": "reference",
-										"target": 2226,
-										"name": "NameRevResult",
-										"package": "@scolladon/tsgit"
+										"type": "union",
+										"types": [
+											{
+												"type": "reference",
+												"target": 2226,
+												"name": "NameRevResult",
+												"package": "@scolladon/tsgit"
+											},
+											{
+												"type": "intrinsic",
+												"name": "undefined"
+											}
+										]
 									}
 								],
 								"name": "Promise",
@@ -153887,6 +153896,54 @@
 							"variant": "signature",
 							"kind": 4096,
 							"flags": {},
+							"comment": {
+								"summary": [
+									{
+										"kind": "text",
+										"text": "Name "
+									},
+									{
+										"kind": "code",
+										"text": "`rev`"
+									},
+									{
+										"kind": "text",
+										"text": " (default "
+									},
+									{
+										"kind": "code",
+										"text": "`HEAD`"
+									},
+									{
+										"kind": "text",
+										"text": "). An argument git's "
+									},
+									{
+										"kind": "code",
+										"text": "`repo_get_oid`"
+									},
+									{
+										"kind": "text",
+										"text": " cannot read, or\nwhose object "
+									},
+									{
+										"kind": "code",
+										"text": "`parse_object`"
+									},
+									{
+										"kind": "text",
+										"text": " cannot load, is skipped with git's note rather\nthan refused — "
+									},
+									{
+										"kind": "code",
+										"text": "`undefined`"
+									},
+									{
+										"kind": "text",
+										"text": ", as git prints nothing for it and exits 0."
+									}
+								]
+							},
 							"parameters": [
 								{
 									"id": 2240,
@@ -153938,10 +153995,19 @@
 								},
 								"typeArguments": [
 									{
-										"type": "reference",
-										"target": 2226,
-										"name": "NameRevResult",
-										"package": "@scolladon/tsgit"
+										"type": "union",
+										"types": [
+											{
+												"type": "reference",
+												"target": 2226,
+												"name": "NameRevResult",
+												"package": "@scolladon/tsgit"
+											},
+											{
+												"type": "intrinsic",
+												"name": "undefined"
+											}
+										]
 									}
 								],
 								"name": "Promise",

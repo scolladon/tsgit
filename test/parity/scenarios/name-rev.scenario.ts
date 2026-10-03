@@ -40,6 +40,7 @@ export const nameRevScenario: Scenario<NameRevScenarioResult> = {
     await repo.tag.create({ name: 'v1.0' });
 
     const result = await repo.nameRev(root.id);
+    if (result === undefined) throw new Error(`name-rev skipped ${root.id}`);
     return { ref: result.ref, tagDeref: result.tagDeref, suffix: renderSuffix(result.steps) };
   },
 };

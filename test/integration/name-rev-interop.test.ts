@@ -30,6 +30,7 @@ import {
   runGitAsync,
   runGitEnv,
   tryRunGit,
+  tryRunGitWithExit,
 } from './interop-helpers.js';
 
 const SETUP_TIMEOUT = 60_000;
@@ -48,7 +49,9 @@ const suffix = (r: NameRevResult): string =>
   r.steps.map((s) => (s.kind === 'ancestor' ? `~${s.count}` : `^${s.number}`)).join('');
 
 /** Reconstruct `git name-rev --name-only` (strip `refs/heads/`, else `refs/`). */
-const renderNameRev = (r: NameRevResult): string => {
+/** A skipped argument prints nothing on stdout. */
+const renderNameRev = (r: NameRevResult | undefined): string => {
+  if (r === undefined) return '';
   if (r.ref === undefined) return 'undefined';
   const base = r.ref.startsWith('refs/heads/')
     ? r.ref.slice('refs/heads/'.length)
@@ -58,7 +61,8 @@ const renderNameRev = (r: NameRevResult): string => {
 };
 
 /** Reconstruct `git describe --contains` (rev-parse short name: strip `refs/tags/`). */
-const renderContains = (r: NameRevResult): string => {
+const renderContains = (r: NameRevResult | undefined): string => {
+  if (r === undefined) return '';
   const base = (r.ref as string).replace(/^refs\/tags\//, '').replace(/^refs\//, '');
   if (r.steps.length === 0) return r.tagDeref ? `${base}^0` : base;
   return base + suffix(r);
@@ -119,6 +123,30 @@ describe.skipIf(!GIT_AVAILABLE)('name-rev interop', () => {
       { label: 'a lightweight tag, rendering without `^0`', rev: () => c1 },
       { label: 'a first-parent ancestor, rendering with `~n`', rev: () => c0 },
     ];
+
+    describe.each([
+      { label: 'a name that resolves to nothing', rev: () => 'nope~1' },
+      {
+        label: 'a full object id naming no object',
+        rev: () => '0123456789012345678901234567890123456789',
+      },
+    ])('When nameRevCmd reads $label', ({ rev }) => {
+      it('Then it skips the argument with the note git prints and names nothing', async () => {
+        // Arrange
+        const notes: string[] = [];
+        const noted = { ...ctx, logger: { info: (message: string) => notes.push(message) } };
+        const gitRun = tryRunGitWithExit(['-C', dir, 'name-rev', '--name-only', rev()]);
+        const sut = nameRevCmd;
+
+        // Act
+        const result = await sut(noted, rev());
+
+        // Assert
+        expect(gitRun.exitCode).toBe(0);
+        expect(renderNameRev(result)).toBe(gitRun.stdout.trim());
+        expect(notes.map((note) => `${note}\n`).join('')).toBe(gitRun.stderr);
+      });
+    });
 
     describe('When nameRevCmd renders each rev kind', () => {
       it.each(REV_RENDER_MATRIX)('Then $label', async ({ rev }) => {
@@ -321,7 +349,7 @@ describe.skipIf(!GIT_AVAILABLE)('name-rev interop', () => {
         const result = await nameRevCmd(ctx, c0, { tags: true });
 
         // Assert
-        expect(result.ref).toBeUndefined();
+        expect(result?.ref).toBeUndefined();
         expect(renderNameRev(result)).toBe(gitNameRev(dir, c0, '--tags'));
       });
     });
@@ -358,7 +386,7 @@ describe.skipIf(!GIT_AVAILABLE)('name-rev interop', () => {
         const result = await nameRevCmd(freshCtx, c0, { tags: true });
 
         // Assert
-        expect(result.ref).toBeUndefined();
+        expect(result?.ref).toBeUndefined();
         expect(renderNameRev(result)).toBe(gitNameRev(dir, c0, '--tags'));
       });
 

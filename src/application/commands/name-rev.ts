@@ -6,6 +6,9 @@
  * peel), and the ordered `~`/`^` navigation steps. The library renders no name
  * string and abbreviates no ref — assembling `tags/v2.0~3^2~1` is the caller's.
  */
+
+import type { TsgitError } from '../../domain/error.js';
+import { errorDataCode } from '../../domain/error-data-code.js';
 import {
   buildRefFilter,
   commitIsBeforeCutoff,
@@ -21,8 +24,10 @@ import {
 import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
+import { hasObject } from '../primitives/has-object.js';
 import type { BoundedReader } from '../primitives/internal/bounded-reader.js';
 import { boundedReaderFor } from '../primitives/internal/concurrency.js';
+import { peel } from '../primitives/internal/peel.js';
 import { peelRefToCommit } from '../primitives/internal/peel-ref-to-commit.js';
 import {
   type CommitMeta,
@@ -32,7 +37,7 @@ import {
 import { getRefStore } from '../primitives/ref-store.js';
 import { type NameRevOptions, parseNameRevOptions } from './internal/name-rev-options.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
-import { resolveCommitOnce } from './internal/resolve-rev.js';
+import { evaluateRevision } from './rev-parse.js';
 
 export type { NameRevOptions, NameRevStep };
 
@@ -57,13 +62,19 @@ interface NameRevNode extends CommitMeta {
 
 type MetaReader = BoundedReader<CommitMeta | undefined>;
 
+/**
+ * Name `rev` (default `HEAD`). An argument git's `repo_get_oid` cannot read, or
+ * whose object `parse_object` cannot load, is skipped with git's note rather
+ * than refused — `undefined`, as git prints nothing for it and exits 0.
+ */
 export const nameRev = async (
   ctx: Context,
   rev?: string,
   opts: NameRevOptions = {},
-): Promise<NameRevResult> => {
+): Promise<NameRevResult | undefined> => {
   await assertOperationalRepository(ctx);
-  const target = await resolveCommitOnce(ctx, rev ?? DEFAULT_REV);
+  const target = await readTarget(ctx, rev ?? DEFAULT_REV);
+  if (target === undefined) return undefined;
   const targetMeta = (await readCommitMeta(ctx, target)) as CommitMeta;
   const cutoff = nameRevCutoff(targetMeta);
   const filter = buildRefFilter(parseNameRevOptions(opts));
@@ -78,6 +89,45 @@ export const nameRev = async (
   const name = revNames.get(target);
   if (name === undefined) return { oid: target, ref: undefined, tagDeref: false, steps: [] };
   return { oid: target, ref: name.ref, tagDeref: name.tagDeref, steps: foldSteps(name) };
+};
+
+/** The codes a `repo_get_oid` that read no object refuses with. */
+const UNREAD_ARGUMENT_CODES: ReadonlySet<string | undefined> = new Set([
+  'OBJECT_NOT_FOUND',
+  'REVPARSE_UNRESOLVED',
+  'PATH_NOT_IN_TREE',
+  'AMBIGUOUS_OID_PREFIX',
+]);
+
+const readTarget = async (ctx: Context, rev: string): Promise<ObjectId | undefined> => {
+  const id = await readArgumentOid(ctx, rev);
+  if (id === undefined) return skipArgument(ctx, `Could not get sha1 for ${rev}. Skipping.`);
+  if (!(await hasObject(ctx, id))) {
+    return skipArgument(ctx, `Could not get object for ${rev}. Skipping.`);
+  }
+  return peel(ctx, id, 'commit');
+};
+
+const readArgumentOid = async (ctx: Context, rev: string): Promise<ObjectId | undefined> => {
+  try {
+    return await evaluateRevision(ctx, rev);
+  } catch (error) {
+    if (!UNREAD_ARGUMENT_CODES.has(errorDataCode(error))) throw error;
+    reportAmbiguity(ctx, error);
+    return undefined;
+  }
+};
+
+/** git's `get_short_oid` reports an ambiguous prefix on `error:` before the read fails. */
+const reportAmbiguity = (ctx: Context, error: unknown): void => {
+  const data = (error as TsgitError).data;
+  if (data.code !== 'AMBIGUOUS_OID_PREFIX') return;
+  ctx.logger?.error?.(`short object ID ${data.prefix} is ambiguous`, { prefix: data.prefix });
+};
+
+const skipArgument = (ctx: Context, note: string): undefined => {
+  ctx.logger?.info?.(note);
+  return undefined;
 };
 
 /** Flood down from a single ref, recording the best name for each commit reached. */

@@ -1149,8 +1149,8 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
         const result = await repo.nameRev('HEAD');
 
         // Assert
-        expect(result.ref).toBe(`refs/heads/${gitName}`);
-        expect(result.steps).toEqual([]);
+        expect(result?.ref).toBe(`refs/heads/${gitName}`);
+        expect(result?.steps).toEqual([]);
       });
     });
   });
