@@ -136,7 +136,13 @@ export interface WalkCommitsOptions {
    * set once.
    */
   readonly until?: ReadonlyArray<ObjectId> | ReadonlySet<ObjectId>;
-  readonly order?: 'topo' | 'first-parent';
+  /**
+   * `'breadth-first'` (default) yields each commit after the commit that first
+   * reached it, parents in order — a queue, not git's `--topo-order` (`log`'s
+   * `topoOrder` is that). `'first-parent'` follows only first parents.
+   * `'topo'` is the former name of `'breadth-first'`, kept for compatibility.
+   */
+  readonly order?: 'breadth-first' | 'topo' | 'first-parent';
   readonly ignoreMissing?: boolean;
   readonly verifyHash?: boolean;
   /**

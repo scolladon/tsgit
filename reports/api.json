@@ -125974,9 +125974,73 @@
 								"isOptional": true,
 								"isReadonly": true
 							},
+							"comment": {
+								"summary": [
+									{
+										"kind": "code",
+										"text": "`'breadth-first'`"
+									},
+									{
+										"kind": "text",
+										"text": " (default) yields each commit after the commit that first\nreached it, parents in order — a queue, not git's "
+									},
+									{
+										"kind": "code",
+										"text": "`--topo-order`"
+									},
+									{
+										"kind": "text",
+										"text": " ("
+									},
+									{
+										"kind": "code",
+										"text": "`log`"
+									},
+									{
+										"kind": "text",
+										"text": "'s\n"
+									},
+									{
+										"kind": "code",
+										"text": "`topoOrder`"
+									},
+									{
+										"kind": "text",
+										"text": " is that). "
+									},
+									{
+										"kind": "code",
+										"text": "`'first-parent'`"
+									},
+									{
+										"kind": "text",
+										"text": " follows only first parents.\n"
+									},
+									{
+										"kind": "code",
+										"text": "`'topo'`"
+									},
+									{
+										"kind": "text",
+										"text": " is the former name of "
+									},
+									{
+										"kind": "code",
+										"text": "`'breadth-first'`"
+									},
+									{
+										"kind": "text",
+										"text": ", kept for compatibility."
+									}
+								]
+							},
 							"type": {
 								"type": "union",
 								"types": [
+									{
+										"type": "literal",
+										"value": "breadth-first"
+									},
 									{
 										"type": "literal",
 										"value": "topo"
@@ -164074,7 +164138,7 @@
 									},
 									{
 										"kind": "text",
-										"text": ", parents after children in queue\norder. Excluded commits ("
+										"text": " in queue order: breadth-first, or\nalong first parents only. Excluded commits ("
 									},
 									{
 										"kind": "code",

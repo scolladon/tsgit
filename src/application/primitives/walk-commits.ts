@@ -34,7 +34,7 @@ interface WalkState {
   readonly shallow: ReadonlySet<ObjectId>;
 }
 
-type Order = 'topo' | 'first-parent';
+type Order = NonNullable<WalkCommitsOptions['order']>;
 type CommitBodies = BoundedReader<Commit | undefined>;
 
 interface WalkSession {
@@ -45,7 +45,7 @@ interface WalkSession {
 }
 
 async function createWalkSession(ctx: Context, options: WalkCommitsOptions): Promise<WalkSession> {
-  const order = options.order ?? 'topo';
+  const order = options.order ?? 'breadth-first';
   const ignoreMissing = options.ignoreMissing ?? false;
   const verifyHash = options.verifyHash ?? false;
   const shallow = await resolveShallow(ctx, options.shallow);
@@ -107,8 +107,8 @@ async function resolveFrontierEntry(
 }
 
 /**
- * Walk the commits reachable from `from`, parents after children in queue
- * order. Excluded commits (`until`) are settled first as git's `limit_list`
+ * Walk the commits reachable from `from` in queue order: breadth-first, or
+ * along first parents only. Excluded commits (`until`) are settled first as git's `limit_list`
  * does, so an ancestor of an excluded commit is never yielded, whichever path
  * reaches it.
  */

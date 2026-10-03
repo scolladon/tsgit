@@ -251,7 +251,7 @@ async function collectLimitedWalk(
     from: commitSeeds.map((seed) => seed.id),
     until: marks.commits,
     ignoreMissing: true,
-    order: request.firstParent === true ? 'first-parent' : 'topo',
+    order: request.firstParent === true ? 'first-parent' : 'breadth-first',
   })) {
     walked.push({ id: commit.id, tree: commit.data.tree, parents: commit.data.parents });
     if (request.maxCount !== undefined && walked.length >= request.maxCount && !drainsFully) break;

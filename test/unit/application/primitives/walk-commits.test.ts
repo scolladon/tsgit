@@ -506,6 +506,25 @@ describe('walkCommits', () => {
     });
   });
 
+  describe('Given a diamond whose sides are walked breadth-first', () => {
+    describe.each(['breadth-first', 'topo'] as const)(
+      'When walkCommits runs with order=%s',
+      (order) => {
+        it('Then each commit follows the commit that first reached it, parents in order', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const { a, b, c, d } = await buildDiamond(ctx);
+
+          // Act
+          const result = await collect(walkCommits(ctx, { from: [d], order }));
+
+          // Assert
+          expect(result.map((commit) => commit.id)).toEqual([d, b, c, a]);
+        });
+      },
+    );
+  });
+
   describe('Given a diamond and order=first-parent', () => {
     describe('When walkCommits is called from D', () => {
       it('Then the C branch is NOT visited', async () => {
