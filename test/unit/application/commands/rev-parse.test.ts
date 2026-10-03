@@ -776,6 +776,58 @@ describe('revParse', () => {
       });
     });
 
+    describe.each([
+      { expr: 'main:./b.txt', field: 'blobB' as const },
+      { expr: 'main:../a.txt', field: 'blobA' as const },
+      { expr: 'main:./', field: 'sub' as const },
+    ])('When $expr is read from the sub directory', ({ expr, field }) => {
+      it('Then the relative path is taken from that directory, as git does', async () => {
+        // Arrange
+        const repo = createMemoryContext();
+        const ids = await seedTree(repo);
+        const ctx = { ...repo, cwd: `${repo.layout.workDir}/sub` } as Context;
+        const sut = revParse;
+
+        // Act
+        const result = await sut(ctx, expr);
+
+        // Assert
+        expect(result).toBe(ids[field]);
+      });
+    });
+
+    describe('When a relative path is read from a directory outside the worktree', () => {
+      it('Then it refuses relative path syntax outside a working tree', async () => {
+        // Arrange
+        const repo = createMemoryContext();
+        await seedTree(repo);
+        const ctx = { ...repo, cwd: `${repo.layout.workDir}-elsewhere` } as Context;
+        const sut = revParse;
+
+        // Act
+        const result = await sut(ctx, 'main:./a.txt').catch((error: TsgitError) => error.data);
+
+        // Assert
+        expect(result).toEqual({ code: 'WORK_TREE_REQUIRED', operation: 'relative path syntax' });
+      });
+    });
+
+    describe('When a relative path climbs out of the worktree from the sub directory', () => {
+      it('Then it refuses the path as given', async () => {
+        // Arrange
+        const repo = createMemoryContext();
+        await seedTree(repo);
+        const ctx = { ...repo, cwd: `${repo.layout.workDir}/sub` } as Context;
+        const sut = revParse;
+
+        // Act
+        const result = await sut(ctx, 'main:../../a.txt').catch((error: TsgitError) => error.data);
+
+        // Assert
+        expect(result).toEqual({ code: 'PATHSPEC_OUTSIDE_REPO', path: '../../a.txt' });
+      });
+    });
+
     describe.each(['main:./a.txt', ':0:./a.txt'])(
       'When a bare repository reads the relative path in %s',
       (expr) => {

@@ -187,6 +187,28 @@ describe.skipIf(!GIT_AVAILABLE)(
       });
     });
 
+    describe.each(['HEAD:./f', 'HEAD:../g', 'HEAD:./', ':0:./f', ':./f', ':../g'])(
+      'Given a sub directory, When git rev-parse and revParse read %s from it',
+      (argument) => {
+        it('Then both take the path from that directory', async () => {
+          // Arrange
+          const subdirectory = path.join(repo, 'd');
+          const peer = tryRunGitWithExit(['-C', subdirectory, 'rev-parse', argument], {
+            env: runGitEnv(),
+          });
+          const opened = await openRepository({ cwd: subdirectory });
+          const sut = revParse;
+
+          // Act
+          const result = await sut(opened.ctx, argument).finally(() => opened.dispose());
+
+          // Assert
+          expect(peer.exitCode).toBe(0);
+          expect(result).toBe(peer.stdout.trim());
+        });
+      },
+    );
+
     describe.each(['HEAD:../g', 'HEAD:./d/../../g', ':0:../g'])(
       'Given a worktree, When git rev-parse and revParse read %s',
       (argument) => {

@@ -325,14 +325,26 @@ const resolveTreePath = async (ctx: Context, rev: string, rawPath: string): Prom
 const RELATIVE_PATH_PREFIXES: ReadonlyArray<string> = ['./', '../'];
 
 /**
+ * git's startup prefix: the caller's directory within the worktree,
+ * `/`-terminated and empty at its root; `undefined` outside the worktree.
+ */
+const startupPrefix = (cwd: string, workDir: string | undefined): string | undefined => {
+  if (workDir === undefined) return undefined;
+  if (cwd === workDir) return '';
+  const root = `${workDir}/`;
+  return cwd.startsWith(root) ? `${cwd.slice(root.length)}/` : undefined;
+};
+
+/**
  * git's `resolve_relative_path`: a path spelt from `./` or `../` is taken
- * against the worktree root (the caller's directory) and normalised, refused
+ * against the caller's directory within the worktree and normalised, refused
  * where there is no working tree or where it climbs out of the repository.
  */
 const resolveRelativePath = (ctx: Context, path: string): string => {
   if (!RELATIVE_PATH_PREFIXES.some((prefix) => path.startsWith(prefix))) return path;
-  if (ctx.layout.workDir === undefined) throw workTreeRequired('relative path syntax');
-  const normalized = normalizePathCopy(path);
+  const prefix = startupPrefix(ctx.cwd, ctx.layout.workDir);
+  if (prefix === undefined) throw workTreeRequired('relative path syntax');
+  const normalized = normalizePathCopy(`${prefix}${path}`);
   if (normalized === undefined) throw pathspecOutsideRepo(path as FilePath);
   return normalized;
 };
