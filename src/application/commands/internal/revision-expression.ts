@@ -7,9 +7,9 @@
 import { errorDataCode } from '../../../domain/error-data-code.js';
 import type { ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
-import { revParse } from '../rev-parse.js';
+import { evaluateRevision } from '../rev-parse.js';
 
-/** The codes `revParse` reports when a revision names no object. */
+/** The codes `evaluateRevision` reports when a revision names no object. */
 const UNRESOLVED_REVISION_CODES: ReadonlySet<string | undefined> = new Set([
   'OBJECT_NOT_FOUND',
   'REVPARSE_UNRESOLVED',
@@ -20,7 +20,7 @@ export const resolveRevisionExpression = async (
   expression: string,
 ): Promise<ObjectId | undefined> => {
   try {
-    return await revParse(ctx, expression);
+    return await evaluateRevision(ctx, expression);
   } catch (error) {
     if (UNRESOLVED_REVISION_CODES.has(errorDataCode(error))) return undefined;
     throw error;

@@ -32,7 +32,7 @@ import {
 import { getRefStore } from '../primitives/ref-store.js';
 import { type NameRevOptions, parseNameRevOptions } from './internal/name-rev-options.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
-import { resolveCommit } from './internal/resolve-rev.js';
+import { resolveCommitOnce } from './internal/resolve-rev.js';
 
 export type { NameRevOptions, NameRevStep };
 
@@ -63,7 +63,7 @@ export const nameRev = async (
   opts: NameRevOptions = {},
 ): Promise<NameRevResult> => {
   await assertOperationalRepository(ctx);
-  const target = await resolveCommit(ctx, rev ?? DEFAULT_REV);
+  const target = await resolveCommitOnce(ctx, rev ?? DEFAULT_REV);
   const targetMeta = (await readCommitMeta(ctx, target)) as CommitMeta;
   const cutoff = nameRevCutoff(targetMeta);
   const filter = buildRefFilter(parseNameRevOptions(opts));

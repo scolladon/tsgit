@@ -9,7 +9,7 @@
 import type { ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { peel } from '../../primitives/internal/peel.js';
-import { revParse } from '../rev-parse.js';
+import { evaluateRevision, revParse } from '../rev-parse.js';
 
 /** Resolve `rev` and peel to its commit (annotated tags followed). */
 export const resolveCommit = async (ctx: Context, rev: string): Promise<ObjectId> =>
@@ -18,3 +18,7 @@ export const resolveCommit = async (ctx: Context, rev: string): Promise<ObjectId
 /** Resolve `rev` and peel to its tree (commit → its tree, tags followed). */
 export const resolveTreeish = async (ctx: Context, rev: string): Promise<ObjectId> =>
   peel(ctx, await revParse(ctx, rev), 'tree');
+
+/** {@link resolveCommit} for the commands that refuse their argument after one read (`name-rev`, `range-diff`'s ranges). */
+export const resolveCommitOnce = async (ctx: Context, rev: string): Promise<ObjectId> =>
+  peel(ctx, await evaluateRevision(ctx, rev), 'commit');

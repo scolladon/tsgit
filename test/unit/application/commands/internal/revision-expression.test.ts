@@ -75,7 +75,7 @@ describe('resolveRevisionExpression', () => {
           expression: 'x',
           candidates: [],
         });
-        vi.spyOn(revParseMod, 'revParse').mockRejectedValue(failure);
+        vi.spyOn(revParseMod, 'evaluateRevision').mockRejectedValue(failure);
         const sut = resolveRevisionExpression;
 
         // Act

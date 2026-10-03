@@ -19,9 +19,16 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { branchCreate } from '../../src/application/commands/branch.js';
 import { checkout } from '../../src/application/commands/checkout.js';
+import { cherryPickRun } from '../../src/application/commands/cherry-pick.js';
+import { diff } from '../../src/application/commands/diff.js';
 import { log } from '../../src/application/commands/log.js';
+import { nameRev } from '../../src/application/commands/name-rev.js';
+import { packObjects } from '../../src/application/commands/pack-objects.js';
+import { rangeDiff } from '../../src/application/commands/range-diff.js';
 import { reset } from '../../src/application/commands/reset.js';
+import { revList } from '../../src/application/commands/rev-list.js';
 import { revParse } from '../../src/application/commands/rev-parse.js';
+import { show } from '../../src/application/commands/show.js';
 import { status } from '../../src/application/commands/status.js';
 import { mergeBase } from '../../src/application/primitives/merge-base.js';
 import type { TsgitError } from '../../src/domain/error.js';
@@ -510,12 +517,85 @@ describe.skipIf(!GIT_AVAILABLE)('integration — skip and ambiguity warnings per
       args: ['rev-parse', '@{0}'],
       run: ((ctx) => revParse(ctx, '@{0}')) as CommandRun,
     },
-  ])('Given $label', ({ args, run }) => {
+    {
+      label: 'rev-parse of a name only a dangling symref carries',
+      args: ['rev-parse', 'only'],
+      run: ((ctx) => revParse(ctx, 'only')) as CommandRun,
+    },
+    {
+      label: 'rev-parse of a missing ancestor past a dangling symref',
+      args: ['rev-parse', 'dg~5'],
+      run: ((ctx) => revParse(ctx, 'dg~5')) as CommandRun,
+    },
+    {
+      label: 'rev-parse of a missing path past a dangling symref',
+      args: ['rev-parse', 'dg:absent'],
+      run: ((ctx) => revParse(ctx, 'dg:absent')) as CommandRun,
+    },
+    {
+      label: 'rev-parse of a missing path that reads as a pathspec',
+      args: ['rev-parse', 'dg:absent*'],
+      run: ((ctx) => revParse(ctx, 'dg:absent*')) as CommandRun,
+    },
+    {
+      label: 'log of a name only a dangling symref carries',
+      args: ['log', 'only'],
+      run: ((ctx) => log(ctx, { rev: 'only' })) as CommandRun,
+    },
+    {
+      label: 'show of a name only a dangling symref carries',
+      args: ['show', 'only'],
+      run: ((ctx) => show(ctx, 'only')) as CommandRun,
+    },
+    {
+      label: 'rev-list of a name only a dangling symref carries',
+      args: ['rev-list', 'only'],
+      run: ((ctx) => revList(ctx, { wants: ['only'] })) as CommandRun,
+    },
+    {
+      label: 'diff against a name only a dangling symref carries',
+      args: ['diff', 'only'],
+      run: ((ctx) => diff(ctx, { from: 'only' })) as CommandRun,
+    },
+    {
+      label: 'cherry-pick of a name only a dangling symref carries',
+      args: ['cherry-pick', 'only'],
+      run: ((ctx) => cherryPickRun(ctx, { commits: ['only'] })) as CommandRun,
+    },
+    {
+      label: 'cherry-pick of a range a dangling symref ends',
+      args: ['cherry-pick', 'main..only'],
+      run: ((ctx) => cherryPickRun(ctx, { commits: ['main..only'] })) as CommandRun,
+    },
+    {
+      label: 'name-rev of a name only a dangling symref carries',
+      args: ['name-rev', 'only'],
+      run: ((ctx) => nameRev(ctx, 'only')) as CommandRun,
+    },
+    {
+      label: 'range-diff over a range a dangling symref ends',
+      args: ['range-diff', 'only..main', 'main..main'],
+      run: ((ctx) =>
+        rangeDiff(ctx, {
+          old: { base: 'only', tip: 'main' },
+          new: { base: 'main', tip: 'main' },
+        })) as CommandRun,
+    },
+    {
+      label: 'pack-objects over a name only a dangling symref carries',
+      args: ['pack-objects', '--revs', '--stdout'],
+      input: 'only\n',
+      run: ((ctx) => packObjects(ctx, { wants: ['only'] })) as CommandRun,
+    },
+  ])('Given $label', ({ args, input, run }) => {
     describe('When git and tsgit run it', () => {
       it('Then tsgit warns each line git warns', async () => {
         // Arrange
         const gitDir = await caseRepo('git');
-        const { stderr } = tryRunGitWithExit(['-C', gitDir, ...args]);
+        const { stderr } = tryRunGitWithExit(
+          ['-C', gitDir, ...args],
+          input === undefined ? {} : { input },
+        );
         const warnings: string[] = [];
         const ctx = {
           ...createNodeContext({ workDir: await caseRepo('tsgit') }),

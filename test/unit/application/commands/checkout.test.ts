@@ -1772,7 +1772,7 @@ describe('Given a path restore whose source names nothing', () => {
         expression: 'x',
         candidates: [],
       });
-      vi.spyOn(revParseMod, 'revParse').mockRejectedValue(failure);
+      vi.spyOn(revParseMod, 'evaluateRevision').mockRejectedValue(failure);
       const sut = checkout;
 
       // Act

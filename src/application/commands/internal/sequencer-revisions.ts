@@ -8,7 +8,7 @@ import type { Context } from '../../../ports/context.js';
 import { limitList, resolveLimitOptions } from '../../primitives/internal/limit-list.js';
 import { peelRefToCommit } from '../../primitives/internal/peel-ref-to-commit.js';
 import { readObject } from '../../primitives/read-object.js';
-import { revParse } from '../rev-parse.js';
+import { evaluateRevision } from '../rev-parse.js';
 import { resolveCommitIsh } from './commit-ish.js';
 
 const RANGE = /^(.*)\.\.(.*)$/;
@@ -94,16 +94,16 @@ const addSeed = async (ctx: Context, arg: string, seeds: SeedLists): Promise<voi
   const range = RANGE.exec(arg);
   if (range !== null) {
     const [excluded, tip] = [orHead(range[1] as string), orHead(range[2] as string)];
-    addExcluded(seeds, { name: excluded, id: await revParse(ctx, excluded) });
-    addTip(seeds, { name: tip, id: await revParse(ctx, tip) });
+    addExcluded(seeds, { name: excluded, id: await evaluateRevision(ctx, excluded) });
+    addTip(seeds, { name: tip, id: await evaluateRevision(ctx, tip) });
     return;
   }
   if (arg.startsWith(EXCLUDE_PREFIX)) {
     const name = arg.slice(EXCLUDE_PREFIX.length);
-    addExcluded(seeds, { name, id: await revParse(ctx, name) });
+    addExcluded(seeds, { name, id: await evaluateRevision(ctx, name) });
     return;
   }
-  const resolve = REVISION_OPERATOR.test(arg) ? revParse : resolveCommitIsh;
+  const resolve = REVISION_OPERATOR.test(arg) ? evaluateRevision : resolveCommitIsh;
   addTip(seeds, { name: arg, id: await resolve(ctx, arg) });
 };
 

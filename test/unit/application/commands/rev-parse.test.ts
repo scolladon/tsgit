@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
-import { revParse } from '../../../../src/application/commands/rev-parse.js';
+import { evaluateRevision, revParse } from '../../../../src/application/commands/rev-parse.js';
 import { getRefStore } from '../../../../src/application/primitives/ref-store.js';
 import { writeReflog } from '../../../../src/application/primitives/reflog-store.js';
 import * as resolveRefMod from '../../../../src/application/primitives/resolve-ref.js';
@@ -427,7 +427,7 @@ describe('revParse', () => {
   );
 
   describe('Given a base matching none of the six ref candidates', () => {
-    describe('When revParse sweeps the candidates', () => {
+    describe('When one read sweeps the candidates', () => {
       it('Then probes resolveDirect exactly 6 times and never invokes the throwing resolveRef', async () => {
         // Arrange — a RefStore double (the real store, spied) counts direct
         // probes; resolveRef is the sweep's OLD throw-per-miss path.
@@ -435,10 +435,11 @@ describe('revParse', () => {
         await seedRepo(ctx, {});
         const resolveDirectSpy = vi.spyOn(getRefStore(ctx), 'resolveDirect');
         const resolveRefSpy = vi.spyOn(resolveRefMod, 'resolveRef');
+        const sut = evaluateRevision;
 
         // Act
         try {
-          await revParse(ctx, 'totally-unknown-base');
+          await sut(ctx, 'totally-unknown-base');
           expect.unreachable();
         } catch {
           // OBJECT_NOT_FOUND — already asserted by the sibling case above.

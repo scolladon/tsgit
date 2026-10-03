@@ -22,6 +22,7 @@ import { readObject } from '../primitives/read-object.js';
 import { readTree } from '../primitives/read-tree.js';
 import { listReflogs, readReflogLenient } from '../primitives/reflog-store.js';
 import { readRefCandidate } from '../primitives/resolve-ref.js';
+import { rereadsMisspeltRevision } from './internal/misspelt-revision.js';
 import { readCandidateRef, resolveAmbiguousLadder } from './internal/refname-ambiguity.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
 import {
@@ -32,7 +33,25 @@ import {
 } from './internal/rev-parse-grammar.js';
 import { resolveRevisionName } from './internal/revision-name.js';
 
+/**
+ * `git rev-parse <rev>` (and every `setup_revisions` reader): an expression
+ * that names no object is read a second time before the refusal — git's
+ * misspelt-name diagnosis re-runs `get_oid`, re-emitting each warning — unless
+ * the argument reads as a pathspec or names a working-tree path.
+ */
 export const revParse = async (ctx: Context, expression: string): Promise<ObjectId> => {
+  try {
+    return await evaluateRevision(ctx, expression);
+  } catch (error) {
+    if (await rereadsMisspeltRevision(ctx, expression, error)) {
+      await evaluateRevision(ctx, expression);
+    }
+    throw error;
+  }
+};
+
+/** git's `get_oid` over one expression, read once: the commands that refuse their argument without the misspelt-name diagnosis. */
+export const evaluateRevision = async (ctx: Context, expression: string): Promise<ObjectId> => {
   await assertOperationalRepository(ctx);
   await assertRepoSettingsValid(ctx);
   const expr = parseExpression(expression);

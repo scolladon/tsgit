@@ -25,7 +25,7 @@ import { materialisePatchFiles } from '../primitives/materialise-patch-files.js'
 import { readObject } from '../primitives/read-object.js';
 import { walkCommitsByDate } from '../primitives/walk-commits-by-date.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
-import { resolveCommit } from './internal/resolve-rev.js';
+import { resolveCommitOnce } from './internal/resolve-rev.js';
 
 export type {
   RangeDiffCommit,
@@ -97,8 +97,8 @@ const readSeries = async (
   ctx: Context,
   range: RangeDiffRange,
 ): Promise<ReadonlyArray<RenderedPatch>> => {
-  const base = await resolveCommit(ctx, range.base);
-  const tip = await resolveCommit(ctx, range.tip);
+  const base = await resolveCommitOnce(ctx, range.base);
+  const tip = await resolveCommitOnce(ctx, range.tip);
   const commits: Commit[] = [];
   for await (const commit of walkCommitsByDate(ctx, { from: [tip], until: [base] })) {
     if (commit.data.parents.length <= 1) commits.push(commit); // git's --no-merges
