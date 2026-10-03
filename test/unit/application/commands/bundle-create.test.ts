@@ -364,11 +364,12 @@ describe('bundleCreate', () => {
         const captured = buildPackSpy.mock.calls[0]![1].objects;
         const commitInput = captured.find((object) => object.id === commit1);
         const blobInput = captured.find((object) => object.id === blob);
-        expect(commitInput).toStrictEqual({ id: commit1, nameHash: 0 });
-        expect(blobInput).toStrictEqual({
+        expect(commitInput).toMatchObject({ id: commit1, nameHash: 0 });
+        expect(blobInput).toMatchObject({
           id: blob,
           nameHash: packNameHash(new TextEncoder().encode('dir/f.txt')),
         });
+        expect(captured.some((object) => object.recency !== undefined)).toBe(false);
         buildPackSpy.mockRestore();
       });
     });

@@ -333,6 +333,38 @@ describe('enumerateBundleObjects', () => {
     });
   });
 
+  describe('Given an annotated tag pointing to a commit whose parent is a have', () => {
+    describe('When enumerateBundleObjects is called with wants=[tagOid] haves=[parent]', () => {
+      it('Then the walk starts from the tagged commit, so the parent is the boundary', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const tree = await makeTree(ctx, [treeEntry(BLOB_MODE, 'f.txt', await makeBlob(ctx, 'A'))]);
+        const parent = await makeCommit(ctx, tree, [], 'parent', 1);
+        const tagged = await makeCommit(ctx, tree, [parent], 'tagged', 2);
+        const tag: Tag = {
+          type: 'tag',
+          id: '' as ObjectId,
+          data: {
+            object: tagged,
+            objectType: 'commit',
+            tagName: 'v1.1',
+            message: 'release 1.1',
+            extraHeaders: [],
+          },
+        };
+        const tagId = await writeObject(ctx, tag);
+        const sut = enumerateBundleObjects;
+
+        // Act
+        const result = await sut(ctx, { wants: [tagId], haves: [parent] });
+
+        // Assert
+        expect(result.boundary).toEqual([parent]);
+        expect(sorted(idsOf(result.objects))).toEqual(sorted([tagId, tagged]));
+      });
+    });
+  });
+
   describe('Given maxObjects cap of 1 and a commit with a tree', () => {
     describe('When enumerateBundleObjects is called', () => {
       it('Then throws PACK_TOO_LARGE when the second object would be emitted', async () => {
@@ -1045,6 +1077,49 @@ describe('enumerateBundleObjects — name hash folding', () => {
 
         // Assert
         expect(nameHashOf(result.objects, tagId)).toBe(0);
+      });
+    });
+  });
+
+  describe('Given a have line reaching the shared ancestor through six clock-skewed commits', () => {
+    const buildSkewed = async (): Promise<{
+      readonly ctx: Context;
+      readonly ancestor: ObjectId;
+      readonly tip: ObjectId;
+      readonly have: ObjectId;
+    }> => {
+      const ctx = await buildSeededContext();
+      const fileTree = async (name: string): Promise<ObjectId> =>
+        makeTree(ctx, [treeEntry(BLOB_MODE, `${name}.txt`, await makeBlob(ctx, name))]);
+      const ancestor = await makeCommit(ctx, await fileTree('ancestor'), [], 'ancestor', 500);
+      const tip = await makeCommit(ctx, await fileTree('tip'), [ancestor], 'tip', 1000);
+      let line = ancestor;
+      for (let step = 1; step <= 6; step += 1) {
+        line = await makeCommit(
+          ctx,
+          await fileTree(`line-${step}`),
+          [line],
+          `line ${step}`,
+          300 - step,
+        );
+      }
+      const have = await makeCommit(ctx, await fileTree('have'), [line], 'have', 400);
+      return { ctx, ancestor, tip, have };
+    };
+
+    describe('When enumerateBundleObjects bundles the tip excluding that line', () => {
+      it('Then the ancestor is bundled with its objects and nothing is a prerequisite, as git bundle create gives up on the line', async () => {
+        // Arrange
+        const { ctx, ancestor, tip, have } = await buildSkewed();
+        const sut = enumerateBundleObjects;
+
+        // Act
+        const result = await sut(ctx, { wants: [tip], haves: [have] });
+
+        // Assert
+        expect(idsOf(result.objects)).toContain(ancestor);
+        expect(result.objects).toHaveLength(6);
+        expect(result.boundary).toEqual([]);
       });
     });
   });

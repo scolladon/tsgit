@@ -16,7 +16,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 
-import { enumerateBundleObjects } from '../../../../../src/application/primitives/enumerate-bundle-objects.js';
 import { computeClosure } from '../../../../../src/application/primitives/internal/closure-engine.js';
 import * as midxBitmapBindingModule from '../../../../../src/application/primitives/internal/midx-bitmap-binding.js';
 import * as packBitmapBindingModule from '../../../../../src/application/primitives/internal/pack-bitmap-binding.js';
@@ -231,6 +230,20 @@ const buildHavesFixture = async (): Promise<HavesFixture> => {
   const want = await writeCommit(ctx, rootTree, [have], 'want');
 
   return { ctx, root, have, want };
+};
+
+/** Every object `want` reaches that `have` does not — the exact set difference. */
+const exactDifference = async (
+  ctx: Context,
+  want: ObjectId,
+  have: ObjectId,
+): Promise<ReadonlySet<ObjectId>> => {
+  const reach = async (tip: ObjectId): Promise<ReadonlyArray<ObjectId>> =>
+    (await computeClosure(ctx, { tier: 'walk', wants: [tip], not: [], objects: true })).objects.map(
+      (object) => object.id,
+    );
+  const excluded = new Set(await reach(have));
+  return new Set((await reach(want)).filter((id) => !excluded.has(id)));
 };
 
 afterEach(() => {
@@ -1176,7 +1189,7 @@ describe('computeClosure', () => {
 
         // Act
         const actual = await sut(ctx, { tier: 'walk', wants: [want], not: [have], objects: true });
-        const exact = await enumerateBundleObjects(ctx, { wants: [want], haves: [have] });
+        const exactIds = await exactDifference(ctx, want, have);
         const reachableFromNotTip = await sut(ctx, {
           tier: 'walk',
           wants: [have],
@@ -1186,7 +1199,6 @@ describe('computeClosure', () => {
 
         // Assert — the walk's answer is a superset of the exact difference.
         const actualIds = new Set(actual.objects.map((o) => o.id));
-        const exactIds = new Set(exact.objects.map((o) => o.id));
         for (const id of exactIds) {
           expect(actualIds.has(id)).toBe(true);
         }
@@ -1210,11 +1222,10 @@ describe('computeClosure', () => {
 
         // Act
         const actual = await sut(ctx, { tier: 'walk', wants: [want], not: [have], objects: true });
-        const exact = await enumerateBundleObjects(ctx, { wants: [want], haves: [have] });
+        const exactIds = await exactDifference(ctx, want, have);
 
         // Assert
         const actualIds = new Set(actual.objects.map((o) => o.id));
-        const exactIds = new Set(exact.objects.map((o) => o.id));
         const extra = [...actualIds].filter((id) => !exactIds.has(id));
         expect(extra.length).toBeGreaterThan(0);
       });

@@ -1430,3 +1430,76 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop', () => {
     });
   });
 });
+
+/** `git commit-tree` at `1_700_000_000 + offset`, owning one file named `name`. */
+const commitAt = (
+  dir: string,
+  name: string,
+  offset: number,
+  parents: ReadonlyArray<string>,
+): string => {
+  const blob = runGit(['-C', dir, 'hash-object', '-w', '--stdin'], { input: name }).trim();
+  const tree = runGit(['-C', dir, 'mktree'], {
+    input: `100644 blob ${blob}\t${name}.txt\n`,
+  }).trim();
+  const date = `${1_700_000_000 + offset} +0000`;
+  return runGit(
+    ['-C', dir, 'commit-tree', tree, '-m', name, ...parents.flatMap((p) => ['-p', p])],
+    {
+      env: { ...runGitEnv(), GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date },
+    },
+  ).trim();
+};
+
+/** The object count a bundle's pack header declares. */
+const packedCount = (bundleBytes: Uint8Array): number => {
+  const pack = bundleBytes.subarray(parseBundleHeader(bundleBytes, '<test>').packOffset);
+  return new DataView(pack.buffer, pack.byteOffset + 8, 4).getUint32(0);
+};
+
+describe.skipIf(!GIT_AVAILABLE)('bundle interop — clock-skewed have lines', () => {
+  let dir: string;
+
+  beforeAll(async () => {
+    dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-bundle-skewed-'));
+    runGit(['-C', dir, 'init', '-q', '-b', 'main']);
+    const ancestor = commitAt(dir, 'ancestor', 500, []);
+    runGit(['-C', dir, 'update-ref', 'refs/heads/main', commitAt(dir, 'tip', 1000, [ancestor])]);
+    for (const [branch, depth] of [
+      ['far', 6],
+      ['near', 3],
+    ] as const) {
+      let line = ancestor;
+      for (let step = 1; step <= depth; step += 1) {
+        line = commitAt(dir, `${branch}-${step}`, 300 - step, [line]);
+      }
+      runGit(['-C', dir, 'update-ref', `refs/heads/${branch}`, commitAt(dir, branch, 400, [line])]);
+    }
+  });
+
+  afterAll(async () => rm(dir, { recursive: true, force: true }));
+
+  describe.each(['far', 'near'])(
+    'Given bundleCreate main ^%s, When comparing to git bundle create',
+    (excluded) => {
+      it('Then the header and the packed object count match git, which gives up on a deep skewed line', async () => {
+        // Arrange
+        const gitBytes = gitBundleCreate(
+          dir,
+          path.join(dir, `${excluded}.bundle`),
+          ['main', `^${excluded}`],
+          runGitEnv(),
+        );
+        const ctx = createNodeContext({ workDir: dir });
+        const sut = bundleCreate;
+
+        // Act
+        const result = await sut(ctx, { revs: [{ tip: 'main' }, { exclude: excluded }] });
+
+        // Assert
+        expect(headerBytes(result.bytes)).toEqual(headerBytes(gitBytes));
+        expect(packedCount(result.bytes)).toBe(packedCount(gitBytes));
+      });
+    },
+  );
+});
