@@ -13,6 +13,7 @@ import { NodeCompressor } from './adapters/node/node-compressor.js';
 import { nativeMachineFacts } from './adapters/node/node-concurrency.js';
 import { NodeEnvReader } from './adapters/node/node-env-reader.js';
 import { NodeFileSystem, readRegularFileSync } from './adapters/node/node-file-system.js';
+import { nodeFilenameProbe } from './adapters/node/node-filename-probe.js';
 import { NodeHashService } from './adapters/node/node-hash-service.js';
 import { NodeHookRunner } from './adapters/node/node-hook-runner.js';
 import { NodeHttpTransport } from './adapters/node/node-http-transport.js';
@@ -167,6 +168,7 @@ export const openRepository = async (opts: OpenNodeRepositoryOptions = {}): Prom
     }),
     concurrency: deriveLimits(nativeMachineFacts()),
     windowsPathSyntax: nativePolicy.windowsSyntax,
+    filenameProbe: nodeFilenameProbe,
     makeConfinedFs: (roots: ReadonlyArray<string>): NodeFileSystem =>
       new NodeFileSystem([...roots], {
         pathPolicy: nativePolicy,

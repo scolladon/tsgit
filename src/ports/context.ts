@@ -7,6 +7,7 @@ import type { CommandRunner } from './command-runner.js';
 import type { Compressor } from './compressor.js';
 import type { EnvReader } from './env-reader.js';
 import type { FileSystem } from './file-system.js';
+import type { FilenameProbe } from './filename-probe.js';
 import type { HashService } from './hash-service.js';
 import type { HookRunner } from './hook-runner.js';
 import type { HttpTransport } from './http-transport.js';
@@ -342,6 +343,13 @@ export interface Context {
    * where callers then narrow `ctx.fs`.
    */
   readonly alternatePathProbe?: (path: string) => AlternatePathProbe;
+  /**
+   * Optional capability answering git's `check_filename` existence check for a
+   * revision argument that climbs with `..`: the one read the misspelt-revision
+   * probe makes outside the repository, existence only. Supplied by the node
+   * runtime; absent on browser / memory, where every such path reads as absent.
+   */
+  readonly filenameProbe?: FilenameProbe;
   /**
    * True when the filesystem reads paths the Windows way — `\` separators, drive letters, UNC
    * shares — as git for Windows does (the node adapter on Windows). Absent ⇒ POSIX paths.

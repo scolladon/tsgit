@@ -19,6 +19,7 @@ import { NodeCompressor } from './node-compressor.js';
 import { nativeMachineFacts } from './node-concurrency.js';
 import { NodeEnvReader } from './node-env-reader.js';
 import { NodeFileSystem } from './node-file-system.js';
+import { nodeFilenameProbe } from './node-filename-probe.js';
 import { NodeHashService } from './node-hash-service.js';
 import { NodeHookRunner } from './node-hook-runner.js';
 import { NodeHttpTransport } from './node-http-transport.js';
@@ -135,6 +136,7 @@ export function createNodeContext(options: NodeAdapterOptions): Context {
     ),
     alternatePathProbe: (path: string): AlternatePathProbe =>
       metadataProbe(new NodeFileSystem(nodePath.parse(path).root, syncIoOptions(syncIo))),
+    filenameProbe: nodeFilenameProbe,
   };
   return createContext(parts);
 }

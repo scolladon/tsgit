@@ -36,6 +36,7 @@ import {
 } from './ports/context.js';
 import type { EnvReader } from './ports/env-reader.js';
 import type { FileSystem } from './ports/file-system.js';
+import type { FilenameProbe } from './ports/filename-probe.js';
 import type { HashService } from './ports/hash-service.js';
 import type { HookRunner } from './ports/hook-runner.js';
 import type { HttpTransport } from './ports/http-transport.js';
@@ -315,6 +316,8 @@ export interface RuntimeFallback {
   readonly makeConfinedFs?: (roots: ReadonlyArray<string>) => FileSystem;
   /** Whether the runtime's filesystem reads paths the Windows way (see `Context`). */
   readonly windowsPathSyntax?: boolean;
+  /** The runtime's existence-only filename probe (see `Context`); absent on sandboxed runtimes. */
+  readonly filenameProbe?: FilenameProbe;
 }
 
 /**
@@ -514,6 +517,7 @@ interface OptionalCtxInputs {
   readonly concurrency: ConcurrencyLimits | undefined;
   readonly cacheBudgets: Context['cacheBudgets'];
   readonly windowsPathSyntax: boolean | undefined;
+  readonly filenameProbe: FilenameProbe | undefined;
 }
 
 /**
@@ -534,6 +538,7 @@ const buildOptionalCtxFields = (inputs: OptionalCtxInputs) => ({
   ...(inputs.windowsPathSyntax !== undefined
     ? { windowsPathSyntax: inputs.windowsPathSyntax }
     : {}),
+  ...(inputs.filenameProbe !== undefined ? { filenameProbe: inputs.filenameProbe } : {}),
 });
 
 /**
@@ -721,6 +726,7 @@ export const openRepository = async (
       concurrency: fallback.concurrency,
       cacheBudgets: fallback.cacheBudgets,
       windowsPathSyntax: fallback.windowsPathSyntax,
+      filenameProbe: fallback.filenameProbe,
     }),
     promisor,
     session: createSession(),

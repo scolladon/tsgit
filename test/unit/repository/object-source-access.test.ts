@@ -3,6 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { nodeFilenameProbe } from '../../../src/adapters/node/node-filename-probe.js';
 import { nativePolicy } from '../../../src/adapters/node/path-policy.js';
 import {
   posixGitPathSyntax,
@@ -171,6 +172,18 @@ describe('Context.objectSourceAccess (node)', () => {
         expect(repo.ctx.windowsPathSyntax).toBe(nativePolicy.windowsSyntax);
         await repo.dispose();
       });
+
+      it('Then filenameProbe is the node lstat existence probe', async () => {
+        // Arrange
+        const sut = openRepository;
+
+        // Act
+        const repo = await sut({ cwd: workDir });
+
+        // Assert
+        expect(repo.ctx.filenameProbe).toBe(nodeFilenameProbe);
+        await repo.dispose();
+      });
     });
   });
 
@@ -188,6 +201,21 @@ describe('Context.objectSourceAccess (node)', () => {
 
         // Assert
         expect(repo.ctx.windowsPathSyntax).toBeUndefined();
+        await repo.dispose();
+      });
+
+      it('Then filenameProbe is absent', async () => {
+        // Arrange
+        const sut = openMemoryRepository;
+
+        // Act
+        const repo = await sut({
+          cwd: '/repo',
+          files: { '/repo/.git/HEAD': encode('ref: refs/heads/main\n') },
+        });
+
+        // Assert
+        expect(repo.ctx.filenameProbe).toBeUndefined();
         await repo.dispose();
       });
     });

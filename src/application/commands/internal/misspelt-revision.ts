@@ -3,6 +3,11 @@
  * argument that named no object is read a second time, re-emitting every
  * warning its first read printed — unless the argument reads as a pathspec or
  * names a path that exists, which git takes as a filename instead.
+ *
+ * An argument climbing with `..` is checked the way git's `lstat` sees it,
+ * hops resolved by the operating system from the worktree (the git dir when
+ * bare): the one read this probe makes outside the repository, through an
+ * existence-only capability. Without that capability the path reads as absent.
  */
 import { errorDataCode } from '../../../domain/error-data-code.js';
 import { looksLikePathspec } from '../../../domain/pathspec/index.js';
@@ -24,12 +29,13 @@ const MISSING_FILE_CODES: ReadonlySet<string | undefined> = new Set([
 
 const PARENT_SEGMENT = '..';
 
+const climbsWithParentHop = (arg: string): boolean => arg.split('/').includes(PARENT_SEGMENT);
+
 const namesExistingPath = async (ctx: Context, arg: string): Promise<boolean> => {
-  // A parent hop is never probed: the adapters confine every path to the
-  // repository, so such an argument cannot be told apart from an absent one.
-  if (arg.split('/').includes(PARENT_SEGMENT)) return false;
+  const path = `${ctx.layout.workDir ?? ctx.layout.gitDir}/${arg}`;
+  if (climbsWithParentHop(arg)) return (await ctx.filenameProbe?.(path)) ?? false;
   try {
-    return await pathIsOccupied(ctx, `${ctx.layout.workDir ?? ctx.layout.gitDir}/${arg}`);
+    return await pathIsOccupied(ctx, path);
   } catch (error) {
     if (MISSING_FILE_CODES.has(errorDataCode(error))) return false;
     throw error;

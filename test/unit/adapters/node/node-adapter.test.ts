@@ -10,6 +10,7 @@ import {
 import { NodeCommandRunner } from '../../../../src/adapters/node/node-command-runner.js';
 import { NodeCompressor } from '../../../../src/adapters/node/node-compressor.js';
 import { NodeFileSystem } from '../../../../src/adapters/node/node-file-system.js';
+import { nodeFilenameProbe } from '../../../../src/adapters/node/node-filename-probe.js';
 import { NodeHashService } from '../../../../src/adapters/node/node-hash-service.js';
 import { NodeHookRunner } from '../../../../src/adapters/node/node-hook-runner.js';
 import { NodeHttpTransport } from '../../../../src/adapters/node/node-http-transport.js';
@@ -52,6 +53,21 @@ describe('createNodeContext', () => {
         // Assert
         expect(result?.isDirectory).toBe(true);
         expect(Object.keys(probe ?? {}).sort()).toEqual(['lstat', 'readlink', 'stat']);
+      });
+    });
+  });
+
+  describe('Given workDir only', () => {
+    describe('When its filename probe is read', () => {
+      it('Then it is the node lstat existence probe', () => {
+        // Arrange
+        const sut = createNodeContext;
+
+        // Act
+        const result = sut({ workDir: '/tmp/tsgit-ctx-test' }).filenameProbe;
+
+        // Assert
+        expect(result).toBe(nodeFilenameProbe);
       });
     });
   });

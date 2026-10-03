@@ -135,7 +135,7 @@ describe('Given an expression whose name warns but which names no object', () =>
   });
 
   describe('When revParse reads an argument climbing out of the repository', () => {
-    it('Then it refuses with the read failure, never probing outside', async () => {
+    it('Then it refuses with the read failure', async () => {
       // Arrange
       const ctx = await danglingRepo(() => undefined);
       const sut = revParse;
@@ -145,6 +145,84 @@ describe('Given an expression whose name warns but which names no object', () =>
 
       // Assert
       expect(result).toEqual({ code: 'OBJECT_NOT_FOUND', id: '../outside' });
+    });
+  });
+
+  describe('When its parent hops climb to a path the filename probe finds', () => {
+    it('Then it refuses after the one read, probing the path as written', async () => {
+      // Arrange
+      const warnings: string[] = [];
+      const repo = await danglingRepo((message) => warnings.push(message));
+      const probed: string[] = [];
+      const filenameProbe = (path: string): Promise<boolean> => {
+        probed.push(path);
+        return Promise.resolve(true);
+      };
+      const ctx = { ...repo, filenameProbe } as Context;
+      const sut = revParse;
+
+      // Act
+      const result = await failureOf(() => sut(ctx, 'dg:a/../../outside'));
+
+      // Assert
+      expect(result).toMatchObject({ code: 'PATH_NOT_IN_TREE' });
+      expect(warnings).toEqual([DANGLING]);
+      expect(probed).toEqual([`${repo.layout.workDir}/dg:a/../../outside`]);
+    });
+  });
+
+  describe('When its parent hops climb to a path the filename probe does not find', () => {
+    it('Then it reads the name a second time before refusing', async () => {
+      // Arrange
+      const warnings: string[] = [];
+      const repo = await danglingRepo((message) => warnings.push(message));
+      const filenameProbe = (): Promise<boolean> => Promise.resolve(false);
+      const ctx = { ...repo, filenameProbe } as Context;
+      const sut = revParse;
+
+      // Act
+      await failureOf(() => sut(ctx, 'dg:a/../../absent'));
+
+      // Assert
+      expect(warnings).toEqual([DANGLING, DANGLING]);
+    });
+  });
+
+  describe('When a bare repository probes parent hops', () => {
+    it('Then the filename probe starts from the git dir', async () => {
+      // Arrange
+      const repo = await danglingRepo(() => undefined);
+      const { workDir: _workDir, ...bareLayout } = repo.layout;
+      const probed: string[] = [];
+      const filenameProbe = (path: string): Promise<boolean> => {
+        probed.push(path);
+        return Promise.resolve(true);
+      };
+      const ctx = { ...repo, layout: { ...bareLayout, bare: true }, filenameProbe } as Context;
+      const sut = revParse;
+
+      // Act
+      await failureOf(() => sut(ctx, 'dg:a/../../outside'));
+
+      // Assert
+      expect(probed).toEqual([`${repo.layout.gitDir}/dg:a/../../outside`]);
+    });
+  });
+
+  describe('When the filename probe is refused', () => {
+    it('Then revParse surfaces the refusal', async () => {
+      // Arrange
+      const repo = await danglingRepo(() => undefined);
+      const denied = { code: 'PERMISSION_DENIED', path: 'dg:a/../../x' } as const;
+      const filenameProbe = (): Promise<boolean> => Promise.reject(new TsgitError(denied));
+      const ctx = { ...repo, filenameProbe } as Context;
+      const sut = revParse;
+
+      // Act
+      const result = await failureOf(() => sut(ctx, 'dg:a/../../x'));
+
+      // Assert
+      expect(result).toEqual(denied);
     });
   });
 
