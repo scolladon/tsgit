@@ -70,6 +70,56 @@ async function buildDiamond(
   return { a, b, c, d };
 }
 
+type DatedCommit = (msg: string, ts: number, parents: ReadonlyArray<ObjectId>) => Promise<ObjectId>;
+
+async function datedCommitter(
+  ctx: Awaited<ReturnType<typeof buildSeededContext>>,
+): Promise<DatedCommit> {
+  const treeId = await writeObject(ctx, { type: 'tree', entries: [], id: '' as ObjectId });
+  return (msg, ts, parents) =>
+    createCommit(ctx, {
+      tree: treeId,
+      parents: [...parents],
+      author: { ...AUTHOR, timestamp: ts },
+      committer: { ...AUTHOR, timestamp: ts },
+      message: msg,
+    });
+}
+
+/**
+ * r <- a1 <- a2 and r <- b1 <- b2 (b2 committed before b1), m = merge(a2, b2),
+ * a1 <- c1, n = merge(m, c1): the date order interleaves the two lines.
+ */
+async function buildSkewedMerge(
+  ctx: Awaited<ReturnType<typeof buildSeededContext>>,
+): Promise<Readonly<Record<'r' | 'a1' | 'a2' | 'b1' | 'b2' | 'm' | 'c1' | 'n', ObjectId>>> {
+  const commit = await datedCommitter(ctx);
+  const r = await commit('r', 100, []);
+  const a1 = await commit('a1', 200, [r]);
+  const a2 = await commit('a2', 400, [a1]);
+  const b1 = await commit('b1', 300, [r]);
+  const b2 = await commit('b2', 150, [b1]);
+  const m = await commit('m', 500, [a2, b2]);
+  const c1 = await commit('c1', 450, [a1]);
+  const n = await commit('n', 600, [m, c1]);
+  return { r, a1, a2, b1, b2, m, c1, n };
+}
+
+/** i <- x, and e reaching x through six commits dated older than x. */
+async function buildOlderExcludedChain(
+  ctx: Awaited<ReturnType<typeof buildSeededContext>>,
+): Promise<{ readonly ids: ReadonlyArray<ObjectId>; readonly i: ObjectId; readonly e: ObjectId }> {
+  const commit = await datedCommitter(ctx);
+  const x = await commit('x', 500, []);
+  const i = await commit('i', 1000, [x]);
+  const chain: ObjectId[] = [x];
+  for (let step = 1; step <= 6; step += 1) {
+    chain.push(await commit(`k${step}`, 300 - step, [chain[chain.length - 1]!]));
+  }
+  const e = await commit('e', 400, [chain[chain.length - 1]!]);
+  return { ids: [...chain, i, e], i, e };
+}
+
 async function collect(iter: AsyncIterable<Commit>): Promise<Commit[]> {
   const out: Commit[] = [];
   for await (const c of iter) out.push(c);
@@ -167,6 +217,86 @@ describe('walkCommits', () => {
 
         // Assert
         expect(result.map((commit) => commit.id)).toEqual([d, c, a]);
+      });
+    });
+  });
+
+  describe('Given a merge whose two lines interleave by commit date', () => {
+    describe('When walkCommits walks in topo-order', () => {
+      it('Then each line of history is yielded whole, as git rev-list --topo-order does', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const { r, a1, a2, b1, b2, m, c1, n } = await buildSkewedMerge(ctx);
+        const sut = walkCommits;
+
+        // Act
+        const result = await collect(sut(ctx, { from: [n], order: 'topo-order' }));
+
+        // Assert
+        expect(result.map((commit) => commit.id)).toEqual([n, c1, m, b2, b1, a2, a1, r]);
+      });
+    });
+
+    describe('When walkCommits walks in topo-order from two tips', () => {
+      it('Then the newer tip starts the walk whatever order the tips are given in', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const { r, a1, b1, b2, c1 } = await buildSkewedMerge(ctx);
+        const sut = walkCommits;
+
+        // Act
+        const result = await collect(sut(ctx, { from: [b2, c1], order: 'topo-order' }));
+
+        // Assert
+        expect(result.map((commit) => commit.id)).toEqual([c1, a1, b2, b1, r]);
+      });
+    });
+
+    describe('When walkCommits walks in topo-order excluding one side', () => {
+      it('Then the excluded side and its ancestors are left out', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const { a1, a2, b1, b2, m, c1, n } = await buildSkewedMerge(ctx);
+        const sut = walkCommits;
+
+        // Act
+        const result = await collect(sut(ctx, { from: [n], until: [b1], order: 'topo-order' }));
+
+        // Assert
+        expect(result.map((commit) => commit.id)).toEqual([n, c1, m, b2, a2, a1]);
+      });
+    });
+  });
+
+  describe('Given an excluded line reaching a shown commit through six older commits', () => {
+    describe('When walkCommits walks in topo-order without a commit-graph', () => {
+      it('Then the limited walk gives up before reaching the shared commit, as git does', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const { ids, i, e } = await buildOlderExcludedChain(ctx);
+        const sut = walkCommits;
+
+        // Act
+        const result = await collect(sut(ctx, { from: [i], until: [e], order: 'topo-order' }));
+
+        // Assert
+        expect(result.map((commit) => commit.id)).toEqual([i, ids[0]]);
+      });
+    });
+
+    describe('When walkCommits walks in topo-order over a commit-graph', () => {
+      it('Then the generation walk excludes the shared commit exactly, as git does', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const { ids, i, e } = await buildOlderExcludedChain(ctx);
+        await writeCommitGraph(ctx, [await asCommits(ctx, ids)]);
+        const sut = walkCommits;
+
+        // Act
+        const result = await collect(sut(ctx, { from: [i], until: [e], order: 'topo-order' }));
+
+        // Assert
+        expect(result.map((commit) => commit.id)).toEqual([i]);
       });
     });
   });

@@ -1,10 +1,16 @@
+import { sortInTopologicalOrder } from '../../domain/commit/topological-sort.js';
 import { invalidWalkInput, operationAborted } from '../../domain/error.js';
 import type { Commit, ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { asIdSet } from './internal/as-id-set.js';
 import { type BoundedReader, createBoundedReader } from './internal/bounded-reader.js';
 import { limitFor } from './internal/concurrency.js';
-import { limitList, resolveLimitOptions } from './internal/limit-list.js';
+import {
+  limitList,
+  resolveLimitOptions,
+  topoOrderSettle,
+  walkLimited,
+} from './internal/limit-list.js';
 import { readCommit } from './internal/read-commit.js';
 import { commitHeader } from './internal/read-commit-graph.js';
 import { resolveShallow } from './internal/shallow-set.js';
@@ -16,6 +22,7 @@ import {
   REASON_WALK_QUEUE_OVERFLOW,
   REASON_WALK_TOO_MANY_SEEDS,
 } from './validators.js';
+import { walkCommitsByDate } from './walk-commits-by-date.js';
 
 interface WalkState {
   // queue only ever grows (drained via `head`, never `shift`), and `head` is
@@ -108,13 +115,32 @@ async function resolveFrontierEntry(
 
 /**
  * Walk the commits reachable from `from` in queue order: breadth-first, or
- * along first parents only. Excluded commits (`until`) are settled first as git's `limit_list`
- * does, so an ancestor of an excluded commit is never yielded, whichever path
- * reaches it.
+ * along first parents only; or in git's `--topo-order`. Excluded commits
+ * (`until`) are settled first as git's `limit_list` does, so an ancestor of
+ * an excluded commit is never yielded, whichever path reaches it.
  */
 export function walkCommits(ctx: Context, options: WalkCommitsOptions): AsyncIterable<Commit> {
+  if (options.order === 'topo-order') return walkInTopoOrder(ctx, options);
   const until = asIdSet(options.until);
   return until.size > 0 ? walkExcluding(ctx, options, until) : walkCommitsStoppingAt(ctx, options);
+}
+
+/** git's `rev-list --topo-order`: the whole date-ordered walk first, then each line of history shown whole. */
+async function* walkInTopoOrder(ctx: Context, options: WalkCommitsOptions): AsyncIterable<Commit> {
+  validateOptions(options);
+  const commits: Commit[] = [];
+  for await (const commit of await walkByDate(ctx, options)) commits.push(commit);
+  yield* sortInTopologicalOrder(commits, 'graph');
+}
+
+async function walkByDate(
+  ctx: Context,
+  options: WalkCommitsOptions,
+): Promise<AsyncIterable<Commit>> {
+  const until = asIdSet(options.until);
+  if (until.size === 0) return walkCommitsByDate(ctx, options);
+  const limits = { until, firstParent: false, settle: await topoOrderSettle(ctx) } as const;
+  return walkLimited(ctx, await resolveLimitOptions(ctx, options, limits));
 }
 
 async function* walkExcluding(

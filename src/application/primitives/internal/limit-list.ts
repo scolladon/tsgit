@@ -6,7 +6,7 @@ import type { Context } from '../../../ports/context.js';
 import { type BoundedReader, createBoundedReader } from './bounded-reader.js';
 import { limitFor } from './concurrency.js';
 import { readCommit } from './read-commit.js';
-import { commitHeader } from './read-commit-graph.js';
+import { commitHeader, generationNumbersEnabled } from './read-commit-graph.js';
 import { resolveShallow } from './shallow-set.js';
 
 /** git's `SLOP`: uninteresting commits still examined once only uninteresting ones remain. */
@@ -78,6 +78,13 @@ export const resolveLimitOptions = async (
   shallow: await resolveShallow(ctx, options.shallow),
   ...limits,
 });
+
+/**
+ * How git limits a topologically sorted walk: over a commit-graph carrying
+ * generation numbers its topo walk settles by generation, else `limit_list`.
+ */
+export const topoOrderSettle = async (ctx: Context): Promise<LimitSettle> =>
+  (await generationNumbersEnabled(ctx)) ? 'generation' : 'slop';
 
 interface Parsed {
   readonly parents: ReadonlyArray<ObjectId>;

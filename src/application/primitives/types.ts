@@ -138,11 +138,13 @@ export interface WalkCommitsOptions {
   readonly until?: ReadonlyArray<ObjectId> | ReadonlySet<ObjectId>;
   /**
    * `'breadth-first'` (default) yields each commit after the commit that first
-   * reached it, parents in order — a queue, not git's `--topo-order` (`log`'s
-   * `topoOrder` is that). `'first-parent'` follows only first parents.
-   * `'topo'` is the former name of `'breadth-first'`, kept for compatibility.
+   * reached it, parents in order — a queue. `'topo-order'` is git's
+   * `rev-list --topo-order`: every commit is read before the first is yielded,
+   * a commit comes after all its children and each line of history is yielded
+   * whole. `'first-parent'` follows only first parents. `'topo'` is the former
+   * name of `'breadth-first'`, kept for compatibility.
    */
-  readonly order?: 'breadth-first' | 'topo' | 'first-parent';
+  readonly order?: 'breadth-first' | 'topo' | 'topo-order' | 'first-parent';
   readonly ignoreMissing?: boolean;
   readonly verifyHash?: boolean;
   /**

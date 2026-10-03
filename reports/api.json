@@ -126254,31 +126254,23 @@
 									},
 									{
 										"kind": "text",
-										"text": " (default) yields each commit after the commit that first\nreached it, parents in order — a queue, not git's "
+										"text": " (default) yields each commit after the commit that first\nreached it, parents in order — a queue. "
 									},
 									{
 										"kind": "code",
-										"text": "`--topo-order`"
+										"text": "`'topo-order'`"
 									},
 									{
 										"kind": "text",
-										"text": " ("
+										"text": " is git's\n"
 									},
 									{
 										"kind": "code",
-										"text": "`log`"
+										"text": "`rev-list --topo-order`"
 									},
 									{
 										"kind": "text",
-										"text": "'s\n"
-									},
-									{
-										"kind": "code",
-										"text": "`topoOrder`"
-									},
-									{
-										"kind": "text",
-										"text": " is that). "
+										"text": ": every commit is read before the first is yielded,\na commit comes after all its children and each line of history is yielded\nwhole. "
 									},
 									{
 										"kind": "code",
@@ -126286,7 +126278,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " follows only first parents.\n"
+										"text": " follows only first parents. "
 									},
 									{
 										"kind": "code",
@@ -126294,7 +126286,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " is the former name of "
+										"text": " is the former\nname of "
 									},
 									{
 										"kind": "code",
@@ -126316,6 +126308,10 @@
 									{
 										"type": "literal",
 										"value": "topo"
+									},
+									{
+										"type": "literal",
+										"value": "topo-order"
 									},
 									{
 										"type": "literal",
@@ -164504,7 +164500,15 @@
 									},
 									{
 										"kind": "text",
-										"text": " in queue order: breadth-first, or\nalong first parents only. Excluded commits ("
+										"text": " in queue order: breadth-first, or\nalong first parents only; or in git's "
+									},
+									{
+										"kind": "code",
+										"text": "`--topo-order`"
+									},
+									{
+										"kind": "text",
+										"text": ". Excluded commits\n("
 									},
 									{
 										"kind": "code",
@@ -164520,7 +164524,7 @@
 									},
 									{
 										"kind": "text",
-										"text": "\ndoes, so an ancestor of an excluded commit is never yielded, whichever path\nreaches it."
+										"text": " does, so an ancestor of\nan excluded commit is never yielded, whichever path reaches it."
 									}
 								]
 							},

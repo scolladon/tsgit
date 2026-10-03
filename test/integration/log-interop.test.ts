@@ -19,9 +19,9 @@
  * the order rests on git's queue tie-break alone (first enqueued pops first).
  *
  * @proves
- *   surface:        log
+ *   surface:        log, walkCommits
  *   bucket:         cross-tool-interop
- *   unique:         converged log order / first-parent / tag-peel / exclude vs git
+ *   unique:         converged log order / first-parent / tag-peel / exclude vs git, walkCommits topo-order vs rev-list --topo-order
  *   interopSurface: log
  */
 import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
@@ -30,6 +30,7 @@ import * as path from 'node:path';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { LogOptions } from '../../src/application/commands/log.js';
+import type { ObjectId } from '../../src/domain/objects/index.js';
 import { openRepository } from '../../src/index.node.js';
 import { buildEqualDateHistory } from './equal-date-history-fixture.js';
 import { GIT_AVAILABLE, git, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
@@ -311,6 +312,26 @@ const logIds = async (
   }
 };
 
+const topoOrderIds = async (
+  dir: string,
+  from: ReadonlyArray<string>,
+  until: ReadonlyArray<string> = [],
+): Promise<ReadonlyArray<string>> => {
+  const repo = await openRepository({ cwd: dir });
+  try {
+    const ids: string[] = [];
+    const walk = repo.primitives.walkCommits({
+      from: from as ReadonlyArray<ObjectId>,
+      until: until as ReadonlyArray<ObjectId>,
+      order: 'topo-order',
+    });
+    for await (const commit of walk) ids.push(commit.id);
+    return ids;
+  } finally {
+    await repo.dispose();
+  }
+};
+
 interface LogOidSequenceScenario {
   readonly label: string;
   // The consuming command varies per row (log vs rev-list, distinct flags);
@@ -530,6 +551,33 @@ describe.skipIf(!GIT_AVAILABLE)('log interop', () => {
     });
   });
 
+  describe.each([
+    { graph: 'without a commit-graph', withCommitGraph: false },
+    { graph: 'with a commit-graph', withCommitGraph: true },
+  ])('Given a skewed history with diverging author dates $graph', ({ withCommitGraph }) => {
+    describe.each([['main'], ['held'], ['held', 'main']])(
+      'When walkCommits walks %s in topo-order',
+      (...revs) => {
+        it('Then the oid sequence equals git rev-list --topo-order', async () => {
+          // Arrange
+          const history = await buildOrderingHistory(withCommitGraph);
+          try {
+            const tips = revs.map((rev) => git(history.dir, 'rev-parse', rev).trim());
+            const peer = oidLines(git(history.dir, 'rev-list', '--topo-order', ...tips));
+
+            // Act
+            const ours = await topoOrderIds(history.dir, tips);
+
+            // Assert
+            expect(ours).toEqual(peer);
+          } finally {
+            await history.dispose();
+          }
+        });
+      },
+    );
+  });
+
   describe('Given nested octopus merges whose commits all share one committer date', () => {
     describe.each(ORDERING_MATRIX)('When log runs with $flags', ({ flags, opts }) => {
       it('Then the oid sequence equals git log', async () => {
@@ -563,6 +611,27 @@ describe.skipIf(!GIT_AVAILABLE)('log interop', () => {
       afterAll(async () => {
         await history.dispose();
       });
+
+      describe.each(EXCLUSION_RANGES)(
+        'When walkCommits walks $tip excluding $excluded in topo-order',
+        ({ tip, excluded }) => {
+          it('Then it yields what git rev-list --topo-order lists', async () => {
+            // Arrange
+            const until = excluded.map((name) => history.ids[name] as string);
+            const from = [history.ids[tip] as string];
+            const negations = until.map((id) => `^${id}`);
+            const peer = oidLines(
+              git(history.dir, 'rev-list', '--topo-order', ...from, ...negations),
+            );
+
+            // Act
+            const ours = await topoOrderIds(history.dir, from, until);
+
+            // Assert
+            expect(ours).toEqual(peer);
+          });
+        },
+      );
 
       describe.each(EXCLUSION_RANGES)(
         'When log walks $tip excluding $excluded',

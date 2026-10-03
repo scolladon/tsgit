@@ -1,8 +1,11 @@
 import { sortInTopologicalOrder } from '../../domain/commit/topological-sort.js';
 import type { AuthorIdentity, Commit, ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
-import { resolveLimitOptions, walkLimited } from '../primitives/internal/limit-list.js';
-import { generationNumbersEnabled } from '../primitives/internal/read-commit-graph.js';
+import {
+  resolveLimitOptions,
+  topoOrderSettle,
+  walkLimited,
+} from '../primitives/internal/limit-list.js';
 import { walkCommits } from '../primitives/walk-commits.js';
 import { walkCommitsByDate } from '../primitives/walk-commits-by-date.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
@@ -93,11 +96,10 @@ const walkExcluding = async (
   until: ReadonlySet<ObjectId>,
   opts: LogOptions,
 ): Promise<AsyncIterable<Commit>> => {
-  const byGeneration = opts.topoOrder !== undefined && (await generationNumbersEnabled(ctx));
   const limits = {
     until,
     firstParent: opts.order === 'first-parent',
-    settle: byGeneration ? 'generation' : 'slop',
+    settle: opts.topoOrder === undefined ? 'slop' : await topoOrderSettle(ctx),
   } as const;
   return walkLimited(ctx, await resolveLimitOptions(ctx, { from: [startId] }, limits));
 };
