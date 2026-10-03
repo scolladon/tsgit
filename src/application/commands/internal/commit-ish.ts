@@ -9,7 +9,11 @@ import { isOid, type ObjectId, type RefName } from '../../../domain/objects/inde
 import { refNotFound } from '../../../domain/refs/error.js';
 import type { Context } from '../../../ports/context.js';
 import { resolveOidPrefix } from '../../primitives/resolve-oid-prefix.js';
-import { resolveRefOrMissing, UNREADABLE_REF_CODES } from '../../primitives/resolve-ref.js';
+import {
+  type RefCandidateOutcome,
+  readRefCandidate,
+  UNREADABLE_REF_CODES,
+} from '../../primitives/resolve-ref.js';
 import { resolveRefLadder, warnIfRefNamesObjectId } from './refname-ambiguity.js';
 
 /** What a candidate may fail with and still just not be this name: a ref
@@ -39,14 +43,14 @@ export const resolveCommitIsh = async (ctx: Context, target: string): Promise<Ob
   throw refNotFound(target as RefName);
 };
 
-/** One candidate peeled to its commit, or `undefined` when it is not this name. */
+/** One candidate peeled to its commit; a target that cannot be peeled is not this name. */
 const peeledCandidate =
   (ctx: Context) =>
-  async (candidate: RefName | 'HEAD'): Promise<ObjectId | undefined> => {
+  async (candidate: RefName | 'HEAD'): Promise<RefCandidateOutcome> => {
     try {
-      return await resolveRefOrMissing(ctx, candidate, { peel: true });
+      return await readRefCandidate(ctx, candidate, { peel: true });
     } catch (error) {
       if (!isAbsentCandidate(error)) throw error;
-      return undefined;
+      return { kind: 'missing' };
     }
   };

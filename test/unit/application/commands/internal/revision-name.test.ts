@@ -238,3 +238,106 @@ describe.each([
     });
   });
 });
+
+/** One commit on `refs/heads/<name>` for each name, plus the given raw loose-ref files. */
+const repoWithRawRefs = async (
+  branches: ReadonlyArray<string>,
+  files: Readonly<Record<string, string>>,
+  warn: (message: string) => void,
+): Promise<{ readonly ctx: Context; readonly commit: string }> => {
+  const ctx = createMemoryContext();
+  const { commitIds } = await seedRepo(ctx, { commits: [{ tree: EMPTY_TREE }] });
+  const commit = commitIds[0] as string;
+  await seedRepo(ctx, {
+    refs: Object.fromEntries(branches.map((branch) => [`refs/heads/${branch}`, commit])),
+  });
+  for (const [name, content] of Object.entries(files)) {
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/${name}`, content);
+  }
+  return { ctx: { ...ctx, logger: { warn } } as Context, commit };
+};
+
+describe.each([
+  { label: 'resolveRevisionName', sut: resolveRevisionName },
+  { label: 'resolveCommitIsh', sut: resolveCommitIsh },
+])('Given $label', ({ sut }) => {
+  describe.each([
+    {
+      when: 'a dangling symref ahead of a branch',
+      files: { 'refs/tags/dg': 'ref: refs/tags/nope\n' },
+      expected: ['ignoring dangling symref refs/tags/dg'],
+    },
+    {
+      when: 'a symref cycle ahead of a branch',
+      files: { 'refs/tags/dg': 'ref: refs/tags/dg2\n', 'refs/tags/dg2': 'ref: refs/tags/dg\n' },
+      expected: ['ignoring dangling symref refs/tags/dg'],
+    },
+    {
+      when: 'a symref to a broken ref ahead of a branch',
+      files: { 'refs/tags/dg': 'ref: refs/tags/bad\n', 'refs/tags/bad': 'garbage\n' },
+      expected: ['ignoring dangling symref refs/tags/dg'],
+    },
+    {
+      when: 'a broken ref ahead of a branch',
+      files: { 'refs/tags/dg': 'garbage\n' },
+      expected: ['ignoring broken ref refs/tags/dg'],
+    },
+    {
+      when: 'a broken top-level name ahead of a branch',
+      files: { dg: 'garbage\n' },
+      expected: [],
+    },
+  ])('When it resolves a name with $when', ({ files, expected }) => {
+    it('Then it warns as git expand_ref does and resolves the branch', async () => {
+      // Arrange
+      const messages: string[] = [];
+      const { ctx, commit } = await repoWithRawRefs(['dg'], files, (message) =>
+        messages.push(message),
+      );
+
+      // Act
+      const result = await sut(ctx, 'dg');
+
+      // Assert
+      expect(result).toBe(commit);
+      expect(messages).toEqual(expected);
+    });
+  });
+
+  describe('When it resolves HEAD on an unborn branch alongside a branch named HEAD', () => {
+    it('Then it never warns HEAD itself is dangling', async () => {
+      // Arrange
+      const messages: string[] = [];
+      const { ctx, commit } = await repoWithRawRefs(
+        ['HEAD'],
+        { HEAD: 'ref: refs/heads/unborn\n' },
+        (message) => messages.push(message),
+      );
+
+      // Act
+      const result = await sut(ctx, 'HEAD');
+
+      // Assert
+      expect(result).toBe(commit);
+      expect(messages.filter((message) => message.startsWith('ignoring'))).toEqual([]);
+    });
+  });
+});
+
+describe('Given resolveRevisionName and a name git refuses as a refname', () => {
+  describe('When it resolves that name', () => {
+    it('Then it warns nothing, as git never reads a malformed candidate', async () => {
+      // Arrange
+      const messages: string[] = [];
+      const { ctx } = await repoWithRawRefs(['main'], {}, (message) => messages.push(message));
+      const sut = resolveRevisionName;
+
+      // Act
+      const result = await sut(ctx, 'bad.lock');
+
+      // Assert
+      expect(result).toBeUndefined();
+      expect(messages).toEqual([]);
+    });
+  });
+});

@@ -111,6 +111,74 @@ export async function resolveRefOrMissing(
   return finalizeOutcome(ctx, outcome, options);
 }
 
+/** One gitrevisions candidate as git's `expand_ref` sees it: resolved,
+ *  absent, or unreadable through a symbolic hop (a dangling target, a
+ *  cycle, a chain past the cap) or on its own content (a broken ref). */
+export type RefCandidateOutcome =
+  | { readonly kind: 'found'; readonly id: ObjectId }
+  | { readonly kind: 'missing' }
+  | { readonly kind: 'dangling-symref' }
+  | { readonly kind: 'broken' };
+
+const MISSING_CANDIDATE: RefCandidateOutcome = { kind: 'missing' };
+const DANGLING_CANDIDATE: RefCandidateOutcome = { kind: 'dangling-symref' };
+const BROKEN_CANDIDATE: RefCandidateOutcome = { kind: 'broken' };
+
+const isUnreadable = (err: unknown): boolean => UNREADABLE_REF_CODES.has(errorDataCode(err) ?? '');
+
+/** Whether git's `check_refname_format` accepts `name`; a name it refuses
+ *  is never read, so it is absent rather than broken. */
+const isWellFormed = (name: RefName | 'HEAD'): boolean => {
+  if (name === 'HEAD') return true;
+  try {
+    validateRefName(name);
+    return true;
+  } catch (err) {
+    if (errorDataCode(err) === 'INVALID_REF') return false;
+    throw err;
+  }
+};
+
+/** Why a candidate whose chain failed to read failed: its own first hop
+ *  symbolic, or its own content unreadable. */
+const unreadableCandidate = async (
+  ctx: Context,
+  name: RefName | 'HEAD',
+): Promise<RefCandidateOutcome> => {
+  if (!isWellFormed(name)) return MISSING_CANDIDATE;
+  try {
+    const own = await getRefStore(ctx).resolveDirect(name as RefName);
+    return own.kind === 'symbolic' ? DANGLING_CANDIDATE : BROKEN_CANDIDATE;
+  } catch (err) {
+    if (isUnreadable(err)) return BROKEN_CANDIDATE;
+    throw err;
+  }
+};
+
+/**
+ * {@link resolveRefOrMissing} for a candidate sweep that must tell why a
+ * candidate is not this name: a chain ending missing past a symbolic hop is
+ * a dangling symref, an unreadable chain is dangling when the candidate
+ * itself is symbolic and broken otherwise. Peeling (`options.peel`) happens
+ * after, so its failures still reach the caller.
+ */
+export async function readRefCandidate(
+  ctx: Context,
+  name: RefName | 'HEAD',
+  options?: ResolveRefOptions,
+): Promise<RefCandidateOutcome> {
+  let outcome: ChainOutcome;
+  try {
+    outcome = await resolveChainOutcome(ctx, name, options);
+  } catch (err) {
+    if (!isUnreadable(err)) throw err;
+    return unreadableCandidate(ctx, name);
+  }
+  if (outcome.kind === 'missing')
+    return outcome.name === name ? MISSING_CANDIDATE : DANGLING_CANDIDATE;
+  return { kind: 'found', id: await finalizeOutcome(ctx, outcome, options) };
+}
+
 const resolveChainOutcome = (
   ctx: Context,
   name: RefName | 'HEAD',

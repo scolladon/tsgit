@@ -19,9 +19,10 @@ import {
   parseGitBoolean,
 } from '../../primitives/config-read.js';
 import { resolveOidPrefix } from '../../primitives/resolve-oid-prefix.js';
+import type { RefCandidateOutcome } from '../../primitives/resolve-ref.js';
 
-/** One candidate namespace's object id, or `undefined` when it is not this name. */
-export type CandidateResolver = (candidate: RefName | 'HEAD') => Promise<ObjectId | undefined>;
+/** One candidate namespace as `expand_ref` reads it. */
+export type CandidateResolver = (candidate: RefName | 'HEAD') => Promise<RefCandidateOutcome>;
 
 const OBJECT_NAME_ADVICE = [
   'Git normally never creates a ref that ends with 40 hex characters',
@@ -67,14 +68,36 @@ const warnAmbiguous = (ctx: Context, name: string): void => {
   ctx.logger?.warn?.(`refname '${name}' is ambiguous.`, { refname: name });
 };
 
+/** git's `expand_ref` warning for a candidate it skips: a dangling symref
+ *  other than `HEAD`, or a broken ref below a directory. */
+const warnSkipped = (ctx: Context, candidate: RefName | 'HEAD', kind: string): void => {
+  if (kind === 'dangling-symref' && candidate !== 'HEAD')
+    ctx.logger?.warn?.(`ignoring dangling symref ${candidate}`, { refname: candidate });
+  else if (kind === 'broken' && candidate.includes('/'))
+    ctx.logger?.warn?.(`ignoring broken ref ${candidate}`, { refname: candidate });
+};
+
+/** One candidate's object id, warning as `expand_ref` does when it skips it. */
+const readCandidate = async (
+  ctx: Context,
+  candidate: RefName | 'HEAD',
+  resolve: CandidateResolver,
+): Promise<ObjectId | undefined> => {
+  const outcome = await resolve(candidate);
+  if (outcome.kind === 'found') return outcome.id;
+  warnSkipped(ctx, candidate, outcome.kind);
+  return undefined;
+};
+
 /** How many of `candidates` resolve, each read in order. */
 const countResolving = async (
+  ctx: Context,
   candidates: ReadonlyArray<RefName | 'HEAD'>,
   resolve: CandidateResolver,
 ): Promise<number> => {
   let count = 0;
   for (const candidate of candidates) {
-    if ((await resolve(candidate)) !== undefined) count += 1;
+    if ((await readCandidate(ctx, candidate, resolve)) !== undefined) count += 1;
   }
   return count;
 };
@@ -92,11 +115,11 @@ export const resolveRefLadder = async (
 ): Promise<ObjectId | undefined> => {
   const candidates = refCandidates(name);
   for (const [index, candidate] of candidates.entries()) {
-    const id = await resolve(candidate);
+    const id = await readCandidate(ctx, candidate, resolve);
     if (id === undefined) continue;
     const { warns } = await readSettings(ctx);
     if (!warns) return id;
-    const othersFound = await countResolving(candidates.slice(index + 1), resolve);
+    const othersFound = await countResolving(ctx, candidates.slice(index + 1), resolve);
     if (await isAmbiguous(ctx, name, othersFound)) warnAmbiguous(ctx, name);
     return id;
   }
@@ -125,10 +148,7 @@ export const warnIfRefNamesObjectId = async (
 ): Promise<void> => {
   const { warns, advises } = await readSettings(ctx);
   if (!warns) return;
-  for (const candidate of refCandidates(name)) {
-    if ((await resolve(candidate)) === undefined) continue;
-    warnAmbiguous(ctx, name);
-    if (advises) ctx.logger?.warn?.(OBJECT_NAME_ADVICE);
-    return;
-  }
+  if ((await countResolving(ctx, refCandidates(name), resolve)) === 0) return;
+  warnAmbiguous(ctx, name);
+  if (advises) ctx.logger?.warn?.(OBJECT_NAME_ADVICE);
 };

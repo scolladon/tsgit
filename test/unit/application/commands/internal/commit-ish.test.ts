@@ -165,17 +165,17 @@ describe('resolveCommitIsh', () => {
 
   describe('Given a commit-ish matching none of the ref-DWIM candidates', () => {
     describe('When resolved', () => {
-      it('Then sweeps via resolveRefOrMissing (no thrown-and-caught miss per candidate)', async () => {
+      it('Then sweeps via readRefCandidate (no thrown-and-caught miss per candidate)', async () => {
         // Arrange
         const { ctx } = await seedCommit();
-        const resolveRefOrMissingSpy = vi.spyOn(resolveRefMod, 'resolveRefOrMissing');
+        const readRefCandidateSpy = vi.spyOn(resolveRefMod, 'readRefCandidate');
 
         // Act
         const code = await codeOf(() => resolveCommitIsh(ctx, 'nope'));
 
         // Assert
         expect(code).toBe('REF_NOT_FOUND');
-        expect(resolveRefOrMissingSpy).toHaveBeenCalledTimes(6);
+        expect(readRefCandidateSpy).toHaveBeenCalledTimes(6);
       });
     });
   });
@@ -332,7 +332,7 @@ describe('resolveCommitIsh — a symbolic chain deeper than the reading cap', ()
         // Arrange
         const { ctx } = await seedCommit();
         const failure = invalidMultiPackIndex('signature', 'bad signature');
-        vi.spyOn(resolveRefMod, 'resolveRefOrMissing').mockRejectedValue(failure);
+        vi.spyOn(resolveRefMod, 'readRefCandidate').mockRejectedValue(failure);
 
         // Act
         const outcome = await resolveCommitIsh(ctx, 'main').catch((error: TsgitError) => error);
@@ -353,9 +353,9 @@ describe('resolveCommitIsh — a symbolic chain deeper than the reading cap', ()
         // Arrange
         const { ctx, head } = await seedCommit();
         const absent = 'b'.repeat(40) as ObjectId;
-        vi.spyOn(resolveRefMod, 'resolveRefOrMissing')
+        vi.spyOn(resolveRefMod, 'readRefCandidate')
           .mockRejectedValueOnce(objectNotFound(absent))
-          .mockResolvedValueOnce(head);
+          .mockResolvedValueOnce({ kind: 'found', id: head });
 
         // Act
         const result = await resolveCommitIsh(ctx, 'x');

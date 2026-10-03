@@ -16,27 +16,23 @@ import { refCandidates } from '../../../domain/refs/index.js';
 import type { Context } from '../../../ports/context.js';
 import { getRefStore } from '../../primitives/ref-store.js';
 import { resolveOidPrefix } from '../../primitives/resolve-oid-prefix.js';
-import { resolveRefOrMissing } from '../../primitives/resolve-ref.js';
+import {
+  type RefCandidateOutcome,
+  readRefCandidate,
+  resolveRefOrMissing,
+} from '../../primitives/resolve-ref.js';
 import { MAX_SYMBOLIC_REF_DEPTH } from '../../primitives/types.js';
 import { resolveRefLadder, warnIfRefNamesObjectId } from './refname-ambiguity.js';
 
 /**
- * One candidate's object id, or `undefined`. Never peels: git's plain
- * `get_oid` hands back an annotated tag's own id, and only a commit-ish
- * argument asks for more. A candidate that fails for any OTHER reason — a
- * dangling or broken ref — is skipped just as `expand_ref` skips it, rather
- * than failing the whole resolution.
+ * One candidate as `expand_ref` reads it. Never peels: git's plain `get_oid`
+ * hands back an annotated tag's own id, and only a commit-ish argument asks
+ * for more. A dangling or broken candidate is skipped, not a failure.
  */
 const resolveCandidate =
   (ctx: Context) =>
-  async (candidate: RefName | 'HEAD'): Promise<ObjectId | undefined> => {
-    try {
-      return await resolveRefOrMissing(ctx, candidate);
-    } catch {
-      // Not this candidate — fall through to the next namespace.
-      return undefined;
-    }
-  };
+  (candidate: RefName | 'HEAD'): Promise<RefCandidateOutcome> =>
+    readRefCandidate(ctx, candidate);
 
 /**
  * `name` as an object id: a full-width oid wins over a same-named ref (git

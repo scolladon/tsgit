@@ -11,6 +11,7 @@
  *   unique:         ref DWIM skips a candidate git's reading walk cannot resolve and tries the next
  *   interopSurface: revParse
  */
+import { writeFileSync } from 'node:fs';
 import { cp, mkdtemp, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -297,6 +298,10 @@ describe.skipIf(!GIT_AVAILABLE)('integration — revParse ambiguous refname warn
     git(repo, 'update-ref', 'refs/heads/solo', tip);
     git(repo, 'update-ref', `refs/heads/${tip.slice(0, 7)}`, tip);
     git(repo, 'update-ref', `refs/heads/${tip}`, tip);
+    git(repo, 'update-ref', 'refs/heads/dg', tip);
+    git(repo, 'symbolic-ref', 'refs/tags/dg', 'refs/tags/nope');
+    git(repo, 'update-ref', 'refs/heads/br', tip);
+    writeFileSync(path.join(repo, '.git', 'refs', 'tags', 'br'), 'garbage\n');
   }, SETUP_TIMEOUT);
 
   afterAll(async () => {
@@ -309,6 +314,8 @@ describe.skipIf(!GIT_AVAILABLE)('integration — revParse ambiguous refname warn
     { label: 'a ref and an abbreviated object id', arg: () => tip.slice(0, 7) },
     { label: 'a full object id and a ref', arg: () => tip },
     { label: 'a ref under a revision suffix', arg: () => 'main~0' },
+    { label: 'a branch behind a dangling symref', arg: () => 'dg' },
+    { label: 'a branch behind a broken ref', arg: () => 'br' },
   ])('Given a name that resolves as $label', ({ arg }) => {
     describe('When git and tsgit rev-parse it', () => {
       it('Then tsgit warns the lines git prints to stderr', async () => {
