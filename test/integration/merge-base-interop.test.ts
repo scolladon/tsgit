@@ -82,8 +82,6 @@ const mergeShaDated = (dir: string, theirSha: string, ts: number, msg: string): 
   return git(dir, 'rev-parse', 'HEAD').trim();
 };
 
-const asSortedSet = (ids: ReadonlyArray<string>): ReadonlyArray<string> => [...new Set(ids)].sort();
-
 /** A commit built with plumbing: parent ORDER and committer second are both
  *  exact, which `git merge` / `git commit` cannot express together. */
 const plumbingCommit = (
@@ -210,8 +208,8 @@ describe.skipIf(!GIT_AVAILABLE)('mergeBase interop', () => {
         // Act
         const result = await mergeBase(ctx, [main, topic], { all: true });
 
-        // Assert — set equality, not order
-        expect(asSortedSet(result)).toEqual(asSortedSet(expected));
+        // Assert
+        expect(result).toEqual(expected);
       });
 
       it('Then the octopus fold matches git merge-base --octopus main topic side', async () => {
@@ -242,7 +240,7 @@ describe.skipIf(!GIT_AVAILABLE)('mergeBase interop', () => {
 
         // Assert
         expect(single).toEqual([expectedSingle]);
-        expect(asSortedSet(all)).toEqual(asSortedSet(expectedAll));
+        expect(all).toEqual(expectedAll);
         expect(octopus).toEqual([expectedOctopus]);
       });
     });
@@ -261,7 +259,7 @@ describe.skipIf(!GIT_AVAILABLE)('mergeBase interop', () => {
 
         // Assert
         expect(single).toEqual([expectedSingle]);
-        expect(asSortedSet(all)).toEqual(asSortedSet(expectedAll));
+        expect(all).toEqual(expectedAll);
       });
     });
   });
@@ -302,7 +300,7 @@ describe.skipIf(!GIT_AVAILABLE)('mergeBase interop', () => {
         const result = await mergeBase(ctx, [d1, e1], { all: true });
 
         // Assert
-        expect(asSortedSet(result)).toEqual(asSortedSet(expected));
+        expect(result).toEqual(expected);
       });
     });
 
@@ -320,7 +318,7 @@ describe.skipIf(!GIT_AVAILABLE)('mergeBase interop', () => {
 
         // Assert
         expect(single).toEqual([expectedSingle]);
-        expect(asSortedSet(all)).toEqual(asSortedSet(expectedAll));
+        expect(all).toEqual(expectedAll);
       });
     });
   });
@@ -390,7 +388,7 @@ describe.skipIf(!GIT_AVAILABLE)('mergeBase interop', () => {
         const result = await mergeBase(ctx, [a, z], { all: true });
 
         // Assert
-        expect(asSortedSet(result)).toEqual(asSortedSet(expected));
+        expect(result).toEqual(expected);
       });
     });
   });
@@ -447,9 +445,7 @@ describe.skipIf(!GIT_AVAILABLE)('mergeBase interop', () => {
         // Assert
         expect(single).toEqual([git(dir, 'merge-base', d, e).trim()]);
         expect(single).toEqual([ids.get('b1')]);
-        expect(asSortedSet(every)).toEqual(
-          asSortedSet(git(dir, 'merge-base', '--all', d, e).trim().split('\n')),
-        );
+        expect(every).toEqual(git(dir, 'merge-base', '--all', d, e).trim().split('\n'));
       });
     });
   });
@@ -504,9 +500,7 @@ describe.skipIf(!GIT_AVAILABLE)('mergeBase interop', () => {
         // Assert
         expect(single).toEqual([git(dir, 'merge-base', a, z).trim()]);
         expect(single).toEqual([ids.get('y')]);
-        expect(asSortedSet(every)).toEqual(
-          asSortedSet(git(dir, 'merge-base', '--all', a, z).trim().split('\n')),
-        );
+        expect(every).toEqual(git(dir, 'merge-base', '--all', a, z).trim().split('\n'));
       });
     });
   });
@@ -542,9 +536,7 @@ describe.skipIf(!GIT_AVAILABLE)('mergeBase interop', () => {
         // Assert
         expect(single).toEqual([git(dir, 'merge-base', d1, e1).trim()]);
         expect(single).toEqual([ids.get('c')]);
-        expect(asSortedSet(every)).toEqual(
-          asSortedSet(git(dir, 'merge-base', '--all', d1, e1).trim().split('\n')),
-        );
+        expect(every).toEqual(git(dir, 'merge-base', '--all', d1, e1).trim().split('\n'));
       });
     });
 
@@ -564,9 +556,7 @@ describe.skipIf(!GIT_AVAILABLE)('mergeBase interop', () => {
         // Assert
         expect(single).toEqual([git(dir, 'merge-base', d1, e1).trim()]);
         expect(single).toEqual([ids.get('c')]);
-        expect(asSortedSet(every)).toEqual(
-          asSortedSet(git(dir, 'merge-base', '--all', d1, e1).trim().split('\n')),
-        );
+        expect(every).toEqual(git(dir, 'merge-base', '--all', d1, e1).trim().split('\n'));
       });
     });
   });
@@ -659,10 +649,67 @@ describe.skipIf(!GIT_AVAILABLE)('mergeBase interop', () => {
         // Assert
         expect(single).toEqual([git(dir, 'merge-base', d, e).trim()]);
         expect(single).toEqual([ids.get('shallow')]);
-        expect(asSortedSet(every)).toEqual(
-          asSortedSet(git(dir, 'merge-base', '--all', d, e).trim().split('\n')),
-        );
+        expect(every).toEqual(git(dir, 'merge-base', '--all', d, e).trim().split('\n'));
       });
     });
   });
+});
+
+describe.skipIf(!GIT_AVAILABLE)('mergeBase --all order on equal-date bases (interop)', () => {
+  describe.each([
+    { graph: 'without a commit-graph', withCommitGraph: false },
+    { graph: 'with a commit-graph', withCommitGraph: true },
+  ])(
+    'Given merges listing the same three equal-date bases in different orders $graph',
+    ({ withCommitGraph }) => {
+      let dir: string;
+      const ids = new Map<string, string>();
+
+      beforeAll(async () => {
+        dir = await makeRepo('equal-date-all');
+        const tree = runGit(['-C', dir, 'mktree'], { input: '' }).trim();
+        const commit = (name: string, parents: ReadonlyArray<string>): void => {
+          const args = [
+            '-C',
+            dir,
+            'commit-tree',
+            tree,
+            ...parents.flatMap((p) => ['-p', ids.get(p)!]),
+          ];
+          ids.set(name, runGit([...args, '-m', name], { env: datedEnv(1_700_000_000) }).trim());
+        };
+        commit('r', []);
+        for (const base of ['a', 'b', 'c']) commit(base, ['r']);
+        commit('x', ['a', 'b', 'c']);
+        commit('y', ['c', 'b', 'a']);
+        commit('z', ['b', 'a', 'c']);
+        for (const tip of ['x', 'y', 'z'])
+          git(dir, 'update-ref', `refs/heads/${tip}`, ids.get(tip)!);
+        if (withCommitGraph) git(dir, 'commit-graph', 'write', '--reachable');
+      }, SETUP_TIMEOUT);
+
+      afterAll(async () => rm(dir, { recursive: true, force: true }));
+
+      describe.each([
+        ['x', 'y'],
+        ['y', 'x'],
+        ['z', 'y'],
+        ['x', 'y', 'z'],
+      ])('When mergeBase lists every base of %s and %s', (...tips) => {
+        it('Then the bases come in the order git merge-base --all prints', async () => {
+          // Arrange
+          const oids = tips.map((tip) => ids.get(tip)! as ObjectId);
+          const expected = git(dir, 'merge-base', '--all', ...oids)
+            .trim()
+            .split('\n');
+
+          // Act
+          const result = await mergeBase(createNodeContext({ workDir: dir }), oids, { all: true });
+
+          // Assert
+          expect(result).toEqual(expected);
+        });
+      });
+    },
+  );
 });

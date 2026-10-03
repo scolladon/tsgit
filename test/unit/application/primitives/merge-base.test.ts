@@ -298,11 +298,11 @@ describe('mergeBase', () => {
     });
 
     describe('When mergeBase([D, E], { all: true })', () => {
-      it('Then returns both B and C oid-sorted, without the redundant A', async () => {
+      it('Then returns C then B, newest first as git prints them, without the redundant A', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         const { a, b, c, d, e } = await buildCrissCross(ctx);
-        const expected = [b, c].sort();
+        const expected = [c, b];
 
         // Act
         const result = await mergeBase(ctx, [d, e], { all: true });
@@ -316,10 +316,10 @@ describe('mergeBase', () => {
 
   describe('Given a criss-cross whose newest base is not the lexicographically smallest', () => {
     describe('When mergeBase runs both without and with { all: true }', () => {
-      it('Then the single-result and { all: true } orders deliberately disagree', async () => {
+      it('Then { all: true } lists the single result first, as git merge-base --all does', async () => {
         // Arrange — retry with a varying salt until the newest base's oid is
-        // NOT the lexicographically smallest of {B, C}, proving the two rules
-        // genuinely diverge rather than coincidentally aligning for one hash.
+        // NOT the lexicographically smallest of {B, C}, so a list sorted by oid
+        // could not coincidentally match git's newest-first order.
         const ctx = await buildSeededContext();
         const { b, c, d, e } = await buildCrissCrossWithDisagreeingOrders(ctx);
 
@@ -329,8 +329,8 @@ describe('mergeBase', () => {
 
         // Assert
         expect(single).toEqual([c]);
-        expect(all).toEqual([b, c].sort());
-        expect(all[0]).not.toEqual(single[0]);
+        expect(all).toEqual([c, b]);
+        expect(all[0]).toEqual(single[0]);
       });
     });
   });
@@ -527,11 +527,11 @@ describe('mergeBase', () => {
 
   describe('Given two commits of a criss-cross under octopus', () => {
     describe('When mergeBase([D, E], { octopus: true, all: true })', () => {
-      it('Then equals the two-commit --all set [B, C]', async () => {
+      it('Then equals the two-commit --all list [C, B]', async () => {
         // Arrange
         const ctx = await buildSeededContext();
         const { b, c, d, e } = await buildCrissCross(ctx);
-        const expected = [b, c].sort();
+        const expected = [c, b];
 
         // Act
         const result = await mergeBase(ctx, [d, e], { octopus: true, all: true });
@@ -653,7 +653,7 @@ describe('mergeBase', () => {
         const result = await mergeBase(ctx, [d, e], { all: true });
 
         // Assert
-        expect(result).toEqual([b, c].sort());
+        expect(result).toEqual([c, b]);
         expect(objectStoreReadPaths(calls())).toEqual([]);
       });
     });
@@ -672,7 +672,7 @@ describe('mergeBase', () => {
         const result = await mergeBase(ctx, [d, e], { all: true });
 
         // Assert
-        expect(result).toEqual([b, c].sort());
+        expect(result).toEqual([c, b]);
         expect(result).not.toContain(a);
         expect(objectStoreReadPaths(calls()).length).toBeGreaterThan(0);
       });
@@ -807,7 +807,7 @@ describe('mergeBase', () => {
 
         // Assert
         expect(single).toEqual([b1]);
-        expect(every).toEqual([b1, b2].sort());
+        expect(every).toEqual([b2, b1]);
       });
     });
   });
@@ -857,7 +857,7 @@ describe('mergeBase', () => {
 
         // Assert
         expect(single).toEqual([y]);
-        expect(every).toEqual([x, y].sort());
+        expect(every).toEqual([y, x]);
       });
     });
   });
@@ -1053,7 +1053,7 @@ describe('mergeBase', () => {
         // Assert
         expect(plain).toEqual([q]);
         expect(octopus).toEqual([p]);
-        expect(every).toEqual([p, q].sort());
+        expect(every).toEqual([p, q]);
       });
     });
 
@@ -1077,7 +1077,7 @@ describe('mergeBase', () => {
 
         // Assert
         expect(plain).toEqual([p]);
-        expect(every).toEqual([p, q].sort());
+        expect(every).toEqual([p, q]);
         topoLevels.mockRestore();
       });
     });

@@ -153108,7 +153108,15 @@
 									},
 									{
 										"kind": "text",
-										"text": " returns the whole reduced set, oid-sorted. "
+										"text": " returns the whole reduced set in the order "
+									},
+									{
+										"kind": "code",
+										"text": "`git merge-base\n--all`"
+									},
+									{
+										"kind": "text",
+										"text": " prints it — newest date first, equal dates in the order the paint\nfound them. "
 									},
 									{
 										"kind": "code",

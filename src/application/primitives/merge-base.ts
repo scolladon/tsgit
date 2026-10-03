@@ -393,7 +393,9 @@ export const inMergeBases = async (
  * repository with no commit-graph, but the highest-generation one wherever a
  * graph serves corrected commit dates — the two disagree whenever a base
  * inherits its generation from an ancestor committed later than itself.
- * `{ all: true }` returns the whole reduced set, oid-sorted. `{ octopus: true }`
+ * `{ all: true }` returns the whole reduced set in the order `git merge-base
+ * --all` prints it — newest date first, equal dates in the order the paint
+ * found them. `{ octopus: true }`
  * folds the commits pairwise and reports the reduced accumulator in Git's fold
  * order — each pairwise fold date-sorted, the folds concatenated — so its first
  * entry is the newest base of the FIRST fold, not the newest overall. Unrelated
@@ -415,6 +417,5 @@ export const mergeBase = async (
           findAll,
           correctedCommitDates,
         });
-  if (findAll) return [...bases].sort();
-  return bases.slice(0, 1);
+  return findAll ? bases : bases.slice(0, 1);
 };
