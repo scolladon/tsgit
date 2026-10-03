@@ -157,6 +157,10 @@ export type CommandError =
       readonly remotes: ReadonlyArray<string>;
     }
   | {
+      readonly code: 'TRACKING_INHERIT_REBASE_MULTIPLE';
+      readonly merges: ReadonlyArray<RefName>;
+    }
+  | {
       readonly code: 'TEXTCONV_FAILED';
       readonly command: string;
       /** Absent when the command could not be run at all. */
@@ -632,6 +636,9 @@ export const upstreamMissing = (startPoint: string): TsgitError =>
 
 export const trackingAmbiguous = (ref: RefName, remotes: ReadonlyArray<string>): TsgitError =>
   new TsgitError({ code: 'TRACKING_AMBIGUOUS', ref, remotes });
+
+export const trackingInheritRebaseMultiple = (merges: ReadonlyArray<RefName>): TsgitError =>
+  new TsgitError({ code: 'TRACKING_INHERIT_REBASE_MULTIPLE', merges });
 
 export const textconvFailed = (command: string, exitCode?: number): TsgitError =>
   new TsgitError({

@@ -129,6 +129,36 @@ const ROWS: ReadonlyArray<Row> = [
     args: ['z', 'origin/main'],
     input: z({ startPoint: 'origin/main' }),
   },
+  {
+    label: 'a revision expression start',
+    config: [],
+    args: ['z', 'HEAD~0'],
+    input: z({ startPoint: 'HEAD~0' }),
+  },
+  {
+    label: 'a remote expression start',
+    config: [],
+    args: ['z', 'origin/main~0'],
+    input: z({ startPoint: 'origin/main~0' }),
+  },
+  {
+    label: '--track=inherit from a start merging two refs',
+    config: [['branch.main.merge', 'refs/heads/z']],
+    args: ['--track=inherit', 'z', 'main'],
+    input: z({ startPoint: 'main', track: 'inherit' }),
+  },
+  {
+    label: 'a remote start a negative refspec excludes',
+    config: [['remote.origin.fetch', '^refs/heads/main']],
+    args: ['z', 'origin/main'],
+    input: z({ startPoint: 'origin/main' }),
+  },
+  {
+    label: 'a remote start a negative pattern refspec leaves alone',
+    config: [['remote.origin.fetch', '^refs/heads/m*']],
+    args: ['z', 'origin/z'],
+    input: z({ startPoint: 'origin/z' }),
+  },
 ];
 
 interface RefusalRow {
@@ -161,6 +191,41 @@ const REFUSALS: ReadonlyArray<RefusalRow> = [
     created: false,
   },
   {
+    label: '--track from a revision expression',
+    config: [],
+    args: ['--track', 'z', 'main~0'],
+    input: z({ startPoint: 'main~0', track: 'direct' }),
+    fatal: "fatal: cannot set up tracking information; starting point 'main~0' is not a branch",
+    data: { code: 'UPSTREAM_NOT_BRANCH', startPoint: 'main~0' },
+    created: false,
+  },
+  {
+    label: '--track from a remote ref a negative refspec excludes',
+    config: [['remote.origin.fetch', '^refs/heads/main']],
+    args: ['--track', 'z', 'origin/main'],
+    input: z({ startPoint: 'origin/main', track: 'direct' }),
+    fatal:
+      "fatal: cannot set up tracking information; starting point 'origin/main' is not a branch",
+    data: { code: 'UPSTREAM_NOT_BRANCH', startPoint: 'origin/main' },
+    created: false,
+  },
+  {
+    label: '--track=inherit of two merges under autoSetupRebase=always',
+    config: [
+      ['branch.main.merge', 'refs/heads/z'],
+      ['branch.autoSetupRebase', 'always'],
+    ],
+    args: ['--track=inherit', 'z', 'main'],
+    input: z({ startPoint: 'main', track: 'inherit' }),
+    fatal:
+      'fatal: cannot inherit upstream tracking configuration of multiple refs when rebasing is requested',
+    data: {
+      code: 'TRACKING_INHERIT_REBASE_MULTIPLE',
+      merges: ['refs/heads/main', 'refs/heads/z'],
+    },
+    created: true,
+  },
+  {
     label: 'two remotes fetching into the start ref',
     config: [
       ['remote.o2.url', '/nowhere'],
@@ -178,15 +243,21 @@ const REFUSALS: ReadonlyArray<RefusalRow> = [
   },
 ];
 
-/** git's `branch '<n>' set up to track '<upstream>'` line, rebuilt from the structured result. */
+/** One upstream as git's tracking line names it: `<remote>/<branch>`, or the bare branch locally. */
+const friendlyName = (remote: string, merge: string): string => {
+  const short = merge.startsWith(HEADS) ? merge.slice(HEADS.length) : merge;
+  return remote === '.' ? short : `${remote}/${short}`;
+};
+
+/** git's `branch '<n>' set up to track …` lines, rebuilt from the structured result. */
 const trackingLine = (name: string, upstream: BranchUpstream | undefined): string => {
   if (upstream === undefined) return '';
-  const short = upstream.merge.startsWith(HEADS)
-    ? upstream.merge.slice(HEADS.length)
-    : upstream.merge;
-  const friendly = upstream.remote === '.' ? short : `${upstream.remote}/${short}`;
+  const friendly = upstream.merges.map((merge) => friendlyName(upstream.remote, merge));
+  if (friendly.length > 1) {
+    return `branch '${name}' set up to track:\n${friendly.map((f) => `  ${f}\n`).join('')}`;
+  }
   const suffix = upstream.rebase ? ' by rebasing' : '';
-  return `branch '${name}' set up to track '${friendly}'${suffix}.\n`;
+  return `branch '${name}' set up to track '${friendly[0]}'${suffix}.\n`;
 };
 
 const branchConfig = (dir: string): string =>

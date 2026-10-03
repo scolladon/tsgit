@@ -56,6 +56,7 @@ import {
   branchRefFromHead,
   readHeadRaw,
 } from './internal/repo-state.js';
+import { resolveRevisionExpression } from './internal/revision-expression.js';
 import { dwimRefName, resolveRevisionName, resolvingCandidates } from './internal/revision-name.js';
 
 export type { BranchTrack, BranchUpstream } from './internal/branch-tracking.js';
@@ -601,7 +602,9 @@ const appendRenameEntries = (
 const resolveBranchTarget = async (ctx: Context, startPoint: string): Promise<ObjectId> => {
   const candidates = await resolvingCandidates(ctx, startPoint);
   if (candidates.length > 1) throw revparseAmbiguous(startPoint, candidates);
-  const id = await resolveRevisionName(ctx, startPoint);
+  const id =
+    (await resolveRevisionName(ctx, startPoint)) ??
+    (await resolveRevisionExpression(ctx, startPoint));
   if (id === undefined) throw branchNotFound(startPoint as RefName);
   return id;
 };

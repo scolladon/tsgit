@@ -23,14 +23,14 @@ const PATTERN_PLACEHOLDER = 'x';
 
 /** One refspec split the way `parse_refspec` splits it: the force/negative
  *  marker stripped, then the LAST colon, as git's own reverse search takes it. */
-interface RefspecSides {
+export interface RefspecSides {
   readonly negative: boolean;
   readonly src: string;
   /** `undefined` when the spec carries no colon at all — not the same as empty. */
   readonly dst: string | undefined;
 }
 
-const splitSides = (spec: string): RefspecSides => {
+export const splitSides = (spec: string): RefspecSides => {
   const negative = spec.startsWith(NEGATIVE_PREFIX);
   const body = negative || spec.startsWith(FORCE_PREFIX) ? spec.slice(1) : spec;
   const colon = body.lastIndexOf(':');

@@ -501,6 +501,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `the requested upstream branch '${data.startPoint}' does not exist`;
     case 'TRACKING_AMBIGUOUS':
       return `not tracking: ambiguous information for ref '${data.ref}'`;
+    case 'TRACKING_INHERIT_REBASE_MULTIPLE':
+      return 'cannot inherit upstream tracking configuration of multiple refs when rebasing is requested';
     case 'TEXTCONV_FAILED':
       return `textconv command '${data.command}' failed${exitSuffix(data.exitCode)}`;
     case 'INVALID_FILTER_SPEC':

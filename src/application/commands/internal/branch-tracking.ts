@@ -1,5 +1,7 @@
 import {
+  configMissingValue,
   trackingAmbiguous,
+  trackingInheritRebaseMultiple,
   upstreamMissing,
   upstreamNotBranch,
 } from '../../../domain/commands/error.js';
@@ -8,9 +10,15 @@ import { errorDataCode } from '../../../domain/error-data-code.js';
 import type { RefName } from '../../../domain/objects/index.js';
 import { HEADS_PREFIX } from '../../../domain/refs/ref-prefixes.js';
 import type { Context } from '../../../ports/context.js';
-import { findLastEntry, readConfig } from '../../primitives/config-read.js';
+import {
+  findFirstValuelessEntry,
+  findLastEntry,
+  readConfig,
+} from '../../primitives/config-read.js';
+import { getAllConfigValues } from '../../primitives/config-scoped-read.js';
 import { updateConfigOperations } from '../../primitives/update-config.js';
 import { mapsNamedSource } from './branch-merged.js';
+import { isExcludedByNegativeRefspec } from './negative-refspec.js';
 import { applyRefspec, parseRefspec } from './ref-spec.js';
 import { dwimRefName } from './revision-name.js';
 
@@ -21,8 +29,11 @@ export type BranchTrack = 'direct' | 'inherit';
 export interface BranchUpstream {
   /** `branch.<name>.remote` — `.` when the upstream is a branch of this repository. */
   readonly remote: string;
-  /** `branch.<name>.merge` — the upstream ref as its remote names it. */
-  readonly merge: RefName;
+  /**
+   * Every `branch.<name>.merge` — the upstream refs as their remote names them:
+   * one, except where `--track=inherit` copies a branch merging several.
+   */
+  readonly merges: ReadonlyArray<RefName>;
   /** Whether `branch.<name>.rebase = true` was recorded (`branch.autoSetupRebase`). */
   readonly rebase: boolean;
 }
@@ -93,11 +104,12 @@ const isTrackable = async (ctx: Context, ref: RefName): Promise<boolean> =>
 interface TrackingSource {
   /** `undefined` for a branch of this repository — git's NULL origin. */
   readonly remote: string | undefined;
-  readonly merge: RefName;
+  readonly merges: ReadonlyArray<RefName>;
 }
 
-interface RemoteSource extends TrackingSource {
+interface RemoteSource {
   readonly remote: string;
+  readonly merge: RefName;
 }
 
 /** Every remote whose fetch refspecs map onto `ref`, with the source each names. */
@@ -110,8 +122,12 @@ const remoteSources = async (ctx: Context, ref: RefName): Promise<ReadonlyArray<
   return sources;
 };
 
-/** git's `remote_find_tracking`: the earliest fetch refspec whose destination maps `ref` back. */
+/**
+ * git's `remote_find_tracking`: the earliest fetch refspec whose destination
+ * maps `ref` back — none when a negative refspec excludes `ref`.
+ */
 const firstSource = (specs: ReadonlyArray<string>, ref: RefName): RefName | undefined => {
+  if (isExcludedByNegativeRefspec(specs, ref)) return undefined;
   for (const spec of specs) {
     if (!mapsNamedSource(spec)) continue;
     const { src, dst, ...rest } = parseRefspec(spec);
@@ -136,7 +152,7 @@ export const setupTracking = async (
       ? await inheritedSource(ctx, startRef)
       : await matchedSource(ctx, startRef, mode);
   if (source === undefined) return undefined;
-  if (mode === 'simple' && source.merge !== `${HEADS_PREFIX}${branch}`) return undefined;
+  if (mode === 'simple' && source.merges[0] !== `${HEADS_PREFIX}${branch}`) return undefined;
   return installUpstream(ctx, branch, source);
 };
 
@@ -152,9 +168,10 @@ const matchedSource = async (
       sources.map((source) => source.remote),
     );
   }
-  if (sources.length === 1) return sources[0];
+  const [only] = sources;
+  if (only !== undefined) return { remote: only.remote, merges: [only.merge] };
   return mode === 'always' || mode === 'explicit'
-    ? { remote: undefined, merge: startRef }
+    ? { remote: undefined, merges: [startRef] }
     : undefined;
 };
 
@@ -175,29 +192,48 @@ const inheritedSource = async (
     );
     return undefined;
   }
-  return { remote: tracking.remote, merge: tracking.merge as RefName };
+  return { remote: tracking.remote, merges: await mergesOf(ctx, bare) };
 };
 
-/** git's `install_branch_config_multiple_remotes` for a single upstream. */
+/**
+ * Every `branch.<bare>.merge` value, in config order — git's `branch->merge`,
+ * whose read dies on a valueless entry.
+ */
+const mergesOf = async (ctx: Context, bare: string): Promise<ReadonlyArray<RefName>> => {
+  const valueless = await findFirstValuelessEntry(ctx, 'branch', bare, ['merge']);
+  if (valueless !== undefined) {
+    throw configMissingValue(valueless.key, valueless.source, valueless.line);
+  }
+  const { values } = await getAllConfigValues({ ctx, key: `branch.${bare}.merge` });
+  return values.map(({ value }) => value).filter((value): value is RefName => value !== null);
+};
+
+/**
+ * git's `install_branch_config_multiple_remotes`: rebasing onto more than one
+ * upstream dies before anything is recorded, and a branch of this repository
+ * never records itself as its own upstream.
+ */
 const installUpstream = async (
   ctx: Context,
   branch: string,
   source: TrackingSource,
 ): Promise<BranchUpstream | undefined> => {
-  if (source.remote === undefined && source.merge === `${HEADS_PREFIX}${branch}`) {
+  const { merges } = source;
+  const rebase = await shouldSetupRebase(ctx, source.remote);
+  if (rebase && merges.length > 1) throw trackingInheritRebaseMultiple(merges);
+  if (source.remote === undefined && merges.includes(`${HEADS_PREFIX}${branch}` as RefName)) {
     ctx.logger?.warn?.(`not setting branch '${branch}' as its own upstream`);
     return undefined;
   }
   const remote = source.remote ?? LOCAL_REMOTE;
-  const rebase = await shouldSetupRebase(ctx, source.remote);
   const at = { section: 'branch', subsection: branch } as const;
   await updateConfigOperations(ctx, [
     { kind: 'set', ...at, key: 'remote', value: remote },
     { kind: 'removeEntry', ...at, key: 'merge' },
-    { kind: 'appendEntry', ...at, key: 'merge', value: source.merge },
+    ...merges.map((merge) => ({ kind: 'appendEntry', ...at, key: 'merge', value: merge }) as const),
     ...(rebase ? [{ kind: 'set', ...at, key: 'rebase', value: 'true' } as const] : []),
   ]);
-  return { remote, merge: source.merge, rebase };
+  return { remote, merges, rebase };
 };
 
 /** git's `should_setup_rebase` over `branch.autoSetupRebase`. */

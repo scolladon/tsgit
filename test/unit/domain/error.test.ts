@@ -19,6 +19,7 @@ import {
   textconvFailed,
   timestampOutOfRange,
   trackingAmbiguous,
+  trackingInheritRebaseMultiple,
   upstreamMissing,
   upstreamNotBranch,
   worktreeFileAbsent,
@@ -1379,6 +1380,13 @@ describe('branch tracking refusals', () => {
       build: () => trackingAmbiguous('refs/remotes/o/m' as never, ['o', 'p']),
       data: { code: 'TRACKING_AMBIGUOUS', ref: 'refs/remotes/o/m', remotes: ['o', 'p'] },
       message: "TRACKING_AMBIGUOUS: not tracking: ambiguous information for ref 'refs/remotes/o/m'",
+    },
+    {
+      label: 'trackingInheritRebaseMultiple',
+      build: () => trackingInheritRebaseMultiple(['refs/heads/a', 'refs/heads/b'] as never),
+      data: { code: 'TRACKING_INHERIT_REBASE_MULTIPLE', merges: ['refs/heads/a', 'refs/heads/b'] },
+      message:
+        'TRACKING_INHERIT_REBASE_MULTIPLE: cannot inherit upstream tracking configuration of multiple refs when rebasing is requested',
     },
   ])('Given $label', ({ build, data, message }) => {
     describe('When accessing .data and .message', () => {

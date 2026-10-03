@@ -4,7 +4,6 @@ import {
   invalidOption,
   revparseUnresolved,
 } from '../../domain/commands/error.js';
-import { errorDataCode } from '../../domain/error-data-code.js';
 import {
   FILE_MODE,
   type FilePath,
@@ -40,8 +39,8 @@ import {
   requireWorkTree,
 } from './internal/repo-state.js';
 import { enforceLiteralMustMatch, resolvePathspec } from './internal/resolve-pathspec.js';
+import { resolveRevisionExpression } from './internal/revision-expression.js';
 import { resolveRevisionName } from './internal/revision-name.js';
-import { revParse } from './rev-parse.js';
 
 /** git's `checkout -b <name> [--track|--no-track] <rev>`: create `name` at `rev`, then switch to it. */
 export interface CheckoutCreateBranch {
@@ -241,20 +240,11 @@ interface PathSource {
 const peelTag = (object: GitObject): ObjectId | undefined =>
   object.type === 'tag' ? object.data.object : undefined;
 
-/** The codes `revParse` reports when a revision names no object. */
-const UNRESOLVED_REVISION_CODES: ReadonlySet<string | undefined> = new Set([
-  'OBJECT_NOT_FOUND',
-  'REVPARSE_UNRESOLVED',
-]);
-
 /** git dies `invalid reference` naming the revision as given, whatever step of it failed. */
 const resolveSourceRevision = async (ctx: Context, rev: string): Promise<ObjectId> => {
-  try {
-    return await revParse(ctx, rev);
-  } catch (error) {
-    if (UNRESOLVED_REVISION_CODES.has(errorDataCode(error))) throw revparseUnresolved(rev);
-    throw error;
-  }
+  const id = await resolveRevisionExpression(ctx, rev);
+  if (id === undefined) throw revparseUnresolved(rev);
+  return id;
 };
 
 /**

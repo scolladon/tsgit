@@ -80,8 +80,10 @@ const refusalOf = async (run: () => Promise<unknown>): Promise<unknown> => {
   return undefined;
 };
 
-const ORIGIN_MAIN = { remote: 'origin', merge: 'refs/heads/main', rebase: false };
-const LOCAL_MAIN = { remote: '.', merge: 'refs/heads/main', rebase: false };
+const ORIGIN_MAIN = { remote: 'origin', merges: ['refs/heads/main'], rebase: false };
+const LOCAL_MAIN = { remote: '.', merges: ['refs/heads/main'], rebase: false };
+const SECOND_MAIN_MERGE = '[branch "main"]\n\tmerge = refs/heads/z\n';
+const MAIN_EXCLUDED = '[remote "origin"]\n\tfetch = ^refs/heads/main\n';
 const ORIGIN_SECTION = '[branch "z"]\n\tremote = origin\n\tmerge = refs/heads/main\n';
 const LOCAL_SECTION = '[branch "z"]\n\tremote = .\n\tmerge = refs/heads/main\n';
 
@@ -161,7 +163,7 @@ const ROWS: ReadonlyArray<TrackingRow> = [
     label: 'a same-named remote start under autoSetupMerge=simple',
     config: '[branch]\n\tautoSetupMerge = simple\n',
     input: { startPoint: 'origin/z' },
-    upstream: { remote: 'origin', merge: 'refs/heads/z', rebase: false },
+    upstream: { remote: 'origin', merges: ['refs/heads/z'], rebase: false },
     section: '[branch "z"]\n\tremote = origin\n\tmerge = refs/heads/z\n',
   },
   {
@@ -220,6 +222,48 @@ const ROWS: ReadonlyArray<TrackingRow> = [
     upstream: undefined,
     section: undefined,
   },
+  {
+    label: 'a revision expression start by default',
+    config: '',
+    input: { startPoint: 'HEAD~0' },
+    upstream: undefined,
+    section: undefined,
+  },
+  {
+    label: 'a remote expression start by default',
+    config: '',
+    input: { startPoint: 'origin/main~0' },
+    upstream: undefined,
+    section: undefined,
+  },
+  {
+    label: 'a local start with two merges and --track=inherit',
+    config: SECOND_MAIN_MERGE,
+    input: { startPoint: 'main', track: 'inherit' },
+    upstream: { remote: 'origin', merges: ['refs/heads/main', 'refs/heads/z'], rebase: false },
+    section: `${ORIGIN_SECTION}\tmerge = refs/heads/z\n`,
+  },
+  {
+    label: 'a remote start a negative fetch refspec excludes',
+    config: MAIN_EXCLUDED,
+    input: { startPoint: 'origin/main' },
+    upstream: undefined,
+    section: undefined,
+  },
+  {
+    label: 'a remote start a negative fetch refspec leaves alone',
+    config: MAIN_EXCLUDED,
+    input: { startPoint: 'origin/z', track: 'direct' },
+    upstream: { remote: 'origin', merges: ['refs/heads/z'], rebase: false },
+    section: '[branch "z"]\n\tremote = origin\n\tmerge = refs/heads/z\n',
+  },
+  {
+    label: 'a remote start a negative pattern refspec excludes, with --track',
+    config: '[remote "origin"]\n\tfetch = ^refs/heads/ma*\n',
+    input: { startPoint: 'origin/z', track: 'direct' },
+    upstream: { remote: 'origin', merges: ['refs/heads/z'], rebase: false },
+    section: '[branch "z"]\n\tremote = origin\n\tmerge = refs/heads/z\n',
+  },
 ];
 
 describe('branchCreate — upstream tracking', () => {
@@ -245,11 +289,25 @@ describe('branchCreate — upstream tracking', () => {
     { label: 'an object id', start: (head: string) => head, code: 'UPSTREAM_NOT_BRANCH' },
     { label: 'an untracked remote ref', start: () => 'other/x', code: 'UPSTREAM_NOT_BRANCH' },
     { label: 'a missing name', start: () => 'absent', code: 'UPSTREAM_MISSING' },
-  ])('Given --track from $label', ({ start, code }) => {
+    { label: 'a revision expression', start: () => 'HEAD~0', code: 'UPSTREAM_NOT_BRANCH' },
+    { label: 'a local expression', start: () => 'main~0', code: 'UPSTREAM_NOT_BRANCH' },
+    {
+      label: 'a remote ref a negative refspec excludes',
+      start: () => 'origin/main',
+      code: 'UPSTREAM_NOT_BRANCH',
+      config: MAIN_EXCLUDED,
+    },
+    {
+      label: 'a remote ref a negative pattern refspec excludes',
+      start: () => 'origin/main',
+      code: 'UPSTREAM_NOT_BRANCH',
+      config: '[remote "origin"]\n\tfetch = ^refs/heads/m*\n',
+    },
+  ])('Given --track from $label', ({ start, code, config }) => {
     describe('When branchCreate cuts z', () => {
       it('Then it refuses before writing the branch', async () => {
         // Arrange
-        const { ctx, head } = await seed();
+        const { ctx, head } = await seed(config);
         const startPoint = start(head);
         const sut = branchCreate;
 
@@ -282,6 +340,48 @@ describe('branchCreate — upstream tracking', () => {
           remotes: ['origin', 'o2'],
         });
         expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/heads/z`)).toBe(true);
+        expect(await branchSection(ctx, 'z')).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given --track=inherit from a start with two merges under autoSetupRebase=always', () => {
+    describe('When branchCreate cuts z', () => {
+      it('Then it refuses after writing the branch, naming the merges', async () => {
+        // Arrange
+        const { ctx } = await seed(`${SECOND_MAIN_MERGE}[branch]\n\tautoSetupRebase = always\n`);
+        const sut = branchCreate;
+
+        // Act
+        const result = await refusalOf(() =>
+          sut(ctx, { name: 'z', startPoint: 'main', track: 'inherit' }),
+        );
+
+        // Assert
+        expect(result).toEqual({
+          code: 'TRACKING_INHERIT_REBASE_MULTIPLE',
+          merges: ['refs/heads/main', 'refs/heads/z'],
+        });
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/refs/heads/z`)).toBe(true);
+        expect(await branchSection(ctx, 'z')).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given --track=inherit from a start holding a valueless merge', () => {
+    describe('When branchCreate cuts z', () => {
+      it('Then it refuses naming the valueless key', async () => {
+        // Arrange
+        const { ctx } = await seed('[branch "main"]\n\tmerge\n');
+        const sut = branchCreate;
+
+        // Act
+        const result = await refusalOf(() =>
+          sut(ctx, { name: 'z', startPoint: 'main', track: 'inherit' }),
+        );
+
+        // Assert
+        expect(result).toMatchObject({ code: 'CONFIG_MISSING_VALUE', key: 'branch.main.merge' });
         expect(await branchSection(ctx, 'z')).toBeUndefined();
       });
     });
