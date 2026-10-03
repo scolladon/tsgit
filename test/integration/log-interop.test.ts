@@ -137,6 +137,79 @@ const buildMissingFirstParent = async (withCommitGraph: boolean): Promise<Missin
   return { dir, merge, firstParent, dispose };
 };
 
+interface OrderingHistory {
+  readonly dir: string;
+  readonly dispose: () => Promise<void>;
+}
+
+const OFFSET_EPOCH = 1_700_000_000;
+
+/**
+ * r ← a1 ← a2, r ← b1 ← b2 (b2 committed before b1), m = merge(a2, b2),
+ * a1 ← c1, n = merge(m, c1) on `main`, author dates ordered unlike the
+ * committer dates; plus f ← {g (newer), h (older)} merged as `held` — a
+ * parent committed after one of its children.
+ */
+const buildOrderingHistory = async (withCommitGraph: boolean): Promise<OrderingHistory> => {
+  const dir = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-log-ordering-')));
+  runGit(['init', '-q', '-b', 'main', dir]);
+  const tree = runGit(['-C', dir, 'mktree'], { input: '' }).trim();
+  const commit = (
+    message: string,
+    parents: ReadonlyArray<string>,
+    committed: number,
+    authored = committed,
+  ): string =>
+    runGit(['-C', dir, 'commit-tree', tree, ...parents.flatMap((p) => ['-p', p]), '-m', message], {
+      env: {
+        ...dateEnv(OFFSET_EPOCH + committed),
+        GIT_AUTHOR_DATE: `${OFFSET_EPOCH + authored} +0000`,
+      },
+    }).trim();
+  const r = commit('r', [], 100);
+  const a1 = commit('a1', [r], 200, 500);
+  const a2 = commit('a2', [a1], 400, 300);
+  const b1 = commit('b1', [r], 300, 200);
+  const b2 = commit('b2', [b1], 150, 600);
+  const m = commit('m', [a2, b2], 500, 100);
+  const c1 = commit('c1', [a1], 450);
+  git(dir, 'update-ref', 'refs/heads/main', commit('n', [m, c1], 600));
+  const f = commit('f', [], 8);
+  git(
+    dir,
+    'update-ref',
+    'refs/heads/held',
+    commit('e', [commit('g', [f], 9), commit('h', [f], 1)], 10),
+  );
+  if (withCommitGraph) git(dir, 'commit-graph', 'write', '--reachable');
+  const dispose = (): Promise<void> => rm(dir, { recursive: true, force: true });
+  return { dir, dispose };
+};
+
+const ORDERING_MATRIX: ReadonlyArray<{
+  readonly flags: ReadonlyArray<string>;
+  readonly opts: LogOptions;
+}> = [
+  { flags: ['--topo-order'], opts: { topoOrder: 'graph' } },
+  { flags: ['--date-order'], opts: { topoOrder: 'commit-date' } },
+  { flags: ['--author-date-order'], opts: { topoOrder: 'author-date' } },
+  { flags: ['--reverse'], opts: { reverse: true } },
+  { flags: ['--topo-order', '--reverse'], opts: { topoOrder: 'graph', reverse: true } },
+  { flags: ['--date-order', '--reverse'], opts: { topoOrder: 'commit-date', reverse: true } },
+  {
+    flags: ['--author-date-order', '--reverse'],
+    opts: { topoOrder: 'author-date', reverse: true },
+  },
+  {
+    flags: ['--date-order', '-n', '4', '--reverse'],
+    opts: { topoOrder: 'commit-date', limit: 4, reverse: true },
+  },
+  {
+    flags: ['--first-parent', '--topo-order'],
+    opts: { order: 'first-parent', topoOrder: 'graph' },
+  },
+];
+
 const logIds = async (
   dir: string,
   opts?: Parameters<Awaited<ReturnType<typeof openRepository>>['log']>[0],
@@ -306,6 +379,51 @@ describe.skipIf(!GIT_AVAILABLE)('log interop', () => {
           expect(ours).toEqual([fixture.merge]);
         } finally {
           await fixture.dispose();
+        }
+      });
+    });
+  });
+  describe.each([
+    { graph: 'without a commit-graph', withCommitGraph: false },
+    { graph: 'with a commit-graph', withCommitGraph: true },
+  ])('Given a skewed history with diverging author dates $graph', ({ withCommitGraph }) => {
+    describe.each(['main', 'held'])('When log runs from %s with each ordering option', (rev) => {
+      it.each(ORDERING_MATRIX)(
+        'Then $flags orders the commits as git does',
+        async ({ flags, opts }) => {
+          // Arrange
+          const history = await buildOrderingHistory(withCommitGraph);
+          try {
+            const peer = oidLines(git(history.dir, 'log', '--format=%H', ...flags, rev));
+
+            // Act
+            const ours = await logIds(history.dir, { ...opts, rev });
+
+            // Assert
+            expect(ours).toEqual(peer);
+          } finally {
+            await history.dispose();
+          }
+        },
+      );
+    });
+  });
+
+  describe('Given nested octopus merges whose commits all share one committer date', () => {
+    describe.each(ORDERING_MATRIX)('When log runs with $flags', ({ flags, opts }) => {
+      it('Then the oid sequence equals git log', async () => {
+        // Arrange
+        const history = await buildEqualDateHistory({ withCommitGraph: false });
+        try {
+          const peer = oidLines(git(history.dir, 'log', '--format=%H', ...flags));
+
+          // Act
+          const ours = await logIds(history.dir, opts);
+
+          // Assert
+          expect(ours).toEqual(peer);
+        } finally {
+          await history.dispose();
         }
       });
     });

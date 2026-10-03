@@ -86,6 +86,56 @@ const seedDiamond = async () => {
   return { ctx, a, b, c, d };
 };
 
+/** Write a loose commit whose committer and author timestamps differ. */
+const writeCommitDated = (
+  ctx: Context,
+  parents: ReadonlyArray<ObjectId>,
+  dates: { readonly committed: number; readonly authored: number },
+  message: string,
+): Promise<ObjectId> => {
+  const identity = (timestamp: number): AuthorIdentity => ({ ...author, timestamp });
+  const data: CommitData = {
+    tree: TREE_OID,
+    parents: [...parents],
+    author: identity(dates.authored),
+    committer: identity(dates.committed),
+    message,
+    extraHeaders: [],
+  };
+  return writeObject(ctx, { type: 'commit', id: '' as ObjectId, data });
+};
+
+/**
+ * r ← a1 ← a2, r ← b1 ← b2 (b2 committed before b1), m = merge(a2, b2),
+ * a1 ← c1, n = merge(m, c1) on `main`; author dates order the commits
+ * differently from their committer dates.
+ */
+const seedSkewedHistory = async () => {
+  const ctx = createMemoryContext();
+  const at = (committed: number, authored: number) => ({ committed, authored });
+  const r = await writeCommitDated(ctx, [], at(100, 100), 'r');
+  const a1 = await writeCommitDated(ctx, [r], at(200, 500), 'a1');
+  const a2 = await writeCommitDated(ctx, [a1], at(400, 300), 'a2');
+  const b1 = await writeCommitDated(ctx, [r], at(300, 200), 'b1');
+  const b2 = await writeCommitDated(ctx, [b1], at(150, 600), 'b2');
+  const m = await writeCommitDated(ctx, [a2, b2], at(500, 100), 'm');
+  const c1 = await writeCommitDated(ctx, [a1], at(450, 450), 'c1');
+  const n = await writeCommitDated(ctx, [m, c1], at(600, 600), 'n');
+  await seedRepo(ctx, { refs: { 'refs/heads/main': n } });
+  return ctx;
+};
+
+/** f ← a (newer than f) and f ← b (older than f); e = merge(a, b) on `main`. */
+const seedParentNewerThanChild = async () => {
+  const ctx = createMemoryContext();
+  const f = await writeCommitAt(ctx, [], 8, 'f');
+  const a = await writeCommitAt(ctx, [f], 9, 'a');
+  const b = await writeCommitAt(ctx, [f], 1, 'b');
+  const e = await writeCommitAt(ctx, [a, b], 10, 'e');
+  await seedRepo(ctx, { refs: { 'refs/heads/main': e } });
+  return ctx;
+};
+
 /** Write an annotated tag object pointing at a commit `target`. */
 const writeAnnotatedTag = (ctx: Context, target: ObjectId, name: string): Promise<ObjectId> =>
   writeObject(ctx, {
@@ -615,6 +665,73 @@ describe('log', () => {
 
         // Assert — HEAD~1 = middle; walk stops there; newest has 1 parent and passes
         expect(result.map((e) => e.message)).toEqual(['newest']);
+      });
+    });
+  });
+  describe('Given a history with clock skew and diverging author dates', () => {
+    describe.each([
+      { label: 'graph topo order', opts: { topoOrder: 'graph' }, expected: 'n c1 m b2 b1 a2 a1 r' },
+      {
+        label: 'commit-date topo order',
+        opts: { topoOrder: 'commit-date' },
+        expected: 'n m c1 a2 a1 b2 b1 r',
+      },
+      {
+        label: 'author-date topo order',
+        opts: { topoOrder: 'author-date' },
+        expected: 'n c1 m b2 a2 a1 b1 r',
+      },
+      { label: 'reverse', opts: { reverse: true }, expected: 'r b1 b2 a1 a2 c1 m n' },
+      {
+        label: 'graph topo order reversed',
+        opts: { topoOrder: 'graph', reverse: true },
+        expected: 'r a1 a2 b1 b2 m c1 n',
+      },
+      {
+        label: 'author-date topo order reversed',
+        opts: { topoOrder: 'author-date', reverse: true },
+        expected: 'r b1 a1 a2 b2 m c1 n',
+      },
+      {
+        label: 'commit-date topo order limited to 4 then reversed',
+        opts: { topoOrder: 'commit-date', limit: 4, reverse: true },
+        expected: 'a2 c1 m n',
+      },
+      {
+        label: 'graph topo order on the first-parent line',
+        opts: { topoOrder: 'graph', order: 'first-parent' },
+        expected: 'n m a2 a1 r',
+      },
+    ] as const)('When log runs with $label', ({ opts, expected }) => {
+      it("Then the commits come in git's order", async () => {
+        // Arrange
+        const ctx = await seedSkewedHistory();
+        const sut = log;
+
+        // Act
+        const result = await sut(ctx, opts);
+
+        // Assert
+        expect(result.map((entry) => entry.message).join(' ')).toBe(expected);
+      });
+    });
+  });
+
+  describe('Given a parent committed after one of its two children', () => {
+    describe.each([
+      { label: 'the default order', opts: {}, expected: 'e a f b' },
+      { label: 'commit-date topo order', opts: { topoOrder: 'commit-date' }, expected: 'e a b f' },
+    ] as const)('When log runs with $label', ({ opts, expected }) => {
+      it("Then the commits come in git's order", async () => {
+        // Arrange
+        const ctx = await seedParentNewerThanChild();
+        const sut = log;
+
+        // Act
+        const result = await sut(ctx, opts);
+
+        // Assert
+        expect(result.map((entry) => entry.message).join(' ')).toBe(expected);
       });
     });
   });

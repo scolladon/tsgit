@@ -186,7 +186,7 @@ export {
   bindWorktreeNamespace,
   type WorktreeNamespace,
 } from './internal/worktree-namespace.js';
-export { type LogEntry, type LogOptions, type LogOrder, log } from './log.js';
+export { type LogEntry, type LogOptions, type LogOrder, type LogTopoOrder, log } from './log.js';
 export {
   type MaintenanceOptions,
   type MaintenanceResult,
