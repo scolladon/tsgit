@@ -4,8 +4,9 @@
  * `OIDF`, `OIDL`, `CDAT`, `GDA2`, `GDO2` when any corrected-date
  * offset overflows GDA2's plain 31-bit field, and `EDGE` when any commit has
  * more than two parents — in that order (git's own chunk table order,
- * confirmed against real git). No `BASE` chunk (single-file form only) and
- * no Bloom chunks (those appear only under `--changed-paths`).
+ * confirmed against real git) — then `BASE` last when the file is a split
+ * layer over base layers. No Bloom chunks (those appear only under
+ * `--changed-paths`).
  *
  * The trailer's `hashLength` bytes are left zero — this function does not
  * hash; the caller fills them in place over the returned buffer, the same
@@ -64,10 +65,32 @@ export function setUint64BE(view: DataView, offset: number, value: number): void
   view.setUint32(offset + 4, low);
 }
 
-interface Generation {
+export interface CommitGraphGeneration {
   readonly level: number;
   readonly correctedDate: number;
 }
+
+type Generation = CommitGraphGeneration;
+
+/** A base-layer commit a written layer's commits name as a parent. */
+export interface CommitGraphBaseCommit {
+  /** Its chain-global position: the layers below the base it lives in, plus its local index. */
+  readonly position: number;
+  readonly generation: CommitGraphGeneration;
+}
+
+/**
+ * The layers a split layer is written over: their trailing hashes base-first
+ * (the `BASE` chunk), their summed commit count (local positions start past
+ * it), and every base commit the written commits name as a parent.
+ */
+export interface CommitGraphBase {
+  readonly layerHashes: readonly ObjectId[];
+  readonly commitCount: number;
+  readonly commits: ReadonlyMap<ObjectId, CommitGraphBaseCommit>;
+}
+
+const NO_BASE: CommitGraphBase = { layerHashes: [], commitCount: 0, commits: new Map() };
 
 interface ChunkSpec {
   readonly id: string;
@@ -90,27 +113,31 @@ interface OverflowPlan {
 export function serializeCommitGraph(
   commits: readonly CommitGraphWriterCommit[],
   hashConfig: HashConfig,
+  base: CommitGraphBase = NO_BASE,
 ): Uint8Array {
   const hashVersion: 1 | 2 = hashConfig.digestLength === 32 ? 2 : 1;
   const hashLength = hashLengthFor(hashVersion);
   const sortedCommits = sortByOid(commits);
-  const positionOf = new Map(sortedCommits.map((commit, i) => [commit.id, i]));
-  const generations = computeGenerations(sortedCommits);
+  const positionOf = new Map([
+    ...[...base.commits].map(([id, entry]) => [id, entry.position] as const),
+    ...sortedCommits.map((commit, i) => [commit.id, base.commitCount + i] as const),
+  ]);
+  const generations = computeGenerations(sortedCommits, base);
   const overflowPlan = planOverflowGenerations(sortedCommits, generations);
 
   const edgePlan = planEdges(sortedCommits, positionOf);
-  const chunkSpecs = planChunks(
-    sortedCommits.length,
-    hashLength,
-    overflowPlan.entries.length,
-    edgePlan.entries.length,
-  );
+  const chunkSpecs = planChunks(sortedCommits.length, hashLength, {
+    overflowEntryCount: overflowPlan.entries.length,
+    edgeEntryCount: edgePlan.entries.length,
+    baseLayerCount: base.layerHashes.length,
+  });
   const offsets = computeChunkOffsets(chunkSpecs);
   const trailerStart = offsets[offsets.length - 1]!;
 
   const bytes = new Uint8Array(trailerStart + hashLength);
   const view = new DataView(bytes.buffer);
   writeHeaderAndChunkTable(bytes, view, hashVersion, chunkSpecs, offsets, trailerStart);
+  view.setUint8(7, base.layerHashes.length);
 
   const chunkOffset = (id: string): number =>
     offsets[chunkSpecs.findIndex((spec) => spec.id === id)]!;
@@ -140,6 +167,9 @@ export function serializeCommitGraph(
   }
   // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — writeEdgeChunk's forEach never iterates over an empty array, so calling it unconditionally has no observable effect when edgePlan.entries.length is 0.
   if (edgePlan.entries.length > 0) writeEdgeChunk(view, edgePlan.entries, chunkOffset('EDGE'));
+  base.layerHashes.forEach((hash, i) => {
+    bytes.set(hexToBytes(hash), chunkOffset('BASE') + i * hashLength);
+  });
 
   return bytes;
 }
@@ -173,13 +203,17 @@ function sortByOid(
  * own level/corrected-date) — recursion-free so a long linear history never
  * risks a call-stack overflow. Independent of `commits`' own array order:
  * each id's result depends only on its ancestors, already memoised by the
- * time a child is reached.
+ * time a child is reached. Base-layer parents arrive pre-memoised, so the
+ * walk never descends below the layer being written.
  */
 function computeGenerations(
   commits: readonly CommitGraphWriterCommit[],
+  base: CommitGraphBase,
 ): ReadonlyMap<ObjectId, Generation> {
   const byId = new Map(commits.map((commit) => [commit.id, commit]));
-  const memo = new Map<ObjectId, Generation>();
+  const memo = new Map<ObjectId, Generation>(
+    [...base.commits].map(([id, entry]) => [id, entry.generation]),
+  );
   for (const commit of commits) {
     // Stryker disable next-line ConditionalExpression: equivalent — computeFrom is idempotent: re-visiting an already-memoised id only re-derives the same generation from its (already-memoised, unchanged) parents and overwrites memo with an identical value; a redundant call wastes cycles but changes nothing observable.
     if (!memo.has(commit.id)) computeFrom(commit.id, byId, memo);
@@ -260,11 +294,16 @@ function planEdges(
   return { entries, startByCommit };
 }
 
+interface OptionalChunkCounts {
+  readonly overflowEntryCount: number;
+  readonly edgeEntryCount: number;
+  readonly baseLayerCount: number;
+}
+
 function planChunks(
   commitCount: number,
   hashLength: number,
-  overflowEntryCount: number,
-  edgeEntryCount: number,
+  { overflowEntryCount, edgeEntryCount, baseLayerCount }: OptionalChunkCounts,
 ): ChunkSpec[] {
   const cdatEntrySize = hashLength + CDAT_FIXED_SIZE;
   const specs: ChunkSpec[] = [
@@ -276,6 +315,7 @@ function planChunks(
   if (overflowEntryCount > 0)
     specs.push({ id: 'GDO2', size: overflowEntryCount * GDO2_ENTRY_SIZE });
   if (edgeEntryCount > 0) specs.push({ id: 'EDGE', size: edgeEntryCount * 4 });
+  if (baseLayerCount > 0) specs.push({ id: 'BASE', size: baseLayerCount * hashLength });
   return specs;
 }
 
@@ -298,8 +338,6 @@ function writeHeaderAndChunkTable(
   view.setUint8(4, VERSION);
   view.setUint8(5, hashVersion);
   view.setUint8(6, chunkSpecs.length);
-  // Stryker disable next-line CallExpression: equivalent — `new Uint8Array(...)` zero-initialises the buffer; writing 0 again over an already-zero byte has no observable effect.
-  view.setUint8(7, 0); // numBaseGraphs — single-file form only
 
   chunkSpecs.forEach((spec, i) => {
     const rowStart = HEADER_SIZE + i * CHUNK_TABLE_ROW_SIZE;

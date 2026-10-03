@@ -24,11 +24,12 @@
  *   unique:         tsgit's commit-graph write is byte-identical to `git commit-graph write --reachable`, refs-only roots included
  *   interopSurface: commitGraph
  */
-import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
+import { maintenance } from '../../src/application/commands/maintenance.js';
 import { commitGraphPath } from '../../src/application/primitives/path-layout.js';
 import { writeCommitGraph } from '../../src/application/primitives/write-commit-graph.js';
 import { parseCommitGraphLayer, positionOf } from '../../src/domain/commit/commit-graph.js';
@@ -357,6 +358,102 @@ describe.skipIf(!GIT_AVAILABLE)('commit-graph write interop', () => {
       expectGitVerifiesSilently(twin.oursDir);
       await rm(twin.peerDir, { recursive: true, force: true });
       await rm(twin.oursDir, { recursive: true, force: true });
+    });
+  });
+
+  describe('split commit-graph chains written by the maintenance commit-graph task', () => {
+    /** A commit no ref reaches yet — `refs/heads/next` adopts it between the two runs. */
+    const danglingCommit = (dir: string, parentRevs: readonly string[]): string => {
+      const tree = git(dir, 'rev-parse', 'HEAD^{tree}').trim();
+      const parents = parentRevs.flatMap((rev) => ['-p', git(dir, 'rev-parse', rev).trim()]);
+      return runGit(['-C', dir, 'commit-tree', tree, ...parents, '-m', 'next'], {
+        env: datedEnv(1_700_000_000),
+      }).trim();
+    };
+
+    /** Every file under `objects/info`, keyed by its relative path, as hex — the chain oracle. */
+    const graphFiles = async (dir: string): Promise<Record<string, string>> => {
+      const info = path.join(dir, '.git', 'objects', 'info');
+      const entries = await readdir(info, { recursive: true, withFileTypes: true });
+      const files: Record<string, string> = {};
+      for (const entry of entries.filter((e) => e.isFile())) {
+        const full = path.join(entry.parentPath, entry.name);
+        files[path.relative(info, full)] = (await readFile(full)).toString('hex');
+      }
+      return files;
+    };
+
+    const runBoth = async (peerDir: string, oursDir: string): Promise<void> => {
+      git(peerDir, 'maintenance', 'run', '--task=commit-graph');
+      await maintenance(createNodeContext({ workDir: oursDir, algorithm: 'sha1' }), {
+        tasks: ['commit-graph'],
+      });
+    };
+
+    describe.each([
+      { label: 'no graph yet', commits: 2, priorGraph: 'none', parents: [], layers: 1 },
+      {
+        label: 'a small layer',
+        commits: 2,
+        priorGraph: 'maintenance',
+        parents: ['HEAD'],
+        layers: 1,
+      },
+      {
+        label: 'a layer too large to merge',
+        commits: 12,
+        priorGraph: 'maintenance',
+        parents: ['HEAD', 'HEAD~4', 'HEAD~8'],
+        layers: 2,
+      },
+      {
+        label: 'a single-file graph',
+        commits: 12,
+        priorGraph: 'single-file',
+        parents: ['HEAD'],
+        layers: 2,
+      },
+      {
+        label: 'an up-to-date layer',
+        commits: 2,
+        priorGraph: 'maintenance',
+        parents: undefined,
+        layers: 1,
+      },
+    ] as const)('Given $label', ({ commits, priorGraph, parents, layers }) => {
+      describe('When both tools run the commit-graph maintenance task', () => {
+        it('Then both write the same chain file and graph layers, and git verifies ours silently', async () => {
+          // Arrange
+          const slug = `split-${priorGraph}-${commits}-${parents?.length ?? 0}`;
+          const baseDir = await initRepo(slug);
+          for (let i = 0; i < commits; i += 1)
+            await addDatedCommit(baseDir, `c${i}`, 1_600_000_000 + i);
+          const next = parents === undefined ? undefined : danglingCommit(baseDir, parents);
+          if (priorGraph === 'single-file') git(baseDir, 'commit-graph', 'write', '--reachable');
+          const peerDir = await tmpDir(`${slug}-peer`);
+          const oursDir = await tmpDir(`${slug}-ours`);
+          await cp(baseDir, peerDir, { recursive: true });
+          await cp(baseDir, oursDir, { recursive: true });
+          await rm(baseDir, { recursive: true, force: true });
+          if (priorGraph === 'maintenance') await runBoth(peerDir, oursDir);
+          if (next !== undefined) {
+            for (const dir of [peerDir, oursDir]) git(dir, 'update-ref', 'refs/heads/next', next);
+          }
+
+          // Act
+          await runBoth(peerDir, oursDir);
+
+          // Assert
+          const oursFiles = await graphFiles(oursDir);
+          expect(oursFiles).toEqual(await graphFiles(peerDir));
+          expect(Object.keys(oursFiles).filter((name) => name.endsWith('.graph'))).toHaveLength(
+            layers,
+          );
+          expectGitVerifiesSilently(oursDir);
+          await rm(peerDir, { recursive: true, force: true });
+          await rm(oursDir, { recursive: true, force: true });
+        });
+      });
     });
   });
 });

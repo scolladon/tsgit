@@ -59,12 +59,12 @@ import { getRefStore } from '../../../../src/application/primitives/ref-store.js
 import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
 import { MAX_REFLOG_BYTES } from '../../../../src/application/primitives/types.js';
 import { updateRef } from '../../../../src/application/primitives/update-ref.js';
-import * as writeCommitGraphMod from '../../../../src/application/primitives/write-commit-graph.js';
 import * as writeObjectMod from '../../../../src/application/primitives/write-object.js';
 import {
   writeLooseObject,
   writeObject,
 } from '../../../../src/application/primitives/write-object.js';
+import * as writeSplitCommitGraphMod from '../../../../src/application/primitives/write-split-commit-graph.js';
 import {
   fileNotFound,
   notADirectory,
@@ -351,7 +351,7 @@ describe('maintenance', () => {
 
   describe('Given tasks: ["commit-graph"] against a repository with one commit', () => {
     describe('When maintenance runs', () => {
-      it('Then the graph is written, commitsInGraph matches the reachable count, and tasksRun echoes the task', async () => {
+      it('Then a split chain layer is written, commitsInGraph matches the reachable count, and tasksRun echoes the task', async () => {
         // Arrange
         const ctx = await seedOneCommit();
         const sut = maintenance;
@@ -363,6 +363,8 @@ describe('maintenance', () => {
         expect(result.commitGraphWritten).toBe(true);
         expect(result.commitsInGraph).toBe(1);
         expect(result.tasksRun).toEqual(['commit-graph']);
+        expect(await ctx.fs.exists(commitGraphChainPath(commonGitDir(ctx)))).toBe(true);
+        expect(await ctx.fs.exists(commitGraphPath(commonGitDir(ctx)))).toBe(false);
       });
     });
   });
@@ -573,8 +575,9 @@ describe('maintenance', () => {
         const result = await sut(ctx, { tasks });
 
         // Assert
+        const graphFile = tasks[0] === 'gc' ? commitGraphPath : commitGraphChainPath;
         expect(result.commitGraphWritten).toBe(written);
-        expect(await ctx.fs.exists(commitGraphPath(gitDir))).toBe(written);
+        expect(await ctx.fs.exists(graphFile(gitDir))).toBe(written);
       });
     });
   });
@@ -646,7 +649,7 @@ describe('maintenance', () => {
         // not a fixed internal priority.
         const ctx = await seedOneCommit();
         const enumerateSpy = vi.spyOn(enumerateObjectsMod, 'enumerateObjects');
-        const writeGraphSpy = vi.spyOn(writeCommitGraphMod, 'writeCommitGraph');
+        const writeGraphSpy = vi.spyOn(writeSplitCommitGraphMod, 'writeSplitCommitGraph');
         const sut = maintenance;
 
         // Act
@@ -673,7 +676,7 @@ describe('maintenance', () => {
         // not a fixed internal priority.
         const ctx = await seedOneCommit();
         const enumerateSpy = vi.spyOn(enumerateObjectsMod, 'enumerateObjects');
-        const writeGraphSpy = vi.spyOn(writeCommitGraphMod, 'writeCommitGraph');
+        const writeGraphSpy = vi.spyOn(writeSplitCommitGraphMod, 'writeSplitCommitGraph');
         const sut = maintenance;
 
         // Act
@@ -681,6 +684,7 @@ describe('maintenance', () => {
 
         // Assert
         expect(result.tasksRun).toEqual(['gc', 'commit-graph']);
+        expect(result.commitGraphWritten).toBe(true);
         const gcOrder = Math.min(...enumerateSpy.mock.invocationCallOrder);
         const graphOrder = Math.min(...writeGraphSpy.mock.invocationCallOrder);
         enumerateSpy.mockRestore();

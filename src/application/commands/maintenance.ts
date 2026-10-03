@@ -5,7 +5,9 @@
  * check inside `status`, no write-path hook — a caller decides when
  * maintenance happens, and only the tasks it names run.
  *
- * Ships two tasks. `commit-graph` writes `objects/info/commit-graph`.
+ * Ships two tasks. `commit-graph` writes one split layer of the commit-graph
+ * chain, as `git commit-graph write --split --reachable` does — nothing when
+ * every reachable commit is already in the graph.
  * `gc` consolidates every pack it owns, by class: reachable objects — loose,
  * already packed, or living in a promisor pack — repack into one new normal
  * pack; every promisor object ALSO repacks whole into one new promisor
@@ -34,6 +36,7 @@ import { findLastEntry } from '../primitives/config-read.js';
 import { hasReplaceRefs } from '../primitives/internal/commit-graph-compatible.js';
 import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
 import { writeCommitGraph } from '../primitives/write-commit-graph.js';
+import { writeSplitCommitGraph } from '../primitives/write-split-commit-graph.js';
 import { GC_NOT_RUN, type GcResult, readGcSettings, runGcTask } from './internal/gc-pipeline.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
 
@@ -105,11 +108,13 @@ const writeReachableCommitGraph = async (ctx: Context): Promise<CommitGraphOutco
 };
 
 /** git's `maintenance_task_commit_graph`: `prepare_repo_settings` first, then a
- *  disabled `core.commitGraph` skips the write, silently. */
+ *  disabled `core.commitGraph` skips the write, silently; otherwise one split
+ *  layer, `commitsInGraph` counting the whole chain. */
 const runCommitGraphTask = async (ctx: Context): Promise<CommitGraphOutcome> => {
   await assertRepoSettingsValid(ctx);
   if (await lastBooleanIsFalse(ctx, 'core', 'commitGraph')) return NO_COMMIT_GRAPH;
-  return writeReachableCommitGraph(ctx);
+  const { written, commitCount } = await writeSplitCommitGraph(ctx);
+  return { commitGraphWritten: written, commitsInGraph: commitCount };
 };
 
 const COMMIT_GRAPH_DISABLED_WARNING =
@@ -129,6 +134,15 @@ const writeGcCommitGraph = async (ctx: Context): Promise<CommitGraphOutcome | un
   if (await hasReplaceRefs(ctx)) return undefined;
   return writeReachableCommitGraph(ctx);
 };
+
+/** A commit-graph a gc already wrote stays written when a later task finds nothing new to add. */
+const laterOutcome = (
+  earlier: CommitGraphOutcome,
+  later: CommitGraphOutcome,
+): CommitGraphOutcome => ({
+  commitGraphWritten: earlier.commitGraphWritten || later.commitGraphWritten,
+  commitsInGraph: later.commitsInGraph,
+});
 
 /** `tasks` with later duplicates dropped, first occurrence's position kept —
  *  the shape `maintenance`'s task loop needs to run each requested task
@@ -168,7 +182,7 @@ export const maintenance = async (
 
   for (const task of orderedUniqueTasks(opts.tasks)) {
     if (task === 'commit-graph') {
-      commitGraphOutcome = await runCommitGraphTask(ctx);
+      commitGraphOutcome = laterOutcome(commitGraphOutcome, await runCommitGraphTask(ctx));
       tasksRun.push('commit-graph');
       continue;
     }

@@ -214,6 +214,12 @@ function readBaseGraphHashes(
   return hashes;
 }
 
+/** The oid at a layer-local position of the OIDL chunk. */
+export function oidAtPosition(layer: CommitGraphLayer, localPos: number): ObjectId {
+  const offset = layer._oidLookupOffset + localPos * layer._hashLength;
+  return ObjectId.fromRaw(layer._bytes.subarray(offset, offset + layer._hashLength));
+}
+
 /** Binary search for `oid` within the layer's fanout-backed OIDL chunk. */
 export function positionOf(layer: CommitGraphLayer, oid: ObjectId): number | undefined {
   const targetBytes = hexToBytes(oid);

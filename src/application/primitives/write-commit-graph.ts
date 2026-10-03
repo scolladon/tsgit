@@ -35,7 +35,7 @@ export interface WriteCommitGraphResult {
   readonly commitCount: number;
 }
 
-const commitGraphLocked = (lockPath: string): TsgitError =>
+export const commitGraphLocked = (lockPath: string): TsgitError =>
   new TsgitError({ code: 'RESOURCE_LOCKED', resource: 'commit-graph', path: lockPath });
 
 /**
@@ -45,7 +45,7 @@ const commitGraphLocked = (lockPath: string): TsgitError =>
  * nothing rather than failing the whole write, mirroring fsck's own
  * `addRefRoots` tolerance for the same conditions.
  */
-async function commitGraphRoots(ctx: Context): Promise<readonly ObjectId[]> {
+export async function commitGraphRoots(ctx: Context): Promise<readonly ObjectId[]> {
   const refNames = await enumerateRefs(ctx);
   const roots = new Set<ObjectId>();
   for (const name of refNames) {

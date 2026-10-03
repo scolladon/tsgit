@@ -1,14 +1,18 @@
 /**
  * Maintenance scenario — seeds a single commit then exercises
  * `repo.maintenance({ tasks: ['commit-graph'] })`. `commitsInGraph` is a
- * deterministic count; the on-disk `objects/info/commit-graph` file is read
+ * deterministic count; the one layer `commit-graph-chain` names is read
  * back and re-parsed as the readback proof that the written bytes hold
  * exactly that commit.
  *
  * Surfaces closed:
  *   commands: maintenance
  */
-import { commitGraphPath, commonGitDir } from '../../../src/application/primitives/path-layout.ts';
+import {
+  commitGraphChainPath,
+  commitGraphLayerPath,
+  commonGitDir,
+} from '../../../src/application/primitives/path-layout.ts';
 import { parseCommitGraphLayer } from '../../../src/domain/commit/commit-graph.ts';
 import { AUTHOR, FILES, MESSAGES } from '../fixtures.ts';
 import type { Scenario } from './types.ts';
@@ -37,7 +41,8 @@ export const maintenanceScenario: Scenario<MaintenanceScenarioResult> = {
     const result = await repo.maintenance({ tasks: ['commit-graph'] });
 
     const gitDir = commonGitDir(repo.ctx);
-    const bytes = await repo.ctx.fs.read(commitGraphPath(gitDir));
+    const [layerHash = ''] = (await repo.ctx.fs.readUtf8(commitGraphChainPath(gitDir))).split('\n');
+    const bytes = await repo.ctx.fs.read(commitGraphLayerPath(gitDir, layerHash));
     const layer = parseCommitGraphLayer(bytes);
 
     return {

@@ -14,13 +14,14 @@ import {
   type CommitData,
   type CommitGraphLayer,
   commitDataAt,
+  oidAtPosition,
   parseCommitGraphLayer,
   positionOf,
 } from '../../../domain/commit/commit-graph.js';
 import { invalidCommitGraphChunk } from '../../../domain/commit/error.js';
 import { parseGitBoolean } from '../../../domain/config/config-ini.js';
 import { TsgitError } from '../../../domain/error.js';
-import { ObjectId } from '../../../domain/objects/index.js';
+import type { ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { findLastEntry } from '../config-read.js';
 import { getObjectStore, type ObjectSource, type ObjectStore } from '../object-store.js';
@@ -193,14 +194,14 @@ async function loadChain(
 async function findLayer(store: ObjectStore, hash: string): Promise<CommitGraphLayer | undefined> {
   for (const source of store.sources) {
     const bytes = await tryRead(source.fs, commitGraphLayerPathIn(source.objectsDir, hash));
-    const layer = bytes === undefined ? undefined : parseOrUndefined(bytes);
+    const layer = bytes === undefined ? undefined : parseLayerOrUndefined(bytes);
     if (layer !== undefined) return layer;
   }
   return undefined;
 }
 
 /** A malformed graph file is "not loadable" (git warns and moves on); fs errors never reach here. */
-function parseOrUndefined(bytes: Uint8Array): CommitGraphLayer | undefined {
+export function parseLayerOrUndefined(bytes: Uint8Array): CommitGraphLayer | undefined {
   try {
     return parseCommitGraphLayer(bytes);
   } catch (error) {
@@ -260,7 +261,7 @@ async function readGraphOne(
   source: ObjectSource,
 ): Promise<LoadedGraph | undefined> {
   const single = await tryRead(source.fs, commitGraphPathIn(source.objectsDir));
-  const layer = single === undefined ? undefined : parseOrUndefined(single);
+  const layer = single === undefined ? undefined : parseLayerOrUndefined(single);
   if (layer !== undefined) return loadedGraph([layer]);
   return loadChain(ctx, store, source);
 }
@@ -354,11 +355,6 @@ function findLayerForGlobalPosition(
   // every globalPos read from CDAT/EDGE is a non-negative uint32, so the loop above
   // always matches at (at latest) i=0; this throw's message can never be observed.
   throw invalidCommitGraphChunk(`parent position ${globalPos} out of range`);
-}
-
-function oidAtPosition(layer: CommitGraphLayer, localPos: number): ObjectId {
-  const offset = layer._oidLookupOffset + localPos * layer._hashLength;
-  return ObjectId.fromRaw(layer._bytes.subarray(offset, offset + layer._hashLength));
 }
 
 function resolveParentIds(

@@ -5,7 +5,10 @@ import {
   NO_PARENT,
   OCTOPUS_FLAG,
 } from '../../../../src/domain/commit/commit-graph.js';
-import type { CommitGraphWriterCommit } from '../../../../src/domain/commit/commit-graph-writer.js';
+import type {
+  CommitGraphBase,
+  CommitGraphWriterCommit,
+} from '../../../../src/domain/commit/commit-graph-writer.js';
 import {
   MAX_GENERATION_OFFSET,
   serializeCommitGraph,
@@ -424,6 +427,89 @@ describe('serializeCommitGraph', () => {
         // Assert
         expect(bytes[6]).toBe(6);
         expect(findChunkRowIndex(bytes, 'GDO2')).toBeLessThan(findChunkRowIndex(bytes, 'EDGE'));
+      });
+    });
+  });
+
+  describe('Given a layer written over a two-layer base', () => {
+    const baseParent = oid('b1');
+    const otherBaseParent = oid('b2');
+    const base: CommitGraphBase = {
+      layerHashes: [oid('a1'), oid('a2')],
+      commitCount: 7,
+      commits: new Map([
+        [baseParent, { position: 4, generation: { level: 5, correctedDate: 1_800_000_000 } }],
+        [otherBaseParent, { position: 6, generation: { level: 2, correctedDate: 1_600_000_000 } }],
+      ]),
+    };
+    const local = commit('c0', [baseParent]);
+    const child = commit('c1', [local.id, otherBaseParent]);
+    const octopus = commit('c2', [local.id, baseParent, otherBaseParent]);
+
+    describe('When serialized', () => {
+      it('Then the header counts the base layers and the BASE chunk, last, names them base-first', () => {
+        // Arrange
+        const sut = serializeCommitGraph;
+
+        // Act
+        const result = sut([local, child], SHA1_CONFIG, base);
+
+        // Assert
+        const view = new DataView(result.buffer);
+        const baseChunk = chunkRange(result, view, 'BASE');
+        expect(result[6]).toBe(5);
+        expect(result[7]).toBe(2);
+        expect(findChunkRowIndex(result, 'BASE')).toBe(4);
+        expect(baseChunk.end - baseChunk.start).toBe(40);
+        expect(Buffer.from(result.subarray(baseChunk.start, baseChunk.end)).toString('hex')).toBe(
+          `${oid('a1')}${oid('a2')}`,
+        );
+      });
+
+      it('Then a parent in the base keeps its base position and a local one is offset past the base', () => {
+        // Arrange
+        const sut = serializeCommitGraph;
+
+        // Act
+        const result = sut([local, child], SHA1_CONFIG, base);
+
+        // Assert
+        const view = new DataView(result.buffer);
+        const cdat = chunkRange(result, view, 'CDAT');
+        expect(view.getUint32(cdat.start + 20)).toBe(4);
+        expect(view.getUint32(cdat.start + 36 + 20)).toBe(7);
+        expect(view.getUint32(cdat.start + 36 + 24)).toBe(6);
+      });
+
+      it("Then generations continue from the base parents' levels and corrected dates", () => {
+        // Arrange
+        const sut = serializeCommitGraph;
+
+        // Act
+        const result = sut([local, child], SHA1_CONFIG, base);
+
+        // Assert
+        const view = new DataView(result.buffer);
+        const cdat = chunkRange(result, view, 'CDAT');
+        const gda2 = chunkRange(result, view, 'GDA2');
+        expect(view.getUint32(cdat.start + 28) >>> 2).toBe(6);
+        expect(view.getUint32(cdat.start + 36 + 28) >>> 2).toBe(7);
+        expect(view.getUint32(gda2.start)).toBe(1_800_000_001 - 1_700_000_000);
+        expect(view.getUint32(gda2.start + 4)).toBe(1_800_000_002 - 1_700_000_000);
+      });
+
+      it('Then an octopus EDGE list names its base parents by their base positions', () => {
+        // Arrange
+        const sut = serializeCommitGraph;
+
+        // Act
+        const result = sut([local, octopus], SHA1_CONFIG, base);
+
+        // Assert
+        const view = new DataView(result.buffer);
+        const edge = chunkRange(result, view, 'EDGE');
+        expect(view.getUint32(edge.start)).toBe(4);
+        expect(view.getUint32(edge.start + 4)).toBe((6 | EDGE_LAST_FLAG) >>> 0);
       });
     });
   });
