@@ -177,6 +177,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'FSCK_CANNOT_DEMOTE':
     case 'FSCK_SKIP_LIST_UNREADABLE':
     case 'FSCK_SKIP_LIST_INVALID_NAME':
+    case 'EMPTY_COMMIT_SET':
     case 'CONFIG_UNKNOWN_NEGOTIATION_ALGORITHM':
     case 'CONFIG_INVALID_ENUM_VALUE':
     case 'CONFIG_BAD_ZLIB_LEVEL':

@@ -496,6 +496,56 @@ describe('cherryPickRun — ranges and the sequencer', () => {
     });
   });
 
+  describe('Given a one-commit range whose pick conflicts', () => {
+    describe('When run', () => {
+      it('Then it still starts a sequence — only a lone plain commit-ish skips the sequencer', async () => {
+        // Arrange
+        const { ctx, base, c1 } = await seedRange();
+
+        // Act
+        const result = await cherryPickRun(ctx, { commits: [`${base}..${c1}`] });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        const todo = await ctx.fs.readUtf8(`${ctx.layout.gitDir}/sequencer/todo`);
+        expect(todo).toBe(`pick ${c1} c1 change\n`);
+      });
+    });
+  });
+
+  describe('Given the same commit named twice', () => {
+    describe('When run', () => {
+      it('Then it picks the commit once', async () => {
+        // Arrange
+        const { ctx, feature } = await seedRange();
+
+        // Act
+        const result = await cherryPickRun(ctx, { commits: [feature, 'feature'] });
+
+        // Assert
+        expect(result.kind).toBe('picked');
+        if (result.kind === 'picked') expect(result.commits).toHaveLength(1);
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/sequencer`)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a range that names no commit', () => {
+    describe('When run', () => {
+      it('Then it refuses with EMPTY_COMMIT_SET and starts no sequence', async () => {
+        // Arrange
+        const { ctx, c1 } = await seedRange();
+
+        // Act
+        const code = await codeOf(() => cherryPickRun(ctx, { commits: [`${c1}..${c1}`] }));
+
+        // Assert
+        expect(code).toBe('EMPTY_COMMIT_SET');
+        expect(await ctx.fs.exists(`${ctx.layout.gitDir}/sequencer`)).toBe(false);
+      });
+    });
+  });
+
   describe('Given a default range (no -x, no --allow-empty) that stops on a conflict', () => {
     describe('When the sequencer dir is persisted', () => {
       it('Then no `opts` file is written (git omits it when every option is default)', async () => {

@@ -217,6 +217,7 @@ export type CommandError =
       readonly source?: string;
       readonly line?: number;
     }
+  | { readonly code: 'EMPTY_COMMIT_SET' }
   | {
       readonly code: 'CONFIG_UNKNOWN_NEGOTIATION_ALGORITHM';
       readonly value: string;
@@ -547,6 +548,13 @@ export const remoteNameInvalid = (name: string, reason: string): TsgitError =>
     name: sanitizeForDisplay(name),
     reason: sanitizeForDisplay(reason),
   });
+
+/**
+ * A cherry-pick or revert whose arguments name no commit to replay — every
+ * range is empty (`A..A`). git refuses before it touches the work tree or
+ * writes any sequencer state.
+ */
+export const emptyCommitSet = (): TsgitError => new TsgitError({ code: 'EMPTY_COMMIT_SET' });
 
 export const invalidOption = (option: string, reason: string): TsgitError =>
   new TsgitError({ code: 'INVALID_OPTION', option, reason: sanitizeForDisplay(reason) });

@@ -551,6 +551,8 @@ function extractDetail(data: TsgitErrorData): string {
       return data.key === undefined
         ? `bad date config value '${data.value}'`
         : `bad date config value '${data.value}' for '${data.key}' in file ${data.source} at line ${data.line}`;
+    case 'EMPTY_COMMIT_SET':
+      return 'empty commit set passed';
     case 'CONFIG_UNKNOWN_NEGOTIATION_ALGORITHM':
       return `unknown fetch negotiation algorithm '${data.value}'`;
     case 'CONFIG_INVALID_ENUM_VALUE':

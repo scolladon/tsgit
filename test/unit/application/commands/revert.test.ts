@@ -97,6 +97,29 @@ const seedLinear = async (): Promise<{ ctx: Context; c1: ObjectId; c2: ObjectId 
   return { ctx, c1: c1.id, c2: c2.id };
 };
 
+/**
+ * `seedLinear`, then c3 hand-undoes c2, c4 changes line 3, c5 hand-undoes c4
+ * and c6 adds g.txt — reverting c2 or c4 is empty, reverting c6 is not.
+ */
+const seedUndone = async (): Promise<{
+  ctx: Context;
+  c2: ObjectId;
+  c4: ObjectId;
+  c6: ObjectId;
+}> => {
+  const { ctx, c2 } = await seedLinear();
+  const edit = async (name: string, content: string, message: string): Promise<ObjectId> => {
+    await ctx.fs.writeUtf8(work(ctx, name), content);
+    await add(ctx, [name]);
+    return (await commit(ctx, { message, author: MAIN_AUTHOR })).id;
+  };
+  await edit('f.txt', 'a\nb\nc\n', 'c3 undo c2');
+  const c4 = await edit('f.txt', 'a\nb\nC4\n', 'c4 line3');
+  await edit('f.txt', 'a\nb\nc\n', 'c5 undo c4');
+  const c6 = await edit('g.txt', 'g\n', 'c6 add g');
+  return { ctx, c2, c4, c6 };
+};
+
 describe('revert run', () => {
   describe('Given a clean single revert of the tip', () => {
     describe('When revertRun targets HEAD', () => {
@@ -505,14 +528,63 @@ describe('revert range and sequencer', () => {
     });
   });
 
-  describe('Given a multi-arg revert where a later commit is already undone', () => {
-    describe('When the second revert is empty', () => {
-      it('Then stops empty with the sequencer persisted and no REVERT_HEAD', async () => {
-        // Arrange — reverting c2 twice: the first commits, the second is empty.
+  describe('Given a one-commit range whose revert conflicts', () => {
+    describe('When reverting it', () => {
+      it('Then it still starts a sequence — only a lone plain commit-ish skips the sequencer', async () => {
+        // Arrange — c3 re-edits the line c2 touched, so reverting c2 conflicts
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await setUser(ctx);
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'a\nb\n');
+        await add(ctx, ['f.txt']);
+        const c1 = (await commit(ctx, { message: 'c1 base', author: MAIN_AUTHOR })).id;
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'a\nB2\n');
+        await add(ctx, ['f.txt']);
+        const c2 = (await commit(ctx, { message: 'c2 line2', author: MAIN_AUTHOR })).id;
+        await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'a\nB3\n');
+        await add(ctx, ['f.txt']);
+        await commit(ctx, { message: 'c3 line2 again', author: MAIN_AUTHOR });
+
+        // Act
+        const result = await revertRun(ctx, { commits: [`${c1}..${c2}`] });
+
+        // Assert
+        expect(result.kind).toBe('conflict');
+        const todo = await ctx.fs.readUtf8(`${gitDir(ctx)}/sequencer/todo`);
+        expect(todo).toBe(`revert ${c2} c2 line2\n`);
+      });
+    });
+  });
+
+  describe('Given a range that names no commit', () => {
+    describe('When reverting it', () => {
+      it('Then it refuses with EMPTY_COMMIT_SET and starts no sequence', async () => {
+        // Arrange
         const { ctx, c2 } = await seedLinear();
 
         // Act
-        const result = await revertRun(ctx, { commits: [c2, c2] });
+        let caught: unknown;
+        try {
+          await revertRun(ctx, { commits: [`${c2}..${c2}`] });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({ code: 'EMPTY_COMMIT_SET' });
+        expect(await exists(ctx, 'sequencer')).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a multi-arg revert where a later commit is already undone', () => {
+    describe('When the second revert is empty', () => {
+      it('Then stops empty with the sequencer persisted and no REVERT_HEAD', async () => {
+        // Arrange — reverting c6 commits; c2 is already undone, so its revert is empty.
+        const { ctx, c2, c6 } = await seedUndone();
+
+        // Act
+        const result = await revertRun(ctx, { commits: [c6, c2] });
 
         // Assert
         expect(result.kind).toBe('empty');
@@ -723,9 +795,9 @@ describe('revert continue', () => {
   describe('Given a multi-revert stopped at an empty commit', () => {
     describe('When continue runs', () => {
       it('Then drops the empty revert and finishes, clearing the sequencer', async () => {
-        // Arrange — `revert c2 c2`: first commits, second stops empty.
-        const { ctx, c2 } = await seedLinear();
-        const stop = await revertRun(ctx, { commits: [c2, c2] });
+        // Arrange — `revert c6 c2`: first commits, second stops empty.
+        const { ctx, c2, c6 } = await seedUndone();
+        const stop = await revertRun(ctx, { commits: [c6, c2] });
         if (stop.kind !== 'empty') throw new Error('seed: expected empty stop');
 
         // Act
@@ -1223,9 +1295,9 @@ describe('revert observable surfaces', () => {
   describe('Given a multi-arg revert with two trailing empty reverts', () => {
     describe('When continue acknowledges the first empty', () => {
       it('Then it drops only the leading empty and stops again at the next', async () => {
-        // Arrange — `revert c2 c2 c2`: first commits, second stops empty.
-        const { ctx, c2 } = await seedLinear();
-        const first = await revertRun(ctx, { commits: [c2, c2, c2] });
+        // Arrange — `revert c6 c2 c4`: first commits, second stops empty.
+        const { ctx, c2, c4, c6 } = await seedUndone();
+        const first = await revertRun(ctx, { commits: [c6, c2, c4] });
         if (first.kind !== 'empty') throw new Error('seed: expected an empty stop');
 
         // Act — continue drops this empty but must stop at the third (also empty).
@@ -1241,14 +1313,14 @@ describe('revert observable surfaces', () => {
   describe('Given a multi-commit revert with --no-commit where the first conflicts', () => {
     describe('When run', () => {
       it('Then the conflict reports the remaining count', async () => {
-        // Arrange — revert c2 then c2 with -n; the first conflicts vs c3.
-        const { ctx, c2 } = await seedLinear();
+        // Arrange — revert c2 then c1 with -n; the first conflicts vs c3.
+        const { ctx, c1, c2 } = await seedLinear();
         await ctx.fs.writeUtf8(work(ctx, 'f.txt'), 'a\nB3\nc\n');
         await add(ctx, ['f.txt']);
         await commit(ctx, { message: 'c3 top', author: MAIN_AUTHOR });
 
         // Act
-        const result = await revertRun(ctx, { commits: [c2, c2], noCommit: true });
+        const result = await revertRun(ctx, { commits: [c2, c1], noCommit: true });
 
         // Assert
         expect(result.kind).toBe('conflict');
@@ -1368,9 +1440,9 @@ describe('revert mutation-hardening surfaces', () => {
   describe('Given a markerless empty stop', () => {
     describe('When skip runs', () => {
       it('Then it drops the empty commit and finishes (no REVERT_HEAD needed)', async () => {
-        // Arrange — `revert c2 c2`: first commits, second stops empty (no REVERT_HEAD).
-        const { ctx, c2 } = await seedLinear();
-        const stop = await revertRun(ctx, { commits: [c2, c2] });
+        // Arrange — `revert c6 c2`: first commits, second stops empty (no REVERT_HEAD).
+        const { ctx, c2, c6 } = await seedUndone();
+        const stop = await revertRun(ctx, { commits: [c6, c2] });
         if (stop.kind !== 'empty') throw new Error('seed: expected empty stop');
         expect(await exists(ctx, 'REVERT_HEAD')).toBe(false);
 

@@ -8,7 +8,6 @@
  */
 import {
   cherryPickMergeNoMainline,
-  invalidOption,
   mergeHasConflicts,
   noInitialCommit,
   noOperationInProgress,
@@ -44,7 +43,6 @@ import { readIndex } from '../primitives/read-index.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-index.js';
 import { updateRef } from '../primitives/update-ref.js';
-import { walkCommits, walkCommitsStoppingAt } from '../primitives/walk-commits.js';
 import { abortSequencerReset } from './internal/abort-sequencer-reset.js';
 import {
   clearCherryPickHead,
@@ -53,13 +51,17 @@ import {
   writeCherryPickHead,
 } from './internal/cherry-pick-state.js';
 import { assertCleanWorkTree } from './internal/clean-work-tree.js';
-import { resolveCommitIsh } from './internal/commit-ish.js';
 import { sanitizeMessage, stripComments } from './internal/commit-message.js';
 import { resolveCurrentIdentity } from './internal/current-identity.js';
 import { readCommitData, requireSymbolicHead, treeOf } from './internal/history-rewrite.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import { clearMergeMsg, readMergeMsg, writeMergeMsg } from './internal/merge-state.js';
 import { hardResetWorktreeToCommit } from './internal/reset-worktree.js';
+import {
+  isSequence,
+  resolveSequencerRevisions,
+  type SequencerRevisions,
+} from './internal/sequencer-revisions.js';
 import {
   clearSequencer,
   readSequencerHead,
@@ -70,7 +72,6 @@ import {
   writeSequencerOpts,
   writeSequencerTodo,
 } from './internal/sequencer-state.js';
-import { revParse } from './rev-parse.js';
 
 export type { ConflictType } from '../../domain/merge/index.js';
 
@@ -127,58 +128,12 @@ const toConflictList = (
   conflicts: ReadonlyArray<MergeConflict>,
 ): ReadonlyArray<CherryPickConflict> => conflicts.map((c) => ({ path: c.path, type: c.type }));
 
-const RANGE = /^(.+)\.\.(.+)$/;
-
 /**
- * Commits in `from..to`, oldest-first (git's range order) — the set reachable
- * from `to` minus everything reachable from `from`. `from`'s whole ancestor set
- * is excluded (not just `from` itself): otherwise a shared root reached down a
- * divergent branch leaks in, since `until` is membership-only.
+ * git's `prepare_revs` for a pick: a walked range is replayed oldest first,
+ * listed commits in argument order.
  */
-const expandRange = async (
-  ctx: Context,
-  from: ObjectId,
-  to: ObjectId,
-): Promise<ReadonlyArray<ObjectId>> => {
-  const excluded = new Set<ObjectId>();
-  for await (const commit of walkCommits(ctx, { from: [from] })) {
-    excluded.add(commit.id);
-  }
-  const ids: ObjectId[] = [];
-  for await (const commit of walkCommitsStoppingAt(ctx, { from: [to], until: excluded })) {
-    ids.push(commit.id);
-  }
-  return ids.reverse();
-};
-
-/**
- * Expand each argument to ordered commit oids — a single commit-ish (ref / oid /
- * abbrev / peeled tag) or an `A..B` range (oldest-first). `A...B` / `^`-exclusion
- * forms are rejected (deferred), never mis-expanded.
- */
-const expandRevisions = async (
-  ctx: Context,
-  args: ReadonlyArray<string>,
-): Promise<ReadonlyArray<ObjectId>> => {
-  const todo: ObjectId[] = [];
-  for (const arg of args) {
-    if (arg.includes('...') || arg.includes('^')) {
-      throw invalidOption(
-        'commits',
-        `unsupported revision form '${arg}' (use a commit-ish or A..B)`,
-      );
-    }
-    const match = RANGE.exec(arg);
-    if (match === null) {
-      todo.push(await resolveCommitIsh(ctx, arg));
-      continue;
-    }
-    const from = await revParse(ctx, match[1] as string);
-    const to = await revParse(ctx, match[2] as string);
-    todo.push(...(await expandRange(ctx, from, to)));
-  }
-  return todo;
-};
+const pickOrder = (revisions: SequencerRevisions): ReadonlyArray<ObjectId> =>
+  revisions.kind === 'walked' ? [...revisions.commits].reverse() : revisions.commits;
 
 /** Read each commit's subject to build `pick <oid> <subject>` todo entries. */
 const buildTodoEntries = async (
@@ -439,14 +394,18 @@ export const cherryPickRun = async (
     throw unsupportedOperation(CHERRY_PICK, 'cannot cherry-pick with detached HEAD');
   }
   const ourId = await resolveHeadCommit(ctx, head.target);
-  const todo = await expandRevisions(ctx, input.commits);
+  const revisions = await resolveSequencerRevisions(ctx, input.commits);
+  const todo = pickOrder(revisions);
   await assertCleanWorkTree(ctx, await treeOf(ctx, ourId));
   if (input.noCommit === true) return runNoCommit(ctx, todo);
   const opts: PickOptions = {
     recordOrigin: input.recordOrigin ?? false,
     allowEmpty: input.allowEmpty ?? false,
   };
-  const seq: SequenceState = { multiPick: todo.length > 1, sequenceHead: ourId };
+  const seq: SequenceState = {
+    multiPick: isSequence(input.commits, revisions),
+    sequenceHead: ourId,
+  };
   return runSequence(ctx, todo, ourId, opts, seq);
 };
 

@@ -1697,6 +1697,7 @@ describe('domain commands error — extractDetail message formatting', () => {
       },
       "CONFIG_BAD_BOOLEAN_LITERAL: invalid value for 'push.gpgsign' in file /repo/.git/config",
     ],
+    [{ code: 'EMPTY_COMMIT_SET' }, 'EMPTY_COMMIT_SET: empty commit set passed'],
     [
       { code: 'CONFIG_UNKNOWN_NEGOTIATION_ALGORITHM', value: 'bogus' },
       "CONFIG_UNKNOWN_NEGOTIATION_ALGORITHM: unknown fetch negotiation algorithm 'bogus'",

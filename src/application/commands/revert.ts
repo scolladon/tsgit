@@ -8,7 +8,6 @@
  * revert (no net change) stops markerless (git has no `--allow-empty`).
  */
 import {
-  invalidOption,
   mergeHasConflicts,
   noInitialCommit,
   noOperationInProgress,
@@ -45,12 +44,10 @@ import { readIndex } from '../primitives/read-index.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-index.js';
 import { updateRef } from '../primitives/update-ref.js';
-import { walkCommits, walkCommitsStoppingAt } from '../primitives/walk-commits.js';
 import { writeTree } from '../primitives/write-tree.js';
 import { abortSequencerReset } from './internal/abort-sequencer-reset.js';
 import { conflictMergeMsg } from './internal/cherry-pick-state.js';
 import { assertCleanWorkTree } from './internal/clean-work-tree.js';
-import { resolveCommitIsh } from './internal/commit-ish.js';
 import { sanitizeMessage, stripComments } from './internal/commit-message.js';
 import { resolveCurrentIdentity } from './internal/current-identity.js';
 import { readCommitData, requireSymbolicHead, treeOf } from './internal/history-rewrite.js';
@@ -63,6 +60,7 @@ import {
   revertMessage,
   writeRevertHead,
 } from './internal/revert-state.js';
+import { isSequence, resolveSequencerRevisions } from './internal/sequencer-revisions.js';
 import {
   clearSequencer,
   readSequencerHead,
@@ -72,7 +70,6 @@ import {
   writeSequencerOpts,
   writeSequencerTodo,
 } from './internal/sequencer-state.js';
-import { revParse } from './rev-parse.js';
 
 export type { ConflictType } from '../../domain/merge/index.js';
 
@@ -318,57 +315,6 @@ const runSequence = async (
   return { kind: 'reverted', commits: applied };
 };
 
-const RANGE = /^(.+)\.\.(.+)$/;
-
-/**
- * Commits in `from..to`, **newest-first** (git's revert range order — to undo a
- * span you revert its tip first). The whole ancestor set of `from` is excluded.
- */
-const expandRange = async (
-  ctx: Context,
-  from: ObjectId,
-  to: ObjectId,
-): Promise<ReadonlyArray<ObjectId>> => {
-  const excluded = new Set<ObjectId>();
-  for await (const commit of walkCommits(ctx, { from: [from] })) {
-    excluded.add(commit.id);
-  }
-  const ids: ObjectId[] = [];
-  for await (const commit of walkCommitsStoppingAt(ctx, { from: [to], until: excluded })) {
-    ids.push(commit.id);
-  }
-  return ids;
-};
-
-/**
- * Expand each argument to ordered commit oids — a single commit-ish or an `A..B`
- * range (newest-first). `A...B` / `^`-exclusion forms are rejected, not
- * mis-expanded.
- */
-const expandRevisions = async (
-  ctx: Context,
-  args: ReadonlyArray<string>,
-): Promise<ReadonlyArray<ObjectId>> => {
-  const todo: ObjectId[] = [];
-  for (const arg of args) {
-    if (arg.includes('...') || arg.includes('^')) {
-      throw invalidOption(
-        'commits',
-        `unsupported revision form '${arg}' (use a commit-ish or A..B)`,
-      );
-    }
-    const match = RANGE.exec(arg);
-    if (match === null) {
-      todo.push(await resolveCommitIsh(ctx, arg));
-      continue;
-    }
-    const from = await revParse(ctx, match[1] as string);
-    const to = await revParse(ctx, match[2] as string);
-    todo.push(...(await expandRange(ctx, from, to)));
-  }
-  return todo;
-};
-
 /**
  * `-n` / `--no-commit`: apply each reverse change to the index + working tree,
  * accumulating across the list, without creating any commit or persisting resume
@@ -423,10 +369,15 @@ export const revertRun = async (ctx: Context, input: RevertRunInput): Promise<Re
     throw unsupportedOperation(REVERT, 'cannot revert with detached HEAD');
   }
   const ourId = await resolveHeadCommit(ctx, head.target);
-  const todo = await expandRevisions(ctx, input.commits);
+  const revisions = await resolveSequencerRevisions(ctx, input.commits);
+  const todo = revisions.commits;
   await assertCleanWorkTree(ctx, await treeOf(ctx, ourId));
   if (input.noCommit === true) return runNoCommit(ctx, todo);
-  const seq: SequenceState = { multiPick: todo.length > 1, sequenceHead: ourId, onEmpty: 'stop' };
+  const seq: SequenceState = {
+    multiPick: isSequence(input.commits, revisions),
+    sequenceHead: ourId,
+    onEmpty: 'stop',
+  };
   return runSequence(ctx, todo, ourId, seq);
 };
 
