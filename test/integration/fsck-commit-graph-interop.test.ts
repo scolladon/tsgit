@@ -170,6 +170,100 @@ const renderLine = (finding: GraphFinding): string => {
 const isGraphFinding = (finding: FsckFinding): finding is GraphFinding =>
   finding.type === 'commit-graph-invalid';
 
+type LoadFailure = Extract<GraphFinding, { check: 'load-failure' }>['failure'];
+const hex = (value: number): string => value.toString(16);
+const REQUIRED_NAMES = {
+  'oid-fanout': 'OID fanout',
+  'oid-lookup': 'OID lookup',
+  'commit-data': 'commit data',
+} as const;
+const PROBLEM_LINES = {
+  'oid-fanout': 'commit-graph oid fanout chunk is wrong size',
+  'oid-lookup': 'commit-graph OID lookup chunk is the wrong size',
+  'commit-data': 'commit-graph commit data chunk is wrong size',
+} as const;
+
+const requiredLines = (failure: Extract<LoadFailure, { kind: 'required-chunk' }>): string[] => {
+  const required = `error: commit-graph required ${REQUIRED_NAMES[failure.chunk]} chunk missing or corrupted`;
+  if (failure.problem === 'missing') return [required];
+  const cause =
+    failure.problem === 'out-of-order'
+      ? 'commit-graph fanout values out of order'
+      : PROBLEM_LINES[failure.chunk];
+  return [`error: ${cause}`, required];
+};
+
+const renderLoad = (failure: LoadFailure): string[] => {
+  switch (failure.kind) {
+    case 'too-small':
+      return ['error: commit-graph file is too small'];
+    case 'signature':
+      return [
+        `error: commit-graph signature ${hex(failure.found).toUpperCase()} does not match signature 43475048`,
+      ];
+    case 'version':
+      return [`error: commit-graph version ${hex(failure.found)} does not match version 1`];
+    case 'hash-version':
+      return [
+        `error: commit-graph hash version ${failure.found} does not match version ${failure.expected}`,
+      ];
+    case 'too-small-for-chunks':
+      return [`error: commit-graph file is too small to hold ${failure.chunkCount} chunks`];
+    case 'early-terminator':
+      return ['error: terminating chunk id appears earlier than expected'];
+    case 'improper-offsets':
+      return [`error: improper chunk offset(s) ${hex(failure.offset)} and ${hex(failure.next)}`];
+    case 'duplicate-chunk':
+      return [`error: duplicate chunk ID ${hex(failure.chunkId)} found`];
+    case 'final-chunk-id':
+      return [`error: final chunk has non-zero id ${hex(failure.chunkId)}`];
+    case 'required-chunk':
+      return requiredLines(failure);
+    default:
+      return [JSON.stringify(failure)];
+  }
+};
+
+const renameChunk = (bytes: Uint8Array, from: string, to: string): Uint8Array => {
+  const table = new TextDecoder().decode(bytes.subarray(0, 8 + 12 * (bytes[6] as number)));
+  bytes.set(new TextEncoder().encode(to), table.indexOf(from));
+  return bytes;
+};
+
+const setRowOffset = (bytes: Uint8Array, row: number, delta: number): Uint8Array => {
+  const view = new DataView(bytes.buffer, bytes.byteOffset);
+  view.setUint32(8 + row * 12 + 8, view.getUint32(8 + row * 12 + 8) + delta);
+  return bytes;
+};
+
+const LOAD_ROWS: ReadonlyArray<{
+  readonly name: string;
+  readonly damage: (b: Uint8Array) => Uint8Array;
+}> = [
+  { name: 'a file too small', damage: (b) => b.subarray(0, 1000) },
+  { name: 'another signature', damage: (b) => b.fill(0x58, 0, 1) },
+  { name: 'another version', damage: (b) => b.fill(9, 4, 5) },
+  { name: 'a SHA-256 hash version', damage: (b) => b.fill(2, 5, 6) },
+  { name: 'too many chunks', damage: (b) => b.fill(200, 6, 7) },
+  { name: 'an early terminator', damage: (b) => b.fill(0, 8 + 12, 8 + 12 + 4) },
+  { name: 'a chunk ending before it starts', damage: (b) => setRowOffset(b, 2, -2000) },
+  { name: 'a duplicate chunk', damage: (b) => renameChunk(b, 'CDAT', 'OIDL') },
+  {
+    name: 'a non-zero final id',
+    damage: (b) => b.fill(0x41, 8 + 12 * (b[6] as number), 12 + 12 * (b[6] as number)),
+  },
+  { name: 'no OID fanout', damage: (b) => renameChunk(b, 'OIDF', 'XXXX') },
+  { name: 'no OID lookup', damage: (b) => renameChunk(b, 'OIDL', 'XXXX') },
+  { name: 'no commit data', damage: (b) => renameChunk(b, 'CDAT', 'XXXX') },
+  { name: 'a short fanout', damage: (b) => setRowOffset(b, 1, -4) },
+  {
+    name: 'a decreasing fanout',
+    damage: (b) => b.fill(0x7f, 8 + 12 * ((b[6] as number) + 1), 9 + 12 * ((b[6] as number) + 1)),
+  },
+  { name: 'a ragged OID lookup', damage: (b) => setRowOffset(b, 2, -1) },
+  { name: 'a ragged commit data', damage: (b) => setRowOffset(b, 3, -1) },
+];
+
 describe.skipIf(!GIT_AVAILABLE)('Given a two-commit history with a commit-graph', () => {
   describe.each(ROWS)(
     'When the graph carries $name and both tools run fsck',
@@ -193,6 +287,40 @@ describe.skipIf(!GIT_AVAILABLE)('Given a two-commit history with a commit-graph'
           const lines = peer.stderr.split('\n').filter((line) => line.length > 0);
           expect(result.findings.filter(isGraphFinding).map(renderLine)).toEqual(lines);
           expect(result.exitCode & EXIT_COMMIT_GRAPH).toBe(peer.exitCode & EXIT_COMMIT_GRAPH);
+        },
+        ROW_TIMEOUT,
+      );
+    },
+  );
+
+  describe.each(LOAD_ROWS)(
+    'When the graph carries $name and git cannot load it',
+    ({ name, damage }) => {
+      it(
+        'Then tsgit names the refusal git verify prints, with bit 16',
+        async () => {
+          // Arrange
+          const history = twoCommitsWithGraph(`load-${name.replace(/[^a-z0-9]+/g, '-')}`);
+          writeFileSync(history.graph, damage(new Uint8Array(readFileSync(history.graph))));
+          const peer = tryRunGitWithExit(['-C', history.dir, 'commit-graph', 'verify']);
+          const repo = await openRepository({ cwd: history.dir });
+          const sut = repo.fsck;
+
+          // Act
+          const result = await sut().finally(() => repo.dispose());
+
+          // Assert
+          const lines = peer.stderr.split('\n').filter((line) => line.length > 0);
+          const rendered = result.findings
+            .filter(isGraphFinding)
+            .flatMap((finding) =>
+              finding.check === 'load-failure'
+                ? renderLoad(finding.failure)
+                : [renderLine(finding)],
+            );
+          expect(rendered).toEqual(lines);
+          expect(peer.exitCode).toBe(1);
+          expect(result.exitCode & EXIT_COMMIT_GRAPH).toBe(EXIT_COMMIT_GRAPH);
         },
         ROW_TIMEOUT,
       );

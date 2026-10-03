@@ -6,11 +6,12 @@
 import { bytesToHex, compareBytes } from '../objects/encoding.js';
 import type { ObjectId } from '../objects/index.js';
 import { type CommitGraphLayer, commitDataAt } from './commit-graph.js';
+import type { CommitGraphLoadFailure } from './commit-graph-load.js';
 
 /** One disagreement `git commit-graph verify` reports, keyed by the check that failed. */
 export type CommitGraphVerdict =
   | { readonly check: 'checksum' }
-  | { readonly check: 'load-failure'; readonly reason: string }
+  | { readonly check: 'load-failure'; readonly failure: CommitGraphLoadFailure }
   | { readonly check: 'oid-order'; readonly previous: ObjectId; readonly id: ObjectId }
   | {
       readonly check: 'fanout';

@@ -575,16 +575,44 @@ describe('fsck commit-graph verify', () => {
     });
   });
 
-  describe('Given a commit-graph file that does not parse', () => {
+  describe('Given a commit-graph file shorter than any graph git maps', () => {
     describe('When fsck runs', () => {
-      it('Then it reports the graph load failure with the decode reason', async () => {
+      it('Then it reports the file git finds too small to load', async () => {
         // Arrange
         const { ctx } = await repoWithGraph();
         const garbage = new TextEncoder().encode('not a graph');
         await ctx.fs.write(commitGraphPath(commonGitDir(ctx)), garbage);
+        const sut = fsck;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(graphFindings(result.findings)).toEqual([
+          {
+            type: 'commit-graph-invalid',
+            artefact: commitGraphPath(commonGitDir(ctx)),
+            check: 'load-failure',
+            failure: { kind: 'too-small' },
+          },
+        ]);
+      });
+    });
+  });
+
+  describe('Given a commit-graph git loads but tsgit cannot decode', () => {
+    describe('When fsck runs', () => {
+      it('Then it reports the graph malformed with the decode reason', async () => {
+        // Arrange
+        const { ctx } = await repoWithGraph();
+        const path = commitGraphPath(commonGitDir(ctx));
+        const bytes = new Uint8Array(await ctx.fs.read(path));
+        const table = new TextDecoder().decode(bytes.subarray(0, 8 + 12 * (bytes[6] as number)));
+        bytes.set(new TextEncoder().encode('BASE'), table.indexOf('GDA2'));
+        await ctx.fs.write(path, bytes);
         let reason: unknown;
         try {
-          parseCommitGraphLayer(garbage);
+          parseCommitGraphLayer(bytes);
         } catch (error) {
           reason = (error as Error).message;
         }
@@ -597,9 +625,9 @@ describe('fsck commit-graph verify', () => {
         expect(graphFindings(result.findings)).toEqual([
           {
             type: 'commit-graph-invalid',
-            artefact: commitGraphPath(commonGitDir(ctx)),
+            artefact: path,
             check: 'load-failure',
-            reason,
+            failure: { kind: 'malformed', reason },
           },
         ]);
       });

@@ -9,6 +9,7 @@ import {
   commitDataAt,
   parseCommitGraphLayer,
 } from '../../../../domain/commit/commit-graph.js';
+import { commitGraphLoadFailure } from '../../../../domain/commit/commit-graph-load.js';
 import {
   type CommitGraphVerdict,
   graphOidAt,
@@ -61,12 +62,18 @@ async function readGraphBytes(source: ObjectSource): Promise<Uint8Array | undefi
   }
 }
 
-function parseLayer(bytes: Uint8Array): CommitGraphLayer | CommitGraphVerdict {
+/** git's loader refusal first; tsgit's own decode refusal only past every check git makes. */
+function parseLayer(bytes: Uint8Array, hashLength: number): CommitGraphLayer | CommitGraphVerdict {
+  const failure = commitGraphLoadFailure(bytes, hashLength);
+  if (failure !== undefined) return { check: 'load-failure', failure };
   try {
     return parseCommitGraphLayer(bytes);
   } catch (error) {
     if (!isGraphDecodeFailure(error)) throw error;
-    return { check: 'load-failure', reason: (error as Error).message };
+    return {
+      check: 'load-failure',
+      failure: { kind: 'malformed', reason: (error as Error).message },
+    };
   }
 }
 
@@ -108,7 +115,7 @@ async function verifyGraph(
   ctx: Context,
   bytes: Uint8Array,
 ): Promise<ReadonlyArray<CommitGraphVerdict>> {
-  const layer = parseLayer(bytes);
+  const layer = parseLayer(bytes, ctx.hashConfig.digestLength);
   if ('check' in layer) return [layer];
   const checksum = await checksumVerdicts(ctx, bytes);
   const structure = verifyGraphStructure(layer, layer.commitCount);
