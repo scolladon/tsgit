@@ -21,7 +21,7 @@ import type { ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { atomicWriteFile } from './atomic-write.js';
 import { enumerateRefs } from './enumerate-refs.js';
-import { changedPathFilters } from './internal/changed-path-filters.js';
+import { changedPathFilters, storedFilterLookup } from './internal/changed-path-filters.js';
 import {
   type ChangedPathsRequest,
   resolveChangedPathsSettings,
@@ -99,17 +99,19 @@ export async function declinesChangedPathsVersion(ctx: Context): Promise<boolean
 
 /**
  * The Bloom filters a write carries, settings from the existing graph's top
- * layer — `undefined` when the write carries none.
+ * layer, its stored filters reused — `undefined` when the write carries none.
  */
 export async function changedPathsFor(
   ctx: Context,
   commits: readonly CommitGraphWriterCommit[],
-  top: LocalGraphLayer | undefined,
+  layers: readonly LocalGraphLayer[],
   request: ChangedPathsRequest,
 ): Promise<CommitGraphChangedPaths | undefined> {
-  const settings = await resolveChangedPathsSettings(ctx, top?.layer.bloomSettings, request);
+  const top = layers.at(-1)?.layer.bloomSettings;
+  const settings = await resolveChangedPathsSettings(ctx, top, request);
   if (settings === undefined) return undefined;
-  return { settings, filters: await changedPathFilters(ctx, commits, settings) };
+  const stored = storedFilterLookup(layers, settings);
+  return { settings, filters: await changedPathFilters(ctx, commits, settings, stored) };
 }
 
 const GRAPH_LAYER_SUFFIX = '.graph';
@@ -171,8 +173,8 @@ export async function writeCommitGraph(ctx: Context): Promise<WriteCommitGraphRe
   const commits = await collectCommits(ctx, roots);
   if (commits.length === 0) return { commitCount: 0 };
 
-  const top = (await loadLocalCommitGraphLayers(ctx)).at(-1);
-  const changedPaths = await changedPathsFor(ctx, commits, top, 'preserve');
+  const layers = await loadLocalCommitGraphLayers(ctx);
+  const changedPaths = await changedPathsFor(ctx, commits, layers, 'preserve');
   const bytes = serializeCommitGraph(commits, ctx.hashConfig, undefined, changedPaths);
   const trailerStart = bytes.length - ctx.hashConfig.digestLength;
   const digest = await ctx.hash.hash(bytes.subarray(0, trailerStart));

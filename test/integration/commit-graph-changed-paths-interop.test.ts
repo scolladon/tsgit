@@ -15,7 +15,7 @@
  *   unique:         tsgit's commit-graph writes carry and compute changed-path Bloom filters byte-identically to git
  *   interopSurface: commitGraph
  */
-import { cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -145,6 +145,19 @@ async function graphFiles(dir: string): Promise<Record<string, string>> {
 }
 
 const BIDX_HEX = Buffer.from('BIDX').toString('hex');
+
+/** Flips the first filter byte BDAT stores — data a recompute would never reproduce. */
+async function corruptFirstStoredFilter(dir: string): Promise<void> {
+  const file = path.join(dir, '.git', 'objects', 'info', 'commit-graph');
+  const bytes = await readFile(file);
+  for (let row = 8; row < 8 + bytes[6]! * 12; row += 12) {
+    if (bytes.subarray(row, row + 4).toString() !== 'BDAT') continue;
+    const filters = Number(bytes.readBigUInt64BE(row + 4)) + 12;
+    bytes[filters] = bytes[filters]! ^ 0x5a;
+  }
+  await chmod(file, 0o644);
+  await writeFile(file, bytes);
+}
 
 async function disposeTwin(twin: Twin): Promise<void> {
   await rm(twin.peerDir, { recursive: true, force: true });
@@ -280,6 +293,28 @@ describe.skipIf(!GIT_AVAILABLE)('commit-graph changed-path filters interop', () 
         const peer = await graphFiles(twin.peerDir);
         expect(peer['commit-graph']).not.toContain(BIDX_HEX);
         expect(await graphFiles(twin.oursDir)).toEqual(peer);
+        await disposeTwin(twin);
+      });
+    });
+  });
+
+  describe('Given a single-file graph whose stored filter bytes no recompute would produce', () => {
+    describe('When both tools rewrite it', () => {
+      it('Then both copy the stored filter as it is', async () => {
+        // Arrange
+        const twin = await twinWithNewCommit(baseDir, 'reuse', (dir) =>
+          git(dir, 'commit-graph', 'write', '--reachable', '--changed-paths'),
+        );
+        await corruptFirstStoredFilter(twin.peerDir);
+        await corruptFirstStoredFilter(twin.oursDir);
+        git(twin.peerDir, 'commit-graph', 'write', '--reachable');
+        const sut = writeCommitGraph;
+
+        // Act
+        await sut(ours(twin));
+
+        // Assert
+        expect(await graphFiles(twin.oursDir)).toEqual(await graphFiles(twin.peerDir));
         await disposeTwin(twin);
       });
     });

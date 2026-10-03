@@ -75,6 +75,8 @@ export interface CommitGraphLayer {
   readonly _generationDataRange: ChunkRange | undefined;
   readonly _extraEdgeRange: ChunkRange | undefined;
   readonly _overflowGenerationRange: ChunkRange | undefined;
+  readonly _bloomIndexRange: ChunkRange | undefined;
+  readonly _bloomDataRange: ChunkRange | undefined;
 }
 
 export function parseCommitGraphLayer(bytes: Uint8Array): CommitGraphLayer {
@@ -125,10 +127,11 @@ export function parseCommitGraphLayer(bytes: Uint8Array): CommitGraphLayer {
   const overflowGenerationRange = chunkRanges.get(CHUNK_ID_GDO2);
 
   const baseGraphHashes = readBaseGraphHashes(chunkRanges, numBaseGraphs, hashLength, bytes);
+  const bloom = readBloomChunks(chunkRanges, view, commitCount);
 
   return {
     hashVersion: hashVersion as 1 | 2,
-    bloomSettings: readBloomSettings(chunkRanges, view, commitCount),
+    bloomSettings: bloom?.settings,
     numBaseGraphs,
     baseGraphHashes,
     commitCount,
@@ -142,6 +145,8 @@ export function parseCommitGraphLayer(bytes: Uint8Array): CommitGraphLayer {
     _generationDataRange: generationDataRange,
     _extraEdgeRange: extraEdgeRange,
     _overflowGenerationRange: overflowGenerationRange,
+    _bloomIndexRange: bloom?.index,
+    _bloomDataRange: bloom?.data,
   };
 }
 
@@ -203,21 +208,49 @@ function validateChunkSize(range: ChunkRange, expectedSize: number, id: string):
 }
 
 /** git's `graph_read_bloom_index`/`_data`: a misfit chunk is ignored, and one without the other is too. */
-function readBloomSettings(
+function readBloomChunks(
   ranges: ReadonlyMap<string, ChunkRange>,
   view: DataView,
   commitCount: number,
-): CommitGraphBloomSettings | undefined {
+):
+  | {
+      readonly settings: CommitGraphBloomSettings;
+      readonly index: ChunkRange;
+      readonly data: ChunkRange;
+    }
+  | undefined {
   const index = ranges.get(CHUNK_ID_BIDX);
   const data = ranges.get(CHUNK_ID_BDAT);
   if (index === undefined || data === undefined) return undefined;
   if (Math.floor((index.end - index.start) / BIDX_ENTRY_SIZE) !== commitCount) return undefined;
   if (data.end - data.start < BDAT_HEADER_SIZE) return undefined;
-  return {
+  const settings = {
     hashVersion: view.getUint32(data.start),
     numHashes: view.getUint32(data.start + 4),
     bitsPerEntry: view.getUint32(data.start + 8),
   };
+  return { settings, index, data };
+}
+
+/**
+ * git's `load_bloom_filter_from_graph`: the filter stored at a layer-local
+ * position — possibly empty — or `undefined` when the layer stores none or
+ * its BIDX bounds fall past the data or decrease.
+ */
+export function storedBloomFilter(
+  layer: CommitGraphLayer,
+  localPos: number,
+): Uint8Array | undefined {
+  const index = layer._bloomIndexRange;
+  const data = layer._bloomDataRange;
+  if (index === undefined || data === undefined) return undefined;
+  const end = layer._view.getUint32(index.start + localPos * BIDX_ENTRY_SIZE);
+  const start =
+    localPos === 0 ? 0 : layer._view.getUint32(index.start + (localPos - 1) * BIDX_ENTRY_SIZE);
+  const dataSize = data.end - data.start - BDAT_HEADER_SIZE;
+  if (end > dataSize || start > dataSize || end < start) return undefined;
+  const filters = data.start + BDAT_HEADER_SIZE;
+  return layer._bytes.subarray(filters + start, filters + end);
 }
 
 function readBaseGraphHashes(

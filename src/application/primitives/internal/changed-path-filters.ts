@@ -3,12 +3,18 @@
  * as git's `get_or_compute_bloom_filter` derives it: a recursive,
  * rename-blind tree diff against the first parent only (a root against the
  * empty tree), each changed leaf's raw path bytes hashed with its leading
- * directories.
+ * directories — unless the existing graph already stores one at the same
+ * settings and hash version, which git copies as it is.
  */
 import {
   type BloomFilterSettings,
   changedPathFilter,
 } from '../../../domain/commit/bloom-filter.js';
+import {
+  type CommitGraphBloomSettings,
+  positionOf,
+  storedBloomFilter,
+} from '../../../domain/commit/commit-graph.js';
 import type { CommitGraphWriterCommit } from '../../../domain/commit/commit-graph-writer.js';
 import { unexpectedObjectType } from '../../../domain/objects/error.js';
 import type { ObjectId } from '../../../domain/objects/index.js';
@@ -22,6 +28,7 @@ import {
 } from '../../../domain/objects/tree-cursor.js';
 import type { Context } from '../../../ports/context.js';
 import { readObject } from '../read-object.js';
+import type { LocalGraphLayer } from './local-commit-graph-layers.js';
 import { readRawTreeById } from './raw-tree-io.js';
 
 const SLASH = 0x2f;
@@ -117,15 +124,58 @@ async function firstParentTree(
   return treeOf.get(parent) ?? commitTree(ctx, parent);
 }
 
-/** One filter per commit, keyed by its id. */
+/** A commit's filter as the existing graph stores it, or `undefined`. */
+export type StoredFilterLookup = (id: ObjectId) => Uint8Array | undefined;
+
+const NOTHING_STORED: StoredFilterLookup = () => undefined;
+
+const sameSettings = (a: CommitGraphBloomSettings, b: CommitGraphBloomSettings): boolean =>
+  a.hashVersion === b.hashVersion &&
+  a.numHashes === b.numHashes &&
+  a.bitsPerEntry === b.bitsPerEntry;
+
+/**
+ * git's `validate_mixed_bloom_settings`: the top-most layer storing filters
+ * sets the reference and a layer whose settings differ is ignored. Only
+ * filters at the written hash version are reused; git upgrades the others
+ * only when no path has a high bit, where recomputing yields the same bytes.
+ */
+export function storedFilterLookup(
+  layers: readonly LocalGraphLayer[],
+  settings: BloomFilterSettings,
+): StoredFilterLookup {
+  const reference = [...layers].reverse().find(({ layer }) => layer.bloomSettings)
+    ?.layer.bloomSettings;
+  if (reference === undefined || reference.hashVersion !== settings.hashVersion) {
+    return NOTHING_STORED;
+  }
+  const usable = layers.filter(
+    ({ layer }) => layer.bloomSettings && sameSettings(layer.bloomSettings, reference),
+  );
+  return (id) => {
+    for (const { layer } of usable) {
+      const position = positionOf(layer, id);
+      if (position !== undefined) return storedBloomFilter(layer, position);
+    }
+    return undefined;
+  };
+}
+
+/** One filter per commit, keyed by its id; a non-empty stored filter is reused, as git does. */
 export async function changedPathFilters(
   ctx: Context,
   commits: readonly CommitGraphWriterCommit[],
   settings: BloomFilterSettings,
+  stored: StoredFilterLookup = NOTHING_STORED,
 ): Promise<ReadonlyMap<ObjectId, Uint8Array>> {
   const treeOf = new Map(commits.map((commit) => [commit.id, commit.rootTree]));
   const filters = new Map<ObjectId, Uint8Array>();
   for (const commit of commits) {
+    const reused = stored(commit.id);
+    if (reused !== undefined && reused.length > 0) {
+      filters.set(commit.id, reused);
+      continue;
+    }
     const parentTree = await firstParentTree(ctx, commit, treeOf);
     const paths = await firstParentChangedPaths(
       ctx,

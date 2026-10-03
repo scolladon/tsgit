@@ -276,7 +276,7 @@ export async function writeSplitCommitGraph(ctx: Context): Promise<WriteSplitCom
   const plan = planSplit(layers, fresh.length);
   const commits = uniqueCommits([...fresh, ...(await foldedCommits(ctx, plan.folded))]);
   const base = graphBase(plan.base, commits);
-  const changedPaths = await changedPathsFor(ctx, commits, layers.at(-1), request);
+  const changedPaths = await changedPathsFor(ctx, commits, layers, request);
   await writeChainLayer(ctx, plan, await serializeLayer(ctx, commits, base, changedPaths));
   return { written: true, commitCount: base.commitCount + commits.length };
 }

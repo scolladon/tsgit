@@ -2,15 +2,20 @@ import { describe, expect, it } from 'vitest';
 import {
   changedPathFilters,
   firstParentChangedPaths,
+  storedFilterLookup,
 } from '../../../../../src/application/primitives/internal/changed-path-filters.js';
+import type { LocalGraphLayer } from '../../../../../src/application/primitives/internal/local-commit-graph-layers.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../../src/application/primitives/write-tree.js';
 import {
+  type BloomFilterSettings,
   changedPathFilter,
   DEFAULT_BLOOM_FILTER_SETTINGS,
 } from '../../../../../src/domain/commit/bloom-filter.js';
+import { parseCommitGraphLayer } from '../../../../../src/domain/commit/commit-graph.js';
+import { serializeCommitGraph } from '../../../../../src/domain/commit/commit-graph-writer.js';
 import type { TsgitError } from '../../../../../src/domain/error.js';
-import { FILE_MODE, type ObjectId } from '../../../../../src/domain/objects/index.js';
+import { FILE_MODE, type ObjectId, SHA1_CONFIG } from '../../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../../src/ports/context.js';
 import { buildSeededContext } from '../fixtures.js';
@@ -235,6 +240,92 @@ describe('changedPathFilters', () => {
 
         // Assert
         expect(result).toMatchObject({ code: 'UNEXPECTED_OBJECT_TYPE', expected: 'commit' });
+      });
+    });
+  });
+});
+
+describe('storedFilterLookup', () => {
+  const V2: BloomFilterSettings = { ...DEFAULT_BLOOM_FILTER_SETTINGS, hashVersion: 2 };
+  const idOf = (char: string): ObjectId => char.repeat(40) as ObjectId;
+
+  /** A layer holding one commit `id`, its stored filter `filter`, at `settings` (none when undefined). */
+  const layerWith = (
+    id: ObjectId,
+    filter: Uint8Array,
+    settings: BloomFilterSettings | undefined,
+  ): LocalGraphLayer => {
+    const commit = { id, rootTree: id, parents: [], committerDate: 1 };
+    const changedPaths = settings && { settings, filters: new Map([[id, filter]]) };
+    const bytes = serializeCommitGraph([commit], SHA1_CONFIG, undefined, changedPaths);
+    return { hash: id, path: `graph-${id}`, layer: parseCommitGraphLayer(bytes) };
+  };
+
+  describe('Given a base layer at other settings under a top layer at the written ones', () => {
+    const base = layerWith(idOf('a'), Uint8Array.of(0x01), { ...V2, numHashes: 3 });
+    const top = layerWith(idOf('b'), Uint8Array.of(0x02), V2);
+
+    describe.each([
+      { label: "the top layer's commit", id: idOf('b'), expected: [0x02] },
+      { label: "the mismatched base layer's commit", id: idOf('a'), expected: undefined },
+      { label: 'a commit no layer holds', id: idOf('c'), expected: undefined },
+    ])('When $label is looked up', ({ id, expected }) => {
+      it(`Then the stored filter is ${expected ? 'returned' : 'not reused'}`, () => {
+        // Arrange
+        const sut = storedFilterLookup;
+
+        // Act
+        const result = sut([base, top], V2)(id);
+
+        // Assert
+        expect(result && [...result]).toEqual(expected);
+      });
+    });
+  });
+
+  describe.each([
+    { label: 'no layer storing filters', settings: undefined },
+    { label: 'filters stored at another hash version', settings: DEFAULT_BLOOM_FILTER_SETTINGS },
+  ])('Given $label', ({ settings }) => {
+    describe('When a held commit is looked up', () => {
+      it('Then nothing is reused', () => {
+        // Arrange
+        const layers = [layerWith(idOf('a'), Uint8Array.of(0x01), settings)];
+        const sut = storedFilterLookup;
+
+        // Act
+        const result = sut(layers, V2)(idOf('a'));
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+});
+
+describe('changedPathFilters, with stored filters', () => {
+  describe.each([
+    { label: 'a non-empty stored filter', stored: Uint8Array.of(0xab), reused: true },
+    { label: 'an empty stored filter', stored: new Uint8Array(0), reused: false },
+  ])('Given $label for a root commit', ({ stored, reused }) => {
+    describe('When its filter is computed', () => {
+      it(`Then the stored bytes are ${reused ? 'copied' : 'replaced by a recompute'}`, async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const tree = await writeTree(ctx, []);
+        const id = 'c'.repeat(40) as ObjectId;
+        const sut = changedPathFilters;
+
+        // Act
+        const result = await sut(
+          ctx,
+          [{ id, rootTree: tree, parents: [], committerDate: 1 }],
+          DEFAULT_BLOOM_FILTER_SETTINGS,
+          () => stored,
+        );
+
+        // Assert
+        expect([...result.get(id)!]).toEqual(reused ? [0xab] : [0x00]);
       });
     });
   });

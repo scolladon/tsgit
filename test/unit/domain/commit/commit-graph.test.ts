@@ -4,6 +4,7 @@ import {
   commitDataAt,
   parseCommitGraphLayer,
   positionOf,
+  storedBloomFilter,
 } from '../../../../src/domain/commit/commit-graph.js';
 import {
   type CommitGraphWriterCommit,
@@ -808,6 +809,82 @@ describe('parseCommitGraphLayer, changed-path settings', () => {
 
         // Assert
         expect(result.bloomSettings).toBeUndefined();
+      });
+    });
+  });
+});
+
+describe('storedBloomFilter', () => {
+  const commits: CommitGraphWriterCommit[] = ['a0', 'a1', 'a2'].map((prefix) => ({
+    id: oid(prefix),
+    rootTree: oid('e0'),
+    parents: [],
+    committerDate: 1_700_000_000,
+  }));
+  const changedPaths = {
+    settings: DEFAULT_BLOOM_FILTER_SETTINGS,
+    filters: new Map([
+      [oid('a0'), Uint8Array.of(0x11, 0x22)],
+      [oid('a2'), Uint8Array.of(0x33)],
+    ]),
+  };
+  const written = (): Uint8Array =>
+    serializeCommitGraph(commits, SHA1_CONFIG, undefined, changedPaths);
+  const bidxStart = (bytes: Uint8Array): number =>
+    new DataView(bytes.buffer).getUint32(8 + findChunkRowIndex(bytes, 'BIDX') * 12 + 8);
+
+  describe.each([
+    { label: 'the first commit', position: 0, expected: [0x11, 0x22] },
+    { label: 'a commit stored without a filter', position: 1, expected: [] },
+    { label: 'a later commit', position: 2, expected: [0x33] },
+  ])('Given a layer with filters, for $label', ({ position, expected }) => {
+    describe('When its stored filter is read', () => {
+      it('Then the bytes between its BIDX bounds come back', () => {
+        // Arrange
+        const sut = storedBloomFilter;
+
+        // Act
+        const result = sut(parseCommitGraphLayer(written()), position);
+
+        // Assert
+        expect([...(result ?? [])]).toEqual(expected);
+        expect(result).toBeDefined();
+      });
+    });
+  });
+
+  describe('Given a layer without filters', () => {
+    describe('When a stored filter is read', () => {
+      it('Then there is none', () => {
+        // Arrange
+        const sut = storedBloomFilter;
+
+        // Act
+        const result = sut(parseCommitGraphLayer(serializeCommitGraph(commits, SHA1_CONFIG)), 0);
+
+        // Assert
+        expect(result).toBeUndefined();
+      });
+    });
+  });
+
+  describe.each([
+    { label: 'an end offset past the data', position: 0, entry: 0, value: 4 },
+    { label: 'a start offset past the data', position: 1, entry: 0, value: 4 },
+    { label: 'decreasing offsets', position: 1, entry: 1, value: 1 },
+  ])('Given a layer whose BIDX holds $label', ({ position, entry, value }) => {
+    describe('When the filter is read', () => {
+      it('Then it is ignored, as git ignores it', () => {
+        // Arrange
+        const bytes = written();
+        new DataView(bytes.buffer).setUint32(bidxStart(bytes) + entry * 4, value);
+        const sut = storedBloomFilter;
+
+        // Act
+        const result = sut(parseCommitGraphLayer(bytes), position);
+
+        // Assert
+        expect(result).toBeUndefined();
       });
     });
   });
