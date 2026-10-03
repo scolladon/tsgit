@@ -138,6 +138,11 @@ export type CommandError =
       readonly exitCode?: number;
     }
   | {
+      readonly code: 'FILTER_UNSUPPORTED_CAPABILITY';
+      readonly command: string;
+      readonly capability: string;
+    }
+  | {
       readonly code: 'SMUDGE_FILTER_FAILED';
       readonly path: FilePath;
       readonly filter: string;
@@ -607,6 +612,9 @@ export const cleanFilterFailed = (path: FilePath, filter: string, exitCode?: num
     filter,
     ...(exitCode !== undefined && { exitCode }),
   });
+
+export const filterUnsupportedCapability = (command: string, capability: string): TsgitError =>
+  new TsgitError({ code: 'FILTER_UNSUPPORTED_CAPABILITY', command, capability });
 
 export const smudgeFilterFailed = (path: FilePath, filter: string, exitCode?: number): TsgitError =>
   new TsgitError({

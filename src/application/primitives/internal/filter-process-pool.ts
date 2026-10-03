@@ -1,3 +1,4 @@
+import { errorDataCode } from '../../../domain/error-data-code.js';
 import { decodePktStream } from '../../../domain/protocol/pkt-line.js';
 import type { CommandProcess, CommandRunner } from '../../../ports/command-runner.js';
 import type { Context } from '../../../ports/context.js';
@@ -34,6 +35,7 @@ export interface RunningFilter {
 export type FilterHandshake = (
   child: CommandProcess,
   sections: PktSections,
+  command: string,
 ) => Promise<ReadonlySet<string> | undefined>;
 
 /**
@@ -57,6 +59,7 @@ export interface FilterConversation {
   readonly exchange: (filter: RunningFilter) => Promise<FilterExchange>;
 }
 
+const UNSUPPORTED_CAPABILITY = 'FILTER_UNSUPPORTED_CAPABILITY';
 const FAILED: FilterProcessOutcome = { ok: false, exitCode: undefined };
 const BROKEN: FilterExchange = { kind: 'broken' };
 
@@ -92,8 +95,15 @@ const startFilter = async (
     ...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),
   });
   const sections = sectionsOf(child.output);
-  // As in an exchange, a rejected write or an undecodable frame fails the handshake.
-  const capabilities = await handshake(child, sections).catch(() => undefined);
+  const capabilities = await handshake(child, sections, command).catch(async (error: unknown) => {
+    // git dies on a capability it never asked for; the process stops with it.
+    if (errorDataCode(error) === UNSUPPORTED_CAPABILITY) {
+      await child.close();
+      throw error;
+    }
+    // As in an exchange, a rejected write or an undecodable frame fails the handshake.
+    return undefined;
+  });
   if (capabilities === undefined) return { failure: await stoppedOutcome(child) };
   return { filter: { child, sections, capabilities } };
 };

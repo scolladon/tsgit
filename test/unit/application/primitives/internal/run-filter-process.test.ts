@@ -5,6 +5,7 @@ import {
   type FilterProcessRequest,
   runFilterProcess,
 } from '../../../../../src/application/primitives/internal/run-filter-process.js';
+import type { TsgitError } from '../../../../../src/domain/error.js';
 import type { FilePath, ObjectId } from '../../../../../src/domain/objects/object-id.js';
 import { encodePktStream, FLUSH_PKT } from '../../../../../src/domain/protocol/pkt-line.js';
 import type { CommandProcess, CommandRunner } from '../../../../../src/ports/command-runner.js';
@@ -284,6 +285,15 @@ describe('runFilterProcess', () => {
     { label: 'answers an unknown status', first: concat(HANDSHAKE, statusOnly('weird')) },
     { label: 'writes a malformed frame', first: concat(HANDSHAKE, enc('zzzz')) },
     { label: 'fails its handshake', first: stream('git-filter-server\n', 'version=3\n') },
+    {
+      label: 'greets with a version followed by a space',
+      first: stream('git-filter-server\n', 'version=2 \n'),
+    },
+    {
+      label: 'greets with a negative version',
+      first: stream('git-filter-server\n', 'version=-2\n'),
+    },
+    { label: 'greets with an empty version', first: stream('git-filter-server\n', 'version=\n') },
     { label: 'ends before its capabilities', first: stream('git-filter-server\n', 'version=2\n') },
   ])('Given a first process that $label', ({ first }) => {
     describe('When two paths are cleaned', () => {
@@ -449,6 +459,86 @@ describe('runFilterProcess', () => {
         // Assert
         expect(result).toBe(failure);
         expect(scripted.closed()).toBe(1);
+      });
+    });
+  });
+
+  describe.each([
+    { label: 'a zero-padded version', version: 'version=02\n' },
+    { label: 'a space before the version', version: 'version= 2\n' },
+    { label: 'a plus-signed version', version: 'version=+2\n' },
+    { label: 'an unterminated version line', version: 'version=2' },
+  ])('Given a process greeting with $label', ({ version }) => {
+    describe('When a path is cleaned', () => {
+      it('Then the version reads as 2, as strtol reads it, and the path converts', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const scripted = scriptedCommandRunner(
+          concat(
+            stream('git-filter-server\n', version),
+            stream('capability=clean\n'),
+            success('A\n'),
+          ),
+        );
+        const sut = convertAll;
+
+        // Act
+        const result = await sut(ctx, scripted.runner, [clean('a')]);
+
+        // Assert
+        expect(result.map(bytesOf)).toEqual(['A\n']);
+      });
+    });
+  });
+
+  describe('Given a process advertising a capability git never asked for', () => {
+    describe('When a path is cleaned', () => {
+      it('Then the conversion dies naming the command and the capability, and the process is stopped', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const scripted = scriptedCommandRunner(
+          concat(
+            stream('git-filter-server\n', 'version=2\n'),
+            stream('capability=clean\n', 'capability=bogus\n', 'capability=zap\n'),
+          ),
+        );
+        const sut = convertAll;
+
+        // Act
+        const result = await sut(ctx, scripted.runner, [clean('a')]).catch(
+          (error: unknown) => error,
+        );
+
+        // Assert
+        expect((result as TsgitError).data).toEqual({
+          code: 'FILTER_UNSUPPORTED_CAPABILITY',
+          command: 'proc',
+          capability: 'bogus',
+        });
+        expect(scripted.closed()).toBe(1);
+      });
+    });
+  });
+
+  describe('Given a process advertising delay and a line that is no capability', () => {
+    describe('When a path is cleaned', () => {
+      it('Then both are accepted and the path converts', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const scripted = scriptedCommandRunner(
+          concat(
+            stream('git-filter-server\n', 'version=2\n'),
+            stream('capability=clean\n', 'capability=delay\n', 'other=1\n'),
+            success('A\n'),
+          ),
+        );
+        const sut = convertAll;
+
+        // Act
+        const result = await sut(ctx, scripted.runner, [clean('a')]);
+
+        // Assert
+        expect(result.map(bytesOf)).toEqual(['A\n']);
       });
     });
   });

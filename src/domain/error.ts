@@ -491,6 +491,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `hook ${data.hook} failed with exit code ${data.exitCode}`;
     case 'CLEAN_FILTER_FAILED':
       return `clean filter '${data.filter}' failed for ${basename(data.path)}${exitSuffix(data.exitCode)}`;
+    case 'FILTER_UNSUPPORTED_CAPABILITY':
+      return `subprocess '${data.command}' requested unsupported capability '${data.capability}'`;
     case 'SMUDGE_FILTER_FAILED':
       return `smudge filter '${data.filter}' failed for ${basename(data.path)}${exitSuffix(data.exitCode)}`;
     case 'UPSTREAM_NOT_BRANCH':

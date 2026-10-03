@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   ambiguousOidPrefix,
   cleanFilterFailed,
+  filterUnsupportedCapability,
   formatPlaceholderUnsupported,
   grepLineTooLong,
   invalidPushDefault,
@@ -1490,6 +1491,30 @@ describe('cleanFilterFailed error', () => {
         // Assert — the CLEAN_FILTER_FAILED case must return its own message, not fall through
         // to the SMUDGE_FILTER_FAILED case which starts with "smudge filter".
         expect(result.message).toMatch(/^CLEAN_FILTER_FAILED: clean filter /);
+      });
+    });
+  });
+});
+
+describe('filterUnsupportedCapability error', () => {
+  describe('Given the command and the capability it advertised', () => {
+    describe('When the error is built', () => {
+      it('Then its data and message name both, as git dies with them', () => {
+        // Arrange
+        const sut = filterUnsupportedCapability;
+
+        // Act
+        const result = sut('node filter.cjs', 'bogus');
+
+        // Assert
+        expect(result.data).toEqual({
+          code: 'FILTER_UNSUPPORTED_CAPABILITY',
+          command: 'node filter.cjs',
+          capability: 'bogus',
+        });
+        expect(result.message).toBe(
+          "FILTER_UNSUPPORTED_CAPABILITY: subprocess 'node filter.cjs' requested unsupported capability 'bogus'",
+        );
       });
     });
   });

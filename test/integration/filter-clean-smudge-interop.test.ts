@@ -1295,3 +1295,80 @@ describe.skipIf(!GIT_AVAILABLE)('Given a filter.<d>.process driver over two bran
     });
   });
 });
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'Given a filter.<d>.process driver with an unusual handshake',
+  () => {
+    let root = '';
+
+    beforeAll(async () => {
+      root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-filter-handshake-')));
+    });
+
+    afterAll(async () => {
+      await rm(root, { recursive: true, force: true });
+    });
+
+    /** A repo with `a.t` under the driver; `version` is the line the driver greets with. */
+    const twin = async (slug: string, capabilities: string, version: string) => {
+      const repo = path.join(root, slug);
+      const script = path.join(root, `${slug}.cjs`);
+      await writeFile(
+        script,
+        SMUDGE_PROCESS_FILTER.replace("pkt('version=2\\n')", `pkt('${version}')`),
+      );
+      runGit(['init', '-q', '-b', 'main', repo]);
+      await writeFile(path.join(repo, '.gitattributes'), '*.t filter=d\n');
+      await writeFile(path.join(repo, 'a.t'), 'a\n');
+      const command = `"${process.execPath}" "${script}" ${capabilities}`;
+      runGit(['-C', repo, 'config', 'filter.d.process', command]);
+      return { repo, command };
+    };
+
+    describe('When git and tsgit add through a driver advertising an unknown capability', () => {
+      it('Then both die naming the driver command and the capability', async () => {
+        // Arrange
+        const gitTwin = await twin('git-unknown-capability', 'clean,bogus', 'version=2\\n');
+        const tsgitTwin = await twin('tsgit-unknown-capability', 'clean,bogus', 'version=2\\n');
+        const sut = add;
+
+        // Act
+        const git = tryRunGitWithExit(['-C', gitTwin.repo, 'add', 'a.t']);
+        const result = await sut(createNodeContext({ workDir: tsgitTwin.repo }), ['a.t']).catch(
+          (error: unknown) => error,
+        );
+
+        // Assert
+        expect(git.exitCode).toBe(128);
+        expect(git.stderr).toContain(
+          `fatal: subprocess '${gitTwin.command}' requested unsupported capability 'bogus'`,
+        );
+        expect((result as TsgitError).data).toEqual({
+          code: 'FILTER_UNSUPPORTED_CAPABILITY',
+          command: tsgitTwin.command,
+          capability: 'bogus',
+        });
+      });
+    });
+
+    describe('When git and tsgit add through a driver greeting with a zero-padded version', () => {
+      it('Then both read it as version 2 and stage the cleaned blob', async () => {
+        // Arrange
+        const gitTwin = await twin('git-padded-version', 'clean', 'version=02\\n');
+        const tsgitTwin = await twin('tsgit-padded-version', 'clean', 'version=02\\n');
+        const sut = add;
+
+        // Act
+        runGit(['-C', gitTwin.repo, 'add', 'a.t']);
+        await sut(createNodeContext({ workDir: tsgitTwin.repo }), ['a.t']);
+
+        // Assert
+        const staged = (repo: string) => runGit(['-C', repo, 'ls-files', '-s']);
+        expect(staged(gitTwin.repo)).toContain(
+          runGit(['-C', gitTwin.repo, 'hash-object', '--stdin'], { input: 'A\n' }).trim(),
+        );
+        expect(staged(tsgitTwin.repo)).toEqual(staged(gitTwin.repo));
+      });
+    });
+  },
+);

@@ -1,3 +1,4 @@
+import { filterUnsupportedCapability } from '../../../domain/commands/error.js';
 import { concatBytes } from '../../../domain/objects/encoding.js';
 import type { FilePath, ObjectId } from '../../../domain/objects/object-id.js';
 import {
@@ -23,7 +24,13 @@ const DECODER = new TextDecoder();
  *  every capability it knows. */
 const CLIENT_GREETING = ['git-filter-client\n', 'version=2\n'];
 const CLIENT_CAPABILITIES = ['capability=clean\n', 'capability=smudge\n', 'capability=delay\n'];
-const SERVER_GREETING = ['git-filter-server', 'version=2'];
+const SERVER_WELCOME = 'git-filter-server';
+const VERSION_PREFIX = 'version=';
+const SERVER_VERSION = 2;
+/** What `strtol` reads a whole line as: C whitespace, an optional sign, then digits only. */
+const STRTOL_INTEGER = /^[\t\n\v\f\r ]*[+-]?\d+$/;
+/** The capabilities git asks for — every other one a process advertises kills git. */
+const KNOWN_CAPABILITIES: ReadonlySet<string> = new Set(['clean', 'smudge', 'delay']);
 const SUCCESS = 'success';
 const STATUS_PREFIX = 'status=';
 const CAPABILITY_PREFIX = 'capability=';
@@ -81,13 +88,24 @@ const statusOf = (section: ReadonlyArray<Uint8Array>, previous: string): string 
     .filter((line) => line.startsWith(STATUS_PREFIX))
     .reduce((_, line) => line.slice(STATUS_PREFIX.length), previous);
 
+/** `handshake_version`'s `strtol_i` read of the version line, then the one version git asks for. */
+const servesVersion2 = (line: string | undefined): boolean => {
+  if (line?.startsWith(VERSION_PREFIX) !== true) return false;
+  const version = line.slice(VERSION_PREFIX.length);
+  return STRTOL_INTEGER.test(version) && Number(version) === SERVER_VERSION;
+};
+
 const greetsAsServer = (greeting: ReadonlyArray<Uint8Array> | undefined): boolean => {
   if (greeting === undefined) return false;
-  const greetingLines = lines(greeting);
-  return (
-    greetingLines.length === SERVER_GREETING.length &&
-    greetingLines.every((line, index) => line === SERVER_GREETING[index])
-  );
+  const [welcome, version, ...rest] = lines(greeting);
+  return welcome === SERVER_WELCOME && servesVersion2(version) && rest.length === 0;
+};
+
+/** `handshake_capabilities`: git dies on the first capability it never asked for. */
+const assertKnownCapabilities = (command: string, advertised: ReadonlySet<string>): void => {
+  for (const capability of advertised) {
+    if (!KNOWN_CAPABILITIES.has(capability)) throw filterUnsupportedCapability(command, capability);
+  }
 };
 
 const capabilityNames = (section: ReadonlyArray<Uint8Array>): ReadonlySet<string> =>
@@ -101,12 +119,16 @@ const capabilityNames = (section: ReadonlyArray<Uint8Array>): ReadonlySet<string
 const handshake = async (
   child: CommandProcess,
   sections: PktSections,
+  command: string,
 ): Promise<ReadonlySet<string> | undefined> => {
   await child.write(textStream(CLIENT_GREETING));
   if (!greetsAsServer(await sections.next())) return undefined;
   await child.write(textStream(CLIENT_CAPABILITIES));
   const advertised = await sections.next();
-  return advertised === undefined ? undefined : capabilityNames(advertised);
+  if (advertised === undefined) return undefined;
+  const names = capabilityNames(advertised);
+  assertKnownCapabilities(command, names);
+  return names;
 };
 
 /** `handle_filter_error`'s reading of a non-success status. */
