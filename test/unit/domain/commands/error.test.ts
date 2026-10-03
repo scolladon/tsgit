@@ -23,6 +23,7 @@ import {
   configScopeNotAvailable,
   configSectionNotFound,
   configSystemPathUnresolved,
+  configUnknownNegotiationAlgorithm,
   configValueInvalid,
   emptyCommitMessage,
   emptyPathspec,
@@ -1273,6 +1274,34 @@ describe('domain commands error — config factory data', () => {
     });
   });
 
+  describe('Given the configUnknownNegotiationAlgorithm helper', () => {
+    describe("When called with value='bogus'", () => {
+      it('Then data carries code and value', () => {
+        // Arrange + Act
+        const result = configUnknownNegotiationAlgorithm('bogus');
+
+        // Assert
+        expect(result.data).toEqual({
+          code: 'CONFIG_UNKNOWN_NEGOTIATION_ALGORITHM',
+          value: 'bogus',
+        });
+      });
+    });
+
+    describe('When called with a value containing a control byte', () => {
+      it('Then data.value is sanitized for display', () => {
+        // Arrange + Act
+        const result = configUnknownNegotiationAlgorithm('\x01bad');
+
+        // Assert
+        expect(result.data).toEqual({
+          code: 'CONFIG_UNKNOWN_NEGOTIATION_ALGORITHM',
+          value: '\\x01bad',
+        });
+      });
+    });
+  });
+
   describe('Given the configBadZlibLevel helper', () => {
     describe('When called', () => {
       it.each([[99], [-2]] as const)('Then data carries code and level=%i', (level) => {
@@ -1667,6 +1696,10 @@ describe('domain commands error — extractDetail message formatting', () => {
         value: 'maybe',
       },
       "CONFIG_BAD_BOOLEAN_LITERAL: invalid value for 'push.gpgsign' in file /repo/.git/config",
+    ],
+    [
+      { code: 'CONFIG_UNKNOWN_NEGOTIATION_ALGORITHM', value: 'bogus' },
+      "CONFIG_UNKNOWN_NEGOTIATION_ALGORITHM: unknown fetch negotiation algorithm 'bogus'",
     ],
     [
       {

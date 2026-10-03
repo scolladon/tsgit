@@ -11,7 +11,15 @@
  *   unique:         core.commitGraph=false leaves the commit-graph unread, so the walk follows the objects
  *   interopSurface: revList
  */
-import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  chmodSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -121,9 +129,10 @@ describe.skipIf(!GIT_AVAILABLE)('interop — core.commitGraph', () => {
 
 interface ConfigRefusal {
   readonly code: string;
-  readonly key: string;
-  readonly value: string;
+  readonly key?: string;
+  readonly value?: string;
   readonly reason?: string;
+  readonly line?: number;
 }
 
 /** git's fatal line for a refused config value, rebuilt from tsgit's refusal data. */
@@ -131,6 +140,12 @@ const fatalLineOf = (refusal: ConfigRefusal | undefined): string => {
   if (refusal === undefined) return '';
   if (refusal.code === 'CONFIG_BAD_BOOLEAN_VALUE') {
     return `fatal: bad boolean config value '${refusal.value}' for '${refusal.key}'\n`;
+  }
+  if (refusal.code === 'CONFIG_UNKNOWN_NEGOTIATION_ALGORITHM') {
+    return `fatal: unknown fetch negotiation algorithm '${refusal.value}'\n`;
+  }
+  if (refusal.code === 'CONFIG_MISSING_VALUE') {
+    return `error: missing value for '${refusal.key}'\nfatal: bad config variable '${refusal.key}' in file '.git/config' at line ${refusal.line}\n`;
   }
   return `fatal: bad numeric config value '${refusal.value}' for '${refusal.key}' in file .git/config: ${refusal.reason}\n`;
 };
@@ -145,6 +160,23 @@ const tsgitLogRefusal = async (dir: string): Promise<ConfigRefusal | undefined> 
   } finally {
     await repo.dispose();
   }
+};
+
+/** A one-commit repo carrying `config` — a `null` value appends the key valueless. */
+const configuredRepo = (config: ReadonlyArray<readonly [string, string | null]>): string => {
+  count += 1;
+  const dir = path.join(root, `repo-settings-${count}`);
+  runGit(['init', '-q', '-b', 'main', dir]);
+  runGit(['-C', dir, 'commit', '-q', '--allow-empty', '-m', 'c1']);
+  for (const [key, value] of config) {
+    if (value !== null) {
+      runGit(['-C', dir, 'config', key, value]);
+      continue;
+    }
+    const [section, name] = key.split('.');
+    appendFileSync(path.join(dir, '.git', 'config'), `[${section}]\n\t${name}\n`);
+  }
+  return dir;
 };
 
 const GENERATION_VERSION_ROWS: ReadonlyArray<{
@@ -186,13 +218,7 @@ describe.skipIf(!GIT_AVAILABLE)('interop — commitGraph.generationVersion', () 
           'Then both refuse the same value, or both read the history',
           async () => {
             // Arrange
-            count += 1;
-            const dir = path.join(root, `generation-version-${count}`);
-            runGit(['init', '-q', '-b', 'main', dir]);
-            runGit(['-C', dir, 'commit', '-q', '--allow-empty', '-m', 'c1']);
-            for (const [key, value] of config) {
-              runGit(['-C', dir, 'config', key, value]);
-            }
+            const dir = configuredRepo(config);
             const git = tryRunGitWithExit(['-C', dir, 'log', '--format=%H']);
             const sut = tsgitLogRefusal;
 
@@ -208,3 +234,91 @@ describe.skipIf(!GIT_AVAILABLE)('interop — commitGraph.generationVersion', () 
     },
   );
 });
+
+const LATER_REPO_SETTINGS_ROWS: ReadonlyArray<{
+  readonly label: string;
+  readonly config: ReadonlyArray<readonly [string, string | null]>;
+}> = [
+  { label: 'changedPathsVersion = abc', config: [['commitGraph.changedPathsVersion', 'abc']] },
+  {
+    label: 'changedPathsVersion past the C int ceiling',
+    config: [['commitGraph.changedPathsVersion', '9999999999']],
+  },
+  {
+    label: 'changedPathsVersion = abc after a malformed readChangedPaths',
+    config: [
+      ['commitGraph.changedPathsVersion', 'abc'],
+      ['commitGraph.readChangedPaths', 'maybe'],
+    ],
+  },
+  {
+    label: 'changedPathsVersion = abc before a malformed gc.writeCommitGraph',
+    config: [
+      ['commitGraph.changedPathsVersion', 'abc'],
+      ['gc.writeCommitGraph', 'maybe'],
+    ],
+  },
+  { label: 'index.version = abc', config: [['index.version', 'abc']] },
+  { label: 'index.version valueless', config: [['index.version', null]] },
+  {
+    label: 'index.version = abc after a malformed gc.writeCommitGraph',
+    config: [
+      ['index.version', 'abc'],
+      ['gc.writeCommitGraph', 'maybe'],
+    ],
+  },
+  {
+    label: 'index.version = abc before a malformed core.maxTreeDepth',
+    config: [
+      ['index.version', 'abc'],
+      ['core.maxTreeDepth', 'zz'],
+    ],
+  },
+  { label: 'negotiationAlgorithm = bogus', config: [['fetch.negotiationAlgorithm', 'bogus']] },
+  { label: 'negotiationAlgorithm empty', config: [['fetch.negotiationAlgorithm', '']] },
+  { label: 'negotiationAlgorithm valueless', config: [['fetch.negotiationAlgorithm', null]] },
+  {
+    label: 'negotiationAlgorithm = SKIPPING',
+    config: [['fetch.negotiationAlgorithm', 'SKIPPING']],
+  },
+  {
+    label: 'negotiationAlgorithm = bogus after a malformed core.maxTreeDepth',
+    config: [
+      ['fetch.negotiationAlgorithm', 'bogus'],
+      ['core.maxTreeDepth', 'zz'],
+    ],
+  },
+  {
+    label: 'negotiationAlgorithm = bogus before a malformed core.deltaBaseCacheLimit',
+    config: [
+      ['fetch.negotiationAlgorithm', 'bogus'],
+      ['core.deltaBaseCacheLimit', 'zz'],
+    ],
+  },
+];
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'interop — the ints and strings after the repo-settings booleans',
+  () => {
+    describe.each(LATER_REPO_SETTINGS_ROWS)('Given $label', ({ config }) => {
+      describe('When git and tsgit log HEAD', () => {
+        it(
+          'Then both refuse the same value, or both read the history',
+          async () => {
+            // Arrange
+            const dir = configuredRepo(config);
+            const git = tryRunGitWithExit(['-C', dir, 'log', '--format=%H']);
+            const sut = tsgitLogRefusal;
+
+            // Act
+            const result = await sut(dir);
+
+            // Assert
+            expect(fatalLineOf(result)).toBe(git.exitCode === 0 ? '' : git.stderr);
+          },
+          ROW_TIMEOUT,
+        );
+      });
+    });
+  },
+);

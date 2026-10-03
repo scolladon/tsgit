@@ -1,7 +1,8 @@
 /**
  * The repo-settings class (git's `prepare_repo_settings`, `repo-settings.c`):
  * its booleans (`feature.*`, `core.commitGraph`, … `core.useReplaceRefs`)
- * with `commitGraph.generationVersion` among them, `core.maxTreeDepth`, `core.deltaBaseCacheLimit`, then
+ * with `commitGraph.generationVersion` and `commitGraph.changedPathsVersion` among them,
+ * `index.version`, `core.maxTreeDepth`, `fetch.negotiationAlgorithm`, `core.deltaBaseCacheLimit`, then
  * `core.packedGitWindowSize` and `core.packedGitLimit`. Git reads these keys
  * in that one function and nowhere else — a command dies on
  * a malformed value iff it reaches the object store, the index, a
@@ -13,12 +14,18 @@
  * eager operational gate, which is a different tier validating a different
  * set of `[core]` classes.
  */
-import { configBadBooleanValue, configBadNumericValue } from '../../../domain/commands/error.js';
+import {
+  configBadBooleanValue,
+  configBadNumericValue,
+  configMissingValue,
+  configUnknownNegotiationAlgorithm,
+} from '../../../domain/commands/error.js';
 import { parseGitBoolean } from '../../../domain/config/config-ini.js';
 import type { TsgitError } from '../../../domain/error.js';
 import type { Context } from '../../../ports/context.js';
 import {
   findLastEntries,
+  findLastEntry,
   findLastInvalidBigFileThreshold,
   findLastInvalidDeltaBaseCacheLimit,
   findLastInvalidMaxTreeDepth,
@@ -38,9 +45,11 @@ const LEADING_BOOLEANS: ReadonlyArray<ConfigKey> = [
   ['core', 'commitGraph'],
 ];
 
-/** The booleans it reads after, in its order (repo-settings.c:69-86). */
+/** The boolean it reads between `generationVersion` and `changedPathsVersion`. */
+const CHANGED_PATHS_BOOLEANS: ReadonlyArray<ConfigKey> = [['commitGraph', 'readChangedPaths']];
+
+/** The booleans it reads after `changedPathsVersion`, in its order (repo-settings.c:73-86). */
 const TRAILING_BOOLEANS: ReadonlyArray<ConfigKey> = [
-  ['commitGraph', 'readChangedPaths'],
   ['gc', 'writeCommitGraph'],
   ['fetch', 'writeCommitGraph'],
   ['pack', 'useSparse'],
@@ -68,13 +77,34 @@ const booleanRefusal = async (
 const numericRefusal = (invalid: InvalidNumericEntry | undefined): TsgitError | undefined =>
   invalid && configBadNumericValue(invalid.key, invalid.source, invalid.value, invalid.reason);
 
+/** The values `fetch.negotiationAlgorithm` names, matched case-insensitively (`strcasecmp`). */
+const NEGOTIATION_ALGORITHMS: ReadonlySet<string> = new Set([
+  'skipping',
+  'noop',
+  'consecutive',
+  'default',
+]);
+
+/** git's `repo_config_get_string_tmp` + its algorithm `die` (repo-settings.c:120-133). */
+const negotiationAlgorithmRefusal = async (ctx: Context): Promise<TsgitError | undefined> => {
+  const last = await findLastEntry(ctx, 'fetch', 'negotiationAlgorithm');
+  if (last === undefined) return undefined;
+  if (last.value === null) return configMissingValue(last.key, last.source, last.line);
+  if (NEGOTIATION_ALGORITHMS.has(last.value.toLowerCase())) return undefined;
+  return configUnknownNegotiationAlgorithm(last.value);
+};
+
 /** git's `prepare_repo_settings` (repo-settings.c): the class's keys, in its own reading order. */
 const computeRepoSettingsVerdict = async (ctx: Context): Promise<void> => {
   const refusals = await Promise.all([
     booleanRefusal(ctx, LEADING_BOOLEANS), // repo-settings.c:49-67
     findLastInvalidRepoInt(ctx, 'commitGraph', 'generationVersion').then(numericRefusal), // :68
-    booleanRefusal(ctx, TRAILING_BOOLEANS), // repo-settings.c:69-86
+    booleanRefusal(ctx, CHANGED_PATHS_BOOLEANS), // repo-settings.c:69
+    findLastInvalidRepoInt(ctx, 'commitGraph', 'changedPathsVersion').then(numericRefusal), // :70
+    booleanRefusal(ctx, TRAILING_BOOLEANS), // repo-settings.c:73-86
+    findLastInvalidRepoInt(ctx, 'index', 'version').then(numericRefusal), // repo-settings.c:101
     findLastInvalidMaxTreeDepth(ctx).then(numericRefusal), // repo-settings.c:103
+    negotiationAlgorithmRefusal(ctx), // repo-settings.c:120
     ctx.cacheBudgets?.deltaBaseCacheMaxBytes === undefined // an option-overridden file value is never validated
       ? findLastInvalidDeltaBaseCacheLimit(ctx).then(numericRefusal) // repo-settings.c:142
       : undefined,

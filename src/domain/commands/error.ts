@@ -218,6 +218,10 @@ export type CommandError =
       readonly line?: number;
     }
   | {
+      readonly code: 'CONFIG_UNKNOWN_NEGOTIATION_ALGORITHM';
+      readonly value: string;
+    }
+  | {
       readonly code: 'CONFIG_INVALID_ENUM_VALUE';
       readonly key: string;
       readonly source: string;
@@ -768,6 +772,18 @@ export const configBadDateValue = (
     ...(location !== undefined
       ? { key: sanitizeForDisplay(location.key), source: location.source, line: location.line }
       : {}),
+  });
+
+/**
+ * `fetch.negotiationAlgorithm` holds a value outside git's case-insensitive
+ * `skipping` / `noop` / `consecutive` / `default` set. git reads it with the
+ * other repo settings, so any command reaching the object store refuses on
+ * it — `log` as much as `fetch`. Its refusal names the value alone.
+ */
+export const configUnknownNegotiationAlgorithm = (value: string): TsgitError =>
+  new TsgitError({
+    code: 'CONFIG_UNKNOWN_NEGOTIATION_ALGORITHM',
+    value: sanitizeForDisplay(value),
   });
 
 /**

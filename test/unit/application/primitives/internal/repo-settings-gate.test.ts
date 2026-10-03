@@ -793,3 +793,95 @@ describe('Given commitGraph.generationVersion among the settings prepare_repo_se
     });
   });
 });
+
+describe('Given the ints and strings prepare_repo_settings reads after its booleans', () => {
+  const numeric = (key: string, value: string, reason = 'invalid unit') => ({
+    code: 'CONFIG_BAD_NUMERIC_VALUE',
+    key,
+    value,
+    reason,
+  });
+  const boolean = (key: string, value: string) => ({
+    code: 'CONFIG_BAD_BOOLEAN_VALUE',
+    key,
+    value,
+  });
+  const unknownAlgorithm = (value: string) => ({
+    code: 'CONFIG_UNKNOWN_NEGOTIATION_ALGORITHM',
+    value,
+  });
+  describe.each([
+    {
+      config: '[commitGraph]\n\tchangedPathsVersion = abc\n',
+      refused: numeric('commitgraph.changedpathsversion', 'abc'),
+    },
+    {
+      config: '[commitGraph]\n\tchangedPathsVersion = 9999999999\n',
+      refused: numeric('commitgraph.changedpathsversion', '9999999999', 'out of range'),
+    },
+    {
+      config: '[commitGraph]\n\tchangedPathsVersion = abc\n\treadChangedPaths = maybe\n',
+      refused: boolean('commitgraph.readchangedpaths', 'maybe'),
+    },
+    {
+      config: '[commitGraph]\n\tchangedPathsVersion = abc\n[gc]\n\twriteCommitGraph = maybe\n',
+      refused: numeric('commitgraph.changedpathsversion', 'abc'),
+    },
+    { config: '[index]\n\tversion = abc\n', refused: numeric('index.version', 'abc') },
+    { config: '[index]\n\tversion\n', refused: numeric('index.version', '') },
+    {
+      config: '[index]\n\tversion = abc\n[core]\n\tuseReplaceRefs = maybe\n',
+      refused: boolean('core.usereplacerefs', 'maybe'),
+    },
+    {
+      config: '[index]\n\tversion = abc\n[core]\n\tmaxTreeDepth = zz\n',
+      refused: numeric('index.version', 'abc'),
+    },
+    { config: '[index]\n\tversion = 9\n', refused: undefined },
+    {
+      config: '[fetch]\n\tnegotiationAlgorithm = bogus\n',
+      refused: unknownAlgorithm('bogus'),
+    },
+    { config: '[fetch]\n\tnegotiationAlgorithm = ""\n', refused: unknownAlgorithm('') },
+    {
+      config: '[fetch]\n\tnegotiationAlgorithm = bogus\n[core]\n\tmaxTreeDepth = zz\n',
+      refused: numeric('core.maxtreedepth', 'zz'),
+    },
+    {
+      config: '[fetch]\n\tnegotiationAlgorithm = bogus\n[core]\n\tdeltaBaseCacheLimit = zz\n',
+      refused: unknownAlgorithm('bogus'),
+    },
+    {
+      config: '[fetch]\n\tnegotiationAlgorithm\n',
+      refused: { code: 'CONFIG_MISSING_VALUE', key: 'fetch.negotiationalgorithm', line: 2 },
+    },
+    { config: '[fetch]\n\tnegotiationAlgorithm = SKIPPING\n', refused: undefined },
+    { config: '[fetch]\n\tnegotiationAlgorithm = noop\n', refused: undefined },
+    { config: '[fetch]\n\tnegotiationAlgorithm = Consecutive\n', refused: undefined },
+    { config: '[fetch]\n\tnegotiationAlgorithm = default\n', refused: undefined },
+    {
+      config: '[fetch]\n\tnegotiationAlgorithm = bogus\n\tnegotiationAlgorithm = noop\n',
+      refused: undefined,
+    },
+  ])('When the gate reads $config', ({ config, refused }) => {
+    it(`Then it ${refused === undefined ? 'accepts it' : `refuses ${refused.code}, in git's reading order`}`, async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seedRepo(ctx);
+      await seedConfig(ctx, config);
+      const sut = assertRepoSettingsValid;
+
+      // Act
+      const [outcome] = await Promise.allSettled([sut(ctx)]);
+
+      // Assert
+      const data = outcome.status === 'rejected' ? (outcome.reason as TsgitError).data : undefined;
+      const source = `${ctx.layout.gitDir}/config`;
+      expect(data).toEqual(
+        refused === undefined || refused.code === 'CONFIG_UNKNOWN_NEGOTIATION_ALGORITHM'
+          ? refused
+          : { ...refused, source },
+      );
+    });
+  });
+});
