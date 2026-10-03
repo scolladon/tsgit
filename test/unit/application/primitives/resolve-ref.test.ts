@@ -725,13 +725,18 @@ describe('resolveRefForReading', () => {
 });
 
 describe('readRefCandidate', () => {
-  describe('Given a direct ref, a dangling symref, a symref cycle, a broken ref and an ill-formed name', () => {
+  describe('Given a direct ref, a symref to it, a dangling symref, a symref cycle, a broken ref and an ill-formed name', () => {
     describe('When readRefCandidate reads each candidate', () => {
       it.each([
         {
           label: 'found with its id',
           ref: 'refs/heads/main',
-          expected: { kind: 'found', id: MAIN_ID },
+          expected: { kind: 'found', id: MAIN_ID, ref: 'refs/heads/main' },
+        },
+        {
+          label: 'found with the ref its symbolic chain ends at',
+          ref: 'refs/heads/alias',
+          expected: { kind: 'found', id: MAIN_ID, ref: 'refs/heads/main' },
         },
         { label: 'missing when absent', ref: 'refs/heads/absent', expected: { kind: 'missing' } },
         {
@@ -760,6 +765,7 @@ describe('readRefCandidate', () => {
           refs: [{ name: 'refs/heads/main' as RefName, id: MAIN_ID }],
         });
         await ctx.fs.writeUtf8('/repo/.git/refs/heads/dangling', 'ref: refs/heads/nope\n');
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/alias', 'ref: refs/heads/main\n');
         await ctx.fs.writeUtf8('/repo/.git/refs/heads/cycle', 'ref: refs/heads/cycle2\n');
         await ctx.fs.writeUtf8('/repo/.git/refs/heads/cycle2', 'ref: refs/heads/cycle\n');
         await ctx.fs.writeUtf8('/repo/.git/refs/heads/bad', 'not-a-valid-ref-content\n');

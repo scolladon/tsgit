@@ -34,6 +34,7 @@ import { walkWorkingTree } from '../primitives/walk-working-tree.js';
 import { buildRepoIgnorePredicate } from './internal/build-ignore-evaluator.js';
 import { createGranularityTracker } from './internal/progress-tracker.js';
 import { branchRefFromHead, readHeadRaw, requireWorkTree } from './internal/repo-state.js';
+import { resolveRevisionName } from './internal/revision-name.js';
 
 export type ChangeKind = 'modified' | 'added' | 'deleted' | 'type-changed' | 'mode-changed';
 
@@ -123,6 +124,8 @@ interface GranularityTracker {
 export const status = (ctx: Context): Promise<StatusResult> =>
   withFilterProcessPool(ctx, () => statusInScope(ctx));
 
+const HEAD_NAME = 'HEAD';
+
 const statusInScope = async (ctx: Context): Promise<StatusResult> => {
   await assertOperationalRepositorySettingsFirst(ctx);
   const workDir = requireWorkTree(ctx, 'status');
@@ -160,6 +163,9 @@ const statusInScope = async (ctx: Context): Promise<StatusResult> => {
       index.indexMtime,
     );
     const untracked = await scanUntracked(ctx, trackedPaths);
+    // git's status names HEAD through `get_oid`, warning on an ambiguous HEAD
+    // and refusing a malformed core.warnAmbiguousRefs once HEAD resolves.
+    await resolveRevisionName(ctx, HEAD_NAME);
     const headTree = await readHeadTree(ctx);
     const stagedKindMap = collectStagedKinds(index, headTree, grouped.unmerged);
     const changes = buildChanges(stagedKindMap, workingMap, headTree, stage0Map);

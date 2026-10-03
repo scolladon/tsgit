@@ -1,5 +1,6 @@
 import { revparseUnresolved } from '../../domain/commands/error.js';
 import { applyGraft } from '../../domain/commit/graft.js';
+import { errorDataCode } from '../../domain/error-data-code.js';
 import { objectNotFound } from '../../domain/objects/error.js';
 import {
   type HashConfig,
@@ -19,9 +20,9 @@ import { loadShallowSet } from '../primitives/internal/shallow-set.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
 import { readTree } from '../primitives/read-tree.js';
-import { getRefStore } from '../primitives/ref-store.js';
 import { listReflogs, readReflogLenient } from '../primitives/reflog-store.js';
-import { resolveRef } from '../primitives/resolve-ref.js';
+import { readRefCandidate } from '../primitives/resolve-ref.js';
+import { readCandidateRef, resolveAmbiguousLadder } from './internal/refname-ambiguity.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
 import {
   parseExpression,
@@ -68,7 +69,7 @@ const resolveBase = async (ctx: Context, base: string): Promise<ObjectId> => {
   throw objectNotFound(base as ObjectId);
 };
 
-/** Resolve `<base>@{<selector>}` through the reflog of the base ref. */
+/** Resolve `<base>@{<selector>}` through the reflog `get_oid_basic` picks for the base. */
 const resolveReflogBase = async (
   ctx: Context,
   base: string,
@@ -76,67 +77,45 @@ const resolveReflogBase = async (
   now: number,
   raw: string,
 ): Promise<ObjectId> => {
-  const ref = base === '' ? await currentBranchRef(ctx) : await canonicalizeRef(ctx, base);
+  const ref = base === '' ? await currentBranchLog(ctx) : await dwimLog(ctx, base);
+  if (ref === undefined) throw revparseUnresolved(raw);
   const entries = await readReflogLenient(ctx, ref);
   if (entries.length === 0) throw revparseUnresolved(raw);
   if (selector.kind === 'index') return pickByIndex(entries, selector.n, ref);
   return pickByDate(entries, selector.raw, now, raw, ctx.hashConfig);
 };
 
-/** HEAD's symbolic branch target, or the `HEAD` literal when HEAD is detached. */
-const currentBranchRef = async (ctx: Context): Promise<RefName> => {
-  const result = await getRefStore(ctx).resolveDirect('HEAD' as RefName);
-  return result.kind === 'symbolic' ? result.target : ('HEAD' as RefName);
-};
+/** git's `@{...}`: `dwim_ref("HEAD")`, its ambiguity warned under the empty name git passes. */
+const currentBranchLog = (ctx: Context): Promise<RefName | undefined> =>
+  resolveAmbiguousLadder(ctx, '', refCandidates('HEAD'), (candidate) =>
+    readCandidateRef(ctx, candidate, (name) => readRefCandidate(ctx, name)),
+  );
 
 /**
- * Map a short base to the `RefName` whose reflog to read: the first candidate
- * with a reflog file, else the first that resolves as a ref (so the empty-log
- * path still fires with a sensible ref).
+ * git's `dwim_log`: each candidate namespace that resolves (quietly — a
+ * dangling or broken one is skipped unwarned) and carries a reflog, its own
+ * or the one of the ref its symbolic chain ends at.
  */
-const canonicalizeRef = async (ctx: Context, base: string): Promise<RefName> => {
+const dwimLog = async (ctx: Context, base: string): Promise<RefName | undefined> => {
   // Validate before any candidate reaches the filesystem: an unchecked `base`
-  // carrying `..` would otherwise be probed on disk by listReflogs/refResolves.
+  // carrying `..` would otherwise be probed on disk.
   const validated = validateBaseRef(base);
-  const candidates = refCandidates(validated);
-  const knownReflogs = new Set(await listReflogs(ctx));
-  for (const candidate of candidates) {
-    if (knownReflogs.has(candidate as RefName)) return candidate as RefName;
-  }
-  // The loop below picks a "sensible ref" for the empty-log case, but once the
-  // loop above proves no candidate has a reflog file, its chosen ref is never
-  // observable: resolveReflogBase reads that ref's reflog (empty for every
-  // candidate, since none has a file) and throws REVPARSE_UNRESOLVED, which
-  // carries the raw expression — not the ref. Hence the equivalent-mutant
-  // suppressions: any ref name here yields the identical empty-log error.
-  // Stryker disable next-line BlockStatement: equivalent — see above.
-  for (const candidate of candidates) {
-    // Stryker disable next-line ConditionalExpression: equivalent — see above.
-    if (await refResolves(ctx, candidate)) return candidate as RefName;
-  }
-  // No candidate has a reflog or resolves: fall back to the validated base.
-  return validated;
+  const knownReflogs = new Set<string>(await listReflogs(ctx));
+  const logOf = async (candidate: RefName | 'HEAD'): Promise<RefName | undefined> => {
+    const outcome = await readRefCandidate(ctx, candidate);
+    if (outcome.kind !== 'found') return undefined;
+    if (knownReflogs.has(candidate)) return candidate as RefName;
+    return knownReflogs.has(outcome.ref) ? outcome.ref : undefined;
+  };
+  return resolveAmbiguousLadder(ctx, base, refCandidates(validated), logOf);
 };
 
 const validateBaseRef = (base: string): RefName => {
   try {
     return validateRefName(base);
-  } catch {
-    throw revparseUnresolved(base);
-  }
-};
-
-// Only feeds canonicalizeRef's second loop, whose chosen ref is never
-// observable (see the comment there) — so both return values are
-// equivalent-mutant territory.
-const refResolves = async (ctx: Context, candidate: RefName | 'HEAD'): Promise<boolean> => {
-  try {
-    await resolveRef(ctx, candidate);
-    // Stryker disable next-line BooleanLiteral: equivalent — refResolves only gates canonicalizeRef's unobservable fallback loop.
-    return true;
-  } catch {
-    // Stryker disable next-line BooleanLiteral: equivalent — refResolves only gates canonicalizeRef's unobservable fallback loop.
-    return false;
+  } catch (err) {
+    if (errorDataCode(err) === 'INVALID_REF') throw revparseUnresolved(base);
+    throw err;
   }
 };
 

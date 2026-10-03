@@ -22,6 +22,7 @@ import { checkout } from '../../src/application/commands/checkout.js';
 import { log } from '../../src/application/commands/log.js';
 import { reset } from '../../src/application/commands/reset.js';
 import { revParse } from '../../src/application/commands/rev-parse.js';
+import { status } from '../../src/application/commands/status.js';
 import { mergeBase } from '../../src/application/primitives/merge-base.js';
 import type { TsgitError } from '../../src/domain/error.js';
 import type { ObjectId } from '../../src/domain/objects/index.js';
@@ -428,7 +429,9 @@ describe.skipIf(!GIT_AVAILABLE)('integration — skip and ambiguity warnings per
     git(repo, 'symbolic-ref', 'refs/tags/dg', 'refs/tags/nope');
     git(repo, 'symbolic-ref', 'refs/tags/only', 'refs/heads/nope');
     git(repo, 'update-ref', 'refs/heads/amb', tip);
-    git(repo, 'update-ref', 'refs/tags/amb', tip);
+    git(repo, '-c', 'core.logAllRefUpdates=always', 'update-ref', 'refs/tags/amb', tip);
+    git(repo, 'symbolic-ref', 'refs/heads/sym', 'refs/heads/main');
+    git(repo, 'update-ref', 'refs/tags/main', tip);
   }, SETUP_TIMEOUT);
 
   afterAll(async () => {
@@ -462,6 +465,21 @@ describe.skipIf(!GIT_AVAILABLE)('integration — skip and ambiguity warnings per
       args: ['branch', 'x', 'amb'],
       run: ((ctx) => branchCreate(ctx, { name: 'x', startPoint: 'amb' })) as CommandRun,
     },
+    {
+      label: 'branch without a start point while a tag shares the current branch name',
+      args: ['branch', 'x'],
+      run: ((ctx) => branchCreate(ctx, { name: 'x' })) as CommandRun,
+    },
+    {
+      label: 'rev-parse of a reflog two namespaces carry',
+      args: ['rev-parse', 'amb@{0}'],
+      run: ((ctx) => revParse(ctx, 'amb@{0}')) as CommandRun,
+    },
+    {
+      label: 'rev-parse of the current branch reflog',
+      args: ['rev-parse', '@{0}'],
+      run: ((ctx) => revParse(ctx, '@{0}')) as CommandRun,
+    },
   ])('Given $label', ({ args, run }) => {
     describe('When git and tsgit run it', () => {
       it('Then tsgit warns each line git warns', async () => {
@@ -485,3 +503,102 @@ describe.skipIf(!GIT_AVAILABLE)('integration — skip and ambiguity warnings per
     });
   });
 });
+
+describe.skipIf(!GIT_AVAILABLE)('integration — dwim_log through a symbolic branch', () => {
+  let repo = '';
+
+  beforeAll(async () => {
+    repo = await mkdtemp(path.join(os.tmpdir(), 'tsgit-dwim-log-symref-interop-'));
+    runGit(['init', '-q', '-b', 'main', repo]);
+    disableAutoMaintenance(repo);
+    runGit(['-C', repo, 'commit', '-q', '--allow-empty', '-m', 'c1'], { env: IDENTITY_ENV });
+    git(repo, 'symbolic-ref', 'refs/heads/sym', 'refs/heads/main');
+  }, SETUP_TIMEOUT);
+
+  afterAll(async () => {
+    await rm(repo, { recursive: true, force: true });
+  });
+
+  describe('Given a symbolic branch with no reflog of its own', () => {
+    describe('When git and tsgit rev-parse its reflog selector', () => {
+      it('Then both read the reflog of the branch it points at', async () => {
+        // Arrange
+        const expected = git(repo, 'rev-parse', 'sym@{0}').trim();
+        const sut = revParse;
+
+        // Act
+        const result = await sut(createNodeContext({ workDir: repo }), 'sym@{0}');
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'integration — commands naming HEAD under a malformed core.warnAmbiguousRefs',
+  () => {
+    let repo = '';
+
+    beforeAll(async () => {
+      repo = await mkdtemp(path.join(os.tmpdir(), 'tsgit-head-warn-ambiguous-bad-'));
+      runGit(['init', '-q', '-b', 'main', repo]);
+      disableAutoMaintenance(repo);
+      runGit(['-C', repo, 'commit', '-q', '--allow-empty', '-m', 'c1'], { env: IDENTITY_ENV });
+      git(repo, 'config', 'core.warnAmbiguousRefs', 'maybe');
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(repo, { recursive: true, force: true });
+    });
+
+    describe.each([
+      {
+        label: 'rev-parse @{0}',
+        args: ['rev-parse', '@{0}'],
+        run: ((ctx) => revParse(ctx, '@{0}')) as CommandRun,
+      },
+      {
+        label: 'rev-parse main@{0}',
+        args: ['rev-parse', 'main@{0}'],
+        run: ((ctx) => revParse(ctx, 'main@{0}')) as CommandRun,
+      },
+      { label: 'status', args: ['status', '--short'], run: ((ctx) => status(ctx)) as CommandRun },
+      {
+        label: 'reset --soft HEAD',
+        args: ['reset', '--soft', 'HEAD'],
+        run: ((ctx) => reset(ctx, { mode: 'soft', rev: 'HEAD' })) as CommandRun,
+      },
+      {
+        label: 'branch without a start point',
+        args: ['branch', 'b1'],
+        run: ((ctx) => branchCreate(ctx, { name: 'b1' })) as CommandRun,
+      },
+    ])('Given $label', ({ args, run }) => {
+      describe('When git and tsgit run it', () => {
+        it('Then both refuse the value', async () => {
+          // Arrange
+          const gitRun = tryRunGitWithExit(['-C', repo, ...args]);
+          const sut = run;
+
+          // Act
+          const refusal = await sut(createNodeContext({ workDir: repo })).catch(
+            (err: TsgitError) => err.data,
+          );
+
+          // Assert
+          expect(gitRun.exitCode).toBe(128);
+          expect(gitRun.stderr).toContain(
+            "fatal: bad boolean config value 'maybe' for 'core.warnambiguousrefs'",
+          );
+          expect(refusal).toMatchObject({
+            code: 'CONFIG_BAD_BOOLEAN_VALUE',
+            key: 'core.warnambiguousrefs',
+            value: 'maybe',
+          });
+        });
+      });
+    });
+  },
+);

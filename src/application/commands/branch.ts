@@ -36,7 +36,6 @@ import {
   refResolvesForReading,
   resolveRef,
   resolveRefForReading,
-  resolveRefOrMissing,
 } from '../primitives/resolve-ref.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { branchMerged } from './internal/branch-merged.js';
@@ -185,20 +184,6 @@ const assertNoWorktreeHolds = async (ctx: Context, name: RefName): Promise<void>
   if (holder !== undefined) throw branchCheckedOut(name, holder);
 };
 
-/**
- * HEAD as `create_branch` resolves it when no start point was given. git
- * hands it the CURRENT branch's own resolved ref name, so the default never
- * goes through the revision ladder — and never reports ambiguity against a
- * branch literally named `HEAD`. An unborn HEAD names no object at all, and
- * the refusal carries the label git had already substituted for the start
- * point (the current branch's short name), never `HEAD`.
- */
-const resolveOmittedStartPoint = async (ctx: Context, label: string): Promise<ObjectId> => {
-  const id = await resolveRefOrMissing(ctx, HEAD_NAME);
-  if (id === undefined) throw branchNotFound(label as RefName);
-  return id;
-};
-
 /** When `create_branch` builds the remote table, relative to writing the branch. */
 type RemoteTableRead = 'before-write' | 'after-write' | 'none';
 
@@ -236,8 +221,10 @@ export const branchCreate = async (
   if (!force && held) throw branchExists(name);
   if (force && held) await assertNoWorktreeHolds(ctx, name);
   const mode = await resolveTrackMode(ctx, input);
+  // An omitted start point is the label git substitutes for it — the current
+  // branch's short name, or `HEAD` when detached — run through the same ladder.
   const startPoint = input.startPoint ?? (await omittedStartPointLabel(ctx));
-  const start = await resolveStart(ctx, input, startPoint).catch((err: unknown) => {
+  const start = await resolveBranchTarget(ctx, startPoint).catch((err: unknown) => {
     throw asUpstreamMissing(err, startPoint, mode);
   });
   const target = await requireCommit(ctx, start);
@@ -254,15 +241,6 @@ export const branchCreate = async (
     startRef === undefined ? undefined : await setupTracking(ctx, input.name, startRef, mode);
   return { name, id: target, ...(upstream !== undefined && { upstream }) };
 };
-
-const resolveStart = (
-  ctx: Context,
-  input: BranchCreateInput,
-  startPoint: string,
-): Promise<ObjectId> =>
-  input.startPoint === undefined
-    ? resolveOmittedStartPoint(ctx, startPoint)
-    : resolveBranchTarget(ctx, input.startPoint);
 
 interface NewBranch {
   readonly name: RefName;

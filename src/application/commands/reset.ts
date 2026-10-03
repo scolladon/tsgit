@@ -13,15 +13,15 @@
 import { revparseUnresolved } from '../../domain/commands/error.js';
 import { bareRepository } from '../../domain/index.js';
 import { unexpectedObjectType } from '../../domain/objects/error.js';
-import { isOid, type ObjectId, type RefName } from '../../domain/objects/index.js';
+import type { ObjectId, RefName } from '../../domain/objects/index.js';
 import { resetMovingTo } from '../../domain/reflog/reflog-messages.js';
 import type { Context } from '../../ports/context.js';
 import { buildIndexFromTree } from '../primitives/build-index-from-tree.js';
+import { peelChain } from '../primitives/internal/peel-chain.js';
 import { materializeTree } from '../primitives/materialize-tree.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
 import { loadSparseMatcher } from '../primitives/read-sparse-checkout.js';
-import { resolveRef } from '../primitives/resolve-ref.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { checkoutMetadataFor } from './internal/checkout-metadata.js';
 import { acquireIndexLock } from './internal/index-update.js';
@@ -31,6 +31,7 @@ import {
   readHeadRaw,
   requireWorkTree,
 } from './internal/repo-state.js';
+import { resolveRevisionExpression } from './internal/revision-expression.js';
 
 export type ResetMode = 'soft' | 'mixed' | 'hard';
 
@@ -178,25 +179,17 @@ const hardResetFromCommit = async (
   }
 };
 
+/**
+ * git's `get_oid_committish` read of the target, then `lookup_commit_reference`:
+ * any revision expression, an annotated tag peeled to the commit it names.
+ * A target naming no commit refuses, keeping the id as resolved.
+ */
 const resolveTarget = async (ctx: Context, target: string): Promise<ObjectId> => {
-  if (isOid(target, ctx.hashConfig)) return target as ObjectId;
-  // equivalent-mutant: the `target === 'HEAD'` short-circuit is an
-  // optimisation — the else branch's first candidate is also `'HEAD' as
-  // RefName`, which `resolveRef` resolves to the same commit. Removing or
-  // emptying the literal routes the call through the else branch, which
-  // succeeds on the first try, producing the same observable result.
-  const candidates: ReadonlyArray<RefName | 'HEAD'> =
-    // Stryker disable next-line ConditionalExpression: equivalent — forcing the else branch routes `'HEAD'` through `[target as RefName, ...]` whose first candidate is `'HEAD'`, resolved identically by resolveRef.
-    // Stryker disable next-line StringLiteral: equivalent — emptying the literal makes `target === ''` false for `'HEAD'`, routing it through the else branch whose first candidate `'HEAD'` resolves to the same commit.
-    target === 'HEAD'
-      ? ['HEAD']
-      : [target as RefName, `refs/heads/${target}` as RefName, `refs/tags/${target}` as RefName];
-  for (const c of candidates) {
-    try {
-      return await resolveRef(ctx, c);
-    } catch {
-      // continue
-    }
-  }
-  throw revparseUnresolved(target);
+  const id = await resolveRevisionExpression(ctx, target);
+  if (id === undefined) throw revparseUnresolved(target);
+  const { id: commit, result } = await peelChain(ctx, id, readObject, (object) =>
+    object.type === 'tag' ? object.data.object : undefined,
+  );
+  if (result.type !== 'commit') throw unexpectedObjectType('commit', result.type, id);
+  return commit;
 };

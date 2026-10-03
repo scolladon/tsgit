@@ -355,7 +355,7 @@ describe('resolveCommitIsh — a symbolic chain deeper than the reading cap', ()
         const absent = 'b'.repeat(40) as ObjectId;
         vi.spyOn(resolveRefMod, 'readRefCandidate')
           .mockRejectedValueOnce(objectNotFound(absent))
-          .mockResolvedValueOnce({ kind: 'found', id: head });
+          .mockResolvedValueOnce({ kind: 'found', id: head, ref: 'refs/tags/x' as RefName });
 
         // Act
         const result = await resolveCommitIsh(ctx, 'x');

@@ -14,10 +14,8 @@ import {
 } from '../../../domain/objects/index.js';
 import { refCandidates } from '../../../domain/refs/index.js';
 import type { Context } from '../../../ports/context.js';
-import { getRefStore } from '../../primitives/ref-store.js';
 import { resolveOidPrefix } from '../../primitives/resolve-oid-prefix.js';
 import { type RefCandidateOutcome, readRefCandidate } from '../../primitives/resolve-ref.js';
-import { MAX_SYMBOLIC_REF_DEPTH } from '../../primitives/types.js';
 import { readCandidate, resolveRefLadder, warnIfRefNamesObjectId } from './refname-ambiguity.js';
 
 /**
@@ -67,29 +65,13 @@ export const resolvingCandidates = async (
   return found;
 };
 
-/** Whether `candidate` resolves; a dangling or broken one does not, as `expand_ref` skips it. */
-const resolvesQuietly = async (ctx: Context, candidate: RefName): Promise<boolean> =>
-  (await readRefCandidate(ctx, candidate)).kind === 'found';
-
-/** The ref a resolving symbolic chain from `name` ends at. */
-const terminalRefName = async (ctx: Context, name: RefName): Promise<RefName> => {
-  const store = getRefStore(ctx);
-  let current = name;
-  for (let hop = 0; hop < MAX_SYMBOLIC_REF_DEPTH; hop += 1) {
-    const direct = await store.resolveDirect(current);
-    if (direct.kind !== 'symbolic') return current;
-    current = direct.target;
-  }
-  return current;
-};
-
 /** git's `dwim_ref` real ref: the first candidate namespace `name` resolves in,
- *  symbolic refs followed to the ref they end at. */
+ *  symbolic refs followed to the ref they end at. A dangling or broken
+ *  candidate is skipped; this read is quiet, the counting one warns. */
 export const dwimRefName = async (ctx: Context, name: string): Promise<RefName | undefined> => {
   for (const candidate of refCandidates(name)) {
-    if (await resolvesQuietly(ctx, candidate as RefName)) {
-      return terminalRefName(ctx, candidate as RefName);
-    }
+    const outcome = await readRefCandidate(ctx, candidate);
+    if (outcome.kind === 'found') return outcome.ref;
   }
   return undefined;
 };

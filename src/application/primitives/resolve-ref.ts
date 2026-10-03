@@ -111,11 +111,11 @@ export async function resolveRefOrMissing(
   return finalizeOutcome(ctx, outcome, options);
 }
 
-/** One gitrevisions candidate as git's `expand_ref` sees it: resolved,
- *  absent, or unreadable through a symbolic hop (a dangling target, a
+/** One gitrevisions candidate as git's `expand_ref` sees it: resolved (with
+ *  the ref its symbolic chain ends at), absent, or unreadable through a symbolic hop (a dangling target, a
  *  cycle, a chain past the cap) or on its own content (a broken ref). */
 export type RefCandidateOutcome =
-  | { readonly kind: 'found'; readonly id: ObjectId }
+  | { readonly kind: 'found'; readonly id: ObjectId; readonly ref: RefName }
   | { readonly kind: 'missing' }
   | { readonly kind: 'dangling-symref' }
   | { readonly kind: 'broken' };
@@ -176,7 +176,7 @@ export async function readRefCandidate(
   }
   if (outcome.kind === 'missing')
     return outcome.name === name ? MISSING_CANDIDATE : DANGLING_CANDIDATE;
-  return { kind: 'found', id: await finalizeOutcome(ctx, outcome, options) };
+  return { kind: 'found', id: await finalizeOutcome(ctx, outcome, options), ref: outcome.name };
 }
 
 const resolveChainOutcome = (

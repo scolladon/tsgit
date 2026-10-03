@@ -1634,15 +1634,12 @@ describe('revParse', () => {
       });
     });
 
-    describe('Given a base whose reflog lives on a later candidate than the resolving ref', () => {
+    describe('Given a base whose only reflog belongs to a candidate that does not resolve', () => {
       describe('When revParse(<base>@{0})', () => {
-        it('Then the reflog-file candidate wins', async () => {
-          // Arrange — base `v1`: the candidate ladder is [v1, refs/v1,
-          // refs/tags/v1, refs/heads/v1, refs/remotes/v1, refs/remotes/v1/HEAD].
-          // A branch resolves at refs/heads/v1, but the only reflog FILE is at
-          // refs/tags/v1. canonicalizeRef's first loop
-          // (reflog-file search) must win over the second loop (ref resolution),
-          // otherwise the empty refs/heads/v1 log throws REVPARSE_UNRESOLVED.
+        it('Then the orphan reflog is never read and the selector is unresolved', async () => {
+          // Arrange — a branch resolves at refs/heads/v1 without a reflog; the
+          // only reflog file is refs/tags/v1's, a ref that does not exist.
+          // git's dwim_log counts a candidate only once it resolves.
           const ctx = createMemoryContext();
           const branchTip = await writeCommit(ctx, TREE_OID as ObjectId, []);
           const taggedTip = await writeCommit(ctx, TREE_OID as ObjectId, [branchTip]);
@@ -1652,10 +1649,10 @@ describe('revParse', () => {
           ]);
 
           // Act
-          const result = await revParse(ctx, 'v1@{0}');
+          const refusal = await revParse(ctx, 'v1@{0}').catch((err: TsgitError) => err.data);
 
-          // Assert — resolved through the refs/tags/v1 reflog, not the branch.
-          expect(result).toBe(taggedTip);
+          // Assert
+          expect(refusal).toEqual({ code: 'REVPARSE_UNRESOLVED', expression: 'v1@{0}' });
         });
       });
     });
