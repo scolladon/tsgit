@@ -14,6 +14,7 @@ import { reflogEntryOutOfRange } from '../../domain/reflog/error.js';
 import type { ReflogEntry } from '../../domain/reflog/reflog-entry.js';
 import { refCandidates, validateRefName } from '../../domain/refs/index.js';
 import type { Context } from '../../ports/context.js';
+import { lookupCommitReference } from '../primitives/internal/lookup-commit-reference.js';
 import { peel } from '../primitives/internal/peel.js';
 import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
 import { descendTreePath } from '../primitives/internal/resolve-tree-path.js';
@@ -173,7 +174,7 @@ const pickByDate = (
 
 const applyOperation = async (ctx: Context, id: ObjectId, op: RevOperation): Promise<ObjectId> => {
   if (op.kind === 'peel') return peel(ctx, id, op.target, op.name);
-  const commit = await lookupCommitReference(ctx, id);
+  const commit = await commitToWalk(ctx, id);
   if (op.kind === 'parent') return op.n === 0 ? commit.id : nthParent(ctx, commit, op.n);
   return nthAncestor(ctx, commit, op.n);
 };
@@ -183,17 +184,11 @@ interface PeeledCommit {
   readonly commit: Commit;
 }
 
-/** git's `lookup_commit_reference`: peel tags to the commit `^`/`~` walk, reporting any other kind reached. */
-const lookupCommitReference = async (ctx: Context, id: ObjectId): Promise<PeeledCommit> => {
-  let current = id;
-  let obj = await readObject(ctx, current);
-  while (obj.type === 'tag') {
-    current = obj.data.object;
-    obj = await readObject(ctx, current);
-  }
-  if (obj.type === 'commit') return { id: current, commit: obj };
-  ctx.logger?.error?.(`object ${id} is a ${obj.type}, not a commit`, { id, type: obj.type });
-  throw objectNotFound(id);
+/** The commit `^`/`~` walk from: git's `lookup_commit_reference`, which refuses any other kind. */
+const commitToWalk = async (ctx: Context, id: ObjectId): Promise<PeeledCommit> => {
+  const commit = await lookupCommitReference(ctx, id);
+  if (commit === undefined) throw objectNotFound(id);
+  return { id: commit.id, commit };
 };
 
 const nthParent = async (ctx: Context, peeled: PeeledCommit, n: number): Promise<ObjectId> => {

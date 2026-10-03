@@ -300,7 +300,10 @@ describe.each(['files', 'reftable'] as const)('branch delete — %s ref backend'
 
         // Assert
         expect(result).toEqual({ name: TOPIC });
-        expect(warnings).toEqual(['ignoring dangling symref refs/tags/up']);
+        expect(warnings).toEqual([
+          'ignoring dangling symref refs/tags/up',
+          "deleting branch 'topic' that has been merged to\n         'refs/heads/up', but not yet merged to HEAD",
+        ]);
       });
     });
   });

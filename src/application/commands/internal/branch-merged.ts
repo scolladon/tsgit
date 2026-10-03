@@ -10,17 +10,18 @@
  *
  * Both sides are commits, never raw ref values: git runs each through
  * `lookup_commit_reference`, so a reference standing on an annotated tag is
- * measured at the commit that tag names. The reference side uses the gentle
- * lookup git does — one that names no commit at all is not a refusal, it just
- * hands the decision on to HEAD (measured, git 2.55.0).
+ * measured at the commit that tag names. A reference that names no commit at
+ * all is not a refusal: git reports it on `error:` and hands the decision on
+ * to HEAD. When upstream and HEAD disagree, git warns which way it decided
+ * (measured, git 2.55.0).
  */
 
 import type { ObjectId, RefName } from '../../../domain/objects/index.js';
 import { shortBranchName } from '../../../domain/refs/short-branch-name.js';
 import type { Context } from '../../../ports/context.js';
 import { readConfig } from '../../primitives/config-read.js';
-import { peelRefToCommit } from '../../primitives/internal/peel-ref-to-commit.js';
-import { resolveRefOrMissing } from '../../primitives/resolve-ref.js';
+import { lookupCommitReference } from '../../primitives/internal/lookup-commit-reference.js';
+import { resolveRefOrMissing, resolveTerminalName } from '../../primitives/resolve-ref.js';
 import { isAncestor } from './is-ancestor.js';
 import { applyRefspec, parseRefspec } from './ref-spec.js';
 import { buildRemoteTable } from './remote-config.js';
@@ -44,14 +45,48 @@ export const branchMerged = async (
   name: RefName,
   tipCommit: ObjectId,
 ): Promise<boolean> => {
-  const reference = await mergeReference(ctx, name);
-  return reference !== undefined && (await isAncestor(ctx, tipCommit, reference));
+  const head = await referenceCommit(ctx, HEAD_NAME);
+  const upstream = await upstreamReference(ctx, name);
+  if (upstream === undefined || upstream.commit === head) {
+    return head !== undefined && (await isAncestor(ctx, tipCommit, head));
+  }
+  const merged = await isAncestor(ctx, tipCommit, upstream.commit);
+  const mergedToHead = head !== undefined && (await isAncestor(ctx, tipCommit, head));
+  if (merged !== mergedToHead) warnUpstreamDisagrees(ctx, name, upstream.name, merged);
+  return merged;
 };
 
-const mergeReference = async (ctx: Context, name: RefName): Promise<ObjectId | undefined> => {
+interface UpstreamReference {
+  /** The ref the upstream's symbolic chain ends at — the name git's warning carries. */
+  readonly name: RefName;
+  readonly commit: ObjectId;
+}
+
+/** git's transition-period reminder: upstream and HEAD disagree on whether the branch is merged. */
+const warnUpstreamDisagrees = (
+  ctx: Context,
+  name: RefName,
+  upstream: RefName,
+  merged: boolean,
+): void => {
+  const branch = shortBranchName(name);
+  ctx.logger?.warn?.(
+    merged
+      ? `deleting branch '${branch}' that has been merged to\n         '${upstream}', but not yet merged to HEAD`
+      : `not deleting branch '${branch}' that is not yet merged to\n         '${upstream}', even though it is merged to HEAD`,
+    { branch, upstream, merged },
+  );
+};
+
+const upstreamReference = async (
+  ctx: Context,
+  name: RefName,
+): Promise<UpstreamReference | undefined> => {
   const upstream = await upstreamRef(ctx, name);
-  const upstreamCommit = upstream === undefined ? undefined : await referenceCommit(ctx, upstream);
-  return upstreamCommit ?? (await referenceCommit(ctx, HEAD_NAME));
+  const terminal = upstream === undefined ? undefined : await resolveTerminalName(ctx, upstream);
+  if (terminal === undefined) return undefined;
+  const commit = await referenceCommit(ctx, terminal);
+  return commit === undefined ? undefined : { name: terminal, commit };
 };
 
 /** git's `lookup_commit_reference` over a resolved reference: the commit the
@@ -60,7 +95,7 @@ const mergeReference = async (ctx: Context, name: RefName): Promise<ObjectId | u
 const referenceCommit = async (ctx: Context, ref: RefName): Promise<ObjectId | undefined> => {
   const tip = await resolveRefOrMissing(ctx, ref);
   if (tip === undefined) return undefined;
-  return (await peelRefToCommit(ctx, tip))?.commit.id;
+  return (await lookupCommitReference(ctx, tip))?.id;
 };
 
 /**

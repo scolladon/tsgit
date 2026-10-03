@@ -672,10 +672,13 @@ describe.skipIf(!GIT_AVAILABLE)('branch delete — worktree holders interop', ()
           );
 
           // Assert
-          const skipped = gitResult.stderr
+          // A two-line warning continues on an indented line; keep it whole.
+          const warned = gitResult.stderr
+            .replace(/\n {9}'/g, "\u0000         '")
             .split('\n')
-            .filter((line) => line.startsWith('warning: ignoring'));
-          expect(warnings.map((message) => `warning: ${message}`)).toEqual(skipped);
+            .filter((line) => line.startsWith('warning: '))
+            .map((line) => line.replaceAll('\u0000', '\n'));
+          expect(warnings.map((message) => `warning: ${message}`)).toEqual(warned);
           expect(failure === undefined).toBe(gitResult.exitCode === 0);
           expect(branchSurvives(dir, 'topic')).toBe(branchSurvives(peer, 'topic'));
         },

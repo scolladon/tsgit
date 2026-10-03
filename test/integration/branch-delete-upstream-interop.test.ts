@@ -16,12 +16,14 @@
  *                    every configured-upstream shape, refspecs included
  *   interopSurface: branch
  */
+import { writeFileSync } from 'node:fs';
 import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
 import { afterAll, describe, expect, it } from 'vitest';
 
+import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { branchDelete } from '../../src/application/commands/branch.js';
 import { TsgitError } from '../../src/domain/error.js';
 import { openRepository } from '../../src/index.node.js';
@@ -274,6 +276,104 @@ describe.skipIf(!GIT_AVAILABLE)('branch delete — configured-upstream interop',
             code: 'BRANCH_NOT_FULLY_MERGED',
             name: 'refs/heads/feature',
           });
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  /** git's stderr lines, the continuation line of a two-line warning kept whole. */
+  const diagnosticLines = (stderr: string): ReadonlyArray<string> =>
+    stderr
+      .replace(/\n {9}'/g, "\u0000         '")
+      .split('\n')
+      .filter((line) => line.startsWith('warning: ') || line.startsWith('error: object '))
+      .map((line) => line.replaceAll('\u0000', '\n'));
+
+  describe.each([
+    {
+      slug: 'merged-upstream',
+      label: 'an upstream that contains the branch HEAD does not',
+      entries: [
+        ['branch.feature.remote', '.'],
+        ['branch.feature.merge', 'refs/heads/topic'],
+      ],
+      setup: (_dir: string) => undefined,
+    },
+    {
+      slug: 'tracking-upstream',
+      label: 'a remote-tracking upstream that contains the branch HEAD does not',
+      entries: [
+        ...UPSTREAM_ON_ORIGIN,
+        ['remote.origin.fetch', '+refs/heads/*:refs/remotes/origin/*'],
+      ],
+      setup: (_dir: string) => undefined,
+    },
+    {
+      slug: 'symref-upstream',
+      label: 'an upstream named through a symbolic ref',
+      entries: [
+        ['branch.feature.remote', '.'],
+        ['branch.feature.merge', 'refs/heads/alias'],
+      ],
+      setup: (dir: string) => git(dir, 'symbolic-ref', 'refs/heads/alias', 'refs/heads/topic'),
+    },
+    {
+      slug: 'tree-upstream',
+      label: 'an upstream standing on a tree',
+      entries: [
+        ['branch.feature.remote', '.'],
+        ['branch.feature.merge', 'refs/heads/topic'],
+      ],
+      setup: (dir: string) =>
+        writeFileSync(
+          path.join(dir, '.git', 'refs', 'heads', 'topic'),
+          `${git(dir, 'rev-parse', 'main^{tree}')}`,
+        ),
+    },
+    {
+      slug: 'unmerged-upstream',
+      label: 'an upstream behind a branch HEAD contains',
+      entries: [
+        ['branch.feature.remote', '.'],
+        ['branch.feature.merge', 'refs/heads/topic'],
+      ],
+      setup: (dir: string) => {
+        git(dir, 'commit', '-q', '--allow-empty', '-m', 'head-only');
+        git(dir, 'branch', '-f', 'feature', 'main');
+      },
+    },
+  ] as const)('Given $label', (row) => {
+    describe('When git branch -d and tsgit branchDelete both target the branch', () => {
+      it(
+        'Then tsgit warns each line git prints before deleting or refusing',
+        async () => {
+          // Arrange
+          const peer = await caseRepo(`${row.slug}-peer`, row.entries);
+          const dir = await caseRepo(row.slug, row.entries);
+          row.setup(peer);
+          row.setup(dir);
+          const logs: string[] = [];
+          const ctx = {
+            ...createNodeContext({ workDir: dir }),
+            logger: {
+              warn: (message: string) => logs.push(`warning: ${message}`),
+              error: (message: string) => logs.push(`error: ${message}`),
+            },
+          };
+          const sut = branchDelete;
+
+          // Act
+          const gitResult = quietDelete(peer, '-d', 'feature');
+          const refused = await sut(ctx, { name: 'feature' }).then(
+            () => false,
+            () => true,
+          );
+
+          // Assert
+          expect(diagnosticLines(gitResult.stderr)).not.toEqual([]);
+          expect(refused).toBe(gitResult.exitCode !== 0);
+          expect(logs).toEqual(diagnosticLines(gitResult.stderr));
         },
         ROW_TIMEOUT,
       );
