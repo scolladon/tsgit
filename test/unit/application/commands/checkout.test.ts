@@ -1844,3 +1844,25 @@ describe('Given every tracked file modified', () => {
     });
   });
 });
+
+describe('Given a tag whose name a branch symref to nothing also carries', () => {
+  describe.each([
+    { label: 'a dangling symref', content: 'ref: refs/heads/nowhere\n' },
+    { label: 'a broken ref', content: 'garbage\n' },
+  ])('When checkout names it while the branch is $label', ({ content }) => {
+    it('Then it detaches onto the tag, as no branch resolves', async () => {
+      // Arrange
+      const { ctx, commitId } = await seedWithBranches();
+      await tagCreate(ctx, { name: 'td' });
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/td`, content);
+      const sut = checkout;
+
+      // Act
+      const result = await sut(ctx, { rev: 'td' });
+
+      // Assert
+      expect(result).toMatchObject({ branch: undefined, id: commitId, detached: true });
+      expect(await ctx.fs.readUtf8(`${ctx.layout.gitDir}/HEAD`)).toBe(`${commitId}\n`);
+    });
+  });
+});

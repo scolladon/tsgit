@@ -439,6 +439,8 @@ describe.skipIf(!GIT_AVAILABLE)('integration — skip and ambiguity warnings per
     git(repo, '-c', 'core.logAllRefUpdates=always', 'update-ref', 'refs/tags/amb', tip);
     git(repo, 'symbolic-ref', 'refs/heads/sym', 'refs/heads/main');
     git(repo, 'update-ref', 'refs/tags/main', tip);
+    git(repo, 'update-ref', 'refs/tags/td', tip);
+    git(repo, 'symbolic-ref', 'refs/heads/td', 'refs/heads/nowhere');
   }, SETUP_TIMEOUT);
 
   afterAll(async () => {
@@ -501,6 +503,16 @@ describe.skipIf(!GIT_AVAILABLE)('integration — skip and ambiguity warnings per
       label: 'a detaching checkout of a name past a dangling symref',
       args: ['checkout', '-q', '--detach', 'dg'],
       run: ((ctx) => checkout(ctx, { rev: 'dg', detach: true })) as CommandRun,
+    },
+    {
+      label: 'a checkout creating a branch at a name past a dangling symref',
+      args: ['checkout', '-q', '-b', 'nb', 'dg'],
+      run: ((ctx) => checkout(ctx, { rev: 'dg', createBranch: { name: 'nb' } })) as CommandRun,
+    },
+    {
+      label: 'a checkout of a tag a dangling branch symref shadows',
+      args: ['checkout', '-q', 'td'],
+      run: ((ctx) => checkout(ctx, { rev: 'td' })) as CommandRun,
     },
     {
       label: 'branch without a start point while a tag shares the current branch name',

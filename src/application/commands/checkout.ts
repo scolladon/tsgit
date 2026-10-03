@@ -24,8 +24,12 @@ import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
 import { loadSparseMatcher } from '../primitives/read-sparse-checkout.js';
 import { readTree } from '../primitives/read-tree.js';
-import { getRefStore, refExists } from '../primitives/ref-store.js';
-import { refResolvesForReading, resolveRef } from '../primitives/resolve-ref.js';
+import { getRefStore } from '../primitives/ref-store.js';
+import {
+  refResolvesForReading,
+  resolveRef,
+  resolveRefForReading,
+} from '../primitives/resolve-ref.js';
 import { runInformationalHook } from '../primitives/run-hook.js';
 import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-index.js';
 import { walkTree } from '../primitives/walk-tree.js';
@@ -99,7 +103,8 @@ const branchRefFor = async (ctx: Context, rev: string): Promise<RefName | undefi
   } catch {
     return undefined;
   }
-  return (await refExists(ctx, name)) ? name : undefined;
+  // git's `refs_read_ref`: a dangling or broken branch is no branch to attach to.
+  return (await resolveRefForReading(ctx, name)) === undefined ? undefined : name;
 };
 
 /** The object a switch detaches onto once no branch carries the name: git's
