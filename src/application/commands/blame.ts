@@ -18,6 +18,7 @@ import { BinaryHeap } from '../../domain/commit/binary-heap.js';
 import { precedesByArrival, type QueueEntry } from '../../domain/commit/priority-queue.js';
 import type { TreeDiff } from '../../domain/diff/diff-change.js';
 import { diffPresplitLines, splitLines } from '../../domain/diff/line-diff.js';
+import { errorDataCode } from '../../domain/error-data-code.js';
 import type { CommitData } from '../../domain/objects/commit.js';
 import { subjectLine } from '../../domain/objects/commit-message.js';
 import { FILE_MODE } from '../../domain/objects/file-mode.js';
@@ -474,6 +475,27 @@ type ResolvedParent =
       readonly commitData: CommitData;
     };
 
+/** Why git's `repo_parse_commit` fails on `parent`, for the failures `pass_blame` steps over. */
+const UNPARSABLE_PARENT: ReadonlyMap<string | undefined, (parent: ObjectId) => string> = new Map([
+  ['OBJECT_NOT_FOUND', (parent: ObjectId) => `Could not read ${parent}`],
+  ['UNEXPECTED_OBJECT_TYPE', (parent: ObjectId) => `Object ${parent} not a commit`],
+]);
+
+/**
+ * git's `pass_blame` skips a parent it cannot parse — reporting why — and
+ * leaves the lines with the child; any other failure still refuses.
+ */
+const readParentData = async (ctx: Context, parent: ObjectId): Promise<CommitData | undefined> => {
+  try {
+    return await readCommitData(ctx, parent);
+  } catch (error) {
+    const reason = UNPARSABLE_PARENT.get(errorDataCode(error));
+    if (reason === undefined) throw error;
+    ctx.logger?.warn?.(reason(parent), { id: parent });
+    return undefined;
+  }
+};
+
 /**
  * Resolve the suspect's path in one parent. The per-level oid chain is
  * compared to the suspect's BEFORE any blob is read: a match at any level
@@ -490,7 +512,8 @@ const resolveInParent = async (
   childTree: ObjectId,
   suspect: Suspect,
 ): Promise<ResolvedParent | undefined> => {
-  const commitData = await readCommitData(ctx, parent);
+  const commitData = await readParentData(ctx, parent);
+  if (commitData === undefined) return undefined;
   const resolution = await descendMatchingTreeChain(
     ctx,
     commitData.tree,

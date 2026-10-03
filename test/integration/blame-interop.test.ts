@@ -602,20 +602,27 @@ describe.skipIf(!GIT_AVAILABLE)('blame equal-date merge parents (interop)', () =
 
   describe('Given a merge of two equal-date parents whose own parents are missing', () => {
     describe('When both tools blame through the merge', () => {
-      it('Then tsgit refuses on the first object git cannot read', async () => {
+      it('Then tsgit blames past the unreadable parents and warns as git does', async () => {
         // Arrange
-        const ctx = createNodeContext({ workDir: dir });
-
-        // Act
+        const warnings: string[] = [];
+        const ctx: Context = {
+          ...createNodeContext({ workDir: dir }),
+          logger: { warn: (message) => warnings.push(message) },
+        };
         const gitResult = tryRunGitWithExit(['-C', dir, 'blame', '--porcelain', merge, '--', 'f'], {
           env: runGitEnv(),
         });
-        const firstUnreadable = /Could not read ([0-9a-f]{40})/.exec(gitResult.stderr)?.[1];
+        const unreadable = [...gitResult.stderr.matchAll(/error: (Could not read [0-9a-f]{40})/g)]
+          .map((match) => match[1])
+          .filter((message, at, all) => all.indexOf(message) === at);
+
+        // Act
+        const result = await blame(ctx, 'f', { rev: merge });
 
         // Assert
-        await expect(blame(ctx, 'f', { rev: merge })).rejects.toMatchObject({
-          data: { code: 'OBJECT_NOT_FOUND', id: firstUnreadable },
-        });
+        expect(gitResult.exitCode).toBe(0);
+        expect(renderPorcelain(result)).toBe(gitResult.stdout);
+        expect(warnings).toEqual(unreadable);
       });
     });
   });
