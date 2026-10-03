@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { DEFAULT_BLOOM_FILTER_SETTINGS } from '../../../../src/domain/commit/bloom-filter.js';
 import {
   EDGE_LAST_FLAG,
   GENERATION_OVERFLOW_FLAG,
@@ -10,6 +11,7 @@ import type {
   CommitGraphWriterCommit,
 } from '../../../../src/domain/commit/commit-graph-writer.js';
 import {
+  type CommitGraphChangedPaths,
   MAX_GENERATION_OFFSET,
   serializeCommitGraph,
 } from '../../../../src/domain/commit/commit-graph-writer.js';
@@ -510,6 +512,88 @@ describe('serializeCommitGraph', () => {
         const edge = chunkRange(result, view, 'EDGE');
         expect(view.getUint32(edge.start)).toBe(4);
         expect(view.getUint32(edge.start + 4)).toBe((6 | EDGE_LAST_FLAG) >>> 0);
+      });
+    });
+  });
+
+  describe('Given changed-path filters for a layer over a base, with an octopus merge', () => {
+    const baseParent = oid('b1');
+    const base: CommitGraphBase = {
+      layerHashes: [oid('a1')],
+      commitCount: 3,
+      commits: new Map([
+        [baseParent, { position: 2, generation: { level: 3, correctedDate: 1_700_000_000 } }],
+      ]),
+    };
+    const first = commit('c0', [baseParent]);
+    const second = commit('c1', [first.id]);
+    const octopus = commit('c2', [first.id, second.id, baseParent]);
+    const changedPaths: CommitGraphChangedPaths = {
+      settings: { ...DEFAULT_BLOOM_FILTER_SETTINGS, hashVersion: 2 },
+      filters: new Map([
+        [octopus.id, Uint8Array.of(0xff)],
+        [first.id, Uint8Array.of(0x01, 0x02, 0x03)],
+      ]),
+    };
+
+    describe('When serialized', () => {
+      it('Then BIDX and BDAT sit after EDGE and before BASE', () => {
+        // Arrange
+        const sut = serializeCommitGraph;
+
+        // Act
+        const result = sut([octopus, second, first], SHA1_CONFIG, base, changedPaths);
+
+        // Assert
+        const ids = Array.from({ length: result[6]! }, (_, i) =>
+          decode(result.subarray(8 + i * 12, 12 + i * 12)),
+        );
+        expect(ids).toEqual(['OIDF', 'OIDL', 'CDAT', 'GDA2', 'EDGE', 'BIDX', 'BDAT', 'BASE']);
+      });
+
+      it("Then BIDX holds each commit's cumulative filter end in oid order, a missing filter adding none", () => {
+        // Arrange
+        const sut = serializeCommitGraph;
+
+        // Act
+        const result = sut([octopus, second, first], SHA1_CONFIG, base, changedPaths);
+
+        // Assert
+        const view = new DataView(result.buffer);
+        const bidx = chunkRange(result, view, 'BIDX');
+        const ends = [0, 1, 2].map((i) => view.getUint32(bidx.start + i * 4));
+        expect(ends).toEqual([3, 3, 4]);
+        expect(bidx.end - bidx.start).toBe(12);
+      });
+
+      it('Then BDAT holds the settings header and the filters concatenated in oid order', () => {
+        // Arrange
+        const sut = serializeCommitGraph;
+
+        // Act
+        const result = sut([octopus, second, first], SHA1_CONFIG, base, changedPaths);
+
+        // Assert
+        const view = new DataView(result.buffer);
+        const bdat = chunkRange(result, view, 'BDAT');
+        expect([0, 4, 8].map((at) => view.getUint32(bdat.start + at))).toEqual([2, 7, 10]);
+        expect([...result.subarray(bdat.start + 12, bdat.end)]).toEqual([0x01, 0x02, 0x03, 0xff]);
+      });
+    });
+  });
+
+  describe('Given no changed-path filters', () => {
+    describe('When serialized', () => {
+      it('Then neither BIDX nor BDAT is written', () => {
+        // Arrange
+        const sut = serializeCommitGraph;
+
+        // Act
+        const result = sut([commit('c0', [])], SHA1_CONFIG);
+
+        // Assert
+        expect(() => findChunkRowIndex(result, 'BIDX')).toThrow('chunk BIDX not present');
+        expect(() => findChunkRowIndex(result, 'BDAT')).toThrow('chunk BDAT not present');
       });
     });
   });

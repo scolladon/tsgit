@@ -5,8 +5,8 @@
  * offset overflows GDA2's plain 31-bit field, and `EDGE` when any commit has
  * more than two parents — in that order (git's own chunk table order,
  * confirmed against real git) — then `BASE` last when the file is a split
- * layer over base layers. No Bloom chunks (those appear only under
- * `--changed-paths`).
+ * layer over base layers. Changed-path Bloom filters, when given, add `BIDX`
+ * and `BDAT` after `EDGE` and before `BASE`.
  *
  * The trailer's `hashLength` bytes are left zero — this function does not
  * hash; the caller fills them in place over the returned buffer, the same
@@ -20,6 +20,7 @@
 import { compareBytes, encode, hexToBytes } from '../objects/encoding.js';
 import type { HashConfig } from '../objects/hash-config.js';
 import type { ObjectId } from '../objects/object-id.js';
+import type { BloomFilterSettings } from './bloom-filter.js';
 import {
   EDGE_LAST_FLAG,
   GENERATION_OVERFLOW_FLAG,
@@ -35,6 +36,9 @@ const FANOUT_ENTRIES = 256;
 const FANOUT_SIZE = FANOUT_ENTRIES * 4;
 const CDAT_FIXED_SIZE = 16;
 const GDO2_ENTRY_SIZE = 8;
+const BLOOM_INDEX_ENTRY_SIZE = 4;
+const BLOOM_DATA_HEADER_SIZE = 12;
+const EMPTY_FILTER = new Uint8Array(0);
 
 /**
  * GDA2 stores the corrected-date offset as a plain (non-flagged) u32; past
@@ -92,6 +96,13 @@ export interface CommitGraphBase {
 
 const NO_BASE: CommitGraphBase = { layerHashes: [], commitCount: 0, commits: new Map() };
 
+/** The changed-path Bloom filters a graph carries in `BIDX`/`BDAT`. */
+export interface CommitGraphChangedPaths {
+  readonly settings: BloomFilterSettings;
+  /** Each commit's filter; a commit without one gets a zero-length filter, as git writes one it never computed. */
+  readonly filters: ReadonlyMap<ObjectId, Uint8Array>;
+}
+
 interface ChunkSpec {
   readonly id: string;
   readonly size: number;
@@ -114,6 +125,7 @@ export function serializeCommitGraph(
   commits: readonly CommitGraphWriterCommit[],
   hashConfig: HashConfig,
   base: CommitGraphBase = NO_BASE,
+  changedPaths?: CommitGraphChangedPaths,
 ): Uint8Array {
   const hashVersion: 1 | 2 = hashConfig.digestLength === 32 ? 2 : 1;
   const hashLength = hashLengthFor(hashVersion);
@@ -130,6 +142,7 @@ export function serializeCommitGraph(
     overflowEntryCount: overflowPlan.entries.length,
     edgeEntryCount: edgePlan.entries.length,
     baseLayerCount: base.layerHashes.length,
+    bloomDataSize: changedPaths && bloomDataSize(sortedCommits, changedPaths.filters),
   });
   const offsets = computeChunkOffsets(chunkSpecs);
   const trailerStart = offsets[offsets.length - 1]!;
@@ -167,6 +180,9 @@ export function serializeCommitGraph(
   }
   // Stryker disable next-line ConditionalExpression,EqualityOperator: equivalent — writeEdgeChunk's forEach never iterates over an empty array, so calling it unconditionally has no observable effect when edgePlan.entries.length is 0.
   if (edgePlan.entries.length > 0) writeEdgeChunk(view, edgePlan.entries, chunkOffset('EDGE'));
+  if (changedPaths) {
+    writeBloomChunks(bytes, view, sortedCommits, changedPaths, chunkOffset);
+  }
   base.layerHashes.forEach((hash, i) => {
     bytes.set(hexToBytes(hash), chunkOffset('BASE') + i * hashLength);
   });
@@ -298,12 +314,14 @@ interface OptionalChunkCounts {
   readonly overflowEntryCount: number;
   readonly edgeEntryCount: number;
   readonly baseLayerCount: number;
+  /** `BDAT`'s filter bytes, or `undefined` when the graph carries no Bloom chunks. */
+  readonly bloomDataSize: number | undefined;
 }
 
 function planChunks(
   commitCount: number,
   hashLength: number,
-  { overflowEntryCount, edgeEntryCount, baseLayerCount }: OptionalChunkCounts,
+  { overflowEntryCount, edgeEntryCount, baseLayerCount, bloomDataSize }: OptionalChunkCounts,
 ): ChunkSpec[] {
   const cdatEntrySize = hashLength + CDAT_FIXED_SIZE;
   const specs: ChunkSpec[] = [
@@ -315,6 +333,10 @@ function planChunks(
   if (overflowEntryCount > 0)
     specs.push({ id: 'GDO2', size: overflowEntryCount * GDO2_ENTRY_SIZE });
   if (edgeEntryCount > 0) specs.push({ id: 'EDGE', size: edgeEntryCount * 4 });
+  if (bloomDataSize !== undefined) {
+    specs.push({ id: 'BIDX', size: commitCount * BLOOM_INDEX_ENTRY_SIZE });
+    specs.push({ id: 'BDAT', size: BLOOM_DATA_HEADER_SIZE + bloomDataSize });
+  }
   if (baseLayerCount > 0) specs.push({ id: 'BASE', size: baseLayerCount * hashLength });
   return specs;
 }
@@ -443,5 +465,35 @@ function writeOverflowGenerationChunk(
 function writeEdgeChunk(view: DataView, entries: readonly number[], edgeOffset: number): void {
   entries.forEach((value, i) => {
     view.setUint32(edgeOffset + i * 4, value);
+  });
+}
+
+function bloomDataSize(
+  sortedCommits: readonly CommitGraphWriterCommit[],
+  filters: ReadonlyMap<ObjectId, Uint8Array>,
+): number {
+  return sortedCommits.reduce((size, commit) => size + (filters.get(commit.id)?.length ?? 0), 0);
+}
+
+/** git's `write_graph_chunk_bloom_indexes`/`_data`: each commit's cumulative filter end, then
+ *  the settings header and every filter, both in oid order. */
+function writeBloomChunks(
+  bytes: Uint8Array,
+  view: DataView,
+  sortedCommits: readonly CommitGraphWriterCommit[],
+  { settings, filters }: CommitGraphChangedPaths,
+  chunkOffset: (id: string) => number,
+): void {
+  const indexOffset = chunkOffset('BIDX');
+  const dataOffset = chunkOffset('BDAT');
+  view.setUint32(dataOffset, settings.hashVersion);
+  view.setUint32(dataOffset + 4, settings.numHashes);
+  view.setUint32(dataOffset + 8, settings.bitsPerEntry);
+  let end = 0;
+  sortedCommits.forEach((commit, i) => {
+    const filter = filters.get(commit.id) ?? EMPTY_FILTER;
+    bytes.set(filter, dataOffset + BLOOM_DATA_HEADER_SIZE + end);
+    end += filter.length;
+    view.setUint32(indexOffset + i * BLOOM_INDEX_ENTRY_SIZE, end);
   });
 }
