@@ -41,6 +41,7 @@ import {
   resolveBitmapClosure,
 } from './bitmap-binding.js';
 import { markBoundaryTrees, markNotSide, type NotMarks } from './closure-not-marks.js';
+import { commitDateWalk } from './commit-date-walk.js';
 import { type LimitedWalk, limitList, readShown, resolveLimitOptions } from './limit-list.js';
 import { loadMidxBitmapArtefact } from './midx-bitmap-binding.js';
 import { type EmitState, resolveTagChain, tryEmit } from './object-emit.js';
@@ -250,15 +251,34 @@ async function collectUnlimitedWalk(
   request: ClosureRequest,
 ): Promise<CommitWalk> {
   const walked: WalkedCommit[] = [];
-  for await (const commit of walkCommitsStoppingAt(ctx, {
-    from: commitSeeds.map((seed) => seed.id),
-    ignoreMissing: true,
-    order: request.firstParent === true ? 'first-parent' : 'breadth-first',
-  })) {
+  for await (const commit of unlimitedCommits(ctx, commitSeeds, request)) {
     walked.push(walkedFrom(commit));
     if (request.maxCount !== undefined && walked.length >= request.maxCount) break;
   }
   return { walked, boundary: NO_MARKS };
+}
+
+/**
+ * The commits the walk reaches. A count keeps the ones git's streaming walk
+ * shows first — newest commit date first, ties in arrival order — so only
+ * then is the date-ordered walk paid for; without one, any order reaches
+ * the same set.
+ */
+async function* unlimitedCommits(
+  ctx: Context,
+  commitSeeds: ReadonlyArray<Commit>,
+  request: ClosureRequest,
+): AsyncIterable<Commit> {
+  const from = commitSeeds.map((seed) => seed.id);
+  const firstParent = request.firstParent === true;
+  if (request.maxCount === undefined) {
+    const order = firstParent ? 'first-parent' : 'breadth-first';
+    yield* walkCommitsStoppingAt(ctx, { from, ignoreMissing: true, order });
+    return;
+  }
+  for await (const step of commitDateWalk(ctx, { from, firstParent, ignoreMissing: true })) {
+    yield step.commit;
+  }
 }
 
 /**

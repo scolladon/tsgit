@@ -23,6 +23,29 @@ import { GIT_AVAILABLE, git, runGit, runGitEnv } from './interop-helpers.js';
 
 const SETUP_TIMEOUT = 60_000;
 
+interface SkewedMergeFixture {
+  readonly dir: string;
+  readonly ids: Readonly<Record<string, string>>;
+}
+
+/** m (100) merges a (50, on a1 at 80) and b (90); t (95) is a second tip; all on r. */
+const buildSkewedMergeFixture = async (): Promise<SkewedMergeFixture> => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-rev-list-skewed-merge-'));
+  runGit(['init', '-q', '-b', 'main', dir]);
+  const make = (name: string, offset: number, parents: ReadonlyArray<string>): string => {
+    const blob = runGit(['-C', dir, 'hash-object', '-w', '--stdin'], { input: name }).trim();
+    const tree = runGit(['-C', dir, 'mktree'], { input: `100644 blob ${blob}\t${name}\n` }).trim();
+    const parentArgs = parents.flatMap((parent) => ['-p', parent]);
+    return runGit(['-C', dir, 'commit-tree', tree, ...parentArgs, '-m', name], {
+      env: datedEnv(1_700_000_000 + offset),
+    }).trim();
+  };
+  const r = make('r', 10, []);
+  const a = make('a', 50, [make('a1', 80, [r])]);
+  const b = make('b', 90, [r]);
+  return { dir, ids: { m: make('m', 100, [a, b]), t: make('t', 95, [r]) } };
+};
+
 /** Deterministic author/committer dates for every commit this suite makes. */
 const datedEnv = (epoch: number): NodeJS.ProcessEnv => ({
   ...runGitEnv(),
@@ -556,6 +579,41 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list objects interop — closure prune', ()
           wants: [fixture.sharedTreeTip],
           not: [fixture.lateTip],
           objects: true,
+        });
+
+        // Assert
+        const actual = new Set(result.entries.map((entry) => entry.id));
+        expect([...actual].sort()).toEqual([...expected].sort());
+      });
+    });
+  });
+  describe('Given a merge whose first parent is dated before its second', () => {
+    let fixture: SkewedMergeFixture;
+
+    beforeAll(async () => {
+      fixture = await buildSkewedMergeFixture();
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => rm(fixture.dir, { recursive: true, force: true }));
+
+    describe.each([
+      { wants: ['m'], flags: [], maxCount: 2 },
+      { wants: ['t', 'm'], flags: ['--first-parent'], maxCount: 3 },
+      { wants: ['t', 'm'], flags: ['--objects'], maxCount: 3 },
+    ])('When revList walks $wants $flags with maxCount $maxCount', ({ wants, flags, maxCount }) => {
+      it('Then it keeps the commits git rev-list -n shows first, in commit-date order', async () => {
+        // Arrange
+        const tips = wants.map((name) => fixture.ids[name] as string);
+        const expected = gitIdSet(fixture.dir, ...flags, '-n', `${maxCount}`, ...tips);
+        const ctx = createNodeContext({ workDir: fixture.dir });
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, {
+          wants: tips,
+          maxCount,
+          firstParent: flags.includes('--first-parent'),
+          objects: flags.includes('--objects'),
         });
 
         // Assert

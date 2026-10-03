@@ -909,3 +909,50 @@ describe('Given an excluded line three clock-skewed commits away from the shared
     });
   });
 });
+
+interface SkewedMerge {
+  readonly ctx: Context;
+  readonly ids: Readonly<Record<'r' | 'a1' | 'a' | 'b' | 'm' | 't', ObjectId>>;
+}
+
+/** m (100) merges a (50, on a1 at 80) and b (90); t (95) is a second tip; all on r. */
+const seedSkewedMerge = async (): Promise<SkewedMerge> => {
+  const ctx = createMemoryContext();
+  await init(ctx);
+  const r = await writeDatedCommit(ctx, 'r', 10, []);
+  const a1 = await writeDatedCommit(ctx, 'a1', 80, [r]);
+  const a = await writeDatedCommit(ctx, 'a', 50, [a1]);
+  const b = await writeDatedCommit(ctx, 'b', 90, [r]);
+  const m = await writeDatedCommit(ctx, 'm', 100, [a, b]);
+  const t = await writeDatedCommit(ctx, 't', 95, [r]);
+  return { ctx, ids: { r, a1, a, b, m, t } };
+};
+
+describe('Given a merge whose first parent is dated before its second', () => {
+  describe.each([
+    { wants: ['m'], firstParent: false, maxCount: 2, expected: ['m', 'b'] },
+    { wants: ['t', 'm'], firstParent: true, maxCount: 3, expected: ['m', 't', 'a'] },
+    { wants: ['t', 'm'], firstParent: false, maxCount: 4, expected: ['m', 't', 'b', 'a'] },
+  ] as const)(
+    'When revList walks $wants with firstParent $firstParent and maxCount $maxCount',
+    ({ wants, firstParent, maxCount, expected }) => {
+      it('Then it keeps the commits git shows first in commit-date order', async () => {
+        // Arrange
+        const { ctx, ids } = await seedSkewedMerge();
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, {
+          wants: wants.map((name) => ids[name]),
+          firstParent,
+          maxCount,
+        });
+
+        // Assert
+        expect(new Set(result.entries.map((entry) => entry.id))).toEqual(
+          new Set(expected.map((name) => ids[name])),
+        );
+      });
+    },
+  );
+});
