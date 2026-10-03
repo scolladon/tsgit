@@ -39,7 +39,11 @@ import {
   commonGitDir,
 } from './path-layout.js';
 import { readObject } from './read-object.js';
-import { commitGraphLocked, commitGraphRoots } from './write-commit-graph.js';
+import {
+  commitGraphLocked,
+  commitGraphRoots,
+  declinesChangedPathsVersion,
+} from './write-commit-graph.js';
 
 export interface WriteSplitCommitGraphResult {
   /** Whether a layer was written — false when every reachable commit is already in the graph. */
@@ -256,6 +260,7 @@ async function writeChainLayer(
 export async function writeSplitCommitGraph(ctx: Context): Promise<WriteSplitCommitGraphResult> {
   if (await isShallowRepository(ctx)) return NOTHING_WRITTEN;
   if (await hasGrafts(ctx)) return NOTHING_WRITTEN;
+  if (await declinesChangedPathsVersion(ctx)) return NOTHING_WRITTEN;
 
   const layers = await loadLocalCommitGraphLayers(ctx);
   const fresh = await commitsOutsideGraph(ctx, layers);

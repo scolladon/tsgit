@@ -6,7 +6,7 @@
  * runs as a child — disables replace refs first, so only an in-process write
  * such as `gc`'s consults them.
  */
-import { parseGitBoolean } from '../../../domain/config/config-ini.js';
+import { parseGitBoolean, parseGitInt } from '../../../domain/config/config-ini.js';
 import { isOid } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { findLastEntry } from '../config-read.js';
@@ -42,3 +42,22 @@ export const hasReplaceRefs = async (ctx: Context): Promise<boolean> => {
       ref.startsWith(REPLACE_PREFIX) && isOid(ref.slice(REPLACE_PREFIX.length), ctx.hashConfig),
   );
 };
+
+const OLDEST_CHANGED_PATHS_VERSION = -1;
+const NEWEST_CHANGED_PATHS_VERSION = 2;
+
+/** git's `write_commit_graph` range check: a `commitGraph.changedPathsVersion`
+ *  past -1..2 declines the write, or `undefined` when the version is usable. */
+export const unsupportedChangedPathsVersion = async (ctx: Context): Promise<number | undefined> => {
+  const parsed = parseGitInt(
+    (await findLastEntry(ctx, 'commitGraph', 'changedPathsVersion'))?.value ?? '0',
+  );
+  if (!parsed.ok) return undefined;
+  const { value } = parsed;
+  const supported = value >= OLDEST_CHANGED_PATHS_VERSION && value <= NEWEST_CHANGED_PATHS_VERSION;
+  return supported ? undefined : value;
+};
+
+/** The warning git prints as it declines a write for {@link unsupportedChangedPathsVersion}. */
+export const unsupportedChangedPathsWarning = (version: number): string =>
+  `attempting to write a commit-graph, but 'commitGraph.changedPathsVersion' (${version}) is not supported`;

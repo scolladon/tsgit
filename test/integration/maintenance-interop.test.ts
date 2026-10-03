@@ -2072,6 +2072,52 @@ describe.skipIf(!GIT_AVAILABLE)('gc through a disabled commit-graph', () => {
   });
 });
 
+describe.skipIf(!GIT_AVAILABLE)('commit-graph writes under commitGraph.changedPathsVersion', () => {
+  describe.each([
+    { version: '3', task: 'commit-graph', gitArgs: ['maintenance', 'run', '--task=commit-graph'] },
+    { version: '-2', task: 'gc', gitArgs: ['gc', '-q'] },
+    { version: '2', task: 'commit-graph', gitArgs: ['maintenance', 'run', '--task=commit-graph'] },
+    { version: '-1', task: 'gc', gitArgs: ['gc', '-q'] },
+  ] as const)('Given commitGraph.changedPathsVersion=$version', ({ version, task, gitArgs }) => {
+    describe(`When both tools run ${task}`, () => {
+      it(
+        'Then both warn alike, and write a commit-graph only where the version is supported',
+        async () => {
+          // Arrange
+          const slug = `cg-paths-version-${version}-${task}`;
+          const theirs = await initRepo(`${slug}-git`);
+          const ours = await initRepo(`${slug}-ts`);
+          for (const dir of [theirs, ours]) {
+            await addCommit(dir, 'a');
+            git(dir, 'config', 'commitGraph.changedPathsVersion', version);
+          }
+          const logged: string[] = [];
+          const ctx: Context = {
+            ...trackedNodeContext(ours, 'sha1'),
+            logger: { warn: (message) => logged.push(message) },
+          };
+          liveContexts.push(ctx);
+          const sut = maintenance;
+
+          // Act
+          const expected = tryRunGitWithExit(['-C', theirs, ...gitArgs]);
+          await sut(ctx, { tasks: [task] });
+
+          // Assert
+          const graphs = (dir: string): readonly string[] =>
+            ['commit-graph', 'commit-graphs/commit-graph-chain'].filter((name) =>
+              existsSync(path.join(dir, '.git', 'objects', 'info', name)),
+            );
+          expect(expected.exitCode).toBe(0);
+          expect(expected.stderr).toBe(logged.map((line) => `warning: ${line}\n`).join(''));
+          expect(graphs(ours)).toEqual(graphs(theirs));
+        },
+        SETUP_TIMEOUT,
+      );
+    });
+  });
+});
+
 describe.skipIf(!GIT_AVAILABLE)("commit-graph writes under git's commit_graph_compatible", () => {
   describe.each([
     { label: 'a graft', setup: 'graft', task: 'gc' },

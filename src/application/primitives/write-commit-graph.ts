@@ -20,7 +20,11 @@ import type { ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { atomicWriteFile } from './atomic-write.js';
 import { enumerateRefs } from './enumerate-refs.js';
-import { hasGrafts } from './internal/commit-graph-compatible.js';
+import {
+  hasGrafts,
+  unsupportedChangedPathsVersion,
+  unsupportedChangedPathsWarning,
+} from './internal/commit-graph-compatible.js';
 import { isShallowRepository } from './internal/shallow-set.js';
 import {
   commitGraphChainPath,
@@ -75,6 +79,14 @@ async function collectCommits(
   return commits;
 }
 
+/** Warns and answers true when git would decline the write on the version alone. */
+export async function declinesChangedPathsVersion(ctx: Context): Promise<boolean> {
+  const unsupported = await unsupportedChangedPathsVersion(ctx);
+  if (unsupported === undefined) return false;
+  ctx.logger?.warn?.(unsupportedChangedPathsWarning(unsupported));
+  return true;
+}
+
 const GRAPH_LAYER_SUFFIX = '.graph';
 
 const isAbsent = (error: unknown): boolean => {
@@ -126,6 +138,7 @@ async function expireCommitGraphChain(ctx: Context): Promise<void> {
 export async function writeCommitGraph(ctx: Context): Promise<WriteCommitGraphResult> {
   if (await isShallowRepository(ctx)) return { commitCount: 0 };
   if (await hasGrafts(ctx)) return { commitCount: 0 };
+  if (await declinesChangedPathsVersion(ctx)) return { commitCount: 0 };
 
   const roots = await commitGraphRoots(ctx);
   const commits = await collectCommits(ctx, roots);

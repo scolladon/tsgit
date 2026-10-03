@@ -505,23 +505,58 @@ describe('maintenance', () => {
       label: 'core.commitGraph=false under the gc task',
       text: '[core]\n\tcommitGraph = false\n',
       tasks: ['gc'] as const,
+      written: false,
       warnings: ["attempting to write a commit-graph, but 'core.commitGraph' is disabled"],
     },
     {
       label: 'core.commitGraph=false and gc.writeCommitGraph=false under the gc task',
       text: '[core]\n\tcommitGraph = false\n[gc]\n\twriteCommitGraph = false\n',
       tasks: ['gc'] as const,
+      written: false,
       warnings: [],
     },
     {
       label: 'core.commitGraph=false under the commit-graph task',
       text: '[core]\n\tcommitGraph = false\n',
       tasks: ['commit-graph'] as const,
+      written: false,
       warnings: [],
     },
-  ])('Given $label', ({ text, tasks, warnings }) => {
+    {
+      label: 'commitGraph.changedPathsVersion=3 under the commit-graph task',
+      text: '[commitGraph]\n\tchangedPathsVersion = 3\n',
+      tasks: ['commit-graph'] as const,
+      written: false,
+      warnings: [
+        "attempting to write a commit-graph, but 'commitGraph.changedPathsVersion' (3) is not supported",
+      ],
+    },
+    {
+      label: 'commitGraph.changedPathsVersion=-2 under the gc task',
+      text: '[commitGraph]\n\tchangedPathsVersion = -2\n',
+      tasks: ['gc'] as const,
+      written: false,
+      warnings: [
+        "attempting to write a commit-graph, but 'commitGraph.changedPathsVersion' (-2) is not supported",
+      ],
+    },
+    {
+      label: 'commitGraph.changedPathsVersion=-1 under the commit-graph task',
+      text: '[commitGraph]\n\tchangedPathsVersion = -1\n',
+      tasks: ['commit-graph'] as const,
+      written: true,
+      warnings: [],
+    },
+    {
+      label: 'commitGraph.changedPathsVersion=2 under the gc task',
+      text: '[commitGraph]\n\tchangedPathsVersion = 2\n',
+      tasks: ['gc'] as const,
+      written: true,
+      warnings: [],
+    },
+  ])('Given $label', ({ text, tasks, warnings, written }) => {
     describe('When maintenance runs', () => {
-      it('Then it warns only where git writes through a disabled commit-graph', async () => {
+      it('Then it warns, and declines the write, only where git does', async () => {
         // Arrange
         const seeded = await seedOneCommit();
         const logged: string[] = [];
@@ -530,10 +565,11 @@ describe('maintenance', () => {
         const sut = maintenance;
 
         // Act
-        await sut(ctx, { tasks });
+        const result = await sut(ctx, { tasks });
 
         // Assert
         expect(logged).toEqual(warnings);
+        expect(result.commitGraphWritten).toBe(written);
       });
     });
   });

@@ -4,6 +4,7 @@ import { init } from '../../../../../src/application/commands/init.js';
 import {
   hasGrafts,
   hasReplaceRefs,
+  unsupportedChangedPathsVersion,
 } from '../../../../../src/application/primitives/internal/commit-graph-compatible.js';
 
 const OID = 'a'.repeat(40);
@@ -80,6 +81,33 @@ describe('hasReplaceRefs', () => {
         }
         await ctx.fs.appendUtf8(`${ctx.layout.gitDir}/config`, config);
         const sut = hasReplaceRefs;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(result).toBe(expected);
+      });
+    });
+  });
+});
+
+describe('unsupportedChangedPathsVersion', () => {
+  describe.each([
+    { label: 'no version', config: '', expected: undefined },
+    { label: 'version -1', config: 'changedPathsVersion = -1', expected: undefined },
+    { label: 'version 2', config: 'changedPathsVersion = 2', expected: undefined },
+    { label: 'version 3', config: 'changedPathsVersion = 3', expected: 3 },
+    { label: 'version -2', config: 'changedPathsVersion = -2', expected: -2 },
+    { label: 'a non-numeric version', config: 'changedPathsVersion = x', expected: undefined },
+  ])('Given $label', ({ config, expected }) => {
+    describe('When checked', () => {
+      it(`Then it answers ${expected}`, async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await init(ctx);
+        await ctx.fs.appendUtf8(`${ctx.layout.gitDir}/config`, `[commitGraph]\n\t${config}\n`);
+        const sut = unsupportedChangedPathsVersion;
 
         // Act
         const result = await sut(ctx);
