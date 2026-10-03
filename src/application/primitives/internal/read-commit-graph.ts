@@ -312,13 +312,14 @@ function getHeaderCache(ctx: Context): Map<ObjectId, CommitHeader> {
   return cache;
 }
 
+interface OwnPosition {
+  readonly layer: CommitGraphLayer;
+  readonly localPos: number;
+  readonly layerIndex: number;
+}
+
 /** Binary-search every layer (base → tip) for `id`'s own position. */
-function findOwnPosition(
-  graph: LoadedGraph,
-  id: ObjectId,
-):
-  | { readonly layer: CommitGraphLayer; readonly localPos: number; readonly layerIndex: number }
-  | undefined {
+function findOwnPosition(graph: LoadedGraph, id: ObjectId): OwnPosition | undefined {
   for (let i = 0; i < graph.layers.length; i += 1) {
     const layer = graph.layers[i]!;
     const localPos = positionOf(layer, id);
@@ -364,8 +365,6 @@ function resolveParentIds(
     // references itself and its bases), so refuse it before resolving;
     // `findLayerForGlobalPosition` then only resolves the owning layer.
     if (pos >= ownBound) {
-      // Stryker disable next-line StringLiteral: equivalent — swallowed by
-      // commitHeader's degrade-to-absent catch; only the code is observable.
       throw invalidCommitGraphChunk(`invalid parent position ${pos}`);
     }
     const { layer, localPos } = findLayerForGlobalPosition(graph, pos);
@@ -383,9 +382,9 @@ export async function graphCommitIds(ctx: Context): Promise<ReadonlyArray<Object
   );
 }
 
-/** True once this session's graph probe has answered "absent" (no graph, a
- *  shallow repository, or a graph degraded on a decode fault). A synchronous
- *  read, so callers can skip `commitHeader` outright. */
+/** True once this session's graph probe has answered "absent" (no graph, or
+ *  a shallow repository). A synchronous read, so callers can skip
+ *  `commitHeader` outright. */
 export function isGraphKnownAbsent(ctx: Context): boolean {
   return absentGraphs.has(ctx.session);
 }
@@ -405,42 +404,36 @@ export async function commitHeader(ctx: Context, id: ObjectId): Promise<CommitHe
 
   const found = findOwnPosition(graph, id);
   if (found === undefined) return undefined;
-  // git's `fill_commit_graph_info` dies on missing overflow data before any
-  // parent is read: that refusal is the caller's, never a graph degrade.
-  const meta = commitMetaAt(found.layer, found.localPos, {
-    correctedCommitDates: graph.correctedCommitDates,
-  });
-  try {
-    const recorded = graphParentsAt(found.layer, found.localPos);
-    const ownBound = graph.layerOffsets[found.layerIndex]! + found.layer.commitCount;
-    const parents = resolveParentIds(graph, recorded.positions, ownBound);
-    if (recorded.edgesOutOfBounds) {
-      // git's `fill_commit_in_graph` errors and parses this one commit from
-      // its object instead, keeping the graph for every other commit.
-      ctx.logger?.warn?.('commitGraph: commit-graph extra-edges pointer out of bounds', { id });
-      return undefined;
-    }
-    const header: CommitHeader = {
-      rootTree: meta.rootTree,
-      parents,
-      committerDate: meta.committerDate,
-      generation: meta.generation,
-    };
-    insertBounded(cache, HEADER_CACHE_MAX_ENTRIES, id, header);
-    return header;
-  } catch (error) {
-    // A parsed-but-internally-inconsistent graph (out-of-range parent
-    // positions, truncated EDGE data) surfaces here; degrade to ABSENT for
-    // the rest of the repo lifetime, exactly like a corrupt file on disk.
-    if (isGraphDecodeFailure(error)) {
-      graphCache.set(ctx.session, Promise.resolve(undefined));
-      absentGraphs.add(ctx.session);
-      // Headers served from this graph before the fault must not linger: the
-      // verdict is "absent for the session", so drop the cache — every later
-      // lookup falls through to loadGraph (now absent) and answers from objects.
-      headerCache.delete(ctx.session);
-      return undefined;
-    }
-    throw error;
+  const header = readHeader(ctx, graph, found, id);
+  if (header !== undefined) insertBounded(cache, HEADER_CACHE_MAX_ENTRIES, id, header);
+  return header;
+}
+
+/**
+ * git's `fill_commit_in_graph`, in its order: the generation (refuses as git
+ * dies on missing overflow data), each parent position (refuses as git dies
+ * past the child's own layer), then the EDGE bound — past it git errors and
+ * parses this one commit from its object, keeping the graph for the others.
+ */
+function readHeader(
+  ctx: Context,
+  graph: LoadedGraph,
+  found: OwnPosition,
+  id: ObjectId,
+): CommitHeader | undefined {
+  const { layer, localPos } = found;
+  const meta = commitMetaAt(layer, localPos, { correctedCommitDates: graph.correctedCommitDates });
+  const recorded = graphParentsAt(layer, localPos);
+  const ownBound = graph.layerOffsets[found.layerIndex]! + layer.commitCount;
+  const parents = resolveParentIds(graph, recorded.positions, ownBound);
+  if (recorded.edgesOutOfBounds) {
+    ctx.logger?.warn?.('commitGraph: commit-graph extra-edges pointer out of bounds', { id });
+    return undefined;
   }
+  return {
+    rootTree: meta.rootTree,
+    parents,
+    committerDate: meta.committerDate,
+    generation: meta.generation,
+  };
 }

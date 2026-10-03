@@ -346,4 +346,43 @@ describe.skipIf(!GIT_AVAILABLE)('commit-graph read interop', () => {
       );
     });
   });
+
+  describe('Given a chain that lists its tip layer without the base it builds on', () => {
+    describe('When both tools log the history', () => {
+      it(
+        'Then both refuse on the first parent position past the tip layer',
+        async () => {
+          // Arrange
+          const repo = linearHistory(4);
+          const [, c2, , c4] = repo.commits as [ObjectId, ObjectId, ObjectId, ObjectId];
+          writeSplitAt(repo, c2);
+          writeSplitAt(repo, c4);
+          const [, tip] = chainLines(repo) as [string, string];
+          chmodSync(chainPath(repo), 0o644);
+          writeFileSync(chainPath(repo), `${tip}\n`);
+          const opened = await openRepository({ cwd: repo.dir });
+          let caught: unknown;
+
+          // Act
+          const git = tryRunGitWithExit(['-C', repo.dir, 'log', '--format=%H']);
+          try {
+            await opened.log();
+          } catch (error) {
+            caught = error;
+          } finally {
+            await opened.dispose?.();
+          }
+
+          // Assert
+          expect(git.exitCode).toBe(GIT_DIED);
+          expect(git.stdout).toBe('');
+          expect((caught as TsgitError).data).toEqual({
+            code: 'INVALID_COMMIT_GRAPH_CHUNK',
+            reason: git.stderr.replace(/^fatal: /, '').trimEnd(),
+          });
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
 });

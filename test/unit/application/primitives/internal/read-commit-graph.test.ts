@@ -312,6 +312,16 @@ async function buildOctopusWithoutEdgeChunk(ctx: Context): Promise<{ d0: Commit;
   return { d0, d3 };
 }
 
+/** The refusal `pending` rejects with, as its error data; fails when it resolves. */
+async function refusalOf(pending: Promise<unknown>): Promise<unknown> {
+  try {
+    await pending;
+  } catch (error) {
+    return (error as TsgitError).data;
+  }
+  return expect.fail('expected a refusal');
+}
+
 function expectHeaderMatchesCommit(
   header: Awaited<ReturnType<typeof commitHeader>>,
   commit: Commit,
@@ -1039,101 +1049,78 @@ describe('read-commit-graph', () => {
 
     describe('Given a CDAT parent position far beyond every layer', () => {
       describe('When commitHeader is called for the commit that carries it', () => {
-        it('Then the graph degrades to absent and the session records it, instead of reading past the OID table', async () => {
-          // Arrange — git dies with `invalid parent position N`; tsgit's
-          // documented posture for a graph that fails to decode is to answer
-          // from objects for the rest of the session, so the position is
-          // refused as a decode fault and the graph becomes absent.
+        it("Then it refuses with git's invalid-parent-position reason and keeps the graph", async () => {
+          // Arrange
           const ctx = await buildSeededContext();
           const tree = await emptyTree(ctx);
           const c0 = await makeCommit(ctx, tree, [], 1, 'c0');
           const c1 = await makeCommit(ctx, tree, [c0.id], 2, 'c1');
           await writeCommitGraph(ctx, [[c0, c1]]);
-          const gitDir = commonGitDir(ctx);
-          const graphPath = commitGraphPath(gitDir);
+          const graphPath = commitGraphPath(commonGitDir(ctx));
           const original = await ctx.fs.read(graphPath);
           await ctx.fs.write(graphPath, corruptFirstRealParent1Position(original, 0x6fffffff));
 
           // Act
-          const header = await commitHeader(ctx, c1.id);
+          const caught = await refusalOf(commitHeader(ctx, c1.id));
 
           // Assert
-          expect(header).toBeUndefined();
-          expect(isGraphKnownAbsent(ctx)).toBe(true);
+          expect(caught).toEqual({
+            code: 'INVALID_COMMIT_GRAPH_CHUNK',
+            reason: 'invalid parent position 1879048191',
+          });
+          expect(isGraphKnownAbsent(ctx)).toBe(false);
         });
       });
     });
 
     describe('Given a CDAT parent position equal to the layer commit count (one past the last entry)', () => {
-      describe('When commitHeader is called for the commit that carries it', () => {
-        it('Then the graph degrades to absent rather than fabricating a parent from the bytes after the OID table', async () => {
-          // Arrange — position == commitCount is the boundary that used to slip
-          // through: the 20 bytes after OIDL are the first CDAT entry's root
-          // tree, which came back as a "parent".
+      describe('When walking from the commit that carries it', () => {
+        it('Then the walk refuses rather than fabricating a parent from the bytes after the OID table', async () => {
+          // Arrange — the 20 bytes after OIDL are the first CDAT entry's root tree.
           const ctx = await buildSeededContext();
           const tree = await emptyTree(ctx);
           const c0 = await makeCommit(ctx, tree, [], 1, 'c0');
           const c1 = await makeCommit(ctx, tree, [c0.id], 2, 'c1');
           await writeCommitGraph(ctx, [[c0, c1]]);
-          const gitDir = commonGitDir(ctx);
-          const graphPath = commitGraphPath(gitDir);
+          const graphPath = commitGraphPath(commonGitDir(ctx));
           const original = await ctx.fs.read(graphPath);
           await ctx.fs.write(graphPath, corruptFirstRealParent1Position(original, 2));
 
           // Act
-          const header = await commitHeader(ctx, c1.id);
-          const walked: ObjectId[] = [];
-          for await (const commit of walkCommits(ctx, { from: [c1.id] })) walked.push(commit.id);
+          const caught = await refusalOf(
+            (async () => {
+              for await (const _commit of walkCommits(ctx, { from: [c1.id] }));
+            })(),
+          );
 
-          // Assert — no fabricated parent; the walk falls back to the bodies
-          expect(header).toBeUndefined();
-          expect(isGraphKnownAbsent(ctx)).toBe(true);
-          expect(walked).toEqual([c1.id, c0.id]);
+          // Assert
+          expect(caught).toEqual({
+            code: 'INVALID_COMMIT_GRAPH_CHUNK',
+            reason: 'invalid parent position 2',
+          });
         });
       });
     });
 
     describe('Given a chain whose base-layer commit names a parent position in the tip layer', () => {
-      describe('When commitHeader is called for that base commit', () => {
-        it('Then the graph degrades to absent rather than following an upward cross-layer edge', async () => {
+      describe('When commitHeader is called for that base commit, then for a tip commit', () => {
+        it('Then the base commit refuses as git dies, and the tip commit is still served', async () => {
           // Arrange — position 2 is a real OIDL slot (c2 in the tip layer), so
           // only the child's own-layer bound (git's insert_parent_or_die) can
-          // catch it; the resolved-layer check alone would accept it. git 2.55.0
-          // exits 128 `invalid parent position 2` on the same shape.
-          const ctx = await buildSeededContext();
-          const { c0, c1 } = await writeBadCrossLayerChain(ctx);
-
-          // Act
-          const header = await commitHeader(ctx, c1.id);
-          const walked: ObjectId[] = [];
-          for await (const commit of walkCommits(ctx, { from: [c1.id] })) walked.push(commit.id);
-
-          // Assert — no fabricated cross-layer parent; the walk answers from objects
-          expect(header).toBeUndefined();
-          expect(isGraphKnownAbsent(ctx)).toBe(true);
-          expect(walked).toEqual([c1.id, c0.id]);
-        });
-      });
-    });
-
-    describe('Given a graph that degrades to absent mid-session', () => {
-      describe('When commitHeader is called again for an oid it served before the fault', () => {
-        it('Then it returns undefined — the header cache does not outlive the degrade verdict', async () => {
-          // Arrange — c2 (tip) resolves and is cached; c1 (base) then degrades
-          // the graph. A stale cache would still hand back c2's header.
+          // catch it; the resolved-layer check alone would accept it.
           const ctx = await buildSeededContext();
           const { c1, c2 } = await writeBadCrossLayerChain(ctx);
-          const beforeFault = await commitHeader(ctx, c2.id);
-          expect(beforeFault).toBeDefined();
 
           // Act
-          const faulted = await commitHeader(ctx, c1.id);
-          const afterFault = await commitHeader(ctx, c2.id);
+          const caught = await refusalOf(commitHeader(ctx, c1.id));
+          const tip = await commitHeader(ctx, c2.id);
 
           // Assert
-          expect(faulted).toBeUndefined();
-          expect(isGraphKnownAbsent(ctx)).toBe(true);
-          expect(afterFault).toBeUndefined();
+          expect(caught).toEqual({
+            code: 'INVALID_COMMIT_GRAPH_CHUNK',
+            reason: 'invalid parent position 2',
+          });
+          expect(tip?.rootTree).toBe(c2.data.tree);
         });
       });
     });
