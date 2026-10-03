@@ -454,6 +454,32 @@ describe.skipIf(!GIT_AVAILABLE)('log interop', () => {
       });
     });
   });
+  describe('Given a merge whose first parent object is missing but sits in the commit-graph', () => {
+    describe('When every entry is asked for, each carrying its message', () => {
+      it('Then both tools refuse on the parent whose body a message needs', async () => {
+        // Arrange
+        const fixture = await buildMissingFirstParent(true);
+        try {
+          const peer = tryRunGitWithExit(['-C', fixture.dir, 'log', '--format=%s'], {
+            env: runGitEnv(),
+          });
+
+          // Act
+          const ours = logIds(fixture.dir);
+
+          // Assert
+          expect(peer.exitCode).toBe(128);
+          expect(peer.stderr).toContain(`cannot read commit object ${fixture.firstParent}`);
+          await expect(ours).rejects.toMatchObject({
+            data: { code: 'OBJECT_NOT_FOUND', id: fixture.firstParent },
+          });
+        } finally {
+          await fixture.dispose();
+        }
+      });
+    });
+  });
+
   describe.each([
     { graph: 'without a commit-graph', withCommitGraph: false },
     { graph: 'with a commit-graph', withCommitGraph: true },
