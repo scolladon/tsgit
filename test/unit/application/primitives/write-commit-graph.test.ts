@@ -408,3 +408,84 @@ describe('writeCommitGraph', () => {
     });
   });
 });
+
+const recordingChmod = (ctx: Context): { readonly ctx: Context; readonly calls: string[] } => {
+  const calls: string[] = [];
+  const chmod = (path: string, mode: number) => {
+    calls.push(`${mode.toString(8)} ${path}`);
+    return ctx.fs.chmod(path, mode);
+  };
+  return { ctx: { ...ctx, fs: { ...ctx.fs, chmod } }, calls };
+};
+
+describe('commit-graph file modes', () => {
+  describe('Given a repository already holding a commit-graph', () => {
+    describe('When the commit-graph is rewritten', () => {
+      it('Then the old file is made writable first and the new one left read-only', async () => {
+        // Arrange
+        const seeded = await buildSeededContext();
+        await pointRef(seeded, 'refs/heads/main', await rootCommit(seeded, 1, 'm'));
+        await writeCommitGraph(seeded);
+        const { ctx, calls } = recordingChmod(seeded);
+        const path = commitGraphPath(commonGitDir(ctx));
+        await pointRef(ctx, 'refs/heads/other', await rootCommit(ctx, 2, 'o'));
+        const sut = writeCommitGraph;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        expect(calls).toEqual([`644 ${path}`, `444 ${path}`]);
+      });
+    });
+  });
+
+  describe('Given a chain to extend', () => {
+    describe('When a split layer is written', () => {
+      it('Then the layer and the chain are left read-only', async () => {
+        // Arrange
+        const seeded = await buildSeededContext();
+        const gitDir = commonGitDir(seeded);
+        await pointRef(seeded, 'refs/heads/main', await rootCommit(seeded, 1, 'm'));
+        const { ctx, calls } = recordingChmod(seeded);
+        const sut = writeSplitCommitGraph;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        const [hash] = (await ctx.fs.readUtf8(commitGraphChainPath(gitDir))).split('\n');
+        const layer = commitGraphLayerPath(gitDir, hash as string);
+        const chain = commitGraphChainPath(gitDir);
+        expect(calls).toEqual([`644 ${layer}`, `444 ${layer}`, `644 ${chain}`, `444 ${chain}`]);
+      });
+    });
+  });
+
+  describe('Given making the old commit-graph writable is refused', () => {
+    describe('When the commit-graph is rewritten', () => {
+      it('Then the refusal propagates', async () => {
+        // Arrange
+        const seeded = await buildSeededContext();
+        await pointRef(seeded, 'refs/heads/main', await rootCommit(seeded, 1, 'm'));
+        const refusal = permissionDenied('commit-graph');
+        const ctx: Context = {
+          ...seeded,
+          fs: { ...seeded.fs, chmod: () => Promise.reject(refusal) },
+        };
+        const sut = writeCommitGraph;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx);
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toBe(refusal);
+      });
+    });
+  });
+});

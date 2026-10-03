@@ -24,7 +24,7 @@
  *   unique:         tsgit's commit-graph write is byte-identical to `git commit-graph write --reachable`, refs-only roots included
  *   interopSurface: commitGraph
  */
-import { cp, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -206,6 +206,9 @@ describe.skipIf(!GIT_AVAILABLE)('commit-graph write interop', () => {
       // Assert
       expect(Buffer.compare(twin.peerBytes, twin.oursBytes)).toBe(0);
       expectGitVerifiesSilently(twin.oursDir);
+      const modeOf = async (dir: string) =>
+        (await stat(commitGraphPath(`${dir}/.git`))).mode & 0o777;
+      expect(await modeOf(twin.oursDir)).toBe(await modeOf(twin.peerDir));
       await rm(twin.peerDir, { recursive: true, force: true });
       await rm(twin.oursDir, { recursive: true, force: true });
     });
@@ -371,14 +374,15 @@ describe.skipIf(!GIT_AVAILABLE)('commit-graph write interop', () => {
       }).trim();
     };
 
-    /** Every file under `objects/info`, keyed by its relative path, as hex — the chain oracle. */
+    /** Every file under `objects/info`, keyed by its relative path, as its mode and hex — the chain oracle. */
     const graphFiles = async (dir: string): Promise<Record<string, string>> => {
       const info = path.join(dir, '.git', 'objects', 'info');
       const entries = await readdir(info, { recursive: true, withFileTypes: true });
       const files: Record<string, string> = {};
       for (const entry of entries.filter((e) => e.isFile())) {
         const full = path.join(entry.parentPath, entry.name);
-        files[path.relative(info, full)] = (await readFile(full)).toString('hex');
+        const mode = ((await stat(full)).mode & 0o777).toString(8);
+        files[path.relative(info, full)] = `${mode}:${(await readFile(full)).toString('hex')}`;
       }
       return files;
     };

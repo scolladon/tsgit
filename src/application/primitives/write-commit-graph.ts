@@ -49,6 +49,23 @@ export interface WriteCommitGraphResult {
   readonly commitCount: number;
 }
 
+/** git creates every commit-graph file — single file, layer, chain — read-only. */
+export const COMMIT_GRAPH_FILE_MODE = 0o444;
+
+/**
+ * A read-only target cannot be renamed over on Windows; git for Windows
+ * clears the bit before replacing, and so does this, before every rewrite.
+ */
+export async function makeReplaceable(ctx: Context, path: string): Promise<void> {
+  try {
+    await ctx.fs.chmod(path, WRITABLE_FILE_MODE);
+  } catch (error) {
+    if (errorDataCode(error) !== 'FILE_NOT_FOUND') throw error;
+  }
+}
+
+const WRITABLE_FILE_MODE = 0o644;
+
 export const commitGraphLocked = (lockPath: string): TsgitError =>
   new TsgitError({ code: 'RESOURCE_LOCKED', resource: 'commit-graph', path: lockPath });
 
@@ -181,7 +198,9 @@ export async function writeCommitGraph(ctx: Context): Promise<WriteCommitGraphRe
   bytes.set(digest, trailerStart);
 
   const path = commitGraphPath(commonGitDir(ctx));
+  await makeReplaceable(ctx, path);
   await atomicWriteFile(ctx, path, bytes, commitGraphLocked);
+  await ctx.fs.chmod(path, COMMIT_GRAPH_FILE_MODE);
   await expireCommitGraphChain(ctx);
 
   return { commitCount: commits.length };

@@ -25,7 +25,7 @@ import { errorDataCode } from '../../domain/error-data-code.js';
 import { isObjectNotFound, objectNotFound } from '../../domain/objects/error.js';
 import { type Commit, ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
-import { withLockFile } from './atomic-write.js';
+import { atomicWriteFile, withLockFile } from './atomic-write.js';
 import { changedPathsRequest } from './internal/changed-paths-settings.js';
 import { hasGrafts } from './internal/commit-graph-compatible.js';
 import {
@@ -42,10 +42,12 @@ import {
 } from './path-layout.js';
 import { readObject } from './read-object.js';
 import {
+  COMMIT_GRAPH_FILE_MODE,
   changedPathsFor,
   commitGraphLocked,
   commitGraphRoots,
   declinesChangedPathsVersion,
+  makeReplaceable,
 } from './write-commit-graph.js';
 
 export interface WriteSplitCommitGraphResult {
@@ -245,11 +247,17 @@ async function writeChainLayer(
   const gitDir = commonGitDir(ctx);
   const hashes = [...plan.base.map(({ hash }) => hash), layer.hash];
   await ctx.fs.mkdir(commitGraphLayersDir(gitDir));
-  await withLockFile(ctx, commitGraphChainPath(gitDir), commitGraphLocked, async (commit) => {
-    await ctx.fs.write(commitGraphLayerPath(gitDir, layer.hash), layer.bytes);
+  const layerPath = commitGraphLayerPath(gitDir, layer.hash);
+  const chainPath = commitGraphChainPath(gitDir);
+  await withLockFile(ctx, chainPath, commitGraphLocked, async (commit) => {
+    await makeReplaceable(ctx, layerPath);
+    await atomicWriteFile(ctx, layerPath, layer.bytes, commitGraphLocked);
+    await ctx.fs.chmod(layerPath, COMMIT_GRAPH_FILE_MODE);
     await settleSingleFile(ctx, plan.base);
+    await makeReplaceable(ctx, chainPath);
     await commit(new TextEncoder().encode(hashes.map((hash) => `${hash}\n`).join('')));
   });
+  await ctx.fs.chmod(chainPath, COMMIT_GRAPH_FILE_MODE);
   await expireUnlistedLayers(
     ctx,
     new Set(hashes.map((hash) => `graph-${hash}${GRAPH_LAYER_SUFFIX}`)),
