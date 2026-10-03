@@ -23,7 +23,6 @@ describe('internal/rev-parse-grammar', () => {
       describe('When parseExpression', () => {
         it.each([
           { raw: '', label: "'' (empty string)" },
-          { raw: ':4:f.txt', label: "':4:f.txt' (out-of-range stage)" },
           { raw: 'HEAD^{garbage}', label: "'HEAD^{garbage}' (unknown peel type)" },
           {
             raw: 'HEAD@{}',
@@ -41,10 +40,8 @@ describe('internal/rev-parse-grammar', () => {
           { raw: ':0:', label: "':0:' (empty path)" },
           { raw: ':', label: "':' alone" },
           { raw: 'HEAD^{', label: "'HEAD^{' (peel with no closing brace)" },
-          { raw: ':0', label: "':0' (stage with no path separator)" },
           { raw: 'HEAD^x', label: "'HEAD^x' (non-operator char inside the operation chain)" },
           { raw: '^1', label: "'^1' (empty base before an operator)" },
-          { raw: ':5:f.txt', label: "':5:f.txt' (single-digit out-of-range stage)" },
           {
             raw: 'HEAD~2z',
             // `isDigit` must reject 'z' (0x7a): the digit-consuming loop stops
@@ -843,6 +840,30 @@ describe('internal/rev-parse-grammar', () => {
             expectError(() => sut(raw), 'REVPARSE_UNRESOLVED');
           },
         );
+      });
+    });
+
+    describe('Given an index path git reads at stage 0 or a message search', () => {
+      describe('When parseExpression', () => {
+        it.each([
+          { raw: ':f', expected: { kind: 'index-stage', stage: 0, path: 'f' } },
+          { raw: ':./f', expected: { kind: 'index-stage', stage: 0, path: './f' } },
+          { raw: ':4:f.txt', expected: { kind: 'index-stage', stage: 0, path: '4:f.txt' } },
+          { raw: ':5:f.txt', expected: { kind: 'index-stage', stage: 0, path: '5:f.txt' } },
+          { raw: ':0', expected: { kind: 'index-stage', stage: 0, path: '0' } },
+          { raw: ':/', expected: { kind: 'index-stage', stage: 0, path: '/' } },
+          { raw: ':/tip', expected: { kind: 'message-search', pattern: 'tip' } },
+          { raw: ':/!-a:b', expected: { kind: 'message-search', pattern: '!-a:b' } },
+        ])('Then $raw reads as git reads it', ({ raw, expected }) => {
+          // Arrange
+          const sut = parseExpression;
+
+          // Act
+          const result = sut(raw);
+
+          // Assert
+          expect(result).toEqual(expected);
+        });
       });
     });
 

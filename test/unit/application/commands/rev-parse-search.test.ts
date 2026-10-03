@@ -338,3 +338,116 @@ describe('Given a commit naming an absent parent', () => {
     });
   });
 });
+
+/**
+ * c1 ← c2, then three same-date tips on c2: main (HEAD), a and z, plus
+ * `head` beside them; `bad` tags an absent commit, `tt` the tree,
+ * `dangling` names an absent object, `broken` holds no ref and `stale` points
+ * at an absent ref.
+ */
+const allRefsRepo = async (): Promise<SearchRepo> => {
+  const { ctx, errors } = loggingContext();
+  const tree = await writeRawObjectBytes(ctx, 'tree', new Uint8Array());
+  const c1 = await writeCommit(ctx, tree, [], 1, 'first fix\n');
+  const c2 = await writeCommit(ctx, tree, [c1], 2, 'second\n');
+  const tips = Object.fromEntries(
+    await Promise.all(
+      ['main', 'a', 'z', 'head'].map(
+        async (name) => [name, await writeCommit(ctx, tree, [c2], 5, `tip ${name}\n`)] as const,
+      ),
+    ),
+  );
+  const tag = (target: ObjectId, type: string, name: string) =>
+    writeRawObjectBytes(
+      ctx,
+      'tag',
+      encoder.encode(
+        `object ${target}\ntype ${type}\ntag ${name}\ntagger A <a@a> 1 +0000\n\n${name}\n`,
+      ),
+    );
+  for (const name of ['main', 'a', 'z'])
+    await writeRef(ctx, `refs/heads/${name}`, tips[name] as ObjectId);
+  await writeRef(ctx, 'refs/heads/dangling', ABSENT_OID);
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/broken`, 'garbage\n');
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/stale`, 'ref: refs/heads/gone\n');
+  await writeRef(ctx, 'refs/tags/bad', await tag(ABSENT_OID, 'commit', 'bad'));
+  await writeRef(ctx, 'refs/tags/tt', await tag(tree, 'tree', 'tt'));
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+  return { ctx, errors, ids: { c1, c2, ...tips } };
+};
+
+const BAD_TAG_ERROR = "missing object referenced by 'refs/tags/bad'";
+
+describe('Given refs whose histories are searched by commit message', () => {
+  describe.each([
+    { arg: ':/tip', expected: 'main' },
+    { arg: ':/tip (a|z)', expected: 'z' },
+    { arg: ':/second', expected: 'c2' },
+    { arg: ':/!-tip', expected: 'c2' },
+  ])('When evaluateRevision reads $arg', ({ arg, expected }) => {
+    it(`Then it names ${expected}, reporting the tag of an absent object`, async () => {
+      // Arrange
+      const { ctx, errors, ids } = await allRefsRepo();
+      const sut = evaluateRevision;
+
+      // Act
+      const result = await sut(ctx, arg);
+
+      // Assert
+      expect(result).toBe(ids[expected]);
+      expect(errors).toEqual([BAD_TAG_ERROR]);
+    });
+  });
+
+  describe('When HEAD is detached at a commit no ref names', () => {
+    it('Then HEAD is searched first', async () => {
+      // Arrange
+      const { ctx, ids } = await allRefsRepo();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${ids.head}\n`);
+      const sut = evaluateRevision;
+
+      // Act
+      const result = await sut(ctx, ':/tip');
+
+      // Assert
+      expect(result).toBe(ids.head);
+    });
+  });
+
+  describe.each([{ arg: ':/zzz' }, { arg: ':/!x' }])('When revParse reads $arg', ({ arg }) => {
+    it('Then it names no object, reporting the tag once as git does', async () => {
+      // Arrange
+      const { ctx, errors } = await allRefsRepo();
+      const sut = revParse;
+
+      // Act
+      const result = await failureCode(() => sut(ctx, arg));
+
+      // Assert
+      expect(result).toBe('REVPARSE_UNRESOLVED');
+      expect(errors).toEqual([BAD_TAG_ERROR]);
+    });
+  });
+});
+
+describe('Given a ref naming an object that fails to read', () => {
+  describe('When evaluateRevision searches every ref', () => {
+    it('Then the read failure propagates', async () => {
+      // Arrange
+      const { ctx } = await allRefsRepo();
+      const corrupt = '3'.repeat(40) as ObjectId;
+      await ctx.fs.write(
+        `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(corrupt)}`,
+        GARBAGE,
+      );
+      await writeRef(ctx, 'refs/heads/corrupt', corrupt);
+      const sut = evaluateRevision;
+
+      // Act
+      const result = await failureCode(() => sut(ctx, ':/tip'));
+
+      // Assert
+      expect(result).toBe('DECOMPRESS_FAILED');
+    });
+  });
+});

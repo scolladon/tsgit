@@ -13,6 +13,7 @@ import { errorDataCode } from '../../../domain/error-data-code.js';
 import { looksLikePathspec } from '../../../domain/pathspec/index.js';
 import type { Context } from '../../../ports/context.js';
 import { pathIsOccupied } from '../../primitives/internal/path-occupied.js';
+import { isMessageSearch } from './rev-parse-grammar.js';
 
 /** The codes a read that found no object refuses with — git's `get_oid` returning -1. */
 const UNRESOLVED_CODES: ReadonlySet<string | undefined> = new Set([
@@ -53,6 +54,8 @@ export const rereadsMisspeltRevision = async (
   failure: unknown,
 ): Promise<boolean> => {
   if (!namesNoObject(failure)) return false;
+  // git's second read (`GET_OID_ONLY_TO_DIE`) skips a `:/` search, so nothing it printed repeats.
+  if (isMessageSearch(expression)) return false;
   if (looksLikePathspec(expression)) return false;
   return !(await namesExistingPath(ctx, expression));
 };

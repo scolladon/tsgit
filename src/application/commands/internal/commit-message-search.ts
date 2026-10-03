@@ -3,15 +3,17 @@ import { precedesByArrival } from '../../../domain/commit/priority-queue.js';
 import { errorDataCode } from '../../../domain/error-data-code.js';
 import { type Commit, commitBodyBytes } from '../../../domain/objects/commit.js';
 import { decodePreservingBom } from '../../../domain/objects/encoding.js';
-import type { ObjectId } from '../../../domain/objects/index.js';
+import type { GitObject, ObjectId, RefName } from '../../../domain/objects/index.js';
 import { compileExtendedRegex } from '../../../domain/regex/extended-regex.js';
 import type { Context } from '../../../ports/context.js';
+import { enumerateRefs } from '../../primitives/enumerate-refs.js';
 import {
   type CommitMeta,
   commitMetaOf,
   readCommitMeta,
 } from '../../primitives/internal/read-commit-meta.js';
-import { readRawObject } from '../../primitives/read-object.js';
+import { readObject, readRawObject } from '../../primitives/read-object.js';
+import { resolveRefForReading } from '../../primitives/resolve-ref.js';
 
 /**
  * git's `get_oid_oneline`: walking back from `seeds` youngest first — by
@@ -38,6 +40,51 @@ export const searchCommitMessages = async (
     if (await messageMatches(ctx, top.id, test)) return top.id;
   }
   return undefined;
+};
+
+/** git's `:/<regex>`: the search from every ref under `refs/`, then HEAD. */
+export const searchRefMessages = async (
+  ctx: Context,
+  search: string,
+): Promise<ObjectId | undefined> => searchCommitMessages(ctx, await refTipCommits(ctx), search);
+
+const REFS_PREFIX = 'refs/';
+const HEAD = 'HEAD';
+
+/** git's seed list: each ref in name order, then HEAD, put at the list's head — HEAD ends first. */
+const refTipCommits = async (ctx: Context): Promise<ReadonlyArray<Commit>> => {
+  const names = (await enumerateRefs(ctx)).filter((name) => name.startsWith(REFS_PREFIX));
+  const tips: Commit[] = [];
+  for (const name of [...names, HEAD] as const) {
+    const tip = await refTipCommit(ctx, name);
+    if (tip !== undefined) tips.unshift(tip);
+  }
+  return tips;
+};
+
+/**
+ * git's `handle_one_ref`: the commit a ref names through its tags. An object
+ * that does not read is skipped; a tag of one is reported under the ref's name.
+ */
+const refTipCommit = async (ctx: Context, name: RefName | 'HEAD'): Promise<Commit | undefined> => {
+  const id = await resolveRefForReading(ctx, name);
+  if (id === undefined) return undefined;
+  let object = await readPresent(ctx, id);
+  while (object?.type === 'tag') {
+    object = await readPresent(ctx, object.data.object);
+    if (object === undefined)
+      ctx.logger?.error?.(`missing object referenced by '${name}'`, { name });
+  }
+  return object?.type === 'commit' ? object : undefined;
+};
+
+const readPresent = async (ctx: Context, id: ObjectId): Promise<GitObject | undefined> => {
+  try {
+    return await readObject(ctx, id);
+  } catch (error) {
+    if (errorDataCode(error) === 'OBJECT_NOT_FOUND') return undefined;
+    throw error;
+  }
 };
 
 interface MessageTest {

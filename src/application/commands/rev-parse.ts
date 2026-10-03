@@ -28,7 +28,7 @@ import { readObject } from '../primitives/read-object.js';
 import { readTree } from '../primitives/read-tree.js';
 import { listReflogs, readReflogLenient } from '../primitives/reflog-store.js';
 import { readRefCandidate } from '../primitives/resolve-ref.js';
-import { searchCommitMessages } from './internal/commit-message-search.js';
+import { searchCommitMessages, searchRefMessages } from './internal/commit-message-search.js';
 import { namesNoObject, rereadsMisspeltRevision } from './internal/misspelt-revision.js';
 import { readCandidateRef, resolveAmbiguousLadder } from './internal/refname-ambiguity.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
@@ -97,6 +97,7 @@ const evaluate = async (ctx: Context, expr: RevExpression, raw: string): Promise
   if (expr.kind === 'tree-path') {
     return resolveTreePath(ctx, expr.rev, expr.path);
   }
+  if (expr.kind === 'message-search') return searchFromRefs(ctx, expr.pattern, raw);
   // `now` is read once per call so the reflog `@{date}` resolution is
   // deterministic within an evaluation; the grammar parser stays clock-free.
   const now = Math.floor(Date.now() / 1000);
@@ -233,6 +234,12 @@ const searchFrom = async (
   if (op.pattern === '') return peeled.id;
   const found = await searchCommitMessages(ctx, [peeled.commit], op.pattern);
   if (found === undefined) throw revparseUnresolved(op.name);
+  return found;
+};
+
+const searchFromRefs = async (ctx: Context, pattern: string, raw: string): Promise<ObjectId> => {
+  const found = await searchRefMessages(ctx, pattern);
+  if (found === undefined) throw revparseUnresolved(raw);
   return found;
 };
 

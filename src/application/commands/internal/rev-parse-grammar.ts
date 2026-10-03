@@ -8,6 +8,8 @@ import { revparseUnresolved } from '../../../domain/commands/error.js';
  * Grammar (subset accepted):
  *   - empty                       throws REVPARSE_UNRESOLVED
  *   - `:<stage>:<path>`           IndexStage (stage in 0..3, path non-empty)
+ *   - `:<path>`                   IndexStage at stage 0
+ *   - `:/<regex>`                 MessageSearch from every ref and HEAD
  *   - `<tree-ish>:<path>`         TreePath — a `:` outside any `@{…}`/`^{…}`
  *                                 splits the tree-ish from the path (path may be empty)
  *   - `<base>` `<op>*`            RefOrHex with chained operations
@@ -29,6 +31,8 @@ import { revparseUnresolved } from '../../../domain/commands/error.js';
  * resolves. An empty base (bare `@{N}`) is allowed and resolves against the
  * current branch.
  */
+
+type IndexStage = 0 | 1 | 2 | 3;
 
 export type PeelTarget = 'commit' | 'tree' | 'blob' | 'tag' | 'object';
 
@@ -55,9 +59,10 @@ export type RevExpression =
     }
   | {
       readonly kind: 'index-stage';
-      readonly stage: 0 | 1 | 2 | 3;
+      readonly stage: IndexStage;
       readonly path: string;
     }
+  | { readonly kind: 'message-search'; readonly pattern: string }
   | {
       readonly kind: 'tree-path';
       readonly rev: string;
@@ -65,7 +70,8 @@ export type RevExpression =
     };
 
 const PEEL_TARGETS: ReadonlyArray<PeelTarget> = ['commit', 'tree', 'blob', 'tag', 'object'];
-const INDEX_STAGE_PATTERN = /^:(\d):(.+)$/;
+const INDEX_STAGE_PATTERN = /^:([0-3]):/;
+const MESSAGE_SEARCH_PREFIX = ':/';
 const TRAILING_STEP_PATTERN = /([~^])(\d*)$/;
 const DIGITS_ONLY_PATTERN = /^\d+$/;
 /** What no ref name, object id or describe output can hold. */
@@ -111,17 +117,24 @@ const findTreePathColon = (raw: string): number => {
   return -1;
 };
 
+/** git's `:/<regex>`: a leading `:/` with a pattern after it. */
+export const isMessageSearch = (raw: string): boolean =>
+  raw.length > MESSAGE_SEARCH_PREFIX.length && raw.startsWith(MESSAGE_SEARCH_PREFIX);
+
+/**
+ * git's leading-colon forms: `:/<regex>` (longer than `:/`) searches every
+ * ref's history; `:<0-3>:<path>` names an index stage and any other `:<path>`
+ * stage 0 — so `:4:x` is the path `4:x`.
+ */
 const parseIndexStage = (raw: string): RevExpression => {
-  const match = INDEX_STAGE_PATTERN.exec(raw);
-  if (match === null) fail(raw);
-  const stageStr = (match as RegExpMatchArray)[1] as string;
-  const path = (match as RegExpMatchArray)[2] as string;
-  const stage = Number(stageStr);
-  // `INDEX_STAGE_PATTERN` captures a single digit, so `stage` is always 0..9 — only the upper bound can be exceeded.
-  if (stage > 3) fail(raw);
-  // The `(.+)` capture in `INDEX_STAGE_PATTERN` guarantees `path` is non-empty,
-  // so no empty-path guard is needed here.
-  return { kind: 'index-stage', stage: stage as 0 | 1 | 2 | 3, path };
+  if (isMessageSearch(raw)) {
+    return { kind: 'message-search', pattern: raw.slice(MESSAGE_SEARCH_PREFIX.length) };
+  }
+  const staged = INDEX_STAGE_PATTERN.exec(raw);
+  const stage = staged === null ? 0 : (Number(staged[1]) as IndexStage);
+  const path = raw.slice(staged === null ? 1 : staged[0].length);
+  if (path === '') fail(raw);
+  return { kind: 'index-stage', stage, path };
 };
 
 interface Step {
