@@ -34,7 +34,10 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
-import type { BundleCreateOptions } from '../../src/application/commands/bundle-create.js';
+import type {
+  BundleCreateOptions,
+  BundleRevArg,
+} from '../../src/application/commands/bundle-create.js';
 import { bundleCreate } from '../../src/application/commands/bundle-create.js';
 import { bundleListHeads } from '../../src/application/commands/bundle-list-heads.js';
 import { bundleVerify } from '../../src/application/commands/bundle-verify.js';
@@ -1503,3 +1506,154 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop — clock-skewed have lines', ()
     },
   );
 });
+
+const annotatedTag = (dir: string, name: string, target: string): void => {
+  const date = '1700000000 +0000';
+  runGit(['-C', dir, 'tag', '-a', '-m', name, name, target], {
+    env: { ...runGitEnv(), GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date },
+  });
+};
+
+/** `base` <- `main`; refs name each one's tree and `main`'s own blob, plus tags of a tree, of a tag and of `base`. */
+const buildNonCommitTipRepo = async (prefix: string): Promise<string> => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), prefix));
+  runGit(['-C', dir, 'init', '-q', '-b', 'main']);
+  const base = commitAt(dir, 'base', 0, []);
+  const baseBlob = runGit(['-C', dir, 'rev-parse', `${base}:base.txt`]).trim();
+  const tipBlob = runGit(['-C', dir, 'hash-object', '-w', '--stdin'], { input: 'tip' }).trim();
+  const mainTree = runGit(['-C', dir, 'mktree'], {
+    input: `100644 blob ${baseBlob}\tbase.txt\n100644 blob ${tipBlob}\ttip.txt\n`,
+  }).trim();
+  const date = '1700000100 +0000';
+  const main = runGit(['-C', dir, 'commit-tree', mainTree, '-m', 'main', '-p', base], {
+    env: { ...runGitEnv(), GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date },
+  }).trim();
+  const baseTree = runGit(['-C', dir, 'rev-parse', `${base}^{tree}`]).trim();
+  for (const [ref, oid] of [
+    ['refs/heads/main', main],
+    ['refs/heads/base', base],
+    ['refs/tags/main-tree', mainTree],
+    ['refs/tags/base-tree', baseTree],
+    ['refs/tags/tip-blob', tipBlob],
+  ] as const) {
+    runGit(['-C', dir, 'update-ref', ref, oid]);
+  }
+  annotatedTag(dir, 'tag-tree', mainTree);
+  annotatedTag(dir, 'tag-tag', 'tag-tree');
+  annotatedTag(dir, 'tag-base', base);
+  return dir;
+};
+
+/** git's command-line revision words as `bundleCreate` rev args. */
+const revArgsOf = (words: ReadonlyArray<string>): ReadonlyArray<BundleRevArg> =>
+  words.map((word) => {
+    if (word.includes('..')) return { range: word.split('..') as [string, string] };
+    if (word.startsWith('^')) return { exclude: word.slice(1) };
+    return { tip: word };
+  });
+
+describe.skipIf(!GIT_AVAILABLE)('bundle interop — tag, tree and blob tips', () => {
+  let dir: string;
+
+  beforeAll(async () => {
+    dir = await buildNonCommitTipRepo('tsgit-bundle-non-commit-');
+  });
+
+  afterAll(async () => rm(dir, { recursive: true, force: true }));
+
+  describe.each([
+    ['main', '^main-tree'],
+    ['main', '^tag-tree'],
+    ['main', '^tip-blob'],
+    ['main-tree..main'],
+    ['main', 'tag-tree', '^tag-tag'],
+    ['base', 'main', '^base'],
+    ['base..main', 'base-tree'],
+    ['tag-tree', '^main-tree'],
+    ['main..main-tree'],
+    ['tag-base', '^base'],
+  ])('Given bundleCreate %s, When comparing to git bundle create', (...words) => {
+    it('Then the header and the packed object count match git', async () => {
+      // Arrange
+      const gitBytes = gitBundleCreate(dir, path.join(dir, 'b.bundle'), words, runGitEnv());
+      const ctx = createNodeContext({ workDir: dir });
+      const sut = bundleCreate;
+
+      // Act
+      const result = await sut(ctx, { revs: revArgsOf(words) });
+
+      // Assert
+      expect(headerBytes(result.bytes)).toEqual(headerBytes(gitBytes));
+      expect(packedCount(result.bytes)).toBe(packedCount(gitBytes));
+    });
+  });
+
+  describe.each([
+    ['base', '^main'],
+    ['main..main'],
+    ['tip-blob', '^main-tree'],
+    ['tag-tree', '^tag-tree'],
+  ])('Given bundleCreate %s, When every ref it names is left uninteresting', (...words) => {
+    it('Then it refuses with no-refs where git refuses to create an empty bundle', async () => {
+      // Arrange
+      const gitRun = tryRunGitWithExit([
+        '-C',
+        dir,
+        'bundle',
+        'create',
+        path.join(dir, 'e.bundle'),
+        ...words,
+      ]);
+      const ctx = createNodeContext({ workDir: dir });
+      const sut = bundleCreate;
+
+      // Act
+      let caught: unknown;
+      try {
+        await sut(ctx, { revs: revArgsOf(words) });
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect(gitRun.exitCode).toBe(128);
+      expect(gitRun.stderr).toContain('Refusing to create empty bundle.');
+      expect((caught as TsgitError).data).toEqual({ code: 'BUNDLE_EMPTY', reason: 'no-refs' });
+    });
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'bundle interop — a bitmap leaving a tree tip nothing to pack',
+  () => {
+    let dir: string;
+
+    beforeAll(async () => {
+      dir = await buildNonCommitTipRepo('tsgit-bundle-bitmap-tree-');
+      runGit(['-C', dir, 'repack', '-a', '-d', '-b', '-q']);
+    });
+
+    afterAll(async () => rm(dir, { recursive: true, force: true }));
+
+    describe('Given bundleCreate main..main-tree, When comparing to git bundle create', () => {
+      it('Then both write the tree ref line over an empty pack, byte for byte', async () => {
+        // Arrange
+        const gitBytes = gitBundleCreate(
+          dir,
+          path.join(dir, 'b.bundle'),
+          ['main..main-tree'],
+          runGitEnv(),
+        );
+        const ctx = createNodeContext({ workDir: dir });
+        const sut = bundleCreate;
+
+        // Act
+        const result = await sut(ctx, { revs: [{ range: ['main', 'main-tree'] }] });
+
+        // Assert
+        expect(packedCount(gitBytes)).toBe(0);
+        expect(result.bytes).toEqual(gitBytes);
+      });
+    });
+  },
+);

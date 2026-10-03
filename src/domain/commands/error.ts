@@ -338,7 +338,7 @@ export type CommandError =
   | { readonly code: 'NO_REACHABLE_NAMES'; readonly oid: ObjectId }
   | { readonly code: 'NO_EXACT_MATCH'; readonly oid: ObjectId }
   | { readonly code: 'CANNOT_DESCRIBE'; readonly oid: ObjectId }
-  | { readonly code: 'BUNDLE_EMPTY'; readonly reason: 'no-refs' | 'no-objects' }
+  | { readonly code: 'BUNDLE_EMPTY'; readonly reason: 'no-refs' }
   | { readonly code: 'BUNDLE_READ_FAILED'; readonly path: string }
   | ({ readonly code: 'BUNDLE_BAD_HEADER'; readonly path: string } & BundleBadHeaderDetails)
   | {
@@ -1026,10 +1026,9 @@ export const noExactMatch = (oid: ObjectId): TsgitError =>
 export const cannotDescribe = (oid: ObjectId): TsgitError =>
   new TsgitError({ code: 'CANNOT_DESCRIBE', oid });
 
-// `bundle create` refusals. `reason` discriminates between a zero-ref selection
-// (git `Refusing to create empty bundle.`) and a zero-object closure (same message
-// but triggered when all selected tips are identical to their exclusions).
-export const bundleEmpty = (reason: 'no-refs' | 'no-objects'): TsgitError =>
+// `bundle create`'s refusal when no ref line survives the walk — git's
+// `Refusing to create empty bundle.`; an empty pack is never refused.
+export const bundleEmpty = (reason: 'no-refs'): TsgitError =>
   new TsgitError({ code: 'BUNDLE_EMPTY', reason });
 
 // `bundle verify`/`bundle list-heads` open-failure: the path does not exist or is

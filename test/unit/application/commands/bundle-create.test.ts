@@ -10,6 +10,7 @@ import {
 import * as buildPackMod from '../../../../src/application/primitives/build-pack.js';
 import { invalidateConfigCache } from '../../../../src/application/primitives/config-read.js';
 import { createCommit } from '../../../../src/application/primitives/create-commit.js';
+import * as enumerateBundleObjectsMod from '../../../../src/application/primitives/enumerate-bundle-objects.js';
 import * as readObjectMod from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
@@ -144,6 +145,46 @@ const buildDivergentRepo = async (): Promise<DivergentRepo> => {
   return { ctx, base, mainCommit, featureCommit };
 };
 
+interface NonCommitRefRepo {
+  readonly ctx: Context;
+  readonly base: ObjectId;
+  readonly main: ObjectId;
+  readonly baseTree: ObjectId;
+}
+
+const makeTagOf = async (
+  ctx: Context,
+  object: ObjectId,
+  objectType: Tag['data']['objectType'],
+  tagName: string,
+): Promise<ObjectId> =>
+  writeObject(ctx, {
+    type: 'tag',
+    id: '' as ObjectId,
+    data: { object, objectType, tagName, message: tagName, extraHeaders: [] },
+  });
+
+/** `base` <- `main`, `main`'s tree reusing `base`'s blob; refs name both trees, a tag of `main`'s tree and a tag of that tag. */
+const buildNonCommitRefRepo = async (): Promise<NonCommitRefRepo> => {
+  const ctx = await initRepo();
+  const baseBlob = await makeBlob(ctx, 'base');
+  const baseTree = await writeTree(ctx, [treeEntry(BLOB_MODE, 'base.txt', baseBlob)]);
+  const base = await makeCommitObj(ctx, baseTree, [], 'base commit', 1);
+  const mainTree = await writeTree(ctx, [
+    treeEntry(BLOB_MODE, 'base.txt', baseBlob),
+    treeEntry(BLOB_MODE, 'tip.txt', await makeBlob(ctx, 'tip')),
+  ]);
+  const main = await makeCommitObj(ctx, mainTree, [base], 'main commit', 2);
+  const tagTree = await makeTagOf(ctx, mainTree, 'tree', 'tag-tree');
+  await setRef(ctx, 'refs/heads/main', main);
+  await setRef(ctx, 'refs/heads/base', base);
+  await setRef(ctx, 'refs/tags/main-tree', mainTree);
+  await setRef(ctx, 'refs/tags/base-tree', baseTree);
+  await setRef(ctx, 'refs/tags/tag-tree', tagTree);
+  await setRef(ctx, 'refs/tags/tag-tag', await makeTagOf(ctx, tagTree, 'tag', 'tag-tag'));
+  return { ctx, base, main, baseTree };
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Helper: extract the BUNDLE_EMPTY data or rethrow
 // ─────────────────────────────────────────────────────────────────────────────
@@ -213,7 +254,7 @@ describe('bundleCreate', () => {
           buildOpts: (): BundleCreateOptions => ({
             revs: [{ range: ['refs/heads/main', 'refs/heads/main'] }],
           }),
-          reason: 'no-objects',
+          reason: 'no-refs',
         },
       ])('Then throws BUNDLE_EMPTY with reason $reason ($label)', async ({ buildOpts, reason }) => {
         // Arrange
@@ -226,6 +267,103 @@ describe('bundleCreate', () => {
         // Assert
         expect(result.code).toBe('BUNDLE_EMPTY');
         expect(result.reason).toBe(reason);
+      });
+    });
+  });
+
+  // ── Tips the walk leaves uninteresting ────────────────────────────────────
+
+  describe('Given refs naming commits, trees and tags of trees', () => {
+    describe.each([
+      { label: 'a tree', exclude: 'main-tree' },
+      { label: 'a tag of a tree', exclude: 'tag-tree' },
+    ])('When bundleCreate excludes $label', ({ exclude }) => {
+      it('Then it bundles main without that tree or a prerequisite', async () => {
+        // Arrange
+        const { ctx, main } = await buildNonCommitRefRepo();
+        const sut = bundleCreate;
+
+        // Act
+        const result = await sut(ctx, { revs: [{ tip: 'main' }, { exclude }] });
+
+        // Assert
+        expect(result.refs).toEqual([{ name: 'refs/heads/main', oid: main }]);
+        expect(result.prerequisites).toEqual([]);
+        expect(result.objectCount).toBe(3);
+      });
+    });
+
+    describe('When bundleCreate wants a tag of a tree the excluded tag-of-tag reaches', () => {
+      it('Then it writes no ref line for that tag', async () => {
+        // Arrange
+        const { ctx, main } = await buildNonCommitRefRepo();
+        const sut = bundleCreate;
+
+        // Act
+        const result = await sut(ctx, {
+          revs: [{ tip: 'main' }, { tip: 'tag-tree' }, { exclude: 'tag-tag' }],
+        });
+
+        // Assert
+        expect(result.refs).toEqual([{ name: 'refs/heads/main', oid: main }]);
+      });
+    });
+
+    describe('When bundleCreate wants a commit that is an ancestor of an excluded commit', () => {
+      it('Then it writes no ref line for that commit', async () => {
+        // Arrange
+        const { ctx, base, main } = await buildNonCommitRefRepo();
+        const sut = bundleCreate;
+
+        // Act
+        const result = await sut(ctx, {
+          revs: [{ tip: 'base' }, { tip: 'main' }, { exclude: 'base' }],
+        });
+
+        // Assert
+        expect(result.refs).toEqual([{ name: 'refs/heads/main', oid: main }]);
+        expect(result.prerequisites).toEqual([{ oid: base, comment: 'base commit' }]);
+      });
+    });
+
+    describe("When bundleCreate wants the boundary commit's own tree alongside a range", () => {
+      it('Then it writes that tree ref line, though the boundary keeps the tree out of the pack', async () => {
+        // Arrange
+        const { ctx, main, baseTree } = await buildNonCommitRefRepo();
+        const sut = bundleCreate;
+
+        // Act
+        const result = await sut(ctx, {
+          revs: [{ range: ['base', 'main'] }, { tip: 'base-tree' }],
+        });
+
+        // Assert
+        expect(result.refs).toEqual([
+          { name: 'refs/heads/main', oid: main },
+          { name: 'refs/tags/base-tree', oid: baseTree },
+        ]);
+        expect(result.objectCount).toBe(3);
+      });
+    });
+  });
+
+  describe('Given a closure that leaves nothing to pack for a surviving ref', () => {
+    describe('When bundleCreate is called', () => {
+      it('Then it writes the bundle with an empty pack, as git does', async () => {
+        // Arrange
+        const { ctx, commit1 } = await buildSingleCommitRepo();
+        const enumerateSpy = vi
+          .spyOn(enumerateBundleObjectsMod, 'enumerateBundleObjects')
+          .mockResolvedValue({ objects: [], boundary: [], uninteresting: new Set() });
+        const sut = bundleCreate;
+
+        // Act
+        const result = await sut(ctx, { revs: [{ tip: 'main' }] });
+
+        // Assert
+        expect(result.refs).toEqual([{ name: 'refs/heads/main', oid: commit1 }]);
+        expect(result.objectCount).toBe(0);
+        enumerateSpy.mockRestore();
       });
     });
   });

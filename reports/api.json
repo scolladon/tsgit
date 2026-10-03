@@ -37618,17 +37618,8 @@
 												"isReadonly": true
 											},
 											"type": {
-												"type": "union",
-												"types": [
-													{
-														"type": "literal",
-														"value": "no-refs"
-													},
-													{
-														"type": "literal",
-														"value": "no-objects"
-													}
-												]
+												"type": "literal",
+												"value": "no-refs"
 											}
 										}
 									],
@@ -145270,7 +145261,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " (header ++ packfile) for the caller to write, alongside\nthe structured metadata so the caller can inspect the result without\nre-parsing. Throws "
+										"text": " (header ++ packfile) for the caller to write, alongside\nthe structured metadata so the caller can inspect the result without\nre-parsing. Like git, a ref whose object the walk leaves uninteresting —\nexcluded, reached through an excluded tag or tree, or an ancestor of an\nexcluded commit — writes no ref line. Throws "
 									},
 									{
 										"kind": "code",
@@ -145278,7 +145269,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " if the selection yields no ref lines\n("
+										"text": "\n("
 									},
 									{
 										"kind": "code",
@@ -145286,15 +145277,7 @@
 									},
 									{
 										"kind": "text",
-										"text": ") or an empty object closure ("
-									},
-									{
-										"kind": "code",
-										"text": "`reason: 'no-objects'`"
-									},
-									{
-										"kind": "text",
-										"text": ")."
+										"text": ") when no ref line remains; an empty pack is written\nas git writes it."
 									}
 								]
 							},

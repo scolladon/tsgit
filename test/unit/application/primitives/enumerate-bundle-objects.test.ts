@@ -129,6 +129,7 @@ describe('enumerateBundleObjects', () => {
         // Assert
         expect(result.objects).toEqual([]);
         expect(result.boundary).toEqual([]);
+        expect(result.uninteresting).toEqual(new Set());
       });
     });
   });
@@ -329,6 +330,70 @@ describe('enumerateBundleObjects', () => {
         // Assert
         expect(sorted(idsOf(result.objects))).toEqual(sorted([tagId, commit1, tree1, blobA]));
         expect(result.boundary).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given wants with no haves', () => {
+    describe('When enumerateBundleObjects is called', () => {
+      it('Then nothing is uninteresting', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const tree = await makeTree(ctx, [treeEntry(BLOB_MODE, 'f.txt', await makeBlob(ctx, 'A'))]);
+        const commit = await makeCommit(ctx, tree, [], 'only', 1);
+        const sut = enumerateBundleObjects;
+
+        // Act
+        const result = await sut(ctx, { wants: [commit], haves: [] });
+
+        // Assert
+        expect(result.uninteresting).toEqual(new Set());
+      });
+    });
+  });
+
+  describe('Given a want that is an ancestor of the have', () => {
+    describe('When enumerateBundleObjects is called', () => {
+      it('Then the walk leaves that want and the have uninteresting', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const tree = await makeTree(ctx, [treeEntry(BLOB_MODE, 'f.txt', await makeBlob(ctx, 'A'))]);
+        const parent = await makeCommit(ctx, tree, [], 'parent', 1);
+        const child = await makeCommit(ctx, tree, [parent], 'child', 2);
+        const sut = enumerateBundleObjects;
+
+        // Act
+        const result = await sut(ctx, { wants: [parent], haves: [child] });
+
+        // Assert
+        expect(result.uninteresting).toEqual(new Set([child, parent]));
+      });
+    });
+  });
+
+  describe('Given a have that is a tag of a tree', () => {
+    describe('When enumerateBundleObjects is called with a commit want', () => {
+      it('Then the tag, its tree and the tree contents are uninteresting, and no commit is a boundary', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blob = await makeBlob(ctx, 'A');
+        const tree = await makeTree(ctx, [treeEntry(BLOB_MODE, 'f.txt', blob)]);
+        const commit = await makeCommit(ctx, tree, [], 'tip', 1);
+        const tag: Tag = {
+          type: 'tag',
+          id: '' as ObjectId,
+          data: { object: tree, objectType: 'tree', tagName: 't', message: 't', extraHeaders: [] },
+        };
+        const tagId = await writeObject(ctx, tag);
+        const sut = enumerateBundleObjects;
+
+        // Act
+        const result = await sut(ctx, { wants: [commit], haves: [tagId] });
+
+        // Assert
+        expect(result.uninteresting).toEqual(new Set([tagId, tree, blob]));
+        expect(result.boundary).toEqual([]);
+        expect(idsOf(result.objects)).toEqual([commit]);
       });
     });
   });

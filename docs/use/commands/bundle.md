@@ -245,10 +245,11 @@ const filtered = await repo.bundle.listHeads({
 - `DUBIOUS_OWNERSHIP` / `IMPLICIT_BARE_REPOSITORY` / `REPOSITORY_FORMAT_VERSION_UNSUPPORTED` / `REPOSITORY_EXTENSIONS_UNSUPPORTED` — the repository the acceptance tier rejects (see [`errors.md`](../errors.md#repository-state)). `create` takes the full operational tier like any other write, so these raise ahead of any `[core]` validation — unlike `verify` below, which demotes to `NOT_A_REPOSITORY` instead.
 - `CONFIG_BAD_ZLIB_LEVEL` / `CONFIG_MISSING_VALUE` / `CONFIG_BAD_BOOLEAN_VALUE` — an invalid streaming-class `[core]` entry, reached through the eager operational gate every operational command reads (see [`errors.md`](../errors.md)).
 - `CONFIG_BAD_NUMERIC_VALUE` — a malformed `core.maxTreeDepth` or `core.deltaBaseCacheLimit` — the **repo-settings tier** ([`internals.md`](../primitives/internals.md#assertrepossettingsvalid)), not the eager gate above. `bundle create` is one of the handful of commands where git's own builtin reads this class *before* its config pass, matching `git bundle create`'s own ordering: when a streaming class is malformed on the same file too, this refusal is reported first here, the reverse of the majority of operational commands. `verify` and `listHeads` reach neither gate — they operate on the bundle file, not the ambient repository's config.
-- `BUNDLE_EMPTY` `reason: 'no-refs'` — no rev arg resolves to a named ref
-  (no `--all`/`--branches`/`--tags` and no `{ tip }` DWIMs to a ref).
-- `BUNDLE_EMPTY` `reason: 'no-objects'` — the rev selection yields an empty
-  object set (e.g. `{ range: ['main', 'main'] }`).
+- `BUNDLE_EMPTY` `reason: 'no-refs'` — no ref line survives: no rev arg
+  resolves to a named ref (no `--all`/`--branches`/`--tags` and no `{ tip }`
+  DWIMs to a ref), or every named ref's object is excluded — directly, through
+  an excluded tag or tree, or as an ancestor of an excluded commit (e.g.
+  `{ range: ['main', 'main'] }`). An empty pack is written, not refused.
 - `REVPARSE_UNRESOLVED` / `REVPARSE_AMBIGUOUS` — a rev argument cannot be
   resolved (propagated from `revParse`).
 - `PACK_TOO_LARGE` — the object closure exceeds the built-in object-count ceiling.

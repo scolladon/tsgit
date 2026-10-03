@@ -16,6 +16,7 @@ import { TsgitError } from '../../domain/error.js';
 import type { ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { computeClosure } from './internal/closure-engine.js';
+import { markNotSide } from './internal/closure-not-marks.js';
 import { limitList, readShown, resolveLimitOptions } from './internal/limit-list.js';
 import { resolveTagChain } from './internal/object-emit.js';
 import { MAX_PUSH_OBJECTS } from './types.js';
@@ -23,7 +24,7 @@ import { MAX_PUSH_OBJECTS } from './types.js';
 export interface EnumerateBundleObjectsInput {
   /** Positive endpoint oids — commits or annotated tags. */
   readonly wants: ReadonlyArray<ObjectId>;
-  /** Excluded commit oids — explicit excludes or computed merge-bases. */
+  /** Excluded oids — explicit excludes of any type, or computed merge-bases. */
   readonly haves: ReadonlyArray<ObjectId>;
   /** Hard cap on total emitted objects. Defaults to MAX_PUSH_OBJECTS. */
   readonly maxObjects?: number;
@@ -50,22 +51,38 @@ export interface BundleObjectClosure {
    * oid ascending before serialising the bundle header.
    */
   readonly boundary: ReadonlyArray<ObjectId>;
+  /**
+   * Every object git's bundle walk leaves flagged uninteresting: a commit
+   * the limited walk marks, an excluded tag and what it peels to, and an
+   * excluded tree with all it holds. A boundary commit's own tree is NOT
+   * among them — only `pack-objects` marks it — so a ref naming it stays.
+   */
+  readonly uninteresting: ReadonlySet<ObjectId>;
 }
 
 const IGNORE_TAG = (): void => {};
 
-/** The uninteresting parents of every commit the limited walk lists, in walk order. */
-const findBoundary = async (
+const NOTHING_EXCLUDED: BundleWalk = { boundary: [], uninteresting: new Set() };
+
+type BundleWalk = Pick<BundleObjectClosure, 'boundary' | 'uninteresting'>;
+
+/**
+ * git's `--boundary` walk of the bundle's revisions: the uninteresting
+ * parents of every commit the limited walk lists, in walk order, and every
+ * object the walk leaves flagged uninteresting.
+ */
+const walkBundle = async (
   ctx: Context,
   wants: ReadonlyArray<ObjectId>,
   haves: ReadonlyArray<ObjectId>,
-): Promise<ObjectId[]> => {
-  if (haves.length === 0) return [];
+): Promise<BundleWalk> => {
+  if (haves.length === 0) return NOTHING_EXCLUDED;
+  const marks = await markNotSide(ctx, haves);
   const from = await Promise.all(wants.map((want) => resolveTagChain(ctx, want, IGNORE_TAG)));
   const options = await resolveLimitOptions(
     ctx,
     { from, ignoreMissing: true },
-    { until: new Set(haves), firstParent: false, settle: 'slop' },
+    { until: new Set(marks.commitTips), firstParent: false, settle: 'slop' },
   );
   const walk = await limitList(ctx, options);
   const boundary = new Set<ObjectId>();
@@ -74,7 +91,10 @@ const findBoundary = async (
       if (walk.uninteresting.has(parent)) boundary.add(parent);
     }
   }
-  return [...boundary];
+  return {
+    boundary: [...boundary],
+    uninteresting: new Set([...marks.objects, ...walk.uninteresting]),
+  };
 };
 
 /** `tryEmit`'s own refusal, for a closure that outgrew the caller's cap. */
@@ -87,8 +107,8 @@ export const enumerateBundleObjects = async (
   ctx: Context,
   input: EnumerateBundleObjectsInput,
 ): Promise<BundleObjectClosure> => {
-  if (input.wants.length === 0) return { objects: [], boundary: [] };
-  const boundary = await findBoundary(ctx, input.wants, input.haves);
+  if (input.wants.length === 0) return { objects: [], ...NOTHING_EXCLUDED };
+  const { boundary, uninteresting } = await walkBundle(ctx, input.wants, input.haves);
   const closure = await computeClosure(ctx, {
     wants: input.wants,
     not: [...input.haves, ...boundary],
@@ -96,5 +116,5 @@ export const enumerateBundleObjects = async (
     tier: 'bitmap',
   });
   assertWithinCap(closure.objects.length, input.maxObjects ?? MAX_PUSH_OBJECTS);
-  return { objects: closure.objects, boundary };
+  return { objects: closure.objects, boundary, uninteresting };
 };

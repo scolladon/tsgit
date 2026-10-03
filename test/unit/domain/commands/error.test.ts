@@ -1827,7 +1827,7 @@ describe('domain commands error — extractDetail message formatting', () => {
 
   describe('Given the bundleEmpty error helper', () => {
     describe('When called', () => {
-      it.each([['no-refs'], ['no-objects']] as const)('Then data carries reason=%s', (reason) => {
+      it.each([['no-refs']] as const)('Then data carries reason=%s', (reason) => {
         // Arrange + Act
         const result = bundleEmpty(reason);
 

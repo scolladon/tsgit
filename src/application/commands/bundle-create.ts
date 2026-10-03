@@ -127,8 +127,7 @@ const processTip = async (
 };
 
 const processExclude = async (ctx: Context, exclude: string, acc: Accumulator): Promise<void> => {
-  const oid = await revParse(ctx, exclude);
-  acc.haves.push(await peel(ctx, oid, 'commit'));
+  acc.haves.push(await revParse(ctx, exclude));
 };
 
 const processRange = async (
@@ -138,8 +137,7 @@ const processRange = async (
   acc: Accumulator,
 ): Promise<void> => {
   const [aExpr, bExpr] = range;
-  const aOid = await revParse(ctx, aExpr);
-  acc.haves.push(await peel(ctx, aOid, 'commit'));
+  acc.haves.push(await revParse(ctx, aExpr));
   const bOid = await revParse(ctx, bExpr);
   const bFullRef = findFullRef(bExpr, allRefs);
   if (bFullRef !== undefined) acc.refs.push({ name: bFullRef, oid: bOid });
@@ -284,8 +282,11 @@ export const selectBundleVersion = (input: SelectBundleVersionInput): BundleVers
  *
  * Returns `bytes` (header ++ packfile) for the caller to write, alongside
  * the structured metadata so the caller can inspect the result without
- * re-parsing. Throws `BUNDLE_EMPTY` if the selection yields no ref lines
- * (`reason: 'no-refs'`) or an empty object closure (`reason: 'no-objects'`).
+ * re-parsing. Like git, a ref whose object the walk leaves uninteresting —
+ * excluded, reached through an excluded tag or tree, or an ancestor of an
+ * excluded commit — writes no ref line. Throws `BUNDLE_EMPTY`
+ * (`reason: 'no-refs'`) when no ref line remains; an empty pack is written
+ * as git writes it.
  */
 export const bundleCreate = async (
   ctx: Context,
@@ -303,24 +304,23 @@ export const bundleCreate = async (
   const acc: Accumulator = { refs: [], wants: [], haves: [] };
   await expandPseudoRefs(ctx, opts, allRefs, acc);
   await processRevArgs(ctx, opts.revs ?? [], allRefs, acc);
-  const deduped = deduplicateRefs(acc.refs);
-  acc.refs.splice(0, acc.refs.length, ...deduped);
   if (acc.refs.length === 0) throw bundleEmpty('no-refs');
   const closure = await enumerateBundleObjects(ctx, { wants: acc.wants, haves: acc.haves });
-  if (closure.objects.length === 0) throw bundleEmpty('no-objects');
+  const refs = deduplicateRefs(acc.refs.filter((ref) => !closure.uninteresting.has(ref.oid)));
+  if (refs.length === 0) throw bundleEmpty('no-refs');
   const prerequisites = await makePrerequisites(ctx, closure.boundary);
   const pack = await buildPack(ctx, { objects: closure.objects, delta: true });
   const header = serializeBundleHeader({
     version,
     hashAlgorithm: ctx.hashConfig.algorithm,
     prerequisites,
-    refs: acc.refs,
+    refs,
   });
   const bytes = concat(header, pack.bytes);
   return {
     version,
     bytes,
-    refs: acc.refs,
+    refs,
     prerequisites,
     objectCount: pack.objectCount,
     packSha: pack.sha,
