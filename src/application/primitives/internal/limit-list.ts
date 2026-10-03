@@ -43,6 +43,8 @@ export interface LimitedWalk {
   readonly shown: ReadonlyArray<ObjectId>;
   /** Every commit found uninteresting — closed under the parents the walk parsed. */
   readonly uninteresting: ReadonlySet<ObjectId>;
+  /** Commits taken into the list while interesting and found uninteresting later. */
+  readonly dropped: ReadonlyArray<ObjectId>;
   /** Bodies of shown commits read while parsing them (those absent from the graph). */
   readonly bodies: ReadonlyMap<ObjectId, Commit>;
 }
@@ -110,7 +112,8 @@ export async function limitList(ctx: Context, options: LimitListOptions): Promis
   await enqueueSeeds(state);
   const taken = await drain(state);
   const shown = taken.filter((id) => !state.uninteresting.has(id));
-  return { shown, uninteresting: state.uninteresting, bodies: state.bodies };
+  const dropped = taken.filter((id) => state.uninteresting.has(id));
+  return { shown, uninteresting: state.uninteresting, dropped, bodies: state.bodies };
 }
 
 /** {@link limitList}, then each shown commit's body, in the walk's order. */
@@ -118,7 +121,15 @@ export async function* walkLimited(
   ctx: Context,
   options: LimitListOptions,
 ): AsyncGenerator<Commit, void, undefined> {
-  const walk = await limitList(ctx, options);
+  yield* readShown(ctx, options, await limitList(ctx, options));
+}
+
+/** Each of `walk`'s shown commit bodies, in the walk's order. */
+export async function* readShown(
+  ctx: Context,
+  options: LimitListOptions,
+  walk: LimitedWalk,
+): AsyncGenerator<Commit, void, undefined> {
   const reader = shownReader(ctx, options, walk.bodies);
   for (const [index, id] of walk.shown.entries()) {
     if (ctx.signal?.aborted) throw operationAborted();

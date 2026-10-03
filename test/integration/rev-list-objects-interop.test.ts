@@ -11,11 +11,12 @@
  *                    including the identical-tree-commit over-report shape
  *   interopSurface: closure
  */
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
+import { packObjects } from '../../src/application/commands/pack-objects.js';
 import { revList } from '../../src/application/commands/rev-list.js';
 import type { Context } from '../../src/ports/context.js';
 import { GIT_AVAILABLE, git, runGit, runGitEnv } from './interop-helpers.js';
@@ -57,6 +58,65 @@ const gitIdSet = (dir: string, ...args: ReadonlyArray<string>): ReadonlySet<stri
     ids.add(spaceIndex === -1 ? line : line.slice(0, spaceIndex));
   }
   return ids;
+};
+
+interface SkewedExclusionFixture {
+  readonly dir: string;
+  /** Newest commit, on the shared ancestor. */
+  readonly tip: string;
+  /** Reaches the ancestor through six commits dated before it. */
+  readonly farTip: string;
+  /** Reaches the ancestor through three commits dated before it. */
+  readonly nearTip: string;
+  /** Reuses the tree of an ancestor the walk lists before `lateTip` reaches it. */
+  readonly sharedTreeTip: string;
+  /** Reaches `sharedTreeTip`'s ancestors only through a commit dated after them. */
+  readonly lateTip: string;
+}
+
+/** A plumbing-built commit at `1_700_000_000 + offset`, owning one file named `name`. */
+const commitAt = (
+  dir: string,
+  name: string,
+  offset: number,
+  parents: ReadonlyArray<string>,
+  tree?: string,
+): string => {
+  const blob = runGit(['-C', dir, 'hash-object', '-w', '--stdin'], { input: name }).trim();
+  const ownTree =
+    tree ?? runGit(['-C', dir, 'mktree'], { input: `100644 blob ${blob}\t${name}.txt\n` }).trim();
+  const parentArgs = parents.flatMap((parent) => ['-p', parent]);
+  return runGit(['-C', dir, 'commit-tree', ownTree, '-m', name, ...parentArgs], {
+    env: datedEnv(1_700_000_000 + offset),
+  }).trim();
+};
+
+const skewedLine = (dir: string, base: string, depth: number): string => {
+  let line = base;
+  for (let step = 1; step <= depth; step += 1) {
+    line = commitAt(dir, `line${depth}-${step}`, 300 - step, [line]);
+  }
+  return commitAt(dir, `tip${depth}`, 400, [line]);
+};
+
+const buildSkewedExclusionFixture = async (): Promise<SkewedExclusionFixture> => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-rev-list-skewed-'));
+  git(dir, 'init', '-q', '-b', 'main');
+  const ancestor = commitAt(dir, 'ancestor', 500, []);
+  const tip = commitAt(dir, 'tip', 1000, [ancestor]);
+  const older = commitAt(dir, 'older', 700, []);
+  const olderTree = git(dir, 'rev-parse', `${older}^{tree}`).trim();
+  const middle = commitAt(dir, 'middle', 800, [older]);
+  const sharedTreeTip = commitAt(dir, 'sharedTreeTip', 1000, [middle], olderTree);
+  const late = commitAt(dir, 'late', 900, [middle]);
+  return {
+    dir,
+    tip,
+    farTip: skewedLine(dir, ancestor, 6),
+    nearTip: skewedLine(dir, ancestor, 3),
+    sharedTreeTip,
+    lateTip: commitAt(dir, 'late-tip', 500, [late]),
+  };
 };
 
 interface SharedSubtreeFixture {
@@ -408,6 +468,94 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list objects interop — closure prune', ()
           not: [fixture.notTip],
           objects: true,
           noWalk: true,
+        });
+
+        // Assert
+        const actual = new Set(result.entries.map((entry) => entry.id));
+        expect([...actual].sort()).toEqual([...expected].sort());
+      });
+    });
+  });
+
+  describe('Given excluded lines reaching the shared ancestor through clock-skewed commits', () => {
+    let fixture: SkewedExclusionFixture;
+
+    beforeAll(async () => {
+      fixture = await buildSkewedExclusionFixture();
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => rm(fixture.dir, { recursive: true, force: true }));
+
+    describe.each([
+      { label: 'six', excluded: () => fixture.farTip, objects: false },
+      { label: 'six', excluded: () => fixture.farTip, objects: true },
+      { label: 'three', excluded: () => fixture.nearTip, objects: true },
+    ])(
+      'When revList excludes the line $label commits deep (objects: $objects)',
+      ({ excluded, objects }) => {
+        it('Then it lists what git rev-list lists, giving up on the excluded side as git does', async () => {
+          // Arrange
+          const flags = objects ? ['--objects'] : [];
+          const expected = gitIdSet(fixture.dir, ...flags, fixture.tip, '--not', excluded());
+          const ctx = createNodeContext({ workDir: fixture.dir });
+          const sut = revList;
+
+          // Act
+          const result = await sut(ctx, { wants: [fixture.tip], not: [excluded()], objects });
+
+          // Assert
+          const actual = new Set(result.entries.map((entry) => entry.id));
+          expect([...actual].sort()).toEqual([...expected].sort());
+        });
+      },
+    );
+
+    describe('When packObjects packs the tip excluding the line six commits deep', () => {
+      it('Then it packs as many objects as git pack-objects --revs', async () => {
+        // Arrange
+        const out = await mkdtemp(path.join(os.tmpdir(), 'tsgit-skewed-pack-'));
+        const stem = runGit(['-C', fixture.dir, 'pack-objects', '--revs', '-q', `${out}/git`], {
+          input: `${fixture.tip}\n^${fixture.farTip}\n`,
+        }).trim();
+        const gitCount = runGit(['show-index'], {
+          input: await readFile(`${out}/git-${stem}.idx`),
+        })
+          .split('\n')
+          .filter((line) => line.length > 0).length;
+        const ctx = createNodeContext({ workDir: fixture.dir });
+        const sut = packObjects;
+
+        // Act
+        const result = await sut(ctx, {
+          wants: [fixture.tip],
+          not: [fixture.farTip],
+          outputDirectory: path.join(fixture.dir, '.git', 'tsgit-pack-out'),
+        });
+
+        // Assert
+        expect(result.objectCount).toBe(gitCount);
+        await rm(out, { recursive: true, force: true });
+      });
+    });
+
+    describe('When revList lists, with objects, a want whose listed ancestor the excluded side reaches late', () => {
+      it("Then that ancestor's tree is excluded as git rev-list --objects excludes it", async () => {
+        // Arrange
+        const expected = gitIdSet(
+          fixture.dir,
+          '--objects',
+          fixture.sharedTreeTip,
+          '--not',
+          fixture.lateTip,
+        );
+        const ctx = createNodeContext({ workDir: fixture.dir });
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, {
+          wants: [fixture.sharedTreeTip],
+          not: [fixture.lateTip],
+          objects: true,
         });
 
         // Assert

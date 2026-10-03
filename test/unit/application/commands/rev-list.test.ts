@@ -9,6 +9,8 @@ import { mergeRun } from '../../../../src/application/commands/merge.js';
 import { revList } from '../../../../src/application/commands/rev-list.js';
 import { tagCreate } from '../../../../src/application/commands/tag.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
+import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import type {
   AuthorIdentity,
@@ -804,6 +806,106 @@ describe('revList — useBitmapIndex', () => {
         // Assert — a real noWalk call would return only the merge commit itself.
         expect(result.entries.filter((e) => e.type === 'commit')).toHaveLength(4);
       });
+    });
+  });
+});
+
+interface SkewedExclusion {
+  readonly ctx: Context;
+  readonly ancestor: ObjectId;
+  readonly tip: ObjectId;
+  readonly excluded: ObjectId;
+}
+
+/** A commit owning one distinct blob, dated `timestamp` seconds. */
+const writeDatedCommit = async (
+  ctx: Context,
+  name: string,
+  timestamp: number,
+  parents: ReadonlyArray<ObjectId>,
+): Promise<ObjectId> => {
+  const blob: Blob = { type: 'blob', id: '' as ObjectId, content: new TextEncoder().encode(name) };
+  const tree = await writeTree(ctx, [
+    treeEntry('100644' as FileMode, `${name}.txt`, await writeObject(ctx, blob)),
+  ]);
+  const signature: AuthorIdentity = { ...AUTHOR, timestamp };
+  const object: Commit = {
+    type: 'commit',
+    id: '' as ObjectId,
+    data: {
+      tree,
+      parents,
+      author: signature,
+      committer: signature,
+      message: name,
+      extraHeaders: [],
+    },
+  };
+  return writeObject(ctx, object);
+};
+
+/**
+ * `tip` (newest) on `ancestor`, and an excluded line reaching `ancestor`
+ * through `depth` commits all dated BEFORE `ancestor` — clock skew that
+ * makes git's limited walk give up on the excluded side before it reaches
+ * `ancestor`.
+ */
+const seedSkewedExclusion = async (depth: number): Promise<SkewedExclusion> => {
+  const ctx = createMemoryContext();
+  await init(ctx);
+  const ancestor = await writeDatedCommit(ctx, 'ancestor', 500, []);
+  const tip = await writeDatedCommit(ctx, 'tip', 1000, [ancestor]);
+  let line = ancestor;
+  for (let step = 1; step <= depth; step += 1) {
+    line = await writeDatedCommit(ctx, `skewed-${step}`, 300 - step, [line]);
+  }
+  const excluded = await writeDatedCommit(ctx, 'excluded', 400, [line]);
+  return { ctx, ancestor, tip, excluded };
+};
+
+describe('Given an excluded line six clock-skewed commits away from the shared ancestor', () => {
+  describe('When revList walks the tip excluding that line', () => {
+    it('Then the ancestor is listed, because the walk stops looking five commits after it went all-uninteresting', async () => {
+      // Arrange
+      const { ctx, ancestor, tip, excluded } = await seedSkewedExclusion(6);
+      const sut = revList;
+
+      // Act
+      const result = await sut(ctx, { wants: [tip], not: [excluded] });
+
+      // Assert
+      expect(new Set(result.entries.map((entry) => entry.id))).toEqual(new Set([tip, ancestor]));
+    });
+  });
+
+  describe('When revList walks the tip excluding that line with objects', () => {
+    it('Then the ancestor keeps its tree and blob too', async () => {
+      // Arrange
+      const { ctx, tip, excluded } = await seedSkewedExclusion(6);
+      const sut = revList;
+
+      // Act
+      const result = await sut(ctx, { wants: [tip], not: [excluded], objects: true });
+
+      // Assert
+      expect(result.count).toBe(6);
+    });
+  });
+});
+
+describe('Given an excluded line three clock-skewed commits away from the shared ancestor', () => {
+  describe('When revList walks the tip excluding that line', () => {
+    it('Then the ancestor is excluded, reached within the five-commit slack', async () => {
+      // Arrange
+      const { ctx, tip, excluded } = await seedSkewedExclusion(3);
+      const sut = revList;
+
+      // Act
+      const result = await sut(ctx, { wants: [tip], not: [excluded], objects: true });
+
+      // Assert
+      expect(result.entries.map((entry) => entry.id).filter((id) => id === tip)).toEqual([tip]);
+      expect(result.count).toBe(3);
     });
   });
 });

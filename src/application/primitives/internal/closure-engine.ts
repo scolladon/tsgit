@@ -9,8 +9,13 @@
  * artefacts compute the identical answer, so which one served it is never
  * observable from the result alone. `'walk'` always walks.
  *
- * What the walk excludes, and the commit/tree asymmetry that reproduces
- * git's own over-report, lives in `closure-not-marks.ts`.
+ * With a commit on the `not` side the walk is git's limited walk
+ * (`limit_list`, `limit-list.ts`): it may give up on a clock-skewed excluded
+ * line before reaching a shared ancestor and list it, exactly as git's
+ * `rev-list` and `pack-objects --revs` do. The bitmap tier answers the exact
+ * set difference, as git's bitmap path does. What the walk excludes, and the
+ * commit/tree asymmetry that reproduces git's own over-report, lives in
+ * `closure-not-marks.ts`.
  *
  * Order is deterministic for a given call, but is not git's own order and is
  * not equal across calls with different shapes — callers that need a stable
@@ -35,12 +40,8 @@ import {
   type LoadedBitmapArtefact,
   resolveBitmapClosure,
 } from './bitmap-binding.js';
-import {
-  markBoundaryTrees,
-  markNotSide,
-  type NotMarks,
-  type WalkedCommit,
-} from './closure-not-marks.js';
+import { markBoundaryTrees, markNotSide, type NotMarks } from './closure-not-marks.js';
+import { type LimitedWalk, limitList, readShown, resolveLimitOptions } from './limit-list.js';
 import { loadMidxBitmapArtefact } from './midx-bitmap-binding.js';
 import { type EmitState, resolveTagChain, tryEmit } from './object-emit.js';
 import { loadPackBitmapArtefact } from './pack-bitmap-binding.js';
@@ -216,54 +217,91 @@ async function resolveWants(
 async function emitSeedsWithoutWalking(
   ctx: Context,
   commitSeeds: ReadonlyArray<Commit>,
-  marks: NotMarks,
   scope: TreeEmitScope,
   request: ClosureRequest,
   emit: Emit,
 ): Promise<void> {
-  let emitted = 0;
-  for (const seed of commitSeeds) {
-    if (marks.commits.has(seed.id)) continue;
-    if (request.maxCount !== undefined && emitted >= request.maxCount) return;
+  const shown =
+    request.maxCount === undefined ? commitSeeds : commitSeeds.slice(0, request.maxCount);
+  for (const seed of shown) {
     emit({ id: seed.id, type: 'commit', nameHash: 0 });
-    emitted += 1;
     if (request.objects) await emitTree(ctx, seed.data.tree, scope, emit);
   }
 }
 
+/** The slice of a walked commit the emit pass needs. */
+interface WalkedCommit {
+  readonly id: ObjectId;
+  readonly tree: ObjectId;
+}
+
+/** The commits a walk lists, and the uninteresting ones whose trees it marks. */
+interface CommitWalk {
+  readonly walked: ReadonlyArray<WalkedCommit>;
+  readonly boundary: ReadonlySet<ObjectId>;
+}
+
+const walkedFrom = (commit: Commit): WalkedCommit => ({ id: commit.id, tree: commit.data.tree });
+
+/** Nothing excluded: the plain walk, which may stop as soon as `maxCount` is reached. */
+async function collectUnlimitedWalk(
+  ctx: Context,
+  commitSeeds: ReadonlyArray<Commit>,
+  request: ClosureRequest,
+): Promise<CommitWalk> {
+  const walked: WalkedCommit[] = [];
+  for await (const commit of walkCommitsStoppingAt(ctx, {
+    from: commitSeeds.map((seed) => seed.id),
+    ignoreMissing: true,
+    order: request.firstParent === true ? 'first-parent' : 'breadth-first',
+  })) {
+    walked.push(walkedFrom(commit));
+    if (request.maxCount !== undefined && walked.length >= request.maxCount) break;
+  }
+  return { walked, boundary: NO_MARKS };
+}
+
 /**
- * Drain the interesting walk into a buffer. git's `mark_edges_uninteresting`
- * runs over the WHOLE interesting frontier (`limit_list`) before `--max-count`
- * truncates the output, so a limited-objects walk (one with a `not` side) must
- * reach the `until` boundary before `maxCount` applies — otherwise an edge
- * parent beyond the count never has its tree marked. A commits-only or
- * negative-free walk has no boundary to discover past the cap and stops early.
+ * git's `mark_edges_uninteresting` edges: every uninteresting parent of a
+ * listed commit, and every commit listed before it turned uninteresting.
+ */
+const edgesOf = (walk: LimitedWalk, listed: ReadonlyArray<Commit>): ReadonlySet<ObjectId> => {
+  const boundary = new Set(walk.dropped);
+  for (const commit of listed) {
+    for (const parent of commit.data.parents) {
+      if (walk.uninteresting.has(parent)) boundary.add(parent);
+    }
+  }
+  return boundary;
+};
+
+/**
+ * A commit excluded: git's `limit_list` over both sides, which runs to
+ * completion before `maxCount` truncates the list — an edge beyond the count
+ * still has its tree marked, as `mark_edges_uninteresting` sees the whole list.
  */
 async function collectLimitedWalk(
   ctx: Context,
   commitSeeds: ReadonlyArray<Commit>,
   marks: NotMarks,
   request: ClosureRequest,
-): Promise<WalkedCommit[]> {
-  const drainsFully = request.objects === true && marks.commits.size > 0;
-  const walked: WalkedCommit[] = [];
-  for await (const commit of walkCommitsStoppingAt(ctx, {
-    from: commitSeeds.map((seed) => seed.id),
-    until: marks.commits,
-    ignoreMissing: true,
-    order: request.firstParent === true ? 'first-parent' : 'breadth-first',
-  })) {
-    walked.push({ id: commit.id, tree: commit.data.tree, parents: commit.data.parents });
-    if (request.maxCount !== undefined && walked.length >= request.maxCount && !drainsFully) break;
-  }
-  return walked;
+): Promise<CommitWalk> {
+  const options = await resolveLimitOptions(
+    ctx,
+    { from: commitSeeds.map((seed) => seed.id), ignoreMissing: true },
+    { until: new Set(marks.commitTips), firstParent: request.firstParent === true, settle: 'slop' },
+  );
+  const walk = await limitList(ctx, options);
+  const listed: Commit[] = [];
+  for await (const commit of readShown(ctx, options, walk)) listed.push(commit);
+  return { walked: listed.map(walkedFrom), boundary: edgesOf(walk, listed) };
 }
 
 /**
  * Walk the commit seeds' ancestry, bounded by `maxCount` and ordered by
- * `firstParent`, buffered first: boundary-tree discovery (`markBoundaryTrees`)
- * needs the FULL walked set before any tree is emitted, since a boundary a
- * later commit surfaces must still gate an earlier commit's own tree walk.
+ * `firstParent`, buffered first: boundary-tree marking (`markBoundaryTrees`)
+ * needs the FULL walk before any tree is emitted, since a boundary a later
+ * commit surfaces must still gate an earlier commit's own tree walk.
  */
 async function walkAndEmitCommits(
   ctx: Context,
@@ -273,8 +311,11 @@ async function walkAndEmitCommits(
   request: ClosureRequest,
   emit: Emit,
 ): Promise<void> {
-  const walked = await collectLimitedWalk(ctx, commitSeeds, marks, request);
-  if (request.objects) await markBoundaryTrees(ctx, walked, marks);
+  const { walked, boundary } =
+    marks.commitTips.length === 0
+      ? await collectUnlimitedWalk(ctx, commitSeeds, request)
+      : await collectLimitedWalk(ctx, commitSeeds, marks, request);
+  if (request.objects) await markBoundaryTrees(ctx, boundary, marks);
 
   const emitted = request.maxCount !== undefined ? walked.slice(0, request.maxCount) : walked;
   for (const commit of emitted) {
@@ -297,7 +338,7 @@ async function emitCommitSeeds(
   // to the ordinary bounded walk; `noWalk` shows only the tips solely when there
   // is nothing to exclude.
   if (request.noWalk === true && request.not.length === 0)
-    return emitSeedsWithoutWalking(ctx, commitSeeds, marks, scope, request, emit);
+    return emitSeedsWithoutWalking(ctx, commitSeeds, scope, request, emit);
   return walkAndEmitCommits(ctx, commitSeeds, marks, scope, request, emit);
 }
 

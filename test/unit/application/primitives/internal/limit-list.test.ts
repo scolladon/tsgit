@@ -521,4 +521,26 @@ describe('walkLimited', () => {
       });
     });
   });
+
+  describe('Given commits listed before the excluded side reaches them through a later-dated commit', () => {
+    describe('When the walk reports what it dropped', () => {
+      it('Then it holds those commits in list order, and the shown list leaves them out', async () => {
+        // Arrange — o ← d ← w; e reaches d only through s, dated after d and o
+        const history = await buildHistory([
+          ['o', 700, []],
+          ['d', 800, ['o']],
+          ['w', 1000, ['d']],
+          ['s', 900, ['d']],
+          ['e', 500, ['s']],
+        ]);
+
+        // Act
+        const result = await limitList(history.ctx, optionsFor(history, ['w'], ['e']));
+
+        // Assert
+        expect(result.dropped.map(history.name)).toEqual(['d', 'o']);
+        expect(result.shown.map(history.name)).toEqual(['w']);
+      });
+    });
+  });
 });
