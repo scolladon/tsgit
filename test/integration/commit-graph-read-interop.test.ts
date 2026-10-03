@@ -290,4 +290,60 @@ describe.skipIf(!GIT_AVAILABLE)('commit-graph read interop', () => {
       );
     });
   });
+
+  describe('Given a single-file graph whose octopus merge has no EDGE chunk to read', () => {
+    describe('When both tools log the history', () => {
+      it(
+        'Then both report the extra-edges pointer, fall back for that commit and keep the graph',
+        async () => {
+          // Arrange
+          const repo = linearHistory(1);
+          const [root] = repo.commits as [ObjectId];
+          const commitTree = (message: string, parents: ReadonlyArray<string>): string =>
+            runGit([
+              '-C',
+              repo.dir,
+              'commit-tree',
+              `${root}^{tree}`,
+              ...parents.flatMap((parent) => ['-p', parent]),
+              '-m',
+              message,
+            ]).trim();
+          const sides = ['s1', 's2'].map((message) => commitTree(message, [root]));
+          const octopus = commitTree('octopus', [root, ...sides]);
+          runGit(['-C', repo.dir, 'update-ref', 'refs/heads/main', octopus]);
+          runGit(['-C', repo.dir, 'commit-graph', 'write', '--reachable']);
+          const file = path.join(repo.dir, '.git', 'objects', 'info', 'commit-graph');
+          chmodSync(file, 0o644);
+          const bytes = new Uint8Array(readFileSync(file));
+          const rows = Buffer.from(bytes.subarray(0, 8 + 12 * ((bytes[6] as number) + 1)));
+          bytes.set(Buffer.from('ZZZZ', 'latin1'), rows.indexOf('EDGE', 8, 'latin1'));
+          writeFileSync(file, bytes);
+          const warnings: string[] = [];
+          const opened = await openRepository({
+            cwd: repo.dir,
+            logger: { warn: (message: string) => warnings.push(message) },
+          });
+
+          // Act
+          const git = tryRunGitWithExit(['-C', repo.dir, 'log', '--format=%H %P']);
+          const ours = await opened.log();
+          const sideServed = await commitHeader(opened.ctx, sides[0] as ObjectId);
+          await opened.dispose?.();
+
+          // Assert
+          expect(git.exitCode).toBe(GIT_SUCCEEDED);
+          expect(git.stderr).toBe('error: commit-graph extra-edges pointer out of bounds\n');
+          expect(warnings.map((line) => `error: ${line.replace(LOGGER_PREFIX, '')}\n`)).toEqual([
+            git.stderr,
+          ]);
+          expect(ours.map((entry) => [entry.id, ...entry.parents].join(' '))).toEqual(
+            git.stdout.trimEnd().split('\n'),
+          );
+          expect(sideServed).toBeDefined();
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
 });

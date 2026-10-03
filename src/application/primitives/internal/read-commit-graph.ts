@@ -12,9 +12,8 @@
  */
 import {
   type CommitGraphLayer,
-  type CommitParentPositions,
   commitMetaAt,
-  commitParentPositionsAt,
+  graphParentsAt,
   oidAtPosition,
   parseCommitGraphLayer,
   positionOf,
@@ -355,14 +354,9 @@ function findLayerForGlobalPosition(
 
 function resolveParentIds(
   graph: LoadedGraph,
-  data: CommitParentPositions,
+  positions: ReadonlyArray<number>,
   ownBound: number,
 ): readonly ObjectId[] {
-  const positions: number[] = [];
-  if (data.parent1Pos !== undefined) positions.push(data.parent1Pos);
-  if (data.parent2Pos !== undefined) positions.push(data.parent2Pos);
-  positions.push(...data.additionalParentPositions);
-
   return positions.map((pos) => {
     // git's `insert_parent_or_die` bounds a parent by the CHILD's own layer:
     // `pos >= g->num_commits + g->num_commits_in_base`. A position naming a
@@ -417,11 +411,18 @@ export async function commitHeader(ctx: Context, id: ObjectId): Promise<CommitHe
     correctedCommitDates: graph.correctedCommitDates,
   });
   try {
-    const data = commitParentPositionsAt(found.layer, found.localPos);
+    const recorded = graphParentsAt(found.layer, found.localPos);
     const ownBound = graph.layerOffsets[found.layerIndex]! + found.layer.commitCount;
+    const parents = resolveParentIds(graph, recorded.positions, ownBound);
+    if (recorded.edgesOutOfBounds) {
+      // git's `fill_commit_in_graph` errors and parses this one commit from
+      // its object instead, keeping the graph for every other commit.
+      ctx.logger?.warn?.('commitGraph: commit-graph extra-edges pointer out of bounds', { id });
+      return undefined;
+    }
     const header: CommitHeader = {
       rootTree: meta.rootTree,
-      parents: resolveParentIds(graph, data, ownBound),
+      parents,
       committerDate: meta.committerDate,
       generation: meta.generation,
     };

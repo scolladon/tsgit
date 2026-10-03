@@ -373,10 +373,7 @@ export function commitDataAt(
 }
 
 /** Reads the parent positions for a layer-local position, following EDGE for an octopus. */
-export function commitParentPositionsAt(
-  layer: CommitGraphLayer,
-  localPos: number,
-): CommitParentPositions {
+function commitParentPositionsAt(layer: CommitGraphLayer, localPos: number): CommitParentPositions {
   const parentsOffset =
     layer._commitDataOffset + localPos * layer._commitDataEntrySize + layer._hashLength;
   const parent1Raw = layer._view.getUint32(parentsOffset);
@@ -416,6 +413,38 @@ function readEdgeChain(layer: CommitGraphLayer, edgePos: number): number[] {
     if ((raw & EDGE_LAST_FLAG) !== 0) return positions;
   }
   throw invalidCommitGraphChunk('truncated EDGE chunk: octopus parent list never terminates');
+}
+
+export interface GraphParents {
+  readonly positions: ReadonlyArray<number>;
+  /** The octopus list ran past the EDGE chunk before its last entry. */
+  readonly edgesOutOfBounds: boolean;
+}
+
+const EDGE_ENTRY_SIZE = 4;
+
+/** git's `fill_commit_in_graph` parent read, stopping where git's extra-edges bound does. */
+export function graphParentsAt(layer: CommitGraphLayer, position: number): GraphParents {
+  const entry = layer._commitDataOffset + position * layer._commitDataEntrySize + layer._hashLength;
+  const first = layer._view.getUint32(entry);
+  if (first === NO_PARENT) return { positions: [], edgesOutOfBounds: false };
+  const second = layer._view.getUint32(entry + 4);
+  if (second === NO_PARENT) return { positions: [first], edgesOutOfBounds: false };
+  if ((second & OCTOPUS_FLAG) === 0) return { positions: [first, second], edgesOutOfBounds: false };
+  return readEdges(layer, first, second & EDGE_POS_MASK);
+}
+
+function readEdges(layer: CommitGraphLayer, first: number, start: number): GraphParents {
+  const positions = [first];
+  const range = layer._extraEdgeRange;
+  if (range === undefined) return { positions, edgesOutOfBounds: true };
+  for (let at = range.start + start * EDGE_ENTRY_SIZE; at + EDGE_ENTRY_SIZE <= range.end; ) {
+    const raw = layer._view.getUint32(at);
+    positions.push(raw & EDGE_POS_MASK);
+    if ((raw & EDGE_LAST_FLAG) !== 0) return { positions, edgesOutOfBounds: false };
+    at += EDGE_ENTRY_SIZE;
+  }
+  return { positions, edgesOutOfBounds: true };
 }
 
 /** `generationRange` is the layer's GDA2 chunk, or `undefined` when this read

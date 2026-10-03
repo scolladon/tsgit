@@ -298,6 +298,20 @@ async function buildFiveCommitHistory(
   return { c0, c1, c2, c3, c4 };
 }
 
+/** d3 = octopus(d0, d1, d2) in a single-file graph whose EDGE chunk id is smashed. */
+async function buildOctopusWithoutEdgeChunk(ctx: Context): Promise<{ d0: Commit; d3: Commit }> {
+  const tree = await emptyTree(ctx);
+  const d0 = await makeCommit(ctx, tree, [], 1, 'd0');
+  const d1 = await makeCommit(ctx, tree, [], 2, 'd1');
+  const d2 = await makeCommit(ctx, tree, [], 3, 'd2');
+  const d3 = await makeCommit(ctx, tree, [d0.id, d1.id, d2.id], 4, 'd3');
+  await writeCommitGraph(ctx, [[d0, d1, d2, d3]]);
+  const graphPath = commitGraphPath(commonGitDir(ctx));
+  const original = await ctx.fs.read(graphPath);
+  await ctx.fs.write(graphPath, renameChunkRowId(original, 'EDGE', 'ZZZZ'));
+  return { d0, d3 };
+}
+
 function expectHeaderMatchesCommit(
   header: Awaited<ReturnType<typeof commitHeader>>,
   commit: Commit,
@@ -984,58 +998,22 @@ describe('read-commit-graph', () => {
 
     describe('Given a single-file graph with an octopus merge whose EDGE chunk becomes unreadable after writing', () => {
       describe('When commitHeader is called for the merge commit', () => {
-        it('Then the graph degrades to absent instead of throwing, and stays poisoned for later calls', async () => {
-          // Arrange — a decode failure discovered mid-lookup (not at parse
-          // time) must still be caught by commitHeader's own try/catch and
-          // degrade the whole graph to absent for the rest of the lifetime.
-          const ctx = await buildSeededContext();
-          const tree = await emptyTree(ctx);
-          const d0 = await makeCommit(ctx, tree, [], 1, 'd0');
-          const d1 = await makeCommit(ctx, tree, [], 2, 'd1');
-          const d2 = await makeCommit(ctx, tree, [], 3, 'd2');
-          const d3 = await makeCommit(ctx, tree, [d0.id, d1.id, d2.id], 4, 'd3');
-          await writeCommitGraph(ctx, [[d0, d1, d2, d3]]);
-          const gitDir = commonGitDir(ctx);
-          const graphPath = commitGraphPath(gitDir);
-          const original = await ctx.fs.read(graphPath);
-          await ctx.fs.write(graphPath, renameChunkRowId(original, 'EDGE', 'ZZZZ'));
+        it("Then that commit alone falls back to its object and git's error is logged", async () => {
+          // Arrange
+          const warn = vi.fn<NonNullable<Logger['warn']>>();
+          const ctx = { ...(await buildSeededContext()), logger: { warn } };
+          const { d0, d3 } = await buildOctopusWithoutEdgeChunk(ctx);
 
           // Act
           const header = await commitHeader(ctx, d3.id);
-          const secondHeader = await commitHeader(ctx, d3.id);
 
           // Assert
           expect(header).toBeUndefined();
-          expect(secondHeader).toBeUndefined();
-        });
-      });
-
-      describe('When a DIFFERENT, structurally-clean commit is looked up right after', () => {
-        it('Then it ALSO comes back absent — the whole graph degrades, not just the failing entry', async () => {
-          // Arrange — d0 is parentless: its own lookup never touches the
-          // corrupt EDGE chunk at all, so it can only come back absent here
-          // if the FIRST call's degrade actually poisoned the cached graph
-          // object itself, rather than the graph staying cached (structurally
-          // intact from d0's point of view) for a would-be-clean second read.
-          const ctx = await buildSeededContext();
-          const tree = await emptyTree(ctx);
-          const d0 = await makeCommit(ctx, tree, [], 1, 'd0');
-          const d1 = await makeCommit(ctx, tree, [], 2, 'd1');
-          const d2 = await makeCommit(ctx, tree, [], 3, 'd2');
-          const d3 = await makeCommit(ctx, tree, [d0.id, d1.id, d2.id], 4, 'd3');
-          await writeCommitGraph(ctx, [[d0, d1, d2, d3]]);
-          const gitDir = commonGitDir(ctx);
-          const graphPath = commitGraphPath(gitDir);
-          const original = await ctx.fs.read(graphPath);
-          await ctx.fs.write(graphPath, renameChunkRowId(original, 'EDGE', 'ZZZZ'));
-
-          // Act
-          const header = await commitHeader(ctx, d3.id);
-          const cleanHeader = await commitHeader(ctx, d0.id);
-
-          // Assert
-          expect(header).toBeUndefined();
-          expect(cleanHeader).toBeUndefined();
+          expect(isGraphKnownAbsent(ctx)).toBe(false);
+          expect(warn.mock.calls).toEqual([
+            ['commitGraph: commit-graph extra-edges pointer out of bounds', { id: d3.id }],
+          ]);
+          expect((await commitHeader(ctx, d0.id))?.rootTree).toBe(d0.data.tree);
         });
       });
     });
