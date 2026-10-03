@@ -89,6 +89,9 @@ describe.skipIf(!GIT_AVAILABLE)('integration — revParse ref DWIM parity with c
     // A short name two namespaces carry, the tag on the newer commit.
     git(repo, 'update-ref', 'refs/heads/amb', first);
     git(repo, 'update-ref', 'refs/tags/amb', second);
+    // Hex-only branch names: too short to abbreviate an oid, and one that also abbreviates `first`.
+    git(repo, 'update-ref', 'refs/heads/a2', second);
+    git(repo, 'update-ref', `refs/heads/${first.slice(0, 4)}`, second);
   }, SETUP_TIMEOUT);
 
   afterAll(async () => {
@@ -203,6 +206,29 @@ describe.skipIf(!GIT_AVAILABLE)('integration — revParse ref DWIM parity with c
         expect(gitResult.stdout.trim()).toBe(second);
         expect(result).toBe(second);
         expect(git(repo, 'rev-parse', 'refs/heads/amb').trim()).toBe(first);
+      });
+    });
+  });
+
+  describe.each([
+    { name: () => 'a2', label: 'a two-character hex branch name' },
+    { name: () => 'a2^', label: 'a two-character hex branch name with a parent operator' },
+    {
+      name: () => first.slice(0, 4),
+      label: "a hex branch name that also abbreviates another commit's oid",
+    },
+  ])('Given $label', ({ name }) => {
+    describe('When git rev-parse and revParse both resolve it', () => {
+      it('Then both resolve the branch', async () => {
+        // Arrange
+        const sut = revParse;
+        const ctx = createNodeContext({ workDir: repo });
+
+        // Act
+        const result = await sut(ctx, name());
+
+        // Assert
+        expect(result).toBe(git(repo, 'rev-parse', name()).trim());
       });
     });
   });

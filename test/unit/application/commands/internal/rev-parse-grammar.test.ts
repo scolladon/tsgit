@@ -39,7 +39,6 @@ describe('internal/rev-parse-grammar', () => {
             // can reject it.
             label: "'HEAD@{12' (a multi-character body with no closing brace)",
           },
-          { raw: 'abc', label: "'abc' (3 hex chars, shorter than git's min abbreviation)" },
           { raw: ':0:', label: "':0:' (empty path)" },
           { raw: ':', label: "':' alone" },
           { raw: 'HEAD^{', label: "'HEAD^{' (peel with no closing brace)" },
@@ -549,13 +548,33 @@ describe('internal/rev-parse-grammar', () => {
       });
     });
 
+    describe("Given 'abc' (a hex name too short to abbreviate an object id)", () => {
+      describe('When parseExpression', () => {
+        it('Then accepted as ref-or-hex, left for the ref lookup to resolve as git does', () => {
+          // Arrange
+          const sut = parseExpression;
+
+          // Act
+          const result = sut('abc');
+
+          // Assert
+          expect(result).toEqual({
+            kind: 'ref-or-hex',
+            base: 'abc',
+            operations: [],
+          } satisfies RevExpression);
+        });
+      });
+    });
+
     describe("Given 'abc^' (short hex base followed by an operator)", () => {
       describe('When parseExpression', () => {
         it('Then accepted as ref-or-hex with operations', () => {
-          // Arrange / Act
-          // A short hex base only fails when it stands alone (opStart === -1).
-          // With an operator chain it is a valid ref-or-hex expression.
-          const result = parseExpression('abc^');
+          // Arrange
+          const sut = parseExpression;
+
+          // Act
+          const result = sut('abc^');
 
           // Assert
           expect(result).toEqual({

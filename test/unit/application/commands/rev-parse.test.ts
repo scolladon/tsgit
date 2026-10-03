@@ -403,6 +403,29 @@ describe('revParse', () => {
     });
   });
 
+  describe.each(['a2', 'b1', 'abc'])(
+    'Given a branch named %s, too short to abbreviate an object id',
+    (name) => {
+      describe('When revParse resolves that name', () => {
+        it('Then it resolves the branch as git does', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          const {
+            commitIds: [tip],
+          } = await seedRepo(ctx, { commits: [{ tree: 'e'.repeat(40) }] });
+          await seedRepo(ctx, { refs: { [`refs/heads/${name}`]: tip as string } });
+          const sut = revParse;
+
+          // Act
+          const bare = await sut(ctx, name);
+
+          // Assert
+          expect(bare).toBe(tip);
+        });
+      });
+    },
+  );
+
   describe('Given a base matching none of the six ref candidates', () => {
     describe('When revParse sweeps the candidates', () => {
       it('Then probes resolveDirect exactly 6 times and never invokes the throwing resolveRef', async () => {
