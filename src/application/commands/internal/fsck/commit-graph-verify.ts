@@ -25,7 +25,7 @@ import {
   isGraphDecodeFailure,
 } from '../../../primitives/internal/read-commit-graph.js';
 import { getObjectStore, type ObjectSource } from '../../../primitives/object-store.js';
-import { commitGraphPathIn } from '../../../primitives/path-layout.js';
+import { commitGraphChainPathIn, commitGraphPathIn } from '../../../primitives/path-layout.js';
 import { readObject } from '../../../primitives/read-object.js';
 import { EXIT_COMMIT_GRAPH } from './exit-codes.js';
 import { attributeTo } from './source-attribution.js';
@@ -43,9 +43,9 @@ export async function runCommitGraphVerifyPass(ctx: Context): Promise<PassResult
   const store = await getObjectStore(ctx);
   const findings: FsckFinding[] = [];
   for (const source of store.sources) {
-    const artefact = commitGraphPathIn(source.objectsDir);
+    const { artefact, verdicts } = await verifySource(ctx, source);
     const attribution = attributeTo(store, source);
-    for (const verdict of await verifySource(ctx, source)) {
+    for (const verdict of verdicts) {
       findings.push({ type: 'commit-graph-invalid', artefact, ...attribution, ...verdict });
     }
   }
@@ -70,12 +70,44 @@ function parseLayer(bytes: Uint8Array): CommitGraphLayer | CommitGraphVerdict {
   }
 }
 
-async function verifySource(
-  ctx: Context,
-  source: ObjectSource,
-): Promise<ReadonlyArray<CommitGraphVerdict>> {
+interface SourceReport {
+  /** The file the verdicts are about: the single graph, or the chain when there is none. */
+  readonly artefact: string;
+  readonly verdicts: ReadonlyArray<CommitGraphVerdict>;
+}
+
+/** git's `graph_verify`: the single file when it opens, otherwise the chain. */
+async function verifySource(ctx: Context, source: ObjectSource): Promise<SourceReport> {
   const bytes = await readGraphBytes(source);
-  if (bytes === undefined) return [];
+  if (bytes === undefined) return chainReport(source);
+  return {
+    artefact: commitGraphPathIn(source.objectsDir),
+    verdicts: await verifyGraph(ctx, bytes),
+  };
+}
+
+/** An absent chain verifies nothing; one that will not open is where git's verify dies. */
+async function chainReport(source: ObjectSource): Promise<SourceReport> {
+  const artefact = commitGraphChainPathIn(source.objectsDir);
+  const code = await chainOpenFailure(source, artefact);
+  return { artefact, verdicts: code === undefined ? [] : [{ check: 'chain-unopenable', code }] };
+}
+
+async function chainOpenFailure(source: ObjectSource, path: string): Promise<string | undefined> {
+  try {
+    await source.fs.read(path);
+    return undefined;
+  } catch (error) {
+    const code = errorDataCode(error);
+    if (code === undefined) throw error;
+    return code === 'FILE_NOT_FOUND' ? undefined : code;
+  }
+}
+
+async function verifyGraph(
+  ctx: Context,
+  bytes: Uint8Array,
+): Promise<ReadonlyArray<CommitGraphVerdict>> {
   const layer = parseLayer(bytes);
   if ('check' in layer) return [layer];
   const checksum = await checksumVerdicts(ctx, bytes);

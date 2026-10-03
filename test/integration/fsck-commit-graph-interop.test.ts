@@ -160,6 +160,8 @@ const renderLine = (finding: GraphFinding): string => {
       return `failed to parse commit ${finding.id} from commit-graph`;
     case 'invalid-parent-position':
       return `fatal: invalid parent position ${finding.position}`;
+    case 'chain-unopenable':
+      return `fatal: could not open commit-graph chain '${finding.artefact}': Not a directory`;
     default:
       return JSON.stringify(finding);
   }
@@ -218,6 +220,35 @@ describe.skipIf(!GIT_AVAILABLE)('Given a two-commit history with a commit-graph'
         expect(peer.exitCode).toBe(0);
         expect(result.findings.filter(isGraphFinding)).toEqual([]);
         expect(result.exitCode).toBe(0);
+      },
+      ROW_TIMEOUT,
+    );
+  });
+
+  describe('When info/commit-graphs is a file and both tools run fsck', () => {
+    it(
+      'Then tsgit reports the unopenable chain git dies on, with bit 16',
+      async () => {
+        // Arrange
+        const history = twoCommitsWithGraph('chain-not-a-directory');
+        rmSync(history.graph);
+        writeFileSync(path.join(history.dir, '.git', 'objects', 'info', 'commit-graphs'), 'x');
+        const peer = tryRunGitWithExit(['-C', history.dir, 'fsck']);
+        const repo = await openRepository({ cwd: history.dir });
+        const sut = repo.fsck;
+
+        // Act
+        const result = await sut().finally(() => repo.dispose());
+
+        // Assert
+        const lines = peer.stderr.split('\n').filter((line) => line.length > 0);
+        const relative = result.findings
+          .filter(isGraphFinding)
+          .map((finding) =>
+            renderLine({ ...finding, artefact: path.relative(history.dir, finding.artefact) }),
+          );
+        expect(relative).toEqual(lines);
+        expect(result.exitCode & EXIT_COMMIT_GRAPH).toBe(peer.exitCode & EXIT_COMMIT_GRAPH);
       },
       ROW_TIMEOUT,
     );

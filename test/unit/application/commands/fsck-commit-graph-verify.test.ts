@@ -9,12 +9,15 @@ import { type FsckFinding, fsck } from '../../../../src/application/commands/fsc
 import { runCommitGraphVerifyPass } from '../../../../src/application/commands/internal/fsck/commit-graph-verify.js';
 import { getObjectStore } from '../../../../src/application/primitives/object-store.js';
 import {
+  commitGraphChainPath,
+  commitGraphLayersDir,
   commitGraphPath,
   commonGitDir,
 } from '../../../../src/application/primitives/path-layout.js';
 import * as readObjectMod from '../../../../src/application/primitives/read-object.js';
 import { writeCommitGraph } from '../../../../src/application/primitives/write-commit-graph.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import { writeSplitCommitGraph } from '../../../../src/application/primitives/write-split-commit-graph.js';
 import * as commitGraphMod from '../../../../src/domain/commit/commit-graph.js';
 import {
   type CommitGraphLayer,
@@ -507,6 +510,71 @@ describe('fsck commit-graph verify', () => {
     });
   });
 
+  describe('Given no commit-graph file and info/commit-graphs a file', () => {
+    describe('When fsck runs', () => {
+      it('Then it reports the chain it cannot open, setting bit 16', async () => {
+        // Arrange
+        const { ctx } = await repoWithGraph();
+        const gitDir = commonGitDir(ctx);
+        await ctx.fs.rm(commitGraphPath(gitDir));
+        await ctx.fs.writeUtf8(commitGraphLayersDir(gitDir), 'x');
+        const sut = fsck;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(graphFindings(result.findings)).toEqual([
+          {
+            type: 'commit-graph-invalid',
+            artefact: commitGraphChainPath(gitDir),
+            check: 'chain-unopenable',
+            code: 'NOT_A_DIRECTORY',
+          },
+        ]);
+        expect(result.exitCode & EXIT_COMMIT_GRAPH).toBe(EXIT_COMMIT_GRAPH);
+      });
+    });
+  });
+
+  describe('Given a sound split chain in place of the single file', () => {
+    describe('When fsck runs', () => {
+      it('Then no commit-graph finding is reported', async () => {
+        // Arrange
+        const { ctx } = await repoWithGraph();
+        await ctx.fs.rm(commitGraphPath(commonGitDir(ctx)));
+        await writeSplitCommitGraph(ctx);
+        const sut = fsck;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(await ctx.fs.exists(commitGraphChainPath(commonGitDir(ctx)))).toBe(true);
+        expect(graphFindings(result.findings)).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given no commit-graph file and a chain directory with no chain', () => {
+    describe('When fsck runs', () => {
+      it('Then no commit-graph finding is reported', async () => {
+        // Arrange
+        const { ctx } = await repoWithGraph();
+        const gitDir = commonGitDir(ctx);
+        await ctx.fs.rm(commitGraphPath(gitDir));
+        await ctx.fs.mkdir(commitGraphLayersDir(gitDir));
+        const sut = fsck;
+
+        // Act
+        const result = await sut(ctx);
+
+        // Assert
+        expect(graphFindings(result.findings)).toEqual([]);
+      });
+    });
+  });
+
   describe('Given a commit-graph file that does not parse', () => {
     describe('When fsck runs', () => {
       it('Then it reports the graph load failure with the decode reason', async () => {
@@ -552,6 +620,19 @@ describe('fsck commit-graph verify', () => {
         vi.spyOn(commitGraphMod, 'parseCommitGraphLayer').mockImplementationOnce(() => {
           throw UNEXPECTED;
         });
+      },
+    },
+    {
+      fault: 'opening the chain fails outside the error model',
+      arrange: async (ctx: Context): Promise<void> => {
+        await ctx.fs.rm(commitGraphPath(commonGitDir(ctx)));
+        const { primary } = await getObjectStore(ctx);
+        const read = primary.fs.read.bind(primary.fs);
+        vi.spyOn(primary.fs, 'read').mockImplementation((path) =>
+          path === commitGraphChainPath(commonGitDir(ctx))
+            ? Promise.reject(UNEXPECTED)
+            : read(path),
+        );
       },
     },
     {

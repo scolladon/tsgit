@@ -40,7 +40,9 @@ export type CommitGraphVerdict =
       readonly recordedDate: number;
       readonly actualDate: number;
     }
-  | { readonly check: 'mixed-generations'; readonly zero: ObjectId; readonly nonZero: ObjectId };
+  | { readonly check: 'mixed-generations'; readonly zero: ObjectId; readonly nonZero: ObjectId }
+  /** The chain file could not be opened for a reason other than its absence — `code` names it. */
+  | { readonly check: 'chain-unopenable'; readonly code: string };
 
 export interface StructuralVerdicts {
   readonly verdicts: ReadonlyArray<CommitGraphVerdict>;
