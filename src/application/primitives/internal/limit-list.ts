@@ -27,7 +27,12 @@ const READ_AHEAD = 8;
 export type LimitSettle = 'slop' | 'generation';
 
 export interface LimitListOptions {
-  readonly from: ReadonlyArray<ObjectId>;
+  /**
+   * Every named commit, included or excluded, in command-line order: git
+   * queues commits sharing a date in that order, and which of them pops
+   * first decides what the excluded side has marked by then.
+   */
+  readonly seeds: ReadonlyArray<ObjectId>;
   /** Excluded commits; they and every ancestor the walk reaches are uninteresting. */
   readonly until: ReadonlySet<ObjectId>;
   /** Follow only first parents of interesting commits; excluded lines follow all. */
@@ -57,13 +62,17 @@ export interface LimitWalkOptions {
   readonly shallow?: ReadonlySet<ObjectId>;
 }
 
+/** The walk's own knobs; `seeds` defaults to git's `<from> ^<until>` command-line order. */
+type LimitSettings = Pick<LimitListOptions, 'until' | 'firstParent' | 'settle'> &
+  Partial<Pick<LimitListOptions, 'seeds'>>;
+
 /** Complete a walk's options for {@link limitList}, loading `.git/shallow` when none is given. */
 export const resolveLimitOptions = async (
   ctx: Context,
   options: LimitWalkOptions,
-  limits: Pick<LimitListOptions, 'until' | 'firstParent' | 'settle'>,
+  limits: LimitSettings,
 ): Promise<LimitListOptions> => ({
-  from: options.from,
+  seeds: [...options.from, ...limits.until],
   ignoreMissing: options.ignoreMissing ?? false,
   verifyHash: options.verifyHash ?? false,
   shallow: await resolveShallow(ctx, options.shallow),
@@ -173,8 +182,8 @@ const createState = (ctx: Context, options: LimitListOptions): LimitState => ({
  * marks its parents uninteresting, and all of them are queued once.
  */
 const enqueueSeeds = async (state: LimitState): Promise<void> => {
-  const { from, until } = state.options;
-  for (const seed of new Set([...from, ...until])) {
+  const { seeds, until } = state.options;
+  for (const seed of new Set(seeds)) {
     const parsed = await parse(state, seed, false);
     if (parsed === undefined) continue;
     if (until.has(seed)) {

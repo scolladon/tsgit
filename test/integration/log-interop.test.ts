@@ -198,11 +198,27 @@ interface ExclusionHistory {
  * six commits dated older than x — git's limited walk gives up on the
  * longer chain before it reaches x.
  */
+type CommitFn = (message: string, parents: ReadonlyArray<string>, committed: number) => string;
+
+/**
+ * ta and tb share a date; tb ← tp ← tk1 … tk6 ← tg and tb ← ts ← tg, while
+ * ta reaches tp through tm ← tn, tp's whole line dated before tg. Which of
+ * ta and tb pops first decides whether tp is marked before it is shown.
+ */
+const buildTiedSeeds = (commit: CommitFn): { readonly ta: string; readonly tb: string } => {
+  const tg = commit('tg', [], 98);
+  let line = tg;
+  for (let step = 6; step >= 1; step -= 1) line = commit(`tk${step}`, [line], 90);
+  const tp = commit('tp', [line], 90);
+  const ta = commit('ta', [commit('tm', [commit('tn', [tp], 90)], 90)], 100);
+  return { ta, tb: commit('tb', [tp, commit('ts', [tg], 99)], 100) };
+};
+
 const buildExclusionHistory = async (withCommitGraph: boolean): Promise<ExclusionHistory> => {
   const dir = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-log-exclusion-')));
   runGit(['init', '-q', '-b', 'main', dir]);
   const tree = runGit(['-C', dir, 'mktree'], { input: '' }).trim();
-  const commit = (message: string, parents: ReadonlyArray<string>, committed: number): string =>
+  const commit: CommitFn = (message, parents, committed) =>
     runGit(['-C', dir, 'commit-tree', tree, ...parents.flatMap((p) => ['-p', p]), '-m', message], {
       env: dateEnv(OFFSET_EPOCH + committed),
     }).trim();
@@ -227,6 +243,7 @@ const buildExclusionHistory = async (withCommitGraph: boolean): Promise<Exclusio
     a1,
     b1,
     c1,
+    ...buildTiedSeeds(commit),
   };
   for (const [name, id] of Object.entries(ids)) git(dir, 'update-ref', `refs/heads/${name}`, id);
   if (withCommitGraph) git(dir, 'commit-graph', 'write', '--reachable');
@@ -245,6 +262,7 @@ const EXCLUSION_RANGES: ReadonlyArray<{
   { tip: 'n', excluded: ['m2'] },
   { tip: 'i', excluded: ['e3'] },
   { tip: 'i', excluded: ['e6'] },
+  { tip: 'tb', excluded: ['ta'] },
 ];
 
 const ORDERING_MATRIX: ReadonlyArray<{

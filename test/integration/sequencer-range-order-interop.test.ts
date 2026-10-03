@@ -65,6 +65,20 @@ const HISTORY: ReadonlyArray<readonly [string, number, ReadonlyArray<string>]> =
   ['upper', 450, ['bottom']],
   ['head-merge', 1000, ['bottom', 'yonder']],
   ['head-tip', 1100, ['head-merge']],
+  ['tg', 98, []],
+  ['tk6', 90, ['tg']],
+  ['tk5', 90, ['tk6']],
+  ['tk4', 90, ['tk5']],
+  ['tk3', 90, ['tk4']],
+  ['tk2', 90, ['tk3']],
+  ['tk1', 90, ['tk2']],
+  ['tp', 90, ['tk1']],
+  ['tn', 90, ['tp']],
+  ['tm', 90, ['tn']],
+  ['td', 100, ['tm']],
+  ['ts', 99, ['tg']],
+  ['th', 100, ['tp']],
+  ['tc', 100, ['ts']],
 ];
 
 let root: string;
@@ -135,6 +149,8 @@ describe.skipIf(!GIT_AVAILABLE)('interop — cherry-pick range order', () => {
     { args: ['left2^'], expected: ['left1'] },
     { args: ['^root', 'left2'], expected: ['left1', 'left2'] },
     { args: ['left2', '^left1'], expected: ['left2'] },
+    { args: ['tc', 'td..th'], expected: ['tg', 'ts', 'th', 'tc'] },
+    { args: ['tc', 'th', '^td'], expected: ['ts', 'th', 'tc'] },
   ])('Given the arguments $args', ({ args, expected }) => {
     describe('When git and tsgit cherry-pick them onto z', () => {
       it(

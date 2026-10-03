@@ -3,6 +3,7 @@ import { createCommit } from '../../../../../src/application/primitives/create-c
 import {
   type LimitListOptions,
   limitList,
+  resolveLimitOptions,
   walkLimited,
 } from '../../../../../src/application/primitives/internal/limit-list.js';
 import { readCommit } from '../../../../../src/application/primitives/internal/read-commit.js';
@@ -74,7 +75,7 @@ const optionsFor = (
   until: ReadonlyArray<string>,
   overrides: Partial<LimitListOptions> = {},
 ): LimitListOptions => ({
-  from: from.map(history.id),
+  seeds: [...from, ...until].map(history.id),
   until: new Set(until.map(history.id)),
   firstParent: false,
   ignoreMissing: false,
@@ -99,6 +100,25 @@ const SKEWED: Spec = [
   ['c1', 450, ['a1']],
   ['n', 600, ['m', 'c1']],
   ['m2', 350, ['b2', 'a1']],
+];
+
+// c, d and h share a date. g ← s ← c; g ← k6 … k1 ← p ← h; p ← n ← m ← d,
+// p's whole line dated before g.
+const TIED_SEEDS: Spec = [
+  ['g', 98, []],
+  ['k6', 90, ['g']],
+  ['k5', 90, ['k6']],
+  ['k4', 90, ['k5']],
+  ['k3', 90, ['k4']],
+  ['k2', 90, ['k3']],
+  ['k1', 90, ['k2']],
+  ['p', 90, ['k1']],
+  ['n', 90, ['p']],
+  ['m', 90, ['n']],
+  ['d', 100, ['m']],
+  ['s', 99, ['g']],
+  ['h', 100, ['p']],
+  ['c', 100, ['s']],
 ];
 
 // i ← x, and e reaches x through `length` commits all dated before x.
@@ -540,6 +560,69 @@ describe('walkLimited', () => {
         // Assert
         expect(result.dropped.map(history.name)).toEqual(['d', 'o']);
         expect(result.shown.map(history.name)).toEqual(['w']);
+      });
+    });
+  });
+
+  describe.each([
+    { order: ['c', 'd', 'h'], expected: ['c', 'h', 's', 'g'] },
+    { order: ['c', 'h', 'd'], expected: ['c', 'h', 's'] },
+  ])('Given seeds sharing a commit date queued as $order', ({ order, expected }) => {
+    describe('When the walk excludes d', () => {
+      it('Then the seed order decides what d has marked when its line gives up', async () => {
+        // Arrange
+        const history = await buildHistory(TIED_SEEDS);
+        const options = optionsFor(history, ['c', 'h'], ['d'], { seeds: order.map(history.id) });
+
+        // Act
+        const result = await shownNames(history, options);
+
+        // Assert
+        expect(result).toEqual(expected);
+      });
+    });
+  });
+});
+
+describe('resolveLimitOptions', () => {
+  describe('Given included and excluded commits and no seed order', () => {
+    describe('When the options are resolved', () => {
+      it('Then the included commits seed the walk before the excluded ones', async () => {
+        // Arrange
+        const history = await buildHistory(TIED_SEEDS);
+        const sut = resolveLimitOptions;
+        const until = new Set([history.id('d')]);
+
+        // Act
+        const result = await sut(
+          history.ctx,
+          { from: [history.id('c'), history.id('h')], shallow: new Set() },
+          { until, firstParent: false, settle: 'slop' },
+        );
+
+        // Assert
+        expect(result.seeds.map(history.name)).toEqual(['c', 'h', 'd']);
+      });
+    });
+  });
+
+  describe('Given an explicit seed order', () => {
+    describe('When the options are resolved', () => {
+      it('Then that order is kept', async () => {
+        // Arrange
+        const history = await buildHistory(TIED_SEEDS);
+        const sut = resolveLimitOptions;
+        const seeds = [history.id('d'), history.id('h')];
+
+        // Act
+        const result = await sut(
+          history.ctx,
+          { from: [history.id('h')], shallow: new Set() },
+          { seeds, until: new Set([history.id('d')]), firstParent: false, settle: 'slop' },
+        );
+
+        // Assert
+        expect(result.seeds.map(history.name)).toEqual(['d', 'h']);
       });
     });
   });

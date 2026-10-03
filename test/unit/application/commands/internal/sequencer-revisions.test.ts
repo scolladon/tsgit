@@ -70,6 +70,29 @@ const SPEC: Spec = [
   ['q3', 300, ['q1']],
 ];
 
+/**
+ * c, d (excluded) and h share a date. g ← s ← c; g ← k6 … k1 ← p ← h and
+ * p ← n ← m ← d, all of p's line dated before g. Popping d before h marks p
+ * before it is shown, so the walk gives up before k6 reaches g; popping h
+ * first shows p, whose date keeps the walk going until g is excluded.
+ */
+const TIED_SEEDS: Spec = [
+  ['g', 98, []],
+  ['k6', 90, ['g']],
+  ['k5', 90, ['k6']],
+  ['k4', 90, ['k5']],
+  ['k3', 90, ['k4']],
+  ['k2', 90, ['k3']],
+  ['k1', 90, ['k2']],
+  ['p', 90, ['k1']],
+  ['n', 90, ['p']],
+  ['m', 90, ['n']],
+  ['d', 100, ['m']],
+  ['s', 99, ['g']],
+  ['h', 100, ['p']],
+  ['c', 100, ['s']],
+];
+
 describe('resolveSequencerRevisions', () => {
   describe.each([
     { args: ['e..i'], kind: 'walked', commits: ['i', 'x'] },
@@ -101,6 +124,26 @@ describe('resolveSequencerRevisions', () => {
           kind,
           commits,
         });
+      });
+    });
+  });
+
+  describe.each([
+    { args: ['c', 'd..h'], commits: ['c', 'h', 's', 'g'] },
+    { args: ['c', 'h', '^d'], commits: ['c', 'h', 's'] },
+  ])('Given seeds sharing a commit date and the arguments $args', ({ args, commits }) => {
+    describe('When the sequencer resolves them', () => {
+      it('Then the seeds enter the walk in argument order, as git queues them', async () => {
+        // Arrange
+        const history = await buildHistory(TIED_SEEDS);
+        const sut = resolveSequencerRevisions;
+        const named = args.map((arg) => arg.replace(/[a-z]\d*/g, history.id));
+
+        // Act
+        const result = await sut(history.ctx, named);
+
+        // Assert
+        expect(history.names(result.commits)).toEqual(commits);
       });
     });
   });
