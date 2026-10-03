@@ -2071,3 +2071,53 @@ describe.skipIf(!GIT_AVAILABLE)('gc through a disabled commit-graph', () => {
     });
   });
 });
+
+describe.skipIf(!GIT_AVAILABLE)("commit-graph writes under git's commit_graph_compatible", () => {
+  describe.each([
+    { label: 'a graft', setup: 'graft', task: 'gc' },
+    { label: 'a graft', setup: 'graft', task: 'commit-graph' },
+    { label: 'a replace ref', setup: 'replace', task: 'gc' },
+    { label: 'a replace ref', setup: 'replace', task: 'commit-graph' },
+  ] as const)('Given $label', ({ label, setup, task }) => {
+    describe(`When git and tsgit run the ${task} task`, () => {
+      it(
+        'Then both write a commit-graph, or neither does',
+        async () => {
+          // Arrange
+          const slug = `compat-${label.replace(/[^a-z]+/gi, '-')}-${task}`;
+          const theirs = await initRepo(`${slug}-git`);
+          const ours = await initRepo(`${slug}-ts`);
+          for (const dir of [theirs, ours]) {
+            await addCommit(dir, 'a');
+            const head = await addCommit(dir, 'b');
+            git(dir, 'config', 'gc.writeCommitGraph', 'true');
+            git(dir, 'config', 'advice.graftFileDeprecated', 'false');
+            if (setup === 'graft')
+              await writeFile(path.join(dir, '.git', 'info', 'grafts'), `${head}\n`);
+            if (setup === 'replace') git(dir, 'replace', 'HEAD', 'HEAD~1');
+          }
+          const sut = maintenance;
+          const graphOf = (dir: string): boolean =>
+            existsSync(path.join(dir, '.git', 'objects', 'info', 'commit-graph')) ||
+            existsSync(path.join(dir, '.git', 'objects', 'info', 'commit-graphs'));
+
+          // Act
+          const expected = tryRunGitWithExit([
+            '-C',
+            theirs,
+            'maintenance',
+            'run',
+            `--task=${task}`,
+          ]);
+          const result = await sut(trackedNodeContext(ours, 'sha1'), { tasks: [task] });
+
+          // Assert
+          expect(expected.exitCode).toBe(0);
+          expect(result.commitGraphWritten).toBe(graphOf(theirs));
+          expect(graphOf(ours)).toBe(graphOf(theirs));
+        },
+        SETUP_TIMEOUT,
+      );
+    });
+  });
+});

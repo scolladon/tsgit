@@ -31,6 +31,7 @@ import { parseGitBoolean } from '../../domain/config/config-ini.js';
 import type { ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { findLastEntry } from '../primitives/config-read.js';
+import { hasReplaceRefs } from '../primitives/internal/commit-graph-compatible.js';
 import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
 import { writeCommitGraph } from '../primitives/write-commit-graph.js';
 import { GC_NOT_RUN, type GcResult, readGcSettings, runGcTask } from './internal/gc-pipeline.js';
@@ -116,7 +117,8 @@ const COMMIT_GRAPH_DISABLED_WARNING =
 
 /** git's `cmd_gc` tail: a gc that ran writes the reachable commit-graph unless
  *  `gc.writeCommitGraph` is false — and `write_commit_graph` itself declines,
- *  warning, when `core.commitGraph` is false; `undefined` when nothing is written. */
+ *  warning, when `core.commitGraph` is false, and silently while replace refs
+ *  apply, its in-process write not disabling them; `undefined` when nothing is written. */
 const writeGcCommitGraph = async (ctx: Context): Promise<CommitGraphOutcome | undefined> => {
   await assertRepoSettingsValid(ctx);
   if (await lastBooleanIsFalse(ctx, 'gc', 'writeCommitGraph')) return undefined;
@@ -124,6 +126,7 @@ const writeGcCommitGraph = async (ctx: Context): Promise<CommitGraphOutcome | un
     ctx.logger?.warn?.(COMMIT_GRAPH_DISABLED_WARNING);
     return undefined;
   }
+  if (await hasReplaceRefs(ctx)) return undefined;
   return writeReachableCommitGraph(ctx);
 };
 

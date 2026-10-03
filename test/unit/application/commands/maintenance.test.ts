@@ -56,7 +56,9 @@ import {
   refreshPackRegistry,
 } from '../../../../src/application/primitives/read-object.js';
 import { getRefStore } from '../../../../src/application/primitives/ref-store.js';
+import { resolveRef } from '../../../../src/application/primitives/resolve-ref.js';
 import { MAX_REFLOG_BYTES } from '../../../../src/application/primitives/types.js';
+import { updateRef } from '../../../../src/application/primitives/update-ref.js';
 import * as writeCommitGraphMod from '../../../../src/application/primitives/write-commit-graph.js';
 import * as writeObjectMod from '../../../../src/application/primitives/write-object.js';
 import {
@@ -530,6 +532,49 @@ describe('maintenance', () => {
 
         // Assert
         expect(logged).toEqual(warnings);
+      });
+    });
+  });
+
+  describe.each([
+    { label: 'a shallow file', setup: 'shallow', tasks: ['commit-graph'], written: false },
+    { label: 'a shallow file', setup: 'shallow', tasks: ['gc'], written: false },
+    { label: 'a graft', setup: 'graft', tasks: ['commit-graph'], written: false },
+    { label: 'a graft', setup: 'graft', tasks: ['gc'], written: false },
+    {
+      label: 'a grafts file of comments and bad data',
+      setup: 'bad-graft',
+      tasks: ['gc'],
+      written: true,
+    },
+    { label: 'a replace ref', setup: 'replace', tasks: ['commit-graph'], written: true },
+    { label: 'a replace ref', setup: 'replace', tasks: ['gc'], written: false },
+    { label: 'a replace ref git ignores', setup: 'replace-off', tasks: ['gc'], written: true },
+    { label: 'a non-oid replace ref', setup: 'replace-named', tasks: ['gc'], written: true },
+  ] as const)('Given $label', ({ setup, tasks, written }) => {
+    describe(`When maintenance runs ${tasks[0]}`, () => {
+      it(`Then a commit-graph is ${written ? '' : 'not '}written, as git's commit_graph_compatible decides`, async () => {
+        // Arrange
+        const ctx = await seedOneCommit();
+        const head = await resolveRef(ctx, 'HEAD' as RefName);
+        const gitDir = commonGitDir(ctx);
+        if (setup === 'shallow') await ctx.fs.writeUtf8(`${gitDir}/shallow`, `${head}\n`);
+        if (setup === 'graft') await ctx.fs.writeUtf8(`${gitDir}/info/grafts`, `# c\n${head}\n`);
+        if (setup === 'bad-graft')
+          await ctx.fs.writeUtf8(`${gitDir}/info/grafts`, `# c\n\nzz\n${head} x\n`);
+        if (setup.startsWith('replace')) {
+          const name = setup === 'replace-named' ? 'refs/replace/topic' : `refs/replace/${head}`;
+          await updateRef(ctx, name as RefName, head, { reflogMessage: 'r' });
+        }
+        if (setup === 'replace-off') await appendConfig(ctx, '[core]\n\tuseReplaceRefs = false\n');
+        const sut = maintenance;
+
+        // Act
+        const result = await sut(ctx, { tasks });
+
+        // Assert
+        expect(result.commitGraphWritten).toBe(written);
+        expect(await ctx.fs.exists(commitGraphPath(gitDir))).toBe(written);
       });
     });
   });
