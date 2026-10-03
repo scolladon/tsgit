@@ -1618,3 +1618,51 @@ describe('Given a worktree-less repository that is NOT bare', () => {
     });
   });
 });
+
+describe('Given a merge of two equal-date parents whose own parents are missing', () => {
+  const writeFileTree = async (ctx: Context, content: string): Promise<ObjectId> => {
+    const blobId = await writeObject(ctx, {
+      type: 'blob',
+      id: '' as ObjectId,
+      content: new TextEncoder().encode(content),
+    } as Blob);
+    return writeObject(ctx, {
+      type: 'tree',
+      id: '' as ObjectId,
+      entries: [treeEntry(FILE_MODE.REGULAR, 'f', blobId)],
+    } as Tree);
+  };
+  const commitAt = (ctx: Context, tree: ObjectId, parents: ObjectId[], message: string) =>
+    createCommit(ctx, {
+      tree,
+      parents,
+      author: ident('same', 1_700_000_000),
+      committer: ident('same', 1_700_000_000),
+      message,
+    });
+
+  describe('When the merge lists the higher-oid parent first', () => {
+    it('Then the first parent is processed first and its missing parent is the refusal', async () => {
+      // Arrange
+      const ctx = await seed();
+      const missingOfA = '1'.repeat(40) as ObjectId;
+      const missingOfB = '2'.repeat(40) as ObjectId;
+      const a = await commitAt(ctx, await writeFileTree(ctx, 'A\n2\n3\n'), [missingOfA], 'a');
+      const b = await commitAt(ctx, await writeFileTree(ctx, '1\n2\nB\n'), [missingOfB], 'b');
+      const [low, high] = a < b ? [a, b] : [b, a];
+      const missingOfHigh = high === a ? missingOfA : missingOfB;
+      const merge = await commitAt(ctx, await writeFileTree(ctx, 'A\n2\nB\n'), [high, low], 'm');
+
+      // Act
+      let caught: unknown;
+      try {
+        await blame(ctx, 'f', { rev: merge });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect((caught as TsgitError).data).toEqual({ code: 'OBJECT_NOT_FOUND', id: missingOfHigh });
+    });
+  });
+});

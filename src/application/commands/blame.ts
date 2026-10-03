@@ -15,7 +15,7 @@ import { splitAgainstParent } from '../../domain/blame/split-blame.js';
 import type { BlameEntry } from '../../domain/blame/types.js';
 import { invalidOption, pathNotInTree, worktreeFileAbsent } from '../../domain/commands/error.js';
 import { BinaryHeap } from '../../domain/commit/binary-heap.js';
-import { precedes, type QueueEntry } from '../../domain/commit/priority-queue.js';
+import { precedesByArrival, type QueueEntry } from '../../domain/commit/priority-queue.js';
 import type { TreeDiff } from '../../domain/diff/diff-change.js';
 import { diffPresplitLines, splitLines } from '../../domain/diff/line-diff.js';
 import type { CommitData } from '../../domain/objects/commit.js';
@@ -138,10 +138,14 @@ interface Suspect {
   readonly commitData: CommitData;
 }
 
+type ScheduledSuspect = QueueEntry<Suspect> & { readonly arrival: number };
+
 interface Scoreboard {
   readonly ctx: Context;
-  readonly queue: BinaryHeap<QueueEntry<Suspect>>;
+  readonly queue: BinaryHeap<ScheduledSuspect>;
   readonly finalized: BlameLine[];
+  /** Next arrival ticket; advanced in place, once per scheduled suspect. */
+  arrivals: number;
 }
 
 const DEFAULT_REV = 'HEAD';
@@ -155,8 +159,9 @@ export const blame = async (
   const filePath = FilePathFactory.from(path);
   const board: Scoreboard = {
     ctx,
-    queue: new BinaryHeap<QueueEntry<Suspect>>(precedes),
+    queue: new BinaryHeap<ScheduledSuspect>(precedesByArrival),
     finalized: [],
+    arrivals: 0,
   };
   if (opts.worktree === true) {
     if (opts.rev !== undefined) {
@@ -341,7 +346,7 @@ const seed = async (
 
 const walk = async (sb: Scoreboard): Promise<void> => {
   while (sb.queue.size() > 0) {
-    const { value } = sb.queue.pop() as QueueEntry<Suspect>;
+    const { value } = sb.queue.pop() as ScheduledSuspect;
     await processSuspect(sb, value);
   }
 };
@@ -577,13 +582,16 @@ const renamedSource = async (
   return undefined;
 };
 
-/** Queue a suspect for the lines now blamed on it (newest commit date pops first). */
+/** Queue a suspect for the lines now blamed on it: newest commit date pops
+ *  first, equal dates in scheduling order (git's `prio_queue` insertion order). */
 const schedule = (sb: Scoreboard, suspect: Suspect): void => {
   // Stryker disable next-line ConditionalExpression: equivalent — an empty entry list would enqueue a suspect that finalizes no lines; the guard only avoids needlessly walking ancestors, so output is identical
   if (suspect.entries.length === 0) return;
   sb.queue.push({
     oid: suspect.commit,
     date: suspect.commitData.committer.timestamp,
+    arrival: sb.arrivals,
     value: suspect,
   });
+  sb.arrivals += 1;
 };
