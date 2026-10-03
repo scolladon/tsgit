@@ -125630,7 +125630,7 @@
 							},
 							{
 								"kind": "text",
-								"text": " — the all-parents, commit-date-ordered history\nwalk (newest committer-date first, oid-ascending tie-break). Mirrors the\nboundary/missing/hash knobs of "
+								"text": " — the all-parents, commit-date-ordered history\nwalk (newest committer-date first, equal dates in enqueue order). Mirrors the\nboundary/missing/hash knobs of "
 							},
 							{
 								"kind": "inline-tag",
@@ -163941,7 +163941,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " across **all** parents, yielding them\nin commit-date priority order — newest committer date first, oid-ascending on\nties. A thin wrapper over the shared "
+										"text": " across **all** parents, yielding them\nin commit-date priority order — newest committer date first, and on equal\ndates in the order they were enqueued (seeds as given, parents in parent\norder), as git's commit priority queue does. A thin wrapper over the\nshared "
 									},
 									{
 										"kind": "inline-tag",
@@ -163955,7 +163955,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " core: it owns the\npublic "
+										"text": " core: it owns the public "
 									},
 									{
 										"kind": "code",
@@ -163963,7 +163963,7 @@
 									},
 									{
 										"kind": "text",
-										"text": " seed contract (empty / too-many seeds) and\ndelegates the all-parents traversal. The core's first-parent variant is\ninternal — no public consumer needs date + first-parent yet ("
+										"text": "\nseed contract (empty / too-many seeds) and delegates the all-parents\ntraversal. The core's first-parent variant is\ninternal — no public consumer needs date + first-parent yet ("
 									},
 									{
 										"kind": "code",

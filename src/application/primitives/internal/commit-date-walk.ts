@@ -1,5 +1,5 @@
 import { BinaryHeap } from '../../../domain/commit/binary-heap.js';
-import { precedes, type QueueEntry } from '../../../domain/commit/priority-queue.js';
+import { precedesByArrival, type QueueEntry } from '../../../domain/commit/priority-queue.js';
 import { operationAborted } from '../../../domain/error.js';
 import type { Commit, ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
@@ -11,6 +11,7 @@ import { commitHeader } from './read-commit-graph.js';
 import { resolveShallow } from './shallow-set.js';
 
 type CommitBodies = BoundedReader<Commit | undefined>;
+type HeapEntry = QueueEntry<Promise<Commit | undefined>> & { readonly arrival: number };
 
 /**
  * One walk step: the popped commit plus the frontier state sampled after the
@@ -46,7 +47,9 @@ export interface CommitDateWalkOptions {
 
 /** Mutable state threaded through the date-ordered walk. */
 interface DateWalk {
-  readonly heap: BinaryHeap<QueueEntry<Promise<Commit | undefined>>>;
+  readonly heap: BinaryHeap<HeapEntry>;
+  /** Next arrival ticket; advanced in place, once per resolved candidate. */
+  arrivals: number;
   readonly seen: Set<ObjectId>;
   readonly until: ReadonlySet<ObjectId>;
   readonly firstParent: boolean;
@@ -57,8 +60,8 @@ interface DateWalk {
 /**
  * The shared date-priority commit traversal: walk every commit reachable from
  * `from` (across all parents, or first-parent only) in commit-date priority
- * order — newest committer date first, oid-ascending on ties (the shared
- * `domain/commit` comparator). A commit's date is sourced from the
+ * order — newest committer date first, first-enqueued on ties (git's
+ * `prio_queue` insertion counter). A commit's date is sourced from the
  * commit-graph when available (no I/O beyond the first parse), which lets its
  * heap entry — and its parents' — get pushed without waiting on a full object
  * read; the read itself is deferred to a bounded, deduped prefetcher and
@@ -75,8 +78,10 @@ interface DateWalk {
  * `walkCommitsByDate` wrapper owns the `INVALID_WALK_INPUT` seed contract.
  *
  * The walk is lazy (parents discovered on pop), so it matches
- * `git rev-list --date-order` for histories whose committer dates are monotonic
- * along parent edges — every history built by normal git operations. It does not
+ * `git rev-list --date-order` for histories whose committer dates strictly
+ * decrease along parent edges. Equal dates pop in enqueue order, which is
+ * plain `git rev-list` / `git log` order; `--date-order` would also hold an
+ * equal-date parent back until all its children are shown. It does not
  * enforce git's strict all-children-before-parent rule for forged reverse-causal
  * dates, trading that edge case for streaming composition.
  */
@@ -92,7 +97,8 @@ export async function* commitDateWalk(
   const missing = new Set<string>();
   const bound = limitFor(ctx, 'ioBound');
   const walk: DateWalk = {
-    heap: new BinaryHeap<QueueEntry<Promise<Commit | undefined>>>(precedes),
+    heap: new BinaryHeap<HeapEntry>(precedesByArrival),
+    arrivals: 0,
     seen: new Set<ObjectId>(options.from),
     until: asIdSet(options.until),
     firstParent: options.firstParent ?? false,
@@ -110,7 +116,7 @@ export async function* commitDateWalk(
 
   while (walk.heap.size() > 0) {
     if (ctx.signal?.aborted) throw operationAborted();
-    const { oid, value: bodyPromise } = walk.heap.pop() as QueueEntry<Promise<Commit | undefined>>;
+    const { oid, value: bodyPromise } = walk.heap.pop() as HeapEntry;
     const commit = await bodyPromise;
     // Consumed: drop the memo entry (`seen` already blocks re-enqueue), or a
     // full-history drain retains every body simultaneously.
@@ -125,8 +131,6 @@ export async function* commitDateWalk(
     await enqueueParents(ctx, walk, commit);
   }
 }
-
-type HeapEntry = QueueEntry<Promise<Commit | undefined>>;
 
 // Iterate the deduped `seen` set, not raw `from`, so a duplicate seed enqueues
 // once — the pop loop has no visited check by design.
@@ -182,6 +186,11 @@ const resolveHeapEntry = async (
   walk: DateWalk,
   id: ObjectId,
 ): Promise<HeapEntry | undefined> => {
+  // Ticketed before any await: callers resolve candidates in git's push order
+  // (seeds as given, parents in parent order), so the ticket is that order
+  // whatever the reads' completion timing. A dropped candidate's gap is inert.
+  const arrival = walk.arrivals;
+  walk.arrivals += 1;
   const header = await commitHeader(ctx, id);
   const bodyPromise = walk.bodies.start(id);
   if (header !== undefined && !walk.ignoreMissing) {
@@ -189,7 +198,7 @@ const resolveHeapEntry = async (
     // resolving (and any downstream enqueue it enables) does not wait on
     // I/O. (A missing body without `ignoreMissing` rejects at pop and aborts
     // the walk, so resolving early is unobservable.)
-    return { oid: id, date: header.committerDate, value: bodyPromise };
+    return { oid: id, date: header.committerDate, arrival, value: bodyPromise };
   }
   // Graph-absent fallback — and, under `ignoreMissing`, the stale-graph
   // guard: a commit whose body is gone must never enter the heap (it would
@@ -197,5 +206,5 @@ const resolveHeapEntry = async (
   const commit = await bodyPromise;
   if (commit === undefined) return undefined;
   const date = header?.committerDate ?? commit.data.committer.timestamp;
-  return { oid: id, date, value: bodyPromise };
+  return { oid: id, date, arrival, value: bodyPromise };
 };

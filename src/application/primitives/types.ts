@@ -156,7 +156,7 @@ export interface WalkCommitsOptions {
 
 /**
  * Options for `walkCommitsByDate` — the all-parents, commit-date-ordered history
- * walk (newest committer-date first, oid-ascending tie-break). Mirrors the
+ * walk (newest committer-date first, equal dates in enqueue order). Mirrors the
  * boundary/missing/hash knobs of {@link WalkCommitsOptions} but carries no
  * `order`: the date order is the primitive's identity.
  */

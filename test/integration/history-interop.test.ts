@@ -13,8 +13,10 @@
  * A merge is required so the order assertion distinguishes the all-parents reach
  * from a first-parent walk. The dates are strictly distinct and causally ordered
  * (parent older than child) — the regime where the lazy walk is byte-for-byte
- * `--date-order` (ADR-261); the deterministic equal-date tie-break is a unit-test
- * concern, and strict ordering under forged reverse-causal dates is out of scope.
+ * `--date-order` (ADR-261). Strict ordering under forged reverse-causal dates is
+ * out of scope. A second history puts every commit at ONE date and walks from
+ * several seeds, pinning git's queue tie-break against plain `rev-list`: seeds
+ * in the order given, parents in parent order.
  *
  * @proves
  *   surface:        walkCommitsByDate, foldSubject
@@ -30,6 +32,7 @@ import { describe, expect, it } from 'vitest';
 import { foldSubject } from '../../src/domain/objects/commit-message.js';
 import type { ObjectId } from '../../src/domain/objects/index.js';
 import { openRepository } from '../../src/index.node.js';
+import { buildEqualDateHistory } from './equal-date-history-fixture.js';
 import { GIT_AVAILABLE, git, runGit, runGitEnv } from './interop-helpers.js';
 
 const IDENTITY = {
@@ -129,6 +132,37 @@ describe.skipIf(!GIT_AVAILABLE)('history interop', () => {
         } finally {
           await repo.dispose();
           await diamond.dispose();
+        }
+      });
+    });
+  });
+
+  describe('Given nested octopus merges whose commits all share one committer date', () => {
+    describe('When walkCommitsByDate walks from seeds given out of oid order', () => {
+      it('Then the oid sequence equals git rev-list over the same seeds', async () => {
+        // Arrange
+        const history = await buildEqualDateHistory({ withCommitGraph: false });
+        const repo = await openRepository({ cwd: history.dir });
+        try {
+          const { ids } = history;
+          const seeds = [ids.c, ids.n, ids.b];
+          // Plain `rev-list`, not `--date-order`: the latter also holds a parent
+          // back until all its children are shown, which equal dates expose.
+          const peerOrder = git(history.dir, 'rev-list', ...seeds)
+            .split('\n')
+            .filter((line) => line.length > 0);
+
+          // Act
+          const ours: ObjectId[] = [];
+          for await (const commit of repo.primitives.walkCommitsByDate({ from: seeds })) {
+            ours.push(commit.id);
+          }
+
+          // Assert
+          expect(ours).toEqual(peerOrder);
+        } finally {
+          await repo.dispose();
+          await history.dispose();
         }
       });
     });

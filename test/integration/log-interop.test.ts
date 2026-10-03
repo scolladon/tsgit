@@ -14,7 +14,9 @@
  *      `git rev-list HEAD~2..HEAD` (a linear boundary where `until` ≡ git's `^`).
  *
  * Dates are strictly distinct and causally ordered, the regime where the lazy
- * `walkCommitsByDate` is byte-for-byte `--date-order` (ADR-261).
+ * `walkCommitsByDate` is byte-for-byte `--date-order` (ADR-261). A second
+ * history puts every commit at ONE date, with and without a commit-graph, so
+ * the order rests on git's queue tie-break alone (first enqueued pops first).
  *
  * @proves
  *   surface:        log
@@ -29,6 +31,7 @@ import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { LogOptions } from '../../src/application/commands/log.js';
 import { openRepository } from '../../src/index.node.js';
+import { buildEqualDateHistory } from './equal-date-history-fixture.js';
 import { GIT_AVAILABLE, git, runGit, runGitEnv } from './interop-helpers.js';
 
 const IDENTITY = {
@@ -206,6 +209,29 @@ describe.skipIf(!GIT_AVAILABLE)('log interop', () => {
           expect(ours).toEqual(peer);
         } finally {
           await scenario.dispose();
+        }
+      });
+    });
+  });
+
+  describe('Given nested octopus merges whose commits all share one committer date', () => {
+    describe.each([
+      { graph: 'without a commit-graph', withCommitGraph: false },
+      { graph: 'with a commit-graph', withCommitGraph: true },
+    ])('When log runs $graph', ({ withCommitGraph }) => {
+      it('Then the oid sequence equals git log', async () => {
+        // Arrange
+        const history = await buildEqualDateHistory({ withCommitGraph });
+        try {
+          const peer = oidLines(git(history.dir, 'log', '--format=%H'));
+
+          // Act
+          const ours = await logIds(history.dir);
+
+          // Assert
+          expect(ours).toEqual(peer);
+        } finally {
+          await history.dispose();
         }
       });
     });

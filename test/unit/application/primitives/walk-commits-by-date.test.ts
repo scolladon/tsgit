@@ -69,6 +69,27 @@ async function buildDiamond(
   return { a, b, c, d };
 }
 
+/**
+ * r ← {a, b, c, d}; n = merge(d, a); p = merge(n, c, b) — every commit at one
+ * date. `order` is git's `log` order for `p`, read off a live git: equal dates
+ * pop in the order they entered the queue, parents in parent order.
+ */
+async function buildEqualDateOctopus(
+  ctx: Awaited<ReturnType<typeof buildSeededContext>>,
+): Promise<{ readonly order: ReadonlyArray<ObjectId> }> {
+  const treeId = await emptyTree(ctx);
+  const commit = (message: string, parents: ObjectId[]): Promise<ObjectId> =>
+    createCommit(ctx, { tree: treeId, parents, author: AUTHOR, committer: AUTHOR, message });
+  const r = await commit('r', []);
+  const a = await commit('a', [r]);
+  const b = await commit('b', [r]);
+  const c = await commit('c', [r]);
+  const d = await commit('d', [r]);
+  const n = await commit('n', [d, a]);
+  const p = await commit('p', [n, c, b]);
+  return { order: [p, n, c, b, d, a, r] };
+}
+
 async function collect(iter: AsyncIterable<Commit>): Promise<Commit[]> {
   const out: Commit[] = [];
   for await (const c of iter) out.push(c);
@@ -267,7 +288,7 @@ describe('walkCommitsByDate', () => {
 
   describe('Given two roots with equal committer dates', () => {
     describe('When walkCommitsByDate is called from both', () => {
-      it('Then they pop in oid-ascending order', async () => {
+      it('Then they pop in seed order, not oid order', async () => {
         // Arrange — same timestamp, different messages → different oids.
         const ctx = await buildSeededContext();
         const treeId = await emptyTree(ctx);
@@ -284,10 +305,27 @@ describe('walkCommitsByDate', () => {
         const [lower, higher] = r1 < r2 ? [r1, r2] : [r2, r1];
 
         // Act
-        const commits = await collect(walkCommitsByDate(ctx, { from: [r1, r2] }));
+        const commits = await collect(walkCommitsByDate(ctx, { from: [higher, lower] }));
 
-        // Assert — kills the `a.oid < b.oid` tie-break mutant.
-        expect(idsOf(commits)).toEqual([lower, higher]);
+        // Assert — git's queue breaks equal dates by insertion, so the
+        // oid-descending seed order survives.
+        expect(idsOf(commits)).toEqual([higher, lower]);
+      });
+    });
+  });
+
+  describe('Given nested octopus merges whose commits all share one committer date', () => {
+    describe('When walkCommitsByDate is called from the outer merge', () => {
+      it('Then commits pop in the order their parents were enqueued', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const { order } = await buildEqualDateOctopus(ctx);
+
+        // Act
+        const commits = await collect(walkCommitsByDate(ctx, { from: order.slice(0, 1) }));
+
+        // Assert
+        expect(idsOf(commits)).toEqual(order);
       });
     });
   });
@@ -769,6 +807,23 @@ describe('walkCommitsByDate', () => {
 
           // Assert
           expect(idsOf(withGraph)).toEqual(idsOf(baseline));
+        });
+      });
+    });
+
+    describe('Given a commit-graph covering nested equal-date octopus merges', () => {
+      describe('When walkCommitsByDate is called from the outer merge', () => {
+        it('Then commits pop in the order their parents were enqueued', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const { order } = await buildEqualDateOctopus(ctx);
+          await writeCommitGraph(ctx, [await asCommits(ctx, order)]);
+
+          // Act
+          const commits = await collect(walkCommitsByDate(ctx, { from: order.slice(0, 1) }));
+
+          // Assert
+          expect(idsOf(commits)).toEqual(order);
         });
       });
     });
