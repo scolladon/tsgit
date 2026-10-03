@@ -2,6 +2,7 @@ import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import type { Commit } from '../../../../src/domain/objects/commit.js';
 import {
+  commitBodyBytes,
   parseCommitContent,
   serializeCommitContent,
 } from '../../../../src/domain/objects/commit.js';
@@ -866,6 +867,51 @@ describe('commit', () => {
           );
         });
       });
+    });
+  });
+});
+
+describe('commitBodyBytes', () => {
+  describe.each([
+    { content: 'tree t\n\nmsg\n', expected: 'msg\n' },
+    { content: 'tree t\n\n', expected: '' },
+    { content: 'tree t\n\n\nlead\n', expected: '\nlead\n' },
+    { content: 'tree t\n', expected: undefined },
+  ])('Given the raw commit $content', ({ content, expected }) => {
+    describe('When commitBodyBytes reads it', () => {
+      it('Then it answers what follows the first blank line, or nothing', () => {
+        // Arrange
+        const sut = commitBodyBytes;
+
+        // Act
+        const result = sut(encode(content));
+
+        // Assert
+        expect(result === undefined ? undefined : new TextDecoder().decode(result)).toBe(expected);
+      });
+    });
+  });
+});
+
+describe.each([
+  { ending: 'a newline', tail: '\n' },
+  { ending: 'the last header', tail: '' },
+])('Given a commit whose headers end with $ending and no blank line', ({ tail }) => {
+  describe('When parseCommitContent reads it', () => {
+    it('Then it reads the headers and an empty message, as git does', () => {
+      // Arrange
+      const content = encode(
+        `tree ${TREE_ID}\nauthor A <a@a> 1 +0000\ncommitter A <a@a> 2 +0000${tail}`,
+      );
+      const sut = parseCommitContent;
+
+      // Act
+      const result = sut(DUMMY_ID, content);
+
+      // Assert
+      expect(result.data.message).toBe('');
+      expect(result.data.committer.timestamp).toBe(2);
+      expect(result.data.extraHeaders).toEqual([]);
     });
   });
 });

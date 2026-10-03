@@ -28,6 +28,7 @@ import { readObject } from '../primitives/read-object.js';
 import { readTree } from '../primitives/read-tree.js';
 import { listReflogs, readReflogLenient } from '../primitives/reflog-store.js';
 import { readRefCandidate } from '../primitives/resolve-ref.js';
+import { searchCommitMessages } from './internal/commit-message-search.js';
 import { namesNoObject, rereadsMisspeltRevision } from './internal/misspelt-revision.js';
 import { readCandidateRef, resolveAmbiguousLadder } from './internal/refname-ambiguity.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
@@ -204,6 +205,7 @@ const pickByDate = (
 const applyOperation = async (ctx: Context, id: ObjectId, op: RevOperation): Promise<ObjectId> => {
   if (op.kind === 'deref') return derefTags(ctx, id, op.name);
   if (op.kind === 'peel') return peelTo(ctx, id, op.target, op.name);
+  if (op.kind === 'search') return searchFrom(ctx, id, op);
   const commit = await commitToWalk(ctx, id);
   if (op.kind === 'parent') return op.n === 0 ? commit.id : nthParent(ctx, commit, op.n);
   return nthAncestor(ctx, commit, op.n);
@@ -219,6 +221,19 @@ const peelTo = async (
   if (target !== 'object') return peel(ctx, id, target, name);
   await readObject(ctx, id);
   return id;
+};
+
+/** git's `^{/<regex>}`: peel to a commit, then search back from it; `^{/}` is the commit itself. */
+const searchFrom = async (
+  ctx: Context,
+  id: ObjectId,
+  op: Extract<RevOperation, { readonly kind: 'search' }>,
+): Promise<ObjectId> => {
+  const peeled = await commitToWalk(ctx, await peel(ctx, id, 'commit', op.name));
+  if (op.pattern === '') return peeled.id;
+  const found = await searchCommitMessages(ctx, [peeled.commit], op.pattern);
+  if (found === undefined) throw revparseUnresolved(op.name);
+  return found;
 };
 
 /** git's `deref_tag`: follow tags to the first non-tag, naming `name` when one is missing. */

@@ -778,5 +778,125 @@ describe('internal/rev-parse-grammar', () => {
         });
       });
     });
+
+    describe('Given a peel whose braces git reads from the last ^{', () => {
+      describe('When parseExpression', () => {
+        it.each([
+          {
+            raw: 'HEAD^{commit}x}',
+            operations: [{ kind: 'peel', target: 'commit', name: 'HEAD^{commit}x}' }],
+          },
+          {
+            raw: 'HEAD^{commit}@{0}',
+            operations: [{ kind: 'peel', target: 'commit', name: 'HEAD^{commit}@{0}' }],
+          },
+          { raw: 'HEAD^{}x}', operations: [{ kind: 'deref', name: 'HEAD' }] },
+          {
+            raw: 'HEAD^{/fix}',
+            operations: [{ kind: 'search', pattern: 'fix', name: 'HEAD^{/fix}' }],
+          },
+          { raw: 'HEAD^{/}', operations: [{ kind: 'search', pattern: '', name: 'HEAD^{/}' }] },
+          {
+            raw: 'HEAD^{/a}b}',
+            operations: [{ kind: 'search', pattern: 'a}b', name: 'HEAD^{/a}b}' }],
+          },
+          {
+            raw: 'HEAD^{/a~1}',
+            operations: [{ kind: 'search', pattern: 'a~1', name: 'HEAD^{/a~1}' }],
+          },
+          {
+            raw: 'HEAD^{/a:b}',
+            operations: [{ kind: 'search', pattern: 'a:b', name: 'HEAD^{/a:b}' }],
+          },
+          {
+            raw: 'HEAD^{/sec}~1',
+            operations: [
+              { kind: 'search', pattern: 'sec', name: 'HEAD^{/sec}' },
+              { kind: 'ancestor', n: 1 },
+            ],
+          },
+          {
+            raw: 'HEAD^{/sec}^{/first}',
+            operations: [
+              { kind: 'search', pattern: 'sec', name: 'HEAD^{/sec}' },
+              { kind: 'search', pattern: 'first', name: 'HEAD^{/sec}^{/first}' },
+            ],
+          },
+        ])('Then $raw reads as $operations', ({ raw, operations }) => {
+          // Arrange
+          const sut = parseExpression;
+
+          // Act
+          const result = sut(raw);
+
+          // Assert
+          expect(result).toEqual({ kind: 'ref-or-hex', base: 'HEAD', operations });
+        });
+
+        it.each([{ raw: 'HEAD^{/x^{y}' }, { raw: '^{/x}' }, { raw: 'HEAD^{commit}x' }])(
+          'Then $raw throws REVPARSE_UNRESOLVED',
+          ({ raw }) => {
+            // Arrange
+            const sut = parseExpression;
+
+            // Act / Assert
+            expectError(() => sut(raw), 'REVPARSE_UNRESOLVED');
+          },
+        );
+      });
+    });
+
+    describe('Given the shortest braced operators', () => {
+      describe('When parseExpression', () => {
+        it.each([
+          {
+            raw: 'a^{}',
+            expected: { kind: 'ref-or-hex', base: 'a', operations: [{ kind: 'deref', name: 'a' }] },
+          },
+          {
+            raw: '@{1}',
+            expected: {
+              kind: 'ref-or-hex',
+              base: '',
+              reflog: { kind: 'index', n: 1 },
+              operations: [],
+            },
+          },
+          { raw: 'a}:b', expected: { kind: 'tree-path', rev: 'a}', path: 'b' } },
+        ])('Then $raw reads as git reads it', ({ raw, expected }) => {
+          // Arrange
+          const sut = parseExpression;
+
+          // Act
+          const result = sut(raw);
+
+          // Assert
+          expect(result).toEqual(expected);
+        });
+
+        it('Then an empty @{} throws REVPARSE_UNRESOLVED', () => {
+          // Arrange
+          const sut = parseExpression;
+
+          // Act / Assert
+          expectError(() => sut('@{}'), 'REVPARSE_UNRESOLVED');
+        });
+      });
+    });
+
+    describe('Given a colon after a closed ^{…}', () => {
+      describe('When parseExpression', () => {
+        it('Then it splits the tree-path after the braces', () => {
+          // Arrange
+          const sut = parseExpression;
+
+          // Act
+          const result = sut('HEAD^{/fix}:f');
+
+          // Assert
+          expect(result).toEqual({ kind: 'tree-path', rev: 'HEAD^{/fix}', path: 'f' });
+        });
+      });
+    });
   });
 });

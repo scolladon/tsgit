@@ -233,3 +233,117 @@ describe.skipIf(!GIT_AVAILABLE)(
     );
   },
 );
+
+const EMPTY_TREE_INPUT = '';
+
+/**
+ * c1 ← c2 ← a ← m, with c2 ← s1 ← s2 merged into m: a and s1 share a date,
+ * s2 is younger. Raw commits beside: `nobody` (no message) on m, `mp`
+ * naming an absent parent then `nobody`, `bp` a blob then c1, `z` a message
+ * holding a NUL; `tt` an annotated tag of the tree; `dia` a diamond whose
+ * shared parent names an absent parent.
+ */
+const buildSearchRepository = (repo: string): void => {
+  runGit(['init', '-q', '-b', 'main', repo]);
+  disableAutoMaintenance(repo);
+  const tree = runGit(['-C', repo, 'hash-object', '-t', 'tree', '-w', '--stdin'], {
+    input: EMPTY_TREE_INPUT,
+  }).trim();
+  const commit = (message: string, offset: number, parents: ReadonlyArray<string>): string =>
+    runGit(
+      [
+        '-C',
+        repo,
+        'commit-tree',
+        tree,
+        ...parents.flatMap((parent) => ['-p', parent]),
+        '-m',
+        message,
+      ],
+      { env: identityAt(offset) },
+    ).trim();
+  const raw = (name: string, content: string): void => {
+    const id = runGit(['-C', repo, 'hash-object', '-t', 'commit', '-w', '--stdin', '--literally'], {
+      input: content,
+    }).trim();
+    git(repo, 'update-ref', `refs/tags/${name}`, id);
+  };
+  const header = (parents: ReadonlyArray<string>, offset: number): string =>
+    `tree ${tree}\n${parents.map((parent) => `parent ${parent}\n`).join('')}author A <a@x> ${EPOCH + offset} +0000\ncommitter A <a@x> ${EPOCH + offset} +0000\n`;
+  const c1 = commit('first fix', 1, []);
+  const c2 = commit('second !bang', 2, [c1]);
+  const a = commit('main same-date', 5, [c2]);
+  const s1 = commit('side same-date', 5, [c2]);
+  const s2 = commit('side newer', 7, [s1]);
+  const m = commit('merge it', 9, [a, s2]);
+  git(repo, 'update-ref', 'refs/heads/main', m);
+  raw('nobody', header([m], 20));
+  const nobody = git(repo, 'rev-parse', 'nobody').trim();
+  raw('mp', `${header([ABSENT_OID, nobody], 30)}\nmissing parent\n`);
+  const blob = runGit(['-C', repo, 'hash-object', '-w', '--stdin'], { input: 'b\n' }).trim();
+  raw('bp', `${header([blob, c1], 31)}\nblob parent\n`);
+  raw('z', `${header([c1], 40)}\nhead\u0000tail\n`);
+  runGit(['-C', repo, 'tag', '-a', '-m', 'tt', 'tt', tree], { env: identityAt(100) });
+  raw('shared', `${header([ABSENT_OID], 50)}\nshared\n`);
+  const shared = git(repo, 'rev-parse', 'shared').trim();
+  const left = commit('left', 51, [shared]);
+  const right = commit('right', 52, [shared]);
+  git(repo, 'update-ref', 'refs/tags/dia', commit('top', 53, [left, right]));
+};
+
+describe.skipIf(!GIT_AVAILABLE)('integration — revParse ^{/regex} search parity with git', () => {
+  let repo = '';
+
+  beforeAll(async () => {
+    repo = await mkdtemp(path.join(os.tmpdir(), 'tsgit-rev-parse-search-interop-'));
+    buildSearchRepository(repo);
+  }, SETUP_TIMEOUT);
+
+  afterAll(async () => {
+    await rm(repo, { recursive: true, force: true });
+  });
+
+  describe('Given a merge, commits sharing a date, a message-less commit and broken parents', () => {
+    describe.each([
+      'HEAD^{/same-date}',
+      'HEAD^{/side}',
+      'HEAD^{/^(main|side) same}',
+      'HEAD^{/s(ec|id)}',
+      'HEAD^{/[[:alpha:]]+ fix}',
+      'HEAD^{/date$}',
+      'HEAD^{/^merge it$}',
+      'HEAD^{/merge}',
+      'HEAD^{/}',
+      'HEAD^{/!-same}',
+      'HEAD^{/!!bang}',
+      'HEAD^{/!x}',
+      'HEAD^{/nomatch}',
+      'HEAD^{/sec}~1',
+      'HEAD^{/sec}^{/first}',
+      'HEAD^{/fix}:',
+      'HEAD^{commit}x}',
+      'HEAD^{commit}@{0}',
+      'nobody^{/!-zzz}',
+      'nobody^{/.}',
+      'mp^{/second}',
+      'mp^{/zzz}',
+      'mp^{/}',
+      'dia^{/zzz}',
+      'bp^{/first}',
+      'z^{/head}',
+      'z^{/tail}',
+      'tt^{/x}',
+    ])('When git rev-parse and revParse read %s', (argument) => {
+      it('Then both resolve the same object and print the same errors', async () => {
+        // Arrange
+        const peer = gitOutcome(repo, argument);
+
+        // Act
+        const result = await tsgitOutcome(repo, argument);
+
+        // Assert
+        expect(result).toEqual(peer);
+      });
+    });
+  });
+});
