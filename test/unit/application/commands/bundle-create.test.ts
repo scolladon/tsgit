@@ -655,6 +655,42 @@ describe('bundleCreate', () => {
     });
   });
 
+  describe('Given a symmetric range whose sides are not both commits', () => {
+    describe.each([
+      { left: 'tree', right: 'main', bad: ['tree'] },
+      { left: 'main', right: 'tree', bad: ['tree'] },
+      { left: 'tree', right: 'tree', bad: ['tree', 'tree'] },
+    ])(
+      'When bundleCreate is called with symmetricRange [$left, $right]',
+      ({ left, right, bad }) => {
+        it('Then it refuses the expression, naming each side that is no commit', async () => {
+          // Arrange
+          const { ctx, mainCommit } = await buildDivergentRepo();
+          const tree = (await readObjectMod.readObject(ctx, mainCommit)) as {
+            data: { tree: string };
+          };
+          const name = (side: string): string => (side === 'tree' ? tree.data.tree : side);
+          const sut = bundleCreate;
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut(ctx, { revs: [{ symmetricRange: [name(left), name(right)] }] });
+          } catch (error) {
+            caught = error;
+          }
+
+          // Assert
+          expect((caught as TsgitError).data).toEqual({
+            code: 'INVALID_SYMMETRIC_RANGE',
+            expression: `${name(left)}...${name(right)}`,
+            nonCommits: bad.map(() => ({ id: tree.data.tree, type: 'tree' })),
+          });
+        });
+      },
+    );
+  });
+
   // ── SymmetricRange with multiple merge bases (criss-cross) ────────────────
 
   describe('Given a criss-cross history where main and feature share two merge bases', () => {

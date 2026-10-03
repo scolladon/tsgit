@@ -222,6 +222,7 @@ export function assertExhaustiveSwitch(data: TsgitErrorData): void {
     case 'GITFILE_INVALID_FORMAT':
     case 'GITFILE_NO_PATH':
     case 'BUNDLE_EMPTY':
+    case 'INVALID_SYMMETRIC_RANGE':
     case 'BUNDLE_READ_FAILED':
     case 'BUNDLE_BAD_HEADER':
     case 'BUNDLE_UNSUPPORTED_VERSION':

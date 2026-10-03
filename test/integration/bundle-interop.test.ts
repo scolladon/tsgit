@@ -1589,6 +1589,50 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop — tag, tree and blob tips', ()
   });
 
   describe.each([
+    ['main', 'main-tree'],
+    ['tag-tree', 'main'],
+    ['tip-blob', 'base'],
+    ['main-tree', 'tip-blob'],
+  ])('Given bundleCreate %s...%s, When a side peels to no commit', (left, right) => {
+    it('Then it refuses the expression, naming each side git errors on', async () => {
+      // Arrange
+      const expression = `${left}...${right}`;
+      const gitRun = tryRunGitWithExit([
+        '-C',
+        dir,
+        'bundle',
+        'create',
+        path.join(dir, 's.bundle'),
+        expression,
+      ]);
+      const ctx = createNodeContext({ workDir: dir });
+      const sut = bundleCreate;
+
+      // Act
+      let caught: unknown;
+      try {
+        await sut(ctx, { revs: [{ symmetricRange: [left, right] }] });
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      const nonCommits = [
+        ...gitRun.stderr.matchAll(/^error: object ([0-9a-f]+) is a (\w+), not a commit$/gm),
+      ].map(([, id, type]) => ({ id, type }));
+      expect(gitRun.exitCode).toBe(128);
+      expect(gitRun.stderr).toContain(
+        `fatal: Invalid symmetric difference expression ${expression}`,
+      );
+      expect((caught as TsgitError).data).toEqual({
+        code: 'INVALID_SYMMETRIC_RANGE',
+        expression,
+        nonCommits,
+      });
+    });
+  });
+
+  describe.each([
     ['base', '^main'],
     ['main..main'],
     ['tip-blob', '^main-tree'],

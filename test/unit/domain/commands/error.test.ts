@@ -35,6 +35,7 @@ import {
   hookFailed,
   invalidOption,
   invalidPushDefault,
+  invalidSymmetricRange,
   invalidUrl,
   MAX_BUNDLE_DETAIL_IN_ERROR,
   MAX_HOOK_STDERR_IN_ERROR,
@@ -85,7 +86,7 @@ import {
   workingTreeDirty,
   workingTreeFileTooLarge,
 } from '../../../../src/domain/commands/error.js';
-import { TsgitError } from '../../../../src/domain/error.js';
+import { sanitizeForDisplay, TsgitError } from '../../../../src/domain/error.js';
 import { type FilePath, ObjectId, type RefName } from '../../../../src/domain/objects/object-id.js';
 
 /** An `[fsck]` key half no check reports — spelled as git's own configured
@@ -1755,6 +1756,10 @@ describe('domain commands error — extractDetail message formatting', () => {
       'BUNDLE_EMPTY: refusing to create empty bundle: no-refs',
     ],
     [
+      { code: 'INVALID_SYMMETRIC_RANGE', expression: 'main...t', nonCommits: [] },
+      'INVALID_SYMMETRIC_RANGE: invalid symmetric difference expression main...t',
+    ],
+    [
       { code: 'BUNDLE_READ_FAILED', path: '/some/path.bundle' },
       "BUNDLE_READ_FAILED: could not open '/some/path.bundle'",
     ],
@@ -1821,6 +1826,27 @@ describe('domain commands error — extractDetail message formatting', () => {
 
         // Assert
         expect(sut.message).toBe(expected);
+      });
+    });
+  });
+
+  describe('Given the invalidSymmetricRange error helper', () => {
+    describe('When called with an expression carrying a control character', () => {
+      it('Then data carries the sanitised expression and each non-commit side', () => {
+        // Arrange
+        const sut = invalidSymmetricRange;
+        const nonCommits = [{ id: OID1, type: 'tree' as const }];
+
+        // Act
+        const result = sut('main...t\u001b', nonCommits);
+
+        // Assert
+        expect(result.data).toEqual({
+          code: 'INVALID_SYMMETRIC_RANGE',
+          expression: sanitizeForDisplay('main...t\u001b'),
+          nonCommits,
+        });
+        expect(result.data).not.toEqual(expect.objectContaining({ expression: 'main...t\u001b' }));
       });
     });
   });

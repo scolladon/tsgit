@@ -650,6 +650,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `no path in gitfile: ${data.path}`;
     case 'BUNDLE_EMPTY':
       return `refusing to create empty bundle: ${data.reason}`;
+    case 'INVALID_SYMMETRIC_RANGE':
+      return `invalid symmetric difference expression ${data.expression}`;
     case 'BUNDLE_READ_FAILED':
       return `could not open '${data.path}'`;
     case 'BUNDLE_BAD_HEADER':

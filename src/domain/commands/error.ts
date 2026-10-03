@@ -339,6 +339,11 @@ export type CommandError =
   | { readonly code: 'NO_EXACT_MATCH'; readonly oid: ObjectId }
   | { readonly code: 'CANNOT_DESCRIBE'; readonly oid: ObjectId }
   | { readonly code: 'BUNDLE_EMPTY'; readonly reason: 'no-refs' }
+  | {
+      readonly code: 'INVALID_SYMMETRIC_RANGE';
+      readonly expression: string;
+      readonly nonCommits: ReadonlyArray<SymmetricRangeNonCommit>;
+    }
   | { readonly code: 'BUNDLE_READ_FAILED'; readonly path: string }
   | ({ readonly code: 'BUNDLE_BAD_HEADER'; readonly path: string } & BundleBadHeaderDetails)
   | {
@@ -1030,6 +1035,25 @@ export const cannotDescribe = (oid: ObjectId): TsgitError =>
 // `Refusing to create empty bundle.`; an empty pack is never refused.
 export const bundleEmpty = (reason: 'no-refs'): TsgitError =>
   new TsgitError({ code: 'BUNDLE_EMPTY', reason });
+
+/** One side of `A...B` that peels to no commit: the object as named, and the type it peels to. */
+export interface SymmetricRangeNonCommit {
+  readonly id: ObjectId;
+  readonly type: ObjectType;
+}
+
+// `A...B` whose sides do not both peel to a commit — git's `error: object <id>
+// is a <type>, not a commit` per such side, then `Invalid symmetric difference
+// expression A...B`. `expression` is caller-supplied and sanitised.
+export const invalidSymmetricRange = (
+  expression: string,
+  nonCommits: ReadonlyArray<SymmetricRangeNonCommit>,
+): TsgitError =>
+  new TsgitError({
+    code: 'INVALID_SYMMETRIC_RANGE',
+    expression: sanitizeForDisplay(expression),
+    nonCommits,
+  });
 
 // `bundle verify`/`bundle list-heads` open-failure: the path does not exist or is
 // unreadable. `path` is caller-supplied and sanitised before embedding.
