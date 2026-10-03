@@ -80,6 +80,8 @@ const HISTORY: ReadonlyArray<readonly [string, number, ReadonlyArray<string>]> =
   ['ts', 99, ['tg']],
   ['th', 100, ['tp']],
   ['tc', 100, ['ts']],
+  ['tu', 100, ['td']],
+  ['tmerge', 100, ['td', 'tp', 'ts']],
 ];
 
 let root: string;
@@ -268,6 +270,7 @@ describe.skipIf(!GIT_AVAILABLE)('interop — rebase replay order', () => {
     { head: 'skewed3', upstream: 'up', expected: ['skewed1', 'skewed2', 'skewed3'] },
     { head: 'tie4', upstream: 'up', expected: ['tie1', 'tie2', 'tie4'] },
     { head: 'head-tip', upstream: 'upper', expected: ['head-tip'] },
+    { head: 'tmerge', upstream: 'tu', expected: ['ts'] },
   ])('Given $head rebased onto $upstream', ({ head, upstream, expected }) => {
     describe('When git and tsgit rebase it', () => {
       it(
