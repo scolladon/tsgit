@@ -560,6 +560,21 @@ describe.skipIf(!GIT_AVAILABLE)('integration — skip and ambiguity warnings per
       run: ((ctx) => show(ctx, 'only')) as CommandRun,
     },
     {
+      label: 'show of a missing path past a dangling symref',
+      args: ['show', 'dg:absent'],
+      run: ((ctx) => show(ctx, 'dg:absent')) as CommandRun,
+    },
+    {
+      label: 'show of the root tree past a dangling symref',
+      args: ['show', 'dg:'],
+      run: ((ctx) => show(ctx, 'dg:')) as CommandRun,
+    },
+    {
+      label: 'show of a missing ancestor past a dangling symref',
+      args: ['show', '-s', 'dg~5'],
+      run: ((ctx) => show(ctx, 'dg~5')) as CommandRun,
+    },
+    {
       label: 'rev-list of a name only a dangling symref carries',
       args: ['rev-list', 'only'],
       run: ((ctx) => revList(ctx, { wants: ['only'] })) as CommandRun,
