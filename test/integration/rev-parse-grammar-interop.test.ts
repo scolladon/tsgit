@@ -119,6 +119,8 @@ describe.skipIf(!GIT_AVAILABLE)('integration — revParse suffix grammar parity 
       'bad^{}',
       'bad^{object}',
       'bad^{commit}',
+      't6^{commit}',
+      't6^{tree}',
     ])('When git rev-parse and revParse read %s', (argument) => {
       it('Then both resolve the same object and print the same errors', async () => {
         // Arrange

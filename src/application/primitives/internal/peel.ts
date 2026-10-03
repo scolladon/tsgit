@@ -7,11 +7,13 @@ type PeelTarget = 'commit' | 'tree' | 'blob' | 'tag';
 
 /**
  * Peel an object id to the requested kind, as git's `repo_peel_to_type`: follow
- * annotated tags (≤ 5 levels) and a commit's root tree until an object of that
+ * annotated tags, to any depth, and a commit's root tree until an object of that
  * kind is reached. A rev that cannot reach the wanted kind refuses with
  * `OBJECT_NOT_FOUND`; under a `name` (a `<rev>^{<type>}` operator) git first
- * reports the kind it stopped at. Shared by the rev grammar (`rev-parse`) and
- * the read-command resolver (`resolve-rev`).
+ * reports the kind it stopped at. A chain revisiting an object — only a store
+ * whose objects do not hash to their names holds one — names no object either.
+ * Shared by the rev grammar (`rev-parse`) and the read-command resolver
+ * (`resolve-rev`).
  */
 export const peel = async (
   ctx: Context,
@@ -19,8 +21,9 @@ export const peel = async (
   target: PeelTarget,
   name?: string,
 ): Promise<ObjectId> => {
-  let current: ObjectId = id;
-  for (let i = 0; i < 5; i += 1) {
+  const seen = new Set<ObjectId>();
+  for (let current = id; !seen.has(current); ) {
+    seen.add(current);
     const obj = await readObject(ctx, current);
     if (obj.type === target) return current;
     if (obj.type === 'tag') {
@@ -35,7 +38,7 @@ export const peel = async (
     if (name !== undefined) reportPeelMismatch(ctx, name, target, obj.type);
     throw objectNotFound(current);
   }
-  throw objectNotFound(current);
+  throw objectNotFound(id);
 };
 
 const reportPeelMismatch = (

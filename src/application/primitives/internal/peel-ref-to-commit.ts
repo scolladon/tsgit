@@ -1,13 +1,13 @@
 /**
- * Peel a ref target through its annotated-tag chain to the commit it names,
- * bounded by `MAX_PEEL_DEPTH`. Shared by `describe` and `name-rev`, which both
+ * Peel a ref target through its annotated-tag chain, to any depth as git does,
+ * to the commit it names. Shared by `describe` and `name-rev`, which both
  * build a commit→ref map and need the outermost tagger date for tie-breaking.
- * Returns `undefined` when the chain is too deep or terminates at a non-commit.
+ * Returns `undefined` when the chain loops (a store whose objects do not hash
+ * to their names) or terminates at a non-commit.
  */
 import type { Commit, ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { readObject } from '../read-object.js';
-import { exceedsMaxPeelDepth } from '../validators.js';
 
 export interface PeeledRef {
   readonly commit: Commit;
@@ -24,11 +24,14 @@ export const peelRefToCommit = async (
   let current = await readObject(ctx, oid);
   let viaTag = false;
   let taggerDate = 0;
-  for (let depth = 0; current.type === 'tag'; depth += 1) {
-    if (exceedsMaxPeelDepth(depth)) return undefined;
+  const seen = new Set<ObjectId>([oid]);
+  while (current.type === 'tag') {
+    const next = current.data.object;
+    if (seen.has(next)) return undefined;
+    seen.add(next);
     if (!viaTag) taggerDate = current.data.tagger?.timestamp ?? 0;
     viaTag = true;
-    current = await readObject(ctx, current.data.object);
+    current = await readObject(ctx, next);
   }
   if (current.type !== 'commit') return undefined;
   return { commit: current, viaTag, taggerDate };

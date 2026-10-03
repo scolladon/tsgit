@@ -1474,12 +1474,12 @@ describe('branch', () => {
           caught = err;
         }
 
-        // Assert — the full payload, not just the code: pins the depth cap
-        // as the refusal, not some other error shape.
+        // Assert — the full payload, not just the code: pins the revisit of
+        // A after two tags as the refusal, not some other error shape.
         expect(caught).toBeInstanceOf(TsgitError);
         expect((caught as TsgitError).data).toEqual({
           code: 'REF_CHAIN_TOO_DEEP',
-          depth: 6,
+          depth: 2,
           chain: [],
         });
       }, 5_000);

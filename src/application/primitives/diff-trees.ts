@@ -537,7 +537,7 @@ interface PeeledTree {
 
 /**
  * Peel a commit or tag oid down to the tree it ultimately points at. Shares
- * `readTree`'s peel loop (`peelChain`, same `MAX_PEEL_DEPTH` bound, same
+ * `readTree`'s peel loop (`peelChain`, same revisit guard, same
  * non-tree refusal) but reads every hop once as raw bytes, parsing only the
  * commit/tag body needed to find the next hop's id — the terminal tree is
  * never parsed, only read, so a peel never pays for a `Tree` parse it

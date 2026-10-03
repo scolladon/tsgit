@@ -974,12 +974,10 @@ describe('describe', () => {
     });
   });
 
-  describe('Given a tag chain deeper than the peel bound', () => {
+  describe('Given a seven-deep tag chain', () => {
     describe('When describe runs', () => {
-      it('Then the over-deep tag is dropped at the peel bound', async () => {
-        // Arrange — seven nested annotated tags on c1 with increasing dates. The
-        // outermost (t7) exceeds the peel depth and must be dropped, so the
-        // newest still-peelable tag (t6) wins rather than t7.
+      it('Then the outermost, newest tag names the commit, as git peels to any depth', async () => {
+        // Arrange — seven nested annotated tags on c1 with increasing dates.
         const ctx = await seed();
         const c1 = await commitFile(ctx, 'c1');
         let prev = c1;
@@ -993,7 +991,7 @@ describe('describe', () => {
         const result = await describeCmd(ctx);
 
         // Assert
-        expect(result.name).toBe('t6');
+        expect(result.name).toBe('t7');
       });
     });
   });

@@ -173,8 +173,8 @@ describe('exceedsMaxSymbolicDepth boundary triple (default cap = 4, as git)', ()
   });
 });
 
-describe('exceedsMaxPeelDepth boundary triple (default cap = 5)', () => {
-  describe('Given a depth around the default cap', () => {
+describe('exceedsMaxPeelDepth boundary triple (cap = 5)', () => {
+  describe('Given a depth around the cap', () => {
     describe('When invoked', () => {
       it.each([
         { depth: 4, expected: false, label: 'returns false (just-under)' },
@@ -182,7 +182,7 @@ describe('exceedsMaxPeelDepth boundary triple (default cap = 5)', () => {
         { depth: 6, expected: true, label: 'returns true (just-over)' },
       ])('Then $label', ({ depth, expected }) => {
         // Arrange & Act
-        const result = exceedsMaxPeelDepth(depth);
+        const result = exceedsMaxPeelDepth(depth, 5);
 
         // Assert
         expect(result).toBe(expected);

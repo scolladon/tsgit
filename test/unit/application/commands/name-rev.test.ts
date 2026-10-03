@@ -461,37 +461,6 @@ describe('nameRev', () => {
     });
   });
 
-  describe('Given a tag chain deeper than the peel bound', () => {
-    describe('When name-rev runs', () => {
-      it('Then the over-deep tag is dropped at the peel bound', async () => {
-        // Arrange — eight nested tags; the outermost exceeds the peel depth.
-        const ctx = await seed();
-        const c1 = await commitFile(ctx, 'c1');
-        let prev = c1;
-        let prevType: TagData['objectType'] = 'commit';
-        for (let i = 1; i <= 8; i += 1) {
-          const data: TagData = {
-            object: prev,
-            objectType: prevType,
-            tagName: `t${i}`,
-            tagger: ident(1_000 + i),
-            message: `t${i}\n`,
-            extraHeaders: [],
-          };
-          prev = await writeObject(ctx, { type: 'tag', id: '' as ObjectId, data });
-          await tagCreate(ctx, { name: `t${i}`, target: prev });
-          prevType = 'tag';
-        }
-
-        // Act
-        const result = await nameRev(ctx, c1, { tags: true });
-
-        // Assert — the oldest still-peelable tag (t1) names c1; t8 is dropped.
-        expect(result?.ref).toBe(RefName.from('refs/tags/t1'));
-      });
-    });
-  });
-
   describe('Given a commit whose recorded parent is not a commit', () => {
     describe('When name-rev runs', () => {
       it('Then the non-commit parent is not traversed', async () => {

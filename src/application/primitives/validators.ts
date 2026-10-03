@@ -13,7 +13,6 @@ import { type HashConfig, isOid } from '../../domain/objects/index.js';
 import {
   MAX_COMMIT_MESSAGE_BYTES,
   MAX_INDEX_BYTES,
-  MAX_PEEL_DEPTH,
   MAX_SYMBOLIC_REF_DEPTH,
   MAX_WALK_SEEDS,
 } from './types.js';
@@ -195,7 +194,7 @@ export function exceedsMaxSymbolicDepth(depth: number, cap = MAX_SYMBOLIC_REF_DE
   return depth > cap;
 }
 
-export function exceedsMaxPeelDepth(depth: number, cap = MAX_PEEL_DEPTH): boolean {
+export function exceedsMaxPeelDepth(depth: number, cap: number): boolean {
   return depth > cap;
 }
 

@@ -7,6 +7,7 @@ import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import type { CommitData, ObjectId } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
+import { writeForgedTagLoop } from '../primitives/fixtures.js';
 
 const AUTHOR = {
   name: 'Test',
@@ -320,6 +321,42 @@ describe('Given objects behind zero or more tags', () => {
       // Assert
       expect(result).toBe('OBJECT_NOT_FOUND');
       expect(errors).toEqual([]);
+    });
+  });
+});
+
+describe('Given a six-deep chain of tags over a commit', () => {
+  describe('When revParse peels its outermost tag to the tree', () => {
+    it('Then it peels every tag, as git does', async () => {
+      // Arrange
+      const { ctx, ids } = await peelRepo();
+      let tip: ObjectId = ids.tagOfCommit;
+      for (let level = 2; level <= 6; level += 1)
+        tip = await writeTag(ctx, tip, 'tag', `d${level}`);
+      const sut = revParse;
+
+      // Act
+      const result = await sut(ctx, `${tip}^{tree}`);
+
+      // Assert
+      expect(result).toBe(ids.tree);
+    });
+  });
+});
+
+describe('Given a forged tag naming itself', () => {
+  describe('When evaluateRevision peels it to a commit', () => {
+    it('Then it refuses the looping chain as naming no object', async () => {
+      // Arrange
+      const { ctx } = await peelRepo();
+      const loop = await writeForgedTagLoop(ctx);
+      const sut = evaluateRevision;
+
+      // Act
+      const result = await failureCode(() => sut(ctx, `${loop}^{commit}`));
+
+      // Assert
+      expect(result).toBe('OBJECT_NOT_FOUND');
     });
   });
 });

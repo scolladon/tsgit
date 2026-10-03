@@ -23,9 +23,6 @@ import type { FileStat } from '../../ports/file-system.js';
 /** Max symbolic-ref dereferences resolveRef will follow. */
 export const MAX_SYMBOLIC_REF_DEPTH = 4;
 
-/** Max tag-peel hops resolveRef / readTree will follow when peeling. */
-export const MAX_PEEL_DEPTH = 5;
-
 /** Max seeds walkCommits.from can contain. */
 export const MAX_WALK_SEEDS = 1024;
 

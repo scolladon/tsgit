@@ -979,11 +979,8 @@ describe('revParse', () => {
 
   describe('Given five stacked tags wrapping a commit', () => {
     describe('When revParse(<tag>^{commit})', () => {
-      it('Then peel exhausts its five-step budget and rejects with OBJECT_NOT_FOUND', async () => {
-        // Arrange — peel reads exactly five tags (i=0..4) then exits at `i < 5`,
-        // throwing on the unreached commit. `i <= 5` would do a sixth read and
-        // succeed; `i -= 1` never hits the bound and also succeeds — both mutants
-        // turn this failure into the commit oid.
+      it('Then it peels all five tags to the commit, as git does', async () => {
+        // Arrange
         const ctx = createMemoryContext();
         const commit = await writeCommit(ctx, TREE_OID as ObjectId, []);
         const t1 = await writeTag(ctx, commit, 'commit');
@@ -992,19 +989,13 @@ describe('revParse', () => {
         const t4 = await writeTag(ctx, t3, 'tag');
         const t5 = await writeTag(ctx, t4, 'tag');
         await seedRepo(ctx, { refs: { 'refs/heads/main': commit, 'refs/tags/v1': t5 } });
+        const sut = revParse;
 
         // Act
-        let caught: unknown;
-        try {
-          await revParse(ctx, 'v1^{commit}');
-        } catch (err) {
-          caught = err;
-        }
+        const result = await sut(ctx, 'v1^{commit}');
 
         // Assert
-        const data = (caught as TsgitError).data as { code: string; id: string };
-        expect(data.code).toBe('OBJECT_NOT_FOUND');
-        expect(data.id).toBe(commit);
+        expect(result).toBe(commit);
       });
     });
   });

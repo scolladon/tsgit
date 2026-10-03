@@ -496,7 +496,7 @@ export function resolveRef(
   3. Neither found → `REF_NOT_FOUND`.
 - When `peel: true`, after resolving the `ObjectId`, reads the object and peels through tag chain until non-tag, subject to `maxPeelDepth`.
 - Cycle detection: tracked visited ref names; revisit throws `REF_CYCLE_DETECTED{chain}`.
-- **`maxSymbolicDepth` (default 5)** caps symbolic-ref dereferences only. **`maxPeelDepth` (default 5)** caps tag-peel steps only. The two counters are independent so neither budget is consumed by the other dimension.
+- **`maxSymbolicDepth` (default 5)** caps symbolic-ref dereferences only. **`maxPeelDepth` (default: unbounded, as git peels to any depth; a chain revisiting an object refuses)** caps tag-peel steps only. The two counters are independent so neither budget is consumed by the other dimension.
 
 **Ports used.** `ctx.fs.readUtf8`, `ctx.fs.exists`, `ctx.fs.stat` (for packed-refs mtime-based cache invalidation — see below), plus transitive `readObject` when `peel=true`.
 

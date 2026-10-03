@@ -7,7 +7,6 @@ import * as materialisePatchFilesMod from '../../../../src/application/primitive
 import * as readBlobMod from '../../../../src/application/primitives/read-blob.js';
 import * as readObjectMod from '../../../../src/application/primitives/read-object.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
-import { MAX_PEEL_DEPTH } from '../../../../src/application/primitives/types.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import { primaryPath } from '../../../../src/domain/diff/change-path.js';
@@ -3694,17 +3693,15 @@ describe('diffTrees', () => {
     });
   });
 
-  describe('Given recursive=true and a tag chain exceeding MAX_PEEL_DEPTH', () => {
+  describe('Given recursive=true and a six-deep tag chain over a tree', () => {
     describe('When diffTrees is called', () => {
-      it('Then throws REF_CHAIN_TOO_DEEP', async () => {
-        // Arrange — mirrors read-tree.test.ts's boundary case: the peel
-        // walker's depth counter is the only thing stopping runaway tag
-        // resolution on the raw (diff) side too.
+      it('Then it peels every tag and diffs the tree, as git does', async () => {
+        // Arrange
         const ctx = await buildSeededContext();
         const treeId = await writeTree(ctx, []);
         let currentId: ObjectId = treeId;
         let currentType: 'tree' | 'tag' = 'tree';
-        for (let i = 0; i <= MAX_PEEL_DEPTH; i += 1) {
+        for (let i = 0; i < 6; i += 1) {
           currentId = await writeObject(ctx, {
             type: 'tag',
             id: '' as ObjectId,
@@ -3720,15 +3717,13 @@ describe('diffTrees', () => {
           currentType = 'tag';
         }
 
-        // Act + Assert
-        try {
-          await diffTrees(ctx, currentId, treeId, { recursive: true });
-          expect.unreachable();
-        } catch (error) {
-          const data = (error as { data: { code: string; depth: number } }).data;
-          expect(data.code).toBe('REF_CHAIN_TOO_DEEP');
-          expect(data.depth).toBe(MAX_PEEL_DEPTH + 1);
-        }
+        const sut = diffTrees;
+
+        // Act
+        const result = await sut(ctx, currentId, treeId, { recursive: true });
+
+        // Assert
+        expect(result).toEqual({ changes: [] });
       });
     });
   });

@@ -317,6 +317,23 @@ export async function writeRawObjectBytes(
   return id;
 }
 
+const FORGED_TAG_ID = 'a1'.repeat(20) as ObjectId;
+
+/**
+ * Plant a loose tag naming itself under an id its bytes do not hash to — a
+ * loop only a store read without hash verification can hold.
+ */
+export async function writeForgedTagLoop(ctx: Context): Promise<ObjectId> {
+  const content = new TextEncoder().encode(
+    `object ${FORGED_TAG_ID}\ntype tag\ntag loop\ntagger A <a@a> 0 +0000\n\nloop\n`,
+  );
+  const header = serializeHeader('tag', content.length);
+  const bytes = new Uint8Array([...header, ...content]);
+  const loosePath = `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(FORGED_TAG_ID)}`;
+  await ctx.fs.write(loosePath, await ctx.compressor.deflate(bytes));
+  return FORGED_TAG_ID;
+}
+
 /**
  * Overwrite an already-hashed loose object's on-disk file with a header
  * whose size claim disagrees with `content`'s real length — a size-lying

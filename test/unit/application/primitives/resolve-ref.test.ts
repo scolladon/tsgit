@@ -12,7 +12,7 @@ import { writeObject } from '../../../../src/application/primitives/write-object
 import { permissionDenied, type TsgitError } from '../../../../src/domain/error.js';
 import type { ObjectId, RefName, Tag, Tree } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
-import { buildSeededContext } from './fixtures.js';
+import { buildSeededContext, writeForgedTagLoop } from './fixtures.js';
 
 const MAIN_ID = 'a'.repeat(40) as ObjectId;
 const OTHER_ID = 'b'.repeat(40) as ObjectId;
@@ -431,6 +431,66 @@ describe('resolveRef', () => {
         } catch (error) {
           expect((error as TsgitError).data.code).toBe('REF_CHAIN_TOO_DEEP');
         }
+      });
+    });
+  });
+
+  describe('Given a six-deep tag chain and no maxPeelDepth', () => {
+    describe('When resolveRef peel=true', () => {
+      it('Then it peels every tag, as git does', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        let currentId: ObjectId = await writeObject(ctx, {
+          type: 'tree',
+          entries: [],
+          id: '' as ObjectId,
+        });
+        const treeId = currentId;
+        for (let i = 0; i < 6; i += 1) {
+          currentId = await writeObject(ctx, {
+            type: 'tag',
+            id: '' as ObjectId,
+            data: {
+              object: currentId,
+              objectType: i === 0 ? 'tree' : 'tag',
+              tagName: `d${i}`,
+              tagger: { name: 'a', email: 'a@a', timestamp: 0, timezoneOffset: '+0000' },
+              message: `d${i}`,
+              extraHeaders: [],
+            },
+          });
+        }
+        await ctx.fs.writeUtf8('/repo/.git/refs/tags/deep', `${currentId}\n`);
+        const sut = resolveRef;
+
+        // Act
+        const result = await sut(ctx, 'refs/tags/deep' as RefName, { peel: true });
+
+        // Assert
+        expect(result).toBe(treeId);
+      });
+    });
+  });
+
+  describe('Given a forged tag naming itself', () => {
+    describe('When resolveRef peel=true', () => {
+      it('Then it refuses the looping chain with REF_CHAIN_TOO_DEEP', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const loop = await writeForgedTagLoop(ctx);
+        await ctx.fs.writeUtf8('/repo/.git/refs/tags/loop', `${loop}\n`);
+        const sut = resolveRef;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, 'refs/tags/loop' as RefName, { peel: true });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toMatchObject({ code: 'REF_CHAIN_TOO_DEEP', depth: 1 });
       });
     });
   });

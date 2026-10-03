@@ -5,7 +5,7 @@ import { validateRefName } from '../../domain/refs/ref-validation.js';
 import type { Context } from '../../ports/context.js';
 import { readObject } from './read-object.js';
 import { getRefStore, type RefStore } from './ref-store.js';
-import { MAX_PEEL_DEPTH, MAX_SYMBOLIC_REF_DEPTH, type ResolveRefOptions } from './types.js';
+import { MAX_SYMBOLIC_REF_DEPTH, type ResolveRefOptions } from './types.js';
 import { exceedsMaxPeelDepth, exceedsMaxSymbolicDepth } from './validators.js';
 
 /** {@link resolveDirectChain}'s result: the resolved id, or the ref name the
@@ -195,7 +195,7 @@ const finalizeOutcome = (
 ): Promise<ObjectId> => {
   if (options?.peel !== true) return Promise.resolve(outcome.id);
   // Stryker disable next-line OptionalChaining: equivalent — the guard above returns unless `options?.peel === true`, which no undefined `options` can satisfy, so `options` is always defined here.
-  return peelChain(ctx, outcome.id, options?.maxPeelDepth ?? MAX_PEEL_DEPTH);
+  return peelChain(ctx, outcome.id, options?.maxPeelDepth ?? Number.POSITIVE_INFINITY);
 };
 
 /**
@@ -249,16 +249,17 @@ export async function resolveDirectChain(
   }
 }
 
+/** Peel tags to any depth, as git does, unless the caller caps it; a chain revisiting an object refuses. */
 async function peelChain(ctx: Context, startId: ObjectId, maxDepth: number): Promise<ObjectId> {
   let current: ObjectId = startId;
-  let depth = 0;
+  const seen = new Set<ObjectId>([startId]);
   for (;;) {
     const object: GitObject = await readObject(ctx, current);
     if (object.type !== 'tag') return current;
-    depth += 1;
-    if (exceedsMaxPeelDepth(depth, maxDepth)) {
-      throw refChainTooDeep(depth, []);
-    }
     current = object.data.object;
+    if (seen.has(current) || exceedsMaxPeelDepth(seen.size, maxDepth)) {
+      throw refChainTooDeep(seen.size, []);
+    }
+    seen.add(current);
   }
 }

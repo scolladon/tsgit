@@ -32,7 +32,6 @@ import { tagCreate } from '../../../../src/application/commands/tag.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import { tablesListPath } from '../../../../src/application/primitives/path-layout.js';
 import * as readObjectMod from '../../../../src/application/primitives/read-object.js';
-import { MAX_PEEL_DEPTH } from '../../../../src/application/primitives/types.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
 import type { AuthorIdentity, ObjectId, Tag } from '../../../../src/domain/objects/index.js';
@@ -48,11 +47,14 @@ import {
   type ReftableWriteOptions,
 } from '../../../../src/domain/refs/reftable/reftable-writer.js';
 import type { Context } from '../../../../src/ports/context.js';
+import { writeForgedTagLoop } from '../primitives/fixtures.js';
 import {
   commonReftableDir,
   withReftableStorage,
   writeReftableFiles,
 } from '../primitives/reftable-fixtures.js';
+
+const DEEP_TAG_CHAIN = 6;
 
 const AUTHOR: AuthorIdentity = {
   name: 'Ada',
@@ -365,14 +367,12 @@ describe('packRefs — files backend', () => {
     });
   });
 
-  describe('Given a tag chain at exactly MAX_PEEL_DEPTH pointing at a commit', () => {
+  describe('Given a six-deep tag chain pointing at a commit', () => {
     describe('When packRefs runs', () => {
       it('Then it succeeds and the packed-refs entry carries the commit as the peeled oid', async () => {
-        // Arrange — kills the `depth > MAX_PEEL_DEPTH` EqualityOperator `>=`
-        // mutant on `ref-store.ts`'s OWN `peelToNonTag` (pack-refs' peel
-        // walk), distinct from `resolve-ref.ts`'s own bound.
+        // Arrange — git peels a tag chain to any depth.
         const { ctx, commitId } = await seedOneCommit();
-        const chainTip = await buildTagChain(ctx, MAX_PEEL_DEPTH, commitId);
+        const chainTip = await buildTagChain(ctx, DEEP_TAG_CHAIN, commitId);
         await ctx.fs.writeUtf8(`${gitDirOf(ctx)}/refs/tags/chain`, `${chainTip}\n`);
         const sut = packRefs;
 
@@ -391,33 +391,25 @@ describe('packRefs — files backend', () => {
     });
   });
 
-  describe('Given a tag chain exceeding MAX_PEEL_DEPTH', () => {
+  describe('Given a forged tag naming itself', () => {
     describe('When packRefs runs', () => {
-      it('Then it throws REF_CHAIN_TOO_DEEP with the depth at which the walk stopped', async () => {
-        // Arrange — one hop past the cap: the walk counter, not a
-        // coincidence of chain length, is what stops it.
-        const { ctx, commitId } = await seedOneCommit();
-        const chainTip = await buildTagChain(ctx, MAX_PEEL_DEPTH + 1, commitId);
-        await ctx.fs.writeUtf8(`${gitDirOf(ctx)}/refs/tags/deep`, `${chainTip}\n`);
+      it('Then it refuses the looping chain with REF_CHAIN_TOO_DEEP', async () => {
+        // Arrange
+        const { ctx } = await seedOneCommit();
+        const loop = await writeForgedTagLoop(ctx);
+        await ctx.fs.writeUtf8(`${gitDirOf(ctx)}/refs/tags/loop`, `${loop}\n`);
         const sut = packRefs;
 
-        // Act — captured OUTSIDE the try: an `expect.unreachable()` thrown
-        // inside it would be swallowed by this same `catch` and resurface as
-        // a confusing downstream TypeError instead of the intended message.
+        // Act
         let caught: unknown;
         try {
           await sut(ctx);
         } catch (err) {
           caught = err;
         }
-        if (caught === undefined) expect.unreachable();
 
         // Assert
-        const data = (caught as TsgitError).data;
-        expect(data.code).toBe('REF_CHAIN_TOO_DEEP');
-        if (data.code === 'REF_CHAIN_TOO_DEEP') {
-          expect(data.depth).toBe(MAX_PEEL_DEPTH + 1);
-        }
+        expect((caught as TsgitError).data).toMatchObject({ code: 'REF_CHAIN_TOO_DEEP', depth: 1 });
       });
     });
   });
@@ -502,9 +494,8 @@ describe('packRefs — files backend', () => {
 });
 
 /** `length` tags chained onto `base` (a commit): tag 0 points at `base`, tag
- *  1 at tag 0, and so on — the same shape `read-tree.test.ts`'s own
- *  MAX_PEEL_DEPTH fixtures use, reused here against `ref-store.ts`'s
- *  separate `peelToNonTag` (the pack-refs peel walk). */
+ *  1 at tag 0, and so on — exercising `ref-store.ts`'s `peelToNonTag` (the
+ *  pack-refs peel walk). */
 async function buildTagChain(ctx: Context, length: number, base: ObjectId): Promise<ObjectId> {
   let currentId = base;
   let currentType: 'commit' | 'tag' = 'commit';

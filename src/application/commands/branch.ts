@@ -588,8 +588,8 @@ const resolveBranchTarget = async (ctx: Context, startPoint: string): Promise<Ob
 
 /**
  * Peels `id` through any tag objects to the commit it names (git's
- * `lookup_commit_reference`), bounded by `MAX_PEEL_DEPTH` — the same shared
- * walker `readTree`/`peelToTree` use, so a hostile repository's self- or
+ * `lookup_commit_reference`), to any depth — the same shared walker
+ * `readTree`/`peelToTree` use, so a hostile repository's self- or
  * mutually-referential tag chain refuses with `REF_CHAIN_TOO_DEEP` instead of
  * looping forever. The refusal keeps `id` as resolved — an annotated tag's
  * own oid, never its target — because that is the oid git's `error: object

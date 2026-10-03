@@ -76,8 +76,7 @@ import {
   recordRefUpdate,
 } from './record-ref-update.js';
 import { createReftableRefStore } from './reftable-ref-store.js';
-import { MAX_PEEL_DEPTH, MAX_REFLOG_BYTES } from './types.js';
-import { exceedsMaxPeelDepth } from './validators.js';
+import { MAX_REFLOG_BYTES } from './types.js';
 
 const TEXT_ENCODER = new TextEncoder();
 const TEXT_DECODER = new TextDecoder();
@@ -1922,13 +1921,11 @@ function createFilesRefStore(ctx: Context): RefStore {
    */
   async function peelToNonTag(id: ObjectId): Promise<ObjectId> {
     let current = id;
-    let depth = 0;
+    const seen = new Set<ObjectId>([id]);
     while ((await readObjectMetadata(ctx, current)).type === 'tag') {
-      depth += 1;
-      if (exceedsMaxPeelDepth(depth, MAX_PEEL_DEPTH)) {
-        throw refChainTooDeep(depth, []);
-      }
       current = await tagTargetOf(current);
+      if (seen.has(current)) throw refChainTooDeep(seen.size, []);
+      seen.add(current);
     }
     return current;
   }
