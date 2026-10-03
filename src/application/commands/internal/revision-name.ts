@@ -16,13 +16,9 @@ import { refCandidates } from '../../../domain/refs/index.js';
 import type { Context } from '../../../ports/context.js';
 import { getRefStore } from '../../primitives/ref-store.js';
 import { resolveOidPrefix } from '../../primitives/resolve-oid-prefix.js';
-import {
-  type RefCandidateOutcome,
-  readRefCandidate,
-  resolveRefOrMissing,
-} from '../../primitives/resolve-ref.js';
+import { type RefCandidateOutcome, readRefCandidate } from '../../primitives/resolve-ref.js';
 import { MAX_SYMBOLIC_REF_DEPTH } from '../../primitives/types.js';
-import { resolveRefLadder, warnIfRefNamesObjectId } from './refname-ambiguity.js';
+import { readCandidate, resolveRefLadder, warnIfRefNamesObjectId } from './refname-ambiguity.js';
 
 /**
  * One candidate as `expand_ref` reads it. Never peels: git's plain `get_oid`
@@ -55,8 +51,9 @@ export const resolveRevisionName = async (
 
 /**
  * Every object id `name`'s candidate namespaces resolve to, in ladder order —
- * git's `dwim_ref` count. Reading them all is what `dwim_ref` does too; only
- * `branch`'s start point consults the count, and it refuses more than one.
+ * git's `dwim_ref` count, warning on each namespace it skips as `expand_ref`
+ * does. Only `branch`'s start point consults the count, and it refuses more
+ * than one.
  */
 export const resolvingCandidates = async (
   ctx: Context,
@@ -64,24 +61,15 @@ export const resolvingCandidates = async (
 ): Promise<ReadonlyArray<ObjectId>> => {
   const found: ObjectId[] = [];
   for (const candidate of refCandidates(name)) {
-    try {
-      const id = await resolveRefOrMissing(ctx, candidate);
-      if (id !== undefined) found.push(id);
-    } catch {
-      // A dangling or broken candidate is skipped, as `expand_ref` skips it.
-    }
+    const id = await readCandidate(ctx, candidate, resolveCandidate(ctx));
+    if (id !== undefined) found.push(id);
   }
   return found;
 };
 
 /** Whether `candidate` resolves; a dangling or broken one does not, as `expand_ref` skips it. */
-const resolvesQuietly = async (ctx: Context, candidate: RefName): Promise<boolean> => {
-  try {
-    return (await resolveRefOrMissing(ctx, candidate)) !== undefined;
-  } catch {
-    return false;
-  }
-};
+const resolvesQuietly = async (ctx: Context, candidate: RefName): Promise<boolean> =>
+  (await readRefCandidate(ctx, candidate)).kind === 'found';
 
 /** The ref a resolving symbolic chain from `name` ends at. */
 const terminalRefName = async (ctx: Context, name: RefName): Promise<RefName> => {

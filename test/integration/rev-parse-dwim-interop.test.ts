@@ -25,6 +25,7 @@ import { revParse } from '../../src/application/commands/rev-parse.js';
 import { mergeBase } from '../../src/application/primitives/merge-base.js';
 import type { TsgitError } from '../../src/domain/error.js';
 import type { ObjectId } from '../../src/domain/objects/index.js';
+import type { Context } from '../../src/ports/context.js';
 import {
   disableAutoMaintenance,
   GIT_AVAILABLE,
@@ -410,3 +411,77 @@ describe.skipIf(!GIT_AVAILABLE)(
     });
   },
 );
+
+type CommandRun = (ctx: Context) => Promise<unknown>;
+
+describe.skipIf(!GIT_AVAILABLE)('integration — skip and ambiguity warnings per command', () => {
+  let repo = '';
+  const caseRoots: string[] = [];
+
+  beforeAll(async () => {
+    repo = await mkdtemp(path.join(os.tmpdir(), 'tsgit-command-warnings-interop-'));
+    runGit(['init', '-q', '-b', 'main', repo]);
+    disableAutoMaintenance(repo);
+    runGit(['-C', repo, 'commit', '-q', '--allow-empty', '-m', 'c1'], { env: IDENTITY_ENV });
+    const tip = git(repo, 'rev-parse', 'HEAD').trim();
+    git(repo, 'update-ref', 'refs/heads/dg', tip);
+    git(repo, 'symbolic-ref', 'refs/tags/dg', 'refs/tags/nope');
+    git(repo, 'symbolic-ref', 'refs/tags/only', 'refs/heads/nope');
+    git(repo, 'update-ref', 'refs/heads/amb', tip);
+    git(repo, 'update-ref', 'refs/tags/amb', tip);
+  }, SETUP_TIMEOUT);
+
+  afterAll(async () => {
+    await rm(repo, { recursive: true, force: true });
+    await Promise.all(
+      caseRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
+    );
+  });
+
+  const caseRepo = async (slug: string): Promise<string> => {
+    const root = await mkdtemp(path.join(os.tmpdir(), `tsgit-command-warnings-${slug}-`));
+    caseRoots.push(root);
+    const dir = path.join(root, 'repo');
+    await cp(repo, dir, { recursive: true });
+    return dir;
+  };
+
+  describe.each([
+    {
+      label: 'branch from a name past a dangling symref',
+      args: ['branch', 'x', 'dg'],
+      run: ((ctx) => branchCreate(ctx, { name: 'x', startPoint: 'dg' })) as CommandRun,
+    },
+    {
+      label: 'branch from a name only a dangling symref carries',
+      args: ['branch', 'x', 'only'],
+      run: ((ctx) => branchCreate(ctx, { name: 'x', startPoint: 'only' })) as CommandRun,
+    },
+    {
+      label: 'branch from a name two namespaces carry',
+      args: ['branch', 'x', 'amb'],
+      run: ((ctx) => branchCreate(ctx, { name: 'x', startPoint: 'amb' })) as CommandRun,
+    },
+  ])('Given $label', ({ args, run }) => {
+    describe('When git and tsgit run it', () => {
+      it('Then tsgit warns each line git warns', async () => {
+        // Arrange
+        const gitDir = await caseRepo('git');
+        const { stderr } = tryRunGitWithExit(['-C', gitDir, ...args]);
+        const warnings: string[] = [];
+        const ctx = {
+          ...createNodeContext({ workDir: await caseRepo('tsgit') }),
+          logger: { warn: (message: string) => warnings.push(message) },
+        };
+        const sut = run;
+
+        // Act
+        await sut(ctx).catch(() => undefined);
+
+        // Assert
+        const expected = stderrLines(stderr).filter((line) => line.startsWith('warning: '));
+        expect(warnings.map((message) => `warning: ${message}`)).toEqual(expected);
+      });
+    });
+  });
+});

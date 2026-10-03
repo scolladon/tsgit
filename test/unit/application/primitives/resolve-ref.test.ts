@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  readRefCandidate,
   refResolvesForReading,
   resolveRef,
   resolveRefForReading,
@@ -680,6 +681,25 @@ describe('refResolvesForReading', () => {
   });
 });
 
+const permissionDeniedOn = (base: Context, target: string): Context => ({
+  ...base,
+  fs: {
+    ...base.fs,
+    openWithNoFollow: async (path, mode) => {
+      if (path === target) throw permissionDenied(path);
+      return base.fs.openWithNoFollow(path, mode);
+    },
+    read: async (path) => {
+      if (path === target) throw permissionDenied(path);
+      return base.fs.read(path);
+    },
+    readUtf8: async (path) => {
+      if (path === target) throw permissionDenied(path);
+      return base.fs.readUtf8(path);
+    },
+  },
+});
+
 describe('resolveRefForReading', () => {
   describe('Given a ref whose read fails for a reason the reading walk does not fold away', () => {
     describe('When resolveRefForReading resolves it', () => {
@@ -689,25 +709,81 @@ describe('resolveRefForReading', () => {
           refs: [{ name: 'refs/heads/main' as RefName, id: MAIN_ID }],
         });
         const target = '/repo/.git/refs/heads/main';
-        const ctx: Context = {
-          ...base,
-          fs: {
-            ...base.fs,
-            openWithNoFollow: async (path, mode) => {
-              if (path === target) throw permissionDenied(path);
-              return base.fs.openWithNoFollow(path, mode);
-            },
-            read: async (path) => {
-              if (path === target) throw permissionDenied(path);
-              return base.fs.read(path);
-            },
-            readUtf8: async (path) => {
-              if (path === target) throw permissionDenied(path);
-              return base.fs.readUtf8(path);
-            },
-          },
-        };
+        const ctx = permissionDeniedOn(base, target);
         const sut = resolveRefForReading;
+
+        // Act
+        const refusal = await sut(ctx, 'refs/heads/main' as RefName).catch(
+          (err: TsgitError) => err.data,
+        );
+
+        // Assert
+        expect(refusal).toEqual({ code: 'PERMISSION_DENIED', path: target });
+      });
+    });
+  });
+});
+
+describe('readRefCandidate', () => {
+  describe('Given a direct ref, a dangling symref, a symref cycle, a broken ref and an ill-formed name', () => {
+    describe('When readRefCandidate reads each candidate', () => {
+      it.each([
+        {
+          label: 'found with its id',
+          ref: 'refs/heads/main',
+          expected: { kind: 'found', id: MAIN_ID },
+        },
+        { label: 'missing when absent', ref: 'refs/heads/absent', expected: { kind: 'missing' } },
+        {
+          label: 'a dangling symref when its target is absent',
+          ref: 'refs/heads/dangling',
+          expected: { kind: 'dangling-symref' },
+        },
+        {
+          label: 'a dangling symref when its chain cycles',
+          ref: 'refs/heads/cycle',
+          expected: { kind: 'dangling-symref' },
+        },
+        {
+          label: 'broken when its content is garbage',
+          ref: 'refs/heads/bad',
+          expected: { kind: 'broken' },
+        },
+        {
+          label: 'missing when git refuses the name',
+          ref: 'refs/heads/a..b',
+          expected: { kind: 'missing' },
+        },
+      ])('Then the candidate reads as $label', async ({ ref, expected }) => {
+        // Arrange
+        const ctx = await buildSeededContext({
+          refs: [{ name: 'refs/heads/main' as RefName, id: MAIN_ID }],
+        });
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/dangling', 'ref: refs/heads/nope\n');
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/cycle', 'ref: refs/heads/cycle2\n');
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/cycle2', 'ref: refs/heads/cycle\n');
+        await ctx.fs.writeUtf8('/repo/.git/refs/heads/bad', 'not-a-valid-ref-content\n');
+        const sut = readRefCandidate;
+
+        // Act
+        const result = await sut(ctx, ref as RefName);
+
+        // Assert
+        expect(result).toEqual(expected);
+      });
+    });
+  });
+
+  describe('Given a candidate whose read fails for a reason other than an unreadable ref', () => {
+    describe('When readRefCandidate reads it', () => {
+      it('Then that refusal propagates instead of classifying the candidate', async () => {
+        // Arrange
+        const base = await buildSeededContext({
+          refs: [{ name: 'refs/heads/main' as RefName, id: MAIN_ID }],
+        });
+        const target = '/repo/.git/refs/heads/main';
+        const ctx = permissionDeniedOn(base, target);
+        const sut = readRefCandidate;
 
         // Act
         const refusal = await sut(ctx, 'refs/heads/main' as RefName).catch(

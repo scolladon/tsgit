@@ -4,7 +4,9 @@ import { resolveCommitIsh } from '../../../../../src/application/commands/intern
 import {
   dwimRefName,
   resolveRevisionName,
+  resolvingCandidates,
 } from '../../../../../src/application/commands/internal/revision-name.js';
+import { permissionDenied, type TsgitError } from '../../../../../src/domain/error.js';
 import type { Context } from '../../../../../src/ports/context.js';
 import { seedRepo } from '../fixtures.js';
 
@@ -338,6 +340,85 @@ describe('Given resolveRevisionName and a name git refuses as a refname', () => 
       // Assert
       expect(result).toBeUndefined();
       expect(messages).toEqual([]);
+    });
+  });
+});
+
+describe('Given resolvingCandidates and a name some namespaces skip', () => {
+  describe.each([
+    {
+      when: 'a dangling symref',
+      files: { 'refs/tags/dg': 'ref: refs/tags/nope\n' },
+      expected: ['ignoring dangling symref refs/tags/dg'],
+    },
+    {
+      when: 'a broken ref',
+      files: { 'refs/tags/dg': 'garbage\n' },
+      expected: ['ignoring broken ref refs/tags/dg'],
+    },
+  ])('When it counts the namespaces past $when', ({ files, expected }) => {
+    it('Then it skips that namespace warning as git dwim_ref does', async () => {
+      // Arrange
+      const messages: string[] = [];
+      const { ctx, commit } = await repoWithRawRefs(['dg'], files, (message) =>
+        messages.push(message),
+      );
+      const sut = resolvingCandidates;
+
+      // Act
+      const result = await sut(ctx, 'dg');
+
+      // Assert
+      expect(result).toEqual([commit]);
+      expect(messages).toEqual(expected);
+    });
+  });
+});
+
+/** `ctx` whose read of the loose ref at `path` (below the git dir) is denied. */
+const denyingRead = (ctx: Context, path: string): Context => {
+  const target = `${ctx.layout.gitDir}/${path}`;
+  const deny = (requested: string): void => {
+    if (requested === target) throw permissionDenied(requested);
+  };
+  return {
+    ...ctx,
+    fs: {
+      ...ctx.fs,
+      openWithNoFollow: async (requested, mode) => {
+        deny(requested);
+        return ctx.fs.openWithNoFollow(requested, mode);
+      },
+      read: async (requested) => {
+        deny(requested);
+        return ctx.fs.read(requested);
+      },
+      readUtf8: async (requested) => {
+        deny(requested);
+        return ctx.fs.readUtf8(requested);
+      },
+    },
+  };
+};
+
+describe.each([
+  { label: 'resolvingCandidates', sut: resolvingCandidates },
+  { label: 'dwimRefName', sut: dwimRefName },
+])('Given $label and a candidate whose read is denied', ({ sut }) => {
+  describe('When it reads that candidate', () => {
+    it('Then the refusal propagates instead of skipping the namespace', async () => {
+      // Arrange
+      const { ctx } = await repoWithRawRefs(['dg'], {}, () => undefined);
+      const denied = denyingRead(ctx, 'refs/heads/dg');
+
+      // Act
+      const refusal = await sut(denied, 'dg').catch((err: TsgitError) => err.data);
+
+      // Assert
+      expect(refusal).toEqual({
+        code: 'PERMISSION_DENIED',
+        path: `${ctx.layout.gitDir}/refs/heads/dg`,
+      });
     });
   });
 });

@@ -78,7 +78,7 @@ const warnSkipped = (ctx: Context, candidate: RefName | 'HEAD', kind: string): v
 };
 
 /** One candidate's object id, warning as `expand_ref` does when it skips it. */
-const readCandidate = async (
+export const readCandidate = async (
   ctx: Context,
   candidate: RefName | 'HEAD',
   resolve: CandidateResolver,

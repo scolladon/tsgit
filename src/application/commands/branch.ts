@@ -57,7 +57,7 @@ import {
   readHeadRaw,
 } from './internal/repo-state.js';
 import { resolveRevisionExpression } from './internal/revision-expression.js';
-import { dwimRefName, resolveRevisionName, resolvingCandidates } from './internal/revision-name.js';
+import { dwimRefName, resolvingCandidates } from './internal/revision-name.js';
 
 export type { BranchTrack, BranchUpstream } from './internal/branch-tracking.js';
 
@@ -594,18 +594,17 @@ const appendRenameEntries = (
  * A branch's start point, through git's revision ladder. `create_branch` is
  * the one surface that refuses an ambiguous name rather than taking the first
  * candidate and warning — `dwim_ref` returning more than one match is its
- * `ambiguous object name` refusal. `dwim_branch_start` runs that count for
- * EVERY start point, a full-width object id included: git resolves the object
- * first and still refuses when two namespaces carry the same 40-hex string as
- * a ref name (measured, git 2.55.0).
+ * `ambiguous object name` refusal. `dwim_branch_start` resolves the start
+ * point first (`get_oid_mb`, which warns), and only a resolving one is
+ * counted (`dwim_ref`, which warns again) — for EVERY start point, a
+ * full-width object id included: git still refuses when two namespaces carry
+ * the same 40-hex string as a ref name (measured, git 2.55.0).
  */
 const resolveBranchTarget = async (ctx: Context, startPoint: string): Promise<ObjectId> => {
+  const id = await resolveRevisionExpression(ctx, startPoint);
+  if (id === undefined) throw branchNotFound(startPoint as RefName);
   const candidates = await resolvingCandidates(ctx, startPoint);
   if (candidates.length > 1) throw revparseAmbiguous(startPoint, candidates);
-  const id =
-    (await resolveRevisionName(ctx, startPoint)) ??
-    (await resolveRevisionExpression(ctx, startPoint));
-  if (id === undefined) throw branchNotFound(startPoint as RefName);
   return id;
 };
 
