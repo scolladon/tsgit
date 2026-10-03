@@ -1088,6 +1088,25 @@ describe('read-commit-graph', () => {
       });
     });
 
+    describe('Given a single-file graph with an octopus merge whose EDGE chunk is unreadable', () => {
+      describe('When commitHeader is asked for the merge twice in one session', () => {
+        it("Then git's error is logged once and both answers fall back to the object", async () => {
+          // Arrange
+          const warn = vi.fn<NonNullable<Logger['warn']>>();
+          const ctx = { ...(await buildSeededContext()), logger: { warn } };
+          const { d3 } = await buildOctopusWithoutEdgeChunk(ctx);
+          const sut = commitHeader;
+
+          // Act
+          const result = [await sut(ctx, d3.id), await sut(ctx, d3.id)];
+
+          // Assert
+          expect(result).toEqual([undefined, undefined]);
+          expect(warn).toHaveBeenCalledTimes(1);
+        });
+      });
+    });
+
     describe('Given a single-file graph whose OIDF chunk table entry causes a genuine RangeError while parsing', () => {
       describe('When commitHeader is called for a real commit', () => {
         it('Then the graph degrades to absent instead of throwing', async () => {

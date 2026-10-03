@@ -108,6 +108,13 @@ const HEADER_CACHE_MAX_ENTRIES = 65_536;
 const headerCache = new WeakMap<Context['session'], Map<ObjectId, CommitHeader>>();
 
 /**
+ * Commits whose EDGE pointer runs past the chunk. git errors on the first
+ * graph parse, then parses the commit from its object for the rest of the
+ * process; the session remembers them so the error is logged once.
+ */
+const objectFallbacks = new WeakMap<Context['session'], Set<ObjectId>>();
+
+/**
  * Insert into an insertion-order-bounded Map: when the map is at `cap`,
  * evict the oldest entry (Map iteration order is insertion order) before
  * inserting. Overwriting an existing key never evicts — the size does not
@@ -320,12 +327,23 @@ export async function correctedCommitDatesEnabled(ctx: Context): Promise<boolean
 }
 
 function getHeaderCache(ctx: Context): Map<ObjectId, CommitHeader> {
-  let cache = headerCache.get(ctx.session);
-  if (cache === undefined) {
-    cache = new Map<ObjectId, CommitHeader>();
-    headerCache.set(ctx.session, cache);
-  }
-  return cache;
+  return sessionScoped(headerCache, ctx, () => new Map<ObjectId, CommitHeader>());
+}
+
+function getObjectFallbacks(ctx: Context): Set<ObjectId> {
+  return sessionScoped(objectFallbacks, ctx, () => new Set<ObjectId>());
+}
+
+function sessionScoped<V>(
+  scoped: WeakMap<Context['session'], V>,
+  ctx: Context,
+  create: () => V,
+): V {
+  const existing = scoped.get(ctx.session);
+  if (existing !== undefined) return existing;
+  const created = create();
+  scoped.set(ctx.session, created);
+  return created;
 }
 
 interface OwnPosition {
@@ -414,6 +432,7 @@ export async function commitHeader(ctx: Context, id: ObjectId): Promise<CommitHe
   const cache = getHeaderCache(ctx);
   const cached = cache.get(id);
   if (cached !== undefined) return cached;
+  if (getObjectFallbacks(ctx).has(id)) return undefined;
 
   const graph = await loadGraph(ctx);
   if (graph === undefined) return undefined;
@@ -443,6 +462,7 @@ function readHeader(
   const ownBound = graph.layerOffsets[found.layerIndex]! + layer.commitCount;
   const parents = resolveParentIds(graph, recorded.positions, ownBound);
   if (recorded.edgesOutOfBounds) {
+    getObjectFallbacks(ctx).add(id);
     ctx.logger?.warn?.('commitGraph: commit-graph extra-edges pointer out of bounds', { id });
     return undefined;
   }

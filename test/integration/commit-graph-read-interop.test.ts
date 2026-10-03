@@ -80,6 +80,17 @@ const chainLines = (repo: Linear): ReadonlyArray<string> =>
 const layerPath = (repo: Linear, hash: string): string =>
   path.join(repo.layersDir, `graph-${hash}.graph`);
 
+/** Write a reachable single-file graph, then hide its EDGE chunk from readers. */
+const writeGraphWithoutEdgeChunk = (repo: Linear): void => {
+  runGit(['-C', repo.dir, 'commit-graph', 'write', '--reachable']);
+  const file = path.join(repo.dir, '.git', 'objects', 'info', 'commit-graph');
+  chmodSync(file, 0o644);
+  const bytes = new Uint8Array(readFileSync(file));
+  const rows = Buffer.from(bytes.subarray(0, 8 + 12 * ((bytes[6] as number) + 1)));
+  bytes.set(Buffer.from('ZZZZ', 'latin1'), rows.indexOf('EDGE', 8, 'latin1'));
+  writeFileSync(file, bytes);
+};
+
 const gitWarnings = (repo: Linear): { readonly exitCode: number; readonly lines: string[] } => {
   const result = tryRunGitWithExit(['-C', repo.dir, 'log', '--format=%H']);
   const lines = result.stderr
@@ -312,13 +323,7 @@ describe.skipIf(!GIT_AVAILABLE)('commit-graph read interop', () => {
           const sides = ['s1', 's2'].map((message) => commitTree(message, [root]));
           const octopus = commitTree('octopus', [root, ...sides]);
           runGit(['-C', repo.dir, 'update-ref', 'refs/heads/main', octopus]);
-          runGit(['-C', repo.dir, 'commit-graph', 'write', '--reachable']);
-          const file = path.join(repo.dir, '.git', 'objects', 'info', 'commit-graph');
-          chmodSync(file, 0o644);
-          const bytes = new Uint8Array(readFileSync(file));
-          const rows = Buffer.from(bytes.subarray(0, 8 + 12 * ((bytes[6] as number) + 1)));
-          bytes.set(Buffer.from('ZZZZ', 'latin1'), rows.indexOf('EDGE', 8, 'latin1'));
-          writeFileSync(file, bytes);
+          writeGraphWithoutEdgeChunk(repo);
           const warnings: string[] = [];
           const opened = await openRepository({
             cwd: repo.dir,
@@ -413,6 +418,51 @@ describe.skipIf(!GIT_AVAILABLE)('commit-graph read interop', () => {
           expect(git.lines).toEqual([]);
           expect(ours.warnings).toEqual(git.lines);
           expect(ours.served).toEqual([true, true]);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+  describe('Given a graph whose unreadable octopus sits below two children on the first-parent line', () => {
+    describe('When both tools log the first-parent history', () => {
+      it(
+        'Then the extra-edges pointer is reported once, as git reports it once per process',
+        async () => {
+          // Arrange
+          const repo = linearHistory(1);
+          const [root] = repo.commits as [ObjectId];
+          const commitTree = (message: string, parents: ReadonlyArray<string>): string =>
+            runGit([
+              '-C',
+              repo.dir,
+              'commit-tree',
+              `${root}^{tree}`,
+              ...parents.flatMap((parent) => ['-p', parent]),
+              '-m',
+              message,
+            ]).trim();
+          const sides = ['s1', 's2'].map((message) => commitTree(message, [root]));
+          const octopus = commitTree('octopus', [root, ...sides]);
+          const children = ['c1', 'c2'].map((message) => commitTree(message, [octopus]));
+          runGit(['-C', repo.dir, 'update-ref', 'refs/heads/main', commitTree('top', children)]);
+          writeGraphWithoutEdgeChunk(repo);
+          const warnings: string[] = [];
+          const opened = await openRepository({
+            cwd: repo.dir,
+            logger: { warn: (message: string) => warnings.push(message) },
+          });
+
+          // Act
+          const git = tryRunGitWithExit(['-C', repo.dir, 'log', '--first-parent', '--format=%H']);
+          const ours = await opened.log({ order: 'first-parent' });
+          await opened.dispose?.();
+
+          // Assert
+          expect(git.stderr).toBe('error: commit-graph extra-edges pointer out of bounds\n');
+          expect(warnings.map((line) => `error: ${line.replace(LOGGER_PREFIX, '')}\n`)).toEqual([
+            git.stderr,
+          ]);
+          expect(ours.map((entry) => entry.id)).toEqual(git.stdout.trimEnd().split('\n'));
         },
         ROW_TIMEOUT,
       );
