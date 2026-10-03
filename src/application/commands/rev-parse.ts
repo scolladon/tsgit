@@ -1,6 +1,7 @@
 import { revparseUnresolved } from '../../domain/commands/error.js';
 import { applyGraft } from '../../domain/commit/graft.js';
 import { errorDataCode } from '../../domain/error-data-code.js';
+import type { Commit } from '../../domain/objects/commit.js';
 import { objectNotFound } from '../../domain/objects/error.js';
 import {
   type HashConfig,
@@ -171,22 +172,48 @@ const pickByDate = (
 };
 
 const applyOperation = async (ctx: Context, id: ObjectId, op: RevOperation): Promise<ObjectId> => {
-  if (op.kind === 'parent') return getNthParent(ctx, id, op.n);
-  if (op.kind === 'ancestor') {
-    let cur = id;
-    for (let i = 0; i < op.n; i += 1) cur = await getNthParent(ctx, cur, 1);
-    return cur;
-  }
-  return peel(ctx, id, op.target);
+  if (op.kind === 'peel') return peel(ctx, id, op.target, op.name);
+  const commit = await lookupCommitReference(ctx, id);
+  if (op.kind === 'parent') return op.n === 0 ? commit.id : nthParent(ctx, commit, op.n);
+  return nthAncestor(ctx, commit, op.n);
 };
 
-const getNthParent = async (ctx: Context, id: ObjectId, n: number): Promise<ObjectId> => {
+interface PeeledCommit {
+  readonly id: ObjectId;
+  readonly commit: Commit;
+}
+
+/** git's `lookup_commit_reference`: peel tags to the commit `^`/`~` walk, reporting any other kind reached. */
+const lookupCommitReference = async (ctx: Context, id: ObjectId): Promise<PeeledCommit> => {
+  let current = id;
+  let obj = await readObject(ctx, current);
+  while (obj.type === 'tag') {
+    current = obj.data.object;
+    obj = await readObject(ctx, current);
+  }
+  if (obj.type === 'commit') return { id: current, commit: obj };
+  ctx.logger?.error?.(`object ${id} is a ${obj.type}, not a commit`, { id, type: obj.type });
+  throw objectNotFound(id);
+};
+
+const nthParent = async (ctx: Context, peeled: PeeledCommit, n: number): Promise<ObjectId> => {
+  const grafted = applyGraft(peeled.commit, await loadShallowSet(ctx));
+  const parent = grafted.data.parents[n - 1];
+  if (parent === undefined) throw objectNotFound(peeled.id);
+  return parent;
+};
+
+/** git's `get_nth_ancestor`: every hop but the last parses the commit it lands on. */
+const nthAncestor = async (ctx: Context, start: PeeledCommit, n: number): Promise<ObjectId> => {
+  let cur = start;
+  for (let i = 1; i < n; i += 1) cur = await readCommitAt(ctx, await nthParent(ctx, cur, 1));
+  return n === 0 ? cur.id : nthParent(ctx, cur, 1);
+};
+
+const readCommitAt = async (ctx: Context, id: ObjectId): Promise<PeeledCommit> => {
   const obj = await readObject(ctx, id);
   if (obj.type !== 'commit') throw objectNotFound(id);
-  const grafted = applyGraft(obj, await loadShallowSet(ctx));
-  const parent = grafted.data.parents[n - 1];
-  if (parent === undefined) throw objectNotFound(id);
-  return parent;
+  return { id, commit: obj };
 };
 
 const resolveIndexStage = async (

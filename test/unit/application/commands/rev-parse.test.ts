@@ -1035,9 +1035,9 @@ describe('revParse', () => {
 
   describe('Given a commit', () => {
     describe('When revParse(HEAD^{blob})', () => {
-      it('Then peel cannot reach a blob and rejects with OBJECT_NOT_FOUND', async () => {
-        // Arrange — a commit is not a blob and `target !== 'tree'`, so peel hits
-        // the throw; pins the `target === 'tree'` guard's false branch.
+      it('Then peel descends to the root tree, cannot reach a blob there, and rejects with OBJECT_NOT_FOUND', async () => {
+        // Arrange — a commit is not a blob and `target !== 'tree'`, so peel hops
+        // to the commit's tree as git does and misses there.
         const ctx = createMemoryContext();
         const commit = await writeCommit(ctx, TREE_OID as ObjectId, []);
         await seedRepo(ctx, { refs: { 'refs/heads/main': commit } });
@@ -1053,7 +1053,7 @@ describe('revParse', () => {
         // Assert
         const data = (caught as TsgitError).data as { code: string; id: string };
         expect(data.code).toBe('OBJECT_NOT_FOUND');
-        expect(data.id).toBe(commit);
+        expect(data.id).toBe(TREE_OID);
       });
     });
   });

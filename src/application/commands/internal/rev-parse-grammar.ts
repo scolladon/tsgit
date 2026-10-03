@@ -33,7 +33,8 @@ export type PeelTarget = 'commit' | 'tree' | 'blob' | 'tag';
 export type RevOperation =
   | { readonly kind: 'parent'; readonly n: number }
   | { readonly kind: 'ancestor'; readonly n: number }
-  | { readonly kind: 'peel'; readonly target: PeelTarget };
+  /** `name` spells the expression up to this operator's `}` — the name git reports a mismatch under. */
+  | { readonly kind: 'peel'; readonly target: PeelTarget; readonly name: string };
 
 export type ReflogSelector =
   | { readonly kind: 'index'; readonly n: number }
@@ -135,7 +136,7 @@ const parseReflog = (raw: string): RevExpression => {
     ? { kind: 'index', n: Number(body) }
     : { kind: 'date', raw: body };
   // parseOperations returns [] for an empty tail, so no separate empty guard.
-  const operations = parseOperations(raw.slice(close + 1), 0);
+  const operations = parseOperations(raw, close + 1);
   return { kind: 'ref-or-hex', base, reflog, operations };
 };
 
@@ -192,7 +193,7 @@ const parseCaret = (
     const targetStr = raw.slice(i + 2, closeIdx);
     if (!VALID_PEEL_TARGETS.has(targetStr)) fail(raw);
     return {
-      op: { kind: 'peel', target: targetStr as PeelTarget },
+      op: { kind: 'peel', target: targetStr as PeelTarget, name: raw.slice(0, closeIdx + 1) },
       next: closeIdx + 1,
     };
   }

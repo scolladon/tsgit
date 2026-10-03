@@ -724,3 +724,94 @@ describe.skipIf(!GIT_AVAILABLE)(
     });
   },
 );
+
+describe.skipIf(!GIT_AVAILABLE)('integration — error lines a revision operator prints', () => {
+  let repo = '';
+
+  beforeAll(async () => {
+    repo = await mkdtemp(path.join(os.tmpdir(), 'tsgit-operator-errors-interop-'));
+    runGit(['init', '-q', '-b', 'main', repo]);
+    git(repo, 'config', 'tag.gpgsign', 'false');
+    disableAutoMaintenance(repo);
+    writeFileSync(path.join(repo, 'f'), 'a\n');
+    git(repo, 'add', 'f');
+    runGit(['-C', repo, 'commit', '-q', '-m', 'c1'], { env: IDENTITY_ENV });
+    runGit(['-C', repo, 'commit', '-q', '--allow-empty', '-m', 'c2'], { env: IDENTITY_ENV });
+    runGit(['-C', repo, 'tag', '-a', '-m', 't', 'tt', 'HEAD^{tree}'], { env: IDENTITY_ENV });
+    runGit(['-C', repo, 'tag', '-a', '-m', 't', 'tc', 'HEAD'], { env: IDENTITY_ENV });
+  }, SETUP_TIMEOUT);
+
+  afterAll(async () => {
+    await rm(repo, { recursive: true, force: true });
+  });
+
+  describe.each([
+    {
+      args: ['rev-parse', 'HEAD^{tree}^{commit}'],
+      run: ((ctx) => revParse(ctx, 'HEAD^{tree}^{commit}')) as CommandRun,
+    },
+    {
+      args: ['rev-parse', 'tt^{blob}~1'],
+      run: ((ctx) => revParse(ctx, 'tt^{blob}~1')) as CommandRun,
+    },
+    {
+      args: ['rev-parse', 'HEAD^{tag}'],
+      run: ((ctx) => revParse(ctx, 'HEAD^{tag}')) as CommandRun,
+    },
+    {
+      args: ['rev-parse', 'HEAD^{tree}~0'],
+      run: ((ctx) => revParse(ctx, 'HEAD^{tree}~0')) as CommandRun,
+    },
+    { args: ['rev-parse', 'tt^'], run: ((ctx) => revParse(ctx, 'tt^')) as CommandRun },
+    { args: ['rev-parse', 'tc^0'], run: ((ctx) => revParse(ctx, 'tc^0')) as CommandRun },
+    {
+      args: ['log', 'HEAD^{tree}^{commit}'],
+      run: ((ctx) => log(ctx, { rev: 'HEAD^{tree}^{commit}' })) as CommandRun,
+    },
+    { args: ['show', 'tt^0'], run: ((ctx) => show(ctx, 'tt^0')) as CommandRun },
+    {
+      args: ['rev-list', 'HEAD^{tree}^'],
+      run: ((ctx) => revList(ctx, { wants: ['HEAD^{tree}^'] })) as CommandRun,
+    },
+  ])('Given git $args', ({ args, run }) => {
+    describe('When tsgit reads the same revision', () => {
+      it('Then it reports each error line git prints, as many times', async () => {
+        // Arrange
+        const { stderr } = tryRunGitWithExit(['-C', repo, ...args]);
+        const errors: string[] = [];
+        const ctx = {
+          ...createNodeContext({ workDir: repo }),
+          logger: { error: (message: string) => errors.push(message) },
+        };
+        const sut = run;
+
+        // Act
+        await sut(ctx).catch(() => undefined);
+
+        // Assert
+        const expected = stderrLines(stderr).filter((line) => line.startsWith('error: '));
+        expect(errors.map((message) => `error: ${message}`)).toEqual(expected);
+      });
+    });
+  });
+
+  describe.each(['tc^0', 'tc^', 'tc~1', 'tc~0', 'HEAD^0'])(
+    'Given an operator on the commit-ish %s',
+    (arg) => {
+      describe('When git and tsgit rev-parse it', () => {
+        it('Then both peel the tag and resolve the same commit', async () => {
+          // Arrange
+          const expected = git(repo, 'rev-parse', arg).trim();
+          const ctx = createNodeContext({ workDir: repo });
+          const sut = revParse;
+
+          // Act
+          const result = await sut(ctx, arg);
+
+          // Assert
+          expect(result).toBe(expected);
+        });
+      });
+    },
+  );
+});

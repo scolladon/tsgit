@@ -246,7 +246,7 @@ describe('internal/rev-parse-grammar', () => {
           expect(result).toEqual({
             kind: 'ref-or-hex',
             base: 'HEAD',
-            operations: [{ kind: 'peel', target: 'tree' }],
+            operations: [{ kind: 'peel', target: 'tree', name: 'HEAD^{tree}' }],
           });
         });
       });
@@ -261,6 +261,7 @@ describe('internal/rev-parse-grammar', () => {
           expect(result.kind === 'ref-or-hex' && result.operations[0]).toEqual({
             kind: 'peel',
             target: 'commit',
+            name: 'HEAD^{commit}',
           });
         });
       });
@@ -599,8 +600,8 @@ describe('internal/rev-parse-grammar', () => {
             kind: 'ref-or-hex',
             base: 'HEAD',
             operations: [
-              { kind: 'peel', target: 'tag' },
-              { kind: 'peel', target: 'tree' },
+              { kind: 'peel', target: 'tag', name: 'HEAD^{tag}' },
+              { kind: 'peel', target: 'tree', name: 'HEAD^{tag}^{tree}' },
             ],
           } satisfies RevExpression);
         });
