@@ -4,8 +4,11 @@
  * object id, warns `refname '<name>' is ambiguous.`; a full object id that a
  * ref also names warns the same, followed by the object-name advice.
  * `core.warnAmbiguousRefs` (default on) turns the check off, and with it
- * `dwim_ref` stops at the first namespace that resolves.
+ * `dwim_ref` stops at the first namespace that resolves. git reads that
+ * setting lazily — only once a namespace resolves, or for a full object id —
+ * and dies on a malformed value (`repo_cfg_bool`).
  */
+import { configBadBooleanValue } from '../../../domain/commands/error.js';
 import { errorDataCode } from '../../../domain/error-data-code.js';
 import type { ObjectId, RefName } from '../../../domain/objects/index.js';
 import { refCandidates } from '../../../domain/refs/index.js';
@@ -37,11 +40,19 @@ interface AmbiguitySettings {
   readonly advises: boolean;
 }
 
-/** A boolean setting git defaults on; a malformed value reads as on here, its refusal is git's repo-settings prologue. */
+/** An advice setting git defaults on; a malformed value reads as on here. */
 const enabled = (entry: LocatedConfigEntry | undefined): boolean => {
   if (entry === undefined) return true;
   const parsed = parseGitBoolean(entry.value);
   return !parsed.ok || parsed.value;
+};
+
+/** git's `repo_cfg_bool` read of `core.warnAmbiguousRefs`: default on, a malformed value refused. */
+const warnsOnAmbiguity = (entry: LocatedConfigEntry | undefined): boolean => {
+  if (entry?.value == null) return true;
+  const parsed = parseGitBoolean(entry.value);
+  if (parsed.ok) return parsed.value;
+  throw configBadBooleanValue(entry.key, entry.source, entry.value);
 };
 
 const readSettings = async (ctx: Context): Promise<AmbiguitySettings> => {
@@ -49,37 +60,52 @@ const readSettings = async (ctx: Context): Promise<AmbiguitySettings> => {
     ['core', 'warnAmbiguousRefs'],
     ['advice', 'objectNameWarning'],
   ]);
-  return { warns: enabled(warns), advises: enabled(advises) };
+  return { warns: warnsOnAmbiguity(warns), advises: enabled(advises) };
 };
 
 const warnAmbiguous = (ctx: Context, name: string): void => {
   ctx.logger?.warn?.(`refname '${name}' is ambiguous.`, { refname: name });
 };
 
+/** How many of `candidates` resolve, each read in order. */
+const countResolving = async (
+  candidates: ReadonlyArray<RefName | 'HEAD'>,
+  resolve: CandidateResolver,
+): Promise<number> => {
+  let count = 0;
+  for (const candidate of candidates) {
+    if ((await resolve(candidate)) !== undefined) count += 1;
+  }
+  return count;
+};
+
 /**
  * git's `dwim_ref` under `get_oid_basic`: the first namespace `name`
- * resolves in wins. With the check on, every namespace is read and the
- * ambiguity warned before the id is returned.
+ * resolves in wins. Only then is the check's setting read; with the check
+ * on, every later namespace is read too and the ambiguity warned before the
+ * id is returned.
  */
 export const resolveRefLadder = async (
   ctx: Context,
   name: string,
   resolve: CandidateResolver,
 ): Promise<ObjectId | undefined> => {
-  const { warns } = await readSettings(ctx);
-  const found: ObjectId[] = [];
-  for (const candidate of refCandidates(name)) {
+  const candidates = refCandidates(name);
+  for (const [index, candidate] of candidates.entries()) {
     const id = await resolve(candidate);
     if (id === undefined) continue;
-    found.push(id);
-    if (!warns) break;
+    const { warns } = await readSettings(ctx);
+    if (!warns) return id;
+    const othersFound = await countResolving(candidates.slice(index + 1), resolve);
+    if (await isAmbiguous(ctx, name, othersFound)) warnAmbiguous(ctx, name);
+    return id;
   }
-  if (warns && (await isAmbiguous(ctx, name, found.length))) warnAmbiguous(ctx, name);
-  return found[0];
+  return undefined;
 };
 
-const isAmbiguous = async (ctx: Context, name: string, refsFound: number): Promise<boolean> =>
-  refsFound > 1 || (refsFound === 1 && (await isUniqueAbbreviation(ctx, name)));
+/** git's check once one namespace resolved: another namespace, or a unique abbreviation, also names it. */
+const isAmbiguous = async (ctx: Context, name: string, othersFound: number): Promise<boolean> =>
+  othersFound > 0 || (await isUniqueAbbreviation(ctx, name));
 
 /** git's quiet `get_short_oid`: a prefix more than one object shares names none of them. */
 const isUniqueAbbreviation = async (ctx: Context, name: string): Promise<boolean> => {

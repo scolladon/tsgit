@@ -180,3 +180,61 @@ describe.each([
     });
   });
 });
+
+const MALFORMED_WARN_AMBIGUOUS_REFS = `${CORE}\twarnAmbiguousRefs = maybe\n`;
+
+const caughtData = async (run: () => Promise<unknown>): Promise<unknown> => {
+  try {
+    await run();
+  } catch (error) {
+    return (error as { readonly data?: unknown }).data;
+  }
+  return undefined;
+};
+
+describe.each([
+  { label: 'resolveRevisionName', sut: resolveRevisionName },
+  { label: 'resolveCommitIsh', sut: resolveCommitIsh },
+])('Given $label and a malformed core.warnAmbiguousRefs', ({ sut }) => {
+  describe.each([
+    { when: 'a name a ref holds', asked: named('solo') },
+    { when: 'a full object id', asked: full },
+  ])('When it resolves $when', ({ asked }) => {
+    it('Then it refuses the value as git repo_cfg_bool dies', async () => {
+      // Arrange
+      const { ctx, commit } = await repoWithNamedRef(
+        named('solo'),
+        MALFORMED_WARN_AMBIGUOUS_REFS,
+        () => {},
+      );
+
+      // Act
+      const result = await caughtData(() => sut(ctx, asked(commit)));
+
+      // Assert
+      expect(result).toEqual({
+        code: 'CONFIG_BAD_BOOLEAN_VALUE',
+        key: 'core.warnambiguousrefs',
+        source: `${ctx.layout.gitDir}/config`,
+        value: 'maybe',
+      });
+    });
+  });
+
+  describe('When it resolves an abbreviated object id no ref names', () => {
+    it('Then it never reads the setting, as git reads it only once a ref matches', async () => {
+      // Arrange
+      const { ctx, commit } = await repoWithNamedRef(
+        named('solo'),
+        MALFORMED_WARN_AMBIGUOUS_REFS,
+        () => {},
+      );
+
+      // Act
+      const result = await sut(ctx, short(commit));
+
+      // Assert
+      expect(result).toBe(commit);
+    });
+  });
+});

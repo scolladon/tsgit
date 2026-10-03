@@ -1334,6 +1334,7 @@
     "vneg",
     "Volgenant",
     "voverflow",
+    "warnambiguousrefs",
     "warntoblock",
     "webcrypto",
     "whatchanged",

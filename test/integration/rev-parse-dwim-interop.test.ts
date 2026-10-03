@@ -333,3 +333,73 @@ describe.skipIf(!GIT_AVAILABLE)('integration — revParse ambiguous refname warn
     });
   });
 });
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'integration — revParse under a malformed core.warnAmbiguousRefs',
+  () => {
+    let repo = '';
+    let tip = '';
+
+    beforeAll(async () => {
+      repo = await mkdtemp(path.join(os.tmpdir(), 'tsgit-rev-parse-warn-ambiguous-bad-'));
+      runGit(['init', '-q', '-b', 'main', repo]);
+      disableAutoMaintenance(repo);
+      runGit(['-C', repo, 'commit', '-q', '--allow-empty', '-m', 'c1'], { env: IDENTITY_ENV });
+      tip = git(repo, 'rev-parse', 'HEAD').trim();
+      git(repo, 'config', 'core.warnAmbiguousRefs', 'maybe');
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(repo, { recursive: true, force: true });
+    });
+
+    describe.each([
+      { label: 'a branch', arg: () => 'main' },
+      { label: 'HEAD under a revision suffix', arg: () => 'HEAD~0' },
+      { label: 'a full object id', arg: () => tip },
+    ])('Given $label', ({ arg }) => {
+      describe('When git and tsgit rev-parse it', () => {
+        it('Then both refuse the value', async () => {
+          // Arrange
+          const gitRun = tryRunGitWithExit(['-C', repo, 'rev-parse', arg()]);
+          const sut = revParse;
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut(createNodeContext({ workDir: repo }), arg());
+          } catch (error) {
+            caught = error;
+          }
+
+          // Assert
+          expect(gitRun.exitCode).toBe(128);
+          expect(gitRun.stderr).toContain(
+            "fatal: bad boolean config value 'maybe' for 'core.warnambiguousrefs'",
+          );
+          expect((caught as TsgitError).data).toMatchObject({
+            code: 'CONFIG_BAD_BOOLEAN_VALUE',
+            key: 'core.warnambiguousrefs',
+            value: 'maybe',
+          });
+        });
+      });
+    });
+
+    describe('Given an abbreviated object id no ref names', () => {
+      describe('When git and tsgit rev-parse it', () => {
+        it('Then both resolve it, never reading the setting', async () => {
+          // Arrange
+          const expected = git(repo, 'rev-parse', tip.slice(0, 7)).trim();
+          const sut = revParse;
+
+          // Act
+          const result = await sut(createNodeContext({ workDir: repo }), tip.slice(0, 7));
+
+          // Assert
+          expect(result).toBe(expected);
+        });
+      });
+    });
+  },
+);
