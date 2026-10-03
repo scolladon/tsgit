@@ -4,6 +4,7 @@ import { createCommit } from '../../../../../src/application/primitives/create-c
 import {
   commitHeader,
   correctedCommitDatesEnabled,
+  generationNumbersEnabled,
   graphCommitIds,
   insertBounded,
   isGraphKnownAbsent,
@@ -35,6 +36,7 @@ import {
   seedMaxTreeDepth,
   stampTrailer,
   writeCommitGraph,
+  zeroFirstTopologicalLevel,
 } from '../fixtures.js';
 
 const withFsOverride = (ctx: Context, overrides: Partial<Context['fs']>): Context => ({
@@ -369,6 +371,90 @@ describe('read-commit-graph', () => {
 
           // Assert
           expect(result).toEqual([]);
+        });
+      });
+    });
+  });
+
+  describe('generationNumbersEnabled', () => {
+    describe('Given no commit-graph', () => {
+      describe('When generation numbers are probed', () => {
+        it('Then they are disabled', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const sut = generationNumbersEnabled;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result).toBe(false);
+        });
+      });
+    });
+
+    describe('Given a commit-graph holding no commit', () => {
+      describe('When generation numbers are probed', () => {
+        it('Then they are disabled', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          await writeCommitGraph(ctx, [[]]);
+          const sut = generationNumbersEnabled;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result).toBe(false);
+        });
+      });
+    });
+
+    describe('Given a single-file commit-graph', () => {
+      describe.each([
+        { level: 'its computed level', zeroed: false, expected: true },
+        { level: 'a zero level', zeroed: true, expected: false },
+      ])('When its first commit carries $level', ({ zeroed, expected }) => {
+        it(`Then generation numbers are ${expected ? 'enabled' : 'disabled'}`, async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const { c0, c1, c2, c3, c4 } = await buildFiveCommitHistory(ctx);
+          await writeCommitGraph(ctx, [[c0, c1, c2, c3, c4]]);
+          if (zeroed) await zeroFirstTopologicalLevel(ctx, commitGraphPath(ctx.layout.gitDir));
+          const sut = generationNumbersEnabled;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result).toBe(expected);
+        });
+      });
+    });
+
+    describe('Given a split commit-graph whose base layer starts with a zero level', () => {
+      describe('When generation numbers are probed', () => {
+        it('Then the tip layer decides, as git reads only the top graph', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const { c0, c1, c2, c3, c4 } = await buildFiveCommitHistory(ctx);
+          await writeCommitGraph(ctx, [
+            [c0, c1, c2],
+            [c3, c4],
+          ]);
+          const chain = await ctx.fs.readUtf8(commitGraphChainPath(ctx.layout.gitDir));
+          const base = chain.split('\n')[0] as string;
+          await zeroFirstTopologicalLevel(
+            ctx,
+            `${ctx.layout.gitDir}/objects/info/commit-graphs/graph-${base}.graph`,
+          );
+          const sut = generationNumbersEnabled;
+
+          // Act
+          const result = await sut(ctx);
+
+          // Assert
+          expect(result).toBe(true);
         });
       });
     });

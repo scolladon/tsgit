@@ -1,6 +1,8 @@
 import { sortInTopologicalOrder } from '../../domain/commit/topological-sort.js';
 import type { AuthorIdentity, Commit, ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
+import { resolveLimitOptions, walkLimited } from '../primitives/internal/limit-list.js';
+import { generationNumbersEnabled } from '../primitives/internal/read-commit-graph.js';
 import { walkCommits } from '../primitives/walk-commits.js';
 import { walkCommitsByDate } from '../primitives/walk-commits-by-date.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
@@ -66,12 +68,38 @@ export const log = async (
   const startId = await resolveCommit(ctx, opts.rev ?? 'HEAD');
   const exclude = await Promise.all((opts.excluding ?? []).map((r) => resolveCommit(ctx, r)));
   const walk =
-    opts.order === 'first-parent'
-      ? walkCommits(ctx, { from: [startId], until: exclude, order: 'first-parent' })
-      : walkCommitsByDate(ctx, { from: [startId], until: exclude });
+    exclude.length > 0
+      ? await walkExcluding(ctx, startId, new Set(exclude), opts)
+      : walkFrom(ctx, startId, opts);
   const ordered = opts.topoOrder === undefined ? walk : await topologically(walk, opts.topoOrder);
   const shown = await collectShown(ordered, opts);
   return opts.reverse === true ? shown.reverse() : shown;
+};
+
+const walkFrom = (ctx: Context, startId: ObjectId, opts: LogOptions): AsyncIterable<Commit> =>
+  opts.order === 'first-parent'
+    ? walkCommits(ctx, { from: [startId], order: 'first-parent' })
+    : walkCommitsByDate(ctx, { from: [startId] });
+
+/**
+ * git limits a walk with exclusions (`limit_list`), giving up on a skewed
+ * excluded line after a few commits — except a topological order over a
+ * commit-graph, which explores the excluded side by generation and so
+ * excludes exactly.
+ */
+const walkExcluding = async (
+  ctx: Context,
+  startId: ObjectId,
+  until: ReadonlySet<ObjectId>,
+  opts: LogOptions,
+): Promise<AsyncIterable<Commit>> => {
+  const byGeneration = opts.topoOrder !== undefined && (await generationNumbersEnabled(ctx));
+  const limits = {
+    until,
+    firstParent: opts.order === 'first-parent',
+    settle: byGeneration ? 'generation' : 'slop',
+  } as const;
+  return walkLimited(ctx, await resolveLimitOptions(ctx, { from: [startId] }, limits));
 };
 
 /** git's limited walk: read every commit first, then sort them all. */

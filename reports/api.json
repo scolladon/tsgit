@@ -164054,6 +164054,38 @@
 							"variant": "signature",
 							"kind": 4096,
 							"flags": {},
+							"comment": {
+								"summary": [
+									{
+										"kind": "text",
+										"text": "Walk the commits reachable from "
+									},
+									{
+										"kind": "code",
+										"text": "`from`"
+									},
+									{
+										"kind": "text",
+										"text": ", parents after children in queue\norder. Excluded commits ("
+									},
+									{
+										"kind": "code",
+										"text": "`until`"
+									},
+									{
+										"kind": "text",
+										"text": ") are settled first as git's "
+									},
+									{
+										"kind": "code",
+										"text": "`limit_list`"
+									},
+									{
+										"kind": "text",
+										"text": "\ndoes, so an ancestor of an excluded commit is never yielded, whichever path\nreaches it."
+									}
+								]
+							},
 							"parameters": [
 								{
 									"id": 3628,

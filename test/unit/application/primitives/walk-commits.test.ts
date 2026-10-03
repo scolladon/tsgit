@@ -6,7 +6,10 @@ import {
 } from '../../../../src/application/primitives/path-layout.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { MAX_WALK_QUEUE_SIZE } from '../../../../src/application/primitives/types.js';
-import { walkCommits } from '../../../../src/application/primitives/walk-commits.js';
+import {
+  walkCommits,
+  walkCommitsStoppingAt,
+} from '../../../../src/application/primitives/walk-commits.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import type {
@@ -97,6 +100,73 @@ describe('walkCommits', () => {
         } catch (error) {
           expect((error as TsgitError).data.code).toBe('INVALID_WALK_INPUT');
         }
+      });
+    });
+  });
+
+  describe('Given empty from and a commit to exclude', () => {
+    describe('When walkCommits is called', () => {
+      it('Then throws INVALID_WALK_INPUT before limiting', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const [rootId] = await linearChain(ctx, 1);
+
+        // Act
+        let caught: unknown;
+        try {
+          for await (const _ of walkCommits(ctx, { from: [], until: [rootId!] })) void _;
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toMatchObject({ data: { code: 'INVALID_WALK_INPUT' } });
+      });
+    });
+  });
+
+  describe('Given a diamond whose root the excluded side also reaches', () => {
+    describe('When walkCommits excludes one side of the diamond', () => {
+      it('Then the root is not yielded through the other side', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const { b, c, d } = await buildDiamond(ctx);
+
+        // Act
+        const result = await collect(walkCommits(ctx, { from: [d], until: [b] }));
+
+        // Assert
+        expect(result.map((commit) => commit.id)).toEqual([d, c]);
+      });
+    });
+
+    describe('When walkCommits follows first parents excluding the second parent', () => {
+      it('Then the root shared with the excluded parent is not yielded', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const { b, c, d } = await buildDiamond(ctx);
+
+        // Act
+        const result = await collect(
+          walkCommits(ctx, { from: [d], until: [c], order: 'first-parent' }),
+        );
+
+        // Assert
+        expect(result.map((commit) => commit.id)).toEqual([d, b]);
+      });
+    });
+
+    describe('When walkCommitsStoppingAt excludes one side of the diamond', () => {
+      it('Then only the excluded commit itself is skipped', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const { a, b, c, d } = await buildDiamond(ctx);
+
+        // Act
+        const result = await collect(walkCommitsStoppingAt(ctx, { from: [d], until: [b] }));
+
+        // Assert
+        expect(result.map((commit) => commit.id)).toEqual([d, c, a]);
       });
     });
   });

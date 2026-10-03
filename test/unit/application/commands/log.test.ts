@@ -4,9 +4,10 @@ import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { log } from '../../../../src/application/commands/log.js';
+import { writeCommitGraph } from '../../../../src/application/primitives/write-commit-graph.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type { AuthorIdentity, CommitData, ObjectId } from '../../../../src/domain/objects/index.js';
-import type { Context } from '../../../../src/ports/context.js';
+import { type Context, createSession } from '../../../../src/ports/context.js';
 import { seedRepo } from './fixtures.js';
 
 const author: AuthorIdentity = {
@@ -123,6 +124,23 @@ const seedSkewedHistory = async () => {
   const n = await writeCommitDated(ctx, [m, c1], at(600, 600), 'n');
   await seedRepo(ctx, { refs: { 'refs/heads/main': n } });
   return ctx;
+};
+
+/** i ← x on `main`; `excluded` reaches x through six commits all dated before x. */
+const seedSkewedExclusion = async (withCommitGraph: boolean) => {
+  const ctx = createMemoryContext();
+  const x = await writeCommitAt(ctx, [], 500, 'x');
+  const i = await writeCommitAt(ctx, [x], 1000, 'i');
+  let tip = x;
+  for (const offset of [1, 2, 3, 4, 5, 6]) {
+    tip = await writeCommitAt(ctx, [tip], 300 - offset, `e${offset}`);
+  }
+  const excluded = await writeCommitAt(ctx, [tip], 400, 'e');
+  await seedRepo(ctx, { refs: { 'refs/heads/main': i, 'refs/heads/excluded': excluded } });
+  if (!withCommitGraph) return ctx;
+  await writeCommitGraph(ctx);
+  // A fresh session: the write's own walk memoised the graph as absent.
+  return { ...ctx, session: createSession() };
 };
 
 /** f ← a (newer than f) and f ← b (older than f); e = merge(a, b) on `main`. */
@@ -710,6 +728,43 @@ describe('log', () => {
 
         // Act
         const result = await sut(ctx, opts);
+
+        // Assert
+        expect(result.map((entry) => entry.message).join(' ')).toBe(expected);
+      });
+    });
+  });
+
+  describe('Given a tip that an excluded line reaches only through commits dated before it', () => {
+    describe.each([
+      { label: 'date order without a commit-graph', graph: false, opts: {}, expected: 'i x' },
+      { label: 'date order over a commit-graph', graph: true, opts: {}, expected: 'i x' },
+      {
+        label: 'graph topo order without a commit-graph',
+        graph: false,
+        opts: { topoOrder: 'graph' },
+        expected: 'i x',
+      },
+      {
+        label: 'graph topo order over a commit-graph',
+        graph: true,
+        opts: { topoOrder: 'graph' },
+        expected: 'i',
+      },
+      {
+        label: 'first-parent topo order over a commit-graph',
+        graph: true,
+        opts: { topoOrder: 'graph', order: 'first-parent' },
+        expected: 'i',
+      },
+    ] as const)('When log excludes that line with $label', ({ graph, opts, expected }) => {
+      it('Then it shows what git shows', async () => {
+        // Arrange
+        const ctx = await seedSkewedExclusion(graph);
+        const sut = log;
+
+        // Act
+        const result = await sut(ctx, { ...opts, rev: 'main', excluding: ['excluded'] });
 
         // Assert
         expect(result.map((entry) => entry.message).join(' ')).toBe(expected);

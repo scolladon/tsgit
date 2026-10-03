@@ -701,6 +701,21 @@ export async function flagGenerationOverflow(ctx: Context, id: ObjectId): Promis
   await ctx.fs.write(path, bytes);
 }
 
+const GRAPH_DATE_HIGH_BITS = 0x3;
+
+/**
+ * Clears the topological level of the first commit in the graph file at
+ * `path`, keeping its committer-date high bits — what a graph written before
+ * git computed generation numbers holds.
+ */
+export async function zeroFirstTopologicalLevel(ctx: Context, path: string): Promise<void> {
+  const bytes = (await ctx.fs.read(path)).slice();
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const levelWord = graphChunkStart(view, 'CDAT') + GRAPH_OID_SIZE + 8;
+  view.setUint32(levelWord, view.getUint32(levelWord) & GRAPH_DATE_HIGH_BITS);
+  await ctx.fs.write(path, bytes);
+}
+
 /** As git names a layer: by the checksum it writes as the file's trailer, every base listed in BASE. */
 export async function stampTrailer(ctx: Context, bytes: Uint8Array): Promise<ObjectId> {
   const trailerStart = bytes.length - ctx.hashConfig.digestLength;

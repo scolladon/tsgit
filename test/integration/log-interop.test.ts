@@ -28,7 +28,7 @@ import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { LogOptions } from '../../src/application/commands/log.js';
 import { openRepository } from '../../src/index.node.js';
 import { buildEqualDateHistory } from './equal-date-history-fixture.js';
@@ -186,6 +186,67 @@ const buildOrderingHistory = async (withCommitGraph: boolean): Promise<OrderingH
   return { dir, dispose };
 };
 
+interface ExclusionHistory {
+  readonly dir: string;
+  readonly ids: Readonly<Record<string, string>>;
+  readonly dispose: () => Promise<void>;
+}
+
+/**
+ * The ordering history's main line plus m2 = merge(b2, a1); and an
+ * independent i ← x whose x is also reached from e3 / e6 through three /
+ * six commits dated older than x — git's limited walk gives up on the
+ * longer chain before it reaches x.
+ */
+const buildExclusionHistory = async (withCommitGraph: boolean): Promise<ExclusionHistory> => {
+  const dir = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-log-exclusion-')));
+  runGit(['init', '-q', '-b', 'main', dir]);
+  const tree = runGit(['-C', dir, 'mktree'], { input: '' }).trim();
+  const commit = (message: string, parents: ReadonlyArray<string>, committed: number): string =>
+    runGit(['-C', dir, 'commit-tree', tree, ...parents.flatMap((p) => ['-p', p]), '-m', message], {
+      env: dateEnv(OFFSET_EPOCH + committed),
+    }).trim();
+  const r = commit('r', [], 100);
+  const a1 = commit('a1', [r], 200);
+  const b1 = commit('b1', [r], 300);
+  const b2 = commit('b2', [b1], 150);
+  const c1 = commit('c1', [a1], 450);
+  const m = commit('m', [commit('a2', [a1], 400), b2], 500);
+  const x = commit('x', [], 500);
+  const olderChain = (length: number): string => {
+    let tip = x;
+    for (let step = 1; step <= length; step += 1) tip = commit(`e${step}`, [tip], 300 - step);
+    return commit('e', [tip], 400);
+  };
+  const ids = {
+    n: commit('n', [m, c1], 600),
+    m2: commit('m2', [b2, a1], 350),
+    i: commit('i', [x], 1000),
+    e3: olderChain(3),
+    e6: olderChain(6),
+    a1,
+    b1,
+    c1,
+  };
+  for (const [name, id] of Object.entries(ids)) git(dir, 'update-ref', `refs/heads/${name}`, id);
+  if (withCommitGraph) git(dir, 'commit-graph', 'write', '--reachable');
+  const dispose = (): Promise<void> => rm(dir, { recursive: true, force: true });
+  return { dir, ids, dispose };
+};
+
+const EXCLUSION_RANGES: ReadonlyArray<{
+  readonly tip: string;
+  readonly excluded: ReadonlyArray<string>;
+}> = [
+  { tip: 'n', excluded: ['b1'] },
+  { tip: 'n', excluded: ['a1'] },
+  { tip: 'n', excluded: ['a1', 'b1'] },
+  { tip: 'n', excluded: ['c1'] },
+  { tip: 'n', excluded: ['m2'] },
+  { tip: 'i', excluded: ['e3'] },
+  { tip: 'i', excluded: ['e6'] },
+];
+
 const ORDERING_MATRIX: ReadonlyArray<{
   readonly flags: ReadonlyArray<string>;
   readonly opts: LogOptions;
@@ -208,6 +269,16 @@ const ORDERING_MATRIX: ReadonlyArray<{
     flags: ['--first-parent', '--topo-order'],
     opts: { order: 'first-parent', topoOrder: 'graph' },
   },
+];
+
+const EXCLUSION_MODES: ReadonlyArray<{
+  readonly flags: ReadonlyArray<string>;
+  readonly opts: LogOptions;
+}> = [
+  { flags: [], opts: {} },
+  { flags: ['--first-parent'], opts: { order: 'first-parent' } },
+  { flags: ['-n', '2'], opts: { limit: 2 } },
+  ...ORDERING_MATRIX,
 ];
 
 const logIds = async (
@@ -428,4 +499,53 @@ describe.skipIf(!GIT_AVAILABLE)('log interop', () => {
       });
     });
   });
+
+  describe.each([
+    { graph: 'without a commit-graph', withCommitGraph: false },
+    { graph: 'with a commit-graph', withCommitGraph: true },
+  ])(
+    'Given histories where excluded commits share ancestors with the tip $graph',
+    ({ withCommitGraph }) => {
+      let history: ExclusionHistory;
+      beforeAll(async () => {
+        history = await buildExclusionHistory(withCommitGraph);
+      });
+      afterAll(async () => {
+        await history.dispose();
+      });
+
+      describe.each(EXCLUSION_RANGES)(
+        'When log walks $tip excluding $excluded',
+        ({ tip, excluded }) => {
+          it.each(EXCLUSION_MODES)(
+            'Then $flags shows the commits git shows',
+            async ({ flags, opts }) => {
+              // Arrange
+              const negations = excluded.map((name) => `^${history.ids[name]}`);
+              const peer = oidLines(
+                git(
+                  history.dir,
+                  'log',
+                  '--format=%H',
+                  ...flags,
+                  history.ids[tip] as string,
+                  ...negations,
+                ),
+              );
+
+              // Act
+              const ours = await logIds(history.dir, {
+                ...opts,
+                rev: history.ids[tip] as string,
+                excluding: excluded.map((name) => history.ids[name] as string),
+              });
+
+              // Assert
+              expect(ours).toEqual(peer);
+            },
+          );
+        },
+      );
+    },
+  );
 });

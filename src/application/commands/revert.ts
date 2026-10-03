@@ -45,7 +45,7 @@ import { readIndex } from '../primitives/read-index.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-index.js';
 import { updateRef } from '../primitives/update-ref.js';
-import { walkCommits } from '../primitives/walk-commits.js';
+import { walkCommits, walkCommitsStoppingAt } from '../primitives/walk-commits.js';
 import { writeTree } from '../primitives/write-tree.js';
 import { abortSequencerReset } from './internal/abort-sequencer-reset.js';
 import { conflictMergeMsg } from './internal/cherry-pick-state.js';
@@ -334,7 +334,7 @@ const expandRange = async (
     excluded.add(commit.id);
   }
   const ids: ObjectId[] = [];
-  for await (const commit of walkCommits(ctx, { from: [to], until: excluded })) {
+  for await (const commit of walkCommitsStoppingAt(ctx, { from: [to], until: excluded })) {
     ids.push(commit.id);
   }
   return ids;

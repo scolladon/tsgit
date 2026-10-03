@@ -445,19 +445,42 @@ describe('walkCommitsByDate', () => {
 
   describe('Given a seed listed in until', () => {
     describe('When the seed oid is missing and ignoreMissing is false', () => {
-      it('Then it is neither read nor yielded (no throw)', async () => {
-        // Arrange — the until-gate must fire before the eager read; a read-then-skip
-        // impl would throw OBJECT_NOT_FOUND on the synthetic oid.
+      it('Then it refuses, as git parses every named commit before walking', async () => {
+        // Arrange
         const ctx = await buildSeededContext();
         const missingId = 'f'.repeat(40) as ObjectId;
 
         // Act
-        const commits = await collect(
-          walkCommitsByDate(ctx, { from: [missingId], until: [missingId] }),
-        );
+        let caught: unknown;
+        try {
+          await collect(walkCommitsByDate(ctx, { from: [missingId], until: [missingId] }));
+        } catch (error) {
+          caught = error;
+        }
 
         // Assert
-        expect(commits).toEqual([]);
+        expect(caught).toMatchObject({ data: { code: 'OBJECT_NOT_FOUND', id: missingId } });
+      });
+    });
+  });
+
+  describe('Given empty from and a commit to exclude', () => {
+    describe('When walkCommitsByDate is iterated', () => {
+      it('Then it throws INVALID_WALK_INPUT before limiting', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const [rootId] = await linearChain(ctx, 1);
+
+        // Act
+        let caught: unknown;
+        try {
+          await collect(walkCommitsByDate(ctx, { from: [], until: [rootId!] }));
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(caught).toMatchObject({ data: { code: 'INVALID_WALK_INPUT' } });
       });
     });
   });

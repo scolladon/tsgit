@@ -39,7 +39,7 @@ import { resolveMaxTreeDepth } from './internal/resolve-max-tree-depth.js';
 import { readObject } from './read-object.js';
 import { MAX_PUSH_OBJECTS } from './types.js';
 import { isGitlink } from './validators.js';
-import { walkCommits } from './walk-commits.js';
+import { walkCommits, walkCommitsStoppingAt } from './walk-commits.js';
 
 /** Taken through the seam rather than the concrete fold, so adopting a
  *  second hash version stays the one-module port it is meant to be. */
@@ -230,7 +230,7 @@ const walkInteresting = async (
     seenTrees,
     maxDepth,
   };
-  for await (const commit of walkCommits(ctx, {
+  for await (const commit of walkCommitsStoppingAt(ctx, {
     from: seeds,
     until: [...uninteresting.commits],
     ignoreMissing: true,

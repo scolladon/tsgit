@@ -61,7 +61,7 @@ import { runHook, runInformationalHook } from '../primitives/run-hook.js';
 import { synthesizeTreeFromIndex } from '../primitives/synthesize-tree-from-index.js';
 import { updateRef } from '../primitives/update-ref.js';
 import { REASON_SKIP_TARGET_PARENTLESS } from '../primitives/validators.js';
-import { walkCommits } from '../primitives/walk-commits.js';
+import { walkCommits, walkCommitsStoppingAt } from '../primitives/walk-commits.js';
 import { conflictMergeMsg } from './internal/cherry-pick-state.js';
 import { assertCleanWorkTree } from './internal/clean-work-tree.js';
 import { resolveCommitIsh } from './internal/commit-ish.js';
@@ -176,7 +176,8 @@ const commitsToReplay = async (
     for await (const c of walkCommits(ctx, { from: [base] })) excluded.add(c.id);
   }
   const ids: ObjectId[] = [];
-  for await (const c of walkCommits(ctx, { from: [head], until: excluded })) ids.push(c.id);
+  for await (const c of walkCommitsStoppingAt(ctx, { from: [head], until: excluded }))
+    ids.push(c.id);
   return ids.reverse();
 };
 

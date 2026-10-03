@@ -4,6 +4,7 @@ import type { Context } from '../../ports/context.js';
 import { asIdSet } from './internal/as-id-set.js';
 import { type BoundedReader, createBoundedReader } from './internal/bounded-reader.js';
 import { limitFor } from './internal/concurrency.js';
+import { limitList, resolveLimitOptions } from './internal/limit-list.js';
 import { readCommit } from './internal/read-commit.js';
 import { commitHeader } from './internal/read-commit-graph.js';
 import { resolveShallow } from './internal/shallow-set.js';
@@ -105,7 +106,33 @@ async function resolveFrontierEntry(
   return { commit, enqueuedFromHeader: header !== undefined };
 }
 
-export async function* walkCommits(
+/**
+ * Walk the commits reachable from `from`, parents after children in queue
+ * order. Excluded commits (`until`) are settled first as git's `limit_list`
+ * does, so an ancestor of an excluded commit is never yielded, whichever path
+ * reaches it.
+ */
+export function walkCommits(ctx: Context, options: WalkCommitsOptions): AsyncIterable<Commit> {
+  const until = asIdSet(options.until);
+  return until.size > 0 ? walkExcluding(ctx, options, until) : walkCommitsStoppingAt(ctx, options);
+}
+
+async function* walkExcluding(
+  ctx: Context,
+  options: WalkCommitsOptions,
+  until: ReadonlySet<ObjectId>,
+): AsyncIterable<Commit> {
+  validateOptions(options);
+  const limits = { until, firstParent: options.order === 'first-parent', settle: 'slop' } as const;
+  const { uninteresting } = await limitList(ctx, await resolveLimitOptions(ctx, options, limits));
+  yield* walkCommitsStoppingAt(ctx, { ...options, until: uninteresting });
+}
+
+/**
+ * {@link walkCommits} stopping only at the `until` commits themselves — for
+ * callers whose `until` already holds every ancestor of what they exclude.
+ */
+export async function* walkCommitsStoppingAt(
   ctx: Context,
   options: WalkCommitsOptions,
 ): AsyncIterable<Commit> {

@@ -28,7 +28,7 @@ import { getObjectStore } from '../object-store.js';
 import { readObject } from '../read-object.js';
 import { MAX_PUSH_OBJECTS } from '../types.js';
 import { isGitlink } from '../validators.js';
-import { walkCommits } from '../walk-commits.js';
+import { walkCommitsStoppingAt } from '../walk-commits.js';
 import { walkTree } from '../walk-tree.js';
 import {
   type BitmapClosureRequest,
@@ -247,7 +247,7 @@ async function collectLimitedWalk(
 ): Promise<WalkedCommit[]> {
   const drainsFully = request.objects === true && marks.commits.size > 0;
   const walked: WalkedCommit[] = [];
-  for await (const commit of walkCommits(ctx, {
+  for await (const commit of walkCommitsStoppingAt(ctx, {
     from: commitSeeds.map((seed) => seed.id),
     until: marks.commits,
     ignoreMissing: true,

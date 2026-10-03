@@ -416,6 +416,18 @@ export async function graphCommitIds(ctx: Context): Promise<ReadonlyArray<Object
   );
 }
 
+/**
+ * git's `generation_numbers_enabled`: a graph whose top layer holds commits,
+ * the first of them carrying a non-zero topological level (a graph written
+ * before git computed generations stores zero there).
+ */
+export async function generationNumbersEnabled(ctx: Context): Promise<boolean> {
+  if (!repoSettingsVerdictSettled(ctx)) await assertRepoSettingsValid(ctx);
+  const top = (await loadGraph(ctx))?.layers.at(-1);
+  if (top === undefined || top.commitCount === 0) return false;
+  return commitMetaAt(top, 0, { correctedCommitDates: false }).generation !== 0;
+}
+
 /** True once this session's graph probe has answered "absent" (no graph, or
  *  a shallow repository). A synchronous read, so callers can skip
  *  `commitHeader` outright. */
