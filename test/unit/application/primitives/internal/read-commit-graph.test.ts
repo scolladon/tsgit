@@ -54,6 +54,15 @@ function findChunkRowIndex(bytes: Uint8Array, id: string): number {
   throw new Error(`chunk ${id} not present in fixture`);
 }
 
+/** Moves the end boundary of `id`'s chunk by `delta` bytes, leaving every other chunk's start. */
+function shrinkChunkAfter(bytes: Uint8Array, id: string, delta: number): Uint8Array {
+  const copy = bytes.slice();
+  const view = new DataView(copy.buffer);
+  const endOffsetLow = 8 + (findChunkRowIndex(copy, id) + 1) * 12 + 8;
+  view.setUint32(endOffsetLow, view.getUint32(endOffsetLow) + delta);
+  return copy;
+}
+
 function renameChunkRowId(bytes: Uint8Array, id: string, newId: string): Uint8Array {
   const copy = bytes.slice();
   const rowStart = 8 + findChunkRowIndex(copy, id) * 12;
@@ -849,6 +858,30 @@ describe('read-commit-graph', () => {
               'commitGraph: commit-graph file failed to load',
               { path: graphPath, failure: { kind: 'signature', found: 0x58475048 } },
             ],
+          ]);
+        });
+      });
+    });
+
+    describe('Given a single-file graph whose GDA2 chunk is one entry short', () => {
+      describe('When commitHeader is called', () => {
+        it("Then the graph serves topological levels and git's error is logged", async () => {
+          // Arrange
+          const warn = vi.fn<NonNullable<Logger['warn']>>();
+          const ctx = { ...(await buildSeededContext()), logger: { warn } };
+          const { c0, c1, c2, c3, c4 } = await buildFiveCommitHistory(ctx);
+          await writeCommitGraph(ctx, [[c0, c1, c2, c3, c4]]);
+          const graphPath = commitGraphPath(commonGitDir(ctx));
+          const bytes = await ctx.fs.read(graphPath);
+          await ctx.fs.write(graphPath, shrinkChunkAfter(bytes, 'GDA2', -4));
+
+          // Act
+          const header = await commitHeader(ctx, c0.id);
+
+          // Assert
+          expect(header?.generation).toBe(1);
+          expect(warn.mock.calls).toEqual([
+            ['commitGraph: commit-graph generations chunk is wrong size'],
           ]);
         });
       });

@@ -537,11 +537,6 @@ describe('commit-graph', () => {
             reasonContains: 'truncated OIDL',
             label: 'an OIDL chunk shorter than commitCount * hashLength',
           },
-          {
-            bytes: shrinkChunkAfter(validBytes, 'GDA2', -4),
-            reasonContains: 'truncated GDA2',
-            label: 'a GDA2 chunk shorter than commitCount * 4',
-          },
         ])('Then throws INVALID_COMMIT_GRAPH_CHUNK for $label', ({ bytes, reasonContains }) => {
           // Arrange (bytes from the each-table row) + Act & Assert
           expectThrows(
@@ -575,6 +570,23 @@ describe('commit-graph', () => {
 
           // Act & Assert
           expectThrows(() => parseCommitGraphLayer(bytes), 'INVALID_COMMIT_GRAPH_CHUNK', 'trailer');
+        });
+      });
+    });
+
+    describe('Given a GDA2 chunk whose size is not commitCount * 4', () => {
+      describe('When parsing', () => {
+        it('Then the layer loads without generation data and flags the misfit, as git does', () => {
+          // Arrange
+          const bytes = shrinkChunkAfter(validBytes, 'GDA2', -4);
+
+          // Act
+          const result = parseCommitGraphLayer(bytes);
+
+          // Assert
+          expect(result._generationDataRange).toBeUndefined();
+          expect(result.generationDataMisfit).toBe(true);
+          expect(parseCommitGraphLayer(validBytes).generationDataMisfit).toBe(false);
         });
       });
     });

@@ -221,9 +221,19 @@ async function loadGraphUncached(ctx: Context): Promise<LoadedGraph | undefined>
   const store = await getObjectStore(ctx);
   for (const source of store.sources) {
     const graph = await readGraphOne(ctx, store, source);
-    if (graph !== undefined) return graph;
+    if (graph === undefined) continue;
+    warnGenerationMisfits(ctx, graph);
+    return graph;
   }
   return undefined;
+}
+
+function warnGenerationMisfits(ctx: Context, graph: LoadedGraph): void {
+  for (const layer of graph.layers) {
+    if (layer.generationDataMisfit) {
+      ctx.logger?.warn?.('commitGraph: commit-graph generations chunk is wrong size');
+    }
+  }
 }
 
 /**

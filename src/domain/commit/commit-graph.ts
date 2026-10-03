@@ -65,6 +65,8 @@ export interface CommitGraphLayer {
   readonly numBaseGraphs: number;
   readonly baseGraphHashes: readonly ObjectId[];
   readonly commitCount: number;
+  /** A GDA2 chunk whose size is not one entry per commit: git loads the layer without it. */
+  readonly generationDataMisfit: boolean;
   readonly _bytes: Uint8Array;
   readonly _view: DataView;
   readonly _hashLength: number;
@@ -118,10 +120,12 @@ export function parseCommitGraphLayer(bytes: Uint8Array): CommitGraphLayer {
   const cdat = requireChunk(chunkRanges, CHUNK_ID_CDAT);
   validateChunkSize(cdat, commitCount * commitDataEntrySize, CHUNK_ID_CDAT);
 
-  const generationDataRange = chunkRanges.get(CHUNK_ID_GDA2);
-  if (generationDataRange !== undefined) {
-    validateChunkSize(generationDataRange, commitCount * 4, CHUNK_ID_GDA2);
-  }
+  // git's `graph_read_generation_data` refuses a misfit GDA2 with an error yet loads the layer.
+  const generationData = chunkRanges.get(CHUNK_ID_GDA2);
+  const generationDataMisfit =
+    generationData !== undefined &&
+    Math.floor((generationData.end - generationData.start) / 4) !== commitCount;
+  const generationDataRange = generationDataMisfit ? undefined : generationData;
 
   const extraEdgeRange = chunkRanges.get(CHUNK_ID_EDGE);
   const overflowGenerationRange = chunkRanges.get(CHUNK_ID_GDO2);
@@ -135,6 +139,7 @@ export function parseCommitGraphLayer(bytes: Uint8Array): CommitGraphLayer {
     numBaseGraphs,
     baseGraphHashes,
     commitCount,
+    generationDataMisfit,
     _bytes: bytes,
     _view: view,
     _hashLength: hashLength,
