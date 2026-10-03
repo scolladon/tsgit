@@ -19,6 +19,7 @@ import {
   type WorkingTreeDelta,
 } from '../primitives/compare-working-tree-entry.js';
 import { assertValidPromisorRemoteConfig } from '../primitives/internal/boolean-config-guard.js';
+import { type CleanOrder, withCleanOrder } from '../primitives/internal/clean-order.js';
 import { boundedMapFor } from '../primitives/internal/concurrency.js';
 import { withFilterProcessPool } from '../primitives/internal/filter-process-pool.js';
 import { joinPath } from '../primitives/internal/join-working-tree-path.js';
@@ -183,6 +184,18 @@ const statusInScope = async (ctx: Context): Promise<StatusResult> => {
  * `boundedMap`'s completion-order-independent result array is safe here
  * because every entry is keyed by its own unique path.
  */
+const scanEntry = async (
+  ctx: Context,
+  entry: IndexEntry,
+  provider: AttributeProvider | undefined,
+  indexMtime: GitIndex['indexMtime'],
+): Promise<readonly [FilePath, WorkingTreeDelta] | undefined> => {
+  const delta = entry.flags.skipWorktree
+    ? undefined
+    : await compareWorkingTreeDelta(ctx, entry, provider, indexMtime);
+  return delta === undefined ? undefined : [entry.path, delta];
+};
+
 const scanWorkingTree = async (
   ctx: Context,
   stage0: ReadonlyArray<IndexEntry>,
@@ -190,13 +203,25 @@ const scanWorkingTree = async (
   provider: AttributeProvider | undefined,
   indexMtime: GitIndex['indexMtime'],
 ): Promise<Map<FilePath, WorkingTreeDelta>> => {
-  const results = await boundedMapFor(ctx, 'ioBound', stage0, async (entry) => {
-    const delta = entry.flags.skipWorktree
-      ? undefined
-      : await compareWorkingTreeDelta(ctx, entry, provider, indexMtime);
-    tracker.tick();
-    return delta === undefined ? undefined : ([entry.path, delta] as const);
-  });
+  const scan = (order?: CleanOrder) =>
+    boundedMapFor(ctx, 'ioBound', stage0, async (entry) => {
+      try {
+        const scanned = await scanEntry(ctx, entry, provider, indexMtime);
+        tracker.tick();
+        return scanned;
+      } finally {
+        order?.release(entry.path);
+      }
+    });
+  // A clean driver hears the paths in index order, however the reads race;
+  // without attributes no driver applies, and the scan needs no order.
+  const results =
+    provider === undefined
+      ? await scan()
+      : await withCleanOrder(ctx, (order) => {
+          for (const entry of stage0) order.enlist(entry.path);
+          return scan(order);
+        });
   const map = new Map<FilePath, WorkingTreeDelta>();
   for (const result of results) {
     if (result !== undefined) map.set(...result);

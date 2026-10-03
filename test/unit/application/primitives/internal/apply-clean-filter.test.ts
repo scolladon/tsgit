@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import { applyCleanFilter } from '../../../../../src/application/primitives/internal/apply-clean-filter.js';
+import {
+  admitClean,
+  withCleanOrder,
+} from '../../../../../src/application/primitives/internal/clean-order.js';
 import type { FilterChoice } from '../../../../../src/application/primitives/resolve-filter-driver.js';
 import type { TsgitError } from '../../../../../src/domain/error.js';
 import type { FilePath } from '../../../../../src/domain/objects/object-id.js';
@@ -295,6 +299,56 @@ describe('applyCleanFilter', () => {
           filter: 'd',
         });
         expect(requests).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a clean order where another path comes first', () => {
+    describe('When the later path is cleaned before the earlier one is released', () => {
+      it('Then the driver hears nothing until the earlier path is released', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const earlier = 'e' as FilePath;
+        const { runner, requests } = scriptedCommandRunner(successResponse('HI\n'));
+        const sut = applyCleanFilter;
+
+        // Act
+        const result = await withCleanOrder(ctx, async (order) => {
+          order.enlist(earlier);
+          order.enlist(PATH);
+          const cleaning = sut(ctx, runner, PATH, RAW, processDriver(false));
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          const heardEarly = requests.length;
+          order.release(earlier);
+          return { heardEarly, cleaned: dec(await cleaning) };
+        });
+
+        // Assert
+        expect(result).toEqual({ heardEarly: 0, cleaned: 'HI\n' });
+      });
+    });
+
+    describe('When a path has been cleaned', () => {
+      it('Then the path after it is admitted', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const later = 'g' as FilePath;
+        const { runner } = scriptedCommandRunner(successResponse('HI\n'));
+        const sut = applyCleanFilter;
+
+        // Act
+        const admitted = await withCleanOrder(ctx, async (order) => {
+          order.enlist(PATH);
+          order.enlist(later);
+          await sut(ctx, runner, PATH, RAW, processDriver(false));
+          return Promise.race([
+            admitClean(ctx, later).then(() => true),
+            new Promise((resolve) => setTimeout(() => resolve(false), 0)),
+          ]);
+        });
+
+        // Assert
+        expect(admitted).toBe(true);
       });
     });
   });

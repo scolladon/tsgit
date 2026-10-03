@@ -9,7 +9,9 @@
  *   kind:    equivalent-under-readback
  *   format:  git-index-tree-state
  */
+
 import { invalidOption, workingTreeFileTooLarge } from '../../domain/commands/error.js';
+import { comparePaths } from '../../domain/diff/path-compare.js';
 import { operationAborted, TsgitError } from '../../domain/error.js';
 import type { IndexEntry } from '../../domain/git-index/index.js';
 import { NO_PARSER_OFFSET, validateIndexPath } from '../../domain/git-index/path-validator.js';
@@ -27,6 +29,7 @@ import type { Context } from '../../ports/context.js';
 import type { FileStat } from '../../ports/file-system.js';
 import { applyCleanFilter } from '../primitives/internal/apply-clean-filter.js';
 import { assertValidPromisorRemoteConfig } from '../primitives/internal/boolean-config-guard.js';
+import { withCleanOrder } from '../primitives/internal/clean-order.js';
 import { limiterFor } from '../primitives/internal/concurrency.js';
 import { withFilterProcessPool } from '../primitives/internal/filter-process-pool.js';
 import { indexEntryFromStat } from '../primitives/internal/index-entry-from-stat.js';
@@ -163,7 +166,8 @@ const addLiteralOnly = async (
     const newEntries = new Map<FilePath, IndexEntry>(existing);
     const added: FilePath[] = [];
     const modified: FilePath[] = [];
-    for (const path of validated) {
+    // git stages — and cleans — in index order, whatever order the paths came in.
+    for (const path of [...validated].sort(comparePaths)) {
       const result = await stageOne(
         ctx,
         path,
@@ -247,39 +251,44 @@ const stageWalkedEntries = async (
   const outcomes: WalkOutcome[] = [];
   const pending: Promise<void>[] = [];
   let firstError: { readonly error: unknown; readonly ordinal: number } | undefined;
-  const dispatch = (walkEntry: WalkWorkingTreeEntry, ordinal: number): void => {
-    pending.push(
-      limiter
-        .run(() =>
-          processWalkEntry(
-            ctx,
-            walkEntry,
-            existing,
-            seen,
-            provider,
-            indexMtime,
-            ensurePromisorConfigValid,
-          ),
-        )
-        .then(
-          (outcome) => {
-            if (outcome !== undefined) outcomes.push(outcome);
-          },
-          (error: unknown) => {
-            // Stryker disable next-line EqualityOperator: equivalent — `ordinal` is a distinct integer per dispatch() call (assigned via a single monotonically-incrementing `ordinal++` in the walk loop), so `ordinal === firstError.ordinal` can only be true when this IS the entry that already set firstError — impossible, since a settled promise's rejection handler runs at most once; `<=` and `<` are therefore indistinguishable at every reachable call (full add.test.ts suite, incl. the earliest-walked-path race tests, passes unmutated).
-            if (firstError === undefined || ordinal < firstError.ordinal) {
-              firstError = { error, ordinal };
-            }
-          },
-        ),
-    );
-  };
-  try {
-    let ordinal = 0;
-    for await (const walkEntry of walk) dispatch(walkEntry, ordinal++);
-  } finally {
-    await Promise.all(pending);
-  }
+  // A clean driver hears the paths in walk order, however the reads race.
+  await withCleanOrder(ctx, async (order) => {
+    const dispatch = (walkEntry: WalkWorkingTreeEntry, ordinal: number): void => {
+      order.enlist(walkEntry.path);
+      pending.push(
+        limiter
+          .run(() =>
+            processWalkEntry(
+              ctx,
+              walkEntry,
+              existing,
+              seen,
+              provider,
+              indexMtime,
+              ensurePromisorConfigValid,
+            ),
+          )
+          .then(
+            (outcome) => {
+              if (outcome !== undefined) outcomes.push(outcome);
+            },
+            (error: unknown) => {
+              // Stryker disable next-line EqualityOperator: equivalent — `ordinal` is a distinct integer per dispatch() call (assigned via a single monotonically-incrementing `ordinal++` in the walk loop), so `ordinal === firstError.ordinal` can only be true when this IS the entry that already set firstError — impossible, since a settled promise's rejection handler runs at most once; `<=` and `<` are therefore indistinguishable at every reachable call (full add.test.ts suite, incl. the earliest-walked-path race tests, passes unmutated).
+              if (firstError === undefined || ordinal < firstError.ordinal) {
+                firstError = { error, ordinal };
+              }
+            },
+          )
+          .finally(() => order.release(walkEntry.path)),
+      );
+    };
+    try {
+      let ordinal = 0;
+      for await (const walkEntry of walk) dispatch(walkEntry, ordinal++);
+    } finally {
+      await Promise.all(pending);
+    }
+  });
   if (firstError !== undefined) throw firstError.error;
   return outcomes;
 };

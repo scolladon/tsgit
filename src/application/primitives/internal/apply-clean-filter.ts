@@ -4,6 +4,7 @@ import type { CommandRunner } from '../../../ports/command-runner.js';
 import type { Context } from '../../../ports/context.js';
 import type { FilterChoice } from '../resolve-filter-driver.js';
 import { type FilterDriverResult, runFilterDriver } from '../run-filter-driver.js';
+import { admitClean, releaseClean } from './clean-order.js';
 import { pickFilterCommand } from './pick-filter-command.js';
 import { runFilterProcess } from './run-filter-process.js';
 
@@ -27,6 +28,20 @@ const runCleanCommand = (
   return runFilterDriver(ctx, runner, picked.command, bytes);
 };
 
+/** git cleans one path at a time, in index order — whichever read finished first. */
+const runInOrder = async (
+  ctx: Context,
+  runner: CommandRunner | undefined,
+  request: CleanRequest,
+): Promise<CleanOutcome> => {
+  await admitClean(ctx, request.path);
+  try {
+    return await runCleanCommand(ctx, runner, request);
+  } finally {
+    releaseClean(ctx, request.path);
+  }
+};
+
 interface CleanRequest {
   readonly path: FilePath;
   readonly bytes: Uint8Array;
@@ -47,7 +62,7 @@ export const applyCleanFilter = async (
   choice: FilterChoice,
 ): Promise<Uint8Array> => {
   if (choice.kind !== 'external') return bytes;
-  const result = await runCleanCommand(ctx, runner, { path, bytes, choice });
+  const result = await runInOrder(ctx, runner, { path, bytes, choice });
   if (result.ok) return result.bytes;
   if (choice.required) throw cleanFilterFailed(path, choice.name, result.exitCode);
   return bytes;

@@ -25,6 +25,7 @@ import type {
   ObjectId,
 } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
+import { stubCommandRunner } from '../primitives/helpers/stub-command-runner.js';
 import { asBareContext } from './fixtures.js';
 
 const author: AuthorIdentity = {
@@ -1394,6 +1395,27 @@ describe('status — remote.promisor guard', () => {
           operation: 'status',
         });
       });
+    });
+  });
+});
+
+describe('Given a context that can run filter drivers and a modified tracked file', () => {
+  describe('When status scans the work tree', () => {
+    it('Then the modified file is reported', async () => {
+      // Arrange
+      const ctx = createMemoryContext({ command: stubCommandRunner() });
+      await init(ctx);
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+      await add(ctx, ['a.txt']);
+      await commit(ctx, { message: 'first', author });
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'b');
+      const sut = status;
+
+      // Act
+      const result = await sut(ctx);
+
+      // Assert
+      expect(changeFor(result, 'a.txt')?.unstaged).toBe('modified');
     });
   });
 });
