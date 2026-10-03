@@ -324,15 +324,15 @@ describe('log', () => {
 
   describe('Given before exactly equal to a commit timestamp', () => {
     describe('When log', () => {
-      it('Then that commit is excluded (>= boundary)', async () => {
+      it('Then that commit is shown, as git --before keeps a commit dated at the boundary', async () => {
         // Arrange — threshold 2000s equals the `middle` commit's timestamp.
         const { ctx } = await seedTimestampChain();
 
         // Act
         const result = await log(ctx, { before: new Date(2000 * 1000) });
 
-        // Assert — `>=` excludes the commit AT the boundary; `>` would keep it.
-        expect(result.map((e) => e.message)).toEqual(['oldest']);
+        // Assert — git skips only a commit dated after the boundary (`date > min_age`).
+        expect(result.map((e) => e.message)).toEqual(['middle', 'oldest']);
       });
     });
   });

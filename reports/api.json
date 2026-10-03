@@ -152812,7 +152812,15 @@
 									},
 									{
 										"kind": "code",
-										"text": "`committer.timestamp < before`"
+										"text": "`committer.timestamp <= before`"
+									},
+									{
+										"kind": "text",
+										"text": ", git's "
+									},
+									{
+										"kind": "code",
+										"text": "`--before`"
 									},
 									{
 										"kind": "text",
@@ -165192,7 +165200,15 @@
 									},
 									{
 										"kind": "code",
-										"text": "`committer.timestamp < before`"
+										"text": "`committer.timestamp <= before`"
+									},
+									{
+										"kind": "text",
+										"text": ", git's "
+									},
+									{
+										"kind": "code",
+										"text": "`--before`"
 									},
 									{
 										"kind": "text",

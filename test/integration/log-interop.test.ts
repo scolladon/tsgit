@@ -324,6 +324,12 @@ const LOG_OID_SEQUENCE_MATRIX: ReadonlyArray<LogOidSequenceScenario> = [
     opts: () => ({ excluding: ['HEAD~3'] }),
   },
   {
+    // `c on side` is dated exactly at the boundary second; git keeps it.
+    label: 'it matches git log --before at a commit date (boundary kept)',
+    gitArgs: () => ['log', '--format=%H', '--before=@1700000003'],
+    opts: () => ({ before: new Date(1700000003 * 1000) }),
+  },
+  {
     // scenario has two roots (base and root2); non-trivial set
     label: 'the oid sequence equals git rev-list --max-parents=0',
     gitArgs: () => ['rev-list', '--max-parents=0', 'HEAD'],

@@ -57,7 +57,7 @@ const withinParentBand = (parentCount: number, opts: LogOptions): boolean => {
  * committer-date order; `order: 'first-parent'` follows only the first parent;
  * `topoOrder` re-sorts the walked commits topologically.
  * Honors `limit`, `excluding` (commit-ish stops), `before` (only commits with
- * `committer.timestamp < before`), `minParents`/`maxParents` (parent-count
+ * `committer.timestamp <= before`, git's `--before`), `minParents`/`maxParents` (parent-count
  * band) and `reverse` (applied last, after `limit`).
  */
 export const log = async (
@@ -119,7 +119,7 @@ const collectShown = async (
   const before = opts.before;
   const out: LogEntry[] = [];
   for await (const value of commits) {
-    if (before !== undefined && value.data.committer.timestamp >= before.getTime() / 1000) {
+    if (before !== undefined && value.data.committer.timestamp > before.getTime() / 1000) {
       continue;
     }
     if (!withinParentBand(value.data.parents.length, opts)) {
