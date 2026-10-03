@@ -99,6 +99,58 @@ describe('resolvePathspec', () => {
     });
   });
 
+  describe('Given patterns carrying `.` path components', () => {
+    describe('When resolved', () => {
+      it.each([
+        { patterns: ['.'], literalMustMatch: [''], label: 'a bare `.` names the whole tree' },
+        { patterns: ['./'], literalMustMatch: [''], label: '`./` names the whole tree' },
+        { patterns: ['./a.txt'], literalMustMatch: ['a.txt'], label: 'a leading `./` collapses' },
+        { patterns: ['d/.'], literalMustMatch: ['d'], label: 'a trailing `/.` collapses' },
+        { patterns: ['d/./b'], literalMustMatch: ['d/b'], label: 'an inner `/./` collapses' },
+      ])('Then $label', ({ patterns, literalMustMatch }) => {
+        // Arrange
+        const sut = resolvePathspec;
+
+        // Act
+        const result = sut(patterns);
+
+        // Assert
+        expect(result.literalMustMatch).toEqual(literalMustMatch);
+        expect(result.symlinkScanTargets).toEqual(literalMustMatch.filter((t) => t !== ''));
+      });
+    });
+
+    describe('When the whole-tree pattern is matched', () => {
+      it('Then it selects every path, nested ones included', () => {
+        // Arrange
+        const sut = resolvePathspec;
+
+        // Act
+        const result = sut(['.']);
+
+        // Assert
+        expect(result.matcher[0]?.compiled.test('a.txt')).toBe(true);
+        expect(result.matcher[0]?.compiled.test('d/b')).toBe(true);
+      });
+    });
+
+    describe('When a negated `./` pattern is matched', () => {
+      it('Then it excludes the collapsed path', () => {
+        // Arrange
+        const sut = resolvePathspec;
+
+        // Act
+        const result = sut(['!./a.txt']);
+
+        // Assert
+        expect(result.matcher[0]?.negated).toBe(true);
+        expect(result.matcher[0]?.compiled.test('a.txt')).toBe(true);
+        expect(result.literalMustMatch).toEqual([]);
+        expect(result.symlinkScanTargets).toEqual(['a.txt']);
+      });
+    });
+  });
+
   describe('Given a pattern whose body resolves outside the repo', () => {
     describe('When resolved', () => {
       it.each([
@@ -245,6 +297,29 @@ describe('enforceLiteralMustMatch', () => {
           'PATHSPEC_NO_MATCH',
         );
         expect((err.data as { pattern: string }).pattern).toBe('nope.txt');
+      });
+    });
+  });
+
+  describe('Given the whole-tree literal', () => {
+    describe('When any path matched', () => {
+      it('Then it is satisfied', () => {
+        // Arrange
+        const sut = enforceLiteralMustMatch;
+
+        // Act
+        const result = () => sut([path('')], [path('d/b')]);
+
+        // Assert
+        expect(result).not.toThrow();
+      });
+    });
+
+    describe('When nothing matched', () => {
+      it('Then throws PATHSPEC_NO_MATCH naming `.`', () => {
+        // Arrange + Assert
+        const err = expectError(() => enforceLiteralMustMatch([path('')], []), 'PATHSPEC_NO_MATCH');
+        expect((err.data as { pattern: string }).pattern).toBe('.');
       });
     });
   });

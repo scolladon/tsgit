@@ -2565,3 +2565,35 @@ describe('add — filter section validation', () => {
     });
   });
 });
+
+describe('Given a work tree with nothing to add', () => {
+  describe('When the whole tree is added with the `.` pathspec', () => {
+    it('Then nothing is staged and the whole-tree pathspec is not refused', async () => {
+      // Arrange
+      const ctx = await seedFreshRepo();
+      const sut = add;
+
+      // Act
+      const result = await sut(ctx, ['.']);
+
+      // Assert
+      expect(result).toEqual({ added: [], modified: [], removed: [] });
+    });
+  });
+});
+
+describe('Given a nested work tree', () => {
+  describe('When the whole tree is added with the `.` pathspec', () => {
+    it('Then every file is staged', async () => {
+      // Arrange
+      const ctx = await seedFreshRepo({ 'a.txt': 'a', 'd/b': 'b' });
+      const sut = add;
+
+      // Act
+      const result = await sut(ctx, ['.']);
+
+      // Assert
+      expect(result.added).toEqual(['a.txt', 'd/b']);
+    });
+  });
+});

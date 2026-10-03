@@ -52,16 +52,39 @@ export interface ResolvedPathspec {
 // limited to `MAX_DOUBLE_STAR_PER_PATTERN` `**` tokens to bound the
 // cost of the compiled regex; both throw `INVALID_OPTION`.
 export const resolvePathspec = (patterns: ReadonlyArray<string>): ResolvedPathspec => {
-  for (const raw of patterns) {
-    const body = raw.startsWith('!') ? raw.slice(1) : raw;
-    validatePath(body);
-    enforcePatternBudget(raw);
-  }
-  const matcher = compilePathspec(patterns);
+  const collapsed = patterns.map(collapsePattern);
+  for (const raw of patterns) enforcePatternBudget(raw);
+  const matcher = compilePathspec(collapsed);
   const literalMustMatch = matcher.filter(isPositiveLiteral).map((e) => bodyOf(e));
   const hasGlob = matcher.some(isPositiveGlob);
-  const symlinkScanTargets = matcher.map((e) => bodyOf(e));
+  const symlinkScanTargets = matcher.map((e) => bodyOf(e)).filter((body) => body !== WHOLE_TREE);
   return { matcher, literalMustMatch, hasGlob, symlinkScanTargets };
+};
+
+/** The empty prefix a pattern of nothing but `.` components collapses to: the whole tree. */
+const WHOLE_TREE = '';
+/** Whether `literal` is the whole-tree pathspec (`.` collapsed). */
+export const namesWholeTree = (literal: FilePath): boolean => literal === WHOLE_TREE;
+
+/** How git spells the whole-tree pathspec back. */
+const WHOLE_TREE_SPELLING = '.';
+const NEGATION = '!';
+const CURRENT_DIRECTORY = '.';
+
+/**
+ * git's `prefix_path` collapse of `.` components (`./a` → `a`, `d/.` → `d`,
+ * `.` → the whole tree), then the body's validation. A pattern that was
+ * empty before the collapse is no whole tree: the validator refuses it.
+ */
+const collapsePattern = (raw: string): string => {
+  const negation = raw.startsWith(NEGATION) ? NEGATION : '';
+  const body = raw.slice(negation.length);
+  const collapsed = body
+    .split('/')
+    .filter((component) => component !== CURRENT_DIRECTORY)
+    .join('/');
+  if (body === '' || collapsed !== WHOLE_TREE) validatePath(collapsed);
+  return `${negation}${collapsed}`;
 };
 
 const enforcePatternBudget = (pattern: string): void => {
@@ -104,6 +127,10 @@ export const enforceLiteralMustMatch = (
   if (literals.length === 0) return;
   const matchedSet = new Set(matched);
   for (const lit of literals) {
+    if (namesWholeTree(lit)) {
+      if (matched.length > 0) continue;
+      throw pathspecNoMatch(WHOLE_TREE_SPELLING);
+    }
     if (matchedSet.has(lit)) continue;
     if (matched.some((m) => m.startsWith(`${lit}/`))) continue;
     throw pathspecNoMatch(lit);

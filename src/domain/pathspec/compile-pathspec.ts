@@ -37,18 +37,18 @@ export type Pathspec = ReadonlyArray<PathspecEntry>;
 export const compilePathspec = (patterns: ReadonlyArray<string>): Pathspec =>
   patterns.map(compileOne);
 
+/** The whole tree — git's `.` once its `.` components collapse to the empty prefix. */
+const WHOLE_TREE: GlobMatcher = { test: () => true };
+
+const compileLiteral = (body: string): GlobMatcher =>
+  body === '' ? WHOLE_TREE : compileGlob(body, { anchored: true, withDirSuffix: true });
+
 const compileOne = (raw: string): PathspecEntry => {
   const negated = raw.startsWith('!');
   const body = negated ? raw.slice(1) : raw;
   const isLiteral = !containsGlob(body);
   if (isLiteral) {
-    return {
-      pattern: raw,
-      body,
-      negated,
-      isLiteral: true,
-      compiled: compileGlob(body, { anchored: true, withDirSuffix: true }),
-    };
+    return { pattern: raw, body, negated, isLiteral: true, compiled: compileLiteral(body) };
   }
   return {
     pattern: raw,

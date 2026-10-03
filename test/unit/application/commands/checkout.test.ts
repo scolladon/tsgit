@@ -1711,3 +1711,21 @@ describe('Given a path restore whose source is a revision', () => {
     });
   });
 });
+
+describe('Given every tracked file modified', () => {
+  describe('When the whole tree is restored with the `.` pathspec', () => {
+    it('Then every file is restored from the index', async () => {
+      // Arrange
+      const { ctx } = await seedWithOlderBranch();
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'zz');
+      const sut = checkout;
+
+      // Act
+      const result = await sut(ctx, { paths: ['.'] });
+
+      // Assert
+      expect(result.changedPaths).toBe(1);
+      expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/a.txt`)).toBe('b');
+    });
+  });
+});

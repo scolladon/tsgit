@@ -53,6 +53,7 @@ import {
 import {
   assertNoSymlinkedLeadingPath,
   enforceLiteralMustMatch,
+  namesWholeTree,
   resolvePathspec,
 } from './internal/resolve-pathspec.js';
 
@@ -324,7 +325,11 @@ const addByPathspec = async (
       if (outcome.kind === 'added') added.push(outcome.path);
       else if (outcome.kind === 'modified') modified.push(outcome.path);
     }
-    enforceLiteralMustMatch(literalMustMatch, matched);
+    // git add never refuses the whole tree, even when it holds nothing to add.
+    enforceLiteralMustMatch(
+      literalMustMatch.filter((literal) => !namesWholeTree(literal)),
+      matched,
+    );
     added.sort();
     modified.sort();
     await lock.commit(Array.from(newEntries.values()));
