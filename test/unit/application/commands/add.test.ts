@@ -140,6 +140,54 @@ describe('add', () => {
     });
   });
 
+  describe('Given a non-existent path spelled with a `./` component', () => {
+    describe('When add', () => {
+      it('Then PATHSPEC_NO_MATCH names the pathspec as spelled', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo();
+        const sut = add;
+
+        // Act
+        const err = await expectError(() => sut(ctx, ['./nomatch']), 'PATHSPEC_NO_MATCH');
+
+        // Assert
+        expect(err.data).toEqual({ code: 'PATHSPEC_NO_MATCH', pattern: './nomatch' });
+      });
+    });
+  });
+
+  describe('Given a file named by a directory pathspec', () => {
+    describe('When add', () => {
+      it('Then throws PATHSPEC_NO_MATCH naming the directory pathspec', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ f: 'x' });
+        const sut = add;
+
+        // Act
+        const err = await expectError(() => sut(ctx, ['f/']), 'PATHSPEC_NO_MATCH');
+
+        // Assert
+        expect(err.data).toEqual({ code: 'PATHSPEC_NO_MATCH', pattern: 'f/' });
+      });
+    });
+  });
+
+  describe('Given a directory named by a directory pathspec', () => {
+    describe('When add', () => {
+      it('Then the files beneath it are staged', async () => {
+        // Arrange
+        const ctx = await seedFreshRepo({ 'd/x': 'x', dx: 'y' });
+        const sut = add;
+
+        // Act
+        const result = await sut(ctx, ['d/./']);
+
+        // Assert
+        expect(result.added).toEqual(['d/x']);
+      });
+    });
+  });
+
   describe('Given a literal naming a file beyond a symlink pointing outside the repo', () => {
     describe('When add', () => {
       it('Then throws PATHSPEC_BEYOND_SYMLINK and stages nothing', async () => {

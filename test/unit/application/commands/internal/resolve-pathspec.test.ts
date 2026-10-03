@@ -105,8 +105,16 @@ describe('resolvePathspec', () => {
         { patterns: ['.'], literalMustMatch: [''], label: 'a bare `.` names the whole tree' },
         { patterns: ['./'], literalMustMatch: [''], label: '`./` names the whole tree' },
         { patterns: ['./a.txt'], literalMustMatch: ['a.txt'], label: 'a leading `./` collapses' },
-        { patterns: ['d/.'], literalMustMatch: ['d'], label: 'a trailing `/.` collapses' },
+        {
+          patterns: ['d/.'],
+          literalMustMatch: ['d/'],
+          label: 'a trailing `/.` collapses to a directory',
+        },
         { patterns: ['d/./b'], literalMustMatch: ['d/b'], label: 'an inner `/./` collapses' },
+        { patterns: ['d/'], literalMustMatch: ['d/'], label: 'a trailing `/` names a directory' },
+        { patterns: ['d/./'], literalMustMatch: ['d/'], label: 'a trailing `/./` collapses' },
+        { patterns: ['d//b'], literalMustMatch: ['d/b'], label: 'a doubled `/` collapses' },
+        { patterns: ['d//'], literalMustMatch: ['d/'], label: 'a doubled trailing `/` collapses' },
       ])('Then $label', ({ patterns, literalMustMatch }) => {
         // Arrange
         const sut = resolvePathspec;
@@ -117,6 +125,38 @@ describe('resolvePathspec', () => {
         // Assert
         expect(result.literalMustMatch).toEqual(literalMustMatch);
         expect(result.symlinkScanTargets).toEqual(literalMustMatch.filter((t) => t !== ''));
+      });
+    });
+
+    describe('When a directory pattern is matched', () => {
+      it('Then it selects the paths beneath the directory but not a file of that name', () => {
+        // Arrange
+        const sut = resolvePathspec;
+
+        // Act
+        const result = sut(['d/./']);
+
+        // Assert
+        expect(result.matcher[0]?.compiled.test('d/b')).toBe(true);
+        expect(result.matcher[0]?.compiled.test('d')).toBe(false);
+        expect(result.matcher[0]?.compiled.test('db')).toBe(false);
+      });
+    });
+
+    describe('When the literal spellings are read', () => {
+      it('Then each collapsed literal maps to the first pattern spelling it', () => {
+        // Arrange
+        const sut = resolvePathspec;
+
+        // Act
+        const result = sut(['./a.txt', 'a.txt', 'd/./', '!./n', 'b']);
+
+        // Assert
+        expect([...result.literalSpellings]).toEqual([
+          ['a.txt', './a.txt'],
+          ['d/', 'd/./'],
+          ['b', 'b'],
+        ]);
       });
     });
 
@@ -320,6 +360,58 @@ describe('enforceLiteralMustMatch', () => {
         // Arrange + Assert
         const err = expectError(() => enforceLiteralMustMatch([path('')], []), 'PATHSPEC_NO_MATCH');
         expect((err.data as { pattern: string }).pattern).toBe('.');
+      });
+    });
+  });
+
+  describe('Given a directory literal', () => {
+    describe('When a path beneath it matched', () => {
+      it('Then it is satisfied', () => {
+        // Arrange
+        const sut = enforceLiteralMustMatch;
+
+        // Act
+        const result = () => sut([path('d/')], [path('d/b')]);
+
+        // Assert
+        expect(result).not.toThrow();
+      });
+    });
+
+    describe('When only a file of that name matched', () => {
+      it('Then throws PATHSPEC_NO_MATCH naming the directory', () => {
+        // Arrange + Assert
+        const err = expectError(
+          () => enforceLiteralMustMatch([path('d/')], [path('d'), path('db')]),
+          'PATHSPEC_NO_MATCH',
+        );
+        expect((err.data as { pattern: string }).pattern).toBe('d/');
+      });
+    });
+  });
+
+  describe('Given literals spelled otherwise by the pattern', () => {
+    describe('When one is missing', () => {
+      it('Then throws PATHSPEC_NO_MATCH naming its spelling', () => {
+        // Arrange
+        const sut = enforceLiteralMustMatch;
+        const spellings = new Map([[path('x'), './x']]);
+
+        // Act + Assert
+        const err = expectError(() => sut([path('x')], [], spellings), 'PATHSPEC_NO_MATCH');
+        expect((err.data as { pattern: string }).pattern).toBe('./x');
+      });
+    });
+
+    describe('When the whole tree is missing', () => {
+      it('Then throws PATHSPEC_NO_MATCH naming its spelling', () => {
+        // Arrange
+        const sut = enforceLiteralMustMatch;
+        const spellings = new Map([[path(''), './.']]);
+
+        // Act + Assert
+        const err = expectError(() => sut([path('')], [], spellings), 'PATHSPEC_NO_MATCH');
+        expect((err.data as { pattern: string }).pattern).toBe('./.');
       });
     });
   });

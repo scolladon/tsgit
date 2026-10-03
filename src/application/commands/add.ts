@@ -23,7 +23,7 @@ import {
   type ObjectId,
 } from '../../domain/objects/index.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
-import { matchesPathspec, type Pathspec } from '../../domain/pathspec/index.js';
+import { matchesPathspec } from '../../domain/pathspec/index.js';
 import { CHERRY_PICK, MERGE, REBASE, REVERT } from '../../domain/sequencer/operation-labels.js';
 import type { Context } from '../../ports/context.js';
 import type { FileStat } from '../../ports/file-system.js';
@@ -56,7 +56,9 @@ import {
 import {
   assertNoSymlinkedLeadingPath,
   enforceLiteralMustMatch,
+  namesDirectoryOnly,
   namesWholeTree,
+  type ResolvedPathspec,
   resolvePathspec,
 } from './internal/resolve-pathspec.js';
 
@@ -146,12 +148,13 @@ const dispatchPathspec = async (
   paths: ReadonlyArray<string>,
   provider: AttributeProvider | undefined,
 ): Promise<AddResult> => {
-  const { matcher, literalMustMatch, hasGlob, symlinkScanTargets } = resolvePathspec(paths);
-  await assertNoSymlinkedLeadingPath(ctx, symlinkScanTargets);
-  if (!hasGlob && (await allLiteralsAreFiles(ctx, literalMustMatch))) {
+  const resolved = resolvePathspec(paths);
+  const { literalMustMatch } = resolved;
+  await assertNoSymlinkedLeadingPath(ctx, resolved.symlinkScanTargets);
+  if (!resolved.hasGlob && (await allLiteralsAreFiles(ctx, literalMustMatch))) {
     return addLiteralOnly(ctx, literalMustMatch, provider);
   }
-  return addByPathspec(ctx, matcher, literalMustMatch, provider);
+  return addByPathspec(ctx, resolved, provider);
 };
 
 const addLiteralOnly = async (
@@ -195,6 +198,7 @@ const allLiteralsAreFiles = async (
 ): Promise<boolean> => {
   if (literals.length === 0) return false;
   for (const path of literals) {
+    if (namesDirectoryOnly(path)) return false;
     const stat = await lstatOrMissing(ctx, path);
     if (stat === undefined) return false;
     if (stat.isDirectory && !stat.isSymbolicLink) return false;
@@ -300,8 +304,7 @@ const stageWalkedEntries = async (
 // applies via `buildRepoIgnorePredicate`.
 const addByPathspec = async (
   ctx: Context,
-  matcher: Pathspec,
-  literalMustMatch: ReadonlyArray<FilePath>,
+  { matcher, literalMustMatch, literalSpellings }: ResolvedPathspec,
   provider: AttributeProvider | undefined,
 ): Promise<AddResult> => {
   const ignore = await buildRepoIgnorePredicate(ctx);
@@ -338,6 +341,7 @@ const addByPathspec = async (
     enforceLiteralMustMatch(
       literalMustMatch.filter((literal) => !namesWholeTree(literal)),
       matched,
+      literalSpellings,
     );
     added.sort();
     modified.sort();

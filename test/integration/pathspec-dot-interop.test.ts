@@ -1,8 +1,10 @@
 /**
  * Cross-tool interop — pathspecs carrying `.` components. git collapses them
- * (`.` is the whole tree, `./a` is `a`, `d/.` is `d`): a path restore puts back
- * and stages the same files and refuses a whole-tree pathspec over an empty
- * index, while `add .` stages the whole tree and never refuses it.
+ * (`.` is the whole tree, `./a` is `a`, `d/.` and `d/./` are the directory
+ * `d/`): a path restore puts back and stages the same files and refuses a
+ * whole-tree pathspec over an empty index, while `add .` stages the whole tree
+ * and never refuses it. A pathspec matching nothing is named as spelled, and
+ * an unresolvable restore source as given.
  *
  * @proves
  *   surface:        checkout, add
@@ -63,6 +65,8 @@ describe.skipIf(!GIT_AVAILABLE)('Given pathspecs carrying `.` components', () =>
     { label: '`.` from HEAD', pathspec: '.', source: 'HEAD' },
     { label: '`./a` from the index', pathspec: './a', source: undefined },
     { label: '`d/.` from HEAD', pathspec: 'd/.', source: 'HEAD' },
+    { label: '`d/./` from the index', pathspec: 'd/./', source: undefined },
+    { label: '`d//b` from HEAD', pathspec: 'd//b', source: 'HEAD' },
   ])('When git and tsgit restore $label', ({ label, pathspec, source }) => {
     it('Then both restore and stage the same files', async () => {
       // Arrange
@@ -109,6 +113,60 @@ describe.skipIf(!GIT_AVAILABLE)('Given pathspecs carrying `.` components', () =>
       expect(git.exitCode).toBe(1);
       expect(git.stderr).toContain("error: pathspec '.' did not match any file(s) known to git");
       expect((result as TsgitError).data).toEqual({ code: 'PATHSPEC_NO_MATCH', pattern: '.' });
+    });
+  });
+
+  describe.each([
+    { label: 'an unknown name', source: 'missing-rev' },
+    { label: 'a revision past the root', source: 'HEAD~5' },
+  ])('When git and tsgit restore a path from $label', ({ label, source }) => {
+    it('Then both refuse naming the source as given', async () => {
+      // Arrange
+      const slug = label.replaceAll(/[^a-z]/gi, '');
+      const gitRepo = await twin(`git-src-${slug}`);
+      const tsgitRepo = await twin(`tsgit-src-${slug}`);
+      const sut = checkout;
+
+      // Act
+      const git = tryRunGitWithExit(['-C', gitRepo, 'checkout', source, '--', 'a']);
+      const result = await sut(createNodeContext({ workDir: tsgitRepo }), {
+        paths: ['a'],
+        source,
+      }).catch((err: unknown) => err);
+
+      // Assert
+      const data = (result as TsgitError).data as { code: string; expression: string };
+      expect(git.exitCode).toBe(128);
+      expect(git.stderr).toContain(`fatal: invalid reference: ${data.expression}`);
+      expect(data).toEqual({ code: 'REVPARSE_UNRESOLVED', expression: source });
+    });
+  });
+
+  describe.each([
+    { label: 'a `./` spelling', pathspec: './nomatch' },
+    { label: 'an inner `./` spelling', pathspec: 'd/./nomatch' },
+    { label: 'a directory pathspec naming a file', pathspec: 'a/' },
+  ])('When git and tsgit restore $label matching nothing', ({ label, pathspec }) => {
+    it('Then both refuse naming the pathspec as spelled', async () => {
+      // Arrange
+      const slug = label.replaceAll(/[^a-z]/gi, '');
+      const gitRepo = await twin(`git-nm-${slug}`);
+      const tsgitRepo = await twin(`tsgit-nm-${slug}`);
+      const sut = checkout;
+
+      // Act
+      const git = tryRunGitWithExit(['-C', gitRepo, 'checkout', '--', pathspec]);
+      const result = await sut(createNodeContext({ workDir: tsgitRepo }), {
+        paths: [pathspec],
+      }).catch((err: unknown) => err);
+
+      // Assert
+      const data = (result as TsgitError).data as { code: string; pattern: string };
+      expect(git.exitCode).toBe(1);
+      expect(git.stderr).toContain(
+        `error: pathspec '${data.pattern}' did not match any file(s) known to git`,
+      );
+      expect(data).toEqual({ code: 'PATHSPEC_NO_MATCH', pattern: pathspec });
     });
   });
 

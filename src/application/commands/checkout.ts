@@ -1,4 +1,10 @@
-import { branchExists, branchNotFound, invalidOption } from '../../domain/commands/error.js';
+import {
+  branchExists,
+  branchNotFound,
+  invalidOption,
+  revparseUnresolved,
+} from '../../domain/commands/error.js';
+import { errorDataCode } from '../../domain/error-data-code.js';
 import {
   FILE_MODE,
   type FilePath,
@@ -235,13 +241,29 @@ interface PathSource {
 const peelTag = (object: GitObject): ObjectId | undefined =>
   object.type === 'tag' ? object.data.object : undefined;
 
+/** The codes `revParse` reports when a revision names no object. */
+const UNRESOLVED_REVISION_CODES: ReadonlySet<string | undefined> = new Set([
+  'OBJECT_NOT_FOUND',
+  'REVPARSE_UNRESOLVED',
+]);
+
+/** git dies `invalid reference` naming the revision as given, whatever step of it failed. */
+const resolveSourceRevision = async (ctx: Context, rev: string): Promise<ObjectId> => {
+  try {
+    return await revParse(ctx, rev);
+  } catch (error) {
+    if (UNRESOLVED_REVISION_CODES.has(errorDataCode(error))) throw revparseUnresolved(rev);
+    throw error;
+  }
+};
+
 /**
  * git's `<tree-ish> -- <paths>` source: the tree to restore from, and the smudge
  * metadata naming the commit the revision peels to — the named object itself
  * when it is no commit — and the ref it resolves to.
  */
 const resolvePathSource = async (ctx: Context, rev: string): Promise<PathSource> => {
-  const named = await revParse(ctx, rev);
+  const named = await resolveSourceRevision(ctx, rev);
   const { id, result } = await peelChain(ctx, named, readObject, peelTag);
   const tree = await readTree(ctx, id);
   const treeish = result.type === 'commit' ? id : named;
@@ -257,7 +279,7 @@ const pathRestore = async (ctx: Context, opts: CheckoutPathsOptions): Promise<Ch
     throw invalidOption('paths', 'must not be empty');
   }
   const source = await pathSourceFor(ctx, opts.source ?? INDEX_SOURCE);
-  const { matcher, literalMustMatch } = resolvePathspec(opts.paths);
+  const { matcher, literalMustMatch, literalSpellings } = resolvePathspec(opts.paths);
 
   // Enumerate the source's flat path universe so globs (`*.ts`,
   // `src/**`) can be expanded into a concrete `pathSet` for the
@@ -267,7 +289,7 @@ const pathRestore = async (ctx: Context, opts: CheckoutPathsOptions): Promise<Ch
   // path). For `source: 'HEAD'` or an ObjectId, walk the tree once.
   const universe: ReadonlyArray<FilePath> = await enumerateSourcePaths(ctx, source);
   const matched = universe.filter((p) => matchesPathspec(matcher, p));
-  enforceLiteralMustMatch(literalMustMatch, matched);
+  enforceLiteralMustMatch(literalMustMatch, matched, literalSpellings);
   const pathSet = new Set<FilePath>(matched);
 
   // Glob with zero matches → no-op (literals already threw above).

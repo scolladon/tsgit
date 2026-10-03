@@ -69,7 +69,7 @@ export const rm = async (
   requireWorkTree(ctx, 'rm');
   await assertNoPendingOperation(ctx);
   if (paths.length === 0) throw emptyPathspec();
-  const { matcher, literalMustMatch } = resolvePathspec(paths);
+  const { matcher, literalMustMatch, literalSpellings } = resolvePathspec(paths);
   const lock = await acquireIndexLock(ctx);
   try {
     const index = await readIndex(ctx).catch((err: unknown) => {
@@ -88,7 +88,7 @@ export const rm = async (
         removedEntries.push(entry);
       }
     }
-    enforceLiteralMustMatch(literalMustMatch, removed);
+    enforceLiteralMustMatch(literalMustMatch, removed, literalSpellings);
     if (opts.force !== true) {
       await enforceSafetyValve(ctx, removedEntries, opts.cached === true);
     }

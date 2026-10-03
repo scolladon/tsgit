@@ -102,6 +102,22 @@ const expectError = async (fn: () => Promise<unknown>, code: string): Promise<Ts
   return caught as TsgitError;
 };
 
+describe('Given a tracked file and a pathspec spelled with a `./` component', () => {
+  describe('When rm names an untracked path', () => {
+    it('Then PATHSPEC_NO_MATCH names the pathspec as spelled', async () => {
+      // Arrange
+      const ctx = await seedAndStage({ 'a.txt': 'a' });
+      const sut = rm;
+
+      // Act
+      const err = await expectError(() => sut(ctx, ['./nomatch']), 'PATHSPEC_NO_MATCH');
+
+      // Assert
+      expect(err.data).toEqual({ code: 'PATHSPEC_NO_MATCH', pattern: './nomatch' });
+    });
+  });
+});
+
 // Committed `a.txt`, then a staged edit (index ≠ HEAD, working tree == index).
 const seedStaged = async (): Promise<Context> => {
   const ctx = await seedAndStage({ 'a.txt': 'v1\n' });

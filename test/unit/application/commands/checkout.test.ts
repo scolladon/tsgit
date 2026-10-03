@@ -6,6 +6,7 @@ import { branchCreate } from '../../../../src/application/commands/branch.js';
 import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
+import * as revParseMod from '../../../../src/application/commands/rev-parse.js';
 import { tagCreate } from '../../../../src/application/commands/tag.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import * as materializeTreeMod from '../../../../src/application/primitives/materialize-tree.js';
@@ -1708,6 +1709,120 @@ describe('Given a path restore whose source is a revision', () => {
 
       // Assert
       expect(materialize.mock.calls[0]?.[1].checkoutMetadata).toBeUndefined();
+    });
+  });
+});
+
+describe('Given a path restore whose source names nothing', () => {
+  describe.each([
+    { label: 'an unknown name', source: 'missing-rev' },
+    { label: 'a revision expression past the root', source: 'HEAD~5' },
+  ])('When the path is restored from $label', ({ source }) => {
+    it('Then it refuses REVPARSE_UNRESOLVED naming the source as given', async () => {
+      // Arrange
+      const { ctx } = await seedWithOlderBranch();
+      const sut = checkout;
+
+      // Act
+      let caught: unknown;
+      try {
+        await sut(ctx, { paths: ['a.txt'], source });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect((caught as TsgitError).data).toEqual({
+        code: 'REVPARSE_UNRESOLVED',
+        expression: source,
+      });
+    });
+  });
+
+  describe('When the path is restored from a full object id absent from the store', () => {
+    it('Then it refuses OBJECT_NOT_FOUND naming that id', async () => {
+      // Arrange
+      const { ctx } = await seedWithOlderBranch();
+      const absent = '1234567890123456789012345678901234567890';
+      const sut = checkout;
+
+      // Act
+      let caught: unknown;
+      try {
+        await sut(ctx, { paths: ['a.txt'], source: absent });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect((caught as TsgitError).data).toEqual({ code: 'OBJECT_NOT_FOUND', id: absent });
+    });
+  });
+
+  describe('When resolving the source fails for another reason', () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('Then that failure propagates unchanged', async () => {
+      // Arrange
+      const { ctx } = await seedWithOlderBranch();
+      const failure = new TsgitError({
+        code: 'REVPARSE_AMBIGUOUS',
+        expression: 'x',
+        candidates: [],
+      });
+      vi.spyOn(revParseMod, 'revParse').mockRejectedValue(failure);
+      const sut = checkout;
+
+      // Act
+      const attempt = sut(ctx, { paths: ['a.txt'], source: 'other' });
+
+      // Assert
+      await expect(attempt).rejects.toBe(failure);
+    });
+  });
+});
+
+describe('Given a path restore whose pathspec is spelled with `.` components', () => {
+  describe('When the pathspec matches nothing', () => {
+    it('Then PATHSPEC_NO_MATCH names the pathspec as spelled', async () => {
+      // Arrange
+      const { ctx } = await seedWithOlderBranch();
+      const sut = checkout;
+
+      // Act
+      let caught: unknown;
+      try {
+        await sut(ctx, { paths: ['./nomatch'], source: 'HEAD' });
+      } catch (err) {
+        caught = err;
+      }
+
+      // Assert
+      expect((caught as TsgitError).data).toEqual({
+        code: 'PATHSPEC_NO_MATCH',
+        pattern: './nomatch',
+      });
+    });
+  });
+
+  describe('When the pathspec names a directory with a trailing `/./`', () => {
+    it('Then the files beneath it are restored', async () => {
+      // Arrange
+      const { ctx } = await seedWithOlderBranch();
+      await ctx.fs.mkdir(`${ctx.layout.workDir}/d`);
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/d/x`, 'x');
+      await add(ctx, ['d/x']);
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/d/x`, 'zz');
+      const sut = checkout;
+
+      // Act
+      const result = await sut(ctx, { paths: ['d/./'] });
+
+      // Assert
+      expect(result.changedPaths).toBe(1);
+      expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/d/x`)).toBe('x');
     });
   });
 });
