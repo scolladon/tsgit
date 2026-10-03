@@ -579,4 +579,82 @@ describe('writeSplitCommitGraph', () => {
       });
     });
   });
+
+  describe('Given commitGraph.changedPaths set and no commit-graph', () => {
+    describe('When the split write runs', () => {
+      it("Then the layer carries changed-path filters at git's default settings", async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const ids = await linearHistory(ctx, 2);
+        await pointRef(ctx, 'refs/heads/main', ids[1]!);
+        await ctx.fs.appendUtf8(`${commonGitDir(ctx)}/config`, '[commitGraph]\n\tchangedPaths\n');
+        const sut = writeSplitCommitGraph;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        const [hash] = await chainHashes(ctx);
+        expect((await readLayer(ctx, hash!)).bloomSettings).toEqual({
+          hashVersion: 1,
+          numHashes: 7,
+          bitsPerEntry: 10,
+        });
+      });
+    });
+  });
+
+  describe('Given a top layer carrying changed-path filters and commitGraph.changedPaths false', () => {
+    describe('When a new commit is written as a layer', () => {
+      it("Then the new layer keeps the top layer's settings", async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const ids = await linearHistory(ctx, 6);
+        const config = `${commonGitDir(ctx)}/config`;
+        await pointRef(ctx, 'refs/heads/main', ids[4]!);
+        await ctx.fs.appendUtf8(
+          config,
+          '[commitGraph]\n\tchangedPaths\n\tchangedPathsVersion = 2\n',
+        );
+        await writeSplitCommitGraph(ctx);
+        await ctx.fs.appendUtf8(config, '\tchangedPaths = false\n\tchangedPathsVersion = -1\n');
+        await pointRef(ctx, 'refs/heads/main', ids[5]!);
+        const sut = writeSplitCommitGraph;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        const hashes = await chainHashes(ctx);
+        expect(hashes).toHaveLength(2);
+        expect((await readLayer(ctx, hashes[1]!)).bloomSettings?.hashVersion).toBe(2);
+      });
+    });
+  });
+
+  describe('Given a malformed commitGraph.changedPaths in a shallow repository', () => {
+    describe('When the split write runs', () => {
+      it('Then it refuses on the config before declining for the shallow boundary', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const ids = await linearHistory(ctx, 1);
+        await pointRef(ctx, 'refs/heads/main', ids[0]!);
+        await ctx.fs.writeUtf8(shallowFilePath(commonGitDir(ctx)), `${ids[0]}\n`);
+        await ctx.fs.appendUtf8(
+          `${commonGitDir(ctx)}/config`,
+          '[commitGraph]\n\tchangedPaths = x\n',
+        );
+        const sut = writeSplitCommitGraph;
+
+        // Act
+        const result = await caughtFrom(() => sut(ctx));
+
+        // Assert
+        expect((result as TsgitError).data).toMatchObject({
+          code: 'CONFIG_BAD_BOOLEAN_VALUE',
+          value: 'x',
+        });
+      });
+    });
+  });
 });

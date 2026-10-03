@@ -17,6 +17,7 @@ import { mergedLayerCount } from '../../domain/commit/commit-graph-split.js';
 import {
   type CommitGraphBase,
   type CommitGraphBaseCommit,
+  type CommitGraphChangedPaths,
   type CommitGraphWriterCommit,
   serializeCommitGraph,
 } from '../../domain/commit/commit-graph-writer.js';
@@ -25,6 +26,7 @@ import { isObjectNotFound, objectNotFound } from '../../domain/objects/error.js'
 import { type Commit, ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { withLockFile } from './atomic-write.js';
+import { changedPathsRequest } from './internal/changed-paths-settings.js';
 import { hasGrafts } from './internal/commit-graph-compatible.js';
 import {
   type LocalGraphLayer,
@@ -40,6 +42,7 @@ import {
 } from './path-layout.js';
 import { readObject } from './read-object.js';
 import {
+  changedPathsFor,
   commitGraphLocked,
   commitGraphRoots,
   declinesChangedPathsVersion,
@@ -180,8 +183,9 @@ async function serializeLayer(
   ctx: Context,
   commits: readonly CommitGraphWriterCommit[],
   base: CommitGraphBase,
+  changedPaths: CommitGraphChangedPaths | undefined,
 ): Promise<{ readonly bytes: Uint8Array; readonly hash: ObjectId }> {
-  const bytes = serializeCommitGraph(commits, ctx.hashConfig, base);
+  const bytes = serializeCommitGraph(commits, ctx.hashConfig, base, changedPaths);
   const trailerStart = bytes.length - ctx.hashConfig.digestLength;
   const digest = await ctx.hash.hash(bytes.subarray(0, trailerStart));
   bytes.set(digest, trailerStart);
@@ -255,9 +259,11 @@ async function writeChainLayer(
 /**
  * No layer is written for a shallow repository or one with a registered
  * graft — git's `commit_graph_compatible` — nor when every reachable commit
- * is already in the graph.
+ * is already in the graph. Changed-path Bloom filters follow the chain's top
+ * layer, or `commitGraph.changedPaths` turns them on.
  */
 export async function writeSplitCommitGraph(ctx: Context): Promise<WriteSplitCommitGraphResult> {
+  const request = await changedPathsRequest(ctx);
   if (await isShallowRepository(ctx)) return NOTHING_WRITTEN;
   if (await hasGrafts(ctx)) return NOTHING_WRITTEN;
   if (await declinesChangedPathsVersion(ctx)) return NOTHING_WRITTEN;
@@ -270,6 +276,7 @@ export async function writeSplitCommitGraph(ctx: Context): Promise<WriteSplitCom
   const plan = planSplit(layers, fresh.length);
   const commits = uniqueCommits([...fresh, ...(await foldedCommits(ctx, plan.folded))]);
   const base = graphBase(plan.base, commits);
-  await writeChainLayer(ctx, plan, await serializeLayer(ctx, commits, base));
+  const changedPaths = await changedPathsFor(ctx, commits, layers.at(-1), request);
+  await writeChainLayer(ctx, plan, await serializeLayer(ctx, commits, base, changedPaths));
   return { written: true, commitCount: base.commitCount + commits.length };
 }

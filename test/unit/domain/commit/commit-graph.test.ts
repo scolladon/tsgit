@@ -1,12 +1,17 @@
 import { describe, expect, it } from 'vitest';
-
+import { DEFAULT_BLOOM_FILTER_SETTINGS } from '../../../../src/domain/commit/bloom-filter.js';
 import {
   commitDataAt,
   parseCommitGraphLayer,
   positionOf,
 } from '../../../../src/domain/commit/commit-graph.js';
+import {
+  type CommitGraphWriterCommit,
+  serializeCommitGraph,
+} from '../../../../src/domain/commit/commit-graph-writer.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
 import { compareBytes } from '../../../../src/domain/objects/encoding.js';
+import { SHA1_CONFIG } from '../../../../src/domain/objects/hash-config.js';
 import type { ObjectId } from '../../../../src/domain/objects/object-id.js';
 import {
   buildCommitGraphBytes,
@@ -717,6 +722,92 @@ describe('commit-graph', () => {
             'out of range',
           );
         });
+      });
+    });
+  });
+});
+
+describe('parseCommitGraphLayer, changed-path settings', () => {
+  const root: CommitGraphWriterCommit = {
+    id: oid('a0'),
+    rootTree: oid('e0'),
+    parents: [],
+    committerDate: 1_700_000_000,
+  };
+  const side: CommitGraphWriterCommit = { ...root, id: oid('a1'), rootTree: oid('e1') };
+  const other: CommitGraphWriterCommit = { ...root, id: oid('a2'), rootTree: oid('e2') };
+  const octopus: CommitGraphWriterCommit = {
+    ...root,
+    id: oid('a3'),
+    parents: [root.id, side.id, other.id],
+  };
+  const commits = [root, side, other, octopus];
+  const changedPaths = {
+    settings: { ...DEFAULT_BLOOM_FILTER_SETTINGS, hashVersion: 2 as const, numHashes: 6 },
+    filters: new Map([[root.id, Uint8Array.of(0x01)]]),
+  };
+
+  describe('Given a layer written with changed-path filters', () => {
+    describe('When parsed', () => {
+      it("Then its BDAT header's settings are read back", () => {
+        // Arrange
+        const sut = parseCommitGraphLayer;
+        const bytes = serializeCommitGraph(commits, SHA1_CONFIG, undefined, changedPaths);
+
+        // Act
+        const result = sut(bytes);
+
+        // Assert
+        expect(result.bloomSettings).toEqual({ hashVersion: 2, numHashes: 6, bitsPerEntry: 10 });
+      });
+    });
+  });
+
+  describe.each([
+    { label: 'without changed-path filters', from: 'OIDF', to: 'OIDF', bloom: false },
+    { label: 'whose BDAT is missing', from: 'BDAT', to: 'XXXX', bloom: true },
+    { label: 'whose BIDX is missing', from: 'BIDX', to: 'YYYY', bloom: true },
+  ])('Given a layer $label', ({ from, to, bloom }) => {
+    describe('When parsed', () => {
+      it('Then it carries no changed-path settings', () => {
+        // Arrange
+        const sut = parseCommitGraphLayer;
+        const written = serializeCommitGraph(
+          commits,
+          SHA1_CONFIG,
+          undefined,
+          bloom ? changedPaths : undefined,
+        );
+
+        // Act
+        const result = sut(renameChunkRowId(written, from, to));
+
+        // Assert
+        expect(result.bloomSettings).toBeUndefined();
+      });
+    });
+  });
+
+  describe.each([
+    { label: 'a BIDX not sized one entry per commit', bloomChunk: 'BIDX' },
+    { label: 'a BDAT shorter than its header', bloomChunk: 'BDAT' },
+  ])('Given a layer with $label', ({ bloomChunk }) => {
+    describe('When parsed', () => {
+      it('Then its changed-path chunks are ignored', () => {
+        // Arrange
+        const sut = parseCommitGraphLayer;
+        const written = serializeCommitGraph(commits, SHA1_CONFIG, undefined, changedPaths);
+        const misplaced = renameChunkRowId(
+          renameChunkRowId(written, bloomChunk, 'XXXX'),
+          'EDGE',
+          bloomChunk,
+        );
+
+        // Act
+        const result = sut(misplaced);
+
+        // Assert
+        expect(result.bloomSettings).toBeUndefined();
       });
     });
   });

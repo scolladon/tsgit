@@ -46,14 +46,21 @@ export const hasReplaceRefs = async (ctx: Context): Promise<boolean> => {
 const OLDEST_CHANGED_PATHS_VERSION = -1;
 const NEWEST_CHANGED_PATHS_VERSION = 2;
 
+/** git's `commit_graph_changed_paths_version`: the configured `commitGraph.changedPathsVersion`,
+ *  else -1 — or 0 when `commitGraph.readChangedPaths` is false. */
+export const configuredChangedPathsVersion = async (ctx: Context): Promise<number> => {
+  const configured = (await findLastEntry(ctx, 'commitGraph', 'changedPathsVersion'))?.value;
+  const parsed = configured == null ? undefined : parseGitInt(configured);
+  if (parsed?.ok) return parsed.value;
+  const reads = (await findLastEntry(ctx, 'commitGraph', 'readChangedPaths'))?.value;
+  const readsParsed = reads == null ? undefined : parseGitBoolean(reads);
+  return readsParsed?.ok === true && !readsParsed.value ? 0 : -1;
+};
+
 /** git's `write_commit_graph` range check: a `commitGraph.changedPathsVersion`
  *  past -1..2 declines the write, or `undefined` when the version is usable. */
 export const unsupportedChangedPathsVersion = async (ctx: Context): Promise<number | undefined> => {
-  const parsed = parseGitInt(
-    (await findLastEntry(ctx, 'commitGraph', 'changedPathsVersion'))?.value ?? '0',
-  );
-  if (!parsed.ok) return undefined;
-  const { value } = parsed;
+  const value = await configuredChangedPathsVersion(ctx);
   const supported = value >= OLDEST_CHANGED_PATHS_VERSION && value <= NEWEST_CHANGED_PATHS_VERSION;
   return supported ? undefined : value;
 };

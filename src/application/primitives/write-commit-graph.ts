@@ -11,6 +11,7 @@
  *   format:  commit-graph-v1
  */
 import {
+  type CommitGraphChangedPaths,
   type CommitGraphWriterCommit,
   serializeCommitGraph,
 } from '../../domain/commit/commit-graph-writer.js';
@@ -20,11 +21,20 @@ import type { ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { atomicWriteFile } from './atomic-write.js';
 import { enumerateRefs } from './enumerate-refs.js';
+import { changedPathFilters } from './internal/changed-path-filters.js';
+import {
+  type ChangedPathsRequest,
+  resolveChangedPathsSettings,
+} from './internal/changed-paths-settings.js';
 import {
   hasGrafts,
   unsupportedChangedPathsVersion,
   unsupportedChangedPathsWarning,
 } from './internal/commit-graph-compatible.js';
+import {
+  type LocalGraphLayer,
+  loadLocalCommitGraphLayers,
+} from './internal/local-commit-graph-layers.js';
 import { isShallowRepository } from './internal/shallow-set.js';
 import {
   commitGraphChainPath,
@@ -87,6 +97,21 @@ export async function declinesChangedPathsVersion(ctx: Context): Promise<boolean
   return true;
 }
 
+/**
+ * The Bloom filters a write carries, settings from the existing graph's top
+ * layer — `undefined` when the write carries none.
+ */
+export async function changedPathsFor(
+  ctx: Context,
+  commits: readonly CommitGraphWriterCommit[],
+  top: LocalGraphLayer | undefined,
+  request: ChangedPathsRequest,
+): Promise<CommitGraphChangedPaths | undefined> {
+  const settings = await resolveChangedPathsSettings(ctx, top?.layer.bloomSettings, request);
+  if (settings === undefined) return undefined;
+  return { settings, filters: await changedPathFilters(ctx, commits, settings) };
+}
+
 const GRAPH_LAYER_SUFFIX = '.graph';
 
 const isAbsent = (error: unknown): boolean => {
@@ -133,7 +158,9 @@ async function expireCommitGraphChain(ctx: Context): Promise<void> {
  * generation-number invariant the graph format itself relies on unsound
  * (a shallow commit's true depth from its full history is unknown). This
  * is checked BEFORE the walk, not after, since a shallow repository never
- * needs one. A registered graft refuses the write likewise.
+ * needs one. A registered graft refuses the write likewise. Changed-path
+ * Bloom filters are written when the existing graph carries them, as `gc`'s
+ * in-process write keeps them.
  */
 export async function writeCommitGraph(ctx: Context): Promise<WriteCommitGraphResult> {
   if (await isShallowRepository(ctx)) return { commitCount: 0 };
@@ -144,7 +171,9 @@ export async function writeCommitGraph(ctx: Context): Promise<WriteCommitGraphRe
   const commits = await collectCommits(ctx, roots);
   if (commits.length === 0) return { commitCount: 0 };
 
-  const bytes = serializeCommitGraph(commits, ctx.hashConfig);
+  const top = (await loadLocalCommitGraphLayers(ctx)).at(-1);
+  const changedPaths = await changedPathsFor(ctx, commits, top, 'preserve');
+  const bytes = serializeCommitGraph(commits, ctx.hashConfig, undefined, changedPaths);
   const trailerStart = bytes.length - ctx.hashConfig.digestLength;
   const digest = await ctx.hash.hash(bytes.subarray(0, trailerStart));
   bytes.set(digest, trailerStart);

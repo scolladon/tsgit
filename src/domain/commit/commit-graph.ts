@@ -17,6 +17,10 @@ const CHUNK_ID_GDA2 = 'GDA2';
 const CHUNK_ID_GDO2 = 'GDO2';
 const CHUNK_ID_EDGE = 'EDGE';
 const CHUNK_ID_BASE = 'BASE';
+const CHUNK_ID_BIDX = 'BIDX';
+const CHUNK_ID_BDAT = 'BDAT';
+const BIDX_ENTRY_SIZE = 4;
+const BDAT_HEADER_SIZE = 12;
 
 /** Bytes per GDO2 entry: a plain (non-flagged) 64-bit corrected-date offset. */
 const GDO2_ENTRY_SIZE = 8;
@@ -46,9 +50,18 @@ export interface CommitData {
   readonly committerDate: number;
 }
 
+/** A layer's `BDAT` header, as written — the hash version unvalidated, as git reads it. */
+export interface CommitGraphBloomSettings {
+  readonly hashVersion: number;
+  readonly numHashes: number;
+  readonly bitsPerEntry: number;
+}
+
 /** A single parsed `commit-graph` file — either the standalone file or one chain layer. */
 export interface CommitGraphLayer {
   readonly hashVersion: 1 | 2;
+  /** Present only when both `BIDX` and `BDAT` are present and well-sized, as git requires. */
+  readonly bloomSettings: CommitGraphBloomSettings | undefined;
   readonly numBaseGraphs: number;
   readonly baseGraphHashes: readonly ObjectId[];
   readonly commitCount: number;
@@ -115,6 +128,7 @@ export function parseCommitGraphLayer(bytes: Uint8Array): CommitGraphLayer {
 
   return {
     hashVersion: hashVersion as 1 | 2,
+    bloomSettings: readBloomSettings(chunkRanges, view, commitCount),
     numBaseGraphs,
     baseGraphHashes,
     commitCount,
@@ -186,6 +200,24 @@ function validateChunkSize(range: ChunkRange, expectedSize: number, id: string):
       `truncated ${id} chunk: expected ${expectedSize} bytes, got ${actualSize}`,
     );
   }
+}
+
+/** git's `graph_read_bloom_index`/`_data`: a misfit chunk is ignored, and one without the other is too. */
+function readBloomSettings(
+  ranges: ReadonlyMap<string, ChunkRange>,
+  view: DataView,
+  commitCount: number,
+): CommitGraphBloomSettings | undefined {
+  const index = ranges.get(CHUNK_ID_BIDX);
+  const data = ranges.get(CHUNK_ID_BDAT);
+  if (index === undefined || data === undefined) return undefined;
+  if (Math.floor((index.end - index.start) / BIDX_ENTRY_SIZE) !== commitCount) return undefined;
+  if (data.end - data.start < BDAT_HEADER_SIZE) return undefined;
+  return {
+    hashVersion: view.getUint32(data.start),
+    numHashes: view.getUint32(data.start + 4),
+    bitsPerEntry: view.getUint32(data.start + 8),
+  };
 }
 
 function readBaseGraphHashes(

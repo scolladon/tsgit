@@ -12,6 +12,7 @@ import {
 } from '../../../../src/application/primitives/path-layout.js';
 import { writeCommitGraph } from '../../../../src/application/primitives/write-commit-graph.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import { writeSplitCommitGraph } from '../../../../src/application/primitives/write-split-commit-graph.js';
 import { parseCommitGraphLayer, positionOf } from '../../../../src/domain/commit/commit-graph.js';
 import { notADirectory, permissionDenied, TsgitError } from '../../../../src/domain/error.js';
 import type {
@@ -371,6 +372,38 @@ describe('writeCommitGraph', () => {
         const layer = parseCommitGraphLayer(await ctx.fs.read(commitGraphPath(gitDir)));
         expect(layer.commitCount).toBe(1);
         expect(positionOf(layer, commitId)).not.toBeUndefined();
+      });
+    });
+  });
+
+  describe('Given a chain whose top layer carries changed-path filters', () => {
+    describe('When the single-file graph is written', () => {
+      it("Then it carries filters at the top layer's settings", async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const id = await createCommit(ctx, {
+          tree: await writeObject(ctx, { type: 'tree', entries: [], id: '' as ObjectId }),
+          parents: [],
+          author: AUTHOR,
+          committer: AUTHOR,
+          message: 'root',
+        });
+        await ctx.fs.writeUtf8(`${commonGitDir(ctx)}/refs/heads/main`, `${id}\n`);
+        const config = `${commonGitDir(ctx)}/config`;
+        await ctx.fs.appendUtf8(
+          config,
+          '[commitGraph]\n\tchangedPaths\n\tchangedPathsVersion = 2\n',
+        );
+        await writeSplitCommitGraph(ctx);
+        await ctx.fs.appendUtf8(config, '\tchangedPathsVersion = -1\n');
+        const sut = writeCommitGraph;
+
+        // Act
+        await sut(ctx);
+
+        // Assert
+        const layer = parseCommitGraphLayer(await ctx.fs.read(commitGraphPath(commonGitDir(ctx))));
+        expect(layer.bloomSettings).toEqual({ hashVersion: 2, numHashes: 7, bitsPerEntry: 10 });
       });
     });
   });
