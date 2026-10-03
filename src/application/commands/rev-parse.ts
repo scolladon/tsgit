@@ -28,9 +28,10 @@ import { readObject } from '../primitives/read-object.js';
 import { readTree } from '../primitives/read-tree.js';
 import { listReflogs, readReflogLenient } from '../primitives/reflog-store.js';
 import { readRefCandidate } from '../primitives/resolve-ref.js';
-import { rereadsMisspeltRevision } from './internal/misspelt-revision.js';
+import { namesNoObject, rereadsMisspeltRevision } from './internal/misspelt-revision.js';
 import { readCandidateRef, resolveAmbiguousLadder } from './internal/refname-ambiguity.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
+import { differenceSides } from './internal/rev-parse-difference.js';
 import {
   type PeelTarget,
   parseExpression,
@@ -42,11 +43,13 @@ import { resolveRevisionName } from './internal/revision-name.js';
 
 /**
  * `git rev-parse <rev>` (and every `setup_revisions` reader): an expression
- * that names no object is read a second time before the refusal — git's
+ * holding `..` has its sides read first, as git tries it as a range; an
+ * expression that names no object is read a second time before the refusal — git's
  * misspelt-name diagnosis re-runs `get_oid`, re-emitting each warning — unless
  * the argument reads as a pathspec or names a working-tree path.
  */
 export const revParse = async (ctx: Context, expression: string): Promise<ObjectId> => {
+  await readDifferenceSides(ctx, expression);
   try {
     return await evaluateRevision(ctx, expression);
   } catch (error) {
@@ -55,6 +58,27 @@ export const revParse = async (ctx: Context, expression: string): Promise<Object
     }
     throw error;
   }
+};
+
+/** Whether `side` names an object; a read that names none is not a refusal here. */
+const resolvesSide = async (ctx: Context, side: string): Promise<boolean> => {
+  try {
+    await evaluateRevision(ctx, side);
+    return true;
+  } catch (error) {
+    if (namesNoObject(error)) return false;
+    throw error;
+  }
+};
+
+/**
+ * git rev-parse's `try_difference` reads: the side before a `..`, then the
+ * side after it once the first resolves, each printing its own warnings.
+ */
+const readDifferenceSides = async (ctx: Context, expression: string): Promise<void> => {
+  const sides = differenceSides(expression);
+  if (sides === undefined) return;
+  if (await resolvesSide(ctx, sides.start)) await resolvesSide(ctx, sides.end);
 };
 
 /** git's `get_oid` over one expression, read once: the commands that refuse their argument without the misspelt-name diagnosis. */

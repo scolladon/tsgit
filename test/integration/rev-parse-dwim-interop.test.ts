@@ -12,7 +12,7 @@
  *   interopSurface: revParse
  */
 import { writeFileSync } from 'node:fs';
-import { cp, mkdtemp, rm } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -545,6 +545,31 @@ describe.skipIf(!GIT_AVAILABLE)('integration — skip and ambiguity warnings per
       run: ((ctx) => revParse(ctx, 'dg:absent')) as CommandRun,
     },
     {
+      label: 'rev-parse of a range whose start warns and whose end names nothing',
+      args: ['rev-parse', 'dg..nope'],
+      run: ((ctx) => revParse(ctx, 'dg..nope')) as CommandRun,
+    },
+    {
+      label: 'rev-parse of a range whose start names nothing',
+      args: ['rev-parse', 'nope..dg'],
+      run: ((ctx) => revParse(ctx, 'nope..dg')) as CommandRun,
+    },
+    {
+      label: 'rev-parse of a symmetric range whose start is a missing ancestor',
+      args: ['rev-parse', 'dg~5...nope'],
+      run: ((ctx) => revParse(ctx, 'dg~5...nope')) as CommandRun,
+    },
+    {
+      label: 'rev-parse of a parent hop in a missing path past a dangling symref',
+      args: ['rev-parse', 'dg:a/..'],
+      run: ((ctx) => revParse(ctx, 'dg:a/..')) as CommandRun,
+    },
+    {
+      label: 'rev-parse of a relative path climbing out past a dangling symref',
+      args: ['rev-parse', 'dg:../absent'],
+      run: ((ctx) => revParse(ctx, 'dg:../absent')) as CommandRun,
+    },
+    {
       label: 'rev-parse of a missing path that reads as a pathspec',
       args: ['rev-parse', 'dg:absent*'],
       run: ((ctx) => revParse(ctx, 'dg:absent*')) as CommandRun,
@@ -639,6 +664,45 @@ describe.skipIf(!GIT_AVAILABLE)('integration — skip and ambiguity warnings per
       });
     });
   });
+
+  describe.each([
+    { label: 'present', target: 'outside', plant: true, refused: 0 },
+    { label: 'absent', target: 'absent', plant: false, refused: 128 },
+  ])(
+    'Given an argument whose parent hops climb out of the worktree to a $label path',
+    ({ target, plant, refused }) => {
+      describe('When git and tsgit rev-parse it', () => {
+        it('Then tsgit warns each line git warns', async () => {
+          // Arrange
+          const arg = `dg:a/../../${target}`;
+          const outsideRepo = async (slug: string): Promise<string> => {
+            const dir = await caseRepo(slug);
+            await mkdir(path.join(dir, 'dg:a'));
+            if (plant) writeFileSync(path.join(dir, '..', 'outside'), '');
+            return dir;
+          };
+          const gitRun = tryRunGitWithExit(['-C', await outsideRepo('git'), 'rev-parse', arg]);
+          const warnings: string[] = [];
+          const ctx = {
+            ...createNodeContext({ workDir: await outsideRepo('tsgit') }),
+            logger: { warn: (message: string) => warnings.push(message) },
+          };
+          const sut = revParse;
+
+          // Act
+          const result = await sut(ctx, arg).catch((err: TsgitError) => err.data);
+
+          // Assert
+          const expected = stderrLines(gitRun.stderr).filter((line) =>
+            line.startsWith('warning: '),
+          );
+          expect(gitRun.exitCode).toBe(refused);
+          expect(warnings.map((message) => `warning: ${message}`)).toEqual(expected);
+          expect(result).toMatchObject({ code: 'PATH_NOT_IN_TREE', path: `a/../../${target}` });
+        });
+      });
+    },
+  );
 });
 
 describe.skipIf(!GIT_AVAILABLE)('integration — dwim_log through a symbolic branch', () => {

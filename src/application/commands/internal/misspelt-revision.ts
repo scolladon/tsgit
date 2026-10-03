@@ -42,13 +42,17 @@ const namesExistingPath = async (ctx: Context, arg: string): Promise<boolean> =>
   }
 };
 
+/** Whether `failure` is git's `get_oid` returning -1: the read named no object, and nothing died. */
+export const namesNoObject = (failure: unknown): boolean =>
+  UNRESOLVED_CODES.has(errorDataCode(failure));
+
 /** Whether `failure`, refusing `expression`, sends git back to read it once more. */
 export const rereadsMisspeltRevision = async (
   ctx: Context,
   expression: string,
   failure: unknown,
 ): Promise<boolean> => {
-  if (!UNRESOLVED_CODES.has(errorDataCode(failure))) return false;
+  if (!namesNoObject(failure)) return false;
   if (looksLikePathspec(expression)) return false;
   return !(await namesExistingPath(ctx, expression));
 };

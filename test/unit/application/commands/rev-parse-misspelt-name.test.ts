@@ -159,12 +159,12 @@ describe('Given an expression whose name warns but which names no object', () =>
 
       // Assert
       expect(result).toEqual({ code: 'PATHSPEC_OUTSIDE_REPO', path: '../absent' });
-      expect(warnings).toEqual([DANGLING]);
+      expect(warnings).toEqual([DANGLING, DANGLING]);
     });
   });
 
   describe('When its parent hops climb to a path the filename probe finds', () => {
-    it('Then it refuses after the one read, probing the path as written', async () => {
+    it('Then it refuses without a second read, probing the path as written', async () => {
       // Arrange
       const warnings: string[] = [];
       const repo = await danglingRepo((message) => warnings.push(message));
@@ -181,7 +181,7 @@ describe('Given an expression whose name warns but which names no object', () =>
 
       // Assert
       expect(result).toMatchObject({ code: 'PATH_NOT_IN_TREE' });
-      expect(warnings).toEqual([DANGLING]);
+      expect(warnings).toEqual([DANGLING, DANGLING]);
       expect(probed).toEqual([`${repo.layout.workDir}/dg:a/../../outside`]);
     });
   });
@@ -199,7 +199,7 @@ describe('Given an expression whose name warns but which names no object', () =>
       await failureOf(() => sut(ctx, 'dg:a/../../absent'));
 
       // Assert
-      expect(warnings).toEqual([DANGLING, DANGLING]);
+      expect(warnings).toEqual([DANGLING, DANGLING, DANGLING]);
     });
   });
 
@@ -254,6 +254,50 @@ describe('Given an expression whose name warns but which names no object', () =>
       // Assert
       expect(result).toMatchObject({ code: 'OBJECT_NOT_FOUND' });
       expect(warnings).toEqual([DANGLING]);
+    });
+  });
+});
+
+describe('Given an argument a `..` splits', () => {
+  describe.each([
+    { arg: 'dg..nope', reads: 1 },
+    { arg: 'dg...nope', reads: 1 },
+    { arg: 'dg~5..x', reads: 1 },
+    { arg: 'nope..dg', reads: 0 },
+    { arg: 'x..dg~5', reads: 0 },
+    { arg: '..nope', reads: 0 },
+    { arg: 'dg:a/..', reads: 3 },
+  ])('When revParse reads $arg', ({ arg, reads }) => {
+    it('Then it reads each side as git does before the whole', async () => {
+      // Arrange
+      const warnings: string[] = [];
+      const ctx = await danglingRepo((message) => warnings.push(message));
+      const sut = revParse;
+
+      // Act
+      await failureOf(() => sut(ctx, arg));
+
+      // Assert
+      expect(warnings).toEqual(Array.from({ length: reads }, () => DANGLING));
+    });
+  });
+
+  describe('When revParse reads it and a side is refused for another reason', () => {
+    it('Then it surfaces that refusal', async () => {
+      // Arrange
+      const ctx = await danglingRepo(() => undefined);
+      const corrupt = 'ab'.padEnd(40, '0');
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/objects/ab/${corrupt.slice(2)}`, 'garbage');
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/c`, `${corrupt}\n`);
+      const sut = revParse;
+      const sideRefusal = await failureOf(() => sut(ctx, 'c^{commit}'));
+
+      // Act
+      const result = await failureOf(() => sut(ctx, 'c^{commit}..nope'));
+
+      // Assert
+      expect(result).toEqual(sideRefusal);
+      expect(result).not.toMatchObject({ code: 'REVPARSE_UNRESOLVED' });
     });
   });
 });
