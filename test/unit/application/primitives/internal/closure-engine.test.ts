@@ -5,6 +5,7 @@
  *  - commits-only vs `objects: true` (trees/blobs, each carrying a path)
  *  - tag peeling (single tag, tag-of-tag chain)
  *  - non-commit wants (a tree want's own subtree; a blob want alone)
+ *  - pending tag/tree/blob wants the not side or a boundary tree marks
  *  - gitlink entries are skipped
  *  - empty wants / wants fully covered by `not` / an unborn repository
  *  - the haves relation: the walk's superset over the exact difference, and
@@ -131,7 +132,7 @@ const singleFileTree = async (ctx: Context, name: string): Promise<ObjectId> =>
 const writeTag = async (
   ctx: Context,
   target: ObjectId,
-  targetType: 'commit' | 'tag',
+  targetType: Tag['data']['objectType'],
   tagName: string,
 ): Promise<ObjectId> => {
   const tag: Tag = {
@@ -918,6 +919,129 @@ describe('computeClosure', () => {
           tier: 'walk',
           wants: [commitId],
           not: [tagId],
+          objects: true,
+        });
+
+        // Assert
+        expect(result.objects).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a tree want the not side names too', () => {
+    describe('When computeClosure is called with objects: true', () => {
+      it('Then nothing is emitted, as git skips an uninteresting pending tree', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const treeId = await singleFileTree(ctx, 'both-sides');
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [treeId],
+          not: [treeId],
+          objects: true,
+        });
+
+        // Assert
+        expect(result.objects).toEqual([]);
+      });
+    });
+  });
+
+  describe('Given a blob want held by an excluded tree', () => {
+    describe('When computeClosure is called with objects: true', () => {
+      it('Then nothing is emitted, as the excluded tree marks its contents', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blobId = await writeBlob(ctx, 'inside');
+        const treeId = await writeTree(ctx, [treeEntry('100644' as FileMode, 'in.txt', blobId)]);
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [blobId],
+          not: [treeId],
+          objects: true,
+        });
+
+        // Assert
+        expect(result.objects).toEqual([]);
+      });
+    });
+  });
+
+  describe("Given tree and blob wants that are a boundary commit's own tree and blob", () => {
+    describe('When computeClosure walks with objects: true', () => {
+      it('Then neither is emitted, as the boundary marks its tree before pending objects are shown', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const baseBlobId = await writeBlob(ctx, 'base');
+        const baseTreeId = await writeTree(ctx, [
+          treeEntry('100644' as FileMode, 'base.txt', baseBlobId),
+        ]);
+        const baseId = await writeCommit(ctx, baseTreeId, [], 'base');
+        const tipTreeId = await singleFileTree(ctx, 'tip');
+        const tipId = await writeCommit(ctx, tipTreeId, [baseId], 'tip');
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [tipId, baseTreeId, baseBlobId],
+          not: [baseId],
+          objects: true,
+        });
+
+        // Assert
+        const ids = new Set(result.objects.map((o) => o.id));
+        expect(ids.has(tipId)).toBe(true);
+        expect(ids.has(baseTreeId)).toBe(false);
+        expect(ids.has(baseBlobId)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a tag-of-tree want whose tree the not side names', () => {
+    describe('When computeClosure is called with objects: true', () => {
+      it('Then only the tag is emitted', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const treeId = await singleFileTree(ctx, 'tagged');
+        const tagId = await writeTag(ctx, treeId, 'tree', 'on-tree');
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [tagId],
+          not: [treeId],
+          objects: true,
+        });
+
+        // Assert
+        expect(result.objects).toStrictEqual([{ id: tagId, type: 'tag', nameHash: 0 }]);
+      });
+    });
+  });
+
+  describe('Given a tag-of-tree want the not side reaches through a tag-of-tag', () => {
+    describe('When computeClosure is called with objects: true', () => {
+      it('Then nothing is emitted, as peeling the excluded chain marks every tag on it', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const treeId = await singleFileTree(ctx, 'tagged-twice');
+        const innerTagId = await writeTag(ctx, treeId, 'tree', 'inner');
+        const outerTagId = await writeTag(ctx, innerTagId, 'tag', 'outer');
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          tier: 'walk',
+          wants: [innerTagId],
+          not: [outerTagId],
           objects: true,
         });
 

@@ -105,7 +105,8 @@ async function markTree(
 }
 
 /**
- * Mark one `not` tip uninteresting: peel a tag chain, then collect a commit
+ * Mark one `not` tip uninteresting: peel a tag chain, marking every tag on it
+ * as git's `handle_commit` flags each object it peels, then collect a commit
  * for the limited walk (its own tree is left to `markBoundaryTrees`), or mark
  * a tree/blob tip directly.
  */
@@ -116,6 +117,7 @@ async function markUninteresting(
 ): Promise<void> {
   const obj = await readObject(ctx, id);
   if (obj.type === 'tag') {
+    acc.objects.add(id);
     await markUninteresting(ctx, obj.data.object, acc);
     return;
   }

@@ -174,61 +174,75 @@ async function emitTree(
   }
 }
 
+/** A want git keeps pending past the commit walk — a tag, a tree or a blob —
+ *  shown only if the walk has not marked it uninteresting by then. */
+interface PendingObject {
+  readonly id: ObjectId;
+  readonly type: Exclude<ClosureObject['type'], 'commit'>;
+}
+
+interface ResolvedWants {
+  readonly commitSeeds: ReadonlyArray<Commit>;
+  readonly pending: ReadonlyArray<PendingObject>;
+}
+
 /**
- * Resolve every want: peel tags (recording each tag oid), then either seed
- * the commit walk or — for a tree/blob want, which has no parents — emit
- * itself and its own subtree directly. Commit seeds carry their full body so
- * the `noWalk` path can emit them (and, under `objects`, their own tree)
- * without a second read.
+ * Resolve every want: peel tags (keeping each tag pending), then either seed
+ * the commit walk or keep a tree/blob want pending. Commit seeds carry their
+ * full body so the `noWalk` path can emit them (and, under `objects`, their
+ * own tree) without a second read.
  */
-async function resolveWants(
-  ctx: Context,
-  wants: ReadonlyArray<ObjectId>,
-  scope: TreeEmitScope,
-  emit: Emit,
-): Promise<Commit[]> {
+async function resolveWants(ctx: Context, wants: ReadonlyArray<ObjectId>): Promise<ResolvedWants> {
   const commitSeeds: Commit[] = [];
+  const pending: PendingObject[] = [];
   for (const wantId of wants) {
     const peeled = await resolveTagChain(ctx, wantId, (tagId) =>
-      emit({ id: tagId, type: 'tag', nameHash: 0 }),
+      pending.push({ id: tagId, type: 'tag' }),
     );
     const obj = await readObject(ctx, peeled);
-    if (obj.type === 'commit') {
-      commitSeeds.push(obj);
-      continue;
-    }
-    if (obj.type === 'tree') {
-      await emitTree(ctx, peeled, { ...scope, marked: NO_MARKS }, emit);
-      continue;
-    }
-    // A recorded divergence: git names a direct want after the pending
-    // object's own name; tsgit has none to give it, so it hashes to 0.
-    emit({ id: peeled, type: 'blob', nameHash: 0 });
+    if (obj.type === 'commit') commitSeeds.push(obj);
+    else pending.push({ id: peeled, type: obj.type });
   }
-  return commitSeeds;
+  return { commitSeeds, pending };
+}
+
+/**
+ * git's `traverse_non_commits`: a pending tag, tree or blob is shown unless
+ * flagged uninteresting — named by the not side, reached through an excluded
+ * tag or tree, or held by a boundary commit's tree the walk marked. A tree
+ * want is the root of its own subtree, so it carries the empty path.
+ */
+async function emitPending(
+  ctx: Context,
+  pending: ReadonlyArray<PendingObject>,
+  scope: TreeEmitScope,
+  emit: Emit,
+): Promise<void> {
+  for (const object of pending) {
+    if (object.type === 'tree') {
+      await emitTree(ctx, object.id, scope, emit);
+      continue;
+    }
+    if (scope.marked.has(object.id)) continue;
+    // A recorded divergence: git names a direct blob want after the pending
+    // object's own name; tsgit has none to give it, so it hashes to 0.
+    emit({ id: object.id, type: object.type, nameHash: 0 });
+  }
 }
 
 /**
  * `noWalk`'s own building block, reached only when there is no `not` side
- * (git ignores `--no-walk` with a range): emit each commit seed itself with no
- * parent enqueue at all. `maxCount` still bounds how many seeds are emitted;
- * `objects` still emits each seed's own tree. With no `not` side there is no
- * boundary tree to mark.
+ * (git ignores `--no-walk` with a range): each commit seed itself with no
+ * parent enqueue at all. `maxCount` still bounds how many seeds are listed.
+ * With no `not` side there is no boundary tree to mark.
  */
-async function emitSeedsWithoutWalking(
-  ctx: Context,
+const seedsWithoutWalking = (
   commitSeeds: ReadonlyArray<Commit>,
-  scope: TreeEmitScope,
   request: ClosureRequest,
-  emit: Emit,
-): Promise<void> {
-  const shown =
-    request.maxCount === undefined ? commitSeeds : commitSeeds.slice(0, request.maxCount);
-  for (const seed of shown) {
-    emit({ id: seed.id, type: 'commit', nameHash: 0 });
-    if (request.objects) await emitTree(ctx, seed.data.tree, scope, emit);
-  }
-}
+): ReadonlyArray<WalkedCommit> =>
+  (request.maxCount === undefined ? commitSeeds : commitSeeds.slice(0, request.maxCount)).map(
+    walkedFrom,
+  );
 
 /** The slice of a walked commit the emit pass needs. */
 interface WalkedCommit {
@@ -321,45 +335,51 @@ async function collectLimitedWalk(
  * Walk the commit seeds' ancestry, bounded by `maxCount` and ordered by
  * `firstParent`, buffered first: boundary-tree marking (`markBoundaryTrees`)
  * needs the FULL walk before any tree is emitted, since a boundary a later
- * commit surfaces must still gate an earlier commit's own tree walk.
+ * commit surfaces must still gate an earlier commit's own tree walk — and a
+ * pending tree or blob want, which git shows only after the commit walk.
  */
-async function walkAndEmitCommits(
+async function walkCommitSeeds(
   ctx: Context,
   commitSeeds: ReadonlyArray<Commit>,
   marks: NotMarks,
-  scope: TreeEmitScope,
   request: ClosureRequest,
-  emit: Emit,
-): Promise<void> {
+): Promise<ReadonlyArray<WalkedCommit>> {
   const { walked, boundary } =
     marks.commitTips.length === 0
       ? await collectUnlimitedWalk(ctx, commitSeeds, request)
       : await collectLimitedWalk(ctx, commitSeeds, marks, request);
   if (request.objects) await markBoundaryTrees(ctx, boundary, marks);
-
-  const emitted = request.maxCount !== undefined ? walked.slice(0, request.maxCount) : walked;
-  for (const commit of emitted) {
-    emit({ id: commit.id, type: 'commit', nameHash: 0 });
-    if (request.objects) await emitTree(ctx, commit.tree, scope, emit);
-  }
+  return request.maxCount !== undefined ? walked.slice(0, request.maxCount) : walked;
 }
 
 /** Dispatch the commit-seed side of the closure: no seeds, `maxCount: 0`, `noWalk`, or the full walk. */
-async function emitCommitSeeds(
+async function listCommitSeeds(
   ctx: Context,
   commitSeeds: ReadonlyArray<Commit>,
   marks: NotMarks,
-  scope: TreeEmitScope,
   request: ClosureRequest,
-  emit: Emit,
-): Promise<void> {
-  if (commitSeeds.length === 0 || request.maxCount === 0) return;
+): Promise<ReadonlyArray<WalkedCommit>> {
+  if (commitSeeds.length === 0 || request.maxCount === 0) return [];
   // git ignores `--no-walk` once a range (a `not` tip) is present, falling back
   // to the ordinary bounded walk; `noWalk` shows only the tips solely when there
   // is nothing to exclude.
   if (request.noWalk === true && request.not.length === 0)
-    return emitSeedsWithoutWalking(ctx, commitSeeds, scope, request, emit);
-  return walkAndEmitCommits(ctx, commitSeeds, marks, scope, request, emit);
+    return seedsWithoutWalking(commitSeeds, request);
+  return walkCommitSeeds(ctx, commitSeeds, marks, request);
+}
+
+/** Each listed commit, then — under `objects` — its own tree. */
+async function emitWalked(
+  ctx: Context,
+  walked: ReadonlyArray<WalkedCommit>,
+  scope: TreeEmitScope,
+  request: ClosureRequest,
+  emit: Emit,
+): Promise<void> {
+  for (const commit of walked) {
+    emit({ id: commit.id, type: 'commit', nameHash: 0 });
+    if (request.objects) await emitTree(ctx, commit.tree, scope, emit);
+  }
 }
 
 async function walkClosure(ctx: Context, request: ClosureRequest): Promise<ClosureObject[]> {
@@ -376,8 +396,10 @@ async function walkClosure(ctx: Context, request: ClosureRequest): Promise<Closu
     emitted: state.emitted,
     maxDepth: marks.maxDepth,
   };
-  const commitSeeds = await resolveWants(ctx, request.wants, scope, emit);
-  await emitCommitSeeds(ctx, commitSeeds, marks, scope, request, emit);
+  const { commitSeeds, pending } = await resolveWants(ctx, request.wants);
+  const walked = await listCommitSeeds(ctx, commitSeeds, marks, request);
+  await emitPending(ctx, pending, scope, emit);
+  await emitWalked(ctx, walked, scope, request, emit);
 
   return results;
 }

@@ -122,6 +122,32 @@ const skewedLine = (dir: string, base: string, depth: number): string => {
   return commitAt(dir, `tip${depth}`, 400, [line]);
 };
 
+const annotatedTag = (dir: string, name: string, target: string): void => {
+  runGit(['-C', dir, 'tag', '-a', '-m', name, name, target], { env: datedEnv(1_700_000_000) });
+};
+
+/** `base` <- `main`; refs name each one's tree and blob, plus tags of a tree and of a tag. */
+const buildNonCommitTipFixture = async (): Promise<string> => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-rev-list-non-commit-'));
+  git(dir, 'init', '-q', '-b', 'main');
+  const base = commitAt(dir, 'base', 0, []);
+  const baseBlob = git(dir, 'rev-parse', `${base}:base.txt`).trim();
+  const tipBlob = runGit(['-C', dir, 'hash-object', '-w', '--stdin'], { input: 'tip' }).trim();
+  const tipTree = runGit(['-C', dir, 'mktree'], {
+    input: `100644 blob ${baseBlob}\tbase.txt\n100644 blob ${tipBlob}\ttip.txt\n`,
+  }).trim();
+  git(dir, 'update-ref', 'refs/heads/main', commitAt(dir, 'tip', 100, [base], tipTree));
+  git(dir, 'update-ref', 'refs/heads/base', base);
+  git(dir, 'update-ref', 'refs/tags/tip-tree', tipTree);
+  git(dir, 'update-ref', 'refs/tags/tip-blob', tipBlob);
+  git(dir, 'update-ref', 'refs/tags/base-tree', git(dir, 'rev-parse', `${base}^{tree}`).trim());
+  git(dir, 'update-ref', 'refs/tags/base-blob', baseBlob);
+  annotatedTag(dir, 'tag-tree', tipTree);
+  annotatedTag(dir, 'tag-tag', 'tag-tree');
+  annotatedTag(dir, 'tag-base', base);
+  return dir;
+};
+
 const buildSkewedExclusionFixture = async (): Promise<SkewedExclusionFixture> => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-rev-list-skewed-'));
   git(dir, 'init', '-q', '-b', 'main');
@@ -580,6 +606,41 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list objects interop — closure prune', ()
           not: [fixture.lateTip],
           objects: true,
         });
+
+        // Assert
+        const actual = new Set(result.entries.map((entry) => entry.id));
+        expect([...actual].sort()).toEqual([...expected].sort());
+      });
+    });
+  });
+  describe('Given tag, tree and blob tips on either side of a range', () => {
+    let dir: string;
+
+    beforeAll(async () => {
+      dir = await buildNonCommitTipFixture();
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => rm(dir, { recursive: true, force: true }));
+
+    describe.each([
+      { wants: ['tip-tree'], not: ['tip-tree'] },
+      { wants: ['main', 'base-tree'], not: ['base'] },
+      { wants: ['main', 'base-blob'], not: ['base'] },
+      { wants: ['tag-tree'], not: ['tip-tree'] },
+      { wants: ['tag-tree'], not: ['tag-tree'] },
+      { wants: ['main', 'tag-tree'], not: ['tag-tag'] },
+      { wants: ['tip-blob'], not: ['tip-tree'] },
+      { wants: ['tip-tree'], not: ['main'] },
+      { wants: ['tag-base'], not: ['base'] },
+    ])('When revList lists $wants ^$not with objects', ({ wants, not }) => {
+      it('Then it shows the pending objects git rev-list --objects shows', async () => {
+        // Arrange
+        const expected = gitIdSet(dir, '--objects', ...wants, '--not', ...not);
+        const ctx = createNodeContext({ workDir: dir });
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, { wants, not, objects: true });
 
         // Assert
         const actual = new Set(result.entries.map((entry) => entry.id));
