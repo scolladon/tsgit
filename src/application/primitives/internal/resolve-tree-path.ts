@@ -51,6 +51,10 @@ export const descendTreePath = async (
   return entry;
 };
 
+/** git's `find_tree_entry`: one `/` after a directory's name, ending the path, names that directory. */
+const closesWithSeparator = (segments: ReadonlyArray<string>, index: number): boolean =>
+  index === segments.length - 1 && segments[index] === '';
+
 /**
  * Descend a `/`-separated tree path from a root oid or an already-resolved
  * `Tree`, returning the addressed `TreeEntry` — or `undefined` if any segment
@@ -74,6 +78,7 @@ export const findTreeEntry = async (
   let index = match?.consumed ?? 0;
   while (match !== undefined && index < segments.length) {
     if (!isDirectory(match.entry.mode)) return undefined;
+    if (closesWithSeparator(segments, index)) return match.entry;
     match = await matchRawLevel(ctx, match.entry.id, segments, index);
     if (match !== undefined) index += match.consumed;
   }

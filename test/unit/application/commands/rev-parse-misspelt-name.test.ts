@@ -32,7 +32,6 @@ describe('Given an expression whose name warns but which names no object', () =>
   describe.each([
     { arg: 'dg~5', failure: { code: 'OBJECT_NOT_FOUND' } },
     { arg: 'dg:absent', failure: { code: 'PATH_NOT_IN_TREE', rev: 'dg', path: 'absent' } },
-    { arg: 'dg:../absent', failure: {} },
     {
       arg: 'dg:absent/deeper',
       failure: { code: 'PATH_NOT_IN_TREE', rev: 'dg', path: 'absent/deeper' },
@@ -145,6 +144,22 @@ describe('Given an expression whose name warns but which names no object', () =>
 
       // Assert
       expect(result).toEqual({ code: 'OBJECT_NOT_FOUND', id: '../outside' });
+    });
+  });
+
+  describe('When its relative path climbs out of the worktree', () => {
+    it('Then it refuses the path after the one read', async () => {
+      // Arrange
+      const warnings: string[] = [];
+      const ctx = await danglingRepo((message) => warnings.push(message));
+      const sut = revParse;
+
+      // Act
+      const result = await failureOf(() => sut(ctx, 'dg:../absent'));
+
+      // Assert
+      expect(result).toEqual({ code: 'PATHSPEC_OUTSIDE_REPO', path: '../absent' });
+      expect(warnings).toEqual([DANGLING]);
     });
   });
 

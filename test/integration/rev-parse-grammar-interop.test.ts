@@ -11,12 +11,14 @@
  *   unique:         the ~, ^{}, ^{object} and ^{/regex} suffixes and unbounded tag peeling read like git's get_oid
  *   interopSurface: revParse
  */
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { revParse } from '../../src/application/commands/rev-parse.js';
+import type { TsgitError } from '../../src/domain/error.js';
+import { openRepository } from '../../src/index.node.js';
 import {
   disableAutoMaintenance,
   GIT_AVAILABLE,
@@ -135,3 +137,99 @@ describe.skipIf(!GIT_AVAILABLE)('integration — revParse suffix grammar parity 
     });
   });
 });
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'integration — revParse relative tree paths parity with git',
+  () => {
+    let repo = '';
+    let bare = '';
+
+    beforeAll(async () => {
+      repo = await realpath(
+        await mkdtemp(path.join(os.tmpdir(), 'tsgit-rev-parse-relative-interop-')),
+      );
+      runGit(['init', '-q', '-b', 'main', repo]);
+      disableAutoMaintenance(repo);
+      await mkdir(path.join(repo, 'd'));
+      await writeFile(path.join(repo, 'd', 'f'), 'x\n');
+      await writeFile(path.join(repo, 'g'), 'y\n');
+      git(repo, 'add', '.');
+      runGit(['-C', repo, 'commit', '-q', '-m', 'c1'], { env: identityAt(0) });
+      bare = `${repo}.git`;
+      runGit(['clone', '-q', '--bare', repo, bare]);
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(repo, { recursive: true, force: true });
+      await rm(bare, { recursive: true, force: true });
+    });
+
+    describe.each([
+      'HEAD:./g',
+      'HEAD:./d/../g',
+      'HEAD:./d/./f',
+      'HEAD:./',
+      'HEAD:.//d//f',
+      'HEAD:./d/',
+      ':0:./g',
+      ':0:./d/../g',
+    ])('Given a worktree, When git rev-parse and revParse read %s', (argument) => {
+      it('Then both resolve the same object', async () => {
+        // Arrange
+        const peer = gitOutcome(repo, argument);
+
+        // Act
+        const result = await tsgitOutcome(repo, argument);
+
+        // Assert
+        expect(peer.id).toBeDefined();
+        expect(result).toEqual(peer);
+      });
+    });
+
+    describe.each(['HEAD:../g', 'HEAD:./d/../../g', ':0:../g'])(
+      'Given a worktree, When git rev-parse and revParse read %s',
+      (argument) => {
+        it('Then both refuse the path as outside the repository', async () => {
+          // Arrange
+          const peer = tryRunGitWithExit(['-C', repo, 'rev-parse', argument], { env: runGitEnv() });
+          const sut = revParse;
+
+          // Act
+          const result = await sut(createNodeContext({ workDir: repo }), argument).catch(
+            (error: TsgitError) => error.data,
+          );
+
+          // Assert
+          const { path: outside } = result as { readonly path: string };
+          expect(peer.exitCode).toBe(128);
+          expect(peer.stderr).toContain(`fatal: '${outside}' is outside repository at '${repo}'`);
+          expect(result).toMatchObject({ code: 'PATHSPEC_OUTSIDE_REPO' });
+        });
+      },
+    );
+
+    describe.each(['HEAD:./g', 'HEAD:../g'])(
+      'Given a bare repository, When git rev-parse and revParse read %s',
+      (argument) => {
+        it('Then both refuse relative path syntax', async () => {
+          // Arrange
+          const peer = tryRunGitWithExit(['-C', bare, 'rev-parse', argument], { env: runGitEnv() });
+          const sut = revParse;
+
+          // Act
+          const opened = await openRepository({ cwd: bare });
+          const result = await sut(opened.ctx, argument).catch((error: TsgitError) => error.data);
+          await opened.dispose();
+
+          // Assert
+          expect(peer.exitCode).toBe(128);
+          expect(peer.stderr).toContain(
+            "fatal: relative path syntax can't be used outside working tree",
+          );
+          expect(result).toEqual({ code: 'WORK_TREE_REQUIRED', operation: 'relative path syntax' });
+        });
+      },
+    );
+  },
+);

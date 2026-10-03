@@ -678,6 +678,32 @@ describe('revParse', () => {
           expr: 'main:sub',
           field: 'sub' as const,
         },
+        {
+          label: 'the sub-tree a trailing slash closes (main:sub/)',
+          expr: 'main:sub/',
+          field: 'sub' as const,
+        },
+        {
+          label: 'the blob a worktree-relative path names (main:./a.txt)',
+          expr: 'main:./a.txt',
+          field: 'blobA' as const,
+        },
+        {
+          label: 'the blob a relative path names after a parent hop (main:./sub/../a.txt)',
+          expr: 'main:./sub/../a.txt',
+          field: 'blobA' as const,
+        },
+        {
+          label:
+            'the nested blob a relative path names through doubled slashes (main:.//sub//b.txt)',
+          expr: 'main:.//sub//b.txt',
+          field: 'blobB' as const,
+        },
+        {
+          label: 'the commit tree itself for the worktree root (main:./)',
+          expr: 'main:./',
+          field: 'root' as const,
+        },
       ])('Then it returns $label', async ({ expr, field }) => {
         // Arrange
         const ctx = createMemoryContext();
@@ -712,6 +738,63 @@ describe('revParse', () => {
         expect(data.path).toBe('nope');
       });
     });
+
+    describe.each(['main:a.txt/', 'main:sub//', 'main:sub//b.txt'])(
+      'When the trailing or doubled slash in %s names no directory',
+      (expr) => {
+        it('Then throws PATH_NOT_IN_TREE', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedTree(ctx);
+          const sut = revParse;
+
+          // Act
+          const result = await sut(ctx, expr).catch((error: TsgitError) => error.data);
+
+          // Assert
+          expect(result).toMatchObject({ code: 'PATH_NOT_IN_TREE' });
+        });
+      },
+    );
+
+    describe.each([
+      { expr: 'main:../a.txt', path: '../a.txt' },
+      { expr: 'main:./sub/../../a.txt', path: './sub/../../a.txt' },
+      { expr: ':0:../a.txt', path: '../a.txt' },
+    ])('When a relative path in $expr climbs out of the worktree', ({ expr, path }) => {
+      it('Then it refuses the path as outside the repository', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedTree(ctx);
+        const sut = revParse;
+
+        // Act
+        const result = await sut(ctx, expr).catch((error: TsgitError) => error.data);
+
+        // Assert
+        expect(result).toEqual({ code: 'PATHSPEC_OUTSIDE_REPO', path });
+      });
+    });
+
+    describe.each(['main:./a.txt', ':0:./a.txt'])(
+      'When a bare repository reads the relative path in %s',
+      (expr) => {
+        it('Then it refuses relative path syntax outside a working tree', async () => {
+          // Arrange
+          const repo = createMemoryContext();
+          await seedTree(repo);
+          const { workDir: _workDir, ...bareLayout } = repo.layout;
+          const ctx = { ...repo, layout: { ...bareLayout, bare: true } } as Context;
+          const sut = revParse;
+
+          // Act
+          const result = await sut(ctx, expr).catch((error: TsgitError) => error.data);
+
+          // Assert
+          expect(result).toEqual({ code: 'WORK_TREE_REQUIRED', operation: 'relative path syntax' });
+        });
+      },
+    );
 
     describe('When a component descends into a blob', () => {
       it('Then throws PATH_NOT_IN_TREE on the non-tree component', async () => {
@@ -1060,6 +1143,23 @@ describe('revParse', () => {
 
         // Act
         const result = await revParse(ctx, ':0:a.txt');
+
+        // Assert
+        expect(result).toBe(blob);
+      });
+    });
+
+    describe.each([':0:./a.txt', ':0:./sub/../a.txt'])('When revParse(%s)', (expr) => {
+      it('Then returns the entry its worktree-relative path names', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await seedRepo(ctx, {});
+        const blob = await writeBlob(ctx, 'content');
+        await writeIndexFile(ctx, [{ path: 'a.txt', id: blob, stage: 0 }]);
+        const sut = revParse;
+
+        // Act
+        const result = await sut(ctx, expr);
 
         // Assert
         expect(result).toBe(blob);

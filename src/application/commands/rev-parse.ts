@@ -1,19 +1,22 @@
-import { revparseUnresolved } from '../../domain/commands/error.js';
+import { pathspecOutsideRepo, revparseUnresolved } from '../../domain/commands/error.js';
 import { applyGraft } from '../../domain/commit/graft.js';
 import { errorDataCode } from '../../domain/error-data-code.js';
 import type { Commit } from '../../domain/objects/commit.js';
 import { objectNotFound } from '../../domain/objects/error.js';
 import {
+  type FilePath,
   type GitObject,
   type HashConfig,
   type ObjectId,
   type RefName,
   zeroOid,
 } from '../../domain/objects/index.js';
+import { normalizePathCopy } from '../../domain/path/normalize-path-copy.js';
 import { parseApproxidate } from '../../domain/reflog/approxidate.js';
 import { reflogEntryOutOfRange } from '../../domain/reflog/error.js';
 import type { ReflogEntry } from '../../domain/reflog/reflog-entry.js';
 import { refCandidates, validateRefName } from '../../domain/refs/index.js';
+import { workTreeRequired } from '../../domain/repository/error.js';
 import type { Context } from '../../ports/context.js';
 import { lookupCommitReference } from '../primitives/internal/lookup-commit-reference.js';
 import { peel } from '../primitives/internal/peel.js';
@@ -64,7 +67,7 @@ export const evaluateRevision = async (ctx: Context, expression: string): Promis
 
 const evaluate = async (ctx: Context, expr: RevExpression, raw: string): Promise<ObjectId> => {
   if (expr.kind === 'index-stage') {
-    return resolveIndexStage(ctx, expr);
+    return resolveIndexStage(ctx, { stage: expr.stage, path: resolveRelativePath(ctx, expr.path) });
   }
   if (expr.kind === 'tree-path') {
     return resolveTreePath(ctx, expr.rev, expr.path);
@@ -262,12 +265,28 @@ const resolveIndexStage = async (
  * `/`-separated components to the addressed blob/tree. An empty path returns the
  * tree itself (`HEAD:` ⇒ the root tree).
  */
-const resolveTreePath = async (ctx: Context, rev: string, path: string): Promise<ObjectId> => {
+const resolveTreePath = async (ctx: Context, rev: string, rawPath: string): Promise<ObjectId> => {
   const baseId = await evaluate(ctx, parseExpression(rev), rev);
+  const path = resolveRelativePath(ctx, rawPath);
   const treeId = await peel(ctx, baseId, 'tree');
   if (path === '') return treeId;
   // `treeId` is already a tree (peeled above), so `readTree` loads it without a
   // further peel; the shared descent then walks the `/`-separated components.
   const rootTree = await readTree(ctx, treeId);
   return (await descendTreePath(ctx, rootTree, path, rev)).id;
+};
+
+const RELATIVE_PATH_PREFIXES: ReadonlyArray<string> = ['./', '../'];
+
+/**
+ * git's `resolve_relative_path`: a path spelt from `./` or `../` is taken
+ * against the worktree root (the caller's directory) and normalised, refused
+ * where there is no working tree or where it climbs out of the repository.
+ */
+const resolveRelativePath = (ctx: Context, path: string): string => {
+  if (!RELATIVE_PATH_PREFIXES.some((prefix) => path.startsWith(prefix))) return path;
+  if (ctx.layout.workDir === undefined) throw workTreeRequired('relative path syntax');
+  const normalized = normalizePathCopy(path);
+  if (normalized === undefined) throw pathspecOutsideRepo(path as FilePath);
+  return normalized;
 };
