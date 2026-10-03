@@ -2025,3 +2025,49 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
     });
   });
 });
+
+describe.skipIf(!GIT_AVAILABLE)('gc through a disabled commit-graph', () => {
+  const WARNING = "attempting to write a commit-graph, but 'core.commitGraph' is disabled";
+
+  describe.each([
+    { label: 'gc.writeCommitGraph=true', writeCommitGraph: 'true', warnings: [WARNING] },
+    { label: 'gc.writeCommitGraph=false', writeCommitGraph: 'false', warnings: [] },
+  ])('Given core.commitGraph=false and $label', ({ label, writeCommitGraph, warnings }) => {
+    describe('When git gc and tsgit maintenance gc run', () => {
+      it(
+        'Then both warn alike and write no commit-graph',
+        async () => {
+          // Arrange
+          const slug = `cg-off-${label.replace(/[^a-z]+/gi, '-')}`;
+          const theirs = await initRepo(`${slug}-git`);
+          const ours = await initRepo(`${slug}-ts`);
+          for (const dir of [theirs, ours]) {
+            await addCommit(dir, 'a');
+            git(dir, 'config', 'core.commitGraph', 'false');
+            git(dir, 'config', 'gc.writeCommitGraph', writeCommitGraph);
+          }
+          const logged: string[] = [];
+          const ctx: Context = {
+            ...trackedNodeContext(ours, 'sha1'),
+            logger: { warn: (message) => logged.push(message) },
+          };
+          liveContexts.push(ctx);
+          const sut = maintenance;
+
+          // Act
+          const expected = tryRunGitWithExit(['-C', theirs, 'gc', '-q']);
+          await sut(ctx, { tasks: ['gc'] });
+
+          // Assert
+          expect(expected.exitCode).toBe(0);
+          expect(expected.stderr).toBe(logged.map((line) => `warning: ${line}\n`).join(''));
+          expect(logged).toEqual(warnings);
+          expect(existsSync(path.join(ours, '.git', 'objects', 'info', 'commit-graph'))).toBe(
+            false,
+          );
+        },
+        SETUP_TIMEOUT,
+      );
+    });
+  });
+});

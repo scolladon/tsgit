@@ -111,12 +111,19 @@ const runCommitGraphTask = async (ctx: Context): Promise<CommitGraphOutcome> => 
   return writeReachableCommitGraph(ctx);
 };
 
+const COMMIT_GRAPH_DISABLED_WARNING =
+  "attempting to write a commit-graph, but 'core.commitGraph' is disabled";
+
 /** git's `cmd_gc` tail: a gc that ran writes the reachable commit-graph unless
- *  `gc.writeCommitGraph` or `core.commitGraph` is false; `undefined` when it does not. */
+ *  `gc.writeCommitGraph` is false — and `write_commit_graph` itself declines,
+ *  warning, when `core.commitGraph` is false; `undefined` when nothing is written. */
 const writeGcCommitGraph = async (ctx: Context): Promise<CommitGraphOutcome | undefined> => {
   await assertRepoSettingsValid(ctx);
   if (await lastBooleanIsFalse(ctx, 'gc', 'writeCommitGraph')) return undefined;
-  if (await lastBooleanIsFalse(ctx, 'core', 'commitGraph')) return undefined;
+  if (await lastBooleanIsFalse(ctx, 'core', 'commitGraph')) {
+    ctx.logger?.warn?.(COMMIT_GRAPH_DISABLED_WARNING);
+    return undefined;
+  }
   return writeReachableCommitGraph(ctx);
 };
 

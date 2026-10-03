@@ -496,6 +496,44 @@ describe('maintenance', () => {
     });
   });
 
+  describe.each([
+    {
+      label: 'core.commitGraph=false under the gc task',
+      text: '[core]\n\tcommitGraph = false\n',
+      tasks: ['gc'] as const,
+      warnings: ["attempting to write a commit-graph, but 'core.commitGraph' is disabled"],
+    },
+    {
+      label: 'core.commitGraph=false and gc.writeCommitGraph=false under the gc task',
+      text: '[core]\n\tcommitGraph = false\n[gc]\n\twriteCommitGraph = false\n',
+      tasks: ['gc'] as const,
+      warnings: [],
+    },
+    {
+      label: 'core.commitGraph=false under the commit-graph task',
+      text: '[core]\n\tcommitGraph = false\n',
+      tasks: ['commit-graph'] as const,
+      warnings: [],
+    },
+  ])('Given $label', ({ text, tasks, warnings }) => {
+    describe('When maintenance runs', () => {
+      it('Then it warns only where git writes through a disabled commit-graph', async () => {
+        // Arrange
+        const seeded = await seedOneCommit();
+        const logged: string[] = [];
+        const ctx: Context = { ...seeded, logger: { warn: (message) => logged.push(message) } };
+        await appendConfig(ctx, text);
+        const sut = maintenance;
+
+        // Act
+        await sut(ctx, { tasks });
+
+        // Assert
+        expect(logged).toEqual(warnings);
+      });
+    });
+  });
+
   describe('Given a gc.auto gate that declines', () => {
     describe('When maintenance runs the gc task with auto', () => {
       it('Then no commit-graph is written', async () => {
