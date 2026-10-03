@@ -32,6 +32,7 @@ import {
   buildSeededContext,
   instrumentedContext,
   seedMaxTreeDepth,
+  stampTrailer,
   writeCommitGraph,
 } from '../fixtures.js';
 
@@ -168,7 +169,7 @@ async function writeMixedGenerationChain(ctx: Context): Promise<MixedChainCommit
       },
     ],
   });
-  const baseHash = (await ctx.hash.hashHex(baseBytes)) as ObjectId;
+  const baseHash = await stampTrailer(ctx, baseBytes);
   const tipBytes = buildCommitGraphBytes({
     hashVersion: 1,
     numBaseGraphs: 1,
@@ -185,7 +186,7 @@ async function writeMixedGenerationChain(ctx: Context): Promise<MixedChainCommit
       },
     ],
   });
-  const tipHash = (await ctx.hash.hashHex(tipBytes)) as ObjectId;
+  const tipHash = await stampTrailer(ctx, tipBytes);
   const gitDir = commonGitDir(ctx);
   await ctx.fs.write(`${gitDir}/objects/info/commit-graphs/graph-${baseHash}.graph`, baseBytes);
   await ctx.fs.write(`${gitDir}/objects/info/commit-graphs/graph-${tipHash}.graph`, tipBytes);
@@ -225,7 +226,7 @@ async function writeBadCrossLayerChain(
       generationV2Offset: 0,
     })),
   });
-  const baseHash = (await ctx.hash.hashHex(baseBytes)) as ObjectId;
+  const baseHash = await stampTrailer(ctx, baseBytes);
   const tipBytes = buildCommitGraphBytes({
     hashVersion: 1,
     numBaseGraphs: 1,
@@ -242,7 +243,7 @@ async function writeBadCrossLayerChain(
       },
     ],
   });
-  const tipHash = (await ctx.hash.hashHex(tipBytes)) as ObjectId;
+  const tipHash = await stampTrailer(ctx, tipBytes);
   const gitDir = commonGitDir(ctx);
   await ctx.fs.write(`${gitDir}/objects/info/commit-graphs/graph-${baseHash}.graph`, baseBytes);
   await ctx.fs.write(`${gitDir}/objects/info/commit-graphs/graph-${tipHash}.graph`, tipBytes);
@@ -734,7 +735,7 @@ describe('read-commit-graph', () => {
       });
     });
 
-    describe('Given ctx.fs.readUtf8 throws a non-FILE_NOT_FOUND error while probing the chain file', () => {
+    describe('Given ctx.fs.read throws a non-FILE_NOT_FOUND error while probing the chain file', () => {
       describe('When commitHeader is called', () => {
         it('Then the error propagates unchanged', async () => {
           // Arrange — no single-file graph, so loadGraphUncached falls to loadChain.
@@ -745,9 +746,9 @@ describe('read-commit-graph', () => {
           const chainPath = commitGraphChainPath(gitDir);
           const wrapped = withFsOverride(ctx, {
             exists: async (path) => (path === chainPath ? true : ctx.fs.exists(path)),
-            readUtf8: async (path) => {
+            read: async (path) => {
               if (path === chainPath) throw new TsgitError({ code: 'PERMISSION_DENIED', path });
-              return ctx.fs.readUtf8(path);
+              return ctx.fs.read(path);
             },
           });
 
@@ -762,7 +763,7 @@ describe('read-commit-graph', () => {
       });
     });
 
-    describe('Given ctx.fs.readUtf8 throws FILE_NOT_FOUND despite exists() reporting the chain file present', () => {
+    describe('Given ctx.fs.read throws FILE_NOT_FOUND despite exists() reporting the chain file present', () => {
       describe('When commitHeader is called', () => {
         it('Then the graph degrades to absent instead of throwing', async () => {
           // Arrange
@@ -773,9 +774,9 @@ describe('read-commit-graph', () => {
           const chainPath = commitGraphChainPath(gitDir);
           const wrapped = withFsOverride(ctx, {
             exists: async (path) => (path === chainPath ? true : ctx.fs.exists(path)),
-            readUtf8: async (path) => {
+            read: async (path) => {
               if (path === chainPath) throw new TsgitError({ code: 'FILE_NOT_FOUND', path });
-              return ctx.fs.readUtf8(path);
+              return ctx.fs.read(path);
             },
           });
 
@@ -789,12 +790,11 @@ describe('read-commit-graph', () => {
     });
 
     describe('Given a chain file whose hash lines carry leading/trailing whitespace', () => {
-      describe('When commitHeader is called for a commit in the (still-resolvable) base layer', () => {
-        it('Then the padded lines are trimmed before being used as layer filenames', async () => {
-          // Arrange — kills the `.trim()` drop: without it, the padded
-          // "  <hash>  " string never matches a real `graph-<hash>.graph`
-          // file, so the layer read fails and the whole chain degrades absent.
-          const ctx = await buildSeededContext();
+      describe('When commitHeader is called for a commit in the base layer', () => {
+        it('Then the first padded line is not a hash and no layer loads, as in git', async () => {
+          // Arrange — git reads each line's leading hex digits as the layer hash, untrimmed.
+          const warn = vi.fn<NonNullable<Logger['warn']>>();
+          const ctx = { ...(await buildSeededContext()), logger: { warn } };
           const { c0, c1, c2, c3, c4 } = await buildFiveCommitHistory(ctx);
           await writeCommitGraph(ctx, [
             [c0, c1, c2],
@@ -814,8 +814,42 @@ describe('read-commit-graph', () => {
           const header = await commitHeader(ctx, c0.id);
 
           // Assert
-          expect(header).toBeDefined();
-          expect(header?.rootTree).toBe(c0.data.tree);
+          expect(header).toBeUndefined();
+          expect(warn).toHaveBeenCalledWith(
+            'commitGraph: invalid commit-graph chain: line not a hash',
+            {
+              chain: chainPath,
+              layer: paddedText.split('\n')[0],
+              line: paddedText.split('\n')[0],
+            },
+          );
+        });
+      });
+    });
+
+    describe('Given a single-file graph whose signature is smashed', () => {
+      describe('When commitHeader is called', () => {
+        it("Then the file is refused with git's load failure logged", async () => {
+          // Arrange
+          const warn = vi.fn<NonNullable<Logger['warn']>>();
+          const ctx = { ...(await buildSeededContext()), logger: { warn } };
+          const { c0, c1, c2, c3, c4 } = await buildFiveCommitHistory(ctx);
+          await writeCommitGraph(ctx, [[c0, c1, c2, c3, c4]]);
+          const graphPath = commitGraphPath(commonGitDir(ctx));
+          const bytes = await ctx.fs.read(graphPath);
+          await ctx.fs.write(graphPath, Uint8Array.of(0x58, ...bytes.subarray(1)));
+
+          // Act
+          const header = await commitHeader(ctx, c0.id);
+
+          // Assert
+          expect(header).toBeUndefined();
+          expect(warn.mock.calls).toEqual([
+            [
+              'commitGraph: commit-graph file failed to load',
+              { path: graphPath, failure: { kind: 'signature', found: 0x58475048 } },
+            ],
+          ]);
         });
       });
     });
@@ -1438,6 +1472,45 @@ describe('commitHeader / correctedCommitDatesEnabled — repo-settings class bou
           // Assert
           expectHeaderMatchesCommit(base, c0);
           expectHeaderMatchesCommit(tip, c4);
+        });
+      });
+    });
+
+    describe('Given a chain whose second line names a layer built on a different base', () => {
+      describe('When commitHeader is called', () => {
+        it("Then the tip layer is refused and git's chain warnings are logged", async () => {
+          // Arrange
+          const base = await contextWithAlternate();
+          const warn = vi.fn<NonNullable<Logger['warn']>>();
+          const ctx = withLogger(base, warn);
+          const { c0, c1, c2, c3, c4 } = await buildFiveCommitHistory(ctx);
+          await writeCommitGraph(ctx, [
+            [c0, c1, c2],
+            [c3, c4],
+          ]);
+          const [, tipHash] = await chainHashes(ctx);
+          await writeCommitGraph(ctx, [[c0], [c1]]);
+          const [singleBase] = await chainHashes(ctx);
+          const chainPath = commitGraphChainPath(commonGitDir(ctx));
+          await ctx.fs.writeUtf8(chainPath, `${singleBase}\n${tipHash}\n`);
+
+          // Act
+          const tip = await commitHeader(ctx, c4.id);
+          const prefix = await commitHeader(ctx, c0.id);
+
+          // Assert
+          expect(tip).toBeUndefined();
+          expectHeaderMatchesCommit(prefix, c0);
+          expect(warn.mock.calls).toEqual([
+            [
+              'commitGraph: commit-graph chain does not match',
+              { chain: chainPath, layer: tipHash },
+            ],
+            [
+              'commitGraph: unable to find all commit-graph files',
+              { chain: chainPath, layer: tipHash },
+            ],
+          ]);
         });
       });
     });

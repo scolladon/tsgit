@@ -13,6 +13,7 @@ import { writeObject } from '../../../../src/application/primitives/write-object
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import type { GitIndex } from '../../../../src/domain/git-index/index-entry.js';
 import { serializeIndex } from '../../../../src/domain/git-index/index-writer.js';
+import { bytesToHex } from '../../../../src/domain/objects/encoding.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
 import { serializeObject } from '../../../../src/domain/objects/git-object.js';
 import type {
@@ -654,15 +655,22 @@ export async function writeCommitGraph(
 
   const hashes: ObjectId[] = [];
   for (const sorted of sortedLayers) {
-    const baseGraphHashes = hashes.length > 0 ? [hashes[hashes.length - 1]!] : [];
     const bytes = buildCommitGraphBytes(
-      layerModelFor(sorted, positionOf, generations, baseGraphHashes),
+      layerModelFor(sorted, positionOf, generations, [...hashes]),
     );
-    const hash = (await ctx.hash.hashHex(bytes)) as ObjectId;
+    const hash = await stampTrailer(ctx, bytes);
     hashes.push(hash);
     await ctx.fs.write(`${gitDir}/objects/info/commit-graphs/graph-${hash}.graph`, bytes);
   }
   await ctx.fs.writeUtf8(commitGraphChainPath(gitDir), `${hashes.join('\n')}\n`);
+}
+
+/** As git names a layer: by the checksum it writes as the file's trailer, every base listed in BASE. */
+export async function stampTrailer(ctx: Context, bytes: Uint8Array): Promise<ObjectId> {
+  const trailerStart = bytes.length - ctx.hashConfig.digestLength;
+  const checksum = await ctx.hash.hash(bytes.subarray(0, trailerStart));
+  bytes.set(checksum, trailerStart);
+  return bytesToHex(checksum) as ObjectId;
 }
 
 const NO_BIG_FILE_THRESHOLD = Number.POSITIVE_INFINITY;

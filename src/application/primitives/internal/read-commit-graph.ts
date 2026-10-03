@@ -20,17 +20,18 @@ import {
 } from '../../../domain/commit/commit-graph.js';
 import { invalidCommitGraphChunk } from '../../../domain/commit/error.js';
 import { parseGitBoolean } from '../../../domain/config/config-ini.js';
-import { TsgitError } from '../../../domain/error.js';
 import { errorDataCode } from '../../../domain/error-data-code.js';
 import type { ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { findLastEntry } from '../config-read.js';
 import { getObjectStore, type ObjectSource, type ObjectStore } from '../object-store.js';
+import { commitGraphChainPathIn, commitGraphPathIn } from '../path-layout.js';
 import {
-  commitGraphChainPathIn,
-  commitGraphLayerPathIn,
-  commitGraphPathIn,
-} from '../path-layout.js';
+  type ChainLoadVerdict,
+  isGraphDecodeFailure,
+  loadChain as loadGraphChain,
+  parseLayer,
+} from './commit-graph-chain.js';
 import { assertRepoSettingsValid, repoSettingsVerdictSettled } from './repo-settings-gate.js';
 
 const COMMIT_GRAPH_KEY = 'commitGraph';
@@ -147,28 +148,22 @@ async function tryRead(fs: SourceFs, path: string): Promise<Uint8Array | undefin
   }
 }
 
-async function tryReadUtf8(fs: SourceFs, path: string): Promise<string | undefined> {
-  try {
-    if (!(await fs.exists(path))) return undefined;
-    return await fs.readUtf8(path);
-  } catch (error) {
-    if (isAbsentPath(error)) return undefined;
-    throw error;
-  }
-}
-
-function parseChainLayerHashes(chainText: string): readonly string[] {
-  return chainText
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
-}
+/** git's text for each warning its chain loader prints. */
+const CHAIN_WARNINGS: Readonly<Record<ChainLoadVerdict['check'], string>> = {
+  'layer-load-failure': 'commit-graph file failed to load',
+  'chain-line-not-hash': 'invalid commit-graph chain: line not a hash',
+  'chain-no-base-chunk': 'commit-graph has no base graphs chunk',
+  'chain-base-chunk-too-small': 'commit-graph base graphs chunk is too small',
+  'chain-mismatch': 'commit-graph chain does not match',
+  'chain-layer-missing': 'unable to find all commit-graph files',
+};
 
 /**
  * Git's `load_commit_graph_chain_fd_st`: each chain line (base first) is
- * searched in every source, first loadable file wins. A line no source
- * satisfies warns and stops — the layers loaded so far are served, and an
- * empty prefix is no graph (the caller moves on to the next source).
+ * searched in every source, and the first loadable file must sit on the
+ * layers below it (`add_graph_to_chain`). A line that fails warns and stops —
+ * the layers loaded so far are served, and an empty prefix is no graph (the
+ * caller moves on to the next source).
  */
 async function loadChain(
   ctx: Context,
@@ -176,31 +171,18 @@ async function loadChain(
   holder: ObjectSource,
 ): Promise<LoadedGraph | undefined> {
   const chainPath = commitGraphChainPathIn(holder.objectsDir);
-  const chainText = await tryReadUtf8(holder.fs, chainPath);
-  if (chainText === undefined) return undefined;
-
-  const layers: CommitGraphLayer[] = [];
-  for (const hash of parseChainLayerHashes(chainText)) {
-    const layer = await findLayer(store, hash);
-    if (layer === undefined) {
-      ctx.logger?.warn?.('commitGraph: unable to find all commit-graph files', {
-        chain: chainPath,
-        layer: hash,
-      });
-      break;
-    }
-    layers.push(layer);
+  const chain = await tryRead(holder.fs, chainPath);
+  if (chain === undefined) return undefined;
+  const loaded = await loadGraphChain(ctx, store.sources, chain);
+  for (const { check, ...detail } of loaded.verdicts) {
+    ctx.logger?.warn?.(`commitGraph: ${CHAIN_WARNINGS[check]}`, {
+      chain: chainPath,
+      layer: loaded.stoppedAt,
+      ...detail,
+    });
   }
+  const layers = loaded.layers.map(({ layer }) => layer);
   return layers.length > 0 ? loadedGraph(layers) : undefined;
-}
-
-async function findLayer(store: ObjectStore, hash: string): Promise<CommitGraphLayer | undefined> {
-  for (const source of store.sources) {
-    const bytes = await tryRead(source.fs, commitGraphLayerPathIn(source.objectsDir, hash));
-    const layer = bytes === undefined ? undefined : parseLayerOrUndefined(bytes);
-    if (layer !== undefined) return layer;
-  }
-  return undefined;
 }
 
 /** A malformed graph file is "not loadable" (git warns and moves on); fs errors never reach here. */
@@ -263,17 +245,17 @@ async function readGraphOne(
   store: ObjectStore,
   source: ObjectSource,
 ): Promise<LoadedGraph | undefined> {
-  const single = await tryRead(source.fs, commitGraphPathIn(source.objectsDir));
-  const layer = single === undefined ? undefined : parseLayerOrUndefined(single);
-  if (layer !== undefined) return loadedGraph([layer]);
+  const path = commitGraphPathIn(source.objectsDir);
+  const single = await tryRead(source.fs, path);
+  const parsed = single === undefined ? undefined : parseLayer(single, ctx.hashConfig.digestLength);
+  if (parsed !== undefined && !('check' in parsed)) return loadedGraph([parsed]);
+  if (parsed !== undefined) {
+    ctx.logger?.warn?.(`commitGraph: ${CHAIN_WARNINGS['layer-load-failure']}`, {
+      path,
+      failure: parsed.failure,
+    });
+  }
   return loadChain(ctx, store, source);
-}
-
-/** Decode failures (malformed graph bytes) — never fs errors. `RangeError`
- *  covers out-of-range `DataView` reads from crafted chunk offsets. */
-export function isGraphDecodeFailure(error: unknown): boolean {
-  if (error instanceof RangeError) return true;
-  return error instanceof TsgitError && error.data.code.startsWith('INVALID_COMMIT_GRAPH');
 }
 
 function loadGraph(ctx: Context): Promise<LoadedGraph | undefined> {

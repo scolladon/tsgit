@@ -20,6 +20,11 @@ import { errorDataCode } from '../../../../domain/error-data-code.js';
 import { bytesEqual } from '../../../../domain/objects/encoding.js';
 import type { Commit, ObjectId } from '../../../../domain/objects/index.js';
 import type { Context } from '../../../../ports/context.js';
+import {
+  type ChainLayer,
+  loadChain,
+  parseLayer,
+} from '../../../primitives/internal/commit-graph-chain.js';
 import { commitGraphEnabled } from '../../../primitives/internal/read-commit-graph.js';
 import {
   getObjectStore,
@@ -28,7 +33,6 @@ import {
 } from '../../../primitives/object-store.js';
 import { commitGraphChainPathIn, commitGraphPathIn } from '../../../primitives/path-layout.js';
 import { readObject } from '../../../primitives/read-object.js';
-import { type ChainLayer, loadChain, parseLayer } from './commit-graph-chain.js';
 import { EXIT_COMMIT_GRAPH } from './exit-codes.js';
 import { attributeTo } from './source-attribution.js';
 import type { FsckFinding } from './types.js';

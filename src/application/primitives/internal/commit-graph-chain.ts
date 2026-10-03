@@ -1,5 +1,5 @@
 /**
- * The graph `git commit-graph verify` opens for one object source: git's
+ * The graph git opens for one object source, for reads and `commit-graph verify` alike: git's
  * `load_commit_graph_one_fd_st` for the single file, and
  * `load_commit_graph_chain_fd_st` for a chain — each line's layer searched in
  * every source, matched against the layers below it, the walk stopping at the
@@ -8,15 +8,17 @@
 import {
   type CommitGraphLayer,
   parseCommitGraphLayer,
-} from '../../../../domain/commit/commit-graph.js';
-import { commitGraphLoadFailure } from '../../../../domain/commit/commit-graph-load.js';
-import type { CommitGraphVerdict } from '../../../../domain/commit/commit-graph-verify.js';
-import { errorDataCode } from '../../../../domain/error-data-code.js';
-import { bytesToHex } from '../../../../domain/objects/encoding.js';
-import type { Context } from '../../../../ports/context.js';
-import { isGraphDecodeFailure } from '../../../primitives/internal/read-commit-graph.js';
-import type { ObjectSource } from '../../../primitives/object-store.js';
-import { commitGraphLayerPathIn } from '../../../primitives/path-layout.js';
+} from '../../../domain/commit/commit-graph.js';
+import {
+  type CommitGraphLoadFailure,
+  commitGraphLoadFailure,
+} from '../../../domain/commit/commit-graph-load.js';
+import { TsgitError } from '../../../domain/error.js';
+import { errorDataCode } from '../../../domain/error-data-code.js';
+import { bytesToHex } from '../../../domain/objects/encoding.js';
+import type { Context } from '../../../ports/context.js';
+import type { ObjectSource } from '../object-store.js';
+import { commitGraphLayerPathIn } from '../path-layout.js';
 
 export interface ChainLayer {
   readonly layer: CommitGraphLayer;
@@ -24,11 +26,29 @@ export interface ChainLayer {
   readonly baseCount: number;
 }
 
+/** Every warning git's chain loader prints, each one also a `commit-graph verify` verdict. */
+export type ChainLoadVerdict =
+  | {
+      readonly check: 'layer-load-failure';
+      readonly layer: string;
+      readonly failure: CommitGraphLoadFailure;
+    }
+  | { readonly check: 'chain-line-not-hash'; readonly line: string }
+  | {
+      readonly check:
+        | 'chain-no-base-chunk'
+        | 'chain-base-chunk-too-small'
+        | 'chain-mismatch'
+        | 'chain-layer-missing';
+    };
+
 export interface LoadedChain {
   /** Base first. */
   readonly layers: ReadonlyArray<ChainLayer>;
-  readonly verdicts: ReadonlyArray<CommitGraphVerdict>;
+  readonly verdicts: ReadonlyArray<ChainLoadVerdict>;
   readonly incomplete: boolean;
+  /** The chain line the walk stopped at, when it stopped short. */
+  readonly stoppedAt: string | undefined;
 }
 
 const HEX_LINE = /^[0-9a-f]+$/i;
@@ -37,7 +57,7 @@ const HEX_LINE = /^[0-9a-f]+$/i;
 export function parseLayer(
   bytes: Uint8Array,
   hashLength: number,
-): CommitGraphLayer | { readonly check: 'load-failure'; readonly failure: LoadFailure } {
+): CommitGraphLayer | { readonly check: 'load-failure'; readonly failure: CommitGraphLoadFailure } {
   const failure = commitGraphLoadFailure(bytes, hashLength);
   if (failure !== undefined) return { check: 'load-failure', failure };
   try {
@@ -49,7 +69,12 @@ export function parseLayer(
   }
 }
 
-type LoadFailure = NonNullable<ReturnType<typeof commitGraphLoadFailure>>;
+/** Decode failures (malformed graph bytes) — never fs errors. `RangeError`
+ *  covers out-of-range `DataView` reads from crafted chunk offsets. */
+export function isGraphDecodeFailure(error: unknown): boolean {
+  if (error instanceof RangeError) return true;
+  return error instanceof TsgitError && error.data.code.startsWith('INVALID_COMMIT_GRAPH');
+}
 
 interface ChainWalk {
   readonly ctx: Context;
@@ -57,7 +82,7 @@ interface ChainWalk {
   readonly hexLength: number;
   readonly layers: ChainLayer[];
   readonly oids: string[];
-  readonly verdicts: CommitGraphVerdict[];
+  readonly verdicts: ChainLoadVerdict[];
 }
 
 export async function loadChain(
@@ -69,11 +94,13 @@ export async function loadChain(
   const walk: ChainWalk = { ctx, sources, hexLength, layers: [], oids: [], verdicts: [] };
   const lines = new TextDecoder().decode(chain).split('\n');
   const count = Math.min(Math.floor(chain.length / (hexLength + 1)), lines.length);
-  let valid = true;
-  for (let index = 0; index < count && valid; index += 1) {
-    valid = await addLine(walk, lines[index] as string);
+  for (let index = 0; index < count; index += 1) {
+    const line = lines[index] as string;
+    if (!(await addLine(walk, line))) {
+      return { layers: walk.layers, verdicts: walk.verdicts, incomplete: true, stoppedAt: line };
+    }
   }
-  return { layers: walk.layers, verdicts: walk.verdicts, incomplete: !valid };
+  return { layers: walk.layers, verdicts: walk.verdicts, incomplete: false, stoppedAt: undefined };
 }
 
 async function addLine(walk: ChainWalk, line: string): Promise<boolean> {
