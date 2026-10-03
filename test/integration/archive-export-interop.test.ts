@@ -997,6 +997,57 @@ describe.skipIf(!GIT_AVAILABLE)('archive export-subst interop', () => {
       });
     });
 
+    /** Writes loose blobs until two share a four-digit prefix and returns that prefix. */
+    const ambiguousPrefix = (dir: string): string => {
+      const scratch = path.join(dir, '.git', 'blobs');
+      mkdirSync(scratch);
+      const files = Array.from({ length: 1000 }, (_, index) => {
+        const file = path.join(scratch, `b${index}`);
+        writeFileSync(file, `blob ${index}\n`);
+        return file;
+      });
+      const ids = git(dir, 'hash-object', '-w', ...files)
+        .trim()
+        .split('\n');
+      const seen = new Set<string>();
+      const shared = ids
+        .map((id) => id.slice(0, 4))
+        .find((prefix) => seen.has(prefix) || !seen.add(prefix));
+      return shared as string;
+    };
+
+    describe.each([
+      ['an abbreviated id two objects share', 'ambiguous'],
+      ['a full object id naming no object', 'missing'],
+    ])('When mailmap.blob is %s', (_label, kind) => {
+      it('Then tsgit reports each error line git prints and leaves the ident unmapped', async () => {
+        // Arrange
+        const dir = await mailmapRepo(`mailmap-blob-${kind}`);
+        await rm(path.join(dir, '.mailmap'));
+        const named =
+          kind === 'ambiguous' ? ambiguousPrefix(dir) : '0123456789012345678901234567890123456789';
+        git(dir, 'config', 'mailmap.blob', named);
+        const { stderr } = gitRefusal(dir, 'HEAD');
+        const errors: string[] = [];
+        __resetConfigCacheForTests();
+        const ctx = {
+          ...createNodeContext({ workDir: dir }),
+          logger: { error: (message: string) => errors.push(message) },
+        };
+        const sut = archive;
+
+        // Act
+        const result = await sut(ctx, { treeish: 'HEAD' });
+        for await (const _entry of result.entries);
+
+        // Assert
+        const expected = stderr.split('\n').filter((line) => line.startsWith('error: '));
+        expect(expected).not.toEqual([]);
+        expect(errors.map((message) => `error: ${message}`)).toEqual(expected);
+        expect(await tsgitFiles(dir, 'HEAD')).toEqual(gitFiles(dir, 'HEAD'));
+      });
+    });
+
     describe('When a bare clone is archived', () => {
       it('Then HEAD:.mailmap maps the ident', async () => {
         // Arrange

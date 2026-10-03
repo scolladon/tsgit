@@ -7,7 +7,6 @@
  * string and abbreviates no ref — assembling `tags/v2.0~3^2~1` is the caller's.
  */
 
-import type { TsgitError } from '../../domain/error.js';
 import { errorDataCode } from '../../domain/error-data-code.js';
 import {
   buildRefFilter,
@@ -35,6 +34,7 @@ import {
   readCommitMeta,
 } from '../primitives/internal/read-commit-meta.js';
 import { getRefStore } from '../primitives/ref-store.js';
+import { reportAmbiguousOid } from './internal/ambiguous-oid-report.js';
 import { type NameRevOptions, parseNameRevOptions } from './internal/name-rev-options.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
 import { evaluateRevision } from './rev-parse.js';
@@ -113,16 +113,9 @@ const readArgumentOid = async (ctx: Context, rev: string): Promise<ObjectId | un
     return await evaluateRevision(ctx, rev);
   } catch (error) {
     if (!UNREAD_ARGUMENT_CODES.has(errorDataCode(error))) throw error;
-    reportAmbiguity(ctx, error);
+    reportAmbiguousOid(ctx, error);
     return undefined;
   }
-};
-
-/** git's `get_short_oid` reports an ambiguous prefix on `error:` before the read fails. */
-const reportAmbiguity = (ctx: Context, error: unknown): void => {
-  const data = (error as TsgitError).data;
-  if (data.code !== 'AMBIGUOUS_OID_PREFIX') return;
-  ctx.logger?.error?.(`short object ID ${data.prefix} is ambiguous`, { prefix: data.prefix });
 };
 
 const skipArgument = (ctx: Context, note: string): undefined => {

@@ -221,6 +221,52 @@ describe('readMailmap', () => {
     });
   });
 
+  describe('Given mailmap.blob an abbreviated object id two objects share', () => {
+    describe('When the mailmap is read', () => {
+      it('Then the ambiguity is reported as git errors it and the blob is skipped', async () => {
+        // Arrange
+        const errors: string[] = [];
+        const base = createMemoryContext();
+        const ctx = { ...base, logger: { error: (message: string) => errors.push(message) } };
+        await commitMailmap(ctx, rule('Blob', 'old@example.com'));
+        for (const tail of ['0'.repeat(34), '1'.repeat(34)]) {
+          await ctx.fs.write(`${ctx.layout.gitDir}/objects/ab/cdef${tail}`, new Uint8Array([1]));
+        }
+        await writeConfig(ctx, '[mailmap]\n\tblob = abcdef\n');
+        const sut = mapped;
+
+        // Act
+        const result = await sut(ctx, 'old@example.com');
+
+        // Assert
+        expect(result).toBe('Old');
+        expect(errors).toEqual(['short object ID abcdef is ambiguous']);
+      });
+    });
+  });
+
+  describe('Given mailmap.blob a full object id naming no object', () => {
+    describe('When the mailmap is read', () => {
+      it('Then the unreadable object is reported as git errors it and the blob is skipped', async () => {
+        // Arrange
+        const errors: string[] = [];
+        const base = createMemoryContext();
+        const ctx = { ...base, logger: { error: (message: string) => errors.push(message) } };
+        await commitMailmap(ctx, rule('Blob', 'old@example.com'));
+        const missing = '0123456789012345678901234567890123456789';
+        await writeConfig(ctx, `[mailmap]\n\tblob = ${missing}\n`);
+        const sut = mapped;
+
+        // Act
+        const result = await sut(ctx, 'old@example.com');
+
+        // Assert
+        expect(result).toBe('Old');
+        expect(errors).toEqual([`unable to read mailmap object at ${missing}`]);
+      });
+    });
+  });
+
   describe('Given a bare repository with a committed .mailmap and no mailmap.blob', () => {
     describe('When the mailmap is read', () => {
       it('Then HEAD:.mailmap applies', async () => {
