@@ -1144,6 +1144,16 @@ describe.skipIf(!GIT_AVAILABLE)('Given a filter.<d>.process driver over two bran
     runGit(['-C', repo, 'add', '.']);
     commit('c');
     runGit(['-C', repo, 'branch', 'other']);
+    runGit(['-C', repo, 'tag', 'v1']);
+    const annotate = (name: string, target: string) =>
+      runGit(
+        ['-C', repo, '-c', 'user.name=A', '-c', 'user.email=a@a', 'tag', '-am', 't', name, target],
+        {
+          env,
+        },
+      );
+    annotate('v2', 'HEAD');
+    annotate('vt', 'HEAD^{tree}');
     await writeFile(path.join(repo, 'a.t'), 'B\n');
     commit('d');
     const log = path.join(root, `${slug}.log`);
@@ -1202,6 +1212,51 @@ describe.skipIf(!GIT_AVAILABLE)('Given a filter.<d>.process driver over two bran
       expect(await tsgitTwin.smudges()).toEqual(gitSmudges);
     });
   });
+
+  /** `rev` is handed to both tools verbatim; `objectOf` hands both the object id it names instead. */
+  describe.each([
+    { label: 'the other branch', rev: 'other' },
+    { label: 'HEAD', rev: 'HEAD' },
+    { label: 'a tag', rev: 'v1' },
+    { label: 'an annotated tag of a commit', rev: 'v2' },
+    { label: 'an annotated tag of a tree', rev: 'vt' },
+    { label: 'the index', rev: undefined },
+    { label: 'a revision expression', rev: 'other~0' },
+    { label: 'the other branch via restore', rev: 'other', restore: true },
+    { label: 'a commit id', objectOf: 'other' },
+    { label: 'a tree id', objectOf: 'other^{tree}' },
+  ])(
+    'When git and tsgit restore a modified path from $label',
+    ({ label, rev, restore, objectOf }) => {
+      it('Then both send the driver the same ref and treeish', async () => {
+        // Arrange
+        const slug = `restore-${label.replaceAll(' ', '-')}`;
+        const gitTwin = await twin(`git-${slug}`);
+        const tsgitTwin = await twin(`tsgit-${slug}`);
+        const source =
+          objectOf === undefined ? rev : runGit(['-C', gitTwin.repo, 'rev-parse', objectOf]).trim();
+        const gitArgs =
+          restore === true
+            ? ['restore', '-s', `${source}`]
+            : ['checkout', '-q', ...(source === undefined ? [] : [source]), '--'];
+        await writeFile(path.join(gitTwin.repo, 'a.t'), 'zz\n');
+        await writeFile(path.join(tsgitTwin.repo, 'a.t'), 'zz\n');
+        const sut = checkout;
+
+        // Act
+        runGit(['-C', gitTwin.repo, ...gitArgs, 'a.t']);
+        await sut(createNodeContext({ workDir: tsgitTwin.repo }), {
+          paths: ['a.t'],
+          ...(source !== undefined && { source }),
+        });
+
+        // Assert
+        const gitSmudges = await gitTwin.smudges();
+        expect(gitSmudges).toHaveLength(1);
+        expect(await tsgitTwin.smudges()).toEqual(gitSmudges);
+      });
+    },
+  );
 
   describe.each([
     { label: 'no tracking', flags: [] as string[], track: undefined },

@@ -2,6 +2,7 @@ import { branchExists, branchNotFound, invalidOption } from '../../domain/comman
 import {
   FILE_MODE,
   type FilePath,
+  type GitObject,
   type ObjectId,
   type RefName,
 } from '../../domain/objects/index.js';
@@ -9,10 +10,13 @@ import { matchesPathspec } from '../../domain/pathspec/index.js';
 import { validateRefName } from '../../domain/refs/index.js';
 import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import type { Context } from '../../ports/context.js';
+import type { CheckoutMetadata } from '../primitives/internal/apply-smudge-filter.js';
 import { withFilterProcessPool } from '../primitives/internal/filter-process-pool.js';
+import { peelChain } from '../primitives/internal/peel-chain.js';
 import { materializeTree } from '../primitives/materialize-tree.js';
 import { assertEverySourceLoadable } from '../primitives/object-store.js';
 import { readIndex } from '../primitives/read-index.js';
+import { readObject } from '../primitives/read-object.js';
 import { loadSparseMatcher } from '../primitives/read-sparse-checkout.js';
 import { readTree } from '../primitives/read-tree.js';
 import { getRefStore, refExists } from '../primitives/ref-store.js';
@@ -31,6 +35,7 @@ import {
 } from './internal/repo-state.js';
 import { enforceLiteralMustMatch, resolvePathspec } from './internal/resolve-pathspec.js';
 import { resolveRevisionName } from './internal/revision-name.js';
+import { revParse } from './rev-parse.js';
 
 /** git's `checkout -b <name> [--track|--no-track] <rev>`: create `name` at `rev`, then switch to it. */
 export interface CheckoutCreateBranch {
@@ -48,7 +53,12 @@ export interface CheckoutSwitchOptions {
 
 export interface CheckoutPathsOptions {
   readonly paths: ReadonlyArray<string>;
-  readonly source?: 'index' | 'HEAD' | ObjectId;
+  /**
+   * Where the paths are restored from: `'index'` (the default), or a revision
+   * naming a commit or a tree — a branch or tag name, `HEAD`, an object id, a
+   * revision expression such as `HEAD~1`.
+   */
+  readonly source?: 'index' | string;
 }
 
 export type CheckoutOptions = CheckoutSwitchOptions | CheckoutPathsOptions;
@@ -61,6 +71,7 @@ export interface CheckoutResult {
 }
 
 const CHECKOUT_MATERIALIZE_OP = 'checkout:materialize';
+const INDEX_SOURCE = 'index';
 /** post-checkout's 3rd argument: `1` for a branch checkout, `0` for a file checkout. */
 const BRANCH_FLAG = '1';
 const FILE_FLAG = '0';
@@ -216,21 +227,36 @@ const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<
   };
 };
 
-const resolvePathSource = async (ctx: Context, source: 'HEAD' | ObjectId): Promise<ObjectId> => {
-  if (source === 'HEAD') {
-    const head = await resolveRef(ctx, 'HEAD' as RefName);
-    const headTree = await readTree(ctx, head);
-    return headTree.id;
-  }
-  const tree = await readTree(ctx, source);
-  return tree.id;
+interface PathSource {
+  readonly tree: ObjectId;
+  readonly metadata: CheckoutMetadata;
+}
+
+const peelTag = (object: GitObject): ObjectId | undefined =>
+  object.type === 'tag' ? object.data.object : undefined;
+
+/**
+ * git's `<tree-ish> -- <paths>` source: the tree to restore from, and the smudge
+ * metadata naming the commit the revision peels to — the named object itself
+ * when it is no commit — and the ref it resolves to.
+ */
+const resolvePathSource = async (ctx: Context, rev: string): Promise<PathSource> => {
+  const named = await revParse(ctx, rev);
+  const { id, result } = await peelChain(ctx, named, readObject, peelTag);
+  const tree = await readTree(ctx, id);
+  const treeish = result.type === 'commit' ? id : named;
+  return { tree: tree.id, metadata: await checkoutMetadataFor(ctx, rev, treeish) };
 };
+
+/** The revision a path restore reads from, or `undefined` for the index. */
+const pathSourceFor = (ctx: Context, source: string): Promise<PathSource | undefined> =>
+  source === INDEX_SOURCE ? Promise.resolve(undefined) : resolvePathSource(ctx, source);
 
 const pathRestore = async (ctx: Context, opts: CheckoutPathsOptions): Promise<CheckoutResult> => {
   if (opts.paths.length === 0) {
     throw invalidOption('paths', 'must not be empty');
   }
-  const source = opts.source ?? 'index';
+  const source = await pathSourceFor(ctx, opts.source ?? INDEX_SOURCE);
   const { matcher, literalMustMatch } = resolvePathspec(opts.paths);
 
   // Enumerate the source's flat path universe so globs (`*.ts`,
@@ -259,9 +285,9 @@ const pathRestore = async (ctx: Context, opts: CheckoutPathsOptions): Promise<Ch
   // - 'HEAD' | ObjectId: commits the index. Lock-first ordering applies,
   //  same as.2/13.3 reset paths.
   const materializeResult =
-    source === 'index'
+    source === undefined
       ? await materializePathRestoreLockless(ctx, pathSet)
-      : await materializePathRestoreLocked(ctx, await resolvePathSource(ctx, source), pathSet);
+      : await materializePathRestoreLocked(ctx, source, pathSet);
 
   // HEAD unchanged. Resolve current HEAD for the result.
   const head = await resolveRef(ctx, 'HEAD' as RefName);
@@ -302,16 +328,17 @@ const materializePathRestoreLockless = async (
 
 const materializePathRestoreLocked = async (
   ctx: Context,
-  targetTree: ObjectId,
+  source: PathSource,
   pathSet: ReadonlySet<FilePath>,
 ): Promise<Awaited<ReturnType<typeof materializeTree>>> => {
   const lock = await acquireIndexLock(ctx);
   try {
     const currentIndex = await readIndex(ctx);
     const result = await materializeTree(ctx, {
-      targetTree,
+      targetTree: source.tree,
       currentIndex,
       force: true,
+      checkoutMetadata: source.metadata,
       // Path-restore from `HEAD` / ObjectId is the explicit
       // "give me this version" operation — canonical git always writes
       // the source content even when the index already records it (so
@@ -345,15 +372,14 @@ const materializePathRestoreLocked = async (
 // full list.
 const enumerateSourcePaths = async (
   ctx: Context,
-  source: 'index' | 'HEAD' | ObjectId,
+  source: PathSource | undefined,
 ): Promise<ReadonlyArray<FilePath>> => {
-  if (source === 'index') {
+  if (source === undefined) {
     const index = await readIndex(ctx);
     return index.entries.map((e) => e.path);
   }
-  const treeId = await resolvePathSource(ctx, source);
   const paths: FilePath[] = [];
-  for await (const entry of walkTree(ctx, treeId)) {
+  for await (const entry of walkTree(ctx, source.tree)) {
     // Stryker disable next-line ConditionalExpression: equivalent — directory entries in the universe are unobservable: materializeTree filters DIRECTORY modes itself and matches by exact path, and any pathspec matching a directory also matches its (non-empty) descendant files.
     if (entry.mode !== FILE_MODE.DIRECTORY) paths.push(entry.path);
   }

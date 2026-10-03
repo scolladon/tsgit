@@ -6,7 +6,12 @@ import { branchCreate } from '../../../../src/application/commands/branch.js';
 import { checkout } from '../../../../src/application/commands/checkout.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
+import { tagCreate } from '../../../../src/application/commands/tag.js';
+import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
+import * as materializeTreeMod from '../../../../src/application/primitives/materialize-tree.js';
 import * as objectStoreMod from '../../../../src/application/primitives/object-store.js';
+import { readIndex } from '../../../../src/application/primitives/read-index.js';
+import { readTree } from '../../../../src/application/primitives/read-tree.js';
 import { TsgitError } from '../../../../src/domain/index.js';
 import type { AuthorIdentity, RefName } from '../../../../src/domain/objects/index.js';
 import { snapshotFiles } from './fixtures.js';
@@ -1575,6 +1580,134 @@ describe('Given an alternate that fails to load', () => {
       // Assert
       await expect(attempt).rejects.toBe(loadError);
       expect(await snapshotFiles(ctx)).toEqual(before);
+    });
+  });
+});
+
+/** `other` and the tags hold `a.txt = 'a'` (`vt` tags the tree); `main` has moved on to `'b'`. */
+const seedWithOlderBranch = async () => {
+  const ctx = createMemoryContext();
+  await init(ctx);
+  const config = `${ctx.layout.gitDir}/config`;
+  await ctx.fs.writeUtf8(
+    config,
+    `${await ctx.fs.readUtf8(config)}[user]\n  name = Ada\n  email = ada@example.com\n`,
+  );
+  __resetConfigCacheForTests();
+  await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+  await add(ctx, ['a.txt']);
+  const older = await commit(ctx, { message: 'first', author });
+  await branchCreate(ctx, { name: 'other' });
+  await tagCreate(ctx, { name: 'v1' });
+  await tagCreate(ctx, { name: 'v2', message: 'annotated' });
+  const olderTree = (await readTree(ctx, older.id)).id;
+  const treeTag = await tagCreate(ctx, { name: 'vt', target: olderTree, message: 'tree' });
+  await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'b');
+  await add(ctx, ['a.txt']);
+  const newer = await commit(ctx, { message: 'second', author });
+  return { ctx, older: older.id, newer: newer.id, olderTree, treeTag: treeTag.id };
+};
+
+describe('Given a path restore whose source is a revision', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe.each([
+    { label: 'a branch name', source: () => 'other' },
+    { label: 'a tag name', source: () => 'v1' },
+    { label: 'a revision expression', source: () => 'HEAD~1' },
+    { label: 'an abbreviated object id', source: (older: string) => older.slice(0, 10) },
+    { label: 'a tree id', source: (_older: string, tree: string) => tree },
+  ])('When the path is restored from $label', ({ source }) => {
+    it('Then the work tree and the index hold the source revision content', async () => {
+      // Arrange
+      const { ctx, older, olderTree } = await seedWithOlderBranch();
+      const sut = checkout;
+
+      // Act
+      await sut(ctx, { paths: ['a.txt'], source: source(older, olderTree) });
+
+      // Assert
+      expect(await ctx.fs.readUtf8(`${ctx.layout.workDir}/a.txt`)).toBe('a');
+      const sourceEntry = (await readTree(ctx, olderTree)).entries[0]?.id;
+      expect((await readIndex(ctx)).entries[0]?.id).toBe(sourceEntry);
+    });
+  });
+
+  describe.each([
+    {
+      label: 'a branch name',
+      source: () => 'other',
+      expected: (older: string) => ({ ref: 'refs/heads/other', treeish: older }),
+    },
+    {
+      label: 'HEAD',
+      source: () => 'HEAD',
+      expected: (_older: string, newer: string) => ({ ref: 'refs/heads/main', treeish: newer }),
+    },
+    {
+      label: 'a tag name',
+      source: () => 'v1',
+      expected: (older: string) => ({ ref: 'refs/tags/v1', treeish: older }),
+    },
+    {
+      label: 'an annotated tag of a commit',
+      source: () => 'v2',
+      expected: (older: string) => ({ ref: 'refs/tags/v2', treeish: older }),
+    },
+    {
+      label: 'an annotated tag of a tree',
+      source: () => 'vt',
+      expected: (_older: string, _newer: string, _tree: string, treeTag: string) => ({
+        ref: 'refs/tags/vt',
+        treeish: treeTag,
+      }),
+    },
+    {
+      label: 'an object id',
+      source: (older: string) => older,
+      expected: (older: string) => ({ treeish: older }),
+    },
+    {
+      label: 'a revision expression',
+      source: () => 'other~0',
+      expected: (older: string) => ({ treeish: older }),
+    },
+    {
+      label: 'a tree id',
+      source: (_older: string, _newer: string, tree: string) => tree,
+      expected: (_older: string, _newer: string, tree: string) => ({ treeish: tree }),
+    },
+  ])('When the path is restored from $label', ({ source, expected }) => {
+    it('Then the smudge metadata names the ref and the treeish git sends', async () => {
+      // Arrange
+      const { ctx, older, newer, olderTree, treeTag } = await seedWithOlderBranch();
+      const materialize = vi.spyOn(materializeTreeMod, 'materializeTree');
+      const sut = checkout;
+
+      // Act
+      await sut(ctx, { paths: ['a.txt'], source: source(older, newer, olderTree) });
+
+      // Assert
+      expect(materialize.mock.calls[0]?.[1].checkoutMetadata).toEqual(
+        expected(older, newer, olderTree, treeTag),
+      );
+    });
+  });
+
+  describe('When the path is restored from the index', () => {
+    it('Then no smudge metadata is sent', async () => {
+      // Arrange
+      const { ctx } = await seedWithOlderBranch();
+      const materialize = vi.spyOn(materializeTreeMod, 'materializeTree');
+      const sut = checkout;
+
+      // Act
+      await sut(ctx, { paths: ['a.txt'] });
+
+      // Assert
+      expect(materialize.mock.calls[0]?.[1].checkoutMetadata).toBeUndefined();
     });
   });
 });
