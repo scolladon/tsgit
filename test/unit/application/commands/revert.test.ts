@@ -643,20 +643,31 @@ describe('revert range and sequencer', () => {
   });
 
   describe('Given an unsupported revision form', () => {
-    describe.each([
-      ['symmetric', '...'],
-      ['exclusion', '^'],
-    ])('When the arg uses %s syntax', (_label, op) => {
+    describe('When the arg uses symmetric syntax', () => {
       it('Then refuses with INVALID_OPTION rather than mis-expanding', async () => {
         // Arrange
         const { ctx, c1, c2 } = await seedLinear();
-        const arg = op === '^' ? `^${c1}` : `${c1}...${c2}`;
+        const arg = `${c1}...${c2}`;
 
         // Act
         const code = await codeOf(() => revertRun(ctx, { commits: [arg] }));
 
         // Assert
         expect(code).toBe('INVALID_OPTION');
+      });
+    });
+
+    describe('When the only arg is an exclusion', () => {
+      it('Then refuses with EMPTY_COMMIT_SET, as git finds nothing to revert', async () => {
+        // Arrange
+        const { ctx, c1 } = await seedLinear();
+        const sut = revertRun;
+
+        // Act
+        const code = await codeOf(() => sut(ctx, { commits: [`^${c1}`] }));
+
+        // Assert
+        expect(code).toBe('EMPTY_COMMIT_SET');
       });
     });
   });
@@ -1257,23 +1268,23 @@ describe('revert observable surfaces', () => {
   });
 
   describe('Given an unsupported revision form', () => {
-    describe.each([
-      ['symmetric', 'aaaaaaa...bbbbbbb'],
-      ['exclusion', '^aaaaaaa'],
-    ])('When run with %s syntax', (_label, arg) => {
-      it('Then INVALID_OPTION names the `commits` option and echoes the form', async () => {
-        // Arrange
-        const { ctx } = await seedLinear();
+    describe.each([['symmetric', 'aaaaaaa...bbbbbbb']])(
+      'When run with %s syntax',
+      (_label, arg) => {
+        it('Then INVALID_OPTION names the `commits` option and echoes the form', async () => {
+          // Arrange
+          const { ctx } = await seedLinear();
 
-        // Act
-        const data = await dataOf(() => revertRun(ctx, { commits: [arg] }));
+          // Act
+          const data = await dataOf(() => revertRun(ctx, { commits: [arg] }));
 
-        // Assert
-        expect(data.code).toBe('INVALID_OPTION');
-        expect(data.option).toBe('commits');
-        expect(data.reason).toContain(arg);
-      });
-    });
+          // Assert
+          expect(data.code).toBe('INVALID_OPTION');
+          expect(data.option).toBe('commits');
+          expect(data.reason).toContain(arg);
+        });
+      },
+    );
   });
 
   describe('Given an unresolved index on continue', () => {

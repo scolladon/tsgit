@@ -5,7 +5,13 @@ import { limitList, resolveLimitOptions } from '../../primitives/internal/limit-
 import { revParse } from '../rev-parse.js';
 import { resolveCommitIsh } from './commit-ish.js';
 
-const RANGE = /^(.+)\.\.(.+)$/;
+const RANGE = /^(.*)\.\.(.*)$/;
+const SYMMETRIC_RANGE = '...';
+const EXCLUDE_PREFIX = '^';
+/** A revision suffix (`A^`, `A~2`, `A@{1}`) needs the full revision grammar, not a ref lookup. */
+const REVISION_OPERATOR = /[~^@]/;
+/** git reads a range side left out (`A..`, `..B`) as `HEAD`. */
+const orHead = (side: string): string => (side === '' ? 'HEAD' : side);
 
 /**
  * The commits a cherry-pick or revert sequence works through. `listed`: no
@@ -47,24 +53,32 @@ export const isSequence = (args: ReadonlyArray<string>, revisions: SequencerRevi
   args.length > 1 || revisions.kind === 'walked';
 
 const resolveSeeds = async (ctx: Context, args: ReadonlyArray<string>): Promise<Seeds> => {
-  const tips: ObjectId[] = [];
-  const excluded: ObjectId[] = [];
-  for (const arg of args) {
-    if (arg.includes('...') || arg.includes('^')) {
-      throw invalidOption(
-        'commits',
-        `unsupported revision form '${arg}' (use a commit-ish or A..B)`,
-      );
-    }
-    const range = RANGE.exec(arg);
-    if (range === null) {
-      tips.push(await resolveCommitIsh(ctx, arg));
-      continue;
-    }
-    excluded.push(await revParse(ctx, range[1] as string));
-    tips.push(await revParse(ctx, range[2] as string));
+  const seeds = { tips: [] as ObjectId[], excluded: [] as ObjectId[] };
+  for (const arg of args) await addSeed(ctx, arg, seeds);
+  return seeds;
+};
+
+/** One argument as git's `setup_revisions` reads it: `A..B`, `^A`, or a commit-ish. */
+const addSeed = async (
+  ctx: Context,
+  arg: string,
+  seeds: { readonly tips: ObjectId[]; readonly excluded: ObjectId[] },
+): Promise<void> => {
+  if (arg.includes(SYMMETRIC_RANGE)) {
+    throw invalidOption('commits', `unsupported revision form '${arg}' (use a commit-ish or A..B)`);
   }
-  return { tips, excluded };
+  const range = RANGE.exec(arg);
+  if (range !== null) {
+    seeds.excluded.push(await revParse(ctx, orHead(range[1] as string)));
+    seeds.tips.push(await revParse(ctx, orHead(range[2] as string)));
+    return;
+  }
+  if (arg.startsWith(EXCLUDE_PREFIX)) {
+    seeds.excluded.push(await revParse(ctx, arg.slice(EXCLUDE_PREFIX.length)));
+    return;
+  }
+  const resolve = REVISION_OPERATOR.test(arg) ? revParse : resolveCommitIsh;
+  seeds.tips.push(await resolve(ctx, arg));
 };
 
 const walkSeeds = async (ctx: Context, seeds: Seeds): Promise<ReadonlyArray<ObjectId>> => {

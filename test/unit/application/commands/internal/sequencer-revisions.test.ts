@@ -82,6 +82,9 @@ describe('resolveSequencerRevisions', () => {
     { args: ['r..a2', 'a1..a2'], kind: 'walked', commits: ['a2'] },
     { args: ['a2', 'b1', 'a1'], kind: 'listed', commits: ['a2', 'b1', 'a1'] },
     { args: ['b1', 'b1'], kind: 'listed', commits: ['b1'] },
+    { args: ['a2^'], kind: 'listed', commits: ['a1'] },
+    { args: ['^r', 'a2'], kind: 'walked', commits: ['a2', 'a1'] },
+    { args: ['a2', '^a1'], kind: 'walked', commits: ['a2'] },
   ])('Given the history and the arguments $args', ({ args, kind, commits }) => {
     describe('When the sequencer resolves them', () => {
       it(`Then it ${kind === 'walked' ? 'walks them together, newest first' : 'lists each commit once, in argument order'}`, async () => {
@@ -119,6 +122,30 @@ describe('resolveSequencerRevisions', () => {
 
         // Assert
         expect((caught as TsgitError).data).toEqual({ code: 'EMPTY_COMMIT_SET' });
+      });
+    });
+  });
+
+  describe.each([
+    { args: ['r..'], commits: ['a2', 'a1'] },
+    { args: ['..b2'], commits: ['b2', 'b1'] },
+  ])('Given HEAD on a2 and a range $args with one side left out', ({ args, commits }) => {
+    describe('When the sequencer resolves it', () => {
+      it('Then the missing side means HEAD, as git reads it', async () => {
+        // Arrange
+        const history = await buildHistory(SPEC);
+        await history.ctx.fs.writeUtf8(
+          `${history.ctx.layout.gitDir}/refs/heads/main`,
+          `${history.id('a2')}\n`,
+        );
+        const sut = resolveSequencerRevisions;
+        const named = args.map((arg) => arg.replace(/[a-z]\d*/g, history.id));
+
+        // Act
+        const result = await sut(history.ctx, named);
+
+        // Assert
+        expect(history.names(result.commits)).toEqual(commits);
       });
     });
   });

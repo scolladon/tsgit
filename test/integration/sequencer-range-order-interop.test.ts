@@ -132,6 +132,9 @@ describe.skipIf(!GIT_AVAILABLE)('interop — cherry-pick range order', () => {
     { args: ['root..tie2', 'root..tie3'], expected: ['tie1', 'tie3', 'tie2'] },
     { args: ['root..left2', 'left1..left2'], expected: ['left2'] },
     { args: ['left2', 'right1', 'right1'], expected: ['left2', 'right1'] },
+    { args: ['left2^'], expected: ['left1'] },
+    { args: ['^root', 'left2'], expected: ['left1', 'left2'] },
+    { args: ['left2', '^left1'], expected: ['left2'] },
   ])('Given the arguments $args', ({ args, expected }) => {
     describe('When git and tsgit cherry-pick them onto z', () => {
       it(

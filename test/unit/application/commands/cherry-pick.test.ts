@@ -1416,10 +1416,7 @@ describe('cherryPick — observable surfaces', () => {
   });
 
   describe('Given an unsupported revision form', () => {
-    describe.each([
-      ['main...feature', 'main...feature'],
-      ['feature^', 'feature^'],
-    ])('When run with %s', (_label, arg) => {
+    describe.each([['main...feature', 'main...feature']])('When run with %s', (_label, arg) => {
       it('Then INVALID_OPTION names the `commits` option and echoes the form', async () => {
         // Arrange
         const { ctx } = await seedFeature();
