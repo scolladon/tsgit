@@ -32,7 +32,7 @@ import { describe, expect, it } from 'vitest';
 import type { LogOptions } from '../../src/application/commands/log.js';
 import { openRepository } from '../../src/index.node.js';
 import { buildEqualDateHistory } from './equal-date-history-fixture.js';
-import { GIT_AVAILABLE, git, runGit, runGitEnv } from './interop-helpers.js';
+import { GIT_AVAILABLE, git, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
 
 const IDENTITY = {
   GIT_AUTHOR_NAME: 'Ada',
@@ -108,6 +108,33 @@ const buildScenario = async (): Promise<Scenario> => {
 
   const dispose = (): Promise<void> => rm(dir, { recursive: true, force: true });
   return { dir, tag: 'v1', dispose };
+};
+
+const MISSING_PARENT_EPOCH = 1_700_000_000;
+
+interface MissingFirstParent {
+  readonly dir: string;
+  readonly merge: string;
+  readonly firstParent: string;
+  readonly dispose: () => Promise<void>;
+}
+
+/** merge(p, q) on HEAD, then p's loose object deleted — after an optional graph write. */
+const buildMissingFirstParent = async (withCommitGraph: boolean): Promise<MissingFirstParent> => {
+  const dir = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-log-missing-parent-')));
+  runGit(['init', '-q', '-b', 'main', dir]);
+  const tree = runGit(['-C', dir, 'mktree'], { input: '' }).trim();
+  const commit = (message: string, parents: ReadonlyArray<string>): string =>
+    runGit(['-C', dir, 'commit-tree', tree, ...parents.flatMap((p) => ['-p', p]), '-m', message], {
+      env: dateEnv(MISSING_PARENT_EPOCH),
+    }).trim();
+  const firstParent = commit('p', []);
+  const merge = commit('m', [firstParent, commit('q', [])]);
+  git(dir, 'update-ref', 'refs/heads/main', merge);
+  if (withCommitGraph) git(dir, 'commit-graph', 'write', '--reachable');
+  await rm(path.join(dir, '.git', 'objects', firstParent.slice(0, 2), firstParent.slice(2)));
+  const dispose = (): Promise<void> => rm(dir, { recursive: true, force: true });
+  return { dir, merge, firstParent, dispose };
 };
 
 const logIds = async (
@@ -232,6 +259,53 @@ describe.skipIf(!GIT_AVAILABLE)('log interop', () => {
           expect(ours).toEqual(peer);
         } finally {
           await history.dispose();
+        }
+      });
+    });
+  });
+  describe('Given a merge whose first parent object is missing and no commit-graph', () => {
+    describe('When the first first-parent entry is asked for', () => {
+      it('Then both tools refuse on the parent before showing the merge', async () => {
+        // Arrange
+        const fixture = await buildMissingFirstParent(false);
+        try {
+          const peer = tryRunGitWithExit(
+            ['-C', fixture.dir, 'log', '-1', '--first-parent', '--format=%H'],
+            { env: runGitEnv() },
+          );
+
+          // Act
+          const ours = logIds(fixture.dir, { order: 'first-parent', limit: 1 });
+
+          // Assert
+          expect(peer.exitCode).toBe(128);
+          expect(peer.stderr).toContain(`Could not read ${fixture.firstParent}`);
+          await expect(ours).rejects.toMatchObject({
+            data: { code: 'OBJECT_NOT_FOUND', id: fixture.firstParent },
+          });
+        } finally {
+          await fixture.dispose();
+        }
+      });
+    });
+  });
+
+  describe('Given a merge whose first parent object is missing but sits in the commit-graph', () => {
+    describe('When the first first-parent entry is asked for', () => {
+      it('Then both tools show the merge, its parent parsed from the graph', async () => {
+        // Arrange
+        const fixture = await buildMissingFirstParent(true);
+        try {
+          const peer = oidLines(git(fixture.dir, 'log', '-1', '--first-parent', '--format=%H'));
+
+          // Act
+          const ours = await logIds(fixture.dir, { order: 'first-parent', limit: 1 });
+
+          // Assert
+          expect(ours).toEqual(peer);
+          expect(ours).toEqual([fixture.merge]);
+        } finally {
+          await fixture.dispose();
         }
       });
     });

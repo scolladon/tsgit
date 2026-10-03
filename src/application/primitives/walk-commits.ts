@@ -123,12 +123,33 @@ export async function* walkCommits(
     const { commit, enqueuedFromHeader } = await resolveFrontierEntry(ctx, session, id);
     if (commit === undefined) continue;
     state.visited.add(id);
-    yield commit;
-    // Graph-absent commit: parents were not yet known, so enqueue now from
-    // the just-read body (today's fallback path — unchanged shape).
+    // Graph-absent commit: parents were not yet known, so enqueue them from
+    // the just-read body.
     if (!enqueuedFromHeader) {
       enqueueParents(state, commit, order, bodies);
     }
+    await parseFollowedParents(ctx, session, commit);
+    yield commit;
+  }
+}
+
+/**
+ * git's `process_parents` runs before a commit is shown: each followed parent
+ * is parsed — from its commit-graph entry when it has one, else from its
+ * object — so an unreadable parent refuses ahead of its child. The reads are
+ * the ones the enqueue already started; this only awaits them earlier.
+ */
+async function parseFollowedParents(
+  ctx: Context,
+  session: WalkSession,
+  commit: Commit,
+): Promise<void> {
+  const { state, bodies, order } = session;
+  if (state.shallow.has(commit.id)) return;
+  for (const parent of selectParentIds(commit.data.parents, order)) {
+    if (state.visited.has(parent) || state.missing.has(parent) || state.until.has(parent)) continue;
+    const header = state.shallow.has(parent) ? undefined : await commitHeader(ctx, parent);
+    if (header === undefined) await bodies.start(parent);
   }
 }
 

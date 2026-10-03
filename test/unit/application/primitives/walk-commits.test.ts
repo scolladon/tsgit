@@ -272,6 +272,72 @@ describe('walkCommits', () => {
     });
   });
 
+  describe('Given a merge whose followed parent is missing', () => {
+    describe.each([{ order: 'topo' as const }, { order: 'first-parent' as const }])(
+      'When the first commit is pulled ($order)',
+      ({ order }) => {
+        it('Then it refuses before yielding the merge', async () => {
+          // Arrange
+          const ctx = await buildSeededContext();
+          const treeId = await writeObject(ctx, { type: 'tree', entries: [], id: '' as ObjectId });
+          const present = await createCommit(ctx, {
+            tree: treeId,
+            parents: [],
+            author: AUTHOR,
+            committer: AUTHOR,
+            message: 'present',
+          });
+          const missingId = 'f'.repeat(40) as ObjectId;
+          const merge = await createCommit(ctx, {
+            tree: treeId,
+            parents: [missingId, present],
+            author: AUTHOR,
+            committer: AUTHOR,
+            message: 'merge',
+          });
+          const sut = walkCommits;
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut(ctx, { from: [merge], order })
+              [Symbol.asyncIterator]()
+              .next();
+          } catch (error) {
+            caught = error;
+          }
+
+          // Assert
+          expect((caught as TsgitError).data).toEqual({ code: 'OBJECT_NOT_FOUND', id: missingId });
+        });
+      },
+    );
+  });
+
+  describe('Given a commit-graph covering a parent whose object is gone', () => {
+    describe('When the first commit is pulled', () => {
+      it('Then the child yields, its parent parsed from the graph alone', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const [parent, child] = (await linearChain(ctx, 2)) as [ObjectId, ObjectId];
+        await writeCommitGraph(ctx, [await asCommits(ctx, [parent, child])]);
+        const { computeLooseObjectPath } = await import(
+          '../../../../src/domain/storage/loose-path.js'
+        );
+        await ctx.fs.rm(`${ctx.layout.gitDir}/objects/${computeLooseObjectPath(parent)}`);
+        const sut = walkCommits;
+
+        // Act
+        const result = await sut(ctx, { from: [child], order: 'first-parent' })
+          [Symbol.asyncIterator]()
+          .next();
+
+        // Assert
+        expect(result.value?.id).toBe(child);
+      });
+    });
+  });
+
   describe('Given ignoreMissing=false and a missing parent', () => {
     describe('When walkCommits is called', () => {
       it('Then throws OBJECT_NOT_FOUND', async () => {
@@ -730,7 +796,9 @@ describe('walkCommits', () => {
     describe('Given a header-driven enqueue near MAX_WALK_QUEUE_SIZE from an unrelated seed', () => {
       describe('When the graph-covered head enqueues its parents', () => {
         it('Then the distinct pending count stays under the bound and the abort is the next stop', async () => {
-          // Arrange — `filler`'s 65,500 distinct (never-read) parents bring the
+          // Arrange — `filler`'s 65,500 distinct missing parents (parsed past
+          // under `ignoreMissing`, as each followed parent is parsed before its
+          // child yields) bring the
           // pending frontier to 65,500; `head`'s 30 REAL, graph-covered parents
           // push it to 65,530 — under MAX_WALK_QUEUE_SIZE (65,536). The bound
           // counts DISTINCT pending ids: a parent already queued is never
@@ -774,9 +842,10 @@ describe('walkCommits', () => {
           });
           const controller = new AbortController();
           const ctxWithSignal = { ...ctx, signal: controller.signal };
-          const iterator = walkCommits(ctxWithSignal, { from: [filler, head] })[
-            Symbol.asyncIterator
-          ]();
+          const iterator = walkCommits(ctxWithSignal, {
+            from: [filler, head],
+            ignoreMissing: true,
+          })[Symbol.asyncIterator]();
 
           // Act
           const first = await iterator.next();
