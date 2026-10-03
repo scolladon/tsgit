@@ -18,28 +18,25 @@ import { getRefStore } from '../../primitives/ref-store.js';
 import { resolveOidPrefix } from '../../primitives/resolve-oid-prefix.js';
 import { resolveRefOrMissing } from '../../primitives/resolve-ref.js';
 import { MAX_SYMBOLIC_REF_DEPTH } from '../../primitives/types.js';
+import { resolveRefLadder, warnIfRefNamesObjectId } from './refname-ambiguity.js';
 
 /**
- * The first candidate in `names` that resolves, or `undefined`. Never peels:
- * git's plain `get_oid` hands back an annotated tag's own id, and only a
- * commit-ish argument asks for more. A candidate that fails for any OTHER
- * reason — a dangling or broken ref — is skipped just as `expand_ref` skips
- * it, rather than failing the whole resolution.
+ * One candidate's object id, or `undefined`. Never peels: git's plain
+ * `get_oid` hands back an annotated tag's own id, and only a commit-ish
+ * argument asks for more. A candidate that fails for any OTHER reason — a
+ * dangling or broken ref — is skipped just as `expand_ref` skips it, rather
+ * than failing the whole resolution.
  */
-const firstResolving = async (
-  ctx: Context,
-  names: ReadonlyArray<RefName | 'HEAD'>,
-): Promise<ObjectId | undefined> => {
-  for (const candidate of names) {
+const resolveCandidate =
+  (ctx: Context) =>
+  async (candidate: RefName | 'HEAD'): Promise<ObjectId | undefined> => {
     try {
-      const id = await resolveRefOrMissing(ctx, candidate);
-      if (id !== undefined) return id;
+      return await resolveRefOrMissing(ctx, candidate);
     } catch {
       // Not this candidate — fall through to the next namespace.
+      return undefined;
     }
-  }
-  return undefined;
-};
+  };
 
 /**
  * `name` as an object id: a full-width oid wins over a same-named ref (git
@@ -51,8 +48,11 @@ export const resolveRevisionName = async (
   ctx: Context,
   name: string,
 ): Promise<ObjectId | undefined> => {
-  if (isOid(name, ctx.hashConfig)) return ObjectIdFactory.from(name);
-  const byRef = await firstResolving(ctx, refCandidates(name));
+  if (isOid(name, ctx.hashConfig)) {
+    await warnIfRefNamesObjectId(ctx, name, resolveCandidate(ctx));
+    return ObjectIdFactory.from(name);
+  }
+  const byRef = await resolveRefLadder(ctx, name, resolveCandidate(ctx));
   if (byRef !== undefined) return byRef;
   return resolveOidPrefix(ctx, name);
 };

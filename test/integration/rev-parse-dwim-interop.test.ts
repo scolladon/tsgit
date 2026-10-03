@@ -278,3 +278,58 @@ describe.skipIf(!GIT_AVAILABLE)('integration — revParse ref DWIM parity with c
     });
   });
 });
+
+/** git's stderr as lines, its closing newline dropped and blank lines inside kept. */
+const stderrLines = (stderr: string): ReadonlyArray<string> =>
+  stderr === '' ? [] : stderr.replace(/\n$/, '').split('\n');
+
+describe.skipIf(!GIT_AVAILABLE)('integration — revParse ambiguous refname warning', () => {
+  let repo = '';
+  let tip = '';
+
+  beforeAll(async () => {
+    repo = await mkdtemp(path.join(os.tmpdir(), 'tsgit-rev-parse-ambiguous-interop-'));
+    runGit(['init', '-q', '-b', 'main', repo]);
+    disableAutoMaintenance(repo);
+    runGit(['-C', repo, 'commit', '-q', '--allow-empty', '-m', 'c1'], { env: IDENTITY_ENV });
+    tip = git(repo, 'rev-parse', 'HEAD').trim();
+    git(repo, 'update-ref', 'refs/tags/main', tip);
+    git(repo, 'update-ref', 'refs/heads/solo', tip);
+    git(repo, 'update-ref', `refs/heads/${tip.slice(0, 7)}`, tip);
+    git(repo, 'update-ref', `refs/heads/${tip}`, tip);
+  }, SETUP_TIMEOUT);
+
+  afterAll(async () => {
+    await rm(repo, { recursive: true, force: true });
+  });
+
+  describe.each([
+    { label: 'a branch and a tag', arg: () => 'main' },
+    { label: 'one namespace', arg: () => 'solo' },
+    { label: 'a ref and an abbreviated object id', arg: () => tip.slice(0, 7) },
+    { label: 'a full object id and a ref', arg: () => tip },
+    { label: 'a ref under a revision suffix', arg: () => 'main~0' },
+  ])('Given a name that resolves as $label', ({ arg }) => {
+    describe('When git and tsgit rev-parse it', () => {
+      it('Then tsgit warns the lines git prints to stderr', async () => {
+        // Arrange
+        const { stderr } = tryRunGitWithExit(['-C', repo, 'rev-parse', arg()]);
+        const warnings: string[] = [];
+        const ctx = {
+          ...createNodeContext({ workDir: repo }),
+          logger: { warn: (message: string) => warnings.push(message) },
+        };
+        const sut = revParse;
+
+        // Act
+        await sut(ctx, arg());
+
+        // Assert
+        const rendered = warnings.flatMap((message, at) =>
+          (at === 0 ? `warning: ${message}` : message).split('\n'),
+        );
+        expect(rendered).toEqual(stderrLines(stderr));
+      });
+    });
+  });
+});
