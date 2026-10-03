@@ -1,7 +1,7 @@
 /**
  * The repo-settings class (git's `prepare_repo_settings`, `repo-settings.c`):
- * its booleans (`feature.*`, `core.commitGraph`, … `core.useReplaceRefs`),
- * `core.maxTreeDepth`, `core.deltaBaseCacheLimit`, then
+ * its booleans (`feature.*`, `core.commitGraph`, … `core.useReplaceRefs`)
+ * with `commitGraph.generationVersion` among them, `core.maxTreeDepth`, `core.deltaBaseCacheLimit`, then
  * `core.packedGitWindowSize` and `core.packedGitLimit`. Git reads these keys
  * in that one function and nowhere else — a command dies on
  * a malformed value iff it reaches the object store, the index, a
@@ -15,6 +15,7 @@
  */
 import { configBadBooleanValue, configBadNumericValue } from '../../../domain/commands/error.js';
 import { parseGitBoolean } from '../../../domain/config/config-ini.js';
+import type { TsgitError } from '../../../domain/error.js';
 import type { Context } from '../../../ports/context.js';
 import {
   findLastEntries,
@@ -22,15 +23,23 @@ import {
   findLastInvalidDeltaBaseCacheLimit,
   findLastInvalidMaxTreeDepth,
   findLastInvalidPackedGitBound,
+  findLastInvalidRepoInt,
+  type InvalidNumericEntry,
   type LocatedConfigEntry,
   memoizeRepoSettingsVerdict,
 } from '../config-read.js';
 
-/** The booleans `prepare_repo_settings` reads first, in its order (repo-settings.c:49-86). */
-const REPO_SETTINGS_BOOLEANS: ReadonlyArray<readonly [section: string, key: string]> = [
+type ConfigKey = readonly [section: string, key: string];
+
+/** The booleans `prepare_repo_settings` reads before `commitGraph.generationVersion`. */
+const LEADING_BOOLEANS: ReadonlyArray<ConfigKey> = [
   ['feature', 'manyFiles'],
   ['feature', 'experimental'],
   ['core', 'commitGraph'],
+];
+
+/** The booleans it reads after, in its order (repo-settings.c:69-86). */
+const TRAILING_BOOLEANS: ReadonlyArray<ConfigKey> = [
   ['commitGraph', 'readChangedPaths'],
   ['gc', 'writeCommitGraph'],
   ['fetch', 'writeCommitGraph'],
@@ -45,29 +54,34 @@ const REPO_SETTINGS_BOOLEANS: ReadonlyArray<readonly [section: string, key: stri
 ];
 
 /** git's `repo_cfg_bool`: the first key whose last value its boolean grammar refuses. */
-const findInvalidRepoSettingsBoolean = async (
+const booleanRefusal = async (
   ctx: Context,
-): Promise<LocatedConfigEntry | undefined> =>
-  (await findLastEntries(ctx, REPO_SETTINGS_BOOLEANS)).find(
-    (last) => last?.value != null && !parseGitBoolean(last.value).ok,
+  keys: ReadonlyArray<ConfigKey>,
+): Promise<TsgitError | undefined> => {
+  const invalid = (await findLastEntries(ctx, keys)).find(
+    (last): last is LocatedConfigEntry & { readonly value: string } =>
+      last?.value != null && !parseGitBoolean(last.value).ok,
   );
+  return invalid && configBadBooleanValue(invalid.key, invalid.source, invalid.value);
+};
+
+const numericRefusal = (invalid: InvalidNumericEntry | undefined): TsgitError | undefined =>
+  invalid && configBadNumericValue(invalid.key, invalid.source, invalid.value, invalid.reason);
 
 /** git's `prepare_repo_settings` (repo-settings.c): the class's keys, in its own reading order. */
 const computeRepoSettingsVerdict = async (ctx: Context): Promise<void> => {
-  const [boolean, maxTreeDepth, deltaBaseCacheLimit, packedGitBound] = await Promise.all([
-    findInvalidRepoSettingsBoolean(ctx), // repo-settings.c:49-86
-    findLastInvalidMaxTreeDepth(ctx), // repo-settings.c:103
+  const refusals = await Promise.all([
+    booleanRefusal(ctx, LEADING_BOOLEANS), // repo-settings.c:49-67
+    findLastInvalidRepoInt(ctx, 'commitGraph', 'generationVersion').then(numericRefusal), // :68
+    booleanRefusal(ctx, TRAILING_BOOLEANS), // repo-settings.c:69-86
+    findLastInvalidMaxTreeDepth(ctx).then(numericRefusal), // repo-settings.c:103
     ctx.cacheBudgets?.deltaBaseCacheMaxBytes === undefined // an option-overridden file value is never validated
-      ? findLastInvalidDeltaBaseCacheLimit(ctx) // repo-settings.c:142
+      ? findLastInvalidDeltaBaseCacheLimit(ctx).then(numericRefusal) // repo-settings.c:142
       : undefined,
-    findLastInvalidPackedGitBound(ctx), // repo-settings.c:145, :155
+    findLastInvalidPackedGitBound(ctx).then(numericRefusal), // repo-settings.c:145, :155
   ]);
-  if (boolean?.value != null)
-    throw configBadBooleanValue(boolean.key, boolean.source, boolean.value);
-  const invalid = maxTreeDepth ?? deltaBaseCacheLimit ?? packedGitBound; // in-function order
-  if (invalid !== undefined) {
-    throw configBadNumericValue(invalid.key, invalid.source, invalid.value, invalid.reason);
-  }
+  const first = refusals.find((refusal) => refusal !== undefined);
+  if (first !== undefined) throw first;
 };
 
 /**

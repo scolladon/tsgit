@@ -945,13 +945,22 @@ describe('read-commit-graph', () => {
     });
 
     describe.each([
-      { label: 'explicitly 2', value: '2' },
-      { label: 'malformed', value: 'two' },
+      { label: 'explicitly 2', value: '2', refusal: undefined },
+      {
+        label: 'malformed',
+        value: 'two',
+        refusal: {
+          code: 'CONFIG_BAD_NUMERIC_VALUE',
+          key: 'commitgraph.generationversion',
+          value: 'two',
+          reason: 'invalid unit',
+        },
+      },
     ])(
       'Given commitGraph.generationVersion $label and a GDA2 chunk one entry short',
-      ({ value }) => {
+      ({ value, refusal }) => {
         describe('When commitHeader is called', () => {
-          it("Then GDA2 is read and git's wrong-size error is logged", async () => {
+          it("Then GDA2 is read and git's wrong-size error is logged, unless the value is refused first", async () => {
             // Arrange
             const warn = vi.fn<NonNullable<Logger['warn']>>();
             const ctx = { ...(await buildSeededContext()), logger: { warn } };
@@ -966,12 +975,21 @@ describe('read-commit-graph', () => {
             );
 
             // Act
-            await commitHeader(ctx, c0.id);
+            const [outcome] = await Promise.allSettled([commitHeader(ctx, c0.id)]);
 
             // Assert
-            expect(warn.mock.calls).toEqual([
-              ['commitGraph: commit-graph generations chunk is wrong size'],
-            ]);
+            const refused =
+              outcome.status === 'rejected' ? (outcome.reason as TsgitError).data : undefined;
+            expect(refused).toEqual(
+              refusal === undefined
+                ? undefined
+                : { ...refusal, source: `${ctx.layout.gitDir}/config` },
+            );
+            expect(warn.mock.calls).toEqual(
+              refusal === undefined
+                ? [['commitGraph: commit-graph generations chunk is wrong size']]
+                : [],
+            );
           });
         });
       },

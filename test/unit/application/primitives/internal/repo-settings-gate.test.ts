@@ -736,3 +736,60 @@ describe('Given a boolean prepare_repo_settings reads', () => {
     });
   });
 });
+
+describe('Given commitGraph.generationVersion among the settings prepare_repo_settings reads', () => {
+  const numeric = (value: string, reason: string) => ({
+    code: 'CONFIG_BAD_NUMERIC_VALUE',
+    key: 'commitgraph.generationversion',
+    value,
+    reason,
+  });
+  describe.each([
+    {
+      config: '[commitGraph]\n\tgenerationVersion = abc\n',
+      refused: numeric('abc', 'invalid unit'),
+    },
+    {
+      config: '[commitGraph]\n\tgenerationVersion = 2147483648\n',
+      refused: numeric('2147483648', 'out of range'),
+    },
+    {
+      config: '[commitGraph]\n\tgenerationVersion = abc\n\treadChangedPaths = maybe\n',
+      refused: numeric('abc', 'invalid unit'),
+    },
+    {
+      config: '[core]\n\tmaxTreeDepth = zz\n[commitGraph]\n\tgenerationVersion = abc\n',
+      refused: numeric('abc', 'invalid unit'),
+    },
+    {
+      config: '[commitGraph]\n\tgenerationVersion = abc\n[core]\n\tcommitGraph = maybe\n',
+      refused: {
+        code: 'CONFIG_BAD_BOOLEAN_VALUE',
+        key: 'core.commitgraph',
+        value: 'maybe',
+      },
+    },
+    { config: '[commitGraph]\n\tgenerationVersion = 1k\n', refused: undefined },
+    {
+      config: '[commitGraph]\n\tgenerationVersion = abc\n\tgenerationVersion = 1\n',
+      refused: undefined,
+    },
+  ])('When the gate reads $config', ({ config, refused }) => {
+    it(`Then it ${refused === undefined ? 'accepts it' : `refuses ${refused.key}, in git's reading order`}`, async () => {
+      // Arrange
+      const ctx = createMemoryContext();
+      await seedRepo(ctx);
+      await seedConfig(ctx, config);
+      const sut = assertRepoSettingsValid;
+
+      // Act
+      const [outcome] = await Promise.allSettled([sut(ctx)]);
+
+      // Assert
+      const data = outcome.status === 'rejected' ? (outcome.reason as TsgitError).data : undefined;
+      expect(data).toEqual(
+        refused === undefined ? undefined : { ...refused, source: `${ctx.layout.gitDir}/config` },
+      );
+    });
+  });
+});

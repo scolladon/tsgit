@@ -15,8 +15,9 @@ import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import type { TsgitError } from '../../src/domain/error.js';
 import { openRepository } from '../../src/index.node.js';
-import { GIT_AVAILABLE, runGit } from './interop-helpers.js';
+import { GIT_AVAILABLE, runGit, tryRunGitWithExit } from './interop-helpers.js';
 
 const ROW_TIMEOUT = 30_000;
 const HEADER_BYTES = 8;
@@ -116,4 +117,94 @@ describe.skipIf(!GIT_AVAILABLE)('interop — core.commitGraph', () => {
       );
     });
   });
+});
+
+interface ConfigRefusal {
+  readonly code: string;
+  readonly key: string;
+  readonly value: string;
+  readonly reason?: string;
+}
+
+/** git's fatal line for a refused config value, rebuilt from tsgit's refusal data. */
+const fatalLineOf = (refusal: ConfigRefusal | undefined): string => {
+  if (refusal === undefined) return '';
+  if (refusal.code === 'CONFIG_BAD_BOOLEAN_VALUE') {
+    return `fatal: bad boolean config value '${refusal.value}' for '${refusal.key}'\n`;
+  }
+  return `fatal: bad numeric config value '${refusal.value}' for '${refusal.key}' in file .git/config: ${refusal.reason}\n`;
+};
+
+const tsgitLogRefusal = async (dir: string): Promise<ConfigRefusal | undefined> => {
+  const repo = await openRepository({ cwd: dir });
+  try {
+    await repo.log();
+    return undefined;
+  } catch (error) {
+    return (error as TsgitError).data as ConfigRefusal;
+  } finally {
+    await repo.dispose();
+  }
+};
+
+const GENERATION_VERSION_ROWS: ReadonlyArray<{
+  readonly label: string;
+  readonly config: ReadonlyArray<readonly [string, string]>;
+}> = [
+  { label: 'abc', config: [['commitGraph.generationVersion', 'abc']] },
+  { label: 'past the C int ceiling', config: [['commitGraph.generationVersion', '2147483648']] },
+  { label: '1k', config: [['commitGraph.generationVersion', '1k']] },
+  {
+    label: 'abc and a later-read malformed commitGraph.readChangedPaths',
+    config: [
+      ['commitGraph.readChangedPaths', 'maybe'],
+      ['commitGraph.generationVersion', 'abc'],
+    ],
+  },
+  {
+    label: 'abc and an earlier-read malformed core.commitGraph',
+    config: [
+      ['commitGraph.generationVersion', 'abc'],
+      ['core.commitGraph', 'maybe'],
+    ],
+  },
+  {
+    label: 'abc and a later-read malformed core.maxTreeDepth',
+    config: [
+      ['core.maxTreeDepth', 'zz'],
+      ['commitGraph.generationVersion', 'abc'],
+    ],
+  },
+];
+
+describe.skipIf(!GIT_AVAILABLE)('interop — commitGraph.generationVersion', () => {
+  describe.each(GENERATION_VERSION_ROWS)(
+    'Given commitGraph.generationVersion $label',
+    ({ config }) => {
+      describe('When git and tsgit log HEAD', () => {
+        it(
+          'Then both refuse the same value, or both read the history',
+          async () => {
+            // Arrange
+            count += 1;
+            const dir = path.join(root, `generation-version-${count}`);
+            runGit(['init', '-q', '-b', 'main', dir]);
+            runGit(['-C', dir, 'commit', '-q', '--allow-empty', '-m', 'c1']);
+            for (const [key, value] of config) {
+              runGit(['-C', dir, 'config', key, value]);
+            }
+            const git = tryRunGitWithExit(['-C', dir, 'log', '--format=%H']);
+            const sut = tsgitLogRefusal;
+
+            // Act
+            const result = await sut(dir);
+
+            // Assert
+            expect(fatalLineOf(result)).toBe(git.exitCode === 0 ? '' : git.stderr);
+          },
+          ROW_TIMEOUT,
+        );
+      });
+    },
+  );
 });

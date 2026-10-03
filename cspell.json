@@ -314,6 +314,7 @@
     "EXPSIG",
     "fmid",
     "EQLIMIT",
+    "generationversion",
     "GOODSIG",
     "groupsize",
     "heur",

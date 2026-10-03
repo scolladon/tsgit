@@ -1172,21 +1172,38 @@ export const findLastInvalidMaxTreeDepth = async (
     last = { value: token.value };
   }
   if (last === undefined) return undefined;
-  const key = `core.${MAX_TREE_DEPTH_KEY}`;
-  if (last.value === null) {
-    return { key, source: path, value: '', reason: 'invalid unit' };
-  }
-  const parsed = parseGitInt(last.value);
-  if (!parsed.ok) {
-    return { key, source: path, value: last.value, reason: parsed.reason };
-  }
+  const reason = cIntRefusal(last.value);
+  if (reason === undefined) return undefined;
+  return { key: `core.${MAX_TREE_DEPTH_KEY}`, source: path, value: last.value ?? '', reason };
+};
+
+/** git's `git_config_int` grammar: why it dies on `value`, or `undefined` when it parses. */
+const cIntRefusal = (value: string | null): InvalidNumericEntry['reason'] | undefined => {
+  if (value === null) return 'invalid unit';
+  const parsed = parseGitInt(value);
+  if (!parsed.ok) return parsed.reason;
   // The C-`int` narrowing sits here, on top of `parseGitInt`: `parseGitInt`'s own
   // bounds are int64, so a magnitude like 4294967296 comes back `ok` from it —
-  // this comparison is what turns that into `out of range` for this key.
-  if (parsed.value < GIT_C_INT_MIN || parsed.value > GIT_C_INT_MAX) {
-    return { key, source: path, value: last.value, reason: 'out of range' };
-  }
+  // this comparison is what turns that into `out of range`.
+  if (parsed.value < GIT_C_INT_MIN || parsed.value > GIT_C_INT_MAX) return 'out of range';
   return undefined;
+};
+
+/**
+ * git's `repo_cfg_int` (`prepare_repo_settings`): the LAST entry of
+ * `<section>.<key>` under the C-`int` grammar. Returns it when git would die
+ * on it, else `undefined`. Runs ONLY on a command's refusal path.
+ */
+export const findLastInvalidRepoInt = async (
+  ctx: Context,
+  section: string,
+  key: string,
+): Promise<InvalidNumericEntry | undefined> => {
+  const last = await findLastEntry(ctx, section, key);
+  if (last === undefined) return undefined;
+  const reason = cIntRefusal(last.value);
+  if (reason === undefined) return undefined;
+  return { key: last.key, source: last.source, value: last.value ?? '', reason };
 };
 
 /**
