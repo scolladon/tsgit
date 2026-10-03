@@ -137,6 +137,41 @@ describe.skipIf(!GIT_AVAILABLE)('commit-graph read interop', () => {
     });
   });
 
+  describe.each([
+    { label: 'more base graphs than its BASE chunk holds', declared: 2 },
+    { label: 'no base graph at all', declared: 0 },
+  ])('Given a tip layer whose header declares $label', ({ declared }) => {
+    describe('When both tools load the graph', () => {
+      it(
+        'Then both read BASE by its chunk and serve every layer without a warning',
+        async () => {
+          // Arrange
+          const repo = linearHistory(3);
+          const [c1, , c3] = repo.commits as [ObjectId, ObjectId, ObjectId];
+          writeSplitAt(repo, c1);
+          writeSplitAt(repo, c3);
+          const [, tip] = chainLines(repo) as [string, string];
+          const tipFile = layerPath(repo, tip);
+          chmodSync(tipFile, 0o644);
+          const bytes = new Uint8Array(readFileSync(tipFile));
+          bytes[7] = declared;
+          writeFileSync(tipFile, bytes);
+
+          // Act
+          const git = gitWarnings(repo);
+          const ours = await tsgitServes(repo, [c1, c3]);
+
+          // Assert
+          expect(git.exitCode).toBe(GIT_SUCCEEDED);
+          expect(git.lines).toEqual([]);
+          expect(ours.warnings).toEqual(git.lines);
+          expect(ours.served).toEqual([true, true]);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
   describe('Given a single-file graph whose signature is smashed', () => {
     describe('When both tools load the graph', () => {
       it(

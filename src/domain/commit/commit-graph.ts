@@ -126,7 +126,7 @@ export function parseCommitGraphLayer(bytes: Uint8Array): CommitGraphLayer {
   const extraEdgeRange = chunkRanges.get(CHUNK_ID_EDGE);
   const overflowGenerationRange = chunkRanges.get(CHUNK_ID_GDO2);
 
-  const baseGraphHashes = readBaseGraphHashes(chunkRanges, numBaseGraphs, hashLength, bytes);
+  const baseGraphHashes = readBaseGraphHashes(chunkRanges, hashLength, bytes);
   const bloom = readBloomChunks(chunkRanges, view, commitCount);
 
   return {
@@ -253,30 +253,19 @@ export function storedBloomFilter(
   return layer._bytes.subarray(filters + start, filters + end);
 }
 
+/** git's `pair_chunk` for BASE: every whole hash the chunk holds — the header's base count is never read. */
 function readBaseGraphHashes(
   ranges: ReadonlyMap<string, ChunkRange>,
-  numBaseGraphs: number,
   hashLength: number,
   bytes: Uint8Array,
 ): readonly ObjectId[] {
   const base = ranges.get(CHUNK_ID_BASE);
-  if (base === undefined) {
-    if (numBaseGraphs !== 0) {
-      throw invalidCommitGraphChunk(
-        `missing BASE chunk: header declares ${numBaseGraphs} base graphs`,
-      );
-    }
-    return [];
-  }
-
-  validateChunkSize(base, numBaseGraphs * hashLength, CHUNK_ID_BASE);
-
-  const hashes: ObjectId[] = [];
-  for (let i = 0; i < numBaseGraphs; i += 1) {
-    const offset = base.start + i * hashLength;
-    hashes.push(ObjectId.fromRaw(bytes.subarray(offset, offset + hashLength)));
-  }
-  return hashes;
+  if (base === undefined) return [];
+  const count = Math.floor((base.end - base.start) / hashLength);
+  return Array.from({ length: count }, (_, index) => {
+    const offset = base.start + index * hashLength;
+    return ObjectId.fromRaw(bytes.subarray(offset, offset + hashLength));
+  });
 }
 
 /** The oid at a layer-local position of the OIDL chunk. */

@@ -581,7 +581,7 @@ describe('commit-graph', () => {
 
     describe('Given a tip layer declaring base graphs with no BASE chunk', () => {
       describe('When parsing', () => {
-        it('Then throws INVALID_COMMIT_GRAPH_CHUNK for a missing BASE chunk', () => {
+        it('Then it loads with no base hash, as git reads BASE by its chunk alone', () => {
           // Arrange
           const bytes = renameChunkRowId(
             buildCommitGraphBytes(chainTipModel(oid('a2'))),
@@ -589,32 +589,50 @@ describe('commit-graph', () => {
             'XXXX',
           );
 
-          // Act & Assert
-          expectThrows(
-            () => parseCommitGraphLayer(bytes),
-            'INVALID_COMMIT_GRAPH_CHUNK',
-            'missing BASE',
-          );
+          // Act
+          const result = parseCommitGraphLayer(bytes);
+
+          // Assert
+          expect(result.numBaseGraphs).toBe(1);
+          expect(result.baseGraphHashes).toEqual([]);
         });
       });
     });
 
-    describe('Given a BASE chunk whose size does not match numBaseGraphs * hashLength', () => {
+    describe('Given a header base count that disagrees with the BASE chunk size', () => {
       describe('When parsing', () => {
-        it('Then throws INVALID_COMMIT_GRAPH_CHUNK for a truncated BASE chunk', () => {
+        it('Then every whole hash the BASE chunk holds is read, whatever the header says', () => {
+          // Arrange
+          const bytes = buildCommitGraphBytes(chainTipModel(oid('a2')));
+          const expected = parseCommitGraphLayer(bytes).baseGraphHashes;
+          const sut = bytes.slice();
+          sut[7] = 3;
+
+          // Act
+          const result = parseCommitGraphLayer(sut);
+
+          // Assert
+          expect(expected).toHaveLength(1);
+          expect(result.baseGraphHashes).toEqual(expected);
+        });
+      });
+    });
+
+    describe('Given a BASE chunk with a ragged tail', () => {
+      describe('When parsing', () => {
+        it('Then only whole hashes are read', () => {
           // Arrange
           const bytes = shrinkChunkAfter(
             buildCommitGraphBytes(chainTipModel(oid('a2'))),
             'BASE',
-            -20,
+            -1,
           );
 
-          // Act & Assert
-          expectThrows(
-            () => parseCommitGraphLayer(bytes),
-            'INVALID_COMMIT_GRAPH_CHUNK',
-            'truncated BASE',
-          );
+          // Act
+          const result = parseCommitGraphLayer(bytes);
+
+          // Assert
+          expect(result.baseGraphHashes).toEqual([]);
         });
       });
     });

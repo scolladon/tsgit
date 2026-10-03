@@ -714,7 +714,9 @@ describe('fsck commit-graph verify', () => {
         const path = commitGraphPath(commonGitDir(ctx));
         const bytes = new Uint8Array(await ctx.fs.read(path));
         const table = new TextDecoder().decode(bytes.subarray(0, 8 + 12 * (bytes[6] as number)));
-        bytes.set(new TextEncoder().encode('BASE'), table.indexOf('GDA2'));
+        const view = new DataView(bytes.buffer, bytes.byteOffset);
+        const gdaOffsetLow = table.indexOf('GDA2') + 8;
+        view.setUint32(gdaOffsetLow, view.getUint32(gdaOffsetLow) + 4);
         await ctx.fs.write(path, bytes);
         let reason: unknown;
         try {
