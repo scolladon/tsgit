@@ -193,6 +193,98 @@ describe('resolveSequencerRevisions', () => {
     });
   });
 
+  describe.each([
+    { label: 'a peeled tree', arg: (id: string) => `${id}^{tree}`, type: 'tree' },
+    { label: 'a tree path', arg: (id: string) => `${id}:`, type: 'tree' },
+    {
+      label: 'a range side naming a tree',
+      arg: (id: string) => `r..${id}:`,
+      type: 'tree',
+      side: true,
+    },
+  ])('Given an argument naming $label', ({ arg, type, side }) => {
+    describe('When the sequencer resolves it after a commit', () => {
+      it('Then it refuses the non-commit by the name it was given', async () => {
+        // Arrange
+        const history = await buildHistory(SPEC);
+        const sut = resolveSequencerRevisions;
+        const named = arg(history.id('a2')).replace(/^r\.\./, `${history.id('r')}..`);
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(history.ctx, [history.id('a1'), named]);
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        const revision = side === true ? named.slice(named.indexOf('..') + 2) : named;
+        expect((caught as TsgitError).data).toEqual({
+          code: 'CANNOT_PICK_NON_COMMIT',
+          revision,
+          type,
+        });
+      });
+    });
+  });
+
+  describe('Given a blob id and then an unknown revision', () => {
+    describe('When the sequencer resolves them', () => {
+      it('Then the unknown revision refuses first, as git resolves every argument before checking types', async () => {
+        // Arrange
+        const history = await buildHistory(SPEC);
+        const blob = await writeObject(history.ctx, {
+          type: 'blob',
+          id: '' as ObjectId,
+          content: new TextEncoder().encode('x'),
+        });
+        const sut = resolveSequencerRevisions;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(history.ctx, [blob, `${history.id('a2')}~9`]);
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data.code).not.toBe('CANNOT_PICK_NON_COMMIT');
+      });
+    });
+  });
+
+  describe('Given a blob id', () => {
+    describe('When the sequencer resolves it', () => {
+      it('Then it refuses the blob', async () => {
+        // Arrange
+        const history = await buildHistory(SPEC);
+        const blob = await writeObject(history.ctx, {
+          type: 'blob',
+          id: '' as ObjectId,
+          content: new TextEncoder().encode('x'),
+        });
+        const sut = resolveSequencerRevisions;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(history.ctx, [blob]);
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'CANNOT_PICK_NON_COMMIT',
+          revision: blob,
+          type: 'blob',
+        });
+      });
+    });
+  });
+
   describe('Given a symmetric range', () => {
     describe('When the sequencer resolves it', () => {
       it('Then it refuses the unsupported form', async () => {

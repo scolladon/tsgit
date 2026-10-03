@@ -1699,6 +1699,10 @@ describe('domain commands error — extractDetail message formatting', () => {
     ],
     [{ code: 'EMPTY_COMMIT_SET' }, 'EMPTY_COMMIT_SET: empty commit set passed'],
     [
+      { code: 'CANNOT_PICK_NON_COMMIT', revision: 'HEAD:d/f', type: 'blob' },
+      "CANNOT_PICK_NON_COMMIT: HEAD:d/f: can't cherry-pick a blob",
+    ],
+    [
       { code: 'CONFIG_UNKNOWN_NEGOTIATION_ALGORITHM', value: 'bogus' },
       "CONFIG_UNKNOWN_NEGOTIATION_ALGORITHM: unknown fetch negotiation algorithm 'bogus'",
     ],

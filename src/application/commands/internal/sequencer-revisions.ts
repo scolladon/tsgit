@@ -1,15 +1,21 @@
-import { emptyCommitSet, invalidOption } from '../../../domain/commands/error.js';
+import {
+  cannotPickNonCommit,
+  emptyCommitSet,
+  invalidOption,
+} from '../../../domain/commands/error.js';
 import type { ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { limitList, resolveLimitOptions } from '../../primitives/internal/limit-list.js';
+import { peelRefToCommit } from '../../primitives/internal/peel-ref-to-commit.js';
+import { readObject } from '../../primitives/read-object.js';
 import { revParse } from '../rev-parse.js';
 import { resolveCommitIsh } from './commit-ish.js';
 
 const RANGE = /^(.*)\.\.(.*)$/;
 const SYMMETRIC_RANGE = '...';
 const EXCLUDE_PREFIX = '^';
-/** A revision suffix (`A^`, `A~2`, `A@{1}`) needs the full revision grammar, not a ref lookup. */
-const REVISION_OPERATOR = /[~^@]/;
+/** A revision suffix (`A^`, `A~2`, `A@{1}`) or path (`A:path`) needs the full revision grammar, not a ref lookup. */
+const REVISION_OPERATOR = /[~^@:]/;
 /** git reads a range side left out (`A..`, `..B`) as `HEAD`. */
 const orHead = (side: string): string => (side === '' ? 'HEAD' : side);
 
@@ -25,6 +31,12 @@ export interface SequencerRevisions {
   readonly commits: ReadonlyArray<ObjectId>;
 }
 
+/** A named object and the name it was given — a whole argument, or one side of a range. */
+interface NamedObject {
+  readonly name: string;
+  readonly id: ObjectId;
+}
+
 interface Seeds {
   readonly tips: ReadonlyArray<ObjectId>;
   readonly excluded: ReadonlyArray<ObjectId>;
@@ -36,6 +48,7 @@ interface SeedLists {
   readonly tips: ObjectId[];
   readonly excluded: ObjectId[];
   readonly named: ObjectId[];
+  readonly objects: NamedObject[];
 }
 
 /** git's `setup_revisions` + `prepare_revs` over a cherry-pick / revert argument list. */
@@ -61,9 +74,16 @@ export const isSequence = (args: ReadonlyArray<string>, revisions: SequencerRevi
   args.length > 1 || revisions.kind === 'walked';
 
 const resolveSeeds = async (ctx: Context, args: ReadonlyArray<string>): Promise<Seeds> => {
-  const seeds: SeedLists = { tips: [], excluded: [], named: [] };
+  const seeds: SeedLists = { tips: [], excluded: [], named: [], objects: [] };
   for (const arg of args) await addSeed(ctx, arg, seeds);
+  for (const object of seeds.objects) await assertPicksCommit(ctx, object);
   return seeds;
+};
+
+/** git's `sequencer_pick_revisions` check, run once every argument resolved: each named object must peel to a commit. */
+const assertPicksCommit = async (ctx: Context, { name, id }: NamedObject): Promise<void> => {
+  if ((await peelRefToCommit(ctx, id)) !== undefined) return;
+  throw cannotPickNonCommit(name, (await readObject(ctx, id)).type);
 };
 
 /** One argument as git's `setup_revisions` reads it: `A..B`, `^A`, or a commit-ish. */
@@ -73,26 +93,30 @@ const addSeed = async (ctx: Context, arg: string, seeds: SeedLists): Promise<voi
   }
   const range = RANGE.exec(arg);
   if (range !== null) {
-    addExcluded(seeds, await revParse(ctx, orHead(range[1] as string)));
-    addTip(seeds, await revParse(ctx, orHead(range[2] as string)));
+    const [excluded, tip] = [orHead(range[1] as string), orHead(range[2] as string)];
+    addExcluded(seeds, { name: excluded, id: await revParse(ctx, excluded) });
+    addTip(seeds, { name: tip, id: await revParse(ctx, tip) });
     return;
   }
   if (arg.startsWith(EXCLUDE_PREFIX)) {
-    addExcluded(seeds, await revParse(ctx, arg.slice(EXCLUDE_PREFIX.length)));
+    const name = arg.slice(EXCLUDE_PREFIX.length);
+    addExcluded(seeds, { name, id: await revParse(ctx, name) });
     return;
   }
   const resolve = REVISION_OPERATOR.test(arg) ? revParse : resolveCommitIsh;
-  addTip(seeds, await resolve(ctx, arg));
+  addTip(seeds, { name: arg, id: await resolve(ctx, arg) });
 };
 
-const addTip = (seeds: SeedLists, id: ObjectId): void => {
-  seeds.tips.push(id);
-  seeds.named.push(id);
+const addTip = (seeds: SeedLists, object: NamedObject): void => {
+  seeds.tips.push(object.id);
+  seeds.named.push(object.id);
+  seeds.objects.push(object);
 };
 
-const addExcluded = (seeds: SeedLists, id: ObjectId): void => {
-  seeds.excluded.push(id);
-  seeds.named.push(id);
+const addExcluded = (seeds: SeedLists, object: NamedObject): void => {
+  seeds.excluded.push(object.id);
+  seeds.named.push(object.id);
+  seeds.objects.push(object);
 };
 
 const walkSeeds = async (ctx: Context, seeds: Seeds): Promise<ReadonlyArray<ObjectId>> => {

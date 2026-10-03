@@ -1,6 +1,6 @@
 import { sanitizeForDisplay, TsgitError } from '../error.js';
 import type { HookName } from '../hooks/index.js';
-import { MAX_OBJECT_ID_IN_ERROR } from '../objects/error.js';
+import { MAX_OBJECT_ID_IN_ERROR, type ObjectType } from '../objects/error.js';
 import type { FilePath, ObjectId, RefName } from '../objects/object-id.js';
 import type { ReceivePackResponse as ReportStatus } from '../protocol/receive-pack.js';
 import type { PendingOperation } from '../sequencer/operation-labels.js';
@@ -218,6 +218,13 @@ export type CommandError =
       readonly line?: number;
     }
   | { readonly code: 'EMPTY_COMMIT_SET' }
+  | {
+      readonly code: 'CANNOT_PICK_NON_COMMIT';
+      /** The argument as given, or a range side. */
+      readonly revision: string;
+      /** The named object's own type — a tag when its chain ends short of a commit. */
+      readonly type: ObjectType;
+    }
   | {
       readonly code: 'CONFIG_UNKNOWN_NEGOTIATION_ALGORITHM';
       readonly value: string;
@@ -555,6 +562,10 @@ export const remoteNameInvalid = (name: string, reason: string): TsgitError =>
  * writes any sequencer state.
  */
 export const emptyCommitSet = (): TsgitError => new TsgitError({ code: 'EMPTY_COMMIT_SET' });
+
+/** git's `sequencer_pick_revisions`: a named object that peels to no commit. */
+export const cannotPickNonCommit = (revision: string, type: ObjectType): TsgitError =>
+  new TsgitError({ code: 'CANNOT_PICK_NON_COMMIT', revision, type });
 
 export const invalidOption = (option: string, reason: string): TsgitError =>
   new TsgitError({ code: 'INVALID_OPTION', option, reason: sanitizeForDisplay(reason) });

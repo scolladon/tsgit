@@ -10,10 +10,11 @@
  *   bucket:         cross-tool-interop
  *   unique:         ranges and plain commits seed one date-ordered limited walk, so skewed exclusions, duplicates and equal-date ties pick git's commits in git's order
  */
-import { cpSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import type { TsgitError } from '../../src/domain/error.js';
 import { openRepository } from '../../src/index.node.js';
 import { GIT_AVAILABLE, git, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
 
@@ -289,6 +290,50 @@ describe.skipIf(!GIT_AVAILABLE)('interop — rebase replay order', () => {
           // Assert
           expect(replayed(gitDir, upstream)).toEqual(expected);
           expect(replayed(tsgitDir, upstream)).toEqual(expected);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)('interop — cherry-pick and revert of a non-commit', () => {
+  describe.each([
+    { command: 'cherry-pick', arg: 'left2:left2', type: 'blob' },
+    { command: 'cherry-pick', arg: 'left2:', type: 'tree' },
+    { command: 'revert', arg: 'left2^{tree}', type: 'tree' },
+    { command: 'revert', arg: 'root..left2:left1', type: 'blob', revision: 'left2:left1' },
+  ] as const)('Given $command of $arg', ({ command, arg, type, ...rest }) => {
+    describe('When git and tsgit run it', () => {
+      it(
+        'Then both refuse the named object before writing any sequencer state',
+        async () => {
+          // Arrange
+          const revision = 'revision' in rest ? rest.revision : arg;
+          const gitDir = copyAt('left2');
+          const peer = tryRunGitWithExit(['-C', gitDir, command, arg]);
+          const tsgitDir = copyAt('left2');
+          const repo = await openRepository({ cwd: tsgitDir });
+          const sut = command === 'revert' ? repo.revert : repo.cherryPick;
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut.run({ commits: [arg] });
+          } catch (error) {
+            caught = error;
+          } finally {
+            await repo.dispose();
+          }
+
+          // Assert
+          const data = (caught as TsgitError).data as { revision: string; type: string };
+          expect(data).toEqual({ code: 'CANNOT_PICK_NON_COMMIT', revision, type });
+          expect(peer.stderr.split('\n')[0]).toBe(
+            `error: ${data.revision}: can't cherry-pick a ${data.type}`,
+          );
+          expect(existsSync(path.join(gitDir, '.git', 'sequencer'))).toBe(false);
+          expect(existsSync(path.join(tsgitDir, '.git', 'sequencer'))).toBe(false);
         },
         ROW_TIMEOUT,
       );
