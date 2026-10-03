@@ -385,4 +385,37 @@ describe.skipIf(!GIT_AVAILABLE)('commit-graph read interop', () => {
       );
     });
   });
+
+  describe('Given commitGraph.generationVersion=1 and a single-file graph whose GDA2 chunk is one entry short', () => {
+    describe('When both tools load the graph', () => {
+      it(
+        'Then neither reads GDA2: no error, every commit served',
+        async () => {
+          // Arrange
+          const repo = linearHistory(2);
+          runGit(['-C', repo.dir, 'commit-graph', 'write', '--reachable']);
+          runGit(['-C', repo.dir, 'config', 'commitGraph.generationVersion', '1']);
+          const file = path.join(repo.dir, '.git', 'objects', 'info', 'commit-graph');
+          chmodSync(file, 0o644);
+          const bytes = new Uint8Array(readFileSync(file));
+          const view = new DataView(bytes.buffer);
+          const rows = Buffer.from(bytes.subarray(0, 8 + 12 * ((bytes[6] as number) + 1)));
+          const endOffsetLow = rows.indexOf('GDA2', 8, 'latin1') + 12 + 8;
+          view.setUint32(endOffsetLow, view.getUint32(endOffsetLow) - 4);
+          writeFileSync(file, bytes);
+
+          // Act
+          const git = gitWarnings(repo);
+          const ours = await tsgitServes(repo, [...repo.commits]);
+
+          // Assert
+          expect(git.exitCode).toBe(GIT_SUCCEEDED);
+          expect(git.lines).toEqual([]);
+          expect(ours.warnings).toEqual(git.lines);
+          expect(ours.served).toEqual([true, true]);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
 });

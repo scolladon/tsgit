@@ -917,6 +917,66 @@ describe('read-commit-graph', () => {
       });
     });
 
+    describe('Given commitGraph.generationVersion=1 and a single-file graph whose GDA2 chunk is one entry short', () => {
+      describe('When commitHeader is called', () => {
+        it('Then GDA2 is never read: topological levels are served and nothing is logged', async () => {
+          // Arrange
+          const warn = vi.fn<NonNullable<Logger['warn']>>();
+          const ctx = { ...(await buildSeededContext()), logger: { warn } };
+          const { c0, c1, c2, c3, c4 } = await buildFiveCommitHistory(ctx);
+          await writeCommitGraph(ctx, [[c0, c1, c2, c3, c4]]);
+          const graphPath = commitGraphPath(commonGitDir(ctx));
+          const bytes = await ctx.fs.read(graphPath);
+          await ctx.fs.write(graphPath, shrinkChunkAfter(bytes, 'GDA2', -4));
+          await ctx.fs.writeUtf8(
+            `${ctx.layout.gitDir}/config`,
+            '[commitGraph]\n\tgenerationVersion = 1\n',
+          );
+
+          // Act
+          const header = await commitHeader(ctx, c0.id);
+
+          // Assert
+          expect(header?.generation).toBe(1);
+          expect(warn).not.toHaveBeenCalled();
+          expect(await correctedCommitDatesEnabled(ctx)).toBe(false);
+        });
+      });
+    });
+
+    describe.each([
+      { label: 'explicitly 2', value: '2' },
+      { label: 'malformed', value: 'two' },
+    ])(
+      'Given commitGraph.generationVersion $label and a GDA2 chunk one entry short',
+      ({ value }) => {
+        describe('When commitHeader is called', () => {
+          it("Then GDA2 is read and git's wrong-size error is logged", async () => {
+            // Arrange
+            const warn = vi.fn<NonNullable<Logger['warn']>>();
+            const ctx = { ...(await buildSeededContext()), logger: { warn } };
+            const { c0, c1, c2, c3, c4 } = await buildFiveCommitHistory(ctx);
+            await writeCommitGraph(ctx, [[c0, c1, c2, c3, c4]]);
+            const graphPath = commitGraphPath(commonGitDir(ctx));
+            const bytes = await ctx.fs.read(graphPath);
+            await ctx.fs.write(graphPath, shrinkChunkAfter(bytes, 'GDA2', -4));
+            await ctx.fs.writeUtf8(
+              `${ctx.layout.gitDir}/config`,
+              `[commitGraph]\n\tgenerationVersion = ${value}\n`,
+            );
+
+            // Act
+            await commitHeader(ctx, c0.id);
+
+            // Assert
+            expect(warn.mock.calls).toEqual([
+              ['commitGraph: commit-graph generations chunk is wrong size'],
+            ]);
+          });
+        });
+      },
+    );
+
     describe('Given a single-file graph whose GDA2 chunk is one entry short', () => {
       describe('When commitHeader is called', () => {
         it("Then the graph serves topological levels and git's error is logged", async () => {

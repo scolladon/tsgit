@@ -19,7 +19,7 @@ import {
   positionOf,
 } from '../../../domain/commit/commit-graph.js';
 import { invalidCommitGraphChunk } from '../../../domain/commit/error.js';
-import { parseGitBoolean } from '../../../domain/config/config-ini.js';
+import { parseGitBoolean, parseGitInt } from '../../../domain/config/config-ini.js';
 import { errorDataCode } from '../../../domain/error-data-code.js';
 import type { ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
@@ -219,13 +219,29 @@ async function loadGraphUncached(ctx: Context): Promise<LoadedGraph | undefined>
   if (await isShallowRepository(ctx)) return undefined;
 
   const store = await getObjectStore(ctx);
+  const generationData = await readsGenerationData(ctx);
   for (const source of store.sources) {
     const graph = await readGraphOne(ctx, store, source);
     if (graph === undefined) continue;
+    if (!generationData) return { ...graph, correctedCommitDates: false };
     warnGenerationMisfits(ctx, graph);
     return graph;
   }
   return undefined;
+}
+
+const GENERATION_DATA_VERSION = 2;
+
+/**
+ * git's `commitGraph.generationVersion` (default 2): below 2, git never reads
+ * GDA2 or GDO2, so every layer serves topological levels and a wrong-sized
+ * GDA2 goes unnoticed. A malformed value reads as the default here; its
+ * refusal belongs to git's repo-settings prologue.
+ */
+async function readsGenerationData(ctx: Context): Promise<boolean> {
+  const configured = (await findLastEntry(ctx, 'commitGraph', 'generationVersion'))?.value;
+  const parsed = configured == null ? undefined : parseGitInt(configured);
+  return parsed?.ok !== true || parsed.value >= GENERATION_DATA_VERSION;
 }
 
 function warnGenerationMisfits(ctx: Context, graph: LoadedGraph): void {
