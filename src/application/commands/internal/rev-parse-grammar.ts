@@ -17,7 +17,8 @@ import { revparseUnresolved } from '../../../domain/commands/error.js';
  *   - `^`             parent 1
  *   - `^N`            parent N (1-based; 1 = first parent)
  *   - `^^^`           sequence of parent ops
- *   - `^{<type>}`     peel to type (commit | tree | blob | tag)
+ *   - `^{<type>}`     peel to type (commit | tree | blob | tag), or `object`: any kind
+ *   - `^{}`           dereference tags until a non-tag
  *
  * A reflog `@{…}` selector binds to the base ref, before any `~`/`^`:
  *   `<base> @{ <selector> } <op>*`
@@ -28,13 +29,15 @@ import { revparseUnresolved } from '../../../domain/commands/error.js';
  * the evaluator (which scans loose objects + pack indices).
  */
 
-export type PeelTarget = 'commit' | 'tree' | 'blob' | 'tag';
+export type PeelTarget = 'commit' | 'tree' | 'blob' | 'tag' | 'object';
 
 export type RevOperation =
   | { readonly kind: 'parent'; readonly n: number }
   | { readonly kind: 'ancestor'; readonly n: number }
   /** `name` spells the expression up to this operator's `}` — the name git reports a mismatch under. */
-  | { readonly kind: 'peel'; readonly target: PeelTarget; readonly name: string };
+  | { readonly kind: 'peel'; readonly target: PeelTarget; readonly name: string }
+  /** `name` spells the expression before this `^{}` — the name git reports a missing object under. */
+  | { readonly kind: 'deref'; readonly name: string };
 
 export type ReflogSelector =
   | { readonly kind: 'index'; readonly n: number }
@@ -58,7 +61,7 @@ export type RevExpression =
       readonly path: string;
     };
 
-const VALID_PEEL_TARGETS = new Set<string>(['commit', 'tree', 'blob', 'tag']);
+const VALID_PEEL_TARGETS = new Set<string>(['commit', 'tree', 'blob', 'tag', 'object']);
 const INDEX_STAGE_PATTERN = /^:(\d):(.+)$/;
 
 const fail = (raw: string): never => {
@@ -189,6 +192,8 @@ const parseCaret = (
     // Stryker disable next-line ConditionalExpression,UnaryOperator: equivalent — when `closeIdx === -1` this guard is bypassed, `targetStr` becomes `raw.slice(i + 2, -1)` and `next` becomes 0; either the slice is not a valid peel target (fails at L130) or parseOperations re-enters at index 0 where the non-empty base's first char is neither `~` nor `^` (fails in the else branch). Both paths throw revparseUnresolved(raw) with identical `raw`.
     if (closeIdx === -1) fail(raw);
     const targetStr = raw.slice(i + 2, closeIdx);
+    if (targetStr === '')
+      return { op: { kind: 'deref', name: raw.slice(0, i) }, next: closeIdx + 1 };
     if (!VALID_PEEL_TARGETS.has(targetStr)) fail(raw);
     return {
       op: { kind: 'peel', target: targetStr as PeelTarget, name: raw.slice(0, closeIdx + 1) },

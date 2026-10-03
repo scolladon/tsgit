@@ -4,6 +4,7 @@ import { errorDataCode } from '../../domain/error-data-code.js';
 import type { Commit } from '../../domain/objects/commit.js';
 import { objectNotFound } from '../../domain/objects/error.js';
 import {
+  type GitObject,
   type HashConfig,
   type ObjectId,
   type RefName,
@@ -28,6 +29,7 @@ import { rereadsMisspeltRevision } from './internal/misspelt-revision.js';
 import { readCandidateRef, resolveAmbiguousLadder } from './internal/refname-ambiguity.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
 import {
+  type PeelTarget,
   parseExpression,
   type ReflogSelector,
   type RevExpression,
@@ -173,10 +175,43 @@ const pickByDate = (
 };
 
 const applyOperation = async (ctx: Context, id: ObjectId, op: RevOperation): Promise<ObjectId> => {
-  if (op.kind === 'peel') return peel(ctx, id, op.target, op.name);
+  if (op.kind === 'deref') return derefTags(ctx, id, op.name);
+  if (op.kind === 'peel') return peelTo(ctx, id, op.target, op.name);
   const commit = await commitToWalk(ctx, id);
   if (op.kind === 'parent') return op.n === 0 ? commit.id : nthParent(ctx, commit, op.n);
   return nthAncestor(ctx, commit, op.n);
+};
+
+/** git's `peel_onion`: `^{object}` only needs the object to exist. */
+const peelTo = async (
+  ctx: Context,
+  id: ObjectId,
+  target: PeelTarget,
+  name: string,
+): Promise<ObjectId> => {
+  if (target !== 'object') return peel(ctx, id, target, name);
+  await readObject(ctx, id);
+  return id;
+};
+
+/** git's `deref_tag`: follow tags to the first non-tag, naming `name` when one is missing. */
+const derefTags = async (ctx: Context, id: ObjectId, name: string): Promise<ObjectId> => {
+  let current = await readObject(ctx, id);
+  while (current.type === 'tag') {
+    current = await readTagged(ctx, current.data.object, name);
+  }
+  return current.id;
+};
+
+const readTagged = async (ctx: Context, id: ObjectId, name: string): Promise<GitObject> => {
+  try {
+    return await readObject(ctx, id);
+  } catch (error) {
+    if (errorDataCode(error) === 'OBJECT_NOT_FOUND') {
+      ctx.logger?.error?.(`missing object referenced by '${name}'`, { name, id });
+    }
+    throw error;
+  }
 };
 
 interface PeeledCommit {

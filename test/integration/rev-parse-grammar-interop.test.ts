@@ -49,7 +49,7 @@ interface Outcome {
 }
 
 const gitOutcome = (repo: string, argument: string): Outcome => {
-  const result = tryRunGitWithExit(['-C', repo, 'rev-parse', '--verify', '-q', argument], {
+  const result = tryRunGitWithExit(['-C', repo, 'rev-parse', argument], {
     env: runGitEnv(),
   });
   const errors = result.stderr
@@ -106,20 +106,30 @@ describe.skipIf(!GIT_AVAILABLE)('integration — revParse suffix grammar parity 
   });
 
   describe('Given commits, a six-deep tag chain and a tag naming an absent object', () => {
-    describe.each(['HEAD~', 'HEAD~~', 'HEAD~^'])(
-      'When git rev-parse and revParse read %s',
-      (argument) => {
-        it('Then both resolve the same object and print the same errors', async () => {
-          // Arrange
-          const peer = gitOutcome(repo, argument);
+    describe.each([
+      'HEAD~',
+      'HEAD~~',
+      'HEAD~^',
+      'HEAD^{}',
+      't1^{}',
+      't6^{}',
+      't6^{}~1',
+      'HEAD^{object}',
+      't6^{object}',
+      'bad^{}',
+      'bad^{object}',
+      'bad^{commit}',
+    ])('When git rev-parse and revParse read %s', (argument) => {
+      it('Then both resolve the same object and print the same errors', async () => {
+        // Arrange
+        const peer = gitOutcome(repo, argument);
 
-          // Act
-          const result = await tsgitOutcome(repo, argument);
+        // Act
+        const result = await tsgitOutcome(repo, argument);
 
-          // Assert
-          expect(result).toEqual(peer);
-        });
-      },
-    );
+        // Assert
+        expect(result).toEqual(peer);
+      });
+    });
   });
 });

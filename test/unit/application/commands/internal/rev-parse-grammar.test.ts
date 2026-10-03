@@ -205,6 +205,31 @@ describe('internal/rev-parse-grammar', () => {
       });
     });
 
+    describe.each([
+      { raw: 'tc^{}', operations: [{ kind: 'deref', name: 'tc' }] },
+      {
+        raw: 'tc^{}^{}',
+        operations: [
+          { kind: 'deref', name: 'tc' },
+          { kind: 'deref', name: 'tc^{}' },
+        ],
+      },
+      { raw: 'tc^{object}', operations: [{ kind: 'peel', target: 'object', name: 'tc^{object}' }] },
+    ] as const)("Given '$raw' (a peel to any object)", ({ raw, operations }) => {
+      describe('When parseExpression', () => {
+        it('Then ^{} dereferences tags under the name before it and ^{object} peels to any kind', () => {
+          // Arrange
+          const sut = parseExpression;
+
+          // Act
+          const result = sut(raw);
+
+          // Assert
+          expect(result).toEqual({ kind: 'ref-or-hex', base: 'tc', operations });
+        });
+      });
+    });
+
     describe("Given 'HEAD^'", () => {
       describe('When parseExpression', () => {
         it('Then operations=[parent 1]', () => {
