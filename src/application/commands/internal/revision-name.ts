@@ -16,7 +16,7 @@ import { refCandidates } from '../../../domain/refs/index.js';
 import type { Context } from '../../../ports/context.js';
 import { resolveOidPrefix } from '../../primitives/resolve-oid-prefix.js';
 import { type RefCandidateOutcome, readRefCandidate } from '../../primitives/resolve-ref.js';
-import { readCandidate, resolveRefLadder, warnIfRefNamesObjectId } from './refname-ambiguity.js';
+import { expandRef, resolveRefLadder, warnIfRefNamesObjectId } from './refname-ambiguity.js';
 
 /**
  * One candidate as `expand_ref` reads it. Never peels: git's plain `get_oid`
@@ -49,21 +49,20 @@ export const resolveRevisionName = async (
 
 /**
  * Every object id `name`'s candidate namespaces resolve to, in ladder order —
- * git's `dwim_ref` count, warning on each namespace it skips as `expand_ref`
- * does. Only `branch`'s start point consults the count, and it refuses more
- * than one.
+ * git's `dwim_ref` count. Only `branch`'s start point consults the count, and
+ * it refuses more than one.
  */
 export const resolvingCandidates = async (
   ctx: Context,
   name: string,
-): Promise<ReadonlyArray<ObjectId>> => {
-  const found: ObjectId[] = [];
-  for (const candidate of refCandidates(name)) {
-    const id = await readCandidate(ctx, candidate, resolveCandidate(ctx));
-    if (id !== undefined) found.push(id);
-  }
-  return found;
-};
+): Promise<ReadonlyArray<ObjectId>> =>
+  (await expandRef(ctx, name, resolveCandidate(ctx))).map((found) => found.id);
+
+/** git's `dwim_ref` real ref as a command's own `dwim_ref` call reads it, warning on each skipped namespace. */
+export const dwimRefNameWarning = async (
+  ctx: Context,
+  name: string,
+): Promise<RefName | undefined> => (await expandRef(ctx, name, resolveCandidate(ctx)))[0]?.ref;
 
 /** git's `dwim_ref` real ref: the first candidate namespace `name` resolves in,
  *  symbolic refs followed to the ref they end at. A dangling or broken

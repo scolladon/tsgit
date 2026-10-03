@@ -185,6 +185,9 @@ const hardResetFromCommit = async (
  * A target naming no commit refuses, keeping the id as resolved.
  */
 const resolveTarget = async (ctx: Context, target: string): Promise<ObjectId> => {
+  // git reads the argument twice — once to tell a revision from a path, then
+  // to resolve it — so every warning the ladder prints, it prints twice.
+  await resolveRevisionExpression(ctx, target);
   const id = await resolveRevisionExpression(ctx, target);
   if (id === undefined) throw revparseUnresolved(target);
   const { id: commit, result } = await peelChain(ctx, id, readObject, (object) =>

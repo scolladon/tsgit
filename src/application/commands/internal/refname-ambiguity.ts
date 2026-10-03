@@ -105,6 +105,26 @@ export const readCandidateRef = async (
   resolve: CandidateResolver,
 ): Promise<RefName | undefined> => (await readFound(ctx, candidate, resolve))?.ref;
 
+/**
+ * git's `expand_ref` as `dwim_ref` runs it: every namespace `name` resolves
+ * in, in ladder order, each skipped one warned. With the ambiguity check off
+ * it stops at the first — the setting read only once one resolves.
+ */
+export const expandRef = async (
+  ctx: Context,
+  name: string,
+  resolve: CandidateResolver,
+): Promise<ReadonlyArray<FoundCandidate>> => {
+  const found: FoundCandidate[] = [];
+  for (const candidate of refCandidates(name)) {
+    const outcome = await readFound(ctx, candidate, resolve);
+    if (outcome === undefined) continue;
+    found.push(outcome);
+    if (!(await readSettings(ctx)).warns) break;
+  }
+  return found;
+};
+
 /** One candidate's answer — an object id, or a ref — `undefined` when the candidate does not count. */
 type CandidateReader<T> = (candidate: RefName | 'HEAD') => Promise<T | undefined>;
 

@@ -422,3 +422,22 @@ describe.each([
     });
   });
 });
+
+describe('Given resolvingCandidates and a name a tag and a branch both carry', () => {
+  describe.each([
+    { check: 'on', config: CORE, expected: 2 },
+    { check: 'off', config: `${CORE}\twarnAmbiguousRefs = false\n`, expected: 1 },
+  ])('When the ambiguity check is $check', ({ config, expected }) => {
+    it(`Then it counts ${expected} namespace(s), as git dwim_ref stops at the first with the check off`, async () => {
+      // Arrange
+      const { ctx } = await repoWithNamedRef(named('other'), config, () => undefined);
+      const sut = resolvingCandidates;
+
+      // Act
+      const result = await sut(ctx, 'main');
+
+      // Assert
+      expect(result).toHaveLength(expected);
+    });
+  });
+});

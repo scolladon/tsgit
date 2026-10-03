@@ -466,6 +466,36 @@ describe.skipIf(!GIT_AVAILABLE)('integration — skip and ambiguity warnings per
       run: ((ctx) => branchCreate(ctx, { name: 'x', startPoint: 'amb' })) as CommandRun,
     },
     {
+      label: 'a soft reset to a name past a dangling symref',
+      args: ['reset', '--soft', 'dg'],
+      run: ((ctx) => reset(ctx, { mode: 'soft', rev: 'dg' })) as CommandRun,
+    },
+    {
+      label: 'a mixed reset to a name past a dangling symref',
+      args: ['reset', '--mixed', '-q', 'dg'],
+      run: ((ctx) => reset(ctx, { mode: 'mixed', rev: 'dg' })) as CommandRun,
+    },
+    {
+      label: 'a hard reset to a name past a dangling symref',
+      args: ['reset', '--hard', '-q', 'dg'],
+      run: ((ctx) => reset(ctx, { mode: 'hard', rev: 'dg' })) as CommandRun,
+    },
+    {
+      label: 'a soft reset to a name only a dangling symref carries',
+      args: ['reset', '--soft', 'only'],
+      run: ((ctx) => reset(ctx, { mode: 'soft', rev: 'only' })) as CommandRun,
+    },
+    {
+      label: 'a checkout of a branch past a dangling symref',
+      args: ['checkout', '-q', 'dg'],
+      run: ((ctx) => checkout(ctx, { rev: 'dg' })) as CommandRun,
+    },
+    {
+      label: 'a detaching checkout of a name past a dangling symref',
+      args: ['checkout', '-q', '--detach', 'dg'],
+      run: ((ctx) => checkout(ctx, { rev: 'dg', detach: true })) as CommandRun,
+    },
+    {
       label: 'branch without a start point while a tag shares the current branch name',
       args: ['branch', 'x'],
       run: ((ctx) => branchCreate(ctx, { name: 'x' })) as CommandRun,

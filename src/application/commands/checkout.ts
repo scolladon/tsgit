@@ -103,9 +103,8 @@ const branchRefFor = async (ctx: Context, rev: string): Promise<RefName | undefi
 };
 
 /** The object a switch detaches onto once no branch carries the name: git's
- *  `get_oid_mb` fallback over the revision ladder. */
-const resolveSwitchOid = async (ctx: Context, rev: string): Promise<ObjectId> => {
-  const id = await resolveRevisionName(ctx, rev);
+ *  `get_oid_mb` answer over the revision ladder. */
+const requireSwitchOid = (id: ObjectId | undefined, rev: string): ObjectId => {
   if (id === undefined) throw branchNotFound(validateRefName(`${HEADS_PREFIX}${rev}`));
   return id;
 };
@@ -170,13 +169,14 @@ const switchBranch = async (ctx: Context, opts: CheckoutSwitchOptions): Promise<
   // `refs/heads/<arg>` before its revision ladder either way, and only the
   // ATTACH decision consults the flag. A name no branch carries detaches, as
   // git's own fallback does: a tag, a remote-tracking path or an object id.
+  // git names the argument through `get_oid_mb` first, branch or not — its
+  // warnings and its read of core.warnAmbiguousRefs happen either way.
+  const named = await resolveRevisionName(ctx, opts.rev);
   const onBranch = await branchRefFor(ctx, opts.rev);
   const detached = opts.detach === true || onBranch === undefined;
   const branchRef = detached ? undefined : onBranch;
   const oid =
-    onBranch === undefined
-      ? await resolveSwitchOid(ctx, opts.rev)
-      : await resolveRef(ctx, onBranch);
+    onBranch === undefined ? requireSwitchOid(named, opts.rev) : await resolveRef(ctx, onBranch);
 
   // Read target tree — git objects are content-addressed and immutable, so
   // this can happen outside the index lock without risk.
