@@ -4288,6 +4288,7 @@ describe('maintenance', () => {
         expect(Object.keys(result).sort()).toEqual(
           [
             'tasksRun',
+            'tasksFailed',
             'commitGraphWritten',
             'commitsInGraph',
             'looseObjectsBefore',
@@ -4306,6 +4307,7 @@ describe('maintenance', () => {
             'packBytesAfter',
           ].sort(),
         );
+        expect(result.tasksFailed).toEqual([]);
         expect(typeof result.commitGraphWritten).toBe('boolean');
         expect(typeof result.commitsInGraph).toBe('number');
         expect(typeof result.looseObjectsBefore).toBe('number');

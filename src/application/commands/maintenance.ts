@@ -30,6 +30,7 @@
  */
 import { invalidOption } from '../../domain/commands/error.js';
 import { parseGitBoolean } from '../../domain/config/config-ini.js';
+import { errorDataCode } from '../../domain/error-data-code.js';
 import type { ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { findLastEntry } from '../primitives/config-read.js';
@@ -53,8 +54,17 @@ export interface MaintenanceOptions {
   readonly auto?: boolean;
 }
 
+/** A task git reports as `task '<name>' failed`: the run goes on and exits 1. */
+export interface MaintenanceTaskFailure {
+  readonly task: MaintenanceTask;
+  /** The error code of the refusal the task met. */
+  readonly code: string;
+}
+
 export interface MaintenanceResult {
   readonly tasksRun: ReadonlyArray<MaintenanceTask>;
+  /** Tasks that failed, in run order; any entry is git's exit status 1. */
+  readonly tasksFailed: ReadonlyArray<MaintenanceTaskFailure>;
   readonly commitGraphWritten: boolean;
   readonly commitsInGraph: number;
   readonly looseObjectsBefore: number;
@@ -110,11 +120,14 @@ const writeReachableCommitGraph = async (ctx: Context): Promise<CommitGraphOutco
 /** git's `maintenance_task_commit_graph`: `prepare_repo_settings` first, then a
  *  disabled `core.commitGraph` skips the write, silently; otherwise one split
  *  layer, `commitsInGraph` counting the whole chain. */
-const runCommitGraphTask = async (ctx: Context): Promise<CommitGraphOutcome> => {
+const runCommitGraphTask = async (
+  ctx: Context,
+): Promise<CommitGraphOutcome | MaintenanceTaskFailure> => {
   await assertRepoSettingsValid(ctx);
   if (await lastBooleanIsFalse(ctx, 'core', 'commitGraph')) return NO_COMMIT_GRAPH;
-  const { written, commitCount } = await writeSplitCommitGraph(ctx);
-  return { commitGraphWritten: written, commitsInGraph: commitCount };
+  const written = await failureOr('commit-graph', () => writeSplitCommitGraph(ctx));
+  if ('code' in written) return written;
+  return { commitGraphWritten: written.written, commitsInGraph: written.commitCount };
 };
 
 const COMMIT_GRAPH_DISABLED_WARNING =
@@ -179,10 +192,16 @@ export const maintenance = async (
     result: GC_NOT_RUN,
   };
   const tasksRun: MaintenanceTask[] = [];
+  const tasksFailed: MaintenanceTaskFailure[] = [];
 
   for (const task of orderedUniqueTasks(opts.tasks)) {
     if (task === 'commit-graph') {
-      commitGraphOutcome = laterOutcome(commitGraphOutcome, await runCommitGraphTask(ctx));
+      const outcome = await runCommitGraphTask(ctx);
+      if ('code' in outcome) {
+        tasksFailed.push(outcome);
+        continue;
+      }
+      commitGraphOutcome = laterOutcome(commitGraphOutcome, outcome);
       tasksRun.push('commit-graph');
       continue;
     }
@@ -192,5 +211,19 @@ export const maintenance = async (
     commitGraphOutcome = (await writeGcCommitGraph(ctx)) ?? commitGraphOutcome;
   }
 
-  return { tasksRun, ...commitGraphOutcome, ...gcOutcome.result };
+  return { tasksRun, tasksFailed, ...commitGraphOutcome, ...gcOutcome.result };
 };
+
+/** The write git runs as a child: its coded refusal fails the task; anything else is a bug and propagates. */
+async function failureOr<T extends object>(
+  task: MaintenanceTask,
+  run: () => Promise<T>,
+): Promise<T | MaintenanceTaskFailure> {
+  try {
+    return await run();
+  } catch (error) {
+    const code = errorDataCode(error);
+    if (code === undefined) throw error;
+    return { task, code };
+  }
+}

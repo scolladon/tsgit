@@ -21,6 +21,7 @@ import {
 import { invalidCommitGraphChunk } from '../../../domain/commit/error.js';
 import { parseGitBoolean } from '../../../domain/config/config-ini.js';
 import { TsgitError } from '../../../domain/error.js';
+import { errorDataCode } from '../../../domain/error-data-code.js';
 import type { ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { findLastEntry } from '../config-read.js';
@@ -124,8 +125,10 @@ export function insertBounded<K, V>(map: Map<K, V>, cap: number, key: K, value: 
 
 type SourceFs = ObjectSource['fs'];
 
-function isFileNotFound(error: unknown): boolean {
-  return error instanceof TsgitError && error.data.code === 'FILE_NOT_FOUND';
+/** git's open of a graph path under a non-directory fails ENOTDIR: no graph there either. */
+function isAbsentPath(error: unknown): boolean {
+  const code = errorDataCode(error);
+  return code === 'FILE_NOT_FOUND' || code === 'NOT_A_DIRECTORY';
 }
 
 // `exists` gates the read so the overwhelmingly common "no commit-graph in
@@ -135,21 +138,21 @@ function isFileNotFound(error: unknown): boolean {
 // budget. The read itself still guards FILE_NOT_FOUND for the narrow TOCTOU
 // window between the two calls.
 async function tryRead(fs: SourceFs, path: string): Promise<Uint8Array | undefined> {
-  if (!(await fs.exists(path))) return undefined;
   try {
+    if (!(await fs.exists(path))) return undefined;
     return await fs.read(path);
   } catch (error) {
-    if (isFileNotFound(error)) return undefined;
+    if (isAbsentPath(error)) return undefined;
     throw error;
   }
 }
 
 async function tryReadUtf8(fs: SourceFs, path: string): Promise<string | undefined> {
-  if (!(await fs.exists(path))) return undefined;
   try {
+    if (!(await fs.exists(path))) return undefined;
     return await fs.readUtf8(path);
   } catch (error) {
-    if (isFileNotFound(error)) return undefined;
+    if (isAbsentPath(error)) return undefined;
     throw error;
   }
 }

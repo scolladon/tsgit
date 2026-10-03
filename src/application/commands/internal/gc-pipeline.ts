@@ -64,7 +64,7 @@ const CLOSURE_TIER: ClosureTier = 'walk';
 
 export type GcResult = Omit<
   MaintenanceResult,
-  'tasksRun' | 'commitGraphWritten' | 'commitsInGraph'
+  'tasksRun' | 'tasksFailed' | 'commitGraphWritten' | 'commitsInGraph'
 >;
 
 export const GC_NOT_RUN: GcResult = {

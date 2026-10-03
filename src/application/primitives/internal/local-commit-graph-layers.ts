@@ -46,8 +46,18 @@ async function loadLayerFile(ctx: Context, path: string): Promise<LocalGraphLaye
   return { hash, path, layer };
 }
 
+/** A chain under a non-directory `info/commit-graphs` is no chain, as git's open finds none. */
+async function readChainIfPresent(ctx: Context, gitDir: string): Promise<string | undefined> {
+  try {
+    return await readUtf8IfPresent(ctx.fs, commitGraphChainPath(gitDir));
+  } catch (error) {
+    if (isAbsent(error)) return undefined;
+    throw error;
+  }
+}
+
 async function loadChainLayers(ctx: Context, gitDir: string): Promise<readonly LocalGraphLayer[]> {
-  const chainText = await readUtf8IfPresent(ctx.fs, commitGraphChainPath(gitDir));
+  const chainText = await readChainIfPresent(ctx, gitDir);
   const hashes = (chainText ?? '').split('\n').filter((line) => line.length > 0);
   const layers: LocalGraphLayer[] = [];
   for (const hash of hashes) {

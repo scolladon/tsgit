@@ -460,4 +460,42 @@ describe.skipIf(!GIT_AVAILABLE)('commit-graph write interop', () => {
       });
     });
   });
+
+  describe('Given info/commit-graphs is a file, When both tools run the commit-graph then gc maintenance tasks', () => {
+    it('Then the commit-graph task fails for both, gc still runs and writes the same single-file graph', async () => {
+      // Arrange
+      const baseDir = await initRepo('layers-dir-file');
+      await addDatedCommit(baseDir, 'c0', 1_600_000_000);
+      await writeFile(path.join(baseDir, '.git', 'objects', 'info', 'commit-graphs'), 'x\n');
+      const peerDir = await tmpDir('layers-dir-file-peer');
+      const oursDir = await tmpDir('layers-dir-file-ours');
+      await cp(baseDir, peerDir, { recursive: true });
+      await cp(baseDir, oursDir, { recursive: true });
+      await rm(baseDir, { recursive: true, force: true });
+      const peer = tryRunGitWithExit([
+        '-C',
+        peerDir,
+        'maintenance',
+        'run',
+        '--task=commit-graph',
+        '--task=gc',
+      ]);
+      const sut = maintenance;
+
+      // Act
+      const result = await sut(createNodeContext({ workDir: oursDir, algorithm: 'sha1' }), {
+        tasks: ['commit-graph', 'gc'],
+      });
+
+      // Assert
+      expect(peer.exitCode).toBe(1);
+      expect(peer.stderr).toContain("error: task 'commit-graph' failed");
+      expect(result.tasksFailed).toEqual([{ task: 'commit-graph', code: 'FILE_EXISTS' }]);
+      expect(result.tasksRun).toEqual(['gc']);
+      const graphOf = (dir: string) => readFile(commitGraphPath(`${dir}/.git`));
+      expect(Buffer.compare(await graphOf(oursDir), await graphOf(peerDir))).toBe(0);
+      await rm(peerDir, { recursive: true, force: true });
+      await rm(oursDir, { recursive: true, force: true });
+    });
+  });
 });
