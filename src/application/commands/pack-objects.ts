@@ -23,6 +23,7 @@ import type { Context } from '../../ports/context.js';
 import { buildPack } from '../primitives/build-pack.js';
 import { assertValidPackIntConfig } from '../primitives/config-read.js';
 import { type ClosureTier, computeClosure } from '../primitives/internal/closure-engine.js';
+import { packUseSparse } from '../primitives/internal/pack-use-sparse.js';
 import { writePackArtifacts } from '../primitives/internal/write-pack-artifacts.js';
 import { commonGitDir, packsDir } from '../primitives/path-layout.js';
 import { refreshPackRegistry } from '../primitives/read-object.js';
@@ -84,6 +85,7 @@ export const packObjects = async (
     not,
     objects: true,
     tier: closureTierFor(opts),
+    sparse: await packUseSparse(ctx),
   });
 
   const pack = await buildPack(ctx, { objects: closure.objects, delta: true });

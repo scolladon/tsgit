@@ -168,10 +168,13 @@ export interface ParsedConfig {
    * many recent objects the delta selector considers as bases (git default
    * `10`). `depth` bounds the longest delta chain the writer builds (git
    * default `50`). `windowMemory` bounds the window's total resident size in
-   * bytes; unset or `0` means unlimited (git default).
+   * bytes; unset or `0` means unlimited (git default). `useSparse` marks a
+   * `pack-objects --revs` excluded side only along the paths both sides hold
+   * (git default `true`).
    */
   readonly pack?: {
     readonly writeReverseIndex?: boolean;
+    readonly useSparse?: boolean;
     readonly window?: number;
     readonly depth?: number;
     readonly windowMemory?: number;
@@ -1908,6 +1911,7 @@ const mergeTag = (acc: { tag?: { gpgSign?: boolean } }, sec: IniSection): void =
 
 type MutablePack = {
   writeReverseIndex?: boolean;
+  useSparse?: boolean;
   window?: number;
   depth?: number;
   windowMemory?: number;
@@ -2002,12 +2006,13 @@ export const assertValidGcNumberConfig = async (
   }
 };
 
-const applyPackWriteReverseIndexEntry = (
+const applyPackBooleanEntry = (
   pack: MutablePack,
+  field: 'writeReverseIndex' | 'useSparse',
   value: string | null,
 ): MutablePack | undefined => {
   const parsed = parseGitBoolean(value);
-  return parsed.ok ? { ...pack, writeReverseIndex: parsed.value } : undefined;
+  return parsed.ok ? { ...pack, [field]: parsed.value } : undefined;
 };
 
 const applyPackIntEntry = (
@@ -2032,7 +2037,9 @@ const applyPackEntry = (
   lowered: string,
   value: string | null,
 ): MutablePack | undefined => {
-  if (lowered === 'writereverseindex') return applyPackWriteReverseIndexEntry(pack, value);
+  if (lowered === 'writereverseindex')
+    return applyPackBooleanEntry(pack, 'writeReverseIndex', value);
+  if (lowered === 'usesparse') return applyPackBooleanEntry(pack, 'useSparse', value);
   const check = packIntChecker(lowered);
   if (check === undefined) return undefined;
   const field =

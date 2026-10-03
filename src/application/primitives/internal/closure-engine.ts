@@ -40,7 +40,14 @@ import {
   type LoadedBitmapArtefact,
   resolveBitmapClosure,
 } from './bitmap-binding.js';
-import { markBoundaryTrees, markNotSide, type NotMarks } from './closure-not-marks.js';
+import {
+  markBoundaryTrees,
+  markNotSide,
+  markSparseTrees,
+  type NotMarks,
+  readCommitMetaIfPresent,
+  type SparseTreeSeed,
+} from './closure-not-marks.js';
 import { commitDateWalk } from './commit-date-walk.js';
 import { type LimitedWalk, limitList, readShown, resolveLimitOptions } from './limit-list.js';
 import { loadMidxBitmapArtefact } from './midx-bitmap-binding.js';
@@ -66,6 +73,12 @@ export interface ClosureRequest {
    * (git itself abandons the bitmap for it).
    */
   readonly maxCount?: number;
+  /**
+   * Mark the excluded side the way git's `pack.useSparse` does: only along
+   * the paths both sides hold. Omitted means git's dense marking of every
+   * edge tree, as `rev-list` does. Only a walk with a `not` side differs.
+   */
+  readonly sparse?: boolean;
   /** Follow only the first parent of each commit. Omitted means every
    *  parent. Ignored on the bitmap tier, which does not traverse. */
   readonly firstParent?: boolean;
@@ -254,6 +267,8 @@ interface WalkedCommit {
 interface CommitWalk {
   readonly walked: ReadonlyArray<WalkedCommit>;
   readonly boundary: ReadonlySet<ObjectId>;
+  /** The limited walk and the commits it listed — what sparse marking groups. */
+  readonly limited?: { readonly walk: LimitedWalk; readonly listed: ReadonlyArray<Commit> };
 }
 
 const walkedFrom = (commit: Commit): WalkedCommit => ({ id: commit.id, tree: commit.data.tree });
@@ -328,8 +343,54 @@ async function collectLimitedWalk(
   const walk = await limitList(ctx, options);
   const listed: Commit[] = [];
   for await (const commit of readShown(ctx, options, walk)) listed.push(commit);
-  return { walked: listed.map(walkedFrom), boundary: edgesOf(walk, listed) };
+  return {
+    walked: listed.map(walkedFrom),
+    boundary: edgesOf(walk, listed),
+    limited: { walk, listed },
+  };
 }
+
+/**
+ * git's sparse `mark_edges_uninteresting` seeds: every commit the limited
+ * walk keeps in its list — the shown ones and those it dropped — and every
+ * parent of one, each tree flagged with its commit's exclusion.
+ */
+async function sparseSeedsOf(
+  ctx: Context,
+  walk: LimitedWalk,
+  listed: ReadonlyArray<Commit>,
+): Promise<ReadonlyArray<SparseTreeSeed>> {
+  const trees = new Map(listed.map((commit) => [commit.id, commit.data.tree]));
+  const seeds: SparseTreeSeed[] = [];
+  const commits = [
+    ...listed.map((commit) => ({
+      id: commit.id,
+      tree: commit.data.tree,
+      parents: commit.data.parents,
+    })),
+    ...(await readDropped(ctx, walk.dropped)),
+  ];
+  for (const commit of commits) {
+    seeds.push({ tree: commit.tree, excluded: walk.uninteresting.has(commit.id) });
+    for (const parent of commit.parents) {
+      const tree = trees.get(parent) ?? (await readCommitMetaIfPresent(ctx, parent))?.tree;
+      if (tree !== undefined) seeds.push({ tree, excluded: walk.uninteresting.has(parent) });
+    }
+  }
+  return seeds;
+}
+
+const readDropped = async (
+  ctx: Context,
+  dropped: Iterable<ObjectId>,
+): Promise<ReadonlyArray<{ id: ObjectId; tree: ObjectId; parents: ReadonlyArray<ObjectId> }>> => {
+  const out: { id: ObjectId; tree: ObjectId; parents: ReadonlyArray<ObjectId> }[] = [];
+  for (const id of dropped) {
+    const meta = await readCommitMetaIfPresent(ctx, id);
+    if (meta !== undefined) out.push({ id, tree: meta.tree, parents: meta.parents });
+  }
+  return out;
+};
 
 /**
  * Walk the commit seeds' ancestry, bounded by `maxCount` and ordered by
@@ -344,12 +405,30 @@ async function walkCommitSeeds(
   marks: NotMarks,
   request: ClosureRequest,
 ): Promise<ReadonlyArray<WalkedCommit>> {
-  const { walked, boundary } =
+  const commitWalk =
     marks.commitTips.length === 0
       ? await collectUnlimitedWalk(ctx, commitSeeds, request)
       : await collectLimitedWalk(ctx, commitSeeds, marks, request);
-  if (request.objects) await markBoundaryTrees(ctx, boundary, marks);
+  if (request.objects) await markExcludedTrees(ctx, commitWalk, marks, request);
+  const { walked } = commitWalk;
   return request.maxCount !== undefined ? walked.slice(0, request.maxCount) : walked;
+}
+
+async function markExcludedTrees(
+  ctx: Context,
+  walk: CommitWalk,
+  marks: NotMarks,
+  request: ClosureRequest,
+): Promise<void> {
+  if (request.sparse !== true || walk.limited === undefined) {
+    await markBoundaryTrees(ctx, walk.boundary, marks);
+    return;
+  }
+  await markSparseTrees(
+    ctx,
+    await sparseSeedsOf(ctx, walk.limited.walk, walk.limited.listed),
+    marks,
+  );
 }
 
 /** Dispatch the commit-seed side of the closure: no seeds, `maxCount: 0`, `noWalk`, or the full walk. */

@@ -155,7 +155,7 @@ export async function markNotSide(ctx: Context, not: ReadonlyArray<ObjectId>): P
  * `undefined` for a locally absent object, every other failure rethrown —
  * git's `mark_tree_uninteresting` returns on a commit with no tree to give.
  */
-const readCommitMetaIfPresent = async (
+export const readCommitMetaIfPresent = async (
   ctx: Context,
   id: ObjectId,
 ): Promise<CommitMeta | undefined> => {
@@ -183,5 +183,78 @@ export async function markBoundaryTrees(
     const meta = await readCommitMetaIfPresent(ctx, commitId);
     if (meta === undefined) continue;
     await markTree(ctx, meta.tree, marks.objects, marks.seenTrees, marks.maxDepth);
+  }
+}
+
+/** A commit tree git's sparse marking starts from, excluded when its commit is. */
+export interface SparseTreeSeed {
+  readonly tree: ObjectId;
+  readonly excluded: boolean;
+}
+
+/**
+ * git's `pack.useSparse` marking (`mark_trees_uninteresting_sparse`): group
+ * the listed commits' trees and their parents' by path, and descend only a
+ * path both an excluded and an included tree hold. An excluded tree marks
+ * its direct children whatever their path; a subtree an included commit
+ * holds under a path no excluded tree shares stays in the closure even when
+ * an excluded tree holds it elsewhere.
+ */
+export async function markSparseTrees(
+  ctx: Context,
+  seeds: Iterable<SparseTreeSeed>,
+  marks: NotMarks,
+): Promise<void> {
+  const trees = new Set<ObjectId>();
+  for (const seed of seeds) {
+    if (seed.excluded) marks.objects.add(seed.tree);
+    trees.add(seed.tree);
+  }
+  await markTreeGroup(ctx, trees, marks, 0);
+}
+
+async function markTreeGroup(
+  ctx: Context,
+  trees: ReadonlySet<ObjectId>,
+  marks: NotMarks,
+  depth: number,
+): Promise<void> {
+  if (!holdsBothSides(trees, marks.objects)) return;
+  if (depth > marks.maxDepth) throw treeDepthExceeded(depth);
+  const byName = new Map<string, Set<ObjectId>>();
+  for (const tree of trees) await addChildrenByName(ctx, tree, byName, marks.objects);
+  for (const group of byName.values()) await markTreeGroup(ctx, group, marks, depth + 1);
+}
+
+const holdsBothSides = (trees: ReadonlySet<ObjectId>, marked: ReadonlySet<ObjectId>): boolean => {
+  let excluded = false;
+  let included = false;
+  for (const tree of trees) {
+    if (marked.has(tree)) excluded = true;
+    else included = true;
+  }
+  return excluded && included;
+};
+
+/** Lossless map key for an entry name: one code unit per name byte. */
+const nameKey = (bytes: Uint8Array): string => String.fromCharCode(...bytes);
+
+async function addChildrenByName(
+  ctx: Context,
+  treeId: ObjectId,
+  byName: Map<string, Set<ObjectId>>,
+  marked: Set<ObjectId>,
+): Promise<void> {
+  const tree = await readTreeIfPresent(ctx, treeId);
+  if (tree === undefined || tree.type !== 'tree') return;
+  const excluded = marked.has(treeId);
+  for (const entry of tree.entries) {
+    if (isGitlink(entry.mode)) continue;
+    if (excluded) marked.add(entry.id);
+    if (!isDirectory(entry.mode)) continue;
+    const key = nameKey(entry.nameBytes);
+    const group = byName.get(key) ?? new Set<ObjectId>();
+    group.add(entry.id);
+    byName.set(key, group);
   }
 }
