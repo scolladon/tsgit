@@ -16,7 +16,6 @@
  */
 
 import type { ObjectId, RefName } from '../../../domain/objects/index.js';
-import { refCandidates } from '../../../domain/refs/index.js';
 import { shortBranchName } from '../../../domain/refs/short-branch-name.js';
 import type { Context } from '../../../ports/context.js';
 import { readConfig } from '../../primitives/config-read.js';
@@ -25,6 +24,7 @@ import { resolveRefOrMissing } from '../../primitives/resolve-ref.js';
 import { isAncestor } from './is-ancestor.js';
 import { applyRefspec, parseRefspec } from './ref-spec.js';
 import { buildRemoteTable } from './remote-config.js';
+import { resolvingCandidateRefs } from './revision-name.js';
 
 const HEAD_NAME = 'HEAD' as RefName;
 
@@ -86,26 +86,12 @@ const upstreamRef = async (ctx: Context, name: RefName): Promise<RefName | undef
 /**
  * git's `repo_dwim_ref` over `branch.<n>.merge` for the pseudo-remote `.`:
  * `set_merge` stores the full ref the value resolves to, and keeps the raw
- * value only when the resolution fails. It counts EVERY candidate namespace
- * that holds the name and resolves only on exactly one — an ambiguous name is
- * no resolution at all.
+ * value unless exactly one namespace resolves — an ambiguous name is no
+ * resolution at all, and each skipped namespace warns.
  */
 const dwimLocalMerge = async (ctx: Context, merge: string): Promise<RefName> => {
-  const found: RefName[] = [];
-  for (const candidate of refCandidates(merge)) {
-    if (await candidateResolves(ctx, candidate as RefName)) found.push(candidate as RefName);
-  }
+  const found = await resolvingCandidateRefs(ctx, merge);
   return found.length === 1 ? (found[0] as RefName) : (merge as RefName);
-};
-
-/** Whether one dwim candidate names an object, the way `expand_ref` counts it —
- *  a dangling or broken candidate counts for nothing rather than refusing. */
-const candidateResolves = async (ctx: Context, candidate: RefName): Promise<boolean> => {
-  try {
-    return (await resolveRefOrMissing(ctx, candidate)) !== undefined;
-  } catch {
-    return false;
-  }
 };
 
 /**

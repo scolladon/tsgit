@@ -58,6 +58,14 @@ export const resolvingCandidates = async (
 ): Promise<ReadonlyArray<ObjectId>> =>
   (await expandRef(ctx, name, resolveCandidate(ctx))).map((found) => found.id);
 
+/** Every real ref `name`'s candidate namespaces resolve to, in ladder order — the
+ *  `dwim_ref` count whose single answer `set_merge` keeps. */
+export const resolvingCandidateRefs = async (
+  ctx: Context,
+  name: string,
+): Promise<ReadonlyArray<RefName>> =>
+  (await expandRef(ctx, name, resolveCandidate(ctx))).map((found) => found.ref);
+
 /** git's `dwim_ref` real ref as a command's own `dwim_ref` call reads it, warning on each skipped namespace. */
 export const dwimRefNameWarning = async (
   ctx: Context,

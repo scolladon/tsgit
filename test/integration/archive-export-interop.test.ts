@@ -980,6 +980,23 @@ describe.skipIf(!GIT_AVAILABLE)('archive export-subst interop', () => {
       });
     });
 
+    describe.each([
+      ['a revision expression', 'HEAD~0:.mailmap'],
+      ['an abbreviated blob id', 'abbreviated'],
+    ])('When mailmap.blob names the committed file through %s', (_label, blob) => {
+      it('Then the mapped ident expands', async () => {
+        // Arrange
+        const dir = await mailmapRepo(`mailmap-blob-${blob === 'abbreviated' ? 'abbrev' : 'expr'}`);
+        await rm(path.join(dir, '.mailmap'));
+        const named =
+          blob === 'abbreviated' ? git(dir, 'rev-parse', '--short', 'HEAD:.mailmap').trim() : blob;
+        git(dir, 'config', 'mailmap.blob', named);
+
+        // Act / Assert
+        await expectSameExpansion(dir, 'HEAD', { m: '[Mapped Name|mapped@example.com|mapped]' });
+      });
+    });
+
     describe('When a bare clone is archived', () => {
       it('Then HEAD:.mailmap maps the ident', async () => {
         // Arrange

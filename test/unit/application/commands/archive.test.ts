@@ -3,12 +3,12 @@ import { createMemoryContext } from '../../../../src/adapters/memory/memory-adap
 import type { ArchiveEntry } from '../../../../src/application/commands/archive.js';
 import { archive } from '../../../../src/application/commands/archive.js';
 import { describe as describeCommit } from '../../../../src/application/commands/describe.js';
+import { readMailmap } from '../../../../src/application/commands/internal/read-mailmap.js';
 import {
   abbreviateObjectId,
   abbreviateObjectIdFrom,
 } from '../../../../src/application/primitives/abbreviate-object-id.js';
 import { readBlobContentInStreamOrder } from '../../../../src/application/primitives/internal/blob-source.js';
-import { readMailmap } from '../../../../src/application/primitives/internal/read-mailmap.js';
 import { loadRefDecorations } from '../../../../src/application/primitives/internal/ref-decorations.js';
 import { verifyCommitSignature } from '../../../../src/application/primitives/internal/verify-commit-signature.js';
 import { readBlob } from '../../../../src/application/primitives/read-blob.js';
@@ -53,16 +53,13 @@ vi.mock(
   },
 );
 
-vi.mock(
-  '../../../../src/application/primitives/internal/read-mailmap.js',
-  async (importOriginal) => {
-    const actual =
-      await importOriginal<
-        typeof import('../../../../src/application/primitives/internal/read-mailmap.js')
-      >();
-    return { ...actual, readMailmap: vi.fn(actual.readMailmap) };
-  },
-);
+vi.mock('../../../../src/application/commands/internal/read-mailmap.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<
+      typeof import('../../../../src/application/commands/internal/read-mailmap.js')
+    >();
+  return { ...actual, readMailmap: vi.fn(actual.readMailmap) };
+});
 
 vi.mock(
   '../../../../src/application/primitives/internal/verify-commit-signature.js',

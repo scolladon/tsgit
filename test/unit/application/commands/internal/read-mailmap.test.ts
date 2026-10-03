@@ -1,13 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
-import { readMailmap } from '../../../../../src/application/primitives/internal/read-mailmap.js';
+import { readMailmap } from '../../../../../src/application/commands/internal/read-mailmap.js';
+import { invalidateConfigCache } from '../../../../../src/application/primitives/config-read.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../../src/application/primitives/write-tree.js';
 import { mapUser } from '../../../../../src/domain/mailmap/index.js';
 import type { ObjectId } from '../../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../../src/ports/context.js';
-import { asBareContext } from '../../commands/fixtures.js';
+import { asBareContext } from '../fixtures.js';
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -24,7 +25,10 @@ const mapped = async (ctx: Context, mail: string): Promise<string> => {
 const rule = (name: string, mail: string): string => `${name} <new@example.com> <${mail}>\n`;
 
 /** Commits a tree holding `.mailmap`, and points `refs/heads/main` and HEAD at it. */
-const commitMailmap = async (ctx: Context, text: string): Promise<void> => {
+const commitMailmap = async (
+  ctx: Context,
+  text: string,
+): Promise<{ readonly commit: ObjectId; readonly blob: ObjectId }> => {
   const blob = await writeObject(ctx, {
     type: 'blob',
     id: '' as ObjectId,
@@ -45,10 +49,20 @@ const commitMailmap = async (ctx: Context, text: string): Promise<void> => {
   });
   await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commit}\n`);
   await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+  return { commit, blob };
 };
 
-const writeConfig = (ctx: Context, text: string): Promise<void> =>
-  ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, text);
+const writeConfig = async (ctx: Context, text: string): Promise<void> => {
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, text);
+  invalidateConfigCache(ctx);
+};
+
+/** A repository whose HEAD names a branch with no commit yet. */
+const unbornRepository = async (): Promise<Context> => {
+  const ctx = createMemoryContext();
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+  return ctx;
+};
 
 describe('readMailmap', () => {
   describe('Given a worktree .mailmap', () => {
@@ -105,7 +119,7 @@ describe('readMailmap', () => {
     describe('When the mailmap is read', () => {
       it('Then nothing is mapped', async () => {
         // Arrange
-        const ctx = createMemoryContext();
+        const ctx = await unbornRepository();
         await writeConfig(ctx, '[mailmap]\n\tblob = nowhere:.mailmap\n');
 
         // Act
@@ -113,6 +127,96 @@ describe('readMailmap', () => {
 
         // Assert
         expect(result).toBe('Old');
+      });
+    });
+  });
+
+  describe.each([
+    { label: 'a revision expression', blob: 'main~0:.mailmap' },
+    { label: 'an abbreviated blob id', blob: 'abbreviated' },
+    { label: 'a name past a dangling symref', blob: 'dg:.mailmap' },
+  ])('Given mailmap.blob naming the committed file through $label', ({ blob }) => {
+    describe('When the mailmap is read', () => {
+      it('Then the blob rules apply, warning as get_oid does', async () => {
+        // Arrange
+        const warnings: string[] = [];
+        const base = createMemoryContext();
+        const ctx = { ...base, logger: { warn: (message: string) => warnings.push(message) } };
+        const { commit, blob: blobId } = await commitMailmap(ctx, rule('Blob', 'old@example.com'));
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/dg`, `${commit}\n`);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/dg`, 'ref: refs/tags/nope\n');
+        const named = blob === 'abbreviated' ? blobId.slice(0, 7) : blob;
+        await writeConfig(ctx, `[mailmap]\n\tblob = ${named}\n`);
+
+        // Act
+        const result = await mapped(ctx, 'old@example.com');
+
+        // Assert
+        expect(result).toBe('Blob');
+        expect(warnings).toEqual(
+          blob === 'dg:.mailmap' ? ['ignoring dangling symref refs/tags/dg'] : [],
+        );
+      });
+    });
+  });
+
+  describe('Given mailmap.blob naming a path the revision does not hold', () => {
+    describe('When the mailmap is read', () => {
+      it('Then nothing is mapped', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await commitMailmap(ctx, rule('Blob', 'old@example.com'));
+        await writeConfig(ctx, '[mailmap]\n\tblob = main:absent\n');
+
+        // Act
+        const result = await mapped(ctx, 'old@example.com');
+
+        // Assert
+        expect(result).toBe('Old');
+      });
+    });
+  });
+
+  describe('Given mailmap.blob read under a malformed ambiguity setting', () => {
+    describe('When the mailmap is read', () => {
+      it('Then the refusal git dies with propagates', async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        await commitMailmap(ctx, rule('Blob', 'old@example.com'));
+        await writeConfig(
+          ctx,
+          '[core]\n\twarnAmbiguousRefs = maybe\n[mailmap]\n\tblob = main:.mailmap\n',
+        );
+        const sut = readMailmap;
+
+        // Act
+        const result = await sut(ctx).then(
+          () => undefined,
+          (error: unknown) => (error as { data?: unknown }).data,
+        );
+
+        // Assert
+        expect(result).toMatchObject({ code: 'CONFIG_BAD_BOOLEAN_VALUE', value: 'maybe' });
+      });
+    });
+  });
+
+  describe('Given mailmap.blob naming a commit rather than a blob', () => {
+    describe('When the mailmap is read', () => {
+      it('Then nothing is mapped and the misfit is reported as git errors it', async () => {
+        // Arrange
+        const errors: string[] = [];
+        const base = createMemoryContext();
+        const ctx = { ...base, logger: { error: (message: string) => errors.push(message) } };
+        await commitMailmap(ctx, rule('Blob', 'old@example.com'));
+        await writeConfig(ctx, '[mailmap]\n\tblob = main\n');
+
+        // Act
+        const result = await mapped(ctx, 'old@example.com');
+
+        // Assert
+        expect(result).toBe('Old');
+        expect(errors).toEqual(['mailmap is not a blob: main']);
       });
     });
   });
@@ -156,7 +260,7 @@ describe('readMailmap', () => {
     describe('When the mailmap is read', () => {
       it('Then the worktree path is not read', async () => {
         // Arrange
-        const seeded = createMemoryContext();
+        const seeded = await unbornRepository();
         await seeded.fs.writeUtf8('/repo/.mailmap', rule('Worktree', 'old@example.com'));
         const ctx = asBareContext(seeded);
 
@@ -193,7 +297,7 @@ describe('readMailmap', () => {
     describe('When the mailmap is read with a .mailmap file in that directory', () => {
       it('Then the file is not read', async () => {
         // Arrange
-        const seeded = createMemoryContext();
+        const seeded = await unbornRepository();
         await seeded.fs.writeUtf8('/repo/.mailmap', rule('Worktree', 'old@example.com'));
         const ctx = bareKeepingWorkDir(seeded);
 

@@ -90,6 +90,12 @@ const configureUpstream = async (ctx: Context, upstream: RefName): Promise<void>
   invalidateConfigCache(ctx);
 };
 
+const appendCoreSetting = async (ctx: Context, setting: string): Promise<void> => {
+  const path = `${ctx.layout.gitDir}/config`;
+  await ctx.fs.writeUtf8(path, `${await ctx.fs.readUtf8(path)}[core]\n\t${setting}\n`);
+  invalidateConfigCache(ctx);
+};
+
 interface Seeded {
   readonly ctx: Context;
   readonly tree: ObjectId;
@@ -245,6 +251,56 @@ describe.each(['files', 'reftable'] as const)('branch delete — %s ref backend'
         // Assert
         expect(result).toEqual({ name: TOPIC });
         expect(await refExists(ctx, TOPIC)).toBe(false);
+      });
+    });
+  });
+
+  describe('Given a local upstream short name two namespaces carry, the ambiguity check off', () => {
+    describe('When branch delete runs unforced on a branch only the first namespace contains', () => {
+      it('Then the first namespace stands as the upstream and the ref is removed', async () => {
+        // Arrange
+        const { ctx, root, side } = await seed(refStorage);
+        await plantRef(ctx, TOPIC, side);
+        await plantRef(ctx, 'refs/tags/up' as RefName, side);
+        await plantRef(ctx, UPSTREAM, root);
+        await configureUpstream(ctx, 'up' as RefName);
+        await appendCoreSetting(ctx, 'warnAmbiguousRefs = false');
+        const sut = branchDelete;
+
+        // Act
+        const result = await sut(ctx, { name: 'topic' });
+
+        // Assert
+        expect(result).toEqual({ name: TOPIC });
+      });
+    });
+  });
+
+  describe('Given a local upstream short name a dangling tag symref shadows', () => {
+    describe('When branch delete runs unforced on a branch the branch namespace contains', () => {
+      it('Then it warns the skipped symref and the ref is removed', async () => {
+        // Arrange
+        const { ctx: base, side } = await seed(refStorage);
+        const warnings: string[] = [];
+        const ctx = { ...base, logger: { warn: (message: string) => warnings.push(message) } };
+        await plantRef(ctx, TOPIC, side);
+        await plantRef(ctx, UPSTREAM, side);
+        await getRefStore(ctx).applyRefUpdates([
+          {
+            kind: 'setSymbolic',
+            name: 'refs/tags/up' as RefName,
+            target: 'refs/tags/nope' as RefName,
+          },
+        ]);
+        await configureUpstream(ctx, 'up' as RefName);
+        const sut = branchDelete;
+
+        // Act
+        const result = await sut(ctx, { name: 'topic' });
+
+        // Assert
+        expect(result).toEqual({ name: TOPIC });
+        expect(warnings).toEqual(['ignoring dangling symref refs/tags/up']);
       });
     });
   });

@@ -1,21 +1,18 @@
 import { workingTreeFileTooLarge } from '../../../domain/commands/error.js';
+import { errorDataCode } from '../../../domain/error-data-code.js';
 import { indexMailmap, type MailmapIndex, parseMailmap } from '../../../domain/mailmap/index.js';
 import { decode } from '../../../domain/objects/encoding.js';
 import type { ObjectId } from '../../../domain/objects/index.js';
-import { refCandidates } from '../../../domain/refs/index.js';
 import type { Context } from '../../../ports/context.js';
-import { readConfig } from '../config-read.js';
-import { readBlob } from '../read-blob.js';
-import { resolveRefOrMissing } from '../resolve-ref.js';
-import { MAX_WORKING_TREE_BLOB_BYTES } from '../types.js';
-import { joinPath } from './join-working-tree-path.js';
-import { peel } from './peel.js';
-import { expandUserPath, loadCappedUtf8 } from './read-capped-file.js';
-import { findTreeEntry } from './resolve-tree-path.js';
+import { readConfig } from '../../primitives/config-read.js';
+import { joinPath } from '../../primitives/internal/join-working-tree-path.js';
+import { expandUserPath, loadCappedUtf8 } from '../../primitives/internal/read-capped-file.js';
+import { readObject } from '../../primitives/read-object.js';
+import { MAX_WORKING_TREE_BLOB_BYTES } from '../../primitives/types.js';
+import { evaluateRevision } from '../rev-parse.js';
 
 const MAILMAP_FILE = '.mailmap';
 const BARE_DEFAULT_BLOB = `HEAD:${MAILMAP_FILE}`;
-const FULL_OID = /^[0-9a-f]+$/;
 
 const readFileText = (ctx: Context, path: string): Promise<string | undefined> =>
   loadCappedUtf8(ctx, path, MAX_WORKING_TREE_BLOB_BYTES, workingTreeFileTooLarge);
@@ -26,31 +23,34 @@ const readWorktreeMailmap = async (ctx: Context): Promise<string | undefined> =>
   return readFileText(ctx, joinPath(workDir, MAILMAP_FILE));
 };
 
-const resolveRevision = async (ctx: Context, rev: string): Promise<ObjectId | undefined> => {
-  if (rev.length === ctx.hashConfig.hexLength && FULL_OID.test(rev)) return rev as ObjectId;
-  for (const candidate of refCandidates(rev)) {
-    const id = await resolveRefOrMissing(ctx, candidate);
-    if (id !== undefined) return id;
-  }
-  return undefined;
-};
+/** The codes `get_oid` answers -1 with: the expression names no object, so no blob is read. */
+const UNRESOLVED_CODES: ReadonlySet<string | undefined> = new Set([
+  'OBJECT_NOT_FOUND',
+  'REVPARSE_UNRESOLVED',
+  'PATH_NOT_IN_TREE',
+]);
 
-/** `<rev>:<path>` as `get_oid_blob` reads it; `undefined` when it names nothing. */
+/** `mailmap.blob` as `read_mailmap_blob`'s `repo_get_oid` reads it; `undefined` when it names nothing. */
 const resolveBlobExpression = async (
   ctx: Context,
   expression: string,
 ): Promise<ObjectId | undefined> => {
-  const colon = expression.indexOf(':');
-  const rev = await resolveRevision(ctx, colon < 0 ? expression : expression.slice(0, colon));
-  if (rev === undefined || colon < 0) return rev;
-  const entry = await findTreeEntry(ctx, await peel(ctx, rev, 'tree'), expression.slice(colon + 1));
-  return entry?.id;
+  try {
+    return await evaluateRevision(ctx, expression);
+  } catch (error) {
+    if (UNRESOLVED_CODES.has(errorDataCode(error))) return undefined;
+    throw error;
+  }
 };
 
+/** git reports a named object that is no blob and reads the mailmap on without it. */
 const readBlobMailmap = async (ctx: Context, expression: string): Promise<string | undefined> => {
   const id = await resolveBlobExpression(ctx, expression);
   if (id === undefined) return undefined;
-  return decode((await readBlob(ctx, id)).content);
+  const object = await readObject(ctx, id);
+  if (object.type === 'blob') return decode(object.content);
+  ctx.logger?.error?.(`mailmap is not a blob: ${expression}`, { expression });
+  return undefined;
 };
 
 const readConfiguredFile = async (ctx: Context, raw: string): Promise<string | undefined> => {

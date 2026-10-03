@@ -20,11 +20,11 @@ import {
 import type { Context } from '../../../ports/context.js';
 import { abbreviateObjectId } from '../../primitives/abbreviate-object-id.js';
 import { readConfig } from '../../primitives/config-read.js';
-import { readMailmap } from '../../primitives/internal/read-mailmap.js';
 import { loadRefDecorations } from '../../primitives/internal/ref-decorations.js';
 import { verifyCommitSignature } from '../../primitives/internal/verify-commit-signature.js';
 import { readRawObject } from '../../primitives/read-object.js';
 import { describeForFormat } from './archive-describe.js';
+import { readMailmap } from './read-mailmap.js';
 
 /** Expands an `export-subst` file's `$Format:…$` occurrences against the archived commit. */
 export interface SubstExpander {
