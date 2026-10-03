@@ -25,7 +25,6 @@ describe('internal/rev-parse-grammar', () => {
           { raw: '', label: "'' (empty string)" },
           { raw: ':4:f.txt', label: "':4:f.txt' (out-of-range stage)" },
           { raw: 'HEAD^{garbage}', label: "'HEAD^{garbage}' (unknown peel type)" },
-          { raw: 'HEAD~~', label: "'HEAD~~' (~ with no number after)" },
           {
             raw: 'HEAD@{}',
             // an empty body is neither an index nor a date.
@@ -46,12 +45,6 @@ describe('internal/rev-parse-grammar', () => {
           { raw: 'HEAD^x', label: "'HEAD^x' (non-operator char inside the operation chain)" },
           { raw: '^1', label: "'^1' (empty base before an operator)" },
           { raw: ':5:f.txt', label: "':5:f.txt' (single-digit out-of-range stage)" },
-          {
-            raw: 'HEAD~',
-            // `~` must be followed by a digit; with none, the digit loop
-            // never advances (`j === i + 1`) and parseTilde fails.
-            label: "'HEAD~' (a '~' with no digit)",
-          },
           {
             raw: 'HEAD~2z',
             // `isDigit` must reject 'z' (0x7a): the digit-consuming loop stops
@@ -184,6 +177,30 @@ describe('internal/rev-parse-grammar', () => {
             base: 'HEAD',
             operations: [{ kind: 'ancestor', n: 3 }],
           });
+        });
+      });
+    });
+
+    describe.each([
+      { raw: 'HEAD~', operations: [{ kind: 'ancestor', n: 1 }] },
+      {
+        raw: 'HEAD~~',
+        operations: [
+          { kind: 'ancestor', n: 1 },
+          { kind: 'ancestor', n: 1 },
+        ],
+      },
+    ] as const)("Given '$raw' (a '~' with no count)", ({ raw, operations }) => {
+      describe('When parseExpression', () => {
+        it('Then each bare ~ is a first-parent step, as git reads it', () => {
+          // Arrange
+          const sut = parseExpression;
+
+          // Act
+          const result = sut(raw);
+
+          // Assert
+          expect(result).toEqual({ kind: 'ref-or-hex', base: 'HEAD', operations });
         });
       });
     });

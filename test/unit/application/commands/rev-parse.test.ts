@@ -316,7 +316,7 @@ describe('revParse', () => {
         // Act
         let caught: unknown;
         try {
-          await revParse(ctx, 'HEAD~~');
+          await revParse(ctx, 'HEAD^{garbage}');
         } catch (err) {
           caught = err;
         }

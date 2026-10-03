@@ -13,7 +13,7 @@ import { revparseUnresolved } from '../../../domain/commands/error.js';
  *   - `<base>` `<op>*`            RefOrHex with chained operations
  *
  * Operations:
- *   - `~N`            ancestor (first-parent N times); `~` alone is invalid
+ *   - `~N`            ancestor (first-parent N times); `~` alone is `~1`
  *   - `^`             parent 1
  *   - `^N`            parent N (1-based; 1 = first parent)
  *   - `^^^`           sequence of parent ops
@@ -177,9 +177,7 @@ const parseTilde = (
   let j = i + 1;
   // Stryker disable next-line EqualityOperator,ConditionalExpression: equivalent — at j === raw.length, charCodeAt returns NaN, isDigit(NaN) is false, so the `isDigit` operand terminates the loop whether or not the `j < raw.length` bound holds.
   while (j < raw.length && isDigit(raw.charCodeAt(j))) j += 1;
-  if (j === i + 1) fail(raw); // no digits after `~`
-  const n = Number(raw.slice(i + 1, j));
-  return { op: { kind: 'ancestor', n }, next: j };
+  return { op: { kind: 'ancestor', n: countOrOne(raw.slice(i + 1, j)) }, next: j };
 };
 
 const parseCaret = (
@@ -200,9 +198,10 @@ const parseCaret = (
   let j = i + 1;
   // Stryker disable next-line EqualityOperator,ConditionalExpression: equivalent — at j === raw.length, charCodeAt returns NaN, isDigit(NaN) is false, so the `isDigit` operand terminates the loop whether or not the `j < raw.length` bound holds.
   while (j < raw.length && isDigit(raw.charCodeAt(j))) j += 1;
-  const digitsStr = raw.slice(i + 1, j);
-  const n = digitsStr === '' ? 1 : Number(digitsStr);
-  return { op: { kind: 'parent', n }, next: j };
+  return { op: { kind: 'parent', n: countOrOne(raw.slice(i + 1, j)) }, next: j };
 };
+
+/** git's `get_oid_1`: a `~` or `^` with no count steps once. */
+const countOrOne = (digits: string): number => (digits === '' ? 1 : Number(digits));
 
 const isDigit = (code: number): boolean => code >= 0x30 && code <= 0x39;
