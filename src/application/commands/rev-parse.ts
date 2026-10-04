@@ -33,7 +33,7 @@ import { listReflogs, readReflogLenient } from '../primitives/reflog-store.js';
 import type { CandidateFilter } from '../primitives/resolve-oid-prefix.js';
 import { readRefCandidate } from '../primitives/resolve-ref.js';
 import { searchCommitMessages, searchRefMessages } from './internal/commit-message-search.js';
-import { committishFilter } from './internal/disambiguate-committish.js';
+import { committishFilter, treeishFilter } from './internal/disambiguate-committish.js';
 import {
   namesFilename,
   namesNoObject,
@@ -304,7 +304,7 @@ const evaluate = async (
   let id =
     expr.reflog !== undefined
       ? await resolveReflogBase(ctx, expr.base, expr.reflog, now, raw)
-      : await resolveBase(ctx, expr.base, expr.operations.length === 0 ? accepts : undefined);
+      : await resolveBase(ctx, expr.base, baseHint(ctx, expr.operations, accepts));
   for (const op of expr.operations) {
     id = await applyOperation(ctx, id, op);
   }
@@ -316,6 +316,25 @@ const HEAD = 'HEAD';
 
 /** git's `interpret_empty_at`: a lone `@` — `@@{...}` included — stands for `HEAD`. */
 const interpretEmptyAt = (base: string): string => (base === EMPTY_AT ? HEAD : base);
+
+/**
+ * The disambiguation hint the base is read with: the caller's when no
+ * operation applies, else the one git's innermost operation asks for —
+ * commit-ish for `^`, `~`, `^{commit}` and `^{/re}`, tree-ish for `^{tree}`,
+ * none for the other peels.
+ */
+const baseHint = (
+  ctx: Context,
+  operations: ReadonlyArray<RevOperation>,
+  accepts: CandidateFilter | undefined,
+): CandidateFilter | undefined => {
+  const [innermost] = operations;
+  if (innermost === undefined) return accepts;
+  if (innermost.kind === 'deref') return undefined;
+  if (innermost.kind !== 'peel') return committishFilter(ctx);
+  if (innermost.target === 'commit') return committishFilter(ctx);
+  return innermost.target === 'tree' ? treeishFilter(ctx) : undefined;
+};
 
 const resolveBase = async (
   ctx: Context,
@@ -523,7 +542,7 @@ const resolveIndexStage = async (
  * tree itself (`HEAD:` ⇒ the root tree).
  */
 const resolveTreePath = async (ctx: Context, rev: string, rawPath: string): Promise<ObjectId> => {
-  const baseId = await evaluate(ctx, parseExpression(rev), rev);
+  const baseId = await evaluate(ctx, parseExpression(rev), rev, treeishFilter(ctx));
   const path = resolveRelativePath(ctx, rawPath);
   const treeId = await peel(ctx, baseId, 'tree');
   if (path === '') return treeId;

@@ -10,6 +10,9 @@ const encoder = new TextEncoder();
 /** A blob whose id shares its first four hex digits with `c2`'s. */
 const C2_PREFIX_BLOB = 'x133570\n';
 const C2_PREFIX = '1c63';
+/** A tree entry name that makes its one-entry tree's id share `c2`'s prefix. */
+const C2_PREFIX_TREE_ENTRY = 't153626';
+const EMPTY_BLOB = 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391';
 
 interface ListRepo {
   readonly ctx: Context;
@@ -330,6 +333,94 @@ describe('Given a merge of two branches over a root tagged t', () => {
       // Assert
       expect(result).toMatchObject({ code: 'REVPARSE_UNRESOLVED' });
       expect(errors).toEqual([`object ${ids.tree} is a tree, not a commit`]);
+    });
+  });
+});
+
+const hexBytes = (hex: string): Uint8Array =>
+  Uint8Array.from(hex.match(/../g) ?? [], (byte) => Number.parseInt(byte, 16));
+
+const writeSharingTree = (ctx: Context): Promise<ObjectId> =>
+  writeRawObjectBytes(
+    ctx,
+    'tree',
+    Uint8Array.from([
+      ...encoder.encode(`100644 ${C2_PREFIX_TREE_ENTRY}\0`),
+      ...hexBytes(EMPTY_BLOB),
+    ]),
+  );
+
+describe('Given a commit and a blob sharing an abbreviated id', () => {
+  describe.each([
+    { arg: `${C2_PREFIX}~0`, expected: 'c2' },
+    { arg: `${C2_PREFIX}^0`, expected: 'c2' },
+    { arg: `${C2_PREFIX}^{commit}`, expected: 'c2' },
+    { arg: `${C2_PREFIX}^{/c2}`, expected: 'c2' },
+    { arg: `${C2_PREFIX}^{tree}`, expected: 'tree' },
+    { arg: `${C2_PREFIX}:`, expected: 'tree' },
+  ])('When revParse reads $arg', ({ arg, expected }) => {
+    it("Then the operation's own hint names the commit", async () => {
+      // Arrange
+      const { ctx, ids } = await listRepo();
+      const sut = revParse;
+
+      // Act
+      const result = await sut(ctx, arg);
+
+      // Assert
+      expect(result).toEqual(entries(ids, [[expected, false]]));
+    });
+  });
+
+  describe.each([`${C2_PREFIX}^{}`, `${C2_PREFIX}^{blob}`, `${C2_PREFIX}^{object}`])(
+    'When revParse reads %s',
+    (arg) => {
+      it('Then the operation gives no hint and the name stays ambiguous', async () => {
+        // Arrange
+        const { ctx } = await listRepo();
+        const sut = revParse;
+
+        // Act
+        const result = await failureData(() => sut(ctx, arg));
+
+        // Assert
+        expect(result).toMatchObject({ code: 'AMBIGUOUS_OID_PREFIX', prefix: C2_PREFIX });
+      });
+    },
+  );
+});
+
+describe('Given a commit, a blob and a tree sharing an abbreviated id', () => {
+  describe.each([
+    { arg: `${C2_PREFIX}~0^{tree}`, expected: 'tree' },
+    { arg: `${C2_PREFIX}^{commit}`, expected: 'c2' },
+  ])('When revParse reads $arg', ({ arg, expected }) => {
+    it('Then the commit-ish hint of the innermost operation names the commit', async () => {
+      // Arrange
+      const { ctx, ids } = await listRepo();
+      await writeSharingTree(ctx);
+      const sut = revParse;
+
+      // Act
+      const result = await sut(ctx, arg);
+
+      // Assert
+      expect(result).toEqual(entries(ids, [[expected, false]]));
+    });
+  });
+
+  describe.each([`${C2_PREFIX}^{tree}`, `${C2_PREFIX}:`])('When revParse reads %s', (arg) => {
+    it('Then the tree-ish hint keeps both the commit and the tree', async () => {
+      // Arrange
+      const { ctx } = await listRepo();
+      await writeSharingTree(ctx);
+      const sut = revParse;
+
+      // Act
+      const result = await failureData(() => sut(ctx, arg));
+
+      // Assert
+      expect(result).toMatchObject({ code: 'AMBIGUOUS_OID_PREFIX', prefix: C2_PREFIX });
     });
   });
 });

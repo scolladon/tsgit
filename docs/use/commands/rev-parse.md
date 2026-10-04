@@ -48,6 +48,8 @@ An argument that names no revision but reads as a pathspec (`f*`, `:(top)x`) or 
 | `^` / `^N` | `main^2` | Nth parent (1-based) |
 | Combined | `HEAD~3^2` | parent of the third ancestor |
 
+An abbreviated id shared by several objects is read with the hint of the operation applied to it, as git does: commit-ish under `~`, `^`, `^{commit}` and `^{/<regex>}`, tree-ish under `^{tree}` and before `:<path>`; `^{}`, `^{blob}`, `^{tag}` and `^{object}` give none.
+
 ## Behaviour
 
 - **Lenient reflog reads.** `@{N}` and `@{date}` read the reflog leniently: a malformed line is skipped, and `@{N}`'s numbering counts only the surviving entries — matching git.

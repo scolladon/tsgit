@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
-import { committishFilter } from '../../../../../src/application/commands/internal/disambiguate-committish.js';
+import {
+  committishFilter,
+  treeishFilter,
+} from '../../../../../src/application/commands/internal/disambiguate-committish.js';
 import type { TsgitError } from '../../../../../src/domain/error.js';
 import type { ObjectId } from '../../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../../src/ports/context.js';
@@ -53,6 +56,27 @@ const objectsRepo = async (): Promise<{
 };
 
 describe('Given objects of every kind', () => {
+  describe.each([
+    { name: 'commit', expected: true },
+    { name: 'tagOfTagOfCommit', expected: true },
+    { name: 'tree', expected: true },
+    { name: 'tagOfTree', expected: true },
+    { name: 'blob', expected: false },
+    { name: 'tagOfAbsent', expected: false },
+  ])('When the treeish filter reads $name', ({ name, expected }) => {
+    it(`Then it answers ${expected}`, async () => {
+      // Arrange
+      const { ctx, ids } = await objectsRepo();
+      const sut = treeishFilter;
+
+      // Act
+      const result = await sut(ctx)(ids[name] as ObjectId);
+
+      // Assert
+      expect(result).toBe(expected);
+    });
+  });
+
   describe.each([
     { name: 'commit', expected: true },
     { name: 'tagOfCommit', expected: true },

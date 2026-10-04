@@ -215,6 +215,13 @@ describe.skipIf(!GIT_AVAILABLE)('integration — revParse revision list parity w
       '@@',
       'main@',
       '@@{0}',
+      '<prefix>~0',
+      '<prefix>^0',
+      '<prefix>^{commit}',
+      '<prefix>^{/c2}',
+      '<prefix>^{tree}',
+      '<prefix>:',
+      '<prefix>~0^{tree}',
     ])('When git rev-parse and revParse read %s', (row) => {
       it("Then both print git's revisions in git's order and the same errors", async () => {
         // Arrange
@@ -246,7 +253,14 @@ describe.skipIf(!GIT_AVAILABLE)('integration — revParse revision list parity w
       },
     );
 
-    describe.each(['<prefix>', '^<prefix>', '<prefix>^{}..side'])(
+    describe.each([
+      '<prefix>',
+      '^<prefix>',
+      '<prefix>^{}..side',
+      '<prefix>^{}',
+      '<prefix>^{blob}',
+      '<prefix>^{object}',
+    ])(
       'When git rev-parse and revParse read %s, the prefix read with no commit-ish hint',
       (row) => {
         it('Then both refuse the ambiguous abbreviated id', async () => {
