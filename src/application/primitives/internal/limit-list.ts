@@ -116,6 +116,8 @@ interface LimitState {
   /** Commits whose pointers the table already typed — git parses each once. */
   readonly typed: Set<ObjectId>;
   readonly missing: Set<string>;
+  /** Objects a typing walk read that are not commits — git's failed `repo_parse_commit`. */
+  readonly notCommits: Set<ObjectId>;
   readonly uninteresting: Set<ObjectId>;
   readonly seen: Set<ObjectId>;
   readonly queue: BinaryHeap<Entry>;
@@ -188,6 +190,7 @@ const createState = (ctx: Context, options: LimitListOptions): LimitState => ({
   bodies: new Map(),
   typed: new Set(),
   missing: new Set(),
+  notCommits: new Set(),
   uninteresting: new Set(),
   seen: new Set(),
   queue: new BinaryHeap<Entry>(precedesByArrival),
@@ -274,7 +277,9 @@ const processParents = async (state: LimitState, id: ObjectId): Promise<void> =>
   const followed = state.options.firstParent ? parents.slice(0, 1) : parents;
   const parsed = await parseInOrder(state, followed);
   for (const [at, parent] of followed.entries()) {
-    if (!(await typeParsed(state, parent))) throw revisionWalkFailed(id);
+    if (state.notCommits.has(parent) || !(await typeParsed(state, parent))) {
+      throw revisionWalkFailed(id);
+    }
     const entry = parsed[at];
     if (entry === undefined || state.seen.has(parent)) continue;
     state.seen.add(parent);
@@ -370,10 +375,22 @@ const parse = async (
     missing: state.missing,
     shallow,
   });
-  if (commit === undefined) return undefined;
+  if (commit === undefined) return notParsed(state, id);
   state.bodies.set(id, commit);
   const { parents, committer } = commit.data;
   return remember(state, id, { parents, date: committer.timestamp, generation: OUTSIDE_GRAPH });
+};
+
+/**
+ * A commit read that found nothing to parse. Under typing, an object stored as
+ * something else is git's `Object X not a commit` parse failure — logged on
+ * every parse attempt, as git re-reads an object it could not parse.
+ */
+const notParsed = (state: LimitState, id: ObjectId): undefined => {
+  if (state.options.objectTypes === undefined || state.missing.has(id)) return undefined;
+  state.ctx.logger?.error?.(`Object ${id} not a commit`, { id });
+  state.notCommits.add(id);
+  return undefined;
 };
 
 const remember = (state: LimitState, id: ObjectId, parsed: Parsed): Parsed => {

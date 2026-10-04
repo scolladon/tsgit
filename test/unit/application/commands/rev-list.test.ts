@@ -1809,4 +1809,60 @@ describe('revList: object types assigned during one invocation', () => {
       });
     });
   });
+
+  describe('Given a commit whose parent is a blob nothing typed before', () => {
+    describe('When the walk parses that parent', () => {
+      it('Then the object is not a commit and the walk fails at the commit naming it', async () => {
+        // Arrange
+        const { ctx, logged, blob } = await seedMistypedTag();
+        const empty = await writeEmptyTree(ctx);
+        const parent = await writeCommitNaming(ctx, empty, [blob]);
+        const child = await writeCommitNaming(ctx, empty, [parent]);
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, { wants: [child] }));
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'REVISION_WALK_FAILED', commit: parent },
+          logged: [`Object ${blob} not a commit`],
+        });
+      });
+    });
+  });
+
+  describe('Given an excluded commit whose parent is a blob nothing typed before', () => {
+    describe('When the limited walk parses that parent gently', () => {
+      it('Then it logs the object is not a commit and lists the included commit', async () => {
+        // Arrange
+        const { ctx, logged, blob } = await seedMistypedTag();
+        const empty = await writeEmptyTree(ctx);
+        const newer = { ...AUTHOR, timestamp: AUTHOR.timestamp + 1 };
+        const excluded = await writeObject(ctx, {
+          type: 'commit',
+          id: '' as ObjectId,
+          data: {
+            tree: empty,
+            parents: [blob],
+            author: newer,
+            committer: newer,
+            message: 'm\n',
+            extraHeaders: [],
+          },
+        });
+        const included = await writeCommitNaming(ctx, empty, []);
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, { wants: [included], not: [excluded] });
+
+        // Assert
+        expect({ entries: result.entries, logged }).toEqual({
+          entries: [{ id: included, type: 'commit' }],
+          logged: [`Object ${blob} not a commit`],
+        });
+      });
+    });
+  });
 });

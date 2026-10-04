@@ -1133,6 +1133,27 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list interop — object types assigned in o
     });
   });
 
+  describe('Given a commit whose parent is a blob nothing typed before', () => {
+    describe('When rev-list walks to that parent on both tools', () => {
+      it('Then both find it is not a commit and fail to traverse the commit naming it', async () => {
+        // Arrange
+        const { dir, blob } = await buildMistypedTagFixture();
+        const empty = emptyTreeOf(dir);
+        const child = writeLiteralCommit(dir, empty, [writeLiteralCommit(dir, empty, [blob])]);
+        const peer = tryRunGitWithExit(['-C', dir, 'rev-list', child]);
+        const { ctx, logged } = capturing(dir);
+        const sut = revList;
+
+        // Act
+        const result = await settled(() => sut(ctx, { wants: [child] }));
+
+        // Assert
+        expect(peer.exitCode).toBe(128);
+        expect(walkStderrOf(logged, result)).toBe(peer.stderr);
+      });
+    });
+  });
+
   describe('Given a shallow commit whose stored parent is a blob tip before it', () => {
     describe('When rev-list --objects parses the commit on both tools', () => {
       it('Then neither types the cut parent and both list the same objects in order', async () => {
