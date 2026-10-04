@@ -1,9 +1,11 @@
 import { BinaryHeap } from '../../domain/commit/binary-heap.js';
 import type { QueueEntry } from '../../domain/commit/priority-queue.js';
-import { invalidWalkInput, operationAborted } from '../../domain/error.js';
+import { invalidCommitName, invalidWalkInput, operationAborted } from '../../domain/error.js';
 import { isObjectNotFound } from '../../domain/objects/error.js';
 import type { ObjectId } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
+import { lookupTypedCommitReference } from './internal/lookup-commit-reference.js';
+import { createObjectTypeTable } from './internal/object-type-table.js';
 import { correctedCommitDatesEnabled } from './internal/read-commit-graph.js';
 import {
   type CommitMeta,
@@ -400,6 +402,11 @@ export const inMergeBases = async (
  * order — each pairwise fold date-sorted, the folds concatenated — so its first
  * entry is the newest base of the FIRST fold, not the newest overall. Unrelated
  * histories yield `[]`.
+ *
+ * Each id is first looked up as a commit, as `git merge-base` does — through
+ * its annotated tags, against one object table for the whole call, last
+ * first under `octopus` — refusing `INVALID_COMMIT_NAME` on the first that
+ * names none, after git's `error:` lines for it are logged.
  */
 export const mergeBase = async (
   ctx: Context,
@@ -407,6 +414,35 @@ export const mergeBase = async (
   options?: MergeBaseOptions,
 ): Promise<readonly ObjectId[]> => {
   if (commits.length === 0) throw invalidWalkInput('mergeBase requires at least one commit');
+  const looked = await lookUpArguments(ctx, commits, options?.octopus === true);
+  return mergeBasesOf(ctx, looked, options);
+};
+
+/** git's argument loop: each looked up in turn — `--octopus` last first. */
+const lookUpArguments = async (
+  ctx: Context,
+  ids: readonly ObjectId[],
+  lastFirst: boolean,
+): Promise<ObjectId[]> => {
+  const table = createObjectTypeTable();
+  const peeled: ObjectId[] = [];
+  for (const id of lastFirst ? [...ids].reverse() : ids) {
+    const commit = await lookupTypedCommitReference(ctx, table, id);
+    if (commit === undefined) throw invalidCommitName(id);
+    peeled.push(commit);
+  }
+  return lastFirst ? peeled.reverse() : peeled;
+};
+
+/**
+ * The merge-base computation over ids a command already holds as commits —
+ * what git's own callers run on parsed commits, with no argument lookup.
+ */
+export const mergeBasesOf = async (
+  ctx: Context,
+  commits: readonly ObjectId[],
+  options?: MergeBaseOptions,
+): Promise<readonly ObjectId[]> => {
   const read = makeReadCommit(ctx);
   const findAll = options?.all === true;
   const correctedCommitDates = await correctedCommitDatesEnabled(ctx);

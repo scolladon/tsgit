@@ -1097,7 +1097,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
     });
 
     describe('When mergeBase is asked about a commit beyond the boundary', () => {
-      it('Then it rejects OBJECT_NOT_FOUND rather than inventing a commit, matching git', async () => {
+      it('Then it refuses the absent name rather than inventing a commit, matching git', async () => {
         // Arrange — A19: C3 is a genuinely absent input, not a masked parent —
         // grafting must not paper over a truly missing seed.
         const repo = await openTrackedRepository({ cwd: f1 });
@@ -1113,8 +1113,9 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
         } catch (error) {
           caught = error;
         }
-        expect((caught as TsgitError).data.code).toBe('OBJECT_NOT_FOUND');
+        expect((caught as TsgitError).data).toEqual({ code: 'INVALID_COMMIT_NAME', name: c3 });
         expect(gitResult.exitCode).toBe(128);
+        expect(gitResult.stderr).toBe(`fatal: Not a valid commit name ${c3}\n`);
       });
     });
   });

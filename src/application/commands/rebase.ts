@@ -51,7 +51,7 @@ import {
   requireWorkTree,
 } from '../primitives/internal/repo-state.js';
 import { materialisePatchFiles } from '../primitives/materialise-patch-files.js';
-import { mergeBase } from '../primitives/merge-base.js';
+import { mergeBasesOf } from '../primitives/merge-base.js';
 import { assertEverySourceLoadable } from '../primitives/object-store.js';
 import { readIndex } from '../primitives/read-index.js';
 import { getRefStore } from '../primitives/ref-store.js';
@@ -448,7 +448,7 @@ export const rebaseRun = async (ctx: Context, input: RebaseRunInput): Promise<Re
   // No common ancestor (unrelated histories) → `base` is undefined and the whole
   // branch replays onto `onto`, the root commit against the empty-tree base —
   // faithful to `git rebase <unrelated>`.
-  const [base] = await mergeBase(ctx, [upstream, headCommit]);
+  const [base] = await mergeBasesOf(ctx, [upstream, headCommit]);
   if (input.interactive !== undefined) {
     // An interactive rebase always has todo work (the caller supplies it), so it
     // is never the no-op "up to date" case — pre-rebase fires.

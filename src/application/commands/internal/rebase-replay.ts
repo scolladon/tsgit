@@ -2,7 +2,7 @@ import { sortInTopologicalOrder } from '../../../domain/commit/topological-sort.
 import type { Commit, ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { resolveLimitOptions, walkLimited } from '../../primitives/internal/limit-list.js';
-import { mergeBase } from '../../primitives/merge-base.js';
+import { mergeBasesOf } from '../../primitives/merge-base.js';
 import { computePatchId } from '../../primitives/patch-id.js';
 
 export interface RebaseReplayInput {
@@ -39,7 +39,7 @@ const walkBothSides = async (
   ctx: Context,
   input: RebaseReplayInput,
 ): Promise<ReadonlyArray<Commit>> => {
-  const bases = await mergeBase(ctx, [input.upstream, input.head], { all: true });
+  const bases = await mergeBasesOf(ctx, [input.upstream, input.head], { all: true });
   const options = await resolveLimitOptions(
     ctx,
     { from: [input.upstream, input.head] },

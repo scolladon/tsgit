@@ -10,7 +10,7 @@ import {
 import type { GitObject, ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { peelChain } from '../../primitives/internal/peel-chain.js';
-import { mergeBase } from '../../primitives/merge-base.js';
+import { mergeBasesOf } from '../../primitives/merge-base.js';
 import { readObject } from '../../primitives/read-object.js';
 
 type SymmetricSide =
@@ -37,5 +37,5 @@ export const symmetricBases = async (
   const commits = peeled.flatMap((side) => (side.kind === 'commit' ? [side.commit] : []));
   const nonCommits = peeled.flatMap((side) => (side.kind === 'non-commit' ? [side.side] : []));
   if (nonCommits.length > 0) throw invalidSymmetricRange(expression, nonCommits);
-  return mergeBase(ctx, commits, { all: true });
+  return mergeBasesOf(ctx, commits, { all: true });
 };

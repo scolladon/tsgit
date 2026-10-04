@@ -31,7 +31,7 @@ import { peel } from '../primitives/internal/peel.js';
 import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
 import { descendTreePath } from '../primitives/internal/resolve-tree-path.js';
 import { loadShallowSet } from '../primitives/internal/shallow-set.js';
-import { mergeBase } from '../primitives/merge-base.js';
+import { mergeBasesOf } from '../primitives/merge-base.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
 import { readTree } from '../primitives/read-tree.js';
@@ -306,7 +306,7 @@ const symmetricDifference = async (
   const a = await lookupCommitReference(ctx, start);
   const b = await lookupCommitReference(ctx, end);
   if (a === undefined || b === undefined) return { printed: sides, consumed: false };
-  const bases = await mergeBase(ctx, [a.id, b.id], { all: true });
+  const bases = await mergeBasesOf(ctx, [a.id, b.id], { all: true });
   return { printed: [...sides, ...bases.map(excluded)], consumed: true };
 };
 

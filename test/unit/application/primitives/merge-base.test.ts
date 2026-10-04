@@ -11,6 +11,7 @@ import type {
   AuthorIdentity,
   Commit,
   ObjectId,
+  ObjectType,
   Tree,
 } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
@@ -75,6 +76,23 @@ const commitWith = async (
   ts: number,
   parents: ObjectId[],
 ): Promise<ObjectId> => commitNamed(ctx, treeId, ts, parents, `c${ts}`);
+
+const TAGGER: AuthorIdentity = { ...AUTHOR, timestamp: 1700000000 };
+
+/** An annotated tag naming `target` under the header `type` — which need not be the target's own. */
+const tagOf = (ctx: Context, target: ObjectId, type: ObjectType): Promise<ObjectId> =>
+  writeObject(ctx, {
+    type: 'tag',
+    id: '' as ObjectId,
+    data: {
+      object: target,
+      objectType: type,
+      tagName: 't',
+      tagger: TAGGER,
+      message: 'm\n',
+      extraHeaders: [],
+    },
+  });
 
 const buildLinear = async (
   ctx: Awaited<ReturnType<typeof buildSeededContext>>,
@@ -393,19 +411,20 @@ describe('mergeBase', () => {
     });
   });
 
-  describe('Given an input oid that is not a commit', () => {
-    describe('When mergeBase([tree, commit])', () => {
-      it('Then returns [] (a non-commit contributes no parents)', async () => {
+  describe('Given an annotated tag of a commit', () => {
+    describe('When mergeBase([commit, tag])', () => {
+      it('Then the tag is peeled to the commit it names', async () => {
         // Arrange
         const ctx = await buildSeededContext();
-        const treeId = await emptyTree(ctx);
         const [c0] = await buildLinear(ctx, 1);
+        const tag = await tagOf(ctx, c0!, 'commit');
+        const sut = mergeBase;
 
         // Act
-        const result = await mergeBase(ctx, [treeId, c0!]);
+        const result = await sut(ctx, [c0!, tag]);
 
         // Assert
-        expect(result).toEqual([]);
+        expect(result).toEqual([c0]);
       });
     });
   });
@@ -638,7 +657,7 @@ describe('mergeBase', () => {
 
   describe('Given a commit-graph covering every commit in a criss-cross reduction', () => {
     describe('When mergeBase({ all: true }) runs', () => {
-      it('Then it reads no object from the store', async () => {
+      it('Then it reads from the store only the two arguments, to type them', async () => {
         // Arrange
         const base = await buildSeededContext();
         const { a, b, c, d, e } = await buildCrissCross(base);
@@ -654,7 +673,9 @@ describe('mergeBase', () => {
 
         // Assert
         expect(result).toEqual([c, b]);
-        expect(objectStoreReadPaths(calls())).toEqual([]);
+        expect(objectStoreReadPaths(calls())).toEqual(
+          [d, e].map((id) => `${ctx.layout.gitDir}/objects/${id.slice(0, 2)}/${id.slice(2)}`),
+        );
       });
     });
   });

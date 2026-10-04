@@ -33,6 +33,7 @@ export type AdapterError =
 /** Cross-cutting application-tier codes raised by primitives (not adapters). */
 export type ApplicationError =
   | { readonly code: 'INVALID_WALK_INPUT'; readonly reason: string }
+  | { readonly code: 'INVALID_COMMIT_NAME'; readonly name: string }
   | { readonly code: 'OPERATION_ABORTED' }
   | {
       readonly code: 'RESOURCE_LOCKED';
@@ -169,6 +170,10 @@ export const networkError = (reason: string): TsgitError =>
 
 export const invalidWalkInput = (reason: string): TsgitError =>
   new TsgitError({ code: 'INVALID_WALK_INPUT', reason });
+
+/** git's `Not a valid commit name <name>`: an argument a command looks up as a commit names none. */
+export const invalidCommitName = (name: string): TsgitError =>
+  new TsgitError({ code: 'INVALID_COMMIT_NAME', name });
 
 /** An artefact already occupying a content-addressed pack name holds different
  *  bytes — git's finalize step refuses this rather than overwriting. */
@@ -335,6 +340,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `reftable stack locked: stack=${data.stack} ${data.reason}`;
     case 'INVALID_WALK_INPUT':
       return `invalid walk input: ${data.reason}`;
+    case 'INVALID_COMMIT_NAME':
+      return `not a valid commit name: ${data.name}`;
     case 'OPERATION_ABORTED':
       return 'operation aborted';
     case 'INVALID_PKT_LENGTH':

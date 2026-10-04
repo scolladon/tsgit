@@ -27,6 +27,7 @@ import {
 import {
   basename,
   dirname,
+  invalidCommitName,
   invalidWalkInput,
   operationAborted,
   orderInvariantViolation,
@@ -688,6 +689,24 @@ describe('domain error — AdapterError', () => {
           expect(result.message).toBe(
             'INVALID_WALK_INPUT: invalid walk input: start commit is undefined',
           );
+        });
+      });
+    });
+
+    describe('Given INVALID_COMMIT_NAME', () => {
+      describe('When reading message', () => {
+        it('Then names the argument that names no commit', () => {
+          // Arrange
+          const sut = invalidCommitName;
+
+          // Act
+          const result = sut('HEAD^{tree}');
+
+          // Assert
+          expect({ message: result.message, data: result.data }).toEqual({
+            message: 'INVALID_COMMIT_NAME: not a valid commit name: HEAD^{tree}',
+            data: { code: 'INVALID_COMMIT_NAME', name: 'HEAD^{tree}' },
+          });
         });
       });
     });

@@ -22,6 +22,24 @@ repo.primitives.mergeBase(
 
 `commits[0]` is treated as `one`, the rest as the others. An empty `commits` array throws `INVALID_WALK_INPUT`.
 
+Each id is looked up as a commit first, as `git merge-base` looks up its
+arguments: an annotated tag peels to the commit it names, and every lookup
+shares one object table, so a type an earlier argument's parse assigned binds
+a later one. `{ octopus: true }` looks them up last first, as git does. The
+first id that names no commit — absent, another kind of object, or a commit
+or tag git cannot parse — throws `INVALID_COMMIT_NAME` naming it, after the
+`error:` lines git prints for it go to `ctx.logger.error`:
+
+```ts
+// git: error: object <tree> is a tree, not a commit
+//      fatal: Not a valid commit name <tree>
+try {
+  await repo.primitives.mergeBase([head, treeId]);
+} catch (error) {
+  if (error.data.code === 'INVALID_COMMIT_NAME') console.error(`fatal: Not a valid commit name ${error.data.name}`);
+}
+```
+
 ## Examples
 
 ```ts

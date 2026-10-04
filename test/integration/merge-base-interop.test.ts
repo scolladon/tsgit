@@ -23,7 +23,14 @@ import { mergeBase } from '../../src/application/primitives/merge-base.js';
 import type { ObjectId } from '../../src/domain/objects/object-id.js';
 import { openRepository } from '../../src/index.node.js';
 import type { Context } from '../../src/ports/context.js';
-import { GIT_AVAILABLE, git, runGit, runGitAsync, runGitEnv } from './interop-helpers.js';
+import {
+  GIT_AVAILABLE,
+  git,
+  runGit,
+  runGitAsync,
+  runGitEnv,
+  tryRunGitWithExit,
+} from './interop-helpers.js';
 
 const SETUP_TIMEOUT = 60_000;
 
@@ -712,4 +719,103 @@ describe.skipIf(!GIT_AVAILABLE)('mergeBase --all order on equal-date bases (inte
       });
     },
   );
+});
+
+const IDENTITY = 'A U Thor <author@example.com> 1700000000 +0000';
+const ABSENT = `cd${'0'.repeat(38)}`;
+
+const literally = (dir: string, type: 'tag' | 'commit', body: string): string =>
+  runGit(['-C', dir, 'hash-object', '-t', type, '-w', '--stdin', '--literally'], {
+    input: body,
+  }).trim();
+
+const tagBody = (target: string, type: string): string =>
+  `object ${target}\ntype ${type}\ntag t\ntagger ${IDENTITY}\n\nm\n`;
+
+const commitBody = (tree: string, parents: ReadonlyArray<string>, message: string): string =>
+  `tree ${tree}\n${parents.map((p) => `parent ${p}\n`).join('')}author ${IDENTITY}\ncommitter ${IDENTITY}\n\n${message}\n`;
+
+/** What `git merge-base` prints on stderr, rebuilt from tsgit's logged lines and refusal. */
+const rebuiltStderr = (logged: ReadonlyArray<string>, name: string): string =>
+  `${logged.map((line) => `error: ${line}\n`).join('')}fatal: Not a valid commit name ${name}\n`;
+
+describe.skipIf(!GIT_AVAILABLE)('mergeBase argument lookup (interop)', () => {
+  let dir: string;
+  const ids = new Map<string, string>();
+
+  beforeAll(async () => {
+    dir = await makeRepo('lookup');
+    const c = datedCommit(dir, 'a', 1_700_000_000);
+    const tree = git(dir, 'rev-parse', `${c}^{tree}`).trim();
+    const blob = git(dir, 'rev-parse', `${c}:a.txt`).trim();
+    ids.set('C', c).set('T', tree).set('B', blob).set('M', ABSENT);
+    ids.set('T2', runGit(['-C', dir, 'mktree'], { input: '' }).trim());
+    ids.set('TC', literally(dir, 'tag', tagBody(c, 'commit')));
+    ids.set('TT', literally(dir, 'tag', tagBody(tree, 'tree')));
+    ids.set('TM', literally(dir, 'tag', tagBody(ABSENT, 'commit')));
+    ids.set('TL', literally(dir, 'tag', tagBody(tree, 'commit')));
+    ids.set('CB', literally(dir, 'commit', commitBody(blob, [], 'x')));
+    ids.set('CP', literally(dir, 'commit', commitBody(tree, [tree], 'y')));
+  }, SETUP_TIMEOUT);
+
+  afterAll(async () => rm(dir, { recursive: true, force: true }));
+
+  describe.each([
+    { args: ['C', 'T'] },
+    { args: ['T', 'C'] },
+    { args: ['C', 'B'] },
+    { args: ['C', 'M'] },
+    { args: ['C', 'TT'] },
+    { args: ['C', 'TM'] },
+    { args: ['C', 'TL'] },
+    { args: ['TL', 'C'] },
+    { args: ['CB', 'B'] },
+    { args: ['C', 'CP'] },
+    { args: ['C', 'T', 'T2'], octopus: true },
+    { args: ['C', 'M', 'T'], octopus: true },
+  ])('Given merge-base of $args (octopus: $octopus)', ({ args, octopus }) => {
+    describe('When both tools look the arguments up', () => {
+      it('Then tsgit refuses the name git dies on, after the error lines git prints', async () => {
+        // Arrange
+        const oids = args.map((name) => ids.get(name)!);
+        const mode = octopus === true ? ['--octopus'] : [];
+        const peer = tryRunGitWithExit(['-C', dir, 'merge-base', ...mode, ...oids]);
+        const logged: string[] = [];
+        const base = createNodeContext({ workDir: dir });
+        const ctx: Context = { ...base, logger: { error: (line: string) => logged.push(line) } };
+        const sut = mergeBase;
+
+        // Act
+        const caught = await sut(ctx, oids as ObjectId[], { octopus: octopus === true }).then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+
+        // Assert
+        const data = (
+          caught as { readonly data?: { readonly code: string; readonly name: string } }
+        ).data;
+        expect(data?.code).toBe('INVALID_COMMIT_NAME');
+        expect(peer.exitCode).toBe(128);
+        expect(rebuiltStderr(logged, data?.name ?? '')).toBe(peer.stderr);
+      });
+    });
+  });
+
+  describe('Given an annotated tag of a commit', () => {
+    describe('When both tools compute the base of the commit and the tag', () => {
+      it('Then tsgit peels the tag and prints the base git prints', async () => {
+        // Arrange
+        const oids = [ids.get('C')!, ids.get('TC')!] as ObjectId[];
+        const expected = git(dir, 'merge-base', ...oids).trim();
+        const sut = mergeBase;
+
+        // Act
+        const result = await sut(createNodeContext({ workDir: dir }), oids);
+
+        // Assert
+        expect(result).toEqual([expected]);
+      });
+    });
+  });
 });

@@ -52,7 +52,7 @@ import {
   writeWorkingTreeFileStream,
 } from '../primitives/internal/write-working-tree-file.js';
 import { materializeTree } from '../primitives/materialize-tree.js';
-import { mergeBase } from '../primitives/merge-base.js';
+import { mergeBasesOf } from '../primitives/merge-base.js';
 import { assertEverySourceLoadable } from '../primitives/object-store.js';
 import { readBlob } from '../primitives/read-blob.js';
 import { readIndex } from '../primitives/read-index.js';
@@ -178,7 +178,7 @@ const computeMerge = async (
   await assertEverySourceLoadable(ctx);
   // Stryker disable next-line ConditionalExpression: equivalent — when ourId===theirId, mergeBase returns that same commit, so the `base === theirId` check below yields the identical up-to-date result.
   if (ourId === theirId) return { kind: 'up-to-date', id: ourId };
-  const [base] = await mergeBase(ctx, [ourId, theirId]);
+  const [base] = await mergeBasesOf(ctx, [ourId, theirId]);
   if (base === theirId) return { kind: 'up-to-date', id: ourId };
   if (base === ourId) {
     if (opts.fastForward !== 'never') {
