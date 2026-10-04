@@ -40,6 +40,12 @@ try {
 }
 ```
 
+The walk then parses each parent it reaches. One the store lacks, or one of
+another kind, throws `COMMIT_PARSE_FAILED` naming it, after git's `Could not
+read <id>` / `Object <id> not a commit` line goes to `ctx.logger.error` — git
+prints `error: could not parse commit <id>` and exits 255 (128 under
+`--octopus`).
+
 ## Examples
 
 ```ts

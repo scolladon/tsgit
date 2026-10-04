@@ -1,3 +1,4 @@
+import { commitParseFailed } from '../../domain/commands/error.js';
 import { BinaryHeap } from '../../domain/commit/binary-heap.js';
 import type { QueueEntry } from '../../domain/commit/priority-queue.js';
 import { invalidCommitName, invalidWalkInput, operationAborted } from '../../domain/error.js';
@@ -40,7 +41,36 @@ const memoizedReader = (ctx: Context, readMeta: ReadMeta): ReadCommit => {
   };
 };
 
-const makeReadCommit = (ctx: Context): ReadCommit => memoizedReader(ctx, readCommitMeta);
+const ABSENT = 'absent';
+
+/** The commit's metadata, `undefined` for another type, or {@link ABSENT} when the store lacks it. */
+const readMetaOrAbsent = async (
+  ctx: Context,
+  id: ObjectId,
+): Promise<CommitMeta | undefined | typeof ABSENT> => {
+  try {
+    return await readCommitMeta(ctx, id);
+  } catch (error) {
+    if (isObjectNotFound(error)) return ABSENT;
+    throw error;
+  }
+};
+
+/** git's `could not parse commit`, after the line `repo_parse_commit` logs for `id`. */
+const refuseUnparsed = (ctx: Context, line: string, id: ObjectId): never => {
+  ctx.logger?.error?.(line, { id });
+  throw commitParseFailed(id);
+};
+
+/** git's `repo_parse_commit`, not quiet: an absent object or one of another
+ *  type logs why, then refuses the walk that reached it. */
+const readParsedMeta: ReadMeta = async (ctx, id) => {
+  const meta = await readMetaOrAbsent(ctx, id);
+  if (meta === ABSENT) return refuseUnparsed(ctx, `Could not read ${id}`, id);
+  return meta ?? refuseUnparsed(ctx, `Object ${id} not a commit`, id);
+};
+
+const makeReadCommit = (ctx: Context): ReadCommit => memoizedReader(ctx, readParsedMeta);
 
 /** git's `repo_parse_commit` under `ignore_missing_commits`: an absent object
  *  reads as a commit with no parents instead of refusing, so a history
@@ -48,12 +78,8 @@ const makeReadCommit = (ctx: Context): ReadCommit => memoizedReader(ctx, readCom
  *  every other read, so an absent oid costs one lookup per call rather than
  *  one per edge naming it. */
 const readMetaOrMissing: ReadMeta = async (ctx, id) => {
-  try {
-    return await readCommitMeta(ctx, id);
-  } catch (error) {
-    if (isObjectNotFound(error)) return undefined;
-    throw error;
-  }
+  const meta = await readMetaOrAbsent(ctx, id);
+  return meta === ABSENT ? undefined : meta;
 };
 
 const dateOf = (meta: CommitMeta | undefined): number => meta?.committerDate ?? 0;

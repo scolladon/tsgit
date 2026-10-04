@@ -13,6 +13,7 @@ import {
   cannotDescribe,
   checkoutOverwriteDirty,
   cherryPickMergeNoMainline,
+  commitParseFailed,
   configBadBooleanLiteral,
   configBadBooleanValue,
   configBadNumericValue,
@@ -1766,6 +1767,10 @@ describe('domain commands error — extractDetail message formatting', () => {
       'INVALID_REVISION_RANGE: invalid revision range main..t',
     ],
     [
+      { code: 'COMMIT_PARSE_FAILED', id: OID1 },
+      `COMMIT_PARSE_FAILED: could not parse commit ${OID1}`,
+    ],
+    [
       { code: 'NEED_TWO_COMMIT_RANGES', expression: 'main..main' },
       'NEED_TWO_COMMIT_RANGES: need two commit ranges: main..main is not one',
     ],
@@ -1876,6 +1881,21 @@ describe('domain commands error — extractDetail message formatting', () => {
           expression: sanitizeForDisplay('main..t\u001b'),
         });
         expect(result.data).not.toEqual(expect.objectContaining({ expression: 'main..t\u001b' }));
+      });
+    });
+  });
+
+  describe('Given the commitParseFailed error helper', () => {
+    describe('When called with an id', () => {
+      it('Then data carries the id', () => {
+        // Arrange
+        const sut = commitParseFailed;
+
+        // Act
+        const result = sut(OID1);
+
+        // Assert
+        expect(result.data).toEqual({ code: 'COMMIT_PARSE_FAILED', id: OID1 });
       });
     });
   });

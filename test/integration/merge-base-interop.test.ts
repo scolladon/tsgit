@@ -819,3 +819,54 @@ describe.skipIf(!GIT_AVAILABLE)('mergeBase argument lookup (interop)', () => {
     });
   });
 });
+
+describe.skipIf(!GIT_AVAILABLE)('mergeBase walk parse (interop)', () => {
+  let dir: string;
+  const ids = new Map<string, string>();
+
+  beforeAll(async () => {
+    dir = await makeRepo('walk-parse');
+    const c = datedCommit(dir, 'a', 1_700_000_000);
+    const tree = git(dir, 'rev-parse', `${c}^{tree}`).trim();
+    const blob = git(dir, 'rev-parse', `${c}:a.txt`).trim();
+    ids.set('C', c);
+    ids.set('CPM', literally(dir, 'commit', commitBody(tree, [ABSENT], 'z')));
+    ids.set('CPB', literally(dir, 'commit', commitBody(tree, [blob], 'w')));
+  }, SETUP_TIMEOUT);
+
+  afterAll(async () => rm(dir, { recursive: true, force: true }));
+
+  describe.each([
+    { child: 'CPM', mode: [], options: {}, exitCode: 255 },
+    { child: 'CPB', mode: [], options: {}, exitCode: 255 },
+    { child: 'CPM', mode: ['--all'], options: { all: true }, exitCode: 255 },
+    { child: 'CPB', mode: ['--octopus'], options: { octopus: true }, exitCode: 128 },
+  ])('Given merge-base $mode of a commit and $child', ({ child, mode, options, exitCode }) => {
+    describe('When both tools walk to the parent that fails to parse', () => {
+      it('Then tsgit logs the lines git prints and refuses the commit git could not parse', async () => {
+        // Arrange
+        const oids = [ids.get('C')!, ids.get(child)!];
+        const peer = tryRunGitWithExit(['-C', dir, 'merge-base', ...mode, ...oids]);
+        const logged: string[] = [];
+        const base = createNodeContext({ workDir: dir });
+        const ctx: Context = { ...base, logger: { error: (line: string) => logged.push(line) } };
+        const sut = mergeBase;
+
+        // Act
+        const caught = await sut(ctx, oids as ObjectId[], options).then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+
+        // Assert
+        const data = (caught as { readonly data: { readonly code: string; readonly id: string } })
+          .data;
+        expect(data.code).toBe('COMMIT_PARSE_FAILED');
+        expect({ exitCode: peer.exitCode, stderr: peer.stderr }).toEqual({
+          exitCode,
+          stderr: `${[...logged, `could not parse commit ${data.id}`].map((line) => `error: ${line}\n`).join('')}`,
+        });
+      });
+    });
+  });
+});

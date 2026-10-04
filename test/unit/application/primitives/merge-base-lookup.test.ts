@@ -272,3 +272,50 @@ describe('mergeBase argument lookup', () => {
     });
   });
 });
+
+describe('mergeBase walk parse', () => {
+  const walkRefusalOf = async (
+    { ctx, logged }: Store,
+    args: ReadonlyArray<ObjectId>,
+    options?: { readonly all?: boolean; readonly octopus?: boolean },
+  ): Promise<unknown> => {
+    const sut = mergeBase;
+    try {
+      await sut(ctx, args, options);
+      return undefined;
+    } catch (error) {
+      return { data: (error as { readonly data?: unknown }).data, logged };
+    }
+  };
+
+  describe.each([
+    ['names a parent the store lacks', () => MISSING, (id: ObjectId) => `Could not read ${id}`],
+    [
+      'names a blob as its parent',
+      (repo: Store) => repo.blob,
+      (id: ObjectId) => `Object ${id} not a commit`,
+    ],
+  ] as const)('Given a commit that %s', (_label, parentOf, line) => {
+    describe.each([
+      ['default', undefined],
+      ['all', { all: true }],
+      ['octopus', { octopus: true }],
+    ] as const)('When mergeBase (%s) walks it against another commit', (_mode, options) => {
+      it('Then it logs why the parent fails to parse and refuses to parse it', async () => {
+        // Arrange
+        const repo = await store();
+        const parent = parentOf(repo);
+        const child = await commitOf(repo.ctx, repo.tree, [parent], 'child\n');
+
+        // Act
+        const result = await walkRefusalOf(repo, [repo.commit, child], options);
+
+        // Assert
+        expect(result).toEqual({
+          data: { code: 'COMMIT_PARSE_FAILED', id: parent },
+          logged: [line(parent)],
+        });
+      });
+    });
+  });
+});

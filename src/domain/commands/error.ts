@@ -87,6 +87,11 @@ export type CommandError =
       readonly id: ObjectId;
     }
   | {
+      /** git's `could not parse commit <id>`: a walk reached a parent that fails to parse. */
+      readonly code: 'COMMIT_PARSE_FAILED';
+      readonly id: ObjectId;
+    }
+  | {
       readonly code: 'REVPARSE_UNRESOLVED';
       readonly expression: string;
       /** What `rev-parse` had printed before refusing. */
@@ -568,6 +573,9 @@ export const revisionWalkFailed = (commit?: ObjectId): TsgitError =>
 
 export const commitLookupFailed = (id: ObjectId): TsgitError =>
   new TsgitError({ code: 'COMMIT_LOOKUP_FAILED', id });
+
+export const commitParseFailed = (id: ObjectId): TsgitError =>
+  new TsgitError({ code: 'COMMIT_PARSE_FAILED', id });
 
 export const revparseUnresolved = (expression: string): TsgitError =>
   new TsgitError({ code: 'REVPARSE_UNRESOLVED', expression });
