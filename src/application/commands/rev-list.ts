@@ -15,6 +15,7 @@ import { objectNotFound } from '../../domain/objects/error.js';
 import type { FilePath, ObjectId, RefName } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
+import { type HasObjectOptions, hasObject } from '../primitives/has-object.js';
 import { type ClosureTier, computeClosure } from '../primitives/internal/closure-engine.js';
 import { readRefCandidate } from '../primitives/resolve-ref.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
@@ -91,15 +92,22 @@ const allRefNames = async (ctx: Context): Promise<RefName[]> => {
   return [...names.filter((name) => name.startsWith('refs/')), HEAD_REF];
 };
 
+/** `get_reference`'s `parse_object` reads with a pack re-scan on a miss. */
+const RECHECK: HasObjectOptions = { mode: 'recheck' };
+
 /**
  * One `--all` tip as git's paranoid ref iteration hands it to
  * `get_reference`: a dangling symref (an unborn `HEAD` included) is omitted,
- * a broken ref dies `bad object <name>`, and any other fault propagates.
+ * a broken ref — or one naming an object the repository lacks — dies
+ * `bad object <name>`, and any other fault propagates.
  */
 const readAllRefTip = async (ctx: Context, name: RefName): Promise<ObjectId | undefined> => {
   const outcome = await readRefCandidate(ctx, name);
   if (outcome.kind === 'broken') throw objectNotFound(name as string as ObjectId);
-  return outcome.kind === 'found' ? outcome.id : undefined;
+  if (outcome.kind !== 'found') return undefined;
+  if (!(await hasObject(ctx, outcome.id, RECHECK)))
+    throw objectNotFound(name as string as ObjectId);
+  return outcome.id;
 };
 
 const resolveAllRefTips = async (ctx: Context): Promise<ObjectId[]> => {

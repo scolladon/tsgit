@@ -717,6 +717,11 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list all interop — broken refs', () => {
       'a symbolic branch whose target is broken',
       { 'refs/heads/zz': 'garbage\n', 'refs/heads/aa': 'ref: refs/heads/zz\n' },
     ],
+    ['a branch naming an absent object', { 'refs/heads/missing': `${'1'.repeat(40)}\n` }],
+    [
+      'an absent object after a broken branch',
+      { 'refs/heads/b-missing': `${'1'.repeat(40)}\n`, 'refs/heads/a-broken': 'x\n' },
+    ],
   ] as const)('Given %s', (_label, looseRefs) => {
     describe('When rev-list --all runs on both tools', () => {
       it('Then both refuse with the same bad-object line', async () => {

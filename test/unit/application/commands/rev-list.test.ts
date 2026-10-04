@@ -990,6 +990,26 @@ describe('revList all: broken refs', () => {
     });
   });
 
+  describe('Given a loose branch naming an object the repository lacks', () => {
+    describe('When revList is called with all: true', () => {
+      it('Then it refuses naming the ref as a bad object, not the absent id', async () => {
+        // Arrange
+        const { ctx } = await seedThree();
+        await writeLooseRef(ctx, 'refs/heads/missing', `${'1'.repeat(40)}\n`);
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, { all: true }));
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'OBJECT_NOT_FOUND',
+          id: 'refs/heads/missing',
+        });
+      });
+    });
+  });
+
   describe('Given two broken loose branches', () => {
     describe('When revList is called with all: true', () => {
       it('Then the refusal names the first in ref order', async () => {
