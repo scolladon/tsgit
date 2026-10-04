@@ -28,7 +28,7 @@ import { writePackArtifacts } from '../primitives/internal/write-pack-artifacts.
 import { commonGitDir, packsDir } from '../primitives/path-layout.js';
 import { refreshPackRegistry } from '../primitives/read-object.js';
 import { assertOperationalRepositorySettingsFirst } from './internal/repo-state.js';
-import { evaluateRevision } from './rev-parse.js';
+import { resolveRevision } from './rev-parse.js';
 
 export interface PackObjectsOptions {
   readonly wants: ReadonlyArray<string>;
@@ -78,8 +78,9 @@ export const packObjects = async (
 ): Promise<PackObjectsResult> => {
   await assertOperationalRepositorySettingsFirst(ctx);
   await assertValidPackIntConfig(ctx);
-  const wants = await Promise.all(opts.wants.map((rev) => evaluateRevision(ctx, rev)));
-  const not = await Promise.all((opts.not ?? []).map((rev) => evaluateRevision(ctx, rev)));
+  // git reads `--revs` lines from stdin, where no argument can be a filename.
+  const wants = await Promise.all(opts.wants.map((rev) => resolveRevision(ctx, rev, 'stdin')));
+  const not = await Promise.all((opts.not ?? []).map((rev) => resolveRevision(ctx, rev, 'stdin')));
   const closure = await computeClosure(ctx, {
     wants,
     not,

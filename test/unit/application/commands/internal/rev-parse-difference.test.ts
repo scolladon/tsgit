@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { differenceSides } from '../../../../../src/application/commands/internal/rev-parse-difference.js';
+import {
+  differenceSides,
+  rangeSides,
+} from '../../../../../src/application/commands/internal/rev-parse-difference.js';
 
 describe('differenceSides', () => {
   describe.each([
@@ -36,6 +39,27 @@ describe('differenceSides', () => {
 
         // Assert
         expect(result).toBeUndefined();
+      });
+    });
+  });
+});
+
+describe('rangeSides', () => {
+  describe.each([
+    { arg: '..', expected: { start: 'HEAD', end: 'HEAD', symmetric: false } },
+    { arg: 'a..b', expected: { start: 'a', end: 'b', symmetric: false } },
+    { arg: 'HEAD', expected: undefined },
+  ])('Given $arg, where it cannot be a filename', ({ arg, expected }) => {
+    describe('When it is split', () => {
+      it('Then it reads the sides git reads', () => {
+        // Arrange
+        const sut = rangeSides;
+
+        // Act
+        const result = sut(arg);
+
+        // Assert
+        expect(result).toEqual(expected);
       });
     });
   });

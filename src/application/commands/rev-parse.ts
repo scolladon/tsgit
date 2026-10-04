@@ -41,7 +41,11 @@ import {
 } from './internal/misspelt-revision.js';
 import { readCandidateRef, resolveAmbiguousLadder } from './internal/refname-ambiguity.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
-import { differenceSides } from './internal/rev-parse-difference.js';
+import {
+  type DifferenceSides,
+  differenceSides,
+  rangeSides,
+} from './internal/rev-parse-difference.js';
 import {
   isMessageSearch,
   type PeelTarget,
@@ -141,12 +145,29 @@ const withPrinted = (refusal: unknown, printed: ReadonlyArray<RevParseEntry>): u
 };
 
 /**
+ * Where a `setup_revisions` reader takes its argument from: the command line,
+ * where an argument naming no object may be a filename, or a `--stdin` line,
+ * where it cannot — a bare `..` is then `HEAD..HEAD`, and a miss is refused
+ * without the misspelt-name re-read.
+ */
+export type RevisionSource = 'command-line' | 'stdin';
+
+const SIDES_BY_SOURCE: Readonly<
+  Record<RevisionSource, (expression: string) => DifferenceSides | undefined>
+> = { 'command-line': differenceSides, stdin: rangeSides };
+
+/**
  * The single object a `setup_revisions` reader takes from `expression`: an
  * expression holding `..` has its sides read first, as git tries it as a
  * range, then the whole is read as one name.
  */
-export const resolveRevision = async (ctx: Context, expression: string): Promise<ObjectId> => {
-  await readDifferenceSides(ctx, expression);
+export const resolveRevision = async (
+  ctx: Context,
+  expression: string,
+  source: RevisionSource = 'command-line',
+): Promise<ObjectId> => {
+  await readDifferenceSides(ctx, SIDES_BY_SOURCE[source](expression));
+  if (source === 'stdin') return evaluateRevision(ctx, expression);
   return readNamedObject(ctx, expression, expression);
 };
 
@@ -180,8 +201,10 @@ const readCommittish = async (ctx: Context, side: string): Promise<ObjectId | un
  * git's `handle_dotdot` reads: the side before a `..`, then the side after it
  * once the first resolves, each printing its own warnings.
  */
-const readDifferenceSides = async (ctx: Context, expression: string): Promise<void> => {
-  const sides = differenceSides(expression);
+const readDifferenceSides = async (
+  ctx: Context,
+  sides: DifferenceSides | undefined,
+): Promise<void> => {
   if (sides === undefined) return;
   if ((await readCommittish(ctx, sides.start)) !== undefined) await readCommittish(ctx, sides.end);
 };

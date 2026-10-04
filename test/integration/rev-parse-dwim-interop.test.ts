@@ -659,6 +659,24 @@ describe.skipIf(!GIT_AVAILABLE)('integration — skip and ambiguity warnings per
       input: 'only\n',
       run: ((ctx) => packObjects(ctx, { wants: ['only'] })) as CommandRun,
     },
+    {
+      label: 'pack-objects over a missing ancestor past a dangling symref',
+      args: ['pack-objects', '--revs', '--stdout'],
+      input: 'dg~5\n',
+      run: ((ctx) => packObjects(ctx, { wants: ['dg~5'] })) as CommandRun,
+    },
+    {
+      label: 'pack-objects over a range whose end names nothing',
+      args: ['pack-objects', '--revs', '--stdout'],
+      input: 'dg..nope\n',
+      run: ((ctx) => packObjects(ctx, { wants: ['dg..nope'] })) as CommandRun,
+    },
+    {
+      label: 'pack-objects excluding a range whose end names nothing',
+      args: ['pack-objects', '--revs', '--stdout'],
+      input: 'main\n--not\ndg..nope\n',
+      run: ((ctx) => packObjects(ctx, { wants: ['main'], not: ['dg..nope'] })) as CommandRun,
+    },
   ])('Given $label', ({ args, input, run }) => {
     describe('When git and tsgit run it', () => {
       it('Then tsgit warns each line git warns', async () => {

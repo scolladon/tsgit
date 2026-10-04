@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
-import { evaluateRevision, revParse } from '../../../../src/application/commands/rev-parse.js';
+import {
+  evaluateRevision,
+  resolveRevision,
+  revParse,
+} from '../../../../src/application/commands/rev-parse.js';
 import { TsgitError } from '../../../../src/domain/error.js';
 import type { ObjectId } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
@@ -266,6 +270,22 @@ describe('Given an expression whose name warns but which names no object', () =>
     });
   });
 
+  describe('When a reader that cannot take it as a filename resolves it', () => {
+    it('Then it refuses after the one read', async () => {
+      // Arrange
+      const warnings: string[] = [];
+      const ctx = await danglingRepo((message) => warnings.push(message));
+      const sut = resolveRevision;
+
+      // Act
+      const result = await failureOf(() => sut(ctx, 'dg~5', 'stdin'));
+
+      // Assert
+      expect(result).toMatchObject({ code: 'OBJECT_NOT_FOUND' });
+      expect(warnings).toEqual([DANGLING]);
+    });
+  });
+
   describe('When a command evaluates it once', () => {
     it('Then it refuses after the one read', async () => {
       // Arrange
@@ -340,6 +360,34 @@ describe('Given an expression that resolves after a warning', () => {
 
       // Assert
       expect(warnings).toEqual([DANGLING]);
+    });
+  });
+});
+
+describe('Given a dangling refs/tags/HEAD beside HEAD', () => {
+  const headRepo = async (warn: (message: string) => void): Promise<Context> => {
+    const ctx = await danglingRepo(warn);
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, 'ref: refs/heads/main\n');
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/HEAD`, 'ref: refs/tags/nothing\n');
+    return ctx;
+  };
+  const HEAD_DANGLING = 'ignoring dangling symref refs/tags/HEAD';
+
+  describe.each([
+    { source: 'stdin', reads: [HEAD_DANGLING, HEAD_DANGLING] },
+    { source: 'command-line', reads: [] },
+  ] as const)('When a $source reader resolves a bare ..', ({ source, reads }) => {
+    it('Then it reads HEAD as both range sides only where .. cannot be a path', async () => {
+      // Arrange
+      const warnings: string[] = [];
+      const ctx = await headRepo((message) => warnings.push(message));
+      const sut = resolveRevision;
+
+      // Act
+      await failureOf(() => sut(ctx, '..', source));
+
+      // Assert
+      expect(warnings).toEqual(reads);
     });
   });
 });
