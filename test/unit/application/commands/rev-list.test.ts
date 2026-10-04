@@ -8,7 +8,10 @@ import { init } from '../../../../src/application/commands/init.js';
 import { mergeRun } from '../../../../src/application/commands/merge.js';
 import { revList } from '../../../../src/application/commands/rev-list.js';
 import { tagCreate } from '../../../../src/application/commands/tag.js';
+import { worktreeAdd } from '../../../../src/application/commands/worktree.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
+import { deriveWorktreeContext } from '../../../../src/application/primitives/internal/worktree-context.js';
+import { readObject } from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { writeTree } from '../../../../src/application/primitives/write-tree.js';
 import { TsgitError } from '../../../../src/domain/index.js';
@@ -1094,6 +1097,231 @@ describe('revList all: broken refs', () => {
 
         // Assert
         expect(caught).toBe(ioError);
+      });
+    });
+  });
+});
+
+describe('revList: explicit wants naming an absent object', () => {
+  const ABSENT = '1'.repeat(40);
+
+  const readTreeOf = async (ctx: Context, id: ObjectId): Promise<ObjectId> => {
+    const object = await readObject(ctx, id);
+    if (object.type !== 'commit') throw new Error(`${id} is not a commit`);
+    return object.data.tree;
+  };
+
+  const caughtFrom = async (run: () => Promise<unknown>): Promise<unknown> => {
+    try {
+      await run();
+    } catch (error) {
+      return error;
+    }
+    return undefined;
+  };
+
+  describe.each([
+    ['a want', { wants: [ABSENT] }],
+    ['a negated want', { wants: ['HEAD', `^${ABSENT}`] }],
+    ['a not tip', { wants: ['HEAD'], not: [ABSENT] }],
+    ['an absent want before an unknown name', { wants: [ABSENT, 'nope'] }],
+    ['a parents shorthand', { wants: [`${ABSENT}^@`] }],
+    ['an exclude-parents shorthand', { wants: [`${ABSENT}^!`] }],
+    ['an exclude-parent shorthand', { wants: [`${ABSENT}^-`] }],
+    ['a negated parents shorthand', { wants: ['HEAD', `^${ABSENT}^@`] }],
+  ] as const)('Given %s spelling a full id the repository lacks', (_label, opts) => {
+    describe('When revList is called', () => {
+      it('Then it refuses naming the argument as typed as a bad object', async () => {
+        // Arrange
+        const { ctx } = await seedThree();
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, opts));
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({ code: 'OBJECT_NOT_FOUND', id: ABSENT });
+      });
+    });
+  });
+
+  describe.each(['^@', '^!', '^-'])('Given a tree followed by the %s shorthand', (mark) => {
+    describe('When revList is called', () => {
+      it('Then the whole argument is an unknown revision and nothing is logged', async () => {
+        // Arrange
+        const { ctx: base, commitIds } = await seedThree();
+        const logged: string[] = [];
+        const record = (message: string): void => {
+          logged.push(message);
+        };
+        const ctx = { ...base, logger: { error: record, warn: record, info: record } };
+        const tree = await readTreeOf(ctx, commitIds[0]!);
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, { wants: [`${tree}${mark}`] }));
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'REVPARSE_UNRESOLVED', expression: `${tree}${mark}` },
+          logged: [],
+        });
+      });
+    });
+  });
+
+  describe.each([
+    ['t^@', 't'],
+    ['t^!', 't'],
+    ['t^-', 't'],
+    ['t', ABSENT],
+  ])('Given a tag t whose target the repository lacks, wanted as %s', (want, id) => {
+    describe('When revList is called', () => {
+      it("Then it refuses with git's bad object name", async () => {
+        // Arrange
+        const { ctx } = await seedThree();
+        const tag = await writeObject(ctx, {
+          type: 'tag',
+          id: '' as ObjectId,
+          data: {
+            object: ABSENT as ObjectId,
+            objectType: 'commit',
+            tagName: 't',
+            tagger: AUTHOR,
+            message: 't\n',
+            extraHeaders: [],
+          },
+        });
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/t`, `${tag}\n`);
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, { wants: [want] }));
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({ code: 'OBJECT_NOT_FOUND', id });
+      });
+    });
+  });
+
+  describe.each([
+    ['a want', { wants: ['missing'] }, 'missing'],
+    ['a fully spelt want', { wants: ['refs/heads/missing'] }, 'refs/heads/missing'],
+    ['a not tip', { wants: ['HEAD'], not: ['missing'] }, 'missing'],
+  ] as const)('Given %s naming a branch whose object the repository lacks', (_label, opts, id) => {
+    describe('When revList is called', () => {
+      it('Then it refuses naming the branch as typed', async () => {
+        // Arrange
+        const { ctx } = await seedThree();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/missing`, `${ABSENT}\n`);
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, opts));
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({ code: 'OBJECT_NOT_FOUND', id });
+      });
+    });
+  });
+});
+
+describe('revList all: other worktrees', () => {
+  const caughtFrom = async (run: () => Promise<unknown>): Promise<unknown> => {
+    try {
+      await run();
+    } catch (error) {
+      return error;
+    }
+    return undefined;
+  };
+
+  const seedLinked = async (): Promise<
+    SeededRepo & { readonly linkedHead: string; readonly linkedCtx: Context }
+  > => {
+    const seeded = await seedThree();
+    const { id, path } = await worktreeAdd(seeded.ctx, { path: 'wt', detach: true });
+    return {
+      ...seeded,
+      linkedHead: `${seeded.ctx.layout.gitDir}/worktrees/${id}/HEAD`,
+      linkedCtx: deriveWorktreeContext(seeded.ctx, id, path),
+    };
+  };
+
+  describe('Given the main worktree HEAD names an absent object', () => {
+    describe('When revList is called with all: true from a linked worktree', () => {
+      it('Then it refuses naming the main worktree HEAD', async () => {
+        // Arrange
+        const { ctx, linkedCtx } = await seedLinked();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${'1'.repeat(40)}\n`);
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(linkedCtx, { all: true }));
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'OBJECT_NOT_FOUND',
+          id: 'main-worktree/HEAD',
+        });
+      });
+    });
+  });
+
+  describe('Given a linked worktree whose detached HEAD only it reaches', () => {
+    describe('When revList is called with all: true', () => {
+      it('Then that HEAD is a tip too', async () => {
+        // Arrange
+        const { ctx, commitIds, linkedHead } = await seedLinked();
+        const only = await writeDatedCommit(ctx, 'linked', 1_700_000_100, [commitIds[2]!]);
+        await ctx.fs.writeUtf8(linkedHead, `${only}\n`);
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, { all: true });
+
+        // Assert
+        expect(result.entries.map(({ id }) => id)).toContain(only);
+      });
+    });
+  });
+
+  describe('Given a linked worktree whose HEAD names an absent object', () => {
+    describe('When revList is called with all: true', () => {
+      it('Then it refuses naming that worktree HEAD', async () => {
+        // Arrange
+        const { ctx, linkedHead } = await seedLinked();
+        await ctx.fs.writeUtf8(linkedHead, `${'1'.repeat(40)}\n`);
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, { all: true }));
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'OBJECT_NOT_FOUND',
+          id: 'worktrees/wt/HEAD',
+        });
+      });
+    });
+  });
+
+  describe.each([
+    ['unreadable', 'garbage\n'],
+    ['a dangling symref', 'ref: refs/heads/nope\n'],
+  ])('Given a linked worktree whose HEAD is %s', (_label, content) => {
+    describe('When revList is called with all: true', () => {
+      it('Then that HEAD is skipped', async () => {
+        // Arrange
+        const { ctx, commitIds, linkedHead } = await seedLinked();
+        await ctx.fs.writeUtf8(linkedHead, content);
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, { all: true });
+
+        // Assert
+        expect(result.entries.map(({ id }) => id)).toEqual([...commitIds].reverse());
       });
     });
   });

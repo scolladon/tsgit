@@ -15,10 +15,11 @@ import { objectNotFound } from '../../domain/objects/error.js';
 import type { FilePath, ObjectId, RefName } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
-import { type HasObjectOptions, hasObject } from '../primitives/has-object.js';
 import { type ClosureTier, computeClosure } from '../primitives/internal/closure-engine.js';
 import { readRefCandidate } from '../primitives/resolve-ref.js';
+import { worktreeContexts } from './internal/fsck/roots.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
+import { requireReference } from './internal/require-reference.js';
 import { expandRevisionArguments } from './internal/revision-argument.js';
 
 export interface RevListOptions {
@@ -36,11 +37,13 @@ export interface RevListOptions {
    */
   readonly count?: boolean;
   /**
-   * Union the tips of every ref (branches, tags, remotes, `HEAD`) into
-   * `wants`, deduplicated. A symbolic ref whose target does not resolve — a
-   * `HEAD` on an unborn branch is the live case — is skipped; a ref whose
-   * content is unreadable refuses with `OBJECT_NOT_FOUND` naming that ref,
-   * as git's `bad object <ref>`.
+   * Union the tips of every ref (branches, tags, remotes, `HEAD`) and every
+   * other worktree's `HEAD` into `wants`, deduplicated. A symbolic ref whose
+   * target does not resolve — a `HEAD` on an unborn branch is the live case —
+   * is skipped, as is another worktree's unreadable `HEAD`; a ref whose
+   * content is unreadable, or that names an absent object, refuses with
+   * `OBJECT_NOT_FOUND` naming that ref (`worktrees/<id>/HEAD` or
+   * `main-worktree/HEAD` for another worktree's), as git's `bad object <ref>`.
    */
   readonly all?: boolean;
   /**
@@ -92,9 +95,6 @@ const allRefNames = async (ctx: Context): Promise<RefName[]> => {
   return [...names.filter((name) => name.startsWith('refs/')), HEAD_REF];
 };
 
-/** `get_reference`'s `parse_object` reads with a pack re-scan on a miss. */
-const RECHECK: HasObjectOptions = { mode: 'recheck' };
-
 /**
  * One `--all` tip as git's paranoid ref iteration hands it to
  * `get_reference`: a dangling symref (an unborn `HEAD` included) is omitted,
@@ -105,9 +105,25 @@ const readAllRefTip = async (ctx: Context, name: RefName): Promise<ObjectId | un
   const outcome = await readRefCandidate(ctx, name);
   if (outcome.kind === 'broken') throw objectNotFound(name as string as ObjectId);
   if (outcome.kind !== 'found') return undefined;
-  if (!(await hasObject(ctx, outcome.id, RECHECK)))
-    throw objectNotFound(name as string as ObjectId);
+  await requireReference(ctx, name, outcome.id);
   return outcome.id;
+};
+
+/**
+ * git's `other_head_refs`: every other worktree's HEAD, under its
+ * per-worktree prefix — one that resolves to nothing (unborn, dangling,
+ * unreadable) is skipped, one naming an absent object dies there.
+ */
+const otherWorktreeHeadTips = async (ctx: Context): Promise<ObjectId[]> => {
+  const tips: ObjectId[] = [];
+  for (const { ref, worktreeCtx } of await worktreeContexts(ctx)) {
+    if (worktreeCtx === ctx) continue;
+    const outcome = await readRefCandidate(worktreeCtx, HEAD_REF);
+    if (outcome.kind !== 'found') continue;
+    await requireReference(ctx, ref, outcome.id);
+    tips.push(outcome.id);
+  }
+  return tips;
 };
 
 const resolveAllRefTips = async (ctx: Context): Promise<ObjectId[]> => {
@@ -116,7 +132,7 @@ const resolveAllRefTips = async (ctx: Context): Promise<ObjectId[]> => {
     const tip = await readAllRefTip(ctx, name);
     if (tip !== undefined) tips.push(tip);
   }
-  return tips;
+  return [...tips, ...(await otherWorktreeHeadTips(ctx))];
 };
 
 interface RevListTips {

@@ -20,6 +20,7 @@ import { packObjects } from '../../src/application/commands/pack-objects.js';
 import { revList } from '../../src/application/commands/rev-list.js';
 import type { Context } from '../../src/ports/context.js';
 import { GIT_AVAILABLE, git, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
+import { trackedRepositories } from './repository-lifecycle.js';
 
 const SETUP_TIMEOUT = 60_000;
 
@@ -760,6 +761,148 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list all interop — broken refs', () => {
 
         // Assert
         expect(new Set(result.entries.map((entry) => entry.id))).toEqual(peer);
+      });
+    });
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)('rev-list interop — explicit tips naming absent objects', () => {
+  const ABSENT = '1'.repeat(40);
+  const dirs: string[] = [];
+  afterAll(async () => {
+    await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true })));
+  });
+
+  describe.each([
+    ['an absent full id', [ABSENT], { wants: [ABSENT] }],
+    ['a negated absent full id', ['HEAD', `^${ABSENT}`], { wants: ['HEAD', `^${ABSENT}`] }],
+    ['an absent full id before an unknown name', [ABSENT, 'nope'], { wants: [ABSENT, 'nope'] }],
+    ['the parents of an absent full id', [`${ABSENT}^@`], { wants: [`${ABSENT}^@`] }],
+    ['a branch naming an absent object', ['missing'], { wants: ['missing'] }],
+    [
+      'an excluded branch naming an absent object',
+      ['HEAD', '--not', 'missing'],
+      { wants: ['HEAD'], not: ['missing'] },
+    ],
+    ['a tag of an absent commit', ['t'], { wants: ['t'] }],
+    ['the parents of a tag of an absent commit', ['t^@'], { wants: ['t^@'] }],
+    ['a tag of an absent commit without its parents', ['t^!'], { wants: ['t^!'] }],
+    ['a tag of an absent commit without its first parent', ['t^-'], { wants: ['t^-'] }],
+  ] as const)('Given %s', (_label, args, opts) => {
+    describe('When rev-list runs on both tools', () => {
+      it('Then both refuse with the same bad-object line', async () => {
+        // Arrange
+        const dir = await buildLooseRefFixture({ 'refs/heads/missing': `${ABSENT}\n` });
+        dirs.push(dir);
+        const tag = runGit(['-C', dir, 'hash-object', '-t', 'tag', '-w', '--stdin'], {
+          input: `object ${ABSENT}\ntype commit\ntag t\ntagger a <a@b> 1700000000 +0000\n\nt\n`,
+        }).trim();
+        git(dir, 'update-ref', 'refs/tags/t', tag);
+        const peer = tryRunGitWithExit(['-C', dir, 'rev-list', ...args]);
+        const sut = revList;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(createNodeContext({ workDir: dir }), opts);
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(peer.exitCode).toBe(128);
+        expect(badObjectLine(caught)).toBe(peer.stderr);
+      });
+    });
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)('rev-list all interop — other worktrees', () => {
+  const openTrackedRepository = trackedRepositories();
+  const dirs: string[] = [];
+  afterAll(async () => {
+    await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true })));
+  });
+
+  /** A repository with a detached linked worktree `wt` one commit ahead of every ref. */
+  const buildLinkedFixture = async (): Promise<{ readonly dir: string; readonly wt: string }> => {
+    const dir = await buildLooseRefFixture({});
+    const wt = `${dir}-wt`;
+    dirs.push(dir, wt);
+    git(dir, 'worktree', 'add', '-q', '--detach', wt);
+    commit(wt, 'linked', 1_700_000_100, ['--allow-empty']);
+    return { dir, wt };
+  };
+
+  describe('Given a linked worktree whose detached HEAD only it reaches', () => {
+    describe('When rev-list --all runs on both tools from the main worktree', () => {
+      it('Then both list the same commits', async () => {
+        // Arrange
+        const { dir } = await buildLinkedFixture();
+        const peer = new Set(git(dir, 'rev-list', '--all').split('\n').filter(Boolean));
+        const sut = revList;
+
+        // Act
+        const result = await sut(createNodeContext({ workDir: dir }), { all: true });
+
+        // Assert
+        expect(new Set(result.entries.map(({ id }) => id))).toEqual(peer);
+      });
+    });
+  });
+
+  describe.each([
+    ['unreadable', 'garbage\n'],
+    ['a dangling symref', 'ref: refs/heads/nope\n'],
+  ])('Given a linked worktree whose HEAD is %s', (_label, content) => {
+    describe('When rev-list --all runs on both tools from the main worktree', () => {
+      it('Then both skip it and list the same commits', async () => {
+        // Arrange
+        const { dir } = await buildLinkedFixture();
+        await writeFile(
+          path.join(dir, '.git', 'worktrees', path.basename(`${dir}-wt`), 'HEAD'),
+          content,
+        );
+        const peer = new Set(git(dir, 'rev-list', '--all').split('\n').filter(Boolean));
+        const sut = revList;
+
+        // Act
+        const result = await sut(createNodeContext({ workDir: dir }), { all: true });
+
+        // Assert
+        expect(new Set(result.entries.map(({ id }) => id))).toEqual(peer);
+      });
+    });
+  });
+
+  describe.each([
+    ['a linked worktree HEAD', 'linked'],
+    ['the main worktree HEAD read from the linked one', 'main'],
+  ] as const)('Given %s naming an absent object', (_label, broken) => {
+    describe('When rev-list --all runs on both tools', () => {
+      it('Then both refuse with the same bad-object line', async () => {
+        // Arrange
+        const { dir, wt } = await buildLinkedFixture();
+        const head =
+          broken === 'main'
+            ? path.join(dir, '.git', 'HEAD')
+            : path.join(dir, '.git', 'worktrees', path.basename(wt), 'HEAD');
+        await writeFile(head, `${'1'.repeat(40)}\n`);
+        const from = broken === 'main' ? wt : dir;
+        const peer = tryRunGitWithExit(['-C', from, 'rev-list', '--all']);
+        const sut = await openTrackedRepository({ cwd: from });
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut.revList({ all: true });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(peer.exitCode).toBe(128);
+        expect(badObjectLine(caught)).toBe(peer.stderr);
       });
     });
   });

@@ -117411,15 +117411,7 @@
 									},
 									{
 										"kind": "text",
-										"text": ") into\n"
-									},
-									{
-										"kind": "code",
-										"text": "`wants`"
-									},
-									{
-										"kind": "text",
-										"text": ", deduplicated. A symbolic ref whose target does not resolve — a\n"
+										"text": ") and every\nother worktree's "
 									},
 									{
 										"kind": "code",
@@ -117427,7 +117419,31 @@
 									},
 									{
 										"kind": "text",
-										"text": " on an unborn branch is the live case — is skipped; a ref whose\ncontent is unreadable refuses with "
+										"text": " into "
+									},
+									{
+										"kind": "code",
+										"text": "`wants`"
+									},
+									{
+										"kind": "text",
+										"text": ", deduplicated. A symbolic ref whose\ntarget does not resolve — a "
+									},
+									{
+										"kind": "code",
+										"text": "`HEAD`"
+									},
+									{
+										"kind": "text",
+										"text": " on an unborn branch is the live case —\nis skipped, as is another worktree's unreadable "
+									},
+									{
+										"kind": "code",
+										"text": "`HEAD`"
+									},
+									{
+										"kind": "text",
+										"text": "; a ref whose\ncontent is unreadable, or that names an absent object, refuses with\n"
 									},
 									{
 										"kind": "code",
@@ -117435,7 +117451,23 @@
 									},
 									{
 										"kind": "text",
-										"text": " naming that ref,\nas git's "
+										"text": " naming that ref ("
+									},
+									{
+										"kind": "code",
+										"text": "`worktrees/<id>/HEAD`"
+									},
+									{
+										"kind": "text",
+										"text": " or\n"
+									},
+									{
+										"kind": "code",
+										"text": "`main-worktree/HEAD`"
+									},
+									{
+										"kind": "text",
+										"text": " for another worktree's), as git's "
 									},
 									{
 										"kind": "code",

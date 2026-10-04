@@ -9,16 +9,17 @@
 
 import { revparseUnresolved } from '../../../domain/commands/error.js';
 import { applyGraft } from '../../../domain/commit/graft.js';
-import type { ObjectId } from '../../../domain/objects/index.js';
+import type { Commit, ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
-import { lookupCommitReference } from '../../primitives/internal/lookup-commit-reference.js';
 import { loadShallowSet } from '../../primitives/internal/shallow-set.js';
+import { readObject } from '../../primitives/read-object.js';
 import {
   type RevisionSource,
   readCommittish,
   readNamedObject,
   readReporting,
 } from '../rev-parse.js';
+import { requireReference } from './require-reference.js';
 import { type DifferenceSides, differenceSides, rangeSides } from './rev-parse-difference.js';
 import { symmetricBases } from './symmetric-bases.js';
 
@@ -59,6 +60,22 @@ const expandRange = async (
 };
 
 /**
+ * git's `add_parents_only` peel: through annotated tags to the commit `id`
+ * reaches — each object on the way refused as `bad object <base>` when
+ * absent — or `undefined`, silently, when the chain ends on a non-commit.
+ */
+const peelParentsBase = async (
+  ctx: Context,
+  base: string,
+  id: ObjectId,
+): Promise<Commit | undefined> => {
+  await requireReference(ctx, base, id);
+  const object = await readObject(ctx, id);
+  if (object.type === 'tag') return peelParentsBase(ctx, base, object.data.object);
+  return object.type === 'commit' ? object : undefined;
+};
+
+/**
  * git's `add_parents_only`: the parents of the commit `base` names — only the
  * `exclude`-th when given — marked `negated` (flipped by a leading `^`), or
  * `undefined` when `base` names no commit or has no such parent.
@@ -72,7 +89,8 @@ const parentsOf = async (
   const flipped = spelt.startsWith(NEGATION);
   const base = flipped ? spelt.slice(NEGATION.length) : spelt;
   const id = await readCommittish(ctx, base);
-  const commit = id === undefined ? undefined : await lookupCommitReference(ctx, id);
+  if (id === undefined) return undefined;
+  const commit = await peelParentsBase(ctx, base, id);
   if (commit === undefined) return undefined;
   const { parents } = applyGraft(commit, await loadShallowSet(ctx)).data;
   const chosen = exclude === undefined ? parents : parents.slice(exclude - 1, exclude);
@@ -116,6 +134,7 @@ const readTip = async (ctx: Context, arg: string, source: RevisionSource): Promi
   const name = negated ? arg.slice(NEGATION.length) : arg;
   const id =
     source === 'stdin' ? await readReporting(ctx, name) : await readNamedObject(ctx, name, arg);
+  await requireReference(ctx, name, id);
   return tip(id, negated);
 };
 

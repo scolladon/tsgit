@@ -815,7 +815,7 @@ async function linkedWorktreeContext(
 }
 
 /** git's `get_worktrees` order: the main worktree, then each admin entry as listed. */
-async function worktreeContexts(
+export async function worktreeContexts(
   ctx: Context,
 ): Promise<ReadonlyArray<{ readonly ref: RefName; readonly worktreeCtx: Context }>> {
   const main = isMainWorktreeCtx(ctx) ? ctx : mainWorktreeContext(ctx);
