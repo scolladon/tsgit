@@ -1,14 +1,14 @@
 /**
  * Cross-tool interop — `revParse`'s revision list against `git rev-parse`'s
  * stdout. One repository is built once with canonical git: two branches off
- * one root, two criss-cross merges of them, an annotated tag and a blob
- * sharing a commit's abbreviated id. Each row rebuilds git's stdout from the
+ * one root, two criss-cross merges of them, an annotated tag of the root and
+ * a blob sharing a commit's abbreviated id. Each row rebuilds git's stdout from the
  * entries and compares it, or that neither resolves, and the `error:` lines.
  *
  * @proves
  *   surface:        revParse
  *   bucket:         cross-tool-interop
- *   unique:         ranges, symmetric ranges and ^-excluded names list git's revisions in git's order
+ *   unique:         ranges, symmetric ranges, ^@ / ^! / ^-n parent shorthands and ^-excluded names list git's revisions in git's order
  *   interopSurface: revParse
  */
 import { createHash } from 'node:crypto';
@@ -153,6 +153,34 @@ describe.skipIf(!GIT_AVAILABLE)('integration — revParse revision list parity w
       '<prefix>..side',
       'side..<prefix>',
       '<prefix>...side',
+      'x1^@',
+      'x1^!',
+      'x1^-',
+      'x1^-1',
+      'x1^-2',
+      'x1^-3',
+      'x1^-0',
+      'x1^-+2',
+      'x1^- 2',
+      'x1^-02',
+      'x1^-2x',
+      'x1^--1',
+      'x1~1^-',
+      't^!',
+      't^@',
+      't^-',
+      'main^{tree}^@',
+      'main^{tree}^!',
+      'x1^!x',
+      'x1^!^!',
+      'x1^@^!',
+      'x1^@^@',
+      'nope^!',
+      '^x1^!',
+      'side..main^!',
+      '^!',
+      '<prefix>^!',
+      '<prefix>^@',
     ])('When git rev-parse and revParse read %s', (row) => {
       it("Then both print git's revisions in git's order and the same errors", async () => {
         // Arrange

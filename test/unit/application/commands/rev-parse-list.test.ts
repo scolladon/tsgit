@@ -201,3 +201,105 @@ describe('Given a history with two branches, criss-cross merges and a tag', () =
     },
   );
 });
+
+describe('Given a merge of two branches over a root tagged t', () => {
+  describe.each([
+    {
+      arg: 'x1^@',
+      expected: [
+        ['c2', false],
+        ['s1', false],
+      ],
+    },
+    {
+      arg: 'x1^!',
+      expected: [
+        ['x1', false],
+        ['c2', true],
+        ['s1', true],
+      ],
+    },
+    {
+      arg: 'x1^-',
+      expected: [
+        ['x1', false],
+        ['c2', true],
+      ],
+    },
+    {
+      arg: 'x1^-2',
+      expected: [
+        ['x1', false],
+        ['s1', true],
+      ],
+    },
+    { arg: 't^!', expected: [['t', false]] },
+    { arg: 't^@', expected: [] },
+    {
+      arg: `${C2_PREFIX}^!`,
+      expected: [
+        ['c2', false],
+        ['c1', true],
+      ],
+    },
+  ] as const)('When revParse reads $arg', ({ arg, expected }) => {
+    it("Then it answers git's parent shorthand in git's order", async () => {
+      // Arrange
+      const { ctx, ids } = await listRepo();
+      const sut = revParse;
+
+      // Act
+      const result = await sut(ctx, arg);
+
+      // Assert
+      expect(result).toEqual(entries(ids, expected));
+    });
+  });
+
+  describe.each([
+    { arg: 'x1^@', expected: [] },
+    { arg: 'x1^!', expected: [['x1', false]] },
+  ] as const)('When revParse reads $arg with x1 a shallow boundary', ({ arg, expected }) => {
+    it('Then it reads the parents the shallow graft leaves', async () => {
+      // Arrange
+      const { ctx, ids } = await listRepo();
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `${ids.x1}\n`);
+      const sut = revParse;
+
+      // Act
+      const result = await sut(ctx, arg);
+
+      // Assert
+      expect(result).toEqual(entries(ids, expected));
+    });
+  });
+
+  describe.each(['x1^-3', 't^-', 'nope^!'])('When revParse reads %s', (arg) => {
+    it('Then it refuses the argument as one name', async () => {
+      // Arrange
+      const { ctx } = await listRepo();
+      const sut = revParse;
+
+      // Act
+      const result = await failureData(() => sut(ctx, arg));
+
+      // Assert
+      expect(result).toMatchObject({ code: 'REVPARSE_UNRESOLVED' });
+    });
+  });
+
+  describe('When revParse reads a parent shorthand of a tree', () => {
+    it('Then it reports the tree and refuses the argument', async () => {
+      // Arrange
+      const { ctx, errors, ids } = await listRepo();
+      const sut = revParse;
+
+      // Act
+      const result = await failureData(() => sut(ctx, `${ids.tree}^@`));
+
+      // Assert
+      expect(result).toMatchObject({ code: 'REVPARSE_UNRESOLVED' });
+      expect(errors).toEqual([`object ${ids.tree} is a tree, not a commit`]);
+    });
+  });
+});

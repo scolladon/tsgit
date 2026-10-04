@@ -43,6 +43,7 @@ import {
   type RevExpression,
   type RevOperation,
 } from './internal/rev-parse-grammar.js';
+import { type ParentShorthand, parentShorthand } from './internal/rev-parse-parent-shorthand.js';
 import { resolveRevisionName } from './internal/revision-name.js';
 
 /** One revision `git rev-parse` prints: its object, `negated` where git prefixes `^`. */
@@ -59,15 +60,18 @@ const excluded = (id: ObjectId): RevParseEntry => ({ id, negated: true });
 /**
  * `git rev-parse <arg>`: every revision git prints for the argument, in its
  * order. An argument holding `..` whose sides both name objects is a range —
- * `A..B` answers B then ^A, `A...B` B, A, then ^ each merge base; otherwise
- * the argument names one object, excluded when spelt `^<rev>`.
+ * `A..B` answers B then ^A, `A...B` B, A, then ^ each merge base; a commit
+ * `X` read as `X^@` answers its parents, `X^!` X then ^ each parent, `X^-<n>`
+ * X then ^ its n-th parent; otherwise the argument names one object,
+ * excluded when spelt `^<rev>`.
  */
 export const revParse = async (
   ctx: Context,
   expression: string,
 ): Promise<ReadonlyArray<RevParseEntry>> => {
-  const range = await tryDifference(ctx, expression);
-  if (range !== undefined) return range;
+  const listed =
+    (await tryDifference(ctx, expression)) ?? (await tryParentShorthands(ctx, expression));
+  if (listed !== undefined) return listed;
   const negated = expression.startsWith(NEGATION);
   const name = negated ? expression.slice(NEGATION.length) : expression;
   const id = await readNamedObject(ctx, name, expression);
@@ -100,8 +104,8 @@ const readNamedObject = async (ctx: Context, name: string, arg: string): Promise
   }
 };
 
-/** One side of a `..`, read commit-ish; a read that names no object is not a refusal here. */
-const readSide = async (ctx: Context, side: string): Promise<ObjectId | undefined> => {
+/** A range side or shorthand base, read commit-ish; a read that names no object is not a refusal here. */
+const readCommittish = async (ctx: Context, side: string): Promise<ObjectId | undefined> => {
   try {
     return await evaluateRevision(ctx, side, committishFilter(ctx));
   } catch (error) {
@@ -117,7 +121,7 @@ const readSide = async (ctx: Context, side: string): Promise<ObjectId | undefine
 const readDifferenceSides = async (ctx: Context, expression: string): Promise<void> => {
   const sides = differenceSides(expression);
   if (sides === undefined) return;
-  if ((await readSide(ctx, sides.start)) !== undefined) await readSide(ctx, sides.end);
+  if ((await readCommittish(ctx, sides.start)) !== undefined) await readCommittish(ctx, sides.end);
 };
 
 /**
@@ -131,9 +135,9 @@ const tryDifference = async (
 ): Promise<ReadonlyArray<RevParseEntry> | undefined> => {
   const sides = differenceSides(expression);
   if (sides === undefined) return undefined;
-  const start = await readSide(ctx, sides.start);
+  const start = await readCommittish(ctx, sides.start);
   if (start === undefined) return undefined;
-  const end = await readSide(ctx, sides.end);
+  const end = await readCommittish(ctx, sides.end);
   if (end === undefined) return undefined;
   if (!sides.symmetric) return [included(end), excluded(start)];
   return symmetricDifference(ctx, start, end);
@@ -149,6 +153,37 @@ const symmetricDifference = async (
   if (a === undefined || b === undefined) return undefined;
   const bases = await mergeBase(ctx, [a.id, b.id], { all: true });
   return [included(end), included(start), ...bases.map(excluded)];
+};
+
+/**
+ * git rev-parse's `try_parent_shorthands`: the base read commit-ish and
+ * looked up as a commit, its parents as its shallow graft leaves them; a
+ * base naming no commit, or `^-<n>` past its last parent, answers `undefined`
+ * so the whole argument is read as one name.
+ */
+const tryParentShorthands = async (
+  ctx: Context,
+  expression: string,
+): Promise<ReadonlyArray<RevParseEntry> | undefined> => {
+  const shorthand = parentShorthand(expression);
+  if (shorthand === undefined) return undefined;
+  const id = await readCommittish(ctx, shorthand.base);
+  if (id === undefined) return undefined;
+  const commit = await lookupCommitReference(ctx, id);
+  if (commit === undefined) return undefined;
+  const { parents } = applyGraft(commit, await loadShallowSet(ctx)).data;
+  return shorthandEntries(shorthand, id, parents);
+};
+
+const shorthandEntries = (
+  shorthand: ParentShorthand,
+  id: ObjectId,
+  parents: ReadonlyArray<ObjectId>,
+): ReadonlyArray<RevParseEntry> | undefined => {
+  if (shorthand.kind === 'parents') return parents.map(included);
+  if (shorthand.kind === 'exclude-parents') return [included(id), ...parents.map(excluded)];
+  const parent = parents[shorthand.n - 1];
+  return parent === undefined ? undefined : [included(id), excluded(parent)];
 };
 
 /**

@@ -1,6 +1,6 @@
 # `revParse`
 
-Resolve a revision argument to the revisions `git rev-parse` prints for it, in git's order. Accepts ref names, oids (full or short), `HEAD`, `@{N}`, `@{date}`, `<ref>~N`, `<ref>^`, `<ref>^N`, and the range forms `A..B`, `A...B`, `^<rev>`.
+Resolve a revision argument to the revisions `git rev-parse` prints for it, in git's order. Accepts ref names, oids (full or short), `HEAD`, `@{N}`, `@{date}`, `<ref>~N`, `<ref>^`, `<ref>^N`, the range forms `A..B`, `A...B`, `^<rev>`, and the parent forms `X^@`, `X^!`, `X^-<n>`.
 
 ## Signature
 
@@ -23,8 +23,11 @@ A plain name answers one entry. Rendering is the caller's: `git rev-parse`'s std
 | `A..B` | `B`, `^A` |
 | `..B` / `A..` | the empty side reads `HEAD` |
 | `A...B` | `B`, `A`, then `^` each merge base, newest first |
+| `X^@` | X's parents |
+| `X^!` | `X`, then `^` each of its parents |
+| `X^-<n>` / `X^-` | `X`, then `^` its n-th parent (`^-` is `^-1`) |
 
-Both sides are read commit-ish: an abbreviated id shared by a commit and a non-commit names the commit. A side naming nothing — or, for `A...B`, a side that is no commit — reads the whole argument as one name instead, which then refuses. A bare `..` is a path, never a range.
+`X` keeps the id it was spelt as (a tag stays the tag), and its parents are the ones a shallow boundary leaves. Both range sides and `X` are read commit-ish: an abbreviated id shared by a commit and a non-commit names the commit. A side naming nothing — or, for `A...B` and the parent forms, one that is no commit, or `^-<n>` past the last parent — reads the whole argument as one name instead, which then refuses. A bare `..` is a path, never a range.
 
 ## Supported syntax
 
