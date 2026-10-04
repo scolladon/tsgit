@@ -888,6 +888,14 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list all interop — other worktrees', () =
   });
 });
 
+/** The objects a range under test spells its ends from. */
+interface RangeEnds {
+  readonly blob: string;
+  /** A commit naming `blob` as its tree. */
+  readonly holder: string;
+  readonly head: string;
+}
+
 describe.skipIf(!GIT_AVAILABLE)('rev-list interop — object types assigned in one run', () => {
   const dirs: string[] = [];
   afterAll(async () => {
@@ -1696,6 +1704,82 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list interop — object types assigned in o
 
         // Assert
         expect(packStderrOf(logged, result)).toBe(peer.stderr);
+      });
+    });
+  });
+
+  /** git's `dotdot_missing` death, rebuilt from the logged lines and the refusal's data. */
+  const rangeStderrOf = (logged: ReadonlyArray<string>, error: unknown): string => {
+    const data = (error as { data: { code: string; expression: string } }).data;
+    const nonCommits =
+      (error as { data: { nonCommits?: ReadonlyArray<{ id: string; type: string }> } }).data
+        .nonCommits ?? [];
+    const lines = [
+      ...logged,
+      ...nonCommits.map((side) => `object ${side.id} is a ${side.type}, not a commit`),
+    ];
+    const fatal =
+      data.code === 'INVALID_SYMMETRIC_RANGE'
+        ? `Invalid symmetric difference expression ${data.expression}`
+        : `Invalid revision range ${data.expression}`;
+    return `${lines.map((line) => `error: ${line}\n`).join('')}fatal: ${fatal}\n`;
+  };
+
+  const ABSENT = 'cd00000000000000000000000000000000000000';
+
+  describe.each([
+    ['a blob up to a commit naming it as its tree', (e: RangeEnds) => `${e.blob}..${e.holder}`],
+    [
+      'a commit naming a blob as its tree up to that blob',
+      (e: RangeEnds) => `${e.holder}..${e.blob}`,
+    ],
+    ['a blob and a commit naming it as its tree', (e: RangeEnds) => `${e.blob}...${e.holder}`],
+    ['an absent object up to a commit', (e: RangeEnds) => `${ABSENT}..${e.head}`],
+    ['a commit up to an absent object', (e: RangeEnds) => `${e.head}..${ABSENT}`],
+    ['an absent object and a commit', (e: RangeEnds) => `${ABSENT}...${e.head}`],
+    ['a blob and a commit', (e: RangeEnds) => `${e.blob}...${e.head}`],
+  ] as const)('Given a range from %s', (_label, rangeOf) => {
+    const endsOf = async (): Promise<{ readonly dir: string; readonly range: string }> => {
+      const { dir, blob } = await buildMistypedTagFixture();
+      git(dir, 'update-ref', '-d', 'refs/tags/t');
+      const holder = writeLiteralCommit(dir, blob, []);
+      const head = git(dir, 'rev-parse', 'HEAD').trim();
+      return { dir, range: rangeOf({ blob, holder, head }) };
+    };
+
+    describe('When rev-list --objects reads it on both tools', () => {
+      it('Then both refuse the range the same way', async () => {
+        // Arrange
+        const { dir, range } = await endsOf();
+        const peer = tryRunGitWithExit(['-C', dir, 'rev-list', '--objects', range]);
+        const { ctx, logged } = capturing(dir);
+        const sut = revList;
+
+        // Act
+        const result = await settled(() => sut(ctx, { wants: [range], objects: true }));
+
+        // Assert
+        expect(peer.exitCode).toBe(128);
+        expect(rangeStderrOf(logged, result)).toBe(peer.stderr);
+      });
+    });
+
+    describe('When pack-objects --revs reads it on both tools', () => {
+      it('Then both refuse the range the same way', async () => {
+        // Arrange
+        const { dir, range } = await endsOf();
+        const peer = tryRunGitWithExit(['-C', dir, 'pack-objects', '--revs', '--stdout', '-q'], {
+          input: `${range}\n`,
+        });
+        const { ctx, logged } = capturing(dir);
+        const sut = packObjects;
+
+        // Act
+        const result = await settled(() => sut(ctx, { wants: [range] }));
+
+        // Assert
+        expect(peer.exitCode).toBe(128);
+        expect(rangeStderrOf(logged, result)).toBe(peer.stderr);
       });
     });
   });

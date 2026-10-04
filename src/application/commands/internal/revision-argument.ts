@@ -7,11 +7,18 @@
  * whole argument is then read as one name.
  */
 
-import { revparseUnresolved } from '../../../domain/commands/error.js';
+import {
+  invalidRevisionRange,
+  invalidSymmetricRange,
+  revparseUnresolved,
+} from '../../../domain/commands/error.js';
 import { applyGraft } from '../../../domain/commit/graft.js';
 import type { Commit, ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
-import type { ObjectTypeTable } from '../../primitives/internal/object-type-table.js';
+import {
+  type ObjectTypeTable,
+  parseTypedObjectOrAbsent,
+} from '../../primitives/internal/object-type-table.js';
 import { loadShallowSet } from '../../primitives/internal/shallow-set.js';
 import { readObject } from '../../primitives/read-object.js';
 import {
@@ -43,6 +50,20 @@ const SIDES_BY_SOURCE: Readonly<
   Record<RevisionSource, (arg: string) => DifferenceSides | undefined>
 > = { 'command-line': differenceSides, stdin: rangeSides };
 
+/** git's `dotdot_missing`: both ends parsed into `table` before a failed parse of either refuses the range. */
+const requireRangeEnds = async (
+  ctx: Context,
+  table: ObjectTypeTable,
+  arg: string,
+  sides: DifferenceSides,
+  ends: readonly [ObjectId, ObjectId],
+): Promise<void> => {
+  const start = await parseTypedObjectOrAbsent(ctx, table, ends[0]);
+  const end = await parseTypedObjectOrAbsent(ctx, table, ends[1]);
+  if (start !== undefined && end !== undefined) return;
+  throw sides.symmetric ? invalidSymmetricRange(arg, []) : invalidRevisionRange(arg);
+};
+
 /** git's `handle_dotdot`: both sides named, the range's tips; otherwise `undefined`. */
 const expandRange = async (
   ctx: Context,
@@ -56,6 +77,7 @@ const expandRange = async (
   if (start === undefined) return undefined;
   const end = await readCommittish(ctx, table, sides.end);
   if (end === undefined) return undefined;
+  await requireRangeEnds(ctx, table, arg, sides, [start, end]);
   if (!sides.symmetric) return [tip(start, true), tip(end, false)];
   const bases = await symmetricBases(ctx, arg, [start, end]);
   if (bases === undefined) return undefined;

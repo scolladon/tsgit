@@ -137,6 +137,36 @@ describe('expandRevisionArgument symmetric walk', () => {
   );
 });
 
+describe('expandRevisionArgument range ends', () => {
+  const MISSING = `cd${'0'.repeat(38)}` as ObjectId;
+
+  describe.each([
+    { arg: `${MISSING}..main`, code: 'INVALID_REVISION_RANGE' },
+    { arg: `main..${MISSING}`, code: 'INVALID_REVISION_RANGE' },
+    { arg: `${MISSING}...main`, code: 'INVALID_SYMMETRIC_RANGE', nonCommits: [] },
+  ])('Given a range one end of which the store lacks', ({ arg, ...refusal }) => {
+    describe(`When ${arg} is expanded`, () => {
+      it('Then it parses both ends before refusing the range', async () => {
+        // Arrange
+        const { ctx } = await history();
+        const table = createObjectTypeTable();
+        const sut = expandRevisionArgument;
+
+        // Act
+        const result = await sut(ctx, table, arg, 'command-line').catch(
+          (error: TsgitError) => error.data,
+        );
+
+        // Assert
+        expect({ result, tree: table.get(EMPTY_TREE as ObjectId) }).toEqual({
+          result: { ...refusal, expression: arg },
+          tree: 'tree',
+        });
+      });
+    });
+  });
+});
+
 describe('expandRevisionArguments', () => {
   describe('Given a want and a range to exclude', () => {
     describe('When both are expanded', () => {
