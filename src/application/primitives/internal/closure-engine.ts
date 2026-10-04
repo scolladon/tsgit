@@ -350,7 +350,7 @@ async function collectUnlimitedWalk(
   commitSeeds: ReadonlyArray<Commit>,
   request: ClosureRequest,
 ): Promise<CommitWalk> {
-  if (request.objectTypes !== undefined && request.maxCount === undefined) {
+  if (request.objectTypes !== undefined) {
     return collectTypedWalk(ctx, commitSeeds, request.objectTypes, request);
   }
   const walked: WalkedCommit[] = [];
@@ -365,7 +365,8 @@ async function collectUnlimitedWalk(
  * A typing invocation's whole walk: git's `get_revision` parses each parent
  * as it pops a commit — newest first, ties in arrival order — and dies on the
  * first commit whose parents it cannot parse. With nothing excluded,
- * `limitList` walks exactly that order and refuses naming that commit.
+ * `limitList` walks exactly that order and refuses naming that commit; a
+ * count stops it once that many commits have had their parents parsed.
  */
 async function collectTypedWalk(
   ctx: Context,
@@ -376,7 +377,13 @@ async function collectTypedWalk(
   const options = await resolveLimitOptions(
     ctx,
     { from: commitSeeds.map((seed) => seed.id), ignoreMissing: true },
-    { until: new Set(), firstParent: request.firstParent === true, settle: 'slop', objectTypes },
+    {
+      until: new Set(),
+      firstParent: request.firstParent === true,
+      settle: 'slop',
+      objectTypes,
+      ...(request.maxCount === undefined ? {} : { takeAtMost: request.maxCount }),
+    },
   );
   const walked: WalkedCommit[] = [];
   for await (const commit of readShown(ctx, options, await limitList(ctx, options))) {

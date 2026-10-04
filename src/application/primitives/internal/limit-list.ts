@@ -50,6 +50,13 @@ export interface LimitListOptions {
    * one's is logged and not walked on, as git's gentle parse leaves it.
    */
   readonly objectTypes?: ObjectTypeTable;
+  /**
+   * Stop once this many commits are taken, each after its parents are
+   * parsed — git's streaming walk under `max_count`. Only for a walk with
+   * nothing excluded, where no commit taken is dropped later. Omitted means
+   * the walk runs to completion.
+   */
+  readonly takeAtMost?: number;
 }
 
 export interface LimitedWalk {
@@ -73,7 +80,7 @@ export interface LimitWalkOptions {
 
 /** The walk's own knobs; `seeds` defaults to git's `<from> ^<until>` command-line order. */
 type LimitSettings = Pick<LimitListOptions, 'until' | 'firstParent' | 'settle'> &
-  Partial<Pick<LimitListOptions, 'seeds' | 'objectTypes'>>;
+  Partial<Pick<LimitListOptions, 'seeds' | 'objectTypes' | 'takeAtMost'>>;
 
 /** Complete a walk's options for {@link limitList}, loading `.git/shallow` when none is given. */
 export const resolveLimitOptions = async (
@@ -238,6 +245,7 @@ const drain = async (state: LimitState): Promise<ReadonlyArray<ObjectId>> => {
     date = entry.date;
     state.lowestShownGeneration = Math.min(state.lowestShownGeneration, entry.generation);
     taken.push(entry.oid);
+    if (taken.length === state.options.takeAtMost) break;
   }
   return taken;
 };

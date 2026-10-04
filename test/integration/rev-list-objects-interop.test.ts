@@ -1325,6 +1325,46 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list interop — object types assigned in o
     },
   );
 
+  describe.each([
+    [3, false],
+    [2, true],
+    [2, false],
+  ] as const)(
+    'Given a three-commit line whose oldest commit names a blob parent (count %i, blob wanted: %s)',
+    (count, blobWanted) => {
+      describe('When rev-list -n walks it on both tools', () => {
+        it('Then both parse the same parents and agree on the refusal or the listing', async () => {
+          // Arrange
+          const { dir, blob } = await buildMistypedTagFixture();
+          const empty = emptyTreeOf(dir);
+          const oldest = writeLiteralCommit(dir, empty, [blob]);
+          const newest = writeLiteralCommit(dir, empty, [writeLiteralCommit(dir, empty, [oldest])]);
+          const wants = blobWanted ? [blob, newest] : [newest];
+          const peer = tryRunGitWithExit(['-C', dir, 'rev-list', `-n${count}`, ...wants]);
+          const { ctx, logged } = capturing(dir);
+          const sut = revList;
+
+          // Act
+          let stdout = peer.stdout;
+          let fatal = '';
+          try {
+            const result = await sut(ctx, { wants, maxCount: count });
+            stdout = result.entries.map((entry) => `${entry.id}\n`).join('');
+          } catch (error) {
+            fatal = walkFatalOf(error);
+          }
+
+          // Assert
+          const errors = logged.map((line) => `error: ${line}\n`).join('');
+          expect({ stdout, stderr: errors + fatal }).toEqual({
+            stdout: peer.stdout,
+            stderr: peer.stderr,
+          });
+        });
+      });
+    },
+  );
+
   /** A tree stored as spelt: `[mode, name, id]` entries, whatever their objects are. */
   const writeLiteralTree = (
     dir: string,

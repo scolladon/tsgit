@@ -2108,4 +2108,72 @@ describe('revList: object types assigned during one invocation', () => {
       });
     });
   });
+
+  describe('Given a three-commit line whose oldest commit names a blob as its parent', () => {
+    const seedLine = async () => {
+      const seeded = await seedMistypedTag();
+      const empty = await writeEmptyTree(seeded.ctx);
+      const oldest = await writeCommitNaming(seeded.ctx, empty, [seeded.blob]);
+      const middle = await writeCommitNaming(seeded.ctx, empty, [oldest]);
+      const newest = await writeCommitNaming(seeded.ctx, empty, [middle]);
+      return { ...seeded, oldest, middle, newest };
+    };
+
+    describe('When revList lists at most three commits', () => {
+      it('Then it parses the third commit parents and fails at the object that is not a commit', async () => {
+        // Arrange
+        const { ctx, logged, blob, oldest, newest } = await seedLine();
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, { wants: [newest], maxCount: 3 }));
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'REVISION_WALK_FAILED', commit: oldest },
+          logged: [`Object ${blob} not a commit`],
+        });
+      });
+    });
+
+    describe('When revList lists at most two commits after the blob is wanted', () => {
+      it('Then it parses the second commit parents and fails on the bad parent', async () => {
+        // Arrange
+        const { ctx, logged, blob, oldest, middle, newest } = await seedLine();
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, { wants: [blob, newest], maxCount: 2 }));
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'REVISION_WALK_FAILED', commit: middle },
+          logged: [
+            `object ${blob} is a blob, not a commit`,
+            `bad parent ${blob} in commit ${oldest}`,
+          ],
+        });
+      });
+    });
+
+    describe('When revList lists at most two commits', () => {
+      it('Then it stops before parsing the oldest commit parents', async () => {
+        // Arrange
+        const { ctx, logged, middle, newest } = await seedLine();
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, { wants: [newest], maxCount: 2 });
+
+        // Assert
+        expect({ entries: result.entries, logged }).toEqual({
+          entries: [
+            { id: newest, type: 'commit' },
+            { id: middle, type: 'commit' },
+          ],
+          logged: [],
+        });
+      });
+    });
+  });
 });
