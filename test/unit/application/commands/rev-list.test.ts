@@ -1622,6 +1622,121 @@ describe('revList: object types assigned during one invocation', () => {
     });
   });
 
+  const MISSING = `cd${'0'.repeat(38)}` as ObjectId;
+  const OTHER_MISSING = `ce${'0'.repeat(38)}` as ObjectId;
+
+  describe.each([
+    ['listing commits', {}],
+    ['listing objects', { objects: true }],
+    ['counting one commit', { maxCount: 1 }],
+  ] as const)('Given an included commit whose parent object is missing, %s', (_label, opts) => {
+    describe('When the walk parses that parent', () => {
+      it('Then it cannot read it and fails to traverse the parents of that commit', async () => {
+        // Arrange
+        const { ctx, logged } = await seedMistypedTag();
+        const empty = await writeEmptyTree(ctx);
+        const child = await writeCommitNaming(ctx, empty, [MISSING]);
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, { wants: [child], ...opts }));
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'REVISION_WALK_FAILED', commit: child },
+          logged: [`Could not read ${MISSING}`],
+        });
+      });
+    });
+  });
+
+  describe('Given an included commit whose two parent objects are missing', () => {
+    describe('When the walk parses its parents', () => {
+      it('Then it stops at the first parent it cannot read', async () => {
+        // Arrange
+        const { ctx, logged } = await seedMistypedTag();
+        const empty = await writeEmptyTree(ctx);
+        const child = await writeCommitNaming(ctx, empty, [MISSING, OTHER_MISSING]);
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, { wants: [child] }));
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'REVISION_WALK_FAILED', commit: child },
+          logged: [`Could not read ${MISSING}`],
+        });
+      });
+    });
+  });
+
+  describe('Given an included commit whose parent object is missing and an excluded line', () => {
+    describe('When the limited walk parses that parent', () => {
+      it('Then it cannot read it and fails the walk setup', async () => {
+        // Arrange
+        const { ctx, logged } = await seedMistypedTag();
+        const empty = await writeEmptyTree(ctx);
+        const included = await writeCommitNaming(ctx, empty, [MISSING]);
+        const excluded = await writeCommitNaming(ctx, empty, []);
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, { wants: [included], not: [excluded] }));
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'REVISION_WALK_FAILED' },
+          logged: [`Could not read ${MISSING}`],
+        });
+      });
+    });
+  });
+
+  describe('Given an excluded commit whose parent object is missing', () => {
+    describe('When the limited walk marks that parent', () => {
+      it('Then it skips it quietly and lists the included commit', async () => {
+        // Arrange
+        const { ctx, logged } = await seedMistypedTag();
+        const empty = await writeEmptyTree(ctx);
+        const excluded = await writeCommitNaming(ctx, empty, [MISSING]);
+        const included = await writeCommitNaming(ctx, empty, [excluded]);
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, { wants: [included], not: [excluded] });
+
+        // Assert
+        expect({ ids: result.entries.map(({ id }) => id), logged }).toEqual({
+          ids: [included],
+          logged: [],
+        });
+      });
+    });
+  });
+
+  describe('Given a merge whose second parent object is missing, walked first-parent', () => {
+    describe('When the walk follows the first parent only', () => {
+      it('Then it never reads the second parent and lists the line', async () => {
+        // Arrange
+        const { ctx, logged } = await seedMistypedTag();
+        const empty = await writeEmptyTree(ctx);
+        const first = await writeCommitNaming(ctx, empty, []);
+        const merge = await writeCommitNaming(ctx, empty, [first, MISSING]);
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, { wants: [merge], firstParent: true });
+
+        // Assert
+        expect({ ids: result.entries.map(({ id }) => id), logged }).toEqual({
+          ids: [merge, first],
+          logged: [],
+        });
+      });
+    });
+  });
+
   describe('Given a blob and an annotated tag of it wanted without objects', () => {
     describe('When revList lists them', () => {
       it('Then nothing is listed, as git lists only commits then', async () => {

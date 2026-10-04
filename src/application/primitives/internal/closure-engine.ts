@@ -428,7 +428,7 @@ async function collectStreamedWalk(
   const { objectTypes, maxCount } = request;
   const options = await resolveLimitOptions(
     ctx,
-    { from, ignoreMissing: true },
+    { from, ignoreMissing: objectTypes === undefined },
     {
       until: new Set(),
       firstParent: request.firstParent === true,
@@ -471,7 +471,10 @@ async function collectLimitedWalk(
 ): Promise<CommitWalk> {
   const options = await resolveLimitOptions(
     ctx,
-    { from: resolved.commitSeeds.map((seed) => seed.id), ignoreMissing: true },
+    {
+      from: resolved.commitSeeds.map((seed) => seed.id),
+      ignoreMissing: request.objectTypes === undefined,
+    },
     {
       seeds: resolved.seeds,
       until: new Set(marks.commitTips),

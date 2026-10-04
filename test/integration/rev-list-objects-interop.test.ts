@@ -1068,6 +1068,75 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list interop — object types assigned in o
     },
   );
 
+  const ABSENT_PARENT = `cd${'0'.repeat(38)}`;
+
+  describe.each([
+    ['rev-list', [], {}],
+    ['rev-list --objects', ['--objects'], { objects: true }],
+    ['rev-list --max-count=1', ['--max-count=1'], { maxCount: 1 }],
+  ] as const)('Given a commit whose parent object is missing', (command, flags, opts) => {
+    describe(`When ${command} walks it on both tools`, () => {
+      it('Then both cannot read the parent and fail to traverse the same commit', async () => {
+        // Arrange
+        const { dir } = await buildMistypedTagFixture();
+        const child = writeLiteralCommit(dir, emptyTreeOf(dir), [ABSENT_PARENT]);
+        const peer = tryRunGitWithExit(['-C', dir, 'rev-list', ...flags, child]);
+        const { ctx, logged } = capturing(dir);
+        const sut = revList;
+
+        // Act
+        const result = await settled(() => sut(ctx, { wants: [child], ...opts }));
+
+        // Assert
+        expect(peer.exitCode).toBe(128);
+        expect(walkStderrOf(logged, result)).toBe(peer.stderr);
+      });
+    });
+  });
+
+  describe('Given a commit whose parent object is missing and an excluded root', () => {
+    describe('When rev-list walks the range on both tools', () => {
+      it('Then both cannot read the parent and fail the walk setup', async () => {
+        // Arrange
+        const { dir } = await buildMistypedTagFixture();
+        const child = writeLiteralCommit(dir, emptyTreeOf(dir), [ABSENT_PARENT]);
+        const root = writeLiteralCommit(dir, emptyTreeOf(dir), []);
+        const peer = tryRunGitWithExit(['-C', dir, 'rev-list', child, `^${root}`]);
+        const { ctx, logged } = capturing(dir);
+        const sut = revList;
+
+        // Act
+        const result = await settled(() => sut(ctx, { wants: [child], not: [root] }));
+
+        // Assert
+        expect(peer.exitCode).toBe(128);
+        expect(walkStderrOf(logged, result)).toBe(peer.stderr);
+      });
+    });
+  });
+
+  describe('Given a commit whose parent object is missing', () => {
+    describe('When pack-objects --revs walks it on both tools', () => {
+      it('Then both cannot read the parent and fail to traverse the same commit', async () => {
+        // Arrange
+        const { dir } = await buildMistypedTagFixture();
+        const child = writeLiteralCommit(dir, emptyTreeOf(dir), [ABSENT_PARENT]);
+        const peer = tryRunGitWithExit(['-C', dir, 'pack-objects', '--revs', '--stdout'], {
+          input: `${child}\n`,
+        });
+        const { ctx, logged } = capturing(dir);
+        const sut = packObjects;
+
+        // Act
+        const result = await settled(() => sut(ctx, { wants: [child] }));
+
+        // Assert
+        expect(peer.exitCode).toBe(128);
+        expect(walkStderrOf(logged, result)).toBe(peer.stderr);
+      });
+    });
+  });
+
   describe('Given a blob, an annotated tag of it and a tree wanted without --objects', () => {
     describe('When rev-list lists them on both tools', () => {
       it('Then neither lists anything, commits being all git shows then', async () => {

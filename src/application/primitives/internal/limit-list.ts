@@ -46,8 +46,9 @@ export interface LimitListOptions {
   /**
    * The invocation's object-type table: each parent parsed from its object is
    * typed as git's commit parse types it. An included commit's parent that
-   * fails refuses with `REVISION_WALK_FAILED` naming that commit; an excluded
-   * one's is logged and not walked on, as git's gentle parse leaves it.
+   * fails — or, without `ignoreMissing`, is missing — refuses with
+   * `REVISION_WALK_FAILED` naming that commit; an excluded one's is logged
+   * and not walked on, as git's gentle parse leaves it.
    */
   readonly objectTypes?: ObjectTypeTable;
   /**
@@ -288,9 +289,11 @@ const processParents = async (state: LimitState, id: ObjectId): Promise<void> =>
   const followed = state.options.firstParent ? parents.slice(0, 1) : parents;
   const parsed = await parseInOrder(state, followed);
   for (const [at, parent] of followed.entries()) {
-    if (state.notCommits.has(parent) || !(await typeParsed(state, parent))) {
-      throw revisionWalkFailed(id);
-    }
+    const failed =
+      unreadable(state, parent) ||
+      state.notCommits.has(parent) ||
+      !(await typeParsed(state, parent));
+    if (failed) throw revisionWalkFailed(id);
     const entry = parsed[at];
     if (entry === undefined || state.seen.has(parent)) continue;
     state.seen.add(parent);
@@ -326,6 +329,13 @@ const typeGraphParents = (state: LimitState, table: ObjectTypeTable, id: ObjectI
   for (const parent of (state.parsed.get(id) as Parsed).parents) {
     if (!assignObjectType(state.ctx, table, parent, 'commit')) throw commitLookupFailed(parent);
   }
+};
+
+/** git's `Could not read`: a missing parent a typed walk does not skip, logged once it is met. */
+const unreadable = (state: LimitState, parent: ObjectId): boolean => {
+  if (state.options.ignoreMissing || !state.missing.has(parent)) return false;
+  state.ctx.logger?.error?.(`Could not read ${parent}`, { id: parent });
+  return true;
 };
 
 /** Parents parsed concurrently; a refusal surfaces for the first in parent order, as git's loop meets it. */
@@ -394,7 +404,8 @@ const parse = async (
   }
   const commit = await readCommit(state.ctx, id, {
     verifyHash,
-    ignoreMissing: gently || ignoreMissing,
+    // A typed walk records a missing parent for its parse loop to refuse.
+    ignoreMissing: gently || ignoreMissing || state.options.objectTypes !== undefined,
     missing: state.missing,
     shallow,
   });
