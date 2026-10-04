@@ -18,6 +18,7 @@ import {
 import { TsgitError } from '../../domain/error.js';
 import type { FsckConfiguredSeverity } from '../../domain/fsck/index.js';
 import { CONFIGURABLE_MSG_IDS, FATAL_MSG_IDS, parseFsckSeverity } from '../../domain/fsck/index.js';
+import { parseDisambiguationHint } from '../../domain/objects/disambiguation-hint.js';
 import type { FilePath } from '../../domain/objects/object-id.js';
 import type { ReflogExpiryConfigEntry } from '../../domain/reflog/expire-policy.js';
 import type { Context } from '../../ports/context.js';
@@ -2750,6 +2751,21 @@ export const findFirstInvalidAutoSetupMerge = async (
     keys: ['autosetupmerge'],
     accepts: (value) => AUTO_SETUP_MERGE_LITERALS.has(value) || acceptsGitBoolean(value),
     fixedKey: 'branch.autosetupmerge',
+  });
+
+/**
+ * `core.disambiguate`-specific finder: `git_default_config` dies `unknown hint
+ * type` on a value naming none of the hint types — on every command. A
+ * valueless entry is a separate refusal (`findFirstValuelessEntry`).
+ */
+export const findFirstInvalidDisambiguate = async (
+  ctx: Context,
+): Promise<InvalidBooleanEntry | undefined> =>
+  findFirstRejectedBoolean(ctx, {
+    section: 'core',
+    keys: ['disambiguate'],
+    accepts: (value) => parseDisambiguationHint(value) !== undefined,
+    fixedKey: 'core.disambiguate',
   });
 
 /** `branch.autoSetupRebase`'s literals, which git compares case-sensitively. */

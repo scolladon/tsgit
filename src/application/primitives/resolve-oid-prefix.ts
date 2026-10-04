@@ -20,6 +20,7 @@ import {
   logCandidateReadFault,
   passesHint,
 } from './internal/ambiguous-candidates.js';
+import { configuredHint } from './internal/disambiguation-hints.js';
 import { isMissingFanoutDir } from './internal/loose-oid-cache.js';
 import { getObjectStore, type ObjectSource } from './object-store.js';
 
@@ -131,7 +132,8 @@ const leadingPassers = async (
 
 /**
  * `finish_object_disambiguation` then `get_short_oid`'s listing: the single
- * candidate passing `accepts` wins; otherwise the prefix is ambiguous, the
+ * candidate passing `accepts` — or, when the caller names no hint,
+ * `core.disambiguate`'s — wins; otherwise the prefix is ambiguous, the
  * listing still hinted when two passed it, else showing every match.
  */
 const chooseCandidate = async (
@@ -140,10 +142,10 @@ const chooseCandidate = async (
   candidates: ReadonlyArray<ObjectId>,
   accepts: CandidateFilter | undefined,
 ): Promise<ObjectId> => {
-  const [chosen, rival] =
-    accepts === undefined ? [] : await leadingPassers(ctx, candidates, accepts);
+  const hint = accepts ?? (await configuredHint(ctx));
+  const [chosen, rival] = hint === undefined ? [] : await leadingPassers(ctx, candidates, hint);
   if (chosen !== undefined && rival === undefined) return chosen;
-  const listingHint = rival === undefined ? undefined : accepts;
+  const listingHint = rival === undefined ? undefined : hint;
   const { candidates: described, readFaults } = await describeCandidates(
     ctx,
     candidates,

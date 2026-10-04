@@ -332,6 +332,59 @@ const buildUnreadableRepository = (repo: string): string => {
   return prefix;
 };
 
+/** A commit and two blobs sharing the commit's prefix — the shape `core.disambiguate` chooses among. */
+const buildHintRepository = (repo: string): string => {
+  runGit(['init', '-q', '-b', 'main', repo]);
+  disableAutoMaintenance(repo);
+  runGit(['-C', repo, 'commit', '-q', '--allow-empty', '-m', 'hinted'], { env: identity });
+  const prefix = git(repo, 'rev-parse', 'HEAD').trim().slice(0, PREFIX_LENGTH);
+  writeSharing(repo, 'blob', prefix, Buffer.from(`x${PLACEHOLDER}\n`));
+  writeSharing(repo, 'blob', prefix, Buffer.from(`y${PLACEHOLDER}\n`));
+  return prefix;
+};
+
+describe.skipIf(!GIT_AVAILABLE)('integration — core.disambiguate against git', () => {
+  let repo = '';
+  let prefix = '';
+
+  beforeAll(async () => {
+    repo = await mkdtemp(path.join(os.tmpdir(), 'tsgit-rev-parse-disambiguate-interop-'));
+    prefix = buildHintRepository(repo);
+  }, SETUP_TIMEOUT);
+
+  afterAll(async () => {
+    await rm(repo, { recursive: true, force: true });
+  });
+
+  describe.each([
+    { hint: 'none', row: '<p>' },
+    { hint: 'commit', row: '<p>' },
+    { hint: 'COMMIT', row: '<p>' },
+    { hint: 'committish', row: '<p>' },
+    { hint: 'tree', row: '<p>' },
+    { hint: 'treeish', row: '<p>' },
+    { hint: 'blob', row: '<p>' },
+    { hint: 'blob', row: '<p>^{tree}' },
+    { hint: 'blob', row: '<p>^{commit}' },
+  ])('Given a commit and two blobs sharing a prefix under the $hint hint', ({ hint, row }) => {
+    describe(`When git rev-parse and revParse read ${row}`, () => {
+      it('Then both resolve or list the candidates alike', async () => {
+        // Arrange
+        git(repo, 'config', 'core.disambiguate', hint);
+        const argument = row.replace('<p>', prefix);
+        const peer = gitOutcome(repo, ['rev-parse', argument]);
+        const sut = revParse;
+
+        // Act
+        const result = await tsgitOutcome(repo, repo, (ctx) => sut(ctx, argument));
+
+        // Assert
+        expect(result).toEqual(peer);
+      });
+    });
+  });
+});
+
 /** The unreadable repository plus a tag of its commit, so two candidates pass a commit-ish or tree-ish hint. */
 const buildHintedUnreadableRepository = (repo: string): string => {
   const prefix = buildUnreadableRepository(repo);

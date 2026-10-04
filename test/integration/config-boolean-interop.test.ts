@@ -779,4 +779,48 @@ describe.skipIf(!GIT_AVAILABLE)('config boolean refusal tier interop', () => {
       });
     });
   });
+  describe.each([
+    {
+      label: 'valueless',
+      line: '\tdisambiguate\n',
+      stderr: "error: missing value for 'core.disambiguate'",
+      data: { code: 'CONFIG_MISSING_VALUE', key: 'core.disambiguate', line: 3 },
+    },
+    {
+      label: 'outside its hint types',
+      line: '\tdisambiguate = bogus\n',
+      stderr: "error: unknown hint type for 'core.disambiguate': bogus",
+      data: {
+        code: 'CONFIG_INVALID_ENUM_VALUE',
+        key: 'core.disambiguate',
+        value: 'bogus',
+        line: 3,
+      },
+    },
+  ])('Given core.disambiguate $label', ({ line, stderr, data }) => {
+    beforeEach(() => writeConfig(`[core]\n\trepositoryformatversion = 0\n${line}`));
+
+    describe.each([
+      {
+        verb: 'branch --list',
+        git: ['branch', '--list'],
+        run: (repo: Repository) => repo.branch.list(),
+      },
+      { verb: 'status', git: ['status'], run: (repo: Repository) => repo.status() },
+    ])('When git $verb and tsgit run', ({ git, run }) => {
+      it('Then both die on the config line', async () => {
+        // Arrange & Act — armed in beforeEach
+        const g = tryRunGitWithExit(['-C', ours, ...git], { env: runGitEnv() });
+        const caught = await withRepo(ours, (repo) => captureThrow(() => run(repo)));
+
+        // Assert
+        expect(g.exitCode).toBe(128);
+        expect(g.stderr.split('\n')[0]).toBe(stderr);
+        expect(g.stderr).toContain(
+          "bad config variable 'core.disambiguate' in file '.git/config' at line 3",
+        );
+        expect((caught as TsgitError).data).toMatchObject(data);
+      });
+    });
+  });
 });

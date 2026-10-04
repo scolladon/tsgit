@@ -7508,6 +7508,61 @@ describe('Char-wise same-line, orphan, and key-grammar config parsing', () => {
     });
   });
 
+  describe('Given core.disambiguate is set', () => {
+    describe.each([
+      {
+        label: 'valueless',
+        config: '[core]\n\tdisambiguate\n',
+        data: { code: 'CONFIG_MISSING_VALUE', key: 'core.disambiguate', line: 2 },
+      },
+      {
+        label: 'to a word naming no hint type',
+        config: '[user]\n\tname = a\n[core]\n\tdisambiguate = bogus\n',
+        data: {
+          code: 'CONFIG_INVALID_ENUM_VALUE',
+          key: 'core.disambiguate',
+          value: 'bogus',
+          line: 4,
+        },
+      },
+    ])('$label', ({ config, data }) => {
+      describe('When assertOperationalRepository runs', () => {
+        it('Then it refuses the way git_default_config dies', async () => {
+          // Arrange
+          const ctx = createMemoryContext();
+          await seedHead(ctx);
+          await seed(ctx, config);
+
+          // Act
+          const result = await assertOperationalRepository(ctx).catch((err: unknown) => err);
+
+          // Assert
+          expect((result as TsgitError).data).toMatchObject(data);
+        });
+      });
+    });
+
+    describe.each(['none', 'COMMIT', 'committish', 'tree', 'treeish', 'Blob'])(
+      'to the hint type %s',
+      (value) => {
+        describe('When assertOperationalRepository runs', () => {
+          it('Then it passes', async () => {
+            // Arrange
+            const ctx = createMemoryContext();
+            await seedHead(ctx);
+            await seed(ctx, `[core]\n\tdisambiguate = ${value}\n`);
+
+            // Act
+            const result = await assertOperationalRepository(ctx).catch((err: unknown) => err);
+
+            // Assert
+            expect(result).not.toBeInstanceOf(TsgitError);
+          });
+        });
+      },
+    );
+  });
+
   describe('findFirstInvalidDiffBinary', () => {
     describe('Given diff.MyDriver.binary holds a value that fails both the tri-state literal and the boolean grammar', () => {
       describe('When findFirstInvalidDiffBinary', () => {

@@ -38,6 +38,7 @@ import {
   findFirstInvalidBooleanInSection,
   findFirstInvalidCompression,
   findFirstInvalidDiffBinary,
+  findFirstInvalidDisambiguate,
   findFirstInvalidLogAllRefUpdates,
   findFirstValuelessEntry,
   findFirstValuelessInSection,
@@ -141,7 +142,7 @@ const hasUsableHead = async (ctx: Context): Promise<boolean> => {
   return false;
 };
 
-const CORE_STRING_KEYS: ReadonlyArray<string> = ['excludesfile', 'attributesfile'];
+const CORE_STRING_KEYS: ReadonlyArray<string> = ['excludesfile', 'attributesfile', 'disambiguate'];
 // `logallrefupdates` is deliberately excluded: it accepts a third literal
 // ("always") beyond git's boolean grammar, so it takes its own tri-state-aware
 // finder (`findFirstInvalidLogAllRefUpdates`) rather than this plain set.
@@ -223,12 +224,13 @@ const throwEagerCandidate = (candidate: EagerCandidate): never => {
  * when every class is valid or absent.
  */
 export const assertEagerConfigValid = async (ctx: Context): Promise<void> => {
-  const [str, comp, boolCore, logAllRefUpdates, autoSetupMerge] = await Promise.all([
+  const [str, comp, boolCore, logAllRefUpdates, autoSetupMerge, disambiguate] = await Promise.all([
     findFirstValuelessEntry(ctx, 'core', undefined, CORE_STRING_KEYS),
     findFirstInvalidCompression(ctx),
     findFirstInvalidBoolean(ctx, 'core', undefined, CORE_BOOLEAN_KEYS),
     findFirstInvalidLogAllRefUpdates(ctx),
     findFirstInvalidAutoSetupMerge(ctx),
+    findFirstInvalidDisambiguate(ctx),
   ]);
   const branchCandidates = await autoSetupRebaseCandidates(ctx);
   const diffCandidates = await diffDriverCandidates(ctx);
@@ -242,6 +244,9 @@ export const assertEagerConfigValid = async (ctx: Context): Promise<void> => {
     autoSetupMerge === undefined
       ? undefined
       : { kind: 'boolean', line: autoSetupMerge.line, entry: autoSetupMerge },
+    disambiguate === undefined
+      ? undefined
+      : { kind: 'enum', line: disambiguate.line, entry: disambiguate },
     ...branchCandidates,
     ...diffCandidates,
   ];

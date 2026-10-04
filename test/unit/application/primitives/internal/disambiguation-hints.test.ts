@@ -1,13 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import {
+  blobFilter,
+  commitFilter,
   committishFilter,
+  treeFilter,
   treeishFilter,
-} from '../../../../../src/application/commands/internal/disambiguate-committish.js';
+} from '../../../../../src/application/primitives/internal/disambiguation-hints.js';
 import type { TsgitError } from '../../../../../src/domain/error.js';
 import type { ObjectId } from '../../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../../src/ports/context.js';
-import { writeRawObjectBytes } from '../../primitives/fixtures.js';
+import { writeRawObjectBytes } from '../fixtures.js';
 
 const encoder = new TextEncoder();
 const ABSENT_OID = '1'.repeat(40) as ObjectId;
@@ -104,6 +107,24 @@ describe('Given objects of every kind', () => {
 
       // Assert
       expect(result).toBe(expected);
+    });
+  });
+
+  describe.each([
+    { filter: 'commit', sut: commitFilter, accepted: 'commit' },
+    { filter: 'tree', sut: treeFilter, accepted: 'tree' },
+    { filter: 'blob', sut: blobFilter, accepted: 'blob' },
+  ])('When the $filter filter reads each kind', ({ sut, accepted }) => {
+    it(`Then it accepts the ${accepted} alone, never peeling a tag`, async () => {
+      // Arrange
+      const { ctx, ids } = await objectsRepo();
+      const kinds = ['commit', 'tree', 'blob', 'tagOfCommit', 'tagOfTree'];
+
+      // Act
+      const result = await Promise.all(kinds.map((name) => sut(ctx)(ids[name] as ObjectId)));
+
+      // Assert
+      expect(kinds.filter((_name, index) => result[index])).toEqual([accepted]);
     });
   });
 

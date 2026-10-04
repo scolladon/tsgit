@@ -836,3 +836,110 @@ describe('resolveOidPrefix over unreadable candidates', () => {
     });
   });
 });
+
+/** A commit and two blobs sharing `SHARED_PREFIX`, under `[core] disambiguate = <hint>` when one is given. */
+const disambiguatedRepo = async (
+  hint?: string,
+): Promise<{
+  readonly ctx: Context;
+  readonly commit: ObjectId;
+  readonly blobs: ReadonlyArray<ObjectId>;
+}> => {
+  const ctx = await buildSeededContext();
+  if (hint !== undefined)
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/config`, `[core]\n\tdisambiguate = ${hint}\n`);
+  const tree = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+  const commit = await writeRawObjectBytes(
+    ctx,
+    'commit',
+    contentSharingPrefix(
+      'commit',
+      `tree ${tree}\nauthor A <a@a> 1 +0000\ncommitter A <a@a> 1 +0000\n\nc@@\n`,
+    ),
+  );
+  return { ctx, commit, blobs: await writeBlobsSharingPrefix(ctx, 2) };
+};
+
+const ambiguityOf = async (run: () => Promise<unknown>): Promise<unknown> => {
+  try {
+    return await run();
+  } catch (err) {
+    return (err as TsgitError).data;
+  }
+};
+
+describe('resolveOidPrefix under core.disambiguate', () => {
+  describe.each(['commit', 'COMMIT', 'committish', 'treeish'])(
+    'Given a commit and two blobs sharing a prefix under the %s hint',
+    (hint) => {
+      describe('When resolveOidPrefix is called without a hint of its own', () => {
+        it('Then the commit wins', async () => {
+          // Arrange
+          const { ctx, commit } = await disambiguatedRepo(hint);
+          const sut = resolveOidPrefix;
+
+          // Act
+          const result = await sut(ctx, SHARED_PREFIX);
+
+          // Assert
+          expect(result).toBe(commit);
+        });
+      });
+    },
+  );
+
+  describe('Given a commit and two blobs sharing a prefix under the blob hint', () => {
+    describe('When resolveOidPrefix is called without a hint of its own', () => {
+      it('Then only the blobs are listed', async () => {
+        // Arrange
+        const { ctx, blobs } = await disambiguatedRepo('blob');
+        const sut = resolveOidPrefix;
+
+        // Act
+        const result = await ambiguityOf(() => sut(ctx, SHARED_PREFIX));
+
+        // Assert
+        expect(result).toEqual({
+          code: 'AMBIGUOUS_OID_PREFIX',
+          prefix: SHARED_PREFIX,
+          candidates: asBlobs(blobs),
+        });
+      });
+    });
+
+    describe('When resolveOidPrefix is called with a commit hint of its own', () => {
+      it('Then the caller hint overrides the configured one and the commit wins', async () => {
+        // Arrange
+        const { ctx, commit } = await disambiguatedRepo('blob');
+        const sut = resolveOidPrefix;
+
+        // Act
+        const result = await sut(ctx, SHARED_PREFIX, async (id) => id === commit);
+
+        // Assert
+        expect(result).toBe(commit);
+      });
+    });
+  });
+
+  describe.each(['tree', 'none', 'bogus', undefined])(
+    'Given a commit and two blobs sharing a prefix under the %s hint',
+    (hint) => {
+      describe('When resolveOidPrefix is called without a hint of its own', () => {
+        it('Then every candidate is listed', async () => {
+          // Arrange
+          const { ctx, commit, blobs } = await disambiguatedRepo(hint);
+          const sut = resolveOidPrefix;
+
+          // Act
+          const result = (await ambiguityOf(() => sut(ctx, SHARED_PREFIX))) as {
+            readonly candidates: ReadonlyArray<{ readonly id: ObjectId }>;
+          };
+
+          // Assert
+          expect(result.candidates.map(({ id }) => id)).toEqual([commit, ...blobs]);
+        });
+      });
+    },
+  );
+});

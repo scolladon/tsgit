@@ -20,6 +20,7 @@ import type { ReflogEntry } from '../../domain/reflog/reflog-entry.js';
 import { refCandidates, validateRefName } from '../../domain/refs/index.js';
 import { workTreeRequired } from '../../domain/repository/error.js';
 import type { Context } from '../../ports/context.js';
+import { committishFilter, treeishFilter } from '../primitives/internal/disambiguation-hints.js';
 import { lookupCommitReference } from '../primitives/internal/lookup-commit-reference.js';
 import { peel } from '../primitives/internal/peel.js';
 import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
@@ -34,7 +35,6 @@ import type { CandidateFilter } from '../primitives/resolve-oid-prefix.js';
 import { readRefCandidate } from '../primitives/resolve-ref.js';
 import { reportAmbiguousOid } from './internal/ambiguous-oid-report.js';
 import { searchCommitMessages, searchRefMessages } from './internal/commit-message-search.js';
-import { committishFilter, treeishFilter } from './internal/disambiguate-committish.js';
 import {
   namesFilename,
   namesNoObject,
