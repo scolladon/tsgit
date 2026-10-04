@@ -229,7 +229,11 @@ describe('readMailmap', () => {
         // Arrange
         const errors: string[] = [];
         const base = createMemoryContext();
-        const ctx = { ...base, logger: { error: (message: string) => errors.push(message) } };
+        const logger = {
+          error: (message: string) => errors.push(`error: ${message}`),
+          warn: (message: string) => errors.push(`hint: ${message}`),
+        };
+        const ctx = { ...base, logger };
         await commitMailmap(ctx, rule('Blob', 'old@example.com'));
         for (const text of SHARING_ABCD) {
           await writeObject(ctx, {
@@ -246,7 +250,10 @@ describe('readMailmap', () => {
 
         // Assert
         expect(result).toBe('Old');
-        expect(errors).toEqual(['short object ID abcd is ambiguous', 'The candidates are:']);
+        expect(errors).toEqual([
+          'error: short object ID abcd is ambiguous',
+          'hint: The candidates are:',
+        ]);
       });
     });
   });

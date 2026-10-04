@@ -33,6 +33,7 @@ const seed = async (): Promise<Seeded> => {
     ...base,
     logger: {
       info: (message: string) => logs.push(message),
+      warn: (message: string) => logs.push(`hint: ${message}`),
       error: (message: string) => logs.push(`error: ${message}`),
     },
   } as Context;
@@ -99,7 +100,7 @@ describe('Given an abbreviated object id two objects share', () => {
       expect(result).toBeUndefined();
       expect(logs).toEqual([
         `error: short object ID ${shared} is ambiguous`,
-        'error: The candidates are:',
+        'hint: The candidates are:',
         `Could not get sha1 for ${shared}. Skipping.`,
       ]);
     });

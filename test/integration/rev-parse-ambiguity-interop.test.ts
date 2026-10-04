@@ -47,6 +47,7 @@ const DIAGNOSTIC = /^(error|hint): /;
 type Printed = ReadonlyArray<RevParseEntry>;
 
 interface Logged {
+  readonly channel: 'error' | 'hint';
   readonly message: string;
   readonly context: Readonly<Record<string, unknown>> | undefined;
 }
@@ -137,8 +138,8 @@ const candidateLine = async (ctx: Context, candidate: AmbiguousCandidate): Promi
 
 /** git's `error:` line, or the `hint:` block rebuilt from the structured candidates. */
 const diagnosticLines = async (ctx: Context, logged: Logged): Promise<ReadonlyArray<string>> => {
-  const candidates = logged.context?.candidates as ReadonlyArray<AmbiguousCandidate> | undefined;
-  if (candidates === undefined) return [`error: ${logged.message}`];
+  if (logged.channel === 'error') return [`error: ${logged.message}`];
+  const candidates = (logged.context?.candidates ?? []) as ReadonlyArray<AmbiguousCandidate>;
   const lines = await Promise.all(candidates.map((candidate) => candidateLine(ctx, candidate)));
   return [`hint: ${logged.message}`, ...lines.map((line) => `hint:   ${line}`)];
 };
@@ -152,7 +153,10 @@ const tsgitOutcome = async (
   const ctx: Context = {
     ...createNodeContext({ workDir: repo }),
     cwd,
-    logger: { error: (message, context) => logged.push({ message, context }) },
+    logger: {
+      error: (message, context) => logged.push({ channel: 'error', message, context }),
+      warn: (message, context) => logged.push({ channel: 'hint', message, context }),
+    },
   };
   const settle = async (): Promise<{ readonly printed: Printed; readonly refused: boolean }> => {
     try {

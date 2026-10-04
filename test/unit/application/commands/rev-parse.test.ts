@@ -246,11 +246,14 @@ describe('resolveRevision', () => {
     /** Two blob contents whose ids share the abbreviation `abcd`. */
     const SHARING_ABCD = ['x20507\n', 'x115828\n'];
     const sharedRepo = async () => {
-      const logged: Array<readonly [string, unknown]> = [];
+      const logged: Array<readonly [string, string, unknown]> = [];
       const base = createMemoryContext();
       const ctx: Context = {
         ...base,
-        logger: { error: (message, context) => logged.push([message, context]) },
+        logger: {
+          error: (message, context) => logged.push(['error', message, context]),
+          warn: (message, context) => logged.push(['warn', message, context]),
+        },
       };
       const { commitIds } = await seedRepo(ctx, { commits: [{ tree: TREE_OID }] });
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${commitIds[0]}\n`);
@@ -258,8 +261,8 @@ describe('resolveRevision', () => {
       for (const text of SHARING_ABCD) ids.push(await writeBlob(ctx, text));
       const candidates = ids.sort().map((id) => ({ id, type: 'blob' }));
       const report = [
-        [`short object ID ${SHARED} is ambiguous`, { prefix: SHARED }],
-        ['The candidates are:', { prefix: SHARED, candidates }],
+        ['error', `short object ID ${SHARED} is ambiguous`, { prefix: SHARED }],
+        ['warn', 'The candidates are:', { prefix: SHARED, candidates }],
       ];
       return { ctx, logged, report };
     };

@@ -7,8 +7,10 @@ const CANDIDATES_HINT = 'The candidates are:';
 
 /**
  * git's `get_short_oid` reports an ambiguous abbreviated id on `error:`, then
- * each failed type read its sort and listing made, then lists the candidates on `hint:` — logged here with the structured candidates
- * as its payload — before the read fails. Any other failure reports nothing.
+ * each failed type read its sort and listing made, then lists the candidates on
+ * `hint:` — logged on `warn`, the channel git's `advise` lines take here, with the
+ * structured candidates as its payload — before the read fails. Any other failure
+ * reports nothing.
  */
 export const reportAmbiguousOid = (ctx: Context, failure: unknown): void => {
   const data = (failure as Partial<TsgitError>).data;
@@ -16,5 +18,5 @@ export const reportAmbiguousOid = (ctx: Context, failure: unknown): void => {
   const { prefix, candidates, readFaults = [] } = data;
   ctx.logger?.error?.(`short object ID ${prefix} is ambiguous`, { prefix });
   for (const fault of readFaults) logCandidateReadFault(ctx, fault);
-  ctx.logger?.error?.(CANDIDATES_HINT, { prefix, candidates });
+  ctx.logger?.warn?.(CANDIDATES_HINT, { prefix, candidates });
 };
