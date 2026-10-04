@@ -17,7 +17,7 @@ import { mkdtempSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'no
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { openRepository, type Repository } from '../../src/index.node.js';
+import { openRepository, type Repository, type TsgitErrorData } from '../../src/index.node.js';
 import { GIT_AVAILABLE, revParseStdout, runGit, tryRunGitWithExit } from './interop-helpers.js';
 
 const ROW_TIMEOUT = 30_000;
@@ -66,6 +66,13 @@ const repoIn = (state: RepoState): string => {
   return dir;
 };
 
+/** git's bad-numeric `fatal:` line, rebuilt from tsgit's refusal; `undefined` for any other. */
+const numericFatal = (dir: string, data: TsgitErrorData | undefined): string | undefined => {
+  if (data?.code !== 'CONFIG_BAD_NUMERIC_VALUE') return undefined;
+  const source = path.relative(dir, data.source);
+  return `fatal: bad numeric config value '${data.value}' for '${data.key}' in file ${source}: ${data.reason}\n`;
+};
+
 /** git's fatal line, rebuilt from tsgit's refusal; `undefined` when the command ran. */
 const tsgitFatal = async (
   dir: string,
@@ -76,10 +83,9 @@ const tsgitFatal = async (
     await op(repo);
     return undefined;
   } catch (err) {
-    const data = (err as { readonly data?: Record<string, string> }).data;
-    if (data?.code !== 'CONFIG_BAD_NUMERIC_VALUE') throw err;
-    const source = path.relative(dir, data.source as string);
-    return `fatal: bad numeric config value '${data.value}' for '${data.key}' in file ${source}: ${data.reason}\n`;
+    const fatal = numericFatal(dir, (err as { readonly data?: TsgitErrorData }).data);
+    if (fatal === undefined) throw err;
+    return fatal;
   } finally {
     await repo.dispose();
   }
@@ -324,9 +330,11 @@ describe.skipIf(!GIT_AVAILABLE)('interop — malformed core.bigFileThreshold in 
 
           // Assert
           expect(gitRun.exitCode).toBe(1);
-          expect(firstFatalLine(gitRun.stderr)).toMatch(/^fatal: bad numeric config value 'x'/);
           expect(gitRun.stderr.endsWith("error: task 'gc' failed\n")).toBe(true);
-          expect(result.tasksFailed).toEqual([{ task: 'gc', code: 'CONFIG_BAD_NUMERIC_VALUE' }]);
+          expect(result.tasksFailed.map(({ task }) => task)).toEqual(['gc']);
+          expect(numericFatal(dir, result.tasksFailed[0]?.data)).toBe(
+            firstFatalLine(gitRun.stderr),
+          );
         },
         ROW_TIMEOUT,
       );

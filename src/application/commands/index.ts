@@ -191,6 +191,7 @@ export {
   type MaintenanceOptions,
   type MaintenanceResult,
   type MaintenanceTask,
+  type MaintenanceTaskFailure,
   maintenance,
 } from './maintenance.js';
 export { type MergeResult, type MergeRunInput, mergeRun } from './merge.js';

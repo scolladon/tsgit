@@ -36,7 +36,7 @@ import { hasObject } from '../../src/application/primitives/has-object.js';
 import { readObjectMetadata } from '../../src/application/primitives/read-object.js';
 import type { CatFileBatchEntry } from '../../src/application/primitives/types.js';
 import type { DiffChange } from '../../src/domain/diff/diff-change.js';
-import { TsgitError } from '../../src/domain/error.js';
+import { TsgitError, type TsgitErrorData } from '../../src/domain/error.js';
 import type { ObjectId, RefName } from '../../src/domain/objects/index.js';
 import { openRepository } from '../../src/index.node.js';
 import type { Repository } from '../../src/repository.js';
@@ -857,6 +857,15 @@ const filesUnder = (dir: string): string[] =>
     .map((entry) => path.join(path.relative(dir, entry.parentPath), entry.name))
     .sort();
 
+const SIGNATURE_REASON = /^invalid signature: expected (0x[0-9a-f]{8}), got (0x[0-9a-f]{8})$/;
+
+/** git's gc child `fatal:` line, rebuilt from the task failure's signature refusal. */
+const midxFatal = (data: TsgitErrorData | undefined): string | undefined => {
+  if (data?.code !== 'INVALID_MULTI_PACK_INDEX') return undefined;
+  const [, expected, found] = SIGNATURE_REASON.exec(data.reason) ?? [];
+  return `fatal: multi-pack-index signature ${found} does not match signature ${expected}\n`;
+};
+
 const packDirOf = (dir: string): string => path.join(dir, '.git', 'objects', 'pack');
 const objectsDirOf = (dir: string): string => path.join(dir, '.git', 'objects');
 
@@ -945,7 +954,9 @@ describe.skipIf(!GIT_AVAILABLE)('alternates stream interop — pack builders', (
           expect(git.stderr).toContain(MIDX_SIGNATURE_FATAL);
           expect(git.stderr.endsWith("error: task 'gc' failed\n")).toBe(true);
           expect(filesUnder(objectsDirOf(gitCopy.dir))).toEqual(gitBefore);
-          expect(result.tasksFailed).toEqual([{ task: 'gc', code: REFUSAL_DATA.code }]);
+          expect(result.tasksFailed.map(({ task }) => task)).toEqual(['gc']);
+          expect(result.tasksFailed[0]?.data).toMatchObject(REFUSAL_DATA);
+          expect(git.stderr).toContain(midxFatal(result.tasksFailed[0]?.data));
           expect(filesUnder(objectsDirOf(copy.dir))).toEqual(before);
         },
         ROW_TIMEOUT,

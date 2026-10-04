@@ -51,7 +51,13 @@ describe('maintenance task failure', () => {
         const result = await sut(ctx, { tasks: ['commit-graph'] });
 
         // Assert
-        expect(result.tasksFailed).toEqual([{ task: 'commit-graph', code: 'FILE_EXISTS' }]);
+        expect(result.tasksFailed).toEqual([
+          {
+            task: 'commit-graph',
+            code: 'FILE_EXISTS',
+            data: { code: 'FILE_EXISTS', path: commitGraphLayersDir(commonGitDir(ctx)) },
+          },
+        ]);
         expect(result.tasksRun).toEqual([]);
         expect(result.commitGraphWritten).toBe(false);
       });
@@ -67,7 +73,13 @@ describe('maintenance task failure', () => {
         const result = await sut(ctx, { tasks: ['commit-graph', 'gc'] });
 
         // Assert
-        expect(result.tasksFailed).toEqual([{ task: 'commit-graph', code: 'FILE_EXISTS' }]);
+        expect(result.tasksFailed).toEqual([
+          {
+            task: 'commit-graph',
+            code: 'FILE_EXISTS',
+            data: { code: 'FILE_EXISTS', path: commitGraphLayersDir(commonGitDir(ctx)) },
+          },
+        ]);
         expect(result.tasksRun).toEqual(['gc']);
       });
     });
@@ -228,7 +240,11 @@ describe('maintenance task failure', () => {
             tasksFailed: result.tasksFailed,
             tasksRun: result.tasksRun,
             logged: repo.logged,
-          }).toEqual({ tasksFailed: [{ task: 'gc', code: data.code }], tasksRun: [], logged });
+          }).toEqual({
+            tasksFailed: [{ task: 'gc', code: data.code, data }],
+            tasksRun: [],
+            logged,
+          });
         });
       });
     });
@@ -250,7 +266,13 @@ describe('maintenance task failure', () => {
             tasksRun: result.tasksRun,
             commitGraphWritten: result.commitGraphWritten,
           }).toEqual({
-            tasksFailed: [{ task: 'gc', code: 'BAD_TREE_OBJECT' }],
+            tasksFailed: [
+              {
+                task: 'gc',
+                code: 'BAD_TREE_OBJECT',
+                data: { code: 'BAD_TREE_OBJECT', id: repo.blob },
+              },
+            ],
             tasksRun: ['commit-graph'],
             commitGraphWritten: true,
           });

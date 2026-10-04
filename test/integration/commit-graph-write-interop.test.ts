@@ -489,8 +489,14 @@ describe.skipIf(!GIT_AVAILABLE)('commit-graph write interop', () => {
 
       // Assert
       expect(peer.exitCode).toBe(1);
-      expect(peer.stderr).toContain("error: task 'commit-graph' failed");
-      expect(result.tasksFailed).toEqual([{ task: 'commit-graph', code: 'FILE_EXISTS' }]);
+      const [failure] = result.tasksFailed;
+      const layers = failure?.data.code === 'FILE_EXISTS' ? failure.data.path : '';
+      expect(failure?.task).toBe('commit-graph');
+      expect(peer.stderr).toBe(
+        `error: unable to create leading directories of ${path.relative(oursDir, layers)}/tmp_graph_XXXXXX\n` +
+          'error: failed to write commit-graph\n' +
+          "error: task 'commit-graph' failed\n",
+      );
       expect(result.tasksRun).toEqual(['gc']);
       const graphOf = (dir: string) => readFile(commitGraphPath(`${dir}/.git`));
       expect(Buffer.compare(await graphOf(oursDir), await graphOf(peerDir))).toBe(0);

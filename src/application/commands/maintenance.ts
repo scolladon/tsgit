@@ -30,6 +30,7 @@
  */
 import { invalidOption } from '../../domain/commands/error.js';
 import { parseGitBoolean } from '../../domain/config/config-ini.js';
+import type { TsgitErrorData } from '../../domain/error.js';
 import { errorDataCode } from '../../domain/error-data-code.js';
 import type { ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
@@ -65,6 +66,8 @@ export interface MaintenanceTaskFailure {
   readonly task: MaintenanceTask;
   /** The error code of the refusal the task met. */
   readonly code: string;
+  /** The refusal itself — enough to rebuild the `fatal:` line git's task child prints. */
+  readonly data: TsgitErrorData;
 }
 
 export interface MaintenanceResult {
@@ -247,6 +250,6 @@ async function failureOr<T extends object>(
   } catch (error) {
     const code = errorDataCode(error);
     if (code === undefined) throw error;
-    return { task, code };
+    return { task, code, data: (error as { readonly data: TsgitErrorData }).data };
   }
 }

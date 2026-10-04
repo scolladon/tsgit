@@ -37,8 +37,19 @@ interface MaintenanceOptions {
   readonly auto?: boolean;
 }
 
+/** A task git reports as `task '<name>' failed`: the run goes on and exits 1. */
+interface MaintenanceTaskFailure {
+  readonly task: MaintenanceTask;
+  /** The error code of the refusal the task met. */
+  readonly code: string;
+  /** The refusal itself — enough to rebuild the `fatal:` line git's task child prints. */
+  readonly data: TsgitErrorData;
+}
+
 interface MaintenanceResult {
   readonly tasksRun: ReadonlyArray<MaintenanceTask>;
+  /** Tasks that failed, in run order; any entry is git's exit status 1. */
+  readonly tasksFailed: ReadonlyArray<MaintenanceTaskFailure>;
   readonly commitGraphWritten: boolean;
   readonly commitsInGraph: number;
   readonly looseObjectsBefore: number;
@@ -74,6 +85,13 @@ interface MaintenanceResult {
   `'gc'` is additionally omitted when the `auto` gate declines it (see
   below) — the caller tells "declined" from "ran and found nothing" by
   reading `tasksRun`, never a separate flag.
+- **A failing task does not stop the run.** As `git maintenance run` reports
+  `error: task '<name>' failed`, runs the next task and exits 1, a coded
+  refusal met inside a task lands in `tasksFailed` instead of throwing, and
+  the remaining tasks still run. `data` carries the refusal, so a caller can
+  print git's child line — a `gc` failing on `BAD_TREE_OBJECT` is git's
+  `fatal: bad tree object <data.id>`. A refusal met before any task starts
+  (an invalid option, a malformed repository setting) still throws.
 - **`commit-graph`** sources commits from every resolvable ref (the same
   root set as `git commit-graph write --reachable`), writes
   `objects/info/commit-graph`, and reports:
@@ -271,6 +289,13 @@ const gcResult = await repo.maintenance({ tasks: ['gc'] });
 // Same, but only when loose-object count exceeds gc.auto.
 const declined = await repo.maintenance({ tasks: ['gc'], auto: true });
 // declined.tasksRun omits 'gc' when the threshold was not exceeded.
+
+// A failed task is reported, not thrown; its refusal rebuilds git's child line.
+const { tasksFailed } = await repo.maintenance({ tasks: ['gc', 'commit-graph'] });
+for (const { task, data } of tasksFailed) {
+  if (data.code === 'BAD_TREE_OBJECT') console.error(`fatal: bad tree object ${data.id}`);
+  console.error(`error: task '${task}' failed`);
+}
 
 // An unknown task refuses rather than running nothing silently.
 await repo.maintenance({ tasks: ['bogus' as never] }); // throws INVALID_OPTION

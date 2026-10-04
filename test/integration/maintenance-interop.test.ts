@@ -247,6 +247,12 @@ function catFileExists(dir: string, oid: string): boolean {
   return tryRunGitWithExit(['-C', dir, 'cat-file', '-e', oid]).exitCode === 0;
 }
 
+/** git's first `fatal:` line, newline-terminated; the maintenance wrapper's own lines follow it. */
+const firstFatalLineOf = (stderr: string): string | undefined => {
+  const line = stderr.split('\n').find((candidate) => candidate.startsWith('fatal: '));
+  return line === undefined ? undefined : `${line}\n`;
+};
+
 async function packDirEntries(dir: string): Promise<ReadonlyArray<string>> {
   return readdir(path.join(dir, '.git', 'objects', 'pack'));
 }
@@ -1081,9 +1087,12 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
 
         // Assert
         expect(peer.exitCode).toBe(refuses ? 1 : 0);
-        expect(result.tasksFailed).toEqual(
-          refuses ? [{ task: 'gc', code: 'CONFIG_MISSING_VALUE' }] : [],
+        const fatalLines = result.tasksFailed.map(({ data }) =>
+          data.code === 'CONFIG_MISSING_VALUE'
+            ? `fatal: bad config variable '${data.key}' in file '${path.relative(twin.oursDir, data.source)}' at line ${data.line}\n`
+            : data.code,
         );
+        expect(fatalLines).toEqual(refuses ? [firstFatalLineOf(peer.stderr)] : []);
         expect(await packDirEntries(twin.oursDir)).toEqual(await packDirEntries(twin.peerDir));
         await disposeTwin(twin);
       });
@@ -2230,13 +2239,14 @@ describe.skipIf(!GIT_AVAILABLE)('maintenance interop — gc over a history git c
         // Assert
         const logLines = logged.map((line) => `error: ${line}\n`).join('');
         expect(peer.exitCode).toBe(1);
-        expect(peer.stderr).toBe(
-          `${logLines}fatal: bad tree object ${blob}\nfatal: failed to run repack\nerror: task 'gc' failed\n`,
+        const fatalLines = result.tasksFailed.map(({ data }) =>
+          data.code === 'BAD_TREE_OBJECT' ? `fatal: bad tree object ${data.id}\n` : data.code,
         );
-        expect({ tasksFailed: result.tasksFailed, tasksRun: result.tasksRun }).toEqual({
-          tasksFailed: [{ task: 'gc', code: 'BAD_TREE_OBJECT' }],
-          tasksRun: ['commit-graph'],
-        });
+        expect(peer.stderr).toBe(
+          `${logLines}${fatalLines.join('')}fatal: failed to run repack\nerror: task 'gc' failed\n`,
+        );
+        expect(fatalLines).toEqual([`fatal: bad tree object ${blob}\n`]);
+        expect(result.tasksRun).toEqual(['commit-graph']);
         expect(git(dir, 'count-objects')).toBe(git(twin, 'count-objects'));
       });
     });
