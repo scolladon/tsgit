@@ -744,6 +744,73 @@ describe('resolveOidPrefix over unreadable candidates', () => {
     });
   });
 
+  describe('Given two blobs and an unreadable loose object sharing a prefix', () => {
+    describe('When resolveOidPrefix is called with a hint both blobs pass', () => {
+      it('Then the listing sorts every candidate and re-runs the hint, reporting each unreadable read', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const badObject = `${SHARED_PREFIX}${'f'.repeat(36)}` as ObjectId;
+        await writeLooseNamed(base, badObject);
+        const blobs = await writeBlobsSharingPrefix(base, 2);
+        const error = vi.fn();
+        const ctx: Context = { ...base, logger: { error } };
+        const sut = resolveOidPrefix;
+
+        // Act
+        let caught: TsgitError | undefined;
+        try {
+          await sut(ctx, SHARED_PREFIX, async (id) => {
+            await readDeclaredObjectHeader(ctx, id);
+            return true;
+          });
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        const fault = { id: badObject, reason: 'unexpected end of deflate stream' };
+        expect(error).not.toHaveBeenCalled();
+        expect(caught?.data).toEqual({
+          code: 'AMBIGUOUS_OID_PREFIX',
+          prefix: SHARED_PREFIX,
+          candidates: asBlobs(blobs),
+          readFaults: [fault, fault, fault],
+        });
+      });
+    });
+  });
+
+  describe('Given three blobs sharing a prefix, the middle one failing the hint', () => {
+    describe('When resolveOidPrefix is called with that hint', () => {
+      it('Then the hint runs once per candidate until the second pass, then once per listed candidate', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const [first, middle, last] = [...(await writeBlobsSharingPrefix(ctx, 3))].sort();
+        const hinted: ObjectId[] = [];
+        const sut = resolveOidPrefix;
+
+        // Act
+        let caught: TsgitError | undefined;
+        try {
+          await sut(ctx, SHARED_PREFIX, async (id) => {
+            hinted.push(id);
+            return id !== middle;
+          });
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(hinted).toEqual([first, middle, last, first, middle, last]);
+        expect(caught?.data).toEqual({
+          code: 'AMBIGUOUS_OID_PREFIX',
+          prefix: SHARED_PREFIX,
+          candidates: asBlobs([first as ObjectId, last as ObjectId]),
+        });
+      });
+    });
+  });
+
   describe('Given a blob sharing a prefix with a candidate whose hint read faults unexpectedly', () => {
     describe('When resolveOidPrefix is called with that hint', () => {
       it('Then the fault propagates', async () => {

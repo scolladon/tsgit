@@ -38,6 +38,11 @@ const objectsRepo = async (): Promise<{
   const tagOfTree = await tagOf(ctx, tree, 'tree');
   const tagOfAbsent = await tagOf(ctx, ABSENT_OID, 'commit');
   const tagOfCorrupt = await tagOf(ctx, CORRUPT_OID, 'commit');
+  const untaggedTagOfCommit = await writeRawObjectBytes(
+    ctx,
+    'tag',
+    encoder.encode(`object ${commit}\ntype commit\ntagger A <a@a> 1 +0000\n\nt\n`),
+  );
   const corruptPath = `${ctx.layout.gitDir}/objects/ab/${CORRUPT_OID.slice(2)}`;
   await ctx.fs.writeUtf8(corruptPath, 'garbage');
   return {
@@ -51,6 +56,7 @@ const objectsRepo = async (): Promise<{
       tagOfTree,
       tagOfAbsent,
       tagOfCorrupt,
+      untaggedTagOfCommit,
     },
   };
 };
@@ -63,6 +69,7 @@ describe('Given objects of every kind', () => {
     { name: 'tagOfTree', expected: true },
     { name: 'blob', expected: false },
     { name: 'tagOfAbsent', expected: false },
+    { name: 'untaggedTagOfCommit', expected: false },
   ])('When the treeish filter reads $name', ({ name, expected }) => {
     it(`Then it answers ${expected}`, async () => {
       // Arrange
@@ -85,6 +92,7 @@ describe('Given objects of every kind', () => {
     { name: 'blob', expected: false },
     { name: 'tagOfTree', expected: false },
     { name: 'tagOfAbsent', expected: false },
+    { name: 'untaggedTagOfCommit', expected: false },
   ])('When the committish filter reads $name', ({ name, expected }) => {
     it(`Then it answers ${expected}`, async () => {
       // Arrange

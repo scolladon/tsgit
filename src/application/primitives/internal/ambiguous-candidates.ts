@@ -57,6 +57,24 @@ export const candidateReadFault = (
   return { id, reason: String(data.reason) };
 };
 
+/** git's disambiguation hint: whether a candidate is the kind the caller reads. */
+export type CandidateFilter = (id: ObjectId) => Promise<boolean>;
+
+/** git's hint over one candidate: an unreadable one fails it, its failed read handed to `report`. */
+export const passesHint = async (
+  id: ObjectId,
+  accepts: CandidateFilter,
+  report: (fault: CandidateReadFault) => void,
+): Promise<boolean> => {
+  try {
+    return await accepts(id);
+  } catch (error) {
+    const fault = candidateReadFault(id, error);
+    if (fault !== undefined) report(fault);
+    return false;
+  }
+};
+
 /** git's two `error:` lines for one failed read of a loose object's header. */
 export const logCandidateReadFault = (ctx: Context, { id, reason }: CandidateReadFault): void => {
   ctx.logger?.error?.(`inflate: data stream error (${reason})`, { id, reason });
@@ -137,13 +155,31 @@ const described = async (ctx: Context, candidate: ProbedCandidate): Promise<Ambi
 };
 
 /**
- * Every one of `ids` in git's listing order, each described: `sort_ambiguous`
- * over the id-sorted unique set, then `show_ambiguous_object` — each reading
- * the candidate's type again, so an unreadable one reports a fault per read.
+ * `show_ambiguous_object` over one sorted candidate: a hinted listing first
+ * re-runs the hint, skipping what fails it; what is shown has its type read
+ * again, so an unreadable one reports a fault per read.
+ */
+const shownCandidate = async (
+  ctx: Context,
+  candidate: ProbedCandidate,
+  accepts: CandidateFilter | undefined,
+  readFaults: CandidateReadFault[],
+): Promise<AmbiguousCandidate | undefined> => {
+  const report = (fault: CandidateReadFault): number => readFaults.push(fault);
+  if (accepts !== undefined && !(await passesHint(candidate.id, accepts, report))) return undefined;
+  if (candidate.fault !== undefined) report(candidate.fault);
+  return described(ctx, candidate);
+};
+
+/**
+ * The candidates git lists among `ids`, in its listing order, each described:
+ * `sort_ambiguous` over the id-sorted unique set, then `show_ambiguous_object`
+ * per candidate, keeping only those passing `accepts` when the listing is hinted.
  */
 export const describeCandidates = async (
   ctx: Context,
   ids: ReadonlyArray<ObjectId>,
+  accepts?: CandidateFilter,
 ): Promise<DescribedCandidates> => {
   const unique = [...new Set(ids)].sort();
   const probes = await Promise.all(unique.map((id) => probed(ctx, id)));
@@ -151,8 +187,8 @@ export const describeCandidates = async (
   const ordered = gitMergeSort(probes, comparedInGitOrder(readFaults));
   const candidates: AmbiguousCandidate[] = [];
   for (const candidate of ordered) {
-    if (candidate.fault !== undefined) readFaults.push(candidate.fault);
-    candidates.push(await described(ctx, candidate));
+    const shown = await shownCandidate(ctx, candidate, accepts, readFaults);
+    if (shown !== undefined) candidates.push(shown);
   }
   return { candidates, readFaults };
 };

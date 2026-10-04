@@ -2,7 +2,8 @@
  * git's `disambiguate_committish_only` and `disambiguate_treeish_only`: a
  * candidate for an abbreviated name is commit-ish when it is a commit, or a
  * tag whose chain ends at one; tree-ish when it, or the end of its tag chain,
- * is a tree or a commit. A tag naming an absent object ends nowhere.
+ * is a tree or a commit. A tag naming an absent object, or one git cannot
+ * parse, ends nowhere.
  */
 import { errorDataCode } from '../../../domain/error-data-code.js';
 import type { GitObject, ObjectId } from '../../../domain/objects/index.js';
@@ -10,11 +11,14 @@ import type { Context } from '../../../ports/context.js';
 import { readObject } from '../../primitives/read-object.js';
 import type { CandidateFilter } from '../../primitives/resolve-oid-prefix.js';
 
+/** `parse_object` answering nothing: an absent object, or a tag `parse_tag_buffer` refuses. */
+const ENDS_NOWHERE: ReadonlySet<string | undefined> = new Set(['OBJECT_NOT_FOUND', 'INVALID_TAG']);
+
 const readPresent = async (ctx: Context, id: ObjectId): Promise<GitObject | undefined> => {
   try {
     return await readObject(ctx, id);
   } catch (error) {
-    if (errorDataCode(error) === 'OBJECT_NOT_FOUND') return undefined;
+    if (ENDS_NOWHERE.has(errorDataCode(error))) return undefined;
     throw error;
   }
 };

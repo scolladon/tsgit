@@ -332,6 +332,52 @@ const buildUnreadableRepository = (repo: string): string => {
   return prefix;
 };
 
+/** The unreadable repository plus a tag of its commit, so two candidates pass a commit-ish or tree-ish hint. */
+const buildHintedUnreadableRepository = (repo: string): string => {
+  const prefix = buildUnreadableRepository(repo);
+  const commit = git(repo, 'rev-parse', 'HEAD').trim();
+  const tagged = `object ${commit}\ntype commit\ntag v${PLACEHOLDER}\ntagger T <t@t> 1500000000 +0000\n\nm\n`;
+  writeSharing(repo, 'tag', prefix, Buffer.from(tagged));
+  return prefix;
+};
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'integration — a hinted ambiguous prefix with unreadable candidates against git',
+  () => {
+    let repo = '';
+    let prefix = '';
+
+    beforeAll(async () => {
+      repo = await mkdtemp(path.join(os.tmpdir(), 'tsgit-rev-parse-hinted-unreadable-interop-'));
+      prefix = buildHintedUnreadableRepository(repo);
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(repo, { recursive: true, force: true });
+    });
+
+    describe('Given a commit and its tag passing the hint beside a bad tag, a blob and a bad object', () => {
+      describe.each(['<p>^{commit}', '<p>^{tree}'])(
+        'When git rev-parse and revParse read %s',
+        (row) => {
+          it('Then both report every failed read and list the hint survivors alike', async () => {
+            // Arrange
+            const argument = row.replace('<p>', prefix);
+            const peer = gitOutcome(repo, ['rev-parse', argument]);
+            const sut = revParse;
+
+            // Act
+            const result = await tsgitOutcome(repo, repo, (ctx) => sut(ctx, argument));
+
+            // Assert
+            expect(result).toEqual(peer);
+          });
+        },
+      );
+    });
+  },
+);
+
 describe.skipIf(!GIT_AVAILABLE)(
   'integration — an ambiguous prefix with unreadable candidates against git',
   () => {
@@ -348,7 +394,7 @@ describe.skipIf(!GIT_AVAILABLE)(
     });
 
     describe('Given a commit, a blob, a bad tag and a bad object sharing a prefix', () => {
-      describe.each(['<p>'])('When git rev-parse and revParse read %s', (row) => {
+      describe.each(['<p>', '<p>^{commit}'])('When git rev-parse and revParse read %s', (row) => {
         it('Then both report every failed read and list the bad candidates alike', async () => {
           // Arrange
           const argument = row.replace('<p>', prefix);

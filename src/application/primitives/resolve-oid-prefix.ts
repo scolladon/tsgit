@@ -9,14 +9,16 @@
  * `rev-parse`.
  */
 import { ambiguousOidPrefix } from '../../domain/commands/error.js';
+import type { CandidateReadFault } from '../../domain/objects/ambiguous-candidate.js';
 import type { HashConfig } from '../../domain/objects/hash-config.js';
 import { isOid, type ObjectId } from '../../domain/objects/index.js';
 import { findByPrefix } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
 import {
-  candidateReadFault,
+  type CandidateFilter,
   describeCandidates,
   logCandidateReadFault,
+  passesHint,
 } from './internal/ambiguous-candidates.js';
 import { isMissingFanoutDir } from './internal/loose-oid-cache.js';
 import { getObjectStore, type ObjectSource } from './object-store.js';
@@ -60,7 +62,9 @@ function patternFor(
   return patterns[algorithm];
 }
 
-/** Loose objects whose `<dir><name>` starts with `prefix` (name-based scan).
+/** Loose objects whose `<dir><name>` starts with `prefix` (name-based scan),
+ *  in id order as git's loose-object cache walks them, whatever order
+ *  `readdir` answers in.
  *  No `exists` pre-probe: `readdir` itself answers "nothing loose here yet"
  *  via `isMissingFanoutDir` (a missing directory or a file occupying the
  *  fanout path), folded to an empty scan; any other fault (e.g. a
@@ -87,7 +91,7 @@ export const scanLooseIn = async (
     if (!entry.name.startsWith(rest)) continue;
     found.push((prefix.slice(0, 2) + entry.name) as ObjectId);
   }
-  return found;
+  return found.sort();
 };
 
 /** Packed objects whose id starts with `prefix`, across every pack registered in `source`. */
@@ -104,40 +108,31 @@ export const scanPacksIn = async (
   return found;
 };
 
-/** git's disambiguation hint: whether a candidate is the kind the caller reads. */
-export type CandidateFilter = (id: ObjectId) => Promise<boolean>;
+export type { CandidateFilter };
 
-/** git's hint over one candidate: an unreadable one fails it, its read reported as it happens. */
-const passesHint = async (
-  ctx: Context,
-  id: ObjectId,
-  accepts: CandidateFilter,
-): Promise<boolean> => {
-  try {
-    return await accepts(id);
-  } catch (error) {
-    const fault = candidateReadFault(id, error);
-    if (fault !== undefined) logCandidateReadFault(ctx, fault);
-    return false;
-  }
-};
-
-/** The candidates passing git's disambiguation hint `accepts`. */
-const passing = async (
+/**
+ * `update_disambiguate_state`'s hint reads: each candidate once, in scan
+ * order, stopping at the second to pass — git needs no more to call the
+ * prefix ambiguous. A failed read is reported as it happens.
+ */
+const leadingPassers = async (
   ctx: Context,
   candidates: ReadonlyArray<ObjectId>,
   accepts: CandidateFilter,
 ): Promise<ReadonlyArray<ObjectId>> => {
-  const kept: ObjectId[] = [];
-  for (const id of candidates) if (await passesHint(ctx, id, accepts)) kept.push(id);
-  return kept;
+  const report = (fault: CandidateReadFault): void => logCandidateReadFault(ctx, fault);
+  const passers: ObjectId[] = [];
+  for (const id of candidates) {
+    if (passers.length === 2) break;
+    if (await passesHint(id, accepts, report)) passers.push(id);
+  }
+  return passers;
 };
 
 /**
- * git's `update_candidates` then `get_short_oid`'s listing: among several
- * candidates, the single one passing `accepts` wins; otherwise the prefix is
- * ambiguous, listing the hint's survivors when more than one passed it, else
- * every match.
+ * `finish_object_disambiguation` then `get_short_oid`'s listing: the single
+ * candidate passing `accepts` wins; otherwise the prefix is ambiguous, the
+ * listing still hinted when two passed it, else showing every match.
  */
 const chooseCandidate = async (
   ctx: Context,
@@ -145,11 +140,15 @@ const chooseCandidate = async (
   candidates: ReadonlyArray<ObjectId>,
   accepts: CandidateFilter | undefined,
 ): Promise<ObjectId> => {
-  const kept = accepts === undefined ? [] : await passing(ctx, candidates, accepts);
-  const [chosen, rival] = kept;
+  const [chosen, rival] =
+    accepts === undefined ? [] : await leadingPassers(ctx, candidates, accepts);
   if (chosen !== undefined && rival === undefined) return chosen;
-  const listed = rival === undefined ? candidates : kept;
-  const { candidates: described, readFaults } = await describeCandidates(ctx, listed);
+  const listingHint = rival === undefined ? undefined : accepts;
+  const { candidates: described, readFaults } = await describeCandidates(
+    ctx,
+    candidates,
+    listingHint,
+  );
   throw ambiguousOidPrefix(prefix, described, readFaults);
 };
 
