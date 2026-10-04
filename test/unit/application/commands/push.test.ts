@@ -2064,6 +2064,142 @@ describe('push — pack contents', () => {
   });
 });
 
+describe('push — object types assigned while enumerating', () => {
+  const AUTHOR = { name: 'A', email: 'a@a', timestamp: 0, timezoneOffset: '+0000' };
+
+  const loggingContext = (): {
+    readonly ctx: ReturnType<typeof createMemoryContext>;
+    readonly logged: string[];
+  } => {
+    const logged: string[] = [];
+    const base = createMemoryContext();
+    return { ctx: { ...base, logger: { error: (line: string) => logged.push(line) } }, logged };
+  };
+
+  const writeBlob = (ctx: ReturnType<typeof createMemoryContext>): Promise<ObjectId> =>
+    writeObject(ctx, { type: 'blob', id: '' as ObjectId, content: ENCODER.encode('hi\n') });
+
+  const writeCommitNaming = (
+    ctx: ReturnType<typeof createMemoryContext>,
+    tree: ObjectId,
+    parents: ReadonlyArray<ObjectId>,
+  ): Promise<ObjectId> =>
+    writeObject(ctx, {
+      type: 'commit',
+      id: '' as ObjectId,
+      data: { tree, parents, author: AUTHOR, committer: AUTHOR, message: 'm\n', extraHeaders: [] },
+    });
+
+  const pushRefused = async (
+    ctx: ReturnType<typeof createMemoryContext>,
+    tip: ObjectId,
+  ): Promise<unknown> => {
+    await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+    await writeOriginConfig(ctx);
+    const { transport } = fakeServer({
+      url: 'https://example.com/r.git',
+      advertisedRefs: [],
+      reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+    });
+    try {
+      await push({ ...ctx, transport });
+    } catch (error) {
+      return error;
+    }
+    return undefined;
+  };
+
+  describe('Given a branch whose commit names a blob as its tree', () => {
+    describe('When push enumerates its objects', () => {
+      it('Then it logs the blob is not a tree and refuses it as a bad tree object', async () => {
+        // Arrange
+        const { ctx, logged } = loggingContext();
+        const blob = await writeBlob(ctx);
+        const tip = await writeCommitNaming(ctx, blob, []);
+        const sut = pushRefused;
+
+        // Act
+        const caught = await sut(ctx, tip);
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'BAD_TREE_OBJECT', id: blob },
+          logged: [`Object ${blob} not a tree`],
+        });
+      });
+    });
+  });
+
+  describe('Given a branch whose commit names a blob as its parent', () => {
+    describe('When push enumerates its objects', () => {
+      it('Then it logs the blob is not a commit and fails to traverse that commit', async () => {
+        // Arrange
+        const { ctx, logged } = loggingContext();
+        const blob = await writeBlob(ctx);
+        const empty = await writeTree(ctx, []);
+        const tip = await writeCommitNaming(ctx, empty, [blob]);
+        const sut = pushRefused;
+
+        // Act
+        const caught = await sut(ctx, tip);
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'REVISION_WALK_FAILED', commit: tip },
+          logged: [`Object ${blob} not a commit`],
+        });
+      });
+    });
+  });
+
+  describe('Given an alternate have, an updated ref and a created ref', () => {
+    describe('When push computes its closure', () => {
+      it("Then the tips follow send-pack's feed: haves, each ref's old then new, then created refs", async () => {
+        // Arrange
+        const ctx = createMemoryContext();
+        const alternate = await seedCommit(ctx, [], 'alt');
+        const parent = await seedCommit(ctx, [], 'p');
+        const tip = await seedCommit(ctx, [parent.id], 't');
+        await seedRepo(ctx, { refs: { 'refs/heads/main': tip.id } });
+        await writeOriginConfig(ctx);
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [
+            { name: 'refs/heads/main', id: parent.id },
+            { name: 'refs/heads/gone', id: 'f'.repeat(40) },
+            { name: '.have', id: alternate.id },
+          ],
+          reportStatus: {
+            unpack: 'ok',
+            refs: [
+              { name: 'refs/heads/main', status: 'ok' },
+              { name: 'refs/heads/new', status: 'ok' },
+            ],
+          },
+        });
+        const closureSpy = vi.spyOn(closureMod, 'computeClosure');
+        const sut = push;
+
+        // Act
+        await sut({ ...ctx, transport }, { refspecs: ['main', 'main:refs/heads/new'] });
+
+        // Assert
+        const request = closureSpy.mock.calls[0]![1];
+        expect({ tips: request.tips, typed: request.objectTypes !== undefined }).toEqual({
+          tips: [
+            { id: alternate.id, excluded: true },
+            { id: parent.id, excluded: true },
+            { id: tip.id, excluded: false },
+            { id: tip.id, excluded: false },
+          ],
+          typed: true,
+        });
+        closureSpy.mockRestore();
+      });
+    });
+  });
+});
+
 describe('push — non-fast-forward with a missing ancestor', () => {
   describe('Given a tip whose parent commit is absent on disk', () => {
     describe('When push runs a non-FF update', () => {

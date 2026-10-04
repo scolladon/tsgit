@@ -52,8 +52,9 @@ import {
 } from '../primitives/config-read.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
 import { hasObject } from '../primitives/has-object.js';
-import { computeClosure } from '../primitives/internal/closure-engine.js';
+import { type ClosureTip, computeClosure } from '../primitives/internal/closure-engine.js';
 import { boundedMapFor } from '../primitives/internal/concurrency.js';
+import { createObjectTypeTable } from '../primitives/internal/object-type-table.js';
 import { assertNoValuelessConfig } from '../primitives/internal/valueless-config-guard.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { runHook } from '../primitives/run-hook.js';
@@ -322,11 +323,10 @@ const emptyReport = (): { unpackOk: boolean; refUpdates: ReadonlyArray<RefStatus
 // nothing is read from the object store.
 const buildPackfileFor = async (
   ctx: Context,
-  wants: ReadonlyArray<ObjectId>,
-  haves: ReadonlyArray<ObjectId>,
+  feed: ReadonlyArray<ClosureTip>,
 ): Promise<Uint8Array | undefined> => {
-  if (wants.length === 0) return undefined;
-  const oids = await collectObjects(ctx, wants, haves);
+  if (feed.every((tip) => tip.excluded)) return undefined;
+  const oids = await collectObjects(ctx, feed);
   const pack = await buildPack(ctx, { objects: oids.map((id) => ({ id })) });
   return pack.bytes;
 };
@@ -344,13 +344,11 @@ const sendUpdates = async (
   const mode = await resolveSignedPushMode(ctx, opts);
   const nonce = parsePushCertNonce(adv.capabilities);
   const intent = resolveSigningIntent(mode, nonce, remoteName);
-  const wants = movers.filter((m) => !m.parsed.isDelete).map((m) => m.localOid);
   // Zero-oid-advertised refs (ref-creation sentinels) are kept verbatim in
-  // `haves`: `hasObject(ctx, zeroOid)` is always false (no pack hit, no loose
-  // file), so the sentinel drops out of `collectObjects`'s negatives on its
-  // own — one absent negative among others, not a special case.
-  const haves = adv.refs.map((r) => r.id);
-  const packfile = await buildPackfileFor(ctx, wants, haves);
+  // the feed: `hasObject(ctx, zeroOid)` is always false (no pack hit, no
+  // loose file), so the sentinel drops out of `collectObjects`'s negatives on
+  // its own — one absent negative among others, not a special case.
+  const packfile = await buildPackfileFor(ctx, sendPackFeed(adv, movers));
   const capabilities = selectPushCapabilities(
     adv.capabilities,
     ctx.hashConfig.algorithm,
@@ -450,17 +448,53 @@ const buildSignedRequestBody = async (
   });
 };
 
+const HAVE_LINE = '.have';
+
+/** One advertised ref's feed: its old value excluded, then any value pushed to it. */
+const refFeed = (old: ObjectId, pushed: ObjectId | undefined): ReadonlyArray<ClosureTip> => {
+  const excluded = { id: old, excluded: true };
+  return pushed === undefined ? [excluded] : [excluded, { id: pushed, excluded: false }];
+};
+
+/**
+ * git's send-pack `pack_objects` feed to `pack-objects --revs`: the remote's
+ * `.have`s, then each advertised ref's old value and the value pushed to it,
+ * then each ref the push creates — the order its walk types and pops in.
+ */
+const sendPackFeed = (
+  adv: Advertisement,
+  movers: ReadonlyArray<ResolvedRefspec>,
+): ReadonlyArray<ClosureTip> => {
+  const sent = movers.filter((m) => !m.parsed.isDelete);
+  const pushed = new Map(sent.map((m) => [m.parsed.dst, m.localOid]));
+  const refs = adv.refs.filter((ref) => ref.name !== HAVE_LINE);
+  const advertised = new Set(refs.map((ref) => ref.name));
+  return [
+    ...adv.refs.filter((ref) => ref.name === HAVE_LINE).map(({ id }) => ({ id, excluded: true })),
+    ...refs.flatMap((ref) => refFeed(ref.id, pushed.get(ref.name))),
+    ...sent
+      .filter((m) => !advertised.has(m.parsed.dst))
+      .map((m) => ({ id: m.localOid, excluded: false })),
+  ];
+};
+
 const collectObjects = async (
   ctx: Context,
-  wants: ReadonlyArray<ObjectId>,
-  haves: ReadonlyArray<ObjectId>,
+  feed: ReadonlyArray<ClosureTip>,
 ): Promise<ReadonlyArray<ObjectId>> => {
-  if (wants.length === 0) return [];
-  const distinctHaves = [...new Set(haves)];
+  const negatives = [...new Set(feed.filter((tip) => tip.excluded).map((tip) => tip.id))];
   // git's send-pack feed_object: a negative we do not hold locally is never fed.
-  const present = await boundedMapFor(ctx, 'ioBound', distinctHaves, (id) => hasObject(ctx, id));
-  const not = distinctHaves.filter((_, index) => present[index] === true);
-  const closure = await computeClosure(ctx, { wants, not, objects: true, tier: 'bitmap' });
+  const present = await boundedMapFor(ctx, 'ioBound', negatives, (id) => hasObject(ctx, id));
+  const held = new Set(negatives.filter((_, index) => present[index] === true));
+  const tips = feed.filter((tip) => !tip.excluded || held.has(tip.id));
+  const closure = await computeClosure(ctx, {
+    wants: tips.filter((tip) => !tip.excluded).map((tip) => tip.id),
+    not: [...held],
+    tips,
+    objects: true,
+    tier: 'bitmap',
+    objectTypes: createObjectTypeTable(),
+  });
   return closure.objects.map((object) => object.id);
 };
 

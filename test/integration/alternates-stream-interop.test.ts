@@ -13,7 +13,6 @@
  *   unique:         tsgit opens blob streams across alternate object stores in git's stream order and refuses exactly where git dies
  *   interopSurface: packfile
  */
-import { spawnSync } from 'node:child_process';
 import {
   cpSync,
   existsSync,
@@ -40,14 +39,13 @@ import type { DiffChange } from '../../src/domain/diff/diff-change.js';
 import { TsgitError } from '../../src/domain/error.js';
 import type { ObjectId, RefName } from '../../src/domain/objects/index.js';
 import { openRepository } from '../../src/index.node.js';
-import type { HttpRequest, HttpResponse, HttpTransport } from '../../src/ports/http-transport.js';
 import type { Repository } from '../../src/repository.js';
+import { backendTransport } from './http-backend-transport.js';
 import {
   disableAutoMaintenance,
   GIT_AVAILABLE,
   revParseStdout,
   runGit,
-  runGitEnv,
   tryRunGitWithExit,
 } from './interop-helpers.js';
 import { mutateMidxOrThrow, writeMultiPackIndex } from './midx-fixture-helpers.js';
@@ -960,45 +958,6 @@ describe.skipIf(!GIT_AVAILABLE)('alternates stream interop — pack builders', (
 // ---------------------------------------------------------------------------
 
 const PEER_URL = 'https://example.com/peer.git';
-const CGI_HEADER_SEPARATOR = '\r\n\r\n';
-
-const cgiResponse = (output: Buffer): HttpResponse => {
-  const split = output.indexOf(CGI_HEADER_SEPARATOR);
-  const headers: Record<string, string> = {};
-  for (const line of output.subarray(0, split).toString('utf8').split('\r\n')) {
-    const colon = line.indexOf(':');
-    headers[line.slice(0, colon).trim().toLowerCase()] = line.slice(colon + 1).trim();
-  }
-  const body = output.subarray(split + CGI_HEADER_SEPARATOR.length);
-  return {
-    statusCode: 200,
-    headers,
-    body: new Response(new Uint8Array(body)).body as ReadableStream<Uint8Array>,
-  };
-};
-
-const backendTransport = (projectRoot: string): HttpTransport => ({
-  request: async (req: HttpRequest): Promise<HttpResponse> => {
-    const url = new URL(req.url);
-    const body = req.body ?? new Uint8Array(0);
-    const result = spawnSync('git', ['http-backend'], {
-      input: body,
-      env: {
-        ...runGitEnv(),
-        PATH_INFO: url.pathname,
-        QUERY_STRING: url.search.slice(1),
-        REQUEST_METHOD: req.method,
-        GIT_PROJECT_ROOT: projectRoot,
-        GIT_HTTP_EXPORT_ALL: '1',
-        CONTENT_TYPE: req.headers['content-type'] ?? req.headers['Content-Type'] ?? '',
-        CONTENT_LENGTH: String(body.byteLength),
-        REMOTE_ADDR: '127.0.0.1',
-      },
-    });
-    return cgiResponse(result.stdout);
-  },
-});
-
 interface Peer {
   readonly root: string;
   readonly bare: string;
