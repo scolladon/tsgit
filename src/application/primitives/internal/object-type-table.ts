@@ -12,11 +12,20 @@ import { readObject } from '../read-object.js';
 
 const tables = new WeakMap<Context, Map<ObjectId, ObjectType>>();
 
-/** A Context carrying a fresh, empty table for one command invocation. */
-export const withObjectTypeTable = (ctx: Context): Context => {
-  const scoped: Context = Object.freeze({ ...ctx });
-  tables.set(scoped, new Map());
-  return scoped;
+/**
+ * Runs one command invocation with a fresh, empty table on `ctx`, dropped when
+ * it settles. The Context keeps its identity, so caches keyed on it survive.
+ * An invocation starting while another on the same Context is in flight
+ * joins that one's table.
+ */
+export const withObjectTypeTable = async <T>(ctx: Context, run: () => Promise<T>): Promise<T> => {
+  if (tables.has(ctx)) return run();
+  tables.set(ctx, new Map());
+  try {
+    return await run();
+  } finally {
+    tables.delete(ctx);
+  }
 };
 
 /**

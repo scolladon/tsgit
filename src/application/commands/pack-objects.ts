@@ -75,7 +75,7 @@ const closureTierFor = (opts: PackObjectsOptions): ClosureTier =>
 
 /** One invocation, with its own object-type table as git's process has. */
 export const packObjects = (ctx: Context, opts: PackObjectsOptions): Promise<PackObjectsResult> =>
-  packObjectsScoped(withObjectTypeTable(ctx), opts);
+  withObjectTypeTable(ctx, () => packObjectsScoped(ctx, opts));
 
 const packObjectsScoped = async (
   ctx: Context,

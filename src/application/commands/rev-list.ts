@@ -189,4 +189,4 @@ const revListScoped = async (ctx: Context, opts: RevListOptions): Promise<RevLis
 
 /** One invocation, with its own object-type table as git's process has. */
 export const revList = (ctx: Context, opts: RevListOptions = {}): Promise<RevListResult> =>
-  revListScoped(withObjectTypeTable(ctx), opts);
+  withObjectTypeTable(ctx, () => revListScoped(ctx, opts));

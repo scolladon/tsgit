@@ -22,6 +22,7 @@ import { workTreeRequired } from '../../domain/repository/error.js';
 import type { Context } from '../../ports/context.js';
 import { committishFilter, treeishFilter } from '../primitives/internal/disambiguation-hints.js';
 import { lookupCommitReference } from '../primitives/internal/lookup-commit-reference.js';
+import { parseTypedObject, withObjectTypeTable } from '../primitives/internal/object-type-table.js';
 import { peel } from '../primitives/internal/peel.js';
 import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
 import { descendTreePath } from '../primitives/internal/resolve-tree-path.js';
@@ -84,7 +85,10 @@ const NOTHING_PRINTED: Attempt = { printed: [], consumed: false };
  * excluded when spelt `^<rev>`, or else an existing path, printed as given.
  * A refusal carries the lines git printed before it.
  */
-export const revParse = async (
+export const revParse = (ctx: Context, expression: string): Promise<ReadonlyArray<RevParseEntry>> =>
+  withObjectTypeTable(ctx, () => revParseScoped(ctx, expression));
+
+const revParseScoped = async (
   ctx: Context,
   expression: string,
 ): Promise<ReadonlyArray<RevParseEntry>> => {
@@ -518,22 +522,30 @@ const searchFromRefs = async (ctx: Context, pattern: string, raw: string): Promi
 
 /** git's `deref_tag`: follow tags to the first non-tag, naming `name` when one is missing. */
 const derefTags = async (ctx: Context, id: ObjectId, name: string): Promise<ObjectId> => {
-  let current = await readObject(ctx, id);
+  let current = await parseTypedObject(ctx, id);
+  if (current === undefined) throw objectNotFound(id);
   while (current.type === 'tag') {
     current = await readTagged(ctx, current.data.object, name);
   }
   return current.id;
 };
 
+const reportMissingReferenced = (ctx: Context, name: string, id: ObjectId): void => {
+  ctx.logger?.error?.(`missing object referenced by '${name}'`, { name, id });
+};
+
+/** `parse_object` of a tag's target: absent or mistyped, git names the tag's spelling. */
 const readTagged = async (ctx: Context, id: ObjectId, name: string): Promise<GitObject> => {
+  let tagged: GitObject | undefined;
   try {
-    return await readObject(ctx, id);
+    tagged = await parseTypedObject(ctx, id);
   } catch (error) {
-    if (errorDataCode(error) === 'OBJECT_NOT_FOUND') {
-      ctx.logger?.error?.(`missing object referenced by '${name}'`, { name, id });
-    }
+    if (errorDataCode(error) === 'OBJECT_NOT_FOUND') reportMissingReferenced(ctx, name, id);
     throw error;
   }
+  if (tagged !== undefined) return tagged;
+  reportMissingReferenced(ctx, name, id);
+  throw objectNotFound(id);
 };
 
 interface PeeledCommit {

@@ -94,6 +94,12 @@ const buildRepository = (repo: string): void => {
     input: dangling,
   }).trim();
   git(repo, 'update-ref', 'refs/tags/bad', badTag);
+  const blob = runGit(['-C', repo, 'hash-object', '-w', '--stdin'], { input: 'mistyped\n' }).trim();
+  const mistyped = `object ${blob}\ntype commit\ntag mt\ntagger A <a@x> ${EPOCH} +0000\n\nmt\n`;
+  const mistypedTag = runGit(['-C', repo, 'hash-object', '-t', 'tag', '-w', '--stdin'], {
+    input: mistyped,
+  }).trim();
+  git(repo, 'update-ref', '--no-deref', 'refs/tags/mt', mistypedTag);
 };
 
 describe.skipIf(!GIT_AVAILABLE)('integration — revParse suffix grammar parity with git', () => {
@@ -124,6 +130,12 @@ describe.skipIf(!GIT_AVAILABLE)('integration — revParse suffix grammar parity 
       'bad^{commit}',
       't6^{commit}',
       't6^{tree}',
+      'mt',
+      'mt^{}',
+      'mt^{commit}',
+      'mt^{tree}',
+      'mt^{blob}',
+      'mt^{object}',
     ])('When git rev-parse and revParse read %s', (argument) => {
       it('Then both resolve the same object and print the same errors', async () => {
         // Arrange

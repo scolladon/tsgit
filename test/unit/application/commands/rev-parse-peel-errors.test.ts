@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
+import { init } from '../../../../src/application/commands/init.js';
 import {
   evaluateRevision,
   resolveRevision,
+  revParse,
 } from '../../../../src/application/commands/rev-parse.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
@@ -360,6 +362,59 @@ describe('Given a forged tag naming itself', () => {
 
       // Assert
       expect(result).toBe('OBJECT_NOT_FOUND');
+    });
+  });
+});
+
+describe('revParse: object types assigned during one invocation', () => {
+  /** `refs/tags/tm` naming a tag that declares `type commit` for a blob. */
+  const seedMistypedTag = async (): Promise<{
+    readonly ctx: Context;
+    readonly errors: string[];
+    readonly blob: ObjectId;
+  }> => {
+    const errors: string[] = [];
+    const base = createMemoryContext();
+    await init(base);
+    const ctx: Context = { ...base, logger: { error: (message: string) => errors.push(message) } };
+    const blob = await writeObject(ctx, {
+      type: 'blob',
+      id: '' as ObjectId,
+      content: new TextEncoder().encode('hi\n'),
+    });
+    const tag = await writeTag(ctx, blob, 'commit', 'tm');
+    await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/tm`, `${tag}\n`);
+    return { ctx, errors, blob };
+  };
+
+  describe.each([
+    ['tm^{commit}', (blob: ObjectId) => [`object ${blob} is a commit, not a blob`]],
+    [
+      'tm^{}',
+      (blob: ObjectId) => [
+        `object ${blob} is a commit, not a blob`,
+        "missing object referenced by 'tm'",
+      ],
+    ],
+  ])('Given a tag declaring a commit for a blob, When revParse reads %s', (expression, once) => {
+    it('Then each read logs the typing error the blob conflicts with', async () => {
+      // Arrange
+      const { ctx, errors, blob } = await seedMistypedTag();
+      const sut = revParse;
+
+      // Act
+      let caught: unknown;
+      try {
+        await sut(ctx, expression);
+      } catch (error) {
+        caught = error;
+      }
+
+      // Assert
+      expect({ code: (caught as TsgitError).data.code, errors }).toEqual({
+        code: 'OBJECT_NOT_FOUND',
+        errors: [...once(blob), ...once(blob)],
+      });
     });
   });
 });

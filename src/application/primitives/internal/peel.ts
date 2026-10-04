@@ -1,7 +1,7 @@
 import { objectNotFound } from '../../../domain/objects/error.js';
 import type { ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
-import { readObject } from '../read-object.js';
+import { parseTypedObject } from './object-type-table.js';
 
 type PeelTarget = 'commit' | 'tree' | 'blob' | 'tag';
 
@@ -24,7 +24,8 @@ export const peel = async (
   const seen = new Set<ObjectId>();
   for (let current = id; !seen.has(current); ) {
     seen.add(current);
-    const obj = await readObject(ctx, current);
+    const obj = await parseTypedObject(ctx, current);
+    if (obj === undefined) throw objectNotFound(current);
     if (obj.type === target) return current;
     if (obj.type === 'tag') {
       current = obj.data.object;

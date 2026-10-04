@@ -1414,6 +1414,28 @@ describe('revList: object types assigned during one invocation', () => {
     });
   });
 
+  describe('Given a tag declaring a commit for a blob wanted before the blob peeled', () => {
+    describe('When revList reads the peel', () => {
+      it('Then each read of the blob conflicts and the peel names no object', async () => {
+        // Arrange
+        const { ctx, logged, blob } = await seedMistypedTag();
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, { wants: ['t', `${blob}^{}`] }));
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'OBJECT_NOT_FOUND', id: blob },
+          logged: [
+            `object ${blob} is a commit, not a blob`,
+            `object ${blob} is a commit, not a blob`,
+          ],
+        });
+      });
+    });
+  });
+
   describe('Given an earlier invocation typed the blob', () => {
     describe('When revList walks the tag in a later one', () => {
       it('Then the earlier typing does not carry over', async () => {
