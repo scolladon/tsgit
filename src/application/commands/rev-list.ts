@@ -15,8 +15,15 @@ import { objectNotFound } from '../../domain/objects/error.js';
 import type { FilePath, ObjectId, RefName } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
-import { type ClosureTier, computeClosure } from '../primitives/internal/closure-engine.js';
-import { withObjectTypeTable } from '../primitives/internal/object-type-table.js';
+import {
+  type ClosureObject,
+  type ClosureTier,
+  computeClosure,
+} from '../primitives/internal/closure-engine.js';
+import {
+  createObjectTypeTable,
+  type ObjectTypeTable,
+} from '../primitives/internal/object-type-table.js';
 import { readRefCandidate } from '../primitives/resolve-ref.js';
 import { worktreeContexts } from './internal/fsck/roots.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
@@ -102,11 +109,15 @@ const allRefNames = async (ctx: Context): Promise<RefName[]> => {
  * a broken ref — or one naming an object the repository lacks — dies
  * `bad object <name>`, and any other fault propagates.
  */
-const readAllRefTip = async (ctx: Context, name: RefName): Promise<ObjectId | undefined> => {
+const readAllRefTip = async (
+  ctx: Context,
+  table: ObjectTypeTable,
+  name: RefName,
+): Promise<ObjectId | undefined> => {
   const outcome = await readRefCandidate(ctx, name);
   if (outcome.kind === 'broken') throw objectNotFound(name as string as ObjectId);
   if (outcome.kind !== 'found') return undefined;
-  await requireReference(ctx, name, outcome.id);
+  await requireReference(ctx, table, name, outcome.id);
   return outcome.id;
 };
 
@@ -115,25 +126,25 @@ const readAllRefTip = async (ctx: Context, name: RefName): Promise<ObjectId | un
  * per-worktree prefix — one that resolves to nothing (unborn, dangling,
  * unreadable) is skipped, one naming an absent object dies there.
  */
-const otherWorktreeHeadTips = async (ctx: Context): Promise<ObjectId[]> => {
+const otherWorktreeHeadTips = async (ctx: Context, table: ObjectTypeTable): Promise<ObjectId[]> => {
   const tips: ObjectId[] = [];
   for (const { ref, worktreeCtx } of await worktreeContexts(ctx)) {
     if (worktreeCtx === ctx) continue;
     const outcome = await readRefCandidate(worktreeCtx, HEAD_REF);
     if (outcome.kind !== 'found') continue;
-    await requireReference(ctx, ref, outcome.id);
+    await requireReference(ctx, table, ref, outcome.id);
     tips.push(outcome.id);
   }
   return tips;
 };
 
-const resolveAllRefTips = async (ctx: Context): Promise<ObjectId[]> => {
+const resolveAllRefTips = async (ctx: Context, table: ObjectTypeTable): Promise<ObjectId[]> => {
   const tips: ObjectId[] = [];
   for (const name of await allRefNames(ctx)) {
-    const tip = await readAllRefTip(ctx, name);
+    const tip = await readAllRefTip(ctx, table, name);
     if (tip !== undefined) tips.push(tip);
   }
-  return [...tips, ...(await otherWorktreeHeadTips(ctx))];
+  return [...tips, ...(await otherWorktreeHeadTips(ctx, table))];
 };
 
 interface RevListTips {
@@ -146,15 +157,23 @@ interface RevListTips {
  * `handle_revision_arg` reads it, union `all`'s ref tips, deduplicated. `all`
  * supplies its own tips, so the `['HEAD']` default only applies when `all` is unset.
  */
-const resolveRevListTips = async (ctx: Context, opts: RevListOptions): Promise<RevListTips> => {
+const resolveRevListTips = async (
+  ctx: Context,
+  table: ObjectTypeTable,
+  opts: RevListOptions,
+): Promise<RevListTips> => {
   const explicitInputs = opts.wants ?? (opts.all === true ? [] : DEFAULT_WANTS);
   const tips = await expandRevisionArguments(
     ctx,
+    table,
     { wants: explicitInputs, not: opts.not ?? [] },
     'command-line',
   );
   if (opts.all !== true) return tips;
-  return { ...tips, wants: [...new Set([...tips.wants, ...(await resolveAllRefTips(ctx))])] };
+  return {
+    ...tips,
+    wants: [...new Set([...tips.wants, ...(await resolveAllRefTips(ctx, table))])],
+  };
 };
 
 /**
@@ -167,10 +186,18 @@ const resolveRevListTips = async (ctx: Context, opts: RevListOptions): Promise<R
 const closureTierFor = (opts: RevListOptions): ClosureTier =>
   opts.useBitmapIndex === true && opts.maxCount === undefined ? 'bitmap' : 'walk';
 
-const revListScoped = async (ctx: Context, opts: RevListOptions): Promise<RevListResult> => {
+const toEntry = (object: ClosureObject): RevListEntry =>
+  object.path === undefined
+    ? { id: object.id, type: object.type }
+    : { id: object.id, type: object.type, path: object.path };
+
+/** One invocation, with its own object-type table as git's process has. */
+export const revList = async (ctx: Context, opts: RevListOptions = {}): Promise<RevListResult> => {
   await assertOperationalRepository(ctx);
-  const { wants, not } = await resolveRevListTips(ctx, opts);
+  const objectTypes = createObjectTypeTable();
+  const { wants, not } = await resolveRevListTips(ctx, objectTypes, opts);
   const closure = await computeClosure(ctx, {
+    objectTypes,
     wants,
     not,
     objects: opts.objects ?? false,
@@ -179,14 +206,6 @@ const revListScoped = async (ctx: Context, opts: RevListOptions): Promise<RevLis
     noWalk: opts.noWalk ?? false,
     ...(opts.maxCount !== undefined ? { maxCount: opts.maxCount } : {}),
   });
-  const entries: RevListEntry[] = closure.objects.map((object) =>
-    object.path === undefined
-      ? { id: object.id, type: object.type }
-      : { id: object.id, type: object.type, path: object.path },
-  );
+  const entries = closure.objects.map(toEntry);
   return { entries, count: entries.length };
 };
-
-/** One invocation, with its own object-type table as git's process has. */
-export const revList = (ctx: Context, opts: RevListOptions = {}): Promise<RevListResult> =>
-  withObjectTypeTable(ctx, () => revListScoped(ctx, opts));

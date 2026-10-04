@@ -4,6 +4,7 @@ import {
   expandRevisionArgument,
   expandRevisionArguments,
 } from '../../../../../src/application/commands/internal/revision-argument.js';
+import { createObjectTypeTable } from '../../../../../src/application/primitives/internal/object-type-table.js';
 import type { TsgitError } from '../../../../../src/domain/error.js';
 import type { ObjectId } from '../../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../../src/ports/context.js';
@@ -68,7 +69,7 @@ describe('expandRevisionArgument', () => {
         const sut = expandRevisionArgument;
 
         // Act
-        const result = await sut(ctx, arg, source);
+        const result = await sut(ctx, createObjectTypeTable(), arg, source);
 
         // Assert
         expect(result).toEqual(spelt(ids, tips));
@@ -93,7 +94,7 @@ describe('expandRevisionArgument', () => {
         const sut = expandRevisionArgument;
 
         // Act
-        const result = await sut(ctx, arg, 'command-line').catch(
+        const result = await sut(ctx, createObjectTypeTable(), arg, 'command-line').catch(
           (error: TsgitError) => error.data.code,
         );
 
@@ -113,7 +114,12 @@ describe('expandRevisionArguments', () => {
         const sut = expandRevisionArguments;
 
         // Act
-        const result = await sut(ctx, { wants: ['base'], not: ['side..main'] }, 'stdin');
+        const result = await sut(
+          ctx,
+          createObjectTypeTable(),
+          { wants: ['base'], not: ['side..main'] },
+          'stdin',
+        );
 
         // Assert
         expect(result).toEqual({ wants: [ids.root, ids.side], not: [ids.merge] });

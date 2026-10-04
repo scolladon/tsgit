@@ -34,12 +34,15 @@ import {
   reconstructEntry,
 } from './bitmap-reconstruct.js';
 import { resolveTagChain } from './object-emit.js';
+import type { ObjectTypeTable } from './object-type-table.js';
 
 export interface BitmapClosureRequest {
   readonly wants: ReadonlyArray<ObjectId>;
   readonly not: ReadonlyArray<ObjectId>;
   /** Include trees and blobs, not just commits and tags. */
   readonly objects: boolean;
+  /** The invocation's object-type table the tips are typed into; omitted, nothing is typed. */
+  readonly objectTypes?: ObjectTypeTable;
 }
 
 export interface BitmapClosureObject {
@@ -239,13 +242,13 @@ async function fill(
   extended: ExtendedPositions,
   rc: ReconstructionContext,
   tips: ReadonlyArray<ObjectId>,
-  objects: boolean,
+  request: BitmapClosureRequest,
 ): Promise<FillState> {
   const state: FillState = { bits: new Uint32Array(artefact.laneCount), extended: new Set() };
   const commitSeeds: ObjectId[] = [];
 
   for (const tip of tips) {
-    const peeled = await resolveTagChain(ctx, tip, (tagId) =>
+    const peeled = await resolveTagChain(ctx, request.objectTypes, tip, (tagId) =>
       markPosition(artefact, extended, state, tagId),
     );
     const obj = await readObject(ctx, peeled);
@@ -260,7 +263,7 @@ async function fill(
     markPosition(artefact, extended, state, peeled);
   }
 
-  await walkPendingCommits(ctx, artefact, extended, rc, state, commitSeeds, objects);
+  await walkPendingCommits(ctx, artefact, extended, rc, state, commitSeeds, request.objects);
   return state;
 }
 
@@ -303,8 +306,8 @@ export async function resolveBitmapClosure(
   const rc = createReconstructionContext(artefact.bitmap, artefact.headers, artefact.laneCount);
   const extended: ExtendedPositions = { indexByOid: new Map(), oids: [] };
 
-  const wantState = await fill(ctx, artefact, extended, rc, request.wants, request.objects);
-  const notState = await fill(ctx, artefact, extended, rc, request.not, request.objects);
+  const wantState = await fill(ctx, artefact, extended, rc, request.wants, request);
+  const notState = await fill(ctx, artefact, extended, rc, request.not, request);
 
   const results: BitmapClosureObject[] = [];
   emitInArtefactPositions(artefact, wantState, notState, request.objects, results);

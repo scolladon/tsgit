@@ -2,38 +2,30 @@
  * git's process-wide object table, scoped to one command invocation: the
  * type each `lookup_<type>` call assigned an id — by a tag's `type` header or
  * by parsing the object itself. A later assignment that disagrees is git's
- * `object X is a <known>, not a <asked>` failure. A Context without a table
- * (a primitive called outside a scoped command) assigns nothing and never
- * conflicts.
+ * `object X is a <known>, not a <asked>` failure. Each command entry creates
+ * its own and threads it down, as each git command runs in its own process;
+ * a lookup given none (a primitive called outside a typing command) assigns
+ * nothing and never conflicts.
  */
 import type { GitObject, ObjectId, ObjectType, Tag } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { readObject } from '../read-object.js';
 
-const tables = new WeakMap<Context, Map<ObjectId, ObjectType>>();
+export type ObjectTypeTable = Map<ObjectId, ObjectType>;
 
-/**
- * Runs one command invocation with a fresh, empty table on `ctx`, dropped when
- * it settles. The Context keeps its identity, so caches keyed on it survive.
- * An invocation starting while another on the same Context is in flight
- * joins that one's table.
- */
-export const withObjectTypeTable = async <T>(ctx: Context, run: () => Promise<T>): Promise<T> => {
-  if (tables.has(ctx)) return run();
-  tables.set(ctx, new Map());
-  try {
-    return await run();
-  } finally {
-    tables.delete(ctx);
-  }
-};
+/** A fresh, empty table for one command invocation. */
+export const createObjectTypeTable = (): ObjectTypeTable => new Map();
 
 /**
  * git's `lookup_<type>`: records `type` for `id` unless an earlier lookup
  * typed it otherwise — then logs git's `error:` and answers `false`.
  */
-export const assignObjectType = (ctx: Context, id: ObjectId, type: ObjectType): boolean => {
-  const table = tables.get(ctx);
+export const assignObjectType = (
+  ctx: Context,
+  table: ObjectTypeTable | undefined,
+  id: ObjectId,
+  type: ObjectType,
+): boolean => {
   const known = table?.get(id);
   if (known === undefined || known === type) {
     table?.set(id, type);
@@ -44,9 +36,14 @@ export const assignObjectType = (ctx: Context, id: ObjectId, type: ObjectType): 
 };
 
 /** git's `parse_tag_buffer`: the tag's `type` header assigns its target's type. */
-const assignTagPointer = (ctx: Context, id: ObjectId, tag: Tag): boolean => {
+const assignTagPointer = (
+  ctx: Context,
+  table: ObjectTypeTable | undefined,
+  id: ObjectId,
+  tag: Tag,
+): boolean => {
   const target = tag.data.object;
-  if (assignObjectType(ctx, target, tag.data.objectType)) return true;
+  if (assignObjectType(ctx, table, target, tag.data.objectType)) return true;
   ctx.logger?.error?.(`bad tag pointer to ${target} in ${id}`, { id, target });
   return false;
 };
@@ -58,10 +55,11 @@ const assignTagPointer = (ctx: Context, id: ObjectId, tag: Tag): boolean => {
  */
 export const parseTypedObject = async (
   ctx: Context,
+  table: ObjectTypeTable | undefined,
   id: ObjectId,
 ): Promise<GitObject | undefined> => {
   const object = await readObject(ctx, id);
-  if (!assignObjectType(ctx, id, object.type)) return undefined;
-  if (object.type === 'tag' && !assignTagPointer(ctx, id, object)) return undefined;
+  if (!assignObjectType(ctx, table, id, object.type)) return undefined;
+  if (object.type === 'tag' && !assignTagPointer(ctx, table, id, object)) return undefined;
   return object;
 };

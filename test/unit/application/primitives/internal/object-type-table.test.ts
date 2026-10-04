@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import {
   assignObjectType,
-  withObjectTypeTable,
+  createObjectTypeTable,
 } from '../../../../../src/application/primitives/internal/object-type-table.js';
 import type { ObjectId } from '../../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../../src/ports/context.js';
@@ -18,19 +18,18 @@ const logging = (): { readonly ctx: Context; readonly logged: string[] } => {
   return { ctx, logged };
 };
 
-describe('withObjectTypeTable', () => {
-  describe('Given an id typed a blob inside a scope', () => {
-    describe('When a nested scope types it a commit', () => {
-      it('Then the nested scope shares the table and the typing conflicts', async () => {
+describe('assignObjectType', () => {
+  describe('Given an id typed a blob in a table', () => {
+    describe('When the same table types it a commit', () => {
+      it('Then the typing conflicts', () => {
         // Arrange
         const { ctx, logged } = logging();
-        const sut = withObjectTypeTable;
+        const table = createObjectTypeTable();
+        const sut = assignObjectType;
+        sut(ctx, table, ID, 'blob');
 
         // Act
-        const result = await sut(ctx, async () => {
-          assignObjectType(ctx, ID, 'blob');
-          return sut(ctx, async () => assignObjectType(ctx, ID, 'commit'));
-        });
+        const result = sut(ctx, table, ID, 'commit');
 
         // Assert
         expect({ result, logged }).toEqual({
@@ -39,24 +38,16 @@ describe('withObjectTypeTable', () => {
         });
       });
     });
-  });
 
-  describe('Given a scope that typed an id and then rejected', () => {
-    describe('When a later scope types it otherwise', () => {
-      it('Then the earlier typing is gone', async () => {
+    describe('When another table types it a commit', () => {
+      it('Then the earlier typing does not carry over', () => {
         // Arrange
         const { ctx, logged } = logging();
-        const failure = new Error('boom');
-        const sut = withObjectTypeTable;
-        await sut(ctx, async () => {
-          assignObjectType(ctx, ID, 'blob');
-          throw failure;
-        }).catch((error: unknown) => {
-          if (error !== failure) throw error;
-        });
+        const sut = assignObjectType;
+        sut(ctx, createObjectTypeTable(), ID, 'blob');
 
         // Act
-        const result = await sut(ctx, async () => assignObjectType(ctx, ID, 'commit'));
+        const result = sut(ctx, createObjectTypeTable(), ID, 'commit');
 
         // Assert
         expect({ result, logged }).toEqual({ result: true, logged: [] });
@@ -64,16 +55,16 @@ describe('withObjectTypeTable', () => {
     });
   });
 
-  describe('Given no scope', () => {
+  describe('Given no table', () => {
     describe('When an id is typed twice differently', () => {
       it('Then nothing conflicts', () => {
         // Arrange
         const { ctx, logged } = logging();
         const sut = assignObjectType;
-        sut(ctx, ID, 'blob');
+        sut(ctx, undefined, ID, 'blob');
 
         // Act
-        const result = sut(ctx, ID, 'commit');
+        const result = sut(ctx, undefined, ID, 'commit');
 
         // Assert
         expect({ result, logged }).toEqual({ result: true, logged: [] });

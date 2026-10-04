@@ -79,7 +79,7 @@ async function classifyOid(ctx: Context, oid: ObjectId): Promise<ClassifyResult>
     return { tree: obj.data.tree, commit: oid, commitTime: obj.data.committer.timestamp };
   }
   if (obj.type === 'tag') {
-    const commitOid = await peel(ctx, oid, 'commit');
+    const commitOid = await peel(ctx, undefined, oid, 'commit');
     const commitObj = await readObject(ctx, commitOid);
     if (commitObj.type !== 'commit') {
       throw unexpectedObjectType('commit', commitObj.type, commitOid);

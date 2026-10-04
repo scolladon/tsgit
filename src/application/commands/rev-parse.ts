@@ -22,7 +22,11 @@ import { workTreeRequired } from '../../domain/repository/error.js';
 import type { Context } from '../../ports/context.js';
 import { committishFilter, treeishFilter } from '../primitives/internal/disambiguation-hints.js';
 import { lookupCommitReference } from '../primitives/internal/lookup-commit-reference.js';
-import { parseTypedObject, withObjectTypeTable } from '../primitives/internal/object-type-table.js';
+import {
+  createObjectTypeTable,
+  type ObjectTypeTable,
+  parseTypedObject,
+} from '../primitives/internal/object-type-table.js';
 import { peel } from '../primitives/internal/peel.js';
 import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
 import { descendTreePath } from '../primitives/internal/resolve-tree-path.js';
@@ -86,32 +90,34 @@ const NOTHING_PRINTED: Attempt = { printed: [], consumed: false };
  * A refusal carries the lines git printed before it.
  */
 export const revParse = (ctx: Context, expression: string): Promise<ReadonlyArray<RevParseEntry>> =>
-  withObjectTypeTable(ctx, () => revParseScoped(ctx, expression));
+  revParseScoped(ctx, createObjectTypeTable(), expression);
 
 const revParseScoped = async (
   ctx: Context,
+  table: ObjectTypeTable,
   expression: string,
 ): Promise<ReadonlyArray<RevParseEntry>> => {
-  const difference = await tryDifference(ctx, expression);
+  const difference = await tryDifference(ctx, table, expression);
   if (difference.consumed) return difference.printed;
-  const shorthand = await tryParentShorthands(ctx, expression);
+  const shorthand = await tryParentShorthands(ctx, table, expression);
   if (shorthand !== undefined) return [...difference.printed, ...shorthand];
-  return readArgument(ctx, expression, difference.printed);
+  return readArgument(ctx, table, expression, difference.printed);
 };
 
 const readArgument = async (
   ctx: Context,
+  table: ObjectTypeTable,
   expression: string,
   printed: ReadonlyArray<RevParseEntry>,
 ): Promise<ReadonlyArray<RevParseEntry>> => {
   const negated = expression.startsWith(NEGATION);
   const name = negated ? expression.slice(NEGATION.length) : expression;
   try {
-    const id = await readReporting(ctx, name);
+    const id = await readReporting(ctx, table, name);
     return [...printed, negated ? excluded(id) : included(id)];
   } catch (error) {
     if (!namesNoObject(error)) throw error;
-    return readFilename(ctx, expression, [...printed, pathEntry(expression)], error);
+    return readFilename(ctx, table, expression, [...printed, pathEntry(expression)], error);
   }
 };
 
@@ -121,12 +127,13 @@ const readArgument = async (
  */
 const readFilename = async (
   ctx: Context,
+  table: ObjectTypeTable,
   arg: string,
   printed: ReadonlyArray<RevParseEntry>,
   failure: unknown,
 ): Promise<ReadonlyArray<RevParseEntry>> => {
   if (await namesFilename(ctx, arg)) return printed;
-  await rereadMisspelt(ctx, arg).catch((error: unknown) => {
+  await rereadMisspelt(ctx, table, arg).catch((error: unknown) => {
     throw withPrinted(error, printed);
   });
   throw withPrinted(failure, printed);
@@ -137,10 +144,14 @@ const readFilename = async (
  * which skips a `:/` search — quiet but below a `^<n>` or `~<n>`, which reads
  * what precedes it without the quiet flag, so an ambiguity there is reported again.
  */
-const rereadMisspelt = async (ctx: Context, arg: string): Promise<void> => {
+const rereadMisspelt = async (
+  ctx: Context,
+  table: ObjectTypeTable | undefined,
+  arg: string,
+): Promise<void> => {
   if (isMessageSearch(arg)) return;
   try {
-    await evaluateRevision(ctx, arg);
+    await evaluateTyped(ctx, table, arg);
   } catch (error) {
     if (errorDataCode(error) === 'AMBIGUOUS_OID_PREFIX' && dropsQuietRead(arg)) {
       reportAmbiguousOid(ctx, error);
@@ -161,11 +172,12 @@ const dropsQuietRead = (arg: string): boolean => {
 /** git's `get_oid` read aloud: an ambiguous abbreviated name is reported before the read fails. */
 export const readReporting = async (
   ctx: Context,
+  table: ObjectTypeTable | undefined,
   expression: string,
   accepts?: CandidateFilter,
 ): Promise<ObjectId> => {
   try {
-    return await evaluateRevision(ctx, expression, accepts);
+    return await evaluateTyped(ctx, table, expression, accepts);
   } catch (error) {
     reportAmbiguousOid(ctx, error);
     throw error;
@@ -211,9 +223,9 @@ export const resolveRevision = async (
   expression: string,
   source: RevisionSource = 'command-line',
 ): Promise<ObjectId> => {
-  await readDifferenceSides(ctx, SIDES_BY_SOURCE[source](expression));
-  if (source === 'stdin') return readReporting(ctx, expression);
-  return readNamedObject(ctx, expression, expression);
+  await readDifferenceSides(ctx, undefined, SIDES_BY_SOURCE[source](expression));
+  if (source === 'stdin') return readReporting(ctx, undefined, expression);
+  return readNamedObject(ctx, undefined, expression, expression);
 };
 
 /**
@@ -223,21 +235,26 @@ export const resolveRevision = async (
  */
 export const readNamedObject = async (
   ctx: Context,
+  table: ObjectTypeTable | undefined,
   name: string,
   arg: string,
 ): Promise<ObjectId> => {
   try {
-    return await readReporting(ctx, name);
+    return await readReporting(ctx, table, name);
   } catch (error) {
-    if (await rereadsMisspeltRevision(ctx, arg, error)) await rereadMisspelt(ctx, arg);
+    if (await rereadsMisspeltRevision(ctx, arg, error)) await rereadMisspelt(ctx, table, arg);
     throw error;
   }
 };
 
 /** A range side or shorthand base, read commit-ish; a read that names no object is not a refusal here. */
-export const readCommittish = async (ctx: Context, side: string): Promise<ObjectId | undefined> => {
+export const readCommittish = async (
+  ctx: Context,
+  table: ObjectTypeTable | undefined,
+  side: string,
+): Promise<ObjectId | undefined> => {
   try {
-    return await readReporting(ctx, side, committishFilter(ctx));
+    return await readReporting(ctx, table, side, committishFilter(ctx));
   } catch (error) {
     if (namesNoObject(error)) return undefined;
     throw error;
@@ -250,10 +267,12 @@ export const readCommittish = async (ctx: Context, side: string): Promise<Object
  */
 const readDifferenceSides = async (
   ctx: Context,
+  table: ObjectTypeTable | undefined,
   sides: DifferenceSides | undefined,
 ): Promise<void> => {
   if (sides === undefined) return;
-  if ((await readCommittish(ctx, sides.start)) !== undefined) await readCommittish(ctx, sides.end);
+  if ((await readCommittish(ctx, table, sides.start)) === undefined) return;
+  await readCommittish(ctx, table, sides.end);
 };
 
 /**
@@ -261,12 +280,16 @@ const readDifferenceSides = async (
  * a symmetric range whose sides are not both commits has printed both sides
  * but leaves the argument unconsumed, so the whole is read as one name.
  */
-const tryDifference = async (ctx: Context, expression: string): Promise<Attempt> => {
+const tryDifference = async (
+  ctx: Context,
+  table: ObjectTypeTable,
+  expression: string,
+): Promise<Attempt> => {
   const sides = differenceSides(expression);
   if (sides === undefined) return NOTHING_PRINTED;
-  const start = await readCommittish(ctx, sides.start);
+  const start = await readCommittish(ctx, table, sides.start);
   if (start === undefined) return NOTHING_PRINTED;
-  const end = await readCommittish(ctx, sides.end);
+  const end = await readCommittish(ctx, table, sides.end);
   if (end === undefined) return NOTHING_PRINTED;
   if (!sides.symmetric) return { printed: [included(end), excluded(start)], consumed: true };
   return symmetricDifference(ctx, start, end);
@@ -293,11 +316,12 @@ const symmetricDifference = async (
  */
 const tryParentShorthands = async (
   ctx: Context,
+  table: ObjectTypeTable,
   expression: string,
 ): Promise<ReadonlyArray<RevParseEntry> | undefined> => {
   const shorthand = parentShorthand(expression);
   if (shorthand === undefined) return undefined;
-  const id = await readCommittish(ctx, shorthand.base);
+  const id = await readCommittish(ctx, table, shorthand.base);
   if (id === undefined) return undefined;
   const commit = await lookupCommitReference(ctx, id);
   if (commit === undefined) return undefined;
@@ -321,19 +345,28 @@ const shorthandEntries = (
  * their argument without the misspelt-name diagnosis. `accepts` is the
  * caller's disambiguation hint for an abbreviated name read as is.
  */
-export const evaluateRevision = async (
+export const evaluateRevision = (
   ctx: Context,
+  expression: string,
+  accepts?: CandidateFilter,
+): Promise<ObjectId> => evaluateTyped(ctx, undefined, expression, accepts);
+
+/** git's `get_oid` typing each object it parses into `table`, the invocation's. */
+const evaluateTyped = async (
+  ctx: Context,
+  table: ObjectTypeTable | undefined,
   expression: string,
   accepts?: CandidateFilter,
 ): Promise<ObjectId> => {
   await assertOperationalRepository(ctx);
   await assertRepoSettingsValid(ctx);
   const expr = parseExpression(expression);
-  return evaluate(ctx, expr, expression, accepts);
+  return evaluate(ctx, table, expr, expression, accepts);
 };
 
 const evaluate = async (
   ctx: Context,
+  table: ObjectTypeTable | undefined,
   expr: RevExpression,
   raw: string,
   accepts?: CandidateFilter,
@@ -342,7 +375,7 @@ const evaluate = async (
     return resolveIndexStage(ctx, { stage: expr.stage, path: resolveRelativePath(ctx, expr.path) });
   }
   if (expr.kind === 'tree-path') {
-    return resolveTreePath(ctx, expr.rev, expr.path);
+    return resolveTreePath(ctx, table, expr.rev, expr.path);
   }
   if (expr.kind === 'message-search') return searchFromRefs(ctx, expr.pattern, raw);
   // `now` is read once per call so the reflog `@{date}` resolution is
@@ -353,7 +386,7 @@ const evaluate = async (
       ? await resolveReflogBase(ctx, expr.base, expr.reflog, now, raw)
       : await resolveBase(ctx, expr.base, baseHint(ctx, expr.operations, accepts));
   for (const op of expr.operations) {
-    id = await applyOperation(ctx, id, op);
+    id = await applyOperation(ctx, table, id, op);
   }
   return id;
 };
@@ -480,10 +513,15 @@ const pickByDate = (
   return oldest.oldId === zeroOid(hashConfig) ? oldest.newId : oldest.oldId;
 };
 
-const applyOperation = async (ctx: Context, id: ObjectId, op: RevOperation): Promise<ObjectId> => {
-  if (op.kind === 'deref') return derefTags(ctx, id, op.name);
-  if (op.kind === 'peel') return peelTo(ctx, id, op.target, op.name);
-  if (op.kind === 'search') return searchFrom(ctx, id, op);
+const applyOperation = async (
+  ctx: Context,
+  table: ObjectTypeTable | undefined,
+  id: ObjectId,
+  op: RevOperation,
+): Promise<ObjectId> => {
+  if (op.kind === 'deref') return derefTags(ctx, table, id, op.name);
+  if (op.kind === 'peel') return peelTo(ctx, table, id, op.target, op.name);
+  if (op.kind === 'search') return searchFrom(ctx, table, id, op);
   const commit = await commitToWalk(ctx, id);
   if (op.kind === 'parent') return op.n === 0 ? commit.id : nthParent(ctx, commit, op.n);
   return nthAncestor(ctx, commit, op.n);
@@ -492,11 +530,12 @@ const applyOperation = async (ctx: Context, id: ObjectId, op: RevOperation): Pro
 /** git's `peel_onion`: `^{object}` only needs the object to exist. */
 const peelTo = async (
   ctx: Context,
+  table: ObjectTypeTable | undefined,
   id: ObjectId,
   target: PeelTarget,
   name: string,
 ): Promise<ObjectId> => {
-  if (target !== 'object') return peel(ctx, id, target, name);
+  if (target !== 'object') return peel(ctx, table, id, target, name);
   await readObject(ctx, id);
   return id;
 };
@@ -504,10 +543,11 @@ const peelTo = async (
 /** git's `^{/<regex>}`: peel to a commit, then search back from it; `^{/}` is the commit itself. */
 const searchFrom = async (
   ctx: Context,
+  table: ObjectTypeTable | undefined,
   id: ObjectId,
   op: Extract<RevOperation, { readonly kind: 'search' }>,
 ): Promise<ObjectId> => {
-  const peeled = await commitToWalk(ctx, await peel(ctx, id, 'commit', op.name));
+  const peeled = await commitToWalk(ctx, await peel(ctx, table, id, 'commit', op.name));
   if (op.pattern === '') return peeled.id;
   const found = await searchCommitMessages(ctx, [peeled.commit], op.pattern);
   if (found === undefined) throw revparseUnresolved(op.name);
@@ -521,11 +561,16 @@ const searchFromRefs = async (ctx: Context, pattern: string, raw: string): Promi
 };
 
 /** git's `deref_tag`: follow tags to the first non-tag, naming `name` when one is missing. */
-const derefTags = async (ctx: Context, id: ObjectId, name: string): Promise<ObjectId> => {
-  let current = await parseTypedObject(ctx, id);
+const derefTags = async (
+  ctx: Context,
+  table: ObjectTypeTable | undefined,
+  id: ObjectId,
+  name: string,
+): Promise<ObjectId> => {
+  let current = await parseTypedObject(ctx, table, id);
   if (current === undefined) throw objectNotFound(id);
   while (current.type === 'tag') {
-    current = await readTagged(ctx, current.data.object, name);
+    current = await readTagged(ctx, table, current.data.object, name);
   }
   return current.id;
 };
@@ -535,10 +580,15 @@ const reportMissingReferenced = (ctx: Context, name: string, id: ObjectId): void
 };
 
 /** `parse_object` of a tag's target: absent or mistyped, git names the tag's spelling. */
-const readTagged = async (ctx: Context, id: ObjectId, name: string): Promise<GitObject> => {
+const readTagged = async (
+  ctx: Context,
+  table: ObjectTypeTable | undefined,
+  id: ObjectId,
+  name: string,
+): Promise<GitObject> => {
   let tagged: GitObject | undefined;
   try {
-    tagged = await parseTypedObject(ctx, id);
+    tagged = await parseTypedObject(ctx, table, id);
   } catch (error) {
     if (errorDataCode(error) === 'OBJECT_NOT_FOUND') reportMissingReferenced(ctx, name, id);
     throw error;
@@ -596,10 +646,15 @@ const resolveIndexStage = async (
  * `/`-separated components to the addressed blob/tree. An empty path returns the
  * tree itself (`HEAD:` ⇒ the root tree).
  */
-const resolveTreePath = async (ctx: Context, rev: string, rawPath: string): Promise<ObjectId> => {
-  const baseId = await evaluate(ctx, parseExpression(rev), rev, treeishFilter(ctx));
+const resolveTreePath = async (
+  ctx: Context,
+  table: ObjectTypeTable | undefined,
+  rev: string,
+  rawPath: string,
+): Promise<ObjectId> => {
+  const baseId = await evaluate(ctx, table, parseExpression(rev), rev, treeishFilter(ctx));
   const path = resolveRelativePath(ctx, rawPath);
-  const treeId = await peel(ctx, baseId, 'tree');
+  const treeId = await peel(ctx, table, baseId, 'tree');
   if (path === '') return treeId;
   // `treeId` is already a tree (peeled above), so `readTree` loads it without a
   // further peel; the shared descent then walks the `/`-separated components.

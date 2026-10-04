@@ -11,6 +11,7 @@ import { revparseUnresolved } from '../../../domain/commands/error.js';
 import { applyGraft } from '../../../domain/commit/graft.js';
 import type { Commit, ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
+import type { ObjectTypeTable } from '../../primitives/internal/object-type-table.js';
 import { loadShallowSet } from '../../primitives/internal/shallow-set.js';
 import { readObject } from '../../primitives/read-object.js';
 import {
@@ -45,14 +46,15 @@ const SIDES_BY_SOURCE: Readonly<
 /** git's `handle_dotdot`: both sides named, the range's tips; otherwise `undefined`. */
 const expandRange = async (
   ctx: Context,
+  table: ObjectTypeTable,
   arg: string,
   source: RevisionSource,
 ): Promise<ReadonlyArray<RevisionTip> | undefined> => {
   const sides = SIDES_BY_SOURCE[source](arg);
   if (sides === undefined) return undefined;
-  const start = await readCommittish(ctx, sides.start);
+  const start = await readCommittish(ctx, table, sides.start);
   if (start === undefined) return undefined;
-  const end = await readCommittish(ctx, sides.end);
+  const end = await readCommittish(ctx, table, sides.end);
   if (end === undefined) return undefined;
   if (!sides.symmetric) return [tip(start, true), tip(end, false)];
   const bases = await symmetricBases(ctx, arg, [start, end]);
@@ -66,12 +68,13 @@ const expandRange = async (
  */
 const peelParentsBase = async (
   ctx: Context,
+  table: ObjectTypeTable,
   base: string,
   id: ObjectId,
 ): Promise<Commit | undefined> => {
-  await requireReference(ctx, base, id);
+  await requireReference(ctx, table, base, id);
   const object = await readObject(ctx, id);
-  if (object.type === 'tag') return peelParentsBase(ctx, base, object.data.object);
+  if (object.type === 'tag') return peelParentsBase(ctx, table, base, object.data.object);
   return object.type === 'commit' ? object : undefined;
 };
 
@@ -82,15 +85,16 @@ const peelParentsBase = async (
  */
 const parentsOf = async (
   ctx: Context,
+  table: ObjectTypeTable,
   spelt: string,
   negated: boolean,
   exclude?: number,
 ): Promise<ReadonlyArray<RevisionTip> | undefined> => {
   const flipped = spelt.startsWith(NEGATION);
   const base = flipped ? spelt.slice(NEGATION.length) : spelt;
-  const id = await readCommittish(ctx, base);
+  const id = await readCommittish(ctx, table, base);
   if (id === undefined) return undefined;
-  const commit = await peelParentsBase(ctx, base, id);
+  const commit = await peelParentsBase(ctx, table, base, id);
   if (commit === undefined) return undefined;
   const { parents } = applyGraft(commit, await loadShallowSet(ctx)).data;
   const chosen = exclude === undefined ? parents : parents.slice(exclude - 1, exclude);
@@ -110,54 +114,75 @@ interface Shrunk {
 }
 
 /** `X^!`: X's parents excluded, X left to read; untouched when X names no commit. */
-const shrinkExcludeParents = async (ctx: Context, arg: string): Promise<Shrunk> => {
+const shrinkExcludeParents = async (
+  ctx: Context,
+  table: ObjectTypeTable,
+  arg: string,
+): Promise<Shrunk> => {
   const base = endingWith(arg, EXCLUDE_PARENTS_MARK);
   if (base === undefined) return { excluded: [], rest: arg };
-  const excluded = await parentsOf(ctx, base, true);
+  const excluded = await parentsOf(ctx, table, base, true);
   return excluded === undefined ? { excluded: [], rest: arg } : { excluded, rest: base };
 };
 
 /** `X^-<n>`: X's n-th parent excluded, X left to read; a malformed `<n>` is a bad revision. */
-const shrinkExcludeParent = async (ctx: Context, arg: string): Promise<Shrunk> => {
+const shrinkExcludeParent = async (
+  ctx: Context,
+  table: ObjectTypeTable,
+  arg: string,
+): Promise<Shrunk> => {
   const at = arg.indexOf(EXCLUDE_PARENT_MARK);
   if (at === -1) return { excluded: [], rest: arg };
   const spelt = arg.slice(at + EXCLUDE_PARENT_MARK.length);
   const n = spelt === '' ? 1 : Number.parseInt(spelt, 10);
   if (spelt !== '' && (!PARENT_NUMBER.test(spelt) || n < 1)) throw revparseUnresolved(arg);
   const base = arg.slice(0, at);
-  const excluded = await parentsOf(ctx, base, true, n);
+  const excluded = await parentsOf(ctx, table, base, true, n);
   return excluded === undefined ? { excluded: [], rest: arg } : { excluded, rest: base };
 };
 
-const readTip = async (ctx: Context, arg: string, source: RevisionSource): Promise<RevisionTip> => {
+const readTip = async (
+  ctx: Context,
+  table: ObjectTypeTable,
+  arg: string,
+  source: RevisionSource,
+): Promise<RevisionTip> => {
   const negated = arg.startsWith(NEGATION);
   const name = negated ? arg.slice(NEGATION.length) : arg;
   const id =
-    source === 'stdin' ? await readReporting(ctx, name) : await readNamedObject(ctx, name, arg);
-  await requireReference(ctx, name, id);
+    source === 'stdin'
+      ? await readReporting(ctx, table, name)
+      : await readNamedObject(ctx, table, name, arg);
+  await requireReference(ctx, table, name, id);
   return tip(id, negated);
 };
 
 /** The tips `arg` expands to, in the order git adds them to the walk. */
 export const expandRevisionArgument = async (
   ctx: Context,
+  table: ObjectTypeTable,
   arg: string,
   source: RevisionSource,
 ): Promise<ReadonlyArray<RevisionTip>> => {
-  const range = await expandRange(ctx, arg, source);
+  const range = await expandRange(ctx, table, arg, source);
   if (range !== undefined) return range;
   const parentsBase = endingWith(arg, PARENTS_MARK);
-  const parents = parentsBase === undefined ? undefined : await parentsOf(ctx, parentsBase, false);
+  const parents =
+    parentsBase === undefined ? undefined : await parentsOf(ctx, table, parentsBase, false);
   if (parents !== undefined) return parents;
-  const withoutParents = await shrinkExcludeParents(ctx, arg);
-  const withoutParent = await shrinkExcludeParent(ctx, withoutParents.rest);
+  const withoutParents = await shrinkExcludeParents(ctx, table, arg);
+  const withoutParent = await shrinkExcludeParent(ctx, table, withoutParents.rest);
   const excluded = [...withoutParents.excluded, ...withoutParent.excluded];
-  return [...excluded, await readTip(ctx, withoutParent.rest, source)];
+  return [...excluded, await readTip(ctx, table, withoutParent.rest, source)];
 };
 
-/** Each argument expanded in turn, `not` ones with every tip's polarity flipped. */
+/**
+ * Each argument expanded in turn, `not` ones with every tip's polarity
+ * flipped, every object parsed typed into `table`, the invocation's.
+ */
 export const expandRevisionArguments = async (
   ctx: Context,
+  table: ObjectTypeTable,
   args: { readonly wants: ReadonlyArray<string>; readonly not: ReadonlyArray<string> },
   source: RevisionSource,
 ): Promise<{ readonly wants: ObjectId[]; readonly not: ObjectId[] }> => {
@@ -167,8 +192,8 @@ export const expandRevisionArguments = async (
     (expanded.negated !== flip ? not : wants).push(expanded.id);
   };
   for (const arg of args.wants)
-    for (const t of await expandRevisionArgument(ctx, arg, source)) place(t, false);
+    for (const t of await expandRevisionArgument(ctx, table, arg, source)) place(t, false);
   for (const arg of args.not)
-    for (const t of await expandRevisionArgument(ctx, arg, source)) place(t, true);
+    for (const t of await expandRevisionArgument(ctx, table, arg, source)) place(t, true);
   return { wants, not };
 };

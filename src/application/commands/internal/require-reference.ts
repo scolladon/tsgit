@@ -7,15 +7,19 @@
 import { isObjectNotFound, objectNotFound } from '../../../domain/objects/error.js';
 import type { GitObject, ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
-import { parseTypedObject } from '../../primitives/internal/object-type-table.js';
+import {
+  type ObjectTypeTable,
+  parseTypedObject,
+} from '../../primitives/internal/object-type-table.js';
 
 const parseNamed = async (
   ctx: Context,
+  table: ObjectTypeTable | undefined,
   name: string,
   id: ObjectId,
 ): Promise<GitObject | undefined> => {
   try {
-    return await parseTypedObject(ctx, id);
+    return await parseTypedObject(ctx, table, id);
   } catch (error) {
     if (isObjectNotFound(error)) throw objectNotFound(name as ObjectId);
     throw error;
@@ -25,8 +29,14 @@ const parseNamed = async (
 /**
  * Refuses `OBJECT_NOT_FOUND` naming `name` unless `id` is stored — or, in a
  * partial clone, fetched from the promisor as `parse_object` would — and
- * types as the command's earlier lookups allow.
+ * types as the command's earlier lookups — recorded in `table` — allow.
  */
-export const requireReference = async (ctx: Context, name: string, id: ObjectId): Promise<void> => {
-  if ((await parseNamed(ctx, name, id)) === undefined) throw objectNotFound(name as ObjectId);
+export const requireReference = async (
+  ctx: Context,
+  table: ObjectTypeTable | undefined,
+  name: string,
+  id: ObjectId,
+): Promise<void> => {
+  if ((await parseNamed(ctx, table, name, id)) === undefined)
+    throw objectNotFound(name as ObjectId);
 };

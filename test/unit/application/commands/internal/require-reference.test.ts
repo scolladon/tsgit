@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../../src/adapters/memory/memory-adapter.js';
 import { init } from '../../../../../src/application/commands/init.js';
 import { requireReference } from '../../../../../src/application/commands/internal/require-reference.js';
+import { createObjectTypeTable } from '../../../../../src/application/primitives/internal/object-type-table.js';
 import { writeObject } from '../../../../../src/application/primitives/write-object.js';
 import type { TsgitError } from '../../../../../src/domain/index.js';
 import type { Blob, ObjectId } from '../../../../../src/domain/objects/index.js';
@@ -36,7 +37,7 @@ describe('requireReference', () => {
         const sut = requireReference;
 
         // Act
-        const result = await sut(ctx, 'name', id);
+        const result = await sut(ctx, createObjectTypeTable(), 'name', id);
 
         // Assert
         expect(result).toBeUndefined();
@@ -52,7 +53,7 @@ describe('requireReference', () => {
         const sut = requireReference;
 
         // Act
-        const caught = await caughtFrom(() => sut(ctx, 'spelt', id));
+        const caught = await caughtFrom(() => sut(ctx, createObjectTypeTable(), 'spelt', id));
 
         // Assert
         expect((caught as TsgitError).data).toEqual({ code: 'OBJECT_NOT_FOUND', id: 'spelt' });
@@ -80,7 +81,7 @@ describe('requireReference', () => {
         const sut = requireReference;
 
         // Act
-        await sut(ctx, 'spelt', id);
+        await sut(ctx, createObjectTypeTable(), 'spelt', id);
 
         // Assert
         expect(fetched).toEqual([[id]]);
@@ -105,7 +106,7 @@ describe('requireReference', () => {
         const sut = requireReference;
 
         // Act
-        const caught = await caughtFrom(() => sut(ctx, 'spelt', id));
+        const caught = await caughtFrom(() => sut(ctx, createObjectTypeTable(), 'spelt', id));
 
         // Assert
         expect(caught).toBe(failure);

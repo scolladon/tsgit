@@ -13,12 +13,12 @@ import { evaluateRevision, resolveRevision } from '../rev-parse.js';
 
 /** Resolve `rev` and peel to its commit (annotated tags followed). */
 export const resolveCommit = async (ctx: Context, rev: string): Promise<ObjectId> =>
-  peel(ctx, await resolveRevision(ctx, rev), 'commit');
+  peel(ctx, undefined, await resolveRevision(ctx, rev), 'commit');
 
 /** Resolve `rev` and peel to its tree (commit → its tree, tags followed). */
 export const resolveTreeish = async (ctx: Context, rev: string): Promise<ObjectId> =>
-  peel(ctx, await resolveRevision(ctx, rev), 'tree');
+  peel(ctx, undefined, await resolveRevision(ctx, rev), 'tree');
 
 /** {@link resolveCommit} for the commands that refuse their argument after one read (`name-rev`, `range-diff`'s ranges). */
 export const resolveCommitOnce = async (ctx: Context, rev: string): Promise<ObjectId> =>
-  peel(ctx, await evaluateRevision(ctx, rev), 'commit');
+  peel(ctx, undefined, await evaluateRevision(ctx, rev), 'commit');

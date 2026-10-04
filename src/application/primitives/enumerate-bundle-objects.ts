@@ -78,7 +78,9 @@ const walkBundle = async (
 ): Promise<BundleWalk> => {
   if (haves.length === 0) return NOTHING_EXCLUDED;
   const marks = await markNotSide(ctx, haves);
-  const from = await Promise.all(wants.map((want) => resolveTagChain(ctx, want, IGNORE_TAG)));
+  const from = await Promise.all(
+    wants.map((want) => resolveTagChain(ctx, undefined, want, IGNORE_TAG)),
+  );
   const options = await resolveLimitOptions(
     ctx,
     { from, ignoreMissing: true },

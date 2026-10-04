@@ -52,6 +52,7 @@ import { commitDateWalk } from './commit-date-walk.js';
 import { type LimitedWalk, limitList, readShown, resolveLimitOptions } from './limit-list.js';
 import { loadMidxBitmapArtefact } from './midx-bitmap-binding.js';
 import { type EmitState, resolveTagChain, tryEmit } from './object-emit.js';
+import type { ObjectTypeTable } from './object-type-table.js';
 import { loadPackBitmapArtefact } from './pack-bitmap-binding.js';
 
 /** `'bitmap'` asks for the bitmap tier (with a silent walk fallback on any
@@ -88,6 +89,8 @@ export interface ClosureRequest {
    * Ignored on the bitmap tier, which does not traverse.
    */
   readonly noWalk?: boolean;
+  /** The invocation's object-type table the wants are typed into; omitted, nothing is typed. */
+  readonly objectTypes?: ObjectTypeTable;
 }
 
 export interface ClosureObject {
@@ -205,11 +208,11 @@ interface ResolvedWants {
  * full body so the `noWalk` path can emit them (and, under `objects`, their
  * own tree) without a second read.
  */
-async function resolveWants(ctx: Context, wants: ReadonlyArray<ObjectId>): Promise<ResolvedWants> {
+async function resolveWants(ctx: Context, request: ClosureRequest): Promise<ResolvedWants> {
   const commitSeeds: Commit[] = [];
   const pending: PendingObject[] = [];
-  for (const wantId of wants) {
-    const peeled = await resolveTagChain(ctx, wantId, (tagId) =>
+  for (const wantId of request.wants) {
+    const peeled = await resolveTagChain(ctx, request.objectTypes, wantId, (tagId) =>
       pending.push({ id: tagId, type: 'tag' }),
     );
     const obj = await readObject(ctx, peeled);
@@ -475,7 +478,7 @@ async function walkClosure(ctx: Context, request: ClosureRequest): Promise<Closu
     emitted: state.emitted,
     maxDepth: marks.maxDepth,
   };
-  const { commitSeeds, pending } = await resolveWants(ctx, request.wants);
+  const { commitSeeds, pending } = await resolveWants(ctx, request);
   const walked = await listCommitSeeds(ctx, commitSeeds, marks, request);
   await emitPending(ctx, pending, scope, emit);
   await emitWalked(ctx, walked, scope, request, emit);
@@ -484,7 +487,8 @@ async function walkClosure(ctx: Context, request: ClosureRequest): Promise<Closu
 }
 
 function projectedRequest(request: ClosureRequest): BitmapClosureRequest {
-  return { wants: request.wants, not: request.not, objects: request.objects };
+  const { wants, not, objects, objectTypes } = request;
+  return objectTypes === undefined ? { wants, not, objects } : { wants, not, objects, objectTypes };
 }
 
 /**

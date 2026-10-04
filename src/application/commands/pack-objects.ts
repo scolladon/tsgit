@@ -22,8 +22,12 @@ import type { ObjectId } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { buildPack } from '../primitives/build-pack.js';
 import { assertValidPackIntConfig } from '../primitives/config-read.js';
-import { type ClosureTier, computeClosure } from '../primitives/internal/closure-engine.js';
-import { withObjectTypeTable } from '../primitives/internal/object-type-table.js';
+import {
+  type ClosureObject,
+  type ClosureTier,
+  computeClosure,
+} from '../primitives/internal/closure-engine.js';
+import { createObjectTypeTable } from '../primitives/internal/object-type-table.js';
 import { packUseSparse } from '../primitives/internal/pack-use-sparse.js';
 import { writePackArtifacts } from '../primitives/internal/write-pack-artifacts.js';
 import { commonGitDir, packsDir } from '../primitives/path-layout.js';
@@ -73,31 +77,37 @@ export interface PackObjectsResult {
 const closureTierFor = (opts: PackObjectsOptions): ClosureTier =>
   opts.useBitmapIndex === false ? 'walk' : 'bitmap';
 
-/** One invocation, with its own object-type table as git's process has. */
-export const packObjects = (ctx: Context, opts: PackObjectsOptions): Promise<PackObjectsResult> =>
-  withObjectTypeTable(ctx, () => packObjectsScoped(ctx, opts));
-
-const packObjectsScoped = async (
+/** The objects to pack, typed into one invocation's own table as git's process has. */
+const selectObjects = async (
   ctx: Context,
   opts: PackObjectsOptions,
-): Promise<PackObjectsResult> => {
-  await assertOperationalRepositorySettingsFirst(ctx);
-  await assertValidPackIntConfig(ctx);
+): Promise<ReadonlyArray<ClosureObject>> => {
   // git reads `--revs` lines from stdin, where no argument can be a filename.
+  const objectTypes = createObjectTypeTable();
   const { wants, not } = await expandRevisionArguments(
     ctx,
+    objectTypes,
     { wants: opts.wants, not: opts.not ?? [] },
     'stdin',
   );
   const closure = await computeClosure(ctx, {
+    objectTypes,
     wants,
     not,
     objects: true,
     tier: closureTierFor(opts),
     sparse: await packUseSparse(ctx),
   });
+  return closure.objects;
+};
 
-  const pack = await buildPack(ctx, { objects: closure.objects, delta: true });
+export const packObjects = async (
+  ctx: Context,
+  opts: PackObjectsOptions,
+): Promise<PackObjectsResult> => {
+  await assertOperationalRepositorySettingsFirst(ctx);
+  await assertValidPackIntConfig(ctx);
+  const pack = await buildPack(ctx, { objects: await selectObjects(ctx, opts), delta: true });
   const outputDirectory = opts.outputDirectory ?? packsDir(commonGitDir(ctx));
   const written = await writePackArtifacts(ctx, {
     packDir: outputDirectory,

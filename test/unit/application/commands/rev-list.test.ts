@@ -1455,4 +1455,52 @@ describe('revList: object types assigned during one invocation', () => {
       });
     });
   });
+
+  describe('Given the tag and the blob walked by two concurrent invocations', () => {
+    describe('When both run at once', () => {
+      it('Then only the tag invocation refuses, as two git processes do', async () => {
+        // Arrange
+        const { ctx, logged, blob } = await seedMistypedTag();
+        const sut = revList;
+
+        // Act
+        const [tagWalk, blobWalk] = await Promise.all([
+          caughtFrom(() => sut(ctx, { wants: ['t'] })),
+          sut(ctx, { wants: [blob], objects: true }),
+        ]);
+
+        // Assert
+        expect({ data: (tagWalk as TsgitError).data, blobWalk, logged }).toEqual({
+          data: { code: 'OBJECT_NOT_FOUND', id: blob },
+          blobWalk: { entries: [{ id: blob, type: 'blob' }], count: 1 },
+          logged: [`object ${blob} is a commit, not a blob`],
+        });
+      });
+    });
+  });
+
+  describe('Given an invocation with no tips started just before one walking the tag', () => {
+    describe('When the first settles while the second is in flight', () => {
+      it('Then the second still types its own lookups', async () => {
+        // Arrange
+        const { ctx, logged, blob } = await seedMistypedTag();
+        const sut = revList;
+
+        // Act
+        const [, tagWalk] = await Promise.all([
+          sut(ctx, { wants: [] }),
+          caughtFrom(() => sut(ctx, { wants: ['t', `${blob}^{}`] })),
+        ]);
+
+        // Assert
+        expect({ data: (tagWalk as TsgitError).data, logged }).toEqual({
+          data: { code: 'OBJECT_NOT_FOUND', id: blob },
+          logged: [
+            `object ${blob} is a commit, not a blob`,
+            `object ${blob} is a commit, not a blob`,
+          ],
+        });
+      });
+    });
+  });
 });

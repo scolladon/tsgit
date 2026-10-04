@@ -105,7 +105,7 @@ const readTarget = async (ctx: Context, rev: string): Promise<ObjectId | undefin
   if (!(await hasObject(ctx, id))) {
     return skipArgument(ctx, `Could not get object for ${rev}. Skipping.`);
   }
-  return peel(ctx, id, 'commit');
+  return peel(ctx, undefined, id, 'commit');
 };
 
 const readArgumentOid = async (ctx: Context, rev: string): Promise<ObjectId | undefined> => {

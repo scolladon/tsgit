@@ -1,7 +1,7 @@
 import { objectNotFound } from '../../../domain/objects/error.js';
 import type { ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
-import { parseTypedObject } from './object-type-table.js';
+import { type ObjectTypeTable, parseTypedObject } from './object-type-table.js';
 
 type PeelTarget = 'commit' | 'tree' | 'blob' | 'tag';
 
@@ -13,10 +13,11 @@ type PeelTarget = 'commit' | 'tree' | 'blob' | 'tag';
  * reports the kind it stopped at. A chain revisiting an object — only a store
  * whose objects do not hash to their names holds one — names no object either.
  * Shared by the rev grammar (`rev-parse`) and the read-command resolver
- * (`resolve-rev`).
+ * (`resolve-rev`). Each object is typed into `table`, the invocation's.
  */
 export const peel = async (
   ctx: Context,
+  table: ObjectTypeTable | undefined,
   id: ObjectId,
   target: PeelTarget,
   name?: string,
@@ -24,7 +25,7 @@ export const peel = async (
   const seen = new Set<ObjectId>();
   for (let current = id; !seen.has(current); ) {
     seen.add(current);
-    const obj = await parseTypedObject(ctx, current);
+    const obj = await parseTypedObject(ctx, table, current);
     if (obj === undefined) throw objectNotFound(current);
     if (obj.type === target) return current;
     if (obj.type === 'tag') {

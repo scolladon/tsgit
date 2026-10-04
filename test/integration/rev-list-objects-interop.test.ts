@@ -996,4 +996,31 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list interop — object types assigned in o
       });
     });
   });
+
+  describe('Given the tag and its blob walked by two concurrent runs', () => {
+    describe('When rev-list runs both at once on both tools', () => {
+      it('Then only the tag run refuses, the blob run listing the blob as git does', async () => {
+        // Arrange
+        const { dir, blob } = await buildMistypedTagFixture();
+        const tagPeer = tryRunGitWithExit(['-C', dir, 'rev-list', 't']);
+        const blobPeer = tryRunGitWithExit(['-C', dir, 'rev-list', '--objects', blob]);
+        const { ctx, logged } = capturing(dir);
+        const sut = revList;
+
+        // Act
+        const [tagRun, blobRun] = await Promise.allSettled([
+          sut(ctx, { wants: ['t'] }),
+          sut(ctx, { wants: [blob], objects: true }),
+        ]);
+
+        // Assert
+        const tagError = tagRun.status === 'rejected' ? tagRun.reason : undefined;
+        const listed = blobRun.status === 'fulfilled' ? blobRun.value.entries : [];
+        expect({ tag: stderrOf(logged, tagError), blob: listed.map((e) => `${e.id} \n`) }).toEqual({
+          tag: tagPeer.stderr,
+          blob: [blobPeer.stdout],
+        });
+      });
+    });
+  });
 });
