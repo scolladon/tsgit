@@ -311,6 +311,12 @@ const evaluate = async (
   return id;
 };
 
+const EMPTY_AT = '@';
+const HEAD = 'HEAD';
+
+/** git's `interpret_empty_at`: a lone `@` — `@@{...}` included — stands for `HEAD`. */
+const interpretEmptyAt = (base: string): string => (base === EMPTY_AT ? HEAD : base);
+
 const resolveBase = async (
   ctx: Context,
   base: string,
@@ -320,7 +326,7 @@ const resolveBase = async (
   // candidate namespaces (the verbatim one also covering the `HEAD` literal),
   // then an abbreviated object id — which still throws AMBIGUOUS_OID_PREFIX
   // when the prefix matches more than one object.
-  const id = await resolveRevisionName(ctx, base, accepts);
+  const id = await resolveRevisionName(ctx, interpretEmptyAt(base), accepts);
   if (id !== undefined) return id;
   throw objectNotFound(base as ObjectId);
 };
@@ -333,7 +339,8 @@ const resolveReflogBase = async (
   now: number,
   raw: string,
 ): Promise<ObjectId> => {
-  const ref = base === '' ? await currentBranchLog(ctx) : await dwimLog(ctx, base);
+  const ref =
+    base === '' ? await currentBranchLog(ctx) : await dwimLog(ctx, interpretEmptyAt(base));
   if (ref === undefined) throw revparseUnresolved(raw);
   const entries = await readReflogLenient(ctx, ref);
   if (entries.length === 0) throw revparseUnresolved(raw);

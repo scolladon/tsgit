@@ -38,6 +38,7 @@ An argument that names no revision but reads as a pathspec (`f*`, `:(top)x`) or 
 |---|---|---|
 | Ref name | `main` | tip of branch |
 | Symbolic ref | `HEAD` | current branch tip |
+| Lone `@` | `@`, `@~2`, `^@`, `@@{1}` | `HEAD` (only a lone `@`: `@@` and `main@` name nothing) |
 | Tag | `v1.0.0` | tag's target (peeled) |
 | Full oid | `9f86d08...` | the oid itself |
 | Short oid | `9f86d08` | the unambiguous oid (`AMBIGUOUS_OID_PREFIX` on collision) |

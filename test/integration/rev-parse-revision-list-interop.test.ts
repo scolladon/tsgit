@@ -204,6 +204,17 @@ describe.skipIf(!GIT_AVAILABLE)('integration — revParse revision list parity w
       ':/zzz',
       'main^{tree}...side',
       '^f',
+      '@',
+      '^@',
+      '@~1',
+      '@^',
+      '@^{tree}',
+      '@^!',
+      '@..side',
+      'side..@',
+      '@@',
+      'main@',
+      '@@{0}',
     ])('When git rev-parse and revParse read %s', (row) => {
       it("Then both print git's revisions in git's order and the same errors", async () => {
         // Arrange

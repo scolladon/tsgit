@@ -334,6 +334,48 @@ describe('Given a merge of two branches over a root tagged t', () => {
   });
 });
 
+describe('Given HEAD on main', () => {
+  describe.each([
+    { arg: '@', expected: [['c2', false]] },
+    { arg: '^@', expected: [['c2', true]] },
+    { arg: '@~1', expected: [['c1', false]] },
+    { arg: '@^{tree}', expected: [['tree', false]] },
+    {
+      arg: '@..side',
+      expected: [
+        ['s1', false],
+        ['c2', true],
+      ],
+    },
+  ] as const)('When revParse reads $arg', ({ arg, expected }) => {
+    it('Then it reads a lone @ as HEAD', async () => {
+      // Arrange
+      const { ctx, ids } = await listRepo();
+      const sut = revParse;
+
+      // Act
+      const result = await sut(ctx, arg);
+
+      // Assert
+      expect(result).toEqual(entries(ids, expected));
+    });
+  });
+
+  describe.each(['@@', 'main@'])('When revParse reads %s', (arg) => {
+    it('Then it refuses an @ that is not alone', async () => {
+      // Arrange
+      const { ctx } = await listRepo();
+      const sut = revParse;
+
+      // Act
+      const result = await failureData(() => sut(ctx, arg));
+
+      // Assert
+      expect(result).toMatchObject({ printed: [{ kind: 'path', path: arg }] });
+    });
+  });
+});
+
 describe('Given a worktree holding f at its root and g under sub', () => {
   const withFiles = async (cwd: string | undefined): Promise<Context> => {
     const { ctx } = await listRepo();
