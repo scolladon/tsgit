@@ -33,7 +33,6 @@ export const peel = async (
       continue;
     }
     if (obj.type === 'commit') {
-      if (target === 'tree') return obj.data.tree;
       current = obj.data.tree;
       continue;
     }

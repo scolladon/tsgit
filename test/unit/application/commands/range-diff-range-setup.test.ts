@@ -26,9 +26,13 @@ interface Store {
   readonly ctx: Context;
   readonly logged: string[];
   readonly blob: ObjectId;
+  /** `root`'s tree. */
+  readonly tree: ObjectId;
   readonly root: ObjectId;
   /** A commit, child of `root`, naming `blob` as its tree. */
   readonly blobTree: ObjectId;
+  /** A commit, child of `root`, adding a file; `main` and `HEAD` point to it. */
+  readonly second: ObjectId;
 }
 
 const commitOf = (
@@ -59,7 +63,17 @@ const store = async (): Promise<Store> => {
   });
   const root = await commitOf(ctx, tree, [], 'root\n');
   const blobTree = await commitOf(ctx, blob, [root], 'tb\n');
-  return { ctx, logged, blob, root, blobTree };
+  const secondTree = await writeObject(ctx, {
+    type: 'tree',
+    id: '' as ObjectId,
+    entries: [
+      treeEntry('100644' as FileMode, 'a', blob),
+      treeEntry('100644' as FileMode, 'b', blob),
+    ],
+  });
+  const second = await commitOf(ctx, secondTree, [root], 'second\n');
+  await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${second}\n`);
+  return { ctx, logged, blob, tree, root, blobTree, second };
 };
 
 type Range = readonly [base: ObjectId, tip: ObjectId];
@@ -111,8 +125,8 @@ const CASES: ReadonlyArray<Case> = [
   },
   {
     label: 'a new range whose tip is absent',
-    scenario: ({ root }) => ({
-      old: [root, root],
+    scenario: ({ root, second }) => ({
+      old: [root, second],
       new: [root, MISSING],
       expected: { expression: `${root}..${MISSING}`, logged: [] },
     }),
@@ -152,6 +166,138 @@ describe('rangeDiff range setup', () => {
 
         // Assert
         expect(result).toEqual(built.expected);
+      });
+    });
+  });
+});
+
+type Spelt = readonly [base: string, tip: string];
+
+const runRanges = async ({ ctx }: Store, old: Spelt, next: Spelt): Promise<unknown> => {
+  const sut = rangeDiff;
+  try {
+    const entries = await sut(ctx, {
+      old: { base: old[0], tip: old[1] },
+      new: { base: next[0], tip: next[1] },
+    });
+    return entries.map((entry) => [entry.status, entry.old?.id, entry.new?.id]);
+  } catch (error) {
+    return (error as { readonly data?: unknown }).data;
+  }
+};
+
+interface SpeltCase {
+  readonly label: string;
+  readonly ranges: (repo: Store) => { readonly old: Spelt; readonly new: Spelt };
+  readonly expected: (repo: Store) => unknown;
+}
+
+const NOT_RANGES: ReadonlyArray<SpeltCase> = [
+  {
+    label: 'an old range from a commit to itself',
+    ranges: ({ root, second }) => ({ old: [root, root], new: [root, second] }),
+    expected: ({ root }) => ({ code: 'NEED_TWO_COMMIT_RANGES', expression: `${root}..${root}` }),
+  },
+  {
+    label: 'a new range from a commit to itself',
+    ranges: ({ root, second }) => ({ old: [root, second], new: [second, second] }),
+    expected: ({ second }) => ({
+      code: 'NEED_TWO_COMMIT_RANGES',
+      expression: `${second}..${second}`,
+    }),
+  },
+  {
+    label: 'an old range from a tree to itself',
+    ranges: ({ tree, root, second }) => ({ old: [tree, tree], new: [root, second] }),
+    expected: ({ tree }) => ({ code: 'NEED_TWO_COMMIT_RANGES', expression: `${tree}..${tree}` }),
+  },
+  {
+    label: 'an old range with no base, its tip what HEAD names',
+    ranges: ({ root, second }) => ({ old: ['', second], new: [root, second] }),
+    expected: ({ second }) => ({ code: 'NEED_TWO_COMMIT_RANGES', expression: `..${second}` }),
+  },
+];
+
+const ACCEPTED: ReadonlyArray<SpeltCase> = [
+  {
+    label: 'an old range whose base is a tree',
+    ranges: ({ tree, root, second }) => ({ old: [tree, second], new: [root, second] }),
+    expected: ({ root, second }) => [
+      ['only-old', root, undefined],
+      ['unchanged', second, second],
+    ],
+  },
+  {
+    label: 'an old range whose tip is a tree',
+    ranges: ({ tree, root, second }) => ({ old: [root, tree], new: [root, second] }),
+    expected: ({ second }) => [['only-new', undefined, second]],
+  },
+  {
+    label: 'an old range with no tip, read as HEAD',
+    ranges: ({ root, second }) => ({ old: [root, ''], new: [root, second] }),
+    expected: ({ second }) => [['unchanged', second, second]],
+  },
+];
+
+const BAD_REVISIONS: ReadonlyArray<SpeltCase> = [
+  {
+    label: 'an old range whose base peels a commit to the blob it names as its tree',
+    ranges: ({ blobTree, root, second }) => ({
+      old: [`${blobTree}^{tree}`, second],
+      new: [root, second],
+    }),
+    expected: ({ blobTree, second, blob }) => ({
+      data: { code: 'REVPARSE_UNRESOLVED', expression: `${blobTree}^{tree}..${second}` },
+      logged: [`object ${blob} is a tree, not a blob`],
+    }),
+  },
+];
+
+describe('rangeDiff range kinds', () => {
+  describe.each(NOT_RANGES)('Given $label', ({ ranges, expected }) => {
+    describe('When rangeDiff sets the ranges up', () => {
+      it('Then it refuses for want of two commit ranges', async () => {
+        // Arrange
+        const repo = await store();
+        const { old, new: next } = ranges(repo);
+
+        // Act
+        const result = await runRanges(repo, old, next);
+
+        // Assert
+        expect(result).toEqual(expected(repo));
+      });
+    });
+  });
+
+  describe.each(ACCEPTED)('Given $label', ({ ranges, expected }) => {
+    describe('When rangeDiff compares the ranges', () => {
+      it('Then it walks what git log lists for each', async () => {
+        // Arrange
+        const repo = await store();
+        const { old, new: next } = ranges(repo);
+
+        // Act
+        const result = await runRanges(repo, old, next);
+
+        // Assert
+        expect(result).toEqual(expected(repo));
+      });
+    });
+  });
+
+  describe.each(BAD_REVISIONS)('Given $label', ({ ranges, expected }) => {
+    describe('When rangeDiff sets the ranges up', () => {
+      it('Then it logs the typing conflict and refuses the range as a bad revision', async () => {
+        // Arrange
+        const repo = await store();
+        const { old, new: next } = ranges(repo);
+
+        // Act
+        const result = await runRanges(repo, old, next);
+
+        // Assert
+        expect({ data: result, logged: repo.logged }).toEqual(expected(repo));
       });
     });
   });

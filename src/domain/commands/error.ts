@@ -377,6 +377,11 @@ export type CommandError =
       readonly nonCommits: ReadonlyArray<SymmetricRangeNonCommit>;
     }
   | { readonly code: 'INVALID_REVISION_RANGE'; readonly expression: string }
+  | {
+      /** git range-diff's `need two commit ranges`: `expression` excludes all it includes. */
+      readonly code: 'NEED_TWO_COMMIT_RANGES';
+      readonly expression: string;
+    }
   | { readonly code: 'BUNDLE_READ_FAILED'; readonly path: string }
   | ({ readonly code: 'BUNDLE_BAD_HEADER'; readonly path: string } & BundleBadHeaderDetails)
   | {
@@ -1109,6 +1114,12 @@ export const invalidSymmetricRange = (
 // git: `fatal: Invalid revision range <A..B>`.
 export const invalidRevisionRange = (expression: string): TsgitError =>
   new TsgitError({ code: 'INVALID_REVISION_RANGE', expression: sanitizeForDisplay(expression) });
+
+// `range-diff`'s `is_range_diff_range` refusal: `A..B` whose ends are one
+// object, so the range includes nothing it does not exclude. `expression` is
+// caller-supplied and sanitised. git: `fatal: need two commit ranges` (exit 129).
+export const needTwoCommitRanges = (expression: string): TsgitError =>
+  new TsgitError({ code: 'NEED_TWO_COMMIT_RANGES', expression: sanitizeForDisplay(expression) });
 
 // `bundle verify`/`bundle list-heads` open-failure: the path does not exist or is
 // unreadable. `path` is caller-supplied and sanitised before embedding.

@@ -8,10 +8,15 @@
  * and blobs — then hands the pure domain orchestrator two hydrated patch series.
  */
 
-import { invalidOption, invalidRevisionRange } from '../../domain/commands/error.js';
+import {
+  invalidOption,
+  invalidRevisionRange,
+  needTwoCommitRanges,
+  revparseUnresolved,
+} from '../../domain/commands/error.js';
 import { foldSubject } from '../../domain/objects/commit-message.js';
 import { unexpectedObjectType } from '../../domain/objects/error.js';
-import type { Commit, ObjectId } from '../../domain/objects/index.js';
+import type { Commit, GitObject, ObjectId } from '../../domain/objects/index.js';
 import {
   type RangeDiffEntry,
   type RenderedPatch,
@@ -26,12 +31,12 @@ import {
   type ObjectTypeTable,
   parseTypedObjectOrAbsent,
 } from '../primitives/internal/object-type-table.js';
-import { peel } from '../primitives/internal/peel.js';
+import { peelChain } from '../primitives/internal/peel-chain.js';
 import { materialisePatchFiles } from '../primitives/materialise-patch-files.js';
 import { readObject } from '../primitives/read-object.js';
 import { walkCommitsByDate } from '../primitives/walk-commits-by-date.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
-import { evaluateRevision } from './rev-parse.js';
+import { readCommittish } from './rev-parse.js';
 
 export type {
   RangeDiffCommit,
@@ -103,29 +108,63 @@ interface RangeEnds {
   readonly tip: ObjectId;
 }
 
-/** git's `handle_dotdot_1`: both ends parsed into the table, then a failed
- *  parse of either dies `Invalid revision range <base>..<tip>`. */
+const HEAD = 'HEAD';
+
+/** git's `handle_dotdot_1`: an empty side reads as `HEAD`. */
+const sideOf = (spelt: string): string => (spelt === '' ? HEAD : spelt);
+
+/** Both ends read commit-ish into the table, the tip once the base resolves; `undefined` once either names no object. */
+const readRangeEnds = async (
+  ctx: Context,
+  table: ObjectTypeTable,
+  range: RangeDiffRange,
+): Promise<RangeEnds | undefined> => {
+  const base = await readCommittish(ctx, table, sideOf(range.base));
+  if (base === undefined) return undefined;
+  const tip = await readCommittish(ctx, table, sideOf(range.tip));
+  return tip === undefined ? undefined : { base, tip };
+};
+
+/**
+ * git's `is_range_diff_range`: both ends read — one naming no object is a bad
+ * revision — then parsed into the table — a failed parse dies `Invalid
+ * revision range` — and ends that are one object exclude all they include,
+ * which is no commit range.
+ */
 const setUpRange = async (
   ctx: Context,
   table: ObjectTypeTable,
   range: RangeDiffRange,
 ): Promise<RangeEnds> => {
-  const base = await evaluateRevision(ctx, range.base);
-  const tip = await evaluateRevision(ctx, range.tip);
-  const parsedBase = await parseTypedObjectOrAbsent(ctx, table, base);
-  const parsedTip = await parseTypedObjectOrAbsent(ctx, table, tip);
+  const expression = `${range.base}..${range.tip}`;
+  const ends = await readRangeEnds(ctx, table, range);
+  if (ends === undefined) throw revparseUnresolved(expression);
+  const parsedBase = await parseTypedObjectOrAbsent(ctx, table, ends.base);
+  const parsedTip = await parseTypedObjectOrAbsent(ctx, table, ends.tip);
   if (parsedBase === undefined || parsedTip === undefined) {
-    throw invalidRevisionRange(`${range.base}..${range.tip}`);
+    throw invalidRevisionRange(expression);
   }
-  return { base, tip };
+  if (ends.base === ends.tip) throw needTwoCommitRanges(expression);
+  return ends;
+};
+
+const tagTarget = (object: GitObject): ObjectId | undefined =>
+  object.type === 'tag' ? object.data.object : undefined;
+
+/** The commit `id` reaches through its tags, or `undefined` for a tree or blob, which git log walks nothing from. */
+const commitBehind = async (ctx: Context, id: ObjectId): Promise<ObjectId | undefined> => {
+  const { id: peeled, result } = await peelChain(ctx, id, readObject, tagTarget);
+  return result.type === 'commit' ? peeled : undefined;
 };
 
 /** Walk `base..tip` (date order), drop merges, reverse to a patch series. */
 const readSeries = async (ctx: Context, ends: RangeEnds): Promise<ReadonlyArray<RenderedPatch>> => {
-  const base = await peel(ctx, undefined, ends.base, 'commit');
-  const tip = await peel(ctx, undefined, ends.tip, 'commit');
+  const base = await commitBehind(ctx, ends.base);
+  const tip = await commitBehind(ctx, ends.tip);
+  if (tip === undefined) return [];
+  const until = base === undefined ? [] : [base];
   const commits: Commit[] = [];
-  for await (const commit of walkCommitsByDate(ctx, { from: [tip], until: [base] })) {
+  for await (const commit of walkCommitsByDate(ctx, { from: [tip], until })) {
     if (commit.data.parents.length <= 1) commits.push(commit); // git's --no-merges
   }
   commits.reverse(); // oldest-first patch order

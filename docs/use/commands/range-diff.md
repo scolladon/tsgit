@@ -121,8 +121,14 @@ await repo.rangeDiff({ old, new: next, creationFactor: 90 });
 ## Throws
 
 - `INVALID_OPTION` — `creationFactor` is not a non-negative integer.
-- `OBJECT_NOT_FOUND` / `REVPARSE_UNRESOLVED` — a range endpoint cannot be
-  resolved (co-refuses with git's `bad revision`).
+- `REVPARSE_UNRESOLVED` — a range endpoint names no object, or one whose
+  peel (`X^{tree}`) fails to parse against the object table; `expression` is
+  `<base>..<tip>` as given — git's `bad revision '<expression>'`. An empty end
+  reads as `HEAD`, as git's does.
+- `NEED_TWO_COMMIT_RANGES` — a range's two ends are one object, so it
+  includes nothing it does not exclude (git's `need two commit ranges`, exit
+  129). The old range is checked before the new range is read. A tree or blob
+  end is a range: as a base it excludes nothing, as a tip it lists nothing.
 - `INVALID_REVISION_RANGE` — an endpoint names an absent object, or one
   whose parse fails against the types the earlier parses assigned (a commit
   naming a blob as its tree, a blob such a commit already typed a tree).

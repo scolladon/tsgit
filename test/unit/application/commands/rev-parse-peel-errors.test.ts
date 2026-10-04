@@ -459,3 +459,20 @@ describe('revParse: object types assigned during one invocation', () => {
     },
   );
 });
+
+describe('Given a commit naming a tree the store lacks', () => {
+  describe('When evaluateRevision peels it to its tree', () => {
+    it('Then the tree is read, as git parses it, and the revision names no object', async () => {
+      // Arrange
+      const { ctx } = await peelRepo();
+      const commit = await writeCommit(ctx, ABSENT_OID, []);
+      const sut = evaluateRevision;
+
+      // Act
+      const result = await failureCode(() => sut(ctx, `${commit}^{tree}`));
+
+      // Assert
+      expect(result).toBe('OBJECT_NOT_FOUND');
+    });
+  });
+});

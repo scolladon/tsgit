@@ -42,6 +42,7 @@ import {
   MAX_HOOK_STDERR_IN_ERROR,
   maxRefspecsExceeded,
   mergeHasConflicts,
+  needTwoCommitRanges,
   noAnnotatedNames,
   noExactMatch,
   noInitialCommit,
@@ -1765,6 +1766,10 @@ describe('domain commands error — extractDetail message formatting', () => {
       'INVALID_REVISION_RANGE: invalid revision range main..t',
     ],
     [
+      { code: 'NEED_TWO_COMMIT_RANGES', expression: 'main..main' },
+      'NEED_TWO_COMMIT_RANGES: need two commit ranges: main..main is not one',
+    ],
+    [
       { code: 'BUNDLE_READ_FAILED', path: '/some/path.bundle' },
       "BUNDLE_READ_FAILED: could not open '/some/path.bundle'",
     ],
@@ -1871,6 +1876,27 @@ describe('domain commands error — extractDetail message formatting', () => {
           expression: sanitizeForDisplay('main..t\u001b'),
         });
         expect(result.data).not.toEqual(expect.objectContaining({ expression: 'main..t\u001b' }));
+      });
+    });
+  });
+
+  describe('Given the needTwoCommitRanges error helper', () => {
+    describe('When called with an expression holding a control byte', () => {
+      it('Then data carries the sanitised expression', () => {
+        // Arrange
+        const sut = needTwoCommitRanges;
+
+        // Act
+        const result = sut('main..main\u001b');
+
+        // Assert
+        expect(result.data).toEqual({
+          code: 'NEED_TWO_COMMIT_RANGES',
+          expression: sanitizeForDisplay('main..main\u001b'),
+        });
+        expect(result.data).not.toEqual(
+          expect.objectContaining({ expression: 'main..main\u001b' }),
+        );
       });
     });
   });
