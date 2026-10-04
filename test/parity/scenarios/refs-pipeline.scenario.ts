@@ -62,16 +62,15 @@ export const refsPipelineScenario: Scenario<RefsPipelineResult> = {
     });
     const updateRefCreatedReflog = reflogProof.kind === 'exists' && reflogProof.exists;
 
-    // rev-parse only accepts full 40-hex or ref names — short SHA prefix
-    // lookup is not implemented; HEAD goes through the ref-resolution path.
-    const fromHead = await repo.revParse('HEAD');
+    // HEAD goes through the ref-resolution path: one included revision.
+    const [fromHead] = await repo.revParse('HEAD');
 
     return {
       seedCommitId: seed.id,
       headResolvesToSeed: head === seed.id,
       newRefResolvesToSeed: newRefTarget === seed.id,
       updateRefCreatedReflog,
-      revParseHeadResolvesToSeed: fromHead === seed.id,
+      revParseHeadResolvesToSeed: fromHead?.id === seed.id && fromHead.negated === false,
     };
   },
 };

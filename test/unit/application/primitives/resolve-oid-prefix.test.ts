@@ -135,6 +135,75 @@ describe('resolveOidPrefix', () => {
     });
   });
 
+  describe('Given two loose objects sharing the queried prefix and a disambiguation filter', () => {
+    const a = `abcdef${'0'.repeat(34)}`;
+    const b = `abcdef${'1'.repeat(34)}`;
+    const twoCandidates = async (): Promise<Context> => {
+      const ctx = await buildSeededContext();
+      await writeLooseNamed(ctx, a);
+      await writeLooseNamed(ctx, b);
+      return ctx;
+    };
+
+    describe('When only one candidate passes the filter', () => {
+      it('Then resolves to that candidate', async () => {
+        // Arrange
+        const ctx = await twoCandidates();
+        const sut = resolveOidPrefix;
+
+        // Act
+        const result = await sut(ctx, 'abcdef', async (id) => id === b);
+
+        // Assert
+        expect(result).toBe(b);
+      });
+    });
+
+    describe.each([
+      { label: 'both candidates pass', passes: true },
+      { label: 'no candidate passes', passes: false },
+    ])('When $label', ({ passes }) => {
+      it('Then throws AMBIGUOUS_OID_PREFIX carrying both candidates', async () => {
+        // Arrange
+        const ctx = await twoCandidates();
+        const sut = resolveOidPrefix;
+
+        // Act
+        let caught: TsgitError | undefined;
+        try {
+          await sut(ctx, 'abcdef', async () => passes);
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data).toEqual({
+          code: 'AMBIGUOUS_OID_PREFIX',
+          prefix: 'abcdef',
+          candidates: [a, b],
+        });
+      });
+    });
+  });
+
+  describe('Given one loose object matching the prefix and a filter it fails', () => {
+    describe('When resolveOidPrefix is called', () => {
+      it('Then still resolves to the sole candidate', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const only = `abcdef${'0'.repeat(34)}`;
+        await writeLooseNamed(ctx, only);
+        const sut = resolveOidPrefix;
+
+        // Act
+        const result = await sut(ctx, 'abcdef', async () => false);
+
+        // Assert
+        expect(result).toBe(only);
+      });
+    });
+  });
+
   describe('Given more matches than the candidate cap', () => {
     describe('When resolveOidPrefix is called', () => {
       it('Then the thrown candidate list is capped', async () => {

@@ -45,6 +45,7 @@ import type { Repository } from '../../src/repository.js';
 import {
   disableAutoMaintenance,
   GIT_AVAILABLE,
+  revParseStdout,
   runGit,
   runGitEnv,
   tryRunGitWithExit,
@@ -337,7 +338,7 @@ describe.skipIf(!GIT_AVAILABLE)('alternates stream interop — in-core readers',
           // Act
           const type = await readObjectMetadata(repo.ctx, oid);
           const has = await hasObject(repo.ctx, oid);
-          const resolved = await repo.revParse('HEAD:f');
+          const resolved = revParseStdout(await repo.revParse('HEAD:f'));
 
           // Assert
           expect(gitIn(copy.dir, 'cat-file', '-t', oid).exitCode).toBe(0);

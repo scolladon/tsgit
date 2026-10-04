@@ -286,7 +286,7 @@ export {
   type RevListResult,
   revList,
 } from './rev-list.js';
-export { revParse } from './rev-parse.js';
+export { type RevParseEntry, revParse } from './rev-parse.js';
 export {
   type RevertAbortResult,
   type RevertConflict,

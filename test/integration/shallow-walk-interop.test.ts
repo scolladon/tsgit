@@ -22,7 +22,13 @@ import { describe as describeCommit } from '../../src/application/commands/descr
 import { enumeratePushObjects } from '../../src/application/primitives/enumerate-push-objects.js';
 import type { TsgitError } from '../../src/domain/error.js';
 import type { ObjectId } from '../../src/domain/objects/index.js';
-import { GIT_AVAILABLE, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
+import {
+  GIT_AVAILABLE,
+  revParseStdout,
+  runGit,
+  runGitEnv,
+  tryRunGitWithExit,
+} from './interop-helpers.js';
 import { trackedRepositories } from './repository-lifecycle.js';
 
 const openTrackedRepository = trackedRepositories();
@@ -1023,7 +1029,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
         const gitHead1 = runGit(['-C', f1, 'rev-parse', 'HEAD~1']).trim();
 
         // Act
-        const head1 = await repo.revParse('HEAD~1');
+        const head1 = revParseStdout(await repo.revParse('HEAD~1'));
 
         // Assert
         expect(head1).toBe(c4);
@@ -1038,7 +1044,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
         // Act
         let head2Caught: unknown;
         try {
-          await repo.revParse('HEAD~2');
+          revParseStdout(await repo.revParse('HEAD~2'));
           expect.unreachable();
         } catch (error) {
           head2Caught = error;
@@ -1058,7 +1064,7 @@ describe.skipIf(!GIT_AVAILABLE)('shallow-walk interop', () => {
         // Act
         let caretCaught: unknown;
         try {
-          await repo.revParse(`${c4}^`);
+          revParseStdout(await repo.revParse(`${c4}^`));
           expect.unreachable();
         } catch (error) {
           caretCaught = error;

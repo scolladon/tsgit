@@ -50,6 +50,7 @@ import {
   initBothRepos,
   makePeerPair,
   type PeerPair,
+  revParseStdout,
   runGit,
   tryRunGitWithExit,
 } from './interop-helpers.js';
@@ -99,7 +100,7 @@ describe.skipIf(!GIT_AVAILABLE)('head symlink interop', () => {
         const gitOid = git(pair.ours, 'rev-parse', 'HEAD').trim();
 
         // Act
-        const result = await revParse(ctx, 'HEAD');
+        const result = revParseStdout(await revParse(ctx, 'HEAD'));
 
         // Assert
         expect(result).toBe(gitOid);
@@ -163,7 +164,7 @@ describe.skipIf(!GIT_AVAILABLE)('head symlink interop', () => {
         // Act
         let caught: unknown;
         try {
-          await revParse(ctx, 'HEAD');
+          revParseStdout(await revParse(ctx, 'HEAD'));
         } catch (err) {
           caught = err;
         }
@@ -249,7 +250,7 @@ describe.skipIf(!GIT_AVAILABLE)('head symlink interop', () => {
         // Act
         const gitRevParse = git(gitDir, 'rev-parse', 'HEAD').trim();
         const gitSymbolicRef = tryRunGitWithExit(['-C', gitDir, 'symbolic-ref', 'HEAD']);
-        const tsgitOid = await revParse(ctx, 'HEAD');
+        const tsgitOid = revParseStdout(await revParse(ctx, 'HEAD'));
         const tsgitBranch = await currentBranchRef(ctx);
         git(gitDir, 'commit', '-q', '--allow-empty', '-m', 'via git');
         await commit(ctx, { message: 'via tsgit', allowEmpty: true });
@@ -284,7 +285,7 @@ describe.skipIf(!GIT_AVAILABLE)('head symlink interop', () => {
         // Act
         const gitRevParse = git(gitDir, 'rev-parse', 'HEAD').trim();
         const gitSymbolicRef = git(gitDir, 'symbolic-ref', 'HEAD').trim();
-        const tsgitOid = await revParse(ctx, 'HEAD');
+        const tsgitOid = revParseStdout(await revParse(ctx, 'HEAD'));
         const tsgitBranch = await currentBranchRef(ctx);
         git(gitDir, 'commit', '-q', '--allow-empty', '-m', 'via git');
         await commit(ctx, { message: 'via tsgit', allowEmpty: true });
@@ -312,7 +313,7 @@ describe.skipIf(!GIT_AVAILABLE)('head symlink interop', () => {
         // Act
         const gitRevParse = git(gitDir, 'rev-parse', 'HEAD').trim();
         const gitSymbolicRef = tryRunGitWithExit(['-C', gitDir, 'symbolic-ref', 'HEAD']);
-        const tsgitOid = await revParse(ctx, 'HEAD');
+        const tsgitOid = revParseStdout(await revParse(ctx, 'HEAD'));
         git(gitDir, 'commit', '-q', '--allow-empty', '-m', 'via git');
         await commit(ctx, { message: 'via tsgit', allowEmpty: true });
 
@@ -342,7 +343,7 @@ describe.skipIf(!GIT_AVAILABLE)('head symlink interop', () => {
           // Act
           const gitRevParse = git(gitDir, 'rev-parse', 'HEAD').trim();
           const gitSymbolicRef = tryRunGitWithExit(['-C', gitDir, 'symbolic-ref', 'HEAD']);
-          const tsgitOid = await revParse(ctx, 'HEAD');
+          const tsgitOid = revParseStdout(await revParse(ctx, 'HEAD'));
           git(gitDir, 'commit', '-q', '--allow-empty', '-m', 'via git');
           await commit(ctx, { message: 'via tsgit', allowEmpty: true });
 

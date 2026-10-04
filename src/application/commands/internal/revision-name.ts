@@ -14,7 +14,7 @@ import {
 } from '../../../domain/objects/index.js';
 import { refCandidates } from '../../../domain/refs/index.js';
 import type { Context } from '../../../ports/context.js';
-import { resolveOidPrefix } from '../../primitives/resolve-oid-prefix.js';
+import { type CandidateFilter, resolveOidPrefix } from '../../primitives/resolve-oid-prefix.js';
 import { type RefCandidateOutcome, readRefCandidate } from '../../primitives/resolve-ref.js';
 import { expandRef, resolveRefLadder, warnIfRefNamesObjectId } from './refname-ambiguity.js';
 
@@ -32,11 +32,12 @@ const resolveCandidate =
  * `name` as an object id: a full-width oid wins over a same-named ref (git
  * resolves an object name first), then the ref ladder, then an abbreviated
  * oid — which still throws `AMBIGUOUS_OID_PREFIX` when the prefix matches
- * more than one object. `undefined` when nothing matches.
+ * more than one object `accepts` cannot tell apart. `undefined` when nothing matches.
  */
 export const resolveRevisionName = async (
   ctx: Context,
   name: string,
+  accepts?: CandidateFilter,
 ): Promise<ObjectId | undefined> => {
   if (isOid(name, ctx.hashConfig)) {
     await warnIfRefNamesObjectId(ctx, name, resolveCandidate(ctx));
@@ -44,7 +45,7 @@ export const resolveRevisionName = async (
   }
   const byRef = await resolveRefLadder(ctx, name, resolveCandidate(ctx));
   if (byRef !== undefined) return byRef;
-  return resolveOidPrefix(ctx, name);
+  return resolveOidPrefix(ctx, name, accepts);
 };
 
 /**

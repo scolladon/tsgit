@@ -27,6 +27,7 @@ import {
   disableAutoMaintenance,
   GIT_AVAILABLE,
   git,
+  revParseStdout,
   runGit,
   runGitEnv,
   tryRunGitWithExit,
@@ -276,7 +277,7 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
         try {
           // Act
           const log = await fresh.log();
-          const revParsed = await fresh.revParse('HEAD');
+          const revParsed = revParseStdout(await fresh.revParse('HEAD'));
           const catFile = await fresh.catFile({ ids: [expectedHead] });
           const branches = await fresh.branch.list();
           const tags = await fresh.tag.list();
@@ -862,7 +863,7 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
           await expect(repo.log()).resolves.toBeDefined();
           await expect(repo.show([head])).resolves.toBeDefined();
           await expect(repo.revList()).resolves.toBeDefined();
-          await expect(repo.revParse('HEAD')).resolves.toBe(head);
+          expect(revParseStdout(await repo.revParse('HEAD'))).toBe(head);
           await expect(repo.catFile({ ids: [head] })).resolves.toBeDefined();
         });
       });
@@ -1103,7 +1104,7 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
             // Act / Assert
             expect(reopened.ctx.layout.bare).toBe(true);
             expect(reopened.ctx.layout.workDir).toBeUndefined();
-            expect(await reopened.revParse('main')).toBe(commitId);
+            expect(revParseStdout(await reopened.revParse('main'))).toBe(commitId);
           } finally {
             await reopened.dispose();
           }
@@ -1124,7 +1125,9 @@ describe.skipIf(!GIT_AVAILABLE)('bare and work-tree-less layout interop', () => 
             await fetcher.fetch({ remote: 'origin' });
 
             // Assert
-            expect(await fetcher.revParse('refs/remotes/origin/main')).toBe(commitId);
+            expect(revParseStdout(await fetcher.revParse('refs/remotes/origin/main'))).toBe(
+              commitId,
+            );
           } finally {
             await fetcher.dispose();
           }

@@ -23,6 +23,7 @@ import {
   disableAutoMaintenance,
   GIT_AVAILABLE,
   git,
+  revParseStdout,
   runGit,
   runGitEnv,
   tryRunGitWithExit,
@@ -68,7 +69,7 @@ const tsgitOutcome = async (repo: string, argument: string): Promise<Outcome> =>
     logger: { error: (message: string) => errors.push(message) },
   };
   try {
-    return { id: await revParse(ctx, argument), errors };
+    return { id: revParseStdout(await revParse(ctx, argument)), errors };
   } catch {
     return { id: undefined, errors };
   }
@@ -204,7 +205,7 @@ describe.skipIf(!GIT_AVAILABLE)(
 
           // Assert
           expect(peer.exitCode).toBe(0);
-          expect(result).toBe(peer.stdout.trim());
+          expect(revParseStdout(result)).toBe(peer.stdout.trim());
         });
       },
     );

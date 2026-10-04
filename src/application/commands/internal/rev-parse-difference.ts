@@ -11,6 +11,7 @@ const HEAD = 'HEAD';
 export interface DifferenceSides {
   readonly start: string;
   readonly end: string;
+  readonly symmetric: boolean;
 }
 
 const orHead = (side: string): string => (side === '' ? HEAD : side);
@@ -20,6 +21,7 @@ export const differenceSides = (arg: string): DifferenceSides | undefined => {
   if (dotdot === -1) return undefined;
   const after = arg.slice(dotdot + DOTDOT.length);
   if (dotdot === 0 && after === '') return undefined;
-  const end = after.startsWith(SYMMETRIC_MARK) ? after.slice(SYMMETRIC_MARK.length) : after;
-  return { start: orHead(arg.slice(0, dotdot)), end: orHead(end) };
+  const symmetric = after.startsWith(SYMMETRIC_MARK);
+  const end = symmetric ? after.slice(SYMMETRIC_MARK.length) : after;
+  return { start: orHead(arg.slice(0, dotdot)), end: orHead(end), symmetric };
 };

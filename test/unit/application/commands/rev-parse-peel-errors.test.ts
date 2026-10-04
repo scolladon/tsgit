@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
-import { evaluateRevision, revParse } from '../../../../src/application/commands/rev-parse.js';
+import {
+  evaluateRevision,
+  resolveRevision,
+} from '../../../../src/application/commands/rev-parse.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
 import { FILE_MODE } from '../../../../src/domain/objects/file-mode.js';
@@ -123,11 +126,11 @@ describe('Given a peel operator that cannot reach its kind', () => {
       message: 'tt^{commit}: expected commit type, but the object dereferences to tree type',
     },
     { arg: 'HEAD:f^{tree}~1', message: undefined },
-  ])('When revParse reads $arg', ({ arg, message }) => {
+  ])('When resolveRevision reads $arg', ({ arg, message }) => {
     it('Then it reports the mismatch on each of the two reads before refusing', async () => {
       // Arrange
       const { ctx, errors } = await peelRepo();
-      const sut = revParse;
+      const sut = resolveRevision;
 
       // Act
       const result = await failureCode(() => sut(ctx, arg));
@@ -261,11 +264,11 @@ describe('Given objects behind zero or more tags', () => {
     { arg: 'HEAD^{object}', expected: 'head' },
     { arg: 'tc2^{object}', expected: 'tagOfTag' },
     { arg: 'bad^{object}', expected: 'dangling' },
-  ] as const)('When revParse reads $arg', ({ arg, expected }) => {
+  ] as const)('When resolveRevision reads $arg', ({ arg, expected }) => {
     it('Then ^{} peels every tag and ^{object} keeps the object, as git does', async () => {
       // Arrange
       const { ctx, errors, ids } = await peelRepo();
-      const sut = revParse;
+      const sut = resolveRevision;
 
       // Act
       const result = await sut(ctx, arg);
@@ -276,11 +279,11 @@ describe('Given objects behind zero or more tags', () => {
     });
   });
 
-  describe('When revParse peels a tag naming an absent object with ^{}', () => {
+  describe('When resolveRevision peels a tag naming an absent object with ^{}', () => {
     it('Then it reports the missing object under the tag name on each read and refuses', async () => {
       // Arrange
       const { ctx, errors } = await peelRepo();
-      const sut = revParse;
+      const sut = resolveRevision;
 
       // Act
       const result = await failureCode(() => sut(ctx, 'bad^{}'));
@@ -326,14 +329,14 @@ describe('Given objects behind zero or more tags', () => {
 });
 
 describe('Given a six-deep chain of tags over a commit', () => {
-  describe('When revParse peels its outermost tag to the tree', () => {
+  describe('When resolveRevision peels its outermost tag to the tree', () => {
     it('Then it peels every tag, as git does', async () => {
       // Arrange
       const { ctx, ids } = await peelRepo();
       let tip: ObjectId = ids.tagOfCommit;
       for (let level = 2; level <= 6; level += 1)
         tip = await writeTag(ctx, tip, 'tag', `d${level}`);
-      const sut = revParse;
+      const sut = resolveRevision;
 
       // Act
       const result = await sut(ctx, `${tip}^{tree}`);

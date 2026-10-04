@@ -14,7 +14,7 @@ subjects:
 parent forms print several, in git's order, with excluded ones marked `^`:
 
 - `A..B` prints `B` then `^A`;
-- `A...B` prints `A`, `B`, then `^<merge base>` for each base;
+- `A...B` prints `B`, `A`, then `^<merge base>` for each base, newest first;
 - `X^@` prints X's parents;
 - `X^!` prints `X` then `^<parent>` for each parent;
 - `X^-n` prints `X` then `^<nth parent>`.

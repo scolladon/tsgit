@@ -3,7 +3,7 @@ import { createMemoryContext } from '../../../../src/adapters/memory/memory-adap
 import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
-import { revParse } from '../../../../src/application/commands/rev-parse.js';
+import { resolveRevision } from '../../../../src/application/commands/rev-parse.js';
 import { show } from '../../../../src/application/commands/show.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
 import { readObject } from '../../../../src/application/primitives/read-object.js';
@@ -51,7 +51,7 @@ describe('show', () => {
     it('Then it returns the HEAD commit with its structured patch', async () => {
       // Arrange
       const ctx = await seedTwoCommits();
-      const head = await revParse(ctx, 'HEAD');
+      const head = await resolveRevision(ctx, 'HEAD');
 
       // Act
       const result = await show(ctx);
@@ -71,7 +71,7 @@ describe('show', () => {
     it('Then the patch is computed against the empty tree (an add)', async () => {
       // Arrange
       const ctx = await seedTwoCommits();
-      const root = await revParse(ctx, 'HEAD~1');
+      const root = await resolveRevision(ctx, 'HEAD~1');
 
       // Act
       const result = await show(ctx, root);
@@ -88,7 +88,7 @@ describe('show', () => {
     it('Then parents are empty and the patch is against the empty tree (a full add)', async () => {
       // Arrange
       const ctx = await seedTwoCommits();
-      const head = await revParse(ctx, 'HEAD');
+      const head = await resolveRevision(ctx, 'HEAD');
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `${head}\n`);
 
       // Act
@@ -175,7 +175,7 @@ describe('show', () => {
     it('Then both results are returned (no commit-style de-duplication)', async () => {
       // Arrange
       const ctx = await seedTwoCommits();
-      const tree = await revParse(ctx, 'HEAD^{tree}');
+      const tree = await resolveRevision(ctx, 'HEAD^{tree}');
 
       // Act
       const result = await show(ctx, [tree, tree]);
@@ -190,7 +190,7 @@ describe('show', () => {
     it('Then the raw blob content is returned', async () => {
       // Arrange
       const ctx = await seedTwoCommits();
-      const tree = await readObject(ctx, await revParse(ctx, 'HEAD^{tree}'));
+      const tree = await readObject(ctx, await resolveRevision(ctx, 'HEAD^{tree}'));
       if (tree.type !== 'tree') throw new Error('expected tree');
       const blobId = tree.entries.find((e) => e.name === 'a.txt')?.id;
       if (blobId === undefined) throw new Error('a.txt missing');
@@ -209,7 +209,7 @@ describe('show', () => {
     it('Then the tag data plus the recursed target commit are returned', async () => {
       // Arrange
       const ctx = await seedTwoCommits();
-      const head = await revParse(ctx, 'HEAD');
+      const head = await resolveRevision(ctx, 'HEAD');
       const tagId = await writeAnnotatedTag(ctx, head);
       await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/tags/v1.0`, `${tagId}\n`);
 
@@ -230,8 +230,8 @@ describe('show', () => {
     it('Then one diff per parent is returned and no single patch', async () => {
       // Arrange
       const ctx = await seedTwoCommits();
-      const head = await revParse(ctx, 'HEAD');
-      const root = await revParse(ctx, 'HEAD~1');
+      const head = await resolveRevision(ctx, 'HEAD');
+      const root = await resolveRevision(ctx, 'HEAD~1');
       const headData = await readObject(ctx, head);
       if (headData.type !== 'commit') throw new Error('expected commit');
       const mergeId = await writeObject(ctx, {
@@ -266,8 +266,8 @@ describe('show', () => {
     it('Then one result per rev is returned in order', async () => {
       // Arrange
       const ctx = await seedTwoCommits();
-      const head = await revParse(ctx, 'HEAD');
-      const root = await revParse(ctx, 'HEAD~1');
+      const head = await resolveRevision(ctx, 'HEAD');
+      const root = await resolveRevision(ctx, 'HEAD~1');
 
       // Act
       const result = await show(ctx, [head, root]);

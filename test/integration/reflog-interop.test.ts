@@ -30,6 +30,7 @@ import {
   disableAutoMaintenance,
   GIT_AVAILABLE,
   git,
+  revParseStdout,
   runGit,
   runGitEnv,
   tryRunGitWithExit,
@@ -694,7 +695,7 @@ describe.skipIf(!GIT_AVAILABLE)(
 
           // Act
           const gitOid = git(dir, 'rev-parse', `main@{${n}}`).trim();
-          const tsgitOid = await revParse(ctx, `main@{${n}}`);
+          const tsgitOid = revParseStdout(await revParse(ctx, `main@{${n}}`));
 
           // Assert
           expect(tsgitOid).toBe(gitOid);
@@ -712,7 +713,7 @@ describe.skipIf(!GIT_AVAILABLE)(
           const gitResult = tryRunGitWithExit(['-C', dir, 'rev-parse', 'main@{3}']);
           let caught: unknown;
           try {
-            await revParse(ctx, 'main@{3}');
+            revParseStdout(await revParse(ctx, 'main@{3}'));
           } catch (err) {
             caught = err;
           }
@@ -1158,7 +1159,7 @@ describe.skipIf(!GIT_AVAILABLE)(
             const tip = git(dir, 'rev-parse', 'main').trim();
             let caught: unknown;
             try {
-              await revParse(ctx, 'main@{0}');
+              revParseStdout(await revParse(ctx, 'main@{0}'));
             } catch (err) {
               caught = err;
             }
@@ -1223,7 +1224,7 @@ describe.skipIf(!GIT_AVAILABLE)(
 
           // Act
           const gitOid = git(dir, 'rev-parse', 'main@{50.years.ago}').trim();
-          const tsgitOid = await revParse(ctx, 'main@{50.years.ago}');
+          const tsgitOid = revParseStdout(await revParse(ctx, 'main@{50.years.ago}'));
 
           // Assert
           expect(tsgitOid).toBe(gitOid);

@@ -102,9 +102,26 @@ export const scanPacksIn = async (
   return found;
 };
 
+/** git's disambiguation hint: whether a candidate is the kind the caller reads. */
+export type CandidateFilter = (id: ObjectId) => Promise<boolean>;
+
+/**
+ * git's `update_candidates`: among several candidates, the single one passing
+ * `accepts` wins; none or more than one passing leaves the prefix ambiguous.
+ */
+const disambiguate = async (
+  candidates: ReadonlyArray<ObjectId>,
+  accepts: CandidateFilter,
+): Promise<ObjectId | undefined> => {
+  const passing: ObjectId[] = [];
+  for (const id of candidates) if (await accepts(id)) passing.push(id);
+  return passing.length === 1 ? passing[0] : undefined;
+};
+
 export const resolveOidPrefix = async (
   ctx: Context,
   prefix: string,
+  accepts?: CandidateFilter,
 ): Promise<ObjectId | undefined> => {
   if (isOid(prefix, ctx.hashConfig)) return prefix as ObjectId;
   if (!patternFor(OID_PREFIX_PATTERNS, ctx.hashConfig.algorithm).test(prefix)) return undefined;
@@ -117,5 +134,7 @@ export const resolveOidPrefix = async (
   const unique = [...new Set<ObjectId>(perSource.flat(2))];
   if (unique.length === 0) return undefined;
   if (unique.length === 1) return unique[0];
+  const chosen = accepts === undefined ? undefined : await disambiguate(unique, accepts);
+  if (chosen !== undefined) return chosen;
   throw ambiguousOidPrefix(prefix, unique.slice(0, MAX_OID_PREFIX_CANDIDATES));
 };

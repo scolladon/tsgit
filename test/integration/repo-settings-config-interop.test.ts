@@ -66,7 +66,14 @@ import { TsgitError } from '../../src/domain/error.js';
 import { FILE_MODE, type ObjectId } from '../../src/domain/objects/index.js';
 import { treeEntry } from '../../src/domain/objects/tree.js';
 import type { Context } from '../../src/ports/context.js';
-import { GIT_AVAILABLE, git, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
+import {
+  GIT_AVAILABLE,
+  git,
+  revParseStdout,
+  runGit,
+  runGitEnv,
+  tryRunGitWithExit,
+} from './interop-helpers.js';
 
 const SETUP_TIMEOUT = 60_000;
 
@@ -807,7 +814,7 @@ describe.skipIf(!GIT_AVAILABLE)('repo-settings tier — cross-tool interop', () 
         const g = tryRunGitWithExit(['-C', dir, 'rev-parse', 'HEAD']);
         let caught: unknown;
         try {
-          await revParse(ctx, 'HEAD');
+          revParseStdout(await revParse(ctx, 'HEAD'));
         } catch (err) {
           caught = err;
         }
@@ -835,7 +842,7 @@ describe.skipIf(!GIT_AVAILABLE)('repo-settings tier — cross-tool interop', () 
           'HEAD',
         ]);
         const overridden: Context = { ...ctx, cacheBudgets: { deltaBaseCacheMaxBytes: 1024 } };
-        const result = await revParse(overridden, 'HEAD');
+        const result = revParseStdout(await revParse(overridden, 'HEAD'));
 
         // Assert
         expect(g.exitCode).toBe(0);
@@ -867,7 +874,7 @@ describe.skipIf(!GIT_AVAILABLE)('repo-settings tier — cross-tool interop', () 
         const g = tryRunGitWithExit(['-C', dir, 'rev-parse', 'HEAD']);
         let caught: unknown;
         try {
-          await revParse(ctx, 'HEAD');
+          revParseStdout(await revParse(ctx, 'HEAD'));
         } catch (err) {
           caught = err;
         }
@@ -1014,7 +1021,7 @@ describe.skipIf(!GIT_AVAILABLE)('repo-settings tier — cross-tool interop', () 
 
           // Act
           const gitResult = tryRunGitWithExit(['-C', dir, 'rev-parse', 'HEAD']);
-          const result = await revParse(ctx, 'HEAD');
+          const result = revParseStdout(await revParse(ctx, 'HEAD'));
 
           // Assert
           expect(gitResult.exitCode).toBe(0);
@@ -1035,7 +1042,7 @@ describe.skipIf(!GIT_AVAILABLE)('repo-settings tier — cross-tool interop', () 
             const gitResult = tryRunGitWithExit(['-C', dir, 'rev-parse', 'HEAD']);
             let caught: unknown;
             try {
-              await revParse(ctx, 'HEAD');
+              revParseStdout(await revParse(ctx, 'HEAD'));
             } catch (err) {
               caught = err;
             }
@@ -1064,7 +1071,7 @@ describe.skipIf(!GIT_AVAILABLE)('repo-settings tier — cross-tool interop', () 
 
           // Act
           const gitResult = tryRunGitWithExit(['-C', dir, 'rev-parse', 'HEAD']);
-          const result = await revParse(ctx, 'HEAD');
+          const result = revParseStdout(await revParse(ctx, 'HEAD'));
 
           // Assert
           expect(gitResult.exitCode).toBe(0);

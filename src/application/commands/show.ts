@@ -29,7 +29,7 @@ import { loadShallowSet } from '../primitives/internal/shallow-set.js';
 import { readDeclaredObjectHeader, readObjectStreamed } from '../primitives/read-object.js';
 import { diffCommitAgainstParent } from './internal/commit-diff.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
-import { revParse } from './rev-parse.js';
+import { resolveRevision } from './rev-parse.js';
 
 export type ShowInput = string | ReadonlyArray<string>;
 
@@ -120,7 +120,7 @@ export async function show(
 }
 
 const buildForRev = async (ctx: Context, rev: string, withStat: boolean): Promise<ShowResult> => {
-  const id = await revParse(ctx, rev);
+  const id = await resolveRevision(ctx, rev);
   // Promisor-remote guard (see assertValidPromisorRemoteConfig) — after rev resolution.
   await assertValidPromisorRemoteConfig(ctx);
   return buildResult(ctx, await readShowTarget(ctx, id), withStat);

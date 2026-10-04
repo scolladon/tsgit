@@ -38,6 +38,7 @@ import {
   disableAutoMaintenance,
   GIT_AVAILABLE,
   git,
+  revParseStdout,
   runGit,
   runGitEnv,
   tryRunGitWithExit,
@@ -150,7 +151,7 @@ describe.skipIf(!GIT_AVAILABLE)('integration — revParse ref DWIM parity with c
         const ctx = createNodeContext({ workDir: repo });
 
         // Act
-        const result = await sut(ctx, argument);
+        const result = revParseStdout(await sut(ctx, argument));
 
         // Assert
         const gitResult = tryRunGitWithExit(['-C', repo, 'rev-parse', argument], {
@@ -207,7 +208,7 @@ describe.skipIf(!GIT_AVAILABLE)('integration — revParse ref DWIM parity with c
         const ctx = createNodeContext({ workDir: repo });
 
         // Act
-        const result = await sut(ctx, 'amb');
+        const result = revParseStdout(await sut(ctx, 'amb'));
 
         // Assert
         const gitResult = tryRunGitWithExit(['-C', repo, 'rev-parse', 'amb'], { env: runGitEnv() });
@@ -235,7 +236,7 @@ describe.skipIf(!GIT_AVAILABLE)('integration — revParse ref DWIM parity with c
         const ctx = createNodeContext({ workDir: repo });
 
         // Act
-        const result = await sut(ctx, name());
+        const result = revParseStdout(await sut(ctx, name()));
 
         // Assert
         expect(result).toBe(git(repo, 'rev-parse', name()).trim());
@@ -266,8 +267,8 @@ describe.skipIf(!GIT_AVAILABLE)('integration — revParse ref DWIM parity with c
         // resolved ids, so its DWIM is `revParse`'s, run here explicitly.
         const entries = await log(ctx, { rev: 'y', limit: 1 });
         const bases = await mergeBase(ctx, [
-          (await revParse(ctx, 'y')) as ObjectId,
-          (await revParse(ctx, 'main')) as ObjectId,
+          revParseStdout(await revParse(ctx, 'y')) as ObjectId,
+          revParseStdout(await revParse(ctx, 'main')) as ObjectId,
         ]);
         const created = await branchCreate(ctx, { name: 'fresh-branch', startPoint: 'y' });
         const resetResult = await reset(ctx, { mode: 'soft', rev: 'y' });
@@ -410,7 +411,9 @@ describe.skipIf(!GIT_AVAILABLE)(
           const sut = revParse;
 
           // Act
-          const result = await sut(createNodeContext({ workDir: repo }), tip.slice(0, 7));
+          const result = revParseStdout(
+            await sut(createNodeContext({ workDir: repo }), tip.slice(0, 7)),
+          );
 
           // Assert
           expect(result).toBe(expected);
@@ -728,7 +731,7 @@ describe.skipIf(!GIT_AVAILABLE)('integration — dwim_log through a symbolic bra
         const sut = revParse;
 
         // Act
-        const result = await sut(createNodeContext({ workDir: repo }), 'sym@{0}');
+        const result = revParseStdout(await sut(createNodeContext({ workDir: repo }), 'sym@{0}'));
 
         // Assert
         expect(result).toBe(expected);
@@ -885,7 +888,7 @@ describe.skipIf(!GIT_AVAILABLE)('integration — error lines a revision operator
           const sut = revParse;
 
           // Act
-          const result = await sut(ctx, arg);
+          const result = revParseStdout(await sut(ctx, arg));
 
           // Assert
           expect(result).toBe(expected);

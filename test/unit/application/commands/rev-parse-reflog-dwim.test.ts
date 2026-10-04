@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
-import { revParse } from '../../../../src/application/commands/rev-parse.js';
+import { resolveRevision } from '../../../../src/application/commands/rev-parse.js';
 import { writeReflog } from '../../../../src/application/primitives/reflog-store.js';
 import type { TsgitError } from '../../../../src/domain/error.js';
 import type { ObjectId, RefName } from '../../../../src/domain/objects/index.js';
@@ -103,14 +103,14 @@ describe('Given a reflog selector on a name dwim_log reads', () => {
       arg: 'sym@{0}',
       expected: [],
     },
-  ])('When revParse reads $arg where $when', ({ seed, arg, expected }) => {
+  ])('When resolveRevision reads $arg where $when', ({ seed, arg, expected }) => {
     it('Then it resolves the entry and warns as git does', async () => {
       // Arrange
       const messages: string[] = [];
       const { ctx, tip } = await reflogRepo(seed as ReflogRepo, (message) =>
         messages.push(message),
       );
-      const sut = revParse;
+      const sut = resolveRevision;
 
       // Act
       const result = await sut(ctx, arg);
@@ -131,7 +131,7 @@ describe('Given a reflog selector on a name dwim_log reads', () => {
         { refs: { [`refs/heads/${short}`]: 'tip' }, logs: [`refs/heads/${short}`] },
         (message) => messages.push(message),
       );
-      const sut = revParse;
+      const sut = resolveRevision;
 
       // Act
       const result = await sut(ctx, `${short}@{0}`);
@@ -144,39 +144,42 @@ describe('Given a reflog selector on a name dwim_log reads', () => {
 });
 
 describe('Given a malformed core.warnAmbiguousRefs', () => {
-  describe.each([{ arg: '@{0}' }, { arg: 'main@{0}' }])('When revParse reads $arg', ({ arg }) => {
-    it('Then it refuses the setting once a reflog is found', async () => {
-      // Arrange
-      const { ctx } = await reflogRepo(
-        {
-          symrefs: { HEAD: 'refs/heads/main' },
-          logs: ['refs/heads/main'],
-          config: `${CORE}\twarnAmbiguousRefs = maybe\n`,
-        },
-        () => undefined,
-      );
-      const sut = revParse;
+  describe.each([{ arg: '@{0}' }, { arg: 'main@{0}' }])(
+    'When resolveRevision reads $arg',
+    ({ arg }) => {
+      it('Then it refuses the setting once a reflog is found', async () => {
+        // Arrange
+        const { ctx } = await reflogRepo(
+          {
+            symrefs: { HEAD: 'refs/heads/main' },
+            logs: ['refs/heads/main'],
+            config: `${CORE}\twarnAmbiguousRefs = maybe\n`,
+          },
+          () => undefined,
+        );
+        const sut = resolveRevision;
 
-      // Act
-      const refusal = await sut(ctx, arg).catch((err: TsgitError) => err.data);
+        // Act
+        const refusal = await sut(ctx, arg).catch((err: TsgitError) => err.data);
 
-      // Assert
-      expect(refusal).toMatchObject({
-        code: 'CONFIG_BAD_BOOLEAN_VALUE',
-        key: 'core.warnambiguousrefs',
-        value: 'maybe',
+        // Assert
+        expect(refusal).toMatchObject({
+          code: 'CONFIG_BAD_BOOLEAN_VALUE',
+          key: 'core.warnambiguousrefs',
+          value: 'maybe',
+        });
       });
-    });
-  });
+    },
+  );
 
-  describe('When revParse reads a name no reflog carries', () => {
+  describe('When resolveRevision reads a name no reflog carries', () => {
     it('Then it reports the selector unresolved without reading the setting', async () => {
       // Arrange
       const { ctx } = await reflogRepo(
         { logs: ['refs/heads/main'], config: `${CORE}\twarnAmbiguousRefs = maybe\n` },
         () => undefined,
       );
-      const sut = revParse;
+      const sut = resolveRevision;
 
       // Act
       const refusal = await sut(ctx, 'nope@{0}').catch((err: TsgitError) => err.data);

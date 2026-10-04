@@ -17,7 +17,7 @@ import { readBlob } from '../primitives/read-blob.js';
 import { readTree } from '../primitives/read-tree.js';
 import type { ReadObjectOptions } from '../primitives/types.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
-import { revParse } from './rev-parse.js';
+import { resolveRevision } from './rev-parse.js';
 
 /** Structured result of reading a file's bytes as of a revision. */
 export interface ReadFileAtResult {
@@ -45,7 +45,7 @@ export const readFileAt = async (
   options?: ReadObjectOptions,
 ): Promise<ReadFileAtResult> => {
   await assertOperationalRepository(ctx);
-  const revOid = await revParse(ctx, rev);
+  const revOid = await resolveRevision(ctx, rev);
   const rootTree = await readTree(ctx, revOid);
   const entry = await descendTreePath(ctx, rootTree, path, rev);
   const blob = await readBlob(ctx, entry.id, options);

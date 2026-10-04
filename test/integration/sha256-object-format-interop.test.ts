@@ -76,6 +76,7 @@ import {
   GIT_AVAILABLE,
   GIT_HAS_RUST_COMPAT,
   lsStage,
+  revParseStdout,
   runGit,
   runGitEnv,
   tryRunGitWithExit,
@@ -317,7 +318,7 @@ describe.skipIf(!GIT_AVAILABLE)('sha256 object format — .git/index interop', (
       const prefix40 = fullHead.slice(0, 40);
 
       // Act
-      const ours = await revParse(sha256Context(baseDir), prefix40);
+      const ours = revParseStdout(await revParse(sha256Context(baseDir), prefix40));
       const theirs = runGit(['-C', baseDir, 'rev-parse', '--verify', prefix40], { env }).trim();
 
       // Assert
@@ -346,7 +347,7 @@ describe.skipIf(!GIT_AVAILABLE)('sha256 object format — .git/index interop', (
         const theirs = tryRunGitWithExit(['-C', dir, 'rev-parse', '--verify', fake64], { env });
         let caught: TsgitError | undefined;
         try {
-          await revParse(createTrackedNodeContext({ workDir: dir }), fake64);
+          revParseStdout(await revParse(createTrackedNodeContext({ workDir: dir }), fake64));
         } catch (err) {
           caught = err as TsgitError;
         }
@@ -451,8 +452,8 @@ describe.skipIf(!GIT_AVAILABLE)('sha256 object format — .git/index interop', (
       const expectedTree = runGit(['-C', baseDir, 'rev-parse', 'HEAD^{tree}'], { env }).trim();
 
       // Act
-      const ours = await revParse(sha256Context(baseDir), 'HEAD');
-      const oursTree = await revParse(sha256Context(baseDir), 'HEAD^{tree}');
+      const ours = revParseStdout(await revParse(sha256Context(baseDir), 'HEAD'));
+      const oursTree = revParseStdout(await revParse(sha256Context(baseDir), 'HEAD^{tree}'));
 
       // Assert
       expect(ours).toBe(expectedHead);
@@ -778,7 +779,7 @@ describe.skipIf(!GIT_AVAILABLE)(
         const looseRefExists = existsSync(path.join(dir, '.git', 'refs', 'heads', 'main'));
 
         // Act
-        const ours = await revParse(sha256Context(dir), 'main');
+        const ours = revParseStdout(await revParse(sha256Context(dir), 'main'));
 
         // Assert
         expect(looseRefExists).toBe(false);

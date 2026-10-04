@@ -20,7 +20,7 @@ import { mergeBase } from '../primitives/merge-base.js';
 import { readObject } from '../primitives/read-object.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
-import { revParse } from './rev-parse.js';
+import { resolveRevision } from './rev-parse.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public types
@@ -122,14 +122,14 @@ const processTip = async (
   allRefs: ReadonlyArray<RefName>,
   acc: Accumulator,
 ): Promise<void> => {
-  const oid = await revParse(ctx, tip);
+  const oid = await resolveRevision(ctx, tip);
   const fullRef = findFullRef(tip, allRefs);
   if (fullRef !== undefined) acc.refs.push({ name: fullRef, oid });
   acc.wants.push(oid);
 };
 
 const processExclude = async (ctx: Context, exclude: string, acc: Accumulator): Promise<void> => {
-  acc.haves.push(await revParse(ctx, exclude));
+  acc.haves.push(await resolveRevision(ctx, exclude));
 };
 
 const processRange = async (
@@ -139,8 +139,8 @@ const processRange = async (
   acc: Accumulator,
 ): Promise<void> => {
   const [aExpr, bExpr] = range;
-  acc.haves.push(await revParse(ctx, aExpr));
-  const bOid = await revParse(ctx, bExpr);
+  acc.haves.push(await resolveRevision(ctx, aExpr));
+  const bOid = await resolveRevision(ctx, bExpr);
   const bFullRef = findFullRef(bExpr, allRefs);
   if (bFullRef !== undefined) acc.refs.push({ name: bFullRef, oid: bOid });
   acc.wants.push(bOid);
@@ -153,11 +153,11 @@ const processSymmetricRange = async (
   acc: Accumulator,
 ): Promise<void> => {
   const [aExpr, bExpr] = sym;
-  const aOid = await revParse(ctx, aExpr);
+  const aOid = await resolveRevision(ctx, aExpr);
   const aFullRef = findFullRef(aExpr, allRefs);
   if (aFullRef !== undefined) acc.refs.push({ name: aFullRef, oid: aOid });
   acc.wants.push(aOid);
-  const bOid = await revParse(ctx, bExpr);
+  const bOid = await resolveRevision(ctx, bExpr);
   const bFullRef = findFullRef(bExpr, allRefs);
   if (bFullRef !== undefined) acc.refs.push({ name: bFullRef, oid: bOid });
   acc.wants.push(bOid);

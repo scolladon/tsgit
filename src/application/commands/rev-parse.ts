@@ -23,12 +23,15 @@ import { peel } from '../primitives/internal/peel.js';
 import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
 import { descendTreePath } from '../primitives/internal/resolve-tree-path.js';
 import { loadShallowSet } from '../primitives/internal/shallow-set.js';
+import { mergeBase } from '../primitives/merge-base.js';
 import { readIndex } from '../primitives/read-index.js';
 import { readObject } from '../primitives/read-object.js';
 import { readTree } from '../primitives/read-tree.js';
 import { listReflogs, readReflogLenient } from '../primitives/reflog-store.js';
+import type { CandidateFilter } from '../primitives/resolve-oid-prefix.js';
 import { readRefCandidate } from '../primitives/resolve-ref.js';
 import { searchCommitMessages, searchRefMessages } from './internal/commit-message-search.js';
+import { committishFilter } from './internal/disambiguate-committish.js';
 import { namesNoObject, rereadsMisspeltRevision } from './internal/misspelt-revision.js';
 import { readCandidateRef, resolveAmbiguousLadder } from './internal/refname-ambiguity.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
@@ -42,55 +45,134 @@ import {
 } from './internal/rev-parse-grammar.js';
 import { resolveRevisionName } from './internal/revision-name.js';
 
+/** One revision `git rev-parse` prints: its object, `negated` where git prefixes `^`. */
+export interface RevParseEntry {
+  readonly id: ObjectId;
+  readonly negated: boolean;
+}
+
+const NEGATION = '^';
+
+const included = (id: ObjectId): RevParseEntry => ({ id, negated: false });
+const excluded = (id: ObjectId): RevParseEntry => ({ id, negated: true });
+
 /**
- * `git rev-parse <rev>` (and every `setup_revisions` reader): an expression
- * holding `..` has its sides read first, as git tries it as a range; an
- * expression that names no object is read a second time before the refusal — git's
- * misspelt-name diagnosis re-runs `get_oid`, re-emitting each warning — unless
- * the argument reads as a pathspec or names a working-tree path.
+ * `git rev-parse <arg>`: every revision git prints for the argument, in its
+ * order. An argument holding `..` whose sides both name objects is a range —
+ * `A..B` answers B then ^A, `A...B` B, A, then ^ each merge base; otherwise
+ * the argument names one object, excluded when spelt `^<rev>`.
  */
-export const revParse = async (ctx: Context, expression: string): Promise<ObjectId> => {
+export const revParse = async (
+  ctx: Context,
+  expression: string,
+): Promise<ReadonlyArray<RevParseEntry>> => {
+  const range = await tryDifference(ctx, expression);
+  if (range !== undefined) return range;
+  const negated = expression.startsWith(NEGATION);
+  const name = negated ? expression.slice(NEGATION.length) : expression;
+  const id = await readNamedObject(ctx, name, expression);
+  return [negated ? excluded(id) : included(id)];
+};
+
+/**
+ * The single object a `setup_revisions` reader takes from `expression`: an
+ * expression holding `..` has its sides read first, as git tries it as a
+ * range, then the whole is read as one name.
+ */
+export const resolveRevision = async (ctx: Context, expression: string): Promise<ObjectId> => {
   await readDifferenceSides(ctx, expression);
+  return readNamedObject(ctx, expression, expression);
+};
+
+/**
+ * `name` read once; naming no object, git's misspelt-name diagnosis of `arg`
+ * re-runs `get_oid`, re-emitting each warning — unless `arg` reads as a
+ * pathspec or names a working-tree path.
+ */
+const readNamedObject = async (ctx: Context, name: string, arg: string): Promise<ObjectId> => {
   try {
-    return await evaluateRevision(ctx, expression);
+    return await evaluateRevision(ctx, name);
   } catch (error) {
-    if (await rereadsMisspeltRevision(ctx, expression, error)) {
-      await evaluateRevision(ctx, expression);
+    if (await rereadsMisspeltRevision(ctx, arg, error)) {
+      await evaluateRevision(ctx, arg);
     }
     throw error;
   }
 };
 
-/** Whether `side` names an object; a read that names none is not a refusal here. */
-const resolvesSide = async (ctx: Context, side: string): Promise<boolean> => {
+/** One side of a `..`, read commit-ish; a read that names no object is not a refusal here. */
+const readSide = async (ctx: Context, side: string): Promise<ObjectId | undefined> => {
   try {
-    await evaluateRevision(ctx, side);
-    return true;
+    return await evaluateRevision(ctx, side, committishFilter(ctx));
   } catch (error) {
-    if (namesNoObject(error)) return false;
+    if (namesNoObject(error)) return undefined;
     throw error;
   }
 };
 
 /**
- * git rev-parse's `try_difference` reads: the side before a `..`, then the
- * side after it once the first resolves, each printing its own warnings.
+ * git's `handle_dotdot` reads: the side before a `..`, then the side after it
+ * once the first resolves, each printing its own warnings.
  */
 const readDifferenceSides = async (ctx: Context, expression: string): Promise<void> => {
   const sides = differenceSides(expression);
   if (sides === undefined) return;
-  if (await resolvesSide(ctx, sides.start)) await resolvesSide(ctx, sides.end);
+  if ((await readSide(ctx, sides.start)) !== undefined) await readSide(ctx, sides.end);
 };
 
-/** git's `get_oid` over one expression, read once: the commands that refuse their argument without the misspelt-name diagnosis. */
-export const evaluateRevision = async (ctx: Context, expression: string): Promise<ObjectId> => {
+/**
+ * git rev-parse's `try_difference`: both sides named, the range's revisions;
+ * a symmetric range whose sides are not both commits answers `undefined`, so
+ * the whole argument is read as one name.
+ */
+const tryDifference = async (
+  ctx: Context,
+  expression: string,
+): Promise<ReadonlyArray<RevParseEntry> | undefined> => {
+  const sides = differenceSides(expression);
+  if (sides === undefined) return undefined;
+  const start = await readSide(ctx, sides.start);
+  if (start === undefined) return undefined;
+  const end = await readSide(ctx, sides.end);
+  if (end === undefined) return undefined;
+  if (!sides.symmetric) return [included(end), excluded(start)];
+  return symmetricDifference(ctx, start, end);
+};
+
+const symmetricDifference = async (
+  ctx: Context,
+  start: ObjectId,
+  end: ObjectId,
+): Promise<ReadonlyArray<RevParseEntry> | undefined> => {
+  const a = await lookupCommitReference(ctx, start);
+  const b = await lookupCommitReference(ctx, end);
+  if (a === undefined || b === undefined) return undefined;
+  const bases = await mergeBase(ctx, [a.id, b.id], { all: true });
+  return [included(end), included(start), ...bases.map(excluded)];
+};
+
+/**
+ * git's `get_oid` over one expression, read once: the commands that refuse
+ * their argument without the misspelt-name diagnosis. `accepts` is the
+ * caller's disambiguation hint for an abbreviated name read as is.
+ */
+export const evaluateRevision = async (
+  ctx: Context,
+  expression: string,
+  accepts?: CandidateFilter,
+): Promise<ObjectId> => {
   await assertOperationalRepository(ctx);
   await assertRepoSettingsValid(ctx);
   const expr = parseExpression(expression);
-  return evaluate(ctx, expr, expression);
+  return evaluate(ctx, expr, expression, accepts);
 };
 
-const evaluate = async (ctx: Context, expr: RevExpression, raw: string): Promise<ObjectId> => {
+const evaluate = async (
+  ctx: Context,
+  expr: RevExpression,
+  raw: string,
+  accepts?: CandidateFilter,
+): Promise<ObjectId> => {
   if (expr.kind === 'index-stage') {
     return resolveIndexStage(ctx, { stage: expr.stage, path: resolveRelativePath(ctx, expr.path) });
   }
@@ -104,19 +186,23 @@ const evaluate = async (ctx: Context, expr: RevExpression, raw: string): Promise
   let id =
     expr.reflog !== undefined
       ? await resolveReflogBase(ctx, expr.base, expr.reflog, now, raw)
-      : await resolveBase(ctx, expr.base);
+      : await resolveBase(ctx, expr.base, expr.operations.length === 0 ? accepts : undefined);
   for (const op of expr.operations) {
     id = await applyOperation(ctx, id, op);
   }
   return id;
 };
 
-const resolveBase = async (ctx: Context, base: string): Promise<ObjectId> => {
+const resolveBase = async (
+  ctx: Context,
+  base: string,
+  accepts: CandidateFilter | undefined,
+): Promise<ObjectId> => {
   // The shared `get_oid` ladder: a full-width oid, then the gitrevisions
   // candidate namespaces (the verbatim one also covering the `HEAD` literal),
   // then an abbreviated object id — which still throws AMBIGUOUS_OID_PREFIX
   // when the prefix matches more than one object.
-  const id = await resolveRevisionName(ctx, base);
+  const id = await resolveRevisionName(ctx, base, accepts);
   if (id !== undefined) return id;
   throw objectNotFound(base as ObjectId);
 };

@@ -45,6 +45,7 @@ import { serializeTreeContent } from '../../src/domain/objects/tree.js';
 import type { Context } from '../../src/ports/context.js';
 import {
   GIT_AVAILABLE,
+  revParseStdout,
   runGit,
   runGitBytes,
   runGitEnv,
@@ -420,8 +421,8 @@ describe.skipIf(!GIT_AVAILABLE)('tree entry-name bytes interop', () => {
         // Act
         const gitDot = tryRunGitWithExit(['-C', dir, 'rev-parse', `${dotTree}:.`]);
         const gitDotdot = tryRunGitWithExit(['-C', dir, 'rev-parse', `${dotdotTree}:..`]);
-        const tsgitDot = await revParse(ctx, `${dotTree}:.`);
-        const tsgitDotdot = await revParse(ctx, `${dotdotTree}:..`);
+        const tsgitDot = revParseStdout(await revParse(ctx, `${dotTree}:.`));
+        const tsgitDotdot = revParseStdout(await revParse(ctx, `${dotdotTree}:..`));
 
         // Assert
         expect(gitDot.exitCode).toBe(0);
@@ -440,7 +441,7 @@ describe.skipIf(!GIT_AVAILABLE)('tree entry-name bytes interop', () => {
 
         // Act
         const gitResult = tryRunGitWithExit(['-C', dir, 'rev-parse', `${slashTree}:a/b`]);
-        const tsgitResult = await revParse(ctx, `${slashTree}:a/b`);
+        const tsgitResult = revParseStdout(await revParse(ctx, `${slashTree}:a/b`));
 
         // Assert
         expect(gitResult.exitCode).toBe(0);
@@ -460,7 +461,7 @@ describe.skipIf(!GIT_AVAILABLE)('tree entry-name bytes interop', () => {
 
         // Act
         const gitResult = tryRunGitWithExit(['-C', dir, 'rev-parse', `${slashDirTree}:a/b/c`]);
-        const tsgitResult = await revParse(ctx, `${slashDirTree}:a/b/c`);
+        const tsgitResult = revParseStdout(await revParse(ctx, `${slashDirTree}:a/b/c`));
 
         // Assert
         expect(gitResult.exitCode).toBe(0);
@@ -625,7 +626,7 @@ describe.skipIf(!GIT_AVAILABLE)('tree entry-name bytes interop', () => {
         const gitResult = tryRunGitWithExit(['-C', dir, 'rev-parse', `${dupTree}:a`]);
 
         // Act
-        const revParsed = await revParse(ctx, `${dupTree}:a`);
+        const revParsed = revParseStdout(await revParse(ctx, `${dupTree}:a`));
         const read = await readFileAt(freshCtx(), dupTree, 'a');
 
         // Assert

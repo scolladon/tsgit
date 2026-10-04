@@ -18,7 +18,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { openRepository, type Repository } from '../../src/index.node.js';
-import { GIT_AVAILABLE, runGit, tryRunGitWithExit } from './interop-helpers.js';
+import { GIT_AVAILABLE, revParseStdout, runGit, tryRunGitWithExit } from './interop-helpers.js';
 
 const ROW_TIMEOUT = 30_000;
 const LONG_AGO = new Date('2000-01-01T00:00:00Z');
@@ -264,7 +264,7 @@ const ROWS: ReadonlyArray<Row> = [
         state,
         git: ['cat-file', '--batch'],
         input: 'HEAD:f1.txt\n',
-        tsgit: async (r) => r.catFile({ ids: [await r.revParse('HEAD:f1.txt')] }),
+        tsgit: async (r) => r.catFile({ ids: [revParseStdout(await r.revParse('HEAD:f1.txt'))] }),
       },
       {
         name: `show on a ${where} blob`,

@@ -43,6 +43,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { promisify } from 'node:util';
+import type { RevParseEntry } from '../../src/application/commands/rev-parse.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -341,3 +342,9 @@ export const tryRunGit = (
     };
   }
 };
+
+const EXCLUDED_MARK = '^';
+
+/** `git rev-parse`'s stdout rebuilt from `revParse`'s entries: one line each, an excluded one marked `^`. */
+export const revParseStdout = (entries: ReadonlyArray<RevParseEntry>): string =>
+  entries.map(({ id, negated }) => `${negated ? EXCLUDED_MARK : ''}${id}`).join('\n');

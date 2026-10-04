@@ -3,13 +3,13 @@ import { differenceSides } from '../../../../../src/application/commands/interna
 
 describe('differenceSides', () => {
   describe.each([
-    { arg: 'a..b', expected: { start: 'a', end: 'b' } },
-    { arg: 'a...b', expected: { start: 'a', end: 'b' } },
-    { arg: '..b', expected: { start: 'HEAD', end: 'b' } },
-    { arg: 'a..', expected: { start: 'a', end: 'HEAD' } },
-    { arg: '...', expected: { start: 'HEAD', end: 'HEAD' } },
-    { arg: 'dg:a/../../x', expected: { start: 'dg:a/', end: '/../x' } },
-    { arg: 'a....b', expected: { start: 'a', end: '.b' } },
+    { arg: 'a..b', expected: { start: 'a', end: 'b', symmetric: false } },
+    { arg: 'a...b', expected: { start: 'a', end: 'b', symmetric: true } },
+    { arg: '..b', expected: { start: 'HEAD', end: 'b', symmetric: false } },
+    { arg: 'a..', expected: { start: 'a', end: 'HEAD', symmetric: false } },
+    { arg: '...', expected: { start: 'HEAD', end: 'HEAD', symmetric: true } },
+    { arg: 'dg:a/../../x', expected: { start: 'dg:a/', end: '/../x', symmetric: false } },
+    { arg: 'a....b', expected: { start: 'a', end: '.b', symmetric: true } },
   ])('Given $arg', ({ arg, expected }) => {
     describe('When it is split', () => {
       it('Then it reads the sides git reads', () => {

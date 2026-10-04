@@ -30,7 +30,14 @@ import { TsgitError } from '../../src/domain/error.js';
 import type { Commit } from '../../src/domain/objects/index.js';
 import { ObjectId, serializeIdentity } from '../../src/domain/objects/index.js';
 import type { Context } from '../../src/ports/context.js';
-import { GIT_AVAILABLE, git, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
+import {
+  GIT_AVAILABLE,
+  git,
+  revParseStdout,
+  runGit,
+  runGitEnv,
+  tryRunGitWithExit,
+} from './interop-helpers.js';
 
 const SETUP_TIMEOUT = 60_000;
 
@@ -197,7 +204,7 @@ describe.skipIf(!GIT_AVAILABLE)(
             throw new Error('expected a resolved commit entry');
           }
           expect(reconstructCatFileText(entry.object)).toBe(catFileGit.stdout);
-          await expect(revParse(ctx, 'HEAD')).resolves.toBe(headId);
+          expect(revParseStdout(await revParse(ctx, 'HEAD'))).toBe(headId);
           const statusResult = await status(ctx);
           expect(statusResult.changes).toEqual([]);
         });
@@ -222,7 +229,7 @@ describe.skipIf(!GIT_AVAILABLE)(
 
           // Assert
           expect(gitExits).toEqual([0, 0, 0]);
-          await expect(revParse(ctx, 'HEAD')).resolves.toBe(headId);
+          expect(revParseStdout(await revParse(ctx, 'HEAD'))).toBe(headId);
           expect((await status(ctx)).changes).toEqual([]);
         });
       });

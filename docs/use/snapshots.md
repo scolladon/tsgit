@@ -63,7 +63,8 @@ one place for all four sources.
 To snapshot a tree at an arbitrary revision, resolve it first:
 
 ```ts
-const tree = repo.snapshot.commit(await repo.revParse('v1.0'));
+const [{ id: v1 }] = await repo.revParse('v1.0');
+const tree = repo.snapshot.commit(v1);
 ```
 
 ## Worked example — `status`
