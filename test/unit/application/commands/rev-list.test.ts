@@ -1456,6 +1456,98 @@ describe('revList: object types assigned during one invocation', () => {
     });
   });
 
+  /** A commit naming `tree` and `parents` as stored, whatever they are. */
+  const writeCommitNaming = (
+    ctx: Context,
+    tree: ObjectId,
+    parents: ReadonlyArray<ObjectId>,
+  ): Promise<ObjectId> =>
+    writeObject(ctx, {
+      type: 'commit',
+      id: '' as ObjectId,
+      data: { tree, parents, author: AUTHOR, committer: AUTHOR, message: 'm\n', extraHeaders: [] },
+    });
+
+  const writeEmptyTree = (ctx: Context): Promise<ObjectId> =>
+    writeObject(ctx, { type: 'tree', id: '' as ObjectId, entries: [] });
+
+  describe.each([
+    ['its tree', 'tree', 'bad tree pointer'],
+    ['a parent', 'commit', 'bad parent'],
+  ] as const)('Given a blob wanted before a commit naming it as %s', (_label, kind, pointer) => {
+    describe('When revList parses the commit', () => {
+      it('Then the pointer is bad and the commit is a bad object', async () => {
+        // Arrange
+        const { ctx, logged, blob } = await seedMistypedTag();
+        const tree = kind === 'tree' ? blob : await writeEmptyTree(ctx);
+        const named = await writeCommitNaming(ctx, tree, kind === 'commit' ? [blob] : []);
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, { wants: [blob, named] }));
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'OBJECT_NOT_FOUND', id: named },
+          logged: [
+            `object ${blob} is a blob, not a ${kind}`,
+            `${pointer} ${blob} in commit ${named}`,
+          ],
+        });
+      });
+    });
+  });
+
+  describe('Given a commit naming one tree as both its tree and its parent', () => {
+    describe('When revList parses it', () => {
+      it('Then the parent already typed a tree is bad and the commit is a bad object', async () => {
+        // Arrange
+        const { ctx, logged } = await seedMistypedTag();
+        const tree = await writeEmptyTree(ctx);
+        const named = await writeCommitNaming(ctx, tree, [tree]);
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, { wants: [named] }));
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'OBJECT_NOT_FOUND', id: named },
+          logged: [
+            `object ${tree} is a tree, not a commit`,
+            `bad parent ${tree} in commit ${named}`,
+          ],
+        });
+      });
+    });
+  });
+
+  describe('Given a shallow commit whose stored parent is a blob wanted before it', () => {
+    describe('When revList parses the commit', () => {
+      it('Then the cut parent is never typed and the commit is listed', async () => {
+        // Arrange
+        const { ctx, logged, blob } = await seedMistypedTag();
+        const tree = await writeEmptyTree(ctx);
+        const named = await writeCommitNaming(ctx, tree, [blob]);
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/shallow`, `${named}\n`);
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, { wants: [blob, named], objects: true });
+
+        // Assert
+        expect({ listed: new Set(result.entries), logged }).toEqual({
+          listed: new Set([
+            { id: named, type: 'commit' },
+            { id: blob, type: 'blob' },
+            { id: tree, type: 'tree', path: '' },
+          ]),
+          logged: [],
+        });
+      });
+    });
+  });
+
   describe('Given the tag and the blob walked by two concurrent invocations', () => {
     describe('When both run at once', () => {
       it('Then only the tag invocation refuses, as two git processes do', async () => {

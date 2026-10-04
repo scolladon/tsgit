@@ -7,9 +7,16 @@
  * a lookup given none (a primitive called outside a typing command) assigns
  * nothing and never conflicts.
  */
-import type { GitObject, ObjectId, ObjectType, Tag } from '../../../domain/objects/index.js';
+import type {
+  Commit,
+  GitObject,
+  ObjectId,
+  ObjectType,
+  Tag,
+} from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { readObject } from '../read-object.js';
+import { loadShallowSet } from './shallow-set.js';
 
 export type ObjectTypeTable = Map<ObjectId, ObjectType>;
 
@@ -48,10 +55,53 @@ const assignTagPointer = (
   return false;
 };
 
+const reportBadPointer = (ctx: Context, pointer: string, target: ObjectId, id: ObjectId): false => {
+  ctx.logger?.error?.(`${pointer} ${target} in commit ${id}`, { id, target });
+  return false;
+};
+
+/**
+ * git's `parse_commit_buffer`: the commit's tree typed a tree, then each
+ * parent a commit — none for a shallow commit, whose parents git cuts. A
+ * first conflict stops the parse.
+ */
+const assignCommitPointers = async (
+  ctx: Context,
+  table: ObjectTypeTable,
+  id: ObjectId,
+  { data }: Commit,
+): Promise<boolean> => {
+  if (!assignObjectType(ctx, table, data.tree, 'tree')) {
+    return reportBadPointer(ctx, 'bad tree pointer', data.tree, id);
+  }
+  if ((await loadShallowSet(ctx)).has(id)) return true;
+  for (const parent of data.parents) {
+    if (!assignObjectType(ctx, table, parent, 'commit')) {
+      return reportBadPointer(ctx, 'bad parent', parent, id);
+    }
+  }
+  return true;
+};
+
+/** The pointers git's parse of `object` types: a tag's target, a commit's tree and parents. */
+const assignPointers = async (
+  ctx: Context,
+  table: ObjectTypeTable | undefined,
+  id: ObjectId,
+  object: GitObject,
+): Promise<boolean> => {
+  if (object.type === 'tag') return assignTagPointer(ctx, table, id, object);
+  if (object.type === 'commit' && table !== undefined) {
+    return assignCommitPointers(ctx, table, id, object);
+  }
+  return true;
+};
+
 /**
  * git's `parse_object` against the table: the object read and typed as
- * stored — a tag also typing its target as declared — or `undefined` once
- * either typing conflicted and git's `error:` lines are logged.
+ * stored — a tag also typing its target as declared, a commit its tree and
+ * parents — or `undefined` once a typing conflicted and git's `error:` lines
+ * are logged.
  */
 export const parseTypedObject = async (
   ctx: Context,
@@ -60,6 +110,5 @@ export const parseTypedObject = async (
 ): Promise<GitObject | undefined> => {
   const object = await readObject(ctx, id);
   if (!assignObjectType(ctx, table, id, object.type)) return undefined;
-  if (object.type === 'tag' && !assignTagPointer(ctx, table, id, object)) return undefined;
-  return object;
+  return (await assignPointers(ctx, table, id, object)) ? object : undefined;
 };

@@ -997,6 +997,70 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list interop — object types assigned in o
     });
   });
 
+  const IDENT_LINES = 'author a <a@b> 1700000000 +0000\ncommitter a <a@b> 1700000000 +0000\n\nm\n';
+
+  /** A commit stored as spelt, naming `tree` and `parents` whatever they are. */
+  const writeLiteralCommit = (dir: string, tree: string, parents: ReadonlyArray<string>): string =>
+    runGit(['-C', dir, 'hash-object', '-t', 'commit', '-w', '--stdin', '--literally'], {
+      input: `tree ${tree}\n${parents.map((p) => `parent ${p}\n`).join('')}${IDENT_LINES}`,
+    }).trim();
+
+  const emptyTreeOf = (dir: string): string => runGit(['-C', dir, 'mktree'], { input: '' }).trim();
+
+  describe.each([
+    ['its tree', (dir: string, blob: string) => writeLiteralCommit(dir, blob, [])],
+    ['a parent', (dir: string, blob: string) => writeLiteralCommit(dir, emptyTreeOf(dir), [blob])],
+  ] as const)('Given a blob tip before a commit naming it as %s', (_label, commitNaming) => {
+    describe('When rev-list parses the commit on both tools', () => {
+      it('Then both log the same bad pointer and refuse the same bad object', async () => {
+        // Arrange
+        const { dir, blob } = await buildMistypedTagFixture();
+        const named = commitNaming(dir, blob);
+        const peer = tryRunGitWithExit(['-C', dir, 'rev-list', blob, named]);
+        const { ctx, logged } = capturing(dir);
+        const sut = revList;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { wants: [blob, named] });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(peer.exitCode).toBe(128);
+        expect(stderrOf(logged, caught)).toBe(peer.stderr);
+      });
+    });
+  });
+
+  describe('Given a shallow commit whose stored parent is a blob tip before it', () => {
+    describe('When rev-list --objects parses the commit on both tools', () => {
+      it('Then neither types the cut parent and both list the same objects', async () => {
+        // Arrange
+        const { dir, blob } = await buildMistypedTagFixture();
+        const named = writeLiteralCommit(dir, emptyTreeOf(dir), [blob]);
+        await writeFile(path.join(dir, '.git', 'shallow'), `${named}\n`);
+        const peer = runGit(['-C', dir, 'rev-list', '--objects', blob, named]);
+        const { ctx, logged } = capturing(dir);
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, { wants: [blob, named], objects: true });
+
+        // Assert
+        const listed = result.entries.map((e) => `${e.id} ${e.path ?? ''}`.trimEnd());
+        expect({ listed: new Set(listed), logged }).toEqual({
+          listed: new Set(
+            peer.split('\n').flatMap((line) => (line === '' ? [] : [line.trimEnd()])),
+          ),
+          logged: [],
+        });
+      });
+    });
+  });
+
   describe('Given the tag and its blob walked by two concurrent runs', () => {
     describe('When rev-list runs both at once on both tools', () => {
       it('Then only the tag run refuses, the blob run listing the blob as git does', async () => {
