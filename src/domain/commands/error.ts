@@ -1002,9 +1002,8 @@ export const stashNotFound = (index: number, stackSize: number): TsgitError =>
 export const stashApplyWouldOverwrite = (paths: ReadonlyArray<FilePath>): TsgitError =>
   new TsgitError({ code: 'STASH_APPLY_WOULD_OVERWRITE', paths });
 
-// Abbreviated-oid resolution. `candidates` is capped by the caller so a hostile
-// near-collision cannot inflate the thrown error payload; `prefix` is the
-// validated 4–39-hex query, embedded verbatim.
+// Abbreviated-oid resolution. `candidates` holds every match git's hint lists,
+// uncapped as git's is; `prefix` is the validated 4–39-hex query, embedded verbatim.
 export const ambiguousOidPrefix = (
   prefix: string,
   candidates: ReadonlyArray<AmbiguousCandidate>,

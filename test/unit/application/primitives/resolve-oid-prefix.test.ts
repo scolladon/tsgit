@@ -1,10 +1,7 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
-import {
-  MAX_OID_PREFIX_CANDIDATES,
-  resolveOidPrefix,
-} from '../../../../src/application/primitives/resolve-oid-prefix.js';
+import { resolveOidPrefix } from '../../../../src/application/primitives/resolve-oid-prefix.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { permissionDenied, TsgitError } from '../../../../src/domain/error.js';
 import type { Blob, ObjectId } from '../../../../src/domain/objects/index.js';
@@ -15,6 +12,7 @@ import { writeSyntheticPack, writeSyntheticPackIn } from './pack-fixture.js';
 const blobOf = (content: Uint8Array): Blob => ({ type: 'blob', id: '' as ObjectId, content });
 
 const SHARED_PREFIX = 'abcd';
+const MORE_THAN_SIXTEEN = 18;
 const encoder = new TextEncoder();
 
 /** The first `count` blob contents whose sha1 id starts with `SHARED_PREFIX`. */
@@ -249,12 +247,12 @@ describe('resolveOidPrefix', () => {
     });
   });
 
-  describe('Given more matches than the candidate cap', () => {
+  describe('Given more than sixteen matches', () => {
     describe('When resolveOidPrefix is called', () => {
-      it('Then the thrown candidate list is capped to the first in id order', async () => {
+      it('Then the thrown candidate list holds every match in id order', async () => {
         // Arrange
         const ctx = await buildSeededContext();
-        const ids = await writeBlobsSharingPrefix(ctx, MAX_OID_PREFIX_CANDIDATES + 2);
+        const ids = await writeBlobsSharingPrefix(ctx, MORE_THAN_SIXTEEN);
 
         // Act
         let caught: TsgitError | undefined;
@@ -268,7 +266,7 @@ describe('resolveOidPrefix', () => {
         expect(caught?.data).toEqual({
           code: 'AMBIGUOUS_OID_PREFIX',
           prefix: SHARED_PREFIX,
-          candidates: asBlobs(ids.slice(0, MAX_OID_PREFIX_CANDIDATES)),
+          candidates: asBlobs(ids),
         });
       });
     });

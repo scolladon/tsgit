@@ -90,11 +90,7 @@ describe('describeCandidates', () => {
         ].sort((a, b) => (a.id < b.id ? -1 : 1));
 
         // Act
-        const result = await sut(
-          ctx,
-          [ids.blob, ids.tree, ids.commit, ids.untagged, ids.tag],
-          Number.POSITIVE_INFINITY,
-        );
+        const result = await sut(ctx, [ids.blob, ids.tree, ids.commit, ids.untagged, ids.tag]);
 
         // Assert
         expect(result).toEqual([
@@ -110,21 +106,6 @@ describe('describeCandidates', () => {
         ]);
       });
     });
-
-    describe('When two are described under a limit of one', () => {
-      it('Then only the first in git order is described', async () => {
-        // Arrange
-        const ctx = await buildSeededContext();
-        const ids = await writeObjects(ctx);
-        const sut = describeCandidates;
-
-        // Act
-        const result = await sut(ctx, [ids.blob, ids.tree], 1);
-
-        // Assert
-        expect(result).toEqual([{ id: ids.tree, type: 'tree' }]);
-      });
-    });
   });
 
   describe('Given two blobs', () => {
@@ -136,7 +117,7 @@ describe('describeCandidates', () => {
         const sut = describeCandidates;
 
         // Act
-        const result = await sut(ctx, [high as ObjectId, low as ObjectId], 2);
+        const result = await sut(ctx, [high as ObjectId, low as ObjectId]);
 
         // Assert
         expect(result).toEqual([

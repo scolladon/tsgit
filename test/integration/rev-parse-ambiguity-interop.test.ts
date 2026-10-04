@@ -265,3 +265,48 @@ describe.skipIf(!GIT_AVAILABLE)('integration — an ambiguous abbreviated id aga
     });
   });
 });
+
+const MANY_SHARING_BLOBS = 18;
+
+/** A commit, then blobs each brute-forced to share its prefix — more candidates than sixteen. */
+const buildCrowdedRepository = (repo: string): string => {
+  runGit(['init', '-q', '-b', 'main', repo]);
+  disableAutoMaintenance(repo);
+  runGit(['-C', repo, 'commit', '-q', '--allow-empty', '-m', 'crowded'], { env: identity });
+  const prefix = git(repo, 'rev-parse', 'HEAD').trim().slice(0, PREFIX_LENGTH);
+  for (let index = 0; index < MANY_SHARING_BLOBS; index += 1) {
+    writeSharing(repo, 'blob', prefix, Buffer.from(`b${index}-${PLACEHOLDER}\n`));
+  }
+  return prefix;
+};
+
+describe.skipIf(!GIT_AVAILABLE)('integration — a crowded ambiguous prefix against git', () => {
+  let repo = '';
+  let prefix = '';
+
+  beforeAll(async () => {
+    repo = await mkdtemp(path.join(os.tmpdir(), 'tsgit-rev-parse-crowded-interop-'));
+    prefix = buildCrowdedRepository(repo);
+  }, SETUP_TIMEOUT);
+
+  afterAll(async () => {
+    await rm(repo, { recursive: true, force: true });
+  });
+
+  describe('Given a commit and eighteen blobs sharing a prefix', () => {
+    describe('When git rev-parse and revParse read the prefix', () => {
+      it('Then both refuse and list every candidate alike', async () => {
+        // Arrange
+        const peer = gitOutcome(repo, ['rev-parse', prefix]);
+        const sut = revParse;
+
+        // Act
+        const result = await tsgitOutcome(repo, repo, (ctx) => sut(ctx, prefix));
+
+        // Assert
+        expect(peer.diagnostics.length).toBeGreaterThan(MANY_SHARING_BLOBS + 1);
+        expect(result).toEqual(peer);
+      });
+    });
+  });
+});

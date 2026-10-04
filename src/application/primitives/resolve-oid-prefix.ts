@@ -56,9 +56,6 @@ function patternFor(
   return patterns[algorithm];
 }
 
-/** Max candidate oids embedded in an `AMBIGUOUS_OID_PREFIX` error payload. */
-export const MAX_OID_PREFIX_CANDIDATES = 16;
-
 /** Loose objects whose `<dir><name>` starts with `prefix` (name-based scan).
  *  No `exists` pre-probe: `readdir` itself answers "nothing loose here yet"
  *  via `isMissingFanoutDir` (a missing directory or a file occupying the
@@ -132,10 +129,7 @@ const chooseCandidate = async (
   const [chosen, rival] = kept;
   if (chosen !== undefined && rival === undefined) return chosen;
   const listed = rival === undefined ? candidates : kept;
-  throw ambiguousOidPrefix(
-    prefix,
-    await describeCandidates(ctx, listed, MAX_OID_PREFIX_CANDIDATES),
-  );
+  throw ambiguousOidPrefix(prefix, await describeCandidates(ctx, listed));
 };
 
 export const resolveOidPrefix = async (

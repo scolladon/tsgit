@@ -55,12 +55,11 @@ const described = async (ctx: Context, candidate: TypedCandidate): Promise<Ambig
   return candidateOf(await readObject(ctx, candidate.id));
 };
 
-/** The first `limit` of `ids` in git's listing order, each described. */
+/** Every one of `ids` in git's listing order, each described. */
 export const describeCandidates = async (
   ctx: Context,
   ids: ReadonlyArray<ObjectId>,
-  limit: number,
 ): Promise<ReadonlyArray<AmbiguousCandidate>> => {
   const ordered = (await Promise.all(ids.map((id) => typed(ctx, id)))).sort(inGitOrder);
-  return Promise.all(ordered.slice(0, limit).map((candidate) => described(ctx, candidate)));
+  return Promise.all(ordered.map((candidate) => described(ctx, candidate)));
 };
