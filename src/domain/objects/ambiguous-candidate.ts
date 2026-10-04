@@ -23,10 +23,11 @@ export type AmbiguousCandidate =
 
 /**
  * One read of a candidate's type that failed while git sorted or showed the
- * candidates: the object, and the inflate reason git reports for it on its
- * `inflate: data stream error (<reason>)` and `unable to unpack <id> header` lines.
+ * candidates: an inflate failure, with the reason git reports on its
+ * `inflate: data stream error (<reason>)` and `unable to unpack <id> header`
+ * lines; or a header that never ended within git's `headerLimit`-byte buffer,
+ * reported as `header for <id> too long, exceeds <headerLimit> bytes`.
  */
-export interface CandidateReadFault {
-  readonly id: ObjectId;
-  readonly reason: string;
-}
+export type CandidateReadFault =
+  | { readonly id: ObjectId; readonly reason: string }
+  | { readonly id: ObjectId; readonly headerLimit: number };

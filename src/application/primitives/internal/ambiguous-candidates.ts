@@ -41,20 +41,29 @@ export interface DescribedCandidates {
   readonly readFaults: ReadonlyArray<CandidateReadFault>;
 }
 
+/** The fields a failed type read's error data may carry. */
+interface FaultData {
+  readonly code?: unknown;
+  readonly reason?: unknown;
+  readonly headerLimit?: number;
+}
+
 /**
  * What a failed type read of candidate `id` reports: an inflate failure is
- * git's fault pair, an absent object reads silently as unreadable, and any
- * other failure is not a candidate's to absorb — it propagates.
+ * git's fault pair, a header that never ends is its too-long line, an absent
+ * object reads silently as unreadable, and any other failure is not a
+ * candidate's to absorb — it propagates.
  */
 export const candidateReadFault = (
   id: ObjectId,
   error: unknown,
 ): CandidateReadFault | undefined => {
-  const data = (error as { readonly data?: { readonly code?: unknown; readonly reason?: unknown } })
-    .data;
+  const data = (error as { readonly data?: FaultData }).data;
   if (data?.code === 'OBJECT_NOT_FOUND') return undefined;
-  if (data?.code !== 'DECOMPRESS_FAILED') throw error;
-  return { id, reason: String(data.reason) };
+  if (data?.code === 'DECOMPRESS_FAILED') return { id, reason: String(data.reason) };
+  if (data?.code === 'INVALID_OBJECT_HEADER' && data.headerLimit !== undefined)
+    return { id, headerLimit: data.headerLimit };
+  throw error;
 };
 
 /** git's disambiguation hint: whether a candidate is the kind the caller reads. */
@@ -75,8 +84,18 @@ export const passesHint = async (
   }
 };
 
-/** git's two `error:` lines for one failed read of a loose object's header. */
-export const logCandidateReadFault = (ctx: Context, { id, reason }: CandidateReadFault): void => {
+/** git's `error:` lines for one failed read of a loose object's header. */
+export const logCandidateReadFault = (ctx: Context, fault: CandidateReadFault): void => {
+  const { id } = fault;
+  if ('headerLimit' in fault) {
+    const { headerLimit } = fault;
+    ctx.logger?.error?.(`header for ${id} too long, exceeds ${headerLimit} bytes`, {
+      id,
+      headerLimit,
+    });
+    return;
+  }
+  const { reason } = fault;
   ctx.logger?.error?.(`inflate: data stream error (${reason})`, { id, reason });
   ctx.logger?.error?.(`unable to unpack ${id} header`, { id });
 };

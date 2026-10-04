@@ -43,6 +43,31 @@ describe('Given an ambiguous prefix whose listing read an unreadable candidate t
   });
 });
 
+describe('Given an ambiguous prefix whose listing read a never-ending header', () => {
+  describe('When the failure is reported', () => {
+    it("Then the read logs git's header-too-long line between the error and the hint", () => {
+      // Arrange
+      const { ctx, error } = loggingContext();
+      const fault = { id: BAD, headerLimit: 32 };
+      const candidates = [
+        { id: BAD, type: 'bad-object' as const },
+        { id: BLOB, type: 'blob' as const },
+      ];
+      const sut = reportAmbiguousOid;
+
+      // Act
+      sut(ctx, ambiguousOidPrefix('abcd', candidates, [fault]));
+
+      // Assert
+      expect(error.mock.calls).toEqual([
+        ['short object ID abcd is ambiguous', { prefix: 'abcd' }],
+        [`header for ${BAD} too long, exceeds 32 bytes`, fault],
+        ['The candidates are:', { prefix: 'abcd', candidates }],
+      ]);
+    });
+  });
+});
+
 describe('Given an ambiguous prefix whose candidates all read', () => {
   describe('When the failure is reported', () => {
     it('Then only the error and the hint are logged', () => {

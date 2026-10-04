@@ -5,6 +5,7 @@
 import { TsgitError } from '../../domain/error.js';
 import { indexOf } from '../../domain/objects/encoding.js';
 import {
+  looseHeaderTooLong as headerTooLong,
   invalidObjectHeader,
   objectHashMismatch,
   objectNotFound,
@@ -120,7 +121,7 @@ export function contentExceedsDeclaredSize(size: number): TsgitError {
  * (read-object.ts) — so the rule and its exact wording live in one place.
  */
 export function looseHeaderTooLong(id: ObjectId): TsgitError {
-  return invalidObjectHeader(`header for ${id} too long, exceeds ${LOOSE_HEADER_WINDOW} bytes`);
+  return headerTooLong(id, LOOSE_HEADER_WINDOW);
 }
 
 /**

@@ -18,6 +18,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { deflateSync } from 'node:zlib';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { packObjects } from '../../src/application/commands/pack-objects.js';
@@ -377,6 +378,50 @@ describe.skipIf(!GIT_AVAILABLE)('integration — core.disambiguate against git',
 
         // Act
         const result = await tsgitOutcome(repo, repo, (ctx) => sut(ctx, argument));
+
+        // Assert
+        expect(result).toEqual(peer);
+      });
+    });
+  });
+});
+
+/** A commit beside loose files sharing its prefix whose header git cannot unpack: `bodies` deflated as given. */
+const buildBadHeaderRepository = (repo: string, bodies: ReadonlyArray<Uint8Array>): string => {
+  runGit(['init', '-q', '-b', 'main', repo]);
+  disableAutoMaintenance(repo);
+  runGit(['-C', repo, 'commit', '-q', '--allow-empty', '-m', 'bad headers'], { env: identity });
+  const prefix = git(repo, 'rev-parse', 'HEAD').trim().slice(0, PREFIX_LENGTH);
+  mkdirSync(path.join(repo, '.git', 'objects', prefix.slice(0, 2)), { recursive: true });
+  bodies.forEach((body, index) => {
+    const name = `${prefix.slice(2)}${String(index).repeat(36)}`;
+    writeFileSync(path.join(repo, '.git', 'objects', prefix.slice(0, 2), name), body);
+  });
+  return prefix;
+};
+
+describe.skipIf(!GIT_AVAILABLE)('integration — loose headers git cannot unpack against git', () => {
+  const repos: string[] = [];
+
+  afterAll(async () => {
+    await Promise.all(repos.map((repo) => rm(repo, { recursive: true, force: true })));
+  });
+
+  describe.each([
+    { label: 'a stream cut inside its header', body: deflateSync('blob 12\0x').subarray(0, 4) },
+    { label: 'a whole stream with no header end', body: deflateSync('blob 12') },
+  ])('Given a commit sharing its prefix with $label', ({ body }) => {
+    describe('When git rev-parse and revParse read the prefix', () => {
+      it('Then both report each header read and list the bad object alike', async () => {
+        // Arrange
+        const repo = await mkdtemp(path.join(os.tmpdir(), 'tsgit-rev-parse-bad-header-interop-'));
+        repos.push(repo);
+        const prefix = buildBadHeaderRepository(repo, [body]);
+        const peer = gitOutcome(repo, ['rev-parse', prefix]);
+        const sut = revParse;
+
+        // Act
+        const result = await tsgitOutcome(repo, repo, (ctx) => sut(ctx, prefix));
 
         // Assert
         expect(result).toEqual(peer);

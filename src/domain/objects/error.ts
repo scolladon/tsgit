@@ -9,7 +9,12 @@ export type ObjectType = 'blob' | 'tree' | 'commit' | 'tag';
 
 export type DomainObjectError =
   | { readonly code: 'INVALID_OBJECT_ID'; readonly value: string }
-  | { readonly code: 'INVALID_OBJECT_HEADER'; readonly reason: string }
+  | {
+      readonly code: 'INVALID_OBJECT_HEADER';
+      readonly reason: string;
+      /** Set when the header never ended within git's fixed-size header buffer of this many bytes. */
+      readonly headerLimit?: number;
+    }
   | {
       readonly code: 'INVALID_TREE_ENTRY';
       readonly offset: number;
@@ -67,6 +72,14 @@ export const invalidObjectId = (value: string): TsgitError =>
 
 export const invalidObjectHeader = (reason: string): TsgitError =>
   new TsgitError({ code: 'INVALID_OBJECT_HEADER', reason });
+
+/** git's `header for <id> too long, exceeds <limit> bytes`: no NUL within its `limit`-byte header buffer. */
+export const looseHeaderTooLong = (id: string, limit: number): TsgitError =>
+  new TsgitError({
+    code: 'INVALID_OBJECT_HEADER',
+    reason: `header for ${id} too long, exceeds ${limit} bytes`,
+    headerLimit: limit,
+  });
 
 export const invalidTreeEntry = (offset: number, reason: string): TsgitError =>
   new TsgitError({ code: 'INVALID_TREE_ENTRY', offset, reason });

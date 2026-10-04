@@ -744,6 +744,74 @@ describe('resolveOidPrefix over unreadable candidates', () => {
     });
   });
 
+  describe('Given a blob and a loose object whose header never ends sharing a prefix', () => {
+    describe('When resolveOidPrefix is called without a hint', () => {
+      it("Then each read of the bad object reports git's header-too-long fault", async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const badObject = `${SHARED_PREFIX}${'f'.repeat(36)}` as ObjectId;
+        const unterminated = await ctx.compressor.deflate(encoder.encode('blob 12'));
+        await ctx.fs.write(
+          `${ctx.layout.gitDir}/objects/${badObject.slice(0, 2)}/${badObject.slice(2)}`,
+          unterminated,
+        );
+        const [blob] = await writeBlobsSharingPrefix(ctx, 1);
+        const sut = resolveOidPrefix;
+
+        // Act
+        let caught: TsgitError | undefined;
+        try {
+          await sut(ctx, SHARED_PREFIX);
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        const fault = { id: badObject, headerLimit: 32 };
+        expect(caught?.data).toEqual({
+          code: 'AMBIGUOUS_OID_PREFIX',
+          prefix: SHARED_PREFIX,
+          candidates: [
+            { id: badObject, type: 'bad-object' },
+            { id: blob, type: 'blob' },
+          ],
+          readFaults: [fault, fault],
+        });
+      });
+    });
+  });
+
+  describe('Given a blob and a loose object whose header ends but does not parse sharing a prefix', () => {
+    describe('When resolveOidPrefix is called without a hint', () => {
+      it('Then the header refusal propagates rather than listing', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const badObject = `${SHARED_PREFIX}${'f'.repeat(36)}` as ObjectId;
+        const unparsable = await ctx.compressor.deflate(encoder.encode('blob\0x'));
+        await ctx.fs.write(
+          `${ctx.layout.gitDir}/objects/${badObject.slice(0, 2)}/${badObject.slice(2)}`,
+          unparsable,
+        );
+        await writeBlobsSharingPrefix(ctx, 1);
+        const sut = resolveOidPrefix;
+
+        // Act
+        let caught: TsgitError | undefined;
+        try {
+          await sut(ctx, SHARED_PREFIX);
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        expect(caught?.data).toEqual({
+          code: 'INVALID_OBJECT_HEADER',
+          reason: 'missing space between type and size',
+        });
+      });
+    });
+  });
+
   describe('Given two blobs and an unreadable loose object sharing a prefix', () => {
     describe('When resolveOidPrefix is called with a hint both blobs pass', () => {
       it('Then the listing sorts every candidate and re-runs the hint, reporting each unreadable read', async () => {
