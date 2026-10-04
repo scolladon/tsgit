@@ -70,7 +70,8 @@ export const refsPipelineScenario: Scenario<RefsPipelineResult> = {
       headResolvesToSeed: head === seed.id,
       newRefResolvesToSeed: newRefTarget === seed.id,
       updateRefCreatedReflog,
-      revParseHeadResolvesToSeed: fromHead?.id === seed.id && fromHead.negated === false,
+      revParseHeadResolvesToSeed:
+        fromHead?.kind === 'object' && fromHead.id === seed.id && fromHead.negated === false,
     };
   },
 };

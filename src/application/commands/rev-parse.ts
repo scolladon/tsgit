@@ -1,5 +1,6 @@
 import { pathspecOutsideRepo, revparseUnresolved } from '../../domain/commands/error.js';
 import { applyGraft } from '../../domain/commit/graft.js';
+import { TsgitError, type TsgitErrorData } from '../../domain/error.js';
 import { errorDataCode } from '../../domain/error-data-code.js';
 import type { Commit } from '../../domain/objects/commit.js';
 import { objectNotFound } from '../../domain/objects/error.js';
@@ -11,6 +12,7 @@ import {
   type RefName,
   zeroOid,
 } from '../../domain/objects/index.js';
+import type { RevParseEntry } from '../../domain/objects/rev-parse-entry.js';
 import { normalizePathCopy } from '../../domain/path/normalize-path-copy.js';
 import { parseApproxidate } from '../../domain/reflog/approxidate.js';
 import { reflogEntryOutOfRange } from '../../domain/reflog/error.js';
@@ -32,11 +34,16 @@ import type { CandidateFilter } from '../primitives/resolve-oid-prefix.js';
 import { readRefCandidate } from '../primitives/resolve-ref.js';
 import { searchCommitMessages, searchRefMessages } from './internal/commit-message-search.js';
 import { committishFilter } from './internal/disambiguate-committish.js';
-import { namesNoObject, rereadsMisspeltRevision } from './internal/misspelt-revision.js';
+import {
+  namesFilename,
+  namesNoObject,
+  rereadsMisspeltRevision,
+} from './internal/misspelt-revision.js';
 import { readCandidateRef, resolveAmbiguousLadder } from './internal/refname-ambiguity.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
 import { differenceSides } from './internal/rev-parse-difference.js';
 import {
+  isMessageSearch,
   type PeelTarget,
   parseExpression,
   type ReflogSelector,
@@ -45,37 +52,92 @@ import {
 } from './internal/rev-parse-grammar.js';
 import { type ParentShorthand, parentShorthand } from './internal/rev-parse-parent-shorthand.js';
 import { resolveRevisionName } from './internal/revision-name.js';
+import { startupPrefix } from './internal/startup-prefix.js';
 
-/** One revision `git rev-parse` prints: its object, `negated` where git prefixes `^`. */
-export interface RevParseEntry {
-  readonly id: ObjectId;
-  readonly negated: boolean;
-}
+export type { RevParseEntry } from '../../domain/objects/rev-parse-entry.js';
 
 const NEGATION = '^';
 
-const included = (id: ObjectId): RevParseEntry => ({ id, negated: false });
-const excluded = (id: ObjectId): RevParseEntry => ({ id, negated: true });
+const included = (id: ObjectId): RevParseEntry => ({ kind: 'object', id, negated: false });
+const excluded = (id: ObjectId): RevParseEntry => ({ kind: 'object', id, negated: true });
+const pathEntry = (path: string): RevParseEntry => ({ kind: 'path', path });
+
+/** What one of git's `try_*` readers printed, and whether it consumed the argument. */
+interface Attempt {
+  readonly printed: ReadonlyArray<RevParseEntry>;
+  readonly consumed: boolean;
+}
+
+const NOTHING_PRINTED: Attempt = { printed: [], consumed: false };
 
 /**
- * `git rev-parse <arg>`: every revision git prints for the argument, in its
+ * `git rev-parse <arg>`: every line git prints for the argument, in its
  * order. An argument holding `..` whose sides both name objects is a range —
  * `A..B` answers B then ^A, `A...B` B, A, then ^ each merge base; a commit
  * `X` read as `X^@` answers its parents, `X^!` X then ^ each parent, `X^-<n>`
  * X then ^ its n-th parent; otherwise the argument names one object,
- * excluded when spelt `^<rev>`.
+ * excluded when spelt `^<rev>`, or else an existing path, printed as given.
+ * A refusal carries the lines git printed before it.
  */
 export const revParse = async (
   ctx: Context,
   expression: string,
 ): Promise<ReadonlyArray<RevParseEntry>> => {
-  const listed =
-    (await tryDifference(ctx, expression)) ?? (await tryParentShorthands(ctx, expression));
-  if (listed !== undefined) return listed;
+  const difference = await tryDifference(ctx, expression);
+  if (difference.consumed) return difference.printed;
+  const shorthand = await tryParentShorthands(ctx, expression);
+  if (shorthand !== undefined) return [...difference.printed, ...shorthand];
+  return readArgument(ctx, expression, difference.printed);
+};
+
+const readArgument = async (
+  ctx: Context,
+  expression: string,
+  printed: ReadonlyArray<RevParseEntry>,
+): Promise<ReadonlyArray<RevParseEntry>> => {
   const negated = expression.startsWith(NEGATION);
   const name = negated ? expression.slice(NEGATION.length) : expression;
-  const id = await readNamedObject(ctx, name, expression);
-  return [negated ? excluded(id) : included(id)];
+  try {
+    const id = await evaluateRevision(ctx, name);
+    return [...printed, negated ? excluded(id) : included(id)];
+  } catch (error) {
+    if (!namesNoObject(error)) throw error;
+    return readFilename(ctx, expression, [...printed, pathEntry(expression)], error);
+  }
+};
+
+/**
+ * git's `show_file` then `verify_filename`: the argument is printed as a
+ * path, then refused — after the misspelt-name re-read — unless it names one.
+ */
+const readFilename = async (
+  ctx: Context,
+  arg: string,
+  printed: ReadonlyArray<RevParseEntry>,
+  failure: unknown,
+): Promise<ReadonlyArray<RevParseEntry>> => {
+  if (await namesFilename(ctx, arg)) return printed;
+  await rereadMisspelt(ctx, arg).catch((error: unknown) => {
+    throw withPrinted(error, printed);
+  });
+  throw withPrinted(failure, printed);
+};
+
+/** git's `maybe_die_on_misspelt_object_name`: a second read of `arg`, which skips a `:/` search. */
+const rereadMisspelt = async (ctx: Context, arg: string): Promise<void> => {
+  if (isMessageSearch(arg)) return;
+  await evaluateRevision(ctx, arg);
+};
+
+type PrintingRefusal = Extract<
+  TsgitErrorData,
+  { readonly code: 'OBJECT_NOT_FOUND' | 'REVPARSE_UNRESOLVED' | 'PATH_NOT_IN_TREE' }
+>;
+
+const withPrinted = (refusal: unknown, printed: ReadonlyArray<RevParseEntry>): unknown => {
+  if (!namesNoObject(refusal)) return refusal;
+  const { data } = refusal as { readonly data: PrintingRefusal };
+  return new TsgitError({ ...data, printed });
 };
 
 /**
@@ -126,20 +188,17 @@ const readDifferenceSides = async (ctx: Context, expression: string): Promise<vo
 
 /**
  * git rev-parse's `try_difference`: both sides named, the range's revisions;
- * a symmetric range whose sides are not both commits answers `undefined`, so
- * the whole argument is read as one name.
+ * a symmetric range whose sides are not both commits has printed both sides
+ * but leaves the argument unconsumed, so the whole is read as one name.
  */
-const tryDifference = async (
-  ctx: Context,
-  expression: string,
-): Promise<ReadonlyArray<RevParseEntry> | undefined> => {
+const tryDifference = async (ctx: Context, expression: string): Promise<Attempt> => {
   const sides = differenceSides(expression);
-  if (sides === undefined) return undefined;
+  if (sides === undefined) return NOTHING_PRINTED;
   const start = await readCommittish(ctx, sides.start);
-  if (start === undefined) return undefined;
+  if (start === undefined) return NOTHING_PRINTED;
   const end = await readCommittish(ctx, sides.end);
-  if (end === undefined) return undefined;
-  if (!sides.symmetric) return [included(end), excluded(start)];
+  if (end === undefined) return NOTHING_PRINTED;
+  if (!sides.symmetric) return { printed: [included(end), excluded(start)], consumed: true };
   return symmetricDifference(ctx, start, end);
 };
 
@@ -147,12 +206,13 @@ const symmetricDifference = async (
   ctx: Context,
   start: ObjectId,
   end: ObjectId,
-): Promise<ReadonlyArray<RevParseEntry> | undefined> => {
+): Promise<Attempt> => {
+  const sides = [included(end), included(start)];
   const a = await lookupCommitReference(ctx, start);
   const b = await lookupCommitReference(ctx, end);
-  if (a === undefined || b === undefined) return undefined;
+  if (a === undefined || b === undefined) return { printed: sides, consumed: false };
   const bases = await mergeBase(ctx, [a.id, b.id], { all: true });
-  return [included(end), included(start), ...bases.map(excluded)];
+  return { printed: [...sides, ...bases.map(excluded)], consumed: true };
 };
 
 /**
@@ -444,17 +504,6 @@ const resolveTreePath = async (ctx: Context, rev: string, rawPath: string): Prom
 };
 
 const RELATIVE_PATH_PREFIXES: ReadonlyArray<string> = ['./', '../'];
-
-/**
- * git's startup prefix: the caller's directory within the worktree,
- * `/`-terminated and empty at its root; `undefined` outside the worktree.
- */
-const startupPrefix = (cwd: string, workDir: string | undefined): string | undefined => {
-  if (workDir === undefined) return undefined;
-  if (cwd === workDir) return '';
-  const root = `${workDir}/`;
-  return cwd.startsWith(root) ? `${cwd.slice(root.length)}/` : undefined;
-};
 
 /**
  * git's `resolve_relative_path`: a path spelt from `./` or `../` is taken

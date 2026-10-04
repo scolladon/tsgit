@@ -58,7 +58,7 @@ describe('Given an expression whose name warns but which names no object', () =>
     { label: 'a working-tree file', arg: 'dg~5', setup: 'file' },
     { label: 'a glob a pathspec would match', arg: 'dg:absent*', setup: 'none' },
   ])('When revParse reads an argument that names $label', ({ arg, setup }) => {
-    it('Then it refuses after the one read', async () => {
+    it('Then it answers the argument as a path after the one read', async () => {
       // Arrange
       const warnings: string[] = [];
       const ctx = await danglingRepo((message) => warnings.push(message));
@@ -66,15 +66,16 @@ describe('Given an expression whose name warns but which names no object', () =>
       const sut = revParse;
 
       // Act
-      await failureOf(() => sut(ctx, arg));
+      const result = await sut(ctx, arg);
 
       // Assert
+      expect(result).toEqual([{ kind: 'path', path: arg }]);
       expect(warnings).toEqual([DANGLING]);
     });
   });
 
   describe('When revParse reads it in a bare repository whose git dir holds that path', () => {
-    it('Then it refuses after the one read', async () => {
+    it('Then it answers the argument as a path after the one read', async () => {
       // Arrange
       const warnings: string[] = [];
       const repo = await danglingRepo((message) => warnings.push(message));
@@ -84,9 +85,10 @@ describe('Given an expression whose name warns but which names no object', () =>
       const sut = revParse;
 
       // Act
-      await failureOf(() => sut(ctx, 'dg~5'));
+      const result = await sut(ctx, 'dg~5');
 
       // Assert
+      expect(result).toEqual([{ kind: 'path', path: 'dg~5' }]);
       expect(warnings).toEqual([DANGLING]);
     });
   });
@@ -105,6 +107,25 @@ describe('Given an expression whose name warns but which names no object', () =>
 
       // Assert
       expect(result).toEqual(denied);
+    });
+  });
+
+  describe('When its second read is refused for a reason other than naming nothing', () => {
+    it('Then revParse surfaces that refusal as is', async () => {
+      // Arrange
+      const refusal = new TsgitError({ code: 'PERMISSION_DENIED', path: 'logger' });
+      let reads = 0;
+      const ctx = await danglingRepo(() => {
+        reads += 1;
+        if (reads > 1) throw refusal;
+      });
+      const sut = revParse;
+
+      // Act
+      const result = await failureOf(() => sut(ctx, 'dg~5'));
+
+      // Assert
+      expect(result).toBe(refusal.data);
     });
   });
 
@@ -134,7 +155,7 @@ describe('Given an expression whose name warns but which names no object', () =>
   });
 
   describe('When revParse reads an argument climbing out of the repository', () => {
-    it('Then it refuses with the read failure', async () => {
+    it('Then it refuses with the read failure, carrying the path line printed first', async () => {
       // Arrange
       const ctx = await danglingRepo(() => undefined);
       const sut = revParse;
@@ -143,7 +164,11 @@ describe('Given an expression whose name warns but which names no object', () =>
       const result = await failureOf(() => sut(ctx, '../outside~1'));
 
       // Assert
-      expect(result).toEqual({ code: 'OBJECT_NOT_FOUND', id: '../outside' });
+      expect(result).toEqual({
+        code: 'OBJECT_NOT_FOUND',
+        id: '../outside',
+        printed: [{ kind: 'path', path: '../outside~1' }],
+      });
     });
   });
 
@@ -164,7 +189,7 @@ describe('Given an expression whose name warns but which names no object', () =>
   });
 
   describe('When its parent hops climb to a path the filename probe finds', () => {
-    it('Then it refuses without a second read, probing the path as written', async () => {
+    it('Then it answers the path without a second read, probing it as written', async () => {
       // Arrange
       const warnings: string[] = [];
       const repo = await danglingRepo((message) => warnings.push(message));
@@ -177,10 +202,10 @@ describe('Given an expression whose name warns but which names no object', () =>
       const sut = revParse;
 
       // Act
-      const result = await failureOf(() => sut(ctx, 'dg:a/../../outside'));
+      const result = await sut(ctx, 'dg:a/../../outside');
 
       // Assert
-      expect(result).toMatchObject({ code: 'PATH_NOT_IN_TREE' });
+      expect(result).toEqual([{ kind: 'path', path: 'dg:a/../../outside' }]);
       expect(warnings).toEqual([DANGLING, DANGLING]);
       expect(probed).toEqual([`${repo.layout.workDir}/dg:a/../../outside`]);
     });

@@ -345,6 +345,12 @@ export const tryRunGit = (
 
 const EXCLUDED_MARK = '^';
 
-/** `git rev-parse`'s stdout rebuilt from `revParse`'s entries: one line each, an excluded one marked `^`. */
+const revParseLine = (entry: RevParseEntry): string =>
+  entry.kind === 'path' ? entry.path : `${entry.negated ? EXCLUDED_MARK : ''}${entry.id}`;
+
+/**
+ * `git rev-parse`'s stdout rebuilt from `revParse`'s entries: one line each,
+ * an excluded object marked `^`, a path as given.
+ */
 export const revParseStdout = (entries: ReadonlyArray<RevParseEntry>): string =>
-  entries.map(({ id, negated }) => `${negated ? EXCLUDED_MARK : ''}${id}`).join('\n');
+  entries.map(revParseLine).join('\n');

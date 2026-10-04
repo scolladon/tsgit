@@ -195,7 +195,11 @@ describe.skipIf(!GIT_AVAILABLE)('integration — revParse ref DWIM parity with c
         expect(gitResult.stderr).toContain(
           verify ? 'Needed a single revision' : 'ambiguous argument',
         );
-        expect((caught as TsgitError).data).toEqual({ code: 'OBJECT_NOT_FOUND', id: argument });
+        expect((caught as TsgitError).data).toEqual({
+          code: 'OBJECT_NOT_FOUND',
+          id: argument,
+          printed: [{ kind: 'path', path: argument }],
+        });
       });
     });
   });
@@ -682,13 +686,29 @@ describe.skipIf(!GIT_AVAILABLE)('integration — skip and ambiguity warnings per
   });
 
   describe.each([
-    { label: 'present', target: 'outside', plant: true, refused: 0 },
-    { label: 'absent', target: 'absent', plant: false, refused: 128 },
+    {
+      label: 'present',
+      target: 'outside',
+      plant: true,
+      refused: 0,
+      outcome: [{ kind: 'path', path: 'dg:a/../../outside' }],
+    },
+    {
+      label: 'absent',
+      target: 'absent',
+      plant: false,
+      refused: 128,
+      outcome: {
+        code: 'PATH_NOT_IN_TREE',
+        path: 'a/../../absent',
+        printed: [{ kind: 'path', path: 'dg:a/../../absent' }],
+      },
+    },
   ])(
     'Given an argument whose parent hops climb out of the worktree to a $label path',
-    ({ target, plant, refused }) => {
+    ({ target, plant, refused, outcome }) => {
       describe('When git and tsgit rev-parse it', () => {
-        it('Then tsgit warns each line git warns', async () => {
+        it('Then tsgit warns each line git warns and answers as git does', async () => {
           // Arrange
           const arg = `dg:a/../../${target}`;
           const outsideRepo = async (slug: string): Promise<string> => {
@@ -714,7 +734,7 @@ describe.skipIf(!GIT_AVAILABLE)('integration — skip and ambiguity warnings per
           );
           expect(gitRun.exitCode).toBe(refused);
           expect(warnings.map((message) => `warning: ${message}`)).toEqual(expected);
-          expect(result).toMatchObject({ code: 'PATH_NOT_IN_TREE', path: `a/../../${target}` });
+          expect(result).toMatchObject(outcome);
         });
       });
     },

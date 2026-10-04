@@ -1170,6 +1170,7 @@ describe.skipIf(!GIT_AVAILABLE)(
             expect((caught as TsgitError).data).toEqual({
               code: 'REVPARSE_UNRESOLVED',
               expression: 'main@{0}',
+              printed: [{ kind: 'path', path: 'main@{0}' }],
             });
           },
         );

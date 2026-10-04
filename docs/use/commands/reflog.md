@@ -81,8 +81,8 @@ const { entries } = await repo.reflog();
 await repo.reflog({ ref: 'main' });
 
 // Resolve via @{N} or @{date} (combined with revParse)
-const [{ id: oid }] = await repo.revParse('main@{2}');           // 2 moves back
-const [{ id: old }] = await repo.revParse('main@{yesterday}');   // at yesterday 00:00 local time
+const [moved] = await repo.revParse('main@{2}');           // { kind: 'object', id }: 2 moves back
+const [old] = await repo.revParse('main@{yesterday}');     // at yesterday 00:00 local time
 
 // Delete the newest entry
 await repo.reflog({ action: 'delete', ref: 'main', index: 0 });

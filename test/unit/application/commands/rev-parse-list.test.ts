@@ -81,7 +81,7 @@ const failureData = async (run: () => Promise<unknown>): Promise<unknown> => {
 const entries = (
   ids: Readonly<Record<string, ObjectId>>,
   pairs: ReadonlyArray<readonly [string, boolean]>,
-) => pairs.map(([name, negated]) => ({ id: ids[name], negated }));
+) => pairs.map(([name, negated]) => ({ kind: 'object', id: ids[name], negated }));
 
 describe('Given a history with two branches, criss-cross merges and a tag', () => {
   describe.each([
@@ -179,8 +179,38 @@ describe('Given a history with two branches, criss-cross merges and a tag', () =
       const result = await failureData(() => sut(ctx, `${ids.tree}...main`));
 
       // Assert
-      expect(result).toMatchObject({ code: 'OBJECT_NOT_FOUND' });
+      expect(result).toMatchObject({
+        code: 'OBJECT_NOT_FOUND',
+        printed: [
+          ...entries(ids, [
+            ['c2', false],
+            ['tree', false],
+          ]),
+          { kind: 'path', path: `${ids.tree}...main` },
+        ],
+      });
       expect(errors).toEqual([`object ${ids.tree} is a tree, not a commit`]);
+    });
+  });
+
+  describe('When revParse reads that symmetric range and a file bears its name', () => {
+    it('Then it answers both sides, then the argument as a path', async () => {
+      // Arrange
+      const { ctx, ids } = await listRepo();
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/${ids.tree}...main`, '');
+      const sut = revParse;
+
+      // Act
+      const result = await sut(ctx, `${ids.tree}...main`);
+
+      // Assert
+      expect(result).toEqual([
+        ...entries(ids, [
+          ['c2', false],
+          ['tree', false],
+        ]),
+        { kind: 'path', path: `${ids.tree}...main` },
+      ]);
     });
   });
 
@@ -300,6 +330,62 @@ describe('Given a merge of two branches over a root tagged t', () => {
       // Assert
       expect(result).toMatchObject({ code: 'REVPARSE_UNRESOLVED' });
       expect(errors).toEqual([`object ${ids.tree} is a tree, not a commit`]);
+    });
+  });
+});
+
+describe('Given a worktree holding f at its root and g under sub', () => {
+  const withFiles = async (cwd: string | undefined): Promise<Context> => {
+    const { ctx } = await listRepo();
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/f`, '');
+    await ctx.fs.writeUtf8(`${ctx.layout.workDir}/sub/g`, '');
+    return cwd === undefined ? ctx : ({ ...ctx, cwd: `${ctx.layout.workDir}/${cwd}` } as Context);
+  };
+
+  describe.each([
+    { cwd: undefined, arg: 'f' },
+    { cwd: undefined, arg: 'no*' },
+    { cwd: undefined, arg: ':(top)nothing' },
+    { cwd: undefined, arg: ':/' },
+    { cwd: undefined, arg: ':!f' },
+    { cwd: undefined, arg: ':^f' },
+    { cwd: undefined, arg: ':!' },
+    { cwd: 'sub', arg: 'g' },
+    { cwd: 'sub', arg: ':!g' },
+    { cwd: 'sub', arg: ':/f' },
+    { cwd: 'sub', arg: ':/sub/g' },
+    { cwd: 'sub', arg: '' },
+  ])('When revParse reads $arg from $cwd', ({ cwd, arg }) => {
+    it('Then it answers the argument as the path git prints unchanged', async () => {
+      // Arrange
+      const ctx = await withFiles(cwd);
+      const sut = revParse;
+
+      // Act
+      const result = await sut(ctx, arg);
+
+      // Assert
+      expect(result).toEqual([{ kind: 'path', path: arg }]);
+    });
+  });
+
+  describe.each([
+    { cwd: undefined, arg: 'nope', code: 'OBJECT_NOT_FOUND' },
+    { cwd: undefined, arg: '', code: 'REVPARSE_UNRESOLVED' },
+    { cwd: undefined, arg: ':/zzz', code: 'REVPARSE_UNRESOLVED' },
+    { cwd: 'sub', arg: 'f', code: 'OBJECT_NOT_FOUND' },
+    { cwd: 'sub', arg: ':!f', code: 'OBJECT_NOT_FOUND' },
+  ])('When revParse reads $arg from $cwd', ({ cwd, arg, code }) => {
+    it('Then it refuses, carrying the path line git printed first', async () => {
+      // Arrange
+      const ctx = await withFiles(cwd);
+      const sut = revParse;
+
+      // Act
+      const result = await failureData(() => sut(ctx, arg));
+
+      // Assert
+      expect(result).toMatchObject({ code, printed: [{ kind: 'path', path: arg }] });
     });
   });
 });

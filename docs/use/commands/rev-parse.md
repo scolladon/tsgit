@@ -7,13 +7,16 @@ Resolve a revision argument to the revisions `git rev-parse` prints for it, in g
 ```ts
 repo.revParse(expression: string): Promise<readonly RevParseEntry[]>;
 
-interface RevParseEntry {
-  readonly id: ObjectId;
-  readonly negated: boolean; // git prints `^` before it
-}
+type RevParseEntry =
+  | { readonly kind: 'object'; readonly id: ObjectId; readonly negated: boolean } // `negated`: git prints `^` before it
+  | { readonly kind: 'path'; readonly path: string }; // no revision, but a path git prints unchanged
 ```
 
-A plain name answers one entry. Rendering is the caller's: `git rev-parse`'s stdout is one line per entry, `^<id>` when `negated`.
+A plain name answers one entry. Rendering is the caller's: `git rev-parse`'s stdout is one line per entry, `^<id>` when `negated`, the path as given for a `path` entry.
+
+## Paths
+
+An argument that names no revision but reads as a pathspec (`f*`, `:(top)x`) or names an existing path answers `{ kind: 'path', path }` with the argument as given, as `git rev-parse` prints it. The path is looked up against the caller's directory in the worktree (`ctx.cwd`); `:/x` looks up `x` from the worktree top, `:!x` / `:^x` look up `x`, and a bare `:/`, `:!` or `:^` always names one.
 
 ## Ranges
 
@@ -52,14 +55,19 @@ A plain name answers one entry. Rendering is the caller's: `git rev-parse`'s std
 ## Examples
 
 ```ts
-const [head] = await repo.revParse('HEAD');            // { id, negated: false }
+const [head] = await repo.revParse('HEAD');            // { kind: 'object', id, negated: false }
 const [oldHead] = await repo.revParse('HEAD@{1}');
 const [second] = await repo.revParse('main^2');
-const range = await repo.revParse('v1.0.0..main');     // [{ id: main }, { id: v1.0.0, negated: true }]
-const stdout = range.map(({ id, negated }) => (negated ? `^${id}` : id)).join('\n');
+const range = await repo.revParse('v1.0.0..main');     // [{ kind: 'object', id: main }, { kind: 'object', id: v1.0.0, negated: true }]
+const stdout = range
+  .map((entry) => (entry.kind === 'path' ? entry.path : `${entry.negated ? '^' : ''}${entry.id}`))
+  .join('\n');
+const [file] = await repo.revParse('README.md');        // { kind: 'path', path: 'README.md' }
 ```
 
 ## Throws
+
+A refusal reached after git has already printed lines carries them as `printed` in its error data (`OBJECT_NOT_FOUND`, `REVPARSE_UNRESOLVED`, `PATH_NOT_IN_TREE`): an argument naming neither a revision nor a path carries itself as a `path` entry, and a symmetric range with a side that is no commit carries both sides before it.
 
 - `REVPARSE_UNRESOLVED` — name does not resolve, or `@{date}` form unparseable.
 - `AMBIGUOUS_OID_PREFIX` — short oid matches multiple objects.

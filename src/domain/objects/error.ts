@@ -1,6 +1,7 @@
 import { sanitizeForDisplay, TsgitError } from '../error.js';
 import { errorDataCode } from '../error-data-code.js';
 import type { ObjectId } from './object-id.js';
+import type { RevParseEntry } from './rev-parse-entry.js';
 
 export { TsgitError } from '../error.js';
 
@@ -22,7 +23,12 @@ export type DomainObjectError =
       readonly line: string;
       readonly reason: string;
     }
-  | { readonly code: 'OBJECT_NOT_FOUND'; readonly id: ObjectId }
+  | {
+      readonly code: 'OBJECT_NOT_FOUND';
+      readonly id: ObjectId;
+      /** What `rev-parse` had printed before refusing. */
+      readonly printed?: ReadonlyArray<RevParseEntry>;
+    }
   | {
       readonly code: 'OBJECT_HASH_MISMATCH';
       readonly expected: ObjectId;

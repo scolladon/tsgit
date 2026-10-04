@@ -2,6 +2,7 @@ import { sanitizeForDisplay, TsgitError } from '../error.js';
 import type { HookName } from '../hooks/index.js';
 import { MAX_OBJECT_ID_IN_ERROR, type ObjectType } from '../objects/error.js';
 import type { FilePath, ObjectId, RefName } from '../objects/object-id.js';
+import type { RevParseEntry } from '../objects/rev-parse-entry.js';
 import type { ReceivePackResponse as ReportStatus } from '../protocol/receive-pack.js';
 import type { PendingOperation } from '../sequencer/operation-labels.js';
 import type { ConfigScope } from './config-scope.js';
@@ -70,8 +71,19 @@ export type CommandError =
       readonly expression: string;
       readonly candidates: ReadonlyArray<ObjectId>;
     }
-  | { readonly code: 'REVPARSE_UNRESOLVED'; readonly expression: string }
-  | { readonly code: 'PATH_NOT_IN_TREE'; readonly rev: string; readonly path: string }
+  | {
+      readonly code: 'REVPARSE_UNRESOLVED';
+      readonly expression: string;
+      /** What `rev-parse` had printed before refusing. */
+      readonly printed?: ReadonlyArray<RevParseEntry>;
+    }
+  | {
+      readonly code: 'PATH_NOT_IN_TREE';
+      readonly rev: string;
+      readonly path: string;
+      /** What `rev-parse` had printed before refusing. */
+      readonly printed?: ReadonlyArray<RevParseEntry>;
+    }
   | { readonly code: 'WORKTREE_FILE_ABSENT'; readonly path: string }
   | { readonly code: 'EMPTY_PATHSPEC' }
   | {

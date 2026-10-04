@@ -2,8 +2,10 @@
  * Cross-tool interop — `revParse`'s revision list against `git rev-parse`'s
  * stdout. One repository is built once with canonical git: two branches off
  * one root, two criss-cross merges of them, an annotated tag of the root and
- * a blob sharing a commit's abbreviated id. Each row rebuilds git's stdout from the
- * entries and compares it, or that neither resolves, and the `error:` lines.
+ * a blob sharing a commit's abbreviated id, and untracked files `f` and `sub/g`.
+ * Each row rebuilds git's stdout from the entries — or, on a refusal, from the
+ * lines its error carries as printed — and compares it, whether either
+ * refused, and the `error:` lines.
  *
  * @proves
  *   surface:        revParse
@@ -12,12 +14,13 @@
  *   interopSurface: revParse
  */
 import { createHash } from 'node:crypto';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
-import { revParse } from '../../src/application/commands/rev-parse.js';
+import { type RevParseEntry, revParse } from '../../src/application/commands/rev-parse.js';
 import type { TsgitError } from '../../src/domain/error.js';
 import {
   disableAutoMaintenance,
@@ -34,6 +37,8 @@ const EPOCH = 1_700_000_000;
 const ERROR_PREFIX = 'error: ';
 const PREFIX_LENGTH = 4;
 
+type Printed = ReadonlyArray<RevParseEntry>;
+
 const identityAt = (offset: number): NodeJS.ProcessEnv => ({
   ...runGitEnv(),
   GIT_AUTHOR_NAME: 'A',
@@ -45,29 +50,32 @@ const identityAt = (offset: number): NodeJS.ProcessEnv => ({
 });
 
 interface Outcome {
-  readonly stdout: string | undefined;
+  readonly stdout: string;
+  readonly refused: boolean;
   readonly errors: ReadonlyArray<string>;
 }
 
-const gitOutcome = (repo: string, argument: string): Outcome => {
-  const result = tryRunGitWithExit(['-C', repo, 'rev-parse', argument], { env: runGitEnv() });
+const gitOutcome = (cwd: string, argument: string): Outcome => {
+  const result = tryRunGitWithExit(['-C', cwd, 'rev-parse', argument], { env: runGitEnv() });
   const errors = result.stderr
     .split('\n')
     .filter((line) => line.startsWith(ERROR_PREFIX))
     .map((line) => line.slice(ERROR_PREFIX.length));
-  return { stdout: result.exitCode === 0 ? result.stdout.trim() : undefined, errors };
+  return { stdout: result.stdout.replace(/\n$/, ''), refused: result.exitCode !== 0, errors };
 };
 
-const tsgitOutcome = async (repo: string, argument: string): Promise<Outcome> => {
+const tsgitOutcome = async (repo: string, cwd: string, argument: string): Promise<Outcome> => {
   const errors: string[] = [];
   const ctx = {
     ...createNodeContext({ workDir: repo }),
+    cwd,
     logger: { error: (message: string) => errors.push(message) },
   };
   try {
-    return { stdout: revParseStdout(await revParse(ctx, argument)), errors };
-  } catch {
-    return { stdout: undefined, errors };
+    return { stdout: revParseStdout(await revParse(ctx, argument)), refused: false, errors };
+  } catch (error) {
+    const printed = (error as TsgitError).data as { readonly printed?: Printed };
+    return { stdout: revParseStdout(printed.printed ?? []), refused: true, errors };
   }
 };
 
@@ -113,6 +121,10 @@ const buildRepository = (repo: string): string => {
   git(repo, 'checkout', '-q', 'main');
   const prefix = git(repo, 'rev-parse', 'main').trim().slice(0, PREFIX_LENGTH);
   writeBlobSharing(repo, prefix);
+  writeFileSync(path.join(repo, 'f'), '');
+  mkdirSync(path.join(repo, 'sub'));
+  writeFileSync(path.join(repo, 'sub', 'g'), '');
+  writeFileSync(path.join(repo, 'main^{tree}...side'), '');
   return prefix;
 };
 
@@ -181,6 +193,17 @@ describe.skipIf(!GIT_AVAILABLE)('integration — revParse revision list parity w
       '^!',
       '<prefix>^!',
       '<prefix>^@',
+      'f',
+      'nope',
+      '',
+      'f*',
+      ':(top)nothing',
+      ':/',
+      ':!f',
+      ':^g',
+      ':/zzz',
+      'main^{tree}...side',
+      '^f',
     ])('When git rev-parse and revParse read %s', (row) => {
       it("Then both print git's revisions in git's order and the same errors", async () => {
         // Arrange
@@ -188,12 +211,29 @@ describe.skipIf(!GIT_AVAILABLE)('integration — revParse revision list parity w
         const peer = gitOutcome(repo, argument);
 
         // Act
-        const result = await tsgitOutcome(repo, argument);
+        const result = await tsgitOutcome(repo, repo, argument);
 
         // Assert
         expect(result).toEqual(peer);
       });
     });
+
+    describe.each(['g', 'f', ':!g', ':!f', ':/f', ':/sub/g', '', '../f'])(
+      'When git rev-parse and revParse read %s from sub',
+      (argument) => {
+        it('Then both print the same lines and refuse alike', async () => {
+          // Arrange
+          const cwd = path.join(repo, 'sub');
+          const peer = gitOutcome(cwd, argument);
+
+          // Act
+          const result = await tsgitOutcome(repo, cwd, argument);
+
+          // Assert
+          expect(result).toEqual(peer);
+        });
+      },
+    );
 
     describe.each(['<prefix>', '^<prefix>', '<prefix>^{}..side'])(
       'When git rev-parse and revParse read %s, the prefix read with no commit-ish hint',

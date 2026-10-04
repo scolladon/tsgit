@@ -489,6 +489,7 @@ describe.skipIf(!GIT_AVAILABLE)('tree entry-name bytes interop', () => {
           code: 'PATH_NOT_IN_TREE',
           rev: slashBlobTree,
           path: 'a/b/c',
+          printed: [{ kind: 'path', path: `${slashBlobTree}:a/b/c` }],
         });
       });
     });
