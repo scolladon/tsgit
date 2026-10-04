@@ -21,6 +21,9 @@
  * not equal across calls with different shapes — callers that need a stable
  * display order sort the result themselves.
  */
+
+import type { TsgitError } from '../../../domain/error.js';
+import { treeEntryTypeMismatch } from '../../../domain/objects/error.js';
 import {
   type Commit,
   type FilePath,
@@ -31,6 +34,7 @@ import { PACK_NAME_HASH_SEED, PACK_NAME_HASH_V1 } from '../../../domain/storage/
 import type { Context } from '../../../ports/context.js';
 import { getObjectStore } from '../object-store.js';
 import { readObject } from '../read-object.js';
+import { readTree } from '../read-tree.js';
 import { MAX_PUSH_OBJECTS } from '../types.js';
 import { isGitlink } from '../validators.js';
 import { walkCommitsStoppingAt } from '../walk-commits.js';
@@ -52,8 +56,9 @@ import { commitDateWalk } from './commit-date-walk.js';
 import { type LimitedWalk, limitList, readShown, resolveLimitOptions } from './limit-list.js';
 import { loadMidxBitmapArtefact } from './midx-bitmap-binding.js';
 import { type EmitState, resolveTagChain, tryEmit } from './object-emit.js';
-import type { ObjectTypeTable } from './object-type-table.js';
+import { assignObjectType, type ObjectTypeTable } from './object-type-table.js';
 import { loadPackBitmapArtefact } from './pack-bitmap-binding.js';
+import { descendTreePath } from './resolve-tree-path.js';
 
 /** `'bitmap'` asks for the bitmap tier (with a silent walk fallback on any
  *  fault); `'walk'` always walks. No default — see the module doc. */
@@ -151,6 +156,30 @@ interface TreeEmitScope {
   readonly marked: ReadonlySet<ObjectId>;
   readonly emitted: ReadonlySet<ObjectId>;
   readonly maxDepth: number;
+  readonly objectTypes: ObjectTypeTable | undefined;
+}
+
+const SEPARATOR = '/';
+
+/**
+ * git's `process_tree_contents` death on an entry its mode types against an
+ * earlier lookup: the entry named within the tree that lists it.
+ */
+async function entryTypeMismatch(
+  ctx: Context,
+  rootId: ObjectId,
+  path: FilePath,
+  mode: 'tree' | 'blob',
+): Promise<TsgitError> {
+  const cut = path.lastIndexOf(SEPARATOR);
+  if (cut === -1) return treeEntryTypeMismatch(rootId, path, mode);
+  const holder = await descendTreePath(
+    ctx,
+    await readTree(ctx, rootId),
+    path.slice(0, cut),
+    rootId,
+  );
+  return treeEntryTypeMismatch(holder.id, path.slice(cut + 1), mode);
 }
 
 /**
@@ -180,10 +209,14 @@ async function emitTree(
     skipTree,
   })) {
     if (isGitlink(entry.mode)) continue;
+    const type = isDirectory(entry.mode) ? 'tree' : 'blob';
+    if (!assignObjectType(ctx, scope.objectTypes, entry.id, type)) {
+      throw await entryTypeMismatch(ctx, treeId, entry.path, type);
+    }
     if (scope.marked.has(entry.id)) continue;
     emit({
       id: entry.id,
-      type: isDirectory(entry.mode) ? 'tree' : 'blob',
+      type,
       path: entry.path,
       nameHash: entry.nameHash ?? 0,
     });
@@ -477,6 +510,7 @@ async function walkClosure(ctx: Context, request: ClosureRequest): Promise<Closu
     marked: marks.objects,
     emitted: state.emitted,
     maxDepth: marks.maxDepth,
+    objectTypes: request.objectTypes,
   };
   const { commitSeeds, pending } = await resolveWants(ctx, request);
   const walked = await listCommitSeeds(ctx, commitSeeds, marks, request);

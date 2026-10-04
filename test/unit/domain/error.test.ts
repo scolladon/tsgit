@@ -406,6 +406,25 @@ describe('domain error — AdapterError', () => {
       });
     });
 
+    describe('Given TREE_ENTRY_TYPE_MISMATCH', () => {
+      describe('When reading message', () => {
+        it('Then reads as git names the entry, its tree and its mode', () => {
+          // Arrange & Act
+          const result = new TsgitErrorClass({
+            code: 'TREE_ENTRY_TYPE_MISMATCH',
+            tree: 'abc123' as never,
+            entry: 'b',
+            mode: 'blob',
+          });
+
+          // Assert
+          expect(result.message).toBe(
+            "TREE_ENTRY_TYPE_MISMATCH: entry 'b' in tree abc123 has blob mode, but is not a blob",
+          );
+        });
+      });
+    });
+
     describe('Given TREE_CYCLE_DETECTED', () => {
       describe('When reading message', () => {
         it('Then contains id', () => {

@@ -46,6 +46,13 @@ export type DomainObjectError =
       readonly id: ObjectId;
     }
   | { readonly code: 'TREE_CYCLE_DETECTED'; readonly id: ObjectId }
+  | {
+      /** git's `entry '<entry>' in tree <tree> has <mode> mode, but is not a <mode>`. */
+      readonly code: 'TREE_ENTRY_TYPE_MISMATCH';
+      readonly tree: ObjectId;
+      readonly entry: string;
+      readonly mode: 'tree' | 'blob';
+    }
   | { readonly code: 'TREE_DEPTH_EXCEEDED'; readonly depth: number }
   | {
       readonly code: 'TREE_ENTRY_LIMIT_EXCEEDED';
@@ -98,6 +105,12 @@ export const invalidIdentity = (line: string, reason: string): TsgitError =>
 
 export const objectNotFound = (id: ObjectId): TsgitError =>
   new TsgitError({ code: 'OBJECT_NOT_FOUND', id });
+
+export const treeEntryTypeMismatch = (
+  tree: ObjectId,
+  entry: string,
+  mode: 'tree' | 'blob',
+): TsgitError => new TsgitError({ code: 'TREE_ENTRY_TYPE_MISMATCH', tree, entry, mode });
 
 /**
  * True when `err` carries the `OBJECT_NOT_FOUND` code in `data.code` — the

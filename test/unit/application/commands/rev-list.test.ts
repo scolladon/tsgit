@@ -1548,6 +1548,69 @@ describe('revList: object types assigned during one invocation', () => {
     });
   });
 
+  const TREE_MODE = '40000' as FileMode;
+  const BLOB_MODE = '100644' as FileMode;
+
+  const writeTreeOf = (
+    ctx: Context,
+    entries: ReadonlyArray<readonly [FileMode, string, ObjectId]>,
+  ): Promise<ObjectId> =>
+    writeObject(ctx, {
+      type: 'tree',
+      id: '' as ObjectId,
+      entries: entries.map(([mode, name, id]) => treeEntry(mode, name, id)),
+    });
+
+  describe.each([
+    ['at the root', false],
+    ['in a subtree', true],
+  ] as const)('Given a tree %s listing one tree as a tree and then as a blob', (_label, nested) => {
+    describe('When revList walks its objects', () => {
+      it('Then the blob-mode entry is not a blob and the walk refuses', async () => {
+        // Arrange
+        const { ctx, logged } = await seedMistypedTag();
+        const empty = await writeEmptyTree(ctx);
+        const holder = await writeTreeOf(ctx, [
+          [TREE_MODE, 'a', empty],
+          [BLOB_MODE, 'b', empty],
+        ]);
+        const root = nested ? await writeTreeOf(ctx, [[TREE_MODE, 'd', holder]]) : holder;
+        const named = await writeCommitNaming(ctx, root, []);
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, { wants: [named], objects: true }));
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'TREE_ENTRY_TYPE_MISMATCH', tree: holder, entry: 'b', mode: 'blob' },
+          logged: [`object ${empty} is a tree, not a blob`],
+        });
+      });
+    });
+  });
+
+  describe('Given a blob tip before a commit whose tree lists it with tree mode', () => {
+    describe('When revList walks its objects', () => {
+      it('Then the tree-mode entry is not a tree and the walk refuses', async () => {
+        // Arrange
+        const { ctx, logged, blob } = await seedMistypedTag();
+        const holder = await writeTreeOf(ctx, [[TREE_MODE, 'b', blob]]);
+        const named = await writeCommitNaming(ctx, holder, []);
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, { wants: [blob, named], objects: true }));
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'TREE_ENTRY_TYPE_MISMATCH', tree: holder, entry: 'b', mode: 'tree' },
+          logged: [`object ${blob} is a blob, not a tree`],
+        });
+      });
+    });
+  });
+
   describe('Given the tag and the blob walked by two concurrent invocations', () => {
     describe('When both run at once', () => {
       it('Then only the tag invocation refuses, as two git processes do', async () => {

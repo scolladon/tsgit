@@ -1061,6 +1061,75 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list interop — object types assigned in o
     });
   });
 
+  /** A tree stored as spelt: `[mode, name, id]` entries, whatever their objects are. */
+  const writeLiteralTree = (
+    dir: string,
+    entries: ReadonlyArray<readonly [string, string, string]>,
+  ): string =>
+    runGit(['-C', dir, 'hash-object', '-t', 'tree', '-w', '--stdin', '--literally'], {
+      input: Buffer.concat(
+        entries.map(([mode, name, id]) =>
+          Buffer.concat([Buffer.from(`${mode} ${name}\0`), Buffer.from(id, 'hex')]),
+        ),
+      ),
+    }).trim();
+
+  /** git's `process_tree_contents` death, rebuilt from the refusal's data. */
+  const entryMismatchLine = (error: unknown): string => {
+    const { tree, entry, mode } = (error as { data: { tree: string; entry: string; mode: string } })
+      .data;
+    return `fatal: entry '${entry}' in tree ${tree} has ${mode} mode, but is not a ${mode}\n`;
+  };
+
+  describe.each([
+    [
+      'one tree listed as a tree, then as a blob',
+      (dir: string) => {
+        const empty = emptyTreeOf(dir);
+        return {
+          tips: [],
+          tree: writeLiteralTree(dir, [
+            ['40000', 'a', empty],
+            ['100644', 'b', empty],
+          ]),
+        };
+      },
+    ],
+    [
+      'a blob tip listed as a tree',
+      (dir: string, blob: string) => ({
+        tips: [blob],
+        tree: writeLiteralTree(dir, [['40000', 'b', blob]]),
+      }),
+    ],
+  ] as const)('Given %s', (_label, layout) => {
+    describe('When rev-list --objects walks it on both tools', () => {
+      it('Then both log the same typing error and die on the same entry', async () => {
+        // Arrange
+        const { dir, blob } = await buildMistypedTagFixture();
+        const { tips, tree } = layout(dir, blob);
+        const named = writeLiteralCommit(dir, tree, []);
+        const peer = tryRunGitWithExit(['-C', dir, 'rev-list', '--objects', ...tips, named]);
+        const { ctx, logged } = capturing(dir);
+        const sut = revList;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { wants: [...tips, named], objects: true });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(peer.exitCode).toBe(128);
+        expect(
+          `${logged.map((line) => `error: ${line}\n`).join('')}${entryMismatchLine(caught)}`,
+        ).toBe(peer.stderr);
+      });
+    });
+  });
+
   describe('Given the tag and its blob walked by two concurrent runs', () => {
     describe('When rev-list runs both at once on both tools', () => {
       it('Then only the tag run refuses, the blob run listing the blob as git does', async () => {
