@@ -16,7 +16,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
-import { revParse } from '../../src/application/commands/rev-parse.js';
+import { evaluateRevision, revParse } from '../../src/application/commands/rev-parse.js';
 import type { TsgitError } from '../../src/domain/error.js';
 import { openRepository } from '../../src/index.node.js';
 import {
@@ -101,6 +101,50 @@ const buildRepository = (repo: string): void => {
   }).trim();
   git(repo, 'update-ref', '--no-deref', 'refs/tags/mt', mistypedTag);
 };
+
+describe.skipIf(!GIT_AVAILABLE)('integration — evaluateRevision typing parity with git', () => {
+  let repo = '';
+
+  beforeAll(async () => {
+    repo = await mkdtemp(path.join(os.tmpdir(), 'tsgit-evaluate-revision-typing-interop-'));
+    buildRepository(repo);
+  }, SETUP_TIMEOUT);
+
+  afterAll(async () => {
+    await rm(repo, { recursive: true, force: true });
+  });
+
+  describe.each(['mt^{commit}', 'mt^{}'])(
+    'Given a tag declaring a commit for a blob, When %s is read once on both tools',
+    (expression) => {
+      it("Then both type the read's own lookups and log the same errors", async () => {
+        // Arrange
+        const peer = tryRunGitWithExit(['-C', repo, 'cat-file', '-t', expression]);
+        const errors: string[] = [];
+        const ctx = {
+          ...createNodeContext({ workDir: repo }),
+          logger: { error: (message: string) => errors.push(message) },
+        };
+        const sut = evaluateRevision;
+
+        // Act
+        const named = await sut(ctx, expression).then(
+          () => true,
+          () => false,
+        );
+
+        // Assert
+        expect({ named, errors }).toEqual({
+          named: peer.exitCode === 0,
+          errors: peer.stderr
+            .split('\n')
+            .filter((line) => line.startsWith('error: '))
+            .map((line) => line.slice('error: '.length)),
+        });
+      });
+    },
+  );
+});
 
 describe.skipIf(!GIT_AVAILABLE)('integration — revParse suffix grammar parity with git', () => {
   let repo = '';

@@ -216,16 +216,18 @@ const SIDES_BY_SOURCE: Readonly<
 /**
  * The single object a `setup_revisions` reader takes from `expression`: an
  * expression holding `..` has its sides read first, as git tries it as a
- * range, then the whole is read as one name.
+ * range, then the whole is read as one name — every lookup typed into one
+ * table, as one git process types them.
  */
 export const resolveRevision = async (
   ctx: Context,
   expression: string,
   source: RevisionSource = 'command-line',
 ): Promise<ObjectId> => {
-  await readDifferenceSides(ctx, undefined, SIDES_BY_SOURCE[source](expression));
-  if (source === 'stdin') return readReporting(ctx, undefined, expression);
-  return readNamedObject(ctx, undefined, expression, expression);
+  const table = createObjectTypeTable();
+  await readDifferenceSides(ctx, table, SIDES_BY_SOURCE[source](expression));
+  if (source === 'stdin') return readReporting(ctx, table, expression);
+  return readNamedObject(ctx, table, expression, expression);
 };
 
 /**
@@ -341,15 +343,16 @@ const shorthandEntries = (
 };
 
 /**
- * git's `get_oid` over one expression, read once: the commands that refuse
- * their argument without the misspelt-name diagnosis. `accepts` is the
+ * git's `get_oid` over one expression, read once and typed into its own
+ * table: the commands that refuse their argument without the misspelt-name
+ * diagnosis. `accepts` is the
  * caller's disambiguation hint for an abbreviated name read as is.
  */
 export const evaluateRevision = (
   ctx: Context,
   expression: string,
   accepts?: CandidateFilter,
-): Promise<ObjectId> => evaluateTyped(ctx, undefined, expression, accepts);
+): Promise<ObjectId> => evaluateTyped(ctx, createObjectTypeTable(), expression, accepts);
 
 /** git's `get_oid` typing each object it parses into `table`, the invocation's. */
 const evaluateTyped = async (

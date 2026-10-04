@@ -417,4 +417,45 @@ describe('revParse: object types assigned during one invocation', () => {
       });
     });
   });
+
+  describe.each([
+    [
+      'evaluateRevision',
+      'tm^{commit}',
+      1,
+      (blob: ObjectId) => [`object ${blob} is a commit, not a blob`],
+    ],
+    [
+      'resolveRevision',
+      'tm^{}',
+      2,
+      (blob: ObjectId) => [
+        `object ${blob} is a commit, not a blob`,
+        "missing object referenced by 'tm'",
+      ],
+    ],
+  ] as const)(
+    'Given a tag declaring a commit for a blob, When %s reads %s',
+    (name, expression, reads, once) => {
+      it('Then it types its own lookups, logs the conflict at each read and names no object', async () => {
+        // Arrange
+        const { ctx, errors, blob } = await seedMistypedTag();
+        const sut = name === 'evaluateRevision' ? evaluateRevision : resolveRevision;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, expression);
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect({ code: (caught as TsgitError).data.code, errors }).toEqual({
+          code: 'OBJECT_NOT_FOUND',
+          errors: Array.from({ length: reads }, () => once(blob)).flat(),
+        });
+      });
+    },
+  );
 });
