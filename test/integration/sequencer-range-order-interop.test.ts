@@ -10,7 +10,8 @@
  *   bucket:         cross-tool-interop
  *   unique:         ranges and plain commits seed one date-ordered limited walk, so skewed exclusions, duplicates and equal-date ties pick git's commits in git's order
  */
-import { cpSync, existsSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdtempSync, realpathSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -134,9 +135,12 @@ beforeAll(() => {
   if (GIT_AVAILABLE) buildHistory(fixture);
 });
 
-afterAll(() => {
-  rmSync(root, { recursive: true, force: true });
-});
+/** Removing every replayed copy outlasts the default hook budget on a loaded machine. */
+const TEARDOWN_TIMEOUT_MS = 60_000;
+
+afterAll(async () => {
+  await rm(root, { recursive: true, force: true });
+}, TEARDOWN_TIMEOUT_MS);
 
 describe.skipIf(!GIT_AVAILABLE)('interop — cherry-pick range order', () => {
   describe.each([
