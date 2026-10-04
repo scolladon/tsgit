@@ -1036,7 +1036,9 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list interop — object types assigned in o
 
   /** git's walk death, rebuilt from the refusal's data. */
   const walkFatalOf = (error: unknown): string => {
-    const commit = (error as { data?: { commit?: string } }).data?.commit;
+    const data = (error as { data?: { code?: string; commit?: string; id?: string } }).data;
+    if (data?.code === 'BAD_TREE_OBJECT') return `fatal: bad tree object ${data.id}\n`;
+    const commit = data?.commit;
     return commit === undefined
       ? 'fatal: revision walk setup failed\n'
       : `fatal: Failed to traverse parents of commit ${commit}\n`;
@@ -1146,6 +1148,32 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list interop — object types assigned in o
 
         // Act
         const result = await settled(() => sut(ctx, { wants: [child] }));
+
+        // Assert
+        expect(peer.exitCode).toBe(128);
+        expect(walkStderrOf(logged, result)).toBe(peer.stderr);
+      });
+    });
+  });
+
+  describe.each([
+    ['a commit whose tree is', (dir: string, blob: string) => writeLiteralCommit(dir, blob, [])],
+    [
+      'a tree whose tree-mode entry is',
+      (dir: string, blob: string) => writeLiteralTree(dir, [['40000', 'sub', blob]]),
+    ],
+  ] as const)('Given %s a blob nothing typed before', (_label, holderOf) => {
+    describe('When rev-list --objects walks it on both tools', () => {
+      it('Then both find it is not a tree and die on the same bad tree object', async () => {
+        // Arrange
+        const { dir, blob } = await buildMistypedTagFixture();
+        const holder = holderOf(dir, blob);
+        const peer = tryRunGitWithExit(['-C', dir, 'rev-list', '--objects', holder]);
+        const { ctx, logged } = capturing(dir);
+        const sut = revList;
+
+        // Act
+        const result = await settled(() => sut(ctx, { wants: [holder], objects: true }));
 
         // Assert
         expect(peer.exitCode).toBe(128);

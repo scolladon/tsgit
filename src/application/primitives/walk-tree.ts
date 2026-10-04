@@ -32,6 +32,7 @@ interface WalkConfig {
   readonly maxDepth: number;
   readonly maxEntries: number;
   readonly pathBytes: boolean;
+  readonly strictSubtrees: boolean;
   readonly pathHasher?: PathHasher;
   readonly skipTree?: (id: ObjectId) => boolean;
 }
@@ -133,6 +134,7 @@ async function resolveWalkConfig(
     maxDepth: options?.maxDepth ?? (await resolveMaxTreeDepth(ctx)),
     maxEntries: options?.maxEntries ?? MAX_FLAT_TREE_ENTRIES,
     pathBytes: options?.pathBytes ?? false,
+    strictSubtrees: options?.strictSubtrees ?? false,
     ...(options?.pathHasher !== undefined ? { pathHasher: options.pathHasher } : {}),
     ...(options?.skipTree !== undefined ? { skipTree: options.skipTree } : {}),
   };
@@ -269,12 +271,19 @@ export async function* walkTree(
     const { path, entry, nameHash, pathBytes, descend } = nextFrameEntry(config, counter, frame);
     yield buildYieldedEntry(path, entry, nameHash, pathBytes);
     if (!descend) continue;
-    const subtreeObj = await readObject(config.ctx, entry.id);
-    if (subtreeObj.type === 'tree') {
-      const childPrefix = buildChildPrefix(config, frame, path, entry, nameHash);
-      stack.push(enterTree(config.maxDepth, subtreeObj, childPrefix, frame.depth + 1, ancestry));
-    }
+    const subtree = await readSubtree(config, entry.id);
+    if (subtree === undefined) continue;
+    const childPrefix = buildChildPrefix(config, frame, path, entry, nameHash);
+    stack.push(enterTree(config.maxDepth, subtree, childPrefix, frame.depth + 1, ancestry));
   }
+}
+
+/** The subtree a directory entry names; anything else is skipped, or refused when strict. */
+async function readSubtree(config: WalkConfig, id: ObjectId): Promise<Tree | undefined> {
+  const object = await readObject(config.ctx, id);
+  if (object.type === 'tree') return object;
+  if (config.strictSubtrees) throw unexpectedObjectType('tree', object.type, id);
+  return undefined;
 }
 
 function shouldRecurse(recursive: boolean, mode: string): boolean {

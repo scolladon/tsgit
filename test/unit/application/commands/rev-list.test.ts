@@ -1865,4 +1865,44 @@ describe('revList: object types assigned during one invocation', () => {
       });
     });
   });
+
+  describe('Given a commit whose tree is a blob nothing typed before', () => {
+    describe('When revList walks its objects', () => {
+      it('Then the object is not a tree and the walk dies on a bad tree object', async () => {
+        // Arrange
+        const { ctx, logged, blob } = await seedMistypedTag();
+        const named = await writeCommitNaming(ctx, blob, []);
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, { wants: [named], objects: true }));
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'BAD_TREE_OBJECT', id: blob },
+          logged: [`Object ${blob} not a tree`],
+        });
+      });
+    });
+  });
+
+  describe('Given a wanted tree whose tree-mode entry is a blob nothing typed before', () => {
+    describe('When revList walks its objects', () => {
+      it('Then the entry is not a tree and the walk dies on a bad tree object', async () => {
+        // Arrange
+        const { ctx, logged, blob } = await seedMistypedTag();
+        const holder = await writeTreeOf(ctx, [[TREE_MODE, 'sub', blob]]);
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, { wants: [holder], objects: true }));
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'BAD_TREE_OBJECT', id: blob },
+          logged: [`Object ${blob} not a tree`],
+        });
+      });
+    });
+  });
 });

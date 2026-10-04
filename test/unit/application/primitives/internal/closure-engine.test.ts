@@ -2847,3 +2847,54 @@ describe('computeClosure — bitmap search across object sources', () => {
     });
   });
 });
+
+describe('computeClosure — a tree stored as a blob, with no type table', () => {
+  describe('Given a commit whose tree is a blob', () => {
+    describe('When an untyped walk lists its objects', () => {
+      it('Then the root read refuses as an unexpected object type', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blob = await writeBlob(ctx, 'not a tree');
+        const commit = await writeCommit(ctx, blob, [], 'm');
+        const sut = computeClosure;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, { wants: [commit], not: [], objects: true, tier: 'walk' });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'UNEXPECTED_OBJECT_TYPE',
+          expected: 'tree',
+          actual: 'blob',
+          id: blob,
+        });
+      });
+    });
+  });
+
+  describe('Given a wanted tree whose directory entry is a blob', () => {
+    describe('When an untyped walk lists its objects', () => {
+      it('Then the entry is listed and its descent skipped', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const blob = await writeBlob(ctx, 'not a tree');
+        const holder = await writeTree(ctx, [treeEntry('40000' as FileMode, 'sub', blob)]);
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, { wants: [holder], not: [], objects: true, tier: 'walk' });
+
+        // Assert
+        expect(result.objects.map(({ id, type }) => ({ id, type }))).toEqual([
+          { id: holder, type: 'tree' },
+          { id: blob, type: 'tree' },
+        ]);
+      });
+    });
+  });
+});

@@ -24,7 +24,8 @@
 
 import { revisionWalkFailed } from '../../../domain/commands/error.js';
 import type { TsgitError } from '../../../domain/error.js';
-import { treeEntryTypeMismatch } from '../../../domain/objects/error.js';
+import { errorDataCode } from '../../../domain/error-data-code.js';
+import { badTreeObject, treeEntryTypeMismatch } from '../../../domain/objects/error.js';
 import {
   type Commit,
   type FilePath,
@@ -209,11 +210,38 @@ async function emitTree(
 ): Promise<void> {
   if (scope.marked.has(treeId) || scope.emitted.has(treeId)) return;
   emit({ id: treeId, type: 'tree', path: ROOT_PATH, nameHash: PACK_NAME_HASH_SEED });
+  try {
+    await emitTreeContents(ctx, treeId, scope, emit);
+  } catch (error) {
+    throw asBadTree(ctx, scope, error);
+  }
+}
+
+/**
+ * git's `process_tree` parses a tree before listing it: under typing, a tree
+ * stored as something else is `Object X not a tree`, then `bad tree object X`.
+ */
+const asBadTree = (ctx: Context, scope: TreeEmitScope, error: unknown): unknown => {
+  if (scope.objectTypes === undefined || errorDataCode(error) !== 'UNEXPECTED_OBJECT_TYPE') {
+    return error;
+  }
+  const { id } = (error as TsgitError).data as { readonly id: ObjectId };
+  ctx.logger?.error?.(`Object ${id} not a tree`, { id });
+  return badTreeObject(id);
+};
+
+async function emitTreeContents(
+  ctx: Context,
+  treeId: ObjectId,
+  scope: TreeEmitScope,
+  emit: Emit,
+): Promise<void> {
   const skipTree = (id: ObjectId): boolean => scope.marked.has(id) || scope.emitted.has(id);
   for await (const entry of walkTree(ctx, treeId, {
     pathHasher: PACK_NAME_HASH_V1,
     maxDepth: scope.maxDepth,
     skipTree,
+    strictSubtrees: scope.objectTypes !== undefined,
   })) {
     if (isGitlink(entry.mode)) continue;
     const type = isDirectory(entry.mode) ? 'tree' : 'blob';

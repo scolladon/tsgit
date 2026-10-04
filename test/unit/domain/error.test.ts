@@ -458,6 +458,18 @@ describe('domain error — AdapterError', () => {
       });
     });
 
+    describe('Given BAD_TREE_OBJECT', () => {
+      describe('When reading message', () => {
+        it("Then reads as git's walk death on the tree", () => {
+          // Arrange & Act
+          const result = new TsgitErrorClass({ code: 'BAD_TREE_OBJECT', id: 'abc123' as never });
+
+          // Assert
+          expect(result.message).toBe('BAD_TREE_OBJECT: bad tree object abc123');
+        });
+      });
+    });
+
     describe('Given TREE_DEPTH_EXCEEDED', () => {
       describe('When reading message', () => {
         it('Then contains depth', () => {

@@ -241,6 +241,13 @@ export interface WalkTreeOptions {
    * called for a blob or a gitlink entry. Absent, the walk is unchanged.
    */
   readonly skipTree?: (id: ObjectId) => boolean;
+  /**
+   * When true, a directory entry naming an object stored as anything but a
+   * tree refuses with `UNEXPECTED_OBJECT_TYPE` once the walk reads it to
+   * descend, as git's tree walk does. Default `false`: the entry is yielded
+   * and its descent skipped.
+   */
+  readonly strictSubtrees?: boolean;
 }
 
 export interface WalkWorkingTreeEntry {

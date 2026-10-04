@@ -309,6 +309,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `unexpected object type: expected=${data.expected} actual=${data.actual} id=${data.id}`;
     case 'TREE_CYCLE_DETECTED':
       return `tree cycle detected: ${data.id}`;
+    case 'BAD_TREE_OBJECT':
+      return `bad tree object ${data.id}`;
     case 'TREE_ENTRY_TYPE_MISMATCH':
       return `entry '${data.entry}' in tree ${data.tree} has ${data.mode} mode, but is not a ${data.mode}`;
     case 'TREE_DEPTH_EXCEEDED':

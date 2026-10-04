@@ -46,6 +46,8 @@ export type DomainObjectError =
       readonly id: ObjectId;
     }
   | { readonly code: 'TREE_CYCLE_DETECTED'; readonly id: ObjectId }
+  /** git's `bad tree object <id>`: a tree the object walk could not parse as one. */
+  | { readonly code: 'BAD_TREE_OBJECT'; readonly id: ObjectId }
   | {
       /** git's `entry '<entry>' in tree <tree> has <mode> mode, but is not a <mode>`. */
       readonly code: 'TREE_ENTRY_TYPE_MISMATCH';
@@ -131,6 +133,9 @@ export const unexpectedObjectType = (
   actual: ObjectType,
   id: ObjectId,
 ): TsgitError => new TsgitError({ code: 'UNEXPECTED_OBJECT_TYPE', expected, actual, id });
+
+export const badTreeObject = (id: ObjectId): TsgitError =>
+  new TsgitError({ code: 'BAD_TREE_OBJECT', id });
 
 export const treeCycleDetected = (id: ObjectId): TsgitError =>
   new TsgitError({ code: 'TREE_CYCLE_DETECTED', id });
