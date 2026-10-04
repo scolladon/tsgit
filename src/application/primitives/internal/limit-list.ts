@@ -298,12 +298,15 @@ const typeParsed = async (state: LimitState, id: ObjectId): Promise<boolean> => 
   const table = state.options.objectTypes;
   if (table === undefined || state.typed.has(id)) return true;
   const body = state.bodies.get(id);
-  if (body !== undefined) {
-    state.typed.add(id);
-    return typeWalkedCommit(state.ctx, table, body);
+  if (body === undefined) {
+    if (state.fromGraph.has(id)) typeGraphParents(state, table, id);
+    return true;
   }
-  if (state.fromGraph.has(id)) typeGraphParents(state, table, id);
-  return true;
+  // git marks a commit parsed only once its parse succeeds: a failed one is
+  // parsed, and fails, again at every reach.
+  const typed = await typeWalkedCommit(state.ctx, table, body);
+  if (typed) state.typed.add(id);
+  return typed;
 };
 
 /**
@@ -338,19 +341,12 @@ const processUninterestingParents = async (
   const parsed = await Promise.all(parents.map((parent) => parse(state, parent, true)));
   for (const [at, parent] of parents.entries()) {
     const entry = parsed[at];
-    if (entry === undefined || !(await typeGently(state, parent, entry))) continue;
+    if (entry === undefined || !(await typeParsed(state, parent))) continue;
     markParentsUninteresting(state, parent);
     if (state.seen.has(parent)) continue;
     state.seen.add(parent);
     enqueue(state, parent, entry);
   }
-};
-
-/** A gentle parse that failed typing leaves the commit parsed with no parents, as git's does. */
-const typeGently = async (state: LimitState, id: ObjectId, parsed: Parsed): Promise<boolean> => {
-  if (await typeParsed(state, id)) return true;
-  remember(state, id, { ...parsed, parents: [] });
-  return false;
 };
 
 /** git's `mark_parents_uninteresting`: recurse only through parsed commits. */

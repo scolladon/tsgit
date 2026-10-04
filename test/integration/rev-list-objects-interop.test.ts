@@ -1278,6 +1278,53 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list interop — object types assigned in o
     });
   });
 
+  describe.each([
+    ['a second excluded commit', 8, false],
+    ['an included commit', 7, true],
+  ] as const)(
+    'Given a commit whose second parent is a blob tip, reached by an excluded commit then by %s',
+    (_label, offset, included) => {
+      describe('When rev-list limits the walk on both tools', () => {
+        it('Then both parse it again at each reach and agree on what follows', async () => {
+          // Arrange
+          const { dir, blob } = await buildMistypedTagFixture();
+          const empty = emptyTreeOf(dir);
+          const dated = (parents: ReadonlyArray<string>, at: number): string =>
+            runGit(['-C', dir, 'hash-object', '-t', 'commit', '-w', '--stdin', '--literally'], {
+              input: `tree ${empty}\n${parents.map((p) => `parent ${p}\n`).join('')}${IDENT_LINES.replaceAll('1700000000', String(1700000000 + at))}`,
+            }).trim();
+          const base = dated([], 0);
+          const failing = dated([base, blob], 5);
+          const excluded = dated([failing], 9);
+          const second = dated([failing], offset);
+          const wants = included ? [blob, second] : [blob, dated([base], 1)];
+          const not = included ? [excluded] : [excluded, second];
+          const notArgs = not.map((id) => `^${id}`);
+          const peer = tryRunGitWithExit(['-C', dir, 'rev-list', ...wants, ...notArgs]);
+          const { ctx, logged } = capturing(dir);
+          const sut = revList;
+
+          // Act
+          let stdout = '';
+          let fatal = '';
+          try {
+            const result = await sut(ctx, { wants, not });
+            stdout = result.entries.map((entry) => `${entry.id}\n`).join('');
+          } catch (error) {
+            fatal = walkFatalOf(error);
+          }
+
+          // Assert
+          const errors = logged.map((line) => `error: ${line}\n`).join('');
+          expect({ stdout, stderr: errors + fatal }).toEqual({
+            stdout: peer.stdout,
+            stderr: peer.stderr,
+          });
+        });
+      });
+    },
+  );
+
   /** A tree stored as spelt: `[mode, name, id]` entries, whatever their objects are. */
   const writeLiteralTree = (
     dir: string,

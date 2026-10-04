@@ -2024,4 +2024,88 @@ describe('revList: object types assigned during one invocation', () => {
       });
     });
   });
+
+  describe('Given a blob wanted and a commit naming it as its second parent, reached again after a gentle parse failed', () => {
+    const writeAt = (
+      ctx: Context,
+      parents: ReadonlyArray<ObjectId>,
+      tree: ObjectId,
+      at: number,
+    ) => {
+      const signature = { ...AUTHOR, timestamp: AUTHOR.timestamp + at };
+      return writeObject(ctx, {
+        type: 'commit',
+        id: '' as ObjectId,
+        data: {
+          tree,
+          parents,
+          author: signature,
+          committer: signature,
+          message: `m${at}\n`,
+          extraHeaders: [],
+        },
+      });
+    };
+
+    const seedFailingParse = async () => {
+      const seeded = await seedMistypedTag();
+      const { ctx, blob } = seeded;
+      const empty = await writeEmptyTree(ctx);
+      const base = await writeAt(ctx, [], empty, 0);
+      const failing = await writeAt(ctx, [base, blob], empty, 5);
+      return { ...seeded, empty, base, failing, writeAt };
+    };
+
+    describe('When a second excluded commit reaches it', () => {
+      it('Then the parse fails and logs again, and the shared base is listed', async () => {
+        // Arrange
+        const { ctx, logged, blob, empty, base, failing } = await seedFailingParse();
+        const first = await writeAt(ctx, [failing], empty, 9);
+        const second = await writeAt(ctx, [failing], empty, 8);
+        const included = await writeAt(ctx, [base], empty, 1);
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, { wants: [blob, included], not: [first, second] });
+
+        // Assert
+        const failure = [
+          `object ${blob} is a blob, not a commit`,
+          `bad parent ${blob} in commit ${failing}`,
+        ];
+        expect({ entries: result.entries, logged }).toEqual({
+          entries: [
+            { id: included, type: 'commit' },
+            { id: base, type: 'commit' },
+          ],
+          logged: [...failure, ...failure],
+        });
+      });
+    });
+
+    describe('When an included commit reaches it', () => {
+      it('Then the parse fails again and the walk setup fails', async () => {
+        // Arrange
+        const { ctx, logged, blob, empty, failing } = await seedFailingParse();
+        const excluded = await writeAt(ctx, [failing], empty, 9);
+        const included = await writeAt(ctx, [failing], empty, 7);
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() =>
+          sut(ctx, { wants: [blob, included], not: [excluded] }),
+        );
+
+        // Assert
+        const failure = [
+          `object ${blob} is a blob, not a commit`,
+          `bad parent ${blob} in commit ${failing}`,
+        ];
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'REVISION_WALK_FAILED' },
+          logged: [...failure, ...failure],
+        });
+      });
+    });
+  });
 });
