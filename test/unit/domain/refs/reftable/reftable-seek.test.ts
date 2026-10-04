@@ -11,6 +11,7 @@ import { ObjectId } from '../../../../../src/domain/objects/index.js';
 import {
   iterateReftableRefs,
   iterateReftableRefsFrom,
+  lookupReftableRef,
   parseReftable,
   type Reftable,
   type ReftableRefRecord,
@@ -110,6 +111,35 @@ const buildForeignIndexTable = (): Reftable => {
       refIndexPosition: indexBlockStart,
     }),
   );
+};
+
+/**
+ * 174 refs in 128-byte blocks: the ref index is one block whose aligned
+ * successor lands inside the footer, on a CRC byte that reads as an index
+ * block type. git bounds every block read by the footer's start, so it reads
+ * the table and finds nothing past its last key.
+ */
+const buildFooterAdjacentIndexTable = async (): Promise<Reftable> => {
+  const ctx = createMemoryContext();
+  const refs = Array.from({ length: 174 }, (_, index) => ({
+    name: `refs/heads/nnnnnnnnn${String(index).padStart(5, '0')}` as RefName,
+    updateIndex: 1n,
+    value: { kind: 'direct' as const, id: ObjectId.fromRaw(new Uint8Array(20).fill(0x11)) },
+  }));
+  const bytes = await serializeReftable(
+    refs,
+    [],
+    {
+      hashId: 'sha1',
+      blockSize: 128,
+      restartInterval: 6,
+      indexObjects: false,
+      minUpdateIndex: 1n,
+      maxUpdateIndex: 1n,
+    },
+    ctx.compressor.deflate,
+  );
+  return parseReftable(bytes);
 };
 
 describe('reftable — the seeked ref walk', () => {
@@ -228,6 +258,36 @@ describe('reftable — the seeked ref walk', () => {
 
         // Assert
         expect(seen).toEqual(['refs/heads/aaa', 'refs/heads/zzz']);
+      });
+    });
+  });
+
+  describe('Given a ref index whose aligned successor falls inside the footer', () => {
+    describe('When the walk is seeked past every name the table carries', () => {
+      it('Then it yields nothing, the footer never read as a block', async () => {
+        // Arrange
+        const table = await buildFooterAdjacentIndexTable();
+        const sut = namesFrom;
+
+        // Act
+        const result = sut(table, 'refs/heads/~');
+
+        // Assert
+        expect(result).toEqual([]);
+      });
+    });
+
+    describe('When a name sorting past every key is looked up', () => {
+      it('Then it is absent, as git reads it', async () => {
+        // Arrange
+        const table = await buildFooterAdjacentIndexTable();
+        const sut = lookupReftableRef;
+
+        // Act
+        const result = sut(table, 'refs/heads/zzz' as RefName);
+
+        // Assert
+        expect(result).toBeUndefined();
       });
     });
   });
