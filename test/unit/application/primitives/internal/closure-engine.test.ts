@@ -573,11 +573,11 @@ describe('computeClosure', () => {
     });
   });
 
-  describe('Given the same shared-subtree not tree, with objects: false', () => {
+  describe('Given the same shared-subtree not tree as the want commit tree', () => {
     describe('When computeClosure marks it uninteresting', () => {
       it('Then the shared subtree is read once, not once per reference', async () => {
-        // Arrange — objects: false keeps the want side from walking any tree,
-        // so every read of `sharedTreeId` is one the marking pass made.
+        // Arrange — the want commit's tree is the marked one, so the want side
+        // never walks it and every read of `sharedTreeId` is the marking pass's.
         const ctx = await buildSeededContext();
         const sharedBlobId = await writeBlob(ctx, 'shared-leaf');
         const sharedTreeId = await writeTree(ctx, [
@@ -592,7 +592,7 @@ describe('computeClosure', () => {
 
         // Act
         const reads = await countLooseReadsOf(ctx, sharedTreeId, () =>
-          sut(ctx, { tier: 'walk', wants: [commitId], not: [outerTreeId], objects: false }),
+          sut(ctx, { tier: 'walk', wants: [commitId], not: [outerTreeId], objects: true }),
         );
 
         // Assert
@@ -776,7 +776,7 @@ describe('computeClosure', () => {
           tier: 'walk',
           wants: [commitId],
           not: [notTreeId],
-          objects: false,
+          objects: true,
         });
 
         // Assert — no throw; the unrelated want commit is still emitted
@@ -798,7 +798,7 @@ describe('computeClosure', () => {
         // Act
         let caught: unknown;
         try {
-          await sut(ctx, { tier: 'walk', wants: [commitId], not: [notTreeId], objects: false });
+          await sut(ctx, { tier: 'walk', wants: [commitId], not: [notTreeId], objects: true });
         } catch (err) {
           caught = err;
         }
@@ -829,7 +829,7 @@ describe('computeClosure', () => {
         // Act
         let caught: unknown;
         try {
-          await sut(ctx, { tier: 'walk', wants: [commitId], not: [notTreeId], objects: false });
+          await sut(ctx, { tier: 'walk', wants: [commitId], not: [notTreeId], objects: true });
         } catch (err) {
           caught = err;
         }
@@ -862,7 +862,7 @@ describe('computeClosure', () => {
           tier: 'walk',
           wants: [commitId],
           not: [notTreeId],
-          objects: false,
+          objects: true,
         });
 
         // Assert — no throw; the unrelated want commit is still emitted
@@ -884,7 +884,7 @@ describe('computeClosure', () => {
         // Act
         let caught: unknown;
         try {
-          await sut(ctx, { tier: 'walk', wants: [commitId], not: [notTreeId], objects: false });
+          await sut(ctx, { tier: 'walk', wants: [commitId], not: [notTreeId], objects: true });
         } catch (err) {
           caught = err;
         }

@@ -77,7 +77,7 @@ const walkBundle = async (
   haves: ReadonlyArray<ObjectId>,
 ): Promise<BundleWalk> => {
   if (haves.length === 0) return NOTHING_EXCLUDED;
-  const marks = await markNotSide(ctx, haves);
+  const marks = await markNotSide(ctx, haves, { objects: true });
   const from = await Promise.all(
     wants.map((want) => resolveTagChain(ctx, undefined, want, IGNORE_TAG)),
   );

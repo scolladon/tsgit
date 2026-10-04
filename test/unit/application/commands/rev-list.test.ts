@@ -2176,4 +2176,32 @@ describe('revList: object types assigned during one invocation', () => {
       });
     });
   });
+
+  describe('Given an excluded tree listing the oldest commit of a line with blob mode', () => {
+    describe('When revList lists commits only', () => {
+      it('Then the tree is never marked and every commit is listed', async () => {
+        // Arrange
+        const { ctx, logged } = await seedMistypedTag();
+        const empty = await writeEmptyTree(ctx);
+        const oldest = await writeCommitNaming(ctx, empty, []);
+        const middle = await writeCommitNaming(ctx, empty, [oldest]);
+        const newest = await writeCommitNaming(ctx, empty, [middle]);
+        const excluded = await writeTreeOf(ctx, [[BLOB_MODE, 'f', oldest]]);
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, { wants: [newest], not: [excluded] });
+
+        // Assert
+        expect({ entries: result.entries, logged }).toEqual({
+          entries: [
+            { id: newest, type: 'commit' },
+            { id: middle, type: 'commit' },
+            { id: oldest, type: 'commit' },
+          ],
+          logged: [],
+        });
+      });
+    });
+  });
 });

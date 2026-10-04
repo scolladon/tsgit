@@ -50,6 +50,14 @@ export interface NotMarks {
 
 interface NotMarksAccumulator extends NotMarks {
   readonly commitTips: ObjectId[];
+  readonly objectsListed: boolean;
+}
+
+/** What the walk marking the `not` side lists, and the table it types into. */
+export interface NotSideScope {
+  /** Whether trees and blobs are listed — without them, git never marks one. */
+  readonly objects: boolean;
+  readonly objectTypes?: ObjectTypeTable;
 }
 
 /**
@@ -142,9 +150,10 @@ async function markUninteresting(
     acc.commitTips.push(id);
     return;
   }
+  // git's `handle_commit` drops a tree or blob tip unless the walk lists
+  // objects, and otherwise marks it outright, a tree with its contents.
+  if (!acc.objectsListed) return;
   if (obj.type === 'tree') {
-    // A directly-named tree/blob `not` id is marked outright — git's
-    // `handle_commit` marks a pending object of that type directly.
     await markTree(ctx, id, acc);
     return;
   }
@@ -157,13 +166,15 @@ async function markUninteresting(
 export async function markNotSide(
   ctx: Context,
   not: ReadonlyArray<ObjectId>,
-  objectTypes?: ObjectTypeTable,
+  scope: NotSideScope,
 ): Promise<NotMarks> {
+  const { objects: objectsListed, objectTypes } = scope;
   const acc: NotMarksAccumulator = {
     commitTips: [],
     objects: new Set<ObjectId>(),
     seenTrees: new Set<ObjectId>(),
     maxDepth: await resolveMaxTreeDepth(ctx),
+    objectsListed,
     ...(objectTypes === undefined ? {} : { objectTypes }),
   };
   for (const notId of not) {

@@ -1365,6 +1365,31 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list interop — object types assigned in o
     },
   );
 
+  describe('Given an excluded tree listing the oldest commit of a line with blob mode', () => {
+    describe('When rev-list lists commits only on both tools', () => {
+      it('Then neither marks the tree and both list every commit in order', async () => {
+        // Arrange
+        const { dir } = await buildMistypedTagFixture();
+        const empty = emptyTreeOf(dir);
+        const oldest = writeLiteralCommit(dir, empty, []);
+        const newest = writeLiteralCommit(dir, empty, [writeLiteralCommit(dir, empty, [oldest])]);
+        const excluded = writeLiteralTree(dir, [['100644', 'f', oldest]]);
+        const peer = tryRunGitWithExit(['-C', dir, 'rev-list', `^${excluded}`, newest]);
+        const { ctx, logged } = capturing(dir);
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, { wants: [newest], not: [excluded] });
+
+        // Assert
+        expect({
+          stdout: result.entries.map((entry) => `${entry.id}\n`).join(''),
+          stderr: logged.map((line) => `error: ${line}\n`).join(''),
+        }).toEqual({ stdout: peer.stdout, stderr: peer.stderr });
+      });
+    });
+  });
+
   /** A tree stored as spelt: `[mode, name, id]` entries, whatever their objects are. */
   const writeLiteralTree = (
     dir: string,
