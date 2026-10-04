@@ -1,10 +1,6 @@
 import { TsgitError } from '../../domain/error.js';
 import { indexOf } from '../../domain/objects/encoding.js';
-import {
-  invalidObjectHeader,
-  isObjectNotFound,
-  objectNotFound,
-} from '../../domain/objects/error.js';
+import { isObjectNotFound, objectNotFound } from '../../domain/objects/error.js';
 import { parseHeader } from '../../domain/objects/header.js';
 import type { GitObject, ObjectId, ObjectType } from '../../domain/objects/index.js';
 import {
@@ -385,10 +381,6 @@ async function readLooseDeclaredHeader(
   return resolveDeclaredHeaderFromPrefix(ctx, id, prefix, location);
 }
 
-function noNulTerminator(id: ObjectId): TsgitError {
-  return invalidObjectHeader(`no NUL terminator found in inflated object ${id}`);
-}
-
 /** One header probe's outcome: the declared size once a NUL is found within
  *  `LOOSE_HEADER_WINDOW`; `tooLong` once the probe's own output fills that
  *  window without one; `incomplete` when the probed bytes ran out first,
@@ -431,8 +423,10 @@ async function probeDeclaredSize(
  * ambiguous as a clean `incomplete` outcome: only a prefix that already hit
  * the read budget (`LOOSE_HEADER_PROBE_BYTES`; more of the file may exist
  * unread) routes either one to the whole-file fallback. A prefix that IS
- * already the whole file propagates its own fault, or its plain no-NUL
- * error, as-is. A `tooLong` outcome always throws immediately regardless of
+ * already the whole file propagates its own fault as-is; a stream that ends,
+ * or is cut short, before any NUL is git's `header … too long` — its
+ * `git_inflate` takes a starved stream for a clean stop, and an unterminated
+ * header for one longer than its buffer. A `tooLong` outcome always throws immediately regardless of
  * how much of the file is left unread — git's own fixed-size header buffer
  * refuses the same way independent of the object's total length, so it is
  * checked BEFORE the fallback decision, never inside the catch a hard fault
@@ -455,7 +449,7 @@ async function resolveDeclaredHeaderFromPrefix(
   if (outcome.status === 'found') return outcome.header;
   if (outcome.status === 'tooLong') throw looseHeaderTooLong(id);
   if (isPrefixTruncated) return readDeclaredHeaderFromWholeFile(ctx, id, location);
-  throw noNulTerminator(id);
+  throw looseHeaderTooLong(id);
 }
 
 /** The rare fallback: a header whose NUL never appeared inside the probe
@@ -471,8 +465,7 @@ async function readDeclaredHeaderFromWholeFile(
   const compressed = await looseFsFor(ctx, location).read(loosePathFor(ctx, id, location));
   const outcome = await probeDeclaredSize(ctx, compressed);
   if (outcome.status === 'found') return outcome.header;
-  if (outcome.status === 'tooLong') throw looseHeaderTooLong(id);
-  throw noNulTerminator(id);
+  throw looseHeaderTooLong(id);
 }
 
 async function resolveObjectMetadataWithContent(

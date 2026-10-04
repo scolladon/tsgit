@@ -486,7 +486,7 @@ describe('readDeclaredObjectSize', () => {
 
   describe('Given a whole-file fallback whose real payload decodes to under 32 bytes with no NUL', () => {
     describe('When readDeclaredObjectSize is called', () => {
-      it('Then rejects the no-NUL-terminator reason through the SAME capped probe, never header-too-long', async () => {
+      it("Then rejects with git's header-too-long reason through the SAME capped probe", async () => {
         // Arrange — the same empty-stored-block run pushes the payload past the
         // 1024-byte probe window, forcing the whole-file fallback; unlike the
         // "hello" row above, this payload never terminates with a NUL AND never
@@ -508,7 +508,7 @@ describe('readDeclaredObjectSize', () => {
           const data = (error as TsgitError).data;
           expect(data.code).toBe('INVALID_OBJECT_HEADER');
           if (data.code === 'INVALID_OBJECT_HEADER') {
-            expect(data.reason).toBe(`no NUL terminator found in inflated object ${id}`);
+            expect(data.reason).toBe(`header for ${id} too long, exceeds 32 bytes`);
           }
         }
       });
@@ -582,7 +582,7 @@ describe('readDeclaredObjectSize', () => {
 
   describe('Given a loose file whose entire content has no NUL but stays at or under 32 bytes', () => {
     describe('When readDeclaredObjectSize is called', () => {
-      it('Then rejects INVALID_OBJECT_HEADER with the no-NUL-terminator reason, with no whole-file fallback read', async () => {
+      it("Then rejects INVALID_OBJECT_HEADER with git's header-too-long reason, with no whole-file fallback read", async () => {
         // Arrange — the whole file fits inside the 1024-byte probe and never
         // reaches the 32-byte header cap, so the "never catch" branch applies:
         // no fallback, the plain no-NUL error propagates as-is. Warm the
@@ -605,7 +605,7 @@ describe('readDeclaredObjectSize', () => {
           const data = (error as TsgitError).data;
           expect(data.code).toBe('INVALID_OBJECT_HEADER');
           if (data.code === 'INVALID_OBJECT_HEADER') {
-            expect(data.reason).toBe(`no NUL terminator found in inflated object ${id}`);
+            expect(data.reason).toBe(`header for ${id} too long, exceeds 32 bytes`);
           }
         }
         // isPrefixTruncated correctly reads false here (the prefix IS the
@@ -772,7 +772,7 @@ describe('readDeclaredObjectSize', () => {
           const data = (error as TsgitError).data;
           expect(data.code).toBe('INVALID_OBJECT_HEADER');
           if (data.code === 'INVALID_OBJECT_HEADER') {
-            expect(data.reason).toBe(`no NUL terminator found in inflated object ${id}`);
+            expect(data.reason).toBe(`header for ${id} too long, exceeds 32 bytes`);
           }
         }
       });
