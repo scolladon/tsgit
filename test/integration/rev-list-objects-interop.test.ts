@@ -1085,6 +1085,27 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list interop — object types assigned in o
     },
   );
 
+  describe('Given a blob, an annotated tag of it and a tree wanted without --objects', () => {
+    describe('When rev-list lists them on both tools', () => {
+      it('Then neither lists anything, commits being all git shows then', async () => {
+        // Arrange
+        const { dir, blob } = await buildMistypedTagFixture();
+        runGit(['-C', dir, 'tag', '-a', 'tb', '-m', 'tb', blob]);
+        const tree = emptyTreeOf(dir);
+        const peer = runGit(['-C', dir, 'rev-list', blob, 'tb', tree]);
+        const sut = revList;
+
+        // Act
+        const result = await sut(createNodeContext({ workDir: dir }), {
+          wants: [blob, 'tb', tree],
+        });
+
+        // Assert
+        expect(result.entries.map((entry) => `${entry.id}\n`).join('')).toBe(peer);
+      });
+    });
+  });
+
   describe('Given a blob tip, a newer excluded line and an included line whose parents name it', () => {
     describe('When rev-list limits the walk on both tools', () => {
       it('Then both log the excluded line, go on, and fail the walk setup on the included one', async () => {

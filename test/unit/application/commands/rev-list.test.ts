@@ -281,20 +281,17 @@ describe('revList', () => {
         );
         __resetConfigCacheForTests();
         await tagCreate(ctx, { name: 'v-light', target: base });
-        const annotated = await tagCreate(ctx, {
-          name: 'v-annotated',
-          target: featureTip,
-          message: 'release',
-        });
+        await tagCreate(ctx, { name: 'v-annotated', target: featureTip, message: 'release' });
         const sut = revList;
 
         // Act
         const result = await sut(ctx, { all: true });
 
         // Assert
+        // Without objects git lists the commits alone, never the annotated tag.
         const ids = new Set(result.entries.map((e) => e.id));
-        expect(ids).toEqual(new Set([base, featureTip, annotated.id]));
-        expect(result.entries).toHaveLength(3);
+        expect(ids).toEqual(new Set([base, featureTip]));
+        expect(result.entries).toHaveLength(2);
       });
     });
   });
@@ -1620,6 +1617,34 @@ describe('revList: object types assigned during one invocation', () => {
 
         // Assert
         expect((caught as TsgitError).data.code).toBe('DECOMPRESS_FAILED');
+      });
+    });
+  });
+
+  describe('Given a blob and an annotated tag of it wanted without objects', () => {
+    describe('When revList lists them', () => {
+      it('Then nothing is listed, as git lists only commits then', async () => {
+        // Arrange
+        const { ctx, blob } = await seedMistypedTag();
+        const tag = await writeObject(ctx, {
+          type: 'tag',
+          id: '' as ObjectId,
+          data: {
+            object: blob,
+            objectType: 'blob',
+            tagName: 'b',
+            tagger: AUTHOR,
+            message: 'b\n',
+            extraHeaders: [],
+          },
+        });
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, { wants: [blob, tag] });
+
+        // Assert
+        expect(result).toEqual({ entries: [], count: 0 });
       });
     });
   });

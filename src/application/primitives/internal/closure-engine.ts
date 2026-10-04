@@ -565,7 +565,8 @@ async function walkClosure(ctx: Context, request: ClosureRequest): Promise<Closu
   };
   const { commitSeeds, pending } = await resolveWants(ctx, request);
   const walked = await listCommitSeeds(ctx, commitSeeds, marks, request);
-  await emitPending(ctx, pending, scope, emit);
+  // git shows a pending tag, tree or blob only when it lists objects at all.
+  if (request.objects) await emitPending(ctx, pending, scope, emit);
   await emitWalked(ctx, walked, scope, request, emit);
 
   return results;

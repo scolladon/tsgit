@@ -355,11 +355,11 @@ describe('computeClosure', () => {
         const sut = computeClosure;
 
         // Act
-        const result = await sut(ctx, { tier: 'walk', wants: [tagId], not: [], objects: false });
+        const result = await sut(ctx, { tier: 'walk', wants: [tagId], not: [], objects: true });
 
         // Assert — a tag has no path, so it carries nameHash 0, like a commit.
         const ids = new Set(result.objects.map((o) => o.id));
-        expect(ids).toEqual(new Set([tagId, commitId]));
+        expect(ids).toEqual(new Set([tagId, commitId, treeId, blobId]));
         expect(result.objects.find((o) => o.id === tagId)).toStrictEqual({
           id: tagId,
           type: 'tag',
@@ -386,21 +386,20 @@ describe('computeClosure', () => {
           tier: 'walk',
           wants: [outerTagId],
           not: [],
-          objects: false,
+          objects: true,
         });
 
         // Assert
         const ids = new Set(result.objects.map((o) => o.id));
-        expect(ids).toEqual(new Set([outerTagId, innerTagId, commitId]));
+        expect(ids).toEqual(new Set([outerTagId, innerTagId, commitId, treeId, blobId]));
       });
     });
   });
 
   describe('Given a want that resolves to a tree', () => {
-    describe('When computeClosure is called with objects: false', () => {
+    describe('When computeClosure is called with objects: true', () => {
       it('Then it contributes itself plus its own subtree', async () => {
-        // Arrange — the subtree is emitted regardless of `objects`, since a
-        // tree want has no parents to gate that flag against.
+        // Arrange
         const ctx = await buildSeededContext();
         const nestedBlobId = await writeBlob(ctx, 'nested');
         const subTreeId = await writeTree(ctx, [
@@ -418,7 +417,7 @@ describe('computeClosure', () => {
           tier: 'walk',
           wants: [rootTreeId],
           not: [],
-          objects: false,
+          objects: true,
         });
 
         // Assert
@@ -443,7 +442,7 @@ describe('computeClosure', () => {
         const sut = computeClosure;
 
         // Act
-        const result = await sut(ctx, { tier: 'walk', wants: [blobId], not: [], objects: false });
+        const result = await sut(ctx, { tier: 'walk', wants: [blobId], not: [], objects: true });
 
         // Assert — no path, and the directly-wanted-blob divergence: git
         // would use the pending object's own name, tsgit names it 0.
