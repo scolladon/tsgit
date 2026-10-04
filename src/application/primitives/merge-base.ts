@@ -1,4 +1,4 @@
-import { commitParseFailed } from '../../domain/commands/error.js';
+import { commitLookupFailed, commitParseFailed } from '../../domain/commands/error.js';
 import { BinaryHeap } from '../../domain/commit/binary-heap.js';
 import type { QueueEntry } from '../../domain/commit/priority-queue.js';
 import {
@@ -12,7 +12,11 @@ import { isObjectNotFound } from '../../domain/objects/error.js';
 import type { ObjectId } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
 import { lookupTypedCommitReference } from './internal/lookup-commit-reference.js';
-import { createObjectTypeTable } from './internal/object-type-table.js';
+import {
+  assignObjectType,
+  createObjectTypeTable,
+  type ObjectTypeTable,
+} from './internal/object-type-table.js';
 import {
   correctedCommitDatesEnabled,
   generationNumbersEnabled,
@@ -94,7 +98,54 @@ const readParsedMeta: ReadMeta<CommitMeta> = async (ctx, id) => {
   return meta;
 };
 
-const makeReadCommit = (ctx: Context): ReadCommit => memoizedReader(ctx, readParsedMeta);
+/**
+ * git's parse of a walk parent against the call's object table: from the
+ * graph, `fill_commit_in_graph` types each parent a commit and dies
+ * `could not find commit` on a conflict; from the object, `parse_commit_buffer`
+ * types the tree then each parent, and a conflict fails the parse.
+ */
+const typedParsedMeta =
+  (table: ObjectTypeTable): ReadMeta<CommitMeta> =>
+  async (ctx, id) => {
+    const meta = await readParsedMeta(ctx, id);
+    if (meta.source === 'graph') typeGraphParents(ctx, table, meta);
+    else if (!typeCommitPointers(ctx, table, id, meta)) throw commitParseFailed(id);
+    return meta;
+  };
+
+const typeGraphParents = (ctx: Context, table: ObjectTypeTable, meta: CommitMeta): void => {
+  for (const parent of meta.parents) {
+    if (!assignObjectType(ctx, table, parent, 'commit')) throw commitLookupFailed(parent);
+  }
+};
+
+const typeCommitPointers = (
+  ctx: Context,
+  table: ObjectTypeTable,
+  id: ObjectId,
+  meta: CommitMeta,
+): boolean => {
+  const conflict = pointerConflict(ctx, table, meta);
+  if (conflict === undefined) return true;
+  ctx.logger?.error?.(`${conflict.pointer} ${conflict.target} in commit ${id}`, { id });
+  return false;
+};
+
+/** The first of the commit's pointers whose typing conflicts, with git's name for it. */
+const pointerConflict = (
+  ctx: Context,
+  table: ObjectTypeTable,
+  meta: CommitMeta,
+): { readonly pointer: string; readonly target: ObjectId } | undefined => {
+  if (!assignObjectType(ctx, table, meta.tree, 'tree')) {
+    return { pointer: 'bad tree pointer', target: meta.tree };
+  }
+  const parent = meta.parents.find((id) => !assignObjectType(ctx, table, id, 'commit'));
+  return parent === undefined ? undefined : { pointer: 'bad parent', target: parent };
+};
+
+const makeReadCommit = (ctx: Context, table: ObjectTypeTable): ReadCommit =>
+  memoizedReader(ctx, typedParsedMeta(table));
 
 /** The commit's metadata, `undefined` — quietly — for an absent object or
  *  one of another type: how git's reachability callers parse their ends. */
@@ -536,17 +587,18 @@ export const mergeBase = async (
   options?: MergeBaseOptions,
 ): Promise<readonly ObjectId[]> => {
   if (commits.length === 0) throw invalidWalkInput('mergeBase requires at least one commit');
-  const looked = await lookUpArguments(ctx, commits, options?.octopus === true);
-  return mergeBasesOf(ctx, looked, options);
+  const table = createObjectTypeTable();
+  const looked = await lookUpArguments(ctx, table, commits, options?.octopus === true);
+  return mergeBasesOf(ctx, looked, options, table);
 };
 
 /** git's argument loop: each looked up in turn — `--octopus` last first. */
 const lookUpArguments = async (
   ctx: Context,
+  table: ObjectTypeTable,
   ids: readonly ObjectId[],
   lastFirst: boolean,
 ): Promise<ObjectId[]> => {
-  const table = createObjectTypeTable();
   const peeled: ObjectId[] = [];
   for (const id of lastFirst ? [...ids].reverse() : ids) {
     const commit = await lookupTypedCommitReference(ctx, table, id);
@@ -564,8 +616,9 @@ export const mergeBasesOf = async (
   ctx: Context,
   commits: readonly ObjectId[],
   options?: MergeBaseOptions,
+  table: ObjectTypeTable = createObjectTypeTable(),
 ): Promise<readonly ObjectId[]> => {
-  const read = makeReadCommit(ctx);
+  const read = makeReadCommit(ctx, table);
   const findAll = options?.all === true;
   const correctedCommitDates = await correctedCommitDatesEnabled(ctx);
   const bases =

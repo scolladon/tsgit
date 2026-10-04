@@ -1067,3 +1067,57 @@ describe.skipIf(!GIT_AVAILABLE)('branch -d reachability walk parse (interop)', (
     });
   });
 });
+
+describe.skipIf(!GIT_AVAILABLE)('mergeBase walk typing (interop)', () => {
+  let dir: string;
+  const ids = new Map<string, string>();
+
+  beforeAll(async () => {
+    dir = await makeRepo('walk-typing');
+    const c0 = datedCommit(dir, 'a', 1_700_000_000);
+    const c1 = datedCommit(dir, 'b', 1_700_000_001);
+    git(dir, 'commit-graph', 'write', '--reachable');
+    const tree = git(dir, 'rev-parse', `${c1}^{tree}`).trim();
+    const y = literally(dir, 'commit', commitBody(c1, [c1], 'y'));
+    const p = literally(dir, 'commit', commitBody(tree, [tree], 'p'));
+    ids.set('C1', c1);
+    ids.set('Z', literally(dir, 'commit', commitBody(tree, [y], 'z')));
+    ids.set('Q', literally(dir, 'commit', commitBody(tree, [p], 'q')));
+    ids.set('Y0', literally(dir, 'commit', commitBody(c0, [], 'y0')));
+    ids.set('Z1', literally(dir, 'commit', commitBody(tree, [c1], 'z1')));
+  }, SETUP_TIMEOUT);
+
+  afterAll(async () => rm(dir, { recursive: true, force: true }));
+
+  describe.each([
+    { label: 'a tree pointer naming an argument', args: ['C1', 'Z'], exitCode: 255 },
+    { label: 'a parent pointer naming a typed tree', args: ['C1', 'Q'], exitCode: 255 },
+    { label: 'a graph parent typed a tree', args: ['Y0', 'Z1'], exitCode: 128 },
+  ])('Given a walk reaching $label', ({ args, exitCode }) => {
+    describe('When both tools run merge-base --all', () => {
+      it("Then tsgit logs git's lines and refuses as git does", async () => {
+        // Arrange
+        const oids = args.map((name) => ids.get(name)!);
+        const peer = tryRunGitWithExit(['-C', dir, 'merge-base', '--all', ...oids]);
+        const logged: string[] = [];
+        const base = createNodeContext({ workDir: dir });
+        const ctx: Context = { ...base, logger: { error: (line: string) => logged.push(line) } };
+        const sut = mergeBase;
+
+        // Act
+        const caught = await sut(ctx, oids as ObjectId[], { all: true }).then(
+          () => undefined,
+          (error: unknown) =>
+            error as { readonly message: string; readonly data: { readonly code: string } },
+        );
+
+        // Assert
+        const prefix = caught?.data.code === 'COMMIT_LOOKUP_FAILED' ? 'fatal' : 'error';
+        expect({ exitCode: peer.exitCode, stderr: peer.stderr }).toEqual({
+          exitCode,
+          stderr: `${logged.map((line) => `error: ${line}\n`).join('')}${prefix}: ${caught?.message.replace(/^[A-Z_]+: /, '')}\n`,
+        });
+      });
+    });
+  });
+});

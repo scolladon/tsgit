@@ -11,12 +11,14 @@ import * as readObjectModule from '../../../../src/application/primitives/read-o
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type {
   AuthorIdentity,
+  Commit,
   FileMode,
   ObjectId,
   ObjectType,
 } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
+import { writeCommitGraph } from './fixtures.js';
 
 const AUTHOR: AuthorIdentity = {
   name: 'Ada',
@@ -61,6 +63,15 @@ const tagOf = (ctx: Context, target: ObjectId, objectType: ObjectType): Promise<
       extraHeaders: [],
     },
   });
+
+const commitsOf = async (ctx: Context, ids: ReadonlyArray<ObjectId>): Promise<Commit[]> => {
+  const commits: Commit[] = [];
+  for (const id of ids) {
+    const object = await readObjectModule.readObject(ctx, id);
+    if (object.type === 'commit') commits.push(object);
+  }
+  return commits;
+};
 
 const store = async (): Promise<Store> => {
   const logged: string[] = [];
@@ -384,6 +395,88 @@ describe('tryMergeBasesOf', () => {
 
         // Assert
         expect((result as Error).message).toBe('disk gone');
+      });
+    });
+  });
+});
+
+describe('mergeBase walk typing', () => {
+  const caughtOf = async (
+    { ctx, logged }: Store,
+    args: ReadonlyArray<ObjectId>,
+  ): Promise<{ readonly data: unknown; readonly logged: ReadonlyArray<string> }> => {
+    const sut = mergeBase;
+    const data = await sut(ctx, args, { all: true }).then(
+      () => undefined,
+      (error: { readonly data: unknown }) => error.data,
+    );
+    return { data, logged };
+  };
+
+  describe('Given a walk parent whose tree pointer names a commit the call already typed', () => {
+    describe('When mergeBase walks to it', () => {
+      it('Then it logs the conflicting tree pointer and refuses the parent it could not parse', async () => {
+        // Arrange
+        const repo = await store();
+        const pointing = await commitOf(repo.ctx, repo.commit, [repo.commit], 'y\n');
+        const child = await commitOf(repo.ctx, repo.tree, [pointing], 'z\n');
+
+        // Act
+        const result = await caughtOf(repo, [repo.commit, child]);
+
+        // Assert
+        expect(result).toEqual({
+          data: { code: 'COMMIT_PARSE_FAILED', id: pointing },
+          logged: [
+            `object ${repo.commit} is a commit, not a tree`,
+            `bad tree pointer ${repo.commit} in commit ${pointing}`,
+          ],
+        });
+      });
+    });
+  });
+
+  describe('Given a walk parent whose parent pointer names a tree the walk already typed', () => {
+    describe('When mergeBase walks to it', () => {
+      it('Then it logs the conflicting parent and refuses the parent it could not parse', async () => {
+        // Arrange
+        const repo = await store();
+        const pointing = await commitOf(repo.ctx, repo.tree, [repo.tree], 'p\n');
+        const child = await commitOf(repo.ctx, repo.tree, [pointing], 'q\n');
+
+        // Act
+        const result = await caughtOf(repo, [repo.commit, child]);
+
+        // Assert
+        expect(result).toEqual({
+          data: { code: 'COMMIT_PARSE_FAILED', id: pointing },
+          logged: [
+            `object ${repo.tree} is a tree, not a commit`,
+            `bad parent ${repo.tree} in commit ${pointing}`,
+          ],
+        });
+      });
+    });
+  });
+
+  describe('Given a graph-served walk parent whose own parent the call typed a tree', () => {
+    describe('When mergeBase walks to it', () => {
+      it('Then it logs the conflict and refuses the commit it could not find', async () => {
+        // Arrange
+        const repo = await store();
+        const served = await commitOf(repo.ctx, repo.tree, [repo.commit], 'c1\n');
+        await writeCommitGraph(repo.ctx, [await commitsOf(repo.ctx, [repo.commit, served])]);
+        const pointing = await commitOf(repo.ctx, repo.commit, [], 'y\n');
+        const child = await commitOf(repo.ctx, repo.tree, [served], 'z\n');
+
+        // Act
+        const result = await caughtOf(repo, [pointing, child]);
+
+        // Assert
+        expect(result).toEqual({
+          data: { code: 'COMMIT_LOOKUP_FAILED', id: repo.commit },
+          logged: [`object ${repo.commit} is a tree, not a commit`],
+        });
       });
     });
   });

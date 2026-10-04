@@ -46,6 +46,16 @@ read <id>` / `Object <id> not a commit` line goes to `ctx.logger.error` — git
 prints `error: could not parse commit <id>` and exits 255 (128 under
 `--octopus`).
 
+Each parse types its pointers into the call's one object table, the table
+the argument lookup filled. A commit read from its object types its tree a
+tree, then each parent a commit; a pointer an earlier read typed otherwise
+logs `object <x> is a <type>, not a <type>` and `bad tree pointer <x> in
+commit <id>` / `bad parent <x> in commit <id>`, then refuses
+`COMMIT_PARSE_FAILED` for that commit. A commit the commit-graph serves types
+only its parents (`fill_commit_in_graph`); a conflict there logs the same
+first line and refuses `COMMIT_LOOKUP_FAILED` naming the parent — git dies
+`could not find commit <x>`.
+
 ## Examples
 
 ```ts
