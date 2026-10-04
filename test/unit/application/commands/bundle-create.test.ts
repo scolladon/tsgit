@@ -1408,6 +1408,52 @@ describe('bundleCreate: object types assigned while enumerating', () => {
     });
   });
 
+  describe('Given a symmetric range whose walk reaches a parent the store lacks', () => {
+    describe('When bundleCreate reads it', () => {
+      it("Then it logs both of git's lines and refuses the whole range as one name", async () => {
+        // Arrange
+        const { ctx, logged, empty } = await buildTypingRepo();
+        const broken = await writeCommitNaming(ctx, empty, [MISSING]);
+        await setRef(ctx, 'refs/heads/broken', broken);
+        const sut = refusalOf;
+
+        // Act
+        const caught = await sut(ctx, { revs: [{ symmetricRange: ['root', 'broken'] }] });
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'OBJECT_NOT_FOUND', id: 'root...broken' },
+          logged: [`Could not read ${MISSING}`, `could not parse commit ${MISSING}`],
+        });
+      });
+    });
+  });
+
+  describe('Given a symmetric range whose walk fails and whose whole spelling names a commit', () => {
+    describe('When bundleCreate reads it', () => {
+      it('Then the commit the whole spelling names is the tip', async () => {
+        // Arrange
+        const { ctx, logged, empty, root } = await buildTypingRepo();
+        const alpha = await makeCommitObj(ctx, empty, [root], 'alpha - broken', 3);
+        await setRef(ctx, 'refs/heads/alpha', alpha);
+        await setRef(ctx, 'refs/heads/broken', await writeCommitNaming(ctx, empty, [MISSING]));
+        const sut = bundleCreate;
+
+        // Act
+        const result = await sut(ctx, {
+          revs: [{ tip: 'alpha' }, { symmetricRange: [':/alpha', 'broken'] }],
+        });
+
+        // Assert
+        expect({ refs: result.refs, objectCount: result.objectCount, logged }).toEqual({
+          refs: [{ name: 'refs/heads/alpha', oid: alpha }],
+          objectCount: 3,
+          logged: [`Could not read ${MISSING}`, `could not parse commit ${MISSING}`],
+        });
+      });
+    });
+  });
+
   describe('Given a symmetric range with an end the store lacks', () => {
     describe('When bundleCreate reads it', () => {
       it('Then the symmetric difference is invalid with no non-commit side', async () => {

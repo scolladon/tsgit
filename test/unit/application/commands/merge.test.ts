@@ -91,6 +91,57 @@ const chainHeadThroughS = async (ctx: Context, branch: string): Promise<void> =>
   await writeSymbolicRef(ctx, 'HEAD' as RefName, 'refs/heads/s' as RefName);
 };
 
+describe('merge walk parse', () => {
+  const MISSING = `cd${'0'.repeat(38)}` as ObjectId;
+
+  describe.each([
+    ['default', {}],
+    ['ff-only', { fastForward: 'only' }],
+    ['no-ff', { fastForward: 'never' }],
+  ] as const)('Given a commit whose parent the store lacks, merged (%s)', (_mode, options) => {
+    describe('When merge walks HEAD against it', () => {
+      it("Then it logs both of git's lines and is up to date, as git's reduced heads leave none", async () => {
+        // Arrange
+        const logged: string[] = [];
+        const ctx: Context = {
+          ...createMemoryContext(),
+          logger: { error: (line: string) => logged.push(line) },
+        };
+        await init(ctx);
+        await ctx.fs.writeUtf8(`${ctx.layout.workDir}/a.txt`, 'a');
+        await add(ctx, ['a.txt']);
+        const head = await commit(ctx, { message: 'first', author });
+        const tree = (await readObject(ctx, head.id)) as { readonly data: { tree: ObjectId } };
+        const broken = await writeObject(ctx, {
+          type: 'commit',
+          id: '' as ObjectId,
+          data: {
+            tree: tree.data.tree,
+            parents: [MISSING],
+            author,
+            committer: author,
+            message: 'broken\n',
+            extraHeaders: [],
+          },
+        });
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: broken, ...options });
+
+        // Assert
+        expect({ result, logged, origHead: await resolveRef(ctx, 'ORIG_HEAD' as RefName) }).toEqual(
+          {
+            result: { kind: 'up-to-date', id: head.id },
+            logged: [`Could not read ${MISSING}`, `could not parse commit ${MISSING}`],
+            origHead: head.id,
+          },
+        );
+      });
+    });
+  });
+});
+
 describe('merge', () => {
   describe('Given target equals HEAD', () => {
     describe('When merge', () => {

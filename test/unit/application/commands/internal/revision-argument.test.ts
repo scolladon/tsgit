@@ -105,6 +105,38 @@ describe('expandRevisionArgument', () => {
   });
 });
 
+describe('expandRevisionArgument symmetric walk', () => {
+  const MISSING = `cd${'0'.repeat(38)}` as ObjectId;
+
+  describe.each(['command-line', 'stdin'] as const)(
+    'Given a branch whose commit names a parent the store lacks, read from the %s',
+    (source) => {
+      describe('When main...broken walks to that parent', () => {
+        it("Then it logs both of git's lines and refuses the whole argument as one name", async () => {
+          // Arrange
+          const { ctx: base } = await history();
+          const logged: string[] = [];
+          const ctx: Context = { ...base, logger: { error: (line: string) => logged.push(line) } };
+          const broken = await commitOn(ctx, 'broken', [MISSING]);
+          await seedRepo(ctx, { refs: { 'refs/heads/broken': broken } });
+          const sut = expandRevisionArgument;
+
+          // Act
+          const result = await sut(ctx, createObjectTypeTable(), 'main...broken', source).catch(
+            (error: TsgitError) => error.data,
+          );
+
+          // Assert
+          expect({ result, logged }).toEqual({
+            result: { code: 'OBJECT_NOT_FOUND', id: 'main...broken' },
+            logged: [`Could not read ${MISSING}`, `could not parse commit ${MISSING}`],
+          });
+        });
+      });
+    },
+  );
+});
+
 describe('expandRevisionArguments', () => {
   describe('Given a want and a range to exclude', () => {
     describe('When both are expanded', () => {

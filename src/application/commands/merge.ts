@@ -52,7 +52,7 @@ import {
   writeWorkingTreeFileStream,
 } from '../primitives/internal/write-working-tree-file.js';
 import { materializeTree } from '../primitives/materialize-tree.js';
-import { mergeBasesOf } from '../primitives/merge-base.js';
+import { tryMergeBasesOf } from '../primitives/merge-base.js';
 import { assertEverySourceLoadable } from '../primitives/object-store.js';
 import { readBlob } from '../primitives/read-blob.js';
 import { readIndex } from '../primitives/read-index.js';
@@ -178,26 +178,36 @@ const computeMerge = async (
   await assertEverySourceLoadable(ctx);
   // Stryker disable next-line ConditionalExpression: equivalent — when ourId===theirId, mergeBase returns that same commit, so the `base === theirId` check below yields the identical up-to-date result.
   if (ourId === theirId) return { kind: 'up-to-date', id: ourId };
-  const [base] = await mergeBasesOf(ctx, [ourId, theirId]);
+  const bases = await tryMergeBasesOf(ctx, [ourId, theirId]);
+  // git's `reduce_heads` leaves no remote head when its walk cannot parse a parent.
+  if (bases === undefined) return { kind: 'up-to-date', id: ourId };
+  const [base] = bases;
   if (base === theirId) return { kind: 'up-to-date', id: ourId };
-  if (base === ourId) {
-    if (opts.fastForward !== 'never') {
-      return materialiseAndApply(ctx, await getTree(ctx, theirId), async () => {
-        // Written through the literal `HEAD` — merge refuses on a detached
-        // HEAD, so `HEAD` always names the branch being fast-forwarded here.
-        await updateRef(ctx, HEAD, theirId, {
-          expected: ourId,
-          reflogMessage: `${internal.reflogAction ?? `merge ${opts.rev}`}: Fast-forward`,
-        });
-        return { kind: 'fast-forward', id: theirId, branch: head.target };
-      });
-    }
+  if (base === ourId && opts.fastForward !== 'never') {
+    return fastForward(ctx, opts, internal, head.target, { ourId, theirId });
   }
   if (opts.fastForward === 'only') {
     throw nonFastForward(head.target, ourId, theirId);
   }
   return mergeCommit(ctx, opts, internal, head.target, ourId, theirId, base);
 };
+
+const fastForward = async (
+  ctx: Context,
+  opts: MergeRunInput,
+  internal: MergeInternalOptions,
+  branch: RefName,
+  { ourId, theirId }: { readonly ourId: ObjectId; readonly theirId: ObjectId },
+): Promise<MergeResult> =>
+  materialiseAndApply(ctx, await getTree(ctx, theirId), async () => {
+    // Written through the literal `HEAD` — merge refuses on a detached
+    // HEAD, so `HEAD` always names the branch being fast-forwarded here.
+    await updateRef(ctx, HEAD, theirId, {
+      expected: ourId,
+      reflogMessage: `${internal.reflogAction ?? `merge ${opts.rev}`}: Fast-forward`,
+    });
+    return { kind: 'fast-forward', id: theirId, branch };
+  });
 
 const MERGE_WRITE_FILES_OP = 'merge:write-files';
 

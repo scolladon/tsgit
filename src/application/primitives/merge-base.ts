@@ -1,7 +1,13 @@
 import { commitParseFailed } from '../../domain/commands/error.js';
 import { BinaryHeap } from '../../domain/commit/binary-heap.js';
 import type { QueueEntry } from '../../domain/commit/priority-queue.js';
-import { invalidCommitName, invalidWalkInput, operationAborted } from '../../domain/error.js';
+import {
+  invalidCommitName,
+  invalidWalkInput,
+  operationAborted,
+  type TsgitError,
+} from '../../domain/error.js';
+import { errorDataCode } from '../../domain/error-data-code.js';
 import { isObjectNotFound } from '../../domain/objects/error.js';
 import type { ObjectId } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
@@ -480,4 +486,27 @@ export const mergeBasesOf = async (
           correctedCommitDates,
         });
   return findAll ? bases : bases.slice(0, 1);
+};
+
+const COMMIT_PARSE_FAILED = 'COMMIT_PARSE_FAILED';
+
+/**
+ * git's `repo_get_merge_bases(...) < 0` for a caller that carries on: a walk
+ * parent that fails to parse logs git's `could not parse commit` line and
+ * answers `undefined` rather than refusing — `merge` reads it as no remote
+ * heads left, `handle_dotdot` as no range.
+ */
+export const tryMergeBasesOf = async (
+  ctx: Context,
+  commits: readonly ObjectId[],
+  options?: MergeBaseOptions,
+): Promise<readonly ObjectId[] | undefined> => {
+  try {
+    return await mergeBasesOf(ctx, commits, options);
+  } catch (error) {
+    if (errorDataCode(error) !== COMMIT_PARSE_FAILED) throw error;
+    const { id } = (error as TsgitError).data as { readonly id: ObjectId };
+    ctx.logger?.error?.(`could not parse commit ${id}`, { id });
+    return undefined;
+  }
 };

@@ -19,6 +19,11 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
+import { bundleCreate } from '../../src/application/commands/bundle-create.js';
+import { mergeRun } from '../../src/application/commands/merge.js';
+import { rebaseRun } from '../../src/application/commands/rebase.js';
+import { revList } from '../../src/application/commands/rev-list.js';
+import { revParse } from '../../src/application/commands/rev-parse.js';
 import { mergeBase } from '../../src/application/primitives/merge-base.js';
 import type { ObjectId } from '../../src/domain/objects/object-id.js';
 import { openRepository } from '../../src/index.node.js';
@@ -865,6 +870,120 @@ describe.skipIf(!GIT_AVAILABLE)('mergeBase walk parse (interop)', () => {
         expect({ exitCode: peer.exitCode, stderr: peer.stderr }).toEqual({
           exitCode,
           stderr: `${[...logged, `could not parse commit ${data.id}`].map((line) => `error: ${line}\n`).join('')}`,
+        });
+      });
+    });
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)('merge-base callers walk parse (interop)', () => {
+  let dir: string;
+  let head: string;
+
+  beforeAll(async () => {
+    dir = await makeRepo('callers-walk-parse');
+    head = datedCommit(dir, 'a', 1_700_000_000);
+    const tree = git(dir, 'rev-parse', `${head}^{tree}`).trim();
+    const broken = literally(dir, 'commit', commitBody(tree, [ABSENT], 'z'));
+    git(dir, 'update-ref', 'refs/heads/broken', broken);
+  }, SETUP_TIMEOUT);
+
+  afterAll(async () => rm(dir, { recursive: true, force: true }));
+
+  const loggingContext = (): { readonly ctx: Context; readonly logged: string[] } => {
+    const logged: string[] = [];
+    const base = createNodeContext({ workDir: dir });
+    return { ctx: { ...base, logger: { error: (line: string) => logged.push(line) } }, logged };
+  };
+
+  const errorLines = (logged: ReadonlyArray<string>): string =>
+    logged.map((line) => `error: ${line}\n`).join('');
+
+  const refusal = (
+    run: Promise<unknown>,
+  ): Promise<{ readonly code: string; readonly id: string }> =>
+    run.then(
+      () => ({ code: 'none', id: '' }),
+      (error: unknown) => (error as { readonly data: { code: string; id: string } }).data,
+    );
+
+  describe.each([
+    { command: 'rev-parse', args: ['rev-parse', 'main...broken'], run: revParse },
+    {
+      command: 'rebase',
+      args: ['rebase', 'broken'],
+      run: (ctx: Context) => rebaseRun(ctx, { upstream: 'broken' }),
+    },
+  ])('Given $command over a walk reaching a parent the store lacks', ({ args, run }) => {
+    describe('When both tools run it', () => {
+      it("Then tsgit refuses the commit git could not parse after git's error line", async () => {
+        // Arrange
+        const peer = tryRunGitWithExit(['-C', dir, ...args]);
+        const { ctx, logged } = loggingContext();
+        const sut = run;
+
+        // Act
+        const data = await refusal(sut(ctx, 'main...broken'));
+
+        // Assert
+        expect({ code: data.code, exitCode: peer.exitCode, stderr: peer.stderr }).toEqual({
+          code: 'COMMIT_PARSE_FAILED',
+          exitCode: 128,
+          stderr: errorLines([...logged, `could not parse commit ${data.id}`]),
+        });
+      });
+    });
+  });
+
+  describe.each([
+    { command: 'rev-list', run: (ctx: Context) => revList(ctx, { wants: ['main...broken'] }) },
+    {
+      command: 'bundle create',
+      run: (ctx: Context) => bundleCreate(ctx, { revs: [{ symmetricRange: ['main', 'broken'] }] }),
+    },
+  ])('Given $command main...broken', ({ command, run }) => {
+    describe('When both tools walk the range to the parent the store lacks', () => {
+      it("Then tsgit logs git's lines and refuses the whole argument as one name", async () => {
+        // Arrange
+        const extra = command === 'bundle create' ? ['../walk-parse.bundle'] : [];
+        const peer = tryRunGitWithExit([
+          '-C',
+          dir,
+          ...command.split(' '),
+          ...extra,
+          'main...broken',
+        ]);
+        const { ctx, logged } = loggingContext();
+        const sut = run;
+
+        // Act
+        const data = await refusal(sut(ctx));
+
+        // Assert
+        expect({ data, exitCode: peer.exitCode, stderr: peer.stderr }).toEqual({
+          data: { code: 'OBJECT_NOT_FOUND', id: 'main...broken' },
+          exitCode: 128,
+          stderr: `${errorLines(logged)}fatal: ambiguous argument 'main...broken': unknown revision or path not in the working tree.\nUse '--' to separate paths from revisions, like this:\n'git <command> [<revision>...] -- [<file>...]'\n`,
+        });
+      });
+    });
+  });
+
+  describe('Given merge of a branch whose walk reaches a parent the store lacks', () => {
+    describe('When both tools merge it', () => {
+      it("Then tsgit logs git's lines and is up to date, as git is", async () => {
+        // Arrange
+        const peer = tryRunGitWithExit(['-C', dir, 'merge', 'broken']);
+        const { ctx, logged } = loggingContext();
+        const sut = mergeRun;
+
+        // Act
+        const result = await sut(ctx, { rev: 'broken' });
+
+        // Assert
+        expect({ result, peer }).toEqual({
+          result: { kind: 'up-to-date', id: head },
+          peer: { exitCode: 0, stdout: 'Already up to date.\n', stderr: errorLines(logged) },
         });
       });
     });

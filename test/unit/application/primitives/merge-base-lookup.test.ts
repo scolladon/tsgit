@@ -6,7 +6,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
 import { init } from '../../../../src/application/commands/init.js';
-import { mergeBase } from '../../../../src/application/primitives/merge-base.js';
+import { mergeBase, tryMergeBasesOf } from '../../../../src/application/primitives/merge-base.js';
 import * as readObjectModule from '../../../../src/application/primitives/read-object.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import type {
@@ -315,6 +315,75 @@ describe('mergeBase walk parse', () => {
           data: { code: 'COMMIT_PARSE_FAILED', id: parent },
           logged: [line(parent)],
         });
+      });
+    });
+  });
+});
+
+describe('tryMergeBasesOf', () => {
+  describe.each([
+    ['names a parent the store lacks', () => MISSING, (id: ObjectId) => `Could not read ${id}`],
+    [
+      'names a blob as its parent',
+      (repo: Store) => repo.blob,
+      (id: ObjectId) => `Object ${id} not a commit`,
+    ],
+  ] as const)('Given a commit that %s', (_label, parentOf, line) => {
+    describe('When a caller that carries on walks it against another commit', () => {
+      it("Then it logs both of git's lines and answers no bases", async () => {
+        // Arrange
+        const repo = await store();
+        const parent = parentOf(repo);
+        const child = await commitOf(repo.ctx, repo.tree, [parent], 'child\n');
+        const sut = tryMergeBasesOf;
+
+        // Act
+        const result = await sut(repo.ctx, [repo.commit, child], { all: true });
+
+        // Assert
+        expect({ result, logged: repo.logged }).toEqual({
+          result: undefined,
+          logged: [line(parent), `could not parse commit ${parent}`],
+        });
+      });
+    });
+  });
+
+  describe('Given two commits whose walk parses', () => {
+    describe('When a caller that carries on walks them', () => {
+      it('Then it answers their bases', async () => {
+        // Arrange
+        const repo = await store();
+        const child = await commitOf(repo.ctx, repo.tree, [repo.commit], 'child\n');
+        const sut = tryMergeBasesOf;
+
+        // Act
+        const result = await sut(repo.ctx, [repo.commit, child]);
+
+        // Assert
+        expect(result).toEqual([repo.commit]);
+      });
+    });
+  });
+
+  describe('Given a walk that fails for another reason', () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    describe('When a caller that carries on walks it', () => {
+      it('Then it rethrows that failure', async () => {
+        // Arrange
+        const repo = await store();
+        const child = await commitOf(repo.ctx, repo.tree, [repo.commit], 'child\n');
+        vi.spyOn(readObjectModule, 'readObject').mockRejectedValue(new Error('disk gone'));
+        const sut = tryMergeBasesOf;
+
+        // Act
+        const result = await sut(repo.ctx, [repo.commit, child]).catch((error: unknown) => error);
+
+        // Assert
+        expect((result as Error).message).toBe('disk gone');
       });
     });
   });

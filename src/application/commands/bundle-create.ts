@@ -26,7 +26,7 @@ import { resolveRef, resolveRefForReading } from '../primitives/resolve-ref.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
 import { requireReference } from './internal/require-reference.js';
 import { symmetricBases } from './internal/symmetric-bases.js';
-import { resolveRevision } from './rev-parse.js';
+import { readNamedObject, resolveRevision } from './rev-parse.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public types
@@ -161,11 +161,19 @@ const processTip = async (
   allRefs: ReadonlyArray<RefName>,
   acc: Accumulator,
 ): Promise<void> => {
-  const oid = await resolveRevision(ctx, tip);
+  await wantNamed(ctx, tip, await resolveRevision(ctx, tip), allRefs, acc);
+};
+
+/** A tip `name` resolved to `oid`: referenced, recorded under its full ref when it is one, wanted. */
+const wantNamed = async (
+  ctx: Context,
+  tip: string,
+  oid: ObjectId,
+  allRefs: ReadonlyArray<RefName>,
+  acc: Accumulator,
+): Promise<void> => {
   await requireReference(ctx, acc.objectTypes, tip, oid);
-  const fullRef = findFullRef(tip, allRefs);
-  if (fullRef !== undefined) acc.refs.push({ name: fullRef, oid });
-  want(acc, oid);
+  wantSide(tip, oid, allRefs, acc);
 };
 
 const processExclude = async (ctx: Context, excluded: string, acc: Accumulator): Promise<void> => {
@@ -203,6 +211,17 @@ const processRange = async (
   want(acc, bOid);
 };
 
+/** git's `get_oid_with_context` on an argument no range form took: the whole spelling, one tip. */
+const wantWholeName = async (
+  ctx: Context,
+  expression: string,
+  allRefs: ReadonlyArray<RefName>,
+  acc: Accumulator,
+): Promise<void> => {
+  const oid = await readNamedObject(ctx, acc.objectTypes, expression, expression);
+  await wantNamed(ctx, expression, oid, allRefs, acc);
+};
+
 const processSymmetricRange = async (
   ctx: Context,
   sym: readonly [string, string],
@@ -212,19 +231,27 @@ const processSymmetricRange = async (
   const [aExpr, bExpr] = sym;
   const aOid = await resolveRevision(ctx, aExpr);
   const bOid = await resolveRevision(ctx, bExpr);
-  if (!(await parseRangeEnds(ctx, acc, [aOid, bOid]))) {
-    throw invalidSymmetricRange(`${aExpr}...${bExpr}`, []);
-  }
-  const aFullRef = findFullRef(aExpr, allRefs);
-  if (aFullRef !== undefined) acc.refs.push({ name: aFullRef, oid: aOid });
-  const bFullRef = findFullRef(bExpr, allRefs);
-  if (bFullRef !== undefined) acc.refs.push({ name: bFullRef, oid: bOid });
+  const expression = `${aExpr}...${bExpr}`;
+  if (!(await parseRangeEnds(ctx, acc, [aOid, bOid]))) throw invalidSymmetricRange(expression, []);
+  const bases = await symmetricBases(ctx, expression, [aOid, bOid]);
+  // A walk git could not finish leaves no range: the expression is one name.
+  if (bases === undefined) return wantWholeName(ctx, expression, allRefs, acc);
   // git's `handle_dotdot_1` pends the merge bases before either side.
-  for (const base of await symmetricBases(ctx, `${aExpr}...${bExpr}`, [aOid, bOid])) {
-    exclude(acc, base);
-  }
-  want(acc, aOid);
-  want(acc, bOid);
+  for (const base of bases) exclude(acc, base);
+  wantSide(aExpr, aOid, allRefs, acc);
+  wantSide(bExpr, bOid, allRefs, acc);
+};
+
+/** A spelt tip: recorded under its full ref when it is one, wanted. */
+const wantSide = (
+  spelt: string,
+  oid: ObjectId,
+  allRefs: ReadonlyArray<RefName>,
+  acc: Accumulator,
+): void => {
+  const fullRef = findFullRef(spelt, allRefs);
+  if (fullRef !== undefined) acc.refs.push({ name: fullRef, oid });
+  want(acc, oid);
 };
 
 const processRevArgs = async (

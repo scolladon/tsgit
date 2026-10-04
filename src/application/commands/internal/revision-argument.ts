@@ -58,6 +58,7 @@ const expandRange = async (
   if (end === undefined) return undefined;
   if (!sides.symmetric) return [tip(start, true), tip(end, false)];
   const bases = await symmetricBases(ctx, arg, [start, end]);
+  if (bases === undefined) return undefined;
   return [...bases.map((id) => tip(id, true)), tip(start, false), tip(end, false)];
 };
 
