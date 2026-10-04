@@ -2898,3 +2898,40 @@ describe('computeClosure — a tree stored as a blob, with no type table', () =>
     });
   });
 });
+
+describe('computeClosure — an excluded tree entry stored as a blob, with no type table', () => {
+  describe('Given an excluded parent whose tree lists a blob with tree mode', () => {
+    describe('When an untyped walk marks the excluded tree', () => {
+      it('Then it marks the entry quietly', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const logged: string[] = [];
+        const ctx: Context = { ...base, logger: { error: (message) => logged.push(message) } };
+        const blob = await writeBlob(ctx, 'not a tree');
+        const excluded = await writeCommit(
+          ctx,
+          await writeTree(ctx, [treeEntry('40000' as FileMode, 'sub', blob)]),
+          [],
+          'excluded',
+        );
+        const empty = await writeTree(ctx, []);
+        const included = await writeCommit(ctx, empty, [excluded], 'included');
+        const sut = computeClosure;
+
+        // Act
+        const result = await sut(ctx, {
+          wants: [blob, included],
+          not: [excluded],
+          objects: true,
+          tier: 'walk',
+        });
+
+        // Assert
+        expect({ ids: result.objects.map(({ id }) => id), logged }).toEqual({
+          ids: [included, empty],
+          logged: [],
+        });
+      });
+    });
+  });
+});

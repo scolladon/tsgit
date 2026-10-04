@@ -1905,4 +1905,92 @@ describe('revList: object types assigned during one invocation', () => {
       });
     });
   });
+
+  describe('Given an excluded parent whose tree lists a wanted blob with tree mode', () => {
+    describe('When revList marks the excluded tree', () => {
+      it('Then the entry is not a tree, stays unmarked and the blob is listed', async () => {
+        // Arrange
+        const { ctx, logged, blob } = await seedMistypedTag();
+        const empty = await writeEmptyTree(ctx);
+        const excluded = await writeCommitNaming(
+          ctx,
+          await writeTreeOf(ctx, [[TREE_MODE, 'sub', blob]]),
+          [],
+        );
+        const included = await writeCommitNaming(ctx, empty, [excluded]);
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, { wants: [blob, included], not: [excluded], objects: true });
+
+        // Assert
+        expect({ entries: result.entries, logged }).toEqual({
+          entries: [
+            { id: included, type: 'commit' },
+            { id: blob, type: 'blob' },
+            { id: empty, type: 'tree', path: '' },
+          ],
+          logged: [`object ${blob} is a blob, not a tree`],
+        });
+      });
+    });
+  });
+
+  describe('Given an excluded parent whose tree lists a blob nothing typed with tree mode', () => {
+    describe('When revList marks the excluded tree', () => {
+      it('Then it logs the entry is not a tree and carries on', async () => {
+        // Arrange
+        const { ctx, logged, blob } = await seedMistypedTag();
+        const empty = await writeEmptyTree(ctx);
+        const excluded = await writeCommitNaming(
+          ctx,
+          await writeTreeOf(ctx, [[TREE_MODE, 'sub', blob]]),
+          [],
+        );
+        const included = await writeCommitNaming(ctx, empty, [excluded]);
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, { wants: [included], not: [excluded], objects: true });
+
+        // Assert
+        expect({ entries: result.entries, logged }).toEqual({
+          entries: [
+            { id: included, type: 'commit' },
+            { id: empty, type: 'tree', path: '' },
+          ],
+          logged: [`Object ${blob} not a tree`],
+        });
+      });
+    });
+  });
+
+  describe('Given an excluded parent whose tree lists a wanted tree with blob mode', () => {
+    describe('When revList marks the excluded tree', () => {
+      it('Then the entry is not a blob, stays unmarked and the tree is listed', async () => {
+        // Arrange
+        const { ctx, logged } = await seedMistypedTag();
+        const empty = await writeEmptyTree(ctx);
+        const excluded = await writeCommitNaming(
+          ctx,
+          await writeTreeOf(ctx, [[BLOB_MODE, 'f', empty]]),
+          [],
+        );
+        const included = await writeCommitNaming(ctx, empty, [excluded]);
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, { wants: [empty, included], not: [excluded], objects: true });
+
+        // Assert
+        expect({ entries: result.entries, logged }).toEqual({
+          entries: [
+            { id: included, type: 'commit' },
+            { id: empty, type: 'tree', path: '' },
+          ],
+          logged: [`object ${empty} is a tree, not a blob`],
+        });
+      });
+    });
+  });
 });

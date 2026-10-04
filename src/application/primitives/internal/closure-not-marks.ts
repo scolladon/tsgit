@@ -18,10 +18,16 @@
  */
 import { operationAborted } from '../../../domain/error.js';
 import { isObjectNotFound, treeDepthExceeded } from '../../../domain/objects/error.js';
-import { type GitObject, isDirectory, type ObjectId } from '../../../domain/objects/index.js';
+import {
+  type GitObject,
+  isDirectory,
+  type ObjectId,
+  type Tree,
+} from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { readObject } from '../read-object.js';
 import { isGitlink } from '../validators.js';
+import { assignObjectType, type ObjectTypeTable } from './object-type-table.js';
 import { type CommitMeta, readCommitMeta } from './read-commit-meta.js';
 import { resolveMaxTreeDepth } from './resolve-max-tree-depth.js';
 
@@ -38,6 +44,8 @@ export interface NotMarks {
   /** Resolved once by `markNotSide` from `core.maxTreeDepth` — `markBoundaryTrees`
    *  reads it back from here instead of resolving it again. */
   readonly maxDepth: number;
+  /** The invocation's object-type table the marked entries are typed into; omitted, nothing is typed. */
+  readonly objectTypes?: ObjectTypeTable;
 }
 
 interface NotMarksAccumulator extends NotMarks {
@@ -71,38 +79,47 @@ const readTreeIfPresent = async (
 
 /**
  * Recursively mark `treeId` and its non-gitlink contents uninteresting.
+ * Under typing, each entry is looked up as its mode types it — git's
+ * `mark_tree_contents_uninteresting` — and an entry an earlier lookup typed
+ * otherwise is logged and left unmarked.
  *
  * This descent was measured honouring `core.maxTreeDepth` exactly, to 100000
  * (2026-08-15): depth 100000 completes, and a fixture one level deeper refuses
  * cleanly with `TREE_DEPTH_EXCEEDED` at depth 100001 — so the configured cap,
  * not the call stack, is what bounds it. Deeper than that is unmeasured.
  */
-async function markTree(
-  ctx: Context,
-  treeId: ObjectId,
-  marked: Set<ObjectId>,
-  seenTrees: Set<ObjectId>,
-  maxDepth: number,
-  depth = 0,
-): Promise<void> {
-  if (seenTrees.has(treeId)) return;
-  seenTrees.add(treeId);
-  if (depth > maxDepth) throw treeDepthExceeded(depth);
+async function markTree(ctx: Context, treeId: ObjectId, marks: NotMarks, depth = 0): Promise<void> {
+  if (marks.seenTrees.has(treeId)) return;
+  marks.seenTrees.add(treeId);
+  if (depth > marks.maxDepth) throw treeDepthExceeded(depth);
   // Stryker disable next-line ConditionalExpression: equivalent — the readObject below re-checks ctx.signal and throws the identical operationAborted; the only mark this guard saves is discarded by that same throw.
   if (ctx.signal?.aborted) throw operationAborted();
-  marked.add(treeId);
-  const treeObj = await readTreeIfPresent(ctx, treeId);
-  if (treeObj === undefined) return;
-  if (treeObj.type !== 'tree') return;
-  for (const entry of treeObj.entries) {
+  marks.objects.add(treeId);
+  const tree = await readMarkedTree(ctx, treeId, marks.objectTypes);
+  if (tree === undefined) return;
+  for (const entry of tree.entries) {
     if (isGitlink(entry.mode)) continue;
-    if (!isDirectory(entry.mode)) {
-      marked.add(entry.id);
-      continue;
-    }
-    await markTree(ctx, entry.id, marked, seenTrees, maxDepth, depth + 1);
+    const type = isDirectory(entry.mode) ? 'tree' : 'blob';
+    if (!assignObjectType(ctx, marks.objectTypes, entry.id, type)) continue;
+    if (type === 'blob') marks.objects.add(entry.id);
+    else await markTree(ctx, entry.id, marks, depth + 1);
   }
 }
+
+/**
+ * git's `parse_tree_gently` on the excluded side: a missing tree is skipped
+ * quietly, one stored as something else is `Object X not a tree` under typing.
+ */
+const readMarkedTree = async (
+  ctx: Context,
+  treeId: ObjectId,
+  objectTypes: ObjectTypeTable | undefined,
+): Promise<Tree | undefined> => {
+  const object = await readTreeIfPresent(ctx, treeId);
+  if (object === undefined || object.type === 'tree') return object;
+  if (objectTypes !== undefined) ctx.logger?.error?.(`Object ${treeId} not a tree`, { id: treeId });
+  return undefined;
+};
 
 /**
  * Mark one `not` tip uninteresting: peel a tag chain, marking every tag on it
@@ -128,7 +145,7 @@ async function markUninteresting(
   if (obj.type === 'tree') {
     // A directly-named tree/blob `not` id is marked outright — git's
     // `handle_commit` marks a pending object of that type directly.
-    await markTree(ctx, id, acc.objects, acc.seenTrees, acc.maxDepth);
+    await markTree(ctx, id, acc);
     return;
   }
   acc.objects.add(id);
@@ -137,12 +154,17 @@ async function markUninteresting(
 /** Collect every commit `not` tip; mark a directly-named tree/blob tip
  *  outright. A tip's own tree is left to `markBoundaryTrees` — see this
  *  module's own doc. */
-export async function markNotSide(ctx: Context, not: ReadonlyArray<ObjectId>): Promise<NotMarks> {
+export async function markNotSide(
+  ctx: Context,
+  not: ReadonlyArray<ObjectId>,
+  objectTypes?: ObjectTypeTable,
+): Promise<NotMarks> {
   const acc: NotMarksAccumulator = {
     commitTips: [],
     objects: new Set<ObjectId>(),
     seenTrees: new Set<ObjectId>(),
     maxDepth: await resolveMaxTreeDepth(ctx),
+    ...(objectTypes === undefined ? {} : { objectTypes }),
   };
   for (const notId of not) {
     await markUninteresting(ctx, notId, acc);
@@ -182,7 +204,7 @@ export async function markBoundaryTrees(
   for (const commitId of boundary) {
     const meta = await readCommitMetaIfPresent(ctx, commitId);
     if (meta === undefined) continue;
-    await markTree(ctx, meta.tree, marks.objects, marks.seenTrees, marks.maxDepth);
+    await markTree(ctx, meta.tree, marks);
   }
 }
 

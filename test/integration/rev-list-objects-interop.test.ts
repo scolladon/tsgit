@@ -1206,6 +1206,44 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list interop — object types assigned in o
     });
   });
 
+  describe.each([
+    ['a blob tip listed with tree mode', '40000', 'blob'],
+    ['a blob nothing typed listed with tree mode', '40000', undefined],
+    ['the empty tree tip listed with blob mode', '100644', 'tree'],
+  ] as const)('Given an excluded parent whose tree holds %s', (_label, mode, tip) => {
+    describe('When rev-list --objects marks the excluded tree on both tools', () => {
+      it('Then both log the same entry, carry on and list the same objects in order', async () => {
+        // Arrange
+        const { dir, blob } = await buildMistypedTagFixture();
+        const empty = emptyTreeOf(dir);
+        const entryId = mode === '40000' ? blob : empty;
+        const excluded = writeLiteralCommit(dir, writeLiteralTree(dir, [[mode, 'e', entryId]]), []);
+        const included = writeLiteralCommit(dir, empty, [excluded]);
+        const wants = tip === undefined ? [included] : [entryId, included];
+        const peer = tryRunGitWithExit([
+          '-C',
+          dir,
+          'rev-list',
+          '--objects',
+          ...wants,
+          `^${excluded}`,
+        ]);
+        const { ctx, logged } = capturing(dir);
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, { wants, not: [excluded], objects: true });
+
+        // Assert
+        const listed = result.entries.map((e) => `${e.id} ${e.path ?? ''}`.trimEnd());
+        expect({ listed, stderr: logged.map((line) => `error: ${line}\n`).join('') }).toEqual({
+          listed: peer.stdout.split('\n').flatMap((line) => (line === '' ? [] : [line.trimEnd()])),
+          stderr: peer.stderr,
+        });
+      });
+    });
+  });
+
   /** A tree stored as spelt: `[mode, name, id]` entries, whatever their objects are. */
   const writeLiteralTree = (
     dir: string,
