@@ -1,3 +1,4 @@
+import { revisionWalkFailed } from '../../../domain/commands/error.js';
 import { BinaryHeap } from '../../../domain/commit/binary-heap.js';
 import { precedesByArrival } from '../../../domain/commit/priority-queue.js';
 import { operationAborted } from '../../../domain/error.js';
@@ -5,6 +6,7 @@ import type { Commit, ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
 import { type BoundedReader, createBoundedReader } from './bounded-reader.js';
 import { limitFor } from './concurrency.js';
+import { type ObjectTypeTable, typeWalkedCommit } from './object-type-table.js';
 import { readCommit } from './read-commit.js';
 import { commitHeader, generationNumbersEnabled } from './read-commit-graph.js';
 import { resolveShallow } from './shallow-set.js';
@@ -41,6 +43,13 @@ export interface LimitListOptions {
   readonly verifyHash: boolean;
   readonly shallow: ReadonlySet<ObjectId>;
   readonly settle: LimitSettle;
+  /**
+   * The invocation's object-type table: each parent parsed from its object is
+   * typed as git's commit parse types it. An included commit's parent that
+   * fails refuses with `REVISION_WALK_FAILED` naming that commit; an excluded
+   * one's is logged and not walked on, as git's gentle parse leaves it.
+   */
+  readonly objectTypes?: ObjectTypeTable;
 }
 
 export interface LimitedWalk {
@@ -64,7 +73,7 @@ export interface LimitWalkOptions {
 
 /** The walk's own knobs; `seeds` defaults to git's `<from> ^<until>` command-line order. */
 type LimitSettings = Pick<LimitListOptions, 'until' | 'firstParent' | 'settle'> &
-  Partial<Pick<LimitListOptions, 'seeds'>>;
+  Partial<Pick<LimitListOptions, 'seeds' | 'objectTypes'>>;
 
 /** Complete a walk's options for {@link limitList}, loading `.git/shallow` when none is given. */
 export const resolveLimitOptions = async (
@@ -104,6 +113,8 @@ interface LimitState {
   readonly options: LimitListOptions;
   readonly parsed: Map<ObjectId, Parsed>;
   readonly bodies: Map<ObjectId, Commit>;
+  /** Commits whose pointers the table already typed — git parses each once. */
+  readonly typed: Set<ObjectId>;
   readonly missing: Set<string>;
   readonly uninteresting: Set<ObjectId>;
   readonly seen: Set<ObjectId>;
@@ -175,6 +186,7 @@ const createState = (ctx: Context, options: LimitListOptions): LimitState => ({
   options,
   parsed: new Map(),
   bodies: new Map(),
+  typed: new Set(),
   missing: new Set(),
   uninteresting: new Set(),
   seen: new Set(),
@@ -261,12 +273,25 @@ const processParents = async (state: LimitState, id: ObjectId): Promise<void> =>
   }
   const followed = state.options.firstParent ? parents.slice(0, 1) : parents;
   const parsed = await parseInOrder(state, followed);
-  followed.forEach((parent, at) => {
+  for (const [at, parent] of followed.entries()) {
+    if (!(await typeParsed(state, parent))) throw revisionWalkFailed(id);
     const entry = parsed[at];
-    if (entry === undefined || state.seen.has(parent)) return;
+    if (entry === undefined || state.seen.has(parent)) continue;
     state.seen.add(parent);
     enqueue(state, parent, entry);
-  });
+  }
+};
+
+/**
+ * git's commit parse typing `id`'s pointers, once, when its body was read
+ * from the object — `false` once a typing conflicted and was logged.
+ */
+const typeParsed = async (state: LimitState, id: ObjectId): Promise<boolean> => {
+  const table = state.options.objectTypes;
+  const body = state.bodies.get(id);
+  if (table === undefined || body === undefined || state.typed.has(id)) return true;
+  state.typed.add(id);
+  return typeWalkedCommit(state.ctx, table, body);
 };
 
 /** Parents parsed concurrently; a refusal surfaces for the first in parent order, as git's loop meets it. */
@@ -288,14 +313,21 @@ const processUninterestingParents = async (
 ): Promise<void> => {
   for (const parent of parents) state.uninteresting.add(parent);
   const parsed = await Promise.all(parents.map((parent) => parse(state, parent, true)));
-  parents.forEach((parent, at) => {
+  for (const [at, parent] of parents.entries()) {
     const entry = parsed[at];
-    if (entry === undefined) return;
+    if (entry === undefined || !(await typeGently(state, parent, entry))) continue;
     markParentsUninteresting(state, parent);
-    if (state.seen.has(parent)) return;
+    if (state.seen.has(parent)) continue;
     state.seen.add(parent);
     enqueue(state, parent, entry);
-  });
+  }
+};
+
+/** A gentle parse that failed typing leaves the commit parsed with no parents, as git's does. */
+const typeGently = async (state: LimitState, id: ObjectId, parsed: Parsed): Promise<boolean> => {
+  if (await typeParsed(state, id)) return true;
+  remember(state, id, { ...parsed, parents: [] });
+  return false;
 };
 
 /** git's `mark_parents_uninteresting`: recurse only through parsed commits. */

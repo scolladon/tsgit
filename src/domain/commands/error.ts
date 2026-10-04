@@ -73,6 +73,15 @@ export type CommandError =
       readonly candidates: ReadonlyArray<ObjectId>;
     }
   | {
+      /**
+       * git's revision walk dying on a commit it could not parse: `Failed to
+       * traverse parents of commit <commit>` while walking, or `revision walk
+       * setup failed` (no `commit`) while limiting the walk.
+       */
+      readonly code: 'REVISION_WALK_FAILED';
+      readonly commit?: ObjectId;
+    }
+  | {
       readonly code: 'REVPARSE_UNRESOLVED';
       readonly expression: string;
       /** What `rev-parse` had printed before refusing. */
@@ -538,6 +547,13 @@ export const revparseAmbiguous = (
   expression: string,
   candidates: ReadonlyArray<ObjectId>,
 ): TsgitError => new TsgitError({ code: 'REVPARSE_AMBIGUOUS', expression, candidates });
+
+export const revisionWalkFailed = (commit?: ObjectId): TsgitError =>
+  new TsgitError(
+    commit === undefined
+      ? { code: 'REVISION_WALK_FAILED' }
+      : { code: 'REVISION_WALK_FAILED', commit },
+  );
 
 export const revparseUnresolved = (expression: string): TsgitError =>
   new TsgitError({ code: 'REVPARSE_UNRESOLVED', expression });

@@ -406,6 +406,24 @@ describe('domain error — AdapterError', () => {
       });
     });
 
+    describe.each([
+      [{ code: 'REVISION_WALK_FAILED' }, 'REVISION_WALK_FAILED: revision walk setup failed'],
+      [
+        { code: 'REVISION_WALK_FAILED', commit: 'abc123' },
+        'REVISION_WALK_FAILED: Failed to traverse parents of commit abc123',
+      ],
+    ] as const)('Given REVISION_WALK_FAILED %o', (data, expected) => {
+      describe('When reading message', () => {
+        it("Then reads as git's walk death", () => {
+          // Arrange & Act
+          const result = new TsgitErrorClass(data as never);
+
+          // Assert
+          expect(result.message).toBe(expected);
+        });
+      });
+    });
+
     describe('Given TREE_ENTRY_TYPE_MISMATCH', () => {
       describe('When reading message', () => {
         it('Then reads as git names the entry, its tree and its mode', () => {

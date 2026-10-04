@@ -83,6 +83,19 @@ const assignCommitPointers = async (
   return true;
 };
 
+/**
+ * git's `repo_parse_commit` of a commit the walk reached through a parent
+ * line: typed a commit, then its tree and parents — `false` once a typing
+ * conflicted and git's `error:` lines are logged.
+ */
+export const typeWalkedCommit = async (
+  ctx: Context,
+  table: ObjectTypeTable,
+  commit: Commit,
+): Promise<boolean> =>
+  assignObjectType(ctx, table, commit.id, 'commit') &&
+  (await assignCommitPointers(ctx, table, commit.id, commit));
+
 /** The pointers git's parse of `object` types: a tag's target, a commit's tree and parents. */
 const assignPointers = async (
   ctx: Context,

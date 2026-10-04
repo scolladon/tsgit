@@ -1035,6 +1035,84 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list interop — object types assigned in o
     });
   });
 
+  /** git's walk death, rebuilt from the refusal's data. */
+  const walkFatalOf = (error: unknown): string => {
+    const commit = (error as { data?: { commit?: string } }).data?.commit;
+    return commit === undefined
+      ? 'fatal: revision walk setup failed\n'
+      : `fatal: Failed to traverse parents of commit ${commit}\n`;
+  };
+
+  const walkStderrOf = (logged: ReadonlyArray<string>, error: unknown): string =>
+    `${logged.map((line) => `error: ${line}\n`).join('')}${walkFatalOf(error)}`;
+
+  const settled = async (run: () => Promise<unknown>): Promise<unknown> => {
+    try {
+      await run();
+    } catch (error) {
+      return error;
+    }
+    return undefined;
+  };
+
+  describe.each([
+    ['its tree', (dir: string, blob: string) => writeLiteralCommit(dir, blob, [])],
+    ['a parent', (dir: string, blob: string) => writeLiteralCommit(dir, emptyTreeOf(dir), [blob])],
+  ] as const)(
+    'Given a blob tip before a commit whose parent names it as %s',
+    (_label, parentNaming) => {
+      describe.each([
+        ['rev-list', false],
+        ['rev-list --objects', true],
+      ] as const)('When %s walks to that parent on both tools', (_command, objects) => {
+        it('Then both log the same bad pointer and fail to traverse the same commit', async () => {
+          // Arrange
+          const { dir, blob } = await buildMistypedTagFixture();
+          const child = writeLiteralCommit(dir, emptyTreeOf(dir), [parentNaming(dir, blob)]);
+          const flags = objects ? ['--objects'] : [];
+          const peer = tryRunGitWithExit(['-C', dir, 'rev-list', ...flags, blob, child]);
+          const { ctx, logged } = capturing(dir);
+          const sut = revList;
+
+          // Act
+          const result = await settled(() => sut(ctx, { wants: [blob, child], objects }));
+
+          // Assert
+          expect(peer.exitCode).toBe(128);
+          expect(walkStderrOf(logged, result)).toBe(peer.stderr);
+        });
+      });
+    },
+  );
+
+  describe('Given a blob tip, a newer excluded line and an included line whose parents name it', () => {
+    describe('When rev-list limits the walk on both tools', () => {
+      it('Then both log the excluded line, go on, and fail the walk setup on the included one', async () => {
+        // Arrange
+        const { dir, blob } = await buildMistypedTagFixture();
+        const empty = emptyTreeOf(dir);
+        const excludedParent = writeLiteralCommit(dir, blob, []);
+        const excluded = runGit(
+          ['-C', dir, 'hash-object', '-t', 'commit', '-w', '--stdin', '--literally'],
+          {
+            input: `tree ${empty}\nparent ${excludedParent}\n${IDENT_LINES.replaceAll('1700000000', '1700000001')}`,
+          },
+        ).trim();
+        const included = writeLiteralCommit(dir, empty, [writeLiteralCommit(dir, empty, [blob])]);
+        const peer = tryRunGitWithExit(['-C', dir, 'rev-list', blob, included, '--not', excluded]);
+        const { ctx, logged } = capturing(dir);
+        const sut = revList;
+
+        // Act
+        const result = await settled(() => sut(ctx, { wants: [blob, included], not: [excluded] }));
+
+        // Assert
+        expect(peer.exitCode).toBe(128);
+        expect(walkStderrOf(logged, result)).toBe(peer.stderr);
+      });
+    });
+  });
+
   describe('Given a shallow commit whose stored parent is a blob tip before it', () => {
     describe('When rev-list --objects parses the commit on both tools', () => {
       it('Then neither types the cut parent and both list the same objects', async () => {

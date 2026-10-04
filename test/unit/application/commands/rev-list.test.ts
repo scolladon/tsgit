@@ -1522,6 +1522,108 @@ describe('revList: object types assigned during one invocation', () => {
     });
   });
 
+  describe.each([
+    ['its tree', 'tree', 'bad tree pointer'],
+    ['a parent', 'commit', 'bad parent'],
+  ] as const)(
+    'Given a blob wanted before a commit whose parent names it as %s',
+    (_label, kind, pointer) => {
+      describe('When the walk parses that parent', () => {
+        it('Then it fails to traverse the parents of the commit that reached it', async () => {
+          // Arrange
+          const { ctx, logged, blob } = await seedMistypedTag();
+          const empty = await writeEmptyTree(ctx);
+          const parent = await writeCommitNaming(
+            ctx,
+            kind === 'tree' ? blob : empty,
+            kind === 'commit' ? [blob] : [],
+          );
+          const child = await writeCommitNaming(ctx, empty, [parent]);
+          const sut = revList;
+
+          // Act
+          const caught = await caughtFrom(() => sut(ctx, { wants: [blob, child] }));
+
+          // Assert
+          expect({ data: (caught as TsgitError).data, logged }).toEqual({
+            data: { code: 'REVISION_WALK_FAILED', commit: child },
+            logged: [
+              `object ${blob} is a blob, not a ${kind}`,
+              `${pointer} ${blob} in commit ${parent}`,
+            ],
+          });
+        });
+      });
+    },
+  );
+
+  describe('Given a blob wanted, a newer excluded line and an included line whose parents name it', () => {
+    describe('When the limited walk parses both lines', () => {
+      it('Then the excluded line logs and goes on, the included one fails the walk setup', async () => {
+        // Arrange
+        const { ctx, logged, blob } = await seedMistypedTag();
+        const empty = await writeEmptyTree(ctx);
+        const excludedParent = await writeCommitNaming(ctx, blob, []);
+        const newer = { ...AUTHOR, timestamp: AUTHOR.timestamp + 1 };
+        const excluded = await writeObject(ctx, {
+          type: 'commit',
+          id: '' as ObjectId,
+          data: {
+            tree: empty,
+            parents: [excludedParent],
+            author: newer,
+            committer: newer,
+            message: 'm\n',
+            extraHeaders: [],
+          },
+        });
+        const includedParent = await writeCommitNaming(ctx, empty, [blob]);
+        const included = await writeCommitNaming(ctx, empty, [includedParent]);
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() =>
+          sut(ctx, { wants: [blob, included], not: [excluded] }),
+        );
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'REVISION_WALK_FAILED' },
+          logged: [
+            `object ${blob} is a blob, not a tree`,
+            `bad tree pointer ${blob} in commit ${excludedParent}`,
+            `object ${blob} is a blob, not a commit`,
+            `bad parent ${blob} in commit ${includedParent}`,
+          ],
+        });
+      });
+    });
+  });
+
+  describe('Given an included commit whose parent object is corrupt and an excluded line', () => {
+    describe('When the limited walk reads that parent', () => {
+      it('Then the read fault surfaces as it is, not as a walk setup failure', async () => {
+        // Arrange
+        const { ctx } = await seedMistypedTag();
+        const empty = await writeEmptyTree(ctx);
+        const corrupt = `ab${'0'.repeat(38)}` as ObjectId;
+        await ctx.fs.write(
+          `${ctx.layout.gitDir}/objects/ab/${'0'.repeat(38)}`,
+          new TextEncoder().encode('not zlib'),
+        );
+        const included = await writeCommitNaming(ctx, empty, [corrupt]);
+        const excluded = await writeCommitNaming(ctx, empty, []);
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, { wants: [included], not: [excluded] }));
+
+        // Assert
+        expect((caught as TsgitError).data.code).toBe('DECOMPRESS_FAILED');
+      });
+    });
+  });
+
   describe('Given a shallow commit whose stored parent is a blob wanted before it', () => {
     describe('When revList parses the commit', () => {
       it('Then the cut parent is never typed and the commit is listed', async () => {

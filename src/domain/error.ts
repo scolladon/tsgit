@@ -238,6 +238,12 @@ function timestampRangeDetail(
     : `Timestamp too large for this system: ${data.timestamp}`;
 }
 
+/** git's two walk deaths: while limiting (no commit) or while walking a commit's parents. */
+const revisionWalkDetail = (commit: string | undefined): string =>
+  commit === undefined
+    ? 'revision walk setup failed'
+    : `Failed to traverse parents of commit ${commit}`;
+
 function extractDetail(data: TsgitErrorData): string {
   switch (data.code) {
     case 'INVALID_OBJECT_ID':
@@ -443,6 +449,8 @@ function extractDetail(data: TsgitErrorData): string {
       return `revision expression "${data.expression}" is ambiguous (${data.candidates.length} candidates)`;
     case 'REVPARSE_UNRESOLVED':
       return `cannot resolve revision: ${data.expression}`;
+    case 'REVISION_WALK_FAILED':
+      return revisionWalkDetail(data.commit);
     case 'PATH_NOT_IN_TREE':
       return `path '${data.path}' does not exist in '${data.rev}'`;
     case 'WORKTREE_FILE_ABSENT':

@@ -22,6 +22,7 @@
  * display order sort the result themselves.
  */
 
+import { revisionWalkFailed } from '../../../domain/commands/error.js';
 import type { TsgitError } from '../../../domain/error.js';
 import { treeEntryTypeMismatch } from '../../../domain/objects/error.js';
 import {
@@ -53,7 +54,13 @@ import {
   type SparseTreeSeed,
 } from './closure-not-marks.js';
 import { commitDateWalk } from './commit-date-walk.js';
-import { type LimitedWalk, limitList, readShown, resolveLimitOptions } from './limit-list.js';
+import {
+  type LimitedWalk,
+  type LimitListOptions,
+  limitList,
+  readShown,
+  resolveLimitOptions,
+} from './limit-list.js';
 import { loadMidxBitmapArtefact } from './midx-bitmap-binding.js';
 import { type EmitState, resolveTagChain, tryEmit } from './object-emit.js';
 import { assignObjectType, type ObjectTypeTable } from './object-type-table.js';
@@ -315,10 +322,37 @@ async function collectUnlimitedWalk(
   commitSeeds: ReadonlyArray<Commit>,
   request: ClosureRequest,
 ): Promise<CommitWalk> {
+  if (request.objectTypes !== undefined && request.maxCount === undefined) {
+    return collectTypedWalk(ctx, commitSeeds, request.objectTypes, request);
+  }
   const walked: WalkedCommit[] = [];
   for await (const commit of unlimitedCommits(ctx, commitSeeds, request)) {
     walked.push(walkedFrom(commit));
     if (request.maxCount !== undefined && walked.length >= request.maxCount) break;
+  }
+  return { walked, boundary: NO_MARKS };
+}
+
+/**
+ * A typing invocation's whole walk: git's `get_revision` parses each parent
+ * as it pops a commit — newest first, ties in arrival order — and dies on the
+ * first commit whose parents it cannot parse. With nothing excluded,
+ * `limitList` walks exactly that order and refuses naming that commit.
+ */
+async function collectTypedWalk(
+  ctx: Context,
+  commitSeeds: ReadonlyArray<Commit>,
+  objectTypes: ObjectTypeTable,
+  request: ClosureRequest,
+): Promise<CommitWalk> {
+  const options = await resolveLimitOptions(
+    ctx,
+    { from: commitSeeds.map((seed) => seed.id), ignoreMissing: true },
+    { until: new Set(), firstParent: request.firstParent === true, settle: 'slop', objectTypes },
+  );
+  const walked: WalkedCommit[] = [];
+  for await (const commit of readShown(ctx, options, await limitList(ctx, options))) {
+    walked.push(walkedFrom(commit));
   }
   return { walked, boundary: NO_MARKS };
 }
@@ -374,9 +408,14 @@ async function collectLimitedWalk(
   const options = await resolveLimitOptions(
     ctx,
     { from: commitSeeds.map((seed) => seed.id), ignoreMissing: true },
-    { until: new Set(marks.commitTips), firstParent: request.firstParent === true, settle: 'slop' },
+    {
+      until: new Set(marks.commitTips),
+      firstParent: request.firstParent === true,
+      settle: 'slop',
+      ...(request.objectTypes === undefined ? {} : { objectTypes: request.objectTypes }),
+    },
   );
-  const walk = await limitList(ctx, options);
+  const walk = await limitOrFailSetup(ctx, options);
   const listed: Commit[] = [];
   for await (const commit of readShown(ctx, options, walk)) listed.push(commit);
   return {
@@ -384,6 +423,18 @@ async function collectLimitedWalk(
     boundary: edgesOf(walk, listed),
     limited: { walk, listed },
   };
+}
+
+/** git's `limit_list` runs inside `prepare_revision_walk`: a commit it cannot parse fails the setup. */
+async function limitOrFailSetup(ctx: Context, options: LimitListOptions): Promise<LimitedWalk> {
+  try {
+    return await limitList(ctx, options);
+  } catch (error) {
+    if ((error as Partial<TsgitError>).data?.code === 'REVISION_WALK_FAILED') {
+      throw revisionWalkFailed();
+    }
+    throw error;
+  }
 }
 
 /**
