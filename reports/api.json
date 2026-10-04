@@ -90141,7 +90141,7 @@
 									},
 									{
 										"kind": "text",
-										"text": ": the one read the misspelt-revision\nprobe makes outside the repository, existence only. Supplied by the node\nruntime; absent on browser / memory, where every such path reads as absent."
+										"text": " or is absolute: the reads the\nmisspelt-revision probe makes outside the repository, existence only.\nSupplied by the node runtime; absent on browser / memory, where every such\npath reads as absent."
 									}
 								]
 							},

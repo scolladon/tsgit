@@ -6,12 +6,14 @@
  *
  * An argument climbing with `..` is checked the way git's `lstat` sees it,
  * hops resolved by the operating system from the worktree (the git dir when
- * bare): the one read this probe makes outside the repository, through an
- * existence-only capability. Without that capability the path reads as absent.
+ * bare), and an absolute one where it stands: the reads this probe makes
+ * outside the repository, through an existence-only capability. Without that
+ * capability the path reads as absent.
  */
 import { errorDataCode } from '../../../domain/error-data-code.js';
 import { looksLikePathspec } from '../../../domain/pathspec/index.js';
 import type { Context } from '../../../ports/context.js';
+import { gitPathSyntaxOf } from '../../primitives/internal/git-path-syntax.js';
 import { pathIsOccupied } from '../../primitives/internal/path-occupied.js';
 import { isMessageSearch } from './rev-parse-grammar.js';
 import { startupPrefix } from './startup-prefix.js';
@@ -43,9 +45,12 @@ interface FilenameSpelling {
 
 const climbsWithParentHop = (arg: string): boolean => arg.split('/').includes(PARENT_SEGMENT);
 
+const probeFilename = async (ctx: Context, path: string): Promise<boolean> =>
+  (await ctx.filenameProbe?.(path)) ?? false;
+
 const namesExistingPath = async (ctx: Context, relative: string): Promise<boolean> => {
   const path = `${ctx.layout.workDir ?? ctx.layout.gitDir}/${relative}`;
-  if (climbsWithParentHop(relative)) return (await ctx.filenameProbe?.(path)) ?? false;
+  if (climbsWithParentHop(relative)) return probeFilename(ctx, path);
   try {
     return await pathIsOccupied(ctx, path);
   } catch (error) {
@@ -65,12 +70,14 @@ const spellingOf = (arg: string): FilenameSpelling => {
 
 /**
  * git's `check_filename`: whether `arg` names an existing path, taken against
- * the caller's directory unless spelt `:/` from the top; a bare magic prefix
- * always does, and an empty name at the top never does.
+ * the caller's directory unless spelt `:/` from the top or absolute, which
+ * `prefix_filename` leaves where it stands; a bare magic prefix always does,
+ * and an empty name at the top never does.
  */
 const checkFilename = async (ctx: Context, arg: string): Promise<boolean> => {
   const { rest, magic, fromTop } = spellingOf(arg);
   if (magic && rest === '') return true;
+  if (gitPathSyntaxOf(ctx).isAbsolute(rest)) return probeFilename(ctx, rest);
   const prefix = fromTop ? '' : (startupPrefix(ctx.cwd, ctx.layout.workDir) ?? '');
   const relative = `${prefix}${rest}`;
   if (relative === '') return false;

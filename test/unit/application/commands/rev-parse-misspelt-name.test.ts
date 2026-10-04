@@ -253,6 +253,67 @@ describe('Given an expression whose name warns but which names no object', () =>
     });
   });
 
+  describe.each([
+    { arg: '/outside/x', path: '/outside/x' },
+    { arg: '://outside/x', path: '/outside/x' },
+    { arg: ':!/outside/x', path: '/outside/x' },
+  ])('When it reads the absolute argument $arg the filename probe finds', ({ arg, path }) => {
+    it('Then it answers the path, probing it where it stands', async () => {
+      // Arrange
+      const repo = await danglingRepo(() => undefined);
+      const probed: string[] = [];
+      const filenameProbe = (probedPath: string): Promise<boolean> => {
+        probed.push(probedPath);
+        return Promise.resolve(true);
+      };
+      const ctx = { ...repo, cwd: `${repo.layout.workDir}/sub`, filenameProbe } as Context;
+      const sut = revParse;
+
+      // Act
+      const result = await sut(ctx, arg);
+
+      // Assert
+      expect(result).toEqual([{ kind: 'path', path: arg }]);
+      expect(probed).toEqual([path]);
+    });
+  });
+
+  describe('When a Windows-syntax repository reads a drive-absolute argument', () => {
+    it('Then the filename probe answers it where it stands', async () => {
+      // Arrange
+      const repo = await danglingRepo(() => undefined);
+      const probed: string[] = [];
+      const filenameProbe = (probedPath: string): Promise<boolean> => {
+        probed.push(probedPath);
+        return Promise.resolve(true);
+      };
+      const ctx = { ...repo, windowsPathSyntax: true, filenameProbe } as Context;
+      const sut = revParse;
+
+      // Act
+      const result = await sut(ctx, 'C:/outside');
+
+      // Assert
+      expect(result).toEqual([{ kind: 'path', path: 'C:/outside' }]);
+      expect(probed).toEqual(['C:/outside']);
+    });
+  });
+
+  describe('When it reads an absolute argument with no filename probe', () => {
+    it('Then the path reads as absent and the argument is refused', async () => {
+      // Arrange
+      const ctx = await danglingRepo(() => undefined);
+      await ctx.fs.writeUtf8(`${ctx.layout.workDir}/outside`, '');
+      const sut = revParse;
+
+      // Act
+      const result = await failureOf(() => sut(ctx, '/outside'));
+
+      // Assert
+      expect(result).toMatchObject({ printed: [{ kind: 'path', path: '/outside' }] });
+    });
+  });
+
   describe('When the filename probe is refused', () => {
     it('Then revParse surfaces the refusal', async () => {
       // Arrange

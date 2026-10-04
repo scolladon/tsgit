@@ -253,6 +253,24 @@ describe.skipIf(!GIT_AVAILABLE)('integration — revParse revision list parity w
       },
     );
 
+    describe.each(['<abs>/f', '<abs>/absent', ':/<abs>/f', ':!<abs>/f', ':^<abs>/absent'])(
+      'When git rev-parse and revParse read the absolute argument %s from sub',
+      (row) => {
+        it('Then both check the path where it stands and print, refuse alike', async () => {
+          // Arrange
+          const argument = row.replace('<abs>', repo);
+          const cwd = path.join(repo, 'sub');
+          const peer = gitOutcome(cwd, argument);
+
+          // Act
+          const result = await tsgitOutcome(repo, cwd, argument);
+
+          // Assert
+          expect(result).toEqual(peer);
+        });
+      },
+    );
+
     describe.each(['<prefix>', '<prefix>^{}', '<prefix>^{blob}', '<prefix>^{object}'])(
       'When git rev-parse and revParse read %s, the prefix read with no commit-ish hint',
       (row) => {

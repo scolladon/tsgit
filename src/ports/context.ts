@@ -345,9 +345,10 @@ export interface Context {
   readonly alternatePathProbe?: (path: string) => AlternatePathProbe;
   /**
    * Optional capability answering git's `check_filename` existence check for a
-   * revision argument that climbs with `..`: the one read the misspelt-revision
-   * probe makes outside the repository, existence only. Supplied by the node
-   * runtime; absent on browser / memory, where every such path reads as absent.
+   * revision argument that climbs with `..` or is absolute: the reads the
+   * misspelt-revision probe makes outside the repository, existence only.
+   * Supplied by the node runtime; absent on browser / memory, where every such
+   * path reads as absent.
    */
   readonly filenameProbe?: FilenameProbe;
   /**
