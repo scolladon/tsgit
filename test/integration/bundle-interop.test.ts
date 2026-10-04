@@ -1789,4 +1789,40 @@ describe.skipIf(!GIT_AVAILABLE)('bundle interop — object types assigned while 
       });
     });
   });
+
+  describe('Given a blob named before a branch whose commit names that blob as its tree', () => {
+    describe('When both tools bundle them', () => {
+      it('Then both log the conflicting tree pointer and die on the branch as a bad object', async () => {
+        // Arrange
+        const dir = buildRepo(treeNamingBlob);
+        const blob = runGit(['-C', dir, 'hash-object', '--stdin'], { input: 'hi\n' }).trim();
+        const git = tryRunGitWithExit([
+          '-C',
+          dir,
+          'bundle',
+          'create',
+          path.join(dir, 'g.bundle'),
+          blob,
+          'main',
+        ]);
+        const logged: string[] = [];
+        const base = createNodeContext({ workDir: dir });
+        const ctx = { ...base, logger: { error: (line: string) => logged.push(line) } };
+        const sut = bundleCreate;
+
+        // Act
+        const thrown = await sut(ctx, { revs: [{ tip: blob }, { tip: 'main' }] }).then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+
+        // Assert
+        const { id } = (thrown as { data: { id: string } }).data;
+        expect(git.exitCode).toBe(128);
+        expect(git.stderr).toBe(
+          `${logged.map((line) => `error: ${line}\n`).join('')}fatal: bad object ${id}\n`,
+        );
+      });
+    });
+  });
 });

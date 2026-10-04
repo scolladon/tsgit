@@ -1299,6 +1299,30 @@ describe('bundleCreate: object types assigned while enumerating', () => {
     return undefined;
   };
 
+  describe('Given a blob named before a branch whose commit names that blob as its tree', () => {
+    describe('When bundleCreate resolves both', () => {
+      it('Then the blob typing conflicts with the tree pointer and the branch is a bad object', async () => {
+        // Arrange
+        const { ctx, logged, blob, root } = await buildTypingRepo();
+        const named = await writeCommitNaming(ctx, blob, [root]);
+        await setRef(ctx, 'refs/heads/main', named);
+        const sut = refusalOf;
+
+        // Act
+        const caught = await sut(ctx, { revs: [{ tip: blob }, { tip: 'main' }] });
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'OBJECT_NOT_FOUND', id: 'main' },
+          logged: [
+            `object ${blob} is a blob, not a tree`,
+            `bad tree pointer ${blob} in commit ${named}`,
+          ],
+        });
+      });
+    });
+  });
+
   describe('Given a branch whose commit names a blob as its tree', () => {
     describe('When bundleCreate packs it', () => {
       it('Then it logs the blob is not a tree and refuses it as a bad tree object', async () => {

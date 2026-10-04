@@ -14,9 +14,14 @@ import { enumerateBundleObjects } from '../primitives/enumerate-bundle-objects.j
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
 import type { ClosureTip } from '../primitives/internal/closure-engine.js';
 import { boundedMapFor } from '../primitives/internal/concurrency.js';
+import {
+  createObjectTypeTable,
+  type ObjectTypeTable,
+} from '../primitives/internal/object-type-table.js';
 import { readObject } from '../primitives/read-object.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
+import { requireReference } from './internal/require-reference.js';
 import { symmetricBases } from './internal/symmetric-bases.js';
 import { resolveRevision } from './rev-parse.js';
 
@@ -56,6 +61,8 @@ interface Accumulator {
   readonly refs: BundleRef[];
   /** Every tip in git's pending order — `handle_revision_arg`'s. */
   readonly pending: ClosureTip[];
+  /** The bundle process's object-type table, shared by its arguments and its walk. */
+  readonly objectTypes: ObjectTypeTable;
 }
 
 const want = (acc: Accumulator, id: ObjectId): void => {
@@ -129,13 +136,16 @@ const processTip = async (
   acc: Accumulator,
 ): Promise<void> => {
   const oid = await resolveRevision(ctx, tip);
+  await requireReference(ctx, acc.objectTypes, tip, oid);
   const fullRef = findFullRef(tip, allRefs);
   if (fullRef !== undefined) acc.refs.push({ name: fullRef, oid });
   want(acc, oid);
 };
 
 const processExclude = async (ctx: Context, excluded: string, acc: Accumulator): Promise<void> => {
-  exclude(acc, await resolveRevision(ctx, excluded));
+  const oid = await resolveRevision(ctx, excluded);
+  await requireReference(ctx, acc.objectTypes, excluded, oid);
+  exclude(acc, oid);
 };
 
 const processRange = async (
@@ -307,7 +317,7 @@ export const bundleCreate = async (
     ...(opts.version !== undefined ? { requested: opts.version } : {}),
   });
   const allRefs = await enumerateRefs(ctx);
-  const acc: Accumulator = { refs: [], pending: [] };
+  const acc: Accumulator = { refs: [], pending: [], objectTypes: createObjectTypeTable() };
   await expandPseudoRefs(ctx, opts, allRefs, acc);
   await processRevArgs(ctx, opts.revs ?? [], allRefs, acc);
   if (acc.refs.length === 0) throw bundleEmpty('no-refs');
@@ -315,6 +325,7 @@ export const bundleCreate = async (
     wants: acc.pending.filter((tip) => !tip.excluded).map((tip) => tip.id),
     haves: acc.pending.filter((tip) => tip.excluded).map((tip) => tip.id),
     tips: acc.pending,
+    objectTypes: acc.objectTypes,
   });
   const refs = deduplicateRefs(acc.refs.filter((ref) => !closure.uninteresting.has(ref.oid)));
   if (refs.length === 0) throw bundleEmpty('no-refs');

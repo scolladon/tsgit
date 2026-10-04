@@ -39,6 +39,11 @@ export interface EnumerateBundleObjectsInput {
   readonly tips?: ReadonlyArray<ClosureTip>;
   /** Hard cap on total emitted objects. Defaults to MAX_PUSH_OBJECTS. */
   readonly maxObjects?: number;
+  /**
+   * The bundle process's object-type table, holding what its argument
+   * parsing already typed; its walk types into it. Omitted means a fresh one.
+   */
+  readonly objectTypes?: ObjectTypeTable;
 }
 
 /** An object id paired with git's `pack_name_hash` of its own path — `0`
@@ -113,9 +118,12 @@ const seedInOrder = async (
  * walk lists, in walk order, and every object the walk leaves flagged
  * uninteresting.
  */
-const walkBundle = async (ctx: Context, tips: ReadonlyArray<ClosureTip>): Promise<BundleWalk> => {
+const walkBundle = async (
+  ctx: Context,
+  tips: ReadonlyArray<ClosureTip>,
+  objectTypes: ObjectTypeTable,
+): Promise<BundleWalk> => {
   if (tips.every((tip) => !tip.excluded)) return NOTHING_EXCLUDED;
-  const objectTypes = createObjectTypeTable();
   const marks = await createNotMarks(ctx, { objects: true, objectTypes });
   const { from, seeds } = await seedInOrder(ctx, tips, marks, objectTypes);
   const options = await resolveLimitOptions(
@@ -166,7 +174,7 @@ export const enumerateBundleObjects = async (
 ): Promise<BundleObjectClosure> => {
   if (input.wants.length === 0) return { objects: [], ...NOTHING_EXCLUDED };
   const tips = pendingOf(input);
-  const walked = await walkBundle(ctx, tips);
+  const walked = await walkBundle(ctx, tips, input.objectTypes ?? createObjectTypeTable());
   const { boundary, uninteresting } = walked;
   const closure = await computeClosure(ctx, {
     wants: input.wants,
