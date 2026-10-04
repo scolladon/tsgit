@@ -122,8 +122,8 @@ export interface RefStore {
    * `branch` warn `ignoring broken ref` and omit it (exit 0), while
    * `rev-list --branches` and `bundle create --all` refuse outright with
    * `fatal: bad object`. Skip-or-refuse is therefore the CALLER's policy to
-   * pick, and each one already does: `rev-list`, `fsck` and `reflog expire`
-   * tolerate, `bundle create` propagates. Filtering here would impose
+   * pick, and each one already does: `fsck` and `reflog expire` tolerate,
+   * `rev-list --all` and `bundle create` propagate. Filtering here would impose
    * for-each-ref's answer on every caller — including the ones git makes
    * fatal — and would cost one file read per loose name to discover
    * something no caller had asked about.

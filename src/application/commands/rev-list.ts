@@ -11,13 +11,14 @@
  * Ordering is deterministic for a given call but is not git's own order —
  * every equality check against the result compares it as a set.
  */
-import type { FilePath, ObjectId } from '../../domain/objects/index.js';
+import { objectNotFound } from '../../domain/objects/error.js';
+import type { FilePath, ObjectId, RefName } from '../../domain/objects/index.js';
 import type { Context } from '../../ports/context.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
 import { type ClosureTier, computeClosure } from '../primitives/internal/closure-engine.js';
+import { readRefCandidate } from '../primitives/resolve-ref.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
 import { expandRevisionArguments } from './internal/revision-argument.js';
-import { resolveRevision } from './rev-parse.js';
 
 export interface RevListOptions {
   /** Revisions to walk from. Defaults to `['HEAD']`, unless `all` is set. */
@@ -35,9 +36,10 @@ export interface RevListOptions {
   readonly count?: boolean;
   /**
    * Union the tips of every ref (branches, tags, remotes, `HEAD`) into
-   * `wants`, deduplicated. A ref that does not peel to an object — a
-   * symbolic `HEAD` on an unborn branch is the live case — is skipped
-   * rather than refusing the call.
+   * `wants`, deduplicated. A symbolic ref whose target does not resolve — a
+   * `HEAD` on an unborn branch is the live case — is skipped; a ref whose
+   * content is unreadable refuses with `OBJECT_NOT_FOUND` naming that ref,
+   * as git's `bad object <ref>`.
    */
   readonly all?: boolean;
   /**
@@ -81,20 +83,30 @@ export interface RevListResult {
 
 const DEFAULT_WANTS: ReadonlyArray<string> = ['HEAD'];
 
+const HEAD_REF = 'HEAD' as RefName;
+
+/** git's `--all` iteration order: every ref under `refs/`, then `HEAD`. */
+const allRefNames = async (ctx: Context): Promise<RefName[]> => {
+  const names = await enumerateRefs(ctx);
+  return [...names.filter((name) => name.startsWith('refs/')), HEAD_REF];
+};
+
 /**
- * Every ref's tip, resolved through the same peel path as an explicit want
- * (`resolveRevision`). A ref that does not peel to an object — a symbolic `HEAD` on
- * an unborn branch — contributes nothing rather than refusing the call.
+ * One `--all` tip as git's paranoid ref iteration hands it to
+ * `get_reference`: a dangling symref (an unborn `HEAD` included) is omitted,
+ * a broken ref dies `bad object <name>`, and any other fault propagates.
  */
+const readAllRefTip = async (ctx: Context, name: RefName): Promise<ObjectId | undefined> => {
+  const outcome = await readRefCandidate(ctx, name);
+  if (outcome.kind === 'broken') throw objectNotFound(name as string as ObjectId);
+  return outcome.kind === 'found' ? outcome.id : undefined;
+};
+
 const resolveAllRefTips = async (ctx: Context): Promise<ObjectId[]> => {
-  const refs = await enumerateRefs(ctx);
   const tips: ObjectId[] = [];
-  for (const ref of refs) {
-    try {
-      tips.push(await resolveRevision(ctx, ref));
-    } catch {
-      // Does not peel to an object — skip, per `all`'s own semantics above.
-    }
+  for (const name of await allRefNames(ctx)) {
+    const tip = await readAllRefTip(ctx, name);
+    if (tip !== undefined) tips.push(tip);
   }
   return tips;
 };

@@ -956,3 +956,125 @@ describe('Given a merge whose first parent is dated before its second', () => {
     },
   );
 });
+
+describe('revList all: broken refs', () => {
+  const writeLooseRef = (ctx: Context, name: string, content: string): Promise<void> =>
+    ctx.fs.writeUtf8(`${ctx.layout.gitDir}/${name}`, content);
+
+  const caughtFrom = async (run: () => Promise<unknown>): Promise<unknown> => {
+    try {
+      await run();
+    } catch (error) {
+      return error;
+    }
+    return expect.unreachable();
+  };
+
+  describe('Given a loose branch whose content is neither an id nor a symref', () => {
+    describe('When revList is called with all: true', () => {
+      it('Then it refuses naming the broken ref as a bad object', async () => {
+        // Arrange
+        const { ctx } = await seedThree();
+        await writeLooseRef(ctx, 'refs/heads/broken', 'garbage\n');
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, { all: true }));
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'OBJECT_NOT_FOUND',
+          id: 'refs/heads/broken',
+        });
+      });
+    });
+  });
+
+  describe('Given two broken loose branches', () => {
+    describe('When revList is called with all: true', () => {
+      it('Then the refusal names the first in ref order', async () => {
+        // Arrange
+        const { ctx } = await seedThree();
+        await writeLooseRef(ctx, 'refs/heads/z-broken', 'garbage\n');
+        await writeLooseRef(ctx, 'refs/heads/a-broken', 'garbage\n');
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, { all: true }));
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'OBJECT_NOT_FOUND',
+          id: 'refs/heads/a-broken',
+        });
+      });
+    });
+  });
+
+  describe('Given a symbolic branch whose target is broken', () => {
+    describe('When revList is called with all: true', () => {
+      it('Then the symbolic branch is skipped and the refusal names the broken target', async () => {
+        // Arrange
+        const { ctx } = await seedThree();
+        await writeLooseRef(ctx, 'refs/heads/zz', 'garbage\n');
+        await writeLooseRef(ctx, 'refs/heads/aa', 'ref: refs/heads/zz\n');
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(ctx, { all: true }));
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'OBJECT_NOT_FOUND',
+          id: 'refs/heads/zz',
+        });
+      });
+    });
+  });
+
+  describe('Given a symbolic branch whose target does not exist', () => {
+    describe('When revList is called with all: true', () => {
+      it('Then the dangling symbolic branch is skipped', async () => {
+        // Arrange
+        const { ctx, commitIds } = await seedThree();
+        await writeLooseRef(ctx, 'refs/heads/sym', 'ref: refs/heads/nope\n');
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, { all: true });
+
+        // Assert
+        expect(new Set(result.entries.map((entry) => entry.id))).toEqual(new Set(commitIds));
+      });
+    });
+  });
+
+  describe('Given a loose branch whose read faults', () => {
+    describe('When revList is called with all: true', () => {
+      it('Then the fault propagates unchanged', async () => {
+        // Arrange
+        const { ctx } = await seedThree();
+        await writeLooseRef(ctx, 'refs/heads/faulty', 'garbage\n');
+        const faultyPath = `${ctx.layout.gitDir}/refs/heads/faulty`;
+        const ioError = new Error('EIO: simulated read failure');
+        const faultyCtx: Context = {
+          ...ctx,
+          fs: {
+            ...ctx.fs,
+            openWithNoFollow: async (path, mode) => {
+              if (path === faultyPath) throw ioError;
+              return ctx.fs.openWithNoFollow(path, mode);
+            },
+          },
+        };
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() => sut(faultyCtx, { all: true }));
+
+        // Assert
+        expect(caught).toBe(ioError);
+      });
+    });
+  });
+});

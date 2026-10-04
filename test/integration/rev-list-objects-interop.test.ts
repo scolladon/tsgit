@@ -19,7 +19,7 @@ import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { packObjects } from '../../src/application/commands/pack-objects.js';
 import { revList } from '../../src/application/commands/rev-list.js';
 import type { Context } from '../../src/ports/context.js';
-import { GIT_AVAILABLE, git, runGit, runGitEnv } from './interop-helpers.js';
+import { GIT_AVAILABLE, git, runGit, runGitEnv, tryRunGitWithExit } from './interop-helpers.js';
 
 const SETUP_TIMEOUT = 60_000;
 
@@ -680,6 +680,81 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list objects interop — closure prune', ()
         // Assert
         const actual = new Set(result.entries.map((entry) => entry.id));
         expect([...actual].sort()).toEqual([...expected].sort());
+      });
+    });
+  });
+});
+
+/** One commit on `main`, then each of `looseRefs` written verbatim under `.git/`. */
+const buildLooseRefFixture = async (
+  looseRefs: Readonly<Record<string, string>>,
+): Promise<string> => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'tsgit-rev-list-all-broken-'));
+  git(dir, 'init', '-q', '-b', 'main');
+  git(dir, 'config', 'user.name', 'A U Thor');
+  git(dir, 'config', 'user.email', 'author@example.com');
+  commit(dir, 'base', 1_700_000_000, ['--allow-empty']);
+  for (const [name, content] of Object.entries(looseRefs)) {
+    await writeFile(path.join(dir, '.git', name), content);
+  }
+  return dir;
+};
+
+/** git's `die("bad object %s")` line, rebuilt from the refusal's structured data. */
+const badObjectLine = (error: unknown): string =>
+  `fatal: bad object ${String((error as { data?: { id?: string } }).data?.id)}\n`;
+
+describe.skipIf(!GIT_AVAILABLE)('rev-list all interop — broken refs', () => {
+  const dirs: string[] = [];
+  afterAll(async () => {
+    await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true })));
+  });
+
+  describe.each([
+    ['a loose branch holding garbage', { 'refs/heads/broken': 'garbage\n' }],
+    ['two broken branches', { 'refs/heads/z-broken': 'garbage\n', 'refs/heads/a-broken': 'x\n' }],
+    [
+      'a symbolic branch whose target is broken',
+      { 'refs/heads/zz': 'garbage\n', 'refs/heads/aa': 'ref: refs/heads/zz\n' },
+    ],
+  ] as const)('Given %s', (_label, looseRefs) => {
+    describe('When rev-list --all runs on both tools', () => {
+      it('Then both refuse with the same bad-object line', async () => {
+        // Arrange
+        const dir = await buildLooseRefFixture(looseRefs);
+        dirs.push(dir);
+        const peer = tryRunGitWithExit(['-C', dir, 'rev-list', '--all']);
+        const sut = revList;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(createNodeContext({ workDir: dir }), { all: true });
+        } catch (error) {
+          caught = error;
+        }
+
+        // Assert
+        expect(peer.exitCode).toBe(128);
+        expect(badObjectLine(caught)).toBe(peer.stderr);
+      });
+    });
+  });
+
+  describe('Given a symbolic branch whose target does not exist', () => {
+    describe('When rev-list --all runs on both tools', () => {
+      it('Then both skip it and list the same commits', async () => {
+        // Arrange
+        const dir = await buildLooseRefFixture({ 'refs/heads/sym': 'ref: refs/heads/nope\n' });
+        dirs.push(dir);
+        const peer = new Set(git(dir, 'rev-list', '--all').split('\n').filter(Boolean));
+        const sut = revList;
+
+        // Act
+        const result = await sut(createNodeContext({ workDir: dir }), { all: true });
+
+        // Assert
+        expect(new Set(result.entries.map((entry) => entry.id))).toEqual(peer);
       });
     });
   });
