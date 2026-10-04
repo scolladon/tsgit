@@ -93,7 +93,8 @@ describe('describeCandidates', () => {
         const result = await sut(ctx, [ids.blob, ids.tree, ids.commit, ids.untagged, ids.tag]);
 
         // Assert
-        expect(result).toEqual([
+        expect(result.readFaults).toEqual([]);
+        expect(result.candidates).toEqual([
           ...tags,
           {
             id: ids.commit,
@@ -120,7 +121,7 @@ describe('describeCandidates', () => {
         const result = await sut(ctx, [high as ObjectId, low as ObjectId]);
 
         // Assert
-        expect(result).toEqual([
+        expect(result.candidates).toEqual([
           { id: low, type: 'blob' },
           { id: high, type: 'blob' },
         ]);

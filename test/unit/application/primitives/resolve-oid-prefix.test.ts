@@ -1,12 +1,13 @@
 import { createHash } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMemoryContext } from '../../../../src/adapters/memory/memory-adapter.js';
+import { readDeclaredObjectHeader } from '../../../../src/application/primitives/read-object.js';
 import { resolveOidPrefix } from '../../../../src/application/primitives/resolve-oid-prefix.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { permissionDenied, TsgitError } from '../../../../src/domain/error.js';
 import type { Blob, ObjectId } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
-import { buildSeededContext, instrumentedContext } from './fixtures.js';
+import { buildSeededContext, instrumentedContext, writeRawObjectBytes } from './fixtures.js';
 import { writeSyntheticPack, writeSyntheticPackIn } from './pack-fixture.js';
 
 const blobOf = (content: Uint8Array): Blob => ({ type: 'blob', id: '' as ObjectId, content });
@@ -36,6 +37,16 @@ const writeBlobsSharingPrefix = async (
   for (const content of contentsSharingPrefix(count))
     ids.push(await writeObject(ctx, blobOf(content)));
   return ids.sort();
+};
+
+/** `template` with `@@` replaced by the first counter whose `type` id starts with `SHARED_PREFIX`. */
+const contentSharingPrefix = (type: string, template: string): Uint8Array => {
+  for (let attempt = 0; ; attempt += 1) {
+    const content = encoder.encode(template.replace('@@', String(attempt)));
+    const header = `${type} ${content.length}\0`;
+    const id = createHash('sha1').update(header).update(content).digest('hex');
+    if (id.startsWith(SHARED_PREFIX)) return content;
+  }
 };
 
 const asBlobs = (ids: ReadonlyArray<ObjectId>) => ids.map((id) => ({ id, type: 'blob' }));
@@ -656,6 +667,104 @@ describe('resolveOidPrefix through alternates', () => {
           prefix: SHARED_PREFIX,
           candidates: asBlobs([mine, theirs as ObjectId].sort()),
         });
+      });
+    });
+  });
+});
+
+describe('resolveOidPrefix over unreadable candidates', () => {
+  describe('Given a blob, a tag without a tag line and an unreadable loose object sharing a prefix', () => {
+    describe('When resolveOidPrefix is called without a hint', () => {
+      it('Then the bad object and the bad tag are listed first, with every unreadable read in git order', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        const badTag = await writeRawObjectBytes(
+          ctx,
+          'tag',
+          contentSharingPrefix('tag', `object ${'0'.repeat(40)}\ntype commit\n\nm@@\n`),
+        );
+        const badObject = `${SHARED_PREFIX}${'f'.repeat(36)}` as ObjectId;
+        await writeLooseNamed(ctx, badObject);
+        const [blob] = await writeBlobsSharingPrefix(ctx, 1);
+        const sut = resolveOidPrefix;
+
+        // Act
+        let caught: TsgitError | undefined;
+        try {
+          await sut(ctx, SHARED_PREFIX);
+        } catch (err) {
+          caught = err as TsgitError;
+        }
+
+        // Assert
+        // The memory adapter's inflate names a one-byte body's failure in its own words.
+        const fault = { id: badObject, reason: 'unexpected end of deflate stream' };
+        expect(caught?.data).toEqual({
+          code: 'AMBIGUOUS_OID_PREFIX',
+          prefix: SHARED_PREFIX,
+          candidates: [
+            { id: badObject, type: 'bad-object' },
+            { id: badTag, type: 'bad-tag' },
+            { id: blob, type: 'blob' },
+          ],
+          readFaults: [fault, fault, fault],
+        });
+      });
+    });
+  });
+
+  describe('Given a blob and an unreadable loose object sharing a prefix', () => {
+    describe('When resolveOidPrefix is called with a hint that reads each candidate', () => {
+      it('Then the unreadable one fails the hint, its read is logged, and the blob wins', async () => {
+        // Arrange
+        const base = await buildSeededContext();
+        const badObject = `${SHARED_PREFIX}${'f'.repeat(36)}` as ObjectId;
+        await writeLooseNamed(base, badObject);
+        const [blob] = await writeBlobsSharingPrefix(base, 1);
+        const error = vi.fn();
+        const ctx: Context = { ...base, logger: { error } };
+        const sut = resolveOidPrefix;
+
+        // Act
+        const result = await sut(ctx, SHARED_PREFIX, async (id) => {
+          await readDeclaredObjectHeader(ctx, id);
+          return true;
+        });
+
+        // Assert
+        expect(result).toBe(blob);
+        expect(error.mock.calls).toEqual([
+          [
+            'inflate: data stream error (unexpected end of deflate stream)',
+            { id: badObject, reason: 'unexpected end of deflate stream' },
+          ],
+          [`unable to unpack ${badObject} header`, { id: badObject }],
+        ]);
+      });
+    });
+  });
+
+  describe('Given a blob sharing a prefix with a candidate whose hint read faults unexpectedly', () => {
+    describe('When resolveOidPrefix is called with that hint', () => {
+      it('Then the fault propagates', async () => {
+        // Arrange
+        const ctx = await buildSeededContext();
+        await writeBlobsSharingPrefix(ctx, 2);
+        const fault = permissionDenied('/objects');
+        const sut = resolveOidPrefix;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut(ctx, SHARED_PREFIX, async () => {
+            throw fault;
+          });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect(caught).toBe(fault);
       });
     });
   });

@@ -13,7 +13,11 @@ import type { HashConfig } from '../../domain/objects/hash-config.js';
 import { isOid, type ObjectId } from '../../domain/objects/index.js';
 import { findByPrefix } from '../../domain/storage/index.js';
 import type { Context } from '../../ports/context.js';
-import { describeCandidates } from './internal/ambiguous-candidates.js';
+import {
+  candidateReadFault,
+  describeCandidates,
+  logCandidateReadFault,
+} from './internal/ambiguous-candidates.js';
 import { isMissingFanoutDir } from './internal/loose-oid-cache.js';
 import { getObjectStore, type ObjectSource } from './object-store.js';
 
@@ -103,13 +107,29 @@ export const scanPacksIn = async (
 /** git's disambiguation hint: whether a candidate is the kind the caller reads. */
 export type CandidateFilter = (id: ObjectId) => Promise<boolean>;
 
+/** git's hint over one candidate: an unreadable one fails it, its read reported as it happens. */
+const passesHint = async (
+  ctx: Context,
+  id: ObjectId,
+  accepts: CandidateFilter,
+): Promise<boolean> => {
+  try {
+    return await accepts(id);
+  } catch (error) {
+    const fault = candidateReadFault(id, error);
+    if (fault !== undefined) logCandidateReadFault(ctx, fault);
+    return false;
+  }
+};
+
 /** The candidates passing git's disambiguation hint `accepts`. */
 const passing = async (
+  ctx: Context,
   candidates: ReadonlyArray<ObjectId>,
   accepts: CandidateFilter,
 ): Promise<ReadonlyArray<ObjectId>> => {
   const kept: ObjectId[] = [];
-  for (const id of candidates) if (await accepts(id)) kept.push(id);
+  for (const id of candidates) if (await passesHint(ctx, id, accepts)) kept.push(id);
   return kept;
 };
 
@@ -125,11 +145,12 @@ const chooseCandidate = async (
   candidates: ReadonlyArray<ObjectId>,
   accepts: CandidateFilter | undefined,
 ): Promise<ObjectId> => {
-  const kept = accepts === undefined ? [] : await passing(candidates, accepts);
+  const kept = accepts === undefined ? [] : await passing(ctx, candidates, accepts);
   const [chosen, rival] = kept;
   if (chosen !== undefined && rival === undefined) return chosen;
   const listed = rival === undefined ? candidates : kept;
-  throw ambiguousOidPrefix(prefix, await describeCandidates(ctx, listed));
+  const { candidates: described, readFaults } = await describeCandidates(ctx, listed);
+  throw ambiguousOidPrefix(prefix, described, readFaults);
 };
 
 export const resolveOidPrefix = async (

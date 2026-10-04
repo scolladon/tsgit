@@ -126,6 +126,8 @@ const gitOutcome = (cwd: string, args: ReadonlyArray<string>, input?: string): O
 
 const candidateLine = async (ctx: Context, candidate: AmbiguousCandidate): Promise<string> => {
   const abbrev = await abbreviateObjectId(ctx, candidate.id);
+  if (candidate.type === 'bad-object') return `${abbrev} [bad object]`;
+  if (candidate.type === 'bad-tag') return `${abbrev} [bad tag, could not parse it]`;
   if (!('date' in candidate)) return `${abbrev} ${candidate.type}`;
   const { timestamp, timezoneOffset } = candidate.date;
   const day = showDate(BigInt(timestamp), Number(timezoneOffset), 'short', 0, 0);
@@ -310,3 +312,56 @@ describe.skipIf(!GIT_AVAILABLE)('integration — a crowded ambiguous prefix agai
     });
   });
 });
+
+/** A commit, a blob, a tag without a tag line and an unreadable loose file, all sharing the commit's prefix. */
+const buildUnreadableRepository = (repo: string): string => {
+  runGit(['init', '-q', '-b', 'main', repo]);
+  disableAutoMaintenance(repo);
+  runGit(['-C', repo, 'commit', '-q', '--allow-empty', '-m', 'unreadable'], { env: identity });
+  const commit = git(repo, 'rev-parse', 'HEAD').trim();
+  const prefix = commit.slice(0, PREFIX_LENGTH);
+  writeSharing(repo, 'blob', prefix, Buffer.from(`x${PLACEHOLDER}\n`));
+  const untagged = `object ${commit}\ntype commit\ntagger T <t@t> 1500000000 +0000\n\nm${PLACEHOLDER}\n`;
+  writeSharing(repo, 'tag', prefix, Buffer.from(untagged));
+  const unreadable = `${prefix}${'f'.repeat(36)}`;
+  mkdirSync(path.join(repo, '.git', 'objects', unreadable.slice(0, 2)), { recursive: true });
+  writeFileSync(
+    path.join(repo, '.git', 'objects', unreadable.slice(0, 2), unreadable.slice(2)),
+    'garbage',
+  );
+  return prefix;
+};
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'integration — an ambiguous prefix with unreadable candidates against git',
+  () => {
+    let repo = '';
+    let prefix = '';
+
+    beforeAll(async () => {
+      repo = await mkdtemp(path.join(os.tmpdir(), 'tsgit-rev-parse-unreadable-interop-'));
+      prefix = buildUnreadableRepository(repo);
+    }, SETUP_TIMEOUT);
+
+    afterAll(async () => {
+      await rm(repo, { recursive: true, force: true });
+    });
+
+    describe('Given a commit, a blob, a bad tag and a bad object sharing a prefix', () => {
+      describe.each(['<p>'])('When git rev-parse and revParse read %s', (row) => {
+        it('Then both report every failed read and list the bad candidates alike', async () => {
+          // Arrange
+          const argument = row.replace('<p>', prefix);
+          const peer = gitOutcome(repo, ['rev-parse', argument]);
+          const sut = revParse;
+
+          // Act
+          const result = await tsgitOutcome(repo, repo, (ctx) => sut(ctx, argument));
+
+          // Assert
+          expect(result).toEqual(peer);
+        });
+      });
+    });
+  },
+);

@@ -1,6 +1,6 @@
 import { sanitizeForDisplay, TsgitError } from '../error.js';
 import type { HookName } from '../hooks/index.js';
-import type { AmbiguousCandidate } from '../objects/ambiguous-candidate.js';
+import type { AmbiguousCandidate, CandidateReadFault } from '../objects/ambiguous-candidate.js';
 import { MAX_OBJECT_ID_IN_ERROR, type ObjectType } from '../objects/error.js';
 import type { FilePath, ObjectId, RefName } from '../objects/object-id.js';
 import type { RevParseEntry } from '../objects/rev-parse-entry.js';
@@ -341,8 +341,10 @@ export type CommandError =
   | {
       readonly code: 'AMBIGUOUS_OID_PREFIX';
       readonly prefix: string;
-      /** The objects git's `hint:` lists, in its order: tags, commits, trees, then blobs, each by id. */
+      /** The objects git's `hint:` lists, in its order: unreadable objects, tags, commits, trees, then blobs, each by id. */
       readonly candidates: ReadonlyArray<AmbiguousCandidate>;
+      /** Every failed type read git made while sorting and showing the candidates, in read order; absent when none failed. */
+      readonly readFaults?: ReadonlyArray<CandidateReadFault>;
       /** What `rev-parse` had printed before refusing. */
       readonly printed?: ReadonlyArray<RevParseEntry>;
     }
@@ -1007,7 +1009,14 @@ export const stashApplyWouldOverwrite = (paths: ReadonlyArray<FilePath>): TsgitE
 export const ambiguousOidPrefix = (
   prefix: string,
   candidates: ReadonlyArray<AmbiguousCandidate>,
-): TsgitError => new TsgitError({ code: 'AMBIGUOUS_OID_PREFIX', prefix, candidates });
+  readFaults: ReadonlyArray<CandidateReadFault> = [],
+): TsgitError =>
+  new TsgitError({
+    code: 'AMBIGUOUS_OID_PREFIX',
+    prefix,
+    candidates,
+    ...(readFaults.length === 0 ? {} : { readFaults }),
+  });
 
 // Corrupt `.git/sequencer/todo` line. `reason` embeds the offending line
 // (sanitised — a mid-write crash can leave control bytes behind).
