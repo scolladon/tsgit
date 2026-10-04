@@ -35,6 +35,7 @@ import {
 } from '../../primitives/internal/gc-config-guard.js';
 import { forgetLooseOidPrefix } from '../../primitives/internal/loose-oid-cache.js';
 import { forgetParsedObjectMemo } from '../../primitives/internal/object-caches.js';
+import { createObjectTypeTable } from '../../primitives/internal/object-type-table.js';
 import {
   packFilePath,
   writePackArtifactsViaQuarantine,
@@ -339,6 +340,8 @@ async function computeReachable(ctx: Context): Promise<ReachableClosure> {
     not: [],
     objects: true,
     tier: CLOSURE_TIER,
+    // git's repack runs `pack-objects`, typing every object its walk meets.
+    objectTypes: createObjectTypeTable(),
   });
   // One pass, projecting as it goes: a `new Map(objects.map(...))` would
   // materialise the whole tuple array before the Map consumed an entry, and

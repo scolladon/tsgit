@@ -13,6 +13,10 @@ import {
   commitGraphLayersDir,
   commonGitDir,
 } from '../../../../src/application/primitives/path-layout.js';
+import { writeObject } from '../../../../src/application/primitives/write-object.js';
+import type { TsgitError } from '../../../../src/domain/error.js';
+import type { FileMode, ObjectId } from '../../../../src/domain/objects/index.js';
+import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
 
 const AUTHOR = {
@@ -95,6 +99,111 @@ describe('maintenance task failure', () => {
 
         // Assert
         expect(caught).toBe(fault);
+      });
+    });
+  });
+
+  describe('gc over a history git cannot walk', () => {
+    const MISSING = `cd${'0'.repeat(38)}` as ObjectId;
+
+    interface Corrupt {
+      readonly ctx: Context;
+      readonly logged: string[];
+      readonly blob: ObjectId;
+      readonly empty: ObjectId;
+    }
+
+    const corruptRepo = async (): Promise<Corrupt> => {
+      const logged: string[] = [];
+      const base = createMemoryContext();
+      const ctx: Context = { ...base, logger: { error: (line: string) => logged.push(line) } };
+      await init(ctx);
+      const content = new TextEncoder().encode('hi\n');
+      const blob = await writeObject(ctx, { type: 'blob', id: '' as ObjectId, content });
+      const empty = await writeObject(ctx, { type: 'tree', id: '' as ObjectId, entries: [] });
+      return { ctx, logged, blob, empty };
+    };
+
+    const commitNaming = async (
+      ctx: Context,
+      tree: ObjectId,
+      parents: ReadonlyArray<ObjectId>,
+    ): Promise<ObjectId> => {
+      const id = await writeObject(ctx, {
+        type: 'commit',
+        id: '' as ObjectId,
+        data: {
+          tree,
+          parents,
+          author: AUTHOR,
+          committer: AUTHOR,
+          message: 'm\n',
+          extraHeaders: [],
+        },
+      });
+      await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/refs/heads/main`, `${id}\n`);
+      return id;
+    };
+
+    const subtreeNaming = (ctx: Context, blob: ObjectId): Promise<ObjectId> =>
+      writeObject(ctx, {
+        type: 'tree',
+        id: '' as ObjectId,
+        entries: [treeEntry('40000' as FileMode, 'sub', blob)],
+      });
+
+    describe.each([
+      [
+        'a tree listing a blob as a subtree',
+        async ({ ctx, blob }: Corrupt) => commitNaming(ctx, await subtreeNaming(ctx, blob), []),
+        ({ blob }: Corrupt) => ({
+          data: { code: 'BAD_TREE_OBJECT', id: blob },
+          logged: [`Object ${blob} not a tree`],
+        }),
+      ],
+      [
+        'a commit naming a blob as its tree',
+        ({ ctx, blob }: Corrupt) => commitNaming(ctx, blob, []),
+        ({ blob }: Corrupt) => ({
+          data: { code: 'BAD_TREE_OBJECT', id: blob },
+          logged: [`Object ${blob} not a tree`],
+        }),
+      ],
+      [
+        'a commit naming a blob as its parent',
+        ({ ctx, blob, empty }: Corrupt) => commitNaming(ctx, empty, [blob]),
+        ({ blob }: Corrupt, tip: ObjectId) => ({
+          data: { code: 'REVISION_WALK_FAILED', commit: tip },
+          logged: [`Object ${blob} not a commit`],
+        }),
+      ],
+      [
+        'a commit naming a parent the store lacks',
+        ({ ctx, empty }: Corrupt) => commitNaming(ctx, empty, [MISSING]),
+        (_repo: Corrupt, tip: ObjectId) => ({
+          data: { code: 'REVISION_WALK_FAILED', commit: tip },
+          logged: [`Could not read ${MISSING}`],
+        }),
+      ],
+    ] as const)('Given %s', (_label, corrupt, expectedFor) => {
+      describe('When the gc task runs', () => {
+        it("Then it logs what git does and refuses with git's walk refusal", async () => {
+          // Arrange
+          const repo = await corruptRepo();
+          const tip = await corrupt(repo);
+          const sut = maintenance;
+
+          // Act
+          const caught = await sut(repo.ctx, { tasks: ['gc'] }).then(
+            () => undefined,
+            (error: unknown) => error,
+          );
+
+          // Assert
+          expect({ data: (caught as TsgitError).data, logged: repo.logged }).toEqual(
+            expectedFor(repo, tip),
+          );
+        });
       });
     });
   });

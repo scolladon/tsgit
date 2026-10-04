@@ -2167,3 +2167,70 @@ describe.skipIf(!GIT_AVAILABLE)("commit-graph writes under git's commit_graph_co
     });
   });
 });
+
+describe.skipIf(!GIT_AVAILABLE)('maintenance interop — gc over a history git cannot walk', () => {
+  const dirs: string[] = [];
+
+  afterAll(async () => {
+    await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true })));
+  });
+
+  const gitWithInput = (dir: string, args: ReadonlyArray<string>, input: Buffer): string =>
+    execFileSync('git', ['-C', dir, ...args], { input, env: runGitEnv() })
+      .toString()
+      .trim();
+
+  /** `main` a commit whose root tree lists blob `B` under a tree mode. */
+  const buildRepo = async (): Promise<{ readonly dir: string; readonly blob: string }> => {
+    const dir = await realpath(await mkdtemp(path.join(os.tmpdir(), 'tsgit-interop-gc-walk-')));
+    dirs.push(dir);
+    git(dir, 'init', '-q', '-b', 'main');
+    disableAutoMaintenance(dir);
+    const blob = gitWithInput(dir, ['hash-object', '-w', '--stdin'], Buffer.from('hi\n'));
+    const entry = Buffer.concat([Buffer.from('40000 sub\0'), Buffer.from(blob, 'hex')]);
+    const tree = gitWithInput(
+      dir,
+      ['hash-object', '-t', 'tree', '-w', '--stdin', '--literally'],
+      entry,
+    );
+    const body = `tree ${tree}\nauthor a <a@b> 1700000000 +0000\ncommitter a <a@b> 1700000000 +0000\n\nm\n`;
+    const commit = gitWithInput(
+      dir,
+      ['hash-object', '-t', 'commit', '-w', '--stdin', '--literally'],
+      Buffer.from(body),
+    );
+    git(dir, 'update-ref', 'refs/heads/main', commit);
+    return { dir, blob };
+  };
+
+  describe('Given a tree listing a blob as a subtree', () => {
+    describe('When both tools run the gc task', () => {
+      it('Then both die on the bad tree object and leave every loose object in place', async () => {
+        // Arrange
+        const { dir, blob } = await buildRepo();
+        const twin = `${dir}-twin`;
+        dirs.push(twin);
+        await cp(dir, twin, { recursive: true });
+        const peer = tryRunGitWithExit(['-C', twin, 'maintenance', 'run', '--task=gc']);
+        const logged: string[] = [];
+        const base = createNodeContext({ workDir: dir });
+        const ctx: Context = { ...base, logger: { error: (line: string) => logged.push(line) } };
+        const sut = maintenance;
+
+        // Act
+        const caught = await sut(ctx, { tasks: ['gc'] }).then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+
+        // Assert
+        const { id } = (caught as TsgitError).data as { readonly id: string };
+        const stderr = `${logged.map((line) => `error: ${line}\n`).join('')}fatal: bad tree object ${id}\n`;
+        expect(peer.exitCode).toBe(1);
+        expect(peer.stderr.startsWith(stderr)).toBe(true);
+        expect(id).toBe(blob);
+        expect(git(dir, 'count-objects')).toBe(git(twin, 'count-objects'));
+      });
+    });
+  });
+});
