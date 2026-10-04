@@ -4,6 +4,8 @@ import {
   bundleEmpty,
   bundlePrerequisiteNotCommit,
   bundleUnsupportedSerializeVersion,
+  invalidRevisionRange,
+  invalidSymmetricRange,
 } from '../../domain/commands/error.js';
 import { foldSubject } from '../../domain/objects/commit-message.js';
 import type { Commit, GitObject, ObjectId, RefName } from '../../domain/objects/index.js';
@@ -17,9 +19,10 @@ import { boundedMapFor } from '../primitives/internal/concurrency.js';
 import {
   createObjectTypeTable,
   type ObjectTypeTable,
+  parseTypedObjectOrAbsent,
 } from '../primitives/internal/object-type-table.js';
 import { readObject } from '../primitives/read-object.js';
-import { resolveRef } from '../primitives/resolve-ref.js';
+import { resolveRef, resolveRefForReading } from '../primitives/resolve-ref.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
 import { requireReference } from './internal/require-reference.js';
 import { symmetricBases } from './internal/symmetric-bases.js';
@@ -98,8 +101,15 @@ const findFullRef = (name: string, allRefs: ReadonlyArray<RefName>): RefName | u
 // Pseudo-ref expansion (--all / --branches / --tags)
 // ─────────────────────────────────────────────────────────────────────────────
 
-const addRefToAccumulator = async (ctx: Context, ref: RefName, acc: Accumulator): Promise<void> => {
+/** git's `handle_one_ref`: the ref's object parsed into the table, dying `bad object <spelt>`. */
+const addRefToAccumulator = async (
+  ctx: Context,
+  ref: RefName,
+  spelt: string,
+  acc: Accumulator,
+): Promise<void> => {
   const oid = await resolveRef(ctx, ref);
+  await requireReference(ctx, acc.objectTypes, spelt, oid);
   acc.refs.push({ name: ref, oid });
   want(acc, oid);
 };
@@ -107,21 +117,37 @@ const addRefToAccumulator = async (ctx: Context, ref: RefName, acc: Accumulator)
 const refsWithPrefix = (prefix: string, allRefs: ReadonlyArray<RefName>): RefName[] =>
   allRefs.filter((r) => (r as string).startsWith(prefix)).sort() as RefName[];
 
+/** git's `for_each_ref_in(prefix)`: each ref under `prefix`, spelt with the prefix `trimmed` off. */
+const addRefsUnder = async (
+  ctx: Context,
+  prefix: string,
+  trimmed: string,
+  allRefs: ReadonlyArray<RefName>,
+  acc: Accumulator,
+): Promise<void> => {
+  for (const ref of refsWithPrefix(prefix, allRefs)) {
+    await addRefToAccumulator(ctx, ref, ref.slice(trimmed.length), acc);
+  }
+};
+
+/** git's `head_ref`: HEAD only once it resolves — an unborn HEAD adds nothing. */
+const addHead = async (ctx: Context, acc: Accumulator): Promise<void> => {
+  const head = 'HEAD' as RefName;
+  if ((await resolveRefForReading(ctx, head)) === undefined) return;
+  await addRefToAccumulator(ctx, head, head, acc);
+};
+
 const expandPseudoRefs = async (
   ctx: Context,
   opts: BundleCreateOptions,
   allRefs: ReadonlyArray<RefName>,
   acc: Accumulator,
 ): Promise<void> => {
-  if (opts.branches === true) {
-    for (const r of refsWithPrefix('refs/heads/', allRefs)) await addRefToAccumulator(ctx, r, acc);
-  }
-  if (opts.tags === true) {
-    for (const r of refsWithPrefix('refs/tags/', allRefs)) await addRefToAccumulator(ctx, r, acc);
-  }
+  if (opts.branches === true) await addRefsUnder(ctx, 'refs/heads/', 'refs/heads/', allRefs, acc);
+  if (opts.tags === true) await addRefsUnder(ctx, 'refs/tags/', 'refs/tags/', allRefs, acc);
   if (opts.all === true) {
-    for (const r of refsWithPrefix('refs/', allRefs)) await addRefToAccumulator(ctx, r, acc);
-    await addRefToAccumulator(ctx, 'HEAD' as RefName, acc);
+    await addRefsUnder(ctx, 'refs/', '', allRefs, acc);
+    await addHead(ctx, acc);
   }
 };
 
@@ -148,6 +174,17 @@ const processExclude = async (ctx: Context, excluded: string, acc: Accumulator):
   exclude(acc, oid);
 };
 
+/** git's `handle_dotdot_1`: both ends parsed into the table before a failed parse of either refuses the range. */
+const parseRangeEnds = async (
+  ctx: Context,
+  acc: Accumulator,
+  ends: readonly [ObjectId, ObjectId],
+): Promise<boolean> => {
+  const a = await parseTypedObjectOrAbsent(ctx, acc.objectTypes, ends[0]);
+  const b = await parseTypedObjectOrAbsent(ctx, acc.objectTypes, ends[1]);
+  return a !== undefined && b !== undefined;
+};
+
 const processRange = async (
   ctx: Context,
   range: readonly [string, string],
@@ -155,8 +192,12 @@ const processRange = async (
   acc: Accumulator,
 ): Promise<void> => {
   const [aExpr, bExpr] = range;
-  exclude(acc, await resolveRevision(ctx, aExpr));
+  const aOid = await resolveRevision(ctx, aExpr);
   const bOid = await resolveRevision(ctx, bExpr);
+  if (!(await parseRangeEnds(ctx, acc, [aOid, bOid]))) {
+    throw invalidRevisionRange(`${aExpr}..${bExpr}`);
+  }
+  exclude(acc, aOid);
   const bFullRef = findFullRef(bExpr, allRefs);
   if (bFullRef !== undefined) acc.refs.push({ name: bFullRef, oid: bOid });
   want(acc, bOid);
@@ -170,9 +211,12 @@ const processSymmetricRange = async (
 ): Promise<void> => {
   const [aExpr, bExpr] = sym;
   const aOid = await resolveRevision(ctx, aExpr);
+  const bOid = await resolveRevision(ctx, bExpr);
+  if (!(await parseRangeEnds(ctx, acc, [aOid, bOid]))) {
+    throw invalidSymmetricRange(`${aExpr}...${bExpr}`, []);
+  }
   const aFullRef = findFullRef(aExpr, allRefs);
   if (aFullRef !== undefined) acc.refs.push({ name: aFullRef, oid: aOid });
-  const bOid = await resolveRevision(ctx, bExpr);
   const bFullRef = findFullRef(bExpr, allRefs);
   if (bFullRef !== undefined) acc.refs.push({ name: bFullRef, oid: bOid });
   // git's `handle_dotdot_1` pends the merge bases before either side.

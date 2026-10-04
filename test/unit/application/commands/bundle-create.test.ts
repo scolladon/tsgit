@@ -1323,6 +1323,191 @@ describe('bundleCreate: object types assigned while enumerating', () => {
     });
   });
 
+  describe('Given a blob and a commit naming that blob as its tree', () => {
+    describe('When bundleCreate reads the range from the blob to the commit', () => {
+      it('Then the tree pointer conflicts and the range is invalid', async () => {
+        // Arrange
+        const { ctx, logged, blob, root } = await buildTypingRepo();
+        const named = await writeCommitNaming(ctx, blob, [root]);
+        const sut = refusalOf;
+
+        // Act
+        const caught = await sut(ctx, { revs: [{ range: [blob, named] }] });
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'INVALID_REVISION_RANGE', expression: `${blob}..${named}` },
+          logged: [
+            `object ${blob} is a blob, not a tree`,
+            `bad tree pointer ${blob} in commit ${named}`,
+          ],
+        });
+      });
+    });
+
+    describe('When bundleCreate reads the range from the commit to the blob', () => {
+      it('Then the blob conflicts with its tree typing and the range is invalid', async () => {
+        // Arrange
+        const { ctx, logged, blob, root } = await buildTypingRepo();
+        const named = await writeCommitNaming(ctx, blob, [root]);
+        const sut = refusalOf;
+
+        // Act
+        const caught = await sut(ctx, { revs: [{ range: [named, blob] }] });
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'INVALID_REVISION_RANGE', expression: `${named}..${blob}` },
+          logged: [`object ${blob} is a tree, not a blob`],
+        });
+      });
+    });
+
+    describe('When bundleCreate reads the symmetric range from the blob to the commit', () => {
+      it('Then the tree pointer conflicts and the symmetric difference is invalid', async () => {
+        // Arrange
+        const { ctx, logged, blob, root } = await buildTypingRepo();
+        const named = await writeCommitNaming(ctx, blob, [root]);
+        const sut = refusalOf;
+
+        // Act
+        const caught = await sut(ctx, { revs: [{ symmetricRange: [blob, named] }] });
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: {
+            code: 'INVALID_SYMMETRIC_RANGE',
+            expression: `${blob}...${named}`,
+            nonCommits: [],
+          },
+          logged: [
+            `object ${blob} is a blob, not a tree`,
+            `bad tree pointer ${blob} in commit ${named}`,
+          ],
+        });
+      });
+    });
+  });
+
+  describe.each([
+    [['root', MISSING], `root..${MISSING}`],
+    [[MISSING, 'root'], `${MISSING}..root`],
+  ] as const)('Given the range %j with an end the store lacks', (range, expression) => {
+    describe('When bundleCreate reads it', () => {
+      it('Then the range is invalid', async () => {
+        // Arrange
+        const { ctx } = await buildTypingRepo();
+        const sut = refusalOf;
+
+        // Act
+        const caught = await sut(ctx, { revs: [{ range }] });
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({ code: 'INVALID_REVISION_RANGE', expression });
+      });
+    });
+  });
+
+  describe('Given a symmetric range with an end the store lacks', () => {
+    describe('When bundleCreate reads it', () => {
+      it('Then the symmetric difference is invalid with no non-commit side', async () => {
+        // Arrange
+        const { ctx } = await buildTypingRepo();
+        const sut = refusalOf;
+
+        // Act
+        const caught = await sut(ctx, { revs: [{ symmetricRange: ['root', MISSING] }] });
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'INVALID_SYMMETRIC_RANGE',
+          expression: `root...${MISSING}`,
+          nonCommits: [],
+        });
+      });
+    });
+  });
+
+  describe.each([
+    ['tags', { tags: true }, 'b'],
+    ['all', { all: true }, 'refs/tags/b'],
+  ] as const)(
+    'Given a tag on a commit naming a blob as its tree, then a tag on that blob',
+    (label, opts, name) => {
+      describe(`When bundleCreate expands --${label}`, () => {
+        it('Then the blob conflicts with its tree typing and its ref is a bad object', async () => {
+          // Arrange
+          const { ctx, logged, blob, root } = await buildTypingRepo();
+          await setRef(ctx, 'refs/tags/a', await writeCommitNaming(ctx, blob, [root]));
+          await setRef(ctx, 'refs/tags/b', blob);
+          const sut = refusalOf;
+
+          // Act
+          const caught = await sut(ctx, opts);
+
+          // Assert
+          expect({ data: (caught as TsgitError).data, logged }).toEqual({
+            data: { code: 'OBJECT_NOT_FOUND', id: name },
+            logged: [`object ${blob} is a tree, not a blob`],
+          });
+        });
+      });
+    },
+  );
+
+  describe.each([
+    ['branches', { branches: true }, 'gone'],
+    ['all', { all: true }, 'refs/heads/gone'],
+  ] as const)('Given a branch on an object the store lacks', (label, opts, name) => {
+    describe(`When bundleCreate expands --${label}`, () => {
+      it('Then its ref is a bad object', async () => {
+        // Arrange
+        const { ctx } = await buildTypingRepo();
+        await setRef(ctx, 'refs/heads/gone', MISSING);
+        const sut = refusalOf;
+
+        // Act
+        const caught = await sut(ctx, opts);
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({ code: 'OBJECT_NOT_FOUND', id: name });
+      });
+    });
+  });
+
+  describe('Given an unborn HEAD beside a branch', () => {
+    describe('When bundleCreate expands --all', () => {
+      it('Then HEAD adds no ref and the branch alone is bundled', async () => {
+        // Arrange
+        const { ctx, root } = await buildTypingRepo();
+        const sut = bundleCreate;
+
+        // Act
+        const result = await sut(ctx, { all: true });
+
+        // Assert
+        expect(result.refs).toEqual([{ name: 'refs/heads/root', oid: root }]);
+      });
+    });
+  });
+
+  describe('Given a detached HEAD on an object the store lacks', () => {
+    describe('When bundleCreate expands --all', () => {
+      it('Then HEAD is a bad object', async () => {
+        // Arrange
+        const { ctx } = await buildTypingRepo();
+        await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/HEAD`, `${MISSING}\n`);
+        const sut = refusalOf;
+
+        // Act
+        const caught = await sut(ctx, { all: true });
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({ code: 'OBJECT_NOT_FOUND', id: 'HEAD' });
+      });
+    });
+  });
+
   describe('Given a branch whose commit names a blob as its tree', () => {
     describe('When bundleCreate packs it', () => {
       it('Then it logs the blob is not a tree and refuses it as a bad tree object', async () => {

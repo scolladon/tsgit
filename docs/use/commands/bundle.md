@@ -252,6 +252,15 @@ const filtered = await repo.bundle.listHeads({
   `{ range: ['main', 'main'] }`). An empty pack is written, not refused.
 - `REVPARSE_UNRESOLVED` / `REVPARSE_AMBIGUOUS` — a rev argument cannot be
   resolved (propagated from `revParse`).
+- `OBJECT_NOT_FOUND` `id` — a tip, exclusion or pseudo-ref's object is absent,
+  or its parse fails against the types earlier arguments assigned. `id` is the
+  name as spelt: the argument, the ref trimmed of `refs/heads/` (`branches`) or
+  `refs/tags/` (`tags`), the full ref (`all`), or `HEAD` — git's `bad object`.
+  An unborn `HEAD` under `all` is skipped, as git does.
+- `INVALID_REVISION_RANGE` / `INVALID_SYMMETRIC_RANGE` (`nonCommits: []`) — a
+  `range` / `symmetricRange` end is absent or its parse fails; both ends are
+  parsed into the bundle's object table first, the `error:` lines git prints
+  going to `ctx.logger.error`.
 - `PACK_TOO_LARGE` — the object closure exceeds the built-in object-count ceiling.
 - `BUNDLE_UNSUPPORTED_VERSION` `version` (no `path`) — an explicit `version`
   option that cannot be honoured: outside `{2, 3}`, or `2` while the
