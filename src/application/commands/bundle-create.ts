@@ -4,8 +4,6 @@ import {
   bundleEmpty,
   bundlePrerequisiteNotCommit,
   bundleUnsupportedSerializeVersion,
-  invalidSymmetricRange,
-  type SymmetricRangeNonCommit,
 } from '../../domain/commands/error.js';
 import { foldSubject } from '../../domain/objects/commit-message.js';
 import type { Commit, GitObject, ObjectId, RefName } from '../../domain/objects/index.js';
@@ -15,11 +13,10 @@ import { assertValidPackIntConfig } from '../primitives/config-read.js';
 import { enumerateBundleObjects } from '../primitives/enumerate-bundle-objects.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
 import { boundedMapFor } from '../primitives/internal/concurrency.js';
-import { peelChain } from '../primitives/internal/peel-chain.js';
-import { mergeBase } from '../primitives/merge-base.js';
 import { readObject } from '../primitives/read-object.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
+import { symmetricBases } from './internal/symmetric-bases.js';
 import { resolveRevision } from './rev-parse.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -162,33 +159,6 @@ const processSymmetricRange = async (
   if (bFullRef !== undefined) acc.refs.push({ name: bFullRef, oid: bOid });
   acc.wants.push(bOid);
   acc.haves.push(...(await symmetricBases(ctx, `${aExpr}...${bExpr}`, [aOid, bOid])));
-};
-
-type SymmetricSide =
-  | { readonly kind: 'commit'; readonly commit: ObjectId }
-  | { readonly kind: 'non-commit'; readonly side: SymmetricRangeNonCommit };
-
-const tagTarget = (object: GitObject): ObjectId | undefined =>
-  object.type === 'tag' ? object.data.object : undefined;
-
-/** git's `lookup_commit_reference` on one side of `A...B`: the side as named, peeled through its tags. */
-const peelSymmetricSide = async (ctx: Context, id: ObjectId): Promise<SymmetricSide> => {
-  const { id: peeled, result } = await peelChain(ctx, id, readObject, tagTarget);
-  if (result.type === 'commit') return { kind: 'commit', commit: peeled };
-  return { kind: 'non-commit', side: { id, type: result.type } };
-};
-
-/** The merge bases `A...B` excludes; both sides are looked up before git refuses either. */
-const symmetricBases = async (
-  ctx: Context,
-  expression: string,
-  sides: readonly [ObjectId, ObjectId],
-): Promise<ReadonlyArray<ObjectId>> => {
-  const peeled = [await peelSymmetricSide(ctx, sides[0]), await peelSymmetricSide(ctx, sides[1])];
-  const commits = peeled.flatMap((side) => (side.kind === 'commit' ? [side.commit] : []));
-  const nonCommits = peeled.flatMap((side) => (side.kind === 'non-commit' ? [side.side] : []));
-  if (nonCommits.length > 0) throw invalidSymmetricRange(expression, nonCommits);
-  return mergeBase(ctx, commits, { all: true });
 };
 
 const processRevArgs = async (

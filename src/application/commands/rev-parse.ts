@@ -155,7 +155,7 @@ const dropsQuietRead = (arg: string): boolean => {
 };
 
 /** git's `get_oid` read aloud: an ambiguous abbreviated name is reported before the read fails. */
-const readReporting = async (
+export const readReporting = async (
   ctx: Context,
   expression: string,
   accepts?: CandidateFilter,
@@ -217,7 +217,11 @@ export const resolveRevision = async (
  * re-runs `get_oid`, re-emitting each warning — unless `arg` reads as a
  * pathspec or names a working-tree path.
  */
-const readNamedObject = async (ctx: Context, name: string, arg: string): Promise<ObjectId> => {
+export const readNamedObject = async (
+  ctx: Context,
+  name: string,
+  arg: string,
+): Promise<ObjectId> => {
   try {
     return await readReporting(ctx, name);
   } catch (error) {
@@ -227,7 +231,7 @@ const readNamedObject = async (ctx: Context, name: string, arg: string): Promise
 };
 
 /** A range side or shorthand base, read commit-ish; a read that names no object is not a refusal here. */
-const readCommittish = async (ctx: Context, side: string): Promise<ObjectId | undefined> => {
+export const readCommittish = async (ctx: Context, side: string): Promise<ObjectId | undefined> => {
   try {
     return await readReporting(ctx, side, committishFilter(ctx));
   } catch (error) {

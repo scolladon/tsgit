@@ -35,7 +35,7 @@ interface RevListResult {
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `wants` | `ReadonlyArray<string>` | `['HEAD']` | Revisions to walk from (full rev grammar, resolved through `revParse`). |
+| `wants` | `ReadonlyArray<string>` | `['HEAD']` | Revisions to walk from, each read as git's `handle_revision_arg` reads an argument: `A..B` excludes A, `A...B` excludes their merge bases, `^X` excludes X, `X^@` walks X's parents, `X^!` and `X^-<n>` exclude X's parents (or its n-th) and walk X. Entries of `not` expand the same way with every tip flipped. |
 | `not` | `ReadonlyArray<string>` | `(none)` | Revisions whose reachability is excluded. |
 | `objects` | `boolean` | `false` | Include trees and blobs, not just commits and tags. |
 | `count` | `boolean` | `false` | Documents intent only — `entries` is always populated and `count` is always `entries.length` on the same call; there is no separate count-only fast path. |

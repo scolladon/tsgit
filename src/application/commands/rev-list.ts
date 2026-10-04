@@ -16,6 +16,7 @@ import type { Context } from '../../ports/context.js';
 import { enumerateRefs } from '../primitives/enumerate-refs.js';
 import { type ClosureTier, computeClosure } from '../primitives/internal/closure-engine.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
+import { expandRevisionArguments } from './internal/revision-argument.js';
 import { resolveRevision } from './rev-parse.js';
 
 export interface RevListOptions {
@@ -98,15 +99,25 @@ const resolveAllRefTips = async (ctx: Context): Promise<ObjectId[]> => {
   return tips;
 };
 
+interface RevListTips {
+  readonly wants: ReadonlyArray<ObjectId>;
+  readonly not: ReadonlyArray<ObjectId>;
+}
+
 /**
- * Explicit `wants` union `all`'s ref tips, deduplicated. `all` supplies its
- * own tips, so the `['HEAD']` default only applies when `all` is unset.
+ * Explicit `wants` and `not`, each expanded in turn as git's
+ * `handle_revision_arg` reads it, union `all`'s ref tips, deduplicated. `all`
+ * supplies its own tips, so the `['HEAD']` default only applies when `all` is unset.
  */
-const resolveRevListWants = async (ctx: Context, opts: RevListOptions): Promise<ObjectId[]> => {
+const resolveRevListTips = async (ctx: Context, opts: RevListOptions): Promise<RevListTips> => {
   const explicitInputs = opts.wants ?? (opts.all === true ? [] : DEFAULT_WANTS);
-  const explicit = await Promise.all(explicitInputs.map((rev) => resolveRevision(ctx, rev)));
-  if (opts.all !== true) return explicit;
-  return [...new Set([...explicit, ...(await resolveAllRefTips(ctx))])];
+  const tips = await expandRevisionArguments(
+    ctx,
+    { wants: explicitInputs, not: opts.not ?? [] },
+    'command-line',
+  );
+  if (opts.all !== true) return tips;
+  return { ...tips, wants: [...new Set([...tips.wants, ...(await resolveAllRefTips(ctx))])] };
 };
 
 /**
@@ -121,8 +132,7 @@ const closureTierFor = (opts: RevListOptions): ClosureTier =>
 
 export const revList = async (ctx: Context, opts: RevListOptions = {}): Promise<RevListResult> => {
   await assertOperationalRepository(ctx);
-  const wants = await resolveRevListWants(ctx, opts);
-  const not = await Promise.all((opts.not ?? []).map((rev) => resolveRevision(ctx, rev)));
+  const { wants, not } = await resolveRevListTips(ctx, opts);
   const closure = await computeClosure(ctx, {
     wants,
     not,

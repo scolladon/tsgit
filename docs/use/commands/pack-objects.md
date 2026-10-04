@@ -31,7 +31,7 @@ interface PackObjectsResult {
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `wants` | `ReadonlyArray<string>` | (required) | Revisions to pack (full rev grammar), each read as git reads a `--revs` line on stdin: never a filename, so a bare `..` reads its sides as `HEAD`, and a name that resolves to nothing is refused after one read. |
+| `wants` | `ReadonlyArray<string>` | (required) | Revisions to pack (full rev grammar), each read as git reads a `--revs` line on stdin: never a filename, so a bare `..` reads its sides as `HEAD`, and a name that resolves to nothing is refused after one read. A line spelt `A..B`, `A...B`, `^X`, `X^@`, `X^!` or `X^-<n>` expands to the tips git adds for it; `not` lines expand with every tip flipped. |
 | `not` | `ReadonlyArray<string>` | `(none)` | Revisions whose reachability is excluded — git's "haves". |
 | `outputDirectory` | `string` | the repository's pack directory | Directory to write `pack-<sha>.pack` / `.idx` into. |
 | `useBitmapIndex` | `boolean` | `true` | Use the bitmap tier. See "Tiers" below. |
