@@ -19,6 +19,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
+import { branchDelete } from '../../src/application/commands/branch.js';
 import { bundleCreate } from '../../src/application/commands/bundle-create.js';
 import { mergeRun } from '../../src/application/commands/merge.js';
 import { rebaseRun } from '../../src/application/commands/rebase.js';
@@ -985,6 +986,83 @@ describe.skipIf(!GIT_AVAILABLE)('merge-base callers walk parse (interop)', () =>
           result: { kind: 'up-to-date', id: head },
           peer: { exitCode: 0, stdout: 'Already up to date.\n', stderr: errorLines(logged) },
         });
+      });
+    });
+  });
+});
+
+describe.skipIf(!GIT_AVAILABLE)('branch -d reachability walk parse (interop)', () => {
+  const ABSENT_GAP_SETUP = async (slug: string, graph: boolean): Promise<string[]> => {
+    const dir = await makeRepo(slug);
+    const ids = [datedCommit(dir, 'c0', 1_700_000_000), datedCommit(dir, 'c1', 1_700_000_001)];
+    if (graph) git(dir, 'commit-graph', 'write', '--reachable');
+    for (const n of [2, 3, 4]) ids.push(datedCommit(dir, `c${n}`, 1_700_000_000 + n));
+    git(dir, 'branch', 'b0', ids[0]!);
+    git(dir, 'branch', 'b3', ids[3]!);
+    await rm(path.join(dir, '.git', 'objects', ids[2]!.slice(0, 2), ids[2]!.slice(2)));
+    return [dir, ...ids];
+  };
+
+  const twinRepos = async (slug: string, graph: boolean) => {
+    const [gitDir, ...ids] = await ABSENT_GAP_SETUP(`${slug}-git`, graph);
+    const [tsDir] = await ABSENT_GAP_SETUP(`${slug}-ts`, graph);
+    return { gitDir: gitDir!, tsDir: tsDir!, gap: ids[2]! };
+  };
+
+  const deleteBoth = async (slug: string, graph: boolean, branch: string) => {
+    const { gitDir, tsDir, gap } = await twinRepos(slug, graph);
+    const peer = tryRunGitWithExit(['-C', gitDir, 'branch', '-d', branch]);
+    const logged: string[] = [];
+    const base = createNodeContext({ workDir: tsDir });
+    const ctx: Context = { ...base, logger: { error: (line: string) => logged.push(line) } };
+    const outcome = await branchDelete(ctx, { name: branch }).then(
+      () => ({ code: 'deleted' }),
+      (error: unknown) => (error as { readonly data: { readonly code: string } }).data,
+    );
+    await rm(gitDir, { recursive: true, force: true });
+    await rm(tsDir, { recursive: true, force: true });
+    return { peer, logged, outcome, gap };
+  };
+
+  describe('Given no commit-graph and a history whose middle commit is absent', () => {
+    describe.each(['b0', 'b3'])('When both tools delete %s', (branch) => {
+      it("Then tsgit refuses the commit git could not parse after git's error line", async () => {
+        // Arrange
+        const sut = deleteBoth;
+
+        // Act
+        const { peer, logged, outcome, gap } = await sut(`gap-${branch}`, false, branch);
+
+        // Assert
+        expect({ outcome, exitCode: peer.exitCode, stderr: peer.stderr }).toEqual({
+          outcome: { code: 'COMMIT_PARSE_FAILED', id: gap },
+          exitCode: 128,
+          stderr: [...logged, `could not parse commit ${gap}`]
+            .map((line) => `error: ${line}\n`)
+            .join(''),
+        });
+      });
+    });
+  });
+
+  describe('Given a commit-graph below a history whose first commit past the graph is absent', () => {
+    describe.each([
+      { branch: 'b0', code: 'BRANCH_NOT_FULLY_MERGED', exitCode: 1 },
+      { branch: 'b3', code: 'deleted', exitCode: 0 },
+    ])('When both tools delete $branch', ({ branch, code, exitCode }) => {
+      it("Then tsgit logs git's lines for the skipped parent and answers as git does", async () => {
+        // Arrange
+        const sut = deleteBoth;
+
+        // Act
+        const { peer, logged, outcome } = await sut(`graph-gap-${branch}`, true, branch);
+
+        // Assert
+        expect({ code: outcome.code, exitCode: peer.exitCode }).toEqual({ code, exitCode });
+        expect(peer.stderr.startsWith(logged.map((line) => `error: ${line}\n`).join(''))).toBe(
+          true,
+        );
+        expect(peer.stderr.match(/^error: Could not read/gm)?.length ?? 0).toBe(logged.length);
       });
     });
   });

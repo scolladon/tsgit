@@ -45,6 +45,8 @@ type MergeResult =
 | `'only'` | `--ff-only` | Refuse with `NON_FAST_FORWARD` when a true merge would be required. |
 | `'never'` | `--no-ff` | Always create a merge commit, even when a fast-forward is possible. |
 
+When the walk between HEAD and the merged commit reaches a parent that fails to parse (absent, or another kind of object), `run` logs git's two `error:` lines through `ctx.logger.error` and answers `up-to-date` in every mode: git's `reduce_heads` comes back empty, so `git merge` prints `Already up to date.` and exits 0. `ORIG_HEAD` is still written.
+
 ## Working tree and index
 
 A **fast-forward** and a **clean true-merge** both check the result out: the working tree and index advance to the merged tree, exactly like `git merge` (a true merge additionally creates the merge commit on top). If a path the merge would change has uncommitted working-tree modifications — or an untracked file would be clobbered by an incoming add — `run` refuses with `WORKING_TREE_DIRTY` and leaves HEAD, the index, and the working tree untouched. A **conflicting** true-merge refuses the same way: before any conflict is materialised, every path the merge would change is checked, and `run` refuses with `WORKING_TREE_DIRTY` if writing the conflict would overwrite a tracked-and-modified or untracked path — atomically and pre-write, so HEAD, the index, and the working tree are untouched and no `MERGE_HEAD` is written. The offending paths are split across the error's two arrays: `localChanges` for tracked-dirty paths, `untracked` for untracked clashes.

@@ -79,6 +79,7 @@ for (const r of result.pushedRefs) {
 
 - `PUSH_REJECTED` — server returned `ng` for at least one ref (also covers `forceWithLease` mismatch). Surfaces in `pushedRefs[i].status`.
 - `NON_FAST_FORWARD` — non-fast-forward refspec without `force` / `forceWithLease`.
+- `COMMIT_PARSE_FAILED` — the fast-forward check, in a repository with no commit-graph, reached a parent that fails to parse (git exits 128 there). With a commit-graph git's depth-first reach logs the parent's line and skips it instead.
 - `HOOK_FAILED` — `pre-push` returned non-zero exit (when hooks are enabled).
 - `INVALID_URL` — malformed remote URL; HTTP: failed SSRF validation; SSH/scp: a control character, or the host/path begins with `-` (argv-injection guard).
 - `ADAPTER_UNAVAILABLE` — an `ssh://`/scp-like remote given to a runtime with no `SshTransport` wired (Browser, Memory).

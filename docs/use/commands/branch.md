@@ -77,6 +77,7 @@ await repo.branch.delete({ name: 'feature/y' });
 - `REVPARSE_AMBIGUOUS` — `create` whose `startPoint` names more than one object through the revision ladder; `expression` is the spelling you passed and `candidates` every object it could mean.
 - `BRANCH_NOT_FOUND` — `delete` / `rename` on a name that does not exist, or an unresolvable `startPoint`. On an unborn HEAD with no `startPoint`, `name` carries the current branch's short name — the label git substituted for the omitted start point — never `HEAD`.
 - `BRANCH_NOT_FULLY_MERGED` — an unforced `delete` whose tip is not reachable from its merge reference.
+- `COMMIT_PARSE_FAILED` — the safety valve, in a repository with no commit-graph, reached a parent that fails to parse (git exits 128 there). With a commit-graph git's depth-first reach logs the parent's line and skips it instead.
 - `UNEXPECTED_OBJECT_TYPE` — `create` whose (peeled) `startPoint` is not a commit, or a `delete` whose tip names no commit at all.
 - `BRANCH_CHECKED_OUT` — `delete`, or a forced `create`, on a branch some worktree's HEAD names; `path` carries that worktree.
 - `CONFIG_BAD_NUMERIC_VALUE` — `delete` on a repository with a malformed `core.maxTreeDepth` / `core.deltaBaseCacheLimit` (the repo-settings class, checked right after the gate, before the worktree-holder / not-found checks); `create` reaches the same class through its own read of the start point's object, structurally, with no separate check. `list` and `rename` do **not** refuse on this class — git runs them without touching the object store.

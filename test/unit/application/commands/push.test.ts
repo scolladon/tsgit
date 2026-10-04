@@ -2200,14 +2200,11 @@ describe('push — object types assigned while enumerating', () => {
   });
 });
 
-describe('push — non-fast-forward with a missing ancestor', () => {
+describe('push — a tip with a missing ancestor', () => {
   describe('Given a tip whose parent commit is absent on disk', () => {
     describe('When push runs a non-FF update', () => {
-      it('Then it still surfaces NON_FAST_FORWARD', async () => {
-        // Arrange — kills the `ignoreMissing: true → false` mutant in
-        // isAncestor. The local tip references a parent oid that was never
-        // written; with `ignoreMissing: false` the commit walk throws
-        // OBJECT_NOT_FOUND instead of completing and reporting NON_FAST_FORWARD.
+      it('Then it refuses the parent it could not parse, as git exits before its non-fast-forward check', async () => {
+        // Arrange — the local tip references a parent oid that was never written.
         const ctx = createMemoryContext();
         const missingParentId = '1'.repeat(40) as ObjectId;
         const serverTip = await seedCommit(ctx, [], 'server-tip'); // disjoint
@@ -2228,10 +2225,11 @@ describe('push — non-fast-forward with a missing ancestor', () => {
           caught = err;
         }
 
-        // Assert — the walk tolerates the missing parent and the non-FF guard
-        // fires (not OBJECT_NOT_FOUND).
-        expect(caught).toBeInstanceOf(TsgitError);
-        expect((caught as TsgitError).data.code).toBe('NON_FAST_FORWARD');
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'COMMIT_PARSE_FAILED',
+          id: missingParentId,
+        });
       });
     });
   });

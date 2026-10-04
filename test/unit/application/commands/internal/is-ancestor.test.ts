@@ -93,6 +93,11 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+const loggingContext = (base: Context): { readonly ctx: Context; readonly logged: string[] } => {
+  const logged: string[] = [];
+  return { ctx: { ...base, logger: { error: (line: string) => logged.push(line) } }, logged };
+};
+
 describe('isAncestor', () => {
   describe('Given a linear history the commit-graph covers, When the candidate is a sibling of the tip', () => {
     it('Then answers false without reading one object byte', async () => {
@@ -149,7 +154,7 @@ describe('isAncestor', () => {
   });
 
   describe('Given a linear history the commit-graph covers, When the candidate is the tip’s parent', () => {
-    it('Then answers true and stops one generation below the candidate', async () => {
+    it('Then answers true from the first path down, consulting nothing below the candidate', async () => {
       // Arrange
       const ctx = await buildSeededContext();
       const chain = await buildLinear(ctx, 10);
@@ -161,7 +166,7 @@ describe('isAncestor', () => {
 
       // Assert
       expect(result).toBe(true);
-      expect(consultedIds()).toEqual(new Set([chain[9], chain[8], chain[7]]));
+      expect(consultedIds()).toEqual(new Set([chain[9], chain[8]]));
     });
   });
 
@@ -267,22 +272,59 @@ describe('isAncestor', () => {
     });
   });
 
-  describe('Given a history truncated by an absent commit part-way down, When it is measured', () => {
-    it('Then answers false for anything below the gap and true for anything above it', async () => {
-      // Arrange
-      const ctx = await buildSeededContext();
-      const chain = await buildLinear(ctx, 5);
-      await ctx.fs.rmRecursive(
-        `${ctx.layout.gitDir}/objects/${computeLooseObjectPath(chain[2] as ObjectId)}`,
-      );
+  describe('Given a history with no commit-graph truncated by an absent commit part-way down', () => {
+    describe.each([
+      ['below', 0],
+      ['above', 3],
+    ] as const)('When a candidate %s the gap is measured against the tip', (_side, candidate) => {
+      it("Then it logs git's line and refuses the commit it could not parse", async () => {
+        // Arrange
+        const { ctx, logged } = loggingContext(await buildSeededContext());
+        const chain = await buildLinear(ctx, 5);
+        const gap = chain[2] as ObjectId;
+        await ctx.fs.rmRecursive(`${ctx.layout.gitDir}/objects/${computeLooseObjectPath(gap)}`);
+        const sut = isAncestor;
 
-      // Act
-      const belowGap = await isAncestor(ctx, chain[0] as ObjectId, chain[4] as ObjectId);
-      const aboveGap = await isAncestor(ctx, chain[3] as ObjectId, chain[4] as ObjectId);
+        // Act
+        const result = await sut(ctx, chain[candidate] as ObjectId, chain[4] as ObjectId).catch(
+          (error: { readonly data: unknown }) => error.data,
+        );
 
-      // Assert
-      expect(belowGap).toBe(false);
-      expect(aboveGap).toBe(true);
+        // Assert
+        expect({ result, logged }).toEqual({
+          result: { code: 'COMMIT_PARSE_FAILED', id: gap },
+          logged: [`Could not read ${gap}`],
+        });
+      });
     });
+  });
+
+  describe('Given a commit-graph below a history truncated by an absent commit past the graph', () => {
+    describe.each([
+      ['below', 0, false, true],
+      ['above', 3, true, false],
+    ] as const)(
+      'When a candidate %s the gap is measured against the tip',
+      (_side, candidate, expected, logs) => {
+        it("Then it skips the parent it could not parse after git's line, as git's depth-first reach does", async () => {
+          // Arrange
+          const { ctx, logged } = loggingContext(await buildSeededContext());
+          const chain = await buildLinear(ctx, 5);
+          await writeCommitGraph(ctx, [await commitObjects(ctx, chain.slice(0, 2))]);
+          const gap = chain[2] as ObjectId;
+          await ctx.fs.rmRecursive(`${ctx.layout.gitDir}/objects/${computeLooseObjectPath(gap)}`);
+          const sut = isAncestor;
+
+          // Act
+          const result = await sut(ctx, chain[candidate] as ObjectId, chain[4] as ObjectId);
+
+          // Assert
+          expect({ result, logged }).toEqual({
+            result: expected,
+            logged: logs ? [`Could not read ${gap}`] : [],
+          });
+        });
+      },
+    );
   });
 });

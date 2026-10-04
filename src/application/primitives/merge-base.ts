@@ -13,7 +13,10 @@ import type { ObjectId } from '../../domain/objects/object-id.js';
 import type { Context } from '../../ports/context.js';
 import { lookupTypedCommitReference } from './internal/lookup-commit-reference.js';
 import { createObjectTypeTable } from './internal/object-type-table.js';
-import { correctedCommitDatesEnabled } from './internal/read-commit-graph.js';
+import {
+  correctedCommitDatesEnabled,
+  generationNumbersEnabled,
+} from './internal/read-commit-graph.js';
 import {
   type CommitMeta,
   GENERATION_INFINITY,
@@ -31,19 +34,30 @@ export interface MergeBaseOptions {
   readonly octopus?: boolean;
 }
 
-type ReadCommit = (id: ObjectId) => Promise<CommitMeta | undefined>;
+/** A read of a commit the walk needs parsed — it refuses rather than answer none. */
+type ReadCommit = (id: ObjectId) => Promise<CommitMeta>;
 
-type ReadMeta = (ctx: Context, id: ObjectId) => Promise<CommitMeta | undefined>;
+/** A read that answers `undefined` for an id naming no commit. */
+type ReadMaybeCommit = (id: ObjectId) => Promise<CommitMeta | undefined>;
 
-const memoizedReader = (ctx: Context, readMeta: ReadMeta): ReadCommit => {
-  const cache = new Map<ObjectId, CommitMeta | undefined>();
+type ReadMeta<M extends CommitMeta | undefined> = (ctx: Context, id: ObjectId) => Promise<M>;
+
+const memoizedReader = <M extends CommitMeta | undefined>(
+  ctx: Context,
+  readMeta: ReadMeta<M>,
+  known: ReadonlyMap<ObjectId, CommitMeta> = new Map(),
+): ((id: ObjectId) => Promise<CommitMeta | M>) => {
+  const cache = new Map<ObjectId, CommitMeta | M>(known);
   return async (id) => {
     // The graph-first paint reads no object bytes, so this reader is merge-base's
     // only per-commit checkpoint for cancellation — the cadence `readObject`
     // gave on the object path (git checks between pops the same way).
     if (ctx.signal?.aborted) throw operationAborted();
-    if (!cache.has(id)) cache.set(id, await readMeta(ctx, id));
-    return cache.get(id);
+    const hit = cache.get(id);
+    if (hit !== undefined) return hit;
+    const meta = await readMeta(ctx, id);
+    cache.set(id, meta);
+    return meta;
   };
 };
 
@@ -62,38 +76,32 @@ const readMetaOrAbsent = async (
   }
 };
 
-/** git's `could not parse commit`, after the line `repo_parse_commit` logs for `id`. */
-const refuseUnparsed = (ctx: Context, line: string, id: ObjectId): never => {
+/** git's `repo_parse_commit`, not quiet: an absent object or one of another
+ *  type logs why and reads as no commit. */
+const readLoggedMeta: ReadMeta<CommitMeta | undefined> = async (ctx, id) => {
+  const meta = await readMetaOrAbsent(ctx, id);
+  if (meta !== ABSENT && meta !== undefined) return meta;
+  const line = meta === ABSENT ? `Could not read ${id}` : `Object ${id} not a commit`;
   ctx.logger?.error?.(line, { id });
-  throw commitParseFailed(id);
+  return undefined;
 };
 
-/** git's `repo_parse_commit`, not quiet: an absent object or one of another
- *  type logs why, then refuses the walk that reached it. */
-const readParsedMeta: ReadMeta = async (ctx, id) => {
-  const meta = await readMetaOrAbsent(ctx, id);
-  if (meta === ABSENT) return refuseUnparsed(ctx, `Could not read ${id}`, id);
-  return meta ?? refuseUnparsed(ctx, `Object ${id} not a commit`, id);
+/** git's `paint_down_to_common` parse: a parent that fails to parse refuses
+ *  the walk with `could not parse commit`, after the line it logs. */
+const readParsedMeta: ReadMeta<CommitMeta> = async (ctx, id) => {
+  const meta = await readLoggedMeta(ctx, id);
+  if (meta === undefined) throw commitParseFailed(id);
+  return meta;
 };
 
 const makeReadCommit = (ctx: Context): ReadCommit => memoizedReader(ctx, readParsedMeta);
 
-/** git's `repo_parse_commit` under `ignore_missing_commits`: an absent object
- *  reads as a commit with no parents instead of refusing, so a history
- *  truncated part-way down is answered from what is present. Memoised with
- *  every other read, so an absent oid costs one lookup per call rather than
- *  one per edge naming it. */
-const readMetaOrMissing: ReadMeta = async (ctx, id) => {
+/** The commit's metadata, `undefined` — quietly — for an absent object or
+ *  one of another type: how git's reachability callers parse their ends. */
+const readMetaOrMissing: ReadMeta<CommitMeta | undefined> = async (ctx, id) => {
   const meta = await readMetaOrAbsent(ctx, id);
   return meta === ABSENT ? undefined : meta;
 };
-
-const dateOf = (meta: CommitMeta | undefined): number => meta?.committerDate ?? 0;
-
-/** A commit the graph does not cover sorts as infinitely young, so it can
- *  never trip the `minGeneration` break (Git's `GENERATION_NUMBER_INFINITY`). */
-const generationOf = (meta: CommitMeta | undefined): number =>
-  meta?.generation ?? GENERATION_INFINITY;
 
 const hasNonStale = (
   queue: readonly QueueEntry<undefined>[],
@@ -237,10 +245,10 @@ const makePaintQueue = (read: ReadCommit, precedes: Precedes): PaintQueue => {
       const meta = await read(id);
       heap.push({
         oid: id,
-        date: dateOf(meta),
-        generation: generationOf(meta),
+        date: meta.committerDate,
+        generation: meta.generation,
         ins: insertions++,
-        parents: meta?.parents ?? [],
+        parents: meta.parents,
         value: undefined,
       });
     },
@@ -287,7 +295,9 @@ const byDateDescending = async (
   read: ReadCommit,
   ids: readonly ObjectId[],
 ): Promise<ObjectId[]> => {
-  const dated = await Promise.all(ids.map(async (id) => ({ id, date: dateOf(await read(id)) })));
+  const dated = await Promise.all(
+    ids.map(async (id) => ({ id, date: (await read(id)).committerDate })),
+  );
   return dated.sort((a, b) => b.date - a.date).map((entry) => entry.id);
 };
 
@@ -299,7 +309,7 @@ const lowestGeneration = async (
   commits: readonly ObjectId[],
 ): Promise<number> => {
   let lowest = GENERATION_INFINITY;
-  for (const id of commits) lowest = Math.min(lowest, generationOf(await read(id)));
+  for (const id of commits) lowest = Math.min(lowest, (await read(id)).generation);
   return lowest;
 };
 
@@ -390,33 +400,113 @@ const octopusMergeBases = async (
  * Git's `repo_in_merge_bases`: whether `commit` is reachable from `reference`.
  *
  * Git never walks to answer this when the generations already settle it — a
- * commit younger than the reference cannot be its ancestor — and otherwise
- * paints with the reduction floor set to `commit`'s OWN generation, so the
- * `false` answer costs the frontier at or above that generation rather than
- * all of history. The paint reads no object bytes wherever the graph covers
- * the frontier, because it asks only for parents, dates and generations.
+ * commit younger than the reference cannot be its ancestor. An end that names
+ * no commit — absent, or some other object type — answers `false` quietly, as
+ * git's callers parse their ends before asking.
  *
- * `commit` carries PARENT1 from the start, so it picks up PARENT2 exactly when
- * the reference reaches down to it. An end that names no commit — absent, or
- * some other object type — answers `false`, as does a history truncated by an
- * absent commit part-way down (Git's `ignore_missing_commits`).
+ * With generation numbers (a commit-graph) git asks `can_all_from_reach`: a
+ * depth-first descent from `reference` that stops at the first path down to
+ * `commit` and prunes below `commit`'s generation — a parent that fails to
+ * parse logs why and is skipped. Without them git paints down to `commit`, and
+ * a parent that fails to parse refuses the walk (`COMMIT_PARSE_FAILED`) after
+ * its line, the way `paint_down_to_common` does.
  */
 export const inMergeBases = async (
   ctx: Context,
   commit: ObjectId,
   reference: ObjectId,
 ): Promise<boolean> => {
-  const read = memoizedReader(ctx, readMetaOrMissing);
-  const meta = await read(commit);
-  const referenceMeta = await read(reference);
-  if (meta === undefined || referenceMeta === undefined) return false;
-  if (meta.generation > referenceMeta.generation) return false;
-  const { flags } = await paint(read, commit, [reference], {
-    minGeneration: meta.generation,
+  const target = await readMetaOrMissing(ctx, commit);
+  const from = await readMetaOrMissing(ctx, reference);
+  if (target === undefined || from === undefined) return false;
+  if (target.generation > from.generation) return false;
+  const ends: Ends = { target: { id: commit, meta: target }, from: { id: reference, meta: from } };
+  if (await generationNumbersEnabled(ctx)) return reachesDepthFirst(ctx, ends);
+  return reachesByPaint(ctx, ends);
+};
+
+interface Parsed {
+  readonly id: ObjectId;
+  readonly meta: CommitMeta;
+}
+
+interface Ends {
+  readonly target: Parsed;
+  readonly from: Parsed;
+}
+
+const knownEnds = ({ target, from }: Ends): ReadonlyMap<ObjectId, CommitMeta> =>
+  new Map([
+    [target.id, target.meta],
+    [from.id, from.meta],
+  ]);
+
+/** Git's `repo_in_merge_bases_many`: `target` painted PARENT1, `from` PARENT2. */
+const reachesByPaint = async (ctx: Context, ends: Ends): Promise<boolean> => {
+  const read = memoizedReader(ctx, readParsedMeta, knownEnds(ends));
+  const { target, from } = ends;
+  const { flags } = await paint(read, target.id, [from.id], {
+    minGeneration: target.meta.generation,
     findAll: true,
     correctedCommitDates: await correctedCommitDatesEnabled(ctx),
   });
-  return ((flags.get(commit) ?? 0) & PARENT2) !== 0;
+  return ((flags.get(target.id) ?? 0) & PARENT2) !== 0;
+};
+
+interface DepthFirst {
+  readonly read: ReadMaybeCommit;
+  readonly target: ObjectId;
+  readonly minGeneration: number;
+  /** Git's `assign_flag`: every commit already descended into or skipped. */
+  readonly assigned: Set<ObjectId>;
+  /** Git's `RESULT`: commits found to reach the target. */
+  readonly reached: Set<ObjectId>;
+}
+
+const reaches = (walk: DepthFirst, id: ObjectId): boolean =>
+  id === walk.target || walk.reached.has(id);
+
+/** The next parent of `top` to descend into, marking `top` reached on the way
+ *  when a parent already reaches the target; a parent that fails to parse —
+ *  after its line — or sits below the floor is skipped. */
+const nextParent = async (walk: DepthFirst, top: Parsed): Promise<Parsed | undefined> => {
+  for (const parent of top.meta.parents) {
+    if (reaches(walk, parent)) walk.reached.add(top.id);
+    if (walk.assigned.has(parent)) continue;
+    walk.assigned.add(parent);
+    const meta = await walk.read(parent);
+    if (meta !== undefined && meta.generation >= walk.minGeneration) return { id: parent, meta };
+  }
+  return undefined;
+};
+
+/** One turn of git's descent: a reaching top is popped, marking the commit
+ *  below it reached; any other descends into its next parent, or is popped
+ *  once it has none left. */
+const step = async (walk: DepthFirst, stack: Parsed[], top: Parsed): Promise<void> => {
+  if (reaches(walk, top.id)) {
+    stack.pop();
+    const below = stack.at(-1);
+    if (below !== undefined) walk.reached.add(below.id);
+    return;
+  }
+  const parent = await nextParent(walk, top);
+  if (parent === undefined) stack.pop();
+  else stack.push(parent);
+};
+
+/** Git's `can_all_from_reach_with_flag` for one `from` and one target. */
+const reachesDepthFirst = async (ctx: Context, { target, from }: Ends): Promise<boolean> => {
+  const walk: DepthFirst = {
+    read: memoizedReader(ctx, readLoggedMeta, new Map([[target.id, target.meta]])),
+    target: target.id,
+    minGeneration: target.meta.generation,
+    assigned: new Set([from.id]),
+    reached: new Set(),
+  };
+  const stack = [from];
+  for (let top = stack.at(-1); top !== undefined; top = stack.at(-1)) await step(walk, stack, top);
+  return reaches(walk, from.id);
 };
 
 /**
