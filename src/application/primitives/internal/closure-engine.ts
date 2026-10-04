@@ -534,18 +534,25 @@ async function listCommitSeeds(
   return walkCommitSeeds(ctx, commitSeeds, marks, request);
 }
 
-/** Each listed commit, then — under `objects` — its own tree. */
-async function emitWalked(
+/**
+ * git's `traverse_commit_list`: every listed commit as the walk shows it, then
+ * — under `objects` — the pending tags, trees and blobs, then each listed
+ * commit's tree, which the walk queued behind them.
+ */
+async function emitListed(
   ctx: Context,
-  walked: ReadonlyArray<WalkedCommit>,
+  listed: {
+    readonly walked: ReadonlyArray<WalkedCommit>;
+    readonly pending: ReadonlyArray<PendingObject>;
+  },
   scope: TreeEmitScope,
   request: ClosureRequest,
   emit: Emit,
 ): Promise<void> {
-  for (const commit of walked) {
-    emit({ id: commit.id, type: 'commit', nameHash: 0 });
-    if (request.objects) await emitTree(ctx, commit.tree, scope, emit);
-  }
+  for (const commit of listed.walked) emit({ id: commit.id, type: 'commit', nameHash: 0 });
+  if (!request.objects) return;
+  await emitPending(ctx, listed.pending, scope, emit);
+  for (const commit of listed.walked) await emitTree(ctx, commit.tree, scope, emit);
 }
 
 async function walkClosure(ctx: Context, request: ClosureRequest): Promise<ClosureObject[]> {
@@ -565,9 +572,7 @@ async function walkClosure(ctx: Context, request: ClosureRequest): Promise<Closu
   };
   const { commitSeeds, pending } = await resolveWants(ctx, request);
   const walked = await listCommitSeeds(ctx, commitSeeds, marks, request);
-  // git shows a pending tag, tree or blob only when it lists objects at all.
-  if (request.objects) await emitPending(ctx, pending, scope, emit);
-  await emitWalked(ctx, walked, scope, request, emit);
+  await emitListed(ctx, { walked, pending }, scope, request, emit);
 
   return results;
 }

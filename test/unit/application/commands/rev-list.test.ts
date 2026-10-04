@@ -1649,6 +1649,30 @@ describe('revList: object types assigned during one invocation', () => {
     });
   });
 
+  describe('Given a blob wanted before a commit with a tree', () => {
+    describe('When revList lists objects', () => {
+      it('Then it lists the commits, then the wanted blob, then the commit trees, as git does', async () => {
+        // Arrange
+        const { ctx, blob } = await seedMistypedTag();
+        const empty = await writeEmptyTree(ctx);
+        const parent = await writeCommitNaming(ctx, empty, []);
+        const child = await writeCommitNaming(ctx, empty, [parent]);
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, { wants: [blob, child], objects: true });
+
+        // Assert
+        expect(result.entries).toEqual([
+          { id: child, type: 'commit' },
+          { id: parent, type: 'commit' },
+          { id: blob, type: 'blob' },
+          { id: empty, type: 'tree', path: '' },
+        ]);
+      });
+    });
+  });
+
   describe('Given a shallow commit whose stored parent is a blob wanted before it', () => {
     describe('When revList parses the commit', () => {
       it('Then the cut parent is never typed and the commit is listed', async () => {

@@ -1690,13 +1690,28 @@ describe('computeClosure', () => {
           objects: true,
         });
 
-        // Assert — the exact ordered entry list captured on the unpruned
-        // walk; the closure prune must reproduce it
+        // Assert — the exact ordered entry list, every commit ahead of the
+        // trees as git's traversal lists them; the closure prune must reproduce it
         // byte-for-byte (equivalence argument: a pruned subtree contributes
         // nothing to this sequence today either).
         expect(result.objects).toStrictEqual([
           {
             id: '00a4e3116c60e67c73ad2b29fbbbd9b5cb828617' as ObjectId,
+            type: 'commit',
+            nameHash: 0,
+          },
+          {
+            id: 'f86601129a7fbbf8b94617d239aa6e93712ce2f5' as ObjectId,
+            type: 'commit',
+            nameHash: 0,
+          },
+          {
+            id: '0c390bf764a562d037f67f4c6ba65b769926f8fd' as ObjectId,
+            type: 'commit',
+            nameHash: 0,
+          },
+          {
+            id: '1834ee9324eab6e6fa7d7df9a8c6915b81e86920' as ObjectId,
             type: 'commit',
             nameHash: 0,
           },
@@ -1743,16 +1758,6 @@ describe('computeClosure', () => {
             nameHash: 2501771264,
           },
           {
-            id: 'f86601129a7fbbf8b94617d239aa6e93712ce2f5' as ObjectId,
-            type: 'commit',
-            nameHash: 0,
-          },
-          {
-            id: '0c390bf764a562d037f67f4c6ba65b769926f8fd' as ObjectId,
-            type: 'commit',
-            nameHash: 0,
-          },
-          {
             id: 'e6cdd70da23364b27db4b180bbce0d4ad9ce0e2f' as ObjectId,
             type: 'tree',
             path: '',
@@ -1763,11 +1768,6 @@ describe('computeClosure', () => {
             type: 'tree',
             path: 'b',
             nameHash: 1644167168,
-          },
-          {
-            id: '1834ee9324eab6e6fa7d7df9a8c6915b81e86920' as ObjectId,
-            type: 'commit',
-            nameHash: 0,
           },
           {
             id: '2b5396c9a8aa16db82ed23f17eebd290688e2f98' as ObjectId,

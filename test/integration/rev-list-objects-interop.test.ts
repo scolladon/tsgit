@@ -338,7 +338,7 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list objects interop — closure prune', ()
     afterAll(async () => rm(fixture.dir, { recursive: true, force: true }));
 
     describe('When revList walks the objects closure from HEAD', () => {
-      it('Then the object id set matches git rev-list --objects HEAD exactly', async () => {
+      it('Then the object ids match git rev-list --objects HEAD exactly, in order', async () => {
         // Arrange
         const expected = gitIdSet(fixture.dir, '--objects', 'HEAD');
         const sut = revList;
@@ -347,8 +347,7 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list objects interop — closure prune', ()
         const result = await sut(fixture.ctx, { wants: ['HEAD'], objects: true });
 
         // Assert
-        const actual = new Set(result.entries.map((entry) => entry.id));
-        expect([...actual].sort()).toEqual([...expected].sort());
+        expect(result.entries.map((entry) => entry.id)).toEqual([...expected]);
       });
     });
 
@@ -1136,7 +1135,7 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list interop — object types assigned in o
 
   describe('Given a shallow commit whose stored parent is a blob tip before it', () => {
     describe('When rev-list --objects parses the commit on both tools', () => {
-      it('Then neither types the cut parent and both list the same objects', async () => {
+      it('Then neither types the cut parent and both list the same objects in order', async () => {
         // Arrange
         const { dir, blob } = await buildMistypedTagFixture();
         const named = writeLiteralCommit(dir, emptyTreeOf(dir), [blob]);
@@ -1150,10 +1149,8 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list interop — object types assigned in o
 
         // Assert
         const listed = result.entries.map((e) => `${e.id} ${e.path ?? ''}`.trimEnd());
-        expect({ listed: new Set(listed), logged }).toEqual({
-          listed: new Set(
-            peer.split('\n').flatMap((line) => (line === '' ? [] : [line.trimEnd()])),
-          ),
+        expect({ listed, logged }).toEqual({
+          listed: peer.split('\n').flatMap((line) => (line === '' ? [] : [line.trimEnd()])),
           logged: [],
         });
       });
