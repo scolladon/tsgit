@@ -8,6 +8,7 @@
  * nothing and never conflicts.
  */
 
+import { commitLookupFailed } from '../../../domain/commands/error.js';
 import { isObjectNotFound } from '../../../domain/objects/error.js';
 import type {
   Commit,
@@ -97,6 +98,21 @@ export const typeWalkedCommit = async (
 ): Promise<boolean> =>
   assignObjectType(ctx, table, commit.id, 'commit') &&
   (await assignCommitPointers(ctx, table, commit.id, commit));
+
+/**
+ * git's `fill_commit_in_graph`: a commit served by the commit-graph types each
+ * parent a commit — its tree waits until read — and a parent the table holds
+ * as another type is git's `die("could not find commit")`, after its line.
+ */
+export const typeGraphParents = (
+  ctx: Context,
+  table: ObjectTypeTable,
+  parents: readonly ObjectId[],
+): void => {
+  for (const parent of parents) {
+    if (!assignObjectType(ctx, table, parent, 'commit')) throw commitLookupFailed(parent);
+  }
+};
 
 /** The pointers git's parse of `object` types: a tag's target, a commit's tree and parents. */
 const assignPointers = async (

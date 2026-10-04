@@ -5,6 +5,7 @@ import { readObject, readObjectMetadata } from '../read-object.js';
 import {
   type ObjectTypeTable,
   parseTypedObjectOrAbsent,
+  typeGraphParents,
   typeWalkedCommit,
 } from './object-type-table.js';
 import { commitHeader, isGraphKnownAbsent } from './read-commit-graph.js';
@@ -75,13 +76,18 @@ const reportUnparsed = (ctx: Context, message: string, id: ObjectId): false => {
 };
 
 /** git's `repo_parse_commit_gently`, not quiet: the commit-graph answers
- *  without a read; otherwise the stored commit is parsed, typing its pointers. */
+ *  without a read, typing the parents it serves; otherwise the stored commit
+ *  is parsed, typing its pointers. */
 const parseCommit = async (
   ctx: Context,
   table: ObjectTypeTable,
   id: ObjectId,
 ): Promise<boolean> => {
-  if (!isGraphKnownAbsent(ctx) && (await commitHeader(ctx, id)) !== undefined) return true;
+  const header = isGraphKnownAbsent(ctx) ? undefined : await commitHeader(ctx, id);
+  if (header !== undefined) {
+    typeGraphParents(ctx, table, header.parents);
+    return true;
+  }
   const object = await absentAsUndefined(() => readObject(ctx, id));
   if (object === undefined) return reportUnparsed(ctx, `Could not read ${id}`, id);
   if (object.type !== 'commit') return reportUnparsed(ctx, `Object ${id} not a commit`, id);

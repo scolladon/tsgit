@@ -1,4 +1,4 @@
-import { commitLookupFailed, commitParseFailed } from '../../domain/commands/error.js';
+import { commitParseFailed } from '../../domain/commands/error.js';
 import { BinaryHeap } from '../../domain/commit/binary-heap.js';
 import type { QueueEntry } from '../../domain/commit/priority-queue.js';
 import {
@@ -16,6 +16,7 @@ import {
   assignObjectType,
   createObjectTypeTable,
   type ObjectTypeTable,
+  typeGraphParents,
 } from './internal/object-type-table.js';
 import {
   correctedCommitDatesEnabled,
@@ -130,14 +131,8 @@ const typeParsedPointers = (
   meta: CommitMeta,
 ): boolean => {
   if (meta.source !== 'graph') return typeCommitPointers(ctx, table, id, meta);
-  typeGraphParents(ctx, table, meta);
+  typeGraphParents(ctx, table, meta.parents);
   return true;
-};
-
-const typeGraphParents = (ctx: Context, table: ObjectTypeTable, meta: CommitMeta): void => {
-  for (const parent of meta.parents) {
-    if (!assignObjectType(ctx, table, parent, 'commit')) throw commitLookupFailed(parent);
-  }
 };
 
 const typeCommitPointers = (

@@ -459,6 +459,51 @@ describe('mergeBase walk typing', () => {
     });
   });
 
+  describe('Given a graph-served argument whose parent an earlier argument typed a tree', () => {
+    describe('When mergeBase looks both up', () => {
+      it('Then it logs the conflict and refuses the parent it could not find', async () => {
+        // Arrange
+        const repo = await store();
+        const served = await commitOf(repo.ctx, repo.tree, [repo.commit], 'c1\n');
+        await writeCommitGraph(repo.ctx, [await commitsOf(repo.ctx, [repo.commit, served])]);
+        const pointing = await commitOf(repo.ctx, repo.commit, [], 'y\n');
+
+        // Act
+        const result = await caughtOf(repo, [pointing, served]);
+
+        // Assert
+        expect(result).toEqual({
+          data: { code: 'COMMIT_LOOKUP_FAILED', id: repo.commit },
+          logged: [`object ${repo.commit} is a tree, not a commit`],
+        });
+      });
+    });
+  });
+
+  describe('Given a graph-served argument whose parent a later argument names as its tree', () => {
+    describe('When mergeBase looks both up', () => {
+      it('Then the graph types the parent a commit and the later argument fails to parse', async () => {
+        // Arrange
+        const repo = await store();
+        const served = await commitOf(repo.ctx, repo.tree, [repo.commit], 'c1\n');
+        await writeCommitGraph(repo.ctx, [await commitsOf(repo.ctx, [repo.commit, served])]);
+        const pointing = await commitOf(repo.ctx, repo.commit, [], 'y\n');
+
+        // Act
+        const result = await caughtOf(repo, [served, pointing]);
+
+        // Assert
+        expect(result).toEqual({
+          data: { code: 'INVALID_COMMIT_NAME', name: pointing },
+          logged: [
+            `object ${repo.commit} is a commit, not a tree`,
+            `bad tree pointer ${repo.commit} in commit ${pointing}`,
+          ],
+        });
+      });
+    });
+  });
+
   describe('Given a graph-served walk parent whose own parent the call typed a tree', () => {
     describe('When mergeBase walks to it', () => {
       it('Then it logs the conflict and refuses the commit it could not find', async () => {

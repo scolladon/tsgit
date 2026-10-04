@@ -745,6 +745,62 @@ const commitBody = (tree: string, parents: ReadonlyArray<string>, message: strin
 const rebuiltStderr = (logged: ReadonlyArray<string>, name: string): string =>
   `${logged.map((line) => `error: ${line}\n`).join('')}fatal: Not a valid commit name ${name}\n`;
 
+describe.skipIf(!GIT_AVAILABLE)('mergeBase argument lookup over a commit-graph (interop)', () => {
+  let dir: string;
+  const ids = new Map<string, string>();
+
+  beforeAll(async () => {
+    dir = await makeRepo('lookup-graph');
+    const parent = datedCommit(dir, 'p', 1_700_000_000);
+    ids.set('P', parent).set('C', datedCommit(dir, 'c', 1_700_000_001));
+    git(dir, 'commit-graph', 'write', '--reachable');
+    ids.set('Y', literally(dir, 'commit', commitBody(parent, [], 'y')));
+  }, SETUP_TIMEOUT);
+
+  afterAll(async () => rm(dir, { recursive: true, force: true }));
+
+  /** git's stderr rebuilt from tsgit's logged lines and the refusal it threw. */
+  const rebuiltDeath = (logged: ReadonlyArray<string>, data: Readonly<Record<string, string>>) => {
+    const fatal =
+      data.code === 'COMMIT_LOOKUP_FAILED'
+        ? `fatal: could not find commit ${data.id}\n`
+        : `fatal: Not a valid commit name ${data.name}\n`;
+    return `${logged.map((line) => `error: ${line}\n`).join('')}${fatal}`;
+  };
+
+  describe.each([
+    { args: ['C', 'Y'], code: 'INVALID_COMMIT_NAME' },
+    { args: ['Y', 'C'], code: 'COMMIT_LOOKUP_FAILED' },
+  ])(
+    'Given merge-base of $args, C served by the graph and Y naming its parent as a tree',
+    ({ args, code }) => {
+      describe('When both tools look the arguments up', () => {
+        it('Then tsgit refuses where git dies, after the error lines git prints', async () => {
+          // Arrange
+          const oids = args.map((name) => ids.get(name)!);
+          const peer = tryRunGitWithExit(['-C', dir, 'merge-base', ...oids]);
+          const logged: string[] = [];
+          const base = createNodeContext({ workDir: dir });
+          const ctx: Context = { ...base, logger: { error: (line: string) => logged.push(line) } };
+          const sut = mergeBase;
+
+          // Act
+          const caught = await sut(ctx, oids as ObjectId[]).then(
+            () => undefined,
+            (error: unknown) => error,
+          );
+
+          // Assert
+          const data = (caught as { readonly data: Readonly<Record<string, string>> }).data;
+          expect(data.code).toBe(code);
+          expect(peer.exitCode).toBe(128);
+          expect(rebuiltDeath(logged, data)).toBe(peer.stderr);
+        });
+      });
+    },
+  );
+});
+
 describe.skipIf(!GIT_AVAILABLE)('mergeBase argument lookup (interop)', () => {
   let dir: string;
   const ids = new Map<string, string>();
