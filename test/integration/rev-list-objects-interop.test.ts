@@ -1567,4 +1567,72 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list interop — object types assigned in o
       });
     });
   });
+
+  /** pack-objects' stderr, rebuilt from the logged lines and the refusal or the packed count. */
+  const packStderrOf = (logged: ReadonlyArray<string>, error: unknown): string => {
+    const logs = logged.map((line) => `error: ${line}\n`).join('');
+    if (error === undefined) return logs;
+    const code = (error as { data?: { code?: string } }).data?.code;
+    return code === 'TREE_ENTRY_TYPE_MISMATCH'
+      ? `${logs}${entryMismatchLine(error)}`
+      : walkStderrOf(logged, error);
+  };
+
+  describe.each([
+    [
+      'an included commit naming a blob as its tree',
+      (dir: string, blob: string) => ({
+        excluded: writeLiteralCommit(dir, emptyTreeOf(dir), []),
+        includedTree: blob,
+      }),
+    ],
+    [
+      'an included tree holding a blob as a subtree the excluded tree holds as a tree',
+      (dir: string, blob: string, good: string) => ({
+        excluded: writeLiteralCommit(dir, writeLiteralTree(dir, [['40000', 'sub', good]]), []),
+        includedTree: writeLiteralTree(dir, [['40000', 'sub', blob]]),
+      }),
+    ],
+    [
+      'an excluded commit naming a blob as its tree',
+      (dir: string, blob: string, good: string) => ({
+        excluded: writeLiteralCommit(dir, blob, []),
+        includedTree: good,
+      }),
+    ],
+    [
+      'an excluded tree holding as a subtree a blob the included tree holds as a file',
+      (dir: string, blob: string, good: string) => ({
+        excluded: writeLiteralCommit(dir, writeLiteralTree(dir, [['40000', 'sub', blob]]), []),
+        includedTree: writeLiteralTree(dir, [
+          ['100644', 'f', blob],
+          ['40000', 'sub', good],
+        ]),
+      }),
+    ],
+  ] as const)('Given %s', (_label, sidesOf) => {
+    describe('When pack-objects --revs marks the excluded side sparsely on both tools', () => {
+      it('Then both log the same typing errors and end the same way', async () => {
+        // Arrange
+        const { dir, blob } = await buildMistypedTagFixture();
+        // pack-objects peels every tag ref when it orders a pack it writes.
+        git(dir, 'update-ref', '-d', 'refs/tags/t');
+        const other = runGit(['-C', dir, 'hash-object', '-w', '--stdin'], { input: 'yo\n' }).trim();
+        const good = writeLiteralTree(dir, [['100644', 'f', other]]);
+        const { excluded, includedTree } = sidesOf(dir, blob, good);
+        const included = writeLiteralCommit(dir, includedTree, [excluded]);
+        const peer = tryRunGitWithExit(['-C', dir, 'pack-objects', '--revs', '--stdout', '-q'], {
+          input: `${included}\n^${excluded}\n`,
+        });
+        const { ctx, logged } = capturing(dir);
+        const sut = packObjects;
+
+        // Act
+        const result = await settled(() => sut(ctx, { wants: [included], not: [excluded] }));
+
+        // Assert
+        expect(packStderrOf(logged, result)).toBe(peer.stderr);
+      });
+    });
+  });
 });

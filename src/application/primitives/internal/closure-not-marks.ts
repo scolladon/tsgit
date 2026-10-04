@@ -174,19 +174,6 @@ export async function createNotMarks(
   };
 }
 
-/** Collect every commit `not` tip; mark a directly-named tree/blob tip
- *  outright. A tip's own tree is left to `markBoundaryTrees` — see this
- *  module's own doc. */
-export async function markNotSide(
-  ctx: Context,
-  not: ReadonlyArray<ObjectId>,
-  scope: NotSideScope,
-): Promise<NotMarks> {
-  const acc = await createNotMarks(ctx, scope);
-  for (const notId of not) await markNotTip(ctx, notId, acc);
-  return acc;
-}
-
 /**
  * The negative side's tolerance for a boundary commit it cannot resolve:
  * `undefined` for a locally absent object, every other failure rethrown —
@@ -256,18 +243,30 @@ async function markTreeGroup(
   marks: NotMarks,
   depth: number,
 ): Promise<void> {
-  if (!holdsBothSides(trees, marks.objects)) return;
+  if (!holdsBothSides(ctx, trees, marks)) return;
   if (depth > marks.maxDepth) throw treeDepthExceeded(depth);
   const byName = new Map<string, Set<ObjectId>>();
-  for (const tree of trees) await addChildrenByName(ctx, tree, byName, marks.objects);
+  for (const tree of trees) {
+    if (lookupTree(ctx, marks, tree)) await addChildrenByName(ctx, tree, byName, marks);
+  }
   for (const group of byName.values()) await markTreeGroup(ctx, group, marks, depth + 1);
 }
 
-const holdsBothSides = (trees: ReadonlySet<ObjectId>, marked: ReadonlySet<ObjectId>): boolean => {
+/** git's `lookup_tree`: under typing, an object typed otherwise is logged and skipped. */
+const lookupTree = (ctx: Context, marks: NotMarks, id: ObjectId): boolean =>
+  assignObjectType(ctx, marks.objectTypes, id, 'tree');
+
+/**
+ * Whether the group holds both sides, each tree looked up. git stops looking
+ * once it knows, in its oid set's hash order; looking every tree up logs a
+ * conflicting one as git does when its order reaches that tree first.
+ */
+const holdsBothSides = (ctx: Context, trees: ReadonlySet<ObjectId>, marks: NotMarks): boolean => {
   let excluded = false;
   let included = false;
   for (const tree of trees) {
-    if (marked.has(tree)) excluded = true;
+    if (!lookupTree(ctx, marks, tree)) continue;
+    if (marks.objects.has(tree)) excluded = true;
     else included = true;
   }
   return excluded && included;
@@ -276,22 +275,32 @@ const holdsBothSides = (trees: ReadonlySet<ObjectId>, marked: ReadonlySet<Object
 /** Lossless map key for an entry name: one code unit per name byte. */
 const nameKey = (bytes: Uint8Array): string => String.fromCharCode(...bytes);
 
+/**
+ * git's `add_children_by_path`: each subtree grouped by name, and an
+ * excluded tree's children marked once looked up as their mode types them.
+ */
 async function addChildrenByName(
   ctx: Context,
   treeId: ObjectId,
   byName: Map<string, Set<ObjectId>>,
-  marked: Set<ObjectId>,
+  marks: NotMarks,
 ): Promise<void> {
-  const tree = await readTreeIfPresent(ctx, treeId);
-  if (tree === undefined || tree.type !== 'tree') return;
-  const excluded = marked.has(treeId);
+  const tree = await readMarkedTree(ctx, treeId, marks.objectTypes);
+  if (tree === undefined) return;
+  const excluded = marks.objects.has(treeId);
   for (const entry of tree.entries) {
     if (isGitlink(entry.mode)) continue;
-    if (excluded) marked.add(entry.id);
-    if (!isDirectory(entry.mode)) continue;
-    const key = nameKey(entry.nameBytes);
-    const group = byName.get(key) ?? new Set<ObjectId>();
-    group.add(entry.id);
-    byName.set(key, group);
+    const type = isDirectory(entry.mode) ? 'tree' : 'blob';
+    if (excluded && assignObjectType(ctx, marks.objectTypes, entry.id, type)) {
+      marks.objects.add(entry.id);
+    }
+    if (type === 'tree') groupByName(byName, entry.nameBytes, entry.id);
   }
 }
+
+const groupByName = (byName: Map<string, Set<ObjectId>>, name: Uint8Array, id: ObjectId): void => {
+  const key = nameKey(name);
+  const group = byName.get(key) ?? new Set<ObjectId>();
+  group.add(id);
+  byName.set(key, group);
+};
