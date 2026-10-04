@@ -15,7 +15,8 @@ import type { WalkTreeEntry } from '../primitives/types.js';
 import { walkTree } from '../primitives/walk-tree.js';
 import { createSubstExpander, type SubstExpander } from './internal/archive-subst.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
-import { resolveRevision } from './rev-parse.js';
+import { dwimRefNameWarning } from './internal/revision-name.js';
+import { evaluateRevision } from './rev-parse.js';
 
 export type { ArchiveEntry, ArchiveResult } from '../../domain/archive/index.js';
 
@@ -35,12 +36,14 @@ export interface ArchiveOptions {
  *
  * Refusal conditions (thrown, never mid-stream):
  * - `NOT_A_REPOSITORY`: `ctx` does not point at a git repository.
- * - Unborn HEAD or unresolvable expression: propagated from `resolveRevision`.
+ * - Unborn HEAD or unresolvable expression: propagated from `evaluateRevision`.
  * - `UNEXPECTED_OBJECT_TYPE`: treeish resolves to a blob, not a tree/commit/tag.
  */
 export async function archive(ctx: Context, opts: ArchiveOptions): Promise<ArchiveResult> {
   await assertOperationalRepository(ctx);
-  const oid = await resolveRevision(ctx, opts.treeish);
+  // git's `parse_treeish_arg`: a `dwim_ref` of the whole name, then one `get_oid` read.
+  await dwimRefNameWarning(ctx, opts.treeish);
+  const oid = await evaluateRevision(ctx, opts.treeish);
   const classified = await classifyOid(ctx, oid);
   const { tree } = classified;
   if ('commit' in classified) {

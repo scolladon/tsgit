@@ -18,6 +18,8 @@
  */
 
 import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdtemp, rm } from 'node:fs/promises';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { inflateRawSync } from 'node:zlib';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -28,7 +30,9 @@ import { archive } from '../../src/application/commands/archive.js';
 import { tarArchive } from '../../src/domain/archive/tar.js';
 import { zipArchive } from '../../src/domain/archive/zip.js';
 import {
+  disableAutoMaintenance,
   GIT_AVAILABLE,
+  git,
   makePeerPair,
   type PeerPair,
   runGit,
@@ -1195,5 +1199,70 @@ describe.skipIf(!GIT_AVAILABLE)('zip cross-adapter parity (node vs memory)', () 
       // Ensure the fixture actually exercised method-8 (at least big.txt)
       expect(methodEightSeen).toBeGreaterThan(0);
     });
+  });
+});
+
+const DANGLING_TAG_WARNING = 'ignoring dangling symref refs/tags/dg';
+const WARNING_PREFIX = 'warning: ';
+
+describe.skipIf(!GIT_AVAILABLE)('integration — archive reads its tree-ish like git', () => {
+  let repo = '';
+
+  beforeAll(async () => {
+    repo = await mkdtemp(path.join(os.tmpdir(), 'tsgit-archive-treeish-reads-'));
+    runGit(['init', '-q', '-b', 'main', repo]);
+    disableAutoMaintenance(repo);
+    runGit(['-C', repo, 'commit', '-q', '--allow-empty', '-m', 'c1'], {
+      env: {
+        ...runGitEnv(),
+        GIT_AUTHOR_NAME: 'A',
+        GIT_AUTHOR_EMAIL: 'a@x',
+        GIT_AUTHOR_DATE: '1700000000 +0000',
+        GIT_COMMITTER_NAME: 'A',
+        GIT_COMMITTER_EMAIL: 'a@x',
+        GIT_COMMITTER_DATE: '1700000000 +0000',
+      },
+    });
+    git(repo, 'branch', 'dg');
+    git(repo, 'symbolic-ref', 'refs/tags/dg', 'refs/tags/nope');
+  });
+
+  afterAll(async () => {
+    await rm(repo, { recursive: true, force: true });
+  });
+
+  describe('Given a branch dg shadowed by a dangling symref tag', () => {
+    describe.each(['dg', 'dg~5', 'dg:absent', 'dg..nope', 'nope..dg'])(
+      'When git archive and archive read %s',
+      (treeish) => {
+        it('Then both warn once per read and agree on refusing', async () => {
+          // Arrange
+          const peer = tryRunGitWithExit(['-C', repo, 'archive', '--format=tar', treeish], {
+            env: runGitEnv(),
+          });
+          const peerWarnings = peer.stderr
+            .split('\n')
+            .filter((line) => line.startsWith(WARNING_PREFIX))
+            .map((line) => line.slice(WARNING_PREFIX.length));
+          const warnings: string[] = [];
+          const ctx = {
+            ...createNodeContext({ workDir: repo }),
+            logger: { warn: (message: string) => warnings.push(message) },
+          };
+          const sut = archive;
+
+          // Act
+          const refused = await sut(ctx, { treeish }).then(
+            () => false,
+            () => true,
+          );
+
+          // Assert
+          expect(warnings).toEqual(peerWarnings);
+          expect(warnings.every((warning) => warning === DANGLING_TAG_WARNING)).toBe(true);
+          expect(refused).toBe(peer.exitCode !== 0);
+        });
+      },
+    );
   });
 });
