@@ -20,7 +20,11 @@ import type { ObjectId, RefName } from '../../../domain/objects/index.js';
 import { shortBranchName } from '../../../domain/refs/short-branch-name.js';
 import type { Context } from '../../../ports/context.js';
 import { readConfig } from '../../primitives/config-read.js';
-import { lookupCommitReference } from '../../primitives/internal/lookup-commit-reference.js';
+import { lookupTypedCommitReference } from '../../primitives/internal/lookup-commit-reference.js';
+import {
+  createObjectTypeTable,
+  type ObjectTypeTable,
+} from '../../primitives/internal/object-type-table.js';
 import { resolveRefOrMissing, resolveTerminalName } from '../../primitives/resolve-ref.js';
 import { isAncestor } from './is-ancestor.js';
 import { applyRefspec, parseRefspec } from './ref-spec.js';
@@ -38,20 +42,34 @@ const NEGATIVE_PREFIX = '^';
 /** git's `+` marker for a force-updating refspec. */
 const FORCE_PREFIX = '+';
 
-/** `tipCommit` is the branch tip already peeled to a commit, the way git's
- *  `check_branch_commit` peels it before consulting the valve at all. */
+/** What an unforced delete measures against: the commit HEAD names, and the
+ *  object table every lookup and walk of the call shares with it. */
+export interface MergeValve {
+  readonly table: ObjectTypeTable;
+  readonly head: ObjectId | undefined;
+}
+
+/** git's `delete_branches` prologue: HEAD is looked up first — before any
+ *  branch is checked or resolved — into a fresh table for the whole call. */
+export const openMergeValve = async (ctx: Context): Promise<MergeValve> => {
+  const table = createObjectTypeTable();
+  return { table, head: await referenceCommit(ctx, table, HEAD_NAME) };
+};
+
+/** `tipCommit` is the branch tip already looked up into the valve's table,
+ *  the way git's `check_branch_commit` does before consulting it at all. */
 export const branchMerged = async (
   ctx: Context,
   name: RefName,
   tipCommit: ObjectId,
+  { table, head }: MergeValve,
 ): Promise<boolean> => {
-  const head = await referenceCommit(ctx, HEAD_NAME);
-  const upstream = await upstreamReference(ctx, name);
+  const upstream = await upstreamReference(ctx, table, name);
   if (upstream === undefined || upstream.commit === head) {
-    return head !== undefined && (await isAncestor(ctx, tipCommit, head));
+    return head !== undefined && (await isAncestor(ctx, tipCommit, head, table));
   }
-  const merged = await isAncestor(ctx, tipCommit, upstream.commit);
-  const mergedToHead = head !== undefined && (await isAncestor(ctx, tipCommit, head));
+  const merged = await isAncestor(ctx, tipCommit, upstream.commit, table);
+  const mergedToHead = head !== undefined && (await isAncestor(ctx, tipCommit, head, table));
   if (merged !== mergedToHead) warnUpstreamDisagrees(ctx, name, upstream.name, merged);
   return merged;
 };
@@ -80,22 +98,27 @@ const warnUpstreamDisagrees = (
 
 const upstreamReference = async (
   ctx: Context,
+  table: ObjectTypeTable,
   name: RefName,
 ): Promise<UpstreamReference | undefined> => {
   const upstream = await upstreamRef(ctx, name);
   const terminal = upstream === undefined ? undefined : await resolveTerminalName(ctx, upstream);
   if (terminal === undefined) return undefined;
-  const commit = await referenceCommit(ctx, terminal);
+  const commit = await referenceCommit(ctx, table, terminal);
   return commit === undefined ? undefined : { name: terminal, commit };
 };
 
-/** git's `lookup_commit_reference` over a resolved reference: the commit the
- *  ref names through any annotated-tag chain, `undefined` when it resolves to
- *  nothing or lands on something that is not a commit. */
-const referenceCommit = async (ctx: Context, ref: RefName): Promise<ObjectId | undefined> => {
+/** git's `lookup_commit_reference` over a resolved reference, against the
+ *  call's table: the commit the ref names through any annotated-tag chain,
+ *  `undefined` when it resolves to nothing or that lookup fails. */
+const referenceCommit = async (
+  ctx: Context,
+  table: ObjectTypeTable,
+  ref: RefName,
+): Promise<ObjectId | undefined> => {
   const tip = await resolveRefOrMissing(ctx, ref);
   if (tip === undefined) return undefined;
-  return (await lookupCommitReference(ctx, tip))?.id;
+  return lookupTypedCommitReference(ctx, table, tip);
 };
 
 /**

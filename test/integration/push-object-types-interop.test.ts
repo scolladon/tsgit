@@ -6,13 +6,18 @@
  * push to their own bare peer served by `git http-backend`, and both peers are
  * left without the ref.
  *
+ * Before any pack, git measures each update's fast-forward — forced or not —
+ * by looking both ends up into the push's object table, then walking: a walk
+ * parent whose pointers that table already typed otherwise fails to parse, and
+ * git dies on it before the peer moves.
+ *
  * @proves
  *   surface:        push
  *   bucket:         cross-tool-interop
  *   unique:         push enumerates its pack with git's typed walk and refuses exactly where git's pack-objects dies
  *   interopSurface: closure
  */
-import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { cpSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -131,3 +136,80 @@ describe.skipIf(!GIT_AVAILABLE)('push interop — object types assigned while en
     });
   });
 });
+
+/** A bare peer whose `main` already stands on `advertised`, its objects copied from `dir`. */
+const makeSeededPeer = (
+  dir: string,
+  advertised: string,
+): { readonly root: string; readonly bare: string } => {
+  const peer = makePeer();
+  cpSync(path.join(dir, '.git', 'objects'), path.join(peer.bare, 'objects'), { recursive: true });
+  runGit(['-C', peer.bare, 'update-ref', 'refs/heads/main', advertised]);
+  return peer;
+};
+
+describe.skipIf(!GIT_AVAILABLE)(
+  'push interop — fast-forward walk against the push object table',
+  () => {
+    describe.each([
+      ['unforced', [], {}],
+      ['forced', ['--force'], { force: true }],
+    ] as const)(
+      "Given the local tip's parent whose own parent is the tree the tip carries, %s",
+      (_label, flags, opts) => {
+        describe('When both tools push it over an unrelated advertised commit', () => {
+          it('Then both fail to parse that parent in the walk and the peer keeps its ref', async () => {
+            // Arrange
+            let parent = '';
+            let advertised = '';
+            const dir = buildRepo((repo, blob) => {
+              const tree = emptyTreeOf(repo);
+              const parentTree = runGit(['-C', repo, 'mktree'], {
+                input: `100644 blob ${blob}\tb\n`,
+              }).trim();
+              parent = writeLiteralCommit(repo, parentTree, [tree]);
+              advertised = writeLiteralCommit(repo, parentTree, []);
+              return writeLiteralCommit(repo, tree, [parent]);
+            });
+            const gitPeer = makeSeededPeer(dir, advertised);
+            const peer = makeSeededPeer(dir, advertised);
+            const git = tryRunGitWithExit(['-C', dir, 'push', ...flags, gitPeer.bare, 'main']);
+            const { ctx, logged } = capturing(dir);
+            const tree = emptyTreeOf(dir);
+            const sut = push;
+
+            // Act
+            let caught: unknown;
+            try {
+              await sut(
+                { ...ctx, transport: backendTransport(peer.root) },
+                { remote: 'origin', refspecs: ['main'], ...opts },
+              );
+            } catch (error) {
+              caught = error;
+            }
+
+            // Assert
+            const typingLines = [
+              `object ${tree} is a tree, not a commit`,
+              `bad parent ${tree} in commit ${parent}`,
+            ];
+            expect(git.exitCode).toBe(128);
+            expect(
+              git.stderr.startsWith(
+                `${typingLines.map((line) => `error: ${line}\n`).join('')}error: could not parse commit ${parent}\n`,
+              ),
+            ).toBe(true);
+            expect(logged).toEqual(typingLines);
+            expect((caught as { data?: unknown }).data).toEqual({
+              code: 'COMMIT_PARSE_FAILED',
+              id: parent,
+            });
+            expect(runGit(['-C', gitPeer.bare, 'rev-parse', 'main']).trim()).toBe(advertised);
+            expect(runGit(['-C', peer.bare, 'rev-parse', 'main']).trim()).toBe(advertised);
+          });
+        });
+      },
+    );
+  },
+);

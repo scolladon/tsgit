@@ -7,10 +7,12 @@
 
 import type { ObjectId } from '../../../domain/objects/index.js';
 import type { Context } from '../../../ports/context.js';
+import type { ObjectTypeTable } from '../../primitives/internal/object-type-table.js';
 import { inMergeBases } from '../../primitives/merge-base.js';
 
 export const isAncestor = (
   ctx: Context,
   ancestor: ObjectId,
   descendant: ObjectId,
-): Promise<boolean> => inMergeBases(ctx, ancestor, descendant);
+  table?: ObjectTypeTable,
+): Promise<boolean> => inMergeBases(ctx, ancestor, descendant, table);

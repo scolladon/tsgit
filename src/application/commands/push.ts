@@ -54,7 +54,11 @@ import { enumerateRefs } from '../primitives/enumerate-refs.js';
 import { hasObject } from '../primitives/has-object.js';
 import { type ClosureTip, computeClosure } from '../primitives/internal/closure-engine.js';
 import { boundedMapFor } from '../primitives/internal/concurrency.js';
-import { createObjectTypeTable } from '../primitives/internal/object-type-table.js';
+import { lookupTypedCommitReferenceQuietly } from '../primitives/internal/lookup-commit-reference.js';
+import {
+  createObjectTypeTable,
+  type ObjectTypeTable,
+} from '../primitives/internal/object-type-table.js';
 import { assertNoValuelessConfig } from '../primitives/internal/valueless-config-guard.js';
 import { resolveRef } from '../primitives/resolve-ref.js';
 import { runHook } from '../primitives/run-hook.js';
@@ -233,6 +237,15 @@ const resolveRemoteUrl = async (ctx: Context, remoteName: string): Promise<strin
   return url;
 };
 
+/** What every refspec of one push resolves against: the advertised refs, the
+ *  remote and options, and the object table git's push process carries. */
+interface RefspecScope {
+  readonly remoteByName: ReadonlyMap<string, ObjectId>;
+  readonly remoteName: string;
+  readonly opts: PushOptions;
+  readonly table: ObjectTypeTable;
+}
+
 const resolveAllRefspecs = async (
   ctx: Context,
   refspecs: ReadonlyArray<ParsedRefspec>,
@@ -240,10 +253,15 @@ const resolveAllRefspecs = async (
   remoteName: string,
   opts: PushOptions,
 ): Promise<ReadonlyArray<ResolvedRefspec>> => {
-  const remoteByName = buildRemoteMap(adv.refs);
+  const scope: RefspecScope = {
+    remoteByName: buildRemoteMap(adv.refs),
+    remoteName,
+    opts,
+    table: createObjectTypeTable(),
+  };
   const out: ResolvedRefspec[] = [];
   for (const parsed of refspecs) {
-    out.push(await resolveOneRefspec(ctx, parsed, remoteByName, remoteName, opts));
+    out.push(await resolveOneRefspec(ctx, parsed, scope));
   }
   return out;
 };
@@ -257,12 +275,10 @@ const buildRemoteMap = (refs: ReadonlyArray<AdvertisedRef>): ReadonlyMap<string,
 const resolveOneRefspec = async (
   ctx: Context,
   parsed: ParsedRefspec,
-  remoteByName: ReadonlyMap<string, ObjectId>,
-  remoteName: string,
-  opts: PushOptions,
+  scope: RefspecScope,
 ): Promise<ResolvedRefspec> => {
   const zero = zeroOid(ctx.hashConfig);
-  const remoteOid = remoteByName.get(parsed.dst) ?? zero;
+  const remoteOid = scope.remoteByName.get(parsed.dst) ?? zero;
   if (parsed.isDelete) {
     if (remoteOid === zero) {
       throw invalidOption('refspecs', `delete target ${parsed.dst} is not advertised`);
@@ -270,31 +286,46 @@ const resolveOneRefspec = async (
     return { parsed, localOid: zero, remoteOid };
   }
   const localOid = await resolveRef(ctx, parsed.src as RefName);
-  await enforceLeaseAndFastForward(ctx, parsed, localOid, remoteOid, remoteName, opts);
-  return { parsed, localOid, remoteOid };
+  const resolved: ResolvedRefspec = { parsed, localOid, remoteOid };
+  await enforceLeaseAndFastForward(ctx, resolved, scope);
+  return resolved;
 };
 
+/**
+ * git's `set_ref_status_for_push`: a stale lease rejects outright; otherwise
+ * the fast-forward is measured — forced or not, as git measures it before
+ * force overrides the verdict — and only an update neither forced nor
+ * leased that does not fast-forward is rejected.
+ */
 const enforceLeaseAndFastForward = async (
   ctx: Context,
-  parsed: ParsedRefspec,
+  { parsed, localOid, remoteOid }: ResolvedRefspec,
+  scope: RefspecScope,
+): Promise<void> => {
+  const lease = await resolveLease(ctx, parsed, scope.remoteName, scope.opts);
+  if (lease !== undefined && lease !== remoteOid) {
+    throw pushRejected(parsed.dst as RefName, 'lease-mismatch', emptyReport());
+  }
+  if (remoteOid === zeroOid(ctx.hashConfig)) return; // creating a new ref
+  const newer = await refNewer(ctx, scope.table, localOid, remoteOid);
+  if (lease !== undefined || parsed.force === 'force' || scope.opts.force === true) return;
+  if (!newer) throw nonFastForward(parsed.dst as RefName, localOid, remoteOid);
+};
+
+/**
+ * git's lookups then `ref_newer`: the advertised end looked up first, then the
+ * local one, quietly, into the push's table; only two commits are walked.
+ */
+const refNewer = async (
+  ctx: Context,
+  table: ObjectTypeTable,
   localOid: ObjectId,
   remoteOid: ObjectId,
-  remoteName: string,
-  opts: PushOptions,
-): Promise<void> => {
-  const lease = await resolveLease(ctx, parsed, remoteName, opts);
-  if (lease !== undefined) {
-    if (lease !== remoteOid) {
-      throw pushRejected(parsed.dst as RefName, 'lease-mismatch', emptyReport());
-    }
-    // Lease holds → treat as force, skip ancestor check.
-    return;
-  }
-  if (parsed.force === 'force' || opts.force === true) return;
-  if (remoteOid === zeroOid(ctx.hashConfig)) return; // creating a new ref
-  if (!(await isAncestor(ctx, remoteOid, localOid))) {
-    throw nonFastForward(parsed.dst as RefName, localOid, remoteOid);
-  }
+): Promise<boolean> => {
+  const old = await lookupTypedCommitReferenceQuietly(ctx, table, remoteOid);
+  if (old === undefined) return false;
+  const fresh = await lookupTypedCommitReferenceQuietly(ctx, table, localOid);
+  return fresh !== undefined && isAncestor(ctx, old, fresh, table);
 };
 
 const resolveLease = async (

@@ -98,9 +98,7 @@ export const lookupTypedCommitReference = async (
   table: ObjectTypeTable,
   id: ObjectId,
 ): Promise<ObjectId | undefined> => {
-  const type = await typeOnSight(ctx, table, id);
-  if (type === undefined) return undefined;
-  const declared = type === 'tag' ? await peelDeclared(ctx, table, id) : { id, type };
+  const declared = await peelOnSight(ctx, table, id);
   if (declared === undefined) return undefined;
   if (declared.type !== 'commit') {
     ctx.logger?.error?.(`object ${id} is a ${declared.type}, not a commit`, {
@@ -109,5 +107,37 @@ export const lookupTypedCommitReference = async (
     });
     return undefined;
   }
-  return (await parseCommit(ctx, table, declared.id)) ? declared.id : undefined;
+  return parsedCommit(ctx, table, declared.id);
 };
+
+/**
+ * git's `lookup_commit_reference_gently` with `quiet` set: as
+ * {@link lookupTypedCommitReference}, except that landing on another type is
+ * no `error:` line — a failed parse still logs its own.
+ */
+export const lookupTypedCommitReferenceQuietly = async (
+  ctx: Context,
+  table: ObjectTypeTable,
+  id: ObjectId,
+): Promise<ObjectId | undefined> => {
+  const declared = await peelOnSight(ctx, table, id);
+  if (declared?.type !== 'commit') return undefined;
+  return parsedCommit(ctx, table, declared.id);
+};
+
+/** `id` typed on sight and peeled through its tags as their headers declare. */
+const peelOnSight = async (
+  ctx: Context,
+  table: ObjectTypeTable,
+  id: ObjectId,
+): Promise<Declared | undefined> => {
+  const type = await typeOnSight(ctx, table, id);
+  if (type === undefined) return undefined;
+  return type === 'tag' ? peelDeclared(ctx, table, id) : { id, type };
+};
+
+const parsedCommit = async (
+  ctx: Context,
+  table: ObjectTypeTable,
+  id: ObjectId,
+): Promise<ObjectId | undefined> => ((await parseCommit(ctx, table, id)) ? id : undefined);

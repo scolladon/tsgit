@@ -141,6 +141,26 @@ describe.skipIf(!GIT_AVAILABLE)('branch delete — commit-reference peeling inte
       input: `object ${inner}\ntype tag\ntag ${name}\ntagger ${IDENTITY} ${PINNED_CLOCK}\n\n${name}\n`,
     }).trim();
 
+  /** A commit written byte for byte, below the typing `commit-tree` enforces. */
+  const literalCommit = (
+    fixture: Fixture,
+    tree: string,
+    parents: ReadonlyArray<string>,
+    message: string,
+  ): string => {
+    const parentLines = parents.map((parent) => `parent ${parent}\n`).join('');
+    const stamp = `${IDENTITY} ${PINNED_CLOCK}`;
+    const body = `tree ${tree}\n${parentLines}author ${stamp}\ncommitter ${stamp}\n\n${message}\n`;
+    return runGit(
+      ['-C', fixture.dir, 'hash-object', '-t', 'commit', '-w', '--stdin', '--literally'],
+      { input: body },
+    ).trim();
+  };
+
+  /** tsgit's logged `error:` lines as git prints them on stderr. */
+  const asStderr = (logged: ReadonlyArray<string>): string =>
+    logged.map((line) => `error: ${line}\n`).join('');
+
   /** Configures `topic` to track `up` through git's pseudo-remote for this
    *  repository, which takes the merge ref verbatim. */
   const trackLocally = (fixture: Fixture, upstream: string): void => {
@@ -187,14 +207,20 @@ describe.skipIf(!GIT_AVAILABLE)('branch delete — commit-reference peeling inte
   const deleteWithTsgit = async (
     fixture: Fixture,
     input: { readonly name: string; readonly force?: boolean },
-  ): Promise<{ readonly result?: unknown; readonly error?: TsgitError }> => {
+  ): Promise<{
+    readonly result?: unknown;
+    readonly error?: TsgitError;
+    readonly logged: ReadonlyArray<string>;
+  }> => {
     const sut = branchDelete;
     const repo = await openRepository({ cwd: fixture.dir });
+    const logged: string[] = [];
+    const ctx = { ...repo.ctx, logger: { error: (line: string) => logged.push(line) } };
     try {
-      return { result: await sut(repo.ctx, input) };
+      return { result: await sut(ctx, input), logged };
     } catch (caught) {
       expect(caught).toBeInstanceOf(TsgitError);
-      return { error: caught as TsgitError };
+      return { error: caught as TsgitError, logged };
     } finally {
       await repo.dispose();
     }
@@ -326,11 +352,15 @@ describe.skipIf(!GIT_AVAILABLE)('branch delete — commit-reference peeling inte
 
           // Act
           const gitResult = runBranch(pair.peer.dir, '-D', 'topic');
-          const { error } = await deleteWithTsgit(pair.ours, { name: 'topic', force: true });
+          const { error, logged } = await deleteWithTsgit(pair.ours, {
+            name: 'topic',
+            force: true,
+          });
 
           // Assert
           expect(gitResult.exitCode).toBe(0);
           expect(gitResult.stderr).toBe(typeLine(pair.peer.tree, 'tree'));
+          expect(asStderr(logged)).toBe(gitResult.stderr);
           expect(error).toBeUndefined();
           expectBothRemoved(pair, TOPIC);
         },
@@ -418,6 +448,84 @@ describe.skipIf(!GIT_AVAILABLE)('branch delete — commit-reference peeling inte
           expect(gitResult.exitCode).toBe(1);
           expect(gitResult.stderr).toBe(typeLine(pair.peer.tree, 'tree') + unmergedLine('topic'));
           expect(error?.data).toEqual({ code: 'BRANCH_NOT_FULLY_MERGED', name: TOPIC });
+          expectBothSurvive(pair, TOPIC);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe("Given HEAD whose second parent is the object the branch tip's tree names", () => {
+    describe('When git branch -d and tsgit branchDelete both target it', () => {
+      it(
+        'Then both type HEAD first and refuse the tip that then fails to parse',
+        async () => {
+          // Arrange
+          const planted: string[] = [];
+          const pair = await twins('head-typed-tip', async (fixture) => {
+            const blob = runGit(['-C', fixture.dir, 'hash-object', '-w', '--stdin'], {
+              input: 'b\n',
+            }).trim();
+            const tip = literalCommit(fixture, blob, [], 'tip');
+            const head = literalCommit(fixture, fixture.tree, [fixture.root, blob], 'head');
+            planted.push(blob, tip);
+            await plantRef(fixture, MAIN, head);
+            await plantRef(fixture, TOPIC, tip);
+          });
+          const [blob, tip] = planted as [string, string];
+
+          // Act
+          const gitResult = runBranch(pair.peer.dir, '-d', 'topic');
+          const { error, logged } = await deleteWithTsgit(pair.ours, { name: 'topic' });
+
+          // Assert
+          const typingLines = asStderr([
+            `object ${blob} is a commit, not a tree`,
+            `bad tree pointer ${blob} in commit ${tip}`,
+          ]);
+          expect(gitResult.exitCode).toBe(1);
+          expect(gitResult.stderr).toBe(typingLines + noCommitLine(TOPIC));
+          expect(asStderr(logged)).toBe(typingLines);
+          expect(error?.data).toEqual({ code: 'COMMIT_PARSE_FAILED', id: tip });
+          expectBothSurvive(pair, TOPIC);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+
+  describe("Given HEAD's parent whose own parent is the tree HEAD carries", () => {
+    describe('When git branch -d and tsgit branchDelete both target an unrelated branch', () => {
+      it(
+        'Then both fail to parse that parent in the walk and the branch survives',
+        async () => {
+          // Arrange
+          const parents: string[] = [];
+          const pair = await twins('walk-typed-parent', async (fixture) => {
+            const parentTree = runGit(['-C', fixture.dir, 'mktree'], {
+              input: `040000 tree ${fixture.tree}\tsub\n`,
+            }).trim();
+            const parent = literalCommit(fixture, parentTree, [fixture.tree], 'parent');
+            parents.push(parent);
+            await plantRef(fixture, MAIN, literalCommit(fixture, fixture.tree, [parent], 'head'));
+            await plantRef(fixture, TOPIC, literalCommit(fixture, fixture.tree, [], 'tip'));
+          });
+          const parent = parents[0] as string;
+          const tree = pair.ours.tree;
+
+          // Act
+          const gitResult = runBranch(pair.peer.dir, '-d', 'topic');
+          const { error, logged } = await deleteWithTsgit(pair.ours, { name: 'topic' });
+
+          // Assert
+          const typingLines = asStderr([
+            `object ${tree} is a tree, not a commit`,
+            `bad parent ${tree} in commit ${parent}`,
+          ]);
+          expect(gitResult.exitCode).toBe(128);
+          expect(gitResult.stderr).toBe(`${typingLines}error: could not parse commit ${parent}\n`);
+          expect(asStderr(logged)).toBe(typingLines);
+          expect(error?.data).toEqual({ code: 'COMMIT_PARSE_FAILED', id: parent });
           expectBothSurvive(pair, TOPIC);
         },
         ROW_TIMEOUT,

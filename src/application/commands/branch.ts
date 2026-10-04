@@ -5,7 +5,7 @@
  * `internal/branch-namespace.ts`.
  */
 
-import { revparseAmbiguous } from '../../domain/commands/error.js';
+import { commitParseFailed, revparseAmbiguous } from '../../domain/commands/error.js';
 import { TsgitError, unsupportedOperation } from '../../domain/error.js';
 import { errorDataCode } from '../../domain/error-data-code.js';
 import { branchExists, branchNotFound, branchNotFullyMerged } from '../../domain/index.js';
@@ -22,6 +22,8 @@ import { HEADS_PREFIX } from '../../domain/refs/ref-prefixes.js';
 import { shortBranchName } from '../../domain/refs/short-branch-name.js';
 import { branchCheckedOut } from '../../domain/worktree/error.js';
 import type { Context } from '../../ports/context.js';
+import { lookupTypedCommitReference } from '../primitives/internal/lookup-commit-reference.js';
+import { createObjectTypeTable } from '../primitives/internal/object-type-table.js';
 import { peelChain } from '../primitives/internal/peel-chain.js';
 import { transactionLogging } from '../primitives/internal/ref-transaction-logging.js';
 import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
@@ -38,7 +40,7 @@ import {
   resolveRefForReading,
 } from '../primitives/resolve-ref.js';
 import { updateRef } from '../primitives/update-ref.js';
-import { branchMerged } from './internal/branch-merged.js';
+import { branchMerged, type MergeValve, openMergeValve } from './internal/branch-merged.js';
 import {
   asUpstreamMissing,
   type BranchTrack,
@@ -275,10 +277,12 @@ export const branchDelete = async (
   await assertOperationalRepository(ctx);
   await assertRepoSettingsValid(ctx);
   const name = validateRefName(`${HEADS_PREFIX}${input.name}`);
+  const valve = input.force === true ? undefined : await openMergeValve(ctx);
   await assertNoWorktreeHolds(ctx, name);
   const held = await getRefStore(ctx).resolveDirect(name);
   if (held.kind === 'missing') throw branchNotFound(name);
-  if (input.force !== true) await assertFullyMerged(ctx, name, held);
+  if (valve === undefined) await lookUpForcedTip(ctx, held);
+  else await assertFullyMerged(ctx, name, held, valve);
   // `branch -D` deletes the symref itself when `name` names one — git's
   // own `REF_NO_DEREF` on this delete.
   await updateRef(ctx, name, zeroOid(ctx.hashConfig), { delete: true, noDeref: true });
@@ -295,16 +299,30 @@ export const branchDelete = async (
  * standing on an annotated tag is measured at the commit the tag names. A tip
  * that names no commit at all never reaches the valve: git refuses on the
  * type instead of reporting the branch unmerged (measured, git 2.55.0).
+ *
+ * The lookup runs against the table HEAD's lookup opened, so a tip whose
+ * pointers HEAD already typed otherwise fails to parse and is refused —
+ * after git's `error:` lines — before any merge is measured.
  */
 const assertFullyMerged = async (
   ctx: Context,
   name: RefName,
   held: ResolveDirectResult,
+  valve: MergeValve,
 ): Promise<void> => {
   if (held.kind !== 'direct') return;
   const tipCommit = await requireCommit(ctx, held.id);
-  if (await branchMerged(ctx, name, tipCommit)) return;
+  const looked = await lookupTypedCommitReference(ctx, valve.table, held.id);
+  if (looked === undefined) throw commitParseFailed(tipCommit);
+  if (await branchMerged(ctx, name, tipCommit, valve)) return;
   throw branchNotFullyMerged(name);
+};
+
+/** git's `check_branch_commit` looks the tip up even when forced: the lines
+ *  that lookup logs still print, and only the decision on it is skipped. */
+const lookUpForcedTip = async (ctx: Context, held: ResolveDirectResult): Promise<void> => {
+  if (held.kind !== 'direct') return;
+  await lookupTypedCommitReference(ctx, createObjectTypeTable(), held.id);
 };
 
 export const branchRename = async (

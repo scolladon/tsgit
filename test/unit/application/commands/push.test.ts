@@ -951,6 +951,109 @@ describe('push — force / non-fast-forward', () => {
   });
 });
 
+/** A commit over `tree` with `parents`, written as given — no typing gate. */
+const writeRawCommit = (
+  ctx: ReturnType<typeof createMemoryContext>,
+  tree: ObjectId,
+  parents: ReadonlyArray<ObjectId>,
+  message: string,
+): Promise<ObjectId> => {
+  const author = { name: 'A', email: 'a@a', timestamp: 0, timezoneOffset: '+0000' };
+  const commit: Commit = {
+    type: 'commit',
+    id: '' as ObjectId,
+    data: { tree, parents, author, committer: author, message, extraHeaders: [] },
+  };
+  return writeObject(ctx, commit);
+};
+
+describe('push — fast-forward walk against the push object table', () => {
+  describe.each([
+    ['unforced', {}],
+    ['forced', { force: true }],
+  ] as const)(
+    "Given the local tip's parent whose own parent is the tree the tip carries, %s",
+    (_, opts) => {
+      describe('When push measures the advertised unrelated commit against it', () => {
+        it('Then the walk parses that parent against the table and refuses COMMIT_PARSE_FAILED on it', async () => {
+          // Arrange
+          const base = createMemoryContext();
+          const errors: string[] = [];
+          const ctx = { ...base, logger: { error: (line: string) => errors.push(line) } };
+          const { tree } = await seedCommit(ctx, [], 'seed');
+          const { tree: parentTree } = await seedCommit(ctx, [], 'other');
+          const parent = await writeRawCommit(ctx, parentTree, [tree], 'parent');
+          const tip = await writeRawCommit(ctx, tree, [parent], 'tip');
+          const advertised = await writeRawCommit(ctx, tree, [], 'advertised');
+          await seedRepo(ctx, { refs: { 'refs/heads/main': tip } });
+          await writeOriginConfig(ctx);
+          const { transport } = fakeServer({
+            url: 'https://example.com/r.git',
+            advertisedRefs: [{ name: 'refs/heads/main', id: advertised }],
+            reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+          });
+          const sut = push;
+
+          // Act
+          let caught: unknown;
+          try {
+            await sut({ ...ctx, transport }, opts);
+          } catch (err) {
+            caught = err;
+          }
+
+          // Assert
+          expect((caught as TsgitError).data).toEqual({ code: 'COMMIT_PARSE_FAILED', id: parent });
+          expect(errors).toEqual([
+            `object ${tree} is a tree, not a commit`,
+            `bad parent ${tree} in commit ${parent}`,
+          ]);
+        });
+      });
+    },
+  );
+});
+
+describe('push — fast-forward against an advertised commit the store lacks', () => {
+  describe('Given an advertised tip absent locally and no force', () => {
+    describe('When push runs', () => {
+      it('Then it refuses NON_FAST_FORWARD without a logged line', async () => {
+        // Arrange
+        const base = createMemoryContext();
+        const errors: string[] = [];
+        const ctx = { ...base, logger: { error: (line: string) => errors.push(line) } };
+        const local = await seedCommit(ctx, [], 'local');
+        const absent = 'c'.repeat(40) as ObjectId;
+        await seedRepo(ctx, { refs: { 'refs/heads/main': local.id } });
+        await writeOriginConfig(ctx);
+        const { transport } = fakeServer({
+          url: 'https://example.com/r.git',
+          advertisedRefs: [{ name: 'refs/heads/main', id: absent }],
+          reportStatus: { unpack: 'ok', refs: [{ name: 'refs/heads/main', status: 'ok' }] },
+        });
+        const sut = push;
+
+        // Act
+        let caught: unknown;
+        try {
+          await sut({ ...ctx, transport });
+        } catch (err) {
+          caught = err;
+        }
+
+        // Assert
+        expect((caught as TsgitError).data).toEqual({
+          code: 'NON_FAST_FORWARD',
+          ref: 'refs/heads/main',
+          local: local.id,
+          remote: absent,
+        });
+        expect(errors).toEqual([]);
+      });
+    });
+  });
+});
+
 describe('push — force-with-lease', () => {
   describe('Given `forceWithLease: "auto"` and the cached remote-tracking ref matches the server', () => {
     describe('When push runs', () => {

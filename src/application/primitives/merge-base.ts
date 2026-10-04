@@ -108,10 +108,31 @@ const typedParsedMeta =
   (table: ObjectTypeTable): ReadMeta<CommitMeta> =>
   async (ctx, id) => {
     const meta = await readParsedMeta(ctx, id);
-    if (meta.source === 'graph') typeGraphParents(ctx, table, meta);
-    else if (!typeCommitPointers(ctx, table, id, meta)) throw commitParseFailed(id);
+    if (!typeParsedPointers(ctx, table, id, meta)) throw commitParseFailed(id);
     return meta;
   };
+
+/** git's `repo_parse_commit` of a depth-first parent against the table: a
+ *  parse that fails — a typing conflict included — logs why and is skipped. */
+const typedLoggedMeta =
+  (table: ObjectTypeTable): ReadMeta<CommitMeta | undefined> =>
+  async (ctx, id) => {
+    const meta = await readLoggedMeta(ctx, id);
+    return meta !== undefined && typeParsedPointers(ctx, table, id, meta) ? meta : undefined;
+  };
+
+/** Types `meta`'s pointers the way its source parses them; `false` once the
+ *  object parse's typing conflicted — the graph's conflict dies instead. */
+const typeParsedPointers = (
+  ctx: Context,
+  table: ObjectTypeTable,
+  id: ObjectId,
+  meta: CommitMeta,
+): boolean => {
+  if (meta.source !== 'graph') return typeCommitPointers(ctx, table, id, meta);
+  typeGraphParents(ctx, table, meta);
+  return true;
+};
 
 const typeGraphParents = (ctx: Context, table: ObjectTypeTable, meta: CommitMeta): void => {
   for (const parent of meta.parents) {
@@ -461,19 +482,23 @@ const octopusMergeBases = async (
  * parse logs why and is skipped. Without them git paints down to `commit`, and
  * a parent that fails to parse refuses the walk (`COMMIT_PARSE_FAILED`) after
  * its line, the way `paint_down_to_common` does.
+ *
+ * Every parse types its pointers into `table` — the caller's, when its own
+ * lookups already filled one, as git's process-wide table carries them.
  */
 export const inMergeBases = async (
   ctx: Context,
   commit: ObjectId,
   reference: ObjectId,
+  table: ObjectTypeTable = createObjectTypeTable(),
 ): Promise<boolean> => {
   const target = await readMetaOrMissing(ctx, commit);
   const from = await readMetaOrMissing(ctx, reference);
   if (target === undefined || from === undefined) return false;
   if (target.generation > from.generation) return false;
   const ends: Ends = { target: { id: commit, meta: target }, from: { id: reference, meta: from } };
-  if (await generationNumbersEnabled(ctx)) return reachesDepthFirst(ctx, ends);
-  return reachesByPaint(ctx, ends);
+  if (await generationNumbersEnabled(ctx)) return reachesDepthFirst(ctx, ends, table);
+  return reachesByPaint(ctx, ends, table);
 };
 
 interface Parsed {
@@ -493,8 +518,12 @@ const knownEnds = ({ target, from }: Ends): ReadonlyMap<ObjectId, CommitMeta> =>
   ]);
 
 /** Git's `repo_in_merge_bases_many`: `target` painted PARENT1, `from` PARENT2. */
-const reachesByPaint = async (ctx: Context, ends: Ends): Promise<boolean> => {
-  const read = memoizedReader(ctx, readParsedMeta, knownEnds(ends));
+const reachesByPaint = async (
+  ctx: Context,
+  ends: Ends,
+  table: ObjectTypeTable,
+): Promise<boolean> => {
+  const read = memoizedReader(ctx, typedParsedMeta(table), knownEnds(ends));
   const { target, from } = ends;
   const { flags } = await paint(read, target.id, [from.id], {
     minGeneration: target.meta.generation,
@@ -547,9 +576,13 @@ const step = async (walk: DepthFirst, stack: Parsed[], top: Parsed): Promise<voi
 };
 
 /** Git's `can_all_from_reach_with_flag` for one `from` and one target. */
-const reachesDepthFirst = async (ctx: Context, { target, from }: Ends): Promise<boolean> => {
+const reachesDepthFirst = async (
+  ctx: Context,
+  { target, from }: Ends,
+  table: ObjectTypeTable,
+): Promise<boolean> => {
   const walk: DepthFirst = {
-    read: memoizedReader(ctx, readLoggedMeta, new Map([[target.id, target.meta]])),
+    read: memoizedReader(ctx, typedLoggedMeta(table), new Map([[target.id, target.meta]])),
     target: target.id,
     minGeneration: target.meta.generation,
     assigned: new Set([from.id]),
