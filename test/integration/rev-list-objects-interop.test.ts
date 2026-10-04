@@ -1137,6 +1137,70 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list interop — object types assigned in o
     });
   });
 
+  /** A three-commit line in a commit-graph whose middle commit's object is then deleted. */
+  const buildGraphOnlyMiddleFixture = async (): Promise<{
+    readonly dir: string;
+    readonly newest: string;
+    readonly middle: string;
+  }> => {
+    const { dir } = await buildMistypedTagFixture();
+    const oldest = writeLiteralCommit(dir, emptyTreeOf(dir), []);
+    const middle = writeLiteralCommit(dir, emptyTreeOf(dir), [oldest]);
+    const newest = writeLiteralCommit(dir, emptyTreeOf(dir), [middle]);
+    runGit(['-C', dir, 'commit-graph', 'write', '--stdin-commits'], { input: `${newest}\n` });
+    await rm(path.join(dir, '.git', 'objects', middle.slice(0, 2), middle.slice(2)));
+    return { dir, newest, middle };
+  };
+
+  describe.each([
+    ['rev-list', [], {}],
+    ['rev-list --objects', ['--objects'], { objects: true }],
+    ['rev-list --first-parent', ['--first-parent'], { firstParent: true }],
+  ] as const)('Given a commit-graph commit whose object is missing', (command, flags, opts) => {
+    describe(`When ${command} walks through it on both tools`, () => {
+      it('Then both list it from the graph', async () => {
+        // Arrange
+        const { dir, newest } = await buildGraphOnlyMiddleFixture();
+        const expected = gitIds(dir, ...flags, newest);
+        const { ctx, logged } = capturing(dir);
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, { wants: [newest], ...opts });
+
+        // Assert
+        expect({ ids: result.entries.map(({ id }) => id), logged }).toEqual({
+          ids: expected,
+          logged: [],
+        });
+      });
+    });
+  });
+
+  describe('Given a commit-graph commit whose object is missing', () => {
+    describe('When pack-objects --revs packs through it on both tools', () => {
+      it('Then both walk it from the graph and cannot read it to write it', async () => {
+        // Arrange
+        const { dir, newest, middle } = await buildGraphOnlyMiddleFixture();
+        const peer = tryRunGitWithExit(['-C', dir, 'pack-objects', '--revs', '--stdout'], {
+          input: `${newest}\n`,
+        });
+        const { ctx } = capturing(dir);
+        const sut = packObjects;
+
+        // Act
+        const result = await settled(() => sut(ctx, { wants: [newest] }));
+
+        // Assert
+        const data = (result as { data?: { code?: string; id?: string } }).data;
+        expect(peer.exitCode).toBe(128);
+        expect(data?.code).toBe('OBJECT_NOT_FOUND');
+        expect(`fatal: unable to read ${data?.id}\n`).toBe(peer.stderr);
+        expect(data?.id).toBe(middle);
+      });
+    });
+  });
+
   describe('Given a blob, an annotated tag of it and a tree wanted without --objects', () => {
     describe('When rev-list lists them on both tools', () => {
       it('Then neither lists anything, commits being all git shows then', async () => {

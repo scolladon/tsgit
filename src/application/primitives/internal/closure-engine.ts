@@ -59,7 +59,6 @@ import {
   type LimitedWalk,
   limitList,
   limitOrFailSetup,
-  readShown,
   resolveLimitOptions,
 } from './limit-list.js';
 import { loadMidxBitmapArtefact } from './midx-bitmap-binding.js';
@@ -388,8 +387,8 @@ interface WalkedCommit {
 interface CommitWalk {
   readonly walked: ReadonlyArray<WalkedCommit>;
   readonly boundary: ReadonlySet<ObjectId>;
-  /** The limited walk and the commits it listed — what sparse marking groups. */
-  readonly limited?: { readonly walk: LimitedWalk; readonly listed: ReadonlyArray<Commit> };
+  /** The limited walk, whose listed commits sparse marking groups. */
+  readonly limited?: LimitedWalk;
 }
 
 const walkedFrom = (commit: Commit): WalkedCommit => ({ id: commit.id, tree: commit.data.tree });
@@ -436,21 +435,18 @@ async function collectStreamedWalk(
       ...(maxCount === undefined ? {} : { takeAtMost: maxCount }),
     },
   );
-  const walked: WalkedCommit[] = [];
-  for await (const commit of readShown(ctx, options, await limitList(ctx, options))) {
-    walked.push(walkedFrom(commit));
-  }
-  return { walked, boundary: NO_MARKS };
+  const { shownHeads } = await limitList(ctx, options);
+  return { walked: shownHeads, boundary: NO_MARKS };
 }
 
 /**
  * git's `mark_edges_uninteresting` edges: every uninteresting parent of a
  * listed commit, and every commit listed before it turned uninteresting.
  */
-const edgesOf = (walk: LimitedWalk, listed: ReadonlyArray<Commit>): ReadonlySet<ObjectId> => {
+const edgesOf = (walk: LimitedWalk): ReadonlySet<ObjectId> => {
   const boundary = new Set(walk.dropped);
-  for (const commit of listed) {
-    for (const parent of commit.data.parents) {
+  for (const commit of walk.shownHeads) {
+    for (const parent of commit.parents) {
       if (walk.uninteresting.has(parent)) boundary.add(parent);
     }
   }
@@ -483,13 +479,7 @@ async function collectLimitedWalk(
     },
   );
   const walk = await limitOrFailSetup(ctx, options);
-  const listed: Commit[] = [];
-  for await (const commit of readShown(ctx, options, walk)) listed.push(commit);
-  return {
-    walked: listed.map(walkedFrom),
-    boundary: edgesOf(walk, listed),
-    limited: { walk, listed },
-  };
+  return { walked: walk.shownHeads, boundary: edgesOf(walk), limited: walk };
 }
 
 /**
@@ -500,18 +490,10 @@ async function collectLimitedWalk(
 async function sparseSeedsOf(
   ctx: Context,
   walk: LimitedWalk,
-  listed: ReadonlyArray<Commit>,
 ): Promise<ReadonlyArray<SparseTreeSeed>> {
-  const trees = new Map(listed.map((commit) => [commit.id, commit.data.tree]));
+  const trees = new Map(walk.shownHeads.map((commit) => [commit.id, commit.tree]));
   const seeds: SparseTreeSeed[] = [];
-  const commits = [
-    ...listed.map((commit) => ({
-      id: commit.id,
-      tree: commit.data.tree,
-      parents: commit.data.parents,
-    })),
-    ...(await readDropped(ctx, walk.dropped)),
-  ];
+  const commits = [...walk.shownHeads, ...(await readDropped(ctx, walk.dropped))];
   for (const commit of commits) {
     seeds.push({ tree: commit.tree, excluded: walk.uninteresting.has(commit.id) });
     for (const parent of commit.parents) {
@@ -566,11 +548,7 @@ async function markExcludedTrees(
     await markBoundaryTrees(ctx, walk.boundary, marks);
     return;
   }
-  await markSparseTrees(
-    ctx,
-    await sparseSeedsOf(ctx, walk.limited.walk, walk.limited.listed),
-    marks,
-  );
+  await markSparseTrees(ctx, await sparseSeedsOf(ctx, walk.limited), marks);
 }
 
 /** Dispatch the commit-seed side of the closure: no seeds, `maxCount: 0`, `noWalk`, or the full walk. */

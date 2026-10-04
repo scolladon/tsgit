@@ -69,6 +69,19 @@ export interface LimitedWalk {
   readonly dropped: ReadonlyArray<ObjectId>;
   /** Bodies of shown commits read while parsing them (those absent from the graph). */
   readonly bodies: ReadonlyMap<ObjectId, Commit>;
+  /**
+   * Each shown commit as the walk parsed it — from the commit-graph when it
+   * holds the commit, as git's `get_commit_tree` reads it, so a commit whose
+   * object is gone is still listed with its tree.
+   */
+  readonly shownHeads: ReadonlyArray<WalkedHead>;
+}
+
+/** A walked commit's tree and parents, from the commit-graph or its object. */
+export interface WalkedHead {
+  readonly id: ObjectId;
+  readonly tree: ObjectId;
+  readonly parents: ReadonlyArray<ObjectId>;
 }
 
 /** The walk-option slice a public walk hands over when it limits. */
@@ -104,6 +117,7 @@ export const topoOrderSettle = async (ctx: Context): Promise<LimitSettle> =>
   (await generationNumbersEnabled(ctx)) ? 'generation' : 'slop';
 
 interface Parsed {
+  readonly tree: ObjectId;
   readonly parents: ReadonlyArray<ObjectId>;
   readonly date: number;
   readonly generation: number;
@@ -152,8 +166,19 @@ export async function limitList(ctx: Context, options: LimitListOptions): Promis
   const taken = await drain(state);
   const shown = taken.filter((id) => !state.uninteresting.has(id));
   const dropped = taken.filter((id) => state.uninteresting.has(id));
-  return { shown, uninteresting: state.uninteresting, dropped, bodies: state.bodies };
+  return {
+    shown,
+    uninteresting: state.uninteresting,
+    dropped,
+    bodies: state.bodies,
+    shownHeads: shown.map((id) => headOf(state, id)),
+  };
 }
+
+const headOf = (state: LimitState, id: ObjectId): WalkedHead => {
+  const { tree, parents } = state.parsed.get(id) as Parsed;
+  return { id, tree, parents };
+};
 
 /** {@link limitList}, then each shown commit's body, in the walk's order. */
 export async function* walkLimited(
@@ -164,7 +189,7 @@ export async function* walkLimited(
 }
 
 /** Each of `walk`'s shown commit bodies, in the walk's order. */
-export async function* readShown(
+async function* readShown(
   ctx: Context,
   options: LimitListOptions,
   walk: LimitedWalk,
@@ -398,9 +423,9 @@ const parse = async (
   const { shallow, verifyHash, ignoreMissing } = state.options;
   const header = shallow.has(id) ? undefined : await commitHeader(state.ctx, id);
   if (header !== undefined) {
-    const { parents, committerDate: date, generation } = header;
+    const { rootTree: tree, parents, committerDate: date, generation } = header;
     if (state.options.objectTypes !== undefined) state.fromGraph.add(id);
-    return remember(state, id, { parents, date, generation });
+    return remember(state, id, { tree, parents, date, generation });
   }
   const commit = await readCommit(state.ctx, id, {
     verifyHash,
@@ -411,8 +436,9 @@ const parse = async (
   });
   if (commit === undefined) return notParsed(state, id);
   state.bodies.set(id, commit);
-  const { parents, committer } = commit.data;
-  return remember(state, id, { parents, date: committer.timestamp, generation: OUTSIDE_GRAPH });
+  const { tree, parents, committer } = commit.data;
+  const date = committer.timestamp;
+  return remember(state, id, { tree, parents, date, generation: OUTSIDE_GRAPH });
 };
 
 /**

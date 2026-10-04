@@ -26,6 +26,7 @@ import type {
 } from '../../../../src/domain/objects/index.js';
 import { serializeObject } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
+import { computeLooseObjectPath } from '../../../../src/domain/storage/loose-path.js';
 import type { Context } from '../../../../src/ports/context.js';
 import {
   type BitmapEntrySpec,
@@ -2401,6 +2402,38 @@ describe('revList: object types assigned during one invocation', () => {
         // Assert
         expect({ ids: result.entries.map(({ id }) => id), logged }).toEqual({
           ids: [newest, middle, oldest],
+          logged: [],
+        });
+      });
+    });
+  });
+
+  describe.each([
+    ['commits', false],
+    ['objects', true],
+  ] as const)('Given a commit-graph line whose middle commit object is gone', (label, objects) => {
+    describe(`When revList lists its ${label}`, () => {
+      it('Then the middle commit is listed from the graph, its tree included', async () => {
+        // Arrange
+        const { ctx, logged } = await seedMistypedTag();
+        const empty = await writeEmptyTree(ctx);
+        const oldest = await writeCommitNaming(ctx, empty, []);
+        const middle = await writeCommitNaming(ctx, empty, [oldest]);
+        const newest = await writeCommitNaming(ctx, empty, [middle]);
+        const commits = await Promise.all(
+          [oldest, middle, newest].map(async (id) => (await readObject(ctx, id)) as Commit),
+        );
+        await writeCommitGraph(ctx, [commits]);
+        ctx.deltaCache.delete(middle);
+        await ctx.fs.rm(`${ctx.layout.gitDir}/objects/${computeLooseObjectPath(middle)}`);
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, { wants: [newest], objects });
+
+        // Assert
+        expect({ ids: result.entries.map(({ id }) => id), logged }).toEqual({
+          ids: objects ? [newest, middle, oldest, empty] : [newest, middle, oldest],
           logged: [],
         });
       });

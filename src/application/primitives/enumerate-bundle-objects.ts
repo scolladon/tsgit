@@ -21,7 +21,7 @@ import {
   markNotTip,
   type NotMarksAccumulator,
 } from './internal/closure-not-marks.js';
-import { limitOrFailSetup, readShown, resolveLimitOptions } from './internal/limit-list.js';
+import { limitOrFailSetup, resolveLimitOptions } from './internal/limit-list.js';
 import { resolveTagChain } from './internal/object-emit.js';
 import { createObjectTypeTable, type ObjectTypeTable } from './internal/object-type-table.js';
 import { MAX_PUSH_OBJECTS } from './types.js';
@@ -125,8 +125,8 @@ const walkBundle = async (ctx: Context, tips: ReadonlyArray<ClosureTip>): Promis
   );
   const walk = await limitOrFailSetup(ctx, options);
   const boundary = new Set<ObjectId>();
-  for await (const commit of readShown(ctx, options, walk)) {
-    for (const parent of commit.data.parents) {
+  for (const commit of walk.shownHeads) {
+    for (const parent of commit.parents) {
       if (walk.uninteresting.has(parent)) boundary.add(parent);
     }
   }
