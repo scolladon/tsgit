@@ -6,8 +6,9 @@ import { diff } from '../../../../src/application/commands/diff.js';
 import { init } from '../../../../src/application/commands/init.js';
 import { rm } from '../../../../src/application/commands/rm.js';
 import { __resetConfigCacheForTests } from '../../../../src/application/primitives/config-read.js';
+import { writeObject } from '../../../../src/application/primitives/write-object.js';
 import { TsgitError } from '../../../../src/domain/error.js';
-import type { AuthorIdentity } from '../../../../src/domain/objects/index.js';
+import type { AuthorIdentity, ObjectId } from '../../../../src/domain/objects/index.js';
 
 const author: AuthorIdentity = {
   name: 'Ada',
@@ -738,6 +739,80 @@ describe('diff — remote.promisor guard', () => {
         expect(data.code).toBe('CONFIG_BAD_BOOLEAN_VALUE');
         expect(data.key).toBe('remote.origin.promisor');
         expect(data.value).toBe('maybe');
+      });
+    });
+  });
+});
+
+describe('diff — one object-type table across both expressions', () => {
+  const seed = async () => {
+    const base = createMemoryContext();
+    await init(base);
+    const logged: string[] = [];
+    const ctx = { ...base, logger: { error: (line: string) => logged.push(line) } };
+    const blob = await writeObject(ctx, {
+      type: 'blob',
+      id: '' as ObjectId,
+      content: new TextEncoder().encode('hi\n'),
+    });
+    const named = await writeObject(ctx, {
+      type: 'commit',
+      id: '' as ObjectId,
+      data: {
+        tree: blob,
+        parents: [],
+        author,
+        committer: author,
+        message: 'm\n',
+        extraHeaders: [],
+      },
+    });
+    return { ctx, logged, blob, named };
+  };
+
+  describe('Given a blob, then a commit naming that blob as its tree', () => {
+    describe('When diff resolves both', () => {
+      it('Then the tree pointer conflicts with the blob and the commit is a bad object', async () => {
+        // Arrange
+        const { ctx, logged, blob, named } = await seed();
+        const sut = diff;
+
+        // Act
+        const caught = await sut(ctx, { from: blob, to: named }).then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'OBJECT_NOT_FOUND', id: named },
+          logged: [
+            `object ${blob} is a blob, not a tree`,
+            `bad tree pointer ${blob} in commit ${named}`,
+          ],
+        });
+      });
+    });
+  });
+
+  describe('Given a commit naming a blob as its tree, then that blob', () => {
+    describe('When diff resolves both', () => {
+      it('Then the blob conflicts with the tree the commit typed and is a bad object', async () => {
+        // Arrange
+        const { ctx, logged, blob, named } = await seed();
+        const sut = diff;
+
+        // Act
+        const caught = await sut(ctx, { from: named, to: blob }).then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'OBJECT_NOT_FOUND', id: blob },
+          logged: [`object ${blob} is a tree, not a blob`],
+        });
       });
     });
   });
