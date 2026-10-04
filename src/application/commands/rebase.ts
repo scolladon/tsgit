@@ -69,6 +69,7 @@ import { resolveCurrentIdentity } from './internal/current-identity.js';
 import { readCommitData, treeOf } from './internal/history-rewrite.js';
 import { acquireIndexLock } from './internal/index-update.js';
 import { writeOrigHead } from './internal/merge-state.js';
+import { branchBaseOf, canFastForward } from './internal/rebase-fast-forward.js';
 import { resolveRebaseReplay } from './internal/rebase-replay.js';
 import {
   clearRebaseState,
@@ -434,6 +435,24 @@ const replayFrom = async (
   return { kind: 'rebased', commits: applied };
 };
 
+/**
+ * An interactive rebase always has todo work (the caller supplies it), so it is
+ * never the no-op "up to date" case — pre-rebase fires. No common ancestor
+ * (unrelated histories) leaves `base` undefined and the whole branch replays
+ * onto `onto` — faithful to `git rebase <unrelated>`.
+ */
+const startInteractive = async (
+  ctx: Context,
+  upstreamName: string,
+  instructions: ReadonlyArray<RebaseInstruction>,
+  sides: Omit<InteractivePlan, 'instructions' | 'base'>,
+): Promise<RebaseResult> => {
+  const [base] = await mergeBasesOf(ctx, [sides.upstream, sides.headCommit]);
+  await assertEverySourceLoadable(ctx);
+  await firePreRebase(ctx, upstreamName);
+  return rebaseRunInteractive(ctx, { ...sides, instructions, base });
+};
+
 export const rebaseRun = async (ctx: Context, input: RebaseRunInput): Promise<RebaseResult> => {
   await assertOperationalRepositorySettingsFirst(ctx);
   requireWorkTree(ctx, 'rebase');
@@ -444,29 +463,17 @@ export const rebaseRun = async (ctx: Context, input: RebaseRunInput): Promise<Re
   const upstream = await resolveCommitIsh(ctx, input.upstream);
   const onto = input.onto !== undefined ? await resolveCommitIsh(ctx, input.onto) : upstream;
   const ontoName = input.onto ?? input.upstream;
+  const branchBase = await branchBaseOf(ctx, onto, headCommit);
   await assertCleanWorkTree(ctx, await treeOf(ctx, headCommit));
-  // No common ancestor (unrelated histories) → `base` is undefined and the whole
-  // branch replays onto `onto`, the root commit against the empty-tree base —
-  // faithful to `git rebase <unrelated>`.
-  const [base] = await mergeBasesOf(ctx, [upstream, headCommit]);
   if (input.interactive !== undefined) {
-    // An interactive rebase always has todo work (the caller supplies it), so it
-    // is never the no-op "up to date" case — pre-rebase fires.
-    await assertEverySourceLoadable(ctx);
-    await firePreRebase(ctx, input.upstream);
-    return rebaseRunInteractive(ctx, {
-      instructions: input.interactive,
-      branch,
-      headCommit,
-      upstream,
-      onto,
-      ontoName,
-      base,
-    });
+    const sides = { branch, headCommit, upstream, onto, ontoName };
+    return startInteractive(ctx, input.upstream, input.interactive, sides);
   }
   // git fires pre-rebase only when the rebase will do work; an up-to-date rebase
   // (nothing to replay or fast-forward) returns before the hook, matching git.
-  if (onto === base) return { kind: 'up-to-date' };
+  if (await canFastForward(ctx, { onto, upstream, head: headCommit, branchBase })) {
+    return { kind: 'up-to-date' };
+  }
   await assertEverySourceLoadable(ctx);
   await firePreRebase(ctx, input.upstream);
   const toReplay = await resolveRebaseReplay(ctx, { upstream, head: headCommit });

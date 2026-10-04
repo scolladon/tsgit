@@ -193,6 +193,26 @@ describe.skipIf(!GIT_AVAILABLE)('rebase interop', () => {
     });
   });
 
+  describe('Given a merge on main of a side branch forked at the base, When main is rebased onto the base', () => {
+    it('Then tsgit, like git, replays the non-linear history rather than calling it up to date', async () => {
+      // Arrange — identical history in both repos
+      buildMergedSide(pair.peer);
+      buildMergedSide(pair.ours);
+      git(pair.peer, 'rebase', 'base');
+      const repo = await openRepository({ cwd: pair.ours });
+
+      // Act
+      const result = await repo.rebase.run({ upstream: 'base' });
+      await repo.dispose();
+
+      // Assert
+      expect(result.kind).toBe('rebased');
+      expect(commitCount(pair.ours)).toBe(commitCount(pair.peer));
+      expect(writeTreeOf(pair.ours)).toBe(writeTreeOf(pair.peer));
+      expect(headParents(pair.ours)).toBe(headParents(pair.peer));
+    });
+  });
+
   describe('Given two unrelated histories (no common ancestor), When the feature branch is rebased onto main', () => {
     it('Then tsgit matches git: same resulting tree, commit count, single-parent tip', async () => {
       // Arrange — identical orphan-branch history in both repos
@@ -301,6 +321,27 @@ function buildUnrelated(dir: string): void {
   writeWork(dir, 'f1.txt', 'f1\n');
   git(dir, 'add', 'f1.txt');
   gitCommit(dir, 'feature one');
+}
+
+/** base (branch `base`); side adds s.txt; main adds m1.txt, then merges side. HEAD on main. */
+function buildMergedSide(dir: string): void {
+  runGit(['init', '-q', '-b', 'main', dir]);
+  configGit(dir);
+  writeWork(dir, 'base.txt', 'base\n');
+  git(dir, 'add', 'base.txt');
+  gitCommit(dir, 'base');
+  git(dir, 'branch', 'base');
+  git(dir, 'checkout', '-q', '-b', 'side');
+  writeWork(dir, 's.txt', 's\n');
+  git(dir, 'add', 's.txt');
+  gitCommit(dir, 'side');
+  git(dir, 'checkout', '-q', 'main');
+  writeWork(dir, 'm1.txt', 'm1\n');
+  git(dir, 'add', 'm1.txt');
+  gitCommit(dir, 'm1');
+  runGit(['-C', dir, 'merge', '-q', '--no-ff', '-m', 'merge side', 'side'], {
+    env: { ...runGitEnv(), GIT_AUTHOR_DATE: FIXED_DATE, GIT_COMMITTER_DATE: FIXED_DATE },
+  });
 }
 
 // ── interactive (`rebase -i`) ───────────────────────────────────────────────

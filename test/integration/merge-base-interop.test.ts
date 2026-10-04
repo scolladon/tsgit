@@ -915,6 +915,11 @@ describe.skipIf(!GIT_AVAILABLE)('merge-base callers walk parse (interop)', () =>
       args: ['rebase', 'broken'],
       run: (ctx: Context) => rebaseRun(ctx, { upstream: 'broken' }),
     },
+    {
+      command: 'rebase --onto',
+      args: ['rebase', '--onto', 'broken', 'main'],
+      run: (ctx: Context) => rebaseRun(ctx, { upstream: 'main', onto: 'broken' }),
+    },
   ])('Given $command over a walk reaching a parent the store lacks', ({ args, run }) => {
     describe('When both tools run it', () => {
       it("Then tsgit refuses the commit git could not parse after git's error line", async () => {
