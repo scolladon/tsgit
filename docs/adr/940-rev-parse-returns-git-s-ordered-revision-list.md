@@ -35,6 +35,12 @@ is `git rev-parse --verify` behaviour, not plain `git rev-parse`.
 prints. A plain name returns one entry. This is data, not rendering (ADR-249): the `^` prefix git
 prints becomes `negated: true`; callers render it.
 
+**Amendment (2026-10-04, user-ratified).** An argument that is not a revision but names an existing
+file is printed unchanged by git (`show_file`, exit 0). Entries are therefore a discriminated union:
+`{ readonly kind: 'object'; readonly id: ObjectId; readonly negated: boolean } |
+{ readonly kind: 'path'; readonly path: string }`. A refusal after git has already printed lines
+(e.g. `A...B` with a non-commit side) carries those entries in its error data.
+
 ## Consequences
 
 - Breaking public change (`feat(rev-parse)!`); `reports/api.json` and the `docs/use` page are updated.
