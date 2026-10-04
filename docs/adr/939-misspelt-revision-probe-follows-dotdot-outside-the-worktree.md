@@ -31,6 +31,10 @@ following `..` outside the worktree. This is a deliberate, narrowly scoped excep
 containment: only this probe, only an `lstat`-equivalent existence answer (no content is read, nothing
 is written), and only for the argument git itself would `lstat`.
 
+**Amendment (2026-10-04, user-ratified).** The same probe also answers an absolute argument
+(e.g. `/etc/passwd`) where it stands, as git's `check_filename` lstats it in place. Same limits:
+existence only, no content read, no write, only after the revision failed to resolve.
+
 ## Consequences
 
 - The probe goes through a capability scoped to existence checks, declared on the write-surface /
