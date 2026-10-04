@@ -924,9 +924,9 @@ describe.skipIf(!GIT_AVAILABLE)('alternates stream interop — pack builders', (
   });
 
   describe('Given M5w: an unusable alternate', () => {
-    describe('When gc runs', () => {
+    describe('When the gc task runs', () => {
       it(
-        'Then both tools refuse and leave the objects directory file set unchanged',
+        'Then both tools fail the task and leave the objects directory file set unchanged',
         async () => {
           // Arrange
           const gitCopy = copyOfFixture();
@@ -936,15 +936,16 @@ describe.skipIf(!GIT_AVAILABLE)('alternates stream interop — pack builders', (
           const repo = await copy.repo();
 
           // Act
-          const git = gitIn(gitCopy.dir, 'gc', '-q');
-          const refused = await rejectionOf(() => repo.maintenance({ tasks: ['gc'] }));
+          const git = gitIn(gitCopy.dir, 'maintenance', 'run', '--task=gc');
+          const result = await repo.maintenance({ tasks: ['gc'] });
           await repo.dispose();
 
           // Assert
-          expect(git.exitCode).not.toBe(0);
+          expect(git.exitCode).toBe(1);
           expect(git.stderr).toContain(MIDX_SIGNATURE_FATAL);
+          expect(git.stderr.endsWith("error: task 'gc' failed\n")).toBe(true);
           expect(filesUnder(objectsDirOf(gitCopy.dir))).toEqual(gitBefore);
-          expect(refused.data).toMatchObject(REFUSAL_DATA);
+          expect(result.tasksFailed).toEqual([{ task: 'gc', code: REFUSAL_DATA.code }]);
           expect(filesUnder(objectsDirOf(copy.dir))).toEqual(before);
         },
         ROW_TIMEOUT,

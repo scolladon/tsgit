@@ -14,7 +14,6 @@ import {
   commonGitDir,
 } from '../../../../src/application/primitives/path-layout.js';
 import { writeObject } from '../../../../src/application/primitives/write-object.js';
-import type { TsgitError } from '../../../../src/domain/error.js';
 import type { FileMode, ObjectId } from '../../../../src/domain/objects/index.js';
 import { treeEntry } from '../../../../src/domain/objects/tree.js';
 import type { Context } from '../../../../src/ports/context.js';
@@ -70,6 +69,33 @@ describe('maintenance task failure', () => {
         // Assert
         expect(result.tasksFailed).toEqual([{ task: 'commit-graph', code: 'FILE_EXISTS' }]);
         expect(result.tasksRun).toEqual(['gc']);
+      });
+    });
+  });
+
+  describe('Given a malformed core.deltaBaseCacheLimit', () => {
+    describe('When the gc task runs', () => {
+      it('Then maintenance itself refuses, as git dies before running the task', async () => {
+        // Arrange
+        const ctx = await repoWithLayersDirAsFile();
+        await ctx.fs.appendUtf8(
+          `${ctx.layout.gitDir}/config`,
+          '[core]\n\tdeltaBaseCacheLimit = bogus\n',
+        );
+        const sut = maintenance;
+
+        // Act
+        const caught = await sut(ctx, { tasks: ['gc'] }).then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+
+        // Assert
+        expect((caught as { data?: unknown }).data).toMatchObject({
+          code: 'CONFIG_BAD_NUMERIC_VALUE',
+          key: 'core.deltabasecachelimit',
+          value: 'bogus',
+        });
       });
     });
   });
@@ -187,22 +213,47 @@ describe('maintenance task failure', () => {
       ],
     ] as const)('Given %s', (_label, corrupt, expectedFor) => {
       describe('When the gc task runs', () => {
-        it("Then it logs what git does and refuses with git's walk refusal", async () => {
+        it("Then it logs what git does and the task fails with git's walk refusal", async () => {
           // Arrange
           const repo = await corruptRepo();
           const tip = await corrupt(repo);
           const sut = maintenance;
 
           // Act
-          const caught = await sut(repo.ctx, { tasks: ['gc'] }).then(
-            () => undefined,
-            (error: unknown) => error,
-          );
+          const result = await sut(repo.ctx, { tasks: ['gc'] });
 
           // Assert
-          expect({ data: (caught as TsgitError).data, logged: repo.logged }).toEqual(
-            expectedFor(repo, tip),
-          );
+          const { data, logged } = expectedFor(repo, tip);
+          expect({
+            tasksFailed: result.tasksFailed,
+            tasksRun: result.tasksRun,
+            logged: repo.logged,
+          }).toEqual({ tasksFailed: [{ task: 'gc', code: data.code }], tasksRun: [], logged });
+        });
+      });
+    });
+
+    describe('Given a commit naming a blob as its tree', () => {
+      describe('When the gc task fails before the commit-graph task', () => {
+        it('Then the commit-graph task still runs', async () => {
+          // Arrange
+          const repo = await corruptRepo();
+          await commitNaming(repo.ctx, repo.blob, []);
+          const sut = maintenance;
+
+          // Act
+          const result = await sut(repo.ctx, { tasks: ['gc', 'commit-graph'] });
+
+          // Assert
+          expect({
+            tasksFailed: result.tasksFailed,
+            tasksRun: result.tasksRun,
+            commitGraphWritten: result.commitGraphWritten,
+          }).toEqual({
+            tasksFailed: [{ task: 'gc', code: 'BAD_TREE_OBJECT' }],
+            tasksRun: ['commit-graph'],
+            commitGraphWritten: true,
+          });
         });
       });
     });

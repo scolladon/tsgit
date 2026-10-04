@@ -248,12 +248,6 @@ const ROWS: ReadonlyArray<Row> = [
     input: 'HEAD\n',
     tsgit: (r) => r.packObjects({ wants: ['HEAD'] }),
   },
-  {
-    name: 'maintenance run --task=gc',
-    state: CLEAN_LOOSE,
-    git: ['maintenance', 'run', '--task=gc'],
-    tsgit: (r) => r.maintenance({ tasks: ['gc'] }),
-  },
   ...REQUIRED_DRIVER_ROWS,
   ...DIFF_ATTRIBUTE_ROWS,
   ...[CLEAN_LOOSE, CLEAN_PACKED].flatMap((state): ReadonlyArray<Row> => {
@@ -311,3 +305,31 @@ describe.skipIf(!GIT_AVAILABLE)(
     });
   },
 );
+
+describe.skipIf(!GIT_AVAILABLE)('interop — malformed core.bigFileThreshold in the gc task', () => {
+  describe('Given a malformed core.bigFileThreshold', () => {
+    describe('When git maintenance and tsgit run the gc task', () => {
+      it(
+        'Then the gc child refuses and both report the task failed',
+        async () => {
+          // Arrange
+          const gitDir = repoIn(CLEAN_LOOSE);
+          const dir = repoIn(CLEAN_LOOSE);
+          const gitRun = tryRunGitWithExit(['-C', gitDir, 'maintenance', 'run', '--task=gc']);
+          const repo = await openRepository({ cwd: dir });
+          const sut = repo.maintenance;
+
+          // Act
+          const result = await sut({ tasks: ['gc'] }).finally(() => repo.dispose());
+
+          // Assert
+          expect(gitRun.exitCode).toBe(1);
+          expect(firstFatalLine(gitRun.stderr)).toMatch(/^fatal: bad numeric config value 'x'/);
+          expect(gitRun.stderr.endsWith("error: task 'gc' failed\n")).toBe(true);
+          expect(result.tasksFailed).toEqual([{ task: 'gc', code: 'CONFIG_BAD_NUMERIC_VALUE' }]);
+        },
+        ROW_TIMEOUT,
+      );
+    });
+  });
+});

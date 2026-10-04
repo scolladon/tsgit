@@ -20,6 +20,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNodeContext } from '../../src/adapters/node/node-adapter.js';
 import { bundleCreate } from '../../src/application/commands/bundle-create.js';
 import { fsck } from '../../src/application/commands/fsck.js';
+import { readGcSettings, runGcTask } from '../../src/application/commands/internal/gc-pipeline.js';
 import { maintenance } from '../../src/application/commands/maintenance.js';
 import { packObjects } from '../../src/application/commands/pack-objects.js';
 import { buildPack } from '../../src/application/primitives/build-pack.js';
@@ -310,11 +311,12 @@ async function appendConfigLines(dir: string, lines: string): Promise<void> {
   await writeFile(configPath, `${existing}${lines}`);
 }
 
+/** The gc task's own refusal — `maintenance` reports it as a failed task, as git's repack child dies with it. */
 async function tsgitGcRefusal(dir: string): Promise<TsgitError> {
   const ctx = trackedNodeContext(dir);
   try {
-    await maintenance(ctx, { tasks: ['gc'] });
-    throw new Error('expected maintenance to reject');
+    await runGcTask(ctx, { auto: undefined, settings: await readGcSettings(ctx) });
+    throw new Error('expected the gc task to reject');
   } catch (error) {
     if (error instanceof TsgitError) return error;
     throw error;

@@ -1052,7 +1052,12 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
 
   describe('Given a valueless remote partialclonefilter', () => {
     describe.each([
-      { run: 'gc', gitArgs: ['gc', '-q'], tasks: ['gc'] as const, refuses: true },
+      {
+        run: 'the gc task',
+        gitArgs: ['maintenance', 'run', '--task=gc'],
+        tasks: ['gc'] as const,
+        refuses: true,
+      },
       {
         run: 'the commit-graph task',
         gitArgs: ['maintenance', 'run', '--task=commit-graph'],
@@ -1060,7 +1065,7 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
         refuses: false,
       },
     ])('When both tools run $run', ({ gitArgs, tasks, refuses }) => {
-      it('Then both refuse only where git repack loads promisor remotes, writing no pack', async () => {
+      it('Then the task fails only where git repack loads promisor remotes, writing no pack', async () => {
         // Arrange
         const slug = `gc-valueless-pcf-${gitArgs.length}`;
         const baseDir = await initRepo(slug);
@@ -1072,17 +1077,12 @@ describe.skipIf(!GIT_AVAILABLE)('gc interop', () => {
         const sut = maintenance;
 
         // Act
-        let caught: unknown;
-        try {
-          await sut(trackedNodeContext(twin.oursDir, 'sha1'), { tasks: [...tasks] });
-        } catch (error) {
-          caught = error;
-        }
+        const result = await sut(trackedNodeContext(twin.oursDir, 'sha1'), { tasks: [...tasks] });
 
         // Assert
-        expect(peer.exitCode).toBe(refuses ? 128 : 0);
-        expect((caught as TsgitError | undefined)?.data.code).toBe(
-          refuses ? 'CONFIG_MISSING_VALUE' : undefined,
+        expect(peer.exitCode).toBe(refuses ? 1 : 0);
+        expect(result.tasksFailed).toEqual(
+          refuses ? [{ task: 'gc', code: 'CONFIG_MISSING_VALUE' }] : [],
         );
         expect(await packDirEntries(twin.oursDir)).toEqual(await packDirEntries(twin.peerDir));
         await disposeTwin(twin);
@@ -2204,31 +2204,39 @@ describe.skipIf(!GIT_AVAILABLE)('maintenance interop — gc over a history git c
   };
 
   describe('Given a tree listing a blob as a subtree', () => {
-    describe('When both tools run the gc task', () => {
-      it('Then both die on the bad tree object and leave every loose object in place', async () => {
+    describe('When both tools run the gc task, then the commit-graph task', () => {
+      it('Then gc fails on the bad tree object, the commit-graph task still runs and every loose object stays', async () => {
         // Arrange
         const { dir, blob } = await buildRepo();
         const twin = `${dir}-twin`;
         dirs.push(twin);
         await cp(dir, twin, { recursive: true });
-        const peer = tryRunGitWithExit(['-C', twin, 'maintenance', 'run', '--task=gc']);
+        const peer = tryRunGitWithExit([
+          '-C',
+          twin,
+          'maintenance',
+          'run',
+          '--task=gc',
+          '--task=commit-graph',
+        ]);
         const logged: string[] = [];
         const base = createNodeContext({ workDir: dir });
         const ctx: Context = { ...base, logger: { error: (line: string) => logged.push(line) } };
         const sut = maintenance;
 
         // Act
-        const caught = await sut(ctx, { tasks: ['gc'] }).then(
-          () => undefined,
-          (error: unknown) => error,
-        );
+        const result = await sut(ctx, { tasks: ['gc', 'commit-graph'] });
 
         // Assert
-        const { id } = (caught as TsgitError).data as { readonly id: string };
-        const stderr = `${logged.map((line) => `error: ${line}\n`).join('')}fatal: bad tree object ${id}\n`;
+        const logLines = logged.map((line) => `error: ${line}\n`).join('');
         expect(peer.exitCode).toBe(1);
-        expect(peer.stderr.startsWith(stderr)).toBe(true);
-        expect(id).toBe(blob);
+        expect(peer.stderr).toBe(
+          `${logLines}fatal: bad tree object ${blob}\nfatal: failed to run repack\nerror: task 'gc' failed\n`,
+        );
+        expect({ tasksFailed: result.tasksFailed, tasksRun: result.tasksRun }).toEqual({
+          tasksFailed: [{ task: 'gc', code: 'BAD_TREE_OBJECT' }],
+          tasksRun: ['commit-graph'],
+        });
         expect(git(dir, 'count-objects')).toBe(git(twin, 'count-objects'));
       });
     });

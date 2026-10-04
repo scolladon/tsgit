@@ -32,6 +32,11 @@ import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
 import * as retentionRootsMod from '../../../../src/application/commands/internal/fsck/roots.js';
 import {
+  readGcSettings,
+  runGcTask,
+} from '../../../../src/application/commands/internal/gc-pipeline.js';
+import { assertOperationalRepository } from '../../../../src/application/commands/internal/repo-state.js';
+import {
   type MaintenanceTask,
   maintenance,
 } from '../../../../src/application/commands/maintenance.js';
@@ -81,6 +86,12 @@ import type { Context } from '../../../../src/ports/context.js';
 import { buildMidx } from '../../domain/storage/arbitraries.js';
 import { writeSyntheticPack, writeSyntheticPackIn } from '../primitives/pack-fixture.js';
 import { withReftableStorage } from '../primitives/reftable-fixtures.js';
+
+/** The gc task as `maintenance` runs it, its refusal surfaced rather than reported as a failed task. */
+const gcTask = async (ctx: Context): Promise<unknown> => {
+  await assertOperationalRepository(ctx);
+  return runGcTask(ctx, { auto: undefined, settings: await readGcSettings(ctx) });
+};
 
 const AUTHOR: AuthorIdentity = {
   name: 'Ada',
@@ -1056,12 +1067,12 @@ describe('maintenance', () => {
         // Arrange
         const ctx = await seedOneCommit();
         await appendConfig(ctx, '\n[pack]\n\twindow = abc\n[remote "x"]\n\tpartialclonefilter\n');
-        const sut = maintenance;
+        const sut = gcTask;
 
         // Act
         let caught: unknown;
         try {
-          await sut(ctx, { tasks: ['gc'] });
+          await sut(ctx);
           expect.unreachable();
         } catch (error) {
           caught = error;
@@ -1749,12 +1760,12 @@ describe('maintenance', () => {
         const loosePath = looseObjectPath(commonGitDir(ctx), blobId);
         const { forceFailure } = installLstatOverrides(ctx);
         forceFailure(loosePath, fileNotFound(loosePath));
-        const sut = maintenance;
+        const sut = gcTask;
 
         // Act
         let caught: unknown;
         try {
-          await sut(ctx, { tasks: ['gc'] });
+          await sut(ctx);
           expect.unreachable();
         } catch (error) {
           caught = error;
@@ -1926,12 +1937,12 @@ describe('maintenance', () => {
         const ctx = await seedOneCommit();
         const oversized = 'x'.repeat(MAX_REFLOG_BYTES + 1);
         await ctx.fs.writeUtf8(`${ctx.layout.gitDir}/logs/HEAD`, oversized);
-        const sut = maintenance;
+        const sut = gcTask;
 
         // Act
         let caught: unknown;
         try {
-          await sut(ctx, { tasks: ['gc'] });
+          await sut(ctx);
           expect.unreachable();
         } catch (error) {
           caught = error;
@@ -2309,8 +2320,8 @@ describe('maintenance', () => {
         forceMtimeSeconds(looseObjectPath(commonGitDir(ctx), idA), 2_000_000_000);
         forceMtimeSeconds(looseObjectPath(commonGitDir(ctx), idB), 2_000_000_000);
         await appendConfig(ctx, '\n[gc]\n\tpruneExpire = never\n');
-        const sut = maintenance;
-        const first = await sut(ctx, { tasks: ['gc'] });
+        const sut = gcTask;
+        const first = await maintenance(ctx, { tasks: ['gc'] });
         expect(first.cruftPackId).toBeDefined();
         const packDir = packDirOf(ctx);
         const mtimesPath = `${packDir}/pack-${first.cruftPackId}.mtimes`;
@@ -2323,7 +2334,7 @@ describe('maintenance', () => {
         // Act
         let caught: unknown;
         try {
-          await sut(ctx, { tasks: ['gc'] });
+          await sut(ctx);
           expect.unreachable();
         } catch (error) {
           caught = error;
@@ -2351,8 +2362,8 @@ describe('maintenance', () => {
         forceMtimeSeconds(looseObjectPath(commonGitDir(ctx), idA), 2_000_000_000);
         forceMtimeSeconds(looseObjectPath(commonGitDir(ctx), idB), 2_000_000_000);
         await appendConfig(ctx, '\n[gc]\n\tpruneExpire = never\n');
-        const sut = maintenance;
-        const first = await sut(ctx, { tasks: ['gc'] });
+        const sut = gcTask;
+        const first = await maintenance(ctx, { tasks: ['gc'] });
         expect(first.cruftPackId).toBeDefined();
         const packDir = packDirOf(ctx);
         const mtimesPath = `${packDir}/pack-${first.cruftPackId}.mtimes`;
@@ -2365,7 +2376,7 @@ describe('maintenance', () => {
         // Act
         let caught: unknown;
         try {
-          await sut(ctx, { tasks: ['gc'] });
+          await sut(ctx);
           expect.unreachable();
         } catch (error) {
           caught = error;
@@ -2385,8 +2396,8 @@ describe('maintenance', () => {
         const ctx = await seedOneCommit();
         await writeLooseBlob(ctx, 'truncated-sidecar');
         await appendConfig(ctx, '\n[gc]\n\tpruneExpire = never\n');
-        const sut = maintenance;
-        const first = await sut(ctx, { tasks: ['gc'] });
+        const sut = gcTask;
+        const first = await maintenance(ctx, { tasks: ['gc'] });
         expect(first.cruftPackId).toBeDefined();
         const packDir = packDirOf(ctx);
         const mtimesPath = `${packDir}/pack-${first.cruftPackId}.mtimes`;
@@ -2395,7 +2406,7 @@ describe('maintenance', () => {
         // Act
         let caught: unknown;
         try {
-          await sut(ctx, { tasks: ['gc'] });
+          await sut(ctx);
           expect.unreachable();
         } catch (error) {
           caught = error;
@@ -3188,12 +3199,12 @@ describe('maintenance', () => {
         // Arrange
         const ctx = await seedOneCommit();
         await appendConfig(ctx, '\n[pack]\n\tdepth = abc\n');
-        const sut = maintenance;
+        const sut = gcTask;
 
         // Act
         let caught: unknown;
         try {
-          await sut(ctx, { tasks: ['gc'] });
+          await sut(ctx);
           expect.unreachable();
         } catch (error) {
           caught = error;
@@ -3219,12 +3230,12 @@ describe('maintenance', () => {
         const ctx = createMemoryContext();
         await init(ctx);
         await appendConfig(ctx, '\n[pack]\n\twindow = 2147483648\n');
-        const sut = maintenance;
+        const sut = gcTask;
 
         // Act
         let caught: unknown;
         try {
-          await sut(ctx, { tasks: ['gc'] });
+          await sut(ctx);
           expect.unreachable();
         } catch (error) {
           caught = error;
@@ -3380,12 +3391,12 @@ describe('maintenance', () => {
           if (path === loosePath) throw genericFault;
           return originalRm(path);
         });
-        const sut = maintenance;
+        const sut = gcTask;
 
         // Act
         let caught: unknown;
         try {
-          await sut(ctx, { tasks: ['gc'] });
+          await sut(ctx);
           expect.unreachable();
         } catch (error) {
           caught = error;
@@ -3493,7 +3504,7 @@ describe('maintenance', () => {
         const ctx = await seedOneCommit();
         const blobId = await writeLooseBlob(ctx, 'half-written-cruft');
         await appendConfig(ctx, '\n[gc]\n\tpruneExpire = never\n');
-        const sut = maintenance;
+        const sut = gcTask;
         const originalWriteExclusive = ctx.fs.writeExclusive.bind(ctx.fs);
         const spy = vi
           .spyOn(ctx.fs, 'writeExclusive')
@@ -3505,7 +3516,7 @@ describe('maintenance', () => {
         // Act
         let caught: unknown;
         try {
-          await sut(ctx, { tasks: ['gc'] });
+          await sut(ctx);
         } catch (error) {
           caught = error;
         }
@@ -3540,12 +3551,12 @@ describe('maintenance', () => {
         const rawBytes = new TextEncoder().encode('blob 3\0xyz');
         const compressed = await ctx.compressor.deflate(rawBytes);
         await ctx.fs.write(looseObjectPath(commonGitDir(ctx), fakeId), compressed);
-        const sut = maintenance;
+        const sut = gcTask;
 
         // Act
         let caught: unknown;
         try {
-          await sut(ctx, { tasks: ['gc'] });
+          await sut(ctx);
           expect.unreachable();
         } catch (error) {
           caught = error;
@@ -4048,12 +4059,12 @@ describe('maintenance', () => {
         const ctx = await seedOneCommit();
         const fanoutPath = `${ctx.layout.gitDir}/objects/cd`;
         await ctx.fs.write(fanoutPath, new Uint8Array([0x78]));
-        const sut = maintenance;
+        const sut = gcTask;
 
         // Act
         let caught: unknown;
         try {
-          await sut(ctx, { tasks: ['gc'] });
+          await sut(ctx);
           expect.unreachable();
         } catch (error) {
           caught = error;
@@ -4077,12 +4088,12 @@ describe('maintenance', () => {
           if (path === fanoutDir) throw fault;
           return original(path);
         });
-        const sut = maintenance;
+        const sut = gcTask;
 
         // Act
         let caught: unknown;
         try {
-          await sut(ctx, { tasks: ['gc'] });
+          await sut(ctx);
           expect.unreachable();
         } catch (error) {
           caught = error;
@@ -4110,12 +4121,12 @@ describe('maintenance', () => {
           if (path === fanoutDir) throw genericFault;
           return original(path);
         });
-        const sut = maintenance;
+        const sut = gcTask;
 
         // Act
         let caught: unknown;
         try {
-          await sut(ctx, { tasks: ['gc'] });
+          await sut(ctx);
           expect.unreachable();
         } catch (error) {
           caught = error;
@@ -5105,8 +5116,8 @@ describe('maintenance', () => {
       it('Then it rethrows rather than tolerating the fault as absence', async () => {
         // Arrange
         const ctx = await seedOneCommit();
-        const sut = maintenance;
-        const first = await sut(ctx, { tasks: ['gc'] });
+        const sut = gcTask;
+        const first = await maintenance(ctx, { tasks: ['gc'] });
         const packDir = packDirOf(ctx);
         const midxPath = multiPackIndexPath(packDir);
         await writeMinimalMidx(ctx, packDir, [`pack-${first.packId}.idx`]);
@@ -5131,7 +5142,7 @@ describe('maintenance', () => {
         // is non-empty and the midx read is actually attempted.
         let caught: unknown;
         try {
-          await sut(ctx, { tasks: ['gc'] });
+          await sut(ctx);
           expect.unreachable();
         } catch (error) {
           caught = error;

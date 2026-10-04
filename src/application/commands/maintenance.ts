@@ -38,7 +38,13 @@ import { hasReplaceRefs } from '../primitives/internal/commit-graph-compatible.j
 import { assertRepoSettingsValid } from '../primitives/internal/repo-settings-gate.js';
 import { writeCommitGraph } from '../primitives/write-commit-graph.js';
 import { writeSplitCommitGraph } from '../primitives/write-split-commit-graph.js';
-import { GC_NOT_RUN, type GcResult, readGcSettings, runGcTask } from './internal/gc-pipeline.js';
+import {
+  GC_NOT_RUN,
+  type GcResult,
+  type GcSettings,
+  readGcSettings,
+  runGcTask,
+} from './internal/gc-pipeline.js';
 import { assertOperationalRepository } from './internal/repo-state.js';
 
 export type MaintenanceTask = 'commit-graph' | 'gc';
@@ -130,6 +136,18 @@ const runCommitGraphTask = async (
   return { commitGraphWritten: written.written, commitsInGraph: written.commitCount };
 };
 
+/** git's gc task: the parent's own object-store reads settle the repo settings
+ *  first, dying on a malformed one; then a coded refusal from the gc child
+ *  fails the task. */
+const runGcStep = async (
+  ctx: Context,
+  opts: MaintenanceOptions,
+  settings: GcSettings,
+): Promise<{ readonly ran: boolean; readonly result: GcResult } | MaintenanceTaskFailure> => {
+  await assertRepoSettingsValid(ctx);
+  return failureOr('gc', () => runGcTask(ctx, { auto: opts.auto, settings }));
+};
+
 const COMMIT_GRAPH_DISABLED_WARNING =
   "attempting to write a commit-graph, but 'core.commitGraph' is disabled";
 
@@ -205,7 +223,12 @@ export const maintenance = async (
       tasksRun.push('commit-graph');
       continue;
     }
-    gcOutcome = await runGcTask(ctx, { auto: opts.auto, settings: gcSettings });
+    const gcRun = await runGcStep(ctx, opts, gcSettings);
+    if ('code' in gcRun) {
+      tasksFailed.push(gcRun);
+      continue;
+    }
+    gcOutcome = gcRun;
     if (!gcOutcome.ran) continue;
     tasksRun.push('gc');
     commitGraphOutcome = (await writeGcCommitGraph(ctx)) ?? commitGraphOutcome;

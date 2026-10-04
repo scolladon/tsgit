@@ -3,6 +3,11 @@ import { createMemoryContext } from '../../../../src/adapters/memory/memory-adap
 import { add } from '../../../../src/application/commands/add.js';
 import { commit } from '../../../../src/application/commands/commit.js';
 import { init } from '../../../../src/application/commands/init.js';
+import {
+  readGcSettings,
+  runGcTask,
+} from '../../../../src/application/commands/internal/gc-pipeline.js';
+import { assertOperationalRepository } from '../../../../src/application/commands/internal/repo-state.js';
 import { maintenance } from '../../../../src/application/commands/maintenance.js';
 import { worktreeAdd } from '../../../../src/application/commands/worktree.js';
 import { deriveWorktreeContext } from '../../../../src/application/primitives/internal/worktree-context.js';
@@ -18,6 +23,12 @@ import { hexToBytes } from '../../../../src/domain/objects/encoding.js';
 import type { AuthorIdentity, ObjectId } from '../../../../src/domain/objects/index.js';
 import type { Context } from '../../../../src/ports/context.js';
 import { serializeIndexFixtureAsync } from '../primitives/fixtures.js';
+
+/** The gc task as `maintenance` runs it, its refusal surfaced rather than reported as a failed task. */
+const gcTask = async (ctx: Context): Promise<unknown> => {
+  await assertOperationalRepository(ctx);
+  return runGcTask(ctx, { auto: undefined, settings: await readGcSettings(ctx) });
+};
 
 const AUTHOR: AuthorIdentity = {
   name: 'Ada',
@@ -144,12 +155,12 @@ describe('Given a resolve-undo stage naming an absent blob', () => {
       // Arrange
       const ctx = await seed();
       await recordResolveUndo(ctx, [[REGULAR, ABSENT]]);
-      const sut = maintenance;
+      const sut = gcTask;
 
       // Act
       let caught: unknown;
       try {
-        await sut(ctx, { tasks: ['gc'] });
+        await sut(ctx);
       } catch (error) {
         caught = error;
       }
