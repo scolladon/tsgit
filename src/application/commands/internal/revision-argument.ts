@@ -176,6 +176,19 @@ export const expandRevisionArgument = async (
   return [...excluded, await readTip(ctx, table, withoutParent.rest, source)];
 };
 
+/** A walk tip in git's pending order, excluded or not. */
+export interface PendingTip {
+  readonly id: ObjectId;
+  readonly excluded: boolean;
+}
+
+export interface ExpandedRevisions {
+  readonly wants: ObjectId[];
+  readonly not: ObjectId[];
+  /** Every tip of `wants` and `not`, in the order git adds them to the walk. */
+  readonly tips: PendingTip[];
+}
+
 /**
  * Each argument expanded in turn, `not` ones with every tip's polarity
  * flipped, every object parsed typed into `table`, the invocation's.
@@ -185,15 +198,18 @@ export const expandRevisionArguments = async (
   table: ObjectTypeTable,
   args: { readonly wants: ReadonlyArray<string>; readonly not: ReadonlyArray<string> },
   source: RevisionSource,
-): Promise<{ readonly wants: ObjectId[]; readonly not: ObjectId[] }> => {
+): Promise<ExpandedRevisions> => {
   const wants: ObjectId[] = [];
   const not: ObjectId[] = [];
+  const tips: PendingTip[] = [];
   const place = (expanded: RevisionTip, flip: boolean): void => {
-    (expanded.negated !== flip ? not : wants).push(expanded.id);
+    const excluded = expanded.negated !== flip;
+    (excluded ? not : wants).push(expanded.id);
+    tips.push({ id: expanded.id, excluded });
   };
   for (const arg of args.wants)
     for (const t of await expandRevisionArgument(ctx, table, arg, source)) place(t, false);
   for (const arg of args.not)
     for (const t of await expandRevisionArgument(ctx, table, arg, source)) place(t, true);
-  return { wants, not };
+  return { wants, not, tips };
 };

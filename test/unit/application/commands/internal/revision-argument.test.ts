@@ -122,7 +122,15 @@ describe('expandRevisionArguments', () => {
         );
 
         // Assert
-        expect(result).toEqual({ wants: [ids.root, ids.side], not: [ids.merge] });
+        expect(result).toEqual({
+          wants: [ids.root, ids.side],
+          not: [ids.merge],
+          tips: [
+            { id: ids.root, excluded: false },
+            { id: ids.side, excluded: false },
+            { id: ids.merge, excluded: true },
+          ],
+        });
       });
     });
   });

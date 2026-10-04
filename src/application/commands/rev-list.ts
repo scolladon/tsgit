@@ -18,6 +18,7 @@ import { enumerateRefs } from '../primitives/enumerate-refs.js';
 import {
   type ClosureObject,
   type ClosureTier,
+  type ClosureTip,
   computeClosure,
 } from '../primitives/internal/closure-engine.js';
 import {
@@ -150,6 +151,7 @@ const resolveAllRefTips = async (ctx: Context, table: ObjectTypeTable): Promise<
 interface RevListTips {
   readonly wants: ReadonlyArray<ObjectId>;
   readonly not: ReadonlyArray<ObjectId>;
+  readonly tips: ReadonlyArray<ClosureTip>;
 }
 
 /**
@@ -170,9 +172,11 @@ const resolveRevListTips = async (
     'command-line',
   );
   if (opts.all !== true) return tips;
+  const refTips = await resolveAllRefTips(ctx, table);
   return {
-    ...tips,
-    wants: [...new Set([...tips.wants, ...(await resolveAllRefTips(ctx, table))])],
+    not: tips.not,
+    wants: [...new Set([...tips.wants, ...refTips])],
+    tips: [...tips.tips, ...refTips.map((id) => ({ id, excluded: false }))],
   };
 };
 
@@ -195,11 +199,12 @@ const toEntry = (object: ClosureObject): RevListEntry =>
 export const revList = async (ctx: Context, opts: RevListOptions = {}): Promise<RevListResult> => {
   await assertOperationalRepository(ctx);
   const objectTypes = createObjectTypeTable();
-  const { wants, not } = await resolveRevListTips(ctx, objectTypes, opts);
+  const { wants, not, tips } = await resolveRevListTips(ctx, objectTypes, opts);
   const closure = await computeClosure(ctx, {
     objectTypes,
     wants,
     not,
+    tips,
     objects: opts.objects ?? false,
     tier: closureTierFor(opts),
     firstParent: opts.firstParent ?? false,

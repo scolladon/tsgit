@@ -2204,4 +2204,91 @@ describe('revList: object types assigned during one invocation', () => {
       });
     });
   });
+
+  describe('Given a blob wanted, then an excluded line and an included line of equal dates naming it', () => {
+    const seedLines = async () => {
+      const seeded = await seedMistypedTag();
+      const { ctx, blob } = seeded;
+      const empty = await writeEmptyTree(ctx);
+      const excludedParent = await writeCommitNaming(ctx, blob, []);
+      const excluded = await writeCommitNaming(ctx, empty, [excludedParent]);
+      const includedParent = await writeCommitNaming(ctx, empty, [blob]);
+      const included = await writeCommitNaming(ctx, empty, [includedParent]);
+      return { ...seeded, excludedParent, excluded, includedParent, included };
+    };
+
+    describe('When the excluded line is named first', () => {
+      it('Then the walk pops it first, logs its bad tree and fails on the included line', async () => {
+        // Arrange
+        const { ctx, logged, blob, excludedParent, excluded, includedParent, included } =
+          await seedLines();
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() =>
+          sut(ctx, { wants: [blob, `^${excluded}`, included] }),
+        );
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'REVISION_WALK_FAILED' },
+          logged: [
+            `object ${blob} is a blob, not a tree`,
+            `bad tree pointer ${blob} in commit ${excludedParent}`,
+            `object ${blob} is a blob, not a commit`,
+            `bad parent ${blob} in commit ${includedParent}`,
+          ],
+        });
+      });
+    });
+
+    describe('When the included line is named first', () => {
+      it('Then the walk pops it first and fails before parsing the excluded line', async () => {
+        // Arrange
+        const { ctx, logged, blob, excluded, includedParent, included } = await seedLines();
+        const sut = revList;
+
+        // Act
+        const caught = await caughtFrom(() =>
+          sut(ctx, { wants: [blob, included, `^${excluded}`] }),
+        );
+
+        // Assert
+        expect({ data: (caught as TsgitError).data, logged }).toEqual({
+          data: { code: 'REVISION_WALK_FAILED' },
+          logged: [
+            `object ${blob} is a blob, not a commit`,
+            `bad parent ${blob} in commit ${includedParent}`,
+          ],
+        });
+      });
+    });
+  });
+
+  describe('Given a commit-graph line nothing else types', () => {
+    describe('When revList walks it from the graph', () => {
+      it('Then each graph parent types as a commit and the whole line is listed', async () => {
+        // Arrange
+        const { ctx, logged } = await seedMistypedTag();
+        const empty = await writeEmptyTree(ctx);
+        const oldest = await writeCommitNaming(ctx, empty, []);
+        const middle = await writeCommitNaming(ctx, empty, [oldest]);
+        const newest = await writeCommitNaming(ctx, empty, [middle]);
+        const commits = await Promise.all(
+          [oldest, middle, newest].map(async (id) => (await readObject(ctx, id)) as Commit),
+        );
+        await writeCommitGraph(ctx, [commits]);
+        const sut = revList;
+
+        // Act
+        const result = await sut(ctx, { wants: [newest] });
+
+        // Assert
+        expect({ ids: result.entries.map(({ id }) => id), logged }).toEqual({
+          ids: [newest, middle, oldest],
+          logged: [],
+        });
+      });
+    });
+  });
 });

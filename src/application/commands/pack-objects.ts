@@ -84,7 +84,7 @@ const selectObjects = async (
 ): Promise<ReadonlyArray<ClosureObject>> => {
   // git reads `--revs` lines from stdin, where no argument can be a filename.
   const objectTypes = createObjectTypeTable();
-  const { wants, not } = await expandRevisionArguments(
+  const { wants, not, tips } = await expandRevisionArguments(
     ctx,
     objectTypes,
     { wants: opts.wants, not: opts.not ?? [] },
@@ -94,6 +94,7 @@ const selectObjects = async (
     objectTypes,
     wants,
     not,
+    tips,
     objects: true,
     tier: closureTierFor(opts),
     sparse: await packUseSparse(ctx),

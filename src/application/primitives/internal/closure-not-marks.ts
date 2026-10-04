@@ -48,7 +48,8 @@ export interface NotMarks {
   readonly objectTypes?: ObjectTypeTable;
 }
 
-interface NotMarksAccumulator extends NotMarks {
+/** The marks as tips are added, each in git's pending order. */
+export interface NotMarksAccumulator extends NotMarks {
   readonly commitTips: ObjectId[];
   readonly objectsListed: boolean;
 }
@@ -133,31 +134,44 @@ const readMarkedTree = async (
  * Mark one `not` tip uninteresting: peel a tag chain, marking every tag on it
  * as git's `handle_commit` flags each object it peels, then collect a commit
  * for the limited walk (its own tree is left to `markBoundaryTrees`), or mark
- * a tree/blob tip directly.
+ * a tree/blob tip directly. Answers the commit collected, if any.
  */
-async function markUninteresting(
+export async function markNotTip(
   ctx: Context,
   id: ObjectId,
   acc: NotMarksAccumulator,
-): Promise<void> {
+): Promise<ObjectId | undefined> {
   const obj = await readObject(ctx, id);
   if (obj.type === 'tag') {
     acc.objects.add(id);
-    await markUninteresting(ctx, obj.data.object, acc);
-    return;
+    return markNotTip(ctx, obj.data.object, acc);
   }
   if (obj.type === 'commit') {
     acc.commitTips.push(id);
-    return;
+    return id;
   }
   // git's `handle_commit` drops a tree or blob tip unless the walk lists
   // objects, and otherwise marks it outright, a tree with its contents.
-  if (!acc.objectsListed) return;
-  if (obj.type === 'tree') {
-    await markTree(ctx, id, acc);
-    return;
-  }
-  acc.objects.add(id);
+  if (!acc.objectsListed) return undefined;
+  if (obj.type === 'tree') await markTree(ctx, id, acc);
+  else acc.objects.add(id);
+  return undefined;
+}
+
+/** Empty marks for one walk, ready for its `not` tips. */
+export async function createNotMarks(
+  ctx: Context,
+  scope: NotSideScope,
+): Promise<NotMarksAccumulator> {
+  const { objects: objectsListed, objectTypes } = scope;
+  return {
+    commitTips: [],
+    objects: new Set<ObjectId>(),
+    seenTrees: new Set<ObjectId>(),
+    maxDepth: await resolveMaxTreeDepth(ctx),
+    objectsListed,
+    ...(objectTypes === undefined ? {} : { objectTypes }),
+  };
 }
 
 /** Collect every commit `not` tip; mark a directly-named tree/blob tip
@@ -168,18 +182,8 @@ export async function markNotSide(
   not: ReadonlyArray<ObjectId>,
   scope: NotSideScope,
 ): Promise<NotMarks> {
-  const { objects: objectsListed, objectTypes } = scope;
-  const acc: NotMarksAccumulator = {
-    commitTips: [],
-    objects: new Set<ObjectId>(),
-    seenTrees: new Set<ObjectId>(),
-    maxDepth: await resolveMaxTreeDepth(ctx),
-    objectsListed,
-    ...(objectTypes === undefined ? {} : { objectTypes }),
-  };
-  for (const notId of not) {
-    await markUninteresting(ctx, notId, acc);
-  }
+  const acc = await createNotMarks(ctx, scope);
+  for (const notId of not) await markNotTip(ctx, notId, acc);
   return acc;
 }
 

@@ -47,14 +47,15 @@ import {
   resolveBitmapClosure,
 } from './bitmap-binding.js';
 import {
+  createNotMarks,
   markBoundaryTrees,
-  markNotSide,
+  markNotTip,
   markSparseTrees,
   type NotMarks,
+  type NotMarksAccumulator,
   readCommitMetaIfPresent,
   type SparseTreeSeed,
 } from './closure-not-marks.js';
-import { commitDateWalk } from './commit-date-walk.js';
 import {
   type LimitedWalk,
   type LimitListOptions,
@@ -104,6 +105,18 @@ export interface ClosureRequest {
   readonly noWalk?: boolean;
   /** The invocation's object-type table the wants are typed into; omitted, nothing is typed. */
   readonly objectTypes?: ObjectTypeTable;
+  /**
+   * Every tip of `wants` and `not`, in git's pending (command-line) order:
+   * the order tips are peeled and marked, and which of equal-dated commits
+   * the walk pops first. Omitted means `wants`, then `not`.
+   */
+  readonly tips?: ReadonlyArray<ClosureTip>;
+}
+
+/** One walk tip, wanted or excluded. */
+export interface ClosureTip {
+  readonly id: ObjectId;
+  readonly excluded: boolean;
 }
 
 export interface ClosureObject {
@@ -268,26 +281,64 @@ interface PendingObject {
 interface ResolvedWants {
   readonly commitSeeds: ReadonlyArray<Commit>;
   readonly pending: ReadonlyArray<PendingObject>;
+  /** Every commit tip, wanted or excluded, in pending order — the walk's arrival order. */
+  readonly seeds: ReadonlyArray<ObjectId>;
+}
+
+interface ResolvingWants {
+  readonly commitSeeds: Commit[];
+  readonly pending: PendingObject[];
+  readonly seeds: ObjectId[];
+}
+
+const pendingTips = (request: ClosureRequest): ReadonlyArray<ClosureTip> =>
+  request.tips ?? [
+    ...request.wants.map((id) => ({ id, excluded: false })),
+    ...request.not.map((id) => ({ id, excluded: true })),
+  ];
+
+/**
+ * git's `prepare_revision_walk`: each tip in pending order — an excluded one
+ * marked, a wanted one resolved — and every commit among them seeded in that
+ * order.
+ */
+async function resolveTips(
+  ctx: Context,
+  request: ClosureRequest,
+  marks: NotMarksAccumulator,
+): Promise<ResolvedWants> {
+  const resolving: ResolvingWants = { commitSeeds: [], pending: [], seeds: [] };
+  for (const tip of pendingTips(request)) {
+    const commit = tip.excluded
+      ? await markNotTip(ctx, tip.id, marks)
+      : await resolveWant(ctx, request, tip.id, resolving);
+    if (commit !== undefined) resolving.seeds.push(commit);
+  }
+  return resolving;
 }
 
 /**
- * Resolve every want: peel tags (keeping each tag pending), then either seed
+ * Resolve one want: peel tags (keeping each tag pending), then either seed
  * the commit walk or keep a tree/blob want pending. Commit seeds carry their
  * full body so the `noWalk` path can emit them (and, under `objects`, their
- * own tree) without a second read.
+ * own tree) without a second read. Answers the commit seeded, if any.
  */
-async function resolveWants(ctx: Context, request: ClosureRequest): Promise<ResolvedWants> {
-  const commitSeeds: Commit[] = [];
-  const pending: PendingObject[] = [];
-  for (const wantId of request.wants) {
-    const peeled = await resolveTagChain(ctx, request.objectTypes, wantId, (tagId) =>
-      pending.push({ id: tagId, type: 'tag' }),
-    );
-    const obj = await readObject(ctx, peeled);
-    if (obj.type === 'commit') commitSeeds.push(obj);
-    else pending.push({ id: peeled, type: obj.type });
+async function resolveWant(
+  ctx: Context,
+  request: ClosureRequest,
+  wantId: ObjectId,
+  resolving: ResolvingWants,
+): Promise<ObjectId | undefined> {
+  const peeled = await resolveTagChain(ctx, request.objectTypes, wantId, (tagId) =>
+    resolving.pending.push({ id: tagId, type: 'tag' }),
+  );
+  const obj = await readObject(ctx, peeled);
+  if (obj.type !== 'commit') {
+    resolving.pending.push({ id: peeled, type: obj.type });
+    return undefined;
   }
-  return { commitSeeds, pending };
+  resolving.commitSeeds.push(obj);
+  return obj.id;
 }
 
 /**
@@ -344,45 +395,46 @@ interface CommitWalk {
 
 const walkedFrom = (commit: Commit): WalkedCommit => ({ id: commit.id, tree: commit.data.tree });
 
-/** Nothing excluded: the plain walk, which may stop as soon as `maxCount` is reached. */
+/**
+ * Nothing excluded. A typing or counted walk is git's streaming
+ * `get_revision`, which parses each parent as it pops a commit — newest
+ * first, ties in arrival order — and dies on the first commit whose parents
+ * it cannot parse; `limitList` walks exactly that order, refuses naming that
+ * commit, and a count stops it once that many commits have had their parents
+ * parsed. Otherwise any order reaches the same set.
+ */
 async function collectUnlimitedWalk(
   ctx: Context,
   commitSeeds: ReadonlyArray<Commit>,
   request: ClosureRequest,
 ): Promise<CommitWalk> {
-  if (request.objectTypes !== undefined) {
-    return collectTypedWalk(ctx, commitSeeds, request.objectTypes, request);
+  const from = commitSeeds.map((seed) => seed.id);
+  if (request.objectTypes !== undefined || request.maxCount !== undefined) {
+    return collectStreamedWalk(ctx, from, request);
   }
+  const order = request.firstParent === true ? 'first-parent' : 'breadth-first';
   const walked: WalkedCommit[] = [];
-  for await (const commit of unlimitedCommits(ctx, commitSeeds, request)) {
+  for await (const commit of walkCommitsStoppingAt(ctx, { from, ignoreMissing: true, order })) {
     walked.push(walkedFrom(commit));
-    if (request.maxCount !== undefined && walked.length >= request.maxCount) break;
   }
   return { walked, boundary: NO_MARKS };
 }
 
-/**
- * A typing invocation's whole walk: git's `get_revision` parses each parent
- * as it pops a commit — newest first, ties in arrival order — and dies on the
- * first commit whose parents it cannot parse. With nothing excluded,
- * `limitList` walks exactly that order and refuses naming that commit; a
- * count stops it once that many commits have had their parents parsed.
- */
-async function collectTypedWalk(
+async function collectStreamedWalk(
   ctx: Context,
-  commitSeeds: ReadonlyArray<Commit>,
-  objectTypes: ObjectTypeTable,
+  from: ReadonlyArray<ObjectId>,
   request: ClosureRequest,
 ): Promise<CommitWalk> {
+  const { objectTypes, maxCount } = request;
   const options = await resolveLimitOptions(
     ctx,
-    { from: commitSeeds.map((seed) => seed.id), ignoreMissing: true },
+    { from, ignoreMissing: true },
     {
       until: new Set(),
       firstParent: request.firstParent === true,
       settle: 'slop',
-      objectTypes,
-      ...(request.maxCount === undefined ? {} : { takeAtMost: request.maxCount }),
+      ...(objectTypes === undefined ? {} : { objectTypes }),
+      ...(maxCount === undefined ? {} : { takeAtMost: maxCount }),
     },
   );
   const walked: WalkedCommit[] = [];
@@ -390,29 +442,6 @@ async function collectTypedWalk(
     walked.push(walkedFrom(commit));
   }
   return { walked, boundary: NO_MARKS };
-}
-
-/**
- * The commits the walk reaches. A count keeps the ones git's streaming walk
- * shows first — newest commit date first, ties in arrival order — so only
- * then is the date-ordered walk paid for; without one, any order reaches
- * the same set.
- */
-async function* unlimitedCommits(
-  ctx: Context,
-  commitSeeds: ReadonlyArray<Commit>,
-  request: ClosureRequest,
-): AsyncIterable<Commit> {
-  const from = commitSeeds.map((seed) => seed.id);
-  const firstParent = request.firstParent === true;
-  if (request.maxCount === undefined) {
-    const order = firstParent ? 'first-parent' : 'breadth-first';
-    yield* walkCommitsStoppingAt(ctx, { from, ignoreMissing: true, order });
-    return;
-  }
-  for await (const step of commitDateWalk(ctx, { from, firstParent, ignoreMissing: true })) {
-    yield step.commit;
-  }
 }
 
 /**
@@ -436,14 +465,15 @@ const edgesOf = (walk: LimitedWalk, listed: ReadonlyArray<Commit>): ReadonlySet<
  */
 async function collectLimitedWalk(
   ctx: Context,
-  commitSeeds: ReadonlyArray<Commit>,
+  resolved: ResolvedWants,
   marks: NotMarks,
   request: ClosureRequest,
 ): Promise<CommitWalk> {
   const options = await resolveLimitOptions(
     ctx,
-    { from: commitSeeds.map((seed) => seed.id), ignoreMissing: true },
+    { from: resolved.commitSeeds.map((seed) => seed.id), ignoreMissing: true },
     {
+      seeds: resolved.seeds,
       until: new Set(marks.commitTips),
       firstParent: request.firstParent === true,
       settle: 'slop',
@@ -523,14 +553,14 @@ const readDropped = async (
  */
 async function walkCommitSeeds(
   ctx: Context,
-  commitSeeds: ReadonlyArray<Commit>,
+  resolved: ResolvedWants,
   marks: NotMarks,
   request: ClosureRequest,
 ): Promise<ReadonlyArray<WalkedCommit>> {
   const commitWalk =
     marks.commitTips.length === 0
-      ? await collectUnlimitedWalk(ctx, commitSeeds, request)
-      : await collectLimitedWalk(ctx, commitSeeds, marks, request);
+      ? await collectUnlimitedWalk(ctx, resolved.commitSeeds, request)
+      : await collectLimitedWalk(ctx, resolved, marks, request);
   if (request.objects) await markExcludedTrees(ctx, commitWalk, marks, request);
   const { walked } = commitWalk;
   return request.maxCount !== undefined ? walked.slice(0, request.maxCount) : walked;
@@ -556,17 +586,18 @@ async function markExcludedTrees(
 /** Dispatch the commit-seed side of the closure: no seeds, `maxCount: 0`, `noWalk`, or the full walk. */
 async function listCommitSeeds(
   ctx: Context,
-  commitSeeds: ReadonlyArray<Commit>,
+  resolved: ResolvedWants,
   marks: NotMarks,
   request: ClosureRequest,
 ): Promise<ReadonlyArray<WalkedCommit>> {
+  const { commitSeeds } = resolved;
   if (commitSeeds.length === 0 || request.maxCount === 0) return [];
   // git ignores `--no-walk` once a range (a `not` tip) is present, falling back
   // to the ordinary bounded walk; `noWalk` shows only the tips solely when there
   // is nothing to exclude.
   if (request.noWalk === true && request.not.length === 0)
     return seedsWithoutWalking(commitSeeds, request);
-  return walkCommitSeeds(ctx, commitSeeds, marks, request);
+  return walkCommitSeeds(ctx, resolved, marks, request);
 }
 
 /**
@@ -598,7 +629,7 @@ async function walkClosure(ctx: Context, request: ClosureRequest): Promise<Closu
     results.push(entry);
   };
 
-  const marks = await markNotSide(ctx, request.not, {
+  const marks = await createNotMarks(ctx, {
     objects: request.objects,
     ...(request.objectTypes === undefined ? {} : { objectTypes: request.objectTypes }),
   });
@@ -608,9 +639,9 @@ async function walkClosure(ctx: Context, request: ClosureRequest): Promise<Closu
     maxDepth: marks.maxDepth,
     objectTypes: request.objectTypes,
   };
-  const { commitSeeds, pending } = await resolveWants(ctx, request);
-  const walked = await listCommitSeeds(ctx, commitSeeds, marks, request);
-  await emitListed(ctx, { walked, pending }, scope, request, emit);
+  const resolved = await resolveTips(ctx, request, marks);
+  const walked = await listCommitSeeds(ctx, resolved, marks, request);
+  await emitListed(ctx, { walked, pending: resolved.pending }, scope, request, emit);
 
   return results;
 }

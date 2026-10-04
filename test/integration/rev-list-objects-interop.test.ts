@@ -1390,6 +1390,38 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list interop — object types assigned in o
     });
   });
 
+  describe.each([
+    ['the blob, the excluded line, then the included line', true, true, false],
+    ['the blob, the included line, then the excluded line', true, false, false],
+    ['the excluded line, then the included line, listing objects', false, true, true],
+  ] as const)(
+    'Given equal-dated excluded and included lines whose parents name a blob, named as %s',
+    (_label, blobFirst, excludedFirst, objects) => {
+      describe('When rev-list limits the walk on both tools', () => {
+        it('Then both pop the lines in command-line order and log the same failures', async () => {
+          // Arrange
+          const { dir, blob } = await buildMistypedTagFixture();
+          const empty = emptyTreeOf(dir);
+          const excluded = writeLiteralCommit(dir, empty, [writeLiteralCommit(dir, blob, [])]);
+          const included = writeLiteralCommit(dir, empty, [writeLiteralCommit(dir, empty, [blob])]);
+          const lines = excludedFirst ? [`^${excluded}`, included] : [included, `^${excluded}`];
+          const wants = blobFirst ? [blob, ...lines] : lines;
+          const flags = objects ? ['--objects'] : [];
+          const peer = tryRunGitWithExit(['-C', dir, 'rev-list', ...flags, ...wants]);
+          const { ctx, logged } = capturing(dir);
+          const sut = revList;
+
+          // Act
+          const result = await settled(() => sut(ctx, { wants, objects }));
+
+          // Assert
+          expect(peer.exitCode).toBe(128);
+          expect(walkStderrOf(logged, result)).toBe(peer.stderr);
+        });
+      });
+    },
+  );
+
   /** A tree stored as spelt: `[mode, name, id]` entries, whatever their objects are. */
   const writeLiteralTree = (
     dir: string,
