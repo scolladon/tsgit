@@ -70,19 +70,15 @@ const commit = (
 };
 
 /**
- * `git rev-list <args>` stdout, as a bare id set. Each line is either a bare
+ * `git rev-list <args>` stdout, as bare ids in git's order. Each line is either a bare
  * id (commits without `--objects`) or `id path` (`--objects`' trees/blobs,
  * a root tree's own empty path included) — only the id counts here.
  */
-const gitIdSet = (dir: string, ...args: ReadonlyArray<string>): ReadonlySet<string> => {
-  const ids = new Set<string>();
-  for (const line of git(dir, 'rev-list', ...args).split('\n')) {
-    if (line.length === 0) continue;
-    const spaceIndex = line.indexOf(' ');
-    ids.add(spaceIndex === -1 ? line : line.slice(0, spaceIndex));
-  }
-  return ids;
-};
+const gitIds = (dir: string, ...args: ReadonlyArray<string>): ReadonlyArray<string> =>
+  git(dir, 'rev-list', ...args)
+    .split('\n')
+    .filter((line) => line.length > 0)
+    .map((line) => line.split(' ')[0] as string);
 
 interface SkewedExclusionFixture {
   readonly dir: string;
@@ -340,14 +336,14 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list objects interop — closure prune', ()
     describe('When revList walks the objects closure from HEAD', () => {
       it('Then the object ids match git rev-list --objects HEAD exactly, in order', async () => {
         // Arrange
-        const expected = gitIdSet(fixture.dir, '--objects', 'HEAD');
+        const expected = gitIds(fixture.dir, '--objects', 'HEAD');
         const sut = revList;
 
         // Act
         const result = await sut(fixture.ctx, { wants: ['HEAD'], objects: true });
 
         // Assert
-        expect(result.entries.map((entry) => entry.id)).toEqual([...expected]);
+        expect(result.entries.map((entry) => entry.id)).toEqual(expected);
       });
     });
 
@@ -370,12 +366,12 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list objects interop — closure prune', ()
     });
 
     describe('When revList walks the objects closure from HEAD excluding HEAD~2', () => {
-      it('Then the object id set matches git rev-list --objects HEAD ^HEAD~2 — including its over-report', async () => {
+      it('Then the object ids match git rev-list --objects HEAD ^HEAD~2 in order — including its over-report', async () => {
         // Arrange — a fresh Context: the graph/fanout caches are per session,
         // and the prior rows already read through this one.
         const freshCtx = createNodeContext({ workDir: fixture.dir });
         const notTipId = git(fixture.dir, 'rev-parse', 'HEAD~2').trim();
-        const expected = gitIdSet(fixture.dir, '--objects', 'HEAD', '--not', notTipId);
+        const expected = gitIds(fixture.dir, '--objects', 'HEAD', '--not', notTipId);
         const sut = revList;
 
         // Act
@@ -386,8 +382,7 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list objects interop — closure prune', ()
         });
 
         // Assert
-        const actual = new Set(result.entries.map((entry) => entry.id));
-        expect([...actual].sort()).toEqual([...expected].sort());
+        expect(result.entries.map((entry) => entry.id)).toEqual(expected);
       });
     });
   });
@@ -402,12 +397,12 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list objects interop — closure prune', ()
     afterAll(async () => rm(fixture.dir, { recursive: true, force: true }));
 
     describe('When revList walks the objects closure excluding that tip', () => {
-      it('Then the object id set matches git rev-list --objects want ^have, over-report and all', async () => {
+      it('Then the object ids match git rev-list --objects want ^have in order, over-report and all', async () => {
         // Arrange — `gitIdSet` spawns git through `execFileSync`, which throws
         // on any non-zero exit: git succeeding here IS the pinned behaviour.
         // A fresh Context, cut after the object was removed, so no cache
         // carries a reading of the vanished tree.
-        const expected = gitIdSet(fixture.dir, '--objects', 'HEAD', '--not', fixture.notTip);
+        const expected = gitIds(fixture.dir, '--objects', 'HEAD', '--not', fixture.notTip);
         const ctx = createNodeContext({ workDir: fixture.dir });
         const sut = revList;
 
@@ -419,8 +414,7 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list objects interop — closure prune', ()
         });
 
         // Assert
-        const actual = new Set(result.entries.map((entry) => entry.id));
-        expect([...actual].sort()).toEqual([...expected].sort());
+        expect(result.entries.map((entry) => entry.id)).toEqual(expected);
       });
     });
   });
@@ -434,15 +428,9 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list objects interop — closure prune', ()
     afterAll(async () => rm(fixture.dir, { recursive: true, force: true }));
 
     describe('When revList walks the objects closure from the want excluding the unrelated tip', () => {
-      it('Then the shared blob is still emitted — the set matches git rev-list --objects want ^T', async () => {
+      it('Then the shared blob is still emitted — the ids match git rev-list --objects want ^T in order', async () => {
         // Arrange
-        const expected = gitIdSet(
-          fixture.dir,
-          '--objects',
-          fixture.wantTip,
-          '--not',
-          fixture.notTip,
-        );
+        const expected = gitIds(fixture.dir, '--objects', fixture.wantTip, '--not', fixture.notTip);
         const ctx = createNodeContext({ workDir: fixture.dir });
         const sut = revList;
 
@@ -454,8 +442,7 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list objects interop — closure prune', ()
         });
 
         // Assert
-        const actual = new Set(result.entries.map((entry) => entry.id));
-        expect([...actual].sort()).toEqual([...expected].sort());
+        expect(result.entries.map((entry) => entry.id)).toEqual(expected);
       });
     });
   });
@@ -471,7 +458,7 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list objects interop — closure prune', ()
     describe('When revList excludes the root with maxCount 1 under objects', () => {
       it('Then it marks the edge parent tree over the full walk — matching git rev-list --objects -n 1 W3 ^P', async () => {
         // Arrange
-        const expected = gitIdSet(
+        const expected = gitIds(
           fixture.dir,
           '--objects',
           '-n',
@@ -492,15 +479,14 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list objects interop — closure prune', ()
         });
 
         // Assert
-        const actual = new Set(result.entries.map((entry) => entry.id));
-        expect([...actual].sort()).toEqual([...expected].sort());
+        expect(result.entries.map((entry) => entry.id)).toEqual(expected);
       });
     });
 
     describe('When revList excludes the root under noWalk and objects', () => {
       it('Then noWalk is ignored with a range, matching git rev-list --no-walk --objects W2 ^P', async () => {
         // Arrange
-        const expected = gitIdSet(
+        const expected = gitIds(
           fixture.dir,
           '--objects',
           '--no-walk',
@@ -520,8 +506,7 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list objects interop — closure prune', ()
         });
 
         // Assert
-        const actual = new Set(result.entries.map((entry) => entry.id));
-        expect([...actual].sort()).toEqual([...expected].sort());
+        expect(result.entries.map((entry) => entry.id)).toEqual(expected);
       });
     });
   });
@@ -545,7 +530,7 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list objects interop — closure prune', ()
         it('Then it lists what git rev-list lists, giving up on the excluded side as git does', async () => {
           // Arrange
           const flags = objects ? ['--objects'] : [];
-          const expected = gitIdSet(fixture.dir, ...flags, fixture.tip, '--not', excluded());
+          const expected = gitIds(fixture.dir, ...flags, fixture.tip, '--not', excluded());
           const ctx = createNodeContext({ workDir: fixture.dir });
           const sut = revList;
 
@@ -553,8 +538,7 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list objects interop — closure prune', ()
           const result = await sut(ctx, { wants: [fixture.tip], not: [excluded()], objects });
 
           // Assert
-          const actual = new Set(result.entries.map((entry) => entry.id));
-          expect([...actual].sort()).toEqual([...expected].sort());
+          expect(result.entries.map((entry) => entry.id)).toEqual(expected);
         });
       },
     );
@@ -590,7 +574,7 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list objects interop — closure prune', ()
     describe('When revList lists, with objects, a want whose listed ancestor the excluded side reaches late', () => {
       it("Then that ancestor's tree is excluded as git rev-list --objects excludes it", async () => {
         // Arrange
-        const expected = gitIdSet(
+        const expected = gitIds(
           fixture.dir,
           '--objects',
           fixture.sharedTreeTip,
@@ -608,8 +592,7 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list objects interop — closure prune', ()
         });
 
         // Assert
-        const actual = new Set(result.entries.map((entry) => entry.id));
-        expect([...actual].sort()).toEqual([...expected].sort());
+        expect(result.entries.map((entry) => entry.id)).toEqual(expected);
       });
     });
   });
@@ -635,7 +618,7 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list objects interop — closure prune', ()
     ])('When revList lists $wants ^$not with objects', ({ wants, not }) => {
       it('Then it shows the pending objects git rev-list --objects shows', async () => {
         // Arrange
-        const expected = gitIdSet(dir, '--objects', ...wants, '--not', ...not);
+        const expected = gitIds(dir, '--objects', ...wants, '--not', ...not);
         const ctx = createNodeContext({ workDir: dir });
         const sut = revList;
 
@@ -643,8 +626,7 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list objects interop — closure prune', ()
         const result = await sut(ctx, { wants, not, objects: true });
 
         // Assert
-        const actual = new Set(result.entries.map((entry) => entry.id));
-        expect([...actual].sort()).toEqual([...expected].sort());
+        expect(result.entries.map((entry) => entry.id)).toEqual(expected);
       });
     });
   });
@@ -665,7 +647,7 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list objects interop — closure prune', ()
       it('Then it keeps the commits git rev-list -n shows first, in commit-date order', async () => {
         // Arrange
         const tips = wants.map((name) => fixture.ids[name] as string);
-        const expected = gitIdSet(fixture.dir, ...flags, '-n', `${maxCount}`, ...tips);
+        const expected = gitIds(fixture.dir, ...flags, '-n', `${maxCount}`, ...tips);
         const ctx = createNodeContext({ workDir: fixture.dir });
         const sut = revList;
 
@@ -678,8 +660,7 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list objects interop — closure prune', ()
         });
 
         // Assert
-        const actual = new Set(result.entries.map((entry) => entry.id));
-        expect([...actual].sort()).toEqual([...expected].sort());
+        expect(result.entries.map((entry) => entry.id)).toEqual(expected);
       });
     });
   });
@@ -748,18 +729,18 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list all interop — broken refs', () => {
 
   describe('Given a symbolic branch whose target does not exist', () => {
     describe('When rev-list --all runs on both tools', () => {
-      it('Then both skip it and list the same commits', async () => {
+      it('Then both skip it and list the same commits in order', async () => {
         // Arrange
         const dir = await buildLooseRefFixture({ 'refs/heads/sym': 'ref: refs/heads/nope\n' });
         dirs.push(dir);
-        const peer = new Set(git(dir, 'rev-list', '--all').split('\n').filter(Boolean));
+        const peer = git(dir, 'rev-list', '--all').split('\n').filter(Boolean);
         const sut = revList;
 
         // Act
         const result = await sut(createNodeContext({ workDir: dir }), { all: true });
 
         // Assert
-        expect(new Set(result.entries.map((entry) => entry.id))).toEqual(peer);
+        expect(result.entries.map((entry) => entry.id)).toEqual(peer);
       });
     });
   });
@@ -835,17 +816,17 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list all interop — other worktrees', () =
 
   describe('Given a linked worktree whose detached HEAD only it reaches', () => {
     describe('When rev-list --all runs on both tools from the main worktree', () => {
-      it('Then both list the same commits', async () => {
+      it('Then both list the same commits in order', async () => {
         // Arrange
         const { dir } = await buildLinkedFixture();
-        const peer = new Set(git(dir, 'rev-list', '--all').split('\n').filter(Boolean));
+        const peer = git(dir, 'rev-list', '--all').split('\n').filter(Boolean);
         const sut = revList;
 
         // Act
         const result = await sut(createNodeContext({ workDir: dir }), { all: true });
 
         // Assert
-        expect(new Set(result.entries.map(({ id }) => id))).toEqual(peer);
+        expect(result.entries.map(({ id }) => id)).toEqual(peer);
       });
     });
   });
@@ -855,21 +836,21 @@ describe.skipIf(!GIT_AVAILABLE)('rev-list all interop — other worktrees', () =
     ['a dangling symref', 'ref: refs/heads/nope\n'],
   ])('Given a linked worktree whose HEAD is %s', (_label, content) => {
     describe('When rev-list --all runs on both tools from the main worktree', () => {
-      it('Then both skip it and list the same commits', async () => {
+      it('Then both skip it and list the same commits in order', async () => {
         // Arrange
         const { dir } = await buildLinkedFixture();
         await writeFile(
           path.join(dir, '.git', 'worktrees', path.basename(`${dir}-wt`), 'HEAD'),
           content,
         );
-        const peer = new Set(git(dir, 'rev-list', '--all').split('\n').filter(Boolean));
+        const peer = git(dir, 'rev-list', '--all').split('\n').filter(Boolean);
         const sut = revList;
 
         // Act
         const result = await sut(createNodeContext({ workDir: dir }), { all: true });
 
         // Assert
-        expect(new Set(result.entries.map(({ id }) => id))).toEqual(peer);
+        expect(result.entries.map(({ id }) => id)).toEqual(peer);
       });
     });
   });
